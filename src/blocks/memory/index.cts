@@ -179,6 +179,8 @@ const CHUNK_CHARS = 250_000;
 const LIST_LIMIT = 200;
 const MAX_VERSIONS = 5;
 const MAX_RETRIES = 8;
+const RESTORE_RACE =
+  "Another writer changed the memory store while this restore ran, so nothing was restored. Run the same restore again.";
 const DEFAULT_LIMIT = 10;
 const SNIPPET_LENGTH = 200;
 // Owner-tagged texts whose word sets overlap this much are reported as similar: a hint to the
@@ -390,6 +392,20 @@ function committed<T>(attempt: () => T): T {
     }
   }
   throw last;
+}
+
+/**
+ * Run a read-then-write once, as one transaction. Unlike committed, a lost race is not retried: the
+ * caller is told nothing was written and reruns it against the new state, so it never silently
+ * starts over and never overwrites what the other writer did.
+ */
+function attemptedOnce<T>(code: string, message: string, attempt: () => T): T {
+  try {
+    return attempt();
+  } catch (error) {
+    if (conflict(error)) fail(code, message);
+    throw error;
+  }
 }
 
 function moveCopy(
@@ -2781,9 +2797,13 @@ module.exports = {
           ? `${target.prefix}/${link.slice(exported.length)}`
           : link,
       );
-    // One transaction for the whole page and the counter that must stay ahead of it.
-    return committed(() => {
+    // One attempt, one transaction for the whole page and the counter that must stay ahead of it.
+    // It commits against every note the scan read, so a change by another writer in between makes
+    // it refuse with RESTORE_CONFLICT and write nothing.
+    return attemptedOnce("RESTORE_CONFLICT", RESTORE_RACE, () => {
       let skipped = 0;
+      // The existing notes the scan skipped or reported; the commit must still find them unchanged.
+      const read: { key: string; expectRevision: number }[] = [];
       const conflicts: string[] = [];
       const entries: BatchEntry[] = [];
       const queued = new Set<string>();
@@ -2807,6 +2827,7 @@ module.exports = {
         highest = Math.max(highest, ref.number);
         const existing = state.get(key);
         if (existing) {
+          read.push({ key, expectRevision: existing.revision });
           const old = existing.value as NoteValue;
           if (old.deleted !== true && old.text === note.text.text) {
             skipped += 1;
@@ -2916,7 +2937,7 @@ module.exports = {
           value: { last: highest },
           expectRevision: counter.revision,
         });
-      if (entries.length > 0) state.putMany(entries);
+      if (entries.length > 0) state.putMany(entries, { readSet: read });
       return {
         added,
         skipped,

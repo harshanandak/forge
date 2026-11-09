@@ -29,6 +29,7 @@ import {
 } from "../../../src/contract/schema.ts";
 import type {
   BatchEntry,
+  BatchOptions,
   ExtendedStateClient,
   HistoryOptions,
   PutOptions,
@@ -450,12 +451,20 @@ export function memoryState(
       counts.puttedRecords += 1;
       return write(key, value, options.expectRevision);
     },
-    putMany(entries: readonly BatchEntry[]) {
+    putMany(entries: readonly BatchEntry[], options?: BatchOptions) {
       race();
       counts.putMany += 1;
       counts.puttedRecords += entries.length;
       const before = new Map(records);
       try {
+        // Like the real store, a read-set key at another revision fails the whole batch.
+        for (const read of options?.readSet ?? [])
+          if ((records.get(read.key)?.revision ?? 0) !== read.expectRevision)
+            throw new ForgeFailure({
+              code: "REVISION_CONFLICT",
+              message: "stale read",
+              retry: "reconcile_first",
+            });
         return entries.map((entry) =>
           write(entry.key, entry.value, entry.expectRevision),
         );
