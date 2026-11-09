@@ -460,12 +460,20 @@ test("refuses malformed base64url in each segment and wrong signature lengths", 
   const parts = proof.split(".");
   const f = await fixture();
   for (let index = 0; index < parts.length; index++) {
-    for (const replacement of ["", `${parts[index]}=`, `${parts[index]}!`, "A"])
-      expect(
-        await f.verify(
-          parts.map((part, i) => (i === index ? replacement : part)).join("."),
-        ),
-      ).toEqual(refused());
+    for (const replacement of [
+      "",
+      `${parts[index]}=`,
+      `${parts[index]}!`,
+      "A",
+    ]) {
+      const malformed =
+        index === 1
+          ? await sign(`${parts[0]}.${replacement}`)
+          : parts
+              .map((part, i) => (i === index ? replacement : part))
+              .join(".");
+      expect(await f.verify(malformed)).toEqual(refused());
+    }
   }
   const signature = Buffer.from(parts[2]!, "base64url");
   for (const bytes of [
