@@ -87,6 +87,33 @@ test("a batch is at most 10 items and 7 by default, and next continues it", asyn
   expect(valid({ limit: 0 })).not.toEqual([]);
 });
 
+test("the handler clamps a limit over 10 to exactly 10 items", async () => {
+  const { call, queue } = setup();
+  for (let i = 1; i <= 12; i += 1)
+    await propose(call, `Rule number ${i} says something of its own ${i}.`);
+  const wide = await queue({ limit: 11 });
+  expect(ids(wide)).toHaveLength(10);
+  expect(wide).toMatchObject({ total: 12, returned: 10, next: 10 });
+});
+
+test("after the owner decides a batch, the review restarts at 0 and sees the rest", async () => {
+  const { call, queue } = setup();
+  for (let i = 1; i <= 12; i += 1)
+    await propose(call, `Rule number ${i} says something of its own ${i}.`);
+  const first = await queue();
+  expect(first).toMatchObject({ total: 12, returned: 7, next: 7 });
+  await call("memory.accept", {
+    items: acceptItems(first),
+    approval: ownerApproval,
+  });
+  const rest = await queue();
+  expect(rest).toMatchObject({ total: 5, returned: 5 });
+  expect(rest.next).toBeUndefined();
+  expect(ids(rest)).toEqual(
+    Array.from({ length: 5 }, (_, i) => `device/note-${i + 8}`),
+  );
+});
+
 test("similar proposals are grouped and unrelated ones stand alone", async () => {
   const { call, queue } = setup();
   const one = await propose(call, "Write the test first.");
