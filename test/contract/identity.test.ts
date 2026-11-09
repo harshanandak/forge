@@ -1,8 +1,10 @@
 import { expect, test } from "bun:test";
 import type { ClockPort } from "../../src/ports/clock.ts";
-import type {
-  IdentityVerifier,
-  IdentityClaims,
+import {
+  isVerifiedIdentity,
+  type VerifiedIdentity,
+  type IdentityVerifier,
+  type IdentityClaims,
 } from "../../src/ports/identity.ts";
 import { testIdentityVerifier } from "./lib/identity-verifier.ts";
 
@@ -107,3 +109,75 @@ test("unknown or malformed proofs never become principals", async () => {
     });
   }
 }, 1_000);
+
+async function verified(): Promise<VerifiedIdentity> {
+  const result = await verifier().verify("known", "forge", clock.now());
+  if (!result.ok) throw new Error("Expected verified identity");
+  return result.identity;
+}
+
+test("verifier output carries runtime provenance", async () => {
+  expect(isVerifiedIdentity(await verified())).toBe(true);
+}, 1_000);
+
+for (const [name, copy] of [
+  [
+    "changed spread",
+    (real: VerifiedIdentity) => ({ ...real, subject: "victim" }),
+  ],
+  ["unchanged spread", (real: VerifiedIdentity) => ({ ...real })],
+  [
+    "JSON round-trip",
+    (real: VerifiedIdentity) => JSON.parse(JSON.stringify(real)) as unknown,
+  ],
+  ["structured clone", (real: VerifiedIdentity) => structuredClone(real)],
+  ["cast literal", () => ({ ...identity }) as VerifiedIdentity],
+] as const) {
+  test(`${name} loses verified provenance`, async () => {
+    const real = await verified();
+    expect(isVerifiedIdentity(real)).toBe(true);
+    expect(isVerifiedIdentity(copy(real))).toBe(false);
+    expect(isVerifiedIdentity(real)).toBe(true);
+  }, 1_000);
+}
+
+test("verified identities stay frozen with their original subject", async () => {
+  const real = await verified();
+  expect(Object.isFrozen(real)).toBe(true);
+  try {
+    (real as { subject: string }).subject = "victim";
+  } catch (error) {
+    expect(error).toBeInstanceOf(TypeError);
+  }
+  expect(real.subject).toBe(identity.subject);
+  expect(isVerifiedIdentity(real)).toBe(true);
+}, 1_000);
+
+test("unverified primitives and claims have no provenance", () => {
+  for (const value of [null, undefined, true, 42, "known", [], {}, identity])
+    expect(isVerifiedIdentity(value)).toBe(false);
+}, 1_000);
+
+for (const [name, record] of [
+  ["null", null],
+  ["array", []],
+  ["missing issuer", { subject: identity.subject }],
+  ["numeric issuer", { ...identity, issuer: 42 }],
+  ["missing subject", { ...identity, subject: undefined }],
+  ["numeric subject", { ...identity, subject: 42 }],
+  ["numeric audience", { ...identity, audience: 42 }],
+  ["missing expiry", { ...identity, expiresAt: undefined }],
+  ["infinite expiry", { ...identity, expiresAt: Infinity }],
+  ["invalid authentication time", { ...identity, authenticatedAt: NaN }],
+  ["extra field", { ...identity, role: "admin" }],
+] as const) {
+  test(`malformed resolved record refuses ${name}`, async () => {
+    const verify = testIdentityVerifier(
+      new Map([["known", record as unknown as IdentityClaims]]),
+    );
+    expect(await verify.verify("known", "forge", clock.now())).toEqual({
+      ok: false,
+      reason: "invalid_proof",
+    });
+  }, 1_000);
+}

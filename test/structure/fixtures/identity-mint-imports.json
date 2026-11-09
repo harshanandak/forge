@@ -1,0 +1,9 @@
+{
+  "named import": "import { mintIdentity } from \"TARGET\";",
+  "type import": "import type { mintIdentity } from \"TARGET\";",
+  "named re-export": "export { mintIdentity } from \"TARGET\";",
+  "star re-export": "export * from \"TARGET\";",
+  "namespace import": "import * as identity from \"TARGET\";",
+  "dynamic import": "const identity = await import(\"TARGET\");",
+  "require": "const identity = require(\"TARGET\");"
+}

@@ -41,3 +41,9 @@ export abstract class IdentityVerifier {
     now: number,
   ): Promise<IdentityResult>;
 }
+
+export function isVerifiedIdentity(
+  _value: unknown,
+): _value is VerifiedIdentity {
+  return false;
+}
