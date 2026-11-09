@@ -46,6 +46,69 @@ export interface Comparison {
   readonly passed: boolean;
 }
 
+/** The limits for one platform. */
+export interface GateLimit {
+  readonly ceilingMs: number;
+  readonly maxPeakMb: number;
+}
+
+/** What the gate reads from one measured command. */
+export interface GateRow {
+  readonly medianMs: number;
+  readonly medianPeakMb: number;
+  readonly timesMs: readonly number[];
+}
+
+export interface GateDecision {
+  readonly failures: string[];
+  readonly warnings: string[];
+}
+
+/**
+ * The Speed gate's whole decision for the gated command. `baseRow` is the base build measured in
+ * the same job, or undefined when it is missing. `where` only words the messages.
+ */
+export function gateDecision(
+  limit: GateLimit,
+  row: GateRow,
+  baseRow: GateRow | undefined,
+  where: {
+    readonly command: string;
+    readonly platform: string;
+    readonly baseMissing: string;
+  },
+): GateDecision {
+  const { command, platform } = where;
+  const failures: string[] = [];
+  const warnings: string[] = [];
+  if (row.medianPeakMb > limit.maxPeakMb)
+    failures.push(
+      `${command} peak ${row.medianPeakMb.toFixed(1)} MB is over the ${limit.maxPeakMb} MB limit on ${platform}`,
+    );
+  const overCeiling = row.medianMs > limit.ceilingMs;
+  const ceilingMessage = `${command} median ${row.medianMs.toFixed(0)} ms is over the ${limit.ceilingMs} ms ceiling on ${platform}`;
+  if (baseRow === undefined) {
+    if (overCeiling) failures.push(ceilingMessage);
+    failures.push(where.baseMissing);
+  } else {
+    const verdict = compareToBase(row.timesMs, baseRow.timesMs);
+    if (overCeiling) {
+      // Runner speed does not cancel in an absolute time, so the ceiling fails the job only when
+      // the same-job comparison with the base build fails too; otherwise it only warns.
+      if (verdict.passed)
+        warnings.push(
+          `${ceilingMessage}, but the same-job origin/main build's median is ${baseRow.medianMs.toFixed(0)} ms and the comparison passed, so this is not failing`,
+        );
+      else failures.push(ceilingMessage);
+    }
+    if (!verdict.passed)
+      failures.push(
+        `${command} ${SCORE_LABEL} ${verdict.currentMs.toFixed(0)} ms is more than ${MAX_RATIO_TO_BASE} times the origin/main build's ${verdict.baseMs.toFixed(0)} ms in the same job on ${platform}`,
+      );
+  }
+  return { failures, warnings };
+}
+
 export function compareToBase(
   current: readonly number[],
   base: readonly number[],
