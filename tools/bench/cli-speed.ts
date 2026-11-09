@@ -14,6 +14,12 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import {
+  MAX_RATIO_TO_BASE,
+  SCORE_LABEL,
+  compareToBase,
+  sampleOrder,
+} from "./speed-compare.ts";
 
 interface Limit {
   /** Absolute ceiling on the median; a runner can be slow, so this only catches a gross regression. */
@@ -31,14 +37,14 @@ const LIMITS: Readonly<Record<string, Limit>> = {
   win32: { ceilingMs: 500, maxPeakMb: 70 },
   linux: { ceilingMs: 350, maxPeakMb: 85 },
 };
-/** This build may take at most this multiple of the base build's median time. */
-const MAX_RATIO_TO_BASE = 1.05;
 
 interface Row {
   readonly command: string;
   readonly medianMs: number;
   readonly minMs: number;
   readonly maxMs: number;
+  /** Every timed run, in run order, for the comparison with the base build. */
+  readonly timesMs: readonly number[];
   readonly medianPeakMb: number;
 }
 
@@ -161,6 +167,7 @@ function toRow(
     medianMs: median(times),
     minMs: Math.min(...times),
     maxMs: Math.max(...times),
+    timesMs: times,
     medianPeakMb: median(samples.map((sample) => sample.peakMb)),
   };
 }
@@ -183,14 +190,9 @@ function measurePair(
   run(args, baseProgram);
   const current: { ms: number; peakMb: number }[] = [];
   const base: { ms: number; peakMb: number }[] = [];
-  for (let n = 0; n < runs; n += 1) {
-    if (n % 2 === 0) {
-      current.push(run(args));
-      base.push(run(args, baseProgram));
-    } else {
-      base.push(run(args, baseProgram));
-      current.push(run(args));
-    }
+  for (const side of sampleOrder(runs)) {
+    if (side === "current") current.push(run(args));
+    else base.push(run(args, baseProgram));
   }
   return {
     current: toRow(command, current),
@@ -293,10 +295,13 @@ if (gate) {
       failures.push(
         `the origin/main build was not found${baseDist === undefined ? " (no --base folder was given)" : ` at ${baseDist}`}, so the check against the base branch cannot run; build the base branch first`,
       );
-    else if (row.medianMs > MAX_RATIO_TO_BASE * baseRow.medianMs)
-      failures.push(
-        `${GATE_COMMAND} median ${row.medianMs.toFixed(0)} ms is more than ${MAX_RATIO_TO_BASE} times the origin/main build's ${baseRow.medianMs.toFixed(0)} ms in the same job on ${platform}`,
-      );
+    else {
+      const verdict = compareToBase(row.timesMs, baseRow.timesMs);
+      if (!verdict.passed)
+        failures.push(
+          `${GATE_COMMAND} ${SCORE_LABEL} ${verdict.currentMs.toFixed(0)} ms is more than ${MAX_RATIO_TO_BASE} times the origin/main build's ${verdict.baseMs.toFixed(0)} ms in the same job on ${platform}`,
+        );
+    }
     for (const message of failures) console.error(`::error::${message}`);
     if (failures.length > 0) process.exitCode = 1;
     else console.log(`Speed gate passed on ${platform}.`);
