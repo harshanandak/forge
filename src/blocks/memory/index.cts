@@ -182,6 +182,8 @@ const SNIPPET_LENGTH = 200;
 // agent, never a reason to drop a proposal, because word sets ignore order and negation.
 const NEAR_DUPLICATE_OVERLAP = 0.9;
 const SIMILAR_LIMIT = 2;
+const PROPOSALS_DEFAULT = 7;
+const PROPOSALS_MAX = 10;
 // A bare note-N is a note written before notes had levels: every one of those is a device note.
 const NOTE_REF = /^(?:(device|project\/([0-9a-f]{16}))\/)?note-([0-9]{1,9})$/;
 const LEGACY_REF = /^note-[0-9]{1,9}$/;
@@ -2977,6 +2979,108 @@ module.exports = {
     }
     return { results };
   },
+  /** What waits for the owner, in batches: similar proposals sit together and each item is ready for memory.accept. */
+  "memory.proposals": async ({
+    input = {},
+    services,
+  }: {
+    input?: { limit?: number; skip?: number };
+    services: Services;
+  }) => {
+    const sources = [deviceSource(services.state)];
+    const project = services.levels.inProject
+      ? await ownProject(services)
+      : undefined;
+    if (project) sources.push(project);
+    const entries: {
+      id: string;
+      revision: number;
+      kind: "note" | "revision";
+      level: Level;
+      scope?: string;
+      tags: readonly string[];
+      text: string;
+      proposedBy: { kind: string; id: string };
+      proposedAt: string;
+    }[] = [];
+    for (const source of sources) {
+      let after = 0;
+      for (;;) {
+        const page = notePage(source, {
+          after,
+          limit: LIST_LIMIT,
+          descending: false,
+        });
+        for (const { id, value, record } of page) {
+          if (value.deleted === true) continue;
+          const waiting = value.proposal;
+          if (waiting === undefined && value.status !== "proposed") continue;
+          const scope = waiting === undefined ? value.scope : waiting.scope;
+          entries.push({
+            id,
+            revision: record.revision,
+            kind: waiting === undefined ? "note" : "revision",
+            level: source.level,
+            ...(scope === undefined ? {} : { scope }),
+            tags: waiting === undefined ? value.tags : waiting.tags,
+            text: waiting === undefined ? value.text : waiting.text,
+            proposedBy: {
+              kind: record.updatedBy.kind,
+              id: record.updatedBy.id,
+            },
+            proposedAt:
+              waiting?.at ??
+              value.changedAt ??
+              value.createdAt ??
+              record.updatedAt,
+          });
+        }
+        const last = page.at(-1);
+        if (page.length < LIST_LIMIT || !last) break;
+        after = last.number;
+      }
+    }
+    // Oldest first; a tie keeps the scan order (device, then project, by note number).
+    entries.sort((a, b) => a.proposedAt.localeCompare(b.proposedAt));
+    const groups: (typeof entries)[] = [];
+    for (const entry of entries) {
+      const group = groups.find(
+        ([lead]) =>
+          lead!.level === entry.level &&
+          lead!.scope === entry.scope &&
+          (sameText(lead!.text, entry.text) ||
+            similarText(lead!.text, entry.text)),
+      );
+      if (group) group.push(entry);
+      else groups.push([entry]);
+    }
+    const flat = groups.flat();
+    const skip = input.skip ?? 0;
+    const limit = Math.min(input.limit ?? PROPOSALS_DEFAULT, PROPOSALS_MAX);
+    const place = new Map(flat.map((entry, index) => [entry, index]));
+    const shownGroups = groups
+      .map((group) =>
+        group.filter((entry) => {
+          const at = place.get(entry)!;
+          return at >= skip && at < skip + limit;
+        }),
+      )
+      .filter((group) => group.length > 0);
+    const returned = shownGroups.reduce((sum, group) => sum + group.length, 0);
+    return {
+      total: flat.length,
+      returned,
+      ...(skip + returned < flat.length ? { next: skip + returned } : {}),
+      groups: shownGroups.map((group) => ({
+        items: group.map(({ text, ...entry }) => ({
+          ...entry,
+          tags: [...entry.tags],
+          text: fence(text, `memory:${entry.id}:proposal`, entry.proposedAt),
+        })),
+      })),
+    };
+  },
+
   "decision.propose": ({
     input,
     config,

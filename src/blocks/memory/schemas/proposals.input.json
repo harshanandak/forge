@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 10,
+      "description": "Items in this batch: at most 10, default 7."
+    },
+    "skip": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Items to pass over, from the previous result's next."
+    }
+  },
+  "additionalProperties": false
+}

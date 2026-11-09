@@ -134,6 +134,18 @@
         }
       ]
     },
+    "memory.proposals": {
+      "title": "List proposals for the owner",
+      "summary": "Read-only batches of what waits for the owner, similar ones grouped, ready for memory.accept.",
+      "description": "Writes nothing and serves nothing. Lists new owner-tagged notes that were never accepted and pending revisions of accepted notes, from the device store and this project's store, oldest first. A batch holds at most 10 items (limit, default 7); skip continues from the previous result's next. Items of the same level and scope whose text is the same after trimming, whitespace and case, or whose words overlap by 0.9 or more, sit together in one group; every item is still listed and can be decided on its own. Each item has id, revision, kind (note, or revision for a pending edit), level, scope, tags, the proposed text (fenced as untrusted data, like memory.show), proposedBy (the actor the store recorded for the last write, never a field the caller supplies) and proposedAt. For memory.accept, copy {id, revision, text: item.text.text}. Withdrawn, rejected and accepted notes are not listed.",
+      "examples": [
+        {
+          "input": {
+            "limit": 7
+          }
+        }
+      ]
+    },
     "decision.propose": {
       "title": "Propose a decision",
       "summary": "Record a decision under the next number in the project's own id format.",
