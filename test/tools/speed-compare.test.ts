@@ -2,7 +2,9 @@ import { expect, test } from "bun:test";
 import {
   MAX_RATIO_TO_BASE,
   compareToBase,
+  gateDecision,
   sampleOrder,
+  type GateRow,
   type Side,
 } from "../../tools/bench/speed-compare.ts";
 
@@ -84,4 +86,54 @@ test("a build exactly at the limit passes and one just over fails", () => {
     side === "current" ? BASE_MS * 1.06 : BASE_MS,
   );
   expect(compareToBase(over.current, over.base).passed).toBe(false);
+}, 1000);
+
+// The gate's whole decision. The ceiling is 500 ms and the memory cap 70 MB, as on win32.
+const LIMIT = { ceilingMs: 500, maxPeakMb: 70 };
+const WHERE = {
+  command: "issue show",
+  platform: "win32",
+  baseMissing: "the origin/main build was not found",
+};
+const row = (ms: number, peakMb = 50): GateRow => ({
+  medianMs: ms,
+  medianPeakMb: peakMb,
+  timesMs: Array.from({ length: PAIRS }, () => ms),
+});
+
+test("over the ceiling while the base comparison passes: a warning, no failure", () => {
+  const { failures, warnings } = gateDecision(LIMIT, row(518), row(510), WHERE);
+  expect(failures).toEqual([]);
+  expect(warnings).toHaveLength(1);
+  expect(warnings[0]).toContain("518 ms");
+  expect(warnings[0]).toContain("500 ms");
+  expect(warnings[0]).toContain("510 ms");
+}, 1000);
+
+test("over the ceiling while the base comparison fails: both are failures", () => {
+  const { failures, warnings } = gateDecision(LIMIT, row(600), row(500), WHERE);
+  expect(warnings).toEqual([]);
+  expect(failures).toHaveLength(2);
+  expect(failures[0]).toContain("ceiling");
+  expect(failures[1]).toContain("times the origin/main build");
+}, 1000);
+
+test("a missing base build fails, even under the ceiling", () => {
+  const { failures } = gateDecision(LIMIT, row(300), undefined, WHERE);
+  expect(failures).toEqual([WHERE.baseMissing]);
+}, 1000);
+
+test("over the memory cap fails whether or not the base comparison passes", () => {
+  const withBase = gateDecision(LIMIT, row(300, 71), row(300), WHERE);
+  expect(withBase.failures).toHaveLength(1);
+  expect(withBase.failures[0]).toContain("MB");
+  const noBase = gateDecision(LIMIT, row(300, 71), undefined, WHERE);
+  expect(noBase.failures).toHaveLength(2);
+}, 1000);
+
+test("under every limit and level with the base build: pass with no warning", () => {
+  expect(gateDecision(LIMIT, row(300), row(300), WHERE)).toEqual({
+    failures: [],
+    warnings: [],
+  });
 }, 1000);
