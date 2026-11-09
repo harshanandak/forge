@@ -175,7 +175,13 @@ export class LocalState {
       path: this.#path,
       readOnly: !write,
     });
-    if (!result.ok) throw new StateUnavailable(result.unavailable);
+    if (!result.ok)
+      throw new StateUnavailable({
+        ...result.unavailable,
+        reason: this.#projectRoot
+          ? `Project ${this.#projectRoot}: ${result.unavailable.reason}`
+          : result.unavailable.reason,
+      });
     try {
       const owner = new StateOwner(result.handle.value, {
         now: () => Date.now(),

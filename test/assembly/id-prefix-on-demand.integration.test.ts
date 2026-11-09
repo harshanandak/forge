@@ -254,8 +254,13 @@ async function fixture(workEnabled: boolean, idPrefix?: string) {
       providers: { env: { ...env, GIT_TRACE2_EVENT: trace } },
     });
     return {
+      root,
       git,
       diagnostics,
+      restoreSpies() {
+        processes.mockRestore();
+        capture.mockRestore();
+      },
       failOrigin(value: OriginFailure) {
         originFails = value;
       },
@@ -593,3 +598,161 @@ test("enabled work derives a fresh origin prefix on each issue create", async ()
     await project.close();
   }
 });
+
+test("a new acme project mints its own first id", async () => {
+  const project = await fixture(true);
+  try {
+    project.git(
+      "remote",
+      "set-url",
+      "origin",
+      "git@example.invalid:team/acme.git",
+    );
+    expect(
+      await project.call(["issue", "create", "--title", "First"]),
+    ).toMatchObject({ id: "acme-1" });
+  } finally {
+    await project.close();
+  }
+}, 30_000);
+
+test("a copied forge pin reports a reversible repair without rewriting config on read", async () => {
+  const project = await fixture(true, "forge");
+  try {
+    project.git(
+      "remote",
+      "set-url",
+      "origin",
+      "https://example.invalid/team/acme.git",
+    );
+    const path = join(project.root, ".forge/config.yaml");
+    const before = readFileSync(path, "utf8");
+    const shown = await project.invoke("config.show");
+    expect(shown.ok).toBe(true);
+    expect(readFileSync(path, "utf8")).toBe(before);
+    const warning = shown.warnings.find(
+      ({ code }) => code === "ID_PREFIX_MISMATCH",
+    );
+    expect(warning).toBeDefined();
+    expect(warning?.message).toMatch(
+      /forge[\s\S]*acme[\s\S]*config\.apply[\s\S]*restore/i,
+    );
+  } finally {
+    await project.close();
+  }
+}, 30_000);
+
+test.each([
+  { pin: "forge", origin: "Forge" },
+  { pin: "configured", origin: "acme" },
+  { pin: undefined, origin: "acme" },
+])(
+  "prefix $pin with origin $origin has no copied-pin warning",
+  async ({ pin, origin }) => {
+    const project = await fixture(true, pin);
+    try {
+      project.git(
+        "remote",
+        "set-url",
+        "origin",
+        `https://example.invalid/team/${origin}.git`,
+      );
+      const shown = await project.invoke("config.show");
+      expect(shown.ok).toBe(true);
+      expect(shown.warnings.map(({ code }) => code)).not.toContain(
+        "ID_PREFIX_MISMATCH",
+      );
+    } finally {
+      await project.close();
+    }
+  },
+  30_000,
+);
+
+test("explicit prefix repair preserves old aliases, numbers and reversal while refusing foreign ids", async () => {
+  const project = await fixture(true, "forge");
+  try {
+    project.git(
+      "remote",
+      "set-url",
+      "origin",
+      "https://example.invalid/team/acme.git",
+    );
+    expect(
+      await project.call(["issue", "create", "--title", "Earlier"]),
+    ).toMatchObject({ id: "forge-1" });
+    const change = async (restore: boolean) => {
+      const shown = done(await project.invoke("config.show")) as {
+        revision: string;
+      };
+      const patch = restore
+        ? [{ op: "set", path: "/blocks/work/config/idPrefix", value: "forge" }]
+        : [{ op: "remove", path: "/blocks/work/config/idPrefix" }];
+      const preview = await project.invoke("config.preview", { patch });
+      expect(preview.ok).toBe(true);
+      expect(
+        await project.invoke("config.apply", {
+          expectRevision: shown.revision,
+          patch,
+        }),
+      ).toMatchObject({ ok: true });
+    };
+    await change(false);
+    for (const id of ["forge-1", "acme-1"])
+      expect(done(await project.invoke("issue.show", { id }))).toMatchObject({
+        id: "acme-1",
+        title: "Earlier",
+      });
+    expect(
+      await project.call(["issue", "create", "--title", "Next"]),
+    ).toMatchObject({ id: "acme-2" });
+    expect(
+      await project.invoke("issue.show", { id: "foreign-1" }),
+    ).toMatchObject({ ok: false, error: { code: "INPUT_INVALID" } });
+    await change(true);
+    expect(
+      done(await project.invoke("issue.show", { id: "acme-1" })),
+    ).toMatchObject({ id: "forge-1" });
+    await change(false);
+    const listed = done(await project.invoke("issue.list")) as {
+      items: { id: string }[];
+    };
+    expect(listed.items.map(({ id }) => id).sort()).toEqual([
+      "acme-1",
+      "acme-2",
+    ]);
+  } finally {
+    await project.close();
+  }
+}, 30_000);
+
+test("a project store that cannot open refuses without writing another project's store", async () => {
+  const other = await fixture(true, "forge");
+  try {
+    await other.call(["issue", "create", "--title", "Other project's issue"]);
+    const path = join(other.root, ".forge/state.sqlite");
+    const before = readFileSync(path);
+    other.restoreSpies();
+    const blocked = await fixture(true);
+    try {
+      mkdirSync(join(blocked.root, ".forge/state.sqlite"));
+      const result = await blocked.invoke("issue.create", {
+        title: "Must stay in the blocked project",
+      });
+      expect(result).toMatchObject({
+        ok: false,
+        error: { code: "UNAVAILABLE" },
+      });
+      if (result.ok) throw new Error("Blocked project unexpectedly wrote");
+      expect(result.error.message).toContain(`Project ${blocked.root}:`);
+      expect(readFileSync(path)).toEqual(before);
+      expect(done(await other.invoke("issue.list"))).toMatchObject({
+        items: [{ id: "forge-1", title: "Other project's issue" }],
+      });
+    } finally {
+      await blocked.close();
+    }
+  } finally {
+    await other.close();
+  }
+}, 30_000);
