@@ -11,6 +11,7 @@ import {
   statSync,
 } from "node:fs";
 import { basename, join, relative, resolve } from "node:path";
+import { exitStatesLine } from "../exit-states.ts";
 import { powerShellArgs } from "../powershell.ts";
 
 export type AttributionRunner = (
@@ -315,7 +316,8 @@ export function cleanupAttribution(
               ? evidence
               : { inspected: evidence };
         // Evidence comes first so the attribution JSON stays the last line of the message.
-        error.message += `\nCleanup evidence: ${serialize({ ...base, ...secondAttempt(cleanup, sleep) })}`;
+        // exitStates (whether each killed process really exited) does not depend on Handle.exe.
+        error.message += `\nCleanup evidence: ${serialize({ ...base, exitStates: exitStatesLine(), ...secondAttempt(cleanup, sleep) })}`;
       } catch {
         // The original cleanup error is rethrown below even if its message cannot be extended.
       }

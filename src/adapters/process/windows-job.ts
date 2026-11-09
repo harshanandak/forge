@@ -8,6 +8,10 @@ const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9;
 const PROCESS_SET_QUOTA = 0x0100;
 const PROCESS_TERMINATE = 0x0001;
 const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+const SYNCHRONIZE = 0x00100000;
+const WAIT_OBJECT_0 = 0;
+const WAIT_TIMEOUT = 258;
+const ERROR_INVALID_PARAMETER = 87;
 const ERROR_INSUFFICIENT_BUFFER = 122;
 const ERROR_MORE_DATA = 234;
 const MAX_ASSOCIATED_PROCESSES = 4096;
@@ -60,6 +64,10 @@ interface NativeApi {
     number
   >;
   readonly terminateJobObject: NativeFunction<
+    readonly [bigint, number],
+    number
+  >;
+  readonly waitForSingleObject: NativeFunction<
     readonly [bigint, number],
     number
   >;
@@ -220,6 +228,12 @@ function loadNativeApi(): NativeApi {
         "uint32_t",
       ]),
     ),
+    waitForSingleObject: asNativeFunction(
+      kernel32.func("__stdcall", "WaitForSingleObject", "uint32_t", [
+        handle,
+        "uint32_t",
+      ]),
+    ),
     closeHandle: asNativeFunction(
       kernel32.func("__stdcall", "CloseHandle", "int", [handle]),
     ),
@@ -268,30 +282,34 @@ function isHandle(value: unknown): value is bigint {
   return typeof value === "bigint" && value !== 0n;
 }
 
+function startTime(api: Pick<NativeApi, "getProcessTimes">, handle: bigint) {
+  const created = Buffer.alloc(8);
+  const read = api.getProcessTimes(
+    handle,
+    created,
+    Buffer.alloc(8),
+    Buffer.alloc(8),
+    Buffer.alloc(8),
+  );
+  return read === 0 ? undefined : created.readBigUInt64LE().toString();
+}
+
 /** Creation FILETIME identifies an owner even after Windows reuses its PID. */
 export function windowsProcessStartTime(pid: number): string | undefined {
   const api = loadNativeApi();
   const handle = api.openProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
   if (!isHandle(handle)) return undefined;
   try {
-    const created = Buffer.alloc(8);
-    if (
-      api.getProcessTimes(
-        handle,
-        created,
-        Buffer.alloc(8),
-        Buffer.alloc(8),
-        Buffer.alloc(8),
-      ) === 0
-    )
-      return undefined;
-    return created.readBigUInt64LE().toString();
+    return startTime(api, handle);
   } finally {
     api.closeHandle(handle);
   }
 }
 
-function nativeError(api: NativeApi, operation: string): Error {
+function nativeError(
+  api: Pick<NativeApi, "getLastError">,
+  operation: string,
+): Error {
   return new Error(
     `${operation} failed with Windows error ${api.getLastError()}.`,
   );
@@ -432,6 +450,118 @@ function terminateJob(api: NativeApi, job: bigint): void {
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+/** The native calls `waitForExit` uses; a test can supply a fake. */
+export type ExitApi = Pick<
+  NativeApi,
+  | "openProcess"
+  | "getProcessTimes"
+  | "waitForSingleObject"
+  | "closeHandle"
+  | "getLastError"
+>;
+
+/** A process the caller killed. `started` is its creation time from before the kill, if known. */
+export interface ExitTarget {
+  readonly pid: number;
+  readonly started?: string | undefined;
+}
+
+/** "signaled": the process object is signaled. "gone": no such process, or its PID was reused. */
+export interface PidExit {
+  readonly pid: number;
+  readonly state: "signaled" | "gone" | "running";
+}
+
+/**
+ * Waits until every killed process is really gone. A job's active count and an exit code change
+ * before the dying process's handle table closes, and that table holds its working directory; a
+ * process object is signaled only after. One deadline covers all targets. A process that no longer
+ * exists, or whose creation time differs from `started` (its PID was reused), counts as gone and is
+ * never waited on. `onStates` gets every target's final state, also when the deadline throws.
+ */
+export async function waitForExit(
+  targets: readonly ExitTarget[],
+  options: {
+    readonly deadlineMs: number;
+    readonly pollIntervalMs?: number;
+    readonly onStates?: (states: readonly PidExit[]) => void;
+  },
+  api: ExitApi = loadNativeApi(),
+): Promise<readonly PidExit[]> {
+  const deadline = performance.now() + options.deadlineMs;
+  const states = new Map<number, PidExit["state"]>();
+  const open = new Map<number, bigint>();
+  // Each pid is opened at most once, so a duplicate cannot overwrite (and leak) a handle.
+  const unique = targets.filter(
+    (target, index) =>
+      targets.findIndex((other) => other.pid === target.pid) === index,
+  );
+  const report = (): readonly PidExit[] =>
+    unique.map(({ pid }) => ({ pid, state: states.get(pid) ?? "running" }));
+  try {
+    for (const { pid, started } of unique) {
+      const handle = api.openProcess(
+        SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+        0,
+        pid,
+      );
+      if (!isHandle(handle)) {
+        if (api.getLastError() !== ERROR_INVALID_PARAMETER)
+          throw new ProcessSpawnError(
+            "TREE_KILL_FAILED",
+            `Could not open process ${pid} to confirm it exited.`,
+            nativeError(api, "OpenProcess"),
+          );
+        states.set(pid, "gone");
+      } else if (started === undefined) open.set(pid, handle);
+      else {
+        const current = startTime(api, handle);
+        if (current === undefined) {
+          // A failed query proves nothing about PID reuse, so it is an error, not "gone".
+          const failure = nativeError(api, "GetProcessTimes");
+          api.closeHandle(handle);
+          throw new ProcessSpawnError(
+            "TREE_KILL_FAILED",
+            `Could not read the start time of process ${pid} to confirm it is the one that was killed.`,
+            failure,
+          );
+        }
+        if (current === started) open.set(pid, handle);
+        else {
+          api.closeHandle(handle);
+          states.set(pid, "gone");
+        }
+      }
+    }
+    for (;;) {
+      for (const [pid, handle] of open) {
+        const waited = api.waitForSingleObject(handle, 0);
+        if (waited === WAIT_OBJECT_0) {
+          api.closeHandle(handle);
+          open.delete(pid);
+          states.set(pid, "signaled");
+        } else if (waited !== WAIT_TIMEOUT)
+          throw new ProcessSpawnError(
+            "TREE_KILL_FAILED",
+            `Waiting for process ${pid} to exit failed.`,
+            nativeError(api, "WaitForSingleObject"),
+          );
+      }
+      if (open.size === 0) return report();
+      const remaining = deadline - performance.now();
+      if (remaining <= 0)
+        throw new ProcessSpawnError(
+          "TREE_KILL_FAILED",
+          `Processes still running ${options.deadlineMs} ms after their job ended: ${[...open.keys()].join(", ")}.`,
+        );
+      await delay(Math.min(options.pollIntervalMs ?? 5, remaining));
+    }
+  } finally {
+    for (const handle of open.values()) api.closeHandle(handle);
+    options.onStates?.(report());
+  }
 }
 
 /** Opens an unnamed Windows Job Object that owns every attached process and descendant. */
