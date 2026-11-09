@@ -11,6 +11,7 @@ import {
   statSync,
 } from "node:fs";
 import { basename, join, relative, resolve } from "node:path";
+import { exitStatesLine } from "../exit-states.ts";
 import { powerShellArgs } from "../powershell.ts";
 
 export type AttributionRunner = (
@@ -215,6 +216,8 @@ function windowsEvidence(
     errorPath: path,
     errorIsRoot: resolve(path) === resolve(root),
     rootExists: existsSync(root),
+    // Whether each process a fixture killed had really exited when its job ended.
+    exitStates: exitStatesLine(),
     ...treeEvidence(root),
   };
   try {
