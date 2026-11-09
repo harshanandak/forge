@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { nodeConfigFiles } from "../adapters/fs/index.ts";
+import { entryKind, nodeConfigFiles } from "../adapters/fs/index.ts";
 import { ForgeFailure } from "../contract/failure.ts";
 
 /**
@@ -45,8 +45,20 @@ function unsafe(error: unknown): ForgeFailure {
   });
 }
 
+/** A FIFO, socket or device would block or misbehave on open, so every path refuses it first. */
+function refuseSpecialEntry(root: string): void {
+  let kind: ReturnType<typeof entryKind>;
+  try {
+    kind = entryKind(root, PROJECT_MANIFEST);
+  } catch (error) {
+    throw unsafe(error);
+  }
+  if (kind === "other") throw unsafe(undefined);
+}
+
 /** The manifest at a checkout root, undefined when absent; anything malformed is refused. */
 export function readProjectManifest(root: string): ProjectManifest | undefined {
+  refuseSpecialEntry(root);
   let bytes: Uint8Array | undefined;
   try {
     bytes = nodeConfigFiles(root).read(PROJECT_MANIFEST, MAX_MANIFEST_BYTES);
@@ -85,6 +97,7 @@ export function readProjectManifest(root: string): ProjectManifest | undefined {
 
 /** True when a manifest file is present, readable or not. */
 export function projectManifestExists(root: string): boolean {
+  refuseSpecialEntry(root);
   try {
     return nodeConfigFiles(root).list(".forge").includes("project.json");
   } catch (error) {
@@ -116,6 +129,7 @@ export function initProjectManifest(
   const bytes = new TextEncoder().encode(
     `${JSON.stringify(manifest, null, 2)}\n`,
   );
+  refuseSpecialEntry(root);
   let created: boolean;
   try {
     created = nodeConfigFiles(root).createExclusive(PROJECT_MANIFEST, bytes);
