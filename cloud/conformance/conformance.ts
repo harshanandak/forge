@@ -3,6 +3,8 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -140,6 +142,45 @@ async function adminCall(
     status: response.status,
     body: (await response.json()) as AdminBody,
   };
+}
+// An admin restore that declares `length` bytes in Content-Length and sends none of them. The reply is
+// read as soon as the Worker sends it, then the request is dropped.
+function refusedBeforeUpload(
+  project: string,
+  length: number,
+): Promise<{ status: number; body: AdminBody }> {
+  const url = new URL(`${base}/p/${project}/restore`);
+  return new Promise((resolve, reject) => {
+    const send = url.protocol === "https:" ? httpsRequest : httpRequest;
+    const call = send(
+      url,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${adminToken}`,
+          "content-length": String(length),
+        },
+        timeout: 20_000,
+      },
+      (response) => {
+        const chunks: Buffer[] = [];
+        response.on("data", (chunk: Buffer) => chunks.push(chunk));
+        response.on("end", () => {
+          resolve({
+            status: response.statusCode ?? 0,
+            body: JSON.parse(
+              Buffer.concat(chunks).toString("utf8"),
+            ) as AdminBody,
+          });
+          call.destroy();
+        });
+        response.on("error", reject);
+      },
+    );
+    call.on("timeout", () => call.destroy(new Error("no reply in 20 seconds")));
+    call.on("error", reject);
+    call.flushHeaders();
+  });
 }
 async function dumpOf(project: string): Promise<Dump> {
   const reply = await adminCall(project, "GET", "dump");
@@ -1233,8 +1274,10 @@ if (phase === "main") {
     "a restore over its size bound is refused as RESTORE_TOO_LARGE and creates nothing",
     async () => {
       const project = `${run}-restore-big`;
-      const body = "x".repeat(9 * 1024 * 1024);
-      const reply = await adminCall(project, "POST", "restore", body);
+      // The Worker refuses from the Content-Length header and closes the connection, so a client that
+      // is still uploading 9 MiB can lose the reply (ECONNRESET). This request sends the header and
+      // no body, so it always reads the 413.
+      const reply = await refusedBeforeUpload(project, 9 * 1024 * 1024);
       assert.equal(reply.status, 413, JSON.stringify(reply.body));
       assert.equal(reply.body.error?.code, "RESTORE_TOO_LARGE");
       assert.equal(await initialized(project), false);

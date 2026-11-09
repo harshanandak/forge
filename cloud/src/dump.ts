@@ -2,6 +2,14 @@
 // Device tokens and their hashes are never part of a dump. The database image is never used.
 // Every value is a string or a safe integer; anything else is refused on the way out and on the way in.
 import { ForgeFailure } from "../../src/contract/failure.ts";
+import {
+  RestoreConsistencyFailure,
+  verifyEventDerivedState,
+} from "../../src/core/state/index.ts";
+import {
+  validateForgeError,
+  validateLeaseRecord,
+} from "../../src/generated/validators.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
 
 export const DUMP_FORMAT = "forge-cloud-dump/1";
@@ -152,11 +160,57 @@ export function parseDump(text: string): Dump {
   return { format: DUMP_FORMAT, tables };
 }
 
+const REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const rejectedRow = (table: string, key: string): ForgeFailure =>
+  new ForgeFailure({
+    code: "RESTORE_INVALID_ROW",
+    message: `${table} row ${key} is not valid state`,
+    retry: "never",
+  });
+
+// The server's own receipts: what Project#replay reads back. The state owner checks its own tables.
+function checkServerReceipt(row: Row): void {
+  const key = String(row.request_id);
+  const bad = (): never => {
+    throw rejectedRow("domain_cloud_requests", key);
+  };
+  let fingerprint: unknown;
+  let result: unknown;
+  try {
+    fingerprint = JSON.parse(String(row.fingerprint));
+    result = JSON.parse(String(row.result));
+  } catch {
+    return bad();
+  }
+  const input = fingerprint as { route?: unknown; subject?: unknown } | null;
+  if (
+    !REQUEST_ID.test(key) ||
+    input === null ||
+    typeof input !== "object" ||
+    !["claim", "renew", "release"].includes(String(input.route)) ||
+    typeof input.subject !== "string"
+  )
+    bad();
+  if (row.outcome === "ok") {
+    const lease = validateLeaseRecord(result);
+    if (!lease.ok || lease.value.subject !== input!.subject) bad();
+  } else {
+    const failure = validateForgeError(result);
+    if (
+      !failure.ok ||
+      !String(row.outcome).startsWith("LEASE_") ||
+      failure.value.code !== row.outcome
+    )
+      bad();
+  }
+}
+
 /** Writes a dump into an empty project and reads it back in the same transaction; any difference rolls it back. */
 export function restoreDump(
   db: SqlDatabase,
   dump: Dump,
 ): Record<string, number> {
+  for (const row of dump.tables.domain_cloud_requests!) checkServerReceipt(row);
   return db.transaction(() => {
     const before = dumpOf(db);
     if (Object.values(before.tables).some((rows) => rows.length > 0))
@@ -175,6 +229,15 @@ export function restoreDump(
         } catch {
           throw invalid(`A ${table} row conflicts with another row`);
         }
+    // The runtime's own check of an imported image: every body parses with the runtime parsers, agrees
+    // with its indexed columns, and replays from the events. A refusal rolls the whole restore back.
+    try {
+      verifyEventDerivedState(db, dump.tables.state_events!.length);
+    } catch (error) {
+      if (error instanceof RestoreConsistencyFailure)
+        throw rejectedRow(error.table, error.key);
+      throw error;
+    }
     if (JSON.stringify(dumpOf(db)) !== JSON.stringify(dump))
       throw invalid(
         "The dump rows must be in dump order and read back identical",
