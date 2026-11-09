@@ -128,7 +128,7 @@ interface AdminBody {
 async function adminCall(
   project: string,
   method: "GET" | "POST",
-  route: "dump" | "restore",
+  route: string,
   body?: string,
   token = adminToken,
 ): Promise<{ status: number; body: AdminBody }> {
@@ -187,6 +187,37 @@ async function dumpOf(project: string): Promise<Dump> {
   assert.equal(reply.status, 200, JSON.stringify(reply.body));
   return reply.body.value as Dump;
 }
+// One page of a paged dump (GET dump?cursor=start, then the cursor each page names as `next`).
+interface DumpPage {
+  readonly format: string;
+  readonly page: number;
+  readonly last: boolean;
+  readonly next: string | null;
+  readonly tables: Record<string, readonly Record<string, unknown>[]>;
+}
+async function pagesOf(project: string): Promise<DumpPage[]> {
+  const pages: DumpPage[] = [];
+  let cursor = "start";
+  for (;;) {
+    const reply = await adminCall(
+      project,
+      "GET",
+      `dump?cursor=${encodeURIComponent(cursor)}`,
+    );
+    assert.equal(reply.status, 200, JSON.stringify(reply.body));
+    const page = reply.body.value as DumpPage;
+    assert.equal(page.format, "forge-cloud-dump-page/1");
+    pages.push(page);
+    if (page.next === null) return pages;
+    assert.ok(pages.length < 200, "the pages end");
+    cursor = page.next;
+  }
+}
+const sendPage = (
+  project: string,
+  page: unknown,
+): ReturnType<typeof adminCall> =>
+  adminCall(project, "POST", "restore", JSON.stringify(page));
 const projectTokens = new Map<string, Promise<string>>();
 const tokenFor = (project: string): Promise<string> => {
   let token = projectTokens.get(project);
@@ -1236,6 +1267,278 @@ if (phase === "main") {
         granted(await holderLookup(target, "issue:bad-1")),
         granted(await holderLookup(source, "issue:bad-1")),
       );
+    },
+  );
+
+  // The test config (wrangler.test.jsonc) sets a 4096-byte page and a 131072-byte project limit, so a
+  // small project needs several pages and a larger one trips the size guard.
+  let paged: Promise<{ source: string; pages: DumpPage[] }> | undefined;
+  const pagedSource = (): Promise<{ source: string; pages: DumpPage[] }> =>
+    (paged ??= (async () => {
+      const source = `${run}-page-a`;
+      for (let i = 0; i < 12; i += 1)
+        granted(
+          await claim(source, `issue:page-${i}`, holderOf("page"), `page-${i}`),
+        );
+      return { source, pages: await pagesOf(source) };
+    })());
+
+  await check(
+    "a project dumps in byte-bounded pages and restores the same pages into an empty project, read back identical",
+    async () => {
+      const { source, pages } = await pagedSource();
+      const target = `${run}-page-b`;
+      assert.ok(pages.length >= 3, `${pages.length} pages`);
+      pages.forEach((page, index) => {
+        assert.equal(page.page, index);
+        assert.equal(page.last, index === pages.length - 1);
+        assert.ok(
+          Buffer.byteLength(JSON.stringify(page)) <= 4096 + 512,
+          `page ${index} is about 4096 bytes`,
+        );
+      });
+      const whole = await dumpOf(source);
+      for (const [table, rows] of Object.entries(whole.tables))
+        assert.deepEqual(
+          pages.flatMap((page) => page.tables[table]!),
+          rows,
+          `${table}: the pages hold the same rows as the whole dump`,
+        );
+      for (const page of pages) {
+        const reply = await sendPage(target, page);
+        assert.equal(reply.status, 200, JSON.stringify(reply.body));
+        assert.equal((reply.body.value as { done: boolean }).done, page.last);
+        assert.equal(await initialized(target), page.last, `page ${page.page}`);
+      }
+      assert.deepEqual(await dumpOf(target), whole, "read back identical");
+      assert.deepEqual(await pagesOf(target), pages, "same pages");
+      assert.deepEqual(
+        granted(await holderLookup(target, "issue:page-3")),
+        granted(await holderLookup(source, "issue:page-3")),
+      );
+      assert.deepEqual(
+        granted(
+          await claim(target, "issue:page-4", holderOf("page"), "page-4"),
+        ),
+        granted(
+          await claim(source, "issue:page-4", holderOf("page"), "page-4"),
+        ),
+      );
+      const again = await sendPage(target, pages[0]);
+      assert.equal(again.status, 409, JSON.stringify(again.body));
+      assert.equal(again.body.error?.code, "RESTORE_TARGET_NOT_EMPTY");
+    },
+  );
+
+  await check(
+    "pages restore in order only, and a half restore is abandoned by starting again at page 0",
+    async () => {
+      const { source, pages } = await pagedSource();
+      const target = `${run}-page-half`;
+      assert.equal((await sendPage(target, pages[1])).status, 400, "not first");
+      assert.equal((await sendPage(target, pages[0])).status, 200);
+      assert.equal((await sendPage(target, pages[1])).status, 200);
+      const skipped = await sendPage(target, pages[3]);
+      assert.equal(skipped.status, 400, JSON.stringify(skipped.body));
+      assert.equal(skipped.body.error?.code, "INPUT_INVALID");
+      const repeated = await sendPage(target, pages[1]);
+      assert.equal(repeated.status, 400, JSON.stringify(repeated.body));
+      assert.ok(
+        repeated.body.error?.message.includes("send page 0 first"),
+        "the refused skip ended the session",
+      );
+      assert.equal(await initialized(target), false, "half restored");
+      // Abandon: page 0 again clears what was staged, then the whole set goes in.
+      for (const page of pages) {
+        const reply = await sendPage(target, page);
+        assert.equal(reply.status, 200, JSON.stringify(reply.body));
+      }
+      assert.deepEqual(await dumpOf(target), await dumpOf(source));
+
+      // Issuing a device token provisions a project, so it clears staged rows that were never checked.
+      const issued = `${run}-page-issued`;
+      assert.equal((await sendPage(issued, pages[0])).status, 200);
+      assert.equal((await sendPage(issued, pages[1])).status, 200);
+      await issue(issued, "tablet");
+      for (const rows of Object.values((await dumpOf(issued)).tables))
+        assert.equal(rows.length, 0, "no staged row survives a token");
+      assert.equal(
+        (await sendPage(issued, pages[2])).status,
+        409,
+        "provisioned",
+      );
+
+      // A refused page ends the session: after page 0 and a skipped page, page 1 needs page 0 first.
+      const order = `${run}-page-order`;
+      assert.equal((await sendPage(order, pages[0])).status, 200);
+      assert.equal((await sendPage(order, pages[2])).status, 400, "skipped");
+      const late = await sendPage(order, pages[1]);
+      assert.equal(late.status, 400, JSON.stringify(late.body));
+      assert.ok(late.body.error?.message.includes("send page 0 first"));
+    },
+  );
+
+  await check(
+    "a write between dump pages makes the next page DUMP_CHANGED, and a fresh export restores identical",
+    async () => {
+      const race = `${run}-page-race`;
+      const holder = holderOf("race");
+      const first = granted(
+        await claim(race, "issue:race-0", holder, "race-0"),
+      );
+      for (let i = 1; i < 12; i += 1)
+        granted(await claim(race, `issue:race-${i}`, holder, `race-${i}`));
+      const next = async (cursor: string): ReturnType<typeof adminCall> =>
+        adminCall(race, "GET", `dump?cursor=${encodeURIComponent(cursor)}`);
+      const changed = (reply: Awaited<ReturnType<typeof adminCall>>): void => {
+        assert.equal(reply.status, 409, JSON.stringify(reply.body));
+        assert.equal(reply.body.error?.code, "DUMP_CHANGED");
+      };
+
+      // A renewal (an event and a receipt) between page 0 and page 1.
+      const page0 = (await next("start")).body.value as DumpPage;
+      assert.ok(page0.next !== null, "more than one page");
+      granted(
+        await send(race, "POST", "renew", {
+          subject: "issue:race-0",
+          holder,
+          generation: first.generation,
+          ttlMs: 900_000,
+          requestId: "race-renew",
+        }),
+      );
+      changed(await next(page0.next));
+
+      // A refused claim writes a receipt only, and that changes the project too.
+      const again = (await next("start")).body.value as DumpPage;
+      refused(
+        await claim(race, "issue:race-0", holderOf("rival"), "race-rival"),
+        "LEASE_HELD",
+      );
+      changed(await next(again.next!));
+
+      // With nothing written between pages, the export restores identical.
+      const pages = await pagesOf(race);
+      assert.ok(pages.length >= 3, `${pages.length} pages`);
+      const target = `${run}-page-race-copy`;
+      for (const page of pages)
+        assert.equal((await sendPage(target, page)).status, 200);
+      assert.deepEqual(await dumpOf(target), await dumpOf(race));
+    },
+  );
+
+  await check(
+    "a paged restore runs the same row checks on the whole staged set, and a refusal leaves nothing staged",
+    async () => {
+      const { pages } = await pagedSource();
+      const target = `${run}-page-bad`;
+      const copy = JSON.parse(JSON.stringify(pages)) as DumpPage[];
+      const leases = copy.find((page) => page.tables.state_leases!.length > 0)!;
+      (leases.tables.state_leases![0] as Record<string, unknown>).body =
+        "not json";
+      for (const page of copy) {
+        const reply = await sendPage(target, page);
+        if (!page.last) {
+          assert.equal(reply.status, 200, JSON.stringify(reply.body));
+          continue;
+        }
+        assert.equal(reply.status, 400, JSON.stringify(reply.body));
+        assert.equal(reply.body.error?.code, "RESTORE_INVALID_ROW");
+        assert.ok(reply.body.error?.message.includes("state_leases"));
+      }
+      assert.equal(await initialized(target), false);
+      assert.equal((await sendPage(target, pages[1])).status, 400, "abandoned");
+      for (const page of pages)
+        assert.equal((await sendPage(target, page)).status, 200);
+      assert.equal(await initialized(target), true);
+    },
+  );
+
+  await check(
+    "the size guard refuses a dump over the project limit, and a restore whose staged rows pass it, before rows load",
+    async () => {
+      const big = `${run}-page-big`;
+      const holder = holderOf("big");
+      const claims = await Promise.all(
+        Array.from({ length: 150 }, (_, i) =>
+          claim(big, `issue:big-${i}`, holder, `big-${i}`),
+        ),
+      );
+      claims.forEach((reply) => granted(reply));
+      for (const route of ["dump", "dump?cursor=start"]) {
+        const reply = await adminCall(big, "GET", route);
+        assert.equal(
+          reply.status,
+          413,
+          `${route}: ${JSON.stringify(reply.body)}`,
+        );
+        assert.equal(reply.body.error?.code, "DUMP_TOO_LARGE");
+      }
+      const target = `${run}-page-guard`;
+      const record = (index: number): object => ({
+        format: "forge-cloud-dump-page/1",
+        page: index,
+        last: false,
+        next: "more",
+        tables: {
+          state_records: [
+            {
+              namespace: "n",
+              key: `k${index}`,
+              revision: 1,
+              body: "x".repeat(80_000),
+            },
+          ],
+          state_events: [],
+          state_leases: [],
+          state_requests: [],
+          domain_cloud_requests: [],
+        },
+      });
+      // The page that crosses the limit is the page that is refused: 80,000 fits, 160,000 does not.
+      assert.equal((await sendPage(target, record(0))).status, 200);
+      const over = await sendPage(target, record(1));
+      assert.equal(over.status, 413, JSON.stringify(over.body));
+      assert.equal(over.body.error?.code, "RESTORE_TOO_LARGE");
+      assert.equal(await initialized(target), false);
+      const late = await sendPage(target, record(1));
+      assert.equal(late.status, 400, JSON.stringify(late.body));
+      assert.ok(late.body.error?.message.includes("send page 0 first"));
+
+      // The row limit (100 per table in the test config) is checked in SQL the same way.
+      const many = record(0) as { tables: Record<string, unknown[]> };
+      many.tables.state_records = Array.from({ length: 101 }, (_, i) => ({
+        namespace: "n",
+        key: `k${i}`,
+        revision: 1,
+        body: "{}",
+      }));
+      const crowded = await sendPage(`${run}-page-rows`, many);
+      assert.equal(crowded.status, 413, JSON.stringify(crowded.body));
+      assert.equal(crowded.body.error?.code, "RESTORE_TOO_LARGE");
+      assert.ok(crowded.body.error?.message.includes("state_records"));
+
+      // A cursor must have an integer table index and a key of that table's types, and a page-0
+      // cursor starts the first table and runs the same guard as "start".
+      const cursor = (value: object): ReturnType<typeof adminCall> =>
+        adminCall(
+          big,
+          "GET",
+          `dump?cursor=${encodeURIComponent(JSON.stringify(value))}`,
+        );
+      for (const bad of [
+        { p: 0, t: "1", k: null, w: "" },
+        { p: 0, t: null, k: null, w: "" },
+        { p: 0, t: 1, k: null, w: "" },
+        { p: 1, t: 1, k: ["x"], w: "" },
+        { p: 1, t: 1, k: [1], w: 5 },
+      ]) {
+        const reply = await cursor(bad);
+        assert.equal(reply.status, 400, JSON.stringify([bad, reply.body]));
+      }
+      const skipGuard = await cursor({ p: 0, t: 0, k: null, w: "" });
+      assert.equal(skipGuard.status, 413, JSON.stringify(skipGuard.body));
+      assert.equal(skipGuard.body.error?.code, "DUMP_TOO_LARGE");
     },
   );
 

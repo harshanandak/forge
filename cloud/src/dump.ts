@@ -10,83 +10,294 @@ import {
   validateForgeError,
   validateLeaseRecord,
 } from "../../src/generated/validators.ts";
-import type { SqlDatabase } from "../../src/ports/store.ts";
+import type { SqlDatabase, SqlRow } from "../../src/ports/store.ts";
 
 export const DUMP_FORMAT = "forge-cloud-dump/1";
 
-const TABLES: Record<string, { columns: string[]; order: string }> = {
+// `keys` is each table's primary key in order: dump order, and the position a page cursor resumes after.
+const TABLES: Record<string, { columns: string[]; keys: string[] }> = {
   state_records: {
     columns: ["namespace", "key", "revision", "body"],
-    order: "namespace, key",
+    keys: ["namespace", "key"],
   },
   state_events: {
     columns: ["sequence", "namespace", "key", "body"],
-    order: "sequence",
+    keys: ["sequence"],
   },
   state_leases: {
     columns: ["namespace", "subject", "generation", "body"],
-    order: "namespace, subject",
+    keys: ["namespace", "subject"],
   },
   state_requests: {
     columns: ["namespace", "request_id", "fingerprint", "result"],
-    order: "namespace, request_id",
+    keys: ["namespace", "request_id"],
   },
   domain_cloud_requests: {
     columns: ["request_id", "fingerprint", "outcome", "result"],
-    order: "request_id",
+    keys: ["request_id"],
   },
 };
+
+export const PAGE_FORMAT = "forge-cloud-dump-page/1";
 
 // Limits on a dump, on the way out and on the way in. The depth is exactly what the format needs:
 // document, tables, rows array, row. The caps keep a hostile or broken document from filling the isolate.
 const MAX_DEPTH = 4;
-const MAX_ROWS_PER_TABLE = 50_000;
+const MAX_ROWS_PER_TABLE = 10_000;
 const MAX_VALUE_LENGTH = 262_144;
+// A whole (unpaged) dump stays well under the 8 MiB restore body: JSON escaping can double its size.
+const WHOLE_DUMP_BYTES = 3 * 1024 * 1024;
+// Rows are read this many at a time, so a page never holds more than a page plus one batch.
+const BATCH = 16;
+
+/** Page and project size in bytes, and rows per table. A deploy uses the defaults; the test config lowers them. */
+export interface Limits {
+  readonly pageBytes: number;
+  readonly maxBytes: number;
+  readonly maxRows: number;
+}
+export function limitsFrom(env: unknown): Limits {
+  const vars = (env ?? {}) as Record<string, unknown>;
+  const read = (name: string, fallback: number): number => {
+    const value = Number(vars[name]);
+    return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+  };
+  return {
+    pageBytes: read("DUMP_PAGE_BYTES", 4 * 1024 * 1024),
+    maxBytes: read("DUMP_MAX_BYTES", 8 * 1024 * 1024),
+    maxRows: read("DUMP_MAX_ROWS", MAX_ROWS_PER_TABLE),
+  };
+}
 
 type Row = Record<string, string | number>;
+type Key = (string | number)[];
 export interface Dump {
   format: string;
   tables: Record<string, Row[]>;
+}
+/** A piece of a project: whole tables or the part of one that fits, in dump order. */
+export interface Page extends Dump {
+  page: number;
+  last: boolean;
+  next: string | null;
+}
+interface Cursor {
+  p: number; // page number
+  t: number; // table index
+  k: Key | null; // last key written in that table
+  w: string; // the project's write watermark when page 0 was cut
 }
 
 const invalid = (message: string): ForgeFailure =>
   new ForgeFailure({ code: "INPUT_INVALID", message, retry: "never" });
 const emptyTables = (): Record<string, Row[]> =>
   Object.fromEntries(Object.keys(TABLES).map((table) => [table, []]));
+const counts = (tables: Record<string, Row[]>): Record<string, number> =>
+  Object.fromEntries(
+    Object.entries(tables).map(([table, rows]) => [table, rows.length]),
+  );
 
-/** The dump of a project; undefined means the project was never provisioned, so it has no database. */
-export function dumpOf(db: SqlDatabase | undefined): Dump {
-  if (db === undefined) return { format: DUMP_FORMAT, tables: emptyTables() };
-  const tables = emptyTables();
-  for (const [table, { columns, order }] of Object.entries(TABLES)) {
-    const found = db.all(
-      `SELECT ${columns.join(", ")} FROM ${table} ORDER BY ${order} LIMIT ${MAX_ROWS_PER_TABLE + 1}`,
-    );
-    if (found.length > MAX_ROWS_PER_TABLE)
+// The row count and stored size of the five tables, counted and summed by SQLite, so a check loads no
+// row. Validation holds a whole project in memory, so both are bounded before it runs.
+function assertLimits(
+  db: SqlDatabase,
+  limits: Limits,
+  code: string,
+  what: string,
+  maxBytes = limits.maxBytes,
+  hint = "",
+): void {
+  let bytes = 0;
+  for (const [table, { columns }] of Object.entries(TABLES)) {
+    const found = db.get(
+      `SELECT COUNT(*) AS n, COALESCE(SUM(${columns.map((column) => `LENGTH(CAST(${column} AS BLOB))`).join(" + ")}), 0) AS bytes FROM ${table}`,
+    )!;
+    if (Number(found.n) > limits.maxRows)
       throw new ForgeFailure({
-        code: "DUMP_TOO_LARGE",
-        message: `${table} has more than ${MAX_ROWS_PER_TABLE} rows`,
+        code,
+        message: `${table} has ${Number(found.n)} rows, over the ${limits.maxRows} row limit.`,
         retry: "never",
       });
-    tables[table] = found.map((row) =>
-      Object.fromEntries(
-        columns.map((column) => {
-          const value = row[column];
-          if (
-            (typeof value === "string" && value.length <= MAX_VALUE_LENGTH) ||
-            (typeof value === "number" && Number.isSafeInteger(value))
-          )
-            return [column, value];
-          throw new ForgeFailure({
-            code: "DUMP_UNSAFE_VALUE",
-            message: `${table}.${column} holds a value that is not a string (up to ${MAX_VALUE_LENGTH} characters) or a safe integer`,
-            retry: "never",
-          });
-        }),
-      ),
+    bytes += Number(found.bytes);
+  }
+  if (bytes > maxBytes)
+    throw new ForgeFailure({
+      code,
+      message: `${what} holds ${bytes} bytes, over the ${maxBytes} byte limit.${hint}`,
+      retry: "never",
+    });
+}
+
+function rowOf(table: string, row: SqlRow): Row {
+  return Object.fromEntries(
+    TABLES[table]!.columns.map((column) => {
+      const value = row[column];
+      if (
+        (typeof value === "string" && value.length <= MAX_VALUE_LENGTH) ||
+        (typeof value === "number" && Number.isSafeInteger(value))
+      )
+        return [column, value];
+      throw new ForgeFailure({
+        code: "DUMP_UNSAFE_VALUE",
+        message: `${table}.${column} holds a value that is not a string (up to ${MAX_VALUE_LENGTH} characters) or a safe integer`,
+        retry: "never",
+      });
+    }),
+  );
+}
+
+// Every row from table index `from`, after the key `after` in that table, in dump order. Rows come from
+// SQLite a batch at a time, so a caller that stops early never loads the rest.
+function* rowsFrom(
+  db: SqlDatabase,
+  from: number,
+  after: Key | null,
+): Generator<{ table: number; row: Row }> {
+  const names = Object.keys(TABLES);
+  let key = after;
+  for (let t = from; t < names.length; t += 1, key = null) {
+    const table = names[t]!;
+    const { keys } = TABLES[table]!;
+    for (;;) {
+      const found = db.all(
+        `SELECT ${TABLES[table]!.columns.join(", ")} FROM ${table}${key === null ? "" : ` WHERE (${keys.join(", ")}) > (${keys.map(() => "?").join(", ")})`} ORDER BY ${keys.join(", ")} LIMIT ${BATCH}`,
+        key ?? [],
+      );
+      for (const stored of found) {
+        const row = rowOf(table, stored);
+        yield { table: t, row };
+        key = keys.map((column) => row[column]!);
+      }
+      if (found.length < BATCH) break;
+    }
+  }
+}
+
+/** The whole dump of a project; undefined means it was never provisioned, so it has no database. */
+export function dumpOf(db: SqlDatabase | undefined, limits?: Limits): Dump {
+  if (db === undefined) return { format: DUMP_FORMAT, tables: emptyTables() };
+  if (limits !== undefined)
+    assertLimits(
+      db,
+      limits,
+      "DUMP_TOO_LARGE",
+      "The project",
+      Math.min(limits.maxBytes, WHOLE_DUMP_BYTES),
+      " Dump it in pages with GET dump?cursor=start.",
     );
+  const tables = emptyTables();
+  const names = Object.keys(TABLES);
+  for (const { table, row } of rowsFrom(db, 0, null)) {
+    const rows = tables[names[table]!]!;
+    if (rows.length >= MAX_ROWS_PER_TABLE)
+      throw new ForgeFailure({
+        code: "DUMP_TOO_LARGE",
+        message: `${names[table]} has more than ${MAX_ROWS_PER_TABLE} rows`,
+        retry: "never",
+      });
+    rows.push(row);
   }
   return { format: DUMP_FORMAT, tables };
+}
+
+function parseCursor(text: string): Cursor {
+  if (text === "start") return { p: 0, t: 0, k: null, w: "" };
+  const bad = (): ForgeFailure =>
+    invalid("The cursor must be start or a cursor a page returned");
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    throw bad();
+  }
+  const cursor = value as Record<string, unknown> | null;
+  if (
+    cursor === null ||
+    typeof cursor !== "object" ||
+    Object.keys(cursor).sort().join() !== "k,p,t,w" ||
+    !Number.isSafeInteger(cursor.p) ||
+    (cursor.p as number) < 0 ||
+    typeof cursor.w !== "string" ||
+    !Number.isSafeInteger(cursor.t) ||
+    (cursor.t as number) < 0
+  )
+    throw bad();
+  const table = Object.values(TABLES)[cursor.t as number];
+  // Page 0 is always the start of the first table. Every other key has its table's types.
+  if (
+    table === undefined ||
+    (cursor.p === 0 && (cursor.t !== 0 || cursor.k !== null)) ||
+    (cursor.k !== null &&
+      (!Array.isArray(cursor.k) ||
+        cursor.k.length !== table.keys.length ||
+        cursor.k.some((part: unknown, index) =>
+          table.keys[index] === "sequence"
+            ? !Number.isSafeInteger(part)
+            : typeof part !== "string",
+        )))
+  )
+    throw bad();
+  return cursor as unknown as Cursor;
+}
+
+// Where the project's writes have got to. Every write to the five dumped tables is a receipt (a
+// domain_cloud_requests row, whose rowid only grows) or an event (state_events, whose sequence only
+// grows), and the Worker writes the receipt with the event in one transaction. Rows are never deleted,
+// so a changed project has a different pair. The dump takes it at page 0 and checks it on every page.
+function watermark(db: SqlDatabase): string {
+  const last = (sql: string): number => Number(db.get(sql)!.n);
+  return `${last("SELECT COALESCE(MAX(sequence), 0) AS n FROM state_events")}.${last("SELECT COALESCE(MAX(rowid), 0) AS n FROM domain_cloud_requests")}`;
+}
+
+const pageOf = (
+  page: number,
+  tables: Record<string, Row[]>,
+  next: Cursor | null,
+): Page => ({
+  format: PAGE_FORMAT,
+  page,
+  last: next === null,
+  next: next === null ? null : JSON.stringify(next),
+  tables,
+});
+
+/** One page of a project, at most about `limits.pageBytes` of rows (one row is never split). */
+export function dumpPage(
+  db: SqlDatabase | undefined,
+  cursorText: string,
+  limits: Limits,
+): Page {
+  const from = parseCursor(cursorText);
+  const tables = emptyTables();
+  if (db === undefined) return pageOf(from.p, tables, null);
+  // A page is cut in one synchronous call, so a write cannot land inside it. A write between pages
+  // would give a dump with a lease body and no event for it, which cannot be restored.
+  const now = watermark(db);
+  if (from.p === 0) assertLimits(db, limits, "DUMP_TOO_LARGE", "The project");
+  else if (from.w !== now)
+    throw new ForgeFailure({
+      code: "DUMP_CHANGED",
+      message:
+        "The project changed during the export; start again from cursor=start",
+      retry: "never",
+    });
+  const names = Object.keys(TABLES);
+  let used = 0;
+  let next: Cursor = { p: from.p + 1, t: from.t, k: from.k, w: now };
+  for (const { table, row } of rowsFrom(db, from.t, from.k)) {
+    const size = new TextEncoder().encode(JSON.stringify(row)).length;
+    if (used > 0 && used + size > limits.pageBytes)
+      return pageOf(from.p, tables, next);
+    tables[names[table]!]!.push(row);
+    used += size;
+    next = {
+      p: from.p + 1,
+      t: table,
+      k: TABLES[names[table]!]!.keys.map((column) => row[column]!),
+      w: now,
+    };
+  }
+  return pageOf(from.p, tables, null);
 }
 
 // One pass over the text, before JSON.parse builds anything: refuses nesting deeper than the format has.
@@ -107,8 +318,8 @@ function checkDepth(text: string): void {
   }
 }
 
-/** Checks a dump document strictly and returns it with every row in column order. */
-export function parseDump(text: string): Dump {
+/** Checks a dump or a dump page strictly and returns it with every row in column order. */
+export function parseDump(text: string): Dump | Page {
   checkDepth(text);
   let parsed: unknown;
   try {
@@ -116,13 +327,31 @@ export function parseDump(text: string): Dump {
   } catch {
     throw invalid("The dump must be JSON");
   }
-  const document = parsed as { format?: unknown; tables?: unknown } | null;
+  const document = parsed as Record<string, unknown> | null;
   if (document === null || typeof document !== "object")
     throw invalid("The dump must be a JSON object");
-  if (Object.keys(document).sort().join() !== "format,tables")
-    throw invalid("The dump must have exactly format and tables");
-  if (document.format !== DUMP_FORMAT)
+  const paged = document.format === PAGE_FORMAT;
+  if (
+    Object.keys(document).sort().join() !==
+    (paged ? "format,last,next,page,tables" : "format,tables")
+  )
+    throw invalid(
+      paged
+        ? "A dump page must have exactly format, page, last, next and tables"
+        : "The dump must have exactly format and tables",
+    );
+  if (!paged && document.format !== DUMP_FORMAT)
     throw invalid(`The dump format must be ${DUMP_FORMAT}`);
+  if (
+    paged &&
+    (!Number.isSafeInteger(document.page) ||
+      (document.page as number) < 0 ||
+      document.last !== (document.next === null) ||
+      (document.next !== null && typeof document.next !== "string"))
+  )
+    throw invalid(
+      "A dump page needs a page number and next (null on the last)",
+    );
   const given = document.tables as Record<string, unknown> | null;
   if (given === null || typeof given !== "object" || Array.isArray(given))
     throw invalid("The dump needs a tables object");
@@ -133,7 +362,8 @@ export function parseDump(text: string): Dump {
   for (const [table, { columns }] of Object.entries(TABLES)) {
     const rows = given[table];
     if (!Array.isArray(rows)) throw invalid(`${table} must be an array`);
-    if (rows.length > MAX_ROWS_PER_TABLE)
+    // A page is bounded by its bytes (the restore body limit), a whole dump by its rows.
+    if (!paged && rows.length > MAX_ROWS_PER_TABLE)
       throw invalid(`${table} has more than ${MAX_ROWS_PER_TABLE} rows`);
     tables[table] = (rows as Record<string, unknown>[]).map((row) => {
       if (
@@ -157,7 +387,15 @@ export function parseDump(text: string): Dump {
       );
     });
   }
-  return { format: DUMP_FORMAT, tables };
+  return paged
+    ? {
+        format: PAGE_FORMAT,
+        page: document.page as number,
+        last: document.last as boolean,
+        next: document.next as string | null,
+        tables,
+      }
+    : { format: DUMP_FORMAT, tables };
 }
 
 const REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -205,12 +443,42 @@ function checkServerReceipt(row: Row): void {
   }
 }
 
+function insertRows(db: SqlDatabase, tables: Record<string, Row[]>): void {
+  for (const [table, { columns }] of Object.entries(TABLES))
+    for (const row of tables[table]!)
+      try {
+        db.run(
+          `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
+          columns.map((column) => row[column]!),
+        );
+      } catch {
+        throw invalid(`A ${table} row conflicts with another row`);
+      }
+}
+
+// The row checks of a restore, over every row now in the project (a whole dump, or all staged pages):
+// the server's receipts, then the state owner's own check of an imported image. Every body parses with
+// the runtime parsers, agrees with its indexed columns and replays from the events.
+function verifyRestored(db: SqlDatabase): void {
+  const receipts = Object.keys(TABLES).indexOf("domain_cloud_requests");
+  for (const { row } of rowsFrom(db, receipts, null)) checkServerReceipt(row);
+  try {
+    verifyEventDerivedState(
+      db,
+      Number(db.get("SELECT COUNT(*) AS n FROM state_events")!.n),
+    );
+  } catch (error) {
+    if (error instanceof RestoreConsistencyFailure)
+      throw rejectedRow(error.table, error.key);
+    throw error;
+  }
+}
+
 /** Writes a dump into an empty project and reads it back in the same transaction; any difference rolls it back. */
 export function restoreDump(
   db: SqlDatabase,
   dump: Dump,
 ): Record<string, number> {
-  for (const row of dump.tables.domain_cloud_requests!) checkServerReceipt(row);
   return db.transaction(() => {
     const before = dumpOf(db);
     if (Object.values(before.tables).some((rows) => rows.length > 0))
@@ -219,31 +487,39 @@ export function restoreDump(
         message: "A dump restores only into an empty project",
         retry: "never",
       });
-    for (const [table, { columns }] of Object.entries(TABLES))
-      for (const row of dump.tables[table]!)
-        try {
-          db.run(
-            `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
-            columns.map((column) => row[column]!),
-          );
-        } catch {
-          throw invalid(`A ${table} row conflicts with another row`);
-        }
-    // The runtime's own check of an imported image: every body parses with the runtime parsers, agrees
-    // with its indexed columns, and replays from the events. A refusal rolls the whole restore back.
-    try {
-      verifyEventDerivedState(db, dump.tables.state_events!.length);
-    } catch (error) {
-      if (error instanceof RestoreConsistencyFailure)
-        throw rejectedRow(error.table, error.key);
-      throw error;
-    }
+    insertRows(db, dump.tables);
+    verifyRestored(db);
     if (JSON.stringify(dumpOf(db)) !== JSON.stringify(dump))
       throw invalid(
         "The dump rows must be in dump order and read back identical",
       );
-    return Object.fromEntries(
-      Object.entries(dump.tables).map(([table, rows]) => [table, rows.length]),
-    );
+    return counts(dump.tables);
+  });
+}
+
+/** Removes every staged row. Only an unprovisioned project has staged rows, and it serves nothing. */
+export function clearStaged(db: SqlDatabase): void {
+  db.transaction(() => {
+    for (const table of Object.keys(TABLES)) db.run(`DELETE FROM ${table}`);
+  });
+}
+
+/**
+ * Stages one page of a paged restore. Page 0 clears what an earlier try staged. The limits are checked
+ * after every page is written, in the same transaction, so the page that crosses one is the page that
+ * is refused. The last page then runs the row checks over everything staged; a refusal rolls that page
+ * back, and the caller clears the rest.
+ */
+export function restorePage(
+  db: SqlDatabase,
+  page: Page,
+  limits: Limits,
+): Record<string, number> {
+  return db.transaction(() => {
+    if (page.page === 0) clearStaged(db);
+    insertRows(db, page.tables);
+    assertLimits(db, limits, "RESTORE_TOO_LARGE", "The staged restore");
+    if (page.last) verifyRestored(db);
+    return counts(page.tables);
   });
 }
