@@ -869,7 +869,7 @@ const PRIVATE_FETCH_FLAGS = [
 ];
 const PRIVATE_REF_MAX_AGE_MS = 3600000;
 const PRIVATE_REF =
-  /^refs\/forge\/lane-(?:close|base)\/(\d+)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  /^refs\/forge\/lane-(?:close|base)\/(\d+)-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
 // Lane time comes from an optional clock service, so a test can move it without
 // touching the global Date. No clock is provided in production.
 function laneClock(services: unknown): () => number {
@@ -882,6 +882,27 @@ function privateRefName(
   now: number,
 ): string {
   return `refs/forge/${kind}/${now}-${id}`;
+}
+// A call holds this lock for as long as its private ref exists, so the sweep
+// can tell a live call from a leftover without trusting any clock.
+function privateRefLock(id: string): string {
+  return `forge-lane-ref-${id}.lock`;
+}
+// A lock that cannot be taken, for any reason, counts as live: the ref is kept.
+// A dead owner's lock is recovered by the probe, which releases it at once.
+function ownerIsLive(files: FilesService, id: string): boolean {
+  let probe: ReturnType<FilesService["lock"]>;
+  try {
+    probe = files.lock([privateRefLock(id)], { recoverDeadOwner: true });
+  } catch {
+    return true;
+  }
+  try {
+    probe.release();
+  } catch {
+    // The probe got the lock, so no call holds it.
+  }
+  return false;
 }
 // Cleanup never throws and never reads the call's deadline or signal: a
 // cancelled call must still report its own error. If the process service
@@ -907,6 +928,14 @@ async function bestEffortGit(
     return "";
   }
 }
+// Runs after the ref is deleted. A failing release never replaces the call's own error.
+function releaseRefLock(lock: ReturnType<FilesService["lock"]>): void {
+  try {
+    lock.release();
+  } catch {
+    // The next sweep recovers a lock whose owner is gone.
+  }
+}
 async function dropPrivateRefs(
   executor: ProcessService,
   git: Parameters<ProcessService["run"]>[0],
@@ -924,13 +953,17 @@ async function dropPrivateRefs(
     ]);
 }
 // Removes private refs a cancelled or timed-out call left behind: those named
-// <ms>-<uuid> and older than an hour. A recent one may belong to a running call.
+// <ms>-<uuid> whose time is more than an hour from now, in either direction,
+// and whose call no longer holds its lock. The lock decides liveness, because
+// the time comes from the clock of whichever process made the ref. Run this
+// before taking this call's own ref lock: a probe takes one more lock.
 async function sweepPrivateRefs(
   executor: ProcessService,
   git: Parameters<ProcessService["run"]>[0],
   cwd: string,
   env: Readonly<Record<string, string>>,
   now: number,
+  files: FilesService,
 ): Promise<void> {
   const listed = await bestEffortGit(executor, git, cwd, env, [
     "for-each-ref",
@@ -940,7 +973,11 @@ async function sweepPrivateRefs(
   ]);
   const stale = listed.split(/\r?\n/).filter((ref) => {
     const match = PRIVATE_REF.exec(ref);
-    return match !== null && now - Number(match[1]) > PRIVATE_REF_MAX_AGE_MS;
+    return (
+      match !== null &&
+      Math.abs(now - Number(match[1])) > PRIVATE_REF_MAX_AGE_MS &&
+      !ownerIsLive(files, match[2]!)
+    );
   });
   await dropPrivateRefs(executor, git, cwd, env, stale);
 }
@@ -3786,12 +3823,12 @@ const operations: Operations<WorkOperations> = {
     const remoteHead = await laneMainBranch(config, () =>
       run(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], true),
     );
-    await sweepPrivateRefs(executor, git, files.root, env, clock());
-    const baseRef = privateRefName(
-      "lane-base",
-      bound.crypto.randomUUID(),
-      clock(),
-    );
+    await sweepPrivateRefs(executor, git, files.root, env, clock(), files);
+    const baseId = bound.crypto.randomUUID(),
+      baseLock = files.lock([privateRefLock(baseId)], {
+        recoverDeadOwner: true,
+      }),
+      baseRef = privateRefName("lane-base", baseId, clock());
     let base: string;
     try {
       await run([
@@ -3803,6 +3840,7 @@ const operations: Operations<WorkOperations> = {
       base = await run(["rev-parse", "--verify", baseRef + "^{commit}"]);
     } finally {
       await dropPrivateRefs(executor, git, files.root, env, [baseRef]);
+      releaseRefLock(baseLock);
     }
     let lock: ReturnType<FilesService["lock"]>;
     try {
@@ -4470,13 +4508,14 @@ const operations: Operations<WorkOperations> = {
           refuse("PR_NOT_MERGED", `PR must be merged into ${main}`);
         // Fetch main into a ref only this call uses: FETCH_HEAD is shared, and
         // any other fetch in the repository can overwrite it.
-        const mainRef = privateRefName(
-          "lane-close",
-          bound.crypto?.randomUUID() ??
+        await sweepPrivateRefs(executor, git, checkout, env, clock(), files);
+        const mainId =
+            bound.crypto?.randomUUID() ??
             fail("UNAVAILABLE", "Lane close requires crypto"),
-          clock(),
-        );
-        await sweepPrivateRefs(executor, git, checkout, env, clock());
+          mainLock = files.lock([privateRefLock(mainId)], {
+            recoverDeadOwner: true,
+          }),
+          mainRef = privateRefName("lane-close", mainId, clock());
         try {
           await run([
             "fetch",
@@ -4510,6 +4549,7 @@ const operations: Operations<WorkOperations> = {
           // Best effort: a leftover private ref is harmless and must not mask
           // the check result. The next lane command sweeps it.
           await dropPrivateRefs(executor, git, checkout, env, [mainRef]);
+          releaseRefLock(mainLock);
         }
       }
       if (!dropped && head !== pull.headRefOid) {
