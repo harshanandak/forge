@@ -88,6 +88,20 @@ function expectFailure(work: () => void, table: string, name: string): void {
 
 for (const pageSize of [1, 2, undefined]) {
   const label = pageSize ?? "default";
+  test(`restore rejects a blob receipt id instead of matching its string form, page size ${label}`, async () => {
+    const { db, owner, close } = await open(false);
+    try {
+      owner.put(ns, "a", "value", actor, { expectRevision: 0, requestId: "1" });
+      db.run("UPDATE state_requests SET request_id=X'01' WHERE request_id='1'");
+      expect(
+        db.get("SELECT typeof(request_id) AS kind FROM state_requests")?.kind,
+      ).toBe("blob");
+      expectFailure(() => verify(db, 1, pageSize), "state_requests", "1");
+    } finally {
+      await close();
+    }
+  }, 30_000);
+
   test(`restore uses the last duplicate type label, page size ${label}`, async () => {
     const { db, owner, close } = await open(false);
     try {

@@ -503,6 +503,14 @@ export function verifyEventDerivedState(
   const reject = (table: string, name: string): never => {
     throw new RestoreConsistencyFailure(table, name);
   };
+  const rowKey = (table: string, row: SqlRow, column: string): string => {
+    const namespace = row.namespace;
+    const name = row[column];
+    if (typeof namespace !== "string" || typeof name !== "string")
+      // Preserve main's failure label, but never use coerced values for a lookup.
+      return reject(table, key(String(namespace), String(name)));
+    return key(namespace, name);
+  };
   const inspect = (table: string, name: string, check: () => void): void => {
     try {
       check();
@@ -517,7 +525,9 @@ export function verifyEventDerivedState(
     "namespace,request_id,fingerprint,result",
     ["namespace", "request_id"],
   )) {
-    const id = key(String(row.namespace), String(row.request_id));
+    if (typeof row.namespace !== "string" || typeof row.request_id !== "string")
+      continue;
+    const id = key(row.namespace, row.request_id);
     try {
       plans.set(id, receiptPlan(row));
     } catch {
@@ -528,7 +538,7 @@ export function verifyEventDerivedState(
   for (const row of rows("state_events", "sequence,namespace,key,body", [
     "sequence",
   ])) {
-    const id = key(String(row.namespace), String(row.key));
+    const id = rowKey("state_events", row, "key");
     sequence++;
     if (row.sequence !== sequence && row.sequence !== BigInt(sequence))
       reject("state_events", id);
@@ -743,7 +753,7 @@ export function verifyEventDerivedState(
     "namespace",
     "key",
   ])) {
-    const id = key(String(row.namespace), String(row.key));
+    const id = rowKey("state_records", row, "key");
     inspect("state_records", id, () => {
       const record = JSON.parse(String(row.body)) as StateRecord;
       if (
@@ -761,7 +771,7 @@ export function verifyEventDerivedState(
     "namespace",
     "subject",
   ])) {
-    const id = key(String(row.namespace), String(row.subject));
+    const id = rowKey("state_leases", row, "subject");
     inspect("state_leases", id, () => {
       const lease = JSON.parse(String(row.body)) as LeaseRecord;
       if (
@@ -779,10 +789,10 @@ export function verifyEventDerivedState(
     "namespace,request_id,fingerprint,result",
     ["namespace", "request_id"],
   )) {
-    const id = key(String(row.namespace), String(row.request_id));
+    const id = rowKey("state_requests", row, "request_id");
     inspect("state_requests", id, () => {
-      namespaceValid(String(row.namespace));
-      if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(String(row.request_id)))
+      namespaceValid(row.namespace as string);
+      if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(row.request_id as string))
         reject("state_requests", id);
       if (plans.get(id) !== true) reject("state_requests", id);
       requests.delete(id);
