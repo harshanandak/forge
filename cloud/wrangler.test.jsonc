@@ -11,6 +11,9 @@
     "bindings": [{ "name": "PROJECTS", "class_name": "Project" }],
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Project"] }],
+  // Test-only limits so a small project needs several dump pages and a larger one trips the size guard.
+  // wrangler.jsonc sets none, so a deploy uses the defaults (4 MiB pages, a 16 MiB project).
+  "vars": { "DUMP_PAGE_BYTES": "4096", "DUMP_MAX_BYTES": "131072" },
   "dev": { "ip": "127.0.0.1", "port": 8787 },
   "send_metrics": false,
 }
