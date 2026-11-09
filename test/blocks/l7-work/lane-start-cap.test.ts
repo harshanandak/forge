@@ -113,7 +113,11 @@ async function fixture(lanes: readonly number[]) {
       },
       lock: () => ({ release() {} }),
     },
-    environment: { platform: "linux", select: () => ({}) },
+    environment: {
+      platform: "linux",
+      select: () => ({}),
+      load: () => Promise.resolve({ freeMemoryMb: 8192, cpuBusyPercent: 10 }),
+    },
     crypto: { randomUUID: () => "invocation-1" },
     process: {
       resolve: () => ({ kind: "resolved", path: "git" }),
@@ -166,6 +170,18 @@ async function fixture(lanes: readonly number[]) {
       now =
         Date.parse(owner.lease(namespace, `issue:work-${n}`)!.expiresAt) + 1;
     },
+    status: () =>
+      (
+        operations["lane.status"] as unknown as (call: unknown) => Promise<{
+          hold?: string;
+        }>
+      )({
+        input: {},
+        config: { lanes: { base: "main", max: 3 } },
+        services,
+        signal: new AbortController().signal,
+        deadline: Number.MAX_SAFE_INTEGER,
+      }),
     start: (n: number) =>
       operations["lane.start"]!({
         input: { id: `work-${n}`, branch: "feat/next", brief: "brief.md" },
@@ -217,6 +233,31 @@ test("a lane whose issue cannot be found keeps its slot", async () => {
   const f = await fixture([1, 2, 9]);
   try {
     for (const n of [1, 2, 4]) f.addIssue(n);
+    await expect(f.start(4)).rejects.toThrow("LIMIT_REACHED");
+  } finally {
+    await f.dispose();
+  }
+}, 30_000);
+
+test("lane status reports the cap free when the closed lane holds no lease, and start succeeds", async () => {
+  const f = await fixture([1, 2, 3]);
+  try {
+    for (const n of [1, 2, 3, 4]) f.addIssue(n);
+    f.close(1);
+    expect((await f.status()).hold).toBeUndefined();
+    expect((await f.start(4)).issue).toBe("work-4");
+  } finally {
+    await f.dispose();
+  }
+}, 30_000);
+
+test("lane status reports the cap held while the closed lane keeps a live lease, and start is refused", async () => {
+  const f = await fixture([1, 2, 3]);
+  try {
+    for (const n of [1, 2, 3, 4]) f.addIssue(n);
+    f.claim(1);
+    f.close(1);
+    expect((await f.status()).hold).toContain("lane cap 3 reached");
     await expect(f.start(4)).rejects.toThrow("LIMIT_REACHED");
   } finally {
     await f.dispose();
