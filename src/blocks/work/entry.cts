@@ -839,6 +839,20 @@ function holdsSlot(state: LeaseStateClient, lane: Lane): boolean {
     !record || stored(record).status === "open" || live(state, id) !== undefined
   );
 }
+// The branch lanes start from and land on: the configured base, else the
+// remote default branch, else main.
+async function laneMainBranch(
+  config: unknown,
+  originHead: () => Promise<string>,
+): Promise<string> {
+  const name =
+    (config as WorkConfig | undefined)?.lanes?.base ??
+    ((await originHead()).replace(/^refs\/remotes\/origin\//, "") || "main");
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._/-]*$/.test(name))
+    fail("INPUT_INVALID", "Invalid lane base");
+  return name;
+}
+
 function laneIdentity(lane: Lane): string {
   // Registry ids belong to this project; legacy writers stored a display prefix.
   const number = QUALIFIED.exec(lane.issue)?.[2];
@@ -3673,14 +3687,9 @@ const operations: Operations<WorkOperations> = {
     )
       fail("INPUT_INVALID", "Invalid lane branch name");
     const laneConfig = (config as WorkConfig | undefined)?.lanes;
-    const remoteHead =
-      laneConfig?.base ??
-      ((
-        await run(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], true)
-      ).replace(/^refs\/remotes\/origin\//, "") ||
-        "main");
-    if (!/^[a-zA-Z0-9][a-zA-Z0-9._/-]*$/.test(remoteHead))
-      fail("INPUT_INVALID", "Invalid lane base");
+    const remoteHead = await laneMainBranch(config, () =>
+      run(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], true),
+    );
     const baseRef = "refs/forge/lane-base/" + bound.crypto.randomUUID();
     let base: string;
     try {
@@ -3967,7 +3976,7 @@ const operations: Operations<WorkOperations> = {
                 "view",
                 String(input.pr),
                 "--json",
-                "state,headRefName,headRefOid,mergeCommit,url",
+                "state,headRefName,baseRefName,headRefOid,mergeCommit,url",
               ],
               checkout,
               true,
@@ -3975,6 +3984,7 @@ const operations: Operations<WorkOperations> = {
           ) as {
             state?: string;
             headRefName?: string;
+            baseRefName?: string;
             headRefOid?: string;
             mergeCommit?: { oid?: string } | null;
             url?: string;
@@ -4031,6 +4041,28 @@ const operations: Operations<WorkOperations> = {
         );
       const mergeCommit = pull.mergeCommit?.oid ?? "",
         ref = `refs/heads/${branch}`;
+      if (!dropped) {
+        // A merge into another branch has not landed. Check before any write.
+        const main = await laneMainBranch(config, () =>
+          run(
+            ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
+            checkout,
+            false,
+            true,
+          ),
+        );
+        if (pull.baseRefName !== main)
+          refuse("PR_NOT_MERGED", `PR must be merged into ${main}`);
+        await run(["fetch", "origin", `refs/heads/${main}`]);
+        const common = await run(
+          ["merge-base", mergeCommit, "FETCH_HEAD"],
+          checkout,
+          false,
+          true,
+        );
+        if (common.toLowerCase() !== mergeCommit.toLowerCase())
+          refuse("PR_NOT_MERGED", `Merge commit is not on ${main}`);
+      }
       const hasBranch = (
         await run(["for-each-ref", "--format=%(refname)", ref])
       )
