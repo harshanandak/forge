@@ -374,9 +374,11 @@ for (const [field, value, reason] of [
 test("refuses non-finite timestamps encoded as JSON numbers", async () => {
   const header = encode({ alg: "RS256", kid: "first" });
   for (const field of ["exp", "iat"]) {
-    const payload = JSON.stringify(claims).replace(/}$/, `,"${field}":1e400}`);
-    // Replace exp rather than introducing a duplicate member for that case.
-    const raw = field === "exp" ? payload.replace('"exp":200,', "") : payload;
+    // Serialize numeric overflow without JSON.stringify turning it into null.
+    const raw = JSON.stringify({ ...claims, [field]: "1e400" }).replace(
+      '"1e400"',
+      "1e400",
+    );
     const f = await fixture();
     expect(
       await f.verify(
@@ -423,6 +425,8 @@ for (const [location, member] of [
   ["header", '"alg":"none","\\u0061lg":"RS256"'],
   ["payload", '"sub":"attacker","sub":" Person-A "'],
   ["payload", '"sub":"attacker","\\u0073ub":" Person-A "'],
+  ["payload", '"sub":" Person-A ","nested":{"x":1,"\\u0078":2}'],
+  ["payload", '"sub":" Person-A ","nested":[{"x":1,"x":2}]'],
 ] as const) {
   test(`refuses duplicate JSON members in ${location}: ${member}`, async () => {
     const header =
@@ -440,6 +444,16 @@ for (const [location, member] of [
     expect(await f.verify(await sign(input))).toEqual(refused());
   }, 5_000);
 }
+
+test("duplicate scanning preserves strings and independent object scopes", async () => {
+  const f = await fixture();
+  const proof = await token({
+    note: '{"sub":"quoted","sub":"text"} [ ] \\ " :',
+    nested: { sub: "nested", child: { sub: "child" } },
+    items: [{ sub: "first" }, { sub: "second" }],
+  });
+  expect(await f.verify(proof)).toMatchObject({ ok: true });
+}, 5_000);
 
 test("refuses malformed base64url in each segment and wrong signature lengths", async () => {
   const proof = await token();
