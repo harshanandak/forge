@@ -97,6 +97,18 @@ async function issue(
   assert.equal(reply.status, 200, JSON.stringify(reply.body));
   return reply.body.value!;
 }
+// Admin read: whether the project has a database yet. It never creates one.
+async function initialized(project: string): Promise<boolean> {
+  const response = await fetch(`${base}/p/${project}/status`, {
+    headers: { authorization: `Bearer ${adminToken}` },
+    signal: AbortSignal.timeout(20_000),
+  });
+  const body = (await response.json()) as {
+    value?: { initialized: boolean };
+  };
+  assert.equal(response.status, 200, JSON.stringify(body));
+  return body.value!.initialized;
+}
 const projectTokens = new Map<string, Promise<string>>();
 const tokenFor = (project: string): Promise<string> => {
   let token = projectTokens.get(project);
@@ -214,10 +226,12 @@ const lookup = (
     headers,
   );
 
+let revokedPhone: Device | undefined;
 const revokeCheck = (): Promise<void> =>
   check("a revoked token is refused on its next request", async () => {
     const project = `${run}-revoke`;
     const phone = await issue(project, "phone");
+    revokedPhone = phone;
     const laptop = await issue(project, "laptop");
     const holder = holderOf("revoke");
     const attempt = (subject: string, device: Device): Promise<Reply> =>
@@ -826,6 +840,68 @@ if (phase === "main") {
     },
   );
 
+  await check(
+    "a bad token creates no project database, and a token for another project is refused",
+    async () => {
+      const fresh = `${run}-never-seen`;
+      const wrong = `fct_${"1".repeat(16)}.${"B".repeat(43)}`;
+      for (const authorization of ["Bearer not-a-token", `Bearer ${wrong}`]) {
+        const claimed = await send(
+          fresh,
+          "POST",
+          "claim",
+          {
+            subject: "issue:never-1",
+            holder: holderOf("never"),
+            ttlMs: 600_000,
+            requestId: "never-1",
+          },
+          { authorization },
+        );
+        assert.equal(claimed.status, 401, JSON.stringify(claimed.body));
+        assert.equal(claimed.body.error?.code, "AUTH_INVALID");
+        const read = await lookup(fresh, "issue:never-1", { authorization });
+        assert.equal(read.status, 401, JSON.stringify(read.body));
+      }
+      assert.equal(await initialized(fresh), false, "no database was made");
+
+      const a = await issue(`${run}-a`, "tablet");
+      await issue(`${run}-b`, "tablet");
+      for (const project of [`${run}-b`, fresh]) {
+        const reply = await lookup(project, "issue:x-1", asDevice(a));
+        assert.equal(reply.status, 401, JSON.stringify(reply.body));
+        assert.equal(reply.body.error?.code, "AUTH_INVALID");
+      }
+      assert.equal(await initialized(fresh), false, "A's token made nothing");
+      await issue(fresh, "tablet");
+      assert.equal(await initialized(fresh), true, "a token issue makes it");
+    },
+  );
+
+  await check(
+    "a bad token is refused by its token, not by its body size; a good token with a big body is refused for size",
+    async () => {
+      const project = `${run}-big`;
+      const device = await issue(project, "tablet");
+      const big = JSON.stringify({ requestId: "x".repeat(1_000_000) });
+      const bad = `Bearer fct_${"2".repeat(16)}.${"C".repeat(43)}`;
+      const refusedBad = await send(project, "POST", "claim", big, {
+        authorization: bad,
+      });
+      assert.equal(refusedBad.status, 401, JSON.stringify(refusedBad.body));
+      assert.equal(refusedBad.body.error?.code, "AUTH_INVALID");
+      const refusedBig = await send(
+        project,
+        "POST",
+        "claim",
+        big,
+        asDevice(device),
+      );
+      assert.equal(refusedBig.status, 400, JSON.stringify(refusedBig.body));
+      assert.equal(refusedBig.body.error?.code, "INPUT_INVALID");
+    },
+  );
+
   const project = `${run}-persist`;
   const holder = holderOf("persist");
   const claimed = granted(
@@ -847,7 +923,10 @@ if (phase === "main") {
       requestId: "persist-release",
     }),
   );
-  writeFileSync(stateFile, JSON.stringify({ project, holder, claimed, freed }));
+  writeFileSync(
+    stateFile,
+    JSON.stringify({ project, holder, claimed, freed, revoked: revokedPhone }),
+  );
   console.log(`saved restart state for ${project}`);
 } else if (phase === "restart") {
   const saved = JSON.parse(readFileSync(stateFile, "utf8")) as {
@@ -855,6 +934,7 @@ if (phase === "main") {
     holder: Holder;
     claimed: Lease;
     freed: Lease;
+    revoked: Device;
   };
   await check("claims and request ids survive a restart", async () => {
     assert.deepEqual(
@@ -895,6 +975,20 @@ if (phase === "main") {
     );
     assert.equal(free.generation, saved.freed.generation + 1);
   });
+
+  await check(
+    "a revoked token is still refused after the restart",
+    async () => {
+      const project = saved.project.replace(/persist$/, "revoke");
+      const reply = await lookup(
+        project,
+        "issue:revoke-1",
+        asDevice(saved.revoked),
+      );
+      assert.equal(reply.status, 401, JSON.stringify(reply.body));
+      assert.equal(reply.body.error?.code, "AUTH_REVOKED");
+    },
+  );
 }
 
 if (failures.length > 0) {
