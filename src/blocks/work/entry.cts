@@ -4029,6 +4029,8 @@ const operations: Operations<WorkOperations> = {
           signal,
           timeoutMs: Math.min(20000, remaining),
           maxOutputBytes,
+          // Keep the full text up to the cap, and ask for proof that the pipes finished draining.
+          capture: { headBytes: maxOutputBytes, tailBytes: 0 },
           ...(leaveDirectory ? { leaveDirectory } : {}),
         });
         eligible();
@@ -4039,6 +4041,15 @@ const operations: Operations<WorkOperations> = {
           fail(
             "UNAVAILABLE",
             "Git timed out or exceeded the lane output limit",
+          );
+        // A clean exit can still hide unread output; only complete streams may be parsed.
+        if (
+          !result.outputEvidence?.stdout.complete ||
+          !result.outputEvidence.stderr.complete
+        )
+          fail(
+            "INPUT_CONFLICT",
+            "Git output was incomplete; inspect the lane before releasing",
           );
         if (result.exitCode !== 0)
           fail(

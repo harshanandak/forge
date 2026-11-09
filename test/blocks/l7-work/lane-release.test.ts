@@ -72,6 +72,8 @@ async function fixture() {
     canonicalWorktree: lane.worktree,
     indexEntries: "H visible.txt\0",
     truncateIndex: false,
+    evidence: undefined as
+      { command: string; mode: "incomplete" | "missing" } | undefined,
     afterRead: undefined as (() => void) | undefined,
   };
   const calls: string[][] = [];
@@ -141,6 +143,16 @@ async function fixture() {
       const hook = flags.afterRead;
       flags.afterRead = undefined;
       hook?.();
+      const stream = (complete: boolean) => ({
+        head: "",
+        tail: "",
+        encoding: "base64" as const,
+        totalBytes: Buffer.byteLength(stdout),
+        digest: "sha256:fixture",
+        complete,
+      });
+      const mark = flags.evidence;
+      const evidence = mark && mark.command === args[0] ? mark.mode : undefined;
       return {
         stdout,
         stderr: "",
@@ -149,6 +161,14 @@ async function fixture() {
         timedOut: false,
         truncated,
         durationMs: 0,
+        ...(evidence === "missing"
+          ? {}
+          : {
+              outputEvidence: {
+                stdout: stream(evidence !== "incomplete"),
+                stderr: stream(true),
+              },
+            }),
       };
     },
   };
@@ -546,3 +566,36 @@ test("only the ls-files check gets the larger output cap", async () => {
     await f.close();
   }
 }, 30_000);
+
+for (const [command, mode] of [
+  ["ls-files", "incomplete"],
+  ["status", "incomplete"],
+  ["ls-files", "missing"],
+  ["status", "missing"],
+] as const) {
+  test(`release refuses when ${command} output evidence is ${mode}`, async () => {
+    const f = await fixture();
+    try {
+      f.flags.evidence = { command, mode };
+      // An unread tail could hold a flagged entry or dirty work; the prefix alone looks clean.
+      f.flags.indexEntries = "H visible.txt ";
+      const before = f.snapshot();
+      const result = await f.invoke("lane.release", { id: "sample-1" });
+      expect(result).toMatchObject({
+        ok: false,
+        error: {
+          code: "INPUT_CONFLICT",
+          message:
+            "Git output was incomplete; inspect the lane before releasing",
+        },
+      });
+      expect(
+        f.calls.some((args) => args[0] === "worktree" && args[1] === "remove"),
+      ).toBe(false);
+      expect(f.snapshot()).toBe(before);
+      expect(f.mutations).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  }, 30_000);
+}
