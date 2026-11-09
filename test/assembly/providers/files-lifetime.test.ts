@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdtempSync,
   mkdirSync,
+  readdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -69,6 +70,106 @@ const result = (stdout: string): ProcessResult => ({
   truncated: false,
   durationMs: 0,
 });
+
+for (const processFails of [false, true]) {
+  test(`file close preserves pending marker classification and process failures, processFails=${processFails}`, async () => {
+    const root = mkdtempSync(join(tmpdir(), "files-cleanup-"));
+    const git = join(root, ".git");
+    mkdirSync(git);
+    const port: ProcessPort = {
+      capability: "forge.process/v1",
+      resolve: () => ({ kind: "resolved", path: "git" }),
+      run: (_program, args) =>
+        args.includes("--absolute-git-dir")
+          ? Promise.resolve(result(`${git}\n${git}\n`))
+          : processFails
+            ? Promise.reject(
+                Object.assign(new Error("termination unconfirmed"), {
+                  code: "TREE_KILL_FAILED",
+                }),
+              )
+            : Promise.resolve(result("a".repeat(40))),
+    };
+    const f = fixture(
+      `async ({ services, input }) => {
+        try { await services.files.snapshot({ paths: [], maxBytes: 100, timeoutMs: 5000, maxOutputBytes: 100 }); }
+        catch { /* The handler returns valid output even after a snapshot failure. */ }
+        return input;
+      }`,
+      { effects: ["files:read", "files:write"], timeoutMs: 5000 },
+    );
+    grant(f.trust, f.block.digest, ["files:read", "files:write"]);
+    let closeError: unknown;
+    try {
+      const response = await f
+        .runtime({
+          limits: { timeoutMs: 5000 },
+          services: async (_instance, _context, scope) => {
+            const lease = await createAssemblyProviders(
+              root,
+              {
+                env: {},
+                supervision: {
+                  cleanupTimeoutMs: 100,
+                  pollIntervalMs: 25,
+                  drainTimeoutMs: 50,
+                  maxConcurrent: 1,
+                },
+              },
+              port,
+            ).openFiles(scope);
+            const lock = lease.value.lock(["pending.lock"], {
+              recoverDeadOwner: true,
+            });
+            const path = join(git, "pending.lock");
+            const marker = join(path, readdirSync(path)[0]!);
+            rmSync(marker);
+            mkdirSync(marker);
+            expect(() => lock.release()).toThrow();
+            return {
+              ...lease,
+              value: { files: lease.value },
+              close: () =>
+                lease.close().catch((error: unknown) => {
+                  closeError = error;
+                  throw error;
+                }),
+            };
+          },
+        })
+        .invoke(f.request);
+      expect(closeError).toBeInstanceOf(AggregateError);
+      expect(response).toMatchObject(
+        processFails
+          ? {
+              ok: false,
+              status: "INCOMPLETE",
+              error: {
+                code: "INTERNAL",
+                message: "owned service cleanup failed",
+                retry: "reconcile_first",
+              },
+              warnings: [],
+            }
+          : {
+              ok: true,
+              result: "hello",
+              warnings: [{ code: "SERVICE_CLEANUP_FAILED" }],
+            },
+      );
+      if (processFails)
+        expect(closeError).toMatchObject({
+          errors: [
+            { code: "TREE_KILL_FAILED" },
+            { errors: [{ code: "LOCK_CLEANUP_PENDING" }] },
+          ],
+        });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 5000);
+}
+
 test("missing-path snapshots preserve typed input failures well under 1 s", async () => {
   const root = mkdtempSync(join(tmpdir(), "snapshot-missing-"));
   const git = join(root, ".git");

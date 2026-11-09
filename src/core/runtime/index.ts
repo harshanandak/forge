@@ -37,6 +37,22 @@ export const DEFAULT_RUNTIME_LIMITS: RuntimeLimits = {
 
 export type ServiceHandle = Handle<unknown>;
 
+function onlyPendingLockCleanup(error: unknown, depth = 0): boolean {
+  if (depth >= 32) return false;
+  if (error instanceof AggregateError)
+    return (
+      error.errors.length > 0 &&
+      (error.errors as unknown[]).every((nested) =>
+        onlyPendingLockCleanup(nested, depth + 1),
+      )
+    );
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    error.code === "LOCK_CLEANUP_PENDING"
+  );
+}
+
 export interface ServiceScope {
   readonly op: string;
   readonly effects: readonly string[];
@@ -539,21 +555,25 @@ export class Runtime {
       processCleanupFailed = true;
     }
     let serviceCleanupFailed = false;
+    let lockCleanupPending = false;
     try {
       if (handle?.ownership === "owned") await handle.close();
-    } catch {
-      serviceCleanupFailed = true;
-      result = {
-        ok: false,
-        ...(request === undefined ? {} : { op: request.op }),
-        status: "INCOMPLETE",
-        error: {
-          code: "INTERNAL",
-          message: "owned service cleanup failed",
-          retry: "reconcile_first",
-        },
-        warnings: [],
-      };
+    } catch (error) {
+      if (onlyPendingLockCleanup(error)) lockCleanupPending = true;
+      else {
+        serviceCleanupFailed = true;
+        result = {
+          ok: false,
+          ...(request === undefined ? {} : { op: request.op }),
+          status: "INCOMPLETE",
+          error: {
+            code: "INTERNAL",
+            message: "owned service cleanup failed",
+            retry: "reconcile_first",
+          },
+          warnings: [],
+        };
+      }
     }
     if (processCleanupFailed && !serviceCleanupFailed)
       result = {
@@ -569,7 +589,18 @@ export class Runtime {
       };
     result = {
       ...result,
-      warnings: [...result.warnings, ...(invocation?.warnings() ?? [])],
+      warnings: [
+        ...result.warnings,
+        ...(lockCleanupPending
+          ? [
+              {
+                code: "SERVICE_CLEANUP_FAILED",
+                message: "owned service cleanup failed",
+              },
+            ]
+          : []),
+        ...(invocation?.warnings() ?? []),
+      ],
     };
     const processes = result.ok ? undefined : invocation?.diagnostics();
     if (processes && !result.ok) {

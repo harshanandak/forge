@@ -753,7 +753,11 @@ export function createAssemblyProviders(
       const close = async (): Promise<void> => {
         controller.abort();
         await Promise.allSettled([...pending]);
-        await fileLease?.close();
+        try {
+          await fileLease?.close();
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
         if (cleanupErrors.length)
           throw new AggregateError(
             cleanupErrors,
