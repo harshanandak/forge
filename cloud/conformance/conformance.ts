@@ -297,6 +297,10 @@ function granted(reply: Reply): Lease {
   assert.ok(reply.body.value, "a grant carries the lease");
   return reply.body.value;
 }
+// A holder lookup that reports no lease.
+function noLease(reply: Reply): void {
+  assert.equal(reply.body.value ?? null, null, JSON.stringify(reply.body));
+}
 function refused(
   reply: Reply,
   code: string,
@@ -607,11 +611,7 @@ if (phase === "main") {
       );
       assert.equal(failedClaim.status, 500, JSON.stringify(failedClaim.body));
       assert.equal(failedClaim.body.error?.code, "INTERNAL");
-      assert.equal(
-        (await holderLookup(project, subject)).body.value ?? null,
-        null,
-        "a failed claim leaves no lease",
-      );
+      noLease(await holderLookup(project, subject));
       const first = granted(
         await claim(project, subject, holder, "atomic-claim"),
       );
@@ -639,6 +639,72 @@ if (phase === "main") {
         renewed,
         "the retry is now recorded and replays the current lease",
       );
+    },
+  );
+
+  await check(
+    "a holder lookup that fails is not read as an empty lease",
+    () => {
+      const failed = (status: number, ok: boolean): Reply => ({
+        status,
+        body: { ok, error: { code: "INTERNAL", message: "no lookup" } },
+      });
+      assert.throws(() => noLease(failed(500, false)));
+      assert.throws(() => noLease(failed(401, false)));
+      assert.throws(() => noLease(failed(200, false)));
+      assert.throws(() =>
+        noLease({ status: 500, body: { ok: true, value: null } }),
+      );
+      noLease({ status: 200, body: { ok: true, value: null } });
+      return Promise.resolve();
+    },
+  );
+
+  await faulty(
+    "overlapping requests to one project: only the request with the fault header gets the fault",
+    async () => {
+      const project = `${run}-overlap`;
+      await tokenFor(project);
+      const fault = { "x-cloud-fault": "receipt-insert" };
+      const pairs = Array.from({ length: 12 }, (_, index) => index);
+      const sent = await Promise.all(
+        pairs.flatMap((index) => [
+          send(
+            project,
+            "POST",
+            "claim",
+            {
+              subject: `issue:overlap-fault-${index}`,
+              holder: holderOf("overlap", index),
+              ttlMs: 600_000,
+              requestId: `overlap-fault-${index}`,
+            },
+            fault,
+          ),
+          claim(
+            project,
+            `issue:overlap-plain-${index}`,
+            holderOf("overlap", index),
+            `overlap-plain-${index}`,
+          ),
+        ]),
+      );
+      sent.forEach((reply, position) => {
+        const label = `${position % 2 === 0 ? "faulted" : "plain"} request ${Math.floor(position / 2)}`;
+        if (position % 2 === 0) {
+          assert.equal(
+            reply.status,
+            500,
+            `${label}: ${JSON.stringify(reply.body)}`,
+          );
+          assert.equal(reply.body.error?.code, "INTERNAL", label);
+        } else {
+          granted(reply);
+        }
+      });
+      for (const index of pairs) {
+        noLease(await holderLookup(project, `issue:overlap-fault-${index}`));
+      }
     },
   );
 
