@@ -8,7 +8,7 @@ const addBlock = (root: string, trust: TrustStore) =>
 import { operations as catalogOperations } from "../../../src/core/catalog/operations.ts";
 import { operations as trustOperations } from "../../../src/core/trust/operations.ts";
 import { operations as stateOperations } from "../../../src/core/state/operations.ts";
-import { test } from "bun:test";
+import { spyOn, test } from "bun:test";
 import assert from "node:assert/strict";
 import {
   mkdirSync,
@@ -18,6 +18,7 @@ import {
   readdirSync,
   realpathSync,
   rmSync,
+  unlinkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -31,6 +32,7 @@ import { secretReference } from "../../../src/core/trust/index.ts";
 import { TrustStore, admit, grant } from "../../fixtures/owner-approval.ts";
 import { Runtime } from "../../../src/core/runtime/index.ts";
 import { createCloneFilesLease } from "../../../src/adapters/fs/clone-files.ts";
+import * as durableIO from "../../../src/adapters/fs/durable-io.ts";
 import { createMcpHandlers } from "../../../src/surface/mcp.ts";
 import type { SurfaceCatalog } from "../../../src/surface/catalog.ts";
 import type {
@@ -952,6 +954,69 @@ for (const aggregate of [false, true]) {
     }
   }, 5000);
 }
+
+test("post-unlink sync failure stays fatal at shutdown", async () => {
+  const f = fixture();
+  const root = realpathSync(f.root);
+  const metadata = join(root, "metadata");
+  mkdirSync(metadata);
+  const lease = createCloneFilesLease({
+    projectRoot: root,
+    commonDirectory: metadata,
+    gitDirectory: metadata,
+    read: true,
+    write: true,
+    signal: new AbortController().signal,
+  });
+  lease.service.lock(["pending.lock"], { recoverDeadOwner: true });
+  const path = join(metadata, "pending.lock");
+  const marker = join(path, readdirSync(path)[0]!);
+  const removeDurable = durableIO.removeDurable;
+  const injected = Object.assign(new Error("directory sync failed"), {
+    code: "EIO",
+    syscall: "fsync",
+  });
+  const remove = spyOn(durableIO, "removeDurable");
+  remove.mockImplementation((path) => {
+    if (path !== marker) return removeDurable(path);
+    unlinkSync(path);
+    throw injected;
+  });
+  try {
+    admit(f.trust, f.block.digest);
+    const runtime = new Runtime(f.catalog, f.trust, {
+      isolation: nodeRunIsolation,
+      services: () =>
+        Promise.resolve({
+          ownership: "owned",
+          value: { files: lease.service },
+          close: () => {
+            lease.close();
+            return Promise.resolve();
+          },
+        }),
+    });
+    const result = await runtime.invoke(f.request);
+    assert.equal(
+      remove.mock.calls.some(([path]) => path === marker),
+      true,
+    );
+    assert.equal(existsSync(marker), false);
+    assert.partialDeepStrictEqual(result, {
+      ok: false,
+      status: "INCOMPLETE",
+      error: {
+        code: "INTERNAL",
+        message: "owned service cleanup failed",
+        retry: "reconcile_first",
+      },
+      warnings: [],
+    });
+  } finally {
+    remove.mockRestore();
+    f.close();
+  }
+}, 5000);
 
 for (const fails of [false, true]) {
   test(`failed lock cleanup warns without replacing the call's ${fails ? "error" : "result"}`, async () => {
