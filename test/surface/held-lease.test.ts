@@ -326,3 +326,99 @@ test("a terminal claim refuses every unsourced non-TTY leased write and supports
     ).ok,
   ).toBe(true);
 }, 30_000);
+
+/** What `lane close` is called with when the lane's issue and lease look like this. */
+async function laneCloseContext(
+  issue: Record<string, unknown>,
+  lease: { generation: number } | undefined,
+  input: Record<string, unknown> = { id: "work-1", pr: 1, receipt: "proof" },
+) {
+  let seen: Record<string, unknown> | undefined;
+  const reply = (op: string, result: unknown) =>
+    Promise.resolve({
+      ok: true,
+      op,
+      status: "OK",
+      result,
+      warnings: [],
+    } as never);
+  const catalog: SurfaceCatalog = {
+    list: () =>
+      assembly.catalog
+        .list()
+        .map((entry) =>
+          entry.op === "lane.close" ? { ...entry, admitted: true } : entry,
+        ),
+    invoke: (request) => {
+      if (request.op === "lane.show")
+        return reply(request.op, {
+          issue: "work-1",
+          ...(lease ? { lease } : {}),
+        });
+      if (request.op === "issue.show") return reply(request.op, issue);
+      seen = request.context as Record<string, unknown>;
+      return reply(request.op, { issue: "work-1", removed: true });
+    },
+  };
+  const previous = process.env.FORGE_SESSION;
+  process.env.FORGE_SESSION = "agent-one";
+  const options = localCall(assembly);
+  if (previous === undefined) delete process.env.FORGE_SESSION;
+  else process.env.FORGE_SESSION = previous;
+  await dispatch(catalog, "lane.close", input, options);
+  return seen;
+}
+
+const handClosed = {
+  id: "work-1",
+  status: "closed",
+  withoutReceipt: "by hand",
+};
+for (const [name, issue, lease, input, expected] of [
+  [
+    "an issue closed by hand with no lease",
+    handClosed,
+    undefined,
+    undefined,
+    0,
+  ],
+  [
+    "an open issue with no lease",
+    { id: "work-1", status: "open" },
+    undefined,
+    undefined,
+    undefined,
+  ],
+  [
+    "an issue closed with a receipt and no lease",
+    { id: "work-1", status: "closed", receipt: "proof" },
+    undefined,
+    undefined,
+    undefined,
+  ],
+  [
+    "an issue closed by hand when the close is a drop",
+    handClosed,
+    undefined,
+    { id: "work-1", pr: 1, dropped: "replaced" },
+    undefined,
+  ],
+  [
+    "an issue closed by hand when the close keeps it open",
+    handClosed,
+    undefined,
+    { id: "work-1", pr: 1, receipt: "proof", keepOpen: true },
+    undefined,
+  ],
+  [
+    "an issue closed by hand that still has a lease",
+    handClosed,
+    { generation: 7 },
+    undefined,
+    7,
+  ],
+] as const)
+  test(`lane close gets lease generation ${String(expected)} for ${name}`, async () => {
+    const context = await laneCloseContext(issue, lease, input);
+    expect(context?.leaseGeneration).toBe(expected);
+  }, 30_000);
