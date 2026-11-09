@@ -1,0 +1,16 @@
+{
+  // Conformance only (.github/workflows/cloud.yml). The same Worker as wrangler.jsonc, entered through
+  // a wrapper that can fail a receipt insert on request. Never deploy with this file.
+  "name": "forge-cloud-conformance",
+  "main": "conformance/fault-worker.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "durable_objects": {
+    "bindings": [{ "name": "PROJECTS", "class_name": "Project" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Project"] }],
+  "dev": { "ip": "127.0.0.1", "port": 8787 },
+  "send_metrics": false,
+}
