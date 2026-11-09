@@ -1,6 +1,7 @@
 // Conformance checks for the claim server, run against `wrangler dev` (see .github/workflows/cloud.yml).
 // Phase "main" runs every check and saves what must survive a restart; phase "restart" reads it back.
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -40,7 +41,12 @@ const stateFile =
   join(tmpdir(), "forge-cloud-conformance.json");
 const phase = process.argv[2] ?? "main";
 const run = `c${Date.now()}`;
-const adminToken = process.env.CLOUD_ADMIN_TOKEN ?? "";
+// The admin token comes from a file for live runs, so it never appears on a command line.
+const adminToken = process.env.CLOUD_ADMIN_TOKEN_FILE
+  ? readFileSync(process.env.CLOUD_ADMIN_TOKEN_FILE, "utf8").trim()
+  : (process.env.CLOUD_ADMIN_TOKEN ?? "");
+// Live runs hit the deployed Worker, which has no fault switch.
+const live = process.env.CLOUD_LIVE === "1";
 
 interface Device {
   readonly id: string;
@@ -108,6 +114,37 @@ async function initialized(project: string): Promise<boolean> {
   };
   assert.equal(response.status, 200, JSON.stringify(body));
   return body.value!.initialized;
+}
+interface Dump {
+  readonly format: string;
+  readonly tables: Record<string, readonly Record<string, unknown>[]>;
+}
+interface AdminBody {
+  readonly value?: unknown;
+  readonly error?: { readonly code: string };
+}
+async function adminCall(
+  project: string,
+  method: "GET" | "POST",
+  route: "dump" | "restore",
+  body?: string,
+  token = adminToken,
+): Promise<{ status: number; body: AdminBody }> {
+  const response = await fetch(`${base}/p/${project}/${route}`, {
+    method,
+    headers: token === "" ? {} : { authorization: `Bearer ${token}` },
+    ...(body === undefined ? {} : { body }),
+    signal: AbortSignal.timeout(60_000),
+  });
+  return {
+    status: response.status,
+    body: (await response.json()) as AdminBody,
+  };
+}
+async function dumpOf(project: string): Promise<Dump> {
+  const reply = await adminCall(project, "GET", "dump");
+  assert.equal(reply.status, 200, JSON.stringify(reply.body));
+  return reply.body.value as Dump;
 }
 const projectTokens = new Map<string, Promise<string>>();
 const tokenFor = (project: string): Promise<string> => {
@@ -200,6 +237,10 @@ function refused(
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
+function skip(name: string, _body: () => Promise<void>): Promise<void> {
+  console.log(`SKIP ${name}`);
+  return Promise.resolve();
+}
 const failures: string[] = [];
 async function check(name: string, body: () => Promise<void>): Promise<void> {
   try {
@@ -278,8 +319,30 @@ const revokeCheck = (): Promise<void> =>
 
 if (phase === "revoke") await revokeCheck();
 
+// Claim latency from this machine: 200 claims in a row, in milliseconds.
+if (phase === "latency") {
+  const project = `${run}-latency`;
+  await tokenFor(project);
+  const times: number[] = [];
+  for (let i = 0; i < 200; i += 1) {
+    const started = performance.now();
+    granted(
+      await claim(project, `issue:lat-${i}`, holderOf("lat"), `lat-${i}`),
+    );
+    times.push(performance.now() - started);
+  }
+  times.sort((a, b) => a - b);
+  const at = (q: number): string =>
+    times[Math.ceil(q * times.length) - 1]!.toFixed(1);
+  console.log(
+    `claims=${times.length} p50=${at(0.5)}ms p95=${at(0.95)}ms max=${times.at(-1)!.toFixed(1)}ms`,
+  );
+}
+
 if (phase === "main") {
   await revokeCheck();
+  // The deployed Worker has no fault switch, so live runs skip that one case.
+  const faulty = live ? skip : check;
 
   await check(
     "no token, a wrong token, or a device token on an admin route is refused before any state is read",
@@ -456,7 +519,7 @@ if (phase === "main") {
     },
   );
 
-  await check(
+  await faulty(
     "a failed receipt insert rolls the mutation back, and a retry gives the correct result",
     async () => {
       const project = `${run}-atomic`;
@@ -899,6 +962,99 @@ if (phase === "main") {
       );
       assert.equal(refusedBig.status, 400, JSON.stringify(refusedBig.body));
       assert.equal(refusedBig.body.error?.code, "INPUT_INVALID");
+    },
+  );
+
+  await check(
+    "a project dumps to JSON without token hashes and restores into an empty project, read back identical",
+    async () => {
+      const source = `${run}-dump-a`;
+      const target = `${run}-dump-b`;
+      const holder = holderOf("dump");
+      const first = granted(
+        await claim(source, "issue:dump-1", holder, "dump-1"),
+      );
+      granted(
+        await send(source, "POST", "renew", {
+          subject: "issue:dump-1",
+          holder,
+          generation: first.generation,
+          ttlMs: 900_000,
+          requestId: "dump-renew",
+        }),
+      );
+      refused(
+        await claim(source, "issue:dump-1", holderOf("rival"), "dump-rival"),
+        "LEASE_HELD",
+      );
+      granted(await claim(source, "issue:dump-2", holder, "dump-2"));
+      const device = await issue(source, "tablet");
+
+      const dump = await dumpOf(source);
+      assert.equal(dump.format, "forge-cloud-dump/1");
+      assert.deepEqual(Object.keys(dump.tables).sort(), [
+        "domain_cloud_requests",
+        "state_events",
+        "state_leases",
+        "state_records",
+        "state_requests",
+      ]);
+      assert.equal(dump.tables.state_leases!.length, 2);
+      assert.ok(dump.tables.domain_cloud_requests!.length >= 4, "receipts");
+      const secret = device.token.split(".")[1]!;
+      const digest = createHash("sha256").update(secret).digest("hex");
+      const text = JSON.stringify(dump);
+      for (const hidden of [
+        secret,
+        digest,
+        device.token,
+        "domain_cloud_tokens",
+      ])
+        assert.ok(!text.includes(hidden), "the dump holds no token or hash");
+
+      const restored = await adminCall(target, "POST", "restore", text);
+      assert.equal(restored.status, 200, JSON.stringify(restored.body));
+      assert.deepEqual(await dumpOf(target), dump, "read back identical");
+      // The restored project serves the same lease and replays the same receipts.
+      assert.deepEqual(
+        granted(await holderLookup(target, "issue:dump-1")),
+        granted(await holderLookup(source, "issue:dump-1")),
+      );
+      assert.deepEqual(
+        granted(await claim(target, "issue:dump-2", holder, "dump-2")),
+        granted(await claim(source, "issue:dump-2", holder, "dump-2")),
+      );
+
+      // Restore goes only into an empty project and only with a clean document.
+      const again = await adminCall(target, "POST", "restore", text);
+      assert.equal(again.status, 409, JSON.stringify(again.body));
+      assert.equal(again.body.error?.code, "RESTORE_TARGET_NOT_EMPTY");
+      const bad = (name: string, document: string): Promise<void> =>
+        adminCall(`${run}-${name}`, "POST", "restore", document).then(
+          async (reply) => {
+            assert.equal(reply.status, 400, JSON.stringify(reply.body));
+            assert.equal(reply.body.error?.code, "INPUT_INVALID");
+            assert.equal(await initialized(`${run}-${name}`), false);
+          },
+        );
+      await bad(
+        "dump-unsafe",
+        text.replace(/"generation":\d+/, '"generation":9007199254740993'),
+      );
+      await bad("dump-column", text.replace('"subject"', '"subject2"'));
+      await bad("dump-table", text.replace('"state_events"', '"state_other"'));
+
+      // Only the admin token may dump or restore.
+      for (const token of ["", device.token]) {
+        assert.equal(
+          (await adminCall(source, "GET", "dump", undefined, token)).status,
+          401,
+        );
+        assert.equal(
+          (await adminCall(`${run}-x`, "POST", "restore", text, token)).status,
+          401,
+        );
+      }
     },
   );
 
