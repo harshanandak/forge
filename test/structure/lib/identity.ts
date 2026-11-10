@@ -27,24 +27,16 @@ class IdentityTokenRefusal extends Error {
 }
 
 const controls = new Set(["if", "while", "for", "with", "switch", "catch"]);
-const regexPrefix = new Set([
-  "return",
-  "throw",
-  "typeof",
-  "void",
-  "delete",
-  "new",
-  "in",
-  "instanceof",
-  "yield",
-  "await",
-  "case",
-  "else",
-  "do",
-  "of",
-  "default",
-  "extends",
-]);
+const regexPrefix = new Set(
+  "return throw typeof void delete new in instanceof case else do default extends".split(
+    " ",
+  ),
+);
+const contextual = new Set(
+  "of yield await get set static async as satisfies let using from type interface implements private protected public abstract readonly declare namespace module infer keyof is asserts override accessor out global".split(
+    " ",
+  ),
+);
 const identifier =
   /^(?:[$_\p{ID_Start}]|\\u(?:[\da-fA-F]{4}|\{[\da-fA-F]+\}))(?:[$\u200c\u200d\p{ID_Continue}]|\\u(?:[\da-fA-F]{4}|\{[\da-fA-F]+\}))*/u;
 const unicodeEscape = /^u(?:([\da-fA-F]{4})|\{([\da-fA-F]+)\})/;
@@ -197,14 +189,35 @@ function identityTokens(source: string): {
       if (ch === "/") {
         if (previous?.context === "ambiguous")
           refuse("ambiguous regex or division");
+        const property = [".", "?."].includes(tokens.at(-2)?.text ?? "");
+        const header = braces.findLast((frame) => frame.text === "(");
+        const forOf =
+          previous?.text === "of" &&
+          header &&
+          (tokens[header.index - 1]?.text === "for" ||
+            (tokens[header.index - 1]?.text === "await" &&
+              tokens[header.index - 2]?.text === "for")) &&
+          /^(?:(?:const|let|var) )?[$_\p{ID_Start}][$\u200c\u200d\p{ID_Continue}]*$/u.test(
+            tokens
+              .slice(header.index + 1, -1)
+              .map((token) => token.text)
+              .join(" "),
+          );
+        if (
+          previous?.kind === "identifier" &&
+          contextual.has(previous.text) &&
+          !property &&
+          !forOf
+        )
+          refuse("unclassified contextual keyword before slash");
         const division =
           previous &&
           (previous.kind === "number" ||
             previous.kind === "literal" ||
             previous.kind === "regex" ||
             (previous.kind === "identifier" &&
-              (!regexPrefix.has(previous.text) ||
-                [".", "?."].includes(tokens.at(-2)?.text ?? ""))) ||
+              !forOf &&
+              (!regexPrefix.has(previous.text) || property)) ||
             [")", "]", "++", "--"].includes(previous.text) ||
             (previous.text === "}" && previous.context === "expression"));
         if (!division) {
@@ -278,6 +291,7 @@ function identityTokens(source: string): {
           refuse("unmatched delimiter");
         pairs.set(open.index, tokens.length);
         pairs.set(tokens.length, open.index);
+        tokens[open.index] = { ...tokens[open.index]!, context: open.context };
         tokens.push({
           kind: "punctuator",
           text: punctuator,
@@ -334,6 +348,8 @@ function oauthMintRefusal(file: SourceFile): IdentityTokenRefusal | undefined {
     const { tokens, pairs } = identityTokens(parsedSource(file));
     const scopes: { start: number; end: number; name: string }[] = [];
     const parameters = new Set<number>();
+    const blocks = new Set<number>();
+    const classes = new Set<number>();
     const at = (index: number): string => {
       const token = tokens[index];
       return token?.kind === "identifier" || token?.kind === "punctuator"
@@ -359,11 +375,13 @@ function oauthMintRefusal(file: SourceFile): IdentityTokenRefusal | undefined {
       )
         refuse("unclassified function body");
       parameters.add(parameter);
+      blocks.add(close + 1);
       scopes.push({ start: i, end, name });
     }
     for (let i = 0; i < tokens.length; i++) {
       if (at(i) === "=>") {
         let end = pairs.get(i + 1);
+        if (at(i + 1) === "{") blocks.add(i + 1);
         if (at(i + 1) !== "{") {
           end = i + 1;
           while (
@@ -381,24 +399,103 @@ function oauthMintRefusal(file: SourceFile): IdentityTokenRefusal | undefined {
           name: "",
         });
       }
-      if (at(i) === "(" && !parameters.has(i) && !controls.has(at(i - 1))) {
-        const close = pairs.get(i)!;
-        const end = pairs.get(close + 1);
-        if (at(close + 1) === "{" && end !== undefined)
-          scopes.push({ start: i, end, name: "" });
-      }
+      if (
+        at(i) === "{" &&
+        ["try", "catch", "finally", "else", "do"].includes(at(i - 1))
+      )
+        blocks.add(i);
       if (at(i) === "class" && ![".", "?."].includes(at(i - 1))) {
         let body = i + 1;
         while (body < tokens.length && at(body) !== "{")
           body = (pairs.get(body) ?? body) + 1;
         const end = pairs.get(body);
         if (end === undefined) refuse("unclassified class body");
+        classes.add(body);
         scopes.push({ start: i, end, name: "" });
       }
     }
+    const statementStart = (index: number): boolean =>
+      index === 0 ||
+      at(index - 1) === ";" ||
+      (at(index - 1) === "}" && blocks.has(pairs.get(index - 1)!));
     for (let i = 0; i < tokens.length; i++) {
+      if (at(i) !== "(" || parameters.has(i)) continue;
+      const close = pairs.get(i)!;
+      const end = pairs.get(close + 1);
+      if (at(close + 1) !== "{" || end === undefined) continue;
+      const container = Math.max(
+        -1,
+        ...[...pairs]
+          .filter(([open, end]) => at(open) === "{" && open < i && i < end)
+          .map(([open]) => open),
+      );
+      const method =
+        container >= 0 &&
+        (classes.has(container) || tokens[container]?.context === "expression");
+      const header =
+        at(i - 1) === "await" && at(i - 2) === "for" ? i - 2 : i - 1;
+      if (controls.has(at(header)) && !method) {
+        if (
+          (container !== -1 && !blocks.has(container)) ||
+          !(
+            statementStart(header) ||
+            (at(header - 1) === "{" && blocks.has(header - 1)) ||
+            at(header - 1) === "else"
+          )
+        )
+          refuse("unclassified control header or method");
+      } else scopes.push({ start: i, end, name: "" });
+      blocks.add(close + 1);
+    }
+    const name = "[$_\\p{ID_Start}][$\\u200c\\u200d\\p{ID_Continue}]*";
+    const item = `${name}(?: as ${name})?`;
+    const declaration = new RegExp(
+      `^import (?:<literal>|(?:(?:${name} , )?(?:\\{ (?:${item}(?: , ${item})*(?: ,)? )?\\}|\\* as ${name})|${name}) from <literal>) ;$`,
+      "u",
+    );
+    for (let i = 0; i < tokens.length; i++) {
+      if (
+        at(i) === "export" &&
+        (!statementStart(i) ||
+          [...pairs].some(([open, end]) => open < i && i < end) ||
+          ![
+            "function",
+            "class",
+            "const",
+            "let",
+            "var",
+            "default",
+            "{",
+            "*",
+            "async",
+          ].includes(at(i + 1)))
+      )
+        refuse("unclassified export token");
+      if (
+        at(i) === "import" &&
+        ([".", "?."].includes(at(i - 1)) ||
+          (at(i + 1) === "." && at(i + 2) !== "meta"))
+      )
+        refuse("unclassified import token");
       if (at(i) === "import" && at(i + 1) !== "(" && at(i + 1) !== ".") {
+        const start = i;
+        if (
+          !statementStart(i) ||
+          [...pairs].some(([open, end]) => open < i && i < end)
+        )
+          refuse("unclassified import token");
         while (i < tokens.length && at(i) !== ";") i++;
+        if (
+          !declaration.test(
+            tokens
+              .slice(start, i + 1)
+              .map((token) =>
+                token.kind === "literal" ? "<literal>" : token.text,
+              )
+              .join(" "),
+          )
+        )
+          refuse("unclassified import declaration");
         continue;
       }
       if (tokens[i]?.kind !== "identifier" || at(i) !== "mintIdentity")

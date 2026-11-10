@@ -48,6 +48,13 @@ test("OAuth tokenization refuses ambiguous slashes and nested template mints", (
   }
 }, 30_000);
 
+test("OAuth classifies for-of regex headers and verifier control blocks", () => {
+  const path = "cloud/src/adapters/workers-oauth/index.ts";
+  const text =
+    'import { mintIdentity } from "../../../../src/ports/identity-mint.ts"; export function createOAuthAdapter() { function verifyProviderToken(claims) { for (const entry of /scope/.exec(input) ?? []) { void entry; } if (claims) { return mintIdentity(claims); } } }';
+  expect(findIdentityMintViolations([{ path, text }])).toEqual([]);
+}, 30_000);
+
 test("only the exact OAuth validation boundary may carry verifier-minted identity", () => {
   for (const path of [
     "cloud/src/adapters/workers-oauth/index.ts",
