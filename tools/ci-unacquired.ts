@@ -13,21 +13,80 @@ export type CurrentRun = {
   run_attempt: number;
   status: string;
   conclusion: string | null;
+  head_sha?: string;
 };
+// Only static axes or an include-only matrix have an unambiguous count here.
+function matrixSize(matrix: unknown): number {
+  if (matrix === undefined) return 1;
+  if (matrix === null || typeof matrix !== "object" || Array.isArray(matrix))
+    throw new Error("Unsupported matrix");
+  const entries = Object.entries(matrix);
+  const literal = (value: unknown) =>
+    typeof value === "number" ||
+    typeof value === "boolean" ||
+    (typeof value === "string" && !value.includes("${{"));
+  let count: number;
+  if (entries.length === 1 && entries[0]?.[0] === "include") {
+    const rows: unknown = entries[0][1];
+    if (
+      !Array.isArray(rows) ||
+      !rows.every(
+        (row: unknown) =>
+          row !== null &&
+          typeof row === "object" &&
+          !Array.isArray(row) &&
+          Object.keys(row).length > 0 &&
+          Object.values(row).every(literal),
+      )
+    )
+      throw new Error("Unsupported matrix include");
+    count = rows.length;
+  } else {
+    count = 1;
+    for (const [key, values] of entries) {
+      if (
+        key === "include" ||
+        key === "exclude" ||
+        !Array.isArray(values) ||
+        !values.every(literal)
+      )
+        throw new Error("Unsupported matrix axis");
+      count *= values.length;
+    }
+  }
+  if (entries.length === 0 || count < 1 || count > 256)
+    throw new Error("Unsupported matrix size");
+  return count;
+}
 // Name templates of the jobs the CI Gate needs, read from the workflow itself
 // so the list cannot drift from the gate's `needs`.
-export function neededJobNames(ciWorkflow: string): string[] {
+export function neededJobNames(
+  ciWorkflow: string,
+  countLegs = false,
+): string[] {
   const jobs = (
     Bun.YAML.parse(ciWorkflow) as {
-      jobs?: Record<string, { name?: string; needs?: string | string[] }>;
+      jobs?: Record<
+        string,
+        {
+          name?: string;
+          needs?: string | string[];
+          strategy?: { matrix?: unknown };
+        }
+      >;
     }
   ).jobs;
   const needs = jobs?.["ci-gate"]?.needs;
   if (needs === undefined) throw new Error("ci-gate has no needs");
-  return [needs].flat().map((id) => {
+  return [needs].flat().flatMap((id) => {
     const job = jobs?.[id];
     if (job === undefined) throw new Error(`ci-gate needs unknown job ${id}`);
-    return job.name ?? id;
+    const name = job.name ?? id;
+    if (typeof name !== "string" || name.length === 0)
+      throw new Error("Unsupported job name");
+    return Array<string>(countLegs ? matrixSize(job.strategy?.matrix) : 1).fill(
+      name,
+    );
   });
 }
 // A matrix name is a template; match on the text before its first expression.
@@ -66,9 +125,15 @@ export function decideRerun(
     (job.conclusion === "cancelled" || job.conclusion === null) &&
     (job.steps?.length ?? 0) === 0 &&
     (job.runner_name === "" || job.runner_name === null);
-  const missing = needed.filter(
-    (template) => !run.jobs.some((job) => matchesName(template, job.name)),
-  );
+  const missing = needed.filter((template) => {
+    const created = run.jobs.filter((job) => matchesName(template, job.name));
+    // An if-skipped matrix has one unexpanded placeholder, not missing legs.
+    return (
+      !created.some(
+        (job) => job.name === template && job.conclusion === "skipped",
+      ) && created.length < needed.filter((name) => name === template).length
+    );
+  });
   const hasGate = run.jobs.some((job) => job.name === "CI Gate");
   const rerun =
     (run.jobs.some(unacquired) || (missing.length > 0 && hasGate)) &&
@@ -108,19 +173,48 @@ export function decisionOutput(
       jobs: pages.flatMap((page) => page.jobs),
     },
     current,
-    neededJobNames(ciWorkflow),
+    neededJobNames(ciWorkflow, true),
   );
   return `rerun=${decision.rerun}\nscope=${decision.scope}\nreason=${decision.reason}`;
 }
+export async function decisionAtHead(
+  pages: readonly { jobs: readonly CiJob[] }[],
+  current: CurrentRun,
+  env: Readonly<Record<string, string | undefined>>,
+  read = async (endpoint: string): Promise<string> => {
+    const response = await fetch(`https://api.github.com/${endpoint}`, {
+      headers: {
+        Accept: "application/vnd.github.raw+json",
+        Authorization: `Bearer ${env.GH_TOKEN}`,
+      },
+    });
+    if (!response.ok) throw new Error("Head workflow unavailable");
+    return response.text();
+  },
+): Promise<string> {
+  try {
+    if (
+      !/^[a-f0-9]{40}$/i.test(current.head_sha ?? "") ||
+      !/^[\w.-]+\/[\w.-]+$/.test(env.GH_REPO ?? "")
+    )
+      throw new Error("Missing run source");
+    // Fork content is parsed as YAML data only. Trusted code stays on default branch.
+    const workflow = await read(
+      `repos/${env.GH_REPO}/contents/.github/workflows/ci.yml?ref=${current.head_sha}`,
+    );
+    return decisionOutput(pages, current, env, workflow);
+  } catch {
+    return "rerun=false\nscope=failed\nreason=Head CI workflow could not be read or interpreted; keep CI failed";
+  }
+}
 if (import.meta.main) {
   console.log(
-    decisionOutput(
+    await decisionAtHead(
       (await Bun.stdin.json()) as { jobs: CiJob[] }[],
       (await Bun.file(
         `${process.env.RUNNER_TEMP}/ci-current.json`,
       ).json()) as CurrentRun,
       process.env,
-      await Bun.file(".github/workflows/ci.yml").text(),
     ),
   );
 }
