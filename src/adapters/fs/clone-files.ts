@@ -15,6 +15,7 @@ import {
 } from "node:fs";
 import type { BigIntStats } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
+import { hostname, uptime } from "node:os";
 import {
   dirname,
   basename,
@@ -49,7 +50,8 @@ export interface CloneMarkerCleanupScheduler {
 }
 export interface CloneFilesOptions {
   readonly markerCleanup?: CloneMarkerCleanupScheduler;
-  readonly hostIdentity?: string;
+  /** Null models a legacy writer in injected fixtures. */
+  readonly hostIdentity?: string | null;
   readonly processProbe?: (pid: number) => void;
   readonly processStartTime?: (pid: number) => string | undefined;
   readonly projectRoot: string;
@@ -222,6 +224,45 @@ const markerCleanupHosts = new WeakMap<
   CloneMarkerCleanupScheduler,
   MarkerCleanup
 >();
+export function lockHostIdentity(): string {
+  let boot: string;
+  try {
+    boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+  } catch {
+    // A clock adjustment can change this fallback; that only retains an old lock.
+    boot = String(Math.round(Date.now() / 1000 - uptime()));
+  }
+  return `${hostname()}:${createHash("sha256").update(boot).digest("hex").slice(0, 16)}`;
+}
+export function checkLockHost(
+  marker: string,
+  hostIdentity: string | undefined,
+  relativePath: string,
+): void {
+  const info = stat(marker);
+  if (!info?.isFile() || info.isSymbolicLink() || info.size > 512n)
+    failure("INPUT_CONFLICT", "Lock owner host cannot be inspected safely");
+  let record: unknown;
+  try {
+    const text = readFileSync(marker, "utf8");
+    if (!text.trim()) return;
+    record = JSON.parse(text);
+  } catch {
+    failure("INPUT_CONFLICT", "Lock owner host cannot be read safely");
+  }
+  if (
+    typeof record === "object" &&
+    record !== null &&
+    "hostIdentity" in record &&
+    record.hostIdentity !== hostIdentity
+  ) {
+    const ownerHost = String(record.hostIdentity);
+    const message = `Foreign host ${ownerHost} holds ${relativePath}; run the command on host ${ownerHost}, or after confirming that host is down, remove the named marker file ${relativePath}`;
+    // The sweep catches the refusal to keep the ref; stderr still reports why.
+    process.emitWarning(message, { code: "LOCK_FOREIGN_HOST" });
+    failure("LOCK_FOREIGN_HOST", message);
+  }
+}
 /** Owner filenames make dead-owner cleanup generation-specific; unknown locks stay untouched. */
 function recoverableLock(
   target: string,
@@ -229,6 +270,8 @@ function recoverableLock(
   complete: () => void,
   startTime?: (pid: number) => string | undefined,
   processProbe?: (pid: number) => void,
+  hostIdentity?: string,
+  relativePath = basename(target),
 ): CloneFileLock {
   const owner = "owner-" + process.pid + "-" + randomUUID();
   const conflict = () =>
@@ -271,6 +314,7 @@ function recoverableLock(
       name = names.length === 1 ? names[0] : undefined;
     const match = name?.match(/^owner-([1-9]\d*)-[0-9a-f-]{36}$/);
     if (!match) conflict();
+    checkLockHost(join(target, name!), hostIdentity, `${relativePath}/${name}`);
     let dead = false;
     try {
       if (processProbe) processProbe(Number(match![1]));
@@ -322,8 +366,8 @@ function recoverableLock(
     const fd = createPrivateFile(join(target, owner), false);
     try {
       const created = startTime?.(process.pid);
-      if (created !== undefined) {
-        writeFileSync(fd, JSON.stringify({ startTime: created }));
+      if (created !== undefined || hostIdentity !== undefined) {
+        writeFileSync(fd, JSON.stringify({ startTime: created, hostIdentity }));
         fsyncSync(fd);
       }
     } finally {
@@ -509,6 +553,10 @@ function createCloneFilesAccess(
   const recoverable = new Set<CloneFileLock>();
   const pendingCleanup = new Set<CloneFileLock>();
   const scheduler = options.markerCleanup ?? hostMarkerScheduler;
+  const hostIdentity =
+    options.hostIdentity === null
+      ? undefined
+      : (options.hostIdentity ?? lockHostIdentity());
   const markerCleanup =
     markerCleanupHosts.get(scheduler) ?? new MarkerCleanup(scheduler);
   markerCleanupHosts.set(scheduler, markerCleanup);
@@ -974,6 +1022,8 @@ function createCloneFilesAccess(
               },
               options.processStartTime,
               options.processProbe,
+              hostIdentity,
+              relative(roots.project, plan.target).split("\\").join("/"),
             );
             held.push(lock);
             recoverable.add(lock);

@@ -34,7 +34,11 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
+import {
+  checkLockHost,
+  lockHostIdentity,
+} from "../src/adapters/fs/clone-files.ts";
 import { setTimeout as delay } from "node:timers/promises";
 import { interruptLaneRuns, laneHistory, laneRun } from "./lane-run.ts";
 import { laneTier } from "./lane-tier.ts";
@@ -230,6 +234,11 @@ function reclaim(lock: string): void {
       /^owner-([1-9]\d*)-[0-9a-f-]{36}(?:-([1-9]\d*))?$/,
     );
     if (!match) return;
+    checkLockHost(
+      join(lock, owner!),
+      lockHostIdentity(),
+      relative(process.cwd(), join(lock, owner!)).split("\\").join("/"),
+    );
     try {
       process.kill(Number(match[1]), 0);
       return;
@@ -260,6 +269,11 @@ function laneLockLive(lock: string): boolean {
     owners.length === 1 &&
     owners[0]?.match(/^owner-([1-9]\d*)-[0-9a-f-]{36}(?:-([1-9]\d*))?$/);
   if (!match) throw new Error(`unrecognized lane lock owner: ${lock}`);
+  checkLockHost(
+    join(lock, owners[0]!),
+    lockHostIdentity(),
+    relative(process.cwd(), join(lock, owners[0]!)).split("\\").join("/"),
+  );
   for (const pid of [match[1], match[2]]) {
     if (!pid) continue;
     try {
@@ -293,7 +307,11 @@ export function acquireLaneLock(common: string, id: string, owner: string) {
   }
   if (!handedOff) {
     mkdirSync(staged);
-    writeFileSync(join(staged, owner), "", { flag: "wx" });
+    writeFileSync(
+      join(staged, owner),
+      JSON.stringify({ hostIdentity: lockHostIdentity() }),
+      { flag: "wx" },
+    );
     try {
       reclaim(lock);
       if (laneLockLive(lock))
@@ -767,7 +785,11 @@ export async function main(): Promise<number> {
     lock = join(common, "forge-lanes.lock");
     const pending = `${lock}.${process.pid}.${randomUUID()}`;
     mkdirSync(pending);
-    writeFileSync(join(pending, owner), "", { flag: "wx" });
+    writeFileSync(
+      join(pending, owner),
+      JSON.stringify({ hostIdentity: lockHostIdentity() }),
+      { flag: "wx" },
+    );
     staged = pending;
     const deadline = Date.now() + 15_000;
     while (!held) {

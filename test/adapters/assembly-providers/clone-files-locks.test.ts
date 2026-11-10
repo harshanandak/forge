@@ -596,6 +596,7 @@ test.each([
   const { options, commonDirectory, lease } = fixture();
   const owner = createCloneFilesLease({
     ...options,
+    hostIdentity: null,
     processStartTime: () => "linux-starttime-v1:100",
   });
   const held = owner.service.lock(["identity.lock"], {

@@ -201,9 +201,9 @@ const own = "forge-lane-ref-11111111-2222-4333-8444-555555555555.lock";
 const stale = (ms: number, uuid: string) =>
   `refs/forge/lane-base/${ms}-${uuid}`;
 
-test.each([false, true])(
-  "the sweep preserves foreign owner markers and both private refs when its PID is locally live=%s",
-  async (live) => {
+test.each([{ live: false }, { live: true }])(
+  "the sweep preserves foreign owner markers and both private refs when its PID is locally live=$live",
+  async ({ live }) => {
     const f = fixture();
     const root = mkdtempSync(join(tmpdir(), "forge-foreign-ref-"));
     const uuid = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
