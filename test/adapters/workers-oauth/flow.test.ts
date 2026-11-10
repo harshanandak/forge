@@ -98,6 +98,24 @@ test("consent issues a resource-bound token and a code cannot be used twice", as
   expect(await f.api.accepts(body.access_token, resource)).toBe(true);
   expect(await f.api.accepts(body.access_token, other)).toBe(false);
   expect((await f.exchange(code)).status).toBe(400);
+  expect(await f.api.accepts(body.access_token, resource)).toBe(false);
+}, 30_000);
+
+test("repeated wrong secrets do not revoke the real grant", async () => {
+  const f = await fixture(),
+    code = await f.code();
+  const body = (await f.keep(await f.exchange(code), 200).json()) as {
+    access_token: string;
+  };
+  expect(await f.api.accepts(body.access_token, resource)).toBe(true);
+  const forged = `${code.slice(0, code.lastIndexOf(":") + 1)}wrongsecret`;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const response = f.keep(await f.exchange(forged), 400);
+    expect(((await response.json()) as { error: string }).error).toBe(
+      "invalid_grant",
+    );
+    expect(await f.api.accepts(body.access_token, resource)).toBe(true);
+  }
 }, 30_000);
 
 for (const [name, value, error] of [
