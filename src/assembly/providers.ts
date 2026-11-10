@@ -58,6 +58,7 @@ export type {
   ReportFormat,
 } from "../ports/runner-output.ts";
 export interface FileSnapshotInput {
+  readonly tracked?: boolean;
   readonly paths: readonly string[];
   readonly maxBytes: number;
   readonly timeoutMs: number;
@@ -66,7 +67,7 @@ export interface FileSnapshotInput {
 export interface FilesService extends CloneFilesService {
   snapshot(
     input: FileSnapshotInput,
-  ): Promise<{ head: string; filesDigest: string }>;
+  ): Promise<{ head: string; filesDigest: string; dirtyPaths?: string[] }>;
 }
 export interface EnvironmentService {
   readonly platform: NodeJS.Platform;
@@ -89,6 +90,7 @@ export interface ReceiptsService {
         readonly id: string;
         readonly status: string;
         readonly subject: string;
+        readonly reason?: string;
         readonly checked: readonly {
           readonly name: string;
           readonly status: string;
@@ -121,6 +123,9 @@ export function createReceiptsService(
         id: value.id,
         status: value.status,
         subject: value.subject,
+        ...(value.reason.startsWith("TRACKED_INPUTS_DIRTY:")
+          ? { reason: value.reason }
+          : {}),
         checked: Object.freeze(
           rows.flatMap((row) =>
             typeof row?.name === "string" && typeof row.status === "string"
@@ -880,7 +885,10 @@ export function createAssemblyProviders(
             if (Date.now() >= deadline)
               refuse("INVOCATION_TIMEOUT", "Snapshot deadline exceeded");
           };
-          const head = async (): Promise<string> => {
+          const readGit = async (
+            args = ["rev-parse", "--verify", "HEAD"],
+          ): Promise<string> => {
+            const isHead = args[0] === "rev-parse";
             snapshotActive();
             const remaining = deadline - Date.now() - cleanupMs;
             if (remaining < 1)
@@ -888,42 +896,74 @@ export function createAssemblyProviders(
                 "INVOCATION_TIMEOUT",
                 "Snapshot has no time left for Git and cleanup",
               );
-            const result = await executor.run(
-              git,
-              ["-C", root, "rev-parse", "--verify", "HEAD"],
-              {
-                cwd: root,
-                env: discoveryEnv,
-                signal: scope.signal,
-                timeoutMs: remaining,
-                maxOutputBytes: input.maxOutputBytes,
-              },
-            );
+            const result = await executor.run(git, ["-C", root, ...args], {
+              cwd: root,
+              env: discoveryEnv,
+              signal: scope.signal,
+              timeoutMs: remaining,
+              maxOutputBytes: isHead
+                ? input.maxOutputBytes
+                : args[0] === "ls-files"
+                  ? 33554432
+                  : 65536,
+            });
             if (result.timedOut)
               refuse("INVOCATION_TIMEOUT", "Snapshot head lookup timed out");
             snapshotActive();
             if (
               result.exitCode !== 0 ||
               result.truncated ||
-              !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(result.stdout.trim())
+              result.signal !== null ||
+              (isHead &&
+                !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(result.stdout.trim()))
             )
               refuse(
                 "INPUT_CONFLICT",
                 'Snapshot requires an exact Git HEAD. If this repository has no first commit, create it with: git add -A && git commit -m "initial commit". Otherwise repair HEAD and retry.',
               );
-            return result.stdout.trim();
+            return isHead ? result.stdout.trim() : result.stdout;
           };
-          const before = await head();
+          const before = await readGit();
+          if (
+            input.tracked &&
+            (await readGit(["ls-files", "-v", "-z"]))
+              .split("\0")
+              .some((entry) => /^[a-zS]/.test(entry))
+          )
+            refuse(
+              "INPUT_CONFLICT",
+              "Clear assume-unchanged or skip-worktree flags before checking committed inputs",
+            );
+          const dirtyPaths = input.tracked
+            ? (
+                await readGit([
+                  "diff",
+                  "--no-ext-diff",
+                  "--no-textconv",
+                  "--name-only",
+                  "-z",
+                  before,
+                  "--",
+                ])
+              )
+                .split("\0")
+                .filter(Boolean)
+                .sort()
+            : undefined;
           const filesDigest = digestCloneFiles(
             { ...fileOptions, deadline },
             input.paths,
             input.maxBytes,
           );
-          const after = await head();
+          const after = await readGit();
           snapshotActive();
           if (before !== after)
             refuse("INPUT_CONFLICT", "Git HEAD changed during snapshot");
-          return { head: after, filesDigest };
+          return {
+            head: after,
+            filesDigest,
+            ...(dirtyPaths && { dirtyPaths }),
+          };
         },
       };
       return {

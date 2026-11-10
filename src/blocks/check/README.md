@@ -207,6 +207,8 @@ profile folders); see `schemas/config.json`. The snapshot provider reads exact s
 untracked selected inputs) and HEAD. It refuses escapes, unsafe file types and over-budget
 snapshots rather than returning partial evidence. Select inputs deliberately: command
 outputs and Forge state should not be inputs unless a changed-input result is intended.
+Tracked changes keep run status; TRACKED_INPUTS_DIRTY marks head ineligibility and paths for gate and close.
+Forge's own config is excluded unless declared as an input.
 Internal HEAD lookups reserve 66 output bytes for a complete 64-character object id and
 CRLF, independently of the declared command output cap.
 

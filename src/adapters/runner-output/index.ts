@@ -58,10 +58,13 @@ function summary(
   match: readonly string[],
 ): OutputReport {
   const failed = /(\d+)\s+failed/.exec(match[0] ?? "");
+  const total = Number(match[1]),
+    failures = Number(failed?.[1] ?? 0);
+  if (!count(total) || !count(failures) || failures > total) return malformed;
   return {
     kind: "recognized",
-    testCount: Number(match[1]),
-    failed: Number(failed?.[1] ?? 0),
+    testCount: total,
+    failed: failures,
     detail: `${kind} test summary`,
   };
 }
@@ -92,7 +95,11 @@ function retainFailure(
   current: OutputReport | undefined,
   next: OutputReport,
 ): OutputReport {
-  return current?.failed ? current : next;
+  if (current?.failed) return current;
+  if (next.failed) return next;
+  if (current?.kind === "malformed") return current;
+  if (next.kind === "malformed") return next;
+  return current?.testCount === 0 ? current : next;
 }
 
 /** Scans one stream line by line, keeping only the summary lines it has seen. */
@@ -103,8 +110,11 @@ class SummaryLines {
   pytest: OutputReport | undefined;
   bun: OutputReport | undefined;
   bunHint = false;
+  bunFailures = 0;
+  bunFooter = false;
   zero = false;
   hint = false;
+  invalid = false;
   nodeFailure = false;
   private nodeLines: string[] = [];
   private bunPassed: number | undefined;
@@ -113,6 +123,12 @@ class SummaryLines {
   private pending: Buffer[] = [];
   private pendingBytes = 0;
   private overlong = false;
+  get incompleteBun(): boolean {
+    return (
+      (this.bunPassed !== undefined && this.bunFailed !== undefined) ||
+      (this.bunFooter && !this.bun)
+    );
+  }
 
   push(chunk: Uint8Array): void {
     this.bytes += chunk.length;
@@ -137,6 +153,7 @@ class SummaryLines {
   }
   private bunSummary(total: number, failed: number): void {
     const valid = count(total) && count(failed) && failed <= total;
+    if (valid && total === 0) this.zero = true;
     const next: OutputReport = valid
       ? {
           kind: "recognized",
@@ -190,15 +207,27 @@ class SummaryLines {
     const vitest = /^\s*Tests\s+(.*?)\((\d+)\)\s*$/.exec(text)?.slice(1);
     if (vitest)
       this.vitest = retainFailure(this.vitest, summary("Vitest", vitest));
+    if (
+      (/^\s*Tests:/.test(text) && !jest) ||
+      (/^\s*Tests\s+.*\(/.test(text) && !vitest)
+    )
+      this.invalid = true;
     const bunOutcome = /^\s*(\d+) (pass|fail)\s*$/.exec(text);
     if (bunOutcome) {
       this.bunHint = true;
       if (bunOutcome[2] === "pass") this.bunPassed = Number(bunOutcome[1]);
-      else this.bunFailed = Number(bunOutcome[1]);
+      else {
+        this.bunFailed = Number(bunOutcome[1]);
+        if (count(this.bunFailed))
+          this.bunFailures = Math.max(this.bunFailures, this.bunFailed);
+      }
     }
     const bunTotal =
       /^\s*Ran (\d+) tests? across \d+ files?\.(?:\s+\[.*\])?\s*$/.exec(text);
+    if (/^\s*Ran .* tests? across /.test(text) && !bunTotal)
+      this.invalid = true;
     if (bunTotal) {
+      this.bunFooter = true;
       this.bunHint = true;
       const total = Number(bunTotal[1]);
       const passed = this.bunPassed,
@@ -320,6 +349,21 @@ function recognizer(format: ReportFormat): OutputRecognizer {
         (report) => report.kind === "recognized" && report.failed! > 0,
       );
       if (failed) return failed;
+      const invalid = reports.find((report) => report.kind === "malformed");
+      const failures = stdout.bunFailures + stderr.bunFailures;
+      if (
+        invalid ||
+        stdout.invalid ||
+        stderr.invalid ||
+        stdout.incompleteBun ||
+        stderr.incompleteBun ||
+        failures
+      )
+        return failures
+          ? { ...(invalid ?? malformed), failed: failures }
+          : (invalid ?? malformed);
+      const zero = reports.find((report) => report.testCount === 0);
+      if (zero) return zero;
       if (reports.length) {
         const report = reports[0]!;
         return (stdout.nodeFailure || stderr.nodeFailure) &&

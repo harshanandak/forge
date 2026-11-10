@@ -8,7 +8,8 @@ import {
 import { createRunnerOutput } from "../../../src/adapters/runner-output/index.ts";
 import type { StateRecord } from "../../../src/generated/types.ts";
 import type { ProcessResult } from "../../../src/ports/process.ts";
-import { captured } from "./fakes.ts";
+import { captured, trackedChanges } from "./fakes.ts";
+import { hash } from "../../../src/blocks/check/receipt.ts";
 import entry from "../../../src/blocks/check/entry.cts";
 import { checkCrypto } from "../../../src/blocks/check/support.ts";
 import type { CatalogServices } from "../../../src/blocks/check/services.ts";
@@ -221,7 +222,7 @@ function fixture(headRefName: unknown = "feat/x") {
       receiptHead = options.head ?? head;
       receiptExit = options.exit ?? 0;
       now += 1000;
-      return await check.run({}, config);
+      return await createCheck(services).run({}, config);
     },
     gate(
       gateConfig: CheckConfig = config,
@@ -707,12 +708,87 @@ test("gate fails closed when process service throws", async () => {
   expect((await f.gate()).verdict).toBe("REFUSED");
 }, 1000);
 
+test("a newer failure outvotes an older pass at the same head", async () => {
+  const f = fixture();
+  await f.receipt();
+  await f.receipt({ exit: 1 });
+  await refuses(f, "RECEIPT_NOT_PASS", {
+    ...config,
+    gate: { receiptChecks: ["structure"] },
+  });
+}, 1000);
+
+test("a newer pass supersedes a failure at the same head", async () => {
+  const f = fixture();
+  await f.receipt({ exit: 1 });
+  const latest = await f.receipt();
+  expect(await f.gate()).toMatchObject({ verdict: "PASS", receipt: latest.id });
+}, 1000);
+
+for (const phase of ["before", "after", "both"])
+  test(`a dirty-tree receipt ${phase} cannot pass the head delivery gate`, async () => {
+    const f = fixture();
+    trackedChanges(f.services, [
+      phase === "after" ? [] : ["behavior.txt"],
+      phase === "before" ? [] : ["behavior.txt"],
+    ]);
+    await f.receipt();
+    const result = await f.gate();
+    expect(result.verdict).toBe("REFUSED");
+    const dirty = result.reasons.find(
+      (reason) => reason.code === "TRACKED_INPUTS_DIRTY",
+    );
+    expect(dirty).toBeDefined();
+    expect(dirty?.detail).toContain("behavior.txt");
+    trackedChanges(f.services, [[], []]);
+    await f.receipt();
+    expect((await f.gate()).verdict).toBe("PASS");
+  }, 1000);
+
+test("separate clean runs cannot revive an older combined dirty receipt", async () => {
+  const f = fixture();
+  let now = 1_700_000_000_000;
+  f.services.clock.now = () => ++now;
+  const checks = {
+    ...config,
+    commands: { A: "tool check", B: "tool check" },
+    gate: { receiptChecks: ["A", "B"] },
+  };
+  trackedChanges(f.services, [["behavior.txt"]]);
+  await createCheck(f.services).run({}, checks);
+  trackedChanges(f.services, [[]]);
+  const engine = createCheck(f.services);
+  await engine.run({ checks: ["A"] }, checks);
+  await engine.run({ checks: ["B"] }, checks);
+  await refuses(f, "RECEIPT_CHECK_MISSING", checks);
+}, 1000);
+
+test("conflicting results in the same millisecond refuse regardless of UUID order", async () => {
+  const f = fixture();
+  const pass = await f.receipt();
+  const failed = await f.receipt({ exit: 1 });
+  const { digest: _digest, ...body } = {
+    ...failed,
+    id: "00000000-0000-0000-0000-000000000000",
+    checkedAt: pass.checkedAt,
+  };
+  const key = `runs/${body.id}`;
+  f.records.delete(`runs/${failed.id}`);
+  f.records.set(key, {
+    ...f.records.get(`runs/${pass.id}`)!,
+    key,
+    value: { ...body, digest: hash(body) },
+  });
+  await refuses(f, "RECEIPT_NOT_PASS");
+}, 1000);
+
 test("gate chooses the newest eligible verified receipt", async () => {
   const f = fixture();
   await f.receipt();
   const latest = await f.receipt();
-  await f.receipt({ exit: 1 });
   expect((await f.gate()).receipt).toBe(latest.id);
+  await f.receipt({ exit: 1 });
+  await refuses(f, "RECEIPT_NOT_PASS");
 }, 1000);
 
 test("an explicit empty required list refuses", async () => {

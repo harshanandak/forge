@@ -82,6 +82,7 @@ export interface CheckInvocationScope {
 }
 export interface InputSnapshot {
   readonly head: string;
+  readonly dirtyPaths?: readonly string[];
   /** Digest of the actual input files, including uncommitted content. */
   readonly filesDigest: string;
 }

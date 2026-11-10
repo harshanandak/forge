@@ -10,6 +10,7 @@ export interface CloneFilesService {
   readonly root: string;
   read(path: string, maxBytes: number): string | undefined;
   snapshot(input: {
+    readonly tracked?: boolean;
     readonly paths: readonly string[];
     readonly maxBytes: number;
     readonly timeoutMs: number;

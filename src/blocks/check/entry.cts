@@ -687,7 +687,16 @@ function createCheck(
         scope?.deadline ??
         services.clock.now() +
           finalizationTimeoutMs(frozenConfig.maxReceiptBytes);
-      const changed = hash(before) !== hash(after);
+      const changed =
+        before.head !== after.head || before.filesDigest !== after.filesDigest;
+      const inputs = frozenConfig.inputs.map((path) => path.toLowerCase());
+      const dirtyPaths = [
+        ...new Set([...(before.dirtyPaths ?? []), ...(after.dirtyPaths ?? [])]),
+      ]
+        .filter(
+          (path) => path !== ".forge/config.yaml" || inputs.includes(path),
+        )
+        .sort();
       const status = changed ? "INCOMPLETE" : aggregate(runs);
       const body = {
         version: 1 as const,
@@ -696,11 +705,13 @@ function createCheck(
         subject: before.head,
         checkedAt: new Date(services.clock.now()).toISOString(),
         checked: runs.map(({ name, status }) => ({ name, status })),
-        reason: changed
-          ? "Project inputs changed while checks ran"
-          : runs.length
-            ? "Results of declared commands"
-            : "No commands declared",
+        reason: dirtyPaths.length
+          ? `TRACKED_INPUTS_DIRTY: not head-eligible; ${dirtyPaths.map((path) => JSON.stringify(path)).join(", ")}`
+          : changed
+            ? "Project inputs changed while checks ran"
+            : runs.length
+              ? "Results of declared commands"
+              : "No commands declared",
         inputsDigest,
         runs,
       };
@@ -925,11 +936,39 @@ async function gate(
         ? [value]
         : [];
     });
-    const current = verified.filter((value) => value.subject === head);
+    const current = verified
+      .filter((value) => value.subject === head)
+      .sort(
+        (a, b) =>
+          Date.parse(b.checkedAt) - Date.parse(a.checkedAt) ||
+          Number(b.status !== "PASS") - Number(a.status !== "PASS") ||
+          b.id.localeCompare(a.id),
+      );
     const passing = current.filter((value) => value.status === "PASS");
     const receiptChecks = config.gate?.receiptChecks ?? [];
+    const latest = receiptChecks.length
+      ? receiptChecks.map((name) =>
+          current.find((value) =>
+            value.checked.some((check) => check.name === name),
+          ),
+        )
+      : [current[0]];
+    const rejected = latest.find(
+      (value) =>
+        value &&
+        (value.status !== "PASS" ||
+          value.reason.startsWith("TRACKED_INPUTS_DIRTY:")),
+    );
+    if (rejected)
+      refuse(
+        rejected.reason.startsWith("TRACKED_INPUTS_DIRTY:")
+          ? "TRACKED_INPUTS_DIRTY"
+          : "RECEIPT_NOT_PASS",
+        rejected.reason,
+      );
     const eligible = passing.filter(
       (value) =>
+        !value.reason.startsWith("TRACKED_INPUTS_DIRTY:") &&
         value.runs.length > 0 &&
         receiptChecks.every((name) =>
           value.checked.some(
@@ -942,8 +981,8 @@ async function gate(
         Date.parse(b.checkedAt) - Date.parse(a.checkedAt) ||
         b.id.localeCompare(a.id),
     );
-    receipt = eligible[0]?.id;
-    if (!receipt) {
+    receipt = rejected ? undefined : eligible[0]?.id;
+    if (!receipt && !rejected) {
       const code = !candidates.length
         ? "RECEIPT_MISSING"
         : !verified.length
@@ -1885,6 +1924,7 @@ const operations = {
       clock: { now: () => Date.now() },
       snapshot: () =>
         services.files.snapshot({
+          tracked: true,
           paths: config.inputs,
           maxBytes: config.maxInputBytes,
           timeoutMs: Math.max(1, args.deadline - Date.now()),

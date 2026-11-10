@@ -3,6 +3,21 @@ import type {
   ProcessResult,
   SpawnOptions,
 } from "../../../src/ports/process.ts";
+import type { CheckServices } from "../../../src/blocks/check/types.ts";
+
+export function trackedChanges(
+  services: CheckServices,
+  snapshots: readonly (readonly string[])[],
+): void {
+  const snapshot = services.snapshot.bind(services);
+  let calls = 0;
+  Object.assign(services, {
+    snapshot: async () => ({
+      ...(await snapshot()),
+      dirtyPaths: snapshots[Math.min(calls++, snapshots.length - 1)] ?? [],
+    }),
+  });
+}
 
 export function captured(
   result: ProcessResult,

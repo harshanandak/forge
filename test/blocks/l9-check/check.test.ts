@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { runInNewContext } from "node:vm";
 import {
   createCheck,
   verifyReceipt,
@@ -15,7 +16,7 @@ import { createRunnerOutput } from "../../../src/adapters/runner-output/index.ts
 import type { StateRecord } from "../../../src/generated/types.ts";
 import { operations } from "../../../src/blocks/check/operations.ts";
 import { hash } from "../../../src/blocks/check/receipt.ts";
-import { captured } from "./fakes.ts";
+import { captured, trackedChanges } from "./fakes.ts";
 import { exitCode } from "../../../src/surface/result.ts";
 import { finalizationTimeoutMs } from "../../../src/blocks/check/budget.ts";
 
@@ -517,6 +518,77 @@ test("conflicting and bailed Bun reports fail receipts even on exit zero", async
     expect(receipt.status).toBe("PASS");
     expect(receipt.runs[0]?.testCount).toBe(1);
   }
+}, 1000);
+
+for (const [name, paths] of [
+  ["dirty throughout", [["behavior.txt"], ["behavior.txt"]]],
+  ["dirty only before", [["behavior.txt"], []]],
+  ["dirty only after", [[], ["behavior.txt"]]],
+] as const) {
+  test(`tracked files ${name} cannot certify the committed head`, async () => {
+    const { services } = fixture();
+    trackedChanges(services, paths);
+    const check = createCheck(services);
+    const receipt = await check.run({}, config);
+    expect(receipt.status).toBe("PASS");
+    expect(receipt.reason).toContain("TRACKED_INPUTS_DIRTY: not head-eligible");
+    expect(receipt.reason).toContain("behavior.txt");
+    expect(check.show(receipt.id)).toEqual(receipt);
+    expect(verifyReceipt(receipt, receipt.inputsDigest)).toBe(true);
+  }, 1000);
+}
+
+for (const paths of [[], [".forge/config.yaml"]])
+  test(`clean tracked inputs with ${paths.join()} still certify the head`, async () => {
+    const { services } = fixture();
+    trackedChanges(services, [paths, paths]);
+    const check = createCheck(services);
+    const receipt = await check.run({}, config);
+    expect(receipt.status).toBe("PASS");
+    expect(receipt.subject).toBe("abc123");
+    expect(receipt.reason).not.toContain("TRACKED_INPUTS_DIRTY");
+  }, 1000);
+
+test("issue close refuses a dirty-tree check receipt before writing", async () => {
+  const { services } = fixture();
+  trackedChanges(services, [["behavior.txt"], ["behavior.txt"]]);
+  const check = createCheck(services);
+  const receipt = await check.run({}, config);
+  const module = { exports: {} };
+  runInNewContext(
+    new Bun.Transpiler({ loader: "ts" }).transformSync(
+      readFileSync(
+        new URL("../../../src/blocks/work/entry.cts", import.meta.url),
+        "utf8",
+      ),
+    ),
+    {
+      module,
+      fail(code: string, message: string) {
+        throw Object.assign(new Error(message), { code });
+      },
+    },
+  );
+  const handlers = module.exports as Record<
+    string,
+    (call: unknown) => Promise<unknown>
+  >;
+  let writes = 0;
+  const result = await handlers["issue.close"]!({
+    input: { id: "work-1", receipt: receipt.id },
+    services: {
+      receipts: { get: () => receipt },
+      state: {
+        lease: () => undefined,
+        acquire: () => undefined,
+        get: () => ({ value: { id: "work-1", status: "open" } }),
+        list: () => [],
+        put: () => writes++,
+      },
+    },
+  }).catch((error: unknown) => error);
+  expect(result).toMatchObject({ code: "TRACKED_INPUTS_DIRTY" });
+  expect(writes).toBe(0);
 }, 1000);
 
 test("changing input files during execution cannot yield a passing receipt", async () => {
