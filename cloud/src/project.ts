@@ -48,6 +48,7 @@ import {
 const NAMESPACE = "forge/work";
 const REQUESTS = "domain_cloud_requests";
 const MAX_BODY = 8192;
+const MAX_LEASE_MS = 24 * 60 * 60 * 1000;
 // A restore carries a whole project, so its own bound is 8 MiB: far above a device request, and
 // about a third of the 128 MB a Worker has to hold the text, parse it and write it. It is enforced
 // while the body streams, and over it the request is refused as RESTORE_TOO_LARGE (413).
@@ -228,10 +229,44 @@ export class Project {
         const input = object(await bounded(request));
         if (!(await this.#isProvisioned()))
           throw fail("INPUT_INVALID", "No such device token");
-        return Response.json({
-          ok: true,
-          value: revokeToken(this.#open().db, text(input, "id"), Date.now()),
+        const { db, owner } = this.#open(),
+          id = text(input, "id"),
+          now = Date.now();
+        const value = db.transaction(() => {
+          const token = db.get(`SELECT * FROM ${TOKENS} WHERE id=?`, [id]);
+          const result = revokeToken(db, id, now);
+          if (token === undefined || token.revoked_at !== null) return result;
+          const released: string[] = [];
+          for (const row of db.all(
+            "SELECT body FROM state_leases WHERE namespace=? ORDER BY subject",
+            [NAMESPACE],
+          )) {
+            const lease = JSON.parse(String(row.body)) as LeaseRecord;
+            const session = lease.holder.session;
+            if (
+              session.device !== token.device ||
+              (token.session !== null && session.id !== token.session) ||
+              lease.releasedAt !== undefined ||
+              Date.parse(lease.expiresAt) <= now
+            )
+              continue;
+            if (
+              db.get(
+                `SELECT id FROM ${TOKENS} WHERE device=? AND (session IS NULL OR session=?) AND revoked_at IS NULL AND expires_at>?`,
+                [String(token.device), session.id, now],
+              ) !== undefined
+            )
+              continue;
+            owner.release(NAMESPACE, {
+              subject: lease.subject,
+              holder: lease.holder,
+              generation: lease.generation,
+            });
+            released.push(lease.subject);
+          }
+          return { ...result, released };
         });
+        return Response.json({ ok: true, value });
       }
       if (request.method === "GET" && route === "dump") {
         const db = (await this.#isProvisioned()) ? this.#open().db : undefined;
@@ -310,7 +345,12 @@ export class Project {
         body,
         device,
         owner === null
-          ? undefined
+          ? Number(
+              this.#open().db.get(
+                `SELECT expires_at FROM ${TOKENS} WHERE id=?`,
+                [parts!.id],
+              )!.expires_at,
+            )
           : Number(request.headers.get("X-Forge-Owner-Expires")),
       );
       if (owner !== null && !this.#provisioned) {
@@ -420,7 +460,8 @@ export class Project {
       ...checked.value,
       session: { ...checked.value.session, device },
     };
-    const ttlMs = route === "release" ? null : integer(input, "ttlMs");
+    const ttlMs =
+      route === "release" ? null : ((input.ttlMs ?? null) as number);
     const generation = route === "claim" ? null : integer(input, "generation");
 
     // The one rule for request ids. Every valid write records its id, route and input (keys sorted,
@@ -454,6 +495,13 @@ export class Project {
       // back, so a retry after the 500 starts from the state the caller last saw.
       return this.#open().db.transaction(() => {
         checkExpiry();
+        if (route !== "release") {
+          integer(input, "ttlMs");
+          if (ttlMs! > MAX_LEASE_MS)
+            throw fail("INPUT_INVALID", "ttlMs is over 24 hours");
+          if (expiresAt !== undefined && Date.now() + ttlMs! > expiresAt)
+            throw fail("INPUT_INVALID", "ttlMs would exceed the token expiry");
+        }
         const fence = { subject, holder, generation: generation ?? 0 };
         const lease =
           route === "claim"
@@ -474,7 +522,8 @@ export class Project {
       // A refusal changed no lease state (its transaction rolled back), so its receipt is one insert.
       if (
         error instanceof ForgeFailure &&
-        error.error.code.startsWith("LEASE_")
+        (error.error.code.startsWith("LEASE_") ||
+          error.error.code === "INPUT_INVALID")
       )
         this.#open().db.transaction(() =>
           this.#record(requestId, fingerprint, error.error.code, error.error),

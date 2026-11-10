@@ -353,7 +353,10 @@ const revokeCheck = (): Promise<void> =>
     const phone = await issue(project, "phone");
     revokedPhone = phone;
     const laptop = await issue(project, "laptop");
-    const holder = holderOf("revoke");
+    const holder = {
+      ...holderOf("revoke"),
+      session: { ...holderOf("revoke").session, id: phone.session },
+    };
     const attempt = (subject: string, device: Device): Promise<Reply> =>
       send(
         project,

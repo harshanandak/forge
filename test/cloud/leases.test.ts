@@ -189,7 +189,6 @@ for (const route of ["claim", "renew"])
       }
     }, 30_000);
   }
-
 test("revoke releases matching leases, records releases and preserves other holders", async () => {
   using f = fixture();
   const phone = await f.issue(),
