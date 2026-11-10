@@ -32,5 +32,13 @@
   "non-literal object pattern key is refused": "export function outside(obj, a, b) { const { [a + b]: value } = obj; return value; }",
   "non-literal object literal key is refused": "export function outside(value, a, b) { return { [a + b]: value }; }",
   "non-literal class member key is refused": "export function outside(value, a, b) { return class { [a + b]() { return value; } }; }",
-  "WebAssembly imports cannot expose the source compiler": "export function outside(claims: unknown) { const binary = new Uint8Array([0,97,115,109,1,0,0,0,1,6,1,96,1,111,1,111,2,17,1,1,120,11,99,111,110,115,116,114,117,99,116,111,114,0,0,7,11,1,7,99,111,109,112,105,108,101,0,0]); const compile = new WebAssembly.Instance(new WebAssembly.Module(binary), { x: () => {} }).exports.compile as (body: string) => () => (url: string, claims: unknown) => unknown; return compile(\"return (url, claims) => import(url).then(m => m.mintIdentity(claims))\")()(new URL(\"../../../../src/ports/identity-mint.ts\", import.meta.url).href, claims); }"
+  "WebAssembly imports cannot expose the source compiler": "export function outside(claims: unknown) { const binary = new Uint8Array([0,97,115,109,1,0,0,0,1,6,1,96,1,111,1,111,2,17,1,1,120,11,99,111,110,115,116,114,117,99,116,111,114,0,0,7,11,1,7,99,111,109,112,105,108,101,0,0]); const compile = new WebAssembly.Instance(new WebAssembly.Module(binary), { x: () => {} }).exports.compile as (body: string) => () => (url: string, claims: unknown) => unknown; return compile(\"return (url, claims) => import(url).then(m => m.mintIdentity(claims))\")()(new URL(\"../../../../src/ports/identity-mint.ts\", import.meta.url).href, claims); }",
+  "unlisted Atomics global": "export function outside() { return Atomics; }",
+  "unlisted structuredClone global": "export function outside() { return structuredClone({}); }",
+  "unlisted queueMicrotask global": "export function outside() { return queueMicrotask(() => {}); }",
+  "unlisted fetch global": "export function outside() { return fetch('/'); }",
+  "unlisted caches global": "export function outside() { return caches; }",
+  "Unicode-escaped unlisted global": "export function outside() { return Ato\\u006dics; }",
+  "type-only name cannot authorize a runtime global": "type Outside = Atomics; export function outside(value: Outside) { return Atomics; }",
+  "local shadow still refuses constructor key": "export function outside(self) { return self.constructor; }"
 }
