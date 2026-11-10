@@ -4,6 +4,7 @@ import {
   OAuthAuthorizationServer,
 } from "@cloudflare/workers-oauth-provider";
 import type { ClockPort } from "../../../../src/ports/clock.ts";
+import type { OAuthVerificationPort } from "../../../../src/ports/authorization.ts";
 import { mintIdentity } from "../../../../src/ports/identity-mint.ts";
 import {
   isVerifiedIdentity,
@@ -49,8 +50,7 @@ export interface OAuthOptions {
     ): Promise<IdentityResult & { readonly verifiedAudience?: string }>;
   };
 }
-export interface OAuthAdapter {
-  verify(token: string, resource: string): Promise<VerifiedIdentity | null>;
+export interface OAuthAdapter extends OAuthVerificationPort {
   register(redirectUri: string): Promise<string>;
   authorize(request: Request): Promise<Response>;
   consent(request: Request, allow: boolean): Promise<Response>;
