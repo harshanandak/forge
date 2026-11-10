@@ -344,8 +344,19 @@ test("missing OAuth composition refuses OAuth routes and preserves device and ad
 
   for (const path of oauthPaths) {
     const response = await f.worker.fetch(projectRequest("", path), f.env);
-    expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ path });
+    const redeems = ["/callback", "/oauth/token"].includes(path);
+    expect(response.status).toBe(redeems ? 503 : 200);
+    expect(await response.json()).toEqual(
+      redeems
+        ? {
+            error: {
+              code: "AUTH_CONFIG_UNAVAILABLE",
+              variable: "CODE_REDEMPTION",
+              message: "Atomic redemption unavailable",
+            },
+          }
+        : { path },
+    );
   }
   expect(f.forward).toHaveBeenCalledTimes(0);
 }, 30_000);
@@ -452,6 +463,10 @@ test("token and callback refuse without atomic redemption even with every var se
   for (const worker of [
     createConfiguredWorker(),
     createConfiguredWorker(protocol),
+    createWorker(
+      composeOAuth(f.options, resource, undefined, undefined, protocol),
+      f.forward,
+    ),
   ]) {
     const env = { ...f.env, ...vars, OAUTH_KV: f.options.storage };
     for (const path of ["/oauth/token", "/callback"]) {
@@ -467,4 +482,41 @@ test("token and callback refuse without atomic redemption even with every var se
     }
   }
   expect(protocol).toHaveBeenCalledTimes(0);
+}, 30_000);
+
+test("real provider registration and canonical resource metadata handle requests", async () => {
+  const f = await fixture(),
+    env = { ...f.env, ...vars, OAUTH_KV: f.options.storage },
+    worker = createConfiguredWorker();
+  const registration = await worker.fetch(
+    new Request(`${issuer}/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    }),
+    env,
+  );
+  expect(registration.status).toBe(400);
+  expect(await registration.json()).toMatchObject({
+    error: "invalid_client_metadata",
+  });
+  for (const method of ["GET", "HEAD", "POST"]) {
+    const response = await worker.fetch(
+      new Request(`${issuer}/.well-known/oauth-protected-resource`, { method }),
+      env,
+    );
+    expect(response.status).toBe(method === "POST" ? 405 : 200);
+    if (method === "GET")
+      expect(await response.json()).toEqual({
+        resource,
+        authorization_servers: [issuer],
+      });
+    else if (method === "HEAD") expect(await response.text()).toBe("");
+    else {
+      expect(response.headers.get("Allow")).toBe("GET, HEAD");
+      expect(await response.json()).toEqual({
+        error: { code: "METHOD_NOT_ALLOWED" },
+      });
+    }
+  }
 }, 30_000);

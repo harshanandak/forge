@@ -62,10 +62,30 @@ export function createConfiguredWorker(
         );
       try {
         if (protocol) return await protocol(request);
+        if (
+          new URL(request.url).pathname ===
+          "/.well-known/oauth-protected-resource"
+        ) {
+          if (!["GET", "HEAD"].includes(request.method))
+            return Response.json(
+              { error: { code: "METHOD_NOT_ALLOWED" } },
+              { status: 405, headers: { Allow: "GET, HEAD" } },
+            );
+          return new Response(
+            request.method === "HEAD"
+              ? null
+              : JSON.stringify({
+                  resource: config.resource,
+                  authorization_servers: [new URL(request.url).origin],
+                }),
+            { headers: { "Content-Type": "application/json" } },
+          );
+        }
         const server = new OAuthAuthorizationServer({
           issuer: new URL(request.url).origin,
           resources: [config.resource],
           clientIdMetadataDocumentEnabled: false,
+          clientRegistrationEndpoint: "/register",
         });
         // Authorization cannot begin an upstream exchange before atomic redemption is wired.
         if (new URL(request.url).pathname === "/authorize")

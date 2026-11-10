@@ -54,5 +54,17 @@ export function composeAuth(
       ).authorize({ principal, project, action, authority }),
     };
   };
-  return { authorize, mcp: authorize, policy, route };
+  return {
+    authorize,
+    mcp: authorize,
+    policy,
+    route: async (request: Request) => {
+      if (["/callback", "/oauth/token"].includes(new URL(request.url).pathname))
+        return configUnavailable(
+          "CODE_REDEMPTION",
+          "Atomic redemption unavailable",
+        );
+      return route(request);
+    },
+  };
 }
