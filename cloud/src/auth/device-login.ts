@@ -59,6 +59,7 @@ export interface ChallengeStore {
 }
 export interface DeviceLoginOptions {
   readonly store: ChallengeStore;
+  /** Maximum unexpired pending or approved records per store; defaults to 1,024. */
   readonly maxLiveChallenges?: number;
   readonly now: () => number;
   readonly random: (length: number) => Uint8Array;
@@ -107,6 +108,9 @@ function identityClaims(identity: IdentityClaims): IdentityClaims {
 
 export function createDeviceLogin(options: DeviceLoginOptions): DeviceLogin {
   const { store, now, random, issue, userCodeKey } = options;
+  const maxLiveChallenges = options.maxLiveChallenges ?? 1_024;
+  if (!Number.isSafeInteger(maxLiveChallenges) || maxLiveChallenges < 1)
+    throw new DeviceLoginFailure("unavailable");
   const algorithm = userCodeKey.algorithm as {
     name: string;
     hash: { name: string };
@@ -211,6 +215,13 @@ export function createDeviceLogin(options: DeviceLoginOptions): DeviceLogin {
           const time = now();
           if (!Number.isFinite(time))
             throw new DeviceLoginFailure("unavailable");
+          state.challenges = state.challenges.filter(
+            (row) =>
+              (row.status === "pending" || row.status === "approved") &&
+              time < row.expiresAt,
+          );
+          if (state.challenges.length >= maxLiveChallenges)
+            return "capacity_exceeded" as const;
           if (
             state.challenges.some(
               (row) =>
@@ -230,6 +241,8 @@ export function createDeviceLogin(options: DeviceLoginOptions): DeviceLogin {
           });
           return true;
         });
+        if (inserted === "capacity_exceeded")
+          throw new DeviceLoginFailure("capacity_exceeded");
         if (inserted)
           return {
             device_code,
@@ -283,8 +296,13 @@ export function createDeviceLogin(options: DeviceLoginOptions): DeviceLogin {
   };
   return {
     start: (device) =>
-      login.start(device).catch(() => {
-        throw new DeviceLoginFailure("unavailable");
+      login.start(device).catch((error: unknown) => {
+        throw new DeviceLoginFailure(
+          error instanceof DeviceLoginFailure &&
+            error.code === "capacity_exceeded"
+            ? "capacity_exceeded"
+            : "unavailable",
+        );
       }),
     approve: (code, identity) =>
       login.approve(code, identity).catch(() => refuse("unavailable")),
