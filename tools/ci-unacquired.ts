@@ -16,6 +16,8 @@ export type CurrentRun = {
   status: string;
   conclusion: string | null;
   head_sha?: string;
+  event?: string;
+  pull_requests?: readonly { base?: { sha?: string } }[];
 };
 const workflowByteLimit = 256 * 1024;
 class WorkflowInputError extends Error {}
@@ -24,6 +26,7 @@ export async function readHeadWorkflow(
   endpoint: string,
   env: Readonly<Record<string, string | undefined>>,
   request: (url: string, init: RequestInit) => Promise<Response> = fetch,
+  metadata = false,
 ): Promise<string> {
   const deadline = AbortSignal.timeout(10_000);
   const failedRead = (error: unknown): never => {
@@ -34,7 +37,9 @@ export async function readHeadWorkflow(
   const response = await request(`https://api.github.com/${endpoint}`, {
     signal: deadline,
     headers: {
-      Accept: "application/vnd.github.raw+json",
+      Accept: metadata
+        ? "application/vnd.github+json"
+        : "application/vnd.github.raw+json",
       Authorization: `Bearer ${env.GH_TOKEN}`,
     },
   }).catch(failedRead);
@@ -261,7 +266,8 @@ export async function decisionAtHead(
   pages: readonly { jobs: readonly CiJob[] }[],
   current: CurrentRun,
   env: Readonly<Record<string, string | undefined>>,
-  read = (endpoint: string): Promise<string> => readHeadWorkflow(endpoint, env),
+  read = (endpoint: string): Promise<string> =>
+    readHeadWorkflow(endpoint, env, fetch, current.event === "pull_request"),
 ): Promise<string> {
   try {
     if (
@@ -269,10 +275,40 @@ export async function decisionAtHead(
       !/^[\w.-]+\/[\w.-]+$/.test(env.GH_REPO ?? "")
     )
       throw new Error("Missing run source");
+    const baseSha = current.pull_requests?.[0]?.base?.sha;
+    if (
+      current.event === "pull_request" &&
+      !/^[a-f0-9]{40}$/i.test(baseSha ?? "")
+    )
+      throw new WorkflowInputError("Head CI workflow revision ambiguous");
     // Fork content is parsed as YAML data only. Trusted code stays on default branch.
-    const workflow = await read(
+    let workflow = await read(
       `repos/${env.GH_REPO}/contents/.github/workflows/ci.yml?ref=${current.head_sha}`,
     );
+    if (current.event === "pull_request") {
+      try {
+        const head = JSON.parse(workflow) as {
+          sha?: string;
+          content?: string;
+          encoding?: string;
+        };
+        const base = JSON.parse(
+          await read(
+            `repos/${env.GH_REPO}/contents/.github/workflows/ci.yml?ref=${baseSha}`,
+          ),
+        ) as { sha?: string };
+        if (
+          !/^[a-f0-9]{40}$/i.test(head.sha ?? "") ||
+          head.sha !== base.sha ||
+          head.encoding !== "base64" ||
+          typeof head.content !== "string"
+        )
+          throw new Error("Different workflow blobs");
+        workflow = Buffer.from(head.content, "base64").toString("utf8");
+      } catch {
+        throw new WorkflowInputError("Head CI workflow revision ambiguous");
+      }
+    }
     if (new TextEncoder().encode(workflow).byteLength > workflowByteLimit)
       throw new WorkflowInputError("Head CI workflow exceeds 256 KB");
     return decisionOutput(pages, current, env, workflow);

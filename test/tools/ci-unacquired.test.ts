@@ -700,3 +700,42 @@ test("reports a timed-out head workflow read without rerunning", async () => {
   expect(lines).toContain("rerun=false");
   expect(lines.join("\n")).toContain("read timed out");
 }, 1000);
+
+for (const [name, equal, hasBase, rerun] of [
+  ["equal workflow blobs proceed", true, true, true],
+  ["different workflow blobs refuse", false, true, false],
+  ["missing base SHA refuses", true, false, false],
+] as const) {
+  test(`pull-request workflow revision: ${name}`, async () => {
+    const baseSha = "b".repeat(40);
+    const endpoints: string[] = [];
+    const lines = (
+      await ciUnacquired.decisionAtHead(
+        [{ jobs: [...matrixLegs.slice(0, 2), gate] }],
+        {
+          ...headRun,
+          event: "pull_request",
+          pull_requests: hasBase ? [{ base: { sha: baseSha } }] : [],
+        },
+        headEnv,
+        (endpoint) => {
+          endpoints.push(endpoint);
+          return Promise.resolve(
+            JSON.stringify({
+              sha:
+                endpoint.endsWith(baseSha) && !equal
+                  ? "c".repeat(40)
+                  : "a".repeat(40),
+              encoding: "base64",
+              content: Buffer.from(workflowAtHead("24, 26")).toString("base64"),
+            }),
+          );
+        },
+      )
+    ).split("\n");
+    expect(lines).toContain(`rerun=${rerun}`);
+    if (!rerun)
+      expect(lines.join("\n")).toContain("workflow revision ambiguous");
+    expect(endpoints).toHaveLength(hasBase ? 2 : 0);
+  }, 1000);
+}
