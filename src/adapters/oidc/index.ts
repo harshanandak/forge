@@ -27,9 +27,24 @@ function bytes(part: string): Buffer<ArrayBuffer> {
   return decoded;
 }
 function claims(part: string): Record<string, unknown> {
-  return object(
-    JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes(part))),
-  );
+  const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes(part));
+  const parsed = object(JSON.parse(text));
+  const scopes: (Set<string> | undefined)[] = [];
+  // JSON.parse validates syntax but loses duplicate names; scan whole strings
+  // so quoted punctuation cannot alter scope, and decode escaped member names.
+  for (const match of text.matchAll(/"(?:[^"\\]|\\.)*"|[{}[\]]/g)) {
+    const token = match[0];
+    if (token === "{") scopes.push(new Set<string>());
+    else if (token === "[") scopes.push(undefined);
+    else if (token === "}" || token === "]") scopes.pop();
+    else if (/^\s*:/.test(text.slice(match.index + token.length))) {
+      const names = scopes.at(-1);
+      const name = JSON.parse(token) as string;
+      if (!names || names.has(name)) throw new Error("Duplicate member name");
+      names.add(name);
+    }
+  }
+  return parsed;
 }
 
 function timestamp(value: unknown): value is number {
@@ -218,6 +233,11 @@ export function createOidcVerifier(
           !Number.isFinite(decisionTime) ||
           decisionTime >= expiresAt ||
           !timestamp(payload.exp) ||
+          (payload.iat !== undefined &&
+            (!timestamp(payload.iat) ||
+              payload.iat < 0 ||
+              payload.iat * 1_000 > decisionTime ||
+              payload.iat > payload.exp)) ||
           !timestamp(payload.auth_time) ||
           payload.auth_time * 1_000 > decisionTime ||
           (payload.nbf !== undefined &&

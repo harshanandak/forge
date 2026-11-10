@@ -59,6 +59,10 @@ async function token(
 ): Promise<string> {
   const selected = (await keys)[signer]!;
   const input = `${encode({ alg: "RS256", kid: selected.jwk.kid, ...header })}.${encode({ ...claims, ...payload })}`;
+  return sign(input, signer);
+}
+async function sign(input: string, signer = 0): Promise<string> {
+  const selected = (await keys)[signer]!;
   const signature = await crypto.subtle.sign(
     rsa,
     selected.pair.privateKey,
@@ -66,14 +70,14 @@ async function token(
   );
   return `${input}.${Buffer.from(signature).toString("base64url")}`;
 }
-async function fixture(get?: OidcHttpPort["get"]) {
+async function fixture(get?: OidcHttpPort["get"], options = config) {
   const pairs = await keys;
   let now = 100_000,
     fetches = 0;
   let jwks: unknown = { keys: [pairs[0]!.jwk] };
   const urls: string[] = [];
   const verifier = createOidcVerifier(
-    config,
+    options,
     {
       get: (url, signal) => {
         fetches++;
@@ -291,4 +295,231 @@ test("signed OIDC proof yields runtime-verified identity", async () => {
   expect(isVerifiedIdentity(result.identity)).toBe(true);
   expect(Object.isFrozen(result.identity)).toBe(true);
   expect(isVerifiedIdentity({ ...result.identity })).toBe(false);
+}, 5_000);
+
+test("refuses an HMAC signed with RSA public key bytes as its secret", async () => {
+  const selected = (await keys)[0]!;
+  const secret = await crypto.subtle.exportKey("spki", selected.pair.publicKey);
+  const hmac = { name: "HMAC", hash: "SHA-256" };
+  const key = await crypto.subtle.importKey("raw", secret, hmac, false, [
+    "sign",
+  ]);
+  const input = `${encode({ alg: "HS256", kid: selected.jwk.kid })}.${encode(claims)}`;
+  const signature = await crypto.subtle.sign(
+    hmac,
+    key,
+    new TextEncoder().encode(input),
+  );
+  const f = await fixture(undefined, {
+    ...config,
+    algorithms: ["RS256", "HS256"],
+  });
+  expect(
+    await f.verify(`${input}.${Buffer.from(signature).toString("base64url")}`),
+  ).toEqual(refused());
+  expect(f.fetches()).toBe(0);
+}, 5_000);
+
+test("refuses RS256 when configuration excludes it", async () => {
+  const f = await fixture(undefined, { ...config, algorithms: ["RS512"] });
+  expect(await f.verify(await token())).toEqual(refused());
+  expect(f.fetches()).toBe(0);
+}, 5_000);
+
+for (const metadata of [
+  { use: "enc" },
+  { alg: "RS512" },
+  { kty: "EC" },
+  { key_ops: ["encrypt"] },
+]) {
+  test(`refuses mismatched JWK metadata ${JSON.stringify(metadata)}`, async () => {
+    const jwk = { ...(await keys)[0]!.jwk, ...metadata };
+    const f = await fixture(() =>
+      Promise.resolve(JSON.stringify({ keys: [jwk] })),
+    );
+    expect(await f.verify(await token())).toEqual(refused());
+    expect(f.fetches()).toBe(1);
+  }, 5_000);
+}
+
+for (const [field, value, reason] of [
+  ["iss", undefined, "invalid_proof"],
+  ["iss", null, "invalid_proof"],
+  ["iss", 42, "invalid_proof"],
+  ["iss", "", "empty_issuer"],
+  ["sub", undefined, "invalid_proof"],
+  ["sub", null, "invalid_proof"],
+  ["sub", 42, "invalid_proof"],
+  ["aud", undefined, "wrong_audience"],
+  ["aud", null, "wrong_audience"],
+  ["aud", 42, "wrong_audience"],
+  ["aud", "", "wrong_audience"],
+  ["exp", undefined, "invalid_proof"],
+  ["exp", null, "invalid_proof"],
+  ["exp", "200", "invalid_proof"],
+  ["iat", null, "invalid_proof"],
+  ["iat", "50", "invalid_proof"],
+  ["iat", false, "invalid_proof"],
+  ["iat", -0.001, "invalid_proof"],
+  ["iat", 100.001, "invalid_proof"],
+] as const) {
+  test(`refuses ${field}=${String(value)}`, async () => {
+    const f = await fixture();
+    expect(await f.verify(await token({ [field]: value }))).toEqual(
+      refused(reason),
+    );
+  }, 5_000);
+}
+
+test("refuses non-finite timestamps encoded as JSON numbers", async () => {
+  const header = encode({ alg: "RS256", kid: "first" });
+  for (const field of ["exp", "iat"]) {
+    // Serialize numeric overflow without JSON.stringify turning it into null.
+    const raw = JSON.stringify({ ...claims, [field]: "1e400" }).replace(
+      '"1e400"',
+      "1e400",
+    );
+    const f = await fixture();
+    expect(
+      await f.verify(
+        await sign(`${header}.${Buffer.from(raw).toString("base64url")}`),
+      ),
+    ).toEqual(refused());
+  }
+}, 5_000);
+
+test("refuses issuance after expiry even when issuance is not in the future", async () => {
+  const f = await fixture();
+  expect(await f.verify(await token({ iat: 99.5, exp: 99 }))).toEqual(
+    refused(),
+  );
+}, 5_000);
+
+test("optional issuance accepts absence, zero, past fractions and exactly now", async () => {
+  const f = await fixture();
+  for (const iat of [undefined, 0, 99.999, 100])
+    expect(await f.verify(await token({ iat }))).toMatchObject({ ok: true });
+  expect(await f.verify(await token({ iat: 100, exp: 100 }))).toEqual(
+    refused("expired"),
+  );
+}, 5_000);
+
+test("audience arrays require the configured audience and authorized party", async () => {
+  const f = await fixture();
+  for (const aud of [["forge"], ["other", "forge"], ["forge", "other"]])
+    expect(await f.verify(await token({ aud, azp: "forge" }))).toMatchObject({
+      ok: true,
+    });
+  for (const aud of [[], ["other"], ["other", "another"], ["forge", 42]])
+    expect(await f.verify(await token({ aud, azp: "forge" }))).toEqual(
+      refused("wrong_audience"),
+    );
+  for (const azp of [undefined, "other"])
+    expect(
+      await f.verify(await token({ aud: ["forge", "other"], azp })),
+    ).toEqual(refused());
+}, 5_000);
+
+for (const [location, member] of [
+  ["header", '"alg":"none","alg":"RS256"'],
+  ["header", '"alg":"none","\\u0061lg":"RS256"'],
+  ["payload", '"sub":"attacker","sub":" Person-A "'],
+  ["payload", '"sub":"attacker","\\u0073ub":" Person-A "'],
+  ["payload", '"sub":" Person-A ","nested":{"x":1,"\\u0078":2}'],
+  ["payload", '"sub":" Person-A ","nested":[{"x":1,"x":2}]'],
+] as const) {
+  test(`refuses duplicate JSON members in ${location}: ${member}`, async () => {
+    const header =
+      location === "header"
+        ? `{${member},"kid":"first"}`
+        : '{"alg":"RS256","kid":"first"}';
+    const payload =
+      location === "payload"
+        ? JSON.stringify(claims).replace('"sub":" Person-A "', member)
+        : JSON.stringify(claims);
+    const input = [header, payload]
+      .map((raw) => Buffer.from(raw).toString("base64url"))
+      .join(".");
+    const f = await fixture();
+    expect(await f.verify(await sign(input))).toEqual(refused());
+  }, 5_000);
+}
+
+test("duplicate scanning preserves strings and independent object scopes", async () => {
+  const f = await fixture();
+  const proof = await token({
+    note: '{"sub":"quoted","sub":"text"} [ ] \\ " :',
+    nested: { sub: "nested", child: { sub: "child" } },
+    items: [{ sub: "first" }, { sub: "second" }],
+  });
+  expect(await f.verify(proof)).toMatchObject({ ok: true });
+}, 5_000);
+
+test("refuses malformed base64url in each segment and wrong signature lengths", async () => {
+  const proof = await token();
+  const parts = proof.split(".");
+  const f = await fixture();
+  for (let index = 0; index < parts.length; index++) {
+    for (const replacement of [
+      "",
+      `${parts[index]}=`,
+      `${parts[index]}!`,
+      "A",
+    ]) {
+      const malformed =
+        index === 1
+          ? await sign(`${parts[0]}.${replacement}`)
+          : parts
+              .map((part, i) => (i === index ? replacement : part))
+              .join(".");
+      expect(await f.verify(malformed)).toEqual(refused());
+    }
+  }
+  const signature = Buffer.from(parts[2]!, "base64url");
+  for (const bytes of [
+    signature.subarray(0, -1),
+    Buffer.concat([signature, Buffer.from([0])]),
+  ])
+    expect(
+      await f.verify(`${parts[0]}.${parts[1]}.${bytes.toString("base64url")}`),
+    ).toEqual(refused());
+}, 5_000);
+
+test("concurrent cold and expired JWKS refreshes share exactly one fetch", async () => {
+  const body = JSON.stringify({ keys: [(await keys)[0]!.jwk] });
+  const proof = await token();
+  for (const stale of [false, true]) {
+    let response = Promise.resolve(body);
+    const f = await fixture(() => response);
+    if (stale) {
+      expect(await f.verify(proof)).toMatchObject({ ok: true });
+      f.advance(config.cacheTtlMs);
+    }
+    const gate = Promise.withResolvers<string>();
+    response = gate.promise;
+    const before = f.fetches();
+    const pending = Array.from({ length: 8 }, () => f.verify(proof));
+    expect(f.fetches() - before).toBe(1);
+    gate.resolve(body);
+    const results = await Promise.all(pending);
+    for (const result of results) expect(result).toMatchObject({ ok: true });
+    expect(f.fetches() - before).toBe(1);
+  }
+}, 5_000);
+
+test("failed JWKS fetch recovers when the refresh interval permits", async () => {
+  const body = JSON.stringify({ keys: [(await keys)[0]!.jwk] });
+  let calls = 0;
+  const f = await fixture(() =>
+    ++calls === 1
+      ? Promise.reject(new Error("Unavailable"))
+      : Promise.resolve(body),
+  );
+  const proof = await token();
+  expect(await f.verify(proof)).toEqual(refused());
+  expect(await f.verify(proof)).toEqual(refused());
+  expect(f.fetches()).toBe(1);
+  f.advance(config.refreshIntervalMs);
+  expect(await f.verify(proof)).toMatchObject({ ok: true });
+  expect(f.fetches()).toBe(2);
 }, 5_000);
