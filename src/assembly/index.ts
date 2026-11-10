@@ -17,6 +17,7 @@ import {
 import { GitCommandError } from "../adapters/vcs-git/index.ts";
 import { yamlConfigCodec } from "../adapters/config-yaml/index.ts";
 import { compatibleConfig } from "../core/config/compatible.ts";
+import { describeConfigFormat } from "./config-format.ts";
 import { parsePointer } from "../core/config/pointer.ts";
 import { detectProject, createFolderFiles } from "../blocks/project/index.ts";
 import {
@@ -437,6 +438,7 @@ export async function createAssembly(
       return found;
     }
     const environment = {
+      describeFormat: describeConfigFormat,
       warnUnknownConfig: (name: string, paths: readonly string[]) => {
         let ignored = ignoredConfig.get(name);
         if (ignored === undefined) {

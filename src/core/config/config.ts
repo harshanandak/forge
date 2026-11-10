@@ -63,6 +63,12 @@ import {
 } from "./store.ts";
 
 export interface ConfigEnvironment extends StoreDeps, BlockLookup {
+  readonly describeFormat?: (document: JsonObject) =>
+    | {
+        readonly name: string;
+        readonly fields: Readonly<Record<string, string>>;
+      }
+    | undefined;
   readonly warn?: (message: string) => void;
   readonly warnUnknownConfig?: (name: string, paths: readonly string[]) => void;
   readonly files: ConfigFiles;
@@ -124,7 +130,7 @@ function excludedAt(pointer: string): string[] {
  */
 function usable(
   document: JsonObject | undefined,
-  lookup: BlockLookup,
+  lookup: ConfigEnvironment,
 ): {
   document: JsonObject | undefined;
   excluded: Excluded[];
@@ -146,16 +152,39 @@ function usable(
         !flagged.some((f) => p.pointer === f || p.pointer.startsWith(`${f}/`)),
     ),
   ];
+  const file =
+    lookup.projectRoot === undefined
+      ? CONFIG_FILE
+      : `Project ${lookup.projectRoot}: ${CONFIG_FILE}`;
+  const format = lookup.describeFormat?.(filled);
+  const shape =
+    'schemaVersion: forge.config/1; blocks: {name: {source: {builtin: "publisher/name"} or {path: "./block"} or {package: "name"}, enabled: boolean, config: {}}}; templates: [{template: "publisher/name@1.0.0", digest: "sha256:<64 lowercase hex>"}]; values: {}';
   const byUnit = new Map<string, string[]>();
   for (const problem of problems) {
     const unit = formatPointer(excludedAt(problem.pointer));
     const found = byUnit.get(unit) ?? [];
-    found.push(schemaDiagnostic({ keyword: "path", ...problem }, filled));
+    const segments = parsePointer(problem.pointer) ?? [];
+    const field = segments[0] ?? "";
+    found.push(
+      "keyword" in problem &&
+        (problem.keyword === "additionalProperties" ||
+          problem.keyword === "required") &&
+        segments.length === 1
+        ? `${file}: ${field}: ${problem.keyword === "required" ? "missing required field" : (format?.fields[field] ?? "unknown field; no current equivalent is declared")}. Expected current shape: ${shape}. Fix: preserve the original file in a backup, then explicitly translate unsupported settings and define blocks with selected sources; there is no automatic mapping. Then run config show.`
+        : schemaDiagnostic(
+            { keyword: "path", ...problem },
+            filled,
+            undefined,
+            file,
+          ),
+    );
     byUnit.set(unit, found);
   }
   const excluded = [...byUnit.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([pointer, problems]) => ({ pointer, problems }));
+  if (format !== undefined)
+    excluded[0]?.problems.unshift(`${file}: old ${format.name} format`);
   if (byUnit.has("")) return { document: undefined, excluded, implied: [] };
   const dropped = new Set<number>();
   for (const { pointer } of excluded) {

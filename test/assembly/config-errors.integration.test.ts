@@ -107,6 +107,20 @@ for (const [name, text, fields, pointers] of [
           },
         });
         expect(envelope.error.message).toContain(realpathSync(root));
+        if (text.startsWith("template:")) {
+          expect(
+            envelope.error.message.match(/old adoption-template .*format/g),
+          ).toHaveLength(1);
+          expect(envelope.error.message).toContain("forge.adoptionTemplate");
+          for (const explanation of [
+            "templates now records provenance",
+            "phases and gates have no current equivalent",
+            "blocks now selects implementations",
+            "protectedPaths has no current equivalent",
+          ])
+            expect(envelope.error.message).toContain(explanation);
+          expect(envelope.error.message).not.toMatch(/Fix: (remove|.*Rename)/);
+        }
         for (const field of fields) {
           const line = envelope.error.message
             .split("\n")
