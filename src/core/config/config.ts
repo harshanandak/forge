@@ -124,7 +124,8 @@ function excludedAt(pointer: string): string[] {
  */
 function usable(
   document: JsonObject | undefined,
-  lookup: BlockLookup,
+  lookup: ConfigEnvironment,
+  format?: ProjectConfig["format"],
 ): {
   document: JsonObject | undefined;
   excluded: Excluded[];
@@ -146,16 +147,48 @@ function usable(
         !flagged.some((f) => p.pointer === f || p.pointer.startsWith(`${f}/`)),
     ),
   ];
+  const file =
+    lookup.projectRoot === undefined
+      ? CONFIG_FILE
+      : `Project ${lookup.projectRoot}: ${CONFIG_FILE}`;
+  const shape =
+    'schemaVersion: forge.config/1; blocks: {name: {source: {builtin: "publisher/name"} or {path: "./block"} or {package: "name"}, enabled: boolean, config: {}}}; templates: [{template: "publisher/name@1.0.0", digest: "sha256:<64 lowercase hex>"}]; values: {}';
   const byUnit = new Map<string, string[]>();
+  let showShape = false;
   for (const problem of problems) {
     const unit = formatPointer(excludedAt(problem.pointer));
     const found = byUnit.get(unit) ?? [];
-    found.push(schemaDiagnostic({ keyword: "path", ...problem }, filled));
+    const segments = parsePointer(problem.pointer) ?? [];
+    const field = segments[0] ?? "";
+    const detailed =
+      "keyword" in problem &&
+      (problem.keyword === "additionalProperties" ||
+        problem.keyword === "required") &&
+      segments.length === 1;
+    showShape ||= detailed;
+    found.push(
+      detailed
+        ? `${file}: ${field}: ${problem.keyword === "required" ? "missing required field; define blocks with selected sources" : (format?.fields[field] ?? "unknown field; no current equivalent is declared")}. Expected current shape: see schemaVersion, blocks/source, templates/digest and values below. Fix: preserve settings in a backup and translate explicitly; no automatic mapping.`
+        : schemaDiagnostic(
+            { keyword: "path", ...problem },
+            filled,
+            undefined,
+            file,
+          ),
+    );
     byUnit.set(unit, found);
   }
   const excluded = [...byUnit.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([pointer, problems]) => ({ pointer, problems }));
+  if (format !== undefined)
+    excluded[0]?.problems.unshift(`${file}: old ${format.name} format`);
+  if (showShape)
+    excluded
+      .at(-1)
+      ?.problems.push(
+        `Expected current shape: ${shape}. Then run config show.`,
+      );
   if (byUnit.has("")) return { document: undefined, excluded, implied: [] };
   const dropped = new Set<number>();
   for (const { pointer } of excluded) {
@@ -525,7 +558,11 @@ export function createConfig(env: ConfigEnvironment): ConfigApi {
       let patched = clone(current.document);
       for (const { segments, value } of invocation)
         setIn((patched ??= emptyDocument()), segments, clone(value));
-      const { document, excluded, implied } = usable(patched, env);
+      const { document, excluded, implied } = usable(
+        patched,
+        env,
+        current.format,
+      );
       const kept = invocation
         .flatMap(({ segments, value }) => leaves(value, undefined, segments))
         .filter(({ segments }) => hasIn(document, segments))
@@ -574,7 +611,11 @@ export function createConfig(env: ConfigEnvironment): ConfigApi {
     explain(input) {
       const segments = segmentsOf(input.path);
       const current = readProject(env);
-      const { document, implied } = usable(current.document, env);
+      const { document, implied } = usable(
+        current.document,
+        env,
+        current.format,
+      );
       const layers = resolve(env, document, implied, derive());
       const entries = entriesAt(layers, segments);
       const set = hasIn(layers.effective, segments);
@@ -660,7 +701,10 @@ export function createConfig(env: ConfigEnvironment): ConfigApi {
             current.document,
             [],
             [],
-            mapKeys(usable(current.document, env).document, env),
+            mapKeys(
+              usable(current.document, env, current.format).document,
+              env,
+            ),
           );
           for (const entry of layers.entries) {
             if (entry.layer !== "derived" || !entry.active) continue;
