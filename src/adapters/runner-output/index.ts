@@ -102,9 +102,21 @@ function retainFailure(
   return current?.testCount === 0 ? current : next;
 }
 
+function hasReportKey(text: string): boolean {
+  // Consume whole string tokens so escaped quotes in values cannot become keys.
+  for (const match of text.matchAll(/"(?:\\.|[^"\\])*"/g))
+    if (
+      /^"num(?:Total|Failed)Tests"$/.test(match[0]) &&
+      /^\s*:/.test(text.slice(match.index + match[0].length))
+    )
+      return true;
+  return false;
+}
+
 /** Scans one stream line by line, keeping only the summary lines it has seen. */
 class SummaryLines {
   bytes = 0;
+  structured = false;
   jest: OutputReport | undefined;
   vitest: OutputReport | undefined;
   pytest: OutputReport | undefined;
@@ -202,6 +214,7 @@ class SummaryLines {
     )
       this.nodeFailure = true;
     if (!text) return;
+    if (/^\s*\{/.test(text) && hasReportKey(text)) this.structured = true;
     const jest = /^\s*Tests:\s*(.*?)\s*(\d+)\s+total\s*$/.exec(text)?.slice(1);
     if (jest) this.jest = retainFailure(this.jest, summary("Jest", jest));
     const vitest = /^\s*Tests\s+(.*?)\((\d+)\)\s*$/.exec(text)?.slice(1);
@@ -270,16 +283,13 @@ class SummaryLines {
         : pytest(candidate.replace(/^=+\s*|\s*=+$/g, ""));
     if (parsed?.kind === "recognized")
       this.pytest = retainFailure(this.pytest, parsed);
-    if (/^\s*Tests:|^\s*Tests\s+\d+.*\(|"numTotalTests"/.test(text))
-      this.hint = true;
+    if (/^\s*Tests:|^\s*Tests\s+\d+.*\(/.test(text)) this.hint = true;
   }
 }
 
 function recognizer(format: ReportFormat): OutputRecognizer {
   const stdout = new SummaryLines(),
     stderr = new SummaryLines();
-  const hints = { stdout: false, stderr: false };
-  const tails = { stdout: "", stderr: "" };
   let structured: Buffer[] | undefined = format === "json" ? [] : undefined;
   let structuredBytes = 0,
     decided = format === "json",
@@ -304,12 +314,6 @@ function recognizer(format: ReportFormat): OutputRecognizer {
   }
   return {
     push(stream, chunk) {
-      if (format !== "exit-code" && !hints[stream]) {
-        const text = tails[stream] + Buffer.from(chunk).toString("latin1");
-        hints[stream] = /"num(?:Total|Failed)Tests"/.test(text);
-        // Keep keys split across chunks, including on lines too long to retain.
-        tails[stream] = text.slice(-16);
-      }
       if (stream === "stdout") {
         stdout.push(chunk);
         if (format !== "exit-code") keep(chunk);
@@ -322,13 +326,10 @@ function recognizer(format: ReportFormat): OutputRecognizer {
       stderr.end();
       const text = structured ? Buffer.concat(structured).toString("utf8") : "";
       const reports: OutputReport[] = [];
-      if (hints.stderr || (hints.stdout && !structured))
+      if (stderr.structured || (stdout.structured && !structured))
         reports.push(malformed);
       // An overflowing object is never read whole, so its counts may lie past what was kept.
-      if (
-        format === "json" ||
-        (structured && (overflow || /"num(?:Total|Failed)Tests"/.test(text)))
-      )
+      if (format === "json" || (structured && (overflow || hasReportKey(text))))
         reports.push(
           overflow
             ? {
