@@ -21,7 +21,10 @@ import { jsonEqual } from "../contract/schema.ts";
 type ClientPutOptions = PutOptions &
   Pick<WriteOptions, "readSet"> & { readonly subject?: string };
 type ClientBatchOptions = BatchOptions & { readonly subject?: string };
-type ClientDeleteOptions = DeleteOptions & { readonly subject?: string };
+type ClientDeleteOptions = DeleteOptions & {
+  readonly subject?: string;
+  readonly guard?: () => boolean;
+};
 type LandingCommentInput = {
   readonly id: string;
   readonly pr: number;
@@ -176,6 +179,7 @@ export function createStateClient(options: {
         refuse("CONTEXT_MISSING", "Acquisition cannot mutate records");
       return state.delete(namespace, key, context.actor, {
         expectRevision: options.expectRevision,
+        ...(options.guard === undefined ? {} : { guard: options.guard }),
         ...(options.readSet === undefined
           ? {}
           : { readSet: structuredClone(options.readSet) }),

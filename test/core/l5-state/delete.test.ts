@@ -13,6 +13,38 @@ import type { BoundContext } from "../../../src/generated/types.ts";
 const ns = "forge/test";
 const actor = { kind: "agent" as const, id: "retire" };
 
+test("guarded deletion rechecks its bound after acquiring the write lock", async () => {
+  const { owner, db, close } = await open();
+  try {
+    let elapsed = 0;
+    const guarded = new StateOwner(
+      {
+        ...db,
+        transaction<T>(work: () => T): T {
+          return db.transaction(() => {
+            elapsed = 1000;
+            return work();
+          });
+        },
+      },
+      { now: () => 1000 },
+    );
+    const row = owner.put(ns, "key", true, actor, { expectRevision: 0 });
+    const guard = () => elapsed < 1000;
+    expect(guard()).toBe(true);
+    expect(() =>
+      guarded.delete(ns, "key", actor, {
+        expectRevision: row.revision,
+        guard,
+      }),
+    ).toThrow("Deletion bound expired");
+    expect(owner.get(ns, "key")).toEqual(row);
+    expect(owner.events(ns, "key")).toHaveLength(1);
+  } finally {
+    await close();
+  }
+}, 5000);
+
 async function open() {
   const result = await createSqliteStore(tmpdir()).open({
     path: ":memory:",
