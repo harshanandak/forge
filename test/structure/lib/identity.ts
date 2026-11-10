@@ -308,6 +308,39 @@ function identityTokens(source: string): {
   return { tokens, pairs };
 }
 
+function executableMember(
+  tokens: readonly IdentityToken[],
+  pairs: ReadonlyMap<number, number>,
+  index: number,
+): boolean {
+  const token = tokens[index]!;
+  const previous = tokens[index - 1];
+  if (
+    token.kind === "identifier" &&
+    token.text === "constructor" &&
+    [".", "?."].includes(previous?.text ?? "")
+  )
+    return true;
+  // Empty brackets are array types; executable member access requires a key.
+  if (token.text !== "[" || pairs.get(index) === index + 1) return false;
+  const receiver =
+    (previous?.kind === "identifier" &&
+      ([".", "?."].includes(tokens[index - 2]?.text ?? "") ||
+        (!regexPrefix.has(previous.text) &&
+          !["const", "let", "var", "await", "yield"].includes(
+            previous.text,
+          )))) ||
+    ["literal", "number", "regex"].includes(previous?.kind ?? "") ||
+    [")", "]", "?."].includes(previous?.text ?? "") ||
+    (previous?.text === "}" && previous.context === "expression");
+  return (
+    receiver &&
+    (pairs.get(index) !== index + 2 ||
+      !["literal", "number"].includes(tokens[index + 1]?.kind ?? "") ||
+      tokens[index + 1]?.text === "constructor")
+  );
+}
+
 function oauthMintRefusal(file: SourceFile): IdentityTokenRefusal | undefined {
   try {
     const hasMint = importsOf(file).some((s) => mintTarget(file.path, s));
@@ -325,12 +358,23 @@ function oauthMintRefusal(file: SourceFile): IdentityTokenRefusal | undefined {
         );
     }
     // Type erasure must not hide an ambiguous slash or an invalid raw token.
-    const raw = identityTokens(file.text).tokens;
+    const { tokens: raw, pairs: rawPairs } = identityTokens(file.text);
     for (let i = 0; i < raw.length; i++) {
       const token = raw[i]!;
       if (
-        token.kind === "identifier" &&
-        ["eval", "Function", "setTimeout", "setInterval"].includes(token.text)
+        (token.kind === "identifier" &&
+          [
+            "eval",
+            "Function",
+            "setTimeout",
+            "setInterval",
+            "globalThis",
+            "self",
+            "window",
+            "global",
+            "Reflect",
+          ].includes(token.text)) ||
+        executableMember(raw, rawPairs, i)
       )
         throw new IdentityTokenRefusal("executable source");
       if (
@@ -365,6 +409,7 @@ function oauthMintRefusal(file: SourceFile): IdentityTokenRefusal | undefined {
       throw new IdentityTokenRefusal(reason);
     };
     for (let i = 0; i < tokens.length; i++) {
+      if (executableMember(tokens, pairs, i)) refuse("executable source");
       if (at(i) !== "function" || [".", "?."].includes(at(i - 1))) continue;
       let parameter = i + 1;
       if (at(parameter) === "*") parameter++;
