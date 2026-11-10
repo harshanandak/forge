@@ -35,7 +35,15 @@ test("tracked snapshots retain exact dirty paths and refuse truncated Git output
   };
   const lease = await createAssemblyProviders(
     root,
-    { env: {} },
+    {
+      env: {},
+      supervision: {
+        cleanupTimeoutMs: 100,
+        pollIntervalMs: 25,
+        drainTimeoutMs: 50,
+        maxConcurrent: 1,
+      },
+    },
     process,
   ).openFiles({
     op: "sample.snapshot",

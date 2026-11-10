@@ -95,15 +95,11 @@ function retainFailure(
   current: OutputReport | undefined,
   next: OutputReport,
 ): OutputReport {
-  const rank = (report: OutputReport | undefined) =>
-    report?.failed
-      ? 3
-      : report?.kind === "malformed"
-        ? 2
-        : report?.testCount === 0
-          ? 1
-          : 0;
-  return rank(current) > rank(next) ? current! : next;
+  if (current?.failed) return current;
+  if (next.failed) return next;
+  if (current?.kind === "malformed") return current;
+  if (next.kind === "malformed") return next;
+  return current?.testCount === 0 ? current : next;
 }
 
 /** Scans one stream line by line, keeping only the summary lines it has seen. */
@@ -338,12 +334,9 @@ function recognizer(format: ReportFormat): OutputRecognizer {
         (report) => report.kind === "recognized" && report.failed! > 0,
       );
       if (failed) return failed;
-      if (
-        stdout.invalid ||
-        stderr.invalid ||
-        reports.some((report) => report.kind === "malformed")
-      )
-        return malformed;
+      const invalid = reports.find((report) => report.kind === "malformed");
+      if (invalid || stdout.invalid || stderr.invalid)
+        return invalid ?? malformed;
       const zero = reports.find((report) => report.testCount === 0);
       if (zero) return zero;
       if (reports.length) {

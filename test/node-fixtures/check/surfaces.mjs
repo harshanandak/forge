@@ -503,14 +503,15 @@ try {
     );
     configure({ commands: config.commands });
     writeFileSync(join(root, "input.txt"), "changed bytes\n");
-    const changed = runReceipt(cli(["check", "run"]));
+    const changed = runReceipt(cli(["check", "run"], 2));
     assert.notEqual(
       first.inputsDigest,
       changed.inputsDigest,
       "dirty file bytes bind CLI receipts",
     );
-    const wire = await mcp();
+    const wire = await mcp("INCOMPLETE");
     assert.equal(wire.status, changed.status, "CLI and MCP outcomes agree");
+    git(["restore", "--", "input.txt"]);
     configure({
       commands: {
         first: { argv: [process.execPath, "command.mjs", "maximum"] },
