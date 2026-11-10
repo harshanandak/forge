@@ -174,7 +174,7 @@
     },
     "issue.claim": {
       "title": "Claim",
-      "summary": "Session's open-issue lease; ttlSeconds overrides claimTtlSeconds (3600s default).",
+      "summary": "Lease; blocked claims need reason (CLAIM_BLOCKED/CLAIMED_BLOCKED).",
       "examples": [
         {
           "input": {

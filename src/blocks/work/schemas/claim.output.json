@@ -1,0 +1,38 @@
+{
+  "type": "object",
+  "required": ["id", "generation", "expiresAt"],
+  "properties": {
+    "id": {
+      "$ref": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/tracker.json#/$defs/ItemId"
+    },
+    "generation": {
+      "$ref": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/tracker.json#/$defs/LeaseGrant/properties/generation"
+    },
+    "expiresAt": {
+      "$ref": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/common.json#/$defs/Timestamp"
+    },
+    "warnings": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["code", "blockers"],
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "const": "CLAIMED_BLOCKED"
+          },
+          "blockers": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "board.output.json#/$defs/edge"
+            }
+          }
+        }
+      }
+    }
+  },
+  "additionalProperties": false
+}
