@@ -63,6 +63,12 @@ for (const [name, text, fields, pointers] of [
     ["schemaVersion", "blocks", "unmappedSetting"],
     ["/schemaVersion", "/blocks", "/unmappedSetting"],
   ],
+  [
+    "current config with stray template",
+    "schemaVersion: forge.config/1\nblocks: {}\ntemplate: {kind: forge.adoptionTemplate}\n",
+    ["template"],
+    ["/template"],
+  ],
 ] as const) {
   test(`${name} names all invalid fields and the project root`, () => {
     const root = mkdtempSync(join(tmpdir(), "forge-old-config-"));
@@ -107,6 +113,13 @@ for (const [name, text, fields, pointers] of [
           },
         });
         expect(envelope.error.message).toContain(realpathSync(root));
+        if (name === "current config with stray template") {
+          expect(envelope.error.message).toContain("template: unknown field");
+          expect(envelope.error.message).not.toContain("old adoption-template");
+          expect(envelope.error.message).not.toContain(
+            "templates now records provenance",
+          );
+        }
         if (text.startsWith("template:")) {
           expect(
             envelope.error.message.match(/old adoption-template .*format/g),

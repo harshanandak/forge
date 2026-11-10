@@ -6,6 +6,16 @@ export function describeConfigFormat(
   document: JsonObject,
 ): ReturnType<NonNullable<ConfigEnvironment["describeFormat"]>> {
   if (
+    [
+      "schemaVersion",
+      "blocks",
+      "templates",
+      "values",
+      "runtime",
+      "mcp",
+      "owners",
+      "laws",
+    ].some((key) => Object.hasOwn(document, key)) ||
     !isObject(document.template) ||
     document.template.kind !== "forge.adoptionTemplate"
   )

@@ -20,7 +20,13 @@ import { expandShortForm } from "./short.ts";
 export const CONFIG_FILE = ".forge/config.yaml";
 export const LOCK_FILE = ".forge/config.lock";
 
+export interface ConfigFormat {
+  readonly name: string;
+  readonly fields: Readonly<Record<string, string>>;
+}
+
 export interface ProjectConfig {
+  readonly format?: ConfigFormat;
   /** Exact bytes on disk; undefined when the file does not exist. */
   readonly bytes: Uint8Array | undefined;
   /** Digest of the bytes; an absent file has the digest of no bytes. */
@@ -47,6 +53,7 @@ export interface Committed {
 }
 
 export interface StoreDeps {
+  readonly describeFormat?: (document: JsonObject) => ConfigFormat | undefined;
   readonly files: ConfigFiles;
   readonly codec: ConfigCodecPort;
   readonly clock: ClockPort;
@@ -106,10 +113,12 @@ export function readProject(deps: StoreDeps): ProjectConfig {
       },
     };
   }
+  const format = deps.describeFormat?.(decoded.value);
   const document = expandShortForm(decoded.value);
   const checked = validateConfigDocument(document);
   return {
     ...base,
+    ...(format === undefined ? {} : { format }),
     document,
     unreadable: undefined,
     problems: checked.ok ? [] : checked.problems,

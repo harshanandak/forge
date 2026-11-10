@@ -986,6 +986,17 @@ export async function createAssembly(
       ],
     };
   }
+  function configError(
+    problems: readonly string[],
+    code = "INPUT_INVALID",
+  ): ForgeError {
+    return {
+      code,
+      message: problems.join("\n"),
+      retry: "reconcile_first",
+      reconcileWith: "config.show",
+    };
+  }
   const catalog: Assembly["catalog"] = {
     upgradeHint(op) {
       try {
@@ -1100,14 +1111,11 @@ export async function createAssembly(
         });
       });
       if (declared === undefined) return undefined;
-      return {
-        code:
-          current.unavailable.find((block) => block.name === declared)?.error
-            .code ?? "INPUT_INVALID",
-        message: current.problems.join("\n"),
-        retry: "reconcile_first",
-        reconcileWith: "config.show",
-      };
+      return configError(
+        current.problems,
+        current.unavailable.find((block) => block.name === declared)?.error
+          .code ?? "INPUT_INVALID",
+      );
     },
     list() {
       const call = callScope();
@@ -1425,12 +1433,7 @@ export async function createAssembly(
               return {
                 ...failure(
                   request.op,
-                  new ForgeFailure({
-                    code: "INPUT_INVALID",
-                    message: current.problems.join("\n"),
-                    retry: "reconcile_first",
-                    reconcileWith: "config.show",
-                  }),
+                  new ForgeFailure(configError(current.problems)),
                 ),
                 result: output,
               };
@@ -1737,9 +1740,11 @@ export async function createAssembly(
           !current.catalog.list().includes(request.op) &&
           current.problems.length
         )
-          refuse(
-            current.unavailable[0]?.error.code ?? "INPUT_INVALID",
-            current.problems.join("\n"),
+          throw new ForgeFailure(
+            configError(
+              current.problems,
+              current.unavailable[0]?.error.code ?? "INPUT_INVALID",
+            ),
           );
         // The owner's words for memory forget, restore and adopt are relayed through Forge's own
         // approval: a request for these exact arguments, then the reply and where it was said.
