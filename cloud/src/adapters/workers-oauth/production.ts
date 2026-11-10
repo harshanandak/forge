@@ -1,4 +1,4 @@
-import { createOidcVerifier } from "../../../../src/adapters/oidc/index.ts";
+import { createOidcVerifier } from "../../../../src/assembly/oidc.ts";
 import { createClerkBinding } from "./clerk/index.ts";
 import { createClerkUpstream } from "./clerk/upstream.ts";
 import { durableRedemption, type RedemptionNamespace } from "./redemption.ts";
