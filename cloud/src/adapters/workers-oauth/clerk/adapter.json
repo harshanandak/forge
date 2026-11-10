@@ -1,0 +1,4 @@
+{
+  "port": "cloud/src/adapters/workers-oauth/clerk/index.ts#ClerkBinding",
+  "verification": "src/ports/identity.ts#IdentityVerifier"
+}
