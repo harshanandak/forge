@@ -6,6 +6,7 @@ import {
 } from "../../../cloud/src/adapters/workers-oauth/clerk/upstream.ts";
 import { createOidcVerifier } from "../../../src/adapters/oidc/index.ts";
 import { createOAuthHarness } from "../workers-oauth/harness.ts";
+import { jwtFixture } from "./jwt-fixture.ts";
 
 await mock.module("cloudflare:workers", () => ({ WorkerEntrypoint: class {} }));
 const { createOAuthAdapter } =
@@ -19,16 +20,6 @@ const config = {
   clientId: "forge-client",
   timeoutMs: 25,
 };
-const rsa = {
-  name: "RSASSA-PKCS1-v1_5",
-  modulusLength: 2048,
-  publicExponent: new Uint8Array([1, 0, 1]),
-  hash: "SHA-256",
-};
-const keys = crypto.subtle.generateKey(rsa, true, ["sign", "verify"]);
-const otherKeys = crypto.subtle.generateKey(rsa, true, ["sign", "verify"]);
-const encode = (value: unknown) =>
-  Buffer.from(JSON.stringify(value)).toString("base64url");
 const code = "code=recorded-code";
 const response =
   (body: unknown, status = 200) =>
@@ -43,19 +34,8 @@ async function fixture(
     slow?: boolean;
   } = {},
 ) {
-  const harness = createOAuthHarness(),
-    pair = await keys;
-  const input = `${encode({ alg: options.algorithm ?? "RS256", kid: "recorded" })}.${encode({ iss: issuer, sub: "person", aud: audience, auth_time: 500, exp: 2000, ...options.claims })}`;
-  const signed = await crypto.subtle.sign(
-    rsa,
-    (options.wrongKey ? await otherKeys : pair).privateKey,
-    new TextEncoder().encode(input),
-  );
-  const proof = `${input}.${Buffer.from(signed).toString("base64url")}`;
-  const jwk = {
-    ...(await crypto.subtle.exportKey("jwk", pair.publicKey)),
-    kid: "recorded",
-  };
+  const harness = createOAuthHarness();
+  const { proof, jwk } = await jwtFixture(issuer, audience, options);
   const verifier = createOidcVerifier(
     {
       issuer,

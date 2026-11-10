@@ -4,6 +4,13 @@ import { isVerifiedIdentity } from "../../../src/ports/identity.ts";
 import { ForgeFailure } from "../../../src/contract/failure.ts";
 import { bearer } from "../tokens.ts";
 
+const durablePorts = new WeakSet<object>();
+// Only durableRedemption may call this registration function.
+export function registerDurableRedemption<T extends object>(port: T): T {
+  durablePorts.add(port);
+  return port;
+}
+
 export const isOAuthRoute = (request: Request) =>
   /^\/(authorize|callback|oauth\/token|register|\.well-known\/oauth-(authorization-server|protected-resource))$/.test(
     new URL(request.url).pathname,
@@ -29,6 +36,9 @@ export function composeAuth(
   team?: Auth.AuthorizationPort,
   route: (request: Request) => Promise<Response> = () =>
     Promise.resolve(configUnavailable("OAUTH_COMPOSITION")),
+  atomicRedemption?: {
+    claimOnce(codeHash: string, expiresAt: number): Promise<boolean>;
+  },
 ) {
   const authorize = async (
     request: Request,
@@ -59,7 +69,10 @@ export function composeAuth(
     mcp: authorize,
     policy,
     route: async (request: Request) => {
-      if (["/callback", "/oauth/token"].includes(new URL(request.url).pathname))
+      if (
+        !(atomicRedemption && durablePorts.has(atomicRedemption)) &&
+        ["/callback", "/oauth/token"].includes(new URL(request.url).pathname)
+      )
         return configUnavailable(
           "CODE_REDEMPTION",
           "Atomic redemption unavailable",
