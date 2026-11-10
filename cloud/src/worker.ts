@@ -4,6 +4,7 @@
 // ADMIN_TOKEN secret, before the project's object is touched; the others are checked by the object.
 export { Project } from "./project.ts";
 import { bearer, same, sha256, wellFormed } from "./tokens.ts";
+import type { Access, AuthComposition } from "./auth/compose.ts";
 
 interface Env {
   readonly ADMIN_TOKEN?: string;
@@ -41,7 +42,7 @@ async function isAdmin(presented: string, secret?: string): Promise<boolean> {
   return same(a, b);
 }
 
-export default {
+const legacyWorker = {
   async fetch(request: Request, env: Env): Promise<Response> {
     const match = PATH.exec(new URL(request.url).pathname);
     const project = match?.[1];
@@ -78,3 +79,16 @@ export default {
     return env.PROJECTS.get(env.PROJECTS.idFromName(project)).fetch(request);
   },
 };
+
+export type ProjectForward = (
+  request: Request,
+  project: string,
+  access: Access,
+) => Promise<Response>;
+export function createWorker(
+  _auth?: AuthComposition,
+  _forward?: ProjectForward,
+) {
+  return legacyWorker;
+}
+export default legacyWorker;

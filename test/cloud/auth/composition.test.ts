@@ -1,3 +1,5 @@
+import { singleOwnerPolicy } from "../../../src/ports/authorization.ts";
+import { composeAuth } from "../../../cloud/src/auth/compose.ts";
 import { expect, mock, test } from "bun:test";
 import {
   isVerifiedIdentity,
@@ -9,6 +11,7 @@ import { createOAuthHarness } from "../../adapters/workers-oauth/harness.ts";
 await mock.module("cloudflare:workers", () => ({ WorkerEntrypoint: class {} }));
 const { createOAuthAdapter } =
   await import("../../../cloud/src/adapters/workers-oauth/index.ts");
+const { createWorker } = await import("../../../cloud/src/worker.ts");
 const issuer = "https://auth.example",
   resource = "https://api.example/a";
 const claims = {
@@ -19,7 +22,7 @@ const claims = {
   expiresAt: 4_600_000,
 };
 
-async function fixture() {
+async function fixture(denied = false, expectedResource = resource) {
   const harness = createOAuthHarness(),
     api = createOAuthAdapter(harness.options);
   const redirect = "https://client.example/callback";
@@ -83,7 +86,39 @@ async function fixture() {
     if (exchanged.status !== 200) throw new Error("Fixture exchange failed");
     return ((await exchanged.json()) as { access_token: string }).access_token;
   }
-  return { ...harness, api, callback, token };
+
+  const protocol = mock((request: Request) =>
+    Promise.resolve(Response.json({ path: new URL(request.url).pathname })),
+  );
+  const auth = composeAuth(
+    api,
+    expectedResource,
+    {
+      authorize: () =>
+        denied ? { allowed: false, code: "AUTH_FORBIDDEN" } : { allowed: true },
+    },
+    protocol,
+  );
+  const env = {
+    ADMIN_TOKEN: "fixture-admin",
+    PROJECTS: {
+      idFromName: (name: string) => name,
+      get: () => ({ fetch: () => Promise.resolve(new Response("legacy")) }),
+    },
+  };
+  const forward = mock((_request: Request, project: string, access: unknown) =>
+    Promise.resolve(Response.json({ project, ...(access as object) })),
+  );
+  return {
+    ...harness,
+    api,
+    callback,
+    token,
+    auth,
+    env,
+    forward,
+    worker: createWorker(auth, forward),
+  };
 }
 
 test("a provider token carries the verifier's exact issuer and subject", async () => {
@@ -144,4 +179,134 @@ test("the verified upstream audience is distinct from the authorization server a
       });
     else expect((await f.callback()).status).toBe(400);
   }
+}, 30_000);
+
+test("client identity headers and query props cannot replace the token identity", async () => {
+  const f = await fixture(),
+    token = await f.token();
+  const request = new Request(
+    `${resource}?subject=attacker&props=${encodeURIComponent(JSON.stringify(claims))}`,
+    {
+      headers: {
+        authorization: `Bearer ${token}`,
+        "x-identity-subject": "attacker",
+        "x-forwarded-user": "attacker",
+      },
+    },
+  );
+  const presented = request.headers.get("authorization")!.slice(7);
+  expect((await f.api.verify(presented, resource))?.subject).toBe("person");
+  request.headers.delete("authorization");
+  expect(
+    await f.api.verify(request.headers.get("authorization") ?? "", resource),
+  ).toBeNull();
+}, 30_000);
+
+test("the open policy distinguishes an owner principal from a verified person", async () => {
+  const input = {
+    project: "project",
+    action: "read",
+    authority: "single-owner",
+  } as const;
+  expect(
+    singleOwnerPolicy.authorize({
+      ...input,
+      principal: { kind: "single-owner" },
+    }),
+  ).toEqual({ allowed: true });
+  const result = await testIdentityVerifier(
+    new Map([["proof", claims]]),
+  ).verify("proof", issuer, 1_000_000);
+  if (!result.ok) throw new Error("Fixture identity failed");
+  expect(
+    singleOwnerPolicy.authorize({
+      ...input,
+      principal: { kind: "person", identity: result.identity },
+    }),
+  ).toEqual({ allowed: false, code: "AUTH_FORBIDDEN" });
+}, 30_000);
+
+test("an owner principal cannot bypass a missing team authorization provider", () => {
+  expect(
+    singleOwnerPolicy.authorize({
+      project: "project",
+      action: "read",
+      authority: "team",
+      principal: { kind: "single-owner" },
+    }),
+  ).toEqual({ allowed: false, code: "TEAM_AUTHORIZATION_UNAVAILABLE" });
+}, 30_000);
+
+const oauthPaths = [
+  "/authorize",
+  "/callback",
+  "/oauth/token",
+  "/register",
+  "/.well-known/oauth-authorization-server",
+  "/.well-known/oauth-protected-resource",
+];
+const projectRequest = (token: string, path = "/p/a/holder?subject=attacker") =>
+  new Request(`${issuer}${path}`, {
+    headers: {
+      authorization: `Bearer ${token}`,
+      "x-forwarded-user": "attacker",
+      "x-identity-subject": "attacker",
+    },
+  });
+
+test("Worker and MCP receive the same verified identity and allow decision", async () => {
+  const f = await fixture(),
+    request = projectRequest(await f.token());
+  const response = await f.worker.fetch(request, f.env);
+  expect(response.status).toBe(200);
+  const access = await f.auth.mcp(request, "a", "holder");
+  expect(await response.json()).toEqual({ project: "a", ...access });
+  expect<unknown>(access.principal).toEqual({
+    kind: "person",
+    identity: { ...claims, audience: resource },
+  });
+  expect(access.decision).toEqual({ allowed: true });
+  expect(f.forward).toHaveBeenCalledTimes(1);
+  expect((await f.auth.mcp(request, "a", "holder", "team")).decision).toEqual({
+    allowed: false,
+    code: "TEAM_AUTHORIZATION_UNAVAILABLE",
+  });
+
+  for (const denied of [false, true]) {
+    const f = await fixture(
+      denied,
+      denied ? resource : "https://api.example/b",
+    );
+    expect(
+      (await f.worker.fetch(projectRequest(await f.token()), f.env)).status,
+    ).toBe(denied ? 403 : 401);
+    expect(f.forward).toHaveBeenCalledTimes(0);
+  }
+}, 30_000);
+
+test("missing OAuth composition refuses OAuth routes and preserves device and admin routing", async () => {
+  const f = await fixture(),
+    worker = createWorker();
+  for (const path of oauthPaths) {
+    const response = await worker.fetch(projectRequest("", path), f.env);
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({
+      error: { code: "AUTH_CONFIG_UNAVAILABLE" },
+    });
+  }
+  for (const [route, token] of [
+    ["holder", `fct_${"0".repeat(16)}.${"x".repeat(43)}`],
+    ["status", "fixture-admin"],
+  ])
+    expect(
+      (await worker.fetch(projectRequest(token!, `/p/a/${route}`), f.env))
+        .status,
+    ).toBe(200);
+
+  for (const path of oauthPaths) {
+    const response = await f.worker.fetch(projectRequest("", path), f.env);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ path });
+  }
+  expect(f.forward).toHaveBeenCalledTimes(0);
 }, 30_000);
