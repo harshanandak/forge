@@ -75,3 +75,52 @@ for (const key of ["numTotalTests", "numFailedTests"])
       expect(recognizer.report().kind).toBe("malformed");
       expect(output.parse(stdout, stderr, "auto").kind).toBe("malformed");
     }, 10_000);
+
+const failedReport = { numTotalTests: 1, numFailedTests: 1, success: false };
+const nestedFailure = JSON.stringify({
+  numTotalTests: 1,
+  numFailedTests: 0,
+  reports: [failedReport],
+});
+for (const [name, text, malformedResult] of [
+  [
+    "unfinished string before a failing object",
+    `${passing}\nlog: {"message":"unfinished\n${JSON.stringify(failedReport)}`,
+    true,
+  ],
+  ["nested failure beside passing text", `${nestedFailure}\n${passing}`, true],
+  [
+    "malformed property without a summary",
+    '{"other":0 "numFailedTests":1}',
+    true,
+  ],
+  [
+    "newline recovery before pretty failure",
+    `${passing}\nlog: {"message":"unfinished\n${JSON.stringify(failedReport, null, 2)}`,
+    false,
+  ],
+  [
+    "nested failure in a prefixed object",
+    `log: ${nestedFailure}\n${passing}`,
+    false,
+  ],
+  [
+    "newline recovery retains earlier report evidence",
+    `${passing}\nlog: {"numTotalTests":1,"message":"unfinished\nrunner: {"numTotalTests":1,"numFailedTests":0,"success":true}`,
+    true,
+  ],
+] as const)
+  for (const bytewise of [false, true])
+    test(`${name}, ${bytewise ? "bytewise" : "whole"}`, () => {
+      const recognizer = output.recognize("auto");
+      const bytes = Buffer.from(text);
+      if (bytewise)
+        for (const byte of bytes)
+          recognizer.push("stdout", Uint8Array.of(byte));
+      else recognizer.push("stdout", bytes);
+      const report = recognizer.report();
+      expect(report).toEqual(output.parse(text, "", "auto"));
+      if (malformedResult) expect(report.kind).toBe("malformed");
+      else expect(report).toMatchObject({ kind: "recognized", failed: 1 });
+      expect(recognizer.report()).toEqual(report);
+    }, 10_000);

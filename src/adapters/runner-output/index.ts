@@ -32,6 +32,9 @@ function jsonReport(text: string): OutputReport {
   } catch {
     return malformed;
   }
+  return objectReport(value);
+}
+function objectReport(value: unknown): OutputReport {
   if (typeof value !== "object" || value === null) return malformed;
   const report = value as Record<string, unknown>;
   // Jest and Vitest use these fields in their JSON reports.
@@ -113,13 +116,29 @@ function hasReportKey(text: string): boolean {
   return false;
 }
 
+function nestedReport(text: string): OutputReport {
+  let nested: OutputReport | undefined;
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return malformed;
+  }
+  const pending: unknown[] = [value];
+  while (pending.length) {
+    const item = pending.pop();
+    if (typeof item !== "object" || item === null) continue;
+    const report = item as Record<string, unknown>;
+    if ("numTotalTests" in report || "numFailedTests" in report)
+      nested = retainFailure(nested, objectReport(report));
+    for (const child of Object.values(item))
+      if (typeof child === "object" && child !== null) pending.push(child);
+  }
+  return retainFailure(objectReport(value), nested ?? unknown);
+}
+
 /** One stream's object and string state, independent of summary-line buffering. */
 class StructuredReports {
-  leading = false;
-  private first = true;
-  private bytes = 0;
-  private trailing = false;
-  private closed = false;
   private prefix = "";
   private depth = 0;
   private quoted = false;
@@ -142,14 +161,15 @@ class StructuredReports {
   push(chunk: Uint8Array): void {
     for (const byte of chunk) {
       const space = byte === 32 || (byte >= 9 && byte <= 13);
-      if (this.first && !space) {
-        this.first = false;
-        this.leading = byte === 123;
+      // Raw newlines cannot occur in JSON strings. Recover at the next line.
+      if (this.quoted && (byte === 10 || byte === 13)) {
+        if (this.evidence) this.result = retainFailure(this.result, malformed);
+        this.reset();
+        this.prefix = "";
+        continue;
       }
-      if (!this.first) this.bytes++;
       if (byte === 10) this.prefix = "";
       if (!this.depth) {
-        if (this.closed && !space) this.trailing = true;
         if (this.prefix.length < 128) this.prefix += String.fromCharCode(byte);
         if (
           byte !== 123 ||
@@ -203,33 +223,26 @@ class StructuredReports {
             this.result,
             this.overflow
               ? malformed
-              : jsonReport(
+              : nestedReport(
                   Buffer.concat(this.chunks, this.kept).toString("utf8"),
                 ),
           );
-        for (const part of this.chunks) this.budget.remaining += part.length;
-        this.chunks = [];
-        this.tail = undefined;
-        this.kept = 0;
-        this.evidence = this.overflow = false;
-        this.closed = true;
+        this.reset();
       }
       this.last = byte;
     }
   }
   report(): OutputReport | undefined {
-    if (this.leading && this.bytes > REPORT_LIMIT) return malformed;
     return this.evidence ? retainFailure(this.result, malformed) : this.result;
   }
-  primary(): OutputReport | undefined {
-    if (!this.leading) return undefined;
-    if (this.bytes > REPORT_LIMIT)
-      return {
-        ...malformed,
-        detail: `Structured report exceeds ${REPORT_LIMIT} bytes and cannot be read whole`,
-      };
-    const report = this.report();
-    return report && this.trailing ? malformed : report;
+  private reset(): void {
+    for (const part of this.chunks) this.budget.remaining += part.length;
+    this.chunks = [];
+    this.tail = undefined;
+    this.kept = this.at = this.depth = this.last = 0;
+    this.name = "";
+    this.quoted = this.escaped = this.key = this.property = false;
+    this.evidence = this.overflow = false;
   }
 }
 
@@ -408,27 +421,33 @@ class SummaryLines {
   }
 }
 
-function recognizer(format: ReportFormat): OutputRecognizer {
+function mainRecognizer(format: ReportFormat): OutputRecognizer {
   const stdout = new SummaryLines(),
     stderr = new SummaryLines();
-  const budget = { remaining: REPORT_LIMIT };
-  const objects = {
-    stdout: new StructuredReports(budget),
-    stderr: new StructuredReports(budget),
-  };
-  const structured: Buffer[] | undefined = format === "json" ? [] : undefined;
+  let structured: Buffer[] | undefined = format === "json" ? [] : undefined;
   let structuredBytes = 0,
+    decided = format === "json",
     overflow = false;
   function keep(chunk: Uint8Array): void {
+    let part = chunk;
+    if (!decided) {
+      const start = part.findIndex(
+        (byte) => byte !== 32 && (byte < 9 || byte > 13),
+      );
+      if (start < 0) return;
+      decided = true;
+      if (part[start] !== 0x7b) return;
+      structured = [];
+      part = part.subarray(start);
+    }
     if (!structured || overflow) return;
     const room = REPORT_LIMIT - structuredBytes;
-    if (chunk.length > room) overflow = true;
-    structured.push(Buffer.from(chunk.subarray(0, room)));
-    structuredBytes += Math.min(chunk.length, room);
+    if (part.length > room) overflow = true;
+    structured.push(Buffer.from(part.subarray(0, room)));
+    structuredBytes += Math.min(part.length, room);
   }
   return {
     push(stream, chunk) {
-      if (format === "auto") objects[stream].push(chunk);
       if (stream === "stdout") {
         stdout.push(chunk);
         if (format !== "exit-code") keep(chunk);
@@ -441,9 +460,10 @@ function recognizer(format: ReportFormat): OutputRecognizer {
       stderr.end();
       const text = structured ? Buffer.concat(structured).toString("utf8") : "";
       const reports: OutputReport[] = [];
-      if (format === "json" && stderr.structured) reports.push(malformed);
+      if (stderr.structured || (stdout.structured && !structured))
+        reports.push(malformed);
       // An overflowing object is never read whole, so its counts may lie past what was kept.
-      if (format === "json")
+      if (format === "json" || (structured && (overflow || hasReportKey(text))))
         reports.push(
           overflow
             ? {
@@ -470,22 +490,6 @@ function recognizer(format: ReportFormat): OutputRecognizer {
         });
       for (const report of [stdout.pytest, stderr.pytest])
         if (report) reports.push(report);
-      if (format === "auto") {
-        const structuredReports = reports.some(
-          (report) => report.kind === "recognized",
-        )
-          ? [objects.stdout.report(), objects.stderr.report()]
-          : [
-              objects.stdout.primary(),
-              stderr.structured ||
-              (stdout.structured && !objects.stdout.leading)
-                ? malformed
-                : undefined,
-            ];
-        reports.unshift(
-          ...structuredReports.filter((report) => report !== undefined),
-        );
-      }
       const failed = reports.find(
         (report) => report.kind === "recognized" && report.failed! > 0,
       );
@@ -523,6 +527,37 @@ function recognizer(format: ReportFormat): OutputRecognizer {
       if (stdout.hint || stderr.hint || stdout.bunHint || stderr.bunHint)
         return malformed;
       return unknown;
+    },
+  };
+}
+
+function nonPass(report: OutputReport): boolean {
+  return (
+    report.kind === "malformed" ||
+    report.testCount === 0 ||
+    (report.failed ?? 0) > 0
+  );
+}
+
+function recognizer(format: ReportFormat): OutputRecognizer {
+  const main = mainRecognizer(format);
+  const budget = { remaining: REPORT_LIMIT };
+  const objects = {
+    stdout: new StructuredReports(budget),
+    stderr: new StructuredReports(budget),
+  };
+  return {
+    push(stream, chunk) {
+      main.push(stream, chunk);
+      if (format === "auto") objects[stream].push(chunk);
+    },
+    observed: () => main.observed(),
+    report() {
+      const report = main.report();
+      if (format !== "auto" || nonPass(report)) return report;
+      for (const extra of [objects.stdout.report(), objects.stderr.report()])
+        if (extra && nonPass(extra)) return extra;
+      return report;
     },
   };
 }
