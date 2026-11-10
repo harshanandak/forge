@@ -2060,6 +2060,19 @@ export async function createAssembly(
                   write: scope.effects.includes(`${noun}:write`),
                   requestId: request.requestId,
                 });
+                if (
+                  namespace === "forge/work" &&
+                  current.catalog.resolve(scope.op).operation.declaredOp ===
+                    "lane.release"
+                ) {
+                  const id = (request.input as { id: string }).id;
+                  scope.authorizeFinalizer?.(
+                    clients[binding.slot] as ReturnType<
+                      typeof createStateClient
+                    >,
+                    `cleanup:work-${id.slice(id.lastIndexOf("-") + 1)}`,
+                  );
+                }
               }
               return {
                 ownership: "owned",

@@ -1,6 +1,7 @@
 import { DEFAULT_PARSE_LIMITS } from "../../contract/untrusted.ts";
 import type { ParseLimits } from "../../generated/types.ts";
 import type { ClockPort } from "../../ports/clock.ts";
+import type { DeletableStateClient } from "../../ports/state.ts";
 import { ForgeFailure } from "../../contract/failure.ts";
 import { refuse } from "../trust/index.ts";
 import type {
@@ -9,6 +10,13 @@ import type {
   ProcessSupervisionReport,
   ProcessResult,
 } from "../../ports/process.ts";
+
+export type FinalizerState = {
+  delete(
+    key: string,
+    options: { expectRevision: number; guard: () => boolean },
+  ): unknown;
+};
 
 // Bound inspection before encoding: never traverse provider extras or retain mutable results.
 function processSnapshot(result: ProcessResult): string {
@@ -70,6 +78,12 @@ export class InvocationServices {
   readonly controller: AbortController = new AbortController();
   #deadline: number;
   readonly #pending = new Set<Promise<unknown>>();
+  #unconfirmedProcesses = 0;
+  readonly #finalizers: (() => void)[] = [];
+  #finalizerState?: FinalizerState;
+  #finalizerKey?: string;
+  readonly #monotonic: () => number;
+  #monotonicBound: number;
   #active = true;
   readonly #cleanupErrors: unknown[] = [];
   readonly #authorize: () => void;
@@ -87,7 +101,10 @@ export class InvocationServices {
     strict = false,
     clock: ClockPort = { now: () => Date.now() },
     limits: Pick<ParseLimits, "maxNodes" | "maxDepth"> = DEFAULT_PARSE_LIMITS,
+    monotonic: () => number = () => performance.now(),
   ) {
+    this.#monotonic = monotonic;
+    this.#monotonicBound = monotonic() + deadline - clock.now();
     this.#limits = limits;
     this.#clock = clock;
     this.#deadline = deadline;
@@ -100,6 +117,14 @@ export class InvocationServices {
   startHandler(deadline: number): void {
     this.check();
     this.#deadline = deadline;
+    this.#monotonicBound = this.#monotonic() + deadline - this.#clock.now();
+  }
+  authorizeFinalizer(state: FinalizerState, key: string): void {
+    this.check();
+    if (this.#finalizerState)
+      refuse("INPUT_INVALID", "Finalizer already bound");
+    this.#finalizerState = state;
+    this.#finalizerKey = key;
   }
   check(): void {
     if (!this.#active)
@@ -174,6 +199,9 @@ export class InvocationServices {
   }
   async drain(): Promise<void> {
     await Promise.allSettled([...this.#pending]);
+    const finalizers = this.#finalizers.splice(0);
+    if (!this.#active && this.#unconfirmedProcesses === 0)
+      for (const finalize of finalizers) finalize();
     if (this.#cleanupErrors.length)
       throw new AggregateError(this.#cleanupErrors, "Process cleanup failed");
   }
@@ -377,6 +405,8 @@ export class InvocationServices {
       if (proxies.has(entry)) return entry;
       const cached = seen.get(entry)?.get(receiver);
       if (cached) return cached;
+      const stateClient = entry === this.#finalizerState;
+      let owned: number | undefined;
       // Explicit process capabilities inherit cancellation even if the
       // handler omits or replaces its own signal and timeout.
       const processPort =
@@ -391,6 +421,46 @@ export class InvocationServices {
         typeof entry === "function" ? (..._args: unknown[]) => undefined : {};
       const read = (key: string | symbol): unknown => {
         this.check();
+        if (stateClient && key === "put")
+          return (...args: Parameters<DeletableStateClient["put"]>) => {
+            this.check();
+            const row = (entry as DeletableStateClient).put(
+              ...(args.map(transfer) as typeof args),
+            );
+            if (row.key === this.#finalizerKey) owned = row.revision;
+            return returned(row);
+          };
+        if (stateClient && key === "finalizeDelete")
+          return (key: string, revision: number) => {
+            this.check();
+            if (!owned || key !== this.#finalizerKey || owned !== revision)
+              refuse(
+                "INPUT_INVALID",
+                "Finalization requires an owned revision",
+              );
+            const bound = this.deadline;
+            const monotonicBound = this.#monotonicBound;
+            const guard = () =>
+              this.#clock.now() < bound && this.#monotonic() < monotonicBound;
+            // Only teardown may use this exact deletion; ordinary clients remain revoked.
+            this.#finalizers.push(() => {
+              if (!guard()) return;
+              try {
+                (entry as FinalizerState).delete(key, {
+                  expectRevision: revision,
+                  guard,
+                });
+              } catch (error) {
+                if (
+                  !(error instanceof ForgeFailure) ||
+                  !["REVISION_CONFLICT", "SERVICE_EXPIRED"].includes(
+                    error.error.code,
+                  )
+                )
+                  throw error;
+              }
+            });
+          };
         if (
           typeof entry === "function" &&
           (key === "bind" || key === "call" || key === "apply")
@@ -407,6 +477,8 @@ export class InvocationServices {
             const signal = options.signal
               ? AbortSignal.any([this.controller.signal, options.signal])
               : this.controller.signal;
+            // A thrown or rejected launch also lacks proof of termination.
+            this.#unconfirmedProcesses++;
             const pending = port
               .run(executable, args, {
                 ...options,
@@ -439,6 +511,8 @@ export class InvocationServices {
             void pending.then(
               (result) => {
                 this.#pending.delete(pending);
+                if (result.supervision?.confirmed !== false)
+                  this.#unconfirmedProcesses--;
                 this.#capture(result, options);
                 if (result.supervision && this.#reports.length < 32)
                   this.#reports.push(result.supervision);

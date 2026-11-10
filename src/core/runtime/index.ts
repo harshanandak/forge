@@ -4,7 +4,7 @@ import {
   TIMEOUT_BOUNDS,
 } from "./deadline.ts";
 import type { ClockPort } from "../../ports/clock.ts";
-import { InvocationServices } from "./services.ts";
+import { InvocationServices, type FinalizerState } from "./services.ts";
 import { bindContext } from "../../contract/context.ts";
 import { ForgeFailure } from "../../contract/failure.ts";
 import { inputError, formatConfigProblem } from "../../contract/input-error.ts";
@@ -54,6 +54,7 @@ function onlyPendingLockCleanup(error: unknown, depth = 0): boolean {
 }
 
 export interface ServiceScope {
+  readonly authorizeFinalizer?: (state: FinalizerState, key: string) => void;
   readonly op: string;
   readonly effects: readonly string[];
   readonly signal: AbortSignal;
@@ -422,6 +423,8 @@ export class Runtime {
             operation.instance,
             bound.context,
             Object.freeze({
+              authorizeFinalizer: (state: FinalizerState, key: string) =>
+                scope.authorizeFinalizer(state, key),
               op: request.op,
               effects: Object.freeze([...declaration.effects]),
               signal: scope.controller.signal,
