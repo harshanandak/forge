@@ -112,7 +112,7 @@
       "context": "leased",
       "timeoutMs": 15000,
       "leaseMode": "acquire",
-      "effects": ["issue:write", "files:read", "files:write"],
+      "effects": ["issue:write"],
       "idempotent": false,
       "callers": ["agent", "human"],
       "stability": "experimental",

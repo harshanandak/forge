@@ -44,6 +44,7 @@ function fixture() {
       failRevParse: false,
       failUpdateRef: false,
       refuse: false,
+      uuid: "11111111-2222-4333-8444-555555555555",
     };
   let pinned = "";
   // Names of the exclusion locks a call holds right now.
@@ -63,7 +64,10 @@ function fixture() {
       read: (path: string) => (path === "forge-lanes.json" ? undefined : brief),
       write() {},
       lock: ([name]: string[]) => {
-        if (name !== own && name?.startsWith("forge-lane-ref-"))
+        if (
+          name !== `forge-lane-ref-${hooks.uuid}.lock` &&
+          name?.startsWith("forge-lane-ref-")
+        )
           probes.push(name);
         if (held.has(name!)) throw new Error(`held: ${name}`);
         held.add(name!);
@@ -71,7 +75,7 @@ function fixture() {
       },
     },
     environment: { platform: "linux", select: () => ({}) },
-    crypto: { randomUUID: () => "11111111-2222-4333-8444-555555555555" },
+    crypto: { randomUUID: () => hooks.uuid },
     process: {
       resolve: () => ({ kind: "resolved", path: "git" }),
       run: (
@@ -248,3 +252,27 @@ for (const live of [false, true]) {
     expect(f.held.size).toBe(0);
   }, 30_000);
 }
+
+test("rotating sweeps reach abandoned refs while the first 32 owners stay live", async () => {
+  const f = fixture();
+  const liveRefs: string[] = [];
+  for (let index = 0; index < 40; index++) {
+    const uuid = `${index.toString(16).padStart(8, "0")}-bbbb-4ccc-8ddd-eeeeeeeeeeee`;
+    const ref = stale(1, uuid);
+    f.refs.add(ref);
+    if (index < 32) {
+      f.held.add(`forge-lane-ref-${uuid}.lock`);
+      liveRefs.push(ref);
+    }
+  }
+  for (const offset of [0, 32]) {
+    f.hooks.uuid = `${offset.toString(16).padStart(8, "0")}-2222-4333-8444-555555555555`;
+    f.probes.length = 0;
+    await f.run();
+    expect(f.probes).toHaveLength(32);
+    expect(f.held.size).toBe(32);
+    expect(liveRefs.every((ref) => f.refs.has(ref))).toBe(true);
+    if (offset === 0) expect(f.refs.size).toBe(40);
+  }
+  expect([...f.refs]).toEqual(liveRefs);
+}, 30_000);

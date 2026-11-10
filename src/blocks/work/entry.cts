@@ -799,19 +799,6 @@ function briefProblems(text: string): string[] {
 
 const registryPath = "forge-lanes.json";
 const registryLock = "forge-lanes-registry.lock";
-function reserveCleanup(files: FilesService, id: string) {
-  // Any future operation that reopens or reactivates an issue must honor this reservation.
-  try {
-    return files.lock([`forge-lane-cleanup-${id}.lock`], {
-      recoverDeadOwner: true,
-    });
-  } catch {
-    fail(
-      "INPUT_CONFLICT",
-      `Lane cleanup holds ${id}; retry after cleanup completes`,
-    );
-  }
-}
 function laneFiles(services: unknown): FilesService {
   const files = (services as { files?: FilesService }).files;
   if (!files) fail("UNAVAILABLE", "Lane operations require the files service");
@@ -980,6 +967,7 @@ async function sweepPrivateRefs(
   env: Readonly<Record<string, string>>,
   now: number,
   files: FilesService,
+  randomId: string,
 ): Promise<void> {
   const listed = await bestEffortGit(executor, git, cwd, env, [
     "for-each-ref",
@@ -987,18 +975,25 @@ async function sweepPrivateRefs(
     "refs/forge/lane-close/",
     "refs/forge/lane-base/",
   ]);
-  const stale: string[] = [];
-  let probes = 0;
-  for (const ref of listed.split(/\r?\n/)) {
+  const candidates = listed.split(/\r?\n/).flatMap((ref) => {
     const match = PRIVATE_REF.exec(ref);
-    if (
-      match === null ||
-      Math.abs(now - Number(match[1])) <= PRIVATE_REF_MAX_AGE_MS
-    )
-      continue;
-    if (probes >= PRIVATE_REF_SWEEP_PROBES) break;
-    probes += 1;
-    if (!ownerIsLive(files, match[2]!)) stale.push(ref);
+    return match !== null &&
+      Math.abs(now - Number(match[1])) > PRIVATE_REF_MAX_AGE_MS
+      ? [{ ref, id: match[2]! }]
+      : [];
+  });
+  if (!candidates.length) return;
+  // Rotate the bounded window using the call UUID, without persisting a cursor.
+  const offset =
+    (Number.parseInt(randomId.slice(0, 8), 16) >>> 0) % candidates.length;
+  const stale: string[] = [];
+  for (
+    let index = 0;
+    index < Math.min(PRIVATE_REF_SWEEP_PROBES, candidates.length);
+    index++
+  ) {
+    const candidate = candidates[(offset + index) % candidates.length]!;
+    if (!ownerIsLive(files, candidate.id)) stale.push(candidate.ref);
   }
   await dropPrivateRefs(executor, git, cwd, env, stale);
 }
@@ -3844,9 +3839,17 @@ const operations: Operations<WorkOperations> = {
     const remoteHead = await laneMainBranch(config, () =>
       run(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], true),
     );
-    await sweepPrivateRefs(executor, git, files.root, env, clock(), files);
-    const baseId = bound.crypto.randomUUID(),
-      baseLock = files.lock([privateRefLock(baseId)], {
+    const baseId = bound.crypto.randomUUID();
+    await sweepPrivateRefs(
+      executor,
+      git,
+      files.root,
+      env,
+      clock(),
+      files,
+      baseId,
+    );
+    const baseLock = files.lock([privateRefLock(baseId)], {
         recoverDeadOwner: true,
       }),
       baseRef = privateRefName("lane-base", baseId, clock());
@@ -3997,8 +4000,7 @@ const operations: Operations<WorkOperations> = {
     if (git.kind !== "resolved")
       fail("UNAVAILABLE", "Install Git and put it on PATH");
     const lock = files.lock([registryLock], { recoverDeadOwner: true });
-    let runLock: ReturnType<FilesService["lock"]> | undefined,
-      reservation: typeof runLock;
+    let runLock: ReturnType<FilesService["lock"]> | undefined;
     try {
       const saved = laneRegistry(files),
         lane = saved.lanes.find((row) => laneIdentity(row) === id);
@@ -4179,7 +4181,6 @@ const operations: Operations<WorkOperations> = {
           "INPUT_CONFLICT",
           "Preserve dirty, untracked or ignored work before releasing the lane",
         );
-      reservation = reserveCleanup(files, id);
       await run(["worktree", "remove", worktree], checkout, worktree);
       eligible();
       files.write(
@@ -4199,13 +4200,9 @@ const operations: Operations<WorkOperations> = {
       };
     } finally {
       try {
-        reservation?.release();
+        runLock?.release();
       } finally {
-        try {
-          runLock?.release();
-        } finally {
-          lock.release();
-        }
+        lock.release();
       }
     }
   },
@@ -4572,11 +4569,19 @@ const operations: Operations<WorkOperations> = {
           refuse("PR_NOT_MERGED", `PR must be merged into ${main}`);
         // Fetch main into a ref only this call uses: FETCH_HEAD is shared, and
         // any other fetch in the repository can overwrite it.
-        await sweepPrivateRefs(executor, git, checkout, env, clock(), files);
         const mainId =
-            bound.crypto?.randomUUID() ??
-            fail("UNAVAILABLE", "Lane close requires crypto"),
-          mainLock = files.lock([privateRefLock(mainId)], {
+          bound.crypto?.randomUUID() ??
+          fail("UNAVAILABLE", "Lane close requires crypto");
+        await sweepPrivateRefs(
+          executor,
+          git,
+          checkout,
+          env,
+          clock(),
+          files,
+          mainId,
+        );
+        const mainLock = files.lock([privateRefLock(mainId)], {
             recoverDeadOwner: true,
           }),
           mainRef = privateRefName("lane-close", mainId, clock());
@@ -4940,28 +4945,22 @@ const operations: Operations<WorkOperations> = {
     const state = client(services);
     const ids = idsFor(state, config);
     const id = ids.stored(input.id);
-    const files = (services as { files?: FilesService }).files;
-    const reservation = files ? reserveCleanup(files, id) : undefined;
-    try {
-      if (stored(get(state, id, input.id)).status !== "open")
-        fail("INPUT_CONFLICT", "Closed issues cannot be claimed");
-      const ttl =
-        input.ttlSeconds ??
-        (config as WorkConfig | undefined)?.claimTtlSeconds ??
-        3600;
-      const acquired = state.acquire(key(id), ttl * 1000);
-      // Another holder may close between the initial read and acquisition.
-      if (stored(get(state, id, input.id)).status !== "open") {
-        state.release(key(id));
-        fail(
-          "INPUT_CONFLICT",
-          "The issue closed during acquisition; the grant was revoked",
-        );
-      }
-      return grant(state, id, acquired, ids);
-    } finally {
-      reservation?.release();
+    if (stored(get(state, id, input.id)).status !== "open")
+      fail("INPUT_CONFLICT", "Closed issues cannot be claimed");
+    const ttl =
+      input.ttlSeconds ??
+      (config as WorkConfig | undefined)?.claimTtlSeconds ??
+      3600;
+    const acquired = state.acquire(key(id), ttl * 1000);
+    // Another holder may close between the initial read and acquisition.
+    if (stored(get(state, id, input.id)).status !== "open") {
+      state.release(key(id));
+      fail(
+        "INPUT_CONFLICT",
+        "The issue closed during acquisition; the grant was revoked",
+      );
     }
+    return grant(state, id, acquired, ids);
   },
   "issue.renew": ({ input, services, config }) => {
     const state = client(services);

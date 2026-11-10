@@ -1,5 +1,5 @@
-import { dirname, join, resolve } from "node:path";
-import { existsSync, lstatSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import {
   createConfig,
@@ -235,23 +235,6 @@ export interface Assembly {
   prepareTrust(): Promise<void>;
   close(): Promise<void>;
 }
-function outsideGit(root: string): boolean {
-  for (let current = resolve(root); ;) {
-    try {
-      if (lstatSync(join(current, ".git"), { throwIfNoEntry: false }))
-        return false;
-    } catch {
-      refuse(
-        "UNAVAILABLE",
-        "Cannot inspect Git context for clone files; retry",
-      );
-    }
-    const parent = dirname(current);
-    if (parent === current) return true;
-    current = parent;
-  }
-}
-
 function trustRecord(value: unknown): TrustRecord | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const record = value as Record<string, unknown>;
@@ -2006,14 +1989,6 @@ export async function createAssembly(
                       "CONTEXT_MISSING",
                       "Clone files require project context",
                     );
-                  const optional = current.blocks
-                    .get(instance)!
-                    .manifest.requires?.some(
-                      (required) =>
-                        required.slot === binding.slot && required.optional,
-                    );
-                  // Outside Git there are no lanes or worktrees, so claims need no cleanup fence.
-                  if (optional && outsideGit(root)) continue;
                   const lease = await providers.openFiles(scope);
                   leases.push(lease);
                   clients[binding.slot] = lease.value;
