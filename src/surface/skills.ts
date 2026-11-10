@@ -7,7 +7,6 @@ import {
 } from "../contract/mcp.ts";
 import {
   CORE_NOUNS,
-  cliWords,
   mcpToolName,
   parseOperationName,
 } from "../contract/naming.ts";
@@ -74,8 +73,7 @@ function section(candidate: McpCandidate, prefix: string | undefined): string {
     ...(deprecated === undefined ? [] : [`Deprecated: use \`${deprecated}\`.`]),
     docs.summary,
     "",
-    `- CLI: \`forge ${(cliWords(op) ?? [op]).join(" ")} --input '<json>'\``,
-    `- MCP: \`${mcpToolName(op, prefix) ?? "catalog_call"}\``,
+    ...(mcpToolName(op, prefix) === undefined ? ["- MCP: `catalog_call`"] : []),
     `- Input: ${fields(candidate.argumentSchema ?? candidate.inputSchema)}`,
     `- Effects: ${effects}; ${declaration.idempotent ? "idempotent" : "not idempotent"}`,
     "",
@@ -109,7 +107,8 @@ function skill(
     entries.every((entry) => entry.blockId === block && entry.builtin === true)
       ? [`<!-- forge block: ${block} -->`]
       : []),
-    "Every call returns a JSON result envelope. When an MCP tool below is not listed, use `catalog_call` with the operation name and input; `catalog_describe` returns the full schemas.",
+    `For \`<noun>.<verb>\`, keep hyphens. CLI: \`forge <noun> <verb> --input '<json>'\`. MCP: \`${prefix === undefined ? "" : `${prefix}_`}<noun>_<verb>\`, unless overridden in the section.`,
+    "Every call returns a JSON result envelope. When an MCP tool is not listed, use `catalog_call` with the operation name and input; `catalog_describe` returns the full schemas.",
     "",
     ...agent.map((c) => section(c, prefix)),
     ...(human.length === 0

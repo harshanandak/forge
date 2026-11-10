@@ -41,8 +41,7 @@ import {
 import { candidate } from "./fixtures/catalog.ts";
 
 const repo = resolve(import.meta.dirname, "../..");
-/** A skill's CLI line; built with RegExp so its backticks do not read as a template literal. */
-const CLI_LINE = new RegExp("^- CLI: `([^`]+)`$", "gm");
+const allBlocks = ["accounts", "agent", "check", "memory", "project", "work"];
 
 function operationSection(text: string, op: string): string {
   const sections = text.split("\n## ").slice(1);
@@ -135,7 +134,7 @@ test("every generated operation retains its own calling facts and issue has 1024
     const issue = skills.find((skill) => skill.noun === "issue");
     expect(issue).toBeDefined();
     expect(Buffer.byteLength(issue!.text)).toBeLessThanOrEqual(7168);
-  });
+  }, allBlocks);
 }, 30_000);
 
 test("shared call rules and exceptions resolve every operation, renamed deprecation and missing MCP tool", async () => {
@@ -196,7 +195,7 @@ test("shared call rules and exceptions resolve every operation, renamed deprecat
         );
       }
     }
-  });
+  }, allBlocks);
 }, 30_000);
 
 /** Run `forge <argv>` through the generated CLI against the assembly; returns the parsed envelope. */
@@ -225,7 +224,7 @@ async function withProject(
   const root = mkdtempSync(join(tmpdir(), "forge-skills-"));
   try {
     const blocks: Record<string, unknown> = {};
-    for (const name of ["work", "memory"]) {
+    for (const name of new Set(["work", "memory", ...admit])) {
       const target = join(root, "blocks", name);
       cpSync(join(repo, "src/blocks", name), target, { recursive: true });
       const { entry } = JSON.parse(
@@ -287,12 +286,13 @@ test("skills.sync writes one linted skill per block noun, deterministically, fro
       expect(lintSkill(text, assembly.catalog.list())).toEqual([]);
     }
     const decision = readFileSync(join(root, paths[0] ?? ""), "utf8");
-    expect(decision).toContain(
-      "- CLI: `forge decision propose --input '<json>'`\n- MCP: `decision_propose`",
-    );
+    expect(skillCalls(decision, "decision.propose")).toEqual({
+      cli: "forge decision propose --input '<json>'",
+      mcp: "decision_propose",
+    });
     expect(decision).toContain("- Effects: `decision:write`; not idempotent");
     expect(decision).toContain("## `decision.adopt`");
-    expect(decision).toContain("- MCP: `decision_adopt`");
+    expect(skillCalls(decision, "decision.adopt").mcp).toBe("decision_adopt");
     expect(await forge(assembly, ["skills", "sync"])).toMatchObject({
       result: { written: [], unchanged: paths },
     });
@@ -422,13 +422,14 @@ test("an enabled but unadmitted block gets no skill and none of its text reaches
   );
 }, 30_000);
 
-test("every generated CLI line for the shipped blocks delivers its --input JSON through the real CLI parser", async () => {
+test("every generated CLI call for the shipped blocks delivers its --input JSON through the real CLI parser", async () => {
   await withProject(async (assembly) => {
     const catalog = assembly.catalog.list();
     const input = { probe: [1, "two words"], nested: { ok: true } };
     const ops: string[] = [];
     for (const skill of renderSkills(catalog))
-      for (const [, line = ""] of skill.text.matchAll(CLI_LINE)) {
+      for (const [, op = ""] of skill.text.matchAll(/^## `([^`]+)`/gm)) {
+        const line = skillCalls(skill.text, op).cli;
         let seen: InvocationRequest | undefined;
         const argv = line
           .split(" ")
@@ -447,7 +448,7 @@ test("every generated CLI line for the shipped blocks delivers its --input JSON 
         expect(seen?.input).toEqual(input);
         ops.push(seen?.op ?? line);
       }
-    // One line per agent-callable block operation, and nothing else.
+    // One call per agent-callable block operation, and nothing else.
     const expected = catalog
       .filter((c) => isAgentCallable(c.declaration))
       .map((c) => c.op)
@@ -489,7 +490,7 @@ test("the lint rejects unknown operations and oversized skills; core and human-o
   expect(skills.map((s) => s.path)).toEqual(["sample/SKILL.md"]);
   expect(renderSkills([...catalog].reverse(), "forge")).toEqual(skills);
   const text = skills[0]?.text ?? "";
-  expect(text).toContain("- MCP: `forge_sample_echo`");
+  expect(skillCalls(text, "sample.echo").mcp).toBe("forge_sample_echo");
   expect(lintSkill(text, catalog, "forge")).toEqual([]);
   for (const planted of [
     "`sample.frobnicate`",
@@ -612,13 +613,18 @@ test("input fields are shown for display only; non-object and $ref/anyOf inputs 
   const render = (inputSchema: McpCandidate["inputSchema"]) =>
     renderSkills([{ ...base, inputSchema }])[0]?.text ?? "";
   const text = render({ ...base.inputSchema, properties });
-  expect(text).toContain("- CLI: `forge sample echo --input '<json>'`");
+  expect(skillCalls(text, "sample.echo").cli).toBe(
+    "forge sample echo --input '<json>'",
+  );
   expect(text).toContain(
     '- Input: `value` string (required), `count` integer (optional), `preRelease` boolean (optional), `tags` see schema (optional), `mode` see schema (optional), `level` "low" | "high" (optional), `names` string[] (optional)\n',
   );
-  expect(render({ type: "string" })).toContain(
-    "- CLI: `forge sample echo --input '<json>'`\n- MCP: `sample_echo`\n- Input: string\n",
-  );
+  const scalar = render({ type: "string" });
+  expect(skillCalls(scalar, "sample.echo")).toEqual({
+    cli: "forge sample echo --input '<json>'",
+    mcp: "sample_echo",
+  });
+  expect(scalar).toContain("- Input: string\n");
   expect(render({ type: "array", items: { type: "string" } })).toContain(
     "- Input: string[]\n",
   );
