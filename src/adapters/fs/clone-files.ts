@@ -240,6 +240,40 @@ export function lockHostIdentity(
 function validHostIdentity(value: unknown): value is string {
   return typeof value === "string" && /^[0-9a-f]{16}$/.test(value);
 }
+function refuseLockOwner(
+  code: string,
+  reason: string,
+  paths: readonly string[],
+  kind = "marker",
+): never {
+  const directory = dirname(paths[0]!).split("\\").join("/");
+  const message = `${reason}, remove the named ${kind} file${paths.length === 1 ? "" : "s"} ${paths.join(", ")} and then its now-empty lock directory ${directory}`;
+  // Readers may catch the refusal to keep the ref; stderr still reports why.
+  process.emitWarning(message, { code });
+  failure(code, message);
+}
+export function checkUnpublishedLockOwner(
+  target: string,
+  names: readonly string[],
+  relativePath: string,
+): void {
+  if (
+    !names.length ||
+    !names.every(
+      (name) =>
+        /^\.forge-owner-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp$/.test(
+          name,
+        ) && stat(join(target, name))?.isFile(),
+    )
+  )
+    return;
+  refuseLockOwner(
+    "INPUT_CONFLICT",
+    "Recoverable exclusion lock has an unpublished owner; after confirming no Forge process is mid-acquire",
+    names.map((name) => `${relativePath}/${name}`),
+    "temp",
+  );
+}
 export function checkLockHost(
   marker: string,
   hostIdentity: string | undefined,
@@ -268,11 +302,11 @@ export function checkLockHost(
       : record.hostIdentity === "unknown"
         ? "unknown"
         : "invalid";
-    const directory = dirname(relativePath).split("\\").join("/");
-    const message = `Foreign host id ${ownerHost} holds ${relativePath}; run the command on host id ${ownerHost}, or after confirming that machine is down, remove the named marker file ${relativePath} and then its now-empty lock directory ${directory}`;
-    // The sweep catches the refusal to keep the ref; stderr still reports why.
-    process.emitWarning(message, { code: "LOCK_FOREIGN_HOST" });
-    failure("LOCK_FOREIGN_HOST", message);
+    refuseLockOwner(
+      "LOCK_FOREIGN_HOST",
+      `Foreign host id ${ownerHost} holds ${relativePath}; run the command on host id ${ownerHost}, or after confirming that machine is down`,
+      [relativePath],
+    );
   }
 }
 /** Owner filenames make dead-owner cleanup generation-specific; unknown locks stay untouched. */
@@ -326,7 +360,10 @@ function recoverableLock(
     const names = readdirSync(target),
       name = names.length === 1 ? names[0] : undefined;
     const match = name?.match(/^owner-([1-9]\d*)-[0-9a-f-]{36}$/);
-    if (!match) conflict();
+    if (!match) {
+      checkUnpublishedLockOwner(target, names, relativePath);
+      conflict();
+    }
     checkLockHost(join(target, name!), hostIdentity, `${relativePath}/${name}`);
     let dead = false;
     try {
