@@ -26,6 +26,12 @@ class IdentityTokenRefusal extends Error {
   readonly kind = "identity-token-refusal";
 }
 
+const executableNames = new Set(
+  "eval Function setTimeout setInterval globalThis self window global Reflect constructor getOwnPropertyDescriptor getOwnPropertyDescriptors getPrototypeOf setPrototypeOf defineProperty defineProperties __proto__ __lookupGetter__".split(
+    " ",
+  ),
+);
+
 const controls = new Set(["if", "while", "for", "with", "switch", "catch"]);
 const regexPrefix = new Set(
   "return throw typeof void delete new in instanceof case else do default extends".split(
@@ -58,6 +64,11 @@ function identityTokens(source: string): {
     throw new IdentityTokenRefusal(`${reason} at offset ${i}`);
   };
   const emit = (kind: IdentityToken["kind"], text: string): void => {
+    if (
+      (kind === "identifier" || kind === "literal") &&
+      executableNames.has(text)
+    )
+      refuse("executable source");
     tokens.push({ kind, text });
   };
   const escape = (): string => {
@@ -79,7 +90,8 @@ function identityTokens(source: string): {
         emit("literal", text);
         return;
       }
-      if (ch === "\n" || ch === "\r") refuse("unterminated string");
+      if ((ch === "\n" || ch === "\r") && quote !== "`")
+        refuse("unterminated string");
       if (ch !== "\\") {
         text += ch;
         continue;
@@ -134,6 +146,12 @@ function identityTokens(source: string): {
     refuse("unterminated regex");
   };
   const template = (): void => {
+    if (/^`(?:\\[\s\S]|[^`\\$]|\$(?!\{))*`/.test(source.slice(i))) {
+      const start = tokens.length;
+      quoted("`");
+      tokens.splice(start, 0, { kind: "literal", text: "<template>" });
+      return;
+    }
     emit("literal", "<template>");
     i++;
     while (i < source.length) {
@@ -308,21 +326,25 @@ function identityTokens(source: string): {
   return { tokens, pairs };
 }
 
-function executableMember(
+function executableKey(
   tokens: readonly IdentityToken[],
   pairs: ReadonlyMap<number, number>,
   index: number,
 ): boolean {
   const token = tokens[index]!;
   const previous = tokens[index - 1];
-  if (
-    token.kind === "identifier" &&
-    token.text === "constructor" &&
-    [".", "?."].includes(previous?.text ?? "")
-  )
-    return true;
   // Empty brackets are array types; executable member access requires a key.
-  if (token.text !== "[" || pairs.get(index) === index + 1) return false;
+  if (token.kind !== "punctuator" || token.text !== "[") return false;
+  if (pairs.get(index) === index + 1) return false;
+  const container = Math.max(
+    -1,
+    ...[...pairs]
+      .filter(([open, end]) => open < index && index < end)
+      .map(([open]) => open),
+  );
+  const property =
+    tokens[container]?.text === "{" &&
+    ["{", ",", ";", "}", "*"].includes(previous?.text ?? "");
   const receiver =
     (previous?.kind === "identifier" &&
       ([".", "?."].includes(tokens[index - 2]?.text ?? "") ||
@@ -331,13 +353,12 @@ function executableMember(
             previous.text,
           )))) ||
     ["literal", "number", "regex"].includes(previous?.kind ?? "") ||
-    [")", "]", "?."].includes(previous?.text ?? "") ||
+    [")", "]", "?.", ">", "!"].includes(previous?.text ?? "") ||
     (previous?.text === "}" && previous.context === "expression");
   return (
-    receiver &&
+    (property || receiver) &&
     (pairs.get(index) !== index + 2 ||
-      !["literal", "number"].includes(tokens[index + 1]?.kind ?? "") ||
-      tokens[index + 1]?.text === "constructor")
+      !["literal", "number"].includes(tokens[index + 1]?.kind ?? ""))
   );
 }
 
@@ -361,21 +382,7 @@ function oauthMintRefusal(file: SourceFile): IdentityTokenRefusal | undefined {
     const { tokens: raw, pairs: rawPairs } = identityTokens(file.text);
     for (let i = 0; i < raw.length; i++) {
       const token = raw[i]!;
-      if (
-        (token.kind === "identifier" &&
-          [
-            "eval",
-            "Function",
-            "setTimeout",
-            "setInterval",
-            "globalThis",
-            "self",
-            "window",
-            "global",
-            "Reflect",
-          ].includes(token.text)) ||
-        executableMember(raw, rawPairs, i)
-      )
+      if (executableKey(raw, rawPairs, i))
         throw new IdentityTokenRefusal("executable source");
       if (
         token.kind !== "identifier" ||
@@ -409,7 +416,7 @@ function oauthMintRefusal(file: SourceFile): IdentityTokenRefusal | undefined {
       throw new IdentityTokenRefusal(reason);
     };
     for (let i = 0; i < tokens.length; i++) {
-      if (executableMember(tokens, pairs, i)) refuse("executable source");
+      if (executableKey(tokens, pairs, i)) refuse("executable source");
       if (at(i) !== "function" || [".", "?."].includes(at(i - 1))) continue;
       let parameter = i + 1;
       if (at(parameter) === "*") parameter++;
