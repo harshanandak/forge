@@ -238,11 +238,14 @@ async function fixture() {
     spyOn(providers, "createAssemblyProviders").mockImplementation(
       (...args) => ({
         ...factory(...args),
-        process: (scope) => {
-          if (scope.op === "lane.release")
-            flags.releaseDeadline = scope.deadline;
-          return process;
-        },
+        process: (scope) => ({
+          ...process,
+          run: (executable, args, options) => {
+            if (scope.op === "lane.release")
+              flags.releaseDeadline = scope.deadline;
+            return process.run(executable, args, options);
+          },
+        }),
         openFiles: () =>
           Promise.resolve({
             ownership: "owned" as const,
