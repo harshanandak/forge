@@ -107,7 +107,7 @@ function skill(
     entries.every((entry) => entry.blockId === block && entry.builtin === true)
       ? [`<!-- forge block: ${block} -->`]
       : []),
-    `For \`<noun>.<verb>\`, keep hyphens. CLI: \`forge <noun> <verb> --input '<json>'\`. MCP: \`${prefix === undefined ? "" : `${prefix}_`}<noun>_<verb>\`, unless overridden in the section.`,
+    `Operation \`<noun>.<verb>\` maps to CLI: \`forge <noun> <verb> --input '<json>'\` and MCP: \`${prefix === undefined ? "" : `${prefix}_`}<noun>_<verb>\` (keep hyphens). A section shows CLI or MCP only where it differs.`,
     "Every call returns a JSON result envelope. When an MCP tool is not listed, use `catalog_call` with the operation name and input; `catalog_describe` returns the full schemas.",
     "",
     ...agent.map((c) => section(c, prefix)),
