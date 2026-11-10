@@ -18,11 +18,16 @@
     "bindings": [
       { "name": "PROJECTS", "class_name": "Project" },
       { "name": "CODE_REDEMPTION", "class_name": "CodeRedemption" },
+      { "name": "REGISTRATION_LIMITER", "class_name": "RegistrationLimiter" },
     ],
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["Project"] },
     { "tag": "v2-code-redemption", "new_sqlite_classes": ["CodeRedemption"] },
+    {
+      "tag": "v3-registration-limits",
+      "new_sqlite_classes": ["RegistrationLimiter"],
+    },
   ],
   "dev": { "ip": "127.0.0.1", "port": 8787 },
   "send_metrics": false,

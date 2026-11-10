@@ -140,6 +140,8 @@ test("alarm cleanup cannot revive a code after its issuance horizon", async () =
   await d.object.alarm();
   expect(d.values.size).toBe(0);
   expect(await f.options.storage.get("grant:person:grant")).toBeNull();
+  await f.options.storage.put("grant:person:grant", JSON.stringify(f.grant));
+  expect(await f.options.storage.get("grant:person:grant")).not.toBeNull();
   const response = await createOAuthAdapter(f.options).token(
     new Request("https://auth.example/oauth/token", {
       method: "POST",

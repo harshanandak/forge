@@ -491,10 +491,13 @@ test("real provider registration and canonical resource metadata handle requests
   const registration = await worker.fetch(
     new Request(`${issuer}/register`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "CF-Connecting-IP": "203.0.113.1",
+      },
       body: "{}",
     }),
-    env,
+    { ...env, REGISTRATION_LIMITER: f.env.PROJECTS },
   );
   expect(registration.status).toBe(400);
   expect(await registration.json()).toMatchObject({

@@ -8,8 +8,10 @@ import { createOAuthAdapter, type OAuthOptions } from "./index.ts";
 import { createWorker } from "../../worker.ts";
 import { OAuthConfigError, readOAuthConfig } from "./config.ts";
 import { OAuthAuthorizationServer } from "@cloudflare/workers-oauth-provider";
+import { guardRegistration, REGISTRATION_LIMITS } from "./registration.ts";
 export { Project } from "../../worker.ts";
 export { CodeRedemption } from "./redemption.ts";
+export { RegistrationLimiter } from "./registration.ts";
 
 export function composeOAuth(
   options: OAuthOptions,
@@ -62,6 +64,11 @@ export function createConfiguredWorker(
           "Atomic redemption unavailable",
         );
       try {
+        const refusal = await guardRegistration(
+          request,
+          env.REGISTRATION_LIMITER,
+        );
+        if (refusal) return refusal;
         if (protocol) return await protocol(request);
         if (
           new URL(request.url).pathname ===
@@ -87,6 +94,7 @@ export function createConfiguredWorker(
           resources: [config.resource],
           clientIdMetadataDocumentEnabled: false,
           clientRegistrationEndpoint: "/register",
+          clientRegistrationTTL: REGISTRATION_LIMITS.clientTTL,
         });
         // Authorization cannot begin an upstream exchange before atomic redemption is wired.
         if (new URL(request.url).pathname === "/authorize")
@@ -105,7 +113,12 @@ export function createConfiguredWorker(
           props: {},
         });
         await Promise.all(tasks);
-        return response;
+        return new URL(request.url).pathname === "/register" && !response.ok
+          ? Response.json(
+              { error: "invalid_client_metadata" },
+              { status: response.status },
+            )
+          : response;
       } catch {
         return configUnavailable("OAUTH_PROTOCOL");
       }
