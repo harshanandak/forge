@@ -12,8 +12,17 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { PassThrough } from "node:stream";
-import { isAgentCallable, type McpCandidate } from "../../src/contract/mcp.ts";
-import { CORE_NOUNS, nounRefusal } from "../../src/contract/naming.ts";
+import {
+  isAgentCallable,
+  renamedOperation,
+  type McpCandidate,
+} from "../../src/contract/mcp.ts";
+import {
+  CORE_NOUNS,
+  cliWords,
+  mcpToolName,
+  nounRefusal,
+} from "../../src/contract/naming.ts";
 import {
   createAssembly,
   localCall,
@@ -34,6 +43,161 @@ import { candidate } from "./fixtures/catalog.ts";
 const repo = resolve(import.meta.dirname, "../..");
 /** A skill's CLI line; built with RegExp so its backticks do not read as a template literal. */
 const CLI_LINE = new RegExp("^- CLI: `([^`]+)`$", "gm");
+
+function operationSection(text: string, op: string): string {
+  const sections = text.split("\n## ").slice(1);
+  const found = sections.filter((section) => section.startsWith(`\`${op}\``));
+  expect(found, op).toHaveLength(1);
+  return found[0]!;
+}
+
+/** Read the published call templates, then apply only explicitly printed overrides. */
+function skillCalls(text: string, op: string) {
+  const shared = text.split("\n## ")[0]!;
+  const cli = /CLI: `([^`]+)`/.exec(shared)?.[1];
+  const mcp = /MCP: `([^`]+)`/.exec(shared)?.[1];
+  expect(cli).toBe("forge <noun> <verb> --input '<json>'");
+  expect(mcp).toMatch(/^(?:[a-z][a-z0-9-]*_)?<noun>_<verb>$/);
+  expect(shared).toContain("keep hyphens");
+  expect(shared).toContain("catalog_call");
+  expect(shared).toContain("operation name and input");
+  const [noun, verb] = op.split(".");
+  const expand = (template: string) =>
+    template.replace("<noun>", noun!).replace("<verb>", verb!);
+  const section = operationSection(text, op);
+  return {
+    cli: /^- CLI: `([^`]+)`$/m.exec(section)?.[1] ?? expand(cli!),
+    mcp: /^- MCP: `([^`]+)`$/m.exec(section)?.[1] ?? expand(mcp!),
+  };
+}
+
+test("every generated operation retains its own calling facts and issue has 1024 bytes of headroom", async () => {
+  await withProject((assembly) => {
+    const catalog = assembly.catalog.list();
+    const skills = renderSkills(catalog);
+    console.table(
+      skills.map(({ noun, text }) => ({
+        noun,
+        bytes: Buffer.byteLength(text),
+      })),
+    );
+    for (const skill of skills) {
+      const entries = catalog.filter(
+        (entry) => entry.admitted && entry.op.split(".")[0] === skill.noun,
+      );
+      for (const entry of entries.filter((c) =>
+        isAgentCallable(c.declaration),
+      )) {
+        const section = operationSection(skill.text, entry.op);
+        expect(section).toContain(entry.docs.title);
+        expect(section).toContain(entry.docs.summary);
+        const schema = entry.argumentSchema ?? entry.inputSchema;
+        const required = Array.isArray(schema.required) ? schema.required : [];
+        for (const [name, field] of Object.entries(
+          record(schema.properties) ?? {},
+        )) {
+          const s = record(field)!;
+          const type = Array.isArray(s.enum)
+            ? s.enum.map((value) => JSON.stringify(value)).join(" | ")
+            : s.type === "array" && typeof record(s.items)?.type === "string"
+              ? `${String(record(s.items)?.type)}[]`
+              : Array.isArray(s.type)
+                ? s.type.join(" | ")
+                : typeof s.type === "string"
+                  ? s.type
+                  : "see schema";
+          expect(section, entry.op).toContain(
+            `\`${name}\` ${type} (${required.includes(name) ? "required" : "optional"})`,
+          );
+        }
+        if (entry.declaration.effects.length === 0)
+          expect(section).toContain("none (read-only)");
+        for (const effect of entry.declaration.effects)
+          expect(section).toContain(`\`${effect}\``);
+        expect(section).toMatch(
+          entry.declaration.idempotent
+            ? /; idempotent(?:\n|$)/
+            : /; not idempotent(?:\n|$)/,
+        );
+        const replacement = entry.declaration.deprecated?.use;
+        if (replacement !== undefined)
+          expect(section).toContain(
+            `Deprecated: use \`${renamedOperation(replacement, entry.rename)}\`.`,
+          );
+      }
+      for (const entry of entries.filter(
+        (c) => !isAgentCallable(c.declaration),
+      ))
+        expect(skill.text.split("## Human only\n")[1]).toContain(
+          `- \`${entry.op}\`: ${entry.docs.summary}`,
+        );
+    }
+    const issue = skills.find((skill) => skill.noun === "issue");
+    expect(issue).toBeDefined();
+    expect(Buffer.byteLength(issue!.text)).toBeLessThanOrEqual(7168);
+  });
+}, 30_000);
+
+test("shared call rules and exceptions resolve every operation, renamed deprecation and missing MCP tool", async () => {
+  await withProject((assembly) => {
+    const old: McpCandidate = {
+      ...candidate("demo.old", {
+        stability: "deprecated",
+        deprecated: { since: "0.2.0", use: "sample.new" },
+      }),
+      declaredOp: "sample.old",
+      rename: { sample: "demo" },
+    };
+    const long = candidate(`${"d".repeat(21)}.${"v".repeat(21)}`);
+    const missingPrefix = "p".repeat(21);
+    const catalog = [
+      ...assembly.catalog.list(),
+      old,
+      candidate("demo.new"),
+      long,
+      candidate("two-words.read-back"),
+    ];
+    expect(cliWords(long.op)).toBeDefined();
+    expect(mcpToolName(long.op, missingPrefix)).toBeUndefined();
+    for (const prefix of [undefined, "forge", missingPrefix]) {
+      for (const skill of renderSkills(catalog, prefix)) {
+        for (const entry of catalog.filter(
+          (c) =>
+            c.admitted &&
+            isAgentCallable(c.declaration) &&
+            c.op.split(".")[0] === skill.noun,
+        )) {
+          const calls = skillCalls(skill.text, entry.op);
+          expect(calls.cli).toBe(
+            `forge ${cliWords(entry.op)!.join(" ")} --input '<json>'`,
+          );
+          expect(calls.mcp).toBe(
+            mcpToolName(entry.op, prefix) ?? "catalog_call",
+          );
+          expect(operationSection(skill.text, entry.op)).not.toContain(
+            "- CLI:",
+          );
+          if (mcpToolName(entry.op, prefix) !== undefined)
+            expect(operationSection(skill.text, entry.op)).not.toContain(
+              "- MCP:",
+            );
+        }
+      }
+      const demo = renderSkills(catalog, prefix).find(
+        (skill) => skill.noun === "demo",
+      )!;
+      expect(operationSection(demo.text, old.op)).toContain(
+        "Deprecated: use `demo.new`.",
+      );
+      if (prefix === missingPrefix) {
+        const fallback = renderSkills([long], prefix)[0]!;
+        expect(operationSection(fallback.text, long.op)).toContain(
+          "- MCP: `catalog_call`",
+        );
+      }
+    }
+  });
+}, 30_000);
 
 /** Run `forge <argv>` through the generated CLI against the assembly; returns the parsed envelope. */
 async function forge(assembly: Assembly, argv: readonly string[]) {
