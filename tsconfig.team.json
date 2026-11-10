@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.build.json",
+  "compilerOptions": {
+    "outDir": "dist-team",
+    "rootDir": "team",
+    "paths": {}
+  },
+  "include": ["team"],
+  "exclude": ["**/*.test.ts", "**/test/**"]
+}

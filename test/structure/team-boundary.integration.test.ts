@@ -46,6 +46,7 @@ const declarations = readJson(
   "test/structure/fixtures/team-declarations.json",
 ) as {
   configs: Record<string, unknown>;
+  compilerAliases: Record<string, unknown>;
   manifests: { name: string; path: string; value: unknown }[];
 };
 const compilerConfigs = (
@@ -81,6 +82,21 @@ const compilerConfigs = (
     visit(path);
   return [...found.values()];
 };
+
+test("public code refuses an import from the team build output", () => {
+  const path = "src/assembly/compose.ts";
+  expect(
+    boundary([{ path, text: fixture("team build import") }]).map((v) => v.file),
+  ).toEqual([path]);
+}, 30_000);
+
+for (const [path, config] of Object.entries(declarations.compilerAliases)) {
+  test(`${path} refuses a paths alias into the team build output`, () => {
+    expect(
+      boundary([{ path, text: JSON.stringify(config) }]).map((v) => v.file),
+    ).toEqual([path]);
+  }, 30_000);
+}
 
 test("the real scan includes sources from every public root", () => {
   const sources = readRepoFiles(paths.filter((path) => CODE_FILE.test(path)));
