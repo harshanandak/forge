@@ -44,8 +44,11 @@ test("repository listing excludes an untracked transient root folder before its 
   withRepo((root) => {
     const transient = mkdtempSync(join(root, ".journey-exit-"));
     writeFileSync(join(transient, "journey.mjs"), "export {};\n");
+    const mixedCase = mkdtempSync(join(root, ".JoUrNeY-ExIt-"));
+    writeFileSync(join(mixedCase, "journey.mjs"), "export {};\n");
     const paths = listRepoFiles(root);
     rmSync(transient, { recursive: true, force: true });
+    rmSync(mixedCase, { recursive: true, force: true });
     expect(paths).toEqual([".gitignore", "src/tracked.ts"]);
     expect(() => readRepoFiles(paths, root)).not.toThrow();
   });
@@ -107,10 +110,20 @@ test("brand-new source roots, root dot files and nested dot folders are scanned 
       "new-source/index.ts",
       ".config.json",
       "src/.local/file.ts",
+      ".plugin/check.ts",
+      ".husky/pre-push",
+      ".Journey-Exit/check.ts",
+      ".journey-exit-source.ts",
+      "src/.journey-exit-local/check.ts",
     ]) {
       write(root, path);
       expect(listRepoFiles(root)).toContain(path);
     }
+    write(root, ".plugin/check.ts", "import '../team/secret.ts';\n");
+    expect(readRepoFiles(listRepoFiles(root), root)).toContainEqual({
+      path: ".plugin/check.ts",
+      text: "import '../team/secret.ts';\n",
+    });
   });
 }, 30_000);
 

@@ -40,22 +40,23 @@ function gitFiles(root: string, flags: readonly string[]): string[] {
   return out.stdout.split("\0").filter((path) => path !== "");
 }
 
+// Owned by test/core/async-handlers/journey-exit.integration.test.ts; its child scratch is nested.
+const REPO_SCRATCH_PREFIXES = [".journey-exit-"] as const;
+
 /**
- * Keep every tracked path, even if missing. Include nonignored untracked root files and files
- * under every ordinary root directory, including brand-new source roots. Only a root dot
- * directory with no tracked contents is treated as scratch space (such as .journey-exit-*).
- * Stage hidden source roots to scan them; existing dot roots such as
- * .github keep their untracked files visible. Nested dot directories are not excluded.
+ * Keep every tracked path, even if missing. Include every nonignored untracked path except
+ * files inside an owned root scratch directory, matching its prefix case-insensitively.
+ * New source roots and dot folders stay visible before staging; nested matches and root files
+ * are not scratch directories. The journey stays in package scope for module self-resolution.
  */
 export function listRepoFiles(root: string = repoRoot): string[] {
   const tracked = gitFiles(root, ["--cached"]);
-  const trackedRoots = new Set(
-    tracked
-      .filter((path) => path.includes("/"))
-      .map((path) => path.split("/")[0]!),
-  );
   const untracked = gitFiles(root, ["--others", "--exclude-standard"]).filter(
-    (path) => !/^\.[^/]+\//.test(path) || trackedRoots.has(path.split("/")[0]!),
+    (path) =>
+      !path.includes("/") ||
+      !REPO_SCRATCH_PREFIXES.some((prefix) =>
+        path.toLowerCase().startsWith(prefix.toLowerCase()),
+      ),
   );
   return [...new Set([...tracked, ...untracked])].sort();
 }
