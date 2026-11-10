@@ -63,6 +63,11 @@ export function createOAuthAdapter(options: OAuthOptions): OAuthAdapter {
   const oauth = server.getOAuthApi(env);
   const refusal = (code: "invalid_request" | "access_denied") =>
     new AuthorizationError(code, { description: code });
+  const failure = (error: string, status: number): Response =>
+    Response.json(
+      { error },
+      { status, headers: { "Cache-Control": "no-store" } },
+    );
   const guarded = async (
     operation: () => Promise<Response>,
   ): Promise<Response> => {
@@ -70,12 +75,9 @@ export function createOAuthAdapter(options: OAuthOptions): OAuthAdapter {
       return await operation();
     } catch (error) {
       const invalid = error instanceof AuthorizationError;
-      return Response.json(
-        { error: invalid ? error.code : "temporarily_unavailable" },
-        {
-          status: invalid ? 400 : 503,
-          headers: { "Cache-Control": "no-store" },
-        },
+      return failure(
+        invalid ? error.code : "temporarily_unavailable",
+        invalid ? 400 : 503,
       );
     }
   };
@@ -142,6 +144,32 @@ export function createOAuthAdapter(options: OAuthOptions): OAuthAdapter {
       }),
     token: (request) =>
       guarded(async () => {
+        const contentType = request.headers.get("Content-Type") ?? "";
+        if (
+          request.method === "POST" &&
+          contentType.split(";")[0]?.trim().toLowerCase() ===
+            "application/x-www-form-urlencoded"
+        ) {
+          const form = await request.clone().formData();
+          if (form.get("grant_type") === "authorization_code") {
+            const code = form.get("code");
+            if (typeof code !== "string" || !code)
+              throw refusal("invalid_request");
+            const digest = await crypto.subtle.digest(
+              "SHA-256",
+              new TextEncoder().encode(code),
+            );
+            const hash = Array.from(new Uint8Array(digest), (byte) =>
+              byte.toString(16).padStart(2, "0"),
+            ).join("");
+            // Provider codes live 600s; keep the tombstone from redemption, not issuance.
+            const expiresAt = options.clock.now() + 600_000;
+            if (!Number.isFinite(expiresAt))
+              throw new Error("Invalid claim deadline");
+            if (!(await options.codeRedemption.claimOnce(hash, expiresAt)))
+              return failure("invalid_grant", 400);
+          }
+        }
         const tasks: Promise<unknown>[] = [];
         const response = await server.fetch(request, env, {
           waitUntil: (task: Promise<unknown>) => {

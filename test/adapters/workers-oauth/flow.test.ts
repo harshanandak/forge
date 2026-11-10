@@ -210,3 +210,13 @@ test("identity expires while its upstream transaction is still valid", async () 
     "access_denied",
   );
 }, 30_000);
+
+test("a failed verifier still burns the authorization code", async () => {
+  const f = await fixture(),
+    code = await f.code();
+  f.keep(await f.exchange(code, { code_verifier: "wrong" }), 400);
+  const response = f.keep(await f.exchange(code), 400);
+  expect(((await response.json()) as { error: string }).error).toBe(
+    "invalid_grant",
+  );
+}, 30_000);
