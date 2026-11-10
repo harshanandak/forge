@@ -4,9 +4,12 @@ import {
   OAuthAuthorizationServer,
 } from "@cloudflare/workers-oauth-provider";
 import type { ClockPort } from "../../../../src/ports/clock.ts";
+import { mintIdentity } from "../../../../src/ports/identity-mint.ts";
 import {
   isVerifiedIdentity,
+  type IdentityClaims,
   type IdentityResult,
+  type VerifiedIdentity,
 } from "../../../../src/ports/identity.ts";
 
 export interface OAuthStorage {
@@ -43,10 +46,11 @@ export interface OAuthOptions {
       request: Request,
       now: number,
       verifier?: string,
-    ): Promise<IdentityResult>;
+    ): Promise<IdentityResult & { readonly verifiedAudience?: string }>;
   };
 }
 export interface OAuthAdapter {
+  verify(token: string, resource: string): Promise<VerifiedIdentity | null>;
   register(redirectUri: string): Promise<string>;
   authorize(request: Request): Promise<Response>;
   consent(request: Request, allow: boolean): Promise<Response>;
@@ -66,6 +70,37 @@ export function createOAuthAdapter(options: OAuthOptions): OAuthAdapter {
     clientIdMetadataDocumentEnabled: false,
   });
   const oauth = server.getOAuthApi(env);
+  async function verifyProviderToken(
+    token: string,
+    resource: string,
+  ): Promise<VerifiedIdentity | null> {
+    try {
+      const validated = await server.validateToken<
+        IdentityClaims & { verifiedAudience: string }
+      >(resource, token, env);
+      const now = options.clock.now();
+      if (
+        !validated ||
+        validated.audience !== resource ||
+        !Number.isFinite(now)
+      )
+        return null;
+      const claims = validated.props;
+      const expiresAt = Math.min(claims.expiresAt, validated.expiresAt * 1_000);
+      if (
+        claims.audience !== claims.verifiedAudience ||
+        !Number.isFinite(expiresAt) ||
+        now >= expiresAt ||
+        now < claims.authenticatedAt ||
+        validated.userId !==
+          encodeURIComponent(JSON.stringify([claims.issuer, claims.subject]))
+      )
+        return null;
+      return mintIdentity({ ...claims, audience: resource, expiresAt });
+    } catch {
+      return null;
+    }
+  }
   const refusal = (code: "invalid_request" | "access_denied") =>
     new AuthorizationError(code, { description: code });
   const failure = (error: string, status: number): Response =>
@@ -87,6 +122,7 @@ export function createOAuthAdapter(options: OAuthOptions): OAuthAdapter {
     }
   };
   return {
+    verify: verifyProviderToken,
     register: async (redirectUri) =>
       (
         await oauth.createClient({
@@ -161,6 +197,8 @@ export function createOAuthAdapter(options: OAuthOptions): OAuthAdapter {
         if (
           !result.ok ||
           !isVerifiedIdentity(result.identity) ||
+          result.identity.audience !==
+            (result.verifiedAudience ?? options.issuer) ||
           !Number.isFinite(now) ||
           now >= result.identity.expiresAt ||
           now < result.identity.authenticatedAt
@@ -172,7 +210,10 @@ export function createOAuthAdapter(options: OAuthOptions): OAuthAdapter {
           userId: encodeURIComponent(JSON.stringify([issuer, subject])),
           metadata: {},
           scope: original.request.scope,
-          props: { issuer, subject },
+          props: {
+            ...result.identity,
+            verifiedAudience: result.verifiedAudience ?? options.issuer,
+          },
         });
         original.headers.set("Location", redirectTo);
         return new Response(null, { status: 302, headers: original.headers });
@@ -257,14 +298,7 @@ export function createOAuthAdapter(options: OAuthOptions): OAuthAdapter {
         await Promise.all(tasks);
         return response;
       }),
-    accepts: async (token, resource) => {
-      try {
-        return (
-          (await server.validateToken<unknown>(resource, token, env)) !== null
-        );
-      } catch {
-        return false;
-      }
-    },
+    accepts: async (token, resource) =>
+      (await verifyProviderToken(token, resource)) !== null,
   };
 }
