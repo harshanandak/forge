@@ -10,8 +10,9 @@ export interface OAuthHarness {
 }
 
 /** Test-only upstream proof and storage; no provider, network or runtime host is loaded. */
-export function createOAuthHarness(): OAuthHarness {
+export function createOAuthHarness(identityTtlMs = 3_600_000): OAuthHarness {
   let now = 1_000_000;
+  const redemptions = new Map<string, number>();
   const entries = new Map<
     string,
     {
@@ -67,7 +68,7 @@ export function createOAuthHarness(): OAuthHarness {
           subject: "person",
           audience: issuer,
           authenticatedAt: now,
-          expiresAt: now + 3_600_000,
+          expiresAt: now + identityTtlMs,
         },
       ],
     ]),
@@ -77,6 +78,17 @@ export function createOAuthHarness(): OAuthHarness {
       issuer,
       resources: ["https://api.example/a", "https://api.example/b"],
       storage,
+      codeRedemption: {
+        claimOnce(hash, expiresAt) {
+          if (!Number.isFinite(expiresAt) || expiresAt <= now)
+            return Promise.reject(new Error("Invalid claim deadline"));
+          // Check and set before yielding; memory is an atomic test fake only.
+          if ((redemptions.get(hash) ?? -Infinity) > now)
+            return Promise.resolve(false);
+          redemptions.set(hash, expiresAt);
+          return Promise.resolve(true);
+        },
+      },
       clock: { now: () => now },
       upstream: {
         begin: (state) =>
