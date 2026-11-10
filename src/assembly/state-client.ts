@@ -5,6 +5,7 @@ import type {
 } from "../core/state/index.ts";
 import type {
   BoundContext,
+  LeaseHolder,
   LeaseRecord,
   StateRecord,
 } from "../generated/types.ts";
@@ -44,6 +45,7 @@ export interface LeaseStateClient extends DeletableStateClient {
     key: string,
     options: ClientDeleteOptions,
   ): ReturnType<DeletableStateClient["delete"]>;
+  holder(): LeaseHolder;
   now(): number;
   lease(subject: string): LeaseRecord | undefined;
   acquire(
@@ -100,6 +102,14 @@ export function createStateClient(options: {
     };
   }
   return Object.freeze({
+    holder() {
+      if (context.variant !== "leased")
+        refuse("CONTEXT_MISSING", "Missing lease holder");
+      return structuredClone({
+        actor: context.actor,
+        session: context.session,
+      });
+    },
     now: () => Date.now(),
     get: (key: string) => owner?.get(namespace, key),
     list: (prefix?: string) => owner?.list(namespace, prefix) ?? [],

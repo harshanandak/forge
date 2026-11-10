@@ -1,0 +1,16 @@
+{
+  "type": "object",
+  "required": ["id", "session"],
+  "properties": {
+    "id": {
+      "$ref": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/tracker.json#/$defs/ItemId"
+    },
+    "session": {
+      "$ref": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/context.json#/$defs/Session/properties/id"
+    },
+    "device": {
+      "$ref": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/context.json#/$defs/Session/properties/device"
+    }
+  },
+  "additionalProperties": false
+}

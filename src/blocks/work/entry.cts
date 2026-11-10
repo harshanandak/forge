@@ -456,6 +456,13 @@ function item(
     ...(lease ? { lease } : {}),
   };
 }
+const invitations = (state: LeaseStateClient, id: string) =>
+  state.list(`participant:${id}:`);
+const matches = (a: LeaseHolder, b: LeaseHolder) =>
+  a.session.id === b.session.id &&
+  (a.session.device !== undefined
+    ? a.session.device === b.session.device
+    : a.actor.kind === b.actor.kind && a.actor.id === b.actor.id);
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
   if (typeof value === "object" && value !== null)
@@ -5071,6 +5078,16 @@ const operations: Operations<WorkOperations> = {
   "issue.show": ({ input, services, config }) => {
     const state = client(services);
     const ids = idsFor(state, config);
+    const id = ids.stored(input.id),
+      invited = invitations(state, id);
+    if (invited.length)
+      return {
+        ...item(state, get(state, id, input.id), ids),
+        mode: "collaborative",
+        participants: invited.flatMap(
+          (record) => live(state, record.key) ?? [],
+        ),
+      };
     return item(state, get(state, ids.stored(input.id), input.id), ids);
   },
   "issue.list": ({ input, services, config }) =>
@@ -5176,12 +5193,86 @@ const operations: Operations<WorkOperations> = {
       input.id,
     );
   },
-  "issue.invite": () =>
-    fail("INPUT_CONFLICT", "Participant implementation pending"),
-  "issue.join": () =>
-    fail("INPUT_CONFLICT", "Participant implementation pending"),
-  "issue.leave": () =>
-    fail("INPUT_CONFLICT", "Participant implementation pending"),
+  "issue.invite": ({ input, services, config }) => {
+    const state = client(services),
+      ids = idsFor(state, config),
+      id = ids.stored(input.id);
+    get(state, id, input.id);
+    state.putMany([], { subject: key(id) });
+    const holder: LeaseHolder = {
+      actor: state.holder().actor,
+      session: {
+        id: input.session,
+        ...(input.device === undefined ? {} : { device: input.device }),
+      },
+    };
+    const invited = invitations(state, id);
+    if (
+      !invited.some((record) =>
+        matches((record.value as { holder: LeaseHolder }).holder, holder),
+      )
+    )
+      persist(
+        state,
+        `participant:${id}:${invited.length + 1}`,
+        { holder },
+        0,
+        key(id),
+      );
+    return { id: ids.shown(id) };
+  },
+  "issue.join": ({ input, services, config }) => {
+    const state = client(services),
+      ids = idsFor(state, config),
+      id = ids.stored(input.id);
+    const record = get(state, id, input.id),
+      invited = invitations(state, id),
+      caller = state.holder();
+    if (stored(record).status !== "open")
+      fail("INPUT_CONFLICT", "Closed issues cannot be joined");
+    if (!invited.length)
+      fail("ISSUE_NOT_COLLABORATIVE", "Coordinator invite required");
+    const coordinator = live(state, id);
+    if (coordinator && matches(coordinator.holder, caller))
+      fail("INPUT_CONFLICT", "The coordinator cannot join its own issue");
+    const invitation = invited.find((row) =>
+      matches((row.value as { holder: LeaseHolder }).holder, caller),
+    );
+    if (!invitation) fail("PARTICIPANT_NOT_INVITED", "Holder needs an invite");
+    const subject = key(invitation.key);
+    const current = live(state, invitation.key);
+    const lease =
+      (current && matches(current.holder, caller) ? current : undefined) ??
+      state.acquire(
+        subject,
+        (input.ttlSeconds ??
+          (config as WorkConfig | undefined)?.claimTtlSeconds ??
+          3600) * 1000,
+        {
+          readSet: [record, invitation].map((row) => ({
+            key: row.key,
+            expectRevision: row.revision,
+          })),
+        },
+      );
+    return { ...grant(state, invitation.key, lease, ids), id: ids.shown(id) };
+  },
+  "issue.leave": ({ input, services, config }) => {
+    const state = client(services),
+      ids = idsFor(state, config),
+      id = ids.stored(input.id);
+    get(state, id, input.id);
+    const caller = state.holder();
+    const invitation = invitations(state, id).find((row) =>
+      matches((row.value as { holder: LeaseHolder }).holder, caller),
+    );
+    if (!invitation)
+      fail("LEASE_NOT_HELD", "This caller has no participant membership");
+    const released = state.release(key(invitation.key));
+    if (canonical(state.lease(key(invitation.key))) !== canonical(released))
+      fail("INTERNAL", "Released membership did not match its readback");
+    return { id: ids.shown(id) };
+  },
   "issue.claim": ({ input, services, config }) => {
     const state = client(services);
     const ids = idsFor(state, config);

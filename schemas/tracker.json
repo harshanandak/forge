@@ -55,6 +55,11 @@
         "lease": { "$ref": "state.json#/$defs/LeaseRecord" },
         "createdAt": { "$ref": "common.json#/$defs/Timestamp" },
         "updatedAt": { "$ref": "common.json#/$defs/Timestamp" },
+        "mode": { "enum": ["exclusive", "collaborative"] },
+        "participants": {
+          "type": "array",
+          "items": { "$ref": "state.json#/$defs/LeaseRecord" }
+        },
         "revision": { "type": "integer", "minimum": 1 }
       },
       "additionalProperties": false

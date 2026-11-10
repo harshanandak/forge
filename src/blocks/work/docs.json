@@ -135,7 +135,7 @@
     },
     "issue.show": {
       "title": "Show",
-      "summary": "Issue + live lease only.",
+      "summary": "Issue, lease; invited: mode and live participants.",
       "examples": [
         {
           "input": {
@@ -146,11 +146,12 @@
     },
     "issue.list": {
       "title": "List",
-      "summary": "AND filters: ready=open+deps closed+no live lease; labels/label=all-of; parent=id/none; kind. createdSince: inclusive full RFC 3339 timestamp, before limit; truncated: more matches."
+      "summary": "AND filters; ready=open+deps closed+unheld. createdSince: inclusive full RFC 3339 timestamp, before limit; truncated: more matches.",
+      "description": "AND filters: ready=open+deps closed+no live lease; labels/label=all-of; parent=id/none; kind. createdSince: inclusive full RFC 3339 timestamp, before limit; truncated: more matches."
     },
     "issue.update": {
       "title": "Update",
-      "summary": "Held lease + show revision. kind=task/bug/feature/epic; open epic+open children: no demotion. parent=existing id/null(clear); no cycles.",
+      "summary": "Held lease+revision; no cycles or open epic demotion with open children.",
       "examples": [
         {
           "command": "POSIX: forge issue update demo-1 --title \"Updated task\" --expect-revision \"$(forge issue show demo-1 | node -pe 'JSON.parse(require(\"fs\").readFileSync(0,\"utf8\")).result.revision')\""
@@ -158,7 +159,8 @@
         {
           "command": "PowerShell 5.1: forge issue update demo-1 --title \"Updated task\" --expect-revision ((forge issue show demo-1 | ConvertFrom-Json).result.revision)"
         }
-      ]
+      ],
+      "description": "Held lease + show revision. kind=task/bug/feature/epic; open epic+open children: no demotion. parent=existing id/null(clear); no cycles."
     },
     "issue.comment": {
       "title": "Comment",
@@ -225,7 +227,8 @@
     },
     "issue.ready": {
       "title": "Ready",
-      "summary": "Open; deps closed; no live lease (expired/released OK); all labels match. /blocks/work/config/labelOrder: first carried label, then stored order."
+      "summary": "Open; deps closed; no live lease; labels all-of. labelOrder: first carried label, then stored order.",
+      "description": "Open; deps closed; no live lease (expired/released OK); all labels match. /blocks/work/config/labelOrder: first carried label, then stored order."
     },
     "issue.blocked": {
       "title": "Blocked",
@@ -336,11 +339,25 @@
     },
     "issue.tree": {
       "title": "Tree",
-      "summary": "Open epics/root id: open/closed child counts, open descendants to depth 3, parent anomalies. limit: nodes/ids; truncated includes deeper children."
+      "summary": "Open epics/root: child counts, open descendants (depth 3), parent anomalies; limit/truncated.",
+      "description": "Open epics/root id: open/closed child counts, open descendants to depth 3, parent anomalies. limit: nodes/ids; truncated includes deeper children."
     },
     "issue.lint": {
       "title": "Lint",
       "summary": "Kinds, refs, dep cycles; open issues' closed parents (always). labels.required: exactly one match/group; empty default."
+    },
+    "issue.invite": {
+      "title": "Invite",
+      "summary": "Coordinator invite; duplicates do nothing."
+    },
+    "issue.join": {
+      "title": "Join",
+      "summary": "Invited membership; live rejoin keeps expiry.",
+      "description": "ISSUE_NOT_COLLABORATIVE: invite required. PARTICIPANT_NOT_INVITED: this holder was not invited. INPUT_CONFLICT: closed issue or coordinator joining itself. ttlSeconds overrides claimTtlSeconds (3600s fallback). Refusals write nothing."
+    },
+    "issue.leave": {
+      "title": "Leave",
+      "summary": "Release own membership."
     }
   }
 }

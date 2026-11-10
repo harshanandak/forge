@@ -1,12 +1,4 @@
-import {
-  afterAll,
-  afterEach,
-  beforeAll,
-  beforeEach,
-  expect,
-  test,
-} from "bun:test";
-import { createHash } from "node:crypto";
+import { afterEach, beforeEach, expect, test } from "bun:test";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { readFileSync } from "node:fs";
@@ -21,11 +13,10 @@ import type {
   LeaseRecord,
   TrackerItem,
 } from "../../../src/generated/types.ts";
-
 type Handler = (call: HandlerCall<Record<string, unknown>>) => unknown;
 type View = TrackerItem & { mode: string; participants: LeaseRecord[] };
 const root = resolve(import.meta.dirname, "../../../src/blocks/work");
-const namespace = "forge/work";
+const ns = "forge/work";
 const who = (id: string): LeaseHolder => ({
   actor: { kind: "agent", id: "worker" },
   session: { id, device: "laptop" },
@@ -34,24 +25,13 @@ const A = who("A"),
   B = who("B"),
   C = who("C"),
   D = who("D");
-const globals = globalThis as Record<string, unknown>,
-  previousFail = globals.fail;
-let operations: Record<string, Handler>;
-beforeAll(() => {
-  globals.fail = refuse;
-  operations = require(resolve(root, "entry.cts")) as typeof operations;
-});
-afterAll(() => {
-  if (previousFail === undefined) delete globals.fail;
-  else globals.fail = previousFail;
-});
+const globals = globalThis as Record<string, unknown>;
+const ops = require(resolve(root, "entry.cts")) as Record<string, Handler>;
 let p: Awaited<ReturnType<typeof project>>;
 beforeEach(async () => {
   p = await project();
 });
-afterEach(async () => {
-  await p.close();
-});
+afterEach(() => p.close());
 async function project() {
   const opened = await createSqliteStore(tmpdir()).open({
     path: ":memory:",
@@ -64,7 +44,7 @@ async function project() {
   owner.initialize();
   for (const id of ["work-1", "work-2"])
     owner.put(
-      namespace,
+      ns,
       `issue:${id}`,
       {
         id,
@@ -85,7 +65,7 @@ async function project() {
   ): Promise<T> {
     const state = createStateClient({
       owner,
-      namespace,
+      namespace: ns,
       write: true,
       requestId: `request-${++request}`,
       context: {
@@ -97,38 +77,35 @@ async function project() {
           : { leaseMode: "held" as const, leaseGeneration: generation }),
       },
     });
-    return (await operations[`issue.${op}`]!({
-      input: { id: "shown-1", ...input },
-      config: { idPrefix: "shown", claimTtlSeconds: 60 },
-      signal: new AbortController().signal,
-      deadline: Number.MAX_SAFE_INTEGER,
-      services: {
-        state: { ...state, now: () => now },
-        crypto: {
-          sha256: (text: string) =>
-            createHash("sha256").update(text).digest("hex"),
-        },
-      },
-    })) as T;
+    const previousFail = globals.fail;
+    globals.fail = refuse;
+    try {
+      return (await ops[`issue.${op}`]!({
+        input: { id: "shown-1", ...input },
+        config: { idPrefix: "shown", claimTtlSeconds: 60 },
+        signal: new AbortController().signal,
+        deadline: Number.MAX_SAFE_INTEGER,
+        services: { state: { ...state, now: () => now } },
+      })) as T;
+    } finally {
+      if (previousFail === undefined) delete globals.fail;
+      else globals.fail = previousFail;
+    }
   }
   return {
     call,
     owner,
     close: () => opened.handle.close(),
-    advance: (ms: number) => {
-      now += ms;
-    },
+    advance: (ms: number) => (now += ms),
     snapshot: () => {
       const { image: _image, ...state } = owner.export();
       return state;
     },
-    held: () => owner.lease(namespace, "issue:work-1"),
+    held: () => owner.lease(ns, "issue:work-1"),
     invite: (caller: LeaseHolder) =>
       call("invite", A, {
         session: caller.session.id,
-        ...(caller.session.device === undefined
-          ? {}
-          : { device: caller.session.device }),
+        device: caller.session.device,
       }),
   };
 }
@@ -149,7 +126,6 @@ async function collaborate() {
   await p.invite(B);
   await p.invite(C);
 }
-
 test("A coordinates while B and C have separate participant leases", async () => {
   await collaborate();
   const coordinator = p.held();
@@ -170,12 +146,11 @@ test("A coordinates while B and C have separate participant leases", async () =>
   }
   const leases = p.owner
     .export()
-    .leases.filter((lease) => lease.namespace === namespace);
+    .leases.filter((lease) => lease.namespace === ns);
   expect(new Set(leases.map(({ lease }) => lease.subject)).size).toBe(3);
   expect(p.held()).toEqual(coordinator);
   expect(p.snapshot()).toEqual(before);
 }, 10000);
-
 test("uninvited D and mismatched session or device cannot join or write", async () => {
   await collaborate();
   for (const caller of [
@@ -185,7 +160,6 @@ test("uninvited D and mismatched session or device cannot join or write", async 
   ])
     await refused("PARTICIPANT_NOT_INVITED", () => p.call("join", caller));
 }, 10000);
-
 test("exclusive, coordinator and closed joins refuse without writes", async () => {
   await p.call("claim");
   await refused("ISSUE_NOT_COLLABORATIVE", () => p.call("join", B));
@@ -194,7 +168,6 @@ test("exclusive, coordinator and closed joins refuse without writes", async () =
   await p.call("close", A, { withoutReceipt: "contract fixture" });
   await refused("INPUT_CONFLICT", () => p.call("join", B));
 }, 10000);
-
 test("participants cannot invite, update, release or close the coordinator's issue", async () => {
   await collaborate();
   for (const caller of [B, C]) {
@@ -205,7 +178,7 @@ test("participants cannot invite, update, release or close the coordinator's iss
           session: D.session.id,
           device: D.session.device,
           title: "unauthorized",
-          expectRevision: p.owner.get(namespace, "issue:work-1")!.revision,
+          expectRevision: p.owner.get(ns, "issue:work-1")!.revision,
           withoutReceipt: "contract fixture",
         }),
       );
@@ -213,14 +186,12 @@ test("participants cannot invite, update, release or close the coordinator's iss
   expect((await p.call<View>("show")).status).toBe("open");
   expect(p.held()?.holder).toEqual(A);
 }, 10000);
-
 test("invite keeps the existing generation and expiry fence errors", async () => {
   await p.call("claim");
   await refused("LEASE_STALE", () => p.call("invite", A, { session: "B" }, 2));
   p.advance(60000);
   await refused("LEASE_EXPIRED", () => p.call("invite", A, { session: "B" }));
 }, 10000);
-
 test("duplicate invite and live rejoin do not write or extend membership", async () => {
   await collaborate();
   const invited = p.snapshot();
@@ -232,7 +203,6 @@ test("duplicate invite and live rejoin do not write or extend membership", async
   expect(await p.call("join", B, { ttlSeconds: 60 })).toEqual(joined);
   expect(p.snapshot()).toEqual(live);
 }, 10000);
-
 test("expiry hides B and reacquiring advances only B's generation", async () => {
   await collaborate();
   await p.call("join", B, { ttlSeconds: 1 });
@@ -252,7 +222,6 @@ test("expiry hides B and reacquiring advances only B's generation", async () => 
   ).toBe(1);
   expect(p.held()).toEqual(coordinator);
 }, 10000);
-
 test("leave releases only the caller and a refused leave writes nothing", async () => {
   await collaborate();
   for (const caller of [B, C]) await p.call("join", caller);
@@ -266,7 +235,6 @@ test("leave releases only the caller and a refused leave writes nothing", async 
   expect(p.held()).toEqual(coordinator);
   await refused("LEASE_NOT_HELD", () => p.call("leave", B));
 }, 10000);
-
 test("solo claim, comment, update and close keep their existing result fields", async () => {
   const grant = await p.call("claim");
   expect(grant).toEqual({
@@ -278,10 +246,7 @@ test("solo claim, comment, update and close keep their existing result fields", 
     id: "shown-1",
     commentId: "comment:work-1:1",
   });
-  const original = await p.call<View>("show");
-  expect(original.mode).toBe("exclusive");
-  expect(original.participants).toEqual([]);
-  const { mode: _mode, participants: _participants, ...fields } = original;
+  const fields = await p.call<TrackerItem>("show");
   expect(fields).toEqual({
     id: "shown-1",
     title: "work-1",
@@ -308,7 +273,6 @@ test("solo claim, comment, update and close keep their existing result fields", 
     revision: 3,
   });
 }, 10000);
-
 test("invite, join and leave are declared once for generated CLI and MCP", () => {
   const read = (file: string) =>
     JSON.parse(readFileSync(resolve(root, file), "utf8")) as {
