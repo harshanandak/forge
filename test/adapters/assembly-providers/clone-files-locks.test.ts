@@ -950,8 +950,8 @@ test("an unpublished owner crash names both recovery paths and requires both rem
     expect(diagnostic.message).toContain(
       `now-empty lock directory ../common/${lockPath}`,
     );
-    expect(diagnostic.message).toMatch(
-      /confirm.+no Forge process.+mid-acquire/i,
+    expect(diagnostic.message).toContain(
+      "retry first; if the refusal persists, stop Forge processes on every host that shares this Git directory; confirm the lock directory still holds only the named temp files, remove",
     );
     expect(diagnostic.message).toMatch(
       /remove.+temp.+and then.+now-empty lock directory/i,

@@ -269,7 +269,7 @@ export function checkUnpublishedLockOwner(
     return;
   refuseLockOwner(
     "INPUT_CONFLICT",
-    "Recoverable exclusion lock has an unpublished owner; after confirming no Forge process is mid-acquire",
+    "Recoverable exclusion lock has an unpublished owner; retry first; if the refusal persists, stop Forge processes on every host that shares this Git directory; confirm the lock directory still holds only the named temp files",
     names.map((name) => `${relativePath}/${name}`),
     "temp",
   );
