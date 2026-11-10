@@ -113,6 +113,126 @@ function hasReportKey(text: string): boolean {
   return false;
 }
 
+/** One stream's object and string state, independent of summary-line buffering. */
+class StructuredReports {
+  leading = false;
+  private first = true;
+  private bytes = 0;
+  private trailing = false;
+  private closed = false;
+  private prefix = "";
+  private depth = 0;
+  private quoted = false;
+  private escaped = false;
+  private name = "";
+  private last = 0;
+  private key = false;
+  private property = false;
+  private evidence = false;
+  private overflow = false;
+  private chunks: Buffer[] = [];
+  private tail: Buffer | undefined;
+  private at = 0;
+  private kept = 0;
+  private result: OutputReport | undefined;
+  private budget: { remaining: number };
+  constructor(budget: { remaining: number }) {
+    this.budget = budget;
+  }
+  push(chunk: Uint8Array): void {
+    for (const byte of chunk) {
+      const space = byte === 32 || (byte >= 9 && byte <= 13);
+      if (this.first && !space) {
+        this.first = false;
+        this.leading = byte === 123;
+      }
+      if (!this.first) this.bytes++;
+      if (byte === 10) this.prefix = "";
+      if (!this.depth) {
+        if (this.closed && !space) this.trailing = true;
+        if (this.prefix.length < 128) this.prefix += String.fromCharCode(byte);
+        if (
+          byte !== 123 ||
+          /^\s*\((?:pass|fail|skip|todo)\)/.test(
+            stripVTControlCharacters(this.prefix),
+          )
+        )
+          continue;
+        this.last = 0;
+      }
+      if (!this.overflow) {
+        if (!this.tail || this.at === this.tail.length) {
+          const size = Math.min(4096, this.budget.remaining);
+          if (!size) this.overflow = true;
+          else {
+            this.tail = Buffer.allocUnsafe(size);
+            this.chunks.push(this.tail);
+            this.budget.remaining -= size;
+            this.at = 0;
+          }
+        }
+        if (!this.overflow) {
+          this.tail![this.at++] = byte;
+          this.kept++;
+        }
+      }
+      if (this.quoted) {
+        if (this.escaped) this.escaped = false;
+        else if (byte === 92) this.escaped = true;
+        else if (byte === 34) {
+          this.quoted = false;
+          this.property =
+            this.key && /^(?:numTotalTests|numFailedTests)$/.test(this.name);
+          this.last = byte;
+          continue;
+        }
+        if (this.name.length < 17) this.name += String.fromCharCode(byte);
+        continue;
+      }
+      if (space) continue;
+      if (byte === 58 && this.property) this.evidence = true;
+      this.property = false;
+      if (byte === 34) {
+        this.quoted = true;
+        this.key = this.last === 123 || this.last === 44;
+        this.name = "";
+      } else if (byte === 123) this.depth++;
+      else if (byte === 125 && --this.depth === 0) {
+        if (this.evidence)
+          this.result = retainFailure(
+            this.result,
+            this.overflow
+              ? malformed
+              : jsonReport(
+                  Buffer.concat(this.chunks, this.kept).toString("utf8"),
+                ),
+          );
+        for (const part of this.chunks) this.budget.remaining += part.length;
+        this.chunks = [];
+        this.tail = undefined;
+        this.kept = 0;
+        this.evidence = this.overflow = false;
+        this.closed = true;
+      }
+      this.last = byte;
+    }
+  }
+  report(): OutputReport | undefined {
+    if (this.leading && this.bytes > REPORT_LIMIT) return malformed;
+    return this.evidence ? retainFailure(this.result, malformed) : this.result;
+  }
+  primary(): OutputReport | undefined {
+    if (!this.leading) return undefined;
+    if (this.bytes > REPORT_LIMIT)
+      return {
+        ...malformed,
+        detail: `Structured report exceeds ${REPORT_LIMIT} bytes and cannot be read whole`,
+      };
+    const report = this.report();
+    return report && this.trailing ? malformed : report;
+  }
+}
+
 /** Scans one stream line by line, keeping only the summary lines it has seen. */
 class SummaryLines {
   bytes = 0;
@@ -291,30 +411,24 @@ class SummaryLines {
 function recognizer(format: ReportFormat): OutputRecognizer {
   const stdout = new SummaryLines(),
     stderr = new SummaryLines();
-  let structured: Buffer[] | undefined = format === "json" ? [] : undefined;
+  const budget = { remaining: REPORT_LIMIT };
+  const objects = {
+    stdout: new StructuredReports(budget),
+    stderr: new StructuredReports(budget),
+  };
+  const structured: Buffer[] | undefined = format === "json" ? [] : undefined;
   let structuredBytes = 0,
-    decided = format === "json",
     overflow = false;
   function keep(chunk: Uint8Array): void {
-    let part = chunk;
-    if (!decided) {
-      const start = part.findIndex(
-        (byte) => byte !== 32 && (byte < 9 || byte > 13),
-      );
-      if (start < 0) return;
-      decided = true;
-      if (part[start] !== 0x7b) return;
-      structured = [];
-      part = part.subarray(start);
-    }
     if (!structured || overflow) return;
     const room = REPORT_LIMIT - structuredBytes;
-    if (part.length > room) overflow = true;
-    structured.push(Buffer.from(part.subarray(0, room)));
-    structuredBytes += Math.min(part.length, room);
+    if (chunk.length > room) overflow = true;
+    structured.push(Buffer.from(chunk.subarray(0, room)));
+    structuredBytes += Math.min(chunk.length, room);
   }
   return {
     push(stream, chunk) {
+      if (format === "auto") objects[stream].push(chunk);
       if (stream === "stdout") {
         stdout.push(chunk);
         if (format !== "exit-code") keep(chunk);
@@ -327,10 +441,9 @@ function recognizer(format: ReportFormat): OutputRecognizer {
       stderr.end();
       const text = structured ? Buffer.concat(structured).toString("utf8") : "";
       const reports: OutputReport[] = [];
-      if (stderr.structured || (stdout.structured && !structured))
-        reports.push(malformed);
+      if (format === "json" && stderr.structured) reports.push(malformed);
       // An overflowing object is never read whole, so its counts may lie past what was kept.
-      if (format === "json" || (structured && (overflow || hasReportKey(text))))
+      if (format === "json")
         reports.push(
           overflow
             ? {
@@ -357,6 +470,21 @@ function recognizer(format: ReportFormat): OutputRecognizer {
         });
       for (const report of [stdout.pytest, stderr.pytest])
         if (report) reports.push(report);
+      if (format === "auto") {
+        const structuredReports = reports.some(
+          (report) => report.kind === "recognized",
+        )
+          ? [objects.stdout.report(), objects.stderr.report()]
+          : [
+              objects.stdout.primary(),
+              stderr.structured ||
+              (stdout.structured && !objects.stdout.leading)
+                ? malformed
+                : undefined,
+            ];
+        for (const report of structuredReports)
+          if (report) reports.push(report);
+      }
       const failed = reports.find(
         (report) => report.kind === "recognized" && report.failed! > 0,
       );

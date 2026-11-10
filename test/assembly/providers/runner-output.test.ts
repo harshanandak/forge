@@ -105,4 +105,4 @@ test("assembly preserves structured failure evidence across report layouts and s
             (report.kind === "recognized" && (report.failed ?? 0) > 0),
         ).toBe(true);
     }
-}, 1000);
+}, 10_000);

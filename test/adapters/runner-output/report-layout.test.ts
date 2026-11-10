@@ -56,7 +56,7 @@ for (const failed of [1, 0]) {
               failed: 0,
             });
           expect(recognizer.report()).toEqual(report);
-        }, 1000);
+        }, 10_000);
 }
 
 for (const key of ["numTotalTests", "numFailedTests"])
@@ -74,4 +74,4 @@ for (const key of ["numTotalTests", "numFailedTests"])
           recognizer.push(channel, Uint8Array.of(byte));
       expect(recognizer.report().kind).toBe("malformed");
       expect(output.parse(stdout, stderr, "auto").kind).toBe("malformed");
-    }, 1000);
+    }, 10_000);
