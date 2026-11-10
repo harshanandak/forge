@@ -37,14 +37,132 @@ A device token acts only as its own device. The admin token is the Worker secret
 
 ## Deploy
 
-Do not deploy with OAuth until 7d3 lands.
+The owner runs these steps. Replace angle-bracket placeholders; `<worker-origin>` is an HTTPS origin without a trailing slash. Use an existing Cloudflare login with Workers/KV write access and the intended `CLOUDFLARE_ACCOUNT_ID`.
 
-From `cloud/`, with `CLOUDFLARE_ACCOUNT_ID` set and an existing wrangler login (free plan only):
+1. **Clerk OAuth application.** In the Clerk admin console, open **OAuth applications** and create or open an application. Set its redirect URI to `<worker-origin>/callback`, make it a public client and require PKCE S256; no client secret is used. Allow `openid profile email` scopes (the Worker currently requests `openid`). Copy the client ID from **Application credentials** and the Frontend API URL from **API keys → Show API URLs**. Clerk organizations are informational only and grant no project access. See [Clerk's public-client guidance](https://clerk.com/docs/guides/configure/auth-strategies/oauth/how-clerk-implements-oauth).
+   If the Clerk instance requires organization membership, a new user must create or join an organization during sign-up before consent; organizations still grant no project access.
 
-1. `bun x wrangler whoami` shows the login, the account and the token scopes. It needs Workers write access.
-2. `bun x wrangler deploy` deploys `wrangler.jsonc` (never `wrangler.test.jsonc`, which is for CI).
-3. `node scripts/set-admin-token.mjs` sets the admin token. It is not printed; it is saved to
-   `~/.forge-cloud/forge-cloud-dev.token`, readable by your user only. Run it again to rotate: the old token stops working at once.
+2. **KV namespace.** From `cloud/`, install its pinned tools:
+
+   ```sh
+   bun install --frozen-lockfile
+   ```
+
+   Create the namespace once:
+
+   ```sh
+   bun x wrangler kv namespace create OAUTH_KV
+   ```
+
+   Expect a namespace ID; put it in `cloud/wrangler.jsonc` as `kv_namespaces: [{ "binding": "OAUTH_KV", "id": "<namespace-id>" }]`. Keep the `PROJECTS`, `CODE_REDEMPTION` and `REGISTRATION_LIMITER` bindings and all three migrations.
+
+3. **Public vars.** Replace the five `vars` values in `cloud/wrangler.jsonc`; all are required strings:
+
+   | Name                 | Example shape                    | What `readOAuthConfig` checks                                     | Classification |
+   | -------------------- | -------------------------------- | ----------------------------------------------------------------- | -------------- |
+   | `CLERK_ISSUER`       | `<frontend-api-url>`             | HTTPS origin only, optionally one trailing slash                  | Not secret     |
+   | `CLERK_CLIENT_ID`    | `<client-id>`                    | 1–256 printable ASCII characters, excluding spaces                | Not secret     |
+   | `CLERK_REDIRECT_URI` | `<worker-origin>/callback`       | Exactly the incoming request origin plus `/callback`              | Not secret     |
+   | `FORGE_API_RESOURCE` | `<worker-origin>/p/<project-id>` | HTTPS URL; a path is allowed                                      | Not secret     |
+   | `OAUTH_TIMEOUT_MS`   | `5000`                           | Decimal integer string from 1 through 2147483647, no leading zero | Not secret     |
+
+   Every HTTPS value above rejects credentials, query strings, fragments, whitespace and backslashes. Metadata uses the callback origin, not the Host header. No Clerk secret key is needed or used; never put one in `vars`.
+
+4. **Deploy.** First prepare generated validators from the repository root:
+
+   ```sh
+   bun install --frozen-lockfile
+   ```
+
+   ```sh
+   bun run gen
+   ```
+
+   Return to `cloud/` and deploy `wrangler.jsonc`, never the CI-only `wrangler.test.jsonc`:
+
+   ```sh
+   bun x wrangler deploy
+   ```
+
+   Expect a deployed Worker URL. Migrations `v1`, `v2-code-redemption` and `v3-registration-limits` apply automatically on deploy; there is no manual migration command. On first setup, set the separate admin secret:
+
+   ```sh
+   node scripts/set-admin-token.mjs
+   ```
+
+   It saves the secret to `~/.forge-cloud/forge-cloud-dev.token` without printing it. Re-running rotates it immediately. For authenticated curls below, prepare private curl config files containing the appropriate `Authorization` header; never put token values on the command line or print their files. Keep response files private too.
+
+5. **Smoke checks.** Start with metadata:
+
+   ```sh
+   curl -sS -i '<worker-origin>/.well-known/oauth-authorization-server'
+   ```
+
+   Expect 200 JSON including `{"issuer":"<worker-origin>","authorization_endpoint":"<worker-origin>/authorize","token_endpoint":"<worker-origin>/oauth/token","registration_endpoint":"<worker-origin>/register"}`.
+
+   ```sh
+   curl -sS -i '<worker-origin>/.well-known/oauth-protected-resource'
+   ```
+
+   Expect 200 JSON `{"resource":"<api-resource>","authorization_servers":["<worker-origin>"]}`, matching `FORGE_API_RESOURCE`.
+
+   If a var is missing in a bad deploy, the same request below returns a visible config refusal; do not remove a live var just to test it:
+
+   ```sh
+   curl -sS -i '<worker-origin>/.well-known/oauth-authorization-server'
+   ```
+
+   With only `CLERK_ISSUER` missing, expect 503 `{"error":{"code":"AUTH_CONFIG_UNAVAILABLE","variable":"CLERK_ISSUER","message":"OAuth configuration unavailable"}}`. Device-token and admin routes bypass OAuth config and keep working:
+
+   ```sh
+   curl -sS -i --config '<admin-curl-config>' '<worker-origin>/p/<project-id>/status'
+   ```
+
+   Expect 200 `{"ok":true,"value":{"initialized":true}}` for a provisioned project (`false` before provisioning).
+
+   ```sh
+   curl -sS -i --config '<device-curl-config>' '<worker-origin>/p/<project-id>/holder?subject=deploy-smoke'
+   ```
+
+   With an existing unexpired device token for this project, expect 200 `{"ok":true,"value":null}` for an unused subject, or a lease object. This is the working project path.
+
+   Register one public client using the real client's callback URI:
+
+   ```sh
+   curl -sS --output '<private-registration-response-file>' --write-out 'HTTP %{http_code}\n' -H 'Content-Type: application/json' --data '{"redirect_uris":["<client-redirect-uri>"],"token_endpoint_auth_method":"none"}' '<worker-origin>/register'
+   ```
+
+   In a fresh quota window expect 201 JSON including `client_id` and `redirect_uris`. Retain that client for login. Then exercise the same-IP ceiling:
+
+   ```sh
+   for attempt in 1 2 3 4 5; do curl -sS --dump-header - --output '<private-burst-response-file>' --write-out 'HTTP %{http_code}\n' -H 'Content-Type: application/json' --data '{"redirect_uris":["<client-redirect-uri>"],"token_endpoint_auth_method":"none"}' '<worker-origin>/register'; done
+   ```
+
+   After five admitted registrations total from this IP in a fixed UTC hour, expect 429 `{"error":{"code":"REGISTRATION_RATE_LIMITED"}}` with `Retry-After` seconds until the next hour; 100 global admissions also trigger it. Cloudflare supplies `CF-Connecting-IP`; do not spoof it. Bodies are capped at 8192 bytes, redirect lists at 5 entries and each URI at 512 code units; abandoned registrations expire after 86400 seconds. Wait for rollover before another registration, or reuse the retained client.
+
+   Use an OAuth-capable MCP client to log in with that client ID, its registered redirect URI, S256 PKCE and the configured resource. Follow `/authorize`, choose Allow, sign in at Clerk and return through `/callback` to the client's redirect URI. The login check ends at a successful token exchange. If exchanging manually instead of letting the client exchange, save the one-use code and matching verifier in private files without trailing newlines, then run:
+
+   ```sh
+   curl -sS --output '<private-token-response-file>' --write-out 'HTTP %{http_code}\n' --data-urlencode 'grant_type=authorization_code' --data-urlencode 'client_id=<registered-client-id>' --data-urlencode 'redirect_uri=<client-redirect-uri>' --data-urlencode 'resource=<api-resource>' --data-urlencode 'code@<private-code-file>' --data-urlencode 'code_verifier@<private-verifier-file>' '<worker-origin>/oauth/token'
+   ```
+
+   Expect 200 JSON including `access_token` and `token_type: "bearer"`; do not print the response. Codes are single-use, failed exchanges burn them, and refresh grants are refused. Check the current OAuth project refusal using a private config with this token:
+
+   ```sh
+   curl -sS -i --config '<oauth-curl-config>' '<worker-origin>/p/<project-id>/holder?subject=deploy-smoke'
+   ```
+
+   Expect 403 `{"ok":false,"error":{"code":"AUTH_FORBIDDEN","message":"Access is not allowed","retry":"never"}}`: the default open composition uses `singleOwnerPolicy` and has no person-identity forwarder. Person access to projects needs the team authorization policy and forwarding wiring, tracked in forge-1124.
+
+6. **Rollback.** From `cloud/`, select a known-good version with compatible bindings and the same Durable Object migration history:
+
+   ```sh
+   bun x wrangler rollback <version-id>
+   ```
+
+   Expect the selected version to become active. Rollback does not rewind KV clients/grants, project data, Durable Object claims or registration counters. Retaining them preserves burned codes and quotas; expiry checks and alarms still apply in compatible code. Cloudflare refuses rollback across Durable Object migrations; do not delete namespaces or migrations to force it. See [rollback limits](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/).
+
+7. **Known limits.** Links point to the originating reviews; issue IDs are tracked in Forge. [forge-1121 (registration residuals)](https://github.com/harshanandak/forge/pull/406): provider-invalid requests consume quota, fixed windows allow boundary bursts, shared or Worker-origin IPs affect quotas, and pre-existing clients retain their old TTL. [forge-1122 (replay revocation race)](https://github.com/harshanandak/forge/pull/404): a refused replay can race the winning token write, so its tokens may survive revocation, while the code still issues tokens at most once.
 
 ## Check a live Worker
 
