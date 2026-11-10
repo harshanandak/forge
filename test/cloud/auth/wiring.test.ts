@@ -1,0 +1,303 @@
+import { expect, mock, test } from "bun:test";
+import { createOAuthHarness } from "../../adapters/workers-oauth/harness.ts";
+import { jwtFixture } from "../../adapters/clerk/jwt-fixture.ts";
+if (!("timingSafeEqual" in crypto.subtle))
+  Object.defineProperty(crypto.subtle, "timingSafeEqual", {
+    value: crypto.timingSafeEqual.bind(crypto),
+  });
+await mock.module("cloudflare:workers", () => ({ WorkerEntrypoint: class {} }));
+const { createConfiguredWorker } =
+  await import("../../../cloud/src/adapters/workers-oauth/compose.ts");
+const { composeAuth } = await import("../../../cloud/src/auth/compose.ts");
+const issuer = "https://auth.example",
+  redirect = "https://client.example/callback";
+const verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+const vars = {
+  CLERK_ISSUER: "https://clerk.example",
+  CLERK_CLIENT_ID: "public-client",
+  CLERK_REDIRECT_URI: `${issuer}/callback`,
+  FORGE_API_RESOURCE: "https://api.example/a",
+  OAUTH_TIMEOUT_MS: "5000",
+};
+const field = async (response: Response, key: string) =>
+  ((await response.json()) as Record<string, string>)[key]!;
+const status = async (response: Promise<Response>) => (await response).status;
+const codeOf = (response: Response) =>
+  new URL(response.headers.get("location")!).searchParams.get("code")!;
+function sanitized(body: string, ...proofs: string[]) {
+  for (const value of [
+    ...Object.values(vars),
+    verifier,
+    "clerk-code",
+    "private upstream",
+    ...proofs,
+  ])
+    expect(body).not.toContain(value);
+}
+async function fixture(claims = {}, alg = "RS256") {
+  const harness = createOAuthHarness();
+  harness.advance(Date.now() - harness.options.clock.now());
+  const now = Math.floor(harness.options.clock.now() / 1000);
+  const { proof, jwk } = await jwtFixture(
+    vars.CLERK_ISSUER,
+    vars.CLERK_CLIENT_ID,
+    {
+      algorithm: alg,
+      claims: {
+        auth_time: now - 1,
+        exp: now + 600,
+        org_id: "untrusted-org",
+        ...claims,
+      },
+    },
+  );
+  const cookies = new Map<string, string>();
+  const transport = {
+    idFromName: (name: string) => name,
+    get: () => ({ fetch: () => Promise.resolve(new Response("legacy")) }),
+  };
+  const env = {
+    ...vars,
+    ADMIN_TOKEN: "fixture-admin",
+    PROJECTS: transport,
+    REGISTRATION_LIMITER: transport,
+    OAUTH_KV: harness.options.storage,
+    CODE_REDEMPTION: {
+      idFromName: (hash: string) => hash,
+      get: (hash: unknown) => ({
+        fetch: async (request: Request) =>
+          new Response(null, {
+            status: (await harness.options.codeRedemption.claimOnce(
+              String(hash),
+              Number(new URL(request.url).searchParams.get("until")),
+            ))
+              ? 200
+              : 400,
+          }),
+      }),
+    },
+  };
+  let challenge = "",
+    jwks = 0;
+  const network = async (url: string, init?: RequestInit) => {
+    expect(init?.redirect).toBe("manual");
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
+    if (url === `${vars.CLERK_ISSUER}/.well-known/jwks.json`) {
+      jwks++;
+      return Response.json({ keys: [jwk] });
+    }
+    expect(url).toBe(`${vars.CLERK_ISSUER}/oauth/token`);
+    expect(init?.method).toBe("POST");
+    const body = init?.body;
+    if (!(body instanceof URLSearchParams))
+      throw new Error("Expected form body");
+    expect(body.get("client_id")).toBe(vars.CLERK_CLIENT_ID);
+    expect(body.get("redirect_uri")).toBe(vars.CLERK_REDIRECT_URI);
+    const digest = Buffer.from(
+      await crypto.subtle.digest(
+        "SHA-256",
+        new TextEncoder().encode(body.get("code_verifier")!),
+      ),
+    ).toString("base64url");
+    return digest === challenge
+      ? Response.json({ id_token: proof })
+      : new Response("private upstream", { status: 400 });
+  };
+  const forward = mock((_request: Request, _project: string, access: unknown) =>
+    Promise.resolve(Response.json(access)),
+  );
+  const worker = createConfiguredWorker(undefined, {
+    fetch: network,
+    clock: harness.options.clock,
+    policy: { authorize: () => ({ allowed: true }) },
+    forward,
+  });
+  const send = async (path: string, form?: Record<string, string>) => {
+    const response = await worker.fetch(
+      new Request(new URL(path, issuer).href, {
+        headers: { cookie: [...cookies.values()].join("; ") },
+        ...(form ? { method: "POST", body: new URLSearchParams(form) } : {}),
+      }),
+      env,
+    );
+    for (const cookie of response.headers.getSetCookie())
+      cookies.set(cookie.split("=")[0]!, cookie.split(";")[0]!);
+    return response;
+  };
+  async function start() {
+    const registered = await worker.fetch(
+      new Request(`${issuer}/register`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "CF-Connecting-IP": "203.0.113.1",
+        },
+        body: `{"redirect_uris":["${redirect}"],"token_endpoint_auth_method":"none"}`,
+      }),
+      env,
+    );
+    expect(registered.status).toBe(201);
+    const client = await field(registered, "client_id");
+    const auth = await send(
+      `/authorize?${new URLSearchParams({ response_type: "code", client_id: client, redirect_uri: redirect, resource: vars.FORGE_API_RESOURCE, state: "client-state", code_challenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM", code_challenge_method: "S256" })}`,
+    );
+    expect(auth.status).toBe(200);
+    const login = await send("/authorize", {
+      handle: await field(auth, "handle"),
+      allow: "true",
+    });
+    expect(login.status).toBe(302);
+    const target = new URL(login.headers.get("location")!);
+    expect(target.origin + target.pathname).toBe(
+      `${vars.CLERK_ISSUER}/oauth/authorize`,
+    );
+    expect(target.searchParams.get("code_challenge_method")).toBe("S256");
+    challenge = target.searchParams.get("code_challenge")!;
+    const callback = `${vars.CLERK_REDIRECT_URI}?${new URLSearchParams({ state: target.searchParams.get("state")!, code: "clerk-code" })}`;
+    return {
+      callback,
+      finish: () => send(callback),
+      exchange: (code: string) =>
+        send("/oauth/token", {
+          grant_type: "authorization_code",
+          client_id: client,
+          redirect_uri: redirect,
+          resource: vars.FORGE_API_RESOURCE,
+          code,
+          code_verifier: verifier,
+        }),
+    };
+  }
+  const jwksCount = () => jwks;
+  return { env, worker, start, send, proof, forward, network, jwksCount };
+}
+async function refused(
+  response: Response,
+  proof: string,
+  error = "access_denied",
+) {
+  expect(response.status).toBe(400);
+  const body = await response.text();
+  expect(JSON.parse(body)).toEqual({ error });
+  sanitized(body, proof);
+}
+
+test("configured login uses cached JWKS and verified project authorization", async () => {
+  const f = await fixture(),
+    a = await f.start(),
+    callback = await a.finish();
+  expect(callback.status).toBe(302);
+  const issued = await a.exchange(codeOf(callback));
+  expect(issued.status).toBe(200);
+  const project = new Request(`${issuer}/p/a/holder`, {
+    headers: { authorization: `Bearer ${await field(issued, "access_token")}` },
+  });
+  expect(await status(f.worker.fetch(project, f.env))).toBe(200);
+  expect(f.forward).toHaveBeenCalledTimes(1);
+  const defaultPolicy = createConfiguredWorker(undefined, { fetch: f.network });
+  expect(await status(defaultPolicy.fetch(project, f.env))).toBe(403);
+  const b = await f.start();
+  expect((await b.finish()).status).toBe(302);
+  expect(f.jwksCount()).toBe(1);
+}, 30_000);
+
+test("configured token exchange permits one success and refuses races and replay", async () => {
+  const f = await fixture(),
+    a = await f.start(),
+    callback = await a.finish();
+  expect(callback.status).toBe(302);
+  const code = codeOf(callback);
+  expect((await a.exchange(code)).status).toBe(200);
+  const replay = await a.exchange(code);
+  expect(replay.status).toBe(400);
+  sanitized(await replay.text(), code);
+  const b = await f.start(),
+    second = await b.finish();
+  expect(second.status).toBe(302);
+  const next = codeOf(second),
+    results = await Promise.all([b.exchange(next), b.exchange(next)]);
+  expect(results.map((r) => r.status).sort()).toEqual([200, 400]);
+}, 30_000);
+
+test("configured callbacks refuse replay, foreign state and invalid ID tokens", async () => {
+  for (const [claims, alg] of [
+    [{ aud: "other" }, "RS256"],
+    [{ iss: "https://lookalike.example" }, "RS256"],
+    [{ exp: 0 }, "RS256"],
+    [{}, "HS256"],
+  ] as const) {
+    const f = await fixture(claims, alg),
+      flow = await f.start();
+    await refused(await flow.finish(), f.proof);
+  }
+  const a = await fixture(),
+    b = await fixture(),
+    first = await a.start(),
+    second = await b.start();
+  await refused(await a.send(second.callback), a.proof, "invalid_request");
+  expect((await first.finish()).status).toBe(302);
+  await refused(await first.finish(), a.proof, "invalid_request");
+}, 30_000);
+
+test("missing redemption refuses while device/admin and unmarked composition remain safe", async () => {
+  const f = await fixture();
+  for (const binding of [
+    undefined,
+    {},
+    { idFromName: "invalid", get: () => ({}) },
+  ]) {
+    const env = { ...f.env, CODE_REDEMPTION: binding };
+    const response = await f.worker.fetch(
+      new Request(`${issuer}/oauth/token`),
+      env,
+    );
+    expect(response.status).toBe(503);
+    const body = await response.text();
+    expect(JSON.parse(body)).toMatchObject({
+      error: { code: "AUTH_CONFIG_UNAVAILABLE", variable: "CODE_REDEMPTION" },
+    });
+    sanitized(body);
+    for (const [path, token] of [
+      ["status", "fixture-admin"],
+      ["holder", `fct_${"0".repeat(16)}.${"x".repeat(43)}`],
+    ]) {
+      const request = new Request(`${issuer}/p/a/${path}`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(await status(f.worker.fetch(request, env))).toBe(200);
+    }
+  }
+  const route = mock(() => Promise.resolve(new Response("unsafe")));
+  const auth = composeAuth(
+    { verify: () => Promise.resolve(null) },
+    vars.FORGE_API_RESOURCE,
+    undefined,
+    undefined,
+    route,
+  );
+  expect((await auth.route(new Request(`${issuer}/callback`))).status).toBe(
+    503,
+  );
+  expect(route).toHaveBeenCalledTimes(0);
+}, 30_000);
+
+test("configured metadata uses the configured issuer despite a mismatched Host", async () => {
+  const f = await fixture();
+  for (const path of [
+    "/.well-known/oauth-authorization-server",
+    "/.well-known/oauth-protected-resource",
+  ]) {
+    const response = await f.worker.fetch(
+      new Request(`${issuer}${path}`, {
+        headers: { Host: "lookalike.example" },
+      }),
+      f.env,
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject(
+      path.endsWith("protected-resource")
+        ? { authorization_servers: [issuer] }
+        : { issuer },
+    );
+  }
+}, 30_000);

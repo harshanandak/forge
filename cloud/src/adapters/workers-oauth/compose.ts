@@ -5,13 +5,20 @@ import {
 } from "../../auth/compose.ts";
 import type { AuthorizationPort } from "../../../../src/ports/authorization.ts";
 import { createOAuthAdapter, type OAuthOptions } from "./index.ts";
-import { createWorker } from "../../worker.ts";
+import { createWorker, type ProjectForward } from "../../worker.ts";
+import type { ClockPort } from "../../../../src/ports/clock.ts";
 import { OAuthConfigError, readOAuthConfig } from "./config.ts";
 import { OAuthAuthorizationServer } from "@cloudflare/workers-oauth-provider";
 import { guardRegistration, REGISTRATION_LIMITS } from "./registration.ts";
 export { Project } from "../../worker.ts";
 export { CodeRedemption } from "./redemption.ts";
 export { RegistrationLimiter } from "./registration.ts";
+export interface WorkerDependencies {
+  fetch?: (url: string, init?: RequestInit) => Promise<Response>;
+  clock?: ClockPort;
+  policy?: AuthorizationPort;
+  forward?: ProjectForward;
+}
 
 export function composeOAuth(
   options: OAuthOptions,
@@ -31,6 +38,7 @@ export function composeOAuth(
 
 export function createConfiguredWorker(
   protocol?: (request: Request) => Promise<Response>,
+  _dependencies: WorkerDependencies = {},
 ) {
   const worker = createWorker();
   return {
