@@ -15,6 +15,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createCloneFilesLease } from "../../../src/adapters/fs/clone-files.ts";
+import { ForgeFailure } from "../../../src/contract/failure.ts";
 import type { CloneMarkerCleanupScheduler } from "../../../src/adapters/fs/clone-files.ts";
 
 setDefaultTimeout(30_000);
@@ -652,6 +653,119 @@ test.each([
     lease.close();
   }
 });
+
+test.each([
+  { host: "local-host", live: false, start: "101", kept: false },
+  { host: undefined, live: false, start: "101", kept: false },
+  { host: undefined, live: true, start: "101", kept: false },
+  { host: "local-host", live: true, start: "100", kept: true },
+  { host: "local-host", live: true, start: "101", kept: false },
+  { host: "remote-host", live: false, start: "101", kept: true },
+  { host: "remote-host", live: true, start: "101", kept: true },
+])(
+  "recoverable owner host=$host live=$live is kept=$kept",
+  ({ host, live, start, kept }) => {
+    const { options, commonDirectory, lease } = fixture();
+    const lockPath = "host-owner.lock";
+    const path = join(commonDirectory, lockPath);
+    const marker = "owner-12345-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+    const record = JSON.stringify({
+      ...(host === undefined ? {} : { hostIdentity: host }),
+      startTime: "linux-starttime-v1:100",
+    });
+    mkdirSync(path);
+    writeFileSync(join(path, marker), record);
+    const probes: number[] = [];
+    const contender = createCloneFilesLease({
+      ...options,
+      hostIdentity: "local-host",
+      processProbe(pid) {
+        probes.push(pid);
+        if (!live) throw Object.assign(new Error("dead"), { code: "ESRCH" });
+      },
+      processStartTime: () => `linux-starttime-v1:${start}`,
+    });
+    try {
+      const acquire = () =>
+        contender.service.lock([lockPath], { recoverDeadOwner: true });
+      if (kept) {
+        expect(acquire).toThrow();
+        expect(readdirSync(path)).toEqual([marker]);
+        expect(readFileSync(join(path, marker), "utf8")).toBe(record);
+      } else {
+        acquire().release();
+        expect(existsSync(path)).toBe(false);
+      }
+      expect(probes).toEqual(host === "remote-host" ? [] : [12345]);
+    } finally {
+      contender.close();
+      lease.close();
+    }
+  },
+  30_000,
+);
+
+test("a foreign lock refusal identifies its host, relative marker and manual recovery", () => {
+  const { options, commonDirectory, lease } = fixture();
+  const lockPath = "foreign.lock";
+  const marker = "owner-12345-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  const path = join(commonDirectory, lockPath);
+  mkdirSync(path);
+  writeFileSync(
+    join(path, marker),
+    JSON.stringify({
+      hostIdentity: "remote-host",
+      startTime: "linux-starttime-v1:100",
+    }),
+  );
+  const contender = createCloneFilesLease({
+    ...options,
+    hostIdentity: "local-host",
+    processProbe: () => {
+      throw Object.assign(new Error("dead"), { code: "ESRCH" });
+    },
+  });
+  let refusal: unknown;
+  try {
+    contender.service.lock([lockPath], { recoverDeadOwner: true });
+  } catch (error) {
+    refusal = error;
+  } finally {
+    contender.close();
+    lease.close();
+  }
+  expect(refusal).toBeInstanceOf(ForgeFailure);
+  expect((refusal as ForgeFailure).error.code).toBe("LOCK_FOREIGN_HOST");
+  const message = (refusal as ForgeFailure).error.message;
+  expect(message).toContain("remote-host");
+  expect(message).toContain(`${lockPath}/${marker}`);
+  expect(message).not.toContain(commonDirectory);
+  expect(message).toMatch(/run.+on.+remote-host/i);
+  expect(message).toMatch(/confirm.+host.+down/i);
+  expect(message).toMatch(/remove.+marker/i);
+  expect(readdirSync(path)).toEqual([marker]);
+}, 30_000);
+
+test("new owner markers record the injected host identity with their start time", () => {
+  const { options, commonDirectory, lease } = fixture();
+  const owner = createCloneFilesLease({
+    ...options,
+    hostIdentity: "local-host",
+    processStartTime: () => "linux-starttime-v1:100",
+  });
+  try {
+    owner.service.lock(["host-record.lock"], { recoverDeadOwner: true });
+    const path = join(commonDirectory, "host-record.lock");
+    const marker = readdirSync(path)[0]!;
+    expect(JSON.parse(readFileSync(join(path, marker), "utf8"))).toEqual({
+      hostIdentity: "local-host",
+      startTime: "linux-starttime-v1:100",
+    });
+  } finally {
+    owner.close();
+    lease.close();
+  }
+}, 30_000);
 
 test.each(["file", "empty directory", "unknown marker"])(
   "recoverable locks preserve an unproven owner: %s",

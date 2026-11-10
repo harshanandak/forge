@@ -1,5 +1,15 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { resolve } from "node:path";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { createCloneFilesLease } from "../../../src/adapters/fs/clone-files.ts";
 
 type Handler = (call: {
   input: Record<string, unknown>;
@@ -122,7 +132,7 @@ function fixture() {
       signal: call.signal ?? new AbortController().signal,
       deadline: call.deadline ?? Number.MAX_SAFE_INTEGER,
     });
-  return { calls, refs, held, hooks, run, time, probes };
+  return { calls, refs, held, hooks, run, time, probes, services };
 }
 
 test("the base fetch writes only its own ref", async () => {
@@ -190,6 +200,60 @@ test("the next start removes a stale private ref and keeps a fresh one", async (
 const own = "forge-lane-ref-11111111-2222-4333-8444-555555555555.lock";
 const stale = (ms: number, uuid: string) =>
   `refs/forge/lane-base/${ms}-${uuid}`;
+
+test.each([false, true])(
+  "the sweep preserves foreign owner markers and both private refs when its PID is locally live=%s",
+  async (live) => {
+    const f = fixture();
+    const root = mkdtempSync(join(tmpdir(), "forge-foreign-ref-"));
+    const uuid = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+    const lockPath = `forge-lane-ref-${uuid}.lock`;
+    const path = join(root, lockPath);
+    const marker = "owner-12345-bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
+    const record = JSON.stringify({
+      hostIdentity: "remote-host",
+      startTime: "linux-starttime-v1:100",
+    });
+    const lease = createCloneFilesLease({
+      projectRoot: root,
+      gitDirectory: root,
+      commonDirectory: root,
+      read: true,
+      write: true,
+      signal: new AbortController().signal,
+      hostIdentity: "local-host",
+      processProbe: () => {
+        if (!live) throw Object.assign(new Error("dead"), { code: "ESRCH" });
+      },
+      processStartTime: () => "linux-starttime-v1:101",
+    });
+    mkdirSync(path);
+    writeFileSync(join(path, marker), record);
+    const refs = [stale(1, uuid), `refs/forge/lane-close/1-${uuid}`];
+    for (const ref of refs) f.refs.add(ref);
+    const original = f.services.files.lock;
+    f.services.files.lock = ([name]: string[]) => {
+      if (name !== lockPath) return original([name!]);
+      const held = lease.service.lock([name], { recoverDeadOwner: true });
+      return { release: () => void held.release() };
+    };
+    try {
+      await f.run();
+      expect([...f.refs]).toEqual(refs);
+      expect(readdirSync(path)).toEqual([marker]);
+      expect(readFileSync(join(path, marker), "utf8")).toBe(record);
+      expect(
+        f.calls.filter(
+          (args) => args[0] === "update-ref" && refs.includes(args[2]!),
+        ),
+      ).toEqual([]);
+    } finally {
+      lease.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+  30_000,
+);
 
 test("the start holds an exclusion lock for its ref while it fetches and releases it after", async () => {
   const f = fixture();

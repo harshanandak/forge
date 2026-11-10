@@ -49,6 +49,8 @@ export interface CloneMarkerCleanupScheduler {
 }
 export interface CloneFilesOptions {
   readonly markerCleanup?: CloneMarkerCleanupScheduler;
+  readonly hostIdentity?: string;
+  readonly processProbe?: (pid: number) => void;
   readonly processStartTime?: (pid: number) => string | undefined;
   readonly projectRoot: string;
   readonly gitDirectory: string;
@@ -226,6 +228,7 @@ function recoverableLock(
   pending: MarkerCleanup,
   complete: () => void,
   startTime?: (pid: number) => string | undefined,
+  processProbe?: (pid: number) => void,
 ): CloneFileLock {
   const owner = "owner-" + process.pid + "-" + randomUUID();
   const conflict = () =>
@@ -270,7 +273,8 @@ function recoverableLock(
     if (!match) conflict();
     let dead = false;
     try {
-      process.kill(Number(match![1]), 0);
+      if (processProbe) processProbe(Number(match![1]));
+      else process.kill(Number(match![1]), 0);
       const marker = join(target, name!);
       const info = stat(marker);
       if (
@@ -969,6 +973,7 @@ function createCloneFilesAccess(
                 pendingCleanup.delete(lock);
               },
               options.processStartTime,
+              options.processProbe,
             );
             held.push(lock);
             recoverable.add(lock);
