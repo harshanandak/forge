@@ -96,24 +96,18 @@ async function project() {
       { expectRevision: 0 },
     );
   }
-  for (const id of [4])
-    owner.acquire(
-      namespace,
-      `issue:work-${id}`,
-      otherHolder,
-      60000,
-      `seed-${id}`,
-    );
+  owner.acquire(namespace, "issue:work-4", otherHolder, 60000, "seed-4");
   function call<T = unknown>(
     op: string,
     id: number,
     extra: Record<string, unknown> = {},
+    requestId = "request-" + ++request,
   ): T {
     const state = createStateClient({
       owner,
       namespace,
       write: true,
-      requestId: `request-${++request}`,
+      requestId,
       context: {
         variant: "leased",
         ...holder,
@@ -137,6 +131,7 @@ async function project() {
   }
   return {
     call,
+    owner,
     close: () => {
       fault.mockRestore();
       return opened.handle.close();
@@ -235,7 +230,8 @@ test.each(["", " \t\n", "x".repeat(65537)])(
 
 test("reason accepts the comment limit of 65536 Unicode characters", () => {
   expect(
-    p.call<Grant>("claim", 2, { reason: "\u{1f642}".repeat(65536) }).generation,
+    p.call<Grant>("claim", 2, { reason: " " + "\u{1f642}".repeat(65536) + " " })
+      .generation,
   ).toBe(1);
 }, 10000);
 
@@ -251,4 +247,43 @@ test("seven mixed issues need a claim reason exactly when their board lists BLOC
       expect(failure(() => p.call("claim", id)).code).toBe("LEASE_HELD");
     else expect(p.call<Grant>("claim", id).warnings ?? []).toEqual([]);
   }
+}, 10000);
+
+test("claim replay ignores dependency title changes without writing", () => {
+  const grant = p.call("claim", 2, { reason }, "R");
+  const dependency = p.owner.get(namespace, "issue:work-1")!;
+  p.owner.put(
+    namespace,
+    dependency.key,
+    { ...(dependency.value as object), title: "renamed" },
+    holder.actor,
+    { expectRevision: dependency.revision },
+  );
+  const before = p.snapshot();
+  expect(p.call("claim", 2, { reason }, "R")).toEqual(grant);
+  expect(() =>
+    p.owner.acquire(namespace, "issue:work-7", holder, 3600000, "fresh", {
+      readSet: [{ key: dependency.key, expectRevision: dependency.revision }],
+    }),
+  ).toThrow(/REVISION_CONFLICT/);
+  expect(p.snapshot()).toEqual(before);
+}, 10000);
+
+test("another holder retains the main lease error on blocked claims, with or without reason", () => {
+  const issue = p.owner.get(namespace, "issue:work-4")!;
+  p.owner.put(
+    namespace,
+    issue.key,
+    { ...(issue.value as object), dependsOn: ["work-1"] },
+    holder.actor,
+    { expectRevision: issue.revision },
+  );
+  const before = p.snapshot();
+  const expected = failure(() =>
+    p.owner.acquire(namespace, issue.key, holder, 3600000, "main"),
+  );
+  expect(expected.code).toBe("LEASE_HELD");
+  for (const extra of [{}, { reason }])
+    expect(failure(() => p.call("claim", 4, extra))).toEqual(expected);
+  expect(p.snapshot()).toEqual(before);
 }, 10000);

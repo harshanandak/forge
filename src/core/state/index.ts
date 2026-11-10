@@ -212,6 +212,9 @@ function deletionEvent(
     actor,
   };
 }
+function acquisitionInput(options?: AcquireOptions) {
+  return options?.metadata === undefined ? {} : { metadata: options.metadata };
+}
 function acquisitionEvent(
   namespace: string,
   lease: LeaseRecord,
@@ -436,7 +439,7 @@ function validateReceipt(
           subject: lease.subject,
           holder: lease.holder,
           durationMs: duration,
-          ...(data.options === undefined ? {} : { options: data.options }),
+          ...acquisitionInput(data.options),
         })
     )
       invalid("Imported acquisition receipt does not match its operation");
@@ -613,7 +616,7 @@ export function verifyEventDerivedState(
                     subject: event.key,
                     holder: (result as LeaseRecord).holder,
                     durationMs: plan.durationMs,
-                    ...(options === undefined ? {} : { options }),
+                    ...acquisitionInput(options),
                   };
             const row = {
               namespace: event.namespace,
@@ -1412,7 +1415,7 @@ export class StateOwner {
           subject,
           holder,
           durationMs,
-          ...(accepted === undefined ? {} : { options: accepted }),
+          ...acquisitionInput(accepted),
         },
         () => {
           this.#readSetHolds(namespace, undefined, undefined, readSet);

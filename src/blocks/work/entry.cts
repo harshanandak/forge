@@ -5197,27 +5197,6 @@ const operations: Operations<WorkOperations> = {
         "INPUT_INVALID",
         "reason must contain 1 to 65536 characters after trimming",
       );
-    if (blockers.length && reason === undefined)
-      fail(
-        "CLAIM_BLOCKED",
-        blockers
-          .map(
-            (blocker) =>
-              blocker.id +
-              " (" +
-              (graph.read(ids.stored(blocker.id)) ? "open" : "missing") +
-              ")" +
-              (blocker.holder
-                ? " held by " + JSON.stringify(blocker.holder)
-                : ""),
-          )
-          .join(", "),
-        {
-          observed: { blockers },
-          repair:
-            "Pass --reason with a non-empty explanation to claim blocked work.",
-        },
-      );
     const readSet = [
       { key: record.key, expectRevision: record.revision },
       ...value.dependsOn.map((dependency) => ({
@@ -5229,10 +5208,31 @@ const operations: Operations<WorkOperations> = {
       input.ttlSeconds ??
       (config as WorkConfig | undefined)?.claimTtlSeconds ??
       3600;
-    const acquired = state.acquire(key(id), ttl * 1000, {
-      readSet,
-      ...(reason === undefined ? {} : { metadata: { reason } }),
-    });
+    const acquire = () =>
+      state.acquire(key(id), ttl * 1000, {
+        readSet,
+        ...(reason === undefined ? {} : { metadata: { reason } }),
+      });
+    const replayed = live(state, id) ? acquire() : undefined;
+    if (!replayed && blockers.length && reason === undefined)
+      fail(
+        "CLAIM_BLOCKED",
+        blockers
+          .map((blocker) =>
+            [
+              blocker.id,
+              graph.read(ids.stored(blocker.id)) ? "(open)" : "(missing)",
+              blocker.holder ? JSON.stringify(blocker.holder) : "",
+            ].join(" "),
+          )
+          .join(", "),
+        {
+          observed: { blockers },
+          repair:
+            "Pass --reason with a non-empty explanation to claim blocked work.",
+        },
+      );
+    const acquired = replayed ?? acquire();
     // Cleanup may reserve between the first check and acquiring the issue lease.
     const reserved = cleanupHeld(state, id);
     if (reserved) {
