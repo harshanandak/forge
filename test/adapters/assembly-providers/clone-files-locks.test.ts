@@ -213,15 +213,31 @@ test("128 outstanding markers refuse new recoverable paths without dropping reco
     const blocked = Array.from({ length: 128 }, (_, i) =>
       context.block(`limit-${i}.lock`),
     );
+    expect(() => {
+      const ordinary = context.files.lock(["ordinary.lock"]);
+      expect(existsSync(join(context.commonDirectory, "ordinary.lock"))).toBe(
+        true,
+      );
+      ordinary.release();
+    }).not.toThrow();
+    expect(existsSync(join(context.commonDirectory, "ordinary.lock"))).toBe(
+      false,
+    );
+    let caughtRefusal: unknown;
     let refusal = "";
     expect(() => {
       try {
         context.files.lock(["over-limit.lock"], { recoverDeadOwner: true });
       } catch (error) {
+        caughtRefusal = error;
         refusal = String(error);
         throw error;
       }
     }).toThrow(/LOCK_CLEANUP_LIMIT/);
+    expect(caughtRefusal).toMatchObject({
+      error: { code: "LOCK_CLEANUP_LIMIT", retry: "safe" },
+    });
+    expect(refusal).toContain("retry after cleanup");
     for (let i = 0; i < 128; i += 1)
       expect(refusal).not.toContain(`limit-${i}.lock`);
     expect(existsSync(join(context.commonDirectory, "over-limit.lock"))).toBe(
