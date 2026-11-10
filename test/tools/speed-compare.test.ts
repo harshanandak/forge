@@ -137,3 +137,74 @@ test("under every limit and level with the base build: pass with no warning", ()
     warnings: [],
   });
 }, 1000);
+
+// Synthetic PR 399 shape, not recovered raw timings: the independent scores are 561/534,
+// but five pairs are level or faster. The medians also match the reported 573/575 ms.
+const runnerNoise = {
+  current: [561, 561, 561, 573, 573, 590, 610, 630, 650],
+  base: [520, 528, 534, 560, 575, 590, 610, 630, 650],
+};
+
+test("PR 399 shaped noise passes using the paired 25th percentile", () => {
+  const { current, base } = runnerNoise;
+  const independentQuartile = (times: number[]): number =>
+    [...times].sort((a, b) => a - b)[2]!;
+  expect(independentQuartile(current) / independentQuartile(base)).toBeCloseTo(
+    1.0506,
+    4,
+  );
+  const verdict = compareToBase(current, base);
+  expect(verdict.ratio).toBeCloseTo(1, 5);
+  expect(verdict.passed).toBe(true);
+}, 1000);
+
+test("PR 399 shaped noise above the ceiling only warns", () => {
+  const { failures, warnings } = gateDecision(
+    LIMIT,
+    { ...row(573), timesMs: runnerNoise.current },
+    { ...row(575), timesMs: runnerNoise.base },
+    WHERE,
+  );
+  expect(failures).toEqual([]);
+  expect(warnings).toHaveLength(1);
+  expect(warnings[0]).toContain("573 ms");
+  expect(warnings[0]).toContain("575 ms");
+}, 1000);
+
+test("a monotone runner slowdown shared by each pair cancels", () => {
+  const { current, base } = simulate(
+    (_side, index) => BASE_MS * (1 + Math.floor(index / 2) * 0.1),
+  );
+  const verdict = compareToBase(current, base);
+  expect(verdict.ratio).toBeCloseTo(1, 5);
+  expect(verdict.passed).toBe(true);
+}, 1000);
+
+test("a real 7 percent slowdown fails with shared runner drift", () => {
+  const { current, base } = simulate(
+    (side, index) =>
+      BASE_MS *
+      (1 + Math.floor(index / 2) * 0.1) *
+      (side === "current" ? 1.07 : 1),
+  );
+  const verdict = compareToBase(current, base);
+  expect(verdict.ratio).toBeCloseTo(1.07, 5);
+  expect(verdict.passed).toBe(false);
+}, 1000);
+
+test("a real 5.5 percent slowdown with no drift fails", () => {
+  const { current, base } = simulate(
+    (side) => BASE_MS * (side === "current" ? 1.055 : 1),
+  );
+  const verdict = compareToBase(current, base);
+  expect(verdict.ratio).toBeCloseTo(1.055, 5);
+  expect(verdict.passed).toBe(false);
+}, 1000);
+
+test("the failure message names the paired estimator and both timings", () => {
+  const { failures } = gateDecision(LIMIT, row(321), row(300), WHERE);
+  expect(failures).toHaveLength(1);
+  expect(failures[0]).toContain("paired 25th percentile");
+  expect(failures[0]).toContain("321 ms");
+  expect(failures[0]).toContain("300 ms");
+}, 1000);
