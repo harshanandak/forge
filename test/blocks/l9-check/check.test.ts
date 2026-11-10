@@ -538,14 +538,16 @@ for (const [name, paths] of [
   }, 1000);
 }
 
-test("clean tracked files still certify a passing committed head", async () => {
-  const { services } = fixture();
-  trackedChanges(services, [[], []]);
-  const check = createCheck(services);
-  const receipt = await check.run({}, config);
-  expect(receipt.status).toBe("PASS");
-  expect(receipt.subject).toBe("abc123");
-}, 1000);
+for (const paths of [[], [".forge/config.yaml"]])
+  test(`clean tracked inputs with ${paths.join()} still certify the head`, async () => {
+    const { services } = fixture();
+    trackedChanges(services, [paths, paths]);
+    const check = createCheck(services);
+    const receipt = await check.run({}, config);
+    expect(receipt.status).toBe("PASS");
+    expect(receipt.subject).toBe("abc123");
+    expect(receipt.reason).not.toContain("TRACKED_INPUTS_DIRTY");
+  }, 1000);
 
 test("issue close refuses a dirty-tree check receipt before writing", async () => {
   const { services } = fixture();

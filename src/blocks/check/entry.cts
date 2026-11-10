@@ -689,9 +689,14 @@ function createCheck(
           finalizationTimeoutMs(frozenConfig.maxReceiptBytes);
       const changed =
         before.head !== after.head || before.filesDigest !== after.filesDigest;
+      const inputs = frozenConfig.inputs.map((path) => path.toLowerCase());
       const dirtyPaths = [
         ...new Set([...(before.dirtyPaths ?? []), ...(after.dirtyPaths ?? [])]),
-      ].sort();
+      ]
+        .filter(
+          (path) => path !== ".forge/config.yaml" || inputs.includes(path),
+        )
+        .sort();
       const status = changed ? "INCOMPLETE" : aggregate(runs);
       const body = {
         version: 1 as const,

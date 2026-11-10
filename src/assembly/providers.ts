@@ -948,7 +948,7 @@ export function createAssemblyProviders(
           return {
             head: after,
             filesDigest,
-            ...(dirtyPaths ? { dirtyPaths } : {}),
+            ...(dirtyPaths && { dirtyPaths }),
           };
         },
       };
