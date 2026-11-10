@@ -7,6 +7,10 @@ import {
   type GateRow,
   type Side,
 } from "../../tools/bench/speed-compare.ts";
+import {
+  recordSpeedSample,
+  type SpeedSample,
+} from "../../tools/bench/speed-samples.ts";
 
 const PAIRS = 9;
 const BASE_MS = 300;
@@ -136,4 +140,48 @@ test("under every limit and level with the base build: pass with no warning", ()
     failures: [],
     warnings: [],
   });
+}, 1000);
+
+test("a monotone runner slowdown shared by each pair cancels", () => {
+  const { current, base } = simulate(
+    (_side, index) => BASE_MS * (1 + Math.floor(index / 2) * 0.1),
+  );
+  const verdict = compareToBase(current, base);
+  expect(verdict.ratio).toBeCloseTo(1, 5);
+  expect(verdict.passed).toBe(true);
+}, 1000);
+
+test("a real 7 percent slowdown fails with shared runner drift", () => {
+  const { current, base } = simulate(
+    (side, index) =>
+      BASE_MS *
+      (1 + Math.floor(index / 2) * 0.1) *
+      (side === "current" ? 1.07 : 1),
+  );
+  const verdict = compareToBase(current, base);
+  expect(verdict.ratio).toBeCloseTo(1.07, 5);
+  expect(verdict.passed).toBe(false);
+}, 1000);
+
+test("a real 5.5 percent slowdown with no drift fails", () => {
+  const { current, base } = simulate(
+    (side) => BASE_MS * (side === "current" ? 1.055 : 1),
+  );
+  const verdict = compareToBase(current, base);
+  expect(verdict.ratio).toBeCloseTo(1.055, 5);
+  expect(verdict.passed).toBe(false);
+}, 1000);
+
+test("Speed sample output keeps acquisition order and one-based positions", () => {
+  const samples: SpeedSample[] = [];
+  const times = [30, 10, 50, 20];
+  sampleOrder(2).forEach((side, index) =>
+    recordSpeedSample(samples, side, times[index]!),
+  );
+  expect(samples).toEqual([
+    { side: "current", position: 1, ms: 30 },
+    { side: "base", position: 2, ms: 10 },
+    { side: "base", position: 3, ms: 50 },
+    { side: "current", position: 4, ms: 20 },
+  ]);
 }, 1000);
