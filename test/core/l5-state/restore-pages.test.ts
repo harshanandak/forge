@@ -88,6 +88,24 @@ function expectFailure(work: () => void, table: string, name: string): void {
 
 for (const pageSize of [1, 2, undefined]) {
   const label = pageSize ?? "default";
+  test(`restore preserves the consistency failure without rowid, page size ${label}`, async () => {
+    const { db, owner, close } = await open(false);
+    try {
+      owner.put(ns, "a", "value", actor, { expectRevision: 0 });
+      db.exec("DROP TABLE state_records");
+      db.exec(
+        "CREATE TABLE state_records (namespace TEXT NOT NULL, key TEXT NOT NULL, revision INTEGER NOT NULL CHECK(revision > 0), body TEXT NOT NULL, PRIMARY KEY(namespace,key)) WITHOUT ROWID",
+      );
+      db.run(
+        "INSERT INTO state_records(namespace,key,revision,body) VALUES(?,?,1,'not json')",
+        [ns, "a"],
+      );
+      expectFailure(() => verify(db, 1, pageSize), "state_records", "a");
+    } finally {
+      await close();
+    }
+  }, 30_000);
+
   for (const table of [
     "state_records",
     "state_leases",

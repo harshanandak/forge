@@ -771,10 +771,15 @@ export function verifyEventDerivedState(
         // Only unverified keys remain in replay state; scan that suffix by rowid.
         let after: readonly SqlValue[] = [];
         for (;;) {
-          const page = candidate.all(
-            `SELECT rowid,${columns} FROM ${table} WHERE (${keys.join(",")}) >= (${keys.map(() => "?").join(",")})${after.length ? " AND rowid > ?" : ""} ORDER BY rowid LIMIT ?`,
-            [...keys.map((column) => row[column]!), ...after, pageSize],
-          );
+          let page: readonly SqlRow[];
+          try {
+            page = candidate.all(
+              `SELECT rowid,${columns} FROM ${table} WHERE (${keys.join(",")}) >= (${keys.map(() => "?").join(",")})${after.length ? " AND rowid > ?" : ""} ORDER BY rowid LIMIT ?`,
+              [...keys.map((column) => row[column]!), ...after, pageSize],
+            );
+          } catch {
+            throw error;
+          }
           for (const remaining of page) check(remaining);
           // Keep the original rejection even if the candidate changes mid-read.
           if (page.length < pageSize) throw error;
