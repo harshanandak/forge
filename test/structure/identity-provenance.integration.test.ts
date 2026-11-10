@@ -15,6 +15,51 @@ const fixtures = readJson(
 const mint = "src/ports/identity-mint.ts";
 const paths = listRepoFiles();
 
+test("only the exact OAuth validation boundary may carry verifier-minted identity", () => {
+  for (const path of [
+    "cloud/src/adapters/workers-oauth/index.ts",
+    "cloud/src/adapters/workers-oauth/other.ts",
+    "cloud/src/adapters/workers-oauth/index.test.ts",
+    "cloud/src/auth/compose.ts",
+    "cloud/src/worker.ts",
+  ]) {
+    const target = posix.relative(posix.dirname(path), mint);
+    const text = `import { mintIdentity } from "${target}"; export function createOAuthAdapter() { async function verifyProviderToken(claims) { return mintIdentity(claims); } return { verify: verifyProviderToken }; }`;
+    expect(
+      findIdentityMintViolations([{ path, text }]).map((v) => v.file),
+    ).toEqual(
+      path === "cloud/src/adapters/workers-oauth/index.ts" ? [] : [path],
+    );
+  }
+}, 30_000);
+
+test("the OAuth file refuses direct mints outside its private token-validation function", () => {
+  const path = "cloud/src/adapters/workers-oauth/index.ts";
+  for (const code of [
+    "mintIdentity(claims);",
+    "function other() { return mintIdentity(claims); }",
+    "function verifyProviderToken() { return mintIdentity(claims); }",
+    "function createOAuthAdapter() { function other() { return mintIdentity(claims); } }",
+    "function createOAuthAdapter() { function verifyProviderToken() { return () => mintIdentity(claims); } }",
+    "function createOAuthAdapter() { function verifyProviderToken() { return { other() { return mintIdentity(claims); } }; } }",
+    'import { mintIdentity as é } from "TARGET"; export function other(c) { return é(c); }',
+    'import { mintIdentity as mint } from "TARGET"; export function other(c) { return mint(c); }',
+    'import * as identity from "TARGET"; export function other(c) { return identity.mintIdentity(c); }',
+    'export { mintIdentity } from "TARGET";',
+    'import mint from "TARGET"; export function other(c) { return mint(c); }',
+    'import { mintIdentity } from "TARGET"; import { isVerifiedIdentity } from "TARGET";',
+    'import { mintIdentity } from "TARGET"; export function createOAuthAdapter() { function verifyProviderToken() { return expose(mintIdentity); } }',
+  ]) {
+    const target = "../../../../src/ports/identity-mint.ts";
+    const text = code.includes("TARGET")
+      ? code.replaceAll("TARGET", target)
+      : `import { mintIdentity } from "${target}"; ${code}`;
+    expect(
+      findIdentityMintViolations([{ path, text }]).map((v) => v.file),
+    ).toEqual([path]);
+  }
+}, 30_000);
+
 test("the real tree mints identities only at verifier boundaries", () => {
   expect(
     format(
@@ -77,6 +122,7 @@ const reexports = readJson(
 for (const path of [
   "src/adapters/oidc/bridge.ts",
   "test/contract/lib/identity-verifier.ts",
+  "cloud/src/adapters/workers-oauth/index.ts",
 ]) {
   for (const [name, source] of Object.entries(reexports)) {
     test(`verifier refuses ${name} mint re-export to public code`, () => {
