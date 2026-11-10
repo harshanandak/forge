@@ -16,6 +16,7 @@ import {
 import { guardRegistration, REGISTRATION_LIMITS } from "./registration.ts";
 import { productionOptions } from "./production.ts";
 import { bearer, sha256, wellFormed } from "../../tokens.ts";
+import { boundedOAuthRequest } from "./body.ts";
 export { Project } from "../../worker.ts";
 export { CodeRedemption } from "./redemption.ts";
 export { RegistrationLimiter } from "./registration.ts";
@@ -41,6 +42,14 @@ export function composeOAuth(
     team,
     async (request) => {
       const path = new URL(request.url).pathname;
+      if (
+        request.method === "POST" &&
+        ["/authorize", "/oauth/token"].includes(path)
+      ) {
+        const bounded = await boundedOAuthRequest(request);
+        if (bounded instanceof Response) return bounded;
+        request = bounded;
+      }
       if (path === "/callback") return adapter.callback(request);
       if (path === "/oauth/token") return adapter.token(request);
       if (protocol) return protocol(request);
