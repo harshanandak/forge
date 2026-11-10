@@ -1,5 +1,9 @@
 import { test, expect } from "bun:test";
-import { createProcessService } from "../../../src/assembly/providers.ts";
+import {
+  createAssemblyProviders,
+  createProcessService,
+  processCleanupBudgetMs,
+} from "../../../src/assembly/providers.ts";
 import type { ProcessPort } from "../../../src/ports/process.ts";
 
 test("process launches require the operation effect, with host cancellation and deadline", async () => {
@@ -68,4 +72,27 @@ test("process launches require the operation effect, with host cancellation and 
     .catch((error: unknown) => error);
   expect(expired).toMatchObject({ error: { code: "SERVICE_EXPIRED" } });
   expect(calls).toBe(1);
+}, 5000);
+
+test("process services expose the adapter cleanup budget from host supervision settings", () => {
+  const scope = {
+    op: "sample.run",
+    effects: [],
+    signal: new AbortController().signal,
+    deadline: Date.now() + 1000,
+    processContainment: "supervised" as const,
+  };
+  const supervision = {
+    cleanupTimeoutMs: 7000,
+    drainTimeoutMs: 400,
+    pollIntervalMs: 25,
+    maxConcurrent: 1,
+  };
+  expect(
+    createAssemblyProviders("/project").process(scope).cleanupBudgetMs,
+  ).toBe(processCleanupBudgetMs());
+  expect(
+    createAssemblyProviders("/project", { supervision }).process(scope)
+      .cleanupBudgetMs,
+  ).toBe(processCleanupBudgetMs(supervision));
 }, 5000);
