@@ -83,6 +83,8 @@ jobs:
         with:
           bun-version: ${{ env.BUN_VERSION }}
       - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile --ignore-scripts
+        working-directory: cloud
       - run: bun run test:structure --timings="$CI_TIMINGS" --update-timings 2>&1 | tee -a "$RUNNER_TEMP/ci-tests.log"
       - &write-record
         if: always()

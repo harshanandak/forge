@@ -113,7 +113,7 @@ Each one gets an entry here and an adapter in the same pull request.
 - **Licence:** MIT, declared by the pinned package and its [upstream manifest](https://github.com/cloudflare/workers-oauth-provider/blob/b4cec3173079b42e3df2cb9f16a8ff13653709d0/package.json).
 - **Trust:** official Cloudflare package, pinned exactly in `cloud/package.json` with integrity in `cloud/bun.lock`. Source inspected at registry gitHead `b4cec3173079b42e3df2cb9f16a8ff13653709d0`; protocol behavior and registration policy remain forge-1105 work.
 - **Swap proof:** `OAuthAdapter` and `OAuthOptions` describe the request/response boundary. The adapter's type-only provider import derives the string token/resource parameters from `validateToken`; callers import only the adapter surface. Structure guards verify package ownership in this foundation. Protocol implementation and the fake-upstream flow contract are deferred to forge-1105; no runtime swap or OAuth behavior is proven here.
-- **Adapter:** `cloud/src/adapters/workers-oauth/`, implementing its provider-neutral `OAuthAdapter` surface. Only that folder imports the provider.
+- **Adapter:** `cloud/src/adapters/workers-oauth/`, declaring its provider-neutral `OAuthAdapter` surface. Only that folder imports the provider.
 
 ### wrangler
 

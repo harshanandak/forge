@@ -351,6 +351,11 @@ test("public sources compile in a copy with team removed and emit no team files"
       join(scratch, "node_modules"),
       "junction",
     );
+    symlinkSync(
+      join(repoRoot, "cloud/node_modules"),
+      join(scratch, "cloud/node_modules"),
+      "junction",
+    );
     const node = Bun.which("node");
     if (node === null)
       throw new Error("Node is required to resolve compiler configs");
