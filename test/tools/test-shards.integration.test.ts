@@ -23,6 +23,16 @@ const possibleReader = new RegExp(
   `\\breadFile(?:Sync)?\\s*\\(|\\bBun\\.file\\s*\\(|(?:from|import)\\s*[${quotes}][^${quotes}]*README\\.md`,
 );
 
+test("CI Gate warns above the documented 12-minute budget (720 seconds)", () => {
+  const workflow = readFileSync(".github/workflows/ci.yml", "utf8");
+  expect(workflow).toContain('if [ "$wall" -gt 720 ]; then');
+  expect(workflow).toContain("budget: 12 minutes");
+  expect(workflow).toContain("over the 12 minute budget");
+  expect(readFileSync("CODING_STANDARDS.md", "utf8")).toContain(
+    "PR CI budget: 12 minutes wall",
+  );
+}, 10_000);
+
 test("the docs-only migration README has no non-fixture source readers", () => {
   const files = execFileSync("git", ["ls-files", "-z"], {
     encoding: "utf8",

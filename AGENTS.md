@@ -2,13 +2,13 @@
 
 Forge (npm package `forge-workflow`, command `forge`) is an open building-block platform for AI coding agents. Blocks declare their operations once; the CLI and MCP tools are generated from that catalog. Core knows no workflow: stages, TDD and pull requests live in blocks and templates. Bun builds Forge; the published package runs on Node 24.15 or later 24.x, or Node 26 and later (Node 25 is not supported) with npm and assumes nothing about a user's toolchain.
 
-Commands: `package.json` scripts. `test/structure` holds repo guards.
+Commands: `package.json`. Guards: `test/structure`.
 Agents: use `forge <noun> <verb> --help --json` or `forge catalog describe <noun.verb>` for the full JSON contract.
 
 ## Gotchas
 
 - `bun lint` needs canary; `bun fmt` is stable in 1.4.4. The `lint` and `fmt` scripts use `tools/bun-builtin.ts`, which exits 1 with an upgrade hint on a Bun without the built-in. `bun check` needs Bun 1.4.3 or newer.
-- CI is the gate and there are no local git hooks. Run what you touched locally; the full matrix runs on the pull request. Fix the cause of a failing check; never skip one with `--no-verify` or `core.hooksPath` tricks.
+- Owner rule (2026-11-03): CI is the test gate; no local test suites. Local checks: lint, format check, typecheck and build. Prove red then green in CI. No local git hooks; fix failing checks, never bypass them.
 - Work in a git worktree under `.worktrees/`, based on the fetched `origin/main`.
 - Commit with conventional titles (`feat:`, `fix:`, `docs:`, `chore:`, `refactor:`, `test:`, `ci:`). The pull request title is checked and becomes the squash-merge title and the changelog line.
 - After cloning, run `forge skills sync`. People run `/forge-loop`; models read `.agents/skills/forge-loop/SKILL.md` when told to.

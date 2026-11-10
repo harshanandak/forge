@@ -56,15 +56,16 @@ The owner runs these steps. Replace angle-bracket placeholders; `<worker-origin>
 
    Expect a namespace ID; put it in `cloud/wrangler.jsonc` as `kv_namespaces: [{ "binding": "OAUTH_KV", "id": "<namespace-id>" }]`. Keep the `PROJECTS`, `CODE_REDEMPTION` and `REGISTRATION_LIMITER` bindings and all three migrations.
 
-3. **Public vars.** Replace the five `vars` values in `cloud/wrangler.jsonc`; all are required strings:
+3. **Public vars.** Replace the five required strings in `cloud/wrangler.jsonc`; set the optional owner subject to enable OAuth project access, or omit it to keep login without project access:
 
-   | Name                 | Example shape                    | What `readOAuthConfig` checks                                     | Classification |
-   | -------------------- | -------------------------------- | ----------------------------------------------------------------- | -------------- |
-   | `CLERK_ISSUER`       | `<frontend-api-url>`             | HTTPS origin only, optionally one trailing slash                  | Not secret     |
-   | `CLERK_CLIENT_ID`    | `<client-id>`                    | 1–256 printable ASCII characters, excluding spaces                | Not secret     |
-   | `CLERK_REDIRECT_URI` | `<worker-origin>/callback`       | Exactly the incoming request origin plus `/callback`              | Not secret     |
-   | `FORGE_API_RESOURCE` | `<worker-origin>/p/<project-id>` | HTTPS URL; a path is allowed                                      | Not secret     |
-   | `OAUTH_TIMEOUT_MS`   | `5000`                           | Decimal integer string from 1 through 2147483647, no leading zero | Not secret     |
+   | Name                  | Example shape                    | What `readOAuthConfig` checks                                                                 | Classification |
+   | --------------------- | -------------------------------- | --------------------------------------------------------------------------------------------- | -------------- |
+   | `CLERK_ISSUER`        | `<frontend-api-url>`             | HTTPS origin only, optionally one trailing slash                                              | Not secret     |
+   | `CLERK_CLIENT_ID`     | `<client-id>`                    | 1–256 printable ASCII characters, excluding spaces                                            | Not secret     |
+   | `CLERK_REDIRECT_URI`  | `<worker-origin>/callback`       | Exactly the incoming request origin plus `/callback`                                          | Not secret     |
+   | `FORGE_API_RESOURCE`  | `<worker-origin>/p/<project-id>` | HTTPS URL; a path is allowed                                                                  | Not secret     |
+   | `OAUTH_TIMEOUT_MS`    | `5000`                           | Decimal integer string from 1 through 2147483647, no leading zero                             | Not secret     |
+   | `FORGE_OWNER_SUBJECT` | `user_REPLACEWITHOWNERID`        | Optional `user_` plus alphanumerics; owner must match this subject and `CLERK_ISSUER` exactly | Not secret     |
 
    Every HTTPS value above rejects credentials, query strings, fragments, whitespace and backslashes. Metadata uses the callback origin, not the Host header. No Clerk secret key is needed or used; never put one in `vars`.
 
@@ -146,13 +147,13 @@ The owner runs these steps. Replace angle-bracket placeholders; `<worker-origin>
    curl -sS --output '<private-token-response-file>' --write-out 'HTTP %{http_code}\n' --data-urlencode 'grant_type=authorization_code' --data-urlencode 'client_id=<registered-client-id>' --data-urlencode 'redirect_uri=<client-redirect-uri>' --data-urlencode 'resource=<api-resource>' --data-urlencode 'code@<private-code-file>' --data-urlencode 'code_verifier@<private-verifier-file>' '<worker-origin>/oauth/token'
    ```
 
-   Expect 200 JSON including `access_token` and `token_type: "bearer"`; do not print the response. Codes are single-use, failed exchanges burn them, and refresh grants are refused. Check the current OAuth project refusal using a private config with this token:
+   Expect 200 JSON including `access_token` and `token_type: "bearer"`; do not print the response. Codes are single-use, failed exchanges burn them, and refresh grants are refused. Check OAuth project access using a private config with this token:
 
    ```sh
    curl -sS -i --config '<oauth-curl-config>' '<worker-origin>/p/<project-id>/holder?subject=deploy-smoke'
    ```
 
-   Expect 403 `{"ok":false,"error":{"code":"AUTH_FORBIDDEN","message":"Access is not allowed","retry":"never"}}`: the default open composition uses `singleOwnerPolicy` and has no person-identity forwarder. Person access to projects needs the team authorization policy and forwarding wiring, tracked in forge-1124.
+   Expect 200 `{"ok":true,"value":null}` for an unused subject when the token matches the configured owner issuer and subject. Another Clerk user, or an absent `FORGE_OWNER_SUBJECT`, must get 403 `AUTH_FORBIDDEN`. The owner's token on `GET /p/<project-id>/status` must get 401; all admin routes still require the admin token.
 
 6. **Rollback.** From `cloud/`, select a known-good version with compatible bindings and the same Durable Object migration history:
 

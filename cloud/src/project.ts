@@ -274,32 +274,50 @@ export class Project {
         );
       // The device is checked before the body is read, and again right before the write: nothing
       // awaits between that second check and the write, so a revoke cannot land between them.
+      // The private binding receives this only after the Worker strips outside headers and authorizes.
+      const owner = request.headers.get("X-Forge-Owner");
       const presented = bearer(request);
-      if (presented === undefined)
+      if (owner === null && presented === undefined)
         throw fail("AUTH_REQUIRED", "A device token is required");
-      const parts = await tokenParts(presented);
-      if (!(await this.#isProvisioned()))
+      const parts = owner === null ? await tokenParts(presented!) : undefined;
+      if (parts !== undefined && !(await this.#isProvisioned()))
         throw fail("AUTH_INVALID", "Token is not valid");
-      authorize(this.#open().db, parts, Date.now());
+      if (parts !== undefined) authorize(this.#open().db, parts, Date.now());
       const body = writes ? await bounded(request) : "";
-      const device = authorize(this.#open().db, parts, Date.now());
+      if (
+        owner !== null &&
+        writes &&
+        (await this.#storage.get(STAGED)) !== undefined
+      )
+        throw fail("INPUT_CONFLICT", "An admin restore is under way");
+      const device =
+        parts === undefined
+          ? owner!
+          : authorize(this.#open().db, parts, Date.now());
       if (reads) {
         const subject = url.searchParams.get("subject");
         if (subject === null || subject === "")
           throw fail("INPUT_INVALID", "subject is required");
         return Response.json({
           ok: true,
-          value: this.#open().owner.lease(NAMESPACE, subject) ?? null,
+          value: (await this.#isProvisioned())
+            ? (this.#open().owner.lease(NAMESPACE, subject) ?? null)
+            : null,
         });
       }
-      return Response.json({
-        ok: true,
-        value: this.#write(
-          route as "claim" | "renew" | "release",
-          body,
-          device,
-        ),
-      });
+      const value = this.#write(
+        route as "claim" | "renew" | "release",
+        body,
+        device,
+        owner === null
+          ? undefined
+          : Number(request.headers.get("X-Forge-Owner-Expires")),
+      );
+      if (owner !== null && !this.#provisioned) {
+        this.#provisioned = true;
+        await this.#storage.put(PROVISIONED, true);
+      }
+      return Response.json({ ok: true, value });
     } catch (error) {
       await discard(request);
       if (!(error instanceof ForgeFailure)) {
@@ -365,7 +383,13 @@ export class Project {
     route: "claim" | "renew" | "release",
     body: string,
     device: string,
+    expiresAt?: number,
   ): LeaseRecord {
+    const checkExpiry = () => {
+      if (expiresAt !== undefined && !(expiresAt > Date.now()))
+        throw fail("AUTH_EXPIRED", "Token expired");
+    };
+    checkExpiry();
     let parsed: unknown;
     try {
       parsed = JSON.parse(body);
@@ -422,12 +446,14 @@ export class Project {
           message: "Request ID belongs to a different input",
           retry: "reconcile_first",
         });
+      checkExpiry();
       return this.#replay(route, requestId, prior, subject, holder);
     }
     try {
       // The change and its receipt commit together: if the receipt insert fails, the change rolls
       // back, so a retry after the 500 starts from the state the caller last saw.
       return this.#open().db.transaction(() => {
+        checkExpiry();
         const fence = { subject, holder, generation: generation ?? 0 };
         const lease =
           route === "claim"

@@ -14,29 +14,20 @@ through the installed `forge`, before any code change:
 How:
 
 1. Skills are generated and gitignored. If missing, run `forge skills sync` here.
-2. Install dependencies with `bun install`.
+2. Install dependencies with `bun install --frozen-lockfile`.
 3. Read `.agents/skills/forge-loop/SKILL.md`, then the skill it routes to.
-   Tests first: show the new assertion failing before the change.
+   Tests first: push the test-only commit for CI red, then the fix for CI green.
 4. Only installed `forge` on PATH may claim, comment or otherwise write tracker
    state. Never run this branch's build against the shared issue store or real
    device root. Exercise branch builds in disposable temp projects with
    FORGE_DEVICE_ROOT pointing to a temp folder. Never close this issue; release
    your claim before stopping so the lead can close it.
-5. Run lint, format check, typecheck, structure, every
-   regression lane in `.forge/config.yaml` whose files the diff touches, and the
-   acceptance tests. Run applicable targeted tests covering the changed code,
-   including existing tests. Also run `bun run test:changed` as an extra check.
-   Bun's import graph misses runtime-loaded and spawned code, so it never replaces
-   the regression lanes; 0 selected tests is not evidence of anything.
-   Do not run `test:unit`, `test:integration` or whole test folders;
-   full suites stay in CI. Run commands serially, each with a hard
-   15-minute timeout; record a timeout and move on without retrying. If Bun lacks
-   the linter, prepend FORGE_CANARY_BUN_DIR to PATH for that command. Never run
-   `bun upgrade`. Do not run broad assembly or packed journeys unless packaging
-   changes. A change to a packed journey or its helpers requires `bun run test:pack`.
-   Adding, renaming or removing a template skill counts as packaging:
-   run `test/templates/delivery/packed.integration.test.ts`. Changing delivery
-   skill text requires every test file under `test/templates/delivery/`.
+5. CI is the test gate; run no test suites locally. Before each authorized push,
+   run `bun install --frozen-lockfile`, `bun run build`, `bun x tsc -p tsconfig.json`,
+   `bun run fmt --check` and `bun run lint` in one serial chain.
+   Each command has a hard 15-minute timeout; record a timeout and move on without
+   retrying. If Bun lacks the linter, prepend FORGE_CANARY_BUN_DIR to PATH for
+   that command. Never run `bun upgrade`. CI runs the repo guards and suites.
 6. For GitHub, obtain the configured account's token inside the command using
    FORGE_GH_USER and `gh auth token`; never print it.
 7. Keep scratch files out of skills and git. Before installing packages in a temp
@@ -55,9 +46,8 @@ Rules:
   the slice small; prefer narrowing or deleting code to adding machinery.
 - Before filing unrelated findings, search open issue titles for the same symptom;
   comment on an existing issue rather than duplicating it. Do not fix them here.
-- Respect the contract's size cap (default 400 changed source/docs lines, tests
-  excluded). Check `git diff --numstat origin/main...HEAD` before committing. If
-  it cannot fit, stop and report the overage and proposed split.
+- Follow the PR-size and review-round rules in `CODING_STANDARDS.md`, Documents
+  and reviews. The lane brief must state a hard cap; report any overage and split.
 - Everything added must work through CLI and JSON.
 - For named owner projects, exercise acceptance read-only using the branch build
   with a temp FORGE_DEVICE_ROOT. Do not fix known unrelated timing failures.
