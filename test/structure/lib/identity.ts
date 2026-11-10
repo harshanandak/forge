@@ -51,6 +51,34 @@ function reexportsMint(file: SourceFile): boolean {
     },
   );
   const code = maskSource(references, true);
+  if (file.path === "cloud/src/adapters/workers-oauth/index.ts") {
+    const scopes: string[] = [];
+    // Parse-normalized code: the private boundary permits no nested executable functions.
+    for (const match of code.matchAll(
+      /\bfunction\s+([$\w]+)\s*\([^)]*\)\s*\{|=>|\)\s*\{|\b(?:class|function)\b|[{}]|[$A-Z_a-z][$\w]*/g,
+    )) {
+      const token = match[0],
+        name = match[1];
+      if (name)
+        scopes.push(
+          name === "createOAuthAdapter" && scopes.length !== 0
+            ? "nested"
+            : name,
+        );
+      else if (token === "{") scopes.push("");
+      else if (token === "}") scopes.pop();
+      else if (
+        bindings.has(token) &&
+        scopes.filter(Boolean).join("/") !==
+          "createOAuthAdapter/verifyProviderToken"
+      )
+        return true;
+      else if (/^(?:=>|\)|class\b|function\b)/.test(token)) {
+        if (scopes.includes("verifyProviderToken")) return true;
+        if (token.endsWith("{")) scopes.push("nested");
+      }
+    }
+  }
   for (const match of code.matchAll(/[$A-Z_a-z][$\w]*/g))
     if (
       bindings.has(match[0]) &&
@@ -71,6 +99,7 @@ export function findIdentityMintViolations(
     const verifier =
       (path.startsWith("src/adapters/oidc/") && !isTestFile(path)) ||
       path === "src/adapters/oidc/identity-mint.test.ts" ||
+      path === "cloud/src/adapters/workers-oauth/index.ts" ||
       path === "test/contract/lib/identity-verifier.ts";
     if (
       verifier

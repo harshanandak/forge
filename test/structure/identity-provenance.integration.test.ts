@@ -24,12 +24,29 @@ test("only the exact OAuth validation boundary may carry verifier-minted identit
     "cloud/src/worker.ts",
   ]) {
     const target = posix.relative(posix.dirname(path), mint);
-    const text = `import { mintIdentity } from "${target}"; export function verify(claims) { return mintIdentity(claims); }`;
+    const text = `import { mintIdentity } from "${target}"; export function createOAuthAdapter() { async function verifyProviderToken(claims) { return mintIdentity(claims); } return { verify: verifyProviderToken }; }`;
     expect(
       findIdentityMintViolations([{ path, text }]).map((v) => v.file),
     ).toEqual(
       path === "cloud/src/adapters/workers-oauth/index.ts" ? [] : [path],
     );
+  }
+}, 30_000);
+
+test("the OAuth file refuses direct mints outside its private token-validation function", () => {
+  const path = "cloud/src/adapters/workers-oauth/index.ts";
+  for (const code of [
+    "mintIdentity(claims);",
+    "function other() { return mintIdentity(claims); }",
+    "function verifyProviderToken() { return mintIdentity(claims); }",
+    "function createOAuthAdapter() { function other() { return mintIdentity(claims); } }",
+    "function createOAuthAdapter() { function verifyProviderToken() { return () => mintIdentity(claims); } }",
+    "function createOAuthAdapter() { function verifyProviderToken() { return { other() { return mintIdentity(claims); } }; } }",
+  ]) {
+    const text = `import { mintIdentity } from "../../../../src/ports/identity-mint.ts"; ${code}`;
+    expect(
+      findIdentityMintViolations([{ path, text }]).map((v) => v.file),
+    ).toEqual([path]);
   }
 }, 30_000);
 

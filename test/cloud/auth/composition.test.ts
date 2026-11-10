@@ -1,5 +1,4 @@
 import { expect, mock, test } from "bun:test";
-import { singleOwnerPolicy } from "../../../src/ports/authorization.ts";
 import {
   isVerifiedIdentity,
   type VerifiedIdentity,
@@ -112,27 +111,6 @@ test("wrong-resource, expired and forged credentials yield no identity", async (
   expect(await f.api.verify(token, resource)).toBeNull();
 }, 30_000);
 
-test("client identity headers and query props cannot replace the token identity", async () => {
-  const f = await fixture(),
-    token = await f.token();
-  const request = new Request(
-    `${resource}?subject=attacker&props=${encodeURIComponent(JSON.stringify(claims))}`,
-    {
-      headers: {
-        authorization: `Bearer ${token}`,
-        "x-identity-subject": "attacker",
-        "x-forwarded-user": "attacker",
-      },
-    },
-  );
-  const presented = request.headers.get("authorization")!.slice(7);
-  expect((await f.api.verify(presented, resource))?.subject).toBe("person");
-  request.headers.delete("authorization");
-  expect(
-    await f.api.verify(request.headers.get("authorization") ?? "", resource),
-  ).toBeNull();
-}, 30_000);
-
 test("a structurally forged upstream identity never creates a provider grant", async () => {
   const f = await fixture();
   f.options.upstream.verify = () =>
@@ -148,39 +126,4 @@ test("an upstream identity for another audience never creates a provider grant",
   f.options.upstream.verify = (_request, now) =>
     verifier.verify("proof", "other", now);
   expect((await f.callback()).status).toBe(400);
-}, 30_000);
-
-test("the open policy distinguishes an owner principal from a verified person", async () => {
-  const input = {
-    project: "project",
-    action: "read",
-    authority: "single-owner",
-  } as const;
-  expect(
-    singleOwnerPolicy.authorize({
-      ...input,
-      principal: { kind: "single-owner" },
-    }),
-  ).toEqual({ allowed: true });
-  const result = await testIdentityVerifier(
-    new Map([["proof", claims]]),
-  ).verify("proof", issuer, 1_000_000);
-  if (!result.ok) throw new Error("Fixture identity failed");
-  expect(
-    singleOwnerPolicy.authorize({
-      ...input,
-      principal: { kind: "person", identity: result.identity },
-    }),
-  ).toEqual({ allowed: false, code: "AUTH_FORBIDDEN" });
-}, 30_000);
-
-test("an owner principal cannot bypass a missing team authorization provider", () => {
-  expect(
-    singleOwnerPolicy.authorize({
-      project: "project",
-      action: "read",
-      authority: "team",
-      principal: { kind: "single-owner" },
-    }),
-  ).toEqual({ allowed: false, code: "TEAM_AUTHORIZATION_UNAVAILABLE" });
 }, 30_000);

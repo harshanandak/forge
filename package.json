@@ -41,10 +41,6 @@
       "types": "./dist/src/contract/author.d.ts",
       "default": "./dist/src/contract/author.js"
     },
-    "./authorization": {
-      "types": "./dist/src/ports/authorization.d.ts",
-      "default": "./dist/src/ports/authorization.js"
-    },
     "./identity": {
       "types": "./dist/src/ports/identity.d.ts",
       "default": "./dist/src/ports/identity.js"
