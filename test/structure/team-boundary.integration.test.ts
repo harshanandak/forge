@@ -63,6 +63,7 @@ const compilerConfigs = (
       extends?: string | string[];
     };
     for (const base of [config.extends ?? []].flat()) {
+      // Refuse package-style bases instead of resolving unscanned package configs.
       if (!base.startsWith("."))
         throw new Error(
           `Compiler config ${path} must extend a local relative path`,
