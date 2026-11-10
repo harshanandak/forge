@@ -1,12 +1,12 @@
-import { expect, test } from "bun:test";
-import {
-  CodeRedemption,
-  durableRedemption,
-  validateCodeBindings,
-  type ClaimStore,
-} from "../../../cloud/src/adapters/workers-oauth/redemption.ts";
-import { createOAuthAdapter } from "../../../cloud/src/adapters/workers-oauth/index.ts";
+import { expect, mock, test } from "bun:test";
+import type { ClaimStore } from "../../../cloud/src/adapters/workers-oauth/redemption.ts";
 import { createOAuthHarness } from "../../adapters/workers-oauth/harness.ts";
+
+await mock.module("cloudflare:workers", () => ({ WorkerEntrypoint: class {} }));
+const { CodeRedemption, durableRedemption, validateCodeBindings } =
+  await import("../../../cloud/src/adapters/workers-oauth/redemption.ts");
+const { createOAuthAdapter } =
+  await import("../../../cloud/src/adapters/workers-oauth/index.ts");
 
 const code = "person:grant:private-code",
   verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
