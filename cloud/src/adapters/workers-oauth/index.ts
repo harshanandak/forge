@@ -6,6 +6,7 @@ import {
 import type { ClockPort } from "../../../../src/ports/clock.ts";
 import type { OAuthVerificationPort } from "../../../../src/ports/authorization.ts";
 import { mintIdentity } from "../../../../src/ports/identity-mint.ts";
+import { validateCodeBindings } from "./redemption.ts";
 import {
   isVerifiedIdentity,
   type IdentityClaims,
@@ -227,6 +228,8 @@ export function createOAuthAdapter(options: OAuthOptions): OAuthAdapter {
             "application/x-www-form-urlencoded"
         ) {
           const form = await request.clone().formData();
+          if (form.get("grant_type") !== "authorization_code")
+            return failure("unsupported_grant_type", 400);
           if (form.get("grant_type") === "authorization_code") {
             const code = form.get("code");
             if (typeof code !== "string" || !code)
@@ -283,6 +286,11 @@ export function createOAuthAdapter(options: OAuthOptions): OAuthAdapter {
               }
               return failure("invalid_grant", 400);
             }
+            if (!(await validateCodeBindings(form, options.storage)))
+              return failure(
+                form.get("code_verifier") ? "invalid_grant" : "invalid_request",
+                400,
+              );
           }
         }
         const tasks: Promise<unknown>[] = [];
@@ -296,7 +304,9 @@ export function createOAuthAdapter(options: OAuthOptions): OAuthAdapter {
           props: {},
         });
         await Promise.all(tasks);
-        return response;
+        return response.ok
+          ? response
+          : failure("invalid_grant", response.status);
       }),
     accepts: async (token, resource) =>
       (await verifyProviderToken(token, resource)) !== null,

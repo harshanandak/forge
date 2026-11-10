@@ -114,7 +114,7 @@ test("two concurrent durable claims have one winner and replay loses", async () 
   }
 }, 30_000);
 
-test("grant hash, client, redirect and S256 verifier bind before a claim", async () => {
+test("grant hash, client, redirect and S256 verifier bindings are checked", async () => {
   const f = await fixture();
   expect(await validateCodeBindings(form(), f.options.storage)).toBe(true);
   for (const fields of [
@@ -144,26 +144,20 @@ test("grant hash, client, redirect and S256 verifier bind before a claim", async
   expect(await validateCodeBindings(form(), f.options.storage)).toBe(false);
 }, 30_000);
 
-test("adapter rejects a binding mismatch before claiming and sanitizes its error", async () => {
+test("adapter burns a mismatched code, sanitizes errors and refuses a correct retry", async () => {
   const f = await fixture();
-  let claims = 0;
-  f.options.codeRedemption = {
-    claimOnce: () => {
-      claims++;
-      return Promise.resolve(true);
-    },
-  };
   const api = createOAuthAdapter(f.options);
-  for (const grant of [
-    "authorization_code",
-    "refresh_token",
-    "client_credentials",
-    "unknown",
-  ]) {
+  for (const [grant, proof] of [
+    ["authorization_code", "wrong"],
+    ["authorization_code", verifier],
+    ["refresh_token", verifier],
+    ["client_credentials", verifier],
+    ["unknown", verifier],
+  ] as const) {
     const body = new URLSearchParams({
       grant_type: grant,
       code,
-      code_verifier: "wrong",
+      code_verifier: proof,
       refresh_token: "private-token",
       client_id: "public-client",
       redirect_uri: f.grant.redirectUri,
@@ -182,5 +176,4 @@ test("adapter rejects a binding mismatch before claiming and sanitizes its error
     for (const secret of [code, verifier, "wrong", "private-token"])
       expect(text).not.toContain(secret);
   }
-  expect(claims).toBe(0);
 }, 30_000);
