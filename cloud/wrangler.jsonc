@@ -9,6 +9,7 @@
   "kv_namespaces": [{ "binding": "OAUTH_KV" }],
   "vars": {
     "CLERK_ISSUER": "https://example.clerk.accounts.dev",
+    "FORGE_OWNER_SUBJECT": "user_REPLACEWITHOWNERID",
     "CLERK_CLIENT_ID": "public-client-id",
     "CLERK_REDIRECT_URI": "https://worker.workers.dev/callback",
     "FORGE_API_RESOURCE": "https://worker.workers.dev",
