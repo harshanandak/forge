@@ -1,5 +1,6 @@
 import {
   AuthorizationError,
+  type Grant,
   OAuthAuthorizationServer,
 } from "@cloudflare/workers-oauth-provider";
 import type { ClockPort } from "../../../../src/ports/clock.ts";
@@ -166,8 +167,47 @@ export function createOAuthAdapter(options: OAuthOptions): OAuthAdapter {
             const expiresAt = options.clock.now() + 600_000;
             if (!Number.isFinite(expiresAt))
               throw new Error("Invalid claim deadline");
-            if (!(await options.codeRedemption.claimOnce(hash, expiresAt)))
+            if (!(await options.codeRedemption.claimOnce(hash, expiresAt))) {
+              try {
+                const [userId, grantId, secret, extra] = code.split(":");
+                const clientId = form.get("client_id");
+                // This port registers public clients only; refuse ambiguous authentication.
+                if (
+                  userId &&
+                  grantId &&
+                  secret &&
+                  extra === undefined &&
+                  typeof clientId === "string" &&
+                  ["code", "grant_type", "client_id"].every(
+                    (key) => form.getAll(key).length === 1,
+                  ) &&
+                  !request.headers.has("Authorization") &&
+                  [
+                    "client_secret",
+                    "client_assertion",
+                    "client_assertion_type",
+                  ].every((key) => !form.has(key)) &&
+                  (await oauth.lookupClient(clientId))
+                    ?.tokenEndpointAuthMethod === "none"
+                ) {
+                  // No provider helper exposes authCodeId; listUserGrants omits it.
+                  const grant = await options.storage.get<
+                    Pick<Grant, "authCodeId" | "clientId">
+                  >(`grant:${userId}:${grantId}`, { type: "json" });
+                  if (
+                    grant?.authCodeId === hash &&
+                    grant.clientId === clientId
+                  ) {
+                    // Provider 1.2.4 has no revocation tombstone: an in-flight first
+                    // exchange can persist tokens after this sweep. Claim still limits issuance to one.
+                    await oauth.revokeGrant(grantId, userId);
+                  }
+                }
+              } catch {
+                // Lookup/revocation failure must never resume exchange or expose the code.
+              }
               return failure("invalid_grant", 400);
+            }
           }
         }
         const tasks: Promise<unknown>[] = [];
