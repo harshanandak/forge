@@ -526,8 +526,9 @@ for (const [name, paths] of [
   ["dirty only after", [[], ["behavior.txt"]]],
 ] as const) {
   test(`tracked files ${name} cannot certify the committed head`, async () => {
-    const { services, check } = fixture();
+    const { services } = fixture();
     trackedChanges(services, paths);
+    const check = createCheck(services);
     const receipt = await check.run({}, config);
     expect(receipt.status).toBe("INCOMPLETE");
     expect(receipt.reason).toContain("TRACKED_INPUTS_DIRTY");
@@ -538,16 +539,18 @@ for (const [name, paths] of [
 }
 
 test("clean tracked files still certify a passing committed head", async () => {
-  const { services, check } = fixture();
+  const { services } = fixture();
   trackedChanges(services, [[], []]);
+  const check = createCheck(services);
   const receipt = await check.run({}, config);
   expect(receipt.status).toBe("PASS");
   expect(receipt.subject).toBe("abc123");
 }, 1000);
 
 test("issue close refuses a dirty-tree check receipt before writing", async () => {
-  const { services, check } = fixture();
+  const { services } = fixture();
   trackedChanges(services, [["behavior.txt"], ["behavior.txt"]]);
+  const check = createCheck(services);
   const receipt = await check.run({}, config);
   const module = { exports: {} };
   runInNewContext(

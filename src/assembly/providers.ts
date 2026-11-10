@@ -58,6 +58,7 @@ export type {
   ReportFormat,
 } from "../ports/runner-output.ts";
 export interface FileSnapshotInput {
+  readonly tracked?: boolean;
   readonly paths: readonly string[];
   readonly maxBytes: number;
   readonly timeoutMs: number;
@@ -66,7 +67,7 @@ export interface FileSnapshotInput {
 export interface FilesService extends CloneFilesService {
   snapshot(
     input: FileSnapshotInput,
-  ): Promise<{ head: string; filesDigest: string }>;
+  ): Promise<{ head: string; filesDigest: string; dirtyPaths?: string[] }>;
 }
 export interface EnvironmentService {
   readonly platform: NodeJS.Platform;
@@ -880,7 +881,10 @@ export function createAssemblyProviders(
             if (Date.now() >= deadline)
               refuse("INVOCATION_TIMEOUT", "Snapshot deadline exceeded");
           };
-          const head = async (): Promise<string> => {
+          const readGit = async (
+            args: string[],
+            maxOutputBytes: number,
+          ): Promise<string> => {
             snapshotActive();
             const remaining = deadline - Date.now() - cleanupMs;
             if (remaining < 1)
@@ -888,32 +892,58 @@ export function createAssemblyProviders(
                 "INVOCATION_TIMEOUT",
                 "Snapshot has no time left for Git and cleanup",
               );
-            const result = await executor.run(
-              git,
-              ["-C", root, "rev-parse", "--verify", "HEAD"],
-              {
-                cwd: root,
-                env: discoveryEnv,
-                signal: scope.signal,
-                timeoutMs: remaining,
-                maxOutputBytes: input.maxOutputBytes,
-              },
-            );
+            const result = await executor.run(git, ["-C", root, ...args], {
+              cwd: root,
+              env: discoveryEnv,
+              signal: scope.signal,
+              timeoutMs: remaining,
+              maxOutputBytes,
+            });
             if (result.timedOut)
               refuse("INVOCATION_TIMEOUT", "Snapshot head lookup timed out");
             snapshotActive();
             if (
               result.exitCode !== 0 ||
               result.truncated ||
-              !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(result.stdout.trim())
+              result.signal !== null
             )
               refuse(
                 "INPUT_CONFLICT",
                 'Snapshot requires an exact Git HEAD. If this repository has no first commit, create it with: git add -A && git commit -m "initial commit". Otherwise repair HEAD and retry.',
               );
-            return result.stdout.trim();
+            return result.stdout;
+          };
+          const head = async (): Promise<string> => {
+            const value = (
+              await readGit(
+                ["rev-parse", "--verify", "HEAD"],
+                input.maxOutputBytes,
+              )
+            ).trim();
+            if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(value))
+              refuse("INPUT_CONFLICT", "Snapshot requires an exact Git HEAD");
+            return value;
           };
           const before = await head();
+          const dirtyPaths = input.tracked
+            ? (
+                await readGit(
+                  [
+                    "diff",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                    "--name-only",
+                    "-z",
+                    before,
+                    "--",
+                  ],
+                  65536,
+                )
+              )
+                .split("\0")
+                .filter(Boolean)
+                .sort()
+            : undefined;
           const filesDigest = digestCloneFiles(
             { ...fileOptions, deadline },
             input.paths,
@@ -923,7 +953,11 @@ export function createAssemblyProviders(
           snapshotActive();
           if (before !== after)
             refuse("INPUT_CONFLICT", "Git HEAD changed during snapshot");
-          return { head: after, filesDigest };
+          return {
+            head: after,
+            filesDigest,
+            ...(dirtyPaths ? { dirtyPaths } : {}),
+          };
         },
       };
       return {

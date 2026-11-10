@@ -58,10 +58,13 @@ function summary(
   match: readonly string[],
 ): OutputReport {
   const failed = /(\d+)\s+failed/.exec(match[0] ?? "");
+  const total = Number(match[1]),
+    failures = Number(failed?.[1] ?? 0);
+  if (!count(total) || !count(failures) || failures > total) return malformed;
   return {
     kind: "recognized",
-    testCount: Number(match[1]),
-    failed: Number(failed?.[1] ?? 0),
+    testCount: total,
+    failed: failures,
     detail: `${kind} test summary`,
   };
 }
@@ -92,7 +95,15 @@ function retainFailure(
   current: OutputReport | undefined,
   next: OutputReport,
 ): OutputReport {
-  return current?.failed ? current : next;
+  const rank = (report: OutputReport | undefined) =>
+    report?.failed
+      ? 3
+      : report?.kind === "malformed"
+        ? 2
+        : report?.testCount === 0
+          ? 1
+          : 0;
+  return rank(current) > rank(next) ? current! : next;
 }
 
 /** Scans one stream line by line, keeping only the summary lines it has seen. */
@@ -105,6 +116,7 @@ class SummaryLines {
   bunHint = false;
   zero = false;
   hint = false;
+  invalid = false;
   nodeFailure = false;
   private nodeLines: string[] = [];
   private bunPassed: number | undefined;
@@ -137,6 +149,7 @@ class SummaryLines {
   }
   private bunSummary(total: number, failed: number): void {
     const valid = count(total) && count(failed) && failed <= total;
+    if (valid && total === 0) this.zero = true;
     const next: OutputReport = valid
       ? {
           kind: "recognized",
@@ -190,6 +203,11 @@ class SummaryLines {
     const vitest = /^\s*Tests\s+(.*?)\((\d+)\)\s*$/.exec(text)?.slice(1);
     if (vitest)
       this.vitest = retainFailure(this.vitest, summary("Vitest", vitest));
+    if (
+      (/^\s*Tests:/.test(text) && !jest) ||
+      (/^\s*Tests\s+.*\(/.test(text) && !vitest)
+    )
+      this.invalid = true;
     const bunOutcome = /^\s*(\d+) (pass|fail)\s*$/.exec(text);
     if (bunOutcome) {
       this.bunHint = true;
@@ -320,6 +338,14 @@ function recognizer(format: ReportFormat): OutputRecognizer {
         (report) => report.kind === "recognized" && report.failed! > 0,
       );
       if (failed) return failed;
+      if (
+        stdout.invalid ||
+        stderr.invalid ||
+        reports.some((report) => report.kind === "malformed")
+      )
+        return malformed;
+      const zero = reports.find((report) => report.testCount === 0);
+      if (zero) return zero;
       if (reports.length) {
         const report = reports[0]!;
         return (stdout.nodeFailure || stderr.nodeFailure) &&

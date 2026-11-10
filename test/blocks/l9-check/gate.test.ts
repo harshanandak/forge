@@ -221,7 +221,7 @@ function fixture(headRefName: unknown = "feat/x") {
       receiptHead = options.head ?? head;
       receiptExit = options.exit ?? 0;
       now += 1000;
-      return await check.run({}, config);
+      return await createCheck(services).run({}, config);
     },
     gate(
       gateConfig: CheckConfig = config,
