@@ -22,7 +22,11 @@ import type {
   StateEvent,
 } from "../../generated/types.ts";
 
-declare const fail: (code: string, message: string) => never;
+declare const fail: (
+  code: string,
+  message: string,
+  details?: { observed?: unknown; repair?: string },
+) => never;
 /** `prefix` is the id prefix the item was minted with; it is kept, never shown. */
 type Stored = Omit<TrackerItem, "lease" | "revision" | "updatedAt"> & {
   readonly prefix?: string;
@@ -216,6 +220,10 @@ type TailAction = {
   approval?: { request: string; quote: string; source: ReplySource };
 };
 type WorkOperations = TrackerOperations<"issue"> & {
+  readonly "issue.claim": readonly [
+    TrackerOperations<"issue">["issue.claim"][0] & { readonly reason?: string },
+    LeaseGrant,
+  ];
   readonly "issue.board": readonly [BoardInput, unknown];
   readonly "lane.next": readonly [
     NextInput,
@@ -5170,11 +5178,61 @@ const operations: Operations<WorkOperations> = {
     if (held) cleanupConflict(held);
     if (stored(get(state, id, input.id)).status !== "open")
       fail("INPUT_CONFLICT", "Closed issues cannot be claimed");
+    const record = get(state, id, input.id);
+    const value = {
+      ...stored(record),
+      dependsOn: stored(record).dependsOn ?? [],
+    };
+    const graph = dependencyGraph(state);
+    const blockers = blockedBy(graph, value).map((dependency) => ({
+      id: ids.shown(dependency),
+      ...holder(state, dependency),
+    }));
+    const reason = input.reason?.trim();
+    if (
+      input.reason !== undefined &&
+      (!reason || Array.from(reason).length > 65536)
+    )
+      fail(
+        "INPUT_INVALID",
+        "reason must contain 1 to 65536 characters after trimming",
+      );
+    if (blockers.length && reason === undefined)
+      fail(
+        "CLAIM_BLOCKED",
+        blockers
+          .map(
+            (blocker) =>
+              blocker.id +
+              " (" +
+              (graph.read(ids.stored(blocker.id)) ? "open" : "missing") +
+              ")" +
+              (blocker.holder
+                ? " held by " + JSON.stringify(blocker.holder)
+                : ""),
+          )
+          .join(", "),
+        {
+          observed: { blockers },
+          repair:
+            "Pass --reason with a non-empty explanation to claim blocked work.",
+        },
+      );
+    const readSet = [
+      { key: record.key, expectRevision: record.revision },
+      ...value.dependsOn.map((dependency) => ({
+        key: key(dependency),
+        expectRevision: graph.read(dependency)?.revision ?? 0,
+      })),
+    ];
     const ttl =
       input.ttlSeconds ??
       (config as WorkConfig | undefined)?.claimTtlSeconds ??
       3600;
-    const acquired = state.acquire(key(id), ttl * 1000);
+    const acquired = state.acquire(key(id), ttl * 1000, {
+      readSet,
+      ...(reason === undefined ? {} : { metadata: { reason } }),
+    });
     // Cleanup may reserve between the first check and acquiring the issue lease.
     const reserved = cleanupHeld(state, id);
     if (reserved) {
@@ -5189,7 +5247,12 @@ const operations: Operations<WorkOperations> = {
         "The issue closed during acquisition; the grant was revoked",
       );
     }
-    return grant(state, id, acquired, ids);
+    return {
+      ...grant(state, id, acquired, ids),
+      ...(blockers.length
+        ? { warnings: [{ code: "CLAIMED_BLOCKED", blockers }] }
+        : {}),
+    };
   },
   "issue.renew": ({ input, services, config }) => {
     const state = client(services);

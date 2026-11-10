@@ -70,6 +70,9 @@ export interface DeleteWriteOptions extends DeleteOptions {
   readonly fence?: Fence;
   readonly guard?: () => boolean;
 }
+export interface AcquireOptions extends BatchOptions {
+  readonly metadata?: unknown;
+}
 export interface Snapshot {
   readonly image: string;
   readonly eventHighWaterMark: number;
@@ -215,6 +218,7 @@ function acquisitionEvent(
   previous: LeaseRecord | undefined,
   at: string,
   requestId: string,
+  options?: AcquireOptions,
 ): StateEvent {
   const decision = decideLease(previous, {
     mode: "acquire",
@@ -232,7 +236,11 @@ function acquisitionEvent(
     at,
     actor: lease.holder.actor,
     requestId,
-    data: { lease, previous: previous ?? null },
+    data: {
+      lease,
+      previous: previous ?? null,
+      ...(options === undefined ? {} : { options }),
+    },
   };
 }
 function changedLeaseEvent(
@@ -402,6 +410,7 @@ function validateReceipt(
     const data = event.data as {
       lease?: unknown;
       previous?: LeaseRecord | null;
+      options?: AcquireOptions;
     } | null;
     const duration = input.durationMs;
     if (
@@ -427,9 +436,13 @@ function validateReceipt(
           subject: lease.subject,
           holder: lease.holder,
           durationMs: duration,
+          ...(data.options === undefined ? {} : { options: data.options }),
         })
     )
       invalid("Imported acquisition receipt does not match its operation");
+    for (const read of copyReadSet(data.options?.readSet) ?? [])
+      if (events.revision(read.key) !== read.expectRevision)
+        invalid("Imported request read set does not match accepted history");
     const decision = decideLease(data.previous ?? undefined, {
       mode: "acquire",
       subject: lease.subject,
@@ -579,6 +592,9 @@ export function verifyEventDerivedState(
                     updatedBy: event.actor,
                   }
                 : (event.data as { lease: LeaseRecord }).lease;
+            const options = (
+              event.data as { options?: AcquireOptions } | undefined
+            )?.options;
             const input =
               plan.kind === "put"
                 ? {
@@ -597,6 +613,7 @@ export function verifyEventDerivedState(
                     subject: event.key,
                     holder: (result as LeaseRecord).holder,
                     durationMs: plan.durationMs,
+                    ...(options === undefined ? {} : { options }),
                   };
             const row = {
               namespace: event.namespace,
@@ -664,6 +681,7 @@ export function verifyEventDerivedState(
           const data = event.data as {
             lease: LeaseRecord;
             previous: LeaseRecord | null;
+            options?: AcquireOptions;
           };
           lease = data.lease;
           if (
@@ -675,6 +693,7 @@ export function verifyEventDerivedState(
                   prior,
                   event.at,
                   event.requestId!,
+                  data.options,
                 ),
               ) ||
             !validateLeaseRecord(lease).ok
@@ -1358,9 +1377,15 @@ export class StateOwner {
     holder: LeaseHolder,
     durationMs: number,
     requestId: string,
+    options?: AcquireOptions,
   ): LeaseRecord {
     namespaceValid(namespace);
     keyValid(subject);
+    const accepted =
+      options === undefined
+        ? undefined
+        : (JSON.parse(json(options)) as AcquireOptions);
+    const readSet = copyReadSet(accepted?.readSet) ?? [];
     return this.#db.transaction(() => {
       const now = this.#now();
       const current = this.lease(namespace, subject);
@@ -1382,8 +1407,15 @@ export class StateOwner {
       return this.#request(
         namespace,
         requestId,
-        { kind: "acquire", subject, holder, durationMs },
+        {
+          kind: "acquire",
+          subject,
+          holder,
+          durationMs,
+          ...(accepted === undefined ? {} : { options: accepted }),
+        },
         () => {
+          this.#readSetHolds(namespace, undefined, undefined, readSet);
           const decision = decideLease(current, {
             mode: "acquire",
             subject,
@@ -1405,6 +1437,7 @@ export class StateOwner {
               current,
               new Date(now).toISOString(),
               requestId,
+              accepted,
             ),
           );
           return lease;

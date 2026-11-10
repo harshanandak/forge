@@ -1,4 +1,8 @@
-import type { StateOwner, WriteOptions } from "../core/state/index.ts";
+import type {
+  AcquireOptions,
+  StateOwner,
+  WriteOptions,
+} from "../core/state/index.ts";
 import type {
   BoundContext,
   LeaseRecord,
@@ -42,7 +46,11 @@ export interface LeaseStateClient extends DeletableStateClient {
   ): ReturnType<DeletableStateClient["delete"]>;
   now(): number;
   lease(subject: string): LeaseRecord | undefined;
-  acquire(subject: string, durationMs: number): LeaseRecord;
+  acquire(
+    subject: string,
+    durationMs: number,
+    options?: AcquireOptions,
+  ): LeaseRecord;
   renew(subject: string, durationMs: number): LeaseRecord;
   release(subject: string): LeaseRecord;
   /** Completes only the note already authorized by a fenced work landing. */
@@ -232,7 +240,7 @@ export function createStateClient(options: {
         },
       );
     },
-    acquire(subject: string, durationMs: number) {
+    acquire(subject: string, durationMs: number, options?: AcquireOptions) {
       const state = writable();
       if (context.variant !== "leased" || context.leaseMode !== "acquire")
         refuse(
@@ -245,6 +253,7 @@ export function createStateClient(options: {
         { actor: context.actor, session: context.session },
         durationMs,
         requestId,
+        options,
       );
       acquired.set(subject, structuredClone(lease));
       return lease;

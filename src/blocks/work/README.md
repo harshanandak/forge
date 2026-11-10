@@ -1,5 +1,7 @@
 # Work block
 
+Blocked claims require a trimmed reason (1 to 65,536 characters): CLAIM_BLOCKED refuses without writes; an override returns CLAIMED_BLOCKED and records its reason atomically with the lease.
+
 `forge issue board` returns JSON pages of held open issues with live/stale leases, unverified holder metadata, checkpoint/PR context, direct blockers and open dependents. Pass `--id <id>` for any issue and ordered `CLOSED`, `HELD`, `BLOCKED_BY` reasons; an empty list agrees with `issue ready`. Pages default to 100 rows (max 1000); pass `--cursor` to continue. Changed ordering refuses with `CURSOR_STALE`: restart from the first page. `snapshotAt` labels each read. Reads write nothing. Dedicated text output is deferred.
 
 `forge/work` is an opt-in implementation of `forge.tracker@1`. Register the built-in source in composition and bind its `state` slot to `core`. Loaded from its built-in source it needs no admission or grants, because installing Forge is the trust step; a path or package copy still needs human admission and grants. The same declared operations are available from CLI and MCP. Operations are experimental; select `issue` in `mcp.expose` to expose them to MCP.
