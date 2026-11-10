@@ -82,6 +82,24 @@ const nestedFailure = JSON.stringify({
   numFailedTests: 0,
   reports: [failedReport],
 });
+for (const bytewise of [false, true])
+  test(`a passing nested report envelope stays passing, ${bytewise ? "bytewise" : "whole"}`, () => {
+    const text = `${passing}\nrunner: {"reports":[{"numTotalTests":1,"numFailedTests":0,"success":true}]}`;
+    const recognizer = output.recognize("auto");
+    const bytes = Buffer.from(text);
+    if (bytewise)
+      for (const byte of bytes) recognizer.push("stdout", Uint8Array.of(byte));
+    else recognizer.push("stdout", bytes);
+    const report = recognizer.report();
+    expect(report).toEqual(output.parse(text, "", "auto"));
+    expect(report).toMatchObject({
+      kind: "recognized",
+      testCount: 1,
+      failed: 0,
+    });
+    expect(recognizer.report()).toEqual(report);
+  }, 10_000);
+
 for (const [name, text, malformedResult] of [
   [
     "unfinished string before a failing object",

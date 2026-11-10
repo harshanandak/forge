@@ -134,7 +134,7 @@ function nestedReport(text: string): OutputReport {
     for (const child of Object.values(item))
       if (typeof child === "object" && child !== null) pending.push(child);
   }
-  return retainFailure(objectReport(value), nested ?? unknown);
+  return nested ?? malformed;
 }
 
 /** One stream's object and string state, independent of summary-line buffering. */
