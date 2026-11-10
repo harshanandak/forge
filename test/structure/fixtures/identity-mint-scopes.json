@@ -49,5 +49,10 @@
   "this is not used by the adapter": "export function outside() { return this; }",
   "destructuring cannot expose a compiler member": "export function outside(r) { const { Function: compile } = r; return compile(\"...\")(); }",
   "namespace import cannot expose additional bindings": "import * as provider from \"@cloudflare/workers-oauth-provider\"; export function outside() { return provider; }",
-  "default import is not a measured binding": "import provider from \"@cloudflare/workers-oauth-provider\"; export function outside() { return provider; }"
+  "default import is not a measured binding": "import provider from \"@cloudflare/workers-oauth-provider\"; export function outside() { return provider; }",
+  "star re-export cannot load an unlisted module": "const from = 0; export * from \"node:vm\";",
+  "named re-export cannot load an unlisted module": "const from = 0; const runInThisContext = 0; export { runInThisContext } from \"node:vm\";",
+  "namespace re-export cannot load an unlisted module": "const from = 0; const as = 0; const v = 0; export * as v from \"node:vm\";",
+  "type-only named re-export cannot load an unlisted module": "const from = 0; export type { RunningScriptOptions } from \"node:vm\";",
+  "type-only star re-export cannot load an unlisted module": "const from = 0; export type * from \"node:vm\";"
 }

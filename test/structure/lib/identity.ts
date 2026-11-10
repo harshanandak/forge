@@ -410,13 +410,28 @@ function oauthMintRefusal(file: SourceFile): IdentityTokenRefusal | undefined {
         importsOf({ ...file, text }).some((s) => mintTarget(file.path, s))
       )
         throw new UnknownImportRefusal(
-          "unknown import: identity-mint mintIdentity is not the exact private binding",
+          "unknown import: ../../../../src/ports/identity-mint.ts:mintIdentity is not the exact private binding",
         );
     }
     // Type erasure must not hide an ambiguous slash or an invalid raw token.
     const { tokens: raw, pairs: rawPairs } = identityTokens(file.text);
     for (let i = 0; i < raw.length; i++) {
       const token = raw[i]!;
+      if (
+        token.text === "export" &&
+        ["*", "{", "type"].includes(raw[i + 1]?.text ?? "")
+      ) {
+        for (
+          let j = i + 1;
+          j < raw.length && raw[j]?.text !== ";";
+          j = (rawPairs.get(j) ?? j) + 1
+        ) {
+          if (raw[j]?.text === "from" && raw[j + 1]?.kind === "literal")
+            throw new UnknownImportRefusal(
+              `unknown import: ${raw[j + 1]!.text}`,
+            );
+        }
+      }
       if (
         token.kind === "identifier" &&
         ["import", "require"].includes(token.text)
