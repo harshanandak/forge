@@ -870,6 +870,7 @@ const PRIVATE_FETCH_FLAGS = [
   "--no-recurse-submodules",
 ];
 const PRIVATE_REF_MAX_AGE_MS = 3600000;
+const PRIVATE_REF_SWEEP_PROBES = 32;
 const PRIVATE_REF =
   /^refs\/forge\/lane-(?:close|base)\/(\d+)-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
 // Lane time comes from an optional clock service, so a test can move it without
@@ -966,6 +967,7 @@ async function sweepPrivateRefs(
   env: Readonly<Record<string, string>>,
   now: number,
   files: FilesService,
+  randomId: string,
 ): Promise<void> {
   const listed = await bestEffortGit(executor, git, cwd, env, [
     "for-each-ref",
@@ -973,14 +975,26 @@ async function sweepPrivateRefs(
     "refs/forge/lane-close/",
     "refs/forge/lane-base/",
   ]);
-  const stale = listed.split(/\r?\n/).filter((ref) => {
+  const candidates = listed.split(/\r?\n/).flatMap((ref) => {
     const match = PRIVATE_REF.exec(ref);
-    return (
-      match !== null &&
-      Math.abs(now - Number(match[1])) > PRIVATE_REF_MAX_AGE_MS &&
-      !ownerIsLive(files, match[2]!)
-    );
+    return match !== null &&
+      Math.abs(now - Number(match[1])) > PRIVATE_REF_MAX_AGE_MS
+      ? [{ ref, id: match[2]! }]
+      : [];
   });
+  if (!candidates.length) return;
+  // Rotate the bounded window using the call UUID, without persisting a cursor.
+  const offset =
+    (Number.parseInt(randomId.slice(0, 8), 16) >>> 0) % candidates.length;
+  const stale: string[] = [];
+  for (
+    let index = 0;
+    index < Math.min(PRIVATE_REF_SWEEP_PROBES, candidates.length);
+    index++
+  ) {
+    const candidate = candidates[(offset + index) % candidates.length]!;
+    if (!ownerIsLive(files, candidate.id)) stale.push(candidate.ref);
+  }
   await dropPrivateRefs(executor, git, cwd, env, stale);
 }
 
@@ -3825,9 +3839,17 @@ const operations: Operations<WorkOperations> = {
     const remoteHead = await laneMainBranch(config, () =>
       run(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], true),
     );
-    await sweepPrivateRefs(executor, git, files.root, env, clock(), files);
-    const baseId = bound.crypto.randomUUID(),
-      baseLock = files.lock([privateRefLock(baseId)], {
+    const baseId = bound.crypto.randomUUID();
+    await sweepPrivateRefs(
+      executor,
+      git,
+      files.root,
+      env,
+      clock(),
+      files,
+      baseId,
+    );
+    const baseLock = files.lock([privateRefLock(baseId)], {
         recoverDeadOwner: true,
       }),
       baseRef = privateRefName("lane-base", baseId, clock());
@@ -4547,11 +4569,19 @@ const operations: Operations<WorkOperations> = {
           refuse("PR_NOT_MERGED", `PR must be merged into ${main}`);
         // Fetch main into a ref only this call uses: FETCH_HEAD is shared, and
         // any other fetch in the repository can overwrite it.
-        await sweepPrivateRefs(executor, git, checkout, env, clock(), files);
         const mainId =
-            bound.crypto?.randomUUID() ??
-            fail("UNAVAILABLE", "Lane close requires crypto"),
-          mainLock = files.lock([privateRefLock(mainId)], {
+          bound.crypto?.randomUUID() ??
+          fail("UNAVAILABLE", "Lane close requires crypto");
+        await sweepPrivateRefs(
+          executor,
+          git,
+          checkout,
+          env,
+          clock(),
+          files,
+          mainId,
+        );
+        const mainLock = files.lock([privateRefLock(mainId)], {
             recoverDeadOwner: true,
           }),
           mainRef = privateRefName("lane-close", mainId, clock());
