@@ -741,8 +741,9 @@ test("gate chooses the newest eligible verified receipt", async () => {
   const f = fixture();
   await f.receipt();
   const latest = await f.receipt();
-  await f.receipt({ exit: 1 });
   expect((await f.gate()).receipt).toBe(latest.id);
+  await f.receipt({ exit: 1 });
+  await refuses(f, "RECEIPT_NOT_PASS");
 }, 1000);
 
 test("an explicit empty required list refuses", async () => {
