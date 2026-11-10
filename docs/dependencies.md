@@ -4,6 +4,8 @@ A dependency is acceptable when it adds real value we would otherwise build and 
 
 Each entry is a `### <package>` heading with these fields: **Saves** (what we would otherwise build), **Maintenance**, **Transitive packages**, **Fit** (Node 24/26 and Bun), **Licence**, **Trust**, **Swap proof**, and for runtime dependencies **Adapter**. Every `overrides` entry gets a `### override: <package>` entry with **Issue** and **Expires** (`YYYY-MM-DD`); an expired override fails the test.
 
+Entries above `## Cloud dependencies` belong to root `package.json`; entries in that final section belong to `cloud/package.json`. Both packages use the same required fields, stale-entry refusals and override rules. Cloud runtime packages have exactly one adapter under `cloud/src/adapters/<name>/`; only that folder imports them. Core `src/` and `bin/` cannot import cloud-only packages or cloud code. Cloud code reaches root runtime packages through their root adapters under the existing ownership rules. Cloud manifests may not declare `imports`, and cloud files may not use `#` import aliases. Relative imports from `cloud/src/` into other `cloud/` directories are refused; imports into root `src/` retain their existing checks.
+
 Not npm dependencies, so not entries here: Bun itself is pinned by `packageManager` (`bun fmt` is stable in 1.4.4; CI's static job keeps canary for `bun lint`; the scripts fail fast on a Bun without the built-in), and `git` is the only external tool the shipped package may require.
 
 ## Runtime dependencies
@@ -99,3 +101,15 @@ Each one gets an entry here and an adapter in the same pull request.
 - **Trust:** the same runtime already required by the package.
 - **Swap proof:** runtime acceptance injects the evaluator through L1 LifetimeProvider; admission, output limits and owned-service cleanup stay in core.
 - **Adapter:** src/adapters/node-runtime/ implements runtime-local RunIsolationPort using src/ports/lifetime.ts; no L1 contract change.
+
+## Cloud dependencies
+
+### wrangler
+
+- **Saves:** Cloudflare Worker bundling, local runtime orchestration and deployment tooling that Node built-ins do not provide. This is cloud development tooling, not a CLI runtime dependency.
+- **Maintenance:** Cloudflare's [workers-sdk repository](https://github.com/cloudflare/workers-sdk); pinned 4.152.0 published 2026-10-22T14:43:55.410Z, verified from [npm registry metadata](https://registry.npmjs.org/wrangler) on 2026-11-10.
+- **Transitive packages:** [4.152.0 metadata](https://registry.npmjs.org/wrangler/4.152.0) declares 8 direct dependencies: `@cloudflare/kv-asset-handler`, `@cloudflare/unenv-preset`, `blake3-wasm`, `esbuild`, `miniflare`, `path-to-regexp`, `unenv` and `workerd`; optional `fsevents`. The existing cloud lockfile contains 90 other package records, including optional platform binaries; this is not an installed-package count.
+- **Fit:** declares Node >=22.0.0, covering Forge's Node 24/26 floor. Confined to cloud development tooling and the cloud lockfile; no Wrangler command or deployment was run for this guard change. [Official installation documentation](https://developers.cloudflare.com/workers/wrangler/install-and-update/).
+- **Licence:** MIT OR Apache-2.0, as declared by the pinned registry package and upstream repository.
+- **Trust:** official Cloudflare tool, with exact version and integrity recorded in `cloud/bun.lock`. This change adds no package and executes no install scripts.
+- **Swap proof:** replacing the cloud bundling/deployment tool changes cloud tooling and configuration; the published CLI does not depend on Wrangler. Live deployment interoperability is not verified by these structure checks.

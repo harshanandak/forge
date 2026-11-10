@@ -1,0 +1,21 @@
+{
+  "root": { "dependencies": { "root-lib": "1.0.0" } },
+  "cloud": {
+    "dependencies": { "cloud-lib": "1.0.0" },
+    "devDependencies": { "cloud-tool": "1.0.0" },
+    "optionalDependencies": { "cloud-optional": "1.0.0" },
+    "peerDependencies": { "cloud-peer": "1.0.0" },
+    "overrides": { "cloud-transitive": "1.0.0" }
+  },
+  "imports": {
+    "static import": "import { value } from 'cloud-lib';",
+    "type import": "import type { Value } from 'cloud-lib';",
+    "re-export": "export * from 'cloud-lib';",
+    "dynamic import": "export const load = () => import('cloud-lib');",
+    "require": "const value = require('cloud-lib');"
+  },
+  "adapters": [
+    { "name": "root", "packages": ["root-lib"], "executables": [] },
+    { "name": "cloud/oauth", "packages": ["cloud-lib"], "executables": [] }
+  ]
+}
