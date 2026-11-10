@@ -32,6 +32,9 @@ function jsonReport(text: string): OutputReport {
   } catch {
     return malformed;
   }
+  return objectReport(value);
+}
+function objectReport(value: unknown): OutputReport {
   if (typeof value !== "object" || value === null) return malformed;
   const report = value as Record<string, unknown>;
   // Jest and Vitest use these fields in their JSON reports.
@@ -111,6 +114,136 @@ function hasReportKey(text: string): boolean {
     )
       return true;
   return false;
+}
+
+function nestedReport(text: string): OutputReport {
+  let nested: OutputReport | undefined;
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return malformed;
+  }
+  const pending: unknown[] = [value];
+  while (pending.length) {
+    const item = pending.pop();
+    if (typeof item !== "object" || item === null) continue;
+    const report = item as Record<string, unknown>;
+    if ("numTotalTests" in report || "numFailedTests" in report)
+      nested = retainFailure(nested, objectReport(report));
+    for (const child of Object.values(item))
+      if (typeof child === "object" && child !== null) pending.push(child);
+  }
+  return nested ?? malformed;
+}
+
+/** One stream's object and string state, independent of summary-line buffering. */
+class StructuredReports {
+  private prefix = "";
+  private depth = 0;
+  private quoted = false;
+  private escaped = false;
+  private name = "";
+  private last = 0;
+  private key = false;
+  private property = false;
+  private evidence = false;
+  private overflow = false;
+  private chunks: Buffer[] = [];
+  private tail: Buffer | undefined;
+  private at = 0;
+  private kept = 0;
+  private result: OutputReport | undefined;
+  private budget: { remaining: number };
+  constructor(budget: { remaining: number }) {
+    this.budget = budget;
+  }
+  push(chunk: Uint8Array): void {
+    for (const byte of chunk) {
+      const space = byte === 32 || (byte >= 9 && byte <= 13);
+      // Raw newlines cannot occur in JSON strings. Recover at the next line.
+      if (this.quoted && (byte === 10 || byte === 13)) {
+        if (this.evidence) this.result = retainFailure(this.result, malformed);
+        this.reset();
+        this.prefix = "";
+        continue;
+      }
+      if (byte === 10) this.prefix = "";
+      if (!this.depth) {
+        if (this.prefix.length < 128) this.prefix += String.fromCharCode(byte);
+        if (
+          byte !== 123 ||
+          /^\s*\((?:pass|fail|skip|todo)\)/.test(
+            stripVTControlCharacters(this.prefix),
+          )
+        )
+          continue;
+        this.last = 0;
+      }
+      if (!this.overflow) {
+        if (!this.tail || this.at === this.tail.length) {
+          const size = Math.min(4096, this.budget.remaining);
+          if (!size) this.overflow = true;
+          else {
+            this.tail = Buffer.allocUnsafe(size);
+            this.chunks.push(this.tail);
+            this.budget.remaining -= size;
+            this.at = 0;
+          }
+        }
+        if (!this.overflow) {
+          this.tail![this.at++] = byte;
+          this.kept++;
+        }
+      }
+      if (this.quoted) {
+        if (this.escaped) this.escaped = false;
+        else if (byte === 92) this.escaped = true;
+        else if (byte === 34) {
+          this.quoted = false;
+          this.property =
+            this.key && /^(?:numTotalTests|numFailedTests)$/.test(this.name);
+          this.last = byte;
+          continue;
+        }
+        if (this.name.length < 17) this.name += String.fromCharCode(byte);
+        continue;
+      }
+      if (space) continue;
+      if (byte === 58 && this.property) this.evidence = true;
+      this.property = false;
+      if (byte === 34) {
+        this.quoted = true;
+        this.key = this.last === 123 || this.last === 44;
+        this.name = "";
+      } else if (byte === 123) this.depth++;
+      else if (byte === 125 && --this.depth === 0) {
+        if (this.evidence)
+          this.result = retainFailure(
+            this.result,
+            this.overflow
+              ? malformed
+              : nestedReport(
+                  Buffer.concat(this.chunks, this.kept).toString("utf8"),
+                ),
+          );
+        this.reset();
+      }
+      this.last = byte;
+    }
+  }
+  report(): OutputReport | undefined {
+    return this.evidence ? retainFailure(this.result, malformed) : this.result;
+  }
+  private reset(): void {
+    for (const part of this.chunks) this.budget.remaining += part.length;
+    this.chunks = [];
+    this.tail = undefined;
+    this.kept = this.at = this.depth = this.last = 0;
+    this.name = "";
+    this.quoted = this.escaped = this.key = this.property = false;
+    this.evidence = this.overflow = false;
+  }
 }
 
 /** Scans one stream line by line, keeping only the summary lines it has seen. */
@@ -288,7 +421,7 @@ class SummaryLines {
   }
 }
 
-function recognizer(format: ReportFormat): OutputRecognizer {
+function mainRecognizer(format: ReportFormat): OutputRecognizer {
   const stdout = new SummaryLines(),
     stderr = new SummaryLines();
   let structured: Buffer[] | undefined = format === "json" ? [] : undefined;
@@ -394,6 +527,37 @@ function recognizer(format: ReportFormat): OutputRecognizer {
       if (stdout.hint || stderr.hint || stdout.bunHint || stderr.bunHint)
         return malformed;
       return unknown;
+    },
+  };
+}
+
+function nonPass(report: OutputReport): boolean {
+  return (
+    report.kind === "malformed" ||
+    report.testCount === 0 ||
+    (report.failed ?? 0) > 0
+  );
+}
+
+function recognizer(format: ReportFormat): OutputRecognizer {
+  const main = mainRecognizer(format);
+  const budget = { remaining: REPORT_LIMIT };
+  const objects = {
+    stdout: new StructuredReports(budget),
+    stderr: new StructuredReports(budget),
+  };
+  return {
+    push(stream, chunk) {
+      main.push(stream, chunk);
+      if (format === "auto") objects[stream].push(chunk);
+    },
+    observed: () => main.observed(),
+    report() {
+      const report = main.report();
+      if (format !== "auto" || nonPass(report)) return report;
+      for (const extra of [objects.stdout.report(), objects.stderr.report()])
+        if (extra && nonPass(extra)) return extra;
+      return report;
     },
   };
 }
