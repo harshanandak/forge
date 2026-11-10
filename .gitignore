@@ -1,5 +1,6 @@
 node_modules/
 dist/
+dist-team/
 coverage/
 *.tgz
 *.tsbuildinfo

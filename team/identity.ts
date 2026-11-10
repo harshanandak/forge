@@ -1,4 +1,4 @@
-import { isVerifiedIdentity } from "../src/ports/identity.ts";
+import { isVerifiedIdentity } from "forge-workflow/identity";
 export interface Person {
   readonly id: string;
 }

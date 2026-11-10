@@ -1,5 +1,6 @@
 {
   "static import": "import { secret } from '../../team/secret.ts';",
+  "team build import": "import { secret } from '../../dist-team/identity.js';",
   "type-only import": "import type { Secret } from '../../team/secret.ts';",
   "star re-export": "export * from '../../team/secret.ts';",
   "named re-export": "export { secret } from '../../team/secret.ts';",

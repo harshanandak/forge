@@ -40,6 +40,10 @@
     "./author": {
       "types": "./dist/src/contract/author.d.ts",
       "default": "./dist/src/contract/author.js"
+    },
+    "./identity": {
+      "types": "./dist/src/ports/identity.d.ts",
+      "default": "./dist/src/ports/identity.js"
     }
   },
   "files": [
@@ -72,6 +76,7 @@
     "prelint": "bun run gen",
     "prebuild": "bun run gen",
     "build": "tsc -p tsconfig.build.json",
+    "build:team": "tsc -p tsconfig.team.json",
     "postbuild": "bun tools/build-assets.ts && bun tools/bundle-yaml.ts"
   },
   "dependencies": {

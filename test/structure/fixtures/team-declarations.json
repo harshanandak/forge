@@ -12,7 +12,19 @@
       }
     }
   },
+  "compilerAliases": {
+    "tsconfig.json": {
+      "compilerOptions": { "paths": { "private/*": ["./dist-team/*"] } }
+    }
+  },
   "manifests": [
+    {
+      "name": "build output export",
+      "path": "package.json",
+      "value": {
+        "exports": { "./private": { "default": "./dist-team/identity.js" } }
+      }
+    },
     {
       "name": "unused conditional export",
       "path": "package.json",

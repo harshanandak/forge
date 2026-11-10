@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { isVerifiedIdentity } from "forge-workflow/identity";
 import type { VerifiedIdentity } from "../../src/ports/identity.ts";
 import { PersonDirectory } from "../../team/identity.ts";
 import {
@@ -26,6 +27,10 @@ async function mint(
   if (!result.ok) throw new Error("Fixture verification failed");
   return result.identity;
 }
+
+test("the public identity export shares the source verifier registry", async () => {
+  expect(isVerifiedIdentity(await mint("shared-registry"))).toBe(true);
+}, 1_000);
 
 function setup(store = new MemoryDirectoryStore()) {
   let sequence = 0;
