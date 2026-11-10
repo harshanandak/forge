@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { refuse } from "../../../src/core/trust/index.ts";
 import type { LeaseHolder } from "../../../src/generated/types.ts";
 type Row = {
   id: string;
@@ -69,6 +71,8 @@ const deny = () => {
 };
 const fixtures = new Map(
   Object.entries(scenarios).map(([view, nodes]) => {
+    let clock = now;
+    const activity = new Map<string, string>();
     const records = nodes.map((node: Node, i) => ({
       key: `issue:work-${i + 1}`,
       revision: 1,
@@ -116,10 +120,19 @@ const fixtures = new Map(
           };
     };
     const state = {
-      now: () => now,
+      now: () => clock,
       get: (key: string) => all.find((r) => r.key === key),
       list: (prefix: string) => all.filter((r) => r.key.startsWith(prefix)),
       lease,
+      maxNumber: (prefix: string) =>
+        Math.max(
+          0,
+          ...all
+            .filter((r) => r.key.startsWith(prefix))
+            .map((r) => Number(r.key.slice(prefix.length))),
+        ),
+      history: ({ key }: { key: string }) =>
+        activity.has(key) ? [{ at: activity.get(key)! }] : [],
       put: deny,
       append: deny,
       acquire: deny,
@@ -131,6 +144,11 @@ const fixtures = new Map(
       view,
       {
         state,
+        renewSecond: () => {
+          nodes[0]!.ttl = 61000;
+          clock = now + 1000;
+          activity.set("issue:work-1", stamp(1000));
+        },
         snapshot: () =>
           structuredClone({
             records: all,
@@ -148,6 +166,10 @@ const run = (view: string, op = "board", input: Record<string, unknown> = {}) =>
     services: {
       state: fixtures.get(view)!.state,
       files: { write: deny, remove: deny },
+      crypto: {
+        sha256: (text: string) =>
+          createHash("sha256").update(text).digest("hex"),
+      },
     },
   });
 test("read-only project declaration for agent and human", () => {
@@ -260,4 +282,18 @@ test("reads preserve records, revisions, leases and events", () => {
   run("readonly", "board", { cursor: first.cursor, limit: 1 });
   run("readonly", "board", { id: "work-2" });
   expect(fixtures.get("readonly")!.snapshot()).toEqual(before);
+}, 1000);
+
+test("renewing the second holder between pages refuses a stale cursor", () => {
+  const previous: unknown = Reflect.get(globalThis, "fail");
+  Reflect.set(globalThis, "fail", refuse);
+  try {
+    const first = run("paging", "board", { limit: 1 });
+    fixtures.get("paging")!.renewSecond();
+    expect(() =>
+      run("paging", "board", { limit: 1, cursor: first.cursor }),
+    ).toThrow("CURSOR_STALE: restart from the first page");
+  } finally {
+    Reflect.set(globalThis, "fail", previous);
+  }
 }, 1000);
