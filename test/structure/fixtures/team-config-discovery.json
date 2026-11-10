@@ -1,0 +1,46 @@
+{
+  "local": [
+    {
+      "name": "extends array",
+      "configs": {
+        "tsconfig.json": {
+          "extends": ["./config/first", "./config/second.json"]
+        },
+        "config/first.json": {
+          "compilerOptions": { "paths": { "private/*": ["../team/*"] } }
+        },
+        "config/second.json": {
+          "compilerOptions": { "paths": { "private/*": ["../dist-team/*"] } }
+        }
+      },
+      "discovered": [
+        "tsconfig.json",
+        "config/first.json",
+        "config/second.json"
+      ],
+      "refusals": ["config/first.json", "config/second.json"]
+    },
+    {
+      "name": "extends cycle",
+      "configs": {
+        "tsconfig.json": { "extends": "./config/base.json" },
+        "config/base.json": {
+          "extends": "./loop.json",
+          "compilerOptions": { "paths": { "private/*": ["../team/*"] } }
+        },
+        "config/loop.json": {
+          "extends": "./base.json",
+          "compilerOptions": { "paths": { "private/*": ["../dist-team/*"] } }
+        }
+      },
+      "discovered": ["tsconfig.json", "config/base.json", "config/loop.json"],
+      "refusals": ["config/base.json", "config/loop.json"]
+    }
+  ],
+  "package": {
+    "tsconfig.json": { "extends": "@fixture/config/tsconfig.json" },
+    "node_modules/@fixture/config/tsconfig.json": {
+      "compilerOptions": { "paths": { "private/*": ["../../../team/*"] } }
+    }
+  }
+}
