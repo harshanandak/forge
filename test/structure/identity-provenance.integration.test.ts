@@ -42,8 +42,18 @@ test("the OAuth file refuses direct mints outside its private token-validation f
     "function createOAuthAdapter() { function other() { return mintIdentity(claims); } }",
     "function createOAuthAdapter() { function verifyProviderToken() { return () => mintIdentity(claims); } }",
     "function createOAuthAdapter() { function verifyProviderToken() { return { other() { return mintIdentity(claims); } }; } }",
+    'import { mintIdentity as é } from "TARGET"; export function other(c) { return é(c); }',
+    'import { mintIdentity as mint } from "TARGET"; export function other(c) { return mint(c); }',
+    'import * as identity from "TARGET"; export function other(c) { return identity.mintIdentity(c); }',
+    'export { mintIdentity } from "TARGET";',
+    'import mint from "TARGET"; export function other(c) { return mint(c); }',
+    'import { mintIdentity } from "TARGET"; import { isVerifiedIdentity } from "TARGET";',
+    'import { mintIdentity } from "TARGET"; export function createOAuthAdapter() { function verifyProviderToken() { return expose(mintIdentity); } }',
   ]) {
-    const text = `import { mintIdentity } from "../../../../src/ports/identity-mint.ts"; ${code}`;
+    const target = "../../../../src/ports/identity-mint.ts";
+    const text = code.includes("TARGET")
+      ? code.replaceAll("TARGET", target)
+      : `import { mintIdentity } from "${target}"; ${code}`;
     expect(
       findIdentityMintViolations([{ path, text }]).map((v) => v.file),
     ).toEqual([path]);

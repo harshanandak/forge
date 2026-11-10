@@ -92,7 +92,6 @@ test("a provider token carries the verifier's exact issuer and subject", async (
   const identity = await f.api.verify(token, resource);
   expect(isVerifiedIdentity(identity)).toBe(true);
   expect(identity).toMatchObject({ ...claims, audience: resource });
-  // A different instance must recover provenance from provider-validated storage.
   expect(await createOAuthAdapter(f.options).verify(token, resource)).toEqual(
     identity,
   );
@@ -126,4 +125,23 @@ test("an upstream identity for another audience never creates a provider grant",
   f.options.upstream.verify = (_request, now) =>
     verifier.verify("proof", "other", now);
   expect((await f.callback()).status).toBe(400);
+}, 30_000);
+
+test("the verified upstream audience is distinct from the authorization server and resource", async () => {
+  for (const verifiedAudience of ["upstream-client", "wrong-client"]) {
+    const f = await fixture();
+    const verifier = testIdentityVerifier(
+      new Map([["proof", { ...claims, audience: "upstream-client" }]]),
+    );
+    f.options.upstream.verify = async (_request, now) => ({
+      ...(await verifier.verify("proof", "upstream-client", now)),
+      verifiedAudience,
+    });
+    if (verifiedAudience === "upstream-client")
+      expect(await f.api.verify(await f.token(), resource)).toMatchObject({
+        ...claims,
+        audience: resource,
+      });
+    else expect((await f.callback()).status).toBe(400);
+  }
 }, 30_000);

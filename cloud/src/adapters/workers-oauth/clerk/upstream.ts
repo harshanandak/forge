@@ -23,7 +23,10 @@ export type ClerkFailure =
   | "timeout"
   | "malformed_response"
   | "invalid_token";
-export type ClerkResult = IdentityResult & { error?: ClerkFailure };
+export type ClerkResult = IdentityResult & {
+  error?: ClerkFailure;
+  readonly verifiedAudience?: string;
+};
 export interface ClerkUpstream {
   begin(state: string, verifier?: string): Promise<string>;
   verify(
@@ -187,8 +190,9 @@ export function createClerkUpstream(
               return refusal("malformed_response");
             phase = "invalid_token";
             const verified = await binding.verify(payload);
+            // The binding checks its configured ID-token audience, not the Forge resource.
             return verified.ok
-              ? verified
+              ? { ...verified, verifiedAudience: verified.identity.audience }
               : { ...verified, error: "invalid_token" as const };
           })(),
           deadline,

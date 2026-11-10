@@ -46,7 +46,7 @@ export interface OAuthOptions {
       request: Request,
       now: number,
       verifier?: string,
-    ): Promise<IdentityResult>;
+    ): Promise<IdentityResult & { readonly verifiedAudience?: string }>;
   };
 }
 export interface OAuthAdapter {
@@ -75,11 +75,9 @@ export function createOAuthAdapter(options: OAuthOptions): OAuthAdapter {
     resource: string,
   ): Promise<VerifiedIdentity | null> {
     try {
-      const validated = await server.validateToken<IdentityClaims>(
-        resource,
-        token,
-        env,
-      );
+      const validated = await server.validateToken<
+        IdentityClaims & { verifiedAudience: string }
+      >(resource, token, env);
       const now = options.clock.now();
       if (
         !validated ||
@@ -90,7 +88,7 @@ export function createOAuthAdapter(options: OAuthOptions): OAuthAdapter {
       const claims = validated.props;
       const expiresAt = Math.min(claims.expiresAt, validated.expiresAt * 1_000);
       if (
-        claims.audience !== options.issuer ||
+        claims.audience !== claims.verifiedAudience ||
         !Number.isFinite(expiresAt) ||
         now >= expiresAt ||
         now < claims.authenticatedAt ||
@@ -199,7 +197,8 @@ export function createOAuthAdapter(options: OAuthOptions): OAuthAdapter {
         if (
           !result.ok ||
           !isVerifiedIdentity(result.identity) ||
-          result.identity.audience !== options.issuer ||
+          result.identity.audience !==
+            (result.verifiedAudience ?? options.issuer) ||
           !Number.isFinite(now) ||
           now >= result.identity.expiresAt ||
           now < result.identity.authenticatedAt
@@ -211,7 +210,10 @@ export function createOAuthAdapter(options: OAuthOptions): OAuthAdapter {
           userId: encodeURIComponent(JSON.stringify([issuer, subject])),
           metadata: {},
           scope: original.request.scope,
-          props: result.identity,
+          props: {
+            ...result.identity,
+            verifiedAudience: result.verifiedAudience ?? options.issuer,
+          },
         });
         original.headers.set("Location", redirectTo);
         return new Response(null, { status: 302, headers: original.headers });
