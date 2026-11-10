@@ -272,9 +272,11 @@ export function createOAuthAdapter(options: OAuthOptions): OAuthAdapter {
                   const grant = await options.storage.get<
                     Pick<Grant, "authCodeId" | "clientId">
                   >(`grant:${userId}:${grantId}`, { type: "json" });
+                  // A concurrent loser must not delete the winner's unconsumed grant.
                   if (
                     grant?.authCodeId === hash &&
-                    grant.clientId === clientId
+                    grant.clientId === clientId &&
+                    !("authCodeWrappedKey" in grant)
                   ) {
                     // Provider 1.2.4 has no revocation tombstone: an in-flight first
                     // exchange can persist tokens after this sweep. Claim still limits issuance to one.

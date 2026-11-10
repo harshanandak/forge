@@ -55,14 +55,12 @@ export function durableRedemption(
   return {
     async claimOnce(hash, expiresAt) {
       if (!hashPattern.test(hash)) return false;
-      const response = await namespace
-        .get(namespace.idFromName(hash))
-        .fetch(
-          new Request(
-            `https://redemption.internal/${hash}?until=${expiresAt}`,
-            { method: "POST" },
-          ),
-        );
+      const stub = namespace.get(namespace.idFromName(hash));
+      const response = await stub.fetch(
+        new Request(`https://redemption.internal/${hash}?until=${expiresAt}`, {
+          method: "POST",
+        }),
+      );
       if (response.status !== 200 && response.status !== 400)
         throw new Error("Redemption unavailable");
       return response.status === 200;
