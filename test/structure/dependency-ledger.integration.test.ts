@@ -5,13 +5,19 @@ import {
   LEDGER_PATH,
   type LedgerPackageJson,
 } from "./lib/ledger.ts";
-import { format, listRepoFiles, readJson, readTextFile } from "./lib/repo.ts";
+import {
+  format,
+  listRepoFiles,
+  readJson,
+  readTextFile,
+  repoRoot,
+} from "./lib/repo.ts";
 
 test("every dependency and override has a complete entry in docs/dependencies.md", () => {
   const paths = listRepoFiles();
   const pkg = readJson("package.json") as LedgerPackageJson;
   const ledger = paths.includes(LEDGER_PATH)
-    ? readTextFile(LEDGER_PATH)
+    ? readTextFile(LEDGER_PATH)?.split(/^## Cloud dependencies\s*$/m)[0]
     : undefined;
   const { manifests } = scanAdapters(paths);
   expect(
@@ -33,6 +39,56 @@ const full = (adapter?: string): string =>
 
 const today = new Date("2026-10-16T00:00:00Z");
 const adapters = [{ name: "config-yaml", packages: ["yaml"], executables: [] }];
+
+const cloudFixture = (
+  readJson("test/structure/fixtures/package-dependencies.json") as {
+    cloud: LedgerPackageJson;
+  }
+).cloud;
+
+test("cloud declarations in every dependency group and overrides need ledger entries", () => {
+  const found = findLedgerViolations("", cloudFixture, [], today);
+  expect(found.map((violation) => violation.message)).toEqual([
+    'dependency "cloud-lib" has no ledger entry (### cloud-lib)',
+    'dependency "cloud-tool" has no ledger entry (### cloud-tool)',
+    'dependency "cloud-optional" has no ledger entry (### cloud-optional)',
+    'dependency "cloud-peer" has no ledger entry (### cloud-peer)',
+    'override "cloud-transitive" needs an entry (### override: cloud-transitive) with Issue and Expires',
+  ]);
+}, 30_000);
+
+test("the real cloud package has its own complete ledger section", () => {
+  const ledger = readTextFile(LEDGER_PATH)?.split(
+    /^## Cloud dependencies\s*$/m,
+  )[1];
+  expect(
+    format(
+      findLedgerViolations(
+        ledger,
+        readJson("cloud/package.json") as LedgerPackageJson,
+        [],
+        new Date(),
+      ),
+    ),
+  ).toEqual([]);
+}, 30_000);
+
+test("cloud ledger adapters match their recorded owners", () => {
+  const cloudPaths = listRepoFiles()
+    .filter((path) => path.startsWith("cloud/"))
+    .map((path) => path.slice(6));
+  const cloud = scanAdapters(cloudPaths, `${repoRoot}/cloud`);
+  expect(
+    format(
+      findLedgerViolations(
+        readTextFile(LEDGER_PATH)?.split(/^## Cloud dependencies\s*$/m)[1],
+        readJson("cloud/package.json") as LedgerPackageJson,
+        cloud.manifests,
+        new Date(),
+      ),
+    ),
+  ).toEqual([]);
+}, 30_000);
 
 test("the guard rejects a dependency with no entry or an incomplete entry", () => {
   const pkg = {
