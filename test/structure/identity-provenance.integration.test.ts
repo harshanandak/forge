@@ -15,11 +15,37 @@ const fixtures = readJson(
 const mint = "src/ports/identity-mint.ts";
 const paths = listRepoFiles();
 
-test("the native parser loads under Bun and treats regex contents as data", () => {
+test("the tokenizer treats regex contents as data", () => {
   const path = "cloud/src/adapters/workers-oauth/index.ts";
   const text =
     'import { mintIdentity } from "../../../../src/ports/identity-mint.ts"; export function createOAuthAdapter() { function verifyProviderToken(claims) { const pattern = /function createOAuthAdapter() { function verifyProviderToken() {/; return mintIdentity(claims); } return { verify: verifyProviderToken }; }';
   expect(findIdentityMintViolations([{ path, text }])).toEqual([]);
+}, 30_000);
+
+test("OAuth tokenization preserves literals, substitutions and division", () => {
+  const path = "cloud/src/adapters/workers-oauth/index.ts";
+  for (const code of [
+    "const a = \"function fake() {\"; const b = 'function other() {'; /* function hidden() { */ // function hidden() {\n",
+    "const text = `outer ${ { value: `inner ${ /[}]/.source }` }.value }`;",
+    "const value = 8; const ratios = [value / 2, 8 / 2, (8) / 2, [8][0] / 2]; const objectRatio = { value: 8 } / 2;",
+  ]) {
+    const text = `import { mintIdentity } from "../../../../src/ports/identity-mint.ts"; function createOAuthAdapter() { function verifyProviderToken(claims) { ${code} return mintIdentity(claims); } }`;
+    expect(findIdentityMintViolations([{ path, text }])).toEqual([]);
+  }
+}, 30_000);
+
+test("OAuth tokenization refuses ambiguous slashes and nested template mints", () => {
+  const path = "cloud/src/adapters/workers-oauth/index.ts";
+  for (const code of [
+    "if (ready) /scope/.test(input); return mintIdentity(claims);",
+    "if (ready) {} /scope/.test(input); return mintIdentity(claims);",
+    "return `${ (() => mintIdentity(claims))() }`;",
+  ]) {
+    const text = `import { mintIdentity } from "../../../../src/ports/identity-mint.ts"; function createOAuthAdapter() { function verifyProviderToken(claims) { ${code} } }`;
+    expect(
+      findIdentityMintViolations([{ path, text }]).map((v) => v.file),
+    ).toEqual([path]);
+  }
 }, 30_000);
 
 test("only the exact OAuth validation boundary may carry verifier-minted identity", () => {
