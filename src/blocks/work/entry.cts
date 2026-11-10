@@ -4022,6 +4022,8 @@ const operations: Operations<WorkOperations> = {
       fail("UNAVAILABLE", "Install Git and put it on PATH");
     const lock = files.lock([registryLock], { recoverDeadOwner: true });
     let runLock: ReturnType<FilesService["lock"]> | undefined;
+    let reservation: StateRecord | undefined;
+    let removalStopped = true;
     try {
       const saved = laneRegistry(files),
         lane = saved.lanes.find((row) => laneIdentity(row) === id);
@@ -4047,7 +4049,7 @@ const operations: Operations<WorkOperations> = {
       if (held) cleanupConflict(held);
       // Cancellation starts adapter cleanup; keep fencing until its bound plus a margin.
       const expiresAt = new Date(deadline + cleanupBudget + 1000).toISOString();
-      const reservation = persist(
+      reservation = persist(
         state,
         cleanupKey(id),
         { expiresAt },
@@ -4086,6 +4088,7 @@ const operations: Operations<WorkOperations> = {
         if (remaining <= 0)
           fail("INVOCATION_TIMEOUT", "Lane release deadline expired");
         const removing = args[0] === "worktree" && args[1] === "remove";
+        if (removing) removalStopped = false;
         const result = await executor.run(git, args, {
           cwd,
           env,
@@ -4097,7 +4100,8 @@ const operations: Operations<WorkOperations> = {
           ...(leaveDirectory ? { leaveDirectory } : {}),
         });
         if (removing) {
-          if (result.supervision?.confirmed === false)
+          removalStopped = result.supervision?.confirmed !== false;
+          if (!removalStopped)
             fail(
               "UNAVAILABLE",
               `Git termination was not confirmed; the cleanup reservation expires at ${expiresAt}. Wait until then and retry; no repair is needed`,
@@ -4248,9 +4252,19 @@ const operations: Operations<WorkOperations> = {
       };
     } finally {
       try {
-        runLock?.release();
+        if (reservation && removalStopped)
+          persist(
+            state,
+            reservation.key,
+            { expiresAt: new Date(state.now()).toISOString() },
+            reservation.revision,
+          );
       } finally {
-        lock.release();
+        try {
+          runLock?.release();
+        } finally {
+          lock.release();
+        }
       }
     }
   },

@@ -133,15 +133,22 @@ test("unrelated resolve/run clients retain their declared calling convention", (
 
 for (const expired of [false, true]) {
   test(`state deletion finalizers enforce ownership and their bound, expired=${expired}`, async () => {
-    const clock = { now: 0 };
-    const scope = new InvocationServices(1000, () => undefined, false, {
-      now: () => clock.now,
-    });
+    const clock = { now: 0, monotonic: 0 };
+    const scope = new InvocationServices(
+      1000,
+      () => undefined,
+      false,
+      {
+        now: () => clock.now,
+      },
+      undefined,
+      () => clock.monotonic,
+    );
     const rows = new Map([
       ["foreign", { key: "foreign", revision: 1, value: "keep" }],
     ]);
     const removed: string[] = [];
-    const services = scope.wrap({
+    const clients = {
       state: {
         get: (key: string) => rows.get(key),
         put(key: string, value: string, options: { expectRevision: number }) {
@@ -156,15 +163,14 @@ for (const expired of [false, true]) {
           rows.delete(key);
         },
       },
-    }) as {
-      state: {
-        put(
-          key: string,
-          value: string,
-          options: { expectRevision: number },
-        ): {
-          revision: number;
-        };
+    };
+    expect(
+      (scope.wrap(clients) as { state: { finalizeDelete?: unknown } }).state
+        .finalizeDelete,
+    ).toBeUndefined();
+    scope.authorizeFinalizer(clients.state, "owned");
+    const services = scope.wrap(clients) as {
+      state: typeof clients.state & {
         finalizeDelete(key: string, revision: number): void;
       };
     };
@@ -172,11 +178,16 @@ for (const expired of [false, true]) {
     expect(typeof state.finalizeDelete).toBe("function");
     expect(() => state.finalizeDelete("foreign", 1)).toThrow();
     const written = state.put("owned", "temporary", { expectRevision: 0 });
+    state.put("foreign", "keep", { expectRevision: 1 });
+    expect(() => state.finalizeDelete("foreign", 2)).toThrow();
     expect(() => state.finalizeDelete("owned", written.revision + 1)).toThrow();
     state.finalizeDelete("owned", written.revision);
     scope.controller.abort(new Error("cancelled"));
     scope.stop();
-    if (expired) clock.now = 1000;
+    if (expired) {
+      clock.now = -1000;
+      clock.monotonic = 1000;
+    }
     await scope.drain();
     await scope.drain();
     expect(removed).toEqual(expired ? [] : ["owned"]);

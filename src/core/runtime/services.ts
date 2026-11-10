@@ -11,6 +11,13 @@ import type {
   ProcessResult,
 } from "../../ports/process.ts";
 
+export type FinalizerState = {
+  delete(
+    key: string,
+    options: { expectRevision: number; guard: () => boolean },
+  ): unknown;
+};
+
 // Bound inspection before encoding: never traverse provider extras or retain mutable results.
 function processSnapshot(result: ProcessResult): string {
   let shortened = false;
@@ -73,6 +80,10 @@ export class InvocationServices {
   readonly #pending = new Set<Promise<unknown>>();
   #unconfirmedProcesses = 0;
   readonly #finalizers: (() => void)[] = [];
+  #finalizerState?: FinalizerState;
+  #finalizerKey?: string;
+  readonly #monotonic: () => number;
+  #monotonicBound: number;
   #active = true;
   readonly #cleanupErrors: unknown[] = [];
   readonly #authorize: () => void;
@@ -90,7 +101,10 @@ export class InvocationServices {
     strict = false,
     clock: ClockPort = { now: () => Date.now() },
     limits: Pick<ParseLimits, "maxNodes" | "maxDepth"> = DEFAULT_PARSE_LIMITS,
+    monotonic: () => number = () => performance.now(),
   ) {
+    this.#monotonic = monotonic;
+    this.#monotonicBound = monotonic() + deadline - clock.now();
     this.#limits = limits;
     this.#clock = clock;
     this.#deadline = deadline;
@@ -103,6 +117,14 @@ export class InvocationServices {
   startHandler(deadline: number): void {
     this.check();
     this.#deadline = deadline;
+    this.#monotonicBound = this.#monotonic() + deadline - this.#clock.now();
+  }
+  authorizeFinalizer(state: FinalizerState, key: string): void {
+    this.check();
+    if (this.#finalizerState)
+      refuse("INPUT_INVALID", "Finalizer already bound");
+    this.#finalizerState = state;
+    this.#finalizerKey = key;
   }
   check(): void {
     if (!this.#active)
@@ -293,10 +315,6 @@ export class InvocationServices {
     );
   }
   wrap(value: unknown): unknown {
-    const state =
-      typeof value === "object" && value !== null && "state" in value
-        ? value.state
-        : undefined;
     const seen = new WeakMap<object, Map<object | undefined, unknown>>();
     const proxies = new WeakSet<object>();
     const resource = (
@@ -387,14 +405,8 @@ export class InvocationServices {
       if (proxies.has(entry)) return entry;
       const cached = seen.get(entry)?.get(receiver);
       if (cached) return cached;
-      const stateClient =
-        entry === state &&
-        typeof entry === "object" &&
-        "put" in entry &&
-        typeof entry.put === "function" &&
-        "delete" in entry &&
-        typeof entry.delete === "function";
-      const written = new Map<string, number>();
+      const stateClient = entry === this.#finalizerState;
+      let owned: number | undefined;
       // Explicit process capabilities inherit cancellation even if the
       // handler omits or replaces its own signal and timeout.
       const processPort =
@@ -415,29 +427,35 @@ export class InvocationServices {
             const row = (entry as DeletableStateClient).put(
               ...(args.map(transfer) as typeof args),
             );
-            written.set(row.key, row.revision);
+            if (row.key === this.#finalizerKey) owned = row.revision;
             return returned(row);
           };
         if (stateClient && key === "finalizeDelete")
           return (key: string, revision: number) => {
             this.check();
-            if (!written.has(key) || written.get(key) !== revision)
+            if (!owned || key !== this.#finalizerKey || owned !== revision)
               refuse(
                 "INPUT_INVALID",
                 "Finalization requires an owned revision",
               );
             const bound = this.deadline;
+            const monotonicBound = this.#monotonicBound;
+            const guard = () =>
+              this.#clock.now() < bound && this.#monotonic() < monotonicBound;
             // Only teardown may use this exact deletion; ordinary clients remain revoked.
             this.#finalizers.push(() => {
-              if (this.#clock.now() >= bound) return;
+              if (!guard()) return;
               try {
-                (entry as DeletableStateClient).delete(key, {
+                (entry as FinalizerState).delete(key, {
                   expectRevision: revision,
+                  guard,
                 });
               } catch (error) {
                 if (
                   !(error instanceof ForgeFailure) ||
-                  error.error.code !== "REVISION_CONFLICT"
+                  !["REVISION_CONFLICT", "SERVICE_EXPIRED"].includes(
+                    error.error.code,
+                  )
                 )
                   throw error;
               }

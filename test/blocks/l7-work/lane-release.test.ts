@@ -229,6 +229,10 @@ async function fixture() {
   };
   const clock = { now: Date.now() };
   const starts = spyOn(InvocationServices.prototype, "startHandler");
+  const authorizations = spyOn(
+    InvocationServices.prototype,
+    "authorizeFinalizer",
+  );
   flags.cancelRelease = () => {
     const scope = starts.mock.contexts.at(-1) as InvocationServices;
     scope.controller.abort(
@@ -243,6 +247,7 @@ async function fixture() {
     factory = providers.createAssemblyProviders;
   const mocks = [
     starts,
+    authorizations,
     spyOn(Date, "now").mockImplementation(() => clock.now),
     spyOn(blockCapture, "open").mockImplementation((path) =>
       open(path === source ? target : path),
@@ -330,6 +335,7 @@ async function fixture() {
     mutations,
     files,
     owner,
+    authorizations,
     change,
     invoke,
     snapshot,
@@ -554,6 +560,7 @@ for (const phase of ["before removal", "confirmed removal"] as const) {
   test(`cancelled release clears its own reservation after ${phase}`, async () => {
     const f = await fixture();
     try {
+      expect(f.authorizations).not.toHaveBeenCalled();
       let reserved = false;
       const cancel = () => {
         reserved = cleanupHeld(f);
@@ -563,6 +570,8 @@ for (const phase of ["before removal", "confirmed removal"] as const) {
       if (phase === "before removal") f.flags.afterCleanCheck = cancel;
       else f.flags.duringRemove = cancel;
       const released = await f.invoke("lane.release", { id: "sample-1" });
+      expect(f.authorizations).toHaveBeenCalledTimes(1);
+      expect(f.authorizations.mock.calls[0]?.[1]).toBe(cleanupKey);
       expect(reserved).toBe(true);
       expect(released).toMatchObject({
         ok: false,
