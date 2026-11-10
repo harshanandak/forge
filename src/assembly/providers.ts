@@ -134,6 +134,8 @@ export function createReceiptsService(
 }
 export interface ProcessService extends ProcessPort {
   readonly cwd: string;
+  /** Full adapter termination, reap and drain ceiling, when supplied by the host. */
+  readonly cleanupBudgetMs?: number;
 }
 export interface ProviderOptions {
   readonly supervision?: SupervisionOptions;
@@ -205,10 +207,12 @@ export function createProcessService(
   port: ProcessPort,
   scope: ServiceScope,
   cwd: string,
+  supervision?: SupervisionOptions,
 ): ProcessService {
   return {
     capability: "forge.process/v1",
     cwd,
+    cleanupBudgetMs: processCleanupBudgetMs(supervision),
     ...(port.containment
       ? {
           containment: () => {
@@ -556,7 +560,7 @@ export function createAssemblyProviders(
       };
     },
     process(scope: ServiceScope): ProcessService {
-      return createProcessService(port, scope, root);
+      return createProcessService(port, scope, root, options.supervision);
     },
     environment(scope: ServiceScope): EnvironmentService {
       return {
