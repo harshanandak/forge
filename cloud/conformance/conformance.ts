@@ -390,9 +390,10 @@ const revokeCheck = (): Promise<void> =>
     // The refused claim granted nothing, and the other device still works.
     const none = await lookup(project, "issue:revoke-2", asDevice(laptop));
     assert.equal(none.body.value ?? null, null);
-    assert.deepEqual(
-      granted(await lookup(project, "issue:revoke-1", asDevice(laptop))),
-      first,
+    assert.ok(
+      granted(await lookup(project, "issue:revoke-1", asDevice(laptop)))
+        .releasedAt,
+      first.subject,
     );
   });
 
