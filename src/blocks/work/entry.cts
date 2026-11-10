@@ -98,6 +98,14 @@ type ResumeRow = ItemRef & {
     readonly expiresAt: string;
   };
 };
+type BoardInput = { id?: string; limit?: number; cursor?: string };
+type BoardReason = {
+  code: "CLOSED" | "HELD" | "BLOCKED_BY";
+  id?: string;
+  holder?: LeaseHolder;
+  holderUnverified?: boolean;
+  expiresAt?: string;
+};
 type CallBudget = ItemRef & {
   readonly used: number;
   readonly left: number;
@@ -208,6 +216,7 @@ type TailAction = {
   approval?: { request: string; quote: string; source: ReplySource };
 };
 type WorkOperations = TrackerOperations<"issue"> & {
+  readonly "issue.board": readonly [BoardInput, unknown];
   readonly "lane.next": readonly [
     NextInput,
     TailAction | { actions: TailAction[] },
@@ -567,10 +576,155 @@ function blocked(
   graph: ReturnType<typeof dependencyGraph>,
   value: Stored,
 ): boolean {
-  return value.dependsOn.some((id) => {
+  return blockedBy(graph, value).length > 0;
+}
+function blockedBy(
+  graph: ReturnType<typeof dependencyGraph>,
+  value: Stored,
+): readonly string[] {
+  return value.dependsOn.filter((id) => {
     const dependency = graph.read(id);
     return !dependency || stored(dependency).status !== "closed";
   });
+}
+function holder(state: LeaseStateClient, id: string) {
+  const lease = state.lease(key(id));
+  return lease && lease.releasedAt === undefined
+    ? { holder: lease.holder, holderUnverified: true }
+    : {};
+}
+function readiness(
+  state: LeaseStateClient,
+  graph: ReturnType<typeof dependencyGraph>,
+  value: Stored,
+  ids: Ids,
+): BoardReason[] {
+  const lease = live(state, value.id);
+  const reasons: BoardReason[] = [];
+  if (value.status === "closed") reasons.push({ code: "CLOSED" });
+  if (lease)
+    reasons.push({
+      code: "HELD",
+      ...holder(state, value.id),
+      expiresAt: lease.expiresAt,
+    });
+  return [
+    ...reasons,
+    ...blockedBy(graph, value).map((id) => ({
+      code: "BLOCKED_BY" as const,
+      id: ids.shown(id),
+      ...holder(state, id),
+    })),
+  ];
+}
+function board(services: unknown, input: BoardInput, config: unknown) {
+  const state = client(services),
+    crypto = (services as { crypto?: CryptoService }).crypto;
+  if (!crypto) fail("UNAVAILABLE", "Board requires crypto service");
+  const now = state.now(),
+    ids = idsFor(state, config),
+    records = state.list("issue:");
+  const snapshot = { ...state, now: () => now };
+  const graph = dependencyGraph(state, records),
+    reverse = new Map<string, { id: string }[]>();
+  for (const record of records) {
+    const value = stored(record);
+    if (value.status !== "open") continue;
+    for (const dependency of value.dependsOn) {
+      const rows = reverse.get(dependency) ?? [];
+      rows.push({ id: ids.shown(value.id) });
+      reverse.set(dependency, rows);
+    }
+  }
+  const latest = (prefix: string) =>
+    state.get(`${prefix}${state.maxNumber(prefix)}`);
+  const ordered = (
+    input.id ? [get(state, ids.stored(input.id), input.id)] : records
+  )
+    .filter((record) => {
+      const value = stored(record);
+      return (
+        input.id ||
+        (value.status === "open" &&
+          holder(state, value.id).holder !== undefined)
+      );
+    })
+    .map((record) => {
+      const id = stored(record).id;
+      const activity = Math.max(
+        ...[record, latest(`comment:${id}:`), latest(`link:${id}:`)].map((r) =>
+          r ? Date.parse(r.updatedAt) : 0,
+        ),
+        Date.parse(
+          state.history({ key: key(id), limit: 1 })[0]?.at ??
+            "1970-01-01T00:00:00Z",
+        ),
+      );
+      return { record, id, activity };
+    })
+    .sort((a, b) => b.activity - a.activity || a.id.localeCompare(b.id));
+  const fingerprint = crypto.sha256(
+    JSON.stringify(ordered.map(({ id }) => id)),
+  );
+  let offset = 0;
+  if (input.cursor !== undefined) {
+    let cursor: unknown;
+    try {
+      cursor = JSON.parse(input.cursor);
+    } catch {
+      fail("INPUT_INVALID", "Invalid board cursor");
+    }
+    if (
+      !Array.isArray(cursor) ||
+      cursor.length !== 2 ||
+      typeof cursor[0] !== "string" ||
+      !Number.isSafeInteger(cursor[1]) ||
+      cursor[1] < 0
+    )
+      fail("INPUT_INVALID", "Invalid board cursor");
+    if (cursor[0] !== fingerprint)
+      fail("CURSOR_STALE", "restart from the first page");
+    offset = cursor[1] as number;
+    if (offset > ordered.length) fail("INPUT_INVALID", "Invalid board cursor");
+  }
+  const page = ordered.slice(offset, offset + (input.limit ?? 100));
+  const items = page.map(({ record, id }) => {
+    const value = stored(record),
+      lease = state.lease(key(id));
+    const checkpoint = recovery(appended(state, `comment:${id}:`));
+    const pr = appended(state, `link:${id}:`).findLast(
+      (r) => (r.value as LinkInput).relation === "delivers",
+    )?.value as LinkInput | undefined;
+    const notReadyBecause = readiness(snapshot, graph, value, ids);
+    return {
+      id: ids.shown(id),
+      title: value.title,
+      ...holder(state, id),
+      ...(lease && lease.releasedAt === undefined
+        ? {
+            leaseState: live(snapshot, id) ? "live" : "stale",
+            expiresAt: lease.expiresAt,
+          }
+        : {}),
+      ...(checkpoint ? { lastCheckpointAt: checkpoint.time } : {}),
+      ...(pr ? { pr: pr.url } : checkpoint?.pr ? { pr: checkpoint.pr } : {}),
+      blockers: notReadyBecause
+        .filter((r) => r.code === "BLOCKED_BY")
+        .map(({ code: _code, ...reason }) => reason),
+      dependents: reverse.get(id) ?? [],
+      ready: notReadyBecause.length === 0,
+      notReadyBecause,
+    };
+  });
+  const truncated = ordered.length > offset + page.length;
+  return {
+    items,
+    snapshotAt: new Date(now).toISOString(),
+    truncated,
+    ...(truncated
+      ? { cursor: JSON.stringify([fingerprint, offset + page.length]) }
+      : {}),
+  };
 }
 /** Position of the first configured label an item carries; items with none rank last. */
 function rank(order: readonly string[], value: Stored): number {
@@ -4984,6 +5138,8 @@ const operations: Operations<WorkOperations> = {
       truncated,
     };
   },
+  "issue.board": ({ input, services, config }) =>
+    board(services, input, config),
   "issue.ready": ({ input, services, config }) =>
     list(client(services), input, "ready", config as WorkConfig | undefined),
   "issue.blocked": ({ input, services, config }) =>

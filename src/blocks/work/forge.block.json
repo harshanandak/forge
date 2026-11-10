@@ -159,6 +159,16 @@
       "stability": "experimental",
       "args": ["id"]
     },
+    "issue.board": {
+      "input": "schemas/board.input.json",
+      "output": "schemas/board.output.json",
+      "context": "project",
+      "timeoutMs": 5000,
+      "effects": [],
+      "idempotent": true,
+      "callers": ["agent", "human"],
+      "stability": "experimental"
+    },
     "issue.ready": {
       "input": "schemas/ListItemsInput.json",
       "output": "schemas/ListItemsOutput.json",

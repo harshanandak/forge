@@ -3,7 +3,13 @@
     "lane.release": {
       "title": "Release lane",
       "summary": "Release a lane closed by hand without a lease. Refuse open issues, live leases, merge receipts, pending closes and dirty or ignored work. Remove the worktree and registry entry; keep and report the branch.",
-      "examples": [{ "input": { "id": "demo-1" } }]
+      "examples": [
+        {
+          "input": {
+            "id": "demo-1"
+          }
+        }
+      ]
     },
     "lane.close": {
       "title": "Close lane",
@@ -116,8 +122,8 @@
       ]
     },
     "issue.create": {
-      "title": "Issue create",
-      "summary": "Create with title and kind.",
+      "title": "Create",
+      "summary": "Create: title, kind.",
       "examples": [
         {
           "input": {
@@ -128,8 +134,8 @@
       ]
     },
     "issue.show": {
-      "title": "Issue show",
-      "summary": "Read issue and live lease only.",
+      "title": "Show",
+      "summary": "Issue + live lease only.",
       "examples": [
         {
           "input": {
@@ -140,11 +146,11 @@
     },
     "issue.list": {
       "title": "List",
-      "summary": "List: ready=open, deps closed, no live lease; labels/label=all-of; parent=id/none; kind. Filters AND. createdSince: inclusive full RFC 3339 timestamp, before limit; truncated: more matches."
+      "summary": "AND filters: ready=open+deps closed+no live lease; labels/label=all-of; parent=id/none; kind. createdSince: inclusive full RFC 3339 timestamp, before limit; truncated: more matches."
     },
     "issue.update": {
       "title": "Update",
-      "summary": "Update at show revision with held lease. kind: task/bug/feature/epic; open epics with open children cannot be demoted. parent: existing id/null to clear; no cycles.",
+      "summary": "Held lease + show revision. kind=task/bug/feature/epic; open epic+open children: no demotion. parent=existing id/null(clear); no cycles.",
       "examples": [
         {
           "command": "POSIX: forge issue update demo-1 --title \"Updated task\" --expect-revision \"$(forge issue show demo-1 | node -pe 'JSON.parse(require(\"fs\").readFileSync(0,\"utf8\")).result.revision')\""
@@ -156,7 +162,7 @@
     },
     "issue.comment": {
       "title": "Comment",
-      "summary": "Append plain comment; read via issue.comments.",
+      "summary": "Plain comment; read: issue.comments.",
       "examples": [
         {
           "input": {
@@ -168,7 +174,7 @@
     },
     "issue.claim": {
       "title": "Claim",
-      "summary": "Lease an open issue for this session. ttlSeconds overrides claimTtlSeconds (default 3600s).",
+      "summary": "Session's open-issue lease; ttlSeconds overrides claimTtlSeconds (3600s default).",
       "examples": [
         {
           "input": {
@@ -180,7 +186,7 @@
     },
     "issue.renew": {
       "title": "Renew",
-      "summary": "Renew live generation/reacquire expired lease. ttlSeconds overrides claimTtlSeconds (default 3600s).",
+      "summary": "Renew live generation/reacquire expired; ttlSeconds overrides claimTtlSeconds (3600s default).",
       "examples": [
         {
           "input": {
@@ -192,7 +198,7 @@
     },
     "issue.release": {
       "title": "Release",
-      "summary": "Release this session's lease.",
+      "summary": "This session's lease.",
       "examples": [
         {
           "input": {
@@ -203,7 +209,7 @@
     },
     "issue.close": {
       "title": "Close",
-      "summary": "Close with held lease and verified PASS receipt bound to delivered PR, or written withoutReceipt reason.",
+      "summary": "Held lease; verified PASS receipt bound to delivered PR, or written withoutReceipt reason.",
       "examples": [
         {
           "input": {
@@ -213,21 +219,25 @@
         }
       ]
     },
+    "issue.board": {
+      "title": "Board",
+      "summary": "{}: held issues/holders/blockers/dependents; cursor. {id}: ready, notReadyBecause=CLOSED,HELD,BLOCKED_BY."
+    },
     "issue.ready": {
       "title": "Ready",
-      "summary": "Open, deps closed, no live lease (expired/released OK). All labels match. /blocks/work/config/labelOrder: first listed label carried, then stored order."
+      "summary": "Open; deps closed; no live lease (expired/released OK); all labels match. /blocks/work/config/labelOrder: first carried label, then stored order."
     },
     "issue.blocked": {
       "title": "Blocked",
-      "summary": "Open issues with missing/open dependencies."
+      "summary": "Open: missing/open deps."
     },
     "issue.stale": {
       "title": "Stale",
-      "summary": "Open issues with expired, unreleased leases."
+      "summary": "Open: expired unreleased leases."
     },
     "issue.call": {
       "title": "Call",
-      "summary": "Count root intent call; refuse after 60 calls/30 hours; return bounded timebox.",
+      "summary": "Count root-intent call; refuse after 60 calls/30h; bounded timebox.",
       "examples": [
         {
           "input": {
@@ -238,8 +248,8 @@
       ]
     },
     "issue.checkpoint": {
-      "title": "Issue checkpoint",
-      "summary": "Save a checkpoint.",
+      "title": "Checkpoint",
+      "summary": "Save checkpoint.",
       "examples": [
         {
           "input": {
@@ -253,8 +263,8 @@
       ]
     },
     "issue.resume": {
-      "title": "Issue resume",
-      "summary": "Read restart context.",
+      "title": "Resume",
+      "summary": "Restart context.",
       "examples": [
         {
           "input": {}
@@ -267,7 +277,7 @@
       ]
     },
     "issue.comments": {
-      "title": "Issue comments",
+      "title": "Comments",
       "summary": "Read issue comments.",
       "examples": [
         {
@@ -279,7 +289,7 @@
     },
     "issue.events": {
       "title": "Events",
-      "summary": "Read accepted issue and lease history.",
+      "summary": "Accepted issue/lease history.",
       "examples": [
         {
           "input": {
@@ -290,7 +300,7 @@
     },
     "issue.dep": {
       "title": "Dep",
-      "summary": "Add/remove dependency with held lease and expected revision.",
+      "summary": "Held lease + expected revision; add/remove dep.",
       "examples": [
         {
           "command": "POSIX: forge issue dep --id demo-1 --target demo-2 --action add --expect-revision \"$(forge issue show demo-1 | node -pe 'JSON.parse(require(\"fs\").readFileSync(0,\"utf8\")).result.revision')\""
@@ -302,7 +312,7 @@
     },
     "issue.link": {
       "title": "Link",
-      "summary": "Attach typed external link with held lease.",
+      "summary": "Held lease; typed external link.",
       "examples": [
         {
           "input": {
@@ -326,11 +336,11 @@
     },
     "issue.tree": {
       "title": "Tree",
-      "summary": "Open epics or root id; open/closed child counts, open descendants to depth 3, parent anomalies. limit bounds nodes/ids; truncated includes deeper children."
+      "summary": "Open epics/root id: open/closed child counts, open descendants to depth 3, parent anomalies. limit: nodes/ids; truncated includes deeper children."
     },
     "issue.lint": {
       "title": "Lint",
-      "summary": "Check kinds, references, dep cycles, open issues with closed parents (always). labels.required: exactly one match/group; default empty."
+      "summary": "Kinds, refs, dep cycles; open issues' closed parents (always). labels.required: exactly one match/group; empty default."
     }
   }
 }
