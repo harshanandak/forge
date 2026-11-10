@@ -73,6 +73,10 @@ function skillCalls(text: string, op: string) {
 test("every generated operation retains its own calling facts and issue has 1024 bytes of headroom", async () => {
   await withProject((assembly) => {
     const catalog = assembly.catalog.list();
+    for (const name of allBlocks)
+      expect(
+        catalog.some((c) => c.admitted && c.blockId === `forge/${name}`),
+      ).toBe(true);
     const skills = renderSkills(catalog);
     console.table(
       skills.map(({ noun, text }) => ({
@@ -231,7 +235,10 @@ async function withProject(
         readFileSync(join(target, "forge.block.json"), "utf8"),
       ) as { entry: string };
       writeFileSync(join(target, entry), "module.exports={};");
-      blocks[name] = { source: { path: `./blocks/${name}` } };
+      blocks[name] = {
+        source: { path: `./blocks/${name}` },
+        ...(name === "check" ? { config: { commands: {} } } : {}),
+      };
     }
     mkdirSync(join(root, ".forge"));
     writeFileSync(
@@ -251,9 +258,11 @@ async function withProject(
           { path: `./blocks/${name}` },
           call,
         );
-        const digest = String(
-          record(checked.ok ? checked.result : undefined)?.digest,
-        );
+        expect(checked, `${name}: ${JSON.stringify(checked)}`).toMatchObject({
+          ok: true,
+        });
+        const digest = record(checked.ok ? checked.result : undefined)?.digest;
+        expect(digest).toMatch(/^sha256:[a-f0-9]{64}$/);
         expect(
           await relay(
             (op, input) => dispatch(assembly.catalog, op, input, call),
