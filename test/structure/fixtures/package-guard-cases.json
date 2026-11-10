@@ -1,0 +1,47 @@
+{
+  "aliases": {
+    "static import": "import { value } from '#oauth';",
+    "type import": "import type { Value } from '#oauth';",
+    "dynamic import": "export const load = () => import('#oauth');",
+    "require": "const value = require('#oauth');",
+    "re-export": "export * from '#oauth';"
+  },
+  "boundaries": [
+    {
+      "name": "mixed-case cloud bridge",
+      "path": "cloud/src/worker.ts",
+      "text": "import '../../Cloud/lib/oauth.ts';",
+      "message": "cloud source cannot import outside cloud/src/"
+    },
+    {
+      "name": "normalized mixed-case cloud bridge",
+      "path": "cloud/src/worker.ts",
+      "text": "import '../../Cloud/./src/../lib/oauth.ts';",
+      "message": "cloud source cannot import outside cloud/src/"
+    },
+    {
+      "name": "backslash mixed-case cloud bridge",
+      "path": "cloud/src/worker.ts",
+      "text": "import '..\\\\..\\\\Cloud\\\\lib\\\\oauth.ts';",
+      "message": "cloud source cannot import outside cloud/src/"
+    },
+    {
+      "name": "mixed-case cloud entry from open core",
+      "path": "src/core/load.ts",
+      "text": "import '../../Cloud/src/worker.ts';",
+      "message": "open core cannot import cloud-only code"
+    },
+    {
+      "name": "mixed-case root adapter entry",
+      "path": "src/core/load.ts",
+      "text": "import '../Adapters/oauth/index.ts';",
+      "message": "reaches into adapter"
+    },
+    {
+      "name": "mixed-case cloud adapter entry",
+      "path": "cloud/src/worker.ts",
+      "text": "import './Adapters/oauth/index.ts';",
+      "message": "reaches into adapter"
+    }
+  ]
+}

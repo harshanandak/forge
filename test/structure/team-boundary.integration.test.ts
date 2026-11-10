@@ -124,6 +124,52 @@ test("compiler discovery follows differently named bases into team aliases", () 
   }
 }, 30_000);
 
+const discovery = readJson(
+  "test/structure/fixtures/team-config-discovery.json",
+) as {
+  local: {
+    name: string;
+    configs: Record<string, unknown>;
+    discovered: string[];
+    refusals: string[];
+  }[];
+  package: Record<string, unknown>;
+};
+
+for (const { name, configs, discovered, refusals } of discovery.local) {
+  test(`compiler discovery scans every base once through an ${name}`, () => {
+    const scratch = mkdtempSync(join(tmpdir(), "forge-config-discovery-"));
+    try {
+      for (const [path, config] of Object.entries(configs)) {
+        mkdirSync(join(scratch, posix.dirname(path)), { recursive: true });
+        writeFileSync(join(scratch, path), JSON.stringify(config));
+      }
+      const found = compilerConfigs(scratch, ["tsconfig.json"]);
+      expect(found.map((file) => file.path)).toEqual(discovered);
+      expect(boundary(found).map((violation) => violation.file)).toEqual(
+        refusals,
+      );
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  }, 30_000);
+}
+
+test("compiler discovery refuses package-style extends even when the package exists", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "forge-config-package-"));
+  try {
+    for (const [path, config] of Object.entries(discovery.package)) {
+      mkdirSync(join(scratch, posix.dirname(path)), { recursive: true });
+      writeFileSync(join(scratch, path), JSON.stringify(config));
+    }
+    expect(() => compilerConfigs(scratch, ["tsconfig.json"])).toThrow(
+      "Compiler config tsconfig.json must extend a local relative path",
+    );
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}, 30_000);
+
 for (const [path, name] of [
   ["src/assembly/view.tsx", "TSX side-effect import"],
   ["src/assembly/view.jsx", "JSX side-effect import"],
