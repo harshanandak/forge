@@ -1,4 +1,10 @@
 import { expect, mock, test } from "bun:test";
+import { Database } from "bun:sqlite";
+import { Project } from "../../../cloud/src/project.ts";
+import {
+  OAuthConfigError,
+  readOAuthConfig,
+} from "../../../cloud/src/adapters/workers-oauth/config.ts";
 import { createOAuthHarness } from "../../adapters/workers-oauth/harness.ts";
 import { jwtFixture } from "../../adapters/clerk/jwt-fixture.ts";
 import { durableRedemption } from "../../../cloud/src/adapters/workers-oauth/redemption.ts";
@@ -202,8 +208,212 @@ async function fixture(claims = {}, alg = "RS256") {
     };
   }
   const jwksCount = () => jwks;
-  return { env, worker, start, send, proof, forward, network, jwksCount };
+  const configured = createConfiguredWorker(undefined, {
+    fetch: network,
+    clock: harness.options.clock,
+  });
+  return {
+    env,
+    worker,
+    configured,
+    start,
+    send,
+    proof,
+    forward,
+    network,
+    jwksCount,
+  };
 }
+
+async function ownerFixture(claims = {}) {
+  const f = await fixture({ sub: "user_owner", ...claims });
+  const flow = await f.start();
+  const token = await field(
+    await flow.exchange(codeOf(await flow.finish())),
+    "access_token",
+  );
+  const db = new Database(":memory:"),
+    values = new Map<string, unknown>();
+  const project = new Project({
+    storage: {
+      sql: {
+        exec: (sql, ...bindings) => ({
+          toArray: () =>
+            db
+              .query(sql)
+              .all(
+                ...bindings.map((value) =>
+                  value instanceof ArrayBuffer ? new Uint8Array(value) : value,
+                ),
+              ) as Record<string, unknown>[],
+        }),
+      },
+      transactionSync: (body) => db.transaction(body)(),
+      get: (key) => Promise.resolve(values.get(key)),
+      put: (key, value) => {
+        values.set(key, value);
+        return Promise.resolve();
+      },
+      delete: (key) => Promise.resolve(values.delete(key)),
+    },
+  });
+  const names: string[] = [];
+  const env = {
+    ...f.env,
+    FORGE_OWNER_SUBJECT: "user_owner",
+    PROJECTS: {
+      idFromName: (name: string) => {
+        names.push(name);
+        return name;
+      },
+      get: () => project,
+    },
+  };
+  const request = (
+    route = "holder?subject=issue",
+    credential = token,
+    extra = {},
+  ) =>
+    new Request(`${issuer}/p/a/${route}`, {
+      headers: {
+        ...(credential ? { authorization: `Bearer ${credential}` } : {}),
+        ...extra,
+      },
+    });
+  return { ...f, env, token, request, names, close: () => db.close() };
+}
+
+test("configured owner reaches the real project object without injected policy or forwarding", async () => {
+  const f = await ownerFixture();
+  try {
+    const response = await f.configured.fetch(
+      f.request(undefined, f.token, { "X-Forge-Owner": "user_attacker" }),
+      f.env,
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true, value: null });
+    expect(f.names).toEqual(["a"]);
+    expect(f.forward).toHaveBeenCalledTimes(0);
+  } finally {
+    f.close();
+  }
+}, 30_000);
+
+test("owner matching requires both issuer and subject and keeps audience refusal", async () => {
+  for (const [claims, overrides, expected] of [
+    [{ sub: "user_attacker", org_id: "owner-org" }, {}, 403],
+    [{}, { CLERK_ISSUER: "https://other-clerk.example" }, 403],
+    [{}, { FORGE_OWNER_SUBJECT: undefined }, 403],
+    [{}, { FORGE_API_RESOURCE: "https://api.example/b" }, 401],
+  ] as const) {
+    const f = await ownerFixture(claims);
+    try {
+      const response = await f.configured.fetch(
+        f.request(undefined, f.token, { "X-Forge-Owner": "user_owner" }),
+        { ...f.env, ...overrides },
+      );
+      expect(response.status).toBe(expected);
+      expect(await response.json()).toMatchObject({
+        error: { code: expected === 401 ? "AUTH_INVALID" : "AUTH_FORBIDDEN" },
+      });
+      expect(f.names).toEqual([]);
+    } finally {
+      f.close();
+    }
+  }
+}, 30_000);
+
+test("owner subject config is strict and refuses without echoing its value", async () => {
+  for (const value of [
+    "",
+    "user_",
+    "user_bad-id",
+    " user_owner",
+    "user_owner\n",
+    123,
+    null,
+  ]) {
+    expect(() =>
+      readOAuthConfig({ ...vars, FORGE_OWNER_SUBJECT: value }, issuer),
+    ).toThrow(OAuthConfigError);
+    const f = await fixture();
+    const response = await f.configured.fetch(
+      new Request(`${issuer}/authorize`),
+      { ...f.env, FORGE_OWNER_SUBJECT: value },
+    );
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({
+      error: {
+        code: "AUTH_CONFIG_UNAVAILABLE",
+        variable: "FORGE_OWNER_SUBJECT",
+        message: "OAuth configuration unavailable",
+      },
+    });
+  }
+}, 30_000);
+
+test("forged owner headers grant nothing and OAuth cannot reach any admin route", async () => {
+  const f = await ownerFixture();
+  try {
+    for (const [credential, expected] of [
+      ["", 401],
+      ["forged", 401],
+      [`fct_${"0".repeat(16)}.${"x".repeat(43)}`, 401],
+    ] as const) {
+      const response = await f.configured.fetch(
+        f.request(undefined, credential, { "X-Forge-Owner": "user_owner" }),
+        f.env,
+      );
+      expect(response.status).toBe(expected);
+      expect(await response.json()).toMatchObject({
+        ok: false,
+        error: { code: credential ? "AUTH_INVALID" : "AUTH_REQUIRED" },
+      });
+    }
+    f.names.length = 0;
+    for (const route of ["devices", "revoke", "status", "dump", "restore"]) {
+      expect((await f.configured.fetch(f.request(route), f.env)).status).toBe(
+        401,
+      );
+    }
+    expect(f.names).toEqual([]);
+    const admin = await f.configured.fetch(
+      f.request("status", "fixture-admin"),
+      f.env,
+    );
+    expect(admin.status).toBe(200);
+    expect(await admin.json()).toEqual({
+      ok: true,
+      value: { initialized: false },
+    });
+  } finally {
+    f.close();
+  }
+}, 30_000);
+
+test("device issuance and project reads still require the issued device token", async () => {
+  const f = await ownerFixture();
+  try {
+    const issued = await f.configured.fetch(
+      new Request(`${issuer}/p/a/devices`, {
+        method: "POST",
+        headers: { authorization: "Bearer fixture-admin" },
+        body: JSON.stringify({ device: "laptop", ttlMs: 60_000 }),
+      }),
+      f.env,
+    );
+    expect(issued.status).toBe(200);
+    const body = (await issued.json()) as { value: { token: string } };
+    const response = await f.configured.fetch(
+      f.request(undefined, body.value.token),
+      f.env,
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true, value: null });
+  } finally {
+    f.close();
+  }
+}, 30_000);
 async function refused(
   response: Response,
   proof: string,
