@@ -208,6 +208,7 @@ type TailAction = {
   approval?: { request: string; quote: string; source: ReplySource };
 };
 type WorkOperations = TrackerOperations<"issue"> & {
+  readonly "issue.board": readonly [Record<string, unknown>, unknown];
   readonly "lane.next": readonly [
     NextInput,
     TailAction | { actions: TailAction[] },
@@ -4981,6 +4982,7 @@ const operations: Operations<WorkOperations> = {
       truncated,
     };
   },
+  "issue.board": () => ({ items: [], snapshotAt: "", truncated: false }),
   "issue.ready": ({ input, services, config }) =>
     list(client(services), input, "ready", config as WorkConfig | undefined),
   "issue.blocked": ({ input, services, config }) =>
