@@ -278,6 +278,8 @@ class SummaryLines {
 function recognizer(format: ReportFormat): OutputRecognizer {
   const stdout = new SummaryLines(),
     stderr = new SummaryLines();
+  const hints = { stdout: false, stderr: false };
+  const tails = { stdout: "", stderr: "" };
   let structured: Buffer[] | undefined = format === "json" ? [] : undefined;
   let structuredBytes = 0,
     decided = format === "json",
@@ -302,6 +304,12 @@ function recognizer(format: ReportFormat): OutputRecognizer {
   }
   return {
     push(stream, chunk) {
+      if (format !== "exit-code" && !hints[stream]) {
+        const text = tails[stream] + Buffer.from(chunk).toString("latin1");
+        hints[stream] = /"num(?:Total|Failed)Tests"/.test(text);
+        // Keep keys split across chunks, including on lines too long to retain.
+        tails[stream] = text.slice(-16);
+      }
       if (stream === "stdout") {
         stdout.push(chunk);
         if (format !== "exit-code") keep(chunk);
@@ -314,6 +322,8 @@ function recognizer(format: ReportFormat): OutputRecognizer {
       stderr.end();
       const text = structured ? Buffer.concat(structured).toString("utf8") : "";
       const reports: OutputReport[] = [];
+      if (hints.stderr || (hints.stdout && !structured))
+        reports.push(malformed);
       // An overflowing object is never read whole, so its counts may lie past what was kept.
       if (
         format === "json" ||
