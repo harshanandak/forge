@@ -3,6 +3,35 @@ import { createRunnerOutput } from "../../../src/adapters/runner-output/index.ts
 
 const output = createRunnerOutput();
 const passing = "Tests: 1 passed, 1 total";
+for (const [name, stdout, stderr] of [
+  [
+    "pretty stderr JSON",
+    "",
+    JSON.stringify(
+      { numTotalTests: 1, numFailedTests: 1, success: false },
+      null,
+      2,
+    ),
+  ],
+  [
+    "prefixed stdout JSON",
+    'runner: {"numTotalTests":1,"numFailedTests":1,"success":false}',
+    "",
+  ],
+] as const) {
+  test(`${name} without a recognized summary retains the malformed fallback`, () => {
+    const recognizer = output.recognize("auto");
+    for (const [stream, text] of [
+      ["stdout", stdout],
+      ["stderr", stderr],
+    ] as const)
+      for (const byte of Buffer.from(text))
+        recognizer.push(stream, Uint8Array.of(byte));
+    expect(output.parse(stdout, stderr, "auto").kind).toBe("malformed");
+    expect(recognizer.report().kind).toBe("malformed");
+  }, 1000);
+}
+
 const bunPassing =
   '(pass) structured evidence {"numTotalTests":1,"numFailedTests":1,"success":false}\n1 pass\n0 fail\nRan 1 test across 1 file.';
 for (const [name, stdout, stderr] of [

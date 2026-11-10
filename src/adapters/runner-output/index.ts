@@ -283,7 +283,8 @@ class SummaryLines {
         : pytest(candidate.replace(/^=+\s*|\s*=+$/g, ""));
     if (parsed?.kind === "recognized")
       this.pytest = retainFailure(this.pytest, parsed);
-    if (/^\s*Tests:|^\s*Tests\s+\d+.*\(/.test(text)) this.hint = true;
+    if (/^\s*Tests:|^\s*Tests\s+\d+.*\(|"numTotalTests"/.test(text))
+      this.hint = true;
   }
 }
 
