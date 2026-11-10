@@ -15,9 +15,15 @@
     "OAUTH_TIMEOUT_MS": "5000",
   },
   "durable_objects": {
-    "bindings": [{ "name": "PROJECTS", "class_name": "Project" }],
+    "bindings": [
+      { "name": "PROJECTS", "class_name": "Project" },
+      { "name": "CODE_REDEMPTION", "class_name": "CodeRedemption" },
+    ],
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Project"] }],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["Project"] },
+    { "tag": "v2-code-redemption", "new_sqlite_classes": ["CodeRedemption"] },
+  ],
   "dev": { "ip": "127.0.0.1", "port": 8787 },
   "send_metrics": false,
 }
