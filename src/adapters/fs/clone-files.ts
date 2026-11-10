@@ -36,7 +36,18 @@ import {
 } from "./durable-io.ts";
 
 export type CloneFileArea = "project" | "git" | "common";
+export interface CloneMarkerCleanupScheduler {
+  now(): number;
+  schedule(
+    callback: () => void,
+    delay: number,
+  ): {
+    unref(): void;
+    cancel(): void;
+  };
+}
 export interface CloneFilesOptions {
+  readonly markerCleanup?: CloneMarkerCleanupScheduler;
   readonly processStartTime?: (pid: number) => string | undefined;
   readonly projectRoot: string;
   readonly gitDirectory: string;

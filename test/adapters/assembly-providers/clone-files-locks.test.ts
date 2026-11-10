@@ -1,6 +1,7 @@
 import { afterEach, expect, setDefaultTimeout, test } from "bun:test";
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -14,6 +15,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createCloneFilesLease } from "../../../src/adapters/fs/clone-files.ts";
+import type { CloneMarkerCleanupScheduler } from "../../../src/adapters/fs/clone-files.ts";
 
 setDefaultTimeout(30_000);
 const roots: string[] = [];
@@ -21,7 +23,11 @@ afterEach(() => {
   for (const root of roots.splice(0))
     rmSync(root, { recursive: true, force: true });
 });
-function fixture(read = true, write = true) {
+function fixture(
+  read = true,
+  write = true,
+  markerCleanup?: CloneMarkerCleanupScheduler,
+) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "forge-file-locks-")));
   roots.push(root);
   const projectRoot = join(root, "project");
@@ -31,6 +37,7 @@ function fixture(read = true, write = true) {
   mkdirSync(gitDirectory, { recursive: true });
   const controller = new AbortController();
   const options = {
+    ...(markerCleanup ? { markerCleanup } : {}),
     projectRoot,
     commonDirectory,
     gitDirectory,
@@ -51,6 +58,202 @@ function fixture(read = true, write = true) {
     files: lease.service,
   };
 }
+
+function scheduledCleanupFixture() {
+  let now = 0;
+  let sequence = 0;
+  let cancellations = 0;
+  const jobs = new Map<
+    number,
+    { callback: () => void; at: number; delay: number; keepAlive: boolean }
+  >();
+  const scheduler: CloneMarkerCleanupScheduler = {
+    now: () => now,
+    schedule(callback, delay) {
+      const id = ++sequence;
+      const job = { callback, at: now + delay, delay, keepAlive: true };
+      jobs.set(id, job);
+      return {
+        unref() {
+          job.keepAlive = false;
+        },
+        cancel() {
+          if (jobs.delete(id)) cancellations += 1;
+        },
+      };
+    },
+  };
+  const context = fixture(true, true, scheduler);
+  const markers: string[] = [];
+  const restore = (marker: string) => {
+    if (existsSync(marker) && lstatSync(marker).isDirectory()) {
+      rmSync(marker, { recursive: true });
+      writeFileSync(marker, "");
+    }
+  };
+  return {
+    ...context,
+    jobs,
+    cancellations: () => cancellations,
+    block(path: string) {
+      const held = context.files.lock([path], { recoverDeadOwner: true });
+      const target = join(context.commonDirectory, path);
+      const marker = join(target, readdirSync(target)[0]!);
+      markers.push(marker);
+      rmSync(marker);
+      mkdirSync(marker);
+      expect(() => held.release()).toThrow("Clone lock cleanup failed");
+      return { target, marker, restore: () => restore(marker) };
+    },
+    runNext() {
+      const next = [...jobs.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+      expect(next).toBeDefined();
+      if (!next) return;
+      jobs.delete(next[0]);
+      now = Math.max(now, next[1].at);
+      next[1].callback();
+    },
+    dispose() {
+      for (const marker of markers) restore(marker);
+      context.lease.close();
+      jobs.clear();
+    },
+  };
+}
+
+test("scheduled marker cleanup survives lease close without another lock call and unrefs its timer", () => {
+  const context = scheduledCleanupFixture();
+  try {
+    const blocked = context.block("scheduled.lock");
+    expect(() => context.lease.close()).toThrow("Clone lock cleanup failed");
+    blocked.restore();
+    expect(context.jobs.size).toBe(1);
+    expect([...context.jobs.values()].every((job) => !job.keepAlive)).toBe(
+      true,
+    );
+    context.runNext();
+    expect(existsSync(blocked.target)).toBe(false);
+    expect(context.jobs.size).toBe(0);
+  } finally {
+    context.dispose();
+  }
+}, 30_000);
+
+test("marker cleanup backs off from 100ms to a 30s cap using the injected clock", () => {
+  const context = scheduledCleanupFixture();
+  try {
+    context.block("backoff.lock");
+    for (const delay of [
+      100, 200, 400, 800, 1600, 3200, 6400, 12800, 25600, 30000, 30000,
+    ]) {
+      expect(context.jobs.size).toBe(1);
+      expect([...context.jobs.values()][0]?.delay).toBe(delay);
+      expect([...context.jobs.values()][0]?.keepAlive).toBe(false);
+      context.runNext();
+    }
+  } finally {
+    context.dispose();
+  }
+}, 30_000);
+
+test.each(["marker", "directory"])(
+  "scheduled cleanup preserves a changed %s identity",
+  (kind) => {
+    const context = scheduledCleanupFixture();
+    try {
+      const blocked = context.block("identity-retry.lock");
+      blocked.restore();
+      const name = readdirSync(blocked.target)[0]!;
+      if (kind === "directory") {
+        renameSync(blocked.target, blocked.target + ".moved");
+        mkdirSync(blocked.target);
+      } else rmSync(blocked.marker);
+      const replacement = kind === "directory" ? name : name + "-replacement";
+      writeFileSync(join(blocked.target, replacement), "replacement owner");
+      expect(context.jobs.size).toBe(1);
+      context.runNext();
+      expect(readdirSync(blocked.target)).toEqual([replacement]);
+      expect(readFileSync(join(blocked.target, replacement), "utf8")).toBe(
+        "replacement owner",
+      );
+      if (kind === "directory")
+        expect(existsSync(join(blocked.target + ".moved", name))).toBe(true);
+      expect(context.jobs.size).toBe(0);
+    } finally {
+      context.dispose();
+    }
+  },
+  30_000,
+);
+
+test("a lock call and a scheduled batch each retry at most eight pending markers", () => {
+  const context = scheduledCleanupFixture();
+  try {
+    const blocked = Array.from({ length: 20 }, (_, i) =>
+      context.block(`budget-${i}.lock`),
+    );
+    for (const marker of blocked) marker.restore();
+    context.files.lock(["unrelated.lock"]).release();
+    const remaining = () =>
+      blocked.filter((marker) => existsSync(marker.target)).length;
+    expect(remaining()).toBeGreaterThanOrEqual(12);
+    expect(context.jobs.size).toBe(1);
+    const before = remaining();
+    context.runNext();
+    expect(before - remaining()).toBeGreaterThan(0);
+    expect(before - remaining()).toBeLessThanOrEqual(8);
+  } finally {
+    context.dispose();
+  }
+}, 30_000);
+
+test("128 outstanding markers refuse new recoverable paths without dropping recovery duties", () => {
+  const context = scheduledCleanupFixture();
+  try {
+    const blocked = Array.from({ length: 128 }, (_, i) =>
+      context.block(`limit-${i}.lock`),
+    );
+    let refusal = "";
+    expect(() => {
+      try {
+        context.files.lock(["over-limit.lock"], { recoverDeadOwner: true });
+      } catch (error) {
+        refusal = String(error);
+        throw error;
+      }
+    }).toThrow(/LOCK_CLEANUP_LIMIT/);
+    for (let i = 0; i < 128; i += 1)
+      expect(refusal).not.toContain(`limit-${i}.lock`);
+    expect(existsSync(join(context.commonDirectory, "over-limit.lock"))).toBe(
+      false,
+    );
+    expect(blocked.every((marker) => existsSync(marker.marker))).toBe(true);
+    for (const marker of blocked) marker.restore();
+    for (let batch = 0; batch < 128 && context.jobs.size > 0; batch += 1)
+      context.runNext();
+    expect(blocked.every((marker) => !existsSync(marker.target))).toBe(true);
+    expect(context.jobs.size).toBe(0);
+    context.files
+      .lock(["over-limit.lock"], { recoverDeadOwner: true })
+      .release();
+  } finally {
+    context.dispose();
+  }
+}, 30_000);
+
+test("successful explicit cleanup cancels the pending injected timer", () => {
+  const context = scheduledCleanupFixture();
+  try {
+    const blocked = context.block("cancel-retry.lock");
+    expect(context.jobs.size).toBe(1);
+    blocked.restore();
+    context.lease.close();
+    expect(context.jobs.size).toBe(0);
+    expect(context.cancellations()).toBe(1);
+  } finally {
+    context.dispose();
+  }
+}, 30_000);
 
 test("list reads sorted entries in the selected area and permits root '.' only there", () => {
   const { files, projectRoot, gitDirectory, lease } = fixture();
