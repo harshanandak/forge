@@ -18,6 +18,17 @@ function mintTarget(path: string, specifier: string): boolean {
 
 function reexportsMint(file: SourceFile): boolean {
   if (!importsOf(file).some((s) => mintTarget(file.path, s))) return false;
+  if (file.path === "cloud/src/adapters/workers-oauth/index.ts") {
+    const text = file.text.replace(
+      'import { mintIdentity } from "../../../../src/ports/identity-mint.ts";',
+      "",
+    );
+    if (
+      text === file.text ||
+      importsOf({ ...file, text }).some((s) => mintTarget(file.path, s))
+    )
+      return true;
+  }
   // Other loading forms expose the module rather than a direct mint binding.
   const withoutImports = maskSource(file.text, false).replace(
     /\bimport\s+[^;]*?\s+from\s*["'][^"']+["']\s*;?/g,
@@ -51,7 +62,31 @@ function reexportsMint(file: SourceFile): boolean {
     },
   );
   const code = maskSource(references, true);
-  for (const match of code.matchAll(/[$A-Z_a-z][$\w]*/g))
+  if (file.path === "cloud/src/adapters/workers-oauth/index.ts") {
+    const scopes: string[] = [];
+    for (const match of code.matchAll(
+      /\bfunction\s+([$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*)\s*\([^)]*\)\s*\{|=>|\)\s*\{|\b(?:class|function)\b|[{}]|[$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*/gu,
+    )) {
+      const [token, name] = match;
+      if (name === "createOAuthAdapter" && scopes.length) return true;
+      if (name) scopes.push(name);
+      else if (token === "{") scopes.push("");
+      else if (token === "}") scopes.pop();
+      else if (
+        bindings.has(token) &&
+        scopes.filter(Boolean).join("/") !==
+          "createOAuthAdapter/verifyProviderToken"
+      )
+        return true;
+      else if (/^(?:=>|\)|class\b|function\b)/.test(token)) {
+        if (scopes.includes("verifyProviderToken")) return true;
+        if (token.endsWith("{")) scopes.push("nested");
+      }
+    }
+  }
+  for (const match of code.matchAll(
+    /[$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*/gu,
+  ))
     if (
       bindings.has(match[0]) &&
       (!/^\s*\(/.test(code.slice(match.index + match[0].length)) ||
@@ -67,10 +102,13 @@ export function findIdentityMintViolations(
   const violations: Violation[] = [];
   for (const file of files) {
     const path = posix.normalize(file.path.replaceAll("\\", "/"));
-    const source = { path, text: file.text.replace(predicateOnly, "") };
+    const source = { path, text: file.text };
+    if (path !== "cloud/src/adapters/workers-oauth/index.ts")
+      source.text = source.text.replace(predicateOnly, "");
     const verifier =
       (path.startsWith("src/adapters/oidc/") && !isTestFile(path)) ||
       path === "src/adapters/oidc/identity-mint.test.ts" ||
+      path === "cloud/src/adapters/workers-oauth/index.ts" ||
       path === "test/contract/lib/identity-verifier.ts";
     if (
       verifier
