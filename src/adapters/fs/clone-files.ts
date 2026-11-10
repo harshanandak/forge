@@ -37,6 +37,7 @@ import {
 
 export type CloneFileArea = "project" | "git" | "common";
 export interface CloneMarkerCleanupScheduler {
+  /** Monotonic milliseconds, independent of invocation deadlines. */
   now(): number;
   schedule(
     callback: () => void,
@@ -109,7 +110,12 @@ function failure(code: string, message: string): never {
   throw new ForgeFailure({
     code,
     message,
-    retry: code === "INPUT_CONFLICT" ? "reconcile_first" : "never",
+    retry:
+      code === "LOCK_CLEANUP_LIMIT"
+        ? "safe"
+        : code === "INPUT_CONFLICT"
+          ? "reconcile_first"
+          : "never",
   });
 }
 /** Untagged times may depend on locale or timezone and cannot prove PID reuse. */
@@ -127,10 +133,98 @@ function startTimeFormat(value: string | undefined): string | undefined {
     ? format
     : undefined;
 }
-const pendingMarkerCleanup = new Map<string, () => void>();
+const hostMarkerScheduler: CloneMarkerCleanupScheduler = {
+  now: () => performance.now(),
+  schedule(callback, delay) {
+    const timer = setTimeout(callback, delay);
+    return { unref: () => timer.unref(), cancel: () => clearTimeout(timer) };
+  },
+};
+class MarkerCleanup {
+  private readonly pending = new Map<
+    () => void,
+    { delay: number; due: number }
+  >();
+  private slots = 0;
+  private running = false;
+  private due = Infinity;
+  private timer:
+    ReturnType<CloneMarkerCleanupScheduler["schedule"]> | undefined;
+  private readonly scheduler: CloneMarkerCleanupScheduler;
+  constructor(scheduler: CloneMarkerCleanupScheduler) {
+    this.scheduler = scheduler;
+  }
+  reserve(): () => void {
+    // Held locks reserve recovery capacity before they can leave a failed marker.
+    if (this.slots === 128)
+      failure(
+        "LOCK_CLEANUP_LIMIT",
+        "Recoverable lock cleanup capacity is full; retry after cleanup",
+      );
+    this.slots += 1;
+    return () => {
+      this.slots -= 1;
+    };
+  }
+  defer(cleanup: () => void): void {
+    if (this.pending.has(cleanup)) return;
+    this.pending.set(cleanup, { delay: 100, due: this.scheduler.now() + 100 });
+    this.arm();
+  }
+  complete(cleanup: () => void): void {
+    if (this.pending.delete(cleanup)) this.arm();
+  }
+  retry(opportunistic = false): void {
+    const batch: [() => void, { delay: number; due: number }][] = [];
+    for (const entry of this.pending) {
+      if (opportunistic || entry[1].due <= this.scheduler.now())
+        batch.push(entry);
+      if (batch.length === 8) break;
+    }
+    this.running = true;
+    for (const [cleanup, retry] of batch) {
+      try {
+        cleanup();
+      } catch {
+        retry.delay = Math.min(retry.delay * 2, 30_000);
+        retry.due = this.scheduler.now() + retry.delay;
+        this.pending.delete(cleanup);
+        this.pending.set(cleanup, retry);
+      }
+    }
+    this.running = false;
+    this.arm();
+  }
+  private arm(): void {
+    if (this.running) return;
+    const due = Math.min(
+      ...[...this.pending.values()].map((retry) => retry.due),
+    );
+    if (due === this.due) return;
+    this.timer?.cancel();
+    this.timer = undefined;
+    this.due = due;
+    if (due === Infinity) return;
+    this.timer = this.scheduler.schedule(
+      () => {
+        this.timer = undefined;
+        this.due = Infinity;
+        this.retry();
+      },
+      Math.max(0, due - this.scheduler.now()),
+    );
+    this.timer.unref();
+  }
+}
+const markerCleanupHosts = new WeakMap<
+  CloneMarkerCleanupScheduler,
+  MarkerCleanup
+>();
 /** Owner filenames make dead-owner cleanup generation-specific; unknown locks stay untouched. */
 function recoverableLock(
   target: string,
+  pending: MarkerCleanup,
+  complete: () => void,
   startTime?: (pid: number) => string | undefined,
 ): CloneFileLock {
   const owner = "owner-" + process.pid + "-" + randomUUID();
@@ -236,14 +330,16 @@ function recoverableLock(
     if (current && sameFile(current, identity)) removeEmpty();
     throw error;
   }
-  const marker = join(target, owner);
+  let released = false;
   const cleanup = () => {
+    if (released) return;
     try {
       release(owner, identity);
-      pendingMarkerCleanup.delete(marker);
+      released = true;
+      pending.complete(cleanup);
+      complete();
     } catch (error) {
-      if (errorCode(error) === "LOCK_CLEANUP_PENDING")
-        pendingMarkerCleanup.set(marker, cleanup);
+      pending.defer(cleanup);
       throw error;
     }
   };
@@ -408,6 +504,10 @@ function createCloneFilesAccess(
   const locks = new Set<OwnedLock>();
   const recoverable = new Set<CloneFileLock>();
   const pendingCleanup = new Set<CloneFileLock>();
+  const scheduler = options.markerCleanup ?? hostMarkerScheduler;
+  const markerCleanup =
+    markerCleanupHosts.get(scheduler) ?? new MarkerCleanup(scheduler);
+  markerCleanupHosts.set(scheduler, markerCleanup);
   function checkActive(): void {
     if (closed) failure("SERVICE_EXPIRED", "Clone file service has closed");
     active(options);
@@ -848,13 +948,7 @@ function createCloneFilesAccess(
       seen.add(identity);
       return { area, path: local, target };
     });
-    for (const cleanup of pendingMarkerCleanup.values()) {
-      try {
-        cleanup();
-      } catch {
-        // Retain failed cleanup without replacing this acquisition's result.
-      }
-    }
+    markerCleanup.retry(true);
     if (lockOptions?.recoverDeadOwner) {
       const held: CloneFileLock[] = [];
       const result = {
@@ -864,10 +958,24 @@ function createCloneFilesAccess(
       };
       try {
         for (const plan of plans) {
-          targetFor(plan.area, plan.path, true, true);
-          const lock = recoverableLock(plan.target, options.processStartTime);
-          held.push(lock);
-          recoverable.add(lock);
+          const free = markerCleanup.reserve();
+          try {
+            targetFor(plan.area, plan.path, true, true);
+            const lock = recoverableLock(
+              plan.target,
+              markerCleanup,
+              () => {
+                free();
+                pendingCleanup.delete(lock);
+              },
+              options.processStartTime,
+            );
+            held.push(lock);
+            recoverable.add(lock);
+          } catch (error) {
+            free();
+            throw error;
+          }
         }
         return result;
       } catch (error) {
