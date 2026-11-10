@@ -3,6 +3,7 @@ import type {
   OAuthStorage,
 } from "../../../cloud/src/adapters/workers-oauth/index.ts";
 import { testIdentityVerifier } from "../../contract/lib/identity-verifier.ts";
+import { durableRedemption } from "../../../cloud/src/adapters/workers-oauth/redemption.ts";
 
 export interface OAuthHarness {
   options: OAuthOptions;
@@ -73,7 +74,7 @@ export function createOAuthHarness(identityTtlMs = 3_600_000): OAuthHarness {
       ],
     ]),
   );
-  return {
+  const harness: OAuthHarness = {
     options: {
       issuer,
       resources: ["https://api.example/a", "https://api.example/b"],
@@ -105,4 +106,20 @@ export function createOAuthHarness(identityTtlMs = 3_600_000): OAuthHarness {
       now += milliseconds;
     },
   };
+  const memory = harness.options.codeRedemption;
+  harness.options.codeRedemption = durableRedemption({
+    idFromName: (hash) => hash,
+    get: (hash) => ({
+      fetch: async (request) =>
+        new Response(null, {
+          status: (await memory.claimOnce(
+            String(hash),
+            Number(new URL(request.url).searchParams.get("until")),
+          ))
+            ? 200
+            : 400,
+        }),
+    }),
+  });
+  return harness;
 }

@@ -8,7 +8,10 @@ import { createOAuthAdapter, type OAuthOptions } from "./index.ts";
 import { createWorker, type ProjectForward } from "../../worker.ts";
 import type { ClockPort } from "../../../../src/ports/clock.ts";
 import { OAuthConfigError, readOAuthConfig } from "./config.ts";
-import { OAuthAuthorizationServer } from "@cloudflare/workers-oauth-provider";
+import {
+  OAuthAuthorizationServer,
+  type ConsentDescription,
+} from "@cloudflare/workers-oauth-provider";
 import { guardRegistration, REGISTRATION_LIMITS } from "./registration.ts";
 import { productionOptions } from "./production.ts";
 import { bearer, wellFormed } from "../../tokens.ts";
@@ -40,13 +43,47 @@ export function composeOAuth(
       if (path === "/callback") return adapter.callback(request);
       if (path === "/oauth/token") return adapter.token(request);
       if (protocol) return protocol(request);
-      if (path === "/authorize")
-        return request.method === "POST"
-          ? adapter.consent(
+      if (path === "/authorize") {
+        try {
+          if (request.method === "POST")
+            return await adapter.consent(
               request,
               (await request.clone().formData()).get("allow") === "true",
-            )
-          : adapter.authorize(request);
+            );
+          if (request.method !== "GET") throw new Error("Invalid method");
+          const response = await adapter.authorize(request);
+          if (!response.ok) return response;
+          const { handle, consent } = (await response.json()) as {
+            handle: string;
+            consent: ConsentDescription;
+          };
+          const escape = (value: string) =>
+            value
+              .replaceAll("&", "&amp;")
+              .replaceAll("<", "&lt;")
+              .replaceAll(">", "&gt;")
+              .replaceAll('"', "&quot;")
+              .replaceAll("'", "&#39;");
+          const headers = new Headers(response.headers);
+          headers.set("Content-Type", "text/html; charset=utf-8");
+          headers.set("Cache-Control", "no-store");
+          headers.set("X-Frame-Options", "DENY");
+          headers.set(
+            "Content-Security-Policy",
+            "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
+          );
+          headers.set("Referrer-Policy", "no-referrer");
+          return new Response(
+            `<!doctype html><html lang="en"><meta charset="utf-8"><title>Authorize access</title><h1>Authorize ${escape(consent.clientName || consent.clientId)}</h1><p>Redirect: <code>${escape(consent.redirectUri)}</code></p><form method="post" action="/authorize"><input type="hidden" name="handle" value="${escape(handle)}"><button name="allow" value="true">Allow</button><button name="allow" value="false">Deny</button></form></html>`,
+            { headers },
+          );
+        } catch {
+          return Response.json(
+            { error: "invalid_request" },
+            { status: 400, headers: { "Cache-Control": "no-store" } },
+          );
+        }
+      }
       return configUnavailable("OAUTH_COMPOSITION");
     },
     // The port is supplied explicitly; adapter methods never imply this capability.
@@ -116,7 +153,7 @@ export function createConfiguredWorker(
         if (!isOAuthRoute(request))
           return createWorker(auth, dependencies.forward).fetch(request, env);
         if (["/authorize", "/callback", "/oauth/token"].includes(path))
-          return auth.route(request);
+          return await auth.route(request);
         const refusal = await guardRegistration(
           request,
           env.REGISTRATION_LIMITER,

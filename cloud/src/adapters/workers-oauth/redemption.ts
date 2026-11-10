@@ -2,6 +2,7 @@ import type {
   CodeRedemption as RedemptionPort,
   OAuthStorage,
 } from "./index.ts";
+import { registerDurableRedemption } from "../../auth/compose.ts";
 
 export interface ClaimStore {
   get<T>(key: string): Promise<T | undefined>;
@@ -74,7 +75,7 @@ export class CodeRedemption {
 export function durableRedemption(
   namespace: RedemptionNamespace,
 ): RedemptionPort {
-  return {
+  return registerDurableRedemption<RedemptionPort>({
     async claimOnce(hash, expiresAt) {
       if (!hashPattern.test(hash)) return false;
       const stub = namespace.get(namespace.idFromName(hash));
@@ -87,7 +88,7 @@ export function durableRedemption(
         throw new Error("Redemption unavailable");
       return response.status === 200;
     },
-  };
+  });
 }
 export async function validateCodeBindings(
   form: { get(key: string): unknown; getAll(key: string): unknown[] },

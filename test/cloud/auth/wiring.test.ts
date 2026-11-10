@@ -1,6 +1,7 @@
 import { expect, mock, test } from "bun:test";
 import { createOAuthHarness } from "../../adapters/workers-oauth/harness.ts";
 import { jwtFixture } from "../../adapters/clerk/jwt-fixture.ts";
+import { durableRedemption } from "../../../cloud/src/adapters/workers-oauth/redemption.ts";
 if (!("timingSafeEqual" in crypto.subtle))
   Object.defineProperty(crypto.subtle, "timingSafeEqual", {
     value: crypto.timingSafeEqual.bind(crypto),
@@ -132,7 +133,11 @@ async function fixture(claims = {}, alg = "RS256") {
           "Content-Type": "application/json",
           "CF-Connecting-IP": "203.0.113.1",
         },
-        body: `{"redirect_uris":["${redirect}"],"token_endpoint_auth_method":"none"}`,
+        body: JSON.stringify({
+          redirect_uris: [redirect],
+          token_endpoint_auth_method: "none",
+          client_name: '<script>"',
+        }),
       }),
       env,
     );
@@ -142,8 +147,36 @@ async function fixture(claims = {}, alg = "RS256") {
       `/authorize?${new URLSearchParams({ response_type: "code", client_id: client, redirect_uri: redirect, resource: vars.FORGE_API_RESOURCE, state: "client-state", code_challenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM", code_challenge_method: "S256" })}`,
     );
     expect(auth.status).toBe(200);
+    expect(
+      Object.fromEntries(
+        [
+          "content-type",
+          "cache-control",
+          "x-frame-options",
+          "content-security-policy",
+          "referrer-policy",
+        ].map((key) => [key, auth.headers.get(key)]),
+      ),
+    ).toEqual({
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store",
+      "x-frame-options": "DENY",
+      "content-security-policy":
+        "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
+      "referrer-policy": "no-referrer",
+    });
+    const page = await auth.text();
+    expect(page).toContain("&lt;script&gt;&quot;");
+    expect(page).not.toContain('<script>"');
+    expect(page).toContain(redirect);
+    expect(page).toContain('<form method="post" action="/authorize">');
+    expect(page).toContain('value="true">Allow</button>');
+    expect(page).toContain('value="false">Deny</button>');
+    expect(auth.headers.getSetCookie().length).toBeGreaterThan(0);
+    const handle = /name="handle" value="([^"]+)"/.exec(page)?.[1];
+    expect(handle).toBeDefined();
     const login = await send("/authorize", {
-      handle: await field(auth, "handle"),
+      handle: handle!,
       allow: "true",
     });
     expect(login.status).toBe(302);
@@ -279,6 +312,41 @@ test("missing redemption refuses while device/admin and unmarked composition rem
     503,
   );
   expect(route).toHaveBeenCalledTimes(0);
+  for (const [port, expected] of [
+    [{ claimOnce: () => Promise.resolve(true) }, 503],
+    [durableRedemption(f.env.CODE_REDEMPTION), 200],
+  ] as const) {
+    const marked = composeAuth(
+      undefined,
+      vars.FORGE_API_RESOURCE,
+      undefined,
+      undefined,
+      route,
+      port,
+    );
+    for (const path of ["/callback", "/oauth/token"])
+      expect((await marked.route(new Request(`${issuer}${path}`))).status).toBe(
+        expected,
+      );
+  }
+}, 30_000);
+
+test("malformed consent bodies return sanitized invalid_request", async () => {
+  const f = await fixture();
+  for (const type of [
+    "application/json",
+    "multipart/form-data; boundary=broken",
+  ]) {
+    const response = await f.worker.fetch(
+      new Request(`${issuer}/authorize`, {
+        method: "POST",
+        headers: { "Content-Type": type },
+        body: "clerk-code",
+      }),
+      f.env,
+    );
+    await refused(response, f.proof, "invalid_request");
+  }
 }, 30_000);
 
 test("configured metadata uses the configured issuer despite a mismatched Host", async () => {
