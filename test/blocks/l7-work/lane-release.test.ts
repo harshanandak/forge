@@ -16,6 +16,8 @@ import { blockCapture } from "../../../src/assembly/capture.ts";
 import { firstPartyBlocks } from "../../../src/assembly/first-party.ts";
 import { createSqliteStore } from "../../../src/adapters/store-sqlite/index.ts";
 import { StateOwner } from "../../../src/core/state/index.ts";
+import { InvocationServices } from "../../../src/core/runtime/services.ts";
+import { ForgeFailure } from "../../../src/contract/failure.ts";
 
 const namespace = "forge/work",
   head = "a".repeat(40),
@@ -83,6 +85,7 @@ async function fixture() {
     releaseDeadline: 0,
     removeConfirmed: true,
     removeError: undefined as string | undefined,
+    cancelRelease: () => {},
   };
   const calls: string[][] = [];
   const limits: { args: string[]; maxOutputBytes: number }[] = [];
@@ -225,9 +228,21 @@ async function fixture() {
     snapshot: () => Promise.resolve({ head, filesDigest: head }),
   };
   const clock = { now: Date.now() };
+  const starts = spyOn(InvocationServices.prototype, "startHandler");
+  flags.cancelRelease = () => {
+    const scope = starts.mock.contexts.at(-1) as InvocationServices;
+    scope.controller.abort(
+      new ForgeFailure({
+        code: "INVOCATION_CANCELLED",
+        message: "Injected cancellation",
+        retry: "reconcile_first",
+      }),
+    );
+  };
   const open = blockCapture.open.bind(blockCapture),
     factory = providers.createAssemblyProviders;
   const mocks = [
+    starts,
     spyOn(Date, "now").mockImplementation(() => clock.now),
     spyOn(blockCapture, "open").mockImplementation((path) =>
       open(path === source ? target : path),
@@ -534,6 +549,95 @@ function cleanupHeld(f: Awaited<ReturnType<typeof fixture>>) {
     { expiresAt: string } | undefined;
   return !!value && Date.parse(value.expiresAt) > f.clock.now;
 }
+
+for (const phase of ["before removal", "confirmed removal"] as const) {
+  test(`cancelled release clears its own reservation after ${phase}`, async () => {
+    const f = await fixture();
+    try {
+      let reserved = false;
+      const cancel = () => {
+        reserved = cleanupHeld(f);
+        f.flags.cancelRelease();
+        return Promise.resolve();
+      };
+      if (phase === "before removal") f.flags.afterCleanCheck = cancel;
+      else f.flags.duringRemove = cancel;
+      const released = await f.invoke("lane.release", { id: "sample-1" });
+      expect(reserved).toBe(true);
+      expect(released).toMatchObject({
+        ok: false,
+        error: { code: "INVOCATION_CANCELLED" },
+      });
+      expect(f.flags.present).toBe(phase === "before removal");
+      expect(f.owner.get(namespace, cleanupKey)).toBeUndefined();
+      f.change({ status: "open" });
+      const claimed = await f.invoke("issue.claim", { id: "sample-1" });
+      expect(claimed.ok, JSON.stringify(claimed)).toBe(true);
+    } finally {
+      await f.close();
+    }
+  }, 30_000);
+}
+
+for (const outcome of ["unconfirmed result", "TREE_KILL_FAILED"] as const) {
+  test(`cancelled release retains its reservation after ${outcome}`, async () => {
+    const f = await fixture();
+    try {
+      f.flags.failRemove = true;
+      f.flags.removeConfirmed = false;
+      if (outcome === "TREE_KILL_FAILED") f.flags.removeError = outcome;
+      f.flags.duringRemove = () => {
+        expect(cleanupHeld(f)).toBe(true);
+        f.flags.cancelRelease();
+        return Promise.resolve();
+      };
+      expect((await f.invoke("lane.release", { id: "sample-1" })).ok).toBe(
+        false,
+      );
+      expect(cleanupHeld(f)).toBe(true);
+      expect(f.flags.present).toBe(true);
+      f.change({ status: "open" });
+      expect(await f.invoke("issue.claim", { id: "sample-1" })).toMatchObject({
+        ok: false,
+        error: { code: "INPUT_CONFLICT" },
+      });
+      const { expiresAt } = f.owner.get(namespace, cleanupKey)!.value as {
+        expiresAt: string;
+      };
+      f.clock.now = Date.parse(expiresAt) + 1;
+      expect((await f.invoke("issue.claim", { id: "sample-1" })).ok).toBe(true);
+    } finally {
+      await f.close();
+    }
+  }, 30_000);
+}
+
+test("cancelled release never clears a replacement reservation", async () => {
+  const f = await fixture();
+  try {
+    let revision = 0;
+    f.flags.afterCleanCheck = () => {
+      const previous = f.owner.get(namespace, cleanupKey)!;
+      revision = f.owner.put(namespace, cleanupKey, previous.value, actor, {
+        expectRevision: previous.revision,
+      }).revision;
+      expect(revision).toBeGreaterThan(previous.revision);
+      f.flags.cancelRelease();
+      return Promise.resolve();
+    };
+    expect((await f.invoke("lane.release", { id: "sample-1" })).ok).toBe(false);
+    expect(f.owner.get(namespace, cleanupKey)?.revision).toBe(revision);
+    expect(cleanupHeld(f)).toBe(true);
+    expect(f.flags.present).toBe(true);
+    f.change({ status: "open" });
+    expect(await f.invoke("issue.claim", { id: "sample-1" })).toMatchObject({
+      ok: false,
+      error: { code: "INPUT_CONFLICT" },
+    });
+  } finally {
+    await f.close();
+  }
+}, 30_000);
 
 for (const failRemove of [false, true]) {
   test(`state cleanup reservation fences claiming through removal ${failRemove ? "failure" : "success"}`, async () => {

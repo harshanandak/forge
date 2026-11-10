@@ -130,3 +130,57 @@ test("unrelated resolve/run clients retain their declared calling convention", (
   }) as { client: { run(input: string): string } };
   expect(services.client.run("original argument")).toBe("original argument");
 }, 5000);
+
+for (const expired of [false, true]) {
+  test(`state deletion finalizers enforce ownership and their bound, expired=${expired}`, async () => {
+    const clock = { now: 0 };
+    const scope = new InvocationServices(1000, () => undefined, false, {
+      now: () => clock.now,
+    });
+    const rows = new Map([
+      ["foreign", { key: "foreign", revision: 1, value: "keep" }],
+    ]);
+    const removed: string[] = [];
+    const services = scope.wrap({
+      state: {
+        get: (key: string) => rows.get(key),
+        put(key: string, value: string, options: { expectRevision: number }) {
+          expect(rows.get(key)?.revision ?? 0).toBe(options.expectRevision);
+          const row = { key, value, revision: options.expectRevision + 1 };
+          rows.set(key, row);
+          return row;
+        },
+        delete(key: string, options: { expectRevision: number }) {
+          expect(rows.get(key)?.revision).toBe(options.expectRevision);
+          removed.push(key);
+          rows.delete(key);
+        },
+      },
+    }) as {
+      state: {
+        put(
+          key: string,
+          value: string,
+          options: { expectRevision: number },
+        ): {
+          revision: number;
+        };
+        finalizeDelete(key: string, revision: number): void;
+      };
+    };
+    const state = services.state;
+    expect(typeof state.finalizeDelete).toBe("function");
+    expect(() => state.finalizeDelete("foreign", 1)).toThrow();
+    const written = state.put("owned", "temporary", { expectRevision: 0 });
+    expect(() => state.finalizeDelete("owned", written.revision + 1)).toThrow();
+    state.finalizeDelete("owned", written.revision);
+    scope.controller.abort(new Error("cancelled"));
+    scope.stop();
+    if (expired) clock.now = 1000;
+    await scope.drain();
+    await scope.drain();
+    expect(removed).toEqual(expired ? [] : ["owned"]);
+    expect(rows.has("foreign")).toBe(true);
+    expect(rows.has("owned")).toBe(expired);
+  }, 5000);
+}
