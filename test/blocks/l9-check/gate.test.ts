@@ -8,7 +8,7 @@ import {
 import { createRunnerOutput } from "../../../src/adapters/runner-output/index.ts";
 import type { StateRecord } from "../../../src/generated/types.ts";
 import type { ProcessResult } from "../../../src/ports/process.ts";
-import { captured } from "./fakes.ts";
+import { captured, trackedChanges } from "./fakes.ts";
 import entry from "../../../src/blocks/check/entry.cts";
 import { checkCrypto } from "../../../src/blocks/check/support.ts";
 import type { CatalogServices } from "../../../src/blocks/check/services.ts";
@@ -705,6 +705,36 @@ test("gate fails closed when process service throws", async () => {
   await f.receipt();
   f.alter({ throwProcess: true });
   expect((await f.gate()).verdict).toBe("REFUSED");
+}, 1000);
+
+test("a newer failure outvotes an older pass at the same head", async () => {
+  const f = fixture();
+  await f.receipt();
+  await f.receipt({ exit: 1 });
+  await refuses(f, "RECEIPT_NOT_PASS", {
+    ...config,
+    gate: { receiptChecks: ["structure"] },
+  });
+}, 1000);
+
+test("a newer pass supersedes a failure at the same head", async () => {
+  const f = fixture();
+  await f.receipt({ exit: 1 });
+  const latest = await f.receipt();
+  expect(await f.gate()).toMatchObject({ verdict: "PASS", receipt: latest.id });
+}, 1000);
+
+test("a dirty-tree receipt cannot pass the head delivery gate", async () => {
+  const f = fixture();
+  trackedChanges(f.services, [["behavior.txt"], ["behavior.txt"]]);
+  await f.receipt();
+  const result = await f.gate();
+  expect(result.verdict).toBe("REFUSED");
+  const dirty = result.reasons.find(
+    (reason) => reason.code === "TRACKED_INPUTS_DIRTY",
+  );
+  expect(dirty).toBeDefined();
+  expect(dirty?.detail).toContain("behavior.txt");
 }, 1000);
 
 test("gate chooses the newest eligible verified receipt", async () => {
