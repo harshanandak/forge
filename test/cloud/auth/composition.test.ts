@@ -7,6 +7,12 @@ import {
 import { testIdentityVerifier } from "../../contract/lib/identity-verifier.ts";
 import { createOAuthHarness } from "../../adapters/workers-oauth/harness.ts";
 
+// Bridge the Worker extension to the test runtime's native comparator.
+if (!("timingSafeEqual" in crypto.subtle))
+  Object.defineProperty(crypto.subtle, "timingSafeEqual", {
+    value: crypto.timingSafeEqual.bind(crypto),
+  });
+
 await mock.module("cloudflare:workers", () => ({ WorkerEntrypoint: class {} }));
 const { createOAuthAdapter } =
   await import("../../../cloud/src/adapters/workers-oauth/index.ts");
