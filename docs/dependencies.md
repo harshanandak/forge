@@ -104,6 +104,17 @@ Each one gets an entry here and an adapter in the same pull request.
 
 ## Cloud dependencies
 
+### @cloudflare/workers-oauth-provider
+
+- **Saves:** OAuth 2.1 authorization codes, PKCE S256, redirect validation, consent and browser-bound upstream state, token exchange and resource validation. Platform HTTP and crypto APIs do not implement this protocol.
+- **Maintenance:** Cloudflare's [provider repository](https://github.com/cloudflare/workers-oauth-provider); exact 1.2.4 published 2026-10-22T15:02:21.640Z, verified from [registry metadata](https://registry.npmjs.org/@cloudflare%2fworkers-oauth-provider) on 2026-11-10, more than 14 days before selection.
+- **Transitive packages:** 0 runtime, optional or peer dependencies in [1.2.4 metadata](https://registry.npmjs.org/@cloudflare%2fworkers-oauth-provider/1.2.4).
+- **Fit:** Worker runtime package using Web Crypto and the `cloudflare:workers` host module. This foundation imports only provider types; the shared harness supplies a fake upstream, in-memory storage and an injected clock without loading the host module. Node 24/26 CLI distribution does not import it. No install scripts run.
+- **Licence:** MIT, declared by the pinned package and its [upstream manifest](https://github.com/cloudflare/workers-oauth-provider/blob/b4cec3173079b42e3df2cb9f16a8ff13653709d0/package.json).
+- **Trust:** official Cloudflare package, pinned exactly in `cloud/package.json` with integrity in `cloud/bun.lock`. Source inspected at registry gitHead `b4cec3173079b42e3df2cb9f16a8ff13653709d0`; protocol behavior and registration policy remain forge-1105 work.
+- **Swap proof:** `OAuthAdapter` and `OAuthOptions` describe the request/response boundary. The adapter's type-only provider import derives the string token/resource parameters from `validateToken`; callers import only the adapter surface. Structure guards verify package ownership in this foundation. Protocol implementation and the fake-upstream flow contract are deferred to forge-1105; no runtime swap or OAuth behavior is proven here.
+- **Adapter:** `cloud/src/adapters/workers-oauth/`, declaring its provider-neutral `OAuthAdapter` surface. Only that folder imports the provider.
+
 ### wrangler
 
 - **Saves:** Cloudflare Worker bundling, local runtime orchestration and deployment tooling that Node built-ins do not provide. This is cloud development tooling, not a CLI runtime dependency.
