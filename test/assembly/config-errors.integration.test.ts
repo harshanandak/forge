@@ -5,9 +5,11 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   rmSync,
   symlinkSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -24,6 +26,8 @@ import { GENERATED_MARKER, renderSkills } from "../../src/surface/skills.ts";
 import { version } from "../../src/version.ts";
 import { candidate } from "../surface/fixtures/catalog.ts";
 import { removeQuietly, spawnBudget } from "../spawn-budget.ts";
+import { readProject } from "../../src/core/config/store.ts";
+import { nodeConfigFiles, yamlConfigCodec } from "../../src/assembly/config.ts";
 
 type HintedFailure = FailureEnvelope & {
   readonly error: FailureEnvelope["error"] & {
@@ -33,6 +37,157 @@ type HintedFailure = FailureEnvelope & {
     };
   };
 };
+
+const oldAdoptionConfig = readFileSync(
+  new URL("./fixtures/old-adoption-config.yaml", import.meta.url),
+  "utf8",
+);
+const oldConfigFields = ["template", "workflow", "adapters", "protectedPaths"];
+
+for (const [name, text, fields, pointers] of [
+  [
+    "old adoption config",
+    oldAdoptionConfig,
+    oldConfigFields,
+    ["/blocks", ...oldConfigFields.map((field) => `/${field}`)],
+  ],
+  [
+    "old adoption config with an unknown setting",
+    `${oldAdoptionConfig}unmappedSetting: keep-me\n`,
+    [...oldConfigFields, "unmappedSetting"],
+    undefined,
+  ],
+  [
+    "config invalid in both formats",
+    "schemaVersion: unsupported\nblocks: []\nunmappedSetting: keep-me\n",
+    ["schemaVersion", "blocks", "unmappedSetting"],
+    ["/schemaVersion", "/blocks", "/unmappedSetting"],
+  ],
+] as const) {
+  test(`${name} names all invalid fields and the project root`, () => {
+    const root = mkdtempSync(join(tmpdir(), "forge-old-config-"));
+    const file = join(root, ".forge/config.yaml");
+    mkdirSync(join(root, ".forge"));
+    writeFileSync(file, text);
+    const before = statSync(file);
+    const budget = spawnBudget(110_000);
+    try {
+      const config = readProject({
+        files: nodeConfigFiles(root),
+        codec: yamlConfigCodec,
+        clock: { now: () => 0 },
+        projectRoot: realpathSync(root),
+      });
+      expect(config.unreadable).toBeUndefined();
+      if (pointers !== undefined)
+        expect(config.problems.map(({ pointer }) => pointer).sort()).toEqual(
+          [...pointers].sort(),
+        );
+      for (const args of [
+        ["config", "show"],
+        ["memory", "search", "--input", '{"query":"audit","level":"project"}'],
+      ]) {
+        const result = budget.run(
+          `forge ${args.slice(0, 2).join(" ")}`,
+          "node",
+          [resolve(import.meta.dirname, "../../dist/bin/forge.js"), ...args],
+          {
+            cwd: root,
+            env: { ...process.env, FORGE_DEVICE_ROOT: join(root, "device") },
+          },
+          6,
+        );
+        const envelope = JSON.parse(result.stdout) as FailureEnvelope;
+        expect(envelope).toMatchObject({
+          ok: false,
+          error: {
+            code: "INPUT_INVALID",
+            retry: "reconcile_first",
+            reconcileWith: "config.show",
+          },
+        });
+        expect(envelope.error.message).toContain(realpathSync(root));
+        for (const field of fields) {
+          const line = envelope.error.message
+            .split("\n")
+            .find((entry) => entry.includes(`: ${field}:`));
+          expect(line, field).toBeDefined();
+          expect(line, field).toContain("Fix:");
+          if (field !== "schemaVersion" && field !== "blocks") {
+            expect(line, field).toContain("Expected current shape:");
+            for (const key of [
+              "schemaVersion",
+              "blocks",
+              "source",
+              "templates",
+              "digest",
+              "values",
+            ])
+              expect(line, field).toContain(key);
+            expect(line, field).toContain("no automatic mapping");
+            expect(line, field).toContain("preserve");
+          }
+        }
+        expect(readFileSync(file, "utf8")).toBe(text);
+        expect(statSync(file)).toMatchObject({
+          ino: before.ino,
+          mtimeMs: before.mtimeMs,
+          ctimeMs: before.ctimeMs,
+        });
+        expect(readdirSync(join(root, ".forge"))).toEqual(["config.yaml"]);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 110_000);
+}
+
+test("current config still reads without rewriting its bytes", () => {
+  const root = mkdtempSync(join(tmpdir(), "forge-current-config-"));
+  const file = join(root, ".forge/config.yaml");
+  const text =
+    "# retain this comment\nschemaVersion: forge.config/1\nblocks: {}\nvalues: { greeting: saved }\n";
+  mkdirSync(join(root, ".forge"));
+  writeFileSync(file, text);
+  const before = statSync(file);
+  try {
+    const config = readProject({
+      files: nodeConfigFiles(root),
+      codec: yamlConfigCodec,
+      clock: { now: () => 0 },
+      projectRoot: realpathSync(root),
+    });
+    expect(config.unreadable).toBeUndefined();
+    expect(config.problems).toEqual([]);
+    const result = spawnBudget(30_000).run(
+      "forge config show",
+      "node",
+      [
+        resolve(import.meta.dirname, "../../dist/bin/forge.js"),
+        "config",
+        "show",
+      ],
+      {
+        cwd: root,
+        env: { ...process.env, FORGE_DEVICE_ROOT: join(root, "device") },
+      },
+      0,
+    );
+    expect(JSON.parse(result.stdout) as unknown).toMatchObject({
+      ok: true,
+      result: { valid: true, effective: { values: { greeting: "saved" } } },
+    });
+    expect(readFileSync(file, "utf8")).toBe(text);
+    expect(statSync(file)).toMatchObject({
+      ino: before.ino,
+      mtimeMs: before.mtimeMs,
+      ctimeMs: before.ctimeMs,
+    });
+    expect(readdirSync(join(root, ".forge"))).toEqual(["config.yaml"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 30_000);
 
 const futureSkill = (
   op: string,
