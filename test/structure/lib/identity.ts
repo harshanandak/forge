@@ -547,6 +547,17 @@ function oauthMintRefusal(file: SourceFile): IdentityTokenRefusal | undefined {
       regions
         .filter((s) => s.start < index && index < s.end)
         .sort((a, b) => b.start - a.start)[0] ?? root;
+    const declarationStart = (index: number): boolean => {
+      while (["async", "export", "default"].includes(at(index - 1))) index--;
+      return (
+        statementStart(index) ||
+        regions.some(
+          (s) =>
+            at(s.start) === "{" &&
+            (s.start === index - 1 || s.end === index - 1),
+        )
+      );
+    };
     const bind = (index: number, scope: IdentityRegion): number => {
       if (at(index) === "...") index++;
       if (["{", "["].includes(at(index))) {
@@ -598,9 +609,7 @@ function oauthMintRefusal(file: SourceFile): IdentityTokenRefusal | undefined {
         if (at(start) !== "(") {
           bind(
             start,
-            statementStart(scope.start) || statementStart(scope.start - 1)
-              ? region(scope.start)
-              : scope,
+            declarationStart(scope.start) ? region(scope.start) : scope,
           );
           start++;
         }
@@ -622,9 +631,7 @@ function oauthMintRefusal(file: SourceFile): IdentityTokenRefusal | undefined {
       if (at(i) === "class" && tokens[i + 1]?.kind === "identifier")
         bind(
           i + 1,
-          statementStart(i) || at(i - 1) === "export"
-            ? region(i)
-            : scopes.find((s) => s.start === i)!,
+          declarationStart(i) ? region(i) : scopes.find((s) => s.start === i)!,
         );
       if (at(i) === "catch" && at(i + 1) === "(") {
         const close = pairs.get(i + 1)!;
