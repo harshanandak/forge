@@ -757,10 +757,38 @@ export function verifyEventDerivedState(
     });
   }
   if (sequence !== highWaterMark) reject("state_events", "high-water mark");
-  for (const row of rows("state_records", "namespace,key,revision,body", [
-    "namespace",
-    "key",
-  ])) {
+  const verifyRows = (
+    table: string,
+    columns: string,
+    keys: readonly string[],
+    check: (row: SqlRow) => void,
+  ): void => {
+    for (const row of rows(table, columns, keys)) {
+      try {
+        check(row);
+      } catch (error) {
+        if (!(error instanceof RestoreConsistencyFailure)) throw error;
+        // Only unverified keys remain in replay state; scan that suffix by rowid.
+        let after: readonly SqlValue[] = [];
+        for (;;) {
+          let page: readonly SqlRow[];
+          try {
+            page = candidate.all(
+              `SELECT rowid,${columns} FROM ${table} WHERE (${keys.join(",")}) >= (${keys.map(() => "?").join(",")})${after.length ? " AND rowid > ?" : ""} ORDER BY rowid LIMIT ?`,
+              [...keys.map((column) => row[column]!), ...after, pageSize],
+            );
+          } catch {
+            throw error;
+          }
+          for (const remaining of page) check(remaining);
+          // Keep the original rejection even if the candidate changes mid-read.
+          if (page.length < pageSize) throw error;
+          after = [page.at(-1)!.rowid!];
+        }
+      }
+    }
+  };
+  const verifyRecord = (row: SqlRow): void => {
     const id = rowKey("state_records", row, "key");
     inspect("state_records", id, () => {
       const record = JSON.parse(String(row.body)) as StateRecord;
@@ -773,12 +801,15 @@ export function verifyEventDerivedState(
         reject("state_records", id);
       records.delete(id);
     });
-  }
+  };
+  verifyRows(
+    "state_records",
+    "namespace,key,revision,body",
+    ["namespace", "key"],
+    verifyRecord,
+  );
   if (records.size) reject("state_records", records.keys().next().value!);
-  for (const row of rows("state_leases", "namespace,subject,generation,body", [
-    "namespace",
-    "subject",
-  ])) {
+  const verifyLease = (row: SqlRow): void => {
     const id = rowKey("state_leases", row, "subject");
     inspect("state_leases", id, () => {
       const lease = JSON.parse(String(row.body)) as LeaseRecord;
@@ -790,13 +821,15 @@ export function verifyEventDerivedState(
         reject("state_leases", id);
       leases.delete(id);
     });
-  }
+  };
+  verifyRows(
+    "state_leases",
+    "namespace,subject,generation,body",
+    ["namespace", "subject"],
+    verifyLease,
+  );
   if (leases.size) reject("state_leases", leases.keys().next().value!);
-  for (const row of rows(
-    "state_requests",
-    "namespace,request_id,fingerprint,result",
-    ["namespace", "request_id"],
-  )) {
+  const verifyRequest = (row: SqlRow): void => {
     const id = rowKey("state_requests", row, "request_id");
     inspect("state_requests", id, () => {
       namespaceValid(row.namespace as string);
@@ -805,7 +838,13 @@ export function verifyEventDerivedState(
       if (plans.get(id) !== true) reject("state_requests", id);
       requests.delete(id);
     });
-  }
+  };
+  verifyRows(
+    "state_requests",
+    "namespace,request_id,fingerprint,result",
+    ["namespace", "request_id"],
+    verifyRequest,
+  );
   if (requests.size) reject("state_requests", requests.values().next().value!);
 }
 
