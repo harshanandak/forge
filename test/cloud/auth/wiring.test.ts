@@ -1,4 +1,5 @@
-import { expect, mock, test } from "bun:test";
+import { expect, mock, spyOn, test } from "bun:test";
+import { sha256 } from "../../../cloud/src/tokens.ts";
 import { Database } from "bun:sqlite";
 import { Project } from "../../../cloud/src/project.ts";
 import {
@@ -280,7 +281,25 @@ async function ownerFixture(claims = {}) {
         ...extra,
       },
     });
-  return { ...f, env, token, request, names, close: () => db.close() };
+  const post = (route: string, body: unknown, credential = token) =>
+    f.configured.fetch(
+      new Request(request(route, credential), {
+        method: "POST",
+        body: typeof body === "string" ? body : JSON.stringify(body),
+      }),
+      env,
+    );
+  return {
+    ...f,
+    env,
+    token,
+    request,
+    names,
+    post,
+    db,
+    values,
+    close: () => db.close(),
+  };
 }
 
 test("configured owner reaches the real project object without injected policy or forwarding", async () => {
@@ -303,22 +322,19 @@ test("configured owner reaches the real project object without injected policy o
     });
     const holder = {
       actor: { kind: "agent", id: "owner-agent" },
-      session: { id: "owner-session", device: "owner-laptop" },
+      session: {
+        id: "owner-session",
+        device: `oauth-owner:${await sha256(JSON.stringify([vars.CLERK_ISSUER, "user_owner"]))}`,
+      },
     };
     for (const route of ["claim", "renew", "release"]) {
-      const written = await f.configured.fetch(
-        new Request(f.request(route), {
-          method: "POST",
-          body: JSON.stringify({
-            subject: "issue",
-            holder,
-            requestId: route,
-            ttlMs: 60_000,
-            generation: 1,
-          }),
-        }),
-        f.env,
-      );
+      const written = await f.post(route, {
+        subject: "issue",
+        holder,
+        requestId: route,
+        ttlMs: 60_000,
+        generation: 1,
+      });
       expect(written.status).toBe(200);
       expect(await written.json()).toMatchObject({
         ok: true,
@@ -425,13 +441,10 @@ test("forged owner headers grant nothing and OAuth cannot reach any admin route"
 test("device issuance and project reads still require the issued device token", async () => {
   const f = await ownerFixture();
   try {
-    const issued = await f.configured.fetch(
-      new Request(`${issuer}/p/a/devices`, {
-        method: "POST",
-        headers: { authorization: "Bearer fixture-admin" },
-        body: JSON.stringify({ device: "laptop", ttlMs: 60_000 }),
-      }),
-      f.env,
+    const issued = await f.post(
+      "devices",
+      { device: "laptop", ttlMs: 60_000 },
+      "fixture-admin",
     );
     expect(issued.status).toBe(200);
     const body = (await issued.json()) as { value: { token: string } };
@@ -441,7 +454,110 @@ test("device issuance and project reads still require the issued device token", 
     );
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ ok: true, value: null });
+    const holder = {
+      actor: { kind: "agent", id: "device-agent" },
+      session: { id: "device-session", device: "laptop" },
+    };
+    const input = {
+      subject: "issue",
+      holder,
+      requestId: "device-claim",
+      ttlMs: 60_000,
+      generation: 1,
+    };
+    expect((await f.post("claim", input, body.value.token)).status).toBe(200);
+    for (const route of ["renew", "release"]) {
+      const denied = await f.post(route, { ...input, requestId: route });
+      expect(denied.status).toBe(403);
+      expect(await denied.json()).toMatchObject({
+        error: { code: "AUTH_DEVICE_MISMATCH" },
+      });
+    }
   } finally {
+    f.close();
+  }
+}, 30_000);
+
+test("rejected owner writes preserve provisioning and a paged admin restore", async () => {
+  const f = await ownerFixture();
+  try {
+    expect((await f.post("claim", "{")).status).toBe(400);
+    expect(f.values.get("provisioned")).toBeUndefined();
+    const dumped = await f.configured.fetch(
+      f.request("dump", "fixture-admin"),
+      f.env,
+    );
+    const {
+      value: { tables },
+    } = (await dumped.json()) as {
+      value: { tables: Record<string, unknown[]> };
+    };
+    tables.state_records = [
+      { namespace: "n", key: "staged", revision: 1, body: "{}" },
+    ];
+    const page = {
+      format: "forge-cloud-dump-page/1",
+      page: 0,
+      last: false,
+      next: "more",
+      tables,
+    };
+    expect((await f.post("restore", page, "fixture-admin")).status).toBe(200);
+    const staged = f.db.query("SELECT * FROM state_records").all();
+    for (const body of ["{", { subject: "issue" }]) {
+      expect((await f.post("claim", body)).status).toBe(409);
+      expect(f.values.get("provisioned")).toBeUndefined();
+      expect(f.values.get("restore:next")).toBe(1);
+      expect(f.db.query("SELECT * FROM state_records").all()).toEqual(staged);
+    }
+    tables.state_records = [];
+    expect(
+      (await f.post("restore", { ...page, page: 1 }, "fixture-admin")).status,
+    ).toBe(200);
+  } finally {
+    f.close();
+  }
+}, 30_000);
+
+test("owner writes recheck credential expiry after the body finishes streaming", async () => {
+  const expiresAt = Math.floor(Date.now() / 1000) * 1000 + 60_000;
+  const f = await ownerFixture({ exp: expiresAt / 1000 });
+  const now = spyOn(Date, "now");
+  try {
+    const body = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          now.mockReturnValue(expiresAt + 1);
+          controller.enqueue(
+            new TextEncoder().encode(
+              '{"subject":"issue","holder":{"actor":{"kind":"agent","id":"owner"},"session":{"id":"owner-session"}},"ttlMs":60000,"requestId":"expired"}',
+            ),
+          );
+          controller.close();
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    const response = await f.configured.fetch(
+      new Request(
+        f.request("claim", f.token, {
+          "X-Forge-Owner-Expires": String(expiresAt + 60_000),
+        }),
+        { method: "POST", body },
+      ),
+      f.env,
+    );
+    expect(response.status).toBe(401);
+    expect(await response.json()).toMatchObject({
+      error: { code: "AUTH_EXPIRED" },
+    });
+    expect(
+      f.db
+        .query("SELECT name FROM sqlite_master WHERE name='state_leases'")
+        .all(),
+    ).toEqual([]);
+  } finally {
+    now.mockRestore();
     f.close();
   }
 }, 30_000);
