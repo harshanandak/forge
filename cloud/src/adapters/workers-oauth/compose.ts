@@ -2,6 +2,7 @@ import {
   composeAuth,
   configUnavailable,
   isOAuthRoute,
+  ownerPolicy,
 } from "../../auth/compose.ts";
 import type { AuthorizationPort } from "../../../../src/ports/authorization.ts";
 import { createOAuthAdapter, type OAuthOptions } from "./index.ts";
@@ -14,7 +15,7 @@ import {
 } from "@cloudflare/workers-oauth-provider";
 import { guardRegistration, REGISTRATION_LIMITS } from "./registration.ts";
 import { productionOptions } from "./production.ts";
-import { bearer, wellFormed } from "../../tokens.ts";
+import { bearer, sha256, wellFormed } from "../../tokens.ts";
 export { Project } from "../../worker.ts";
 export { CodeRedemption } from "./redemption.ts";
 export { RegistrationLimiter } from "./registration.ts";
@@ -146,12 +147,35 @@ export function createConfiguredWorker(
         const auth = composeOAuth(
           productionOptions(config, env, dependencies),
           config.resource,
-          dependencies.policy,
+          dependencies.policy ??
+            ownerPolicy(config.issuer, config.ownerSubject),
           undefined,
           protocol,
         );
-        if (!isOAuthRoute(request))
-          return createWorker(auth, dependencies.forward).fetch(request, env);
+        if (!isOAuthRoute(request)) {
+          const forward: ProjectForward = async (
+            request,
+            project,
+            { principal },
+          ) => {
+            if (principal.kind !== "person")
+              throw new Error("Invalid principal");
+            const headers = new Headers(request.headers);
+            const identity = principal.identity;
+            headers.set(
+              "X-Forge-Owner",
+              `oauth-owner:${await sha256(JSON.stringify([identity.issuer, identity.subject]))}`,
+            );
+            headers.set("X-Forge-Owner-Expires", String(identity.expiresAt));
+            return env.PROJECTS.get(env.PROJECTS.idFromName(project)).fetch(
+              new Request(request, { headers }),
+            );
+          };
+          return createWorker(auth, dependencies.forward ?? forward).fetch(
+            request,
+            env,
+          );
+        }
         if (["/authorize", "/callback", "/oauth/token"].includes(path))
           return await auth.route(request);
         const refusal = await guardRegistration(
