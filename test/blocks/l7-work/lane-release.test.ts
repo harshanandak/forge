@@ -662,10 +662,10 @@ test("an abandoned state cleanup reservation expires and allows claim without ma
 
 test("claim revokes its new lease when cleanup reserves during acquisition", async () => {
   const f = await fixture();
-  const acquire = StateOwner.prototype.acquire;
+  const acquire = StateOwner.prototype.acquire.bind(f.owner);
   const injected = spyOn(StateOwner.prototype, "acquire").mockImplementation(
-    function (this: StateOwner, ...args: Parameters<typeof acquire>) {
-      const lease = acquire.apply(this, args);
+    (...args: Parameters<typeof acquire>) => {
+      const lease = acquire(...args);
       f.owner.put(
         namespace,
         cleanupKey,
