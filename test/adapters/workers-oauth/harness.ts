@@ -10,7 +10,7 @@ export interface OAuthHarness {
 }
 
 /** Test-only upstream proof and storage; no provider, network or runtime host is loaded. */
-export function createOAuthHarness(): OAuthHarness {
+export function createOAuthHarness(identityTtlMs = 3_600_000): OAuthHarness {
   let now = 1_000_000;
   const entries = new Map<
     string,
@@ -67,7 +67,7 @@ export function createOAuthHarness(): OAuthHarness {
           subject: "person",
           audience: issuer,
           authenticatedAt: now,
-          expiresAt: now + 3_600_000,
+          expiresAt: now + identityTtlMs,
         },
       ],
     ]),
@@ -77,6 +77,8 @@ export function createOAuthHarness(): OAuthHarness {
       issuer,
       resources: ["https://api.example/a", "https://api.example/b"],
       storage,
+      // CI red checkpoint only; atomic test implementation follows the lead relay.
+      codeRedemption: { claimOnce: () => Promise.resolve(true) },
       clock: { now: () => now },
       upstream: {
         begin: (state) =>

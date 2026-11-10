@@ -21,10 +21,20 @@ export interface OAuthStorage {
     list_complete: boolean;
   }>;
 }
+/**
+ * Strongly consistent, atomic across all instances and regions. Production composition
+ * must back this with a Durable Object, not KV or an in-process lock. Retain claims
+ * through expiresAt (UTC milliseconds); reject if unavailable. No release: a successful
+ * claim burns the code even when later exchange validation fails.
+ */
+export interface CodeRedemption {
+  claimOnce(codeHash: string, expiresAt: number): Promise<boolean>;
+}
 export interface OAuthOptions {
   issuer: string;
   resources: readonly string[];
   storage: OAuthStorage;
+  codeRedemption: CodeRedemption;
   clock: ClockPort;
   upstream: {
     begin(state: string): Promise<string>;

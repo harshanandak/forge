@@ -11,8 +11,8 @@ const redirect = "https://client.example/callback?channel=desktop";
 const verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
 const challenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
 
-async function fixture() {
-  const harness = createOAuthHarness();
+async function fixture(identityTtlMs = 3_600_000) {
+  const harness = createOAuthHarness(identityTtlMs);
   const api = createOAuthAdapter(harness.options);
   const client = await api.register(redirect),
     second = await api.register(redirect);
@@ -75,6 +75,7 @@ async function fixture() {
     );
   return {
     api,
+    options: harness.options,
     authorization,
     consent,
     upstream,
@@ -83,7 +84,7 @@ async function fixture() {
     request,
     second,
     keep,
-    advance: () => harness.advance(),
+    advance: (milliseconds?: number) => harness.advance(milliseconds),
   };
 }
 
@@ -173,4 +174,39 @@ test("upstream identity expiry uses the injected clock", async () => {
     url = await f.upstream();
   f.advance();
   expect((await f.api.callback(f.request(url.href))).status).toBe(400);
+}, 30_000);
+
+test("concurrent code exchanges allow exactly one redemption", async () => {
+  const f = await fixture(),
+    code = await f.code();
+  const responses = await Promise.all([f.exchange(code), f.exchange(code)]);
+  expect(responses.map((response) => response.status).sort()).toEqual([
+    200, 400,
+  ]);
+  const refused = responses.find((response) => response.status === 400)!;
+  const body = (await refused.json()) as {
+    error: string;
+    code?: string;
+    access_token?: string;
+  };
+  expect(body.error).toBe("invalid_grant");
+  expect(body.code).toBeUndefined();
+  expect(body.access_token).toBeUndefined();
+  expect(JSON.stringify(body)).not.toContain(code);
+}, 30_000);
+
+test("identity expires while its upstream transaction is still valid", async () => {
+  const f = await fixture(1_000),
+    url = await f.upstream();
+  const identity = await f.options.upstream.verify(
+    f.request(url.href),
+    f.options.clock.now(),
+  );
+  expect(identity.ok).toBe(true);
+  f.options.upstream.verify = () => Promise.resolve(identity);
+  f.advance(2_000);
+  const response = f.keep(await f.api.callback(f.request(url.href)), 400);
+  expect(((await response.json()) as { error: string }).error).toBe(
+    "access_denied",
+  );
 }, 30_000);
