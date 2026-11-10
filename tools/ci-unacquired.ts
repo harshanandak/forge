@@ -1,3 +1,5 @@
+import { parseDocument } from "yaml";
+
 export type CiJob = {
   name: string;
   conclusion: string | null;
@@ -108,8 +110,25 @@ export function neededJobNames(
   ciWorkflow: string,
   countLegs = false,
 ): string[] {
+  const document = parseDocument(ciWorkflow, {
+    schema: "core",
+    uniqueKeys: true,
+    prettyErrors: false,
+  });
+  if (document.errors.length > 0 || document.warnings.length > 0)
+    throw new WorkflowInputError(
+      "Head CI workflow has YAML errors or warnings",
+    );
+  let workflow: unknown;
+  try {
+    workflow = document.toJS({ maxAliasCount: 32 });
+  } catch {
+    throw new WorkflowInputError(
+      "Head CI workflow exceeds YAML alias limit or has invalid aliases",
+    );
+  }
   const jobs = (
-    Bun.YAML.parse(ciWorkflow) as {
+    workflow as {
       jobs?: Record<
         string,
         {
@@ -256,11 +275,6 @@ export async function decisionAtHead(
     );
     if (new TextEncoder().encode(workflow).byteLength > workflowByteLimit)
       throw new WorkflowInputError("Head CI workflow exceeds 256 KB");
-    // Conservatively refuse YAML graph features before the parser sees them.
-    if (/(?:^|[\s,[{?:-])[&*!]/m.test(workflow) || /^%TAG\b/m.test(workflow))
-      throw new WorkflowInputError(
-        "Head CI workflow contains YAML anchors, aliases or tags",
-      );
     return decisionOutput(pages, current, env, workflow);
   } catch (error) {
     if (error instanceof WorkflowInputError)

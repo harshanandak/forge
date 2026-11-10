@@ -626,18 +626,49 @@ test("refuses head workflow data larger than 256 KB before parsing", async () =>
   expect(lines.join("\n")).toContain("exceeds 256 KB");
 }, 1000);
 
-test("refuses YAML anchors, aliases and custom tags before parsing", async () => {
-  for (const data of [
-    "value: &saved [1, 2]\ncopy: *saved",
-    "copy: *unknown",
-    "value: !custom tagged",
-  ]) {
-    const lines = await judgeHead([unacquired, gate], () =>
-      Promise.resolve(`${workflowAtHead("24, 26")}${data}\n`),
+test("accepts anchored steps reused through aliases and counts the matrix", async () => {
+  const workflow = workflowAtHead("24, 26")
+    .replace(
+      "  ci-gate:",
+      `    steps: &record-steps
+      - name: Start timing record
+        run: echo start
+      - name: Write timing record
+        run: echo finish
+  ci-gate:`,
+    )
+    .concat("    steps: *record-steps\n");
+  for (const [legs, rerun] of [
+    [2, true],
+    [4, false],
+  ] as const) {
+    const lines = await judgeHead([...matrixLegs.slice(0, legs), gate], () =>
+      Promise.resolve(workflow),
     );
-    expect(lines).toContain("rerun=false");
-    expect(lines.join("\n")).toContain("anchors, aliases or tags");
+    expect(lines).toContain(`rerun=${rerun}`);
+    if (rerun) expect(lines).toContain("scope=all");
   }
+}, 1000);
+
+test("refuses billion-laughs expansion through the YAML alias limit", async () => {
+  const workflow = `${workflowAtHead("24, 26")}
+a: &a [lol, lol, lol, lol, lol, lol, lol, lol, lol, lol]
+b: &b [*a, *a, *a, *a, *a, *a, *a, *a, *a, *a]
+c: &c [*b, *b, *b, *b, *b, *b, *b, *b, *b, *b]
+`;
+  const lines = await judgeHead([unacquired, gate], () =>
+    Promise.resolve(workflow),
+  );
+  expect(lines).toContain("rerun=false");
+  expect(lines.join("\n")).toContain("exceeds YAML alias limit");
+}, 1000);
+
+test("refuses custom-tag warnings from the YAML parser", async () => {
+  const lines = await judgeHead([unacquired, gate], () =>
+    Promise.resolve(`${workflowAtHead("24, 26")}value: !custom tagged\n`),
+  );
+  expect(lines).toContain("rerun=false");
+  expect(lines.join("\n")).toContain("YAML errors or warnings");
 }, 1000);
 
 test("stops and cancels the contents stream when its byte cap is exceeded", async () => {
