@@ -5,6 +5,7 @@
 export { Project } from "./project.ts";
 import { bearer, same, sha256, wellFormed } from "./tokens.ts";
 import type { Access, AuthComposition } from "./auth/compose.ts";
+import { singleOwnerPolicy } from "../../src/ports/authorization.ts";
 
 interface Env {
   readonly ADMIN_TOKEN?: string;
@@ -28,11 +29,12 @@ const unauthorized = (
   request: Request,
   code: string,
   message: string,
+  status = 401,
 ): Response => {
   void request.body?.cancel().catch(() => undefined);
   return Response.json(
     { ok: false, error: { code, message, retry: "never" } },
-    { status: 401 },
+    { status },
   );
 };
 
@@ -43,7 +45,12 @@ async function isAdmin(presented: string, secret?: string): Promise<boolean> {
 }
 
 const legacyWorker = {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(
+    request: Request,
+    env: Env,
+    auth?: AuthComposition,
+    forward?: ProjectForward,
+  ): Promise<Response> {
     const match = PATH.exec(new URL(request.url).pathname);
     const project = match?.[1];
     if (project === undefined)
@@ -74,9 +81,42 @@ const legacyWorker = {
         "AUTH_INVALID",
         "An admin token is required",
       );
-    if (!ADMIN_ROUTES.has(match![2]!) && !wellFormed(presented))
+    const legacy = ADMIN_ROUTES.has(match![2]!) || wellFormed(presented);
+    if (!legacy && auth === undefined)
       return unauthorized(request, "AUTH_INVALID", "Token is not valid");
-    return env.PROJECTS.get(env.PROJECTS.idFromName(project)).fetch(request);
+    const principal = { kind: "single-owner" } as const;
+    try {
+      const access: Access = legacy
+        ? {
+            principal,
+            decision: (auth?.policy ?? singleOwnerPolicy).authorize({
+              principal,
+              project,
+              action: match![2]!,
+              authority: "single-owner",
+            }),
+          }
+        : await auth!.authorize(request, project, match![2]!);
+      if (!access.decision.allowed)
+        return unauthorized(
+          request,
+          access.decision.code,
+          "Access is not allowed",
+          403,
+        );
+      if (access.principal.kind === "person" && forward === undefined)
+        return unauthorized(
+          request,
+          "AUTH_FORBIDDEN",
+          "A trusted project transport is required",
+          403,
+        );
+      return forward
+        ? forward(request, project, access)
+        : env.PROJECTS.get(env.PROJECTS.idFromName(project)).fetch(request);
+    } catch {
+      return unauthorized(request, "AUTH_INVALID", "Token is not valid");
+    }
   },
 };
 
@@ -85,10 +125,10 @@ export type ProjectForward = (
   project: string,
   access: Access,
 ) => Promise<Response>;
-export function createWorker(
-  _auth?: AuthComposition,
-  _forward?: ProjectForward,
-) {
-  return legacyWorker;
+export function createWorker(auth?: AuthComposition, forward?: ProjectForward) {
+  return {
+    fetch: (request: Request, env: Env) =>
+      legacyWorker.fetch(request, env, auth, forward),
+  };
 }
-export default legacyWorker;
+export default createWorker();

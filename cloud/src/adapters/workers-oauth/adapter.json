@@ -1,4 +1,4 @@
 {
   "package": "@cloudflare/workers-oauth-provider",
-  "port": "cloud/src/adapters/workers-oauth/index.ts#OAuthAdapter"
+  "port": "src/ports/authorization.ts#OAuthVerificationPort"
 }

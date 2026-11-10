@@ -19,7 +19,15 @@ export type AuthorizationDecision =
 export interface AuthorizationPort {
   authorize(request: AuthorizationRequest): AuthorizationDecision;
 }
-// Tests-first stub; the policy is implemented only after CI demonstrates red.
+/** Resource-bound provider proof; invalid or expired tokens return null. */
+export interface OAuthVerificationPort {
+  verify(token: string, resource: string): Promise<VerifiedIdentity | null>;
+}
 export const singleOwnerPolicy: AuthorizationPort = {
-  authorize: () => ({ allowed: false, code: "AUTH_FORBIDDEN" }),
+  authorize: ({ principal, authority }) =>
+    authority === "team"
+      ? { allowed: false, code: "TEAM_AUTHORIZATION_UNAVAILABLE" }
+      : principal.kind === "single-owner"
+        ? { allowed: true }
+        : { allowed: false, code: "AUTH_FORBIDDEN" },
 };

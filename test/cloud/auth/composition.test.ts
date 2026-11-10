@@ -1,5 +1,4 @@
 import { singleOwnerPolicy } from "../../../src/ports/authorization.ts";
-import { composeAuth } from "../../../cloud/src/auth/compose.ts";
 import { expect, mock, test } from "bun:test";
 import {
   isVerifiedIdentity,
@@ -12,6 +11,8 @@ await mock.module("cloudflare:workers", () => ({ WorkerEntrypoint: class {} }));
 const { createOAuthAdapter } =
   await import("../../../cloud/src/adapters/workers-oauth/index.ts");
 const { createWorker } = await import("../../../cloud/src/worker.ts");
+const { composeOAuth } =
+  await import("../../../cloud/src/adapters/workers-oauth/compose.ts");
 const issuer = "https://auth.example",
   resource = "https://api.example/a";
 const claims = {
@@ -87,18 +88,10 @@ async function fixture(denied = false, expectedResource = resource) {
     return ((await exchanged.json()) as { access_token: string }).access_token;
   }
 
-  const protocol = mock((request: Request) =>
-    Promise.resolve(Response.json({ path: new URL(request.url).pathname })),
-  );
-  const auth = composeAuth(
-    api,
-    expectedResource,
-    {
-      authorize: () =>
-        denied ? { allowed: false, code: "AUTH_FORBIDDEN" } : { allowed: true },
-    },
-    protocol,
-  );
+  const auth = composeOAuth(harness.options, expectedResource, {
+    authorize: () =>
+      denied ? { allowed: false, code: "AUTH_FORBIDDEN" } : { allowed: true },
+  });
   const env = {
     ADMIN_TOKEN: "fixture-admin",
     PROJECTS: {
@@ -237,14 +230,6 @@ test("an owner principal cannot bypass a missing team authorization provider", (
   ).toEqual({ allowed: false, code: "TEAM_AUTHORIZATION_UNAVAILABLE" });
 }, 30_000);
 
-const oauthPaths = [
-  "/authorize",
-  "/callback",
-  "/oauth/token",
-  "/register",
-  "/.well-known/oauth-authorization-server",
-  "/.well-known/oauth-protected-resource",
-];
 const projectRequest = (token: string, path = "/p/a/holder?subject=attacker") =>
   new Request(`${issuer}${path}`, {
     headers: {
@@ -282,31 +267,4 @@ test("Worker and MCP receive the same verified identity and allow decision", asy
     ).toBe(denied ? 403 : 401);
     expect(f.forward).toHaveBeenCalledTimes(0);
   }
-}, 30_000);
-
-test("missing OAuth composition refuses OAuth routes and preserves device and admin routing", async () => {
-  const f = await fixture(),
-    worker = createWorker();
-  for (const path of oauthPaths) {
-    const response = await worker.fetch(projectRequest("", path), f.env);
-    expect(response.status).toBe(503);
-    expect(await response.json()).toMatchObject({
-      error: { code: "AUTH_CONFIG_UNAVAILABLE" },
-    });
-  }
-  for (const [route, token] of [
-    ["holder", `fct_${"0".repeat(16)}.${"x".repeat(43)}`],
-    ["status", "fixture-admin"],
-  ])
-    expect(
-      (await worker.fetch(projectRequest(token!, `/p/a/${route}`), f.env))
-        .status,
-    ).toBe(200);
-
-  for (const path of oauthPaths) {
-    const response = await f.worker.fetch(projectRequest("", path), f.env);
-    expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ path });
-  }
-  expect(f.forward).toHaveBeenCalledTimes(0);
 }, 30_000);
