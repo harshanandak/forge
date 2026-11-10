@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { cpSync, mkdirSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export interface Violation {
@@ -26,25 +26,51 @@ export function format(violations: readonly Violation[]): string[] {
   );
 }
 
-/** Every file that is tracked or untracked-but-not-ignored, so a planted file is seen before it is committed. */
-export function listRepoFiles(root: string = repoRoot): string[] {
-  const out = spawnSync(
-    "git",
-    ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
-    {
-      cwd: root,
-      encoding: "utf8",
-      maxBuffer: 64 * 1024 * 1024,
-    },
-  );
+function gitFiles(root: string, flags: readonly string[]): string[] {
+  const out = spawnSync("git", ["ls-files", "-z", ...flags], {
+    cwd: root,
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+  });
   if (out.status !== 0) {
     throw new Error(
       `git ls-files failed in ${root}: ${out.stderr || out.error?.message}`,
     );
   }
-  return [...new Set(out.stdout.split("\0").filter((p) => p !== ""))]
-    .filter((p) => existsSync(join(root, p)))
-    .sort();
+  return out.stdout.split("\0").filter((path) => path !== "");
+}
+
+/**
+ * Keep every tracked path, even if missing. Include nonignored untracked root files and files
+ * under every ordinary root directory, including brand-new source roots. Only a root dot
+ * directory with no tracked contents is treated as scratch space (such as .journey-exit-*).
+ * Stage hidden source roots to scan them; existing dot roots such as
+ * .github keep their untracked files visible. Nested dot directories are not excluded.
+ */
+export function listRepoFiles(root: string = repoRoot): string[] {
+  const tracked = gitFiles(root, ["--cached"]);
+  const trackedRoots = new Set(
+    tracked
+      .filter((path) => path.includes("/"))
+      .map((path) => path.split("/")[0]!),
+  );
+  const untracked = gitFiles(root, ["--others", "--exclude-standard"]).filter(
+    (path) => !/^\.[^/]+\//.test(path) || trackedRoots.has(path.split("/")[0]!),
+  );
+  return [...new Set([...tracked, ...untracked])].sort();
+}
+
+/** Copy listed files only; never walk directories that may contain another test's scratch files. */
+export function copyRepoFiles(
+  paths: readonly string[],
+  destination: string,
+  root: string = repoRoot,
+): void {
+  for (const path of paths) {
+    const target = join(destination, path);
+    mkdirSync(dirname(target), { recursive: true });
+    cpSync(join(root, path), target);
+  }
 }
 
 /** Read a file as text; returns undefined for binary files. */

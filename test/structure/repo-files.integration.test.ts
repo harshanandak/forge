@@ -1,9 +1,15 @@
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { listRepoFiles, readRepoFiles } from "./lib/repo.ts";
+import { copyRepoFiles, listRepoFiles, readRepoFiles } from "./lib/repo.ts";
 
 function git(root: string, ...args: string[]): void {
   const result = spawnSync("git", args, {
@@ -92,5 +98,47 @@ test("a missing tracked source remains listed and fails when guards read it", ()
     const paths = listRepoFiles(root);
     expect(paths).toContain("src/tracked.ts");
     expect(() => readRepoFiles(paths, root)).toThrow("ENOENT");
+  });
+}, 30_000);
+
+test("brand-new source roots, root dot files and nested dot folders are scanned before staging", () => {
+  withRepo((root) => {
+    for (const path of [
+      "new-source/index.ts",
+      ".config.json",
+      "src/.local/file.ts",
+    ]) {
+      write(root, path);
+      expect(listRepoFiles(root)).toContain(path);
+    }
+  });
+}, 30_000);
+
+test("untracked files in a tracked root dot folder remain visible", () => {
+  withRepo((root) => {
+    write(root, ".config/tracked.json", "{}\n");
+    git(root, "add", ".config/tracked.json");
+    write(root, ".config/new.json", "{}\n");
+    expect(listRepoFiles(root)).toContain(".config/new.json");
+  });
+}, 30_000);
+
+test("repository copies use the listed file set after an unrelated transient folder disappears", () => {
+  withRepo((root) => {
+    const destination = mkdtempSync(join(tmpdir(), "forge-repo-copy-"));
+    try {
+      const transient = mkdtempSync(join(root, ".journey-exit-"));
+      writeFileSync(join(transient, "journey.mjs"), "export {};\n");
+      const paths = listRepoFiles(root);
+      write(root, "new-after-list.ts");
+      rmSync(transient, { recursive: true, force: true });
+      copyRepoFiles(paths, destination, root);
+      expect(readRepoFiles(paths, destination)).toEqual(
+        readRepoFiles(paths, root),
+      );
+      expect(existsSync(join(destination, "new-after-list.ts"))).toBe(false);
+    } finally {
+      rmSync(destination, { recursive: true, force: true });
+    }
   });
 }, 30_000);
