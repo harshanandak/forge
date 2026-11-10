@@ -15,7 +15,10 @@
     "isolatedModules": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "types": ["bun", "node"]
+    "types": ["bun", "node"],
+    "paths": {
+      "forge-workflow/identity": ["./src/ports/identity.ts"]
+    }
   },
   "include": ["bin", "cloud", "src", "team", "test", "tools"]
 }
