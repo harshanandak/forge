@@ -7,12 +7,14 @@ const { RegistrationLimiter, REGISTRATION_LIMITS: limits } =
   await import("../../../cloud/src/adapters/workers-oauth/registration.ts");
 const { createConfiguredWorker } =
   await import("../../../cloud/src/adapters/workers-oauth/compose.ts");
+const redirect = "https://client.example/callback";
 const metadata = {
-  redirect_uris: ["https://client.example/callback"],
+  redirect_uris: [redirect],
   token_endpoint_auth_method: "none",
 };
 const ip = "203.0.113.7",
   issuer = "https://auth.example";
+const privateInputs = ["203.0.113.", "private-var-marker", redirect];
 function fixture() {
   let now = limits.windowMs,
     tail = Promise.resolve();
@@ -87,12 +89,7 @@ async function refused(response: Response) {
   expect(JSON.parse(body)).toEqual({
     error: { code: "REGISTRATION_RATE_LIMITED" },
   });
-  for (const value of [
-    "203.0.113.",
-    "private-var-marker",
-    metadata.redirect_uris[0]!,
-  ])
-    expect(body).not.toContain(value);
+  for (const value of privateInputs) expect(body).not.toContain(value);
 }
 
 test("per-IP admission is atomic, has Retry-After, and leaves another IP room", async () => {
@@ -133,39 +130,23 @@ test("window rollover replaces old counters and abandoned registrations use a da
 }, 30_000);
 
 test("byte, redirect count and redirect length caps refuse before any storage", async () => {
-  const redirect = metadata.redirect_uris[0]!;
-  for (const [field, value] of [
-    ["body", { client_name: "é".repeat(limits.bodyBytes / 2) }],
-    [
-      "redirect_uris",
-      {
-        redirect_uris: Array(limits.redirects + 1).fill(redirect),
-      },
-    ],
-    [
-      "redirect_uris",
-      {
-        redirect_uris: [redirect + "x".repeat(limits.redirectLength)],
-      },
-    ],
+  const uriKey = "redirect_uris";
+  for (const [field, key, value] of [
+    ["body", "client_name", "é".repeat(limits.bodyBytes / 2)],
+    [uriKey, uriKey, Array(limits.redirects + 1).fill(redirect)],
+    [uriKey, uriKey, [redirect + "x".repeat(limits.redirectLength)]],
   ] as const) {
     const f = fixture(),
       response = await f.register(
         ip,
-        JSON.stringify({ ...metadata, ...value }),
+        JSON.stringify({ ...metadata, [key]: value }),
       );
     expect(response.status).toBe(400);
     const body = await response.text();
     expect(JSON.parse(body)).toEqual({
       error: { code: "REGISTRATION_INVALID", field },
     });
-    for (const content of [
-      ip,
-      "private-var-marker",
-      metadata.redirect_uris[0]!,
-      "é",
-      "x".repeat(20),
-    ])
+    for (const content of [...privateInputs, "é", "x".repeat(20)])
       expect(body).not.toContain(content);
     expect(f.ttls).toHaveLength(0);
     expect(f.counters.size).toBe(0);
