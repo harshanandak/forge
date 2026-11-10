@@ -6,7 +6,8 @@ const { composeOAuth } =
   await import("../../../cloud/src/adapters/workers-oauth/compose.ts");
 const limit = 8192;
 const oversized = {
-  error: { code: "REGISTRATION_INVALID", field: "body" },
+  error: "invalid_request",
+  error_description: "Request body exceeds 8192 bytes",
 };
 
 function fixture(

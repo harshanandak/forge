@@ -16,6 +16,7 @@ import {
 import { guardRegistration, REGISTRATION_LIMITS } from "./registration.ts";
 import { productionOptions } from "./production.ts";
 import { bearer, sha256, wellFormed } from "../../tokens.ts";
+import { boundedOAuthRequest } from "./body.ts";
 export { Project } from "../../worker.ts";
 export { CodeRedemption } from "./redemption.ts";
 export { RegistrationLimiter } from "./registration.ts";
@@ -46,11 +47,15 @@ export function composeOAuth(
       if (protocol) return protocol(request);
       if (path === "/authorize") {
         try {
-          if (request.method === "POST")
+          if (request.method === "POST") {
+            const bounded = await boundedOAuthRequest(request);
+            if (bounded instanceof Response) return bounded;
+            request = bounded;
             return await adapter.consent(
               request,
               (await request.clone().formData()).get("allow") === "true",
             );
+          }
           if (request.method !== "GET") throw new Error("Invalid method");
           const response = await adapter.authorize(request);
           if (!response.ok) return response;

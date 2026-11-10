@@ -7,6 +7,7 @@ import type { ClockPort } from "../../../../src/ports/clock.ts";
 import type { OAuthVerificationPort } from "../../../../src/ports/authorization.ts";
 import { mintIdentity } from "../../../../src/ports/identity-mint.ts";
 import { codeExpiresAt, validateCodeBindings } from "./redemption.ts";
+import { boundedOAuthRequest } from "./body.ts";
 import {
   isVerifiedIdentity,
   type IdentityClaims,
@@ -143,6 +144,9 @@ export function createOAuthAdapter(options: OAuthOptions): OAuthAdapter {
     consent: (request, allow) =>
       guarded(async () => {
         if (request.method !== "POST") throw refusal("invalid_request");
+        const bounded = await boundedOAuthRequest(request);
+        if (bounded instanceof Response) return bounded;
+        request = bounded;
         const handle = (await request.formData()).get("handle");
         if (typeof handle !== "string") throw refusal("invalid_request");
         if (!allow)
@@ -227,6 +231,9 @@ export function createOAuthAdapter(options: OAuthOptions): OAuthAdapter {
           contentType.split(";")[0]?.trim().toLowerCase() ===
             "application/x-www-form-urlencoded"
         ) {
+          const bounded = await boundedOAuthRequest(request);
+          if (bounded instanceof Response) return bounded;
+          request = bounded;
           const form = await request.clone().formData();
           if (form.get("grant_type") !== "authorization_code")
             return failure("unsupported_grant_type", 400);
