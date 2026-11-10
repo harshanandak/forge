@@ -6,7 +6,7 @@ import {
 import type { ClockPort } from "../../../../src/ports/clock.ts";
 import type { OAuthVerificationPort } from "../../../../src/ports/authorization.ts";
 import { mintIdentity } from "../../../../src/ports/identity-mint.ts";
-import { validateCodeBindings } from "./redemption.ts";
+import { codeExpiresAt, validateCodeBindings } from "./redemption.ts";
 import {
   isVerifiedIdentity,
   type IdentityClaims,
@@ -241,10 +241,10 @@ export function createOAuthAdapter(options: OAuthOptions): OAuthAdapter {
             const hash = Array.from(new Uint8Array(digest), (byte) =>
               byte.toString(16).padStart(2, "0"),
             ).join("");
-            // Provider codes live 600s; keep the tombstone from redemption, not issuance.
-            const expiresAt = options.clock.now() + 600_000;
-            if (!Number.isFinite(expiresAt))
-              throw new Error("Invalid claim deadline");
+            const expiresAt = await codeExpiresAt(code, options.storage);
+            const now = options.clock.now();
+            if (!Number.isFinite(now) || now >= expiresAt)
+              return failure("invalid_grant", 400);
             if (!(await options.codeRedemption.claimOnce(hash, expiresAt))) {
               try {
                 const [userId, grantId, secret, extra] = code.split(":");
@@ -294,7 +294,7 @@ export function createOAuthAdapter(options: OAuthOptions): OAuthAdapter {
                 400,
               );
           }
-        }
+        } else return failure("invalid_request", 400);
         const tasks: Promise<unknown>[] = [];
         const response = await server.fetch(request, env, {
           waitUntil: (task: Promise<unknown>) => {

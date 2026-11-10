@@ -6,9 +6,11 @@ import type {
 export interface ClaimStore {
   get<T>(key: string): Promise<T | undefined>;
   put(key: string, value: number): Promise<void>;
+  setAlarm(at: number): Promise<void>;
 }
 export interface ClaimState {
   storage: ClaimStore & {
+    deleteAll(): Promise<void>;
     transaction<T>(operation: (store: ClaimStore) => Promise<T>): Promise<T>;
   };
 }
@@ -17,13 +19,32 @@ export interface RedemptionNamespace {
   get(id: unknown): { fetch(request: Request): Promise<Response> };
 }
 
+// Provider grant TTL is 600s; 30s covers issuance/object clock skew.
+const CLOCK_SKEW_MS = 30_000;
+export const CODE_REPLAY_HORIZON_MS = 600_000 + CLOCK_SKEW_MS;
+const MAX_CLAIM_MS = CODE_REPLAY_HORIZON_MS + CLOCK_SKEW_MS;
+export async function codeExpiresAt(code: string, storage: OAuthStorage) {
+  const [user, id] = code.split(":");
+  const grant = await storage.get<{ createdAt: number }>(
+    `grant:${user}:${id}`,
+    { type: "json" },
+  );
+  return grant && Number.isSafeInteger(grant.createdAt)
+    ? grant.createdAt * 1_000 + CODE_REPLAY_HORIZON_MS
+    : 0;
+}
 const hashPattern = /^[a-f0-9]{64}$/;
 const refusal = (error = "invalid_grant", status = 400) =>
   Response.json({ error }, { status });
 export class CodeRedemption {
   readonly #storage: ClaimState["storage"];
-  constructor(state: ClaimState) {
+  readonly #clock: { now(): number };
+  constructor(state: ClaimState, _env?: unknown, clock = { now: Date.now }) {
     this.#storage = state.storage;
+    this.#clock = clock;
+  }
+  alarm(): Promise<void> {
+    return this.#storage.deleteAll();
   }
   async fetch(request: Request): Promise<Response> {
     try {
@@ -34,13 +55,14 @@ export class CodeRedemption {
         request.method !== "POST" ||
         !hashPattern.test(hash) ||
         !Number.isFinite(expiresAt) ||
-        expiresAt <= Date.now()
+        expiresAt <= this.#clock.now() ||
+        expiresAt > this.#clock.now() + MAX_CLAIM_MS
       )
         return refusal();
       const won = await this.#storage.transaction(async (store) => {
-        // Keep a permanent tombstone: stale provider KV must never resurrect a code.
         if ((await store.get(hash)) !== undefined) return false;
         await store.put(hash, expiresAt);
+        await store.setAlarm(expiresAt);
         return true;
       });
       return won ? Response.json({ claimed: true }) : refusal();
