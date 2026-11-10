@@ -15,6 +15,13 @@ const fixtures = readJson(
 const mint = "src/ports/identity-mint.ts";
 const paths = listRepoFiles();
 
+test("the native parser loads under Bun and treats regex contents as data", () => {
+  const path = "cloud/src/adapters/workers-oauth/index.ts";
+  const text =
+    'import { mintIdentity } from "../../../../src/ports/identity-mint.ts"; export function createOAuthAdapter() { function verifyProviderToken(claims) { const pattern = /function createOAuthAdapter() { function verifyProviderToken() {/; return mintIdentity(claims); } return { verify: verifyProviderToken }; }';
+  expect(findIdentityMintViolations([{ path, text }])).toEqual([]);
+}, 30_000);
+
 test("only the exact OAuth validation boundary may carry verifier-minted identity", () => {
   for (const path of [
     "cloud/src/adapters/workers-oauth/index.ts",

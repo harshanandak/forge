@@ -1,6 +1,20 @@
-import { posix } from "node:path";
-import { importsOf, parsedSource } from "./imports.ts";
-import { maskSource } from "./platform.ts";
+import { posix, resolve } from "node:path";
+import {
+  isCallExpression,
+  isExportDeclaration,
+  isFunctionDeclaration,
+  isIdentifier,
+  isImportDeclaration,
+  isImportEqualsDeclaration,
+  isNamedExports,
+  isNamedImports,
+  isStringLiteral,
+  type Node,
+  SyntaxKind,
+} from "typescript/unstable/ast";
+import { createVirtualFileSystem } from "typescript/unstable/fs";
+import { API } from "typescript/unstable/sync";
+import { importsOf } from "./imports.ts";
 import type { SourceFile, Violation } from "./repo.ts";
 import { isTestFile } from "./repo.ts";
 
@@ -16,84 +30,133 @@ function mintTarget(path: string, specifier: string): boolean {
   );
 }
 
+const boundaries = new Set([
+  SyntaxKind.FunctionDeclaration,
+  SyntaxKind.FunctionExpression,
+  SyntaxKind.ArrowFunction,
+  SyntaxKind.MethodDeclaration,
+  SyntaxKind.GetAccessor,
+  SyntaxKind.SetAccessor,
+  SyntaxKind.Constructor,
+  SyntaxKind.ClassDeclaration,
+  SyntaxKind.ClassExpression,
+]);
+
 function reexportsMint(file: SourceFile): boolean {
-  if (!importsOf(file).some((s) => mintTarget(file.path, s))) return false;
-  if (file.path === "cloud/src/adapters/workers-oauth/index.ts") {
-    const text = file.text.replace(
-      'import { mintIdentity } from "../../../../src/ports/identity-mint.ts";',
-      "",
-    );
-    if (
-      text === file.text ||
-      importsOf({ ...file, text }).some((s) => mintTarget(file.path, s))
-    )
+  const name = /\.[jt]sx$/.test(file.path) ? "input.tsx" : "input.ts";
+  const input = resolve(".identity-provenance", name).replaceAll("\\", "/");
+  const config = posix.join(posix.dirname(input), "tsconfig.json");
+  const fs = createVirtualFileSystem({
+    [input]: file.text,
+    [config]: JSON.stringify({
+      compilerOptions: { noLib: true, noResolve: true, jsx: "preserve" },
+      files: [name],
+    }),
+  });
+  const api = new API({ fs });
+  try {
+    using snapshot = api.updateSnapshot({ openProjects: [config] });
+    const program = snapshot.getProject(config)?.program;
+    const tree = program?.getSourceFile(input);
+    if (!program || !tree || program.getSyntacticDiagnostics(input).length)
       return true;
-  }
-  // Other loading forms expose the module rather than a direct mint binding.
-  const withoutImports = maskSource(file.text, false).replace(
-    /\bimport\s+[^;]*?\s+from\s*["'][^"']+["']\s*;?/g,
-    "",
-  );
-  if (
-    importsOf({ ...file, text: withoutImports }).some((s) =>
-      mintTarget(file.path, s),
-    )
-  )
-    return true;
-  const source = maskSource(parsedSource(file), false);
-  const bindings = new Set<string>();
-  // Remove binding declarations, leaving every use for the direct-call check.
-  const references = source.replace(
-    /\bimport\s+([^;]*?)\s+from\s*["'][^"']+["']\s*;?/g,
-    (declaration: string, clause: string) => {
+    const oauth = file.path === "cloud/src/adapters/workers-oauth/index.ts";
+    const bindings = new Set<string>();
+    let mintImports = 0;
+    const loads = (node: Node): boolean => {
+      if (isImportEqualsDeclaration(node)) return true;
+      if (isImportDeclaration(node) || isExportDeclaration(node)) {
+        const target = node.moduleSpecifier;
+        if (target && !isStringLiteral(target)) return true;
+        if (
+          target &&
+          isStringLiteral(target) &&
+          mintTarget(file.path, target.text)
+        ) {
+          if (isExportDeclaration(node))
+            return (
+              oauth ||
+              !node.exportClause ||
+              !isNamedExports(node.exportClause) ||
+              node.exportClause.elements.some(
+                (e) => (e.propertyName ?? e.name).text !== "isVerifiedIdentity",
+              )
+            );
+          mintImports++;
+          if (
+            oauth &&
+            (mintImports !== 1 ||
+              node.getText(tree) !==
+                'import { mintIdentity } from "../../../../src/ports/identity-mint.ts";')
+          )
+            return true;
+          const clause = node.importClause;
+          const names = clause?.namedBindings;
+          if (!clause || clause.name || !names || !isNamedImports(names))
+            return true;
+          for (const entry of names.elements) {
+            const name = (entry.propertyName ?? entry.name).text;
+            if (name === "mintIdentity") bindings.add(entry.name.text);
+            else if (name !== "isVerifiedIdentity") return true;
+          }
+        }
+        return false;
+      }
       if (
-        !importsOf({ ...file, text: declaration }).some((s) =>
-          mintTarget(file.path, s),
+        isCallExpression(node) &&
+        (node.expression.kind === SyntaxKind.ImportKeyword ||
+          (isIdentifier(node.expression) && node.expression.text === "require"))
+      ) {
+        const target = node.arguments[0];
+        if (
+          !target ||
+          !isStringLiteral(target) ||
+          mintTarget(file.path, target.text)
         )
-      )
-        return declaration;
-      const namespace = /\*\s+as\s+([$\w]+)/.exec(clause);
-      if (namespace) bindings.add(namespace[1]!);
-      for (const name of clause.matchAll(
-        /\bmintIdentity(?:\s+as\s+([$\w]+))?/g,
-      ))
-        bindings.add(name[1] ?? "mintIdentity");
-      return "";
-    },
-  );
-  const code = maskSource(references, true);
-  if (file.path === "cloud/src/adapters/workers-oauth/index.ts") {
-    const scopes: string[] = [];
-    for (const match of code.matchAll(
-      /\bfunction\s+([$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*)\s*\([^)]*\)\s*\{|=>|\)\s*\{|\b(?:class|function)\b|[{}]|[$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*/gu,
-    )) {
-      const [token, name] = match;
-      if (name === "createOAuthAdapter" && scopes.length) return true;
-      if (name) scopes.push(name);
-      else if (token === "{") scopes.push("");
-      else if (token === "}") scopes.pop();
-      else if (
-        bindings.has(token) &&
-        scopes.filter(Boolean).join("/") !==
-          "createOAuthAdapter/verifyProviderToken"
+          return true;
+      }
+      if (
+        isIdentifier(node) &&
+        node.text === "require" &&
+        (!isCallExpression(node.parent) || node.parent.expression !== node)
       )
         return true;
-      else if (/^(?:=>|\)|class\b|function\b)/.test(token)) {
-        if (scopes.includes("verifyProviderToken")) return true;
-        if (token.endsWith("{")) scopes.push("nested");
+      return node.forEachChild(loads) === true;
+    };
+    if (loads(tree)) return true;
+    const scopes: Node[] = [];
+    const references = (node: Node): boolean => {
+      if (isImportDeclaration(node)) return false;
+      if (isIdentifier(node) && bindings.has(node.text)) {
+        if (!isCallExpression(node.parent) || node.parent.expression !== node)
+          return true;
+        if (oauth) {
+          const [factory, verifier] = scopes;
+          if (
+            scopes.length !== 2 ||
+            !factory ||
+            !verifier ||
+            !isFunctionDeclaration(factory) ||
+            factory.name?.text !== "createOAuthAdapter" ||
+            !isFunctionDeclaration(verifier) ||
+            verifier.name?.text !== "verifyProviderToken"
+          )
+            return true;
+        }
       }
-    }
+      const boundary = boundaries.has(node.kind);
+      if (boundary) scopes.push(node);
+      const refused = node.forEachChild(references) === true;
+      if (boundary) scopes.pop();
+      return refused;
+    };
+    return references(tree);
+  } catch {
+    // An unavailable parser or an unclassifiable tree never grants mint authority.
+    return true;
+  } finally {
+    api.close();
   }
-  for (const match of code.matchAll(
-    /[$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*/gu,
-  ))
-    if (
-      bindings.has(match[0]) &&
-      (!/^\s*\(/.test(code.slice(match.index + match[0].length)) ||
-        /\bnew\s*$/.test(code.slice(0, match.index)))
-    )
-      return true;
-  return false;
 }
 
 export function findIdentityMintViolations(

@@ -3,5 +3,7 @@
   "Unicode-escaped identifier outside verifier": "import { mintIdentity } from \"TARGET\"; export function other(claims) { return mintId\\u0065ntity(claims); }",
   "non-literal dynamic import": "export async function load(path) { return import(path); }",
   "non-literal require": "export function load(path) { return require(path); }",
-  "returned closure escapes verifier": "import { mintIdentity } from \"TARGET\"; export function createOAuthAdapter() { function verifyProviderToken(claims) { return function later() { return mintIdentity(claims); }; } return { verify: verifyProviderToken }; }"
+  "returned closure escapes verifier": "import { mintIdentity } from \"TARGET\"; export function createOAuthAdapter() { function verifyProviderToken(claims) { return function later() { return mintIdentity(claims); }; } return { verify: verifyProviderToken }; }",
+  "computed mint access": "import { mintIdentity } from \"TARGET\"; export function createOAuthAdapter() { function verifyProviderToken(claims) { return mintIdentity[\"call\"]({}, claims); } }",
+  "unclassifiable syntax": "import { mintIdentity } from \"TARGET\"; export function createOAuthAdapter() { function verifyProviderToken(claims) { return mintIdentity(claims); } const unfinished ="
 }
