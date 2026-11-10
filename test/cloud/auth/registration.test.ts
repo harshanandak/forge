@@ -58,6 +58,7 @@ function fixture() {
       idFromName: (name: string) => name,
       get: () => limiter,
     },
+    CODE_REDEMPTION: { idFromName: () => "", get: () => limiter },
     OAUTH_KV: {
       ...kv,
       async put(...args: Parameters<typeof kv.put>) {

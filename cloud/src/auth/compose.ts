@@ -29,6 +29,9 @@ export function composeAuth(
   team?: Auth.AuthorizationPort,
   route: (request: Request) => Promise<Response> = () =>
     Promise.resolve(configUnavailable("OAUTH_COMPOSITION")),
+  atomicRedemption?: {
+    claimOnce(codeHash: string, expiresAt: number): Promise<boolean>;
+  },
 ) {
   const authorize = async (
     request: Request,
@@ -59,7 +62,10 @@ export function composeAuth(
     mcp: authorize,
     policy,
     route: async (request: Request) => {
-      if (["/callback", "/oauth/token"].includes(new URL(request.url).pathname))
+      if (
+        !atomicRedemption &&
+        ["/callback", "/oauth/token"].includes(new URL(request.url).pathname)
+      )
         return configUnavailable(
           "CODE_REDEMPTION",
           "Atomic redemption unavailable",

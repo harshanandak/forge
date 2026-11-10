@@ -438,7 +438,12 @@ test("configured OAuth dispatch uses the protocol handler without project forwar
     Promise.resolve(Response.json({ path: new URL(request.url).pathname })),
   );
   const worker = createConfiguredWorker(protocol),
-    env = { ...f.env, ...vars, OAUTH_KV: f.options.storage };
+    env = {
+      ...f.env,
+      ...vars,
+      OAUTH_KV: f.options.storage,
+      CODE_REDEMPTION: f.env.PROJECTS,
+    };
   for (const path of oauthPaths.filter(
     (path) => path !== "/callback" && path !== "/oauth/token",
   )) {
@@ -485,7 +490,12 @@ test("token and callback refuse without atomic redemption even with every var se
 
 test("real provider registration and canonical resource metadata handle requests", async () => {
   const f = await fixture(),
-    env = { ...f.env, ...vars, OAUTH_KV: f.options.storage },
+    env = {
+      ...f.env,
+      ...vars,
+      OAUTH_KV: f.options.storage,
+      CODE_REDEMPTION: f.env.PROJECTS,
+    },
     worker = createConfiguredWorker();
   const registration = await worker.fetch(
     new Request(`${issuer}/register`, {

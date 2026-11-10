@@ -10,6 +10,8 @@ import type { ClockPort } from "../../../../src/ports/clock.ts";
 import { OAuthConfigError, readOAuthConfig } from "./config.ts";
 import { OAuthAuthorizationServer } from "@cloudflare/workers-oauth-provider";
 import { guardRegistration, REGISTRATION_LIMITS } from "./registration.ts";
+import { productionOptions } from "./production.ts";
+import { bearer, wellFormed } from "../../tokens.ts";
 export { Project } from "../../worker.ts";
 export { CodeRedemption } from "./redemption.ts";
 export { RegistrationLimiter } from "./registration.ts";
@@ -27,27 +29,52 @@ export function composeOAuth(
   team?: AuthorizationPort,
   protocol?: (request: Request) => Promise<Response>,
 ) {
+  const adapter = createOAuthAdapter(options);
   return composeAuth(
-    createOAuthAdapter(options),
+    adapter,
     resource,
     policy,
     team,
-    protocol,
+    async (request) => {
+      const path = new URL(request.url).pathname;
+      if (path === "/callback") return adapter.callback(request);
+      if (path === "/oauth/token") return adapter.token(request);
+      if (protocol) return protocol(request);
+      if (path === "/authorize")
+        return request.method === "POST"
+          ? adapter.consent(
+              request,
+              (await request.clone().formData()).get("allow") === "true",
+            )
+          : adapter.authorize(request);
+      return configUnavailable("OAUTH_COMPOSITION");
+    },
+    // The port is supplied explicitly; adapter methods never imply this capability.
+    options.codeRedemption,
   );
 }
 
 export function createConfiguredWorker(
   protocol?: (request: Request) => Promise<Response>,
-  _dependencies: WorkerDependencies = {},
+  input: WorkerDependencies = {},
 ) {
   const worker = createWorker();
+  const dependencies = { ...input };
   return {
     async fetch(
       request: Request,
       env: Parameters<typeof worker.fetch>[1] &
         Readonly<Record<string, unknown>>,
     ) {
-      if (!isOAuthRoute(request)) return worker.fetch(request, env);
+      const path = new URL(request.url).pathname;
+      const token = bearer(request);
+      if (
+        !isOAuthRoute(request) &&
+        (!token ||
+          wellFormed(token) ||
+          /\/(devices|revoke|status|dump|restore)$/.test(path))
+      )
+        return worker.fetch(request, env);
       let config;
       try {
         config = readOAuthConfig(env, new URL(request.url).origin);
@@ -66,12 +93,30 @@ export function createConfiguredWorker(
             : "OAUTH_CONFIGURATION",
         );
       }
-      if (["/callback", "/oauth/token"].includes(new URL(request.url).pathname))
+      if (
+        !env.CODE_REDEMPTION ||
+        !["idFromName", "get"].every(
+          (key) =>
+            typeof (env.CODE_REDEMPTION as Record<string, unknown>)[key] ===
+            "function",
+        )
+      )
         return configUnavailable(
           "CODE_REDEMPTION",
           "Atomic redemption unavailable",
         );
       try {
+        const auth = composeOAuth(
+          productionOptions(config, env, dependencies),
+          config.resource,
+          dependencies.policy,
+          undefined,
+          protocol,
+        );
+        if (!isOAuthRoute(request))
+          return createWorker(auth, dependencies.forward).fetch(request, env);
+        if (["/authorize", "/callback", "/oauth/token"].includes(path))
+          return auth.route(request);
         const refusal = await guardRegistration(
           request,
           env.REGISTRATION_LIMITER,
@@ -92,24 +137,18 @@ export function createConfiguredWorker(
               ? null
               : JSON.stringify({
                   resource: config.resource,
-                  authorization_servers: [new URL(request.url).origin],
+                  authorization_servers: [new URL(config.redirectUri).origin],
                 }),
             { headers: { "Content-Type": "application/json" } },
           );
         }
         const server = new OAuthAuthorizationServer({
-          issuer: new URL(request.url).origin,
+          issuer: new URL(config.redirectUri).origin,
           resources: [config.resource],
           clientIdMetadataDocumentEnabled: false,
           clientRegistrationEndpoint: "/register",
           clientRegistrationTTL: REGISTRATION_LIMITS.clientTTL,
         });
-        // Authorization cannot begin an upstream exchange before atomic redemption is wired.
-        if (new URL(request.url).pathname === "/authorize")
-          return configUnavailable(
-            "CODE_REDEMPTION",
-            "Atomic redemption unavailable",
-          );
         const tasks: Promise<unknown>[] = [];
         const response = await server.fetch(request, env, {
           waitUntil: (task: Promise<unknown>) => {
