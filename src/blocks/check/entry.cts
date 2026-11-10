@@ -252,6 +252,7 @@ function metadataSize(
   subject = "",
   paths?: ReadonlyMap<string, string>,
   configPath?: string,
+  reason = "Project inputs changed while checks ran",
 ): number {
   const stream = {
     head: "",
@@ -279,7 +280,7 @@ function metadataSize(
       status: "NOT_EXECUTED",
       checkedAt: "0".repeat(24),
       checked: runs.map(({ name, status }) => ({ name, status })),
-      reason: "Project inputs changed while checks ran",
+      reason,
       inputsDigest: "sha256:" + "a".repeat(64),
       digest: "sha256:" + "a".repeat(64),
       runs,
@@ -698,6 +699,30 @@ function createCheck(
         )
         .sort();
       const status = changed ? "INCOMPLETE" : aggregate(runs);
+      let reason = changed
+        ? "Project inputs changed while checks ran"
+        : runs.length
+          ? "Results of declared commands"
+          : "No commands declared";
+      if (dirtyPaths.length) {
+        const marker = "TRACKED_INPUTS_DIRTY:";
+        const budget =
+          frozenConfig.maxMetadataBytes -
+          metadataSize(budgetConfig, before.head, paths, undefined, "") +
+          2;
+        const fits = (text: string) => utf8Bytes(canonical(text)) <= budget;
+        const omitted = `${marker} and ${dirtyPaths.length} more`;
+        reason = fits(omitted) ? omitted : marker;
+        let listed = "";
+        for (const [index, path] of dirtyPaths.entries()) {
+          const next = listed + (listed ? ", " : "") + JSON.stringify(path);
+          const remaining = dirtyPaths.length - index - 1;
+          const candidate = `${marker} not head-eligible; ${next}${remaining ? `, and ${remaining} more` : ""}`;
+          if (!fits(candidate)) break;
+          listed = next;
+          reason = candidate;
+        }
+      }
       const body = {
         version: 1 as const,
         id: randomUUID(),
@@ -705,13 +730,7 @@ function createCheck(
         subject: before.head,
         checkedAt: new Date(services.clock.now()).toISOString(),
         checked: runs.map(({ name, status }) => ({ name, status })),
-        reason: dirtyPaths.length
-          ? `TRACKED_INPUTS_DIRTY: not head-eligible; ${dirtyPaths.map((path) => JSON.stringify(path)).join(", ")}`
-          : changed
-            ? "Project inputs changed while checks ran"
-            : runs.length
-              ? "Results of declared commands"
-              : "No commands declared",
+        reason,
         inputsDigest,
         runs,
       };

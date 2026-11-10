@@ -1608,11 +1608,14 @@ async function tailNext(call: HandlerCall<TailInput>): Promise<TailAction> {
   if (
     !proof ||
     proof.status !== "PASS" ||
+    proof.reason?.startsWith("TRACKED_INPUTS_DIRTY:") ||
     proof.subject !== journal.mergeCommit
   )
     return pause(
       `Receipt ${journal.receipt} is not a PASS at merge commit ${merge7}`,
-      "Run the checks again at the merge commit and record the new receipt id.",
+      proof?.reason?.startsWith("TRACKED_INPUTS_DIRTY:")
+        ? "Run the checks again at the merge commit on a clean tracked tree and record the new receipt id."
+        : "Run the checks again at the merge commit and record the new receipt id.",
       proof ?? { receipt: journal.receipt, found: false },
     );
   const covered = proof.checked ?? [];
