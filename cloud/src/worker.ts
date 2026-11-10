@@ -5,6 +5,7 @@
 export { Project } from "./project.ts";
 import { bearer, same, sha256, wellFormed } from "./tokens.ts";
 import type { Access, AuthComposition } from "./auth/compose.ts";
+import { configUnavailable, isOAuthRoute } from "./auth/compose.ts";
 
 interface Env {
   readonly ADMIN_TOKEN?: string;
@@ -50,6 +51,8 @@ const legacyWorker = {
     auth?: AuthComposition,
     forward?: ProjectForward,
   ): Promise<Response> {
+    if (isOAuthRoute(request))
+      return auth?.route(request) ?? configUnavailable("OAUTH_COMPOSITION");
     const match = PATH.exec(new URL(request.url).pathname);
     const project = match?.[1];
     if (project === undefined)
