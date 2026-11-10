@@ -68,6 +68,7 @@ export interface BatchWriteOptions {
 }
 export interface DeleteWriteOptions extends DeleteOptions {
   readonly fence?: Fence;
+  readonly guard?: () => boolean;
 }
 export interface Snapshot {
   readonly image: string;
@@ -1187,6 +1188,12 @@ export class StateOwner {
         !Number.isSafeInteger(event.revision)
       )
         invalid("Invalid deletion event");
+      if (options.guard?.() === false)
+        throw new ForgeFailure({
+          code: "SERVICE_EXPIRED",
+          message: "Deletion bound expired",
+          retry: "never",
+        });
       const removed = this.#db.run(
         "DELETE FROM state_records WHERE namespace=? AND key=? AND revision=?",
         [namespace, key, current.revision],

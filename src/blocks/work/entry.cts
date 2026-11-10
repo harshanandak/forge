@@ -4057,6 +4057,11 @@ const operations: Operations<WorkOperations> = {
         undefined,
         [{ key: issue.key, expectRevision: issue.revision }],
       );
+      (
+        state as LeaseStateClient & {
+          finalizeDelete(key: string, revision: number): void;
+        }
+      ).finalizeDelete(reservation.key, reservation.revision);
       for (const name of new Set([input.id, lane.issue, id])) {
         const path = `forge-lane-${name}.lock`,
           info = files.inspect(path, "common");
