@@ -51,7 +51,7 @@ test("OAuth tokenization refuses ambiguous slashes and nested template mints", (
 test("OAuth classifies for-of regex headers and verifier control blocks", () => {
   const path = "cloud/src/adapters/workers-oauth/index.ts";
   const text =
-    'import { mintIdentity } from "../../../../src/ports/identity-mint.ts"; export function createOAuthAdapter() { function verifyProviderToken(claims) { for (const entry of /scope/.exec(input) ?? []) { void entry; } if (claims) { return mintIdentity(claims); } } }';
+    'import { mintIdentity } from "../../../../src/ports/identity-mint.ts"; export function createOAuthAdapter() { function verifyProviderToken(claims, input) { for (const entry of /scope/.exec(input) ?? []) { void entry; } if (claims) { return mintIdentity(claims); } } }';
   expect(findIdentityMintViolations([{ path, text }])).toEqual([]);
 }, 30_000);
 
@@ -114,6 +114,34 @@ for (const [name, source] of Object.entries(scopes)) {
     const found = findIdentityMintViolations([{ path, text }]);
     expect(found.map((violation) => violation.file)).toEqual([path]);
     expect(found[0]?.message).toContain("identity-mint");
+  }, 30_000);
+}
+
+for (const [fixture, name] of [
+  ["unlisted Atomics global", "Atomics"],
+  ["unlisted structuredClone global", "structuredClone"],
+  ["unlisted queueMicrotask global", "queueMicrotask"],
+  ["unlisted fetch global", "fetch"],
+  ["unlisted caches global", "caches"],
+  ["Unicode-escaped unlisted global", "Atomics"],
+  ["type-only name cannot authorize a runtime global", "Atomics"],
+] as const) {
+  test(`the OAuth identity guard names the unknown global in ${fixture}`, () => {
+    const path = "cloud/src/adapters/workers-oauth/index.ts";
+    const found = findIdentityMintViolations([
+      { path, text: scopes[fixture]! },
+    ]);
+    expect(found[0]?.message).toContain(`unknown global: ${name}`);
+  }, 30_000);
+}
+
+for (const source of [
+  "export function outside(self) { return self; }",
+  "type Outside = Atomics; interface Shape { value: structuredClone; } export function outside<T extends queueMicrotask>(value: fetch): caches { return value as Atomics satisfies structuredClone; }",
+]) {
+  test(`the OAuth identity guard permits declared or type-only names: ${source}`, () => {
+    const path = "cloud/src/adapters/workers-oauth/index.ts";
+    expect(findIdentityMintViolations([{ path, text: source }])).toEqual([]);
   }, 30_000);
 }
 
