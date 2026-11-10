@@ -907,6 +907,23 @@ export function createAssemblyProviders(
                   ? 33554432
                   : 65536,
             });
+            if (
+              !isHead &&
+              (result.timedOut ||
+                result.truncated ||
+                result.exitCode !== 0 ||
+                result.signal !== null)
+            )
+              refuse(
+                result.timedOut ? "INVOCATION_TIMEOUT" : "INPUT_CONFLICT",
+                `Snapshot Git ${args[0]} ${
+                  result.truncated
+                    ? "output was truncated; the tree is too large or too dirty to verify"
+                    : result.timedOut
+                      ? "timed out; retry the tracked-tree query"
+                      : "failed; repair the tracked-tree query and retry"
+                }`,
+              );
             if (result.timedOut)
               refuse("INVOCATION_TIMEOUT", "Snapshot head lookup timed out");
             snapshotActive();
