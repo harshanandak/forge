@@ -1,10 +1,12 @@
 import { expect, setDefaultTimeout, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import * as ciUnacquired from "../../tools/ci-unacquired.ts";
 import {
   decideRerun,
   decisionOutput,
   neededJobNames,
+  readHeadWorkflow,
   type CiJob,
   type CiRun,
   type CurrentRun,
@@ -336,8 +338,23 @@ const complete = [
   named("Pack artifact"),
   named("Speed (ubuntu-latest, Node 24)"),
   named("Speed (windows-latest, Node 24)"),
-  named("Verify (ubuntu-latest, Node 24, shard 1)"),
-  named("Verify (windows-latest, Node 26)"),
+  ...[
+    "ubuntu-latest, Node 24, shard 1/2",
+    "ubuntu-latest, Node 24, tests, shard 2/2",
+    "ubuntu-latest, Node 26, shard 1/2",
+    "ubuntu-latest, Node 26, tests, shard 2/2",
+    "macos-latest, Node 24, shard 1/2",
+    "macos-latest, Node 24, tests, shard 2/2",
+    "macos-latest, Node 26, pack",
+    "windows-latest, Node 24, tests, shard 1/3",
+    "windows-latest, Node 24, tests, shard 2/3",
+    "windows-latest, Node 24, tests, shard 3/3",
+    "windows-latest, Node 24, pack",
+    "windows-latest, Node 26, tests, shard 1/3",
+    "windows-latest, Node 26, tests, shard 2/3",
+    "windows-latest, Node 26, tests, shard 3/3",
+    "windows-latest, Node 26, pack",
+  ].map((leg) => named(`Verify (${leg})`)),
 ];
 
 test("does not rerun when every needed job exists and only the gate failed", () => {
@@ -457,3 +474,268 @@ test("outputs rerun=false for a real failure alongside a missing job", () => {
   expect(lines).toContain("rerun=false");
   expect(lines.some((line) => line.startsWith("reason="))).toBe(true);
 }, 1000);
+
+const headSha = "e37b923981fa24a17b0cd8f4661950ace48d6b72";
+const headRun = { ...current, run_attempt: 1, head_sha: headSha };
+const headEnv = {
+  GH_REPO: "harshanandak/forge",
+  RUN_CONCLUSION: "failure",
+  RUN_ATTEMPT: "1",
+};
+const workflowAtHead = (nodes: string) => `jobs:
+  verify:
+    name: Verify (\${{ matrix.os }}, Node \${{ matrix.node }})
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: [${nodes}]
+  ci-gate:
+    name: CI Gate
+    needs: [verify]
+`;
+const matrixLegs = [
+  named("Verify (ubuntu-latest, Node 24)"),
+  named("Verify (windows-latest, Node 24)"),
+  named("Verify (ubuntu-latest, Node 26)"),
+  named("Verify (windows-latest, Node 26)"),
+];
+const judgeMatrix = (jobs: CiJob[]) =>
+  decisionOutput([{ jobs }], headRun, headEnv, workflowAtHead("24, 26")).split(
+    "\n",
+  );
+type HeadDecision = (
+  pages: readonly { jobs: readonly CiJob[] }[],
+  latest: typeof headRun,
+  env: typeof headEnv,
+  read: (endpoint: string) => Promise<string>,
+) => Promise<string>;
+const judgeHead = async (
+  jobs: CiJob[],
+  read: (endpoint: string) => Promise<string>,
+) => {
+  // Keep the tests-only commit typecheckable before the entry point is added.
+  expect(ciUnacquired).toHaveProperty("decisionAtHead");
+  const { decisionAtHead } = ciUnacquired as unknown as {
+    decisionAtHead: HeadDecision;
+  };
+  return (
+    await decisionAtHead(
+      [{ jobs: jobs.slice(0, 2) }, { jobs: jobs.slice(2) }],
+      headRun,
+      headEnv,
+      read,
+    )
+  ).split("\n");
+};
+
+test("recovers two never-created legs out of four needed matrix legs", () => {
+  const lines = judgeMatrix([...matrixLegs.slice(0, 2), gate]);
+  expect(lines).toContain("rerun=true");
+  expect(lines).toContain("scope=all");
+}, 1000);
+
+test("keeps a real failure red when all four matrix legs were created", () => {
+  const jobs = [
+    ...matrixLegs.slice(0, 3),
+    { ...realFailure, name: matrixLegs[3]!.name },
+    gate,
+  ];
+  const lines = judgeMatrix(jobs);
+  expect(lines).toContain("rerun=false");
+}, 1000);
+
+test("keeps a real failure red alongside never-created matrix legs", () => {
+  const lines = judgeMatrix([
+    matrixLegs[0]!,
+    { ...realFailure, name: matrixLegs[1]!.name },
+    gate,
+  ]);
+  expect(lines).toContain("rerun=false");
+}, 1000);
+
+test("judges the matrix read through the API at the run head SHA", async () => {
+  for (const [nodes, expected] of [
+    ["24", "rerun=false"],
+    ["24, 26", "rerun=true"],
+  ] as const) {
+    const endpoints: string[] = [];
+    const lines = await judgeHead(
+      [...matrixLegs.slice(0, 2), gate],
+      (endpoint) => {
+        endpoints.push(endpoint);
+        return Promise.resolve(workflowAtHead(nodes));
+      },
+    );
+    expect(endpoints).toEqual([
+      `repos/harshanandak/forge/contents/.github/workflows/ci.yml?ref=${headSha}`,
+    ]);
+    expect(lines).toContain(expected);
+  }
+}, 1000);
+
+test("fails closed with a clear reason when head workflow cannot be read", async () => {
+  const lines = await judgeHead([unacquired, gate], () =>
+    Promise.reject(new Error("HTTP 404")),
+  );
+  expect(lines).toContain("rerun=false");
+  expect(lines.some((line) => /^reason=.*head.*workflow/i.test(line))).toBe(
+    true,
+  );
+}, 1000);
+
+test("reads fork workflow YAML as data without executing its steps", async () => {
+  const workflow = `${workflowAtHead("24, 26")}    steps:
+      - run: throw new Error('workflow data must not execute')
+`;
+  const lines = await judgeHead([...matrixLegs.slice(0, 2), gate], () =>
+    Promise.resolve(workflow),
+  );
+  expect(lines).toContain("rerun=true");
+}, 1000);
+
+test("refuses an empty matrix-name prefix instead of counting unrelated jobs", async () => {
+  const workflow = workflowAtHead("24, 26").replace(
+    "Verify (${{ matrix.os }}, Node ${{ matrix.node }})",
+    "${{ matrix.os }}",
+  );
+  const lines = await judgeHead(
+    [...matrixLegs.slice(0, 2), unacquired, gate],
+    () => Promise.resolve(workflow),
+  );
+  expect(lines).toContain("rerun=false");
+  expect(lines.join("\n")).toContain("ambiguous job name prefixes");
+}, 1000);
+
+test("refuses matrix prefixes overlapping a known job outside gate needs", async () => {
+  const workflow = `${workflowAtHead("24, 26")}  extra:
+    name: Verify (extra)
+`;
+  const lines = await judgeHead(
+    [...matrixLegs.slice(0, 2), unacquired, gate],
+    () => Promise.resolve(workflow),
+  );
+  expect(lines).toContain("rerun=false");
+  expect(lines.join("\n")).toContain("ambiguous job name prefixes");
+}, 1000);
+
+test("refuses head workflow data larger than 256 KB before parsing", async () => {
+  const lines = await judgeHead([unacquired, gate], () =>
+    Promise.resolve(`${workflowAtHead("24, 26")}#${"x".repeat(256 * 1024)}`),
+  );
+  expect(lines).toContain("rerun=false");
+  expect(lines.join("\n")).toContain("exceeds 256 KB");
+}, 1000);
+
+test("accepts anchored steps reused through aliases and counts the matrix", async () => {
+  const workflow = workflowAtHead("24, 26")
+    .replace(
+      "  ci-gate:",
+      `    steps: &record-steps
+      - name: Start timing record
+        run: echo start
+      - name: Write timing record
+        run: echo finish
+  ci-gate:`,
+    )
+    .concat("    steps: *record-steps\n");
+  for (const [legs, rerun] of [
+    [2, true],
+    [4, false],
+  ] as const) {
+    const lines = await judgeHead([...matrixLegs.slice(0, legs), gate], () =>
+      Promise.resolve(workflow),
+    );
+    expect(lines).toContain(`rerun=${rerun}`);
+    if (rerun) expect(lines).toContain("scope=all");
+  }
+}, 1000);
+
+test("refuses billion-laughs expansion through the YAML alias limit", async () => {
+  const workflow = `${workflowAtHead("24, 26")}
+a: &a [lol, lol, lol, lol, lol, lol, lol, lol, lol, lol]
+b: &b [*a, *a, *a, *a, *a, *a, *a, *a, *a, *a]
+c: &c [*b, *b, *b, *b, *b, *b, *b, *b, *b, *b]
+`;
+  const lines = await judgeHead([unacquired, gate], () =>
+    Promise.resolve(workflow),
+  );
+  expect(lines).toContain("rerun=false");
+  expect(lines.join("\n")).toContain("exceeds YAML alias limit");
+}, 1000);
+
+test("refuses custom-tag warnings from the YAML parser", async () => {
+  const lines = await judgeHead([unacquired, gate], () =>
+    Promise.resolve(`${workflowAtHead("24, 26")}value: !custom tagged\n`),
+  );
+  expect(lines).toContain("rerun=false");
+  expect(lines.join("\n")).toContain("YAML errors or warnings");
+}, 1000);
+
+test("stops and cancels the contents stream when its byte cap is exceeded", async () => {
+  let cancelled = false;
+  const stream = new ReadableStream<Uint8Array>(
+    {
+      pull(controller) {
+        controller.enqueue(new Uint8Array(256 * 1024 + 1));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  await expect(
+    readHeadWorkflow("fixture", headEnv, (_url, init) => {
+      expect(init.signal).toBeInstanceOf(AbortSignal);
+      return Promise.resolve(new Response(stream));
+    }),
+  ).rejects.toThrow("exceeds 256 KB");
+  expect(cancelled).toBe(true);
+}, 1000);
+
+test("reports a timed-out head workflow read without rerunning", async () => {
+  const lines = await judgeHead([unacquired, gate], () =>
+    Promise.reject(new DOMException("Request timed out", "TimeoutError")),
+  );
+  expect(lines).toContain("rerun=false");
+  expect(lines.join("\n")).toContain("read timed out");
+}, 1000);
+
+for (const [name, equal, hasBase, rerun] of [
+  ["equal workflow blobs proceed", true, true, true],
+  ["different workflow blobs refuse", false, true, false],
+  ["missing base SHA refuses", true, false, false],
+] as const) {
+  test(`pull-request workflow revision: ${name}`, async () => {
+    const baseSha = "b".repeat(40);
+    const endpoints: string[] = [];
+    const lines = (
+      await ciUnacquired.decisionAtHead(
+        [{ jobs: [...matrixLegs.slice(0, 2), gate] }],
+        {
+          ...headRun,
+          event: "pull_request",
+          pull_requests: hasBase ? [{ base: { sha: baseSha } }] : [],
+        },
+        headEnv,
+        (endpoint) => {
+          endpoints.push(endpoint);
+          return Promise.resolve(
+            JSON.stringify({
+              sha:
+                endpoint.endsWith(baseSha) && !equal
+                  ? "c".repeat(40)
+                  : "a".repeat(40),
+              encoding: "base64",
+              content: Buffer.from(workflowAtHead("24, 26")).toString("base64"),
+            }),
+          );
+        },
+      )
+    ).split("\n");
+    expect(lines).toContain(`rerun=${rerun}`);
+    if (!rerun)
+      expect(lines.join("\n")).toContain("workflow revision ambiguous");
+    expect(endpoints).toHaveLength(hasBase ? 2 : 0);
+  }, 1000);
+}
