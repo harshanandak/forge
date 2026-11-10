@@ -15,7 +15,7 @@ import {
 } from "@cloudflare/workers-oauth-provider";
 import { guardRegistration, REGISTRATION_LIMITS } from "./registration.ts";
 import { productionOptions } from "./production.ts";
-import { bearer, wellFormed } from "../../tokens.ts";
+import { bearer, sha256, wellFormed } from "../../tokens.ts";
 export { Project } from "../../worker.ts";
 export { CodeRedemption } from "./redemption.ts";
 export { RegistrationLimiter } from "./registration.ts";
@@ -161,7 +161,12 @@ export function createConfiguredWorker(
             if (principal.kind !== "person")
               throw new Error("Invalid principal");
             const headers = new Headers(request.headers);
-            headers.set("X-Forge-Owner", principal.identity.subject);
+            const identity = principal.identity;
+            headers.set(
+              "X-Forge-Owner",
+              `oauth-owner:${await sha256(JSON.stringify([identity.issuer, identity.subject]))}`,
+            );
+            headers.set("X-Forge-Owner-Expires", String(identity.expiresAt));
             return env.PROJECTS.get(env.PROJECTS.idFromName(project)).fetch(
               new Request(request, { headers }),
             );

@@ -280,19 +280,19 @@ export class Project {
       if (owner === null && presented === undefined)
         throw fail("AUTH_REQUIRED", "A device token is required");
       const parts = owner === null ? await tokenParts(presented!) : undefined;
-      if (owner !== null && writes && !(await this.#isProvisioned())) {
-        if ((await this.#storage.get(STAGED)) !== undefined)
-          await this.#abandon();
-        await this.#storage.put(PROVISIONED, true);
-        this.#provisioned = true;
-      }
       if (parts !== undefined && !(await this.#isProvisioned()))
         throw fail("AUTH_INVALID", "Token is not valid");
       if (parts !== undefined) authorize(this.#open().db, parts, Date.now());
       const body = writes ? await bounded(request) : "";
+      if (
+        owner !== null &&
+        writes &&
+        (await this.#storage.get(STAGED)) !== undefined
+      )
+        throw fail("INPUT_CONFLICT", "An admin restore is under way");
       const device =
         parts === undefined
-          ? undefined
+          ? owner!
           : authorize(this.#open().db, parts, Date.now());
       if (reads) {
         const subject = url.searchParams.get("subject");
@@ -305,14 +305,19 @@ export class Project {
             : null,
         });
       }
-      return Response.json({
-        ok: true,
-        value: this.#write(
-          route as "claim" | "renew" | "release",
-          body,
-          device,
-        ),
-      });
+      const value = this.#write(
+        route as "claim" | "renew" | "release",
+        body,
+        device,
+        owner === null
+          ? undefined
+          : Number(request.headers.get("X-Forge-Owner-Expires")),
+      );
+      if (owner !== null && !this.#provisioned) {
+        this.#provisioned = true;
+        await this.#storage.put(PROVISIONED, true);
+      }
+      return Response.json({ ok: true, value });
     } catch (error) {
       await discard(request);
       if (!(error instanceof ForgeFailure)) {
@@ -377,8 +382,14 @@ export class Project {
   #write(
     route: "claim" | "renew" | "release",
     body: string,
-    device: string | undefined,
+    device: string,
+    expiresAt?: number,
   ): LeaseRecord {
+    const checkExpiry = () => {
+      if (expiresAt !== undefined && !(expiresAt > Date.now()))
+        throw fail("AUTH_EXPIRED", "Token expired");
+    };
+    checkExpiry();
     let parsed: unknown;
     try {
       parsed = JSON.parse(body);
@@ -400,17 +411,14 @@ export class Project {
       );
     // A device token acts only as its own device: the server sets the holder's device from the token.
     const named = checked.value.session.device;
-    if (device !== undefined && named !== undefined && named !== device)
+    if (named !== undefined && named !== device)
       throw fail(
         "AUTH_DEVICE_MISMATCH",
         `Token is for device ${device} but the request names device ${named}`,
       );
     const holder: LeaseHolder = {
       ...checked.value,
-      session:
-        device === undefined
-          ? checked.value.session
-          : { ...checked.value.session, device },
+      session: { ...checked.value.session, device },
     };
     const ttlMs = route === "release" ? null : integer(input, "ttlMs");
     const generation = route === "claim" ? null : integer(input, "generation");
@@ -438,12 +446,14 @@ export class Project {
           message: "Request ID belongs to a different input",
           retry: "reconcile_first",
         });
+      checkExpiry();
       return this.#replay(route, requestId, prior, subject, holder);
     }
     try {
       // The change and its receipt commit together: if the receipt insert fails, the change rolls
       // back, so a retry after the 500 starts from the state the caller last saw.
       return this.#open().db.transaction(() => {
+        checkExpiry();
         const fence = { subject, holder, generation: generation ?? 0 };
         const lease =
           route === "claim"

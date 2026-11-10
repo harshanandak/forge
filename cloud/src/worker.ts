@@ -52,9 +52,13 @@ const legacyWorker = {
     forward?: ProjectForward,
   ): Promise<Response> {
     // Only an authorized forward may supply this header to the private Project binding.
-    if (request.headers.has("X-Forge-Owner")) {
+    if (
+      request.headers.has("X-Forge-Owner") ||
+      request.headers.has("X-Forge-Owner-Expires")
+    ) {
       const headers = new Headers(request.headers);
       headers.delete("X-Forge-Owner");
+      headers.delete("X-Forge-Owner-Expires");
       request = new Request(request, { headers });
     }
     if (isOAuthRoute(request))
