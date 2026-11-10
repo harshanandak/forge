@@ -28,7 +28,7 @@ test("the team build emits only team artifacts and preserves the public output",
   const before = publicFiles.map((path) =>
     readFileSync(join(repoRoot, "dist", path)),
   );
-  const scratch = mkdtempSync(join(tmpdir(), "forge-team-build-"));
+  const scratch = mkdtempSync(join(tmpdir(), "team-build-"));
   try {
     cpSync(join(repoRoot, "team"), join(scratch, "team"), { recursive: true });
     cpSync(join(repoRoot, "package.json"), join(scratch, "package.json"));

@@ -184,7 +184,9 @@ const TEAM_LOADING_SITES: Readonly<Record<string, string>> = {
 
 const slashPath = (path: string): string => path.replaceAll("\\", "/");
 const inTeam = (path: string): boolean =>
-  /^(?:dist\/)?team(?:\/|$)/i.test(posix.normalize(slashPath(path)));
+  /^(?:(?:dist\/)?team|dist-team)(?:\/|$)/i.test(
+    posix.normalize(slashPath(path)),
+  );
 
 /** R1/R2: a dependency is imported only inside its adapter, and ports are the only way in. */
 export function findDependencyViolations(
