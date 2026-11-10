@@ -329,6 +329,11 @@ function oauthMintRefusal(file: SourceFile): IdentityTokenRefusal | undefined {
     for (let i = 0; i < raw.length; i++) {
       const token = raw[i]!;
       if (
+        token.kind === "identifier" &&
+        ["eval", "Function", "setTimeout", "setInterval"].includes(token.text)
+      )
+        throw new IdentityTokenRefusal("executable source");
+      if (
         token.kind !== "identifier" ||
         !["import", "require"].includes(token.text)
       )
