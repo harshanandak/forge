@@ -36,3 +36,19 @@ export interface OAuthAdapter {
     resource: Parameters<OAuthAuthorizationServer["validateToken"]>[0],
   ): Promise<boolean>;
 }
+
+/** Compiling CI red checkpoint; protocol implementation follows the lead relay. */
+export function createOAuthAdapter(_options: OAuthOptions): OAuthAdapter {
+  const pending = (): Promise<Response> =>
+    Promise.resolve(
+      Response.json({ error: "not_implemented" }, { status: 501 }),
+    );
+  return {
+    register: () => Promise.resolve(crypto.randomUUID()),
+    authorize: pending,
+    consent: pending,
+    callback: pending,
+    token: pending,
+    accepts: () => Promise.resolve(false),
+  };
+}
