@@ -50,6 +50,21 @@ const keywords = new Set(
   ),
 );
 class UnknownGlobalRefusal extends IdentityTokenRefusal {}
+class UnknownImportRefusal extends IdentityTokenRefusal {}
+const allowedImports = new Set([
+  "@cloudflare/workers-oauth-provider:AuthorizationError",
+  "@cloudflare/workers-oauth-provider:OAuthAuthorizationServer",
+  "@cloudflare/workers-oauth-provider:type Grant",
+  "../../../../src/ports/clock.ts:type ClockPort",
+  "../../../../src/ports/authorization.ts:type OAuthVerificationPort",
+  "../../../../src/ports/identity-mint.ts:mintIdentity",
+  "./redemption.ts:codeExpiresAt",
+  "./redemption.ts:validateCodeBindings",
+  "../../../../src/ports/identity.ts:isVerifiedIdentity",
+  "../../../../src/ports/identity.ts:type IdentityClaims",
+  "../../../../src/ports/identity.ts:type IdentityResult",
+  "../../../../src/ports/identity.ts:type VerifiedIdentity",
+]);
 
 const controls = new Set(["if", "while", "for", "with", "switch", "catch"]);
 const regexPrefix = new Set(
@@ -383,6 +398,7 @@ function executableKey(
 
 function oauthMintRefusal(file: SourceFile): IdentityTokenRefusal | undefined {
   try {
+    const importedBindings = new Set<string>();
     const hasMint = importsOf(file).some((s) => mintTarget(file.path, s));
     if (hasMint) {
       const text = file.text.replace(
@@ -393,31 +409,55 @@ function oauthMintRefusal(file: SourceFile): IdentityTokenRefusal | undefined {
         text === file.text ||
         importsOf({ ...file, text }).some((s) => mintTarget(file.path, s))
       )
-        throw new IdentityTokenRefusal(
-          "mint import is not the exact private binding",
+        throw new UnknownImportRefusal(
+          "unknown import: identity-mint mintIdentity is not the exact private binding",
         );
     }
     // Type erasure must not hide an ambiguous slash or an invalid raw token.
     const { tokens: raw, pairs: rawPairs } = identityTokens(file.text);
     for (let i = 0; i < raw.length; i++) {
       const token = raw[i]!;
-      if (executableKey(raw, rawPairs, i))
-        throw new IdentityTokenRefusal("executable source");
       if (
-        token.kind !== "identifier" ||
-        !["import", "require"].includes(token.text)
-      )
+        token.kind === "identifier" &&
+        ["import", "require"].includes(token.text)
+      ) {
+        let end = i;
+        while (end < raw.length && raw[end]?.text !== ";") end++;
+        const specifier =
+          raw[i + 1]?.text === "(" ? raw[i + 2]?.text : raw[end - 1]?.text;
+        const clause = raw
+          .slice(i, end)
+          .map((t) => (t.kind === "literal" ? "<literal>" : t.text))
+          .join(" ");
+        const match = /^import (type )?\{ (.+?) \} from <literal>$/.exec(
+          clause,
+        );
+        if (!match)
+          throw new UnknownImportRefusal(
+            `unknown import: ${specifier ?? token.text}`,
+          );
+        for (const item of match[2]!.replace(/ ,$/, "").split(" , ")) {
+          const imported = (match[1] ? "type " : "") + item;
+          if (!allowedImports.has(`${specifier}:${imported}`))
+            throw new UnknownImportRefusal(
+              `unknown import: ${specifier}:${imported}`,
+            );
+          if (!imported.startsWith("type ")) importedBindings.add(imported);
+        }
+        i = end;
         continue;
-      if (raw[i + 1]?.text === "(") {
-        const target = raw[i + 2];
-        if (
-          target?.kind !== "literal" ||
-          ![",", ")"].includes(raw[i + 3]?.text ?? "") ||
-          mintTarget(file.path, target.text)
-        )
-          throw new IdentityTokenRefusal("unclassified module load");
-      } else if (token.text === "require")
-        throw new IdentityTokenRefusal("escaped module loader");
+      }
+      const previous = raw[i - 1]?.text ?? "";
+      const next = raw[i + 1]?.text ?? "";
+      const member = [".", "?."].includes(previous);
+      const key =
+        ["{", ","].includes(previous) &&
+        [":", ",", "}", "=", "("].includes(next);
+      const isThis = token.kind === "identifier" && token.text === "this";
+      if (isThis || executableKey(raw, rawPairs, i))
+        throw new IdentityTokenRefusal("executable source");
+      if (executableNames.has(token.text) && (member || key))
+        throw new IdentityTokenRefusal("executable source");
     }
     // Erase types without erasing value references; tokenize before any text masking.
     const { tokens, pairs } = identityTokens(parsedSource(file));
@@ -624,8 +664,7 @@ function oauthMintRefusal(file: SourceFile): IdentityTokenRefusal | undefined {
         let end = i + 1;
         while (end < tokens.length && ![";", ")", "of", "in"].includes(at(end)))
           end = (pairs.get(end) ?? end) + 1;
-        const scope = region(i);
-        bindList(i + 1, end, scope);
+        bindList(i + 1, end, region(i));
         if (at(end) === "of") ignored.add(end);
       }
       if (at(i) === "class" && tokens[i + 1]?.kind === "identifier")
@@ -687,15 +726,7 @@ function oauthMintRefusal(file: SourceFile): IdentityTokenRefusal | undefined {
           )
         )
           refuse("unclassified import declaration");
-        for (let j = start; j <= i; j++) {
-          ignored.add(j);
-          if (
-            tokens[j]?.kind === "identifier" &&
-            !["import", "from", "as"].includes(at(j)) &&
-            at(j + 1) !== "as"
-          )
-            bindings.push({ name: at(j), ...root });
-        }
+        for (let j = start; j <= i; j++) ignored.add(j);
         continue;
       }
       if (tokens[i]?.kind !== "identifier" || at(i) !== "mintIdentity")
@@ -732,6 +763,7 @@ function oauthMintRefusal(file: SourceFile): IdentityTokenRefusal | undefined {
       if (key || method) continue;
       if (
         !allowedGlobals.has(name) &&
+        !importedBindings.has(name) &&
         !bindings.some((b) => b.name === name && b.start <= i && i <= b.end)
       )
         throw new UnknownGlobalRefusal(`unknown global: ${name}`);

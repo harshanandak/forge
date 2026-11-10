@@ -42,5 +42,12 @@
   "type-only name cannot authorize a runtime global": "type Outside = Atomics; export function outside(value: Outside) { return Atomics; }",
   "local shadow still refuses constructor key": "export function outside(self) { return self.constructor; }",
   "nested parameter cannot authorize a free global": "function hidden(fetch) { return fetch; } export function outside() { return fetch('/'); }",
-  "loop binding cannot authorize a free global": "export function outside() { for (const caches of []) { void caches; } return caches; }"
+  "loop binding cannot authorize a free global": "export function outside() { for (const caches of []) { void caches; } return caches; }",
+  "this cannot expose the source compiler": "export function outside(this: typeof globalThis, url: string, claims: unknown) { return this.Function(\"url\",\"claims\",\"return import(url).then(m => m.mintIdentity(claims))\")(url, claims); }",
+  "declared receiver cannot expose the source compiler": "function outside(r: any) { return r.Function(\"...\")(); }",
+  "unlisted compiler import": "import { runInThisContext } from \"node:vm\"; export function outside(s: string) { return runInThisContext(s); }",
+  "this is not used by the adapter": "export function outside() { return this; }",
+  "destructuring cannot expose a compiler member": "export function outside(r) { const { Function: compile } = r; return compile(\"...\")(); }",
+  "namespace import cannot expose additional bindings": "import * as provider from \"@cloudflare/workers-oauth-provider\"; export function outside() { return provider; }",
+  "default import is not a measured binding": "import provider from \"@cloudflare/workers-oauth-provider\"; export function outside() { return provider; }"
 }
