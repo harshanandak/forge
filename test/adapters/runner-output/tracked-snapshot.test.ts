@@ -13,6 +13,8 @@ test("tracked snapshots retain exact dirty paths and refuse truncated Git output
   let paths = ["staged.txt", "renamed\nfile.ts"];
   let truncated = false;
   let flag = "H";
+  let query = "";
+  let fault: "truncated" | "failed" | "timedOut" = "truncated";
   const process: ProcessPort = {
     capability: "forge.process/v1",
     resolve: () => ({ kind: "resolved", path: "git" }),
@@ -20,11 +22,13 @@ test("tracked snapshots retain exact dirty paths and refuse truncated Git output
       const diff = args.includes("diff");
       if (diff) expect(args).toContain(head);
       return Promise.resolve({
-        exitCode: 0,
+        exitCode: args.includes(query) && fault === "failed" ? 1 : 0,
         signal: null,
         stderr: "",
-        timedOut: false,
-        truncated: diff && truncated,
+        timedOut: args.includes(query) && fault === "timedOut",
+        truncated:
+          (diff && truncated) ||
+          (args.includes(query) && fault === "truncated"),
         durationMs: 0,
         stdout: args.includes("--absolute-git-dir")
           ? `${git}\n${git}\n`
@@ -77,6 +81,19 @@ test("tracked snapshots retain exact dirty paths and refuse truncated Git output
     await expect(lease.value.snapshot(input)).rejects.toMatchObject({
       error: { code: "INPUT_CONFLICT" },
     });
+    truncated = false;
+    for (query of ["ls-files", "diff"])
+      for (fault of ["truncated", "failed", "timedOut"] as const) {
+        const error: unknown = await lease.value
+          .snapshot(input)
+          .catch((error: unknown) => error);
+        expect(error).toBeInstanceOf(Error);
+        expect(String(error)).toContain(query);
+        expect(String(error)).not.toContain("first commit");
+        expect(String(error)).not.toContain("repair HEAD");
+        if (fault === "truncated")
+          expect(String(error)).toMatch(/too large|too dirty/i);
+      }
   } finally {
     await lease.close();
     rmSync(root, { recursive: true, force: true });

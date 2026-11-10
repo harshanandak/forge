@@ -216,6 +216,7 @@ function fixture(checks = ["typecheck"]) {
   });
   return {
     records,
+    services,
     files,
     gh,
     config,
@@ -335,6 +336,30 @@ test("a head pin that differs from GitHub pauses before anything is journaled", 
   expect(action.raw).toContain(head);
   expect(f.records.has("autopilot:work-1")).toBe(false);
 });
+
+test("a dirty PASS at the merge commit pauses until a clean receipt is recorded", async () => {
+  const f = fixture();
+  const get = f.services.receipts.get;
+  f.services.receipts.get = (id: string) => {
+    const receipt = get(id);
+    return receipt && id === "r1"
+      ? {
+          ...receipt,
+          reason: "TRACKED_INPUTS_DIRTY: not head-eligible; behavior.ts",
+        }
+      : receipt;
+  };
+  await f.next();
+  await f.record(1, { receipt: "r1" });
+  const action = await f.next();
+  expect(action.kind).toBe("pause");
+  expect(action.ask).toBe(
+    "Run the checks again at the merge commit on a clean tracked tree and record the new receipt id.",
+  );
+  f.services.receipts.get = get;
+  await f.record(1, { receipt: "thin" });
+  expect(await f.next()).toMatchObject({ step: "close", kind: "forge" });
+}, 1000);
 
 test("a receipt at another commit pauses and quotes the receipt", async () => {
   const f = fixture();

@@ -538,6 +538,62 @@ for (const [name, paths] of [
   }, 1000);
 }
 
+for (const [result, status, cliExit] of [
+  [{ exitCode: 0 }, "PASS", 0],
+  [{ exitCode: 1 }, "FAIL", 1],
+  [{ timedOut: true, exitCode: null }, "INCOMPLETE", 2],
+] as const) {
+  test(`500 dirty paths fit a small receipt without changing ${status}`, async () => {
+    const paths = Array.from(
+      { length: 500 },
+      (_, i) => `src/${String(i).padStart(3, "0")}-${"x".repeat(80)}.ts`,
+    );
+    const { services } = fixture(result);
+    trackedChanges(services, [paths, paths]);
+    const check = createCheck(services);
+    const capped = {
+      ...config,
+      maxMetadataBytes: 4096,
+      maxReceiptBytes: 8192,
+      outputHeadBytes: 64,
+      outputTailBytes: 64,
+    };
+    const receipt = await check.run({}, capped);
+    expect(receipt.status).toBe(status);
+    expect(receipt.runs[0]?.exitCode).toBe(result.exitCode);
+    expect(receipt.reason).toStartWith("TRACKED_INPUTS_DIRTY:");
+    expect(receipt.reason).toContain(paths[0]!);
+    expect(receipt.reason).toMatch(/and \d+ more/);
+    expect(Buffer.byteLength(JSON.stringify(receipt))).toBeLessThanOrEqual(
+      capped.maxReceiptBytes,
+    );
+    expect(check.show(receipt.id)).toEqual(receipt);
+    expect(verifyReceipt(receipt, receipt.inputsDigest)).toBe(true);
+    expect(
+      exitCode(
+        status === "PASS"
+          ? {
+              ok: true,
+              op: "check.run",
+              status: "OK",
+              result: receipt,
+              warnings: [],
+            }
+          : {
+              ok: false,
+              status,
+              error: {
+                code: "CHECK_FAIL",
+                message: "Checks did not pass",
+                retry: "never",
+              },
+              warnings: [],
+            },
+      ),
+    ).toBe(cliExit);
+  }, 1000);
+}
+
 for (const paths of [[], [".forge/config.yaml"]])
   test(`clean tracked inputs with ${paths.join()} still certify the head`, async () => {
     const { services } = fixture();
