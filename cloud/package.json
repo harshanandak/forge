@@ -3,6 +3,9 @@
   "private": true,
   "type": "module",
   "description": "The Forge claim server: a Cloudflare Worker with one SQLite Durable Object per project.",
+  "dependencies": {
+    "@cloudflare/workers-oauth-provider": "1.2.4"
+  },
   "devDependencies": {
     "wrangler": "4.152.0"
   }
