@@ -52,3 +52,57 @@ test("runner-output is a pure declared provider with invocation lifetime", () =>
     "Invocation was cancelled",
   );
 }, 5000);
+
+test("assembly preserves structured failure evidence across report layouts and streams", () => {
+  const process: ProcessPort = {
+    capability: "forge.process/v1",
+    resolve() {
+      throw Error("pure parsing must not resolve a process");
+    },
+    run() {
+      throw Error("pure parsing must not launch a process");
+    },
+  };
+  const output = createAssemblyProviders(
+    "/unused",
+    { env: {} },
+    process,
+  ).runnerOutput({
+    op: "sample.parse",
+    effects: [],
+    signal: new AbortController().signal,
+    deadline: Date.now() + 5000,
+    processContainment: "supervised",
+  });
+  const value = { numTotalTests: 1, numFailedTests: 1, success: false };
+  const empty = JSON.stringify({ padding: "", ...value });
+  for (const json of [
+    JSON.stringify(value, null, 2),
+    "runner: " + JSON.stringify(value),
+    JSON.stringify({
+      padding: "x".repeat(65_537 - Buffer.byteLength(empty)),
+      ...value,
+    }),
+  ])
+    for (const stream of ["stdout", "stderr"] as const) {
+      const stdout =
+        "runner setup\nTests: 1 passed, 1 total" +
+        (stream === "stdout" ? "\n" + json : "");
+      const stderr = stream === "stderr" ? json : "";
+      const recognizer = output.recognize("auto");
+      for (const [channel, text] of [
+        ["stdout", stdout],
+        ["stderr", stderr],
+      ] as const)
+        for (const byte of Buffer.from(text))
+          recognizer.push(channel, Uint8Array.of(byte));
+      for (const report of [
+        output.parse(stdout, stderr, "auto"),
+        recognizer.report(),
+      ])
+        expect(
+          report.kind === "malformed" ||
+            (report.kind === "recognized" && (report.failed ?? 0) > 0),
+        ).toBe(true);
+    }
+}, 10_000);
