@@ -274,22 +274,35 @@ export class Project {
         );
       // The device is checked before the body is read, and again right before the write: nothing
       // awaits between that second check and the write, so a revoke cannot land between them.
+      // The private binding receives this only after the Worker strips outside headers and authorizes.
+      const owner = request.headers.get("X-Forge-Owner");
       const presented = bearer(request);
-      if (presented === undefined)
+      if (owner === null && presented === undefined)
         throw fail("AUTH_REQUIRED", "A device token is required");
-      const parts = await tokenParts(presented);
-      if (!(await this.#isProvisioned()))
+      const parts = owner === null ? await tokenParts(presented!) : undefined;
+      if (owner !== null && writes && !(await this.#isProvisioned())) {
+        if ((await this.#storage.get(STAGED)) !== undefined)
+          await this.#abandon();
+        await this.#storage.put(PROVISIONED, true);
+        this.#provisioned = true;
+      }
+      if (parts !== undefined && !(await this.#isProvisioned()))
         throw fail("AUTH_INVALID", "Token is not valid");
-      authorize(this.#open().db, parts, Date.now());
+      if (parts !== undefined) authorize(this.#open().db, parts, Date.now());
       const body = writes ? await bounded(request) : "";
-      const device = authorize(this.#open().db, parts, Date.now());
+      const device =
+        parts === undefined
+          ? undefined
+          : authorize(this.#open().db, parts, Date.now());
       if (reads) {
         const subject = url.searchParams.get("subject");
         if (subject === null || subject === "")
           throw fail("INPUT_INVALID", "subject is required");
         return Response.json({
           ok: true,
-          value: this.#open().owner.lease(NAMESPACE, subject) ?? null,
+          value: (await this.#isProvisioned())
+            ? (this.#open().owner.lease(NAMESPACE, subject) ?? null)
+            : null,
         });
       }
       return Response.json({
@@ -364,7 +377,7 @@ export class Project {
   #write(
     route: "claim" | "renew" | "release",
     body: string,
-    device: string,
+    device: string | undefined,
   ): LeaseRecord {
     let parsed: unknown;
     try {
@@ -387,14 +400,17 @@ export class Project {
       );
     // A device token acts only as its own device: the server sets the holder's device from the token.
     const named = checked.value.session.device;
-    if (named !== undefined && named !== device)
+    if (device !== undefined && named !== undefined && named !== device)
       throw fail(
         "AUTH_DEVICE_MISMATCH",
         `Token is for device ${device} but the request names device ${named}`,
       );
     const holder: LeaseHolder = {
       ...checked.value,
-      session: { ...checked.value.session, device },
+      session:
+        device === undefined
+          ? checked.value.session
+          : { ...checked.value.session, device },
     };
     const ttlMs = route === "release" ? null : integer(input, "ttlMs");
     const generation = route === "claim" ? null : integer(input, "generation");

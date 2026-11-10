@@ -28,6 +28,22 @@ export interface Access {
   readonly principal: Auth.Principal;
   readonly decision: Auth.AuthorizationDecision;
 }
+export const ownerPolicy = (
+  issuer: string,
+  subject?: string,
+): Auth.AuthorizationPort => ({
+  authorize: (request) => {
+    const { principal, authority } = request;
+    return authority !== "team" &&
+      subject !== undefined &&
+      principal.kind === "person" &&
+      isVerifiedIdentity(principal.identity) &&
+      principal.identity.issuer === issuer &&
+      principal.identity.subject === subject
+      ? { allowed: true }
+      : singleOwnerPolicy.authorize(request);
+  },
+});
 export type AuthComposition = ReturnType<typeof composeAuth>;
 export function composeAuth(
   oauth: Auth.OAuthVerificationPort | undefined,

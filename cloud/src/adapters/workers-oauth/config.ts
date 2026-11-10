@@ -37,6 +37,13 @@ export function readOAuthConfig(
   const clientId = read("CLERK_CLIENT_ID", (value) =>
     /^[\x21-\x7e]{1,256}$/.test(value),
   );
+  const ownerSubject =
+    vars.FORGE_OWNER_SUBJECT === undefined
+      ? undefined
+      : read(
+          "FORGE_OWNER_SUBJECT",
+          (value) => /^user_[A-Za-z0-9]+$/.test(value) && !/\s/.test(value),
+        );
   const redirectUri = read(
     "CLERK_REDIRECT_URI",
     (value) => https(value) && value === `${origin}/callback`,
@@ -50,6 +57,7 @@ export function readOAuthConfig(
   );
   return {
     issuer,
+    ...(ownerSubject === undefined ? {} : { ownerSubject }),
     authorizationUrl: new URL("/oauth/authorize", issuer).href,
     tokenUrl: new URL("/oauth/token", issuer).href,
     jwksUrl: new URL("/.well-known/jwks.json", issuer).href,

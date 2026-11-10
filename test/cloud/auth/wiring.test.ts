@@ -237,16 +237,16 @@ async function ownerFixture(claims = {}) {
   const project = new Project({
     storage: {
       sql: {
-        exec: (sql, ...bindings) => ({
-          toArray: () =>
-            db
-              .query(sql)
-              .all(
-                ...bindings.map((value) =>
-                  value instanceof ArrayBuffer ? new Uint8Array(value) : value,
-                ),
-              ) as Record<string, unknown>[],
-        }),
+        exec: (sql, ...bindings) => {
+          const rows = db
+            .query(sql)
+            .all(
+              ...bindings.map((value) =>
+                value instanceof ArrayBuffer ? new Uint8Array(value) : value,
+              ),
+            ) as Record<string, unknown>[];
+          return { toArray: () => rows };
+        },
       },
       transactionSync: (body) => db.transaction(body)(),
       get: (key) => Promise.resolve(values.get(key)),
@@ -294,6 +294,37 @@ test("configured owner reaches the real project object without injected policy o
     expect(await response.json()).toEqual({ ok: true, value: null });
     expect(f.names).toEqual(["a"]);
     expect(f.forward).toHaveBeenCalledTimes(0);
+    const status = await f.configured.fetch(
+      f.request("status", "fixture-admin"),
+      f.env,
+    );
+    expect(await status.json()).toMatchObject({
+      value: { initialized: false },
+    });
+    const holder = {
+      actor: { kind: "agent", id: "owner-agent" },
+      session: { id: "owner-session", device: "owner-laptop" },
+    };
+    for (const route of ["claim", "renew", "release"]) {
+      const written = await f.configured.fetch(
+        new Request(f.request(route), {
+          method: "POST",
+          body: JSON.stringify({
+            subject: "issue",
+            holder,
+            requestId: route,
+            ttlMs: 60_000,
+            generation: 1,
+          }),
+        }),
+        f.env,
+      );
+      expect(written.status).toBe(200);
+      expect(await written.json()).toMatchObject({
+        ok: true,
+        value: { holder },
+      });
+    }
   } finally {
     f.close();
   }
