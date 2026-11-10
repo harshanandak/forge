@@ -77,6 +77,7 @@ async function fixture() {
       { command: string; mode: "incomplete" | "missing" } | undefined,
     afterRead: undefined as (() => void) | undefined,
     duringRemove: undefined as (() => Promise<void>) | undefined,
+    afterCleanCheck: undefined as (() => Promise<void>) | undefined,
     duringRegistry: undefined as (() => void) | undefined,
     failRemove: false,
   };
@@ -138,6 +139,7 @@ async function fixture() {
         stdout = args[1] === "--is-ancestor" ? "" : args[1]!;
         exitCode = flags.merged ? 0 : 1;
       }
+      if (args[0] === "status") await flags.afterCleanCheck?.();
       // Like the real runner, cut output at the caller's cap and report truncation.
       let truncated = flags.truncateIndex && args[0] === "ls-files";
       if (Buffer.byteLength(stdout) > options.maxOutputBytes) {
@@ -508,7 +510,7 @@ function cleanupHeld(f: Awaited<ReturnType<typeof fixture>>) {
 }
 
 for (const failRemove of [false, true]) {
-  test(`state cleanup reservation fences reopening and claiming through removal ${failRemove ? "failure" : "success"}`, async () => {
+  test(`state cleanup reservation fences claiming through removal ${failRemove ? "failure" : "success"}`, async () => {
     const f = await fixture();
     try {
       const attempts: Awaited<ReturnType<typeof f.invoke>>[] = [];
@@ -519,14 +521,7 @@ for (const failRemove of [false, true]) {
       f.flags.failRemove = failRemove;
       f.flags.duringRemove = async () => {
         duringRemove = cleanupHeld(f);
-        const revision = f.owner.get(namespace, "issue:work-1")!.revision;
         attempts.push(
-          await f.invoke(
-            "issue.update",
-            { id: "sample-1", status: "open", expectRevision: revision },
-            true,
-            "competitor",
-          ),
           await f.invoke(
             "issue.claim",
             { id: "sample-1" },
@@ -548,7 +543,7 @@ for (const failRemove of [false, true]) {
         duringRegistry = cleanupHeld(f);
       };
       const released = await f.invoke("lane.release", { id: "sample-1" });
-      expect(attempts).toHaveLength(3);
+      expect(attempts).toHaveLength(2);
       for (const attempt of attempts) {
         expect(attempt).toMatchObject({
           ok: false,
@@ -576,6 +571,39 @@ for (const failRemove of [false, true]) {
     }
   }, 30_000);
 }
+
+test("an external state-store reopen before removal preserves the checkout and cleanup refuses claim", async () => {
+  const f = await fixture();
+  try {
+    let claimed: Awaited<ReturnType<typeof f.invoke>> | undefined;
+    let reserved = false;
+    f.flags.afterCleanCheck = async () => {
+      reserved = cleanupHeld(f);
+      f.change({ status: "open" });
+      claimed = await f.invoke("issue.claim", { id: "sample-1" });
+    };
+    const before = f.snapshot();
+    const released = await f.invoke("lane.release", { id: "sample-1" });
+    expect(reserved).toBe(true);
+    expect(claimed).toMatchObject({
+      ok: false,
+      error: { code: "INPUT_CONFLICT", retry: "reconcile_first" },
+    });
+    if (!claimed || claimed.ok)
+      throw new Error("Claim succeeded during cleanup");
+    expect(claimed.error.message).toMatch(/cleanup/i);
+    expect(released).toMatchObject({
+      ok: false,
+      error: { code: "INPUT_CONFLICT" },
+    });
+    expect(f.snapshot()).toBe(before);
+    expect(f.mutations).toEqual([]);
+    expect(f.owner.lease(namespace, "issue:work-1")).toBeUndefined();
+    expect(cleanupHeld(f)).toBe(false);
+  } finally {
+    await f.close();
+  }
+}, 30_000);
 
 test("a live state cleanup reservation refuses claiming an open issue without new file effects", async () => {
   const f = await fixture();
@@ -628,6 +656,36 @@ test("an abandoned state cleanup reservation expires and allows claim without ma
     });
     expect(f.calls).toEqual([]);
   } finally {
+    await f.close();
+  }
+}, 30_000);
+
+test("claim revokes its new lease when cleanup reserves during acquisition", async () => {
+  const f = await fixture();
+  const acquire = StateOwner.prototype.acquire;
+  const injected = spyOn(StateOwner.prototype, "acquire").mockImplementation(
+    function (this: StateOwner, ...args: Parameters<typeof acquire>) {
+      const lease = acquire.apply(this, args);
+      f.owner.put(
+        namespace,
+        cleanupKey,
+        { expiresAt: new Date(f.clock.now + 1000).toISOString() },
+        actor,
+        { expectRevision: 0 },
+      );
+      return lease;
+    },
+  );
+  try {
+    f.change({ status: "open" });
+    const claimed = await f.invoke("issue.claim", { id: "sample-1" });
+    expect(claimed).toMatchObject({
+      ok: false,
+      error: { code: "INPUT_CONFLICT", retry: "reconcile_first" },
+    });
+    expect(f.owner.lease(namespace, "issue:work-1")?.releasedAt).toBeDefined();
+  } finally {
+    injected.mockRestore();
     await f.close();
   }
 }, 30_000);
