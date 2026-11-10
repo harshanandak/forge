@@ -37,6 +37,7 @@ import {
 import { join, relative, resolve } from "node:path";
 import {
   checkLockHost,
+  checkUnpublishedLockOwner,
   lockHostIdentity,
 } from "../src/adapters/fs/clone-files.ts";
 import { setTimeout as delay } from "node:timers/promises";
@@ -268,7 +269,14 @@ function laneLockLive(lock: string): boolean {
   const match =
     owners.length === 1 &&
     owners[0]?.match(/^owner-([1-9]\d*)-[0-9a-f-]{36}(?:-([1-9]\d*))?$/);
-  if (!match) throw new Error(`unrecognized lane lock owner: ${lock}`);
+  if (!match) {
+    checkUnpublishedLockOwner(
+      lock,
+      owners,
+      relative(process.cwd(), lock).split("\\").join("/"),
+    );
+    throw new Error(`unrecognized lane lock owner: ${lock}`);
+  }
   checkLockHost(
     join(lock, owners[0]!),
     lockHostIdentity(),
