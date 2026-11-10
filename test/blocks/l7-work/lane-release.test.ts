@@ -76,6 +76,13 @@ async function fixture() {
     evidence: undefined as
       { command: string; mode: "incomplete" | "missing" } | undefined,
     afterRead: undefined as (() => void) | undefined,
+    duringRemove: undefined as (() => Promise<void>) | undefined,
+    afterCleanCheck: undefined as (() => Promise<void>) | undefined,
+    duringRegistry: undefined as (() => void) | undefined,
+    failRemove: false,
+    releaseDeadline: 0,
+    removeConfirmed: true,
+    removeError: undefined as string | undefined,
   };
   const calls: string[][] = [];
   const limits: { args: string[]; maxOutputBytes: number }[] = [];
@@ -83,6 +90,7 @@ async function fixture() {
   const process: providers.ProcessService = {
     cwd: root,
     capability: "forge.process/v1",
+    cleanupBudgetMs: providers.processCleanupBudgetMs(),
     resolve: (path) => ({ kind: "resolved", path }),
     async run(_executable, args, options) {
       calls.push([...args]);
@@ -106,9 +114,18 @@ async function fixture() {
         });
       else if (args[0] === "worktree" && args[1] === "list")
         stdout = `worktree ${root}\0branch refs/heads/main\0\0worktree ${flags.registeredWorktree}\0branch refs/heads/${flags.registeredBranch}\0\0`;
-      else if (args[0] === "worktree" && args[1] === "remove")
-        flags.present = false;
-      else if (args[0] === "update-ref" && args[2] === "refs/heads/feature")
+      else if (args[0] === "worktree" && args[1] === "remove") {
+        await flags.duringRemove?.();
+        if (flags.removeError)
+          throw Object.assign(
+            new Error("Removal termination was not confirmed"),
+            {
+              code: flags.removeError,
+            },
+          );
+        if (flags.failRemove) exitCode = 1;
+        else flags.present = false;
+      } else if (args[0] === "update-ref" && args[2] === "refs/heads/feature")
         flags.branch = false;
       else if (args[0] === "branch" && args.some((arg) => /^-[dD]$/.test(arg)))
         flags.branch = false;
@@ -133,6 +150,7 @@ async function fixture() {
         stdout = args[1] === "--is-ancestor" ? "" : args[1]!;
         exitCode = flags.merged ? 0 : 1;
       }
+      if (args[0] === "status") await flags.afterCleanCheck?.();
       // Like the real runner, cut output at the caller's cap and report truncation.
       let truncated = flags.truncateIndex && args[0] === "ls-files";
       if (Buffer.byteLength(stdout) > options.maxOutputBytes) {
@@ -162,6 +180,14 @@ async function fixture() {
         timedOut: flags.timeoutIndex && args[0] === "ls-files",
         truncated,
         durationMs: 0,
+        supervision: {
+          mode: "supervised",
+          backend: "process-group",
+          supervisorPid: 1,
+          stoppedPids: [],
+          confirmed: args[1] === "remove" ? flags.removeConfirmed : true,
+          supervisorResidentBytes: 0,
+        },
         ...(evidence === "missing"
           ? {}
           : {
@@ -178,6 +204,7 @@ async function fixture() {
     roots: { project: root, git: root, common: root },
     read: (path) => files.get(path),
     write: (path, text) => {
+      if (path === "forge-lanes.json") flags.duringRegistry?.();
       mutations.push(`write ${path}`);
       files.set(path, text);
     },
@@ -197,9 +224,11 @@ async function fixture() {
     },
     snapshot: () => Promise.resolve({ head, filesDigest: head }),
   };
+  const clock = { now: Date.now() };
   const open = blockCapture.open.bind(blockCapture),
     factory = providers.createAssemblyProviders;
   const mocks = [
+    spyOn(Date, "now").mockImplementation(() => clock.now),
     spyOn(blockCapture, "open").mockImplementation((path) =>
       open(path === source ? target : path),
     ),
@@ -209,7 +238,14 @@ async function fixture() {
     spyOn(providers, "createAssemblyProviders").mockImplementation(
       (...args) => ({
         ...factory(...args),
-        process: () => process,
+        process: (scope) => ({
+          ...process,
+          run: (executable, args, options) => {
+            if (scope.op === "lane.release")
+              flags.releaseDeadline = scope.deadline;
+            return process.run(executable, args, options);
+          },
+        }),
         openFiles: () =>
           Promise.resolve({
             ownership: "owned" as const,
@@ -225,7 +261,12 @@ async function fixture() {
     providers: { env: {} },
   });
   let request = 0;
-  const invoke = (op: string, input: object, leased = false) =>
+  const invoke = (
+    op: string,
+    input: object,
+    leased = false,
+    sessionId = session.id,
+  ) =>
     assembly.catalog.invoke({
       schemaVersion: "forge.invocation/1",
       requestId: `release-${++request}`,
@@ -234,7 +275,7 @@ async function fixture() {
       caller: "agent",
       context: {
         actor,
-        session,
+        session: { ...session, id: sessionId },
         project: { id: root, root },
         ...(leased ? { leaseGeneration: 1 } : {}),
       },
@@ -266,6 +307,7 @@ async function fixture() {
     });
   return {
     root,
+    clock,
     lane,
     flags,
     calls,
@@ -485,6 +527,265 @@ for (const mode of ["keep-open", "dropped"] as const) {
     }
   }, 30_000);
 }
+
+const cleanupKey = "cleanup:work-1";
+function cleanupHeld(f: Awaited<ReturnType<typeof fixture>>) {
+  const value = f.owner.get(namespace, cleanupKey)?.value as
+    { expiresAt: string } | undefined;
+  return !!value && Date.parse(value.expiresAt) > f.clock.now;
+}
+
+for (const failRemove of [false, true]) {
+  test(`state cleanup reservation fences claiming through removal ${failRemove ? "failure" : "success"}`, async () => {
+    const f = await fixture();
+    try {
+      const attempts: Awaited<ReturnType<typeof f.invoke>>[] = [];
+      let duringRemove = false;
+      let duringRegistry = false;
+      let closedAtRemove = false;
+      let unclaimedAtRemove = false;
+      f.flags.failRemove = failRemove;
+      f.flags.duringRemove = async () => {
+        duringRemove = cleanupHeld(f);
+        attempts.push(
+          await f.invoke(
+            "issue.claim",
+            { id: "sample-1" },
+            false,
+            "competitor",
+          ),
+          await f.invoke("issue.claim", { id: "sample-1" }),
+        );
+        closedAtRemove =
+          (f.owner.get(namespace, "issue:work-1")!.value as { status: string })
+            .status === "closed";
+        const lease = f.owner.lease(namespace, "issue:work-1");
+        unclaimedAtRemove =
+          !lease ||
+          !!lease.releasedAt ||
+          Date.parse(lease.expiresAt) <= f.clock.now;
+      };
+      f.flags.duringRegistry = () => {
+        duringRegistry = cleanupHeld(f);
+      };
+      const released = await f.invoke("lane.release", { id: "sample-1" });
+      expect(attempts).toHaveLength(2);
+      for (const attempt of attempts) {
+        expect(attempt).toMatchObject({
+          ok: false,
+          error: { code: "INPUT_CONFLICT", retry: "reconcile_first" },
+        });
+        if (attempt.ok) throw new Error("Cleanup allowed an issue mutation");
+        expect(attempt.error.message).toMatch(/cleanup/i);
+      }
+      expect(duringRemove).toBe(true);
+      expect(closedAtRemove).toBe(true);
+      expect(unclaimedAtRemove).toBe(true);
+      expect(released.ok, JSON.stringify(released)).toBe(!failRemove);
+      expect(duringRegistry).toBe(!failRemove);
+      expect(f.flags.present).toBe(failRemove);
+      expect(f.flags.branch).toBe(true);
+      expect(JSON.parse(f.files.get("forge-lanes.json")!)).toHaveLength(
+        failRemove ? 1 : 0,
+      );
+      expect(cleanupHeld(f)).toBe(false);
+      f.change({ status: "open" });
+      const claimed = await f.invoke("issue.claim", { id: "sample-1" });
+      expect(claimed.ok, JSON.stringify(claimed)).toBe(true);
+    } finally {
+      await f.close();
+    }
+  }, 30_000);
+}
+
+test("an external state-store reopen before removal preserves the checkout and cleanup refuses claim", async () => {
+  const f = await fixture();
+  try {
+    let claimed: Awaited<ReturnType<typeof f.invoke>> | undefined;
+    let reserved = false;
+    f.flags.afterCleanCheck = async () => {
+      reserved = cleanupHeld(f);
+      f.change({ status: "open" });
+      claimed = await f.invoke("issue.claim", { id: "sample-1" });
+    };
+    const before = f.snapshot();
+    const released = await f.invoke("lane.release", { id: "sample-1" });
+    expect(reserved).toBe(true);
+    expect(claimed).toMatchObject({
+      ok: false,
+      error: { code: "INPUT_CONFLICT", retry: "reconcile_first" },
+    });
+    if (!claimed || claimed.ok)
+      throw new Error("Claim succeeded during cleanup");
+    expect(claimed.error.message).toMatch(/cleanup/i);
+    expect(released).toMatchObject({
+      ok: false,
+      error: { code: "INPUT_CONFLICT" },
+    });
+    expect(f.snapshot()).toBe(before);
+    expect(f.mutations).toEqual([]);
+    expect(f.owner.lease(namespace, "issue:work-1")).toBeUndefined();
+    expect(cleanupHeld(f)).toBe(false);
+  } finally {
+    await f.close();
+  }
+}, 30_000);
+
+test("cleanup fences claim past the invocation deadline while removal is pending", async () => {
+  const f = await fixture();
+  try {
+    const attempts: Awaited<ReturnType<typeof f.invoke>>[] = [];
+    let expiresAt = "";
+    f.flags.failRemove = true;
+    f.flags.duringRemove = async () => {
+      expiresAt = (
+        f.owner.get(namespace, cleanupKey)!.value as { expiresAt: string }
+      ).expiresAt;
+      f.clock.now = f.flags.releaseDeadline + 1;
+      f.change({ status: "open" });
+      attempts.push(await f.invoke("issue.claim", { id: "sample-1" }));
+      f.clock.now =
+        f.flags.releaseDeadline + providers.processCleanupBudgetMs();
+      attempts.push(await f.invoke("issue.claim", { id: "sample-1" }));
+    };
+    const released = await f.invoke("lane.release", { id: "sample-1" });
+    expect(released.ok).toBe(false);
+    expect(attempts).toHaveLength(2);
+    expect(Date.parse(expiresAt)).toBeGreaterThan(
+      f.flags.releaseDeadline + providers.processCleanupBudgetMs(),
+    );
+    for (const claimed of attempts) {
+      expect(claimed).toMatchObject({
+        ok: false,
+        error: { code: "INPUT_CONFLICT", retry: "reconcile_first" },
+      });
+      if (claimed.ok) throw new Error("Claim succeeded during pending removal");
+      expect(claimed.error.message).toContain(expiresAt);
+      expect(claimed.error.message).toMatch(/expire.*wait/i);
+    }
+    expect(f.flags.present).toBe(true);
+    expect(JSON.parse(f.files.get("forge-lanes.json")!)).toHaveLength(1);
+    expect(f.owner.lease(namespace, "issue:work-1")).toBeUndefined();
+    expect(cleanupHeld(f)).toBe(true);
+    f.clock.now = Date.parse(expiresAt) + 1;
+    expect((await f.invoke("issue.claim", { id: "sample-1" })).ok).toBe(true);
+  } finally {
+    await f.close();
+  }
+}, 30_000);
+
+for (const outcome of ["unconfirmed result", "TREE_KILL_FAILED"] as const) {
+  test(`cleanup keeps its reservation until TTL after ${outcome}`, async () => {
+    const f = await fixture();
+    try {
+      f.flags.failRemove = true;
+      f.flags.removeConfirmed = false;
+      if (outcome === "TREE_KILL_FAILED") f.flags.removeError = outcome;
+      const released = await f.invoke("lane.release", { id: "sample-1" });
+      expect(released.ok).toBe(false);
+      expect(cleanupHeld(f)).toBe(true);
+      expect(f.flags.present).toBe(true);
+      expect(JSON.parse(f.files.get("forge-lanes.json")!)).toHaveLength(1);
+      f.change({ status: "open" });
+      expect(await f.invoke("issue.claim", { id: "sample-1" })).toMatchObject({
+        ok: false,
+        error: { code: "INPUT_CONFLICT", retry: "reconcile_first" },
+      });
+      const { expiresAt } = f.owner.get(namespace, cleanupKey)!.value as {
+        expiresAt: string;
+      };
+      f.clock.now = Date.parse(expiresAt) + 1;
+      expect((await f.invoke("issue.claim", { id: "sample-1" })).ok).toBe(true);
+    } finally {
+      await f.close();
+    }
+  }, 30_000);
+}
+
+test("a live state cleanup reservation refuses claiming an open issue without new file effects", async () => {
+  const f = await fixture();
+  try {
+    f.change({ status: "open" });
+    f.owner.put(
+      namespace,
+      cleanupKey,
+      { expiresAt: new Date(f.clock.now + 1000).toISOString() },
+      actor,
+      { expectRevision: 0 },
+    );
+    const claimed = await f.invoke("issue.claim", { id: "sample-1" });
+    expect(claimed).toMatchObject({
+      ok: false,
+      error: { code: "INPUT_CONFLICT", retry: "reconcile_first" },
+    });
+    if (claimed.ok) throw new Error("Claim succeeded during cleanup");
+    expect(claimed.error.message).toMatch(/cleanup/i);
+    expect(f.owner.lease(namespace, "issue:work-1")).toBeUndefined();
+    expect(f.calls).toEqual([]);
+    expect(f.mutations).toEqual([]);
+  } finally {
+    await f.close();
+  }
+}, 30_000);
+
+test("an abandoned state cleanup reservation expires and allows claim without manual recovery", async () => {
+  const f = await fixture();
+  try {
+    f.change({ status: "open" });
+    f.owner.put(
+      namespace,
+      cleanupKey,
+      { expiresAt: new Date(f.clock.now + 1000).toISOString() },
+      actor,
+      { expectRevision: 0 },
+    );
+    const blocked = await f.invoke("issue.claim", { id: "sample-1" });
+    expect(blocked).toMatchObject({
+      ok: false,
+      error: { code: "INPUT_CONFLICT", retry: "reconcile_first" },
+    });
+    f.clock.now += 1001;
+    const claimed = await f.invoke("issue.claim", { id: "sample-1" });
+    expect(claimed.ok, JSON.stringify(claimed)).toBe(true);
+    expect(f.owner.lease(namespace, "issue:work-1")?.holder).toEqual({
+      actor,
+      session,
+    });
+    expect(f.calls).toEqual([]);
+  } finally {
+    await f.close();
+  }
+}, 30_000);
+
+test("claim revokes its new lease when cleanup reserves during acquisition", async () => {
+  const f = await fixture();
+  const acquire = StateOwner.prototype.acquire.bind(f.owner);
+  const injected = spyOn(StateOwner.prototype, "acquire").mockImplementation(
+    (...args: Parameters<typeof acquire>) => {
+      const lease = acquire(...args);
+      f.owner.put(
+        namespace,
+        cleanupKey,
+        { expiresAt: new Date(f.clock.now + 1000).toISOString() },
+        actor,
+        { expectRevision: 0 },
+      );
+      return lease;
+    },
+  );
+  try {
+    f.change({ status: "open" });
+    const claimed = await f.invoke("issue.claim", { id: "sample-1" });
+    expect(claimed).toMatchObject({
+      ok: false,
+      error: { code: "INPUT_CONFLICT", retry: "reconcile_first" },
+    });
+    expect(f.owner.lease(namespace, "issue:work-1")?.releasedAt).toBeDefined();
+  } finally {
+    injected.mockRestore();
+    await f.close();
+  }
+}, 30_000);
 
 const lsFilesLimit = 33_554_432,
   defaultLimit = 262_144,

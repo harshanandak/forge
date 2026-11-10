@@ -398,6 +398,20 @@ function live(state: LeaseStateClient, id: string) {
     ? lease
     : undefined;
 }
+const cleanupKey = (id: string) => `cleanup:${id}`;
+function cleanupHeld(state: LeaseStateClient, id: string): string | undefined {
+  const value = state.get(cleanupKey(id))?.value as
+    { expiresAt: string } | undefined;
+  return value && Date.parse(value.expiresAt) > state.now()
+    ? value.expiresAt
+    : undefined;
+}
+function cleanupConflict(expiresAt: string): never {
+  fail(
+    "INPUT_CONFLICT",
+    `Lane cleanup is in progress; the reservation expires at ${expiresAt}. Wait until then and retry; no repair is needed`,
+  );
+}
 function item(
   state: LeaseStateClient,
   record: StateRecord,
@@ -3997,10 +4011,19 @@ const operations: Operations<WorkOperations> = {
       ]),
       git = executor.resolve("git", env),
       clock = laneClock(services);
+    const cleanupBudget = executor.cleanupBudgetMs;
+    if (
+      typeof cleanupBudget !== "number" ||
+      !Number.isSafeInteger(cleanupBudget) ||
+      cleanupBudget < 0
+    )
+      fail("UNAVAILABLE", "Lane release needs the process cleanup budget");
     if (git.kind !== "resolved")
       fail("UNAVAILABLE", "Install Git and put it on PATH");
     const lock = files.lock([registryLock], { recoverDeadOwner: true });
     let runLock: ReturnType<FilesService["lock"]> | undefined;
+    let reservation: StateRecord | undefined;
+    let removalStopped = true;
     try {
       const saved = laneRegistry(files),
         lane = saved.lanes.find((row) => laneIdentity(row) === id);
@@ -4020,6 +4043,20 @@ const operations: Operations<WorkOperations> = {
           );
       };
       eligible();
+      const issue = get(state, id),
+        previous = state.get(cleanupKey(id));
+      const held = cleanupHeld(state, id);
+      if (held) cleanupConflict(held);
+      // Cancellation starts adapter cleanup; keep fencing until its bound plus a margin.
+      const expiresAt = new Date(deadline + cleanupBudget + 1000).toISOString();
+      reservation = persist(
+        state,
+        cleanupKey(id),
+        { expiresAt },
+        previous?.revision ?? 0,
+        undefined,
+        [{ key: issue.key, expectRevision: issue.revision }],
+      );
       for (const name of new Set([input.id, lane.issue, id])) {
         const path = `forge-lane-${name}.lock`,
           info = files.inspect(path, "common");
@@ -4045,6 +4082,8 @@ const operations: Operations<WorkOperations> = {
         const remaining = deadline - clock();
         if (remaining <= 0)
           fail("INVOCATION_TIMEOUT", "Lane release deadline expired");
+        const removing = args[0] === "worktree" && args[1] === "remove";
+        if (removing) removalStopped = false;
         const result = await executor.run(git, args, {
           cwd,
           env,
@@ -4055,6 +4094,14 @@ const operations: Operations<WorkOperations> = {
           capture: { headBytes: maxOutputBytes, tailBytes: 0 },
           ...(leaveDirectory ? { leaveDirectory } : {}),
         });
+        if (removing) {
+          removalStopped = result.supervision?.confirmed !== false;
+          if (!removalStopped)
+            fail(
+              "UNAVAILABLE",
+              `Git termination was not confirmed; the cleanup reservation expires at ${expiresAt}. Wait until then and retry; no repair is needed`,
+            );
+        }
         eligible();
         const unavailable = () =>
           fail(
@@ -4200,9 +4247,19 @@ const operations: Operations<WorkOperations> = {
       };
     } finally {
       try {
-        runLock?.release();
+        if (reservation && removalStopped)
+          persist(
+            state,
+            reservation.key,
+            { expiresAt: new Date(state.now()).toISOString() },
+            reservation.revision,
+          );
       } finally {
-        lock.release();
+        try {
+          runLock?.release();
+        } finally {
+          lock.release();
+        }
       }
     }
   },
@@ -4945,6 +5002,8 @@ const operations: Operations<WorkOperations> = {
     const state = client(services);
     const ids = idsFor(state, config);
     const id = ids.stored(input.id);
+    const held = cleanupHeld(state, id);
+    if (held) cleanupConflict(held);
     if (stored(get(state, id, input.id)).status !== "open")
       fail("INPUT_CONFLICT", "Closed issues cannot be claimed");
     const ttl =
@@ -4952,6 +5011,12 @@ const operations: Operations<WorkOperations> = {
       (config as WorkConfig | undefined)?.claimTtlSeconds ??
       3600;
     const acquired = state.acquire(key(id), ttl * 1000);
+    // Cleanup may reserve between the first check and acquiring the issue lease.
+    const reserved = cleanupHeld(state, id);
+    if (reserved) {
+      state.release(key(id));
+      cleanupConflict(reserved);
+    }
     // Another holder may close between the initial read and acquisition.
     if (stored(get(state, id, input.id)).status !== "open") {
       state.release(key(id));
