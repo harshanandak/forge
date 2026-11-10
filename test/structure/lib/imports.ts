@@ -112,8 +112,16 @@ function declared(pkg: PackageJson): Set<string> {
   ]);
 }
 
+const slashPath = (path: string): string => path.replaceAll("\\", "/");
+const boundaryPath = (path: string): string =>
+  posix.normalize(slashPath(path)).toLowerCase();
+const inFolder = (path: string, folder: string): boolean => {
+  const normalized = boundaryPath(path);
+  return normalized === folder || normalized.startsWith(`${folder}/`);
+};
+
 function adapterOf(path: string): string | undefined {
-  const match = /^(cloud\/)?src\/adapters\/([^/]+)\//.exec(path);
+  const match = /^(cloud\/)?src\/adapters\/([^/]+)\//.exec(boundaryPath(path));
   return match === null ? undefined : `${match[1] ?? ""}${match[2]}`;
 }
 
@@ -182,11 +190,8 @@ const TEAM_LOADING_SITES: Readonly<Record<string, string>> = {
   "src/assembly/capture.ts": "Resolves installed package roots.",
 };
 
-const slashPath = (path: string): string => path.replaceAll("\\", "/");
 const inTeam = (path: string): boolean =>
-  /^(?:(?:dist\/)?team|dist-team)(?:\/|$)/i.test(
-    posix.normalize(slashPath(path)),
-  );
+  /^(?:(?:dist\/)?team|dist-team)(?:\/|$)/.test(boundaryPath(path));
 
 /** R1/R2: a dependency is imported only inside its adapter, and ports are the only way in. */
 export function findDependencyViolations(
@@ -198,7 +203,8 @@ export function findDependencyViolations(
   const knownPackages = declared(pkg);
   const runtime = new Set(Object.keys(pkg.dependencies ?? {}));
   const cloud = JSON.parse(
-    files.find((file) => file.path === "cloud/package.json")?.text ?? "{}",
+    files.find((file) => boundaryPath(file.path) === "cloud/package.json")
+      ?.text ?? "{}",
   ) as PackageJson;
   const cloudPackages = declared(cloud);
   const cloudRuntime = new Set(Object.keys(cloud.dependencies ?? {}));
@@ -212,7 +218,7 @@ export function findDependencyViolations(
   const cloudAdapters: AdapterManifest[] = [];
   for (const file of files) {
     const name = /^cloud\/src\/adapters\/([^/]+)\/adapter\.json$/.exec(
-      file.path,
+      boundaryPath(file.path),
     )?.[1];
     if (name === undefined) continue;
     const value: unknown = JSON.parse(file.text);
@@ -232,9 +238,10 @@ export function findDependencyViolations(
   }
 
   for (const file of files) {
+    const path = boundaryPath(file.path);
     const here = adapterOf(file.path);
-    const inCloud = file.path.startsWith("cloud/");
-    const inShipped = /^(?:src|bin|cloud\/src)\//.test(file.path);
+    const inCloud = inFolder(path, "cloud");
+    const inShipped = /^(?:src|bin|cloud\/src)\//.test(path);
     const isTest = isTestFile(file.path);
     const unownedFilesystem =
       file.path.startsWith("src/") && !FILESYSTEM_OWNERS.has(file.path);
@@ -251,9 +258,7 @@ export function findDependencyViolations(
     }
 
     const publicCode =
-      CODE_FILE.test(file.path) &&
-      !isTest &&
-      !/^team\//i.test(slashPath(file.path));
+      CODE_FILE.test(file.path) && !isTest && !inFolder(path, "team");
     const reportTeam = (message: string): void => {
       violations.push({ rule: "team-boundary", file: file.path, message });
     };
@@ -317,7 +322,12 @@ export function findDependencyViolations(
         );
     })) {
       const targets = specifier.startsWith(".")
-        ? [posix.join(posix.dirname(file.path), slashPath(specifier))]
+        ? [
+            posix.join(
+              posix.dirname(slashPath(file.path)),
+              slashPath(specifier),
+            ),
+          ]
         : aliasTargets(specifier, pkg).map((target) =>
             target.replace(/^\.\//, ""),
           );
@@ -330,8 +340,7 @@ export function findDependencyViolations(
         publicCode &&
         targets.some(
           (target) =>
-            isTestFile(posix.normalize(slashPath(target)).toLowerCase()) ||
-            /\.test\./i.test(target),
+            isTestFile(boundaryPath(target)) || /\.test\./i.test(target),
         )
       )
         reportTeam(
@@ -354,26 +363,24 @@ export function findDependencyViolations(
       if (
         !inCloud &&
         inShipped &&
-        targets.some((target) => target.startsWith("cloud/"))
+        targets.some((target) => inFolder(target, "cloud"))
       ) {
         fail("open core cannot import cloud-only code");
         continue;
       }
 
       if (specifier.startsWith(".")) {
-        const target = posix.normalize(
-          posix.join(posix.dirname(file.path), specifier),
-        );
+        const target = targets[0]!;
         if (
-          file.path.startsWith("cloud/src/") &&
-          targets[0]!.startsWith("cloud/") &&
-          !targets[0]!.startsWith("cloud/src/")
+          inFolder(path, "cloud/src") &&
+          inFolder(target, "cloud") &&
+          !inFolder(target, "cloud/src")
         ) {
           fail("cloud source cannot import outside cloud/src/");
           continue;
         }
         const into = adapterOf(target.endsWith("/") ? target : `${target}/`);
-        const assembly = file.path.startsWith("src/assembly/");
+        const assembly = inFolder(path, "src/assembly");
         if (inShipped && into !== undefined && into !== here && !assembly) {
           fail(
             `reaches into adapter "${into}"; import its port from src/ports instead`,
@@ -429,14 +436,17 @@ export function findDependencyViolations(
         .get(name)
         ?.filter(
           (candidate) =>
-            candidate.startsWith("cloud/") ===
+            inFolder(candidate, "cloud") ===
             (inCloud && cloudPackages.has(name)),
         );
       if (owner === undefined || owner.length === 0) {
         fail(
           `"${name}" has no adapter; declare it in src/adapters/<name>/adapter.json`,
         );
-      } else if (here === undefined || !owner.includes(here)) {
+      } else if (
+        here === undefined ||
+        !owner.some((candidate) => candidate.toLowerCase() === here)
+      ) {
         fail(
           `"${name}" belongs to adapter ${owner.join(", ")}; import its port, never the package`,
         );

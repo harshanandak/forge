@@ -62,6 +62,74 @@ const cloudManifest = {
   path: "cloud/package.json",
   text: JSON.stringify(packageFixtures.cloud),
 };
+const guardCases = readJson(
+  "test/structure/fixtures/package-guard-cases.json",
+) as {
+  aliases: Record<string, string>;
+  boundaries: { name: string; path: string; text: string; message: string }[];
+};
+
+for (const { name, path, text, message } of guardCases.boundaries) {
+  test(`dependency guard refuses ${name}`, () => {
+    const found = findDependencyViolations(
+      [cloudManifest, { path, text }],
+      packageFixtures.root,
+      packageFixtures.adapters,
+    );
+    expect(found.map((violation) => violation.file)).toEqual([path]);
+    expect(found[0]?.message).toContain(message);
+  }, 30_000);
+}
+
+for (const [kind, text] of Object.entries(guardCases.aliases)) {
+  for (const path of ["cloud/src/worker.ts", "cloud/lib/oauth.ts"]) {
+    for (const mapped of [false, true]) {
+      test(`${path} refuses alias ${kind} ${mapped ? "with" : "without"} an imports map`, () => {
+        const manifest = mapped
+          ? {
+              ...cloudManifest,
+              text: JSON.stringify({
+                ...packageFixtures.cloud,
+                imports: { "#oauth": "cloud-lib" },
+              }),
+            }
+          : cloudManifest;
+        const found = findDependencyViolations(
+          [manifest, { path, text }],
+          packageFixtures.root,
+          packageFixtures.adapters,
+        );
+        const source = found.filter((violation) => violation.file === path);
+        expect(source).toHaveLength(1);
+        expect(source[0]?.message).toContain(
+          "cloud import aliases are not supported",
+        );
+        expect(
+          found.filter((violation) => violation.file === manifest.path),
+        ).toHaveLength(mapped ? 1 : 0);
+      }, 30_000);
+    }
+  }
+}
+
+test("cloud manifest refuses an imports map without any source import", () => {
+  const found = findDependencyViolations(
+    [
+      {
+        ...cloudManifest,
+        text: JSON.stringify({ imports: { "#oauth": "cloud-lib" } }),
+      },
+    ],
+    packageFixtures.root,
+    packageFixtures.adapters,
+  );
+  expect(found.map((violation) => violation.file)).toEqual([
+    "cloud/package.json",
+  ]);
+  expect(found[0]?.message).toBe(
+    "cloud package imports aliases are not supported",
+  );
+}, 30_000);
 
 test("every cloud runtime dependency has a cloud adapter", () => {
   const cloud = scanAdapters(
