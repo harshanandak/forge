@@ -1,0 +1,73 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["items", "snapshotAt", "truncated"],
+  "properties": {
+    "items": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": { "$ref": "#/$defs/row" }
+    },
+    "snapshotAt": { "$ref": "#/$defs/time" },
+    "truncated": { "type": "boolean" },
+    "cursor": { "type": "string", "maxLength": 1024 }
+  },
+  "$defs": {
+    "time": { "type": "string", "format": "date-time" },
+    "holder": {
+      "description": "Unverified display metadata copied from the lease record, not an identity claim.",
+      "$ref": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/state.json#/$defs/LeaseHolder"
+    },
+    "reason": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code"],
+      "properties": {
+        "code": { "enum": ["CLOSED", "HELD", "BLOCKED_BY"] },
+        "id": { "type": "string" },
+        "holder": { "$ref": "#/$defs/holder" },
+        "holderUnverified": { "const": true },
+        "expiresAt": { "$ref": "#/$defs/time" }
+      }
+    },
+    "edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id"],
+      "properties": {
+        "id": { "type": "string" },
+        "holder": { "$ref": "#/$defs/holder" },
+        "holderUnverified": { "const": true }
+      }
+    },
+    "row": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "blockers",
+        "dependents",
+        "ready",
+        "notReadyBecause"
+      ],
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "holder": { "$ref": "#/$defs/holder" },
+        "holderUnverified": { "const": true },
+        "leaseState": { "enum": ["live", "stale"] },
+        "expiresAt": { "$ref": "#/$defs/time" },
+        "lastCheckpointAt": { "$ref": "#/$defs/time" },
+        "pr": { "type": "string" },
+        "blockers": { "type": "array", "items": { "$ref": "#/$defs/edge" } },
+        "dependents": { "type": "array", "items": { "$ref": "#/$defs/edge" } },
+        "ready": { "type": "boolean" },
+        "notReadyBecause": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/reason" }
+        }
+      }
+    }
+  }
+}

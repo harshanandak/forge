@@ -213,6 +213,10 @@
         }
       ]
     },
+    "issue.board": {
+      "title": "Board",
+      "summary": "Held open issues with live/stale leases, unverified holders, blockers and dependents. Optional id explains any issue's readiness. JSON pages default to 100, max 1000; pass cursor for more. snapshotAt labels each read; concurrent activity can reorder pages."
+    },
     "issue.ready": {
       "title": "Ready",
       "summary": "Open, deps closed, no live lease (expired/released OK). All labels match. /blocks/work/config/labelOrder: first listed label carried, then stored order."

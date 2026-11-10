@@ -98,6 +98,14 @@ type ResumeRow = ItemRef & {
     readonly expiresAt: string;
   };
 };
+type BoardInput = { id?: string; limit?: number; cursor?: string };
+type BoardReason = {
+  code: "CLOSED" | "HELD" | "BLOCKED_BY";
+  id?: string;
+  holder?: LeaseHolder;
+  holderUnverified?: boolean;
+  expiresAt?: string;
+};
 type CallBudget = ItemRef & {
   readonly used: number;
   readonly left: number;
@@ -208,7 +216,7 @@ type TailAction = {
   approval?: { request: string; quote: string; source: ReplySource };
 };
 type WorkOperations = TrackerOperations<"issue"> & {
-  readonly "issue.board": readonly [Record<string, unknown>, unknown];
+  readonly "issue.board": readonly [BoardInput, unknown];
   readonly "lane.next": readonly [
     NextInput,
     TailAction | { actions: TailAction[] },
@@ -391,11 +399,11 @@ function get(state: LeaseStateClient, id: string, given = id): StateRecord {
 function stored(record: StateRecord): Stored {
   return record.value as Stored;
 }
-function live(state: LeaseStateClient, id: string) {
+function live(state: LeaseStateClient, id: string, now = state.now()) {
   const lease = state.lease(key(id));
   return lease &&
     lease.releasedAt === undefined &&
-    Date.parse(lease.expiresAt) > state.now()
+    Date.parse(lease.expiresAt) > now
     ? lease
     : undefined;
 }
@@ -567,11 +575,140 @@ function validateDependencies(
 function blocked(
   graph: ReturnType<typeof dependencyGraph>,
   value: Stored,
-): boolean {
-  return value.dependsOn.some((id) => {
+): readonly string[] {
+  return value.dependsOn.filter((id) => {
     const dependency = graph.read(id);
     return !dependency || stored(dependency).status !== "closed";
   });
+}
+function holder(state: LeaseStateClient, id: string) {
+  const lease = state.lease(key(id));
+  return lease && lease.releasedAt === undefined
+    ? { holder: lease.holder, holderUnverified: true }
+    : {};
+}
+function readiness(
+  state: LeaseStateClient,
+  graph: ReturnType<typeof dependencyGraph>,
+  value: Stored,
+  ids: Ids,
+  now = state.now(),
+): BoardReason[] {
+  const lease = live(state, value.id, now);
+  return [
+    ...(value.status === "closed" ? [{ code: "CLOSED" as const }] : []),
+    ...(lease
+      ? [
+          {
+            code: "HELD" as const,
+            ...holder(state, value.id),
+            expiresAt: lease.expiresAt,
+          },
+        ]
+      : []),
+    ...blocked(graph, value).map((id) => ({
+      code: "BLOCKED_BY" as const,
+      id: ids.shown(id),
+      ...holder(state, id),
+    })),
+  ];
+}
+function board(state: LeaseStateClient, input: BoardInput, config: unknown) {
+  const now = state.now(),
+    ids = idsFor(state, config),
+    records = state.list("issue:");
+  const graph = dependencyGraph(state, records);
+  let rows = (input.id ? [get(state, ids.stored(input.id), input.id)] : records)
+    .flatMap((record) => {
+      const value = stored(record),
+        lease = state.lease(key(value.id));
+      if (
+        !input.id &&
+        (value.status !== "open" || !lease || lease.releasedAt !== undefined)
+      )
+        return [];
+      const comments = appended(state, `comment:${value.id}:`),
+        links = appended(state, `link:${value.id}:`);
+      const checkpoint = recovery(comments);
+      const pr = links.findLast(
+        (link) => (link.value as LinkInput).relation === "delivers",
+      )?.value as LinkInput | undefined;
+      const notReadyBecause = readiness(state, graph, value, ids, now);
+      const activity = Math.max(
+        ...[record, ...comments, ...links].map((r) => Date.parse(r.updatedAt)),
+        ...state.events(key(value.id)).map((event) => Date.parse(event.at)),
+      );
+      return [
+        {
+          activity,
+          id: value.id,
+          row: {
+            id: ids.shown(value.id),
+            title: value.title,
+            ...holder(state, value.id),
+            ...(lease && lease.releasedAt === undefined
+              ? {
+                  leaseState: live(state, value.id, now) ? "live" : "stale",
+                  expiresAt: lease.expiresAt,
+                }
+              : {}),
+            ...(checkpoint ? { lastCheckpointAt: checkpoint.time } : {}),
+            ...(pr
+              ? { pr: pr.url }
+              : checkpoint?.pr
+                ? { pr: checkpoint.pr }
+                : {}),
+            blockers: notReadyBecause
+              .filter((reason) => reason.code === "BLOCKED_BY")
+              .map(({ code: _code, ...reason }) => reason),
+            dependents: records
+              .filter(
+                (other) =>
+                  stored(other).status === "open" &&
+                  stored(other).dependsOn.includes(value.id),
+              )
+              .map((other) => ({ id: ids.shown(stored(other).id) })),
+            ready: notReadyBecause.length === 0,
+            notReadyBecause,
+          },
+        },
+      ];
+    })
+    .sort((a, b) => b.activity - a.activity || a.id.localeCompare(b.id));
+  if (input.cursor !== undefined) {
+    let cursor: unknown;
+    try {
+      cursor = JSON.parse(input.cursor);
+    } catch {
+      fail("INPUT_INVALID", "Invalid board cursor");
+    }
+    if (
+      !Array.isArray(cursor) ||
+      cursor.length !== 2 ||
+      typeof cursor[0] !== "number" ||
+      !Number.isFinite(cursor[0]) ||
+      typeof cursor[1] !== "string"
+    )
+      fail("INPUT_INVALID", "Invalid board cursor");
+    const [time, id] = cursor as [number, string];
+    rows = rows.filter(
+      (row) =>
+        row.activity < time ||
+        (row.activity === time && row.id.localeCompare(id) > 0),
+    );
+  }
+  const limit = input.limit ?? 100;
+  const page = rows.slice(0, limit),
+    last = page.at(-1),
+    truncated = rows.length > limit;
+  return {
+    items: page.map(({ row }) => row),
+    snapshotAt: new Date(now).toISOString(),
+    truncated,
+    ...(truncated && last
+      ? { cursor: JSON.stringify([last.activity, last.id]) }
+      : {}),
+  };
 }
 /** Position of the first configured label an item carries; items with none rank last. */
 function rank(order: readonly string[], value: Stored): number {
@@ -614,7 +751,7 @@ function list(
     records = records.filter((record) => {
       const value = stored(record);
       if (value.status !== "open") return false;
-      if (mode === "blocked") return blocked(graph, value);
+      if (mode === "blocked") return blocked(graph, value).length > 0;
       if (mode === "stale") {
         const lease = state.lease(key(value.id));
         return (
@@ -623,7 +760,7 @@ function list(
           Date.parse(lease.expiresAt) <= state.now()
         );
       }
-      return !blocked(graph, value) && !live(state, value.id);
+      return readiness(state, graph, value, ids).length === 0;
     });
   // Missing config means no order; a stable sort keeps the stored order within one rank.
   const order = mode === "ready" ? (config?.labelOrder ?? []) : [];
@@ -4982,7 +5119,8 @@ const operations: Operations<WorkOperations> = {
       truncated,
     };
   },
-  "issue.board": () => ({ items: [], snapshotAt: "", truncated: false }),
+  "issue.board": ({ input, services, config }) =>
+    board(client(services), input, config),
   "issue.ready": ({ input, services, config }) =>
     list(client(services), input, "ready", config as WorkConfig | undefined),
   "issue.blocked": ({ input, services, config }) =>
