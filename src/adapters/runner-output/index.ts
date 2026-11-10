@@ -110,6 +110,8 @@ class SummaryLines {
   pytest: OutputReport | undefined;
   bun: OutputReport | undefined;
   bunHint = false;
+  bunFailures = 0;
+  bunFooter = false;
   zero = false;
   hint = false;
   invalid = false;
@@ -121,6 +123,12 @@ class SummaryLines {
   private pending: Buffer[] = [];
   private pendingBytes = 0;
   private overlong = false;
+  get incompleteBun(): boolean {
+    return (
+      (this.bunPassed !== undefined && this.bunFailed !== undefined) ||
+      (this.bunFooter && !this.bun)
+    );
+  }
 
   push(chunk: Uint8Array): void {
     this.bytes += chunk.length;
@@ -208,11 +216,18 @@ class SummaryLines {
     if (bunOutcome) {
       this.bunHint = true;
       if (bunOutcome[2] === "pass") this.bunPassed = Number(bunOutcome[1]);
-      else this.bunFailed = Number(bunOutcome[1]);
+      else {
+        this.bunFailed = Number(bunOutcome[1]);
+        if (count(this.bunFailed))
+          this.bunFailures = Math.max(this.bunFailures, this.bunFailed);
+      }
     }
     const bunTotal =
       /^\s*Ran (\d+) tests? across \d+ files?\.(?:\s+\[.*\])?\s*$/.exec(text);
+    if (/^\s*Ran .* tests? across /.test(text) && !bunTotal)
+      this.invalid = true;
     if (bunTotal) {
+      this.bunFooter = true;
       this.bunHint = true;
       const total = Number(bunTotal[1]);
       const passed = this.bunPassed,
@@ -335,8 +350,18 @@ function recognizer(format: ReportFormat): OutputRecognizer {
       );
       if (failed) return failed;
       const invalid = reports.find((report) => report.kind === "malformed");
-      if (invalid || stdout.invalid || stderr.invalid)
-        return invalid ?? malformed;
+      const failures = stdout.bunFailures + stderr.bunFailures;
+      if (
+        invalid ||
+        stdout.invalid ||
+        stderr.invalid ||
+        stdout.incompleteBun ||
+        stderr.incompleteBun ||
+        failures
+      )
+        return failures
+          ? { ...(invalid ?? malformed), failed: failures }
+          : (invalid ?? malformed);
       const zero = reports.find((report) => report.testCount === 0);
       if (zero) return zero;
       if (reports.length) {

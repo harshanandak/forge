@@ -901,7 +901,11 @@ export function createAssemblyProviders(
               env: discoveryEnv,
               signal: scope.signal,
               timeoutMs: remaining,
-              maxOutputBytes: isHead ? input.maxOutputBytes : 65536,
+              maxOutputBytes: isHead
+                ? input.maxOutputBytes
+                : args[0] === "ls-files"
+                  ? 33554432
+                  : 65536,
             });
             if (result.timedOut)
               refuse("INVOCATION_TIMEOUT", "Snapshot head lookup timed out");
@@ -920,6 +924,16 @@ export function createAssemblyProviders(
             return isHead ? result.stdout.trim() : result.stdout;
           };
           const before = await readGit();
+          if (
+            input.tracked &&
+            (await readGit(["ls-files", "-v", "-z"]))
+              .split("\0")
+              .some((entry) => /^[a-zS]/.test(entry))
+          )
+            refuse(
+              "INPUT_CONFLICT",
+              "Clear assume-unchanged or skip-worktree flags before checking committed inputs",
+            );
           const dirtyPaths = input.tracked
             ? (
                 await readGit([

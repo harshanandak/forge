@@ -12,6 +12,7 @@ test("tracked snapshots retain exact dirty paths and refuse truncated Git output
   const head = "a".repeat(40);
   let paths = ["staged.txt", "renamed\nfile.ts"];
   let truncated = false;
+  let flag = "H";
   const process: ProcessPort = {
     capability: "forge.process/v1",
     resolve: () => ({ kind: "resolved", path: "git" }),
@@ -29,7 +30,9 @@ test("tracked snapshots retain exact dirty paths and refuse truncated Git output
           ? `${git}\n${git}\n`
           : diff
             ? paths.map((path) => path + "\0").join("")
-            : head,
+            : args.includes("ls-files")
+              ? `${flag} behavior.txt\0`
+              : head,
       });
     },
   };
@@ -65,6 +68,11 @@ test("tracked snapshots retain exact dirty paths and refuse truncated Git output
     );
     paths = [];
     expect((await lease.value.snapshot(input)).dirtyPaths).toEqual([]);
+    for (flag of ["h", "S", "s"])
+      await expect(lease.value.snapshot(input)).rejects.toMatchObject({
+        error: { code: "INPUT_CONFLICT" },
+      });
+    flag = "H";
     truncated = true;
     await expect(lease.value.snapshot(input)).rejects.toMatchObject({
       error: { code: "INPUT_CONFLICT" },

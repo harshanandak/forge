@@ -9,6 +9,7 @@ import { createRunnerOutput } from "../../../src/adapters/runner-output/index.ts
 import type { StateRecord } from "../../../src/generated/types.ts";
 import type { ProcessResult } from "../../../src/ports/process.ts";
 import { captured, trackedChanges } from "./fakes.ts";
+import { hash } from "../../../src/blocks/check/receipt.ts";
 import entry from "../../../src/blocks/check/entry.cts";
 import { checkCrypto } from "../../../src/blocks/check/support.ts";
 import type { CatalogServices } from "../../../src/blocks/check/services.ts";
@@ -743,6 +744,43 @@ for (const phase of ["before", "after", "both"])
     await f.receipt();
     expect((await f.gate()).verdict).toBe("PASS");
   }, 1000);
+
+test("separate clean runs cannot revive an older combined dirty receipt", async () => {
+  const f = fixture();
+  let now = 1_700_000_000_000;
+  f.services.clock.now = () => ++now;
+  const checks = {
+    ...config,
+    commands: { A: "tool check", B: "tool check" },
+    gate: { receiptChecks: ["A", "B"] },
+  };
+  trackedChanges(f.services, [["behavior.txt"]]);
+  await createCheck(f.services).run({}, checks);
+  trackedChanges(f.services, [[]]);
+  const engine = createCheck(f.services);
+  await engine.run({ checks: ["A"] }, checks);
+  await engine.run({ checks: ["B"] }, checks);
+  await refuses(f, "RECEIPT_CHECK_MISSING", checks);
+}, 1000);
+
+test("conflicting results in the same millisecond refuse regardless of UUID order", async () => {
+  const f = fixture();
+  const pass = await f.receipt();
+  const failed = await f.receipt({ exit: 1 });
+  const { digest: _digest, ...body } = {
+    ...failed,
+    id: "00000000-0000-0000-0000-000000000000",
+    checkedAt: pass.checkedAt,
+  };
+  const key = `runs/${body.id}`;
+  f.records.delete(`runs/${failed.id}`);
+  f.records.set(key, {
+    ...f.records.get(`runs/${pass.id}`)!,
+    key,
+    value: { ...body, digest: hash(body) },
+  });
+  await refuses(f, "RECEIPT_NOT_PASS");
+}, 1000);
 
 test("gate chooses the newest eligible verified receipt", async () => {
   const f = fixture();

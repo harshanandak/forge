@@ -10,6 +10,11 @@ for (const evidence of [
   "Tests: 1 failed, 1 total",
   "Tests  0 passed (0)",
   "0 pass\n0 fail\nRan 0 tests across 0 files.",
+  "0 pass\n1 fail\nRan ? tests across 1 file.",
+  "1 pass\n0 fail\nRan ? tests across 1 file.",
+  "1 pass\n0 fail",
+  "1 fail",
+  "Ran 1 test across 1 file.",
 ] as const) {
   test(`mixed summaries retain ${evidence} in every order and stream`, () => {
     const baseline = output.parse(evidence, "", "auto");

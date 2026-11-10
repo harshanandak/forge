@@ -941,6 +941,7 @@ async function gate(
       .sort(
         (a, b) =>
           Date.parse(b.checkedAt) - Date.parse(a.checkedAt) ||
+          Number(b.status !== "PASS") - Number(a.status !== "PASS") ||
           b.id.localeCompare(a.id),
       );
     const passing = current.filter((value) => value.status === "PASS");
@@ -967,6 +968,7 @@ async function gate(
       );
     const eligible = passing.filter(
       (value) =>
+        !value.reason.startsWith("TRACKED_INPUTS_DIRTY:") &&
         value.runs.length > 0 &&
         receiptChecks.every((name) =>
           value.checked.some(
