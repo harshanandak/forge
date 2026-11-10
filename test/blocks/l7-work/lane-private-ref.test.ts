@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -205,13 +206,15 @@ test.each([{ live: false }, { live: true }])(
   "the sweep preserves foreign owner markers and both private refs when its PID is locally live=$live",
   async ({ live }) => {
     const f = fixture();
-    const root = mkdtempSync(join(tmpdir(), "forge-foreign-ref-"));
+    const root = realpathSync(
+      mkdtempSync(join(tmpdir(), "forge-foreign-ref-")),
+    );
     const uuid = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
     const lockPath = `forge-lane-ref-${uuid}.lock`;
     const path = join(root, lockPath);
     const marker = "owner-12345-bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
     const record = JSON.stringify({
-      hostIdentity: "remote-host",
+      hostIdentity: "fedcba9876543210",
       startTime: "linux-starttime-v1:100",
     });
     const lease = createCloneFilesLease({
@@ -221,7 +224,7 @@ test.each([{ live: false }, { live: true }])(
       read: true,
       write: true,
       signal: new AbortController().signal,
-      hostIdentity: "local-host",
+      hostIdentity: "0123456789abcdef",
       processProbe: () => {
         if (!live) throw Object.assign(new Error("dead"), { code: "ESRCH" });
       },
