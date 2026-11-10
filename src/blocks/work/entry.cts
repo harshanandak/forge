@@ -575,6 +575,12 @@ function validateDependencies(
 function blocked(
   graph: ReturnType<typeof dependencyGraph>,
   value: Stored,
+): boolean {
+  return blockedBy(graph, value).length > 0;
+}
+function blockedBy(
+  graph: ReturnType<typeof dependencyGraph>,
+  value: Stored,
 ): readonly string[] {
   return value.dependsOn.filter((id) => {
     const dependency = graph.read(id);
@@ -604,7 +610,7 @@ function readiness(
     });
   return [
     ...reasons,
-    ...blocked(graph, value).map((id) => ({
+    ...blockedBy(graph, value).map((id) => ({
       code: "BLOCKED_BY" as const,
       id: ids.shown(id),
       ...holder(state, id),
@@ -761,7 +767,7 @@ function list(
     records = records.filter((record) => {
       const value = stored(record);
       if (value.status !== "open") return false;
-      if (mode === "blocked") return blocked(graph, value).length > 0;
+      if (mode === "blocked") return blocked(graph, value);
       if (mode === "stale") {
         const lease = state.lease(key(value.id));
         return (
@@ -770,7 +776,7 @@ function list(
           Date.parse(lease.expiresAt) <= state.now()
         );
       }
-      return readiness(state, graph, value, ids).length === 0;
+      return !blocked(graph, value) && !live(state, value.id);
     });
   // Missing config means no order; a stable sort keeps the stored order within one rank.
   const order = mode === "ready" ? (config?.labelOrder ?? []) : [];
