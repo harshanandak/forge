@@ -88,6 +88,60 @@ function expectFailure(work: () => void, table: string, name: string): void {
 
 for (const pageSize of [1, 2, undefined]) {
   const label = pageSize ?? "default";
+  for (const table of [
+    "state_records",
+    "state_leases",
+    "state_requests",
+  ] as const)
+    for (const damage of ["single", "multiple", "missing"] as const)
+      test(`restore reports the earliest invalid ${table} row by rowid for ${damage} corruption, page size ${label}`, async () => {
+        const { db, owner, close } = await open(false);
+        try {
+          // The earliest row sorts last, beyond the first default page.
+          for (const key of [
+            "z",
+            ...Array.from({ length: 17 }, (_, n) => `m${n}`),
+            "a",
+          ]) {
+            owner.acquire(ns, key, holder, 100, `claim-${key}`);
+            owner.put(ns, key, key, actor, {
+              expectRevision: 0,
+              requestId: `put-${key}`,
+            });
+          }
+          const column =
+            table === "state_records"
+              ? "key"
+              : table === "state_leases"
+                ? "subject"
+                : "request_id";
+          const name = table === "state_requests" ? "put-z" : "z";
+          expect(
+            db.get(
+              `SELECT ${column} AS name FROM ${table} ORDER BY rowid LIMIT 1`,
+            )?.name,
+          ).toBe(table === "state_requests" ? "claim-z" : "z");
+          const names = damage === "single" ? ["z"] : ["z", "a"];
+          const change =
+            table === "state_records"
+              ? "body='not json'"
+              : table === "state_leases"
+                ? "generation=generation+1"
+                : "result='null'";
+          for (const key of names)
+            db.run(`UPDATE ${table} SET ${change} WHERE ${column}=?`, [
+              table === "state_requests" ? `put-${key}` : key,
+            ]);
+          if (damage === "missing")
+            db.run(`DELETE FROM ${table} WHERE ${column}=?`, [
+              table === "state_requests" ? "put-m0" : "m0",
+            ]);
+          expectFailure(() => verify(db, 38, pageSize), table, name);
+        } finally {
+          await close();
+        }
+      }, 30_000);
+
   test(`restore rejects a blob receipt id instead of matching its string form, page size ${label}`, async () => {
     const { db, owner, close } = await open(false);
     try {
