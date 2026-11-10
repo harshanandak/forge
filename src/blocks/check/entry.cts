@@ -687,12 +687,12 @@ function createCheck(
         scope?.deadline ??
         services.clock.now() +
           finalizationTimeoutMs(frozenConfig.maxReceiptBytes);
-      const changed = hash(before) !== hash(after);
+      const changed =
+        before.head !== after.head || before.filesDigest !== after.filesDigest;
       const dirtyPaths = [
         ...new Set([...(before.dirtyPaths ?? []), ...(after.dirtyPaths ?? [])]),
       ].sort();
-      const status =
-        changed || dirtyPaths.length ? "INCOMPLETE" : aggregate(runs);
+      const status = changed ? "INCOMPLETE" : aggregate(runs);
       const body = {
         version: 1 as const,
         id: randomUUID(),
@@ -701,7 +701,7 @@ function createCheck(
         checkedAt: new Date(services.clock.now()).toISOString(),
         checked: runs.map(({ name, status }) => ({ name, status })),
         reason: dirtyPaths.length
-          ? `TRACKED_INPUTS_DIRTY: ${dirtyPaths.map((path) => JSON.stringify(path)).join(", ")}`
+          ? `TRACKED_INPUTS_DIRTY: not head-eligible; ${dirtyPaths.map((path) => JSON.stringify(path)).join(", ")}`
           : changed
             ? "Project inputs changed while checks ran"
             : runs.length
@@ -947,7 +947,12 @@ async function gate(
           ),
         )
       : [current[0]];
-    const rejected = latest.find((value) => value && value.status !== "PASS");
+    const rejected = latest.find(
+      (value) =>
+        value &&
+        (value.status !== "PASS" ||
+          value.reason.startsWith("TRACKED_INPUTS_DIRTY:")),
+    );
     if (rejected)
       refuse(
         rejected.reason.startsWith("TRACKED_INPUTS_DIRTY:")

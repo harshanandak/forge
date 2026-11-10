@@ -5070,6 +5070,8 @@ const operations: Operations<WorkOperations> = {
           "Cannot verify receipt: the receipts slot is unbound; bind forge.receipts@1 or omit receipt and supply withoutReceipt",
         );
       const receipt = receipts.get(input.receipt);
+      if (receipt?.reason?.startsWith("TRACKED_INPUTS_DIRTY:"))
+        fail("TRACKED_INPUTS_DIRTY", receipt.reason);
       if (!receipt || receipt.status !== "PASS")
         fail(
           "RECEIPT_INVALID",

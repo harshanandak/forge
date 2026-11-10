@@ -530,8 +530,8 @@ for (const [name, paths] of [
     trackedChanges(services, paths);
     const check = createCheck(services);
     const receipt = await check.run({}, config);
-    expect(receipt.status).toBe("INCOMPLETE");
-    expect(receipt.reason).toContain("TRACKED_INPUTS_DIRTY");
+    expect(receipt.status).toBe("PASS");
+    expect(receipt.reason).toContain("TRACKED_INPUTS_DIRTY: not head-eligible");
     expect(receipt.reason).toContain("behavior.txt");
     expect(check.show(receipt.id)).toEqual(receipt);
     expect(verifyReceipt(receipt, receipt.inputsDigest)).toBe(true);
@@ -585,7 +585,7 @@ test("issue close refuses a dirty-tree check receipt before writing", async () =
       },
     },
   }).catch((error: unknown) => error);
-  expect(result).toMatchObject({ code: "RECEIPT_INVALID" });
+  expect(result).toMatchObject({ code: "TRACKED_INPUTS_DIRTY" });
   expect(writes).toBe(0);
 }, 1000);
 

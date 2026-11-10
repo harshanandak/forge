@@ -90,6 +90,7 @@ export interface ReceiptsService {
         readonly id: string;
         readonly status: string;
         readonly subject: string;
+        readonly reason?: string;
         readonly checked: readonly {
           readonly name: string;
           readonly status: string;
@@ -122,6 +123,9 @@ export function createReceiptsService(
         id: value.id,
         status: value.status,
         subject: value.subject,
+        ...(value.reason.startsWith("TRACKED_INPUTS_DIRTY:")
+          ? { reason: value.reason }
+          : {}),
         checked: Object.freeze(
           rows.flatMap((row) =>
             typeof row?.name === "string" && typeof row.status === "string"
@@ -882,9 +886,9 @@ export function createAssemblyProviders(
               refuse("INVOCATION_TIMEOUT", "Snapshot deadline exceeded");
           };
           const readGit = async (
-            args: string[],
-            maxOutputBytes: number,
+            args = ["rev-parse", "--verify", "HEAD"],
           ): Promise<string> => {
+            const isHead = args[0] === "rev-parse";
             snapshotActive();
             const remaining = deadline - Date.now() - cleanupMs;
             if (remaining < 1)
@@ -897,7 +901,7 @@ export function createAssemblyProviders(
               env: discoveryEnv,
               signal: scope.signal,
               timeoutMs: remaining,
-              maxOutputBytes,
+              maxOutputBytes: isHead ? input.maxOutputBytes : 65536,
             });
             if (result.timedOut)
               refuse("INVOCATION_TIMEOUT", "Snapshot head lookup timed out");
@@ -905,40 +909,28 @@ export function createAssemblyProviders(
             if (
               result.exitCode !== 0 ||
               result.truncated ||
-              result.signal !== null
+              result.signal !== null ||
+              (isHead &&
+                !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(result.stdout.trim()))
             )
               refuse(
                 "INPUT_CONFLICT",
                 'Snapshot requires an exact Git HEAD. If this repository has no first commit, create it with: git add -A && git commit -m "initial commit". Otherwise repair HEAD and retry.',
               );
-            return result.stdout;
+            return isHead ? result.stdout.trim() : result.stdout;
           };
-          const head = async (): Promise<string> => {
-            const value = (
-              await readGit(
-                ["rev-parse", "--verify", "HEAD"],
-                input.maxOutputBytes,
-              )
-            ).trim();
-            if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(value))
-              refuse("INPUT_CONFLICT", "Snapshot requires an exact Git HEAD");
-            return value;
-          };
-          const before = await head();
+          const before = await readGit();
           const dirtyPaths = input.tracked
             ? (
-                await readGit(
-                  [
-                    "diff",
-                    "--no-ext-diff",
-                    "--no-textconv",
-                    "--name-only",
-                    "-z",
-                    before,
-                    "--",
-                  ],
-                  65536,
-                )
+                await readGit([
+                  "diff",
+                  "--no-ext-diff",
+                  "--no-textconv",
+                  "--name-only",
+                  "-z",
+                  before,
+                  "--",
+                ])
               )
                 .split("\0")
                 .filter(Boolean)
@@ -949,7 +941,7 @@ export function createAssemblyProviders(
             input.paths,
             input.maxBytes,
           );
-          const after = await head();
+          const after = await readGit();
           snapshotActive();
           if (before !== after)
             refuse("INPUT_CONFLICT", "Git HEAD changed during snapshot");

@@ -724,18 +724,25 @@ test("a newer pass supersedes a failure at the same head", async () => {
   expect(await f.gate()).toMatchObject({ verdict: "PASS", receipt: latest.id });
 }, 1000);
 
-test("a dirty-tree receipt cannot pass the head delivery gate", async () => {
-  const f = fixture();
-  trackedChanges(f.services, [["behavior.txt"], ["behavior.txt"]]);
-  await f.receipt();
-  const result = await f.gate();
-  expect(result.verdict).toBe("REFUSED");
-  const dirty = result.reasons.find(
-    (reason) => reason.code === "TRACKED_INPUTS_DIRTY",
-  );
-  expect(dirty).toBeDefined();
-  expect(dirty?.detail).toContain("behavior.txt");
-}, 1000);
+for (const phase of ["before", "after", "both"])
+  test(`a dirty-tree receipt ${phase} cannot pass the head delivery gate`, async () => {
+    const f = fixture();
+    trackedChanges(f.services, [
+      phase === "after" ? [] : ["behavior.txt"],
+      phase === "before" ? [] : ["behavior.txt"],
+    ]);
+    await f.receipt();
+    const result = await f.gate();
+    expect(result.verdict).toBe("REFUSED");
+    const dirty = result.reasons.find(
+      (reason) => reason.code === "TRACKED_INPUTS_DIRTY",
+    );
+    expect(dirty).toBeDefined();
+    expect(dirty?.detail).toContain("behavior.txt");
+    trackedChanges(f.services, [[], []]);
+    await f.receipt();
+    expect((await f.gate()).verdict).toBe("PASS");
+  }, 1000);
 
 test("gate chooses the newest eligible verified receipt", async () => {
   const f = fixture();
