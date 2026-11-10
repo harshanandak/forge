@@ -1,12 +1,12 @@
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
-  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -17,6 +17,7 @@ import { findDependencyViolations, type PackageJson } from "./lib/imports.ts";
 import { maskSource } from "./lib/platform.ts";
 import {
   CODE_FILE,
+  copyRepoFiles,
   format,
   isTestFile,
   listRepoFiles,
@@ -401,14 +402,19 @@ test("public compiler configurations reject root and extended paths into team", 
 test("public sources compile in a copy with team removed and emit no team files", () => {
   const scratch = mkdtempSync(join(tmpdir(), "forge-public-"));
   try {
-    for (const path of paths.filter(
-      (path) => !/^(?:team|test)\//i.test(path),
-    )) {
-      cpSync(join(repoRoot, path), join(scratch, path));
-    }
-    cpSync(join(repoRoot, "src/generated"), join(scratch, "src/generated"), {
+    // Generated compiler inputs are ignored by Git but required by this compile smoke.
+    const generated = readdirSync(join(repoRoot, "src/generated"), {
       recursive: true,
-    });
+      encoding: "utf8",
+    })
+      .map((path) => `src/generated/${path.replaceAll("\\", "/")}`)
+      .filter((path) => statSync(join(repoRoot, path)).isFile());
+    copyRepoFiles(
+      [...paths, ...generated].filter(
+        (path) => !/^(?:team|test)\//i.test(path),
+      ),
+      scratch,
+    );
     symlinkSync(
       join(repoRoot, "node_modules"),
       join(scratch, "node_modules"),
