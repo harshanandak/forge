@@ -27,7 +27,7 @@ class IdentityTokenRefusal extends Error {
 }
 
 const executableNames = new Set(
-  "eval Function setTimeout setInterval globalThis self window global Reflect constructor getOwnPropertyDescriptor getOwnPropertyDescriptors getPrototypeOf setPrototypeOf defineProperty defineProperties __proto__ __lookupGetter__".split(
+  "eval Function setTimeout setInterval globalThis self window global Reflect constructor getOwnPropertyDescriptor getOwnPropertyDescriptors getPrototypeOf setPrototypeOf defineProperty defineProperties __proto__ __lookupGetter__ WebAssembly Worker SharedWorker importScripts".split(
     " ",
   ),
 );
