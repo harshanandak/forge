@@ -15,6 +15,24 @@ const fixtures = readJson(
 const mint = "src/ports/identity-mint.ts";
 const paths = listRepoFiles();
 
+test("only the exact OAuth validation boundary may carry verifier-minted identity", () => {
+  for (const path of [
+    "cloud/src/adapters/workers-oauth/index.ts",
+    "cloud/src/adapters/workers-oauth/other.ts",
+    "cloud/src/adapters/workers-oauth/index.test.ts",
+    "cloud/src/auth/compose.ts",
+    "cloud/src/worker.ts",
+  ]) {
+    const target = posix.relative(posix.dirname(path), mint);
+    const text = `import { mintIdentity } from "${target}"; export function verify(claims) { return mintIdentity(claims); }`;
+    expect(
+      findIdentityMintViolations([{ path, text }]).map((v) => v.file),
+    ).toEqual(
+      path === "cloud/src/adapters/workers-oauth/index.ts" ? [] : [path],
+    );
+  }
+}, 30_000);
+
 test("the real tree mints identities only at verifier boundaries", () => {
   expect(
     format(
@@ -77,6 +95,7 @@ const reexports = readJson(
 for (const path of [
   "src/adapters/oidc/bridge.ts",
   "test/contract/lib/identity-verifier.ts",
+  "cloud/src/adapters/workers-oauth/index.ts",
 ]) {
   for (const [name, source] of Object.entries(reexports)) {
     test(`verifier refuses ${name} mint re-export to public code`, () => {

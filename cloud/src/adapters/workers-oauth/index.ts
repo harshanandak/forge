@@ -7,6 +7,7 @@ import type { ClockPort } from "../../../../src/ports/clock.ts";
 import {
   isVerifiedIdentity,
   type IdentityResult,
+  type VerifiedIdentity,
 } from "../../../../src/ports/identity.ts";
 
 export interface OAuthStorage {
@@ -47,6 +48,7 @@ export interface OAuthOptions {
   };
 }
 export interface OAuthAdapter {
+  verify(token: string, resource: string): Promise<VerifiedIdentity | null>;
   register(redirectUri: string): Promise<string>;
   authorize(request: Request): Promise<Response>;
   consent(request: Request, allow: boolean): Promise<Response>;
@@ -87,6 +89,8 @@ export function createOAuthAdapter(options: OAuthOptions): OAuthAdapter {
     }
   };
   return {
+    // Tests-first stub; no token can yield an identity before implementation.
+    verify: () => Promise.resolve(null),
     register: async (redirectUri) =>
       (
         await oauth.createClient({
