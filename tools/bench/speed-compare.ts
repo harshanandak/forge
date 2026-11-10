@@ -21,22 +21,8 @@ export function sampleOrder(pairs: number): Side[] {
   return order;
 }
 
-const sorted = (values: readonly number[]): number[] =>
-  [...values].sort((a, b) => a - b);
-
-/** What a build is scored by, named in the failure message. */
-export const SCORE_LABEL = "25th percentile";
-
-/**
- * A build's score is its 25th percentile run (nearest rank: the 3rd fastest of 9). Runner load only
- * ever slows a run, so the fast end of the samples tracks the build's true cost, while the middle
- * of them tracks the runner's mood. It is not the minimum: one lucky fast run cannot hide a real
- * regression, because the 2 faster runs would have to be lucky too.
- */
-export function score(times: readonly number[]): number {
-  if (times.length === 0) throw new Error("no timings to score");
-  return sorted(times)[Math.floor((times.length - 1) / 4)]!;
-}
+/** What the comparison is scored by, named in the failure message. */
+export const SCORE_LABEL = "paired 25th percentile";
 
 export interface Comparison {
   readonly currentMs: number;
@@ -114,8 +100,26 @@ export function compareToBase(
   base: readonly number[],
   maxRatio: number = MAX_RATIO_TO_BASE,
 ): Comparison {
-  const currentMs = score(current);
-  const baseMs = score(base);
-  const ratio = currentMs / baseMs;
+  if (current.length === 0 || current.length !== base.length)
+    throw new Error("timings must contain the same nonzero number of pairs");
+  // measurePair stores each side in run order, so index i on both sides belongs to pair i,
+  // even when sampleOrder flips which side runs first. Form ratios before sorting any values.
+  const pairs = current.map((currentMs, index) => {
+    const baseMs = base[index]!;
+    if (
+      !Number.isFinite(currentMs) ||
+      currentMs <= 0 ||
+      !Number.isFinite(baseMs) ||
+      baseMs <= 0
+    )
+      throw new Error("paired timings must be finite and positive");
+    return { currentMs, baseMs, ratio: currentMs / baseMs };
+  });
+  pairs.sort((a, b) => a.ratio - b.ratio);
+  // Shared runner drift cancels within each pair. Keep the fast-end rationale for recurring
+  // load: the 3rd smallest of 9 ratios tolerates current-side spikes without letting one lucky
+  // pair hide a regression. Report both timings from the pair that determines the verdict.
+  const { currentMs, baseMs, ratio } =
+    pairs[Math.floor((pairs.length - 1) / 4)]!;
   return { currentMs, baseMs, ratio, passed: !(currentMs > maxRatio * baseMs) };
 }

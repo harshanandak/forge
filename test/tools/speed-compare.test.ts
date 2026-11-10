@@ -208,3 +208,30 @@ test("the failure message names the paired estimator and both timings", () => {
   expect(failures[0]).toContain("321 ms");
   expect(failures[0]).toContain("300 ms");
 }, 1000);
+
+test("paired comparisons reject empty or mismatched samples", () => {
+  expect(() => compareToBase([], [])).toThrow("number of pairs");
+  expect(() => compareToBase([300], [])).toThrow("number of pairs");
+  expect(() => compareToBase([300], [300, 300])).toThrow("number of pairs");
+}, 1000);
+
+test("pairing follows run positions rather than independently sorted ranks", () => {
+  const verdict = compareToBase(
+    [580, 560, 540, 520, 500, 480, 460, 440, 420],
+    [420, 440, 460, 480, 500, 520, 540, 560, 580],
+  );
+  expect(verdict.ratio).toBeCloseTo(460 / 540, 5);
+  expect(verdict.currentMs).toBe(460);
+  expect(verdict.baseMs).toBe(540);
+}, 1000);
+
+test("paired comparisons reject invalid timings on either side", () => {
+  for (const invalid of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+    expect(() => compareToBase([invalid], [300])).toThrow(
+      "finite and positive",
+    );
+    expect(() => compareToBase([300], [invalid])).toThrow(
+      "finite and positive",
+    );
+  }
+}, 1000);
