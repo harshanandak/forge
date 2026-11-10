@@ -220,6 +220,12 @@ type TailAction = {
   approval?: { request: string; quote: string; source: ReplySource };
 };
 type WorkOperations = TrackerOperations<"issue"> & {
+  readonly "issue.invite": readonly [
+    ItemRef & { session: string; device?: string },
+    unknown,
+  ];
+  readonly "issue.join": readonly [ItemRef & { ttlSeconds?: number }, unknown];
+  readonly "issue.leave": readonly [ItemRef, unknown];
   readonly "issue.claim": readonly [
     TrackerOperations<"issue">["issue.claim"][0] & { readonly reason?: string },
     LeaseGrant,
@@ -5170,6 +5176,12 @@ const operations: Operations<WorkOperations> = {
       input.id,
     );
   },
+  "issue.invite": () =>
+    fail("INPUT_CONFLICT", "Participant implementation pending"),
+  "issue.join": () =>
+    fail("INPUT_CONFLICT", "Participant implementation pending"),
+  "issue.leave": () =>
+    fail("INPUT_CONFLICT", "Participant implementation pending"),
   "issue.claim": ({ input, services, config }) => {
     const state = client(services);
     const ids = idsFor(state, config);
