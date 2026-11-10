@@ -1,0 +1,7 @@
+{
+  "regex literal cannot invent verifier scopes": "import { mintIdentity } from \"TARGET\"; const spoof = /function createOAuthAdapter() { function verifyProviderToken() {/; mintIdentity(claims);",
+  "Unicode-escaped identifier outside verifier": "import { mintIdentity } from \"TARGET\"; export function other(claims) { return mintId\\u0065ntity(claims); }",
+  "non-literal dynamic import": "export async function load(path) { return import(path); }",
+  "non-literal require": "export function load(path) { return require(path); }",
+  "returned closure escapes verifier": "import { mintIdentity } from \"TARGET\"; export function createOAuthAdapter() { function verifyProviderToken(claims) { return function later() { return mintIdentity(claims); }; } return { verify: verifyProviderToken }; }"
+}

@@ -60,6 +60,23 @@ test("the OAuth file refuses direct mints outside its private token-validation f
   }
 }, 30_000);
 
+const scopes = readJson(
+  "test/structure/fixtures/identity-mint-scopes.json",
+) as Record<string, string>;
+
+for (const [name, source] of Object.entries(scopes)) {
+  test(`the OAuth identity guard refuses ${name}`, () => {
+    const path = "cloud/src/adapters/workers-oauth/index.ts";
+    const text = source.replaceAll(
+      "TARGET",
+      posix.relative(posix.dirname(path), mint),
+    );
+    const found = findIdentityMintViolations([{ path, text }]);
+    expect(found.map((violation) => violation.file)).toEqual([path]);
+    expect(found[0]?.message).toContain("identity-mint");
+  }, 30_000);
+}
+
 test("the real tree mints identities only at verifier boundaries", () => {
   expect(
     format(
