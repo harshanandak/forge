@@ -26,10 +26,11 @@ const actor = { kind: "agent" as const, id: "worker" };
 const session = { id: "release", device: "fixture" };
 
 /** Real assembly, schemas and state authority; only clone files and external commands are fake. */
-async function fixture(realLocks = false) {
+async function fixture(realLocks = false, gitProject = true) {
   const folder = mkdtempSync(join(tmpdir(), "forge-release-")),
     root = join(folder, "project");
   mkdirSync(join(root, ".forge"), { recursive: true });
+  if (gitProject) mkdirSync(join(root, ".git"));
   writeFileSync(
     join(root, ".forge/config.yaml"),
     JSON.stringify({
@@ -80,6 +81,8 @@ async function fixture(realLocks = false) {
     afterRead: undefined as (() => void) | undefined,
     duringRemove: undefined as (() => Promise<void>) | undefined,
     failRemove: false,
+    failCleanupLock: false,
+    fileOpens: 0,
   };
   const calls: string[][] = [];
   const limits: { args: string[]; maxOutputBytes: number }[] = [];
@@ -205,6 +208,8 @@ async function fixture(realLocks = false) {
     inspect: () => undefined,
     list: () => [],
     lock: (paths, options) => {
+      if (flags.failCleanupLock && paths.includes(cleanupReservation))
+        throw new Error("fixture lock I/O failure");
       const held = locks?.service.lock(paths, options);
       flags.locked = true;
       return {
@@ -229,12 +234,14 @@ async function fixture(realLocks = false) {
       (...args) => ({
         ...factory(...args),
         process: () => process,
-        openFiles: () =>
-          Promise.resolve({
+        openFiles: () => {
+          flags.fileOpens += 1;
+          return Promise.resolve({
             ownership: "owned" as const,
             value: cloneFiles,
             close: () => Promise.resolve(),
-          }),
+          });
+        },
       }),
     ),
   ];
@@ -599,6 +606,42 @@ test("a live cleanup reservation refuses an open issue claim without acquiring a
     expect(f.owner.lease(namespace, "issue:work-1")).toBeUndefined();
   } finally {
     held.release();
+    await f.close();
+  }
+}, 30_000);
+
+test("claim outside Git succeeds without opening optional clone files", async () => {
+  const f = await fixture(true, false);
+  try {
+    f.change({ status: "open" });
+    const claimed = await f.invoke("issue.claim", { id: "sample-1" });
+    expect(claimed.ok, JSON.stringify(claimed)).toBe(true);
+    if (!claimed.ok) throw new Error(JSON.stringify(claimed));
+    expect(claimed.result).toMatchObject({ id: "sample-1", generation: 1 });
+    expect(f.owner.lease(namespace, "issue:work-1")?.holder).toEqual({
+      actor,
+      session,
+    });
+    expect(f.flags.fileOpens).toBe(0);
+    expect(f.calls).toEqual([]);
+  } finally {
+    await f.close();
+  }
+}, 30_000);
+
+test("claim in Git fails closed when the cleanup lock errors", async () => {
+  const f = await fixture(true);
+  try {
+    f.change({ status: "open" });
+    f.flags.failCleanupLock = true;
+    const claimed = await f.invoke("issue.claim", { id: "sample-1" });
+    expect(claimed).toMatchObject({
+      ok: false,
+      error: { code: "INPUT_CONFLICT", retry: "reconcile_first" },
+    });
+    expect(f.flags.fileOpens).toBe(1);
+    expect(f.owner.lease(namespace, "issue:work-1")).toBeUndefined();
+  } finally {
     await f.close();
   }
 }, 30_000);
