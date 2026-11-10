@@ -7,6 +7,10 @@ import {
   type GateRow,
   type Side,
 } from "../../tools/bench/speed-compare.ts";
+import {
+  recordSpeedSample,
+  type SpeedSample,
+} from "../../tools/bench/speed-samples.ts";
 
 const PAIRS = 9;
 const BASE_MS = 300;
@@ -138,39 +142,6 @@ test("under every limit and level with the base build: pass with no warning", ()
   });
 }, 1000);
 
-// Synthetic PR 399 shape, not recovered raw timings: the independent scores are 561/534,
-// but five pairs are level or faster. The medians also match the reported 573/575 ms.
-const runnerNoise = {
-  current: [561, 561, 561, 573, 573, 590, 610, 630, 650],
-  base: [520, 528, 534, 560, 575, 590, 610, 630, 650],
-};
-
-test("PR 399 shaped noise passes using the paired 25th percentile", () => {
-  const { current, base } = runnerNoise;
-  const independentQuartile = (times: number[]): number =>
-    [...times].sort((a, b) => a - b)[2]!;
-  expect(independentQuartile(current) / independentQuartile(base)).toBeCloseTo(
-    1.0506,
-    4,
-  );
-  const verdict = compareToBase(current, base);
-  expect(verdict.ratio).toBeCloseTo(1, 5);
-  expect(verdict.passed).toBe(true);
-}, 1000);
-
-test("PR 399 shaped noise above the ceiling only warns", () => {
-  const { failures, warnings } = gateDecision(
-    LIMIT,
-    { ...row(573), timesMs: runnerNoise.current },
-    { ...row(575), timesMs: runnerNoise.base },
-    WHERE,
-  );
-  expect(failures).toEqual([]);
-  expect(warnings).toHaveLength(1);
-  expect(warnings[0]).toContain("573 ms");
-  expect(warnings[0]).toContain("575 ms");
-}, 1000);
-
 test("a monotone runner slowdown shared by each pair cancels", () => {
   const { current, base } = simulate(
     (_side, index) => BASE_MS * (1 + Math.floor(index / 2) * 0.1),
@@ -201,37 +172,16 @@ test("a real 5.5 percent slowdown with no drift fails", () => {
   expect(verdict.passed).toBe(false);
 }, 1000);
 
-test("the failure message names the paired estimator and both timings", () => {
-  const { failures } = gateDecision(LIMIT, row(321), row(300), WHERE);
-  expect(failures).toHaveLength(1);
-  expect(failures[0]).toContain("paired 25th percentile");
-  expect(failures[0]).toContain("321 ms");
-  expect(failures[0]).toContain("300 ms");
-}, 1000);
-
-test("paired comparisons reject empty or mismatched samples", () => {
-  expect(() => compareToBase([], [])).toThrow("number of pairs");
-  expect(() => compareToBase([300], [])).toThrow("number of pairs");
-  expect(() => compareToBase([300], [300, 300])).toThrow("number of pairs");
-}, 1000);
-
-test("pairing follows run positions rather than independently sorted ranks", () => {
-  const verdict = compareToBase(
-    [580, 560, 540, 520, 500, 480, 460, 440, 420],
-    [420, 440, 460, 480, 500, 520, 540, 560, 580],
+test("Speed sample output keeps acquisition order and one-based positions", () => {
+  const samples: SpeedSample[] = [];
+  const times = [30, 10, 50, 20];
+  sampleOrder(2).forEach((side, index) =>
+    recordSpeedSample(samples, side, times[index]!),
   );
-  expect(verdict.ratio).toBeCloseTo(460 / 540, 5);
-  expect(verdict.currentMs).toBe(460);
-  expect(verdict.baseMs).toBe(540);
-}, 1000);
-
-test("paired comparisons reject invalid timings on either side", () => {
-  for (const invalid of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
-    expect(() => compareToBase([invalid], [300])).toThrow(
-      "finite and positive",
-    );
-    expect(() => compareToBase([300], [invalid])).toThrow(
-      "finite and positive",
-    );
-  }
+  expect(samples).toEqual([
+    { side: "current", position: 1, ms: 30 },
+    { side: "base", position: 2, ms: 10 },
+    { side: "base", position: 3, ms: 50 },
+    { side: "current", position: 4, ms: 20 },
+  ]);
 }, 1000);

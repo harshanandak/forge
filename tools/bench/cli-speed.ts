@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { gateDecision, sampleOrder } from "./speed-compare.ts";
+import { recordSpeedSample, type SpeedSample } from "./speed-samples.ts";
 
 interface Limit {
   /** Absolute ceiling on the median. A slow runner can pass it, so it fails the job only when the same-job comparison with the base build fails too (or the base is missing); otherwise it warns. */
@@ -29,6 +30,7 @@ interface Limit {
 // warns while that comparison passes.
 // Platforms without a limit only report.
 const GATE_COMMAND = "issue show";
+const gatedSamples: SpeedSample[] = [];
 const LIMITS: Readonly<Record<string, Limit>> = {
   win32: { ceilingMs: 500, maxPeakMb: 70 },
   linux: { ceilingMs: 350, maxPeakMb: 85 },
@@ -172,7 +174,12 @@ function measure(command: string, args: readonly string[]): Row {
   run(args); // warm the file cache once; not counted
   return toRow(
     command,
-    Array.from({ length: runs }, () => run(args)),
+    Array.from({ length: runs }, () => {
+      const sample = run(args);
+      if (command === GATE_COMMAND)
+        recordSpeedSample(gatedSamples, "current", sample.ms);
+      return sample;
+    }),
   );
 }
 
@@ -187,8 +194,10 @@ function measurePair(
   const current: { ms: number; peakMb: number }[] = [];
   const base: { ms: number; peakMb: number }[] = [];
   for (const side of sampleOrder(runs)) {
-    if (side === "current") current.push(run(args));
-    else base.push(run(args, baseProgram));
+    const sample = run(args, side === "current" ? bin : baseProgram);
+    (side === "current" ? current : base).push(sample);
+    if (command === GATE_COMMAND)
+      recordSpeedSample(gatedSamples, side, sample.ms);
   }
   return {
     current: toRow(command, current),
@@ -262,11 +271,16 @@ const table = [
   "",
 ].join("\n");
 console.log(table);
+const speedSamples = { command: GATE_COMMAND, samples: gatedSamples };
+console.log(JSON.stringify(speedSamples));
 if (process.env.GITHUB_STEP_SUMMARY)
   appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${table}\n`);
 const jsonPath = flag("--json");
 if (jsonPath)
-  writeFileSync(jsonPath, JSON.stringify({ platform, rows }, null, 2));
+  writeFileSync(
+    jsonPath,
+    JSON.stringify({ platform, rows, speedSamples }, null, 2),
+  );
 
 if (gate) {
   const limit = LIMITS[platform];
