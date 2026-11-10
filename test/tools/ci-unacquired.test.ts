@@ -6,6 +6,7 @@ import {
   decideRerun,
   decisionOutput,
   neededJobNames,
+  readHeadWorkflow,
   type CiJob,
   type CiRun,
   type CurrentRun,
@@ -590,4 +591,81 @@ test("reads fork workflow YAML as data without executing its steps", async () =>
     Promise.resolve(workflow),
   );
   expect(lines).toContain("rerun=true");
+}, 1000);
+
+test("refuses an empty matrix-name prefix instead of counting unrelated jobs", async () => {
+  const workflow = workflowAtHead("24, 26").replace(
+    "Verify (${{ matrix.os }}, Node ${{ matrix.node }})",
+    "${{ matrix.os }}",
+  );
+  const lines = await judgeHead(
+    [...matrixLegs.slice(0, 2), unacquired, gate],
+    () => Promise.resolve(workflow),
+  );
+  expect(lines).toContain("rerun=false");
+  expect(lines.join("\n")).toContain("ambiguous job name prefixes");
+}, 1000);
+
+test("refuses matrix prefixes overlapping a known job outside gate needs", async () => {
+  const workflow = `${workflowAtHead("24, 26")}  extra:
+    name: Verify (extra)
+`;
+  const lines = await judgeHead(
+    [...matrixLegs.slice(0, 2), unacquired, gate],
+    () => Promise.resolve(workflow),
+  );
+  expect(lines).toContain("rerun=false");
+  expect(lines.join("\n")).toContain("ambiguous job name prefixes");
+}, 1000);
+
+test("refuses head workflow data larger than 256 KB before parsing", async () => {
+  const lines = await judgeHead([unacquired, gate], () =>
+    Promise.resolve(`${workflowAtHead("24, 26")}#${"x".repeat(256 * 1024)}`),
+  );
+  expect(lines).toContain("rerun=false");
+  expect(lines.join("\n")).toContain("exceeds 256 KB");
+}, 1000);
+
+test("refuses YAML anchors, aliases and custom tags before parsing", async () => {
+  for (const data of [
+    "value: &saved [1, 2]\ncopy: *saved",
+    "copy: *unknown",
+    "value: !custom tagged",
+  ]) {
+    const lines = await judgeHead([unacquired, gate], () =>
+      Promise.resolve(`${workflowAtHead("24, 26")}${data}\n`),
+    );
+    expect(lines).toContain("rerun=false");
+    expect(lines.join("\n")).toContain("anchors, aliases or tags");
+  }
+}, 1000);
+
+test("stops and cancels the contents stream when its byte cap is exceeded", async () => {
+  let cancelled = false;
+  const stream = new ReadableStream<Uint8Array>(
+    {
+      pull(controller) {
+        controller.enqueue(new Uint8Array(256 * 1024 + 1));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  await expect(
+    readHeadWorkflow("fixture", headEnv, (_url, init) => {
+      expect(init.signal).toBeInstanceOf(AbortSignal);
+      return Promise.resolve(new Response(stream));
+    }),
+  ).rejects.toThrow("exceeds 256 KB");
+  expect(cancelled).toBe(true);
+}, 1000);
+
+test("reports a timed-out head workflow read without rerunning", async () => {
+  const lines = await judgeHead([unacquired, gate], () =>
+    Promise.reject(new DOMException("Request timed out", "TimeoutError")),
+  );
+  expect(lines).toContain("rerun=false");
+  expect(lines.join("\n")).toContain("read timed out");
 }, 1000);

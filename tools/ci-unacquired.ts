@@ -15,6 +15,50 @@ export type CurrentRun = {
   conclusion: string | null;
   head_sha?: string;
 };
+const workflowByteLimit = 256 * 1024;
+class WorkflowInputError extends Error {}
+
+export async function readHeadWorkflow(
+  endpoint: string,
+  env: Readonly<Record<string, string | undefined>>,
+  request: (url: string, init: RequestInit) => Promise<Response> = fetch,
+): Promise<string> {
+  const deadline = AbortSignal.timeout(10_000);
+  const failedRead = (error: unknown): never => {
+    if (deadline.aborted)
+      throw new WorkflowInputError("Head CI workflow read timed out");
+    throw error;
+  };
+  const response = await request(`https://api.github.com/${endpoint}`, {
+    signal: deadline,
+    headers: {
+      Accept: "application/vnd.github.raw+json",
+      Authorization: `Bearer ${env.GH_TOKEN}`,
+    },
+  }).catch(failedRead);
+  if (!response.ok || response.body === null)
+    throw new Error("Head workflow unavailable");
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const next = await reader.read().catch(failedRead);
+      if (next.done) break;
+      const value: unknown = next.value;
+      if (!(value instanceof Uint8Array))
+        throw new Error("Invalid response chunk");
+      size += value.byteLength;
+      if (size > workflowByteLimit)
+        throw new WorkflowInputError("Head CI workflow exceeds 256 KB");
+      chunks.push(value);
+    }
+    return await new Blob(chunks).text();
+  } finally {
+    await reader.cancel().catch(failedRead);
+    reader.releaseLock();
+  }
+}
 // Only static axes or an include-only matrix have an unambiguous count here.
 function matrixSize(matrix: unknown): number {
   if (matrix === undefined) return 1;
@@ -84,12 +128,29 @@ export function neededJobNames(
     const name = job.name ?? id;
     if (typeof name !== "string" || name.length === 0)
       throw new Error("Unsupported job name");
+    if (
+      countLegs &&
+      (matchingPrefix(name).trim() === "" ||
+        Object.entries(jobs ?? {}).some(([otherId, other]) => {
+          if (otherId === id) return false;
+          const otherName = other.name ?? otherId;
+          return (
+            typeof otherName !== "string" ||
+            matchesName(name, matchingPrefix(otherName)) ||
+            matchesName(otherName, matchingPrefix(name))
+          );
+        }))
+    )
+      throw new WorkflowInputError(
+        "Head CI workflow has ambiguous job name prefixes",
+      );
     return Array<string>(countLegs ? matrixSize(job.strategy?.matrix) : 1).fill(
       name,
     );
   });
 }
 // A matrix name is a template; match on the text before its first expression.
+const matchingPrefix = (template: string) => template.split("${{", 1)[0] ?? "";
 const matchesName = (template: string, name: string) => {
   const cut = template.indexOf("${{");
   return cut < 0 ? name === template : name.startsWith(template.slice(0, cut));
@@ -181,16 +242,7 @@ export async function decisionAtHead(
   pages: readonly { jobs: readonly CiJob[] }[],
   current: CurrentRun,
   env: Readonly<Record<string, string | undefined>>,
-  read = async (endpoint: string): Promise<string> => {
-    const response = await fetch(`https://api.github.com/${endpoint}`, {
-      headers: {
-        Accept: "application/vnd.github.raw+json",
-        Authorization: `Bearer ${env.GH_TOKEN}`,
-      },
-    });
-    if (!response.ok) throw new Error("Head workflow unavailable");
-    return response.text();
-  },
+  read = (endpoint: string): Promise<string> => readHeadWorkflow(endpoint, env),
 ): Promise<string> {
   try {
     if (
@@ -202,8 +254,19 @@ export async function decisionAtHead(
     const workflow = await read(
       `repos/${env.GH_REPO}/contents/.github/workflows/ci.yml?ref=${current.head_sha}`,
     );
+    if (new TextEncoder().encode(workflow).byteLength > workflowByteLimit)
+      throw new WorkflowInputError("Head CI workflow exceeds 256 KB");
+    // Conservatively refuse YAML graph features before the parser sees them.
+    if (/(?:^|[\s,[{?:-])[&*!]/m.test(workflow) || /^%TAG\b/m.test(workflow))
+      throw new WorkflowInputError(
+        "Head CI workflow contains YAML anchors, aliases or tags",
+      );
     return decisionOutput(pages, current, env, workflow);
-  } catch {
+  } catch (error) {
+    if (error instanceof WorkflowInputError)
+      return `rerun=false\nscope=failed\nreason=${error.message}; keep CI failed`;
+    if (error instanceof Error && error.name === "TimeoutError")
+      return "rerun=false\nscope=failed\nreason=Head CI workflow read timed out; keep CI failed";
     return "rerun=false\nscope=failed\nreason=Head CI workflow could not be read or interpreted; keep CI failed";
   }
 }
