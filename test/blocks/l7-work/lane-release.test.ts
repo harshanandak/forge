@@ -1,6 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 import {
   cpSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -15,6 +16,7 @@ import * as providers from "../../../src/assembly/providers.ts";
 import { blockCapture } from "../../../src/assembly/capture.ts";
 import { firstPartyBlocks } from "../../../src/assembly/first-party.ts";
 import { createSqliteStore } from "../../../src/adapters/store-sqlite/index.ts";
+import { createCloneFilesLease } from "../../../src/adapters/fs/clone-files.ts";
 import { StateOwner } from "../../../src/core/state/index.ts";
 
 const namespace = "forge/work",
@@ -24,7 +26,7 @@ const actor = { kind: "agent" as const, id: "worker" };
 const session = { id: "release", device: "fixture" };
 
 /** Real assembly, schemas and state authority; only clone files and external commands are fake. */
-async function fixture() {
+async function fixture(realLocks = false) {
   const folder = mkdtempSync(join(tmpdir(), "forge-release-")),
     root = join(folder, "project");
   mkdirSync(join(root, ".forge"), { recursive: true });
@@ -76,6 +78,8 @@ async function fixture() {
     evidence: undefined as
       { command: string; mode: "incomplete" | "missing" } | undefined,
     afterRead: undefined as (() => void) | undefined,
+    duringRemove: undefined as (() => Promise<void>) | undefined,
+    failRemove: false,
   };
   const calls: string[][] = [];
   const limits: { args: string[]; maxOutputBytes: number }[] = [];
@@ -106,9 +110,11 @@ async function fixture() {
         });
       else if (args[0] === "worktree" && args[1] === "list")
         stdout = `worktree ${root}\0branch refs/heads/main\0\0worktree ${flags.registeredWorktree}\0branch refs/heads/${flags.registeredBranch}\0\0`;
-      else if (args[0] === "worktree" && args[1] === "remove")
+      else if (args[0] === "worktree" && args[1] === "remove") {
+        await flags.duringRemove?.();
+        if (flags.failRemove) throw new Error("remove refused");
         flags.present = false;
-      else if (args[0] === "update-ref" && args[2] === "refs/heads/feature")
+      } else if (args[0] === "update-ref" && args[2] === "refs/heads/feature")
         flags.branch = false;
       else if (args[0] === "branch" && args.some((arg) => /^-[dD]$/.test(arg)))
         flags.branch = false;
@@ -173,6 +179,17 @@ async function fixture() {
       };
     },
   };
+  const locks = realLocks
+    ? createCloneFilesLease({
+        projectRoot: root,
+        gitDirectory: root,
+        commonDirectory: root,
+        read: true,
+        write: true,
+        signal: new AbortController().signal,
+        processStartTime: () => "linux-starttime-v1:200",
+      })
+    : undefined;
   const cloneFiles: providers.FilesService = {
     root,
     roots: { project: root, git: root, common: root },
@@ -187,10 +204,12 @@ async function fixture() {
     },
     inspect: () => undefined,
     list: () => [],
-    lock: () => {
+    lock: (paths, options) => {
+      const held = locks?.service.lock(paths, options);
       flags.locked = true;
       return {
         release: () => {
+          held?.release();
           flags.locked = false;
         },
       };
@@ -276,6 +295,7 @@ async function fixture() {
     change,
     invoke,
     snapshot,
+    cloneFiles,
     claim: () =>
       owner.acquire(
         namespace,
@@ -285,6 +305,7 @@ async function fixture() {
         `claim-${++request}`,
       ),
     async close() {
+      locks?.close();
       await opened.handle.close();
       await assembly.close();
       for (const mock of mocks.reverse()) mock.mockRestore();
@@ -491,6 +512,96 @@ const lsFilesLimit = 33_554_432,
   tooMany = "Too many tracked files to verify flags; release the lane by hand";
 const clean = (bytes: number) =>
   "H clean-file-name.txt\0".repeat(Math.ceil(bytes / 22));
+
+const cleanupReservation = "forge-lane-cleanup-work-1.lock";
+
+for (const failRemove of [false, true]) {
+  test(`claim during removal refuses with a retry hint and cleanup unlocks after ${failRemove ? "failure" : "success"}`, async () => {
+    const f = await fixture(true);
+    try {
+      let attempted = false;
+      let reserved = false;
+      let competingClaim: Awaited<ReturnType<typeof f.invoke>> | undefined;
+      f.flags.failRemove = failRemove;
+      f.flags.duringRemove = async () => {
+        attempted = true;
+        try {
+          f.cloneFiles
+            .lock([cleanupReservation], { recoverDeadOwner: true })
+            .release();
+        } catch {
+          reserved = true;
+        }
+        competingClaim = await f.invoke("issue.claim", { id: "sample-1" });
+        expect(f.owner.get(namespace, "issue:work-1")!.value).toMatchObject({
+          status: "closed",
+        });
+        expect(f.owner.lease(namespace, "issue:work-1")).toBeUndefined();
+        expect(f.flags.present).toBe(true);
+      };
+      const released = await f.invoke("lane.release", { id: "sample-1" });
+      expect(attempted).toBe(true);
+      expect(reserved).toBe(true);
+      expect(competingClaim).toMatchObject({
+        ok: false,
+        error: { code: "INPUT_CONFLICT", retry: "reconcile_first" },
+      });
+      if (!competingClaim || competingClaim.ok)
+        throw new Error("Claim was not refused during cleanup");
+      expect(competingClaim.error.message).toMatch(/cleanup.*retry/i);
+      expect(released.ok).toBe(!failRemove);
+      expect(f.flags.present).toBe(failRemove);
+      expect(JSON.parse(f.files.get("forge-lanes.json")!)).toHaveLength(
+        failRemove ? 1 : 0,
+      );
+      f.change({ status: "open" });
+      const claimed = await f.invoke("issue.claim", { id: "sample-1" });
+      expect(claimed.ok, JSON.stringify(claimed)).toBe(true);
+      expect(existsSync(join(f.root, cleanupReservation))).toBe(false);
+    } finally {
+      await f.close();
+    }
+  }, 30_000);
+}
+
+test("claim recovers a cleanup reservation left by a dead process generation", async () => {
+  const f = await fixture(true);
+  try {
+    f.change({ status: "open" });
+    const path = join(f.root, cleanupReservation);
+    mkdirSync(path);
+    writeFileSync(
+      join(path, `owner-${process.pid}-11111111-2222-4333-8444-555555555555`),
+      JSON.stringify({ startTime: "linux-starttime-v1:100" }),
+    );
+    const claimed = await f.invoke("issue.claim", { id: "sample-1" });
+    expect(claimed.ok, JSON.stringify(claimed)).toBe(true);
+    expect(existsSync(path)).toBe(false);
+  } finally {
+    await f.close();
+  }
+}, 30_000);
+
+test("a live cleanup reservation refuses an open issue claim without acquiring a lease", async () => {
+  const f = await fixture(true);
+  const held = f.cloneFiles.lock([cleanupReservation], {
+    recoverDeadOwner: true,
+  });
+  try {
+    f.change({ status: "open" });
+    const claimed = await f.invoke("issue.claim", { id: "sample-1" });
+    expect(claimed).toMatchObject({
+      ok: false,
+      error: { code: "INPUT_CONFLICT", retry: "reconcile_first" },
+    });
+    if (claimed.ok) throw new Error("Claim succeeded during cleanup");
+    expect(claimed.error.message).toMatch(/cleanup.*retry/i);
+    expect(f.owner.lease(namespace, "issue:work-1")).toBeUndefined();
+  } finally {
+    held.release();
+    await f.close();
+  }
+}, 30_000);
 
 test("release proceeds when a clean ls-files reply exceeds the default git output cap", async () => {
   const f = await fixture();

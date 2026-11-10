@@ -48,6 +48,7 @@ function fixture() {
   let pinned = "";
   // Names of the exclusion locks a call holds right now.
   const held = new Set<string>();
+  const probes: string[] = [];
   // The handler reads time from this clock; tests never touch the global Date.
   const time = { value: Date.now() };
   const services = {
@@ -62,6 +63,8 @@ function fixture() {
       read: (path: string) => (path === "forge-lanes.json" ? undefined : brief),
       write() {},
       lock: ([name]: string[]) => {
+        if (name !== own && name?.startsWith("forge-lane-ref-"))
+          probes.push(name);
         if (held.has(name!)) throw new Error(`held: ${name}`);
         held.add(name!);
         return { release: () => void held.delete(name!) };
@@ -115,7 +118,7 @@ function fixture() {
       signal: call.signal ?? new AbortController().signal,
       deadline: call.deadline ?? Number.MAX_SAFE_INTEGER,
     });
-  return { calls, refs, held, hooks, run, time };
+  return { calls, refs, held, hooks, run, time, probes };
 }
 
 test("the base fetch writes only its own ref", async () => {
@@ -225,3 +228,23 @@ test("the sweep keeps a ref dated more than an hour ahead while its owner holds 
   await f.run();
   expect([...f.refs]).toEqual([ahead]);
 }, 30_000);
+
+for (const live of [false, true]) {
+  test(`a sweep probes at most 32 ${live ? "live" : "abandoned"} owners and the next sweep continues`, async () => {
+    const f = fixture();
+    for (let index = 0; index < 40; index++) {
+      const uuid = `${index.toString(16).padStart(8, "0")}-bbbb-4ccc-8ddd-eeeeeeeeeeee`;
+      f.refs.add(stale(1, uuid));
+      if (live) f.held.add(`forge-lane-ref-${uuid}.lock`);
+    }
+    await f.run();
+    expect(f.probes).toHaveLength(32);
+    expect(f.refs.size).toBe(live ? 40 : 8);
+    if (live) f.held.clear();
+    f.probes.length = 0;
+    await f.run();
+    expect(f.probes).toHaveLength(live ? 32 : 8);
+    expect(f.refs.size).toBe(live ? 8 : 0);
+    expect(f.held.size).toBe(0);
+  }, 30_000);
+}
