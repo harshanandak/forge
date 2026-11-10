@@ -32,6 +32,25 @@ const executableNames = new Set(
   ),
 );
 
+type IdentityRegion = { start: number; end: number };
+
+const allowedGlobals = new Set(
+  "Array Buffer Error JSON Math Number Promise Response TextEncoder Uint8Array crypto encodeURIComponent undefined".split(
+    " ",
+  ),
+);
+const forbiddenKeys = new Set(
+  "constructor __proto__ getOwnPropertyDescriptor getOwnPropertyDescriptors getPrototypeOf setPrototypeOf defineProperty defineProperties __lookupGetter__".split(
+    " ",
+  ),
+);
+const keywords = new Set(
+  "break case catch class const continue debugger default delete do else export extends finally for function if import in instanceof let new null return super switch this throw true false try typeof var void while with yield await".split(
+    " ",
+  ),
+);
+class UnknownGlobalRefusal extends IdentityTokenRefusal {}
+
 const controls = new Set(["if", "while", "for", "with", "switch", "catch"]);
 const regexPrefix = new Set(
   "return throw typeof void delete new in instanceof case else do default extends".split(
@@ -65,8 +84,8 @@ function identityTokens(source: string): {
   };
   const emit = (kind: IdentityToken["kind"], text: string): void => {
     if (
-      (kind === "identifier" || kind === "literal") &&
-      executableNames.has(text)
+      (kind === "literal" && executableNames.has(text)) ||
+      (kind === "identifier" && forbiddenKeys.has(text))
     )
       refuse("executable source");
     tokens.push({ kind, text });
@@ -504,6 +523,114 @@ function oauthMintRefusal(file: SourceFile): IdentityTokenRefusal | undefined {
       } else scopes.push({ start: i, end, name: "" });
       blocks.add(close + 1);
     }
+    const bindings: { name: string; start: number; end: number }[] = [];
+    const ignored = new Set<number>();
+    const root = { start: 0, end: tokens.length };
+    const regions = [
+      ...scopes,
+      ...[...pairs]
+        .filter(
+          ([start, end]) =>
+            start < end &&
+            at(start) === "{" &&
+            tokens[start]?.context !== "expression",
+        )
+        .map(([start, end]) => ({ start, end })),
+    ];
+    for (const [open, close] of pairs) {
+      if (at(open) !== "(" || !["for", "await"].includes(at(open - 1)))
+        continue;
+      if (at(close + 1) !== "{") refuse("unclassified loop scope");
+      regions.push({ start: open, end: pairs.get(close + 1)! });
+    }
+    const region = (index: number) =>
+      regions
+        .filter((s) => s.start < index && index < s.end)
+        .sort((a, b) => b.start - a.start)[0] ?? root;
+    const bind = (index: number, scope: IdentityRegion): number => {
+      if (at(index) === "...") index++;
+      if (["{", "["].includes(at(index))) {
+        const object = at(index) === "{";
+        const end = pairs.get(index)!;
+        for (index++; index < end;) {
+          if (at(index) === ",") {
+            index++;
+            continue;
+          }
+          if (object && at(index + 1) === ":") {
+            ignored.add(index);
+            index += 2;
+          }
+          index = bind(index, scope);
+          if (index < end && at(index) !== ",")
+            refuse("unclassified binding pattern");
+        }
+        index++;
+      } else {
+        if (tokens[index]?.kind !== "identifier" || keywords.has(at(index)))
+          refuse("unclassified binding");
+        bindings.push({ ...scope, name: at(index) });
+        ignored.add(index++);
+      }
+      if (at(index) === "=") {
+        index++;
+        while (
+          index < tokens.length &&
+          ![",", ";", ")", "]", "}", "of", "in"].includes(at(index))
+        )
+          index = (pairs.get(index) ?? index) + 1;
+      }
+      return index;
+    };
+    const bindList = (start: number, end: number, scope: IdentityRegion) => {
+      for (let index = start; index < end;) {
+        index = bind(index, scope);
+        if (index < end && at(index) !== ",")
+          refuse("unclassified parameter list");
+        index++;
+      }
+    };
+    for (const scope of scopes) {
+      let start = scope.start;
+      if (at(start) === "function") {
+        start++;
+        if (at(start) === "*") start++;
+        if (at(start) !== "(") {
+          bind(
+            start,
+            statementStart(scope.start) || statementStart(scope.start - 1)
+              ? region(scope.start)
+              : scope,
+          );
+          start++;
+        }
+      }
+      if (at(start) === "(") bindList(start + 1, pairs.get(start)!, scope);
+      else if (at(start + 1) === "=>") bind(start, scope);
+      if (at(scope.start - 1) === "async") ignored.add(scope.start - 1);
+    }
+    for (let i = 0; i < tokens.length; i++) {
+      if ([".", "?."].includes(at(i - 1))) continue;
+      if (["const", "let", "var"].includes(at(i))) {
+        let end = i + 1;
+        while (end < tokens.length && ![";", ")", "of", "in"].includes(at(end)))
+          end = (pairs.get(end) ?? end) + 1;
+        const scope = region(i);
+        bindList(i + 1, end, scope);
+        if (at(end) === "of") ignored.add(end);
+      }
+      if (at(i) === "class" && tokens[i + 1]?.kind === "identifier")
+        bind(
+          i + 1,
+          statementStart(i) || at(i - 1) === "export"
+            ? region(i)
+            : scopes.find((s) => s.start === i)!,
+        );
+      if (at(i) === "catch" && at(i + 1) === "(") {
+        const close = pairs.get(i + 1)!;
+        bindList(i + 2, close, { start: i, end: pairs.get(close + 1)! });
+      }
+    }
     const name = "[$_\\p{ID_Start}][$\\u200c\\u200d\\p{ID_Continue}]*";
     const item = `${name}(?: as ${name})?`;
     const declaration = new RegExp(
@@ -553,6 +680,15 @@ function oauthMintRefusal(file: SourceFile): IdentityTokenRefusal | undefined {
           )
         )
           refuse("unclassified import declaration");
+        for (let j = start; j <= i; j++) {
+          ignored.add(j);
+          if (
+            tokens[j]?.kind === "identifier" &&
+            !["import", "from", "as"].includes(at(j)) &&
+            at(j + 1) !== "as"
+          )
+            bindings.push({ name: at(j), ...root });
+        }
         continue;
       }
       if (tokens[i]?.kind !== "identifier" || at(i) !== "mintIdentity")
@@ -569,6 +705,29 @@ function oauthMintRefusal(file: SourceFile): IdentityTokenRefusal | undefined {
         parents[1]?.name !== "verifyProviderToken"
       )
         refuse("mint reference escapes the verifier boundary");
+    }
+    for (let i = 0; i < tokens.length; i++) {
+      const name = at(i);
+      if (
+        tokens[i]?.kind !== "identifier" ||
+        ignored.has(i) ||
+        keywords.has(name) ||
+        [".", "?."].includes(at(i - 1))
+      )
+        continue;
+      if (
+        name === "async" &&
+        (at(i + 1) === "function" || scopes.some((s) => s.start === i + 1))
+      )
+        continue;
+      const key = at(i + 1) === ":" && ["{", ","].includes(at(i - 1));
+      const method = at(i + 1) === "(" && scopes.some((s) => s.start === i + 1);
+      if (key || method) continue;
+      if (
+        !allowedGlobals.has(name) &&
+        !bindings.some((b) => b.name === name && b.start <= i && i <= b.end)
+      )
+        throw new UnknownGlobalRefusal(`unknown global: ${name}`);
     }
     return undefined;
   } catch (cause) {
@@ -641,16 +800,23 @@ export function findIdentityMintViolations(
       path === "src/adapters/oidc/identity-mint.test.ts" ||
       path === "cloud/src/adapters/workers-oauth/index.ts" ||
       path === "test/contract/lib/identity-verifier.ts";
+    const refusal =
+      path === "cloud/src/adapters/workers-oauth/index.ts"
+        ? oauthMintRefusal(source)
+        : undefined;
     if (
-      verifier
-        ? reexportsMint(source)
-        : importsOf(source).some((specifier) => mintTarget(path, specifier))
+      path === "cloud/src/adapters/workers-oauth/index.ts"
+        ? refusal !== undefined
+        : verifier
+          ? reexportsMint(source)
+          : importsOf(source).some((specifier) => mintTarget(path, specifier))
     )
       violations.push({
         rule: "identity-provenance",
         file: file.path,
         message:
-          "identity-mint may be imported only by verifiers and never re-exported",
+          "identity-mint may be imported only by verifiers and never re-exported" +
+          (refusal ? `: ${refusal.message}` : ""),
       });
   }
   return violations;

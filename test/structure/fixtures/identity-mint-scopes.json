@@ -40,5 +40,7 @@
   "unlisted caches global": "export function outside() { return caches; }",
   "Unicode-escaped unlisted global": "export function outside() { return Ato\\u006dics; }",
   "type-only name cannot authorize a runtime global": "type Outside = Atomics; export function outside(value: Outside) { return Atomics; }",
-  "local shadow still refuses constructor key": "export function outside(self) { return self.constructor; }"
+  "local shadow still refuses constructor key": "export function outside(self) { return self.constructor; }",
+  "nested parameter cannot authorize a free global": "function hidden(fetch) { return fetch; } export function outside() { return fetch('/'); }",
+  "loop binding cannot authorize a free global": "export function outside() { for (const caches of []) { void caches; } return caches; }"
 }
