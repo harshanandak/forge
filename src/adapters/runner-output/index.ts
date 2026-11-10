@@ -482,8 +482,9 @@ function recognizer(format: ReportFormat): OutputRecognizer {
                 ? malformed
                 : undefined,
             ];
-        for (const report of structuredReports)
-          if (report) reports.push(report);
+        reports.unshift(
+          ...structuredReports.filter((report) => report !== undefined),
+        );
       }
       const failed = reports.find(
         (report) => report.kind === "recognized" && report.failed! > 0,
