@@ -1,6 +1,7 @@
 import { DEFAULT_PARSE_LIMITS } from "../../contract/untrusted.ts";
 import type { ParseLimits } from "../../generated/types.ts";
 import type { ClockPort } from "../../ports/clock.ts";
+import type { DeletableStateClient } from "../../ports/state.ts";
 import { ForgeFailure } from "../../contract/failure.ts";
 import { refuse } from "../trust/index.ts";
 import type {
@@ -70,6 +71,8 @@ export class InvocationServices {
   readonly controller: AbortController = new AbortController();
   #deadline: number;
   readonly #pending = new Set<Promise<unknown>>();
+  #unconfirmedProcesses = 0;
+  readonly #finalizers: (() => void)[] = [];
   #active = true;
   readonly #cleanupErrors: unknown[] = [];
   readonly #authorize: () => void;
@@ -174,6 +177,9 @@ export class InvocationServices {
   }
   async drain(): Promise<void> {
     await Promise.allSettled([...this.#pending]);
+    const finalizers = this.#finalizers.splice(0);
+    if (!this.#active && this.#unconfirmedProcesses === 0)
+      for (const finalize of finalizers) finalize();
     if (this.#cleanupErrors.length)
       throw new AggregateError(this.#cleanupErrors, "Process cleanup failed");
   }
@@ -287,6 +293,10 @@ export class InvocationServices {
     );
   }
   wrap(value: unknown): unknown {
+    const state =
+      typeof value === "object" && value !== null && "state" in value
+        ? value.state
+        : undefined;
     const seen = new WeakMap<object, Map<object | undefined, unknown>>();
     const proxies = new WeakSet<object>();
     const resource = (
@@ -377,6 +387,14 @@ export class InvocationServices {
       if (proxies.has(entry)) return entry;
       const cached = seen.get(entry)?.get(receiver);
       if (cached) return cached;
+      const stateClient =
+        entry === state &&
+        typeof entry === "object" &&
+        "put" in entry &&
+        typeof entry.put === "function" &&
+        "delete" in entry &&
+        typeof entry.delete === "function";
+      const written = new Map<string, number>();
       // Explicit process capabilities inherit cancellation even if the
       // handler omits or replaces its own signal and timeout.
       const processPort =
@@ -391,6 +409,40 @@ export class InvocationServices {
         typeof entry === "function" ? (..._args: unknown[]) => undefined : {};
       const read = (key: string | symbol): unknown => {
         this.check();
+        if (stateClient && key === "put")
+          return (...args: Parameters<DeletableStateClient["put"]>) => {
+            this.check();
+            const row = (entry as DeletableStateClient).put(
+              ...(args.map(transfer) as typeof args),
+            );
+            written.set(row.key, row.revision);
+            return returned(row);
+          };
+        if (stateClient && key === "finalizeDelete")
+          return (key: string, revision: number) => {
+            this.check();
+            if (!written.has(key) || written.get(key) !== revision)
+              refuse(
+                "INPUT_INVALID",
+                "Finalization requires an owned revision",
+              );
+            const bound = this.deadline;
+            // Only teardown may use this exact deletion; ordinary clients remain revoked.
+            this.#finalizers.push(() => {
+              if (this.#clock.now() >= bound) return;
+              try {
+                (entry as DeletableStateClient).delete(key, {
+                  expectRevision: revision,
+                });
+              } catch (error) {
+                if (
+                  !(error instanceof ForgeFailure) ||
+                  error.error.code !== "REVISION_CONFLICT"
+                )
+                  throw error;
+              }
+            });
+          };
         if (
           typeof entry === "function" &&
           (key === "bind" || key === "call" || key === "apply")
@@ -407,6 +459,8 @@ export class InvocationServices {
             const signal = options.signal
               ? AbortSignal.any([this.controller.signal, options.signal])
               : this.controller.signal;
+            // A thrown or rejected launch also lacks proof of termination.
+            this.#unconfirmedProcesses++;
             const pending = port
               .run(executable, args, {
                 ...options,
@@ -439,6 +493,8 @@ export class InvocationServices {
             void pending.then(
               (result) => {
                 this.#pending.delete(pending);
+                if (result.supervision?.confirmed !== false)
+                  this.#unconfirmedProcesses--;
                 this.#capture(result, options);
                 if (result.supervision && this.#reports.length < 32)
                   this.#reports.push(result.supervision);
