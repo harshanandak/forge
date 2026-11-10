@@ -37,6 +37,8 @@ A device token acts only as its own device. The admin token is the Worker secret
 
 ## Deploy
 
+Do not deploy with OAuth until 7d3 lands.
+
 From `cloud/`, with `CLOUDFLARE_ACCOUNT_ID` set and an existing wrangler login (free plan only):
 
 1. `bun x wrangler whoami` shows the login, the account and the token scopes. It needs Workers write access.
