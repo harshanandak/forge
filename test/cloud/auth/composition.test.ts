@@ -11,8 +11,10 @@ await mock.module("cloudflare:workers", () => ({ WorkerEntrypoint: class {} }));
 const { createOAuthAdapter } =
   await import("../../../cloud/src/adapters/workers-oauth/index.ts");
 const { createWorker } = await import("../../../cloud/src/worker.ts");
-const { composeOAuth } =
+const { composeOAuth, createConfiguredWorker } =
   await import("../../../cloud/src/adapters/workers-oauth/compose.ts");
+const { readOAuthConfig } =
+  await import("../../../cloud/src/adapters/workers-oauth/config.ts");
 const issuer = "https://auth.example",
   resource = "https://api.example/a";
 const claims = {
@@ -88,10 +90,19 @@ async function fixture(denied = false, expectedResource = resource) {
     return ((await exchanged.json()) as { access_token: string }).access_token;
   }
 
-  const auth = composeOAuth(harness.options, expectedResource, {
-    authorize: () =>
-      denied ? { allowed: false, code: "AUTH_FORBIDDEN" } : { allowed: true },
-  });
+  const protocol = mock((request: Request) =>
+    Promise.resolve(Response.json({ path: new URL(request.url).pathname })),
+  );
+  const auth = composeOAuth(
+    harness.options,
+    expectedResource,
+    {
+      authorize: () =>
+        denied ? { allowed: false, code: "AUTH_FORBIDDEN" } : { allowed: true },
+    },
+    undefined,
+    protocol,
+  );
   const env = {
     ADMIN_TOKEN: "fixture-admin",
     PROJECTS: {
@@ -230,6 +241,14 @@ test("an owner principal cannot bypass a missing team authorization provider", (
   ).toEqual({ allowed: false, code: "TEAM_AUTHORIZATION_UNAVAILABLE" });
 }, 30_000);
 
+const oauthPaths = [
+  "/authorize",
+  "/callback",
+  "/oauth/token",
+  "/register",
+  "/.well-known/oauth-authorization-server",
+  "/.well-known/oauth-protected-resource",
+];
 const projectRequest = (token: string, path = "/p/a/holder?subject=attacker") =>
   new Request(`${issuer}${path}`, {
     headers: {
@@ -296,4 +315,150 @@ test("legacy devices never reach trusted transport and fetch rejections are sani
     });
     expect(body).not.toContain(message);
   }
+}, 30_000);
+
+test("missing OAuth composition refuses OAuth routes and preserves device and admin routing", async () => {
+  const f = await fixture(),
+    worker = createWorker();
+  for (const path of oauthPaths) {
+    const response = await worker.fetch(projectRequest("", path), f.env);
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({
+      error: { code: "AUTH_CONFIG_UNAVAILABLE" },
+    });
+  }
+  for (const [route, token] of [
+    ["holder", `fct_${"0".repeat(16)}.${"x".repeat(43)}`],
+    ["status", "fixture-admin"],
+  ])
+    expect(
+      (await worker.fetch(projectRequest(token!, `/p/a/${route}`), f.env))
+        .status,
+    ).toBe(200);
+
+  for (const path of oauthPaths) {
+    const response = await f.worker.fetch(projectRequest("", path), f.env);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ path });
+  }
+  expect(f.forward).toHaveBeenCalledTimes(0);
+}, 30_000);
+const vars = {
+  CLERK_ISSUER: "https://clerk.example",
+  CLERK_CLIENT_ID: "public-client",
+  CLERK_REDIRECT_URI: `${issuer}/callback`,
+  FORGE_API_RESOURCE: resource,
+  OAUTH_TIMEOUT_MS: "5000",
+};
+
+test("Worker vars derive Clerk endpoints without secrets", () => {
+  expect(readOAuthConfig(vars, issuer)).toEqual({
+    issuer: vars.CLERK_ISSUER,
+    authorizationUrl: "https://clerk.example/oauth/authorize",
+    tokenUrl: "https://clerk.example/oauth/token",
+    jwksUrl: "https://clerk.example/.well-known/jwks.json",
+    clientId: vars.CLERK_CLIENT_ID,
+    redirectUri: vars.CLERK_REDIRECT_URI,
+    resource,
+    timeoutMs: 5000,
+  });
+}, 30_000);
+
+test("missing and invalid vars refuse every OAuth route without breaking device or admin", async () => {
+  const f = await fixture(),
+    worker = createConfiguredWorker();
+  const invalid = {
+    CLERK_ISSUER: [
+      "http://clerk.example",
+      "https://user:pass@clerk.example",
+      "https://clerk.example/path",
+      "https://clerk.example/../",
+      "https://clerk.example?x=1",
+      "https://clerk.example#x",
+    ],
+    CLERK_CLIENT_ID: ["", " ", "bad\nclient"],
+    CLERK_REDIRECT_URI: [
+      "https://other.example/callback",
+      `${issuer}/elsewhere`,
+      `${issuer}/callback?code=x`,
+      `${issuer}/callback#x`,
+      "http://auth.example/callback",
+    ],
+    FORGE_API_RESOURCE: [
+      "",
+      "http://api.example/a",
+      "https://user:pass@api.example/a",
+      "https://api.example/a#x",
+    ],
+    OAUTH_TIMEOUT_MS: ["0", "-1", "1.5", "NaN", "2147483648"],
+    OAUTH_KV: [null],
+  };
+  for (const [variable, values] of Object.entries(invalid)) {
+    for (const value of [undefined, ...values]) {
+      const env = {
+        ...f.env,
+        ...vars,
+        OAUTH_KV: f.options.storage,
+        [variable]: value,
+      };
+      for (const path of oauthPaths) {
+        const response = await worker.fetch(projectRequest("", path), env);
+        expect(response.status).toBe(503);
+        const body = await response.text();
+        expect(JSON.parse(body)).toMatchObject({
+          error: { code: "AUTH_CONFIG_UNAVAILABLE", variable },
+        });
+        if (typeof value === "string" && value.length > 1)
+          expect(body).not.toContain(value);
+      }
+      for (const [path, token] of [
+        ["holder", deviceToken],
+        ["status", "fixture-admin"],
+      ])
+        expect(
+          (await worker.fetch(projectRequest(token!, `/p/a/${path}`), env))
+            .status,
+        ).toBe(200);
+    }
+  }
+}, 30_000);
+
+test("configured OAuth dispatch uses the protocol handler without project forwarding", async () => {
+  const f = await fixture();
+  const protocol = mock((request: Request) =>
+    Promise.resolve(Response.json({ path: new URL(request.url).pathname })),
+  );
+  const worker = createConfiguredWorker(protocol),
+    env = { ...f.env, ...vars, OAUTH_KV: f.options.storage };
+  for (const path of oauthPaths.filter(
+    (path) => path !== "/callback" && path !== "/oauth/token",
+  )) {
+    const response = await worker.fetch(projectRequest("", path), env);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ path });
+  }
+  expect(protocol).toHaveBeenCalledTimes(4);
+}, 30_000);
+
+test("token and callback refuse without atomic redemption even with every var set", async () => {
+  const f = await fixture();
+  const protocol = mock(() => Promise.resolve(new Response("unexpected")));
+  for (const worker of [
+    createConfiguredWorker(),
+    createConfiguredWorker(protocol),
+  ]) {
+    const env = { ...f.env, ...vars, OAUTH_KV: f.options.storage };
+    for (const path of ["/oauth/token", "/callback"]) {
+      const response = await worker.fetch(projectRequest("", path), env);
+      expect(response.status).toBe(503);
+      expect(await response.json()).toMatchObject({
+        error: {
+          code: "AUTH_CONFIG_UNAVAILABLE",
+          variable: "CODE_REDEMPTION",
+          message: "Atomic redemption unavailable",
+        },
+      });
+    }
+  }
+  expect(protocol).toHaveBeenCalledTimes(0);
 }, 30_000);
