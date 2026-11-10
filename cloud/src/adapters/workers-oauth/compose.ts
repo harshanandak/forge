@@ -9,6 +9,7 @@ import { createWorker } from "../../worker.ts";
 import { OAuthConfigError, readOAuthConfig } from "./config.ts";
 import { OAuthAuthorizationServer } from "@cloudflare/workers-oauth-provider";
 export { Project } from "../../worker.ts";
+export { CodeRedemption } from "./redemption.ts";
 
 export function composeOAuth(
   options: OAuthOptions,

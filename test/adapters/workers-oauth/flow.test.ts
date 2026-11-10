@@ -238,3 +238,24 @@ test("a failed verifier still burns the authorization code", async () => {
     "invalid_grant",
   );
 }, 30_000);
+
+test("JSON and multipart token requests do not burn a valid code", async () => {
+  const f = await fixture(),
+    code = await f.code(),
+    multipart = new FormData();
+  multipart.set("code", code);
+  for (const body of [JSON.stringify({ code }), multipart]) {
+    const response = await f.api.token(
+      new Request(`${issuer}/oauth/token`, {
+        method: "POST",
+        body,
+        ...(typeof body === "string"
+          ? { headers: { "Content-Type": "application/json" } }
+          : {}),
+      }),
+    );
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "invalid_request" });
+  }
+  expect((await f.exchange(code)).status).toBe(200);
+}, 30_000);
