@@ -1,0 +1,18 @@
+{
+  "regex literal cannot invent verifier scopes": "import { mintIdentity } from \"TARGET\"; const spoof = /function createOAuthAdapter() { function verifyProviderToken() {/; mintIdentity(claims);",
+  "Unicode-escaped identifier outside verifier": "import { mintIdentity } from \"TARGET\"; export function other(claims) { return mintId\\u0065ntity(claims); }",
+  "non-literal dynamic import": "export async function load(path) { return import(path); }",
+  "non-literal require": "export function load(path) { return require(path); }",
+  "returned closure escapes verifier": "import { mintIdentity } from \"TARGET\"; export function createOAuthAdapter() { function verifyProviderToken(claims) { return function later() { return mintIdentity(claims); }; } return { verify: verifyProviderToken }; }",
+  "computed mint access": "import { mintIdentity } from \"TARGET\"; export function createOAuthAdapter() { function verifyProviderToken(claims) { return mintIdentity[\"call\"]({}, claims); } }",
+  "unclassifiable syntax": "import { mintIdentity } from \"TARGET\"; export function createOAuthAdapter() { function verifyProviderToken(claims) { return mintIdentity(claims); } const unfinished =",
+  "contextual of cannot hide a division mint": "import { mintIdentity } from \"TARGET\"; type Claims = Parameters\u003ctypeof mintIdentity\u003e[0]; export function outside(of: number, claims: Claims) { return of / Number(mintIdentity(claims)) / 2; }",
+  "contextual yield before slash is refused": "import { mintIdentity } from \"TARGET\"; type Claims = Parameters\u003ctypeof mintIdentity\u003e[0]; export function* outside(claims: Claims) { return yield / Number(mintIdentity(claims)) / 2; }",
+  "contextual await before slash is refused": "import { mintIdentity } from \"TARGET\"; type Claims = Parameters\u003ctypeof mintIdentity\u003e[0]; export async function outside(claims: Claims) { return await / Number(mintIdentity(claims)) / 2; }",
+  "import property cannot skip a mint": "import { mintIdentity } from \"TARGET\"; type Claims = Parameters\u003ctypeof mintIdentity\u003e[0]; export function outside(claims: Claims) { return { import: mintIdentity(claims) }; }",
+  "import member assignment cannot skip a mint": "import { mintIdentity } from \"TARGET\"; type Claims = Parameters\u003ctypeof mintIdentity\u003e[0]; export function outside(claims: Claims) { box.import = mintIdentity(claims); }",
+  "control keyword method remains a closure": "import { mintIdentity } from \"TARGET\"; type Claims = Parameters\u003ctypeof mintIdentity\u003e[0]; export function createOAuthAdapter() { function verifyProviderToken(claims: Claims) { return { if() { return mintIdentity(claims); } }; } return verifyProviderToken; }",
+  "class catch method remains a closure": "import { mintIdentity } from \"TARGET\"; type Claims = Parameters\u003ctypeof mintIdentity\u003e[0]; export function createOAuthAdapter() { function verifyProviderToken(claims: Claims) { return class { catch() { return mintIdentity(claims); } }; } return verifyProviderToken; }",
+  "direct eval cannot mint outside the verifier": "import { mintIdentity } from \"TARGET\"; type Claims = Parameters<typeof mintIdentity>[0]; export function createOAuthAdapter() { function verifyProviderToken(claims: Claims) { return mintIdentity(claims); } return { verify: verifyProviderToken, outside(claims: Claims) { return eval(\"mintIdentity(claims)\"); } }; }",
+  "Function constructor cannot execute mint source": "import { mintIdentity } from \"TARGET\"; type Claims = Parameters<typeof mintIdentity>[0]; export function outside(claims: Claims) { return new Function(\"claims\", \"return mintIdentity(claims)\")(claims); }"
+}
