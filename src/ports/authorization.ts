@@ -19,7 +19,6 @@ export type AuthorizationDecision =
 export interface AuthorizationPort {
   authorize(request: AuthorizationRequest): AuthorizationDecision;
 }
-/** Resource-bound provider proof; invalid or expired tokens return null. */
 export interface OAuthVerificationPort {
   verify(token: string, resource: string): Promise<VerifiedIdentity | null>;
 }

@@ -268,3 +268,32 @@ test("Worker and MCP receive the same verified identity and allow decision", asy
     expect(f.forward).toHaveBeenCalledTimes(0);
   }
 }, 30_000);
+const deviceToken = `fct_${"0".repeat(16)}.${"x".repeat(43)}`;
+test("legacy devices never reach trusted transport and fetch rejections are sanitized", async () => {
+  const f = await fixture();
+  for (const code of ["AUTH_INVALID", "AUTH_REVOKED", "AUTH_EXPIRED"]) {
+    const device = mock(() =>
+      Promise.resolve(Response.json({ error: { code } }, { status: 401 })),
+    );
+    f.env.PROJECTS.get = () => ({ fetch: device });
+    const response = await f.worker.fetch(projectRequest(deviceToken), f.env);
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: { code } });
+    expect(device).toHaveBeenCalledTimes(1);
+    expect(f.forward).toHaveBeenCalledTimes(0);
+  }
+  const token = await f.token(),
+    message = "private transport detail";
+  const reject = () => Promise.reject(new Error(message));
+  const worker = createWorker(f.auth, reject);
+  f.env.PROJECTS.get = () => ({ fetch: reject });
+  for (const presented of [token, deviceToken]) {
+    const response = await worker.fetch(projectRequest(presented), f.env);
+    expect(response.status).toBe(401);
+    const body = await response.text();
+    expect(JSON.parse(body)).toMatchObject({
+      error: { code: "AUTH_INVALID", message: "Token is not valid" },
+    });
+    expect(body).not.toContain(message);
+  }
+}, 30_000);

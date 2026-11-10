@@ -5,7 +5,6 @@
 export { Project } from "./project.ts";
 import { bearer, same, sha256, wellFormed } from "./tokens.ts";
 import type { Access, AuthComposition } from "./auth/compose.ts";
-import { singleOwnerPolicy } from "../../src/ports/authorization.ts";
 
 interface Env {
   readonly ADMIN_TOKEN?: string;
@@ -84,36 +83,20 @@ const legacyWorker = {
     const legacy = ADMIN_ROUTES.has(match![2]!) || wellFormed(presented);
     if (!legacy && auth === undefined)
       return unauthorized(request, "AUTH_INVALID", "Token is not valid");
-    const principal = { kind: "single-owner" } as const;
     try {
-      const access: Access = legacy
-        ? {
-            principal,
-            decision: (auth?.policy ?? singleOwnerPolicy).authorize({
-              principal,
-              project,
-              action: match![2]!,
-              authority: "single-owner",
-            }),
-          }
-        : await auth!.authorize(request, project, match![2]!);
-      if (!access.decision.allowed)
+      if (legacy)
+        return await env.PROJECTS.get(env.PROJECTS.idFromName(project)).fetch(
+          request,
+        );
+      const access = await auth!.authorize(request, project, match![2]!);
+      if (!access.decision.allowed || forward === undefined)
         return unauthorized(
           request,
-          access.decision.code,
+          access.decision.allowed ? "AUTH_FORBIDDEN" : access.decision.code,
           "Access is not allowed",
           403,
         );
-      if (access.principal.kind === "person" && forward === undefined)
-        return unauthorized(
-          request,
-          "AUTH_FORBIDDEN",
-          "A trusted project transport is required",
-          403,
-        );
-      return forward
-        ? forward(request, project, access)
-        : env.PROJECTS.get(env.PROJECTS.idFromName(project)).fetch(request);
+      return await forward(request, project, access);
     } catch {
       return unauthorized(request, "AUTH_INVALID", "Token is not valid");
     }
