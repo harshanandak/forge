@@ -31,6 +31,10 @@ const holder: LeaseHolder = {
   actor: { kind: "agent", id: "A" },
   session: { id: "A" },
 };
+const otherHolder: LeaseHolder = {
+  actor: { kind: "agent", id: "B" },
+  session: { id: "B" },
+};
 const globals = globalThis as Record<string, unknown>,
   previousFail = globals.fail;
 let operations: Record<string, Handler>;
@@ -93,7 +97,13 @@ async function project() {
     );
   }
   for (const id of [4])
-    owner.acquire(namespace, `issue:work-${id}`, holder, 60000, `seed-${id}`);
+    owner.acquire(
+      namespace,
+      `issue:work-${id}`,
+      otherHolder,
+      60000,
+      `seed-${id}`,
+    );
   function call<T = unknown>(
     op: string,
     id: number,
