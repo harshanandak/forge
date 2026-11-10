@@ -1,10 +1,14 @@
 import { createHash } from "node:crypto";
 import { ForgeFailure } from "../../contract/failure.ts";
 import { validateSecretRef } from "../../generated/validators.ts";
-import type { Caller, SecretRef } from "../../generated/types.ts";
+import type { Caller, ForgeError, SecretRef } from "../../generated/types.ts";
 
-export function refuse(code: string, message: string): never {
-  throw new ForgeFailure({ code, message, retry: "never" });
+export function refuse(
+  code: string,
+  message: string,
+  details?: Pick<ForgeError, "observed" | "repair">,
+): never {
+  throw new ForgeFailure({ code, message, retry: "never", ...details });
 }
 
 export function digest(value: string | Uint8Array): string {
