@@ -4,6 +4,8 @@ import { createOAuthHarness } from "../../adapters/workers-oauth/harness.ts";
 await mock.module("cloudflare:workers", () => ({ WorkerEntrypoint: class {} }));
 const { composeOAuth } =
   await import("../../../cloud/src/adapters/workers-oauth/compose.ts");
+const { boundedOAuthRequest } =
+  await import("../../../cloud/src/adapters/workers-oauth/body.ts");
 const limit = 8192;
 const oversized = {
   error: "invalid_request",
@@ -79,6 +81,33 @@ async function refused(f: ReturnType<typeof fixture>) {
   expect(f.parse).toHaveBeenCalledTimes(0);
   for (const call of f.calls) expect(call).toHaveBeenCalledTimes(0);
 }
+
+test("bounded token requests preserve all form fields and cookies", async () => {
+  const form = new URLSearchParams({
+    grant_type: "authorization_code",
+    code: "person:grant:secret+with/symbols=",
+    client_id: "public-client",
+    redirect_uri: "https://client.example/callback?channel=desktop&x=1",
+    code_verifier: "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+    resource: "https://api.example/a",
+  });
+  form.append("resource", "https://api.example/b");
+  const request = new Request("https://auth.example/oauth/token", {
+    method: "POST",
+    headers: { Cookie: "session=fixture" },
+    body: form,
+  });
+  const bounded = await boundedOAuthRequest(request);
+  expect(bounded).toBeInstanceOf(Request);
+  if (!(bounded instanceof Request)) throw new Error("Unexpected refusal");
+  expect([...(await bounded.formData())]).toEqual([...form]);
+  expect(bounded.url).toBe(request.url);
+  expect(bounded.method).toBe("POST");
+  expect(bounded.headers.get("Cookie")).toBe("session=fixture");
+  expect(bounded.headers.get("Content-Type")).toBe(
+    request.headers.get("Content-Type"),
+  );
+}, 30_000);
 
 for (const path of ["/authorize", "/oauth/token"]) {
   test(`${path} refuses and cancels a body one byte over the limit`, async () => {

@@ -42,20 +42,24 @@ export function composeOAuth(
     team,
     async (request) => {
       const path = new URL(request.url).pathname;
+      if (
+        request.method === "POST" &&
+        ["/authorize", "/oauth/token"].includes(path)
+      ) {
+        const bounded = await boundedOAuthRequest(request);
+        if (bounded instanceof Response) return bounded;
+        request = bounded;
+      }
       if (path === "/callback") return adapter.callback(request);
       if (path === "/oauth/token") return adapter.token(request);
       if (protocol) return protocol(request);
       if (path === "/authorize") {
         try {
-          if (request.method === "POST") {
-            const bounded = await boundedOAuthRequest(request);
-            if (bounded instanceof Response) return bounded;
-            request = bounded;
+          if (request.method === "POST")
             return await adapter.consent(
               request,
               (await request.clone().formData()).get("allow") === "true",
             );
-          }
           if (request.method !== "GET") throw new Error("Invalid method");
           const response = await adapter.authorize(request);
           if (!response.ok) return response;
