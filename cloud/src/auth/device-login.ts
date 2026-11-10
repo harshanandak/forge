@@ -22,6 +22,7 @@ export type LoginError =
   | "invalid_grant"
   | "invalid_user_code"
   | "rate_limited"
+  | "capacity_exceeded"
   | "issuance_failed"
   | "unavailable";
 export type LoginRefusal = {
@@ -58,6 +59,7 @@ export interface ChallengeStore {
 }
 export interface DeviceLoginOptions {
   readonly store: ChallengeStore;
+  readonly maxLiveChallenges?: number;
   readonly now: () => number;
   readonly random: (length: number) => Uint8Array;
   /** Shared HMAC-SHA-256 key supplied by composition; never persisted here. */

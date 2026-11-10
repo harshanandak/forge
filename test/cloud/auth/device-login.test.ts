@@ -22,7 +22,7 @@ function refused(value: unknown, error: string, interval?: number) {
     ...(interval === undefined ? {} : { interval }),
   });
 }
-async function fixture() {
+async function fixture(maxLiveChallenges?: number) {
   let now = 1_000,
     sequence = 0;
   const state: ChallengeState = { challenges: [], attempts: {} };
@@ -50,6 +50,7 @@ async function fixture() {
   if (!verified.ok) throw new Error("Fixture identity refused");
   const options = {
     store,
+    ...(maxLiveChallenges === undefined ? {} : { maxLiveChallenges }),
     userCodeKey: await crypto.subtle.generateKey(
       { name: "HMAC", hash: "SHA-256", length: 256 },
       false,
@@ -324,4 +325,214 @@ test("a spread copy of a minted identity cannot approve a challenge", async () =
     "access_denied",
   );
   expect(f.calls).toHaveLength(0);
+}, 1_000);
+
+test("a transaction throwing after approval or consumption rolls back without issuance", async () => {
+  for (const operation of ["approve", "poll"] as const) {
+    const f = await fixture(),
+      c = await f.login.start(device);
+    if (operation === "poll")
+      expect(await f.login.approve(c.user_code, f.identity)).toEqual({
+        ok: true,
+      });
+    const before = structuredClone(f.state);
+    let mutatedStatus: string | undefined;
+    const login = createDeviceLogin({
+      ...f.options,
+      store: {
+        conditionalUpdate: (mutate) =>
+          f.options.store.conditionalUpdate((state) => {
+            mutate(state);
+            mutatedStatus = state.challenges[0]!.status;
+            throw new Error(sentinel);
+          }),
+      },
+    });
+    const result =
+      operation === "approve"
+        ? await login.approve(c.user_code, f.identity)
+        : await login.poll(c.device_code);
+    refused(result, "unavailable");
+    expect(mutatedStatus).toBe(
+      operation === "approve" ? "approved" : "consumed",
+    );
+    expect(f.state).toEqual(before);
+    expect(f.calls).toHaveLength(0);
+    if (operation === "approve")
+      expect(await f.login.approve(c.user_code, f.identity)).toEqual({
+        ok: true,
+      });
+    expect(await f.login.poll(c.device_code)).toEqual({
+      ok: true,
+      credential: "forge-device-credential",
+    });
+    expect(f.calls).toHaveLength(1);
+  }
+}, 1_000);
+
+test("competing approvals bind exactly one of two different principals", async () => {
+  const f = await fixture(),
+    c = await f.login.start(device);
+  const other = await testIdentityVerifier(
+    new Map([
+      [
+        "other",
+        {
+          issuer: "https://other.example",
+          subject: "Human-B",
+          audience: f.identity.audience,
+          expiresAt: f.identity.expiresAt,
+          authenticatedAt: f.identity.authenticatedAt,
+        },
+      ],
+    ]),
+  ).verify("other", "forge", f.options.now());
+  if (!other.ok) throw new Error("Fixture identity refused");
+  const identities = [f.identity, other.identity];
+  const results = await Promise.all(
+    identities.map((identity) =>
+      createDeviceLogin(f.options).approve(c.user_code, identity),
+    ),
+  );
+  expect(results.filter((result) => result.ok)).toHaveLength(1);
+  expect(results).toContainEqual({ ok: false, error: "invalid_user_code" });
+  const winner = identities[results.findIndex((result) => result.ok)]!;
+  expect(f.state.challenges[0]!.identity).toEqual(winner);
+  expect(f.calls).toHaveLength(0);
+  expect(await f.login.poll(c.device_code)).toEqual({
+    ok: true,
+    credential: "forge-device-credential",
+  });
+  expect(f.calls).toEqual([{ identity: winner, info: device }]);
+}, 1_000);
+
+test("approval refuses a minted identity at its own expiry while the challenge is live", async () => {
+  const f = await fixture();
+  const expiring = await testIdentityVerifier(
+    new Map([
+      [
+        "short-lived",
+        {
+          issuer: f.identity.issuer,
+          subject: f.identity.subject,
+          audience: f.identity.audience,
+          expiresAt: f.options.now() + 1_000,
+          authenticatedAt: f.identity.authenticatedAt,
+        },
+      ],
+    ]),
+  ).verify("short-lived", "forge", f.options.now());
+  if (!expiring.ok) throw new Error("Fixture identity refused");
+  const c = await f.login.start(device);
+  f.advance((expiring.identity.expiresAt - f.options.now()) / 1_000);
+  expect(f.state.challenges[0]!.expiresAt).toBeGreaterThan(f.options.now());
+  const before = structuredClone(f.state);
+  refused(
+    await f.login.approve(c.user_code, expiring.identity),
+    "access_denied",
+  );
+  expect(f.state).toEqual(before);
+  expect(f.calls).toHaveLength(0);
+}, 1_000);
+
+test("start refuses at the live bound counting pending and approved challenges without echoing codes", async () => {
+  const f = await fixture(2),
+    pending = await f.login.start(device),
+    approved = await f.login.start(device);
+  expect(await f.login.approve(approved.user_code, f.identity)).toEqual({
+    ok: true,
+  });
+  const before = structuredClone(f.state);
+  await expect(f.login.start(device)).rejects.toMatchObject({
+    name: "DeviceLoginFailure",
+    code: "capacity_exceeded",
+    message: "Device login could not complete",
+  });
+  expect(f.state).toEqual(before);
+  expect(f.calls).toHaveLength(0);
+  for (const code of [
+    pending.device_code,
+    pending.user_code,
+    approved.device_code,
+    approved.user_code,
+  ])
+    expect(JSON.stringify(f.state)).not.toContain(code);
+}, 1_000);
+
+test("concurrent starts across instances cannot exceed the injected live bound", async () => {
+  const f = await fixture(1);
+  const results = await Promise.allSettled([
+    f.login.start(device),
+    createDeviceLogin(f.options).start(device),
+  ]);
+  expect(
+    results.filter((result) => result.status === "fulfilled"),
+  ).toHaveLength(1);
+  const rejected = results.find((result) => result.status === "rejected");
+  expect(rejected?.reason).toMatchObject({
+    name: "DeviceLoginFailure",
+    code: "capacity_exceeded",
+  });
+  expect(f.state.challenges).toHaveLength(1);
+  expect(f.calls).toHaveLength(0);
+}, 1_000);
+
+test("start cleans expired pending and approved records at the exact boundary and admits again", async () => {
+  for (const approve of [false, true]) {
+    const f = await fixture(1),
+      expired = await f.login.start(device);
+    if (approve)
+      expect(await f.login.approve(expired.user_code, f.identity)).toEqual({
+        ok: true,
+      });
+    f.advance(expired.expires_in);
+    const current = await f.login.start(device);
+    expect(f.state.challenges).toHaveLength(1);
+    expect(f.state.challenges[0]!.status).toBe("pending");
+    refused(await f.login.poll(expired.device_code), "invalid_grant");
+    refused(await f.login.poll(current.device_code), "authorization_pending");
+    expect(f.calls).toHaveLength(0);
+  }
+}, 1_000);
+
+test("start removes consumed and denied records before admitting a challenge", async () => {
+  const f = await fixture(2),
+    consumed = await f.login.start(device),
+    denied = await f.login.start(device);
+  expect(await f.login.approve(consumed.user_code, f.identity)).toEqual({
+    ok: true,
+  });
+  expect(await f.login.poll(consumed.device_code)).toEqual({
+    ok: true,
+    credential: "forge-device-credential",
+  });
+  expect(await f.login.deny(denied.user_code, f.identity)).toEqual({
+    ok: true,
+  });
+  await f.login.start(device);
+  expect(f.state.challenges).toHaveLength(1);
+  expect(f.state.challenges[0]!.status).toBe("pending");
+  for (const c of [consumed, denied])
+    refused(await f.login.poll(c.device_code), "invalid_grant");
+  expect(f.calls).toHaveLength(1);
+}, 1_000);
+
+test("start cleanup preserves unexpired pending and approved challenges", async () => {
+  const f = await fixture(3),
+    pending = await f.login.start(device),
+    approved = await f.login.start(device);
+  expect(await f.login.approve(approved.user_code, f.identity)).toEqual({
+    ok: true,
+  });
+  const before = structuredClone(f.state.challenges);
+  f.advance(pending.expires_in - 1);
+  await f.login.start(device);
+  expect(f.state.challenges).toHaveLength(3);
+  expect(f.state.challenges.slice(0, 2)).toEqual(before);
+  refused(await f.login.poll(pending.device_code), "authorization_pending");
+  expect(await f.login.poll(approved.device_code)).toEqual({
+    ok: true,
+    credential: "forge-device-credential",
+  });
+  expect(f.calls).toHaveLength(1);
 }, 1_000);
