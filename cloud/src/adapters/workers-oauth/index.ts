@@ -38,8 +38,12 @@ export interface OAuthOptions {
   codeRedemption: CodeRedemption;
   clock: ClockPort;
   upstream: {
-    begin(state: string): Promise<string>;
-    verify(request: Request, now: number): Promise<IdentityResult>;
+    begin(state: string, verifier?: string): Promise<string>;
+    verify(
+      request: Request,
+      now: number,
+      verifier?: string,
+    ): Promise<IdentityResult>;
   };
 }
 export interface OAuthAdapter {
@@ -110,18 +114,48 @@ export function createOAuthAdapter(options: OAuthOptions): OAuthAdapter {
             headers: (await oauth.denyConsent(request, handle)).headers,
           });
         const approved = await oauth.approveConsent(request, handle);
+        const verifier = Buffer.from(
+          crypto.getRandomValues(new Uint8Array(32)),
+        ).toString("base64url");
+        const expiresAt = options.clock.now() + 600_000;
+        if (!Number.isFinite(expiresAt)) throw refusal("access_denied");
         const { state, headers } = await oauth.beginUpstream(approved.request, {
+          data: { verifier, expiresAt },
           headers: approved.headers,
         });
-        headers.set("Location", await options.upstream.begin(state));
+        headers.set("Location", await options.upstream.begin(state, verifier));
         return new Response(null, { status: 302, headers });
       }),
     callback: (request) =>
       guarded(async () => {
-        const original = await oauth.finishUpstream(request);
+        const original = await oauth.finishUpstream<{
+          verifier: string;
+          expiresAt: number;
+        }>(request);
+        const data = original.data,
+          at = options.clock.now();
+        if (
+          !data ||
+          typeof data.verifier !== "string" ||
+          !/^[\w-]{43}$/.test(data.verifier) ||
+          !Number.isFinite(at) ||
+          !Number.isFinite(data.expiresAt) ||
+          at >= data.expiresAt
+        )
+          throw refusal("access_denied");
+        // KV consumption is not atomic; reuse the existing atomic redemption port.
+        const hash = Buffer.from(
+          await crypto.subtle.digest(
+            "SHA-256",
+            new TextEncoder().encode(`upstream:${data.verifier}`),
+          ),
+        ).toString("hex");
+        if (!(await options.codeRedemption.claimOnce(hash, data.expiresAt)))
+          throw refusal("access_denied");
         const result = await options.upstream.verify(
           request,
           options.clock.now(),
+          data.verifier,
         );
         const now = options.clock.now();
         if (

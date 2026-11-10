@@ -26,6 +26,7 @@ const rsa = {
   hash: "SHA-256",
 };
 const keys = crypto.subtle.generateKey(rsa, true, ["sign", "verify"]);
+const otherKeys = crypto.subtle.generateKey(rsa, true, ["sign", "verify"]);
 const encode = (value: unknown) =>
   Buffer.from(JSON.stringify(value)).toString("base64url");
 const code = "code=recorded-code";
@@ -33,13 +34,21 @@ const response =
   (body: unknown, status = 200) =>
   () =>
     Promise.resolve(Response.json(body, { status }));
-async function fixture(post?: ClerkHttpPort["post"]) {
+async function fixture(
+  post?: ClerkHttpPort["post"],
+  options: {
+    claims?: Record<string, unknown>;
+    algorithm?: string;
+    wrongKey?: boolean;
+    slow?: boolean;
+  } = {},
+) {
   const harness = createOAuthHarness(),
     pair = await keys;
-  const input = `${encode({ alg: "RS256", kid: "recorded" })}.${encode({ iss: issuer, sub: "person", aud: audience, auth_time: 500, exp: 2000 })}`;
+  const input = `${encode({ alg: options.algorithm ?? "RS256", kid: "recorded" })}.${encode({ iss: issuer, sub: "person", aud: audience, auth_time: 500, exp: 2000, ...options.claims })}`;
   const signed = await crypto.subtle.sign(
     rsa,
-    pair.privateKey,
+    (options.wrongKey ? await otherKeys : pair).privateKey,
     new TextEncoder().encode(input),
   );
   const proof = `${input}.${Buffer.from(signed).toString("base64url")}`;
@@ -61,11 +70,23 @@ async function fixture(post?: ClerkHttpPort["post"]) {
     harness.options.clock,
   );
   const signals: AbortSignal[] = [];
+  const binding = createClerkBinding(verifier, audience, harness.options.clock);
   const upstream = createClerkUpstream(
     config,
-    createClerkBinding(verifier, audience, harness.options.clock),
     {
-      post: (url, body, signal) => {
+      verify: async (payload) => {
+        if (options.slow)
+          await new Promise((resolve) =>
+            setTimeout(resolve, config.timeoutMs + 1),
+          );
+        return binding.verify(payload);
+      },
+    },
+    {
+      post: (url, exchange, signal) => {
+        const body = new URLSearchParams(exchange);
+        expect(/^[\w-]{43}$/.test(body.get("code_verifier") ?? "")).toBe(true);
+        body.delete("code_verifier");
         expect(url).toBe(config.tokenUrl);
         expect(Object.fromEntries(body)).toEqual({
           grant_type: "authorization_code",
@@ -74,7 +95,9 @@ async function fixture(post?: ClerkHttpPort["post"]) {
           redirect_uri: config.redirectUri,
         });
         signals.push(signal);
-        return post ? post(url, body, signal) : response({ id_token: proof })();
+        return post
+          ? post(url, exchange, signal)
+          : response({ id_token: proof })();
       },
     },
     harness.options.clock,
@@ -83,8 +106,9 @@ async function fixture(post?: ClerkHttpPort["post"]) {
     upstream.verify(
       new Request(`${config.redirectUri}?${query}`),
       harness.options.clock.now(),
+      "x".repeat(43),
     );
-  async function callback(query: string) {
+  async function start() {
     harness.options.upstream = upstream;
     const api = createOAuthAdapter(harness.options);
     const redirect = "https://client.example/callback",
@@ -124,17 +148,101 @@ async function fixture(post?: ClerkHttpPort["post"]) {
       ),
     );
     expect(login.status).toBe(302);
-    const state = new URL(login.headers.get("location")!).searchParams.get(
-      "state",
-    )!;
-    return api.callback(
-      request(
-        `${config.redirectUri}?state=${encodeURIComponent(state)}&${query}`,
-      ),
-    );
+    const target = new URL(login.headers.get("location")!);
+    const state = target.searchParams.get("state")!;
+    return {
+      target,
+      finish: (query: string) =>
+        api.callback(
+          request(
+            `${config.redirectUri}?state=${encodeURIComponent(state)}&${query}`,
+          ),
+        ),
+    };
   }
-  return { verify, callback, signals };
+  const callback = async (query: string) => (await start()).finish(query);
+  return { verify, callback, signals, start, harness, proof };
 }
+
+async function refused(result: Response, ...credentials: string[]) {
+  expect(result.status).toBe(400);
+  expect(result.headers.get("location")).toBeNull();
+  const text = await result.text();
+  expect(JSON.parse(text)).toEqual({ error: "access_denied" });
+  for (const credential of credentials)
+    expect(text.includes(credential)).toBe(false);
+}
+
+for (const [name, options] of [
+  ["issuer", { claims: { iss: "https://wrong.example/" } }],
+  ["audience", { claims: { aud: "wrong" } }],
+  ["algorithm", { algorithm: "HS256" }],
+  ["key", { wrongKey: true }],
+  ["expiry", { claims: { exp: 1000 } }],
+  ["slow verification", { slow: true }],
+] as const) {
+  test(`real callback refuses ${name} with no credential echo`, async () => {
+    const f = await fixture(undefined, options);
+    await refused(await f.callback(code), f.proof, "recorded-code");
+    expect(f.signals).toHaveLength(1);
+  }, 5_000);
+}
+
+test("an upstream code from flow A cannot authenticate flow B", async () => {
+  let expected = "",
+    proof = "";
+  const provider: ClerkHttpPort["post"] = async (_url, body) => {
+    const challenge = Buffer.from(
+      await crypto.subtle.digest(
+        "SHA-256",
+        new TextEncoder().encode(body.get("code_verifier")!),
+      ),
+    ).toString("base64url");
+    return challenge === expected
+      ? Response.json({ id_token: proof })
+      : new Response(null, { status: 400 });
+  };
+  const a = await fixture(provider),
+    b = await fixture(provider);
+  const first = await a.start(),
+    second = await b.start();
+  expected = first.target.searchParams.get("code_challenge")!;
+  proof = a.proof;
+  expect(first.target.searchParams.get("code_challenge_method")).toBe("S256");
+  expect(second.target.searchParams.get("code_challenge_method")).toBe("S256");
+  expect(expected).toBeTruthy();
+  expect(expected).not.toBe(second.target.searchParams.get("code_challenge"));
+  await refused(await second.finish(code), proof, "recorded-code");
+  expect((await first.finish(code)).status).toBe(302);
+}, 5_000);
+
+for (const missing of [true, false]) {
+  test(`a ${missing ? "missing" : "expired"} transaction cannot authenticate`, async () => {
+    const f = await fixture(),
+      transaction = await f.start();
+    if (missing)
+      for (const key of (
+        await f.harness.options.storage.list({ prefix: "transaction:" })
+      ).keys)
+        await f.harness.options.storage.delete(key.name);
+    else f.harness.advance(600_000);
+    const result = await transaction.finish(code);
+    expect(result.status).toBe(400);
+    expect(result.headers.get("location")).toBeNull();
+    expect(f.signals).toHaveLength(0);
+  }, 5_000);
+}
+
+test("a transaction's verifier is consumed once under concurrent callbacks", async () => {
+  const f = await fixture(),
+    transaction = await f.start();
+  const results = await Promise.all([
+    transaction.finish(code),
+    transaction.finish(code),
+  ]);
+  expect(results.map((result) => result.status).sort()).toEqual([302, 400]);
+  expect(f.signals).toHaveLength(1);
+}, 5_000);
 
 test("real callback accepts the merged Clerk binding and returns a client authorization code", async () => {
   const f = await fixture();

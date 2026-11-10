@@ -25,8 +25,12 @@ export type ClerkFailure =
   | "invalid_token";
 export type ClerkResult = IdentityResult & { error?: ClerkFailure };
 export interface ClerkUpstream {
-  begin(state: string): Promise<string>;
-  verify(request: Request, now: number): Promise<ClerkResult>;
+  begin(state: string, verifier?: string): Promise<string>;
+  verify(
+    request: Request,
+    now: number,
+    verifier?: string,
+  ): Promise<ClerkResult>;
 }
 export function createClerkUpstream(
   input: ClerkConfig,
@@ -61,8 +65,15 @@ export function createClerkUpstream(
     // Invalid settings remain unavailable without echoing their contents.
   }
   return {
-    begin(state) {
-      if (!configured) return Promise.reject(new Error("Clerk unavailable"));
+    async begin(state, verifier) {
+      if (!configured || !verifier || !/^[\w-]{43}$/.test(verifier))
+        throw new Error("Clerk unavailable");
+      const challenge = Buffer.from(
+        await crypto.subtle.digest(
+          "SHA-256",
+          new TextEncoder().encode(verifier),
+        ),
+      ).toString("base64url");
       const url = new URL(config.authorizationUrl);
       for (const [name, value] of Object.entries({
         state,
@@ -70,11 +81,13 @@ export function createClerkUpstream(
         client_id: config.clientId,
         redirect_uri: config.redirectUri,
         scope: "openid",
+        code_challenge: challenge,
+        code_challenge_method: "S256",
       }))
         url.searchParams.set(name, value);
       return Promise.resolve(url.href);
     },
-    async verify(request, now) {
+    async verify(request, now, verifier) {
       if (!configured) return refusal("unavailable");
       const controller = new AbortController();
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -101,6 +114,8 @@ export function createClerkUpstream(
         const [code, ...extra] = query.getAll("code");
         if (extra.length || !code || code.length > 16_384)
           return refusal("malformed_response");
+        if (!verifier || !/^[\w-]{43}$/.test(verifier))
+          return refusal("malformed_response");
         const startedAt = clock.now(),
           until = startedAt + config.timeoutMs;
         if (!Number.isFinite(now) || !Number.isFinite(until) || startedAt < now)
@@ -114,8 +129,8 @@ export function createClerkUpstream(
             cancelBody?.();
           }, config.timeoutMs);
         });
-        // Include body reads in the deadline; the HTTP port may ignore abort.
-        const payload: unknown = await Promise.race([
+        // Cover HTTP, body reads and verification even if a port ignores abort.
+        const result = await Promise.race([
           (async () => {
             const response = await http.post(
               config.tokenUrl,
@@ -124,6 +139,7 @@ export function createClerkUpstream(
                 code,
                 client_id: config.clientId,
                 redirect_uri: config.redirectUri,
+                code_verifier: verifier,
               }),
               controller.signal,
             );
@@ -157,7 +173,23 @@ export function createClerkUpstream(
               text += decoder.decode(bytes, { stream: true });
             }
             text += decoder.decode();
-            return JSON.parse(text) as unknown;
+            const payload: unknown = JSON.parse(text);
+            if (
+              typeof payload !== "object" ||
+              payload === null ||
+              Array.isArray(payload) ||
+              Object.hasOwn(payload, "error") ||
+              !Object.hasOwn(payload, "id_token") ||
+              typeof (payload as Record<string, unknown>).id_token !==
+                "string" ||
+              !(payload as Record<string, unknown>).id_token
+            )
+              return refusal("malformed_response");
+            phase = "invalid_token";
+            const verified = await binding.verify(payload);
+            return verified.ok
+              ? verified
+              : { ...verified, error: "invalid_token" as const };
           })(),
           deadline,
         ]);
@@ -165,20 +197,7 @@ export function createClerkUpstream(
         if (!Number.isFinite(at) || at < startedAt)
           return refusal("unavailable");
         if (at >= until) return refusal("timeout");
-        if (
-          typeof payload !== "object" ||
-          payload === null ||
-          Array.isArray(payload) ||
-          Object.hasOwn(payload, "error") ||
-          !Object.hasOwn(payload, "id_token") ||
-          typeof (payload as Record<string, unknown>).id_token !== "string" ||
-          !(payload as Record<string, unknown>).id_token
-        )
-          return refusal("malformed_response");
-        clearTimeout(timer);
-        phase = "invalid_token";
-        const result = await binding.verify(payload);
-        return result.ok ? result : { ...result, error: "invalid_token" };
+        return result;
       } catch {
         return refusal(expired ? "timeout" : phase);
       } finally {
