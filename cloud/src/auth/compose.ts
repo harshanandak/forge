@@ -4,6 +4,19 @@ import { isVerifiedIdentity } from "../../../src/ports/identity.ts";
 import { ForgeFailure } from "../../../src/contract/failure.ts";
 import { bearer } from "../tokens.ts";
 
+export const isOAuthRoute = (request: Request) =>
+  /^\/(authorize|callback|oauth\/token|register|\.well-known\/oauth-(authorization-server|protected-resource))$/.test(
+    new URL(request.url).pathname,
+  );
+export const configUnavailable = (
+  variable: string,
+  message = "OAuth configuration unavailable",
+) =>
+  Response.json(
+    { error: { code: "AUTH_CONFIG_UNAVAILABLE", variable, message } },
+    { status: 503, headers: { "Cache-Control": "no-store" } },
+  );
+
 export interface Access {
   readonly principal: Auth.Principal;
   readonly decision: Auth.AuthorizationDecision;
@@ -14,6 +27,8 @@ export function composeAuth(
   resource: string,
   policy: Auth.AuthorizationPort = singleOwnerPolicy,
   team?: Auth.AuthorizationPort,
+  route: (request: Request) => Promise<Response> = () =>
+    Promise.resolve(configUnavailable("OAUTH_COMPOSITION")),
 ) {
   const authorize = async (
     request: Request,
@@ -39,5 +54,5 @@ export function composeAuth(
       ).authorize({ principal, project, action, authority }),
     };
   };
-  return { authorize, mcp: authorize, policy };
+  return { authorize, mcp: authorize, policy, route };
 }
