@@ -363,10 +363,10 @@ jobs:
         run: |
           if [ -n "$STARTED" ]; then
             wall=$(( $(date +%s) - STARTED ))
-            echo "CI wall time: ${wall}s (budget: about 120s)"
+            echo "CI wall time: ${wall}s (budget: 12 minutes)"
             echo "CI wall time: ${wall}s" >> "$GITHUB_STEP_SUMMARY"
-            if [ "$wall" -gt 150 ]; then
-              echo "::warning::CI wall time ${wall}s is over the ~2 minute budget; see CODING_STANDARDS.md"
+            if [ "$wall" -gt 720 ]; then
+              echo "::warning::CI wall time ${wall}s is over the 12 minute budget; see CODING_STANDARDS.md"
             fi
           fi
           ok=1

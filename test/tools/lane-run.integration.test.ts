@@ -1540,13 +1540,13 @@ test("auto chains builder, failed tester, fixer and passing tester to ready", ()
   );
   expect(f.attempts()[2]!.prompt).toContain("fix every P1");
   expect(f.attempts()[2]!.prompt).toContain(
-    "Re-run the tester's applicable targeted checks and repros, including existing tests covering the changed code.",
+    "Re-run the tester's acceptance commands and repros in a temp project, excluding test-suite commands.",
   );
   expect(f.attempts()[2]!.prompt).toContain(
-    "every regression lane in `.forge/config.yaml` whose files the diff touches",
+    "run lint, format check, typecheck and build only",
   );
-  expect(f.attempts()[2]!.prompt).toContain("acceptance tests");
-  expect(f.attempts()[2]!.prompt).toContain("bun run test:changed");
+  expect(f.attempts()[2]!.prompt).toContain("CI is the test gate");
+  expect(f.attempts()[2]!.prompt).toContain("run no test suites locally");
   const list = f.run(["list"]).lines[0] as {
     lanes: { state: string; since: string; runs: { end: string }[] }[];
   };
@@ -2288,13 +2288,13 @@ test("tester round one uses its template, issue, contract, builder reply and dur
   expect(f.prompt()).toContain(readFileSync(f.brief, "utf8"));
   expect(f.prompt()).toContain("FORGE_CANARY_BUN_DIR");
   expect(f.prompt()).toContain("FORGE_GH_USER");
-  expect(f.prompt()).toContain("bun run test:changed");
+  expect(f.prompt()).not.toContain("bun run test:changed");
   expect(f.prompt()).toContain(
-    "every regression lane in .forge/config.yaml whose files the diff touches",
+    "Run lint, format check, typecheck and build only",
   );
-  expect(f.prompt()).toContain("0 selected tests is not evidence");
-  expect(f.prompt()).toContain("never replaces");
-  expect(f.prompt()).toContain("acceptance tests");
+  expect(f.prompt()).toContain("CI is the test gate");
+  expect(f.prompt()).toContain("run no test suites locally");
+  expect(f.prompt()).toContain("spec's acceptance commands");
   expect(f.prompt()).not.toContain("Run what CI runs");
   expect(f.prompt()).not.toMatch(
     /Personal-Projects|harshanandak|\{\{[A-Z]+\}\}/,

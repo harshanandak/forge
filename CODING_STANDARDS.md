@@ -1,6 +1,6 @@
 # Coding standards
 
-Diff-checkable standards, read at review time. Turn-shaping rules stay in [AGENTS.md](AGENTS.md). CI is the gate: a rule marked **guard** is enforced by `test/structure/**` and fails the pull request; the rest are checked in review. When review catches something a guard could have caught, add the guard.
+Read at review time; turn-shaping rules stay in [AGENTS.md](AGENTS.md). **Guard** marks rules enforced by `test/structure/**` in CI; review checks the rest. Add a guard when review finds an enforceable rule.
 
 These govern this repository and Forge's shipped behaviour. They are not imposed on user projects.
 
@@ -44,7 +44,7 @@ These govern this repository and Forge's shipped behaviour. They are not imposed
 - Every test declares an explicit timeout: a third argument, a `{ timeout }` option, or `setDefaultTimeout(<ms>)` at the top of the file. A configured default alone is not enough. **Guard:** `test-timeouts`.
 - Unit tests use an injected clock and fake process ports. Real git and subprocesses run only in a labelled integration lane. A flaky test is quarantined with an issue, never retried.
 - Every guard ships with a test that it fails on its motivating bad input. A concurrency or authority fix has a fault-injection test and a check that the journey fails with the fix removed.
-- Acceptance is an end-to-end outcome on the real artifact (the packed package, the installed host), never test counts. `bun run test:pack` is the minimum: pack once, install with npm on Node without Bun, run `forge --version` and every packed journey against that one install.
+- CI acceptance uses the real artifact, never test counts. `bun run test:pack` is the minimum: pack once, install with npm on Node without Bun, run `forge --version` and every packed journey against that install.
 - Before adding a check command, run `bun tools/check-admit.ts <check-name> <break.patch> --guard <check-path>` (defaults: replay 20, Windows limit 120 seconds).
   Admit only after all five rows pass; keep the break patch and JSON verdict as evidence.
 - Gates judge outcomes and return `PASS`, `FAIL`, `INCOMPLETE` or `NOT_EXECUTED`. Nothing checked is never `PASS`.
@@ -58,9 +58,10 @@ These govern this repository and Forge's shipped behaviour. They are not imposed
 
 ## Documents and reviews
 
-- `AGENTS.md` loads every turn and this file loads at review, so both stay lean: each has a byte cap in `test/structure/budget.json`. Prune before growing; raise a cap deliberately in that one file. **Guard:** `budget`.
+- Document byte caps live in `test/structure/budget.json`; prune before growing. **Guard:** `budget`.
 - One decision record namespace (`ADR-NNN`) with a title; refer to a decision by name. Records hold durable choices only.
 - Reports lead with the answer in plain language, then evidence and what would change it.
-- Review is done when there are no P0 or P1 findings and your own regressions are fixed; adjacent findings become issues. After three review rounds, escalate as a design issue instead of iterating; the budget never waives a P0 or P1.
+- Aim for about 400 changed lines per PR, counting additions plus deletions across all files, including tests. Write the hard cap in the lane brief; measure with `git diff --numstat origin/main...HEAD`. If over cap, split or park.
+- Review ends with no P0/P1 and own regressions fixed; file adjacent findings. At most 2 review rounds per mechanism, then write a 3-line threat model (asset, threat, mitigation) and choose ship, simplify or park. Never waive P0/P1.
 - The pull request title is a conventional commit title; it becomes the changelog line. Do not edit the changelog by hand.
-- PR CI should stay around 2 minutes wall; a change that adds more than ~30 s states why in its pull request. The CI Gate prints the run's wall time.
+- PR CI budget: 12 minutes wall. Explain additions over ~30 s in the PR. The CI Gate prints wall time.
