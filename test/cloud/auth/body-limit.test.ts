@@ -17,6 +17,7 @@ function fixture(
   size: number,
   chunkSize: number,
   length?: number,
+  protocol?: (request: Request) => Promise<Response>,
 ) {
   const { options } = createOAuthHarness();
   const calls = [
@@ -61,7 +62,13 @@ function fixture(
   });
   const clone = spyOn(request, "clone");
   const parse = spyOn(request, "formData");
-  const auth = composeOAuth(options, options.resources[0]!);
+  const auth = composeOAuth(
+    options,
+    options.resources[0]!,
+    undefined,
+    undefined,
+    protocol,
+  );
   return {
     send: () => auth.route(request),
     read: () => read,
@@ -81,6 +88,16 @@ async function refused(f: ReturnType<typeof fixture>) {
   expect(f.parse).toHaveBeenCalledTimes(0);
   for (const call of f.calls) expect(call).toHaveBeenCalledTimes(0);
 }
+
+test("oversized consent is cancelled before an injected protocol can read it", async () => {
+  const protocol = mock(
+    async (request: Request) => new Response(await request.text()),
+  );
+  const f = fixture("/authorize", limit + 1, limit + 1, undefined, protocol);
+  await refused(f);
+  expect(protocol).toHaveBeenCalledTimes(0);
+  expect(f.read()).toBe(limit + 1);
+}, 30_000);
 
 test("bounded token requests preserve all form fields and cookies", async () => {
   const form = new URLSearchParams({
