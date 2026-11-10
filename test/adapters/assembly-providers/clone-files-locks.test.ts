@@ -905,6 +905,99 @@ test("a contender keeps a temp-only lock while the complete host record awaits p
   }
 }, 30_000);
 
+test("an unpublished owner crash names both recovery paths and requires both removal steps", () => {
+  const { options, commonDirectory, lease } = fixture();
+  const lockPath = "crashed-publication.lock";
+  const path = join(commonDirectory, lockPath);
+  const displaced = `${path}.crashed`;
+  const crash = new Error("injected publication crash");
+  let marker = "";
+  const owner = createCloneFilesLease({
+    ...options,
+    beforeOwnerPublish(temporary) {
+      marker = readdirSync(path)[0]!;
+      expect(readFileSync(temporary, "utf8")).not.toBe("");
+      // Preserve the unpublished directory across the writer's exception cleanup.
+      renameSync(path, displaced);
+      throw crash;
+    },
+  });
+  const probes: number[] = [];
+  const contender = createCloneFilesLease({
+    ...options,
+    processProbe: (pid) => {
+      probes.push(pid);
+      throw Object.assign(new Error("dead"), { code: "ESRCH" });
+    },
+  });
+  const acquire = () =>
+    contender.service.lock([lockPath], { recoverDeadOwner: true });
+  try {
+    expect(() =>
+      owner.service.lock([lockPath], { recoverDeadOwner: true }),
+    ).toThrow(crash);
+    renameSync(displaced, path);
+    let refusal: unknown;
+    try {
+      acquire();
+    } catch (error) {
+      refusal = error;
+    }
+    expect(refusal).toBeInstanceOf(ForgeFailure);
+    const diagnostic = (refusal as ForgeFailure).error;
+    expect(diagnostic.code).toBe("INPUT_CONFLICT");
+    expect(diagnostic.message).toContain(`../common/${lockPath}/${marker}`);
+    expect(diagnostic.message).toContain(
+      `now-empty lock directory ../common/${lockPath}`,
+    );
+    expect(diagnostic.message).toMatch(
+      /confirm.+no Forge process.+mid-acquire/i,
+    );
+    expect(diagnostic.message).toMatch(
+      /remove.+temp.+and then.+now-empty lock directory/i,
+    );
+    expect(diagnostic.message).not.toContain(commonDirectory);
+    expect(readdirSync(path)).toEqual([marker]);
+    expect(probes).toEqual([]);
+    rmSync(join(path, marker));
+    expect(acquire).toThrow(/INPUT_CONFLICT/);
+    expect(existsSync(path)).toBe(true);
+    rmdirSync(path);
+    acquire().release();
+    expect(existsSync(path)).toBe(false);
+  } finally {
+    owner.close();
+    contender.close();
+    lease.close();
+  }
+}, 30_000);
+
+test.each([
+  { names: ["held"] },
+  { names: [".forge-owner-not-a-uuid.tmp"] },
+  { names: [".forge-owner-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee.tmp.bak"] },
+  { names: [".forge-owner-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee.tmp", "held"] },
+])(
+  "unrecognized owner content %j keeps the generic refusal",
+  ({ names }) => {
+    const { commonDirectory, files, lease } = fixture();
+    const path = join(commonDirectory, "unrecognized.lock");
+    mkdirSync(path);
+    for (const name of names) writeFileSync(join(path, name), "held");
+    try {
+      expect(() =>
+        files.lock(["unrecognized.lock"], { recoverDeadOwner: true }),
+      ).toThrow(
+        "Recoverable exclusion lock is held; inspect its owner before retrying",
+      );
+      expect(readdirSync(path).sort()).toEqual([...names].sort());
+    } finally {
+      lease.close();
+    }
+  },
+  30_000,
+);
+
 test("removing the foreign marker and then its empty directory restores acquisition", () => {
   const { options, commonDirectory, lease } = fixture();
   const path = join(commonDirectory, "manual-recovery.lock");
