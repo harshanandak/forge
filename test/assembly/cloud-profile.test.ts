@@ -268,7 +268,9 @@ test("a credential file over the read limit is refused, not truncated", async ()
       });
     const text = JSON.stringify({ schema: 1, entries });
     expect(text.length).toBeGreaterThan(1_048_576);
-    files.write(CREDENTIAL_FILE, text);
+    // The helper will not write what it could not read back, so grow the file directly.
+    files.write(CREDENTIAL_FILE, "{}");
+    writeFileSync(s.credentials, text);
     const store = credentialStore(files, { wait: noWait });
     expect(await asyncCodeOf(() => store.save(entry(NOW)))).toBe(
       "ACCOUNT_INTEGRITY",

@@ -148,10 +148,25 @@ export function createDeviceFiles(
     directory(path: string, created?: boolean): void;
     file(path: string): void;
   },
-  _directory: DeviceFilesDirectory = "accounts",
+  folder: DeviceFilesDirectory = "accounts",
 ): DeviceFiles {
   const parent = join(home, ".forge"),
-    root = join(parent, "accounts");
+    root = join(parent, folder);
+  // Cloud credentials get the stricter checks; account files keep their existing behaviour.
+  const strict = folder === "cloud";
+  const foreign = (st: { readonly uid: number }) =>
+    strict &&
+    typeof process.getuid === "function" &&
+    st.uid !== process.getuid();
+  /** A native security failure is an integrity refusal, not an ordinary error that could name a path. */
+  const secure = (check: () => void) => {
+    if (!strict) return check();
+    try {
+      check();
+    } catch {
+      refuse();
+    }
+  };
   // Temp roots are often symlinks (/var on macOS): compare real paths.
   const canonicalBase = (base: string) => {
     try {
@@ -176,7 +191,8 @@ export function createDeviceFiles(
     const st = lstatSync(path);
     if (st.isSymbolicLink() || !st.isDirectory()) refuse();
     if (owned) {
-      if (security) security.directory(path, created);
+      if (foreign(st)) refuse();
+      if (security) secure(() => security.directory(path, created));
       else if ((st.mode & 0o077) !== 0) refuse();
     }
     return true;
@@ -184,6 +200,30 @@ export function createDeviceFiles(
   function ready(create: boolean) {
     return directory(parent, create, false) && directory(root, create, true);
   }
+  /** A plain, single-link, owned, private file; the one check every read and replace shares. */
+  function checkFile(path: string) {
+    const st = lstatSync(path);
+    if (
+      !st.isFile() ||
+      st.isSymbolicLink() ||
+      st.nlink !== 1 ||
+      st.size > 1048576 ||
+      foreign(st)
+    )
+      refuse();
+    if (security) secure(() => security.file(path));
+    else if ((st.mode & 0o077) !== 0) refuse();
+  }
+  const present = (path: string) => {
+    if (!strict) return existsSync(path);
+    try {
+      lstatSync(path);
+      return true;
+    } catch (error) {
+      if (code(error) === "ENOENT") return false;
+      throw error;
+    }
+  };
   function target(name: string) {
     if (!/^[a-z][a-z.-]*$/.test(name)) refuse();
     return join(root, name);
@@ -192,31 +232,47 @@ export function createDeviceFiles(
     read(name) {
       if (!ready(false)) return undefined;
       const path = target(name);
-      if (!existsSync(path)) return undefined;
-      const st = lstatSync(path);
-      if (
-        !st.isFile() ||
-        st.isSymbolicLink() ||
-        st.nlink !== 1 ||
-        st.size > 1048576
-      )
-        refuse();
-      if (security) security.file(path);
-      else if ((st.mode & 0o077) !== 0) refuse();
+      if (!present(path)) return undefined;
+      checkFile(path);
       return readFileSync(path, "utf8");
     },
-    write(name, text) {
+    write(name, text, options) {
       ready(true);
-      const path = target(name),
-        temporary = path + ".new";
+      const path = target(name);
+      if (!strict) {
+        const temporary = path + ".new";
+        const fd = createPrivateFile(temporary, false);
+        try {
+          writeFileSync(fd, text);
+          fsyncSync(fd);
+        } finally {
+          closeSync(fd);
+        }
+        replaceDurable(temporary, path);
+        return;
+      }
+      // Cloud: check the file being replaced, stage a private file, check what was staged, then publish.
+      if (options?.force !== true && present(path)) checkFile(path);
+      const temporary = `${path}.${randomUUID()}.new`;
       const fd = createPrivateFile(temporary, false);
       try {
-        writeFileSync(fd, text);
-        fsyncSync(fd);
-      } finally {
-        closeSync(fd);
+        try {
+          writeFileSync(fd, text);
+          fsyncSync(fd);
+        } finally {
+          closeSync(fd);
+        }
+        checkFile(temporary);
+        if (readFileSync(temporary, "utf8") !== text) refuse();
+        replaceDurable(temporary, path);
+      } catch (error) {
+        try {
+          removeDurable(temporary);
+        } catch {
+          // Already published or gone; the original failure is the one to report.
+        }
+        throw error;
       }
-      replaceDurable(temporary, path);
     },
     lock() {
       ready(true);

@@ -26,6 +26,16 @@ A whole dump (`GET dump`) is one response for a small project: up to 3 MiB store
 
 Neither route needs a bearer. They serve only the project named by `FORGE_CLOUD_PROJECT`, which must already be provisioned, and need the secret `DEVICE_LOGIN_HMAC_KEY` (random, base64url, at least 32 bytes) plus the owner vars `CLERK_ISSUER`, `FORGE_OWNER_SUBJECT` and `CLERK_CLIENT_ID`. A missing setting returns `AUTH_CONFIG_UNAVAILABLE` (503) on these two routes only. Starts are limited to 5 per address and 30 per project in a 60 second window (`rate_limited`, 429), and to 1,024 live challenges (`capacity_exceeded`, 429). Challenge state is one private `domain_cloud_login` row and is never in a dump. There is no approve route yet. A poll that consumed its challenge and then failed to issue needs a fresh login.
 
+## Log in from the CLI
+
+`forge cloud login --origin <https-origin> --project <project>` runs the device flow for one machine. The first login needs both flags; later logins use the binding in `.forge/cloud.json`, and login never changes an established binding (`INPUT_CONFLICT`, exit 4, before any request). The checkout needs `.forge/project.json`; login never creates it (`CONTEXT_MISSING`, exit 6).
+
+The command prints the verification address (`<origin>/device`) and a code on stderr, then polls no faster than the server's interval until the owner approves, denies or the code expires. Stdout carries one final result: origin, project, device, token id and expiry. The token and the device code are never printed. Ctrl-C cancels the wait. A poll that fails in transit ends the login and is not retried, because it may have used the one-time code; run login again.
+
+The credential is saved in `~/.forge/cloud/credentials.json`, a private file under the same lock and atomic replace as account files. It is checked for the current owner, private modes, a plain file with one link and, on Windows, an owner-only ACL, both before it is read or replaced and again after it is written. Any failure is `ACCOUNT_INTEGRITY`. A token is found only under its exact origin, project id and project name. Login keeps the previous entry until the new one reads back, and restores it if the new file does not. The binding is written last, only after the credential reads back.
+
+Start and poll send no bearer token, follow no redirect and have a deadline and a body limit. A device id longer than 128 characters, or one the Worker would refuse, is sent as `device-` plus the SHA-256 of the full local id; the saved entry keeps both ids, and anything that compares holder identity later must apply the same mapping. Nothing in this command routes another command to the cloud.
+
 ## Dump and restore in pages
 
 Use pages when a project is too big for one dump. The limits are counted in SQL, not by loading rows.
