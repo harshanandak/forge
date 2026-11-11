@@ -1,8 +1,7 @@
-// Reads one work issue from the project authority's state tables and writes nothing. It takes
-// read-only views, runs only the fixed SELECTs below, and treats every stored value as untrusted:
-// bytes are bounded before a body is loaded, and the record's identity must match the key the
-// server derived. Caller text only ever becomes a bound
-// SQL value, and only after it has been matched to `<prefix>-<digits>`.
+// Reads one work issue from the state tables and writes nothing: read-only views, only the fixed
+// SELECTs below, every stored value untrusted (bytes bounded before a body is loaded, identity
+// checked against the key the server derived). Caller text only becomes a bound SQL value, and
+// only after it matches `<prefix>-<digits>`.
 import manifest from "../../src/blocks/work/forge.block.json" with { type: "json" };
 import ItemRef from "../../src/blocks/work/schemas/ItemRef.json" with { type: "json" };
 import { ForgeFailure } from "../../src/contract/failure.ts";
@@ -14,21 +13,19 @@ import {
 import { SCHEMA_DOCUMENTS } from "../../src/generated/schemas.ts";
 import type { TrackerItem } from "../../src/generated/types.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
-
 const NAMESPACE = "forge/work";
 /** Stored issue record bound in bytes; above the response bound so that bound can be reached. */
 export const MAX_RECORD_BYTES = 2 * 1024 * 1024;
 export const MAX_LEASE_BYTES = 16 * 1024;
 const QUALIFIED = /^([a-z0-9]+(?:-[a-z0-9]+)*)-(\d+)$/i;
-// A body above the bound is returned as NULL and never reaches the Worker. Length is counted in bytes.
 const BODY = (table: string, column: string) =>
   `SELECT CASE WHEN length(CAST(body AS BLOB)) <= ? THEN body END AS body FROM ${table} WHERE namespace=? AND ${column}=?`;
 const RECORD = BODY("state_records", "key");
 const LEASE = BODY("state_leases", "subject");
-// Whether an issue is competing (a slots record) or collaborative (any participant record).
+// MODE: a slots record (competing) or any participant record (collaborative) exists.
+// MINTED: some stored issue carries this prefix; a record without one was minted as `work`.
 const MODE =
   "SELECT 1 AS found FROM state_records WHERE namespace=? AND (key=? OR (key>=? AND key<?)) LIMIT 1";
-// Whether any stored issue was minted with this prefix; a record without one was minted as `work`.
 const MINTED =
   "SELECT 1 AS found FROM state_records WHERE namespace=? AND key>=? AND key<? AND coalesce(CASE WHEN json_valid(body) THEN json_extract(body,'$.value.prefix') END,'work')=? LIMIT 1";
 
@@ -38,7 +35,6 @@ export interface IssueViews {
   readonly leases: SqlDatabase | undefined;
 }
 type Json = Record<string, unknown>;
-
 if (manifest.operations["issue.show"].input !== "schemas/ItemRef.json")
   throw new Error("issue.show no longer declares schemas/ItemRef.json");
 let registry: SchemaRegistry | undefined;
@@ -48,7 +44,7 @@ const invalid = () => fail("INTERNAL", "Stored issue is not valid");
 const object = (value: unknown): value is Json =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** One stored JSON object, or undefined when there is no row. Throws when it is oversize or unusable. */
+/** One stored JSON object, or undefined when there is no row. A body over `max` bytes comes back NULL, unread. */
 function load(
   db: SqlDatabase | undefined,
   sql: string,
@@ -133,7 +129,6 @@ export function readIssue(
     lease.releasedAt === undefined &&
     typeof lease.expiresAt === "string" &&
     Date.parse(lease.expiresAt) > now;
-  // The output is checked against the declared schema by the next slice, before anything uses this.
   return {
     ...rest,
     id: shown(id),
