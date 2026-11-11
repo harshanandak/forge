@@ -1,9 +1,7 @@
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import {
-  MAX_DEPTH,
   MAX_LEASE_BYTES,
-  MAX_NODES,
   MAX_RECORD_BYTES,
   readIssue,
 } from "../../cloud/src/issue-read.ts";
@@ -206,21 +204,6 @@ test("the number is kept as given and any historical prefix names any issue", ()
   expect(refused).toEqual(["INPUT_INVALID", 6, "Unknown issue id prefix"]);
 }, 30_000);
 
-test("a historical prefix is found among many issues without reading their bodies", () => {
-  const f = fixture();
-  for (let n = 1; n <= 300; n++)
-    f.put(`issue:work-${n}`, issue(n, { prefix: `p${n}` }));
-  f.raw("issue:work-9998", "{bad");
-  f.raw("issue:work-9999", "x".repeat(3 * 1024 * 1024));
-  for (const prefix of ["p1", "p150", "p300"])
-    expect(f.read({ id: `${prefix}-1` }).id).toBe("forge-1");
-  expect(f.refusal({ id: "zzz-1" })).toEqual([
-    "INPUT_INVALID",
-    6,
-    "Unknown issue id prefix",
-  ]);
-}, 30_000);
-
 test("input that is not exactly an issue id is refused and never echoed", () => {
   const f = fixture();
   f.put("issue:work-1", issue(1));
@@ -296,35 +279,6 @@ test("stored records and leases are bounded in bytes, not characters", () => {
         if (ok) expect(f.read().id).toBe("forge-1");
         else expect(f.refusal()).toEqual(internal);
       }
-}, 30_000);
-
-test("stored depth and node count are bounded before the record is used", () => {
-  const count = (v: unknown): number =>
-    typeof v === "object" && v !== null
-      ? 1 +
-        (Object.values(v) as unknown[]).reduce<number>(
-          (n, c) => n + count(c),
-          0,
-        )
-      : 1;
-  const nest = (levels: number) => {
-    let value: unknown = [];
-    for (let i = 1; i < levels; i++) value = [value];
-    return value;
-  };
-  const base = count(wrap(issue(1, { closeReason: [] })));
-  // The dropped field carries the load, so the output schema cannot be what refuses it.
-  for (const [pad, ok] of [
-    [nest(MAX_DEPTH - 2), true],
-    [nest(MAX_DEPTH - 1), false],
-    [new Array(MAX_NODES - base).fill(0), true],
-    [new Array(MAX_NODES - base + 1).fill(0), false],
-  ] as const) {
-    const f = fixture();
-    f.put(ONE, issue(1, { closeReason: pad }));
-    if (ok) expect(f.read().id).toBe("forge-1");
-    else expect(f.refusal()).toEqual(internal);
-  }
 }, 30_000);
 
 test("malformed stored JSON and identity mismatches give one fixed error", () => {

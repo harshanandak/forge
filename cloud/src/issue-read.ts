@@ -1,13 +1,16 @@
 // Reads one work issue from the project authority's state tables and writes nothing. It takes
 // read-only views, runs only the fixed SELECTs below, and treats every stored value as untrusted:
-// bytes are bounded before a body is loaded, depth and node count before it is used, and the
-// record's identity must match the key the server derived. Caller text only ever becomes a bound
+// bytes are bounded before a body is loaded, and the record's identity must match the key the
+// server derived. Caller text only ever becomes a bound
 // SQL value, and only after it has been matched to `<prefix>-<digits>`.
 import manifest from "../../src/blocks/work/forge.block.json" with { type: "json" };
 import ItemRef from "../../src/blocks/work/schemas/ItemRef.json" with { type: "json" };
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { SchemaRegistry } from "../../src/contract/schema.ts";
-import { parseUntrustedJson } from "../../src/contract/untrusted.ts";
+import {
+  DEFAULT_PARSE_LIMITS,
+  parseUntrustedJson,
+} from "../../src/contract/untrusted.ts";
 import { SCHEMA_DOCUMENTS } from "../../src/generated/schemas.ts";
 import type { TrackerItem } from "../../src/generated/types.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
@@ -16,8 +19,6 @@ const NAMESPACE = "forge/work";
 /** Stored issue record bound in bytes; above the response bound so that bound can be reached. */
 export const MAX_RECORD_BYTES = 2 * 1024 * 1024;
 export const MAX_LEASE_BYTES = 16 * 1024;
-export const MAX_DEPTH = 8;
-export const MAX_NODES = 1024;
 const QUALIFIED = /^([a-z0-9]+(?:-[a-z0-9]+)*)-(\d+)$/i;
 // A body above the bound is returned as NULL and never reaches the Worker. Length is counted in bytes.
 const BODY = (table: string, column: string) =>
@@ -59,9 +60,8 @@ function load(
   const parsed =
     typeof row.body === "string"
       ? parseUntrustedJson(row.body, {
+          ...DEFAULT_PARSE_LIMITS,
           maxBytes: max,
-          maxDepth: MAX_DEPTH,
-          maxNodes: MAX_NODES,
           maxStringLength: max,
         })
       : undefined;
