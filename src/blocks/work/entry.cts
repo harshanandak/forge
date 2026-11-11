@@ -469,6 +469,37 @@ function client(services: unknown): LeaseStateClient {
     );
   return state;
 }
+function withReadFence(
+  services: unknown,
+  given: string,
+  config: unknown,
+  prefixes: readonly string[],
+) {
+  const state = client(services),
+    id = idsFor(state, config).stored(given);
+  const reads = prefixes.map((prefix) => ({
+    key: `${prefix}:${id}`,
+    expectRevision: state.get(`${prefix}:${id}`)?.revision ?? 0,
+  }));
+  return {
+    ...(services as object),
+    state: {
+      ...state,
+      put: (...[key, value, options]: Parameters<LeaseStateClient["put"]>) =>
+        state.put(key, value, {
+          ...options,
+          readSet: [...(options.readSet ?? []), ...reads],
+        }),
+      acquire: (
+        ...[subject, duration, options]: Parameters<LeaseStateClient["acquire"]>
+      ) =>
+        state.acquire(subject, duration, {
+          ...options,
+          readSet: [...(options?.readSet ?? []), ...reads],
+        }),
+    },
+  };
+}
 function get(state: LeaseStateClient, id: string, given = id): StateRecord {
   const record = state.get(key(id));
   if (!record) fail("NOT_FOUND", `Issue ${given} was not found`);
@@ -5397,6 +5428,7 @@ const operations: Operations<WorkOperations> = {
     return { id: ids.shown(id) };
   },
   "attempt.reserve": ({ input, services, config }) => {
+    services = withReadFence(services, input.id, config, ["selection"]);
     const state = client(services),
       ids = idsFor(state, config),
       id = ids.stored(input.id);
@@ -5435,12 +5467,10 @@ const operations: Operations<WorkOperations> = {
         (config as WorkConfig | undefined)?.claimTtlSeconds ??
         3600) * 1000,
       {
-        readSet: [issue, slot]
-          .map((row) => ({
-            key: row.key,
-            expectRevision: row.revision,
-          }))
-          .concat({ key: `selection:${id}`, expectRevision: 0 }),
+        readSet: [issue, slot].map((row) => ({
+          key: row.key,
+          expectRevision: row.revision,
+        })),
         entries: [
           {
             key: slot.key,
@@ -5931,6 +5961,10 @@ const operations: Operations<WorkOperations> = {
     validateOnly = false,
     deliveredUrl?: string,
   ) => {
+    services = withReadFence(services, input.id, config, [
+      "slots",
+      "selection",
+    ]);
     const state = client(services);
     const ids = idsFor(state, config);
     const id = ids.stored(input.id);
@@ -5940,6 +5974,7 @@ const operations: Operations<WorkOperations> = {
       expectRevision: state.get(`${prefix}:${id}`)?.revision ?? 0,
     }));
     if (
+      !validateOnly &&
       competition[0]!.expectRevision > 0 &&
       competition[1]!.expectRevision === 0
     ) {
@@ -6108,15 +6143,7 @@ const operations: Operations<WorkOperations> = {
         : { receipt: input.receipt }),
       ...(input.reason === undefined ? {} : { closeReason: input.reason }),
     };
-    const { revision } = record;
-    const written = persist(
-      state,
-      key(id),
-      value,
-      revision,
-      key(id),
-      competition,
-    );
+    const written = persist(state, key(id), value, record.revision);
     const { closeReason: _reason, ...view } = written.value as Stored & {
       closeReason?: string;
     };

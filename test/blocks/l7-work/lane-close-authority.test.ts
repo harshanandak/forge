@@ -254,6 +254,34 @@ async function fixture(seedLink = true) {
   };
 }
 
+test("competing keep-open validates without selection while a real lane close refuses", async () => {
+  for (const keepOpen of [false, true]) {
+    const f = await fixture();
+    try {
+      f.owner.put(
+        namespace,
+        `slots:${id}`,
+        { count: 2, next: 0 },
+        f.holder.actor,
+        { expectRevision: 0 },
+      );
+      if (keepOpen) await f.close({ keepOpen });
+      else await expect(f.close()).rejects.toThrow("INPUT_CONFLICT");
+      expect(f.owner.get(namespace, `issue:${id}`)?.value).toMatchObject({
+        status: "open",
+      });
+      expect(f.owner.get(namespace, `selection:${id}`)).toBeUndefined();
+      if (!keepOpen) {
+        expect(f.flags.present).toBe(true);
+        expect(f.flags.branch).toBe(true);
+        expect(JSON.parse(f.files.get("forge-lanes.json")!)).toEqual([f.lane]);
+      }
+    } finally {
+      await f.dispose();
+    }
+  }
+}, 10000);
+
 test("a forged close journal without a fenced landing record cannot authorize cleanup", async () => {
   const f = await fixture();
   try {
