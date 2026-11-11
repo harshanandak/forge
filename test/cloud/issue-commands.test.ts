@@ -8,8 +8,10 @@ import {
 } from "../../cloud/src/store.ts";
 import { TOKEN_LOOKUP, TOKENS } from "../../cloud/src/tokens.ts";
 import { prepareCommand } from "../../cloud/src/issue-commands.ts";
+import { LEASE_READS, RECORD_READS } from "../../cloud/src/issue-read.ts";
 import { createWorker } from "../../cloud/src/worker.ts";
 import manifest from "../../src/blocks/work/forge.block.json" with { type: "json" };
+import { stateMigrations } from "../../src/core/state/migrations.ts";
 import { exitCode } from "../../src/surface/result.ts";
 
 if (!("timingSafeEqual" in crypto.subtle))
@@ -23,10 +25,16 @@ const { createConfiguredWorker } =
 const start = 1_800_000_000_000,
   day = 86_400_000,
   limit = 512 * 1024;
-const vars = { FORGE_CLOUD_PROJECT: "p", ADMIN_TOKEN: "admin-secret" };
+const vars = {
+  FORGE_CLOUD_PROJECT: "p",
+  ADMIN_TOKEN: "admin-secret",
+  FORGE_CLOUD_ID_PREFIX: "forge",
+};
 const refused = "not yet supported in cloud";
 interface Envelope {
   ok: boolean;
+  op?: string;
+  result?: unknown;
   error?: { code: string; message: string };
   value?: { token: string };
 }
@@ -39,16 +47,18 @@ type Options = {
   method?: string;
 };
 
-function fixture() {
+function fixture(env: Record<string, unknown> = vars) {
   let t = start;
   spyOn(Date, "now").mockImplementation(() => t);
   const db = new Database(":memory:"),
     values = new Map<string, unknown>(),
-    calls: string[] = [];
+    calls: string[] = [],
+    probes: string[] = [];
   const storage: DurableStorage = {
     sql: {
       exec: (sql, ...bindings) => {
         calls.push(sql);
+        if (sql === TABLE_PROBE) probes.push(bindings[0] as string);
         const rows = db
           .query(sql)
           .all(
@@ -74,7 +84,7 @@ function fixture() {
       return Promise.resolve(values.delete(key));
     },
   };
-  let project = new Project({ storage }, vars);
+  let project = new Project({ storage }, env);
   const reached: string[] = [];
   const bindings = {
     ...vars,
@@ -109,13 +119,19 @@ function fixture() {
       },
     );
     calls.length = 0;
+    probes.length = 0;
     const response =
       o.via === "direct"
         ? await project.fetch(request)
         : await (o.via ?? createWorker()).fetch(request, bindings as never);
-    const json = (await response.json()) as Envelope;
+    const text = await response.text();
+    const json = JSON.parse(text) as Envelope;
     return {
       status: response.status,
+      text,
+      bytes: new TextEncoder().encode(text).length,
+      type: response.headers.get("content-type"),
+      probes: [...probes],
       json,
       code: json.error?.code,
       exit: exitCode(json as never),
@@ -153,8 +169,37 @@ function fixture() {
     db,
     storage,
     calls,
+    // The work tables, from the state owner's own migrations, and rows the way the owner stores them.
+    tables: () => {
+      for (const { statements } of stateMigrations)
+        for (const sql of statements) db.run(sql);
+    },
+    put: (value: unknown, over: object = {}) =>
+      db.run(
+        "INSERT INTO state_records(namespace,key,revision,body) VALUES (?,?,3,?)",
+        [
+          "forge/work",
+          "issue:work-1",
+          JSON.stringify({
+            namespace: "forge/work",
+            key: "issue:work-1",
+            revision: 3,
+            value,
+            updatedAt: iso(start - 500),
+            updatedBy: actor,
+            ...over,
+          }),
+        ],
+      ),
+    lease: (over: object = {}) => {
+      db.run("DELETE FROM state_leases");
+      db.run(
+        "INSERT INTO state_leases(namespace,subject,generation,body) VALUES (?,?,2,?)",
+        ["forge/work", "issue:work-1", JSON.stringify(grant(over))],
+      );
+    },
     reopen: () => {
-      project = new Project({ storage }, vars);
+      project = new Project({ storage }, env);
     },
     advance: (ms: number) => {
       t += ms;
@@ -163,6 +208,29 @@ function fixture() {
   };
 }
 const actor = { kind: "agent", id: "tester" } as const;
+const iso = (ms: number) => new Date(ms).toISOString();
+const stored = (over: object = {}) => ({
+  id: "work-1",
+  title: "Issue 1",
+  status: "open",
+  labels: ["a"],
+  dependsOn: [],
+  createdAt: iso(start - 1000),
+  ...over,
+});
+const shown = (over: object = {}) => ({
+  ...stored({ id: "forge-1" }),
+  updatedAt: iso(start - 500),
+  revision: 3,
+  ...over,
+});
+const grant = (over: object = {}) => ({
+  subject: "issue:work-1",
+  holder: { actor, session: { id: "s1" } },
+  generation: 2,
+  expiresAt: iso(start + 1000),
+  ...over,
+});
 const call = {
   requestId: "r-1",
   op: "issue.show",
@@ -173,6 +241,14 @@ const configured = (forward?: () => Promise<Response>) =>
   createConfiguredWorker(undefined, forward ? { forward } : {});
 const fakeToken = `fct_0123456789abcdef.${"A".repeat(43)}`;
 const oauthToken = "eyJhbGciOi.e30.sig";
+const TOKEN_PROBE = [TOKENS];
+// A show read adds only the two work-table probes and readIssue's own fixed statements.
+const readCalls = (touched: string[]) =>
+  strayCalls(touched).filter(
+    (sql) =>
+      !(RECORD_READS as readonly string[]).includes(sql) &&
+      !(LEASE_READS as readonly string[]).includes(sql),
+  );
 // A refusal reads only the token row and the provisioned flag: no work state, write or setup.
 const strayCalls = (touched: string[]) =>
   touched.filter(
@@ -218,13 +294,14 @@ for (const [layer, via] of [
     expect(f.snapshot()).toBe(before);
     const ok = await f.send(call, { token, via: via() });
     expect([ok.status, ok.code, ok.exit, f.reached]).toEqual([
-      400,
-      "INPUT_INVALID",
-      6,
+      404,
+      "NOT_FOUND",
+      3,
       ["p"],
     ]);
-    expect(ok.json.error?.message).toContain(refused);
-    expect(strayCalls(ok.touched)).toEqual([]);
+    expect(ok.json.error?.message).toBe("Issue was not found");
+    expect(readCalls(ok.touched)).toEqual([]);
+    expect(ok.probes).toEqual([TOKENS, "state_records"]);
     expect(f.snapshot()).toBe(before);
   }, 30_000);
 
@@ -352,12 +429,12 @@ test("a refused command on a cold object older than the login migration writes n
   f.reopen();
   for (const [name, bearer, status, code] of [
     ["invented token", fakeToken, 401, "AUTH_INVALID"],
-    ["valid token", token, 400, "INPUT_INVALID"],
+    ["valid token", token, 404, "NOT_FOUND"],
   ] as const)
     for (const via of ["direct", createWorker()] as const) {
       const got = await f.send(call, { token: bearer, via });
       expect([name, got.status, got.code]).toEqual([name, status, code]);
-      expect(strayCalls(got.touched)).toEqual([]);
+      expect(readCalls(got.touched)).toEqual([]);
       expect(f.snapshot()).toBe(before);
     }
   f.db.query("DROP TABLE domain_cloud_tokens").run();
@@ -422,13 +499,12 @@ const allowed = [
   "issue.create",
   "issue.update",
   "issue.comment",
-  "issue.show",
   "issue.comments",
   "issue.list",
   "issue.ready",
 ];
 
-test("all seven allowed operations pass the envelope and context checks, then are refused", async () => {
+test("the six other allowed operations pass the envelope and context checks, then are refused", async () => {
   const { f, token, before } = await begin();
   const named = {
     actor,
@@ -440,7 +516,7 @@ test("all seven allowed operations pass the envelope and context checks, then ar
     ...allowed.map(
       (op) => [op, op === "issue.update" ? held : { actor }] as const,
     ),
-    ["issue.show", named],
+    ["issue.list", named],
   ] as const) {
     const got = await f.send({ ...call, op, context }, { token });
     refusal(op, got, [400, "INPUT_INVALID", 6]);
@@ -542,7 +618,7 @@ test("nesting and value limits hold at the boundary and name the limit", async (
     ["brackets inside a string", `${"[".repeat(100)}\\"{`, refused],
   ];
   for (const [name, input, message] of cases) {
-    const got = await f.send({ ...call, input }, { token });
+    const got = await f.send({ ...call, op: "issue.list", input }, { token });
     refusal(name, got, [400, "INPUT_INVALID", 6]);
     expect(got.json.error?.message).toContain(message);
   }
@@ -579,11 +655,14 @@ test("an exposed op missing from the manifest fails closed as UNKNOWN_COMMAND", 
     operations["issue.show"] = declared;
   }
   expect(f.snapshot()).toBe(before);
-  refusal("restored op", await f.send(call, { token }), [
-    400,
-    "INPUT_INVALID",
-    6,
+  const restored = await f.send(call, { token });
+  expect([restored.status, restored.code, restored.exit]).toEqual([
+    404,
+    "NOT_FOUND",
+    3,
   ]);
+  expect(restored.json.error?.message).toBe("Issue was not found");
+  expect(readCalls(restored.touched)).toEqual([]);
 }, 30_000);
 
 test("the server builds the effective context from what the operation declares", () => {
@@ -611,6 +690,201 @@ test("the server builds the effective context from what the operation declares",
     project: { id: "p" },
     leaseGeneration: 3,
   });
+}, 30_000);
+
+const WORK_PROBES = [TOKENS, "state_records", "state_leases"];
+const bytesOf = (text: string) => new TextEncoder().encode(text).length;
+const envelope = (result: unknown) =>
+  JSON.stringify({
+    ok: true,
+    op: "issue.show",
+    status: "OK",
+    result,
+    warnings: [],
+  });
+
+test("issue.show returns the stored issue through the Worker and the object, with a lease only while live", async () => {
+  const f = fixture();
+  const token = await f.device();
+  f.tables();
+  f.put(stored());
+  for (const [name, over, live] of [
+    ["none", undefined, false],
+    ["live", { expiresAt: iso(start + 1) }, true],
+    ["exactly at expiry", { expiresAt: iso(start) }, false],
+    ["expired", { expiresAt: iso(start - 1) }, false],
+    ["released", { releasedAt: iso(start - 5) }, false],
+  ] as const) {
+    if (over === undefined) f.db.run("DELETE FROM state_leases");
+    else f.lease(over);
+    const before = f.snapshot();
+    for (const via of ["direct", createWorker()] as const) {
+      const got = await f.send(call, { token, via });
+      expect([name, got.status, got.json.ok, got.json.op]).toEqual([
+        name,
+        200,
+        true,
+        "issue.show",
+      ]);
+      expect([name, got.json.result]).toEqual([
+        name,
+        shown(live ? { lease: grant(over) } : {}),
+      ]);
+      expect(got.type).toContain("application/json");
+      expect(readCalls(got.touched)).toEqual([]);
+      expect(got.probes).toEqual(WORK_PROBES);
+      expect(f.snapshot()).toBe(before);
+    }
+  }
+}, 30_000);
+
+test("the response is capped at 1 MiB of UTF-8 bytes, measured on the whole envelope", async () => {
+  const cap = 1_048_576;
+  const f = fixture();
+  const token = await f.device();
+  f.tables();
+  // Two-byte, escaped and three-byte characters, so characters and bytes differ.
+  const body = 'é"\n✓\\';
+  const room = cap - bytesOf(envelope(shown({ body, kind: "" })));
+  for (const [delta, fits] of [
+    [-1, true],
+    [0, true],
+    [1, false],
+  ] as const) {
+    const kind = "k".repeat(room + delta);
+    f.db.run("DELETE FROM state_records");
+    f.put(stored({ body, kind }));
+    const before = f.snapshot();
+    const got = await f.send(call, { token });
+    expect(got.probes).toEqual(WORK_PROBES);
+    expect(f.snapshot()).toBe(before);
+    if (fits) {
+      expect([got.status, got.bytes]).toEqual([200, cap + delta]);
+      expect(got.json.result).toEqual(shown({ body, kind }));
+      expect(got.text).toBe(JSON.stringify(got.json));
+    } else {
+      expect([got.status, got.code, got.exit]).toEqual([503, "UNAVAILABLE", 1]);
+      expect(got.json.error?.message).toContain("response too large");
+      expect(got.bytes).toBeLessThan(1000);
+    }
+  }
+}, 60_000);
+
+test("show refuses a missing issue, an unknown prefix, bad input and a corrupt record, reading only what it needs", async () => {
+  for (const [name, input, over, want, probes] of [
+    ["missing number", { id: "forge-2" }, {}, [404, "NOT_FOUND", 3], 2],
+    ["unknown prefix", { id: "acme-1" }, {}, [400, "INPUT_INVALID", 6], 2],
+    [
+      "extra field",
+      { id: "forge-1", extra: marker },
+      {},
+      [400, "INPUT_INVALID", 6],
+      1,
+    ],
+    [
+      "wrong-typed revision",
+      { id: "forge-1" },
+      { revision: "x" },
+      [500, "INTERNAL", 1],
+      3,
+    ],
+  ] as const) {
+    const f = fixture();
+    const token = await f.device();
+    f.tables();
+    f.put(stored({ title: marker }), over);
+    const before = f.snapshot();
+    const got = await f.send({ ...call, input }, { token });
+    expect([name, got.status, got.code, got.exit]).toEqual([name, ...want]);
+    expect(JSON.stringify(got.json)).not.toContain(marker);
+    expect(readCalls(got.touched)).toEqual([]);
+    expect(got.probes).toEqual(WORK_PROBES.slice(0, probes));
+    expect(f.snapshot()).toBe(before);
+  }
+}, 30_000);
+
+test("a missing or invalid configured prefix is UNAVAILABLE and no work table is probed or read", async () => {
+  for (const prefix of [undefined, "", "Forge", "x".repeat(33), 5]) {
+    const f = fixture({ ...vars, FORGE_CLOUD_ID_PREFIX: prefix });
+    const token = await f.device();
+    f.tables();
+    f.put(stored());
+    const before = f.snapshot();
+    for (const via of ["direct", createWorker()] as const) {
+      const got = await f.send(call, { token, via });
+      expect([got.status, got.code, got.exit]).toEqual([503, "UNAVAILABLE", 1]);
+      expect(got.json.error?.message).toBe("Server configuration is not valid");
+      expect(strayCalls(got.touched)).toEqual([]);
+      expect(got.probes).toEqual([TOKENS]);
+    }
+    expect(f.snapshot()).toBe(before);
+  }
+}, 30_000);
+
+test("a token revoked or expired after the first check, while the body is held, ends the command before any work read", async () => {
+  const f = fixture();
+  f.tables();
+  f.put(stored());
+  const text = JSON.stringify(call);
+  // The rest of the body and the change are released only after the first token lookup has run.
+  const held = async (token: string, between: () => void) => {
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const stream = new ReadableStream({
+      start: (c) => c.enqueue(new TextEncoder().encode(text.slice(0, 9))),
+      async pull(c) {
+        await gate;
+        c.enqueue(new TextEncoder().encode(text.slice(9)));
+        c.close();
+      },
+    });
+    const pending = f.send(stream, { token });
+    while (!f.calls.includes(TOKEN_LOOKUP))
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    between();
+    release();
+    return pending;
+  };
+  let after = "";
+  const revoked = await f.device();
+  for (const got of [
+    await f.send(call, { token: revoked }),
+    await held(revoked, () => {}),
+  ])
+    expect([got.status, got.json.ok, got.probes]).toEqual([
+      200,
+      true,
+      WORK_PROBES,
+    ]);
+  const cases: [string, string, () => void, string][] = [
+    [
+      "revoked",
+      revoked,
+      () =>
+        f.db
+          .query("UPDATE domain_cloud_tokens SET revoked_at=? WHERE id=?")
+          .run(f.now(), revoked.slice(4, 20)),
+      "AUTH_REVOKED",
+    ],
+    ["expired", await f.device(), () => f.advance(2 * day), "AUTH_EXPIRED"],
+  ];
+  for (const [name, token, change, code] of cases) {
+    const got = await held(token, () => {
+      change();
+      after = f.snapshot();
+    });
+    expect([name, got.status, got.code, got.exit]).toEqual([
+      name,
+      401,
+      code,
+      1,
+    ]);
+    expect(got.probes).toEqual(TOKEN_PROBE);
+    expect(got.touched.filter((sql) => sql.includes("state_"))).toEqual([]);
+    expect(f.snapshot()).toBe(after);
+  }
 }, 30_000);
 
 const READ_ONLY = "This view is read-only";
