@@ -52,21 +52,27 @@ export const TABLE_PROBE =
 export function readOnlyStore(
   storage: DurableStorage,
   table: string,
-  _statements: readonly string[],
+  statements: readonly string[],
 ): SqlDatabase | undefined {
-  const all = (statement: string, params: readonly SqlValue[] = []) =>
+  // Copied now, so changing the caller's array later grants nothing.
+  const allowed = new Set(statements);
+  const execute = (statement: string, params: readonly SqlValue[] = []) =>
     storage.sql.exec(statement, ...params.map(bind)).toArray() as SqlRow[];
   const refuse = (): never => {
     throw new Error("This view is read-only");
   };
-  return all(TABLE_PROBE, [table]).length === 0
+  // The one place `get` and `all` reach storage: an unlisted statement stops here, unrun.
+  const guarded = (statement: string, params?: readonly SqlValue[]) =>
+    allowed.has(statement) ? execute(statement, params) : refuse();
+  // The probe runs directly, only while the view is built; it is not part of the allowlist.
+  return execute(TABLE_PROBE, [table]).length === 0
     ? undefined
     : {
         exec: refuse,
         run: refuse,
         transaction: refuse,
-        all,
-        get: (statement, params) => all(statement, params)[0],
+        all: guarded,
+        get: (statement, params) => guarded(statement, params)[0],
       };
 }
 
