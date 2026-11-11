@@ -21,7 +21,7 @@ What to do:
 
 1. Run `git -C <worktree> status --short` (it must be clean) and read `git -C <worktree> diff origin/main...HEAD` in full.
 2. Run lint, format check, typecheck and build only. If Bun lacks the linter, prepend FORGE_CANARY_BUN_DIR to PATH for that command; never run `bun upgrade`. CI runs the repo guards and suites.
-3. Run the spec's acceptance commands against the branch build in a temp project, excluding test-suite commands, which run in CI. Compare each exit code and output with what the spec says.
+3. Run the spec's acceptance commands against the branch build in a temp project, excluding test-suite commands, which run in CI. Compare each result row by row with the brief's acceptance table: status, exit, eligibility and unchanged behaviour.
 4. Try to break it. Wrong and missing inputs, boundary values, a fresh process reading state back, two sessions at once, Windows paths and PowerShell 5.1 quoting, POSIX shells (a test fixture must never remove PATH folders; system folders hold sh, git and npm), skill byte caps (4,096 bytes rendered) and any rule a trimmed skill no longer states, and anything else the spec promises. For each bug, keep the exact command that shows it.
 5. Check the diff against the spec: every promised item is present, nothing out of scope was added, and the change follows the PR-size and review-round rules in `CODING_STANDARDS.md`, Documents and reviews.
 

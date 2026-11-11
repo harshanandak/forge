@@ -1,3 +1,4 @@
+import { acceptanceTable } from "./lane-brief-fixture.ts";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
@@ -21,7 +22,10 @@ const briefText = [
   "Stop point",
   "Prior art",
 ]
-  .map((name) => `## ${name}\nConcrete content.\n`)
+  .map(
+    (name) =>
+      `## ${name}\nConcrete content.\n${name === "Acceptance test" ? acceptanceTable : ""}\n`,
+  )
   .join("\n");
 let root: string, repo: string, origin: string, other: string;
 let sequence = 0;
