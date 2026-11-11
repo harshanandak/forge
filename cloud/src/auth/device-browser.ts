@@ -15,15 +15,15 @@ import { ownerPolicy } from "./compose.ts";
 import {
   createDeviceLogin,
   userCodeHash,
-  type ChallengeState,
   type LoginError,
 } from "./device-login.ts";
 import {
-  admit,
   importLoginKey,
   loginConfigGap,
   loginStore,
+  spend,
   type LoginEnv,
+  type LoginState,
 } from "./project-login.ts";
 
 /** Every state this handler issues starts with this; no other OAuth state can (they are base64url). */
@@ -31,6 +31,9 @@ export const DEVICE_STATE_PREFIX = "forge-device.";
 const COOKIE = "__Host-forge_device";
 const STATE_TTL_MS = 600_000;
 const MAX_PENDING_STATES = 256;
+const PER_CHALLENGE = 3;
+const bindName = (stateHash: string) =>
+  `__Host-forge_device_${stateHash.slice(0, 24)}`;
 const USER_CODE = /^[BCDFGHJKLMNPQRSTVWXYZ]{4}-[BCDFGHJKLMNPQRSTVWXYZ]{4}$/;
 
 export interface DeviceUpstream {
@@ -47,14 +50,23 @@ export interface DeviceBrowserOptions {
     claimOnce(codeHash: string, expiresAt: number): Promise<boolean>;
   };
 }
-interface PendingState {
-  stateHash: string;
+/** One browser's dealings with one challenge: first a preview with two tickets, then one decision. */
+interface Pending {
   cookieHash: string;
+  userHash: string;
   code: string;
-  action: "approve" | "deny";
-  verifier: string;
   expiresAt: number;
+  tickets?: { approve: string; deny: string };
+  decided?: {
+    stateHash: string;
+    bindHash: string;
+    action: "approve" | "deny";
+    verifier: string;
+    code: string;
+    expiresAt: number;
+  };
 }
+type Held = LoginState & { browser?: Pending[] };
 
 export const isDeviceRoute = (request: Request): boolean => {
   const path = new URL(request.url).pathname;
@@ -112,13 +124,13 @@ const token = () =>
     .replaceAll("+", "-")
     .replaceAll("/", "_")
     .replaceAll("=", "");
-const cookieOf = (request: Request) =>
+const cookieOf = (request: Request, name: string) =>
   request.headers
     .get("Cookie")
     ?.split(";")
     .map((part) => part.trim())
-    .find((part) => part.startsWith(`${COOKIE}=`))
-    ?.slice(COOKIE.length + 1);
+    .find((part) => part.startsWith(`${name}=`))
+    ?.slice(name.length + 1);
 const REFUSAL: Partial<Record<LoginError, number>> = {
   rate_limited: 429,
   unavailable: 503,
@@ -135,7 +147,12 @@ export async function deviceRoute(
 ): Promise<Response> {
   const url = new URL(request.url);
   if (request.method === "GET" && url.pathname === "/device") {
-    const csrf = token();
+    // A page cookie that is already well formed is kept, so a second tab does not break the first.
+    const existing = cookieOf(request, COOKIE);
+    const csrf =
+      existing !== undefined && /^[A-Za-z0-9_-]{43}$/.test(existing)
+        ? existing
+        : token();
     return page(
       200,
       `<h1>Approve a device</h1><form method="post" action="/device"><input type="hidden" name="csrf" value="${csrf}"><label>Code <input name="code" autocomplete="off" required></label><button>Continue</button></form>`,
@@ -167,25 +184,27 @@ export async function deviceRoute(
 
   if (callback) {
     const states = url.searchParams.getAll("state");
-    const jar = cookieOf(request);
     const now = Date.now();
     const stateHash = await sha256(states[0]!);
+    const jar = cookieOf(request, bindName(stateHash));
     // The state is consumed first, so a replay or a wrong browser cannot try again.
     const taken = store.conditionalUpdate((base) => {
-      const state = base as ChallengeState & { browser?: PendingState[] };
+      const state = base as Held;
       state.browser = (state.browser ?? []).filter(
         (row) => now < row.expiresAt,
       );
-      const at = state.browser.findIndex((row) =>
-        same(row.stateHash, stateHash),
+      const at = state.browser.findIndex(
+        (row) =>
+          row.decided !== undefined && same(row.decided.stateHash, stateHash),
       );
-      return at < 0 ? undefined : state.browser.splice(at, 1)[0];
+      return at < 0 ? undefined : state.browser.splice(at, 1)[0]!.decided;
     });
+    // Only the browser that was sent to Clerk holds this transaction's own cookie.
     if (
       states.length !== 1 ||
       taken === undefined ||
       jar === undefined ||
-      !same(taken.cookieHash, await sha256(jar))
+      !same(taken.bindHash, await sha256(jar))
     )
       return result(400, "access_denied");
     // One Clerk code, one try: the durable claim comes before the proof is verified.
@@ -227,7 +246,7 @@ export async function deviceRoute(
 
   // The two POST routes below: same origin, and the cookie must match the form's proof.
   const csrf = form.get("csrf");
-  const jar = cookieOf(request);
+  const jar = cookieOf(request, COOKIE);
   if (
     request.headers.get("Origin") !== url.origin ||
     !csrf ||
@@ -235,6 +254,54 @@ export async function deviceRoute(
     !same(await sha256(jar), await sha256(csrf))
   )
     return result(400, "invalid_request");
+  const cookieHash = await sha256(jar);
+  if (url.pathname !== "/device") {
+    // A decision needs the single-use ticket this browser was given for this action at the preview.
+    // It then gets its own cookie, so a planted or stolen page cookie cannot finish the redirect.
+    const action = url.pathname === "/device/approve" ? "approve" : "deny";
+    const state = DEVICE_STATE_PREFIX + token();
+    const [verifier, bind] = [token(), token()];
+    const [ticketHash, stateHash, bindHash] = await Promise.all([
+      sha256(`${action}:${form.get("ticket") ?? ""}`),
+      sha256(state),
+      sha256(bind),
+    ]);
+    const now = Date.now();
+    const chosen = store.conditionalUpdate((base) => {
+      const held = base as Held;
+      held.browser = (held.browser ?? []).filter((row) => now < row.expiresAt);
+      const row = held.browser.find(
+        (entry) =>
+          entry.tickets !== undefined &&
+          same(entry.tickets[action], ticketHash) &&
+          same(entry.cookieHash, cookieHash),
+      );
+      if (row === undefined) return false;
+      delete row.tickets;
+      row.expiresAt = now + STATE_TTL_MS;
+      row.decided = {
+        stateHash,
+        bindHash,
+        action,
+        verifier,
+        code: row.code,
+        expiresAt: row.expiresAt,
+      };
+      return true;
+    });
+    if (!chosen) return result(400, "invalid_request");
+    const location = await upstream!.begin(state, verifier).catch(() => {
+      throw unavailable("upstream");
+    });
+    return new Response(null, {
+      status: 302,
+      headers: {
+        Location: location,
+        "Cache-Control": "no-store",
+        "Set-Cookie": `${bindName(stateHash)}=${bind}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=600`,
+      },
+    });
+  }
   const address = request.headers.get("CF-Connecting-IP");
   if (address === null || address === "")
     throw new ForgeFailure({
@@ -242,58 +309,59 @@ export async function deviceRoute(
       message: "Client address is unavailable",
       retry: "never",
     });
-  const who = await sha256(address);
-  const now = Date.now();
-  if (!admit(store, who, now, "previews", false))
-    return result(429, "rate_limited");
   const typed = (form.get("code") ?? "").trim().toUpperCase();
   const code = /^[A-Z]{8}$/.test(typed)
     ? `${typed.slice(0, 4)}-${typed.slice(4)}`
     : typed;
-  const hash = USER_CODE.test(code)
-    ? await userCodeHash(userCodeKey, code)
-    : "";
-  const device = store.conditionalUpdate(
-    (state) =>
-      state.challenges.find(
-        (row) =>
-          row.status === "pending" &&
-          now < row.expiresAt &&
-          same(row.userHash, hash),
-      )?.deviceInfo.label,
-  );
-  if (device === undefined) {
-    admit(store, who, now, "previews", true);
-    return result(400, "invalid_code");
-  }
-  if (url.pathname === "/device")
-    return page(
-      200,
-      `<h1>Approve this device?</h1><p>Project <code>${esc(project)}</code></p><p>Device <code>${esc(device)}</code></p>${(["approve", "deny"] as const).map((action) => `<form method="post" action="/device/${action}"><input type="hidden" name="csrf" value="${esc(csrf)}"><input type="hidden" name="code" value="${esc(code)}"><button>${action === "approve" ? "Approve" : "Deny"}</button></form>`).join("")}`,
+  const tickets = { approve: token(), deny: token() };
+  // Everything that awaits comes first. The budget, the lookup and the charge for a failure then run
+  // as one synchronous step, so overlapping requests cannot all pass the budget before any is charged.
+  const [who, hash, approveHash, denyHash] = await Promise.all([
+    sha256(address),
+    USER_CODE.test(code) ? userCodeHash(userCodeKey, code) : "",
+    sha256(`approve:${tickets.approve}`),
+    sha256(`deny:${tickets.deny}`),
+  ]);
+  const now = Date.now();
+  const shown = store.conditionalUpdate((base) => {
+    const state = base as Held;
+    if (!spend(state, who, now, "previews", false))
+      return { refused: "rate_limited" };
+    const challenge = state.challenges.find(
+      (row) =>
+        row.status === "pending" &&
+        now < row.expiresAt &&
+        same(row.userHash, hash),
     );
-  // Approve or deny: remember the choice for this browser, then send the owner to Clerk.
-  const action = url.pathname === "/device/approve" ? "approve" : "deny";
-  const state = DEVICE_STATE_PREFIX + token();
-  const verifier = token();
-  const location = await upstream!.begin(state, verifier);
-  const [stateHash, cookieHash] = [await sha256(state), await sha256(jar)];
-  const saved = store.conditionalUpdate((base) => {
-    const held = base as ChallengeState & { browser?: PendingState[] };
-    held.browser = (held.browser ?? []).filter((row) => now < row.expiresAt);
-    if (held.browser.length >= MAX_PENDING_STATES) return false;
-    held.browser.push({
-      stateHash,
+    if (challenge === undefined) {
+      spend(state, who, now, "previews", true);
+      return { refused: "invalid_code" };
+    }
+    // One record per browser and challenge, a few per challenge, and a cap for the project.
+    const live = (state.browser ?? []).filter(
+      (row) =>
+        now < row.expiresAt &&
+        !(same(row.cookieHash, cookieHash) && same(row.userHash, hash)),
+    );
+    const mine = live.filter((row) => same(row.userHash, hash));
+    if (mine.length >= PER_CHALLENGE) live.splice(live.indexOf(mine[0]!), 1);
+    state.browser = live;
+    if (live.length >= MAX_PENDING_STATES) return { refused: "rate_limited" };
+    live.push({
       cookieHash,
+      userHash: hash,
       code,
-      action,
-      verifier,
       expiresAt: now + STATE_TTL_MS,
+      tickets: { approve: approveHash, deny: denyHash },
     });
-    return true;
+    return { device: challenge.deviceInfo.label };
   });
-  if (!saved) return result(429, "rate_limited");
-  return new Response(null, {
-    status: 302,
-    headers: { Location: location, "Cache-Control": "no-store" },
-  });
+  if ("refused" in shown)
+    return result(shown.refused === "invalid_code" ? 400 : 429, shown.refused);
+  const choice = (action: "approve" | "deny") =>
+    `<form method="post" action="/device/${action}"><input type="hidden" name="csrf" value="${esc(csrf)}"><input type="hidden" name="ticket" value="${tickets[action]}"><button>${action === "approve" ? "Approve" : "Deny"}</button></form>`;
+  return page(
+    200,
+    `<h1>Approve this device?</h1><p>Project <code>${esc(project)}</code></p><p>Device <code>${esc(shown.device)}</code></p>${choice("approve")}${choice("deny")}`,
+  );
 }

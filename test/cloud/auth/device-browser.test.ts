@@ -195,8 +195,8 @@ function fixture(
     db.query(sql).all() as Record<string, unknown>[];
   const begin = (device = "laptop-1", ip = "203.0.113.1") =>
     send("/p/p/loginstart", { json: { device }, ip });
-  const open = async (): Promise<Jar & { page: Reply }> => {
-    const page = await send("/device");
+  const open = async (cookie?: string): Promise<Jar & { page: Reply }> => {
+    const page = await send("/device", cookie === undefined ? {} : { cookie });
     const csrf =
       /__Host-forge_device=([^;]+)/.exec(
         page.headers.get("set-cookie") ?? "",
@@ -205,17 +205,30 @@ function fixture(
   };
   const preview = (code: string, jar: Jar, ip = "203.0.113.1") =>
     send("/device", { form: { csrf: jar.csrf, code }, cookie: jar.cookie, ip });
-  const decide = (
+  const ticketFor = (shown: Reply, action: "approve" | "deny") =>
+    new RegExp(
+      `action="/device/${action}"><input type="hidden" name="csrf" value="[^"]*"><input type="hidden" name="ticket" value="([^"]+)"`,
+    ).exec(shown.text)?.[1] ?? "";
+  const submit = (action: "approve" | "deny", ticket: string, jar: Jar) =>
+    send(`/device/${action}`, {
+      form: { csrf: jar.csrf, ticket },
+      cookie: jar.cookie,
+    });
+  // A decision follows its preview, as in the browser; a refused preview is the answer.
+  const decide = async (
     action: "approve" | "deny",
     code: string,
     jar: Jar,
     ip = "203.0.113.1",
-  ) =>
-    send(`/device/${action}`, {
-      form: { csrf: jar.csrf, code },
-      cookie: jar.cookie,
-      ip,
-    });
+  ) => {
+    const shown = await preview(code, jar, ip);
+    return shown.status === 200
+      ? submit(action, ticketFor(shown, action), jar)
+      : shown;
+  };
+  // The cookie a decision sets for its own callback, as the browser would send it back.
+  const bindOf = (reply: Reply) =>
+    (reply.headers.get("set-cookie") ?? "").split(";")[0]!;
   const stateOf = (reply: Reply) =>
     new URL(
       reply.headers.get("location") ?? "https://none.example/",
@@ -235,12 +248,14 @@ function fixture(
     const jar = await open();
     const decision = await decide(action, login.user_code, jar, ip);
     const state = stateOf(decision);
+    const bind = bindOf(decision);
     return {
       login,
       jar,
       decision,
       state,
-      done: () => callback(state, proof, jar.cookie),
+      bind,
+      done: () => callback(state, proof, bind),
     };
   }
   const poll = (device_code: string) =>
@@ -252,6 +267,9 @@ function fixture(
     open,
     preview,
     decide,
+    submit,
+    ticketFor,
+    bindOf,
     stateOf,
     callback,
     through,
@@ -558,7 +576,7 @@ test("another Clerk user cannot approve or deny, and the challenge stays pending
   const flow = await f.through("approve", "other-subject");
   expect((await flow.done()).status).toBe(403);
   const again = await f.decide("approve", flow.login.user_code, flow.jar);
-  const owner = await f.callback(f.stateOf(again), "owner", flow.jar.cookie);
+  const owner = await f.callback(f.stateOf(again), "owner", f.bindOf(again));
   expect([owner.status, outcome(owner)]).toEqual([200, "approved"]);
 }, 30_000);
 
@@ -601,7 +619,11 @@ test("a callback state is used once, only by its own browser, before its deadlin
   const wrong = await f.through("approve", "owner");
   expect(
     refused(
-      await f.callback(wrong.state, "owner", `${COOKIE}=${"x".repeat(43)}`),
+      await f.callback(
+        wrong.state,
+        "owner",
+        `${wrong.bind.split("=")[0]}=${"x".repeat(43)}`,
+      ),
     ),
   ).toEqual([400, "access_denied"]);
   expect(refused(await wrong.done())).toEqual([400, "access_denied"]);
@@ -638,16 +660,16 @@ test("the sixth failed decision by the owner within a minute is rate limited", a
   for (let n = 0; n < 6; n++)
     logins.push(body(await f.begin("laptop-1", ip(n))));
   f.advance(5_000);
-  const states: string[] = [];
+  const states: Reply[] = [];
   for (const [n, login] of logins.entries())
-    states.push(
-      f.stateOf(await f.decide("approve", login.user_code, jar, ip(n))),
-    );
+    states.push(await f.decide("approve", login.user_code, jar, ip(n)));
   f.advance(596_000);
   await f.begin("laptop-2", ip(9));
   const results: Reply[] = [];
-  for (const state of states)
-    results.push(await f.callback(state, "owner", jar.cookie));
+  for (const decision of states)
+    results.push(
+      await f.callback(f.stateOf(decision), "owner", f.bindOf(decision)),
+    );
   expect(results.map((reply) => [reply.status, outcome(reply)])).toEqual([
     ...Array.from({ length: 5 }, () => [400, "invalid_user_code"]),
     [429, "rate_limited"],
@@ -695,4 +717,111 @@ test("a device state never reaches the OAuth callback, and an OAuth state never 
     reachedBefore,
     verified,
   ]);
+}, 30_000);
+
+test("a stolen or planted page cookie cannot finish a redirect for another browser", async () => {
+  const f = fixture();
+  await f.provision();
+  const owner = await f.open();
+  const attacker = body(await f.begin("evil-box"));
+  // The attacker holds the owner's page cookie and runs the whole page flow with their own code.
+  const shown = await f.preview(attacker.user_code, owner);
+  expect(shown.status).toBe(200);
+  const ticket = f.ticketFor(shown, "approve");
+  for (const [action, proof] of [
+    ["deny", ticket],
+    ["approve", "x".repeat(43)],
+    ["approve", ""],
+  ] as const) {
+    const refused = await f.submit(action, proof, owner);
+    expect([refused.status, outcome(refused)]).toEqual([
+      400,
+      "invalid_request",
+    ]);
+  }
+  expect(f.seen.begun).toEqual([]);
+  const decision = await f.submit("approve", ticket, owner);
+  expect(decision.status).toBe(302);
+  const set = decision.headers.get("set-cookie")!;
+  expect(set.startsWith("__Host-forge_device_")).toBe(true);
+  for (const part of ["Secure", "HttpOnly", "SameSite=Lax", "Path=/"])
+    expect(set).toContain(part);
+  expect((await f.submit("approve", ticket, owner)).status).toBe(400);
+  // The owner's browser follows the Clerk link with only the page cookie it already had.
+  const phished = await f.callback(f.stateOf(decision), "owner", owner.cookie);
+  expect([phished.status, outcome(phished)]).toEqual([400, "access_denied"]);
+  expect(f.seen.verified).toEqual([]);
+  expect(await f.pending(attacker)).toEqual([400, "authorization_pending"]);
+  expect(f.tokens()).toBe(1);
+}, 30_000);
+
+test("overlapping previews cannot evaluate more guesses than the budget allows", async () => {
+  const f = fixture();
+  await f.provision();
+  const login = body(await f.begin());
+  const jar = await f.open();
+  const real = crypto.subtle.sign.bind(crypto.subtle) as (
+    ...args: unknown[]
+  ) => Promise<ArrayBuffer>;
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  // Every code check waits at its HMAC until all eight requests are in flight.
+  const spy = spyOn(crypto.subtle, "sign").mockImplementation(
+    (...args: unknown[]) => gate.then(() => real(...args)),
+  );
+  try {
+    const runs = Array.from({ length: 8 }, () => f.preview("BBBB-BBBB", jar));
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    release();
+    const replies = await Promise.all(runs);
+    expect(replies.filter((reply) => reply.status === 400)).toHaveLength(5);
+    expect(replies.filter((reply) => reply.status === 429)).toHaveLength(3);
+  } finally {
+    spy.mockRestore();
+  }
+  expect((await f.preview(login.user_code, jar)).status).toBe(429);
+}, 30_000);
+
+test("repeating a decision replaces the old one, and one challenge holds only a few records", async () => {
+  const f = fixture();
+  await f.provision();
+  const login = body(await f.begin());
+  const jar = await f.open();
+  const held = () =>
+    (
+      JSON.parse(
+        String(f.rows("SELECT state FROM domain_cloud_login")[0]!.state),
+      ) as { browser: unknown[] }
+    ).browser.length;
+  const decisions: Reply[] = [];
+  for (let n = 0; n < 4; n++)
+    decisions.push(await f.decide("approve", login.user_code, jar));
+  expect(held()).toBe(1);
+  const old = await f.callback(
+    f.stateOf(decisions[0]!),
+    "owner",
+    f.bindOf(decisions[0]!),
+  );
+  expect([old.status, outcome(old)]).toEqual([400, "access_denied"]);
+  for (let n = 0; n < 5; n++) await f.preview(login.user_code, await f.open());
+  expect(held()).toBe(3);
+}, 30_000);
+
+test("a second tab keeps the page cookie, so the first tab still completes", async () => {
+  const f = fixture();
+  await f.provision();
+  const a = body(await f.begin("laptop-1"));
+  const b = body(await f.begin("laptop-2", "203.0.113.2"));
+  const tab1 = await f.open();
+  const tab2 = await f.open(tab1.cookie);
+  expect(tab2.csrf).toBe(tab1.csrf);
+  const odd = await f.open(`${COOKIE}=short`);
+  expect(odd.csrf).toMatch(secret);
+  const first = await f.decide("approve", a.user_code, tab1);
+  const second = await f.decide("approve", b.user_code, tab2);
+  const one = await f.callback(f.stateOf(first), "owner", f.bindOf(first));
+  const two = await f.callback(f.stateOf(second), "owner", f.bindOf(second));
+  expect([one.status, two.status]).toEqual([200, 200]);
 }, 30_000);
