@@ -96,6 +96,27 @@ export function parseBody(body: unknown, max: number): Json {
   return parsed.value;
 }
 
+/** The stored id for a caller's `<prefix>-<digits>`, once its prefix is current or `minted` here. */
+export function storedId(
+  id: string,
+  prefix: string,
+  minted: (given: string) => boolean,
+): string {
+  const match = QUALIFIED.exec(id);
+  if (match === null) throw fail("INPUT_INVALID", "Invalid issue id");
+  const given = match[1]!.toLowerCase();
+  if (given !== prefix && !minted(given))
+    throw fail("INPUT_INVALID", "Unknown issue id prefix");
+  return `work-${match[2]}`;
+}
+
+/** A lease that holds its issue at `now`: not released and not yet expired. */
+export const holds = (lease: Json | undefined, now: number): boolean =>
+  lease !== undefined &&
+  lease.releasedAt === undefined &&
+  typeof lease.expiresAt === "string" &&
+  Date.parse(lease.expiresAt) > now;
+
 /**
  * The issue `input` names, shaped as the local issue.show shows it: stored prefix and close reason
  * dropped, ids carrying `prefix`. A lease appears only while live at `now`, and only from state_leases.
@@ -109,13 +130,18 @@ export function readIssue(
   configured(prefix);
   if (schemas().validate(ItemRef.$ref, input).length > 0)
     throw fail("INPUT_INVALID", "input must be { id } with a valid issue id");
-  const match = QUALIFIED.exec((input as { id: string }).id);
-  if (match === null) throw fail("INPUT_INVALID", "Invalid issue id");
-  const given = match[1]!.toLowerCase();
-  const minted = [NAMESPACE, "issue:", "issue;", MAX_RECORD_BYTES, given];
-  if (given !== prefix && views.records?.get(MINTED, minted) === undefined)
-    throw fail("INPUT_INVALID", "Unknown issue id prefix");
-  const id = `work-${match[2]}`;
+  const id = storedId(
+    (input as { id: string }).id,
+    prefix,
+    (given) =>
+      views.records?.get(MINTED, [
+        NAMESPACE,
+        "issue:",
+        "issue;",
+        MAX_RECORD_BYTES,
+        given,
+      ]) !== undefined,
+  );
   const record = load(views.records, RECORD, MAX_RECORD_BYTES, `issue:${id}`);
   if (record === undefined) throw fail("NOT_FOUND", "Issue was not found");
   if (
@@ -175,11 +201,6 @@ export function shownItem(
     lease: _forged,
     ...rest
   } = value;
-  const live =
-    lease !== undefined &&
-    lease.releasedAt === undefined &&
-    typeof lease.expiresAt === "string" &&
-    Date.parse(lease.expiresAt) > now;
   const item = {
     ...rest,
     id: shown(id),
@@ -189,7 +210,7 @@ export function shownItem(
       : { parent: shown(value.parent as string) }),
     updatedAt: record.updatedAt,
     revision: record.revision,
-    ...(live ? { lease } : {}),
+    ...(holds(lease, now) ? { lease } : {}),
   };
   // Everything projected above, including the wrapper's revision and updatedAt and the live lease.
   if (schemas().validate(TrackerItemSchema.$ref, item).length > 0)

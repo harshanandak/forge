@@ -1,13 +1,14 @@
 // Lists work issues from the state tables and writes nothing. Reads go through the same read-only
 // views and fixed statements as show. The scan is bounded before any body is loaded: a project over
 // the row or byte budget is refused, never read partly, and never silently shortened. Parity with
-// the local list holds within these limits. Only `limit` is supported so far: any other filter
-// is refused, never ignored.
+// the local list holds within these limits. Every row is checked before any filter, limit or lease
+// read; a lease is read only for an issue that is still a candidate.
 import manifest from "../../src/blocks/work/forge.block.json" with { type: "json" };
 import type { TrackerItem } from "../../src/generated/types.ts";
 import {
   configured,
   fail,
+  holds,
   invalid,
   leaseOf,
   MAX_RECORD_BYTES,
@@ -16,8 +17,29 @@ import {
   SCAN,
   schemas,
   shownItem,
+  storedId,
   type IssueViews,
 } from "./issue-read.ts";
+
+type Input = {
+  parent?: string;
+  kind?: string;
+  label?: string[];
+  labels?: string[];
+  status?: string;
+  createdSince?: string;
+  ready?: boolean;
+  limit?: number;
+};
+type Stored = {
+  status: string;
+  kind?: string;
+  parent?: string;
+  labels: string[];
+  createdAt: string;
+  dependsOn: string[];
+  prefix?: unknown;
+};
 
 export const MAX_SCAN_ROWS = 10_000;
 export const MAX_SCAN_BYTES = 8 * 1024 * 1024;
@@ -36,9 +58,7 @@ export function listIssues(
   configured(prefix);
   if (schemas().validate("#", input).length > 0)
     throw fail("INPUT_INVALID", "Invalid issue list input");
-  const { limit = 1000, ...filters } = input as { limit?: number };
-  if (Object.keys(filters).length > 0)
-    throw fail("INPUT_INVALID", "Filter not yet supported in cloud");
+  const { limit = 1000, label = [], labels = [], ...by } = input as Input;
   const range = ["forge/work", "issue:", "issue;", MAX_SCAN_ROWS + 1];
   const sizes = views.records?.all(SCAN, range) ?? [];
   if (
@@ -55,12 +75,39 @@ export function listIssues(
   records.forEach((record, at) =>
     shownItem(record, ids[at]!, undefined, now, prefix),
   );
+  const value = (at: number) => records[at]!.value as Stored;
+  const statusOf = new Map(ids.map((id, at) => [id, value(at).status]));
+  const parent =
+    by.parent === undefined || by.parent === "none"
+      ? undefined
+      : storedId(by.parent, prefix, (given) =>
+          records.some((_, at) => (value(at).prefix ?? "work") === given),
+        );
+  const since = by.createdSince === undefined ? 0 : Date.parse(by.createdSince);
+  const leases = new Map<number, ReturnType<typeof leaseOf>>();
+  const lease = (at: number) => {
+    if (!leases.has(at)) leases.set(at, leaseOf(views, ids[at]!));
+    return leases.get(at);
+  };
+  const wanted = [...labels, ...label];
+  const picked = records.flatMap((_, at) => {
+    const v = value(at);
+    const ok =
+      (by.parent === undefined || v.parent === parent) &&
+      (by.kind === undefined || v.kind === by.kind) &&
+      wanted.every((name) => v.labels.includes(name)) &&
+      (by.status === undefined || v.status === by.status) &&
+      (by.createdSince === undefined || Date.parse(v.createdAt) >= since) &&
+      (by.ready !== true ||
+        (v.status === "open" &&
+          v.dependsOn.every((dep) => statusOf.get(dep) === "closed") &&
+          !holds(lease(at), now)));
+    return ok ? [at] : [];
+  });
   return {
-    items: records
+    items: picked
       .slice(0, limit)
-      .map((record, at) =>
-        shownItem(record, ids[at]!, leaseOf(views, ids[at]!), now, prefix),
-      ),
-    truncated: records.length > limit,
+      .map((at) => shownItem(records[at]!, ids[at]!, lease(at), now, prefix)),
+    truncated: picked.length > limit,
   };
 }
