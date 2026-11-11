@@ -1056,121 +1056,78 @@ const replaced = (f: F, value: unknown, over: object = {}) => {
 };
 const bad = { title: marker };
 
+type Outcome = [number, string | undefined, number, number, string?];
+const drop = (table: string) => (f: F) => f.db.run(`DROP TABLE ${table}`);
+const elsewhere = (f: F, key: string, value: unknown) =>
+  f.put(value, {}, key, "forge/other");
+
 test("a missing table, a mode record, a mismatched row or a foreign namespace is refused as mapped, reading only what it needs", async () => {
-  const input = call.input;
-  const rows: [
-    string,
-    (f: F) => void,
-    object,
-    [number, string?, number?],
-    number,
-    string?,
-  ][] = [
-    [
-      "no leases table",
-      (f) => f.db.run("DROP TABLE state_leases"),
-      input,
-      [200],
-      3,
-    ],
-    [
-      "no records table",
-      (f) => f.db.run("DROP TABLE state_records"),
-      input,
-      [404, "NOT_FOUND", 3],
-      2,
-      gone,
-    ],
+  // status, code, exit, how many of the token, records and leases tables are probed, message
+  const shows: Outcome = [200, undefined, 0, 3];
+  const missing: Outcome = [404, "NOT_FOUND", 3, 2, gone];
+  const unknown: Outcome = [
+    400,
+    "INPUT_INVALID",
+    6,
+    2,
+    "Unknown issue id prefix",
+  ];
+  const mode: Outcome = [400, "INPUT_INVALID", 6, 2, unproven];
+  const corrupt: Outcome = [500, "INTERNAL", 1, 2, notValid];
+  const rows: [string, (f: F) => void, Outcome, object?][] = [
+    ["no leases table", drop("state_leases"), shows],
+    ["no records table", drop("state_records"), missing],
     [
       "no records table, alias",
-      (f) => f.db.run("DROP TABLE state_records"),
+      drop("state_records"),
+      unknown,
       { id: "acme-1" },
-      [400, "INPUT_INVALID", 6],
-      2,
-      "Unknown issue id prefix",
     ],
-    [
-      "slots only",
-      (f) => f.put({ count: 2 }, {}, "slots:work-1"),
-      input,
-      [400, "INPUT_INVALID", 6],
-      2,
-      unproven,
-    ],
-    [
-      "participant only",
-      (f) => f.put({}, {}, "participant:work-1:1"),
-      input,
-      [400, "INPUT_INVALID", 6],
-      2,
-      unproven,
-    ],
+    ["slots only", (f) => f.put({ count: 2 }, {}, "slots:work-1"), mode],
+    ["participant only", (f) => f.put({}, {}, "participant:work-1:1"), mode],
     [
       "record key mismatch",
       (f) => replaced(f, stored(bad), { key: "issue:work-2" }),
-      input,
-      [500, "INTERNAL", 1],
-      2,
-      notValid,
+      corrupt,
     ],
     [
       "record namespace mismatch",
       (f) => replaced(f, stored(bad), { namespace: "forge/other" }),
-      input,
-      [500, "INTERNAL", 1],
-      2,
-      notValid,
+      corrupt,
     ],
     [
       "record id mismatch",
       (f) => replaced(f, stored({ id: "work-2", ...bad })),
-      input,
-      [500, "INTERNAL", 1],
-      2,
-      notValid,
+      corrupt,
     ],
     [
       "lease subject mismatch",
       (f) => f.lease({ subject: "issue:work-9" }),
-      input,
-      [500, "INTERNAL", 1],
-      3,
-      notValid,
+      [500, "INTERNAL", 1, 3, notValid],
     ],
     [
       "issue only in another namespace",
       (f) => {
         f.db.run("DELETE FROM state_records");
-        f.put(stored(bad), {}, "issue:work-1", "forge/other");
+        elsewhere(f, "issue:work-1", stored(bad));
       },
-      input,
-      [404, "NOT_FOUND", 3],
-      2,
-      gone,
+      missing,
     ],
     [
       "mode record only in another namespace",
-      (f) => f.put({ count: 2 }, {}, "slots:work-1", "forge/other"),
-      input,
-      [200],
-      3,
+      (f) => elsewhere(f, "slots:work-1", { count: 2 }),
+      shows,
     ],
   ];
-  for (const [
-    name,
-    setup,
-    body,
-    [status, code, exit = 0],
-    probes,
-    message,
-  ] of rows) {
+  for (const [name, setup, outcome, input = call.input] of rows) {
+    const [status, code, exit, probes, message] = outcome;
     const f = fixture();
     const token = await f.device();
     f.tables();
     f.put(stored(bad));
     setup(f);
     const before = f.snapshot();
-    const got = await f.send({ ...call, input: body }, { token });
+    const got = await f.send({ ...call, input }, { token });
     expect([name, got.status, got.code, got.exit]).toEqual([
       name,
       status,
