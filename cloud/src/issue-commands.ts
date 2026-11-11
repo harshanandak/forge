@@ -1,6 +1,6 @@
 // POST /p/<project>/command: typed issue commands at the project authority.
 // This slice checks the envelope and the context, runs issue.show, issue.list and issue.ready as reads,
-// runs issue.create as the one write and refuses every other command as not yet supported. Everything the caller sends is
+// runs issue.create and issue.comment as writes and refuses every other command as not yet supported. Everything the caller sends is
 // untrusted. The envelope and context are closed shapes, the device comes from the token and the
 // project from the server, and no caller value becomes an SQL identifier, a namespace or a key.
 import manifest from "../../src/blocks/work/forge.block.json" with { type: "json" };
@@ -25,6 +25,7 @@ import {
   RECORD_READS,
   type IssueViews,
 } from "./issue-read.ts";
+import { commentIssue } from "./issue-comment.ts";
 import { createIssue } from "./issue-create.ts";
 import { listIssues } from "./issue-list.ts";
 import { PROJECT_NAME } from "./project-name.ts";
@@ -199,7 +200,7 @@ function lazyViews(storage: DurableStorage): IssueViews {
 }
 
 /**
- * Prepares a command and runs it. Only issue.create, issue.show, issue.list and issue.ready run: each returns
+ * Prepares a command and runs it. Only issue.create, issue.comment, issue.show, issue.list and issue.ready run: each returns
  * the response, serialized once and measured in UTF-8 bytes. Every other operation is refused. Throws ForgeFailure when refused,
  * and runs no await, so the caller's token check stays current until the response is built.
  */
@@ -213,19 +214,31 @@ export function runCommand(text: string, host: CommandRun): Response {
         : op === "issue.ready"
           ? readyIssues
           : undefined;
-  if (read === undefined && op !== "issue.create")
-    throw fail("INPUT_INVALID", "Commands are not yet supported in cloud");
-  const result =
-    read === undefined
-      ? createIssue(host.open().db, host.open().owner, {
-          requestId,
-          input,
-          context,
-          device: host.device,
-          prefix: host.idPrefix,
-          recheck: host.recheck,
-        })
-      : read(lazyViews(host.storage), input, host.now, host.idPrefix as string);
+  const write =
+    op === "issue.create"
+      ? createIssue
+      : op === "issue.comment"
+        ? commentIssue
+        : undefined;
+  let result: unknown;
+  if (write !== undefined) {
+    const { db, owner } = host.open();
+    result = write(db, owner, {
+      requestId,
+      input,
+      context,
+      device: host.device,
+      prefix: host.idPrefix,
+      recheck: host.recheck,
+    });
+  } else if (read !== undefined)
+    result = read(
+      lazyViews(host.storage),
+      input,
+      host.now,
+      host.idPrefix as string,
+    );
+  else throw fail("INPUT_INVALID", "Commands are not yet supported in cloud");
   const body = JSON.stringify({
     ok: true,
     op,
