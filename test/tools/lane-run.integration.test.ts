@@ -2485,6 +2485,17 @@ test("list reports per-lane durable role, round, verdict and reply history", () 
       },
     ],
   });
+  const file = join(f.main, ".git/forge-lanes.json");
+  const rows = JSON.parse(readFileSync(file, "utf8")) as object[];
+  writeFileSync(
+    file,
+    JSON.stringify([{ ...rows[0], attempt: "attempt-1" }, ...rows]),
+  );
+  expect(
+    (f.run(["list"]).output as unknown as { lanes: object[] }).lanes,
+  ).toHaveLength(1);
+  expect(f.run(["tier", "one"]).code).toBe(0);
+  expect(f.run(["run", "one", "--role", "builder"]).code).toBe(0);
 });
 
 function unknownRun(

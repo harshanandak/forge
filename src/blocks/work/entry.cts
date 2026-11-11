@@ -4020,13 +4020,13 @@ const operations: Operations<WorkOperations> = {
     const issue = item(state, get(state, issueId, input.id), ids);
     if (issue.status === "closed")
       fail("INPUT_CONFLICT", `Issue ${issue.id} is closed`);
+    let attemptState: LeaseStateClient | undefined;
     const fence = () => {
       if (input.attempt === undefined) return;
       const record = state.get(`attempt:${issueId}:${input.attempt}`);
       if (!record) fail("NOT_FOUND", "No such attempt on this issue");
-      state
-        .withOwnLease(key(record.key))
-        .putMany([], { subject: key(record.key) });
+      attemptState ??= state.withOwnLease(key(record.key));
+      attemptState.putMany([], { subject: key(record.key) });
     };
     fence();
     const files = laneFiles(services);
@@ -4177,6 +4177,14 @@ const operations: Operations<WorkOperations> = {
         input.attempt === undefined ? issueId : `${issueId}:${input.attempt}`;
       const existing = lanes.find((lane) => laneIdentity(lane) === laneId);
       const worktree = `${slash(trees[0]!.path)}/.worktrees/${issue.id}${input.attempt === undefined ? "" : `-${input.attempt}`}`;
+      if (
+        saved.lanes.some(
+          (lane) =>
+            pathKey(lane.worktree) === pathKey(worktree) &&
+            laneIdentity(lane) !== laneId,
+        )
+      )
+        fail("INPUT_CONFLICT", "Worktree path is recorded for another lane");
       const briefFile = `${slash(files.root)}/${relativeBrief}`;
       if (existing) {
         if (
@@ -4223,6 +4231,7 @@ const operations: Operations<WorkOperations> = {
         brief: briefFile,
         base: adopted ? await run(["-C", worktree, "rev-parse", "HEAD"]) : base,
       };
+      fence();
       try {
         files.write(
           registryPath,

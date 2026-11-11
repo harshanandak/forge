@@ -17,7 +17,6 @@ type Lane = {
   attempt?: string;
   branch: string;
   worktree: string;
-  brief: string;
 };
 type Reply = {
   ok: boolean;
@@ -63,6 +62,8 @@ function good(op: string, input: object = {}, session = "A") {
   expect(r.ok, JSON.stringify(r)).toBe(true);
   return r.result;
 }
+const branchAt = (cwd: string) => git(["branch", "--show-current"], cwd);
+const lanesFor = (id: string) => registry().filter((lane) => lane.issue === id);
 const registry = () =>
   JSON.parse(
     readFileSync(join(repo, ".git/forge-lanes.json"), "utf8"),
@@ -129,14 +130,8 @@ beforeAll(() => {
   mkdirSync(join(repo, ".worktrees/briefs"), { recursive: true });
   writeFileSync(
     join(repo, brief),
-    [
-      "Goal",
-      "Acceptance test",
-      "Files",
-      "Forbidden actions",
-      "Stop point",
-      "Prior art",
-    ]
+    "Goal|Acceptance test|Files|Forbidden actions|Stop point|Prior art"
+      .split("|")
       .map((name) => `## ${name}\nConcrete content.\n`)
       .join("\n"),
   );
@@ -147,15 +142,37 @@ beforeAll(() => {
 }, 30000);
 afterAll(() => rmSync(root, { recursive: true, force: true }), 30000);
 
+test("a prefix alias cannot adopt an attempt checkout as a legacy lane", () => {
+  const id = team();
+  good("lane.attempt", args(id, 1), "B");
+  const config = join(repo, ".forge/config.yaml"),
+    previous = readFileSync(config, "utf8");
+  try {
+    writeFileSync(
+      config,
+      previous.replace("idPrefix: sample", `idPrefix: ${id}-attempt`),
+    );
+    const before = snapshot();
+    expect(
+      call("lane.start", {
+        id: `${id}-attempt-1`,
+        branch: args(id, 1).branch,
+        brief,
+      }).error?.code,
+    ).toBe("INPUT_CONFLICT");
+    expect(snapshot()).toEqual(before);
+  } finally {
+    writeFileSync(config, previous);
+  }
+}, 30000);
+
 test("attempt holders create separate lanes, retry once and count against the shared cap", () => {
   const id = team();
   const before = existsSync(join(repo, ".git/forge-lanes.json"))
     ? registry().length
     : 0;
-  for (const [n, session] of [
-    [1, "B"],
-    [2, "C"],
-  ] as const) {
+  for (const [index, session] of ["B", "C"].entries()) {
+    const n = index + 1;
     const lane = good("lane.attempt", args(id, n), session);
     expect(lane).toMatchObject({
       issue: id,
@@ -163,17 +180,14 @@ test("attempt holders create separate lanes, retry once and count against the sh
       branch: args(id, n).branch,
     });
     expect(realpathSync(String(lane.worktree))).toBe(realpathSync(path(id, n)));
-    expect(git(["branch", "--show-current"], path(id, n))).toBe(
-      args(id, n).branch,
-    );
+    expect(branchAt(path(id, n))).toBe(args(id, n).branch);
     expect(good("lane.attempt", args(id, n), session)).toEqual(lane);
   }
   expect(registry()).toHaveLength(before + 2);
-  expect(
-    registry()
-      .filter((lane) => lane.issue === id)
-      .map((lane) => lane.attempt),
-  ).toEqual(["attempt-1", "attempt-2"]);
+  expect(lanesFor(id).map((lane) => lane.attempt)).toEqual([
+    "attempt-1",
+    "attempt-2",
+  ]);
   cap(registry().length);
   const next = String(good("issue.create", { title: "Capped" }).id);
   expect(
@@ -222,16 +236,14 @@ test("a failed registry write preserves work and retries adopt only their own ch
   expect(good("lane.attempt", args(id, 1), "B")).toEqual(adopted);
   const { lease: _lease, ...record } = adopted;
   expect([...before, record]).toEqual(registry());
-  expect(git(["branch", "--show-current"], String(other.worktree))).toBe(
-    other.branch as string,
-  );
+  expect(branchAt(String(other.worktree))).toBe(other.branch as string);
 }, 30000);
 
 test("adoption refuses a checkout owned by a different branch", () => {
   const id = team();
   git(["worktree", "add", "-b", "feat/foreign", path(id, 1), "HEAD"]);
   refused("INPUT_CONFLICT", args(id, 1));
-  expect(git(["branch", "--show-current"], path(id, 1))).toBe("feat/foreign");
+  expect(branchAt(path(id, 1))).toBe("feat/foreign");
 }, 30000);
 
 test("legacy show, start, close and release preserve both attempt lanes and status rows", () => {
@@ -263,22 +275,17 @@ test("legacy show, start, close and release preserve both attempt lanes and stat
   const legacyRow = rows.find((row) => row.attempt === undefined);
   expect(legacyRow).toBeDefined();
   expect(legacyRow).toEqual(previous);
-  const attempts = registry().filter(
-    (lane) => lane.issue === id && lane.attempt,
-  );
+  const attempts = lanesFor(id).filter((lane) => lane.attempt);
   expect(call("lane.release", { id }).error?.code).toBe("INPUT_CONFLICT");
   good("lane.close", { id, noPr: true, dropped: "Fixture finished" });
-  expect(registry().filter((lane) => lane.issue === id)).toEqual(attempts);
+  expect(lanesFor(id)).toEqual(attempts);
   for (const lane of attempts)
-    expect(git(["branch", "--show-current"], lane.worktree)).toBe(lane.branch);
+    expect(branchAt(lane.worktree)).toBe(lane.branch);
   expect(existsSync(String(legacy.worktree))).toBe(false);
   // A hand-closed legacy lane can be released without touching attempt lanes.
   const next = team();
-  for (const [n, session] of [
-    [1, "B"],
-    [2, "C"],
-  ] as const)
-    good("lane.attempt", args(next, n), session);
+  for (const [n, session] of ["B", "C"].entries())
+    good("lane.attempt", args(next, n + 1), session);
   const release = good("lane.start", {
     id: next,
     branch: `feat/${next}-legacy`,
@@ -286,10 +293,9 @@ test("legacy show, start, close and release preserve both attempt lanes and stat
   });
   good("issue.close", { id: next, withoutReceipt: "Fixture hand closed" });
   good("issue.release", { id: next });
-  const kept = registry().filter((lane) => lane.issue === next && lane.attempt);
+  const kept = lanesFor(next).filter((lane) => lane.attempt);
   good("lane.release", { id: next });
-  expect(registry().filter((lane) => lane.issue === next)).toEqual(kept);
+  expect(lanesFor(next)).toEqual(kept);
   expect(existsSync(String(release.worktree))).toBe(false);
-  for (const lane of kept)
-    expect(git(["branch", "--show-current"], lane.worktree)).toBe(lane.branch);
+  for (const lane of kept) expect(branchAt(lane.worktree)).toBe(lane.branch);
 }, 30000);
