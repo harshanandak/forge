@@ -74,6 +74,9 @@ export type LeaseResult =
     };
 type Answer = { status: number; value: Record<string, unknown> };
 export interface CloudHttp {
+  /** The validated origin and project every request of this adapter goes to. */
+  readonly origin: string;
+  readonly project: string;
   loginStart(device: string, signal?: AbortSignal): Promise<StartResult>;
   loginPoll(deviceCode: string, signal?: AbortSignal): Promise<PollResult>;
   leaseWrite(
@@ -410,6 +413,8 @@ export function createCloudHttp(options: CloudHttpOptions): CloudHttp {
   }
 
   return {
+    origin,
+    project,
     async loginStart(device, signal) {
       const body = await post("loginstart", { device }, signal);
       if (body.ok !== true) return refusal(body);
