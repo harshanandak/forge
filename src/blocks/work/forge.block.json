@@ -319,6 +319,7 @@
       "context": "leased",
       "timeoutMs": 120000,
       "effects": [
+        "lane:write",
         "files:read",
         "files:write",
         "external:process",

@@ -59,6 +59,8 @@ export const nodeSensitive: Readonly<Record<string, string>> = {
     "Launches selected Node for autopilot guard coverage.",
   "test/blocks/l7-work/autopilot-restart.integration.test.ts":
     "Launches selected Node for autopilot restart coverage.",
+  "test/blocks/l7-work/lane-attempt.integration.test.ts":
+    "Launches selected Node for attempt lanes and registry recovery coverage.",
   "test/blocks/l7-work/lane-start.integration.test.ts":
     "Launches selected Node for lane start and registry recovery coverage.",
   "test/blocks/l7-work/lane-private-ref.integration.test.ts":

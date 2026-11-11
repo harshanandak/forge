@@ -1,5 +1,7 @@
 # Work block
 
+`forge lane attempt <issue-id> --attempt attempt-N --branch <branch> --brief <path>` requires your live attempt lease and starts a separate capped checkout beside the issue lane. Repeating the same arguments adopts a checkout preserved after a failed registry write. Legacy lane commands leave attempt lanes alone; attempt cleanup is deferred.
+
 `forge attempt slots <issue-id> --count N` lets the coordinator open 1-16 competing slots. Anyone can use `forge attempt reserve <issue-id> [--label text] [--ttl-seconds N]`; a live retry returns the same attempt. Each attempt has its own lease, separate from the issue claim. `forge attempt note <issue-id> --attempt attempt-N --body text` publishes under that lease, and `forge attempt release <issue-id> --attempt attempt-N` releases only the caller's attempt. `issue show` lists every attempt in order, including expired and released history. Full slots, stale leases and unauthorized writes refuse without changing state.
 
 Blocked claims require a trimmed reason (1 to 65,536 characters): CLAIM_BLOCKED refuses without writes; an override returns CLAIMED_BLOCKED and records its reason atomically with the lease.
