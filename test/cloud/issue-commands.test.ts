@@ -456,6 +456,7 @@ test("a malformed or hostile envelope or context is refused and never echoed", a
   for (const [name, body] of cases) {
     const got = await f.send(body, { token });
     refusal(name, got, [400, "INPUT_INVALID", 6]);
+    expect(got.json.error?.message).toContain("must be");
     expect(JSON.stringify(got.json)).not.toContain(marker);
   }
   expect(f.snapshot()).toBe(before);
