@@ -1,3 +1,4 @@
+import { acceptanceTable, noTableProblem } from "./lane-brief-fixture.ts";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
@@ -38,7 +39,11 @@ function git(args: string[], cwd = repo) {
   expect(r.status, r.stderr).toBe(0);
   return r.stdout.trim();
 }
-function call(op: string, input: object = {}, session = "A"): Reply {
+function call(
+  op: string,
+  input: object = {},
+  session = "A",
+): Reply & { exit: number } {
   const r = spawnSync(
     "node",
     [bin, ...op.split("."), "--input", JSON.stringify(input)],
@@ -55,7 +60,9 @@ function call(op: string, input: object = {}, session = "A"): Reply {
     },
   );
   expect(r.error).toBeUndefined();
-  return JSON.parse(r.stdout) as Reply;
+  return Object.assign(JSON.parse(r.stdout), { exit: r.status }) as Reply & {
+    exit: number;
+  };
 }
 function good(op: string, input: object = {}, session = "A") {
   const r = call(op, input, session);
@@ -132,7 +139,7 @@ beforeAll(() => {
     join(repo, brief),
     "Goal|Acceptance test|Files|Forbidden actions|Stop point|Prior art"
       .split("|")
-      .map((name) => `## ${name}\nConcrete content.\n`)
+      .map((name) => `## ${name}\nConcrete content.\n${acceptanceTable}\n`)
       .join("\n"),
   );
   writeFileSync(
@@ -301,4 +308,25 @@ test("legacy release preserves both attempt lanes after a hand close", () => {
   expect(lanesFor(next)).toEqual(kept);
   expect(existsSync(String(release.worktree))).toBe(false);
   for (const lane of kept) expect(branchAt(lane.worktree)).toBe(lane.branch);
+}, 30000);
+
+test("attempt lane rejects a no-table brief without creating anything", () => {
+  const id = team(),
+    file = ".worktrees/briefs/no-table.md";
+  writeFileSync(
+    join(repo, file),
+    readFileSync(join(repo, brief), "utf8").replaceAll(
+      acceptanceTable,
+      "Concrete prose only.",
+    ),
+  );
+  const before = snapshot();
+  const run = call("lane.attempt", args(id, 1, { brief: file }), "B");
+  expect(run).toMatchObject({
+    ok: false,
+    error: { code: "INPUT_INVALID", message: noTableProblem },
+  });
+  expect(run.exit).toBe(1);
+  expect(snapshot()).toEqual(before);
+  expect(existsSync(path(id, 1))).toBe(false);
 }, 30000);

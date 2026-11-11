@@ -1,3 +1,4 @@
+import { acceptanceTable } from "./lane-brief-fixture.ts";
 import { afterAll, beforeAll, expect, setDefaultTimeout, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { spawnSync } from "node:child_process";
@@ -107,7 +108,7 @@ beforeAll(() => {
       "Stop point",
       "Prior art",
     ]
-      .map((name) => `## ${name}\nConcrete content.\n`)
+      .map((name) => `## ${name}\nConcrete content.\n${acceptanceTable}\n`)
       .join("\n"),
   );
   // A fake gh that prints a scenario file, as the pr-state fixture does.

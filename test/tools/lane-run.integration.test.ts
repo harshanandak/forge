@@ -1,3 +1,4 @@
+import { acceptanceTable } from "../blocks/l7-work/lane-brief-fixture.ts";
 // [integration] Real git worktrees and subprocesses; Forge and Codex are PATH fixtures.
 import { afterAll, afterEach, expect, setDefaultTimeout } from "bun:test";
 import { test as runTest } from "bun:test";
@@ -331,7 +332,7 @@ process.stdout.write(result.slice(0,20));setTimeout(()=>{process.stdout.write(re
     sections
       .map(
         (section) =>
-          `## ${section}\nConcrete ${section.toLowerCase()} evidence.\n`,
+          `## ${section}\nConcrete ${section.toLowerCase()} evidence.\n${section === "Acceptance test" ? acceptanceTable : ""}\n`,
       )
       .join("\n"),
   );

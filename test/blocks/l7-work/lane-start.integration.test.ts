@@ -1,3 +1,4 @@
+import { acceptanceCases, acceptanceTable } from "./lane-brief-fixture.ts";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -30,7 +31,7 @@ const text = [
   "Stop point",
   "Prior art",
 ]
-  .map((name) => `## ${name}\nConcrete content.\n`)
+  .map((name) => `## ${name}\nConcrete content.\n${acceptanceTable}\n`)
   .join("\n");
 function git(args: string[], cwd = repo) {
   const result = spawnSync("git", args, {
@@ -55,7 +56,8 @@ function cli(args: string[], cwd = repo, session = "lane-acceptance") {
     timeout: 20000,
   });
   expect(result.error).toBeUndefined();
-  return JSON.parse(result.stdout) as {
+  return Object.assign(JSON.parse(result.stdout), { exit: result.status }) as {
+    exit: number;
     ok: boolean;
     result: Record<string, unknown>;
     error?: { code: string; message: string };
@@ -948,4 +950,60 @@ test("lane registry survives a reverted display prefix for show, start and close
     }),
   );
   expect(close(id, { dropped: "Prefix recovery" }).ok).toBe(true);
+}, 30000);
+
+for (const [name, body, problem] of acceptanceCases) {
+  test(`lane acceptance table refuses ${name} without creating anything`, () => {
+    configure(100);
+    const id = issue(),
+      file = `.worktrees/briefs/${id}.md`;
+    writeFileSync(join(repo, file), text.replaceAll(acceptanceTable, body));
+    const registry = join(repo, ".git/forge-lanes.json");
+    const before = existsSync(registry) ? readFileSync(registry, "utf8") : null;
+    const trees = git(["worktree", "list", "--porcelain"]);
+    const run = start(id, { brief: file });
+    expect(run).toMatchObject({
+      ok: false,
+      error: { code: "INPUT_INVALID", message: problem },
+    });
+    expect(run.exit).toBe(1);
+    expect(git(["branch", "--list", `feat/${id}`])).toBe("");
+    expect(git(["worktree", "list", "--porcelain"])).toBe(trees);
+    expect(existsSync(join(repo, ".worktrees", id))).toBe(false);
+    expect(existsSync(registry) ? readFileSync(registry, "utf8") : null).toBe(
+      before,
+    );
+  }, 30000);
+}
+
+test("lane acceptance table accepts reordered mixed headers and extra columns", () => {
+  configure(100);
+  const id = issue(),
+    file = `.worktrees/briefs/${id}.md`;
+  const table =
+    "| Extra | eLiGiBiLiTy | EXIT | Status | Input | Case | Unchanged |\n|---|:---|---:|---|---|---|---|\n| extra | lane | 0 | OK | brief | sample | existing |";
+  writeFileSync(join(repo, file), text.replaceAll(acceptanceTable, table));
+  const run = start(id, { brief: file });
+  expect(run.ok, JSON.stringify(run)).toBe(true);
+  expect(run.exit).toBe(0);
+  expect(existsSync(String(run.result.worktree))).toBe(true);
+  expect(call("lane.show", { id }).result).toMatchObject(run.result);
+}, 30000);
+
+test("stored lane briefs without tables keep show and next output", () => {
+  configure(100);
+  const id = issue(),
+    file = `.worktrees/briefs/${id}.md`;
+  writeFileSync(join(repo, file), text);
+  const started = start(id, { brief: file });
+  expect(started.ok, JSON.stringify(started)).toBe(true);
+  const shown = call("lane.show", { id });
+  const next = call("lane.next", { id });
+  expect(next.ok, JSON.stringify(next)).toBe(true);
+  writeFileSync(
+    join(repo, file),
+    text.replaceAll(acceptanceTable, "Concrete prose only."),
+  );
+  expect(call("lane.show", { id })).toEqual(shown);
+  expect(call("lane.next", { id })).toEqual(next);
 }, 30000);

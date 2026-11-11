@@ -1,3 +1,7 @@
+import {
+  acceptanceCases,
+  acceptanceTable,
+} from "../blocks/l7-work/lane-brief-fixture.ts";
 // [integration] Real git worktrees and subprocesses; Forge is a PATH fixture.
 import { afterEach, expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
@@ -119,7 +123,7 @@ function fixture() {
       .filter((s) => s !== omit)
       .map(
         (s) =>
-          `## ${s}\n${s === empty ? "" : `Concrete ${s.toLowerCase()} evidence.`}\n`,
+          `## ${s}\n${s === empty ? "" : `Concrete ${s.toLowerCase()} evidence.${s === "Acceptance test" ? "\n" + acceptanceTable : ""}`}\n`,
       )
       .join("\n");
   writeFileSync(brief, text());
@@ -251,3 +255,17 @@ test("retired start never calls Forge or publishes a registry", () => {
   expect(f.run(f.args("occupied")).code).toBe(2);
   expect(existsSync(f.registry)).toBe(false);
 });
+
+for (const [name, body, problem] of acceptanceCases) {
+  test(`tools acceptance table refuses ${name} with the same problem`, () => {
+    const f = fixture();
+    writeFileSync(f.brief, f.text().replace(acceptanceTable, body));
+    const result = f.run(f.args("no-table"));
+    expect(result.output.reasons).toEqual([problem]);
+    expect(result.code).toBe(2);
+    expect(result.output.verdict).toBe("refused");
+    expect(existsSync(f.registry)).toBe(false);
+    expect(f.git(["branch", "--list", "lane/no-table"])).toBe("");
+    expect(existsSync(join(f.main, ".worktrees/no-table"))).toBe(false);
+  }, 30000);
+}
