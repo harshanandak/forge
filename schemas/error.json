@@ -14,7 +14,12 @@
     "expected": {},
     "observed": {},
     "repair": { "type": "string", "maxLength": 2000 },
-    "hint": { "$ref": "#/$defs/UpgradeHint" },
+    "hint": {
+      "oneOf": [
+        { "$ref": "#/$defs/UpgradeHint" },
+        { "$ref": "#/$defs/TemplateHint" }
+      ]
+    },
     "suggest": {
       "type": "array",
       "maxItems": 8,
@@ -57,6 +62,15 @@
     }
   ],
   "$defs": {
+    "TemplateHint": {
+      "type": "object",
+      "required": ["template", "command"],
+      "properties": {
+        "template": { "type": "string", "minLength": 1 },
+        "command": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
     "UpgradeHint": {
       "type": "object",
       "required": ["running", "required", "cwd", "command"],
