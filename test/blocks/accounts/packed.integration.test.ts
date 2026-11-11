@@ -1263,3 +1263,159 @@ test("installed accounts: a named-login use still records the unpushed-commit an
     rmSync(root, { recursive: true, force: true });
   }
 }, 120_000);
+
+type ApplySnapshot = Record<string, string>;
+function interruptedApply() {
+  const fixture = setup();
+  const { home, cli, clone } = fixture;
+  const repo = clone("uninterrupted");
+  const approval = { quote: "yes", source: "t3:fixture/message:recovery" };
+  expect(cli(repo, "use", { login: "alice", approval }).ok).toBe(true);
+  const paths = [
+    "forge/accounts.gitconfig",
+    "forge/accounts.applied.json",
+    "config",
+  ];
+  const complete: ApplySnapshot = Object.fromEntries(
+    paths.map((path) => [path, readFileSync(join(repo, ".git", path), "utf8")]),
+  );
+  const device = join(home, ".forge/accounts");
+  const bindings = readFileSync(join(device, "bindings.json"), "utf8");
+  const approvedAudit =
+    readFileSync(join(device, "audit.jsonl"), "utf8")
+      .split("\n")
+      .filter((line) => line && (JSON.parse(line) as Audit).kind !== "apply")
+      .join("\n") + "\n";
+  function stage(name: string, count: number) {
+    writeFileSync(join(device, "bindings.json"), bindings);
+    writeFileSync(join(device, "audit.jsonl"), approvedAudit);
+    const path = clone(name);
+    mkdirSync(join(path, ".git/forge"), { recursive: true });
+    for (const file of paths.slice(0, count))
+      writeFileSync(join(path, ".git", file), complete[file]!);
+    return path;
+  }
+  function snapshot(path: string) {
+    return [
+      ...paths.map((file) => join(path, ".git", file)),
+      ...["accounts.json", "bindings.json", "audit.jsonl"].map((file) =>
+        join(device, file),
+      ),
+    ].map((file) => (existsSync(file) ? readFileSync(file, "utf8") : null));
+  }
+  return { ...fixture, approval, paths, complete, device, stage, snapshot };
+}
+
+for (const count of [1, 2, 3]) {
+  for (const verb of ["check", "plan", "use"]) {
+    test(`installed accounts: ${verb} completes interrupted apply after write ${count}`, () => {
+      const f = interruptedApply();
+      try {
+        const repo = f.stage("interrupted", count);
+        const input =
+          verb === "use" ? { login: "alice", approval: f.approval } : {};
+        const recovered = f.cli(repo, verb, input);
+        expect(recovered.status, JSON.stringify(recovered)).toBe(0);
+        expect(recovered.ok).toBe(true);
+        for (const path of f.paths)
+          expect(readFileSync(join(repo, ".git", path), "utf8")).toBe(
+            f.complete[path]!,
+          );
+        expect(
+          f.readAudit().filter((row) => row.kind === "apply"),
+        ).toHaveLength(1);
+        expect(f.cli(repo, verb, input).ok).toBe(true);
+        for (const path of f.paths)
+          expect(readFileSync(join(repo, ".git", path), "utf8")).toBe(
+            f.complete[path]!,
+          );
+        expect(
+          f.readAudit().filter((row) => row.kind === "apply"),
+        ).toHaveLength(1);
+      } finally {
+        rmSync(f.root, { recursive: true, force: true });
+      }
+    }, 120_000);
+  }
+}
+
+for (const kind of [
+  "changed include",
+  "unowned include",
+  "edited record",
+  "record only",
+  "no binding",
+  "declined binding",
+  "different config include",
+  "config only",
+]) {
+  test(`installed accounts: interrupted apply refuses ${kind} without changing files`, () => {
+    const f = interruptedApply();
+    try {
+      const repo = f.stage("refused", kind === "edited record" ? 2 : 1);
+      const owned = join(repo, ".git/forge/accounts.gitconfig");
+      const applied = join(repo, ".git/forge/accounts.applied.json");
+      const config = join(repo, ".git/config");
+      if (kind === "changed include")
+        writeFileSync(owned, f.complete[f.paths[0]!]! + "x");
+      if (kind === "unowned include")
+        writeFileSync(owned, "[user]\nname = other\n");
+      if (kind === "edited record")
+        writeFileSync(
+          applied,
+          f.complete[f.paths[1]!]!.replace(
+            '"includeHash":"',
+            '"includeHash":"x',
+          ),
+        );
+      if (kind === "record only") {
+        rmSync(owned);
+        writeFileSync(applied, f.complete[f.paths[1]!]!);
+      }
+      if (kind === "no binding" || kind === "declined binding")
+        writeFileSync(
+          join(f.device, "bindings.json"),
+          kind === "no binding"
+            ? "{}"
+            : JSON.stringify({
+                "github.com/alice/app": {
+                  declined: true,
+                  appliedFrom: "declined",
+                },
+              }),
+        );
+      if (kind === "different config include")
+        writeFileSync(
+          config,
+          f.complete.config!.replace(
+            'path = "forge/accounts.gitconfig"',
+            'path = "elsewhere.gitconfig"',
+          ),
+        );
+      if (kind === "config only") {
+        rmSync(owned);
+        writeFileSync(config, f.complete.config!);
+      }
+      const before = f.snapshot(repo);
+      for (const verb of ["check", "plan", "use"]) {
+        const result = f.cli(
+          repo,
+          verb,
+          verb === "use" ? { login: "alice", approval: f.approval } : {},
+        );
+        expect(result).toMatchObject({
+          status: 1,
+          ok: false,
+          error: {
+            code: "ACCOUNT_INTEGRITY",
+            message:
+              "Owned include has no matching device binding or clone record",
+          },
+        });
+        expect(f.snapshot(repo)).toEqual(before);
+      }
+    } finally {
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  }, 120_000);
+}
