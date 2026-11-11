@@ -5437,8 +5437,11 @@ const operations: Operations<WorkOperations> = {
     if (held) cleanupConflict(held);
     if (input.reopen !== undefined) {
       const record = get(state, id, input.id);
-      const reason = input.reopen.trim();
-      if (!reason || Array.from(reason).length > 65536)
+      const reopen = input.reopen.trim(),
+        reason = input.reason?.trim();
+      const invalid = (text: string) =>
+        !text || Array.from(text).length > 65536;
+      if (invalid(reopen) || (reason !== undefined && invalid(reason)))
         fail(
           "INPUT_INVALID",
           "reason must contain 1 to 65536 characters after trimming",
@@ -5448,12 +5451,41 @@ const operations: Operations<WorkOperations> = {
       const { receipt, withoutReceipt, closeReason, ...value } = stored(
         record,
       ) as Stored & { closeReason?: string };
+      const graph = dependencyGraph(state);
+      const blockers = blockedBy(graph, value).map((dependency) => ({
+        id: ids.shown(dependency),
+        ...holder(state, dependency),
+      }));
+      const current = live(state, id);
+      if (
+        blockers.length &&
+        reason === undefined &&
+        (!current || matches(current.holder, state.holder()))
+      )
+        fail(
+          "CLAIM_BLOCKED",
+          blockers
+            .map(
+              (b) =>
+                `${b.id} (${graph.read(ids.stored(b.id)) ? "open" : "missing"}) ${b.holder ? JSON.stringify(b.holder) : ""}`,
+            )
+            .join(", "),
+          {
+            observed: { blockers },
+            repair:
+              "Pass --reason with a non-empty explanation to claim blocked work.",
+          },
+        );
       const reservation = state.get(cleanupKey(id));
       const reserved = cleanupHeld(state, id);
       if (reserved) cleanupConflict(reserved);
       const readSet = [
         { key: record.key, expectRevision: record.revision },
         { key: cleanupKey(id), expectRevision: reservation?.revision ?? 0 },
+        ...value.dependsOn.map((dependency) => ({
+          key: key(dependency),
+          expectRevision: graph.read(dependency)?.revision ?? 0,
+        })),
       ];
       const prefix = `reopen:${id}:`;
       const entries = [
@@ -5468,29 +5500,39 @@ const operations: Operations<WorkOperations> = {
             ...(receipt === undefined ? {} : { receipt }),
             ...(withoutReceipt === undefined ? {} : { withoutReceipt }),
             ...(closeReason === undefined ? {} : { closeReason }),
-            reason,
+            reason: reopen,
+            ...(reason === undefined ? {} : { claimReason: reason }),
             holder: state.holder(),
           },
           expectRevision: 0,
         },
       ];
-      const current = live(state, id);
-      if (current && matches(current.holder, state.holder())) {
+      const own =
+        current && matches(current.holder, state.holder())
+          ? current
+          : undefined;
+      if (own) {
         state
           .withOwnLease(key(id))
           .putMany(entries, { subject: key(id), readSet });
-        return grant(state, id, current, ids);
       }
       const ttl =
         input.ttlSeconds ??
         (config as WorkConfig | undefined)?.claimTtlSeconds ??
         3600;
-      return grant(
-        state,
-        id,
-        state.acquire(key(id), ttl * 1000, { readSet, entries }),
-        ids,
-      );
+      const acquired =
+        own ??
+        state.acquire(key(id), ttl * 1000, {
+          readSet,
+          entries,
+          ...(reason === undefined ? {} : { metadata: { reason } }),
+        });
+      return {
+        ...grant(state, id, acquired, ids),
+        ...(blockers.length
+          ? { warnings: [{ code: "CLAIMED_BLOCKED", blockers }] }
+          : {}),
+      };
     }
     if (stored(get(state, id, input.id)).status === "closed")
       fail("INPUT_CONFLICT", "Closed issues cannot be claimed", {
