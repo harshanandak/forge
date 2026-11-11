@@ -7,6 +7,12 @@ import {
 import type { AuthorizationPort } from "../../../../src/ports/authorization.ts";
 import { createOAuthAdapter, type OAuthOptions } from "./index.ts";
 import { createWorker, type ProjectForward } from "../../worker.ts";
+import { Project as BaseProject } from "../../project.ts";
+import {
+  isDeviceCallback,
+  isDeviceRoute,
+  type DeviceBrowserOptions,
+} from "../../auth/device-browser.ts";
 import type { ClockPort } from "../../../../src/ports/clock.ts";
 import { OAuthConfigError, readOAuthConfig } from "./config.ts";
 import {
@@ -18,13 +24,42 @@ import {
   isLoopbackRedirect,
   REGISTRATION_LIMITS,
 } from "./registration.ts";
-import { productionOptions } from "./production.ts";
+import { clerkUpstream, productionOptions } from "./production.ts";
 import { bearer, sha256, wellFormed } from "../../tokens.ts";
+import { durableRedemption, type RedemptionNamespace } from "./redemption.ts";
 import { isLoginRoute } from "../../auth/project-login.ts";
 import { boundedOAuthRequest } from "./body.ts";
-export { Project } from "../../worker.ts";
 export { CodeRedemption } from "./redemption.ts";
 export { RegistrationLimiter } from "./registration.ts";
+/** The Clerk upstream and durable redemption the project object needs for owner approval; absent when unconfigured. */
+function deviceBrowser(env: unknown): DeviceBrowserOptions {
+  try {
+    const vars = (env ?? {}) as Readonly<Record<string, unknown>>;
+    const config = readOAuthConfig(
+      vars,
+      new URL(String(vars.CLERK_REDIRECT_URI)).origin,
+    );
+    const namespace = vars.CODE_REDEMPTION as RedemptionNamespace | undefined;
+    return {
+      upstream: clerkUpstream(config, {}),
+      ...(typeof namespace?.idFromName === "function" &&
+      typeof namespace.get === "function"
+        ? { redemption: durableRedemption(namespace) }
+        : {}),
+    };
+  } catch {
+    return {};
+  }
+}
+/** The deployed project object: the claim server, plus the browser approval of device logins. */
+export class Project extends BaseProject {
+  constructor(
+    ctx: ConstructorParameters<typeof BaseProject>[0],
+    env?: unknown,
+  ) {
+    super(ctx, env, deviceBrowser(env));
+  }
+}
 export interface WorkerDependencies {
   fetch?: (url: string, init?: RequestInit) => Promise<Response>;
   clock?: ClockPort;
@@ -121,11 +156,13 @@ export function createConfiguredWorker(
       const path = new URL(request.url).pathname;
       const token = bearer(request);
       if (
-        !isOAuthRoute(request) &&
-        (isLoginRoute(request) ||
-          !token ||
-          wellFormed(token) ||
-          /\/(devices|revoke|status|dump|restore)$/.test(path))
+        isDeviceRoute(request) ||
+        isDeviceCallback(request) ||
+        (!isOAuthRoute(request) &&
+          (isLoginRoute(request) ||
+            !token ||
+            wellFormed(token) ||
+            /\/(devices|revoke|status|dump|restore)$/.test(path)))
       )
         return worker.fetch(request, env);
       let config;

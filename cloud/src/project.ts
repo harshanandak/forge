@@ -35,7 +35,12 @@ import {
   type DurableState,
   type DurableStorage,
 } from "./store.ts";
-import type { DeviceBrowserOptions } from "./auth/device-browser.ts";
+import {
+  deviceRoute,
+  isDeviceCallback,
+  isDeviceRoute,
+  type DeviceBrowserOptions,
+} from "./auth/device-browser.ts";
 import {
   isLoginRoute,
   LOGIN,
@@ -182,16 +187,18 @@ export class Project {
   #provisioned = false;
   readonly #limits: Limits;
   readonly #env: LoginEnv;
+  readonly #browser: DeviceBrowserOptions;
 
   // `env` carries the page and project limits (DUMP_PAGE_BYTES, DUMP_MAX_BYTES); a deploy sets none.
   constructor(
     ctx: DurableState,
     env?: unknown,
-    _browser: DeviceBrowserOptions = {},
+    browser: DeviceBrowserOptions = {},
   ) {
     this.#storage = ctx.storage;
     this.#limits = limitsFrom(env);
     this.#env = (env ?? {}) as LoginEnv;
+    this.#browser = browser;
   }
 
   // Forgets a half-finished paged restore: its staged rows and its place in the page order.
@@ -235,6 +242,24 @@ export class Project {
           object(await bounded(request)),
           request.headers.get("CF-Connecting-IP"),
           url.pathname.split("/")[2] ?? "",
+        );
+      }
+      // The owner's browser pages: public, and every decision still needs the Clerk proof of the exact owner.
+      if (isDeviceRoute(request) || isDeviceCallback(request)) {
+        if (!(await this.#isProvisioned()))
+          throw fail(
+            "AUTH_FORBIDDEN",
+            "Login is not available for this project",
+          );
+        return await deviceRoute(
+          this.#open().db,
+          this.#env,
+          request,
+          typeof this.#env.FORGE_CLOUD_PROJECT === "string"
+            ? this.#env.FORGE_CLOUD_PROJECT
+            : "",
+          this.#browser,
+          request.method === "POST" ? await bounded(request, 2048) : "",
         );
       }
       // The Worker has already checked the admin token before it forwards these two routes.

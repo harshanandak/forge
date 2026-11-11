@@ -81,8 +81,13 @@ interface Window {
   count: number;
   resetAt: number;
 }
+interface Admission {
+  project: Window;
+  addresses: Record<string, Window>;
+}
 interface LoginState extends ChallengeState {
-  admission?: { project: Window; addresses: Record<string, Window> };
+  admission?: Admission;
+  previews?: Admission;
 }
 
 /** The engine's store: one row, read, changed and written back inside one synchronous transaction. */
@@ -105,10 +110,17 @@ export function loginStore(db: SqlDatabase): ChallengeStore {
   };
 }
 
-function admit(store: ChallengeStore, address: string, now: number): boolean {
+/** Counts one use in a fixed window per address and per project; `charge: false` only asks whether there is room. */
+export function admit(
+  store: ChallengeStore,
+  address: string,
+  now: number,
+  key: "admission" | "previews" = "admission",
+  charge = true,
+): boolean {
   return store.conditionalUpdate((base) => {
     const state = base as LoginState;
-    const budget = state.admission ?? {
+    const budget = state[key] ?? {
       project: { count: 0, resetAt: 0 },
       addresses: {},
     };
@@ -120,14 +132,14 @@ function admit(store: ChallengeStore, address: string, now: number): boolean {
     const allowed =
       budget.project.count < PROJECT_STARTS &&
       (mine?.count ?? 0) < ADDRESS_STARTS;
-    if (allowed) {
+    if (allowed && charge) {
       budget.project.count++;
       budget.addresses[address] = {
         count: (mine?.count ?? 0) + 1,
         resetAt: mine?.resetAt ?? budget.project.resetAt,
       };
     }
-    state.admission = budget;
+    state[key] = budget;
     return allowed;
   });
 }
