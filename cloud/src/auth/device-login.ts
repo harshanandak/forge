@@ -106,6 +106,21 @@ function identityClaims(identity: IdentityClaims): IdentityClaims {
   });
 }
 
+/** The keyed hash of a user code, as the engine stores it; the browser preview uses the same one. */
+export async function userCodeHash(
+  key: Parameters<typeof crypto.subtle.sign>[1],
+  code: string,
+): Promise<string> {
+  const signature = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    new TextEncoder().encode("forge/device-login/user-code/v1\0" + code),
+  );
+  return Array.from(new Uint8Array(signature), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+}
+
 export function createDeviceLogin(options: DeviceLoginOptions): DeviceLogin {
   const { store, now, random, issue, userCodeKey } = options;
   const maxLiveChallenges = options.maxLiveChallenges ?? 1_024;
@@ -124,16 +139,7 @@ export function createDeviceLogin(options: DeviceLoginOptions): DeviceLogin {
     !userCodeKey.usages.includes("sign")
   )
     throw new DeviceLoginFailure("unavailable");
-  async function keyedUserHash(code: string): Promise<string> {
-    const signature = await crypto.subtle.sign(
-      "HMAC",
-      userCodeKey,
-      new TextEncoder().encode("forge/device-login/user-code/v1\0" + code),
-    );
-    return Array.from(new Uint8Array(signature), (byte) =>
-      byte.toString(16).padStart(2, "0"),
-    ).join("");
-  }
+  const keyedUserHash = (code: string) => userCodeHash(userCodeKey, code);
   function bytes(length: number): Uint8Array {
     const value = random(length);
     if (value.length !== length) throw new DeviceLoginFailure("unavailable");
