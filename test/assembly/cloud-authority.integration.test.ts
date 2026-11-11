@@ -72,6 +72,7 @@ const HTTP: Record<string, number> = {
   NOT_FOUND: 404,
   INPUT_CONFLICT: 409,
   INPUT_INVALID: 400,
+  INTERNAL: 500,
 };
 const refusing = (code: string) =>
   fx.json(
@@ -298,6 +299,7 @@ for (const [code, exit] of [
   ["NOT_FOUND", 3],
   ["INPUT_CONFLICT", 4],
   ["INPUT_INVALID", 6],
+  ["INTERNAL", 1],
 ] as const)
   for (const [op, input] of [
     ["issue.create", CREATE],
