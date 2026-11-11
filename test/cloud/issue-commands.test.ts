@@ -1,5 +1,6 @@
 import { expect, mock, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
+import { resolve } from "node:path";
 import { Project } from "../../cloud/src/project.ts";
 import {
   readOnlyStore,
@@ -11,7 +12,10 @@ import { prepareCommand } from "../../cloud/src/issue-commands.ts";
 import { LEASE_READS, RECORD_READS } from "../../cloud/src/issue-read.ts";
 import { createWorker } from "../../cloud/src/worker.ts";
 import manifest from "../../src/blocks/work/forge.block.json" with { type: "json" };
+import { createStateClient } from "../../src/assembly/state-client.ts";
+import { StateOwner } from "../../src/core/state/index.ts";
 import { stateMigrations } from "../../src/core/state/migrations.ts";
+import type { SqlDatabase, SqlRow, SqlValue } from "../../src/ports/store.ts";
 import { exitCode } from "../../src/surface/result.ts";
 
 if (!("timingSafeEqual" in crypto.subtle))
@@ -174,15 +178,20 @@ function fixture(env: Record<string, unknown> = vars) {
       for (const { statements } of stateMigrations)
         for (const sql of statements) db.run(sql);
     },
-    put: (value: unknown, over: object = {}) =>
+    put: (
+      value: unknown,
+      over: object = {},
+      key = "issue:work-1",
+      ns = "forge/work",
+    ) =>
       db.run(
         "INSERT INTO state_records(namespace,key,revision,body) VALUES (?,?,3,?)",
         [
-          "forge/work",
-          "issue:work-1",
+          ns,
+          key,
           JSON.stringify({
-            namespace: "forge/work",
-            key: "issue:work-1",
+            namespace: ns,
+            key,
             revision: 3,
             value,
             updatedAt: iso(start - 500),
@@ -885,6 +894,312 @@ test("a token revoked or expired after the first check, while the body is held, 
     expect(got.touched.filter((sql) => sql.includes("state_"))).toEqual([]);
     expect(f.snapshot()).toBe(after);
   }
+}, 30_000);
+
+type F = ReturnType<typeof fixture>;
+const globals = globalThis as Record<string, unknown>;
+type Handler = (call: {
+  input: unknown;
+  config: unknown;
+  services: unknown;
+}) => unknown;
+
+// The rows the local handler reads: only the owner's fixed point and list SELECTs run, and every
+// other statement is refused and recorded.
+const readView = (db: Database, refused: string[]): SqlDatabase => {
+  const deny = (what: string) => (): never => {
+    refused.push(what);
+    throw new Error(`${what} refused`);
+  };
+  const read = (sql: string, params: readonly SqlValue[] = []) => {
+    if (
+      !/^SELECT body FROM state_(records|leases) WHERE namespace=\?/.test(sql)
+    )
+      deny(sql)();
+    return db.query(sql).all(...(params as never[])) as SqlRow[];
+  };
+  return {
+    exec: deny("exec"),
+    run: deny("run"),
+    transaction: deny("transaction"),
+    all: read,
+    get: (sql, params) => read(sql, params)[0],
+  };
+};
+
+test("the cloud issue.show agrees with the local handler on aliases, case, historical prefixes and leading zeros", async () => {
+  const hadFail = "fail" in globals,
+    previous = globals.fail;
+  globals.fail = (code: string, message: string) => {
+    throw new Error(`${code}: ${message}`);
+  };
+  try {
+    const handlers = require(
+      resolve(import.meta.dirname, "../../src/blocks/work/entry.cts"),
+    ) as Record<string, Handler>;
+    const f = fixture();
+    const token = await f.device();
+    f.tables();
+    f.put(
+      stored({
+        prefix: "acme",
+        kind: "task",
+        body: "b",
+        parent: "work-2",
+        dependsOn: ["work-2"],
+      }),
+    );
+    f.put(stored({ id: "work-2", title: "Issue 2" }), {}, "issue:work-2");
+    f.put(stored({ id: "work-007", prefix: "old" }), {}, "issue:work-007");
+    const refused: string[] = [];
+    const state = createStateClient({
+      owner: new StateOwner(readView(f.db, refused), { now: f.now }),
+      namespace: "forge/work",
+      context: { variant: "project", actor, project: { id: "p" } },
+      write: false,
+      requestId: "oracle",
+    });
+    const before = f.snapshot();
+    const ids = [
+      ...[
+        "forge-1",
+        "FORGE-1",
+        "acme-1",
+        "ACME-1",
+        "work-1",
+        "work-2",
+        "Work-2",
+      ],
+      ...["acme-2", "forge-007", "work-007", "old-007"],
+      ...["forge-7", "forge-0001", "forge-3", "zzz-1"],
+    ];
+    const refusal = (code: string) => ({
+      code,
+      exit: exitCode({
+        ok: false,
+        status: "FAIL",
+        error: { code, message: "", retry: "never" },
+        warnings: [],
+      } as never),
+    });
+    const outcomes = [];
+    for (const id of ids) {
+      const cloud = await f.send({ ...call, input: { id } }, { token });
+      let local;
+      try {
+        local = {
+          result: handlers["issue.show"]!({
+            input: { id },
+            config: { idPrefix: "forge" },
+            services: { state },
+          }),
+        };
+      } catch (error) {
+        local = refusal((error as Error).message.split(":")[0]!);
+      }
+      const here = cloud.json.ok
+        ? { result: cloud.json.result }
+        : refusal(cloud.code!);
+      expect([id, here]).toEqual([id, local]);
+      outcomes.push(here);
+    }
+    // Both sides must not simply fail alike: 11 shown, 3 not found, 1 unknown prefix.
+    expect(outcomes.filter((o) => "result" in o)).toHaveLength(11);
+    expect(outcomes.map((o) => ("code" in o ? o.code : "")).join()).toBe(
+      ",,,,,,,,,,,NOT_FOUND,NOT_FOUND,NOT_FOUND,INPUT_INVALID",
+    );
+    expect(refused).toEqual([]);
+    expect(f.snapshot()).toBe(before);
+  } finally {
+    if (hadFail) globals.fail = previous;
+    else delete globals.fail;
+  }
+}, 30_000);
+
+test("a lease stored inside the issue is never shown: only a live state_leases row is", async () => {
+  const f = fixture();
+  const token = await f.device();
+  f.tables();
+  const holder = { actor, session: { id: marker } };
+  f.put(stored({ lease: grant({ holder, expiresAt: iso(start + day) }) }));
+  const live = { expiresAt: iso(start + 1) };
+  for (const [row, want] of [
+    [undefined, shown()],
+    [live, shown({ lease: grant(live) })],
+  ] as const) {
+    if (row) f.lease(row);
+    const before = f.snapshot();
+    const got = await f.send(call, { token });
+    expect([got.status, got.json.result]).toEqual([200, want]);
+    expect(JSON.stringify(got.json)).not.toContain(marker);
+    expect(f.snapshot()).toBe(before);
+  }
+}, 30_000);
+
+const gone = "Issue was not found";
+const notValid = "Stored issue is not valid";
+const unproven =
+  "Competing and collaborative issues are not yet supported in cloud";
+const replaced = (f: F, value: unknown, over: object = {}) => {
+  f.db.run("DELETE FROM state_records");
+  f.put(value, over);
+};
+const bad = { title: marker };
+
+test("a missing table, a mode record, a mismatched row or a foreign namespace is refused as mapped, reading only what it needs", async () => {
+  const input = call.input;
+  const rows: [
+    string,
+    (f: F) => void,
+    object,
+    [number, string?, number?],
+    number,
+    string?,
+  ][] = [
+    [
+      "no leases table",
+      (f) => f.db.run("DROP TABLE state_leases"),
+      input,
+      [200],
+      3,
+    ],
+    [
+      "no records table",
+      (f) => f.db.run("DROP TABLE state_records"),
+      input,
+      [404, "NOT_FOUND", 3],
+      2,
+      gone,
+    ],
+    [
+      "no records table, alias",
+      (f) => f.db.run("DROP TABLE state_records"),
+      { id: "acme-1" },
+      [400, "INPUT_INVALID", 6],
+      2,
+      "Unknown issue id prefix",
+    ],
+    [
+      "slots only",
+      (f) => f.put({ count: 2 }, {}, "slots:work-1"),
+      input,
+      [400, "INPUT_INVALID", 6],
+      2,
+      unproven,
+    ],
+    [
+      "participant only",
+      (f) => f.put({}, {}, "participant:work-1:1"),
+      input,
+      [400, "INPUT_INVALID", 6],
+      2,
+      unproven,
+    ],
+    [
+      "record key mismatch",
+      (f) => replaced(f, stored(bad), { key: "issue:work-2" }),
+      input,
+      [500, "INTERNAL", 1],
+      2,
+      notValid,
+    ],
+    [
+      "record namespace mismatch",
+      (f) => replaced(f, stored(bad), { namespace: "forge/other" }),
+      input,
+      [500, "INTERNAL", 1],
+      2,
+      notValid,
+    ],
+    [
+      "record id mismatch",
+      (f) => replaced(f, stored({ id: "work-2", ...bad })),
+      input,
+      [500, "INTERNAL", 1],
+      2,
+      notValid,
+    ],
+    [
+      "lease subject mismatch",
+      (f) => f.lease({ subject: "issue:work-9" }),
+      input,
+      [500, "INTERNAL", 1],
+      3,
+      notValid,
+    ],
+    [
+      "issue only in another namespace",
+      (f) => {
+        f.db.run("DELETE FROM state_records");
+        f.put(stored(bad), {}, "issue:work-1", "forge/other");
+      },
+      input,
+      [404, "NOT_FOUND", 3],
+      2,
+      gone,
+    ],
+    [
+      "mode record only in another namespace",
+      (f) => f.put({ count: 2 }, {}, "slots:work-1", "forge/other"),
+      input,
+      [200],
+      3,
+    ],
+  ];
+  for (const [
+    name,
+    setup,
+    body,
+    [status, code, exit = 0],
+    probes,
+    message,
+  ] of rows) {
+    const f = fixture();
+    const token = await f.device();
+    f.tables();
+    f.put(stored(bad));
+    setup(f);
+    const before = f.snapshot();
+    const got = await f.send({ ...call, input: body }, { token });
+    expect([name, got.status, got.code, got.exit]).toEqual([
+      name,
+      status,
+      code,
+      exit,
+    ]);
+    expect(readCalls(got.touched)).toEqual([]);
+    expect(got.probes).toEqual(WORK_PROBES.slice(0, probes));
+    if (message === undefined) expect(got.json.result).toEqual(shown(bad));
+    else {
+      expect(got.json.error?.message).toBe(message);
+      expect(JSON.stringify(got.json)).not.toContain(marker);
+    }
+    expect(f.snapshot()).toBe(before);
+  }
+}, 60_000);
+
+test("two projects with the same issue id each see only their own, and a token opens only its own", async () => {
+  const [a, b] = [fixture(), fixture()];
+  const [ta, tb] = [await a.device(), await b.device()];
+  for (const [f, title] of [
+    [a, "alpha"],
+    [b, "beta"],
+  ] as const) {
+    f.tables();
+    f.put(stored({ title }));
+  }
+  const before = [a.snapshot(), b.snapshot()];
+  const [ga, gb] = [
+    await a.send(call, { token: ta }),
+    await b.send(call, { token: tb }),
+  ];
+  expect([ga.json.result, gb.json.result]).toEqual([
+    shown({ title: "alpha" }),
+    shown({ title: "beta" }),
+  ]);
+  const cross = await b.send(call, { token: ta });
+  expect([cross.status, cross.code]).toEqual([401, "AUTH_INVALID"]);
+  expect([a.snapshot(), b.snapshot()]).toEqual(before);
 }, 30_000);
 
 const READ_ONLY = "This view is read-only";
