@@ -22,6 +22,7 @@ import { GENERATED_MARKER } from "../../../src/surface/skills.ts";
 import { syncSkills } from "../../../src/assembly/skills.ts";
 import { runCli } from "../../../src/surface/cli.ts";
 import { validateResultEnvelope } from "../../../src/generated/validators.ts";
+import { candidate } from "../../surface/fixtures/catalog.ts";
 
 const REVIEW = [
   "---",
@@ -37,6 +38,141 @@ const REVIEW = [
 
 const SOURCE = "tpl/skills/review/SKILL.md";
 const RENDERED = ".agents/skills/review/SKILL.md";
+
+test("noun sync writes, compares and retires both marked files in every requested mirror", () => {
+  const root = mkdtempSync(join(tmpdir(), "forge-noun-reference-"));
+  try {
+    const dirs = [".agents/skills", ".claude/skills"];
+    const paths = dirs.flatMap((dir) =>
+      ["SKILL.md", "reference.md"].map((file) => `${dir}/sample/${file}`),
+    );
+    const first = syncSkills(root, [candidate()], undefined, dirs);
+    expect(first.errors).toEqual([]);
+    expect([...first.written].sort()).toEqual([...paths].sort());
+    for (const path of paths)
+      expect(readFileSync(join(root, path), "utf8")).toContain(
+        GENERATED_MARKER,
+      );
+    const rerun = syncSkills(root, [candidate()], undefined, dirs);
+    expect(rerun.written).toEqual([]);
+    expect([...rerun.unchanged].sort()).toEqual([...paths].sort());
+    const removed = syncSkills(root, [], undefined, dirs);
+    expect([...removed.removed].sort()).toEqual([...paths].sort());
+    for (const path of paths) expect(existsSync(join(root, path))).toBe(false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 30_000);
+
+test("noun reference ownership never overwrites or deletes an unmarked file", () => {
+  const root = mkdtempSync(join(tmpdir(), "forge-noun-ownership-"));
+  const reference = ".agents/skills/sample/reference.md";
+  try {
+    mkdirSync(dirname(join(root, reference)), { recursive: true });
+    writeFileSync(join(root, reference), "hand-written reference\n");
+    expect(syncSkills(root, [candidate()], undefined).skipped).toContain(
+      reference,
+    );
+    expect(readFileSync(join(root, reference), "utf8")).toBe(
+      "hand-written reference\n",
+    );
+    syncSkills(root, [], undefined);
+    expect(readFileSync(join(root, reference), "utf8")).toBe(
+      "hand-written reference\n",
+    );
+    syncSkills(root, [candidate()], undefined);
+    writeFileSync(join(root, reference), `${GENERATED_MARKER}\nold\n`);
+    expect(syncSkills(root, [candidate()], undefined).written).toContain(
+      reference,
+    );
+    writeFileSync(join(root, reference), "hand-written replacement\n");
+    syncSkills(root, [], undefined);
+    expect(readFileSync(join(root, reference), "utf8")).toBe(
+      "hand-written replacement\n",
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 30_000);
+
+test("noun reference drift and missing files fail the CLI check without writing", async () => {
+  await withTemplate(async (root, _call, assembly) => {
+    const list = spyOn(assembly.catalog, "list").mockReturnValue([
+      ...assembly.catalog.list(),
+      candidate(),
+    ]);
+    const reference = ".agents/skills/sample/reference.md";
+    try {
+      const synced = await runCli(
+        assembly.catalog,
+        ["skills", "sync"],
+        localCall(assembly),
+      );
+      expect(synced.exitCode).toBe(0);
+      expect(record(synced.envelope.result)?.written).toContain(reference);
+      for (const missing of [false, true]) {
+        if (missing) rmSync(join(root, reference));
+        else
+          writeFileSync(join(root, reference), `${GENERATED_MARKER}\nedited\n`);
+        const checked = await runCli(
+          assembly.catalog,
+          ["skills", "sync", "--check"],
+          localCall(assembly),
+        );
+        expect(checked.exitCode).toBe(1);
+        expect(record(checked.envelope.result)?.differences).toContain(
+          reference,
+        );
+        expect(checked.stdout).toContain(reference);
+        expect(existsSync(join(root, reference))).toBe(!missing);
+        if (!missing)
+          expect(readFileSync(join(root, reference), "utf8")).toBe(
+            `${GENERATED_MARKER}\nedited\n`,
+          );
+      }
+    } finally {
+      list.mockRestore();
+    }
+  });
+}, 30_000);
+
+test.each(["oversized", "unknown operation"])(
+  "noun reference lint refuses %s before writing",
+  async (kind) => {
+    await withTemplate(async (root, _call, assembly) => {
+      const entry = candidate();
+      const inputSchema = {
+        type: "object",
+        properties: {
+          [kind === "oversized" ? "x".repeat(8192) : "sample.missing"]: {
+            type: "string",
+          },
+        },
+      };
+      const list = spyOn(assembly.catalog, "list").mockReturnValue([
+        ...assembly.catalog.list(),
+        { ...entry, inputSchema },
+      ]);
+      try {
+        const result = await runCli(
+          assembly.catalog,
+          ["skills", "sync"],
+          localCall(assembly),
+        );
+        expect(result.exitCode).toBe(1);
+        expect(result.envelope).toMatchObject({
+          ok: false,
+          error: { code: "OUTPUT_INVALID" },
+        });
+        expect(result.stdout).toContain("sample/reference.md");
+        expect(existsSync(join(root, ".agents/skills"))).toBe(false);
+      } finally {
+        list.mockRestore();
+      }
+    });
+  },
+  30_000,
+);
 
 type Call = (op: string, input?: object) => Promise<Record<string, unknown>>;
 
