@@ -304,7 +304,7 @@ export class Project {
           id = text(input, "id"),
           now = Date.now();
         const value = db.transaction(() => {
-          const token = db.get(`SELECT * FROM ${TOKENS} WHERE id=?`, [id]);
+          const token = db.get(TOKEN_LOOKUP, [id]);
           const result = revokeToken(db, id, now);
           if (token === undefined || token.revoked_at !== null) return result;
           const released: string[] = [];
