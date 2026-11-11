@@ -627,46 +627,32 @@ async function evidenceTeam() {
   await attempt(B);
   await attempt(C);
 }
+const seed = (key: string, value: object) =>
+  p.owner.put(ns, key, value, A.actor, {
+    expectRevision: p.owner.get(ns, key)?.revision ?? 0,
+  });
 function seedEvidence(attempt = "attempt-1", commit = sha) {
   const prefix = `evidence:attempt:work-1:${attempt}:`;
-  p.owner.put(
-    ns,
-    prefix + (p.owner.count(ns, prefix) + 1),
-    {
-      attempt,
-      sha: commit,
-      holder: attempt === "attempt-1" ? B : C,
-      recordedAt: "2026-11-10T12:00:00.000Z",
-    },
-    B.actor,
-    { expectRevision: 0 },
-  );
+  seed(prefix + (p.owner.count(ns, prefix) + 1), {
+    attempt,
+    sha: commit,
+    holder: attempt === "attempt-1" ? B : C,
+    recordedAt: "2026-11-10T12:00:00.000Z",
+  });
 }
 function seedSelection() {
-  p.owner.put(
-    ns,
-    "selection:work-1",
-    {
-      mode: "single",
-      chosen: [{ attempt: "attempt-1", sha }],
-      reason: "R",
-      holder: A,
-      selectedAt: "2026-11-10T12:00:00.000Z",
-    },
-    A.actor,
-    { expectRevision: 0 },
-  );
+  seed("selection:work-1", {
+    mode: "single",
+    chosen: [{ attempt: "attempt-1", sha }],
+    reason: "R",
+    holder: A,
+    selectedAt: "2026-11-10T12:00:00.000Z",
+  });
   const row = p.owner.get(ns, "attempt:work-1:attempt-2")!;
-  p.owner.put(
-    ns,
-    row.key,
-    {
-      ...(row.value as object),
-      superseded: { supersededBy: "selection", reason: "R" },
-    },
-    A.actor,
-    { expectRevision: row.revision },
-  );
+  seed(row.key, {
+    ...(row.value as object),
+    superseded: { supersededBy: "selection", reason: "R" },
+  });
 }
 async function refusedOp(
   op: string,
@@ -683,6 +669,18 @@ async function refusedOp(
 }
 const select = { attempt: "attempt-1", reason: "R" };
 const evidence = { attempt: "attempt-1", sha };
+function onSelectionWrite(change: () => void) {
+  intercept = (state) => ({
+    ...state,
+    putMany(entries, options) {
+      if (entries.some((e) => e.key === "selection:work-1")) {
+        intercept = undefined;
+        change();
+      }
+      return state.putMany(entries, options);
+    },
+  });
+}
 test("evidence ok appends under B lease and preserves notes", async () => {
   await evidenceTeam();
   await act("attempt.note", { attempt: "attempt-1", body: "keep" }, B);
@@ -843,19 +841,9 @@ test("race interleaves two selections and the loser writes nothing", async () =>
   seedEvidence("attempt-2", other);
   let winner: Promise<unknown> | undefined,
     accepted: ReturnType<typeof p.snapshot> | undefined;
-  intercept = (state) => ({
-    ...state,
-    putMany(entries, options) {
-      if (entries.some((e) => e.key === "selection:work-1")) {
-        intercept = undefined;
-        winner = act("attempt.select", {
-          attempt: "attempt-2",
-          reason: "winner",
-        });
-        accepted = p.snapshot();
-      }
-      return state.putMany(entries, options);
-    },
+  onSelectionWrite(() => {
+    winner = act("attempt.select", { attempt: "attempt-2", reason: "winner" });
+    accepted = p.snapshot();
   });
   const results = await Promise.allSettled([
     act("attempt.select", select).then(() => "OK"),
@@ -872,17 +860,10 @@ test("stale coordinator generation changes before selection commit write nothing
   await evidenceTeam();
   seedEvidence();
   let changed: ReturnType<typeof p.snapshot> | undefined;
-  intercept = (state) => ({
-    ...state,
-    putMany(entries, options) {
-      if (entries.some((e) => e.key === "selection:work-1")) {
-        intercept = undefined;
-        p.owner.release(ns, p.held()!);
-        p.owner.acquire(ns, "issue:work-1", A, 60000, "next-generation");
-        changed = p.snapshot();
-      }
-      return state.putMany(entries, options);
-    },
+  onSelectionWrite(() => {
+    p.owner.release(ns, p.held()!);
+    p.owner.acquire(ns, "issue:work-1", A, 60000, "next-generation");
+    changed = p.snapshot();
   });
   await expect(act("attempt.select", select)).rejects.toMatchObject({
     error: { code: "LEASE_STALE" },
@@ -931,4 +912,90 @@ test("close after select and reopen keeps selection, superseded and evidence", a
     ],
   });
   expect(p.owner.list(ns, "evidence:")).toEqual(evidenceRows);
+}, 10000);
+
+for (const close of [true, false])
+  test(
+    close
+      ? "close race refuses slots added before commit"
+      : "single selection refuses a newer evidence append",
+    async () => {
+      if (close) await act("issue.claim");
+      else {
+        await evidenceTeam();
+        seedEvidence();
+      }
+      let changed: ReturnType<typeof p.snapshot> | undefined,
+        concurrent: Promise<unknown> | undefined;
+      const change = () => {
+        intercept = undefined;
+        concurrent = close
+          ? act("attempt.slots", { count: 2 })
+          : act("attempt.evidence", { ...evidence, sha: other }, B);
+        changed = p.snapshot();
+      };
+      if (close)
+        intercept = (state) => ({
+          ...state,
+          put(k, v, o) {
+            change();
+            return state.put(k, v, o);
+          },
+        });
+      else onSelectionWrite(change);
+      await expect(
+        act(
+          close ? "issue.close" : "attempt.select",
+          close ? { withoutReceipt: "done" } : select,
+        ),
+      ).rejects.toMatchObject({ error: { code: "REVISION_CONFLICT" } });
+      await concurrent;
+      expect(p.snapshot()).toEqual(changed!);
+    },
+    10000,
+  );
+test("commit ids normalize across evidence, receipts and combine", async () => {
+  await evidenceTeam();
+  receipts.set("upper", {
+    id: "upper",
+    status: "PASS",
+    subject: sha.toUpperCase(),
+  });
+  await act(
+    "attempt.evidence",
+    { ...evidence, sha: sha.toUpperCase(), receipt: "upper" },
+    B,
+  );
+  expect(p.owner.list(ns, "evidence:")[0]!.value).toMatchObject({ sha });
+  await act("attempt.evidence", { attempt: "attempt-2", sha }, C);
+  await act("attempt.select", {
+    combine: `attempt-1:${sha},attempt-2:${sha.toUpperCase()}`,
+    reason: "case",
+  });
+  expect(p.owner.get(ns, "selection:work-1")!.value).toMatchObject({
+    chosen: [
+      { attempt: "attempt-1", sha },
+      { attempt: "attempt-2", sha },
+    ],
+  });
+}, 10000);
+test("selection refuses later reservations without writes", async () => {
+  await evidenceTeam();
+  seedSelection();
+  expect(
+    (await refusedOp("attempt.reserve", {}, "INPUT_CONFLICT", B)).message,
+  ).toBe("Already selected");
+}, 10000);
+test("none selection supersedes every attempt without evidence and allows close", async () => {
+  await evidenceTeam();
+  await act("attempt.select", { none: true, reason: "R" });
+  const selection = (await act("issue.show")).selection;
+  expect(selection).toMatchObject({ mode: "none", chosen: [], reason: "R" });
+  for (const row of p.owner.list(ns, "attempt:"))
+    expect(row.value).toMatchObject({
+      superseded: { supersededBy: "selection", reason: "R" },
+    });
+  expect(await act("issue.close", { withoutReceipt: "done" })).toMatchObject({
+    status: "closed",
+  });
 }, 10000);

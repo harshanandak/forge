@@ -243,7 +243,12 @@ type WorkOperations = TrackerOperations<"issue"> & {
     ItemRef,
   ];
   readonly "attempt.select": readonly [
-    ItemRef & { attempt?: string; combine?: string; reason: string },
+    ItemRef & {
+      attempt?: string;
+      combine?: string;
+      none?: boolean;
+      reason: string;
+    },
     ItemRef,
   ];
   readonly "issue.invite": readonly [
@@ -5397,6 +5402,8 @@ const operations: Operations<WorkOperations> = {
       id = ids.stored(input.id);
     const issue = get(state, id, input.id),
       slot = state.get(`slots:${id}`);
+    if (state.get(`selection:${id}`))
+      fail("INPUT_CONFLICT", "Already selected");
     if (stored(issue).status !== "open")
       fail("INPUT_CONFLICT", "Closed issues cannot be attempted");
     if (!slot)
@@ -5428,10 +5435,12 @@ const operations: Operations<WorkOperations> = {
         (config as WorkConfig | undefined)?.claimTtlSeconds ??
         3600) * 1000,
       {
-        readSet: [issue, slot].map((row) => ({
-          key: row.key,
-          expectRevision: row.revision,
-        })),
+        readSet: [issue, slot]
+          .map((row) => ({
+            key: row.key,
+            expectRevision: row.revision,
+          }))
+          .concat({ key: `selection:${id}`, expectRevision: 0 }),
         entries: [
           {
             key: slot.key,
@@ -5498,7 +5507,7 @@ const operations: Operations<WorkOperations> = {
           "RECEIPT_INVALID",
           "Evidence requires an existing verified PASS receipt",
         );
-      if (receipt.subject !== input.sha)
+      if (receipt.subject?.toLowerCase() !== input.sha.toLowerCase())
         fail("RECEIPT_HEAD_MISMATCH", "Receipt must cover the evidence sha");
     }
     const prefix = `evidence:${record.key}:`,
@@ -5508,6 +5517,7 @@ const operations: Operations<WorkOperations> = {
       prefix + (state.count(prefix) + 1),
       {
         ...proof,
+        sha: input.sha.toLowerCase(),
         holder: state.holder(),
         recordedAt: new Date(state.now()).toISOString(),
       },
@@ -5537,33 +5547,36 @@ const operations: Operations<WorkOperations> = {
         "INPUT_INVALID",
         "reason must contain 1 to 65536 characters after trimming",
       );
-    if ((input.attempt === undefined) === (input.combine === undefined))
-      fail("INPUT_INVALID", "Choose attempt or combine");
-    const chosen = (
-      input.combine === undefined
-        ? [[input.attempt!, undefined]]
-        : input.combine.split(",").map((part) => {
-            const pair = part.split(":");
-            if (pair.length !== 2)
-              fail("INPUT_INVALID", "combine entries must be attempt-id:sha");
-            return pair;
-          })
-    ).map(([attempt, sha]) => {
-      if (
-        !attempt ||
-        (input.combine !== undefined &&
-          (!sha || !/^[a-fA-F0-9]{40}$/.test(sha)))
-      )
-        fail("INPUT_INVALID", "combine entries must be attempt-id:sha");
+    if (
+      [input.attempt, input.combine, input.none].filter((v) => v !== undefined)
+        .length !== 1 ||
+      (input.none !== undefined && input.none !== true)
+    )
+      fail("INPUT_INVALID", "Choose attempt, combine or none");
+    const evidenceFence: { key: string; expectRevision: number }[] = [];
+    const requested = input.none
+      ? []
+      : (input.combine?.split(",").map((part) => {
+          const pair = /^([^:]+):([a-f0-9]{40})$/i.exec(part);
+          if (!pair)
+            fail("INPUT_INVALID", "combine entries must be attempt-id:sha");
+          return [pair[1]!, pair[2]!.toLowerCase()];
+        }) ?? [[input.attempt!, undefined]]);
+    const chosen = requested.map(([attempt, sha]) => {
       const row = rows.find((row) => (row.value as Attempt).id === attempt);
       const evidence = row
-        ? appended(state, `evidence:${row.key}:`).map(
-            (r) => r.value as { sha: string },
-          )
+        ? appended(state, `evidence:${row.key}:`).map((r) => ({
+            sha: (r.value as { sha: string }).sha.toLowerCase(),
+          }))
         : [];
       const commit = sha ?? evidence.at(-1)?.sha;
       if (!row || !commit || !evidence.some((proof) => proof.sha === commit))
         fail("INPUT_CONFLICT", `Attempt ${attempt} has no matching evidence`);
+      if (input.combine === undefined)
+        evidenceFence.push({
+          key: `evidence:${row.key}:${evidence.length + 1}`,
+          expectRevision: 0,
+        });
       return { attempt, sha: commit };
     });
     if (new Set(chosen.map((c) => c.attempt)).size !== chosen.length)
@@ -5573,7 +5586,7 @@ const operations: Operations<WorkOperations> = {
         {
           key: `selection:${id}`,
           value: {
-            mode: input.combine === undefined ? "single" : "combine",
+            mode: input.none ? "none" : input.combine ? "combine" : "single",
             chosen,
             reason,
             holder: state.holder(),
@@ -5597,10 +5610,12 @@ const operations: Operations<WorkOperations> = {
       ],
       {
         subject: key(id),
-        readSet: [issue, slots, ...rows].map((row) => ({
-          key: row.key,
-          expectRevision: row.revision,
-        })),
+        readSet: [issue, slots, ...rows]
+          .map((row) => ({
+            key: row.key,
+            expectRevision: row.revision,
+          }))
+          .concat(evidenceFence),
       },
     );
     return { id: ids.shown(id) };
@@ -5920,13 +5935,20 @@ const operations: Operations<WorkOperations> = {
     const ids = idsFor(state, config);
     const id = ids.stored(input.id);
     const record = get(state, id, input.id);
-    if (state.get(`slots:${id}`) && !state.get(`selection:${id}`)) {
+    const competition = ["slots", "selection"].map((prefix) => ({
+      key: `${prefix}:${id}`,
+      expectRevision: state.get(`${prefix}:${id}`)?.revision ?? 0,
+    }));
+    if (
+      competition[0]!.expectRevision > 0 &&
+      competition[1]!.expectRevision === 0
+    ) {
       state.putMany([], { subject: key(id) });
       fail(
         "INPUT_CONFLICT",
         "Select an attempt before closing a competing issue",
         {
-          repair: `forge attempt select ${ids.shown(id)} --attempt <attempt-id> --reason "<why>"`,
+          repair: `forge attempt select ${ids.shown(id)} --attempt <attempt-id> --reason "<why>"; or forge attempt select ${ids.shown(id)} --none --reason "<why>"`,
         },
       );
     }
@@ -6086,7 +6108,15 @@ const operations: Operations<WorkOperations> = {
         : { receipt: input.receipt }),
       ...(input.reason === undefined ? {} : { closeReason: input.reason }),
     };
-    const written = persist(state, key(id), value, record.revision);
+    const { revision } = record;
+    const written = persist(
+      state,
+      key(id),
+      value,
+      revision,
+      key(id),
+      competition,
+    );
     const { closeReason: _reason, ...view } = written.value as Stored & {
       closeReason?: string;
     };

@@ -7,11 +7,13 @@
     },
     "attempt": { "type": "string" },
     "combine": { "type": "string" },
+    "none": { "type": "boolean", "const": true },
     "reason": { "type": "string" }
   },
   "oneOf": [
-    { "required": ["attempt"], "not": { "required": ["combine"] } },
-    { "required": ["combine"], "not": { "required": ["attempt"] } }
+    { "required": ["attempt"] },
+    { "required": ["combine"] },
+    { "required": ["none"] }
   ],
   "additionalProperties": false
 }

@@ -114,7 +114,7 @@
           "type": "object",
           "required": ["mode", "chosen", "reason", "holder", "selectedAt"],
           "properties": {
-            "mode": { "enum": ["single", "combine"] },
+            "mode": { "enum": ["single", "combine", "none"] },
             "chosen": {
               "type": "array",
               "items": {

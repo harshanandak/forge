@@ -395,7 +395,7 @@
     },
     "attempt.select": {
       "title": "select",
-      "summary": "Coordinator records one fenced selection; preserves all attempt work."
+      "summary": "Coordinator selects attempts or none; preserves all attempt work."
     },
     "attempt.note": {
       "title": "attempt-note",
