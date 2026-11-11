@@ -12,6 +12,9 @@ export const TOKEN_MIGRATION = {
   ],
 };
 
+/** The one token-by-id lookup. The read-only command view may run only this statement. */
+export const TOKEN_LOOKUP = `SELECT * FROM ${TOKENS} WHERE id=?`;
+
 const TOKEN = /^fct_([0-9a-f]{16})\.([A-Za-z0-9_-]{43})$/;
 const NO_ROW_HASH = "0".repeat(64);
 const MAX_TTL_MS = 90 * 24 * 60 * 60 * 1000;
@@ -105,7 +108,7 @@ export async function issueToken(
 }
 
 export function revokeToken(db: SqlDatabase, id: string, now: number) {
-  const row = db.get(`SELECT * FROM ${TOKENS} WHERE id=?`, [id]);
+  const row = db.get(TOKEN_LOOKUP, [id]);
   if (row === undefined) throw denied("INPUT_INVALID", "No such device token");
   db.run(
     `UPDATE ${TOKENS} SET revoked_at=? WHERE id=? AND revoked_at IS NULL`,
@@ -136,7 +139,7 @@ export function authorize(
   parts: { id: string; hash: string },
   now: number,
 ): string {
-  const row = db.get(`SELECT * FROM ${TOKENS} WHERE id=?`, [parts.id]);
+  const row = db.get(TOKEN_LOOKUP, [parts.id]);
   const match = same(
     parts.hash,
     row === undefined ? NO_ROW_HASH : String(row.hash),
