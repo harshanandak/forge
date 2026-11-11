@@ -56,7 +56,11 @@ function fields(schema: Readonly<Record<string, unknown>>): string {
   return listed.length === 0 ? "none" : listed.join(", ");
 }
 
-function section(candidate: McpCandidate, prefix: string | undefined): string {
+function section(
+  candidate: McpCandidate,
+  prefix: string | undefined,
+  reference = false,
+): string {
   const { op, declaration, docs } = candidate;
   const effects =
     declaration.effects.length === 0
@@ -67,7 +71,7 @@ function section(candidate: McpCandidate, prefix: string | undefined): string {
     declared === undefined
       ? undefined
       : renamedOperation(declared, candidate.rename);
-  return [
+  const lines = [
     `## \`${op}\` — ${docs.title}`,
     "",
     ...(deprecated === undefined ? [] : [`Deprecated: use \`${deprecated}\`.`]),
@@ -77,7 +81,12 @@ function section(candidate: McpCandidate, prefix: string | undefined): string {
     `- Input: ${fields(candidate.argumentSchema ?? candidate.inputSchema)}`,
     `- Effects: ${effects}; ${declaration.idempotent ? "idempotent" : "not idempotent"}`,
     "",
-  ].join("\n");
+  ];
+  return (
+    reference
+      ? [`## \`${op}\``, ...lines.slice(-3)]
+      : [...lines.slice(0, -3), ""]
+  ).join("\n");
 }
 
 function describe(noun: string, agent: readonly McpCandidate[]): string {
@@ -109,6 +118,7 @@ function skill(
       : []),
     `Operation \`<noun>.<verb>\` maps to CLI: \`forge <noun> <verb> --input '<json>'\` and MCP: \`${prefix === undefined ? "" : `${prefix}_`}<noun>_<verb>\` (keep hyphens). A section shows CLI or MCP only where it differs.`,
     "Every call returns a JSON result envelope. When an MCP tool is not listed, use `catalog_call` with the operation name and input; `catalog_describe` returns the full schemas.",
+    "Input fields and effects for each operation are in `reference.md` next to this file.",
     "",
     ...agent.map((c) => section(c, prefix)),
     ...(human.length === 0
@@ -146,11 +156,26 @@ export function renderSkills(
       entries.some((c) => isAgentCallable(c.declaration)),
     )
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-    .map(([noun, entries]) => ({
-      noun,
-      path: `${noun}/SKILL.md`,
-      text: skill(noun, entries, prefix),
-    }));
+    .flatMap(([noun, entries]) => [
+      {
+        noun,
+        path: `${noun}/SKILL.md`,
+        text: skill(noun, entries, prefix),
+      },
+      {
+        noun,
+        path: `${noun}/reference.md`,
+        text: [
+          GENERATED_MARKER,
+          `<!-- forge version: ${buildIdentity.version} -->`,
+          `# ${noun} reference`,
+          "",
+          ...entries
+            .filter((c) => isAgentCallable(c.declaration))
+            .map((c) => section(c, prefix, true)),
+        ].join("\n"),
+      },
+    ]);
 }
 
 const scalar = (value: unknown): value is string | number | boolean =>

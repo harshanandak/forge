@@ -244,7 +244,11 @@ export function syncSkills(
   const problems = skills.flatMap((skill) => {
     const issues =
       skill.bytes === undefined
-        ? lintSkill(skill.text, candidates, prefix)
+        ? (skill.path.endsWith("/SKILL.md") ? lintSkill : lintReference)(
+            skill.text,
+            candidates,
+            prefix,
+          )
         : /\.md$/i.test(skill.path)
           ? lintReference(
               new TextDecoder().decode(skill.bytes),
@@ -326,8 +330,20 @@ export function syncSkills(
         const listed = companions(current, path);
         if (listed === undefined && skillKind !== "missing") {
           if (copies.length) skipped.push(path);
+          for (const copy of copies.filter(
+            (s) => s.bytes === undefined && s.path.endsWith("/reference.md"),
+          ))
+            skipped.push(`${dir}/${copy.path}`);
           return;
         }
+        const markedReference =
+          (!copies.length ||
+            copies.some(
+              (copy) =>
+                copy.bytes === undefined && copy.path.endsWith("/reference.md"),
+            )) &&
+          inspect("reference.md") === "file" &&
+          lines(local.read("reference.md")!).includes(GENERATED_MARKER);
         for (const entry of listed ?? []) validate(inspect, entry, path);
         const wanted = new Map(
           copies.map((s) => [key(s.path.slice(s.noun.length + 1)), s]),
@@ -335,6 +351,7 @@ export function syncSkills(
         const adopted: string[] = [];
         for (const [relative, copy] of wanted) {
           if (relative === key("SKILL.md")) continue;
+          if (relative === "reference.md" && copy.bytes === undefined) continue;
           const destination = copy.path.slice(copy.noun.length + 1);
           const clear = validate(inspect, destination, path);
           const bytes = copy.bytes!;
@@ -362,7 +379,10 @@ export function syncSkills(
           }
           adopted.push(destination);
         }
-        for (const relative of listed ?? []) {
+        for (const relative of new Set([
+          ...(listed ?? []),
+          ...(markedReference ? ["reference.md"] : []),
+        ])) {
           if (wanted.has(key(relative))) continue;
           const target = `${folder}/${relative}`;
           if (readFile(local, relative) !== undefined) {
@@ -379,6 +399,15 @@ export function syncSkills(
         }
         for (const copy of copies) {
           const relative = copy.path.slice(copy.noun.length + 1);
+          if (
+            copy.bytes === undefined &&
+            relative === "reference.md" &&
+            inspect(relative) !== "missing" &&
+            !markedReference
+          ) {
+            skipped.push(`${folder}/${relative}`);
+            continue;
+          }
           if (copy.bytes !== undefined && !adopted.includes(relative)) continue;
           let bytes = copy.bytes;
           if (bytes === undefined) {

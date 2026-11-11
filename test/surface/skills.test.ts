@@ -86,6 +86,7 @@ test("every generated operation retains its own calling facts and issue has 1024
       })),
     );
     for (const skill of skills) {
+      if (!skill.path.endsWith("/SKILL.md")) continue;
       const entries = catalog.filter(
         (entry) => entry.admitted && entry.op.split(".")[0] === skill.noun,
       );
@@ -170,6 +171,7 @@ test("shared call rules and exceptions resolve every operation, renamed deprecat
     expect(mcpToolName(long.op, missingPrefix)).toBeUndefined();
     for (const prefix of [undefined, "forge", missingPrefix]) {
       for (const skill of renderSkills(catalog, prefix)) {
+        if (!skill.path.endsWith("/SKILL.md")) continue;
         for (const entry of catalog.filter(
           (c) =>
             c.admitted &&
@@ -288,8 +290,11 @@ async function withProject(
 
 test("skills.sync writes one linted skill per block noun, deterministically, from CLI and catalog.call", async () => {
   await withProject(async (assembly, root) => {
-    const paths = ["attempt", "decision", "issue", "lane", "memory"].map(
-      (noun) => `.agents/skills/${noun}/SKILL.md`,
+    const paths = ["attempt", "decision", "issue", "lane", "memory"].flatMap(
+      (noun) =>
+        ["SKILL.md", "reference.md"].map(
+          (file) => `.agents/skills/${noun}/${file}`,
+        ),
     );
     const first = { dir: ".agents/skills", written: paths, unchanged: [] };
     expect(await forge(assembly, ["skills", "sync"])).toMatchObject({
@@ -298,7 +303,9 @@ test("skills.sync writes one linted skill per block noun, deterministically, fro
     for (const path of paths) {
       const text = readFileSync(join(root, path), "utf8");
       expect(text).toContain(GENERATED_MARKER);
-      expect(lintSkill(text, assembly.catalog.list())).toEqual([]);
+      if (path.endsWith("/SKILL.md"))
+        expect(lintSkill(text, assembly.catalog.list())).toEqual([]);
+      else expect(lintReference(text, assembly.catalog.list())).toEqual([]);
     }
     const decision = readFileSync(
       join(
@@ -356,10 +363,15 @@ test("a fresh assembly loads persisted admission only when syncing skills", asyn
         result: {
           written: [
             ".agents/skills/attempt/SKILL.md",
+            ".agents/skills/attempt/reference.md",
             ".agents/skills/decision/SKILL.md",
+            ".agents/skills/decision/reference.md",
             ".agents/skills/issue/SKILL.md",
+            ".agents/skills/issue/reference.md",
             ".agents/skills/lane/SKILL.md",
+            ".agents/skills/lane/reference.md",
             ".agents/skills/memory/SKILL.md",
+            ".agents/skills/memory/reference.md",
           ],
         },
       });
@@ -433,8 +445,11 @@ test("an enabled but unadmitted block gets no skill and none of its text reaches
         result: {
           written: [
             ".agents/skills/attempt/SKILL.md",
+            ".agents/skills/attempt/reference.md",
             ".agents/skills/issue/SKILL.md",
+            ".agents/skills/issue/reference.md",
             ".agents/skills/lane/SKILL.md",
+            ".agents/skills/lane/reference.md",
           ],
         },
       });
@@ -458,7 +473,9 @@ test("every generated CLI call for the shipped blocks delivers its --input JSON 
     const catalog = assembly.catalog.list();
     const input = { probe: [1, "two words"], nested: { ok: true } };
     const ops: string[] = [];
-    for (const skill of renderSkills(catalog))
+    for (const skill of renderSkills(catalog).filter((file) =>
+      file.path.endsWith("/SKILL.md"),
+    ))
       for (const [, op = ""] of skill.text.matchAll(/^## `([^`]+)`/gm)) {
         const line = skillCalls(skill.text, op).cli;
         let seen: InvocationRequest | undefined;
@@ -501,7 +518,12 @@ test("sync replaces its own files whatever their size and never touches hand-wri
     writeFileSync(join(dir, "memory/SKILL.md"), mine);
     expect(await forge(assembly, ["skills", "sync"])).toMatchObject({
       ok: true,
-      result: { skipped: [".agents/skills/memory/SKILL.md"] },
+      result: {
+        skipped: [
+          ".agents/skills/memory/SKILL.md",
+          ".agents/skills/memory/reference.md",
+        ],
+      },
     });
     const issue = readFileSync(join(dir, "issue/SKILL.md"), "utf8");
     expect(issue).not.toContain("OLD LINE");
@@ -518,7 +540,10 @@ test("the lint rejects unknown operations and oversized skills; core and human-o
     candidate("vault.seal", { callers: ["human"] }),
   ];
   const skills = renderSkills(catalog, "forge");
-  expect(skills.map((s) => s.path)).toEqual(["sample/SKILL.md"]);
+  expect(skills.map((s) => s.path)).toEqual([
+    "sample/SKILL.md",
+    "sample/reference.md",
+  ]);
   expect(renderSkills([...catalog].reverse(), "forge")).toEqual(skills);
   const text = skills[0]?.text ?? "";
   expect(skillCalls(text, "sample.echo").mcp).toBe("forge_sample_echo");
@@ -696,7 +721,9 @@ test("noun references split every built-in operation and route once within both 
           entry.op.split(".")[0] === router.noun,
       );
       expect(
-        [...text.matchAll(/^## `([^`]+)`$/gm)].map((match) => match[1]),
+        [...text.matchAll(new RegExp("^## `([^`]+)`$", "gm"))].map(
+          (match) => match[1],
+        ),
       ).toEqual(entries.map((entry) => entry.op).sort());
       for (const entry of entries) {
         const section = operationSection(text, entry.op);
@@ -712,10 +739,6 @@ test("noun references split every built-in operation and route once within both 
       }
       expect(lintReference(text, catalog)).toEqual([]);
       if (router.noun === "issue") {
-        console.log("issue split bytes", {
-          skill: Buffer.byteLength(router.text),
-          reference: Buffer.byteLength(text),
-        });
         expect(Buffer.byteLength(router.text)).toBeLessThanOrEqual(7168);
         expect(Buffer.byteLength(text)).toBeLessThanOrEqual(SKILL_MAX_BYTES);
       }

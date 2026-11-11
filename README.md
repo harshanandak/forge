@@ -56,6 +56,8 @@ Start delivery with `forge-loop`. It routes a settled slice to `forge-build`
 (including opening the PR), feedback to `forge-review`, and a checked PR to
 `forge-land`. Sync also installs the review thread helpers beside their skill.
 
+Generated noun skills keep operation summaries and calling rules in `SKILL.md`. Read the adjacent `reference.md` for an operation's input fields and effects; `forge skills sync` maintains both files in each configured skills directory.
+
 The demo's first issue is `demo-1`. In another repository, use the id returned
 by create. Check results include a receipt and a status; inspect that status
 before proceeding. Skills are written under `.agents/skills`. Start or resume

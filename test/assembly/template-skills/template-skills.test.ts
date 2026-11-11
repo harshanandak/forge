@@ -67,19 +67,16 @@ test("noun sync writes, compares and retires both marked files in every requeste
 test("noun reference ownership never overwrites or deletes an unmarked file", () => {
   const root = mkdtempSync(join(tmpdir(), "forge-noun-ownership-"));
   const reference = ".agents/skills/sample/reference.md";
+  const contents = () => readFileSync(join(root, reference), "utf8");
   try {
     mkdirSync(dirname(join(root, reference)), { recursive: true });
     writeFileSync(join(root, reference), "hand-written reference\n");
     expect(syncSkills(root, [candidate()], undefined).skipped).toContain(
       reference,
     );
-    expect(readFileSync(join(root, reference), "utf8")).toBe(
-      "hand-written reference\n",
-    );
+    expect(contents()).toBe("hand-written reference\n");
     syncSkills(root, [], undefined);
-    expect(readFileSync(join(root, reference), "utf8")).toBe(
-      "hand-written reference\n",
-    );
+    expect(contents()).toBe("hand-written reference\n");
     syncSkills(root, [candidate()], undefined);
     writeFileSync(join(root, reference), `${GENERATED_MARKER}\nold\n`);
     expect(syncSkills(root, [candidate()], undefined).written).toContain(
@@ -87,9 +84,7 @@ test("noun reference ownership never overwrites or deletes an unmarked file", ()
     );
     writeFileSync(join(root, reference), "hand-written replacement\n");
     syncSkills(root, [], undefined);
-    expect(readFileSync(join(root, reference), "utf8")).toBe(
-      "hand-written replacement\n",
-    );
+    expect(contents()).toBe("hand-written replacement\n");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -97,28 +92,22 @@ test("noun reference ownership never overwrites or deletes an unmarked file", ()
 
 test("noun reference drift and missing files fail the CLI check without writing", async () => {
   await withTemplate(async (root, _call, assembly) => {
+    const cli = (args: string[]) =>
+      runCli(assembly.catalog, args, localCall(assembly));
     const list = spyOn(assembly.catalog, "list").mockReturnValue([
       ...assembly.catalog.list(),
       candidate(),
     ]);
     const reference = ".agents/skills/sample/reference.md";
     try {
-      const synced = await runCli(
-        assembly.catalog,
-        ["skills", "sync"],
-        localCall(assembly),
-      );
+      const synced = await cli(["skills", "sync"]);
       expect(synced.exitCode).toBe(0);
       expect(record(synced.envelope.result)?.written).toContain(reference);
       for (const missing of [false, true]) {
         if (missing) rmSync(join(root, reference));
         else
           writeFileSync(join(root, reference), `${GENERATED_MARKER}\nedited\n`);
-        const checked = await runCli(
-          assembly.catalog,
-          ["skills", "sync", "--check"],
-          localCall(assembly),
-        );
+        const checked = await cli(["skills", "sync", "--check"]);
         expect(checked.exitCode).toBe(1);
         expect(record(checked.envelope.result)?.differences).toContain(
           reference,
@@ -136,22 +125,17 @@ test("noun reference drift and missing files fail the CLI check without writing"
   });
 }, 30_000);
 
-test.each(["oversized", "unknown operation"])(
-  "noun reference lint refuses %s before writing",
-  async (kind) => {
+for (const kind of ["oversized", "unknown operation"])
+  test(`noun reference lint refuses ${kind} before writing`, async () => {
     await withTemplate(async (root, _call, assembly) => {
-      const entry = candidate();
+      const field = kind === "oversized" ? "x".repeat(8192) : "sample.missing";
       const inputSchema = {
         type: "object",
-        properties: {
-          [kind === "oversized" ? "x".repeat(8192) : "sample.missing"]: {
-            type: "string",
-          },
-        },
+        properties: { [field]: { type: "string" } },
       };
       const list = spyOn(assembly.catalog, "list").mockReturnValue([
         ...assembly.catalog.list(),
-        { ...entry, inputSchema },
+        { ...candidate(), inputSchema },
       ]);
       try {
         const result = await runCli(
@@ -170,9 +154,7 @@ test.each(["oversized", "unknown operation"])(
         list.mockRestore();
       }
     });
-  },
-  30_000,
-);
+  }, 30_000);
 
 type Call = (op: string, input?: object) => Promise<Record<string, unknown>>;
 
