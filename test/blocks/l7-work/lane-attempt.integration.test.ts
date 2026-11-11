@@ -282,6 +282,9 @@ test("legacy show, start, close and release preserve both attempt lanes and stat
   for (const lane of attempts)
     expect(branchAt(lane.worktree)).toBe(lane.branch);
   expect(existsSync(String(legacy.worktree))).toBe(false);
+}, 30000);
+
+test("legacy release preserves both attempt lanes after a hand close", () => {
   // A hand-closed legacy lane can be released without touching attempt lanes.
   const next = team();
   for (const [n, session] of ["B", "C"].entries())

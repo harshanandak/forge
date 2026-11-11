@@ -239,7 +239,10 @@ type WorkOperations = TrackerOperations<"issue"> & {
   readonly "issue.join": readonly [ItemRef & { ttlSeconds?: number }, unknown];
   readonly "issue.leave": readonly [ItemRef, unknown];
   readonly "issue.claim": readonly [
-    TrackerOperations<"issue">["issue.claim"][0] & { readonly reason?: string },
+    TrackerOperations<"issue">["issue.claim"][0] & {
+      readonly reason?: string;
+      readonly reopen?: string;
+    },
     LeaseGrant,
   ];
   readonly "issue.board": readonly [BoardInput, unknown];
@@ -5484,6 +5487,109 @@ const operations: Operations<WorkOperations> = {
     const id = ids.stored(input.id);
     const held = cleanupHeld(state, id);
     if (held) cleanupConflict(held);
+    if (input.reopen !== undefined) {
+      const record = get(state, id, input.id);
+      const reopen = input.reopen.trim(),
+        reason = input.reason?.trim();
+      const invalid = (text: string) =>
+        !text || Array.from(text).length > 65536;
+      if (invalid(reopen) || (reason !== undefined && invalid(reason)))
+        fail(
+          "INPUT_INVALID",
+          "reason must contain 1 to 65536 characters after trimming",
+        );
+      if (stored(record).status !== "closed")
+        fail("INPUT_CONFLICT", "Only closed issues can be reopened");
+      const { receipt, withoutReceipt, closeReason, ...value } = stored(
+        record,
+      ) as Stored & { closeReason?: string };
+      const graph = dependencyGraph(state);
+      const blockers = blockedBy(graph, value).map((dependency) => ({
+        id: ids.shown(dependency),
+        ...holder(state, dependency),
+      }));
+      const current = live(state, id);
+      if (
+        blockers.length &&
+        reason === undefined &&
+        (!current || matches(current.holder, state.holder()))
+      )
+        fail(
+          "CLAIM_BLOCKED",
+          blockers
+            .map(
+              (b) =>
+                `${b.id} (${graph.read(ids.stored(b.id)) ? "open" : "missing"}) ${b.holder ? JSON.stringify(b.holder) : ""}`,
+            )
+            .join(", "),
+          {
+            observed: { blockers },
+            repair:
+              "Pass --reason with a non-empty explanation to claim blocked work.",
+          },
+        );
+      const reservation = state.get(cleanupKey(id));
+      const reserved = cleanupHeld(state, id);
+      if (reserved) cleanupConflict(reserved);
+      const readSet = [
+        { key: record.key, expectRevision: record.revision },
+        { key: cleanupKey(id), expectRevision: reservation?.revision ?? 0 },
+        ...value.dependsOn.map((dependency) => ({
+          key: key(dependency),
+          expectRevision: graph.read(dependency)?.revision ?? 0,
+        })),
+      ];
+      const prefix = `reopen:${id}:`;
+      const entries = [
+        {
+          key: record.key,
+          value: { ...value, status: "open" },
+          expectRevision: record.revision,
+        },
+        {
+          key: `${prefix}${state.count(prefix) + 1}`,
+          value: {
+            ...(receipt === undefined ? {} : { receipt }),
+            ...(withoutReceipt === undefined ? {} : { withoutReceipt }),
+            ...(closeReason === undefined ? {} : { closeReason }),
+            reason: reopen,
+            ...(reason === undefined ? {} : { claimReason: reason }),
+            holder: state.holder(),
+          },
+          expectRevision: 0,
+        },
+      ];
+      const own =
+        current && matches(current.holder, state.holder())
+          ? current
+          : undefined;
+      if (own) {
+        state
+          .withOwnLease(key(id))
+          .putMany(entries, { subject: key(id), readSet });
+      }
+      const ttl =
+        input.ttlSeconds ??
+        (config as WorkConfig | undefined)?.claimTtlSeconds ??
+        3600;
+      const acquired =
+        own ??
+        state.acquire(key(id), ttl * 1000, {
+          readSet,
+          entries,
+          ...(reason === undefined ? {} : { metadata: { reason } }),
+        });
+      return {
+        ...grant(state, id, acquired, ids),
+        ...(blockers.length
+          ? { warnings: [{ code: "CLAIMED_BLOCKED", blockers }] }
+          : {}),
+      };
+    }
+    if (stored(get(state, id, input.id)).status === "closed")
+      fail("INPUT_CONFLICT", "Closed issues cannot be claimed", {
+        repair: `forge issue claim ${input.id} --reopen "<why>"`,
+      });
     if (stored(get(state, id, input.id)).status !== "open")
       fail("INPUT_CONFLICT", "Closed issues cannot be claimed");
     const record = get(state, id, input.id);
@@ -5614,13 +5720,18 @@ const operations: Operations<WorkOperations> = {
           (deliveredUrl === undefined || link.url === deliveredUrl)
         );
       })?.value as LinkInput | undefined;
+      const closeRepair =
+        `Link a merged PR with forge issue link ${ids.shown(id)} --relation delivers --url <pr-url>, then close with --receipt <receipt-id>; ` +
+        `or omit --receipt and run forge issue close ${ids.shown(id)} --without-receipt "<reason>".`;
       if (
         !link ||
         !/^https:\/\/[^\s/]+\/[^\s/]+\/[^\s/]+\/pull\/[1-9]\d*\/?$/.test(
           link.url,
         )
       )
-        fail("PR_UNLINKED", "Link the delivered pull request before closing");
+        fail("PR_UNLINKED", "Link the delivered pull request before closing", {
+          repair: closeRepair,
+        });
       const bound = services as {
         process?: ProcessService;
         environment?: EnvironmentService;
@@ -5631,6 +5742,7 @@ const operations: Operations<WorkOperations> = {
           "Verifying the delivered PR requires process and environment services",
         );
       let output: string;
+      let prNotFound = false;
       try {
         const env = bound.environment.select([
           "PATH",
@@ -5663,10 +5775,22 @@ const operations: Operations<WorkOperations> = {
             signal,
           },
         );
+        prNotFound =
+          result.exitCode !== null &&
+          result.exitCode !== 0 &&
+          !result.timedOut &&
+          !result.truncated &&
+          /^GraphQL: Could not resolve to a PullRequest with the number of [1-9]\d*\.(?: \(repository\.pullRequest\))?\s*$/.test(
+            result.stderr,
+          );
         if (result.exitCode !== 0 || result.timedOut || result.truncated)
           fail("UNAVAILABLE", "Could not read the delivered PR; retry");
         output = result.stdout;
       } catch {
+        if (prNotFound)
+          fail("PR_NOT_FOUND", `Could not find delivered PR ${link.url}`, {
+            repair: closeRepair,
+          });
         fail("UNAVAILABLE", "Could not read the delivered PR; retry");
       }
       let pr: unknown;

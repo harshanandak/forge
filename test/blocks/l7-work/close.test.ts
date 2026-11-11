@@ -7,6 +7,8 @@ import { TrustStore, admit, grant } from "../../fixtures/owner-approval.ts";
 import { nodeRunIsolation } from "../../../src/adapters/node-runtime/isolation.ts";
 import type { ProcessService } from "../../../src/assembly/providers.ts";
 import type { ProcessResult } from "../../../src/ports/process.ts";
+import { ForgeFailure } from "../../../src/contract/failure.ts";
+import { refuse } from "../../../src/core/trust/index.ts";
 
 setDefaultTimeout(30_000);
 
@@ -359,6 +361,102 @@ for (const subject of [head, merge]) {
     });
   });
 }
+
+async function closeFailure(options: Options) {
+  const harness = project(
+    { id: "receipt", status: "PASS", subject: head },
+    options,
+  );
+  const before = harness.stored(),
+    previous = globals.fail;
+  globals.fail = refuse;
+  try {
+    await harness.call({ receipt: "receipt" });
+  } catch (error) {
+    expect(error).toBeInstanceOf(ForgeFailure);
+    expect(harness.stored()).toEqual(before);
+    return { error: (error as ForgeFailure).error, calls: harness.calls };
+  } finally {
+    globals.fail = previous;
+  }
+  throw new Error("Expected close to refuse before writing");
+}
+
+function expectClosePaths(error: { message: string; repair?: string }) {
+  const guidance = `${error.message} ${error.repair ?? ""}`;
+  expect(guidance).toContain(
+    "forge issue link work-1 --relation delivers --url",
+  );
+  expect(guidance).toMatch(/merged/i);
+  expect(guidance).toContain('--without-receipt "<reason>"');
+}
+
+test("unlinked receipt close names both working paths without writing or calling gh", async () => {
+  const { error, calls } = await closeFailure({ links: [] });
+  expect(error.code).toBe("PR_UNLINKED");
+  expectClosePaths(error);
+  expect(calls).toHaveLength(0);
+}, 10000);
+
+// gh's existing diagnostic: https://github.com/cli/cli/issues/14038
+const missingPr =
+  "GraphQL: Could not resolve to a PullRequest with the number of 1. (repository.pullRequest)";
+
+test("missing delivered PR names its URL and both working paths with retry never and no write", async () => {
+  const { error } = await closeFailure({
+    result: { exitCode: 1, stderr: missingPr },
+  });
+  expect(error).toMatchObject({ code: "PR_NOT_FOUND", retry: "never" });
+  expect(`${error.message} ${error.repair ?? ""}`).toContain(pr);
+  expectClosePaths(error);
+}, 10000);
+
+const transientResults: readonly [string, Partial<ProcessResult>][] = [
+  ["timeout", { exitCode: 1, timedOut: true, stderr: missingPr }],
+  ["truncation", { exitCode: 1, truncated: true, stderr: missingPr }],
+  ["network", { exitCode: 1, stderr: "error connecting to api.github.com" }],
+  [
+    "auth",
+    {
+      exitCode: 4,
+      stderr: "To get started with GitHub CLI, please run: gh auth login",
+    },
+  ],
+  [
+    "repository lookup",
+    {
+      exitCode: 1,
+      stderr:
+        "GraphQL: Could not resolve to a Repository with the name 'example/repo'.",
+    },
+  ],
+  ["ambiguous 404", { exitCode: 1, stderr: "HTTP 404: Not Found" }],
+];
+for (const [name, result] of transientResults) {
+  test(`close keeps the current unavailable retry for ${name} without writing`, async () => {
+    const { error } = await closeFailure({ result });
+    expect(error).toMatchObject({
+      code: "UNAVAILABLE",
+      retry: "never",
+      message: "Could not read the delivered PR; retry",
+    });
+  }, 10000);
+}
+
+test("a local project closes without a receipt, link or gh and stores its reason", async () => {
+  const harness = project(undefined, { links: [], process: "unbound" });
+  expect(await harness.call({ withoutReceipt: "local project" })).toMatchObject(
+    {
+      status: "closed",
+      withoutReceipt: "local project",
+    },
+  );
+  expect(harness.read()).toMatchObject({
+    status: "closed",
+    withoutReceipt: "local project",
+  });
+  expect(harness.calls).toHaveLength(0);
+}, 10000);
 
 const refusals: readonly [string, Options, string, string?][] = [
   ["old head", {}, "RECEIPT_HEAD_MISMATCH", "c".repeat(40)],

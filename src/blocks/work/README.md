@@ -1,5 +1,7 @@
 # Work block
 
+`forge issue claim <id> --reopen "<why>"` reopens a closed issue and gives the caller its lease, keeping a still-held generation. The trimmed explanation must contain 1 to 65,536 characters. The status, earlier close evidence and lease acquisition commit atomically; a held-lease reopen uses a fenced batch. The current issue drops its close fields, and a `reopen:<id>:<n>` record keeps them with the explanation and holder. Open issues, another holder and active cleanup reservations are refused without writes.
+
 `forge lane attempt <issue-id> --attempt attempt-N --branch <branch> --brief <path>` requires your live attempt lease and starts a separate capped checkout beside the issue lane. Repeating the same arguments adopts a checkout preserved after a failed registry write. Legacy lane commands leave attempt lanes alone; attempt cleanup is deferred.
 
 `forge attempt slots <issue-id> --count N` lets the coordinator open 1-16 competing slots. Anyone can use `forge attempt reserve <issue-id> [--label text] [--ttl-seconds N]`; a live retry returns the same attempt. Each attempt has its own lease, separate from the issue claim. `forge attempt note <issue-id> --attempt attempt-N --body text` publishes under that lease, and `forge attempt release <issue-id> --attempt attempt-N` releases only the caller's attempt. `issue show` lists every attempt in order, including expired and released history. Full slots, stale leases and unauthorized writes refuse without changing state.
