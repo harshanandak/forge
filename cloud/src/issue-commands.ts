@@ -1,6 +1,6 @@
 // POST /p/<project>/command: typed issue commands at the project authority.
-// This slice checks the envelope and the context, runs issue.show as a read and refuses every
-// other command as not yet supported: nothing is written. Everything the caller sends is
+// This slice checks the envelope and the context, runs issue.show and issue.list as reads and
+// refuses every other command as not yet supported: nothing is written. Everything the caller sends is
 // untrusted. The envelope and context are closed shapes, the device comes from the token and the
 // project from the server, and no caller value becomes an SQL identifier, a namespace or a key.
 import manifest from "../../src/blocks/work/forge.block.json" with { type: "json" };
@@ -25,11 +25,12 @@ import {
   RECORD_READS,
   type IssueViews,
 } from "./issue-read.ts";
+import { listIssues } from "./issue-list.ts";
 import { PROJECT_NAME } from "./project-name.ts";
 import { readOnlyStore, type DurableStorage } from "./store.ts";
 
 export const MAX_COMMAND_BODY = 512 * 1024;
-/** The most a show response may be, in UTF-8 bytes, measured on the whole envelope. */
+/** The most a show or list response may be, in UTF-8 bytes, measured on the whole envelope. */
 export const MAX_SHOW_RESPONSE_BYTES = 1_048_576;
 const COMMAND_ROUTE = new RegExp(`^/p/(${PROJECT_NAME})/command$`);
 const FIELDS = ["requestId", "op", "input", "context", "dryRun"];
@@ -175,15 +176,21 @@ function lazyViews(storage: DurableStorage): IssueViews {
 }
 
 /**
- * Prepares a command and runs it. Only issue.show runs: it returns the response, serialized once
- * and measured in UTF-8 bytes. Every other operation is refused. Throws ForgeFailure when refused,
+ * Prepares a command and runs it. Only issue.show and issue.list run: each returns the response,
+ * serialized once and measured in UTF-8 bytes. Every other operation is refused. Throws ForgeFailure when refused,
  * and runs no await, so the caller's token check stays current until the response is built.
  */
 export function runCommand(text: string, host: CommandRun): Response {
   const { op, input } = prepareCommand(text, host);
-  if (op !== "issue.show")
+  const read =
+    op === "issue.show"
+      ? readIssue
+      : op === "issue.list"
+        ? listIssues
+        : undefined;
+  if (read === undefined)
     throw fail("INPUT_INVALID", "Commands are not yet supported in cloud");
-  const item = readIssue(
+  const result = read(
     lazyViews(host.storage),
     input,
     host.now,
@@ -193,7 +200,7 @@ export function runCommand(text: string, host: CommandRun): Response {
     ok: true,
     op,
     status: "OK",
-    result: item,
+    result,
     warnings: [],
   });
   if (new TextEncoder().encode(body).length > MAX_SHOW_RESPONSE_BYTES)
