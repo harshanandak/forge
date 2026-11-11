@@ -12,6 +12,7 @@ import { refuse } from "../../../src/core/trust/index.ts";
 import { ForgeFailure } from "../../../src/contract/failure.ts";
 import type { HandlerCall } from "../../../src/contract/author.ts";
 import type {
+  Attempt,
   BlockManifest,
   DocsRecords,
   LeaseGrant,
@@ -329,13 +330,6 @@ test("CLI dispatch leaves a reacquired membership and works after coordinator ex
   expect((await p.call<View>("show")).participants).toEqual([]);
 }, 10000);
 
-type Attempt = LeaseGrant & {
-  label?: string;
-  holder: LeaseHolder;
-  baseRevision: number;
-  createdAt: string;
-  live: boolean;
-};
 type AttemptsView = Omit<TrackerItem, "mode"> & {
   mode: "competing";
   slots: number;
@@ -428,22 +422,36 @@ test("a live retry is unchanged and expired or released ids are never reused", a
     { id: "attempt-4", live: true },
   ]);
 }, 10000);
-test("only a live attempt's holder can publish a fenced note", async () => {
+test("ambient generations cannot authorize expired or other attempts, or reject an own live note", async () => {
   await competing();
   await attempt(B, 1);
   await attempt(C);
   p.advance(1000);
   await attempt(D);
   await refused("LEASE_EXPIRED", () =>
-    p.call("attempt.note", B, { attempt: "attempt-1", body: "expired" }),
+    p.call("attempt.note", B, { attempt: "attempt-1", body: "expired" }, 2),
   );
   await refused("LEASE_NOT_HELD", () =>
-    p.call("attempt.note", C, { attempt: "attempt-3", body: "other" }),
+    p.call("attempt.note", C, { attempt: "attempt-3", body: "other" }, 2),
   );
   await refused("LEASE_STALE", () =>
-    p.call("attempt.note", C, { attempt: "attempt-2", body: "stale" }, 2),
+    p.owner.put(ns, "stale-note", { body: "stale" }, C.actor, {
+      expectRevision: 0,
+      fence: {
+        ...p.owner
+          .export()
+          .leases.find(({ lease }) => lease.holder.session.id === "C")!.lease,
+        holder: C,
+        generation: 2,
+      },
+    }),
   );
-  await p.call("attempt.note", C, { attempt: "attempt-2", body: "proposal" });
+  await p.call(
+    "attempt.note",
+    C,
+    { attempt: "attempt-2", body: "proposal" },
+    2,
+  );
   expect(
     p.owner
       .export()
@@ -509,7 +517,9 @@ test("slot changes require the coordinator fence, validate N and never evict liv
     p.call("attempt.slots", B, { count: 2 }),
   );
   await refused("LEASE_STALE", () =>
-    p.call("attempt.slots", A, { count: 2 }, 2),
+    p.owner.putMany(ns, [], A.actor, {
+      fence: { ...p.held()!, generation: 2 },
+    }),
   );
   for (const count of [0, 17, 1.5])
     await refused("INPUT_INVALID", () => p.call("attempt.slots", A, { count }));
@@ -558,15 +568,15 @@ test("collaborative show remains byte-identical without competing slots", async 
 test("attempt operations declare their actual lease modes and generated surfaces", () => {
   const docs = read<DocsRecords>("docs.json");
   for (const [op, leaseMode] of [
-    ["slots", "held"],
+    ["slots", "acquire"],
     ["reserve", "acquire"],
     ["release", "acquire"],
-    ["note", "held"],
+    ["note", "acquire"],
   ]) {
     expect(manifest.operations[`attempt.${op}`]).toMatchObject({
       context: "leased",
       leaseMode,
-      effects: ["issue:write"],
+      effects: ["attempt:write"],
       callers: ["agent", "human"],
       args: ["id"],
     });

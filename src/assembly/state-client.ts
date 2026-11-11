@@ -56,6 +56,7 @@ export interface LeaseStateClient extends DeletableStateClient {
   renew(subject: string, durationMs: number): LeaseRecord;
   release(subject: string): LeaseRecord;
   releaseOwn(subject: string): LeaseRecord;
+  withOwnLease(subject: string): LeaseStateClient;
   /** Completes only the note already authorized by a fenced work landing. */
   appendLandingComment(input: LandingCommentInput): StateRecord;
   put(
@@ -271,6 +272,23 @@ export function createStateClient(options: {
     },
     renew: (subject: string, durationMs: number) =>
       writable().renew(namespace, fence(subject), durationMs),
+    withOwnLease(subject: string): LeaseStateClient {
+      if (context.variant !== "leased")
+        refuse("CONTEXT_MISSING", "Missing lease holder");
+      const lease = writable().lease(namespace, subject);
+      if (!lease) refuse("LEASE_NOT_HELD", "No lease on this subject");
+      return Object.freeze({
+        ...createStateClient({
+          ...options,
+          context: {
+            ...context,
+            leaseMode: "held",
+            leaseGeneration: lease.generation,
+          },
+        }),
+        now: this.now,
+      });
+    },
     releaseOwn(subject: string) {
       const lease = writable().lease(namespace, subject);
       if (!lease) refuse("LEASE_NOT_HELD", "No lease on this subject");

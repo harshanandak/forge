@@ -5238,10 +5238,11 @@ const operations: Operations<WorkOperations> = {
     );
   },
   "attempt.slots": ({ input, services, config }) => {
-    const state = client(services),
-      ids = idsFor(state, config),
+    let state = client(services);
+    const ids = idsFor(state, config),
       id = ids.stored(input.id);
     get(state, id, input.id);
+    state = state.withOwnLease(key(id));
     state.putMany([], { subject: key(id) });
     if (!Number.isInteger(input.count) || input.count < 1 || input.count > 16)
       fail("INPUT_INVALID", "Slot count must be an integer from 1 to 16");
@@ -5328,12 +5329,13 @@ const operations: Operations<WorkOperations> = {
     return { id: ids.shown(id) };
   },
   "attempt.note": ({ input, services, config }) => {
-    const state = client(services),
-      ids = idsFor(state, config),
+    let state = client(services);
+    const ids = idsFor(state, config),
       id = ids.stored(input.id);
     get(state, id, input.id);
     const record = state.get(`attempt:${id}:${input.attempt}`);
     if (!record) fail("LEASE_NOT_HELD", "No such attempt on this issue");
+    state = state.withOwnLease(key(record.key));
     const prefix = `note:${record.key}:`;
     persist(
       state,

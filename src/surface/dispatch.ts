@@ -267,36 +267,6 @@ async function heldContext(
   const id = record(input)?.id;
   const show = `${op.split(".")[0] ?? ""}.show`;
   if (
-    op.startsWith("attempt.") &&
-    declaration?.leaseMode === "held" &&
-    context.session !== undefined &&
-    context.leaseGeneration === undefined &&
-    typeof id === "string"
-  ) {
-    try {
-      const shown = await catalog.invoke({
-        schemaVersion: "forge.invocation/1",
-        requestId: randomUUID(),
-        op: "issue.show",
-        input: { id },
-        caller: options.caller,
-        context,
-      });
-      const view = shown.ok ? record(shown.result) : undefined;
-      const rows = view?.attempts;
-      const lease: unknown =
-        op === "attempt.note" && Array.isArray(rows)
-          ? rows.find((row) => record(row)?.id === record(input)?.attempt)
-          : view?.lease;
-      const generation = record(lease)?.generation;
-      if (typeof generation === "number")
-        return { ...context, leaseGeneration: generation };
-    } catch {
-      /* Keep the handler's own missing-context refusal. */
-    }
-    return context;
-  }
-  if (
     declaration?.context !== "leased" ||
     declaration.leaseMode === "acquire" ||
     context.session === undefined ||
