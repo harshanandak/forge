@@ -295,10 +295,21 @@ test("an oversize, malformed or mismatched row never establishes a historical pr
       padded((pad) => acme(3, "issue:work-3", pad), MAX_RECORD_BYTES + 1, "a"),
     ],
     ["wrapper for another key", "issue:work-4", acme(4, "issue:work-5")],
-    ["value not an object", "issue:work-6", JSON.stringify(wrap("acme"))],
+    [
+      "value not an object",
+      "issue:work-6",
+      JSON.stringify(wrap("acme", { key: "issue:work-6" })),
+    ],
+    [
+      "value id for another row",
+      "issue:work-2",
+      JSON.stringify(
+        wrap(issue(3, { prefix: "other" }), { key: "issue:work-2" }),
+      ),
+    ],
   ];
   for (const [name, key, body] of planted)
-    for (const id of ["work-1", "acme-1"]) {
+    for (const id of ["work-1", "acme-1", "other-1"]) {
       const f = fixture();
       f.put("issue:work-1", issue(1, { prefix: "forge" }));
       f.raw(key!, body!);

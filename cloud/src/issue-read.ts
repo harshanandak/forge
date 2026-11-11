@@ -22,11 +22,11 @@ const BODY = (table: string, column: string) =>
 const RECORD = BODY("state_records", "key");
 const LEASE = BODY("state_leases", "subject");
 // MODE: a slots record (competing) or any participant record (collaborative) exists.
-// MINTED: a stored issue carries this prefix (`work` if none): in-bound, valid JSON, wrapper matching its row.
+// MINTED: a stored issue carries this prefix (`work` if none): in-bound, valid JSON, wrapper and value id matching its row.
 const MODE =
   "SELECT 1 AS found FROM state_records WHERE namespace=? AND (key=? OR (key>=? AND key<?)) LIMIT 1";
 const MINTED =
-  "SELECT 1 AS found FROM state_records WHERE namespace=? AND key>=? AND key<? AND CASE WHEN length(CAST(body AS BLOB)) <= ? THEN CASE WHEN json_valid(body) THEN CASE WHEN json_type(body,'$.value')='object' AND json_extract(body,'$.namespace')=namespace AND json_extract(body,'$.key')=key THEN coalesce(json_extract(body,'$.value.prefix'),'work') END END END=? LIMIT 1";
+  "SELECT 1 AS found FROM state_records WHERE namespace=? AND key>=? AND key<? AND CASE WHEN length(CAST(body AS BLOB)) <= ? THEN CASE WHEN json_valid(body) THEN CASE WHEN json_type(body,'$.value')='object' AND json_extract(body,'$.namespace')=namespace AND json_extract(body,'$.key')=key AND json_extract(body,'$.value.id')=substr(key,7) THEN coalesce(json_extract(body,'$.value.prefix'),'work') END END END=? LIMIT 1";
 
 /** Read-only views of the two state tables; undefined when the table does not exist yet. */
 export interface IssueViews {
