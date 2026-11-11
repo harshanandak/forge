@@ -118,12 +118,13 @@ type CallBudget = ItemRef & {
 type Lane = {
   issue: string;
   issueId?: string;
+  attempt?: string;
   worktree: string;
   branch: string;
   brief: string;
   base?: string;
 };
-type LaneInput = ItemRef & { branch: string; brief: string };
+type LaneInput = ItemRef & { branch: string; brief: string; attempt?: string };
 type LaneOutput = Lane & { lease?: TrackerItem["lease"] };
 type CloseIssue = (
   call: HandlerCall<TrackerOperations<"issue">["issue.close"][0]>,
@@ -152,6 +153,7 @@ type ResumeInput = StopInput & {
 type Usage = { used: number; limit: number };
 type LaneRow = {
   id: string;
+  attempt?: string;
   step: string;
   pr?: number;
   stopped: boolean;
@@ -254,6 +256,10 @@ type WorkOperations = TrackerOperations<"issue"> & {
   readonly "lane.record": readonly [
     TailRecordInput,
     { lane: string; step: string; n: number; recorded: true } | ReplyResult,
+  ];
+  readonly "lane.attempt": readonly [
+    LaneInput & { attempt: string },
+    LaneOutput,
   ];
   readonly "lane.start": readonly [LaneInput, LaneOutput];
   readonly "lane.show": readonly [ItemRef, LaneOutput];
@@ -1053,6 +1059,9 @@ function laneRegistry(files: FilesService): {
             typeof (row as Record<string, unknown>)[field] === "string",
         ) &&
         (!("base" in row) || typeof row.base === "string") &&
+        (!("attempt" in row) ||
+          (typeof row.attempt === "string" &&
+            /^attempt-[1-9][0-9]*$/.test(row.attempt))) &&
         (!("issueId" in row) ||
           (typeof row.issueId === "string" && /^work-\d+$/.test(row.issueId))),
     )
@@ -1066,7 +1075,7 @@ function laneRegistry(files: FilesService): {
  * issue cannot be found keeps its slot.
  */
 function holdsSlot(state: LeaseStateClient, lane: Lane): boolean {
-  const id = laneIdentity(lane),
+  const id = laneIssueIdentity(lane),
     record = state.get(key(id));
   return (
     !record || stored(record).status === "open" || live(state, id) !== undefined
@@ -1226,6 +1235,10 @@ async function sweepPrivateRefs(
 }
 
 function laneIdentity(lane: Lane): string {
+  const id = laneIssueIdentity(lane);
+  return lane.attempt === undefined ? id : `${id}:${lane.attempt}`;
+}
+function laneIssueIdentity(lane: Lane): string {
   // Registry ids belong to this project; legacy writers stored a display prefix.
   const number = QUALIFIED.exec(lane.issue)?.[2];
   if (!number) fail("INPUT_INVALID", "Invalid issue identity in lane registry");
@@ -2682,7 +2695,9 @@ function beforeMerge(
  * A journal that cannot be read is listed too, so its pause shows.
  */
 function activeLanes(state: LeaseStateClient, files: FilesService): string[] {
-  const found = laneRegistry(files).lanes.map(laneIdentity);
+  const found = laneRegistry(files)
+    .lanes.filter((lane) => lane.attempt === undefined)
+    .map(laneIdentity);
   for (const row of state.list("autopilot:")) {
     const id = row.key.slice("autopilot:".length);
     if (!/^work-\d+$/.test(id) || found.includes(id)) continue;
@@ -3692,11 +3707,20 @@ async function laneStatus(
     flags = readGlobal(state).value;
     // Count slots the way lane start does, so the two never disagree on the cap.
     holding = lanes.filter((lane) => holdsSlot(state, lane)).length;
-    rows = listed.map((id) => {
+    rows = [
+      ...listed.map((id) => ({ id, attempt: undefined })),
+      ...lanes
+        .filter((lane) => lane.attempt !== undefined)
+        .map((lane) => ({
+          id: laneIssueIdentity(lane),
+          attempt: lane.attempt,
+        })),
+    ].map(({ id, attempt }) => {
       const used = usageOf(state, ids, id, limits);
       const recorded = beforeMerge(state, id);
       return {
         id: ids.shown(id),
+        ...(attempt === undefined ? {} : { attempt }),
         step: used.journal?.step ?? recorded.step ?? "before merge",
         ...(used.journal || recorded.pr
           ? { pr: used.journal?.pr ?? recorded.pr! }
@@ -3991,6 +4015,7 @@ const operations: Operations<WorkOperations> = {
       ...(lease ? { lease } : {}),
     };
   },
+  "lane.attempt": (call) => operations["lane.start"](call),
   "lane.start": async ({ input, services, config, signal, deadline }) => {
     const state = client(services),
       ids = idsFor(state, config);
@@ -3998,6 +4023,15 @@ const operations: Operations<WorkOperations> = {
     const issue = item(state, get(state, issueId, input.id), ids);
     if (issue.status === "closed")
       fail("INPUT_CONFLICT", `Issue ${issue.id} is closed`);
+    let attemptState: LeaseStateClient | undefined;
+    const fence = () => {
+      if (input.attempt === undefined) return;
+      const record = state.get(`attempt:${issueId}:${input.attempt}`);
+      if (!record) fail("NOT_FOUND", "No such attempt on this issue");
+      attemptState ??= state.withOwnLease(key(record.key));
+      attemptState.putMany([], { subject: key(record.key) });
+    };
+    fence();
     const files = laneFiles(services);
     const bound = services as {
       process?: ProcessService;
@@ -4106,6 +4140,7 @@ const operations: Operations<WorkOperations> = {
       );
     }
     try {
+      fence();
       const saved = laneRegistry(files);
       const trees = (await run(["worktree", "list", "--porcelain", "-z"]))
         .split("\0\0")
@@ -4121,7 +4156,11 @@ const operations: Operations<WorkOperations> = {
           };
         });
       const lanes: Lane[] = [];
-      for (const lane of saved.lanes)
+      for (const lane of saved.lanes) {
+        if (lane.attempt !== undefined) {
+          lanes.push(lane);
+          continue;
+        }
         if (
           trees.some((tree) => pathKey(tree.path) === pathKey(lane.worktree)) &&
           (await run(
@@ -4130,14 +4169,25 @@ const operations: Operations<WorkOperations> = {
           )) === "true"
         )
           lanes.push(lane);
+      }
       const exclude = files.read("info/exclude", 262144, "common") ?? null;
       if (!exclude?.split(/\r?\n/).includes(".worktrees/"))
         files.write("info/exclude", `${exclude ?? ""}\n.worktrees/\n`, {
           area: "common",
           expected: exclude,
         });
-      const existing = lanes.find((lane) => laneIdentity(lane) === issueId);
-      const worktree = `${slash(trees[0]!.path)}/.worktrees/${issue.id}`;
+      const laneId =
+        input.attempt === undefined ? issueId : `${issueId}:${input.attempt}`;
+      const existing = lanes.find((lane) => laneIdentity(lane) === laneId);
+      const worktree = `${slash(trees[0]!.path)}/.worktrees/${issue.id}${input.attempt === undefined ? "" : `-${input.attempt}`}`;
+      if (
+        saved.lanes.some(
+          (lane) =>
+            pathKey(lane.worktree) === pathKey(worktree) &&
+            laneIdentity(lane) !== laneId,
+        )
+      )
+        fail("INPUT_CONFLICT", "Worktree path is recorded for another lane");
       const briefFile = `${slash(files.root)}/${relativeBrief}`;
       if (existing) {
         if (
@@ -4178,11 +4228,13 @@ const operations: Operations<WorkOperations> = {
       const lane: Lane = {
         issue: issue.id,
         issueId,
+        ...(input.attempt === undefined ? {} : { attempt: input.attempt }),
         worktree,
         branch: input.branch,
         brief: briefFile,
         base: adopted ? await run(["-C", worktree, "rev-parse", "HEAD"]) : base,
       };
+      fence();
       try {
         files.write(
           registryPath,
@@ -4192,7 +4244,7 @@ const operations: Operations<WorkOperations> = {
       } catch {
         fail(
           "INPUT_CONFLICT",
-          `Worktree preserved at ${worktree}; registry publication failed. Rerun lane.start with the same arguments to adopt it`,
+          `Worktree preserved at ${worktree}; registry publication failed. Rerun ${input.attempt === undefined ? "lane.start" : "lane.attempt"} with the same arguments to adopt it`,
         );
       }
       return { ...lane, ...(issue.lease ? { lease: issue.lease } : {}) };

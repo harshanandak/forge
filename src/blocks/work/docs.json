@@ -24,6 +24,20 @@
         }
       ]
     },
+    "lane.attempt": {
+      "title": "Start attempt lane",
+      "summary": "Own live attempt lease; separate capped worktree. Same arguments adopt preserved work. Never cleans up another lane.",
+      "examples": [
+        {
+          "input": {
+            "id": "demo-1",
+            "attempt": "attempt-1",
+            "branch": "feat/attempt",
+            "brief": ".worktrees/briefs/demo-1.md"
+          }
+        }
+      ]
+    },
     "lane.start": {
       "title": "Start lane",
       "summary": "Start a capped worktree for an open issue. Brief must be in the project with Goal, Acceptance test, Files, Forbidden actions, Stop point and Prior art sections. Repeating the same arguments adopts a preserved worktree.",
