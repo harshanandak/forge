@@ -1,4 +1,4 @@
-2026-11-11 owner decisions (forge-1198, supersedes the closed-layer, enterprise-license and entitlement parts of this plan and closes forge-1077 as superseded): team features are open source under MIT like the core, no license or entitlement check exists anywhere, and only the hosted service is paid. The first real cloud user is the owner on 2 machines plus cloud agents on 1 project, delivered by forge-1203 slices forge-1206 to forge-1210. Refresh tokens (forge-1125) follow the CLI cloud client. Competing attempts are frozen except for trials.
+2026-11-11 owner decisions (forge-1198, supersedes the closed-layer, enterprise-license and entitlement parts of this plan and closes forge-1077 as superseded): team features are open source under MIT like the core, no license or entitlement check exists anywhere, and only the hosted service is paid. The first real cloud user is the owner on 2 machines plus cloud agents on 1 project, delivered by forge-1203 slices forge-1206 to forge-1210. Refresh tokens (forge-1125) follow the CLI cloud client (forge-1210 and its cross-device proof). Competing attempts are frozen except for trials.
 
 Decisions needed: none.
 
@@ -8,7 +8,7 @@ Let 2 people and their agents share 1 project through one connected authority, u
 
 ## Before teams
 
-Teams wait for the owner's own cloud journey. forge-1203 delivers it in 5 slices: forge-1206 (device challenges and token delivery), forge-1207 (owner approval through Clerk), forge-1208 (`forge cloud login` and private credentials), forge-1209 (first project-authority issue commands) and forge-1210 (CLI lease client and the 3-session proof on 2 machines). Its plan is the source for the login, token and command routes. Do not start a task below until forge-1210 shows the owner working on 2 machines through the cloud. Refresh tokens (forge-1125) come after forge-1208. This plan reuses those routes and adds no second login path.
+Teams wait for the owner's own cloud journey. forge-1203 delivers it in 5 slices: forge-1206 (device challenges and token delivery), forge-1207 (owner approval through Clerk), forge-1208 (`forge cloud login` and private credentials), forge-1209 (first project-authority issue commands) and forge-1210 (CLI lease client and the 3-session proof on 2 machines). Its plan is the source for the login, token and command routes. Do not start a task below until forge-1210 shows the owner working on 2 machines through the cloud. Refresh tokens (forge-1125) come after forge-1210 and its cross-device proof are complete. This plan reuses those routes and adds no second login path.
 
 ## Scope and settled decisions
 
