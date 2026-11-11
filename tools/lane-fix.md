@@ -13,3 +13,5 @@ Never bypass hooks, validation or security gates, and never print secrets. For G
 {{TIER}}
 
 Reply with the head SHA, fixes and failing/green evidence, checks and exit codes, saved output paths, follow-up issue ids, and anything not checked.
+
+Check the fix against the same acceptance table in the lane brief, row by row.

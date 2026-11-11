@@ -40,7 +40,7 @@
     },
     "lane.start": {
       "title": "Start lane",
-      "summary": "Start a capped worktree for an open issue. Brief must be in the project with Goal, Acceptance test, Files, Forbidden actions, Stop point and Prior art sections. Repeating the same arguments adopts a preserved worktree.",
+      "summary": "Start a capped worktree for an open issue. Project-local brief needs Goal, Acceptance test (table: Case, Input, Status, Exit, Eligibility, Unchanged; nonempty first data cell), Files, Forbidden actions, Stop point and Prior art. Same arguments adopt a preserved worktree.",
       "examples": [
         {
           "input": {

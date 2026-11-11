@@ -1,3 +1,4 @@
+import { acceptanceTable, noTableProblem } from "./lane-brief-fixture.ts";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
@@ -38,7 +39,11 @@ function git(args: string[], cwd = repo) {
   expect(r.status, r.stderr).toBe(0);
   return r.stdout.trim();
 }
-function call(op: string, input: object = {}, session = "A"): Reply {
+function call(
+  op: string,
+  input: object = {},
+  session = "A",
+): Reply & { exit: number } {
   const r = spawnSync(
     "node",
     [bin, ...op.split("."), "--input", JSON.stringify(input)],
@@ -55,7 +60,9 @@ function call(op: string, input: object = {}, session = "A"): Reply {
     },
   );
   expect(r.error).toBeUndefined();
-  return JSON.parse(r.stdout) as Reply;
+  return Object.assign(JSON.parse(r.stdout), { exit: r.status }) as Reply & {
+    exit: number;
+  };
 }
 function good(op: string, input: object = {}, session = "A") {
   const r = call(op, input, session);
@@ -132,7 +139,10 @@ beforeAll(() => {
     join(repo, brief),
     "Goal|Acceptance test|Files|Forbidden actions|Stop point|Prior art"
       .split("|")
-      .map((name) => `## ${name}\nConcrete content.\n`)
+      .map(
+        (name) =>
+          `## ${name}\nConcrete content.\n${name === "Acceptance test" ? acceptanceTable : ""}\n`,
+      )
       .join("\n"),
   );
   writeFileSync(
@@ -166,7 +176,7 @@ test("a prefix alias cannot adopt an attempt checkout as a legacy lane", () => {
   }
 }, 30000);
 
-test("attempt holders create separate lanes, retry once and count against the shared cap", () => {
+test("attempt holders create separate lanes and retry once", () => {
   const id = team();
   const before = existsSync(join(repo, ".git/forge-lanes.json"))
     ? registry().length
@@ -188,6 +198,12 @@ test("attempt holders create separate lanes, retry once and count against the sh
     "attempt-1",
     "attempt-2",
   ]);
+}, 30000);
+
+test("attempt lanes count against the shared cap and refuse conflicting reruns", () => {
+  const id = team();
+  good("lane.attempt", args(id, 1), "B");
+  good("lane.attempt", args(id, 2), "C");
   cap(registry().length);
   const next = String(good("issue.create", { title: "Capped" }).id);
   expect(
@@ -320,6 +336,16 @@ test("legacy release preserves both attempt lanes after a hand close", () => {
     branch: `feat/${next}-legacy`,
     brief,
   });
+  good(
+    "attempt.evidence",
+    { id: next, attempt: "attempt-1", sha: git(["rev-parse", "HEAD"]) },
+    "B",
+  );
+  good("attempt.select", {
+    id: next,
+    attempt: "attempt-1",
+    reason: "Fixture hand selection",
+  });
   good("issue.close", { id: next, withoutReceipt: "Fixture hand closed" });
   good("issue.release", { id: next });
   const kept = lanesFor(next).filter((lane) => lane.attempt);
@@ -327,4 +353,25 @@ test("legacy release preserves both attempt lanes after a hand close", () => {
   expect(lanesFor(next)).toEqual(kept);
   expect(existsSync(String(release.worktree))).toBe(false);
   for (const lane of kept) expect(branchAt(lane.worktree)).toBe(lane.branch);
+}, 30000);
+
+test("attempt lane rejects a no-table brief without creating anything", () => {
+  const id = team(),
+    file = ".worktrees/briefs/no-table.md";
+  writeFileSync(
+    join(repo, file),
+    readFileSync(join(repo, brief), "utf8").replaceAll(
+      acceptanceTable,
+      "Concrete prose only.",
+    ),
+  );
+  const before = snapshot();
+  const run = call("lane.attempt", args(id, 1, { brief: file }), "B");
+  expect(run).toMatchObject({
+    ok: false,
+    error: { code: "INPUT_INVALID", message: noTableProblem },
+  });
+  expect(run.exit).toBe(6);
+  expect(snapshot()).toEqual(before);
+  expect(existsSync(path(id, 1))).toBe(false);
 }, 30000);

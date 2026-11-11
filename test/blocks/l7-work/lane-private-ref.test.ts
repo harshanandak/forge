@@ -1,3 +1,4 @@
+import { acceptanceTable } from "./lane-brief-fixture.ts";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import {
   mkdirSync,
@@ -44,7 +45,10 @@ const brief = [
   "Stop point",
   "Prior art",
 ]
-  .map((name) => `## ${name}\nConcrete content.\n`)
+  .map(
+    (name) =>
+      `## ${name}\nConcrete content.\n${name === "Acceptance test" ? acceptanceTable : ""}\n`,
+  )
   .join("\n");
 
 function fixture() {

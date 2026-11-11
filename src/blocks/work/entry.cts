@@ -1013,6 +1013,7 @@ function briefProblems(text: string): string[] {
     start = end + 1;
   }
   const bodies = new Map<string, string[]>();
+  const hidden = new Set<number>();
   let current: string | undefined;
   let fence: { char: string; length: number } | undefined;
   for (const line of lines.slice(start)) {
@@ -1026,6 +1027,8 @@ function briefProblems(text: string): string[] {
       )
         fence = undefined;
       else if (current) bodies.get(current)?.push(line);
+      if (current === "Acceptance test" && fence)
+        hidden.add(bodies.get(current)!.length - 1);
       continue;
     }
     if (marker && !(marker[1]![0] === "`" && marker[2]!.includes("`"))) {
@@ -1037,6 +1040,54 @@ function briefProblems(text: string): string[] {
       current = heading[1] === "##" ? heading[2] : undefined;
       if (current && !bodies.has(current)) bodies.set(current, []);
     } else if (current) bodies.get(current)?.push(line);
+  }
+  if (
+    required.every((name) =>
+      bodies.get(name)?.some((line) => /[\p{L}\p{N}]/u.test(line)),
+    )
+  ) {
+    const columns = "Case|Input|Status|Exit|Eligibility|Unchanged".split("|");
+    const visible = (bodies.get("Acceptance test") ?? []).map((line, index) =>
+      hidden.has(index) ? "" : line,
+    );
+    const rows = visible.map((line) =>
+      line
+        .trim()
+        .replace(/^\||(?<!\\)\|$/g, "")
+        .split(/(?<!\\)\|/)
+        .map((cell) => cell.trim()),
+    );
+    let first: string | undefined;
+    for (let at = 1; at < rows.length; at++) {
+      const row = rows[at]!;
+      if (
+        row.length < 2 ||
+        row.length !== rows[at - 1]!.length ||
+        !row.every((cell) => /^:?-+:?$/.test(cell))
+      )
+        continue;
+      const header = rows[at - 1]!.map((cell) => cell.toLowerCase());
+      const missing = columns.filter(
+        (name) => !header.includes(name.toLowerCase()),
+      );
+      const end = visible.findIndex(
+        (line, index) => index > at && !line.includes("|"),
+      );
+      const problem = missing.length
+        ? "brief acceptance table is missing columns: " + missing.join(", ")
+        : rows
+              .slice(at + 1, end < 0 ? undefined : end)
+              .some((cells) => cells[0])
+          ? undefined
+          : "brief acceptance table has no rows";
+      if (!problem) return [];
+      first ??= problem;
+    }
+    return [
+      first ??
+        "brief Acceptance test section requires a table with columns: " +
+          columns.join(", "),
+    ];
   }
   return required
     .filter(

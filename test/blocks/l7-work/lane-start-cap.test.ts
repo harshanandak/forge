@@ -1,3 +1,4 @@
+import { acceptanceTable } from "./lane-brief-fixture.ts";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -38,7 +39,10 @@ const brief = [
   "Stop point",
   "Prior art",
 ]
-  .map((name) => `## ${name}\nConcrete content.\n`)
+  .map(
+    (name) =>
+      `## ${name}\nConcrete content.\n${name === "Acceptance test" ? acceptanceTable : ""}\n`,
+  )
   .join("\n");
 const worktree = (n: number) => `/project/.worktrees/work-${n}`;
 

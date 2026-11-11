@@ -1,3 +1,4 @@
+import { acceptanceTable } from "./lane-brief-fixture.ts";
 import { expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
@@ -74,7 +75,10 @@ function prepare() {
       "Stop point",
       "Prior art",
     ]
-      .map((name) => `## ${name}\nConcrete content.\n`)
+      .map(
+        (name) =>
+          `## ${name}\nConcrete content.\n${name === "Acceptance test" ? acceptanceTable : ""}\n`,
+      )
       .join("\n"),
   );
 }
