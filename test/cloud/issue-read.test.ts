@@ -81,7 +81,9 @@ function fixture(tables = true) {
     raw(key, JSON.stringify(wrap(value, { key, ...over })), ns);
   const lease = (over: object = {}, subject = "issue:work-1", ns = NS) =>
     rawLease(subject, JSON.stringify(grant(over, subject)), ns);
-  const read = (input: unknown = { id: "forge-1" }, prefix = "forge") => {
+  const read = (...args: [input?: unknown, prefix?: string]) => {
+    const input = args.length > 0 ? args[0] : { id: "forge-1" },
+      prefix = args[1] ?? "forge";
     const before = snapshot(),
       start = calls.length;
     try {
@@ -278,6 +280,34 @@ test("stored records and leases are bounded in bytes, not characters", () => {
         if (ok) expect(f.read().id).toBe("forge-1");
         else expect(f.refusal()).toEqual(internal);
       }
+}, 30_000);
+
+test("an oversize, malformed or mismatched row never establishes a historical prefix", () => {
+  const acme = (n: number, key: string, pad = "") =>
+    JSON.stringify(
+      wrap(issue(n, { prefix: "acme", closeReason: pad }), { key }),
+    );
+  const planted = [
+    ["malformed json", "issue:work-2", "{bad"],
+    [
+      "oversize body",
+      "issue:work-3",
+      padded((pad) => acme(3, "issue:work-3", pad), MAX_RECORD_BYTES + 1, "a"),
+    ],
+    ["wrapper for another key", "issue:work-4", acme(4, "issue:work-5")],
+    ["value not an object", "issue:work-6", JSON.stringify(wrap("acme"))],
+  ];
+  for (const [name, key, body] of planted)
+    for (const id of ["work-1", "acme-1"]) {
+      const f = fixture();
+      f.put("issue:work-1", issue(1, { prefix: "forge" }));
+      f.raw(key!, body!);
+      expect([name, id, f.refusal({ id })]).toEqual([
+        name,
+        id,
+        ["INPUT_INVALID", 6, "Unknown issue id prefix"],
+      ]);
+    }
 }, 30_000);
 
 test("malformed stored JSON and identity mismatches give one fixed error", () => {

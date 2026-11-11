@@ -22,11 +22,11 @@ const BODY = (table: string, column: string) =>
 const RECORD = BODY("state_records", "key");
 const LEASE = BODY("state_leases", "subject");
 // MODE: a slots record (competing) or any participant record (collaborative) exists.
-// MINTED: some stored issue carries this prefix; a record without one was minted as `work`.
+// MINTED: a stored issue carries this prefix (`work` if none): in-bound, valid JSON, wrapper matching its row.
 const MODE =
   "SELECT 1 AS found FROM state_records WHERE namespace=? AND (key=? OR (key>=? AND key<?)) LIMIT 1";
 const MINTED =
-  "SELECT 1 AS found FROM state_records WHERE namespace=? AND key>=? AND key<? AND coalesce(CASE WHEN json_valid(body) THEN json_extract(body,'$.value.prefix') END,'work')=? LIMIT 1";
+  "SELECT 1 AS found FROM state_records WHERE namespace=? AND key>=? AND key<? AND CASE WHEN length(CAST(body AS BLOB)) <= ? THEN CASE WHEN json_valid(body) THEN CASE WHEN json_type(body,'$.value')='object' AND json_extract(body,'$.namespace')=namespace AND json_extract(body,'$.key')=key THEN coalesce(json_extract(body,'$.value.prefix'),'work') END END END=? LIMIT 1";
 
 /** Read-only views of the two state tables; undefined when the table does not exist yet. */
 export interface IssueViews {
@@ -80,11 +80,8 @@ export function readIssue(
   const match = QUALIFIED.exec((input as { id: string }).id);
   if (match === null) throw fail("INPUT_INVALID", "Invalid issue id");
   const given = match[1]!.toLowerCase();
-  if (
-    given !== prefix &&
-    views.records?.get(MINTED, [NAMESPACE, "issue:", "issue;", given]) ===
-      undefined
-  )
+  const minted = [NAMESPACE, "issue:", "issue;", MAX_RECORD_BYTES, given];
+  if (given !== prefix && views.records?.get(MINTED, minted) === undefined)
     throw fail("INPUT_INVALID", "Unknown issue id prefix");
   const id = `work-${match[2]}`;
   const record = load(views.records, RECORD, MAX_RECORD_BYTES, `issue:${id}`);
