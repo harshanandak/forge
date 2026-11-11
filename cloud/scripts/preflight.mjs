@@ -7,31 +7,20 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import {
-  OAuthConfigError,
-  readOAuthConfig,
-} from "../src/adapters/workers-oauth/config.ts";
-import { isProjectName } from "../src/project-name.ts";
-import workConfig from "../../src/blocks/work/schemas/config.json" with { type: "json" };
-import { validateWithSchema } from "../../src/contract/schema.ts";
 
 const SECRETS = ["DEVICE_LOGIN_HMAC_KEY", "ADMIN_TOKEN"];
 const FAKE =
   /[<>]|example|replace|placeholder|public-client-id|worker\.workers\.dev|your-/i;
 const HEX32 = /^(?!(.)\1*$)[0-9a-f]{32}$/;
-// Deployment policy lives here: which vars are required, and that no value is a placeholder. The runtime's
-// own rules are not copied: the Worker's readOAuthConfig, its project-name rule and the work block's idPrefix
-// schema run below. The OAuth rules run at the origin of CLERK_REDIRECT_URI, because the deployed origin is
-// not known here; the deploy smoke checks in docs/reference/cloud.md verify the real one.
-const OAUTH = [
+// Policy lives here: which vars are required, and that none is a placeholder. The Worker's own rules (readOAuthConfig,
+// the project name, the work block's idPrefix) run below, not copies. The OAuth rules run at the origin of
+// CLERK_REDIRECT_URI; the deployed origin is not known here, and the deploy smoke checks verify the real one.
+const VARS = [
   "CLERK_ISSUER",
   "CLERK_CLIENT_ID",
   "CLERK_REDIRECT_URI",
   "FORGE_API_RESOURCE",
   "OAUTH_TIMEOUT_MS",
-];
-const VARS = [
-  ...OAUTH,
   "FORGE_OAUTH_REDIRECTS",
   "FORGE_OWNER_SUBJECT",
   "FORGE_CLOUD_PROJECT",
@@ -65,6 +54,25 @@ const jsonc = (text) =>
 
 const problems = [];
 const bad = (message) => problems.push(message);
+let rules;
+try {
+  const [oauth, name, schema, work] = await Promise.all([
+    import("../src/adapters/workers-oauth/config.ts"),
+    import("../src/project-name.ts"),
+    import("../../src/contract/schema.ts"),
+    import("../../src/blocks/work/schemas/config.json", {
+      with: { type: "json" },
+    }),
+  ]);
+  rules = {
+    ...oauth,
+    ...name,
+    ...schema,
+    idPrefix: work.default.properties.idPrefix,
+  };
+} catch {
+  bad("the Worker's config rules could not be loaded");
+}
 const flag = process.argv.indexOf("--config");
 const path = flag > 0 ? process.argv[flag + 1] : undefined;
 let config;
@@ -111,32 +119,28 @@ if (config) {
     )
       flawed.add(name);
   }
-  if (
-    typeof vars.FORGE_CLOUD_PROJECT === "string" &&
-    !isProjectName(vars.FORGE_CLOUD_PROJECT)
-  )
-    flawed.add("FORGE_CLOUD_PROJECT");
-  if (
-    typeof vars.FORGE_CLOUD_ID_PREFIX === "string" &&
-    validateWithSchema(
-      workConfig.properties.idPrefix,
-      vars.FORGE_CLOUD_ID_PREFIX,
-    ).length > 0
-  )
-    flawed.add("FORGE_CLOUD_ID_PREFIX");
-  try {
-    if (typeof vars.CLERK_REDIRECT_URI !== "string")
-      throw new OAuthConfigError("CLERK_REDIRECT_URI");
-    readOAuthConfig(vars, new URL(vars.CLERK_REDIRECT_URI).origin);
-  } catch (error) {
-    // Only the variable name is used: the error's text and the URL parser's text can quote a value.
-    flawed.add(
-      error instanceof OAuthConfigError ? error.variable : "CLERK_REDIRECT_URI",
-    );
-  }
-  for (const name of VARS)
-    if (flawed.has(name))
-      bad(`var ${name} is missing, a placeholder or invalid`);
+  // A rule that throws, for any reason, refuses a var. Only a var's name is used, never the error's text.
+  const unless = (name, ok) => {
+    try {
+      if (rules && !ok(vars[name])) flawed.add(name);
+    } catch (error) {
+      flawed.add(
+        error instanceof rules.OAuthConfigError ? error.variable : name,
+      );
+    }
+  };
+  unless("FORGE_CLOUD_PROJECT", (v) => rules.isProjectName(v));
+  unless(
+    "FORGE_CLOUD_ID_PREFIX",
+    (v) => rules.validateWithSchema(rules.idPrefix, v).length === 0,
+  );
+  // readOAuthConfig names the first var it refuses; a callback that is not a URL throws something else.
+  unless("CLERK_REDIRECT_URI", (uri) => {
+    rules.readOAuthConfig(vars, new URL(uri).origin);
+    return true;
+  });
+  for (const name of flawed)
+    bad(`var ${name} is missing, a placeholder or invalid`);
   for (const name of Object.keys(config.vars ?? {}))
     if (SECRETS.includes(name))
       bad(`${name} is a secret and must not be a var`);

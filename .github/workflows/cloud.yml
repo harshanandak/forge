@@ -223,6 +223,13 @@ jobs:
           lrefuse "var FORGE_CLOUD_ID_PREFIX" "FORGE_CLOUD_ID_PREFIX=\"$(printf 'a%.0s' $(seq 33))\""
           lpass 'FORGE_OAUTH_REDIRECTS="https://a.ci.test/cb,https://b.ci.test/cb"'
           lpass 'FORGE_CLOUD_ID_PREFIX="a1-b2"'
+          # Fault: the id-prefix rule throws (its schema gains a keyword whose error text would quote the marker).
+          # The refusal is still fixed and local. The schema is restored in this step.
+          schema=../src/blocks/work/schemas/config.json
+          sed -i 's/"idPrefix": {/"idPrefix": { "PRIVATEMARKERkeyword": true,/' "$schema"
+          git diff --quiet -- "$schema" && note "the fault was not injected"
+          lrefuse "var FORGE_CLOUD_ID_PREFIX"
+          git checkout -- "$schema"
           # The preflight holds no copy of a Worker rule: it runs them.
           if grep -Eq 'x21-|user_\[|2_147_483_647|A-Za-z0-9\._-|const https' scripts/preflight.mjs; then note "preflight.mjs still holds a copy of a Worker rule"; fi
           [ "$miss" -eq 0 ] || { echo "::error::$miss preflight case(s) failed"; exit 1; }
