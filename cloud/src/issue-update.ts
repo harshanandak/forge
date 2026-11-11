@@ -34,9 +34,10 @@ interface Fields {
 }
 
 // The fence a held-lease context names: the caller's holder and generation, the device from the token.
-function fence(context: BoundContext, id: string) {
+// Shared by every command that holds a lease on one issue.
+export function fence(context: BoundContext, id: string, op: string) {
   if (context.variant !== "leased" || context.leaseMode !== "held")
-    throw fail("INTERNAL", "issue.update needs a held lease context");
+    throw fail("INTERNAL", `${op} needs a held lease context`);
   return {
     subject: `issue:${id}`,
     holder: { actor: context.actor, session: context.session },
@@ -88,7 +89,7 @@ export function updateIssue(
         actor,
         {
           expectRevision,
-          fence: fence(context, id),
+          fence: fence(context, id, "issue.update"),
         },
       );
       const lease = owner.lease(NAMESPACE, key);
@@ -101,7 +102,11 @@ export function updateIssue(
       );
     },
     (prior, context) => {
-      const held = fence(context, `work-${prior.id.replace(/^.*-/, "")}`);
+      const held = fence(
+        context,
+        `work-${prior.id.replace(/^.*-/, "")}`,
+        "issue.update",
+      );
       const decision = decideLease(owner.lease(NAMESPACE, held.subject), {
         mode: "held",
         subject: held.subject,

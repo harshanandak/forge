@@ -15,6 +15,7 @@ import { commentIssue } from "../../cloud/src/issue-comment.ts";
 import { createIssue } from "../../cloud/src/issue-create.ts";
 import { updateIssue } from "../../cloud/src/issue-update.ts";
 import { claimIssue } from "../../cloud/src/issue-claim.ts";
+import { releaseIssue, renewIssue } from "../../cloud/src/issue-lease.ts";
 import {
   LEASE_READS,
   RECORD_READS,
@@ -634,6 +635,8 @@ test("a missing declared context is refused as CONTEXT_MISSING", async () => {
     ["issue.update", { actor, session: { id: "s1" } }],
     ["issue.update", { actor, leaseGeneration: 3 }],
     ["issue.claim", { actor }],
+    ["issue.renew", { actor, session: { id: "s1" } }],
+    ["issue.release", { actor, leaseGeneration: 3 }],
   ] as const)
     refusal(op, await f.send({ ...call, op, context }, { token }), [
       400,
@@ -672,6 +675,8 @@ test("a dry run is unavailable before its context is bound and runs nothing", as
     ["issue.comment", { actor }],
     ["issue.update", {}],
     ["issue.claim", { actor, session: { id: "s1" } }],
+    ["issue.renew", {}],
+    ["issue.release", { actor, session: { id: "s1" } }],
   ] as const)
     refusal(
       op,
@@ -3144,6 +3149,8 @@ test("the shared write path takes a project context for create and comment and a
     ["issue.comment", commentIssue, lease, "project"],
     ["issue.update", updateIssue, project, "leased"],
     ["issue.claim", claimIssue, project, "leased"],
+    ["issue.renew", renewIssue, project, "leased"],
+    ["issue.release", releaseIssue, project, "leased"],
   ] as const) {
     expect(() =>
       run(db, owner, {
@@ -3167,6 +3174,21 @@ test("the shared write path takes a project context for create and comment and a
       recheck: () => {},
     }),
   ).toThrow("issue.claim needs an acquire lease context");
+  // Renew and release take a held context: an acquire one is refused after the input is read, and writes nothing.
+  for (const [op, run] of [
+    ["issue.renew", renewIssue],
+    ["issue.release", releaseIssue],
+  ] as const)
+    expect(() =>
+      run(db, owner, {
+        requestId: "x-3",
+        input: { id: "forge-12" },
+        context: { ...lease, leaseMode: "acquire" } as never,
+        device: "laptop",
+        prefix: "forge",
+        recheck: () => {},
+      }),
+    ).toThrow(`${op} needs a held lease context`);
   expect(f.snapshot()).toBe(before);
 }, 30_000);
 
@@ -3284,8 +3306,59 @@ const release = (f: F, token: string, n: number, generation: number) =>
     { token, path: "release" },
   );
 
-// The replay scenarios update and claim share: a leased write is answered from its receipt only while
-// the caller still holds the lease, and a reused id with other input conflicts.
+// issue.renew and issue.release: the same rows, clock, config and held lease, for the route and the local handlers.
+const renewal = (id: string, input: object = { id: "forge-12" }, more = {}) =>
+  make(id, input, { op: "issue.renew", context: leased, ...more });
+const giveUp = (id: string, input: object = { id: "forge-12" }, more = {}) =>
+  make(id, input, { op: "issue.release", context: leased, ...more });
+// The real local handler for `op` against `twin`, as session s1 on the laptop holding generation 2 unless given.
+function localLease(
+  op: "issue.renew" | "issue.release",
+  twin: Database,
+  f: F,
+  requestId: string,
+  input: object,
+  who: { generation?: number; session?: string } = {},
+): { result?: unknown; error?: unknown } {
+  const had = "fail" in globals,
+    previous = globals.fail;
+  globals.fail = refuse;
+  try {
+    const handlers = require(
+      resolve(import.meta.dirname, "../../src/blocks/work/entry.cts"),
+    ) as Record<string, Handler>;
+    return {
+      result: handlers[op]!({
+        input,
+        config: { idPrefix: "forge" },
+        services: {
+          state: createStateClient({
+            owner: new StateOwner(sqlOf(twin), { now: f.now }),
+            namespace: "forge/work",
+            context: {
+              variant: "leased",
+              leaseMode: "held",
+              actor,
+              session: { id: who.session ?? "s1", device: "laptop" },
+              project: { id: "p" },
+              leaseGeneration: who.generation ?? 2,
+            },
+            write: true,
+            requestId,
+          }),
+        },
+      }),
+    };
+  } catch (error) {
+    return { error: (error as { error?: unknown }).error ?? String(error) };
+  } finally {
+    if (had) globals.fail = previous;
+    else delete globals.fail;
+  }
+}
+
+// The replay scenarios update, claim, renew and release share: a leased write is answered from its receipt only while
+// the caller still holds the lease (a committed release always, as it grants nothing), and a reused id with other input conflicts.
 type Lose = (f: F, token: string) => Promise<void> | void;
 interface Replay {
   name: string;
@@ -3302,6 +3375,8 @@ interface Replay {
   conflicts: [string, boolean, object?, object?][];
   /** Ways the caller can lose the lease. */
   losses: [string, Lose][];
+  /** A recorded answer that stays valid after each loss, as a release's does. */
+  kept?: true;
 }
 const takeover = (id: string, device: string) => (f: F) =>
   f.lease(
@@ -3425,6 +3500,102 @@ const REPLAYS: Replay[] = [
       ],
     ],
   },
+  {
+    name: "renew",
+    rows: updateRows,
+    send: (id, input = { id: "forge-12" }, more = {}) =>
+      renewal(id, input, more),
+    result: {
+      id: "forge-12",
+      generation: 2,
+      expiresAt: iso(start + 3_600_000),
+    },
+    old: '"result"',
+    // An update leaves the lease as renewed, so the grant is still the live one.
+    moveOn: async (f, token) => {
+      const next = await f.send(revise("r-2", patch({ title: "Later" })), {
+        token,
+      });
+      expect(next.status).toBe(200);
+    },
+    conflicts: [
+      ["ttl", false, { id: "forge-12", ttlSeconds: 60 }],
+      ["issue", false, { id: "forge-1" }],
+      [
+        "generation",
+        false,
+        { id: "forge-12" },
+        { context: { ...leased, leaseGeneration: 3 } },
+      ],
+      [
+        "session",
+        false,
+        { id: "forge-12" },
+        { context: { ...leased, session: { id: "s2" } } },
+      ],
+      ["device", true],
+    ],
+    losses: [
+      [
+        "released",
+        (f) => f.lease({ holder, releasedAt: iso(start) }, "issue:work-12"),
+      ],
+      ["expired", (f) => f.advance(3_600_000)],
+      [
+        "renewed again",
+        (f) =>
+          f.lease(
+            { holder, generation: 2, expiresAt: iso(start + 7_200_000) },
+            "issue:work-12",
+          ),
+      ],
+      ["taken over", takeover("s2", "laptop")],
+      ["taken over by another device", takeover("s1", "tablet")],
+      [
+        "gone",
+        (f) => {
+          f.db.run("DELETE FROM state_leases WHERE subject='issue:work-12'");
+        },
+      ],
+    ],
+  },
+  {
+    name: "release",
+    rows: updateRows,
+    send: (id, input = { id: "forge-12" }, more = {}) =>
+      giveUp(id, input, more),
+    result: { id: "forge-12" },
+    old: '"result"',
+    moveOn: takeover("s2", "laptop"),
+    conflicts: [
+      ["issue", false, { id: "forge-1" }],
+      [
+        "generation",
+        false,
+        { id: "forge-12" },
+        { context: { ...leased, leaseGeneration: 3 } },
+      ],
+      [
+        "session",
+        false,
+        { id: "forge-12" },
+        { context: { ...leased, session: { id: "s2" } } },
+      ],
+      ["device", true],
+    ],
+    kept: true,
+    losses: [
+      ["taken over", takeover("s2", "laptop")],
+      ["taken over by another device", takeover("s1", "tablet")],
+      ["expired", (f) => f.advance(1001)],
+      [
+        "gone",
+        (f) => {
+          f.db.run("DELETE FROM state_leases WHERE subject='issue:work-12'");
+        },
+      ],
+    ],
+  },
 ];
 
 for (const r of REPLAYS) {
@@ -3496,7 +3667,7 @@ for (const r of REPLAYS) {
     expect(f.snapshot()).toBe(revoked);
   }, 60_000);
 
-  test(`a ${r.name} replay after the lease was released, expired or taken over is LEASE_STALE and never the old result`, async () => {
+  test(`a ${r.name} replay after the lease was released, expired or taken over is ${r.kept ? "answered as recorded, with no second release" : "LEASE_STALE and never the old result"}`, async () => {
     for (const [name, lose] of r.losses) {
       const { f, token } = await r.rows();
       const first = await f.send(r.send("r-1"), { token });
@@ -3505,6 +3676,11 @@ for (const r of REPLAYS) {
       const done = f.snapshot();
       for (const via of ["direct", createWorker()] as const) {
         const got = await f.send(r.send("r-1"), { token, via });
+        if (r.kept) {
+          expect([name, got.status, got.text]).toEqual([name, 200, first.text]);
+          expect([name, f.snapshot()]).toEqual([name, done]);
+          continue;
+        }
         expect([name, got.status, got.code, got.exit]).toEqual([
           name,
           409,
@@ -3613,6 +3789,38 @@ const WRITES: Write[] = [
         200,
         { title: "Edited", revision: 4 },
       ]);
+      expect(eventsOf(f.db, "forge/work")).toHaveLength(1);
+    },
+  },
+  {
+    name: "renew",
+    rows: updateRows,
+    send: renewal,
+    // The schema refuses a key renew does not take: the refusal is recorded.
+    bad: { id: "forge-12", reason: "x" },
+    badWant: [400, "INPUT_INVALID"],
+    empty: { id: "forge-12", ttlSeconds: 0 },
+    record: "forge/cloud/request:s-1",
+    lease: "forge/work/issue:work-12",
+    result: (f, got) => {
+      expect([got.status, got.json.result]).toEqual([
+        200,
+        { id: "forge-12", generation: 2, expiresAt: iso(start + 3_600_000) },
+      ]);
+      expect(eventsOf(f.db, "forge/work")).toHaveLength(1);
+    },
+  },
+  {
+    name: "release",
+    rows: updateRows,
+    send: giveUp,
+    bad: { id: "forge-12", reason: "x" },
+    badWant: [400, "INPUT_INVALID"],
+    empty: { id: "" },
+    record: "forge/cloud/request:s-1",
+    lease: "forge/work/issue:work-12",
+    result: (f, got) => {
+      expect([got.status, got.json.result]).toEqual([200, { id: "forge-12" }]);
       expect(eventsOf(f.db, "forge/work")).toHaveLength(1);
     },
   },
@@ -3774,6 +3982,8 @@ test("a session-bound token cannot act as another session, on a first write or a
   for (const [name, send] of [
     ["update", revise("m-1")],
     ["claim", claim("m-6", { id: "forge-12" })],
+    ["renew", renewal("m-7")],
+    ["release", giveUp("m-8")],
     [
       "create",
       make(
@@ -4111,4 +4321,280 @@ test("after a release by the raw route another session claims with a fresh id an
   expect(JSON.stringify(issueRow(f))).toBe(issue);
   // Acquired, released, acquired: the engine's own three events.
   expect(eventsOf(f.db, "forge/work")).toHaveLength(3);
+}, 60_000);
+
+const LEASE_OPS = [
+  ["issue.renew", renewal],
+  ["issue.release", giveUp],
+] as const;
+// updateRows, plus issues 31 to 35 for the ways a held lease is lost: none, held on the tablet, held by session s2,
+// expired, and released. Issue 12 is held by laptop session s1 at generation 2, so the caller can name another one.
+async function fenceRows() {
+  const rows = await updateRows();
+  const { f } = rows;
+  for (const n of [31, 32, 33, 34, 35])
+    f.put(stored({ id: `work-${n}` }), {}, `issue:work-${n}`);
+  const named = (id: string, device: string) => ({
+    actor,
+    session: { id, device },
+  });
+  f.lease({ holder: named("s1", "tablet") }, "issue:work-32");
+  f.lease({ holder: named("s2", "laptop") }, "issue:work-33");
+  f.lease({ holder, expiresAt: iso(start - 1) }, "issue:work-34");
+  f.lease({ holder, releasedAt: iso(start - 5) }, "issue:work-35");
+  return rows;
+}
+
+for (const [op, send] of LEASE_OPS) {
+  const renews = op === "issue.renew";
+  const cases: [string, object][] = renews
+    ? [
+        ["c-0", { id: "forge-12" }],
+        ["c-1", { id: "acme-1", ttlSeconds: 60 }],
+        ["c-2", { id: "FORGE-20", ttlSeconds: 86_400 }],
+        ["c-3", { id: "work-12", ttlSeconds: 7200 }],
+      ]
+    : [
+        ["c-0", { id: "forge-12" }],
+        ["c-1", { id: "acme-1" }],
+        ["c-2", { id: "FORGE-20" }],
+      ];
+  test(`the cloud ${op} agrees with the local handler on whole results, rows, leases and events, for the current, historical and upper case ids`, async () => {
+    const { f, token } = await updateRows();
+    const twin = Database.deserialize(f.db.serialize());
+    const touched = ["issue:work-1", "issue:work-12", "issue:work-20"];
+    const others = () =>
+      JSON.stringify(
+        f.db
+          .query(
+            `SELECT * FROM state_leases WHERE subject NOT IN (${touched.map((s) => `'${s}'`).join()}) ORDER BY subject`,
+          )
+          .all(),
+      );
+    const records = JSON.stringify(rowsOf(f.db, "forge/work"));
+    const before = [others(), await readyIds(f, token)];
+    const results: unknown[] = [];
+    for (const [i, [requestId, input]] of cases.entries()) {
+      const got = await f.send(send(requestId, input), {
+        token,
+        via: i % 2 ? "direct" : createWorker(),
+      });
+      const want = localLease(op, twin, f, requestId, input);
+      expect([requestId, got.status, got.exit]).toEqual([requestId, 200, 0]);
+      expect(got.json).toEqual({
+        ok: true,
+        op,
+        status: "OK",
+        result: want.result,
+        warnings: [],
+      } as never);
+      results.push(got.json.result);
+    }
+    // The first request: the same generation, and for a renew the server's now plus the default 3,600 seconds.
+    expect(results[0]).toEqual(
+      renews
+        ? { id: "forge-12", generation: 2, expiresAt: iso(start + 3_600_000) }
+        : { id: "forge-12" },
+    );
+    if (renews)
+      expect(results.slice(1, 3)).toEqual([
+        { id: "forge-1", generation: 2, expiresAt: iso(start + 60_000) },
+        { id: "forge-20", generation: 2, expiresAt: iso(start + day) },
+      ]);
+    expect(eventsOf(f.db, "forge/work")).toEqual(eventsOf(twin, "forge/work"));
+    expect(eventsOf(f.db, "forge/work")).toHaveLength(cases.length);
+    expect(leasesIn(f.db)).toBe(leasesIn(twin));
+    expect(rowsOf(f.db, "forge/work")).toEqual(rowsOf(twin, "forge/work"));
+    // Issue rows and every other lease stay as they were; a renewed issue stays held, a released one is eligible again.
+    expect(JSON.stringify(rowsOf(f.db, "forge/work"))).toBe(records);
+    expect(rowsOf(f.db, "forge/cloud")).toHaveLength(cases.length);
+    expect(others()).toBe(before[0] as string);
+    const after = await readyIds(f, token);
+    if (renews) expect(after).toEqual(before[1] as string[]);
+    else {
+      expect((before[1] as string[]).includes("12")).toBe(false);
+      expect(["1", "12"].filter((n) => !after.includes(n))).toEqual([]);
+    }
+  }, 60_000);
+
+  test(`${op} refuses every lease the caller does not hold with the local code and message, writes nothing, and is not recorded, so a retry runs again`, async () => {
+    const { f, token } = await fenceRows();
+    const twin = Database.deserialize(f.db.serialize());
+    const before = writes(f);
+    const held = [409, "LEASE_NOT_HELD", 4] as const;
+    const stale = [409, "LEASE_STALE", 4] as const;
+    // [name, issue as the caller wrote it, the generation and session it names, [status, code, exit]]
+    const refusals: [
+      string,
+      string,
+      { generation?: number; session?: string },
+      readonly [number, string, number],
+    ][] = [
+      ["no lease", "forge-31", {}, held],
+      ["another device", "forge-32", {}, held],
+      ["another session", "forge-33", {}, held],
+      ["the caller names another session", "forge-12", { session: "s2" }, held],
+      ["an older generation", "forge-12", { generation: 1 }, stale],
+      ["a newer generation", "forge-12", { generation: 3 }, stale],
+      ["expired", "forge-34", {}, [409, "LEASE_EXPIRED", 4]],
+      ["released", "forge-35", {}, held],
+      ["absent", "forge-99", {}, [404, "NOT_FOUND", 3]],
+      ["absent, as written", "FORGE-99", {}, [404, "NOT_FOUND", 3]],
+    ];
+    for (const [i, [name, id, who, want]] of refusals.entries()) {
+      const context = {
+        actor,
+        session: { id: who.session ?? "s1" },
+        leaseGeneration: who.generation ?? 2,
+      };
+      const run = () => f.send(send(`f-${i}`, { id }, { context }), { token });
+      const got = await run();
+      const local = localLease(op, twin, f, `f-${i}`, { id }, who);
+      expect([name, got.status, got.code, got.exit]).toEqual([name, ...want]);
+      expect(local.error).toBeDefined();
+      expect([name, got.json.error]).toEqual([
+        name,
+        withoutRepair(local.error),
+      ] as never);
+      expect([name, writes(f)]).toEqual([name, before]);
+      const again = await run();
+      expect([name, again.text]).toEqual([name, got.text]);
+      expect([name, writes(f)]).toEqual([name, before]);
+    }
+    // No refusal receipt blocks a retry: the same request id works once the caller holds the lease.
+    f.lease({ holder }, "issue:work-31");
+    const retry = await f.send(
+      send("f-0", { id: "forge-31" }, { context: leased }),
+      { token },
+    );
+    expect(retry.status).toBe(200);
+  }, 60_000);
+
+  test(`${op} refuses bad input as INPUT_INVALID with one refusal receipt per fresh request id, replayed unchanged, and leaves the lease held`, async () => {
+    const { f, token } = await updateRows();
+    const kept = () => JSON.stringify([work(f), leasesIn(f.db)]);
+    const before = kept();
+    const id = "forge-12";
+    const ttls: [string, object][] = renews
+      ? [
+          ["ttl zero", { id, ttlSeconds: 0 }],
+          ["ttl fraction", { id, ttlSeconds: 1.5 }],
+          ["ttl as text", { id, ttlSeconds: "5" }],
+          ["ttl over the schema's week", { id, ttlSeconds: 604_801 }],
+        ]
+      : [["a ttl", { id, ttlSeconds: 60 }]];
+    const cases: [string, object][] = [
+      ["no id", {}],
+      ["unknown key", { id, extra: marker }],
+      ["caller key", { id, key: "issue:work-12" }],
+      ["caller subject", { id, subject: "issue:work-12" }],
+      ["caller holder", { id, holder }],
+      ["reason", { id, reason: "x" }],
+      ["malformed id", { id: "nope" }],
+      ["unknown prefix", { id: "zzz-1" }],
+      ["id not text", { id: 12 }],
+      ...ttls,
+    ];
+    const texts: string[] = [];
+    for (const [i, [name, input]] of cases.entries()) {
+      const got = await f.send(send(`b-${i}`, input), { token });
+      expect([name, got.status, got.code, got.exit]).toEqual([
+        name,
+        400,
+        "INPUT_INVALID",
+        6,
+      ]);
+      expect(JSON.stringify(got.json)).not.toContain(marker);
+      expect([name, kept()]).toEqual([name, before]);
+      expect(receiptOf(f, `b-${i}`)).toMatchObject({
+        outcome: "refused",
+        result: got.json.error,
+      });
+      expect(eventsOf(f.db, "forge/cloud")).toHaveLength(i + 1);
+      texts.push(got.text);
+    }
+    const done = f.snapshot();
+    const again = await f.send(send("b-0", cases[0]![1]), { token });
+    expect([again.status, again.text]).toEqual([400, texts[0]!]);
+    const changed = await f.send(send("b-0"), { token });
+    expect([changed.status, changed.code, changed.exit]).toEqual([
+      409,
+      "INPUT_CONFLICT",
+      4,
+    ]);
+    // No receipt without a valid fresh request id, and none for a dry run.
+    for (const [more, status] of [
+      [{ requestId: "bad id!" }, 400],
+      [{ dryRun: true }, 503],
+    ] as const)
+      expect(
+        (await f.send(send("b-99", { id, reason: "x" }, more), { token }))
+          .status,
+      ).toBe(status);
+    expect(f.snapshot()).toBe(done);
+    // Nothing was spent: the next valid request still holds the lease.
+    expect((await f.send(send("b-ok"), { token })).status).toBe(200);
+  }, 60_000);
+}
+
+test("a renew ttl over 24 hours or past the token's expiry is INPUT_INVALID and never clamped, and the cap and the expiry themselves are accepted", async () => {
+  const { f, token } = await updateRows();
+  // Expires 3,599 seconds from now: the default 3,600 seconds does not fit.
+  const short = await f.device(3_599_000);
+  const before = writes(f);
+  const cases: [string, string, object, string | number][] = [
+    ["over the cap", token, { id: "forge-12", ttlSeconds: 86_401 }, "24 hours"],
+    ["the default past expiry", short, { id: "forge-12" }, "token expiry"],
+    [
+      "one second past expiry",
+      short,
+      { id: "forge-12", ttlSeconds: 3600 },
+      "token expiry",
+    ],
+    ["the cap", token, { id: "forge-12", ttlSeconds: 86_400 }, start + day],
+    [
+      "the token's expiry",
+      short,
+      { id: "forge-1", ttlSeconds: 3599 },
+      start + 3_599_000,
+    ],
+  ];
+  for (const [i, [name, bearer, input, want]] of cases.entries()) {
+    const got = await f.send(renewal(`t-${i}`, input), { token: bearer });
+    if (typeof want === "number") {
+      expect([name, got.status, got.json.result]).toMatchObject([
+        name,
+        200,
+        { expiresAt: iso(want) },
+      ]);
+      continue;
+    }
+    expect([name, got.status, got.code, got.exit]).toEqual([
+      name,
+      400,
+      "INPUT_INVALID",
+      6,
+    ]);
+    expect(got.json.error?.message).toContain(want);
+    expect([name, writes(f)]).toEqual([name, before]);
+  }
+}, 60_000);
+
+test("after a release a renew is refused and another session claims the issue at the next generation", async () => {
+  const { f, token } = await updateRows();
+  const tablet = await f.device(day, "tablet");
+  expect((await f.send(giveUp("k-1"), { token })).status).toBe(200);
+  const renewed = await f.send(renewal("k-2"), { token });
+  expect([renewed.status, renewed.code, renewed.exit]).toEqual([
+    409,
+    "LEASE_NOT_HELD",
+    4,
+  ]);
+  const took = await f.send(claim("k-3", { id: "forge-12" }, asSession("b1")), {
+    token: tablet,
+  });
+  expect([took.status, took.json.result]).toMatchObject([
+    200,
+    { id: "forge-12", generation: 3 },
+  ]);
 }, 60_000);
