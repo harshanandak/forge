@@ -227,5 +227,10 @@ test("an input that carries a token is refused as invalid and the value is never
   expect(envelope.ok).toBe(false);
   if (!envelope.ok) expect(envelope.error.code).toBe("INPUT_INVALID");
   expect(JSON.stringify(envelope)).not.toContain("fct_x");
+  // The credential as a property name is not echoed either.
+  const named = await call(open, { [`fct_0123456789abcdef.${SECRET}`]: 1 });
+  expect(named.ok).toBe(false);
+  expect(JSON.stringify(named)).not.toContain("fct_");
+  expect(JSON.stringify(named)).not.toContain(SECRET);
   expect(open.net.calls).toHaveLength(0);
 }, 60_000);

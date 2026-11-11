@@ -15,7 +15,6 @@ import {
   type LoginChallenge,
 } from "../adapters/http/index.ts";
 import { ForgeFailure } from "../contract/failure.ts";
-import { inputError } from "../contract/input-error.ts";
 import { validateWithSchema } from "../contract/schema.ts";
 import type { CloudLogin, CloudLoginResult } from "../ports/cloud-login.ts";
 import {
@@ -188,15 +187,15 @@ async function login(
   deps: CloudLoginDeps,
   input: unknown,
 ): Promise<CloudLoginResult> {
-  const problems = validateWithSchema(INPUT_SCHEMA, input, true);
+  const problems = validateWithSchema(INPUT_SCHEMA, input);
+  // One fixed refusal, with no field name, pointer or value: a credential pasted into the input, as a
+  // value or as a property name, must never come back in an error.
   if (problems.length > 0)
-    throw new ForgeFailure(
-      inputError(
-        CLOUD_LOGIN_OP,
-        // A refused value may be a token pasted into the wrong field, so no received value is echoed.
-        problems.map((problem) => ({ ...problem, received: "(not shown)" })),
-      ),
-    );
+    throw new ForgeFailure({
+      code: "INPUT_INVALID",
+      message: `Invalid input for ${CLOUD_LOGIN_OP}: expected {"origin": "<https origin>", "project": "<project name>"}, both optional`,
+      retry: "never",
+    });
   const given = input as { origin?: string; project?: string };
   const asked = {
     ...(given.origin === undefined

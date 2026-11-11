@@ -130,6 +130,27 @@ test("without a project identity login is a context failure and writes nothing",
   }
 }, 60_000);
 
+test("an input with a credential as a property name or value prints it nowhere", () => {
+  const f = fixture();
+  try {
+    f.manifest();
+    const name = `fct_0123456789abcdef.${SECRET}`;
+    const value = `fct_fedcba9876543210.${"V".repeat(43)}`;
+    for (const input of [{ [name]: value }, { origin: { [name]: value } }]) {
+      const out = f.run(["cloud", "login", "--input", JSON.stringify(input)]);
+      expect(out.status).toBe(6);
+      expect(code(out.envelope)).toBe("INPUT_INVALID");
+      const shown = out.stdout + out.stderr;
+      for (const secret of [name, value, SECRET, "fct_"])
+        expect(shown).not.toContain(secret);
+      expect(existsSync(f.binding)).toBe(false);
+      expect(existsSync(f.credentials)).toBe(false);
+    }
+  } finally {
+    f.close();
+  }
+}, 60_000);
+
 test("an http origin is refused before any request", () => {
   const f = fixture();
   try {

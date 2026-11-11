@@ -762,6 +762,46 @@ for (const [name, input] of badInputs)
     }
   }, 30_000);
 
+test("an input refusal is one fixed message that holds no field name, pointer, value or diagnostics", async () => {
+  // A credential pasted as a property name, as a value, and inside a wrong-typed field.
+  const secretName = `fct_0123456789abcdef.${SECRET}`;
+  const secretValue = `fct_fedcba9876543210.${"V".repeat(43)}`;
+  const inputs: unknown[] = [
+    { [secretName]: secretValue },
+    { ...INPUT, [secretName]: "x" },
+    { origin: { [secretName]: secretValue }, project: PROJECT },
+    { origin: secretValue, project: 5 },
+    [secretName],
+    secretValue,
+  ];
+  for (const input of inputs) {
+    const r = rig();
+    try {
+      const { envelope, exit, net } = await login(
+        r,
+        [() => json(startBody())],
+        {},
+        input,
+      );
+      expect(exit).toBe(6);
+      const error = failure(envelope);
+      expect(error.code).toBe("INPUT_INVALID");
+      expect(error.message).toBe(
+        'Invalid input for cloud.login: expected {"origin": "<https origin>", "project": "<project name>"}, both optional',
+      );
+      expect(error.observed).toBeUndefined();
+      const text = JSON.stringify(envelope) + r.lines.join("\n");
+      for (const secret of [secretName, secretValue, SECRET, "fct_"])
+        expect(text).not.toContain(secret);
+      expect(text).not.toContain("pointer");
+      expect(net.calls).toHaveLength(0);
+      expect(snapshot(r.sb)).toEqual({ credentials: null, binding: null });
+    } finally {
+      r.sb.close();
+    }
+  }
+}, 30_000);
+
 test("a device id that fits is sent unchanged and any other is mapped by its SHA-256", () => {
   expect(wireDeviceId("laptop-0123")).toBe("laptop-0123");
   expect(wireDeviceId("a".repeat(128))).toBe("a".repeat(128));
