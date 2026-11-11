@@ -282,10 +282,19 @@ test.skipIf(!posix || process.getuid?.() === 0)(
       try {
         const failure = integrity(() => cloud.read(NAME));
         expect(JSON.stringify(failure.error)).not.toContain(s.home);
-        integrity(() => cloud.write(NAME, "b"));
       } finally {
         chmodSync(s.file, 0o600);
       }
+      // Replacing a private file needs only the folder, so a write fails when the folder cannot take
+      // a new file: the staged file cannot be created.
+      chmodSync(s.cloud, 0o500);
+      try {
+        const failure = integrity(() => cloud.write(NAME, "b"));
+        expect(JSON.stringify(failure.error)).not.toContain(s.home);
+      } finally {
+        chmodSync(s.cloud, 0o700);
+      }
+      expect(cloud.read(NAME)).toBe("a");
       const accounts = createDeviceFiles(s.home);
       accounts.write("record", "a");
       const record = join(s.home, ".forge", "accounts", "record");
