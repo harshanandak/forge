@@ -213,6 +213,7 @@
     "issue.close": {
       "title": "Close",
       "summary": "Held lease; verified PASS receipt bound to delivered PR, or written withoutReceipt reason.",
+      "description": "PR_UNLINKED: link a merged PR with forge issue link <id> --relation delivers --url <pr-url>. PR_NOT_FOUND: gh cannot resolve the delivered PR; retry never. Both errors name the link command and forge issue close <id> --without-receipt \"<reason>\". Other gh failures remain UNAVAILABLE.",
       "examples": [
         {
           "input": {
