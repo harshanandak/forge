@@ -48,19 +48,22 @@ export async function selectCloud(
   runtime: Pick<Runtime, "preflight">,
   request: InvocationRequest,
 ): Promise<ResultEnvelope | undefined> {
+  const home = deps.env.HOME ?? deps.env.USERPROFILE;
+  const binding = () => cloudBinding(deps.root, home);
   let flight: ReturnType<Runtime["preflight"]>;
   try {
     flight = runtime.preflight(request);
-  } catch {
-    // The runtime refuses the same request in its own preflight, before it opens anything.
-    return undefined;
+  } catch (refused) {
+    // An unbound project lets the runtime refuse it. A bound one never reaches the local runtime, even
+    // if a later preflight there would pass.
+    if (binding().kind === "unbound") return undefined;
+    throw refused;
   }
   const { block, operation } = flight;
   const declared = operation.declaredOp;
   const route = cloudRoute(block.manifest.id, declared);
   if (route === "local") return undefined;
-  const home = deps.env.HOME ?? deps.env.USERPROFILE;
-  const bound = cloudBinding(deps.root, home);
+  const bound = binding();
   if (bound.kind === "unbound") return undefined;
   deps.scope(flight.context);
   if (route !== "cloud") throw route;

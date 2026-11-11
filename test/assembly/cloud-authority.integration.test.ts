@@ -2,6 +2,7 @@ import {
   afterAll,
   beforeAll,
   expect,
+  mock,
   setDefaultTimeout,
   spyOn,
   test,
@@ -20,7 +21,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { blockCapture } from "../../src/assembly/capture.ts";
-import { cloudRoute } from "../../src/assembly/cloud-authority.ts";
+import { cloudRoute, selectCloud } from "../../src/assembly/cloud-authority.ts";
 import { wireDeviceId } from "../../src/assembly/cloud-login.ts";
 import {
   credentialStore,
@@ -440,3 +441,37 @@ test("an unbound project runs locally, with no cloud request and no credential w
     expect(r.net.calls).toHaveLength(0);
     expect(existsSync(join(r.s.home, ".forge"))).toBe(false);
   }));
+
+test("a refused preflight on a bound project is thrown, never retried on the local runtime", async () => {
+  const refused = new ForgeFailure({
+    code: "GRANT_REQUIRED",
+    message: "no",
+    retry: "never",
+  });
+  const preflight = mock(() => {
+    throw refused;
+  });
+  const invoke = mock();
+  const run = (r: Awaited<ReturnType<typeof rig>>) =>
+    selectCloud(
+      {
+        root: r.s.root,
+        deviceRoot: r.s.deviceRoot,
+        scope: () => {},
+        env: { HOME: r.s.home, FORGE_DEVICE_ID: "dev-1" },
+        cloud: { fetch: r.net.fetch, now: () => NOW },
+      },
+      { preflight, invoke } as never,
+      r.request("issue.show", { id: "forge-1" }),
+    );
+  await using({}, async (r) => {
+    await expect(run(r)).rejects.toBe(refused);
+    expect([preflight.mock.calls.length, invoke.mock.calls.length]).toEqual([
+      1, 0,
+    ]);
+    expect(r.net.calls).toHaveLength(0);
+  });
+  await using({ bind: false, creds: false }, async (r) => {
+    expect(await run(r)).toBeUndefined();
+  });
+});
