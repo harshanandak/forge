@@ -733,6 +733,8 @@ function readiness(
     })),
   ];
 }
+const BOARD_PAGE_BYTES = 524288;
+const BOARD_LIST_LIMIT = 20;
 function board(services: unknown, input: BoardInput, config: unknown) {
   const state = client(services),
     crypto = (services as { crypto?: CryptoService }).crypto;
@@ -832,6 +834,42 @@ function board(services: unknown, input: BoardInput, config: unknown) {
       notReadyBecause,
     };
   });
+  if (!input.id) {
+    for (const row of items) {
+      if (row.blockers.length > BOARD_LIST_LIMIT) {
+        Object.assign(row, {
+          blockersTotal: row.blockers.length,
+          blockedByTotal: row.blockers.length,
+        });
+        row.blockers.splice(BOARD_LIST_LIMIT);
+        row.notReadyBecause = [
+          ...row.notReadyBecause.filter((r) => r.code !== "BLOCKED_BY"),
+          ...row.notReadyBecause
+            .filter((r) => r.code === "BLOCKED_BY")
+            .slice(0, BOARD_LIST_LIMIT),
+        ];
+      }
+      if (row.dependents.length > BOARD_LIST_LIMIT) {
+        Object.assign(row, { dependentsTotal: row.dependents.length });
+        row.dependents = row.dependents.slice(0, BOARD_LIST_LIMIT);
+      }
+    }
+  }
+  let bytes = 0;
+  for (let index = 0; index < items.length; index++) {
+    let next = index === 0 ? 0 : 1;
+    // The block VM has no Buffer or TextEncoder; JSON escapes lone surrogates.
+    for (const character of JSON.stringify(items[index])) {
+      const code = character.codePointAt(0)!;
+      next += code <= 0x7f ? 1 : code <= 0x7ff ? 2 : code <= 0xffff ? 3 : 4;
+    }
+    if (index > 0 && bytes + next > BOARD_PAGE_BYTES) {
+      items.splice(index);
+      page.splice(index);
+      break;
+    }
+    bytes += next;
+  }
   const truncated = ordered.length > offset + page.length;
   return {
     items,
