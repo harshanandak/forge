@@ -130,17 +130,13 @@ export function readIssue(
       "INPUT_INVALID",
       "Competing and collaborative issues are not yet supported in cloud",
     );
-  return shownItem(record, id, views, now, prefix);
+  checkedValue(record, id);
+  return shownItem(record, id, leaseOf(views, id), now, prefix);
 }
 
-/** One stored issue as the local show and list return it, once its wrapper, value and lease agree with `id`. */
-export function shownItem(
-  record: Json,
-  id: string,
-  views: IssueViews,
-  now: number,
-  prefix: string,
-): TrackerItem {
+type Checked = Json & { dependsOn: string[] };
+/** The stored value, once its wrapper and value agree with `id`. No lease is read here. */
+export function checkedValue(record: Json, id: string): Checked {
   const { value } = record;
   if (
     record.namespace !== NAMESPACE ||
@@ -152,8 +148,25 @@ export function shownItem(
     !["string", "undefined"].includes(typeof value.parent)
   )
     throw invalid();
+  return value as Checked;
+}
+
+/** The stored lease for `id`, if any, once its subject agrees. Reads state_leases. */
+export function leaseOf(views: IssueViews, id: string): Json | undefined {
   const lease = load(views.leases, LEASE, MAX_LEASE_BYTES, `issue:${id}`);
   if (lease !== undefined && lease.subject !== `issue:${id}`) throw invalid();
+  return lease;
+}
+
+/** One stored issue as the local show and list return it, once its wrapper and value agree with `id`; `lease` is shown only while live. */
+export function shownItem(
+  record: Json,
+  id: string,
+  lease: Json | undefined,
+  now: number,
+  prefix: string,
+): TrackerItem {
+  const value = checkedValue(record, id);
   const shown = (stored: string): string =>
     /^work-\d+$/.test(stored) ? `${prefix}-${stored.slice(5)}` : stored;
   const {

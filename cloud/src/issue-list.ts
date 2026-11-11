@@ -9,6 +9,7 @@ import {
   configured,
   fail,
   invalid,
+  leaseOf,
   MAX_RECORD_BYTES,
   parseBody,
   ROWS,
@@ -48,20 +49,17 @@ export function listIssues(
   if (sizes.some((row) => Number(row.size) > MAX_RECORD_BYTES)) throw invalid();
   const rows = views.records?.all(ROWS, range) ?? [];
   if (rows.length !== sizes.length) throw invalid();
-  // Every row is parsed, so a corrupt one is never skipped; the first `limit` are also checked
-  // and shown.
+  // Every row is parsed and checked (identity, schema) before any lease is read, even past `limit`.
   const records = rows.map((row) => parseBody(row.body, MAX_RECORD_BYTES));
+  const ids = rows.map((row) => String(row.key).slice("issue:".length));
+  records.forEach((record, at) =>
+    shownItem(record, ids[at]!, undefined, now, prefix),
+  );
   return {
     items: records
       .slice(0, limit)
       .map((record, at) =>
-        shownItem(
-          record,
-          String(rows[at]!.key).slice("issue:".length),
-          views,
-          now,
-          prefix,
-        ),
+        shownItem(record, ids[at]!, leaseOf(views, ids[at]!), now, prefix),
       ),
     truncated: records.length > limit,
   };

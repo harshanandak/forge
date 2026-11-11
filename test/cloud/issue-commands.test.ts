@@ -1306,7 +1306,7 @@ test("list refuses corrupt or oversized storage with a fixed 500, ignores other 
     [
       "wrong-typed revision",
       (f) => f.put(stored({ id: "work-2" }), { revision: "x" }, "issue:work-2"),
-      [500, "INTERNAL", 1, 3, notValid],
+      corrupt,
     ],
     [
       "lease subject mismatch",
@@ -1362,6 +1362,42 @@ test("list refuses corrupt or oversized storage with a fixed 500, ignores other 
     expect(f.snapshot()).toBe(before);
   }
 }, 60_000);
+
+test("list checks every stored issue, even past limit, before it reads any lease", async () => {
+  const rows: [string, (f: F) => void][] = [
+    [
+      "empty record",
+      (f) =>
+        f.db.run(
+          "INSERT INTO state_records(namespace,key,revision,body) VALUES (?,?,3,?)",
+          ["forge/work", "issue:work-2", "{}"],
+        ),
+    ],
+    [
+      "record id mismatch",
+      (f) => f.put(stored({ id: "work-3" }), {}, "issue:work-2"),
+    ],
+    [
+      "wrong-typed revision",
+      (f) => f.put(stored({ id: "work-2" }), { revision: "x" }, "issue:work-2"),
+    ],
+  ];
+  for (const [name, corrupt] of rows) {
+    const f = fixture();
+    const token = await f.device();
+    f.tables();
+    f.put(stored());
+    corrupt(f);
+    const got = await f.send({ ...listCall, input: { limit: 1 } }, { token });
+    expect([name, got.status, got.code, got.json.error?.message]).toEqual([
+      name,
+      500,
+      "INTERNAL",
+      notValid,
+    ]);
+    expect(got.probes).toEqual(WORK_PROBES.slice(0, 2));
+  }
+}, 30_000);
 
 test("list refuses bad input and filters it does not support yet before any work table is probed", async () => {
   const f = fixture();
@@ -1522,7 +1558,7 @@ test("a project over the row or byte budget is refused as UNAVAILABLE, even when
     [
       "10,000 rows",
       await rows(10_000),
-      { items: [shown({ title: "t" })], truncated: true },
+      { items: [shown({ title: "t", labels: [] })], truncated: true },
     ],
     ["10,001 rows", await rows(10_001), undefined],
     ["8 MiB", await bytes(0), { items: [shown()], truncated: true }],
