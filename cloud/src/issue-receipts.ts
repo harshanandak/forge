@@ -66,7 +66,8 @@ export function record(
 
 /**
  * Records a typed refusal in its own transaction, after no work was written, and returns it to be
- * thrown. Past the receipt limit the refusal is returned unrecorded.
+ * thrown. Past the receipt limit the refusal is returned unrecorded. `recheck` runs first inside the
+ * transaction and throws when the token is no longer valid.
  */
 export function refused(
   db: SqlDatabase,
@@ -75,14 +76,17 @@ export function refused(
   actor: Actor,
   fingerprint: string,
   failure: ForgeFailure,
+  recheck: () => void,
 ): ForgeFailure {
   if (!full(owner))
-    db.transaction(() =>
+    db.transaction(() => {
+      // An expired or revoked token records nothing.
+      recheck();
       record(owner, requestId, actor, {
         fingerprint,
         outcome: "refused",
         result: failure.error,
-      }),
-    );
+      });
+    });
   return failure;
 }

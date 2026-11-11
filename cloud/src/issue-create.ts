@@ -10,6 +10,7 @@ import type { BoundContext, TrackerItem } from "../../src/generated/types.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
 import { configured, fail, schemas, shownItem } from "./issue-read.ts";
 import { admit, record, refused, replay } from "./issue-receipts.ts";
+import { carriesToken } from "./tokens.ts";
 
 const NAMESPACE = "forge/work";
 const KINDS = ["task", "bug", "feature", "epic"];
@@ -34,6 +35,8 @@ export interface CreateCall {
   readonly device: string;
   /** The server's configured id prefix, as set. */
   readonly prefix: unknown;
+  /** Throws AUTH_EXPIRED or AUTH_REVOKED when the token is no longer valid. */
+  readonly recheck: () => void;
 }
 
 // Parent and dependencies are refused by name, never dropped: the graph arrives in a later slice.
@@ -56,15 +59,18 @@ function checked(input: unknown): Fields {
 }
 
 /**
- * Creates one open issue, or returns the recorded answer for a repeated request. Runs no await, so
- * the caller's token check stays current until the transaction.
+ * Creates one open issue, or returns the recorded answer for a repeated request. Runs no await, and
+ * rechecks the token inside the transaction before it allocates.
  */
 export function createIssue(
   db: SqlDatabase,
   owner: StateOwner,
   call: CreateCall,
 ): TrackerItem {
-  const { requestId, input, context, device } = call;
+  const { requestId, input, context, device, recheck } = call;
+  // The id becomes a receipt key, an event and a dump row, so a credential is never taken as an id.
+  if (carriesToken(requestId))
+    throw fail("INPUT_INVALID", "requestId must not carry a credential");
   const prefix = call.prefix as string;
   configured(prefix);
   if (context.variant !== "project")
@@ -83,10 +89,12 @@ export function createIssue(
     fields = checked(input);
   } catch (error) {
     throw error instanceof ForgeFailure
-      ? refused(db, owner, requestId, actor, fingerprint, error)
+      ? refused(db, owner, requestId, actor, fingerprint, error, recheck)
       : error;
   }
   return db.transaction(() => {
+    // The token may have expired or been revoked since the route's check: nothing is allocated then.
+    recheck();
     admit(owner);
     const id = `work-${owner.maxNumber(NAMESPACE, "issue:work-") + 1}`;
     const now = Date.now();

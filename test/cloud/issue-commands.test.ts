@@ -2657,3 +2657,56 @@ test("a create leaves its work record, event and receipt in the dump, and no cre
         text.toLowerCase().includes(canary.toLowerCase()),
       ]).toEqual([canary, false]);
 }, 60_000);
+
+test("a request id that carries a device token is refused before any lookup or write, and no part of the token is stored or echoed", async () => {
+  const { f, token } = await createRows();
+  const before = f.snapshot();
+  const secret = token.split(".")[1]!;
+  const texts: string[] = [];
+  for (const [name, id, input] of [
+    ["valid input", token, { title: "New" }],
+    ["refused input", token, { title: "New", parent: "forge-1" }],
+    ["upper case", token.toUpperCase(), { title: "New" }],
+    ["inside other text", `x-${token}`, { title: "New" }],
+  ] as const) {
+    const got = await f.send(make(id, input), { token });
+    expect([name, got.status, got.code, got.exit]).toEqual([
+      name,
+      400,
+      "INPUT_INVALID",
+      6,
+    ]);
+    expect(got.json.error?.message).toBe(
+      "requestId must not carry a credential",
+    );
+    texts.push(got.text);
+  }
+  expect(f.snapshot()).toBe(before);
+  texts.push(await f.dump());
+  for (const text of texts)
+    for (const part of [token, secret])
+      expect(text.toLowerCase()).not.toContain(part.toLowerCase());
+}, 30_000);
+
+test("a token that expires between the route's check and the transaction allocates and records nothing", async () => {
+  const { f, token } = await createRows();
+  const before = writes(f);
+  const real = f.storage.sql.exec.bind(f.storage.sql);
+  let tripped = false;
+  // The first statement after the route's checks is the receipt lookup: the clock passes expiry there.
+  f.storage.sql.exec = (sql, ...bindings) => {
+    if (!tripped && bindings.includes("request:e-1")) {
+      tripped = true;
+      f.advance(2 * day);
+    }
+    return real(sql, ...bindings);
+  };
+  const got = await f.send(make("e-1"), { token });
+  expect([tripped, got.status, got.code, got.exit]).toEqual([
+    true,
+    401,
+    "AUTH_EXPIRED",
+    1,
+  ]);
+  expect(writes(f)).toBe(before);
+}, 30_000);

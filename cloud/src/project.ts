@@ -492,6 +492,9 @@ export class Project {
         idPrefix: (this.#env as { FORGE_CLOUD_ID_PREFIX?: unknown })
           .FORGE_CLOUD_ID_PREFIX,
         now: Date.now(),
+        recheck: () => {
+          authorize(db, parts, Date.now());
+        },
         open: () => this.#open(),
       });
     } catch (error) {

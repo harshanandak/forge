@@ -171,6 +171,8 @@ export interface CommandRun extends CommandHost {
   /** The server's configured id prefix, as set: readIssue checks it. */
   readonly idPrefix: unknown;
   readonly now: number;
+  /** Throws when the token is no longer valid; a write calls it inside its transaction. */
+  readonly recheck: () => void;
   /** Opens the project database for a write; reads never call it. */
   readonly open: () => { db: SqlDatabase; owner: StateOwner };
 }
@@ -221,6 +223,7 @@ export function runCommand(text: string, host: CommandRun): Response {
           context,
           device: host.device,
           prefix: host.idPrefix,
+          recheck: host.recheck,
         })
       : read(lazyViews(host.storage), input, host.now, host.idPrefix as string);
   const body = JSON.stringify({
