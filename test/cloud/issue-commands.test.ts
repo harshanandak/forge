@@ -11,6 +11,9 @@ import { TOKEN_LOOKUP, TOKENS } from "../../cloud/src/tokens.ts";
 import { prepareCommand } from "../../cloud/src/issue-commands.ts";
 import { MAX_RECEIPTS } from "../../cloud/src/issue-receipts.ts";
 import { listIssues } from "../../cloud/src/issue-list.ts";
+import { commentIssue } from "../../cloud/src/issue-comment.ts";
+import { createIssue } from "../../cloud/src/issue-create.ts";
+import { updateIssue } from "../../cloud/src/issue-update.ts";
 import {
   LEASE_READS,
   RECORD_READS,
@@ -229,7 +232,12 @@ function fixture(
       db.run("DELETE FROM state_leases WHERE subject=?", [subject]);
       db.run(
         "INSERT INTO state_leases(namespace,subject,generation,body) VALUES (?,?,?,?)",
-        ["forge/work", subject, body.generation, JSON.stringify(body)],
+        [
+          "forge/work",
+          subject,
+          Number.isInteger(body.generation) ? body.generation : 2,
+          JSON.stringify(body),
+        ],
       );
     },
     reopen: () => {
@@ -3207,6 +3215,12 @@ test("a stale expectRevision is REVISION_CONFLICT with the local code and messag
       ]);
       expect([name, got.json.error]).toEqual([name, want.error as never]);
       expect([name, writes(f)]).toEqual([name, before]);
+      // Like every refusal thrown inside the write, it is not recorded: a retry runs again and refuses the same.
+      const again = await f.send(revise(`s-${expectRevision}`, input), {
+        token,
+      });
+      expect([name, again.text]).toEqual([name, got.text]);
+      expect([name, writes(f)]).toEqual([name, before]);
     }
   });
 }, 60_000);
@@ -3346,6 +3360,25 @@ test("a caller that does not hold the live lease generation is refused with the 
       expect(want.error).toBeDefined();
       expect([name, got.json.error]).toEqual([name, want.error as never]);
       expect([name, writes(f)]).toEqual([name, before]);
+      const again = await f.send(revise("f-1", patch(), { context }), {
+        token,
+      });
+      expect([name, again.text]).toEqual([name, got.text]);
+      expect([name, writes(f)]).toEqual([name, before]);
+    }
+    // No refusal receipt blocks a retry once the caller holds the lease again.
+    {
+      const { f, token } = await updateRows();
+      f.db.run("DELETE FROM state_leases WHERE subject='issue:work-12'");
+      expect((await f.send(revise("f-3"), { token })).code).toBe(
+        "LEASE_NOT_HELD",
+      );
+      f.lease({ holder }, "issue:work-12");
+      const retry = await f.send(revise("f-3"), { token });
+      expect([retry.status, retry.json.result]).toMatchObject([
+        200,
+        { title: "Edited" },
+      ]);
     }
     // The device is the token's: a body that names another one is refused outright.
     const { f, token } = await updateRows();
@@ -3424,12 +3457,13 @@ test("a retry with the lease still held returns the original result with no seco
   }
   // A replay is authenticated first: a revoked token never reads the receipt.
   revoke(f, other);
+  const revoked = f.snapshot();
   const denied = await f.send(revise("r-1"), { token: other });
   expect([denied.status, denied.code]).toEqual([401, "AUTH_REVOKED"]);
   expect(denied.text).not.toContain("Edited");
   const dry = await f.send(revise("r-3", patch(), { dryRun: true }), { token });
   expect([dry.status, dry.code, dry.exit]).toEqual([503, "UNAVAILABLE", 1]);
-  expect(f.snapshot()).toBe(later);
+  expect(f.snapshot()).toBe(revoked);
 }, 60_000);
 
 test("a replay after the lease was released, expired or taken over is LEASE_STALE and never the historical result", async () => {
@@ -3615,3 +3649,36 @@ test("an update leaves its record, event and receipt in the dump, and no credent
         text.toLowerCase().includes(canary.toLowerCase()),
       ]).toEqual([canary, false]);
 }, 60_000);
+
+test("the shared write path takes a project context for create and comment and a leased one for update, and refuses the other as INTERNAL", async () => {
+  const { f } = await updateRows();
+  const db = sqlOf(f.db);
+  const owner = new StateOwner(db, { now: f.now });
+  const project = { variant: "project", actor, project: { id: "p" } } as const;
+  const lease = {
+    variant: "leased",
+    leaseMode: "held",
+    actor,
+    session: { id: "s1", device: "laptop" },
+    project: { id: "p" },
+    leaseGeneration: 2,
+  } as const;
+  const before = f.snapshot();
+  for (const [op, run, context, want] of [
+    ["issue.create", createIssue, lease, "project"],
+    ["issue.comment", commentIssue, lease, "project"],
+    ["issue.update", updateIssue, project, "leased"],
+  ] as const) {
+    expect(() =>
+      run(db, owner, {
+        requestId: "x-1",
+        input: {},
+        context,
+        device: "laptop",
+        prefix: "forge",
+        recheck: () => {},
+      }),
+    ).toThrow(`${op} needs a ${want} context`);
+  }
+  expect(f.snapshot()).toBe(before);
+}, 30_000);

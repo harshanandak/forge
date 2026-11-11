@@ -26,7 +26,9 @@ export interface WriteCall {
 /**
  * Runs `write` once per request id and returns the recorded answer for a repeat. `check` throws
  * ForgeFailure for input it refuses; that refusal is recorded. Runs no await, and rechecks the token
- * inside the transaction before `write` allocates anything.
+ * inside the transaction before `write` allocates anything. A leased write passes `replayed`, which
+ * rechecks the lease before a recorded answer is returned and makes the call take a held-lease context;
+ * without it the call takes a project context.
  */
 export function receipted<Fields, Result>(
   db: SqlDatabase,
@@ -34,7 +36,13 @@ export function receipted<Fields, Result>(
   op: string,
   call: WriteCall,
   check: (input: unknown, prefix: string) => Fields,
-  write: (fields: Fields, actor: Actor, prefix: string) => Result,
+  write: (
+    fields: Fields,
+    actor: Actor,
+    prefix: string,
+    context: BoundContext,
+  ) => Result,
+  replayed?: (prior: Result, context: BoundContext) => void,
 ): Result {
   const { requestId, input, context, device, recheck } = call;
   // The id becomes a receipt key, an event and a dump row, so a credential is never taken as an id.
@@ -42,12 +50,16 @@ export function receipted<Fields, Result>(
     throw fail("INPUT_INVALID", "requestId must not carry a credential");
   const prefix = call.prefix as string;
   configured(prefix);
-  if (context.variant !== "project")
-    throw fail("INTERNAL", `${op} needs a project context`);
+  const variant = replayed === undefined ? "project" : "leased";
+  if (context.variant !== variant)
+    throw fail("INTERNAL", `${op} needs a ${variant} context`);
   const { actor } = context;
   const fingerprint = digestValue({ op, input, context, device });
   const prior = replay(owner, requestId, fingerprint);
-  if (prior !== undefined) return prior as Result;
+  if (prior !== undefined) {
+    replayed?.(prior as Result, context);
+    return prior as Result;
+  }
   let fields: Fields;
   try {
     fields = check(input, prefix);
@@ -63,7 +75,7 @@ export function receipted<Fields, Result>(
     return record(owner, requestId, actor, {
       fingerprint,
       outcome: "ok",
-      result: write(fields, actor, prefix),
+      result: write(fields, actor, prefix, context),
     }) as Result;
   });
 }
