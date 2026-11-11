@@ -204,7 +204,7 @@ test("the consent page says a loopback app runs on this computer and is otherwis
     const response = await f.authorize(client, uri);
     expect(response.status).toBe(200);
     const html = await response.text();
-    const handle = /name="handle" value="([^"]+)"/.exec(html)?.[1];
+    const handle = html.split('name="handle" value="')[1]?.split('"')[0];
     expect(handle).toBeDefined();
     expect(html).toBe(page(uri, handle!, expectLine));
   }

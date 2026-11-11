@@ -13,7 +13,11 @@ import {
   OAuthAuthorizationServer,
   type ConsentDescription,
 } from "@cloudflare/workers-oauth-provider";
-import { guardRegistration, REGISTRATION_LIMITS } from "./registration.ts";
+import {
+  guardRegistration,
+  isLoopbackRedirect,
+  REGISTRATION_LIMITS,
+} from "./registration.ts";
 import { productionOptions } from "./production.ts";
 import { bearer, sha256, wellFormed } from "../../tokens.ts";
 import { boundedOAuthRequest } from "./body.ts";
@@ -84,7 +88,7 @@ export function composeOAuth(
           );
           headers.set("Referrer-Policy", "no-referrer");
           return new Response(
-            `<!doctype html><html lang="en"><meta charset="utf-8"><title>Authorize access</title><h1>Authorize ${escape(consent.clientName || consent.clientId)}</h1><p>Redirect: <code>${escape(consent.redirectUri)}</code></p><form method="post" action="/authorize"><input type="hidden" name="handle" value="${escape(handle)}"><button name="allow" value="true">Allow</button><button name="allow" value="false">Deny</button></form></html>`,
+            `<!doctype html><html lang="en"><meta charset="utf-8"><title>Authorize access</title><h1>Authorize ${escape(consent.clientName || consent.clientId)}</h1><p>Redirect: <code>${escape(consent.redirectUri)}</code></p>${isLoopbackRedirect(consent.redirectUri) ? "<p>This app runs on this computer.</p>" : ""}<form method="post" action="/authorize"><input type="hidden" name="handle" value="${escape(handle)}"><button name="allow" value="true">Allow</button><button name="allow" value="false">Deny</button></form></html>`,
             { headers },
           );
         } catch {
@@ -190,6 +194,7 @@ export function createConfiguredWorker(
         const refusal = await guardRegistration(
           request,
           env.REGISTRATION_LIMITER,
+          config.namedRedirects,
         );
         if (refusal) return refusal;
         if (protocol) return await protocol(request);
