@@ -49,7 +49,12 @@ import {
   loginRoute,
   type LoginEnv,
 } from "./auth/project-login.ts";
-import { commandProject, failed, MAX_COMMAND_BODY } from "./issue-commands.ts";
+import {
+  commandProject,
+  failed,
+  MAX_COMMAND_BODY,
+  runCommand,
+} from "./issue-commands.ts";
 import {
   authorize,
   issueToken,
@@ -100,7 +105,9 @@ const fail = (code: string, message: string): ForgeFailure =>
   new ForgeFailure({ code, message, retry: "never" });
 const STATUS: Record<string, number> = {
   INPUT_INVALID: 400,
+  CONTEXT_MISSING: 400,
   UNKNOWN_COMMAND: 404,
+  UNAVAILABLE: 503,
   INPUT_CONFLICT: 409,
   DUMP_TOO_LARGE: 413,
   DUMP_CHANGED: 409,
@@ -472,9 +479,12 @@ export class Project {
       const db = readOnlyStore(this.#storage, TOKENS);
       if (db === undefined) throw fail("AUTH_INVALID", "Token is not valid");
       authorize(db, parts, Date.now());
-      await bounded(request, MAX_COMMAND_BODY);
-      authorize(db, parts, Date.now());
-      throw fail("INPUT_INVALID", "Commands are not yet supported in cloud");
+      const body = await bounded(request, MAX_COMMAND_BODY);
+      // Envelope handling gets only the device the token names and the admitted project: no storage.
+      runCommand(body, {
+        device: authorize(db, parts, Date.now()),
+        project: commandProject(request)!,
+      });
     } catch (error) {
       if (!(error instanceof ForgeFailure)) throw error;
       await discard(request);
