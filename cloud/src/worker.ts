@@ -8,6 +8,7 @@ import type { Access, AuthComposition } from "./auth/compose.ts";
 import { configUnavailable, isOAuthRoute } from "./auth/compose.ts";
 import { isDeviceCallback, isDeviceRoute } from "./auth/device-browser.ts";
 import { commandProject } from "./issue-commands.ts";
+import { PROJECT_NAME } from "./project-name.ts";
 import {
   isLoginRoute,
   loginConfigGap,
@@ -22,7 +23,7 @@ interface Env extends LoginEnv {
   };
 }
 
-const PATH = /^\/p\/([A-Za-z0-9][A-Za-z0-9._-]{0,63})\/([a-z]+)$/;
+const PATH = new RegExp(`^/p/(${PROJECT_NAME})/([a-z]+)$`);
 const ADMIN_ROUTES = new Set([
   "devices",
   "revoke",
