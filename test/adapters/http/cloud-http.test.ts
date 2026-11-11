@@ -446,19 +446,16 @@ for (const route of ["claim", "renew", "release"] as const)
   }, 10_000);
 
 test("a holder read is a GET with the subject URL-encoded and no body, and keeps the raw record", async () => {
-  const released = lease({ releasedAt: "2026-11-11T11:00:00.000Z" });
-  const lapsed = lease({ expiresAt: "2020-01-01T00:00:00.000Z" });
-  for (const value of [lease(), released, lapsed, null]) {
+  const subject = "issue:a b/c?d";
+  const mine = (more = {}) => lease({ subject, ...more });
+  const released = mine({ releasedAt: "2026-11-11T11:00:00.000Z" });
+  const lapsed = mine({ expiresAt: "2020-01-01T00:00:00.000Z" });
+  for (const value of [mine(), released, lapsed, null]) {
     const net = network(() => ok(value));
-    const result = await http(net.fetch).leaseHolder(TOKEN, "issue:a b/c?d");
+    const result = await http(net.fetch).leaseHolder(TOKEN, subject);
     expect(result).toEqual({ kind: "ok", lease: value } as never);
-    const [call] = net.calls;
-    expect(call?.url).toBe(
-      `${ORIGIN}/p/proj/holder?subject=issue%3Aa%20b%2Fc%3Fd`,
-    );
-    expect(call?.init.method).toBe("GET");
-    expect(call?.init.body).toBeUndefined();
-    expect(call?.init.headers.authorization).toBe(`Bearer ${TOKEN}`);
+    sentOnce(net, "GET", "holder?subject=issue%3Aa%20b%2Fc%3Fd");
+    expect(net.calls[0]?.init.body).toBeUndefined();
   }
 }, 10_000);
 
