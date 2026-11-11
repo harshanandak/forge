@@ -47,6 +47,9 @@ forge issue create --title "First task" --kind task
 forge issue show demo-1
 ```
 
+With a merged PR: `forge issue link demo-1 --relation delivers --url <pr-url>`, `forge check run` (PASS for the PR head), then `forge issue close demo-1 --receipt <receipt-id>`.
+Without a merged PR: `forge issue close demo-1 --without-receipt "<reason>"`.
+
 Start delivery with `forge-loop`. It routes a settled slice to `forge-build`
 (including opening the PR), feedback to `forge-review`, and a checked PR to
 `forge-land`. Sync also installs the review thread helpers beside their skill.
