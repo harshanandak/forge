@@ -18,6 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createAssembly, localCall } from "../../../src/assembly/index.ts";
+import type { AmbientContext } from "../../../src/generated/types.ts";
 import { blockCapture } from "../../../src/assembly/capture.ts";
 import { firstPartyBlocks } from "../../../src/assembly/first-party.ts";
 
@@ -27,7 +28,7 @@ const DAY = 24 * 60 * 60 * 1000;
 const NOT_SPENT = /not expired or used/;
 const PAST_RUNTIME = /no open gated ask/;
 
-async function open() {
+async function open(rename = {}) {
   const folder = mkdtempSync(join(tmpdir(), "forge-renewal-"));
   const root = join(folder, "project");
   mkdirSync(join(root, ".forge"), { recursive: true });
@@ -37,6 +38,7 @@ async function open() {
       schemaVersion: "forge.config/1",
       blocks: {
         work: {
+          rename,
           source: { builtin: "forge/work" },
           config: { idPrefix: "sample" },
         },
@@ -67,7 +69,7 @@ async function open() {
     });
     let counter = 0;
     return {
-      invoke(op: string, input: unknown) {
+      invoke(op: string, input: unknown, ambient: AmbientContext = {}) {
         const { caller, context } = localCall(assembly);
         counter += 1;
         return assembly.catalog.invoke({
@@ -76,7 +78,7 @@ async function open() {
           op,
           input,
           caller,
-          context: context ?? {},
+          context: { ...context, ...ambient },
         });
       },
       async close() {
@@ -94,6 +96,28 @@ async function open() {
     throw error;
   }
 }
+
+test("renamed attempts receive real assembly grants and ignore ambient generations", async () => {
+  const h = await open({ issue: "ticket", attempt: "try" });
+  try {
+    for (const [op, input] of [
+      ["ticket.create", { title: "Attempt" }],
+      ["ticket.claim", { id: "sample-1" }],
+      ["try.slots", { id: "sample-1", count: 1 }],
+      ["try.reserve", { id: "sample-1" }],
+      ["try.note", { id: "sample-1", attempt: "attempt-1", body: "note" }],
+      ["try.release", { id: "sample-1", attempt: "attempt-1" }],
+    ] as const) {
+      const result = await h.invoke(op, input, {
+        session: { id: "attempts" },
+        leaseGeneration: 2,
+      });
+      expect(result.ok, JSON.stringify(result)).toBe(true);
+    }
+  } finally {
+    await h.close();
+  }
+}, 30_000);
 
 test("a request is replaced only once it is used or expired, by the real approval store and clock", async () => {
   const h = await open();

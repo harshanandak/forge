@@ -1,0 +1,17 @@
+{
+  "type": "object",
+  "required": ["id", "attempt", "body"],
+  "properties": {
+    "id": {
+      "$ref": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/tracker.json#/$defs/ItemId"
+    },
+    "attempt": {
+      "type": "string"
+    },
+    "body": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "additionalProperties": false
+}

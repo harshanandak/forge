@@ -4,6 +4,8 @@ import type {
   InvocationRequest,
   ResultEnvelope,
   UpgradeHint,
+  Caller,
+  TemplateHint,
 } from "../generated/types.ts";
 
 /** Metadata only: discovery must never load an operation's executable code. */
@@ -11,6 +13,11 @@ export interface SurfaceCatalog {
   list(): readonly McpCandidate[];
   diagnose?(op: string): ForgeError | undefined;
   upgradeHint?(op: string): UpgradeHint | undefined;
+  templateHint?(
+    op: string,
+    caller: Caller,
+    readOnly?: boolean,
+  ): TemplateHint | undefined;
   invoke(request: InvocationRequest): Promise<ResultEnvelope>;
 }
 

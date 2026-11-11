@@ -12,6 +12,9 @@
     },
     "lane": {
       "interface": "1.0.0"
+    },
+    "attempt": {
+      "interface": "1.0.0"
     }
   },
   "provides": [
@@ -465,6 +468,54 @@
       "timeoutMs": 15000,
       "leaseMode": "acquire",
       "effects": ["issue:write"],
+      "idempotent": false,
+      "callers": ["agent", "human"],
+      "stability": "experimental",
+      "args": ["id"]
+    },
+    "attempt.slots": {
+      "input": "schemas/slots.input.json",
+      "output": "schemas/ItemRef.json",
+      "context": "leased",
+      "timeoutMs": 15000,
+      "leaseMode": "acquire",
+      "effects": ["attempt:write"],
+      "idempotent": true,
+      "callers": ["agent", "human"],
+      "stability": "experimental",
+      "args": ["id"]
+    },
+    "attempt.reserve": {
+      "input": "schemas/attempt.input.json",
+      "output": "schemas/attempt.output.json",
+      "context": "leased",
+      "timeoutMs": 15000,
+      "leaseMode": "acquire",
+      "effects": ["attempt:write"],
+      "idempotent": true,
+      "callers": ["agent", "human"],
+      "stability": "experimental",
+      "args": ["id"]
+    },
+    "attempt.release": {
+      "input": "schemas/attempt-release.input.json",
+      "output": "schemas/ItemRef.json",
+      "context": "leased",
+      "timeoutMs": 15000,
+      "leaseMode": "acquire",
+      "effects": ["attempt:write"],
+      "idempotent": false,
+      "callers": ["agent", "human"],
+      "stability": "experimental",
+      "args": ["id"]
+    },
+    "attempt.note": {
+      "input": "schemas/attempt-note.input.json",
+      "output": "schemas/ItemRef.json",
+      "context": "leased",
+      "timeoutMs": 15000,
+      "leaseMode": "acquire",
+      "effects": ["attempt:write"],
       "idempotent": false,
       "callers": ["agent", "human"],
       "stability": "experimental",
