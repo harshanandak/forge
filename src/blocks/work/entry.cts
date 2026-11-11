@@ -383,6 +383,7 @@ function attemptView(state: LeaseStateClient, record: StateRecord) {
     live: !!live(state, record.key),
     generation: lease.generation,
     expiresAt: lease.expiresAt,
+    evidence: state.count(`evidence:${record.key}:`),
   };
 }
 type TreeNode = {
@@ -5192,6 +5193,13 @@ const operations: Operations<WorkOperations> = {
         mode: "competing",
         slots: slots.count,
         attempts: attempts(state, id).map((row) => attemptView(state, row)),
+        ...(state.get(`selection:${id}`)
+          ? {
+              selection: state.get(`selection:${id}`)!.value as NonNullable<
+                TrackerItem["selection"]
+              >,
+            }
+          : {}),
       };
     if (invited.length)
       return {
@@ -5397,10 +5405,155 @@ const operations: Operations<WorkOperations> = {
       fail("INTERNAL", "Attempt release readback mismatch");
     return { id: ids.shown(id) };
   },
-  "attempt.evidence": () =>
-    fail("UNAVAILABLE", "Attempt evidence is not implemented"),
-  "attempt.select": () =>
-    fail("UNAVAILABLE", "Attempt selection is not implemented"),
+  "attempt.evidence": ({ input, services, config }) => {
+    let state = client(services);
+    const ids = idsFor(state, config),
+      id = ids.stored(input.id);
+    get(state, id, input.id);
+    const record = state.get(`attempt:${id}:${input.attempt}`);
+    if (!record) fail("LEASE_NOT_HELD", "No such attempt on this issue");
+    state = state.withOwnLease(key(record.key));
+    state.putMany([], { subject: key(record.key) });
+    if (!/^[a-fA-F0-9]{40}$/.test(input.sha))
+      fail("INPUT_INVALID", "sha must be a full 40-hex commit id");
+    if (
+      input.metrics !== undefined &&
+      (input.metrics === null ||
+        typeof input.metrics !== "object" ||
+        Array.isArray(input.metrics) ||
+        Object.keys(input.metrics).length > 32 ||
+        Object.values(input.metrics).some(
+          (v) =>
+            typeof v !== "string" &&
+            (typeof v !== "number" || !Number.isFinite(v)),
+        ))
+    )
+      fail(
+        "INPUT_INVALID",
+        "metrics must be a flat object of at most 32 numbers or strings",
+      );
+    if (input.receipt !== undefined) {
+      const receipts = (services as { receipts?: ReceiptsService }).receipts;
+      if (!receipts || typeof receipts.get !== "function")
+        fail(
+          "RECEIPTS_UNAVAILABLE",
+          "Cannot verify receipt: the receipts slot is unbound",
+        );
+      const receipt = receipts.get(input.receipt);
+      if (receipt?.reason?.startsWith("TRACKED_INPUTS_DIRTY:"))
+        fail("TRACKED_INPUTS_DIRTY", receipt.reason);
+      if (!receipt || receipt.status !== "PASS")
+        fail(
+          "RECEIPT_INVALID",
+          "Evidence requires an existing verified PASS receipt",
+        );
+      if (receipt.subject !== input.sha)
+        fail("RECEIPT_HEAD_MISMATCH", "Receipt must cover the evidence sha");
+    }
+    const prefix = `evidence:${record.key}:`,
+      { id: _id, ...proof } = input;
+    persist(
+      state,
+      prefix + (state.count(prefix) + 1),
+      {
+        ...proof,
+        holder: state.holder(),
+        recordedAt: new Date(state.now()).toISOString(),
+      },
+      0,
+      key(record.key),
+    );
+    return { id: ids.shown(id) };
+  },
+  "attempt.select": ({ input, services, config }) => {
+    let state = client(services);
+    const ids = idsFor(state, config),
+      id = ids.stored(input.id);
+    const issue = get(state, id, input.id),
+      slots = state.get(`slots:${id}`),
+      rows = attempts(state, id);
+    state = state.withOwnLease(key(id));
+    state.putMany([], { subject: key(id) });
+    if (state.get(`selection:${id}`))
+      fail("INPUT_CONFLICT", "Already selected");
+    if (stored(issue).status !== "open")
+      fail("INPUT_CONFLICT", "Closed issues cannot be selected");
+    if (!slots)
+      fail("ISSUE_NOT_COMPETING", "Coordinator must set attempt slots");
+    const reason = input.reason.trim();
+    if (!reason || Array.from(reason).length > 65536)
+      fail(
+        "INPUT_INVALID",
+        "reason must contain 1 to 65536 characters after trimming",
+      );
+    if ((input.attempt === undefined) === (input.combine === undefined))
+      fail("INPUT_INVALID", "Choose attempt or combine");
+    const chosen = (
+      input.combine === undefined
+        ? [[input.attempt!, undefined]]
+        : input.combine.split(",").map((part) => {
+            const pair = part.split(":");
+            if (pair.length !== 2)
+              fail("INPUT_INVALID", "combine entries must be attempt-id:sha");
+            return pair;
+          })
+    ).map(([attempt, sha]) => {
+      if (
+        !attempt ||
+        (input.combine !== undefined &&
+          (!sha || !/^[a-fA-F0-9]{40}$/.test(sha)))
+      )
+        fail("INPUT_INVALID", "combine entries must be attempt-id:sha");
+      const row = rows.find((row) => (row.value as Attempt).id === attempt);
+      const evidence = row
+        ? appended(state, `evidence:${row.key}:`).map(
+            (r) => r.value as { sha: string },
+          )
+        : [];
+      const commit = sha ?? evidence.at(-1)?.sha;
+      if (!row || !commit || !evidence.some((proof) => proof.sha === commit))
+        fail("INPUT_CONFLICT", `Attempt ${attempt} has no matching evidence`);
+      return { attempt, sha: commit };
+    });
+    if (new Set(chosen.map((c) => c.attempt)).size !== chosen.length)
+      fail("INPUT_INVALID", "An attempt may be chosen only once");
+    state.putMany(
+      [
+        {
+          key: `selection:${id}`,
+          value: {
+            mode: input.combine === undefined ? "single" : "combine",
+            chosen,
+            reason,
+            holder: state.holder(),
+            selectedAt: new Date(state.now()).toISOString(),
+          },
+          expectRevision: 0,
+        },
+        ...rows
+          .filter(
+            (row) =>
+              !chosen.some((c) => c.attempt === (row.value as Attempt).id),
+          )
+          .map((row) => ({
+            key: row.key,
+            value: {
+              ...(row.value as Attempt),
+              superseded: { supersededBy: "selection", reason },
+            },
+            expectRevision: row.revision,
+          })),
+      ],
+      {
+        subject: key(id),
+        readSet: [issue, slots, ...rows].map((row) => ({
+          key: row.key,
+          expectRevision: row.revision,
+        })),
+      },
+    );
+    return { id: ids.shown(id) };
+  },
   "attempt.note": ({ input, services, config }) => {
     let state = client(services);
     const ids = idsFor(state, config),
@@ -5716,6 +5869,16 @@ const operations: Operations<WorkOperations> = {
     const ids = idsFor(state, config);
     const id = ids.stored(input.id);
     const record = get(state, id, input.id);
+    if (state.get(`slots:${id}`) && !state.get(`selection:${id}`)) {
+      state.putMany([], { subject: key(id) });
+      fail(
+        "INPUT_CONFLICT",
+        "Select an attempt before closing a competing issue",
+        {
+          repair: `forge attempt select ${ids.shown(id)} --attempt <attempt-id> --reason "<why>"`,
+        },
+      );
+    }
     if (input.receipt !== undefined) {
       const receipts = (services as { receipts?: ReceiptsService }).receipts;
       if (!receipts || typeof receipts.get !== "function")

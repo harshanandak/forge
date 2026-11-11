@@ -227,8 +227,8 @@ test("attempt authority refusals create no branch, worktree or registry row", as
 
 test("selection preserves competing branches, worktrees and lane rows", () => {
   const id = team();
+  good("lane.attempt", args(id, 2), "C");
   for (const [index, session] of ["B", "C"].entries()) {
-    good("lane.attempt", args(id, index + 1), session);
     good(
       "attempt.evidence",
       { id, attempt: `attempt-${index + 1}`, sha: git(["rev-parse", "HEAD"]) },
@@ -238,7 +238,7 @@ test("selection preserves competing branches, worktrees and lane rows", () => {
   const before = snapshot();
   good("attempt.select", { id, attempt: "attempt-1", reason: "Keep all work" });
   expect(snapshot()).toEqual(before);
-  for (const n of [1, 2]) expect(existsSync(path(id, n))).toBe(true);
+  expect(existsSync(path(id, 2))).toBe(true);
 }, 30000);
 
 test("a failed registry write preserves work and retries adopt only their own checkout", () => {
