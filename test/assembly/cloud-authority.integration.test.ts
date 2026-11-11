@@ -66,6 +66,14 @@ const ISSUE = {
 const PAGE = { items: [ISSUE], truncated: false };
 const answer = (result: object = ISSUE, op = "issue.show") =>
   fx.json({ ok: true, op, status: "OK", result, warnings: [] });
+const COMMENTED = { id: "forge-1", commentId: "c-1" };
+/** The status the cloud's command route gives each refusal (cloud/src/project.ts STATUS). */
+const HTTP: Record<string, number> = {
+  NOT_FOUND: 404,
+  INPUT_CONFLICT: 409,
+  INPUT_INVALID: 400,
+  INTERNAL: 500,
+};
 const refusing = (code: string) =>
   fx.json(
     {
@@ -74,13 +82,15 @@ const refusing = (code: string) =>
       error: { code, message: TOKEN },
       warnings: [],
     },
-    401,
+    HTTP[code] ?? 401,
   );
 const MANIFEST = resolve(
   import.meta.dirname,
   "../../src/blocks/work/forge.block.json",
 );
-const SERVED = ["issue.show", "issue.list", "issue.ready"];
+const READS = ["issue.show", "issue.list", "issue.ready"];
+const WRITES = ["issue.create", "issue.comment"];
+const SERVED = [...READS, ...WRITES];
 const DECLARED = Object.keys(
   (JSON.parse(readFileSync(MANIFEST, "utf8")) as { operations: object })
     .operations,
@@ -221,7 +231,7 @@ test("a bound project's issue show is answered by the cloud with the stored toke
     expect(body).toMatchObject({ context: { device: { id: "dev-1" } } });
   }));
 
-test("the routing decision serves show, list and ready, refuses every other operation of the work block by name, and leaves other blocks local", () => {
+test("the routing decision serves show, list, ready, create and comment, refuses every other operation of the work block by name, and leaves other blocks local", () => {
   expect(DECLARED.length).toBeGreaterThan(30);
   for (const op of SERVED) expect(cloudRoute("forge/work", op)).toBe("cloud");
   expect(cloudRoute("forge/memory", "memory.list")).toBe("local");
@@ -235,20 +245,114 @@ test("the routing decision serves show, list and ready, refuses every other oper
 });
 
 const RENAMED = yaml({ rename: { issue: "ticket" } });
-for (const [source, op, input, declared] of [
-  [WORK, "issue.create", { title: "x" }, "issue.create"],
-  [RENAMED, "ticket.create", { title: "x" }, "issue.create"],
-  [RENAMED, "ticket.show", { id: "forge-1" }, undefined],
+const CREATE = { title: "x", kind: "task" };
+const COMMENT = { id: "forge-1", body: "hi" };
+for (const [source, op, input, declared, result] of [
+  [WORK, "issue.create", CREATE, "issue.create", ISSUE],
+  [RENAMED, "ticket.create", CREATE, "issue.create", ISSUE],
+  [WORK, "issue.comment", COMMENT, "issue.comment", COMMENTED],
+  [RENAMED, "ticket.comment", COMMENT, "issue.comment", COMMENTED],
+  [RENAMED, "ticket.show", { id: "forge-1" }, "issue.show", ISSUE],
 ] as const)
-  test(`through the assembled catalog, ${op} on a bound project is ${declared ?? "answered by the cloud"}`, () =>
-    using({ config: source }, async (r) => {
+  test(`through the assembled catalog, ${op} on a bound project is answered by the cloud as ${declared}`, () =>
+    using(
+      { config: source, steps: [() => answer(result, declared)] },
+      async (r) => {
+        const done = await r.assembly.catalog.invoke(r.request(op, input));
+        expect(done).toMatchObject({ ok: true, result });
+        expect(exitCode(done)).toBe(0);
+        expect(JSON.stringify(done)).not.toContain(TOKEN);
+        expect(r.net.calls).toHaveLength(1);
+        expect(r.net.calls[0]!.body).toMatchObject({
+          requestId: "r-1",
+          op: declared,
+          input,
+        });
+      },
+    ));
+
+test("every other work operation is refused by name on a bound project, with no request", () =>
+  using({}, async (r) => {
+    const result = await r.assembly.catalog.invoke(
+      r.request("issue.board", {}),
+    );
+    expect(failed(result, "INPUT_INVALID")).toBe(6);
+    expect(result).toMatchObject({
+      error: { message: notServed("issue.board") },
+    });
+    expect(r.net.calls).toHaveLength(0);
+  }));
+
+for (const [op, input, bad] of [
+  ["issue.create", CREATE, { ...ISSUE, revision: TOKEN }],
+  ["issue.comment", COMMENT, { ...COMMENTED, extra: TOKEN }],
+  ["issue.comment", COMMENT, { id: "forge-1" }],
+] as const)
+  test(`a cloud ${op} result that fails its declared output is refused as UNAVAILABLE`, () =>
+    using({ steps: [() => answer(bad, op)] }, async (r) => {
       const result = await r.assembly.catalog.invoke(r.request(op, input));
-      if (declared === undefined)
-        return void expect(result).toMatchObject({ ok: true, result: ISSUE });
-      expect(failed(result, "INPUT_INVALID")).toBe(6);
-      expect(result).toMatchObject({ error: { message: notServed(declared) } });
+      expect(failed(result, "UNAVAILABLE")).toBe(1);
+      expect(r.net.calls).toHaveLength(1);
+    }));
+
+for (const [code, exit] of [
+  ["NOT_FOUND", 3],
+  ["INPUT_CONFLICT", 4],
+  ["INPUT_INVALID", 6],
+  ["INTERNAL", 1],
+] as const)
+  for (const [op, input] of [
+    ["issue.create", CREATE],
+    ["issue.comment", COMMENT],
+  ] as const)
+    test(`a cloud ${code} on ${op} keeps its code and exit ${exit}, without the token`, () =>
+      using({ steps: [() => refusing(code)] }, async (r) => {
+        const result = await r.assembly.catalog.invoke(r.request(op, input));
+        expect(failed(result, code)).toBe(exit);
+        expect(r.net.calls).toHaveLength(1);
+      }));
+
+for (const [op, input] of [
+  ["issue.create", CREATE],
+  ["issue.comment", COMMENT],
+] as const)
+  test(`${op} as a dry run on a bound project is UNAVAILABLE and creates nothing`, () =>
+    using({}, async (r) => {
+      const dry = r.request(op, input, { dryRun: true });
+      expect(failed(await r.assembly.catalog.invoke(dry), "UNAVAILABLE")).toBe(
+        1,
+      );
       expect(r.net.calls).toHaveLength(0);
     }));
+
+test("a routed write that reaches the selector as a dry run is refused before any request, whatever the runtime's own checks did", () =>
+  using({}, async (r) => {
+    for (const op of WRITES) {
+      const request = r.request(op, op === "issue.create" ? CREATE : COMMENT, {
+        dryRun: true,
+      });
+      const flight = {
+        request,
+        block: { manifest: { id: "forge/work" }, validate: () => true },
+        operation: { declaredOp: op, declaration: { output: {} } },
+        context: {},
+      };
+      await expect(
+        selectCloud(
+          {
+            root: r.s.root,
+            deviceRoot: r.s.deviceRoot,
+            scope: () => {},
+            env: { HOME: r.s.home, FORGE_DEVICE_ID: "dev-1" },
+            cloud: { fetch: r.net.fetch, now: () => NOW },
+          },
+          { preflight: () => flight } as never,
+          request,
+        ),
+      ).rejects.toMatchObject({ error: { code: "UNAVAILABLE" } });
+    }
+    expect(r.net.calls).toHaveLength(0);
+  }));
 
 const FILTERS = { status: "open", labels: ["a"], limit: 5 };
 for (const [source, op, input, declared] of [
@@ -500,6 +604,17 @@ test("an unbound project runs locally, with no cloud request and no credential w
         ok: true,
         result: { items: [], truncated: false },
       });
+    const made = await r.assembly.catalog.invoke(
+      r.request("issue.create", CREATE),
+    );
+    expect(made).toMatchObject({ ok: true });
+    const { id } = (made as { result: { id: string } }).result;
+    const note = r.request(
+      "issue.comment",
+      { id, body: "hi" },
+      { requestId: "r-2" },
+    );
+    expect(await r.assembly.catalog.invoke(note)).toMatchObject({ ok: true });
     expect(r.net.calls).toHaveLength(0);
     expect(existsSync(join(r.s.home, ".forge"))).toBe(false);
   }));
