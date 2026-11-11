@@ -358,6 +358,22 @@
     "issue.leave": {
       "title": "Leave",
       "summary": "Release own membership; no coordinator lease."
+    },
+    "issue.slots": {
+      "title": "slots",
+      "summary": "Coordinator sets 1-16 competing slots."
+    },
+    "issue.attempt": {
+      "title": "attempt",
+      "summary": "Reserve an open attempt; live retries keep their lease."
+    },
+    "issue.attempt-release": {
+      "title": "attempt-release",
+      "summary": "Release your attempt; retain its history."
+    },
+    "issue.attempt-note": {
+      "title": "attempt-note",
+      "summary": "Publish under your attempt lease."
     }
   }
 }

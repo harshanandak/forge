@@ -327,3 +327,240 @@ test("CLI dispatch leaves a reacquired membership and works after coordinator ex
   await p.cli(B);
   expect((await p.call<View>("show")).participants).toEqual([]);
 }, 10000);
+
+type Attempt = LeaseGrant & {
+  label?: string;
+  holder: LeaseHolder;
+  baseRevision: number;
+  createdAt: string;
+  live: boolean;
+};
+type AttemptsView = Omit<TrackerItem, "mode"> & {
+  mode: "competing";
+  slots: number;
+  attempts: Attempt[];
+};
+async function competing(count = 2) {
+  await p.call("claim");
+  await p.call("slots", A, { count });
+}
+async function attempt(caller: LeaseHolder, ttlSeconds = 120) {
+  const result = await p.call<Attempt>("attempt", caller, {
+    label: caller.session.id,
+    ttlSeconds,
+  });
+  expect(result.id).toMatch(/^attempt-[1-9]\d*$/);
+  return result;
+}
+test("two open slots admit exactly two concurrent competitors without a refused write", async () => {
+  await competing();
+  const coordinator = p.held(),
+    revision = p.owner.get(ns, "issue:work-1")!.revision;
+  const [b, c] = await Promise.all([
+    attempt(B),
+    attempt(C),
+    refused("ATTEMPT_SLOTS_FULL", () => p.call("attempt", D)),
+  ]);
+  expect([b.id, c.id]).toEqual(["attempt-1", "attempt-2"]);
+  const leases = p.owner
+    .export()
+    .leases.filter(({ lease }) => ["B", "C"].includes(lease.holder.session.id));
+  expect(new Set(leases.map(({ lease }) => lease.subject)).size).toBe(2);
+  for (const { lease } of leases) {
+    expect(lease.subject).not.toBe(coordinator!.subject);
+    expect(lease.generation).toBe(1);
+  }
+  const view = await p.call<AttemptsView>("show");
+  expect(view).toMatchObject({ mode: "competing", slots: 2 });
+  expect(view.attempts).toHaveLength(2);
+  for (const [index, holder] of [B, C].entries()) {
+    expect(view.attempts[index]).toMatchObject({
+      id: `attempt-${index + 1}`,
+      label: holder.session.id,
+      holder,
+      baseRevision: revision,
+      createdAt: "2026-11-10T12:00:00.000Z",
+      live: true,
+      generation: 1,
+      expiresAt: "2026-11-10T12:02:00.000Z",
+    });
+    const record = p.owner
+      .export()
+      .records.find(
+        (row) => (row.value as { id?: string }).id === `attempt-${index + 1}`,
+      );
+    expect(record?.value).toMatchObject({
+      id: `attempt-${index + 1}`,
+      holder,
+      baseRevision: revision,
+    });
+  }
+  await refused("ATTEMPT_SLOTS_FULL", async () => {
+    try {
+      await p.call("attempt", D);
+    } catch (error) {
+      for (const detail of ["2", "attempt-1", "attempt-2"])
+        expect((error as ForgeFailure).message).toContain(detail);
+      throw error;
+    }
+  });
+  expect(p.held()).toEqual(coordinator);
+}, 10000);
+test("a live retry is unchanged and expired or released ids are never reused", async () => {
+  await competing();
+  const b = await attempt(B, 1);
+  await attempt(C);
+  const before = p.snapshot();
+  expect(
+    await p.call("attempt", B, { label: "retry", ttlSeconds: 60 }),
+  ).toEqual(b);
+  expect(p.snapshot()).toEqual(before);
+  p.advance(1000);
+  expect((await attempt(D)).id).toBe("attempt-3");
+  await p.call("attempt-release", C, { attempt: "attempt-2" });
+  expect((await attempt(C)).id).toBe("attempt-4");
+  const view = await p.call<AttemptsView>("show");
+  expect(view.attempts.map(({ id, live }) => ({ id, live }))).toEqual([
+    { id: "attempt-1", live: false },
+    { id: "attempt-2", live: false },
+    { id: "attempt-3", live: true },
+    { id: "attempt-4", live: true },
+  ]);
+}, 10000);
+test("only a live attempt's holder can publish a fenced note", async () => {
+  await competing();
+  await attempt(B, 1);
+  await attempt(C);
+  p.advance(1000);
+  await attempt(D);
+  await refused("LEASE_EXPIRED", () =>
+    p.call("attempt-note", B, { attempt: "attempt-1", body: "expired" }),
+  );
+  await refused("LEASE_NOT_HELD", () =>
+    p.call("attempt-note", C, { attempt: "attempt-3", body: "other" }),
+  );
+  await refused("LEASE_STALE", () =>
+    p.call("attempt-note", C, { attempt: "attempt-2", body: "stale" }, 2),
+  );
+  await p.call("attempt-note", C, { attempt: "attempt-2", body: "proposal" });
+  expect(
+    p.owner
+      .export()
+      .records.some(
+        (row) => (row.value as { body?: string }).body === "proposal",
+      ),
+  ).toBe(true);
+  await p.call("attempt-release", C, { attempt: "attempt-2" });
+  await refused("LEASE_NOT_HELD", () =>
+    p.call("attempt-note", C, { attempt: "attempt-2", body: "released" }),
+  );
+}, 10000);
+test("dispatch releases its own attempt after the coordinator expires, retaining history", async () => {
+  await competing();
+  await attempt(C);
+  await attempt(D);
+  p.advance(60000);
+  expect((await p.call<AttemptsView>("show")).lease).toBeUndefined();
+  const result = await dispatch(
+    {
+      list: () =>
+        ["issue.show", "issue.attempt-release"].map((op) =>
+          candidate(op, manifest.operations[op]),
+        ),
+      invoke: async (req) =>
+        success(
+          req.op,
+          await p.call(
+            req.op.slice(6),
+            C,
+            req.input as Record<string, unknown>,
+            req.context?.leaseGeneration ?? null,
+          ),
+        ),
+    },
+    "issue.attempt-release",
+    { id: "shown-1", attempt: "attempt-1" },
+    { caller: "agent", context: { ...C, project: { id: "test" } } },
+  );
+  expect(result.ok).toBe(true);
+  expect(
+    (await p.call<AttemptsView>("show")).attempts.map(({ id, live }) => ({
+      id,
+      live,
+    })),
+  ).toEqual([
+    { id: "attempt-1", live: false },
+    { id: "attempt-2", live: true },
+  ]);
+  await refused("LEASE_NOT_HELD", () =>
+    p.call("attempt-release", C, { attempt: "attempt-1" }),
+  );
+  await refused("LEASE_NOT_HELD", () =>
+    p.call("attempt-release", C, { attempt: "attempt-2" }),
+  );
+}, 10000);
+test("slot changes require the coordinator fence, validate N and never evict live attempts", async () => {
+  await competing();
+  const before = p.snapshot();
+  await p.call("slots", A, { count: 2 });
+  expect(p.snapshot()).toEqual(before);
+  await refused("LEASE_NOT_HELD", () => p.call("slots", B, { count: 2 }));
+  await refused("LEASE_STALE", () => p.call("slots", A, { count: 2 }, 2));
+  for (const count of [0, 17, 1.5])
+    await refused("INPUT_INVALID", () => p.call("slots", A, { count }));
+  await attempt(B);
+  await attempt(C);
+  await refused("INPUT_CONFLICT", () => p.call("slots", A, { count: 1 }));
+  p.advance(60000);
+  await refused("LEASE_EXPIRED", () => p.call("slots", A, { count: 2 }));
+}, 10000);
+test("exclusive and closed reservations refuse, while the coordinator may compete", async () => {
+  await p.call("claim");
+  await refused("ISSUE_NOT_COMPETING", () => p.call("attempt", B));
+  await p.call("slots", A, { count: 1 });
+  expect((await attempt(A)).id).toBe("attempt-1");
+  await p.call("close", A, { withoutReceipt: "attempt fixture" });
+  await refused("INPUT_CONFLICT", () => p.call("attempt", B));
+}, 10000);
+test("attempt holders cannot mutate the coordinator's issue", async () => {
+  await competing();
+  await attempt(B);
+  for (const op of ["update", "release", "close"])
+    await refused("LEASE_NOT_HELD", () =>
+      p.call(op, B, {
+        title: "unauthorized",
+        expectRevision: p.owner.get(ns, "issue:work-1")!.revision,
+        withoutReceipt: "attempt fixture",
+      }),
+    );
+}, 10000);
+test("collaborative show remains byte-identical without competing slots", async () => {
+  await p.call("claim");
+  const solo = await p.call<TrackerItem>("show");
+  await p.invite(B);
+  await p.call("join", B);
+  const member = p.owner
+    .export()
+    .leases.find(({ lease }) => lease.holder.session.id === "B")!.lease;
+  expect(JSON.stringify(await p.call("show"))).toBe(
+    JSON.stringify({ ...solo, mode: "collaborative", participants: [member] }),
+  );
+}, 10000);
+test("attempt operations declare their actual lease modes and generated surfaces", () => {
+  const docs = read<DocsRecords>("docs.json");
+  for (const [op, leaseMode] of [
+    ["slots", "held"],
+    ["attempt", "acquire"],
+    ["attempt-release", "acquire"],
+    ["attempt-note", "held"],
+  ]) {
+    expect(manifest.operations[`issue.${op}`]).toMatchObject({
+      context: "leased",
+      leaseMode,
+      effects: ["issue:write"],
+      callers: ["agent", "human"],
+      args: ["id"],
+    });
+    expect(docs.operations[`issue.${op}`]).toBeDefined();
+  }
+}, 10000);

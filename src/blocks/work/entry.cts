@@ -220,6 +220,19 @@ type TailAction = {
   approval?: { request: string; quote: string; source: ReplySource };
 };
 type WorkOperations = TrackerOperations<"issue"> & {
+  readonly "issue.slots": readonly [ItemRef & { count: number }, unknown];
+  readonly "issue.attempt": readonly [
+    ItemRef & { label?: string; ttlSeconds?: number },
+    unknown,
+  ];
+  readonly "issue.attempt-release": readonly [
+    ItemRef & { attempt: string },
+    unknown,
+  ];
+  readonly "issue.attempt-note": readonly [
+    ItemRef & { attempt: string; body: string },
+    unknown,
+  ];
   readonly "issue.invite": readonly [
     ItemRef & { session: string; device?: string },
     unknown,
@@ -5193,6 +5206,10 @@ const operations: Operations<WorkOperations> = {
       input.id,
     );
   },
+  "issue.slots": ({ input }) => ({ id: input.id }),
+  "issue.attempt": ({ input }) => ({ id: input.id }),
+  "issue.attempt-release": ({ input }) => ({ id: input.id }),
+  "issue.attempt-note": ({ input }) => ({ id: input.id }),
   "issue.invite": ({ input, services, config }) => {
     const state = client(services),
       ids = idsFor(state, config),
