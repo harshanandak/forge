@@ -53,11 +53,11 @@ type Options = {
 
 // Fixtures that share a registry are projects of one deployment: the id a name maps to picks the object.
 function fixture(
-  env: Record<string, unknown> = vars,
+  settings: Record<string, unknown> = vars,
   name = "p",
   registry = new Map<string, () => Project>(),
 ) {
-  const config = { ...env, FORGE_CLOUD_PROJECT: name };
+  const env = { ...settings, FORGE_CLOUD_PROJECT: name };
   let t = start;
   spyOn(Date, "now").mockImplementation(() => t);
   const db = new Database(":memory:"),
@@ -94,13 +94,13 @@ function fixture(
       return Promise.resolve(values.delete(key));
     },
   };
-  let project = new Project({ storage }, config);
+  let project = new Project({ storage }, env);
   registry.set(name, () => project);
   const reached: string[] = [];
   const bindings = {
-    ...config,
+    ...env,
     PROJECTS: {
-      idFromName: (given: string) => given,
+      idFromName: (name: string) => name,
       get: (id: unknown) => {
         reached.push(String(id));
         return registry.get(String(id))!();
@@ -215,7 +215,7 @@ function fixture(
       );
     },
     reopen: () => {
-      project = new Project({ storage }, config);
+      project = new Project({ storage }, env);
     },
     advance: (ms: number) => {
       t += ms;
@@ -911,9 +911,8 @@ type Handler = (call: {
   services: unknown;
 }) => unknown;
 
-// The rows the local handler reads: only the owner's fixed point and list SELECTs run, and every
-// other statement is refused and recorded.
-// The owner's point, list (with and without an upper bound) and lease reads, as exact statements.
+// The local handler reads only the owner's point, list (with and without an upper bound) and lease
+// SELECTs, as exact statements. Any other statement is refused and recorded.
 const OWNER_READS = new Set([
   "SELECT body FROM state_records WHERE namespace=? AND key=?",
   "SELECT body FROM state_records WHERE namespace=? AND key>=? AND key<? ORDER BY key",
