@@ -343,7 +343,7 @@ test("two explicitly closed attempts free the cap alongside a live normal lane",
   expect(
     (good("lane.status").lanes as { id: string }[]).map((lane) => lane.id),
   ).toEqual([live.id]);
-  expect(good("lane.status").hold).toBeUndefined();
+  expect(good("lane.status").hold ?? "").not.toContain("lane cap");
   good("lane.start", newLane());
   removed(1);
   removed(2);
@@ -355,7 +355,7 @@ test("released attempts with missing worktrees stop holding the cap and disappea
   releaseAttempts();
   for (const n of [1, 2]) git(["worktree", "remove", tree(n)]);
   const status = good("lane.status");
-  expect(status.hold).toBeUndefined();
+  expect(status.hold ?? "").not.toContain("lane cap");
   expect(
     (status.lanes as { id: string; attempt?: string }[]).map((lane) => lane.id),
   ).toEqual([live.id]);
@@ -431,4 +431,33 @@ test("closing one attempt preserves the other attempt's pending close journal", 
 test("an attempt cannot be dropped before the coordinator records a selection", () => {
   pull(1, false);
   refusedClose(1, { dropped: "superseded" }, "INPUT_CONFLICT");
+}, 30000);
+
+test("a released attempt with pruned registration and remaining files stays visible and registered", () => {
+  good("lane.start", newLane());
+  good("attempt.release", { id, attempt: attempt(1) }, "builder-1");
+  rmSync(join(tree(1), ".git"));
+  git(["worktree", "prune", "--expire", "now"]);
+  expect(
+    git(["worktree", "list", "--porcelain"]).replaceAll("\\", "/"),
+  ).not.toContain(tree(1).replaceAll("\\", "/"));
+  const kept = join(tree(1), "kept");
+  writeFileSync(kept, "preserve this work\n");
+  const before = registry();
+  const row = before.find(
+    (lane) => lane.issue === id && lane.attempt === attempt(1),
+  );
+  if (!row) throw new Error("Fixture attempt lane is missing");
+  const status = good("lane.status");
+  expect(status.hold).toContain("lane cap 3 reached");
+  expect(status.lanes).toContainEqual(
+    expect.objectContaining({ id, attempt: attempt(1) }),
+  );
+  expect(call("lane.start", newLane()).error?.code).toBe("LIMIT_REACHED");
+  expect(registry()).toEqual(before);
+  cap(4);
+  good("lane.start", newLane());
+  expect(registry()).toContainEqual(row);
+  expect(readFileSync(kept, "utf8")).toBe("preserve this work\n");
+  retained(1);
 }, 30000);

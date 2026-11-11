@@ -1223,7 +1223,7 @@ function holdsSlot(state: LeaseStateClient, lane: Lane): boolean {
     !record || stored(record).status === "open" || live(state, id) !== undefined
   );
 }
-// Only released attempts with no registered worktree can disappear without lane cleanup.
+// Released attempts hold no slot only when both registration and remaining files are gone.
 async function activeAttemptLanes(
   services: unknown,
   lanes: Lane[],
@@ -1292,9 +1292,53 @@ async function activeAttemptLanes(
             ?.slice(9) ?? "",
         ),
       );
-    return lanes.filter(
-      (lane) => !released(lane) || present.includes(path(lane.worktree)),
-    );
+    const checkout = result.stdout.split("\0")[0]?.slice(9) ?? "";
+    if (!result.stdout.startsWith("worktree ")) return lanes;
+    const active: Lane[] = [];
+    for (const lane of lanes) {
+      if (
+        released(lane) &&
+        !present.includes(path(lane.worktree)) &&
+        path(lane.worktree).startsWith(`${path(checkout)}/.worktrees/`) &&
+        !slash(lane.worktree).split("/").includes("..") &&
+        !/\p{Cc}/u.test(lane.worktree)
+      ) {
+        // Without exclude rules, ls-files includes ignored, untracked and clean tracked files.
+        const remaining = await bound.process.run(
+          git,
+          [
+            "ls-files",
+            "--cached",
+            "--others",
+            "--directory",
+            "--no-empty-directory",
+            "-z",
+            "--",
+            slash(lane.worktree).slice(slash(checkout).length + 1),
+          ],
+          {
+            cwd: checkout,
+            env,
+            signal,
+            timeoutMs: Math.max(
+              1,
+              Math.min(20000, deadline - laneClock(services)()),
+            ),
+            maxOutputBytes: 262144,
+          },
+        );
+        if (
+          remaining.exitCode === 0 &&
+          !remaining.timedOut &&
+          !remaining.truncated &&
+          remaining.outputEvidence?.stdout.complete !== false &&
+          remaining.stdout.length === 0
+        )
+          continue;
+      }
+      active.push(lane);
+    }
+    return active;
   } catch {
     return lanes;
   }
@@ -4398,12 +4442,7 @@ const operations: Operations<WorkOperations> = {
           };
         });
       const lanes: Lane[] = [];
-      for (const lane of await activeAttemptLanes(
-        services,
-        saved.lanes,
-        signal,
-        deadline,
-      )) {
+      for (const lane of saved.lanes) {
         if (lane.attempt !== undefined) {
           lanes.push(lane);
           continue;
@@ -4455,8 +4494,9 @@ const operations: Operations<WorkOperations> = {
         };
       }
       if (
-        lanes.filter((lane) => holdsSlot(state, lane)).length >=
-        (laneConfig?.max ?? 3)
+        (await activeAttemptLanes(services, lanes, signal, deadline)).filter(
+          (lane) => holdsSlot(state, lane),
+        ).length >= (laneConfig?.max ?? 3)
       )
         fail(
           "LIMIT_REACHED",
