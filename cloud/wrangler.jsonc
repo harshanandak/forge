@@ -17,6 +17,8 @@
     // Device login (routes loginstart and loginpoll) needs FORGE_CLOUD_PROJECT, the one already provisioned
     // project name it serves, and the secret DEVICE_LOGIN_HMAC_KEY (random, base64url, at least 32 bytes).
     // Set the secret with `wrangler secret put DEVICE_LOGIN_HMAC_KEY`; never commit its value.
+    // Issue reads (command issue.show) need FORGE_CLOUD_ID_PREFIX, the issue id prefix as in <prefix>-<n>:
+    // lowercase letters, digits and hyphens, at most 32 characters. Without it issue.show answers 503.
     // Optional FORGE_OAUTH_REDIRECTS: comma-separated https redirect URLs that may register besides loopback.
   },
   "durable_objects": {
