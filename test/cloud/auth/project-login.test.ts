@@ -148,6 +148,7 @@ function fixture(env: Record<string, string> = vars) {
     return engine.approve(userCode, verified.identity);
   }
   return {
+    project,
     send,
     rows,
     reached,
@@ -368,6 +369,39 @@ test("a missing HMAC key refuses only the two login routes", async () => {
     200,
     { initialized: true },
   ]);
+}, 30_000);
+
+test("a malformed HMAC key is a configuration refusal, not a server error", async () => {
+  // 45 characters pass the shape check but are not valid base64.
+  const f = fixture({ ...vars, DEVICE_LOGIN_HMAC_KEY: "A".repeat(45) });
+  const seed = await f.provision();
+  for (const route of ["loginstart", "loginpoll"]) {
+    const refused = await f.send(route, {
+      device: "laptop-1",
+      device_code: "x",
+    });
+    expect([refused.status, err(refused)]).toEqual([
+      503,
+      "AUTH_CONFIG_UNAVAILABLE",
+    ]);
+  }
+  // The object refuses it too if a request reaches it directly.
+  const direct = await f.project.fetch(
+    new Request("https://w.example/p/p/loginstart", {
+      method: "POST",
+      headers: { "CF-Connecting-IP": "203.0.113.1" },
+      body: JSON.stringify({ device: "laptop-1" }),
+    }),
+  );
+  const refusal = ((await direct.json()) as { error: object }).error;
+  expect<unknown>([direct.status, refusal]).toMatchObject([
+    503,
+    { code: "AUTH_CONFIG_UNAVAILABLE", retry: "never" },
+  ]);
+  const held = await f.send("holder?subject=x", undefined, {
+    authorization: `Bearer ${seed.token}`,
+  });
+  expect(held.status).toBe(200);
 }, 30_000);
 
 test("login is refused before any table exists, and a later restore works", async () => {

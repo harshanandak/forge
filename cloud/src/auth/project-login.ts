@@ -42,7 +42,8 @@ export const isLoginRoute = (request: Request): boolean =>
 export function loginConfigGap(env: LoginEnv): string | undefined {
   if (
     typeof env.DEVICE_LOGIN_HMAC_KEY !== "string" ||
-    !SECRET.test(env.DEVICE_LOGIN_HMAC_KEY)
+    !SECRET.test(env.DEVICE_LOGIN_HMAC_KEY) ||
+    secretBytes(env.DEVICE_LOGIN_HMAC_KEY) === undefined
   )
     return "DEVICE_LOGIN_HMAC_KEY";
   return (
@@ -50,13 +51,23 @@ export function loginConfigGap(env: LoginEnv): string | undefined {
   ).find((name) => typeof env[name] !== "string" || env[name] === "");
 }
 
-/** Imports the shared HMAC secret (base64url, at least 32 bytes) for the engine's user-code hashes. */
+/** The secret's bytes, or undefined when it is not base64url of at least 32 bytes. */
+function secretBytes(secret: string): Uint8Array | undefined {
+  try {
+    const raw = Uint8Array.from(
+      atob(secret.replaceAll("-", "+").replaceAll("_", "/")),
+      (char) => char.charCodeAt(0),
+    );
+    return raw.length >= 32 ? raw : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Imports the shared HMAC secret for the engine's user-code hashes. */
 export async function importLoginKey(secret: string): Promise<CryptoKey> {
-  const raw = Uint8Array.from(
-    atob(secret.replaceAll("-", "+").replaceAll("_", "/")),
-    (char) => char.charCodeAt(0),
-  );
-  if (raw.length < 32) throw new DeviceLoginFailure("unavailable");
+  const raw = secretBytes(secret);
+  if (raw === undefined) throw new DeviceLoginFailure("unavailable");
   return crypto.subtle.importKey(
     "raw",
     raw,
@@ -153,12 +164,18 @@ export async function loginRoute(
       message: "Login is not available for this project",
       retry: "never",
     });
-  if (loginConfigGap(env) !== undefined)
-    throw new ForgeFailure({
+  const unavailable = () =>
+    new ForgeFailure({
       code: "AUTH_CONFIG_UNAVAILABLE",
       message: "Login configuration unavailable",
       retry: "never",
     });
+  if (loginConfigGap(env) !== undefined) throw unavailable();
+  const userCodeKey = await importLoginKey(
+    String(env.DEVICE_LOGIN_HMAC_KEY),
+  ).catch(() => {
+    throw unavailable();
+  });
   const owner = {
     issuer: env.CLERK_ISSUER,
     subject: env.FORGE_OWNER_SUBJECT,
@@ -167,7 +184,7 @@ export async function loginRoute(
   const store = loginStore(db);
   const login = createDeviceLogin({
     store,
-    userCodeKey: await importLoginKey(String(env.DEVICE_LOGIN_HMAC_KEY)),
+    userCodeKey,
     now: () => Date.now(),
     random: (length) => crypto.getRandomValues(new Uint8Array(length)),
     // Rechecked right before minting: only the configured owner, for the configured client, unexpired.
