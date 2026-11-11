@@ -3,6 +3,7 @@
   "required": ["id"],
   "properties": {
     "id": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "attempt": { "type": "string", "pattern": "^attempt-[1-9][0-9]*$" },
     "pr": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
     "noPr": { "type": "boolean" },
     "receipt": { "type": "string", "minLength": 1, "maxLength": 200 },
