@@ -5430,13 +5430,72 @@ const operations: Operations<WorkOperations> = {
     return { id: ids.shown(id) };
   },
   "issue.claim": ({ input, services, config }) => {
-    if (input.reopen !== undefined)
-      fail("NOT_IMPLEMENTED", "Tests-first claim reopen stub");
     const state = client(services);
     const ids = idsFor(state, config);
     const id = ids.stored(input.id);
     const held = cleanupHeld(state, id);
     if (held) cleanupConflict(held);
+    if (input.reopen !== undefined) {
+      const record = get(state, id, input.id);
+      const reason = input.reopen.trim();
+      if (!reason || Array.from(reason).length > 65536)
+        fail(
+          "INPUT_INVALID",
+          "reason must contain 1 to 65536 characters after trimming",
+        );
+      if (stored(record).status !== "closed")
+        fail("INPUT_CONFLICT", "Only closed issues can be reopened");
+      const { receipt, withoutReceipt, closeReason, ...value } = stored(
+        record,
+      ) as Stored & { closeReason?: string };
+      const reservation = state.get(cleanupKey(id));
+      const reserved = cleanupHeld(state, id);
+      if (reserved) cleanupConflict(reserved);
+      const readSet = [
+        { key: record.key, expectRevision: record.revision },
+        { key: cleanupKey(id), expectRevision: reservation?.revision ?? 0 },
+      ];
+      const prefix = `reopen:${id}:`;
+      const entries = [
+        {
+          key: record.key,
+          value: { ...value, status: "open" },
+          expectRevision: record.revision,
+        },
+        {
+          key: `${prefix}${state.count(prefix) + 1}`,
+          value: {
+            ...(receipt === undefined ? {} : { receipt }),
+            ...(withoutReceipt === undefined ? {} : { withoutReceipt }),
+            ...(closeReason === undefined ? {} : { closeReason }),
+            reason,
+            holder: state.holder(),
+          },
+          expectRevision: 0,
+        },
+      ];
+      const current = live(state, id);
+      if (current && matches(current.holder, state.holder())) {
+        state
+          .withOwnLease(key(id))
+          .putMany(entries, { subject: key(id), readSet });
+        return grant(state, id, current, ids);
+      }
+      const ttl =
+        input.ttlSeconds ??
+        (config as WorkConfig | undefined)?.claimTtlSeconds ??
+        3600;
+      return grant(
+        state,
+        id,
+        state.acquire(key(id), ttl * 1000, { readSet, entries }),
+        ids,
+      );
+    }
+    if (stored(get(state, id, input.id)).status === "closed")
+      fail("INPUT_CONFLICT", "Closed issues cannot be claimed", {
+        repair: `forge issue claim ${input.id} --reopen "<why>"`,
+      });
     if (stored(get(state, id, input.id)).status !== "open")
       fail("INPUT_CONFLICT", "Closed issues cannot be claimed");
     const record = get(state, id, input.id);

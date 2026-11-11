@@ -4,6 +4,7 @@ import {
   beforeAll,
   beforeEach,
   expect,
+  spyOn,
   test,
 } from "bun:test";
 import { readFileSync } from "node:fs";
@@ -95,10 +96,11 @@ async function project() {
     });
     return await operations[`issue.${op}`]!({
       input: { id: "work-1", ...input },
-      services: { state },
+      services: { state: { ...state, now: () => 1000 } },
     });
   };
   return {
+    store: opened.handle.value,
     owner,
     call,
     close: () => opened.handle.close(),
@@ -236,4 +238,26 @@ test("claim on a closed issue retains its refusal and names the reopen repair", 
     repair: 'forge issue claim work-1 --reopen "<why>"',
   });
   expect(p.snapshot()).toEqual(before);
+}, 10000);
+
+test("evidence write failure rolls back the acquired lease and every state change", async () => {
+  await closed();
+  const before = p.snapshot(),
+    run = p.store.run.bind(p.store);
+  const fault = spyOn(p.store, "run").mockImplementation((sql, params) => {
+    if (
+      sql.includes("INSERT INTO state_records") &&
+      JSON.stringify(params).includes("reopen:work-1:1")
+    )
+      throw new Error("injected reopen write failure");
+    return run(sql, params);
+  });
+  try {
+    await expect(p.call("claim", { reopen: "mistake" })).rejects.toThrow(
+      "injected reopen write failure",
+    );
+    expect(p.snapshot()).toEqual(before);
+  } finally {
+    fault.mockRestore();
+  }
 }, 10000);
