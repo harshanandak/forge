@@ -287,3 +287,34 @@ test("another holder retains the main lease error on blocked claims, with or wit
     expect(failure(() => p.call("claim", 4, extra))).toEqual(expected);
   expect(p.snapshot()).toEqual(before);
 }, 10000);
+
+test.each([undefined, reason])(
+  "blocked reopen with reason %s follows claim policy",
+  (reason) => {
+    const issue = p.owner.get(namespace, "issue:work-3")!;
+    p.owner.put(
+      namespace,
+      issue.key,
+      { ...(issue.value as object), dependsOn: ["work-1"] },
+      holder.actor,
+      { expectRevision: issue.revision },
+    );
+    const before = p.snapshot();
+    if (reason === undefined) {
+      const error = failure(() => p.call("claim", 3, { reopen: "mistake" }));
+      expect(error.code).toBe("CLAIM_BLOCKED");
+      expect(error.observed).toEqual({ blockers: [{ id: "shown-1" }] });
+      expect(p.snapshot()).toEqual(before);
+    } else {
+      expect(
+        p.call<Grant>("claim", 3, { reopen: "mistake", reason }).warnings,
+      ).toEqual([{ code: "CLAIMED_BLOCKED", blockers: [{ id: "shown-1" }] }]);
+      expect(
+        p
+          .call<{ events: StateEvent[] }>("events", 3)
+          .events.find((event) => event.type.endsWith("lease.acquired@1")),
+      ).toMatchObject({ data: { options: { metadata: { reason } } } });
+    }
+  },
+  10000,
+);
