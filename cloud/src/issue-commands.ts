@@ -25,12 +25,13 @@ import {
   RECORD_READS,
   type IssueViews,
 } from "./issue-read.ts";
+import { PROJECT_NAME } from "./project-name.ts";
 import { readOnlyStore, type DurableStorage } from "./store.ts";
 
 export const MAX_COMMAND_BODY = 512 * 1024;
 /** The most a show response may be, in UTF-8 bytes, measured on the whole envelope. */
 export const MAX_SHOW_RESPONSE_BYTES = 1_048_576;
-const COMMAND_ROUTE = /^\/p\/([A-Za-z0-9][A-Za-z0-9._-]{0,63})\/command$/;
+const COMMAND_ROUTE = new RegExp(`^/p/(${PROJECT_NAME})/command$`);
 const FIELDS = ["requestId", "op", "input", "context", "dryRun"];
 const LIMITS = {
   maxBytes: MAX_COMMAND_BODY,

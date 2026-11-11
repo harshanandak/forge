@@ -21,6 +21,7 @@
     "FORGE_CLOUD_PROJECT": "<project-name>",
     // Issue reads (command issue.show) need FORGE_CLOUD_ID_PREFIX, the issue id prefix as in <prefix>-<n>:
     // lowercase letters, digits and hyphens, at most 32 characters. Without it issue.show answers 503.
+    "FORGE_CLOUD_ID_PREFIX": "<id-prefix>",
     // Optional FORGE_OAUTH_REDIRECTS: comma-separated https redirect URLs that may register besides loopback.
   },
   // Secrets, set with `wrangler secret put` and never written here: DEVICE_LOGIN_HMAC_KEY, ADMIN_TOKEN.
