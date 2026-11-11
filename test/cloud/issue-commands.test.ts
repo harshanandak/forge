@@ -3280,6 +3280,8 @@ interface Write {
   empty: object;
   /** Input for the dump's accepted write, when the default is not it. */
   ok?: object;
+  /** A valid fresh request after the first write, when the default is no longer valid. */
+  next?: object;
   /** The work record a successful write leaves in the dump. */
   record: string;
   /** What the first successful write returns, after a failed receipt write was rolled back. */
@@ -3322,6 +3324,7 @@ const WRITES: Write[] = [
     bad: patch({ id: "forge-99" }),
     badWant: [404, "NOT_FOUND"],
     empty: patch({ title: "" }),
+    next: patch({ expectRevision: 4 }),
     record: "forge/work/issue:work-12",
     result: (f, got) => {
       expect([got.status, got.json.result]).toMatchObject([
@@ -3398,7 +3401,7 @@ for (const w of WRITES) {
       [MAX_RECEIPTS - 1],
     );
     const full = f.snapshot();
-    const got = await f.send(w.send("l-1"), { token });
+    const got = await f.send(w.send("l-1", w.next), { token });
     expect([got.status, got.code, got.exit]).toEqual([503, "UNAVAILABLE", 1]);
     expect(got.json.error?.message).toContain("receipts");
     expect(f.snapshot()).toBe(full);
