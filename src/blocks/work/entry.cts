@@ -232,6 +232,20 @@ type WorkOperations = TrackerOperations<"issue"> & {
     ItemRef & { attempt: string; body: string },
     unknown,
   ];
+  readonly "attempt.evidence": readonly [
+    ItemRef & {
+      attempt: string;
+      sha: string;
+      receipt?: string;
+      review?: string;
+      metrics?: Record<string, number | string>;
+    },
+    ItemRef,
+  ];
+  readonly "attempt.select": readonly [
+    ItemRef & { attempt?: string; combine?: string; reason: string },
+    ItemRef,
+  ];
   readonly "issue.invite": readonly [
     ItemRef & { session: string; device?: string },
     unknown,
@@ -5383,6 +5397,10 @@ const operations: Operations<WorkOperations> = {
       fail("INTERNAL", "Attempt release readback mismatch");
     return { id: ids.shown(id) };
   },
+  "attempt.evidence": () =>
+    fail("UNAVAILABLE", "Attempt evidence is not implemented"),
+  "attempt.select": () =>
+    fail("UNAVAILABLE", "Attempt selection is not implemented"),
   "attempt.note": ({ input, services, config }) => {
     let state = client(services);
     const ids = idsFor(state, config),
