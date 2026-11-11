@@ -83,7 +83,7 @@ export interface CommandWire {
   readonly context: AmbientContext;
   readonly dryRun?: boolean;
 }
-export type CommandRefusalCode = string;
+export type CommandRefusalCode = keyof typeof COMMAND_STATUS;
 export type CommandResult =
   | { readonly kind: "ok"; readonly result: Record<string, unknown> }
   | { readonly kind: "refused"; readonly code: CommandRefusalCode };
@@ -133,6 +133,20 @@ const REFUSAL_STATUS = {
   AUTH_REVOKED: 401,
   AUTH_EXPIRED: 401,
   AUTH_DEVICE_MISMATCH: 403,
+} as const;
+// The refusals the command route sends, each with the one status the Worker gives it.
+const COMMAND_STATUS = {
+  INPUT_INVALID: 400,
+  CONTEXT_MISSING: 400,
+  UNKNOWN_COMMAND: 404,
+  NOT_FOUND: 404,
+  UNAVAILABLE: 503,
+  AUTH_REQUIRED: 401,
+  AUTH_INVALID: 401,
+  AUTH_REVOKED: 401,
+  AUTH_EXPIRED: 401,
+  AUTH_DEVICE_MISMATCH: 403,
+  AUTH_FORBIDDEN: 403,
 } as const;
 /** Refusal names the Worker is known to send; any other name is reported as "unknown". */
 const REFUSALS = new Set([
@@ -359,12 +373,42 @@ function decodeLease(
   return { kind: "refused", code, lease };
 }
 
+/** A command answer: exactly { ok, op, status, result, warnings } or { ok, status, error, warnings }. Only the result or the error code is kept. */
+function decodeCommand(
+  { status, value: body }: Answer,
+  op: string,
+): CommandResult {
+  const bad = () => unavailable("the command answer failed its checks");
+  const keys = Object.keys(body).sort().join();
+  const result = object(body.result);
+  if (body.ok === true) {
+    if (status !== 200 || keys !== "ok,op,result,status,warnings") throw bad();
+    if (body.op !== op || body.status !== "OK" || result === undefined)
+      throw bad();
+    if (!Array.isArray(body.warnings)) throw bad();
+    return { kind: "ok", result };
+  }
+  const code = object(body.error)?.code as CommandRefusalCode;
+  if (
+    body.ok !== false ||
+    keys !== "error,ok,status,warnings" ||
+    body.status !== "FAIL" ||
+    !Array.isArray(body.warnings) ||
+    typeof code !== "string" ||
+    !Object.hasOwn(COMMAND_STATUS, code) ||
+    COMMAND_STATUS[code] !== status
+  )
+    throw bad();
+  return { kind: "refused", code };
+}
+
 export function createCloudHttp(options: CloudHttpOptions): CloudHttp {
   const origin = validateOrigin(options.origin);
   const project = validateProject(options.project);
   const send = options.fetch ?? defaultCloudFetch;
   const timeoutMs = options.timeoutMs ?? 10_000;
   const maxBytes = options.maxBytes ?? 65_536;
+  const commandMax = options.commandMaxBytes ?? 1_048_576;
 
   async function exchange(
     method: "POST" | "GET",
@@ -372,6 +416,7 @@ export function createCloudHttp(options: CloudHttpOptions): CloudHttp {
     body: string | undefined,
     token: string | undefined,
     caller: AbortSignal | undefined,
+    limit = maxBytes,
   ): Promise<Answer> {
     const deadline = AbortSignal.timeout(timeoutMs);
     const signal =
@@ -394,7 +439,7 @@ export function createCloudHttp(options: CloudHttpOptions): CloudHttp {
       }
       let parsed: unknown;
       try {
-        parsed = JSON.parse(await readBody(response, maxBytes, signal));
+        parsed = JSON.parse(await readBody(response, limit, signal));
       } catch (error) {
         if (error instanceof ForgeFailure) throw error;
         if (signal.aborted) throw error;
@@ -488,8 +533,19 @@ export function createCloudHttp(options: CloudHttpOptions): CloudHttp {
         subject,
         signal,
       ),
-    // Stub: the command route is not decoded yet.
-    command: (_token, _body, _signal) =>
-      Promise.reject(unavailable("the command route is not implemented")),
+    async command(token, body, signal) {
+      if (!TOKEN.test(token))
+        throw invalid("the device token is not well formed");
+      const wire = JSON.stringify(body);
+      const answer = await exchange(
+        "POST",
+        "command",
+        wire,
+        token,
+        signal,
+        commandMax,
+      );
+      return decodeCommand(answer, body.op);
+    },
   };
 }
