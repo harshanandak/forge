@@ -18,17 +18,17 @@ for (const read of READS)
     }
   }, 60_000);
 
-test("the built CLI refuses issue create on a bound project by name, sends no request and opens no store", async () => {
+test("the built CLI refuses issue board on a bound project by name, sends no request and opens no store", async () => {
   const f = await cloudRig(bin);
   try {
-    const out = await f.run(["issue", "create", "--title", "x"]);
+    const out = await f.run(["issue", "board"]);
     expect(out.status).toBe(6);
     expect(out.envelope).toMatchObject({
       ok: false,
       error: { code: "INPUT_INVALID" },
     });
     expect(out.envelope.ok ? "" : out.envelope.error.message).toContain(
-      "issue.create",
+      "issue.board",
     );
     expect(f.requests).toHaveLength(0);
     f.expectUntouched(out);

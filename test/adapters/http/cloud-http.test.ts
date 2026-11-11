@@ -664,8 +664,9 @@ for (const [name, run] of operations) {
 
 const commands = (
   "INPUT_INVALID:400 CONTEXT_MISSING:400 UNKNOWN_COMMAND:404 NOT_FOUND:404 " +
-  "UNAVAILABLE:503 AUTH_REQUIRED:401 AUTH_INVALID:401 AUTH_REVOKED:401 " +
-  "AUTH_EXPIRED:401 AUTH_DEVICE_MISMATCH:403 AUTH_FORBIDDEN:403"
+  "INPUT_CONFLICT:409 INTERNAL:500 UNAVAILABLE:503 AUTH_REQUIRED:401 " +
+  "AUTH_INVALID:401 AUTH_REVOKED:401 AUTH_EXPIRED:401 " +
+  "AUTH_DEVICE_MISMATCH:403 AUTH_FORBIDDEN:403"
 ).split(" ");
 test("a command posts exactly the wire body to the command route with the bearer header and returns only the result", async () => {
   const net = network(() => succeeded());
@@ -736,7 +737,7 @@ const badCommands: [string, () => Response][] = [
   ["a valid code at the wrong status", () => refused("NOT_FOUND", 400)],
   ["a valid code at 200", () => refused("NOT_FOUND", 200)],
   ["an unknown code", () => refused("TEAPOT", 404)],
-  ["a server error code", () => refused("INTERNAL", 500)],
+  ["a server error code at the wrong status", () => refused("INTERNAL", 503)],
   [
     "a refusal with an extra key",
     () => json({ ...refusalBody("NOT_FOUND"), extra: 1 }, 404),

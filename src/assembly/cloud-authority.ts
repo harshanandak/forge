@@ -1,5 +1,6 @@
-// Forge cloud as the authority for a cloud-bound project's `issue show`, `issue list` and `issue ready`: chosen after the Runtime's own
-// request checks and before any local project state opens. Nothing is written and no device is created.
+// Forge cloud as the authority for a cloud-bound project's `issue show`, `issue list`, `issue ready`, `issue create` and
+// `issue comment`: chosen after the Runtime's own request checks and before any local project state opens. A bound project
+// writes only through the cloud, never to a local store, and no device is created.
 import { nodeDeviceIdentity } from "../adapters/fs/device-identity.ts";
 import { createCloudHttp } from "../adapters/http/index.ts";
 import { ForgeFailure } from "../contract/failure.ts";
@@ -24,14 +25,16 @@ export interface CloudAuthorityDeps {
 const fail = (code: string, message: string) =>
   new ForgeFailure({ code, message, retry: "never" });
 
-/** The work operations a cloud-bound project reads from the cloud: the one list of them. */
+/** The work operations a cloud-bound project serves from the cloud: the one list of them. */
 const CLOUD_SERVED: ReadonlySet<string> = new Set([
   "issue.show",
   "issue.list",
   "issue.ready",
+  "issue.create",
+  "issue.comment",
 ]);
 
-/** On a bound project: show, list and ready go to the cloud, other work operations are refused (a second writer), other blocks stay local. */
+/** On a bound project: show, list, ready, create and comment go to the cloud, other work operations are refused (a second writer), other blocks stay local. */
 export function cloudRoute(
   blockId: string,
   declared: string,
@@ -45,7 +48,7 @@ export function cloudRoute(
       );
 }
 
-/** The cloud's envelope for a bound project's served read; undefined when the local runtime should run. */
+/** The cloud's envelope for a bound project's served operation; undefined when the local runtime should run. */
 export async function selectCloud(
   deps: CloudAuthorityDeps,
   runtime: Pick<Runtime, "preflight">,
@@ -70,6 +73,12 @@ export async function selectCloud(
   if (bound.kind === "unbound") return undefined;
   deps.scope(flight.context);
   if (route !== "cloud") throw route;
+  // A routed write must never become a real cloud write by a dry run, whatever the runtime's own checks did.
+  if (request.dryRun === true)
+    throw fail(
+      "UNAVAILABLE",
+      "This profile has no dry-run execution contract.",
+    );
   let device: string | undefined;
   try {
     device =
