@@ -75,13 +75,19 @@ The owner runs these steps. Replace angle-bracket placeholders; `<worker-origin>
    bun install --frozen-lockfile
    ```
 
-   Create the namespace once:
+   Copy `wrangler.example.jsonc` to `wrangler.local.jsonc` and set `account_id` and `name` first: the commands below read them through `--config`. On a first setup, create the namespace once:
 
    ```sh
-   bun x wrangler kv namespace create OAUTH_KV
+   bun x wrangler kv namespace create OAUTH_KV --config wrangler.local.jsonc
    ```
 
-   Expect a namespace ID (an existing deployment keeps its own; list them with `bun x wrangler kv namespace list`). Copy `wrangler.example.jsonc` to `wrangler.local.jsonc` and set `account_id`, `name` and the `OAUTH_KV` id. Keep the rest of the example as it is: the preflight refuses a different entry point, binding or migration.
+   An existing deployment keeps its own namespace; find its id with:
+
+   ```sh
+   bun x wrangler kv namespace list --config wrangler.local.jsonc
+   ```
+
+   Set the `OAUTH_KV` id in `wrangler.local.jsonc`. Keep the rest of the example as it is: the preflight refuses any difference outside `account_id`, `name`, `vars` and that id.
 
 3. **Public vars.** Set each var in `wrangler.local.jsonc`. All are required except `FORGE_OAUTH_REDIRECTS`; without `FORGE_OWNER_SUBJECT` or `FORGE_CLOUD_PROJECT`, device login and `/command` refuse and the preflight stops the deploy:
 
@@ -94,10 +100,9 @@ The owner runs these steps. Replace angle-bracket placeholders; `<worker-origin>
    | `OAUTH_TIMEOUT_MS`      | `5000`                                      | Decimal integer string from 1 through 2147483647, no leading zero                                             | Not secret     |
    | `FORGE_OAUTH_REDIRECTS` | `<https-redirect-url>,<https-redirect-url>` | Optional comma-separated HTTPS URLs, no credentials, query or fragment; any bad entry makes OAuth unavailable | Not secret     |
    | `FORGE_OWNER_SUBJECT`   | `<owner-subject>`                           | `user_` plus alphanumerics; owner must match this subject and `CLERK_ISSUER` exactly                          | Not secret     |
+   | `FORGE_CLOUD_PROJECT`   | `<project-name>`                            | The one provisioned project that login and `/command` serve                                                   | Not secret     |
 
-| `FORGE_CLOUD_PROJECT` | `<project-name>` | The one provisioned project that login and `/command` serve | Not secret |
-
-Every HTTPS value above rejects credentials, query strings, fragments, whitespace and backslashes. Registration accepts only loopback redirects (`http` on `127.0.0.1`, `[::1]` or `localhost`) and exact matches of `FORGE_OAUTH_REDIRECTS`; anything else is refused with `REGISTRATION_INVALID` before the rate limiter counts it. Metadata uses the callback origin, not the Host header. No Clerk secret key is needed or used; never put one in `vars`.
+   Every HTTPS value above rejects credentials, query strings, fragments, whitespace and backslashes. Registration accepts only loopback redirects (`http` on `127.0.0.1`, `[::1]` or `localhost`) and exact matches of `FORGE_OAUTH_REDIRECTS`; anything else is refused with `REGISTRATION_INVALID` before the rate limiter counts it. Metadata uses the callback origin, not the Host header. No Clerk secret key is needed or used; never put one in `vars`.
 
 4. **Deploy.** First prepare generated validators from the repository root:
 
@@ -109,14 +114,16 @@ Every HTTPS value above rejects credentials, query strings, fragments, whitespac
    bun run gen
    ```
 
-   Return to `cloud/`. Two secrets are required, and their values are never printed. `DEVICE_LOGIN_HMAC_KEY` (random base64url, at least 32 bytes) is needed for device login, which refuses with 503 without it. `ADMIN_TOKEN` is needed for `status`, `devices`, `dump` and `restore`. If the Worker does not exist yet, Wrangler offers to create it; accept.
+   Return to `cloud/`. Two secrets are required, and their values are never printed. `DEVICE_LOGIN_HMAC_KEY` (random base64url, at least 32 bytes) is needed for device login, which refuses with 503 without it. `ADMIN_TOKEN` is needed for `status`, `devices`, `dump` and `restore`. A redeploy keeps both: a new `DEVICE_LOGIN_HMAC_KEY` voids pending device approvals and a new `ADMIN_TOKEN` voids the saved one. Rotating is its own decision, not a deploy step; to rotate on purpose, run that secret's command below alone, with no device approval pending.
+
+   **First setup only.** If the Worker does not exist yet, Wrangler offers to create it; accept. Name a token file for this Worker, so another Worker's saved token is never overwritten:
 
    ```sh
    node -e "process.stdout.write(require('crypto').randomBytes(32).toString('base64url'))" | bun x wrangler secret put DEVICE_LOGIN_HMAC_KEY --config wrangler.local.jsonc
-   node scripts/set-admin-token.mjs --config wrangler.local.jsonc
+   node scripts/set-admin-token.mjs --config wrangler.local.jsonc --token-file ~/.forge-cloud/<worker-name>.token
    ```
 
-   Set `ADMIN_TOKEN` on first setup only: re-running rotates it at once, and it is not a redeploy step. For an existing deployment, record the current version (`bun x wrangler deployments list --config wrangler.local.jsonc`) and keep a private dump first. Then run the preflight. It refuses placeholders, a missing var or secret name, and an `OAUTH_KV` id that is not an existing namespace, before anything is uploaded:
+   **Redeploy.** Skip both commands. Record the current version (`bun x wrangler deployments list --config wrangler.local.jsonc`) and keep a private dump first. Then run the preflight. It refuses placeholders, a missing var or secret name, and an `OAUTH_KV` id that is not an existing namespace, before anything is uploaded:
 
    ```sh
    node scripts/preflight.mjs --config wrangler.local.jsonc
@@ -128,7 +135,7 @@ Every HTTPS value above rejects credentials, query strings, fragments, whitespac
    bun x wrangler deploy --config wrangler.local.jsonc
    ```
 
-   Expect a deployed Worker URL. Durable Object class migrations `v1`, `v2-code-redemption` and `v3-registration-limits` apply automatically on deploy; there is no manual migration command. `set-admin-token.mjs` saves its secret to `~/.forge-cloud/forge-cloud-dev.token` without printing it. For authenticated curls below, prepare private curl config files containing the appropriate `Authorization` header; never put token values on the command line or print their files. Keep response files private too.
+   Expect a deployed Worker URL. Durable Object class migrations `v1`, `v2-code-redemption` and `v3-registration-limits` apply automatically on deploy; there is no manual migration command. `set-admin-token.mjs` saves its secret to the token file you named, without printing it. For authenticated curls below, prepare private curl config files containing the appropriate `Authorization` header; never put token values on the command line or print their files. Keep response files private too.
 
 5. **Smoke checks.** Start with metadata:
 

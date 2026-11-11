@@ -20,13 +20,23 @@ const VARS = {
   FORGE_OWNER_SUBJECT: /^user_[A-Za-z0-9]+$/,
   FORGE_CLOUD_PROJECT: /^[A-Za-z0-9][\w.-]{0,127}$/,
 };
-const STRUCTURE = [
-  "main",
-  "compatibility_date",
-  "compatibility_flags",
-  "durable_objects",
-  "migrations",
-];
+// The config with only the values an operator must set masked and keys sorted, so any other drift shows.
+const sorted = (_key, v) =>
+  v && typeof v === "object" && !Array.isArray(v)
+    ? Object.fromEntries(Object.entries(v).sort(([x], [y]) => (x < y ? -1 : 1)))
+    : v;
+const kvs = (c) => (Array.isArray(c.kv_namespaces) ? c.kv_namespaces : []);
+const fixed = (c) =>
+  JSON.stringify(
+    {
+      ...c,
+      account_id: 0,
+      name: 0,
+      vars: 0,
+      kv_namespaces: kvs(c).map((n) => ({ ...n, id: 0 })),
+    },
+    sorted,
+  );
 const here = (path) => fileURLToPath(new URL(path, import.meta.url));
 const jsonc = (text) =>
   JSON.parse(
@@ -42,13 +52,15 @@ const bad = (message) => problems.push(message);
 const flag = process.argv.indexOf("--config");
 const path = flag > 0 ? process.argv[flag + 1] : undefined;
 let config;
-try {
-  if (!path || /example/i.test(path))
-    throw new Error("pass --config <your local config>, not the example");
-  config = jsonc(readFileSync(path, "utf8"));
-} catch (error) {
-  bad(`cannot use the config: ${error.message}`);
-}
+if (!path || /example/i.test(path))
+  bad("pass --config <your local config>, not the example");
+else
+  try {
+    config = jsonc(readFileSync(path, "utf8"));
+  } catch {
+    // A fixed message: the parser's own text can quote the file, and the file can hold a secret.
+    bad("the config could not be read or parsed");
+  }
 if (config) {
   const example = jsonc(
     readFileSync(here("../wrangler.example.jsonc"), "utf8"),
@@ -59,7 +71,7 @@ if (config) {
     bad("account_id is missing or a placeholder");
   if (!real(config.name, /^[a-z0-9][a-z0-9-]{0,62}$/))
     bad("name is missing or a placeholder");
-  const kv = (config.kv_namespaces ?? []).find((n) => n.binding === "OAUTH_KV");
+  const kv = kvs(config).find((n) => n?.binding === "OAUTH_KV");
   if (!real(kv?.id, HEX32))
     bad("OAUTH_KV needs the id of an existing namespace");
   for (const [name, shape] of Object.entries(VARS))
@@ -68,9 +80,10 @@ if (config) {
   for (const name of Object.keys(config.vars ?? {}))
     if (SECRETS.includes(name))
       bad(`${name} is a secret and must not be a var`);
-  for (const key of STRUCTURE)
-    if (JSON.stringify(config[key]) !== JSON.stringify(example[key]))
-      bad(`${key} differs from the production entry in the example`);
+  if (fixed(config) !== fixed(example))
+    bad(
+      "the config differs from the example outside account_id, name, vars and the OAUTH_KV id",
+    );
   if (problems.length === 0) {
     const wrangler =
       process.env.FORGE_WRANGLER ??
@@ -92,10 +105,10 @@ if (config) {
         return [];
       }
     };
-    const names = ask("secret", "list", "--format", "json").map((s) => s.name);
+    const names = ask("secret", "list", "--format", "json").map((s) => s?.name);
     for (const name of SECRETS)
       if (!names.includes(name)) bad(`secret ${name} is not set on the Worker`);
-    if (!ask("kv", "namespace", "list").some((n) => n.id === kv.id))
+    if (!ask("kv", "namespace", "list").some((n) => n?.id === kv.id))
       bad("OAUTH_KV id is not an existing namespace");
   }
 }

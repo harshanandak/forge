@@ -1,7 +1,9 @@
 // Makes a new admin token inside this process and stores it two ways: as the Worker secret ADMIN_TOKEN
-// (piped to the locally installed wrangler over stdin) and in ~/.forge-cloud/forge-cloud-dev.token for
-// this user only. The token is never printed, logged or put on a command line. Run it from cloud/ with
-// --config <your local wrangler config>, which names the Worker and account. It is the first-time setup and the rotation: the old token stops working.
+// (piped to the locally installed wrangler over stdin) and in the file named by --token-file, for this
+// user only. The token is never printed, logged or put on a command line. Run it from cloud/ with
+// --config <your local wrangler config> (the Worker and account) and --token-file <a file for this Worker>:
+// it never picks a default file, so setting up one Worker cannot overwrite another's saved token.
+// It is the first-time setup and the rotation: the old token stops working.
 //
 // Order, so nothing fails open:
 //   1. Make an empty temp file beside the target and prove only this user can read it.
@@ -18,17 +20,22 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { homedir, userInfo } from "node:os";
-import { dirname, join } from "node:path";
+import { userInfo } from "node:os";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const target = join(homedir(), ".forge-cloud", "forge-cloud-dev.token");
+const arg = (name) => {
+  const at = process.argv.indexOf(name);
+  return at > 0 ? process.argv[at + 1] : undefined;
+};
+const config = arg("--config");
+const tokenFile = arg("--token-file");
+const target = tokenFile ? resolve(tokenFile) : "";
 const temp = `${target}.${randomBytes(6).toString("hex")}.tmp`;
 const wrangler = fileURLToPath(
   new URL("../node_modules/wrangler/bin/wrangler.js", import.meta.url),
 );
 const token = randomBytes(32).toString("base64url");
-const config = process.argv[process.argv.indexOf("--config") + 1];
 
 // Blanks and deletes the temp file, if there is one. Blanking and deleting are separate steps, so a
 // failed blank never skips the delete; a failed delete names the leftover path (never its content).
@@ -127,9 +134,9 @@ function restrict() {
   }
 }
 
-if (process.argv.indexOf("--config") < 1 || !config || !existsSync(config))
+if (!config || !existsSync(config) || !tokenFile)
   stop(
-    "Pass --config <your local wrangler config>; see docs/reference/cloud.md.",
+    "Pass --config <your local wrangler config> and --token-file <a private file for this Worker>; see docs/reference/cloud.md.",
   );
 if (!existsSync(wrangler))
   stop("Run `bun install` in cloud/ first: wrangler is not installed.");

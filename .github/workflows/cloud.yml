@@ -149,11 +149,20 @@ jobs:
           refuse() {
             if run "$1" "$2"; then echo "::error::preflight passed: $3"; exit 1; fi
             grep -q "$3" "$RUNNER_TEMP/pre.out" || { echo "::error::preflight refused for another reason: $3"; cat "$RUNNER_TEMP/pre.out"; exit 1; }
+            if grep -q PRIVATEMARKER "$RUNNER_TEMP/pre.out"; then echo "::error::the output echoed config text: $3"; exit 1; fi
             if grep -q '^deploy' "$STUB_LOG"; then echo "::error::a deploy was invoked: $3"; exit 1; fi
           }
           cp wrangler.example.jsonc "$RUNNER_TEMP/placeholders.jsonc"
           sed '/FORGE_OWNER_SUBJECT/d' wrangler.ci.jsonc > "$RUNNER_TEMP/no-owner.jsonc"
+          printf '{ "vars": { "FORGE_OWNER_SUBJECT": user_PRIVATEMARKERONE } }' > "$RUNNER_TEMP/bad1.jsonc"
+          printf '{ "name": "PRIVATEMARKERTWO' > "$RUNNER_TEMP/bad2.jsonc"
+          sed 's/"preview_urls": false/"preview_urls": true/' wrangler.ci.jsonc > "$RUNNER_TEMP/preview.jsonc"
+          sed 's/"workers_dev": true/"workers_dev": false/' wrangler.ci.jsonc > "$RUNNER_TEMP/devhost.jsonc"
           refuse "$both" wrangler.example.jsonc "pass --config"
+          refuse "$both" "$RUNNER_TEMP/bad1.jsonc" "could not be read or parsed"
+          refuse "$both" "$RUNNER_TEMP/bad2.jsonc" "could not be read or parsed"
+          refuse "$both" "$RUNNER_TEMP/preview.jsonc" "differs from the example"
+          refuse "$both" "$RUNNER_TEMP/devhost.jsonc" "differs from the example"
           refuse "$both" "$RUNNER_TEMP/placeholders.jsonc" "placeholder"
           [ ! -s "$STUB_LOG" ] || { echo "::error::wrangler was called before the local checks passed"; exit 1; }
           refuse "$both" "$RUNNER_TEMP/no-owner.jsonc" "var FORGE_OWNER_SUBJECT"
@@ -165,6 +174,7 @@ jobs:
           bun x wrangler deploy --dry-run --config wrangler.ci.jsonc --outdir "$RUNNER_TEMP/bundle"
           [ -n "$(find "$RUNNER_TEMP/bundle" -name '*.js' -size +0 -print -quit)" ] || { echo "::error::no bundle was written"; exit 1; }
           # Counterfactual: an import that cannot resolve must fail the bundle, for that import.
+          trap 'git checkout -- src/issue-commands.ts' EXIT
           sed -i '1i import "../../src/blocks/work/missing.block.json" with { type: "json" };' src/issue-commands.ts
           if bun x wrangler deploy --dry-run --config wrangler.ci.jsonc --outdir "$RUNNER_TEMP/broken" > "$RUNNER_TEMP/broken.out" 2>&1; then
             echo "::error::the bundle built with an unresolved import"
