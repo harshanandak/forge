@@ -81,8 +81,13 @@ interface Window {
   count: number;
   resetAt: number;
 }
-interface LoginState extends ChallengeState {
-  admission?: { project: Window; addresses: Record<string, Window> };
+interface Admission {
+  project: Window;
+  addresses: Record<string, Window>;
+}
+export interface LoginState extends ChallengeState {
+  admission?: Admission;
+  previews?: Admission;
 }
 
 /** The engine's store: one row, read, changed and written back inside one synchronous transaction. */
@@ -105,32 +110,41 @@ export function loginStore(db: SqlDatabase): ChallengeStore {
   };
 }
 
-function admit(store: ChallengeStore, address: string, now: number): boolean {
-  return store.conditionalUpdate((base) => {
-    const state = base as LoginState;
-    const budget = state.admission ?? {
-      project: { count: 0, resetAt: 0 },
-      addresses: {},
+/**
+ * Counts one use in a fixed window per address and per project; `charge: false` only asks whether there
+ * is room. It changes the given state only, so a caller can decide and charge inside one transaction.
+ */
+export function spend(
+  state: LoginState,
+  address: string,
+  now: number,
+  key: "admission" | "previews" = "admission",
+  charge = true,
+): boolean {
+  const budget = state[key] ?? {
+    project: { count: 0, resetAt: 0 },
+    addresses: {},
+  };
+  for (const [key, window] of Object.entries(budget.addresses))
+    if (now >= window.resetAt) delete budget.addresses[key];
+  if (now >= budget.project.resetAt)
+    budget.project = { count: 0, resetAt: now + WINDOW_MS };
+  const mine = budget.addresses[address];
+  const allowed =
+    budget.project.count < PROJECT_STARTS &&
+    (mine?.count ?? 0) < ADDRESS_STARTS;
+  if (allowed && charge) {
+    budget.project.count++;
+    budget.addresses[address] = {
+      count: (mine?.count ?? 0) + 1,
+      resetAt: mine?.resetAt ?? budget.project.resetAt,
     };
-    for (const [key, window] of Object.entries(budget.addresses))
-      if (now >= window.resetAt) delete budget.addresses[key];
-    if (now >= budget.project.resetAt)
-      budget.project = { count: 0, resetAt: now + WINDOW_MS };
-    const mine = budget.addresses[address];
-    const allowed =
-      budget.project.count < PROJECT_STARTS &&
-      (mine?.count ?? 0) < ADDRESS_STARTS;
-    if (allowed) {
-      budget.project.count++;
-      budget.addresses[address] = {
-        count: (mine?.count ?? 0) + 1,
-        resetAt: mine?.resetAt ?? budget.project.resetAt,
-      };
-    }
-    state.admission = budget;
-    return allowed;
-  });
+  }
+  state[key] = budget;
+  return allowed;
 }
+const admit = (store: ChallengeStore, address: string, now: number) =>
+  store.conditionalUpdate((state) => spend(state as LoginState, address, now));
 
 const refusal = (error: LoginError, interval?: number) => ({
   ok: false as const,

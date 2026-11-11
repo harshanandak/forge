@@ -6,6 +6,7 @@ export { Project } from "./project.ts";
 import { bearer, same, sha256, wellFormed } from "./tokens.ts";
 import type { Access, AuthComposition } from "./auth/compose.ts";
 import { configUnavailable, isOAuthRoute } from "./auth/compose.ts";
+import { isDeviceCallback, isDeviceRoute } from "./auth/device-browser.ts";
 import {
   isLoginRoute,
   loginConfigGap,
@@ -65,6 +66,25 @@ const legacyWorker = {
       headers.delete("X-Forge-Owner");
       headers.delete("X-Forge-Owner-Expires");
       request = new Request(request, { headers });
+    }
+    // The owner's device pages and their Clerk return reach the one admitted project, before OAuth routing.
+    if (isDeviceRoute(request) || isDeviceCallback(request)) {
+      const project = env.FORGE_CLOUD_PROJECT;
+      const gap =
+        typeof project === "string" && project !== ""
+          ? loginConfigGap(env)
+          : "FORGE_CLOUD_PROJECT";
+      if (gap !== undefined) {
+        void request.body?.cancel().catch(() => undefined);
+        return configUnavailable(gap, "Device login configuration unavailable");
+      }
+      try {
+        return await env.PROJECTS.get(
+          env.PROJECTS.idFromName(String(project)),
+        ).fetch(request);
+      } catch {
+        return configUnavailable("PROJECTS", "Device login unavailable");
+      }
     }
     if (isOAuthRoute(request))
       return auth?.route(request) ?? configUnavailable("OAUTH_COMPOSITION");

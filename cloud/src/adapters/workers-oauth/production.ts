@@ -1,6 +1,6 @@
 import { createOidcVerifier } from "../../../../src/assembly/oidc.ts";
 import { createClerkBinding } from "./clerk/index.ts";
-import { createClerkUpstream } from "./clerk/upstream.ts";
+import { createClerkUpstream, type ClerkUpstream } from "./clerk/upstream.ts";
 import { durableRedemption, type RedemptionNamespace } from "./redemption.ts";
 import type { OAuthOptions, OAuthStorage } from "./index.ts";
 import type { readOAuthConfig } from "./config.ts";
@@ -11,11 +11,11 @@ const verifiers = new WeakMap<
   WorkerDependencies,
   { key: string; verifier: ReturnType<typeof createOidcVerifier> }
 >();
-export function productionOptions(
+/** The Clerk upstream for a configuration: the OAuth callback and the device approval page both use it. */
+export function clerkUpstream(
   config: ReturnType<typeof readOAuthConfig>,
-  env: Readonly<Record<string, unknown>>,
   dependencies: WorkerDependencies,
-): OAuthOptions {
+): ClerkUpstream {
   const clock = dependencies.clock ?? { now: Date.now },
     network = dependencies.fetch ?? fetch;
   const key = JSON.stringify(config);
@@ -44,6 +44,22 @@ export function productionOptions(
     cached = { key, verifier };
     verifiers.set(dependencies, cached);
   }
+  return createClerkUpstream(
+    config,
+    createClerkBinding(cached.verifier, config.clientId, clock),
+    {
+      post: (url, body, signal) =>
+        network(url, { method: "POST", body, signal, redirect: "manual" }),
+    },
+    clock,
+  );
+}
+
+export function productionOptions(
+  config: ReturnType<typeof readOAuthConfig>,
+  env: Readonly<Record<string, unknown>>,
+  dependencies: WorkerDependencies,
+): OAuthOptions {
   return {
     issuer: new URL(config.redirectUri).origin,
     resources: [config.resource],
@@ -51,15 +67,7 @@ export function productionOptions(
     codeRedemption: durableRedemption(
       env.CODE_REDEMPTION as RedemptionNamespace,
     ),
-    clock,
-    upstream: createClerkUpstream(
-      config,
-      createClerkBinding(cached.verifier, config.clientId, clock),
-      {
-        post: (url, body, signal) =>
-          network(url, { method: "POST", body, signal, redirect: "manual" }),
-      },
-      clock,
-    ),
+    clock: dependencies.clock ?? { now: Date.now },
+    upstream: clerkUpstream(config, dependencies),
   };
 }
