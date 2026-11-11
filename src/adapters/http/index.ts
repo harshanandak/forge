@@ -4,11 +4,16 @@
 import { request } from "node:https";
 import { Readable } from "node:stream";
 import { ForgeFailure } from "../../contract/failure.ts";
+import type {
+  LeaseConflict,
+  LeaseHolder,
+  LeaseRecord,
+} from "../../generated/types.ts";
 
 export interface CloudRequestInit {
-  readonly method: "POST";
+  readonly method: "POST" | "GET";
   readonly headers: Readonly<Record<string, string>>;
-  readonly body: string;
+  readonly body?: string;
   readonly redirect: "manual";
   readonly signal: AbortSignal;
 }
@@ -48,9 +53,50 @@ export interface CloudHttpOptions {
   /** Largest response body accepted. */
   readonly maxBytes?: number;
 }
+export type LeaseRoute = "claim" | "renew" | "release";
+/** What a lease write sends; the adapter sends exactly these fields and never rewrites one. */
+export interface LeaseWriteBody {
+  readonly subject: string;
+  readonly holder: LeaseHolder;
+  readonly requestId: string;
+  readonly ttlMs?: number;
+  readonly generation?: number;
+}
+export type LeaseRefusalCode =
+  | "LEASE_HELD"
+  | "LEASE_STALE"
+  | "LEASE_NOT_HELD"
+  | "LEASE_EXPIRED"
+  | "AUTH_REQUIRED"
+  | "AUTH_INVALID"
+  | "AUTH_REVOKED"
+  | "AUTH_EXPIRED"
+  | "AUTH_DEVICE_MISMATCH"
+  | "INPUT_INVALID"
+  | "INPUT_CONFLICT";
+/** A write always carries a lease; a holder read may carry `null`, an expired or a released record. */
+export type LeaseResult =
+  | { readonly kind: "ok"; readonly lease: LeaseRecord | null }
+  | {
+      readonly kind: "refused";
+      readonly code: LeaseRefusalCode;
+      /** Present for the four LEASE_* refusals, with the details the server named. */
+      readonly lease?: LeaseConflict;
+    };
 export interface CloudHttp {
   loginStart(device: string, signal?: AbortSignal): Promise<StartResult>;
   loginPoll(deviceCode: string, signal?: AbortSignal): Promise<PollResult>;
+  leaseWrite(
+    token: string,
+    route: LeaseRoute,
+    body: LeaseWriteBody,
+    signal?: AbortSignal,
+  ): Promise<LeaseResult>;
+  leaseHolder(
+    token: string,
+    subject: string,
+    signal?: AbortSignal,
+  ): Promise<LeaseResult>;
 }
 
 type ReadResult =
@@ -133,7 +179,9 @@ export const defaultCloudFetch: CloudFetch = (url, init) =>
         method: init.method,
         headers: {
           ...init.headers,
-          "content-length": String(Buffer.byteLength(init.body)),
+          ...(init.body === undefined
+            ? {}
+            : { "content-length": String(Buffer.byteLength(init.body)) }),
         },
         signal: init.signal,
         agent: false,
@@ -331,5 +379,10 @@ export function createCloudHttp(options: CloudHttpOptions): CloudHttp {
         throw unavailable("the login answer failed its checks");
       return { kind: "credential", credential: body.credential };
     },
+    // Stubs: the lease routes are not decoded yet.
+    leaseWrite: (_token, _route, _body, _signal) =>
+      Promise.reject(unavailable("the lease routes are not implemented")),
+    leaseHolder: (_token, _subject, _signal) =>
+      Promise.reject(unavailable("the lease routes are not implemented")),
   };
 }
