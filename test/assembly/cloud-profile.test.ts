@@ -443,6 +443,44 @@ test("a write that fails after the rename (the directory sync) still leaves the 
   }
 }, 20_000);
 
+test("two first logins for one project identity with different origins: one wins, the other is refused and the store keeps only the winner", async () => {
+  const s = sandbox();
+  try {
+    const first = credentialStore(openCloudFiles(s.home), { wait: noWait });
+    const second = credentialStore(openCloudFiles(s.home), { wait: noWait });
+    const winner = entry(NOW);
+    const loser = entry(NOW, {
+      origin: OTHER_ORIGIN,
+      id: "cccccccccccccccc",
+      token: tokenFor("cccccccccccccccc", "C".repeat(43)),
+    });
+    const settled = await Promise.allSettled([
+      first.save(winner),
+      second.save(loser),
+    ]);
+    expect(settled[0].status).toBe("fulfilled");
+    expect(settled[1].status).toBe("rejected");
+    const reason: unknown = (settled[1] as PromiseRejectedResult).reason;
+    expect(reason).toBeInstanceOf(ForgeFailure);
+    expect((reason as ForgeFailure).error.code).toBe("INPUT_CONFLICT");
+    const check = credentialStore(openCloudFiles(s.home), { wait: noWait });
+    expect(check.associations(PROJECT_ID)).toEqual([prior]);
+    expect(check.lookup(prior, NOW)?.id).toBe("aaaaaaaaaaaaaaaa");
+    expect(fileText(s.credentials)).not.toContain("cccccccccccccccc");
+    // The winner's target still renews, and a different target for the same identity stays refused.
+    await check.save(
+      entry(NOW, {
+        id: "dddddddddddddddd",
+        token: tokenFor("dddddddddddddddd", "D".repeat(43)),
+      }),
+    );
+    expect(check.lookup(prior, NOW)?.id).toBe("dddddddddddddddd");
+    expect(await asyncCodeOf(() => check.save(loser))).toBe("INPUT_CONFLICT");
+  } finally {
+    s.close();
+  }
+}, 20_000);
+
 test("two writers that overlap on different keys both succeed and both entries remain", async () => {
   const s = sandbox();
   try {

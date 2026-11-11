@@ -320,8 +320,23 @@ export function credentialStore(
       const held = await lock();
       try {
         const previous = files.read(CREDENTIAL_FILE);
+        const saved = previous === undefined ? {} : parseFile(previous);
+        // The target was chosen before the wait for approval. Another login may have saved a different
+        // origin or project for this identity since, so the choice is checked again under the lock; a
+        // loser leaves the store with the winner's association only.
+        if (
+          Object.values(saved).some(
+            (other) =>
+              other.identity === entry.identity &&
+              (other.origin !== entry.origin ||
+                other.project !== entry.project),
+          )
+        )
+          throw conflict(
+            "Another login already saved this project's credential for a different Forge cloud origin or project",
+          );
         const merged = {
-          ...(previous === undefined ? {} : parseFile(previous)),
+          ...saved,
           [keyOf(entry)]: parseEntry(keyOf(entry), entry),
         };
         const text = serialize(merged);

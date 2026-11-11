@@ -666,6 +666,37 @@ test("explicit flags that differ from the established binding are refused before
   }
 }, 30_000);
 
+test("two first logins for one project with different origins: one succeeds, the other is refused, and the winner's target still logs in", async () => {
+  const r = rig();
+  try {
+    const steps = (): Step[] => [() => json(startBody()), pending, goodPoll(r)];
+    const [a, b] = await Promise.all([
+      login(r, steps(), {}, { origin: ORIGIN, project: PROJECT }),
+      login(r, steps(), {}, { origin: OTHER_ORIGIN, project: PROJECT }),
+    ]);
+    const results = [a, b];
+    expect(results.map((x) => x.exit).sort()).toEqual([0, 4]);
+    const loser = results.find((x) => x.exit === 4)!;
+    expect(failure(loser.envelope).code).toBe("INPUT_CONFLICT");
+    const winner = results.find((x) => x.exit === 0)!;
+    const origin = (winner.envelope as { result: { origin: string } }).result
+      .origin;
+    expect(JSON.parse(read(r.sb.binding) ?? "")).toEqual(
+      bindingFor({ origin }),
+    );
+    const store = credentialStore(openCloudFiles(r.sb.home));
+    expect(store.associations(PROJECT_ID)).toEqual([
+      { origin, identity: PROJECT_ID, project: PROJECT },
+    ]);
+    // A later login with no flags goes to the winning target.
+    const later = await login(r, steps(), {}, {});
+    expect(later.exit).toBe(0);
+    expect(later.net.calls[0]?.url).toBe(`${origin}/p/proj/loginstart`);
+  } finally {
+    r.sb.close();
+  }
+}, 30_000);
+
 test("a later login with no flags uses the existing binding", async () => {
   const r = rig();
   try {
