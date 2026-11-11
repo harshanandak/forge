@@ -9,6 +9,7 @@ import { createDeviceFiles } from "../adapters/fs/device-identity.ts";
 import { validateOrigin, validateProject } from "../adapters/http/index.ts";
 import { windowsPrivateFiles } from "../adapters/process/windows-acl.ts";
 import { privateFileGuard } from "../adapters/store-sqlite/private-files.ts";
+import type { PrivateFiles } from "../ports/private-files.ts";
 import { ForgeFailure } from "../contract/failure.ts";
 import type { DeviceFiles } from "../ports/device-files.ts";
 import { PROJECT_ID_PATTERN } from "./project-manifest.ts";
@@ -113,6 +114,8 @@ const keyOf = (key: CredentialKey): string =>
 export function openCloudFiles(
   home: string | undefined,
   security?: PrivateChecks,
+  /** Inspection only: the folder is verified, never rewritten. `native` stands in for the Windows calls. */
+  inspect?: { readonly native?: (() => PrivateFiles) | undefined },
 ): DeviceFiles {
   if (home === undefined || home === "")
     throw new ForgeFailure({
@@ -121,20 +124,21 @@ export function openCloudFiles(
       retry: "never",
     });
   let guard: ReturnType<typeof privateFileGuard> | undefined;
+  const native = inspect?.native ?? windowsPrivateFiles;
+  const options = {
+    requireOwner: true,
+    ...(inspect === undefined ? {} : { protectDirectories: false }),
+  };
   const host: PrivateChecks | undefined =
     security ??
-    (process.platform === "win32"
+    (process.platform === "win32" || inspect?.native !== undefined
       ? {
           directory(path, created) {
-            guard ??= privateFileGuard(windowsPrivateFiles(), {
-              requireOwner: true,
-            });
+            guard ??= privateFileGuard(native(), options);
             guard.directory(path, created);
           },
           file(path) {
-            guard ??= privateFileGuard(windowsPrivateFiles(), {
-              requireOwner: true,
-            });
+            guard ??= privateFileGuard(native(), options);
             guard.file(path);
           },
         }

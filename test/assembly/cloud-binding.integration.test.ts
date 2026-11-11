@@ -1,7 +1,6 @@
 import { expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
-import { devNull } from "node:os";
 import { join, resolve } from "node:path";
 import { cloudBinding } from "../../src/assembly/cloud-binding.ts";
 import {
@@ -53,22 +52,16 @@ const bind = (s: Box, change = {}) =>
   fs.writeFileSync(s.binding, `${JSON.stringify(fx.bindingFor(change))}\n`);
 const save = (s: Box, saved: CredentialEntry) =>
   credentialStore(openCloudFiles(s.home)).save(saved);
+const manifest = (s: Box) => join(s.root, ".forge", "project.json");
 const git = (cwd: string, ...args: string[]) => {
   const run = spawnSync(
     "git",
     ["-c", "user.name=t", "-c", "user.email=t@example.test", ...args],
-    {
-      cwd,
-      env: { ...process.env, GIT_CONFIG_GLOBAL: devNull },
-      windowsHide: true,
-      timeout: 20_000,
-    },
+    { cwd, encoding: "utf8", windowsHide: true, timeout: 20_000 },
   );
-  expect(run.error).toBeUndefined();
+  expect(run.error ?? ((run.status ?? 2) > 1 ? run.stderr : "")).toBe("");
   return run.status;
 };
-const manifest = (s: Box) => join(s.root, ".forge", "project.json");
-
 test("a project with no binding and no remembered credential is unbound, and inspecting it creates nothing", () =>
   boxed((s) => {
     const before = tree(s.dir);
@@ -78,7 +71,6 @@ test("a project with no binding and no remembered credential is unbound, and ins
     expect(tree(s.dir)).toEqual(before);
     expect(fs.existsSync(join(s.home, ".forge"))).toBe(false);
     expect(fs.existsSync(absent)).toBe(false);
-    // Project identity alone does not bind; with no manifest there is nothing to look up either.
     fs.rmSync(manifest(s));
     expect(cloudBinding(s.root, s.home)).toEqual({ kind: "unbound" });
   }));
@@ -176,16 +168,28 @@ for (const [name, setup, code, hint] of refused)
     }));
 
 test("the repository gitignore tracks the binding and still ignores other local .forge files", () => {
+  const repo = resolve(import.meta.dirname, "../..");
   const ignored = (path: string) =>
-    git(
-      resolve(import.meta.dirname, "../.."),
-      "check-ignore",
-      "-q",
-      "--no-index",
-      "--",
-      path,
-    );
+    git(repo, "check-ignore", "-q", "--no-index", "--", path);
   expect(ignored(".forge/cloud.json")).toBe(1);
   expect(ignored(".forge/scratch.json")).toBe(0);
   expect(ignored(".forge/state.sqlite")).toBe(0);
 });
+
+test("inspecting the credential folder verifies it but never rewrites its permissions", () =>
+  boxed((s) => {
+    fs.mkdirSync(join(s.home, ".forge", "cloud"), { recursive: true });
+    const calls: string[] = [];
+    const host = (acl: string) => () => ({
+      sid: "S-1",
+      owner: () => "S-1",
+      read: () => (calls.push("read"), acl),
+      protect: () => void calls.push("protect"),
+    });
+    const bound = cloudBinding(s.root, s.home, host("D:P(A;OICI;FA;;;S-1)"));
+    expect(bound).toEqual({ kind: "unbound" });
+    const got = refusal(() =>
+      cloudBinding(s.root, s.home, host("D:(A;;FA;;;WD)")),
+    );
+    expect([got?.code, calls]).toEqual(["ACCOUNT_INTEGRITY", ["read", "read"]]);
+  }));

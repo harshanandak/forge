@@ -7,6 +7,7 @@ import {
   openCloudFiles,
   readBinding,
 } from "./cloud-profile.ts";
+import type { PrivateFiles } from "../ports/private-files.ts";
 import { readProjectManifest } from "./project-manifest.ts";
 import { projectManifestRoot } from "./providers.ts";
 
@@ -25,6 +26,7 @@ const refuse = (code: string, message: string) =>
 export function cloudBinding(
   root: string,
   home: string | undefined,
+  native?: () => PrivateFiles,
 ): CloudBindingState {
   const base = projectManifestRoot(root);
   const binding = readBinding(base);
@@ -45,7 +47,8 @@ export function cloudBinding(
   }
   if (manifest === undefined || home === undefined || home === "")
     return { kind: "unbound" };
-  const known = credentialStore(openCloudFiles(home)).associations(manifest.id);
+  const files = openCloudFiles(home, undefined, { native });
+  const known = credentialStore(files).associations(manifest.id);
   if (known.length === 0) return { kind: "unbound" };
   throw refuse(
     "INPUT_CONFLICT",
