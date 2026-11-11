@@ -194,6 +194,29 @@ assert.match(
   /Aim at 400 changed lines/,
 );
 assert.deepEqual(npm.cli(["check", "list"]).result.commands, ["test"]);
+assert.equal(npm.cli(["issue", "list"]).ok, true);
+const activeIssueVerbs = npm
+  .cli(["catalog", "list"])
+  .result.filter((entry) => entry.op.startsWith("issue."));
+assert.ok(activeIssueVerbs.length > 0);
+const bareIssue = npm.cli(["issue", "--json"]);
+assert.equal(bareIssue.ok, true);
+assert.deepEqual(bareIssue.result.operations, activeIssueVerbs);
+const textIssue = spawnSync(process.execPath, [bin, "issue", "--text"], {
+  cwd: npm.root,
+  env: unattendedEnv({
+    ...process.env,
+    FORGE_DEVICE_ROOT: join(npm.root, "device"),
+  }),
+  encoding: "utf8",
+  windowsHide: true,
+  timeout: 30000,
+});
+assert.equal(textIssue.status, 0, textIssue.stderr);
+for (const entry of activeIssueVerbs) {
+  assert.ok(textIssue.stdout.includes(entry.op));
+  assert.ok(textIssue.stdout.includes(entry.docs.summary));
+}
 const receipt = npm.cli(["check", "run"]).result;
 assert.equal(receipt.status, "PASS", JSON.stringify(receipt));
 for (const [detect, kind] of [
