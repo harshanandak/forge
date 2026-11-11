@@ -32,6 +32,7 @@ import {
 import {
   durableStore,
   PRAGMA_TABLE,
+  readOnlyStore,
   type DurableState,
   type DurableStorage,
 } from "./store.ts";
@@ -467,7 +468,9 @@ export class Project {
       const parts = await tokenParts(presented);
       if (!(await this.#isProvisioned()))
         throw fail("AUTH_INVALID", "Token is not valid");
-      const { db } = this.#open();
+      // Checked through a read-only view: a refusal must not create a table or run a migration.
+      const db = readOnlyStore(this.#storage, TOKENS);
+      if (db === undefined) throw fail("AUTH_INVALID", "Token is not valid");
       authorize(db, parts, Date.now());
       await bounded(request, MAX_COMMAND_BODY);
       authorize(db, parts, Date.now());
