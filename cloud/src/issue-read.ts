@@ -110,6 +110,18 @@ export function storedId(
   return `work-${match[2]}`;
 }
 
+/** Whether a stored issue in `db` carries the id prefix `given`: the historical prefixes an id may name. */
+export const minted =
+  (db: SqlDatabase | undefined) =>
+  (given: string): boolean =>
+    db?.get(MINTED, [
+      NAMESPACE,
+      "issue:",
+      "issue;",
+      MAX_RECORD_BYTES,
+      given,
+    ]) !== undefined;
+
 /** A lease that holds its issue at `now`: not released and not yet expired. */
 export const holds = (lease: Json | undefined, now: number): boolean =>
   lease !== undefined &&
@@ -143,14 +155,7 @@ export function readIssue(
   const id = storedId(
     (input as { id: string }).id,
     prefix,
-    (given) =>
-      views.records?.get(MINTED, [
-        NAMESPACE,
-        "issue:",
-        "issue;",
-        MAX_RECORD_BYTES,
-        given,
-      ]) !== undefined,
+    minted(views.records),
   );
   const record = load(views.records, RECORD, MAX_RECORD_BYTES, `issue:${id}`);
   if (record === undefined) throw fail("NOT_FOUND", "Issue was not found");
