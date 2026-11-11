@@ -7,6 +7,7 @@ import { bearer, same, sha256, wellFormed } from "./tokens.ts";
 import type { Access, AuthComposition } from "./auth/compose.ts";
 import { configUnavailable, isOAuthRoute } from "./auth/compose.ts";
 import { isDeviceCallback, isDeviceRoute } from "./auth/device-browser.ts";
+import { commandProject } from "./issue-commands.ts";
 import {
   isLoginRoute,
   loginConfigGap,
@@ -57,6 +58,34 @@ const legacyWorker = {
     auth?: AuthComposition,
     forward?: ProjectForward,
   ): Promise<Response> {
+    // Commands are for a device token on the one admitted project. Refuse everything else first:
+    // before owner headers are stripped, before OAuth is read and before any object is looked up.
+    const target = commandProject(request);
+    if (target !== undefined) {
+      const token = bearer(request);
+      const refusal: [string, string, number] | undefined =
+        target !== env.FORGE_CLOUD_PROJECT ||
+        request.headers.has("X-Forge-Owner") ||
+        request.headers.has("X-Forge-Owner-Expires")
+          ? [
+              "AUTH_FORBIDDEN",
+              "Commands are for a device token on the admitted project",
+              403,
+            ]
+          : token === undefined
+            ? ["AUTH_REQUIRED", "A bearer token is required", 401]
+            : wellFormed(token)
+              ? undefined
+              : ["AUTH_FORBIDDEN", "Commands need a device token", 403];
+      if (refusal) return unauthorized(request, ...refusal);
+      try {
+        return await env.PROJECTS.get(env.PROJECTS.idFromName(target)).fetch(
+          request,
+        );
+      } catch {
+        return configUnavailable("PROJECTS", "Commands unavailable");
+      }
+    }
     // Only an authorized forward may supply this header to the private Project binding.
     if (
       request.headers.has("X-Forge-Owner") ||
