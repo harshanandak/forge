@@ -36,6 +36,13 @@ import {
   type DurableStorage,
 } from "./store.ts";
 import {
+  isLoginRoute,
+  LOGIN,
+  LOGIN_MIGRATION,
+  loginRoute,
+  type LoginEnv,
+} from "./auth/project-login.ts";
+import {
   authorize,
   issueToken,
   revokeToken,
@@ -75,8 +82,9 @@ const domain = {
       ],
     },
     TOKEN_MIGRATION,
+    LOGIN_MIGRATION,
   ],
-  tables: [PRAGMA_TABLE, REQUESTS, TOKENS],
+  tables: [PRAGMA_TABLE, REQUESTS, TOKENS, LOGIN],
 };
 
 const fail = (code: string, message: string): ForgeFailure =>
@@ -95,6 +103,8 @@ const STATUS: Record<string, number> = {
   AUTH_REVOKED: 401,
   AUTH_EXPIRED: 401,
   AUTH_DEVICE_MISMATCH: 403,
+  AUTH_FORBIDDEN: 403,
+  AUTH_CONFIG_UNAVAILABLE: 503,
   LEASE_HELD: 409,
   LEASE_STALE: 409,
   LEASE_NOT_HELD: 409,
@@ -170,11 +180,13 @@ export class Project {
   #opened: { db: SqlDatabase; owner: StateOwner } | undefined;
   #provisioned = false;
   readonly #limits: Limits;
+  readonly #env: LoginEnv;
 
   // `env` carries the page and project limits (DUMP_PAGE_BYTES, DUMP_MAX_BYTES); a deploy sets none.
   constructor(ctx: DurableState, env?: unknown) {
     this.#storage = ctx.storage;
     this.#limits = limitsFrom(env);
+    this.#env = (env ?? {}) as LoginEnv;
   }
 
   // Forgets a half-finished paged restore: its staged rows and its place in the page order.
@@ -204,6 +216,22 @@ export class Project {
     try {
       const url = new URL(request.url);
       const route = url.pathname.split("/")[3] ?? "";
+      // Login is public: the capability is the device code, and nothing here approves or mints for a caller.
+      if (isLoginRoute(request)) {
+        if (!(await this.#isProvisioned()))
+          throw fail(
+            "AUTH_FORBIDDEN",
+            "Login is not available for this project",
+          );
+        return await loginRoute(
+          this.#open().db,
+          this.#env,
+          route as "loginstart" | "loginpoll",
+          object(await bounded(request)),
+          request.headers.get("CF-Connecting-IP"),
+          url.pathname.split("/")[2] ?? "",
+        );
+      }
       // The Worker has already checked the admin token before it forwards these two routes.
       if (request.method === "POST" && route === "devices") {
         const input = object(await bounded(request));
