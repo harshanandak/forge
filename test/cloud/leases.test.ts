@@ -1,7 +1,8 @@
 import { expect, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { Project } from "../../cloud/src/project.ts";
-import { durableStore, type DurableStorage } from "../../cloud/src/store.ts";
+import type { DurableStorage } from "../../cloud/src/store.ts";
+import { createSqliteStore } from "../../src/adapters/store-sqlite/index.ts";
 import { StateOwner } from "../../src/core/state/index.ts";
 import type {
   ForgeError,
@@ -32,6 +33,7 @@ function fixture() {
   const db = new Database(":memory:"),
     values = new Map<string, unknown>();
   let failRelease = false;
+  let claimNumber = 0;
   const storage: DurableStorage = {
     sql: {
       exec: (sql, ...bindings) => {
@@ -101,7 +103,7 @@ function fixture() {
     const input = {
       subject,
       holder: holder(device.device, session),
-      requestId: subject,
+      requestId: `${subject}:${device.device}:${++claimNumber}`,
     };
     const reply = await write("claim", input, device.token);
     expect(reply.status).toBe(200);
@@ -275,9 +277,18 @@ test("a release event failure rolls revocation and lease releases back together"
 }, 30_000);
 
 for (const route of ["acquire", "renew"]) {
-  test(`core ${route} refuses Date overflow without writing`, () => {
-    using f = fixture();
-    const owner = new StateOwner(durableStore(f.storage), { now: () => now });
+  test(`core ${route} refuses Date overflow without writing`, async () => {
+    const opened = await createSqliteStore(import.meta.dirname).open({
+      path: ":memory:",
+      readOnly: false,
+    });
+    if (!opened.ok) throw new Error(opened.unavailable.reason);
+    const db = opened.handle.value;
+    await using f = {
+      rows: (table: string) => db.all(`SELECT * FROM ${table}`),
+      [Symbol.asyncDispose]: () => opened.handle.close(),
+    };
+    const owner = new StateOwner(db, { now: () => now });
     owner.initialize();
     const ns = "forge/work",
       subject = "issue",
@@ -300,3 +311,24 @@ for (const route of ["acquire", "renew"]) {
     expect(tables.map(f.rows)).toEqual(before);
   }, 30_000);
 }
+
+test("whole and paged restores preserve an oversized claim refusal and its replay", async () => {
+  for (const route of ["dump", "dump?cursor=start"]) {
+    using source = fixture();
+    const phone = await source.issue();
+    const input = { ttlMs: day + 1, requestId: "oversized" };
+    const refused = await source.write("claim", input, phone.token);
+    expect(refused.status).toBe(400);
+    expect(refused.body.error?.code).toBe("INPUT_INVALID");
+    const dump = await source.send(route);
+    expect(dump.status).toBe(200);
+    using target = fixture();
+    const restored = await target.send("restore", dump.body.value);
+    expect(restored.status).toBe(200);
+    expect(target.rows("domain_cloud_requests")).toEqual(
+      source.rows("domain_cloud_requests"),
+    );
+    const token = (await target.issue()).token;
+    expect(await target.write("claim", input, token)).toEqual(refused);
+  }
+}, 30_000);

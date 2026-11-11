@@ -436,7 +436,8 @@ function checkServerReceipt(row: Row): void {
     const failure = validateForgeError(result);
     if (
       !failure.ok ||
-      !String(row.outcome).startsWith("LEASE_") ||
+      (!String(row.outcome).startsWith("LEASE_") &&
+        row.outcome !== "INPUT_INVALID") ||
       failure.value.code !== row.outcome
     )
       bad();
