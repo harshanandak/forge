@@ -1,9 +1,11 @@
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import {
+  LEASE_READS,
   MAX_LEASE_BYTES,
   MAX_RECORD_BYTES,
   readIssue,
+  RECORD_READS,
 } from "../../cloud/src/issue-read.ts";
 import { readOnlyStore, type DurableStorage } from "../../cloud/src/store.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
@@ -89,8 +91,8 @@ function fixture(tables = true) {
     try {
       return readIssue(
         {
-          records: readOnlyStore(storage, "state_records"),
-          leases: readOnlyStore(storage, "state_leases"),
+          records: readOnlyStore(storage, "state_records", RECORD_READS),
+          leases: readOnlyStore(storage, "state_leases", LEASE_READS),
         },
         input,
         now,

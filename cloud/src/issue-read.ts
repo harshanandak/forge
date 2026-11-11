@@ -28,6 +28,10 @@ const MODE =
 const MINTED =
   "SELECT 1 AS found FROM state_records WHERE namespace=? AND key>=? AND key<? AND CASE WHEN length(CAST(body AS BLOB)) <= ? THEN CASE WHEN json_valid(body) THEN CASE WHEN json_type(body,'$.value')='object' AND json_extract(body,'$.namespace')=namespace AND json_extract(body,'$.key')=key AND json_extract(body,'$.value.id')=substr(key,7) THEN coalesce(json_extract(body,'$.value.prefix'),'work') END END END=? LIMIT 1";
 
+/** The only statements each read-only view may run; a view refuses any other text. */
+export const RECORD_READS = [MODE, MINTED, RECORD] as const;
+export const LEASE_READS = [LEASE] as const;
+
 /** Read-only views of the two state tables; undefined when the table does not exist yet. */
 export interface IssueViews {
   readonly records: SqlDatabase | undefined;
