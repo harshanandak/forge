@@ -14,8 +14,7 @@ import { SCHEMA_DOCUMENTS } from "../../src/generated/schemas.ts";
 import type { TrackerItem } from "../../src/generated/types.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
 const NAMESPACE = "forge/work";
-/** Stored issue record bound in bytes; above the response bound so that bound can be reached. */
-export const MAX_RECORD_BYTES = 2 * 1024 * 1024;
+export const MAX_RECORD_BYTES = 2 * 1024 * 1024; // bytes; above the 1 MiB response bound so that bound can be reached
 export const MAX_LEASE_BYTES = 16 * 1024;
 const QUALIFIED = /^([a-z0-9]+(?:-[a-z0-9]+)*)-(\d+)$/i;
 const BODY = (table: string, column: string) =>
@@ -66,9 +65,8 @@ function load(
 }
 
 /**
- * The issue `input` names, as the local issue.show shows it: the stored prefix and close reason are
- * dropped, ids carry `prefix`, and revision and update time come from the record. A lease appears
- * only while it is live at `now`, and only from the lease table, never from the issue value.
+ * The issue `input` names, shaped as the local issue.show shows it: stored prefix and close reason
+ * dropped, ids carrying `prefix`. A lease appears only while live at `now`, and only from state_leases.
  */
 export function readIssue(
   views: IssueViews,

@@ -81,7 +81,6 @@ function fixture(tables = true) {
     raw(key, JSON.stringify(wrap(value, { key, ...over })), ns);
   const lease = (over: object = {}, subject = "issue:work-1", ns = NS) =>
     rawLease(subject, JSON.stringify(grant(over, subject)), ns);
-  // Every read must run only SELECTs and leave every table and row as it was.
   const read = (input: unknown = { id: "forge-1" }, prefix = "forge") => {
     const before = snapshot(),
       start = calls.length;
