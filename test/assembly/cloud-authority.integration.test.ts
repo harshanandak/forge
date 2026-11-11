@@ -73,6 +73,11 @@ const HTTP: Record<string, number> = {
   INPUT_CONFLICT: 409,
   INPUT_INVALID: 400,
   INTERNAL: 500,
+  REVISION_CONFLICT: 409,
+  LEASE_NOT_HELD: 409,
+  LEASE_STALE: 409,
+  LEASE_EXPIRED: 409,
+  AUTH_DEVICE_MISMATCH: 403,
 };
 const refusing = (code: string) =>
   fx.json(
@@ -89,7 +94,7 @@ const MANIFEST = resolve(
   "../../src/blocks/work/forge.block.json",
 );
 const READS = ["issue.show", "issue.list", "issue.ready"];
-const WRITES = ["issue.create", "issue.comment"];
+const WRITES = ["issue.create", "issue.comment", "issue.update"];
 const SERVED = [...READS, ...WRITES];
 const DECLARED = Object.keys(
   (JSON.parse(readFileSync(MANIFEST, "utf8")) as { operations: object })
@@ -231,7 +236,7 @@ test("a bound project's issue show is answered by the cloud with the stored toke
     expect(body).toMatchObject({ context: { device: { id: "dev-1" } } });
   }));
 
-test("the routing decision serves show, list, ready, create and comment, refuses every other operation of the work block by name, and leaves other blocks local", () => {
+test("the routing decision serves show, list, ready, create, comment and update, refuses every other operation of the work block by name, and leaves other blocks local", () => {
   expect(DECLARED.length).toBeGreaterThan(30);
   for (const op of SERVED) expect(cloudRoute("forge/work", op)).toBe("cloud");
   expect(cloudRoute("forge/memory", "memory.list")).toBe("local");
@@ -247,6 +252,14 @@ test("the routing decision serves show, list, ready, create and comment, refuses
 const RENAMED = yaml({ rename: { issue: "ticket" } });
 const CREATE = { title: "x", kind: "task" };
 const COMMENT = { id: "forge-1", body: "hi" };
+const UPDATE = { id: "forge-1", expectRevision: 3, title: "Renamed" };
+const UPDATED = { ...ISSUE, title: "Renamed", revision: 4 };
+const HELD = { ...LEASE, generation: 3 };
+const INPUTS: Record<string, object> = {
+  "issue.create": CREATE,
+  "issue.comment": COMMENT,
+  "issue.update": UPDATE,
+};
 for (const [source, op, input, declared, result] of [
   [WORK, "issue.create", CREATE, "issue.create", ISSUE],
   [RENAMED, "ticket.create", CREATE, "issue.create", ISSUE],
@@ -273,13 +286,19 @@ for (const [source, op, input, declared, result] of [
 
 test("every other work operation is refused by name on a bound project, with no request", () =>
   using({}, async (r) => {
-    const result = await r.assembly.catalog.invoke(
-      r.request("issue.board", {}),
-    );
-    expect(failed(result, "INPUT_INVALID")).toBe(6);
-    expect(result).toMatchObject({
-      error: { message: notServed("issue.board") },
-    });
+    const own = r.request("x", {}).context;
+    const context = { ...own, session: { id: "s1" }, leaseGeneration: 3 };
+    for (const [op, input] of [
+      ["issue.board", {}],
+      ["issue.claim", { id: "forge-1" }],
+      ["issue.close", { id: "forge-1" }],
+    ] as const) {
+      const result = await r.assembly.catalog.invoke(
+        r.request(op, input, { context }),
+      );
+      expect(failed(result, "INPUT_INVALID")).toBe(6);
+      expect(result).toMatchObject({ error: { message: notServed(op) } });
+    }
     expect(r.net.calls).toHaveLength(0);
   }));
 
@@ -315,6 +334,7 @@ for (const [code, exit] of [
 for (const [op, input] of [
   ["issue.create", CREATE],
   ["issue.comment", COMMENT],
+  ["issue.update", UPDATE],
 ] as const)
   test(`${op} as a dry run on a bound project is UNAVAILABLE and creates nothing`, () =>
     using({}, async (r) => {
@@ -328,9 +348,7 @@ for (const [op, input] of [
 test("a routed write that reaches the selector as a dry run is refused before any request, whatever the runtime's own checks did", () =>
   using({}, async (r) => {
     for (const op of WRITES) {
-      const request = r.request(op, op === "issue.create" ? CREATE : COMMENT, {
-        dryRun: true,
-      });
+      const request = r.request(op, INPUTS[op]!, { dryRun: true });
       const flight = {
         request,
         block: { manifest: { id: "forge/work" }, validate: () => true },
@@ -425,6 +443,105 @@ test("a held operation's hidden show goes to the cloud, and the operation itself
     }
     const ops = r.net.calls.map((c) => (c.body as { op: string }).op);
     expect(ops).toEqual(["issue.show", "issue.show"]);
+  }));
+
+type Rig = Awaited<ReturnType<typeof rig>>;
+/** A held write as the CLI makes it: a session, the caller's own context, and a generation only if the caller names one. */
+const holding = (r: Rig, own: object = {}) => ({
+  ...localContext(r.assembly, { kind: "agent", id: "a1" }, "s1"),
+  ...own,
+});
+const edit = (r: Rig, op: string, context: object, dryRun = false) =>
+  dispatch(r.assembly.catalog, op, UPDATE, {
+    caller: "agent",
+    context,
+    dryRun,
+  });
+const sent = (r: Rig) => r.net.calls.map((c) => (c.body as { op: string }).op);
+const live = () => answer({ ...ISSUE, lease: HELD });
+
+for (const [source, op] of [
+  [WORK, "issue.update"],
+  [RENAMED, "ticket.update"],
+] as const)
+  test(`through the assembled catalog, ${op} on a bound project takes the generation from the cloud show and is answered by the cloud as issue.update`, () =>
+    using(
+      { config: source, steps: [live, () => answer(UPDATED, "issue.update")] },
+      async (r) => {
+        const context = holding(r);
+        const done = await edit(r, op, context);
+        expect(done).toMatchObject({ ok: true, result: UPDATED });
+        expect(exitCode(done)).toBe(0);
+        expect(JSON.stringify(done)).not.toContain(TOKEN);
+        expect(sent(r)).toEqual(["issue.show", "issue.update"]);
+        expect(r.net.calls[1]!.body).toMatchObject({
+          op: "issue.update",
+          input: UPDATE,
+          context: {
+            actor: context.actor,
+            session: context.session,
+            leaseGeneration: 3,
+            device: { id: "dev-1" },
+          },
+        });
+      },
+    ));
+
+test("an explicit generation reaches the cloud unchanged, a stale one is refused there, and the CLI never reads or refreshes it", () =>
+  using({ steps: [() => refusing("LEASE_STALE")] }, async (r) => {
+    const stale = await edit(
+      r,
+      "issue.update",
+      holding(r, { leaseGeneration: 2 }),
+    );
+    expect(failed(stale, "LEASE_STALE")).toBe(4);
+    expect(sent(r)).toEqual(["issue.update"]);
+    expect(r.net.calls[0]!.body).toMatchObject({
+      context: { leaseGeneration: 2 },
+    });
+  }));
+
+test("with no live lease in the cloud show the runtime's own CONTEXT_MISSING stands, and no update request is sent", () =>
+  using({ steps: [() => answer()] }, async (r) => {
+    const result = await edit(r, "issue.update", holding(r));
+    expect(failed(result, "CONTEXT_MISSING")).toBe(6);
+    expect(sent(r)).toEqual(["issue.show"]);
+  }));
+
+for (const [code, exit] of [
+  ["REVISION_CONFLICT", 4],
+  ["LEASE_NOT_HELD", 4],
+  ["LEASE_EXPIRED", 4],
+  ["AUTH_DEVICE_MISMATCH", 1],
+] as const)
+  test(`a cloud ${code} on issue.update keeps its code and exit ${exit}, without the token`, () =>
+    using({ steps: [live, () => refusing(code)] }, async (r) => {
+      expect(failed(await edit(r, "issue.update", holding(r)), code)).toBe(
+        exit,
+      );
+      expect(sent(r)).toEqual(["issue.show", "issue.update"]);
+    }));
+
+test("a cloud issue.update result that fails TrackerItem is refused as UNAVAILABLE", () =>
+  using(
+    {
+      steps: [
+        live,
+        () => answer({ ...UPDATED, revision: TOKEN }, "issue.update"),
+      ],
+    },
+    async (r) => {
+      const result = await edit(r, "issue.update", holding(r));
+      expect(failed(result, "UNAVAILABLE")).toBe(1);
+      expect(sent(r)).toEqual(["issue.show", "issue.update"]);
+    },
+  ));
+
+test("issue.update through the CLI dispatch as a dry run is UNAVAILABLE and sends no update", () =>
+  using({ steps: [live] }, async (r) => {
+    const dry = await edit(r, "issue.update", holding(r), true);
+    expect(failed(dry, "UNAVAILABLE")).toBe(1);
+    expect(sent(r)).not.toContain("issue.update");
   }));
 
 test("an outage is UNAVAILABLE and never a local read", () =>
@@ -615,6 +732,25 @@ test("an unbound project runs locally, with no cloud request and no credential w
       { requestId: "r-2" },
     );
     expect(await r.assembly.catalog.invoke(note)).toMatchObject({ ok: true });
+    const own = holding(r);
+    const call = (op: string, input: object) =>
+      dispatch(r.assembly.catalog, op, input, {
+        caller: "agent",
+        context: own,
+      });
+    expect(await call("issue.claim", { id })).toMatchObject({ ok: true });
+    const { revision } = (
+      (await call("issue.show", { id })) as unknown as {
+        result: { revision: number };
+      }
+    ).result;
+    const renamed = await call("issue.update", {
+      id,
+      expectRevision: revision,
+      title: "Renamed",
+    });
+    expect(renamed).toMatchObject({ ok: true, result: { title: "Renamed" } });
+    expect(exitCode(renamed)).toBe(0);
     expect(r.net.calls).toHaveLength(0);
     expect(existsSync(join(r.s.home, ".forge"))).toBe(false);
   }));
