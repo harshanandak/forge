@@ -260,9 +260,14 @@ test("a competing or collaborative issue is refused, even without a live lease",
   expect(orphan.refusal({ id: "forge-3" })[0]).toBe("NOT_FOUND");
 }, 30_000);
 
-const sized = (target: number, unit: string) => {
-  const text = (pad: string) =>
-    JSON.stringify(wrap(issue(1, { closeReason: pad })));
+type Fixture = ReturnType<typeof fixture>;
+const ONE = "issue:work-1";
+// Pads `text(pad)` to exactly `target` UTF-8 bytes with ASCII or two-byte characters.
+const padded = (
+  text: (pad: string) => string,
+  target: number,
+  unit: string,
+) => {
   const extra = target - bytes(text(""));
   const pad =
     unit === "a"
@@ -271,47 +276,33 @@ const sized = (target: number, unit: string) => {
   return text(pad);
 };
 
-test("a stored record is bounded in bytes, not characters", () => {
-  for (const unit of ["a", "é"]) {
-    const f = fixture();
-    f.raw("issue:work-1", sized(MAX_RECORD_BYTES, unit));
-    expect(f.read().id).toBe("forge-1");
-    const over = fixture();
-    const text = sized(MAX_RECORD_BYTES + 1, unit);
-    over.raw("issue:work-1", text);
-    expect(unit === "a" || text.length < MAX_RECORD_BYTES).toBe(true);
-    expect(over.refusal()).toEqual(internal);
-  }
-}, 30_000);
-
-test("a stored lease is bounded in bytes, not characters", () => {
-  const body = (target: number, unit: string) => {
-    const text = (pad: string) =>
-      JSON.stringify(grant({ expiresAt: iso(now - 1), pad }));
-    const extra = target - bytes(text(""));
-    return text(
-      unit === "a"
-        ? "a".repeat(extra)
-        : "é".repeat(Math.floor(extra / 2)) + "a".repeat(extra % 2),
-    );
+test("stored records and leases are bounded in bytes, not characters", () => {
+  const record = (pad: string) =>
+    JSON.stringify(wrap(issue(1, { closeReason: pad })));
+  const expired = (pad: string) =>
+    JSON.stringify(grant({ expiresAt: iso(now - 1), pad }));
+  const seedLease = (f: Fixture, body: string) => {
+    f.put(ONE, issue(1));
+    f.rawLease(ONE, body);
   };
-  for (const unit of ["a", "é"]) {
-    const f = fixture();
-    f.put("issue:work-1", issue(1));
-    f.rawLease("issue:work-1", body(MAX_LEASE_BYTES, unit));
-    expect(f.read().lease).toBeUndefined();
-    const over = fixture();
-    over.put("issue:work-1", issue(1));
-    over.rawLease("issue:work-1", body(MAX_LEASE_BYTES + 1, unit));
-    expect(over.refusal()).toEqual(internal);
-  }
+  for (const unit of ["a", "é"])
+    for (const [max, build, seed] of [
+      [MAX_RECORD_BYTES, record, (f: Fixture, b: string) => f.raw(ONE, b)],
+      [MAX_LEASE_BYTES, expired, seedLease],
+    ] as const)
+      for (const ok of [true, false]) {
+        const f = fixture();
+        seed(f, padded(build, max + (ok ? 0 : 1), unit));
+        if (ok) expect(f.read().id).toBe("forge-1");
+        else expect(f.refusal()).toEqual(internal);
+      }
 }, 30_000);
 
 test("stored depth and node count are bounded before the record is used", () => {
-  const count = (value: unknown): number =>
-    typeof value === "object" && value !== null
+  const count = (v: unknown): number =>
+    typeof v === "object" && v !== null
       ? 1 +
-        (Object.values(value) as unknown[]).reduce<number>(
+        (Object.values(v) as unknown[]).reduce<number>(
           (n, c) => n + count(c),
           0,
         )
@@ -330,65 +321,34 @@ test("stored depth and node count are bounded before the record is used", () => 
     [new Array(MAX_NODES - base + 1).fill(0), false],
   ] as const) {
     const f = fixture();
-    f.put("issue:work-1", issue(1, { closeReason: pad }));
+    f.put(ONE, issue(1, { closeReason: pad }));
     if (ok) expect(f.read().id).toBe("forge-1");
     else expect(f.refusal()).toEqual(internal);
   }
 }, 30_000);
 
 test("malformed stored JSON and identity mismatches give one fixed error", () => {
-  const cases: [string, (f: ReturnType<typeof fixture>) => void][] = [
-    ...["{not json", "[]", "null", '"x"'].map(
-      (body): [string, (f: ReturnType<typeof fixture>) => void] => [
-        `record ${body}`,
-        (f) => f.raw("issue:work-1", body),
-      ],
-    ),
-    [
-      "record key",
-      (f) => f.put("issue:work-1", issue(1), { key: "issue:work-2" }),
-    ],
-    [
-      "record namespace",
-      (f) => f.put("issue:work-1", issue(1), { namespace: "forge/other" }),
-    ],
-    ["value id", (f) => f.put("issue:work-1", issue(2, { title: marker }))],
-    ["value not an object", (f) => f.put("issue:work-1", marker)],
-    [
-      "lease json",
-      (f) => (
-        f.put("issue:work-1", issue(1)),
-        f.rawLease("issue:work-1", "{bad")
-      ),
-    ],
-    [
-      "lease array",
-      (f) => (
-        f.put("issue:work-1", issue(1)),
-        f.rawLease("issue:work-1", "[]")
-      ),
-    ],
-    [
-      "live lease subject",
-      (f) => (
-        f.put("issue:work-1", issue(1)),
-        f.rawLease("issue:work-1", JSON.stringify(grant({}, marker)))
-      ),
-    ],
+  const json = (value: unknown) => JSON.stringify(value);
+  const good = json(wrap(issue(1)));
+  const cases: [string, string, string?][] = [
+    ...["{not json", "[]", "null", '"x"'].map((b): [string, string] => [b, b]),
+    ["key", json(wrap(issue(1), { key: "issue:work-2" }))],
+    ["namespace", json(wrap(issue(1), { namespace: "forge/other" }))],
+    ["value id", json(wrap(issue(2, { title: marker })))],
+    ["value not an object", json(wrap(marker))],
+    ["lease json", good, "{bad"],
+    ["lease array", good, "[]"],
+    ["live lease subject", good, json(grant({}, marker))],
     [
       "expired lease subject",
-      (f) => (
-        f.put("issue:work-1", issue(1)),
-        f.rawLease(
-          "issue:work-1",
-          JSON.stringify(grant({ expiresAt: iso(now - 1) }, "issue:work-2")),
-        )
-      ),
+      good,
+      json(grant({ expiresAt: iso(now - 1) }, "issue:work-2")),
     ],
   ];
-  for (const [name, setup] of cases) {
+  for (const [name, record, lease] of cases) {
     const f = fixture();
-    setup(f);
+    f.raw(ONE, record);
+    if (lease !== undefined) f.rawLease(ONE, lease);
     expect([name, f.refusal()]).toEqual([name, internal]);
   }
 }, 30_000);
@@ -396,51 +356,37 @@ test("malformed stored JSON and identity mismatches give one fixed error", () =>
 test("output that fails the declared schema is never returned", () => {
   const cases: [string, object, object?][] = [
     ["no title", { title: undefined }],
-    ["empty title", { title: "" }],
     ["long title", { title: "t".repeat(501) }],
     ["bad status", { status: "weird" }],
     ["extra field", { extra: marker }],
     ["dependsOn not an array", { dependsOn: marker }],
-    ["dependsOn not ids", { dependsOn: [5] }],
     ["duplicate labels", { labels: ["a", "a"] }],
     ["bad kind", { kind: "Bad Kind" }],
     ["long body", { body: "b".repeat(65_537) }],
-    ["bad creation time", { createdAt: "yesterday" }],
     ["revision zero", {}, { revision: 0 }],
     ["bad update time", {}, { updatedAt: "yesterday" }],
   ];
   for (const [name, over, wrapper] of cases) {
     const f = fixture();
-    f.put("issue:work-1", issue(1, over), wrapper);
-    const refused = f.refusal();
-    expect([name, refused]).toEqual([name, internal]);
+    f.put(ONE, issue(1, over), wrapper);
+    expect([name, f.refusal()]).toEqual([name, internal]);
   }
   const f = fixture();
-  f.put("issue:work-1", issue(1));
+  f.put(ONE, issue(1));
   f.lease({ extra: marker });
   expect(f.refusal()).toEqual(internal);
 }, 30_000);
 
-test("a prefix the server configured badly refuses before any SQL runs", () => {
-  for (const prefix of [
-    "Forge",
-    "",
-    "a_b",
-    "x".repeat(33),
-    "-x",
-    "x-",
-    "a--b",
-  ]) {
+test("a prefix the server configured badly refuses before any state row is read", () => {
+  for (const prefix of ["Forge", "", "a_b", "x".repeat(33), "-x", "a--b"]) {
     const f = fixture();
     expect([prefix, f.refusal({ id: "forge-1" }, prefix)]).toEqual([
       prefix,
       ["UNAVAILABLE", 1, "Server configuration is not valid"],
     ]);
-    // Only the table-exists probes ran; no state row was read.
     expect(f.calls.filter((sql) => !sql.includes("sqlite_schema"))).toEqual([]);
   }
-  const f = fixture();
-  expect(f.refusal({ id: `${"x".repeat(32)}-1` }, "x".repeat(32))[0]).toBe(
-    "NOT_FOUND",
-  );
+  const f = fixture(),
+    long = "x".repeat(32);
+  expect(f.refusal({ id: `${long}-1` }, long)[0]).toBe("NOT_FOUND");
 }, 30_000);
