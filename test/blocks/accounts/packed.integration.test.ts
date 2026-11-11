@@ -1263,3 +1263,229 @@ test("installed accounts: a named-login use still records the unpushed-commit an
     rmSync(root, { recursive: true, force: true });
   }
 }, 120_000);
+
+type ApplySnapshot = Record<string, string>;
+function interruptedApply() {
+  const fixture = setup();
+  const { home, cli, clone } = fixture;
+  const repo = clone("uninterrupted");
+  const approval = { quote: "yes", source: "t3:fixture/message:recovery" };
+  expect(cli(repo, "use", { login: "alice", approval }).ok).toBe(true);
+  const paths = [
+    "forge/accounts.gitconfig",
+    "forge/accounts.applied.json",
+    "config",
+  ];
+  const complete: ApplySnapshot = Object.fromEntries(
+    paths.map((path) => [path, readFileSync(join(repo, ".git", path), "utf8")]),
+  );
+  const device = join(home, ".forge/accounts");
+  const bindings = readFileSync(join(device, "bindings.json"), "utf8");
+  const approvedAudit =
+    readFileSync(join(device, "audit.jsonl"), "utf8")
+      .split("\n")
+      .filter((line) => line && (JSON.parse(line) as Audit).kind !== "apply")
+      .join("\n") + "\n";
+  function stage(name: string, count: number) {
+    writeFileSync(join(device, "bindings.json"), bindings);
+    writeFileSync(join(device, "audit.jsonl"), approvedAudit);
+    const path = clone(name);
+    mkdirSync(join(path, ".git/forge"), { recursive: true });
+    for (const file of paths.slice(0, count))
+      writeFileSync(join(path, ".git", file), complete[file]!);
+    return path;
+  }
+  function snapshot(path: string) {
+    return [
+      ...paths.map((file) => join(path, ".git", file)),
+      ...["accounts.json", "bindings.json", "audit.jsonl"].map((file) =>
+        join(device, file),
+      ),
+    ].map((file) => (existsSync(file) ? readFileSync(file, "utf8") : null));
+  }
+  return { ...fixture, approval, paths, complete, device, stage, snapshot };
+}
+
+for (const count of [1, 2, 3]) {
+  for (const verb of ["check", "plan", "use"]) {
+    test(`installed accounts: ${verb} handles interrupted apply after write ${count}`, () => {
+      const f = interruptedApply();
+      try {
+        const repo = f.stage("interrupted", count);
+        const input =
+          verb === "use" ? { login: "alice", approval: f.approval } : {};
+        if (verb === "check" && count < 3) {
+          const before = f.snapshot(repo);
+          expect(f.cli(repo, "check")).toMatchObject({
+            ok: false,
+            status: "FAIL",
+            error: {
+              code: "ACCOUNT_INTEGRITY",
+              message:
+                "Owned include has no matching device binding or clone record",
+              repair: "Run forge accounts plan to finish the interrupted apply",
+            },
+          });
+          expect(f.snapshot(repo)).toEqual(before);
+        }
+        const recovered = f.cli(repo, verb === "check" ? "plan" : verb, input);
+        expect(recovered, JSON.stringify(recovered)).toMatchObject({
+          ok: true,
+          status: "OK",
+        });
+        for (const path of f.paths)
+          expect(readFileSync(join(repo, ".git", path), "utf8")).toBe(
+            f.complete[path]!,
+          );
+        expect(
+          f.readAudit().filter((row) => row.kind === "apply"),
+        ).toHaveLength(count === 3 ? 0 : 1);
+        const after = f.snapshot(repo);
+        expect(f.cli(repo, verb, input).ok).toBe(true);
+        expect(f.snapshot(repo)).toEqual(after);
+      } finally {
+        rmSync(f.root, { recursive: true, force: true });
+      }
+    }, 120_000);
+  }
+}
+
+for (const kind of [
+  "changed include",
+  "unowned include",
+  "edited record",
+  "record only",
+  "no binding",
+  "declined binding",
+  "different config include",
+  "config only",
+]) {
+  test(`installed accounts: interrupted apply refuses ${kind} without changing files`, () => {
+    const f = interruptedApply();
+    try {
+      const repo = f.stage("refused", kind === "edited record" ? 2 : 1);
+      const owned = join(repo, ".git/forge/accounts.gitconfig");
+      const applied = join(repo, ".git/forge/accounts.applied.json");
+      const config = join(repo, ".git/config");
+      if (kind === "changed include")
+        writeFileSync(owned, f.complete[f.paths[0]!]! + "x");
+      if (kind === "unowned include")
+        writeFileSync(owned, "[user]\nname = other\n");
+      if (kind === "edited record")
+        writeFileSync(
+          applied,
+          f.complete[f.paths[1]!]!.replace(
+            '"includeHash":"',
+            '"includeHash":"x',
+          ),
+        );
+      if (kind === "record only") {
+        rmSync(owned);
+        writeFileSync(applied, f.complete[f.paths[1]!]!);
+      }
+      if (kind === "no binding" || kind === "declined binding")
+        writeFileSync(
+          join(f.device, "bindings.json"),
+          kind === "no binding"
+            ? "{}"
+            : JSON.stringify({
+                "github.com/alice/app": {
+                  declined: true,
+                  appliedFrom: "declined",
+                },
+              }),
+        );
+      if (kind === "different config include")
+        writeFileSync(
+          config,
+          f.complete.config!.replace(
+            'path = "forge/accounts.gitconfig"',
+            'path = "elsewhere.gitconfig"',
+          ),
+        );
+      if (kind === "config only") {
+        rmSync(owned);
+        writeFileSync(config, f.complete.config!);
+      }
+      const before = f.snapshot(repo);
+      for (const verb of ["check", "plan", "use"]) {
+        const result = f.cli(
+          repo,
+          verb,
+          verb === "use" ? { login: "alice", approval: f.approval } : {},
+        );
+        expect(result).toMatchObject({
+          status: "FAIL",
+          ok: false,
+          error: {
+            code: "ACCOUNT_INTEGRITY",
+            message:
+              "Owned include has no matching device binding or clone record",
+          },
+        });
+        expect(f.snapshot(repo)).toEqual(before);
+        expect(result.error).not.toHaveProperty("repair");
+      }
+    } finally {
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  }, 120_000);
+}
+
+for (const owner of ["dead", "live device", "live clone"]) {
+  test(`installed accounts: interrupted apply handles ${owner} lock owners`, () => {
+    const f = interruptedApply();
+    try {
+      const repo = f.stage("locked", 1);
+      const exited = f.run(f.node, ["-e", "process.exit(0)"], repo);
+      expect(exited.status).toBe(0);
+      const locks = [
+        join(f.device, "lock"),
+        join(repo, ".git/forge/accounts.apply.lock"),
+      ];
+      const markers = locks.map((path, i) => {
+        const pid =
+          owner === (i === 0 ? "live device" : "live clone")
+            ? process.pid
+            : exited.pid;
+        const marker = `owner-${pid}-00000000-0000-4000-8000-000000000000`;
+        mkdirSync(path, { mode: 0o700 });
+        writeFileSync(join(path, marker), "{}", { mode: 0o600 });
+        return marker;
+      });
+      const before = f.snapshot(repo);
+      const result = f.cli(repo, "plan");
+      expect(result.ok, JSON.stringify(result)).toBe(owner === "dead");
+      if (owner === "dead") {
+        for (const path of f.paths)
+          expect(readFileSync(join(repo, ".git", path), "utf8")).toBe(
+            f.complete[path]!,
+          );
+        expect(
+          f.readAudit().filter((row) => row.kind === "apply"),
+        ).toHaveLength(1);
+        expect(f.cli(repo, "check").ok).toBe(true);
+        for (const lock of locks) expect(existsSync(lock)).toBe(false);
+      } else {
+        expect(f.snapshot(repo)).toEqual(before);
+        const i = owner === "live device" ? 0 : 1;
+        expect(readdirSync(locks[i]!)).toEqual([markers[i]!]);
+      }
+    } finally {
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  }, 120_000);
+}
+
+test("installed accounts: another clone's apply audit does not suppress recovery", () => {
+  const f = interruptedApply();
+  try {
+    const repo = f.stage("interrupted", 1);
+    expect(f.cli(f.clone("completed-other"), "plan").ok).toBe(true);
+    expect(f.readAudit().filter((row) => row.kind === "apply")).toHaveLength(1);
+    expect(f.cli(repo, "plan").ok).toBe(true);
+    expect(f.readAudit().filter((row) => row.kind === "apply")).toHaveLength(2);
+  } finally {
+    rmSync(f.root, { recursive: true, force: true });
+  }
+}, 120_000);
