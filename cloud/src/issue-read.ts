@@ -16,6 +16,8 @@ import type { SqlDatabase } from "../../src/ports/store.ts";
 const NAMESPACE = "forge/work";
 export const MAX_RECORD_BYTES = 2 * 1024 * 1024; // bytes; above the 1 MiB response bound so that bound can be reached
 export const MAX_LEASE_BYTES = 16 * 1024;
+export const MAX_DEPTH = 8;
+export const MAX_NODES = 1024;
 const QUALIFIED = /^([a-z0-9]+(?:-[a-z0-9]+)*)-(\d+)$/i;
 const BODY = (table: string, column: string) =>
   `SELECT CASE WHEN length(CAST(body AS BLOB)) <= ? THEN body END AS body FROM ${table} WHERE namespace=? AND ${column}=?`;
