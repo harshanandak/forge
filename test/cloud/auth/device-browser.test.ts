@@ -1,0 +1,698 @@
+import { expect, mock, spyOn, test } from "bun:test";
+import { Database } from "bun:sqlite";
+import { LOGIN_TTL_MS } from "../../../cloud/src/auth/project-login.ts";
+import type {
+  ClerkResult,
+  ClerkUpstream,
+} from "../../../cloud/src/adapters/workers-oauth/clerk/upstream.ts";
+import { Project } from "../../../cloud/src/project.ts";
+import type { DurableStorage } from "../../../cloud/src/store.ts";
+import { createWorker } from "../../../cloud/src/worker.ts";
+import type { IdentityClaims } from "../../../src/ports/identity.ts";
+import { testIdentityVerifier } from "../../contract/lib/identity-verifier.ts";
+
+if (!("timingSafeEqual" in crypto.subtle))
+  Object.defineProperty(crypto.subtle, "timingSafeEqual", {
+    value: crypto.timingSafeEqual.bind(crypto),
+  });
+await mock.module("cloudflare:workers", () => ({ WorkerEntrypoint: class {} }));
+const { createConfiguredWorker } =
+  await import("../../../cloud/src/adapters/workers-oauth/compose.ts");
+
+const start = 1_800_000_000_000,
+  day = 86_400_000;
+const ORIGIN = "https://w.example";
+const COOKIE = "__Host-forge_device";
+const vars: Record<string, string> = {
+  FORGE_CLOUD_PROJECT: "p",
+  DEVICE_LOGIN_HMAC_KEY: Buffer.alloc(32, 7).toString("base64url"),
+  CLERK_ISSUER: "https://clerk.example",
+  FORGE_OWNER_SUBJECT: "user_Owner1",
+  CLERK_CLIENT_ID: "client",
+  CLERK_REDIRECT_URI: `${ORIGIN}/callback`,
+  FORGE_API_RESOURCE: ORIGIN,
+  OAUTH_TIMEOUT_MS: "5000",
+  ADMIN_TOKEN: "admin-secret",
+};
+const secret = /^[A-Za-z0-9_-]{43}$/;
+interface Body {
+  ok?: boolean;
+  error?: string;
+  user_code: string;
+  device_code: string;
+  credential: string;
+}
+interface Reply {
+  status: number;
+  text: string;
+  headers: Headers;
+}
+interface Jar {
+  cookie: string;
+  csrf: string;
+}
+interface Init {
+  form?: Record<string, string>;
+  json?: unknown;
+  cookie?: string;
+  origin?: string | null;
+  ip?: string | null;
+  headers?: Record<string, string>;
+}
+type Fetcher = { fetch: (request: Request, env: never) => Promise<Response> };
+const body = (reply: Reply) => JSON.parse(reply.text) as Body;
+/** The outcome word a page or a JSON refusal carries. */
+const outcome = (reply: Reply): string =>
+  /<code class="result">([^<]+)<\/code>/.exec(reply.text)?.[1] ??
+  (JSON.parse(reply.text) as { error: { code: string } }).error.code;
+const hex = async (value: string) =>
+  Array.from(
+    new Uint8Array(
+      await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)),
+    ),
+    (byte) => byte.toString(16).padStart(2, "0"),
+  ).join("");
+
+function fixture(
+  env: Record<string, string> = vars,
+  extra: Record<string, unknown> = {},
+) {
+  let t = start;
+  spyOn(Date, "now").mockImplementation(() => t);
+  const db = new Database(":memory:"),
+    values = new Map<string, unknown>();
+  const storage: DurableStorage = {
+    sql: {
+      exec: (sql, ...bindings) => {
+        const rows = db
+          .query(sql)
+          .all(
+            ...bindings.map((value) =>
+              value instanceof ArrayBuffer ? new Uint8Array(value) : value,
+            ),
+          ) as Record<string, unknown>[];
+        return { toArray: () => rows };
+      },
+    },
+    transactionSync: (run) => db.transaction(run)(),
+    get: (key) => Promise.resolve(values.get(key)),
+    put: (key, value) => {
+      values.set(key, value);
+      return Promise.resolve();
+    },
+    delete: (key) => Promise.resolve(values.delete(key)),
+  };
+  const seen = {
+    begun: [] as { state: string; verifier?: string | undefined }[],
+    verified: [] as { url: string; verifier?: string | undefined }[],
+  };
+  const claims = new Map<string, number>();
+  // Every identity is built at the moment of use, relative to the fixture clock.
+  const scenario = (name: string): IdentityClaims => ({
+    issuer: "https://clerk.example",
+    subject: "user_Owner1",
+    audience: "client",
+    expiresAt: name === "expired" ? t - 1 : t + 3_600_000,
+    authenticatedAt: t - 1_000,
+    ...(name === "other-subject" ? { subject: "user_Other2" } : {}),
+    ...(name === "other-issuer" ? { issuer: "https://other.example" } : {}),
+    ...(name === "wrong-audience" ? { audience: "elsewhere" } : {}),
+  });
+  const upstream: ClerkUpstream = {
+    begin: (state, verifier) => {
+      seen.begun.push({ state, verifier });
+      return Promise.resolve(
+        `https://clerk.example/oauth/authorize?s=${state}`,
+      );
+    },
+    verify: async (request, now, verifier) => {
+      seen.verified.push({ url: request.url, verifier });
+      const proof = new URL(request.url).searchParams.get("proof") ?? "";
+      const known =
+        proof === "forged" ? [] : ([[proof, scenario(proof)]] as const);
+      const result = await testIdentityVerifier(new Map(known)).verify(
+        proof,
+        "client",
+        now,
+      );
+      return {
+        ...result,
+        ...(result.ok ? { verifiedAudience: result.identity.audience } : {}),
+      };
+    },
+  };
+  const redemption = {
+    claimOnce: (hash: string, until: number) => {
+      if ((claims.get(hash) ?? 0) > t) return Promise.resolve(false);
+      claims.set(hash, until);
+      return Promise.resolve(true);
+    },
+  };
+  const project = new Project({ storage }, env, { upstream, redemption });
+  const reached: unknown[] = [];
+  const bindings = {
+    ...env,
+    ...extra,
+    PROJECTS: {
+      idFromName: (name: string) => name,
+      get: (id: unknown) => {
+        reached.push(id);
+        return project;
+      },
+    },
+  };
+  let worker: Fetcher = createWorker();
+  async function send(path: string, init: Init = {}): Promise<Reply> {
+    const method = init.form || init.json !== undefined ? "POST" : "GET";
+    const headers: Record<string, string> = { ...init.headers };
+    if (init.ip !== null)
+      headers["CF-Connecting-IP"] = init.ip ?? "203.0.113.1";
+    if (method === "POST" && init.origin !== null)
+      headers.Origin = init.origin ?? ORIGIN;
+    if (init.cookie) headers.Cookie = init.cookie;
+    if (init.form)
+      headers["Content-Type"] = "application/x-www-form-urlencoded";
+    const payload = init.form
+      ? new URLSearchParams(init.form).toString()
+      : init.json === undefined
+        ? undefined
+        : JSON.stringify(init.json);
+    const response = await worker.fetch(
+      new Request(`${ORIGIN}${path}`, {
+        method,
+        headers,
+        ...(payload === undefined ? {} : { body: payload }),
+      }),
+      bindings as never,
+    );
+    return {
+      status: response.status,
+      text: await response.text(),
+      headers: response.headers,
+    };
+  }
+  const rows = (sql: string) =>
+    db.query(sql).all() as Record<string, unknown>[];
+  const begin = (device = "laptop-1", ip = "203.0.113.1") =>
+    send("/p/p/loginstart", { json: { device }, ip });
+  const open = async (): Promise<Jar & { page: Reply }> => {
+    const page = await send("/device");
+    const csrf =
+      /__Host-forge_device=([^;]+)/.exec(
+        page.headers.get("set-cookie") ?? "",
+      )?.[1] ?? "";
+    return { cookie: `${COOKIE}=${csrf}`, csrf, page };
+  };
+  const preview = (code: string, jar: Jar, ip = "203.0.113.1") =>
+    send("/device", { form: { csrf: jar.csrf, code }, cookie: jar.cookie, ip });
+  const decide = (
+    action: "approve" | "deny",
+    code: string,
+    jar: Jar,
+    ip = "203.0.113.1",
+  ) =>
+    send(`/device/${action}`, {
+      form: { csrf: jar.csrf, code },
+      cookie: jar.cookie,
+      ip,
+    });
+  const stateOf = (reply: Reply) =>
+    new URL(
+      reply.headers.get("location") ?? "https://none.example/",
+    ).searchParams.get("s") ?? "";
+  const callback = (state: string, proof: string, cookie?: string) =>
+    send(
+      `/callback?${new URLSearchParams({ state, code: "clerk-code", proof })}`,
+      cookie === undefined ? {} : { cookie },
+    );
+  // One whole browser approval up to the Clerk redirect; `done` returns from Clerk.
+  async function through(
+    action: "approve" | "deny",
+    proof: string,
+    ip = "203.0.113.1",
+  ) {
+    const login = body(await begin("laptop-1", ip));
+    const jar = await open();
+    const decision = await decide(action, login.user_code, jar, ip);
+    const state = stateOf(decision);
+    return {
+      login,
+      jar,
+      decision,
+      state,
+      done: () => callback(state, proof, jar.cookie),
+    };
+  }
+  const poll = (device_code: string) =>
+    send("/p/p/loginpoll", { json: { device_code } });
+  return {
+    send,
+    rows,
+    begin,
+    open,
+    preview,
+    decide,
+    stateOf,
+    callback,
+    through,
+    poll,
+    seen,
+    claims,
+    reached,
+    now: () => t,
+    advance: (ms: number) => {
+      t += ms;
+    },
+    useWorker: (next: Fetcher) => {
+      worker = next;
+    },
+    upstream,
+    admin: { authorization: `Bearer ${env.ADMIN_TOKEN}` },
+    provision: () =>
+      send("/p/p/devices", {
+        json: { device: "seed", ttlMs: day },
+        headers: { authorization: `Bearer ${env.ADMIN_TOKEN}` },
+      }),
+    tokens: () =>
+      Number(rows("SELECT COUNT(*) AS n FROM domain_cloud_tokens")[0]!.n),
+    pending: async (login: Body) => {
+      const reply = await poll(login.device_code);
+      return [reply.status, body(reply).error];
+    },
+  };
+}
+
+test("GET /device serves a fixed page and a csrf cookie, with no secret in the URL", async () => {
+  const f = fixture();
+  await f.provision();
+  const jar = await f.open();
+  expect(jar.page.status).toBe(200);
+  expect(jar.csrf).toMatch(secret);
+  const cookie = jar.page.headers.get("set-cookie")!;
+  for (const part of ["Secure", "HttpOnly", "SameSite=Lax", "Path=/"])
+    expect(cookie).toContain(part);
+  expect(cookie).not.toContain("Domain");
+  const headers = jar.page.headers;
+  expect([
+    headers.get("cache-control"),
+    headers.get("x-frame-options"),
+    headers.get("referrer-policy"),
+  ]).toEqual(["no-store", "DENY", "no-referrer"]);
+  expect(headers.get("content-security-policy")).toContain(
+    "frame-ancestors 'none'",
+  );
+  expect(jar.page.text).toContain(`name="csrf" value="${jar.csrf}"`);
+  expect(jar.page.text).toContain('action="/device"');
+  const prefilled = await f.send("/device?code=BCDF-GHJK");
+  expect(prefilled.text).not.toContain("BCDF-GHJK");
+}, 30_000);
+
+test("the device routes need configuration and a provisioned project", async () => {
+  const lacking = fixture({ ...vars, DEVICE_LOGIN_HMAC_KEY: "" });
+  const gap = await lacking.send("/device");
+  expect([gap.status, outcome(gap)]).toEqual([503, "AUTH_CONFIG_UNAVAILABLE"]);
+  const bare = fixture();
+  const early = await bare.send("/device");
+  expect([early.status, outcome(early)]).toEqual([403, "AUTH_FORBIDDEN"]);
+  const noRedirect = { ...vars, CLERK_REDIRECT_URI: "" };
+  const f = fixture(noRedirect);
+  await f.provision();
+  const login = body(await f.begin());
+  const jar = await f.open();
+  const refused = await f.decide("approve", login.user_code, jar);
+  expect([refused.status, outcome(refused)]).toEqual([
+    503,
+    "AUTH_CONFIG_UNAVAILABLE",
+  ]);
+  expect(f.seen.begun).toEqual([]);
+  expect(
+    String(f.rows("SELECT state FROM domain_cloud_login")[0]!.state),
+  ).not.toContain("verifier");
+}, 30_000);
+
+test("a preview shows the project and device, grants nothing and needs a same-origin csrf proof", async () => {
+  const f = fixture();
+  await f.provision();
+  const login = body(await f.begin());
+  const jar = await f.open();
+  const shown = await f.preview(login.user_code, jar);
+  expect(shown.status).toBe(200);
+  for (const part of [
+    "<code>p</code>",
+    "<code>laptop-1</code>",
+    'action="/device/approve"',
+    'action="/device/deny"',
+  ])
+    expect(shown.text).toContain(part);
+  expect(shown.text).not.toContain(login.device_code);
+  expect((await f.preview(login.user_code.toLowerCase(), jar)).status).toBe(
+    200,
+  );
+  expect(await f.pending(login)).toEqual([400, "authorization_pending"]);
+  expect([f.tokens(), f.seen.begun.length]).toEqual([1, 0]);
+  const bad: [string, Parameters<typeof f.send>[1]][] = [
+    ["no cookie", { form: { csrf: jar.csrf, code: login.user_code } }],
+    [
+      "other cookie",
+      {
+        form: { csrf: jar.csrf, code: login.user_code },
+        cookie: `${COOKIE}=${"x".repeat(43)}`,
+      },
+    ],
+    ["no field", { form: { code: login.user_code }, cookie: jar.cookie }],
+    [
+      "no origin",
+      {
+        form: { csrf: jar.csrf, code: login.user_code },
+        cookie: jar.cookie,
+        origin: null,
+      },
+    ],
+    [
+      "foreign origin",
+      {
+        form: { csrf: jar.csrf, code: login.user_code },
+        cookie: jar.cookie,
+        origin: "https://evil.example",
+      },
+    ],
+  ];
+  for (const [, init] of bad) {
+    const refused = await f.send("/device", init);
+    expect([refused.status, outcome(refused)]).toEqual([
+      400,
+      "invalid_request",
+    ]);
+    const route = await f.send("/device/approve", init);
+    expect([route.status, outcome(route)]).toEqual([400, "invalid_request"]);
+  }
+  expect(f.seen.begun).toEqual([]);
+}, 30_000);
+
+test("missing, consumed and malformed codes get one generic answer", async () => {
+  const f = fixture();
+  await f.provision();
+  const jar = await f.open();
+  const flow = await f.through("approve", "owner");
+  expect((await flow.done()).status).toBe(200);
+  const answers = [
+    await f.preview("BBBB-BBBB", jar),
+    await f.preview("not a code", jar),
+    await f.preview(flow.login.user_code, jar),
+  ];
+  expect(answers.map((reply) => [reply.status, outcome(reply)])).toEqual([
+    [400, "invalid_code"],
+    [400, "invalid_code"],
+    [400, "invalid_code"],
+  ]);
+  expect(new Set(answers.map((reply) => reply.text)).size).toBe(1);
+}, 30_000);
+
+test("failed previews are limited to five per address and thirty per project in a minute", async () => {
+  const f = fixture();
+  await f.provision();
+  const login = body(await f.begin());
+  const jar = await f.open();
+  for (let n = 0; n < 5; n++)
+    expect((await f.preview("BBBB-BBBB", jar)).status).toBe(400);
+  const sixth = await f.preview("BBBB-BBBB", jar);
+  expect([sixth.status, outcome(sixth)]).toEqual([429, "rate_limited"]);
+  expect((await f.preview(login.user_code, jar)).status).toBe(429);
+  expect((await f.preview(login.user_code, jar, "203.0.113.9")).status).toBe(
+    200,
+  );
+  f.advance(59_999);
+  expect((await f.preview(login.user_code, jar)).status).toBe(429);
+  f.advance(1);
+  expect((await f.preview(login.user_code, jar)).status).toBe(200);
+  const refused = await f.send("/device", {
+    form: { csrf: jar.csrf, code: login.user_code },
+    cookie: jar.cookie,
+    ip: null,
+  });
+  expect([refused.status, outcome(refused)]).toEqual([403, "AUTH_FORBIDDEN"]);
+}, 30_000);
+
+test("thirty failed previews from different addresses close the project for a minute", async () => {
+  const f = fixture();
+  await f.provision();
+  const login = body(await f.begin());
+  const jar = await f.open();
+  for (let n = 0; n < 30; n++)
+    expect((await f.preview("BBBB-BBBB", jar, `198.51.100.${n}`)).status).toBe(
+      400,
+    );
+  const next = await f.preview("BBBB-BBBB", jar, "198.51.101.1");
+  expect([next.status, outcome(next)]).toEqual([429, "rate_limited"]);
+  expect((await f.preview(login.user_code, jar, "198.51.101.2")).status).toBe(
+    429,
+  );
+  f.advance(60_000);
+  expect((await f.preview(login.user_code, jar, "198.51.101.2")).status).toBe(
+    200,
+  );
+}, 30_000);
+
+test("approve and deny redirect to Clerk and keep only a hash of the state", async () => {
+  const f = fixture();
+  await f.provision();
+  const flow = await f.through("approve", "owner");
+  expect(flow.decision.status).toBe(302);
+  expect(flow.decision.headers.get("cache-control")).toBe("no-store");
+  const target = new URL(flow.decision.headers.get("location")!);
+  expect(target.origin + target.pathname).toBe(
+    "https://clerk.example/oauth/authorize",
+  );
+  expect(flow.state.startsWith("forge-device.")).toBe(true);
+  expect(f.seen.begun).toHaveLength(1);
+  expect(f.seen.begun[0]!.state).toBe(flow.state);
+  expect(f.seen.begun[0]!.verifier).toMatch(secret);
+  const stored = String(
+    f.rows("SELECT state FROM domain_cloud_login")[0]!.state,
+  );
+  expect(stored).not.toContain(flow.state);
+  expect(stored).toContain(f.seen.begun[0]!.verifier!);
+  expect(await f.pending(flow.login)).toEqual([400, "authorization_pending"]);
+  const denial = await f.through("deny", "owner", "203.0.113.2");
+  expect(denial.decision.status).toBe(302);
+  expect(f.seen.begun).toHaveLength(2);
+  const jar = await f.open();
+  const unknown = await f.decide("approve", "BBBB-BBBB", jar);
+  expect([unknown.status, outcome(unknown)]).toEqual([400, "invalid_code"]);
+  expect(f.seen.begun).toHaveLength(2);
+  const dump = await f.send("/p/p/dump", { headers: f.admin });
+  for (const value of [flow.state, f.seen.begun[0]!.verifier!, flow.jar.csrf])
+    expect(dump.text).not.toContain(value);
+}, 30_000);
+
+test("the owner approves in the browser and only the polling device receives the token", async () => {
+  const logs = [spyOn(console, "log"), spyOn(console, "error")];
+  const f = fixture();
+  await f.provision();
+  const flow = await f.through("approve", "owner");
+  const done = await flow.done();
+  expect([done.status, outcome(done)]).toEqual([200, "approved"]);
+  expect(done.headers.get("cache-control")).toBe("no-store");
+  expect(done.text).not.toContain("fct_");
+  expect(f.tokens()).toBe(1);
+  const verifier = f.seen.begun[0]!.verifier!;
+  expect(f.seen.verified.map((call) => call.verifier)).toEqual([verifier]);
+  expect([...f.claims.keys()]).toEqual([
+    await hex(`device-upstream:${verifier}`),
+  ]);
+  expect(
+    String(f.rows("SELECT state FROM domain_cloud_login")[0]!.state),
+  ).not.toContain(verifier);
+  const won = await f.poll(flow.login.device_code);
+  expect([won.status, won.headers.get("cache-control")]).toEqual([
+    200,
+    "no-store",
+  ]);
+  const credential = JSON.parse(body(won).credential) as {
+    token: string;
+    expiresAt: string;
+  };
+  expect(credential.token).toMatch(/^fct_[0-9a-f]{16}\./);
+  expect(credential.expiresAt).toBe(
+    new Date(f.now() + LOGIN_TTL_MS).toISOString(),
+  );
+  expect(f.tokens()).toBe(2);
+  expect((await f.poll(flow.login.device_code)).status).toBe(400);
+  const seen = JSON.stringify(logs.flatMap((spy) => spy.mock.calls));
+  for (const value of [
+    flow.jar.csrf,
+    flow.state,
+    verifier,
+    flow.login.user_code,
+    flow.login.device_code,
+    credential.token,
+  ])
+    expect(seen).not.toContain(value);
+}, 30_000);
+
+test("a denial in the browser makes the poll fail and mints nothing", async () => {
+  const f = fixture();
+  await f.provision();
+  const flow = await f.through("deny", "owner");
+  const done = await flow.done();
+  expect([done.status, outcome(done)]).toEqual([200, "denied"]);
+  const polled = await f.poll(flow.login.device_code);
+  expect([polled.status, body(polled).error]).toEqual([400, "access_denied"]);
+  expect(f.tokens()).toBe(1);
+}, 30_000);
+
+test("another Clerk user cannot approve or deny, and the challenge stays pending", async () => {
+  const f = fixture();
+  await f.provision();
+  for (const [action, proof] of [
+    ["approve", "other-subject"],
+    ["approve", "other-issuer"],
+    ["deny", "other-subject"],
+  ] as const) {
+    const flow = await f.through(action, proof);
+    const done = await flow.done();
+    expect([done.status, outcome(done)]).toEqual([403, "AUTH_FORBIDDEN"]);
+    expect(await f.pending(flow.login)).toEqual([400, "authorization_pending"]);
+  }
+  expect(f.tokens()).toBe(1);
+  const flow = await f.through("approve", "other-subject");
+  expect((await flow.done()).status).toBe(403);
+  const again = await f.decide("approve", flow.login.user_code, flow.jar);
+  const owner = await f.callback(f.stateOf(again), "owner", flow.jar.cookie);
+  expect([owner.status, outcome(owner)]).toEqual([200, "approved"]);
+}, 30_000);
+
+test("a forged, foreign or unverified proof decides nothing", async () => {
+  const f = fixture();
+  await f.provision();
+  for (const proof of ["forged", "wrong-audience", "expired"]) {
+    const flow = await f.through("approve", proof);
+    const done = await flow.done();
+    expect([done.status, outcome(done)]).toEqual([401, "AUTH_INVALID"]);
+    expect(await f.pending(flow.login)).toEqual([400, "authorization_pending"]);
+  }
+  // A verifier that returns bare claims, not a minted identity, is not accepted.
+  f.upstream.verify = () =>
+    Promise.resolve({
+      ok: true,
+      identity: {
+        issuer: "https://clerk.example",
+        subject: "user_Owner1",
+        audience: "client",
+        expiresAt: f.now() + 3_600_000,
+        authenticatedAt: f.now() - 1_000,
+      },
+    } as unknown as ClerkResult);
+  const flow = await f.through("approve", "owner");
+  const done = await flow.done();
+  expect([done.status, outcome(done)]).toEqual([401, "AUTH_INVALID"]);
+  expect(await f.pending(flow.login)).toEqual([400, "authorization_pending"]);
+  expect(f.tokens()).toBe(1);
+}, 30_000);
+
+test("a callback state is used once, only by its own browser, before its deadline", async () => {
+  const f = fixture();
+  await f.provision();
+  const refused = (reply: Reply) => [reply.status, outcome(reply)];
+  const once = await f.through("approve", "owner");
+  expect((await once.done()).status).toBe(200);
+  expect(refused(await once.done())).toEqual([400, "access_denied"]);
+  expect(f.seen.verified).toHaveLength(1);
+  const wrong = await f.through("approve", "owner");
+  expect(
+    refused(
+      await f.callback(wrong.state, "owner", `${COOKIE}=${"x".repeat(43)}`),
+    ),
+  ).toEqual([400, "access_denied"]);
+  expect(refused(await wrong.done())).toEqual([400, "access_denied"]);
+  const bare = await f.through("approve", "owner");
+  expect(refused(await f.callback(bare.state, "owner"))).toEqual([
+    400,
+    "access_denied",
+  ]);
+  expect(
+    refused(await f.callback("forge-device.unknown", "owner", once.jar.cookie)),
+  ).toEqual([400, "access_denied"]);
+  const lost = await f.through("approve", "owner");
+  f.claims.set(
+    await hex(`device-upstream:${f.seen.begun.at(-1)!.verifier}`),
+    f.now() + day,
+  );
+  expect(refused(await lost.done())).toEqual([400, "access_denied"]);
+  expect(f.seen.verified).toHaveLength(1);
+  const late = await f.through("approve", "owner");
+  f.advance(599_999);
+  expect((await late.done()).status).toBe(200);
+  const expired = await f.through("approve", "owner");
+  f.advance(600_000);
+  expect(refused(await expired.done())).toEqual([400, "access_denied"]);
+  expect(f.seen.verified).toHaveLength(2);
+}, 30_000);
+
+test("the sixth failed decision by the owner within a minute is rate limited", async () => {
+  const f = fixture();
+  await f.provision();
+  const jar = await f.open();
+  const ip = (n: number) => `198.51.100.${n}`;
+  const logins: Body[] = [];
+  for (let n = 0; n < 6; n++)
+    logins.push(body(await f.begin("laptop-1", ip(n))));
+  f.advance(5_000);
+  const states: string[] = [];
+  for (const [n, login] of logins.entries())
+    states.push(
+      f.stateOf(await f.decide("approve", login.user_code, jar, ip(n))),
+    );
+  f.advance(596_000);
+  await f.begin("laptop-2", ip(9));
+  const results: Reply[] = [];
+  for (const state of states)
+    results.push(await f.callback(state, "owner", jar.cookie));
+  expect(results.map((reply) => [reply.status, outcome(reply)])).toEqual([
+    ...Array.from({ length: 5 }, () => [400, "invalid_user_code"]),
+    [429, "rate_limited"],
+  ]);
+  expect(f.tokens()).toBe(1);
+}, 30_000);
+
+test("a device state never reaches the OAuth callback, and an OAuth state never reaches the device handler", async () => {
+  const kv = {
+    get: mock(() => Promise.resolve(null)),
+    put: mock(() => Promise.resolve()),
+    delete: mock(() => Promise.resolve()),
+    list: mock(() => Promise.resolve({ keys: [], list_complete: true })),
+  };
+  const f = fixture(vars, {
+    OAUTH_KV: kv,
+    CODE_REDEMPTION: {
+      idFromName: (name: string) => name,
+      get: () => ({
+        fetch: () => Promise.resolve(new Response(null, { status: 400 })),
+      }),
+    },
+  });
+  f.useWorker(createConfiguredWorker());
+  await f.provision();
+  const refused = (reply: Reply) => [reply.status, outcome(reply)];
+  const unknown = await f.send("/callback?state=forge-device.unknown&code=x");
+  expect(refused(unknown)).toEqual([400, "access_denied"]);
+  const replayed = await f.through("approve", "owner");
+  expect((await replayed.done()).status).toBe(200);
+  expect(refused(await replayed.done())).toEqual([400, "access_denied"]);
+  const expired = await f.through("approve", "owner");
+  f.advance(600_000);
+  expect(refused(await expired.done())).toEqual([400, "access_denied"]);
+  expect(kv.get).not.toHaveBeenCalled();
+  const verified = f.seen.verified.length;
+  const reachedBefore = f.reached.length;
+  // The provider's own refusal, as on main today: an unbound state is invalid_request.
+  const ordinary = await f.send("/callback?state=ordinary&code=x");
+  expect([ordinary.status, JSON.parse(ordinary.text)]).toEqual([
+    400,
+    { error: "invalid_request" },
+  ]);
+  expect([f.reached.length, f.seen.verified.length]).toEqual([
+    reachedBefore,
+    verified,
+  ]);
+}, 30_000);

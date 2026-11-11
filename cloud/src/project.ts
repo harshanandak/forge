@@ -35,6 +35,7 @@ import {
   type DurableState,
   type DurableStorage,
 } from "./store.ts";
+import type { DeviceBrowserOptions } from "./auth/device-browser.ts";
 import {
   isLoginRoute,
   LOGIN,
@@ -183,7 +184,11 @@ export class Project {
   readonly #env: LoginEnv;
 
   // `env` carries the page and project limits (DUMP_PAGE_BYTES, DUMP_MAX_BYTES); a deploy sets none.
-  constructor(ctx: DurableState, env?: unknown) {
+  constructor(
+    ctx: DurableState,
+    env?: unknown,
+    _browser: DeviceBrowserOptions = {},
+  ) {
     this.#storage = ctx.storage;
     this.#limits = limitsFrom(env);
     this.#env = (env ?? {}) as LoginEnv;
