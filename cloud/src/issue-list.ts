@@ -8,7 +8,7 @@ import type { TrackerItem } from "../../src/generated/types.ts";
 import {
   configured,
   fail,
-  holds,
+  holdsLease,
   invalid,
   leaseOf,
   MAX_RECORD_BYTES,
@@ -101,7 +101,7 @@ export function listIssues(
       (by.ready !== true ||
         (v.status === "open" &&
           v.dependsOn.every((dep) => statusOf.get(dep) === "closed") &&
-          !holds(lease(at), now)));
+          !holdsLease(lease(at), records[at]!, ids[at]!, now, prefix)));
     return ok ? [at] : [];
   });
   return {

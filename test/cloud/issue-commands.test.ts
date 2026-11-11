@@ -1525,6 +1525,12 @@ test("a corrupt row is refused whatever the filter would exclude, and ready:true
       "500",
     ],
     [
+      "live lease with no holder on a candidate",
+      (f: F) => f.lease({ holder: undefined }),
+      { ready: true },
+      "500",
+    ],
+    [
       "wrong subject on a candidate",
       (f: F) => f.lease({ subject: "issue:work-9" }),
       { ready: true },

@@ -117,6 +117,19 @@ export const holds = (lease: Json | undefined, now: number): boolean =>
   typeof lease.expiresAt === "string" &&
   Date.parse(lease.expiresAt) > now;
 
+/** Whether `lease` holds the issue at `now`. A live lease must be valid as an item carries it, else INTERNAL. */
+export function holdsLease(
+  lease: Json | undefined,
+  record: Json,
+  id: string,
+  now: number,
+  prefix: string,
+): boolean {
+  if (!holds(lease, now)) return false;
+  shownItem(record, id, lease, now, prefix);
+  return true;
+}
+
 /**
  * The issue `input` names, shaped as the local issue.show shows it: stored prefix and close reason
  * dropped, ids carrying `prefix`. A lease appears only while live at `now`, and only from state_leases.
