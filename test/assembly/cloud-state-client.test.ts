@@ -1,6 +1,5 @@
 import { expect, setDefaultTimeout, test } from "bun:test";
 import type {
-  CloudHttp,
   LeaseRefusalCode,
   LeaseResult,
   LeaseWriteBody,
@@ -85,6 +84,7 @@ function rig(
     entries?: CredentialEntry[];
     text?: string;
     key?: CredentialKey;
+    bound?: Partial<CredentialKey>;
     answer?: LeaseResult | Error;
     signal?: AbortSignal;
   } = {},
@@ -100,7 +100,10 @@ function rig(
     calls.push(args);
     return reply();
   };
-  const http: Pick<CloudHttp, "leaseWrite" | "leaseHolder"> = {
+  const key = options.key ?? KEY;
+  const http = {
+    origin: options.bound?.origin ?? key.origin,
+    project: options.bound?.project ?? key.project,
     leaseWrite: record,
     leaseHolder: record,
   };
@@ -108,7 +111,7 @@ function rig(
     filesWith(options.entries ?? [entry(NOW)], options.text),
   );
   const client = createCloudLeaseClient({
-    key: options.key ?? KEY,
+    key,
     credentials,
     now: () => NOW,
     http,
@@ -166,6 +169,17 @@ for (const [what, options, code] of unusable)
       expect(calls).toHaveLength(0);
     }
   }, 10_000);
+
+test("a transport bound to another origin or project than the credential key is refused before any request", async () => {
+  for (const bound of [{ origin: OTHER_ORIGIN }, { project: "other" }])
+    for (const [, run] of ops) {
+      const { client, calls } = rig({ bound });
+      const failed = await failureOf(() => run(client));
+      expect(failed.error.code).toBe("INPUT_INVALID");
+      expect(exit(failed)).toBe(6);
+      expect(calls).toHaveLength(0);
+    }
+}, 10_000);
 
 test("a holder whose device is not the credential's device is refused before any request", async () => {
   const other = holderOf("s1", "other-device");
@@ -237,12 +251,20 @@ for (const code of refusals)
   }, 10_000);
 
 test("an adapter UNAVAILABLE or cancellation passes through after one request, and an unexpected error becomes UNAVAILABLE without its text", async () => {
-  const error = (code: string) =>
-    new ForgeFailure({ code, message: "x", retry: "never" });
+  const error = (code: string, message = "x", more = {}) =>
+    new ForgeFailure({ code, message, retry: "never", ...more });
+  const inDetails = {
+    expected: TOKEN,
+    lease: { subject: SUBJECT, holder: holderOf(TOKEN) },
+  };
   const cases: [Error, string][] = [
     [error("UNAVAILABLE"), "UNAVAILABLE"],
     [error("INVOCATION_CANCELLED"), "INVOCATION_CANCELLED"],
     [new Error(`boom ${TOKEN}`), "UNAVAILABLE"],
+    [error("UNAVAILABLE", TOKEN), "UNAVAILABLE"],
+    [error("UNAVAILABLE", "x", inDetails), "UNAVAILABLE"],
+    [error("WEIRD_CODE", TOKEN, inDetails), "UNAVAILABLE"],
+    [error("INVOCATION_CANCELLED", TOKEN, inDetails), "INVOCATION_CANCELLED"],
   ];
   for (const [answer, code] of cases)
     for (const [, run] of ops) {

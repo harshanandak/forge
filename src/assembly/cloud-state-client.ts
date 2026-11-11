@@ -17,7 +17,10 @@ export interface CloudLeaseOptions {
   readonly key: CredentialKey;
   readonly credentials: Pick<CredentialStore, "lookup">;
   readonly now: () => number;
-  readonly http: Pick<CloudHttp, "leaseWrite" | "leaseHolder">;
+  readonly http: Pick<
+    CloudHttp,
+    "origin" | "project" | "leaseWrite" | "leaseHolder"
+  >;
   readonly signal?: AbortSignal;
 }
 export type ClaimInput = Required<Omit<LeaseWriteBody, "generation">>;
@@ -40,22 +43,35 @@ export function createCloudLeaseClient(
 ): CloudLeaseClient {
   const { key, credentials, now, http, signal } = options;
 
-  async function run(
-    send: (token: string, device: string) => Promise<LeaseResult>,
-  ): Promise<LeaseRecord | null> {
-    const stored = credentials.lookup(key, now());
-    if (stored === undefined)
+  /** The stored credential for the exact key, and only when the transport is bound to that key. */
+  function stored() {
+    if (http.origin !== key.origin || http.project !== key.project)
+      throw failure(
+        "INPUT_INVALID",
+        "The cloud transport is bound to a different origin or project than the credential key.",
+      );
+    const found = credentials.lookup(key, now());
+    if (found === undefined)
       throw failure(
         "AUTH_REQUIRED",
         "No usable cloud credential is stored; run forge cloud login.",
       );
+    return found;
+  }
+
+  /** One request. Whatever the transport throws is rebuilt: only a cancellation keeps its code, never its text. */
+  async function exchange(
+    send: () => Promise<LeaseResult>,
+  ): Promise<LeaseRecord | null> {
     let result: LeaseResult;
     try {
-      result = await send(stored.token, stored.device);
+      result = await send();
     } catch (error) {
-      if (signal?.aborted === true)
+      const stopped =
+        error instanceof ForgeFailure &&
+        error.error.code === "INVOCATION_CANCELLED";
+      if (signal?.aborted === true || stopped)
         throw failure("INVOCATION_CANCELLED", "The request was cancelled.");
-      if (error instanceof ForgeFailure) throw error;
       throw failure("UNAVAILABLE", UNAVAILABLE);
     }
     if (result.kind === "ok") return result.lease;
@@ -80,13 +96,10 @@ export function createCloudLeaseClient(
   }
 
   async function write(route: LeaseRoute, body: LeaseWriteBody) {
-    const lease = await run((token, device) =>
-      http.leaseWrite(
-        token,
-        route,
-        { ...body, holder: wired(body.holder, device) },
-        signal,
-      ),
+    const { token, device } = stored();
+    const holder = wired(body.holder, device);
+    const lease = await exchange(() =>
+      http.leaseWrite(token, route, { ...body, holder }, signal),
     );
     if (lease === null) throw failure("UNAVAILABLE", UNAVAILABLE);
     return lease;
@@ -96,7 +109,9 @@ export function createCloudLeaseClient(
     claim: (input) => write("claim", input),
     renew: (input) => write("renew", input),
     release: (input) => write("release", input),
-    holder: (subject) =>
-      run((token) => http.leaseHolder(token, subject, signal)),
+    async holder(subject) {
+      const { token } = stored();
+      return await exchange(() => http.leaseHolder(token, subject, signal));
+    },
   };
 }
