@@ -28,6 +28,7 @@ import {
 import { commentIssue } from "./issue-comment.ts";
 import { createIssue } from "./issue-create.ts";
 import { listIssues } from "./issue-list.ts";
+import { updateIssue } from "./issue-update.ts";
 import { PROJECT_NAME } from "./project-name.ts";
 import { readOnlyStore, type DurableStorage } from "./store.ts";
 import type { StateOwner } from "../../src/core/state/index.ts";
@@ -219,7 +220,9 @@ export function runCommand(text: string, host: CommandRun): Response {
       ? createIssue
       : op === "issue.comment"
         ? commentIssue
-        : undefined;
+        : op === "issue.update"
+          ? updateIssue
+          : undefined;
   let result: unknown;
   if (write !== undefined) {
     const { db, owner } = host.open();
