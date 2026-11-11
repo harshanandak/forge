@@ -440,6 +440,7 @@ test("forged owner headers grant nothing and OAuth cannot reach any admin route"
 
 test("device issuance and project reads still require the issued device token", async () => {
   const f = await ownerFixture();
+  const clock = spyOn(Date, "now").mockReturnValue(Date.now());
   try {
     const issued = await f.post(
       "devices",
@@ -474,6 +475,7 @@ test("device issuance and project reads still require the issued device token", 
       });
     }
   } finally {
+    clock.mockRestore();
     f.close();
   }
 }, 30_000);
