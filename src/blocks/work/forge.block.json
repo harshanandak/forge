@@ -12,6 +12,9 @@
     },
     "lane": {
       "interface": "1.0.0"
+    },
+    "attempt": {
+      "interface": "1.0.0"
     }
   },
   "provides": [
@@ -470,7 +473,7 @@
       "stability": "experimental",
       "args": ["id"]
     },
-    "issue.slots": {
+    "attempt.slots": {
       "input": "schemas/slots.input.json",
       "output": "schemas/ItemRef.json",
       "context": "leased",
@@ -482,9 +485,9 @@
       "stability": "experimental",
       "args": ["id"]
     },
-    "issue.attempt": {
+    "attempt.reserve": {
       "input": "schemas/attempt.input.json",
-      "output": "schemas/ItemRef.json",
+      "output": "schemas/attempt.output.json",
       "context": "leased",
       "timeoutMs": 15000,
       "leaseMode": "acquire",
@@ -494,7 +497,7 @@
       "stability": "experimental",
       "args": ["id"]
     },
-    "issue.attempt-release": {
+    "attempt.release": {
       "input": "schemas/attempt-release.input.json",
       "output": "schemas/ItemRef.json",
       "context": "leased",
@@ -506,7 +509,7 @@
       "stability": "experimental",
       "args": ["id"]
     },
-    "issue.attempt-note": {
+    "attempt.note": {
       "input": "schemas/attempt-note.input.json",
       "output": "schemas/ItemRef.json",
       "context": "leased",

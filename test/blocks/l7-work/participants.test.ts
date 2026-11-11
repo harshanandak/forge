@@ -57,7 +57,8 @@ async function project() {
     input: Record<string, unknown> = {},
     generation: number | null = 1,
   ): Promise<T> {
-    const bound = bindContext(manifest.operations[`issue.${op}`]!, {
+    const name = op.includes(".") ? op : `issue.${op}`;
+    const bound = bindContext(manifest.operations[name]!, {
       ...caller,
       project: { id: "test" },
       ...(generation === null ? {} : { leaseGeneration: generation }),
@@ -73,7 +74,7 @@ async function project() {
     const previousFail = globals.fail;
     globals.fail = refuse;
     try {
-      return (await ops[`issue.${op}`]!({
+      return (await ops[name]!({
         input: { id: "shown-1", ...input },
         config: { idPrefix: "shown", claimTtlSeconds: 60 },
         signal: new AbortController().signal,
@@ -342,10 +343,10 @@ type AttemptsView = Omit<TrackerItem, "mode"> & {
 };
 async function competing(count = 2) {
   await p.call("claim");
-  await p.call("slots", A, { count });
+  await p.call("attempt.slots", A, { count });
 }
 async function attempt(caller: LeaseHolder, ttlSeconds = 120) {
-  const result = await p.call<Attempt>("attempt", caller, {
+  const result = await p.call<Attempt>("attempt.reserve", caller, {
     label: caller.session.id,
     ttlSeconds,
   });
@@ -359,7 +360,7 @@ test("two open slots admit exactly two concurrent competitors without a refused 
   const [b, c] = await Promise.all([
     attempt(B),
     attempt(C),
-    refused("ATTEMPT_SLOTS_FULL", () => p.call("attempt", D)),
+    refused("ATTEMPT_SLOTS_FULL", () => p.call("attempt.reserve", D)),
   ]);
   expect([b.id, c.id]).toEqual(["attempt-1", "attempt-2"]);
   const leases = p.owner
@@ -397,7 +398,7 @@ test("two open slots admit exactly two concurrent competitors without a refused 
   }
   await refused("ATTEMPT_SLOTS_FULL", async () => {
     try {
-      await p.call("attempt", D);
+      await p.call("attempt.reserve", D);
     } catch (error) {
       for (const detail of ["2", "attempt-1", "attempt-2"])
         expect((error as ForgeFailure).message).toContain(detail);
@@ -412,12 +413,12 @@ test("a live retry is unchanged and expired or released ids are never reused", a
   await attempt(C);
   const before = p.snapshot();
   expect(
-    await p.call("attempt", B, { label: "retry", ttlSeconds: 60 }),
+    await p.call("attempt.reserve", B, { label: "retry", ttlSeconds: 60 }),
   ).toEqual(b);
   expect(p.snapshot()).toEqual(before);
   p.advance(1000);
   expect((await attempt(D)).id).toBe("attempt-3");
-  await p.call("attempt-release", C, { attempt: "attempt-2" });
+  await p.call("attempt.release", C, { attempt: "attempt-2" });
   expect((await attempt(C)).id).toBe("attempt-4");
   const view = await p.call<AttemptsView>("show");
   expect(view.attempts.map(({ id, live }) => ({ id, live }))).toEqual([
@@ -434,15 +435,15 @@ test("only a live attempt's holder can publish a fenced note", async () => {
   p.advance(1000);
   await attempt(D);
   await refused("LEASE_EXPIRED", () =>
-    p.call("attempt-note", B, { attempt: "attempt-1", body: "expired" }),
+    p.call("attempt.note", B, { attempt: "attempt-1", body: "expired" }),
   );
   await refused("LEASE_NOT_HELD", () =>
-    p.call("attempt-note", C, { attempt: "attempt-3", body: "other" }),
+    p.call("attempt.note", C, { attempt: "attempt-3", body: "other" }),
   );
   await refused("LEASE_STALE", () =>
-    p.call("attempt-note", C, { attempt: "attempt-2", body: "stale" }, 2),
+    p.call("attempt.note", C, { attempt: "attempt-2", body: "stale" }, 2),
   );
-  await p.call("attempt-note", C, { attempt: "attempt-2", body: "proposal" });
+  await p.call("attempt.note", C, { attempt: "attempt-2", body: "proposal" });
   expect(
     p.owner
       .export()
@@ -450,9 +451,9 @@ test("only a live attempt's holder can publish a fenced note", async () => {
         (row) => (row.value as { body?: string }).body === "proposal",
       ),
   ).toBe(true);
-  await p.call("attempt-release", C, { attempt: "attempt-2" });
+  await p.call("attempt.release", C, { attempt: "attempt-2" });
   await refused("LEASE_NOT_HELD", () =>
-    p.call("attempt-note", C, { attempt: "attempt-2", body: "released" }),
+    p.call("attempt.note", C, { attempt: "attempt-2", body: "released" }),
   );
 }, 10000);
 test("dispatch releases its own attempt after the coordinator expires, retaining history", async () => {
@@ -464,21 +465,21 @@ test("dispatch releases its own attempt after the coordinator expires, retaining
   const result = await dispatch(
     {
       list: () =>
-        ["issue.show", "issue.attempt-release"].map((op) =>
+        ["issue.show", "attempt.release"].map((op) =>
           candidate(op, manifest.operations[op]),
         ),
       invoke: async (req) =>
         success(
           req.op,
           await p.call(
-            req.op.slice(6),
+            req.op,
             C,
             req.input as Record<string, unknown>,
             req.context?.leaseGeneration ?? null,
           ),
         ),
     },
-    "issue.attempt-release",
+    "attempt.release",
     { id: "shown-1", attempt: "attempt-1" },
     { caller: "agent", context: { ...C, project: { id: "test" } } },
   );
@@ -493,34 +494,42 @@ test("dispatch releases its own attempt after the coordinator expires, retaining
     { id: "attempt-2", live: true },
   ]);
   await refused("LEASE_NOT_HELD", () =>
-    p.call("attempt-release", C, { attempt: "attempt-1" }),
+    p.call("attempt.release", C, { attempt: "attempt-1" }),
   );
   await refused("LEASE_NOT_HELD", () =>
-    p.call("attempt-release", C, { attempt: "attempt-2" }),
+    p.call("attempt.release", C, { attempt: "attempt-2" }),
   );
 }, 10000);
 test("slot changes require the coordinator fence, validate N and never evict live attempts", async () => {
   await competing();
   const before = p.snapshot();
-  await p.call("slots", A, { count: 2 });
+  await p.call("attempt.slots", A, { count: 2 });
   expect(p.snapshot()).toEqual(before);
-  await refused("LEASE_NOT_HELD", () => p.call("slots", B, { count: 2 }));
-  await refused("LEASE_STALE", () => p.call("slots", A, { count: 2 }, 2));
+  await refused("LEASE_NOT_HELD", () =>
+    p.call("attempt.slots", B, { count: 2 }),
+  );
+  await refused("LEASE_STALE", () =>
+    p.call("attempt.slots", A, { count: 2 }, 2),
+  );
   for (const count of [0, 17, 1.5])
-    await refused("INPUT_INVALID", () => p.call("slots", A, { count }));
+    await refused("INPUT_INVALID", () => p.call("attempt.slots", A, { count }));
   await attempt(B);
   await attempt(C);
-  await refused("INPUT_CONFLICT", () => p.call("slots", A, { count: 1 }));
+  await refused("INPUT_CONFLICT", () =>
+    p.call("attempt.slots", A, { count: 1 }),
+  );
   p.advance(60000);
-  await refused("LEASE_EXPIRED", () => p.call("slots", A, { count: 2 }));
+  await refused("LEASE_EXPIRED", () =>
+    p.call("attempt.slots", A, { count: 2 }),
+  );
 }, 10000);
 test("exclusive and closed reservations refuse, while the coordinator may compete", async () => {
   await p.call("claim");
-  await refused("ISSUE_NOT_COMPETING", () => p.call("attempt", B));
-  await p.call("slots", A, { count: 1 });
+  await refused("ISSUE_NOT_COMPETING", () => p.call("attempt.reserve", B));
+  await p.call("attempt.slots", A, { count: 1 });
   expect((await attempt(A)).id).toBe("attempt-1");
   await p.call("close", A, { withoutReceipt: "attempt fixture" });
-  await refused("INPUT_CONFLICT", () => p.call("attempt", B));
+  await refused("INPUT_CONFLICT", () => p.call("attempt.reserve", B));
 }, 10000);
 test("attempt holders cannot mutate the coordinator's issue", async () => {
   await competing();
@@ -550,17 +559,17 @@ test("attempt operations declare their actual lease modes and generated surfaces
   const docs = read<DocsRecords>("docs.json");
   for (const [op, leaseMode] of [
     ["slots", "held"],
-    ["attempt", "acquire"],
-    ["attempt-release", "acquire"],
-    ["attempt-note", "held"],
+    ["reserve", "acquire"],
+    ["release", "acquire"],
+    ["note", "held"],
   ]) {
-    expect(manifest.operations[`issue.${op}`]).toMatchObject({
+    expect(manifest.operations[`attempt.${op}`]).toMatchObject({
       context: "leased",
       leaseMode,
       effects: ["issue:write"],
       callers: ["agent", "human"],
       args: ["id"],
     });
-    expect(docs.operations[`issue.${op}`]).toBeDefined();
+    expect(docs.operations[`attempt.${op}`]).toBeDefined();
   }
 }, 10000);

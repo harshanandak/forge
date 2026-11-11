@@ -282,7 +282,7 @@ async function withProject(
 
 test("skills.sync writes one linted skill per block noun, deterministically, from CLI and catalog.call", async () => {
   await withProject(async (assembly, root) => {
-    const paths = ["decision", "issue", "lane", "memory"].map(
+    const paths = ["attempt", "decision", "issue", "lane", "memory"].map(
       (noun) => `.agents/skills/${noun}/SKILL.md`,
     );
     const first = { dir: ".agents/skills", written: paths, unchanged: [] };
@@ -294,7 +294,13 @@ test("skills.sync writes one linted skill per block noun, deterministically, fro
       expect(text).toContain(GENERATED_MARKER);
       expect(lintSkill(text, assembly.catalog.list())).toEqual([]);
     }
-    const decision = readFileSync(join(root, paths[0] ?? ""), "utf8");
+    const decision = readFileSync(
+      join(
+        root,
+        paths.find((path) => path.endsWith("/decision/SKILL.md")) ?? "",
+      ),
+      "utf8",
+    );
     expect(skillCalls(decision, "decision.propose")).toEqual({
       cli: "forge decision propose --input '<json>'",
       mcp: "decision_propose",
@@ -339,6 +345,7 @@ test("a fresh assembly loads persisted admission only when syncing skills", asyn
         ok: true,
         result: {
           written: [
+            ".agents/skills/attempt/SKILL.md",
             ".agents/skills/decision/SKILL.md",
             ".agents/skills/issue/SKILL.md",
             ".agents/skills/lane/SKILL.md",
@@ -411,6 +418,7 @@ test("an enabled but unadmitted block gets no skill and none of its text reaches
         ok: true,
         result: {
           written: [
+            ".agents/skills/attempt/SKILL.md",
             ".agents/skills/issue/SKILL.md",
             ".agents/skills/lane/SKILL.md",
           ],
