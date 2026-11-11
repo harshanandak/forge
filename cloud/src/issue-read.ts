@@ -3,19 +3,23 @@
 // checked against the key the server derived). Caller text only becomes a bound SQL value, and
 // only after it matches `<prefix>-<digits>`.
 import manifest from "../../src/blocks/work/forge.block.json" with { type: "json" };
+import config from "../../src/blocks/work/schemas/config.json" with { type: "json" };
 import ItemRef from "../../src/blocks/work/schemas/ItemRef.json" with { type: "json" };
+import TrackerItemSchema from "../../src/blocks/work/schemas/TrackerItem.json" with { type: "json" };
 import { ForgeFailure } from "../../src/contract/failure.ts";
-import { SchemaRegistry } from "../../src/contract/schema.ts";
 import {
-  DEFAULT_PARSE_LIMITS,
-  parseUntrustedJson,
-} from "../../src/contract/untrusted.ts";
+  SchemaRegistry,
+  validateWithSchema,
+} from "../../src/contract/schema.ts";
+import { parseUntrustedJson } from "../../src/contract/untrusted.ts";
 import { SCHEMA_DOCUMENTS } from "../../src/generated/schemas.ts";
 import type { TrackerItem } from "../../src/generated/types.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
 const NAMESPACE = "forge/work";
 export const MAX_RECORD_BYTES = 2 * 1024 * 1024; // bytes; above the 1 MiB response bound so that bound can be reached
 export const MAX_LEASE_BYTES = 16 * 1024;
+export const MAX_DEPTH = 8;
+export const MAX_NODES = 1024;
 const QUALIFIED = /^([a-z0-9]+(?:-[a-z0-9]+)*)-(\d+)$/i;
 const BODY = (table: string, column: string) =>
   `SELECT CASE WHEN length(CAST(body AS BLOB)) <= ? THEN body END AS body FROM ${table} WHERE namespace=? AND ${column}=?`;
@@ -40,6 +44,8 @@ export interface IssueViews {
 type Json = Record<string, unknown>;
 if (manifest.operations["issue.show"].input !== "schemas/ItemRef.json")
   throw new Error("issue.show no longer declares schemas/ItemRef.json");
+if (manifest.operations["issue.show"].output !== "schemas/TrackerItem.json")
+  throw new Error("issue.show no longer declares schemas/TrackerItem.json");
 let registry: SchemaRegistry | undefined;
 const fail = (code: string, message: string): ForgeFailure =>
   new ForgeFailure({ code, message, retry: "never" });
@@ -59,8 +65,9 @@ function load(
   const parsed =
     typeof row.body === "string"
       ? parseUntrustedJson(row.body, {
-          ...DEFAULT_PARSE_LIMITS,
           maxBytes: max,
+          maxDepth: MAX_DEPTH,
+          maxNodes: MAX_NODES,
           maxStringLength: max,
         })
       : undefined;
@@ -78,6 +85,9 @@ export function readIssue(
   now: number,
   prefix: string,
 ): TrackerItem {
+  // The server's own setting is checked first, with the work block's idPrefix rule, before any input.
+  if (validateWithSchema(config.properties.idPrefix, prefix).length > 0)
+    throw fail("UNAVAILABLE", "Server configuration is not valid");
   registry ??= new SchemaRegistry(SCHEMA_DOCUMENTS);
   if (registry.validate(ItemRef.$ref, input).length > 0)
     throw fail("INPUT_INVALID", "input must be { id } with a valid issue id");
@@ -128,7 +138,7 @@ export function readIssue(
     lease.releasedAt === undefined &&
     typeof lease.expiresAt === "string" &&
     Date.parse(lease.expiresAt) > now;
-  return {
+  const item = {
     ...rest,
     id: shown(id),
     dependsOn: value.dependsOn.map(shown),
@@ -138,5 +148,9 @@ export function readIssue(
     updatedAt: record.updatedAt,
     revision: record.revision,
     ...(live ? { lease } : {}),
-  } as unknown as TrackerItem;
+  };
+  // Everything projected above, including the wrapper's revision and updatedAt and the live lease.
+  if (registry.validate(TrackerItemSchema.$ref, item).length > 0)
+    throw invalid();
+  return item as unknown as TrackerItem;
 }
