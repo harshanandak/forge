@@ -760,3 +760,43 @@ for (const [name, answer] of badCommands)
     sentOnce(net, "POST", "command");
     expect(response.bodyUsed).toBe(true);
   }, 10_000);
+
+// A failure the transport throws is not the adapter's own: whatever it says, it is never passed on.
+const planted = () =>
+  new ForgeFailure({
+    code: "AUTH_REVOKED",
+    message: `revoked ${TOKEN}`,
+    retry: "never",
+    repair: TOKEN,
+    observed: { token: TOKEN },
+  });
+const midStream = () =>
+  new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"ok":'));
+        controller.error(planted());
+      },
+    }),
+  );
+const routes: typeof operations = [
+  ...operations,
+  ["loginPoll", (h, s) => h.loginPoll(DEVICE_CODE, s)],
+];
+for (const [name, run] of routes)
+  test(`${name}: a ForgeFailure thrown by the transport or its stream is the fixed unavailable and never repeats the token`, async () => {
+    const thrown = network(() => {
+      throw planted();
+    });
+    for (const net of [thrown, network(midStream)]) {
+      const failed = await failure(() => run(http(net.fetch)));
+      expect([failed.error.code, failed.error.message]).toEqual([
+        "UNAVAILABLE",
+        "The Forge cloud gave no usable answer: the request failed.",
+      ]);
+      expect(`${JSON.stringify(failed.error)} ${String(failed)}`).not.toMatch(
+        /fct_|AUTH_REVOKED/,
+      );
+      expect(net.calls).toHaveLength(1);
+    }
+  }, 10_000);
