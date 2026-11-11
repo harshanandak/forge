@@ -49,6 +49,9 @@ export function same(left: string, right: string): boolean {
 /** True when the text has the shape of a device token; the Worker refuses anything else unseen. */
 export const wellFormed = (presented: string): boolean => TOKEN.test(presented);
 
+/** True when the text carries a device token, whole or inside other text: its `fct_` marker, in any case. */
+export const carriesToken = (text: string): boolean => /fct_/i.test(text);
+
 export function bearer(request: Request): string | undefined {
   return /^Bearer (\S+)$/i.exec(
     request.headers.get("authorization") ?? "",

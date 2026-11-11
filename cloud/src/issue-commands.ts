@@ -1,6 +1,6 @@
 // POST /p/<project>/command: typed issue commands at the project authority.
-// This slice checks the envelope and the context, runs issue.show, issue.list and issue.ready as reads and
-// refuses every other command as not yet supported: nothing is written. Everything the caller sends is
+// This slice checks the envelope and the context, runs issue.show, issue.list and issue.ready as reads,
+// runs issue.create as the one write and refuses every other command as not yet supported. Everything the caller sends is
 // untrusted. The envelope and context are closed shapes, the device comes from the token and the
 // project from the server, and no caller value becomes an SQL identifier, a namespace or a key.
 import manifest from "../../src/blocks/work/forge.block.json" with { type: "json" };
@@ -25,9 +25,12 @@ import {
   RECORD_READS,
   type IssueViews,
 } from "./issue-read.ts";
+import { createIssue } from "./issue-create.ts";
 import { listIssues } from "./issue-list.ts";
 import { PROJECT_NAME } from "./project-name.ts";
 import { readOnlyStore, type DurableStorage } from "./store.ts";
+import type { StateOwner } from "../../src/core/state/index.ts";
+import type { SqlDatabase } from "../../src/ports/store.ts";
 
 export const MAX_COMMAND_BODY = 512 * 1024;
 /** The most a show or list response may be, in UTF-8 bytes, measured on the whole envelope. */
@@ -76,6 +79,7 @@ export interface CommandHost {
   readonly project: string;
 }
 export interface PreparedCommand {
+  readonly requestId: string;
   readonly op: string;
   readonly input: unknown;
   readonly context: BoundContext;
@@ -85,10 +89,7 @@ export interface PreparedCommand {
  * Checks one command text and binds the context its operation declares. Throws ForgeFailure when
  * refused. Messages are fixed text or name a limit: they never repeat what the caller sent.
  */
-export function prepareCommand(
-  text: string,
-  host: CommandHost,
-): PreparedCommand {
+export function parseCommand(text: string, host: CommandHost): PreparedCommand {
   const parsed = parseUntrustedJson(text, LIMITS);
   if (!parsed.ok)
     throw fail(
@@ -144,7 +145,21 @@ export function prepareCommand(
       : { session: { ...session, device: host.device } }),
   });
   if (!bound.ok) throw new ForgeFailure(bound.error);
-  return { op, input: call.input, context: bound.context };
+  return {
+    requestId: call.requestId as string,
+    op,
+    input: call.input,
+    context: bound.context,
+  };
+}
+
+/** The envelope's op, input and bound context: what a read needs, without the request id. */
+export function prepareCommand(
+  text: string,
+  host: CommandHost,
+): Omit<PreparedCommand, "requestId"> {
+  const { requestId: _id, ...prepared } = parseCommand(text, host);
+  return prepared;
 }
 
 // The cloud has no labelOrder setting yet (forge-1250), so ready issues stay in key order.
@@ -156,6 +171,10 @@ export interface CommandRun extends CommandHost {
   /** The server's configured id prefix, as set: readIssue checks it. */
   readonly idPrefix: unknown;
   readonly now: number;
+  /** Throws when the token is no longer valid; a write calls it inside its transaction. */
+  readonly recheck: () => void;
+  /** Opens the project database for a write; reads never call it. */
+  readonly open: () => { db: SqlDatabase; owner: StateOwner };
 }
 
 // Each view is built on first use and then kept, so a request that never reaches the work tables
@@ -180,12 +199,12 @@ function lazyViews(storage: DurableStorage): IssueViews {
 }
 
 /**
- * Prepares a command and runs it. Only issue.show, issue.list and issue.ready run: each returns the response,
- * serialized once and measured in UTF-8 bytes. Every other operation is refused. Throws ForgeFailure when refused,
+ * Prepares a command and runs it. Only issue.create, issue.show, issue.list and issue.ready run: each returns
+ * the response, serialized once and measured in UTF-8 bytes. Every other operation is refused. Throws ForgeFailure when refused,
  * and runs no await, so the caller's token check stays current until the response is built.
  */
 export function runCommand(text: string, host: CommandRun): Response {
-  const { op, input } = prepareCommand(text, host);
+  const { requestId, op, input, context } = parseCommand(text, host);
   const read =
     op === "issue.show"
       ? readIssue
@@ -194,14 +213,19 @@ export function runCommand(text: string, host: CommandRun): Response {
         : op === "issue.ready"
           ? readyIssues
           : undefined;
-  if (read === undefined)
+  if (read === undefined && op !== "issue.create")
     throw fail("INPUT_INVALID", "Commands are not yet supported in cloud");
-  const result = read(
-    lazyViews(host.storage),
-    input,
-    host.now,
-    host.idPrefix as string,
-  );
+  const result =
+    read === undefined
+      ? createIssue(host.open().db, host.open().owner, {
+          requestId,
+          input,
+          context,
+          device: host.device,
+          prefix: host.idPrefix,
+          recheck: host.recheck,
+        })
+      : read(lazyViews(host.storage), input, host.now, host.idPrefix as string);
   const body = JSON.stringify({
     ok: true,
     op,
