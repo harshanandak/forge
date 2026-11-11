@@ -37,6 +37,15 @@ export const DEFAULT_RUNTIME_LIMITS: RuntimeLimits = {
 
 export type ServiceHandle = Handle<unknown>;
 
+/** What the request checks resolved: the values `invoke` goes on to use. */
+export interface Preflight {
+  readonly request: InvocationRequest;
+  readonly block: CapturedBlock;
+  readonly operation: ReturnType<Catalog["resolve"]>["operation"];
+  readonly config: unknown;
+  readonly context: BoundContext;
+}
+
 function onlyPendingLockCleanup(error: unknown, depth = 0): boolean {
   if (depth >= 32) return false;
   if (error instanceof AggregateError)
@@ -292,7 +301,10 @@ export class Runtime {
   }
 
   /** The request checks `invoke` makes first. It opens nothing; `accepted` sees the request once it is valid. */
-  preflight(value: unknown, accepted?: (request: InvocationRequest) => void) {
+  preflight(
+    value: unknown,
+    accepted?: (request: InvocationRequest) => void,
+  ): Preflight {
     const checked = validateInvocationRequest(value);
     if (!checked.ok) refuse("INPUT_INVALID", "invalid invocation request");
     const request = checked.value;
