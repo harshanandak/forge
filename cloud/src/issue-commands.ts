@@ -1,6 +1,6 @@
 // POST /p/<project>/command: typed issue commands at the project authority.
 // This slice checks the envelope and the context, runs issue.show, issue.list and issue.ready as reads,
-// runs issue.create, issue.comment and issue.update as writes and refuses every other command as not yet supported. Everything the caller sends is
+// runs issue.create, issue.comment, issue.update and issue.claim as writes and refuses every other command as not yet supported. Everything the caller sends is
 // untrusted. The envelope and context are closed shapes, the device comes from the token and the
 // project from the server, and no caller value becomes an SQL identifier, a namespace or a key.
 import manifest from "../../src/blocks/work/forge.block.json" with { type: "json" };
@@ -25,6 +25,7 @@ import {
   RECORD_READS,
   type IssueViews,
 } from "./issue-read.ts";
+import { claimIssue } from "./issue-claim.ts";
 import { commentIssue } from "./issue-comment.ts";
 import { createIssue } from "./issue-create.ts";
 import { listIssues } from "./issue-list.ts";
@@ -50,6 +51,7 @@ const LIMITS = {
 const EXPOSED: readonly string[] = [
   "issue.create",
   "issue.update",
+  "issue.claim",
   "issue.comment",
   "issue.show",
   "issue.comments",
@@ -187,6 +189,8 @@ export interface CommandRun extends CommandHost {
   readonly now: number;
   /** Throws when the token is no longer valid; a write calls it inside its transaction. */
   readonly recheck: () => void;
+  /** When the token expires, in milliseconds. */
+  readonly expiresAt?: number | undefined;
   /** Opens the project database for a write; reads never call it. */
   readonly open: () => { db: SqlDatabase; owner: StateOwner };
 }
@@ -213,7 +217,7 @@ function lazyViews(storage: DurableStorage): IssueViews {
 }
 
 /**
- * Prepares a command and runs it. Only issue.create, issue.comment, issue.update, issue.show, issue.list and issue.ready run: each returns
+ * Prepares a command and runs it. Only issue.create, issue.comment, issue.update, issue.claim, issue.show, issue.list and issue.ready run: each returns
  * the response, serialized once and measured in UTF-8 bytes. Every other operation is refused. Throws ForgeFailure when refused,
  * and runs no await, so the caller's token check stays current until the response is built.
  */
@@ -234,7 +238,9 @@ export function runCommand(text: string, host: CommandRun): Response {
         ? commentIssue
         : op === "issue.update"
           ? updateIssue
-          : undefined;
+          : op === "issue.claim"
+            ? claimIssue
+            : undefined;
   let result: unknown;
   if (write !== undefined) {
     const { db, owner } = host.open();
@@ -245,6 +251,7 @@ export function runCommand(text: string, host: CommandRun): Response {
       device: host.device,
       prefix: host.idPrefix,
       recheck: host.recheck,
+      expiresAt: host.expiresAt,
     });
   } else if (read !== undefined)
     result = read(
