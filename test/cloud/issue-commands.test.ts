@@ -4,6 +4,7 @@ import { Project } from "../../cloud/src/project.ts";
 import type { DurableStorage } from "../../cloud/src/store.ts";
 import { prepareCommand } from "../../cloud/src/issue-commands.ts";
 import { createWorker } from "../../cloud/src/worker.ts";
+import manifest from "../../src/blocks/work/forge.block.json" with { type: "json" };
 import { exitCode } from "../../src/surface/result.ts";
 
 if (!("timingSafeEqual" in crypto.subtle))
@@ -129,13 +130,16 @@ function fixture() {
     return ((await response.json()) as Envelope).value!.token;
   };
   const snapshot = () =>
-    JSON.stringify(
-      (
+    JSON.stringify({
+      sql: (
         db
           .query("SELECT name FROM sqlite_master WHERE type='table' ORDER BY 1")
           .all() as { name: string }[]
       ).map(({ name }) => [name, db.query(`SELECT * FROM "${name}"`).all()]),
-    );
+      kv: [...values.entries()].sort(([a], [b]) =>
+        a < b ? -1 : a > b ? 1 : 0,
+      ),
+    });
   return {
     send,
     device,
@@ -162,6 +166,15 @@ const configured = (forward?: () => Promise<Response>) =>
   createConfiguredWorker(undefined, forward ? { forward } : {});
 const fakeToken = `fct_0123456789abcdef.${"A".repeat(43)}`;
 const oauthToken = "eyJhbGciOi.e30.sig";
+// A refusal reads only the token row and the provisioned flag: no work state, write or setup.
+const strayCalls = (touched: string[]) =>
+  touched.filter(
+    (call) =>
+      call !== "get provisioned" &&
+      !/^SELECT (name FROM sqlite_schema WHERE type='table' AND name=\?|\* FROM domain_cloud_tokens WHERE id=\?)$/.test(
+        call,
+      ),
+  );
 
 for (const [layer, via] of [
   ["Worker", () => createWorker()],
@@ -192,6 +205,7 @@ for (const [layer, via] of [
     for (const [name, options, status, code] of cases) {
       const got = await f.send(call, { ...options, via: via() });
       expect([name, got.status, got.code]).toEqual([name, status, code]);
+      expect(strayCalls(got.touched)).toEqual([]);
     }
     expect(f.reached).toEqual([]);
     expect(f.snapshot()).toBe(before);
@@ -203,6 +217,7 @@ for (const [layer, via] of [
       ["p"],
     ]);
     expect(ok.json.error?.message).toContain(refused);
+    expect(strayCalls(ok.touched)).toEqual([]);
     expect(f.snapshot()).toBe(before);
   }, 30_000);
 
@@ -246,6 +261,7 @@ test("the object refuses on its own when reached directly", async () => {
   for (const [name, options, status, code] of cases) {
     const got = await f.send(call, { via: "direct", ...options });
     expect([name, got.status, got.code]).toEqual([name, status, code]);
+    expect(strayCalls(got.touched)).toEqual([]);
   }
 }, 30_000);
 
@@ -253,7 +269,7 @@ test("an unprovisioned project runs no SQL for a command", async () => {
   const f = fixture();
   const got = await f.send(call, { via: "direct", token: fakeToken });
   expect([got.status, got.code]).toEqual([401, "AUTH_INVALID"]);
-  expect(f.snapshot()).toBe("[]");
+  expect(f.snapshot()).toBe('{"sql":[],"kv":[]}');
 }, 30_000);
 
 test("an expired or revoked token ends the command, also during the body read", async () => {
@@ -296,6 +312,7 @@ test("a body over 512 KiB is refused at the limit and nothing is written", async
     const got = await f.send(body, { token });
     expect([got.status, got.code, got.exit]).toEqual([400, "INPUT_INVALID", 6]);
     expect(got.json.error?.message).toContain(`${limit} bytes`);
+    expect(strayCalls(got.touched)).toEqual([]);
   }
   for (const [body, message] of [
     [at, "body must be { requestId"],
@@ -305,6 +322,7 @@ test("a body over 512 KiB is refused at the limit and nothing is written", async
     const got = await f.send(body, { token });
     expect([got.status, got.code]).toEqual([400, "INPUT_INVALID"]);
     expect(got.json.error?.message).toContain(message);
+    expect(strayCalls(got.touched)).toEqual([]);
   }
   expect(f.snapshot()).toBe(before);
 }, 30_000);
@@ -328,12 +346,14 @@ test("a refused command on a cold object older than the login migration writes n
     for (const via of ["direct", createWorker()] as const) {
       const got = await f.send(call, { token: bearer, via });
       expect([name, got.status, got.code]).toEqual([name, status, code]);
+      expect(strayCalls(got.touched)).toEqual([]);
       expect(f.snapshot()).toBe(before);
     }
   f.db.query("DROP TABLE domain_cloud_tokens").run();
   const gone = f.snapshot();
   const got = await f.send(call, { token, via: "direct" });
   expect([got.status, got.code]).toEqual([401, "AUTH_INVALID"]);
+  expect(strayCalls(got.touched)).toEqual([]);
   expect(f.snapshot()).toBe(gone);
 }, 30_000);
 
@@ -358,11 +378,11 @@ test("a streamed body is cut off at the limit before the rest is read", async ()
     expect(got.json.error?.message).toContain(`${limit} bytes`);
     expect(seen.cancelled).toBe(true);
     expect(seen.pulled).toBeLessThan(chunks);
+    expect(strayCalls(got.touched)).toEqual([]);
     expect(f.snapshot()).toBe(before);
   }
 }, 30_000);
 
-// A refusal reads only the token row and the provisioned flag: no work state, write or setup.
 const refusal = (
   name: string,
   got: {
@@ -374,15 +394,7 @@ const refusal = (
   want: [number, string, number],
 ) => {
   expect([name, got.status, got.code, got.exit]).toEqual([name, ...want]);
-  expect(
-    got.touched.filter(
-      (call) =>
-        call !== "get provisioned" &&
-        !/^SELECT (name FROM sqlite_schema WHERE type='table' AND name=\?|\* FROM domain_cloud_tokens WHERE id=\?)$/.test(
-          call,
-        ),
-    ),
-  ).toEqual([]);
+  expect(strayCalls(got.touched)).toEqual([]);
 };
 async function begin() {
   const f = fixture();
@@ -539,6 +551,32 @@ test("a dry run is unavailable before its context is bound and runs nothing", as
       [503, "UNAVAILABLE", 1],
     );
   expect(f.snapshot()).toBe(before);
+}, 30_000);
+
+test("an exposed op missing from the manifest fails closed as UNKNOWN_COMMAND", async () => {
+  const { f, token, before } = await begin();
+  const operations = manifest.operations as unknown as Record<string, unknown>;
+  const declared = operations["issue.show"];
+  delete operations["issue.show"];
+  try {
+    // Direct: the envelope step takes only a device and a project, never a storage capability.
+    expect(() =>
+      prepareCommand(JSON.stringify(call), { device: "laptop", project: "p" }),
+    ).toThrow("UNKNOWN_COMMAND: No such command");
+    refusal("missing op", await f.send(call, { token }), [
+      404,
+      "UNKNOWN_COMMAND",
+      3,
+    ]);
+  } finally {
+    operations["issue.show"] = declared;
+  }
+  expect(f.snapshot()).toBe(before);
+  refusal("restored op", await f.send(call, { token }), [
+    400,
+    "INPUT_INVALID",
+    6,
+  ]);
 }, 30_000);
 
 test("the server builds the effective context from what the operation declares", () => {
