@@ -37,6 +37,15 @@ export const DEFAULT_RUNTIME_LIMITS: RuntimeLimits = {
 
 export type ServiceHandle = Handle<unknown>;
 
+/** What the request checks resolved: the values `invoke` goes on to use. */
+export interface Preflight {
+  readonly request: InvocationRequest;
+  readonly block: CapturedBlock;
+  readonly operation: ReturnType<Catalog["resolve"]>["operation"];
+  readonly config: unknown;
+  readonly context: BoundContext;
+}
+
 function onlyPendingLockCleanup(error: unknown, depth = 0): boolean {
   if (depth >= 32) return false;
   if (error instanceof AggregateError)
@@ -291,6 +300,47 @@ export class Runtime {
     return this.invoke(parsed.value, options);
   }
 
+  /** The request checks `invoke` makes first. It opens nothing; `accepted` sees the request once it is valid. */
+  preflight(
+    value: unknown,
+    accepted?: (request: InvocationRequest) => void,
+  ): Preflight {
+    const checked = validateInvocationRequest(value);
+    if (!checked.ok) refuse("INPUT_INVALID", "invalid invocation request");
+    const request = checked.value;
+    accepted?.(request);
+    const { block, operation } = this.#catalog.resolve(request.op);
+    const declaration = operation.declaration;
+    if (!declaration.callers.includes(request.caller))
+      refuse("GRANT_REQUIRED", "caller is not permitted");
+    if (request.dryRun === true)
+      refuse("UNAVAILABLE", "this profile has no dry-run execution contract");
+    const bound = bindContext(declaration, request.context);
+    if (!bound.ok) throw new ForgeFailure(bound.error);
+    const problems = block.problems(declaration.input, request.input, true);
+    if (problems.length > 0) {
+      const docs = JSON.parse(block.text(block.manifest.docs)) as DocsRecords;
+      throw new ForgeFailure(
+        inputError(
+          request.op,
+          problems,
+          docs.operations?.[operation.declaredOp],
+          block.resolvedSchema(declaration.input) as Record<string, unknown>,
+          declaration.args,
+        ),
+      );
+    }
+    const config =
+      this.#catalog.config.blocks[operation.instance]?.config ?? {};
+    if (
+      block.manifest.configSchema !== undefined &&
+      !block.validate(block.manifest.configSchema, config)
+    )
+      refuse("INPUT_INVALID", "config does not match block schema");
+    this.#checkTrust(block, declaration.effects);
+    return { request, block, operation, config, context: bound.context };
+  }
+
   /** Parsed values from embeddings are trusted objects; outside text uses invokeText. */
   async invoke(
     value: unknown,
@@ -306,38 +356,10 @@ export class Runtime {
     let result: ResultEnvelope;
     const clock = this.#options.clock ?? { now: () => Date.now() };
     try {
-      const checked = validateInvocationRequest(value);
-      if (!checked.ok) refuse("INPUT_INVALID", "invalid invocation request");
-      request = checked.value;
-      const { block, operation } = this.#catalog.resolve(request.op);
+      const flight = this.preflight(value, (valid) => (request = valid));
+      request = flight.request;
+      const { block, operation, config } = flight;
       const declaration = operation.declaration;
-      if (!declaration.callers.includes(request.caller))
-        refuse("GRANT_REQUIRED", "caller is not permitted");
-      if (request.dryRun === true)
-        refuse("UNAVAILABLE", "this profile has no dry-run execution contract");
-      const bound = bindContext(declaration, request.context);
-      if (!bound.ok) throw new ForgeFailure(bound.error);
-      const problems = block.problems(declaration.input, request.input, true);
-      if (problems.length > 0) {
-        const docs = JSON.parse(block.text(block.manifest.docs)) as DocsRecords;
-        throw new ForgeFailure(
-          inputError(
-            request.op,
-            problems,
-            docs.operations?.[operation.declaredOp],
-            block.resolvedSchema(declaration.input) as Record<string, unknown>,
-            declaration.args,
-          ),
-        );
-      }
-      const config =
-        this.#catalog.config.blocks[operation.instance]?.config ?? {};
-      if (
-        block.manifest.configSchema !== undefined &&
-        !block.validate(block.manifest.configSchema, config)
-      )
-        refuse("INPUT_INVALID", "config does not match block schema");
-      this.#checkTrust(block, declaration.effects);
       if (
         this.#catalog.bindings(operation.instance).length > 0 &&
         this.#options.services === undefined
@@ -421,7 +443,7 @@ export class Runtime {
         Promise.resolve(
           this.#options.services?.(
             operation.instance,
-            bound.context,
+            flight.context,
             Object.freeze({
               authorizeFinalizer: (state: FinalizerState, key: string) =>
                 scope.authorizeFinalizer(state, key),
