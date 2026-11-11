@@ -32,6 +32,7 @@ import {
 import {
   durableStore,
   PRAGMA_TABLE,
+  readOnlyStore,
   type DurableState,
   type DurableStorage,
 } from "./store.ts";
@@ -48,6 +49,7 @@ import {
   loginRoute,
   type LoginEnv,
 } from "./auth/project-login.ts";
+import { commandProject, failed, MAX_COMMAND_BODY } from "./issue-commands.ts";
 import {
   authorize,
   issueToken,
@@ -56,6 +58,7 @@ import {
   TOKENS,
   tokenParts,
   bearer,
+  wellFormed,
 } from "./tokens.ts";
 
 const NAMESPACE = "forge/work";
@@ -262,6 +265,8 @@ export class Project {
           request.method === "POST" ? await bounded(request, 2048) : "",
         );
       }
+      if (commandProject(request) !== undefined)
+        return await this.#command(request);
       // The Worker has already checked the admin token before it forwards these two routes.
       if (request.method === "POST" && route === "devices") {
         const input = object(await bounded(request));
@@ -432,6 +437,50 @@ export class Project {
         { ok: false, error: error.error },
         { status: STATUS[error.error.code] ?? 500 },
       );
+    }
+  }
+
+  // A typed command, for a device token only: never the owner-forward path, never an admin token.
+  // Every refusal is a FAIL envelope. The token is checked before the body is read and again, with
+  // no await before the command would run, so a revoke or expiry during the read ends it.
+  async #command(request: Request): Promise<Response> {
+    try {
+      if (request.method !== "POST")
+        throw fail(
+          "UNKNOWN_COMMAND",
+          `No route for ${request.method} /command`,
+        );
+      if (
+        request.headers.has("X-Forge-Owner") ||
+        request.headers.has("X-Forge-Owner-Expires") ||
+        new URL(request.url).pathname.split("/")[2] !==
+          this.#env.FORGE_CLOUD_PROJECT
+      )
+        throw fail(
+          "AUTH_FORBIDDEN",
+          "Commands are for a device token on the admitted project",
+        );
+      const presented = bearer(request);
+      if (presented === undefined)
+        throw fail("AUTH_REQUIRED", "A device token is required");
+      if (!wellFormed(presented))
+        throw fail("AUTH_FORBIDDEN", "Commands need a device token");
+      const parts = await tokenParts(presented);
+      if (!(await this.#isProvisioned()))
+        throw fail("AUTH_INVALID", "Token is not valid");
+      // Checked through a read-only view: a refusal must not create a table or run a migration.
+      const db = readOnlyStore(this.#storage, TOKENS);
+      if (db === undefined) throw fail("AUTH_INVALID", "Token is not valid");
+      authorize(db, parts, Date.now());
+      await bounded(request, MAX_COMMAND_BODY);
+      authorize(db, parts, Date.now());
+      throw fail("INPUT_INVALID", "Commands are not yet supported in cloud");
+    } catch (error) {
+      if (!(error instanceof ForgeFailure)) throw error;
+      await discard(request);
+      return Response.json(failed(error.error), {
+        status: STATUS[error.error.code] ?? 500,
+      });
     }
   }
 

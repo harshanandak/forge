@@ -41,6 +41,32 @@ function synchronous<T>(body: () => T): T {
   return result;
 }
 
+/**
+ * A read-only view for a request that must not set anything up: it creates no table, runs no
+ * migration and writes no row. Undefined when `table` does not exist yet.
+ */
+export function readOnlyStore(
+  storage: DurableStorage,
+  table: string,
+): SqlDatabase | undefined {
+  const all = (statement: string, params: readonly SqlValue[] = []) =>
+    storage.sql.exec(statement, ...params.map(bind)).toArray() as SqlRow[];
+  const refuse = (): never => {
+    throw new Error("This view is read-only");
+  };
+  return all("SELECT name FROM sqlite_schema WHERE type='table' AND name=?", [
+    table,
+  ]).length === 0
+    ? undefined
+    : {
+        exec: refuse,
+        run: refuse,
+        transaction: refuse,
+        all,
+        get: (statement, params) => all(statement, params)[0],
+      };
+}
+
 export function durableStore(storage: DurableStorage): SqlDatabase {
   const { sql } = storage;
   let active = false;

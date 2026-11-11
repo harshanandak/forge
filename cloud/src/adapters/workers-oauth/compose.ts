@@ -28,6 +28,7 @@ import { clerkUpstream, productionOptions } from "./production.ts";
 import { bearer, sha256, wellFormed } from "../../tokens.ts";
 import { durableRedemption, type RedemptionNamespace } from "./redemption.ts";
 import { isLoginRoute } from "../../auth/project-login.ts";
+import { commandProject } from "../../issue-commands.ts";
 import { boundedOAuthRequest } from "./body.ts";
 export { CodeRedemption } from "./redemption.ts";
 export { RegistrationLimiter } from "./registration.ts";
@@ -158,6 +159,7 @@ export function createConfiguredWorker(
       if (
         isDeviceRoute(request) ||
         isDeviceCallback(request) ||
+        commandProject(request) !== undefined ||
         (!isOAuthRoute(request) &&
           (isLoginRoute(request) ||
             !token ||
