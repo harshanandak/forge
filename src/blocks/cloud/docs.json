@@ -1,0 +1,16 @@
+{
+  "operations": {
+    "cloud.login": {
+      "title": "Log in to Forge cloud",
+      "summary": "Log this device in to one Forge cloud project. Prints a code and an address on stderr; the owner approves it in a browser. Saves the credential privately and binds the project. Never prints the token.",
+      "examples": [
+        {
+          "command": "forge cloud login --origin https://forge.example.com --project my-project"
+        },
+        {
+          "command": "forge cloud login"
+        }
+      ]
+    }
+  }
+}

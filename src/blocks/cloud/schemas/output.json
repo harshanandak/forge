@@ -1,0 +1,20 @@
+{
+  "type": "object",
+  "required": [
+    "origin",
+    "project",
+    "device",
+    "tokenId",
+    "expiresAt",
+    "binding"
+  ],
+  "properties": {
+    "origin": { "type": "string" },
+    "project": { "type": "string" },
+    "device": { "type": "string" },
+    "tokenId": { "type": "string" },
+    "expiresAt": { "type": "string" },
+    "binding": { "enum": ["created", "unchanged"] }
+  },
+  "additionalProperties": false
+}

@@ -1,6 +1,9 @@
 import { lstatSync } from "node:fs";
 import type { PrivateFiles } from "../../ports/private-files.ts";
 
+/** The Administrators group owns what an elevated user creates; it is the one other owner accepted. */
+const ADMINISTRATORS = "S-1-5-32-544";
+
 export interface PrivateFileGuard {
   directory(path: string, created?: boolean): void;
   file(path: string): void;
@@ -35,7 +38,11 @@ function powershellLiteral(value: string): string {
 /** Windows can change a DACL without changing stat times; always read it natively. */
 export function privateFileGuard(
   native: PrivateFiles,
-  options: { readonly protectDirectories?: boolean } = {},
+  options: {
+    readonly protectDirectories?: boolean;
+    /** Refuse an owner other than the current user, whatever the DACL says. */
+    readonly requireOwner?: boolean;
+  } = {},
 ): PrivateFileGuard {
   const fail = (path: string): never => {
     throw new Error(
@@ -50,6 +57,15 @@ export function privateFileGuard(
       (!directory && info.nlink !== 1n)
     )
       fail(path);
+    if (options.requireOwner === true) {
+      let owner: string | undefined;
+      try {
+        owner = native.owner(path);
+      } catch {
+        owner = undefined;
+      }
+      if (owner !== native.sid && owner !== ADMINISTRATORS) fail(path);
+    }
     const entry = `(A;OICI;FA;;;${native.sid})`;
     const ownTrustees = [native.sid, ...(native.aliases ?? [])];
     const trustees = ownTrustees.join("|");

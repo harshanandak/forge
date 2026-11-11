@@ -1,0 +1,11 @@
+{
+  "properties": {
+    "origin": {
+      "description": "HTTPS origin of the Forge cloud, such as https://forge.example.com. Needed for the first login only."
+    },
+    "project": {
+      "description": "Name of the cloud project. Needed for the first login only."
+    }
+  },
+  "additionalProperties": true
+}

@@ -278,7 +278,10 @@ export async function createAssembly(
 ): Promise<Assembly> {
   const root = resolve(options.root);
   const deviceRoot = resolve(options.deviceRoot);
-  const providers = createAssemblyProviders(root, options.providers);
+  const providers = createAssemblyProviders(root, {
+    ...options.providers,
+    deviceRoot,
+  });
   const trustState = new LocalState(join(deviceRoot, "trust.sqlite"));
   // Every git worktree of one repository shares one store; config and files stay at `root`.
   const stateRoot = await projectStateRoot(root, options.providers);
@@ -1922,6 +1925,17 @@ export async function createAssembly(
                       "Private device files unavailable",
                     );
                   clients[binding.slot] = providers.deviceFiles(scope);
+                  continue;
+                }
+                if (
+                  interfaceSatisfies(
+                    "forge.cloud-login@1.0.0",
+                    binding.interface,
+                  )
+                ) {
+                  if (!providers.cloudLogin)
+                    refuse("PROVIDER_MISSING", "Cloud login unavailable");
+                  clients[binding.slot] = providers.cloudLogin(scope);
                   continue;
                 }
                 if (

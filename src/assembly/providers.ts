@@ -48,6 +48,8 @@ import { DEFAULT_PARSE_LIMITS } from "../contract/untrusted.ts";
 import { firstPartyBlocks, firstPartyTemplates } from "./first-party.ts";
 import { createDeviceFiles } from "../adapters/fs/device-identity.ts";
 import type { DeviceFiles } from "../ports/device-files.ts";
+import type { CloudLogin } from "../ports/cloud-login.ts";
+import { createCloudLogin, type CloudLoginDeps } from "./cloud-login.ts";
 import { windowsPrivateFiles } from "../adapters/process/windows-acl.ts";
 import { privateFileGuard } from "../adapters/store-sqlite/private-files.ts";
 
@@ -143,12 +145,19 @@ export interface ProcessService extends ProcessPort {
   readonly cleanupBudgetMs?: number;
 }
 export interface ProviderOptions {
+  /** Where the device id lives; the host sets it, and cloud login needs it. */
+  readonly deviceRoot?: string;
+  /** Network, clock and wait seams for cloud login; tests supply them, the host leaves them out. */
+  readonly cloudLogin?: Partial<
+    Pick<CloudLoginDeps, "fetch" | "now" | "wait" | "progress" | "security">
+  >;
   readonly supervision?: SupervisionOptions;
   readonly maxFileBytes?: number;
   readonly env?: Readonly<Record<string, string>>;
 }
 export interface AssemblyProviders {
   deviceFiles?(scope: ServiceScope): DeviceFiles;
+  cloudLogin?(scope: ServiceScope): CloudLogin;
   process(scope: ServiceScope): ProcessService;
   environment(scope: ServiceScope): EnvironmentService;
   crypto(scope: ServiceScope): CryptoService;
@@ -183,6 +192,7 @@ export const SNAPSHOT_TIMEOUT_MS: number =
 export const SNAPSHOT_OPERATION_TIMEOUT_MS: number = SNAPSHOT_TIMEOUT_MS + 1000;
 export const ASSEMBLY_PROVIDES: readonly string[] = [
   "forge.device-files@1.0.0",
+  "forge.cloud-login@1.0.0",
   "forge.state@1.0.0",
   "forge.process@1.0.0",
   "forge.files@1.0.0",
@@ -548,6 +558,27 @@ export function createAssemblyProviders(
         scratch() {
           requireEffect("files:write");
           return files.scratch();
+        },
+      };
+    },
+    cloudLogin(scope) {
+      return {
+        login(input) {
+          active(scope);
+          for (const effect of ["files:write", "external:forge-cloud"])
+            if (!scope.effects.includes(effect))
+              refuse("EFFECT_UNDECLARED", `Cloud login requires ${effect}`);
+          if (options.deviceRoot === undefined)
+            refuse("UNAVAILABLE", "Cloud login requires a device folder");
+          return createCloudLogin({
+            // The checkout root, so a call from a nested folder reads and writes the same files.
+            root: projectManifestRoot(root),
+            home: env.HOME ?? env.USERPROFILE,
+            deviceRoot: options.deviceRoot,
+            env,
+            signal: scope.signal,
+            ...options.cloudLogin,
+          }).login(input);
         },
       };
     },

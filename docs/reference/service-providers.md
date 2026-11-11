@@ -34,6 +34,14 @@ cancellation and deadlines, and is revoked with the invocation. The neutral port
 pure parser are imported unchanged from the check lane; no check policy is added to
 assembly.
 
+## Cloud login
+
+`forge.cloud-login@1.0.0` supplies `login(input)` for the `forge/cloud` block. It runs the device login
+against one Forge cloud project over HTTPS, saves the credential in the private `~/.forge/cloud` file and writes
+the project's `.forge/cloud.json` binding last. It requires the `files:write` and `external:forge-cloud`
+effects on the current operation, follows the invocation's cancellation and deadline, and never returns the token.
+It sends no bearer token and follows no redirect.
+
 ## Process
 
 `forge.process@1` implements the existing `ProcessPort` unchanged and adds `cwd`, the
