@@ -372,7 +372,9 @@ type Store = { entries: Record<string, unknown> };
 const another = (s: fx.Sandbox) => {
   const files = openCloudFiles(s.home); // the store's own private write, so the file keeps its protection
   const file = JSON.parse(files.read(CREDENTIAL_FILE)!) as Store;
-  const e = fx.entry(NOW, { origin: fx.OTHER_ORIGIN, id: "b".repeat(16) });
+  const id = "b".repeat(16); // the token must carry its own id, or the store refuses the whole file
+  const token = fx.tokenFor(id, "P".repeat(43));
+  const e = fx.entry(NOW, { origin: fx.OTHER_ORIGIN, id, token });
   file.entries[`${e.origin}|${e.identity}|${e.project}`] = e;
   files.write(CREDENTIAL_FILE, JSON.stringify(file));
 };

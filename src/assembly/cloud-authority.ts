@@ -24,11 +24,7 @@ export interface CloudAuthorityDeps {
 const fail = (code: string, message: string) =>
   new ForgeFailure({ code, message, retry: "never" });
 
-/**
- * Where a resolved operation goes on a cloud-bound project: the cloud for `issue.show`, a refusal for every
- * other operation of the work block (they would write issue state locally, a second writer), and the local
- * runtime for the operations of other blocks.
- */
+/** On a bound project: `issue.show` goes to the cloud, other work operations are refused (a second writer), other blocks stay local. */
 export function cloudRoute(
   blockId: string,
   declared: string,
