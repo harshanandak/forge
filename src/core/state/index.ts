@@ -72,6 +72,7 @@ export interface DeleteWriteOptions extends DeleteOptions {
 }
 export interface AcquireOptions extends BatchOptions {
   readonly metadata?: unknown;
+  readonly entries?: readonly BatchEntry[];
 }
 export interface Snapshot {
   readonly image: string;
@@ -213,6 +214,11 @@ function deletionEvent(
   };
 }
 function acquisitionInput(options?: AcquireOptions) {
+  if (options?.entries !== undefined)
+    return {
+      entries: options.entries,
+      ...(options.metadata === undefined ? {} : { metadata: options.metadata }),
+    };
   return options?.metadata === undefined ? {} : { metadata: options.metadata };
 }
 function acquisitionEvent(
@@ -1426,6 +1432,19 @@ export class StateOwner {
             nowMs: now,
           });
           if (!decision.ok) throw new ForgeFailure(decision.error);
+          const entries = accepted?.entries ?? [];
+          const keys = new Set<string>();
+          for (const entry of entries) {
+            keyValid(entry.key);
+            if (
+              !Number.isSafeInteger(entry.expectRevision) ||
+              entry.expectRevision < 0 ||
+              keys.has(entry.key)
+            )
+              invalid("Invalid or repeated acquisition entry");
+            keys.add(entry.key);
+            this.#readSetHolds(namespace, entry.key, entry.expectRevision, []);
+          }
           const lease: LeaseRecord = {
             subject,
             holder,
@@ -1443,6 +1462,15 @@ export class StateOwner {
               accepted,
             ),
           );
+          for (const entry of entries)
+            this.#apply(
+              namespace,
+              entry.key,
+              entry.value,
+              holder.actor,
+              now,
+              undefined,
+            );
           return lease;
         },
       );

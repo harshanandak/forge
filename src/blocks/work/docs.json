@@ -358,6 +358,25 @@
     "issue.leave": {
       "title": "Leave",
       "summary": "Release own membership; no coordinator lease."
+    },
+    "attempt.slots": {
+      "title": "slots",
+      "summary": "Coordinator sets 1-16 competing slots.",
+      "description": "INPUT_INVALID: count must be 1-16. INPUT_CONFLICT: fewer slots than live attempts. Coordinator lease fence required; same count writes nothing."
+    },
+    "attempt.reserve": {
+      "title": "attempt",
+      "summary": "Reserve an open attempt; live retries keep their lease.",
+      "description": "ISSUE_NOT_COMPETING: slots not set. ATTEMPT_SLOTS_FULL: names the limit and live ids. INPUT_CONFLICT: closed issue. Atomic reservation; one live attempt per holder. Released and expired ids remain in issue.show."
+    },
+    "attempt.release": {
+      "title": "attempt-release",
+      "summary": "Release your attempt; retain its history."
+    },
+    "attempt.note": {
+      "title": "attempt-note",
+      "summary": "Publish under your attempt lease.",
+      "description": "LEASE_EXPIRED or LEASE_NOT_HELD: expired, released or another holder. LEASE_STALE: wrong attempt generation. Refusals write nothing."
     }
   }
 }

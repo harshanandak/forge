@@ -220,6 +220,16 @@ type TailAction = {
   approval?: { request: string; quote: string; source: ReplySource };
 };
 type WorkOperations = TrackerOperations<"issue"> & {
+  readonly "attempt.slots": readonly [ItemRef & { count: number }, unknown];
+  readonly "attempt.reserve": readonly [
+    ItemRef & { label?: string; ttlSeconds?: number },
+    unknown,
+  ];
+  readonly "attempt.release": readonly [ItemRef & { attempt: string }, unknown];
+  readonly "attempt.note": readonly [
+    ItemRef & { attempt: string; body: string },
+    unknown,
+  ];
   readonly "issue.invite": readonly [
     ItemRef & { session: string; device?: string },
     unknown,
@@ -327,6 +337,31 @@ type WorkOperations = TrackerOperations<"issue"> & {
     { problems: readonly string[] },
   ];
 };
+type Attempt = {
+  id: string;
+  label?: string;
+  holder: LeaseHolder;
+  baseRevision: number;
+  createdAt: string;
+};
+const attempts = (state: LeaseStateClient, id: string) =>
+  state
+    .list(`attempt:${id}:`)
+    .toSorted(
+      (a, b) =>
+        Number((a.value as Attempt).id.slice(8)) -
+        Number((b.value as Attempt).id.slice(8)),
+    );
+function attemptView(state: LeaseStateClient, record: StateRecord) {
+  const lease = state.lease(key(record.key));
+  if (!lease) fail("INTERNAL", "Attempt record has no lease");
+  return {
+    ...(record.value as Attempt),
+    live: !!live(state, record.key),
+    generation: lease.generation,
+    expiresAt: lease.expiresAt,
+  };
+}
 type TreeNode = {
   readonly item: TrackerItem;
   readonly openChildren: number;
@@ -5080,6 +5115,15 @@ const operations: Operations<WorkOperations> = {
     const ids = idsFor(state, config);
     const id = ids.stored(input.id),
       invited = invitations(state, id);
+    const slots = state.get(`slots:${id}`)?.value as
+      { count: number } | undefined;
+    if (slots)
+      return {
+        ...item(state, get(state, id, input.id), ids),
+        mode: "competing",
+        slots: slots.count,
+        attempts: attempts(state, id).map((row) => attemptView(state, row)),
+      };
     if (invited.length)
       return {
         ...item(state, get(state, id, input.id), ids),
@@ -5192,6 +5236,115 @@ const operations: Operations<WorkOperations> = {
       ids,
       input.id,
     );
+  },
+  "attempt.slots": ({ input, services, config }) => {
+    let state = client(services);
+    const ids = idsFor(state, config),
+      id = ids.stored(input.id);
+    get(state, id, input.id);
+    state = state.withOwnLease(key(id));
+    state.putMany([], { subject: key(id) });
+    if (!Number.isInteger(input.count) || input.count < 1 || input.count > 16)
+      fail("INPUT_INVALID", "Slot count must be an integer from 1 to 16");
+    const slot = state.get(`slots:${id}`),
+      value = slot?.value as { count: number; next: number } | undefined;
+    if (
+      input.count <
+      attempts(state, id).filter((row) => live(state, row.key)).length
+    )
+      fail("INPUT_CONFLICT", "Slot count cannot evict live attempts");
+    if (value?.count !== input.count)
+      persist(
+        state,
+        `slots:${id}`,
+        { count: input.count, next: value?.next ?? 0 },
+        slot?.revision ?? 0,
+        key(id),
+      );
+    return { id: ids.shown(id) };
+  },
+  "attempt.reserve": ({ input, services, config }) => {
+    const state = client(services),
+      ids = idsFor(state, config),
+      id = ids.stored(input.id);
+    const issue = get(state, id, input.id),
+      slot = state.get(`slots:${id}`);
+    if (stored(issue).status !== "open")
+      fail("INPUT_CONFLICT", "Closed issues cannot be attempted");
+    if (!slot)
+      fail("ISSUE_NOT_COMPETING", "Coordinator must set attempt slots");
+    const value = slot.value as { count: number; next: number },
+      caller = state.holder();
+    const active = attempts(state, id).filter((row) => live(state, row.key));
+    const own = active.find((row) =>
+      matches((row.value as Attempt).holder, caller),
+    );
+    if (own) return attemptView(state, own);
+    if (active.length >= value.count)
+      fail(
+        "ATTEMPT_SLOTS_FULL",
+        `${value.count} slots full: ${active.map((row) => (row.value as Attempt).id).join(", ")}`,
+      );
+    const attempt = `attempt-${value.next + 1}`,
+      recordKey = `attempt:${id}:${attempt}`;
+    const record: Attempt = {
+      id: attempt,
+      holder: caller,
+      baseRevision: issue.revision,
+      createdAt: new Date(state.now()).toISOString(),
+      ...(input.label === undefined ? {} : { label: input.label }),
+    };
+    state.acquire(
+      key(recordKey),
+      (input.ttlSeconds ??
+        (config as WorkConfig | undefined)?.claimTtlSeconds ??
+        3600) * 1000,
+      {
+        readSet: [issue, slot].map((row) => ({
+          key: row.key,
+          expectRevision: row.revision,
+        })),
+        entries: [
+          {
+            key: slot.key,
+            value: { ...value, next: value.next + 1 },
+            expectRevision: slot.revision,
+          },
+          { key: recordKey, value: record, expectRevision: 0 },
+        ],
+      },
+    );
+    return attemptView(state, state.get(recordKey)!);
+  },
+  "attempt.release": ({ input, services, config }) => {
+    const state = client(services),
+      ids = idsFor(state, config),
+      id = ids.stored(input.id);
+    get(state, id, input.id);
+    const record = state.get(`attempt:${id}:${input.attempt}`);
+    if (!record) fail("LEASE_NOT_HELD", "No such attempt on this issue");
+    const released = state.releaseOwn(key(record.key));
+    if (canonical(state.lease(key(record.key))) !== canonical(released))
+      fail("INTERNAL", "Attempt release readback mismatch");
+    return { id: ids.shown(id) };
+  },
+  "attempt.note": ({ input, services, config }) => {
+    let state = client(services);
+    const ids = idsFor(state, config),
+      id = ids.stored(input.id);
+    get(state, id, input.id);
+    const record = state.get(`attempt:${id}:${input.attempt}`);
+    if (!record) fail("LEASE_NOT_HELD", "No such attempt on this issue");
+    state = state.withOwnLease(key(record.key));
+    const prefix = `note:${record.key}:`;
+    persist(
+      state,
+      `${prefix}${state.count(prefix) + 1}`,
+      { attempt: input.attempt, body: input.body },
+      0,
+      key(record.key),
+    );
+    return { id: ids.shown(id) };
   },
   "issue.invite": ({ input, services, config }) => {
     const state = client(services),

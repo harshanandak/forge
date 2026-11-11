@@ -11,6 +11,48 @@
     "ItemStatus": {
       "enum": ["open", "closed"]
     },
+    "Attempt": {
+      "type": "object",
+      "required": [
+        "id",
+        "holder",
+        "baseRevision",
+        "createdAt",
+        "live",
+        "generation",
+        "expiresAt"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^attempt-[1-9][0-9]*$"
+        },
+        "label": {
+          "type": "string"
+        },
+        "holder": {
+          "$ref": "state.json#/$defs/LeaseHolder"
+        },
+        "baseRevision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "createdAt": {
+          "$ref": "common.json#/$defs/Timestamp"
+        },
+        "live": {
+          "type": "boolean"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "expiresAt": {
+          "$ref": "common.json#/$defs/Timestamp"
+        }
+      },
+      "additionalProperties": false
+    },
     "TrackerItem": {
       "type": "object",
       "required": [
@@ -55,7 +97,9 @@
         "lease": { "$ref": "state.json#/$defs/LeaseRecord" },
         "createdAt": { "$ref": "common.json#/$defs/Timestamp" },
         "updatedAt": { "$ref": "common.json#/$defs/Timestamp" },
-        "mode": { "enum": ["exclusive", "collaborative"] },
+        "mode": { "enum": ["exclusive", "collaborative", "competing"] },
+        "slots": { "type": "integer", "minimum": 1, "maximum": 16 },
+        "attempts": { "type": "array", "items": { "$ref": "#/$defs/Attempt" } },
         "participants": {
           "type": "array",
           "items": { "$ref": "state.json#/$defs/LeaseRecord" }
