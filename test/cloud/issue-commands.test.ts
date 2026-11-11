@@ -1531,6 +1531,18 @@ test("a corrupt row is refused whatever the filter would exclude, and ready:true
       "500",
     ],
     [
+      "live lease with no generation on a candidate",
+      (f: F) => f.lease({ generation: undefined }),
+      { ready: true },
+      "500",
+    ],
+    [
+      "lease with an invalid expiry on a candidate",
+      (f: F) => f.lease({ expiresAt: "not-a-date" }),
+      { ready: true },
+      "500",
+    ],
+    [
       "wrong subject on a candidate",
       (f: F) => f.lease({ subject: "issue:work-9" }),
       { ready: true },

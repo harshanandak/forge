@@ -117,17 +117,14 @@ export const holds = (lease: Json | undefined, now: number): boolean =>
   typeof lease.expiresAt === "string" &&
   Date.parse(lease.expiresAt) > now;
 
-/** Whether `lease` holds the issue at `now`. A live lease must be valid as an item carries it, else INTERNAL. */
-export function holdsLease(
-  lease: Json | undefined,
-  record: Json,
-  id: string,
-  now: number,
-  prefix: string,
-): boolean {
-  if (!holds(lease, now)) return false;
-  shownItem(record, id, lease, now, prefix);
-  return true;
+const LEASE_RECORD =
+  "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/state.json#/$defs/LeaseRecord";
+
+/** Whether `lease` holds the issue at `now`. A stored lease is checked as a whole first, live or not, else INTERNAL. */
+export function holdsLease(lease: Json | undefined, now: number): boolean {
+  if (lease !== undefined && schemas().validate(LEASE_RECORD, lease).length > 0)
+    throw invalid();
+  return holds(lease, now);
 }
 
 /**

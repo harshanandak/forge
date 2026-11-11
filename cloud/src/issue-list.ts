@@ -101,7 +101,7 @@ export function listIssues(
       (by.ready !== true ||
         (v.status === "open" &&
           v.dependsOn.every((dep) => statusOf.get(dep) === "closed") &&
-          !holdsLease(lease(at), records[at]!, ids[at]!, now, prefix)));
+          !holdsLease(lease(at), now)));
     return ok ? [at] : [];
   });
   return {
