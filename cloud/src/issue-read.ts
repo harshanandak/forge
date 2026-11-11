@@ -5,6 +5,7 @@
 import manifest from "../../src/blocks/work/forge.block.json" with { type: "json" };
 import config from "../../src/blocks/work/schemas/config.json" with { type: "json" };
 import ItemRef from "../../src/blocks/work/schemas/ItemRef.json" with { type: "json" };
+import ListItemsInput from "../../src/blocks/work/schemas/ListItemsInput.json" with { type: "json" };
 import TrackerItemSchema from "../../src/blocks/work/schemas/TrackerItem.json" with { type: "json" };
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import {
@@ -32,8 +33,15 @@ const MODE =
 const MINTED =
   "SELECT 1 AS found FROM state_records WHERE namespace=? AND key>=? AND key<? AND CASE WHEN length(CAST(body AS BLOB)) <= ? THEN CASE WHEN json_valid(body) THEN CASE WHEN json_type(body,'$.value')='object' AND json_extract(body,'$.namespace')=namespace AND json_extract(body,'$.key')=key AND json_extract(body,'$.value.id')=substr(key,7) THEN coalesce(json_extract(body,'$.value.prefix'),'work') END END END=? LIMIT 1";
 
+// SCAN: the key and byte size of every issue row, in key order, before any body is loaded.
+// ROWS: the same rows with their bodies. Both end with a bound row limit.
+const ISSUES =
+  "FROM state_records WHERE namespace=? AND key>=? AND key<? ORDER BY key LIMIT ?";
+export const SCAN = `SELECT key, length(CAST(body AS BLOB)) AS size ${ISSUES}`;
+export const ROWS = `SELECT key, body ${ISSUES}`;
+
 /** The only statements each read-only view may run; a view refuses any other text. */
-export const RECORD_READS = [MODE, MINTED, RECORD] as const;
+export const RECORD_READS = [MODE, MINTED, RECORD, SCAN, ROWS] as const;
 export const LEASE_READS = [LEASE] as const;
 
 /** Read-only views of the two state tables; undefined when the table does not exist yet. */
@@ -47,11 +55,20 @@ if (manifest.operations["issue.show"].input !== "schemas/ItemRef.json")
 if (manifest.operations["issue.show"].output !== "schemas/TrackerItem.json")
   throw new Error("issue.show no longer declares schemas/TrackerItem.json");
 let registry: SchemaRegistry | undefined;
-const fail = (code: string, message: string): ForgeFailure =>
+/** The declared schemas, built once: the shared documents and the list input. */
+export const schemas = (): SchemaRegistry =>
+  (registry ??= new SchemaRegistry([...SCHEMA_DOCUMENTS, ListItemsInput]));
+export const fail = (code: string, message: string): ForgeFailure =>
   new ForgeFailure({ code, message, retry: "never" });
-const invalid = () => fail("INTERNAL", "Stored issue is not valid");
+export const invalid = () => fail("INTERNAL", "Stored issue is not valid");
 const object = (value: unknown): value is Json =>
   typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** The server's own prefix setting, checked with the work block's idPrefix rule before any input. */
+export function configured(prefix: unknown): void {
+  if (validateWithSchema(config.properties.idPrefix, prefix).length > 0)
+    throw fail("UNAVAILABLE", "Server configuration is not valid");
+}
 
 /** One stored JSON object, or undefined when there is no row. A body over `max` bytes comes back NULL, unread. */
 function load(
@@ -61,10 +78,14 @@ function load(
   key: string,
 ): Json | undefined {
   const row = db?.get(sql, [max, NAMESPACE, key]);
-  if (row === undefined) return undefined;
+  return row === undefined ? undefined : parseBody(row.body, max);
+}
+
+/** One stored JSON object: a body that is not text, not JSON, too deep or not an object is invalid. */
+export function parseBody(body: unknown, max: number): Json {
   const parsed =
-    typeof row.body === "string"
-      ? parseUntrustedJson(row.body, {
+    typeof body === "string"
+      ? parseUntrustedJson(body, {
           maxBytes: max,
           maxDepth: MAX_DEPTH,
           maxNodes: MAX_NODES,
@@ -85,11 +106,8 @@ export function readIssue(
   now: number,
   prefix: string,
 ): TrackerItem {
-  // The server's own setting is checked first, with the work block's idPrefix rule, before any input.
-  if (validateWithSchema(config.properties.idPrefix, prefix).length > 0)
-    throw fail("UNAVAILABLE", "Server configuration is not valid");
-  registry ??= new SchemaRegistry(SCHEMA_DOCUMENTS);
-  if (registry.validate(ItemRef.$ref, input).length > 0)
+  configured(prefix);
+  if (schemas().validate(ItemRef.$ref, input).length > 0)
     throw fail("INPUT_INVALID", "input must be { id } with a valid issue id");
   const match = QUALIFIED.exec((input as { id: string }).id);
   if (match === null) throw fail("INPUT_INVALID", "Invalid issue id");
@@ -112,6 +130,13 @@ export function readIssue(
       "INPUT_INVALID",
       "Competing and collaborative issues are not yet supported in cloud",
     );
+  checkedValue(record, id);
+  return shownItem(record, id, leaseOf(views, id), now, prefix);
+}
+
+type Checked = Json & { dependsOn: string[] };
+/** The stored value, once its wrapper and value agree with `id`. No lease is read here. */
+export function checkedValue(record: Json, id: string): Checked {
   const { value } = record;
   if (
     record.namespace !== NAMESPACE ||
@@ -123,8 +148,25 @@ export function readIssue(
     !["string", "undefined"].includes(typeof value.parent)
   )
     throw invalid();
+  return value as Checked;
+}
+
+/** The stored lease for `id`, if any, once its subject agrees. Reads state_leases. */
+export function leaseOf(views: IssueViews, id: string): Json | undefined {
   const lease = load(views.leases, LEASE, MAX_LEASE_BYTES, `issue:${id}`);
   if (lease !== undefined && lease.subject !== `issue:${id}`) throw invalid();
+  return lease;
+}
+
+/** One stored issue as the local show and list return it, once its wrapper and value agree with `id`; `lease` is shown only while live. */
+export function shownItem(
+  record: Json,
+  id: string,
+  lease: Json | undefined,
+  now: number,
+  prefix: string,
+): TrackerItem {
+  const value = checkedValue(record, id);
   const shown = (stored: string): string =>
     /^work-\d+$/.test(stored) ? `${prefix}-${stored.slice(5)}` : stored;
   const {
@@ -150,7 +192,7 @@ export function readIssue(
     ...(live ? { lease } : {}),
   };
   // Everything projected above, including the wrapper's revision and updatedAt and the live lease.
-  if (registry.validate(TrackerItemSchema.$ref, item).length > 0)
+  if (schemas().validate(TrackerItemSchema.$ref, item).length > 0)
     throw invalid();
   return item as unknown as TrackerItem;
 }
