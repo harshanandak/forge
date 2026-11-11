@@ -5562,13 +5562,18 @@ const operations: Operations<WorkOperations> = {
           (deliveredUrl === undefined || link.url === deliveredUrl)
         );
       })?.value as LinkInput | undefined;
+      const closeRepair =
+        `Link a merged PR with forge issue link ${ids.shown(id)} --relation delivers --url <pr-url>, then close with --receipt <receipt-id>; ` +
+        `or omit --receipt and run forge issue close ${ids.shown(id)} --without-receipt "<reason>".`;
       if (
         !link ||
         !/^https:\/\/[^\s/]+\/[^\s/]+\/[^\s/]+\/pull\/[1-9]\d*\/?$/.test(
           link.url,
         )
       )
-        fail("PR_UNLINKED", "Link the delivered pull request before closing");
+        fail("PR_UNLINKED", "Link the delivered pull request before closing", {
+          repair: closeRepair,
+        });
       const bound = services as {
         process?: ProcessService;
         environment?: EnvironmentService;
@@ -5579,6 +5584,7 @@ const operations: Operations<WorkOperations> = {
           "Verifying the delivered PR requires process and environment services",
         );
       let output: string;
+      let prNotFound = false;
       try {
         const env = bound.environment.select([
           "PATH",
@@ -5611,10 +5617,22 @@ const operations: Operations<WorkOperations> = {
             signal,
           },
         );
+        prNotFound =
+          result.exitCode !== null &&
+          result.exitCode !== 0 &&
+          !result.timedOut &&
+          !result.truncated &&
+          /^GraphQL: Could not resolve to a PullRequest with the number of [1-9]\d*\.(?: \(repository\.pullRequest\))?\s*$/.test(
+            result.stderr,
+          );
         if (result.exitCode !== 0 || result.timedOut || result.truncated)
           fail("UNAVAILABLE", "Could not read the delivered PR; retry");
         output = result.stdout;
       } catch {
+        if (prNotFound)
+          fail("PR_NOT_FOUND", `Could not find delivered PR ${link.url}`, {
+            repair: closeRepair,
+          });
         fail("UNAVAILABLE", "Could not read the delivered PR; retry");
       }
       let pr: unknown;
