@@ -3307,7 +3307,7 @@ const requestsIn = (db: Database) =>
 // createRows, with issue 4 held by laptop session s1 until start + 1, plus issue 20 (blocked by 21, open with an
 // expired lease nobody released, by the absent 99, and by 22, closed and so no blocker), 23 closed, 24, 25 and 26
 // with a live, an expired and a malformed cleanup reservation, 27 with an expired lease, 28 (blocked and held by
-// laptop session s2), and a live reservation on the absent issue 98.
+// laptop session s2), a live reservation on the absent issue 98, and 29 and 30 as a competing and a collaborative issue.
 async function claimRows() {
   const rows = await createRows();
   const { f } = rows;
@@ -3322,6 +3322,9 @@ async function claimRows() {
   f.lease({ expiresAt: iso(start - 1) }, "issue:work-27");
   const other = { actor, session: { id: "s2", device: "laptop" } };
   f.lease({ holder: other, expiresAt: iso(start + 1) }, "issue:work-28");
+  for (const n of [29, 30]) issue(n);
+  f.put({ count: 1 }, {}, "slots:work-29");
+  f.put({ holder }, {}, "participant:work-30:1");
   for (const [n, expiresAt] of [
     [24, iso(start + 5000)],
     [25, iso(start - 1)],
@@ -3382,6 +3385,11 @@ const withoutRepair = (error: unknown) => {
   const { repair: _repair, ...rest } = error as Record<string, unknown>;
   return rest;
 };
+const readyIds = async (f: F, token: string) =>
+  idsOf(
+    (await f.send({ ...readyCall, input: {} }, { token })).json
+      .result as Listed,
+  ).split(",");
 // Releases issue `n` at `generation` through the raw lease route, as session s1 on the token's device.
 const release = (f: F, token: string, n: number, generation: number) =>
   f.send(
@@ -3696,11 +3704,7 @@ test("a session-bound token cannot act as another session, on a first write or a
 test("the cloud issue.claim agrees with the local handler on whole results, rows, leases and events", async () => {
   const { f, token } = await claimRows();
   const twin = Database.deserialize(f.db.serialize());
-  const ready = async () =>
-    idsOf(
-      (await f.send({ ...readyCall, input: {} }, { token })).json
-        .result as Listed,
-    ).split(",");
+  const ready = () => readyIds(f, token);
   const claimed = [12, 1, 25, 26, 27];
   const others = () =>
     JSON.stringify(
@@ -3824,6 +3828,17 @@ test("every refusal agrees with the local handler, writes nothing, and is not re
   });
   expect(blocked.json.error?.message).toContain("forge-21 (open)");
   expect(blocked.json.error?.message).toContain("forge-99 (missing)");
+  // Competing and collaborative issues are refused as they are for a read.
+  for (const n of [29, 30]) {
+    const got = await f.send(claim(`m-${n}`, { id: `forge-${n}` }), { token });
+    expect([n, got.status, got.code, got.exit]).toEqual([
+      n,
+      400,
+      "INPUT_INVALID",
+      6,
+    ]);
+    expect(got.json.error?.message).toContain("Competing and collaborative");
+  }
   expect(writes(f)).toBe(before);
 }, 60_000);
 
@@ -3901,7 +3916,9 @@ test("a ttl over 24 hours or past the token's expiry is INPUT_INVALID and never 
   // Expires 3,599 seconds from now: the default 3,600 seconds does not fit.
   const short = await f.device(3_599_000, "tablet");
   const before = writes(f);
-  const cases: [string, string, object, string][] = [
+  // A message is a refusal that writes nothing; an expiry is a grant: 24 hours is the cap and this
+  // token's whole life, and 3,599 seconds is the short token's.
+  const cases: [string, string, object, string | number][] = [
     ["over the cap", token, { id: "forge-12", ttlSeconds: 86_401 }, "24 hours"],
     ["the default past expiry", short, { id: "forge-12" }, "token expiry"],
     [
@@ -3910,34 +3927,33 @@ test("a ttl over 24 hours or past the token's expiry is INPUT_INVALID and never 
       { id: "forge-12", ttlSeconds: 3600 },
       "token expiry",
     ],
+    ["the cap", token, { id: "forge-12", ttlSeconds: 86_400 }, start + day],
+    [
+      "the token's expiry",
+      short,
+      { id: "forge-1", ttlSeconds: 3599 },
+      start + 3_599_000,
+    ],
   ];
-  for (const [name, bearer, input, message] of cases) {
-    const got = await f.send(claim("t-1", input), { token: bearer });
+  for (const [i, [name, bearer, input, want]] of cases.entries()) {
+    const got = await f.send(claim(`t-${i}`, input), { token: bearer });
+    if (typeof want === "number") {
+      expect([name, got.status, got.json.result]).toMatchObject([
+        name,
+        200,
+        { expiresAt: iso(want) },
+      ]);
+      continue;
+    }
     expect([name, got.status, got.code, got.exit]).toEqual([
       name,
       400,
       "INPUT_INVALID",
       6,
     ]);
-    expect(got.json.error?.message).toContain(message);
+    expect(got.json.error?.message).toContain(want);
     expect([name, writes(f)]).toEqual([name, before]);
   }
-  // 24 hours is the cap and also this token's whole life; 3,599 seconds is the short token's.
-  const cap = await f.send(
-    claim("t-2", { id: "forge-12", ttlSeconds: 86_400 }),
-    { token },
-  );
-  expect([cap.status, cap.json.result]).toMatchObject([
-    200,
-    { expiresAt: iso(start + day) },
-  ]);
-  const edge = await f.send(claim("t-3", { id: "forge-1", ttlSeconds: 3599 }), {
-    token: short,
-  });
-  expect([edge.status, edge.json.result]).toMatchObject([
-    200,
-    { expiresAt: iso(start + 3_599_000) },
-  ]);
 }, 60_000);
 
 test("a retry while the grant is still the current lease returns the original result with no second lease or lease event, and a reused id with other input, session or device conflicts", async () => {
@@ -4095,11 +4111,7 @@ test("after a release by the raw route another session claims with a fresh id an
   const { f, token } = await claimRows();
   const tablet = await f.device(day, "tablet");
   const issue = JSON.stringify(issueRow(f));
-  const ready = async () =>
-    idsOf(
-      (await f.send({ ...readyCall, input: {} }, { token })).json
-        .result as Listed,
-    ).split(",");
+  const ready = () => readyIds(f, token);
   const first = await f.send(claim("k-1"), { token });
   expect([first.status, first.json.result]).toMatchObject([
     200,

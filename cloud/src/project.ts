@@ -55,6 +55,7 @@ import {
   MAX_COMMAND_BODY,
   runCommand,
 } from "./issue-commands.ts";
+import { checkTtl } from "./lease-ttl.ts";
 import {
   authorize,
   authorizeToken,
@@ -71,7 +72,6 @@ import {
 const NAMESPACE = "forge/work";
 const REQUESTS = "domain_cloud_requests";
 const MAX_BODY = 8192;
-const MAX_LEASE_MS = 24 * 60 * 60 * 1000;
 // A restore carries a whole project, so its own bound is 8 MiB: far above a device request, and
 // about a third of the 128 MB a Worker has to hold the text, parse it and write it. It is enforced
 // while the body streams, and over it the request is refused as RESTORE_TOO_LARGE (413).
@@ -126,6 +126,7 @@ const STATUS: Record<string, number> = {
   AUTH_DEVICE_MISMATCH: 403,
   AUTH_FORBIDDEN: 403,
   AUTH_CONFIG_UNAVAILABLE: 503,
+  CLAIM_BLOCKED: 409,
   LEASE_HELD: 409,
   LEASE_STALE: 409,
   LEASE_NOT_HELD: 409,
@@ -627,11 +628,7 @@ export class Project {
       return this.#open().db.transaction(() => {
         checkExpiry();
         if (route !== "release") {
-          integer(input, "ttlMs");
-          if (ttlMs! > MAX_LEASE_MS)
-            throw fail("INPUT_INVALID", "ttlMs is over 24 hours");
-          if (expiresAt !== undefined && Date.now() + ttlMs! > expiresAt)
-            throw fail("INPUT_INVALID", "ttlMs would exceed the token expiry");
+          checkTtl(ttlMs, expiresAt);
         }
         const fence = { subject, holder, generation: generation ?? 0 };
         const lease =
