@@ -45,10 +45,18 @@ type Stored = {
 export type ReadyMode = { readonly labelOrder: readonly string[] };
 export const MAX_SCAN_ROWS = 10_000;
 export const MAX_SCAN_BYTES = 8 * 1024 * 1024;
-if (manifest.operations["issue.list"].input !== "schemas/ListItemsInput.json")
-  throw new Error("issue.list no longer declares schemas/ListItemsInput.json");
-if (manifest.operations["issue.list"].output !== "schemas/ListItemsOutput.json")
-  throw new Error("issue.list no longer declares schemas/ListItemsOutput.json");
+for (const op of ["issue.list", "issue.ready"] as const) {
+  if (manifest.operations[op].input !== "schemas/ListItemsInput.json")
+    throw new Error(`${op} no longer declares schemas/ListItemsInput.json`);
+  if (manifest.operations[op].output !== "schemas/ListItemsOutput.json")
+    throw new Error(`${op} no longer declares schemas/ListItemsOutput.json`);
+}
+
+/** The first `order` label a stored issue carries, as its rank; no match ranks last. */
+const rank = (order: readonly string[], issue: Stored): number => {
+  const at = order.findIndex((label) => issue.labels.includes(label));
+  return at === -1 ? order.length : at;
+};
 
 /** The issues in key order, `limit` at most, and whether more were stored than were returned. */
 export function listIssues(
@@ -56,7 +64,7 @@ export function listIssues(
   input: unknown,
   now: number,
   prefix: string,
-  _ready?: ReadyMode,
+  ready?: ReadyMode,
 ): { items: TrackerItem[]; truncated: boolean } {
   configured(prefix);
   if (schemas().validate("#", input).length > 0)
@@ -93,6 +101,7 @@ export function listIssues(
     return leases.get(at);
   };
   const wanted = [...labels, ...label];
+  const onlyReady = ready !== undefined || by.ready === true;
   const picked = records.flatMap((_, at) => {
     const v = value(at);
     const ok =
@@ -101,16 +110,24 @@ export function listIssues(
       wanted.every((name) => v.labels.includes(name)) &&
       (by.status === undefined || v.status === by.status) &&
       (by.createdSince === undefined || Date.parse(v.createdAt) >= since) &&
-      (by.ready !== true ||
+      (!onlyReady ||
         (v.status === "open" &&
           v.dependsOn.every((dep) => statusOf.get(dep) === "closed") &&
           !holdsLease(lease(at), now)));
     return ok ? [at] : [];
   });
+  // A stable sort keeps the stored order within one rank; the limit comes after it.
+  const order = ready?.labelOrder ?? [];
+  const ranked =
+    order.length === 0
+      ? picked
+      : picked.toSorted(
+          (a, b) => rank(order, value(a)) - rank(order, value(b)),
+        );
   return {
-    items: picked
+    items: ranked
       .slice(0, limit)
       .map((at) => shownItem(records[at]!, ids[at]!, lease(at), now, prefix)),
-    truncated: picked.length > limit,
+    truncated: ranked.length > limit,
   };
 }
