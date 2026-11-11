@@ -44,10 +44,8 @@ setDefaultTimeout(30_000);
 const NOW = Date.UTC(2026, 10, 11);
 const iso = (ms: number) => new Date(ms).toISOString();
 const TOKEN = fx.entry(NOW).token;
-// The stored subject differs from the shown id on purpose: the CLI must take it from the cloud, never rewrite the id.
-const STORED = "issue:work-1";
 const LEASE = {
-  subject: STORED,
+  subject: "issue:forge-1",
   holder: {
     actor: { kind: "agent", id: "a1" },
     session: { id: "s1", device: "dev-1" },
@@ -98,14 +96,7 @@ const MANIFEST = resolve(
   "../../src/blocks/work/forge.block.json",
 );
 const READS = ["issue.show", "issue.list", "issue.ready"];
-const WRITES = [
-  "issue.create",
-  "issue.comment",
-  "issue.update",
-  "issue.claim",
-  "issue.renew",
-  "issue.release",
-];
+const WRITES = ["issue.create", "issue.comment", "issue.update", "issue.claim"];
 const SERVED = [...READS, ...WRITES];
 const DECLARED = Object.keys(
   (JSON.parse(readFileSync(MANIFEST, "utf8")) as { operations: object })
@@ -247,7 +238,7 @@ test("a bound project's issue show is answered by the cloud with the stored toke
     expect(body).toMatchObject({ context: { device: { id: "dev-1" } } });
   }));
 
-test("the routing decision serves show, list, ready, create, comment, update, claim, renew and release, refuses every other operation of the work block by name, and leaves other blocks local", () => {
+test("the routing decision serves show, list, ready, create, comment, update and claim, refuses every other operation of the work block by name, and leaves other blocks local", () => {
   expect(DECLARED.length).toBeGreaterThan(30);
   for (const op of SERVED) expect(cloudRoute("forge/work", op)).toBe("cloud");
   expect(cloudRoute("forge/memory", "memory.list")).toBe("local");
@@ -271,8 +262,6 @@ const INPUTS: Record<string, object> = {
   "issue.comment": COMMENT,
   "issue.update": UPDATE,
   "issue.claim": { id: "forge-1" },
-  "issue.renew": { id: "forge-1" },
-  "issue.release": { id: "forge-1" },
 };
 for (const [source, op, input, declared, result] of [
   [WORK, "issue.create", CREATE, "issue.create", ISSUE],
@@ -305,6 +294,8 @@ test("every other work operation is refused by name on a bound project, with no 
     for (const [op, input] of [
       ["issue.board", {}],
       ["issue.close", { id: "forge-1" }],
+      ["issue.renew", { id: "forge-1" }],
+      ["issue.release", { id: "forge-1" }],
     ] as const) {
       const result = await r.assembly.catalog.invoke(
         r.request(op, input, { context }),
@@ -349,8 +340,6 @@ for (const [op, input] of [
   ["issue.comment", COMMENT],
   ["issue.update", UPDATE],
   ["issue.claim", INPUTS["issue.claim"]!],
-  ["issue.renew", INPUTS["issue.renew"]!],
-  ["issue.release", INPUTS["issue.release"]!],
 ] as const)
   test(`${op} as a dry run on a bound project is UNAVAILABLE and creates nothing`, () =>
     using({}, async (r) => {
@@ -451,7 +440,7 @@ test("a held operation's hidden show goes to the cloud, and the operation itself
     for (const dryRun of [false, true]) {
       const held = await dispatch(
         r.assembly.catalog,
-        "issue.close",
+        "issue.release",
         { id: "forge-1" },
         { caller: "agent", context, dryRun },
       );
@@ -562,22 +551,6 @@ test("issue.update through the CLI dispatch as a dry run is UNAVAILABLE and send
 
 const ITEM = { id: "forge-1" };
 const GRANT = { ...ITEM, generation: 3, expiresAt: iso(NOW + 3_600_000) };
-const SHORT = iso(NOW + 120_000);
-/** The lease the raw routes return for a held issue, and the answers a raw route gives. */
-const RAW = { ...HELD, expiresAt: GRANT.expiresAt };
-const lease = (value: object = RAW) => fx.json({ ok: true, value });
-const leaseRefusing = (code: string, status: number) =>
-  fx.json(
-    {
-      ok: false,
-      error: {
-        code,
-        message: TOKEN,
-        ...(code.startsWith("LEASE_") ? { lease: { subject: STORED } } : {}),
-      },
-    },
-    status,
-  );
 const act = (
   r: Rig,
   op: string,
@@ -660,140 +633,6 @@ test("a cloud issue.claim result that fails its declared output is refused as UN
       expect(wire(r)).toEqual(["command"]);
     },
   ));
-
-const RENEW = {
-  route: "renew",
-  input: { ...ITEM, ttlSeconds: 120 },
-  raw: () => lease({ ...RAW, expiresAt: SHORT }),
-  result: { ...GRANT, expiresAt: SHORT },
-  body: { generation: 3, ttlMs: 120_000 },
-} as const;
-const LEASED = [
-  {
-    ...RENEW,
-    input: ITEM,
-    raw: () => lease(),
-    result: GRANT,
-    body: { generation: 3, ttlMs: 3_600_000 },
-  },
-  RENEW,
-  {
-    route: "release",
-    input: ITEM,
-    raw: () => lease({ ...RAW, releasedAt: iso(NOW) }),
-    result: ITEM,
-    body: { generation: 3 },
-  },
-] as const;
-const ENDS = [LEASED[0], LEASED[2]] as const;
-
-for (const [source, noun] of NOUNS)
-  for (const t of LEASED)
-    test(`through the assembled catalog, ${noun}.${t.route} ${JSON.stringify(t.input)} on a bound project takes the subject and generation from the cloud show and goes to the raw ${t.route} route`, () =>
-      using({ config: source, steps: [live, live, t.raw] }, async (r) => {
-        const context = holding(r);
-        const op = `${noun}.${t.route}`;
-        const done = await act(r, op, t.input, context, { requestId: "r-9" });
-        expect(done).toMatchObject({ ok: true });
-        expect((done as unknown as { result: object }).result).toEqual(
-          t.result,
-        );
-        expect(exitCode(done)).toBe(0);
-        expect(JSON.stringify(done)).not.toContain(TOKEN);
-        expect(wire(r)).toEqual(["command", "command", t.route]);
-        expect(r.net.calls[1]!.body).toMatchObject({
-          op: "issue.show",
-          input: ITEM,
-        });
-        const call = r.net.calls[2]!;
-        const body = call.body as { holder: unknown };
-        expect(call.url).toBe(`${fx.ORIGIN}/p/${fx.PROJECT}/${t.route}`);
-        expect(call.headers.authorization).toBe(`Bearer ${TOKEN}`);
-        expect(body).toMatchObject({
-          subject: STORED,
-          requestId: "r-9",
-          ...t.body,
-        });
-        expect(body.holder).toEqual({
-          actor: context.actor,
-          session: { ...context.session, device: "dev-1" },
-        });
-        if (t.route === "release") expect(body).not.toHaveProperty("ttlMs");
-      }));
-
-for (const t of ENDS)
-  test(`${t.route} with an explicit generation 2 while the cloud is at 3 sends 2 and returns the cloud's LEASE_STALE`, () =>
-    using(
-      { steps: [live, () => leaseRefusing("LEASE_STALE", 409)] },
-      async (r) => {
-        const own = holding(r, { leaseGeneration: 2 });
-        const result = await act(r, `issue.${t.route}`, t.input, own);
-        expect(failed(result, "LEASE_STALE")).toBe(4);
-        expect(wire(r)).toEqual(["command", t.route]);
-        expect(r.net.calls[1]!.body).toMatchObject({
-          subject: STORED,
-          generation: 2,
-        });
-      },
-    ));
-
-for (const t of ENDS)
-  test(`${t.route} with no live lease in the cloud show is the runtime's CONTEXT_MISSING with no lease request, and with an explicit generation it is LEASE_NOT_HELD`, () =>
-    using({ steps: [() => answer()] }, async (r) => {
-      const op = `issue.${t.route}`;
-      const bare = await act(r, op, t.input, holding(r));
-      expect(failed(bare, "CONTEXT_MISSING")).toBe(6);
-      expect(wire(r)).toEqual(["command"]);
-      const named = holding(r, { leaseGeneration: 3 });
-      expect(failed(await act(r, op, t.input, named), "LEASE_NOT_HELD")).toBe(
-        4,
-      );
-      expect(wire(r)).toEqual(["command", "command"]);
-    }));
-
-for (const [code, status, exit] of [
-  ["LEASE_NOT_HELD", 409, 4],
-  ["LEASE_EXPIRED", 409, 4],
-  ["AUTH_DEVICE_MISMATCH", 403, 1],
-] as const)
-  for (const t of ENDS)
-    test(`a raw ${code} on ${t.route} keeps its code and exit ${exit}, without the token`, () =>
-      using(
-        { steps: [live, live, () => leaseRefusing(code, status)] },
-        async (r) => {
-          const result = await act(r, `issue.${t.route}`, t.input, holding(r));
-          expect(failed(result, code)).toBe(exit);
-          expect(wire(r)).toEqual(["command", "command", t.route]);
-        },
-      ));
-
-for (const t of ENDS) {
-  const bad: [string, fx.Step[], string[]][] = [
-    [
-      "a show that fails TrackerItem",
-      [() => answer({ ...ISSUE, lease: HELD, revision: TOKEN })],
-      ["command"],
-    ],
-    [
-      "a lease for another subject",
-      [live, () => lease({ ...RAW, subject: "issue:other" })],
-      ["command", t.route],
-    ],
-    [
-      "an unreadable lease",
-      [live, () => lease({ ...RAW, generation: TOKEN })],
-      ["command", t.route],
-    ],
-  ];
-  for (const [name, steps, calls] of bad)
-    test(`${t.route} with ${name} is refused as UNAVAILABLE, never passed through`, () =>
-      using({ steps }, async (r) => {
-        const own = holding(r, { leaseGeneration: 3 });
-        const result = await act(r, `issue.${t.route}`, t.input, own);
-        expect(failed(result, "UNAVAILABLE")).toBe(1);
-        expect(wire(r)).toEqual(calls);
-      }));
-}
 
 test("an outage is UNAVAILABLE and never a local read", () =>
   using(

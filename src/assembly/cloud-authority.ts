@@ -1,7 +1,6 @@
 // Forge cloud as the authority for a cloud-bound project's `issue show`, `issue list`, `issue ready`, `issue create`,
-// `issue comment`, `issue update`, `issue claim`, `issue renew` and `issue release`: chosen after the Runtime's own request checks and before any local project state opens. A bound project
+// `issue comment`, `issue update` and `issue claim`: chosen after the Runtime's own request checks and before any local project state opens. A bound project
 // writes only through the cloud, never to a local store, and no device is created.
-import { randomUUID } from "node:crypto";
 import { nodeDeviceIdentity } from "../adapters/fs/device-identity.ts";
 import { createCloudHttp } from "../adapters/http/index.ts";
 import { ForgeFailure } from "../contract/failure.ts";
@@ -26,22 +25,18 @@ export interface CloudAuthorityDeps {
 const fail = (code: string, message: string) =>
   new ForgeFailure({ code, message, retry: "never" });
 
-/** The work operations a cloud-bound project serves from the cloud, and how: the one list of them. */
-const CLOUD_SERVED: ReadonlyMap<string, "command" | "renew" | "release"> =
-  new Map([
-    ["issue.show", "command"],
-    ["issue.list", "command"],
-    ["issue.ready", "command"],
-    ["issue.create", "command"],
-    ["issue.comment", "command"],
-    ["issue.update", "command"],
-    ["issue.claim", "command"],
-    ["issue.renew", "renew"],
-    ["issue.release", "release"],
-  ]);
-const UNAVAILABLE = "The Forge cloud gave no usable answer.";
+/** The work operations a cloud-bound project serves from the cloud: the one list of them. */
+const CLOUD_SERVED: ReadonlySet<string> = new Set([
+  "issue.show",
+  "issue.list",
+  "issue.ready",
+  "issue.create",
+  "issue.comment",
+  "issue.update",
+  "issue.claim",
+]);
 
-/** On a bound project: show, list, ready, create, comment, update, claim, renew and release go to the cloud, other work operations are refused (a second writer), other blocks stay local. */
+/** On a bound project: show, list, ready, create, comment, update and claim go to the cloud, other work operations are refused (a second writer), other blocks stay local. */
 export function cloudRoute(
   blockId: string,
   declared: string,
@@ -124,55 +119,17 @@ export async function selectCloud(
     now: now ?? Date.now,
     http: createCloudHttp({ origin, project, ...(fetch ? { fetch } : {}) }),
   });
-  const context = { ...request.context, device: { id: device } };
-  const lane = CLOUD_SERVED.get(declared);
-  if (lane !== "renew" && lane !== "release") {
-    const result = await client.command(
-      {
-        requestId: request.requestId,
-        op: declared,
-        input: request.input,
-        context,
+  const result = await client.command(
+    {
+      requestId: request.requestId,
+      op: declared,
+      input: request.input,
+      context: {
+        ...request.context,
+        device: { id: device },
       },
-      (value) => block.validate(operation.declaration.output, value),
-    );
-    return { ok: true, op: request.op, status: "OK", result, warnings: [] };
-  }
-  // Renew and release act on the lease the cloud reports: its stored subject comes from a validated show,
-  // its generation from the context. Nothing is derived, made up or refreshed here.
-  const { id, ttlSeconds } = request.input as {
-    id: string;
-    ttlSeconds?: number;
-  };
-  const shown = await client.command(
-    { requestId: randomUUID(), op: "issue.show", input: { id }, context },
-    (value) =>
-      block.validate(block.manifest.operations["issue.show"]!.output, value),
+    },
+    (value) => block.validate(operation.declaration.output, value),
   );
-  const subject = (shown.lease as { subject?: string } | undefined)?.subject;
-  const { actor, session, leaseGeneration: generation } = request.context;
-  if (subject === undefined)
-    throw fail("LEASE_NOT_HELD", "The issue has no live lease in the cloud.");
-  if (actor === undefined || session === undefined || generation === undefined)
-    throw fail(
-      "CONTEXT_MISSING",
-      "A lease needs an actor, a session and a generation.",
-    );
-  const call = {
-    subject,
-    holder: { actor, session: { ...session, device } },
-    requestId: request.requestId,
-    generation,
-  };
-  const held =
-    lane === "renew"
-      ? await client.renew({ ...call, ttlMs: (ttlSeconds ?? 3600) * 1000 })
-      : await client.release(call);
-  const result =
-    lane === "renew"
-      ? { id: shown.id, generation: held.generation, expiresAt: held.expiresAt }
-      : { id: shown.id };
-  if (!block.validate(operation.declaration.output, result))
-    throw fail("UNAVAILABLE", UNAVAILABLE);
   return { ok: true, op: request.op, status: "OK", result, warnings: [] };
 }
