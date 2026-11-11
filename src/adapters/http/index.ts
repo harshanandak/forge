@@ -1,9 +1,10 @@
-// Outbound HTTPS to one Forge cloud origin and project, for the device login routes. The origin and
-// project are fixed when the client is made; it follows no redirect, sends no bearer token, bounds
-// every request by a deadline and every body by a size, and never repeats server text in an error.
+// Outbound HTTPS to one Forge cloud origin and project: the device login routes and the lease routes.
+// It follows no redirect, sends a bearer token only on a lease request and only in the Authorization
+// header, bounds every request by a deadline and a size, and never repeats server text or the token.
 import { request } from "node:https";
 import { Readable } from "node:stream";
 import { ForgeFailure } from "../../contract/failure.ts";
+import { validateLeaseRecord } from "../../generated/validators.ts";
 import type {
   LeaseConflict,
   LeaseHolder,
@@ -54,7 +55,6 @@ export interface CloudHttpOptions {
   readonly maxBytes?: number;
 }
 export type LeaseRoute = "claim" | "renew" | "release";
-/** What a lease write sends; the adapter sends exactly these fields and never rewrites one. */
 export interface LeaseWriteBody {
   readonly subject: string;
   readonly holder: LeaseHolder;
@@ -62,18 +62,7 @@ export interface LeaseWriteBody {
   readonly ttlMs?: number;
   readonly generation?: number;
 }
-export type LeaseRefusalCode =
-  | "LEASE_HELD"
-  | "LEASE_STALE"
-  | "LEASE_NOT_HELD"
-  | "LEASE_EXPIRED"
-  | "AUTH_REQUIRED"
-  | "AUTH_INVALID"
-  | "AUTH_REVOKED"
-  | "AUTH_EXPIRED"
-  | "AUTH_DEVICE_MISMATCH"
-  | "INPUT_INVALID"
-  | "INPUT_CONFLICT";
+export type LeaseRefusalCode = keyof typeof REFUSAL_STATUS;
 /** A write always carries a lease; a holder read may carry `null`, an expired or a released record. */
 export type LeaseResult =
   | { readonly kind: "ok"; readonly lease: LeaseRecord | null }
@@ -83,6 +72,7 @@ export type LeaseResult =
       /** Present for the four LEASE_* refusals, with the details the server named. */
       readonly lease?: LeaseConflict;
     };
+type Answer = { status: number; value: Record<string, unknown> };
 export interface CloudHttp {
   loginStart(device: string, signal?: AbortSignal): Promise<StartResult>;
   loginPoll(deviceCode: string, signal?: AbortSignal): Promise<PollResult>;
@@ -106,6 +96,21 @@ const PROJECT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const DEVICE_CODE = /^[A-Za-z0-9_-]{43}$/;
 const USER_CODE = /^[BCDFGHJKLMNPQRSTVWXYZ]{4}-[BCDFGHJKLMNPQRSTVWXYZ]{4}$/;
 const MAX_CREDENTIAL = 4_096;
+const TOKEN = /^fct_[0-9a-f]{16}\.[A-Za-z0-9_-]{43}$/;
+// The refusals a lease route sends, each with the one status the Worker gives it.
+const REFUSAL_STATUS = {
+  LEASE_HELD: 409,
+  LEASE_STALE: 409,
+  LEASE_NOT_HELD: 409,
+  LEASE_EXPIRED: 409,
+  INPUT_CONFLICT: 409,
+  INPUT_INVALID: 400,
+  AUTH_REQUIRED: 401,
+  AUTH_INVALID: 401,
+  AUTH_REVOKED: 401,
+  AUTH_EXPIRED: 401,
+  AUTH_DEVICE_MISMATCH: 403,
+} as const;
 /** Refusal names the Worker is known to send; any other name is reported as "unknown". */
 const REFUSALS = new Set([
   "authorization_pending",
@@ -137,7 +142,7 @@ const unavailable = (why: string): ForgeFailure =>
 const cancelled = (): ForgeFailure =>
   new ForgeFailure({
     code: "INVOCATION_CANCELLED",
-    message: "The login was cancelled.",
+    message: "The request was cancelled.",
     retry: "never",
   });
 
@@ -285,6 +290,49 @@ function refusal(body: Record<string, unknown>) {
   };
 }
 
+/** Conflict details the server named: just the subject, or a full lease for that subject. */
+function conflictOf(
+  value: unknown,
+  subject: string,
+): LeaseConflict | undefined {
+  const found = object(value);
+  if (found?.subject !== subject) return undefined;
+  if (Object.keys(found).length === 1) return { subject };
+  const checked = validateLeaseRecord(found);
+  if (!checked.ok || checked.value.releasedAt !== undefined) return undefined;
+  const { holder, generation, expiresAt } = checked.value;
+  return { subject, holder, generation, expiresAt };
+}
+
+/** A lease route's `{ ok, value }` or `{ ok, error }` envelope; anything that contradicts itself is unavailable. */
+function decodeLease(
+  { status, value: body }: Answer,
+  subject: string,
+  writes: boolean,
+): LeaseResult {
+  const bad = () => unavailable("the lease answer failed its checks");
+  if (body.ok === true) {
+    if (status !== 200) throw bad();
+    if (body.value === null && !writes) return { kind: "ok", lease: null };
+    const checked = validateLeaseRecord(body.value);
+    if (!checked.ok || checked.value.subject !== subject) throw bad();
+    return { kind: "ok", lease: checked.value };
+  }
+  const error = object(body.error);
+  const code = error?.code as LeaseRefusalCode;
+  if (
+    body.ok !== false ||
+    typeof code !== "string" ||
+    !Object.hasOwn(REFUSAL_STATUS, code) ||
+    REFUSAL_STATUS[code] !== status
+  )
+    throw bad();
+  if (!code.startsWith("LEASE_")) return { kind: "refused", code };
+  const lease = conflictOf(error?.lease, subject);
+  if (lease === undefined) throw bad();
+  return { kind: "refused", code, lease };
+}
+
 export function createCloudHttp(options: CloudHttpOptions): CloudHttp {
   const origin = validateOrigin(options.origin);
   const project = validateProject(options.project);
@@ -292,22 +340,25 @@ export function createCloudHttp(options: CloudHttpOptions): CloudHttp {
   const timeoutMs = options.timeoutMs ?? 10_000;
   const maxBytes = options.maxBytes ?? 65_536;
 
-  async function post(
-    route: "loginstart" | "loginpoll",
-    body: Readonly<Record<string, string>>,
+  async function exchange(
+    method: "POST" | "GET",
+    path: string,
+    body: string | undefined,
+    token: string | undefined,
     caller: AbortSignal | undefined,
-  ): Promise<Record<string, unknown>> {
+  ): Promise<Answer> {
     const deadline = AbortSignal.timeout(timeoutMs);
     const signal =
       caller === undefined ? deadline : AbortSignal.any([caller, deadline]);
     try {
-      const response = await send(`${origin}/p/${project}/${route}`, {
-        method: "POST",
+      const response = await send(`${origin}/p/${project}/${path}`, {
+        method,
         headers: {
-          "content-type": "application/json",
           accept: "application/json",
+          ...(body === undefined ? {} : { "content-type": "application/json" }),
+          ...(token === undefined ? {} : { authorization: `Bearer ${token}` }),
         },
-        body: JSON.stringify(body),
+        ...(body === undefined ? {} : { body }),
         redirect: "manual",
         signal,
       });
@@ -325,7 +376,7 @@ export function createCloudHttp(options: CloudHttpOptions): CloudHttp {
       }
       const value = object(parsed);
       if (value === undefined) throw unavailable("the answer is not an object");
-      return value;
+      return { status: response.status, value };
     } catch (error) {
       if (caller?.aborted === true) throw cancelled();
       if (error instanceof ForgeFailure) throw error;
@@ -333,6 +384,26 @@ export function createCloudHttp(options: CloudHttpOptions): CloudHttp {
         deadline.aborted ? "the request timed out" : "the request failed",
       );
     }
+  }
+  const post = async (
+    route: "loginstart" | "loginpoll",
+    body: Readonly<Record<string, string>>,
+    caller: AbortSignal | undefined,
+  ) =>
+    (await exchange("POST", route, JSON.stringify(body), undefined, caller))
+      .value;
+  async function lease(
+    token: string,
+    path: string,
+    body: string | undefined,
+    subject: string,
+    caller: AbortSignal | undefined,
+  ): Promise<LeaseResult> {
+    if (!TOKEN.test(token))
+      throw invalid("the device token is not well formed");
+    const method = body === undefined ? "GET" : "POST";
+    const answer = await exchange(method, path, body, token, caller);
+    return decodeLease(answer, subject, body !== undefined);
   }
 
   return {
@@ -379,10 +450,15 @@ export function createCloudHttp(options: CloudHttpOptions): CloudHttp {
         throw unavailable("the login answer failed its checks");
       return { kind: "credential", credential: body.credential };
     },
-    // Stubs: the lease routes are not decoded yet.
-    leaseWrite: (_token, _route, _body, _signal) =>
-      Promise.reject(unavailable("the lease routes are not implemented")),
-    leaseHolder: (_token, _subject, _signal) =>
-      Promise.reject(unavailable("the lease routes are not implemented")),
+    leaseWrite: (token, route, body, signal) =>
+      lease(token, route, JSON.stringify(body), body.subject, signal),
+    leaseHolder: (token, subject, signal) =>
+      lease(
+        token,
+        `holder?subject=${encodeURIComponent(subject)}`,
+        undefined,
+        subject,
+        signal,
+      ),
   };
 }
