@@ -13,6 +13,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -20,6 +21,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { blockCapture } from "../../src/assembly/capture.ts";
 import { cloudRoute } from "../../src/assembly/cloud-authority.ts";
+import { wireDeviceId } from "../../src/assembly/cloud-login.ts";
 import {
   credentialStore,
   openCloudFiles,
@@ -27,7 +29,7 @@ import {
   type CredentialEntry,
 } from "../../src/assembly/cloud-profile.ts";
 import { firstPartyBlocks } from "../../src/assembly/first-party.ts";
-import { createAssembly } from "../../src/assembly/index.ts";
+import { createAssembly, localContext } from "../../src/assembly/index.ts";
 import { LocalState } from "../../src/assembly/state.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import type { InvocationRequest } from "../../src/generated/types.ts";
@@ -124,6 +126,8 @@ interface Setup {
   device?: string | false;
   steps?: fx.Step[];
   config?: string;
+  /** Runs after the binding and credentials are written. */
+  prepare?: (s: fx.Sandbox) => void | Promise<void>;
   /** False runs the real local store, for the unbound project. */
   sentinel?: boolean;
 }
@@ -154,6 +158,7 @@ async function rig(o: Setup) {
     );
   if (o.creds !== false)
     await credentialStore(openCloudFiles(s.home)).save(fx.entry(NOW, o.creds));
+  await o.prepare?.(s);
   const net = fx.network(...(o.steps ?? [() => answer()]));
   const sentinel =
     o.sentinel === false
@@ -171,6 +176,7 @@ async function rig(o: Setup) {
       deviceRoot: s.deviceRoot,
       providers: { env, cloudLogin: { fetch: net.fetch, now: () => NOW } },
     });
+  const assembly = await open(); // requests carry the context a real CLI or MCP call builds
   const request = (
     op: string,
     input: object,
@@ -181,13 +187,10 @@ async function rig(o: Setup) {
     op,
     input,
     caller: "agent",
-    context: {
-      actor: { kind: "agent", id: "a1" },
-      project: { id: s.root, root: s.root },
-    },
+    context: localContext(assembly, { kind: "agent", id: "a1" }),
     ...change,
   });
-  return { s, net, sentinel, open, request, assembly: await open() };
+  return { s, net, sentinel, open, request, assembly };
 }
 const show = (r: Awaited<ReturnType<typeof rig>>) =>
   r.assembly.catalog.invoke(r.request("issue.show", { id: "forge-1" }));
@@ -315,18 +318,78 @@ test("a missing device is refused and none is created; a different device is ref
     });
   }));
 
-for (const [name, bind, creds, code] of [
-  ["malformed", "{", {}, "INPUT_INVALID"],
-  [
-    "for another identity",
-    { identity: fx.OTHER_PROJECT_ID },
-    {},
-    "INPUT_CONFLICT",
-  ],
-  ["missing while a credential is remembered", false, {}, "INPUT_CONFLICT"],
-] as const)
-  test(`a binding that is ${name} is refused before any local state or request`, () =>
-    using({ bind, creds }, async (r) => {
+const showWith = (r: Awaited<ReturnType<typeof rig>>, own: object) =>
+  r.assembly.catalog.invoke(
+    r.request(
+      "issue.show",
+      { id: "forge-1" },
+      {
+        context: { ...r.request("x", {}).context, ...own },
+      },
+    ),
+  );
+const wired = wireDeviceId("my laptop");
+
+test("only this machine's device is accepted in the context, and only this machine's device is sent", () =>
+  using({ device: "my laptop", creds: { device: wired } }, async (r) => {
+    expect(await showWith(r, { device: { id: wired } })).toMatchObject({
+      ok: true,
+    });
+    expect(r.net.calls[0]!.body).toMatchObject({
+      context: { device: { id: wired } },
+    });
+    const foreign = await showWith(r, { device: { id: "foreign" } });
+    expect(failed(foreign, "AUTH_DEVICE_MISMATCH")).toBe(1);
+    expect(r.net.calls).toHaveLength(1);
+  }));
+
+test("a device that matches the credential but not this machine is refused with no request", () =>
+  using({ device: "other-device" }, async (r) => {
+    const spoof = await showWith(r, { device: { id: "dev-1" } });
+    expect(failed(spoof, "AUTH_DEVICE_MISMATCH")).toBe(1);
+    expect(r.net.calls).toHaveLength(0);
+  }));
+
+test("a context for another project is the runtime's INPUT_CONFLICT with no request", () =>
+  using({}, async (r) => {
+    const project = { id: fx.OTHER_PROJECT_ID, root: r.s.root };
+    const result = await showWith(r, { project });
+    expect(failed(result, "INPUT_CONFLICT")).toBe(4);
+    expect(result).toMatchObject({
+      error: { message: "State context belongs to another project" },
+    });
+    expect(r.net.calls).toHaveLength(0);
+  }));
+
+const manifest = (s: fx.Sandbox) => join(s.root, ".forge", "project.json");
+const dropped = (s: fx.Sandbox) => rmSync(manifest(s));
+const linked = (s: fx.Sandbox) => (
+  rmSync(s.binding),
+  symlinkSync(manifest(s), s.binding)
+);
+const another = (s: fx.Sandbox) =>
+  credentialStore(openCloudFiles(s.home)).save(
+    fx.entry(NOW, { origin: fx.OTHER_ORIGIN, id: "bbbbbbbbbbbbbbbb" }),
+  );
+const BAD = "INPUT_INVALID";
+const CLASH = "INPUT_CONFLICT";
+const lapsed = { expiresAt: iso(NOW - fx.DAY) };
+const extra = JSON.stringify({ ...fx.bindingFor(), x: 1 });
+const other = { identity: fx.OTHER_PROJECT_ID };
+const rows: [string, Setup, string][] = [
+  ["a malformed binding", { bind: "{" }, BAD],
+  ["a binding with an extra key", { bind: extra }, BAD],
+  ["a binding for another identity", { bind: other }, CLASH],
+  ["a binding with no manifest", { prepare: dropped }, "CONTEXT_MISSING"],
+  ["a remembered credential, no binding", { bind: false }, CLASH],
+  ["an expired one, no binding", { bind: false, creds: lapsed }, CLASH],
+  ["credentials for two servers", { bind: false, prepare: another }, CLASH],
+];
+if (process.platform !== "win32")
+  rows.push(["a symlinked binding", { prepare: linked }, BAD]);
+for (const [name, setup, code] of rows)
+  test(`${name} is refused before any local state or request`, () =>
+    using(setup, async (r) => {
       failed(await show(r), code);
       expect(r.net.calls).toHaveLength(0);
     }));
@@ -358,10 +421,7 @@ test("an existing store is left as it was, and a linked worktree is answered by 
     }
     const other = await r.open(linked);
     try {
-      const context = {
-        actor: { kind: "agent" as const, id: "a1" },
-        project: { id: linked, root: linked },
-      };
+      const context = localContext(other, { kind: "agent", id: "a1" });
       const from = r.request("issue.show", { id: "forge-1" }, { context });
       expect(await other.catalog.invoke(from)).toMatchObject({ ok: true });
     } finally {

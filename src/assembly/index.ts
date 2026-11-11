@@ -61,6 +61,7 @@ import type {
   BlockInstance,
   DocsRecords,
   AmbientContext,
+  BoundContext,
   McpExposure,
   ResultEnvelope,
 } from "../generated/types.ts";
@@ -1873,6 +1874,18 @@ export async function createAssembly(
           request.input,
           processCleanupBudgetMs(options.providers?.supervision),
         );
+        const ownContext = (context: BoundContext) => {
+          if (
+            (context.variant === "project" || context.variant === "leased") &&
+            context.project.id !== root
+          )
+            refuse(
+              "INPUT_CONFLICT",
+              "State context belongs to another project",
+            );
+          if (context.variant === "device" && context.device.id !== deviceRoot)
+            refuse("INPUT_CONFLICT", "State context belongs to another device");
+        };
         const runtime = new Runtime(runtimeCatalog, trust, {
           isolation: nodeRunIsolation,
           async services(instance, context, scope) {
@@ -1889,23 +1902,7 @@ export async function createAssembly(
                     "PROVIDER_MISSING",
                     `Missing provider for ${binding.slot}`,
                   );
-                if (
-                  (context.variant === "project" ||
-                    context.variant === "leased") &&
-                  context.project.id !== root
-                )
-                  refuse(
-                    "INPUT_CONFLICT",
-                    "State context belongs to another project",
-                  );
-                if (
-                  context.variant === "device" &&
-                  context.device.id !== deviceRoot
-                )
-                  refuse(
-                    "INPUT_CONFLICT",
-                    "State context belongs to another device",
-                  );
+                ownContext(context);
                 if (
                   interfaceSatisfies("forge.process@1.0.0", binding.interface)
                 ) {
@@ -2141,6 +2138,7 @@ export async function createAssembly(
           {
             root,
             deviceRoot,
+            scope: ownContext,
             env: options.providers?.env ?? process.env,
             cloud: options.providers?.cloudLogin,
           },

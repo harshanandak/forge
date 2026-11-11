@@ -4,15 +4,18 @@ import { nodeDeviceIdentity } from "../adapters/fs/device-identity.ts";
 import { createCloudHttp } from "../adapters/http/index.ts";
 import { ForgeFailure } from "../contract/failure.ts";
 import type { Runtime } from "../core/runtime/index.ts";
+import type { BoundContext } from "../generated/types.ts";
 import type { InvocationRequest, ResultEnvelope } from "../generated/types.ts";
 import { cloudBinding } from "./cloud-binding.ts";
-import type { CloudLoginDeps } from "./cloud-login.ts";
+import { wireDeviceId, type CloudLoginDeps } from "./cloud-login.ts";
 import { credentialStore, openCloudFiles } from "./cloud-profile.ts";
 import { createCloudLeaseClient } from "./cloud-state-client.ts";
 
 export interface CloudAuthorityDeps {
   readonly root: string;
   readonly deviceRoot: string;
+  /** The runtime's own check that a context is this project's; it throws the refusal. */
+  readonly scope: (context: BoundContext) => void;
   readonly env: Readonly<Record<string, string | undefined>>;
   /** Network, clock and private-file seams, the same ones cloud login takes. */
   readonly cloud?:
@@ -59,6 +62,7 @@ export async function selectCloud(
   const home = deps.env.HOME ?? deps.env.USERPROFILE;
   const bound = cloudBinding(deps.root, home);
   if (bound.kind === "unbound") return undefined;
+  deps.scope(flight.context);
   if (route !== "cloud") throw route;
   let device: string | undefined;
   try {
@@ -74,6 +78,14 @@ export async function selectCloud(
       "A cloud-bound project needs this machine's device identity; run forge cloud login or set FORGE_DEVICE_ID.",
     );
   const { origin, project, identity } = bound;
+  const named = request.context.device?.id;
+  // A supplied device must be this machine: its device root, or an id in the same wire form.
+  if (
+    named !== undefined &&
+    named !== deps.deviceRoot &&
+    wireDeviceId(named) !== wireDeviceId(device)
+  )
+    throw fail("AUTH_DEVICE_MISMATCH", "This session is not on this machine.");
   const { fetch, now, security } = deps.cloud ?? {};
   const client = createCloudLeaseClient({
     key: { origin, identity, project },
@@ -88,7 +100,7 @@ export async function selectCloud(
       input: request.input,
       context: {
         ...request.context,
-        device: request.context.device ?? { id: device },
+        device: { id: device },
       },
     },
     (value) => block.validate(operation.declaration.output, value),
