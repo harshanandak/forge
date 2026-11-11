@@ -107,7 +107,9 @@ const fail = (code: string, message: string): ForgeFailure =>
 const STATUS: Record<string, number> = {
   INPUT_INVALID: 400,
   CONTEXT_MISSING: 400,
+  NOT_FOUND: 404,
   UNKNOWN_COMMAND: 404,
+  INTERNAL: 500,
   UNAVAILABLE: 503,
   INPUT_CONFLICT: 409,
   DUMP_TOO_LARGE: 413,
@@ -482,10 +484,14 @@ export class Project {
       if (db === undefined) throw fail("AUTH_INVALID", "Token is not valid");
       authorize(db, parts, Date.now());
       const body = await bounded(request, MAX_COMMAND_BODY);
-      // Envelope handling gets only the device the token names and the admitted project: no storage.
-      runCommand(body, {
+      // No await from here to the response: the second check below stays current while it is built.
+      return runCommand(body, {
         device: authorize(db, parts, Date.now()),
         project: commandProject(request)!,
+        storage: this.#storage,
+        idPrefix: (this.#env as { FORGE_CLOUD_ID_PREFIX?: unknown })
+          .FORGE_CLOUD_ID_PREFIX,
+        now: Date.now(),
       });
     } catch (error) {
       if (!(error instanceof ForgeFailure)) throw error;

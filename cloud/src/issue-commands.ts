@@ -1,6 +1,6 @@
 // POST /p/<project>/command: typed issue commands at the project authority.
-// This slice checks the envelope and the context and then refuses every command as not yet
-// supported: no operation runs and nothing is read or written. Everything the caller sends is
+// This slice checks the envelope and the context, runs issue.show as a read and refuses every
+// other command as not yet supported: nothing is written. Everything the caller sends is
 // untrusted. The envelope and context are closed shapes, the device comes from the token and the
 // project from the server, and no caller value becomes an SQL identifier, a namespace or a key.
 import manifest from "../../src/blocks/work/forge.block.json" with { type: "json" };
@@ -18,9 +18,19 @@ import {
   validateOperationName,
   validateRequestId,
 } from "../../src/generated/validators.ts";
+
+import {
+  LEASE_READS,
+  readIssue,
+  RECORD_READS,
+  type IssueViews,
+} from "./issue-read.ts";
 import { PROJECT_NAME } from "./project-name.ts";
+import { readOnlyStore, type DurableStorage } from "./store.ts";
 
 export const MAX_COMMAND_BODY = 512 * 1024;
+/** The most a show response may be, in UTF-8 bytes, measured on the whole envelope. */
+export const MAX_SHOW_RESPONSE_BYTES = 1_048_576;
 const COMMAND_ROUTE = new RegExp(`^/p/(${PROJECT_NAME})/command$`);
 const FIELDS = ["requestId", "op", "input", "context", "dryRun"];
 const LIMITS = {
@@ -136,8 +146,60 @@ export function prepareCommand(
   return { op, input: call.input, context: bound.context };
 }
 
-/** Prepares a command and refuses it: the operations arrive in later slices. Always throws. */
-export function runCommand(text: string, host: CommandHost): never {
-  prepareCommand(text, host);
-  throw fail("INPUT_INVALID", "Commands are not yet supported in cloud");
+export interface CommandRun extends CommandHost {
+  readonly storage: DurableStorage;
+  /** The server's configured id prefix, as set: readIssue checks it. */
+  readonly idPrefix: unknown;
+  readonly now: number;
+}
+
+// Each view is built on first use and then kept, so a request that never reaches the work tables
+// never probes them.
+function lazyViews(storage: DurableStorage): IssueViews {
+  const built: {
+    records?: [ReturnType<typeof readOnlyStore>];
+    leases?: [ReturnType<typeof readOnlyStore>];
+  } = {};
+  return {
+    get records() {
+      return (built.records ??= [
+        readOnlyStore(storage, "state_records", RECORD_READS),
+      ])[0];
+    },
+    get leases() {
+      return (built.leases ??= [
+        readOnlyStore(storage, "state_leases", LEASE_READS),
+      ])[0];
+    },
+  };
+}
+
+/**
+ * Prepares a command and runs it. Only issue.show runs: it returns the response, serialized once
+ * and measured in UTF-8 bytes. Every other operation is refused. Throws ForgeFailure when refused,
+ * and runs no await, so the caller's token check stays current until the response is built.
+ */
+export function runCommand(text: string, host: CommandRun): Response {
+  const { op, input } = prepareCommand(text, host);
+  if (op !== "issue.show")
+    throw fail("INPUT_INVALID", "Commands are not yet supported in cloud");
+  const item = readIssue(
+    lazyViews(host.storage),
+    input,
+    host.now,
+    host.idPrefix as string,
+  );
+  const body = JSON.stringify({
+    ok: true,
+    op,
+    status: "OK",
+    result: item,
+    warnings: [],
+  });
+  if (new TextEncoder().encode(body).length > MAX_SHOW_RESPONSE_BYTES)
+    throw fail("UNAVAILABLE", "response too large");
+  return new Response(body, {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
 }
