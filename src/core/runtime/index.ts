@@ -37,6 +37,14 @@ export const DEFAULT_RUNTIME_LIMITS: RuntimeLimits = {
 
 export type ServiceHandle = Handle<unknown>;
 
+/** What the request checks resolved: the values `invoke` goes on to use. */
+export interface Preflight {
+  readonly request: InvocationRequest;
+  readonly block: CapturedBlock;
+  readonly operation: ReturnType<Catalog["resolve"]>["operation"];
+  readonly context: BoundContext;
+}
+
 function onlyPendingLockCleanup(error: unknown, depth = 0): boolean {
   if (depth >= 32) return false;
   if (error instanceof AggregateError)
@@ -289,6 +297,14 @@ export class Runtime {
     if (!parsed.ok)
       return { ok: false, status: "FAIL", error: parsed.error, warnings: [] };
     return this.invoke(parsed.value, options);
+  }
+
+  /** The request checks `invoke` makes first, without opening services; not implemented yet. */
+  preflight(
+    _value: unknown,
+    _accepted?: (request: InvocationRequest) => void,
+  ): Preflight {
+    throw new Error("preflight is not implemented");
   }
 
   /** Parsed values from embeddings are trusted objects; outside text uses invokeText. */

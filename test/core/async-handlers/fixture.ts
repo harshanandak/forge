@@ -14,6 +14,7 @@ export function fixture(
   source: string,
   declaration: Partial<OperationDeclaration> = {},
   legacy = false,
+  extra: Record<string, unknown> = {},
 ) {
   const files = new Map(
     Object.entries({
@@ -25,6 +26,7 @@ export function fixture(
         profile: legacy ? "trusted-action-sync/v1" : "trusted-action/v2",
         entry: "index.cjs",
         docs: "docs.json",
+        ...extra,
         operations: {
           "sample.run": {
             input: "input.json",
