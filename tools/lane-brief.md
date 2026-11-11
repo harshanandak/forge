@@ -17,6 +17,8 @@ How:
 2. Install dependencies with `bun install --frozen-lockfile`.
 3. Read `.agents/skills/forge-loop/SKILL.md`, then the skill it routes to.
    Tests first: push the test-only commit for CI red, then the fix for CI green.
+   In the tests-first report, copy the acceptance table and add an Observed column.
+   For every row, record the red CI status, exit, eligibility and test name.
 4. Only installed `forge` on PATH may claim, comment or otherwise write tracker
    state. Never run this branch's build against the shared issue store or real
    device root. Exercise branch builds in disposable temp projects with

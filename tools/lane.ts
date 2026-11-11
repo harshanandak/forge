@@ -92,6 +92,7 @@ function briefProblems(text: string): string[] {
     start = end + 1;
   }
   const bodies = new Map<string, string[]>();
+  const hidden = new Set<number>();
   let current: string | undefined;
   let fence: { char: string; length: number } | undefined;
   for (const line of lines.slice(start)) {
@@ -105,6 +106,8 @@ function briefProblems(text: string): string[] {
       )
         fence = undefined;
       else if (current) bodies.get(current)?.push(line);
+      if (current === "Acceptance test" && fence)
+        hidden.add(bodies.get(current)!.length - 1);
       continue;
     }
     if (marker && !(marker[1]![0] === "`" && marker[2]!.includes("`"))) {
@@ -116,6 +119,48 @@ function briefProblems(text: string): string[] {
       current = heading[1] === "##" ? heading[2] : undefined;
       if (current && !bodies.has(current)) bodies.set(current, []);
     } else if (current) bodies.get(current)?.push(line);
+  }
+  if (
+    required.every((name) =>
+      bodies.get(name)?.some((line) => /[\p{L}\p{N}]/u.test(line)),
+    )
+  ) {
+    const columns = "Case|Input|Status|Exit|Eligibility|Unchanged".split("|");
+    const visible = (bodies.get("Acceptance test") ?? []).map((line, index) =>
+      hidden.has(index) ? "" : line,
+    );
+    const rows = visible.map((line) =>
+      line
+        .trim()
+        .replace(/^\||(?<!\\)\|$/g, "")
+        .split(/(?<!\\)\|/)
+        .map((cell) => cell.trim()),
+    );
+    const at = rows.findIndex(
+      (row, index) =>
+        index > 0 &&
+        row.length > 1 &&
+        row.length === rows[index - 1]!.length &&
+        row.every((cell) => /^:?-{3,}:?$/.test(cell)),
+    );
+    if (at < 0)
+      return [
+        "brief Acceptance test section requires a table with columns: " +
+          columns.join(", "),
+      ];
+    const header = rows[at - 1]!.map((cell) => cell.toLowerCase());
+    const missing = columns.filter(
+      (name) => !header.includes(name.toLowerCase()),
+    );
+    if (missing.length)
+      return [
+        "brief acceptance table is missing columns: " + missing.join(", "),
+      ];
+    const end = visible.findIndex(
+      (line, index) => index > at && !line.includes("|"),
+    );
+    if (!rows.slice(at + 1, end < 0 ? undefined : end).some((row) => row[0]))
+      return ["brief acceptance table has no rows"];
   }
   return required
     .filter(
@@ -646,10 +691,21 @@ export async function main(): Promise<number> {
           process.argv[2] !== "start" ||
           (arg !== "--max" && args[i - 1] !== "--max"),
       );
+    const briefFlag = process.argv.indexOf("--brief", 3);
+    const file = briefFlag < 0 ? undefined : process.argv[briefFlag + 1];
+    let problems: string[] = [];
+    try {
+      if (process.argv[2] === "start" && file)
+        problems = briefProblems(readFileSync(file, "utf8"));
+    } catch {
+      // Keep the migration refusal for unreadable paths.
+    }
     console.log(
       JSON.stringify({
         verdict: "refused",
-        reasons: ["Use forge lane instead; configure the cap with lanes.max"],
+        reasons: problems.length
+          ? problems
+          : ["Use forge lane instead; configure the cap with lanes.max"],
         next: ["forge", "lane", ...next],
       }),
     );

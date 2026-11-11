@@ -9,3 +9,5 @@ Worktree: {{WT}} ({{PR}}issue {{ID}}). Diff: `git diff {{BASE}}...{{HEAD}}`. Rea
 Look for: a wrong result, a broken guarantee, a regression for existing users or other callers of the changed code, and whether the tests really pin the fix (would they fail if the fix were reverted?).
 
 Final reply first line: `Verdict: CLEAN` (no P0/P1) or `Verdict: ACT`. Then, in plain language, at most 300 words: findings sorted into act on (P0/P1), consider and noted, each with file:line, the concrete failure and the smallest fix. If a category is empty, say so and name what you inspected.
+
+Check the fix against the same acceptance table in the lane brief, row by row.
