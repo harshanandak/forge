@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAssembly, localCall } from "../../src/assembly/index.ts";
@@ -52,6 +52,28 @@ test("inactive bundled operations and nouns name the import that enables them", 
     expect(await dispatch(assembly.catalog, "issue.lsit", {}, options)).toEqual(
       failure("UNKNOWN_COMMAND", "Unknown operation: issue.lsit"),
     );
+    const provider = shippedTemplates().get("delivery");
+    if (provider === undefined)
+      throw new Error("Expected bundled delivery template");
+    mkdirSync(join(root, ".forge"));
+    writeFileSync(
+      join(root, ".forge/config.yaml"),
+      JSON.stringify({
+        schemaVersion: "forge.config/1",
+        blocks: {},
+        templates: [
+          {
+            template: `${provider.id}@${provider.version}`,
+            digest: `sha256:${"0".repeat(64)}`,
+          },
+        ],
+      }),
+    );
+    for (const op of ["issue.list", "issue.show", "issue."]) {
+      expect(await dispatch(assembly.catalog, op, {}, options)).toEqual(
+        failure("UNKNOWN_COMMAND", `Unknown operation: ${op}`),
+      );
+    }
   } finally {
     await assembly.close();
     rmSync(root, { recursive: true, force: true });

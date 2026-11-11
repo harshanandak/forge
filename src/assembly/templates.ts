@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { TemplateSource } from "../core/config/index.ts";
+import type { ShowResult } from "../core/config/index.ts";
 import { expandTemplate } from "../core/config/templates.ts";
 import { refuse } from "../core/trust/index.ts";
 import type { TemplateDocument } from "../generated/types.ts";
@@ -33,6 +34,7 @@ export function shippedTemplates(): TemplateSource & {
     op: string,
     caller: Caller,
     readOnly?: boolean,
+    project?: ShowResult,
   ): TemplateHint | undefined;
 } {
   let read: readonly Shipped[] | undefined;
@@ -68,12 +70,25 @@ export function shippedTemplates(): TemplateSource & {
     list: () => all().map((t) => t.document),
     get: (id) => find(id)?.document,
     dirOf: (id) => all().find((t) => t.document.id === id)?.dir,
-    hint(op, caller, readOnly = false) {
+    hint(op, caller, readOnly = false, project) {
       for (const template of all()) {
+        if (
+          project?.templates.some(({ template: ref }) =>
+            ref.startsWith(`${template.document.id}@`),
+          )
+        )
+          continue;
         for (const instance of Object.values(
           template.document.config.blocks ?? {},
         )) {
           if (instance.enabled === false || !("builtin" in instance.source))
+            continue;
+          const builtin = instance.source.builtin;
+          if (
+            project?.instances.some(
+              ({ source }) => "builtin" in source && source.builtin === builtin,
+            )
+          )
             continue;
           try {
             const handle = blockCapture.open(resolveBlock("", instance.source));

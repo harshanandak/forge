@@ -1000,7 +1000,10 @@ export async function createAssembly(
   const catalog: Assembly["catalog"] = {
     templateHint(op, caller, readOnly) {
       try {
-        return callScope().shipped.hint(op, caller, readOnly);
+        const call = callScope();
+        const show = call.config.show();
+        if (!show.valid) return undefined;
+        return call.shipped.hint(op, caller, readOnly, show);
       } catch {
         return undefined;
       }
