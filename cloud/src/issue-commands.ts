@@ -18,9 +18,10 @@ import {
   validateOperationName,
   validateRequestId,
 } from "../../src/generated/validators.ts";
+import { PROJECT_NAME } from "./project-name.ts";
 
 export const MAX_COMMAND_BODY = 512 * 1024;
-const COMMAND_ROUTE = /^\/p\/([A-Za-z0-9][A-Za-z0-9._-]{0,63})\/command$/;
+const COMMAND_ROUTE = new RegExp(`^/p/(${PROJECT_NAME})/command$`);
 const FIELDS = ["requestId", "op", "input", "context", "dryRun"];
 const LIMITS = {
   maxBytes: MAX_COMMAND_BODY,

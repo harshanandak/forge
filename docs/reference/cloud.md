@@ -89,7 +89,7 @@ The owner runs these steps. Replace angle-bracket placeholders; `<worker-origin>
 
    Set the `OAUTH_KV` id in `wrangler.local.jsonc`. Keep the rest of the example as it is: the preflight refuses any difference outside `account_id`, `name`, `vars` and that id.
 
-3. **Public vars.** Set each var in `wrangler.local.jsonc`. All are required except `FORGE_OAUTH_REDIRECTS`; without `FORGE_OWNER_SUBJECT` or `FORGE_CLOUD_PROJECT`, device login and `/command` refuse and the preflight stops the deploy:
+3. **Public vars.** Set each var in `wrangler.local.jsonc`. All are required except `FORGE_OAUTH_REDIRECTS`; without `FORGE_OWNER_SUBJECT` or `FORGE_CLOUD_PROJECT`, device login and `/command` refuse, without `FORGE_CLOUD_ID_PREFIX`, `issue.show` answers 503, and the preflight stops the deploy in each case:
 
    | Name                    | Example shape                               | What `readOAuthConfig` checks                                                                                 | Classification |
    | ----------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------- | -------------- |
@@ -101,6 +101,9 @@ The owner runs these steps. Replace angle-bracket placeholders; `<worker-origin>
    | `FORGE_OAUTH_REDIRECTS` | `<https-redirect-url>,<https-redirect-url>` | Optional comma-separated HTTPS URLs, no credentials, query or fragment; any bad entry makes OAuth unavailable | Not secret     |
    | `FORGE_OWNER_SUBJECT`   | `<owner-subject>`                           | `user_` plus alphanumerics; owner must match this subject and `CLERK_ISSUER` exactly                          | Not secret     |
    | `FORGE_CLOUD_PROJECT`   | `<project-name>`                            | The one provisioned project that login and `/command` serve                                                   | Not secret     |
+   | `FORGE_CLOUD_ID_PREFIX` | `<id-prefix>`                               | The work block's `idPrefix` rule: lowercase letters, digits and single hyphens, 1–32 characters               | Not secret     |
+
+   The preflight runs the Worker's own rules for these vars, at the origin of `CLERK_REDIRECT_URI`. It cannot know the deployed origin, so the smoke checks below verify the real one.
 
    Every HTTPS value above rejects credentials, query strings, fragments, whitespace and backslashes. Registration accepts only loopback redirects (`http` on `127.0.0.1`, `[::1]` or `localhost`) and exact matches of `FORGE_OAUTH_REDIRECTS`; anything else is refused with `REGISTRATION_INVALID` before the rate limiter counts it. Metadata uses the callback origin, not the Host header. No Clerk secret key is needed or used; never put one in `vars`.
 

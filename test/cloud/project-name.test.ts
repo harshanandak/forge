@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { commandProject } from "../../cloud/src/issue-commands.ts";
+import { PROJECT_NAME, isProjectName } from "../../cloud/src/project-name.ts";
 import { createWorker } from "../../cloud/src/worker.ts";
 
 // The project name in a route is untrusted. Both routes must accept and refuse the same names, so
@@ -49,4 +50,12 @@ test("an extra path segment matches neither route", async () => {
     expect(
       (await worker.fetch(new Request(`https://w.example${path}`), env)).status,
     ).toBe(404);
+}, 5_000);
+
+test("the shared rule agrees with both routes and refuses a trailing newline", () => {
+  for (const [, name, accepted] of NAMES)
+    expect(isProjectName(name)).toBe(accepted);
+  for (const value of ["project\n", "", undefined, 7])
+    expect(isProjectName(value)).toBe(false);
+  expect(PROJECT_NAME).not.toMatch(/[\^$()]/);
 }, 5_000);

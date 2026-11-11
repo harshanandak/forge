@@ -7,26 +7,36 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import {
+  OAuthConfigError,
+  readOAuthConfig,
+} from "../src/adapters/workers-oauth/config.ts";
+import { isProjectName } from "../src/project-name.ts";
+import workConfig from "../../src/blocks/work/schemas/config.json" with { type: "json" };
+import { validateWithSchema } from "../../src/contract/schema.ts";
 
 const SECRETS = ["DEVICE_LOGIN_HMAC_KEY", "ADMIN_TOKEN"];
 const FAKE =
   /[<>]|example|replace|placeholder|public-client-id|worker\.workers\.dev|your-/i;
 const HEX32 = /^(?!(.)\1*$)[0-9a-f]{32}$/;
-// The runtime's limits, from cloud/src/adapters/workers-oauth/config.ts: https (19-30), issuer origin
-// (31-36), client id (37-39), owner subject (40-47), callback (56-59) and timeout (61-66). The project
-// name is worker.ts:25 and issue-commands.ts:23 (64 characters). A .mjs script cannot import them, and
-// https here also refuses '@'.
-const https = (v) => URL.canParse(v) && /^https:\/\/[^\s\\?#@]+$/.test(v);
-const VARS = {
-  CLERK_ISSUER: (v) =>
-    https(v) && [new URL(v).origin, `${new URL(v).origin}/`].includes(v),
-  CLERK_CLIENT_ID: /^[\x21-\x7e]{1,256}$/,
-  CLERK_REDIRECT_URI: (v) => https(v) && new URL(v).pathname === "/callback",
-  FORGE_API_RESOURCE: https,
-  OAUTH_TIMEOUT_MS: (v) => /^[1-9]\d*$/.test(v) && Number(v) <= 2_147_483_647,
-  FORGE_OWNER_SUBJECT: /^user_[A-Za-z0-9]+$/,
-  FORGE_CLOUD_PROJECT: /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/,
-};
+// Deployment policy lives here: which vars are required, and that no value is a placeholder. The runtime's
+// own rules are not copied: the Worker's readOAuthConfig, its project-name rule and the work block's idPrefix
+// schema run below. The OAuth rules run at the origin of CLERK_REDIRECT_URI, because the deployed origin is
+// not known here; the deploy smoke checks in docs/reference/cloud.md verify the real one.
+const OAUTH = [
+  "CLERK_ISSUER",
+  "CLERK_CLIENT_ID",
+  "CLERK_REDIRECT_URI",
+  "FORGE_API_RESOURCE",
+  "OAUTH_TIMEOUT_MS",
+];
+const VARS = [
+  ...OAUTH,
+  "FORGE_OAUTH_REDIRECTS",
+  "FORGE_OWNER_SUBJECT",
+  "FORGE_CLOUD_PROJECT",
+  "FORGE_CLOUD_ID_PREFIX",
+];
 const sorted = (_key, v) =>
   v && typeof v === "object" && !Array.isArray(v)
     ? Object.fromEntries(Object.entries(v).sort(([x], [y]) => (x < y ? -1 : 1)))
@@ -75,9 +85,7 @@ if (config) {
     readFileSync(here("../wrangler.example.jsonc"), "utf8"),
   );
   const real = (value, shape) =>
-    typeof value === "string" &&
-    !FAKE.test(value) &&
-    (shape instanceof RegExp ? shape.test(value) : shape(value));
+    typeof value === "string" && !FAKE.test(value) && shape.test(value);
   if (!real(config.account_id, HEX32))
     bad("account_id is missing, a placeholder or invalid");
   if (!real(config.name, /^[a-z0-9][a-z0-9-]{0,62}$/))
@@ -85,8 +93,49 @@ if (config) {
   const kv = kvs(config).find((n) => n?.binding === "OAUTH_KV");
   if (!real(kv?.id, HEX32))
     bad("OAUTH_KV needs the id of an existing namespace");
-  for (const [name, shape] of Object.entries(VARS))
-    if (!real(config.vars?.[name], shape))
+  const vars =
+    config.vars &&
+    typeof config.vars === "object" &&
+    !Array.isArray(config.vars)
+      ? config.vars
+      : {};
+  const flawed = new Set();
+  for (const name of VARS) {
+    const value = vars[name];
+    // Only the redirects may be omitted. An id prefix can be any valid word, so it skips the placeholder test.
+    if (
+      value === undefined
+        ? name !== "FORGE_OAUTH_REDIRECTS"
+        : typeof value !== "string" ||
+          (name !== "FORGE_CLOUD_ID_PREFIX" && FAKE.test(value))
+    )
+      flawed.add(name);
+  }
+  if (
+    typeof vars.FORGE_CLOUD_PROJECT === "string" &&
+    !isProjectName(vars.FORGE_CLOUD_PROJECT)
+  )
+    flawed.add("FORGE_CLOUD_PROJECT");
+  if (
+    typeof vars.FORGE_CLOUD_ID_PREFIX === "string" &&
+    validateWithSchema(
+      workConfig.properties.idPrefix,
+      vars.FORGE_CLOUD_ID_PREFIX,
+    ).length > 0
+  )
+    flawed.add("FORGE_CLOUD_ID_PREFIX");
+  try {
+    if (typeof vars.CLERK_REDIRECT_URI !== "string")
+      throw new OAuthConfigError("CLERK_REDIRECT_URI");
+    readOAuthConfig(vars, new URL(vars.CLERK_REDIRECT_URI).origin);
+  } catch (error) {
+    // Only the variable name is used: the error's text and the URL parser's text can quote a value.
+    flawed.add(
+      error instanceof OAuthConfigError ? error.variable : "CLERK_REDIRECT_URI",
+    );
+  }
+  for (const name of VARS)
+    if (flawed.has(name))
       bad(`var ${name} is missing, a placeholder or invalid`);
   for (const name of Object.keys(config.vars ?? {}))
     if (SECRETS.includes(name))
