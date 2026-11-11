@@ -269,6 +269,7 @@ test("an unprovisioned project runs no SQL for a command", async () => {
   const f = fixture();
   const got = await f.send(call, { via: "direct", token: fakeToken });
   expect([got.status, got.code]).toEqual([401, "AUTH_INVALID"]);
+  expect(strayCalls(got.touched)).toEqual([]);
   expect(f.snapshot()).toBe('{"sql":[],"kv":[]}');
 }, 30_000);
 
@@ -291,14 +292,17 @@ test("an expired or revoked token ends the command, also during the body read", 
       .run(f.now(), token.slice(4, 20));
   const during = await f.send(slow(revoke), { token });
   expect([during.status, during.code]).toEqual([401, "AUTH_REVOKED"]);
+  expect(strayCalls(during.touched)).toEqual([]);
   const fresh = await f.device();
   const late = await f.send(
     slow(() => f.advance(2 * day)),
     { token: fresh },
   );
   expect([late.status, late.code]).toEqual([401, "AUTH_EXPIRED"]);
+  expect(strayCalls(late.touched)).toEqual([]);
   const after = await f.send(call, { token: fresh });
   expect([after.status, after.code]).toEqual([401, "AUTH_EXPIRED"]);
+  expect(strayCalls(after.touched)).toEqual([]);
 }, 30_000);
 
 test("a body over 512 KiB is refused at the limit and nothing is written", async () => {
@@ -555,6 +559,7 @@ test("a dry run is unavailable before its context is bound and runs nothing", as
 
 test("an exposed op missing from the manifest fails closed as UNKNOWN_COMMAND", async () => {
   const { f, token, before } = await begin();
+  // No await while the shared manifest is changed: the whole mutation is synchronous.
   const operations = manifest.operations as unknown as Record<string, unknown>;
   const declared = operations["issue.show"];
   delete operations["issue.show"];
@@ -563,11 +568,6 @@ test("an exposed op missing from the manifest fails closed as UNKNOWN_COMMAND", 
     expect(() =>
       prepareCommand(JSON.stringify(call), { device: "laptop", project: "p" }),
     ).toThrow("UNKNOWN_COMMAND: No such command");
-    refusal("missing op", await f.send(call, { token }), [
-      404,
-      "UNKNOWN_COMMAND",
-      3,
-    ]);
   } finally {
     operations["issue.show"] = declared;
   }
