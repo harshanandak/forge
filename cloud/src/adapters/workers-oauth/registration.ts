@@ -59,7 +59,41 @@ export class RegistrationLimiter {
     });
   }
 }
-export async function guardRegistration(request: Request, namespace: unknown) {
+/** The only hosts a loopback redirect may name (RFC 8252 section 7.3). */
+export const LOOPBACK_HOSTS: ReadonlySet<string> = new Set([
+  "127.0.0.1",
+  "[::1]",
+  "localhost",
+]);
+const unsafe = (uri: string) =>
+  uri.includes("\\") ||
+  [...uri].some((char) => {
+    const code = char.charCodeAt(0);
+    return code <= 32 || (code >= 127 && code <= 159);
+  });
+const parse = (uri: string) => {
+  try {
+    return unsafe(uri) ? undefined : new URL(uri);
+  } catch {
+    return undefined;
+  }
+};
+export function isLoopbackRedirect(uri: string) {
+  const url = parse(uri);
+  return (
+    url !== undefined &&
+    url.protocol === "http:" &&
+    LOOPBACK_HOSTS.has(url.hostname) &&
+    !(url.username || url.password || url.hash || uri.includes("#"))
+  );
+}
+const allowedRedirect = (uri: string, named: readonly string[]) =>
+  isLoopbackRedirect(uri) || named.includes(parse(uri)?.href ?? "");
+export async function guardRegistration(
+  request: Request,
+  namespace: unknown,
+  named: readonly string[] = [],
+) {
   if (
     new URL(request.url).pathname !== "/register" ||
     request.method !== "POST"
@@ -80,14 +114,15 @@ export async function guardRegistration(request: Request, namespace: unknown) {
     };
     const uris = data?.redirect_uris;
     if (
-      uris !== undefined &&
-      (!Array.isArray(uris) ||
-        uris.length > REGISTRATION_LIMITS.redirects ||
-        uris.some(
-          (uri: unknown) =>
-            typeof uri !== "string" ||
-            uri.length > REGISTRATION_LIMITS.redirectLength,
-        ))
+      !Array.isArray(uris) ||
+      uris.length === 0 ||
+      uris.length > REGISTRATION_LIMITS.redirects ||
+      uris.some(
+        (uri: unknown) =>
+          typeof uri !== "string" ||
+          uri.length > REGISTRATION_LIMITS.redirectLength ||
+          !allowedRedirect(uri, named),
+      )
     )
       return invalid("redirect_uris");
   } catch {

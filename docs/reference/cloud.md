@@ -58,16 +58,17 @@ The owner runs these steps. Replace angle-bracket placeholders; `<worker-origin>
 
 3. **Public vars.** Replace the five required strings in `cloud/wrangler.jsonc`; set the optional owner subject to enable OAuth project access, or omit it to keep login without project access:
 
-   | Name                  | Example shape                    | What `readOAuthConfig` checks                                                                 | Classification |
-   | --------------------- | -------------------------------- | --------------------------------------------------------------------------------------------- | -------------- |
-   | `CLERK_ISSUER`        | `<frontend-api-url>`             | HTTPS origin only, optionally one trailing slash                                              | Not secret     |
-   | `CLERK_CLIENT_ID`     | `<client-id>`                    | 1–256 printable ASCII characters, excluding spaces                                            | Not secret     |
-   | `CLERK_REDIRECT_URI`  | `<worker-origin>/callback`       | Exactly the incoming request origin plus `/callback`                                          | Not secret     |
-   | `FORGE_API_RESOURCE`  | `<worker-origin>/p/<project-id>` | HTTPS URL; a path is allowed                                                                  | Not secret     |
-   | `OAUTH_TIMEOUT_MS`    | `5000`                           | Decimal integer string from 1 through 2147483647, no leading zero                             | Not secret     |
-   | `FORGE_OWNER_SUBJECT` | `user_REPLACEWITHOWNERID`        | Optional `user_` plus alphanumerics; owner must match this subject and `CLERK_ISSUER` exactly | Not secret     |
+   | Name                    | Example shape                               | What `readOAuthConfig` checks                                                                                 | Classification |
+   | ----------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------- | -------------- |
+   | `CLERK_ISSUER`          | `<frontend-api-url>`                        | HTTPS origin only, optionally one trailing slash                                                              | Not secret     |
+   | `CLERK_CLIENT_ID`       | `<client-id>`                               | 1–256 printable ASCII characters, excluding spaces                                                            | Not secret     |
+   | `CLERK_REDIRECT_URI`    | `<worker-origin>/callback`                  | Exactly the incoming request origin plus `/callback`                                                          | Not secret     |
+   | `FORGE_API_RESOURCE`    | `<worker-origin>/p/<project-id>`            | HTTPS URL; a path is allowed                                                                                  | Not secret     |
+   | `OAUTH_TIMEOUT_MS`      | `5000`                                      | Decimal integer string from 1 through 2147483647, no leading zero                                             | Not secret     |
+   | `FORGE_OAUTH_REDIRECTS` | `<https-redirect-url>,<https-redirect-url>` | Optional comma-separated HTTPS URLs, no credentials, query or fragment; any bad entry makes OAuth unavailable | Not secret     |
+   | `FORGE_OWNER_SUBJECT`   | `user_REPLACEWITHOWNERID`                   | Optional `user_` plus alphanumerics; owner must match this subject and `CLERK_ISSUER` exactly                 | Not secret     |
 
-   Every HTTPS value above rejects credentials, query strings, fragments, whitespace and backslashes. Metadata uses the callback origin, not the Host header. No Clerk secret key is needed or used; never put one in `vars`.
+   Every HTTPS value above rejects credentials, query strings, fragments, whitespace and backslashes. Registration accepts only loopback redirects (`http` on `127.0.0.1`, `[::1]` or `localhost`) and exact matches of `FORGE_OAUTH_REDIRECTS`; anything else is refused with `REGISTRATION_INVALID` before the rate limiter counts it. Metadata uses the callback origin, not the Host header. No Clerk secret key is needed or used; never put one in `vars`.
 
 4. **Deploy.** First prepare generated validators from the repository root:
 

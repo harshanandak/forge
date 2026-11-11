@@ -44,6 +44,15 @@ export function readOAuthConfig(
           "FORGE_OWNER_SUBJECT",
           (value) => /^user_[A-Za-z0-9]+$/.test(value) && !/\s/.test(value),
         );
+  // An empty value names nothing; any entry that is not a plain https URL makes the config unavailable.
+  const entries = (value: string) =>
+    value.trim() === "" ? [] : value.split(",").map((entry) => entry.trim());
+  const namedRedirects =
+    vars.FORGE_OAUTH_REDIRECTS === undefined
+      ? []
+      : entries(
+          read("FORGE_OAUTH_REDIRECTS", (value) => entries(value).every(https)),
+        ).map((entry) => new URL(entry).href);
   const redirectUri = read(
     "CLERK_REDIRECT_URI",
     (value) => https(value) && value === `${origin}/callback`,
@@ -58,6 +67,7 @@ export function readOAuthConfig(
   return {
     issuer,
     ...(ownerSubject === undefined ? {} : { ownerSubject }),
+    ...(namedRedirects.length === 0 ? {} : { namedRedirects }),
     authorizationUrl: new URL("/oauth/authorize", issuer).href,
     tokenUrl: new URL("/oauth/token", issuer).href,
     jwksUrl: new URL("/.well-known/jwks.json", issuer).href,

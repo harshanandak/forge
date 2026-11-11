@@ -14,6 +14,7 @@
     "CLERK_REDIRECT_URI": "https://worker.workers.dev/callback",
     "FORGE_API_RESOURCE": "https://worker.workers.dev",
     "OAUTH_TIMEOUT_MS": "5000",
+    // Optional FORGE_OAUTH_REDIRECTS: comma-separated https redirect URLs that may register besides loopback.
   },
   "durable_objects": {
     "bindings": [

@@ -504,7 +504,7 @@ test("real provider registration and canonical resource metadata handle requests
         "Content-Type": "application/json",
         "CF-Connecting-IP": "203.0.113.1",
       },
-      body: "{}",
+      body: '{"redirect_uris":["http://127.0.0.1/cb"],"token_endpoint_auth_method":"bogus"}',
     }),
     { ...env, REGISTRATION_LIMITER: f.env.PROJECTS },
   );

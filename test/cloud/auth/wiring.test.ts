@@ -66,6 +66,7 @@ async function fixture(claims = {}, alg = "RS256") {
   };
   const env = {
     ...vars,
+    FORGE_OAUTH_REDIRECTS: redirect,
     ADMIN_TOKEN: "fixture-admin",
     PROJECTS: transport,
     REGISTRATION_LIMITER: transport,
