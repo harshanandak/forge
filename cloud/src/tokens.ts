@@ -141,7 +141,7 @@ export function authorizeToken(
   db: SqlDatabase,
   parts: { id: string; hash: string },
   now: number,
-): { device: string; session: string | null } {
+): { device: string; session: string | null; expiresAt: number } {
   const row = db.get(TOKEN_LOOKUP, [parts.id]);
   const match = same(
     parts.hash,
@@ -156,6 +156,7 @@ export function authorizeToken(
   return {
     device: String(row.device),
     session: typeof row.session === "string" ? row.session : null,
+    expiresAt: Number(row.expires_at),
   };
 }
 

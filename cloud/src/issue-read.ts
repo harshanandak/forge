@@ -122,6 +122,10 @@ export const minted =
       given,
     ]) !== undefined;
 
+/** The shown id for a stored `work-<digits>`: the current prefix in place of `work`. Any other id is kept. */
+export const shownId = (stored: string, prefix: string): string =>
+  /^work-\d+$/.test(stored) ? `${prefix}-${stored.slice(5)}` : stored;
+
 /** A lease that holds its issue at `now`: not released and not yet expired. */
 export const holds = (lease: Json | undefined, now: number): boolean =>
   lease !== undefined &&
@@ -208,8 +212,7 @@ export function shownItem(
   prefix: string,
 ): TrackerItem {
   const value = checkedValue(record, id);
-  const shown = (stored: string): string =>
-    /^work-\d+$/.test(stored) ? `${prefix}-${stored.slice(5)}` : stored;
+  const shown = (stored: string): string => shownId(stored, prefix);
   const {
     closeReason: _reason,
     prefix: _minted,
