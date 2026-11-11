@@ -86,6 +86,7 @@ import {
   coreDocs,
   validateConfigValue,
 } from "./declarations.ts";
+import { selectCloud } from "./cloud-authority.ts";
 import { LocalState } from "./state.ts";
 import {
   ApprovalRequired,
@@ -1872,7 +1873,7 @@ export async function createAssembly(
           request.input,
           processCleanupBudgetMs(options.providers?.supervision),
         );
-        const result = await new Runtime(runtimeCatalog, trust, {
+        const runtime = new Runtime(runtimeCatalog, trust, {
           isolation: nodeRunIsolation,
           async services(instance, context, scope) {
             const clients: Record<string, unknown> = {};
@@ -2135,7 +2136,19 @@ export async function createAssembly(
               throw error;
             }
           },
-        }).invoke(request);
+        });
+        const cloud = await selectCloud(
+          {
+            root,
+            deviceRoot,
+            env: options.providers?.env ?? process.env,
+            cloud: options.providers?.cloudLogin,
+          },
+          runtime,
+          request,
+        );
+        if (cloud) return cloud;
+        const result = await runtime.invoke(request);
         return checkResult(
           runtimeCatalog,
           request.op,
