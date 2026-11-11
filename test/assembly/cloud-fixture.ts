@@ -155,7 +155,7 @@ export function network(...steps: Step[]) {
   const fetch: CloudFetch = (url, init) => {
     let body: unknown;
     try {
-      body = JSON.parse(init.body);
+      body = JSON.parse(init.body ?? "");
     } catch {
       body = init.body;
     }

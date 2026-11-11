@@ -4,6 +4,9 @@ import {
   validateOrigin,
   validateProject,
   type CloudFetch,
+  type CloudHttp,
+  type LeaseRoute,
+  type LeaseWriteBody,
 } from "../../../src/adapters/http/index.ts";
 import { ForgeFailure } from "../../../src/contract/failure.ts";
 
@@ -368,3 +371,257 @@ test("the real HTTPS transport reports an unreachable local port as unavailable"
   );
   expect(failed.error.code).toBe("UNAVAILABLE");
 }, 20_000);
+
+const TOKEN = `fct_0123456789abcdef.${"T".repeat(43)}`;
+const SUBJECT = "issue:forge-1";
+const HOLDER = {
+  actor: { kind: "agent" as const, id: "a1" },
+  session: { id: "s1", device: "dev-1", agent: "a1", harness: "claude" },
+};
+const lease = (more: Record<string, unknown> = {}) => ({
+  subject: SUBJECT,
+  holder: HOLDER,
+  generation: 3,
+  expiresAt: "2026-11-11T12:00:00.000Z",
+  ...more,
+});
+const base = { subject: SUBJECT, holder: HOLDER, requestId: "r-1" };
+const bodies: Record<LeaseRoute, LeaseWriteBody> = {
+  claim: { ...base, ttlMs: 60_000 },
+  renew: { ...base, generation: 3, ttlMs: 60_000 },
+  release: { ...base, generation: 3 },
+};
+const ok = (value: unknown, status = 200) => json({ ok: true, value }, status);
+const refusal = (code: string, status: number, more = {}) =>
+  json({ ok: false, error: { code, message: SECRET, ...more } }, status);
+const details = { ...lease(), generation: 4 };
+const bad = (more: Record<string, unknown>) =>
+  refusal("LEASE_STALE", 409, { lease: { ...details, ...more } });
+const operations: [
+  string,
+  (h: CloudHttp, s?: AbortSignal) => Promise<unknown>,
+][] = [
+  ["claim", (h, s) => h.leaseWrite(TOKEN, "claim", bodies.claim, s)],
+  ["holder", (h, s) => h.leaseHolder(TOKEN, SUBJECT, s)],
+];
+const feed = (onCancel: () => void, after = () => {}, endless = false) =>
+  new ReadableStream<Uint8Array>({
+    start: (c) => void (c.enqueue(new TextEncoder().encode('{"ok":')), after()),
+    pull: (c) =>
+      void (endless && c.enqueue(new TextEncoder().encode("x".repeat(600)))),
+    cancel: onCancel,
+  });
+
+/** Exactly one request went out, with this method, route and the bearer header. */
+function sentOnce(
+  net: ReturnType<typeof network>,
+  method: string,
+  path: string,
+) {
+  expect(net.calls).toHaveLength(1);
+  const [call] = net.calls;
+  expect([
+    call?.init.method,
+    call?.url,
+    call?.init.headers.authorization,
+  ]).toEqual([method, `${ORIGIN}/p/proj/${path}`, `Bearer ${TOKEN}`]);
+}
+
+for (const route of ["claim", "renew", "release"] as const)
+  test(`a ${route} posts the exact body with the bearer header and nothing else`, async () => {
+    const net = network(() => ok(lease()));
+    const result = await http(net.fetch).leaseWrite(
+      TOKEN,
+      route,
+      bodies[route],
+    );
+    expect(result).toEqual({ kind: "ok", lease: lease() });
+    const [call] = net.calls;
+    expect(call?.url).toBe(`${ORIGIN}/p/proj/${route}`);
+    expect(call?.init.method).toBe("POST");
+    expect(call?.init.redirect).toBe("manual");
+    expect(call?.init.body).toBe(JSON.stringify(bodies[route]));
+    expect(call?.init.headers.authorization).toBe(`Bearer ${TOKEN}`);
+    expect(Object.keys(call?.init.headers ?? {})).toHaveLength(3);
+  }, 10_000);
+
+test("a holder read is a GET with the subject URL-encoded and no body, and keeps the raw record", async () => {
+  const subject = "issue:a b/c?d";
+  const mine = (more = {}) => lease({ subject, ...more });
+  const released = mine({ releasedAt: "2026-11-11T11:00:00.000Z" });
+  const lapsed = mine({ expiresAt: "2020-01-01T00:00:00.000Z" });
+  for (const value of [mine(), released, lapsed, null]) {
+    const net = network(() => ok(value));
+    const result = await http(net.fetch).leaseHolder(TOKEN, subject);
+    expect(result).toEqual({ kind: "ok", lease: value } as never);
+    sentOnce(net, "GET", "holder?subject=issue%3Aa%20b%2Fc%3Fd");
+    expect(net.calls[0]?.init.body).toBeUndefined();
+  }
+}, 10_000);
+
+test("every refusal in the vocabulary keeps its code, the lease ones keep validated details, and no server words survive", async () => {
+  const coded = (
+    "LEASE_HELD:409 LEASE_STALE:409 LEASE_NOT_HELD:409 LEASE_EXPIRED:409 " +
+    "INPUT_CONFLICT:409 INPUT_INVALID:400 AUTH_REQUIRED:401 AUTH_INVALID:401 " +
+    "AUTH_REVOKED:401 AUTH_EXPIRED:401 AUTH_DEVICE_MISMATCH:403"
+  ).split(" ");
+  for (const entry of coded) {
+    const [code = "", status = ""] = entry.split(":");
+    const leased = code.startsWith("LEASE_");
+    const answer = refusal(
+      code,
+      Number(status),
+      leased ? { lease: details } : {},
+    );
+    const result = await http(network(() => answer).fetch).leaseWrite(
+      TOKEN,
+      "renew",
+      bodies.renew,
+    );
+    const expected = leased
+      ? { kind: "refused", code, lease: details }
+      : { kind: "refused", code };
+    expect(result).toEqual(expected as never);
+    expect(JSON.stringify(result)).not.toContain(SECRET);
+  }
+  const bare = refusal("LEASE_HELD", 409, { lease: { subject: SUBJECT } });
+  const read = http(network(() => bare).fetch).leaseHolder(TOKEN, SUBJECT);
+  expect(await read).toEqual({
+    kind: "refused",
+    code: "LEASE_HELD",
+    lease: { subject: SUBJECT },
+  });
+}, 10_000);
+
+const both = (flag: boolean, status: number) =>
+  json({ ok: flag, value: lease(), error: { code: "AUTH_REVOKED" } }, status);
+const badAnswers: [string, () => Response][] = [
+  ["malformed JSON", () => new Response("{")],
+  ["a malformed lease", () => ok(lease({ generation: "3" }))],
+  ["a lease with an unknown field", () => ok(lease({ extra: 1 }))],
+  ["a wrong subject", () => ok(lease({ subject: "issue:x" }))],
+  ["no lease on a write", () => ok(null)],
+  ["a 500 with a success body", () => ok(lease(), 500)],
+  [
+    "a 200 with a refusal",
+    () => refusal("LEASE_HELD", 200, { lease: details }),
+  ],
+  ["no ok flag", () => json({ value: lease() })],
+  ["a success that carries an error", () => both(true, 200)],
+  ["a refusal that carries a value", () => both(false, 401)],
+  ["an unknown code", () => refusal("TEAPOT", 409)],
+  ["UNAVAILABLE as a code", () => refusal("UNAVAILABLE", 503)],
+  ["a status against the code", () => refusal("AUTH_REVOKED", 403)],
+  ["no conflict details", () => refusal("LEASE_HELD", 409)],
+  ["details for another subject", () => bad({ subject: "issue:x" })],
+  ["details with a bad holder", () => bad({ holder: { actor: 1 } })],
+  ["details with a bad generation", () => bad({ generation: 0 })],
+  ["details with a bad expiry", () => bad({ expiresAt: "soon" })],
+];
+for (const [name, answer] of badAnswers)
+  test(`${name} is unavailable and echoes nothing`, async () => {
+    const response = answer();
+    const net = network(() => response);
+    const failed = await failure(() =>
+      http(net.fetch).leaseWrite(TOKEN, "claim", bodies.claim),
+    );
+    expect(failed.error.code).toBe("UNAVAILABLE");
+    expect(JSON.stringify(failed.error)).not.toContain(SECRET);
+    sentOnce(net, "POST", "claim");
+    expect(response.bodyUsed).toBe(true);
+  }, 10_000);
+
+test("a token that is not well formed never reaches the network or an error", async () => {
+  const net = network(() => ok(lease()));
+  for (const token of ["", "fct_x", `${TOKEN}\r\nx: 1`, `Bearer ${TOKEN}`]) {
+    const failed = await failure(() =>
+      http(net.fetch).leaseWrite(token, "claim", bodies.claim),
+    );
+    expect(failed.error.code).toBe("INPUT_INVALID");
+    expect(JSON.stringify(failed.error)).not.toContain("T".repeat(43));
+  }
+  expect(net.calls).toHaveLength(0);
+}, 10_000);
+
+for (const [name, run] of operations) {
+  type Net = ReturnType<typeof network>;
+  const code = async (net: Net, more = {}, signal?: AbortSignal) =>
+    (await failure(() => run(http(net.fetch, more), signal))).error.code;
+
+  test(`${name}: a transport error or a body that holds the token is unavailable and never repeats it`, async () => {
+    const thrown = network(() => {
+      throw new Error(`connect failed for ${TOKEN}`);
+    });
+    const text = network(() => new Response(`${TOKEN} ${SECRET}`));
+    const refused = network(() => refusal("TEAPOT", 409, { message: TOKEN }));
+    for (const net of [thrown, text, refused]) {
+      const failed = await failure(() => run(http(net.fetch)));
+      expect(failed.error.code).toBe("UNAVAILABLE");
+      expect(JSON.stringify(failed.error)).not.toMatch(/fct_|SERVER-TEXT/);
+      expect(net.calls).toHaveLength(1);
+    }
+  }, 10_000);
+
+  for (const status of [301, 302, 303, 307, 308])
+    test(`${name}: a ${status} is refused after one request and the token never goes to its Location`, async () => {
+      const location = "https://evil.test/steal";
+      const net = network(
+        () => new Response(null, { status, headers: { location } }),
+        () => ok(lease()),
+      );
+      expect(await code(net)).toBe("UNAVAILABLE");
+      expect(net.calls).toHaveLength(1);
+      expect(net.calls[0]?.url).not.toContain("evil.test");
+    }, 10_000);
+
+  test(`${name}: a declared or streamed body over the limit is refused and the stream is cancelled`, async () => {
+    const declared = network(
+      () => new Response("{}", { headers: { "content-length": "999999" } }),
+    );
+    expect(await code(declared, { maxBytes: 1024 })).toBe("UNAVAILABLE");
+    let cancelled = false;
+    const endless = feed(
+      () => void (cancelled = true),
+      () => {},
+      true,
+    );
+    const streamed = network(() => new Response(endless));
+    expect(await code(streamed, { maxBytes: 1024 })).toBe("UNAVAILABLE");
+    expect(cancelled).toBe(true);
+    expect(declared.calls.length + streamed.calls.length).toBe(2);
+  }, 10_000);
+
+  test(`${name}: stalled headers or a stalled body end at the deadline and the stream is cancelled`, async () => {
+    const headers = network(
+      ({ init }) =>
+        new Promise<Response>((_, reject) =>
+          init.signal.addEventListener("abort", () => reject(new Error("x"))),
+        ),
+    );
+    expect(await code(headers, { timeoutMs: 40 })).toBe("UNAVAILABLE");
+    let cancelled = false;
+    const body = network(
+      () => new Response(feed(() => void (cancelled = true))),
+    );
+    expect(await code(body, { timeoutMs: 40 })).toBe("UNAVAILABLE");
+    expect(cancelled).toBe(true);
+    expect(headers.calls.length + body.calls.length).toBe(2);
+  }, 10_000);
+
+  test(`${name}: cancelling the caller during the request or the body is a cancellation with one request`, async () => {
+    const early = new AbortController();
+    const during = network(
+      ({ init }) =>
+        new Promise<Response>((_, reject) => {
+          init.signal.addEventListener("abort", () => reject(new Error("x")));
+          early.abort();
+        }),
+    );
+    expect(await code(during, {}, early.signal)).toBe("INVOCATION_CANCELLED");
+    const late = new AbortController();
+    const abort = () => queueMicrotask(() => late.abort());
+    const reading = network(() => new Response(feed(() => {}, abort)));
+    expect(await code(reading, {}, late.signal)).toBe("INVOCATION_CANCELLED");
+    expect(during.calls.length + reading.calls.length).toBe(2);
+  }, 10_000);
+}
