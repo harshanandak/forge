@@ -1,13 +1,15 @@
 // Makes a new admin token inside this process and stores it two ways: as the Worker secret ADMIN_TOKEN
-// (piped to the locally installed wrangler over stdin) and in ~/.forge-cloud/forge-cloud-dev.token for
-// this user only. The token is never printed, logged or put on a command line. Run it from cloud/ with
-// CLOUDFLARE_ACCOUNT_ID set. It is the first-time setup and the rotation: the old token stops working.
+// (piped to the locally installed wrangler over stdin) and in the file named by --token-file, for this
+// user only. The token is never printed, logged or put on a command line. Run it from cloud/ with
+// --config <your local wrangler config> (the Worker and account) and --token-file <a file for this Worker>:
+// it never picks a default file, so setting up one Worker cannot overwrite another's saved token.
+// It is the first-time setup and the rotation: the old token stops working.
 //
 // Order, so nothing fails open:
 //   1. Make an empty temp file beside the target and prove only this user can read it.
 //   2. Set the live secret.
 //   3. Write the token into the temp file and rename it over the target, so an old file's grants cannot survive.
-// Any failure exits non-zero with no success message and leaves no token-bearing file behind.
+// Any failure exits non-zero with a fixed message (wrangler's output is never forwarded), no success message and no token file left behind.
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
@@ -18,15 +20,23 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { homedir, userInfo } from "node:os";
-import { dirname, join } from "node:path";
+import { userInfo } from "node:os";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const target = join(homedir(), ".forge-cloud", "forge-cloud-dev.token");
+const arg = (name) => {
+  const at = process.argv.indexOf(name);
+  return at > 0 ? process.argv[at + 1] : undefined;
+};
+const config = arg("--config");
+const tokenFile = arg("--token-file");
+const target = tokenFile ? resolve(tokenFile) : "";
 const temp = `${target}.${randomBytes(6).toString("hex")}.tmp`;
-const wrangler = fileURLToPath(
-  new URL("../node_modules/wrangler/bin/wrangler.js", import.meta.url),
-);
+const wrangler =
+  process.env.FORGE_WRANGLER ??
+  fileURLToPath(
+    new URL("../node_modules/wrangler/bin/wrangler.js", import.meta.url),
+  );
 const token = randomBytes(32).toString("base64url");
 
 // Blanks and deletes the temp file, if there is one. Blanking and deleting are separate steps, so a
@@ -126,12 +136,16 @@ function restrict() {
   }
 }
 
+if (!config || !existsSync(config) || !tokenFile)
+  stop(
+    "Pass --config <your local wrangler config> and --token-file <a private file for this Worker>; see docs/reference/cloud.md.",
+  );
 if (!existsSync(wrangler))
   stop("Run `bun install` in cloud/ first: wrangler is not installed.");
 try {
   if (!existsSync(folder)) mkdirSync(folder, { recursive: true, mode: 0o700 });
-} catch (error) {
-  stop(`Could not create ${folder}: ${error.message}`);
+} catch {
+  stop(`Could not create ${folder}.`);
 }
 const problem = folderProblem();
 if (problem !== undefined)
@@ -141,24 +155,24 @@ if (problem !== undefined)
 try {
   writeFileSync(temp, "", { flag: "wx", mode: 0o600 });
   restrict();
-} catch (error) {
-  stop(`Could not prepare a private token file: ${error.message}`);
+} catch {
+  stop("Could not prepare a private token file.");
 }
 
 const put = spawnSync(
   process.execPath,
-  [wrangler, "secret", "put", "ADMIN_TOKEN", "--name", "forge-cloud-dev"],
+  [wrangler, "secret", "put", "ADMIN_TOKEN", "--config", config],
   { input: token, encoding: "utf8" },
 );
 if (put.status !== 0)
   stop(
-    `wrangler secret put failed: ${`${put.stderr}${put.stdout}`.split(token).join("[token]").slice(-500)}`,
+    "wrangler secret put failed. Its output is not shown, because it can quote your config.",
   );
 
 try {
   writeFileSync(temp, `${token}\n`);
   renameSync(temp, target);
-} catch (error) {
-  stop(`Could not save the token file: ${error.message}`, true);
+} catch {
+  stop("Could not save the token file.", true);
 }
-console.log(`ADMIN_TOKEN is set on forge-cloud-dev and saved to ${target}`);
+console.log(`ADMIN_TOKEN is set and saved to ${target}`);

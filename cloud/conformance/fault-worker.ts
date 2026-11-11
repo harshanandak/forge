@@ -1,6 +1,6 @@
 // Test-only entry for the conformance run (wrangler.test.jsonc). It wraps the shipped Project so a
 // request carrying `x-cloud-fault: receipt-insert` fails its receipt insert. The shipped Worker
-// (src/worker.ts, wrangler.jsonc) imports nothing from this file, so a deploy cannot carry the switch.
+// (src/worker.ts, wrangler.example.jsonc) imports nothing from this file, so a deploy cannot carry the switch.
 //
 // It also holds a faulted request inside the wrapper so a test can force two requests to overlap:
 //   x-cloud-hold: <key>   the request pauses, already inside its own fault context, until a request
