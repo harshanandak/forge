@@ -47,6 +47,8 @@ forge issue create --title "First task" --kind task
 forge issue show demo-1
 ```
 
+Claim it: `forge issue claim demo-1`. Then close it one of two ways:
+
 With a merged PR: `forge issue link demo-1 --relation delivers --url <pr-url>`, `forge check run` (PASS for the PR head), then `forge issue close demo-1 --receipt <receipt-id>`.
 Without a merged PR: `forge issue close demo-1 --without-receipt "<reason>"`.
 
