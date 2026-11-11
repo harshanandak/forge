@@ -311,6 +311,9 @@ function decodeLease(
   writes: boolean,
 ): LeaseResult {
   const bad = () => unavailable("the lease answer failed its checks");
+  // Exactly { ok, value } or { ok, error }: an envelope that carries both is contradictory.
+  const keys = Object.keys(body).sort().join();
+  if (keys !== (body.ok === true ? "ok,value" : "error,ok")) throw bad();
   if (body.ok === true) {
     if (status !== 200) throw bad();
     if (body.value === null && !writes) return { kind: "ok", lease: null };

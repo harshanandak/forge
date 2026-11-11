@@ -493,6 +493,8 @@ test("every refusal in the vocabulary keeps its code, the lease ones keep valida
   });
 }, 10_000);
 
+const both = (flag: boolean, status: number) =>
+  json({ ok: flag, value: lease(), error: { code: "AUTH_REVOKED" } }, status);
 const badAnswers: [string, () => Response][] = [
   ["malformed JSON", () => new Response("{")],
   ["a malformed lease", () => ok(lease({ generation: "3" }))],
@@ -505,6 +507,8 @@ const badAnswers: [string, () => Response][] = [
     () => refusal("LEASE_HELD", 200, { lease: details }),
   ],
   ["no ok flag", () => json({ value: lease() })],
+  ["a success that carries an error", () => both(true, 200)],
+  ["a refusal that carries a value", () => both(false, 401)],
   ["an unknown code", () => refusal("TEAPOT", 409)],
   ["UNAVAILABLE as a code", () => refusal("UNAVAILABLE", 503)],
   ["a status against the code", () => refusal("AUTH_REVOKED", 403)],
