@@ -41,6 +41,8 @@ if (
 let inputs: SchemaRegistry | undefined;
 interface Fields {
   id: string;
+  /** The id as the caller wrote it, which the local message for a missing issue repeats. */
+  given: string;
   ttlMs: number;
 }
 interface Edge {
@@ -87,10 +89,11 @@ export function claimIssue(
       const { id, ttlSeconds } = input as { id: string; ttlSeconds?: number };
       return {
         id: storedId(id, prefix, minted(db)),
+        given: id,
         ttlMs: (ttlSeconds ?? DEFAULT_TTL_SECONDS) * 1000,
       };
     },
-    ({ id, ttlMs }, _actor, prefix, context) => {
+    ({ id, given, ttlMs }, _actor, prefix, context) => {
       const holder = holderOf(context);
       const now = Date.now();
       const key = `issue:${id}`;
@@ -105,7 +108,8 @@ export function claimIssue(
           `Lane cleanup is in progress; the reservation expires at ${reserved}. Wait until then and retry; no repair is needed`,
         );
       const record = owner.get(NAMESPACE, key);
-      if (record === undefined) throw fail("NOT_FOUND", "Issue was not found");
+      if (record === undefined)
+        throw fail("NOT_FOUND", `Issue ${given} was not found`);
       const value = checkedValue({ ...record }, id);
       if (
         owner.get(NAMESPACE, `slots:${id}`) !== undefined ||

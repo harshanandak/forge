@@ -3125,124 +3125,6 @@ test("a caller that does not hold the live lease generation is refused with the 
   });
 }, 120_000);
 
-test("a retry with the lease still held returns the original result with no second update or update event, and a reused id with other input, fence or device conflicts", async () => {
-  const { f, token } = await updateRows();
-  const other = await f.device();
-  const tablet = await f.device(day, "tablet");
-  const first = await f.send(revise("r-1"), { token });
-  expect([first.status, first.exit, first.json.result]).toMatchObject([
-    200,
-    0,
-    { title: "Edited", revision: 4 },
-  ]);
-  // One update and its one event; the receipt adds its own record and its own event.
-  expect(eventsOf(f.db, "forge/work")).toHaveLength(1);
-  expect(rowsOf(f.db, "forge/cloud").map((r) => r.key)).toEqual([
-    "request:r-1",
-  ]);
-  expect(eventsOf(f.db, "forge/cloud")).toHaveLength(1);
-  const receipt = receiptOf(f, "r-1")!;
-  expect([receipt.outcome, receipt.result]).toEqual(["ok", first.json.result]);
-  const done = f.snapshot();
-  for (const [via, bearer] of [
-    ["direct", token],
-    [createWorker(), other],
-  ] as const) {
-    const again = await f.send(revise("r-1"), { token: bearer, via });
-    expect([again.status, again.text]).toEqual([200, first.text]);
-    expect(f.snapshot()).toBe(done);
-  }
-  // A later update moves the issue on; the replay still answers with the original.
-  const next = await f.send(
-    revise("r-2", patch({ expectRevision: 4, title: "Later" })),
-    { token },
-  );
-  expect(next.status).toBe(200);
-  const later = f.snapshot();
-  const again = await f.send(revise("r-1"), { token });
-  expect([again.status, again.text]).toEqual([200, first.text]);
-  expect(f.snapshot()).toBe(later);
-  const sent = JSON.stringify(receiptOf(f, "r-1"));
-  for (const [name, bearer, body, context] of [
-    ["title", token, patch({ title: "Twice" }), leased],
-    ["revision", token, patch({ expectRevision: 4 }), leased],
-    ["issue", token, patch({ id: "forge-1" }), leased],
-    ["generation", token, patch(), { ...leased, leaseGeneration: 3 }],
-    ["session", token, patch(), { ...leased, session: { id: "s2" } }],
-    ["device", tablet, patch(), leased],
-  ] as const) {
-    const got = await f.send(revise("r-1", body, { context }), {
-      token: bearer,
-    });
-    expect([name, got.status, got.code, got.exit]).toEqual([
-      name,
-      409,
-      "INPUT_CONFLICT",
-      4,
-    ]);
-    expect([name, f.snapshot(), JSON.stringify(receiptOf(f, "r-1"))]).toEqual([
-      name,
-      later,
-      sent,
-    ]);
-  }
-  // A replay is authenticated first: a revoked token never reads the receipt.
-  revoke(f, other);
-  const revoked = f.snapshot();
-  const denied = await f.send(revise("r-1"), { token: other });
-  expect([denied.status, denied.code]).toEqual([401, "AUTH_REVOKED"]);
-  expect(denied.text).not.toContain("Edited");
-  const dry = await f.send(revise("r-3", patch(), { dryRun: true }), { token });
-  expect([dry.status, dry.code, dry.exit]).toEqual([503, "UNAVAILABLE", 1]);
-  expect(f.snapshot()).toBe(revoked);
-}, 60_000);
-
-test("a replay after the lease was released, expired or taken over is LEASE_STALE and never the historical result", async () => {
-  const takeover = (id: string, device: string) => (f: F) =>
-    f.lease(
-      { holder: { actor, session: { id, device } }, generation: 3 },
-      "issue:work-12",
-    );
-  for (const [name, lose] of [
-    [
-      "released",
-      (f: F) => f.lease({ holder, releasedAt: iso(start) }, "issue:work-12"),
-    ],
-    ["expired", (f: F) => f.advance(1001)],
-    ["exactly at expiry", (f: F) => f.advance(1000)],
-    ["taken over", takeover("s2", "laptop")],
-    ["taken over by another device", takeover("s1", "tablet")],
-    [
-      "gone",
-      (f: F) =>
-        f.db.run("DELETE FROM state_leases WHERE subject='issue:work-12'"),
-    ],
-  ] as const) {
-    const { f, token } = await updateRows();
-    const first = await f.send(revise("r-1"), { token });
-    expect([name, first.status]).toEqual([name, 200]);
-    lose(f);
-    const done = f.snapshot();
-    for (const via of ["direct", createWorker()] as const) {
-      const got = await f.send(revise("r-1"), { token, via });
-      expect([name, got.status, got.code, got.exit]).toEqual([
-        name,
-        409,
-        "LEASE_STALE",
-        4,
-      ]);
-      expect(got.text).not.toContain("Edited");
-      expect([name, f.snapshot()]).toEqual([name, done]);
-    }
-    // Other input under the id is a conflict whatever the lease is, and never replaces the receipt.
-    const changed = await f.send(revise("r-1", patch({ title: "Twice" })), {
-      token,
-    });
-    expect([name, changed.code]).toEqual([name, "INPUT_CONFLICT"]);
-    expect([name, f.snapshot()]).toEqual([name, done]);
-  }
-}, 120_000);
-
 test("the shared write path takes a project context for create and comment and a leased one for update and claim, and refuses the other as INTERNAL", async () => {
   const { f } = await updateRows();
   const db = sqlOf(f.db);
@@ -3401,6 +3283,250 @@ const release = (f: F, token: string, n: number, generation: number) =>
     },
     { token, path: "release" },
   );
+
+// The replay scenarios update and claim share: a leased write is answered from its receipt only while
+// the caller still holds the lease, and a reused id with other input conflicts.
+type Lose = (f: F, token: string) => Promise<void> | void;
+interface Replay {
+  name: string;
+  rows: () => Promise<{ f: F; token: string }>;
+  /** The default request for an id, or the same request with other input or fields. */
+  send: (id: string, input?: object, more?: object) => object;
+  /** What the first request returns. */
+  result: object;
+  /** Text only the old result carries: no refusal or failed login may contain it. */
+  old: string;
+  /** Changes the issue or the lease so that the recorded answer is no longer the current state, while the grant holds. */
+  moveOn: (f: F, token: string) => Promise<void> | void;
+  /** Other input, fence or device under the same request id: [name, on the tablet's token, input, fields]. */
+  conflicts: [string, boolean, object?, object?][];
+  /** Ways the caller can lose the lease. */
+  losses: [string, Lose][];
+}
+const takeover = (id: string, device: string) => (f: F) =>
+  f.lease(
+    { holder: { actor, session: { id, device } }, generation: 3 },
+    "issue:work-12",
+  );
+const REPLAYS: Replay[] = [
+  {
+    name: "update",
+    rows: updateRows,
+    send: (id, input = patch(), more = {}) => revise(id, input, more),
+    result: { title: "Edited", revision: 4 },
+    old: "Edited",
+    moveOn: async (f, token) => {
+      // A later update moves the issue on; the replay still answers with the original.
+      const next = await f.send(
+        revise("r-2", patch({ expectRevision: 4, title: "Later" })),
+        { token },
+      );
+      expect(next.status).toBe(200);
+    },
+    conflicts: [
+      ["title", false, patch({ title: "Twice" })],
+      ["revision", false, patch({ expectRevision: 4 })],
+      ["issue", false, patch({ id: "forge-1" })],
+      [
+        "generation",
+        false,
+        patch(),
+        { context: { ...leased, leaseGeneration: 3 } },
+      ],
+      [
+        "session",
+        false,
+        patch(),
+        { context: { ...leased, session: { id: "s2" } } },
+      ],
+      ["device", true],
+    ],
+    losses: [
+      [
+        "released",
+        (f) => f.lease({ holder, releasedAt: iso(start) }, "issue:work-12"),
+      ],
+      ["expired", (f) => f.advance(1001)],
+      ["exactly at expiry", (f) => f.advance(1000)],
+      ["taken over", takeover("s2", "laptop")],
+      ["taken over by another device", takeover("s1", "tablet")],
+      [
+        "gone",
+        (f) => {
+          f.db.run("DELETE FROM state_leases WHERE subject='issue:work-12'");
+        },
+      ],
+    ],
+  },
+  {
+    name: "claim",
+    rows: claimRows,
+    send: (id, input = { id: "forge-12" }, more = {}) => claim(id, input, more),
+    result: {
+      id: "forge-12",
+      generation: 1,
+      expiresAt: iso(start + 3_600_000),
+    },
+    old: '"result"',
+    // A renewal moves the expiry on at the same generation: the replay still answers with the original.
+    moveOn: (f) =>
+      f.lease(
+        { holder, generation: 1, expiresAt: iso(start + 7_200_000) },
+        "issue:work-12",
+      ),
+    conflicts: [
+      ["ttl", false, { id: "forge-12", ttlSeconds: 60 }],
+      ["issue", false, { id: "forge-1" }],
+      ["session", false, { id: "forge-12" }, asSession("s2")],
+      ["device", true],
+    ],
+    losses: [
+      [
+        "released",
+        async (f, token) => {
+          await release(f, token, 12, 1);
+        },
+      ],
+      ["expired", (f) => f.advance(3_600_000)],
+      [
+        "taken over after expiry",
+        (f) => {
+          f.advance(3_600_001);
+          f.lease(
+            {
+              holder: { actor, session: { id: "s2", device: "laptop" } },
+              generation: 2,
+              expiresAt: iso(f.now() + 1000),
+            },
+            "issue:work-12",
+          );
+        },
+      ],
+      [
+        "released, then claimed on another device",
+        async (f, token) => {
+          await release(f, token, 12, 1);
+          const tablet = await f.device(day, "tablet");
+          const took = await f.send(
+            claim("r-2", { id: "forge-12" }, asSession("b1")),
+            { token: tablet },
+          );
+          expect([took.status, took.json.result]).toMatchObject([
+            200,
+            { generation: 2 },
+          ]);
+        },
+      ],
+      [
+        "gone",
+        (f) => {
+          f.db.run("DELETE FROM state_leases WHERE subject='issue:work-12'");
+        },
+      ],
+    ],
+  },
+];
+
+for (const r of REPLAYS) {
+  test(`a ${r.name} retry with the lease still held returns the original result with no second write or event, and a reused id with other input, fence or device conflicts`, async () => {
+    const { f, token } = await r.rows();
+    const other = await f.device();
+    const tablet = await f.device(day, "tablet");
+    const first = await f.send(r.send("r-1"), { token });
+    expect([first.status, first.exit, first.json.result]).toMatchObject([
+      200,
+      0,
+      r.result,
+    ]);
+    // One write and its one event; the receipt adds its own record and its own event.
+    expect(eventsOf(f.db, "forge/work")).toHaveLength(1);
+    expect(rowsOf(f.db, "forge/cloud").map((row) => row.key)).toEqual([
+      "request:r-1",
+    ]);
+    expect(eventsOf(f.db, "forge/cloud")).toHaveLength(1);
+    const receipt = receiptOf(f, "r-1")!;
+    expect(Object.keys(receipt).sort()).toEqual([
+      "fingerprint",
+      "outcome",
+      "result",
+    ]);
+    expect([receipt.outcome, receipt.result]).toEqual([
+      "ok",
+      first.json.result,
+    ]);
+    const done = f.snapshot();
+    for (const [via, bearer] of [
+      ["direct", token],
+      [createWorker(), other],
+    ] as const) {
+      const again = await f.send(r.send("r-1"), { token: bearer, via });
+      expect([again.status, again.text]).toEqual([200, first.text]);
+      expect(f.snapshot()).toBe(done);
+    }
+    await r.moveOn(f, token);
+    const later = f.snapshot();
+    const again = await f.send(r.send("r-1"), { token });
+    expect([again.status, again.text]).toEqual([200, first.text]);
+    expect(f.snapshot()).toBe(later);
+    const sent = JSON.stringify(receiptOf(f, "r-1"));
+    for (const [name, onTablet, input, more] of r.conflicts) {
+      const got = await f.send(r.send("r-1", input, more), {
+        token: onTablet ? tablet : token,
+      });
+      expect([name, got.status, got.code, got.exit]).toEqual([
+        name,
+        409,
+        "INPUT_CONFLICT",
+        4,
+      ]);
+      expect([name, f.snapshot(), JSON.stringify(receiptOf(f, "r-1"))]).toEqual(
+        [name, later, sent],
+      );
+    }
+    // A replay is authenticated first: a revoked token never reads the receipt.
+    revoke(f, other);
+    const revoked = f.snapshot();
+    const denied = await f.send(r.send("r-1"), { token: other });
+    expect([denied.status, denied.code]).toEqual([401, "AUTH_REVOKED"]);
+    expect(denied.text).not.toContain(r.old);
+    const dry = await f.send(r.send("r-3", undefined, { dryRun: true }), {
+      token,
+    });
+    expect([dry.status, dry.code, dry.exit]).toEqual([503, "UNAVAILABLE", 1]);
+    expect(f.snapshot()).toBe(revoked);
+  }, 60_000);
+
+  test(`a ${r.name} replay after the lease was released, expired or taken over is LEASE_STALE and never the old result`, async () => {
+    for (const [name, lose] of r.losses) {
+      const { f, token } = await r.rows();
+      const first = await f.send(r.send("r-1"), { token });
+      expect([name, first.status]).toEqual([name, 200]);
+      await lose(f, token);
+      const done = f.snapshot();
+      for (const via of ["direct", createWorker()] as const) {
+        const got = await f.send(r.send("r-1"), { token, via });
+        expect([name, got.status, got.code, got.exit]).toEqual([
+          name,
+          409,
+          "LEASE_STALE",
+          4,
+        ]);
+        expect([name, got.json.ok, got.json.result]).toEqual([
+          name,
+          false,
+          undefined,
+        ]);
+        expect(got.text).not.toContain(r.old);
+        expect([name, f.snapshot()]).toEqual([name, done]);
+      }
+      // Other input under the id is a conflict whatever the lease is, and never replaces the receipt.
+      const [, , input, more] = r.conflicts[0]!;
+      const changed = await f.send(r.send("r-1", input, more), { token });
+      expect([name, changed.code]).toEqual([name, "INPUT_CONFLICT"]);
+      expect([name, f.snapshot()]).toEqual([name, done]);
+    }
+  }, 120_000);
+}
 
 // The receipt scenarios every write shares, run for create, comment, claim and update, each with its own rows.
 type Sent = Awaited<ReturnType<F["send"]>>;
@@ -3773,13 +3899,12 @@ test("every refusal agrees with the local handler, writes nothing, and is not re
   const s1 = { session: "s1", device: "laptop" };
   const s2 = { session: "s2", device: "laptop" };
   const b1 = { session: "b1", device: "tablet" };
-  // [name, issue, who, [status, code, exit], compare only the code: the cloud words a missing issue its own way]
+  // [name, issue as the caller wrote it, who, [status, code, exit]]
   const cases: [
     string,
     string,
     { session: string; device: string },
     readonly [number, string, number],
-    boolean?,
   ][] = [
     ["same device", "forge-4", s2, [409, "LEASE_HELD", 4]],
     ["another device", "forge-4", b1, [409, "LEASE_HELD", 4]],
@@ -3789,9 +3914,10 @@ test("every refusal agrees with the local handler, writes nothing, and is not re
     ["closed", "forge-23", s1, [409, "INPUT_CONFLICT", 4]],
     ["cleanup reserved", "forge-24", s1, [409, "INPUT_CONFLICT", 4]],
     ["cleanup on an absent issue", "forge-98", s1, [409, "INPUT_CONFLICT", 4]],
-    ["absent", "forge-99", s1, [404, "NOT_FOUND", 3], true],
+    ["absent", "forge-99", s1, [404, "NOT_FOUND", 3]],
+    ["absent, as written", "FORGE-99", s1, [404, "NOT_FOUND", 3]],
   ];
-  for (const [i, [name, id, who, want, codeOnly]] of cases.entries()) {
+  for (const [i, [name, id, who, want]] of cases.entries()) {
     const send = () =>
       f.send(claim(`f-${i}`, { id }, asSession(who.session)), {
         token: who.device === "tablet" ? tablet : token,
@@ -3800,11 +3926,10 @@ test("every refusal agrees with the local handler, writes nothing, and is not re
     const local = localClaim(twin, f, `f-${i}`, { id }, who);
     expect([name, got.status, got.code, got.exit]).toEqual([name, ...want]);
     expect(local.error).toBeDefined();
-    const shown = codeOnly ? { code: got.code } : got.json.error;
-    const wanted = codeOnly
-      ? { code: (local.error as { code: string }).code }
-      : withoutRepair(local.error);
-    expect([name, shown]).toEqual([name, wanted] as never);
+    expect([name, got.json.error]).toEqual([
+      name,
+      withoutRepair(local.error),
+    ] as never);
     expect([name, writes(f)]).toEqual([name, before]);
     const again = await send();
     expect([name, again.text]).toEqual([name, got.text]);
@@ -3955,157 +4080,6 @@ test("a ttl over 24 hours or past the token's expiry is INPUT_INVALID and never 
     expect([name, writes(f)]).toEqual([name, before]);
   }
 }, 60_000);
-
-test("a retry while the grant is still the current lease returns the original result with no second lease or lease event, and a reused id with other input, session or device conflicts", async () => {
-  const { f, token } = await claimRows();
-  const other = await f.device();
-  const tablet = await f.device(day, "tablet");
-  const first = await f.send(claim("r-1"), { token });
-  expect([first.status, first.exit, first.json.result]).toEqual([
-    200,
-    0,
-    { id: "forge-12", generation: 1, expiresAt: iso(start + 3_600_000) },
-  ]);
-  // One lease event; the receipt adds its own record and its own event.
-  expect(eventsOf(f.db, "forge/work")).toHaveLength(1);
-  expect(rowsOf(f.db, "forge/cloud").map((r) => r.key)).toEqual([
-    "request:r-1",
-  ]);
-  expect(eventsOf(f.db, "forge/cloud")).toHaveLength(1);
-  const receipt = receiptOf(f, "r-1")!;
-  expect(Object.keys(receipt).sort()).toEqual([
-    "fingerprint",
-    "outcome",
-    "result",
-  ]);
-  expect([receipt.outcome, receipt.result]).toEqual(["ok", first.json.result]);
-  const done = f.snapshot();
-  for (const [via, bearer] of [
-    ["direct", token],
-    [createWorker(), other],
-  ] as const) {
-    const again = await f.send(claim("r-1"), { token: bearer, via });
-    expect([again.status, again.text]).toEqual([200, first.text]);
-    expect(f.snapshot()).toBe(done);
-  }
-  // A renewal moves the expiry on at the same generation: the replay still answers with the original.
-  f.lease(
-    { holder, generation: 1, expiresAt: iso(start + 7_200_000) },
-    "issue:work-12",
-  );
-  const later = f.snapshot();
-  const renewed = await f.send(claim("r-1"), { token });
-  expect([renewed.status, renewed.text]).toEqual([200, first.text]);
-  expect(f.snapshot()).toBe(later);
-  const sent = JSON.stringify(receiptOf(f, "r-1"));
-  for (const [name, bearer, input, more] of [
-    ["ttl", token, { id: "forge-12", ttlSeconds: 60 }, {}],
-    ["issue", token, { id: "forge-1" }, {}],
-    ["session", token, { id: "forge-12" }, asSession("s2")],
-    ["device", tablet, { id: "forge-12" }, {}],
-  ] as const) {
-    const got = await f.send(claim("r-1", input, more), { token: bearer });
-    expect([name, got.status, got.code, got.exit]).toEqual([
-      name,
-      409,
-      "INPUT_CONFLICT",
-      4,
-    ]);
-    expect([name, f.snapshot(), JSON.stringify(receiptOf(f, "r-1"))]).toEqual([
-      name,
-      later,
-      sent,
-    ]);
-  }
-  // A replay is authenticated first: a revoked token never reads the receipt.
-  revoke(f, other);
-  const revoked = f.snapshot();
-  const denied = await f.send(claim("r-1"), { token: other });
-  expect([denied.status, denied.code]).toEqual([401, "AUTH_REVOKED"]);
-  expect(denied.text).not.toContain("generation");
-  const dry = await f.send(claim("r-3", { id: "forge-12" }, { dryRun: true }), {
-    token,
-  });
-  expect([dry.status, dry.code, dry.exit]).toEqual([503, "UNAVAILABLE", 1]);
-  expect(f.snapshot()).toBe(revoked);
-}, 60_000);
-
-test("a replay after the lease was released, expired or taken over is LEASE_STALE and never the old grant", async () => {
-  const takeover = {
-    holder: { actor, session: { id: "s2", device: "laptop" } },
-    generation: 2,
-  };
-  type Lose = (f: F, token: string) => Promise<void> | void;
-  const losses: [string, Lose][] = [
-    [
-      "released",
-      async (f, token) => {
-        await release(f, token, 12, 1);
-      },
-    ],
-    ["expired", (f) => f.advance(3_600_000)],
-    [
-      "taken over after expiry",
-      (f) => {
-        f.advance(3_600_001);
-        f.lease(
-          { ...takeover, expiresAt: iso(f.now() + 1000) },
-          "issue:work-12",
-        );
-      },
-    ],
-    [
-      "released, then claimed on another device",
-      async (f, token) => {
-        await release(f, token, 12, 1);
-        const tablet = await f.device(day, "tablet");
-        const took = await f.send(
-          claim("r-2", { id: "forge-12" }, asSession("b1")),
-          { token: tablet },
-        );
-        expect([took.status, took.json.result]).toMatchObject([
-          200,
-          { generation: 2 },
-        ]);
-      },
-    ],
-    [
-      "gone",
-      (f) => {
-        f.db.run("DELETE FROM state_leases WHERE subject='issue:work-12'");
-      },
-    ],
-  ];
-  for (const [name, lose] of losses) {
-    const { f, token } = await claimRows();
-    const first = await f.send(claim("r-1"), { token });
-    expect([name, first.status]).toEqual([name, 200]);
-    await lose(f, token);
-    const done = f.snapshot();
-    for (const via of ["direct", createWorker()] as const) {
-      const got = await f.send(claim("r-1"), { token, via });
-      expect([name, got.status, got.code, got.exit]).toEqual([
-        name,
-        409,
-        "LEASE_STALE",
-        4,
-      ]);
-      expect([name, got.json.ok, got.json.result]).toEqual([
-        name,
-        false,
-        undefined,
-      ]);
-      expect([name, f.snapshot()]).toEqual([name, done]);
-    }
-    // Other input under the id is a conflict whatever the lease is, and never replaces the receipt.
-    const changed = await f.send(
-      claim("r-1", { id: "forge-12", ttlSeconds: 60 }),
-      { token },
-    );
-    expect([name, changed.code]).toEqual([name, "INPUT_CONFLICT"]);
-    expect([name, f.snapshot()]).toEqual([name, done]);
-  }
-}, 120_000);
 
 test("after a release by the raw route another session claims with a fresh id and gets the next generation, and an earlier refusal does not block the same id", async () => {
   const { f, token } = await claimRows();
