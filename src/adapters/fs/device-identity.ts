@@ -17,7 +17,6 @@ import {
   createPrivateFile,
   publishExclusive,
   removeDurable,
-  removePrivateDirectory,
   replaceDurable,
 } from "./durable-io.ts";
 
@@ -132,6 +131,7 @@ export function nodeDeviceIdentity(
 }
 
 import type { DeviceFiles } from "../../ports/device-files.ts";
+import { lockDirectory } from "./clone-files.ts";
 import { ForgeFailure } from "../../contract/failure.ts";
 const refuse = (): never => {
   throw new ForgeFailure({
@@ -217,17 +217,7 @@ export function createDeviceFiles(
     },
     lock() {
       ready(true);
-      const path = join(root, "lock");
-      try {
-        createPrivateDirectory(path);
-      } catch {
-        refuse();
-      }
-      return {
-        release() {
-          removePrivateDirectory(path);
-        },
-      };
+      return lockDirectory(join(root, "lock"));
     },
     scratch() {
       ready(true);

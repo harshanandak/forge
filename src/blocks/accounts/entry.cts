@@ -9,7 +9,10 @@ interface Files {
     text: string,
     options: { area: "common"; expected: string | null },
   ): void;
-  lock(paths: readonly string[]): { release(): void };
+  lock(
+    paths: readonly string[],
+    options?: { recoverDeadOwner?: boolean },
+  ): { release(): void };
 }
 interface Services {
   process: ProcessPort;
@@ -220,10 +223,13 @@ async function contact(
     const current = configText ?? "";
     const marked = current.includes(MARK);
     if (content === undefined && record === undefined && !marked) return;
+    if (record !== undefined && marked) return;
     if (action !== "check" && !locked) {
       const deviceLock = s.device.lock();
       try {
-        const lease = s.files.lock(["forge/accounts.apply.lock"]);
+        const lease = s.files.lock(["forge/accounts.apply.lock"], {
+          recoverDeadOwner: true,
+        });
         try {
           if (
             s.device.read("bindings.json") !== bindingText ||
@@ -270,9 +276,7 @@ async function contact(
     const rows = (s.device.read("audit.jsonl") ?? "")
       .split("\n")
       .filter(Boolean)
-      .map((line) =>
-        parseObject<ApprovalRecord & { appliedFrom?: string }>(line, {}),
-      );
+      .map((line) => parseObject<ApprovalRecord>(line, {}));
     const approval = rows.find((row) => row.id === binding.appliedFrom);
     if (
       approval?.kind !== "use" ||
@@ -283,14 +287,8 @@ async function contact(
     )
       integrity("The binding has no matching chat approval audit entry");
     ghPin(account.gh);
-    const audited = rows.some(
-      (row) =>
-        row.kind === "apply" &&
-        row.repo === repo &&
-        row.appliedFrom === binding.appliedFrom,
-    );
     if (action === "check") {
-      if (record === undefined || !marked || !audited)
+      if (record === undefined || !marked)
         return fail("ACCOUNT_INTEGRITY", message, {
           repair: "Run forge accounts plan to finish the interrupted apply",
         });
@@ -306,7 +304,7 @@ async function contact(
         area: "common",
         expected: configText ?? null,
       });
-    if (!audited) audit({ kind: "apply", appliedFrom: binding.appliedFrom });
+    audit({ kind: "apply", appliedFrom: binding.appliedFrom });
   }
   recover();
   if (binding?.declined && action !== "use" && action !== "decline")
@@ -780,7 +778,9 @@ async function contact(
     const { content, include } = includeFor(account);
     if (applied) validateInclude(account);
     else {
-      const lease = s.files.lock(["forge/accounts.apply.lock"]);
+      const lease = s.files.lock(["forge/accounts.apply.lock"], {
+        recoverDeadOwner: true,
+      });
       try {
         s.files.write(OWNED, content, { area: "common", expected: null });
         s.files.write(

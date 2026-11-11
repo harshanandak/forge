@@ -1281,14 +1281,18 @@ function interruptedApply() {
   );
   const device = join(home, ".forge/accounts");
   const bindings = readFileSync(join(device, "bindings.json"), "utf8");
+  const completeAudit = readFileSync(join(device, "audit.jsonl"), "utf8");
   const approvedAudit =
-    readFileSync(join(device, "audit.jsonl"), "utf8")
+    completeAudit
       .split("\n")
       .filter((line) => line && (JSON.parse(line) as Audit).kind !== "apply")
       .join("\n") + "\n";
   function stage(name: string, count: number) {
     writeFileSync(join(device, "bindings.json"), bindings);
-    writeFileSync(join(device, "audit.jsonl"), approvedAudit);
+    writeFileSync(
+      join(device, "audit.jsonl"),
+      count === 3 ? approvedAudit : completeAudit,
+    );
     const path = clone(name);
     mkdirSync(join(path, ".git/forge"), { recursive: true });
     for (const file of paths.slice(0, count))
@@ -1314,7 +1318,7 @@ for (const count of [1, 2, 3]) {
         const repo = f.stage("interrupted", count);
         const input =
           verb === "use" ? { login: "alice", approval: f.approval } : {};
-        if (verb === "check") {
+        if (verb === "check" && count < 3) {
           const before = f.snapshot(repo);
           expect(f.cli(repo, "check")).toMatchObject({
             ok: false,
@@ -1339,15 +1343,10 @@ for (const count of [1, 2, 3]) {
           );
         expect(
           f.readAudit().filter((row) => row.kind === "apply"),
-        ).toHaveLength(1);
+        ).toHaveLength(count === 3 ? 0 : 2);
+        const after = f.snapshot(repo);
         expect(f.cli(repo, verb, input).ok).toBe(true);
-        for (const path of f.paths)
-          expect(readFileSync(join(repo, ".git", path), "utf8")).toBe(
-            f.complete[path]!,
-          );
-        expect(
-          f.readAudit().filter((row) => row.kind === "apply"),
-        ).toHaveLength(1);
+        expect(f.snapshot(repo)).toEqual(after);
       } finally {
         rmSync(f.root, { recursive: true, force: true });
       }
@@ -1430,6 +1429,51 @@ for (const kind of [
         });
         expect(f.snapshot(repo)).toEqual(before);
         expect(result.error).not.toHaveProperty("repair");
+      }
+    } finally {
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  }, 120_000);
+}
+
+for (const owner of ["dead", "live device", "live clone"]) {
+  test(`installed accounts: interrupted apply handles ${owner} lock owners`, () => {
+    const f = interruptedApply();
+    try {
+      const repo = f.stage("locked", 1);
+      const exited = f.run(f.node, ["-e", "process.exit(0)"], repo);
+      expect(exited.status).toBe(0);
+      const locks = [
+        join(f.device, "lock"),
+        join(repo, ".git/forge/accounts.apply.lock"),
+      ];
+      const markers = locks.map((path, i) => {
+        const pid =
+          owner === (i === 0 ? "live device" : "live clone")
+            ? process.pid
+            : exited.pid;
+        const marker = `owner-${pid}-00000000-0000-4000-8000-000000000000`;
+        mkdirSync(path, { mode: 0o700 });
+        writeFileSync(join(path, marker), "{}", { mode: 0o600 });
+        return marker;
+      });
+      const before = f.snapshot(repo);
+      const result = f.cli(repo, "plan");
+      expect(result.ok, JSON.stringify(result)).toBe(owner === "dead");
+      if (owner === "dead") {
+        for (const path of f.paths)
+          expect(readFileSync(join(repo, ".git", path), "utf8")).toBe(
+            f.complete[path]!,
+          );
+        expect(
+          f.readAudit().filter((row) => row.kind === "apply"),
+        ).toHaveLength(2);
+        expect(f.cli(repo, "check").ok).toBe(true);
+        for (const lock of locks) expect(existsSync(lock)).toBe(false);
+      } else {
+        expect(f.snapshot(repo)).toEqual(before);
+        const i = owner === "live device" ? 0 : 1;
+        expect(readdirSync(locks[i]!)).toEqual([markers[i]!]);
       }
     } finally {
       rmSync(f.root, { recursive: true, force: true });
