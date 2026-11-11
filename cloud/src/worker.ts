@@ -6,8 +6,13 @@ export { Project } from "./project.ts";
 import { bearer, same, sha256, wellFormed } from "./tokens.ts";
 import type { Access, AuthComposition } from "./auth/compose.ts";
 import { configUnavailable, isOAuthRoute } from "./auth/compose.ts";
+import {
+  isLoginRoute,
+  loginConfigGap,
+  type LoginEnv,
+} from "./auth/project-login.ts";
 
-interface Env {
+interface Env extends LoginEnv {
   readonly ADMIN_TOKEN?: string;
   readonly PROJECTS: {
     idFromName(name: string): unknown;
@@ -77,6 +82,32 @@ const legacyWorker = {
         },
         { status: 404 },
       );
+    // Login routes are public and come before the bearer requirement. They reach the one admitted project
+    // only, and only when login is configured, so no other name ever allocates an object.
+    if (isLoginRoute(request)) {
+      if (project !== env.FORGE_CLOUD_PROJECT)
+        return unauthorized(
+          request,
+          "AUTH_FORBIDDEN",
+          "Login is not available for this project",
+          403,
+        );
+      const gap = loginConfigGap(env);
+      if (gap !== undefined) {
+        void request.body?.cancel().catch(() => undefined);
+        return configUnavailable(gap, "Device login configuration unavailable");
+      }
+      try {
+        return await env.PROJECTS.get(env.PROJECTS.idFromName(project)).fetch(
+          request,
+        );
+      } catch {
+        return Response.json(
+          { ok: false, error: "unavailable" },
+          { status: 503, headers: { "Cache-Control": "no-store" } },
+        );
+      }
+    }
     const presented = bearer(request);
     if (presented === undefined)
       return unauthorized(

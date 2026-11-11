@@ -14,6 +14,9 @@
     "CLERK_REDIRECT_URI": "https://worker.workers.dev/callback",
     "FORGE_API_RESOURCE": "https://worker.workers.dev",
     "OAUTH_TIMEOUT_MS": "5000",
+    // Device login (routes loginstart and loginpoll) needs FORGE_CLOUD_PROJECT, the one already provisioned
+    // project name it serves, and the secret DEVICE_LOGIN_HMAC_KEY (random, base64url, at least 32 bytes).
+    // Set the secret with `wrangler secret put DEVICE_LOGIN_HMAC_KEY`; never commit its value.
     // Optional FORGE_OAUTH_REDIRECTS: comma-separated https redirect URLs that may register besides loopback.
   },
   "durable_objects": {
