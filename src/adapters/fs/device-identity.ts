@@ -140,12 +140,15 @@ const refuse = (): never => {
     retry: "never",
   });
 };
+/** The private folder under ~/.forge: account files, or the cloud credential file. */
+export type DeviceFilesDirectory = "accounts" | "cloud";
 export function createDeviceFiles(
   home: string,
   security?: {
     directory(path: string, created?: boolean): void;
     file(path: string): void;
   },
+  _directory: DeviceFilesDirectory = "accounts",
 ): DeviceFiles {
   const parent = join(home, ".forge"),
     root = join(parent, "accounts");

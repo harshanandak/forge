@@ -27,6 +27,8 @@ export const nodeSensitive: Readonly<Record<string, string>> = {
     "Launches selected Node for Windows launcher parity and containment coverage.",
   "test/assembly/check-outcomes.integration.test.ts":
     "Launches selected Node for check outcomes coverage.",
+  "test/assembly/cloud-login.integration.test.ts":
+    "Launches selected Node for installed cloud login coverage.",
   "test/assembly/config-defaults/captured-schema.test.ts":
     "Conservatively retains Node command/configuration literals.",
   "test/assembly/config-errors.integration.test.ts":

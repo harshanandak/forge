@@ -38,6 +38,7 @@ const BUILTIN_PROVIDERS: ReadonlyMap<string, string> = new Map([
   ...RESTRICTED_BUILTINS,
   ["fs", "fs"],
   ["crypto", "oidc"],
+  ["https", "http"],
 ]);
 
 const BUILTINS = new Set(
