@@ -309,6 +309,27 @@ export function checkLockHost(
     );
   }
 }
+export function lockDirectory(target: string): CloneFileLock {
+  const pending =
+    markerCleanupHosts.get(hostMarkerScheduler) ??
+    new MarkerCleanup(hostMarkerScheduler);
+  markerCleanupHosts.set(hostMarkerScheduler, pending);
+  pending.retry(true);
+  const free = pending.reserve();
+  try {
+    return recoverableLock(
+      target,
+      pending,
+      free,
+      undefined,
+      undefined,
+      lockHostIdentity(),
+    );
+  } catch (error) {
+    free();
+    throw error;
+  }
+}
 /** Owner filenames make dead-owner cleanup generation-specific; unknown locks stay untouched. */
 function recoverableLock(
   target: string,

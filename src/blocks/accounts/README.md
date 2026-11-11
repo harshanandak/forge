@@ -28,7 +28,7 @@ The approved absolute gh path, size and modification time are checked on later c
 Private device files live under `~/.forge/accounts`. The clone gets one marked include in the
 common Git config, a hashed owned identity file and an applied record referring to the approval audit.
 Another clone of the exact origin inherits the same approval. A changed or orphaned include refuses.
-Interrupted writes and concurrent use refuse; inspect the private lock before recovering it.
+An interrupted apply resumes on `plan` or `use` only when the clone files are an exact ordered prefix of the approved binding's bytes. Recovery checks the account fingerprint and approval audit, takes over only locks whose recorded owner process is dead, holds both locks, completes missing writes with compare-and-write guards, and appends one apply audit entry. Live or unproven lock owners still refuse. All three exact files already present count as complete and need no recovery audit. `check` stays read-only and names `forge accounts plan` as the repair for a recoverable interruption. Changed, orphaned, declined or out-of-order files still refuse without rewriting them.
 
 `forge accounts check --json` refuses a push range holding any commit whose author or committer email is not
 one of the bound account's `commitEmails`, and names each wrong commit, field and email. Pass `--input '{"base":"<sha>","tip":"<sha>"}'`
