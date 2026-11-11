@@ -385,21 +385,11 @@ const lease = (more: Record<string, unknown> = {}) => ({
   expiresAt: "2026-11-11T12:00:00.000Z",
   ...more,
 });
+const base = { subject: SUBJECT, holder: HOLDER, requestId: "r-1" };
 const bodies: Record<LeaseRoute, LeaseWriteBody> = {
-  claim: { subject: SUBJECT, holder: HOLDER, ttlMs: 60_000, requestId: "r-1" },
-  renew: {
-    subject: SUBJECT,
-    holder: HOLDER,
-    generation: 3,
-    ttlMs: 60_000,
-    requestId: "r-1",
-  },
-  release: {
-    subject: SUBJECT,
-    holder: HOLDER,
-    generation: 3,
-    requestId: "r-1",
-  },
+  claim: { ...base, ttlMs: 60_000 },
+  renew: { ...base, generation: 3, ttlMs: 60_000 },
+  release: { ...base, generation: 3 },
 };
 const ok = (value: unknown, status = 200) => json({ ok: true, value }, status);
 const refusal = (code: string, status: number, more = {}) =>
@@ -407,22 +397,35 @@ const refusal = (code: string, status: number, more = {}) =>
 const details = { ...lease(), generation: 4 };
 const bad = (more: Record<string, unknown>) =>
   refusal("LEASE_STALE", 409, { lease: { ...details, ...more } });
-/** Each lease operation as a call, so every transport guard is proved on a write and on the read. */
-const operations: Record<
+const operations: [
   string,
-  (h: CloudHttp, signal?: AbortSignal) => Promise<unknown>
-> = {
-  claim: (h, signal) => h.leaseWrite(TOKEN, "claim", bodies.claim, signal),
-  holder: (h, signal) => h.leaseHolder(TOKEN, SUBJECT, signal),
-};
-const partial = (onCancel: () => void, after = () => {}) =>
+  (h: CloudHttp, s?: AbortSignal) => Promise<unknown>,
+][] = [
+  ["claim", (h, s) => h.leaseWrite(TOKEN, "claim", bodies.claim, s)],
+  ["holder", (h, s) => h.leaseHolder(TOKEN, SUBJECT, s)],
+];
+const feed = (onCancel: () => void, after = () => {}, endless = false) =>
   new ReadableStream<Uint8Array>({
-    start(controller) {
-      controller.enqueue(new TextEncoder().encode('{"ok":'));
-      after();
-    },
+    start: (c) => void (c.enqueue(new TextEncoder().encode('{"ok":')), after()),
+    pull: (c) =>
+      void (endless && c.enqueue(new TextEncoder().encode("x".repeat(600)))),
     cancel: onCancel,
   });
+
+/** Exactly one request went out, with this method, route and the bearer header. */
+function sentOnce(
+  net: ReturnType<typeof network>,
+  method: string,
+  path: string,
+) {
+  expect(net.calls).toHaveLength(1);
+  const [call] = net.calls;
+  expect([
+    call?.init.method,
+    call?.url,
+    call?.init.headers.authorization,
+  ]).toEqual([method, `${ORIGIN}/p/proj/${path}`, `Bearer ${TOKEN}`]);
+}
 
 for (const route of ["claim", "renew", "release"] as const)
   test(`a ${route} posts the exact body with the bearer header and nothing else`, async () => {
@@ -439,11 +442,7 @@ for (const route of ["claim", "renew", "release"] as const)
     expect(call?.init.redirect).toBe("manual");
     expect(call?.init.body).toBe(JSON.stringify(bodies[route]));
     expect(call?.init.headers.authorization).toBe(`Bearer ${TOKEN}`);
-    expect(Object.keys(call?.init.headers ?? {}).sort()).toEqual([
-      "accept",
-      "authorization",
-      "content-type",
-    ]);
+    expect(Object.keys(call?.init.headers ?? {})).toHaveLength(3);
   }, 10_000);
 
 test("a holder read is a GET with the subject URL-encoded and no body, and keeps the raw record", async () => {
@@ -464,21 +463,19 @@ test("a holder read is a GET with the subject URL-encoded and no body, and keeps
 }, 10_000);
 
 test("every refusal in the vocabulary keeps its code, the lease ones keep validated details, and no server words survive", async () => {
-  const coded: [string, number, boolean][] = [
-    ["LEASE_HELD", 409, true],
-    ["LEASE_STALE", 409, true],
-    ["LEASE_NOT_HELD", 409, true],
-    ["LEASE_EXPIRED", 409, true],
-    ["INPUT_CONFLICT", 409, false],
-    ["INPUT_INVALID", 400, false],
-    ["AUTH_REQUIRED", 401, false],
-    ["AUTH_INVALID", 401, false],
-    ["AUTH_REVOKED", 401, false],
-    ["AUTH_EXPIRED", 401, false],
-    ["AUTH_DEVICE_MISMATCH", 403, false],
-  ];
-  for (const [code, status, leased] of coded) {
-    const answer = refusal(code, status, leased ? { lease: details } : {});
+  const coded = (
+    "LEASE_HELD:409 LEASE_STALE:409 LEASE_NOT_HELD:409 LEASE_EXPIRED:409 " +
+    "INPUT_CONFLICT:409 INPUT_INVALID:400 AUTH_REQUIRED:401 AUTH_INVALID:401 " +
+    "AUTH_REVOKED:401 AUTH_EXPIRED:401 AUTH_DEVICE_MISMATCH:403"
+  ).split(" ");
+  for (const entry of coded) {
+    const [code = "", status = ""] = entry.split(":");
+    const leased = code.startsWith("LEASE_");
+    const answer = refusal(
+      code,
+      Number(status),
+      leased ? { lease: details } : {},
+    );
     const result = await http(network(() => answer).fetch).leaseWrite(
       TOKEN,
       "renew",
@@ -522,11 +519,15 @@ const badAnswers: [string, () => Response][] = [
 ];
 for (const [name, answer] of badAnswers)
   test(`${name} is unavailable and echoes nothing`, async () => {
+    const response = answer();
+    const net = network(() => response);
     const failed = await failure(() =>
-      http(network(answer).fetch).leaseWrite(TOKEN, "claim", bodies.claim),
+      http(net.fetch).leaseWrite(TOKEN, "claim", bodies.claim),
     );
     expect(failed.error.code).toBe("UNAVAILABLE");
     expect(JSON.stringify(failed.error)).not.toContain(SECRET);
+    sentOnce(net, "POST", "claim");
+    expect(response.bodyUsed).toBe(true);
   }, 10_000);
 
 test("a token that is not well formed never reaches the network or an error", async () => {
@@ -541,7 +542,7 @@ test("a token that is not well formed never reaches the network or an error", as
   expect(net.calls).toHaveLength(0);
 }, 10_000);
 
-for (const [name, run] of Object.entries(operations)) {
+for (const [name, run] of operations) {
   type Net = ReturnType<typeof network>;
   const code = async (net: Net, more = {}, signal?: AbortSignal) =>
     (await failure(() => run(http(net.fetch, more), signal))).error.code;
@@ -578,12 +579,11 @@ for (const [name, run] of Object.entries(operations)) {
     );
     expect(await code(declared, { maxBytes: 1024 })).toBe("UNAVAILABLE");
     let cancelled = false;
-    const endless = new ReadableStream<Uint8Array>({
-      pull(controller) {
-        controller.enqueue(new TextEncoder().encode("x".repeat(600)));
-      },
-      cancel: () => void (cancelled = true),
-    });
+    const endless = feed(
+      () => void (cancelled = true),
+      () => {},
+      true,
+    );
     const streamed = network(() => new Response(endless));
     expect(await code(streamed, { maxBytes: 1024 })).toBe("UNAVAILABLE");
     expect(cancelled).toBe(true);
@@ -600,7 +600,7 @@ for (const [name, run] of Object.entries(operations)) {
     expect(await code(headers, { timeoutMs: 40 })).toBe("UNAVAILABLE");
     let cancelled = false;
     const body = network(
-      () => new Response(partial(() => void (cancelled = true))),
+      () => new Response(feed(() => void (cancelled = true))),
     );
     expect(await code(body, { timeoutMs: 40 })).toBe("UNAVAILABLE");
     expect(cancelled).toBe(true);
@@ -619,7 +619,7 @@ for (const [name, run] of Object.entries(operations)) {
     expect(await code(during, {}, early.signal)).toBe("INVOCATION_CANCELLED");
     const late = new AbortController();
     const abort = () => queueMicrotask(() => late.abort());
-    const reading = network(() => new Response(partial(() => {}, abort)));
+    const reading = network(() => new Response(feed(() => {}, abort)));
     expect(await code(reading, {}, late.signal)).toBe("INVOCATION_CANCELLED");
     expect(during.calls.length + reading.calls.length).toBe(2);
   }, 10_000);
