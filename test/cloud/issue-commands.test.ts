@@ -51,7 +51,13 @@ type Options = {
   method?: string;
 };
 
-function fixture(env: Record<string, unknown> = vars) {
+// Fixtures that share a registry are projects of one deployment: the id a name maps to picks the object.
+function fixture(
+  env: Record<string, unknown> = vars,
+  name = "p",
+  registry = new Map<string, () => Project>(),
+) {
+  const config = { ...env, FORGE_CLOUD_PROJECT: name };
   let t = start;
   spyOn(Date, "now").mockImplementation(() => t);
   const db = new Database(":memory:"),
@@ -88,21 +94,22 @@ function fixture(env: Record<string, unknown> = vars) {
       return Promise.resolve(values.delete(key));
     },
   };
-  let project = new Project({ storage }, env);
+  let project = new Project({ storage }, config);
+  registry.set(name, () => project);
   const reached: string[] = [];
   const bindings = {
-    ...vars,
+    ...config,
     PROJECTS: {
-      idFromName: (name: string) => name,
+      idFromName: (given: string) => given,
       get: (id: unknown) => {
         reached.push(String(id));
-        return project;
+        return registry.get(String(id))!();
       },
     },
   };
   async function send(body: unknown, o: Options = {}) {
     const request = new Request(
-      `https://w.example/p/${o.name ?? "p"}/command`,
+      `https://w.example/p/${o.name ?? name}/command`,
       {
         method: o.method ?? "POST",
         headers: {
@@ -144,7 +151,7 @@ function fixture(env: Record<string, unknown> = vars) {
   }
   const device = async (ttlMs = day) => {
     const response = await createWorker().fetch(
-      new Request("https://w.example/p/p/devices", {
+      new Request(`https://w.example/p/${name}/devices`, {
         method: "POST",
         headers: { authorization: `Bearer ${vars.ADMIN_TOKEN}` },
         body: JSON.stringify({ device: "laptop", ttlMs }),
@@ -208,7 +215,7 @@ function fixture(env: Record<string, unknown> = vars) {
       );
     },
     reopen: () => {
-      project = new Project({ storage }, env);
+      project = new Project({ storage }, config);
     },
     advance: (ms: number) => {
       t += ms;
@@ -906,16 +913,20 @@ type Handler = (call: {
 
 // The rows the local handler reads: only the owner's fixed point and list SELECTs run, and every
 // other statement is refused and recorded.
+// The owner's point, list (with and without an upper bound) and lease reads, as exact statements.
+const OWNER_READS = new Set([
+  "SELECT body FROM state_records WHERE namespace=? AND key=?",
+  "SELECT body FROM state_records WHERE namespace=? AND key>=? AND key<? ORDER BY key",
+  "SELECT body FROM state_records WHERE namespace=? AND key>=? ORDER BY key",
+  "SELECT body FROM state_leases WHERE namespace=? AND subject=?",
+]);
 const readView = (db: Database, refused: string[]): SqlDatabase => {
   const deny = (what: string) => (): never => {
     refused.push(what);
     throw new Error(`${what} refused`);
   };
   const read = (sql: string, params: readonly SqlValue[] = []) => {
-    if (
-      !/^SELECT body FROM state_(records|leases) WHERE namespace=\?/.test(sql)
-    )
-      deny(sql)();
+    if (!OWNER_READS.has(sql)) deny(sql)();
     return db.query(sql).all(...(params as never[])) as SqlRow[];
   };
   return {
@@ -1178,8 +1189,12 @@ test("a missing table, a mode record, a mismatched row or a foreign namespace is
   }
 }, 60_000);
 
-test("two projects with the same issue id each see only their own, and a token opens only its own", async () => {
-  const [a, b] = [fixture(), fixture()];
+test("two projects with distinct names and one id-indexed binding each see only their own, and a token opens only its own", async () => {
+  const registry = new Map<string, () => Project>();
+  const [a, b] = [
+    fixture(vars, "alpha", registry),
+    fixture(vars, "beta", registry),
+  ];
   const [ta, tb] = [await a.device(), await b.device()];
   for (const [f, title] of [
     [a, "alpha"],
@@ -1193,12 +1208,17 @@ test("two projects with the same issue id each see only their own, and a token o
     await a.send(call, { token: ta }),
     await b.send(call, { token: tb }),
   ];
-  expect([ga.json.result, gb.json.result]).toEqual([
+  expect([ga.json.result, gb.json.result, a.reached, b.reached]).toEqual([
     shown({ title: "alpha" }),
     shown({ title: "beta" }),
+    ["alpha"],
+    ["beta"],
   ]);
-  const cross = await b.send(call, { token: ta });
-  expect([cross.status, cross.code]).toEqual([401, "AUTH_INVALID"]);
+  for (const cross of [
+    await b.send(call, { token: ta }),
+    await a.send(call, { token: tb }),
+  ])
+    expect([cross.status, cross.code]).toEqual([401, "AUTH_INVALID"]);
   expect([a.snapshot(), b.snapshot()]).toEqual(before);
 }, 30_000);
 
