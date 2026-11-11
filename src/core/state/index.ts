@@ -1455,6 +1455,8 @@ export class StateOwner {
       !Number.isSafeInteger(now + durationMs)
     )
       invalid("Lease duration must produce a future finite expiry");
+    if (Number.isNaN(new Date(now + durationMs).getTime()))
+      invalid("Lease duration exceeds the date range");
     return new Date(now + durationMs).toISOString();
   }
   #saveLease(namespace: string, lease: LeaseRecord): void {

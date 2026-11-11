@@ -5,6 +5,7 @@ import type {
 } from "../core/state/index.ts";
 import type {
   BoundContext,
+  LeaseHolder,
   LeaseRecord,
   StateRecord,
 } from "../generated/types.ts";
@@ -44,6 +45,7 @@ export interface LeaseStateClient extends DeletableStateClient {
     key: string,
     options: ClientDeleteOptions,
   ): ReturnType<DeletableStateClient["delete"]>;
+  holder(): LeaseHolder;
   now(): number;
   lease(subject: string): LeaseRecord | undefined;
   acquire(
@@ -53,6 +55,7 @@ export interface LeaseStateClient extends DeletableStateClient {
   ): LeaseRecord;
   renew(subject: string, durationMs: number): LeaseRecord;
   release(subject: string): LeaseRecord;
+  releaseOwn(subject: string): LeaseRecord;
   /** Completes only the note already authorized by a fenced work landing. */
   appendLandingComment(input: LandingCommentInput): StateRecord;
   put(
@@ -100,6 +103,14 @@ export function createStateClient(options: {
     };
   }
   return Object.freeze({
+    holder() {
+      if (context.variant !== "leased")
+        refuse("CONTEXT_MISSING", "Missing lease holder");
+      return structuredClone({
+        actor: context.actor,
+        session: context.session,
+      });
+    },
     now: () => Date.now(),
     get: (key: string) => owner?.get(namespace, key),
     list: (prefix?: string) => owner?.list(namespace, prefix) ?? [],
@@ -260,6 +271,15 @@ export function createStateClient(options: {
     },
     renew: (subject: string, durationMs: number) =>
       writable().renew(namespace, fence(subject), durationMs),
+    releaseOwn(subject: string) {
+      const lease = writable().lease(namespace, subject);
+      if (!lease) refuse("LEASE_NOT_HELD", "No lease on this subject");
+      return writable().release(namespace, {
+        subject,
+        holder: this.holder(),
+        generation: lease.generation,
+      });
+    },
     release(subject: string) {
       const state = writable();
       const rollback =
