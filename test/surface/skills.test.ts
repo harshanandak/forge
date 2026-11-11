@@ -35,6 +35,7 @@ import { dispatch, record, success } from "../../src/surface/dispatch.ts";
 import {
   GENERATED_MARKER,
   SKILL_MAX_BYTES,
+  lintReference,
   lintSkill,
   renderSkills,
 } from "../../src/surface/skills.ts";
@@ -85,6 +86,7 @@ test("every generated operation retains its own calling facts and issue has 1024
       })),
     );
     for (const skill of skills) {
+      if (!skill.path.endsWith("/SKILL.md")) continue;
       const entries = catalog.filter(
         (entry) => entry.admitted && entry.op.split(".")[0] === skill.noun,
       );
@@ -94,6 +96,11 @@ test("every generated operation retains its own calling facts and issue has 1024
         const section = operationSection(skill.text, entry.op);
         expect(section).toContain(entry.docs.title);
         expect(section).toContain(entry.docs.summary);
+        const reference = operationSection(
+          skills.find((file) => file.path === `${skill.noun}/reference.md`)
+            ?.text ?? "",
+          entry.op,
+        );
         const schema = entry.argumentSchema ?? entry.inputSchema;
         const required = Array.isArray(schema.required) ? schema.required : [];
         for (const [name, field] of Object.entries(
@@ -109,15 +116,15 @@ test("every generated operation retains its own calling facts and issue has 1024
                 : typeof s.type === "string"
                   ? s.type
                   : "see schema";
-          expect(section, entry.op).toContain(
+          expect(reference, entry.op).toContain(
             `\`${name}\` ${type} (${required.includes(name) ? "required" : "optional"})`,
           );
         }
         if (entry.declaration.effects.length === 0)
-          expect(section).toContain("none (read-only)");
+          expect(reference).toContain("none (read-only)");
         for (const effect of entry.declaration.effects)
-          expect(section).toContain(`\`${effect}\``);
-        expect(section).toMatch(
+          expect(reference).toContain(`\`${effect}\``);
+        expect(reference).toMatch(
           entry.declaration.idempotent
             ? /; idempotent(?:\n|$)/
             : /; not idempotent(?:\n|$)/,
@@ -164,6 +171,7 @@ test("shared call rules and exceptions resolve every operation, renamed deprecat
     expect(mcpToolName(long.op, missingPrefix)).toBeUndefined();
     for (const prefix of [undefined, "forge", missingPrefix]) {
       for (const skill of renderSkills(catalog, prefix)) {
+        if (!skill.path.endsWith("/SKILL.md")) continue;
         for (const entry of catalog.filter(
           (c) =>
             c.admitted &&
@@ -282,8 +290,11 @@ async function withProject(
 
 test("skills.sync writes one linted skill per block noun, deterministically, from CLI and catalog.call", async () => {
   await withProject(async (assembly, root) => {
-    const paths = ["attempt", "decision", "issue", "lane", "memory"].map(
-      (noun) => `.agents/skills/${noun}/SKILL.md`,
+    const paths = ["attempt", "decision", "issue", "lane", "memory"].flatMap(
+      (noun) =>
+        ["SKILL.md", "reference.md"].map(
+          (file) => `.agents/skills/${noun}/${file}`,
+        ),
     );
     const first = { dir: ".agents/skills", written: paths, unchanged: [] };
     expect(await forge(assembly, ["skills", "sync"])).toMatchObject({
@@ -292,7 +303,9 @@ test("skills.sync writes one linted skill per block noun, deterministically, fro
     for (const path of paths) {
       const text = readFileSync(join(root, path), "utf8");
       expect(text).toContain(GENERATED_MARKER);
-      expect(lintSkill(text, assembly.catalog.list())).toEqual([]);
+      if (path.endsWith("/SKILL.md"))
+        expect(lintSkill(text, assembly.catalog.list())).toEqual([]);
+      else expect(lintReference(text, assembly.catalog.list())).toEqual([]);
     }
     const decision = readFileSync(
       join(
@@ -305,7 +318,11 @@ test("skills.sync writes one linted skill per block noun, deterministically, fro
       cli: "forge decision propose --input '<json>'",
       mcp: "decision_propose",
     });
-    expect(decision).toContain("- Effects: `decision:write`; not idempotent");
+    const referencePath = join(root, ".agents/skills/decision/reference.md");
+    const reference = existsSync(referencePath)
+      ? readFileSync(referencePath, "utf8")
+      : "";
+    expect(reference).toContain("- Effects: `decision:write`; not idempotent");
     expect(decision).toContain("## `decision.adopt`");
     expect(skillCalls(decision, "decision.adopt").mcp).toBe("decision_adopt");
     expect(await forge(assembly, ["skills", "sync"])).toMatchObject({
@@ -346,10 +363,15 @@ test("a fresh assembly loads persisted admission only when syncing skills", asyn
         result: {
           written: [
             ".agents/skills/attempt/SKILL.md",
+            ".agents/skills/attempt/reference.md",
             ".agents/skills/decision/SKILL.md",
+            ".agents/skills/decision/reference.md",
             ".agents/skills/issue/SKILL.md",
+            ".agents/skills/issue/reference.md",
             ".agents/skills/lane/SKILL.md",
+            ".agents/skills/lane/reference.md",
             ".agents/skills/memory/SKILL.md",
+            ".agents/skills/memory/reference.md",
           ],
         },
       });
@@ -372,7 +394,11 @@ test("the generated issue skill lists the resolved issue.create input fields wit
       join(root, ".agents/skills/issue/SKILL.md"),
       "utf8",
     );
-    const create = text.split("## `issue.create`")[1]?.split("\n## ")[0];
+    const referencePath = join(root, ".agents/skills/issue/reference.md");
+    const reference = existsSync(referencePath)
+      ? readFileSync(referencePath, "utf8")
+      : "";
+    const create = reference.split("## `issue.create`")[1]?.split("\n## ")[0];
     for (const field of ["title", "kind", "parent", "labels", "body"])
       expect(create).toContain(`\`${field}\``);
     expect(create).toContain("`title` string (required)");
@@ -419,8 +445,11 @@ test("an enabled but unadmitted block gets no skill and none of its text reaches
         result: {
           written: [
             ".agents/skills/attempt/SKILL.md",
+            ".agents/skills/attempt/reference.md",
             ".agents/skills/issue/SKILL.md",
+            ".agents/skills/issue/reference.md",
             ".agents/skills/lane/SKILL.md",
+            ".agents/skills/lane/reference.md",
           ],
         },
       });
@@ -444,7 +473,9 @@ test("every generated CLI call for the shipped blocks delivers its --input JSON 
     const catalog = assembly.catalog.list();
     const input = { probe: [1, "two words"], nested: { ok: true } };
     const ops: string[] = [];
-    for (const skill of renderSkills(catalog))
+    for (const skill of renderSkills(catalog).filter((file) =>
+      file.path.endsWith("/SKILL.md"),
+    ))
       for (const [, op = ""] of skill.text.matchAll(/^## `([^`]+)`/gm)) {
         const line = skillCalls(skill.text, op).cli;
         let seen: InvocationRequest | undefined;
@@ -487,7 +518,12 @@ test("sync replaces its own files whatever their size and never touches hand-wri
     writeFileSync(join(dir, "memory/SKILL.md"), mine);
     expect(await forge(assembly, ["skills", "sync"])).toMatchObject({
       ok: true,
-      result: { skipped: [".agents/skills/memory/SKILL.md"] },
+      result: {
+        skipped: [
+          ".agents/skills/memory/SKILL.md",
+          ".agents/skills/memory/reference.md",
+        ],
+      },
     });
     const issue = readFileSync(join(dir, "issue/SKILL.md"), "utf8");
     expect(issue).not.toContain("OLD LINE");
@@ -504,7 +540,10 @@ test("the lint rejects unknown operations and oversized skills; core and human-o
     candidate("vault.seal", { callers: ["human"] }),
   ];
   const skills = renderSkills(catalog, "forge");
-  expect(skills.map((s) => s.path)).toEqual(["sample/SKILL.md"]);
+  expect(skills.map((s) => s.path)).toEqual([
+    "sample/SKILL.md",
+    "sample/reference.md",
+  ]);
   expect(renderSkills([...catalog].reverse(), "forge")).toEqual(skills);
   const text = skills[0]?.text ?? "";
   expect(skillCalls(text, "sample.echo").mcp).toBe("forge_sample_echo");
@@ -629,11 +668,15 @@ test("input fields are shown for display only; non-object and $ref/anyOf inputs 
   };
   const render = (inputSchema: McpCandidate["inputSchema"]) =>
     renderSkills([{ ...base, inputSchema }])[0]?.text ?? "";
+  const reference = (inputSchema: McpCandidate["inputSchema"]) =>
+    renderSkills([{ ...base, inputSchema }]).find(
+      (file) => file.path === "sample/reference.md",
+    )?.text ?? "";
   const text = render({ ...base.inputSchema, properties });
   expect(skillCalls(text, "sample.echo").cli).toBe(
     "forge sample echo --input '<json>'",
   );
-  expect(text).toContain(
+  expect(reference({ ...base.inputSchema, properties })).toContain(
     '- Input: `value` string (required), `count` integer (optional), `preRelease` boolean (optional), `tags` see schema (optional), `mode` see schema (optional), `level` "low" | "high" (optional), `names` string[] (optional)\n',
   );
   const scalar = render({ type: "string" });
@@ -641,10 +684,66 @@ test("input fields are shown for display only; non-object and $ref/anyOf inputs 
     cli: "forge sample echo --input '<json>'",
     mcp: "sample_echo",
   });
-  expect(scalar).toContain("- Input: string\n");
-  expect(render({ type: "array", items: { type: "string" } })).toContain(
+  expect(reference({ type: "string" })).toContain("- Input: string\n");
+  expect(reference({ type: "array", items: { type: "string" } })).toContain(
     "- Input: string[]\n",
   );
+}, 30_000);
+
+test("noun references split every built-in operation and route once within both issue budgets", async () => {
+  await withProject((assembly) => {
+    const catalog = assembly.catalog.list();
+    const files = renderSkills(catalog);
+    for (const router of files.filter((file) =>
+      file.path.endsWith("/SKILL.md"),
+    )) {
+      const reference = files.find(
+        (file) => file.path === `${router.noun}/reference.md`,
+      );
+      expect(reference, router.noun).toBeDefined();
+      const text = reference?.text ?? "";
+      const version = router.text.match(/^<!-- forge version: .+ -->$/m)?.[0];
+      expect(
+        text.startsWith(
+          `${GENERATED_MARKER}\n${version}\n# ${router.noun} reference\n`,
+        ),
+      ).toBe(true);
+      expect(text).not.toContain("---\n");
+      const pointer =
+        "Input fields and effects for each operation are in `reference.md` next to this file.";
+      expect(router.text.split(pointer)).toHaveLength(2);
+      expect(router.text).toContain(`returns the full schemas.\n${pointer}\n`);
+      expect(router.text).not.toMatch(/^- (?:Input|Effects):/m);
+      const entries = catalog.filter(
+        (entry) =>
+          entry.admitted &&
+          isAgentCallable(entry.declaration) &&
+          entry.op.split(".")[0] === router.noun,
+      );
+      expect(
+        [...text.matchAll(new RegExp("^## `([^`]+)`$", "gm"))].map(
+          (match) => match[1],
+        ),
+      ).toEqual(entries.map((entry) => entry.op).sort());
+      for (const entry of entries) {
+        const section = operationSection(text, entry.op);
+        expect(section.match(/^- Input: .+$/gm)).toHaveLength(1);
+        const effects = entry.declaration.effects.length
+          ? entry.declaration.effects
+              .map((effect) => `\`${effect}\``)
+              .join(", ")
+          : "none (read-only)";
+        expect(section.match(/^- Effects: .+$/gm)).toEqual([
+          `- Effects: ${effects}; ${entry.declaration.idempotent ? "idempotent" : "not idempotent"}`,
+        ]);
+      }
+      expect(lintReference(text, catalog)).toEqual([]);
+      if (router.noun === "issue") {
+        expect(Buffer.byteLength(router.text)).toBeLessThanOrEqual(7168);
+        expect(Buffer.byteLength(text)).toBeLessThanOrEqual(SKILL_MAX_BYTES);
+      }
+    }
+  }, allBlocks);
 }, 30_000);
 
 test("a deprecation's replacement follows the noun rename; blocks cannot claim the skills noun", () => {

@@ -22,12 +22,34 @@ export function missingOperationHint(
   const files = nodeConfigFiles(root);
   for (const directory of [".agents/skills", ".claude/skills"]) {
     try {
-      for (const name of files.list(directory).slice(0, 100)) {
-        const path = `${directory}/${name}/SKILL.md`;
+      for (const path of files
+        .list(directory)
+        .slice(0, 100)
+        .flatMap((name) =>
+          ["SKILL.md", "reference.md"].map(
+            (file) => `${directory}/${name}/${file}`,
+          ),
+        )) {
         try {
           const bytes = files.read(path, 65_536);
           if (!bytes) continue;
           const lines = new TextDecoder().decode(bytes).split(/\r?\n/);
+          if (
+            path.endsWith("/reference.md") &&
+            lines.includes(GENERATED_MARKER)
+          ) {
+            const router = files.read(
+              path.replace(/reference\.md$/, "SKILL.md"),
+              65_536,
+            );
+            const provenance = new TextDecoder().decode(router).split(/\r?\n/);
+            if (provenance.includes(GENERATED_MARKER))
+              lines.push(
+                ...provenance.filter((line) =>
+                  line.startsWith("<!-- forge block:"),
+                ),
+              );
+          }
           const recorded = /^<!-- forge version: (.+) -->$/.exec(
             lines.find((line) => line.startsWith("<!-- forge version:")) ?? "",
           )?.[1];
