@@ -157,6 +157,7 @@ function fixture(env: Record<string, string> = vars) {
     begin: (device = "laptop-1", ip = "203.0.113.1") =>
       send("loginstart", { device }, { "CF-Connecting-IP": ip }),
     poll: (device_code: string) => send("loginpoll", { device_code }),
+    now: () => t,
     advance: (ms: number) => {
       t += ms;
     },
@@ -261,15 +262,16 @@ test("an approved challenge yields one 30 day credential and never a second", as
 test("an approval that is not the owner's mints nothing", async () => {
   const f = fixture();
   await f.provision();
-  const variants: Partial<IdentityClaims>[] = [
-    { subject: "user_Other" },
-    { issuer: "https://other.example" },
-    { audience: "other-client" },
-    { expiresAt: start + 1_000 },
+  // Each case advances the clock, so the short expiry is taken from the clock at the moment it is used.
+  const variants: ((now: number) => Partial<IdentityClaims>)[] = [
+    () => ({ subject: "user_Other" }),
+    () => ({ issuer: "https://other.example" }),
+    () => ({ audience: "other-client" }),
+    (now) => ({ expiresAt: now + 1_000 }),
   ];
-  for (const claims of variants) {
+  for (const variant of variants) {
     const { body } = await f.begin();
-    expect((await f.approve(body.user_code, claims)).ok).toBe(true);
+    expect((await f.approve(body.user_code, variant(f.now()))).ok).toBe(true);
     f.advance(2_000);
     const result = await f.poll(body.device_code);
     expect<unknown>([result.status, result.body]).toEqual([
