@@ -41,6 +41,8 @@ const transpiler = new Bun.Transpiler({ loader: "ts" });
 interface Open {
   readonly assembly: Assembly;
   readonly root: string;
+  /** The checkout root, which holds the project identity and the binding. */
+  readonly checkout: string;
   readonly home: string;
   readonly net: ReturnType<typeof network>;
   readonly lines: string[];
@@ -69,9 +71,17 @@ function stage(into: string): string {
   return target;
 }
 
-async function openCloud(steps: Step[]): Promise<Open> {
+async function openCloud(
+  steps: Step[],
+  options: { nested?: boolean } = {},
+): Promise<Open> {
   const work = mkdtempSync(join(tmpdir(), "forge-cloud-block-"));
-  const root = join(work, "project");
+  const checkout = join(work, "project");
+  // A nested call: the assembly runs from a folder inside the checkout, whose root holds .git.
+  const root = options.nested === true ? join(checkout, "pkg") : checkout;
+  if (options.nested === true)
+    mkdirSync(join(checkout, ".git"), { recursive: true });
+  mkdirSync(join(checkout, ".forge"), { recursive: true });
   const home = join(work, "home");
   const deviceRoot = join(work, "device");
   mkdirSync(join(root, ".forge"), { recursive: true });
@@ -84,7 +94,7 @@ async function openCloud(steps: Step[]): Promise<Open> {
     }),
   );
   writeFileSync(
-    join(root, ".forge", "project.json"),
+    join(checkout, ".forge", "project.json"),
     `${JSON.stringify({ schema: 1, id: PROJECT_ID })}\n`,
   );
   const staged = stage(join(work, "builtins"));
@@ -110,6 +120,7 @@ async function openCloud(steps: Step[]): Promise<Open> {
   return {
     assembly,
     root,
+    checkout,
     home,
     net,
     lines,
@@ -171,7 +182,13 @@ test("cloud.login is declared by the block for a person only, so it is in the ca
   ]);
   expect(entry?.declaration.idempotent).toBe(false);
   expect(entry?.docs.title.length).toBeGreaterThan(0);
-  expect(entry?.inputSchema.type).toBe("object");
+  // The input schema names the two fields and does not constrain the top-level type, so every input
+  // reaches the service, which gives the one fixed refusal; the shared validator would echo a value.
+  expect(Object.keys(entry?.inputSchema.properties ?? {})).toEqual([
+    "origin",
+    "project",
+  ]);
+  expect(entry?.inputSchema.type).toBeUndefined();
   expect(entry?.outputSchema?.type).toBe("object");
   const tools = createMcpHandlers(open.assembly.catalog, { budget: 100 })
     .listTools()
@@ -207,6 +224,15 @@ test("a person's login runs through the catalog: code printed, credential saved,
   const text = JSON.stringify(envelope) + open.lines.join("\n");
   expect(text).not.toContain("fct_");
   expect(text).not.toContain(SECRET);
+}, 60_000);
+
+test("a login from a folder inside the checkout reads and writes the checkout root's files", async () => {
+  open = await openCloud(login, { nested: true });
+  expect(open.root).not.toBe(open.checkout);
+  const envelope = await call(open, INPUT);
+  expect(envelope.ok).toBe(true);
+  expect(existsSync(join(open.checkout, ".forge", "cloud.json"))).toBe(true);
+  expect(existsSync(join(open.root, ".forge", "cloud.json"))).toBe(false);
 }, 60_000);
 
 test("an agent caller and a dry run are refused before any request", async () => {

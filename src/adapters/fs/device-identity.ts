@@ -183,7 +183,8 @@ export function createDeviceFiles(
   };
   function directory(path: string, create: boolean, owned: boolean) {
     let created = false;
-    if (!existsSync(path)) {
+    // Cloud: only a missing folder is absent; an inaccessible one is an integrity refusal, not "absent".
+    if (!present(path)) {
       if (!create) return false;
       createPrivateDirectory(path);
       created = true;
@@ -291,8 +292,16 @@ export function createDeviceFiles(
       });
     },
     lock() {
-      ready(true);
-      return lockDirectory(join(root, "lock"));
+      if (!strict) {
+        ready(true);
+        return lockDirectory(join(root, "lock"));
+      }
+      // A held lock stays INPUT_CONFLICT; any other failure to take or free it is an integrity refusal.
+      const held = guarded(() => {
+        ready(true);
+        return lockDirectory(join(root, "lock"));
+      });
+      return { release: () => guarded(() => held.release()) };
     },
     scratch() {
       ready(true);

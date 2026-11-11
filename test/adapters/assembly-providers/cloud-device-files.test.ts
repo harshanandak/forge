@@ -316,6 +316,61 @@ test.skipIf(!posix || process.getuid?.() === 0)(
   20_000,
 );
 
+test.skipIf(!posix || process.getuid?.() === 0)(
+  "an inaccessible parent folder is an integrity refusal on a cloud read, not an absent file",
+  () => {
+    const s = sandbox();
+    try {
+      const cloud = createDeviceFiles(s.home, undefined, "cloud");
+      expect(cloud.read(NAME)).toBeUndefined();
+      cloud.write(NAME, "a");
+      const parent = join(s.home, ".forge");
+      chmodSync(parent, 0o000);
+      try {
+        integrity(() => cloud.read(NAME));
+      } finally {
+        chmodSync(parent, 0o700);
+      }
+      expect(cloud.read(NAME)).toBe("a");
+    } finally {
+      s.close();
+    }
+  },
+  20_000,
+);
+
+test.skipIf(!posix || process.getuid?.() === 0)(
+  "a cloud lock that cannot be taken is an integrity refusal, while a held lock stays a conflict",
+  () => {
+    const s = sandbox();
+    try {
+      const cloud = createDeviceFiles(s.home, undefined, "cloud");
+      const held = cloud.lock();
+      try {
+        try {
+          cloud.lock();
+          throw new Error("expected a conflict");
+        } catch (error) {
+          expect(error).toBeInstanceOf(ForgeFailure);
+          expect((error as ForgeFailure).error.code).toBe("INPUT_CONFLICT");
+        }
+      } finally {
+        held.release();
+      }
+      chmodSync(s.cloud, 0o500);
+      try {
+        integrity(() => cloud.lock());
+      } finally {
+        chmodSync(s.cloud, 0o700);
+      }
+      cloud.lock().release();
+    } finally {
+      s.close();
+    }
+  },
+  20_000,
+);
+
 /** A native Windows layer a test controls: the DACL always matches, only the owner varies. */
 function fakeNative(owner: () => string): PrivateFiles {
   const sid = "S-1-5-21-1000-1000-1000-1001";

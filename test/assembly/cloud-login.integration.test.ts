@@ -151,6 +151,23 @@ test("an input with a credential as a property name or value prints it nowhere",
   }
 }, 60_000);
 
+test("a non-object input prints its value nowhere", () => {
+  const f = fixture();
+  try {
+    f.manifest();
+    for (const raw of ['["fct_x"]', '"fct_x"', "5", "null"]) {
+      const out = f.run(["cloud", "login", "--input", raw]);
+      expect(out.status).toBe(6);
+      expect(code(out.envelope)).toBe("INPUT_INVALID");
+      expect(out.stdout + out.stderr).not.toContain("fct_x");
+      expect(existsSync(f.binding)).toBe(false);
+      expect(existsSync(f.credentials)).toBe(false);
+    }
+  } finally {
+    f.close();
+  }
+}, 60_000);
+
 test("an http origin is refused before any request", () => {
   const f = fixture();
   try {

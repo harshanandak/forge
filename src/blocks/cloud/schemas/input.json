@@ -1,5 +1,4 @@
 {
-  "type": "object",
   "properties": {
     "origin": {
       "description": "HTTPS origin of the Forge cloud, such as https://forge.example.com. Needed for the first login only."

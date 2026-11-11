@@ -571,7 +571,8 @@ export function createAssemblyProviders(
           if (options.deviceRoot === undefined)
             refuse("UNAVAILABLE", "Cloud login requires a device folder");
           return createCloudLogin({
-            root,
+            // The checkout root, so a call from a nested folder reads and writes the same files.
+            root: projectManifestRoot(root),
             home: env.HOME ?? env.USERPROFILE,
             deviceRoot: options.deviceRoot,
             env,
