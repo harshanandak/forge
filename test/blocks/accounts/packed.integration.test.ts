@@ -1308,15 +1308,31 @@ function interruptedApply() {
 
 for (const count of [1, 2, 3]) {
   for (const verb of ["check", "plan", "use"]) {
-    test(`installed accounts: ${verb} completes interrupted apply after write ${count}`, () => {
+    test(`installed accounts: ${verb} handles interrupted apply after write ${count}`, () => {
       const f = interruptedApply();
       try {
         const repo = f.stage("interrupted", count);
         const input =
           verb === "use" ? { login: "alice", approval: f.approval } : {};
-        const recovered = f.cli(repo, verb, input);
-        expect(recovered.status, JSON.stringify(recovered)).toBe(0);
-        expect(recovered.ok).toBe(true);
+        if (verb === "check") {
+          const before = f.snapshot(repo);
+          expect(f.cli(repo, "check")).toMatchObject({
+            ok: false,
+            status: "FAIL",
+            error: {
+              code: "ACCOUNT_INTEGRITY",
+              message:
+                "Owned include has no matching device binding or clone record",
+              repair: "Run forge accounts plan to finish the interrupted apply",
+            },
+          });
+          expect(f.snapshot(repo)).toEqual(before);
+        }
+        const recovered = f.cli(repo, verb === "check" ? "plan" : verb, input);
+        expect(recovered, JSON.stringify(recovered)).toMatchObject({
+          ok: true,
+          status: "OK",
+        });
         for (const path of f.paths)
           expect(readFileSync(join(repo, ".git", path), "utf8")).toBe(
             f.complete[path]!,
@@ -1404,7 +1420,7 @@ for (const kind of [
           verb === "use" ? { login: "alice", approval: f.approval } : {},
         );
         expect(result).toMatchObject({
-          status: 1,
+          status: "FAIL",
           ok: false,
           error: {
             code: "ACCOUNT_INTEGRITY",
@@ -1413,6 +1429,7 @@ for (const kind of [
           },
         });
         expect(f.snapshot(repo)).toEqual(before);
+        expect(result.error).not.toHaveProperty("repair");
       }
     } finally {
       rmSync(f.root, { recursive: true, force: true });

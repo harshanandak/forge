@@ -1,6 +1,6 @@
 import type { ProcessPort, ResolvedExecutable } from "../../ports/process.ts";
 import type { DeviceFiles, ExecutablePin } from "../../ports/device-files.ts";
-declare const fail: (code: string, message: string) => never;
+declare const fail: (...args: [string, string, { repair?: string }?]) => never;
 interface Files {
   root: string;
   read(path: string, max: number, area?: "common"): string | undefined;
@@ -204,6 +204,111 @@ async function contact(
   const bindings = parseObject<Record<string, Binding>>(bindingText, {});
   const accounts = parseObject<Record<string, Account>>(accountText, {});
   const binding = Object.hasOwn(bindings, repo) ? bindings[repo] : undefined;
+  const integrity = (message: string): never =>
+    refuse("ACCOUNT_INTEGRITY", message);
+  const hash = (value: unknown) => s.crypto.sha256(JSON.stringify(value));
+  const includeFor = (account: Account) => ({
+    content: `# forge accounts ${hash(account)}\n[user]\n\tname = ${JSON.stringify(account.commitName)}\n\temail = ${JSON.stringify(account.commitEmails[0])}\n\tuseConfigOnly = true\n`,
+    include: `${MARK}\n[include]\n\tpath = "forge/accounts.gitconfig"\n# end forge accounts owned include\n`,
+  });
+  function recover(locked = false): void {
+    if (action === "decline") return;
+    const paths = [OWNED, "forge/accounts.applied.json", "config"];
+    const [content, record, configText] = paths.map((path) =>
+      s.files.read(path, LIMIT, "common"),
+    );
+    const current = configText ?? "";
+    const marked = current.includes(MARK);
+    if (content === undefined && record === undefined && !marked) return;
+    if (action !== "check" && !locked) {
+      const deviceLock = s.device.lock();
+      try {
+        const lease = s.files.lock(["forge/accounts.apply.lock"]);
+        try {
+          if (
+            s.device.read("bindings.json") !== bindingText ||
+            s.device.read("accounts.json") !== accountText
+          )
+            refuse("INPUT_CONFLICT", "Accounts changed; plan again");
+          return recover(true);
+        } finally {
+          lease.release();
+        }
+      } finally {
+        deviceLock.release();
+      }
+    }
+    const message =
+      "Owned include has no matching device binding or clone record";
+    const account =
+      binding?.login && Object.hasOwn(accounts, binding.login)
+        ? accounts[binding.login]
+        : undefined;
+    if (
+      !binding ||
+      binding.declined ||
+      !account ||
+      hash(account) !== binding.fingerprint
+    )
+      return integrity(message);
+    const expected = includeFor(account);
+    const expectedRecord = JSON.stringify({
+      repo,
+      fingerprint: binding.fingerprint,
+      includeHash: s.crypto.sha256(expected.content),
+      appliedFrom: binding.appliedFrom,
+    });
+    if (
+      content !== expected.content ||
+      (record !== undefined && record !== expectedRecord) ||
+      (marked &&
+        (record === undefined ||
+          !current.includes(expected.include) ||
+          current.replace(expected.include, "").includes(MARK)))
+    )
+      return integrity(message);
+    const rows = (s.device.read("audit.jsonl") ?? "")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) =>
+        parseObject<ApprovalRecord & { appliedFrom?: string }>(line, {}),
+      );
+    const approval = rows.find((row) => row.id === binding.appliedFrom);
+    if (
+      approval?.kind !== "use" ||
+      approval.repo !== repo ||
+      approval.fingerprint !== binding.fingerprint ||
+      !approval.approval?.quote?.trim() ||
+      !approval.approval.source?.trim()
+    )
+      integrity("The binding has no matching chat approval audit entry");
+    ghPin(account.gh);
+    const audited = rows.some(
+      (row) =>
+        row.kind === "apply" &&
+        row.repo === repo &&
+        row.appliedFrom === binding.appliedFrom,
+    );
+    if (action === "check") {
+      if (record === undefined || !marked || !audited)
+        return fail("ACCOUNT_INTEGRITY", message, {
+          repair: "Run forge accounts plan to finish the interrupted apply",
+        });
+      return;
+    }
+    if (record === undefined)
+      s.files.write(paths[1]!, expectedRecord, {
+        area: "common",
+        expected: null,
+      });
+    if (!marked)
+      s.files.write("config", current + "\n" + expected.include, {
+        area: "common",
+        expected: configText ?? null,
+      });
+    if (!audited) audit({ kind: "apply", appliedFrom: binding.appliedFrom });
+  }
+  recover();
   if (binding?.declined && action !== "use" && action !== "decline")
     return action === "check"
       ? {
@@ -218,9 +323,6 @@ async function contact(
   );
   const owned = s.files.read(OWNED, LIMIT, "common");
   let config = s.files.read("config", LIMIT, "common") ?? "";
-  const integrity = (message: string): never =>
-    refuse("ACCOUNT_INTEGRITY", message);
-  const hash = (value: unknown) => s.crypto.sha256(JSON.stringify(value));
   if (
     (owned !== undefined || applied || config.includes(MARK)) &&
     (!applied || !binding?.login || !owned || !config.includes(MARK))
@@ -294,10 +396,6 @@ async function contact(
     )
       integrity("Owned Git include or its fingerprint changed");
   }
-  const includeFor = (account: Account) => ({
-    content: `# forge accounts ${hash(account)}\n[user]\n\tname = ${JSON.stringify(account.commitName)}\n\temail = ${JSON.stringify(account.commitEmails[0])}\n\tuseConfigOnly = true\n`,
-    include: `${MARK}\n[include]\n\tpath = "forge/accounts.gitconfig"\n# end forge accounts owned include\n`,
-  });
   const validateInclude = (account: Account) => {
     const expected = includeFor(account);
     if (
