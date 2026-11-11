@@ -357,7 +357,7 @@
     },
     "issue.leave": {
       "title": "Leave",
-      "summary": "Release own membership."
+      "summary": "Release own membership; no coordinator lease."
     }
   }
 }

@@ -5268,7 +5268,7 @@ const operations: Operations<WorkOperations> = {
     );
     if (!invitation)
       fail("LEASE_NOT_HELD", "This caller has no participant membership");
-    const released = state.release(key(invitation.key));
+    const released = state.releaseOwn(key(invitation.key));
     if (canonical(state.lease(key(invitation.key))) !== canonical(released))
       fail("INTERNAL", "Released membership did not match its readback");
     return { id: ids.shown(id) };

@@ -463,7 +463,7 @@
       "output": "schemas/ItemRef.json",
       "context": "leased",
       "timeoutMs": 15000,
-      "leaseMode": "held",
+      "leaseMode": "acquire",
       "effects": ["issue:write"],
       "idempotent": false,
       "callers": ["agent", "human"],

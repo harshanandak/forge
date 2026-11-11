@@ -5,10 +5,16 @@ import { readFileSync } from "node:fs";
 import { createSqliteStore } from "../../../src/adapters/store-sqlite/index.ts";
 import { createStateClient } from "../../../src/assembly/state-client.ts";
 import { StateOwner } from "../../../src/core/state/index.ts";
+import { dispatch, success } from "../../../src/surface/dispatch.ts";
+import { candidate } from "../../surface/fixtures/catalog.ts";
+import { bindContext } from "../../../src/contract/context.ts";
 import { refuse } from "../../../src/core/trust/index.ts";
 import { ForgeFailure } from "../../../src/contract/failure.ts";
 import type { HandlerCall } from "../../../src/contract/author.ts";
 import type {
+  BlockManifest,
+  DocsRecords,
+  LeaseGrant,
   LeaseHolder,
   LeaseRecord,
   TrackerItem,
@@ -17,6 +23,9 @@ type Handler = (call: HandlerCall<Record<string, unknown>>) => unknown;
 type View = TrackerItem & { mode: string; participants: LeaseRecord[] };
 const root = resolve(import.meta.dirname, "../../../src/blocks/work");
 const ns = "forge/work";
+const read = <T>(file: string) =>
+  JSON.parse(readFileSync(resolve(root, file), "utf8")) as T;
+const manifest = read<BlockManifest>("forge.block.json");
 const who = (id: string): LeaseHolder => ({
   actor: { kind: "agent", id: "worker" },
   session: { id, device: "laptop" },
@@ -38,44 +47,28 @@ async function project() {
     readOnly: false,
   });
   if (!opened.ok) throw new Error(opened.unavailable.reason);
-  let now = Date.parse("2026-11-10T12:00:00Z"),
-    request = 0;
+  let now = Date.parse("2026-11-10T12:00:00Z");
   const owner = new StateOwner(opened.handle.value, { now: () => now });
   owner.initialize();
-  for (const id of ["work-1", "work-2"])
-    owner.put(
-      ns,
-      `issue:${id}`,
-      {
-        id,
-        title: id,
-        status: "open",
-        labels: [],
-        dependsOn: [],
-        createdAt: new Date(now).toISOString(),
-      },
-      A.actor,
-      { expectRevision: 0 },
-    );
+  for (const title of ["work-1", "work-2"]) await call("create", A, { title });
   async function call<T = unknown>(
     op: string,
     caller = A,
     input: Record<string, unknown> = {},
-    generation = 1,
+    generation: number | null = 1,
   ): Promise<T> {
+    const bound = bindContext(manifest.operations[`issue.${op}`]!, {
+      ...caller,
+      project: { id: "test" },
+      ...(generation === null ? {} : { leaseGeneration: generation }),
+    });
+    if (!bound.ok) throw new ForgeFailure(bound.error);
     const state = createStateClient({
       owner,
       namespace: ns,
       write: true,
-      requestId: `request-${++request}`,
-      context: {
-        variant: "leased",
-        ...caller,
-        project: { id: "test" },
-        ...(op === "claim" || op === "join"
-          ? { leaseMode: "acquire" as const }
-          : { leaseMode: "held" as const, leaseGeneration: generation }),
-      },
+      requestId: crypto.randomUUID(),
+      context: bound.context,
     });
     const previousFail = globals.fail;
     globals.fail = refuse;
@@ -92,8 +85,33 @@ async function project() {
       else globals.fail = previousFail;
     }
   }
+  async function cli(caller: LeaseHolder) {
+    const result = await dispatch(
+      {
+        list: () =>
+          ["issue.show", "issue.leave"].map((op) =>
+            candidate(op, manifest.operations[op]),
+          ),
+        invoke: async (req) => {
+          const value = await call(
+            req.op.slice(6),
+            caller,
+            req.input as Record<string, unknown>,
+            req.context?.leaseGeneration ?? null,
+          );
+          return success(req.op, value);
+        },
+      },
+      "issue.leave",
+      { id: "shown-1" },
+      { caller: "agent", context: { ...caller, project: { id: "test" } } },
+    );
+    if (!result.ok) throw new ForgeFailure(result.error);
+    return result.result;
+  }
   return {
     call,
+    cli,
     owner,
     close: () => opened.handle.close(),
     advance: (ms: number) => (now += ms),
@@ -109,7 +127,7 @@ async function project() {
       }),
   };
 }
-async function refused(code: string, action: () => Promise<unknown>) {
+async function refused(code: string, action: () => unknown) {
   const before = p.snapshot();
   let error: unknown;
   try {
@@ -227,7 +245,10 @@ test("leave releases only the caller and a refused leave writes nothing", async 
   for (const caller of [B, C]) await p.call("join", caller);
   const coordinator = p.held();
   await refused("LEASE_NOT_HELD", () => p.call("leave", D));
-  await refused("LEASE_STALE", () => p.call("leave", B, {}, 2));
+  const membership = (await p.call<View>("show")).participants[0]!;
+  await refused("LEASE_STALE", () =>
+    p.owner.release(ns, { ...membership, generation: 2 }),
+  );
   await p.call("leave", B);
   expect(
     (await p.call<View>("show")).participants.map((member) => member.holder),
@@ -274,16 +295,11 @@ test("solo claim, comment, update and close keep their existing result fields", 
   });
 }, 10000);
 test("invite, join and leave are declared once for generated CLI and MCP", () => {
-  const read = (file: string) =>
-    JSON.parse(readFileSync(resolve(root, file), "utf8")) as {
-      operations: Record<string, unknown>;
-    };
-  const manifest = read("forge.block.json"),
-    docs = read("docs.json");
+  const docs = read<DocsRecords>("docs.json");
   for (const [op, leaseMode] of [
     ["invite", "held"],
     ["join", "acquire"],
-    ["leave", "held"],
+    ["leave", "acquire"],
   ]) {
     expect(manifest.operations[`issue.${op}`]).toMatchObject({
       context: "leased",
@@ -294,4 +310,20 @@ test("invite, join and leave are declared once for generated CLI and MCP", () =>
     });
     expect(docs.operations[`issue.${op}`]).toBeDefined();
   }
+}, 10000);
+test("CLI dispatch leaves a reacquired membership and works after coordinator expiry", async () => {
+  await p.call("claim");
+  await p.invite(B);
+  await p.call("join", B, { ttlSeconds: 1 });
+  p.advance(1000);
+  const joined = await p.call<LeaseGrant>("join", B, { ttlSeconds: 120 });
+  expect(joined.generation).toBe(2);
+  await p.cli(B);
+  expect((await p.call<View>("show")).participants).toEqual([]);
+  await p.call("join", B, { ttlSeconds: 120 });
+  p.advance(60000);
+  expect((await p.call<View>("show")).lease).toBeUndefined();
+  await refused("LEASE_NOT_HELD", () => p.cli(D));
+  await p.cli(B);
+  expect((await p.call<View>("show")).participants).toEqual([]);
 }, 10000);
