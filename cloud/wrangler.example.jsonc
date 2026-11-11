@@ -1,24 +1,27 @@
 {
-  "name": "forge-cloud-dev",
+  // Committed example only. A bare `wrangler deploy` finds no wrangler.jsonc here and stops. Copy this
+  // file to cloud/wrangler.local.jsonc (git-ignored), fill every <placeholder> with your real value,
+  // run scripts/preflight.mjs, and pass --config wrangler.local.jsonc to every wrangler command.
+  "name": "<worker-name>",
+  "account_id": "<account-id>",
   "main": "src/adapters/workers-oauth/compose.ts",
   "compatibility_date": "2026-10-01",
   "compatibility_flags": ["nodejs_compat"],
-  // Reachable on workers.dev now that device tokens exist; every route needs a token. No preview URLs.
   "workers_dev": true,
   "preview_urls": false,
-  "kv_namespaces": [{ "binding": "OAUTH_KV" }],
+  // The id of an existing namespace, so a deploy never provisions or inherits another one.
+  "kv_namespaces": [{ "binding": "OAUTH_KV", "id": "<kv-namespace-id>" }],
   "vars": {
-    "CLERK_ISSUER": "https://example.clerk.accounts.dev",
-    "FORGE_OWNER_SUBJECT": "user_REPLACEWITHOWNERID",
-    "CLERK_CLIENT_ID": "public-client-id",
-    "CLERK_REDIRECT_URI": "https://worker.workers.dev/callback",
-    "FORGE_API_RESOURCE": "https://worker.workers.dev",
+    "CLERK_ISSUER": "<clerk-frontend-api-url>",
+    "CLERK_CLIENT_ID": "<clerk-client-id>",
+    "CLERK_REDIRECT_URI": "<worker-origin>/callback",
+    "FORGE_API_RESOURCE": "<worker-origin>",
     "OAUTH_TIMEOUT_MS": "5000",
-    // Device login (routes loginstart and loginpoll) needs FORGE_CLOUD_PROJECT, the one already provisioned
-    // project name it serves, and the secret DEVICE_LOGIN_HMAC_KEY (random, base64url, at least 32 bytes).
-    // Set the secret with `wrangler secret put DEVICE_LOGIN_HMAC_KEY`; never commit its value.
+    "FORGE_OWNER_SUBJECT": "<owner-subject>",
+    "FORGE_CLOUD_PROJECT": "<project-name>",
     // Optional FORGE_OAUTH_REDIRECTS: comma-separated https redirect URLs that may register besides loopback.
   },
+  // Secrets, set with `wrangler secret put` and never written here: DEVICE_LOGIN_HMAC_KEY, ADMIN_TOKEN.
   "durable_objects": {
     "bindings": [
       { "name": "PROJECTS", "class_name": "Project" },

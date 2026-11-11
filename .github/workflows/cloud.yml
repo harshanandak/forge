@@ -1,17 +1,19 @@
 name: Cloud claims
 
-# The claim server under cloud/ runs its conformance checks against a local `wrangler dev`.
-# It is a separate workflow so every other pull request skips it; it also runs when the state
-# owner it wraps changes.
+# The claim server under cloud/ runs its conformance checks against a local `wrangler dev`, and its
+# deploy bundle is built with `wrangler deploy --dry-run`. The Worker bundles code from src/ (ports,
+# contract, core state, blocks, assembly, adapters), generated modules (schemas/ and tools/gen/) and the
+# root lockfile and tsconfig, so a change to any of them runs this workflow.
 on:
   pull_request:
     paths:
       - "cloud/**"
-      - "src/core/state/**"
-      - "src/contract/lease.ts"
-      - "src/contract/failure.ts"
-      - "src/ports/store.ts"
+      - "src/**"
       - "schemas/**"
+      - "tools/gen/**"
+      - "package.json"
+      - "bun.lock"
+      - "tsconfig*.json"
       - ".github/workflows/cloud.yml"
 
 permissions:
@@ -100,3 +102,73 @@ jobs:
       - name: wrangler log
         if: failure()
         run: tail -n 100 "$RUNNER_TEMP"/wrangler-*.log || true
+
+  bundle:
+    name: Cloud bundle (wrangler deploy --dry-run)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      WRANGLER_SEND_METRICS: "false"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.4.4"
+      - run: bun install --frozen-lockfile
+      - run: bun run gen
+      - run: bun install --frozen-lockfile
+        working-directory: cloud
+      - name: Path filter covers the Worker's dependencies
+        run: |
+          regexes=$(sed -n '/^    paths:/,/^permissions:/p' .github/workflows/cloud.yml | sed -n 's/^      - "\(.*\)"$/\1/p' | sed -e 's/\./\\./g' -e 's/\*\*/@@/g' -e 's/\*/[^\/]*/g' -e 's/@@/.*/g')
+          matches() { while read -r re; do [[ $1 =~ ^$re$ ]] && return 0; done <<< "$regexes"; return 1; }
+          for path in src/blocks/work/forge.block.json src/assembly/oidc.ts src/adapters/oidc/index.ts src/core/config/pointer.ts tools/gen/types.ts schemas/Lease.json package.json bun.lock tsconfig.build.json cloud/src/worker.ts; do
+            matches "$path" || { echo "::error::$path does not trigger this workflow"; exit 1; }
+          done
+          for path in docs/reference/cloud.md README.md; do
+            if matches "$path"; then echo "::error::$path must not trigger this workflow"; exit 1; fi
+          done
+      - name: Preflight refuses placeholders and missing values
+        working-directory: cloud
+        run: |
+          sed -e 's/<account-id>/0123456789abcdef0123456789abcdef/' -e 's/<kv-namespace-id>/fedcba9876543210fedcba9876543210/' -e 's/<worker-name>/forge-cloud-ci/' -e 's#<clerk-frontend-api-url>#https://clerk.ci.test#' -e 's/<clerk-client-id>/ci-client/' -e 's#<worker-origin>#https://forge-cloud-ci.ci.test#' -e 's/<owner-subject>/user_CI1/' -e 's/<project-name>/ci-project/' wrangler.example.jsonc > wrangler.ci.jsonc
+          cat > "$RUNNER_TEMP/stub.mjs" <<'EOF'
+          import { appendFileSync } from "node:fs";
+          const a = process.argv.slice(2);
+          appendFileSync(process.env.STUB_LOG, `${a[0]} ${a[1]}\n`);
+          if (a[0] === "secret") console.log(JSON.stringify(process.env.STUB_SECRETS.split(",").map((name) => ({ name }))));
+          else if (a[0] === "kv") console.log(JSON.stringify([{ id: "fedcba9876543210fedcba9876543210" }]));
+          else process.exit(1);
+          EOF
+          export FORGE_WRANGLER="$RUNNER_TEMP/stub.mjs" STUB_LOG="$RUNNER_TEMP/stub.log"
+          both=DEVICE_LOGIN_HMAC_KEY,ADMIN_TOKEN
+          run() { : > "$STUB_LOG"; STUB_SECRETS="$1" node scripts/preflight.mjs --config "$2" > "$RUNNER_TEMP/pre.out" 2>&1; }
+          refuse() {
+            if run "$1" "$2"; then echo "::error::preflight passed: $3"; exit 1; fi
+            grep -q "$3" "$RUNNER_TEMP/pre.out" || { echo "::error::preflight refused for another reason: $3"; cat "$RUNNER_TEMP/pre.out"; exit 1; }
+            if grep -q '^deploy' "$STUB_LOG"; then echo "::error::a deploy was invoked: $3"; exit 1; fi
+          }
+          cp wrangler.example.jsonc "$RUNNER_TEMP/placeholders.jsonc"
+          sed '/FORGE_OWNER_SUBJECT/d' wrangler.ci.jsonc > "$RUNNER_TEMP/no-owner.jsonc"
+          refuse "$both" wrangler.example.jsonc "pass --config"
+          refuse "$both" "$RUNNER_TEMP/placeholders.jsonc" "placeholder"
+          [ ! -s "$STUB_LOG" ] || { echo "::error::wrangler was called before the local checks passed"; exit 1; }
+          refuse "$both" "$RUNNER_TEMP/no-owner.jsonc" "var FORGE_OWNER_SUBJECT"
+          refuse ADMIN_TOKEN wrangler.ci.jsonc "secret DEVICE_LOGIN_HMAC_KEY is not set"
+          run "$both" wrangler.ci.jsonc || { cat "$RUNNER_TEMP/pre.out"; echo "::error::preflight refused a complete config"; exit 1; }
+      - name: Bundle with the production entry point
+        working-directory: cloud
+        run: |
+          bun x wrangler deploy --dry-run --config wrangler.ci.jsonc --outdir "$RUNNER_TEMP/bundle"
+          [ -n "$(find "$RUNNER_TEMP/bundle" -name '*.js' -size +0 -print -quit)" ] || { echo "::error::no bundle was written"; exit 1; }
+          # Counterfactual: an import that cannot resolve must fail the bundle, for that import.
+          sed -i '1i import "../../src/blocks/work/missing.block.json" with { type: "json" };' src/issue-commands.ts
+          if bun x wrangler deploy --dry-run --config wrangler.ci.jsonc --outdir "$RUNNER_TEMP/broken" > "$RUNNER_TEMP/broken.out" 2>&1; then
+            echo "::error::the bundle built with an unresolved import"
+            exit 1
+          fi
+          git checkout -- src/issue-commands.ts
+          grep -q 'missing.block.json' "$RUNNER_TEMP/broken.out" || { cat "$RUNNER_TEMP/broken.out"; echo "::error::the bundle failed for another reason"; exit 1; }

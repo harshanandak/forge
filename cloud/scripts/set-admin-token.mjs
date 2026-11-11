@@ -1,7 +1,7 @@
 // Makes a new admin token inside this process and stores it two ways: as the Worker secret ADMIN_TOKEN
 // (piped to the locally installed wrangler over stdin) and in ~/.forge-cloud/forge-cloud-dev.token for
 // this user only. The token is never printed, logged or put on a command line. Run it from cloud/ with
-// CLOUDFLARE_ACCOUNT_ID set. It is the first-time setup and the rotation: the old token stops working.
+// --config <your local wrangler config>, which names the Worker and account. It is the first-time setup and the rotation: the old token stops working.
 //
 // Order, so nothing fails open:
 //   1. Make an empty temp file beside the target and prove only this user can read it.
@@ -28,6 +28,7 @@ const wrangler = fileURLToPath(
   new URL("../node_modules/wrangler/bin/wrangler.js", import.meta.url),
 );
 const token = randomBytes(32).toString("base64url");
+const config = process.argv[process.argv.indexOf("--config") + 1];
 
 // Blanks and deletes the temp file, if there is one. Blanking and deleting are separate steps, so a
 // failed blank never skips the delete; a failed delete names the leftover path (never its content).
@@ -126,6 +127,10 @@ function restrict() {
   }
 }
 
+if (process.argv.indexOf("--config") < 1 || !config || !existsSync(config))
+  stop(
+    "Pass --config <your local wrangler config>; see docs/reference/cloud.md.",
+  );
 if (!existsSync(wrangler))
   stop("Run `bun install` in cloud/ first: wrangler is not installed.");
 try {
@@ -147,7 +152,7 @@ try {
 
 const put = spawnSync(
   process.execPath,
-  [wrangler, "secret", "put", "ADMIN_TOKEN", "--name", "forge-cloud-dev"],
+  [wrangler, "secret", "put", "ADMIN_TOKEN", "--config", config],
   { input: token, encoding: "utf8" },
 );
 if (put.status !== 0)
@@ -161,4 +166,4 @@ try {
 } catch (error) {
   stop(`Could not save the token file: ${error.message}`, true);
 }
-console.log(`ADMIN_TOKEN is set on forge-cloud-dev and saved to ${target}`);
+console.log(`ADMIN_TOKEN is set and saved to ${target}`);

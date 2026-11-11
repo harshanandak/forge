@@ -1,5 +1,5 @@
 {
-  // Conformance only (.github/workflows/cloud.yml). The same Worker as wrangler.jsonc, entered through
+  // Conformance only (.github/workflows/cloud.yml). The same Worker as wrangler.example.jsonc, entered through
   // a wrapper that can fail a receipt insert on request. Never deploy with this file.
   "name": "forge-cloud-conformance",
   "main": "conformance/fault-worker.ts",
@@ -12,7 +12,7 @@
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Project"] }],
   // Test-only limits so a small project needs several dump pages and a larger one trips the size guard.
-  // wrangler.jsonc sets none, so a deploy uses the defaults (4 MiB pages, an 8 MiB project, 10,000 rows per table).
+  // wrangler.example.jsonc sets none, so a deploy uses the defaults (4 MiB pages, an 8 MiB project, 10,000 rows per table).
   "vars": {
     "DUMP_PAGE_BYTES": "4096",
     "DUMP_MAX_BYTES": "131072",

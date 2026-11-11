@@ -54,7 +54,7 @@ Use pages when a project is too big for one dump. The limits are counted in SQL,
 2. While `last` is false, `GET dump?cursor=<next>` (URL-encode `next`) returns the following page. Keep every page. If the project is written to between two pages, the next page is refused as `DUMP_CHANGED` (409): start again from `cursor=start`.
 3. `POST restore` each page, unchanged and in order, into an empty project. A page other than the next one is refused as `INPUT_INVALID`. Earlier pages only stage rows. The last page runs the same row checks as a whole restore over everything staged (`RESTORE_INVALID_ROW` names the table and row) and then provisions the project.
 
-Limits: a project over 8 MiB stored, or with more than 10,000 rows in any table, is refused as `DUMP_TOO_LARGE` at page 0. A restore is checked after every staged page, in the same transaction, so the page that crosses either limit is refused (`RESTORE_TOO_LARGE`) and nothing stays staged. The last page's row checks read 16 rows at a time by key and parse events once, in sequence order, with `JSON.parse`. They retain scalar revisions and digests per record and request, current lease state, and receipt read-set and fence metadata until its event. Memory therefore grows with distinct keys, request ids and their scalar metadata, but does not retain parsed record values or the whole event history. Receipts are paged once for that metadata and again for the final checks. The existing row and byte limits stay in place; changing them is a separate decision after batching is proven (forge-1040). The conformance run sets smaller values in `wrangler.test.jsonc`; `wrangler.jsonc` sets none.
+Limits: a project over 8 MiB stored, or with more than 10,000 rows in any table, is refused as `DUMP_TOO_LARGE` at page 0. A restore is checked after every staged page, in the same transaction, so the page that crosses either limit is refused (`RESTORE_TOO_LARGE`) and nothing stays staged. The last page's row checks read 16 rows at a time by key and parse events once, in sequence order, with `JSON.parse`. They retain scalar revisions and digests per record and request, current lease state, and receipt read-set and fence metadata until its event. Memory therefore grows with distinct keys, request ids and their scalar metadata, but does not retain parsed record values or the whole event history. Receipts are paged once for that metadata and again for the final checks. The existing row and byte limits stay in place; changing them is a separate decision after batching is proven (forge-1040). The conformance run sets smaller values in `wrangler.test.jsonc`; `wrangler.example.jsonc` sets none.
 
 Staged rows are never served: a project is not provisioned until the last page, and every device route stops at that check before it runs any SQL.
 
@@ -64,7 +64,7 @@ A device token acts only as its own device. The admin token is the Worker secret
 
 ## Deploy
 
-The owner runs these steps. Replace angle-bracket placeholders; `<worker-origin>` is an HTTPS origin without a trailing slash. Use an existing Cloudflare login with Workers/KV write access and the intended `CLOUDFLARE_ACCOUNT_ID`.
+The owner runs these steps. Replace angle-bracket placeholders; `<worker-origin>` is an HTTPS origin without a trailing slash. Use an existing Cloudflare login with Workers/KV write access. Run every command from `cloud/` with the git-ignored `wrangler.local.jsonc` (copied from `wrangler.example.jsonc`) as `--config`; a bare `wrangler deploy` finds no `wrangler.jsonc` and stops. Commit no real value.
 
 1. **Clerk OAuth application.** In the Clerk admin console, open **OAuth applications** and create or open an application. Set its redirect URI to `<worker-origin>/callback`, make it a public client and require PKCE S256; no client secret is used. Allow `openid profile email` scopes (the Worker currently requests `openid`). Copy the client ID from **Application credentials** and the Frontend API URL from **API keys → Show API URLs**. Clerk organizations are informational only and grant no project access. See [Clerk's public-client guidance](https://clerk.com/docs/guides/configure/auth-strategies/oauth/how-clerk-implements-oauth).
    If the Clerk instance requires organization membership, a new user must create or join an organization during sign-up before consent; organizations still grant no project access.
@@ -81,9 +81,9 @@ The owner runs these steps. Replace angle-bracket placeholders; `<worker-origin>
    bun x wrangler kv namespace create OAUTH_KV
    ```
 
-   Expect a namespace ID; put it in `cloud/wrangler.jsonc` as `kv_namespaces: [{ "binding": "OAUTH_KV", "id": "<namespace-id>" }]`. Keep the `PROJECTS`, `CODE_REDEMPTION` and `REGISTRATION_LIMITER` bindings and all three migrations.
+   Expect a namespace ID (an existing deployment keeps its own; list them with `bun x wrangler kv namespace list`). Copy `wrangler.example.jsonc` to `wrangler.local.jsonc` and set `account_id`, `name` and the `OAUTH_KV` id. Keep the rest of the example as it is: the preflight refuses a different entry point, binding or migration.
 
-3. **Public vars.** Replace the five required strings in `cloud/wrangler.jsonc`; set the optional owner subject to enable OAuth project access, or omit it to keep login without project access:
+3. **Public vars.** Set each var in `wrangler.local.jsonc`. All are required except `FORGE_OAUTH_REDIRECTS`; without `FORGE_OWNER_SUBJECT` or `FORGE_CLOUD_PROJECT`, device login and `/command` refuse and the preflight stops the deploy:
 
    | Name                    | Example shape                               | What `readOAuthConfig` checks                                                                                 | Classification |
    | ----------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------- | -------------- |
@@ -93,9 +93,11 @@ The owner runs these steps. Replace angle-bracket placeholders; `<worker-origin>
    | `FORGE_API_RESOURCE`    | `<worker-origin>/p/<project-id>`            | HTTPS URL; a path is allowed                                                                                  | Not secret     |
    | `OAUTH_TIMEOUT_MS`      | `5000`                                      | Decimal integer string from 1 through 2147483647, no leading zero                                             | Not secret     |
    | `FORGE_OAUTH_REDIRECTS` | `<https-redirect-url>,<https-redirect-url>` | Optional comma-separated HTTPS URLs, no credentials, query or fragment; any bad entry makes OAuth unavailable | Not secret     |
-   | `FORGE_OWNER_SUBJECT`   | `user_REPLACEWITHOWNERID`                   | Optional `user_` plus alphanumerics; owner must match this subject and `CLERK_ISSUER` exactly                 | Not secret     |
+   | `FORGE_OWNER_SUBJECT`   | `<owner-subject>`                           | `user_` plus alphanumerics; owner must match this subject and `CLERK_ISSUER` exactly                          | Not secret     |
 
-   Every HTTPS value above rejects credentials, query strings, fragments, whitespace and backslashes. Registration accepts only loopback redirects (`http` on `127.0.0.1`, `[::1]` or `localhost`) and exact matches of `FORGE_OAUTH_REDIRECTS`; anything else is refused with `REGISTRATION_INVALID` before the rate limiter counts it. Metadata uses the callback origin, not the Host header. No Clerk secret key is needed or used; never put one in `vars`.
+| `FORGE_CLOUD_PROJECT` | `<project-name>` | The one provisioned project that login and `/command` serve | Not secret |
+
+Every HTTPS value above rejects credentials, query strings, fragments, whitespace and backslashes. Registration accepts only loopback redirects (`http` on `127.0.0.1`, `[::1]` or `localhost`) and exact matches of `FORGE_OAUTH_REDIRECTS`; anything else is refused with `REGISTRATION_INVALID` before the rate limiter counts it. Metadata uses the callback origin, not the Host header. No Clerk secret key is needed or used; never put one in `vars`.
 
 4. **Deploy.** First prepare generated validators from the repository root:
 
@@ -107,19 +109,26 @@ The owner runs these steps. Replace angle-bracket placeholders; `<worker-origin>
    bun run gen
    ```
 
-   Return to `cloud/` and deploy `wrangler.jsonc`, never the CI-only `wrangler.test.jsonc`:
+   Return to `cloud/`. Two secrets are required, and their values are never printed. `DEVICE_LOGIN_HMAC_KEY` (random base64url, at least 32 bytes) is needed for device login, which refuses with 503 without it. `ADMIN_TOKEN` is needed for `status`, `devices`, `dump` and `restore`. If the Worker does not exist yet, Wrangler offers to create it; accept.
 
    ```sh
-   bun x wrangler deploy
+   node -e "process.stdout.write(require('crypto').randomBytes(32).toString('base64url'))" | bun x wrangler secret put DEVICE_LOGIN_HMAC_KEY --config wrangler.local.jsonc
+   node scripts/set-admin-token.mjs --config wrangler.local.jsonc
    ```
 
-   Expect a deployed Worker URL. Migrations `v1`, `v2-code-redemption` and `v3-registration-limits` apply automatically on deploy; there is no manual migration command. On first setup, set the separate admin secret:
+   Set `ADMIN_TOKEN` on first setup only: re-running rotates it at once, and it is not a redeploy step. For an existing deployment, record the current version (`bun x wrangler deployments list --config wrangler.local.jsonc`) and keep a private dump first. Then run the preflight. It refuses placeholders, a missing var or secret name, and an `OAUTH_KV` id that is not an existing namespace, before anything is uploaded:
 
    ```sh
-   node scripts/set-admin-token.mjs
+   node scripts/preflight.mjs --config wrangler.local.jsonc
    ```
 
-   It saves the secret to `~/.forge-cloud/forge-cloud-dev.token` without printing it. Re-running rotates it immediately. For authenticated curls below, prepare private curl config files containing the appropriate `Authorization` header; never put token values on the command line or print their files. Keep response files private too.
+   Deploy only after it passes, never with the example or the CI-only `wrangler.test.jsonc`:
+
+   ```sh
+   bun x wrangler deploy --config wrangler.local.jsonc
+   ```
+
+   Expect a deployed Worker URL. Durable Object class migrations `v1`, `v2-code-redemption` and `v3-registration-limits` apply automatically on deploy; there is no manual migration command. `set-admin-token.mjs` saves its secret to `~/.forge-cloud/forge-cloud-dev.token` without printing it. For authenticated curls below, prepare private curl config files containing the appropriate `Authorization` header; never put token values on the command line or print their files. Keep response files private too.
 
 5. **Smoke checks.** Start with metadata:
 
@@ -155,6 +164,17 @@ The owner runs these steps. Replace angle-bracket placeholders; `<worker-origin>
 
    With an existing unexpired device token for this project, expect 200 `{"ok":true,"value":null}` for an unused subject, or a lease object. This is the working project path.
 
+   The admitted project (`FORGE_CLOUD_PROJECT`) must exist. On a first setup with an isolated Worker and config, `POST devices` with the admin config provisions it. On an existing deployment, check `status` and keep its binding and credentials; never point the live Worker at a disposable project. These unauthenticated checks show only that the routes answer and refuse correctly:
+
+   ```sh
+   curl -sS --output '<private-login-response-file>' --write-out 'HTTP %{http_code}\n' -H 'Content-Type: application/json' --data '{"device":"deploy-smoke"}' '<worker-origin>/p/<project-id>/loginstart'
+   curl -sS -i '<worker-origin>/device'
+   curl -sS -i -X POST -H 'Content-Type: application/json' --data '{}' '<worker-origin>/p/<project-id>/command'
+   curl -sS -i -X POST -H 'Content-Type: application/json' --data '{}' '<worker-origin>/p/<other-project>/command'
+   ```
+
+   Expect 200 with `device_code`, `user_code`, `expires_in` and `verification_uri` (keep that file private; it counts toward the five starts per address per minute); then 200 HTML; then 401 `AUTH_REQUIRED`; then 403 `AUTH_FORBIDDEN`. The command handler only refuses until forge-1227, and owner approval in the browser is not exercised here. Treat both as unverified unless you test them separately.
+
    Register one public client using the real client's callback URI:
 
    ```sh
@@ -183,13 +203,13 @@ The owner runs these steps. Replace angle-bracket placeholders; `<worker-origin>
 
    Expect 200 `{"ok":true,"value":null}` for an unused subject when the token matches the configured owner issuer and subject. Another Clerk user, or an absent `FORGE_OWNER_SUBJECT`, must get 403 `AUTH_FORBIDDEN`. The owner's token on `GET /p/<project-id>/status` must get 401; all admin routes still require the admin token.
 
-6. **Rollback.** From `cloud/`, select a known-good version with compatible bindings and the same Durable Object migration history:
+6. **Rollback.** From `cloud/`, select the version you recorded before the deploy:
 
    ```sh
-   bun x wrangler rollback <version-id>
+   bun x wrangler rollback <version-id> --config wrangler.local.jsonc
    ```
 
-   Expect the selected version to become active. Rollback does not rewind KV clients/grants, project data, Durable Object claims or registration counters. Retaining them preserves burned codes and quotas; expiry checks and alarms still apply in compatible code. Cloudflare refuses rollback across Durable Object migrations; do not delete namespaces or migrations to force it. See [rollback limits](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/).
+   Expect the selected version to become active. A rollback swaps code only. It does not undo the SQL migrations a project applies when it first opens (`src/core/state/migrations.ts` and the cloud domain migrations registered in `cloud/src/project.ts`), stored data, KV clients and grants, claims, registration counters or a rotated secret. After new code has opened a project, an older binary may refuse the upgraded store and the project may break; restore your private dump into an empty project if so. Wrangler's Durable Object class migrations are separate: Cloudflare refuses rollback across them, so do not delete namespaces or migrations to force it. See [rollback limits](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/).
 
 7. **Known limits.** Links point to the originating reviews; issue IDs are tracked in Forge. [forge-1121 (registration residuals)](https://github.com/harshanandak/forge/pull/406): provider-invalid requests consume quota, fixed windows allow boundary bursts, shared or Worker-origin IPs affect quotas, and pre-existing clients retain their old TTL. [forge-1122 (replay revocation race)](https://github.com/harshanandak/forge/pull/404): a refused replay can race the winning token write, so its tokens may survive revocation, while the code still issues tokens at most once.
 
@@ -206,5 +226,5 @@ the receipt-failure case, because the deployed Worker has no fault switch.
 
 ## Delete
 
-From `cloud/`: `CLOUDFLARE_ACCOUNT_ID=<id> bun x wrangler delete forge-cloud-dev`. This removes the Worker and
+From `cloud/`: `bun x wrangler delete --config wrangler.local.jsonc`. This removes the Worker and
 all project data in its Durable Objects. Dump the projects first if you need them.
