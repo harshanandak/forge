@@ -440,7 +440,7 @@
       "output": "schemas/lane-status.output.json",
       "context": "project",
       "timeoutMs": 30000,
-      "effects": ["files:read", "environment:read"],
+      "effects": ["files:read", "environment:read", "external:process"],
       "idempotent": true,
       "callers": ["agent", "human"],
       "stability": "experimental"

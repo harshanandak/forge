@@ -386,3 +386,49 @@ test("three live attempts or normal lanes still hold the shared cap", () => {
   expect(good("lane.status").hold).toContain("lane cap 3 reached");
   expect(registry()).toEqual(before.lanes);
 }, 30000);
+
+test("a merged unselected attempt cannot close the issue with a receipt", () => {
+  select();
+  pull(1, true);
+  refusedClose(1, { receipt: receipt() }, "INPUT_CONFLICT");
+}, 30000);
+
+test("a selected attempt cannot be discarded as an unselected PR", () => {
+  select();
+  pull(2, false);
+  refusedClose(2, { dropped: "superseded" }, "INPUT_CONFLICT");
+}, 30000);
+
+test("release removes a clean released attempt without closing its open issue", () => {
+  good("attempt.release", { id, attempt: attempt(1) }, "builder-1");
+  const before = good("issue.show", { id });
+  good("lane.release", { id, attempt: attempt(1) });
+  removed(1);
+  expect(good("issue.show", { id })).toEqual(before);
+  expect(existsSync(tree(2))).toBe(true);
+  retained(2);
+}, 30000);
+
+test("closing one attempt preserves the other attempt's pending close journal", () => {
+  select();
+  pull(1, false);
+  const journal = join(repo, `.git/forge-attempt-close-${id}-attempt-2.json`);
+  const content = JSON.stringify({
+    branch: branch(2),
+    worktree: tree(2),
+    pr: 2,
+  });
+  writeFileSync(journal, content);
+  const r = close(1, { dropped: "superseded" });
+  expect(r.ok, JSON.stringify(r)).toBe(true);
+  expect(r.exit).toBe(0);
+  removed(1);
+  expect(readFileSync(journal, "utf8")).toBe(content);
+  expect(existsSync(tree(2))).toBe(true);
+  retained(2);
+}, 30000);
+
+test("an attempt cannot be dropped before the coordinator records a selection", () => {
+  pull(1, false);
+  refusedClose(1, { dropped: "superseded" }, "INPUT_CONFLICT");
+}, 30000);

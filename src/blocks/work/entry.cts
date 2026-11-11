@@ -131,7 +131,8 @@ type CloseIssue = (
   validateOnly?: boolean,
   deliveredUrl?: string,
 ) => Promise<TrackerItem>;
-type CloseLaneInput = ItemRef & {
+type LaneRef = ItemRef & { attempt?: string };
+type CloseLaneInput = LaneRef & {
   pr?: number;
   noPr?: boolean;
   receipt?: string;
@@ -281,9 +282,9 @@ type WorkOperations = TrackerOperations<"issue"> & {
     LaneOutput,
   ];
   readonly "lane.start": readonly [LaneInput, LaneOutput];
-  readonly "lane.show": readonly [ItemRef, LaneOutput];
+  readonly "lane.show": readonly [LaneRef, LaneOutput];
   readonly "lane.release": readonly [
-    ItemRef,
+    LaneRef,
     { issue: string; removed: boolean; keptBranch: string },
   ];
   readonly "lane.close": readonly [
@@ -1215,11 +1216,88 @@ function laneRegistry(files: FilesService): {
  * issue cannot be found keeps its slot.
  */
 function holdsSlot(state: LeaseStateClient, lane: Lane): boolean {
+  if (lane.attempt !== undefined) return true;
   const id = laneIssueIdentity(lane),
     record = state.get(key(id));
   return (
     !record || stored(record).status === "open" || live(state, id) !== undefined
   );
+}
+// Only released attempts with no registered worktree can disappear without lane cleanup.
+async function activeAttemptLanes(
+  services: unknown,
+  lanes: Lane[],
+  signal: AbortSignal,
+  deadline: number,
+): Promise<Lane[]> {
+  const state = client(services);
+  const released = (lane: Lane) =>
+    lane.attempt !== undefined &&
+    state.lease(key(`attempt:${laneIssueIdentity(lane)}:${lane.attempt}`))
+      ?.releasedAt !== undefined;
+  if (!lanes.some(released)) return lanes;
+  const bound = services as {
+    process?: ProcessService;
+    environment?: EnvironmentService;
+  };
+  if (!bound.process || !bound.environment) return lanes;
+  const env = bound.environment.select([
+    "PATH",
+    "PATHEXT",
+    "SystemRoot",
+    "windir",
+    "ComSpec",
+    "HOME",
+    "USERPROFILE",
+  ]);
+  const git = bound.process.resolve("git", env);
+  if (git.kind !== "resolved") return lanes;
+  try {
+    const result = await bound.process.run(
+      git,
+      ["worktree", "list", "--porcelain", "-z"],
+      {
+        cwd: laneFiles(services).root,
+        env,
+        signal,
+        timeoutMs: Math.max(
+          1,
+          Math.min(20000, deadline - laneClock(services)()),
+        ),
+        maxOutputBytes: 262144,
+      },
+    );
+    if (
+      result.exitCode !== 0 ||
+      result.timedOut ||
+      result.truncated ||
+      result.outputEvidence?.stdout.complete === false
+    )
+      return lanes;
+    const path = (value: string) =>
+      bound.environment!.platform === "win32"
+        ? slash(value).toLowerCase()
+        : slash(value);
+    const present = result.stdout
+      .split("\0\0")
+      .filter(
+        (row) =>
+          !row.split("\0").some((field) => field.startsWith("prunable ")),
+      )
+      .map((row) =>
+        path(
+          row
+            .split("\0")
+            .find((field) => field.startsWith("worktree "))
+            ?.slice(9) ?? "",
+        ),
+      );
+    return lanes.filter(
+      (lane) => !released(lane) || present.includes(path(lane.worktree)),
+    );
+  } catch {
+    return lanes;
+  }
 }
 // The branch lanes start from and land on: the configured base, else the
 // remote default branch, else main.
@@ -1384,17 +1462,31 @@ function laneIssueIdentity(lane: Lane): string {
   if (!number) fail("INPUT_INVALID", "Invalid issue identity in lane registry");
   return lane.issueId ?? `${STORED}${number}`;
 }
-function closeJournal(files: FilesService, id: string, lane?: Lane) {
+function closeJournal(
+  files: FilesService,
+  id: string,
+  lane?: Lane,
+  attempt?: string,
+) {
   const suffix = id.slice(STORED.length);
-  const name = lane
-    ? `forge-lane-close-${lane.issue}.json`
-    : files
-        .list(".", 1024, "common")
-        .find(
-          (name) =>
-            /^forge-lane-close-.+-\d+\.json$/.test(name) &&
-            name.endsWith(`-${suffix}.json`),
-        );
+  const name =
+    attempt !== undefined
+      ? (files
+          .list(".", 1024, "common")
+          .find(
+            (name) =>
+              name.startsWith("forge-attempt-close-") &&
+              name.endsWith(`-${suffix}-${attempt}.json`),
+          ) ?? `forge-attempt-close-${lane?.issue ?? id}-${attempt}.json`)
+      : lane
+        ? `forge-lane-close-${lane.issue}.json`
+        : files
+            .list(".", 1024, "common")
+            .find(
+              (name) =>
+                /^forge-lane-close-.+-\d+\.json$/.test(name) &&
+                name.endsWith(`-${suffix}.json`),
+            );
   const text = name ? files.read(name, 262144, "common") : undefined;
   const value: unknown = text === undefined ? undefined : JSON.parse(text);
   if (
@@ -3838,7 +3930,12 @@ async function laneStatus(
   const state = client(services),
     ids = idsFor(state, config),
     limits = limitsOf(config),
-    lanes = laneRegistry(laneFiles(services)).lanes,
+    lanes = await activeAttemptLanes(
+      services,
+      laneRegistry(laneFiles(services)).lanes,
+      call.signal,
+      call.deadline,
+    ),
     listed = activeLanes(state, laneFiles(services));
   let flags: GlobalState;
   let holding: number;
@@ -4113,9 +4210,13 @@ const operations: Operations<WorkOperations> = {
     const files = laneFiles(services),
       identity = ids.stored(issue.id);
     let lane = laneRegistry(files).lanes.find(
-      (row) => laneIdentity(row) === identity,
+      (row) =>
+        laneIdentity(row) ===
+        (input.attempt === undefined
+          ? identity
+          : `${identity}:${input.attempt}`),
     );
-    const journal = closeJournal(files, identity, lane).value;
+    const journal = closeJournal(files, identity, lane, input.attempt).value;
     if (
       !lane &&
       journal &&
@@ -4124,6 +4225,7 @@ const operations: Operations<WorkOperations> = {
     )
       lane = {
         issue: issue.id,
+        ...(input.attempt === undefined ? {} : { attempt: input.attempt }),
         branch: journal.branch,
         worktree: journal.worktree,
         brief: "",
@@ -4296,7 +4398,12 @@ const operations: Operations<WorkOperations> = {
           };
         });
       const lanes: Lane[] = [];
-      for (const lane of saved.lanes) {
+      for (const lane of await activeAttemptLanes(
+        services,
+        saved.lanes,
+        signal,
+        deadline,
+      )) {
         if (lane.attempt !== undefined) {
           lanes.push(lane);
           continue;
@@ -4397,6 +4504,7 @@ const operations: Operations<WorkOperations> = {
     const state = client(services),
       ids = idsFor(state, config),
       id = ids.stored(input.id),
+      laneId = input.attempt === undefined ? id : `${id}:${input.attempt}`,
       files = laneFiles(services);
     const bound = services as {
       process?: ProcessService;
@@ -4434,9 +4542,23 @@ const operations: Operations<WorkOperations> = {
     let removalStopped = true;
     try {
       const saved = laneRegistry(files),
-        lane = saved.lanes.find((row) => laneIdentity(row) === id);
+        lane = saved.lanes.find((row) => laneIdentity(row) === laneId);
       if (!lane) fail("NOT_FOUND", `No recorded lane for ${input.id}`);
       const eligible = () => {
+        if (input.attempt !== undefined) {
+          const attemptId = `attempt:${id}:${input.attempt}`;
+          if (!state.get(attemptId))
+            fail("NOT_FOUND", "No such attempt on this issue");
+          if (
+            live(state, attemptId) ||
+            closeJournal(files, id, lane, input.attempt).value
+          )
+            fail(
+              "INPUT_CONFLICT",
+              "Release requires an attempt without a live lease or pending close",
+            );
+          return;
+        }
         const issue = stored(get(state, id, input.id));
         if (
           issue.status !== "closed" ||
@@ -4569,6 +4691,7 @@ const operations: Operations<WorkOperations> = {
             path:
               fields.find((field) => field.startsWith("worktree "))?.slice(9) ??
               "",
+            prunable: fields.some((field) => field.startsWith("prunable ")),
             branch: fields
               .find((field) => field.startsWith("branch "))
               ?.slice(7),
@@ -4580,6 +4703,54 @@ const operations: Operations<WorkOperations> = {
         ["rev-parse", "--path-format=absolute", "--show-toplevel"],
         trees[0].path,
       );
+      if (
+        input.attempt !== undefined &&
+        !trees.some(
+          (tree) =>
+            pathKey(tree.path) === pathKey(lane.worktree) && !tree.prunable,
+        )
+      ) {
+        if (
+          !pathKey(lane.worktree).startsWith(`${pathKey(checkout)}/.worktrees/`)
+        )
+          fail(
+            "INPUT_CONFLICT",
+            "Attempt worktree must be inside the main checkout's .worktrees directory",
+          );
+        const relative = slash(lane.worktree).slice(slash(checkout).length + 1);
+        if (
+          await run(
+            [
+              "status",
+              "--porcelain",
+              "--untracked-files=all",
+              "--ignored",
+              "--",
+              relative,
+            ],
+            checkout,
+          )
+        )
+          fail(
+            "INPUT_CONFLICT",
+            "Preserve remaining attempt files before releasing the lane",
+          );
+        eligible();
+        files.write(
+          registryPath,
+          JSON.stringify(
+            saved.lanes.filter((row) => laneIdentity(row) !== laneId),
+            null,
+            2,
+          ) + "\n",
+          { area: "common", expected: saved.text },
+        );
+        return {
+          issue: item(state, get(state, id), ids).id,
+          removed: true,
+          keptBranch: lane.branch,
+        };
+      }
       // Absolute path output resolves symlinks; a nonempty prefix would name a subdirectory.
       const worktree = await run(
         [
@@ -4646,7 +4817,7 @@ const operations: Operations<WorkOperations> = {
       files.write(
         registryPath,
         JSON.stringify(
-          saved.lanes.filter((row) => laneIdentity(row) !== id),
+          saved.lanes.filter((row) => laneIdentity(row) !== laneId),
           null,
           2,
         ) + "\n",
@@ -4681,7 +4852,8 @@ const operations: Operations<WorkOperations> = {
     const { input, services, config, signal, deadline } = call;
     const state = client(services),
       ids = idsFor(state, config),
-      id = ids.stored(input.id);
+      id = ids.stored(input.id),
+      laneId = input.attempt === undefined ? id : `${id}:${input.attempt}`;
     let current = item(state, get(state, id, input.id), ids);
     if (input.dropped !== undefined && !input.dropped.trim())
       fail("INPUT_INVALID", "Supply a nonempty dropped reason");
@@ -4778,8 +4950,8 @@ const operations: Operations<WorkOperations> = {
     }
     try {
       const saved = laneRegistry(files),
-        lane = saved.lanes.find((row) => laneIdentity(row) === id);
-      const journal = closeJournal(files, id, lane),
+        lane = saved.lanes.find((row) => laneIdentity(row) === laneId);
+      const journal = closeJournal(files, id, lane, input.attempt),
         progress = journal.value;
       const recorded = lane?.branch ?? progress?.branch,
         worktree = lane?.worktree ?? progress?.worktree;
@@ -4789,12 +4961,26 @@ const operations: Operations<WorkOperations> = {
       const dropped = input.dropped ?? "",
         receipt = input.receipt ?? "",
         keepOpen = !!dropped || !!input.keepOpen;
+      if (input.attempt !== undefined) {
+        const selection = state.get(`selection:${id}`)?.value as
+          { chosen: { attempt: string }[] } | undefined;
+        const selected =
+          selection?.chosen.some(
+            (chosen) => chosen.attempt === input.attempt,
+          ) ?? false;
+        if (!selection || (dropped ? selected : !selected))
+          fail(
+            "INPUT_CONFLICT",
+            "Only selected attempts can land; only unselected attempts can be dropped",
+          );
+      }
       const noPr = !!input.noPr;
       const resume = [
         "forge",
         "lane",
         "close",
         current.id,
+        ...(input.attempt === undefined ? [] : ["--attempt", input.attempt]),
         ...(noPr ? ["--no-pr"] : ["--pr", String(input.pr)]),
         ...(dropped ? ["--dropped", dropped] : ["--receipt", receipt]),
         ...(input.keepOpen ? ["--keep-open"] : []),
@@ -4813,7 +4999,8 @@ const operations: Operations<WorkOperations> = {
       )
         refuse("INPUT_CONFLICT", "Resume the pending close arguments");
       const lockId =
-        lane?.issue ?? journal.name.replace(/^forge-lane-close-|\.json$/g, "");
+        lane?.issue ??
+        journal.name.replace(/^forge-(?:lane|attempt)-close-|\.json$/g, "");
       const names = new Set([current.id, lockId, id]);
       for (const name of names) {
         const path = `forge-lane-${name}.lock`,
@@ -5243,7 +5430,11 @@ const operations: Operations<WorkOperations> = {
           worktree,
         );
       }
-      if (hasBranch && (!dropped || (noPr && head === pull.headRefOid)))
+      if (
+        input.attempt === undefined &&
+        hasBranch &&
+        (!dropped || (noPr && head === pull.headRefOid))
+      )
         await run(["update-ref", "-d", ref, head]);
       if (dropped)
         files.write(
@@ -5254,7 +5445,7 @@ const operations: Operations<WorkOperations> = {
       files.write(
         registryPath,
         JSON.stringify(
-          saved.lanes.filter((row) => laneIdentity(row) !== id),
+          saved.lanes.filter((row) => laneIdentity(row) !== laneId),
           null,
           2,
         ) + "\n",
