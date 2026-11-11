@@ -1,7 +1,24 @@
-import { expect, setDefaultTimeout, spyOn, test } from "bun:test";
+import {
+  afterAll,
+  beforeAll,
+  expect,
+  setDefaultTimeout,
+  spyOn,
+  test,
+} from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { blockCapture } from "../../src/assembly/capture.ts";
 import { cloudRoute } from "../../src/assembly/cloud-authority.ts";
 import {
   credentialStore,
@@ -9,12 +26,14 @@ import {
   type CloudBinding,
   type CredentialEntry,
 } from "../../src/assembly/cloud-profile.ts";
+import { firstPartyBlocks } from "../../src/assembly/first-party.ts";
 import { createAssembly } from "../../src/assembly/index.ts";
 import { LocalState } from "../../src/assembly/state.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import type { InvocationRequest } from "../../src/generated/types.ts";
 import { dispatch } from "../../src/surface/dispatch.ts";
 import { exitCode } from "../../src/surface/result.ts";
+import { stageBlock } from "../blocks/memory/lib.ts";
 import * as fx from "./cloud-fixture.ts";
 
 setDefaultTimeout(30_000);
@@ -62,7 +81,42 @@ const DECLARED = Object.keys(
 ).filter((op) => op !== "issue.show");
 const notServed = (op: string) =>
   `${op} is not served by the cloud authority of a cloud-bound project yet.`;
-const WORK = "blocks:\n  work: {}\n";
+const yaml = (extra: object = {}) =>
+  JSON.stringify({
+    schemaVersion: "forge.config/1",
+    blocks: { work: { source: { builtin: "forge/work" }, ...extra } },
+  });
+const WORK = yaml();
+
+/** The shipped blocks are staged as the installed package carries them: compiled entries. */
+let staging: string;
+let capture: ReturnType<typeof spyOn<typeof blockCapture, "open">>;
+beforeAll(() => {
+  staging = mkdtempSync(join(tmpdir(), "forge-authority-blocks-"));
+  const [memory, work] = ["forge/memory", "forge/work"].map((id) =>
+    fileURLToPath(firstPartyBlocks[id]!),
+  );
+  const target = join(staging, "work");
+  cpSync(work!, target, {
+    recursive: true,
+    filter: (path) => !path.endsWith(".cts"),
+  });
+  const source = readFileSync(join(work!, "entry.cts"), "utf8");
+  const entry = new Bun.Transpiler({ loader: "ts" }).transformSync(source);
+  writeFileSync(join(target, "entry.cjs"), entry);
+  const stages = new Map([
+    [memory!, stageBlock("memory", staging)],
+    [work!, target],
+  ]);
+  const open = blockCapture.open.bind(blockCapture);
+  capture = spyOn(blockCapture, "open").mockImplementation((path) =>
+    open(stages.get(path) ?? path),
+  );
+});
+afterAll(() => {
+  capture.mockRestore();
+  rmSync(staging, { recursive: true, force: true });
+});
 
 interface Setup {
   bind?: Partial<CloudBinding> | string | false;
@@ -174,15 +228,15 @@ test("the routing decision refuses every other operation of the work block by na
   }
 });
 
-const RENAMED = "blocks:\n  work:\n    rename: { issue: ticket }\n";
-for (const [config, op, input, declared] of [
+const RENAMED = yaml({ rename: { issue: "ticket" } });
+for (const [source, op, input, declared] of [
   [WORK, "issue.create", { title: "x" }, "issue.create"],
   [WORK, "issue.list", {}, "issue.list"],
   [RENAMED, "ticket.create", { title: "x" }, "issue.create"],
   [RENAMED, "ticket.show", { id: "forge-1" }, undefined],
 ] as const)
   test(`through the assembled catalog, ${op} on a bound project is ${declared ?? "answered by the cloud"}`, () =>
-    using({ config }, async (r) => {
+    using({ config: source }, async (r) => {
       const result = await r.assembly.catalog.invoke(r.request(op, input));
       if (declared === undefined)
         return void expect(result).toMatchObject({ ok: true, result: ISSUE });
