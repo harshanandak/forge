@@ -1,4 +1,8 @@
-import { acceptanceCases, acceptanceTable } from "./lane-brief-fixture.ts";
+import {
+  acceptanceCases,
+  acceptancePassCases,
+  acceptanceTable,
+} from "./lane-brief-fixture.ts";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -969,7 +973,7 @@ for (const [name, body, problem] of acceptanceCases) {
       ok: false,
       error: { code: "INPUT_INVALID", message: problem },
     });
-    expect(run.exit).toBe(1);
+    expect(run.exit).toBe(6);
     expect(git(["branch", "--list", `feat/${id}`])).toBe("");
     expect(git(["worktree", "list", "--porcelain"])).toBe(trees);
     expect(existsSync(join(repo, ".worktrees", id))).toBe(false);
@@ -979,19 +983,25 @@ for (const [name, body, problem] of acceptanceCases) {
   }, 30000);
 }
 
-test("lane acceptance table accepts reordered mixed headers and extra columns", () => {
-  configure(100);
-  const id = issue(),
-    file = `.worktrees/briefs/${id}.md`;
-  const table =
-    "| Extra | eLiGiBiLiTy | EXIT | Status | Input | Case | Unchanged |\n|---|:---|---:|---|---|---|---|\n| extra | lane | 0 | OK | brief | sample | existing |";
-  writeFileSync(join(repo, file), text.replaceAll(acceptanceTable, table));
-  const run = start(id, { brief: file });
-  expect(run.ok, JSON.stringify(run)).toBe(true);
-  expect(run.exit).toBe(0);
-  expect(existsSync(String(run.result.worktree))).toBe(true);
-  expect(call("lane.show", { id }).result).toMatchObject(run.result);
-}, 30000);
+for (const [name, table] of [
+  [
+    "reordered mixed headers and extra columns",
+    "| Extra | eLiGiBiLiTy | EXIT | Status | Input | Case | Unchanged |\n|---|:---|---:|---|---|---|---|\n| extra | lane | 0 | OK | brief | sample | existing |",
+  ],
+  ...acceptancePassCases,
+] as const) {
+  test(`lane acceptance table accepts ${name}`, () => {
+    configure(100);
+    const id = issue(),
+      file = `.worktrees/briefs/${id}.md`;
+    writeFileSync(join(repo, file), text.replaceAll(acceptanceTable, table));
+    const run = start(id, { brief: file });
+    expect(run.ok, JSON.stringify(run)).toBe(true);
+    expect(run.exit).toBe(0);
+    expect(existsSync(String(run.result.worktree))).toBe(true);
+    expect(call("lane.show", { id }).result).toMatchObject(run.result);
+  }, 30000);
+}
 
 test("stored lane briefs without tables keep show and next output", () => {
   configure(100);

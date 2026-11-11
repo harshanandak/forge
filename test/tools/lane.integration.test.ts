@@ -1,5 +1,6 @@
 import {
   acceptanceCases,
+  acceptancePassCases,
   acceptanceTable,
 } from "../blocks/l7-work/lane-brief-fixture.ts";
 // [integration] Real git worktrees and subprocesses; Forge is a PATH fixture.
@@ -267,5 +268,17 @@ for (const [name, body, problem] of acceptanceCases) {
     expect(existsSync(f.registry)).toBe(false);
     expect(f.git(["branch", "--list", "lane/no-table"])).toBe("");
     expect(existsSync(join(f.main, ".worktrees/no-table"))).toBe(false);
+  }, 30000);
+}
+
+for (const [name, table] of acceptancePassCases) {
+  test(`tools acceptance table accepts ${name} before migration refusal`, () => {
+    const f = fixture();
+    writeFileSync(f.brief, f.text().replace(acceptanceTable, table));
+    const result = f.run(f.args("valid-table"));
+    expect(result.code).toBe(2);
+    expect(result.output.reasons).toEqual([
+      "Use forge lane instead; configure the cap with lanes.max",
+    ]);
   }, 30000);
 }

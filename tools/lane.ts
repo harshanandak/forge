@@ -136,31 +136,37 @@ function briefProblems(text: string): string[] {
         .split(/(?<!\\)\|/)
         .map((cell) => cell.trim()),
     );
-    const at = rows.findIndex(
-      (row, index) =>
-        index > 0 &&
-        row.length > 1 &&
-        row.length === rows[index - 1]!.length &&
-        row.every((cell) => /^:?-{3,}:?$/.test(cell)),
-    );
-    if (at < 0)
-      return [
+    let first: string | undefined;
+    for (let at = 1; at < rows.length; at++) {
+      const row = rows[at]!;
+      if (
+        row.length < 2 ||
+        row.length !== rows[at - 1]!.length ||
+        !row.every((cell) => /^:?-+:?$/.test(cell))
+      )
+        continue;
+      const header = rows[at - 1]!.map((cell) => cell.toLowerCase());
+      const missing = columns.filter(
+        (name) => !header.includes(name.toLowerCase()),
+      );
+      const end = visible.findIndex(
+        (line, index) => index > at && !line.includes("|"),
+      );
+      const problem = missing.length
+        ? "brief acceptance table is missing columns: " + missing.join(", ")
+        : rows
+              .slice(at + 1, end < 0 ? undefined : end)
+              .some((cells) => cells[0])
+          ? undefined
+          : "brief acceptance table has no rows";
+      if (!problem) return [];
+      first ??= problem;
+    }
+    return [
+      first ??
         "brief Acceptance test section requires a table with columns: " +
           columns.join(", "),
-      ];
-    const header = rows[at - 1]!.map((cell) => cell.toLowerCase());
-    const missing = columns.filter(
-      (name) => !header.includes(name.toLowerCase()),
-    );
-    if (missing.length)
-      return [
-        "brief acceptance table is missing columns: " + missing.join(", "),
-      ];
-    const end = visible.findIndex(
-      (line, index) => index > at && !line.includes("|"),
-    );
-    if (!rows.slice(at + 1, end < 0 ? undefined : end).some((row) => row[0]))
-      return ["brief acceptance table has no rows"];
+    ];
   }
   return required
     .filter(

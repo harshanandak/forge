@@ -31,3 +31,14 @@ export const acceptanceCases = [
   ],
   ["empty first cell", acceptanceTable.replace("| sample |", "|   |"), noRows],
 ] as const;
+
+export const acceptancePassCases = [
+  [
+    "a qualifying table after a setup table",
+    "| Setup | Value |\n| - | - |\n| fixture | ready |\n\n" + acceptanceTable,
+  ],
+  [
+    "single hyphen delimiters",
+    acceptanceTable.replace("|---|---|---|---|---|---|", "|:-:|-|-|-|-|-|"),
+  ],
+] as const;

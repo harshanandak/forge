@@ -329,7 +329,7 @@ test("attempt lane rejects a no-table brief without creating anything", () => {
     ok: false,
     error: { code: "INPUT_INVALID", message: noTableProblem },
   });
-  expect(run.exit).toBe(1);
+  expect(run.exit).toBe(6);
   expect(snapshot()).toEqual(before);
   expect(existsSync(path(id, 1))).toBe(false);
 }, 30000);
