@@ -6,6 +6,7 @@ import { Readable } from "node:stream";
 import { ForgeFailure } from "../../contract/failure.ts";
 import { validateLeaseRecord } from "../../generated/validators.ts";
 import type {
+  AmbientContext,
   LeaseConflict,
   LeaseHolder,
   LeaseRecord,
@@ -53,6 +54,8 @@ export interface CloudHttpOptions {
   readonly timeoutMs?: number;
   /** Largest response body accepted. */
   readonly maxBytes?: number;
+  /** Largest command response accepted: the server's 1 MiB show-envelope cap. */
+  readonly commandMaxBytes?: number;
 }
 export type LeaseRoute = "claim" | "renew" | "release";
 export interface LeaseWriteBody {
@@ -72,6 +75,18 @@ export type LeaseResult =
       /** Present for the four LEASE_* refusals, with the details the server named. */
       readonly lease?: LeaseConflict;
     };
+/** What a typed command sends; the adapter sends exactly these fields. */
+export interface CommandWire {
+  readonly requestId: string;
+  readonly op: string;
+  readonly input: unknown;
+  readonly context: AmbientContext;
+  readonly dryRun?: boolean;
+}
+export type CommandRefusalCode = string;
+export type CommandResult =
+  | { readonly kind: "ok"; readonly result: Record<string, unknown> }
+  | { readonly kind: "refused"; readonly code: CommandRefusalCode };
 type Answer = { status: number; value: Record<string, unknown> };
 export interface CloudHttp {
   /** The validated origin and project every request of this adapter goes to. */
@@ -90,6 +105,11 @@ export interface CloudHttp {
     subject: string,
     signal?: AbortSignal,
   ): Promise<LeaseResult>;
+  command(
+    token: string,
+    body: CommandWire,
+    signal?: AbortSignal,
+  ): Promise<CommandResult>;
 }
 
 type ReadResult =
@@ -468,5 +488,8 @@ export function createCloudHttp(options: CloudHttpOptions): CloudHttp {
         subject,
         signal,
       ),
+    // Stub: the command route is not decoded yet.
+    command: (_token, _body, _signal) =>
+      Promise.reject(unavailable("the command route is not implemented")),
   };
 }

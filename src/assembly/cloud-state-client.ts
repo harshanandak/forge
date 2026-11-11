@@ -3,6 +3,7 @@
 // the HTTP adapter. It never writes a credential, opens local state or retries. Nothing calls it yet.
 import type {
   CloudHttp,
+  CommandWire,
   LeaseResult,
   LeaseRoute,
   LeaseWriteBody,
@@ -19,7 +20,7 @@ export interface CloudLeaseOptions {
   readonly now: () => number;
   readonly http: Pick<
     CloudHttp,
-    "origin" | "project" | "leaseWrite" | "leaseHolder"
+    "origin" | "project" | "leaseWrite" | "leaseHolder" | "command"
   >;
   readonly signal?: AbortSignal;
 }
@@ -27,6 +28,11 @@ export type ClaimInput = Required<Omit<LeaseWriteBody, "generation">>;
 export type RenewInput = Required<LeaseWriteBody>;
 export type ReleaseInput = Required<Omit<LeaseWriteBody, "ttlMs">>;
 export interface CloudLeaseClient {
+  /** A typed command at the project authority; the result is checked by `validate`. */
+  command(
+    call: CommandWire,
+    validate: (result: unknown) => boolean,
+  ): Promise<Record<string, unknown>>;
   claim(input: ClaimInput): Promise<LeaseRecord>;
   renew(input: RenewInput): Promise<LeaseRecord>;
   release(input: ReleaseInput): Promise<LeaseRecord>;
@@ -106,6 +112,10 @@ export function createCloudLeaseClient(
   }
 
   return {
+    command: () =>
+      Promise.reject(
+        failure("UNAVAILABLE", "The cloud command client is not implemented."),
+      ),
     claim: (input) => write("claim", input),
     renew: (input) => write("renew", input),
     release: (input) => write("release", input),

@@ -5,6 +5,7 @@ import {
   validateProject,
   type CloudFetch,
   type CloudHttp,
+  type CommandWire,
   type LeaseRoute,
   type LeaseWriteBody,
 } from "../../../src/adapters/http/index.ts";
@@ -397,12 +398,43 @@ const refusal = (code: string, status: number, more = {}) =>
 const details = { ...lease(), generation: 4 };
 const bad = (more: Record<string, unknown>) =>
   refusal("LEASE_STALE", 409, { lease: { ...details, ...more } });
+const wire: CommandWire = {
+  requestId: "r-1",
+  op: "issue.show",
+  input: { id: "forge-1" },
+  context: { session: { id: "s1", device: "dev-1" }, project: { id: "proj" } },
+};
+const item = { id: "forge-1", title: "A title" };
+const succeeded = (more = {}, status = 200) =>
+  json(
+    {
+      ok: true,
+      op: "issue.show",
+      status: "OK",
+      result: item,
+      warnings: [],
+      ...more,
+    },
+    status,
+  );
+const refusalBody = (code: string) => ({
+  ok: false,
+  status: "FAIL",
+  error: { code, message: SECRET, retry: "never" },
+  warnings: [],
+});
+const refused = (code: string, status: number, more = {}) =>
+  json(
+    { ...refusalBody(code), error: { ...refusalBody(code).error, ...more } },
+    status,
+  );
 const operations: [
   string,
   (h: CloudHttp, s?: AbortSignal) => Promise<unknown>,
 ][] = [
   ["claim", (h, s) => h.leaseWrite(TOKEN, "claim", bodies.claim, s)],
   ["holder", (h, s) => h.leaseHolder(TOKEN, SUBJECT, s)],
+  ["command", (h, s) => h.command(TOKEN, wire, s)],
 ];
 const feed = (onCancel: () => void, after = () => {}, endless = false) =>
   new ReadableStream<Uint8Array>({
@@ -578,7 +610,9 @@ for (const [name, run] of operations) {
     const declared = network(
       () => new Response("{}", { headers: { "content-length": "999999" } }),
     );
-    expect(await code(declared, { maxBytes: 1024 })).toBe("UNAVAILABLE");
+    expect(
+      await code(declared, { maxBytes: 1024, commandMaxBytes: 1024 }),
+    ).toBe("UNAVAILABLE");
     let cancelled = false;
     const endless = feed(
       () => void (cancelled = true),
@@ -586,7 +620,9 @@ for (const [name, run] of operations) {
       true,
     );
     const streamed = network(() => new Response(endless));
-    expect(await code(streamed, { maxBytes: 1024 })).toBe("UNAVAILABLE");
+    expect(
+      await code(streamed, { maxBytes: 1024, commandMaxBytes: 1024 }),
+    ).toBe("UNAVAILABLE");
     expect(cancelled).toBe(true);
     expect(declared.calls.length + streamed.calls.length).toBe(2);
   }, 10_000);
@@ -625,3 +661,102 @@ for (const [name, run] of operations) {
     expect(during.calls.length + reading.calls.length).toBe(2);
   }, 10_000);
 }
+
+const commands = (
+  "INPUT_INVALID:400 CONTEXT_MISSING:400 UNKNOWN_COMMAND:404 NOT_FOUND:404 " +
+  "UNAVAILABLE:503 AUTH_REQUIRED:401 AUTH_INVALID:401 AUTH_REVOKED:401 " +
+  "AUTH_EXPIRED:401 AUTH_DEVICE_MISMATCH:403 AUTH_FORBIDDEN:403"
+).split(" ");
+test("a command posts exactly the wire body to the command route with the bearer header and returns only the result", async () => {
+  const net = network(() => succeeded());
+  const result = await http(net.fetch).command(TOKEN, wire);
+  expect(result).toEqual({ kind: "ok", result: item });
+  sentOnce(net, "POST", "command");
+  const [call] = net.calls;
+  expect(call?.init.body).toBe(JSON.stringify(wire));
+  expect(call?.init.redirect).toBe("manual");
+  expect(Object.keys(call?.init.headers ?? {})).toHaveLength(3);
+}, 10_000);
+
+test("a command answer may be up to 1 MiB while a lease answer stays at 64 KiB", async () => {
+  const sized = (body: unknown, size: number) => () =>
+    new Response(JSON.stringify(body), {
+      headers: { "content-length": String(size) },
+    });
+  const answer = {
+    ok: true,
+    op: "issue.show",
+    status: "OK",
+    result: item,
+    warnings: [],
+  };
+  const run = (size: number) =>
+    http(network(sized(answer, size)).fetch).command(TOKEN, wire);
+  for (const size of [70_000, 1_048_576])
+    expect(await run(size)).toEqual({ kind: "ok", result: item });
+  expect((await failure(() => run(1_048_577))).error.code).toBe("UNAVAILABLE");
+  const leased = http(
+    network(sized({ ok: true, value: lease() }, 70_000)).fetch,
+  );
+  expect(
+    (await failure(() => leased.leaseHolder(TOKEN, SUBJECT))).error.code,
+  ).toBe("UNAVAILABLE");
+  const big = { text: "x".repeat(200_000) };
+  const real = network(() => succeeded({ result: big }));
+  expect(await http(real.fetch).command(TOKEN, wire)).toEqual({
+    kind: "ok",
+    result: big,
+  });
+}, 10_000);
+
+test("each refusal the command route sends keeps its code at its mapped status and never the server's words", async () => {
+  for (const entry of commands) {
+    const [code = "", status = ""] = entry.split(":");
+    const answer = refused(code, Number(status), { lease: details });
+    const result = await http(network(() => answer).fetch).command(TOKEN, wire);
+    expect(result).toEqual({ kind: "refused", code } as never);
+    expect(JSON.stringify(result)).not.toContain(SECRET);
+  }
+}, 10_000);
+
+const badCommands: [string, () => Response][] = [
+  ["malformed JSON", () => new Response("{")],
+  ["an extra key", () => succeeded({ extra: 1 })],
+  [
+    "a missing key",
+    () => json({ ok: true, op: "issue.show", status: "OK", result: item }),
+  ],
+  ["ok true with a 4xx", () => succeeded({}, 400)],
+  ["ok true with a 500", () => succeeded({}, 500)],
+  ["another operation", () => succeeded({ op: "issue.list" })],
+  ["a status that is not OK", () => succeeded({ status: "FAIL" })],
+  ["a result that is an array", () => succeeded({ result: [] })],
+  ["a result that is null", () => succeeded({ result: null })],
+  ["warnings that are not a list", () => succeeded({ warnings: "x" })],
+  ["a valid code at the wrong status", () => refused("NOT_FOUND", 400)],
+  ["a valid code at 200", () => refused("NOT_FOUND", 200)],
+  ["an unknown code", () => refused("TEAPOT", 404)],
+  ["a server error code", () => refused("INTERNAL", 500)],
+  [
+    "a refusal with an extra key",
+    () => json({ ...refusalBody("NOT_FOUND"), extra: 1 }, 404),
+  ],
+  [
+    "a refusal whose status says OK",
+    () => json({ ...refusalBody("NOT_FOUND"), status: "OK" }, 404),
+  ],
+  [
+    "a refusal with no error object",
+    () => json({ ok: false, status: "FAIL", error: "x", warnings: [] }, 404),
+  ],
+];
+for (const [name, answer] of badCommands)
+  test(`a command answer with ${name} is unavailable and echoes nothing`, async () => {
+    const response = answer();
+    const net = network(() => response);
+    const failed = await failure(() => http(net.fetch).command(TOKEN, wire));
+    expect(failed.error.code).toBe("UNAVAILABLE");
+    expect(JSON.stringify(failed.error)).not.toContain(SECRET);
+    sentOnce(net, "POST", "command");
+    expect(response.bodyUsed).toBe(true);
+  }, 10_000);
