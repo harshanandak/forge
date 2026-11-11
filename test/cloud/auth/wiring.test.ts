@@ -26,6 +26,7 @@ const vars = {
   CLERK_REDIRECT_URI: `${issuer}/callback`,
   FORGE_API_RESOURCE: "https://api.example/a",
   OAUTH_TIMEOUT_MS: "5000",
+  FORGE_OAUTH_REDIRECTS: redirect,
 };
 const field = async (response: Response, key: string) =>
   ((await response.json()) as Record<string, string>)[key]!;

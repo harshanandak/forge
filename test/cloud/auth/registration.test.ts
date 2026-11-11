@@ -50,6 +50,7 @@ function fixture() {
     CLERK_REDIRECT_URI: `${issuer}/callback`,
     FORGE_API_RESOURCE: "https://api.example/a",
     OAUTH_TIMEOUT_MS: "5000",
+    FORGE_OAUTH_REDIRECTS: redirect,
     PROJECTS: {
       idFromName: () => "",
       get: () => ({ fetch: () => Promise.resolve(new Response()) }),
