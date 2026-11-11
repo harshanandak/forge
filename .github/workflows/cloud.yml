@@ -136,9 +136,10 @@ jobs:
         run: |
           sed -e 's/<account-id>/0123456789abcdef0123456789abcdef/' -e 's/<kv-namespace-id>/fedcba9876543210fedcba9876543210/' -e 's/<worker-name>/forge-cloud-ci/' -e 's#<clerk-frontend-api-url>#https://clerk.ci.test#' -e 's/<clerk-client-id>/ci-client/' -e 's#<worker-origin>#https://forge-cloud-ci.ci.test#' -e 's/<owner-subject>/user_CI1/' -e 's/<project-name>/ci-project/' wrangler.example.jsonc > wrangler.ci.jsonc
           cat > "$RUNNER_TEMP/stub.mjs" <<'EOF'
-          import { appendFileSync } from "node:fs";
+          import { appendFileSync, readFileSync } from "node:fs";
           const a = process.argv.slice(2);
           appendFileSync(process.env.STUB_LOG, `${a[0]} ${a[1]}\n`);
+          if (a[1] === "put") { console.error(readFileSync(a[a.indexOf("--config") + 1], "utf8")); process.exit(1); }
           if (a[0] === "secret") console.log(JSON.stringify(process.env.STUB_SECRETS.split(",").map((name) => ({ name }))));
           else if (a[0] === "kv") console.log(JSON.stringify([{ id: "fedcba9876543210fedcba9876543210" }]));
           else process.exit(1);
@@ -155,12 +156,18 @@ jobs:
           cp wrangler.example.jsonc "$RUNNER_TEMP/placeholders.jsonc"
           sed '/FORGE_OWNER_SUBJECT/d' wrangler.ci.jsonc > "$RUNNER_TEMP/no-owner.jsonc"
           printf '{ "vars": { "FORGE_OWNER_SUBJECT": user_PRIVATEMARKERONE } }' > "$RUNNER_TEMP/bad1.jsonc"
-          printf '{ "name": "PRIVATEMARKERTWO' > "$RUNNER_TEMP/bad2.jsonc"
           sed 's/"preview_urls": false/"preview_urls": true/' wrangler.ci.jsonc > "$RUNNER_TEMP/preview.jsonc"
           sed 's/"workers_dev": true/"workers_dev": false/' wrangler.ci.jsonc > "$RUNNER_TEMP/devhost.jsonc"
+          sed 's/"OAUTH_TIMEOUT_MS": "5000"/"OAUTH_TIMEOUT_MS": "2147483648"/' wrangler.ci.jsonc > "$RUNNER_TEMP/timeout.jsonc"
+          sed "s/\"ci-project\"/\"$(printf 'a%.0s' $(seq 65))\"/" wrangler.ci.jsonc > "$RUNNER_TEMP/longname.jsonc"
           refuse "$both" wrangler.example.jsonc "pass --config"
+          refuse "$both" "$RUNNER_TEMP/timeout.jsonc" "var OAUTH_TIMEOUT_MS"
+          refuse "$both" "$RUNNER_TEMP/longname.jsonc" "var FORGE_CLOUD_PROJECT"
+          for value in null false 0 '""'; do
+            printf '%s' "$value" > "$RUNNER_TEMP/primitive.jsonc"
+            refuse "$both" "$RUNNER_TEMP/primitive.jsonc" "could not be read or parsed"
+          done
           refuse "$both" "$RUNNER_TEMP/bad1.jsonc" "could not be read or parsed"
-          refuse "$both" "$RUNNER_TEMP/bad2.jsonc" "could not be read or parsed"
           refuse "$both" "$RUNNER_TEMP/preview.jsonc" "differs from the example"
           refuse "$both" "$RUNNER_TEMP/devhost.jsonc" "differs from the example"
           refuse "$both" "$RUNNER_TEMP/placeholders.jsonc" "placeholder"
@@ -168,6 +175,13 @@ jobs:
           refuse "$both" "$RUNNER_TEMP/no-owner.jsonc" "var FORGE_OWNER_SUBJECT"
           refuse ADMIN_TOKEN wrangler.ci.jsonc "secret DEVICE_LOGIN_HMAC_KEY is not set"
           run "$both" wrangler.ci.jsonc || { cat "$RUNNER_TEMP/pre.out"; echo "::error::preflight refused a complete config"; exit 1; }
+          # The token helper never forwards wrangler's output: the stub echoes the config, which holds a marker.
+          mkdir -m 700 "$RUNNER_TEMP/tokens"
+          tok() { node scripts/set-admin-token.mjs --config "$RUNNER_TEMP/bad1.jsonc" --token-file "$RUNNER_TEMP/tokens/admin.token" > "$RUNNER_TEMP/token.out" 2>&1; }
+          if tok || ! grep -q "wrangler secret put failed" "$RUNNER_TEMP/token.out" || grep -q PRIVATEMARKER "$RUNNER_TEMP/token.out"; then
+            echo "::error::set-admin-token did not fail cleanly, or echoed config text"
+            exit 1
+          fi
       - name: Bundle with the production entry point
         working-directory: cloud
         run: |
