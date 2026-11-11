@@ -34,7 +34,7 @@ test("inactive bundled operations and nouns name the import that enables them", 
         },
       });
       if (result.ok) throw new Error("Expected inactive operation refusal");
-      expect(result.error.message).toContain("delivery");
+      expect(result.error.message).toBe(`Unknown operation: ${op}`);
       expect(validateResultEnvelope(result).ok).toBe(true);
     }
     const bare = await runCli(assembly.catalog, ["issue", "--json"], options);

@@ -195,7 +195,6 @@ async function dispatchRaw(
         ...result,
         error: {
           ...result.error,
-          message: `Unknown operation: ${op}; provided by template ${template.template}. Run ${template.command}.`,
           retry: "reconcile_first",
           hint: template,
         },
