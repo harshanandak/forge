@@ -1,5 +1,5 @@
 // POST /p/<project>/command: typed issue commands at the project authority.
-// This slice checks the envelope and the context, runs issue.show and issue.list as reads and
+// This slice checks the envelope and the context, runs issue.show, issue.list and issue.ready as reads and
 // refuses every other command as not yet supported: nothing is written. Everything the caller sends is
 // untrusted. The envelope and context are closed shapes, the device comes from the token and the
 // project from the server, and no caller value becomes an SQL identifier, a namespace or a key.
@@ -147,6 +147,10 @@ export function prepareCommand(
   return { op, input: call.input, context: bound.context };
 }
 
+// The cloud has no labelOrder setting yet (forge-1250), so ready issues stay in key order.
+const readyIssues: typeof listIssues = (views, input, now, prefix) =>
+  listIssues(views, input, now, prefix, { labelOrder: [] });
+
 export interface CommandRun extends CommandHost {
   readonly storage: DurableStorage;
   /** The server's configured id prefix, as set: readIssue checks it. */
@@ -176,7 +180,7 @@ function lazyViews(storage: DurableStorage): IssueViews {
 }
 
 /**
- * Prepares a command and runs it. Only issue.show and issue.list run: each returns the response,
+ * Prepares a command and runs it. Only issue.show, issue.list and issue.ready run: each returns the response,
  * serialized once and measured in UTF-8 bytes. Every other operation is refused. Throws ForgeFailure when refused,
  * and runs no await, so the caller's token check stays current until the response is built.
  */
@@ -187,7 +191,9 @@ export function runCommand(text: string, host: CommandRun): Response {
       ? readIssue
       : op === "issue.list"
         ? listIssues
-        : undefined;
+        : op === "issue.ready"
+          ? readyIssues
+          : undefined;
   if (read === undefined)
     throw fail("INPUT_INVALID", "Commands are not yet supported in cloud");
   const result = read(
