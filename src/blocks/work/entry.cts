@@ -237,7 +237,10 @@ type WorkOperations = TrackerOperations<"issue"> & {
   readonly "issue.join": readonly [ItemRef & { ttlSeconds?: number }, unknown];
   readonly "issue.leave": readonly [ItemRef, unknown];
   readonly "issue.claim": readonly [
-    TrackerOperations<"issue">["issue.claim"][0] & { readonly reason?: string },
+    TrackerOperations<"issue">["issue.claim"][0] & {
+      readonly reason?: string;
+      readonly reopen?: string;
+    },
     LeaseGrant,
   ];
   readonly "issue.board": readonly [BoardInput, unknown];
@@ -5427,6 +5430,8 @@ const operations: Operations<WorkOperations> = {
     return { id: ids.shown(id) };
   },
   "issue.claim": ({ input, services, config }) => {
+    if (input.reopen !== undefined)
+      fail("NOT_IMPLEMENTED", "Tests-first claim reopen stub");
     const state = client(services);
     const ids = idsFor(state, config);
     const id = ids.stored(input.id);
