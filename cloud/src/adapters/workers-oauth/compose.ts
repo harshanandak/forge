@@ -20,6 +20,7 @@ import {
 } from "./registration.ts";
 import { productionOptions } from "./production.ts";
 import { bearer, sha256, wellFormed } from "../../tokens.ts";
+import { isLoginRoute } from "../../auth/project-login.ts";
 import { boundedOAuthRequest } from "./body.ts";
 export { Project } from "../../worker.ts";
 export { CodeRedemption } from "./redemption.ts";
@@ -121,7 +122,8 @@ export function createConfiguredWorker(
       const token = bearer(request);
       if (
         !isOAuthRoute(request) &&
-        (!token ||
+        (isLoginRoute(request) ||
+          !token ||
           wellFormed(token) ||
           /\/(devices|revoke|status|dump|restore)$/.test(path))
       )

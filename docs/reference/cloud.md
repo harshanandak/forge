@@ -5,12 +5,13 @@ subject. The code is in `cloud/`.
 
 ## Routes
 
-Every route is `/p/<projectId>/<route>` and needs `Authorization: Bearer <token>`.
+Every route is `/p/<projectId>/<route>` and needs `Authorization: Bearer <token>`, except `loginstart` and `loginpoll`.
 
 | Route                       | Method | Token  | What it does                                                                                                                                                                  |
 | --------------------------- | ------ | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `claim`, `renew`, `release` | POST   | device | Change a lease. Each carries a `requestId`; a retry returns the right result.                                                                                                 |
 | `holder?subject=...`        | GET    | device | Read a lease.                                                                                                                                                                 |
+| `loginstart`, `loginpoll`   | POST   | none   | Device login for the one project named by `FORGE_CLOUD_PROJECT`. See below.                                                                                                   |
 | `devices`                   | POST   | admin  | Issue a device token: `{ device, session?, agent?, harness?, ttlMs }`. The token is shown once.                                                                               |
 | `revoke`                    | POST   | admin  | Revoke a device token by id. It is refused on its next request.                                                                                                               |
 | `status`                    | GET    | admin  | Whether the project has a database yet.                                                                                                                                       |
@@ -18,6 +19,12 @@ Every route is `/p/<projectId>/<route>` and needs `Authorization: Bearer <token>
 | `restore`                   | POST   | admin  | Write a dump into an empty project. Body up to 8 MiB (`RESTORE_TOO_LARGE` over it). A row that is not valid state is refused as `RESTORE_INVALID_ROW` and nothing is written. |
 
 A whole dump (`GET dump`) is one response for a small project: up to 3 MiB stored, 10,000 rows per table and 262,144 characters per value. A larger project is refused as `DUMP_TOO_LARGE` (413); a project with more than 10,000 rows in a table cannot be dumped at all yet (see the limits below).
+
+## Device login
+
+`POST loginstart { device }` returns `{ ok, device_code, user_code, expires_in: 600, interval: 5, verification_uri: "/device", project, device }`. `POST loginpoll { device_code }` returns `{ ok: false, error }` (`authorization_pending`, `slow_down` with a longer `interval`, `expired_token`, `access_denied`, `invalid_grant`) until an approved challenge yields `{ ok: true, credential }`, once. The credential is a JSON string `{ format: "forge/device-credential/1", id, token, device, expiresAt }` for a 30 day device token (`LOGIN_TTL_MS`). Responses are `no-store`.
+
+Neither route needs a bearer. They serve only the project named by `FORGE_CLOUD_PROJECT`, which must already be provisioned, and need the secret `DEVICE_LOGIN_HMAC_KEY` (random, base64url, at least 32 bytes) plus the owner vars `CLERK_ISSUER`, `FORGE_OWNER_SUBJECT` and `CLERK_CLIENT_ID`. A missing setting returns `AUTH_CONFIG_UNAVAILABLE` (503) on these two routes only. Starts are limited to 5 per address and 30 per project in a 60 second window (`rate_limited`, 429), and to 1,024 live challenges (`capacity_exceeded`, 429). Challenge state is one private `domain_cloud_login` row and is never in a dump. There is no approve route yet. A poll that consumed its challenge and then failed to issue needs a fresh login.
 
 ## Dump and restore in pages
 
