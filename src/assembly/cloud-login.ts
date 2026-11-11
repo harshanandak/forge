@@ -240,7 +240,8 @@ async function login(
     throw new ForgeFailure(
       inputError(
         CLOUD_LOGIN_OP,
-        problems,
+        // A refused value may be a token pasted into the wrong field, so no received value is echoed.
+        problems.map((problem) => ({ ...problem, received: "(not shown)" })),
         cloudLoginCandidate.docs,
         cloudLoginCandidate.inputSchema,
       ),
