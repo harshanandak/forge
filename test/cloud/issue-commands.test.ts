@@ -13,6 +13,7 @@ import { listIssues } from "../../cloud/src/issue-list.ts";
 import {
   LEASE_READS,
   RECORD_READS,
+  ROWS,
   type IssueViews,
 } from "../../cloud/src/issue-read.ts";
 import { createWorker } from "../../cloud/src/worker.ts";
@@ -2218,6 +2219,8 @@ test("ready refuses an over-budget project as UNAVAILABLE before it loads any bo
         "Issue list is over its read budget",
       ]);
       expect(got.probes).toEqual(WORK_PROBES.slice(0, 2));
+      // The bodies are never loaded: the row-with-body query does not run.
+      expect(got.touched).not.toContain(ROWS);
     }
     expect(f.snapshot()).toBe(before);
   }
