@@ -9,6 +9,11 @@ const noRows = "brief acceptance table has no rows";
 export const acceptanceCases = [
   ["no table", "Concrete prose only.", noTableProblem],
   [
+    "table in another section",
+    "Concrete prose only.\n## Goal\n" + acceptanceTable,
+    noTableProblem,
+  ],
+  [
     "missing columns",
     "| Case | Input | Status | Unchanged |\n|---|---|---|---|\n| sample | brief | OK | existing |",
     "brief acceptance table is missing columns: Exit, Eligibility",

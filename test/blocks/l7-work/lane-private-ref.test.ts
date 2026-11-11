@@ -45,7 +45,10 @@ const brief = [
   "Stop point",
   "Prior art",
 ]
-  .map((name) => `## ${name}\nConcrete content.\n${acceptanceTable}\n`)
+  .map(
+    (name) =>
+      `## ${name}\nConcrete content.\n${name === "Acceptance test" ? acceptanceTable : ""}\n`,
+  )
   .join("\n");
 
 function fixture() {

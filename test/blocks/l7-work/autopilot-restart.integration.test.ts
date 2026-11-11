@@ -108,7 +108,10 @@ beforeAll(() => {
       "Stop point",
       "Prior art",
     ]
-      .map((name) => `## ${name}\nConcrete content.\n${acceptanceTable}\n`)
+      .map(
+        (name) =>
+          `## ${name}\nConcrete content.\n${name === "Acceptance test" ? acceptanceTable : ""}\n`,
+      )
       .join("\n"),
   );
   // A fake gh that prints a scenario file, as the pr-state fixture does.

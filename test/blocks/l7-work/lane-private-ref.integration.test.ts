@@ -22,7 +22,10 @@ const briefText = [
   "Stop point",
   "Prior art",
 ]
-  .map((name) => `## ${name}\nConcrete content.\n${acceptanceTable}\n`)
+  .map(
+    (name) =>
+      `## ${name}\nConcrete content.\n${name === "Acceptance test" ? acceptanceTable : ""}\n`,
+  )
   .join("\n");
 let root: string, repo: string, origin: string, other: string;
 let sequence = 0;

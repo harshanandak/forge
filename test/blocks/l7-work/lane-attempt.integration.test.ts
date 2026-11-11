@@ -139,7 +139,10 @@ beforeAll(() => {
     join(repo, brief),
     "Goal|Acceptance test|Files|Forbidden actions|Stop point|Prior art"
       .split("|")
-      .map((name) => `## ${name}\nConcrete content.\n${acceptanceTable}\n`)
+      .map(
+        (name) =>
+          `## ${name}\nConcrete content.\n${name === "Acceptance test" ? acceptanceTable : ""}\n`,
+      )
       .join("\n"),
   );
   writeFileSync(
