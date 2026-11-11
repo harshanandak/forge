@@ -389,6 +389,14 @@
       "title": "attempt-release",
       "summary": "Release your attempt; retain its history."
     },
+    "attempt.evidence": {
+      "title": "evidence",
+      "summary": "Append commit evidence under your attempt lease."
+    },
+    "attempt.select": {
+      "title": "select",
+      "summary": "Coordinator selects attempts or none; preserves all attempt work."
+    },
     "attempt.note": {
       "title": "attempt-note",
       "summary": "Publish under your attempt lease.",

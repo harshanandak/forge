@@ -1,0 +1,19 @@
+{
+  "type": "object",
+  "required": ["id", "reason"],
+  "properties": {
+    "id": {
+      "$ref": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/tracker.json#/$defs/ItemId"
+    },
+    "attempt": { "type": "string" },
+    "combine": { "type": "string" },
+    "none": { "type": "boolean", "const": true },
+    "reason": { "type": "string" }
+  },
+  "oneOf": [
+    { "required": ["attempt"] },
+    { "required": ["combine"] },
+    { "required": ["none"] }
+  ],
+  "additionalProperties": false
+}
