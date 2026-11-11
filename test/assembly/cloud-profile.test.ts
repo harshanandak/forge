@@ -1,12 +1,14 @@
 import { expect, setDefaultTimeout, test } from "bun:test";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   readFileSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import {
   credentialStore,
   openCloudFiles,
@@ -14,10 +16,12 @@ import {
   readBinding,
   resolveTarget,
   writeBinding,
+  BACKUP_FILE,
   BINDING_PATH,
   CREDENTIAL_FILE,
 } from "../../src/assembly/cloud-profile.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
+import type { DeviceFiles } from "../../src/ports/device-files.ts";
 import {
   bindingFor,
   credentialJson,
@@ -53,6 +57,17 @@ async function asyncCodeOf(run: () => Promise<unknown>): Promise<string> {
     throw error;
   }
   return "NO_FAILURE";
+}
+async function asyncFailure(
+  run: () => Promise<unknown>,
+): Promise<ForgeFailure> {
+  try {
+    await run();
+  } catch (error) {
+    if (error instanceof ForgeFailure) return error;
+    throw error;
+  }
+  throw new Error("expected a failure");
 }
 const fileText = (path: string): string => readFileSync(path, "utf8");
 const noWait = () => Promise.resolve();
@@ -325,14 +340,54 @@ test("a failure before the replace keeps the previous file byte for byte", async
   }
 }, 20_000);
 
-test("a failure after the replace restores the previous valid entry", async () => {
+const newer = () =>
+  entry(NOW, {
+    id: "ffffffffffffffff",
+    token: tokenFor("ffffffffffffffff", "NEWMARK".padEnd(43, "N")),
+  });
+const prior = {
+  origin: ORIGIN,
+  identity: PROJECT_ID,
+  project: PROJECT,
+};
+
+test("a readback that fails only once puts the previous entry back through the checked write", async () => {
   const s = sandbox();
   try {
-    const newer = entry(NOW, {
-      id: "ffffffffffffffff",
-      token: tokenFor("ffffffffffffffff", "NEWMARK".padEnd(43, "N")),
-    });
-    // The published file reads back wrong: it carries the new token.
+    let failed = false;
+    // The first look at the published file fails (a transient refusal); later looks are fine.
+    const files = openCloudFiles(
+      s.home,
+      failing((path) => {
+        if (
+          failed ||
+          basename(path) !== CREDENTIAL_FILE ||
+          !fileText(path).includes("NEWMARK")
+        )
+          return false;
+        failed = true;
+        return true;
+      }),
+    );
+    const store = credentialStore(files, { wait: noWait });
+    await store.save(entry(NOW));
+    const before = fileText(s.credentials);
+    expect(await asyncCodeOf(() => store.save(newer()))).toBe(
+      "ACCOUNT_INTEGRITY",
+    );
+    expect(failed).toBe(true);
+    expect(fileText(s.credentials)).toBe(before);
+    expect(store.lookup(prior, NOW)?.id).toBe("aaaaaaaaaaaaaaaa");
+    expect(existsSync(join(dirname(s.credentials), BACKUP_FILE))).toBe(false);
+  } finally {
+    s.close();
+  }
+}, 20_000);
+
+test("an unsafe destination is never overwritten by the restore: the previous bytes go to a private backup", async () => {
+  const s = sandbox();
+  try {
+    // The published file fails its security check every time: it is not safe to replace.
     const files = openCloudFiles(
       s.home,
       failing(
@@ -344,20 +399,104 @@ test("a failure after the replace restores the previous valid entry", async () =
     const store = credentialStore(files, { wait: noWait });
     await store.save(entry(NOW));
     const before = fileText(s.credentials);
-    expect(await asyncCodeOf(() => store.save(newer))).toBe(
-      "ACCOUNT_INTEGRITY",
-    );
-    expect(fileText(s.credentials)).toBe(before);
-    expect(
-      store.lookup(
-        { origin: ORIGIN, identity: PROJECT_ID, project: PROJECT },
-        NOW,
-      )?.id,
-    ).toBe("aaaaaaaaaaaaaaaa");
+    const failure = await asyncFailure(() => store.save(newer()));
+    expect(failure.error.code).toBe("ACCOUNT_INTEGRITY");
+    expect(failure.error.message).toContain("private backup");
+    expect(JSON.stringify(failure.error)).not.toContain("NEWMARK");
+    // The unsafe file was left as it is, and the backup holds the previous document exactly.
+    expect(fileText(s.credentials)).toContain("NEWMARK");
+    const backup = join(dirname(s.credentials), BACKUP_FILE);
+    expect(fileText(backup)).toBe(before);
+    if (process.platform !== "win32")
+      expect(statSync(backup).mode & 0o777).toBe(0o600);
   } finally {
     s.close();
   }
 }, 20_000);
+
+test("a write that fails after the rename (the directory sync) still leaves the previous entry in place", async () => {
+  const s = sandbox();
+  try {
+    const real = openCloudFiles(s.home);
+    let armed = false;
+    const files: DeviceFiles = {
+      ...real,
+      write(name, text) {
+        real.write(name, text);
+        if (armed && name === CREDENTIAL_FILE) {
+          armed = false;
+          throw new Error("directory sync failed after the rename");
+        }
+      },
+    };
+    const store = credentialStore(files, { wait: noWait });
+    await store.save(entry(NOW));
+    const before = fileText(s.credentials);
+    armed = true;
+    expect(await asyncCodeOf(() => store.save(newer()))).toBe("UNAVAILABLE");
+    expect(armed).toBe(false);
+    expect(fileText(s.credentials)).toBe(before);
+    expect(store.lookup(prior, NOW)?.id).toBe("aaaaaaaaaaaaaaaa");
+    expect(existsSync(join(dirname(s.credentials), BACKUP_FILE))).toBe(false);
+  } finally {
+    s.close();
+  }
+}, 20_000);
+
+test("two writers that overlap on different keys both succeed and both entries remain", async () => {
+  const s = sandbox();
+  try {
+    const waits: number[] = [];
+    const first = credentialStore(openCloudFiles(s.home), { wait: noWait });
+    const second = credentialStore(openCloudFiles(s.home), {
+      wait: (ms) => {
+        waits.push(ms);
+        return Promise.resolve();
+      },
+    });
+    const other = entry(NOW, {
+      identity: OTHER_PROJECT_ID,
+      id: "cccccccccccccccc",
+      token: tokenFor("cccccccccccccccc", "C".repeat(43)),
+    });
+    // Both start before either finishes: the first takes the lock, the second meets it and retries.
+    await Promise.all([first.save(entry(NOW)), second.save(other)]);
+    expect(waits.length).toBeGreaterThan(0);
+    const check = credentialStore(openCloudFiles(s.home));
+    expect(check.lookup(prior, NOW)?.id).toBe("aaaaaaaaaaaaaaaa");
+    expect(
+      check.lookup({ ...prior, identity: OTHER_PROJECT_ID }, NOW)?.id,
+    ).toBe("cccccccccccccccc");
+  } finally {
+    s.close();
+  }
+}, 20_000);
+
+test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+  "a credential file with no read permission is an integrity refusal, not an internal error",
+  async () => {
+    const s = sandbox();
+    try {
+      const files = openCloudFiles(s.home);
+      const store = credentialStore(files, { wait: noWait });
+      await store.save(entry(NOW));
+      chmodSync(s.credentials, 0o000);
+      try {
+        expect(codeOf(() => store.lookup(prior, NOW))).toBe(
+          "ACCOUNT_INTEGRITY",
+        );
+        expect(await asyncCodeOf(() => store.save(entry(NOW)))).toBe(
+          "ACCOUNT_INTEGRITY",
+        );
+      } finally {
+        chmodSync(s.credentials, 0o600);
+      }
+    } finally {
+      s.close();
+    }
+  },
+  20_000,
+);
 
 test("a first save whose readback fails reports an integrity failure and finds nothing to restore", async () => {
   const s = sandbox();

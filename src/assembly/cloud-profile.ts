@@ -14,6 +14,7 @@ import type { DeviceFiles } from "../ports/device-files.ts";
 import { PROJECT_ID_PATTERN } from "./project-manifest.ts";
 
 export const CREDENTIAL_FILE = "credentials.json";
+export const BACKUP_FILE = "credentials.backup.json";
 export const BINDING_PATH = ".forge/cloud.json";
 
 /** A saved credential is found only by all three: the exact origin, project UUID and project name. */
@@ -125,11 +126,15 @@ export function openCloudFiles(
     (process.platform === "win32"
       ? {
           directory(path, created) {
-            guard ??= privateFileGuard(windowsPrivateFiles());
+            guard ??= privateFileGuard(windowsPrivateFiles(), {
+              requireOwner: true,
+            });
             guard.directory(path, created);
           },
           file(path) {
-            guard ??= privateFileGuard(windowsPrivateFiles());
+            guard ??= privateFileGuard(windowsPrivateFiles(), {
+              requireOwner: true,
+            });
             guard.file(path);
           },
         }
@@ -313,10 +318,8 @@ export function credentialStore(
     },
     async save(entry) {
       const held = await lock();
-      let previous: string | undefined;
-      let published = false;
       try {
-        previous = files.read(CREDENTIAL_FILE);
+        const previous = files.read(CREDENTIAL_FILE);
         const merged = {
           ...(previous === undefined ? {} : parseFile(previous)),
           [keyOf(entry)]: parseEntry(keyOf(entry), entry),
@@ -324,26 +327,16 @@ export function credentialStore(
         const text = serialize(merged);
         if (Buffer.byteLength(text) > FILE_LIMIT) throw integrity();
         parseFile(text);
-        files.write(CREDENTIAL_FILE, text);
-        published = true;
-        if (files.read(CREDENTIAL_FILE) !== text) throw integrity();
-      } catch (error) {
-        if (published && previous !== undefined) {
-          // The new document did not read back: put the previous valid one back, and check that too.
-          try {
-            files.write(CREDENTIAL_FILE, previous, { force: true });
-            if (files.read(CREDENTIAL_FILE) !== previous) throw integrity();
-          } catch {
-            throw new ForgeFailure({
-              code: "ACCOUNT_INTEGRITY",
-              message:
-                "The new cloud credential did not read back and the previous one could not be restored",
-              retry: "never",
-              repair:
-                "Remove ~/.forge/cloud/credentials.json and log in again.",
-            });
-          }
+        try {
+          files.write(CREDENTIAL_FILE, text);
+          if (files.read(CREDENTIAL_FILE) !== text) throw integrity();
+        } catch (error) {
+          // A write can fail after the rename, so recovery looks at what is on disk, not at whether
+          // the write reported success.
+          if (previous !== undefined) recover(previous);
+          throw error;
         }
+      } catch (error) {
         throw error instanceof ForgeFailure
           ? error
           : new ForgeFailure({
@@ -356,6 +349,45 @@ export function credentialStore(
       }
     },
   };
+
+  /**
+   * Put the previous valid document back. The restore goes through the same checked write as any other
+   * replace, so a destination that is unsafe is never overwritten; then the previous bytes are kept
+   * in a private, verified backup beside it and the failure is an integrity refusal.
+   */
+  function recover(previous: string): void {
+    let current: string | undefined;
+    try {
+      current = files.read(CREDENTIAL_FILE);
+    } catch {
+      current = undefined;
+    }
+    if (current === previous) return;
+    try {
+      files.write(CREDENTIAL_FILE, previous);
+      if (files.read(CREDENTIAL_FILE) === previous) return;
+    } catch {
+      // Fall through to the backup.
+    }
+    const kept = (() => {
+      try {
+        files.write(BACKUP_FILE, previous);
+        return files.read(BACKUP_FILE) === previous;
+      } catch {
+        return false;
+      }
+    })();
+    throw new ForgeFailure({
+      code: "ACCOUNT_INTEGRITY",
+      message: kept
+        ? "The new cloud credential did not read back and the previous one could not be restored; it is kept in a private backup"
+        : "The new cloud credential did not read back and the previous one could not be restored",
+      retry: "never",
+      repair: kept
+        ? "Check ~/.forge/cloud is yours and private, then move credentials.backup.json over credentials.json, or remove both and log in again."
+        : "Check ~/.forge/cloud is yours and private, or remove credentials.json and log in again.",
+    });
+  }
 }
 
 function parseBinding(bytes: Uint8Array): CloudBinding {

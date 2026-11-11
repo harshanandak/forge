@@ -17,6 +17,7 @@ import { createDeviceFiles } from "../../../src/adapters/fs/device-identity.ts";
 import { windowsPrivateFiles } from "../../../src/adapters/process/windows-acl.ts";
 import { privateFileGuard } from "../../../src/adapters/store-sqlite/private-files.ts";
 import { ForgeFailure } from "../../../src/contract/failure.ts";
+import type { PrivateFiles } from "../../../src/ports/private-files.ts";
 
 setDefaultTimeout(30_000);
 
@@ -36,7 +37,9 @@ function sandbox() {
 
 /** The host's own security hook: the native DACL guard on Windows, the mode checks elsewhere. */
 function host() {
-  return windows ? privateFileGuard(windowsPrivateFiles()) : undefined;
+  return windows
+    ? privateFileGuard(windowsPrivateFiles(), { requireOwner: true })
+    : undefined;
 }
 
 /** A security hook that lets a test decide which private-file checks fail. */
@@ -240,7 +243,7 @@ test("a native security failure on the existing file is one integrity refusal th
   }
 }, 20_000);
 
-test("a forced replace skips the check on the old file but still checks the staged one", () => {
+test("a replace always checks the old file and the staged one: neither check can be skipped", () => {
   const s = sandbox();
   try {
     let oldFileBroken = false;
@@ -257,13 +260,129 @@ test("a forced replace skips the check on the old file but still checks the stag
     files.write(NAME, "a");
     oldFileBroken = true;
     integrity(() => files.write(NAME, "b"));
-    files.write(NAME, "c", { force: true });
     oldFileBroken = false;
-    expect(files.read(NAME)).toBe("c");
+    expect(files.read(NAME)).toBe("a");
     staged = true;
-    integrity(() => files.write(NAME, "d", { force: true }));
+    integrity(() => files.write(NAME, "c"));
     staged = false;
-    expect(files.read(NAME)).toBe("c");
+    expect(files.read(NAME)).toBe("a");
+  } finally {
+    s.close();
+  }
+}, 20_000);
+
+test.skipIf(!posix || process.getuid?.() === 0)(
+  "a filesystem error on a cloud read is an integrity refusal; account files keep the raw error",
+  () => {
+    const s = sandbox();
+    try {
+      const cloud = createDeviceFiles(s.home, undefined, "cloud");
+      cloud.write(NAME, "a");
+      chmodSync(s.file, 0o000);
+      try {
+        const failure = integrity(() => cloud.read(NAME));
+        expect(JSON.stringify(failure.error)).not.toContain(s.home);
+        integrity(() => cloud.write(NAME, "b"));
+      } finally {
+        chmodSync(s.file, 0o600);
+      }
+      const accounts = createDeviceFiles(s.home);
+      accounts.write("record", "a");
+      const record = join(s.home, ".forge", "accounts", "record");
+      chmodSync(record, 0o000);
+      try {
+        expect(() => accounts.read("record")).toThrow();
+        try {
+          accounts.read("record");
+        } catch (error) {
+          expect(error).not.toBeInstanceOf(ForgeFailure);
+        }
+      } finally {
+        chmodSync(record, 0o600);
+      }
+    } finally {
+      s.close();
+    }
+  },
+  20_000,
+);
+
+/** A native Windows layer a test controls: the DACL always matches, only the owner varies. */
+function fakeNative(owner: () => string): PrivateFiles {
+  const sid = "S-1-5-21-1000-1000-1000-1001";
+  return {
+    sid,
+    owner: () => owner(),
+    read: (path) =>
+      statSync(path).isDirectory()
+        ? `D:P(A;OICI;FA;;;${sid})`
+        : `D:P(A;;FA;;;${sid})`,
+    protect() {},
+  };
+}
+const MINE = "S-1-5-21-1000-1000-1000-1001";
+
+test("the owner of the directory and of the file is checked even when the DACL matches", () => {
+  const s = sandbox();
+  try {
+    let owner = MINE;
+    const files = createDeviceFiles(
+      s.home,
+      privateFileGuard(
+        fakeNative(() => owner),
+        { requireOwner: true },
+      ),
+      "cloud",
+    );
+    files.write(NAME, "a");
+    expect(files.read(NAME)).toBe("a");
+    // The DACL still names only the current user, but the owner is another account.
+    owner = "S-1-5-21-2000-2000-2000-1002";
+    integrity(() => files.read(NAME));
+    integrity(() => files.write(NAME, "b"));
+    // An owner that cannot be read is refused too.
+    owner = "";
+    integrity(() => files.read(NAME));
+    // The Administrators group owns what an elevated user creates, and is accepted.
+    owner = "S-1-5-32-544";
+    expect(files.read(NAME)).toBe("a");
+    owner = MINE;
+    expect(readFileSync(s.file, "utf8")).toBe("a");
+  } finally {
+    s.close();
+  }
+}, 20_000);
+
+test("a directory owned by another account is refused even when its DACL matches", () => {
+  const s = sandbox();
+  try {
+    const files = createDeviceFiles(
+      s.home,
+      privateFileGuard(
+        fakeNative(() => "S-1-5-21-2000-2000-2000-1002"),
+        {
+          requireOwner: true,
+        },
+      ),
+      "cloud",
+    );
+    integrity(() => files.write(NAME, "a"));
+    expect(existsSync(s.file)).toBe(false);
+  } finally {
+    s.close();
+  }
+}, 20_000);
+
+test("without the owner option the guard ignores the owner, as for the account and database files", () => {
+  const s = sandbox();
+  try {
+    const files = createDeviceFiles(
+      s.home,
+      privateFileGuard(fakeNative(() => "S-1-5-21-2000-2000-2000-1002")),
+      "cloud",
+    );
+    files.write(NAME, "a");
+    expect(files.read(NAME)).toBe("a");
   } finally {
     s.close();
   }
@@ -296,7 +415,7 @@ test.skipIf(!windows)(
       const native = windowsPrivateFiles();
       const files = createDeviceFiles(
         s.home,
-        privateFileGuard(native),
+        privateFileGuard(native, { requireOwner: true }),
         "cloud",
       );
       files.write(NAME, "a");

@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import {
-  cloudLoginCatalog,
+  createCloudLogin,
   wireDeviceId,
   type CloudLoginDeps,
 } from "../../src/assembly/cloud-login.ts";
@@ -11,12 +11,8 @@ import {
   credentialStore,
   openCloudFiles,
 } from "../../src/assembly/cloud-profile.ts";
-import type { McpCandidate } from "../../src/contract/mcp.ts";
+import { ForgeFailure } from "../../src/contract/failure.ts";
 import type { ResultEnvelope } from "../../src/generated/types.ts";
-import {
-  emptyCatalog,
-  type SurfaceCatalog,
-} from "../../src/surface/catalog.ts";
 import { exitCode } from "../../src/surface/result.ts";
 import {
   approved,
@@ -55,34 +51,45 @@ function rig(options: { manifest?: boolean } = {}): Rig {
   return { sb: sandbox(options), clk: clock(), lines: [] };
 }
 
+/** Runs the login service the block calls and reports it as the envelope the runtime would build. */
 async function login(
   r: Rig,
   steps: Step[],
   more: Partial<CloudLoginDeps> = {},
   input: unknown = INPUT,
-  request: { dryRun?: boolean } = {},
 ) {
   const net = network(...steps);
-  const catalog = cloudLoginCatalog(emptyCatalog, {
+  const service = createCloudLogin({
     root: r.sb.root,
     home: r.sb.home,
     deviceRoot: r.sb.deviceRoot,
     env: { FORGE_DEVICE_ID: "dev-1" },
+    signal: new AbortController().signal,
     fetch: net.fetch,
     now: r.clk.now,
     wait: (ms, signal) => r.clk.wait(ms, signal),
     progress: (line) => r.lines.push(line),
     ...more,
   });
-  const envelope = await catalog.invoke({
-    schemaVersion: "forge.invocation/1",
-    requestId: "request-1",
-    op: "cloud.login",
-    input,
-    caller: "human",
-    context: {},
-    ...request,
-  });
+  let envelope: ResultEnvelope;
+  try {
+    envelope = {
+      ok: true,
+      op: "cloud.login",
+      status: "OK",
+      result: await service.login(input),
+      warnings: [],
+    };
+  } catch (error) {
+    if (!(error instanceof ForgeFailure)) throw error;
+    envelope = {
+      ok: false,
+      op: "cloud.login",
+      status: "FAIL",
+      error: error.error,
+      warnings: [],
+    };
+  }
   return { envelope, net, exit: exitCode(envelope) };
 }
 
@@ -206,6 +213,78 @@ test("polling stops at the original challenge deadline even if the server keeps 
     expect(net.calls).toHaveLength(4);
     expect(snapshot(r.sb)).toEqual({ credentials: null, binding: null });
     expectNoSecrets(envelope, r.lines);
+  } finally {
+    r.sb.close();
+  }
+}, 30_000);
+
+test("a long slow_down never sleeps past the challenge lifetime", async () => {
+  const r = rig();
+  try {
+    const start = r.clk.now();
+    const { envelope, exit, net } = await login(r, [
+      () => json(startBody({ expires_in: 20 })),
+      () => refusal("slow_down", 300),
+    ]);
+    expect(exit).toBe(1);
+    expect(failure(envelope).code).toBe("LOGIN_EXPIRED");
+    // The 300 second interval is cut to the 15 seconds left, and no further poll follows it.
+    expect(r.clk.waits).toEqual([5_000, 15_000]);
+    expect(r.clk.now() - start).toBe(20_000);
+    expect(net.calls).toHaveLength(2);
+    expect(snapshot(r.sb)).toEqual({ credentials: null, binding: null });
+  } finally {
+    r.sb.close();
+  }
+}, 30_000);
+
+test("a credential that arrives after the deadline is refused as expired and saves nothing", async () => {
+  const r = rig();
+  try {
+    const { envelope, exit } = await login(r, [
+      () => json(startBody({ expires_in: 20 })),
+      () => {
+        r.clk.advance(30_000);
+        return approved(credentialJson(r.clk.now()));
+      },
+    ]);
+    expect(exit).toBe(1);
+    expect(failure(envelope).code).toBe("LOGIN_EXPIRED");
+    expect(snapshot(r.sb)).toEqual({ credentials: null, binding: null });
+    expectNoSecrets(envelope, r.lines);
+  } finally {
+    r.sb.close();
+  }
+}, 30_000);
+
+test("a poll still in flight at the deadline is aborted and reported as expired", async () => {
+  const r = rig();
+  try {
+    const { envelope, exit, net } = await login(
+      r,
+      [
+        () => json(startBody({ expires_in: 2, interval: 1 })),
+        ({ init }) =>
+          new Promise<Response>((_, reject) => {
+            init.signal.addEventListener(
+              "abort",
+              () => reject(new Error("aborted")),
+              { once: true },
+            );
+          }),
+      ],
+      {
+        // The wait uses up all but 10 ms of the challenge's life.
+        wait: () => {
+          r.clk.advance(1_990);
+          return Promise.resolve();
+        },
+      },
+    );
+    expect(exit).toBe(1);
+    expect(failure(envelope).code).toBe("LOGIN_EXPIRED");
+    expect(net.calls).toHaveLength(2);
+    expect(snapshot(r.sb)).toEqual({ credentials: null, binding: null });
   } finally {
     r.sb.close();
   }
@@ -429,7 +508,45 @@ test("the binding is written only after the credential is saved: a failed save w
   }
 }, 30_000);
 
-test("a credential that publishes but fails readback restores the prior one and leaves the binding", async () => {
+test("a readback that fails once restores the prior credential and leaves the binding", async () => {
+  const r = rig();
+  try {
+    const prior = await seedPrior(r);
+    let failed = false;
+    const { envelope, exit } = await login(
+      r,
+      [
+        () => json(startBody()),
+        goodPoll(r, {
+          token: tokenFor("0123456789abcdef", "NEWMARK".padEnd(43, "N")),
+        }),
+      ],
+      {
+        security: {
+          directory() {},
+          file(path) {
+            if (
+              !failed &&
+              basename(path) === "credentials.json" &&
+              readFileSync(path, "utf8").includes("NEWMARK")
+            ) {
+              failed = true;
+              throw new Error("acl");
+            }
+          },
+        },
+      },
+    );
+    expect(exit).toBe(1);
+    expect(failure(envelope).code).toBe("ACCOUNT_INTEGRITY");
+    expect(snapshot(r.sb)).toEqual(prior);
+    expectNoSecrets(envelope, r.lines);
+  } finally {
+    r.sb.close();
+  }
+}, 30_000);
+
+test("an unsafe credential file is not overwritten by the restore and the binding is left alone", async () => {
   const r = rig();
   try {
     const prior = await seedPrior(r);
@@ -456,7 +573,11 @@ test("a credential that publishes but fails readback restores the prior one and 
     );
     expect(exit).toBe(1);
     expect(failure(envelope).code).toBe("ACCOUNT_INTEGRITY");
-    expect(snapshot(r.sb)).toEqual(prior);
+    // The prior document is kept in the private backup; the unsafe file itself is untouched.
+    expect(read(r.sb.binding)).toBe(prior.binding);
+    expect(
+      read(join(r.sb.home, ".forge", "cloud", "credentials.backup.json")),
+    ).toBe(prior.credentials);
     expectNoSecrets(envelope, r.lines);
   } finally {
     r.sb.close();
@@ -610,24 +731,6 @@ for (const [name, input] of badInputs)
     }
   }, 30_000);
 
-test("a dry run is refused because login cannot be previewed", async () => {
-  const r = rig();
-  try {
-    const { envelope, exit, net } = await login(
-      r,
-      [() => json(startBody())],
-      {},
-      INPUT,
-      { dryRun: true },
-    );
-    expect(exit).toBe(6);
-    expect(failure(envelope).code).toBe("INPUT_INVALID");
-    expect(net.calls).toHaveLength(0);
-  } finally {
-    r.sb.close();
-  }
-}, 30_000);
-
 test("a device id that fits is sent unchanged and any other is mapped by its SHA-256", () => {
   expect(wireDeviceId("laptop-0123")).toBe("laptop-0123");
   expect(wireDeviceId("a".repeat(128))).toBe("a".repeat(128));
@@ -719,54 +822,3 @@ test("an invalid FORGE_DEVICE_ID is a context failure with no request", async ()
     r.sb.close();
   }
 }, 30_000);
-
-test("the catalog gains cloud.login, and every other call passes through unchanged", async () => {
-  const other = {
-    ok: true,
-    op: "x.y",
-    status: "OK",
-    result: { a: 1 },
-    warnings: [],
-  } as const;
-  const listed = { op: "x.y" } as unknown as McpCandidate;
-  const calls: string[] = [];
-  const base: SurfaceCatalog = {
-    list: () => [listed],
-    diagnose: () => undefined,
-    invoke: (request) => {
-      calls.push(request.op);
-      return Promise.resolve(other);
-    },
-  };
-  const catalog = cloudLoginCatalog(base, {
-    root: "unused",
-    home: "unused",
-    deviceRoot: "unused",
-    env: {},
-  });
-  const entries = catalog.list();
-  expect(entries[0]).toBe(listed);
-  const candidate = entries.find((c) => c.op === "cloud.login");
-  expect(candidate).toBeDefined();
-  expect(candidate?.admitted).toBe(true);
-  expect(candidate?.declaration.callers).toEqual(["human"]);
-  expect(candidate?.declaration.context).toBe("device");
-  expect(candidate?.declaration.effects).toContain("files:write");
-  expect(candidate?.declaration.effects.length).toBeGreaterThan(0);
-  expect(candidate?.docs.title.length).toBeGreaterThan(0);
-  expect(candidate?.inputSchema).toMatchObject({
-    additionalProperties: false,
-    properties: { origin: { type: "string" }, project: { type: "string" } },
-  });
-  expect(typeof catalog.diagnose).toBe("function");
-  const result = await catalog.invoke({
-    schemaVersion: "forge.invocation/1",
-    requestId: "request-1",
-    op: "x.y",
-    input: {},
-    caller: "human",
-    context: {},
-  });
-  expect(result).toBe(other);
-  expect(calls).toEqual(["x.y"]);
-}, 10_000);

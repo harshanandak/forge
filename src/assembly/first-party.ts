@@ -7,6 +7,7 @@ export const firstPartyBlocks: Readonly<Record<string, URL>> = {
   "forge/accounts": new URL("../blocks/accounts/", import.meta.url),
   "forge/agent": new URL("../blocks/agent/", import.meta.url),
   "forge/check": new URL("../blocks/check/", import.meta.url),
+  "forge/cloud": new URL("../blocks/cloud/", import.meta.url),
   "forge/memory": new URL("../blocks/memory/", import.meta.url),
   "forge/work": new URL("../blocks/work/", import.meta.url),
 };

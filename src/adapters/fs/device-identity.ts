@@ -214,6 +214,16 @@ export function createDeviceFiles(
     if (security) secure(() => security.file(path));
     else if ((st.mode & 0o077) !== 0) refuse();
   }
+  /** Cloud files: any filesystem failure is an integrity refusal, never an error that could name a path. */
+  const guarded = <T>(run: () => T): T => {
+    if (!strict) return run();
+    try {
+      return run();
+    } catch (error) {
+      if (error instanceof ForgeFailure) throw error;
+      return refuse();
+    }
+  };
   const present = (path: string) => {
     if (!strict) return existsSync(path);
     try {
@@ -230,49 +240,55 @@ export function createDeviceFiles(
   }
   return {
     read(name) {
-      if (!ready(false)) return undefined;
-      const path = target(name);
-      if (!present(path)) return undefined;
-      checkFile(path);
-      return readFileSync(path, "utf8");
+      return guarded(() => {
+        if (!ready(false)) return undefined;
+        const path = target(name);
+        if (!present(path)) return undefined;
+        checkFile(path);
+        return readFileSync(path, "utf8");
+      });
     },
-    write(name, text, options) {
-      ready(true);
-      const path = target(name);
-      if (!strict) {
-        const temporary = path + ".new";
+    write(name, text) {
+      return guarded(() => {
+        ready(true);
+        const path = target(name);
+        if (!strict) {
+          const temporary = path + ".new";
+          const fd = createPrivateFile(temporary, false);
+          try {
+            writeFileSync(fd, text);
+            fsyncSync(fd);
+          } finally {
+            closeSync(fd);
+          }
+          replaceDurable(temporary, path);
+          return;
+        }
+        // Cloud: check the file being replaced, stage a private file, check what was staged, then publish.
+        // The replace can fail after the rename (the directory sync), so a caller that needs the old
+        // document back compares what is on disk; it never assumes a failed write changed nothing.
+        if (present(path)) checkFile(path);
+        const temporary = `${path}.${randomUUID()}.new`;
         const fd = createPrivateFile(temporary, false);
         try {
-          writeFileSync(fd, text);
-          fsyncSync(fd);
-        } finally {
-          closeSync(fd);
+          try {
+            writeFileSync(fd, text);
+            fsyncSync(fd);
+          } finally {
+            closeSync(fd);
+          }
+          checkFile(temporary);
+          if (readFileSync(temporary, "utf8") !== text) refuse();
+          replaceDurable(temporary, path);
+        } catch (error) {
+          try {
+            removeDurable(temporary);
+          } catch {
+            // Already published or gone; the original failure is the one to report.
+          }
+          throw error;
         }
-        replaceDurable(temporary, path);
-        return;
-      }
-      // Cloud: check the file being replaced, stage a private file, check what was staged, then publish.
-      if (options?.force !== true && present(path)) checkFile(path);
-      const temporary = `${path}.${randomUUID()}.new`;
-      const fd = createPrivateFile(temporary, false);
-      try {
-        try {
-          writeFileSync(fd, text);
-          fsyncSync(fd);
-        } finally {
-          closeSync(fd);
-        }
-        checkFile(temporary);
-        if (readFileSync(temporary, "utf8") !== text) refuse();
-        replaceDurable(temporary, path);
-      } catch (error) {
-        try {
-          removeDurable(temporary);
-        } catch {
-          // Already published or gone; the original failure is the one to report.
-        }
-        throw error;
-      }
+      });
     },
     lock() {
       ready(true);

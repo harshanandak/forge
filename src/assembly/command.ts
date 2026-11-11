@@ -1,9 +1,7 @@
-import { homedir } from "node:os";
 import { version } from "../version.ts";
 import { ForgeFailure } from "../contract/failure.ts";
 import { runCommand } from "../surface/command.ts";
 import { failure, respond } from "../surface/result.ts";
-import { cloudLoginCatalog } from "./cloud-login.ts";
 import { createLocalAssembly, localCall } from "./index.ts";
 import { assemblyMcp } from "./mcp.ts";
 
@@ -18,13 +16,7 @@ export async function runLocalCommand(
     });
     try {
       return await runCommand(argv, {
-        // Only login is added here; every other operation is the assembly's own, unchanged.
-        catalog: cloudLoginCatalog(assembly.catalog, {
-          root: assembly.root,
-          home: process.env.HOME ?? process.env.USERPROFILE ?? homedir(),
-          deviceRoot: assembly.deviceRoot,
-          env: process.env,
-        }),
+        catalog: assembly.catalog,
         version,
         call: localCall(assembly),
         mcp: assemblyMcp(assembly),

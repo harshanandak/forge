@@ -36,6 +36,14 @@ function fixture() {
   const home = join(dir, "home");
   mkdirSync(join(root, ".forge"), { recursive: true });
   mkdirSync(home);
+  // The block declares cloud.login, so the project enables it like any other first-party block.
+  writeFileSync(
+    join(root, ".forge", "config.yaml"),
+    JSON.stringify({
+      schemaVersion: "forge.config/1",
+      blocks: { cloud: { source: { builtin: "forge/cloud" } } },
+    }),
+  );
   const run = (args: string[]) => {
     const result = spawnSync("node", [bin, ...args], {
       cwd: root,

@@ -1,0 +1,28 @@
+{
+  "schemaVersion": "forge.block/1",
+  "id": "forge/cloud",
+  "version": "0.1.0",
+  "authorAbi": "forge.author/v2",
+  "profile": "trusted-action/v2",
+  "entry": "entry.cjs",
+  "configSchema": "schemas/config.json",
+  "requires": [
+    {
+      "slot": "cloud",
+      "interface": "forge.cloud-login@1"
+    }
+  ],
+  "operations": {
+    "cloud.login": {
+      "input": "schemas/input.json",
+      "output": "schemas/output.json",
+      "context": "device",
+      "timeoutMs": 3700000,
+      "effects": ["files:write", "external:forge-cloud"],
+      "idempotent": false,
+      "callers": ["human"],
+      "stability": "experimental"
+    }
+  },
+  "docs": "docs.json"
+}
