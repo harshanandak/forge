@@ -63,8 +63,9 @@ const ISSUE = {
   updatedAt: iso(NOW),
   revision: 3,
 };
-const answer = (result: object = ISSUE) =>
-  fx.json({ ok: true, op: "issue.show", status: "OK", result, warnings: [] });
+const PAGE = { items: [ISSUE], truncated: false };
+const answer = (result: object = ISSUE, op = "issue.show") =>
+  fx.json({ ok: true, op, status: "OK", result, warnings: [] });
 const refusing = (code: string) =>
   fx.json(
     {
@@ -79,10 +80,11 @@ const MANIFEST = resolve(
   import.meta.dirname,
   "../../src/blocks/work/forge.block.json",
 );
+const SERVED = ["issue.show", "issue.list", "issue.ready"];
 const DECLARED = Object.keys(
   (JSON.parse(readFileSync(MANIFEST, "utf8")) as { operations: object })
     .operations,
-).filter((op) => op !== "issue.show");
+).filter((op) => !SERVED.includes(op));
 const notServed = (op: string) =>
   `${op} is not served by the cloud authority of a cloud-bound project yet.`;
 const yaml = (extra: object = {}) =>
@@ -219,9 +221,9 @@ test("a bound project's issue show is answered by the cloud with the stored toke
     expect(body).toMatchObject({ context: { device: { id: "dev-1" } } });
   }));
 
-test("the routing decision refuses every other operation of the work block by name, and leaves other blocks local", () => {
+test("the routing decision serves show, list and ready, refuses every other operation of the work block by name, and leaves other blocks local", () => {
   expect(DECLARED.length).toBeGreaterThan(30);
-  expect(cloudRoute("forge/work", "issue.show")).toBe("cloud");
+  for (const op of SERVED) expect(cloudRoute("forge/work", op)).toBe("cloud");
   expect(cloudRoute("forge/memory", "memory.list")).toBe("local");
   for (const op of DECLARED) {
     const route = cloudRoute("forge/work", op);
@@ -235,7 +237,6 @@ test("the routing decision refuses every other operation of the work block by na
 const RENAMED = yaml({ rename: { issue: "ticket" } });
 for (const [source, op, input, declared] of [
   [WORK, "issue.create", { title: "x" }, "issue.create"],
-  [WORK, "issue.list", {}, "issue.list"],
   [RENAMED, "ticket.create", { title: "x" }, "issue.create"],
   [RENAMED, "ticket.show", { id: "forge-1" }, undefined],
 ] as const)
@@ -247,6 +248,60 @@ for (const [source, op, input, declared] of [
       expect(failed(result, "INPUT_INVALID")).toBe(6);
       expect(result).toMatchObject({ error: { message: notServed(declared) } });
       expect(r.net.calls).toHaveLength(0);
+    }));
+
+const FILTERS = { status: "open", labels: ["a"], limit: 5 };
+for (const [source, op, input, declared] of [
+  [WORK, "issue.list", {}, "issue.list"],
+  [WORK, "issue.list", FILTERS, "issue.list"],
+  [WORK, "issue.ready", {}, "issue.ready"],
+  [RENAMED, "ticket.list", FILTERS, "issue.list"],
+  [RENAMED, "ticket.ready", {}, "issue.ready"],
+] as const)
+  test(`through the assembled catalog, ${op} ${JSON.stringify(input)} on a bound project is answered by the cloud as ${declared}`, () =>
+    using(
+      { config: source, steps: [() => answer(PAGE, declared)] },
+      async (r) => {
+        const result = await r.assembly.catalog.invoke(r.request(op, input));
+        expect(result).toMatchObject({ ok: true, result: PAGE });
+        expect(exitCode(result)).toBe(0);
+        expect(JSON.stringify(result)).not.toContain(TOKEN);
+        expect(r.net.calls).toHaveLength(1);
+        expect(r.net.calls[0]!.body).toMatchObject({ op: declared, input });
+      },
+    ));
+
+for (const op of ["issue.list", "issue.ready"])
+  for (const [name, bad] of [
+    ["a missing truncated", { items: [] }],
+    ["an extra key", { items: [], truncated: false, extra: 1 }],
+    [
+      "an invalid item carrying the token",
+      { items: [{ ...ISSUE, revision: TOKEN }], truncated: false },
+    ],
+  ] as const)
+    test(`a cloud ${op} result with ${name} is refused as UNAVAILABLE, never passed through`, () =>
+      using({ steps: [() => answer(bad, op)] }, async (r) => {
+        expect(
+          failed(
+            await r.assembly.catalog.invoke(r.request(op, {})),
+            "UNAVAILABLE",
+          ),
+        ).toBe(1);
+        expect(r.net.calls).toHaveLength(1);
+      }));
+
+for (const op of ["issue.list", "issue.ready"])
+  test(`${op} on a bound project is UNAVAILABLE with no request as a dry run, and a server refusal keeps its code without the token`, () =>
+    using({ steps: [() => refusing("AUTH_REVOKED")] }, async (r) => {
+      const dry = r.request(op, {}, { dryRun: true });
+      expect(failed(await r.assembly.catalog.invoke(dry), "UNAVAILABLE")).toBe(
+        1,
+      );
+      expect(r.net.calls).toHaveLength(0);
+      const live = await r.assembly.catalog.invoke(r.request(op, {}));
+      expect(failed(live, "AUTH_REVOKED")).toBe(1);
+      expect(r.net.calls).toHaveLength(1);
     }));
 
 test("a held operation's hidden show goes to the cloud, and the operation itself is refused, even as a dry run", () =>
@@ -440,8 +495,11 @@ test("an existing store is left as it was, and a linked worktree is answered by 
 
 test("an unbound project runs locally, with no cloud request and no credential written", () =>
   using({ bind: false, creds: false, sentinel: false }, async (r) => {
-    const list = r.request("issue.list", {});
-    expect(await r.assembly.catalog.invoke(list)).toMatchObject({ ok: true });
+    for (const op of ["issue.list", "issue.ready"])
+      expect(await r.assembly.catalog.invoke(r.request(op, {}))).toMatchObject({
+        ok: true,
+        result: { items: [], truncated: false },
+      });
     expect(r.net.calls).toHaveLength(0);
     expect(existsSync(join(r.s.home, ".forge"))).toBe(false);
   }));
