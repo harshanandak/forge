@@ -79,6 +79,8 @@ export interface CommandHost {
   readonly device: string;
   /** The admitted project, fixed by the server. */
   readonly project: string;
+  /** The session the token is bound to; none for a token of the device alone. */
+  readonly session?: string | null;
 }
 export interface PreparedCommand {
   readonly requestId: string;
@@ -128,6 +130,16 @@ export function parseCommand(text: string, host: CommandHost): PreparedCommand {
     throw fail(
       "AUTH_DEVICE_MISMATCH",
       "The request names a device other than the token's",
+    );
+  // A token bound to a session proves it too, so a lease holder's session is never the caller's claim.
+  if (
+    host.session != null &&
+    session !== undefined &&
+    session.id !== host.session
+  )
+    throw fail(
+      "AUTH_DEVICE_MISMATCH",
+      "The request names a session other than the token's",
     );
   if (
     (project?.id ?? host.project) !== host.project ||

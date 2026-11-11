@@ -137,11 +137,11 @@ function refuse(code: string, what: string, row: SqlRow): ForgeFailure {
  * Second half, with no await after it: look the token up, then refuse a wrong, revoked or expired
  * one. Callers run their write right after, so a revoke can never fall between the check and the write.
  */
-export function authorize(
+export function authorizeToken(
   db: SqlDatabase,
   parts: { id: string; hash: string },
   now: number,
-): string {
+): { device: string; session: string | null } {
   const row = db.get(TOKEN_LOOKUP, [parts.id]);
   const match = same(
     parts.hash,
@@ -153,5 +153,15 @@ export function authorize(
   if (Number(row.expires_at) <= now)
     throw refuse("AUTH_EXPIRED", "expired", row);
   console.log(JSON.stringify({ auth: "granted", ...holderOf(row) }));
-  return String(row.device);
+  return {
+    device: String(row.device),
+    session: typeof row.session === "string" ? row.session : null,
+  };
 }
+
+/** The device a valid token names. */
+export const authorize = (
+  db: SqlDatabase,
+  parts: { id: string; hash: string },
+  now: number,
+): string => authorizeToken(db, parts, now).device;

@@ -57,6 +57,7 @@ import {
 } from "./issue-commands.ts";
 import {
   authorize,
+  authorizeToken,
   issueToken,
   revokeToken,
   TOKEN_LOOKUP,
@@ -487,7 +488,7 @@ export class Project {
       const body = await bounded(request, MAX_COMMAND_BODY);
       // No await from here to the response: the second check below stays current while it is built.
       return runCommand(body, {
-        device: authorize(db, parts, Date.now()),
+        ...authorizeToken(db, parts, Date.now()),
         project: commandProject(request)!,
         storage: this.#storage,
         idPrefix: (this.#env as { FORGE_CLOUD_ID_PREFIX?: unknown })

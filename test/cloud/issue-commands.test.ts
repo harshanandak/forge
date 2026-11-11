@@ -159,12 +159,16 @@ function fixture(
       touched: [...calls],
     };
   }
-  const device = async (ttlMs = day, who = "laptop") => {
+  const device = async (ttlMs = day, who = "laptop", session?: string) => {
     const response = await createWorker().fetch(
       new Request(`https://w.example/p/${name}/devices`, {
         method: "POST",
         headers: { authorization: `Bearer ${vars.ADMIN_TOKEN}` },
-        body: JSON.stringify({ device: who, ttlMs }),
+        body: JSON.stringify({
+          device: who,
+          ttlMs,
+          ...(session === undefined ? {} : { session }),
+        }),
       }),
       bindings,
     );
@@ -2441,28 +2445,6 @@ test("a retry returns the original result with no second issue or issue event, a
   expect(f.snapshot()).toBe(revoked);
 }, 60_000);
 
-test("a failed receipt write rolls the whole create back, and the retry takes the same number", async () => {
-  const { f, token } = await createRows();
-  const before = writes(f);
-  f.db.run(
-    "CREATE TRIGGER no_receipt BEFORE INSERT ON state_records WHEN NEW.namespace='forge/cloud' BEGIN SELECT RAISE(ABORT, 'boom'); END",
-  );
-  const quiet = spyOn(console, "error").mockImplementation(() => {});
-  try {
-    const got = await f.send(make("t-1"), { token });
-    expect([got.status, got.code, got.exit]).toEqual([500, "INTERNAL", 1]);
-  } finally {
-    quiet.mockRestore();
-  }
-  expect(writes(f)).toBe(before);
-  f.db.run("DROP TRIGGER no_receipt");
-  const retry = await f.send(make("t-1"), { token });
-  expect([retry.status, retry.json.result]).toMatchObject([
-    200,
-    { id: "forge-13" },
-  ]);
-}, 30_000);
-
 test("graph fields are refused as unsupported, recorded once for a fresh request id and never dropped", async () => {
   const { f, token } = await createRows();
   const work = () =>
@@ -2596,127 +2578,6 @@ test("a create with no, wrong, revoked or expired credentials writes no work and
   refusal("expired during the read", expired, [401, "AUTH_EXPIRED", 1]);
   expect(writes(f)).toBe(before);
 }, 60_000);
-
-test("at the receipt limit a fresh create is refused, a refusal records nothing more, and a replay still answers", async () => {
-  const { f, token } = await createRows();
-  const first = await f.send(make("l-0"), { token });
-  expect(first.status).toBe(200);
-  f.db.run(
-    "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < ?) INSERT INTO state_records(namespace,key,revision,body) SELECT 'forge/cloud', 'request:fill-' || i, 1, '{}' FROM n",
-    [MAX_RECEIPTS - 1],
-  );
-  const full = f.snapshot();
-  const got = await f.send(make("l-1"), { token });
-  expect([got.status, got.code, got.exit]).toEqual([503, "UNAVAILABLE", 1]);
-  expect(got.json.error?.message).toContain("receipts");
-  expect(f.snapshot()).toBe(full);
-  const refused = await f.send(
-    make("l-2", { title: "New", parent: "forge-1" }),
-    { token },
-  );
-  expect([refused.status, refused.code]).toEqual([400, "INPUT_INVALID"]);
-  expect(f.snapshot()).toBe(full);
-  const again = await f.send(make("l-0"), { token });
-  expect([again.status, again.text]).toEqual([200, first.text]);
-  expect(f.snapshot()).toBe(full);
-}, 60_000);
-
-test("a create leaves its work record, event and receipt in the dump, and no credential or login state anywhere", async () => {
-  const { f, token } = await createRows();
-  const ok = await f.send(make("s-1", { title: "New", kind: "task" }), {
-    token,
-  });
-  const bad = await f.send(make("s-2", { title: "" }), { token });
-  expect([ok.status, bad.status]).toEqual([200, 400]);
-  const dump = await f.dump();
-  const { value } = JSON.parse(dump) as {
-    value: { tables: Record<string, { namespace?: string; key?: string }[]> };
-  };
-  expect(Object.keys(value.tables).sort()).toEqual([
-    "domain_cloud_requests",
-    "state_events",
-    "state_leases",
-    "state_records",
-    "state_requests",
-  ]);
-  const at = (table: string) =>
-    (value.tables[table] ?? []).map((r) => `${r.namespace}/${r.key ?? ""}`);
-  for (const record of [
-    "forge/work/issue:work-13",
-    "forge/cloud/request:s-1",
-    "forge/cloud/request:s-2",
-  ])
-    expect(at("state_records")).toContain(record);
-  expect(
-    at("state_events")
-      .map((row) => row.split("/").slice(0, 2).join("/"))
-      .sort(),
-  ).toEqual(["forge/cloud", "forge/cloud", "forge/work"]);
-  // The token is the canary: it is in no response, receipt, dump or row of the project.
-  const secret = token.split(".")[1]!;
-  const rows = JSON.stringify(
-    ["forge/work", "forge/cloud"].map((ns) => rowsOf(f.db, ns)),
-  );
-  for (const text of [ok.text, bad.text, dump, rows])
-    for (const canary of [token, secret, "authorization", "fct_"])
-      expect([
-        canary,
-        text.toLowerCase().includes(canary.toLowerCase()),
-      ]).toEqual([canary, false]);
-}, 60_000);
-
-test("a request id that carries a device token is refused before any lookup or write, and no part of the token is stored or echoed", async () => {
-  const { f, token } = await createRows();
-  const before = f.snapshot();
-  const secret = token.split(".")[1]!;
-  const texts: string[] = [];
-  for (const [name, id, input] of [
-    ["valid input", token, { title: "New" }],
-    ["refused input", token, { title: "New", parent: "forge-1" }],
-    ["upper case", token.toUpperCase(), { title: "New" }],
-    ["inside other text", `x-${token}`, { title: "New" }],
-  ] as const) {
-    const got = await f.send(make(id, input), { token });
-    expect([name, got.status, got.code, got.exit]).toEqual([
-      name,
-      400,
-      "INPUT_INVALID",
-      6,
-    ]);
-    expect(got.json.error?.message).toBe(
-      "requestId must not carry a credential",
-    );
-    texts.push(got.text);
-  }
-  expect(f.snapshot()).toBe(before);
-  texts.push(await f.dump());
-  for (const text of texts)
-    for (const part of [token, secret])
-      expect(text.toLowerCase()).not.toContain(part.toLowerCase());
-}, 30_000);
-
-test("a token that expires between the route's check and the transaction allocates and records nothing", async () => {
-  const { f, token } = await createRows();
-  const before = writes(f);
-  const real = f.storage.sql.exec.bind(f.storage.sql);
-  let tripped = false;
-  // The first statement after the route's checks is the receipt lookup: the clock passes expiry there.
-  f.storage.sql.exec = (sql, ...bindings) => {
-    if (!tripped && bindings.includes("request:e-1")) {
-      tripped = true;
-      f.advance(2 * day);
-    }
-    return real(sql, ...bindings);
-  };
-  const got = await f.send(make("e-1"), { token });
-  expect([tripped, got.status, got.code, got.exit]).toEqual([
-    true,
-    401,
-    "AUTH_EXPIRED",
-    1,
-  ]);
-  expect(writes(f)).toBe(before);
-}, 30_000);
 
 // issue.comment: the route and the real local handler start from the same rows, clock and config.
 const note = (
@@ -2919,146 +2780,6 @@ test("a missing issue is NOT_FOUND and bad input is INPUT_INVALID: no comment, o
     { token },
   );
   expect([fits.status, fits.exit]).toEqual([200, 0]);
-}, 60_000);
-
-test("a request id that carries a device token is refused for a comment before any lookup or write, and no part of the token is stored or echoed", async () => {
-  const { f, token } = await commentRows();
-  const before = f.snapshot();
-  const secret = token.split(".")[1]!;
-  const texts: string[] = [];
-  for (const [name, id, input] of [
-    ["valid input", token, { id: "forge-12", body: "x" }],
-    ["refused input", token, { id: "forge-99", body: "x" }],
-    ["upper case", token.toUpperCase(), { id: "forge-12", body: "x" }],
-    ["inside other text", `x-${token}`, { id: "forge-12", body: "x" }],
-  ] as const) {
-    const got = await f.send(note(id, input), { token });
-    expect([name, got.status, got.code, got.exit]).toEqual([
-      name,
-      400,
-      "INPUT_INVALID",
-      6,
-    ]);
-    expect(got.json.error?.message).toBe(
-      "requestId must not carry a credential",
-    );
-    texts.push(got.text);
-  }
-  expect(f.snapshot()).toBe(before);
-  texts.push(await f.dump());
-  for (const text of texts)
-    for (const part of [token, secret])
-      expect(text.toLowerCase()).not.toContain(part.toLowerCase());
-}, 30_000);
-
-test("a token that expires between the route's check and the transaction writes and records nothing, for a comment and for a refusal", async () => {
-  for (const input of [
-    { id: "forge-12", body: "x" },
-    { id: "forge-99", body: "x" },
-  ]) {
-    const { f, token } = await commentRows();
-    const before = writes(f);
-    const real = f.storage.sql.exec.bind(f.storage.sql);
-    let tripped = false;
-    // The first statement after the route's checks is the receipt lookup: the clock passes expiry there.
-    f.storage.sql.exec = (sql, ...bindings) => {
-      if (!tripped && bindings.includes("request:e-1")) {
-        tripped = true;
-        f.advance(2 * day);
-      }
-      return real(sql, ...bindings);
-    };
-    const got = await f.send(note("e-1", input), { token });
-    expect([tripped, got.status, got.code, got.exit]).toEqual([
-      true,
-      401,
-      "AUTH_EXPIRED",
-      1,
-    ]);
-    expect(writes(f)).toBe(before);
-  }
-}, 30_000);
-
-test("at the receipt limit a fresh comment is refused, a refusal records nothing more, and a replay still answers", async () => {
-  const { f, token } = await commentRows();
-  const first = await f.send(note("l-0"), { token });
-  expect(first.status).toBe(200);
-  f.db.run(
-    "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < ?) INSERT INTO state_records(namespace,key,revision,body) SELECT 'forge/cloud', 'request:fill-' || i, 1, '{}' FROM n",
-    [MAX_RECEIPTS - 1],
-  );
-  const full = f.snapshot();
-  const got = await f.send(note("l-1"), { token });
-  expect([got.status, got.code, got.exit]).toEqual([503, "UNAVAILABLE", 1]);
-  expect(got.json.error?.message).toContain("receipts");
-  expect(f.snapshot()).toBe(full);
-  const missing = await f.send(note("l-2", { id: "forge-99", body: "x" }), {
-    token,
-  });
-  expect([missing.status, missing.code]).toEqual([404, "NOT_FOUND"]);
-  expect(f.snapshot()).toBe(full);
-  const again = await f.send(note("l-0"), { token });
-  expect([again.status, again.text]).toEqual([200, first.text]);
-  expect(f.snapshot()).toBe(full);
-}, 60_000);
-
-test("a failed receipt write rolls the whole comment back, and the retry takes the same number", async () => {
-  const { f, token } = await commentRows();
-  const before = writes(f);
-  f.db.run(
-    "CREATE TRIGGER no_receipt BEFORE INSERT ON state_records WHEN NEW.namespace='forge/cloud' BEGIN SELECT RAISE(ABORT, 'boom'); END",
-  );
-  const quiet = spyOn(console, "error").mockImplementation(() => {});
-  try {
-    const got = await f.send(note("t-1"), { token });
-    expect([got.status, got.code, got.exit]).toEqual([500, "INTERNAL", 1]);
-  } finally {
-    quiet.mockRestore();
-  }
-  expect(writes(f)).toBe(before);
-  f.db.run("DROP TRIGGER no_receipt");
-  const retry = await f.send(note("t-1"), { token });
-  expect([retry.status, retry.json.result]).toEqual([
-    200,
-    { id: "forge-12", commentId: "comment:work-12:4" },
-  ]);
-}, 30_000);
-
-test("a comment leaves its record, event and receipt in the dump, and no credential or login state anywhere", async () => {
-  const { f, token } = await commentRows();
-  const ok = await f.send(note("s-1"), { token });
-  const bad = await f.send(note("s-2", { id: "forge-12", body: "" }), {
-    token,
-  });
-  expect([ok.status, bad.status]).toEqual([200, 400]);
-  const dump = await f.dump();
-  const { value } = JSON.parse(dump) as {
-    value: { tables: Record<string, { namespace?: string; key?: string }[]> };
-  };
-  const at = (table: string) =>
-    (value.tables[table] ?? []).map((r) => `${r.namespace}/${r.key ?? ""}`);
-  for (const record of [
-    "forge/work/comment:work-12:4",
-    "forge/cloud/request:s-1",
-    "forge/cloud/request:s-2",
-  ])
-    expect(at("state_records")).toContain(record);
-  expect(
-    at("state_events")
-      .map((row) => row.split("/").slice(0, 2).join("/"))
-      .sort(),
-  ).toEqual(["forge/cloud", "forge/cloud", "forge/work"]);
-  // The token is the canary: it is in no response, receipt, dump or row of the project.
-  const secret = token.split(".")[1]!;
-  const rows = JSON.stringify(
-    ["forge/work", "forge/cloud"].map((ns) => rowsOf(f.db, ns)),
-  );
-  for (const text of [ok.text, bad.text, dump, rows])
-    for (const canary of [token, secret, "authorization", "fct_"])
-      expect([
-        canary,
-        text.toLowerCase().includes(canary.toLowerCase()),
-      ]).toEqual([canary, false]);
 }, 60_000);
 
 // issue.update: the route and the real local handler start from the same rows, clock, config and held lease.
@@ -3512,144 +3233,6 @@ test("a replay after the lease was released, expired or taken over is LEASE_STAL
   }
 }, 120_000);
 
-test("a request id that carries a device token is refused for an update before any lookup or write, and no part of the token is stored or echoed", async () => {
-  const { f, token } = await updateRows();
-  const before = f.snapshot();
-  const secret = token.split(".")[1]!;
-  const texts: string[] = [];
-  for (const [name, id, input] of [
-    ["valid input", token, patch()],
-    ["refused input", token, patch({ id: "forge-99" })],
-    ["upper case", token.toUpperCase(), patch()],
-    ["inside other text", `x-${token}`, patch()],
-  ] as const) {
-    const got = await f.send(revise(id, input), { token });
-    expect([name, got.status, got.code, got.exit]).toEqual([
-      name,
-      400,
-      "INPUT_INVALID",
-      6,
-    ]);
-    expect(got.json.error?.message).toBe(
-      "requestId must not carry a credential",
-    );
-    texts.push(got.text);
-  }
-  expect(f.snapshot()).toBe(before);
-  texts.push(await f.dump());
-  for (const text of texts)
-    for (const part of [token, secret])
-      expect(text.toLowerCase()).not.toContain(part.toLowerCase());
-}, 30_000);
-
-test("a token that expires between the route's check and the transaction writes and records nothing, for an update and for a refusal", async () => {
-  for (const input of [patch(), patch({ id: "forge-99" })]) {
-    const { f, token } = await updateRows();
-    const before = writes(f);
-    const real = f.storage.sql.exec.bind(f.storage.sql);
-    let tripped = false;
-    // The first statement after the route's checks is the receipt lookup: the clock passes expiry there.
-    f.storage.sql.exec = (sql, ...bindings) => {
-      if (!tripped && bindings.includes("request:e-1")) {
-        tripped = true;
-        f.advance(2 * day);
-      }
-      return real(sql, ...bindings);
-    };
-    const got = await f.send(revise("e-1", input), { token });
-    expect([tripped, got.status, got.code, got.exit]).toEqual([
-      true,
-      401,
-      "AUTH_EXPIRED",
-      1,
-    ]);
-    expect(writes(f)).toBe(before);
-  }
-}, 30_000);
-
-test("at the receipt limit a fresh update is refused, a refusal records nothing more, and a replay still answers", async () => {
-  const { f, token } = await updateRows();
-  const first = await f.send(revise("l-0"), { token });
-  expect(first.status).toBe(200);
-  f.db.run(
-    "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < ?) INSERT INTO state_records(namespace,key,revision,body) SELECT 'forge/cloud', 'request:fill-' || i, 1, '{}' FROM n",
-    [MAX_RECEIPTS - 1],
-  );
-  const full = f.snapshot();
-  const got = await f.send(revise("l-1", patch({ expectRevision: 4 })), {
-    token,
-  });
-  expect([got.status, got.code, got.exit]).toEqual([503, "UNAVAILABLE", 1]);
-  expect(got.json.error?.message).toContain("receipts");
-  expect(f.snapshot()).toBe(full);
-  const missing = await f.send(revise("l-2", patch({ id: "forge-99" })), {
-    token,
-  });
-  expect([missing.status, missing.code]).toEqual([404, "NOT_FOUND"]);
-  expect(f.snapshot()).toBe(full);
-  const again = await f.send(revise("l-0"), { token });
-  expect([again.status, again.text]).toEqual([200, first.text]);
-  expect(f.snapshot()).toBe(full);
-}, 60_000);
-
-test("a failed receipt write rolls the whole update back, and the retry applies it once", async () => {
-  const { f, token } = await updateRows();
-  const before = writes(f);
-  f.db.run(
-    "CREATE TRIGGER no_receipt BEFORE INSERT ON state_records WHEN NEW.namespace='forge/cloud' BEGIN SELECT RAISE(ABORT, 'boom'); END",
-  );
-  const quiet = spyOn(console, "error").mockImplementation(() => {});
-  try {
-    const got = await f.send(revise("t-1"), { token });
-    expect([got.status, got.code, got.exit]).toEqual([500, "INTERNAL", 1]);
-  } finally {
-    quiet.mockRestore();
-  }
-  expect(writes(f)).toBe(before);
-  f.db.run("DROP TRIGGER no_receipt");
-  const retry = await f.send(revise("t-1"), { token });
-  expect([retry.status, retry.json.result]).toMatchObject([
-    200,
-    { title: "Edited", revision: 4 },
-  ]);
-  expect(eventsOf(f.db, "forge/work")).toHaveLength(1);
-}, 30_000);
-
-test("an update leaves its record, event and receipt in the dump, and no credential or login state anywhere", async () => {
-  const { f, token } = await updateRows();
-  const ok = await f.send(revise("s-1"), { token });
-  const bad = await f.send(revise("s-2", patch({ title: "" })), { token });
-  expect([ok.status, bad.status]).toEqual([200, 400]);
-  const dump = await f.dump();
-  const { value } = JSON.parse(dump) as {
-    value: { tables: Record<string, { namespace?: string; key?: string }[]> };
-  };
-  const at = (table: string) =>
-    (value.tables[table] ?? []).map((r) => `${r.namespace}/${r.key ?? ""}`);
-  for (const record of [
-    "forge/work/issue:work-12",
-    "forge/cloud/request:s-1",
-    "forge/cloud/request:s-2",
-  ])
-    expect(at("state_records")).toContain(record);
-  expect(
-    at("state_events")
-      .map((row) => row.split("/").slice(0, 2).join("/"))
-      .sort(),
-  ).toEqual(["forge/cloud", "forge/cloud", "forge/work"]);
-  // The token is the canary: it is in no response, receipt, dump or row of the project.
-  const secret = token.split(".")[1]!;
-  const rows = JSON.stringify(
-    ["forge/work", "forge/cloud"].map((ns) => rowsOf(f.db, ns)),
-  );
-  for (const text of [ok.text, bad.text, dump, rows])
-    for (const canary of [token, secret, "authorization", "fct_"])
-      expect([
-        canary,
-        text.toLowerCase().includes(canary.toLowerCase()),
-      ]).toEqual([canary, false]);
-}, 60_000);
-
 test("the shared write path takes a project context for create and comment and a leased one for update, and refuses the other as INTERNAL", async () => {
   const { f } = await updateRows();
   const db = sqlOf(f.db);
@@ -3682,3 +3265,270 @@ test("the shared write path takes a project context for create and comment and a
   }
   expect(f.snapshot()).toBe(before);
 }, 30_000);
+
+// The receipt scenarios every write shares, run for create, comment and update, each with its own rows.
+type Sent = Awaited<ReturnType<F["send"]>>;
+interface Write {
+  name: string;
+  rows: () => Promise<{ f: F; token: string }>;
+  /** The envelope for a request id; the input is the write's default unless given. */
+  send: (id: string, input?: object) => object;
+  /** Input its check refuses, recorded as a refusal, and the refusal it gets. */
+  bad: object;
+  badWant: readonly [number, string];
+  /** Input the schema refuses, for the dump. */
+  empty: object;
+  /** Input for the dump's accepted write, when the default is not it. */
+  ok?: object;
+  /** The work record a successful write leaves in the dump. */
+  record: string;
+  /** What the first successful write returns, after a failed receipt write was rolled back. */
+  result: (f: F, got: Sent) => void;
+}
+const WRITES: Write[] = [
+  {
+    name: "create",
+    rows: createRows,
+    send: make,
+    bad: { title: "New", parent: "forge-1" },
+    badWant: [400, "INPUT_INVALID"],
+    empty: { title: "" },
+    ok: { title: "New", kind: "task" },
+    record: "forge/work/issue:work-13",
+    result: (_f, got) =>
+      expect([got.status, got.json.result]).toMatchObject([
+        200,
+        { id: "forge-13" },
+      ]),
+  },
+  {
+    name: "comment",
+    rows: commentRows,
+    send: note,
+    bad: { id: "forge-99", body: "x" },
+    badWant: [404, "NOT_FOUND"],
+    empty: { id: "forge-12", body: "" },
+    record: "forge/work/comment:work-12:4",
+    result: (_f, got) =>
+      expect([got.status, got.json.result]).toEqual([
+        200,
+        { id: "forge-12", commentId: "comment:work-12:4" },
+      ]),
+  },
+  {
+    name: "update",
+    rows: updateRows,
+    send: revise,
+    bad: patch({ id: "forge-99" }),
+    badWant: [404, "NOT_FOUND"],
+    empty: patch({ title: "" }),
+    record: "forge/work/issue:work-12",
+    result: (f, got) => {
+      expect([got.status, got.json.result]).toMatchObject([
+        200,
+        { title: "Edited", revision: 4 },
+      ]);
+      expect(eventsOf(f.db, "forge/work")).toHaveLength(1);
+    },
+  },
+];
+
+for (const w of WRITES) {
+  test(`a request id that carries a device token is refused for ${w.name} before any lookup or write, and no part of the token is stored or echoed`, async () => {
+    const { f, token } = await w.rows();
+    const before = f.snapshot();
+    const secret = token.split(".")[1]!;
+    const texts: string[] = [];
+    for (const [name, id, input] of [
+      ["valid input", token, undefined],
+      ["refused input", token, w.bad],
+      ["upper case", token.toUpperCase(), undefined],
+      ["inside other text", `x-${token}`, undefined],
+    ] as const) {
+      const got = await f.send(w.send(id, input), { token });
+      expect([name, got.status, got.code, got.exit]).toEqual([
+        name,
+        400,
+        "INPUT_INVALID",
+        6,
+      ]);
+      expect(got.json.error?.message).toBe(
+        "requestId must not carry a credential",
+      );
+      texts.push(got.text);
+    }
+    expect(f.snapshot()).toBe(before);
+    texts.push(await f.dump());
+    for (const text of texts)
+      for (const part of [token, secret])
+        expect(text.toLowerCase()).not.toContain(part.toLowerCase());
+  }, 30_000);
+
+  test(`a token that expires between the route's check and the transaction writes and records nothing, for a ${w.name} and for a refusal`, async () => {
+    for (const input of [undefined, w.bad]) {
+      const { f, token } = await w.rows();
+      const before = writes(f);
+      const real = f.storage.sql.exec.bind(f.storage.sql);
+      let tripped = false;
+      // The first statement after the route's checks is the receipt lookup: the clock passes expiry there.
+      f.storage.sql.exec = (sql, ...bindings) => {
+        if (!tripped && bindings.includes("request:e-1")) {
+          tripped = true;
+          f.advance(2 * day);
+        }
+        return real(sql, ...bindings);
+      };
+      const got = await f.send(w.send("e-1", input), { token });
+      expect([tripped, got.status, got.code, got.exit]).toEqual([
+        true,
+        401,
+        "AUTH_EXPIRED",
+        1,
+      ]);
+      expect(writes(f)).toBe(before);
+    }
+  }, 30_000);
+
+  test(`at the receipt limit a fresh ${w.name} is refused, a refusal records nothing more, and a replay still answers`, async () => {
+    const { f, token } = await w.rows();
+    const first = await f.send(w.send("l-0"), { token });
+    expect(first.status).toBe(200);
+    f.db.run(
+      "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < ?) INSERT INTO state_records(namespace,key,revision,body) SELECT 'forge/cloud', 'request:fill-' || i, 1, '{}' FROM n",
+      [MAX_RECEIPTS - 1],
+    );
+    const full = f.snapshot();
+    const got = await f.send(w.send("l-1"), { token });
+    expect([got.status, got.code, got.exit]).toEqual([503, "UNAVAILABLE", 1]);
+    expect(got.json.error?.message).toContain("receipts");
+    expect(f.snapshot()).toBe(full);
+    const refused = await f.send(w.send("l-2", w.bad), { token });
+    expect([refused.status, refused.code]).toEqual([...w.badWant]);
+    expect(f.snapshot()).toBe(full);
+    const again = await f.send(w.send("l-0"), { token });
+    expect([again.status, again.text]).toEqual([200, first.text]);
+    expect(f.snapshot()).toBe(full);
+  }, 60_000);
+
+  test(`a failed receipt write rolls the whole ${w.name} back, and the retry applies it once`, async () => {
+    const { f, token } = await w.rows();
+    const before = writes(f);
+    f.db.run(
+      "CREATE TRIGGER no_receipt BEFORE INSERT ON state_records WHEN NEW.namespace='forge/cloud' BEGIN SELECT RAISE(ABORT, 'boom'); END",
+    );
+    const quiet = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const got = await f.send(w.send("t-1"), { token });
+      expect([got.status, got.code, got.exit]).toEqual([500, "INTERNAL", 1]);
+    } finally {
+      quiet.mockRestore();
+    }
+    expect(writes(f)).toBe(before);
+    f.db.run("DROP TRIGGER no_receipt");
+    w.result(f, await f.send(w.send("t-1"), { token }));
+  }, 30_000);
+
+  test(`a ${w.name} leaves its record, event and receipt in the dump, and no credential or login state anywhere`, async () => {
+    const { f, token } = await w.rows();
+    const ok = await f.send(w.send("s-1", w.ok), { token });
+    const bad = await f.send(w.send("s-2", w.empty), { token });
+    expect([ok.status, bad.status]).toEqual([200, 400]);
+    const dump = await f.dump();
+    const { value } = JSON.parse(dump) as {
+      value: { tables: Record<string, { namespace?: string; key?: string }[]> };
+    };
+    expect(Object.keys(value.tables).sort()).toEqual([
+      "domain_cloud_requests",
+      "state_events",
+      "state_leases",
+      "state_records",
+      "state_requests",
+    ]);
+    const at = (table: string) =>
+      (value.tables[table] ?? []).map((r) => `${r.namespace}/${r.key ?? ""}`);
+    for (const record of [
+      w.record,
+      "forge/cloud/request:s-1",
+      "forge/cloud/request:s-2",
+    ])
+      expect(at("state_records")).toContain(record);
+    expect(
+      at("state_events")
+        .map((row) => row.split("/").slice(0, 2).join("/"))
+        .sort(),
+    ).toEqual(["forge/cloud", "forge/cloud", "forge/work"]);
+    // The token is the canary: it is in no response, receipt, dump or row of the project.
+    const secret = token.split(".")[1]!;
+    const rows = JSON.stringify(
+      ["forge/work", "forge/cloud"].map((ns) => rowsOf(f.db, ns)),
+    );
+    for (const text of [ok.text, bad.text, dump, rows])
+      for (const canary of [token, secret, "authorization", "fct_"])
+        expect([
+          canary,
+          text.toLowerCase().includes(canary.toLowerCase()),
+        ]).toEqual([canary, false]);
+  }, 60_000);
+}
+
+// A token bound to a session proves it: a body that names another session, on the same device, is refused.
+test("a session-bound token cannot act as another session, on a first write or a replay, and a sessionless token keeps the device as the boundary", async () => {
+  const { f, token: sessionless } = await updateRows();
+  const s1 = await f.device(day, "laptop", "s1");
+  const s2 = await f.device(day, "laptop", "s2");
+  const before = writes(f);
+  // The holder is laptop session s1 at generation 2: a token bound to s2 cannot name s1.
+  for (const [name, send] of [
+    ["update", revise("m-1")],
+    [
+      "create",
+      make(
+        "m-2",
+        { title: "New" },
+        { context: { actor, session: { id: "s1" } } },
+      ),
+    ],
+    [
+      "comment",
+      note(
+        "m-3",
+        { id: "forge-12", body: "x" },
+        { context: { actor, session: { id: "s1" } } },
+      ),
+    ],
+  ] as const) {
+    const got = await f.send(send, { token: s2 });
+    expect([name, got.status, got.code, got.exit]).toEqual([
+      name,
+      403,
+      "AUTH_DEVICE_MISMATCH",
+      1,
+    ]);
+    expect(got.json.error?.message).toBe(
+      "The request names a session other than the token's",
+    );
+    expect([name, writes(f)]).toEqual([name, before]);
+  }
+  // A matching session passes; so does a token with no session, which names s1 itself.
+  const first = await f.send(revise("m-4"), { token: s1 });
+  expect([first.status, first.json.result]).toMatchObject([
+    200,
+    { title: "Edited", revision: 4 },
+  ]);
+  const kept = f.snapshot();
+  // A replay is checked the same way: s2 cannot read or repeat the s1 result.
+  const forged = await f.send(revise("m-4"), { token: s2 });
+  expect([forged.status, forged.code]).toEqual([403, "AUTH_DEVICE_MISMATCH"]);
+  expect(forged.text).not.toContain("Edited");
+  expect(f.snapshot()).toBe(kept);
+  const again = await f.send(revise("m-4"), { token: s1 });
+  expect([again.status, again.text]).toEqual([200, first.text]);
+  const open = await f.send(
+    revise("m-5", patch({ expectRevision: 4, title: "Open" })),
+    { token: sessionless },
+  );
+  expect([open.status, open.json.result]).toMatchObject([
+    200,
+    { title: "Open", revision: 5 },
+  ]);
+}, 60_000);
