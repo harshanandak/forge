@@ -99,7 +99,7 @@ The owner runs these steps. Replace angle-bracket placeholders; `<worker-origin>
 
    Set the `OAUTH_KV` id in `wrangler.local.jsonc`. Keep the rest of the example as it is: the preflight refuses any difference outside `account_id`, `name`, `vars` and that id.
 
-3. **Public vars.** Set each var in `wrangler.local.jsonc`. All are required except `FORGE_OAUTH_REDIRECTS`; without `FORGE_OWNER_SUBJECT` or `FORGE_CLOUD_PROJECT`, device login and `/command` refuse, without `FORGE_CLOUD_ID_PREFIX`, `issue.show` answers 503, and the preflight stops the deploy in each case:
+3. **Public vars.** Set each var in `wrangler.local.jsonc`. All are required except `FORGE_OAUTH_REDIRECTS`; without `FORGE_OWNER_SUBJECT`, device login refuses (only login reads it), without `FORGE_CLOUD_PROJECT`, device login and `/command` refuse, without `FORGE_CLOUD_ID_PREFIX`, the issue commands answer 503, and the preflight stops the deploy in each case. `FORGE_OWNER_SUBJECT` is the owner's Clerk user id (in Clerk: Users, the user, "User ID", starting `user_`):
 
    | Name                    | Example shape                               | What `readOAuthConfig` checks                                                                                 | Classification |
    | ----------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------- | -------------- |
@@ -193,7 +193,7 @@ The owner runs these steps. Replace angle-bracket placeholders; `<worker-origin>
    curl -sS -i -X POST -H 'Content-Type: application/json' --data '{}' '<worker-origin>/p/<other-project>/command'
    ```
 
-   Expect 200 with `device_code`, `user_code`, `expires_in` and `verification_uri` (keep that file private; it counts toward the five starts per address per minute); then 200 HTML; then 401 `AUTH_REQUIRED`; then 403 `AUTH_FORBIDDEN`. The command handler only refuses until forge-1227, and owner approval in the browser is not exercised here. Treat both as unverified unless you test them separately.
+   Expect 200 with `device_code`, `user_code`, `expires_in` and `verification_uri` (keep that file private; it counts toward the five starts per address per minute); then 200 HTML; then 401 `AUTH_REQUIRED`; then 403 `AUTH_FORBIDDEN`. The command handler's reads and `issue.create` and owner approval in the browser are not exercised here. Treat both as unverified unless you test them separately.
 
    Register one public client using the real client's callback URI:
 
