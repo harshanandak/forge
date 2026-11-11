@@ -147,6 +147,8 @@ async function fixture(lanes: readonly number[]) {
     },
   };
   return {
+    services,
+    registry,
     owner,
     holder,
     addIssue,
@@ -263,3 +265,37 @@ test("lane status reports the cap held while the closed lane keeps a live lease,
     await f.dispose();
   }
 }, 30_000);
+
+test("publication refuses an attempt released after checkout creation", async () => {
+  const f = await fixture([]);
+  try {
+    f.addIssue(1);
+    const record = "attempt:work-1:attempt-1",
+      subject = `issue:${record}`;
+    f.owner.put(namespace, record, {}, f.holder.actor, { expectRevision: 0 });
+    f.owner.acquire(namespace, subject, f.holder, 60000, "attempt");
+    const run = f.services.process.run;
+    let created = false;
+    f.services.process.run = (git, args) => {
+      const result = run(git, args);
+      if (args[0] === "worktree" && args[1] === "add") {
+        created = true;
+        f.services.state.releaseOwn(subject);
+      }
+      return result;
+    };
+    await expect(
+      operations["lane.attempt"]!({
+        input: { id: "work-1", attempt: "attempt-1", branch: "b", brief: "b" },
+        config: { lanes: { base: "main" } },
+        services: f.services,
+        signal: new AbortController().signal,
+        deadline: Number.MAX_SAFE_INTEGER,
+      }),
+    ).rejects.toThrow("LEASE_NOT_HELD");
+    expect(created).toBe(true);
+    expect(f.registry.get("forge-lanes.json")).toBe("[]");
+  } finally {
+    await f.dispose();
+  }
+}, 30000);

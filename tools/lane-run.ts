@@ -548,7 +548,9 @@ export async function laneRun(
       throw new Error(
         `unsupported harness: ${harness}; configure codex or claude`,
       );
-    const lane = context.lanes.find((item) => item.issue === id);
+    const lane = context.lanes.find(
+      (item) => !("attempt" in item) && item.issue === id,
+    );
     if (!lane) throw new Error(`no active lane for ${id}; use start first`);
     const classification = laneTier(lane.worktree);
     tier = classification.tier;

@@ -206,7 +206,9 @@ function active(file: string, root: string): Lane[] {
   );
   return load(file).filter(
     (lane) =>
-      existsSync(lane.worktree) && registered.has(pathKey(lane.worktree)),
+      !("attempt" in lane) &&
+      existsSync(lane.worktree) &&
+      registered.has(pathKey(lane.worktree)),
   );
 }
 function removeEmpty(lock: string): void {
@@ -394,7 +396,9 @@ async function laneAuto(
     )
       return blocked("refused", "usage: auto <id> [--round-cap N] [--detach]");
     const cap = Number(capText),
-      lane = context.lanes.find((item) => item.issue === id);
+      lane = context.lanes.find(
+        (item) => !("attempt" in item) && item.issue === id,
+      );
     if (!lane)
       return blocked("refused", `no active lane for ${id}; use start first`);
     unlock = context.lock(id);
@@ -709,7 +713,7 @@ export async function main(): Promise<number> {
     const registry = join(common, "forge-lanes.json");
     if (parsed === "tier") {
       const lane = active(registry, root).find(
-        (item) => item.issue === process.argv[3],
+        (item) => !("attempt" in item) && item.issue === process.argv[3],
       );
       if (!lane)
         throw new Error(

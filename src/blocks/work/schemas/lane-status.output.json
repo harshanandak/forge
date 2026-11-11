@@ -39,6 +39,7 @@
           "id": {
             "type": "string"
           },
+          "attempt": { "type": "string", "pattern": "^attempt-[1-9][0-9]*$" },
           "step": {
             "type": "string"
           },
