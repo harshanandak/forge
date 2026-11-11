@@ -1063,16 +1063,24 @@ test("the cloud issue.list agrees with the local handler on order, limit, trunca
         { ...call, op: "issue.list", input },
         { token },
       );
-      const local = handlers["issue.list"]!({
-        input,
-        config,
-        services: { state },
-      });
-      expect(cloud.json.result).toEqual(local);
+      const local = (() => {
+        try {
+          return handlers["issue.list"]!({
+            input,
+            config,
+            services: { state },
+          });
+        } catch (error) {
+          return { code: String(error).split(":")[1]!.trim() };
+        }
+      })();
+      const result: unknown = cloud.json.result ?? { code: cloud.code };
+      expect(result).toEqual(local);
       expect([refused, f.snapshot()]).toEqual([[], before]);
-      return cloud.json.result as {
+      return { items: [], truncated: false, ...(result as object) } as {
         items: { id: string }[];
         truncated: boolean;
+        code?: string;
       };
     };
     const f = fixture();
@@ -1106,6 +1114,87 @@ test("the cloud issue.list agrees with the local handler on order, limit, trunca
       false,
       true,
     ]);
+    // Filters and ready:true: work-1 is blocked by a missing issue, 2 and 9 are closed, 3 is held,
+    // 5 depends on itself, 6 and 7 on each other, 8 on a closed issue that depends back on it, and
+    // 10 to 12 hold an expired, a just-expired and a released lease.
+    const g = fixture();
+    const gt = await g.device();
+    g.tables();
+    const put = (n: number, over: object = {}, lease?: object) => {
+      g.put(stored({ id: `work-${n}`, ...over }), {}, `issue:work-${n}`);
+      if (lease) g.lease(lease, `issue:work-${n}`);
+    };
+    put(1, {
+      prefix: "acme",
+      kind: "task",
+      labels: ["a", "b"],
+      dependsOn: ["work-99"],
+    });
+    put(2, { status: "closed", kind: "task" });
+    put(
+      3,
+      {
+        parent: "work-2",
+        kind: "bug",
+        labels: ["b"],
+        createdAt: iso(start - 500),
+      },
+      { expiresAt: iso(start + 1) },
+    );
+    put(4, {
+      parent: "work-2",
+      kind: "task",
+      labels: ["a", "b"],
+      createdAt: iso(start),
+      dependsOn: ["work-2"],
+    });
+    put(5, { dependsOn: ["work-5"] });
+    put(6, { dependsOn: ["work-7"] });
+    put(7, { dependsOn: ["work-6"] });
+    put(8, { dependsOn: ["work-9"] });
+    put(9, { status: "closed", dependsOn: ["work-8"] });
+    put(10, {}, { expiresAt: iso(start - 1) });
+    put(11, {}, { expiresAt: iso(start) });
+    put(12, {}, { releasedAt: iso(start - 5), expiresAt: iso(start + day) });
+    // The ids returned, `+` when truncated, or the code of the refusal.
+    for (const [input, want] of [
+      [{ ready: false }, "1,10,11,12,2,3,4,5,6,7,8,9"],
+      [{ parent: "forge-2" }, "3,4"],
+      [{ parent: "acme-2" }, "3,4"],
+      [{ parent: "work-2" }, "3,4"],
+      [{ parent: "FORGE-2" }, "3,4"],
+      [{ parent: "forge-002" }, ""],
+      [{ parent: "none" }, "1,10,11,12,2,5,6,7,8,9"],
+      [{ parent: "zzz-2" }, "INPUT_INVALID"],
+      [{ parent: "bad" }, "INPUT_INVALID"],
+      [{ kind: "bug" }, "3"],
+      [{ kind: "task", limit: 2 }, "1,2+"],
+      [{ label: ["b"] }, "1,3,4"],
+      [{ labels: ["a", "b"] }, "1,4"],
+      [{ label: ["a"], labels: ["b"] }, "1,4"],
+      [{ label: [], labels: [] }, "1,10,11,12,2,3,4,5,6,7,8,9"],
+      [{ status: "closed" }, "2,9"],
+      [{ createdSince: iso(start - 1000) }, "1,10,11,12,2,3,4,5,6,7,8,9"],
+      [{ createdSince: iso(start - 500) }, "3,4"],
+      [{ createdSince: iso(start) }, "4"],
+      [{ createdSince: iso(start + 1) }, ""],
+      [{ ready: true }, "10,11,12,4,8"],
+      [{ ready: true, limit: 1 }, "10+"],
+      [{ ready: true, limit: 4 }, "10,11,12,4+"],
+      [{ ready: true, limit: 5 }, "10,11,12,4,8"],
+      [{ ready: true, kind: "task" }, "4"],
+      [{ ready: true, label: ["b"] }, "4"],
+      [{ ready: true, parent: "forge-2" }, "4"],
+      [{ ready: true, status: "closed" }, ""],
+    ] as const) {
+      const got = await both(g, gt, input);
+      const ids =
+        got.items.map((i) => i.id.slice(6)).join() + (got.truncated ? "+" : "");
+      expect([JSON.stringify(input), got.code ?? ids]).toEqual([
+        JSON.stringify(input),
+        want,
+      ]);
+    }
     const empty = fixture();
     empty.tables();
     expect(await both(empty, await empty.device(), {})).toEqual({
@@ -1399,7 +1488,80 @@ test("list checks every stored issue, even past limit, before it reads any lease
   }
 }, 30_000);
 
-test("list refuses bad input and filters it does not support yet before any work table is probed", async () => {
+test("a corrupt row is refused whatever the filter would exclude, and ready:true reads a lease only for a candidate", async () => {
+  const inputs = [
+    { kind: "bug" },
+    { status: "closed" },
+    { label: ["x"] },
+    { parent: "forge-9" },
+    { ready: true },
+  ];
+  for (const input of inputs) {
+    const f = fixture();
+    const token = await f.device();
+    f.tables();
+    f.put(stored());
+    f.db.run(
+      "INSERT INTO state_records(namespace,key,revision,body) VALUES (?,?,3,?)",
+      ["forge/work", "issue:work-2", "{}"],
+    );
+    const got = await f.send({ ...listCall, input }, { token });
+    const name = JSON.stringify(input);
+    expect([
+      name,
+      got.status,
+      got.code,
+      got.json.error?.message,
+      got.probes,
+    ]).toEqual([name, 500, "INTERNAL", notValid, WORK_PROBES.slice(0, 2)]);
+  }
+  const lease =
+    "INSERT INTO state_leases(namespace,subject,generation,body) VALUES (?,?,2,?)";
+  for (const [name, setup, input, want] of [
+    [
+      "malformed lease on a candidate",
+      (f: F) => f.db.run(lease, ["forge/work", "issue:work-1", "{bad"]),
+      { ready: true },
+      "500",
+    ],
+    [
+      "wrong subject on a candidate",
+      (f: F) => f.lease({ subject: "issue:work-9" }),
+      { ready: true },
+      "500",
+    ],
+    [
+      "malformed lease on a closed issue",
+      (f: F) => f.db.run(lease, ["forge/work", "issue:work-2", "{bad"]),
+      { ready: true },
+      "200 forge-1,forge-3",
+    ],
+    [
+      "malformed lease on a filtered-out issue",
+      (f: F) => f.db.run(lease, ["forge/work", "issue:work-1", "{bad"]),
+      { ready: true, kind: "bug" },
+      "200 forge-3",
+    ],
+  ] as const) {
+    const f = fixture();
+    const token = await f.device();
+    f.tables();
+    f.put(stored());
+    f.put(stored({ id: "work-2", status: "closed" }), {}, "issue:work-2");
+    f.put(stored({ id: "work-3", kind: "bug" }), {}, "issue:work-3");
+    setup(f);
+    const got = await f.send({ ...listCall, input }, { token });
+    const items =
+      (got.json.result as { items: { id: string }[] } | undefined)?.items ?? [];
+    expect([
+      name,
+      `${got.status} ${items.map((i) => i.id).join()}`.trim(),
+    ]).toEqual([name, want]);
+    if (got.status === 500) expect(got.json.error?.message).toBe(notValid);
+  }
+}, 60_000);
+
+test("list refuses bad input before any work table is probed", async () => {
   const f = fixture();
   const token = await f.device();
   f.tables();
@@ -1411,22 +1573,12 @@ test("list refuses bad input and filters it does not support yet before any work
     { limit: 1001 },
     { limit: 1.5 },
     { createdSince: "yesterday" },
+    { ready: "yes" },
+    { parent: "" },
     [],
-  ];
-  const unsupported = [
-    { parent: "forge-1" },
-    { kind: "task" },
-    { label: ["a"] },
-    { labels: ["a"] },
-    { status: "open" },
-    { ready: true },
-    { ready: false },
-    { createdSince: iso(start) },
-    { limit: 5, kind: "task" },
   ];
   for (const [inputs, message] of [
     [invalid, "Invalid issue list input"],
-    [unsupported, "Filter not yet supported in cloud"],
   ] as const)
     for (const input of inputs) {
       const got = await f.send({ ...listCall, input }, { token });
@@ -1522,7 +1674,7 @@ test("a list response is capped at 1 MiB of UTF-8 bytes, measured on the whole e
 
 test("a project over the row or byte budget is refused as UNAVAILABLE, even when limit 1 would return one small issue", async () => {
   const mib8 = 8 * 1024 * 1024;
-  const limited = { ...listCall, input: { limit: 1 } };
+  const limited = { ...listCall, input: { limit: 1 } as object };
   const rows = async (count: number) => {
     const f = fixture();
     const token = await f.device();
@@ -1581,6 +1733,14 @@ test("a project over the row or byte budget is refused as UNAVAILABLE, even when
         "Issue list is over its read budget",
       ]);
   }
+  // A selective filter or ready:true does not shrink the work: the same refusal.
+  limited.input = { limit: 1, kind: "none", ready: true };
+  for (const got of [await rows(10_001), await bytes(1)])
+    expect([got.status, got.code, got.json.error?.message]).toEqual([
+      503,
+      "UNAVAILABLE",
+      "Issue list is over its read budget",
+    ]);
 }, 120_000);
 
 const READ_ONLY = "This view is read-only";
