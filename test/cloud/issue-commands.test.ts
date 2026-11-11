@@ -1,7 +1,12 @@
 import { expect, mock, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { Project } from "../../cloud/src/project.ts";
-import type { DurableStorage } from "../../cloud/src/store.ts";
+import {
+  readOnlyStore,
+  TABLE_PROBE,
+  type DurableStorage,
+} from "../../cloud/src/store.ts";
+import { TOKEN_LOOKUP, TOKENS } from "../../cloud/src/tokens.ts";
 import { prepareCommand } from "../../cloud/src/issue-commands.ts";
 import { createWorker } from "../../cloud/src/worker.ts";
 import manifest from "../../src/blocks/work/forge.block.json" with { type: "json" };
@@ -146,6 +151,8 @@ function fixture() {
     snapshot,
     reached,
     db,
+    storage,
+    calls,
     reopen: () => {
       project = new Project({ storage }, vars);
     },
@@ -604,4 +611,152 @@ test("the server builds the effective context from what the operation declares",
     project: { id: "p" },
     leaseGeneration: 3,
   });
+}, 30_000);
+
+const READ_ONLY = "This view is read-only";
+const missingId = "0000000000000000";
+const DEVICE_ONLY = `SELECT device FROM ${TOKENS} WHERE id=?`;
+const thrown = (body: () => unknown) => {
+  try {
+    body();
+  } catch (error) {
+    return (error as Error).message;
+  }
+  return "did not throw";
+};
+async function viewOf(statements: readonly string[]) {
+  const f = fixture();
+  const id = (await f.device()).slice(4, 20);
+  const view = readOnlyStore(f.storage, TOKENS, statements)!;
+  f.calls.length = 0;
+  return { f, id, view };
+}
+
+test("a read-only view runs an allowed statement through get and all", async () => {
+  const { f, id, view } = await viewOf([TOKEN_LOOKUP, DEVICE_ONLY]);
+  const before = f.snapshot();
+  const row = f.db.query(TOKEN_LOOKUP).get(id);
+  expect(row).toMatchObject({ id, device: "laptop", revoked_at: null });
+  expect(view.get(TOKEN_LOOKUP, [id])).toEqual(row as never);
+  expect(view.all(TOKEN_LOOKUP, [id])).toEqual([row] as never);
+  expect(view.get(TOKEN_LOOKUP, [missingId])).toBeUndefined();
+  expect(view.all(TOKEN_LOOKUP, [missingId])).toEqual([]);
+  expect(view.get(DEVICE_ONLY, [id])).toEqual({ device: "laptop" });
+  expect(f.calls).toHaveLength(5);
+  expect(f.snapshot()).toBe(before);
+}, 30_000);
+
+test("bound values stay values, whatever text they hold", async () => {
+  const { f, id, view } = await viewOf([TOKEN_LOOKUP]);
+  const before = f.snapshot();
+  for (const hostile of [
+    `${id}' OR '1'='1`,
+    `'; DROP TABLE ${TOKENS}; --`,
+    `" OR 1=1 --`,
+    "%",
+  ]) {
+    f.calls.length = 0;
+    expect(view.get(TOKEN_LOOKUP, [hostile])).toBeUndefined();
+    expect(view.all(TOKEN_LOOKUP, [hostile])).toEqual([]);
+    expect(f.calls).toEqual([TOKEN_LOOKUP, TOKEN_LOOKUP]);
+  }
+  expect(f.snapshot()).toBe(before);
+}, 30_000);
+
+const refusals: [string, (id: string) => [string, unknown[]]][] = [
+  [
+    "a DELETE of a seeded row",
+    (id) => [`DELETE FROM ${TOKENS} WHERE id=? RETURNING *`, [id]],
+  ],
+  [
+    "a valid INSERT with a fresh id",
+    () => [
+      `INSERT INTO ${TOKENS} (id, hash, device, expires_at) VALUES (?, ?, ?, ?) RETURNING *`,
+      ["ffffffffffffffff", "h", "other", 1],
+    ],
+  ],
+  ["a trailing space", (id) => [`${TOKEN_LOOKUP} `, [id]]],
+  ["a doubled space", (id) => [TOKEN_LOOKUP.replace(" ", "  "), [id]]],
+  ["a leading newline", (id) => [`\n${TOKEN_LOOKUP}`, [id]]],
+  ["lower case", (id) => [TOKEN_LOOKUP.toLowerCase(), [id]]],
+  [
+    "a lower-case keyword",
+    (id) => [TOKEN_LOOKUP.replace("SELECT", "select"), [id]],
+  ],
+  ["an unlisted read", () => ["SELECT * FROM sqlite_schema", []]],
+  ["the table probe", () => [TABLE_PROBE, [TOKENS]]],
+];
+for (const [name, build] of refusals)
+  test(`a read-only view refuses ${name} before storage sees it`, async () => {
+    const { f, id, view } = await viewOf([TOKEN_LOOKUP]);
+    const [statement, params] = build(id);
+    for (const method of ["get", "all"] as const) {
+      const before = f.snapshot();
+      f.calls.length = 0;
+      expect(thrown(() => view[method](statement, params as never))).toBe(
+        READ_ONLY,
+      );
+      expect(f.calls).toEqual([]);
+      expect(f.snapshot()).toBe(before);
+    }
+  }, 30_000);
+
+test("an empty allowlist refuses every statement", async () => {
+  const { f, id, view } = await viewOf([]);
+  const before = f.snapshot();
+  for (const method of ["get", "all"] as const)
+    expect(thrown(() => view[method](TOKEN_LOOKUP, [id]))).toBe(READ_ONLY);
+  expect(f.calls).toEqual([]);
+  expect(f.snapshot()).toBe(before);
+}, 30_000);
+
+test("changing the allowlist array after construction grants nothing", async () => {
+  const list = [TOKEN_LOOKUP];
+  const { f, id, view } = await viewOf(list);
+  const drop = `DELETE FROM ${TOKENS} WHERE id=? RETURNING *`;
+  const before = f.snapshot();
+  list.push(drop);
+  for (const method of ["get", "all"] as const)
+    expect(thrown(() => view[method](drop, [id]))).toBe(READ_ONLY);
+  list.length = 0;
+  expect(view.get(TOKEN_LOOKUP, [id])).toMatchObject({ id });
+  expect(f.calls).toEqual([TOKEN_LOOKUP]);
+  expect(f.snapshot()).toBe(before);
+}, 30_000);
+
+test("exec, run and transaction stay refused even with an allowed statement", async () => {
+  const { f, id, view } = await viewOf([TOKEN_LOOKUP]);
+  const body = mock(() => view.all(TOKEN_LOOKUP, [id]));
+  const before = f.snapshot();
+  for (const attempt of [
+    () => view.exec(TOKEN_LOOKUP),
+    () => view.run(TOKEN_LOOKUP, [id]),
+    () => view.transaction(body),
+  ])
+    expect(thrown(attempt)).toBe(READ_ONLY);
+  expect(body).not.toHaveBeenCalled();
+  expect(f.calls).toEqual([]);
+  expect(f.snapshot()).toBe(before);
+}, 30_000);
+
+test("a view of a missing table runs only the probe and creates nothing", async () => {
+  const f = fixture();
+  await f.device();
+  const seen: unknown[][] = [];
+  const spied: DurableStorage = {
+    ...f.storage,
+    sql: {
+      exec: (statement, ...bindings) => {
+        seen.push([statement, ...bindings]);
+        return f.storage.sql.exec(statement, ...bindings);
+      },
+    },
+  };
+  const schema = () => f.db.query("SELECT * FROM sqlite_schema").all();
+  const before = schema();
+  expect(readOnlyStore(spied, "domain_cloud_missing", [TOKEN_LOOKUP])).toBe(
+    undefined,
+  );
+  expect(seen).toEqual([[TABLE_PROBE, "domain_cloud_missing"]]);
+  expect(schema()).toEqual(before);
 }, 30_000);

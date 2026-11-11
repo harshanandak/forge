@@ -59,6 +59,7 @@ import {
   authorize,
   issueToken,
   revokeToken,
+  TOKEN_LOOKUP,
   TOKEN_MIGRATION,
   TOKENS,
   tokenParts,
@@ -303,7 +304,7 @@ export class Project {
           id = text(input, "id"),
           now = Date.now();
         const value = db.transaction(() => {
-          const token = db.get(`SELECT * FROM ${TOKENS} WHERE id=?`, [id]);
+          const token = db.get(TOKEN_LOOKUP, [id]);
           const result = revokeToken(db, id, now);
           if (token === undefined || token.revoked_at !== null) return result;
           const released: string[] = [];
@@ -476,7 +477,8 @@ export class Project {
       if (!(await this.#isProvisioned()))
         throw fail("AUTH_INVALID", "Token is not valid");
       // Checked through a read-only view: a refusal must not create a table or run a migration.
-      const db = readOnlyStore(this.#storage, TOKENS);
+      // The view runs only the token lookup; nothing from the request names a statement.
+      const db = readOnlyStore(this.#storage, TOKENS, [TOKEN_LOOKUP]);
       if (db === undefined) throw fail("AUTH_INVALID", "Token is not valid");
       authorize(db, parts, Date.now());
       const body = await bounded(request, MAX_COMMAND_BODY);
