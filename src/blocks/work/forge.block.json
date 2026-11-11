@@ -350,7 +350,7 @@
       "args": ["id"]
     },
     "lane.release": {
-      "input": "schemas/ItemRef.json",
+      "input": "schemas/lane-ref.input.json",
       "output": "schemas/lane-release.output.json",
       "context": "project",
       "timeoutMs": 120000,
@@ -440,13 +440,13 @@
       "output": "schemas/lane-status.output.json",
       "context": "project",
       "timeoutMs": 30000,
-      "effects": ["files:read", "environment:read"],
+      "effects": ["files:read", "environment:read", "external:process"],
       "idempotent": true,
       "callers": ["agent", "human"],
       "stability": "experimental"
     },
     "lane.show": {
-      "input": "schemas/ItemRef.json",
+      "input": "schemas/lane-ref.input.json",
       "output": "schemas/lane.output.json",
       "context": "project",
       "timeoutMs": 5000,

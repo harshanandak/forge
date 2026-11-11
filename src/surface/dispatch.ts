@@ -294,7 +294,12 @@ async function heldContext(
       schemaVersion: "forge.invocation/1",
       requestId: randomUUID(),
       op: show,
-      input: { id },
+      input: {
+        id,
+        ...(op === "lane.close" && typeof record(input)?.attempt === "string"
+          ? { attempt: record(input)!.attempt }
+          : {}),
+      },
       caller: options.caller,
       context,
     });

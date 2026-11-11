@@ -2,7 +2,7 @@
   "operations": {
     "lane.release": {
       "title": "Release lane",
-      "summary": "Release a lane closed by hand without a lease. Refuse open issues, live leases, merge receipts, pending closes and dirty or ignored work. Remove the worktree and registry entry; keep and report the branch.",
+      "summary": "Release a hand-closed lane; with attempt, release an attempt without a live lease, including a missing worktree. Refuse dirty or ignored work and pending closes. Keep the branch. Normal lanes require a closed issue without a receipt or live lease.",
       "examples": [
         {
           "input": {
@@ -13,7 +13,7 @@
     },
     "lane.close": {
       "title": "Close lane",
-      "summary": "Claim the issue first. Close a merged lane with a PASS receipt, or a CLOSED unmerged PR with a dropped reason. Refuse active run locks and dirty work; resume matching close journals. keepOpen preserves the issue; discardIgnored authorizes other ignored files.",
+      "summary": "Close a merged lane with a PASS receipt or drop a CLOSED unmerged PR. With attempt, keep its branch: only selected attempts land and only unselected attempts drop after selection. Refuse run locks and dirty work; discardIgnored permits protected ignored files.",
       "examples": [
         {
           "input": {
