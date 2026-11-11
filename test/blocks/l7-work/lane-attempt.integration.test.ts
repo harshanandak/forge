@@ -227,8 +227,34 @@ test("attempt authority refusals create no branch, worktree or registry row", as
   await Bun.sleep(1100);
   refused("LEASE_EXPIRED", { ...args(id, 3), attempt: reserved.id });
   for (const n of [1, 2, 3, 99]) expect(existsSync(path(id, n))).toBe(false);
+  good(
+    "attempt.evidence",
+    { id, attempt: "attempt-2", sha: git(["rev-parse", "HEAD"]) },
+    "C",
+  );
+  good("attempt.select", {
+    id,
+    attempt: "attempt-2",
+    reason: "Fixture selection",
+  });
   good("issue.close", { id, withoutReceipt: "Fixture closed" });
   refused("INPUT_CONFLICT", args(id, 2), "C");
+}, 30000);
+
+test("selection preserves competing branches, worktrees and lane rows", () => {
+  const id = team();
+  good("lane.attempt", args(id, 2), "C");
+  for (const [index, session] of ["B", "C"].entries()) {
+    good(
+      "attempt.evidence",
+      { id, attempt: `attempt-${index + 1}`, sha: git(["rev-parse", "HEAD"]) },
+      session,
+    );
+  }
+  const before = snapshot();
+  good("attempt.select", { id, attempt: "attempt-1", reason: "Keep all work" });
+  expect(snapshot()).toEqual(before);
+  expect(existsSync(path(id, 2))).toBe(true);
 }, 30000);
 
 test("a failed registry write preserves work and retries adopt only their own checkout", () => {
@@ -309,6 +335,16 @@ test("legacy release preserves both attempt lanes after a hand close", () => {
     id: next,
     branch: `feat/${next}-legacy`,
     brief,
+  });
+  good(
+    "attempt.evidence",
+    { id: next, attempt: "attempt-1", sha: git(["rev-parse", "HEAD"]) },
+    "B",
+  );
+  good("attempt.select", {
+    id: next,
+    attempt: "attempt-1",
+    reason: "Fixture hand selection",
   });
   good("issue.close", { id: next, withoutReceipt: "Fixture hand closed" });
   good("issue.release", { id: next });

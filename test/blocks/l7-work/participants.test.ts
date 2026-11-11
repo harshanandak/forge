@@ -3,12 +3,16 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { readFileSync } from "node:fs";
 import { createSqliteStore } from "../../../src/adapters/store-sqlite/index.ts";
-import { createStateClient } from "../../../src/assembly/state-client.ts";
+import {
+  type LeaseStateClient,
+  createStateClient,
+} from "../../../src/assembly/state-client.ts";
 import { StateOwner } from "../../../src/core/state/index.ts";
 import { dispatch, success } from "../../../src/surface/dispatch.ts";
 import { candidate } from "../../surface/fixtures/catalog.ts";
 import { bindContext } from "../../../src/contract/context.ts";
 import { refuse } from "../../../src/core/trust/index.ts";
+import { exitCode, failure } from "../../../src/surface/result.ts";
 import { ForgeFailure } from "../../../src/contract/failure.ts";
 import type { HandlerCall } from "../../../src/contract/author.ts";
 import type {
@@ -35,10 +39,17 @@ const A = who("A"),
   B = who("B"),
   C = who("C"),
   D = who("D");
+const receipts = new Map<
+  string,
+  { id: string; status: string; subject?: string }
+>();
+let intercept: ((state: LeaseStateClient) => LeaseStateClient) | undefined;
 const globals = globalThis as Record<string, unknown>;
 const ops = require(resolve(root, "entry.cts")) as Record<string, Handler>;
 let p: Awaited<ReturnType<typeof project>>;
 beforeEach(async () => {
+  intercept = undefined;
+  receipts.clear();
   p = await project();
 });
 afterEach(() => p.close());
@@ -73,6 +84,13 @@ async function project() {
       context: bound.context,
     });
     const previousFail = globals.fail;
+    const wrap = (view: LeaseStateClient): LeaseStateClient => {
+      const wrapped = {
+        ...view,
+        withOwnLease: (subject: string) => wrap(view.withOwnLease(subject)),
+      };
+      return intercept?.(wrapped) ?? wrapped;
+    };
     globals.fail = refuse;
     try {
       return (await ops[name]!({
@@ -80,7 +98,10 @@ async function project() {
         config: { idPrefix: "shown", claimTtlSeconds: 60 },
         signal: new AbortController().signal,
         deadline: Number.MAX_SAFE_INTEGER,
-        services: { state: { ...state, now: () => now } },
+        services: {
+          state: wrap({ ...state, now: () => now }),
+          receipts: { get: (id: string) => receipts.get(id) },
+        },
       })) as T;
     } finally {
       if (previousFail === undefined) delete globals.fail;
@@ -140,6 +161,7 @@ async function refused(code: string, action: () => unknown) {
   expect(error).toBeInstanceOf(ForgeFailure);
   expect((error as ForgeFailure).error.code).toBe(code);
   expect(p.snapshot()).toEqual(before);
+  return (error as ForgeFailure).error;
 }
 async function collaborate() {
   await p.call("claim");
@@ -538,6 +560,14 @@ test("exclusive and closed reservations refuse, while the coordinator may compet
   await refused("ISSUE_NOT_COMPETING", () => p.call("attempt.reserve", B));
   await p.call("attempt.slots", A, { count: 1 });
   expect((await attempt(A)).id).toBe("attempt-1");
+  await p.call("attempt.evidence", A, {
+    attempt: "attempt-1",
+    sha: "a".repeat(40),
+  });
+  await p.call("attempt.select", A, {
+    attempt: "attempt-1",
+    reason: "Fixture selection",
+  });
   await p.call("close", A, { withoutReceipt: "attempt fixture" });
   await refused("INPUT_CONFLICT", () => p.call("attempt.reserve", B));
 }, 10000);
@@ -582,4 +612,390 @@ test("attempt operations declare their actual lease modes and generated surfaces
     });
     expect(docs.operations[`attempt.${op}`]).toBeDefined();
   }
+}, 10000);
+
+const sha = "a".repeat(40),
+  other = "b".repeat(40);
+const act = (
+  op: string,
+  input: Record<string, unknown> = {},
+  who = A,
+  generation = 1,
+) => p.call<Record<string, unknown>>(op, who, input, generation);
+async function evidenceTeam() {
+  await competing();
+  await attempt(B);
+  await attempt(C);
+}
+const seed = (key: string, value: object) =>
+  p.owner.put(ns, key, value, A.actor, {
+    expectRevision: p.owner.get(ns, key)?.revision ?? 0,
+  });
+function seedEvidence(attempt = "attempt-1", commit = sha) {
+  const prefix = `evidence:attempt:work-1:${attempt}:`;
+  seed(prefix + (p.owner.count(ns, prefix) + 1), {
+    attempt,
+    sha: commit,
+    holder: attempt === "attempt-1" ? B : C,
+    recordedAt: "2026-11-10T12:00:00.000Z",
+  });
+}
+function seedSelection() {
+  seed("selection:work-1", {
+    mode: "single",
+    chosen: [{ attempt: "attempt-1", sha }],
+    reason: "R",
+    holder: A,
+    selectedAt: "2026-11-10T12:00:00.000Z",
+  });
+  const row = p.owner.get(ns, "attempt:work-1:attempt-2")!;
+  seed(row.key, {
+    ...(row.value as object),
+    superseded: { supersededBy: "selection", reason: "R" },
+  });
+}
+async function refusedOp(
+  op: string,
+  input: Record<string, unknown>,
+  code: string,
+  who = A,
+  generation = 1,
+) {
+  const error = await refused(code, () => act(op, input, who, generation));
+  expect(exitCode(failure(error.code, error.message))).toBe(
+    code === "INPUT_INVALID" ? 6 : code.startsWith("RECEIPT_") ? 1 : 4,
+  );
+  return error;
+}
+const select = { attempt: "attempt-1", reason: "R" };
+const evidence = { attempt: "attempt-1", sha };
+function onSelectionWrite(change: () => void) {
+  intercept = (state) => ({
+    ...state,
+    putMany(entries, options) {
+      if (entries.some((e) => e.key === "selection:work-1")) {
+        intercept = undefined;
+        change();
+      }
+      return state.putMany(entries, options);
+    },
+  });
+}
+test("evidence ok appends under B lease and preserves notes", async () => {
+  await evidenceTeam();
+  await act("attempt.note", { attempt: "attempt-1", body: "keep" }, B);
+  const notes = p.owner.list(ns, "note:"),
+    leases = p.owner.export().leases;
+  await act(
+    "attempt.evidence",
+    { ...evidence, review: "review", metrics: { time: 3, quality: "good" } },
+    B,
+    99,
+  );
+  expect(p.owner.list(ns, "evidence:").map((r) => r.value)).toEqual([
+    {
+      ...evidence,
+      review: "review",
+      metrics: { time: 3, quality: "good" },
+      holder: B,
+      recordedAt: "2026-11-10T12:00:00.000Z",
+    },
+  ]);
+  expect(await act("issue.show")).toMatchObject({
+    attempts: [
+      { id: "attempt-1", evidence: 1 },
+      { id: "attempt-2", evidence: 0 },
+    ],
+  });
+  await act("attempt.evidence", { ...evidence, sha: other }, B);
+  expect(p.owner.count(ns, "evidence:")).toBe(2);
+  expect(p.owner.list(ns, "note:")).toEqual(notes);
+  expect(p.owner.export().leases).toEqual(leases);
+}, 10000);
+test("evidence receipt stores a matching PASS receipt", async () => {
+  await evidenceTeam();
+  receipts.set("pass", { id: "pass", status: "PASS", subject: sha });
+  await act("attempt.evidence", { ...evidence, receipt: "pass" }, B);
+  expect(p.owner.list(ns, "evidence:")[0]?.value).toMatchObject({
+    receipt: "pass",
+    sha,
+  });
+}, 10000);
+test("evidence bad receipt uses close refusal codes without writes", async () => {
+  await evidenceTeam();
+  for (const [id, status, subject, code] of [
+    ["missing", "PASS", sha, "RECEIPT_INVALID"],
+    ["fail", "FAIL", sha, "RECEIPT_INVALID"],
+    ["wrong", "PASS", other, "RECEIPT_HEAD_MISMATCH"],
+  ]) {
+    if (id !== "missing")
+      receipts.set(id!, { id: id!, status: status!, subject: subject! });
+    await refusedOp("attempt.evidence", { ...evidence, receipt: id }, code!, B);
+  }
+}, 10000);
+test("evidence not holder, missing, released and expired refuse without writes", async () => {
+  await evidenceTeam();
+  await refusedOp("attempt.evidence", evidence, "LEASE_NOT_HELD", C);
+  await refusedOp(
+    "attempt.evidence",
+    { ...evidence, attempt: "attempt-9" },
+    "LEASE_NOT_HELD",
+    B,
+  );
+  await act("attempt.release", { attempt: "attempt-1" }, B);
+  await refusedOp("attempt.evidence", evidence, "LEASE_NOT_HELD", B);
+  p.advance(120000);
+  await refusedOp(
+    "attempt.evidence",
+    { ...evidence, attempt: "attempt-2" },
+    "LEASE_EXPIRED",
+    C,
+  );
+}, 10000);
+test("evidence bad input refuses sha, nested metrics and 33 keys", async () => {
+  await evidenceTeam();
+  for (const input of [
+    { ...evidence, sha: "abc" },
+    { ...evidence, metrics: { nested: {} } },
+    {
+      ...evidence,
+      metrics: Object.fromEntries(Array.from({ length: 33 }, (_, n) => [n, n])),
+    },
+  ])
+    await refusedOp("attempt.evidence", input, "INPUT_INVALID", B);
+}, 10000);
+test("select single uses latest evidence and supersedes only unchosen records", async () => {
+  await evidenceTeam();
+  seedEvidence();
+  seedEvidence("attempt-1", other);
+  seedEvidence("attempt-2");
+  await act("attempt.note", { attempt: "attempt-2", body: "keep" }, C);
+  const before = p.snapshot();
+  await act("attempt.select", { ...select, reason: "  R  " });
+  expect(p.owner.get(ns, "selection:work-1")?.value).toEqual({
+    mode: "single",
+    chosen: [{ attempt: "attempt-1", sha: other }],
+    reason: "R",
+    holder: A,
+    selectedAt: "2026-11-10T12:00:00.000Z",
+  });
+  expect(p.owner.get(ns, "attempt:work-1:attempt-2")?.value).toMatchObject({
+    superseded: { supersededBy: "selection", reason: "R" },
+  });
+  expect(await act("issue.show")).toMatchObject({
+    selection: { mode: "single" },
+    attempts: [
+      { id: "attempt-1", evidence: 2 },
+      { id: "attempt-2", evidence: 1, superseded: { reason: "R" } },
+    ],
+  });
+  expect(p.snapshot().leases).toEqual(before.leases);
+  const retained = (rows: typeof before.records) =>
+    rows.filter((r) => !/^(selection|attempt):/.test(r.key));
+  expect(retained(p.snapshot().records)).toEqual(retained(before.records));
+}, 10000);
+test("select combine accepts recorded older sha and supersedes none", async () => {
+  await evidenceTeam();
+  seedEvidence();
+  seedEvidence("attempt-1", other);
+  seedEvidence("attempt-2", other);
+  const attempts = p.owner.list(ns, "attempt:");
+  await act("attempt.select", {
+    combine: `attempt-1:${sha},attempt-2:${other}`,
+    reason: "combine",
+  });
+  expect(p.owner.get(ns, "selection:work-1")?.value).toMatchObject({
+    mode: "combine",
+    chosen: [
+      { attempt: "attempt-1", sha },
+      { attempt: "attempt-2", sha: other },
+    ],
+  });
+  expect(p.owner.list(ns, "attempt:")).toEqual(attempts);
+}, 10000);
+test("select no evidence names the missing attempt without writes", async () => {
+  await evidenceTeam();
+  seedEvidence();
+  for (const input of [
+    { ...select, attempt: "attempt-2" },
+    { ...select, attempt: "attempt-9" },
+    { combine: `attempt-2:${other}`, reason: "R" },
+  ])
+    expect(
+      (await refusedOp("attempt.select", input, "INPUT_CONFLICT")).message,
+    ).toContain("attempt" in input ? input.attempt : "attempt-2");
+}, 10000);
+test("stale coordinator select preserves the attempt slots fence", async () => {
+  await evidenceTeam();
+  seedEvidence();
+  await refusedOp("attempt.select", select, "LEASE_NOT_HELD", B);
+  await act("issue.release");
+  await refusedOp("attempt.select", select, "LEASE_NOT_HELD");
+  await act("issue.claim");
+  p.advance(60000);
+  await refusedOp("attempt.select", select, "LEASE_EXPIRED", A, 2);
+}, 10000);
+test("race interleaves two selections and the loser writes nothing", async () => {
+  await evidenceTeam();
+  seedEvidence();
+  seedEvidence("attempt-2", other);
+  let winner: Promise<unknown> | undefined,
+    accepted: ReturnType<typeof p.snapshot> | undefined;
+  onSelectionWrite(() => {
+    winner = act("attempt.select", { attempt: "attempt-2", reason: "winner" });
+    accepted = p.snapshot();
+  });
+  const results = await Promise.allSettled([
+    act("attempt.select", select).then(() => "OK"),
+    Promise.resolve().then(() => winner),
+  ]);
+  expect(results.map((r) => r.status).sort()).toEqual([
+    "fulfilled",
+    "rejected",
+  ]);
+  expect(p.owner.count(ns, "selection:")).toBe(1);
+  expect(p.snapshot()).toEqual(accepted!);
+}, 10000);
+test("stale coordinator generation changes before selection commit write nothing", async () => {
+  await evidenceTeam();
+  seedEvidence();
+  let changed: ReturnType<typeof p.snapshot> | undefined;
+  onSelectionWrite(() => {
+    p.owner.release(ns, p.held()!);
+    p.owner.acquire(ns, "issue:work-1", A, 60000, "next-generation");
+    changed = p.snapshot();
+  });
+  await expect(act("attempt.select", select)).rejects.toMatchObject({
+    error: { code: "LEASE_STALE" },
+  });
+  expect(p.snapshot()).toEqual(changed!);
+}, 10000);
+test("second select refuses Already selected without writes", async () => {
+  await evidenceTeam();
+  seedEvidence();
+  seedSelection();
+  expect(
+    (await refusedOp("attempt.select", select, "INPUT_CONFLICT")).message,
+  ).toContain("Already selected");
+}, 10000);
+test("close guard names selection repair without writes", async () => {
+  await evidenceTeam();
+  expect(
+    (
+      await refusedOp(
+        "issue.close",
+        { withoutReceipt: "done" },
+        "INPUT_CONFLICT",
+      )
+    ).repair,
+  ).toContain(
+    'forge attempt select shown-1 --attempt <attempt-id> --reason "<why>"',
+  );
+}, 10000);
+test("close after select and reopen keeps selection, superseded and evidence", async () => {
+  await evidenceTeam();
+  seedEvidence();
+  seedSelection();
+  const selected = p.owner.get(ns, "selection:work-1")!.value,
+    superseded = { supersededBy: "selection", reason: "R" },
+    evidenceRows = p.owner.list(ns, "evidence:");
+  expect(await act("issue.close", { withoutReceipt: "done" })).toMatchObject({
+    status: "closed",
+  });
+  await act("issue.claim", { reopen: "again" });
+  expect(await act("issue.show")).toMatchObject({
+    status: "open",
+    selection: selected,
+    attempts: [
+      { id: "attempt-1", evidence: 1 },
+      { id: "attempt-2", evidence: 0, superseded },
+    ],
+  });
+  expect(p.owner.list(ns, "evidence:")).toEqual(evidenceRows);
+}, 10000);
+
+for (const close of [true, false])
+  test(
+    close
+      ? "close race refuses slots added before commit"
+      : "single selection refuses a newer evidence append",
+    async () => {
+      if (close) await act("issue.claim");
+      else {
+        await evidenceTeam();
+        seedEvidence();
+      }
+      let changed: ReturnType<typeof p.snapshot> | undefined,
+        concurrent: Promise<unknown> | undefined;
+      const change = () => {
+        intercept = undefined;
+        concurrent = close
+          ? act("attempt.slots", { count: 2 })
+          : act("attempt.evidence", { ...evidence, sha: other }, B);
+        changed = p.snapshot();
+      };
+      if (close)
+        intercept = (state) => ({
+          ...state,
+          put(k, v, o) {
+            change();
+            return state.put(k, v, o);
+          },
+        });
+      else onSelectionWrite(change);
+      await expect(
+        act(
+          close ? "issue.close" : "attempt.select",
+          close ? { withoutReceipt: "done" } : select,
+        ),
+      ).rejects.toMatchObject({ error: { code: "REVISION_CONFLICT" } });
+      await concurrent;
+      expect(p.snapshot()).toEqual(changed!);
+    },
+    10000,
+  );
+test("commit ids normalize across evidence, receipts and combine", async () => {
+  await evidenceTeam();
+  receipts.set("upper", {
+    id: "upper",
+    status: "PASS",
+    subject: sha.toUpperCase(),
+  });
+  await act(
+    "attempt.evidence",
+    { ...evidence, sha: sha.toUpperCase(), receipt: "upper" },
+    B,
+  );
+  expect(p.owner.list(ns, "evidence:")[0]!.value).toMatchObject({ sha });
+  await act("attempt.evidence", { attempt: "attempt-2", sha }, C);
+  await act("attempt.select", {
+    combine: `attempt-1:${sha},attempt-2:${sha.toUpperCase()}`,
+    reason: "case",
+  });
+  expect(p.owner.get(ns, "selection:work-1")!.value).toMatchObject({
+    chosen: [
+      { attempt: "attempt-1", sha },
+      { attempt: "attempt-2", sha },
+    ],
+  });
+}, 10000);
+test("selection refuses later reservations without writes", async () => {
+  await evidenceTeam();
+  seedSelection();
+  expect(
+    (await refusedOp("attempt.reserve", {}, "INPUT_CONFLICT", B)).message,
+  ).toBe("Already selected");
+}, 10000);
+test("none selection supersedes every attempt without evidence and allows close", async () => {
+  await evidenceTeam();
+  await act("attempt.select", { none: true, reason: "R" });
+  const selection = (await act("issue.show")).selection;
+  expect(selection).toMatchObject({ mode: "none", chosen: [], reason: "R" });
+  for (const row of p.owner.list(ns, "attempt:"))
+    expect(row.value).toMatchObject({
+      superseded: { supersededBy: "selection", reason: "R" },
+    });
+  expect(await act("issue.close", { withoutReceipt: "done" })).toMatchObject({
+    status: "closed",
+  });
 }, 10000);
