@@ -1,10 +1,11 @@
 import { sha256 } from "../../tokens.ts";
 import type { RedemptionNamespace } from "./redemption.ts";
+import { BODY_LIMIT_BYTES, boundedBody } from "./body.ts";
 export const REGISTRATION_LIMITS = {
   perIP: 5,
   global: 100,
   windowMs: 3_600_000,
-  bodyBytes: 8192,
+  bodyBytes: BODY_LIMIT_BYTES,
   redirects: 5,
   redirectLength: 512,
   clientTTL: 86400,
@@ -66,25 +67,15 @@ export async function guardRegistration(request: Request, namespace: unknown) {
     return;
   const ip = request.headers.get("CF-Connecting-IP");
   if (!ip) return limited();
-  const reader = request.clone().body?.getReader(),
-    decoder = new TextDecoder("utf-8", { fatal: true });
-  let bytes = 0,
-    text = "";
   try {
-    if (!reader) return invalid("body");
-    for (;;) {
-      const chunk = await reader.read();
-      if (chunk.done) break;
-      const value: unknown = chunk.value;
-      if (!(value instanceof Uint8Array)) return invalid("body");
-      bytes += value.byteLength;
-      if (bytes > REGISTRATION_LIMITS.bodyBytes) {
-        void reader.cancel().catch(() => undefined);
-        return invalid("body");
-      }
-      text += decoder.decode(value, { stream: true });
-    }
-    const data = JSON.parse(text + decoder.decode()) as {
+    const body = await boundedBody(
+      request.clone(),
+      REGISTRATION_LIMITS.bodyBytes,
+    );
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(
+      await body.arrayBuffer(),
+    );
+    const data = JSON.parse(text) as {
       redirect_uris?: unknown;
     };
     const uris = data?.redirect_uris;
