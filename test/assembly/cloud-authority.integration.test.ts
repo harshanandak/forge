@@ -126,7 +126,6 @@ interface Setup {
   device?: string | false;
   steps?: fx.Step[];
   config?: string;
-  /** Runs after the binding and credentials are written. */
   prepare?: (s: fx.Sandbox) => void | Promise<void>;
   /** False runs the real local store, for the unbound project. */
   sentinel?: boolean;
@@ -367,10 +366,13 @@ const linked = (s: fx.Sandbox) => (
   rmSync(s.binding),
   symlinkSync(manifest(s), s.binding)
 );
-const another = (s: fx.Sandbox) =>
-  credentialStore(openCloudFiles(s.home)).save(
-    fx.entry(NOW, { origin: fx.OTHER_ORIGIN, id: "bbbbbbbbbbbbbbbb" }),
-  );
+type Store = { entries: Record<string, unknown> };
+const another = (s: fx.Sandbox) => {
+  const file = JSON.parse(readFileSync(s.credentials, "utf8")) as Store;
+  const e = fx.entry(NOW, { origin: fx.OTHER_ORIGIN, id: "b".repeat(16) });
+  file.entries[`${e.origin}|${e.identity}|${e.project}`] = e;
+  writeFileSync(s.credentials, JSON.stringify(file));
+};
 const BAD = "INPUT_INVALID";
 const CLASH = "INPUT_CONFLICT";
 const lapsed = { expiresAt: iso(NOW - fx.DAY) };
