@@ -18,6 +18,7 @@ import {
 } from "./dispatch.ts";
 import { failure, respond, type SurfaceResponse } from "./result.ts";
 import { discoveryOperations } from "./discovery.ts";
+import { renderText } from "./result.ts";
 import { renderHelp } from "./help.ts";
 
 const builtins = discoveryOperations.map((entry) => entry.op);
@@ -276,6 +277,34 @@ export async function runCli(
       return jsonHelp
         ? response
         : { ...response, stdout: renderHelp(result.operations, op) };
+    }
+    if (
+      first === op.slice(0, -1) &&
+      op.endsWith(".") &&
+      tokens.length === 0 &&
+      rawInput === undefined
+    ) {
+      const operations = visible(
+        catalog,
+        options.caller,
+        options.readOnly,
+      ).filter((entry) => entry.op.startsWith(op));
+      if (operations.length > 0) {
+        const response = respond(success("catalog.list", { operations }), text);
+        return text
+          ? {
+              ...response,
+              stdout:
+                operations
+                  .map((entry) =>
+                    renderText(
+                      `${entry.op}  ${entry.docs.summary.replace(/\s+/g, " ")}`,
+                    ),
+                  )
+                  .join("\n") + "\n",
+            }
+          : response;
+      }
     }
     if (![...builtins, ...entries.map((c) => c.op)].includes(op))
       return respond(await dispatch(catalog, op, {}, options), text);
