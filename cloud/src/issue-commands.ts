@@ -1,6 +1,6 @@
 // POST /p/<project>/command: typed issue commands at the project authority.
 // This slice checks the envelope and the context, runs issue.show, issue.list and issue.ready as reads,
-// runs issue.create and issue.comment as writes and refuses every other command as not yet supported. Everything the caller sends is
+// runs issue.create, issue.comment and issue.update as writes and refuses every other command as not yet supported. Everything the caller sends is
 // untrusted. The envelope and context are closed shapes, the device comes from the token and the
 // project from the server, and no caller value becomes an SQL identifier, a namespace or a key.
 import manifest from "../../src/blocks/work/forge.block.json" with { type: "json" };
@@ -28,6 +28,7 @@ import {
 import { commentIssue } from "./issue-comment.ts";
 import { createIssue } from "./issue-create.ts";
 import { listIssues } from "./issue-list.ts";
+import { updateIssue } from "./issue-update.ts";
 import { PROJECT_NAME } from "./project-name.ts";
 import { readOnlyStore, type DurableStorage } from "./store.ts";
 import type { StateOwner } from "../../src/core/state/index.ts";
@@ -78,6 +79,8 @@ export interface CommandHost {
   readonly device: string;
   /** The admitted project, fixed by the server. */
   readonly project: string;
+  /** The session the token is bound to; none for a token of the device alone. */
+  readonly session?: string | null;
 }
 export interface PreparedCommand {
   readonly requestId: string;
@@ -127,6 +130,16 @@ export function parseCommand(text: string, host: CommandHost): PreparedCommand {
     throw fail(
       "AUTH_DEVICE_MISMATCH",
       "The request names a device other than the token's",
+    );
+  // A token bound to a session proves it too, so a lease holder's session is never the caller's claim.
+  if (
+    host.session != null &&
+    session !== undefined &&
+    session.id !== host.session
+  )
+    throw fail(
+      "AUTH_DEVICE_MISMATCH",
+      "The request names a session other than the token's",
     );
   if (
     (project?.id ?? host.project) !== host.project ||
@@ -200,7 +213,7 @@ function lazyViews(storage: DurableStorage): IssueViews {
 }
 
 /**
- * Prepares a command and runs it. Only issue.create, issue.comment, issue.show, issue.list and issue.ready run: each returns
+ * Prepares a command and runs it. Only issue.create, issue.comment, issue.update, issue.show, issue.list and issue.ready run: each returns
  * the response, serialized once and measured in UTF-8 bytes. Every other operation is refused. Throws ForgeFailure when refused,
  * and runs no await, so the caller's token check stays current until the response is built.
  */
@@ -219,7 +232,9 @@ export function runCommand(text: string, host: CommandRun): Response {
       ? createIssue
       : op === "issue.comment"
         ? commentIssue
-        : undefined;
+        : op === "issue.update"
+          ? updateIssue
+          : undefined;
   let result: unknown;
   if (write !== undefined) {
     const { db, owner } = host.open();
