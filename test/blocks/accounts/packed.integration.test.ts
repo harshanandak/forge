@@ -1281,18 +1281,14 @@ function interruptedApply() {
   );
   const device = join(home, ".forge/accounts");
   const bindings = readFileSync(join(device, "bindings.json"), "utf8");
-  const completeAudit = readFileSync(join(device, "audit.jsonl"), "utf8");
   const approvedAudit =
-    completeAudit
+    readFileSync(join(device, "audit.jsonl"), "utf8")
       .split("\n")
       .filter((line) => line && (JSON.parse(line) as Audit).kind !== "apply")
       .join("\n") + "\n";
   function stage(name: string, count: number) {
     writeFileSync(join(device, "bindings.json"), bindings);
-    writeFileSync(
-      join(device, "audit.jsonl"),
-      count === 3 ? approvedAudit : completeAudit,
-    );
+    writeFileSync(join(device, "audit.jsonl"), approvedAudit);
     const path = clone(name);
     mkdirSync(join(path, ".git/forge"), { recursive: true });
     for (const file of paths.slice(0, count))
@@ -1343,7 +1339,7 @@ for (const count of [1, 2, 3]) {
           );
         expect(
           f.readAudit().filter((row) => row.kind === "apply"),
-        ).toHaveLength(count === 3 ? 0 : 2);
+        ).toHaveLength(count === 3 ? 0 : 1);
         const after = f.snapshot(repo);
         expect(f.cli(repo, verb, input).ok).toBe(true);
         expect(f.snapshot(repo)).toEqual(after);
@@ -1467,7 +1463,7 @@ for (const owner of ["dead", "live device", "live clone"]) {
           );
         expect(
           f.readAudit().filter((row) => row.kind === "apply"),
-        ).toHaveLength(2);
+        ).toHaveLength(1);
         expect(f.cli(repo, "check").ok).toBe(true);
         for (const lock of locks) expect(existsSync(lock)).toBe(false);
       } else {
@@ -1480,3 +1476,16 @@ for (const owner of ["dead", "live device", "live clone"]) {
     }
   }, 120_000);
 }
+
+test("installed accounts: another clone's apply audit does not suppress recovery", () => {
+  const f = interruptedApply();
+  try {
+    const repo = f.stage("interrupted", 1);
+    expect(f.cli(f.clone("completed-other"), "plan").ok).toBe(true);
+    expect(f.readAudit().filter((row) => row.kind === "apply")).toHaveLength(1);
+    expect(f.cli(repo, "plan").ok).toBe(true);
+    expect(f.readAudit().filter((row) => row.kind === "apply")).toHaveLength(2);
+  } finally {
+    rmSync(f.root, { recursive: true, force: true });
+  }
+}, 120_000);
