@@ -1,6 +1,6 @@
 {
   "type": "object",
-  "description": "Rows are sorted by most recent activity. Holder session id, agent, harness and device are unverified metadata copied from the lease. Rows include live/stale lease state and expiry, last checkpoint time and linked PR when present, direct open or missing blockers with their holders, and direct open dependents. snapshotAt is this read's time. truncated means more rows; cursor continues the same ordering or refuses CURSOR_STALE: restart from the first page. Single-id readiness reasons are ordered CLOSED, HELD (holder and expiry), BLOCKED_BY (each open or missing dependency and holder); ready is true exactly when reasons are empty, agreeing with issue ready.",
+  "description": "Rows are sorted by most recent activity. Holder session id, agent, harness and device are unverified metadata copied from the lease. Rows include live/stale lease state and expiry, last checkpoint time and linked PR when present, direct open or missing blockers with their holders, and direct open dependents. Multi-row pages cap blockers, dependents and BLOCKED_BY reasons at 20 entries, with blockersTotal, dependentsTotal and blockedByTotal only when cut. --id returns full lists without totals. Page rows are bounded by 512 KiB of UTF-8 JSON plus separators; the first row is always included. snapshotAt is this read's time. truncated means more rows; cursor continues the same ordering or refuses CURSOR_STALE: restart from the first page. Single-id readiness reasons are ordered CLOSED, HELD (holder and expiry), BLOCKED_BY (each open or missing dependency and holder); ready is true exactly when full reasons are empty, agreeing with issue ready.",
   "additionalProperties": false,
   "required": ["items", "snapshotAt", "truncated"],
   "properties": {
@@ -63,6 +63,9 @@
         "pr": { "type": "string" },
         "blockers": { "type": "array", "items": { "$ref": "#/$defs/edge" } },
         "dependents": { "type": "array", "items": { "$ref": "#/$defs/edge" } },
+        "blockersTotal": { "type": "integer", "minimum": 0 },
+        "dependentsTotal": { "type": "integer", "minimum": 0 },
+        "blockedByTotal": { "type": "integer", "minimum": 0 },
         "ready": { "type": "boolean" },
         "notReadyBecause": {
           "type": "array",
