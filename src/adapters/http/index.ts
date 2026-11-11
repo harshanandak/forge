@@ -168,20 +168,31 @@ const REFUSALS = new Set([
   "UNKNOWN_COMMAND",
 ]);
 
+// The failures this adapter made itself. A ForgeFailure from anywhere else, such as the transport
+// or its stream, is not passed on: its text could hold the bearer token.
+const own = new WeakSet<ForgeFailure>();
+const mine = (failure: ForgeFailure): ForgeFailure => (
+  own.add(failure),
+  failure
+);
 const invalid = (message: string): ForgeFailure =>
-  new ForgeFailure({ code: "INPUT_INVALID", message, retry: "never" });
+  mine(new ForgeFailure({ code: "INPUT_INVALID", message, retry: "never" }));
 const unavailable = (why: string): ForgeFailure =>
-  new ForgeFailure({
-    code: "UNAVAILABLE",
-    message: `The Forge cloud gave no usable answer: ${why}.`,
-    retry: "never",
-  });
+  mine(
+    new ForgeFailure({
+      code: "UNAVAILABLE",
+      message: `The Forge cloud gave no usable answer: ${why}.`,
+      retry: "never",
+    }),
+  );
 const cancelled = (): ForgeFailure =>
-  new ForgeFailure({
-    code: "INVOCATION_CANCELLED",
-    message: "The request was cancelled.",
-    retry: "never",
-  });
+  mine(
+    new ForgeFailure({
+      code: "INVOCATION_CANCELLED",
+      message: "The request was cancelled.",
+      retry: "never",
+    }),
+  );
 
 /** An HTTPS origin and nothing else: no credentials, path, query or fragment, and already canonical. */
 export function validateOrigin(origin: string): string {
@@ -450,7 +461,7 @@ export function createCloudHttp(options: CloudHttpOptions): CloudHttp {
       return { status: response.status, value };
     } catch (error) {
       if (caller?.aborted === true) throw cancelled();
-      if (error instanceof ForgeFailure) throw error;
+      if (error instanceof ForgeFailure && own.has(error)) throw error;
       throw unavailable(
         deadline.aborted ? "the request timed out" : "the request failed",
       );
