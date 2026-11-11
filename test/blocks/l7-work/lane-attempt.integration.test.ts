@@ -176,7 +176,7 @@ test("a prefix alias cannot adopt an attempt checkout as a legacy lane", () => {
   }
 }, 30000);
 
-test("attempt holders create separate lanes, retry once and count against the shared cap", () => {
+test("attempt holders create separate lanes and retry once", () => {
   const id = team();
   const before = existsSync(join(repo, ".git/forge-lanes.json"))
     ? registry().length
@@ -198,6 +198,12 @@ test("attempt holders create separate lanes, retry once and count against the sh
     "attempt-1",
     "attempt-2",
   ]);
+}, 30000);
+
+test("attempt lanes count against the shared cap and refuse conflicting reruns", () => {
+  const id = team();
+  good("lane.attempt", args(id, 1), "B");
+  good("lane.attempt", args(id, 2), "C");
   cap(registry().length);
   const next = String(good("issue.create", { title: "Capped" }).id);
   expect(
