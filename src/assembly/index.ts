@@ -1003,7 +1003,10 @@ export async function createAssembly(
         const call = callScope();
         const show = call.config.show();
         if (!show.valid) return undefined;
-        return call.shipped.hint(op, caller, readOnly, show);
+        return call.shipped.hint(op, caller, readOnly, {
+          ...show,
+          configured: existsSync(join(root, show.file)),
+        });
       } catch {
         return undefined;
       }

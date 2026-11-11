@@ -9,6 +9,7 @@ import { spawnSync } from "node:child_process";
 import {
   cpSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
@@ -91,9 +92,21 @@ function project(files) {
     );
     return JSON.parse(result.stdout);
   };
-  // A first import needs no prior config show: the project has no config file yet.
-  const importDelivery = (expected = 0) =>
-    cli(["template", "import", "delivery"], expected);
+  // Existing config needs a revision; execute exactly the command returned in its hint.
+  let importArgs = ["template", "import", "delivery"];
+  if (Object.keys(files).length > 0) {
+    mkdirSync(join(root, ".forge"));
+    writeFileSync(join(root, ".forge/config.yaml"), "blocks: {}\n");
+    const revision = cli(["config", "show"]).result.revision;
+    const inactive = cli(["issue", "list"], 3);
+    assert.equal(inactive.error.message, "Unknown operation: issue.list");
+    assert.equal(
+      inactive.error.hint.command,
+      `forge template import delivery --expect-revision ${revision}`,
+    );
+    importArgs = inactive.error.hint.command.split(" ").slice(1);
+  }
+  const importDelivery = (expected = 0) => cli(importArgs, expected);
   if (Object.keys(files).length === 0)
     return { root, cli, refused: importDelivery(6) };
   assert.equal(importDelivery().result.template, "harsha/delivery@0.1.2");

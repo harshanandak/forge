@@ -116,7 +116,7 @@ export function shippedTemplates(): TemplateSource & {
               )
                 return {
                   template: template.name,
-                  command: `forge template import ${template.name}`,
+                  command: `forge template import ${template.name}${project?.configured ? ` --expect-revision ${project.revision}` : ""}`,
                 };
             }
           } catch {
