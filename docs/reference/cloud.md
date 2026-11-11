@@ -99,7 +99,7 @@ The owner runs these steps. Replace angle-bracket placeholders; `<worker-origin>
 
    Set the `OAUTH_KV` id in `wrangler.local.jsonc`. Keep the rest of the example as it is: the preflight refuses any difference outside `account_id`, `name`, `vars` and that id.
 
-3. **Public vars.** Set each var in `wrangler.local.jsonc`. All are required except `FORGE_OAUTH_REDIRECTS`; without `FORGE_OWNER_SUBJECT`, device login refuses (only login reads it), without `FORGE_CLOUD_PROJECT`, device login and `/command` refuse, without `FORGE_CLOUD_ID_PREFIX`, the issue commands answer 503, and the preflight stops the deploy in each case. `FORGE_OWNER_SUBJECT` is the owner's Clerk user id (Clerk dashboard, Users, the user, "User ID", starting `user_`):
+3. **Public vars.** Set each var in `wrangler.local.jsonc`. All are required except `FORGE_OAUTH_REDIRECTS`; without `FORGE_OWNER_SUBJECT`, device login refuses (only login reads it), without `FORGE_CLOUD_PROJECT`, device login and `/command` refuse, without `FORGE_CLOUD_ID_PREFIX`, the issue commands answer 503, and the preflight stops the deploy in each case. `FORGE_OWNER_SUBJECT` is the owner's Clerk user id (in Clerk: Users, the user, "User ID", starting `user_`):
 
    | Name                    | Example shape                               | What `readOAuthConfig` checks                                                                                 | Classification |
    | ----------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------- | -------------- |
