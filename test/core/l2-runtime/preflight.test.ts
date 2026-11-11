@@ -68,13 +68,13 @@ const before: Record<string, string> = {
   request: "INPUT_INVALID 6 invalid invocation request",
   requestWithOp: "INPUT_INVALID 6 invalid invocation request",
   operation: "UNKNOWN_COMMAND 3 unknown operation sample.missing",
-  caller: "GRANT_REQUIRED 1 caller is not permitted",
+  caller: "GRANT_REQUIRED 2 caller is not permitted",
   dryRun: "UNAVAILABLE 1 this profile has no dry-run execution contract",
   context:
     "CONTEXT_MISSING 6 this device operation needs actor, device, which the request did not supply",
   input: "INPUT_INVALID 6 Invalid input for sample.run:",
   config: "INPUT_INVALID 6 config does not match block schema",
-  trust: "ADMISSION_REQUIRED 1 captured bytes need human admission",
+  trust: "ADMISSION_REQUIRED 2 captured bytes need human admission",
 };
 for (const [name, [args, patch]] of Object.entries(rows))
   test(`preflight and invoke refuse the ${name} check as before`, async () => {
@@ -115,7 +115,7 @@ test("the earlier of two failing checks is the one reported by both entry points
 });
 
 test("a renamed operation passes preflight with no services and runs under its declared name", async () => {
-  const r = rig({}, {}, { rename: { sample: "renamed" } });
+  const r = rig({ timeoutMs: 1000 }, {}, { rename: { sample: "renamed" } });
   const request = { ...r.request, op: "renamed.run" };
   const got = r.runtime.preflight(request);
   expect(got.block).toBe(r.block);
