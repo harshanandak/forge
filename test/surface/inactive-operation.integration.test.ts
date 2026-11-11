@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +8,9 @@ import { dispatch, record } from "../../src/surface/dispatch.ts";
 import { failure } from "../../src/surface/result.ts";
 import { validateResultEnvelope } from "../../src/generated/validators.ts";
 import { candidate, fakeCatalog } from "./fixtures/catalog.ts";
+import { blockCapture } from "../../src/assembly/capture.ts";
+import { shippedTemplates } from "../../src/assembly/templates.ts";
+import { validateBlockManifest } from "../../src/generated/validators.ts";
 
 test("inactive bundled operations and nouns name the import that enables them", async () => {
   const root = mkdtempSync(join(tmpdir(), "forge-inactive-"));
@@ -52,6 +55,52 @@ test("inactive bundled operations and nouns name the import that enables them", 
   } finally {
     await assembly.close();
     rmSync(root, { recursive: true, force: true });
+  }
+}, 30_000);
+
+test("bundled hints obey declaration callers and read-only effects", () => {
+  const open = blockCapture.open.bind(blockCapture);
+  const capture = spyOn(blockCapture, "open").mockImplementation((root) => {
+    const handle = open(root);
+    const read = handle.value.read.bind(handle.value);
+    return {
+      ...handle,
+      value: {
+        ...handle.value,
+        read(name, budget) {
+          const bytes = read(name, budget);
+          const checked = validateBlockManifest(
+            JSON.parse(new TextDecoder().decode(bytes)) as unknown,
+          );
+          if (!checked.ok)
+            throw new Error("Expected bundled block declaration");
+          return new TextEncoder().encode(
+            JSON.stringify({
+              ...checked.value,
+              operations: Object.fromEntries(
+                Object.entries(checked.value.operations).map(
+                  ([op, declaration]) => [
+                    op,
+                    { ...declaration, callers: ["human"] },
+                  ],
+                ),
+              ),
+            }),
+          );
+        },
+      },
+    };
+  });
+  try {
+    const templates = shippedTemplates();
+    expect(templates.hint("issue.list", "agent")).toBeUndefined();
+    expect(templates.hint("issue.", "agent")).toBeUndefined();
+    expect(templates.hint("issue.list", "human")).toMatchObject({
+      template: "delivery",
+    });
+    expect(templates.hint("issue.create", "human", true)).toBeUndefined();
+  } finally {
+    capture.mockRestore();
   }
 }, 30_000);
 

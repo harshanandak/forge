@@ -998,6 +998,13 @@ export async function createAssembly(
     };
   }
   const catalog: Assembly["catalog"] = {
+    templateHint(op, caller, readOnly) {
+      try {
+        return callScope().shipped.hint(op, caller, readOnly);
+      } catch {
+        return undefined;
+      }
+    },
     upgradeHint(op) {
       try {
         const parsed = parseOperationName(op);

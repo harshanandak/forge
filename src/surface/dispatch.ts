@@ -186,6 +186,20 @@ async function dispatchRaw(
       suggestions(op, catalog, options.caller),
     );
     const hint = entry === undefined ? catalog.upgradeHint?.(op) : undefined;
+    const template =
+      entry === undefined && hint === undefined
+        ? catalog.templateHint?.(op, options.caller, options.readOnly)
+        : undefined;
+    if (template !== undefined)
+      return {
+        ...result,
+        error: {
+          ...result.error,
+          message: `Unknown operation: ${op}; provided by template ${template.template}. Run ${template.command}.`,
+          retry: "reconcile_first",
+          hint: template,
+        },
+      };
     return hint === undefined
       ? result
       : { ...result, error: { ...result.error, hint } };
