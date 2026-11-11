@@ -3,12 +3,17 @@
 // the HTTP adapter. It never writes a credential, opens local state or retries. Nothing calls it yet.
 import type {
   CloudHttp,
-  LeaseResult,
+  CommandWire,
   LeaseRoute,
   LeaseWriteBody,
 } from "../adapters/http/index.ts";
 import { ForgeFailure } from "../contract/failure.ts";
-import type { LeaseHolder, LeaseRecord } from "../generated/types.ts";
+import type {
+  AmbientContext,
+  LeaseConflict,
+  LeaseHolder,
+  LeaseRecord,
+} from "../generated/types.ts";
 import { wireDeviceId } from "./cloud-login.ts";
 import type { CredentialKey, CredentialStore } from "./cloud-profile.ts";
 
@@ -19,7 +24,7 @@ export interface CloudLeaseOptions {
   readonly now: () => number;
   readonly http: Pick<
     CloudHttp,
-    "origin" | "project" | "leaseWrite" | "leaseHolder"
+    "origin" | "project" | "leaseWrite" | "leaseHolder" | "command"
   >;
   readonly signal?: AbortSignal;
 }
@@ -27,6 +32,14 @@ export type ClaimInput = Required<Omit<LeaseWriteBody, "generation">>;
 export type RenewInput = Required<LeaseWriteBody>;
 export type ReleaseInput = Required<Omit<LeaseWriteBody, "ttlMs">>;
 export interface CloudLeaseClient {
+  /**
+   * A typed command at the project authority. The result is validated by `validate` (the operation's
+   * declared output schema, supplied by the caller) and is never returned unvalidated.
+   */
+  command(
+    call: CommandWire,
+    validate: (result: unknown) => boolean,
+  ): Promise<Record<string, unknown>>;
   claim(input: ClaimInput): Promise<LeaseRecord>;
   renew(input: RenewInput): Promise<LeaseRecord>;
   release(input: ReleaseInput): Promise<LeaseRecord>;
@@ -36,6 +49,8 @@ export interface CloudLeaseClient {
 
 const failure = (code: string, message: string) =>
   new ForgeFailure({ code, message, retry: "never" });
+const MISMATCH =
+  "This session's device is not the device the stored credential belongs to.";
 const UNAVAILABLE = "The Forge cloud gave no usable answer.";
 
 export function createCloudLeaseClient(
@@ -60,10 +75,10 @@ export function createCloudLeaseClient(
   }
 
   /** One request. Whatever the transport throws is rebuilt: only a cancellation keeps its code, never its text. */
-  async function exchange(
-    send: () => Promise<LeaseResult>,
-  ): Promise<LeaseRecord | null> {
-    let result: LeaseResult;
+  async function exchange<T extends { kind: string }>(
+    send: () => Promise<T>,
+  ): Promise<Extract<T, { kind: "ok" }>> {
+    let result: T;
     try {
       result = await send();
     } catch (error) {
@@ -74,12 +89,13 @@ export function createCloudLeaseClient(
         throw failure("INVOCATION_CANCELLED", "The request was cancelled.");
       throw failure("UNAVAILABLE", UNAVAILABLE);
     }
-    if (result.kind === "ok") return result.lease;
+    if (result.kind === "ok") return result as Extract<T, { kind: "ok" }>;
+    const bad = result as unknown as { code: string; lease?: LeaseConflict };
     throw new ForgeFailure({
-      code: result.code,
-      message: `The Forge cloud refused the request (${result.code}).`,
-      retry: result.code.startsWith("LEASE_") ? "reconcile_first" : "never",
-      ...(result.lease === undefined ? {} : { lease: result.lease }),
+      code: bad.code,
+      message: `The Forge cloud refused the request (${bad.code}).`,
+      retry: bad.code.startsWith("LEASE_") ? "reconcile_first" : "never",
+      ...(bad.lease === undefined ? {} : { lease: bad.lease }),
     });
   }
 
@@ -88,17 +104,29 @@ export function createCloudLeaseClient(
     const named = holder.session.device;
     if (named === undefined) return holder;
     if (wireDeviceId(named) !== device)
-      throw failure(
-        "AUTH_DEVICE_MISMATCH",
-        "This session's device is not the device the stored credential belongs to.",
-      );
+      throw failure("AUTH_DEVICE_MISMATCH", MISMATCH);
     return { ...holder, session: { ...holder.session, device } };
+  }
+
+  /** The caller's context for the wire: this project by name with no root, any named device in wire form. */
+  function contextFor(context: AmbientContext, device: string) {
+    const named = [context.device?.id, context.session?.device];
+    if (named.some((d) => d !== undefined && wireDeviceId(d) !== device))
+      throw failure("AUTH_DEVICE_MISMATCH", MISMATCH);
+    return {
+      ...context,
+      project: { id: key.project },
+      ...(context.device === undefined ? {} : { device: { id: device } }),
+      ...(context.session?.device === undefined
+        ? {}
+        : { session: { ...context.session, device } }),
+    };
   }
 
   async function write(route: LeaseRoute, body: LeaseWriteBody) {
     const { token, device } = stored();
     const holder = wired(body.holder, device);
-    const lease = await exchange(() =>
+    const { lease } = await exchange(() =>
       http.leaseWrite(token, route, { ...body, holder }, signal),
     );
     if (lease === null) throw failure("UNAVAILABLE", UNAVAILABLE);
@@ -106,12 +134,33 @@ export function createCloudLeaseClient(
   }
 
   return {
+    async command(call, validate) {
+      const { token, device } = stored();
+      const wire = {
+        requestId: call.requestId,
+        op: call.op,
+        input: call.input,
+        context: contextFor(call.context, device),
+        ...(call.dryRun === undefined ? {} : { dryRun: call.dryRun }),
+      };
+      const { result } = await exchange(() =>
+        http.command(token, wire, signal),
+      );
+      const valid = await Promise.resolve()
+        .then(() => validate(result))
+        .catch(() => false);
+      if (!valid) throw failure("UNAVAILABLE", UNAVAILABLE);
+      return result;
+    },
     claim: (input) => write("claim", input),
     renew: (input) => write("renew", input),
     release: (input) => write("release", input),
     async holder(subject) {
       const { token } = stored();
-      return await exchange(() => http.leaseHolder(token, subject, signal));
+      const { lease } = await exchange(() =>
+        http.leaseHolder(token, subject, signal),
+      );
+      return lease;
     },
   };
 }

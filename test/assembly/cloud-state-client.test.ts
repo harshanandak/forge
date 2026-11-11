@@ -52,12 +52,29 @@ const base = { subject: SUBJECT, holder: holderOf("s1"), requestId: "req-1" };
 const claim = { ...base, ttlMs: 60_000 };
 const renew = { ...base, generation: 3, ttlMs: 60_000 };
 const rel = { ...base, generation: 3 };
+/** The adapter's success answer to any call: a lease for the lease routes, a result for a command. */
+const OK = { kind: "ok" as const, lease: LEASE, result: LEASE };
+const cmd = {
+  requestId: "req-c",
+  op: "issue.show",
+  input: { id: "forge-1" },
+  context: {
+    actor: base.holder.actor,
+    session: base.holder.session,
+    project: { id: "ignored", root: "/home/u/repo" },
+  },
+};
+const wireCmd = {
+  ...cmd,
+  context: { ...cmd.context, project: { id: PROJECT } },
+};
 type Run = (client: CloudLeaseClient) => Promise<unknown>;
 const ops: [string, Run, unknown[]][] = [
   ["claim", (c) => c.claim(claim), [TOKEN, "claim", claim, undefined]],
   ["renew", (c) => c.renew(renew), [TOKEN, "renew", renew, undefined]],
   ["release", (c) => c.release(rel), [TOKEN, "release", rel, undefined]],
   ["holder", (c) => c.holder(SUBJECT), [TOKEN, SUBJECT, undefined]],
+  ["command", (c) => c.command(cmd, () => true), [TOKEN, wireCmd, undefined]],
 ];
 
 let touched = 0;
@@ -90,15 +107,12 @@ function rig(
   } = {},
 ) {
   const calls: unknown[][] = [];
-  const answer: LeaseResult | Error = options.answer ?? {
-    kind: "ok",
-    lease: LEASE,
-  };
+  const answer: LeaseResult | Error = options.answer ?? OK;
   const reply = () =>
     answer instanceof Error ? Promise.reject(answer) : Promise.resolve(answer);
   const record = (...args: unknown[]) => {
     calls.push(args);
-    return reply();
+    return reply() as Promise<never>;
   };
   const key = options.key ?? KEY;
   const http = {
@@ -106,6 +120,7 @@ function rig(
     project: options.bound?.project ?? key.project,
     leaseWrite: record,
     leaseHolder: record,
+    command: record,
   };
   const credentials = credentialStore(
     filesWith(options.entries ?? [entry(NOW)], options.text),
@@ -314,4 +329,82 @@ test("holder resolves while every local write, create and lock port fails if cal
   const { client } = rig();
   expect(await client.holder(SUBJECT)).toEqual(LEASE);
   expect(touched).toBe(0);
+}, 10_000);
+
+test("a command sends only requestId, op, input and the context, adds dryRun only when set, and never fills in the credential's device", async () => {
+  const bare = {
+    ...cmd,
+    context: { actor: base.holder.actor, session: { id: "s1" } },
+  };
+  const withProject = {
+    ...bare,
+    context: { ...bare.context, project: { id: PROJECT } },
+  };
+  const cases = [
+    [cmd, wireCmd],
+    [
+      { ...cmd, dryRun: true },
+      { ...wireCmd, dryRun: true },
+    ],
+    [bare, withProject],
+  ] as const;
+  for (const [call, expected] of cases) {
+    const { client, calls } = rig();
+    await client.command(call, () => true);
+    expect(calls).toEqual([[TOKEN, expected, undefined]]);
+  }
+  const { client, calls } = rig();
+  await client.command(bare, () => true);
+  expect(JSON.stringify(calls)).not.toContain("dev-1");
+}, 10_000);
+
+test("a command's named devices are sent in wire form, and a different device is refused before any request", async () => {
+  const local = "me@host";
+  const wire = wireDeviceId(local);
+  const entries = [entry(NOW, { localDevice: local, device: wire })];
+  const named = {
+    ...cmd.context,
+    device: { id: local },
+    session: { id: "s1", device: local },
+  };
+  const good = rig({ entries });
+  await good.client.command({ ...cmd, context: named }, () => true);
+  const sent = (good.calls[0]?.[1] as { context: typeof named }).context;
+  expect([sent.device.id, sent.session.device]).toEqual([wire, wire]);
+  for (const context of [
+    { ...cmd.context, session: { id: "s1", device: "other-device" } },
+    { ...cmd.context, device: { id: "other-device" } },
+  ]) {
+    const { client, calls } = rig();
+    const failed = await failureOf(() =>
+      client.command({ ...cmd, context }, () => true),
+    );
+    expect(failed.error.code).toBe("AUTH_DEVICE_MISMATCH");
+    expect(exit(failed)).toBe(1);
+    expect(calls).toHaveLength(0);
+  }
+}, 10_000);
+
+test("a result that fails the output schema, or a validator that throws, is UNAVAILABLE with the fixed message after one request", async () => {
+  const seen: unknown[] = [];
+  const bad = [
+    (result: unknown) => {
+      seen.push(result);
+      return false;
+    },
+    (result: unknown) => {
+      seen.push(result);
+      throw new Error(`validator saw ${TOKEN}`);
+    },
+  ];
+  for (const validate of bad) {
+    const { client, calls } = rig();
+    const failed = await failureOf(() => client.command(cmd, validate));
+    expect(failed.error.code).toBe("UNAVAILABLE");
+    expect(failed.error.message).toBe("The Forge cloud gave no usable answer.");
+    expect(JSON.stringify(failed.error)).not.toContain("saw");
+    expect(exit(failed)).toBe(1);
+    expect(calls).toHaveLength(1);
+  }
+  expect(seen).toEqual([LEASE, LEASE]);
 }, 10_000);
