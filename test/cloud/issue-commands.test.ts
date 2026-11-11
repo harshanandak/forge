@@ -9,7 +9,12 @@ import {
 } from "../../cloud/src/store.ts";
 import { TOKEN_LOOKUP, TOKENS } from "../../cloud/src/tokens.ts";
 import { prepareCommand } from "../../cloud/src/issue-commands.ts";
-import { LEASE_READS, RECORD_READS } from "../../cloud/src/issue-read.ts";
+import { listIssues } from "../../cloud/src/issue-list.ts";
+import {
+  LEASE_READS,
+  RECORD_READS,
+  type IssueViews,
+} from "../../cloud/src/issue-read.ts";
 import { createWorker } from "../../cloud/src/worker.ts";
 import manifest from "../../src/blocks/work/forge.block.json" with { type: "json" };
 import { createStateClient } from "../../src/assembly/state-client.ts";
@@ -516,10 +521,9 @@ const allowed = [
   "issue.update",
   "issue.comment",
   "issue.comments",
-  "issue.ready",
 ];
 
-test("the five other allowed operations pass the envelope and context checks, then are refused", async () => {
+test("the four other allowed operations pass the envelope and context checks, then are refused", async () => {
   const { f, token, before } = await begin();
   const named = {
     actor,
@@ -1908,3 +1912,313 @@ test("a view of a missing table runs only the probe and creates nothing", async 
   expect(seen).toEqual([[TABLE_PROBE, "domain_cloud_missing"]]);
   expect(schema()).toEqual(before);
 }, 30_000);
+
+// issue.ready: the route and the local handler read the same rows, clock and config.
+type Listed = { items: { id: string }[]; truncated: boolean };
+const idsOf = ({ items, truncated }: Listed) =>
+  items.map((i) => i.id.slice(6)).join() + (truncated ? "+" : "");
+async function withLocal(
+  body: (
+    local: (f: F, input: unknown, config: object, op?: string) => unknown,
+  ) => Promise<void>,
+) {
+  const hadFail = "fail" in globals,
+    previous = globals.fail;
+  globals.fail = (code: string, message: string) => {
+    throw new Error(`${code}: ${message}`);
+  };
+  try {
+    const handlers = require(
+      resolve(import.meta.dirname, "../../src/blocks/work/entry.cts"),
+    ) as Record<string, Handler>;
+    await body((f, input, config, op = "issue.ready") => {
+      const refused: string[] = [];
+      const state = createStateClient({
+        owner: new StateOwner(readView(f.db, refused), { now: f.now }),
+        namespace: "forge/work",
+        context: { variant: "project", actor, project: { id: "p" } },
+        write: false,
+        requestId: "oracle",
+      });
+      try {
+        return handlers[op]!({ input, config, services: { state } });
+      } catch (error) {
+        return { code: String(error).split(":")[1]!.trim() };
+      } finally {
+        expect(refused).toEqual([]);
+      }
+    });
+  } finally {
+    if (hadFail) globals.fail = previous;
+    else delete globals.fail;
+  }
+}
+// Ready: 4, 8, 10, 11 and 12. Blocked: 1 (missing dependency), 5 (itself), 6 and 7 (each other).
+// Closed: 2 and 9. Held by a live lease: 3. Leases on 10, 11 and 12 are expired, expiring now and released.
+async function readyRows() {
+  const f = fixture();
+  const token = await f.device();
+  f.tables();
+  const put = (n: number, over: object = {}, lease?: object) => {
+    f.put(stored({ id: `work-${n}`, ...over }), {}, `issue:work-${n}`);
+    if (lease) f.lease(lease, `issue:work-${n}`);
+  };
+  put(1, { kind: "task", dependsOn: ["work-99"] });
+  put(2, { status: "closed", kind: "task" });
+  put(
+    3,
+    {
+      parent: "work-2",
+      kind: "bug",
+      labels: ["b"],
+      createdAt: iso(start - 500),
+    },
+    { expiresAt: iso(start + 1) },
+  );
+  put(4, {
+    parent: "work-2",
+    kind: "task",
+    labels: ["a", "b"],
+    createdAt: iso(start),
+    dependsOn: ["work-2"],
+  });
+  put(5, { dependsOn: ["work-5"] });
+  put(6, { dependsOn: ["work-7"] });
+  put(7, { dependsOn: ["work-6"] });
+  put(8, { kind: "bug", labels: ["b"], dependsOn: ["work-9"] });
+  put(9, { status: "closed", dependsOn: ["work-8"] });
+  put(10, { labels: ["c"] }, { expiresAt: iso(start - 1) });
+  put(11, { labels: [] }, { expiresAt: iso(start) });
+  const released = { releasedAt: iso(start - 5), expiresAt: iso(start + day) };
+  put(12, { labels: ["a"] }, released);
+  return { f, token };
+}
+const readyCall = { ...call, op: "issue.ready" };
+
+test("the cloud issue.ready agrees with the local handler on defaults, status, filters, leases, limits and the empty labelOrder", async () => {
+  await withLocal(async (local) => {
+    const { f, token } = await readyRows();
+    const config = { idPrefix: "forge", labelOrder: [] };
+    // The ids returned, `+` when truncated. Stored order has work-10 before work-2.
+    for (const [input, want] of [
+      [{}, "10,11,12,4,8"],
+      [{ ready: false }, "10,11,12,4,8"],
+      [{ ready: true }, "10,11,12,4,8"],
+      [{ status: "open" }, "10,11,12,4,8"],
+      [{ status: "closed" }, ""],
+      [{ status: "closed", ready: false }, ""],
+      [{ status: "closed", ready: true }, ""],
+      [{ parent: "forge-2" }, "4"],
+      [{ parent: "work-2", ready: false }, "4"],
+      [{ parent: "none" }, "10,11,12,8"],
+      [{ kind: "task" }, "4"],
+      [{ kind: "bug", ready: false }, "8"],
+      [{ label: ["b"] }, "4,8"],
+      [{ labels: ["a", "b"] }, "4"],
+      [{ label: ["a"] }, "12,4"],
+      [{ label: ["a"], labels: ["c"] }, ""],
+      [{ createdSince: iso(start - 1000) }, "10,11,12,4,8"],
+      [{ createdSince: iso(start - 500) }, "4"],
+      [{ createdSince: iso(start) }, "4"],
+      [{ createdSince: iso(start + 1) }, ""],
+      [{ kind: "bug", label: ["b"], ready: true }, "8"],
+      [{ limit: 1 }, "10+"],
+      [{ limit: 4 }, "10,11,12,4+"],
+      [{ limit: 5 }, "10,11,12,4,8"],
+      [{ limit: 1000, ready: false }, "10,11,12,4,8"],
+      [{ limit: 1, label: ["a"] }, "12+"],
+      [{ limit: 2, label: ["a"] }, "12,4"],
+    ] as const) {
+      const name = JSON.stringify(input);
+      const before = f.snapshot();
+      const got = await f.send({ ...readyCall, input }, { token });
+      expect([name, got.status, got.json.op, got.exit]).toEqual([
+        name,
+        200,
+        "issue.ready",
+        0,
+      ]);
+      expect([name, got.json.result]).toEqual([name, local(f, input, config)]);
+      expect([name, idsOf(got.json.result as Listed)]).toEqual([name, want]);
+      expect(readCalls(got.touched)).toEqual([]);
+      expect(f.snapshot()).toBe(before);
+    }
+  });
+}, 60_000);
+
+test("listIssues ranks ready issues by labelOrder, keeps stored order within a rank, limits after sorting and leaves issue.list unsorted", async () => {
+  await withLocal(async (local) => {
+    const { f } = await readyRows();
+    const views: IssueViews = {
+      records: readOnlyStore(f.storage, "state_records", RECORD_READS),
+      leases: readOnlyStore(f.storage, "state_leases", LEASE_READS),
+    };
+    for (const [labelOrder, input, want] of [
+      [["b", "a"], {}, "4,8,12,10,11"],
+      [["b", "a"], { limit: 1 }, "4+"],
+      [["b", "a"], { limit: 3 }, "4,8,12+"],
+      [["b", "a"], { limit: 5 }, "4,8,12,10,11"],
+      [["a"], {}, "12,4,10,11,8"],
+      [["c", "b"], { ready: false, limit: 2 }, "10,4+"],
+      [["b"], { kind: "bug" }, "8"],
+      [["b"], { status: "closed" }, ""],
+      [["nope"], {}, "10,11,12,4,8"],
+      [[], {}, "10,11,12,4,8"],
+    ] as const) {
+      const name = JSON.stringify([labelOrder, input]);
+      const got = listIssues(views, input, f.now(), "forge", { labelOrder });
+      expect([name, idsOf(got)]).toEqual([name, want]);
+      const mine = { idPrefix: "forge", labelOrder };
+      expect(got).toEqual(local(f, input, mine) as typeof got);
+    }
+    const config = { idPrefix: "forge", labelOrder: ["a"] };
+    const plain = listIssues(views, { ready: true }, f.now(), "forge");
+    expect(idsOf(plain)).toBe("10,11,12,4,8");
+    expect(plain).toEqual(
+      local(f, { ready: true }, config, "issue.list") as typeof plain,
+    );
+  });
+}, 30_000);
+
+test("ready refuses bad input before any work table is probed", async () => {
+  const { f, token } = await readyRows();
+  const before = f.snapshot();
+  for (const input of [
+    { extra: 1 },
+    { createdSince: "yesterday" },
+    { limit: 1.5 },
+    { limit: 0 },
+    { limit: 1001 },
+  ]) {
+    const got = await f.send({ ...readyCall, input }, { token });
+    const name = JSON.stringify(input);
+    expect([name, got.status, got.code, got.exit]).toEqual([
+      name,
+      400,
+      "INPUT_INVALID",
+      6,
+    ]);
+    expect(got.json.error?.message).toBe("Invalid issue list input");
+    expect(got.probes).toEqual(TOKEN_PROBE);
+  }
+  expect(f.snapshot()).toBe(before);
+}, 30_000);
+
+test("ready refuses a corrupt row or a corrupt candidate lease with the fixed 500, reading a lease only for a candidate", async () => {
+  const lease =
+    "INSERT INTO state_leases(namespace,subject,generation,body) VALUES (?,?,2,?)";
+  const row =
+    "INSERT INTO state_records(namespace,key,revision,body) VALUES (?,?,3,?)";
+  const holder = { actor, session: { id: marker } };
+  // The status, the ids returned, and how many work tables were probed.
+  for (const [name, setup, input, want, probes] of [
+    [
+      "empty row past the limit",
+      (f: F) => f.db.run(row, ["forge/work", "issue:work-9", "{}"]),
+      { limit: 1 },
+      "500 ",
+      2,
+    ],
+    [
+      "malformed lease on a candidate",
+      (f: F) => f.db.run(lease, ["forge/work", "issue:work-1", `{${marker}`]),
+      {},
+      "500 ",
+      3,
+    ],
+    [
+      "wrong subject on a candidate",
+      (f: F) => f.lease({ subject: "issue:work-9", holder }),
+      { ready: false },
+      "500 ",
+      3,
+    ],
+    [
+      "malformed lease on a closed issue",
+      (f: F) => f.db.run(lease, ["forge/work", "issue:work-2", `{${marker}`]),
+      {},
+      "200 forge-1,forge-3",
+      3,
+    ],
+    [
+      "malformed lease on a filtered-out issue",
+      (f: F) => f.db.run(lease, ["forge/work", "issue:work-1", `{${marker}`]),
+      { kind: "bug" },
+      "200 forge-3",
+      3,
+    ],
+  ] as const) {
+    const f = fixture();
+    const token = await f.device();
+    f.tables();
+    f.put(stored());
+    f.put(stored({ id: "work-2", status: "closed" }), {}, "issue:work-2");
+    f.put(stored({ id: "work-3", kind: "bug" }), {}, "issue:work-3");
+    setup(f);
+    const before = f.snapshot();
+    const got = await f.send({ ...readyCall, input }, { token });
+    const items = (got.json.result as Listed | undefined)?.items ?? [];
+    expect([name, `${got.status} ${items.map((i) => i.id).join()}`]).toEqual([
+      name,
+      want,
+    ]);
+    expect(got.probes).toEqual(WORK_PROBES.slice(0, probes));
+    if (got.status === 500) {
+      expect([got.code, got.exit, got.json.error?.message]).toEqual([
+        "INTERNAL",
+        1,
+        notValid,
+      ]);
+      expect(JSON.stringify(got.json)).not.toContain(marker);
+    }
+    expect(f.snapshot()).toBe(before);
+  }
+}, 60_000);
+
+test("ready refuses an over-budget project as UNAVAILABLE before it loads any body, whatever the filter", async () => {
+  for (const [name, fill] of [
+    [
+      "10,001 rows",
+      (f: F) =>
+        f.db.run(
+          "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<?) INSERT INTO state_records(namespace,key,revision,body) SELECT 'forge/work','issue:work-'||i,3,json_object('namespace','forge/work','key','issue:work-'||i,'revision',3,'value',json_object('id','work-'||i,'title','t','status','open','labels',json('[]'),'dependsOn',json('[]'),'createdAt',?),'updatedAt',?,'updatedBy',json_object('kind','agent','id','tester')) FROM n",
+          [10_001, iso(start - 1000), iso(start - 500)],
+        ),
+    ],
+    [
+      "over 8 MiB",
+      (f: F) => {
+        for (let n = 1; n <= 5; n++)
+          f.put(
+            stored({ id: `work-${n}`, kind: "k".repeat(1_700_000) }),
+            {},
+            `issue:work-${n}`,
+          );
+      },
+    ],
+  ] as const) {
+    const f = fixture();
+    const token = await f.device();
+    f.tables();
+    fill(f);
+    const before = f.snapshot();
+    for (const input of [{}, { limit: 1, kind: "none", ready: true }]) {
+      const got = await f.send({ ...readyCall, input }, { token });
+      expect([
+        name,
+        got.status,
+        got.code,
+        got.exit,
+        got.json.error?.message,
+      ]).toEqual([
+        name,
+        503,
+        "UNAVAILABLE",
+        1,
+        "Issue list is over its read budget",
+      ]);
+      expect(got.probes).toEqual(WORK_PROBES.slice(0, 2));
+    }
+    expect(f.snapshot()).toBe(before);
+  }
+}, 120_000);

@@ -41,6 +41,8 @@ type Stored = {
   prefix?: unknown;
 };
 
+/** Ready mode: open, unblocked, unleased issues only, ranked by `labelOrder`. */
+export type ReadyMode = { readonly labelOrder: readonly string[] };
 export const MAX_SCAN_ROWS = 10_000;
 export const MAX_SCAN_BYTES = 8 * 1024 * 1024;
 if (manifest.operations["issue.list"].input !== "schemas/ListItemsInput.json")
@@ -54,6 +56,7 @@ export function listIssues(
   input: unknown,
   now: number,
   prefix: string,
+  _ready?: ReadyMode,
 ): { items: TrackerItem[]; truncated: boolean } {
   configured(prefix);
   if (schemas().validate("#", input).length > 0)
