@@ -313,6 +313,24 @@
       "stability": "experimental",
       "args": ["id"]
     },
+    "lane.attempt": {
+      "input": "schemas/lane-attempt.input.json",
+      "output": "schemas/lane.output.json",
+      "context": "leased",
+      "timeoutMs": 120000,
+      "effects": [
+        "files:read",
+        "files:write",
+        "external:process",
+        "external:network",
+        "environment:read"
+      ],
+      "idempotent": true,
+      "callers": ["agent", "human"],
+      "stability": "experimental",
+      "args": ["id"],
+      "leaseMode": "acquire"
+    },
     "lane.start": {
       "input": "schemas/lane-start.input.json",
       "output": "schemas/lane.output.json",

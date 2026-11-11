@@ -252,6 +252,10 @@ type WorkOperations = TrackerOperations<"issue"> & {
     TailRecordInput,
     { lane: string; step: string; n: number; recorded: true } | ReplyResult,
   ];
+  readonly "lane.attempt": readonly [
+    LaneInput & { attempt: string },
+    LaneOutput,
+  ];
   readonly "lane.start": readonly [LaneInput, LaneOutput];
   readonly "lane.show": readonly [ItemRef, LaneOutput];
   readonly "lane.release": readonly [
@@ -3988,6 +3992,8 @@ const operations: Operations<WorkOperations> = {
       ...(lease ? { lease } : {}),
     };
   },
+  "lane.attempt": () =>
+    fail("UNAVAILABLE", "Attempt lane implementation pending"),
   "lane.start": async ({ input, services, config, signal, deadline }) => {
     const state = client(services),
       ids = idsFor(state, config);
