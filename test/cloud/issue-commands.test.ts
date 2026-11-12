@@ -2317,6 +2317,22 @@ const writes = (f: F) =>
   ]);
 const issuesIn = (f: F) =>
   rowsOf(f.db, "forge/work").filter((r) => r.key.startsWith("issue:")).length;
+const floorAt = (number: number) => ({ prefix: "issue:work-", number });
+const floorOf = (f: F) => {
+  const row = rowsOf(f.db, "forge/work").find(
+    (r) => r.key === "allocation:issue:work-",
+  );
+  return row === undefined
+    ? undefined
+    : (JSON.parse(row.body) as { value: unknown }).value;
+};
+const floorEvents = (f: F) =>
+  eventsOf(f.db, "forge/work").filter((e) =>
+    e.includes('"key":"allocation:issue:work-"'),
+  );
+const owned = (f: F) => new StateOwner(sqlOf(f.db), { now: f.now });
+const floorMissing =
+  "Issue allocation floor is missing; dump and re-restore into an empty project before creating issues";
 const make = (id: string, input: object = { title: "New" }, more = {}) => ({
   requestId: id,
   op: "issue.create",
@@ -2328,7 +2344,7 @@ const revoke = (f: F, token: string) =>
   f.db
     .query("UPDATE domain_cloud_tokens SET revoked_at=? WHERE id=?")
     .run(f.now(), token.slice(4, 20));
-// Issues 1, 4 and 12 (gaps, the historical prefixes acme and old, 4 held by a live lease), and a
+// Issues 1, 4 and 12 (gaps, the historical prefixes acme and old, 4 held by a live lease), a floor at 12, and a
 // comment record numbered 30 that is not an issue and must not move the next number.
 async function createRows() {
   const f = fixture();
@@ -2339,6 +2355,7 @@ async function createRows() {
   f.put(stored({ id: "work-12" }), {}, "issue:work-12");
   f.put({ id: "work-1", body: "c" }, {}, "comment:work-1:30");
   f.lease({ expiresAt: iso(start + 1) }, "issue:work-4");
+  f.put({ prefix: "issue:work-", number: 12 }, {}, "allocation:issue:work-");
   return { f, token };
 }
 
@@ -2408,7 +2425,10 @@ test("the cloud issue.create agrees with the local handler on whole results, row
       );
     }
     expect(eventsOf(f.db, "forge/work")).toEqual(eventsOf(twin, "forge/work"));
-    expect(eventsOf(f.db, "forge/work")).toHaveLength(inputs.length);
+    // Each create writes its issue event and its floor event.
+    expect(eventsOf(f.db, "forge/work")).toHaveLength(inputs.length * 2);
+    expect(floorOf(f)).toEqual(floorAt(12 + inputs.length));
+    expect(floorOf(f)).toEqual(floorOf({ db: twin } as F));
     expect(seeded()).toBe(before);
     // Eligible while unleased; the leased issue 4 is not.
     const ready = await f.send({ ...readyCall, input: {} }, { token });
@@ -2428,8 +2448,8 @@ test("a retry returns the original result with no second issue or issue event, a
     0,
     { id: "forge-13" },
   ]);
-  // One issue and its one event; the receipt adds its own record and its own event.
-  expect([issuesIn(f), eventsOf(f.db, "forge/work").length]).toEqual([4, 1]);
+  // One issue and its two events (the issue and its floor); the receipt adds its own record and event.
+  expect([issuesIn(f), eventsOf(f.db, "forge/work").length]).toEqual([4, 2]);
   expect(rowsOf(f.db, "forge/cloud").map((r) => r.key)).toEqual([
     "request:r-1",
   ]);
@@ -2475,6 +2495,128 @@ test("a retry returns the original result with no second issue or issue event, a
   expect([dry.status, dry.code, dry.exit]).toEqual([503, "UNAVAILABLE", 1]);
   expect(f.snapshot()).toBe(revoked);
 }, 60_000);
+
+test("a fresh cloud project allocates forge-1 at revision 1 and keeps a floor, also after raw lease history", async () => {
+  for (const leased of [false, true]) {
+    const f = fixture();
+    const token = await f.device();
+    if (leased)
+      owned(f).acquire(
+        "forge/work",
+        "issue:work-7",
+        { actor, session: { id: "s1" } },
+        60_000,
+        "seed",
+      );
+    for (const [i, id] of ["forge-1", "forge-2"].entries()) {
+      const got = await f.send(make(`f-${i}`), { token });
+      expect([got.status, got.json.result]).toMatchObject([
+        200,
+        { id, revision: 1 },
+      ]);
+      expect(floorOf(f)).toEqual(floorAt(i + 1));
+    }
+    expect(floorEvents(f)).toHaveLength(2);
+  }
+}, 60_000);
+
+for (const [name, seed] of [
+  ["a live issue", (f: F) => f.put(stored())],
+  [
+    "only deleted history",
+    (f: F) => {
+      const owner = owned(f);
+      owner.put("forge/work", "issue:work-3", stored(), actor, {
+        expectRevision: 0,
+      });
+      owner.delete("forge/work", "issue:work-3", actor, { expectRevision: 1 });
+    },
+  ],
+] as const)
+  test(`a cloud project with ${name} and no floor refuses create as UNAVAILABLE and changes nothing`, async () => {
+    const f = fixture();
+    const token = await f.device();
+    f.tables();
+    seed(f);
+    const before = f.snapshot();
+    const got = await f.send(make("o-1"), { token });
+    expect([got.status, got.code, got.exit, got.json.error?.message]).toEqual([
+      503,
+      "UNAVAILABLE",
+      1,
+      floorMissing,
+    ]);
+    expect(f.snapshot()).toBe(before);
+    expect(receiptOf(f, "o-1")).toBeUndefined();
+    // Issuing another device never writes a floor over old history.
+    await f.device(day, "tablet");
+    expect(floorOf(f)).toBeUndefined();
+  }, 30_000);
+
+test("an accepted create replays its original result even after the floor is gone", async () => {
+  const f = fixture();
+  const token = await f.device();
+  const first = await f.send(make("p-1"), { token });
+  f.db.run("DELETE FROM state_records WHERE key='allocation:issue:work-'");
+  const done = f.snapshot();
+  const again = await f.send(make("p-1"), { token });
+  expect([again.status, again.text]).toEqual([200, first.text]);
+  expect(f.snapshot()).toBe(done);
+}, 30_000);
+
+test("create with a floor reads the floor and one candidate, never the issue history, however long it is", async () => {
+  const f = fixture();
+  const token = await f.device();
+  const owner = owned(f);
+  for (let n = 1; n <= 120; n++) {
+    owner.putNext(
+      "forge/work",
+      "issue:work-",
+      (key) => ({ value: stored({ id: key.slice(6) }) }),
+      actor,
+    );
+    owner.delete("forge/work", `issue:work-${n}`, actor, { expectRevision: 1 });
+  }
+  const seen = spyOn(f.storage.sql, "exec");
+  const got = await f.send(make("h-1"), { token });
+  expect([got.status, got.json.result]).toMatchObject([
+    200,
+    { id: "forge-121", revision: 1 },
+  ]);
+  const history = seen.mock.calls.filter(
+    ([sql, ...bindings]) =>
+      /FROM state_events/.test(sql) && bindings[0] === "forge/work",
+  );
+  seen.mockRestore();
+  expect(history).toEqual([]);
+}, 60_000);
+
+test("a receipt failure rolls back the issue and its floor, and the retry gets the same number", async () => {
+  const f = fixture();
+  const token = await f.device();
+  const before = f.snapshot();
+  const exec = f.storage.sql.exec.bind(f.storage.sql);
+  const fault = spyOn(f.storage.sql, "exec").mockImplementation(
+    (sql, ...bindings) => {
+      if (
+        /^INSERT INTO state_records/.test(sql) &&
+        bindings.includes("request:r-1")
+      )
+        throw new Error("injected receipt failure");
+      return exec(sql, ...bindings);
+    },
+  );
+  const failed = await f.send(make("r-1"), { token });
+  fault.mockRestore();
+  expect(failed.status).toBe(500);
+  expect(f.snapshot()).toBe(before);
+  const retry = await f.send(make("r-1"), { token });
+  expect([retry.status, retry.json.result]).toMatchObject([
+    200,
+    { id: "forge-1", revision: 1 },
+  ]);
+  expect(floorOf(f)).toEqual(floorAt(1));
+}, 30_000);
 
 test("graph fields are refused as unsupported, recorded once for a fresh request id and never dropped", async () => {
   const { f, token } = await createRows();
