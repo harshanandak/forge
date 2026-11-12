@@ -375,7 +375,14 @@ interface Item {
   readonly status: string;
   readonly revision: number;
   readonly dependsOn: readonly string[];
-  readonly lease?: { readonly generation: number; readonly holder: Holder };
+  readonly body?: string;
+  readonly kind?: string;
+  readonly labels: readonly string[];
+  readonly lease?: {
+    readonly generation: number;
+    readonly holder: Holder;
+    readonly expiresAt: string;
+  };
 }
 interface Grant {
   readonly id: string;
@@ -495,6 +502,27 @@ const recordsOf = (
   );
 // The stored id behind a shown one: the prefix is only how the id is displayed.
 const storedOf = (shown: string): string => shown.replace(/^[^-]+-/, "work-");
+// The comments stored on one issue, as written: { id, body }.
+const commentsOn = (dump: Dump, shown: string): unknown[] =>
+  recordsOf(dump, "forge/work", `comment:${storedOf(shown)}:`).map(
+    (row) => (JSON.parse(String(row.body)) as { value: unknown }).value,
+  );
+// A call whose receipt insert fails: the reply is a 500 INTERNAL and the dump is as it was.
+// Returns the dump taken before the call.
+async function rolledBack(who: Caller, call: Call): Promise<Dump> {
+  const snapshot = await dumpOf(typedProject);
+  const failed = await typedCall(who, call, {
+    "x-cloud-fault": "receipt-insert",
+  });
+  assert.equal(failed.status, 500, JSON.stringify(failed.body));
+  assert.equal(failed.body.error?.code, "INTERNAL");
+  assert.deepEqual(
+    await dumpOf(typedProject),
+    snapshot,
+    `${call.op} left a row`,
+  );
+  return snapshot;
+}
 
 let revokedPhone: Device | undefined;
 const revokeCheck = (): Promise<void> =>
@@ -1846,7 +1874,12 @@ if (phase === "main") {
   const createOne: Call = {
     requestId: "typed-create-1",
     op: "issue.create",
-    input: { title: "First", body: "first body", labels: ["typed"] },
+    input: {
+      title: "First",
+      body: "first body",
+      kind: "feature",
+      labels: ["typed"],
+    },
     context: {},
   };
   const noteOn = (id: string): Call => ({
@@ -1891,6 +1924,14 @@ if (phase === "main") {
       assert.match(noted.commentId, /^comment:work-\d+:1$/);
       assert.deepEqual(await show(a, one.id), one);
       assert.deepEqual(await show(a, two.id), two);
+      // What was stored is what was sent, not only what the create reply said.
+      const { title, body, kind, labels } = one;
+      assert.deepEqual({ title, body, kind, labels }, createOne.input);
+      assert.equal(two.title, "Second");
+      assert.deepEqual(
+        [two.body, two.kind, two.labels],
+        [undefined, undefined, []],
+      );
       assert.deepEqual(await idsOf(a, "issue.list"), [one.id, two.id].sort());
       assert.deepEqual(await idsOf(a, "issue.ready"), [one.id, two.id].sort());
     },
@@ -1976,7 +2017,12 @@ if (phase === "main") {
         }),
       );
       assert.equal(renewed.generation, 1);
-      assert.notEqual(renewed.expiresAt, raced.expiresAt);
+      // The stored lease is the renewed one: same holder and generation, the returned expiry, later than the claim's.
+      const stored = (await show(a, two.id)).lease;
+      assert.equal(stored?.expiresAt, renewed.expiresAt);
+      assert.equal(stored?.generation, 1);
+      assert.deepEqual(stored?.holder, two.lease?.holder);
+      assert.ok(Date.parse(renewed.expiresAt) > Date.parse(raced.expiresAt));
       const released = typedOk<{ id: string }>(
         await typedCall(winner, {
           requestId: "typed-release-1",
@@ -2084,10 +2130,9 @@ if (phase === "main") {
       );
       assert.deepEqual(await dumpOf(typedProject), before, "a replay wrote");
       assert.deepEqual(await idsOf(a, "issue.list"), [one.id, two.id].sort());
-      assert.equal(
-        recordsOf(before, "forge/work", `comment:${storedOf(one.id)}:`).length,
-        1,
-      );
+      assert.deepEqual(commentsOn(before, one.id), [
+        { id: storedOf(one.id), body: "first note" },
+      ]);
       typedFail(
         await typedCall(a, {
           ...createOne,
@@ -2136,17 +2181,7 @@ if (phase === "main") {
         input: { title: "Third" },
         context: asProject(a),
       };
-      const snapshot = await dumpOf(typedProject);
-      const failed = await typedCall(a, create, {
-        "x-cloud-fault": "receipt-insert",
-      });
-      assert.equal(failed.status, 500, JSON.stringify(failed.body));
-      assert.equal(failed.body.error?.code, "INTERNAL");
-      assert.deepEqual(
-        await dumpOf(typedProject),
-        snapshot,
-        "the failed create left a row",
-      );
+      const snapshot = await rolledBack(a, create);
       third = typedOk<Item>(await typedCall(a, create));
       const after = await dumpOf(typedProject);
       assert.equal(
@@ -2165,17 +2200,7 @@ if (phase === "main") {
     "typed fault: a failed receipt insert rolls a claim back, and a retry takes exactly one lease",
     async () => {
       const claimThird = claimOf("typed-fault-claim", a, third.id);
-      const snapshot = await dumpOf(typedProject);
-      const failed = await typedCall(a, claimThird, {
-        "x-cloud-fault": "receipt-insert",
-      });
-      assert.equal(failed.status, 500, JSON.stringify(failed.body));
-      assert.equal(failed.body.error?.code, "INTERNAL");
-      assert.deepEqual(
-        await dumpOf(typedProject),
-        snapshot,
-        "the failed claim left a row",
-      );
+      await rolledBack(a, claimThird);
       assert.equal(
         typedOk<Grant>(await typedCall(a, claimThird)).generation,
         1,
@@ -2219,10 +2244,9 @@ if (phase === "main") {
         .map((name) => `typed-${name}`);
       for (const dump of [source, copy]) {
         assert.equal(recordsOf(dump, "forge/work", "issue:").length, 3);
-        assert.equal(
-          recordsOf(dump, "forge/work", `comment:${storedOf(one.id)}:`).length,
-          1,
-        );
+        assert.deepEqual(commentsOn(dump, one.id), [
+          { id: storedOf(one.id), body: "first note" },
+        ]);
         for (const requestId of receipts)
           assert.equal(
             recordsOf(dump, "forge/cloud", `request:${requestId}`).length,
