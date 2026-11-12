@@ -49,7 +49,7 @@ export function visible(
   );
 }
 
-/** Core entries carry their block and operation for admission only; the public listing never shows them. */
+/** Core entries carry their block and operation for admission only; their public listing shows neither, as before. */
 function publicEntry(entry: McpCandidate): McpCandidate {
   if (!discoveryOperations.includes(entry)) return entry;
   const { blockId: _block, declaredOp: _declared, ...shown } = entry;
