@@ -3469,7 +3469,7 @@ test("an added dependency blocks its issue until it is removed, and a removed on
   expect(await ready()).toContain("12");
 }, 60_000);
 
-test("issue.dep refuses a missing issue or target, a cycle, a self dependency, the 257th dependency, a stale revision and every lease the caller does not hold with the local code and message, writes nothing and records nothing, so a retry runs again", async () => {
+test("issue.dep refuses a missing target, a cycle, a self dependency, the 257th dependency, a stale revision and every lease the caller does not hold with the local code and message, writes nothing and records nothing, so a retry runs again", async () => {
   const { f, token } = await depRows();
   const twin = Database.deserialize(f.db.serialize());
   const before = writes(f);
@@ -3481,8 +3481,6 @@ test("issue.dep refuses a missing issue or target, a cycle, a self dependency, t
   const refusals: [string, object, Who, readonly [number, string, number]][] = [
     ["missing target", depIn({ target: "forge-99" }), {}, gone],
     ["missing target, as written", depIn({ target: "FORGE-99" }), {}, gone],
-    ["missing issue", depIn({ id: "forge-98" }), {}, gone],
-    ["missing issue, as written", depIn({ id: "FORGE-98" }), {}, gone],
     [
       "removal while another dependency is missing",
       depIn({ id: "forge-51", target: "forge-1", action: "remove" }),
@@ -3541,6 +3539,43 @@ test("issue.dep refuses a missing issue or target, a cycle, a self dependency, t
   );
   expect(retry.status).toBe(200);
 }, 120_000);
+
+test("an absent issue is NOT_FOUND with the id as written, even when the target is malformed, and is recorded once per request id", async () => {
+  const { f, token } = await depRows();
+  const twin = Database.deserialize(f.db.serialize());
+  const before = work(f);
+  const cases: [string, object][] = [
+    ["absent", depIn({ id: "forge-98" })],
+    ["absent, as written", depIn({ id: "FORGE-98" })],
+    ["absent, historical prefix", depIn({ id: "old-98" })],
+    ["absent, malformed target", depIn({ id: "forge-98", target: "nope" })],
+    [
+      "absent, unknown target prefix",
+      depIn({ id: "forge-98", target: "zzz-1" }),
+    ],
+  ];
+  for (const [i, [name, input]] of cases.entries()) {
+    const run = () => f.send(depCall(`a-${i}`, input), { token });
+    const got = await run();
+    const local = localLease("issue.dep", twin, f, `a-${i}`, input);
+    expect([name, got.status, got.code, got.exit]).toEqual([
+      name,
+      404,
+      "NOT_FOUND",
+      3,
+    ]);
+    expect([name, got.json.error]).toEqual([
+      name,
+      withoutRepair(local.error),
+    ] as never);
+    expect([name, work(f)]).toEqual([name, before]);
+    expect(receiptOf(f, `a-${i}`)).toMatchObject({
+      outcome: "refused",
+      result: got.json.error,
+    });
+    expect([name, (await run()).text]).toEqual([name, got.text]);
+  }
+}, 60_000);
 
 test("a dependency walk over 10,000 issues is answered, 10,001 is refused as UNAVAILABLE, and a long chain never overflows the stack", async () => {
   for (const [length, want] of [

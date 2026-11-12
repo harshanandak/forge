@@ -1,6 +1,6 @@
 // POST /p/<project>/command: typed issue commands at the project authority.
 // This slice checks the envelope and the context, runs issue.show, issue.list and issue.ready as reads,
-// runs issue.create, issue.comment, issue.update, issue.claim, issue.renew and issue.release as writes and refuses every other command as not yet supported. Everything the caller sends is
+// runs issue.create, issue.comment, issue.update, issue.dep, issue.claim, issue.renew and issue.release as writes and refuses every other command as not yet supported. Everything the caller sends is
 // untrusted. The envelope and context are closed shapes, the device comes from the token and the
 // project from the server, and no caller value becomes an SQL identifier, a namespace or a key.
 import manifest from "../../src/blocks/work/forge.block.json" with { type: "json" };
@@ -215,7 +215,7 @@ function lazyViews(storage: DurableStorage): IssueViews {
 }
 
 /**
- * Prepares a command and runs it. Only issue.create, issue.comment, issue.update, issue.claim, issue.renew, issue.release, issue.show, issue.list and issue.ready run: each returns
+ * Prepares a command and runs it. Only issue.create, issue.comment, issue.update, issue.dep, issue.claim, issue.renew, issue.release, issue.show, issue.list and issue.ready run: each returns
  * the response, serialized once and measured in UTF-8 bytes. Every other operation is refused. Throws ForgeFailure when refused,
  * and runs no await, so the caller's token check stays current until the response is built.
  */

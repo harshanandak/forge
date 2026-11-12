@@ -45,6 +45,43 @@ export function fence(context: BoundContext, id: string, op: string) {
   };
 }
 
+/** The written issue as the local command shows it, with the caller's lease while it is live. */
+export function shownWrite(
+  owner: StateOwner,
+  written: ReturnType<StateOwner["put"]>,
+  id: string,
+  prefix: string,
+): TrackerItem {
+  const lease = owner.lease(NAMESPACE, `issue:${id}`);
+  return shownItem(
+    { ...written },
+    id,
+    lease === undefined ? undefined : { ...lease },
+    Date.now(),
+    prefix,
+  );
+}
+
+/** The replay hook of a write that returns an issue: the recorded item comes back only while the caller still holds its lease. */
+export const heldReplay =
+  (owner: StateOwner, op: string) =>
+  (prior: TrackerItem, context: BoundContext): void => {
+    const held = fence(context, `work-${prior.id.replace(/^.*-/, "")}`, op);
+    const decision = decideLease(owner.lease(NAMESPACE, held.subject), {
+      mode: "held",
+      subject: held.subject,
+      holder: held.holder,
+      generation: held.generation,
+      nowMs: Date.now(),
+    });
+    if (!decision.ok)
+      throw new ForgeFailure({
+        ...decision.error,
+        code: "LEASE_STALE",
+        message: `Request no longer matches the current lease on ${held.subject}`,
+      });
+  };
+
 /** Edits one issue's title, body or labels, or returns the recorded answer while the caller still holds its lease. */
 export function updateIssue(
   db: SqlDatabase,
@@ -92,34 +129,8 @@ export function updateIssue(
           fence: fence(context, id, "issue.update"),
         },
       );
-      const lease = owner.lease(NAMESPACE, key);
-      return shownItem(
-        { ...written },
-        id,
-        lease === undefined ? undefined : { ...lease },
-        Date.now(),
-        prefix,
-      );
+      return shownWrite(owner, written, id, prefix);
     },
-    (prior, context) => {
-      const held = fence(
-        context,
-        `work-${prior.id.replace(/^.*-/, "")}`,
-        "issue.update",
-      );
-      const decision = decideLease(owner.lease(NAMESPACE, held.subject), {
-        mode: "held",
-        subject: held.subject,
-        holder: held.holder,
-        generation: held.generation,
-        nowMs: Date.now(),
-      });
-      if (!decision.ok)
-        throw new ForgeFailure({
-          ...decision.error,
-          code: "LEASE_STALE",
-          message: `Request no longer matches the current lease on ${held.subject}`,
-        });
-    },
+    heldReplay(owner, "issue.update"),
   );
 }
