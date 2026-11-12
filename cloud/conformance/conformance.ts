@@ -2740,6 +2740,8 @@ if (phase === "large") {
     "large restored target: fresh commands write on top of the restored rows",
     async () => {
       const caller = await who();
+      // The restored issue is there to be written on top of: on a failed restore this read is NOT_FOUND.
+      assert.equal((await show(caller, id)).body === BODY, true);
       typedOk(
         await typedCall(caller, {
           requestId: "large-fresh-comment",
@@ -2758,6 +2760,13 @@ if (phase === "large") {
             context: asProject(caller),
           }),
         );
+      // The comment is the second one on the restored issue, after the restored first.
+      const { records } = await typedRead<{ records: unknown[] }>(
+        caller,
+        "issue.comments",
+        { id },
+      );
+      assert.equal(records.length, 2);
     },
   );
   await check(

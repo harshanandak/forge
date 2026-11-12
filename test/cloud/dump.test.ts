@@ -1,4 +1,4 @@
-// Column and page boundaries of the dump, on plain tables: no Worker, no state owner.
+// Column, cursor and page boundaries of the dump, on plain tables: no Worker, no state owner.
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import {
@@ -7,79 +7,70 @@ import {
   limitsFrom,
   PAGE_FORMAT,
   parseDump,
-  type Limits,
 } from "../../cloud/src/dump.ts";
 import type { SqlDatabase, SqlRow } from "../../src/ports/store.ts";
 
 const MIB = 1024 * 1024;
 const SCALAR = 262_144;
 const CAP = 8 * MIB;
-const limits: Limits = { ...limitsFrom({}), maxRows: 100 };
+const limits = { ...limitsFrom({}), maxRows: 100 };
 type Row = Record<string, string | number>;
-const ROW: Record<string, Row> = {
-  state_records: { namespace: "n", key: "k", revision: 1, body: "{}" },
-  state_events: { sequence: 1, namespace: "n", key: "k", body: "{}" },
-  state_leases: { namespace: "n", subject: "s", generation: 1, body: "{}" },
-  state_requests: {
-    namespace: "n",
-    request_id: "r",
-    fingerprint: "{}",
-    result: "{}",
-  },
-  domain_cloud_requests: {
-    request_id: "r",
-    fingerprint: "{}",
-    outcome: "ok",
-    result: "{}",
-  },
-};
-const KEY: Record<string, string> = {
-  state_records: "PRIMARY KEY (namespace, key)",
-  state_events: "",
-  state_leases: "PRIMARY KEY (namespace, subject)",
-  state_requests: "PRIMARY KEY (namespace, request_id)",
-  domain_cloud_requests: "",
+// A valid row of each table, and the key its table is ordered by.
+const ROW: Record<string, [Row, string]> = {
+  state_records: [
+    { namespace: "n", key: "k", revision: 1, body: "{}" },
+    ", PRIMARY KEY (namespace, key)",
+  ],
+  state_events: [{ sequence: 1, namespace: "n", key: "k", body: "{}" }, ""],
+  state_leases: [
+    { namespace: "n", subject: "s", generation: 1, body: "{}" },
+    ", PRIMARY KEY (namespace, subject)",
+  ],
+  state_requests: [
+    { namespace: "n", request_id: "r", fingerprint: "{}", result: "{}" },
+    ", PRIMARY KEY (namespace, request_id)",
+  ],
+  domain_cloud_requests: [
+    { request_id: "r", fingerprint: "{}", outcome: "ok", result: "{}" },
+    "",
+  ],
 };
 const empty = (): Record<string, Row[]> =>
   Object.fromEntries(Object.keys(ROW).map((table) => [table, []]));
+const row = (table: string, over: Row = {}): [string, Row] => [
+  table,
+  { ...ROW[table]![0], ...over },
+];
 
-function database(rows: [string, Row][] = []) {
+function database(rows: [string, Row][] = []): SqlDatabase {
   const db = new Database(":memory:");
-  for (const [table, row] of Object.entries(ROW))
+  for (const [table, [sample, key]] of Object.entries(ROW))
     db.run(
-      `CREATE TABLE ${table} (${Object.keys(row)
-        .map((c) => `${c} ${typeof row[c] === "number" ? "INTEGER" : "TEXT"}`)
-        .join(", ")}${KEY[table] ? `, ${KEY[table]}` : ""})`,
+      `CREATE TABLE ${table} (${Object.entries(sample)
+        .map(([c, v]) => `${c} ${typeof v === "number" ? "INTEGER" : "TEXT"}`)
+        .join(", ")}${key})`,
     );
-  for (const [table, row] of rows)
+  for (const [table, values] of rows)
     db.run(
-      `INSERT INTO ${table} (${Object.keys(row).join(", ")}) VALUES (${Object.keys(
-        row,
+      `INSERT INTO ${table} (${Object.keys(values).join(", ")}) VALUES (${Object.keys(
+        values,
       )
         .map(() => "?")
         .join(", ")})`,
-      Object.values(row),
+      Object.values(values),
     );
-  const sql: SqlDatabase = {
-    exec: (statement) => {
-      db.run(statement);
+  const params = (p: readonly unknown[] = []) => p as never[];
+  return {
+    exec: (sql) => {
+      db.run(sql);
     },
-    run: (statement, params = []) =>
-      db.query(statement).run(...(params as never[])),
-    all: (statement, params = []) =>
-      db.query(statement).all(...(params as never[])) as SqlRow[],
-    get: (statement, params = []) =>
-      (db.query(statement).get(...(params as never[])) ?? undefined) as
-        SqlRow | undefined,
+    run: (sql, p) => db.query(sql).run(...params(p)),
+    all: (sql, p) => db.query(sql).all(...params(p)) as SqlRow[],
+    get: (sql, p) =>
+      (db.query(sql).get(...params(p)) ?? undefined) as SqlRow | undefined,
     transaction: (body) => db.transaction(body)(),
   };
-  return sql;
 }
-const withValue = (
-  table: string,
-  column: string,
-  value: string,
-): [string, Row] => [table, { ...ROW[table]!, [column]: value }];
 const codeOf = (body: () => unknown): string | undefined => {
   try {
     body();
@@ -90,69 +81,66 @@ const codeOf = (body: () => unknown): string | undefined => {
 };
 const bytes = (value: unknown): number =>
   new TextEncoder().encode(JSON.stringify(value)).length;
-const paged = (tables: Record<string, Row[]>, next: string | null = null) => ({
-  format: PAGE_FORMAT,
-  page: 0,
-  last: next === null,
-  next,
-  tables,
-});
+const dumpText = (table: string, over: Row) =>
+  JSON.stringify({
+    format: "forge-cloud-dump/1",
+    tables: { ...empty(), [table]: [row(table, over)[1]] },
+  });
+const pageText = (tables: Record<string, Row[]>, next: string | null = null) =>
+  JSON.stringify({
+    format: PAGE_FORMAT,
+    page: 0,
+    last: next === null,
+    next,
+    tables,
+  });
+// Every page from the start: its number, and its rows in order.
+function walk(
+  db: SqlDatabase,
+  budget: Parameters<typeof dumpPage>[2],
+  table: string,
+) {
+  const seen: string[] = [];
+  let cursor = "start";
+  for (let n = 0; ; n += 1) {
+    expect(n).toBeLessThan(20);
+    const page = dumpPage(db, cursor, budget);
+    expect(page.page).toBe(n);
+    expect(bytes(page)).toBeLessThanOrEqual(Math.min(budget.pageBytes, CAP));
+    seen.push(...page.tables[table]!.map((r) => String(r.key ?? r.subject)));
+    if (page.next === null) return { pages: n + 1, seen };
+    cursor = page.next;
+  }
+}
 
-// The four columns that carry open JSON have the transport ceiling; every other string keeps its old one.
-const WIDE = [
-  ["state_records", "body"],
-  ["state_events", "body"],
-  ["state_requests", "fingerprint"],
-  ["state_requests", "result"],
-] as const;
-const NARROW = [
-  ["state_leases", "body"],
-  ["domain_cloud_requests", "fingerprint"],
-  ["domain_cloud_requests", "result"],
-  ["domain_cloud_requests", "outcome"],
-  ["state_records", "key"],
-  ["state_requests", "request_id"],
-] as const;
-
-for (const [table, column] of WIDE)
-  test(`${table}.${column} exports up to 8,388,608 characters and refuses one more`, () => {
-    const at = database([withValue(table, column, "x".repeat(CAP))]);
-    expect(dumpOf(at).tables[table]![0]![column]).toHaveLength(CAP);
-    const over = database([withValue(table, column, "x".repeat(CAP + 1))]);
+// Four columns carry open JSON and have the transport ceiling; every other string keeps its old one. The
+// wide parse case uses a value that fits the 8 MiB text bound, since a value at the ceiling cannot.
+for (const [table, column, cap] of [
+  ["state_records", "body", CAP],
+  ["state_events", "body", CAP],
+  ["state_requests", "fingerprint", CAP],
+  ["state_requests", "result", CAP],
+  ["state_leases", "body", SCALAR],
+  ["domain_cloud_requests", "fingerprint", SCALAR],
+  ["domain_cloud_requests", "result", SCALAR],
+  ["domain_cloud_requests", "outcome", SCALAR],
+  ["state_records", "key", SCALAR],
+  ["state_requests", "request_id", SCALAR],
+] as const)
+  test(`${table}.${column} holds ${cap} characters and refuses one more, out and in`, () => {
+    const at = database([row(table, { [column]: "x".repeat(cap) })]);
+    expect(dumpOf(at).tables[table]![0]![column]).toHaveLength(cap);
+    const over = database([row(table, { [column]: "x".repeat(cap + 1) })]);
     expect(codeOf(() => dumpOf(over))).toBe("DUMP_UNSAFE_VALUE");
-  }, 60_000);
-
-for (const [table, column] of WIDE)
-  test(`${table}.${column} parses a value that fits the restore body and refuses one over its ceiling`, () => {
-    const fits = { ...ROW[table]!, [column]: "x".repeat(CAP - 4096) };
-    const doc = (row: Row) =>
-      JSON.stringify({
-        format: "forge-cloud-dump/1",
-        tables: { ...empty(), [table]: [row] },
-      });
-    const parsed = parseDump(doc(fits)) as { tables: Record<string, Row[]> };
-    expect(parsed.tables[table]![0]![column]).toHaveLength(CAP - 4096);
+    const fits = cap === CAP ? cap - 4096 : cap;
+    const parsed = parseDump(dumpText(table, { [column]: "x".repeat(fits) }));
+    expect(parsed.tables[table]![0]![column]).toHaveLength(fits);
     expect(
-      codeOf(() => parseDump(doc({ ...fits, [column]: "x".repeat(CAP + 1) }))),
+      codeOf(() =>
+        parseDump(dumpText(table, { [column]: "x".repeat(cap + 1) })),
+      ),
     ).toBe("INPUT_INVALID");
   }, 60_000);
-
-for (const [table, column] of NARROW)
-  test(`${table}.${column} keeps its 262,144 character ceiling, on the way out and on the way in`, () => {
-    const at = database([withValue(table, column, "x".repeat(SCALAR))]);
-    expect(dumpOf(at).tables[table]![0]![column]).toHaveLength(SCALAR);
-    const over = database([withValue(table, column, "x".repeat(SCALAR + 1))]);
-    expect(codeOf(() => dumpOf(over))).toBe("DUMP_UNSAFE_VALUE");
-    const doc = (value: string) =>
-      JSON.stringify({
-        format: "forge-cloud-dump/1",
-        tables: { ...empty(), [table]: [{ ...ROW[table]!, [column]: value }] },
-      });
-    expect(codeOf(() => parseDump(doc("x".repeat(SCALAR))))).toBeUndefined();
-    expect(codeOf(() => parseDump(doc("x".repeat(SCALAR + 1))))).toBe(
-      "INPUT_INVALID",
-    );
-  }, 30_000);
 
 // A direct parseDump caller is bounded by bytes before JSON.parse builds anything: ASCII, and text whose
 // UTF-16 length is small but whose UTF-8 size is not.
@@ -161,71 +149,43 @@ for (const [name, char, rows] of [
   ["multibyte", "€", 11],
 ] as const)
   test(`parseDump refuses ${name} text over 8 MiB even when every cell is within its ceiling`, () => {
-    const leases = Array.from({ length: rows }, (_, i) => ({
-      ...ROW.state_leases!,
-      subject: `s${i}`,
-      body: char.repeat(SCALAR),
-    }));
-    const text = JSON.stringify(paged({ ...empty(), state_leases: leases }));
+    const leases = Array.from(
+      { length: rows },
+      (_, i) =>
+        row("state_leases", { subject: `s${i}`, body: char.repeat(SCALAR) })[1],
+    );
+    const text = pageText({ ...empty(), state_leases: leases });
     expect(new TextEncoder().encode(text).length).toBeGreaterThan(CAP);
     expect(codeOf(() => parseDump(text))).toBe("INPUT_INVALID");
   }, 30_000);
 
 // The page is counted as the document it is: arrays, commas, metadata, the cursor, quoted and in UTF-8.
 test("every complete page is within its byte budget, counted in UTF-8 with its envelope", () => {
-  const rows = Array.from({ length: 12 }, (_, i): [string, Row] => [
-    "state_records",
-    {
-      ...ROW.state_records!,
+  const rows = Array.from({ length: 12 }, (_, i) =>
+    row("state_records", {
       key: `k${String(i).padStart(2, "0")}`,
       body: "€".repeat(150),
-    },
-  ]);
-  const db = database(rows);
-  const budget = { ...limits, pageBytes: 1600 };
-  const seen: string[] = [];
-  let cursor = "start";
-  for (let pages = 0; ; pages += 1) {
-    expect(pages).toBeLessThan(20);
-    const page = dumpPage(db, cursor, budget);
-    expect(page.page).toBe(pages);
-    expect(bytes(page)).toBeLessThanOrEqual(budget.pageBytes);
-    seen.push(...page.tables.state_records!.map((row) => String(row.key)));
-    if (page.next === null) {
-      expect(pages).toBeGreaterThan(2);
-      break;
-    }
-    cursor = page.next;
-  }
-  expect(seen).toEqual(rows.map(([, row]) => String(row.key)));
+    }),
+  );
+  const { pages, seen } = walk(
+    database(rows),
+    { ...limits, pageBytes: 1600 },
+    "state_records",
+  );
+  expect(pages).toBeGreaterThan(2);
+  expect(seen).toEqual(rows.map(([, r]) => String(r.key)));
 }, 30_000);
 
 test("a page never exceeds the 8 MiB restore body, whatever page size is configured", () => {
-  const db = database(
-    Array.from({ length: 40 }, (_, i): [string, Row] => [
-      "state_leases",
-      {
-        ...ROW.state_leases!,
-        subject: `s${String(i).padStart(2, "0")}`,
-        body: "x".repeat(SCALAR),
-      },
-    ]),
+  const rows = Array.from({ length: 40 }, (_, i) =>
+    row("state_leases", {
+      subject: `s${String(i).padStart(2, "0")}`,
+      body: "x".repeat(SCALAR),
+    }),
   );
   const huge = { ...limits, pageBytes: 64 * MIB, maxBytes: 64 * MIB };
-  let cursor = "start";
-  let count = 0;
-  for (let pages = 0; ; pages += 1) {
-    expect(pages).toBeLessThan(10);
-    const page = dumpPage(db, cursor, huge);
-    expect(bytes(page)).toBeLessThanOrEqual(CAP);
-    count += page.tables.state_leases!.length;
-    if (page.next === null) {
-      expect(pages).toBeGreaterThan(0);
-      break;
-    }
-    cursor = page.next;
-  }
-  expect(count).toBe(40);
+  const { pages, seen } = walk(database(rows), huge, "state_leases");
+  expect([pages > 1, seen.length]).toEqual([true, 40]);
 }, 60_000);
 
 // A row is never split, so one that cannot fit with its envelope is refused, never returned as a page.
@@ -235,7 +195,7 @@ for (const [name, body] of [
   ["multibyte: 400 characters, 1,200 bytes", "€".repeat(400)],
 ] as const)
   test(`a first row that does not fit its page is DUMP_TOO_LARGE: ${name}`, () => {
-    const db = database([withValue("state_records", "body", body)]);
+    const db = database([row("state_records", { body })]);
     expect(
       codeOf(() => dumpPage(db, "start", { ...limits, pageBytes: 1024 })),
     ).toBe("DUMP_TOO_LARGE");
@@ -259,15 +219,18 @@ for (const [name, text] of [
     );
   }, 30_000);
 
-test("the empty start watermark is accepted, and a page's next is bounded in the parser", () => {
-  const db = database([["state_records", ROW.state_records!]]);
-  expect(
-    dumpPage(db, JSON.stringify({ p: 0, t: 0, k: null, w: "" }), limits).tables
-      .state_records,
-  ).toHaveLength(1);
-  const doc = (next: string) => JSON.stringify(paged(empty(), next));
-  expect(codeOf(() => parseDump(doc("n".repeat(3_145_814))))).toBeUndefined();
-  expect(codeOf(() => parseDump(doc("n".repeat(3_145_815))))).toBe(
-    "INPUT_INVALID",
-  );
+test("the empty start watermark is accepted", () => {
+  const db = database([row("state_records")]);
+  const start = JSON.stringify({ p: 0, t: 0, k: null, w: "" });
+  expect(dumpPage(db, start, limits).tables.state_records).toHaveLength(1);
 }, 30_000);
+
+for (const [length, code] of [
+  [3_145_814, undefined],
+  [3_145_815, "INPUT_INVALID"],
+] as const)
+  test(`a page's next of ${length} characters is ${code ?? "accepted"} by the parser`, () => {
+    expect(codeOf(() => parseDump(pageText(empty(), "n".repeat(length))))).toBe(
+      code,
+    );
+  }, 30_000);

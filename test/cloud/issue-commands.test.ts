@@ -6436,12 +6436,12 @@ test("a whole export carries the maximum bodies, receipts and events intact, and
   expect(String(tables.state_records!.at(-1)!.body).length).toBeGreaterThan(
     393_216,
   );
-  const outcomes = [
-    "max-create",
-    "max-comment",
-    "max-bad-create",
-    "max-bad-comment",
-  ].map((id) => [receipt(tables, id).outcome, receipt(tables, id).result.code]);
+  const outcomes = ["create", "comment", "bad-create", "bad-comment"].map(
+    (id) => {
+      const { outcome, result } = receipt(tables, `max-${id}`);
+      return [outcome, result.code];
+    },
+  );
   expect(outcomes).toEqual([
     ["ok", undefined],
     ["ok", undefined],
@@ -6582,54 +6582,42 @@ for (const mode of ["whole", "paged"] as const)
   }, 120_000);
 
 // Small bodies, so these refusals are reached on the row checks themselves.
-const FORGED = {
-  route: "issue.create",
-  subject: "issue:work-1",
-};
-const lease = (subject: string) => ({
-  subject,
-  holder: { actor, session: { id: "s1", device: "laptop" } },
-  generation: 1,
-  expiresAt: iso(start + day),
-});
+const lease = (subject: string) =>
+  JSON.stringify({
+    subject,
+    holder: { actor, session: { id: "s1", device: "laptop" } },
+    generation: 1,
+    expiresAt: iso(start + day),
+  });
+const forged =
+  (request_id: string, route: string, subject: string) => (t: Tables) =>
+    t.domain_cloud_requests!.push({
+      request_id,
+      fingerprint: JSON.stringify({ route, subject: "issue:a" }),
+      outcome: "ok",
+      result: lease(subject),
+    });
 for (const [name, change] of [
   [
     "a typed receipt changed without its event",
     (t: Tables) => {
       const row = t.state_records!.find((r) => r.key === "request:max-create")!;
-      const value = JSON.parse(String(row.body)) as {
-        value: { fingerprint: string };
-      };
-      value.value.fingerprint = `sha256:${"0".repeat(64)}`;
-      row.body = JSON.stringify(value);
+      const stored = JSON.parse(String(row.body)) as { value: Receipt };
+      stored.value.fingerprint = `sha256:${"0".repeat(64)}`;
+      row.body = JSON.stringify(stored);
     },
   ],
   [
     "a raw receipt forged with a typed-command route",
-    (t: Tables) => {
-      t.domain_cloud_requests!.push({
-        request_id: "forged-1",
-        fingerprint: JSON.stringify(FORGED),
-        outcome: "ok",
-        result: JSON.stringify(lease("issue:work-1")),
-      });
-    },
+    forged("forged-1", "issue.create", "issue:a"),
   ],
   [
     "a raw lease receipt whose result names another subject",
-    (t: Tables) => {
-      t.domain_cloud_requests!.push({
-        request_id: "forged-2",
-        fingerprint: JSON.stringify({ route: "claim", subject: "issue:a" }),
-        outcome: "ok",
-        result: JSON.stringify(lease("issue:b")),
-      });
-    },
+    forged("forged-2", "claim", "issue:b"),
   ],
 ] as const)
   test(`a restore of ${name} is RESTORE_INVALID_ROW and leaves the target unprovisioned and empty`, async () => {
-    const { tables } = await largest(vars, "small");
-    const bad = structuredClone(tables);
+    const bad = structuredClone((await largest(vars, "small")).tables);
     change(bad);
     const t = fixture(vars, "target");
     const got = await t.admin(
