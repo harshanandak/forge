@@ -2600,7 +2600,7 @@ test("blocked and stale refuse an over-budget project as UNAVAILABLE before they
 // size, body blanked) and the selected full records share one 8 MiB payload, counted as the work-record
 // statements return it (the `meter` in fixture). The local handler is the oracle for every result.
 const MIB8 = 8 * 1024 * 1024;
-const storedBytes = (f: F) =>
+const storedJsonBytes = (f: F) =>
   (
     f.db
       .query("SELECT sum(length(CAST(body AS BLOB))) AS n FROM state_records")
@@ -2624,7 +2624,7 @@ const bigProject = async (count: number, size: string, fill = "x") => {
   const token = await f.device();
   f.tables();
   bulk(f, count, size, fill);
-  expect(storedBytes(f)).toBeGreaterThan(MIB8);
+  expect(storedJsonBytes(f)).toBeGreaterThan(MIB8);
   return { f, token };
 };
 const LIST_OPS = ["issue.list", "issue.ready", "issue.blocked", "issue.stale"];
