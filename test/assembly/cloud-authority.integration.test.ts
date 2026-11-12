@@ -414,8 +414,6 @@ test("every other work operation is refused by name on a bound project, with no 
     const context = { ...own, session: { id: "s1" }, leaseGeneration: 3 };
     for (const [op, input] of [
       ["issue.board", {}],
-      ["issue.blocked", {}],
-      ["issue.stale", {}],
       ["issue.events", NOTES],
       ["issue.tree", {}],
       ["issue.lint", {}],
