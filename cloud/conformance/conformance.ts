@@ -2768,9 +2768,21 @@ if (phase === "main") {
         ),
         [record],
       );
+      // Two work events (forge-1306): the link and the first move of its issue's link floor, which is the one new
+      // floor record and holds the number the link took.
       assert.equal(
         eventsIn(after, "forge/work"),
-        eventsIn(before, "forge/work") + 1,
+        eventsIn(before, "forge/work") + 2,
+      );
+      assert.deepEqual(
+        recordsOf(
+          after,
+          "forge/work",
+          `allocation:link:${storedOf(one.id)}:`,
+        ).map(
+          (row) => (JSON.parse(String(row.body)) as { value: unknown }).value,
+        ),
+        [{ prefix: `link:${storedOf(one.id)}:`, number: 1 }],
       );
       assert.equal(
         recordsOf(after, "forge/cloud", "request:typed-link-1").length,
