@@ -75,7 +75,10 @@ const codeOf = (body: () => unknown): string | undefined => {
   try {
     body();
   } catch (error) {
-    return (error as { error?: { code: string } }).error?.code;
+    // Only a ForgeFailure is an answer; any other exception is a broken test, never "no code".
+    const code = (error as { error?: { code: string } }).error?.code;
+    if (code === undefined) throw error;
+    return code;
   }
   return undefined;
 };
@@ -234,3 +237,97 @@ for (const [length, code] of [
       code,
     );
   }, 30_000);
+
+const NOW = "0.0";
+const forged = (over: object = {}) =>
+  JSON.stringify({ p: 1, t: 0, k: null, w: NOW, ...over });
+// Every page request is checked against the project limits, so a forged continuation cursor cannot reach
+// rows that cursor=start refuses.
+for (const [name, small, rows] of [
+  [
+    "bytes",
+    { maxBytes: 1000 },
+    [row("state_records", { body: "x".repeat(2000) })],
+  ],
+  [
+    "rows",
+    { maxRows: 2 },
+    ["a", "b", "c"].map((key) => row("state_records", { key })),
+  ],
+] as const)
+  test(`an oversized project (${name}) refuses cursor=start and a forged continuation alike`, () => {
+    const db = database([...rows]);
+    for (const text of ["start", forged()])
+      expect(codeOf(() => dumpPage(db, text, { ...limits, ...small }))).toBe(
+        "DUMP_TOO_LARGE",
+      );
+  }, 30_000);
+
+// A page that is empty or final is a page too: its whole document is within the budget, or it is refused.
+test("an empty or final page over the budget is DUMP_TOO_LARGE, and a final page within it is accepted", () => {
+  const tiny = { ...limits, pageBytes: 100 };
+  const past = JSON.stringify({ p: 1, t: 4, k: ["r"], w: "0.1" });
+  const one = database([row("domain_cloud_requests")]);
+  expect(codeOf(() => dumpPage(undefined, "start", tiny))).toBe(
+    "DUMP_TOO_LARGE",
+  );
+  expect(codeOf(() => dumpPage(database(), "start", tiny))).toBe(
+    "DUMP_TOO_LARGE",
+  );
+  expect(codeOf(() => dumpPage(one, past, tiny))).toBe("DUMP_TOO_LARGE");
+  const empty = dumpPage(one, past, limits);
+  expect(empty.next).toBeNull();
+  expect(
+    codeOf(() => dumpPage(one, past, { ...limits, pageBytes: bytes(empty) })),
+  ).toBeUndefined();
+  expect(
+    codeOf(() =>
+      dumpPage(one, past, { ...limits, pageBytes: bytes(empty) - 1 }),
+    ),
+  ).toBe("DUMP_TOO_LARGE");
+}, 30_000);
+
+// The budget is an inclusive bound: a page of exactly its budget is accepted, one byte less cuts it.
+test("a page that lands exactly on its budget is accepted and one byte under cuts it, final and continuation", () => {
+  const rows = Array.from({ length: 5 }, (_, i) =>
+    row("state_records", { key: `k${i}`, body: "b".repeat(100) }),
+  );
+  const db = database(rows);
+  const first = (pageBytes: number) =>
+    dumpPage(db, "start", { ...limits, pageBytes });
+  const count = (page: ReturnType<typeof first>) =>
+    page.tables.state_records!.length;
+  const whole = first(CAP);
+  expect([count(whole), whole.next]).toEqual([5, null]);
+  expect(first(bytes(whole))).toEqual(whole);
+  const cut = first(bytes(whole) - 1);
+  expect(cut.next).not.toBeNull();
+  expect(count(cut)).toBeLessThan(5);
+  expect(bytes(cut)).toBeLessThanOrEqual(bytes(whole) - 1);
+  expect(first(bytes(cut))).toEqual(cut);
+  expect(count(first(bytes(cut) - 1))).toBeLessThan(count(cut));
+}, 30_000);
+
+test("a cursor key part of exactly 262,144 characters is accepted", () => {
+  const text = JSON.stringify({
+    p: 1,
+    t: 0,
+    k: ["n", "k".repeat(SCALAR)],
+    w: NOW,
+  });
+  expect(codeOf(() => dumpPage(database(), text, limits))).toBeUndefined();
+}, 30_000);
+
+// A whole dump is measured as it is sent: a control character is one stored byte and six serialized.
+test("a whole dump whose escaped size is over the 8 MiB restore body is DUMP_TOO_LARGE, and one under it is served", () => {
+  const big = database(
+    ["a", "b"].map((key) =>
+      row("state_records", { key, body: "\u0001".repeat(1_400_000) }),
+    ),
+  );
+  expect(codeOf(() => dumpOf(big, limits))).toBe("DUMP_TOO_LARGE");
+  const ok = database([
+    row("state_records", { body: "\u0001".repeat(500_000) }),
+  ]);
+  expect(dumpOf(ok, limits).tables.state_records).toHaveLength(1);
+}, 60_000);

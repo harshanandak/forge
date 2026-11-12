@@ -6434,9 +6434,25 @@ const storedBytes = (t: Tables) =>
 
 test("a whole export carries the maximum bodies, receipts and events intact, and no credential", async () => {
   const { f, token, sent, tables } = await largest();
+  // Credential canaries beside the data: the token's stored hash, and a browser-attempt counter.
+  const { hash } = f.db.query("SELECT hash FROM domain_cloud_tokens").get() as {
+    hash: string;
+  };
+  f.db.run(
+    "INSERT INTO domain_cloud_browser_attempts(bucket, count, reset_at) VALUES ('attempt-canary-bucket', 3, 987654321)",
+  );
   const before = f.snapshot();
   const got = await f.admin("dump");
   expect(got.status).toBe(200);
+  // Exactly the five tables: differing() only looks at the keys of its second argument.
+  expect(Object.keys(got.json.value!.tables)).toEqual(Object.keys(tables));
+  expect(Object.keys(tables)).toEqual([
+    "state_records",
+    "state_events",
+    "state_leases",
+    "state_requests",
+    "domain_cloud_requests",
+  ]);
   expect(differing(got.json.value!.tables, tables)).toEqual([]);
   expect(f.snapshot()).toBe(before);
   // Every named record and event is there, and the project is under the 3 MiB a whole export allows.
@@ -6466,7 +6482,14 @@ test("a whole export carries the maximum bodies, receipts and events intact, and
   expect(JSON.stringify(receipt(tables, "max-bad-create")).length).toBeLessThan(
     2000,
   );
-  for (const canary of [token, token.split(".")[1]!, "fct_", "authorization"])
+  for (const canary of [
+    token,
+    token.split(".")[1]!,
+    "fct_",
+    "authorization",
+    hash,
+    "attempt-canary-bucket",
+  ])
     expect([canary, got.text.includes(canary)]).toEqual([canary, false]);
 }, 120_000);
 
