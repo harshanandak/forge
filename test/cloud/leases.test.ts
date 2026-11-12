@@ -191,6 +191,62 @@ for (const route of ["claim", "renew"])
       }
     }, 30_000);
   }
+const SESSION_REFUSAL = "The request names a session other than the token's";
+for (const route of ["claim", "renew", "release"])
+  test(`a session-bound token cannot ${route} as another session, on a first write or a replay`, async () => {
+    using f = fixture();
+    const s1 = await f.issue("phone", "s1"),
+      s2 = await f.issue("phone", "s2");
+    const held = await f.claim("issue:held", s1, "s1"),
+      subject = route === "claim" ? "issue:free" : "issue:held";
+    const as = (session: string, requestId: string) => ({
+      subject,
+      holder: holder("phone", session),
+      generation: held.generation,
+      ttlMs: minute,
+      requestId,
+    });
+    const state = () => [
+      f.rows("state_leases"),
+      f.rows("state_events"),
+      f.rows("domain_cloud_requests"),
+    ];
+    const refused = async (requestId: string) => {
+      const reply = await f.write(route, as("s1", requestId), s2.token);
+      expect([
+        reply.status,
+        reply.body.error?.code,
+        reply.body.error?.message,
+      ]).toEqual([403, "AUTH_DEVICE_MISMATCH", SESSION_REFUSAL]);
+    };
+    const before = state();
+    await refused("shared-id");
+    expect(state()).toEqual(before);
+    // The refusal recorded nothing, so the honest request may reuse the id.
+    const honest = await f.write(route, as("s1", "shared-id"), s1.token);
+    expect(honest.status).toBe(200);
+    // A replay by the other session's token is refused, never answered from the receipt.
+    const after = state();
+    expect(after).not.toEqual(before);
+    await refused("shared-id");
+    expect(state()).toEqual(after);
+  }, 30_000);
+test("a sessionless device token keeps the device as its boundary on the raw lease routes", async () => {
+  using f = fixture();
+  const bare = await f.issue("phone", null);
+  for (const session of ["s1", "s2"]) {
+    const reply = await f.write(
+      "claim",
+      {
+        subject: `issue:${session}`,
+        holder: holder("phone", session),
+        requestId: `bare-${session}`,
+      },
+      bare.token,
+    );
+    expect(reply.status).toBe(200);
+  }
+}, 30_000);
 test("revoke releases matching leases, records releases and preserves other holders", async () => {
   using f = fixture();
   const phone = await f.issue(),
@@ -245,8 +301,13 @@ for (const session of ["phone", null]) {
       now,
       expired.id,
     ]);
+    // A token bound to a session claims only as it, so another session's lease needs its own token.
     const before = await f.claim("issue:phone", first);
-    await f.claim("issue:other", first, "other");
+    await f.claim(
+      "issue:other",
+      session === null ? first : await f.issue("phone", "other"),
+      "other",
+    );
     const reply = await f.revoke(first);
     expect(reply.status).toBe(200);
     expect(reply.body.value).toMatchObject({ released: [] });
