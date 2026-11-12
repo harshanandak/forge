@@ -2081,6 +2081,91 @@ if (phase === "main") {
     },
   );
 
+  // The first issue is still held by a at generation 1: a link is evidence attached to it, so the dump gains one record,
+  // one work event and one receipt, and no issue row or lease changes.
+  const linkInputUrl = "https://example.com/pull/9";
+  const linkTo = (id: string): Call => ({
+    requestId: "typed-link-1",
+    op: "issue.link",
+    input: { id, relation: "delivers", url: linkInputUrl },
+    context: asHolder(a, 1),
+  });
+  interface LinkRecord {
+    readonly namespace: string;
+    readonly key: string;
+    readonly revision: number;
+    readonly value: object;
+    readonly updatedBy: unknown;
+  }
+  let linked!: LinkRecord;
+  const eventsIn = (dump: Dump, namespace: string): number =>
+    (dump.tables.state_events ?? []).filter(
+      (row) => row.namespace === namespace,
+    ).length;
+  await typed(
+    "typed link: a holder appends a link, a replay appends nothing, other input conflicts and a non-holder is refused",
+    async () => {
+      const before = await dumpOf(typedProject);
+      const call = linkTo(one.id);
+      const record = typedOk<LinkRecord>(await typedCall(a, call));
+      const key = `link:${storedOf(one.id)}:1`;
+      assert.deepEqual(
+        [record.namespace, record.key, record.revision, record.value],
+        [
+          "forge/work",
+          key,
+          1,
+          { id: storedOf(one.id), relation: "delivers", url: linkInputUrl },
+        ],
+      );
+      assert.deepEqual(record.updatedBy, a.actor);
+      linked = record;
+      const after = await dumpOf(typedProject);
+      assert.deepEqual(
+        recordsOf(after, "forge/work", "link:").map(
+          (row) => JSON.parse(String(row.body)) as unknown,
+        ),
+        [record],
+      );
+      assert.equal(
+        eventsIn(after, "forge/work"),
+        eventsIn(before, "forge/work") + 1,
+      );
+      assert.equal(
+        recordsOf(after, "forge/cloud", "request:typed-link-1").length,
+        1,
+      );
+      assert.deepEqual(
+        recordsOf(after, "forge/work", "issue:"),
+        recordsOf(before, "forge/work", "issue:"),
+      );
+      assert.deepEqual(await show(a, one.id), one);
+      // A replay returns the original record and writes nothing; other input under the id conflicts.
+      assert.deepEqual(typedOk(await typedCall(a, call)), record);
+      typedFail(
+        await typedCall(a, {
+          ...call,
+          input: { ...call.input, url: "https://example.com/pull/10" },
+        }),
+        409,
+        "INPUT_CONFLICT",
+      );
+      assert.deepEqual(await dumpOf(typedProject), after, "a replay wrote");
+      // The holder of the other issue cannot link this one. The lease engine checks the generation before the holder,
+      // so the caller names the issue's own generation (1) to reach the holder check.
+      typedFail(
+        await typedCall(loser, {
+          ...linkTo(one.id),
+          requestId: "typed-link-2",
+          context: asHolder(loser, 1),
+        }),
+        409,
+        "LEASE_NOT_HELD",
+      );
+      assert.deepEqual(await dumpOf(typedProject), after, "a refusal wrote");
+    },
+  );
+
   await typed(
     "typed 7: closing the dependency, and releasing the first issue, makes it ready",
     async () => {
@@ -2109,6 +2194,18 @@ if (phase === "main") {
       );
       assert.deepEqual(await idsOf(a, "issue.ready"), [one.id]);
       one = await show(a, one.id);
+    },
+  );
+
+  await typed(
+    "typed link release: after the holder released the issue, the link replay is LEASE_STALE and never the old record",
+    async () => {
+      const before = await dumpOf(typedProject);
+      const reply = await typedCall(a, linkTo(one.id));
+      typedFail(reply, 409, "LEASE_STALE");
+      assert.ok(!JSON.stringify(reply.body).includes(linkInputUrl));
+      assert.ok(!JSON.stringify(reply.body).includes(linked.key));
+      assert.deepEqual(await dumpOf(typedProject), before, "a replay wrote");
     },
   );
 

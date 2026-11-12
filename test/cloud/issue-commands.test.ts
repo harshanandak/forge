@@ -15,6 +15,7 @@ import { commentIssue } from "../../cloud/src/issue-comment.ts";
 import { createIssue } from "../../cloud/src/issue-create.ts";
 import { updateIssue } from "../../cloud/src/issue-update.ts";
 import { depIssue } from "../../cloud/src/issue-dep.ts";
+import { linkIssue } from "../../cloud/src/issue-link.ts";
 import { closeIssue } from "../../cloud/src/issue-close.ts";
 import { claimIssue } from "../../cloud/src/issue-claim.ts";
 import { releaseIssue, renewIssue } from "../../cloud/src/issue-lease.ts";
@@ -646,6 +647,8 @@ test("a missing declared context is refused as CONTEXT_MISSING", async () => {
     ["issue.claim", { actor }],
     ["issue.renew", { actor, session: { id: "s1" } }],
     ["issue.release", { actor, leaseGeneration: 3 }],
+    ["issue.link", { actor, session: { id: "s1" } }],
+    ["issue.link", { actor, leaseGeneration: 3 }],
   ] as const)
     refusal(op, await f.send({ ...call, op, context }, { token }), [
       400,
@@ -3560,6 +3563,7 @@ test("the shared write path takes a project context for create and comment and a
     ["issue.comment", commentIssue, lease, "project"],
     ["issue.update", updateIssue, project, "leased"],
     ["issue.dep", depIssue, project, "leased"],
+    ["issue.link", linkIssue, project, "leased"],
     ["issue.close", closeIssue, project, "leased"],
     ["issue.claim", claimIssue, project, "leased"],
     ["issue.renew", renewIssue, project, "leased"],
@@ -3747,7 +3751,7 @@ const heldServices = (
   }),
 });
 function localLease(
-  op: "issue.renew" | "issue.release" | "issue.dep",
+  op: "issue.renew" | "issue.release" | "issue.dep" | "issue.link",
   twin: Database,
   f: F,
   requestId: string,
@@ -4384,6 +4388,508 @@ test("bad issue.close input and a receipt are refused as INPUT_INVALID with one 
   expect(f.snapshot()).toBe(done);
 }, 60_000);
 
+// issue.link: the route and the real local handler start from the same rows, clock, config and held lease.
+const linkIn = (over: object = {}) => ({
+  id: "forge-12",
+  relation: "delivers",
+  url: "https://github.com/o/r/pull/1",
+  ...over,
+});
+const linkCall = (id: string, input: object = linkIn(), more = {}) =>
+  make(id, input, { op: "issue.link", context: leased, ...more });
+const linkKey = (n: number, i: number) => `link:work-${n}:${i}`;
+const linkShape =
+  "input must be { id, relation, url } with a valid issue id, relation and URL";
+const linkUrl = "Links require an http or https URL";
+const readback =
+  "Accepted write did not match its readback; reconcile before retrying";
+const linksOf = (f: F, n: number) =>
+  rowsOf(f.db, "forge/work").filter((r) => r.key.startsWith(`link:work-${n}:`));
+// fenceRows, plus held issues 70 (closed), 71 (slots, no selection), 72 (a participant), 73 (links 1 and 3) and 74
+// (links 1 to 9), 75 (link 1, a lease on that link alone), and a lease on issue 4 so its old prefix can be named.
+async function linkRows() {
+  const rows = await fenceRows();
+  const { f } = rows;
+  const put = (n: number, over: object = {}, held = true) => {
+    f.put(stored({ id: `work-${n}`, ...over }), {}, `issue:work-${n}`);
+    if (held) f.lease({ holder }, `issue:work-${n}`);
+  };
+  const seed = (n: number, ...at: number[]) => {
+    for (const i of at)
+      f.put(
+        {
+          id: `work-${n}`,
+          relation: "references",
+          url: `https://e.example/${i}`,
+        },
+        {},
+        linkKey(n, i),
+      );
+  };
+  put(70, { status: "closed" });
+  put(71);
+  put(72);
+  f.put({ count: 2, next: 0 }, {}, "slots:work-71");
+  f.put({ holder }, {}, "participant:work-72:1");
+  put(73);
+  seed(73, 1, 3);
+  put(74);
+  seed(74, 1, 2, 3, 4, 5, 6, 7, 8, 9);
+  put(75, {}, false);
+  seed(75, 1);
+  f.lease({ holder }, linkKey(75, 1));
+  f.lease({ holder }, "issue:work-4");
+  return rows;
+}
+// The local pattern /^https?:\/\/[^\s/]+(?:\/[^\s]*)?$/ decides, with no trimming, parsing or host policy.
+const URLS: [string, string, boolean][] = [
+  ["a bare host", "https://h", true],
+  ["a root path", "http://h/", true],
+  ["credentials, port, query and fragment", "https://u:p@h:8080/p?q=1#f", true],
+  ["a query on the host", "https://h?q=1", true],
+  ["an upper case scheme", "HTTPS://h/a", false],
+  ["ftp", "ftp://h/a", false],
+  ["a relative URL", "/a/b", false],
+  ["an empty authority", "https:///a", false],
+  ["no host", "https://", false],
+  ["whitespace within", "https://h/a b", false],
+  ["a leading space", " https://h", false],
+  ["a terminal line break", "https://h/a\n", false],
+];
+
+test("the cloud issue.link agrees with the local handler on whole records, rows, leases and events, for duplicates, aliases, any issue state, suffixes past 9 and every URL the local pattern accepts or refuses", async () => {
+  const { f, token } = await linkRows();
+  const twin = Database.deserialize(f.db.serialize());
+  const issues = () =>
+    JSON.stringify(
+      rowsOf(f.db, "forge/work").filter((r) => r.key.startsWith("issue:")),
+    );
+  const before = [issues(), leasesIn(f.db)];
+  const long = `a${"b".repeat(49)}`;
+  const cases: [string, object, boolean][] = [
+    ["delivers", linkIn(), true],
+    [
+      "references over http",
+      linkIn({ relation: "references", url: "http://h.example/a" }),
+      true,
+    ],
+    ["a relation of 50 characters", linkIn({ relation: long }), true],
+    ["the same value again", linkIn(), true],
+    ["a historical prefix", linkIn({ id: "acme-1" }), true],
+    ["the old prefix", linkIn({ id: "old-4" }), true],
+    ["the work prefix", linkIn({ id: "work-20" }), true],
+    ["upper case", linkIn({ id: "FORGE-20" }), true],
+    ["a closed issue", linkIn({ id: "forge-70" }), true],
+    ["slots and no selection", linkIn({ id: "forge-71" }), true],
+    ["a participant", linkIn({ id: "forge-72" }), true],
+    ["past suffix 9", linkIn({ id: "forge-74" }), true],
+    [
+      "a URL of 2000 characters",
+      linkIn({ url: `https://h/${"a".repeat(1990)}` }),
+      true,
+    ],
+    ...URLS.map(([name, url, ok]): [string, object, boolean] => [
+      name,
+      linkIn({ url }),
+      ok,
+    ]),
+  ];
+  const keys: string[] = [];
+  for (const [i, [name, input, ok]] of cases.entries()) {
+    const requestId = `k-${i}`;
+    const got = await f.send(linkCall(requestId, input), {
+      token,
+      via: i % 2 ? "direct" : createWorker(),
+    });
+    const want = localLease("issue.link", twin, f, requestId, input);
+    if (ok) {
+      expect([name, got.status, got.exit]).toEqual([name, 200, 0]);
+      expect([name, got.json]).toEqual([
+        name,
+        {
+          ok: true,
+          op: "issue.link",
+          status: "OK",
+          result: want.result,
+          warnings: [],
+        },
+      ] as never);
+      keys.push((want.result as { key: string }).key);
+    } else {
+      expect([name, got.status, got.code, got.exit]).toEqual([
+        name,
+        400,
+        "INPUT_INVALID",
+        6,
+      ]);
+      expect([name, got.json.error]).toEqual([
+        name,
+        withoutRepair(want.error),
+      ] as never);
+      expect([name, got.json.error?.message]).toEqual([name, linkUrl]);
+    }
+  }
+  // Each accepted request appended at the count plus one under the stored id, the duplicate included.
+  expect(keys).toEqual([
+    ...[1, 2, 3, 4].map((i) => linkKey(12, i)),
+    linkKey(1, 1),
+    linkKey(4, 1),
+    linkKey(20, 1),
+    linkKey(20, 2),
+    linkKey(70, 1),
+    linkKey(71, 1),
+    linkKey(72, 1),
+    linkKey(74, 10),
+    linkKey(12, 5),
+    ...URLS.filter(([, , ok]) => ok).map((_, i) => linkKey(12, 6 + i)),
+  ]);
+  expect(JSON.parse(linksOf(f, 12)[0]!.body)).toEqual({
+    namespace: "forge/work",
+    key: linkKey(12, 1),
+    revision: 1,
+    value: { id: "work-12", relation: "delivers", url: linkIn().url },
+    updatedAt: iso(start),
+    updatedBy: actor,
+  });
+  expect(eventsOf(f.db, "forge/work")).toEqual(eventsOf(twin, "forge/work"));
+  expect(eventsOf(f.db, "forge/work")).toHaveLength(keys.length);
+  expect(rowsOf(f.db, "forge/work")).toEqual(rowsOf(twin, "forge/work"));
+  expect(leasesIn(f.db)).toBe(leasesIn(twin));
+  expect(rowsOf(f.db, "forge/cloud")).toHaveLength(cases.length);
+  // A link changes no issue row, revision or lease, so nothing becomes eligible or blocked.
+  expect([issues(), leasesIn(f.db)]).toEqual(before);
+}, 120_000);
+
+test("issue.link refuses an absent issue, a bad URL, a bad id and bad input in the local order, records one refusal per fresh request id, replays it unchanged and writes nothing", async () => {
+  const { f, token } = await linkRows();
+  const twin = Database.deserialize(f.db.serialize());
+  const before = work(f);
+  const gone = [404, "NOT_FOUND", 3] as const;
+  const bad = [400, "INPUT_INVALID", 6] as const;
+  const padded = (n: number) => `forge-${"0".repeat(n - 8)}12`;
+  const base = { relation: "delivers", url: "https://h" };
+  // [name, input, [status, code, exit], "local" for the local refusal, else the cloud's fixed message]
+  const cases: [string, object, readonly [number, string, number], string][] = [
+    ["absent", linkIn({ id: "forge-99" }), gone, "local"],
+    ["absent, as written", linkIn({ id: "FORGE-99" }), gone, "local"],
+    ["absent, 200 characters", linkIn({ id: padded(200) }), gone, "local"],
+    [
+      "absent and a bad URL",
+      linkIn({ id: "FORGE-99", url: "ftp://h" }),
+      gone,
+      "local",
+    ],
+    [
+      "a bad URL and no lease",
+      linkIn({ id: "forge-31", url: "ftp://h" }),
+      bad,
+      "local",
+    ],
+    ["a malformed id", linkIn({ id: "nope" }), bad, "Invalid issue id"],
+    [
+      "a foreign prefix",
+      linkIn({ id: "zzz-1" }),
+      bad,
+      "Unknown issue id prefix",
+    ],
+    ["no id", base, bad, linkShape],
+    ["no relation", { id: "forge-12", url: "https://h" }, bad, linkShape],
+    ["no url", { id: "forge-12", relation: "delivers" }, bad, linkShape],
+    ["id not text", linkIn({ id: 12 }), bad, linkShape],
+    ["relation not text", linkIn({ relation: 1 }), bad, linkShape],
+    ["url not text", linkIn({ url: null }), bad, linkShape],
+    ["id of 201 characters", linkIn({ id: padded(201) }), bad, linkShape],
+    ["an empty relation", linkIn({ relation: "" }), bad, linkShape],
+    [
+      "an upper case relation",
+      linkIn({ relation: "Delivers" }),
+      bad,
+      linkShape,
+    ],
+    [
+      "a relation that starts with a digit",
+      linkIn({ relation: "1a" }),
+      bad,
+      linkShape,
+    ],
+    [
+      "a relation with an underscore",
+      linkIn({ relation: "a_b" }),
+      bad,
+      linkShape,
+    ],
+    [
+      "a relation of 51 characters",
+      linkIn({ relation: `a${"b".repeat(50)}` }),
+      bad,
+      linkShape,
+    ],
+    ["an empty url", linkIn({ url: "" }), bad, linkShape],
+    [
+      "a url of 2001 characters",
+      linkIn({ url: `https://h/${"a".repeat(1991)}` }),
+      bad,
+      linkShape,
+    ],
+    ["an unknown key", linkIn({ extra: marker }), bad, linkShape],
+    ["a subject", linkIn({ subject: "issue:work-12" }), bad, linkShape],
+    ["a namespace", linkIn({ namespace: "forge/work" }), bad, linkShape],
+    ["a key", linkIn({ key: linkKey(12, 1) }), bad, linkShape],
+    ["a revision", linkIn({ expectRevision: 0 }), bad, linkShape],
+  ];
+  for (const [i, [name, input, want, check]] of cases.entries()) {
+    const run = () => f.send(linkCall(`b-${i}`, input), { token });
+    const got = await run();
+    expect([name, got.status, got.code, got.exit]).toEqual([name, ...want]);
+    if (check === "local") {
+      const local = localLease("issue.link", twin, f, `b-${i}`, input);
+      expect(local.error).toBeDefined();
+      expect([name, got.json.error]).toEqual([
+        name,
+        withoutRepair(local.error),
+      ] as never);
+    } else expect([name, got.json.error?.message]).toEqual([name, check]);
+    expect(JSON.stringify(got.json)).not.toContain(marker);
+    expect([name, work(f)]).toEqual([name, before]);
+    expect(receiptOf(f, `b-${i}`)).toMatchObject({
+      outcome: "refused",
+      result: got.json.error,
+    });
+    expect([name, (await run()).text]).toEqual([name, got.text]);
+  }
+  expect(rowsOf(f.db, "forge/cloud")).toHaveLength(cases.length);
+  // The cloud's id messages are fixed text; the local handler gives the same code.
+  for (const id of ["nope", "zzz-1"])
+    expect(
+      localLease("issue.link", twin, f, "l-0", linkIn({ id })).error,
+    ).toMatchObject({ code: "INPUT_INVALID" });
+}, 120_000);
+
+test("issue.link refuses every lease the caller does not hold, a lease on a link key alone and a count that collides with an existing link, with the local code and message, writes nothing and records nothing, so a retry runs again", async () => {
+  const { f, token } = await linkRows();
+  const twin = Database.deserialize(f.db.serialize());
+  const before = writes(f);
+  const held = [409, "LEASE_NOT_HELD", 4] as const;
+  const stale = [409, "LEASE_STALE", 4] as const;
+  type Who = { generation?: number; session?: string };
+  const refusals: [string, object, Who, readonly [number, string, number]][] = [
+    ["no lease", linkIn({ id: "forge-31" }), {}, held],
+    ["another device", linkIn({ id: "forge-32" }), {}, held],
+    ["another session", linkIn({ id: "forge-33" }), {}, held],
+    ["the caller names another session", linkIn(), { session: "s2" }, held],
+    ["an older generation", linkIn(), { generation: 1 }, stale],
+    ["a newer generation", linkIn(), { generation: 3 }, stale],
+    ["expired", linkIn({ id: "forge-34" }), {}, [409, "LEASE_EXPIRED", 4]],
+    ["released", linkIn({ id: "forge-35" }), {}, held],
+    ["a lease on the link key alone", linkIn({ id: "forge-75" }), {}, held],
+    [
+      "a count that collides with suffix 3",
+      linkIn({ id: "forge-73" }),
+      {},
+      [409, "REVISION_CONFLICT", 4],
+    ],
+  ];
+  for (const [i, [name, input, who, want]] of refusals.entries()) {
+    const context = {
+      actor,
+      session: { id: who.session ?? "s1" },
+      leaseGeneration: who.generation ?? 2,
+    };
+    const run = () => f.send(linkCall(`f-${i}`, input, { context }), { token });
+    const got = await run();
+    const local = localLease("issue.link", twin, f, `f-${i}`, input, who);
+    expect([name, got.status, got.code, got.exit]).toEqual([name, ...want]);
+    expect(local.error).toBeDefined();
+    expect([name, got.json.error]).toEqual([
+      name,
+      withoutRepair(local.error),
+    ] as never);
+    expect([name, writes(f)]).toEqual([name, before]);
+    const again = await run();
+    expect([name, again.text]).toEqual([name, got.text]);
+    expect([name, writes(f)]).toEqual([name, before]);
+  }
+  // The existing links stay, and no refusal receipt blocks a retry once the caller holds the lease.
+  expect(linksOf(f, 73).map((r) => r.key)).toEqual([
+    linkKey(73, 1),
+    linkKey(73, 3),
+  ]);
+  f.lease({ holder }, "issue:work-31");
+  const retry = await f.send(
+    linkCall("f-0", linkIn({ id: "forge-31" }), { context: leased }),
+    { token },
+  );
+  expect([retry.status, linksOf(f, 31).length]).toEqual([200, 1]);
+}, 120_000);
+
+test("a lease lost after the input was read refuses the link with the local lease code and leaves no link, event or receipt", async () => {
+  const other = { actor, session: { id: "s2", device: "laptop" } };
+  const taken = (over: object) =>
+    grant({ subject: "issue:work-12", generation: 3, holder: other, ...over });
+  const cases: [string, (f: F) => void, (twin: Database) => void][] = [
+    ["expired", (f) => f.advance(1001), () => {}],
+    [
+      "taken over",
+      (f) => f.lease({ holder: other, generation: 3 }, "issue:work-12"),
+      (twin) => {
+        twin.run(
+          "UPDATE state_leases SET generation=3, body=? WHERE subject='issue:work-12'",
+          [JSON.stringify(taken({}))],
+        );
+      },
+    ],
+  ];
+  for (const [name, lose, loseTwin] of cases) {
+    const { f, token } = await linkRows();
+    const twin = Database.deserialize(f.db.serialize());
+    const before = writes(f);
+    const real = f.storage.sql.exec.bind(f.storage.sql);
+    let tripped = false;
+    // The count that numbers the link is the first statement after the input was read: the authority changes there.
+    f.storage.sql.exec = (sql, ...bindings) => {
+      if (!tripped && bindings.includes("link:work-12:")) {
+        tripped = true;
+        lose(f);
+      }
+      return real(sql, ...bindings);
+    };
+    const got = await f.send(linkCall("z-1"), { token });
+    loseTwin(twin);
+    const local = localLease("issue.link", twin, f, "z-1", linkIn());
+    expect([name, tripped, got.status, got.exit]).toEqual([name, true, 409, 4]);
+    expect(local.error).toBeDefined();
+    expect([name, got.json.error]).toEqual([
+      name,
+      withoutRepair(local.error),
+    ] as never);
+    expect([name, writes(f)]).toEqual([name, before]);
+  }
+}, 60_000);
+
+test("a readback that is missing or different refuses the link with the local INTERNAL message, rolls the link, event and receipt back, and a retry appends once", async () => {
+  for (const [name, change] of [
+    [
+      "different",
+      "UPDATE state_records SET body=replace(body,'\"delivers\"','\"references\"') WHERE namespace=NEW.namespace AND key=NEW.key",
+    ],
+    [
+      "missing",
+      "DELETE FROM state_records WHERE namespace=NEW.namespace AND key=NEW.key",
+    ],
+  ] as const) {
+    const { f, token } = await linkRows();
+    const twin = Database.deserialize(f.db.serialize());
+    const before = writes(f);
+    const trigger = `CREATE TRIGGER skew AFTER INSERT ON state_records WHEN NEW.key='link:work-12:1' BEGIN ${change}; END`;
+    f.db.run(trigger);
+    twin.run(trigger);
+    const got = await f.send(linkCall("rb-1"), { token });
+    const local = localLease("issue.link", twin, f, "rb-1", linkIn());
+    expect([name, got.status, got.code, got.exit]).toEqual([
+      name,
+      500,
+      "INTERNAL",
+      1,
+    ]);
+    expect([name, got.json.error?.message]).toEqual([name, readback]);
+    expect([name, got.json.error]).toEqual([
+      name,
+      withoutRepair(local.error),
+    ] as never);
+    expect([name, writes(f)]).toEqual([name, before]);
+    f.db.run("DROP TRIGGER skew");
+    const retry = await f.send(linkCall("rb-1"), { token });
+    expect([name, retry.status]).toEqual([name, 200]);
+    expect(linksOf(f, 12).map((r) => r.key)).toEqual([linkKey(12, 1)]);
+    expect(eventsOf(f.db, "forge/work")).toHaveLength(1);
+    expect(rowsOf(f.db, "forge/cloud")).toHaveLength(1);
+  }
+}, 60_000);
+
+test("a recorded link whose stored value is no longer valid is refused as INTERNAL on replay, with the lease still held, and nothing changes", async () => {
+  for (const [name, from, to] of [
+    ["relation", '"delivers"', '"Delivers"'],
+    ["url", `"${linkIn().url}"`, '""'],
+  ] as const) {
+    const { f, token } = await linkRows();
+    const first = await f.send(linkCall("v-1"), { token });
+    expect([name, first.status]).toEqual([name, 200]);
+    f.db.run(
+      "UPDATE state_records SET body=replace(body, ?, ?) WHERE namespace='forge/cloud' AND key='request:v-1'",
+      [from, to],
+    );
+    const done = f.snapshot();
+    for (const via of ["direct", createWorker()] as const) {
+      const got = await f.send(linkCall("v-1"), { token, via });
+      expect([name, got.status, got.code, got.exit]).toEqual([
+        name,
+        500,
+        "INTERNAL",
+        1,
+      ]);
+      expect([name, got.json.error?.message, got.json.result]).toEqual([
+        name,
+        "Stored link is not valid",
+        undefined,
+      ]);
+      expect([name, f.snapshot()]).toEqual([name, done]);
+    }
+  }
+}, 60_000);
+
+test("a link record that fails the declared output schema, even when its readback is the same record, is refused before the receipt commits and leaves no link, event or receipt", async () => {
+  const { f } = await linkRows();
+  const db = sqlOf(f.db);
+  const owner = new StateOwner(db, { now: f.now });
+  const context = {
+    variant: "leased",
+    leaseMode: "held",
+    actor,
+    session: { id: "s1", device: "laptop" },
+    project: { id: "p" },
+    leaseGeneration: 2,
+  } as const;
+  const run = (requestId: string, via: StateOwner) =>
+    linkIssue(db, via, {
+      requestId,
+      input: linkIn(),
+      context,
+      device: "laptop",
+      prefix: "forge",
+      recheck: () => {},
+    });
+  // The seam bends every link record the owner puts or reads to the same malformed one: the clock is a number.
+  const bend = (record: unknown) => ({
+    ...(record as object),
+    updatedAt: 5,
+  });
+  const seam = new Proxy(owner, {
+    get(target, name) {
+      const member = Reflect.get(target, name, target) as unknown;
+      if (typeof member !== "function") return member;
+      const call = member as (...args: unknown[]) => unknown;
+      if (name === "put")
+        return (...args: unknown[]) => bend(call.apply(target, args));
+      if (name === "get")
+        return (namespace: string, key: string) => {
+          const record = call.call(target, namespace, key);
+          return record !== undefined && key.startsWith("link:")
+            ? bend(record)
+            : record;
+        };
+      return call.bind(target);
+    },
+  });
+  const before = writes(f);
+  expect(() => run("o-1", seam)).toThrow("Link result is not valid");
+  expect(writes(f)).toBe(before);
+  // Without the seam the same request appends the first link: nothing of the refused one was kept.
+  expect(run("o-2", owner)).toMatchObject({ key: linkKey(12, 1), revision: 1 });
+  expect(linksOf(f, 12)).toHaveLength(1);
+  expect(eventsOf(f.db, "forge/work")).toHaveLength(1);
+  expect(receiptOf(f, "o-1")).toBeUndefined();
+}, 30_000);
+
 // The replay scenarios update, claim, renew and release share: a leased write is answered from its receipt only while
 // the caller still holds the lease (a committed release always, as it grants nothing), and a reused id with other input conflicts.
 type Lose = (f: F, token: string) => Promise<void> | void;
@@ -4411,6 +4917,55 @@ const takeover = (id: string, device: string) => (f: F) =>
     "issue:work-12",
   );
 const REPLAYS: Replay[] = [
+  {
+    name: "link",
+    rows: linkRows,
+    send: (id, input = linkIn(), more = {}) => linkCall(id, input, more),
+    result: { key: linkKey(12, 1), revision: 1 },
+    old: `"url":"${linkIn().url}"`,
+    // A later link moves the issue's count on; the replay still answers with the original record.
+    moveOn: async (f, token) => {
+      const next = await f.send(
+        linkCall("r-2", linkIn({ url: "https://github.com/o/r/pull/2" })),
+        { token },
+      );
+      expect([next.status, linksOf(f, 12).length]).toEqual([200, 2]);
+    },
+    conflicts: [
+      ["relation", false, linkIn({ relation: "references" })],
+      ["url", false, linkIn({ url: "https://github.com/o/r/pull/2" })],
+      ["issue", false, linkIn({ id: "forge-1" })],
+      [
+        "generation",
+        false,
+        linkIn(),
+        { context: { ...leased, leaseGeneration: 3 } },
+      ],
+      [
+        "session",
+        false,
+        linkIn(),
+        { context: { ...leased, session: { id: "s2" } } },
+      ],
+      ["device", true],
+    ],
+    losses: [
+      [
+        "released",
+        (f) => f.lease({ holder, releasedAt: iso(start) }, "issue:work-12"),
+      ],
+      ["expired", (f) => f.advance(1001)],
+      ["exactly at expiry", (f) => f.advance(1000)],
+      ["taken over", takeover("s2", "laptop")],
+      ["taken over by another device", takeover("s1", "tablet")],
+      [
+        "gone",
+        (f) => {
+          f.db.run("DELETE FROM state_leases WHERE subject='issue:work-12'");
+        },
+      ],
+    ],
+  },
   {
     name: "update",
     rows: updateRows,
@@ -4855,6 +5410,23 @@ interface Write {
 }
 const WRITES: Write[] = [
   {
+    name: "link",
+    rows: linkRows,
+    send: (id, input) => linkCall(id, input),
+    // The schema refuses a key link does not take: the refusal is recorded.
+    bad: linkIn({ expectRevision: 0 }),
+    badWant: [400, "INPUT_INVALID"],
+    empty: linkIn({ url: "" }),
+    record: `forge/work/${linkKey(12, 1)}`,
+    result: (f, got) => {
+      expect([got.status, got.json.result]).toMatchObject([
+        200,
+        { key: linkKey(12, 1), revision: 1 },
+      ]);
+      expect(eventsOf(f.db, "forge/work")).toHaveLength(1);
+    },
+  },
+  {
     name: "create",
     rows: createRows,
     send: make,
@@ -5144,6 +5716,7 @@ test("a session-bound token cannot act as another session, on a first write or a
     ["update", revise("m-1")],
     ["dep", depCall("m-9")],
     ["close", closeCall("m-10")],
+    ["link", linkCall("m-11")],
     ["claim", claim("m-6", { id: "forge-12" })],
     ["renew", renewal("m-7")],
     ["release", giveUp("m-8")],

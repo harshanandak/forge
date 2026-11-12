@@ -1,6 +1,6 @@
 // POST /p/<project>/command: typed issue commands at the project authority.
 // This slice checks the envelope and the context, runs issue.show, issue.comments, issue.list and issue.ready as reads,
-// runs issue.create, issue.comment, issue.update, issue.dep, issue.close, issue.claim, issue.renew and issue.release as writes and refuses every other command as not yet supported. Everything the caller sends is
+// runs issue.create, issue.comment, issue.update, issue.dep, issue.link, issue.close, issue.claim, issue.renew and issue.release as writes and refuses every other command as not yet supported. Everything the caller sends is
 // untrusted. The envelope and context are closed shapes, the device comes from the token and the
 // project from the server, and no caller value becomes an SQL identifier, a namespace or a key.
 import manifest from "../../src/blocks/work/forge.block.json" with { type: "json" };
@@ -31,6 +31,7 @@ import { commentIssue } from "./issue-comment.ts";
 import { createIssue } from "./issue-create.ts";
 import { closeIssue } from "./issue-close.ts";
 import { depIssue } from "./issue-dep.ts";
+import { linkIssue } from "./issue-link.ts";
 import { releaseIssue, renewIssue } from "./issue-lease.ts";
 import { listComments } from "./issue-comments.ts";
 import { listIssues } from "./issue-list.ts";
@@ -56,6 +57,7 @@ const EXPOSED: readonly string[] = [
   "issue.create",
   "issue.update",
   "issue.dep",
+  "issue.link",
   "issue.close",
   "issue.claim",
   "issue.renew",
@@ -217,7 +219,7 @@ function lazyViews(storage: DurableStorage): IssueViews {
 }
 
 /**
- * Prepares a command and runs it. Only issue.create, issue.comment, issue.update, issue.dep, issue.close, issue.claim, issue.renew, issue.release, issue.show, issue.comments, issue.list and issue.ready run: each returns
+ * Prepares a command and runs it. Only issue.create, issue.comment, issue.update, issue.dep, issue.link, issue.close, issue.claim, issue.renew, issue.release, issue.show, issue.comments, issue.list and issue.ready run: each returns
  * the response, serialized once and measured in UTF-8 bytes. Every other operation is refused. Throws ForgeFailure when refused,
  * and runs no await, so the caller's token check stays current until the response is built.
  */
@@ -242,15 +244,17 @@ export function runCommand(text: string, host: CommandRun): Response {
           ? updateIssue
           : op === "issue.dep"
             ? depIssue
-            : op === "issue.close"
-              ? closeIssue
-              : op === "issue.claim"
-                ? claimIssue
-                : op === "issue.renew"
-                  ? renewIssue
-                  : op === "issue.release"
-                    ? releaseIssue
-                    : undefined;
+            : op === "issue.link"
+              ? linkIssue
+              : op === "issue.close"
+                ? closeIssue
+                : op === "issue.claim"
+                  ? claimIssue
+                  : op === "issue.renew"
+                    ? renewIssue
+                    : op === "issue.release"
+                      ? releaseIssue
+                      : undefined;
   let result: unknown;
   if (write !== undefined) {
     const { db, owner } = host.open();
