@@ -12,8 +12,8 @@ import type {
 export interface SurfaceCatalog {
   list(): readonly McpCandidate[];
   diagnose?(op: string): ForgeError | undefined;
-  /** Throws the refusal for an operation this project's authority will not serve, before any lookup for it. */
-  admit?(blockId: string, declaredOp: string): void;
+  /** Throws the refusal for an operation, or a dry run of it, this project's authority will not serve, before any lookup for it. */
+  admit?(blockId: string, declaredOp: string, dryRun?: boolean): void;
   upgradeHint?(op: string): UpgradeHint | undefined;
   templateHint?(
     op: string,

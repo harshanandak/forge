@@ -1,5 +1,6 @@
 // Test-only entry for the conformance run (wrangler.test.jsonc). It wraps the shipped Project so a
-// request carrying `x-cloud-fault: receipt-insert` fails its receipt insert. The shipped Worker
+// request carrying `x-cloud-fault: receipt-insert` fails its receipt insert: the raw routes' row in
+// domain_cloud_requests and a typed command's receipt in state_records. The shipped Worker
 // (src/worker.ts, wrangler.example.jsonc) imports nothing from this file, so a deploy cannot carry the switch.
 //
 // It also holds a faulted request inside the wrapper so a test can force two requests to overlap:
@@ -15,6 +16,18 @@ import type { DurableState } from "../src/store.ts";
 export { default } from "../src/worker.ts";
 
 const RECEIPT_INSERT = /^\s*INSERT INTO domain_cloud_requests\b/i;
+// A typed command receipt is a state record in namespace forge/cloud keyed request:<requestId>, so the fault
+// matches the state owner's insert on its bound namespace and key, never on caller text.
+const RECORD_INSERT = /^\s*INSERT INTO state_records\b/i;
+const isReceiptInsert = (
+  statement: string,
+  bindings: readonly unknown[],
+): boolean =>
+  RECEIPT_INSERT.test(statement) ||
+  (RECORD_INSERT.test(statement) &&
+    bindings[0] === "forge/cloud" &&
+    typeof bindings[1] === "string" &&
+    bindings[1].startsWith("request:"));
 
 // Each request runs inside its own context, so the fault decision follows that request through every
 // await. Requests that overlap in one Durable Object cannot see each other's decision.
@@ -70,7 +83,7 @@ export class Project extends Shipped {
             exec: (statement, ...bindings) => {
               if (
                 current.getStore()?.receiptInsert === true &&
-                RECEIPT_INSERT.test(statement)
+                isReceiptInsert(statement, bindings)
               )
                 throw new Error("Injected receipt insert failure");
               return ctx.storage.sql.exec(statement, ...bindings);

@@ -4,7 +4,7 @@
 import { nodeDeviceIdentity } from "../adapters/fs/device-identity.ts";
 import { createCloudHttp } from "../adapters/http/index.ts";
 import { ForgeFailure } from "../contract/failure.ts";
-import type { Runtime } from "../core/runtime/index.ts";
+import { refuseDryRun, type Runtime } from "../core/runtime/index.ts";
 import type { BoundContext } from "../generated/types.ts";
 import type { InvocationRequest, ResultEnvelope } from "../generated/types.ts";
 import { cloudBinding } from "./cloud-binding.ts";
@@ -54,19 +54,22 @@ export function cloudRoute(
       );
 }
 
-/** Refuses an operation a bound project does not serve, before any lookup for it; an unbound project is never refused. */
+/** Refuses an operation a bound project does not serve, and a dry run of one it does, before any lookup for it; an unbound project is never refused. */
 export function admitCloud(
   deps: Pick<CloudAuthorityDeps, "root" | "env">,
   blockId: string,
   declared: string,
+  dryRun?: boolean,
 ): void {
   const route = cloudRoute(blockId, declared);
+  if (route === "local" || (route === "cloud" && dryRun !== true)) return;
   if (
-    route instanceof ForgeFailure &&
-    cloudBinding(deps.root, deps.env.HOME ?? deps.env.USERPROFILE).kind ===
-      "bound"
+    cloudBinding(deps.root, deps.env.HOME ?? deps.env.USERPROFILE).kind !==
+    "bound"
   )
-    throw route;
+    return;
+  if (route instanceof ForgeFailure) throw route;
+  refuseDryRun();
 }
 
 /** The cloud's envelope for a bound project's served operation; undefined when the local runtime should run. */
