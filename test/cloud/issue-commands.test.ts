@@ -2710,7 +2710,7 @@ const floorEvents = (f: F) =>
   );
 const owned = (f: F) => new StateOwner(sqlOf(f.db), { now: f.now });
 const floorMissing =
-  "Issue allocation floor is missing; dump and re-restore into an empty project before creating issues";
+  "This project has issue history but no saved issue number, so creating issues is not available for it yet";
 const make = (id: string, input: object = { title: "New" }, more = {}) => ({
   requestId: id,
   op: "issue.create",

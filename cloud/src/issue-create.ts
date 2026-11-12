@@ -11,7 +11,7 @@ import { receipted, type WriteCall } from "./issue-write.ts";
 
 const NAMESPACE = "forge/work";
 const FLOOR_MISSING =
-  "Issue allocation floor is missing; dump and re-restore into an empty project before creating issues";
+  "This project has issue history but no saved issue number, so creating issues is not available for it yet";
 const KINDS = ["task", "bug", "feature", "epic"];
 const create = manifest.operations["issue.create"];
 if (
