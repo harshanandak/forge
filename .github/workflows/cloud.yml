@@ -122,6 +122,8 @@ jobs:
             name="$1"; file="$2"; edit="$3"; shift 3
             sed -i "$edit" "$file"
             if git diff --quiet -- "$file"; then echo "::error::the $name counterfactual edit did not apply"; exit 1; fi
+            # An edit that must change several places names how many lines it removed.
+            if [ -n "${edits:-}" ] && [ "$(git diff -U0 -- "$file" | grep -c '^-[^-]')" != "$edits" ]; then echo "::error::the $name counterfactual edit did not change $edits lines"; exit 1; fi
             persist="$RUNNER_TEMP/wrangler-$name"
             start "$name"
             if bun conformance/conformance.ts device > "$RUNNER_TEMP/$name.out" 2>&1; then
@@ -137,9 +139,12 @@ jobs:
           # An unconditional upsert writes the login row on a wrong ticket.
           counterfactual upsert src/auth/project-login.ts 's/if (after !== before)/if (true)/' "device approve: wrong capabilities" "device deny: wrong capabilities"
           # Consuming the state before its cookie is checked burns it for the right browser.
-          counterfactual consume src/auth/device-browser.ts 's/if (!same(row.decided!.bindHash, bound)) return undefined;/if (!same(row.decided!.bindHash, bound)) { state.browser = []; return undefined; }/' "device approve: wrong capabilities" "device deny: wrong capabilities"
+          counterfactual consume src/auth/device-browser.ts 's/if (!owned) return undefined;/if (!owned) { state.browser = []; return undefined; }/' "device approve: wrong capabilities" "device deny: wrong capabilities"
           # Without the admission guard there is no sixth-attempt refusal.
           counterfactual admission src/auth/project-login.ts 's/if (full) return false;/if (false) return false;/' "device: the sixth attempt for one challenge" "device: the sixth attempt from one address" "device: six overlapping attempts admit exactly five"
+          # Charging the budget before the proof on both paths (forge-1303) refuses a right ticket or state
+          # once a guess budget is full. Two lines change: the POST guard and the callback guard.
+          edits=2 counterfactual budget src/auth/device-browser.ts '/^ *row === undefined &&$/d;s/if (!owned && !browserAttempt(/if (!browserAttempt(/' "device: the sixth attempt for one challenge" "device: the sixth attempt from one address" "device approve: bound proofs finish" "device deny: bound proofs finish"
       - name: wrangler log
         if: failure()
         run: tail -n 100 "$RUNNER_TEMP"/wrangler-*.log || true
