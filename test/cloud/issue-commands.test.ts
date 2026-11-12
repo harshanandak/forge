@@ -14,6 +14,7 @@ import { listIssues } from "../../cloud/src/issue-list.ts";
 import { commentIssue } from "../../cloud/src/issue-comment.ts";
 import { createIssue } from "../../cloud/src/issue-create.ts";
 import { updateIssue } from "../../cloud/src/issue-update.ts";
+import { depIssue } from "../../cloud/src/issue-dep.ts";
 import { claimIssue } from "../../cloud/src/issue-claim.ts";
 import { releaseIssue, renewIssue } from "../../cloud/src/issue-lease.ts";
 import {
@@ -3148,6 +3149,7 @@ test("the shared write path takes a project context for create and comment and a
     ["issue.create", createIssue, lease, "project"],
     ["issue.comment", commentIssue, lease, "project"],
     ["issue.update", updateIssue, project, "leased"],
+    ["issue.dep", depIssue, project, "leased"],
     ["issue.claim", claimIssue, project, "leased"],
     ["issue.renew", renewIssue, project, "leased"],
     ["issue.release", releaseIssue, project, "leased"],
@@ -3313,7 +3315,7 @@ const giveUp = (id: string, input: object = { id: "forge-12" }, more = {}) =>
   make(id, input, { op: "issue.release", context: leased, ...more });
 // The real local handler for `op` against `twin`, as session s1 on the laptop holding generation 2 unless given.
 function localLease(
-  op: "issue.renew" | "issue.release",
+  op: "issue.renew" | "issue.release" | "issue.dep",
   twin: Database,
   f: F,
   requestId: string,
@@ -3356,6 +3358,306 @@ function localLease(
     else delete globals.fail;
   }
 }
+
+// issue.dep: the route and the real local handler start from the same rows, clock, config and held lease.
+const depIn = (over: object = {}) => ({
+  id: "forge-12",
+  target: "forge-1",
+  action: "add",
+  expectRevision: 3,
+  ...over,
+});
+const depCall = (id: string, input: object = depIn(), more = {}) =>
+  make(id, input, { op: "issue.dep", context: leased, ...more });
+const pile = (from: number, to: number) =>
+  Array.from({ length: to - from + 1 }, (_, i) => `work-${from + i}`);
+// fenceRows, plus held open issues 40 (41 depends on it), 45 (43 depends on 44, 44 on 45), 46 (on 12), 47 (on the
+// absent 99), 51 (on 99 and 1) and 52; 100 to 355 open; and held 48 and 49 on 100 to 355 (256) and 100 to 354 (255).
+async function depRows() {
+  const rows = await fenceRows();
+  const { f } = rows;
+  const put = (n: number, over: object = {}, held = false) => {
+    f.put(stored({ id: `work-${n}`, ...over }), {}, `issue:work-${n}`);
+    if (held) f.lease({ holder }, `issue:work-${n}`);
+  };
+  put(40, {}, true);
+  put(41, { dependsOn: ["work-40"] });
+  put(43, { dependsOn: ["work-44"] });
+  put(44, { dependsOn: ["work-45"] });
+  put(45, {}, true);
+  put(46, { dependsOn: ["work-12"] }, true);
+  put(47, { dependsOn: ["work-99"] }, true);
+  put(51, { dependsOn: ["work-99", "work-1"] }, true);
+  put(52, {}, true);
+  for (let n = 100; n < 356; n++) put(n);
+  put(48, { dependsOn: pile(100, 355) }, true);
+  put(49, { dependsOn: pile(100, 354) }, true);
+  return rows;
+}
+
+test("the cloud issue.dep agrees with the local handler on whole results, rows, leases and events, for adds, removes, repeats, aliases, a dangling removal and the 256th dependency", async () => {
+  const { f, token } = await depRows();
+  const twin = Database.deserialize(f.db.serialize());
+  const cases: [string, object][] = [
+    ["d-0", depIn()],
+    ["d-1", depIn({ id: "forge-20", target: "forge-12" })],
+    ["d-2", depIn({ id: "forge-1", target: "forge-4", action: "remove" })],
+    ["d-3", depIn({ id: "forge-46", target: "forge-12", action: "remove" })],
+    ["d-4", depIn({ id: "acme-40", target: "old-4" })],
+    ["d-5", depIn({ id: "FORGE-45", target: "WORK-12" })],
+    ["d-6", depIn({ id: "work-52", target: "Acme-1" })],
+    ["d-7", depIn({ id: "forge-47", target: "forge-99", action: "remove" })],
+    ["d-8", depIn({ id: "forge-49", target: "forge-12" })],
+  ];
+  const touched = [12, 20, 1, 46, 40, 45, 52, 47, 49].map(
+    (n) => `issue:work-${n}`,
+  );
+  const others = () =>
+    JSON.stringify(
+      rowsOf(f.db, "forge/work").filter((r) => !touched.includes(r.key)),
+    );
+  const before = [others(), leasesIn(f.db)];
+  for (const [i, [requestId, input]] of cases.entries()) {
+    const got = await f.send(depCall(requestId, input), {
+      token,
+      via: i % 2 ? "direct" : createWorker(),
+    });
+    const want = localLease("issue.dep", twin, f, requestId, input);
+    expect([requestId, got.status, got.exit]).toEqual([requestId, 200, 0]);
+    expect(got.json).toEqual({
+      ok: true,
+      op: "issue.dep",
+      status: "OK",
+      result: want.result,
+      warnings: [],
+    } as never);
+  }
+  expect(eventsOf(f.db, "forge/work")).toEqual(eventsOf(twin, "forge/work"));
+  expect(eventsOf(f.db, "forge/work")).toHaveLength(cases.length);
+  expect(rowsOf(f.db, "forge/work")).toEqual(rowsOf(twin, "forge/work"));
+  expect(rowsOf(f.db, "forge/cloud")).toHaveLength(cases.length);
+  expect([others(), leasesIn(f.db)]).toEqual(before);
+  const row = (n: number) =>
+    (
+      JSON.parse(issueRow(f, `issue:work-${n}`)!.body) as {
+        value: { dependsOn: string[] };
+      }
+    ).value.dependsOn;
+  expect([row(12), row(46), row(47)]).toEqual([["work-1"], [], []]);
+  expect(row(49)).toHaveLength(256);
+}, 60_000);
+
+test("an added dependency blocks its issue until it is removed, and a removed one makes it eligible again", async () => {
+  const { f, token } = await depRows();
+  const free = () =>
+    f.db.run("DELETE FROM state_leases WHERE subject='issue:work-12'");
+  const hold = () => f.lease({ holder }, "issue:work-12");
+  const ready = () => readyIds(f, token);
+  free();
+  expect(await ready()).toContain("12");
+  hold();
+  expect((await f.send(depCall("e-1"), { token })).status).toBe(200);
+  free();
+  expect(await ready()).not.toContain("12");
+  hold();
+  const removed = await f.send(
+    depCall("e-2", depIn({ action: "remove", expectRevision: 4 })),
+    { token },
+  );
+  expect(removed.status).toBe(200);
+  free();
+  expect(await ready()).toContain("12");
+}, 60_000);
+
+test("issue.dep refuses a missing target, a cycle, a self dependency, the 257th dependency, a stale revision and every lease the caller does not hold with the local code and message, writes nothing and records nothing, so a retry runs again", async () => {
+  const { f, token } = await depRows();
+  const twin = Database.deserialize(f.db.serialize());
+  const before = writes(f);
+  const gone = [404, "NOT_FOUND", 3] as const;
+  const clash = [409, "INPUT_CONFLICT", 4] as const;
+  const held = [409, "LEASE_NOT_HELD", 4] as const;
+  const stale = [409, "LEASE_STALE", 4] as const;
+  type Who = { generation?: number; session?: string };
+  const refusals: [string, object, Who, readonly [number, string, number]][] = [
+    ["missing target", depIn({ target: "forge-99" }), {}, gone],
+    ["missing target, as written", depIn({ target: "FORGE-99" }), {}, gone],
+    [
+      "removal while another dependency is missing",
+      depIn({ id: "forge-51", target: "forge-1", action: "remove" }),
+      {},
+      gone,
+    ],
+    ["direct cycle", depIn({ id: "forge-40", target: "forge-41" }), {}, clash],
+    ["longer cycle", depIn({ id: "forge-45", target: "forge-43" }), {}, clash],
+    ["self dependency", depIn({ target: "forge-12" }), {}, clash],
+    [
+      "the 257th dependency",
+      depIn({ id: "forge-48" }),
+      {},
+      [400, "INPUT_INVALID", 6],
+    ],
+    [
+      "stale revision",
+      depIn({ expectRevision: 4 }),
+      {},
+      [409, "REVISION_CONFLICT", 4],
+    ],
+    ["no lease", depIn({ id: "forge-31" }), {}, held],
+    ["another device", depIn({ id: "forge-32" }), {}, held],
+    ["another session", depIn({ id: "forge-33" }), {}, held],
+    ["the caller names another session", depIn(), { session: "s2" }, held],
+    ["an older generation", depIn(), { generation: 1 }, stale],
+    ["a newer generation", depIn(), { generation: 3 }, stale],
+    ["expired", depIn({ id: "forge-34" }), {}, [409, "LEASE_EXPIRED", 4]],
+    ["released", depIn({ id: "forge-35" }), {}, held],
+  ];
+  for (const [i, [name, input, who, want]] of refusals.entries()) {
+    const context = {
+      actor,
+      session: { id: who.session ?? "s1" },
+      leaseGeneration: who.generation ?? 2,
+    };
+    const run = () => f.send(depCall(`f-${i}`, input, { context }), { token });
+    const got = await run();
+    const local = localLease("issue.dep", twin, f, `f-${i}`, input, who);
+    expect([name, got.status, got.code, got.exit]).toEqual([name, ...want]);
+    expect(local.error).toBeDefined();
+    expect([name, got.json.error]).toEqual([
+      name,
+      withoutRepair(local.error),
+    ] as never);
+    expect([name, writes(f)]).toEqual([name, before]);
+    const again = await run();
+    expect([name, again.text]).toEqual([name, got.text]);
+    expect([name, writes(f)]).toEqual([name, before]);
+  }
+  // No refusal receipt blocks a retry: the same request id works once the caller holds the lease.
+  f.lease({ holder }, "issue:work-31");
+  const retry = await f.send(
+    depCall("f-0", depIn({ id: "forge-31" }), { context: leased }),
+    { token },
+  );
+  expect(retry.status).toBe(200);
+}, 120_000);
+
+test("an absent issue is NOT_FOUND with the id as written, even when the target is malformed, and is recorded once per request id", async () => {
+  const { f, token } = await depRows();
+  const twin = Database.deserialize(f.db.serialize());
+  const before = work(f);
+  const cases: [string, object][] = [
+    ["absent", depIn({ id: "forge-98" })],
+    ["absent, as written", depIn({ id: "FORGE-98" })],
+    ["absent, historical prefix", depIn({ id: "old-98" })],
+    ["absent, malformed target", depIn({ id: "forge-98", target: "nope" })],
+    [
+      "absent, unknown target prefix",
+      depIn({ id: "forge-98", target: "zzz-1" }),
+    ],
+  ];
+  for (const [i, [name, input]] of cases.entries()) {
+    const run = () => f.send(depCall(`a-${i}`, input), { token });
+    const got = await run();
+    const local = localLease("issue.dep", twin, f, `a-${i}`, input);
+    expect([name, got.status, got.code, got.exit]).toEqual([
+      name,
+      404,
+      "NOT_FOUND",
+      3,
+    ]);
+    expect([name, got.json.error]).toEqual([
+      name,
+      withoutRepair(local.error),
+    ] as never);
+    expect([name, work(f)]).toEqual([name, before]);
+    expect(receiptOf(f, `a-${i}`)).toMatchObject({
+      outcome: "refused",
+      result: got.json.error,
+    });
+    expect([name, (await run()).text]).toEqual([name, got.text]);
+  }
+}, 60_000);
+
+test("a dependency walk over 10,000 issues is answered, 10,001 is refused as UNAVAILABLE, and a long chain never overflows the stack", async () => {
+  for (const [length, want] of [
+    [10_000, 200],
+    [10_001, 503],
+  ] as const) {
+    const { f, token } = await updateRows();
+    // Issues 1000 to 999 + length, each depending on the next; the held issue 52 joins the head.
+    f.db.run(
+      "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<?) INSERT INTO state_records(namespace,key,revision,body) SELECT 'forge/work','issue:work-'||(999+i),3,json_object('namespace','forge/work','key','issue:work-'||(999+i),'revision',3,'value',json_object('id','work-'||(999+i),'title','t','status','open','labels',json('[]'),'dependsOn',json(CASE WHEN i<? THEN json_array('work-'||(1000+i)) ELSE '[]' END),'createdAt',?),'updatedAt',?,'updatedBy',json_object('kind','agent','id','tester')) FROM n",
+      [length, length, iso(start - 1000), iso(start - 500)],
+    );
+    f.put(stored({ id: "work-52" }), {}, "issue:work-52");
+    f.lease({ holder }, "issue:work-52");
+    const before = writes(f);
+    const got = await f.send(
+      depCall("w-1", depIn({ id: "forge-52", target: "forge-1000" })),
+      { token },
+    );
+    expect([length, got.status]).toEqual([length, want]);
+    if (want === 200)
+      expect(got.json.result).toMatchObject({ dependsOn: ["forge-1000"] });
+    else {
+      expect(got.code).toBe("UNAVAILABLE");
+      expect(writes(f)).toBe(before);
+    }
+  }
+}, 120_000);
+
+test("bad issue.dep input is refused as INPUT_INVALID with one refusal receipt per fresh request id, replayed unchanged, and nothing is written", async () => {
+  const { f, token } = await updateRows();
+  const before = work(f);
+  const cases: [string, object][] = [
+    ["no id", { target: "forge-1", action: "add", expectRevision: 3 }],
+    ["no target", { id: "forge-12", action: "add", expectRevision: 3 }],
+    ["no action", { id: "forge-12", target: "forge-1", expectRevision: 3 }],
+    ["no revision", { id: "forge-12", target: "forge-1", action: "add" }],
+    ["unknown action", depIn({ action: "toggle" })],
+    ["unknown key", depIn({ extra: marker })],
+    ["caller key", depIn({ key: "issue:work-12" })],
+    ["dependsOn", depIn({ dependsOn: ["forge-1"] })],
+    ["zero revision", depIn({ expectRevision: 0 })],
+    ["fractional revision", depIn({ expectRevision: 1.5 })],
+    ["revision as text", depIn({ expectRevision: "3" })],
+    ["empty target", depIn({ target: "" })],
+    ["target not text", depIn({ target: 1 })],
+    ["malformed id", depIn({ id: "nope" })],
+    ["unknown id prefix", depIn({ id: "zzz-1" })],
+    ["malformed target", depIn({ target: "nope" })],
+    ["unknown target prefix", depIn({ target: "zzz-1" })],
+  ];
+  const texts: string[] = [];
+  for (const [i, [name, input]] of cases.entries()) {
+    const got = await f.send(depCall(`b-${i}`, input), { token });
+    expect([name, got.status, got.code, got.exit]).toEqual([
+      name,
+      400,
+      "INPUT_INVALID",
+      6,
+    ]);
+    expect(JSON.stringify(got.json)).not.toContain(marker);
+    expect([name, work(f)]).toEqual([name, before]);
+    expect(receiptOf(f, `b-${i}`)).toMatchObject({
+      outcome: "refused",
+      result: got.json.error,
+    });
+    expect(eventsOf(f.db, "forge/cloud")).toHaveLength(i + 1);
+    texts.push(got.text);
+  }
+  const done = f.snapshot();
+  const again = await f.send(depCall("b-0", cases[0]![1]), { token });
+  expect([again.status, again.text]).toEqual([400, texts[0]!]);
+  const changed = await f.send(depCall("b-0"), { token });
+  expect([changed.status, changed.code, changed.exit]).toEqual([
+    409,
+    "INPUT_CONFLICT",
+    4,
+  ]);
+  const unnamed = depCall("b-99", cases[0]![1], { requestId: "bad id!" });
+  expect((await f.send(unnamed, { token })).status).toBe(400);
+  expect(f.snapshot()).toBe(done);
+}, 60_000);
 
 // The replay scenarios update, claim, renew and release share: a leased write is answered from its receipt only while
 // the caller still holds the lease (a committed release always, as it grants nothing), and a reused id with other input conflicts.
@@ -3412,6 +3714,56 @@ const REPLAYS: Replay[] = [
         "session",
         false,
         patch(),
+        { context: { ...leased, session: { id: "s2" } } },
+      ],
+      ["device", true],
+    ],
+    losses: [
+      [
+        "released",
+        (f) => f.lease({ holder, releasedAt: iso(start) }, "issue:work-12"),
+      ],
+      ["expired", (f) => f.advance(1001)],
+      ["exactly at expiry", (f) => f.advance(1000)],
+      ["taken over", takeover("s2", "laptop")],
+      ["taken over by another device", takeover("s1", "tablet")],
+      [
+        "gone",
+        (f) => {
+          f.db.run("DELETE FROM state_leases WHERE subject='issue:work-12'");
+        },
+      ],
+    ],
+  },
+  {
+    name: "dep",
+    rows: updateRows,
+    send: (id, input = depIn(), more = {}) => depCall(id, input, more),
+    result: { dependsOn: ["forge-1"], revision: 4 },
+    old: '"dependsOn":["forge-1"]',
+    // A later change moves the issue on; the replay still answers with the original.
+    moveOn: async (f, token) => {
+      const next = await f.send(
+        depCall("r-2", depIn({ action: "remove", expectRevision: 4 })),
+        { token },
+      );
+      expect(next.status).toBe(200);
+    },
+    conflicts: [
+      ["target", false, depIn({ target: "forge-4" })],
+      ["action", false, depIn({ action: "remove" })],
+      ["revision", false, depIn({ expectRevision: 4 })],
+      ["issue", false, depIn({ id: "forge-1", target: "forge-4" })],
+      [
+        "generation",
+        false,
+        depIn(),
+        { context: { ...leased, leaseGeneration: 3 } },
+      ],
+      [
+        "session",
+        false,
+        depIn(),
         { context: { ...leased, session: { id: "s2" } } },
       ],
       ["device", true],
@@ -3793,6 +4145,24 @@ const WRITES: Write[] = [
     },
   },
   {
+    name: "dep",
+    rows: updateRows,
+    send: (id, input) => depCall(id, input),
+    // The schema refuses an action it does not know: the refusal is recorded.
+    bad: depIn({ action: "toggle" }),
+    badWant: [400, "INPUT_INVALID"],
+    empty: depIn({ target: "" }),
+    next: depIn({ action: "remove", expectRevision: 4 }),
+    record: "forge/work/issue:work-12",
+    result: (f, got) => {
+      expect([got.status, got.json.result]).toMatchObject([
+        200,
+        { dependsOn: ["forge-1"], revision: 4 },
+      ]);
+      expect(eventsOf(f.db, "forge/work")).toHaveLength(1);
+    },
+  },
+  {
     name: "renew",
     rows: updateRows,
     send: renewal,
@@ -3981,6 +4351,7 @@ test("a session-bound token cannot act as another session, on a first write or a
   // The holder is laptop session s1 at generation 2: a token bound to s2 cannot name s1.
   for (const [name, send] of [
     ["update", revise("m-1")],
+    ["dep", depCall("m-9")],
     ["claim", claim("m-6", { id: "forge-12" })],
     ["renew", renewal("m-7")],
     ["release", giveUp("m-8")],
