@@ -1,21 +1,26 @@
 // Lists work issues from the state tables and writes nothing. The ready, blocked and stale modes are
 // the same scan with a different candidate rule. Reads go through the same read-only
-// views and fixed statements as show. The scan is bounded before any body is loaded: a project over
-// the row or byte budget is refused, never read partly, and never silently shortened. Parity with
-// the local list holds within these limits. Every row is checked before any filter, limit or lease
-// read; a lease is read only for an issue that is still a candidate.
+// views and fixed statements as show. Compact rows (every field but the body) are read first and
+// decide validity, filters, order and the page; only the returned page loads full records. One 8 MiB
+// payload budget covers the compact rows plus the page, as the SQL returns them, and is checked
+// before the rows and again before the page: a project over the row or byte budget is refused, never
+// read partly, and never silently shortened. Parity with the local list holds within these limits.
+// Every row is checked before any filter, limit or lease read; a lease is read only for an issue that
+// is still a candidate. SQLite still examines each source row for the projection, twice (preflight
+// and compact read), so CPU and source-scan cost grow with project size even when little is returned.
 import manifest from "../../src/blocks/work/forge.block.json" with { type: "json" };
 import type { TrackerItem } from "../../src/generated/types.ts";
 import {
+  COMPACT,
   configured,
   fail,
   holdsLease,
   invalid,
+  issueRecord,
   leaseOf,
   MAX_RECORD_BYTES,
   parseBody,
-  ROWS,
-  SCAN,
+  PREFLIGHT,
   schemas,
   shownItem,
   storedId,
@@ -79,16 +84,19 @@ export function listIssues(
   if (schemas().validate("#", input).length > 0)
     throw fail("INPUT_INVALID", "Invalid issue list input");
   const { limit = 1000, label = [], labels = [], ...by } = input as Input;
-  const range = ["forge/work", "issue:", "issue;", MAX_SCAN_ROWS + 1];
-  const sizes = views.records?.all(SCAN, range) ?? [];
-  if (
-    sizes.length > MAX_SCAN_ROWS ||
-    sizes.reduce((sum, row) => sum + Number(row.size), 0) > MAX_SCAN_BYTES
-  )
+  const range = [
+    MAX_RECORD_BYTES,
+    "forge/work",
+    "issue:",
+    "issue;",
+    MAX_SCAN_ROWS + 1,
+  ];
+  const total = views.records?.get(PREFLIGHT, range);
+  const metadata = Number(total?.bytes ?? 0);
+  if (Number(total?.count ?? 0) > MAX_SCAN_ROWS || metadata > MAX_SCAN_BYTES)
     throw fail("UNAVAILABLE", "Issue list is over its read budget");
-  if (sizes.some((row) => Number(row.size) > MAX_RECORD_BYTES)) throw invalid();
-  const rows = views.records?.all(ROWS, range) ?? [];
-  if (rows.length !== sizes.length) throw invalid();
+  const rows = views.records?.all(COMPACT, range) ?? [];
+  if (rows.length !== Number(total?.count ?? 0)) throw invalid();
   // Every row is parsed and checked (identity, schema) before any lease is read, even past `limit`.
   const records = rows.map((row) => parseBody(row.body, MAX_RECORD_BYTES));
   const ids = rows.map((row) => String(row.key).slice("issue:".length));
@@ -149,10 +157,17 @@ export function listIssues(
       : picked.toSorted(
           (a, b) => rank(order, value(a)) - rank(order, value(b)),
         );
+  const page = ranked.slice(0, limit);
+  // The page's full records join the compact rows in the one budget, known from their stored sizes.
+  const pageBytes = page.reduce((sum, at) => sum + Number(rows[at]!.size), 0);
+  if (metadata + pageBytes > MAX_SCAN_BYTES)
+    throw fail("UNAVAILABLE", "Issue list is over its read budget");
   return {
-    items: ranked
-      .slice(0, limit)
-      .map((at) => shownItem(records[at]!, ids[at]!, lease(at), now, prefix)),
+    items: page.map((at) => {
+      const full = issueRecord(views, ids[at]!);
+      if (full === undefined) throw invalid();
+      return shownItem(full, ids[at]!, lease(at), now, prefix);
+    }),
     truncated: ranked.length > limit,
   };
 }
