@@ -160,6 +160,8 @@ function wellFormedText(value: string, position: string): void {
   if (!value.isWellFormed())
     invalid(`${position} must be well-formed UTF-16 text`);
 }
+/** The longest stored floor text accepted: the wrapper of a two-field value is well under this. */
+const FLOOR_TEXT_MAX = 4096;
 /** The stored floor's number; any value that is not the exact floor shape is refused, never read as zero. */
 function floorNumber(value: unknown, prefix: string): number {
   const floor = value as { prefix?: unknown; number?: unknown } | null;
@@ -1330,10 +1332,9 @@ export class StateOwner {
     return this.#db.transaction(() => {
       const now = this.#now();
       if (options.fence) this.#held(namespace, options.fence, now);
-      const floor = this.get(namespace, floorKey);
-      const last = floor
-        ? floorNumber(floor.value, prefix)
-        : this.#highest(namespace, prefix, floorKey, options.refuseMissing);
+      const last =
+        this.#floor(namespace, floorKey, prefix) ??
+        this.#highest(namespace, prefix, floorKey, options.refuseMissing);
       const number = last + 1;
       const key = `${prefix}${number}`;
       if (!Number.isSafeInteger(number)) invalid("Numbers are exhausted");
@@ -1373,6 +1374,39 @@ export class StateOwner {
     });
   }
 
+  /**
+   * The floor's number, or undefined only when its row is absent. A present row must be exactly the
+   * record the owner wrote: bounded text, valid JSON, and a wrapper that matches its indexed namespace,
+   * key and revision. Anything else, including a stored null, is refused rather than read as missing.
+   */
+  #floor(
+    namespace: string,
+    floorKey: string,
+    prefix: string,
+  ): number | undefined {
+    const row = this.#db.get(
+      "SELECT revision,body FROM state_records WHERE namespace=? AND key=?",
+      [namespace, floorKey],
+    );
+    if (row === undefined) return undefined;
+    const text = String(row.body);
+    if (text.length > FLOOR_TEXT_MAX) invalid("Invalid allocation record");
+    let stored: StateRecord;
+    try {
+      stored = JSON.parse(text) as StateRecord;
+    } catch {
+      return invalid("Invalid allocation record");
+    }
+    if (
+      !validateStateRecord(stored).ok ||
+      stored.namespace !== namespace ||
+      stored.key !== floorKey ||
+      stored.revision !== Number(row.revision)
+    )
+      invalid("Invalid allocation record");
+    return floorNumber(stored.value, prefix);
+  }
+
   /** The highest number under a prefix among live keys, all matching history and a deleted floor. */
   #highest(
     namespace: string,
@@ -1390,7 +1424,9 @@ export class StateOwner {
     ];
     const typed = " AND json_extract(body,'$.type') IN (?,?)";
     if (refuse !== undefined) {
-      // Strict mode never scans: one probe each says whether any old state exists.
+      // Two probes say whether any old state exists. LIMIT 1 bounds the rows returned, not the rows
+      // examined, and this runs only while no floor exists, so it is a one-time cost bounded by the
+      // project's existing event count.
       const old =
         this.#db.get(
           `SELECT 1 AS n FROM state_records WHERE ${span} LIMIT 1`,

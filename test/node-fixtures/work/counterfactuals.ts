@@ -114,8 +114,8 @@ export const counterfactuals: readonly {
   },
   {
     file: "core/state/index.js",
-    from: "? floorNumber(floor.value, prefix)",
-    to: "? this.maxNumber(namespace, prefix)",
+    from: "return floorNumber(stored.value, prefix);",
+    to: "return this.maxNumber(namespace, prefix);",
     journey: "allocation",
     evidence: "a deleted number is not reused",
   },

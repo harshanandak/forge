@@ -6646,11 +6646,13 @@ const differing = (a: Tables, b: Tables) =>
   Object.keys(b).filter((t) => JSON.stringify(a[t]) !== JSON.stringify(b[t]));
 const ids = (t: Tables, table: string) =>
   (t[table] ?? []).map((r) => `${r.namespace}/${r.key}`);
+// The accepted create also writes the allocation floor, so its record and its record.updated event are named too.
 const NAMED = [
   "forge/cloud/request:max-bad-comment",
   "forge/cloud/request:max-bad-create",
   "forge/cloud/request:max-comment",
   "forge/cloud/request:max-create",
+  "forge/work/allocation:issue:work-",
   "forge/work/comment:work-1:1",
   "forge/work/issue:work-1",
 ];
