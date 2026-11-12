@@ -3620,11 +3620,16 @@ test("the cloud issue.comment agrees with the local handler on whole results, ro
     const cases = [
       ["m-0", "forge-12", "plain", "comment:work-12:4"],
       ["m-1", "forge-12", 'é\n"x"', "comment:work-12:5"],
-      ["m-2", "forge-1", "numbered by its own count", "comment:work-1:2"],
-      ["m-3", "acme-1", "historical prefix", "comment:work-1:3"],
+      [
+        "m-2",
+        "forge-1",
+        "numbered above its highest comment",
+        "comment:work-1:31",
+      ],
+      ["m-3", "acme-1", "historical prefix", "comment:work-1:32"],
       ["m-4", "OLD-4", "leased, no lease needed", "comment:work-4:1"],
       ["m-5", "work-12", "the default prefix", "comment:work-12:6"],
-      ["m-6", "FORGE-1", "é".repeat(65_536), "comment:work-1:4"],
+      ["m-6", "FORGE-1", "é".repeat(65_536), "comment:work-1:33"],
     ] as const;
     for (const [i, [requestId, id, body, commentId]] of cases.entries()) {
       const input = { id, body };
@@ -3660,9 +3665,9 @@ test("the cloud issue.comment agrees with the local handler on whole results, ro
     // Each comment is two work events (forge-1306): the comment and the move of its issue's comment floor. The
     // first comment of an issue creates that floor from its live comments; each later one moves it by one.
     expect(eventsOf(f.db, "forge/work")).toHaveLength(cases.length * 2);
-    // Issue 1 is left out: its stray comment 30 (see createRows) makes the count-based ids above differ from the
-    // floor-based ones, which is reported to the lead rather than changed here.
+    // Issue 1 holds a stray live comment 30 (see createRows), so its three comments are 31, 32 and 33.
     for (const [n, floor, comments] of [
+      [1, 33, 3],
       [12, 6, 3],
       [4, 1, 1],
     ] as const) {
@@ -8702,8 +8707,23 @@ async function refuses(
   expect(await t.storage.get("restore:next")).toBeUndefined();
   return got;
 }
-/** Every imported row is still there, and exactly one record and one event were added: the floor, at `number`. */
-function expectFloor(t: F, tables: Tables, number: number, revision = 1) {
+/** A floor the restore itself added, besides the issue floor: its record key, value and revision. */
+type Added = { key: string; value: unknown; revision?: number };
+/**
+ * Every imported row is still there, and the restore added exactly the issue floor at `number` plus each floor in
+ * `extra`, each as one record and one event naming its key, value and revision; nothing else.
+ */
+function expectFloor(
+  t: F,
+  tables: Tables,
+  number: number,
+  revision = 1,
+  extra: readonly Added[] = [],
+) {
+  const floors: Added[] = [
+    { key: FLOOR, value: floorAt(number), revision },
+    ...extra,
+  ];
   const after = tablesOf(t.db);
   for (const [table, rows] of Object.entries(tables)) {
     const have = new Set(after[table]!.map(asText));
@@ -8713,42 +8733,44 @@ function expectFloor(t: F, tables: Tables, number: number, revision = 1) {
     ]);
     expect([table, after[table]!.length - rows.length]).toEqual([
       table,
-      table === "state_records" || table === "state_events" ? 1 : 0,
+      table === "state_records" || table === "state_events" ? floors.length : 0,
     ]);
   }
   const fresh = (table: string) => {
     const had = new Set(tables[table]!.map(asText));
     return after[table]!.filter((row) => !had.has(asText(row)));
   };
-  const [record] = fresh("state_records");
-  const [event] = fresh("state_events");
-  expect([record?.namespace, record?.key, record?.revision]).toEqual([
-    WORK,
-    FLOOR,
-    revision,
-  ]);
-  expect(JSON.parse(String(record?.body))).toEqual({
-    namespace: WORK,
-    key: FLOOR,
-    revision,
-    value: floorAt(number),
-    updatedAt: iso(start),
-    updatedBy: RESTORER,
-  });
-  expect([event?.sequence, event?.namespace, event?.key]).toEqual([
-    tables.state_events!.length + 1,
-    WORK,
-    FLOOR,
-  ]);
-  expect(JSON.parse(String(event?.body))).toEqual({
-    type: `${WORK}:record.updated@1`,
-    namespace: WORK,
-    key: FLOOR,
-    revision,
-    at: iso(start),
-    actor: RESTORER,
-    data: floorAt(number),
-  });
+  const events = fresh("state_events");
+  expect(events.map((e) => Number(e.sequence)).sort((a, b) => a - b)).toEqual(
+    floors.map((_, i) => tables.state_events!.length + 1 + i),
+  );
+  for (const { key, value, revision: rev = 1 } of floors) {
+    const record = fresh("state_records").find((r) => r.key === key);
+    expect([record?.namespace, record?.key, record?.revision]).toEqual([
+      WORK,
+      key,
+      rev,
+    ]);
+    expect(JSON.parse(String(record?.body))).toEqual({
+      namespace: WORK,
+      key,
+      revision: rev,
+      value,
+      updatedAt: iso(start),
+      updatedBy: RESTORER,
+    });
+    const event = events.find((e) => e.key === key);
+    expect([event?.namespace, event?.key]).toEqual([WORK, key]);
+    expect(JSON.parse(String(event?.body))).toEqual({
+      type: `${WORK}:record.updated@1`,
+      namespace: WORK,
+      key,
+      revision: rev,
+      at: iso(start),
+      actor: RESTORER,
+      data: value,
+    });
+  }
 }
 /** Issues a device, then creates once per number: each is the next number at revision 1, and the floor follows it. */
 async function createsNext(t: F, numbers: number[]) {
@@ -8935,7 +8957,13 @@ for (const trip of TRIPS) {
     const { tables } = await projectWith(numbers);
     const { t, got } = await restoreInto(trip, tables);
     expect(got.status).toBe(200);
-    expectFloor(t, tables, 10);
+    // The live comment:work-99:1 is an observed comment group, so the restore also settles its floor (forge-1306).
+    expectFloor(t, tables, 10, 1, [
+      {
+        key: "allocation:comment:work-99:",
+        value: { prefix: "comment:work-99:", number: 1 },
+      },
+    ]);
     await createsNext(t, [11]);
   }, 60_000);
 
