@@ -987,7 +987,8 @@ for (const [source, noun, ids] of [
             expect(done.stdout).toContain(heldBy().expiresAt);
             expect(done.exitCode).toBe(4);
             expect(done.stdout).not.toContain(TOKEN);
-            expect(wire(r)).toEqual(Array(++sent).fill("command"));
+            expect(wire(r)).toHaveLength(++sent);
+            expect(new Set(wire(r))).toEqual(new Set(["command"]));
             expect(r.net.calls.at(-1)!.body).toMatchObject({
               op: "issue.claim",
               input: { id },
