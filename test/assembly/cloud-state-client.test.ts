@@ -1,8 +1,10 @@
 import { expect, setDefaultTimeout, test } from "bun:test";
-import type {
-  LeaseRefusalCode,
-  LeaseResult,
-  LeaseWriteBody,
+import {
+  createCloudHttp,
+  type CloudFetch,
+  type LeaseRefusalCode,
+  type LeaseResult,
+  type LeaseWriteBody,
 } from "../../src/adapters/http/index.ts";
 import {
   createCloudLeaseClient,
@@ -505,3 +507,112 @@ test("a refused command's INPUT_CONFLICT keeps a checked repair, and has none wh
   const bare = await commandFailure(refusedWith("INPUT_CONFLICT", {}));
   expect(Object.keys(bare.error).sort()).toEqual(["code", "message", "retry"]);
 }, 10_000);
+
+// A success answer that carries the presented token is refused wherever the string sits. Only that token
+// counts: a different device-token-shaped value is ordinary text.
+const NOT_USABLE = "The Forge cloud gave no usable answer.";
+const ECHO = `before-${TOKEN}-after`;
+const FOREIGN = `fct_bbbbbbbbbbbbbbbb.${"P".repeat(43)}`;
+const withHolder = (session: string): LeaseRecord => ({
+  ...LEASE,
+  holder: holderOf(session),
+});
+
+for (const [name, run] of ops)
+  test(`${name} refuses a success answer that carries the presented token as the fixed UNAVAILABLE after one request`, async () => {
+    const echoed = withHolder(ECHO);
+    const answer = { kind: "ok" as const, lease: echoed, result: echoed };
+    const { client, calls } = rig({ answer });
+    const failed = await failureOf(() => run(client));
+    expect(failed.error).toMatchObject({
+      code: "UNAVAILABLE",
+      message: NOT_USABLE,
+    });
+    expect(JSON.stringify(failed)).not.toContain(TOKEN);
+    expect(exit(failed)).toBe(1);
+    expect(calls).toHaveLength(1);
+  }, 10_000);
+
+for (const [where, result] of [
+  ["a top-level string", { title: ECHO }],
+  ["a string in a list", { id: "forge-1", labels: ["a", ECHO] }],
+  ["a string deep in objects and lists", { items: [{ notes: [{ b: ECHO }] }] }],
+] as const)
+  test(`a command result with the token in ${where} is refused as the fixed UNAVAILABLE`, async () => {
+    const { client, calls } = rig({
+      answer: { kind: "ok", lease: LEASE, result } as never,
+    });
+    const failed = await failureOf(() => client.command(cmd, () => true));
+    expect(failed.error).toMatchObject({
+      code: "UNAVAILABLE",
+      message: NOT_USABLE,
+    });
+    expect(JSON.stringify(failed)).not.toContain("before-");
+    expect(exit(failed)).toBe(1);
+    expect(calls).toHaveLength(1);
+  }, 10_000);
+
+for (const [name, run] of ops)
+  test(`${name} returns a success answer that holds only a different device token unchanged`, async () => {
+    const other = withHolder(FOREIGN);
+    const answer = { kind: "ok" as const, lease: other, result: other };
+    const { client } = rig({ answer });
+    expect(await run(client)).toEqual(other);
+  }, 10_000);
+
+/** The real adapter over a scripted body, so the wire text is decoded the way a response is. */
+function wired(text: string) {
+  const bodies: string[] = [];
+  const fetch: CloudFetch = () => {
+    bodies.push(text);
+    return Promise.resolve(
+      new Response(text, { headers: { "content-type": "application/json" } }),
+    );
+  };
+  const http = createCloudHttp({ origin: ORIGIN, project: PROJECT, fetch });
+  const client = createCloudLeaseClient({
+    key: KEY,
+    credentials: credentialStore(filesWith([entry(NOW)])),
+    now: () => NOW,
+    http,
+  });
+  return { client, bodies };
+}
+const escaped = (value: unknown) =>
+  JSON.stringify(value).replace(TOKEN, `\u0066${TOKEN.slice(1)}`);
+const ESCAPED_ROWS: [string, string, Run][] = [
+  [
+    "a command result",
+    escaped({
+      ok: true,
+      op: "issue.show",
+      status: "OK",
+      result: { id: "forge-1", title: ECHO },
+      warnings: [],
+    }),
+    (c) => c.command(cmd, () => true),
+  ],
+  [
+    "a holder lease",
+    escaped({ ok: true, value: withHolder(ECHO) }),
+    (c) => c.holder(SUBJECT),
+  ],
+  [
+    "a claimed lease",
+    escaped({ ok: true, value: withHolder(ECHO) }),
+    (c) => c.claim(claim),
+  ],
+];
+for (const [what, text, run] of ESCAPED_ROWS)
+  test(`${what} that spells the token with a JSON escape on the wire is refused as the fixed UNAVAILABLE`, async () => {
+    expect(text).toContain("\u0066ct_");
+    expect(text).not.toContain(TOKEN);
+    const { client, bodies } = wired(text);
+    const failed = await failureOf(() => run(client));
+    expect(failed.error).toMatchObject({
+      code: "UNAVAILABLE",
+      message: NOT_USABLE,
+    });
+    expect(exit(failed)).toBe(1);
+    expect(bodies).toHaveLength(1);
+  }, 10_000);
