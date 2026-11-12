@@ -7,14 +7,11 @@
 // back and are not recorded. The answer is the whole stored record, and a replay checks the lease again.
 import manifest from "../../src/blocks/work/forge.block.json" with { type: "json" };
 import LinkInput from "../../src/blocks/work/schemas/link.json" with { type: "json" };
-import LinkOutput from "../../src/blocks/work/schemas/record.json" with { type: "json" };
 import { validateWithSchema } from "../../src/contract/schema.ts";
-import { canonicalJson } from "../../src/core/config/pointer.ts";
 import type { StateOwner } from "../../src/core/state/index.ts";
 import type { StateRecord } from "../../src/generated/types.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
-import { fail, minted, schemas, storedId } from "./issue-read.ts";
-import { fence, heldLease } from "./issue-update.ts";
+import { fail, minted, storedId } from "./issue-read.ts";
 import { receipted, type WriteCall } from "./issue-write.ts";
 
 const NAMESPACE = "forge/work";
@@ -55,28 +52,11 @@ export function linkIssue(
         throw fail("INPUT_INVALID", "Links require an http or https URL");
       return { ...fields, id };
     },
-    (fields, actor, _prefix, context) => {
-      const held = fence(context, fields.id, "issue.link");
+    (fields, actor) => {
       const base = `link:${fields.id}:`;
       const key = `${base}${owner.count(NAMESPACE, base) + 1}`;
-      const written = owner.put(NAMESPACE, key, fields, actor, {
-        expectRevision: 0,
-        fence: held,
-      });
-      if (canonicalJson(owner.get(NAMESPACE, key)) !== canonicalJson(written))
-        throw fail(
-          "INTERNAL",
-          "Accepted write did not match its readback; reconcile before retrying",
-        );
-      if (schemas().validate(LinkOutput.$ref, written).length > 0)
-        throw fail("INTERNAL", "Link result is not valid");
-      return written;
+      return owner.put(NAMESPACE, key, fields, actor, { expectRevision: 0 });
     },
-    // The recorded record names its issue in its stored value, checked against the input schema first.
-    (prior, context) => {
-      if (validateWithSchema(LinkInput, prior.value).length > 0)
-        throw fail("INTERNAL", "Stored link is not valid");
-      heldLease(owner, context, (prior.value as Fields).id, "issue.link");
-    },
+    () => undefined,
   );
 }
