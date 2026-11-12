@@ -253,6 +253,55 @@ function errorCause(error: unknown): Record<string, string> {
   return cause;
 }
 
+/** The refusals a person can repair; every other failure is a FAIL. */
+const INCOMPLETE_CODES: ReadonlySet<string> = new Set([
+  "ADMISSION_REQUIRED",
+  "GRANT_REQUIRED",
+  "LIMIT_EXCEEDED",
+  "CONTAINMENT_UNAVAILABLE",
+  "PROCESS_LIMIT_EXCEEDED",
+  "PROVIDER_MISSING",
+]);
+
+/**
+ * The one envelope for a call that failed: the status choice and the retry rule. A call that has not
+ * `started` keeps the failure's own retry, except a timeout, which is never retried; `timeout` words
+ * an INVOCATION_TIMEOUT only.
+ */
+export function failureEnvelope(
+  request: InvocationRequest | undefined,
+  error: unknown,
+  started = false,
+  timeout?: () => string | undefined,
+): ResultEnvelope {
+  const failure =
+    error instanceof ForgeFailure
+      ? error.error
+      : {
+          code: "BLOCK_EXECUTION_FAILED",
+          message: "block execution failed",
+          retry: "never" as const,
+          observed: { cause: errorCause(error) },
+        };
+  const message =
+    failure.code === "INVOCATION_TIMEOUT" ? timeout?.() : undefined;
+  return {
+    ok: false,
+    ...(request === undefined ? {} : { op: request.op }),
+    status: INCOMPLETE_CODES.has(failure.code) ? "INCOMPLETE" : "FAIL",
+    error: {
+      ...failure,
+      ...(message === undefined ? {} : { message }),
+      retry: started
+        ? "reconcile_first"
+        : failure.code === "INVOCATION_TIMEOUT"
+          ? "never"
+          : failure.retry,
+    },
+    warnings: [],
+  };
+}
+
 /** One shared API for all transports. The trusted profile is trusted code, never a security sandbox. */
 export class Runtime {
   readonly #catalog: Catalog;
@@ -536,43 +585,13 @@ export class Runtime {
         warnings: [],
       };
     } catch (error) {
-      const failure =
-        error instanceof ForgeFailure
-          ? error.error
-          : {
-              code: "BLOCK_EXECUTION_FAILED",
-              message: "block execution failed",
-              retry: "never" as const,
-              observed: { cause: errorCause(error) },
-            };
-      result = {
-        ok: false,
-        ...(request === undefined ? {} : { op: request.op }),
-        status:
-          failure.code === "ADMISSION_REQUIRED" ||
-          failure.code === "GRANT_REQUIRED" ||
-          failure.code === "LIMIT_EXCEEDED" ||
-          failure.code === "CONTAINMENT_UNAVAILABLE" ||
-          failure.code === "PROCESS_LIMIT_EXCEEDED" ||
-          failure.code === "PROVIDER_MISSING"
-            ? "INCOMPLETE"
-            : "FAIL",
-        error: {
-          ...failure,
-          ...(failure.code === "INVOCATION_TIMEOUT" &&
-          timeoutMessage &&
-          invocation !== undefined &&
-          clock.now() >= invocation.deadline
-            ? { message: timeoutMessage() }
-            : {}),
-          retry: started
-            ? "reconcile_first"
-            : failure.code === "INVOCATION_TIMEOUT"
-              ? "never"
-              : failure.retry,
-        },
-        warnings: [],
-      };
+      result = failureEnvelope(request, error, started, () =>
+        timeoutMessage &&
+        invocation !== undefined &&
+        clock.now() >= invocation.deadline
+          ? timeoutMessage()
+          : undefined,
+      );
     }
     if (timer !== undefined) clearTimeout(timer);
     if (cancel) options.signal?.removeEventListener("abort", cancel);
