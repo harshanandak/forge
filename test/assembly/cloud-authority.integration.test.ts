@@ -95,6 +95,7 @@ const HTTP: Record<string, number> = {
   NOT_FOUND: 404,
   INPUT_CONFLICT: 409,
   INPUT_INVALID: 400,
+  RECEIPT_REQUIRED: 400,
   INTERNAL: 500,
   REVISION_CONFLICT: 409,
   LEASE_HELD: 409,
@@ -147,15 +148,18 @@ const WRITES = [
   "issue.comment",
   "issue.update",
   "issue.dep",
+  "issue.close",
   "issue.claim",
   "issue.renew",
   "issue.release",
 ];
 const SERVED = [...READS, ...WRITES];
-const DECLARED = Object.keys(
+/** Every operation the work block declares, read from its manifest. */
+const MANIFEST_OPS = Object.keys(
   (JSON.parse(readFileSync(MANIFEST, "utf8")) as { operations: object })
     .operations,
-).filter((op) => !SERVED.includes(op));
+);
+const DECLARED = MANIFEST_OPS.filter((op) => !SERVED.includes(op));
 const notServed = (op: string) =>
   `${op} is not served by the cloud authority of a cloud-bound project yet.`;
 const yaml = (extra: object = {}) =>
@@ -296,8 +300,12 @@ test("a bound project's issue show is answered by the cloud with the stored toke
     expect(body).toMatchObject({ context: { device: { id: "dev-1" } } });
   }));
 
-test("the routing decision serves show, list, ready, comments, create, comment, update, dep, claim, renew and release, refuses every other operation of the work block by name, and leaves other blocks local", () => {
-  expect(DECLARED.length).toBeGreaterThan(30);
+test("the routing decision serves show, list, ready, comments, create, comment, update, dep, close, claim, renew and release, refuses every other operation of the work block by name, and leaves other blocks local", () => {
+  // The refused set is exactly the manifest minus the served list: a served name the manifest does not declare would hide here.
+  for (const op of SERVED) expect(MANIFEST_OPS).toContain(op);
+  expect(DECLARED).toHaveLength(MANIFEST_OPS.length - SERVED.length);
+  for (const op of ["issue.link", "issue.board"])
+    expect(DECLARED).toContain(op);
   for (const op of SERVED) expect(cloudRoute("forge/work", op)).toBe("cloud");
   expect(cloudRoute("forge/memory", "memory.list")).toBe("local");
   for (const op of DECLARED) {
@@ -320,12 +328,14 @@ const DEP = {
   action: "add",
   expectRevision: 3,
 };
+const CLOSE = { id: "forge-1", reason: "done", withoutReceipt: "guard" };
 const HELD = { ...LEASE, generation: 3 };
 const INPUTS: Record<string, object> = {
   "issue.create": CREATE,
   "issue.comment": COMMENT,
   "issue.update": UPDATE,
   "issue.dep": DEP,
+  "issue.close": CLOSE,
   "issue.claim": { id: "forge-1" },
   "issue.renew": { id: "forge-1" },
   "issue.release": { id: "forge-1" },
@@ -362,7 +372,6 @@ test("every other work operation is refused by name on a bound project, with no 
     const context = { ...own, session: { id: "s1" }, leaseGeneration: 3 };
     for (const [op, input] of [
       ["issue.board", {}],
-      ["issue.close", { id: "forge-1" }],
       [
         "issue.link",
         { id: "forge-1", relation: "pr", url: "https://example.com/pull/1" },
@@ -432,6 +441,7 @@ for (const [op, input] of [
   ["issue.comments", NOTES],
   ["issue.update", UPDATE],
   ["issue.dep", DEP],
+  ["issue.close", CLOSE],
   ["issue.claim", INPUTS["issue.claim"]!],
   ["issue.renew", INPUTS["issue.renew"]!],
   ["issue.release", INPUTS["issue.release"]!],
@@ -584,14 +594,13 @@ const edit = (
 const sent = (r: Rig) => r.net.calls.map((c) => (c.body as { op: string }).op);
 const live = () => answer({ ...ISSUE, lease: HELD });
 
+const LINK = {
+  id: "forge-1",
+  relation: "pr",
+  url: "https://example.com/pull/1",
+};
 /** Each refused held op with an input valid for its own schema, so only the routing refuses it. */
-for (const [op, input] of [
-  ["issue.close", { id: "forge-1", withoutReceipt: "guard" }],
-  [
-    "issue.link",
-    { id: "forge-1", relation: "pr", url: "https://example.com/pull/1" },
-  ],
-] as const)
+for (const [op, input] of [["issue.link", LINK]] as const)
   for (const [name, own, dryRun, lease] of [
     ["no generation", {}, false, true],
     ["no generation and no lease in the cloud", {}, false, false],
@@ -629,11 +638,11 @@ test("through MCP catalog_call, a refused held op on a bound project is refused 
     );
     for (const dryRun of [false, true]) {
       const result = await handlers.callTool("catalog_call", {
-        op: "issue.close",
-        input: { id: "forge-1", withoutReceipt: "guard" },
+        op: "issue.link",
+        input: LINK,
         ...(dryRun ? { dryRun } : {}),
       });
-      expect(result).toMatchObject(REFUSED("issue.close"));
+      expect(result).toMatchObject(REFUSED("issue.link"));
       expect(failed(result!, "INPUT_INVALID")).toBe(6);
     }
     expect(r.net.calls).toHaveLength(0);
@@ -664,27 +673,22 @@ for (const [name, own, dryRun, env] of [
     { FORGE_SESSION: "s1", FORGE_DEVICE_ID: "a b" },
   ],
 ] as const)
-  test(`issue.close with ${name} and the real identity resolver is refused by name, not as a missing session`, () =>
+  test(`issue.link with ${name} and the real identity resolver is refused by name, not as a missing session`, () =>
     using({}, async (r) => {
-      const result = await dispatch(
-        r.assembly.catalog,
-        "issue.close",
-        { id: "forge-1", withoutReceipt: "guard" },
-        {
-          caller: "agent",
-          context: {
-            ...localContext(r.assembly, { kind: "agent", id: "a1" }),
-            ...own,
-          },
-          resolveContext: localIdentityResolver(
-            r.s.deviceRoot,
-            { HOME: r.s.home, ...env },
-            false,
-          ),
-          dryRun,
+      const result = await dispatch(r.assembly.catalog, "issue.link", LINK, {
+        caller: "agent",
+        context: {
+          ...localContext(r.assembly, { kind: "agent", id: "a1" }),
+          ...own,
         },
-      );
-      expect(result).toMatchObject(REFUSED("issue.close"));
+        resolveContext: localIdentityResolver(
+          r.s.deviceRoot,
+          { HOME: r.s.home, ...env },
+          false,
+        ),
+        dryRun,
+      });
+      expect(result).toMatchObject(REFUSED("issue.link"));
       expect(failed(result, "INPUT_INVALID")).toBe(6);
       expect(r.net.calls).toHaveLength(0);
     }));
@@ -784,7 +788,13 @@ const dryRefused = (r: Rig, result: Awaited<ReturnType<typeof edit>>) => {
   expect(failed(result, "UNAVAILABLE")).toBe(1);
 };
 /** A bound dry run is refused at admission: not even the hidden show that fills a missing generation goes out. */
-for (const op of ["issue.update", "issue.renew", "issue.release", "issue.dep"])
+for (const op of [
+  "issue.update",
+  "issue.renew",
+  "issue.release",
+  "issue.dep",
+  "issue.close",
+])
   for (const [name, own] of [
     ["no generation", {}],
     ["an explicit generation", { leaseGeneration: 3 }],
@@ -945,6 +955,184 @@ test("a cloud issue.dep result that fails TrackerItem is refused as UNAVAILABLE"
       const result = await depends(r, holding(r));
       expect(failed(result, "UNAVAILABLE")).toBe(1);
       expect(sent(r)).toEqual(["issue.show", "issue.dep"]);
+    },
+  ));
+
+const CLOSED = { ...ISSUE, status: "closed", revision: 4 };
+const closes = (r: Rig, context: object, input: object = CLOSE) =>
+  edit(r, "issue.close", context, false, input);
+for (const [source, op] of [
+  [WORK, "issue.close"],
+  [RENAMED, "ticket.close"],
+] as const)
+  test(`through the assembled catalog, ${op} on a bound project takes the generation from the cloud show and is answered by the cloud as issue.close`, () =>
+    using(
+      { config: source, steps: [live, () => answer(CLOSED, "issue.close")] },
+      async (r) => {
+        const context = holding(r);
+        const done = await edit(r, op, context, false, CLOSE, "close-1");
+        expect(done).toMatchObject({ ok: true, result: CLOSED });
+        expect(exitCode(done)).toBe(0);
+        expect(JSON.stringify(done)).not.toContain(TOKEN);
+        expect(sent(r)).toEqual(["issue.show", "issue.close"]);
+        expect(r.net.calls[1]!.url).toBe(COMMAND);
+        expect(r.net.calls[1]!.body).toEqual({
+          requestId: "close-1",
+          op: "issue.close",
+          input: CLOSE,
+          context: {
+            actor: context.actor,
+            session: context.session,
+            leaseGeneration: 3,
+            device: { id: "dev-1" },
+            project: { id: fx.PROJECT },
+          },
+        });
+      },
+    ));
+
+test("an explicit generation on issue.close reaches the cloud unchanged, a stale one is refused there, and the CLI never reads or refreshes it", () =>
+  using({ steps: [() => refusing("LEASE_STALE")] }, async (r) => {
+    const context = holding(r, { leaseGeneration: 2 });
+    const stale = await edit(
+      r,
+      "issue.close",
+      context,
+      false,
+      CLOSE,
+      "close-2",
+    );
+    expect(failed(stale, "LEASE_STALE")).toBe(4);
+    expect(sent(r)).toEqual(["issue.close"]);
+    expect(r.net.calls[0]!.url).toBe(COMMAND);
+    expect(r.net.calls[0]!.body).toEqual({
+      requestId: "close-2",
+      op: "issue.close",
+      input: CLOSE,
+      context: {
+        actor: context.actor,
+        session: context.session,
+        leaseGeneration: 2,
+        device: { id: "dev-1" },
+        project: { id: fx.PROJECT },
+      },
+    });
+  }));
+
+test("with no live lease in the cloud show the runtime's own CONTEXT_MISSING stands for issue.close, and no close request is sent", () =>
+  using({ steps: [() => answer()] }, async (r) => {
+    const result = await closes(r, holding(r));
+    expect(failed(result, "CONTEXT_MISSING")).toBe(6);
+    expect(sent(r)).toEqual(["issue.show"]);
+  }));
+
+const RECEIPT = { id: "forge-1", receipt: "proof-1" };
+for (const [name, own] of [
+  ["no generation", {}],
+  ["an explicit generation", { leaseGeneration: 3 }],
+] as const)
+  for (const [shape, input] of [
+    ["only a receipt", RECEIPT],
+    ["a receipt and withoutReceipt", { ...CLOSE, ...RECEIPT }],
+  ] as const)
+    test(`issue.close with ${shape} and ${name} on a bound project is INPUT_INVALID before any request, the hidden show included`, () =>
+      using({ steps: [live] }, async (r) => {
+        const result = await closes(r, holding(r, own), input);
+        expect(failed(result, "INPUT_INVALID")).toBe(6);
+        expect(result).toMatchObject({
+          error: {
+            message:
+              "issue.close with a receipt is not supported in cloud yet.",
+          },
+        });
+        expect(r.net.calls).toHaveLength(0);
+      }));
+
+test("a receipt on issue.close that reaches the selector directly is refused before any request", () =>
+  using({}, async (r) => {
+    const result = await r.assembly.catalog.invoke(
+      r.request(
+        "issue.close",
+        { ...CLOSE, ...RECEIPT },
+        {
+          context: holding(r, { leaseGeneration: 3 }),
+        },
+      ),
+    );
+    expect(failed(result, "INPUT_INVALID")).toBe(6);
+    expect(result).toMatchObject({
+      error: {
+        message: "issue.close with a receipt is not supported in cloud yet.",
+      },
+    });
+    expect(r.net.calls).toHaveLength(0);
+  }));
+
+/** A caller that forwards admit only three arguments: the input is lost, and the refusal must still come before any request. */
+const droppingInput = (r: Rig) => ({
+  ...r.assembly.catalog,
+  admit: (blockId: string, op: string, dryRun: boolean | undefined) =>
+    r.assembly.catalog.admit!(blockId, op, dryRun, undefined),
+});
+for (const input of [{ ...CLOSE, ...RECEIPT }, CLOSE])
+  test(`issue.close with ${"receipt" in input ? "a receipt" : "withoutReceipt"} whose input is dropped before admission is refused before any request, through dispatch and MCP`, () =>
+    using({ steps: [live] }, async (r) => {
+      const catalog = droppingInput(r);
+      const context = holding(r);
+      const refused = (result: Awaited<ReturnType<typeof edit>>) => {
+        expect(failed(result, "INPUT_INVALID")).toBe(6);
+        expect(result).toMatchObject({
+          error: {
+            message:
+              "issue.close was not given its input to check before a cloud request.",
+          },
+        });
+        expect(r.net.calls).toHaveLength(0);
+      };
+      refused(
+        await dispatch(catalog, "issue.close", input, {
+          caller: "agent",
+          context,
+        }),
+      );
+      const handlers = createMcpHandlers(
+        catalog,
+        { expose: ["issue"] },
+        { context },
+      );
+      refused(
+        (await handlers.callTool("catalog_call", {
+          op: "issue.close",
+          input,
+        }))!,
+      );
+    }));
+
+for (const [code, exit] of [
+  ["RECEIPT_REQUIRED", 1],
+  ["INPUT_CONFLICT", 4],
+  ["NOT_FOUND", 3],
+  ["LEASE_NOT_HELD", 4],
+  ["AUTH_DEVICE_MISMATCH", 1],
+] as const)
+  test(`a cloud ${code} on issue.close keeps its code and exit ${exit}, without the token`, () =>
+    using({ steps: [live, () => refusing(code)] }, async (r) => {
+      expect(failed(await closes(r, holding(r)), code)).toBe(exit);
+      expect(sent(r)).toEqual(["issue.show", "issue.close"]);
+    }));
+
+test("a cloud issue.close result that fails TrackerItem is refused as UNAVAILABLE", () =>
+  using(
+    {
+      steps: [
+        live,
+        () => answer({ ...CLOSED, revision: TOKEN }, "issue.close"),
+      ],
+    },
+    async (r) => {
+      const result = await closes(r, holding(r));
+      expect(failed(result, "UNAVAILABLE")).toBe(1);
+      expect(sent(r)).toEqual(["issue.show", "issue.close"]);
     },
   ));
 
@@ -1567,7 +1755,7 @@ test("an unbound project runs locally, with no cloud request and no credential w
     expect(existsSync(join(r.s.home, ".forge"))).toBe(false);
   }));
 
-test("an unbound project's issue.close, which a bound project refuses, still runs locally with no cloud request", () =>
+test("an unbound project's issue.close, with a receipt and without, still runs locally with no cloud request", () =>
   using({ bind: false, creds: false, sentinel: false }, async (r) => {
     const made = await r.assembly.catalog.invoke(
       r.request("issue.create", CREATE),
@@ -1580,9 +1768,27 @@ test("an unbound project's issue.close, which a bound project refuses, still run
         context: own,
       });
     expect(await call("issue.claim", { id })).toMatchObject({ ok: true });
+    const status = async () =>
+      (
+        (await call("issue.show", { id })) as unknown as {
+          result: { status: string };
+        }
+      ).result.status;
+    expect(await status()).toBe("open");
+    const receipt = await call("issue.close", { id, receipt: "proof-1" });
+    expect(receipt).toMatchObject({
+      ok: false,
+      error: {
+        code: "RECEIPT_INVALID",
+        message: "Closing requires an existing verified PASS receipt",
+      },
+    });
+    expect(exitCode(receipt)).toBe(1);
+    expect(await status()).toBe("open");
     const closed = await call("issue.close", { id, withoutReceipt: "guard" });
     expect(closed).toMatchObject({ ok: true });
     expect(exitCode(closed)).toBe(0);
+    expect(await status()).toBe("closed");
     expect(r.net.calls).toHaveLength(0);
   }));
 

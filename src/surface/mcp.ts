@@ -86,7 +86,8 @@ export function createMcpHandlers(
     ...(catalog.admit === undefined
       ? {}
       : {
-          admit: (blockId, op, dryRun) => catalog.admit!(blockId, op, dryRun),
+          admit: (blockId, op, dryRun, input) =>
+            catalog.admit!(blockId, op, dryRun, input),
         }),
   };
   return {

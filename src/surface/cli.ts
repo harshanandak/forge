@@ -269,8 +269,12 @@ export async function runCli(
         ...(source.admit === undefined
           ? {}
           : {
-              admit: (blockId: string, op: string, dryRun?: boolean) =>
-                source.admit!(blockId, op, dryRun),
+              admit: (
+                blockId: string,
+                op: string,
+                dryRun: boolean | undefined,
+                input: unknown,
+              ) => source.admit!(blockId, op, dryRun, input),
             }),
         ...(source.diagnose === undefined
           ? {}
