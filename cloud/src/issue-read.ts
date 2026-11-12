@@ -42,27 +42,8 @@ const ISSUES =
 export const SCAN = `SELECT key, length(CAST(body AS BLOB)) AS size ${ISSUES}`;
 export const ROWS = `SELECT key, body ${ISSUES}`;
 
-// List only. COMPACT: each issue row with a text value.body of at most 65,536 bytes blanked, the stored
-// text otherwise. A body of another type, a longer one or a duplicate field stays whole, so the parse and
-// schema checks decide it as they do for a full record. Bytes, never characters, bound the blanked body: a
-// byte count never undercounts a body that holds escaped NULs or astral characters. A row over the record
-// cap or that is not JSON returns a NULL body, which the parse refuses. PREFLIGHT counts those rows and
-// their payload (key, size and body bytes) without returning any of them.
-const BLANKED =
-  "CASE WHEN length(CAST(body AS BLOB)) <= ? AND json_valid(body) THEN CASE WHEN json_type(body,'$.value.body')='text' AND length(CAST(json_extract(body,'$.value.body') AS BLOB)) <= 65536 THEN json_set(body,'$.value.body','') ELSE body END END";
-export const COMPACT = `SELECT key, length(CAST(body AS BLOB)) AS size, ${BLANKED} AS body ${ISSUES}`;
-export const PREFLIGHT = `SELECT count(*) AS count, coalesce(sum(length(CAST(key AS BLOB)) + length(CAST(size AS BLOB)) + coalesce(length(CAST(body AS BLOB)), 0)), 0) AS bytes FROM (${COMPACT})`;
-
 /** The only statements each read-only view may run; a view refuses any other text. */
-export const RECORD_READS = [
-  MODE,
-  MINTED,
-  RECORD,
-  SCAN,
-  ROWS,
-  COMPACT,
-  PREFLIGHT,
-] as const;
+export const RECORD_READS = [MODE, MINTED, RECORD, SCAN, ROWS] as const;
 export const LEASE_READS = [LEASE] as const;
 
 /** Read-only views of the two state tables; undefined when the table does not exist yet. */
