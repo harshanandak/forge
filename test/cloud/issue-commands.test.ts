@@ -15,6 +15,7 @@ import { commentIssue } from "../../cloud/src/issue-comment.ts";
 import { createIssue } from "../../cloud/src/issue-create.ts";
 import { updateIssue } from "../../cloud/src/issue-update.ts";
 import { depIssue } from "../../cloud/src/issue-dep.ts";
+import { linkIssue } from "../../cloud/src/issue-link.ts";
 import { closeIssue } from "../../cloud/src/issue-close.ts";
 import { claimIssue } from "../../cloud/src/issue-claim.ts";
 import { releaseIssue, renewIssue } from "../../cloud/src/issue-lease.ts";
@@ -3562,6 +3563,7 @@ test("the shared write path takes a project context for create and comment and a
     ["issue.comment", commentIssue, lease, "project"],
     ["issue.update", updateIssue, project, "leased"],
     ["issue.dep", depIssue, project, "leased"],
+    ["issue.link", linkIssue, project, "leased"],
     ["issue.close", closeIssue, project, "leased"],
     ["issue.claim", claimIssue, project, "leased"],
     ["issue.renew", renewIssue, project, "leased"],
