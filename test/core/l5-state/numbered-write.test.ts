@@ -38,6 +38,16 @@ async function open() {
         actor,
       ),
     floor: () => owner.get(ns, floorKey),
+    /** Raw rows, readable even when a body is not valid JSON, so a refusal can prove it wrote nothing. */
+    rows: () =>
+      ["state_records", "state_events"].map((table) =>
+        opened.handle.value.all(`SELECT * FROM ${table} ORDER BY 1,2,3`),
+      ),
+    forge: (body: string) =>
+      opened.handle.value.run(
+        "UPDATE state_records SET body=? WHERE namespace=? AND key=?",
+        [body, ns, floorKey],
+      ),
     put: (key: string, value: unknown = {}) =>
       owner.put(ns, key, value, actor, { expectRevision: 0 }),
     remove: (n: number, expectRevision = 1) =>
@@ -144,6 +154,19 @@ const stale = (key: string, number: number): NumberedBuild => ({
   readSet: [{ key: "item:x-1", expectRevision: 7 }],
 });
 type Refusal = [string, (f: Fixture) => void, typeof stale | undefined, string];
+type Wrapper = Record<string, unknown>;
+// Each keeps a valid floor value: only the stored wrapper, its text or its size is wrong.
+const forgeries: [string, (wrapper: Wrapper) => string][] = [
+  [
+    "a wrong namespace",
+    (w) => JSON.stringify({ ...w, namespace: "forge/other" }),
+  ],
+  ["a wrong key", (w) => JSON.stringify({ ...w, key: "allocation:item:z-" })],
+  ["a wrong revision", (w) => JSON.stringify({ ...w, revision: 99 })],
+  ["text that is not JSON", () => "{not json"],
+  ["a stored JSON null", () => "null"],
+  ["text over the size cap", (w) => JSON.stringify(w) + " ".repeat(8192)],
+];
 const refusals: Refusal[] = [
   [
     "an occupied candidate",
@@ -160,6 +183,15 @@ const refusals: Refusal[] = [
     stale,
     "REVISION_CONFLICT",
   ],
+  ...forgeries.map(([name, body]): Refusal => [
+    `a forged floor wrapper with ${name}`,
+    (f) => {
+      f.next();
+      f.forge(body(f.floor() as unknown as Wrapper));
+    },
+    undefined,
+    "INPUT_INVALID",
+  ]),
   ...[
     "text",
     null,
@@ -181,9 +213,9 @@ for (const [name, setup, build, code] of refusals)
     `${name} is refused with ${code} and writes nothing, not even a floor`,
     run((f) => {
       setup(f);
-      const before = f.owner.export();
+      const before = f.rows();
       expect(codeOf(() => f.next(build))).toBe(code);
-      expect(f.owner.export()).toEqual(before);
+      expect(f.rows()).toEqual(before);
     }),
     30000,
   );

@@ -519,26 +519,21 @@ test(
   30_000,
 );
 
-for (const [name, table, key] of [
-  ["floor record", "state_records", floorKey],
-  ["floor event", "state_events", floorKey],
-  ["issue record", "state_records", "issue:work-3"],
-  ["issue event", "state_events", "issue:work-3"],
-] as const)
-  test(
-    `a ${name} failure leaves no partial floor and the retry gets the same number`,
-    run((f) => {
-      legacy(f, [1], [2]);
-      const before = f.owner.export();
-      f.hooks.fail = (access) => writesKey(access, table, key);
-      expect(() => create(f, "Fault")).toThrow("injected write failure");
-      expect(f.owner.export()).toEqual(before);
-      f.hooks.fail = undefined;
-      expect(create(f, "Retry")).toBe("work-3");
-      expect(floor(f)).toEqual(at(3));
-    }),
-    30_000,
-  );
+// The four write points and both floor states are covered once, in the core numbered-write tests.
+test(
+  "a create whose floor event fails through the work block leaves nothing and the retry gets the same number",
+  run((f) => {
+    legacy(f, [1], [2]);
+    const before = f.owner.export();
+    f.hooks.fail = (access) => writesKey(access, "state_events", floorKey);
+    expect(() => create(f, "Fault")).toThrow("injected write failure");
+    expect(f.owner.export()).toEqual(before);
+    f.hooks.fail = undefined;
+    expect(create(f, "Retry")).toBe("work-3");
+    expect(floor(f)).toEqual(at(3));
+  }),
+  30_000,
+);
 
 test(
   "the floor never appears in issue reads and reads write nothing",

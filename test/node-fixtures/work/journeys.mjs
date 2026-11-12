@@ -21,7 +21,22 @@ const opened = await sqliteStore.open({
 });
 assert.ok(opened.ok);
 let now = Date.parse("2026-10-18T00:00:00Z");
-const state = new StateOwner(opened.handle.value, { now: () => now });
+// A peer write before the next write lock, or an injected write fault, for the allocation journeys.
+const hooks = {};
+const db = {
+  ...opened.handle.value,
+  run(sql, params) {
+    if (hooks.fail?.(sql, params)) throw new Error("injected write failure");
+    return opened.handle.value.run(sql, params);
+  },
+  transaction(work) {
+    const entry = hooks.entry;
+    hooks.entry = undefined;
+    entry?.();
+    return opened.handle.value.transaction(work);
+  },
+};
+const state = new StateOwner(db, { now: () => now });
 state.initialize();
 const isolation = await nodeRunIsolation.open();
 assert.ok(isolation.ok);
@@ -495,6 +510,75 @@ try {
     assert.ok(call("list").items.some((x) => x.id === one.id));
     assert.ok(call("list").items.every((x) => x.id.startsWith("work-")));
     console.log("PASS allocation: a deleted highest number is never reused");
+  }
+  const floor = () => state.get("forge/work", "allocation:issue:work-").value;
+  const history = () => {
+    // Accepted history first: two creates, then the highest is deleted.
+    create("History one");
+    const gone = create("History two");
+    state.delete("forge/work", `issue:${gone.id}`, actor("alice"), {
+      expectRevision: 1,
+    });
+    return floor().number;
+  };
+  if (["all", "lock"].includes(mode)) {
+    const top = history();
+    // A peer create commits after this caller starts but before it takes the write lock.
+    hooks.entry = () =>
+      state.putNext(
+        "forge/work",
+        "issue:work-",
+        (key) => ({
+          value: {
+            id: key.slice("issue:".length),
+            prefix: "work",
+            title: "Peer",
+            status: "open",
+            labels: [],
+            dependsOn: [],
+            createdAt: new Date(now).toISOString(),
+          },
+        }),
+        actor("bob"),
+      );
+    let mine;
+    try {
+      mine = create("Mine");
+    } catch (failure) {
+      assert.fail(
+        `allocation happens inside the write lock: ${failure.message}`,
+      );
+    }
+    assert.equal(
+      mine.id,
+      `work-${top + 2}`,
+      "allocation happens inside the write lock",
+    );
+    assert.equal(floor().number, top + 2);
+    assert.equal(state.get("forge/work", `issue:work-${top + 1}`).revision, 1);
+    console.log("PASS lock: a create allocates inside the write lock");
+  }
+  if (["all", "atomic"].includes(mode)) {
+    const top = history();
+    const next = `issue:work-${top + 1}`;
+    hooks.fail = (sql, params) =>
+      sql.startsWith("INSERT INTO state_records") && params.includes(next);
+    assert.throws(() => create("Fault"));
+    hooks.fail = undefined;
+    assert.equal(
+      floor().number,
+      top,
+      "a failed create leaves the floor unchanged",
+    );
+    assert.equal(state.get("forge/work", next), undefined);
+    assert.equal(
+      create("Retry").id,
+      `work-${top + 1}`,
+      "the retry gets the same number",
+    );
+    console.log(
+      "PASS atomic: the floor and the issue commit or roll back together",
+    );
   }
 } finally {
   await isolation.handle.close();

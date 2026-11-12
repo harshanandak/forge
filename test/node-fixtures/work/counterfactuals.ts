@@ -4,6 +4,8 @@ export const counterfactuals: readonly {
   readonly to: string;
   readonly journey: string;
   readonly evidence: string;
+  /** A second edit, applied after the first, for a change that needs two places. */
+  readonly also?: { readonly from: string; readonly to: string };
 }[] = [
   {
     file: "blocks/work/entry.cjs",
@@ -123,5 +125,26 @@ export const counterfactuals: readonly {
     to: '" AND 0 AND ?<>?"',
     journey: "allocation",
     evidence: "backfill keeps a deleted identity",
+  },
+  {
+    // The allocation reads the floor before the lock and uses that stale answer.
+    file: "core/state/index.js",
+    from: "const floorKey = `allocation:${prefix}`;",
+    to: "const floorKey = `allocation:${prefix}`; const early = this.get(namespace, floorKey); const stale = early ? floorNumber(early.value, prefix) : 0;",
+    also: { from: "const number = last + 1;", to: "const number = stale + 1;" },
+    journey: "lock",
+    evidence: "allocation happens inside the write lock",
+  },
+  {
+    // The floor is committed on its own, before the issue write, instead of in the shared transaction.
+    file: "core/state/index.js",
+    from: "this.#apply(namespace, floorKey, { prefix, number }, actor, now, undefined);",
+    to: "/* floor write moved */",
+    also: {
+      from: "const record = this.#apply(namespace, key, stored, actor, now, undefined, true);",
+      to: 'this.#apply(namespace, floorKey, { prefix, number }, actor, now, undefined); this.#db.run("COMMIT"); this.#db.run("BEGIN IMMEDIATE"); const record = this.#apply(namespace, key, stored, actor, now, undefined, true);',
+    },
+    journey: "atomic",
+    evidence: "a failed create leaves the floor unchanged",
   },
 ];

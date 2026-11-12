@@ -1,6 +1,9 @@
 import { expect, mock, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { resolve } from "node:path";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { Project } from "../../cloud/src/project.ts";
 import {
   readOnlyStore,
@@ -2898,6 +2901,71 @@ for (const [name, seed] of [
     await f.device(day, "tablet");
     expect(floorOf(f)).toBeUndefined();
   }, 30_000);
+
+// The handler the way it was before the floor: the next number is one above the highest live key.
+const LEGACY_NEXT = `
+function legacyNext(owner: any, ns: string, prefix: string, build: any, actor: any) {
+  const n = owner.maxNumber(ns, prefix) + 1;
+  return owner.put(ns, prefix + n, build(prefix + n, n).value, actor, { expectRevision: 0 });
+}
+`;
+/** The real cloud create handler with its numbered write swapped for the pre-floor allocation. */
+async function createIgnoringFloor(): Promise<typeof createIssue> {
+  const file = resolve(import.meta.dirname, "../../cloud/src/issue-create.ts");
+  const text = readFileSync(file, "utf8");
+  expect(text).toContain("owner.putNext(");
+  const mutant = text
+    .replace(
+      /from "(\.[^"]+)"/g,
+      (_match, path: string) =>
+        `from ${JSON.stringify(resolve(dirname(file), path).replaceAll("\\", "/"))}`,
+    )
+    .replace("owner.putNext(", "legacyNext(owner, ");
+  const dir = mkdtempSync(join(tmpdir(), "forge-floor-"));
+  try {
+    const copy = join(dir, "issue-create.ts");
+    writeFileSync(copy, mutant + LEGACY_NEXT);
+    return (
+      (await import(pathToFileURL(copy).href)) as {
+        createIssue: typeof createIssue;
+      }
+    ).createIssue;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+/** Two accepted creates and a delete of the highest, then one more create through the given handler. */
+function createAfterDelete(create: typeof createIssue) {
+  const f = fixture();
+  f.tables();
+  const db = sqlOf(f.db);
+  const owner = new StateOwner(db, { now: f.now });
+  for (let n = 0; n < 2; n++)
+    owner.putNext(
+      "forge/work",
+      "issue:work-",
+      (key) => ({ value: stored({ id: key.slice("issue:".length) }) }),
+      actor,
+    );
+  owner.delete("forge/work", "issue:work-2", actor, { expectRevision: 1 });
+  const got = create(db, owner, {
+    requestId: "c-1",
+    input: { title: "New" },
+    context: { variant: "project", actor, project: { id: "p" } },
+    device: "laptop",
+    prefix: "forge",
+    recheck: () => {},
+  });
+  if (got.id !== "forge-3")
+    throw new Error(`a cloud create must read the floor, got ${got.id}`);
+}
+test("the cloud create handler counts the floor: without it a deleted number is reused", async () => {
+  const mutant = await createIgnoringFloor();
+  createAfterDelete(createIssue);
+  expect(() => createAfterDelete(mutant)).toThrow(
+    "a cloud create must read the floor, got forge-2",
+  );
+}, 30_000);
 
 test("an accepted create replays its original result even after the floor is gone", async () => {
   const f = fixture();

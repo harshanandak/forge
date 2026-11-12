@@ -87,6 +87,8 @@ test("installed work block: CLI readback, lease fixtures and remove-the-fix chec
             "PASS dependency-race",
             "PASS append-order",
             "PASS allocation",
+            "PASS lock",
+            "PASS atomic",
           ],
         },
         {
@@ -142,8 +144,15 @@ test("installed work block: CLI readback, lease fixtures and remove-the-fix chec
         const target = join(isolated, "dist/src", mutation.file);
         const original = readFileSync(target, "utf8");
         expect(original).toContain(mutation.from);
+        const first = original.replace(mutation.from, mutation.to);
+        if (mutation.also) expect(first).toContain(mutation.also.from);
         try {
-          writeFileSync(target, original.replace(mutation.from, mutation.to));
+          writeFileSync(
+            target,
+            mutation.also
+              ? first.replace(mutation.also.from, mutation.also.to)
+              : first,
+          );
           const result = timed(
             `mutation ${index + 1} ${mutation.journey}`,
             () =>
