@@ -576,6 +576,21 @@ try {
         `${mark("call dispatch starts")} const result = await direct.invoke(call, request); ${mark("call dispatch ends")}`,
       ],
     ]);
+    // Inside each block capture: reading the manifest, checking it, then reading the rest of the block's files.
+    patch("src/core/catalog/index.js", [
+      [
+        'const parsed = parseUntrustedJson(read("block.json"), limits.parse);',
+        `const parsed = parseUntrustedJson(read("block.json"), limits.parse); ${mark("capture: block.json read and parsed")}`,
+      ],
+      [
+        "const manifest = checked.value;",
+        `const manifest = checked.value; ${mark("capture: manifest checked")}`,
+      ],
+      [
+        "return new CapturedBlock(",
+        `${mark("capture: block files read and parsed")} return new CapturedBlock(`,
+      ],
+    ]);
   });
   const phased = spawnSync(
     process.execPath,
