@@ -12,6 +12,7 @@ import {
   cpSync,
   existsSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   symlinkSync,
@@ -36,11 +37,16 @@ import { createAssembly, localContext } from "../../src/assembly/index.ts";
 import { LocalState } from "../../src/assembly/state.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { mcpToolName } from "../../src/contract/naming.ts";
-import type { InvocationRequest } from "../../src/generated/types.ts";
+import { decideLease } from "../../src/contract/lease.ts";
+import type {
+  FailureEnvelope,
+  InvocationRequest,
+  LeaseRecord,
+} from "../../src/generated/types.ts";
 import { runCli } from "../../src/surface/cli.ts";
 import { dispatch } from "../../src/surface/dispatch.ts";
 import { createMcpHandlers } from "../../src/surface/mcp.ts";
-import { exitCode } from "../../src/surface/result.ts";
+import { exitCode, respond } from "../../src/surface/result.ts";
 import { stageBlock } from "../blocks/memory/lib.ts";
 import * as fx from "./cloud-fixture.ts";
 
@@ -95,12 +101,35 @@ const HTTP: Record<string, number> = {
   LEASE_EXPIRED: 409,
   AUTH_DEVICE_MISMATCH: 403,
 };
-const refusing = (code: string) =>
+const CLOUD_HOLDER = {
+  actor: { kind: "agent", id: "a2" },
+  session: { id: "s9", device: "dev-9", agent: "a2", harness: "claude" },
+} as const;
+/** The lease a losing claim names: the canonical subject, never the shown prefix. */
+const heldBy = (digits = "1"): LeaseRecord => ({
+  subject: `issue:work-${digits}`,
+  holder: CLOUD_HOLDER,
+  generation: 4,
+  expiresAt: iso(NOW + 60_000),
+});
+const BLOCKERS = [
+  { id: "forge-2" },
+  { id: "forge-3", holder: CLOUD_HOLDER, holderUnverified: true },
+];
+/** The cloud's refusal as the Worker sends it: the lease and blocker details its codes carry. */
+const refusing = (
+  code: string,
+  extra: object = code.startsWith("LEASE_")
+    ? { lease: heldBy() }
+    : code === "CLAIM_BLOCKED"
+      ? { observed: { blockers: BLOCKERS } }
+      : {},
+) =>
   fx.json(
     {
       ok: false,
       status: "FAIL",
-      error: { code, message: TOKEN },
+      error: { code, message: TOKEN, ...extra },
       warnings: [],
     },
     HTTP[code] ?? 401,
@@ -970,6 +999,206 @@ for (const [code, exit] of [
       expect(failed(result, code)).toBe(exit);
       expect(wire(r)).toEqual(["command"]);
     }));
+
+/** The local lease engine's own refusal for the same subject and holder: the oracle for the cloud's. */
+function localRefusal(current: LeaseRecord | undefined, generation = 3) {
+  const decision = decideLease(current, {
+    mode: generation === 0 ? "acquire" : "held",
+    subject: current?.subject ?? "issue:work-1",
+    holder: { actor: { kind: "agent", id: "a1" }, session: { id: "s1" } },
+    nowMs: NOW,
+    generation,
+  });
+  if (decision.ok) throw new Error("the local engine granted the lease");
+  return decision.error;
+}
+const claimVia = (r: Rig, noun: string, id: string, text: boolean) =>
+  runCli(
+    r.assembly.catalog,
+    [
+      noun,
+      "claim",
+      "--input",
+      JSON.stringify({ id }),
+      text ? "--text" : "--json",
+    ],
+    { caller: "agent", context: holding(r) },
+  );
+const errorOf = (done: { envelope: unknown }) =>
+  (done.envelope as { error: object }).error;
+
+for (const [source, noun, ids] of [
+  [WORK, "issue", ["forge-0007", "work-0007", "FORGE-0007", "legacy-0007"]],
+  [RENAMED, "ticket", ["forge-0007"]],
+] as const)
+  test(`${noun}.claim for ${ids.join(", ")} lost to another holder shows that holder in --json and --text exactly as the local engine refuses, with exit 4 and no local state`, () =>
+    using(
+      {
+        config: source,
+        steps: [() => refusing("LEASE_HELD", { lease: heldBy("0007") })],
+      },
+      async (r) => {
+        const want = localRefusal(heldBy("0007"), 0);
+        expect(want.code).toBe("LEASE_HELD");
+        let sent = 0;
+        for (const id of ids)
+          for (const text of [false, true]) {
+            const done = await claimVia(r, noun, id, text);
+            expect(errorOf(done)).toEqual(want);
+            expect(done.stdout).toBe(
+              respond(
+                { ...(done.envelope as FailureEnvelope), error: want },
+                text,
+              ).stdout,
+            );
+            for (const shown of ["dev-9", "a2", "claude", "s9", "0007"])
+              expect(done.stdout).toContain(shown);
+            expect(done.stdout).toContain(heldBy().expiresAt);
+            expect(done.exitCode).toBe(4);
+            expect(done.stdout).not.toContain(TOKEN);
+            expect(wire(r)).toHaveLength(++sent);
+            expect(new Set(wire(r))).toEqual(new Set(["command"]));
+            expect(r.net.calls.at(-1)!.body).toMatchObject({
+              op: "issue.claim",
+              input: { id },
+            });
+          }
+      },
+    ));
+
+test("a fresh checkout in another home with its own credential names the same holder, and creates no local store", async () => {
+  const outputs: string[] = [];
+  const visit = () =>
+    using({ steps: [() => refusing("LEASE_HELD")] }, async (r) => {
+      const before = readdirSync(join(r.s.root, ".forge")).sort();
+      const done = await claimVia(r, "issue", "forge-1", true);
+      expect(done.exitCode).toBe(4);
+      outputs.push(done.stdout);
+      expect(readdirSync(join(r.s.root, ".forge")).sort()).toEqual(before);
+      expect(wire(r)).toEqual(["command"]);
+    });
+  await visit();
+  await visit();
+  expect(outputs[1]).toBe(outputs[0]);
+  expect(outputs[0]).toContain("id: s9");
+});
+
+const lapsedBy = (digits = "1") => ({
+  ...heldBy(digits),
+  expiresAt: iso(NOW - 1),
+});
+for (const [code, current, generation] of [
+  ["LEASE_STALE", heldBy(), 3],
+  ["LEASE_NOT_HELD", undefined, 3],
+  ["LEASE_NOT_HELD", heldBy(), 4],
+  [
+    "LEASE_EXPIRED",
+    {
+      ...lapsedBy(),
+      holder: {
+        ...CLOUD_HOLDER,
+        session: { id: "s1" },
+        actor: { kind: "agent", id: "a1" },
+      },
+    },
+    4,
+  ],
+] as const)
+  test(`a cloud ${code} on issue.claim${current === undefined ? " with only a subject" : ""} keeps the local engine's code, retry posture and lease, with exit 4`, () => {
+    const want = localRefusal(current, generation);
+    return using(
+      { steps: [() => refusing(code, { lease: want.lease })] },
+      async (r) => {
+        const done = await claimVia(r, "issue", "forge-1", false);
+        expect(want.code).toBe(code);
+        const got = errorOf(done) as typeof want;
+        expect([got.code, got.retry, got.lease]).toEqual([
+          want.code,
+          want.retry,
+          want.lease,
+        ]);
+        expect(done.exitCode).toBe(4);
+        expect(wire(r)).toEqual(["command"]);
+      },
+    );
+  });
+
+for (const text of [false, true])
+  test(`a cloud CLAIM_BLOCKED shows exactly the blocker edges in ${text ? "--text" : "--json"} with exit 1, no invented state and no --reason repair`, () =>
+    using({ steps: [() => refusing("CLAIM_BLOCKED")] }, async (r) => {
+      const done = await claimVia(r, "issue", "forge-1", text);
+      const error = errorOf(done) as { observed?: unknown; repair?: string };
+      expect(error.observed).toEqual({ blockers: BLOCKERS });
+      expect(error.repair).toBeUndefined();
+      expect(done.exitCode).toBe(1);
+      for (const shown of ["forge-2", "forge-3", "s9", "dev-9"])
+        expect(done.stdout).toContain(shown);
+      expect(done.stdout).not.toMatch(/--reason|\bopen\b|\bmissing\b/);
+      expect(done.stdout).not.toContain(TOKEN);
+      expect(wire(r)).toEqual(["command"]);
+    }));
+
+const hostile = (value: string) => ({
+  lease: {
+    ...heldBy(),
+    holder: {
+      ...CLOUD_HOLDER,
+      session: { ...CLOUD_HOLDER.session, agent: value },
+    },
+  },
+});
+for (const [name, extra] of [
+  ["a lease that is absent", {}],
+  ["a subject-only lease", { lease: { subject: "issue:work-1" } }],
+  ["another issue's subject", { lease: heldBy("2") }],
+  ["the presented token in the holder", hostile(TOKEN)],
+  [
+    "a foreign device token in the holder",
+    hostile(`fct_ffffffffffffffff.${"Z".repeat(43)}`),
+  ],
+] as const)
+  test(`a cloud LEASE_HELD with ${name} is refused as UNAVAILABLE with exit 1, nothing partial and no local state`, () =>
+    using({ steps: [() => refusing("LEASE_HELD", extra)] }, async (r) => {
+      for (const text of [false, true]) {
+        const done = await claimVia(r, "issue", "forge-1", text);
+        expect(errorOf(done)).toMatchObject({ code: "UNAVAILABLE" });
+        expect(done.exitCode).toBe(1);
+        expect(done.stdout).not.toMatch(/dev-9|s9|fct_/);
+      }
+      expect(wire(r)).toEqual(["command", "command"]);
+    }));
+
+test("a cloud CLAIM_BLOCKED with an invented state is refused as UNAVAILABLE, and a valid refusal survives token text in the fields it discards", () =>
+  using(
+    {
+      steps: [
+        () =>
+          refusing("CLAIM_BLOCKED", {
+            observed: { blockers: [{ id: "forge-2", state: "open" }] },
+          }),
+        () =>
+          refusing("LEASE_HELD", {
+            lease: heldBy(),
+            expected: TOKEN,
+            hint: { template: TOKEN, command: TOKEN },
+            details: { token: TOKEN },
+            repair: TOKEN,
+          }),
+      ],
+    },
+    async (r) => {
+      const blocked = await claimVia(r, "issue", "forge-1", false);
+      expect(errorOf(blocked)).toMatchObject({ code: "UNAVAILABLE" });
+      expect(blocked.exitCode).toBe(1);
+      const held = await claimVia(r, "issue", "forge-1", true);
+      expect(errorOf(held)).toMatchObject({
+        code: "LEASE_HELD",
+        lease: heldBy(),
+      });
+      expect(held.exitCode).toBe(4);
+      expect(held.stdout).not.toContain(TOKEN);
+    },
+  ));
 
 for (const extra of [{ reopen: "why" }, { reason: "why" }])
   test(`issue.claim with ${Object.keys(extra)[0]} on a bound project is INPUT_INVALID with no request`, () =>

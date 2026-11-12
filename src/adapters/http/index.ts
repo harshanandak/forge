@@ -5,6 +5,12 @@ import { request } from "node:https";
 import { Readable } from "node:stream";
 import { ForgeFailure } from "../../contract/failure.ts";
 import { validateLeaseRecord } from "../../generated/validators.ts";
+import {
+  conflictOf,
+  refusalDetails,
+  type RefusalDetails,
+} from "./command-refusal.ts";
+export type { Blocker, RefusalDetails } from "./command-refusal.ts";
 import type {
   AmbientContext,
   LeaseConflict,
@@ -86,7 +92,10 @@ export interface CommandWire {
 export type CommandRefusalCode = keyof typeof COMMAND_STATUS;
 export type CommandResult =
   | { readonly kind: "ok"; readonly result: Record<string, unknown> }
-  | { readonly kind: "refused"; readonly code: CommandRefusalCode };
+  | ({
+      readonly kind: "refused";
+      readonly code: CommandRefusalCode;
+    } & RefusalDetails);
 type Answer = { status: number; value: Record<string, unknown> };
 export interface CloudHttp {
   /** The validated origin and project every request of this adapter goes to. */
@@ -346,20 +355,6 @@ function refusal(body: Record<string, unknown>) {
   };
 }
 
-/** Conflict details the server named: just the subject, or a full lease for that subject. */
-function conflictOf(
-  value: unknown,
-  subject: string,
-): LeaseConflict | undefined {
-  const found = object(value);
-  if (found?.subject !== subject) return undefined;
-  if (Object.keys(found).length === 1) return { subject };
-  const checked = validateLeaseRecord(found);
-  if (!checked.ok || checked.value.releasedAt !== undefined) return undefined;
-  const { holder, generation, expiresAt } = checked.value;
-  return { subject, holder, generation, expiresAt };
-}
-
 /** A lease route's `{ ok, value }` or `{ ok, error }` envelope; anything that contradicts itself is unavailable. */
 function decodeLease(
   { status, value: body }: Answer,
@@ -392,11 +387,13 @@ function decodeLease(
   return { kind: "refused", code, lease };
 }
 
-/** A command answer: exactly { ok, op, status, result, warnings } or { ok, status, error, warnings }. Only the result or the error code is kept. */
+/** A command answer: exactly { ok, op, status, result, warnings } or { ok, status, error, warnings }. Only the result, or the error code with its checked details, is kept. */
 function decodeCommand(
   { status, value: body }: Answer,
-  op: string,
+  call: CommandWire,
+  token: string,
 ): CommandResult {
+  const { op } = call;
   const bad = () => unavailable("the command answer failed its checks");
   const keys = Object.keys(body).sort().join();
   const result = object(body.result);
@@ -418,7 +415,9 @@ function decodeCommand(
     COMMAND_STATUS[code] !== status
   )
     throw bad();
-  return { kind: "refused", code };
+  const details = refusalDetails(code, call, object(body.error) ?? {}, token);
+  if (details === undefined) throw bad();
+  return { kind: "refused", code, ...details };
 }
 
 export function createCloudHttp(options: CloudHttpOptions): CloudHttp {
@@ -564,7 +563,7 @@ export function createCloudHttp(options: CloudHttpOptions): CloudHttp {
         signal,
         commandMax,
       );
-      return decodeCommand(answer, body.op);
+      return decodeCommand(answer, body, token);
     },
   };
 }
