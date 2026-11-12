@@ -11,14 +11,16 @@ import { spawnSync } from "node:child_process";
 import {
   cpSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { blockCapture } from "../../src/assembly/capture.ts";
 import { cloudRoute, selectCloud } from "../../src/assembly/cloud-authority.ts";
@@ -36,7 +38,11 @@ import { createAssembly, localContext } from "../../src/assembly/index.ts";
 import { LocalState } from "../../src/assembly/state.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { mcpToolName } from "../../src/contract/naming.ts";
-import type { InvocationRequest } from "../../src/generated/types.ts";
+import { discoveryOperations } from "../../src/generated/core-discovery.ts";
+import type {
+  InvocationRequest,
+  ResultEnvelope,
+} from "../../src/generated/types.ts";
 import { runCli } from "../../src/surface/cli.ts";
 import { dispatch } from "../../src/surface/dispatch.ts";
 import { createMcpHandlers } from "../../src/surface/mcp.ts";
@@ -202,11 +208,15 @@ async function rig(o: Setup) {
     HOME: s.home,
     ...(o.device === false ? {} : { FORGE_DEVICE_ID: o.device ?? "dev-1" }),
   };
+  /** A person at a terminal who is asked and declines, so an approval request is counted and nothing is approved. */
+  const confirm = mock(() => Promise.resolve(false));
+  const terminal = { tty: () => ({ stdin: true, stderr: true }), confirm };
   const open = (root = s.root) =>
     createAssembly({
       root,
       deviceRoot: s.deviceRoot,
       providers: { env, cloudLogin: { fetch: net.fetch, now: () => NOW } },
+      terminal,
     });
   const assembly = await open(); // requests carry the context a real CLI or MCP call builds
   const request = (
@@ -222,7 +232,7 @@ async function rig(o: Setup) {
     context: localContext(assembly, { kind: "agent", id: "a1" }),
     ...change,
   });
-  return { s, net, sentinel, open, request, assembly };
+  return { s, net, sentinel, open, request, assembly, confirm };
 }
 const show = (r: Awaited<ReturnType<typeof rig>>) =>
   r.assembly.catalog.invoke(r.request("issue.show", { id: "forge-1" }));
@@ -1164,24 +1174,29 @@ test("a direct issue show --dry-run is UNAVAILABLE with no request", () =>
     expect(r.net.calls).toHaveLength(0);
   }));
 
+/** A committed checkout with a linked worktree beside it; returns the worktree's path. */
+function addWorktree(s: fx.Sandbox): string {
+  const linked = join(s.dir, "linked");
+  for (const args of [
+    ["init", "--quiet"],
+    ["add", "-A"],
+    ["commit", "--quiet", "-m", "p"],
+    ["worktree", "add", "--quiet", linked],
+  ]) {
+    const git = ["-c", "user.name=t", "-c", "user.email=t@example.test"];
+    const run = spawnSync("git", [...git, ...args], {
+      cwd: s.root,
+      windowsHide: true,
+    });
+    expect(run.status).toBe(0);
+  }
+  return linked;
+}
 test("an existing store is left as it was, and a linked worktree is answered by the cloud too", () =>
   using({}, async (r) => {
     const store = join(r.s.root, ".forge", "state.sqlite");
     writeFileSync(store, "keep");
-    const linked = join(r.s.dir, "linked");
-    for (const args of [
-      ["init", "--quiet"],
-      ["add", "-A"],
-      ["commit", "--quiet", "-m", "p"],
-      ["worktree", "add", "--quiet", linked],
-    ]) {
-      const git = ["-c", "user.name=t", "-c", "user.email=t@example.test"];
-      const run = spawnSync("git", [...git, ...args], {
-        cwd: r.s.root,
-        windowsHide: true,
-      });
-      expect(run.status).toBe(0);
-    }
+    const linked = addWorktree(r.s);
     const other = await r.open(linked);
     try {
       const context = localContext(other, { kind: "agent", id: "a1" });
@@ -1325,3 +1340,300 @@ test("a refused preflight on a bound project is thrown, never retried on the loc
     expect(await run(r)).toBeUndefined();
   });
 });
+
+// forge-1249: a cloud-bound project never starts a local store by recovery.
+const RECOVER = "store.reinit";
+const NAMED = {
+  ok: false,
+  op: RECOVER,
+  status: "FAIL",
+  error: { code: "INPUT_INVALID", message: notServed(RECOVER), retry: "never" },
+};
+const human = { kind: "human", id: "h1" } as const;
+const STORE = (s: fx.Sandbox) => join(s.root, ".forge", "state.sqlite");
+const SEEDED = "closed fixture, not a database";
+const seeded = (s: fx.Sandbox) => writeFileSync(STORE(s), SEEDED);
+/** Untrusted approval content that carries the synthetic token: it must never come back. */
+const ASKED = { approval: TOKEN };
+const asHuman = (r: Rig, assembly = r.assembly) =>
+  r.request(RECOVER, ASKED, {
+    caller: "human",
+    context: localContext(assembly, human),
+  });
+
+/** Every file and folder under a directory with its bytes, so a refusal that wrote anything changes it. */
+function inventory(dir: string): Record<string, string> {
+  const found: Record<string, string> = {};
+  const walk = (at: string) => {
+    for (const e of readdirSync(at, { withFileTypes: true })) {
+      if (e.name === ".git") continue;
+      const path = join(at, e.name);
+      const name = relative(dir, path);
+      if (e.isDirectory()) {
+        found[`${name}/`] = "";
+        walk(path);
+      } else found[name] = readFileSync(path).toString("base64");
+    }
+  };
+  walk(dir);
+  return found;
+}
+
+/** A refusal that opens or creates no local state, asks no one, sends no request and writes no file. */
+async function leavingNothing(o: Setup, run: (r: Rig) => Promise<void>) {
+  await using(o, async (r) => {
+    const before = inventory(r.s.dir);
+    const spies = [
+      spyOn(LocalState.prototype, "open"),
+      spyOn(LocalState.prototype, "validateCreate"),
+      spyOn(LocalState.prototype, "create"),
+    ];
+    try {
+      await run(r);
+      expect(spies.map((spy) => spy.mock.calls.length)).toEqual([0, 0, 0]);
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+    }
+    expect(r.confirm).not.toHaveBeenCalled();
+    expect(r.net.calls).toHaveLength(0);
+    expect(inventory(r.s.dir)).toEqual(before);
+  });
+}
+const refused = (result: ResultEnvelope, name?: string) => {
+  expect(result, name).toMatchObject(NAMED);
+  expect(failed(result, "INPUT_INVALID")).toBe(6);
+};
+
+const STORES = [
+  ["missing", {}],
+  ["existing", { prepare: seeded }],
+] as const;
+for (const [store, setup] of STORES)
+  for (const dryRun of [false, true]) {
+    const how = `with ${store} store${dryRun ? ", as a dry run" : ""}`;
+    test(`a bound project's store reinit through the CLI, dispatch and catalog.call is refused by name ${how}, before identity resolution or any invoke`, () =>
+      leavingNothing(setup, async (r) => {
+        const invoke = spyOn(r.assembly.catalog, "invoke");
+        const resolveContext = mock(
+          localIdentityResolver(
+            r.s.deviceRoot,
+            { HOME: r.s.home, FORGE_DEVICE_ID: "dev-1" },
+            false,
+          ),
+        );
+        const options = {
+          caller: "human" as const,
+          context: localContext(r.assembly, human),
+          resolveContext,
+          ...(dryRun ? { dryRun } : {}),
+        };
+        const calls: [string, () => Promise<ResultEnvelope>][] = [
+          [
+            "CLI",
+            async () => {
+              const done = await runCli(
+                r.assembly.catalog,
+                [
+                  "store",
+                  "reinit",
+                  ...(dryRun ? ["--dry-run"] : []),
+                  "--input",
+                  JSON.stringify(ASKED),
+                ],
+                options,
+              );
+              expect(JSON.stringify(done)).not.toContain(TOKEN);
+              return done.envelope;
+            },
+          ],
+          [
+            "dispatch",
+            () => dispatch(r.assembly.catalog, RECOVER, ASKED, options),
+          ],
+          [
+            "catalog.call",
+            () =>
+              dispatch(
+                r.assembly.catalog,
+                "catalog.call",
+                { op: RECOVER, input: ASKED },
+                options,
+              ),
+          ],
+        ];
+        try {
+          for (const [name, call] of calls) refused(await call(), name);
+          expect(resolveContext).not.toHaveBeenCalled();
+          expect(invoke).not.toHaveBeenCalled();
+        } finally {
+          invoke.mockRestore();
+        }
+        if (store === "existing")
+          expect(readFileSync(STORE(r.s), "utf8")).toBe(SEEDED);
+      }));
+
+    test(`a direct catalog.invoke of a bound project's store reinit is refused by name ${how}, without dispatch`, () =>
+      leavingNothing(setup, async (r) => {
+        const request = asHuman(r);
+        refused(
+          await r.assembly.catalog.invoke(
+            dryRun ? { ...request, dryRun } : request,
+          ),
+        );
+        if (store === "existing")
+          expect(readFileSync(STORE(r.s), "utf8")).toBe(SEEDED);
+      }));
+  }
+
+test("a direct invoke of store reinit by an agent is still ADMISSION_REQUIRED, with nothing opened or asked", () =>
+  leavingNothing({}, async (r) => {
+    for (const dryRun of [false, true]) {
+      const result = await r.assembly.catalog.invoke(
+        r.request(RECOVER, ASKED, dryRun ? { dryRun } : {}),
+      );
+      expect(result).toMatchObject({
+        ok: false,
+        error: { message: `Only a human may invoke ${RECOVER}` },
+      });
+      expect(failed(result, "ADMISSION_REQUIRED")).toBe(2);
+    }
+  }));
+
+test("through MCP, store reinit stays human-only: catalog_call does not know it, as a dry run too, and no direct tool exists", () =>
+  leavingNothing({}, async (r) => {
+    const handlers = createMcpHandlers(
+      r.assembly.catalog,
+      { expose: ["issue"] },
+      { context: localContext(r.assembly, { kind: "agent", id: "a1" }) },
+    );
+    for (const dryRun of [false, true]) {
+      const result = await handlers.callTool("catalog_call", {
+        op: RECOVER,
+        input: ASKED,
+        ...(dryRun ? { dryRun } : {}),
+      });
+      expect(result).toMatchObject({
+        ok: false,
+        error: { code: "UNKNOWN_COMMAND" },
+      });
+      expect(failed(result!, "UNKNOWN_COMMAND")).toBe(3);
+    }
+    expect(await handlers.callTool(mcpToolName(RECOVER)!, ASKED)).toBe(
+      undefined,
+    );
+  }));
+
+test("a bound project with no saved login, no device identity and a dead network gets the same named refusal", () =>
+  leavingNothing(
+    {
+      creds: false,
+      device: false,
+      steps: [
+        () => {
+          throw new Error("offline");
+        },
+      ],
+    },
+    async (r) => refused(await r.assembly.catalog.invoke(asHuman(r))),
+  ));
+
+for (const [name, setup, code] of rows)
+  test(`store reinit with ${name} keeps that binding refusal and starts no local store`, () =>
+    leavingNothing(setup, async (r) => {
+      const result = await r.assembly.catalog.invoke(asHuman(r));
+      failed(result, code);
+      expect(result).not.toMatchObject(NAMED);
+    }));
+
+test("a bound project's store reinit from a nested folder and from a linked worktree gets the same named refusal", () => {
+  let linked = "";
+  return leavingNothing(
+    {
+      prepare: (s) => {
+        linked = addWorktree(s);
+        mkdirSync(join(s.root, "nested"));
+      },
+    },
+    async (r) => {
+      for (const root of [join(r.s.root, "nested"), linked]) {
+        const assembly = await r.open(root);
+        try {
+          refused(await assembly.catalog.invoke(asHuman(r, assembly)), root);
+        } finally {
+          await assembly.close();
+        }
+      }
+    },
+  );
+});
+
+test("an unbound project keeps recovery as it was: an existing store conflicts and a dry run has no contract, both leaving every record and file alone", () =>
+  using({ bind: false, creds: false, sentinel: false }, async (r) => {
+    expect(
+      await r.assembly.catalog.invoke(r.request("issue.create", CREATE)),
+    ).toMatchObject({ ok: true });
+    const before = inventory(r.s.dir);
+    const options = {
+      caller: "human" as const,
+      context: localContext(r.assembly, human),
+    };
+    const kept = await runCli(r.assembly.catalog, ["store", "reinit"], options);
+    expect(kept.exitCode).toBe(4);
+    expect(kept.envelope).toMatchObject({
+      ok: false,
+      error: { code: "INPUT_CONFLICT" },
+    });
+    expect(JSON.stringify(kept.envelope)).toContain(
+      "Forge store already exists",
+    );
+    const dry = await runCli(
+      r.assembly.catalog,
+      ["store", "reinit", "--dry-run"],
+      options,
+    );
+    expect(dry.exitCode).toBe(1);
+    expect(dry.envelope).toMatchObject({
+      ok: false,
+      error: {
+        code: "UNAVAILABLE",
+        message: "This operation has no dry-run contract",
+      },
+    });
+    expect(inventory(r.s.dir)).toEqual(before);
+    expect(r.net.calls).toHaveLength(0);
+    expect(r.confirm).not.toHaveBeenCalled();
+    expect(
+      await r.assembly.catalog.invoke(r.request("issue.list", {})),
+    ).toMatchObject({ ok: true, result: { items: [{ title: CREATE.title }] } });
+  }));
+
+test("only forge/core's store.reinit joins the refused set: other blocks and other core operations stay local", () => {
+  const route = cloudRoute("forge/core", RECOVER);
+  expect(route).toBeInstanceOf(ForgeFailure);
+  expect(route).toMatchObject({ error: NAMED.error });
+  for (const [block, op] of [
+    ["forge/core", "project.init"],
+    ["forge/core", "config.show"],
+    ["forge/memory", "memory.add"],
+    ["forge/check", "check.run"],
+  ] as const)
+    expect(cloudRoute(block, op)).toBe("local");
+});
+
+test("the generated core discovery names forge/core and store.reinit, so dispatch admits it before identity resolution", () => {
+  expect(discoveryOperations.find((e) => e.op === RECOVER)).toMatchObject({
+    blockId: "forge/core",
+    declaredOp: RECOVER,
+  });
+});
+
+test("another core operation reads no binding: project.init on a project with a malformed binding is the manifest refusal", () =>
+  leavingNothing({ bind: "{" }, async (r) => {
+    const result = await dispatch(
+      r.assembly.catalog,
+      "project.init",
+      {},
+      { caller: "human", context: localContext(r.assembly, human) },
+    );
+    expect(failed(result, "PROJECT_MANIFEST_EXISTS")).toBe(1);
+  }));
