@@ -503,12 +503,8 @@ for (const [source, noun] of [
           [noun, "comments", "forge-1", "--dry-run"],
           own,
         );
-        expect(dry.envelope).toMatchObject({
-          ok: false,
-          error: { code: "UNAVAILABLE" },
-        });
+        dryRefused(r, dry.envelope);
         expect(dry.exitCode).toBe(1);
-        expect(r.net.calls).toHaveLength(0);
         const done = await runCli(
           r.assembly.catalog,
           [noun, "comments", "forge-1"],
@@ -763,6 +759,7 @@ for (const op of ["issue.update", "issue.renew", "issue.release", "issue.dep"])
 
 for (const [op, input] of [
   ["issue.show", { id: "forge-1" }],
+  ["issue.comments", NOTES],
   ["issue.list", {}],
   ["issue.ready", {}],
 ] as const)

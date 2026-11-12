@@ -1858,7 +1858,7 @@ if (phase === "main") {
     },
   );
 
-  // The typed command route on real workerd: cases 1 to 9 run in order on the admitted project and
+  // The typed command route on real workerd: cases 1 to 9 and the comments case run in order on the admitted project and
   // share what they create. The deployed Worker has no fault switch and a live run names no admitted
   // project, so live runs skip them.
   const typed = live ? skip : check;
@@ -2169,6 +2169,62 @@ if (phase === "main") {
         "The request names a session other than the token's",
       );
       assert.deepEqual(await dumpOf(typedProject), before, "the refusal wrote");
+    },
+  );
+
+  await typed(
+    "typed comments: two devices append to the unnoted issue, a, b and c read both in append order, and a read writes nothing",
+    async () => {
+      const notes = (who: Caller, id: string) =>
+        typedCall(who, {
+          requestId: `typed-notes-${(reads += 1)}`,
+          op: "issue.comments",
+          input: { id },
+          context: asProject(who),
+        });
+      assert.deepEqual(typedOk(await notes(a, two.id)), { records: [] });
+      for (const [who, name] of [
+        [a, "a"],
+        [b, "b"],
+      ] as const)
+        typedOk(
+          await typedCall(who, {
+            requestId: `typed-notes-write-${name}`,
+            op: "issue.comment",
+            input: { id: two.id, body: `from ${name}` },
+            context: asProject(who),
+          }),
+        );
+      const before = await dumpOf(typedProject);
+      const stored = recordsOf(
+        before,
+        "forge/work",
+        `comment:${storedOf(two.id)}:`,
+      )
+        .map(
+          (row) =>
+            JSON.parse(String(row.body)) as {
+              key: string;
+              value: { body: string };
+            },
+        )
+        .sort(
+          (x, y) => Number(x.key.split(":")[2]) - Number(y.key.split(":")[2]),
+        );
+      assert.equal(stored.length, 2);
+      for (const who of [a, b, c])
+        assert.deepEqual(typedOk(await notes(who, two.id)), {
+          records: stored,
+        });
+      assert.deepEqual(
+        stored.map((r) => r.value.body),
+        ["from a", "from b"],
+      );
+      const missing = `${two.id.replace(/-.*/, "").toUpperCase()}-99999`;
+      const gone = await notes(a, missing);
+      typedFail(gone, 404, "NOT_FOUND");
+      assert.equal(gone.body.error?.message, `Issue ${missing} was not found`);
+      assert.deepEqual(await dumpOf(typedProject), before, "a read wrote");
     },
   );
 
