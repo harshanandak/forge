@@ -71,6 +71,16 @@ const PAGE = { items: [ISSUE], truncated: false };
 const answer = (result: object = ISSUE, op = "issue.show") =>
   fx.json({ ok: true, op, status: "OK", result, warnings: [] });
 const COMMENTED = { id: "forge-1", commentId: "c-1" };
+const RECORD = {
+  namespace: "forge/work",
+  key: "comment:work-1:1",
+  revision: 1,
+  value: { id: "work-1", body: "hi" },
+  updatedAt: iso(NOW),
+  updatedBy: { kind: "agent", id: "a1" },
+};
+const RECORDS = { records: [RECORD] };
+const NOTES = { id: "forge-1" };
 /** The status the cloud's command route gives each refusal (cloud/src/project.ts STATUS). */
 const HTTP: Record<string, number> = {
   NOT_FOUND: 404,
@@ -99,7 +109,7 @@ const MANIFEST = resolve(
   import.meta.dirname,
   "../../src/blocks/work/forge.block.json",
 );
-const READS = ["issue.show", "issue.list", "issue.ready"];
+const READS = ["issue.show", "issue.list", "issue.ready", "issue.comments"];
 const WRITES = [
   "issue.create",
   "issue.comment",
@@ -250,7 +260,7 @@ test("a bound project's issue show is answered by the cloud with the stored toke
     expect(body).toMatchObject({ context: { device: { id: "dev-1" } } });
   }));
 
-test("the routing decision serves show, list, ready, create, comment, update, dep, claim, renew and release, refuses every other operation of the work block by name, and leaves other blocks local", () => {
+test("the routing decision serves show, list, ready, comments, create, comment, update, dep, claim, renew and release, refuses every other operation of the work block by name, and leaves other blocks local", () => {
   expect(DECLARED.length).toBeGreaterThan(30);
   for (const op of SERVED) expect(cloudRoute("forge/work", op)).toBe("cloud");
   expect(cloudRoute("forge/memory", "memory.list")).toBe("local");
@@ -290,13 +300,15 @@ for (const [source, op, input, declared, result] of [
   [WORK, "issue.comment", COMMENT, "issue.comment", COMMENTED],
   [RENAMED, "ticket.comment", COMMENT, "issue.comment", COMMENTED],
   [RENAMED, "ticket.show", { id: "forge-1" }, "issue.show", ISSUE],
+  [WORK, "issue.comments", NOTES, "issue.comments", RECORDS],
+  [RENAMED, "ticket.comments", NOTES, "issue.comments", RECORDS],
 ] as const)
   test(`through the assembled catalog, ${op} on a bound project is answered by the cloud as ${declared}`, () =>
     using(
       { config: source, steps: [() => answer(result, declared)] },
       async (r) => {
         const done = await r.assembly.catalog.invoke(r.request(op, input));
-        expect(done).toMatchObject({ ok: true, result });
+        expect(done).toMatchObject({ ok: true, op, result });
         expect(exitCode(done)).toBe(0);
         expect(JSON.stringify(done)).not.toContain(TOKEN);
         expect(r.net.calls).toHaveLength(1);
@@ -329,12 +341,31 @@ test("every other work operation is refused by name on a bound project, with no 
     expect(r.net.calls).toHaveLength(0);
   }));
 
-for (const [op, input, bad] of [
-  ["issue.create", CREATE, { ...ISSUE, revision: TOKEN }],
-  ["issue.comment", COMMENT, { ...COMMENTED, extra: TOKEN }],
-  ["issue.comment", COMMENT, { id: "forge-1" }],
+for (const [name, op, input, bad] of [
+  [
+    "a token in the revision",
+    "issue.create",
+    CREATE,
+    { ...ISSUE, revision: TOKEN },
+  ],
+  ["an extra key", "issue.comment", COMMENT, { ...COMMENTED, extra: TOKEN }],
+  ["no commentId", "issue.comment", COMMENT, { id: "forge-1" }],
+  ["no records", "issue.comments", NOTES, {}],
+  ["records that is not a list", "issue.comments", NOTES, { records: "x" }],
+  [
+    "an extra top-level key",
+    "issue.comments",
+    NOTES,
+    { records: [], truncated: false },
+  ],
+  [
+    "an invalid record carrying the token",
+    "issue.comments",
+    NOTES,
+    { records: [{ ...RECORD, revision: TOKEN }] },
+  ],
 ] as const)
-  test(`a cloud ${op} result that fails its declared output is refused as UNAVAILABLE`, () =>
+  test(`a cloud ${op} result with ${name} fails its declared output and is refused as UNAVAILABLE`, () =>
     using({ steps: [() => answer(bad, op)] }, async (r) => {
       const result = await r.assembly.catalog.invoke(r.request(op, input));
       expect(failed(result, "UNAVAILABLE")).toBe(1);
@@ -350,6 +381,7 @@ for (const [code, exit] of [
   for (const [op, input] of [
     ["issue.create", CREATE],
     ["issue.comment", COMMENT],
+    ["issue.comments", NOTES],
   ] as const)
     test(`a cloud ${code} on ${op} keeps its code and exit ${exit}, without the token`, () =>
       using({ steps: [() => refusing(code)] }, async (r) => {
@@ -361,6 +393,7 @@ for (const [code, exit] of [
 for (const [op, input] of [
   ["issue.create", CREATE],
   ["issue.comment", COMMENT],
+  ["issue.comments", NOTES],
   ["issue.update", UPDATE],
   ["issue.dep", DEP],
   ["issue.claim", INPUTS["issue.claim"]!],
@@ -456,6 +489,41 @@ for (const op of ["issue.list", "issue.ready"])
       expect(failed(live, "AUTH_REVOKED")).toBe(1);
       expect(r.net.calls).toHaveLength(1);
     }));
+
+for (const [source, noun] of [
+  [WORK, "issue"],
+  [RENAMED, "ticket"],
+] as const)
+  test(`through the CLI wrapper, ${noun} comments reads the cloud with one request, and --dry-run is UNAVAILABLE with none`, () =>
+    using(
+      { config: source, steps: [() => answer(RECORDS, "issue.comments")] },
+      async (r) => {
+        const own = { caller: "agent", context: holding(r) } as const;
+        const dry = await runCli(
+          r.assembly.catalog,
+          [noun, "comments", "forge-1", "--dry-run"],
+          own,
+        );
+        dryRefused(r, dry.envelope);
+        expect(dry.exitCode).toBe(1);
+        const done = await runCli(
+          r.assembly.catalog,
+          [noun, "comments", "forge-1"],
+          own,
+        );
+        expect(done.envelope).toMatchObject({
+          ok: true,
+          op: `${noun}.comments`,
+          result: RECORDS,
+        });
+        expect(done.exitCode).toBe(0);
+        expect(r.net.calls).toHaveLength(1);
+        expect(r.net.calls[0]!.body).toMatchObject({
+          op: "issue.comments",
+          input: NOTES,
+        });
+      },
+    ));
 
 type Rig = Awaited<ReturnType<typeof rig>>;
 /** A held write as the CLI makes it: a session, the caller's own context, and a generation only if the caller names one. */
@@ -692,6 +760,7 @@ for (const op of ["issue.update", "issue.renew", "issue.release", "issue.dep"])
 
 for (const [op, input] of [
   ["issue.show", { id: "forge-1" }],
+  ["issue.comments", NOTES],
   ["issue.list", {}],
   ["issue.ready", {}],
 ] as const)
@@ -1212,6 +1281,23 @@ test("an unbound project runs locally, with no cloud request and no credential w
       { requestId: "r-2" },
     );
     expect(await r.assembly.catalog.invoke(note)).toMatchObject({ ok: true });
+    const read = (id: string, requestId: string) =>
+      r.assembly.catalog.invoke(
+        r.request("issue.comments", { id }, { requestId }),
+      );
+    expect(await read(id, "r-3")).toMatchObject({
+      ok: true,
+      result: { records: [{ value: { body: "hi" } }] },
+    });
+    const bare = (
+      (await r.assembly.catalog.invoke(
+        r.request("issue.create", CREATE, { requestId: "r-4" }),
+      )) as unknown as { result: { id: string } }
+    ).result.id;
+    expect(await read(bare, "r-5")).toMatchObject({
+      ok: true,
+      result: { records: [] },
+    });
     const own = holding(r);
     const call = (op: string, input: object) =>
       dispatch(r.assembly.catalog, op, input, {
