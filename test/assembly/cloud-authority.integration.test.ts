@@ -35,6 +35,7 @@ import { localIdentityResolver } from "../../src/assembly/identity.ts";
 import { createAssembly, localContext } from "../../src/assembly/index.ts";
 import { LocalState } from "../../src/assembly/state.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
+import { mcpToolName } from "../../src/contract/naming.ts";
 import type { InvocationRequest } from "../../src/generated/types.ts";
 import { runCli } from "../../src/surface/cli.ts";
 import { dispatch } from "../../src/surface/dispatch.ts";
@@ -667,6 +668,87 @@ test("issue.update through the CLI dispatch as a dry run is UNAVAILABLE and send
     expect(failed(dry, "UNAVAILABLE")).toBe(1);
     expect(sent(r)).not.toContain("issue.update");
   }));
+
+/** The runtime's own preflight refusal, which a bound project reaches today (src/core/runtime/index.ts). */
+const NO_CONTRACT = "this profile has no dry-run execution contract";
+/** Requests are counted first: a refusal that came after a hidden cloud read is not the refusal this expects. */
+const dryRefused = (r: Rig, result: Awaited<ReturnType<typeof edit>>) => {
+  expect(r.net.calls).toHaveLength(0);
+  expect(result).toMatchObject({
+    error: { code: "UNAVAILABLE", message: NO_CONTRACT, retry: "never" },
+  });
+  expect(failed(result, "UNAVAILABLE")).toBe(1);
+};
+/** A bound dry run is refused at admission: not even the hidden show that fills a missing generation goes out. */
+for (const op of ["issue.update", "issue.renew", "issue.release", "issue.dep"])
+  for (const [name, own] of [
+    ["no generation", {}],
+    ["an explicit generation", { leaseGeneration: 3 }],
+  ] as const)
+    test(`${op} as a dry run with ${name} on a bound project is refused before any cloud request`, () =>
+      using({ steps: [live] }, async (r) => {
+        dryRefused(r, await edit(r, op, holding(r, own), true, INPUTS[op]));
+      }));
+
+for (const [op, input] of [
+  ["issue.show", { id: "forge-1" }],
+  ["issue.list", {}],
+  ["issue.ready", {}],
+] as const)
+  test(`${op} as a dry run through dispatch on a bound project is refused before any cloud request`, () =>
+    using({ steps: [() => answer(PAGE, op)] }, async (r) => {
+      dryRefused(r, await edit(r, op, holding(r), true, input));
+    }));
+
+test("through MCP catalog_call and the direct tool, a held dry run on a bound project is refused before any cloud request", () =>
+  using({ steps: [live] }, async (r) => {
+    const context = holding(r);
+    const expose = { expose: ["issue"] };
+    const handlers = createMcpHandlers(r.assembly.catalog, expose, { context });
+    dryRefused(
+      r,
+      (await handlers.callTool("catalog_call", {
+        op: "issue.update",
+        input: UPDATE,
+        dryRun: true,
+      }))!,
+    );
+    const direct = createMcpHandlers(r.assembly.catalog, expose, {
+      context,
+      dryRun: true,
+    });
+    dryRefused(
+      r,
+      (await direct.callTool(mcpToolName("issue.update")!, UPDATE))!,
+    );
+  }));
+
+test("through the CLI wrapper, issue update --dry-run on a bound project is refused before any cloud request", () =>
+  using({ steps: [live] }, async (r) => {
+    const done = await runCli(
+      r.assembly.catalog,
+      ["issue", "update", "--input", JSON.stringify(UPDATE), "--dry-run"],
+      { caller: "agent", context: holding(r) },
+    );
+    dryRefused(r, done.envelope);
+    expect(done.exitCode).toBe(1);
+  }));
+
+for (const [op, input] of [
+  ["issue.update", UPDATE],
+  ["issue.close", { id: "forge-1", withoutReceipt: "guard" }],
+] as const)
+  test(`${op} as a dry run on an unbound project is the local runtime's own refusal and sends no cloud request`, () =>
+    using({ bind: false, creds: false, sentinel: false }, async (r) => {
+      const result = await edit(r, op, holding(r), true, input);
+      expect(result).toMatchObject({
+        ok: false,
+        status: "FAIL",
+        error: { code: "UNAVAILABLE", message: NO_CONTRACT },
+      });
+      expect(exitCode(result)).toBe(1);
+      expect(r.net.calls).toHaveLength(0);
+    }));
 
 const DEPPED = { ...ISSUE, dependsOn: ["forge-2"], revision: 4 };
 const UNDEPPED = { ...ISSUE, revision: 4 };

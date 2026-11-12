@@ -37,6 +37,11 @@ export const DEFAULT_RUNTIME_LIMITS: RuntimeLimits = {
 
 export type ServiceHandle = Handle<unknown>;
 
+/** The one refusal of a dry run: this profile has no dry-run execution contract. */
+export function refuseDryRun(): never {
+  refuse("UNAVAILABLE", "this profile has no dry-run execution contract");
+}
+
 /** What the request checks resolved: the values `invoke` goes on to use. */
 export interface Preflight {
   readonly request: InvocationRequest;
@@ -313,8 +318,7 @@ export class Runtime {
     const declaration = operation.declaration;
     if (!declaration.callers.includes(request.caller))
       refuse("GRANT_REQUIRED", "caller is not permitted");
-    if (request.dryRun === true)
-      refuse("UNAVAILABLE", "this profile has no dry-run execution contract");
+    if (request.dryRun === true) refuseDryRun();
     const bound = bindContext(declaration, request.context);
     if (!bound.ok) throw new ForgeFailure(bound.error);
     const problems = block.problems(declaration.input, request.input, true);
