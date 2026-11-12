@@ -578,8 +578,10 @@ function wired(text: string) {
   });
   return { client, bodies };
 }
+/** The six characters backslash, u, 0, 0, 6, 6 followed by "ct_": a JSON escape of the first letter of the token prefix. */
+const ESCAPED_FCT = String.raw`\u0066ct_`;
 const escaped = (value: unknown) =>
-  JSON.stringify(value).replace(TOKEN, `\u0066${TOKEN.slice(1)}`);
+  JSON.stringify(value).replace(TOKEN, `${ESCAPED_FCT}${TOKEN.slice(4)}`);
 const ESCAPED_ROWS: [string, string, Run][] = [
   [
     "a command result",
@@ -605,7 +607,8 @@ const ESCAPED_ROWS: [string, string, Run][] = [
 ];
 for (const [what, text, run] of ESCAPED_ROWS)
   test(`${what} that spells the token with a JSON escape on the wire is refused as the fixed UNAVAILABLE`, async () => {
-    expect(text).toContain("\u0066ct_");
+    expect(text).toContain(ESCAPED_FCT);
+    expect(ESCAPED_FCT).toHaveLength(9);
     expect(text).not.toContain(TOKEN);
     const { client, bodies } = wired(text);
     const failed = await failureOf(() => run(client));
