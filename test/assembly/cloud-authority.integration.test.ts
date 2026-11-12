@@ -811,6 +811,41 @@ test("a cloud issue.list item with the token in one label is refused as UNAVAILA
     },
   ));
 
+test("through the CLI wrapper, a schema-valid StateRecord whose free-form value carries the token in a url is the fixed UNAVAILABLE, with the token in neither the envelope nor stdout", () =>
+  using(
+    {
+      steps: [
+        () =>
+          answer(
+            {
+              records: [
+                {
+                  ...RECORD,
+                  value: { url: `https://example.com/?token=${TOKEN}` },
+                },
+              ],
+            },
+            "issue.comments",
+          ),
+      ],
+    },
+    async (r) => {
+      const done = await runCli(
+        r.assembly.catalog,
+        ["issue", "comments", "forge-1"],
+        { caller: "agent", context: holding(r) },
+      );
+      expect(errorOf(done)).toMatchObject({
+        code: "UNAVAILABLE",
+        message: NOT_USABLE,
+      });
+      for (const shown of [JSON.stringify(done.envelope), done.stdout])
+        expect(shown).not.toMatch(/fct_|example\.com/);
+      expect(done.exitCode).toBe(1);
+      expect(r.net.calls).toHaveLength(1);
+    },
+  ));
+
 test("a cloud issue.update result with the token in its body is refused as UNAVAILABLE after one update request", () =>
   using(
     {
