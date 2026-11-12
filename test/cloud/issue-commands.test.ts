@@ -6832,7 +6832,8 @@ for (const mode of ["whole", "paged"] as const)
       ]);
     }
     expect(differing(tablesOf(t.db), kept)).toEqual([]);
-    // A fresh command is one comment, one receipt and their two events, and no earlier row moves.
+    // A fresh command is one comment, one receipt and their two events, and no earlier row moves. A comment
+    // allocates nothing, so the restored floor row stays as it was. The count is against the source's own rows.
     const fresh = await t.send(
       note("fresh-1", { id: "forge-1", body: "later" }),
       { token },
@@ -6843,8 +6844,8 @@ for (const mode of ["whole", "paged"] as const)
     ]);
     const after = tablesOf(t.db);
     expect([
-      after.state_records!.length - 6,
-      after.state_events!.length - 6,
+      after.state_records!.length - tables.state_records!.length,
+      after.state_events!.length - tables.state_events!.length,
     ]).toEqual([2, 2]);
     for (const table of Object.keys(kept)) {
       const now = new Set(after[table]!.map((r) => JSON.stringify(r)));
