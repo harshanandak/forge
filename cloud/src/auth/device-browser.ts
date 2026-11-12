@@ -181,7 +181,8 @@ export async function deviceRoute(
   const { upstream, redemption } = options;
   if (needsClerk && (upstream === undefined || redemption === undefined))
     throw unavailable("OAUTH_CONFIGURATION");
-  // Every decision and callback is an attempt from a client address, counted before anything is checked.
+  // Every decision and callback needs a client address. It is an ingress-dependent quota signal only, never
+  // proof of a person: same-zone Workers must be trusted or blocked at ingress, and no other header stands in.
   const address = request.headers.get("CF-Connecting-IP");
   if (needsClerk && (address === null || address === "")) throw noAddress();
   const login = createDeviceLogin({
@@ -201,8 +202,9 @@ export async function deviceRoute(
       sha256(jar ?? ""),
     ]);
     const now = Date.now();
-    // One step, no await: count the attempt, check the state, its live row and its own browser's cookie,
-    // and only then use the state up. A refusal leaves every row as it was.
+    // One step, no await: check the state, its live row and its own browser's cookie, and only then use
+    // the state up. That complete proof skips the browser budgets; any other callback is one attempt, and
+    // a refusal leaves every row as it was.
     const taken = store.conditionalUpdate((base) => {
       const state = base as Held;
       const row =
@@ -214,10 +216,14 @@ export async function deviceRoute(
                 same(entry.decided.stateHash, stateHash),
             )
           : undefined;
-      if (!browserAttempt(db, who, row?.userHash, now)) return "limited";
       // Only the browser that was sent to Clerk holds this transaction's own cookie.
-      if (row === undefined || jar === undefined) return undefined;
-      if (!same(row.decided!.bindHash, bound)) return undefined;
+      const owned =
+        row !== undefined &&
+        jar !== undefined &&
+        same(row.decided!.bindHash, bound);
+      if (!owned && !browserAttempt(db, who, row?.userHash, now))
+        return "limited";
+      if (!owned) return undefined;
       state.browser = state.browser!.filter(
         (entry) => entry !== row && now < entry.expiresAt,
       );
@@ -293,7 +299,6 @@ export async function deviceRoute(
       const challenge = held.challenges.find((entry) =>
         same(entry.userHash, selector),
       );
-      if (!browserAttempt(db, who, challenge?.userHash, now)) return "limited";
       const row = trusted
         ? (held.browser ?? []).find(
             (entry) =>
@@ -304,6 +309,13 @@ export async function deviceRoute(
               same(entry.userHash, selector),
           )
         : undefined;
+      // A complete bound proof is not a guess: it neither checks nor spends the browser budgets. Anything
+      // else is one attempt, and a refusal writes no login state.
+      if (
+        row === undefined &&
+        !browserAttempt(db, who, challenge?.userHash, now)
+      )
+        return "limited";
       if (row === undefined) return "refused";
       held.browser = held.browser!.filter((entry) => now < entry.expiresAt);
       delete row.tickets;
