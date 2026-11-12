@@ -3657,7 +3657,18 @@ test("the cloud issue.comment agrees with the local handler on whole results, ro
     }
     expect(rowsOf(f.db, "forge/work")).toEqual(rowsOf(twin, "forge/work"));
     expect(eventsOf(f.db, "forge/work")).toEqual(eventsOf(twin, "forge/work"));
-    expect(eventsOf(f.db, "forge/work")).toHaveLength(cases.length);
+    // Each comment is two work events (forge-1306): the comment and the move of its issue's comment floor. The
+    // first comment of an issue creates that floor from its live comments; each later one moves it by one.
+    expect(eventsOf(f.db, "forge/work")).toHaveLength(cases.length * 2);
+    // Issue 1 is left out: its stray comment 30 (see createRows) makes the count-based ids above differ from the
+    // floor-based ones, which is reported to the lead rather than changed here.
+    for (const [n, floor, comments] of [
+      [12, 6, 3],
+      [4, 1, 1],
+    ] as const) {
+      expect(seqFloor(f, "comment", n)).toEqual(seqAt("comment", n, floor));
+      expect(seqEvents(f, "comment", n)).toHaveLength(comments);
+    }
     expect(rowsOf(f.db, "forge/cloud")).toHaveLength(cases.length);
     expect([seeded(), await eligible()]).toEqual(before);
   });
@@ -3674,11 +3685,13 @@ test("a comment retry returns the original comment with no second comment or com
     0,
     { id: "forge-12", commentId: "comment:work-12:4" },
   ]);
-  // One comment and its one event; the receipt adds its own record and its own event.
+  // One comment and its two events (the comment and its floor, forge-1306); the receipt adds its own record and its own event.
   expect([
     commentsOn(f, "work-12").length,
     eventsOf(f.db, "forge/work").length,
-  ]).toEqual([4, 1]);
+  ]).toEqual([4, 2]);
+  expect(seqFloor(f, "comment", 12)).toEqual(seqAt("comment", 12, 4));
+  expect(seqEvents(f, "comment", 12)).toHaveLength(1);
   expect(rowsOf(f.db, "forge/cloud").map((r) => r.key)).toEqual([
     "request:r-1",
   ]);
@@ -5802,7 +5815,24 @@ test("the cloud issue.link agrees with the local handler on whole records, rows,
     updatedBy: actor,
   });
   expect(eventsOf(f.db, "forge/work")).toEqual(eventsOf(twin, "forge/work"));
-  expect(eventsOf(f.db, "forge/work")).toHaveLength(keys.length);
+  // Each link is two work events (forge-1306): the link and the move of its issue's floor. Every issue touched
+  // has a floor at its highest accepted suffix, created by its first link and moved once by each later one.
+  expect(eventsOf(f.db, "forge/work")).toHaveLength(keys.length * 2);
+  const bySuffix = new Map<number, number[]>();
+  for (const key of keys) {
+    const [, id, suffix] = key.split(":");
+    const n = Number(id!.slice(5));
+    bySuffix.set(n, [...(bySuffix.get(n) ?? []), Number(suffix)]);
+  }
+  expect([...bySuffix.keys()].sort((a, b) => a - b)).toEqual([
+    1, 4, 12, 20, 70, 71, 72, 74,
+  ]);
+  for (const [n, suffixes] of bySuffix) {
+    expect(seqFloor(f, "link", n)).toEqual(
+      seqAt("link", n, Math.max(...suffixes)),
+    );
+    expect(seqEvents(f, "link", n)).toHaveLength(suffixes.length);
+  }
   expect(rowsOf(f.db, "forge/work")).toEqual(rowsOf(twin, "forge/work"));
   expect(leasesIn(f.db)).toBe(leasesIn(twin));
   expect(rowsOf(f.db, "forge/cloud")).toHaveLength(cases.length);
@@ -5915,7 +5945,7 @@ test("issue.link refuses an absent issue, a bad URL, a bad id and bad input in t
     ).toMatchObject({ code: "INPUT_INVALID" });
 }, 120_000);
 
-test("issue.link refuses every lease the caller does not hold, a lease on a link key alone and a count that collides with an existing link, with the local code and message, writes nothing and records nothing, so a retry runs again", async () => {
+test("issue.link refuses every lease the caller does not hold and a lease on a link key alone, with the local code and message, writes nothing and records nothing, so a retry runs again, and sparse links take the next suffix", async () => {
   const { f, token } = await linkRows();
   const twin = Database.deserialize(f.db.serialize());
   const before = writes(f);
@@ -5932,12 +5962,6 @@ test("issue.link refuses every lease the caller does not hold, a lease on a link
     ["expired", linkIn({ id: "forge-34" }), {}, [409, "LEASE_EXPIRED", 4]],
     ["released", linkIn({ id: "forge-35" }), {}, held],
     ["a lease on the link key alone", linkIn({ id: "forge-75" }), {}, held],
-    [
-      "a count that collides with suffix 3",
-      linkIn({ id: "forge-73" }),
-      {},
-      [409, "REVISION_CONFLICT", 4],
-    ],
   ];
   for (const [i, [name, input, who, want]] of refusals.entries()) {
     const context = {
@@ -5970,6 +5994,21 @@ test("issue.link refuses every lease the caller does not hold, a lease on a link
     { token },
   );
   expect([retry.status, linksOf(f, 31).length]).toEqual([200, 1]);
+  // Sparse live links 1 and 3 no longer collide on a count (forge-1306): the next link is suffix 4, at revision 1.
+  const sparse = await f.send(
+    linkCall("f-sparse", linkIn({ id: "forge-73" }), { context: leased }),
+    { token },
+  );
+  expect([sparse.status, sparse.exit, sparse.json.result]).toMatchObject([
+    200,
+    0,
+    { key: linkKey(73, 4), revision: 1 },
+  ]);
+  expect(linksOf(f, 73).map((r) => r.key)).toEqual([
+    linkKey(73, 1),
+    linkKey(73, 3),
+    linkKey(73, 4),
+  ]);
 }, 120_000);
 
 test("a lease lost after the input was read refuses the link with the local lease code and leaves no link, event or receipt", async () => {
@@ -5995,9 +6034,14 @@ test("a lease lost after the input was read refuses the link with the local leas
     const before = writes(f);
     const real = f.storage.sql.exec.bind(f.storage.sql);
     let tripped = false;
-    // The count that numbers the link is the first statement after the input was read: the authority changes there.
+    // The first lease read of the numbered write (the fence check that opens putNext's transaction, forge-1306)
+    // is the first statement after the input was read: the authority changes there. It was the old count's seam.
     f.storage.sql.exec = (sql, ...bindings) => {
-      if (!tripped && bindings.includes("link:work-12:")) {
+      if (
+        !tripped &&
+        /state_leases/.test(sql) &&
+        bindings.includes("issue:work-12")
+      ) {
         tripped = true;
         lose(f);
       }
@@ -6051,7 +6095,10 @@ test("a readback that is missing or different refuses the link with the local IN
     const retry = await f.send(linkCall("rb-1"), { token });
     expect([name, retry.status]).toEqual([name, 200]);
     expect(linksOf(f, 12).map((r) => r.key)).toEqual([linkKey(12, 1)]);
-    expect(eventsOf(f.db, "forge/work")).toHaveLength(1);
+    // The link's event and its floor's first event; the rolled-back attempt left no floor behind.
+    expect(eventsOf(f.db, "forge/work")).toHaveLength(2);
+    expect(seqFloor(f, "link", 12)).toEqual(seqAt("link", 12, 1));
+    expect(seqEvents(f, "link", 12)).toHaveLength(1);
     expect(rowsOf(f.db, "forge/cloud")).toHaveLength(1);
   }
 }, 60_000);
@@ -6127,7 +6174,9 @@ test("a link record that fails the declared output schema, even when its readbac
       prefix: "forge",
       recheck: () => {},
     });
-  // The seam bends every link record the owner puts or reads to the same malformed one: the clock is a number.
+  // The seam bends every link record the owner writes or reads to the same malformed one: the clock is a number.
+  // The link is written through putNext (forge-1306), so that is the write the seam bends; the old seam on put
+  // is no longer reached by a link and would let a bad record through unchecked.
   const bend = (record: unknown) => ({
     ...(record as object),
     updatedAt: 5,
@@ -6137,7 +6186,7 @@ test("a link record that fails the declared output schema, even when its readbac
       const member = Reflect.get(target, name, target) as unknown;
       if (typeof member !== "function") return member;
       const call = member as (...args: unknown[]) => unknown;
-      if (name === "put")
+      if (name === "putNext")
         return (...args: unknown[]) => bend(call.apply(target, args));
       if (name === "get")
         return (namespace: string, key: string) => {
@@ -6155,9 +6204,512 @@ test("a link record that fails the declared output schema, even when its readbac
   // Without the seam the same request appends the first link: nothing of the refused one was kept.
   expect(run("o-2", owner)).toMatchObject({ key: linkKey(12, 1), revision: 1 });
   expect(linksOf(f, 12)).toHaveLength(1);
-  expect(eventsOf(f.db, "forge/work")).toHaveLength(1);
+  // The link's event and its floor's first event: the refused request kept neither.
+  expect(eventsOf(f.db, "forge/work")).toHaveLength(2);
+  expect(seqFloor(f, "link", 12)).toEqual(seqAt("link", 12, 1));
   expect(receiptOf(f, "o-1")).toBeUndefined();
 }, 30_000);
+
+// forge-1306 B1 begin: comment and link numbers are never reused. Each issue and kind keeps a floor record at
+// allocation:<kind>:<stored issue id>: that holds the highest number ever accepted; the next number is above it.
+type Family = "comment" | "link";
+const NUMBERED = ["comment", "link"] as const;
+interface Numbered {
+  value: (n: number, i: number) => object;
+  send: (id: string, issue?: string, more?: object) => object;
+  key: (result: unknown) => string;
+}
+const FAMILY: Record<Family, Numbered> = {
+  comment: {
+    value: (n, i) => ({ id: `work-${n}`, body: `c${i}` }),
+    send: (id, issue = "forge-1", more = {}) =>
+      note(id, { id: issue, body: "next" }, more),
+    key: (result) => (result as { commentId: string }).commentId,
+  },
+  link: {
+    value: (n, i) => ({
+      id: `work-${n}`,
+      relation: "references",
+      url: `https://e.example/${i}`,
+    }),
+    send: (id, issue = "forge-1", more = {}) =>
+      linkCall(id, linkIn({ id: issue }), more),
+    key: (result) => (result as { key: string }).key,
+  },
+};
+const seqKey = (kind: Family, n = 1) => `allocation:${kind}:work-${n}:`;
+const seqAt = (kind: Family, n: number, number: number) => ({
+  prefix: `${kind}:work-${n}:`,
+  number,
+});
+const seqFloor = (f: F, kind: Family, n = 1) => {
+  const row = rowsOf(f.db, "forge/work").find((r) => r.key === seqKey(kind, n));
+  return row === undefined
+    ? undefined
+    : (JSON.parse(row.body) as { value: unknown }).value;
+};
+const seqEvents = (f: F, kind: Family, n = 1) =>
+  eventsOf(f.db, "forge/work").filter((e) =>
+    e.includes(`"key":"${seqKey(kind, n)}"`),
+  );
+const seqKeyed = (key: string) => `"key":"${key}"`;
+/**
+ * Issues 1 and 2, held by the caller, each with children 1.. of both kinds accepted through the real owner, then
+ * the ones in `gone` deleted (an accepted deletion, with its event). With `floors` the children go in through
+ * putNext, so their floors exist; without, this is a project from before the floors: live and deleted children
+ * and no floor. Noise a number must ignore: other issues' and other namespaces' children.
+ */
+async function accepted(
+  live: readonly number[],
+  gone: readonly number[],
+  floors: boolean,
+) {
+  const f = fixture();
+  const token = await f.device();
+  f.tables();
+  const owner = owned(f);
+  const numbers = [...live, ...gone].sort((a, b) => a - b);
+  for (const n of [1, 2]) {
+    owner.put(
+      "forge/work",
+      `issue:work-${n}`,
+      stored({ id: `work-${n}` }),
+      actor,
+      {
+        expectRevision: 0,
+      },
+    );
+    f.lease({ holder }, `issue:work-${n}`);
+    for (const kind of NUMBERED)
+      for (const i of numbers) {
+        const value = FAMILY[kind].value(n, i);
+        if (floors)
+          owner.putNext(
+            "forge/work",
+            `${kind}:work-${n}:`,
+            () => ({ value }),
+            actor,
+          );
+        else
+          owner.put("forge/work", `${kind}:work-${n}:${i}`, value, actor, {
+            expectRevision: 0,
+          });
+      }
+    for (const kind of NUMBERED)
+      for (const i of gone)
+        owner.delete("forge/work", `${kind}:work-${n}:${i}`, actor, {
+          expectRevision: 1,
+        });
+  }
+  for (const kind of NUMBERED) {
+    f.put(FAMILY[kind].value(10, 99), {}, `${kind}:work-10:99`);
+    f.put(FAMILY[kind].value(1, 50), {}, `${kind}:work-1:50`, "forge/other");
+  }
+  return { f, token };
+}
+const everything = (f: F) => ({
+  rows: rowsOf(f.db, "forge/work").filter(
+    (r) => !r.key.startsWith("allocation:"),
+  ),
+  floors: rowsOf(f.db, "forge/work").filter((r) =>
+    r.key.startsWith("allocation:"),
+  ),
+  events: eventsOf(f.db, "forge/work"),
+  other: rowsOf(f.db, "forge/other"),
+  leases: f.db.query("SELECT * FROM state_leases ORDER BY subject").all(),
+});
+/**
+ * One accepted add on issue 1 that must get suffix `want`: the returned key is compared first, then the child at
+ * revision 1, its floor and nothing else: no other row, floor, event, lease or namespace, and the same eligibility.
+ */
+async function add(
+  kind: Family,
+  f: F,
+  token: string,
+  requestId: string,
+  want: number,
+  issue = "forge-1",
+) {
+  const before = everything(f);
+  const eligible = await readyIds(f, token);
+  const floorEvents = seqEvents(f, kind).length;
+  const got = await f.send(FAMILY[kind].send(requestId, issue), { token });
+  expect([requestId, got.status, got.exit]).toEqual([requestId, 200, 0]);
+  const key = `${kind}:work-1:${want}`;
+  expect(FAMILY[kind].key(got.json.result)).toBe(key);
+  const after = everything(f);
+  const row = JSON.parse(after.rows.find((r) => r.key === key)!.body) as object;
+  expect(row).toMatchObject({ key, revision: 1 });
+  if (kind === "link") expect(got.json.result).toEqual(row);
+  expect(after.rows.filter((r) => r.key !== key)).toEqual(before.rows);
+  expect(after.floors.filter((r) => r.key !== seqKey(kind))).toEqual(
+    before.floors.filter((r) => r.key !== seqKey(kind)),
+  );
+  expect(after.events.slice(0, before.events.length)).toEqual(before.events);
+  expect(after.events.slice(before.events.length).sort()).toEqual(
+    [
+      ...after.events.filter((e) => e.includes(seqKeyed(key))),
+      ...seqEvents(f, kind).slice(floorEvents),
+    ].sort(),
+  );
+  expect(after.events).toHaveLength(before.events.length + 2);
+  expect([after.other, after.leases]).toEqual([before.other, before.leases]);
+  expect(seqFloor(f, kind)).toEqual(seqAt(kind, 1, want));
+  expect(seqEvents(f, kind)).toHaveLength(floorEvents + 1);
+  expect(await readyIds(f, token)).toEqual(eligible);
+  expect(receiptOf(f, requestId)).toMatchObject({
+    outcome: "ok",
+    result: got.json.result,
+  });
+  return got;
+}
+
+for (const kind of NUMBERED)
+  test(`cloud ${kind} after deleted highest allocates above it`, async () => {
+    for (const floors of [false, true]) {
+      const { f, token } = await accepted([1], [2], floors);
+      const got = await f.send(FAMILY[kind].send("n-1"), { token });
+      expect([floors, got.status, got.exit]).toEqual([floors, 200, 0]);
+      expect([floors, FAMILY[kind].key(got.json.result)]).toEqual([
+        floors,
+        `${kind}:work-1:3`,
+      ]);
+      // The deleted child stays deleted and keeps its history; the new one is a first revision.
+      expect(rowsOf(f.db, "forge/work").map((r) => r.key)).not.toContain(
+        `${kind}:work-1:2`,
+      );
+      expect(
+        eventsOf(f.db, "forge/work").filter((e) =>
+          e.includes(seqKeyed(`${kind}:work-1:2`)),
+        ),
+      ).toHaveLength(2);
+      expect(seqFloor(f, kind)).toEqual(seqAt(kind, 1, 3));
+    }
+  }, 60_000);
+
+// [name, live, gone, floors kept, the suffix the next add must get]
+const NUMBERINGS: [string, number[], number[], boolean, number][] = [
+  ["the highest deleted, no floor", [1], [2], false, 3],
+  ["the highest deleted, floor kept", [1], [2], true, 3],
+  ["every child deleted, no floor", [], [1, 2], false, 3],
+  ["every child deleted, floor kept", [], [1, 2], true, 3],
+  ["past suffix 9, no floor", [1], [10], false, 11],
+  ["past suffix 9, floor kept", [], [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], true, 11],
+  ["a lower deletion under a higher live child", [10], [2], false, 11],
+  ["sparse live suffixes 1 and 3", [1, 3], [], false, 4],
+];
+for (const kind of NUMBERED)
+  test(`a ${kind} add takes a suffix above every number ever accepted for its issue, under any spelling of the id, and moves only its own floor`, async () => {
+    const spellings = ["forge-1", "FORGE-1", "work-1"];
+    for (const [i, [name, live, gone, floors, want]] of NUMBERINGS.entries()) {
+      const { f, token } = await accepted(live, gone, floors);
+      const spelled = spellings[i % 3]!;
+      await add(kind, f, token, "n-1", want, spelled);
+      // Issue 2, the other kind and the other namespace's higher numbers never moved the number.
+      expect(seqFloor(f, kind, 2)).toEqual(
+        floors ? seqAt(kind, 2, want - 1) : undefined,
+      );
+      const other = NUMBERED.find((k) => k !== kind)!;
+      expect(seqFloor(f, other)).toEqual(
+        floors ? seqAt(other, 1, want - 1) : undefined,
+      );
+      expect([name, seqFloor(f, kind, 10)]).toEqual([name, undefined]);
+    }
+  }, 120_000);
+
+for (const kind of NUMBERED)
+  test(`${kind} replays keep their original answer and burn no number across a deletion`, async () => {
+    const { f, token } = await accepted([], [], false);
+    const other = await f.device();
+    const first: Sent[] = [];
+    for (const id of ["p-1", "p-2"])
+      first.push(await f.send(FAMILY[kind].send(id), { token }));
+    expect(first.map((got) => FAMILY[kind].key(got.json.result))).toEqual([
+      `${kind}:work-1:1`,
+      `${kind}:work-1:2`,
+    ]);
+    owned(f).delete("forge/work", `${kind}:work-1:2`, actor, {
+      expectRevision: 1,
+    });
+    const replays = async () => {
+      const done = f.snapshot();
+      for (const [id, original] of [
+        ["p-1", first[0]!],
+        ["p-2", first[1]!],
+      ] as const)
+        for (const [via, bearer] of [
+          ["direct", token],
+          [createWorker(), other],
+        ] as const) {
+          const again = await f.send(FAMILY[kind].send(id), {
+            token: bearer,
+            via,
+          });
+          expect([id, again.status, again.text]).toEqual([
+            id,
+            200,
+            original.text,
+          ]);
+          expect(f.snapshot()).toBe(done);
+        }
+    };
+    await replays();
+    await add(kind, f, token, "p-3", 3);
+    await replays();
+    await add(kind, f, token, "p-4", 4);
+    expect(seqFloor(f, kind)).toEqual(seqAt(kind, 1, 4));
+  }, 60_000);
+
+for (const kind of NUMBERED)
+  test(`two concurrent ${kind} adds from two clients get distinct consecutive numbers above deleted history, and one repeated request id is one add`, async () => {
+    const { f, token } = await accepted([1], [2], false);
+    const second = await f.device();
+    const keys = async (calls: Promise<Sent>[]) =>
+      (await Promise.all(calls)).map((got) => [
+        got.status,
+        FAMILY[kind].key(got.json.result),
+      ]);
+    expect(
+      await keys([
+        f.send(FAMILY[kind].send("c-1"), { token }),
+        f.send(FAMILY[kind].send("c-2"), { token: second, via: "direct" }),
+      ]),
+    ).toEqual([
+      [200, `${kind}:work-1:3`],
+      [200, `${kind}:work-1:4`],
+    ]);
+    // Both children, the floor at the second number and its two events, and one receipt each.
+    expect(
+      rowsOf(f.db, "forge/work")
+        .filter((r) => r.key.startsWith(`${kind}:work-1:`))
+        .map((r) => r.key),
+    ).toEqual([1, 3, 4].map((i) => `${kind}:work-1:${i}`));
+    expect(seqFloor(f, kind)).toEqual(seqAt(kind, 1, 4));
+    expect(seqEvents(f, kind)).toHaveLength(2);
+    expect(rowsOf(f.db, "forge/cloud").map((r) => r.key)).toEqual([
+      "request:c-1",
+      "request:c-2",
+    ]);
+    const same = await Promise.all([
+      f.send(FAMILY[kind].send("c-3"), { token }),
+      f.send(FAMILY[kind].send("c-3"), { token: second, via: "direct" }),
+    ]);
+    expect(same.map((got) => got.status)).toEqual([200, 200]);
+    expect(same[1].text).toBe(same[0].text);
+    expect(FAMILY[kind].key(same[0].json.result)).toBe(`${kind}:work-1:5`);
+    expect(seqFloor(f, kind)).toEqual(seqAt(kind, 1, 5));
+    expect(seqEvents(f, kind)).toHaveLength(3);
+    expect(rowsOf(f.db, "forge/cloud")).toHaveLength(3);
+  }, 60_000);
+
+for (const kind of NUMBERED)
+  test(`a ${kind} floor is derived once from history, inside the write, and later adds read no history`, async () => {
+    const { f, token } = await accepted([1], [2], false);
+    const seen = spyOn(f.storage.sql, "exec");
+    const history = () =>
+      seen.mock.calls.filter(
+        ([sql, ...bindings]) =>
+          /FROM state_events/.test(sql) && bindings[0] === "forge/work",
+      );
+    await add(kind, f, token, "d-1", 3);
+    expect(history().length).toBeGreaterThan(0);
+    seen.mockClear();
+    await add(kind, f, token, "d-2", 4);
+    expect(history()).toEqual([]);
+    seen.mockRestore();
+  }, 60_000);
+
+// [name, how the floor is spoiled, status, code, exit, the suffix the retry gets once it is repaired]
+const SPOILED: [
+  string,
+  (f: F, kind: Family) => void,
+  number,
+  string,
+  number,
+  number,
+][] = [
+  [
+    "floor text that is not JSON",
+    (f, kind) => {
+      f.db.run(
+        "INSERT INTO state_records(namespace,key,revision,body) VALUES ('forge/work',?,3,'{not json')",
+        [seqKey(kind)],
+      );
+    },
+    400,
+    "INPUT_INVALID",
+    6,
+    2,
+  ],
+  [
+    "a floor of another prefix",
+    (f, kind) =>
+      f.put({ prefix: `${kind}:work-9:`, number: 1 }, {}, seqKey(kind)),
+    400,
+    "INPUT_INVALID",
+    6,
+    2,
+  ],
+  [
+    "an exhausted floor",
+    (f, kind) =>
+      f.put(
+        { prefix: `${kind}:work-1:`, number: Number.MAX_SAFE_INTEGER },
+        {},
+        seqKey(kind),
+      ),
+    400,
+    "INPUT_INVALID",
+    6,
+    2,
+  ],
+  [
+    "an occupied candidate",
+    (f, kind) => {
+      f.put(seqAt(kind, 1, 2), {}, seqKey(kind));
+      f.put(FAMILY[kind].value(1, 3), {}, `${kind}:work-1:3`);
+    },
+    409,
+    "INPUT_CONFLICT",
+    4,
+    3,
+  ],
+];
+for (const kind of NUMBERED)
+  test(`a ${kind} add refused for its floor or candidate allocates nothing, writes no row, event, floor or receipt, and the retry after repair takes the next number`, async () => {
+    for (const [name, spoil, status, code, exit, want] of SPOILED) {
+      const { f, token } = await accepted([1], [], false);
+      spoil(f, kind);
+      const before = f.snapshot();
+      const got = await f.send(FAMILY[kind].send("s-1"), { token });
+      expect([name, got.status, got.code, got.exit]).toEqual([
+        name,
+        status,
+        code,
+        exit,
+      ]);
+      expect([name, f.snapshot()]).toEqual([name, before]);
+      expect(receiptOf(f, "s-1")).toBeUndefined();
+      // Repair: the occupied child is removed; any other floor is replaced by a valid one at the highest child.
+      f.db.run("DELETE FROM state_records WHERE key IN (?,?)", [
+        seqKey(kind),
+        `${kind}:work-1:3`,
+      ]);
+      f.put(
+        seqAt(kind, 1, code === "INPUT_CONFLICT" ? 2 : 1),
+        {},
+        seqKey(kind),
+      );
+      await add(kind, f, token, "s-1", want);
+    }
+  }, 120_000);
+
+test("a link refused for its lease allocates nothing, writes nothing and records nothing, and the retry holds the lease and takes the next number", async () => {
+  const other = { actor, session: { id: "s2" }, leaseGeneration: 2 };
+  for (const [name, more, lose, code] of [
+    ["an expired lease", {}, (f: F) => f.advance(1001), "LEASE_EXPIRED"],
+    ["another session", { context: other }, () => {}, "LEASE_NOT_HELD"],
+    [
+      "an older generation",
+      { context: { ...leased, leaseGeneration: 1 } },
+      () => {},
+      "LEASE_STALE",
+    ],
+  ] as const) {
+    const { f, token } = await accepted([1], [2], false);
+    lose(f);
+    const before = f.snapshot();
+    const got = await f.send(FAMILY.link.send("l-1", "forge-1", more), {
+      token,
+    });
+    expect([name, got.status, got.code, got.exit]).toEqual([
+      name,
+      409,
+      code,
+      4,
+    ]);
+    expect([name, f.snapshot()]).toEqual([name, before]);
+    expect([name, seqFloor(f, "link")]).toEqual([name, undefined]);
+    f.lease({ holder, expiresAt: iso(f.now() + 1000) }, "issue:work-1");
+    await add("link", f, token, "l-1", 3);
+  }
+}, 60_000);
+
+// Each point of the numbered write that can fail: the write must roll back whole, the retry must get the same number.
+const POINTS: [string, RegExp, (kind: Family, id: string) => string][] = [
+  [
+    "receipt record",
+    /^(INSERT INTO|UPDATE) state_records/,
+    (_k, id) => `request:${id}`,
+  ],
+  ["receipt event", /^INSERT INTO state_events/, (_k, id) => `request:${id}`],
+  [
+    "child record",
+    /^(INSERT INTO|UPDATE) state_records/,
+    (k) => `${k}:work-1:3`,
+  ],
+  ["child event", /^INSERT INTO state_events/, (k) => `${k}:work-1:3`],
+  ["floor record", /^(INSERT INTO|UPDATE) state_records/, (k) => seqKey(k)],
+  ["floor event", /^INSERT INTO state_events/, (k) => seqKey(k)],
+];
+for (const kind of NUMBERED)
+  test(`a ${kind} write whose receipt, child or floor fails rolls everything back, with or without an existing floor, and the retry gets the same number`, async () => {
+    for (const floors of [false, true])
+      for (const [name, table, keyOf] of POINTS) {
+        const { f, token } = await accepted([1], [2], floors);
+        const before = f.snapshot();
+        const original = f.storage.sql.exec.bind(f.storage.sql);
+        const key = keyOf(kind, "x-1");
+        const fault = spyOn(f.storage.sql, "exec").mockImplementation(
+          (sql, ...bindings) => {
+            if (table.test(sql) && bindings.includes(key))
+              throw new Error("injected write failure");
+            return original(sql, ...bindings);
+          },
+        );
+        const failed = await f.send(FAMILY[kind].send("x-1"), { token });
+        fault.mockRestore();
+        expect([floors, name, failed.status]).toEqual([floors, name, 500]);
+        expect([floors, name, f.snapshot()]).toEqual([floors, name, before]);
+        await add(kind, f, token, "x-1", 3);
+      }
+  }, 120_000);
+
+// The accepted write is read back and compared with what was written, for the comment as for the link.
+for (const [kind, from, to] of [
+  ["comment", '"body":"next"', '"body":"other"'],
+  ["link", '"delivers"', '"references"'],
+] as const)
+  test(`a ${kind} whose readback is missing or different is INTERNAL and rolls the child, floor, event and receipt back, and a retry appends once`, async () => {
+    for (const [name, change] of [
+      [
+        "different",
+        `UPDATE state_records SET body=replace(body,'${from}','${to}') WHERE namespace=NEW.namespace AND key=NEW.key`,
+      ],
+      [
+        "missing",
+        "DELETE FROM state_records WHERE namespace=NEW.namespace AND key=NEW.key",
+      ],
+    ] as const) {
+      const { f, token } = await accepted([1], [2], false);
+      const before = f.snapshot();
+      f.db.run(
+        `CREATE TRIGGER skew AFTER INSERT ON state_records WHEN NEW.key='${kind}:work-1:3' BEGIN ${change}; END`,
+      );
+      const got = await f.send(FAMILY[kind].send("rb-1"), { token });
+      expect([name, got.status, got.code, got.exit]).toEqual([
+        name,
+        500,
+        "INTERNAL",
+        1,
+      ]);
+      expect([name, got.json.error?.message]).toEqual([name, readback]);
+      expect([name, f.snapshot()]).toEqual([name, before]);
+      f.db.run("DROP TRIGGER skew");
+      await add(kind, f, token, "rb-1", 3);
+    }
+  }, 60_000);
+// forge-1306 B1 end
 
 // The replay scenarios update, claim, renew and release share: a leased write is answered from its receipt only while
 // the caller still holds the lease (a committed release always, as it grants nothing), and a reused id with other input conflicts.
@@ -6559,8 +7111,15 @@ for (const r of REPLAYS) {
       0,
       r.result,
     ]);
-    // One write and its one event; the receipt adds its own record and its own event.
-    expect(eventsOf(f.db, "forge/work")).toHaveLength(1);
+    // One write and its one event; the receipt adds its own record and its own event. A link also moves its
+    // issue's link floor (forge-1306): one more record and one more event, here the floor's first.
+    expect(eventsOf(f.db, "forge/work")).toHaveLength(
+      r.name === "link" ? 2 : 1,
+    );
+    if (r.name === "link") {
+      expect(seqFloor(f, "link", 12)).toEqual(seqAt("link", 12, 1));
+      expect(seqEvents(f, "link", 12)).toHaveLength(1);
+    }
     expect(rowsOf(f.db, "forge/cloud").map((row) => row.key)).toEqual([
       "request:r-1",
     ]);
@@ -6676,6 +7235,8 @@ interface Write {
   lease?: string;
   /** The number a create allocates: it advances the floor to it, with one more work event. Other writes leave the floor alone. */
   floor?: number;
+  /** The comment or link floor a first numbered write records, with its number: one more work record and one more work event. */
+  numbered?: { key: string; number: number };
   /** What the first successful write returns, after a failed receipt write was rolled back. */
   result: (f: F, got: Sent) => void;
 }
@@ -6689,12 +7250,18 @@ const WRITES: Write[] = [
     badWant: [400, "INPUT_INVALID"],
     empty: linkIn({ url: "" }),
     record: `forge/work/${linkKey(12, 1)}`,
+    numbered: { key: "allocation:link:work-12:", number: 1 },
     result: (f, got) => {
       expect([got.status, got.json.result]).toMatchObject([
         200,
         { key: linkKey(12, 1), revision: 1 },
       ]);
-      expect(eventsOf(f.db, "forge/work")).toHaveLength(1);
+      // forge-1306: the link's event and the first event of its number floor, in the same rolled-back transaction.
+      const events = eventsOf(f.db, "forge/work");
+      expect(events).toHaveLength(2);
+      expect(
+        events.filter((e) => e.includes('"key":"allocation:link:work-12:"')),
+      ).toHaveLength(1);
     },
   },
   {
@@ -6721,6 +7288,7 @@ const WRITES: Write[] = [
     badWant: [404, "NOT_FOUND"],
     empty: { id: "forge-12", body: "" },
     record: "forge/work/comment:work-12:4",
+    numbered: { key: "allocation:comment:work-12:", number: 4 },
     result: (_f, got) =>
       expect([got.status, got.json.result]).toEqual([
         200,
@@ -7023,6 +7591,7 @@ for (const w of WRITES) {
       "forge/cloud/request:s-1",
       "forge/cloud/request:s-2",
       ...(floorAfter === undefined ? [] : [floorRecord]),
+      ...(w.numbered === undefined ? [] : [`forge/work/${w.numbered.key}`]),
     ])
       expect(at("state_records")).toContain(record);
     if (w.lease !== undefined) expect(at("state_leases")).toContain(w.lease);
@@ -7036,7 +7605,25 @@ for (const w of WRITES) {
       "forge/cloud",
       "forge/work",
       ...(w.floor === undefined ? [] : ["forge/work"]),
+      // forge-1306: a comment or link also writes its number floor's record.updated, so dump and restore keep it.
+      ...(w.numbered === undefined ? [] : ["forge/work"]),
     ]);
+    const numbered = w.numbered;
+    if (numbered !== undefined)
+      expect(
+        (value.tables.state_records ?? [])
+          .filter(
+            (r) => `${r.namespace}/${r.key}` === `forge/work/${numbered.key}`,
+          )
+          .map(
+            (r) => (JSON.parse(r.body ?? "null") as { value: unknown }).value,
+          ),
+      ).toEqual([
+        {
+          prefix: numbered.key.slice("allocation:".length),
+          number: numbered.number,
+        },
+      ]);
     // The token is the canary: it is in no response, receipt, dump or row of the project.
     const secret = token.split(".")[1]!;
     const rows = JSON.stringify(
@@ -7086,11 +7673,13 @@ const differing = (a: Tables, b: Tables) =>
 const ids = (t: Tables, table: string) =>
   (t[table] ?? []).map((r) => `${r.namespace}/${r.key}`);
 // The accepted create also writes the allocation floor, so its record and its record.updated event are named too.
+// forge-1306: so does the accepted comment, which starts the comment number floor of its issue.
 const NAMED = [
   "forge/cloud/request:max-bad-comment",
   "forge/cloud/request:max-bad-create",
   "forge/cloud/request:max-comment",
   "forge/cloud/request:max-create",
+  "forge/work/allocation:comment:work-1:",
   "forge/work/allocation:issue:work-",
   "forge/work/comment:work-1:1",
   "forge/work/issue:work-1",
@@ -7271,8 +7860,8 @@ for (const mode of ["whole", "paged"] as const)
       ]);
     }
     expect(differing(tablesOf(t.db), kept)).toEqual([]);
-    // A fresh command is one comment, one receipt and their two events, and no earlier row moves. A comment
-    // allocates nothing, so the restored floor row stays as it was. The count is against the source's own rows.
+    // A fresh command is one comment and one receipt, their two events and the comment floor's advance event.
+    // Only the comment floor row changes; no other earlier row moves. The count is against the source's own rows.
     const fresh = await t.send(
       note("fresh-1", { id: "forge-1", body: "later" }),
       { token },
@@ -7285,12 +7874,20 @@ for (const mode of ["whole", "paged"] as const)
     expect([
       after.state_records!.length - tables.state_records!.length,
       after.state_events!.length - tables.state_events!.length,
-    ]).toEqual([2, 2]);
+    ]).toEqual([2, 3]);
+    const commentFloor = "allocation:comment:work-1:";
+    const advanced = after.state_records!.find((r) => r.key === commentFloor)!;
+    expect([
+      advanced.revision,
+      (JSON.parse(String(advanced.body)) as { value: unknown }).value,
+    ]).toEqual([2, { prefix: "comment:work-1:", number: 2 }]);
     for (const table of Object.keys(kept)) {
       const now = new Set(after[table]!.map((r) => JSON.stringify(r)));
       expect([
         table,
-        kept[table]!.filter((r) => !now.has(JSON.stringify(r))),
+        kept[table]!.filter(
+          (r) => r.key !== commentFloor && !now.has(JSON.stringify(r)),
+        ),
       ]).toEqual([table, []]);
     }
   }, 120_000);
@@ -8493,6 +9090,424 @@ for (const trip of TRIPS)
       expectFloor(t, tables, 2);
       await createsNext(t, [3]);
     }, 60_000);
+
+// forge-1306 B2 begin: comment and link number floors in a restore. Every source is real owner history, with
+// deletions made through owner.delete, so each dump is valid; none of them has a comment or link floor.
+const KINDS = ["comment", "link"] as const;
+type Kind = (typeof KINDS)[number];
+const childKey = (kind: Kind, issue: string, n: number) =>
+  `${kind}:${issue}:${n}`;
+const childValue = (kind: Kind, issue: string, n: number) =>
+  kind === "comment"
+    ? { id: issue, body: `c${n}` }
+    : { id: issue, relation: "references", url: `https://e.example/${n}` };
+const numKey = (kind: Kind, issue = "work-1") => `allocation:${kind}:${issue}:`;
+const numFloor = (kind: Kind, number: number, issue = "work-1") => ({
+  prefix: `${kind}:${issue}:`,
+  number,
+});
+const numRow = (t: F, key: string) => {
+  const row = rowsOf(t.db, WORK).find((r) => r.key === key);
+  return row === undefined
+    ? undefined
+    : (JSON.parse(row.body) as { revision: number; value: unknown });
+};
+/** Live and deleted children of one kind on one issue; an updated child is rewritten once before its deletion. */
+function children(
+  w: FloorWrite,
+  kind: Kind,
+  issue: string,
+  live: number[],
+  gone: number[],
+  updated = false,
+) {
+  for (const n of [...live, ...gone])
+    w.put(childKey(kind, issue, n), childValue(kind, issue, n));
+  for (const n of gone) {
+    if (updated)
+      w.put(
+        childKey(kind, issue, n),
+        { ...childValue(kind, issue, n), edited: true },
+        1,
+      );
+    w.drop(childKey(kind, issue, n), updated ? 2 : 1);
+  }
+}
+// Issues 1 and 2 and their issue floor, so only comment and link floors are missing.
+const settled = (w: FloorWrite) => {
+  w.issue(1);
+  w.issue(2);
+  w.floor(floorAt(2));
+};
+// Higher numbers a restore must ignore: another namespace, another numbered family, a suffix that is not a
+// canonical number, a key with no suffix, and a lease-only number.
+const noise: Build = (w, owner) => {
+  w.put(childKey("comment", "work-1", 99), {}, 0, "forge/other");
+  w.put("participant:work-1:50", { holder: "x" });
+  w.put("comment:work-1:007", childValue("comment", "work-1", 7));
+  w.put("link:work-300", { from: "work-1" });
+  owner.acquire(
+    WORK,
+    childKey("comment", "work-1", 77),
+    { actor, session: { id: "s1" } },
+    day,
+    "lease-77",
+  );
+};
+// A small source: one live child of each kind and a supplied issue floor, so a restore adds two floor pairs.
+const smallSource = (w: FloorWrite) => {
+  w.issue(1);
+  w.floor(floorAt(1));
+  for (const kind of KINDS) children(w, kind, "work-1", [1], []);
+};
+const FLOORS_20 = { [numKey("comment")]: 20, [numKey("link")]: 20 };
+const FLOORS_1 = { [numKey("comment")]: 1, [numKey("link")]: 1 };
+
+/** The restored project holds every imported row and exactly these new floor pairs, each a full record and event. */
+function expectFloors(
+  t: F,
+  tables: Tables,
+  want: Record<string, number>,
+  revision = 1,
+) {
+  const after = tablesOf(t.db);
+  const keys = Object.keys(want).sort();
+  const added = (table: string) => {
+    const had = new Set(tables[table]!.map(asText));
+    return after[table]!.filter((row) => !had.has(asText(row)));
+  };
+  for (const [table, rows] of Object.entries(tables)) {
+    const have = new Set(after[table]!.map(asText));
+    expect([table, rows.filter((row) => !have.has(asText(row)))]).toEqual([
+      table,
+      [],
+    ]);
+    const made =
+      table === "state_records" || table === "state_events" ? keys.length : 0;
+    expect([table, added(table).length]).toEqual([table, made]);
+  }
+  const records = added("state_records");
+  const events = added("state_events");
+  expect(records.map((r) => r.key).sort()).toEqual(keys);
+  expect(events.map((e) => Number(e.sequence)).sort((a, b) => a - b)).toEqual(
+    keys.map((_, i) => tables.state_events!.length + 1 + i),
+  );
+  for (const key of keys) {
+    const value = {
+      prefix: key.slice("allocation:".length),
+      number: want[key],
+    };
+    expect(
+      JSON.parse(String(records.find((r) => r.key === key)?.body ?? "null")),
+    ).toEqual({
+      namespace: WORK,
+      key,
+      revision,
+      value,
+      updatedAt: iso(start),
+      updatedBy: RESTORER,
+    });
+    expect(
+      JSON.parse(String(events.find((e) => e.key === key)?.body ?? "null")),
+    ).toEqual({
+      type: `${WORK}:record.updated@1`,
+      namespace: WORK,
+      key,
+      revision,
+      at: iso(start),
+      actor: RESTORER,
+      data: value,
+    });
+  }
+}
+/** Through the real routes, a comment and a link (by two spellings of the issue) take the numbers above the floors. */
+async function appendsAbove(t: F, token: string, want: Record<string, number>) {
+  const claimed = await t.send(claim("ap-claim", { id: "forge-1" }), { token });
+  expect(claimed.status).toBe(200);
+  const leaseGeneration = (claimed.json.result as { generation: number })
+    .generation;
+  const held = { actor, session: { id: "s1" }, leaseGeneration };
+  for (const kind of KINDS) {
+    const base = want[numKey(kind)]!;
+    for (const [i, alias] of ["forge-1", "work-1"].entries()) {
+      const id = `ap-${kind}-${i}`;
+      const got = await t.send(
+        kind === "comment"
+          ? note(id, { id: alias, body: "later" })
+          : linkCall(id, linkIn({ id: alias }), { context: held }),
+        { token },
+      );
+      const result = got.json.result as { commentId?: string; key?: string };
+      const next = childKey(kind, "work-1", base + 1 + i);
+      expect([
+        kind,
+        got.status,
+        got.exit,
+        result.commentId ?? result.key,
+      ]).toEqual([kind, 200, 0, next]);
+      expect(numRow(t, next)?.revision).toBe(1);
+    }
+    expect(numRow(t, numKey(kind))?.value).toEqual(numFloor(kind, base + 2));
+  }
+}
+
+const GROUPS: [string, Build, Record<string, number>][] = [
+  [
+    "live child 1 and deleted child 10 on two issues",
+    (w) => {
+      for (const kind of KINDS) children(w, kind, "work-1", [1], [10]);
+      children(w, "comment", "work-2", [3], [12]);
+      children(w, "link", "work-2", [4], []);
+    },
+    {
+      [numKey("comment")]: 10,
+      [numKey("link")]: 10,
+      [numKey("comment", "work-2")]: 12,
+      [numKey("link", "work-2")]: 4,
+    },
+  ],
+  [
+    "only deleted children",
+    (w) => {
+      for (const kind of KINDS) children(w, kind, "work-1", [], [10]);
+    },
+    { [numKey("comment")]: 10, [numKey("link")]: 10 },
+  ],
+  [
+    "deleted children that were updated first, below a live one",
+    (w) => {
+      children(w, "comment", "work-1", [2], [7, 10], true);
+      children(w, "link", "work-1", [], [10], true);
+    },
+    { [numKey("comment")]: 10, [numKey("link")]: 10 },
+  ],
+];
+const WAYS = [
+  ["whole", "real"],
+  ["paged", 1],
+  ["paged", 2],
+  ["paged", "real"],
+] as const;
+for (const [name, build, want] of GROUPS)
+  for (const [trip, way] of WAYS)
+    test(`a ${trip} restore of ${name}, ${way === "real" ? "as exported" : `${way} rows a page`}, saves every missing floor, reads each back before any append, and the next numbers are above them`, async () => {
+      const { f, tables } = await projectWith(
+        (w, owner) => {
+          settled(w);
+          build(w, owner);
+          noise(w, owner);
+        },
+        { ...vars, DUMP_PAGE_BYTES: "1500" },
+      );
+      const { t, got, parts } = await restoreInto(
+        trip,
+        tables,
+        way === "real" ? { parts: await exported(f, trip) } : { per: way },
+      );
+      if (trip === "paged") expect(parts.length).toBeGreaterThan(1);
+      expect(got.status).toBe(200);
+      expectFloors(t, tables, want);
+      const token = await t.device();
+      expect(await readyIds(t, token)).toEqual(
+        await readyIds(f, await f.device()),
+      );
+      await appendsAbove(t, token, want);
+    }, 60_000);
+
+test("whole restore derives both deleted child floors before any append", async () => {
+  const { tables } = await projectWith((w) => {
+    settled(w);
+    for (const kind of KINDS) children(w, kind, "work-1", [1], [10]);
+  });
+  const { t, got } = await restoreInto("whole", tables);
+  expect(got.status).toBe(200);
+  // Read back before the project serves anything, so a later append cannot derive them lazily.
+  for (const kind of KINDS)
+    expect([kind, numRow(t, numKey(kind))?.value]).toEqual([
+      kind,
+      numFloor(kind, 10),
+    ]);
+  const want = { [numKey("comment")]: 10, [numKey("link")]: 10 };
+  expectFloors(t, tables, want);
+  await appendsAbove(t, await t.device(), want);
+}, 60_000);
+
+for (const trip of TRIPS) {
+  test(`a ${trip} restore keeps supplied comment and link floors above their children byte for byte, and the next numbers are above them`, async () => {
+    const { f, tables } = await projectWith(
+      (w) => {
+        settled(w);
+        for (const kind of KINDS) {
+          children(w, kind, "work-1", [1], [10]);
+          w.put(numKey(kind), numFloor(kind, 20));
+        }
+      },
+      { ...vars, DUMP_PAGE_BYTES: "1500" },
+    );
+    const parts = await exported(f, trip);
+    if (trip === "paged") expect(parts.length).toBeGreaterThan(1);
+    const { t, got } = await restoreInto(trip, tables, { parts });
+    expect(got.status).toBe(200);
+    // No pair is generated: every table is exactly what was sent.
+    expect(differing(tablesOf(t.db), tables)).toEqual([]);
+    await appendsAbove(t, await t.device(), FLOORS_20);
+  }, 60_000);
+
+  test(`a ${trip} restore recreates deleted comment and link floors at the next revision, and its own dump restores again with no new floor`, async () => {
+    const { tables } = await projectWith((w) => {
+      settled(w);
+      for (const kind of KINDS) {
+        children(w, kind, "work-1", [1], [10]);
+        // Updated at revision 1 and deleted at revision 2, so the recreated floor is revision 3.
+        w.put(numKey(kind), numFloor(kind, 20));
+        w.drop(numKey(kind), 1);
+      }
+    });
+    const { t, got } = await restoreInto(trip, tables, { per: 1 });
+    expect(got.status).toBe(200);
+    expectFloors(t, tables, FLOORS_20, 3);
+    const copied = tablesOf(t.db);
+    const again = await restoreInto(trip, copied, {
+      parts: await exported(t, trip),
+    });
+    expect(again.got.status).toBe(200);
+    expect(differing(tablesOf(again.t.db), copied)).toEqual([]);
+    await appendsAbove(again.t, await again.t.device(), FLOORS_20);
+  }, 60_000);
+
+  for (const kind of KINDS) {
+    for (const [name, value] of [
+      ["null", null],
+      ["an extra field", { ...numFloor(kind, 20), extra: true }],
+      ["another prefix", { prefix: `${kind}:work-2:`, number: 20 }],
+      ["a fraction", numFloor(kind, 1.5)],
+      ["a string number", { prefix: `${kind}:work-1:`, number: "20" }],
+    ] as const)
+      test(`a ${trip} restore of a ${kind} floor holding ${name} is RESTORE_INVALID_ROW naming the allocation row, and leaves nothing`, async () => {
+        const { tables } = await projectWith((w) => {
+          settled(w);
+          children(w, kind, "work-1", [1], []);
+          w.put(numKey(kind), value);
+        });
+        const got = await refuses(trip, tables, "RESTORE_INVALID_ROW", 400);
+        expect(got.text).toContain(numKey(kind));
+      }, 60_000);
+
+    for (const [name, build] of [
+      [
+        "below a live child",
+        (w: FloorWrite) => {
+          children(w, kind, "work-1", [12], []);
+          w.put(numKey(kind), numFloor(kind, 11));
+        },
+      ],
+      [
+        "below a deleted child",
+        (w: FloorWrite) => {
+          children(w, kind, "work-1", [], [10]);
+          w.put(numKey(kind), numFloor(kind, 9));
+        },
+      ],
+      [
+        "lowered after a higher earlier value",
+        (w: FloorWrite) => {
+          w.put(numKey(kind), numFloor(kind, 20));
+          w.put(numKey(kind), numFloor(kind, 15), 1);
+        },
+      ],
+    ] as const)
+      test(`a ${trip} restore of a ${kind} floor ${name} is RESTORE_INVALID_ROW naming the allocation row, and leaves nothing`, async () => {
+        const { tables } = await projectWith((w, _owner) => {
+          settled(w);
+          build(w);
+        });
+        const got = await refuses(trip, tables, "RESTORE_INVALID_ROW", 400);
+        expect(got.text).toContain(numKey(kind));
+      }, 60_000);
+
+    test(`a ${trip} restore refuses an unsafe ${kind} number instead of rounding it`, async () => {
+      const { tables } = await projectWith((w) => {
+        settled(w);
+        w.put(`${kind}:work-1:9007199254740993`, childValue(kind, "work-1", 1));
+      });
+      await refuses(trip, tables, "RESTORE_INVALID_ROW", 400);
+    }, 60_000);
+  }
+
+  test(`a ${trip} restore whose generated comment and link floors cross the row limit is RESTORE_TOO_LARGE, and one exactly at it is restored`, async () => {
+    const { tables } = await projectWith(smallSource);
+    expect(Math.max(...Object.values(tables).map((rows) => rows.length))).toBe(
+      4,
+    );
+    await refuses(trip, tables, "RESTORE_TOO_LARGE", 413, {
+      settings: { ...vars, DUMP_MAX_ROWS: "5" },
+    });
+    const { t, got } = await restoreInto(trip, tables, {
+      settings: { ...vars, DUMP_MAX_ROWS: "6" },
+    });
+    expect(got.status).toBe(200);
+    expectFloors(t, tables, FLOORS_1);
+  }, 60_000);
+
+  test(`a ${trip} restore whose generated comment and link floors pass the byte limit is RESTORE_TOO_LARGE, and one exactly at it is restored`, async () => {
+    const { tables } = await projectWith(smallSource);
+    // The same history with both floors written the way the restore writes them: its stored size is the budget.
+    const { tables: whole } = await projectWith((w, owner) => {
+      smallSource(w);
+      for (const kind of KINDS)
+        owner.put(WORK, numKey(kind), numFloor(kind, 1), RESTORER, {
+          expectRevision: 0,
+        });
+    });
+    const at = storedBytes(whole);
+    expect(storedBytes(tables)).toBeLessThan(at);
+    await refuses(trip, tables, "RESTORE_TOO_LARGE", 413, {
+      settings: { ...vars, DUMP_MAX_BYTES: String(at - 1) },
+    });
+    const { t, got } = await restoreInto(trip, tables, {
+      settings: { ...vars, DUMP_MAX_BYTES: String(at) },
+    });
+    expect(got.status).toBe(200);
+    expectFloors(t, tables, FLOORS_1);
+  }, 60_000);
+
+  for (const [what, table, key] of [
+    ["comment floor record", /^INSERT INTO state_records/, numKey("comment")],
+    ["link floor record", /^INSERT INTO state_records/, numKey("link")],
+    [
+      "comment floor event",
+      /^INSERT INTO state_events\(namespace,key,body\)/,
+      numKey("comment"),
+    ],
+    [
+      "link floor event",
+      /^INSERT INTO state_events\(namespace,key,body\)/,
+      numKey("link"),
+    ],
+    ["floor readback", /^SELECT body, \(SELECT MAX\(sequence\)/, undefined],
+  ] as const)
+    test(`a ${trip} restore whose ${what} fails rolls everything back, and a retry saves both floors`, async () => {
+      const { tables } = await projectWith(smallSource);
+      const failed = await restoreInto(trip, tables, {
+        fail: (sql, bindings) =>
+          table.test(sql) && (key === undefined || bindings.includes(key)),
+      });
+      expect([failed.got.status, failed.got.json.error?.code]).toEqual([
+        500,
+        "INTERNAL",
+      ]);
+      expect((await failed.t.admin("status")).json.value!.initialized).toBe(
+        false,
+      );
+      expect(Object.values(tablesOf(failed.t.db)).flat()).toEqual([]);
+      expect(await failed.t.storage.get("restore:next")).toBeUndefined();
+      const { t, got } = await restoreInto(trip, tables, { target: failed.t });
+      expect(got.status).toBe(200);
+      expectFloors(t, tables, FLOORS_1);
+      await appendsAbove(t, await t.device(), FLOORS_1);
+    }, 60_000);
+}
+// forge-1306 B2 end
 
 for (const trip of TRIPS)
   test(`a ${trip} restore reads history sixteen rows at a time, however long it is, and still finds a late deletion`, async () => {

@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, expect, setDefaultTimeout, test } from "bun:test";
 import { resolve } from "node:path";
+import { fakeNext } from "./fake-numbered.ts";
 
 setDefaultTimeout(30_000);
 type RecordValue = {
@@ -76,6 +77,8 @@ function project(stampDelay = 0) {
     list: (prefix: string) =>
       [...records.values()].filter((r) => r.key.startsWith(prefix)).reverse(),
     put,
+    putNext: (prefix: string, build: Parameters<typeof fakeNext>[2]): unknown =>
+      fakeNext({ maxNumber: state.maxNumber, put }, prefix, build),
     lease: () => undefined,
     acquire: () => undefined,
   };

@@ -70,7 +70,9 @@ async function fixture() {
       return row === undefined ? undefined : counted(row, "point");
     },
   };
-  const owner = new StateOwner(db, { now: () => 1000 });
+  // The clock only moves when a test expires a lease.
+  const clock = { now: 1000 };
+  const owner = new StateOwner(db, { now: () => clock.now });
   owner.initialize();
   const state = createStateClient({
     owner,
@@ -82,6 +84,7 @@ async function fixture() {
   return {
     owner,
     state,
+    clock,
     decoded,
     log,
     hooks,
@@ -179,6 +182,7 @@ test("empty allocation prefixes still start at 1 for all four operations", async
       "comment:work-1:1",
     );
     f.owner.delete(namespace, "comment:work-1:1", actor, { expectRevision: 1 });
+    // Replaced expectation: the old assertion reused the deleted number "comment:work-1:1".
     expect(
       f.call("checkpoint", {
         id: "work-1",
@@ -187,7 +191,9 @@ test("empty allocation prefixes still start at 1 for all four operations", async
         worktree: "fixture",
         next: "Check",
       }).commentId,
-    ).toBe("comment:work-1:1");
+    ).toBe("comment:work-1:2");
+    expect(f.owner.get(namespace, "comment:work-1:1")).toBeUndefined();
+    expect(f.owner.events(namespace, "comment:work-1:1")).toHaveLength(2);
     expect(
       f.call("link", {
         id: "work-1",
@@ -195,10 +201,20 @@ test("empty allocation prefixes still start at 1 for all four operations", async
         url: "https://example.com/1",
       }).key,
     ).toBe("link:work-1:1");
+    expect(f.owner.get(namespace, "allocation:comment:work-1:")?.value).toEqual(
+      {
+        prefix: "comment:work-1:",
+        number: 2,
+      },
+    );
+    expect(f.owner.get(namespace, "allocation:link:work-1:")?.value).toEqual({
+      prefix: "link:work-1:",
+      number: 1,
+    });
   } finally {
     await f.close();
   }
-});
+}, 30_000);
 
 test("key aggregates match old JS allocation with gaps, aliases, literal prefixes and numeric ordering", async () => {
   const f = await fixture();
@@ -292,10 +308,22 @@ test("key aggregates match old JS allocation with gaps, aliases, literal prefixe
         relation: "delivers",
         url: "https://example.com/gap",
       });
+      // Replaced expectation: count plus one chose 4 and 5 over the live suffixes 2, 9 and 10; the
+      // next number is above the highest live suffix, and comments and checkpoints share one sequence.
       expect(op === "link" ? result.key : result.commentId).toBe(
-        `${op === "link" ? "link" : "comment"}:work-2:${op === "checkpoint" ? 5 : 4}`,
+        `${op === "link" ? "link" : "comment"}:work-2:${op === "checkpoint" ? 12 : 11}`,
       );
     }
+    expect(f.owner.get(namespace, "allocation:comment:work-2:")?.value).toEqual(
+      {
+        prefix: "comment:work-2:",
+        number: 12,
+      },
+    );
+    expect(f.owner.get(namespace, "allocation:link:work-2:")?.value).toEqual({
+      prefix: "link:work-2:",
+      number: 11,
+    });
     const absent = createStateClient({
       owner: undefined,
       namespace,
@@ -308,52 +336,55 @@ test("key aggregates match old JS allocation with gaps, aliases, literal prefixe
   } finally {
     await f.close();
   }
-});
+}, 30_000);
 
-for (const op of ["comment", "checkpoint", "link"]) {
-  test(`a competing ${op} allocation still loses the create-if-absent revision guard`, async () => {
+// Replaced expectation: a peer used to commit through put at the selected key, and the caller lost
+// the create-if-absent revision guard. A peer now commits through the numbered write before the
+// caller's transaction, and both writes keep distinct consecutive numbers. The revision guard itself
+// stays covered by the core numbered-write tests.
+for (const op of ["comment", "checkpoint", "link"] as const)
+  test(`a competing ${op} committed before the lock takes its own number and loses nothing`, async () => {
     const f = await fixture();
     try {
       f.seed([issue(1)]);
-      const stale = {
-        ...f.state,
-        put: (
-          key: string,
-          value: unknown,
-          options: { expectRevision: number },
-        ) => {
-          // Another caller commits after selection but before this caller's transaction.
-          f.owner.put(namespace, key, value, actor, { expectRevision: 0 });
-          return f.state.put(key, value, options);
-        },
-      };
-      expect(() =>
-        f.call(
-          op,
-          {
-            title: "Race",
-            id: "work-1",
-            body: "Race",
-            step: "build",
-            branch: "topic",
-            worktree: "fixture",
-            next: "Check",
-            relation: "delivers",
-            url: "https://example.com/race",
-          },
-          stale,
-        ),
-      ).toThrow("Expected revision 0; current revision is 1");
-      const key =
-        op === "create"
-          ? "issue:work-2"
-          : `${op === "link" ? "link" : "comment"}:work-1:1`;
-      expect(f.owner.get(namespace, key)?.revision).toBe(1);
+      const prefix = `${op === "link" ? "link" : "comment"}:work-1:`;
+      f.hooks.entry = () =>
+        f.owner.putNext(
+          namespace,
+          prefix,
+          () => ({ value: { id: "work-1", body: "Peer" } }),
+          actor,
+        );
+      const result = f.call(op, {
+        title: "Race",
+        id: "work-1",
+        body: "Race",
+        step: "build",
+        branch: "topic",
+        worktree: "fixture",
+        next: "Check",
+        relation: "delivers",
+        url: "https://example.com/race",
+      });
+      expect(op === "link" ? result.key : result.commentId).toBe(`${prefix}2`);
+      expect(f.owner.get(namespace, `${prefix}1`)?.value).toEqual({
+        id: "work-1",
+        body: "Peer",
+      });
+      for (const n of [1, 2]) {
+        expect(f.owner.get(namespace, `${prefix}${n}`)?.revision).toBe(1);
+        expect(f.owner.events(namespace, `${prefix}${n}`)).toHaveLength(1);
+      }
+      expect(
+        f.owner.events(namespace, `allocation:${prefix}`).map((e) => e.data),
+      ).toEqual([
+        { prefix, number: 1 },
+        { prefix, number: 2 },
+      ]);
     } finally {
       await f.close();
     }
-  });
-}
+  }, 30_000);
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 const run = (body: (f: Fixture) => unknown) => async () => {
@@ -593,6 +624,351 @@ test(
     ] as const)
       expect(() => f.call("create", input)).toThrow(code);
     expect(f.owner.export()).toEqual(before);
+  }),
+  30_000,
+);
+
+// ---- forge-1306: comment and link numbers are never reused after a delete ----
+type Kind = "comment" | "link";
+type Writer = "comment" | "checkpoint" | "call" | "link";
+const prefixOf = (kind: Kind, id = "work-1") => `${kind}:${id}:`;
+const floorAt = (kind: Kind, id: string, number: number) => ({
+  prefix: prefixOf(kind, id),
+  number,
+});
+const floorOf = (f: Fixture, kind: Kind, id = "work-1") =>
+  f.owner.get(namespace, `allocation:${prefixOf(kind, id)}`)?.value;
+const floorEvents = (f: Fixture, kind: Kind, id = "work-1") =>
+  f.owner.events(namespace, `allocation:${prefixOf(kind, id)}`);
+const child = (kind: Kind, id: string, n: number) => ({
+  key: `${prefixOf(kind, id)}${n}`,
+  value:
+    kind === "link"
+      ? { id, relation: "delivers", url: `https://example.com/${n}` }
+      : { id, body: `Comment ${n}` },
+});
+/** A project from before the floor existed: live and deleted children, deleted through the owner. */
+function past(
+  f: Fixture,
+  kind: Kind,
+  live: readonly number[],
+  gone: readonly number[],
+  id = "work-1",
+) {
+  f.seed([...live, ...gone].map((n) => child(kind, id, n)));
+  for (const n of gone)
+    f.owner.delete(namespace, `${prefixOf(kind, id)}${n}`, actor, {
+      expectRevision: 1,
+    });
+}
+const inputs = {
+  comment: { body: "Next" },
+  checkpoint: {
+    step: "build",
+    branch: "topic",
+    worktree: "fixture",
+    next: "Check",
+  },
+  call: { role: "build" },
+  link: { relation: "delivers", url: "https://example.com/next" },
+};
+/** One append through the real handler; the answer is the new key. */
+function add(
+  f: Fixture,
+  op: Writer,
+  view = f.state,
+  id = "work-1",
+  config?: unknown,
+) {
+  const result = f.call(op, { id, ...inputs[op] }, view, config);
+  return (op === "link" ? result.key : result.commentId)!;
+}
+const codeOf = (work: () => unknown) => {
+  try {
+    work();
+  } catch (error) {
+    return (error as { error?: { code?: string } }).error?.code;
+  }
+};
+let leases = 0;
+/** The issue lease for the link tests, held by one holder. */
+const lend = (f: Fixture) =>
+  f.owner.acquire(
+    namespace,
+    "issue:work-1",
+    { actor, session: { id: "holder" } },
+    600,
+    `lend-${++leases}`,
+  );
+function held(f: Fixture, lease: { generation: number }, session = "holder") {
+  return createStateClient({
+    owner: f.owner,
+    namespace,
+    context: {
+      variant: "leased",
+      actor,
+      session: { id: session },
+      project: { id: "allocation" },
+      leaseMode: "held",
+      leaseGeneration: lease.generation,
+    },
+    write: true,
+    requestId: `held-${session}-${lease.generation}`,
+  });
+}
+/** Everything an append must leave alone, except that the floor gains exactly one event. */
+function snapshot(
+  f: Fixture,
+  kind: Kind,
+  live: readonly number[],
+  gone: readonly number[],
+) {
+  const at = (n: number) => `${prefixOf(kind)}${n}`;
+  return {
+    issue: f.owner.get(namespace, "issue:work-1"),
+    lease: f.owner.lease(namespace, "issue:work-1"),
+    ready: ids(f, "ready"),
+    blocked: ids(f, "blocked"),
+    survivors: live.map((n) => f.owner.get(namespace, at(n))),
+    deleted: gone.map((n) => [
+      f.owner.get(namespace, at(n)),
+      f.owner.events(namespace, at(n)),
+    ]),
+    floorEvents: floorEvents(f, kind).length,
+  };
+}
+function expectAdded(
+  f: Fixture,
+  kind: Kind,
+  key: string,
+  expected: number,
+  before: ReturnType<typeof snapshot>,
+  live: readonly number[],
+  gone: readonly number[],
+) {
+  expect(key).toBe(`${prefixOf(kind)}${expected}`);
+  expect(f.owner.get(namespace, key)?.revision).toBe(1);
+  expect(f.owner.events(namespace, key)).toHaveLength(1);
+  expect(floorOf(f, kind)).toEqual(floorAt(kind, "work-1", expected));
+  expect(floorEvents(f, kind).at(-1)?.data).toEqual(
+    floorAt(kind, "work-1", expected),
+  );
+  const after = snapshot(f, kind, live, gone);
+  expect({ ...after, floorEvents: after.floorEvents - 1 }).toEqual(before);
+}
+
+for (const op of ["comment", "checkpoint", "call"] as const) {
+  for (const [name, live, gone, expected] of [
+    ["the highest comment deleted", [1], [2], 3],
+    ["every comment deleted", [], [1, 2], 3],
+    ["a deleted suffix past 9", [9], [10], 11],
+    ["sparse live suffixes", [1, 3], [], 4],
+  ] as const)
+    test(
+      `issue.${op} after ${name} appends comment suffix ${expected} and advances only the floor`,
+      run((f) => {
+        f.seed([issue(1)]);
+        past(f, "comment", live, gone);
+        noise(f);
+        const before = snapshot(f, "comment", live, gone);
+        expectAdded(f, "comment", add(f, op), expected, before, live, gone);
+      }),
+      30_000,
+    );
+  test(
+    `issue.${op} after a floor exists and the highest comment is deleted appends above it`,
+    run((f) => {
+      f.seed([issue(1)]);
+      past(f, "comment", [1], []);
+      expect(add(f, "comment")).toBe("comment:work-1:2");
+      f.owner.delete(namespace, "comment:work-1:2", actor, {
+        expectRevision: 1,
+      });
+      const before = snapshot(f, "comment", [1], [2]);
+      expectAdded(f, "comment", add(f, op), 3, before, [1], [2]);
+    }),
+    30_000,
+  );
+}
+
+for (const [name, live, gone, expected] of [
+  ["the highest link deleted", [1], [2], 3],
+  ["every link deleted", [], [1, 2], 3],
+  ["a deleted suffix past 9", [9], [10], 11],
+  ["sparse live suffixes 1 and 3", [1, 3], [], 4],
+] as const)
+  test(
+    `issue.link after ${name} appends suffix ${expected} under the held lease`,
+    run((f) => {
+      f.seed([issue(1)]);
+      past(f, "link", live, gone);
+      noise(f);
+      const lease = lend(f);
+      const before = snapshot(f, "link", live, gone);
+      const key = add(f, "link", held(f, lease));
+      expectAdded(f, "link", key, expected, before, live, gone);
+      expect(f.owner.get(namespace, key)?.value).toEqual({
+        id: "work-1",
+        ...inputs.link,
+      });
+    }),
+    30_000,
+  );
+test(
+  "issue.link after a floor exists and the highest link is deleted appends above it",
+  run((f) => {
+    f.seed([issue(1)]);
+    past(f, "link", [1], []);
+    const view = held(f, lend(f));
+    expect(add(f, "link", view)).toBe("link:work-1:2");
+    f.owner.delete(namespace, "link:work-1:2", actor, { expectRevision: 1 });
+    const before = snapshot(f, "link", [1], [2]);
+    expectAdded(f, "link", add(f, "link", view), 3, before, [1], [2]);
+  }),
+  30_000,
+);
+
+for (const kind of ["comment", "link"] as const)
+  test(
+    `two ${kind} adds racing for the lock get unique consecutive numbers above deleted history`,
+    run((f) => {
+      f.seed([issue(1)]);
+      past(f, kind, [1], [2]);
+      const prefix = prefixOf(kind);
+      const lease = lend(f);
+      const mine = kind === "link" ? held(f, lease) : f.state;
+      const peer =
+        kind === "link"
+          ? held(f, lease)
+          : createStateClient({
+              owner: f.owner,
+              namespace,
+              context: {
+                variant: "project",
+                actor: { kind: "agent", id: "peer" },
+                project: { id: "allocation" },
+              },
+              write: true,
+              requestId: "peer",
+            });
+      // The peer commits after this caller started but before it takes the write lock.
+      f.hooks.entry = () => expect(add(f, kind, peer)).toBe(`${prefix}3`);
+      expect(add(f, kind, mine)).toBe(`${prefix}4`);
+      for (const n of [3, 4]) {
+        expect(f.owner.get(namespace, `${prefix}${n}`)?.revision).toBe(1);
+        expect(f.owner.events(namespace, `${prefix}${n}`)).toHaveLength(1);
+      }
+      expect(floorEvents(f, kind).map((e) => e.data)).toEqual([
+        floorAt(kind, "work-1", 3),
+        floorAt(kind, "work-1", 4),
+      ]);
+      expect(f.owner.events(namespace, `${prefix}2`)).toHaveLength(2);
+    }),
+    30_000,
+  );
+
+for (const kind of ["comment", "link"] as const)
+  for (const [name, floor, code] of [
+    ["a malformed floor", -1, "INPUT_INVALID"],
+    ["an exhausted number", Number.MAX_SAFE_INTEGER, "INPUT_INVALID"],
+    ["an occupied candidate", 1, "INPUT_CONFLICT"],
+  ] as const)
+    test(
+      `${name} refuses a ${kind} add with ${code}, changes nothing, and the repaired retry numbers above history`,
+      run((f) => {
+        f.seed([issue(1)]);
+        past(f, kind, [1, 2], []);
+        const prefix = prefixOf(kind);
+        const floorKey = `allocation:${prefix}`;
+        f.owner.put(namespace, floorKey, { prefix, number: floor }, actor, {
+          expectRevision: 0,
+        });
+        const view = kind === "link" ? held(f, lend(f)) : f.state;
+        const before = f.owner.export();
+        expect(codeOf(() => add(f, kind, view))).toBe(code);
+        expect(f.owner.export()).toEqual(before);
+        f.owner.put(namespace, floorKey, { prefix, number: 2 }, actor, {
+          expectRevision: 1,
+        });
+        expect(add(f, kind, view)).toBe(`${prefix}3`);
+        expect(floorOf(f, kind)).toEqual(floorAt(kind, "work-1", 3));
+      }),
+      30_000,
+    );
+
+for (const [name, arrange] of [
+  [
+    "a foreign holder",
+    (f: Fixture) => {
+      const lease = lend(f);
+      return { refused: held(f, lease, "intruder"), repaired: () => lease };
+    },
+  ],
+  [
+    "an expired lease",
+    (f: Fixture) => {
+      const lease = lend(f);
+      f.clock.now += 10_000;
+      return { refused: held(f, lease), repaired: () => lend(f) };
+    },
+  ],
+] as const)
+  test(
+    `a link add under ${name} refuses, burns no number, and the holder retry gets the next suffix`,
+    run((f) => {
+      f.seed([issue(1)]);
+      past(f, "link", [1], [2]);
+      const { refused, repaired } = arrange(f);
+      const before = f.owner.export();
+      expect(() => add(f, "link", refused)).toThrow();
+      expect(f.owner.export()).toEqual(before);
+      expect(add(f, "link", held(f, repaired()))).toBe("link:work-1:3");
+      expect(floorOf(f, "link")).toEqual(floorAt("link", "work-1", 3));
+    }),
+    30_000,
+  );
+
+test(
+  "numbers are independent per stored issue, kind and namespace, and display aliases share one sequence",
+  run((f) => {
+    f.seed([issue(1), issue(2)]);
+    f.seed([child("comment", "work-1", 50)], "forge/other");
+    past(f, "comment", [1], [2], "work-1");
+    past(f, "comment", [], [3], "work-2");
+    past(f, "link", [], [7], "work-1");
+    const other = f.owner.list("forge/other");
+    expect(add(f, "comment")).toBe("comment:work-1:3");
+    expect(add(f, "comment", f.state, "alpha-1", { idPrefix: "alpha" })).toBe(
+      "comment:work-1:4",
+    );
+    expect(add(f, "comment", f.state, "work-2")).toBe("comment:work-2:4");
+    expect(add(f, "link")).toBe("link:work-1:8");
+    expect(
+      f.owner.list(namespace, "allocation:").map((row) => [row.key, row.value]),
+    ).toEqual([
+      ["allocation:comment:work-1:", floorAt("comment", "work-1", 4)],
+      ["allocation:comment:work-2:", floorAt("comment", "work-2", 4)],
+      ["allocation:link:work-1:", floorAt("link", "work-1", 8)],
+    ]);
+    expect(f.owner.list("forge/other")).toEqual(other);
+  }),
+  30_000,
+);
+
+test(
+  "with a floor present, an add reads no history and decodes no allocation bodies",
+  run((f) => {
+    f.seed([issue(1)]);
+    f.seed(
+      Array.from({ length: 500 }, (_, n) => child("comment", "work-1", n + 1)),
+    );
+    expect(add(f, "comment")).toBe("comment:work-1:501");
+    f.log.length = 0;
+    f.reset();
+    expect(add(f, "comment")).toBe("comment:work-1:502");
+    expect(floorOf(f, "comment")).toEqual(floorAt("comment", "work-1", 502));
+    expect(historyReads(f.log)).toEqual([]);
+    expect(f.decoded.allocation).toBe(0);
   }),
   30_000,
 );

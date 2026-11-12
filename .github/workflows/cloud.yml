@@ -160,6 +160,24 @@ jobs:
             workerd_rss large
             stop
           )
+          # Number journey (forge-1306): comment and link numbers across deleted history, restore and concurrent adds. It has fresh
+          # persistence and the default dump limits (the large config). The first Worker admits ci-numbers-a; the second starts on the
+          # same persistence after a restart and admits ci-numbers-b, the project the first run restored into.
+          (
+            export config=wrangler.large.jsonc FORGE_CLOUD_PROJECT=ci-numbers-a
+            persist="$RUNNER_TEMP/wrangler-numbers"
+            start numbers
+            measured numbers bun conformance/conformance.ts numbers
+            workerd_rss numbers
+            stop
+            export FORGE_CLOUD_PROJECT=ci-numbers-b
+            start numbers-restart
+            measured numbers-restart bun conformance/conformance.ts numbers-restart
+            workerd_rss numbers-restart
+            stop
+            grep -q "^PASS comment and link numbers survive deleted history, restore and concurrent adds$" "$RUNNER_TEMP/numbers.out" || { echo "::error::the number journey did not pass"; exit 1; }
+            grep -q "^PASS comment and link floors survive a restart, and later adds continue above them$" "$RUNNER_TEMP/numbers-restart.out" || { echo "::error::the number restart journey did not pass"; exit 1; }
+          )
           # The maximum journey's own time counts toward the added time of the budget cases.
           ms=$(sed -n 's/^INFO budget maximum: .*: \([0-9][0-9]*\) ms$/\1/p' "$RUNNER_TEMP/large.out")
           [[ "$ms" =~ ^[0-9]+$ ]] || { echo "::error::large.out needs exactly one valid budget maximum duration line"; exit 1; }
