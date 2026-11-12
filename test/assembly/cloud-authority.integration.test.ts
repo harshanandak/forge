@@ -155,9 +155,12 @@ const READS = [
   "issue.show",
   "issue.list",
   "issue.ready",
+  "issue.blocked",
+  "issue.stale",
   "issue.comments",
   "issue.links",
 ];
+const LISTS = ["issue.list", "issue.ready", "issue.blocked", "issue.stale"];
 const WRITES = [
   "issue.create",
   "issue.comment",
@@ -323,16 +326,20 @@ test("a bound project's issue show is answered by the cloud with the stored toke
     expect(body).toMatchObject({ context: { device: { id: "dev-1" } } });
   }));
 
-test("the routing decision serves show, list, ready, comments, links, create, comment, update, dep, link, close, claim, renew and release, refuses every other operation of the work block by name, and leaves other blocks local", () => {
+test("the routing decision serves show, list, ready, blocked, stale, comments, links, create, comment, update, dep, link, close, claim, renew and release, refuses every other operation of the work block by name, and leaves other blocks local", () => {
   // The refused set is exactly the manifest minus the served list: a served name the manifest does not declare would hide here.
   for (const op of SERVED) expect(MANIFEST_OPS).toContain(op);
   expect(DECLARED).toHaveLength(MANIFEST_OPS.length - SERVED.length);
-  for (const op of [
-    ...["issue.board", "issue.blocked", "issue.stale"],
-    ...["issue.events", "issue.tree", "issue.lint"],
-  ])
+  for (const op of ["issue.blocked", "issue.stale"])
+    expect(cloudRoute("forge/work", op)).toBe("cloud");
+  for (const op of ["issue.board", "issue.events", "issue.tree", "issue.lint"])
     expect(DECLARED).toContain(op);
-  for (const op of ["issue.link", "issue.links"])
+  for (const op of [
+    "issue.blocked",
+    "issue.stale",
+    "issue.link",
+    "issue.links",
+  ])
     expect(DECLARED).not.toContain(op);
   for (const op of SERVED) expect(cloudRoute("forge/work", op)).toBe("cloud");
   expect(cloudRoute("forge/work", "issue.link")).toBe("cloud");
@@ -415,8 +422,6 @@ test("every other work operation is refused by name on a bound project, with no 
     const context = { ...own, session: { id: "s1" }, leaseGeneration: 3 };
     for (const [op, input] of [
       ["issue.board", {}],
-      ["issue.blocked", {}],
-      ["issue.stale", {}],
       ["issue.events", NOTES],
       ["issue.tree", {}],
       ["issue.lint", {}],
@@ -550,6 +555,12 @@ for (const [source, op, input, declared] of [
   [WORK, "issue.ready", {}, "issue.ready"],
   [RENAMED, "ticket.list", FILTERS, "issue.list"],
   [RENAMED, "ticket.ready", {}, "issue.ready"],
+  [WORK, "issue.blocked", {}, "issue.blocked"],
+  [WORK, "issue.blocked", FILTERS, "issue.blocked"],
+  [WORK, "issue.stale", {}, "issue.stale"],
+  [WORK, "issue.stale", FILTERS, "issue.stale"],
+  [RENAMED, "ticket.blocked", FILTERS, "issue.blocked"],
+  [RENAMED, "ticket.stale", {}, "issue.stale"],
 ] as const)
   test(`through the assembled catalog, ${op} ${JSON.stringify(input)} on a bound project is answered by the cloud as ${declared}`, () =>
     using(
@@ -564,7 +575,7 @@ for (const [source, op, input, declared] of [
       },
     ));
 
-for (const op of ["issue.list", "issue.ready"])
+for (const op of LISTS)
   for (const [name, bad] of [
     ["a missing truncated", { items: [] }],
     ["an extra key", { items: [], truncated: false, extra: 1 }],
@@ -584,7 +595,7 @@ for (const op of ["issue.list", "issue.ready"])
         expect(r.net.calls).toHaveLength(1);
       }));
 
-for (const op of ["issue.list", "issue.ready"])
+for (const op of LISTS)
   test(`${op} on a bound project is UNAVAILABLE with no request as a dry run, and a server refusal keeps its code without the token`, () =>
     using({ steps: [() => refusing("AUTH_REVOKED")] }, async (r) => {
       const dry = r.request(op, {}, { dryRun: true });
@@ -666,6 +677,73 @@ for (const [source, noun] of [
         });
       },
     ));
+
+for (const [source, noun] of [
+  [WORK, "issue"],
+  [RENAMED, "ticket"],
+] as const)
+  for (const verb of ["blocked", "stale"] as const)
+    test(`through the CLI wrapper, ${noun} ${verb} reads the cloud with one request and returns its items unchanged, and --dry-run is UNAVAILABLE with none`, () =>
+      using(
+        { config: source, steps: [() => answer(PAGE, `issue.${verb}`)] },
+        async (r) => {
+          const own = { caller: "agent", context: holding(r) } as const;
+          const dry = await runCli(
+            r.assembly.catalog,
+            [noun, verb, "--dry-run"],
+            own,
+          );
+          dryRefused(r, dry.envelope);
+          expect(dry.exitCode).toBe(1);
+          const done = await runCli(
+            r.assembly.catalog,
+            [noun, verb, "--input", JSON.stringify(FILTERS)],
+            own,
+          );
+          expect(done.envelope).toMatchObject({
+            ok: true,
+            op: `${noun}.${verb}`,
+          });
+          expect((done.envelope as { result: unknown }).result).toEqual(PAGE);
+          expect(done.exitCode).toBe(0);
+          expect(r.net.calls).toHaveLength(1);
+          expect(r.net.calls[0]!.body).toMatchObject({
+            op: `issue.${verb}`,
+            input: FILTERS,
+          });
+        },
+      ));
+
+// A schema-valid or invalid answer that carries the presented token, in a value or as a key, is the fixed UNAVAILABLE.
+for (const verb of ["blocked", "stale"] as const)
+  for (const [name, item] of [
+    ["a title", { ...ISSUE, title: `before-${TOKEN}-after` }],
+    ["a label", { ...ISSUE, labels: ["a", `before-${TOKEN}-after`] }],
+    ["a property name", { ...ISSUE, [TOKEN]: "x" }],
+  ] as const)
+    test(`through the CLI wrapper, issue ${verb} whose answer carries the presented token in ${name} is the fixed UNAVAILABLE, with the token in neither the envelope nor stdout`, () =>
+      using(
+        {
+          steps: [
+            () => answer({ items: [item], truncated: false }, `issue.${verb}`),
+          ],
+        },
+        async (r) => {
+          const done = await runCli(r.assembly.catalog, ["issue", verb], {
+            caller: "agent",
+            context: holding(r),
+          });
+          const error = errorOf(done) as { code: string; message: string };
+          expect(error.code).toBe("UNAVAILABLE");
+          expect(error.message).toStartWith(
+            "The Forge cloud gave no usable answer",
+          );
+          for (const shown of [JSON.stringify(done.envelope), done.stdout])
+            expect(shown).not.toMatch(/fct_|before-/);
+          expect(done.exitCode).toBe(1);
+          expect(r.net.calls).toHaveLength(1);
+        },
+      ));
 
 type Rig = Awaited<ReturnType<typeof rig>>;
 /** A held write as the CLI makes it: a session, the caller's own context, and a generation only if the caller names one. */
@@ -1026,6 +1104,8 @@ for (const [op, input] of [
   ["issue.links", NOTES],
   ["issue.list", {}],
   ["issue.ready", {}],
+  ["issue.blocked", {}],
+  ["issue.stale", {}],
 ] as const)
   test(`${op} as a dry run through dispatch on a bound project is refused before any cloud request`, () =>
     using({ steps: [() => answer(PAGE, op)] }, async (r) => {
@@ -2066,7 +2146,7 @@ test("an existing store is left as it was, and a linked worktree is answered by 
 
 test("an unbound project runs locally, with no cloud request and no credential written", () =>
   using({ bind: false, creds: false, sentinel: false }, async (r) => {
-    for (const op of ["issue.list", "issue.ready"])
+    for (const op of LISTS)
       expect(await r.assembly.catalog.invoke(r.request(op, {}))).toMatchObject({
         ok: true,
         result: { items: [], truncated: false },

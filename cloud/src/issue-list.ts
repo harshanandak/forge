@@ -1,4 +1,5 @@
-// Lists work issues from the state tables and writes nothing. Reads go through the same read-only
+// Lists work issues from the state tables and writes nothing. The ready, blocked and stale modes are
+// the same scan with a different candidate rule. Reads go through the same read-only
 // views and fixed statements as show. The scan is bounded before any body is loaded: a project over
 // the row or byte budget is refused, never read partly, and never silently shortened. Parity with
 // the local list holds within these limits. Every row is checked before any filter, limit or lease
@@ -43,9 +44,16 @@ type Stored = {
 
 /** Ready mode: open, unblocked, unleased issues only, ranked by `labelOrder`. */
 export type ReadyMode = { readonly labelOrder: readonly string[] };
+/** Blocked: open with a dependency that is missing or not closed. Stale: open with an unreleased, expired lease. */
+export type ListMode = "blocked" | "stale";
 export const MAX_SCAN_ROWS = 10_000;
 export const MAX_SCAN_BYTES = 8 * 1024 * 1024;
-for (const op of ["issue.list", "issue.ready"] as const) {
+for (const op of [
+  "issue.list",
+  "issue.ready",
+  "issue.blocked",
+  "issue.stale",
+] as const) {
   if (manifest.operations[op].input !== "schemas/ListItemsInput.json")
     throw new Error(`${op} no longer declares schemas/ListItemsInput.json`);
   if (manifest.operations[op].output !== "schemas/ListItemsOutput.json")
@@ -65,6 +73,7 @@ export function listIssues(
   now: number,
   prefix: string,
   ready?: ReadyMode,
+  mode?: ListMode,
 ): { items: TrackerItem[]; truncated: boolean } {
   configured(prefix);
   if (schemas().validate("#", input).length > 0)
@@ -101,7 +110,22 @@ export function listIssues(
     return leases.get(at);
   };
   const wanted = [...labels, ...label];
-  const onlyReady = ready !== undefined || by.ready === true;
+  // A mode takes over from `ready`, as the local handler does.
+  const onlyReady =
+    mode === undefined && (ready !== undefined || by.ready === true);
+  const inMode = (at: number, v: Stored): boolean => {
+    if (v.status !== "open") return false;
+    if (mode === "blocked")
+      return v.dependsOn.some((dep) => statusOf.get(dep) !== "closed");
+    // Checked as a whole first, like a ready candidate's lease; expiry is at or before now.
+    const held = lease(at);
+    return (
+      !holdsLease(held, now) &&
+      held !== undefined &&
+      held.releasedAt === undefined &&
+      Date.parse(String(held.expiresAt)) <= now
+    );
+  };
   const picked = records.flatMap((_, at) => {
     const v = value(at);
     const ok =
@@ -110,6 +134,7 @@ export function listIssues(
       wanted.every((name) => v.labels.includes(name)) &&
       (by.status === undefined || v.status === by.status) &&
       (by.createdSince === undefined || Date.parse(v.createdAt) >= since) &&
+      (mode === undefined || inMode(at, v)) &&
       (!onlyReady ||
         (v.status === "open" &&
           v.dependsOn.every((dep) => statusOf.get(dep) === "closed") &&
