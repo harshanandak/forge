@@ -44,6 +44,8 @@ import {
 } from "./auth/device-browser.ts";
 import {
   isLoginRoute,
+  LIMITS,
+  LIMITS_MIGRATION,
   LOGIN,
   LOGIN_MIGRATION,
   loginRoute,
@@ -100,8 +102,9 @@ const domain = {
     },
     TOKEN_MIGRATION,
     LOGIN_MIGRATION,
+    LIMITS_MIGRATION,
   ],
-  tables: [PRAGMA_TABLE, REQUESTS, TOKENS, LOGIN],
+  tables: [PRAGMA_TABLE, REQUESTS, TOKENS, LOGIN, LIMITS],
 };
 
 const fail = (code: string, message: string): ForgeFailure =>
