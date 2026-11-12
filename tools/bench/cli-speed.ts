@@ -14,7 +14,12 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { gateDecision, sampleOrder } from "./speed-compare.ts";
+import {
+  GATED_PAIRS,
+  gateDecision,
+  medianPairedDelta,
+  sampleOrder,
+} from "./speed-compare.ts";
 import { recordSpeedSample, type SpeedSample } from "./speed-samples.ts";
 
 interface Limit {
@@ -44,6 +49,8 @@ interface Row {
   /** Every timed run, in run order, for the comparison with the base build. */
   readonly timesMs: readonly number[];
   readonly medianPeakMb: number;
+  /** Every run's peak memory, in run order, for the paired comparison with the base build. */
+  readonly peaksMb: readonly number[];
 }
 
 const argv = process.argv.slice(2);
@@ -55,6 +62,12 @@ const runs = Number(flag("--runs") ?? 9);
 if (!Number.isInteger(runs) || runs < 1)
   throw new Error("--runs must be a positive integer");
 const gate = argv.includes("--gate");
+// A pull request only warns when the absolute peak is over its cap; a push to main fails.
+const pullRequest = argv.includes("--pull-request");
+const pairs = Number(flag("--pairs") ?? GATED_PAIRS);
+// An even count has two middle values, and the median would take the upper one.
+if (!Number.isInteger(pairs) || pairs < 1 || pairs % 2 === 0)
+  throw new Error("--pairs must be a positive odd integer");
 
 const bin = resolve(import.meta.dirname, "../../dist/bin/forge.js");
 // `--base <dist folder>`: the base branch's build, measured against this one in the same job.
@@ -167,6 +180,7 @@ function toRow(
     maxMs: Math.max(...times),
     timesMs: times,
     medianPeakMb: median(samples.map((sample) => sample.peakMb)),
+    peaksMb: samples.map((sample) => sample.peakMb),
   };
 }
 
@@ -193,7 +207,7 @@ function measurePair(
   run(args, baseProgram);
   const current: { ms: number; peakMb: number }[] = [];
   const base: { ms: number; peakMb: number }[] = [];
-  for (const side of sampleOrder(runs)) {
+  for (const side of sampleOrder(pairs)) {
     const sample = run(args, side === "current" ? bin : baseProgram);
     (side === "current" ? current : base).push(sample);
     if (command === GATE_COMMAND)
@@ -273,6 +287,10 @@ const table = [
 console.log(table);
 const speedSamples = { command: GATE_COMMAND, samples: gatedSamples };
 console.log(JSON.stringify(speedSamples));
+// Every run's peak memory, so the paired limit can be checked against the real spread.
+for (const row of rows)
+  if (row.command.startsWith(GATE_COMMAND))
+    console.log(`peaks ${row.command}: ${JSON.stringify(row.peaksMb)}`);
 if (process.env.GITHUB_STEP_SUMMARY)
   appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${table}\n`);
 const jsonPath = flag("--json");
@@ -295,11 +313,16 @@ if (gate) {
     const { failures, warnings } = gateDecision(limit, row, baseRow, {
       command: GATE_COMMAND,
       platform,
+      pullRequest,
       baseMissing: `the origin/main build was not found${baseDist === undefined ? " (no --base folder was given)" : ` at ${baseDist}`}, so the check against the base branch cannot run; build the base branch first`,
     });
     for (const message of warnings) console.log(`::warning::${message}`);
     for (const message of failures) console.error(`::error::${message}`);
     if (failures.length > 0) process.exitCode = 1;
     else console.log(`Speed gate passed on ${platform}.`);
+    if (baseRow !== undefined)
+      console.log(
+        `${GATE_COMMAND} peak over the origin/main build: median of ${pairs} paired differences is ${medianPairedDelta(row.peaksMb, baseRow.peaksMb).toFixed(2)} MB`,
+      );
   }
 }

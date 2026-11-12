@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { afterAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
@@ -182,6 +182,7 @@ if (a[0] === 'api') {
     "node_modules/forge-workflow/dist/bin/forge.js",
   );
   function run(command: string, args: string[], cwd: string, extra = {}) {
+    const started = performance.now();
     const out = spawnSync(command, args, {
       cwd,
       env: { ...env, ...extra },
@@ -189,7 +190,13 @@ if (a[0] === 'api') {
       timeout: 20000,
       windowsHide: true,
     });
-    expect(out.error).toBeUndefined();
+    // A child that timed out keeps what it printed; show it with how long it ran.
+    expect(
+      out.error,
+      `${command} ${args.join(" ")} ran ${Math.round(performance.now() - started)} ms: status=${out.status} signal=${out.signal}
+stdout: ${out.stdout}
+stderr: ${out.stderr}`,
+    ).toBeUndefined();
     return out;
   }
   // Each fake gh call appends one line, so tests can count the gh processes Forge starts.
@@ -1265,12 +1272,62 @@ test("installed accounts: a named-login use still records the unpushed-commit an
 }, 120_000);
 
 type ApplySnapshot = Record<string, string>;
+// One real `forge accounts use` builds the fixture for the whole file (21 tests used to run one
+// each); every test ends by restoring the copy of what the call left behind.
+let interrupted: ReturnType<typeof buildInterruptedApply> | undefined;
+let setupUses = 0;
+afterAll(() => {
+  if (interrupted) rmSync(interrupted.root, { recursive: true, force: true });
+});
+// Makes `to` hold the files of `from`. Files that exist are overwritten in place and directories
+// are never replaced: on Windows the device files carry a private ACL that a fresh copy would lose.
+function syncDirectory(from: string, to: string, keep = new Set<string>()) {
+  const wanted = new Set(readdirSync(from));
+  for (const name of readdirSync(to))
+    if (!wanted.has(name) && !keep.has(name))
+      rmSync(join(to, name), { recursive: true, force: true });
+  for (const name of wanted) {
+    const target = join(to, name);
+    const directory = statSync(join(from, name)).isDirectory();
+    // A test may have swapped a file for a directory or back; clear the target so the type matches.
+    if (existsSync(target) && statSync(target).isDirectory() !== directory)
+      rmSync(target, { recursive: true, force: true });
+    if (directory) {
+      mkdirSync(target, { recursive: true });
+      syncDirectory(join(from, name), target);
+    } else writeFileSync(target, readFileSync(join(from, name)));
+  }
+}
 function interruptedApply() {
+  interrupted ??= buildInterruptedApply();
+  return interrupted;
+}
+function buildInterruptedApply() {
   const fixture = setup();
-  const { home, cli, clone } = fixture;
+  const { root, home, cli, clone } = fixture;
   const repo = clone("uninterrupted");
   const approval = { quote: "yes", source: "t3:fixture/message:recovery" };
+  setupUses += 1;
   expect(cli(repo, "use", { login: "alice", approval }).ok).toBe(true);
+  // Everything in the home except the fake gh and git programs, which tests never change and
+  // which are not copied back, so the files that run stay the ones already scanned.
+  const saved = join(root, "saved-home");
+  const mutable = () => readdirSync(home).filter((name) => name !== "bin");
+  for (const name of mutable())
+    cpSync(join(home, name), join(saved, name), { recursive: true });
+  const staged: string[] = [];
+  const stagedClone = (name: string) => {
+    staged.push(name);
+    return clone(name);
+  };
+  function restore() {
+    for (const name of staged.splice(0))
+      rmSync(join(root, name), { recursive: true, force: true });
+    syncDirectory(saved, home, new Set(["bin"]));
+    // The call's scratch space: whatever a test left there is not part of the saved state.
+    for (const name of readdirSync(join(root, "tmp")))
+      rmSync(join(root, "tmp", name), { recursive: true, force: true });
+  }
   const paths = [
     "forge/accounts.gitconfig",
     "forge/accounts.applied.json",
@@ -1289,7 +1346,7 @@ function interruptedApply() {
   function stage(name: string, count: number) {
     writeFileSync(join(device, "bindings.json"), bindings);
     writeFileSync(join(device, "audit.jsonl"), approvedAudit);
-    const path = clone(name);
+    const path = stagedClone(name);
     mkdirSync(join(path, ".git/forge"), { recursive: true });
     for (const file of paths.slice(0, count))
       writeFileSync(join(path, ".git", file), complete[file]!);
@@ -1303,7 +1360,17 @@ function interruptedApply() {
       ),
     ].map((file) => (existsSync(file) ? readFileSync(file, "utf8") : null));
   }
-  return { ...fixture, approval, paths, complete, device, stage, snapshot };
+  return {
+    ...fixture,
+    clone: stagedClone,
+    restore,
+    approval,
+    paths,
+    complete,
+    device,
+    stage,
+    snapshot,
+  };
 }
 
 for (const count of [1, 2, 3]) {
@@ -1344,7 +1411,7 @@ for (const count of [1, 2, 3]) {
         expect(f.cli(repo, verb, input).ok).toBe(true);
         expect(f.snapshot(repo)).toEqual(after);
       } finally {
-        rmSync(f.root, { recursive: true, force: true });
+        f.restore();
       }
     }, 120_000);
   }
@@ -1427,7 +1494,7 @@ for (const kind of [
         expect(result.error).not.toHaveProperty("repair");
       }
     } finally {
-      rmSync(f.root, { recursive: true, force: true });
+      f.restore();
     }
   }, 120_000);
 }
@@ -1472,7 +1539,7 @@ for (const owner of ["dead", "live device", "live clone"]) {
         expect(readdirSync(locks[i]!)).toEqual([markers[i]!]);
       }
     } finally {
-      rmSync(f.root, { recursive: true, force: true });
+      f.restore();
     }
   }, 120_000);
 }
@@ -1486,6 +1553,10 @@ test("installed accounts: another clone's apply audit does not suppress recovery
     expect(f.cli(repo, "plan").ok).toBe(true);
     expect(f.readAudit().filter((row) => row.kind === "apply")).toHaveLength(2);
   } finally {
-    rmSync(f.root, { recursive: true, force: true });
+    f.restore();
   }
 }, 120_000);
+
+test("installed accounts: the interrupted-apply fixture ran one real use for the whole file", () => {
+  expect(setupUses).toBe(1);
+}, 1000);
