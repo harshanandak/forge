@@ -937,6 +937,9 @@ const canaries: [string, string][] = [
   ["a token inside other text", `before-${TOKEN}-after`],
   ["a terminal escape", "a\u001b[31mb"],
   ["a bell", "a\u0007b"],
+  ["a bidi override", "a\u202eb"],
+  ["a bidi isolate", "a\u2066b"],
+  ["a zero-width space", "a\u200bb"],
 ];
 for (const [leaf, plant] of leaves)
   test(`a ${leaf} that holds a token, a control or a format character is the fixed unavailable, as written or JSON-escaped`, async () => {
