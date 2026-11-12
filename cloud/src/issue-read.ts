@@ -81,6 +81,10 @@ function load(
   return row === undefined ? undefined : parseBody(row.body, max);
 }
 
+/** The stored `issue:<id>` record, or undefined when there is none: no mode check, lease or projection. */
+export const issueRecord = (views: IssueViews, id: string): Json | undefined =>
+  load(views.records, RECORD, MAX_RECORD_BYTES, `issue:${id}`);
+
 /** One stored JSON object: a body that is not text, not JSON, too deep or not an object is invalid. */
 export function parseBody(body: unknown, max: number): Json {
   const parsed =
