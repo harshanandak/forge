@@ -1417,7 +1417,7 @@ export class StateOwner {
         actor,
         now,
         undefined,
-        0,
+        true,
       );
       this.#apply(
         namespace,
@@ -1474,6 +1474,7 @@ export class StateOwner {
         actor,
         this.#now(),
         undefined,
+        false,
         found.floorRevision,
       );
       const written = this.#db.get(
@@ -1636,6 +1637,7 @@ export class StateOwner {
     actor: Actor,
     now: number,
     requestId: string | undefined,
+    fresh = false,
     last?: number,
   ): StateRecord {
     const current = this.get(namespace, key);
@@ -1646,15 +1648,17 @@ export class StateOwner {
       current?.revision ??
       last ??
       body<StateEvent>(
-        this.#db.get(
-          "SELECT body FROM state_events WHERE namespace=? AND key=? AND json_extract(body,'$.type') IN (?,?) ORDER BY sequence DESC LIMIT 1",
-          [
-            namespace,
-            key,
-            `${namespace}:record.updated@1`,
-            `${namespace}:record.deleted@1`,
-          ],
-        ),
+        fresh
+          ? undefined
+          : this.#db.get(
+              "SELECT body FROM state_events WHERE namespace=? AND key=? AND json_extract(body,'$.type') IN (?,?) ORDER BY sequence DESC LIMIT 1",
+              [
+                namespace,
+                key,
+                `${namespace}:record.updated@1`,
+                `${namespace}:record.deleted@1`,
+              ],
+            ),
       )?.revision ??
       0;
     const record: StateRecord = {
