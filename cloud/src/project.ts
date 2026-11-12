@@ -56,6 +56,7 @@ import {
   runCommand,
 } from "./issue-commands.ts";
 import { checkTtl } from "./lease-ttl.ts";
+import { requireTokenSession } from "./token-session.ts";
 import {
   authorize,
   authorizeToken,
@@ -401,10 +402,11 @@ export class Project {
         (await this.#storage.get(STAGED)) !== undefined
       )
         throw fail("INPUT_CONFLICT", "An admin restore is under way");
-      const device =
+      const token =
         parts === undefined
-          ? owner!
-          : authorize(this.#open().db, parts, Date.now());
+          ? undefined
+          : authorizeToken(this.#open().db, parts, Date.now());
+      const device = token?.device ?? owner!;
       if (reads) {
         const subject = url.searchParams.get("subject");
         if (subject === null || subject === "")
@@ -420,6 +422,7 @@ export class Project {
         route as "claim" | "renew" | "release",
         body,
         device,
+        token?.session ?? null,
         owner === null
           ? Number(
               this.#open().db.get(
@@ -555,6 +558,7 @@ export class Project {
     route: "claim" | "renew" | "release",
     body: string,
     device: string,
+    tokenSession: string | null,
     expiresAt?: number,
   ): LeaseRecord {
     const checkExpiry = () => {
@@ -588,6 +592,8 @@ export class Project {
         "AUTH_DEVICE_MISMATCH",
         `Token is for device ${device} but the request names device ${named}`,
       );
+    // A token bound to a session acts only as it: refused before any receipt lookup, lease read or write.
+    requireTokenSession(tokenSession, checked.value.session.id);
     const holder: LeaseHolder = {
       ...checked.value,
       session: { ...checked.value.session, device },

@@ -32,6 +32,7 @@ import { releaseIssue, renewIssue } from "./issue-lease.ts";
 import { listIssues } from "./issue-list.ts";
 import { updateIssue } from "./issue-update.ts";
 import { PROJECT_NAME } from "./project-name.ts";
+import { requireTokenSession } from "./token-session.ts";
 import { readOnlyStore, type DurableStorage } from "./store.ts";
 import type { StateOwner } from "../../src/core/state/index.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
@@ -137,15 +138,7 @@ export function parseCommand(text: string, host: CommandHost): PreparedCommand {
       "The request names a device other than the token's",
     );
   // A token bound to a session proves it too, so a lease holder's session is never the caller's claim.
-  if (
-    host.session != null &&
-    session !== undefined &&
-    session.id !== host.session
-  )
-    throw fail(
-      "AUTH_DEVICE_MISMATCH",
-      "The request names a session other than the token's",
-    );
+  requireTokenSession(host.session, session?.id);
   if (
     (project?.id ?? host.project) !== host.project ||
     project?.root !== undefined
