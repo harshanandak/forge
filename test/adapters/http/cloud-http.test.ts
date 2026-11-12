@@ -1100,11 +1100,14 @@ const multibyte = JSON.stringify({
   },
 });
 const SIZE = new TextEncoder().encode(multibyte).length;
+// Over the cap the source stays open, as a server still sending would: only then is there a stream to cancel.
 const streamed = (cap: number) => {
   let cancelled = false;
   const body = new ReadableStream<Uint8Array>({
-    start: (c) =>
-      void (c.enqueue(new TextEncoder().encode(multibyte)), c.close()),
+    start(c) {
+      c.enqueue(new TextEncoder().encode(multibyte));
+      if (SIZE <= cap) c.close();
+    },
     cancel: () => void (cancelled = true),
   });
   const run = ask(new Response(body, { status: 409 }), claimWire(), {
