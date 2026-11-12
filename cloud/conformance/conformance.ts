@@ -1858,7 +1858,7 @@ if (phase === "main") {
     },
   );
 
-  // The typed command route on real workerd: cases 1 to 9 and the comments case run in order on the admitted project and
+  // The typed command route on real workerd: cases 1 to 9, the links case and the comments case run in order on the admitted project and
   // share what they create. The deployed Worker has no fault switch and a live run names no admitted
   // project, so live runs skip them.
   const typed = live ? skip : check;
@@ -2163,6 +2163,53 @@ if (phase === "main") {
         "LEASE_NOT_HELD",
       );
       assert.deepEqual(await dumpOf(typedProject), after, "a refusal wrote");
+    },
+  );
+
+  await typed(
+    "typed links: the holder appends ten more links, a, b and c read all eleven in link-number order, and a read writes nothing",
+    async () => {
+      const links = (who: Caller, id: string) =>
+        typedCall(who, {
+          requestId: `typed-links-${(reads += 1)}`,
+          op: "issue.links",
+          input: { id },
+          context: asProject(who),
+        });
+      for (let n = 2; n <= 11; n += 1)
+        typedOk(
+          await typedCall(a, {
+            ...linkTo(one.id),
+            requestId: `typed-link-n${n}`,
+            input: {
+              id: one.id,
+              relation: "delivers",
+              url: `${linkInputUrl}/${n}`,
+            },
+          }),
+        );
+      const before = await dumpOf(typedProject);
+      const number = (record: LinkRecord) => Number(record.key.split(":")[2]);
+      const stored = recordsOf(
+        before,
+        "forge/work",
+        `link:${storedOf(one.id)}:`,
+      )
+        .map((row) => JSON.parse(String(row.body)) as LinkRecord)
+        .sort((x, y) => number(x) - number(y));
+      // Numeric order puts link 10 after link 9; the text order of the keys would not.
+      assert.deepEqual(stored.map(number), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+      assert.deepEqual(stored[0], linked);
+      for (const who of [a, b, c])
+        assert.deepEqual(typedOk(await links(who, one.id)), {
+          records: stored,
+        });
+      assert.deepEqual(typedOk(await links(a, two.id)), { records: [] });
+      const missing = `${two.id.replace(/-.*/, "").toUpperCase()}-99999`;
+      const gone = await links(a, missing);
+      typedFail(gone, 404, "NOT_FOUND");
+      assert.equal(gone.body.error?.message, `Issue ${missing} was not found`);
+      assert.deepEqual(await dumpOf(typedProject), before, "a read wrote");
     },
   );
 

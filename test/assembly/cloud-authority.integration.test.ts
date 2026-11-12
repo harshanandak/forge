@@ -90,6 +90,12 @@ const RECORD = {
 };
 const RECORDS = { records: [RECORD] };
 const NOTES = { id: "forge-1" };
+const LINK_RECORD = {
+  ...RECORD,
+  key: "link:work-1:1",
+  value: { id: "work-1", relation: "delivers", url: "https://example.com/p/1" },
+};
+const LINK_RECORDS = { records: [LINK_RECORD] };
 /** The status the cloud's command route gives each refusal (cloud/src/project.ts STATUS). */
 const HTTP: Record<string, number> = {
   NOT_FOUND: 404,
@@ -151,6 +157,7 @@ const READS = [
   "issue.blocked",
   "issue.stale",
   "issue.comments",
+  "issue.links",
 ];
 const LISTS = ["issue.list", "issue.ready", "issue.blocked", "issue.stale"];
 const WRITES = [
@@ -311,24 +318,21 @@ test("a bound project's issue show is answered by the cloud with the stored toke
     expect(body).toMatchObject({ context: { device: { id: "dev-1" } } });
   }));
 
-test("the routing decision serves show, list, ready, blocked, stale, comments, create, comment, update, dep, link, close, claim, renew and release, refuses every other operation of the work block by name, and leaves other blocks local", () => {
+test("the routing decision serves show, list, ready, blocked, stale, comments, links, create, comment, update, dep, link, close, claim, renew and release, refuses every other operation of the work block by name, and leaves other blocks local", () => {
   // The refused set is exactly the manifest minus the served list: a served name the manifest does not declare would hide here.
   for (const op of SERVED) expect(MANIFEST_OPS).toContain(op);
   expect(DECLARED).toHaveLength(MANIFEST_OPS.length - SERVED.length);
   for (const op of ["issue.blocked", "issue.stale"])
     expect(cloudRoute("forge/work", op)).toBe("cloud");
+  for (const op of ["issue.board", "issue.events", "issue.tree", "issue.lint"])
+    expect(DECLARED).toContain(op);
   for (const op of [
-    "issue.board",
-    "issue.events",
-    "issue.tree",
-    "issue.lint",
+    "issue.blocked",
+    "issue.stale",
+    "issue.link",
     "issue.links",
   ])
-    expect(DECLARED).toContain(op);
-  expect(DECLARED).not.toContain("issue.blocked");
-  expect(DECLARED).not.toContain("issue.stale");
-  expect(DECLARED).toContain("issue.board");
-  expect(DECLARED).not.toContain("issue.link");
+    expect(DECLARED).not.toContain(op);
   for (const op of SERVED) expect(cloudRoute("forge/work", op)).toBe("cloud");
   expect(cloudRoute("forge/work", "issue.link")).toBe("cloud");
   expect(cloudRoute("forge/memory", "memory.list")).toBe("local");
@@ -384,6 +388,8 @@ for (const [source, op, input, declared, result] of [
   [RENAMED, "ticket.show", { id: "forge-1" }, "issue.show", ISSUE],
   [WORK, "issue.comments", NOTES, "issue.comments", RECORDS],
   [RENAMED, "ticket.comments", NOTES, "issue.comments", RECORDS],
+  [WORK, "issue.links", NOTES, "issue.links", LINK_RECORDS],
+  [RENAMED, "ticket.links", NOTES, "issue.links", LINK_RECORDS],
 ] as const)
   test(`through the assembled catalog, ${op} on a bound project is answered by the cloud as ${declared}`, () =>
     using(
@@ -406,13 +412,20 @@ test("every other work operation is refused by name on a bound project, with no 
   using({}, async (r) => {
     const own = r.request("x", {}).context;
     const context = { ...own, session: { id: "s1" }, leaseGeneration: 3 };
-    const result = await r.assembly.catalog.invoke(
-      r.request("issue.board", {}, { context }),
-    );
-    expect(failed(result, "INPUT_INVALID")).toBe(6);
-    expect(result).toMatchObject({
-      error: { message: notServed("issue.board") },
-    });
+    for (const [op, input] of [
+      ["issue.board", {}],
+      ["issue.blocked", {}],
+      ["issue.stale", {}],
+      ["issue.events", NOTES],
+      ["issue.tree", {}],
+      ["issue.lint", {}],
+    ] as const) {
+      const result = await r.assembly.catalog.invoke(
+        r.request(op, input, { context }),
+      );
+      expect(failed(result, "INPUT_INVALID")).toBe(6);
+      expect(result).toMatchObject({ error: { message: notServed(op) } });
+    }
     expect(r.net.calls).toHaveLength(0);
   }));
 
@@ -439,6 +452,20 @@ for (const [name, op, input, bad] of [
     NOTES,
     { records: [{ ...RECORD, revision: TOKEN }] },
   ],
+  ["no records", "issue.links", NOTES, {}],
+  ["records that is not a list", "issue.links", NOTES, { records: "x" }],
+  [
+    "an extra top-level key",
+    "issue.links",
+    NOTES,
+    { records: [], truncated: false },
+  ],
+  [
+    "an invalid record carrying the token",
+    "issue.links",
+    NOTES,
+    { records: [{ ...LINK_RECORD, revision: TOKEN }] },
+  ],
 ] as const)
   test(`a cloud ${op} result with ${name} fails its declared output and is refused as UNAVAILABLE`, () =>
     using({ steps: [() => answer(bad, op)] }, async (r) => {
@@ -457,6 +484,7 @@ for (const [code, exit] of [
     ["issue.create", CREATE],
     ["issue.comment", COMMENT],
     ["issue.comments", NOTES],
+    ["issue.links", NOTES],
   ] as const)
     test(`a cloud ${code} on ${op} keeps its code and exit ${exit}, without the token`, () =>
       using({ steps: [() => refusing(code)] }, async (r) => {
@@ -469,6 +497,7 @@ for (const [op, input] of [
   ["issue.create", CREATE],
   ["issue.comment", COMMENT],
   ["issue.comments", NOTES],
+  ["issue.links", NOTES],
   ["issue.update", UPDATE],
   ["issue.dep", DEP],
   ["issue.link", LINK],
@@ -603,6 +632,41 @@ for (const [source, noun] of [
         expect(r.net.calls).toHaveLength(1);
         expect(r.net.calls[0]!.body).toMatchObject({
           op: "issue.comments",
+          input: NOTES,
+        });
+      },
+    ));
+
+for (const [source, noun] of [
+  [WORK, "issue"],
+  [RENAMED, "ticket"],
+] as const)
+  test(`through the CLI wrapper, ${noun} links reads the cloud with one request and returns its records unchanged, and --dry-run is UNAVAILABLE with none`, () =>
+    using(
+      { config: source, steps: [() => answer(LINK_RECORDS, "issue.links")] },
+      async (r) => {
+        const own = { caller: "agent", context: holding(r) } as const;
+        const dry = await runCli(
+          r.assembly.catalog,
+          [noun, "links", "forge-1", "--dry-run"],
+          own,
+        );
+        dryRefused(r, dry.envelope);
+        expect(dry.exitCode).toBe(1);
+        const done = await runCli(
+          r.assembly.catalog,
+          [noun, "links", "forge-1"],
+          own,
+        );
+        expect(done.envelope).toMatchObject({
+          ok: true,
+          op: `${noun}.links`,
+          result: LINK_RECORDS,
+        });
+        expect(done.exitCode).toBe(0);
+        expect(r.net.calls).toHaveLength(1);
+        expect(r.net.calls[0]!.body).toMatchObject({
+          op: "issue.links",
           input: NOTES,
         });
       },
@@ -955,6 +1019,34 @@ test("a schema-valid StateRecord whose free-form value carries the token only as
     },
   ));
 
+for (const [name, value] of [
+  ["a value", { url: `https://example.com/?token=${TOKEN}` }],
+  ["a property name", { [TOKEN]: "x" }],
+] as const)
+  test(`through the CLI wrapper, a schema-valid links result carrying the presented token in ${name} is the fixed UNAVAILABLE, with the token in neither the envelope nor stdout`, () =>
+    using(
+      {
+        steps: [
+          () => answer({ records: [{ ...LINK_RECORD, value }] }, "issue.links"),
+        ],
+      },
+      async (r) => {
+        const done = await runCli(
+          r.assembly.catalog,
+          ["issue", "links", "forge-1"],
+          { caller: "agent", context: holding(r) },
+        );
+        expect(errorOf(done)).toMatchObject({
+          code: "UNAVAILABLE",
+          message: NOT_USABLE,
+        });
+        for (const shown of [JSON.stringify(done.envelope), done.stdout])
+          expect(shown).not.toMatch(/fct_|example\.com/);
+        expect(done.exitCode).toBe(1);
+        expect(r.net.calls).toHaveLength(1);
+      },
+    ));
+
 test("a cloud issue.update result with the token in its body is refused as UNAVAILABLE after one update request", () =>
   using(
     {
@@ -1003,6 +1095,7 @@ for (const op of [
 for (const [op, input] of [
   ["issue.show", { id: "forge-1" }],
   ["issue.comments", NOTES],
+  ["issue.links", NOTES],
   ["issue.list", {}],
   ["issue.ready", {}],
   ["issue.blocked", {}],
@@ -2088,6 +2181,18 @@ test("an unbound project runs locally, with no cloud request and no credential w
       });
     expect(await call("issue.claim", { id })).toMatchObject({ ok: true });
     expect(await call("issue.renew", { id })).toMatchObject({ ok: true });
+    expect(await call("issue.links", { id })).toMatchObject({
+      ok: true,
+      result: { records: [] },
+    });
+    const url = "https://example.com/pull/1";
+    expect(
+      await call("issue.link", { id, relation: "delivers", url }),
+    ).toMatchObject({ ok: true });
+    expect(await call("issue.links", { id })).toMatchObject({
+      ok: true,
+      result: { records: [{ value: { relation: "delivers", url } }] },
+    });
     const { revision } = (
       (await call("issue.show", { id })) as unknown as {
         result: { revision: number };
