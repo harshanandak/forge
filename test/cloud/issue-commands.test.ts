@@ -6039,14 +6039,15 @@ test("a lease lost after the input was read refuses the link with the local leas
     const before = writes(f);
     const real = f.storage.sql.exec.bind(f.storage.sql);
     let tripped = false;
-    // The issue read of the input check is the last statement before the numbered write: the authority changes there,
-    // so putNext's fence check (forge-1306), which samples its own clock afterwards, finds it lost. It was the old
-    // count's seam; a trip on putNext's own lease read would come after that clock sample and lose nothing.
+    // The receipt-limit count is the first statement of the write transaction, before putNext samples its own clock
+    // (forge-1306): the authority changes there, so the fence finds it lost and the transaction rolls the change back.
+    // The input check's issue read is outside that transaction, so a loss there would not roll back; a trip on
+    // putNext's own lease read would come after the clock sample and lose nothing.
     f.storage.sql.exec = (sql, ...bindings) => {
       if (
         !tripped &&
-        /FROM state_records/.test(sql) &&
-        bindings.includes("issue:work-12")
+        /COUNT\(\*\)/.test(sql) &&
+        bindings.includes("request:")
       ) {
         tripped = true;
         lose(f);

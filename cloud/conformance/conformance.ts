@@ -3775,15 +3775,19 @@ const FAMILIES = [
 const floorsFor = (
   numbers: readonly number[],
   revisions: readonly number[],
-): Record<string, readonly [string, number, number]> => ({
-  "allocation:issue:work-": ["issue:work-", 3, 1],
-  ...Object.fromEntries(
-    FAMILIES.map(([kind, n], i) => [
-      `allocation:${kind}:work-${n}:`,
-      [`${kind}:work-${n}:`, numbers[i]!, revisions[i]!],
-    ]),
-  ),
-});
+): Record<string, readonly [string, number, number]> =>
+  // In key order, like floorsOf: the checks compare the serialized objects, so order is part of the match.
+  Object.fromEntries(
+    Object.entries({
+      "allocation:issue:work-": ["issue:work-", 3, 1] as const,
+      ...Object.fromEntries(
+        FAMILIES.map(([kind, n], i) => [
+          `allocation:${kind}:work-${n}:`,
+          [`${kind}:work-${n}:`, numbers[i]!, revisions[i]!] as const,
+        ]),
+      ),
+    }).sort(([x], [y]) => (x < y ? -1 : 1)),
+  );
 // What a restore derives: the highest number ever accepted (live or deleted) of each family, at revision 1.
 const SETTLED = floorsFor([10, 5, 10, 3, 3], [1, 1, 1, 1, 1]);
 // After the first typed adds and races, and after the restart's adds.
