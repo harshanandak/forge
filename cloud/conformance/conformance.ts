@@ -355,6 +355,175 @@ const lookup = (
     headers,
   );
 
+// The typed /command route. The Worker admits one project (FORGE_CLOUD_PROJECT) and shows its issue ids with
+// FORGE_CLOUD_ID_PREFIX, so every typed check runs there. A reply is an envelope: status OK with a result,
+// or FAIL with an error code.
+const typedProject = process.env.FORGE_CLOUD_PROJECT ?? "";
+interface Envelope {
+  readonly ok: boolean;
+  readonly status?: "OK" | "FAIL";
+  readonly result?: unknown;
+  readonly error?: { readonly code: string; readonly message: string };
+}
+interface TypedReply {
+  readonly status: number;
+  readonly body: Envelope;
+}
+interface Item {
+  readonly id: string;
+  readonly title: string;
+  readonly status: string;
+  readonly revision: number;
+  readonly dependsOn: readonly string[];
+  readonly body?: string;
+  readonly kind?: string;
+  readonly labels: readonly string[];
+  readonly lease?: {
+    readonly generation: number;
+    readonly holder: Holder;
+    readonly expiresAt: string;
+  };
+}
+interface Grant {
+  readonly id: string;
+  readonly generation: number;
+  readonly expiresAt: string;
+}
+interface Call {
+  readonly requestId: string;
+  readonly op: string;
+  readonly input: object;
+  readonly context: object;
+}
+// A device token with the actor and session it acts as. A session-bound token must name its own
+// session; a sessionless token names any.
+interface Caller {
+  readonly device: Device;
+  readonly actor: Holder["actor"];
+  readonly session: string;
+}
+interface TypedSaved {
+  readonly caller: Caller;
+  readonly create: Call;
+  readonly created: Item;
+  readonly latest: readonly Item[];
+  readonly ready: readonly string[];
+  readonly dump: Dump;
+}
+
+async function callerFor(name: string, bound = true): Promise<Caller> {
+  const device = await issue(typedProject, `typed-${name}`, undefined, bound);
+  return {
+    device,
+    actor: { kind: "agent", id: `agent-typed-${name}` },
+    session: bound ? device.session : `session-chosen-${name}`,
+  };
+}
+async function typedCall(
+  who: Caller,
+  call: Call,
+  headers: Record<string, string> = {},
+  project = typedProject,
+): Promise<TypedReply> {
+  const response = await fetch(`${base}/p/${project}/command`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${who.device.token}`,
+      ...headers,
+    },
+    body: JSON.stringify(call),
+    signal: AbortSignal.timeout(20_000),
+  });
+  const text = await response.text();
+  try {
+    return { status: response.status, body: JSON.parse(text) as Envelope };
+  } catch {
+    throw new Error(
+      `HTTP ${response.status} was not JSON: ${text.slice(0, 300)}`,
+    );
+  }
+}
+const asProject = (who: Caller): object => ({ actor: who.actor });
+const asClaimer = (who: Caller): object => ({
+  actor: who.actor,
+  session: { id: who.session },
+});
+const asHolder = (who: Caller, leaseGeneration: number): object => ({
+  ...asClaimer(who),
+  leaseGeneration,
+});
+const claimOf = (requestId: string, who: Caller, id: string): Call => ({
+  requestId,
+  op: "issue.claim",
+  input: { id, ttlSeconds: 600 },
+  context: asClaimer(who),
+});
+function typedOk<T>(reply: TypedReply): T {
+  assert.equal(reply.status, 200, JSON.stringify(reply.body));
+  assert.equal(reply.body.status, "OK", JSON.stringify(reply.body));
+  assert.equal(reply.body.ok, true, JSON.stringify(reply.body));
+  return reply.body.result as T;
+}
+function typedFail(reply: TypedReply, status: number, code: string): void {
+  assert.equal(reply.status, status, JSON.stringify(reply.body));
+  assert.equal(reply.body.status, "FAIL", JSON.stringify(reply.body));
+  assert.equal(reply.body.ok, false, JSON.stringify(reply.body));
+  assert.equal(reply.body.error?.code, code, JSON.stringify(reply.body));
+}
+let reads = 0;
+const typedRead = async <T>(
+  who: Caller,
+  op: string,
+  input: object,
+): Promise<T> =>
+  typedOk<T>(
+    await typedCall(who, {
+      requestId: `read-${(reads += 1)}`,
+      op,
+      input,
+      context: asProject(who),
+    }),
+  );
+const show = (who: Caller, id: string): Promise<Item> =>
+  typedRead<Item>(who, "issue.show", { id });
+const idsOf = async (who: Caller, op: string): Promise<string[]> =>
+  (await typedRead<{ items: readonly Item[] }>(who, op, {})).items
+    .map((item) => item.id)
+    .sort();
+// The rows of state_records in one namespace whose key starts with `prefix`.
+const recordsOf = (
+  dump: Dump,
+  namespace: string,
+  prefix: string,
+): readonly Record<string, unknown>[] =>
+  (dump.tables.state_records ?? []).filter(
+    (row) => row.namespace === namespace && String(row.key).startsWith(prefix),
+  );
+// The stored id behind a shown one: the prefix is only how the id is displayed.
+const storedOf = (shown: string): string => shown.replace(/^[^-]+-/, "work-");
+// The comments stored on one issue, as written: { id, body }.
+const commentsOn = (dump: Dump, shown: string): unknown[] =>
+  recordsOf(dump, "forge/work", `comment:${storedOf(shown)}:`).map(
+    (row) => (JSON.parse(String(row.body)) as { value: unknown }).value,
+  );
+// A call whose receipt insert fails: the reply is a 500 INTERNAL and the dump is as it was.
+// Returns the dump taken before the call.
+async function rolledBack(who: Caller, call: Call): Promise<Dump> {
+  const snapshot = await dumpOf(typedProject);
+  const failed = await typedCall(who, call, {
+    "x-cloud-fault": "receipt-insert",
+  });
+  assert.equal(failed.status, 500, JSON.stringify(failed.body));
+  assert.equal(failed.body.error?.code, "INTERNAL");
+  assert.deepEqual(
+    await dumpOf(typedProject),
+    snapshot,
+    `${call.op} left a row`,
+  );
+  return snapshot;
+}
+
 let revokedPhone: Device | undefined;
 const revokeCheck = (): Promise<void> =>
   check("a revoked token is refused on its next request", async () => {
@@ -1689,6 +1858,429 @@ if (phase === "main") {
     },
   );
 
+  // The typed command route on real workerd: cases 1 to 9 run in order on the admitted project and
+  // share what they create. The deployed Worker has no fault switch and a live run names no admitted
+  // project, so live runs skip them.
+  const typed = live ? skip : check;
+  let a!: Caller;
+  let b!: Caller;
+  let c!: Caller;
+  let one!: Item;
+  let two!: Item;
+  let third!: Item;
+  let winner!: Caller;
+  let loser!: Caller;
+  let raced!: Grant;
+  const createOne: Call = {
+    requestId: "typed-create-1",
+    op: "issue.create",
+    input: {
+      title: "First",
+      body: "first body",
+      kind: "feature",
+      labels: ["typed"],
+    },
+    context: {},
+  };
+  const noteOn = (id: string): Call => ({
+    requestId: "typed-comment-1",
+    op: "issue.comment",
+    input: { id, body: "first note" },
+    context: {},
+  });
+  let created!: Item;
+  let noted!: { id: string; commentId: string };
+  let typedSaved: TypedSaved | undefined;
+
+  await typed(
+    "typed 1: create, comment, show, list and ready on the admitted project",
+    async () => {
+      assert.notEqual(typedProject, "", "FORGE_CLOUD_PROJECT is set");
+      // Issuing the first token provisions the admitted project.
+      a = await callerFor("a");
+      b = await callerFor("b");
+      c = await callerFor("c", false);
+      created = typedOk<Item>(
+        await typedCall(a, { ...createOne, context: asProject(a) }),
+      );
+      assert.match(created.id, /^ci-\d+$/);
+      assert.equal(created.status, "open");
+      assert.equal(created.revision, 1);
+      one = created;
+      two = typedOk<Item>(
+        await typedCall(a, {
+          requestId: "typed-create-2",
+          op: "issue.create",
+          input: { title: "Second" },
+          context: asProject(a),
+        }),
+      );
+      assert.match(two.id, /^ci-\d+$/);
+      assert.notEqual(two.id, one.id);
+      noted = typedOk(
+        await typedCall(a, { ...noteOn(one.id), context: asProject(a) }),
+      );
+      assert.equal(noted.id, one.id);
+      assert.match(noted.commentId, /^comment:work-\d+:1$/);
+      assert.deepEqual(await show(a, one.id), one);
+      assert.deepEqual(await show(a, two.id), two);
+      // What was stored is what was sent, not only what the create reply said.
+      const { title, body, kind, labels } = one;
+      assert.deepEqual({ title, body, kind, labels }, createOne.input);
+      assert.equal(two.title, "Second");
+      assert.deepEqual(
+        [two.body, two.kind, two.labels],
+        [undefined, undefined, []],
+      );
+      assert.deepEqual(await idsOf(a, "issue.list"), [one.id, two.id].sort());
+      assert.deepEqual(await idsOf(a, "issue.ready"), [one.id, two.id].sort());
+    },
+  );
+
+  await typed(
+    "typed 2: a claim takes the first issue out of ready at generation 1",
+    async () => {
+      const grant = typedOk<Grant>(
+        await typedCall(a, claimOf("typed-claim-1", a, one.id)),
+      );
+      assert.equal(grant.id, one.id);
+      assert.equal(grant.generation, 1);
+      assert.deepEqual(await idsOf(a, "issue.ready"), [two.id]);
+      one = await show(a, one.id);
+      assert.equal(one.lease?.generation, 1);
+    },
+  );
+
+  await typed(
+    "typed 3: an update takes the returned revision, and the old revision is refused",
+    async () => {
+      const edit = (requestId: string, expectRevision: number, title: string) =>
+        typedCall(a, {
+          requestId,
+          op: "issue.update",
+          input: { id: one.id, expectRevision, title },
+          context: asHolder(a, 1),
+        });
+      const updated = typedOk<Item>(
+        await edit("typed-update-1", one.revision, "First edited"),
+      );
+      assert.equal(updated.title, "First edited");
+      assert.equal(updated.revision, one.revision + 1);
+      typedFail(
+        await edit("typed-update-2", one.revision, "Stale"),
+        409,
+        "REVISION_CONFLICT",
+      );
+      one = await show(a, one.id);
+      assert.equal(one.title, "First edited");
+      assert.equal(one.revision, updated.revision);
+    },
+  );
+
+  await typed(
+    "typed 4: two devices race for the second issue: one grant, one LEASE_HELD",
+    async () => {
+      const racers = [b, c];
+      const replies = await Promise.all(
+        racers.map((who, index) =>
+          typedCall(who, claimOf(`typed-race-${index}`, who, two.id)),
+        ),
+      );
+      const won = replies.findIndex((reply) => reply.status === 200);
+      assert.equal(
+        replies.filter((reply) => reply.status === 200).length,
+        1,
+        JSON.stringify(replies.map((reply) => reply.body)),
+      );
+      winner = racers[won]!;
+      loser = racers[1 - won]!;
+      raced = typedOk<Grant>(replies[won]!);
+      assert.equal(raced.generation, 1);
+      typedFail(replies[1 - won]!, 409, "LEASE_HELD");
+      // The winner's lease is untouched, under the session it named.
+      two = await show(a, two.id);
+      assert.equal(two.lease?.generation, 1);
+      assert.equal(two.lease?.holder.session.id, winner.session);
+    },
+  );
+
+  await typed(
+    "typed 5: the winner renews and releases, and the loser claims at generation 2",
+    async () => {
+      await sleep(50);
+      const renewed = typedOk<Grant>(
+        await typedCall(winner, {
+          requestId: "typed-renew-1",
+          op: "issue.renew",
+          input: { id: two.id, ttlSeconds: 600 },
+          context: asHolder(winner, 1),
+        }),
+      );
+      assert.equal(renewed.generation, 1);
+      // The stored lease is the renewed one: same holder and generation, the returned expiry, later than the claim's.
+      const stored = (await show(a, two.id)).lease;
+      assert.equal(stored?.expiresAt, renewed.expiresAt);
+      assert.equal(stored?.generation, 1);
+      assert.deepEqual(stored?.holder, two.lease?.holder);
+      assert.ok(Date.parse(renewed.expiresAt) > Date.parse(raced.expiresAt));
+      const released = typedOk<{ id: string }>(
+        await typedCall(winner, {
+          requestId: "typed-release-1",
+          op: "issue.release",
+          input: { id: two.id },
+          context: asHolder(winner, 1),
+        }),
+      );
+      assert.equal(released.id, two.id);
+      assert.equal((await show(a, two.id)).lease, undefined);
+      const next = typedOk<Grant>(
+        await typedCall(loser, claimOf("typed-claim-2", loser, two.id)),
+      );
+      assert.equal(next.generation, 2);
+      two = await show(a, two.id);
+      assert.equal(two.lease?.holder.session.id, loser.session);
+    },
+  );
+
+  await typed(
+    "typed 6: a dependency is added, and the cycle back is refused",
+    async () => {
+      const added = typedOk<Item>(
+        await typedCall(a, {
+          requestId: "typed-dep-1",
+          op: "issue.dep",
+          input: {
+            id: one.id,
+            target: two.id,
+            action: "add",
+            expectRevision: one.revision,
+          },
+          context: asHolder(a, 1),
+        }),
+      );
+      assert.deepEqual(added.dependsOn, [two.id]);
+      typedFail(
+        await typedCall(loser, {
+          requestId: "typed-dep-2",
+          op: "issue.dep",
+          input: {
+            id: two.id,
+            target: one.id,
+            action: "add",
+            expectRevision: two.revision,
+          },
+          context: asHolder(loser, 2),
+        }),
+        409,
+        "INPUT_CONFLICT",
+      );
+      one = await show(a, one.id);
+      two = await show(a, two.id);
+      assert.deepEqual(one.dependsOn, [two.id]);
+      assert.deepEqual(two.dependsOn, []);
+    },
+  );
+
+  await typed(
+    "typed 7: closing the dependency, and releasing the first issue, makes it ready",
+    async () => {
+      // The first issue waits on an open dependency and a lease, the second is held: nothing is ready.
+      assert.deepEqual(await idsOf(a, "issue.ready"), []);
+      const closed = typedOk<Item>(
+        await typedCall(loser, {
+          requestId: "typed-close-1",
+          op: "issue.close",
+          input: { id: two.id, withoutReceipt: "conformance run" },
+          context: asHolder(loser, 2),
+        }),
+      );
+      assert.equal(closed.status, "closed");
+      two = await show(a, two.id);
+      assert.equal(two.status, "closed");
+      // The dependency is closed, but a live lease still holds the first issue.
+      assert.deepEqual(await idsOf(a, "issue.ready"), []);
+      typedOk(
+        await typedCall(a, {
+          requestId: "typed-release-2",
+          op: "issue.release",
+          input: { id: one.id },
+          context: asHolder(a, 1),
+        }),
+      );
+      assert.deepEqual(await idsOf(a, "issue.ready"), [one.id]);
+      one = await show(a, one.id);
+    },
+  );
+
+  await typed(
+    "typed 8: a replay returns the recorded result and writes nothing, and other input is INPUT_CONFLICT",
+    async () => {
+      const before = await dumpOf(typedProject);
+      assert.deepEqual(
+        typedOk<Item>(
+          await typedCall(a, { ...createOne, context: asProject(a) }),
+        ),
+        created,
+      );
+      assert.deepEqual(
+        typedOk(
+          await typedCall(a, { ...noteOn(one.id), context: asProject(a) }),
+        ),
+        noted,
+      );
+      assert.deepEqual(await dumpOf(typedProject), before, "a replay wrote");
+      assert.deepEqual(await idsOf(a, "issue.list"), [one.id, two.id].sort());
+      assert.deepEqual(commentsOn(before, one.id), [
+        { id: storedOf(one.id), body: "first note" },
+      ]);
+      typedFail(
+        await typedCall(a, {
+          ...createOne,
+          input: { title: "Different" },
+          context: asProject(a),
+        }),
+        409,
+        "INPUT_CONFLICT",
+      );
+      typedFail(
+        await typedCall(a, {
+          ...noteOn(one.id),
+          input: { id: one.id, body: "other note" },
+          context: asProject(a),
+        }),
+        409,
+        "INPUT_CONFLICT",
+      );
+      assert.deepEqual(await dumpOf(typedProject), before, "a conflict wrote");
+    },
+  );
+
+  await typed(
+    "typed 9: a session-bound token naming another session is AUTH_DEVICE_MISMATCH",
+    async () => {
+      const before = await dumpOf(typedProject);
+      const reply = await typedCall(b, {
+        ...claimOf("typed-mismatch-1", b, one.id),
+        context: { actor: b.actor, session: { id: "session-someone-else" } },
+      });
+      typedFail(reply, 403, "AUTH_DEVICE_MISMATCH");
+      assert.equal(
+        reply.body.error?.message,
+        "The request names a session other than the token's",
+      );
+      assert.deepEqual(await dumpOf(typedProject), before, "the refusal wrote");
+    },
+  );
+
+  await typed(
+    "typed fault: a failed receipt insert rolls a create back, and a retry creates exactly one issue",
+    async () => {
+      const create: Call = {
+        requestId: "typed-fault-create",
+        op: "issue.create",
+        input: { title: "Third" },
+        context: asProject(a),
+      };
+      const snapshot = await rolledBack(a, create);
+      third = typedOk<Item>(await typedCall(a, create));
+      const after = await dumpOf(typedProject);
+      assert.equal(
+        recordsOf(after, "forge/work", "issue:").length,
+        recordsOf(snapshot, "forge/work", "issue:").length + 1,
+      );
+      assert.equal(
+        recordsOf(after, "forge/cloud", "request:typed-fault-create").length,
+        1,
+      );
+      assert.deepEqual(typedOk<Item>(await typedCall(a, create)), third);
+    },
+  );
+
+  await typed(
+    "typed fault: a failed receipt insert rolls a claim back, and a retry takes exactly one lease",
+    async () => {
+      const claimThird = claimOf("typed-fault-claim", a, third.id);
+      await rolledBack(a, claimThird);
+      assert.equal(
+        typedOk<Grant>(await typedCall(a, claimThird)).generation,
+        1,
+      );
+      const after = await dumpOf(typedProject);
+      assert.equal(
+        (after.tables.state_leases ?? []).filter(
+          (row) => row.subject === `issue:${storedOf(third.id)}`,
+        ).length,
+        1,
+      );
+      assert.equal(
+        recordsOf(after, "forge/cloud", "request:typed-fault-claim").length,
+        1,
+      );
+      assert.deepEqual(await idsOf(a, "issue.ready"), [one.id]);
+    },
+  );
+
+  await typed(
+    "typed dump and restore: the typed receipts restore with the issues, read back identical",
+    async () => {
+      const source = await dumpOf(typedProject);
+      const target = `${run}-typed-restore`;
+      // A restore refuses a provisioned target, and nothing here has issued it a token.
+      assert.equal(await initialized(target), false);
+      const restored = await adminCall(
+        target,
+        "POST",
+        "restore",
+        JSON.stringify(source),
+      );
+      assert.equal(restored.status, 200, JSON.stringify(restored.body));
+      const copy = await dumpOf(target);
+      assert.deepEqual(copy, source, "read back identical");
+      const receipts = (
+        "create-1 create-2 comment-1 claim-1 update-1 renew-1 release-1 " +
+        "claim-2 dep-1 close-1 fault-create fault-claim"
+      )
+        .split(" ")
+        .map((name) => `typed-${name}`);
+      for (const dump of [source, copy]) {
+        assert.equal(recordsOf(dump, "forge/work", "issue:").length, 3);
+        assert.deepEqual(commentsOn(dump, one.id), [
+          { id: storedOf(one.id), body: "first note" },
+        ]);
+        for (const requestId of receipts)
+          assert.equal(
+            recordsOf(dump, "forge/cloud", `request:${requestId}`).length,
+            1,
+            requestId,
+          );
+        // Typed receipts live in state_records, never in the raw routes' table.
+        assert.deepEqual(
+          (dump.tables.domain_cloud_requests ?? []).filter((row) =>
+            String(row.request_id).startsWith("typed-"),
+          ),
+          [],
+        );
+      }
+      // Tokens are not in a dump, and the restored project is not the admitted one.
+      const refusedHere = await typedCall(a, createOne, {}, target);
+      assert.equal(refusedHere.status, 403, JSON.stringify(refusedHere.body));
+      assert.equal(refusedHere.body.error?.code, "AUTH_FORBIDDEN");
+    },
+  );
+
+  await typed("typed state is saved for the restart phase", async () => {
+    typedSaved = {
+      caller: a,
+      create: { ...createOne, context: asProject(a) },
+      created,
+      latest: await Promise.all(
+        [one, two, third].map((item) => show(a, item.id)),
+      ),
+      ready: await idsOf(a, "issue.ready"),
+      dump: await dumpOf(typedProject),
+    };
+  });
+
   const project = `${run}-persist`;
   const holder = holderOf("persist");
   const claimed = granted(
@@ -1712,7 +2304,14 @@ if (phase === "main") {
   );
   writeFileSync(
     stateFile,
-    JSON.stringify({ project, holder, claimed, freed, revoked: revokedPhone }),
+    JSON.stringify({
+      project,
+      holder,
+      claimed,
+      freed,
+      revoked: revokedPhone,
+      typed: typedSaved,
+    }),
   );
   console.log(`saved restart state for ${project}`);
 } else if (phase === "restart") {
@@ -1722,7 +2321,29 @@ if (phase === "main") {
     claimed: Lease;
     freed: Lease;
     revoked: Device;
+    typed?: TypedSaved;
   };
+  await (live ? skip : check)(
+    "typed replay, show, list and ready survive a restart, and add no row",
+    async () => {
+      const kept = saved.typed;
+      assert.ok(kept, "the main phase saved the typed state");
+      // The original create envelope, resent by the same actor and device, returns the recorded result.
+      assert.deepEqual(
+        typedOk<Item>(await typedCall(kept.caller, kept.create)),
+        kept.created,
+      );
+      for (const item of kept.latest)
+        assert.deepEqual(await show(kept.caller, item.id), item);
+      assert.deepEqual(
+        await idsOf(kept.caller, "issue.list"),
+        kept.latest.map((item) => item.id).sort(),
+      );
+      assert.deepEqual(await idsOf(kept.caller, "issue.ready"), kept.ready);
+      // Neither the replay nor any read wrote an issue, comment, receipt, event or lease.
+      assert.deepEqual(await dumpOf(typedProject), kept.dump);
+    },
+  );
   await check("claims and request ids survive a restart", async () => {
     assert.deepEqual(
       granted(await holderLookup(saved.project, "issue:work-5")),
