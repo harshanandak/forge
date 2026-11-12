@@ -1272,7 +1272,7 @@ test("installed accounts: a named-login use still records the unpushed-commit an
 }, 120_000);
 
 type ApplySnapshot = Record<string, string>;
-// One real `forge accounts use` builds the fixture for the whole file (17 tests used to run one
+// One real `forge accounts use` builds the fixture for the whole file (21 tests used to run one
 // each); every test ends by restoring the copy of what the call left behind.
 let interrupted: ReturnType<typeof buildInterruptedApply> | undefined;
 let setupUses = 0;
@@ -1288,7 +1288,11 @@ function syncDirectory(from: string, to: string, keep = new Set<string>()) {
       rmSync(join(to, name), { recursive: true, force: true });
   for (const name of wanted) {
     const target = join(to, name);
-    if (statSync(join(from, name)).isDirectory()) {
+    const directory = statSync(join(from, name)).isDirectory();
+    // A test may have swapped a file for a directory or back; clear the target so the type matches.
+    if (existsSync(target) && statSync(target).isDirectory() !== directory)
+      rmSync(target, { recursive: true, force: true });
+    if (directory) {
       mkdirSync(target, { recursive: true });
       syncDirectory(join(from, name), target);
     } else writeFileSync(target, readFileSync(join(from, name)));
@@ -1320,6 +1324,9 @@ function buildInterruptedApply() {
     for (const name of staged.splice(0))
       rmSync(join(root, name), { recursive: true, force: true });
     syncDirectory(saved, home, new Set(["bin"]));
+    // The call's scratch space: whatever a test left there is not part of the saved state.
+    for (const name of readdirSync(join(root, "tmp")))
+      rmSync(join(root, "tmp", name), { recursive: true, force: true });
   }
   const paths = [
     "forge/accounts.gitconfig",
@@ -1551,5 +1558,5 @@ test("installed accounts: another clone's apply audit does not suppress recovery
 }, 120_000);
 
 test("installed accounts: the interrupted-apply fixture ran one real use for the whole file", () => {
-  expect(setupUses).toBeLessThanOrEqual(1);
+  expect(setupUses).toBe(1);
 }, 1000);

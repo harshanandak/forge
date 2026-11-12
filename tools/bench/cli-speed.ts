@@ -65,8 +65,9 @@ const gate = argv.includes("--gate");
 // A pull request only warns when the absolute peak is over its cap; a push to main fails.
 const pullRequest = argv.includes("--pull-request");
 const pairs = Number(flag("--pairs") ?? GATED_PAIRS);
-if (!Number.isInteger(pairs) || pairs < 1)
-  throw new Error("--pairs must be a positive integer");
+// An even count has two middle values, and the median would take the upper one.
+if (!Number.isInteger(pairs) || pairs < 1 || pairs % 2 === 0)
+  throw new Error("--pairs must be a positive odd integer");
 
 const bin = resolve(import.meta.dirname, "../../dist/bin/forge.js");
 // `--base <dist folder>`: the base branch's build, measured against this one in the same job.

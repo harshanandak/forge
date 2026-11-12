@@ -14,6 +14,14 @@ export const GATED_PAIRS = 15;
  */
 export const MAX_PEAK_DELTA_MB = 1.5;
 
+/**
+ * A pull request that takes the median peak over the absolute cap, from a base build at or under
+ * it, fails when its paired difference is over this much (MB). It is about 1.7 standard deviations
+ * of the 15-pair median, so a noise-only pull request near the cap rarely trips it; a smaller
+ * crossing step is caught by the push to main, where the cap fails.
+ */
+export const MIN_CROSSING_DELTA_MB = 0.5;
+
 export type Side = "current" | "base";
 
 /**
@@ -95,7 +103,8 @@ export function medianPairedDelta(
  * The Speed gate's whole decision for the gated command. `baseRow` is the base build measured in
  * the same job, or undefined when it is missing. `where` words the messages; `pullRequest` turns
  * the absolute memory cap into a warning, because only the paired difference is steady enough to
- * fail a pull request. A push to main keeps the cap as a failure, so slow creep cannot build up.
+ * fail a pull request, unless the build crosses the cap by a real step. A push to main keeps the
+ * cap as a failure, so slow creep cannot build up.
  */
 export function gateDecision(
   limit: GateLimit,
@@ -111,13 +120,10 @@ export function gateDecision(
   const { command, platform } = where;
   const failures: string[] = [];
   const warnings: string[] = [];
-  if (row.medianPeakMb > limit.maxPeakMb)
-    (where.pullRequest === true && baseRow !== undefined
-      ? warnings
-      : failures
-    ).push(
-      `${command} peak ${row.medianPeakMb.toFixed(1)} MB is over the ${limit.maxPeakMb} MB limit on ${platform}`,
-    );
+  const overCap = row.medianPeakMb > limit.maxPeakMb;
+  const capMessage = `${command} peak ${row.medianPeakMb.toFixed(1)} MB is over the ${limit.maxPeakMb} MB limit on ${platform}`;
+  if (overCap && (where.pullRequest !== true || baseRow === undefined))
+    failures.push(capMessage);
   const overCeiling = row.medianMs > limit.ceilingMs;
   const ceilingMessage = `${command} median ${row.medianMs.toFixed(0)} ms is over the ${limit.ceilingMs} ms ceiling on ${platform}`;
   if (baseRow === undefined) {
@@ -129,6 +135,17 @@ export function gateDecision(
       failures.push(
         `${command} peak is ${delta.toFixed(1)} MB over the origin/main build's in the same job on ${platform}, more than the ${MAX_PEAK_DELTA_MB} MB limit`,
       );
+    // On a pull request the cap warns, unless this build crossed it from under it by a real step.
+    if (overCap && where.pullRequest === true) {
+      const crossed =
+        baseRow.medianPeakMb <= limit.maxPeakMb &&
+        delta > MIN_CROSSING_DELTA_MB;
+      if (crossed)
+        failures.push(
+          `${capMessage}, crossing it from the origin/main build's ${baseRow.medianPeakMb.toFixed(1)} MB by ${delta.toFixed(1)} MB (more than ${MIN_CROSSING_DELTA_MB} MB)`,
+        );
+      else warnings.push(capMessage);
+    }
     const verdict = compareToBase(row.timesMs, baseRow.timesMs);
     if (overCeiling) {
       // Runner speed does not cancel in an absolute time, so the ceiling fails the job only when
