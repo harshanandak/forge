@@ -531,7 +531,8 @@ export class Project {
     let value: Record<string, unknown>;
     if (dump.format === DUMP_FORMAT) {
       if (staged !== undefined) await this.#abandon();
-      value = { restored: restoreDump(this.#open().db, dump) };
+      const { db, owner } = this.#open();
+      value = { restored: restoreDump(db, owner, dump, this.#limits) };
     } else {
       const page = dump as Page;
       // Page 0 starts again; any other page must be the one the last accepted page named.
@@ -542,8 +543,9 @@ export class Project {
             ? "No restore is under way: send page 0 first"
             : `Expected page ${staged}, or page 0 to start again`,
         );
+      const { db, owner } = this.#open();
       value = {
-        restored: restorePage(this.#open().db, page, this.#limits),
+        restored: restorePage(db, owner, page, this.#limits),
         page: page.page,
         done: page.last,
       };

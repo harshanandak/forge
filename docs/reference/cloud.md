@@ -96,6 +96,16 @@ Staged rows are never served: a project is not provisioned until the last page, 
 
 To abandon a half restore, stop. To retry, send page 0 again: it clears the staged rows. Any refused restore request (an out-of-order page, a page over a limit, a bad document or a body that is too large) also clears them, so the next try starts at page 0. A whole `POST restore` clears them too.
 
+## The issue number floor on restore
+
+Create reads a floor record (`allocation:issue:work-` in `forge/work`) so a deleted issue number is never reused. A dump from before floors has none, so create refuses until one exists. Restore settles it as its last step, in the same transaction as the restored rows (the last page for a paged restore, never earlier). The checks that already replay every event also keep the highest issue number seen in live keys and in update and deletion events, and the highest earlier floor value. Nothing else counts: another namespace or prefix, comments, links, a non-numeric or zero-padded suffix, and a lease on its own do not. An unsafe number refuses the restore instead of being rounded.
+
+- **No floor in the dump:** restore writes one floor record at that highest number (0 when there is none) and one `record.updated` event, as the agent `cloud-restore`, at the next revision if a deleted floor left history. The restored counts in the response describe the imported rows only, not this pair. A deleted issue 2 beside a live issue 1 gives floor 2, so the next create is issue 3 at revision 1.
+- **A valid floor in the dump:** it must be at least the highest number and at least any earlier floor value. A larger floor is kept exactly: its value, revision, timestamps and event text do not change, and nothing is written.
+- **A malformed or too low floor** (null, extra fields, another prefix, a fraction, a negative or unsafe number, or below the history) is refused as `RESTORE_INVALID_ROW` (400) naming the allocation row. Restore never repairs or advances it.
+
+The generated pair counts against the same row and byte limits as the imported rows, and a whole restore now checks them too (`RESTORE_TOO_LARGE`, 413). Any failure rolls back the whole restore, or the last page, and the next try starts at page 0. To recover a legacy project, dump it, restore into an empty replacement project, issue its device only after the restore succeeds, and create. This does not repair a project that is already provisioned, and it does not show that a real tracker fits the unchanged limits (forge-1040 covers both).
+
 A device token acts only as its own device. The admin token is the Worker secret `ADMIN_TOKEN`.
 
 ## Deploy

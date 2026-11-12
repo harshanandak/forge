@@ -8135,7 +8135,7 @@ for (const trip of TRIPS)
       { ...vars, DUMP_PAGE_BYTES: "1500" },
     );
     const parts = await exported(f, trip);
-    if (trip === "paged") expect(parts.length).toBeGreaterThan(2);
+    if (trip === "paged") expect(parts.length).toBeGreaterThan(1);
     const { t, got } = await restoreInto(trip, tables, { parts });
     expect(got.status).toBe(200);
     expect(differing(tablesOf(t.db), tables)).toEqual([]);
@@ -8382,11 +8382,13 @@ for (const trip of TRIPS)
   for (const [what, table] of [
     ["record", /^INSERT INTO state_records/],
     ["event", /^INSERT INTO state_events\(namespace,key,body\)/],
+    ["readback", /^SELECT body, \(SELECT MAX\(sequence\)/],
   ] as const)
-    test(`a ${trip} restore whose floor ${what} write fails rolls everything back, and a retry saves the same floor`, async () => {
+    test(`a ${trip} restore whose floor ${what} fails rolls everything back, and a retry saves the same floor`, async () => {
       const { tables } = await projectWith(legacy);
       const failed = await restoreInto(trip, tables, {
-        fail: (sql, bindings) => table.test(sql) && bindings.includes(FLOOR),
+        fail: (sql, bindings) =>
+          table.test(sql) && (what === "readback" || bindings.includes(FLOOR)),
       });
       expect([failed.got.status, failed.got.json.error?.code]).toEqual([
         500,

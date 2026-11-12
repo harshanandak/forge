@@ -511,6 +511,27 @@ export class RestoreConsistencyFailure extends ForgeFailure {
   }
 }
 
+/** Which numbered keys a restore replay reports on: those in `namespace` whose key is `prefix` and a number. */
+export interface NumberedRequest {
+  readonly namespace: string;
+  readonly prefix: string;
+}
+/** The highest number any accepted record under the prefix ever held, and the highest earlier floor value. */
+export interface NumberedSummary {
+  readonly highest: number;
+  readonly earlier: number;
+}
+/** The number after `prefix` when it is a positive decimal (the rule #highest applies in SQL); an unsafe one is refused. */
+function suffixNumber(key: string, prefix: string): number | undefined {
+  if (!key.startsWith(prefix)) return undefined;
+  const text = key.slice(prefix.length);
+  if (!/^[1-9][0-9]*$/.test(text)) return undefined;
+  const number = Number(text);
+  if (!Number.isSafeInteger(number))
+    return invalid("Allocation history holds an unsafe number");
+  return number;
+}
+
 const restorePageSize = 16;
 /** Largest accepted restore page size; a larger value is rejected, never clamped. */
 const restorePageMax: number = 1000;
@@ -540,7 +561,8 @@ export function verifyEventDerivedState(
   candidate: SqlDatabase,
   highWaterMark: number,
   pageSize: number = restorePageSize,
-): void {
+  numbered?: NumberedRequest,
+): NumberedSummary | undefined {
   if (!Number.isSafeInteger(highWaterMark) || highWaterMark < 0)
     throw new RestoreConsistencyFailure("state_events", "high-water mark");
   if (
@@ -592,6 +614,24 @@ export function verifyEventDerivedState(
       plans.set(id, false);
     }
   }
+  // Two numbers folded from rows as they are verified: never the events or the keys themselves.
+  let highest = 0;
+  let earlier = 0;
+  const number = (namespace: string, name: string): void => {
+    if (numbered?.namespace === namespace)
+      highest = Math.max(highest, suffixNumber(name, numbered.prefix) ?? 0);
+  };
+  const reserved = (event: StateEvent): void => {
+    if (
+      numbered?.namespace === event.namespace &&
+      event.key === `allocation:${numbered.prefix}`
+    )
+      try {
+        earlier = Math.max(earlier, floorNumber(event.data, numbered.prefix));
+      } catch {
+        // A value that is not a floor reserves nothing.
+      }
+  };
   let sequence = 0;
   for (const row of rows("state_events", "sequence,namespace,key,body", [
     "sequence",
@@ -687,6 +727,7 @@ export function verifyEventDerivedState(
           reject("state_events", id);
         records.set(id, { revision: record.revision, digest: digest(record) });
         recordRevisions.set(id, record.revision);
+        reserved(event);
       } else if (event.type === `${event.namespace}:record.deleted@1`) {
         const previous = records.get(id);
         if (
@@ -707,6 +748,7 @@ export function verifyEventDerivedState(
           reject("state_records", id);
         records.delete(id);
         recordRevisions.set(id, event.revision);
+        number(event.namespace, event.key);
       } else {
         const prior = leases.get(id);
         let lease: LeaseRecord;
@@ -856,6 +898,7 @@ export function verifyEventDerivedState(
       )
         reject("state_records", id);
       records.delete(id);
+      number(row.namespace as string, row.key as string);
     });
   };
   verifyRows(
@@ -902,6 +945,7 @@ export function verifyEventDerivedState(
     verifyRequest,
   );
   if (requests.size) reject("state_requests", requests.values().next().value!);
+  return numbered === undefined ? undefined : { highest, earlier };
 }
 
 // Only these ledgers contain setup metadata that restore may replace in a nonempty store.
@@ -1371,6 +1415,63 @@ export class StateOwner {
         undefined,
       );
       return record;
+    });
+  }
+
+  /**
+   * Restore only, after a verified replay: make the floor at `allocation:<prefix>` cover every number the
+   * replay found. A present floor is kept exactly, and refused when malformed or below `found`. A missing
+   * one is written at the highest number, in the restore's own transaction, then read back by its known
+   * sequence (`events` is the replay's event count). The refusals are RestoreConsistencyFailure.
+   */
+  seedNumberFloor(
+    namespace: string,
+    prefix: string,
+    found: NumberedSummary,
+    actor: Actor,
+    events: number,
+  ): void {
+    namespaceValid(namespace);
+    wellFormedText(prefix, "Prefix");
+    const floorKey = `allocation:${prefix}`;
+    keyValid(floorKey);
+    if (!validateActor(actor).ok) invalid("Invalid actor");
+    this.#db.transaction(() => {
+      const refuse = () =>
+        new RestoreConsistencyFailure(
+          "state_records",
+          json([namespace, floorKey]),
+        );
+      let stored: number | undefined;
+      try {
+        stored = this.#floor(namespace, floorKey, prefix);
+      } catch (error) {
+        throw error instanceof ForgeFailure ? refuse() : error;
+      }
+      const needed = Math.max(found.highest, found.earlier);
+      if (stored !== undefined) {
+        if (stored < needed) throw refuse();
+        return;
+      }
+      const record = this.#apply(
+        namespace,
+        floorKey,
+        { prefix, number: needed },
+        actor,
+        this.#now(),
+        undefined,
+      );
+      const written = this.#db.get(
+        "SELECT body, (SELECT MAX(sequence) FROM state_events) AS last FROM state_events WHERE sequence=?",
+        [events + 1],
+      );
+      if (
+        written === undefined ||
+        Number(written.last) !== events + 1 ||
+        json(body(written)) !== json(recordEvent(record)) ||
+        this.#floor(namespace, floorKey, prefix) !== needed
+      )
+        throw new Error("The restored floor did not read back");
     });
   }
 
