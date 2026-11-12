@@ -6,12 +6,14 @@ import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Project } from "../../cloud/src/project.ts";
 import {
+  durableStore,
   readOnlyStore,
   TABLE_PROBE,
   type DurableStorage,
 } from "../../cloud/src/store.ts";
 import { TOKEN_LOOKUP, TOKENS } from "../../cloud/src/tokens.ts";
-import { prepareCommand } from "../../cloud/src/issue-commands.ts";
+import { prepareCommand, runCommand } from "../../cloud/src/issue-commands.ts";
+import { OLD_SCHEMA } from "./old-schema.ts";
 import { MAX_RECEIPTS } from "../../cloud/src/issue-receipts.ts";
 import { listIssues } from "../../cloud/src/issue-list.ts";
 import { commentIssue } from "../../cloud/src/issue-comment.ts";
@@ -345,6 +347,12 @@ const strayCalls = (touched: string[]) =>
         call,
       ),
   );
+// Makes the object older than the login migrations and reopens it with nothing set up; returns its snapshot.
+function goCold(f: F): string {
+  for (const sql of OLD_SCHEMA) f.db.query(sql).run();
+  f.reopen();
+  return f.snapshot();
+}
 
 for (const [layer, via] of [
   ["Worker", () => createWorker()],
@@ -505,16 +513,7 @@ test("a body over 512 KiB is refused at the limit and nothing is written", async
 test("a refused command on a cold object older than the login migration writes nothing", async () => {
   const f = fixture();
   const token = await f.device();
-  for (const sql of [
-    "DROP TABLE domain_cloud_login",
-    "DELETE FROM state_migrations WHERE id='003_cloud_login'",
-    "DELETE FROM state_domains WHERE table_name='domain_cloud_login'",
-    // The browser attempt counters came with the next migration, so an object older than login lacks them too.
-    "DROP TABLE domain_cloud_browser_attempts",
-    "DELETE FROM state_migrations WHERE id='004_cloud_browser_attempts'",
-    "DELETE FROM state_domains WHERE table_name='domain_cloud_browser_attempts'",
-  ])
-    f.db.query(sql).run();
+  for (const sql of OLD_SCHEMA) f.db.query(sql).run();
   const before = f.snapshot();
   expect(before).not.toContain("domain_cloud_login");
   for (const absent of [
@@ -6450,7 +6449,65 @@ const WRITES: Write[] = [
   },
 ];
 
+test("a command write rechecks the token before it asks to open the store", async () => {
+  const f = fixture();
+  await f.device();
+  goCold(f);
+  const recheck = mock(() => {
+    throw new Error("rechecked");
+  });
+  // Opening for real would set up the old store; the write must never get that far.
+  const open = mock(() => ({
+    db: durableStore(f.storage),
+    owner: undefined as never,
+  }));
+  const host = {
+    device: "laptop",
+    project: "p",
+    storage: f.storage,
+    idPrefix: "forge",
+    now: start,
+    recheck,
+    open,
+  };
+  expect(() => runCommand(JSON.stringify(make("p-1")), host)).toThrow(
+    "rechecked",
+  );
+  expect(open).not.toHaveBeenCalled();
+}, 30_000);
+
 for (const w of WRITES) {
+  test(`a cold object is not set up for a ${w.name} whose request id carries a token, or whose token expires before the store opens`, async () => {
+    const { f, token } = await w.rows();
+    const before = goCold(f);
+    const fixed = "requestId must not carry a credential";
+    for (const [name, id, input] of [
+      ["valid input", token, undefined],
+      ["refused input", token, w.bad],
+      ["upper case", token.toUpperCase(), undefined],
+      ["inside other text", `x-${token}`, undefined],
+    ] as const) {
+      const got = await f.send(w.send(id, input), { token });
+      const r = [name, got.status, got.code, got.exit, got.json.error?.message];
+      expect(r).toEqual([name, 400, "INPUT_INVALID", 6, fixed]);
+      const u = [name, strayCalls(got.touched), f.snapshot() === before];
+      expect(u).toEqual([name, [], true]);
+    }
+    // The clock passes expiry once the post-body check has read the token row, as the write is about to open.
+    const real = f.storage.sql.exec.bind(f.storage.sql);
+    let lookups = 0;
+    f.storage.sql.exec = (sql, ...bindings) => {
+      const rows = real(sql, ...bindings);
+      if (sql === TOKEN_LOOKUP && ++lookups === 2) f.advance(2 * day);
+      return rows;
+    };
+    const got = await f.send(w.send("e-2"), { token });
+    const r = [lookups >= 2, got.status, got.code, got.exit];
+    expect(r).toEqual([true, 401, "AUTH_EXPIRED", 1]);
+    const u = [strayCalls(got.touched), f.snapshot() === before];
+    expect(u).toEqual([[], true]);
+  }, 30_000);
+
   test(`a request id that carries a device token is refused for ${w.name} before any lookup or write, and no part of the token is stored or echoed`, async () => {
     const { f, token } = await w.rows();
     const before = f.snapshot();

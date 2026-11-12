@@ -1,7 +1,9 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, mock, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { Project } from "../../cloud/src/project.ts";
-import type { DurableStorage } from "../../cloud/src/store.ts";
+import { TABLE_PROBE, type DurableStorage } from "../../cloud/src/store.ts";
+import { TOKEN_LOOKUP } from "../../cloud/src/tokens.ts";
+import { createWorker } from "../../cloud/src/worker.ts";
 import { createSqliteStore } from "../../src/adapters/store-sqlite/index.ts";
 import { StateOwner } from "../../src/core/state/index.ts";
 import type {
@@ -9,11 +11,15 @@ import type {
   LeaseHolder,
   LeaseRecord,
 } from "../../src/generated/types.ts";
+import { OLD_SCHEMA } from "./old-schema.ts";
 
 if (!("timingSafeEqual" in crypto.subtle))
   Object.defineProperty(crypto.subtle, "timingSafeEqual", {
     value: crypto.timingSafeEqual.bind(crypto),
   });
+await mock.module("cloudflare:workers", () => ({ WorkerEntrypoint: class {} }));
+const { createConfiguredWorker } =
+  await import("../../cloud/src/adapters/workers-oauth/compose.ts");
 const now = 1_800_000_000_000,
   day = 86_400_000,
   minute = 60_000;
@@ -22,6 +28,7 @@ const holder = (device = "phone", session = device): LeaseHolder => ({
   session: { id: session, device },
 });
 type Device = { id: string; token: string; device: string };
+type Via = "direct" | "worker" | "configured";
 const defaults = {
   subject: "issue",
   holder: holder(),
@@ -31,12 +38,15 @@ const defaults = {
 function fixture() {
   const clock = spyOn(Date, "now").mockReturnValue(now);
   const db = new Database(":memory:"),
-    values = new Map<string, unknown>();
+    values = new Map<string, unknown>(),
+    // Every statement and key-value write, so setup shows even when no row changes.
+    calls: string[] = [];
   let failRelease = false;
   let claimNumber = 0;
   const storage: DurableStorage = {
     sql: {
       exec: (sql, ...bindings) => {
+        calls.push(sql);
         if (failRelease && sql.startsWith("INSERT INTO state_events"))
           throw new Error("injected event failure");
         const rows = db
@@ -52,12 +62,19 @@ function fixture() {
     transactionSync: (body) => db.transaction(body)(),
     get: (key) => Promise.resolve(values.get(key)),
     put: (key, value) => {
+      calls.push(`put ${key}`);
       values.set(key, value);
       return Promise.resolve();
     },
-    delete: (key) => Promise.resolve(values.delete(key)),
+    delete: (key) => {
+      calls.push(`delete ${key}`);
+      return Promise.resolve(values.delete(key));
+    },
   };
-  const project = new Project({ storage });
+  let project = new Project({ storage });
+  const bindings = {
+    PROJECTS: { idFromName: (name: string) => name, get: () => project },
+  };
   async function send(
     route: string,
     input?: unknown,
@@ -78,6 +95,37 @@ function fixture() {
     return {
       status: response.status,
       body: (await response.json()) as { value: unknown; error?: ForgeError },
+    };
+  }
+  // One request to /p/a/<route>, straight to the Project or through a real Worker; the calls it made come back.
+  async function raw(
+    route: string,
+    input: unknown,
+    headers: Record<string, string>,
+    via: Via = "direct",
+  ) {
+    const request = new Request(`https://fixture.example/p/a/${route}`, {
+      method: input === undefined ? "GET" : "POST",
+      headers,
+      ...(input === undefined
+        ? {}
+        : {
+            body:
+              input instanceof ReadableStream ? input : JSON.stringify(input),
+            duplex: "half",
+          }),
+    });
+    calls.length = 0;
+    const response =
+      via === "direct"
+        ? await project.fetch(request)
+        : await (
+            via === "worker" ? createWorker() : createConfiguredWorker()
+          ).fetch(request, bindings);
+    return {
+      status: response.status,
+      body: (await response.json()) as { value: unknown; error?: ForgeError },
+      calls: [...calls],
     };
   }
   const write = (
@@ -114,9 +162,33 @@ function fixture() {
   const row = (sql: string, id: string) => db.query(sql).get(id);
   const rows = (table: string) =>
     db.query(`SELECT * FROM ${table}`).all() as Record<string, unknown>[];
+  // Schema definitions, every row (ledgers included) and the key-value entries, read straight from the fixture.
+  const snapshot = () => {
+    const schema = db
+      .query("SELECT type, name, sql FROM sqlite_schema ORDER BY 1, 2")
+      .all() as { type: string; name: string }[];
+    const tables = schema.filter((s) => s.type === "table");
+    return JSON.stringify([
+      schema,
+      tables.map((t) => rows(t.name)),
+      [...values],
+    ]);
+  };
   return {
     db,
     storage,
+    calls,
+    raw,
+    snapshot,
+    // A new Project over the same storage: nothing it has not read is set up.
+    reopen: () => {
+      project = new Project({ storage });
+    },
+    // The object as an older deploy left it.
+    cold: () => {
+      for (const sql of OLD_SCHEMA) db.run(sql);
+      project = new Project({ storage });
+    },
     send,
     write,
     issue,
@@ -392,4 +464,185 @@ test("whole and paged restores preserve an oversized claim refusal and its repla
     const token = (await target.issue()).token;
     expect(await target.write("claim", input, token)).toEqual(refused);
   }
+}, 30_000);
+
+// A cold object is an older deploy's database, opened afresh. A refused credential or a holder read must
+// set nothing up: the recorded calls stand beside the snapshot, so an idempotent CREATE fails too.
+type Fixture = ReturnType<typeof fixture>;
+const INVENTED = `fct_0123456789abcdef.${"A".repeat(43)}`;
+const FORGED = { "X-Forge-Owner": "phone", "X-Forge-Owner-Expires": "9e12" };
+const ROUTES = ["holder?subject=issue", "claim", "renew", "release"];
+const bearer = (token: string) => ({ authorization: `Bearer ${token}` });
+const TOKEN_READS = [TABLE_PROBE, TOKEN_LOOKUP];
+const LEASE_READS = [
+  ...TOKEN_READS,
+  "SELECT body FROM state_leases WHERE namespace=? AND subject=?",
+];
+// What a request did: status, error code or value, calls beyond `allowed`, and whether storage changed.
+const outcome = (
+  f: Fixture,
+  was: string,
+  got: Awaited<ReturnType<Fixture["raw"]>>,
+  allowed = TOKEN_READS,
+) => [
+  got.status,
+  got.body.error?.code ?? got.body.value,
+  got.calls.filter((sql) => !allowed.includes(sql)),
+  f.snapshot() === was,
+];
+// Every route, each on a fresh Project, is refused with `code`; only `allowed` reads run and nothing changes.
+async function refused(
+  f: Fixture,
+  name: string,
+  headers: Record<string, string>,
+  vias: readonly Via[],
+  code: string,
+  allowed = TOKEN_READS,
+) {
+  const was = f.snapshot();
+  for (const route of ROUTES)
+    for (const via of vias) {
+      f.reopen();
+      const body =
+        route === ROUTES[0] ? undefined : { ...defaults, requestId: "c" };
+      const got = await f.raw(route, body, headers, via);
+      const done = [name, route, via, ...outcome(f, was, got, allowed)];
+      expect(done).toEqual([name, route, via, 401, code, [], true]);
+    }
+}
+const set = (column: string) =>
+  `UPDATE domain_cloud_tokens SET ${column}=? WHERE id=?`;
+const own = (d: Device) => d.token;
+const wrong = (d: Device) => `${d.token.slice(0, 21)}${"B".repeat(43)}`;
+const REFUSED: [string, (d: Device) => string, string, string][] = [
+  ["an invented id", () => INVENTED, "", "AUTH_INVALID"],
+  ["a wrong secret", wrong, "", "AUTH_INVALID"],
+  ["a revoked token", own, set("revoked_at"), "AUTH_REVOKED"],
+  ["a token expiring now", own, set("expires_at"), "AUTH_EXPIRED"],
+  ["no token table", own, "DROP TABLE domain_cloud_tokens", "AUTH_INVALID"],
+];
+
+test("a refused device token never sets up a cold object on any raw route, direct or through the Worker", async () => {
+  for (const [name, token, change, code] of REFUSED) {
+    using f = fixture();
+    const device = await f.issue();
+    if (change !== "")
+      f.db.run(change, change.includes("?") ? [now, device.id] : []);
+    f.cold();
+    const via = ["direct", "worker"] as const;
+    await refused(f, name, bearer(token(device)), via, code);
+  }
+}, 60_000);
+
+test("an unprovisioned object runs no SQL on any raw route, a staged restore and an owner read included", async () => {
+  using f = fixture();
+  await f.storage.put("restore:next", 1);
+  const via = ["direct", "worker"] as const;
+  await refused(f, "unprovisioned", bearer(INVENTED), via, "AUTH_INVALID", []);
+  const was = f.snapshot();
+  f.reopen();
+  const owner = await f.raw("holder?subject=issue", undefined, FORGED);
+  expect(outcome(f, was, owner, [])).toEqual([200, null, [], true]);
+}, 30_000);
+
+test("a missing bearer or forged owner headers grant nothing and set nothing up on a cold object", async () => {
+  using f = fixture();
+  await f.issue();
+  f.cold();
+  const via = ["worker", "configured"] as const;
+  const forged = { ...FORGED, ...bearer(INVENTED) };
+  await refused(f, "no credential", {}, via, "AUTH_REQUIRED");
+  await refused(f, "forged owner", FORGED, via, "AUTH_REQUIRED");
+  await refused(f, "forged owner, bad token", forged, via, "AUTH_INVALID");
+}, 30_000);
+
+test("a credential lost while the body streams ends a raw write before any setup", async () => {
+  for (const fault of ["revoked_at", "expires_at"])
+    for (const route of ["claim", "renew", "release"]) {
+      using f = fixture();
+      const device = await f.issue();
+      f.cold();
+      const text = JSON.stringify({ ...defaults, requestId: "stream" });
+      const seen = { lookups: 0, after: "" };
+      // The fault lands when the second chunk is pulled: after the first check, before the second.
+      const body = new ReadableStream({
+        start: (c) => c.enqueue(new TextEncoder().encode(text.slice(0, 9))),
+        pull(c) {
+          seen.lookups = f.calls.filter((sql) => sql === TOKEN_LOOKUP).length;
+          f.db.run(set(fault), [now, device.id]);
+          seen.after = f.snapshot();
+          c.enqueue(new TextEncoder().encode(text.slice(9)));
+          c.close();
+        },
+      });
+      const got = await f.raw(route, body, bearer(device.token));
+      // The first check passed and the body was read; the fault is the only change since.
+      const code = fault === "revoked_at" ? "AUTH_REVOKED" : "AUTH_EXPIRED";
+      const done = [fault, route, seen.lookups, ...outcome(f, seen.after, got)];
+      expect(done).toEqual([fault, route, 1, 401, code, [], true]);
+    }
+}, 60_000);
+
+test("a holder read on a cold object returns the stored lease, or null, and sets nothing up", async () => {
+  using f = fixture();
+  const phone = await f.issue();
+  await f.claim("issue:expired", phone);
+  await f.claim("issue:done", phone);
+  const done = { subject: "issue:done", requestId: "d" };
+  expect((await f.write("release", done, phone.token)).status).toBe(200);
+  f.clock.mockReturnValue(now + 10 * minute);
+  await f.claim("issue:live", phone);
+  const stored = (subject: string) => {
+    const row = f.rows("state_leases").find((r) => r.subject === subject);
+    return row === undefined
+      ? null
+      : (JSON.parse(String(row.body)) as LeaseRecord);
+  };
+  f.cold();
+  const was = f.snapshot();
+  const reads = [
+    [bearer(phone.token), "direct"],
+    [bearer(phone.token), "worker"],
+    [FORGED, "direct"],
+  ] as const;
+  for (const [headers, via] of reads)
+    for (const subject of ["expired", "done", "live", "none"]) {
+      f.reopen();
+      const route = `holder?subject=issue:${subject}`;
+      const got = await f.raw(route, undefined, headers, via);
+      const res = [subject, via, ...outcome(f, was, got, LEASE_READS)];
+      const lease = stored(`issue:${subject}`);
+      expect(res).toEqual([subject, via, 200, lease, [], true]);
+    }
+  // A missing subject is a client error, and a missing lease table is no lease.
+  f.reopen();
+  const bad = await f.raw("holder", undefined, bearer(phone.token));
+  expect(outcome(f, was, bad)).toEqual([400, "INPUT_INVALID", [], true]);
+  f.db.run("DROP TABLE state_leases");
+  const bare = f.snapshot();
+  for (const headers of [bearer(phone.token), FORGED]) {
+    f.reopen();
+    const got = await f.raw("holder?subject=issue:live", undefined, headers);
+    expect(outcome(f, bare, got)).toEqual([200, null, [], true]);
+  }
+}, 30_000);
+
+test("a cold object migrates once its token is accepted, then serves the lease journey and its replay", async () => {
+  using f = fixture();
+  const device = await f.issue();
+  f.cold();
+  const sent = [];
+  for (const [route, id] of [
+    ["claim", "c"],
+    ["renew", "n"],
+    ["release", "r"],
+    ["release", "r"],
+  ] as const) {
+    const body = { ...defaults, requestId: id };
+    sent.push(await f.raw(route, body, bearer(device.token), "worker"));
+  }
+  expect(sent.map((got) => got.status)).toEqual([200, 200, 200, 200]);
+  expect(sent[0]?.body.value).toMatchObject({ generation: 1 });
+  expect(sent[3]?.body).toEqual(sent[2]?.body);
+  expect(f.snapshot()).toContain("domain_cloud_login");
 }, 30_000);
