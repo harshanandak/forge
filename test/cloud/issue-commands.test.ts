@@ -477,10 +477,20 @@ test("a refused command on a cold object older than the login migration writes n
     "DROP TABLE domain_cloud_login",
     "DELETE FROM state_migrations WHERE id='003_cloud_login'",
     "DELETE FROM state_domains WHERE table_name='domain_cloud_login'",
+    // The browser attempt counters came with the next migration, so an object older than login lacks them too.
+    "DROP TABLE domain_cloud_browser_attempts",
+    "DELETE FROM state_migrations WHERE id='004_cloud_browser_attempts'",
+    "DELETE FROM state_domains WHERE table_name='domain_cloud_browser_attempts'",
   ])
     f.db.query(sql).run();
   const before = f.snapshot();
   expect(before).not.toContain("domain_cloud_login");
+  for (const absent of [
+    "domain_cloud_browser_attempts",
+    "003_cloud_login",
+    "004_cloud_browser_attempts",
+  ])
+    expect(before).not.toContain(absent);
   f.reopen();
   for (const [name, bearer, status, code] of [
     ["invented token", fakeToken, 401, "AUTH_INVALID"],

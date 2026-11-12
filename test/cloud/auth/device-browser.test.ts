@@ -1167,9 +1167,13 @@ test("the budget survives a restart, and a failed counter write changes nothing"
   const g = fixture();
   await g.provision();
   const q = await previewed(g);
+  // One admitted attempt first, so every bucket has a row whose count a leaked charge would change.
+  expect((await post(g, q)).status).toBe(400);
   const [frozen, limits] = [g.frozen(), g.limits()];
-  // The first counter write succeeds and the second fails: neither may stay.
-  g.writes.failAfter = g.writes.limiter + 1;
+  expect(limits).toHaveLength(3);
+  // The expired-row delete and the project bucket write succeed, then the address bucket write fails:
+  // no bucket may keep a partial charge.
+  g.writes.failAfter = g.writes.limiter + 2;
   expect(pair(await post(g, q))).toEqual([500, "INTERNAL"]);
   expect([g.frozen(), g.limits()]).toEqual([frozen, limits]);
   g.writes.failAfter = Infinity;
