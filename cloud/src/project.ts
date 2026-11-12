@@ -87,6 +87,9 @@ const PROVISIONED = "provisioned";
 // reads them: every device route stops at "not provisioned" before it runs any SQL.
 const STAGED = "restore:next";
 const REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+// StateOwner.lease's own statement, the only one the holder view may run.
+const LEASE_SELECT =
+  "SELECT body FROM state_leases WHERE namespace=? AND subject=?";
 
 // Registers the tables this server adds beside the state owner's own. The digest is checked for its
 // shape only; the tables hold no Forge state.
@@ -245,6 +248,15 @@ export class Project {
     return this.#provisioned;
   }
 
+  // The stored lease as is, read through a view of the lease table: a read never sets up storage, and no table is no lease.
+  async #holder(subject: string): Promise<LeaseRecord | undefined> {
+    if (!(await this.#isProvisioned())) return undefined;
+    const db = readOnlyStore(this.#storage, "state_leases", [LEASE_SELECT]);
+    return db === undefined
+      ? undefined
+      : new StateOwner(db, { now: () => Date.now() }).lease(NAMESPACE, subject);
+  }
+
   async fetch(request: Request): Promise<Response> {
     try {
       const url = new URL(request.url);
@@ -398,7 +410,16 @@ export class Project {
       const parts = owner === null ? await tokenParts(presented!) : undefined;
       if (parts !== undefined && !(await this.#isProvisioned()))
         throw fail("AUTH_INVALID", "Token is not valid");
-      if (parts !== undefined) authorize(this.#open().db, parts, Date.now());
+      // Checked through a read-only view of the token table: a refused token must not set up or migrate storage.
+      const view =
+        parts === undefined
+          ? undefined
+          : readOnlyStore(this.#storage, TOKENS, [TOKEN_LOOKUP]);
+      if (parts !== undefined) {
+        if (view === undefined)
+          throw fail("AUTH_INVALID", "Token is not valid");
+        authorize(view, parts, Date.now());
+      }
       const body = writes ? await bounded(request) : "";
       if (
         owner !== null &&
@@ -409,7 +430,7 @@ export class Project {
       const token =
         parts === undefined
           ? undefined
-          : authorizeToken(this.#open().db, parts, Date.now());
+          : authorizeToken(view!, parts, Date.now());
       const device = token?.device ?? owner!;
       if (reads) {
         const subject = url.searchParams.get("subject");
@@ -417,24 +438,17 @@ export class Project {
           throw fail("INPUT_INVALID", "subject is required");
         return Response.json({
           ok: true,
-          value: (await this.#isProvisioned())
-            ? (this.#open().owner.lease(NAMESPACE, subject) ?? null)
-            : null,
+          value: (await this.#holder(subject)) ?? null,
         });
       }
+      // Nothing awaits between the check above and the first writable opening in #write.
       const value = this.#write(
         route as "claim" | "renew" | "release",
         body,
         device,
         token?.session ?? null,
-        owner === null
-          ? Number(
-              this.#open().db.get(
-                `SELECT expires_at FROM ${TOKENS} WHERE id=?`,
-                [parts!.id],
-              )!.expires_at,
-            )
-          : Number(request.headers.get("X-Forge-Owner-Expires")),
+        token?.expiresAt ??
+          Number(request.headers.get("X-Forge-Owner-Expires")),
       );
       if (owner !== null && !this.#provisioned) {
         this.#provisioned = true;
@@ -531,7 +545,8 @@ export class Project {
     let value: Record<string, unknown>;
     if (dump.format === DUMP_FORMAT) {
       if (staged !== undefined) await this.#abandon();
-      value = { restored: restoreDump(this.#open().db, dump) };
+      const { db, owner } = this.#open();
+      value = { restored: restoreDump(db, owner, dump, this.#limits) };
     } else {
       const page = dump as Page;
       // Page 0 starts again; any other page must be the one the last accepted page named.
@@ -542,8 +557,9 @@ export class Project {
             ? "No restore is under way: send page 0 first"
             : `Expected page ${staged}, or page 0 to start again`,
         );
+      const { db, owner } = this.#open();
       value = {
-        restored: restorePage(this.#open().db, page, this.#limits),
+        restored: restorePage(db, owner, page, this.#limits),
         page: page.page,
         done: page.last,
       };
