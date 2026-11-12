@@ -5,6 +5,12 @@ import { createSqliteStore } from "../../../src/adapters/store-sqlite/index.ts";
 import { createStateClient } from "../../../src/assembly/state-client.ts";
 import { StateOwner } from "../../../src/core/state/index.ts";
 import type { SqlDatabase, SqlRow } from "../../../src/ports/store.ts";
+import {
+  historyReads,
+  instrument,
+  reads,
+  writesKey,
+} from "../../core/l5-state/numbered-fixture.ts";
 
 setDefaultTimeout(30_000);
 
@@ -42,7 +48,7 @@ async function fixture() {
     readOnly: false,
   });
   if (!opened.ok) throw new Error(opened.unavailable.reason);
-  const real = opened.handle.value;
+  const { db: real, log, hooks } = instrument(opened.handle.value);
   const decoded = { allocation: 0, point: 0 };
   // As in list-prefix.test.ts, count accesses to SQL row.body where JSON decoding happens.
   function counted(row: SqlRow, kind: keyof typeof decoded): SqlRow {
@@ -56,9 +62,7 @@ async function fixture() {
     };
   }
   const db: SqlDatabase = {
-    exec: (sql) => real.exec(sql),
-    run: (sql, params) => real.run(sql, params),
-    transaction: (body) => real.transaction(body),
+    ...real,
     all: (sql, params) =>
       real.all(sql, params).map((row) => counted(row, "allocation")),
     get(sql, params) {
@@ -79,6 +83,8 @@ async function fixture() {
     owner,
     state,
     decoded,
+    log,
+    hooks,
     reset: () => {
       decoded.allocation = 0;
       decoded.point = 0;
@@ -92,8 +98,13 @@ async function fixture() {
         entries.map((entry) => ({ ...entry, expectRevision: 0 })),
         actor,
       ),
-    call: (op: string, input: Record<string, unknown>, view = state) =>
-      operations[`issue.${op}`]!({ input, services: { state: view } }),
+    call: (
+      op: string,
+      input: Record<string, unknown>,
+      view = state,
+      config?: unknown,
+    ) =>
+      operations[`issue.${op}`]!({ input, services: { state: view }, config }),
     close: () => opened.handle.close(),
   };
 }
@@ -299,7 +310,7 @@ test("key aggregates match old JS allocation with gaps, aliases, literal prefixe
   }
 });
 
-for (const op of ["create", "comment", "checkpoint", "link"]) {
+for (const op of ["comment", "checkpoint", "link"]) {
   test(`a competing ${op} allocation still loses the create-if-absent revision guard`, async () => {
     const f = await fixture();
     try {
@@ -343,3 +354,245 @@ for (const op of ["create", "comment", "checkpoint", "link"]) {
     }
   });
 }
+
+type Fixture = Awaited<ReturnType<typeof fixture>>;
+const run = (body: (f: Fixture) => unknown) => async () => {
+  const f = await fixture();
+  try {
+    await body(f);
+  } finally {
+    await f.close();
+  }
+};
+const floorKey = "allocation:issue:work-";
+const floor = (f: Fixture) => f.owner.get(namespace, floorKey)?.value;
+const at = (n: number) => ({ prefix: "issue:work-", number: n });
+const create = (f: Fixture, title: string) => f.call("create", { title }).id;
+const ids = (f: Fixture, op: string) =>
+  (f.call(op, {}) as unknown as { items: { id: string }[] }).items.map(
+    (item) => item.id,
+  );
+const remove = (f: Fixture, n: number, expectRevision = 1) =>
+  f.owner.delete(namespace, `issue:work-${n}`, actor, { expectRevision });
+/** A project from before the floor existed: live and deleted issue identities, no floor record. */
+function legacy(f: Fixture, live: readonly number[], gone: readonly number[]) {
+  f.seed([...live, ...gone].map((n) => issue(n)));
+  for (const n of gone) remove(f, n);
+}
+/** Higher identities the allocation must ignore: other kinds, prefixes, namespaces and lease-only history. */
+function noise(f: Fixture) {
+  f.seed([
+    { key: "comment:work-500:1", value: {} },
+    { key: "link:work-500:1", value: {} },
+    {
+      key: "issue:alpha-600",
+      value: { ...issue(600, "alpha").value, id: "alpha-600" },
+    },
+  ]);
+  f.seed([{ key: "issue:work-700", value: issue(700).value }], "forge/other");
+  const holder = { actor, session: { id: "noise" } };
+  f.owner.acquire(namespace, "issue:work-800", holder, 100, "lease-800");
+}
+
+for (const [name, live, gone, expected] of [
+  ["an empty project", [], [], 1],
+  ["live maximum with gaps", [2, 9, 10], [], 11],
+  ["history only", [], [10], 11],
+  ["a lower deletion", [10], [2], 11],
+  ["a restored project", [1], [2], 3],
+] as const)
+  test(
+    `create after ${name} allocates work-${expected} at revision 1 and commits that floor`,
+    run((f) => {
+      legacy(f, live, gone);
+      noise(f);
+      expect(create(f, "Next")).toBe(`work-${expected}`);
+      expect(f.owner.get(namespace, `issue:work-${expected}`)?.revision).toBe(
+        1,
+      );
+      expect(floor(f)).toEqual(at(expected));
+      expect(ids(f, "ready")).toContain(`work-${expected}`);
+      for (const n of gone) {
+        expect(f.owner.get(namespace, `issue:work-${n}`)).toBeUndefined();
+        expect(f.owner.events(namespace, `issue:work-${n}`)).toHaveLength(2);
+      }
+    }),
+    30_000,
+  );
+
+test(
+  "a local create after the highest issue is deleted allocates the next unused number",
+  run((f) => {
+    expect(create(f, "One")).toBe("work-1");
+    expect(create(f, "Two")).toBe("work-2");
+    remove(f, 2);
+    const history = f.owner.events(namespace, "issue:work-2");
+    const receipts = f.owner.export().requests;
+    expect(create(f, "Three")).toBe("work-3");
+    expect(f.owner.get(namespace, "issue:work-3")?.revision).toBe(1);
+    expect(floor(f)).toEqual(at(3));
+    expect(f.owner.get(namespace, "issue:work-2")).toBeUndefined();
+    expect(f.owner.events(namespace, "issue:work-2")).toEqual(history);
+    expect(f.owner.export().requests).toEqual(receipts);
+  }),
+  30_000,
+);
+
+test(
+  "a missing floor is backfilled once, inside the lock, and later creates read no history",
+  run((f) => {
+    f.seed([issue(1), issue(2)]);
+    const second = { expectRevision: 1 };
+    f.owner.put(namespace, "issue:work-2", issue(2).value, actor, second);
+    remove(f, 2, 2);
+    f.log.length = 0;
+    expect(create(f, "Three")).toBe("work-3");
+    const first = historyReads(f.log);
+    expect(first.length).toBeGreaterThan(0);
+    expect(first.every((access) => access.locked)).toBe(true);
+    f.log.length = 0;
+    expect(create(f, "Four")).toBe("work-4");
+    expect(historyReads(f.log)).toEqual([]);
+    expect(floor(f)).toEqual(at(4));
+  }),
+  30_000,
+);
+
+test(
+  "backfill finds the true maximum in a history of more than a thousand events",
+  run((f) => {
+    const rows = Array.from({ length: 400 }, (_, n) => issue(n + 1));
+    f.seed(rows);
+    const again = rows.map((row) => ({ ...row, expectRevision: 1 }));
+    f.owner.putMany(namespace, again, actor);
+    for (let n = 1; n <= 400; n++) remove(f, n, 2);
+    f.seed([issue(9000)]);
+    remove(f, 9000);
+    expect(f.owner.events(namespace).length).toBeGreaterThan(1200);
+    expect(create(f, "After")).toBe("work-9001");
+    f.log.length = 0;
+    expect(create(f, "Again")).toBe("work-9002");
+    expect(historyReads(f.log)).toEqual([]);
+  }),
+  60_000,
+);
+
+for (const withFloor of [true, false])
+  test(
+    `a peer deleting the highest issue before the lock cannot make its number reusable (${withFloor ? "with" : "without"} a floor)`,
+    run((f) => {
+      if (withFloor) {
+        create(f, "One");
+        create(f, "Two");
+      } else legacy(f, [1, 2], []);
+      f.hooks.entry = () => remove(f, 2);
+      f.log.length = 0;
+      expect(create(f, "Three")).toBe("work-3");
+      expect(f.owner.get(namespace, "issue:work-2")).toBeUndefined();
+      const floorReads = reads(f.log).filter((a) =>
+        a.params.includes(floorKey),
+      );
+      expect(floorReads.length).toBeGreaterThan(0);
+      expect(
+        [...floorReads, ...historyReads(f.log)].every((a) => a.locked),
+      ).toBe(true);
+    }),
+    30_000,
+  );
+
+test(
+  "two overlapping creates get distinct consecutive numbers and one event each",
+  run((f) => {
+    f.seed([issue(1)]);
+    // A peer create commits after this caller starts but before it takes the write lock.
+    f.hooks.entry = () => expect(create(f, "Peer")).toBe("work-2");
+    expect(create(f, "Mine")).toBe("work-3");
+    for (const n of [2, 3]) {
+      expect(f.owner.get(namespace, `issue:work-${n}`)?.revision).toBe(1);
+      expect(f.owner.events(namespace, `issue:work-${n}`)).toHaveLength(1);
+    }
+    expect(f.owner.events(namespace, floorKey).map((e) => e.data)).toEqual([
+      at(2),
+      at(3),
+    ]);
+  }),
+  30_000,
+);
+
+// The four write points and both floor states are covered once, in the core numbered-write tests.
+test(
+  "a create whose floor event fails through the work block leaves nothing and the retry gets the same number",
+  run((f) => {
+    legacy(f, [1], [2]);
+    const before = f.owner.export();
+    f.hooks.fail = (access) => writesKey(access, "state_events", floorKey);
+    expect(() => create(f, "Fault")).toThrow("injected write failure");
+    expect(f.owner.export()).toEqual(before);
+    f.hooks.fail = undefined;
+    expect(create(f, "Retry")).toBe("work-3");
+    expect(floor(f)).toEqual(at(3));
+  }),
+  30_000,
+);
+
+test(
+  "the floor never appears in issue reads and reads write nothing",
+  run((f) => {
+    const open = issue(2).value;
+    f.seed([
+      issue(1),
+      { key: "issue:work-2", value: { ...open, dependsOn: ["work-1"] } },
+      {
+        key: "issue:work-3",
+        value: { ...open, id: "work-3", status: "closed" },
+      },
+      issue(4),
+      issue(5),
+    ]);
+    const holder = { actor, session: { id: "lease" } };
+    f.owner.acquire(namespace, "issue:work-4", holder, 4_000_000_000_000, "l4");
+    f.owner.acquire(namespace, "issue:work-5", holder, 10, "l5");
+    expect(create(f, "Six")).toBe("work-6");
+    expect(floor(f)).toEqual(at(6));
+    const before = f.owner.export();
+    expect(ids(f, "list")).toEqual([1, 2, 3, 4, 5, 6].map((n) => `work-${n}`));
+    expect(ids(f, "ready")).toEqual(["work-1", "work-5", "work-6"]);
+    expect(ids(f, "blocked")).toEqual(["work-2"]);
+    expect(ids(f, "stale")).toEqual(["work-5"]);
+    expect(() => f.call("show", { id: floorKey })).toThrow("INPUT_INVALID");
+    expect(f.call("show", { id: "work-6" }).id).toBe("work-6");
+    expect(f.owner.export()).toEqual(before);
+  }),
+  30_000,
+);
+
+test(
+  "a display prefix change keeps one stored sequence and one floor",
+  run((f) => {
+    expect(create(f, "One")).toBe("work-1");
+    const alpha = { idPrefix: "alpha" };
+    expect(f.call("create", { title: "Two" }, f.state, alpha).id).toBe(
+      "alpha-2",
+    );
+    expect(f.owner.get(namespace, "issue:work-2")?.revision).toBe(1);
+    const floors = f.owner.list(namespace, "allocation:");
+    expect(floors.map((r) => r.value)).toEqual([at(2)]);
+  }),
+  30_000,
+);
+
+test(
+  "create refusals write no floor and keep their existing codes",
+  run((f) => {
+    const before = f.owner.export();
+    for (const [input, code] of [
+      [{ title: "Kind", kind: "mystery" }, "INPUT_INVALID"],
+      [{ title: "Missing", dependsOn: ["work-999"] }, "NOT_FOUND"],
+      [{ title: "Parent", parent: "work-999" }, "NOT_FOUND"],
+      [{ title: "Malformed", dependsOn: ["absent"] }, "INPUT_INVALID"],
+    ] as const)
+      expect(() => f.call("create", input)).toThrow(code);
+    expect(f.owner.export()).toEqual(before);
+  }),
+  30_000,
+);
