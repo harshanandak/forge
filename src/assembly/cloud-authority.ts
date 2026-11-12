@@ -4,7 +4,11 @@
 import { nodeDeviceIdentity } from "../adapters/fs/device-identity.ts";
 import { createCloudHttp } from "../adapters/http/index.ts";
 import { ForgeFailure } from "../contract/failure.ts";
-import { refuseDryRun, type Runtime } from "../core/runtime/index.ts";
+import {
+  failureEnvelope,
+  refuseDryRun,
+  type Runtime,
+} from "../core/runtime/index.ts";
 import type { BoundContext } from "../generated/types.ts";
 import type { InvocationRequest, ResultEnvelope } from "../generated/types.ts";
 import { cloudBinding } from "./cloud-binding.ts";
@@ -116,13 +120,14 @@ export async function selectCloud(
   const home = deps.env.HOME ?? deps.env.USERPROFILE;
   const binding = () => cloudBinding(deps.root, home);
   let flight: ReturnType<Runtime["preflight"]>;
+  let accepted: InvocationRequest | undefined;
   try {
-    flight = runtime.preflight(request);
+    flight = runtime.preflight(request, (valid) => (accepted = valid));
   } catch (refused) {
     // An unbound project lets the runtime refuse it. A bound one never reaches the local runtime, even
-    // if a later preflight there would pass.
+    // if a later preflight there would pass, so it gets the envelope the runtime gives that refusal.
     if (binding().kind === "unbound") return undefined;
-    throw refused;
+    return failureEnvelope(accepted, refused);
   }
   const { block, operation } = flight;
   const declared = operation.declaredOp;
