@@ -204,6 +204,9 @@ async function dispatchRaw(
       : { ...result, error: { ...result.error, hint } };
   }
   try {
+    // Before identity resolution and any lookup: a refused op needs neither.
+    if (entry?.blockId !== undefined && entry.declaredOp !== undefined)
+      catalog.admit?.(entry.blockId, entry.declaredOp);
     const context =
       declaration === undefined || options.resolveContext === undefined
         ? (options.context ?? {})

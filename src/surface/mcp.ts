@@ -83,6 +83,9 @@ export function createMcpHandlers(
   const restricted: SurfaceCatalog = {
     list: () => exposed,
     invoke: (request) => catalog.invoke(request),
+    ...(catalog.admit === undefined
+      ? {}
+      : { admit: (blockId, op) => catalog.admit!(blockId, op) }),
   };
   return {
     listTools: () => [

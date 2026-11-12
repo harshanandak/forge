@@ -31,11 +31,14 @@ import {
   type CredentialEntry,
 } from "../../src/assembly/cloud-profile.ts";
 import { firstPartyBlocks } from "../../src/assembly/first-party.ts";
+import { localIdentityResolver } from "../../src/assembly/identity.ts";
 import { createAssembly, localContext } from "../../src/assembly/index.ts";
 import { LocalState } from "../../src/assembly/state.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import type { InvocationRequest } from "../../src/generated/types.ts";
+import { runCli } from "../../src/surface/cli.ts";
 import { dispatch } from "../../src/surface/dispatch.ts";
+import { createMcpHandlers } from "../../src/surface/mcp.ts";
 import { exitCode } from "../../src/surface/result.ts";
 import { stageBlock } from "../blocks/memory/lib.ts";
 import * as fx from "./cloud-fixture.ts";
@@ -440,25 +443,6 @@ for (const op of ["issue.list", "issue.ready"])
       expect(r.net.calls).toHaveLength(1);
     }));
 
-test("a held operation's hidden show goes to the cloud, and the operation itself is refused, even as a dry run", () =>
-  using({ steps: [() => answer({ ...ISSUE, lease: LEASE })] }, async (r) => {
-    const context = {
-      ...r.request("x", {}).context,
-      session: { id: "s1", device: "dev-1" },
-    };
-    for (const dryRun of [false, true]) {
-      const held = await dispatch(
-        r.assembly.catalog,
-        "issue.close",
-        { id: "forge-1" },
-        { caller: "agent", context, dryRun },
-      );
-      failed(held, dryRun ? "UNAVAILABLE" : "INPUT_INVALID");
-    }
-    const ops = r.net.calls.map((c) => (c.body as { op: string }).op);
-    expect(ops).toEqual(["issue.show", "issue.show"]);
-  }));
-
 type Rig = Awaited<ReturnType<typeof rig>>;
 /** A held write as the CLI makes it: a session, the caller's own context, and a generation only if the caller names one. */
 const holding = (r: Rig, own: object = {}) => ({
@@ -473,6 +457,115 @@ const edit = (r: Rig, op: string, context: object, dryRun = false) =>
   });
 const sent = (r: Rig) => r.net.calls.map((c) => (c.body as { op: string }).op);
 const live = () => answer({ ...ISSUE, lease: HELD });
+
+/** Each refused held op with an input valid for its own schema, so only the routing refuses it. */
+for (const [op, input] of [
+  ["issue.close", { id: "forge-1", withoutReceipt: "guard" }],
+  [
+    "issue.dep",
+    { id: "forge-1", target: "forge-2", action: "add", expectRevision: 3 },
+  ],
+  [
+    "issue.link",
+    { id: "forge-1", relation: "pr", url: "https://example.com/pull/1" },
+  ],
+] as const)
+  for (const [name, own, dryRun, lease] of [
+    ["no generation", {}, false, true],
+    ["no generation and no lease in the cloud", {}, false, false],
+    ["an explicit generation", { leaseGeneration: 3 }, false, true],
+    ["no generation as a dry run", {}, true, true],
+    ["an explicit generation as a dry run", { leaseGeneration: 3 }, true, true],
+  ] as const)
+    test(`${op} with ${name} on a bound project is refused by name before any cloud request`, () =>
+      using(
+        { steps: [() => answer(lease ? { ...ISSUE, lease: LEASE } : ISSUE)] },
+        async (r) => {
+          const result = await dispatch(r.assembly.catalog, op, input, {
+            caller: "agent",
+            context: holding(r, own),
+            dryRun,
+          });
+          expect(failed(result, "INPUT_INVALID")).toBe(6);
+          expect(result).toMatchObject({ error: { message: notServed(op) } });
+          expect(r.net.calls).toHaveLength(0);
+        },
+      ));
+
+const REFUSED = (op: string) => ({
+  ok: false,
+  error: { code: "INPUT_INVALID", message: notServed(op) },
+});
+test("through MCP catalog_call, a refused held op on a bound project is refused by name with no request, as a dry run too", () =>
+  using({}, async (r) => {
+    const handlers = createMcpHandlers(
+      r.assembly.catalog,
+      { expose: ["issue"] },
+      {
+        context: holding(r),
+      },
+    );
+    for (const dryRun of [false, true]) {
+      const result = await handlers.callTool("catalog_call", {
+        op: "issue.close",
+        input: { id: "forge-1", withoutReceipt: "guard" },
+        ...(dryRun ? { dryRun } : {}),
+      });
+      expect(result).toMatchObject(REFUSED("issue.close"));
+      expect(failed(result!, "INPUT_INVALID")).toBe(6);
+    }
+    expect(r.net.calls).toHaveLength(0);
+  }));
+
+for (const dryRun of [false, true])
+  test(`through the CLI discovery wrapper, issue board${dryRun ? " --dry-run" : ""} on a bound project is refused by name with no request`, () =>
+    using({}, async (r) => {
+      const done = await runCli(
+        r.assembly.catalog,
+        ["issue", "board", ...(dryRun ? ["--dry-run"] : [])],
+        { caller: "agent", context: holding(r) },
+      );
+      expect(done.envelope).toMatchObject(REFUSED("issue.board"));
+      expect(done.exitCode).toBe(6);
+      expect(r.net.calls).toHaveLength(0);
+    }));
+
+/** The real identity resolver, with no session in the environment or the context. */
+for (const [name, own, dryRun, env] of [
+  ["no generation", {}, false, {}],
+  ["an explicit generation", { leaseGeneration: 3 }, false, {}],
+  ["a dry run", {}, true, {}],
+  [
+    "an invalid FORGE_DEVICE_ID",
+    {},
+    false,
+    { FORGE_SESSION: "s1", FORGE_DEVICE_ID: "a b" },
+  ],
+] as const)
+  test(`issue.close with ${name} and the real identity resolver is refused by name, not as a missing session`, () =>
+    using({}, async (r) => {
+      const result = await dispatch(
+        r.assembly.catalog,
+        "issue.close",
+        { id: "forge-1", withoutReceipt: "guard" },
+        {
+          caller: "agent",
+          context: {
+            ...localContext(r.assembly, { kind: "agent", id: "a1" }),
+            ...own,
+          },
+          resolveContext: localIdentityResolver(
+            r.s.deviceRoot,
+            { HOME: r.s.home, ...env },
+            false,
+          ),
+          dryRun,
+        },
+      );
+      expect(result).toMatchObject(REFUSED("issue.close"));
+      expect(failed(result, "INPUT_INVALID")).toBe(6);
+      expect(r.net.calls).toHaveLength(0);
+    }));
 
 for (const [source, op] of [
   [WORK, "issue.update"],
@@ -953,6 +1046,25 @@ test("an unbound project runs locally, with no cloud request and no credential w
     });
     expect(r.net.calls).toHaveLength(0);
     expect(existsSync(join(r.s.home, ".forge"))).toBe(false);
+  }));
+
+test("an unbound project's issue.close, which a bound project refuses, still runs locally with no cloud request", () =>
+  using({ bind: false, creds: false, sentinel: false }, async (r) => {
+    const made = await r.assembly.catalog.invoke(
+      r.request("issue.create", CREATE),
+    );
+    const { id } = (made as { result: { id: string } }).result;
+    const own = holding(r);
+    const call = (op: string, input: object) =>
+      dispatch(r.assembly.catalog, op, input, {
+        caller: "agent",
+        context: own,
+      });
+    expect(await call("issue.claim", { id })).toMatchObject({ ok: true });
+    const closed = await call("issue.close", { id, withoutReceipt: "guard" });
+    expect(closed).toMatchObject({ ok: true });
+    expect(exitCode(closed)).toBe(0);
+    expect(r.net.calls).toHaveLength(0);
   }));
 
 test("a refused preflight on a bound project is thrown, never retried on the local runtime", async () => {

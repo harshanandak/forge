@@ -266,6 +266,12 @@ export async function runCli(
       catalog = {
         list: () => entries,
         invoke: (request) => source.invoke(request),
+        ...(source.admit === undefined
+          ? {}
+          : {
+              admit: (blockId: string, op: string) =>
+                source.admit!(blockId, op),
+            }),
         ...(source.diagnose === undefined
           ? {}
           : { diagnose: (name: string) => source.diagnose!(name) }),
