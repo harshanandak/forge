@@ -578,7 +578,226 @@ const revokeCheck = (): Promise<void> =>
     );
   });
 
+// Device login journeys (forge-1230). The deployed Worker has no test wrapper, so live runs skip them.
+async function deviceChecks(): Promise<void> {
+  const device = live ? skip : check;
+  // Owner approval of a device login over real HTTP (forge-1230). Every request names its own address,
+  // and a wrong-capability request also arms a fault that fails any write to the login row: its normal
+  // 400 proves the request never reached one. The limit journeys arm no fault, so a missing limit shows
+  // as a missing 429 and never as a write failure. Public test values only; the Clerk upstream is a test double.
+  const browser = (() => {
+    let n = 0;
+    const fresh = (): string => `192.0.2.${++n}`;
+    const origin = new URL(base).origin;
+    interface Call {
+      form?: Record<string, string>;
+      json?: object;
+      cookie?: string;
+      ip?: string;
+      fault?: boolean;
+      converge?: string;
+    }
+    async function call(path: string, init: Call = {}) {
+      const response = await fetch(`${base}${path}`, {
+        method: init.form || init.json ? "POST" : "GET",
+        redirect: "manual",
+        headers: {
+          "x-cloud-ip": init.ip ?? fresh(),
+          ...(init.fault ? { "x-cloud-fault": "login-write" } : {}),
+          ...(init.converge ? { "x-cloud-converge": init.converge } : {}),
+          ...(init.cookie ? { cookie: init.cookie } : {}),
+          ...(init.form
+            ? { origin, "content-type": "application/x-www-form-urlencoded" }
+            : {}),
+          ...(init.json ? { "content-type": "application/json" } : {}),
+        },
+        ...(init.form
+          ? { body: new URLSearchParams(init.form).toString() }
+          : {}),
+        ...(init.json ? { body: JSON.stringify(init.json) } : {}),
+        signal: AbortSignal.timeout(20_000),
+      });
+      const text = await response.text();
+      const word =
+        /<code class="result">([^<]+)<\/code>/.exec(text)?.[1] ??
+        (text.startsWith("{")
+          ? (JSON.parse(text) as { error?: { code?: string } }).error?.code
+          : undefined);
+      return { status: response.status, text, word, headers: response.headers };
+    }
+    // A login and its browser preview: the device code, the cookie, both tickets and the selector.
+    async function previewed() {
+      const start = await call(`/p/${typedProject}/loginstart`, {
+        json: { device: "conformance" },
+      });
+      const login = JSON.parse(start.text) as {
+        user_code: string;
+        device_code: string;
+      };
+      const page = await call("/device");
+      const csrf =
+        /__Host-forge_device=([^;]+)/.exec(
+          page.headers.get("set-cookie") ?? "",
+        )?.[1] ?? "";
+      const cookie = `__Host-forge_device=${csrf}`;
+      const shown = await call("/device", {
+        form: { csrf, code: login.user_code },
+        cookie,
+      });
+      const pick = (pattern: RegExp): string =>
+        pattern.exec(shown.text)?.[1] ?? "";
+      return {
+        deviceCode: login.device_code,
+        csrf,
+        cookie,
+        selector: pick(/name="challenge" value="([^"]*)"/),
+        ticket: (action: "approve" | "deny"): string =>
+          pick(
+            new RegExp(
+              `action="/device/${action}">[^]*?name="ticket" value="([^"]+)"`,
+            ),
+          ),
+      };
+    }
+    type Flow = Awaited<ReturnType<typeof previewed>>;
+    const decide = (
+      f: Flow,
+      action: "approve" | "deny",
+      ticket: string,
+      more: Call & { selector?: string } = {},
+    ) =>
+      call(`/device/${action}`, {
+        ...more,
+        form: {
+          csrf: f.csrf,
+          ticket,
+          challenge: more.selector ?? f.selector,
+        },
+        cookie: f.cookie,
+      });
+    const bindOf = (decision: { headers: Headers }): string =>
+      (decision.headers.get("set-cookie") ?? "").split(";")[0] ?? "";
+    // The return from Clerk, with the owner's proof, carrying the given cookie.
+    const back = (
+      decision: { headers: Headers },
+      cookie: string,
+      fault = false,
+    ) => {
+      const state =
+        new URL(decision.headers.get("location") ?? "").searchParams.get("s") ??
+        "";
+      const query = new URLSearchParams({
+        state,
+        code: "owner",
+      });
+      return call(`/callback?${query}`, { cookie, fault });
+    };
+    const poll = (f: Flow) =>
+      call(`/p/${typedProject}/loginpoll`, {
+        json: { device_code: f.deviceCode },
+      });
+    return { previewed, decide, bindOf, back, poll };
+  })();
+  const WRONG = "x".repeat(43);
+  const outcomeOf = (reply: { status: number; word?: string | undefined }) => [
+    reply.status,
+    reply.word,
+  ];
+
+  for (const action of ["approve", "deny"] as const) {
+    await device(
+      `device ${action}: wrong capabilities write no login row and the right ones still complete`,
+      async () => {
+        const f = await browser.previewed();
+        const swap = action === "approve" ? "deny" : "approve";
+        for (const reply of [
+          await browser.decide(f, action, WRONG, { fault: true }),
+          await browser.decide(f, action, f.ticket(swap), { fault: true }),
+          await browser.decide(f, action, f.ticket(action), {
+            selector: "",
+            fault: true,
+          }),
+        ])
+          assert.deepEqual(outcomeOf(reply), [400, "invalid_request"]);
+        const decision = await browser.decide(f, action, f.ticket(action));
+        assert.equal(decision.status, 302, decision.text);
+        const own = browser.bindOf(decision);
+        const wrongBrowser = await browser.back(
+          decision,
+          `${own.split("=")[0]}=${WRONG}`,
+          true,
+        );
+        assert.deepEqual(outcomeOf(wrongBrowser), [400, "access_denied"]);
+        const done = await browser.back(decision, own);
+        assert.deepEqual(outcomeOf(done), [
+          200,
+          action === "approve" ? "approved" : "denied",
+        ]);
+        assert.ok(
+          !done.text.includes("fct_"),
+          "a browser reply has no credential",
+        );
+        const polled = await browser.poll(f);
+        assert.equal(polled.status, action === "approve" ? 200 : 400);
+        assert.equal((await browser.poll(f)).status, 400);
+      },
+    );
+  }
+
+  await device(
+    "device: the sixth attempt for one challenge, from another address, is rate limited",
+    async () => {
+      const f = await browser.previewed();
+      for (let n = 0; n < 5; n++)
+        assert.deepEqual(outcomeOf(await browser.decide(f, "approve", WRONG)), [
+          400,
+          "invalid_request",
+        ]);
+      const sixth = await browser.decide(f, "approve", f.ticket("approve"));
+      assert.deepEqual(outcomeOf(sixth), [429, "rate_limited"]);
+    },
+  );
+
+  await device(
+    "device: the sixth attempt from one address is rate limited, whatever the challenge",
+    async () => {
+      const ip = "198.51.100.9";
+      for (let n = 0; n < 5; n++) {
+        const f = await browser.previewed();
+        const reply = await browser.decide(f, "approve", WRONG, { ip });
+        assert.deepEqual(outcomeOf(reply), [400, "invalid_request"]);
+      }
+      const f = await browser.previewed();
+      const sixth = await browser.decide(f, "approve", f.ticket("approve"), {
+        ip,
+      });
+      assert.deepEqual(outcomeOf(sixth), [429, "rate_limited"]);
+    },
+  );
+
+  await device(
+    "device: six overlapping attempts admit exactly five",
+    async () => {
+      const f = await browser.previewed();
+      const replies = await Promise.all(
+        Array.from({ length: 6 }, () =>
+          browser.decide(f, "approve", WRONG, { converge: `overlap-${run}:6` }),
+        ),
+      );
+      assert.deepEqual(
+        replies.map((reply) => reply.status).sort(),
+        [400, 400, 400, 400, 400, 429],
+        JSON.stringify(replies.map((reply) => reply.text.slice(0, 120))),
+      );
+    },
+  );
+}
+
 if (phase === "revoke") await revokeCheck();
+if (phase === "device") {
+  await issue(typedProject, "device-journeys");
+  await deviceChecks();
+}
 
 // Claim latency from this machine: 200 claims in a row, in milliseconds.
 if (phase === "latency") {
@@ -2481,225 +2700,7 @@ if (phase === "main") {
     };
   });
 
-  // Owner approval of a device login over real HTTP (forge-1230). Every request names its own address,
-  // and a wrong-capability request also arms a fault that fails any write to the login row: its normal
-  // 400 proves the request never reached one. Public test values only; the Clerk upstream is a test double.
-  const browser = (() => {
-    let n = 0;
-    const fresh = (): string => `192.0.2.${++n}`;
-    const origin = new URL(base).origin;
-    interface Call {
-      form?: Record<string, string>;
-      json?: object;
-      cookie?: string;
-      ip?: string;
-      fault?: boolean;
-      converge?: string;
-    }
-    async function call(path: string, init: Call = {}) {
-      const response = await fetch(`${base}${path}`, {
-        method: init.form || init.json ? "POST" : "GET",
-        redirect: "manual",
-        headers: {
-          "x-cloud-ip": init.ip ?? fresh(),
-          ...(init.fault ? { "x-cloud-fault": "login-write" } : {}),
-          ...(init.converge ? { "x-cloud-converge": init.converge } : {}),
-          ...(init.cookie ? { cookie: init.cookie } : {}),
-          ...(init.form
-            ? { origin, "content-type": "application/x-www-form-urlencoded" }
-            : {}),
-          ...(init.json ? { "content-type": "application/json" } : {}),
-        },
-        ...(init.form
-          ? { body: new URLSearchParams(init.form).toString() }
-          : {}),
-        ...(init.json ? { body: JSON.stringify(init.json) } : {}),
-        signal: AbortSignal.timeout(20_000),
-      });
-      const text = await response.text();
-      const word =
-        /<code class="result">([^<]+)<\/code>/.exec(text)?.[1] ??
-        (text.startsWith("{")
-          ? (JSON.parse(text) as { error?: { code?: string } }).error?.code
-          : undefined);
-      return { status: response.status, text, word, headers: response.headers };
-    }
-    // A login and its browser preview: the device code, the cookie, both tickets and the selector.
-    async function previewed() {
-      const start = await call(`/p/${typedProject}/loginstart`, {
-        json: { device: "conformance" },
-      });
-      const login = JSON.parse(start.text) as {
-        user_code: string;
-        device_code: string;
-      };
-      const page = await call("/device");
-      const csrf =
-        /__Host-forge_device=([^;]+)/.exec(
-          page.headers.get("set-cookie") ?? "",
-        )?.[1] ?? "";
-      const cookie = `__Host-forge_device=${csrf}`;
-      const shown = await call("/device", {
-        form: { csrf, code: login.user_code },
-        cookie,
-      });
-      const pick = (pattern: RegExp): string =>
-        pattern.exec(shown.text)?.[1] ?? "";
-      return {
-        deviceCode: login.device_code,
-        csrf,
-        cookie,
-        selector: pick(/name="challenge" value="([^"]*)"/),
-        ticket: (action: "approve" | "deny"): string =>
-          pick(
-            new RegExp(
-              `action="/device/${action}">[^]*?name="ticket" value="([^"]+)"`,
-            ),
-          ),
-      };
-    }
-    type Flow = Awaited<ReturnType<typeof previewed>>;
-    const decide = (
-      f: Flow,
-      action: "approve" | "deny",
-      ticket: string,
-      more: Call & { selector?: string } = {},
-    ) =>
-      call(`/device/${action}`, {
-        ...more,
-        form: {
-          csrf: f.csrf,
-          ticket,
-          challenge: more.selector ?? f.selector,
-        },
-        cookie: f.cookie,
-      });
-    const bindOf = (decision: { headers: Headers }): string =>
-      (decision.headers.get("set-cookie") ?? "").split(";")[0] ?? "";
-    // The return from Clerk, with the owner's proof, carrying the given cookie.
-    const back = (
-      decision: { headers: Headers },
-      cookie: string,
-      fault = false,
-    ) => {
-      const state =
-        new URL(decision.headers.get("location") ?? "").searchParams.get("s") ??
-        "";
-      const query = new URLSearchParams({
-        state,
-        code: "clerk-code",
-        proof: "owner",
-      });
-      return call(`/callback?${query}`, { cookie, fault });
-    };
-    const poll = (f: Flow) =>
-      call(`/p/${typedProject}/loginpoll`, {
-        json: { device_code: f.deviceCode },
-      });
-    return { previewed, decide, bindOf, back, poll };
-  })();
-  const WRONG = "x".repeat(43);
-  const outcomeOf = (reply: { status: number; word?: string | undefined }) => [
-    reply.status,
-    reply.word,
-  ];
-
-  for (const action of ["approve", "deny"] as const) {
-    await typed(
-      `device ${action}: wrong capabilities write no login row and the right ones still complete`,
-      async () => {
-        const f = await browser.previewed();
-        const swap = action === "approve" ? "deny" : "approve";
-        for (const reply of [
-          await browser.decide(f, action, WRONG, { fault: true }),
-          await browser.decide(f, action, f.ticket(swap), { fault: true }),
-          await browser.decide(f, action, f.ticket(action), {
-            selector: "",
-            fault: true,
-          }),
-        ])
-          assert.deepEqual(outcomeOf(reply), [400, "invalid_request"]);
-        const decision = await browser.decide(f, action, f.ticket(action));
-        assert.equal(decision.status, 302, decision.text);
-        const own = browser.bindOf(decision);
-        const wrongBrowser = await browser.back(
-          decision,
-          `${own.split("=")[0]}=${WRONG}`,
-          true,
-        );
-        assert.deepEqual(outcomeOf(wrongBrowser), [400, "access_denied"]);
-        const done = await browser.back(decision, own);
-        assert.deepEqual(outcomeOf(done), [
-          200,
-          action === "approve" ? "approved" : "denied",
-        ]);
-        assert.ok(
-          !done.text.includes("fct_"),
-          "a browser reply has no credential",
-        );
-        const polled = await browser.poll(f);
-        assert.equal(polled.status, action === "approve" ? 200 : 400);
-        assert.equal((await browser.poll(f)).status, 400);
-      },
-    );
-  }
-
-  await typed(
-    "device: the sixth attempt for one challenge, from another address, is rate limited",
-    async () => {
-      const f = await browser.previewed();
-      for (let n = 0; n < 5; n++)
-        assert.deepEqual(
-          outcomeOf(await browser.decide(f, "approve", WRONG, { fault: true })),
-          [400, "invalid_request"],
-        );
-      const sixth = await browser.decide(f, "approve", f.ticket("approve"), {
-        fault: true,
-      });
-      assert.deepEqual(outcomeOf(sixth), [429, "rate_limited"]);
-    },
-  );
-
-  await typed(
-    "device: the sixth attempt from one address is rate limited, whatever the challenge",
-    async () => {
-      const ip = "198.51.100.9";
-      for (let n = 0; n < 5; n++) {
-        const f = await browser.previewed();
-        const reply = await browser.decide(f, "approve", WRONG, {
-          ip,
-          fault: true,
-        });
-        assert.deepEqual(outcomeOf(reply), [400, "invalid_request"]);
-      }
-      const f = await browser.previewed();
-      const sixth = await browser.decide(f, "approve", f.ticket("approve"), {
-        ip,
-        fault: true,
-      });
-      assert.deepEqual(outcomeOf(sixth), [429, "rate_limited"]);
-    },
-  );
-
-  await typed(
-    "device: six overlapping attempts admit exactly five",
-    async () => {
-      const f = await browser.previewed();
-      const replies = await Promise.all(
-        Array.from({ length: 6 }, () =>
-          browser.decide(f, "approve", WRONG, {
-            fault: true,
-            converge: `overlap-${run}:6`,
-          }),
-        ),
-      );
-      assert.deepEqual(
-        replies.map((reply) => reply.status).sort(),
-        [400, 400, 400, 400, 400, 429],
-        JSON.stringify(replies.map((reply) => reply.text.slice(0, 120))),
-      );
-    },
-  );
+  await deviceChecks();
 
   const project = `${run}-persist`;
   const holder = holderOf("persist");

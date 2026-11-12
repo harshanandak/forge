@@ -685,7 +685,8 @@ test("a callback state is used once, only by its own browser, before its deadlin
       ),
     ),
   ).toEqual([400, "access_denied"]);
-  expect(refused(await wrong.done())).toEqual([400, "access_denied"]);
+  // The wrong browser no longer burns the state: its owner still completes (main burned it here).
+  expect(refused(await wrong.done())).toEqual([200, "approved"]);
   const bare = await f.through("approve", "owner");
   expect(refused(await f.callback(bare.state, "owner"))).toEqual([
     400,
@@ -700,14 +701,14 @@ test("a callback state is used once, only by its own browser, before its deadlin
     f.now() + day,
   );
   expect(refused(await lost.done())).toEqual([400, "access_denied"]);
-  expect(f.seen.verified).toHaveLength(1);
+  expect(f.seen.verified).toHaveLength(2);
   const late = await f.through("approve", "owner");
   f.advance(599_999);
   expect((await late.done()).status).toBe(200);
   const expired = await f.through("approve", "owner");
   f.advance(600_000);
   expect(refused(await expired.done())).toEqual([400, "access_denied"]);
-  expect(f.seen.verified).toHaveLength(2);
+  expect(f.seen.verified).toHaveLength(3);
 }, 30_000);
 
 test("the sixth failed decision by the owner within a minute is rate limited", async () => {
@@ -894,7 +895,11 @@ test("a second tab keeps the page cookie, so the first tab still completes", asy
 
 type Fixture = ReturnType<typeof fixture>;
 const WRONG = "x".repeat(43);
-const pair = (reply: Reply) => [reply.status, outcome(reply)];
+// A redirect has no body, so it has no outcome word.
+const pair = (reply: Reply) => [
+  reply.status,
+  reply.text === "" ? "" : outcome(reply),
+];
 /** A live preview of a fresh challenge: its browser, both tickets and the challenge selector. */
 async function previewed(f: Fixture) {
   const login = body(await f.begin("laptop-1", f.fresh()));

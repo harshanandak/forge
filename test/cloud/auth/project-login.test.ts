@@ -463,7 +463,11 @@ test("the login store writes the row only when the state changed", () => {
   const storage: DurableStorage = {
     sql: {
       exec: (sql, ...bindings) => {
-        if (/^\s*(INSERT|UPDATE|DELETE)\b/i.test(sql)) writes.push(sql);
+        if (
+          /^\s*(INSERT|UPDATE|DELETE)\b/i.test(sql) &&
+          /\bdomain_cloud_login\b/.test(sql)
+        )
+          writes.push(sql);
         return {
           toArray: () => raw.query(sql).all(...(bindings as never[])) as Row[],
         };

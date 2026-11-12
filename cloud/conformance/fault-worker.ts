@@ -15,12 +15,12 @@
 //                                normal refusal proves it never reached one
 //   x-cloud-ip: <address>        the request's CF-Connecting-IP ("none" removes it, "empty" blanks it)
 //   x-cloud-converge: <key>:<n>  the request pauses until n requests with the same key have arrived
-// The Clerk upstream here is a test double: the proof "owner" is the configured owner, anything else is refused.
+// The Clerk upstream here is a test double: the code "owner" is the configured owner, anything else is refused.
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Project as Shipped } from "../src/project.ts";
 import type { DeviceUpstream } from "../src/auth/device-browser.ts";
 import type { DurableState } from "../src/store.ts";
-import { testIdentityVerifier } from "../../test/contract/lib/identity-verifier.ts";
+import { createOidcVerifier } from "../../src/assembly/oidc.ts";
 
 export { default } from "../src/worker.ts";
 
@@ -91,25 +91,78 @@ const redemption = {
     return Promise.resolve(true);
   },
 };
+// The key that signs the test owner's ID token is made on first use, since workerd refuses key generation
+// at module load. The shipped OIDC verifier checks the token against it, so no test file is imported.
+let signing: Promise<{ key: CryptoKey; jwks: string }> | undefined;
+const keyPair = () =>
+  (signing ??= (async () => {
+    const pair = await crypto.subtle.generateKey(
+      {
+        name: "RSASSA-PKCS1-v1_5",
+        modulusLength: 2048,
+        publicExponent: new Uint8Array([1, 0, 1]),
+        hash: "SHA-256",
+      },
+      true,
+      ["sign"],
+    );
+    const { n, e } = await crypto.subtle.exportKey("jwk", pair.publicKey);
+    return {
+      key: pair.privateKey,
+      jwks: JSON.stringify({
+        keys: [{ kid: "conformance", kty: "RSA", alg: "RS256", n, e }],
+      }),
+    };
+  })());
+const b64 = (value: string | ArrayBuffer): string =>
+  Buffer.from(
+    new Uint8Array(
+      typeof value === "string" ? new TextEncoder().encode(value) : value,
+    ),
+  ).toString("base64url");
+
+/** The Clerk double: the code "owner" returns the owner's signed ID token; any other code is refused. */
 function clerk(env: unknown): DeviceUpstream {
   const vars = (env ?? {}) as Record<string, string>;
+  const audience = String(vars.CLERK_CLIENT_ID);
+  const verifier = createOidcVerifier(
+    {
+      issuer: String(vars.CLERK_ISSUER),
+      audience,
+      algorithms: ["RS256"],
+      jwksUrl: `${vars.CLERK_ISSUER}/.well-known/jwks.json`,
+      cacheTtlMs: 300_000,
+      refreshIntervalMs: 1_000,
+      fetchTimeoutMs: 5_000,
+    },
+    { get: async () => (await keyPair()).jwks },
+    { now: () => Date.now() },
+  );
   return {
     begin: (state) =>
       Promise.resolve(
         `https://clerk.test/authorize?s=${encodeURIComponent(state)}`,
       ),
-    verify: (request, now) => {
-      const proof = new URL(request.url).searchParams.get("proof");
-      const claims = {
-        issuer: String(vars.CLERK_ISSUER),
-        subject: String(vars.FORGE_OWNER_SUBJECT),
-        audience: String(vars.CLERK_CLIENT_ID),
-        expiresAt: now + 3_600_000,
-        authenticatedAt: now - 1_000,
-      };
-      return testIdentityVerifier(
-        new Map(proof === "owner" ? [["owner", claims]] : []),
-      ).verify(proof, claims.audience, now);
+    verify: async (request, now) => {
+      if (new URL(request.url).searchParams.get("code") !== "owner")
+        return verifier.verify("refused", audience, now);
+      const at = Math.floor(now / 1_000);
+      const signed = `${b64(JSON.stringify({ alg: "RS256", kid: "conformance" }))}.${b64(
+        JSON.stringify({
+          iss: vars.CLERK_ISSUER,
+          sub: vars.FORGE_OWNER_SUBJECT,
+          aud: audience,
+          iat: at - 2,
+          auth_time: at - 2,
+          exp: at + 3_600,
+        }),
+      )}`;
+      const signature = await crypto.subtle.sign(
+        "RSASSA-PKCS1-v1_5",
+        (await keyPair()).key,
+        new TextEncoder().encode(signed),
+      );
+      return verifier.verify(`${signed}.${b64(signature)}`, audience, now);
     },
   };
 }

@@ -18,6 +18,7 @@ import {
   type LoginError,
 } from "./device-login.ts";
 import {
+  browserAttempt,
   importLoginKey,
   loginConfigGap,
   loginStore,
@@ -131,6 +132,12 @@ const cookieOf = (request: Request, name: string) =>
     .map((part) => part.trim())
     .find((part) => part.startsWith(`${name}=`))
     ?.slice(name.length + 1);
+const noAddress = () =>
+  new ForgeFailure({
+    code: "AUTH_FORBIDDEN",
+    message: "Client address is unavailable",
+    retry: "never",
+  });
 const REFUSAL: Partial<Record<LoginError, number>> = {
   rate_limited: 429,
   unavailable: 503,
@@ -174,6 +181,9 @@ export async function deviceRoute(
   const { upstream, redemption } = options;
   if (needsClerk && (upstream === undefined || redemption === undefined))
     throw unavailable("OAUTH_CONFIGURATION");
+  // Every decision and callback is an attempt from a client address, counted before anything is checked.
+  const address = request.headers.get("CF-Connecting-IP");
+  if (needsClerk && (address === null || address === "")) throw noAddress();
   const login = createDeviceLogin({
     store,
     userCodeKey,
@@ -184,29 +194,37 @@ export async function deviceRoute(
 
   if (callback) {
     const states = url.searchParams.getAll("state");
-    const now = Date.now();
     const stateHash = await sha256(states[0]!);
     const jar = cookieOf(request, bindName(stateHash));
-    // The state is consumed first, so a replay or a wrong browser cannot try again.
+    const [who, bound] = await Promise.all([
+      sha256(address!),
+      sha256(jar ?? ""),
+    ]);
+    const now = Date.now();
+    // One step, no await: count the attempt, check the state, its live row and its own browser's cookie,
+    // and only then use the state up. A refusal leaves every row as it was.
     const taken = store.conditionalUpdate((base) => {
       const state = base as Held;
-      state.browser = (state.browser ?? []).filter(
-        (row) => now < row.expiresAt,
+      const row =
+        states.length === 1
+          ? (state.browser ?? []).find(
+              (entry) =>
+                entry.decided !== undefined &&
+                now < entry.expiresAt &&
+                same(entry.decided.stateHash, stateHash),
+            )
+          : undefined;
+      if (!browserAttempt(db, who, row?.userHash, now)) return "limited";
+      // Only the browser that was sent to Clerk holds this transaction's own cookie.
+      if (row === undefined || jar === undefined) return undefined;
+      if (!same(row.decided!.bindHash, bound)) return undefined;
+      state.browser = state.browser!.filter(
+        (entry) => entry !== row && now < entry.expiresAt,
       );
-      const at = state.browser.findIndex(
-        (row) =>
-          row.decided !== undefined && same(row.decided.stateHash, stateHash),
-      );
-      return at < 0 ? undefined : state.browser.splice(at, 1)[0]!.decided;
+      return row.decided;
     });
-    // Only the browser that was sent to Clerk holds this transaction's own cookie.
-    if (
-      states.length !== 1 ||
-      taken === undefined ||
-      jar === undefined ||
-      !same(taken.bindHash, await sha256(jar))
-    )
-      return result(400, "access_denied");
+    if (taken === "limited") return result(429, "rate_limited");
+    if (taken === undefined) return result(400, "access_denied");
     // One Clerk code, one try: the durable claim comes before the proof is verified.
     const claimed = await redemption!
       .claimOnce(
@@ -247,36 +265,47 @@ export async function deviceRoute(
   // The two POST routes below: same origin, and the cookie must match the form's proof.
   const csrf = form.get("csrf");
   const jar = cookieOf(request, COOKIE);
-  if (
-    request.headers.get("Origin") !== url.origin ||
-    !csrf ||
-    jar === undefined ||
-    !same(await sha256(jar), await sha256(csrf))
-  )
-    return result(400, "invalid_request");
-  const cookieHash = await sha256(jar);
   if (url.pathname !== "/device") {
-    // A decision needs the single-use ticket this browser was given for this action at the preview.
-    // It then gets its own cookie, so a planted or stolen page cookie cannot finish the redirect.
+    // A decision needs the single-use ticket this browser was given for this action at the preview, and
+    // the challenge selector it was shown with it (a budget key, never authority). It then gets its own
+    // cookie, so a planted or stolen page cookie cannot finish the redirect.
     const action = url.pathname === "/device/approve" ? "approve" : "deny";
+    const selector = form.get("challenge") ?? "";
     const state = DEVICE_STATE_PREFIX + token();
     const [verifier, bind] = [token(), token()];
-    const [ticketHash, stateHash, bindHash] = await Promise.all([
-      sha256(`${action}:${form.get("ticket") ?? ""}`),
-      sha256(state),
-      sha256(bind),
-    ]);
+    const [who, ticketHash, jarHash, csrfHash, stateHash, bindHash] =
+      await Promise.all([
+        sha256(address!),
+        sha256(`${action}:${form.get("ticket") ?? ""}`),
+        sha256(jar ?? ""),
+        sha256(csrf ?? ""),
+        sha256(state),
+        sha256(bind),
+      ]);
+    const trusted =
+      request.headers.get("Origin") === url.origin &&
+      !!csrf &&
+      jar !== undefined &&
+      same(jarHash, csrfHash);
     const now = Date.now();
     const chosen = store.conditionalUpdate((base) => {
       const held = base as Held;
-      held.browser = (held.browser ?? []).filter((row) => now < row.expiresAt);
-      const row = held.browser.find(
-        (entry) =>
-          entry.tickets !== undefined &&
-          same(entry.tickets[action], ticketHash) &&
-          same(entry.cookieHash, cookieHash),
+      const challenge = held.challenges.find((entry) =>
+        same(entry.userHash, selector),
       );
-      if (row === undefined) return false;
+      if (!browserAttempt(db, who, challenge?.userHash, now)) return "limited";
+      const row = trusted
+        ? (held.browser ?? []).find(
+            (entry) =>
+              entry.tickets !== undefined &&
+              now < entry.expiresAt &&
+              same(entry.tickets[action], ticketHash) &&
+              same(entry.cookieHash, jarHash) &&
+              same(entry.userHash, selector),
+          )
+        : undefined;
+      if (row === undefined) return "refused";
+      held.browser = held.browser!.filter((entry) => now < entry.expiresAt);
       delete row.tickets;
       row.expiresAt = now + STATE_TTL_MS;
       row.decided = {
@@ -287,9 +316,10 @@ export async function deviceRoute(
         code: row.code,
         expiresAt: row.expiresAt,
       };
-      return true;
+      return "chosen";
     });
-    if (!chosen) return result(400, "invalid_request");
+    if (chosen === "limited") return result(429, "rate_limited");
+    if (chosen !== "chosen") return result(400, "invalid_request");
     const location = await upstream!.begin(state, verifier).catch(() => {
       throw unavailable("upstream");
     });
@@ -302,13 +332,15 @@ export async function deviceRoute(
       },
     });
   }
-  const address = request.headers.get("CF-Connecting-IP");
-  if (address === null || address === "")
-    throw new ForgeFailure({
-      code: "AUTH_FORBIDDEN",
-      message: "Client address is unavailable",
-      retry: "never",
-    });
+  if (
+    request.headers.get("Origin") !== url.origin ||
+    !csrf ||
+    jar === undefined ||
+    !same(await sha256(jar), await sha256(csrf))
+  )
+    return result(400, "invalid_request");
+  const cookieHash = await sha256(jar);
+  if (address === null || address === "") throw noAddress();
   const typed = (form.get("code") ?? "").trim().toUpperCase();
   const code = /^[A-Z]{8}$/.test(typed)
     ? `${typed.slice(0, 4)}-${typed.slice(4)}`
@@ -359,7 +391,7 @@ export async function deviceRoute(
   if ("refused" in shown)
     return result(shown.refused === "invalid_code" ? 400 : 429, shown.refused);
   const choice = (action: "approve" | "deny") =>
-    `<form method="post" action="/device/${action}"><input type="hidden" name="csrf" value="${esc(csrf)}"><input type="hidden" name="ticket" value="${tickets[action]}"><button>${action === "approve" ? "Approve" : "Deny"}</button></form>`;
+    `<form method="post" action="/device/${action}"><input type="hidden" name="csrf" value="${esc(csrf)}"><input type="hidden" name="ticket" value="${tickets[action]}"><input type="hidden" name="challenge" value="${esc(hash)}"><button>${action === "approve" ? "Approve" : "Deny"}</button></form>`;
   return page(
     200,
     `<h1>Approve this device?</h1><p>Project <code>${esc(project)}</code></p><p>Device <code>${esc(shown.device)}</code></p>${choice("approve")}${choice("deny")}`,
