@@ -53,6 +53,7 @@ test.each(["test:integration", "test:changed"])(
         : []),
       ["adapters/l5-state", "private-files"],
       ["surface", "help-examples"],
+      ["adapters/process", "windows-spawn-speed"],
       ["adapters/vcs-git", "vcs-git"],
       ["assembly/shared-store", "shared-store"],
       ["tools", "lane-run"],
