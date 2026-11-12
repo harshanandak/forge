@@ -2853,6 +2853,11 @@ test("list refuses a stored issue with a bad body, unknown field, nesting or nod
     ],
     ["nesting over 8", rawIssue("work-2", `,"closeReason":${nested}`)],
     ["over 1,024 nodes", rawIssue("work-2", `,"closeReason":${nodes}`)],
+    // SQLite text functions stop at a literal NUL byte, so json_valid would accept this and json_set would drop the suffix.
+    [
+      "valid JSON, a literal NUL byte, then trailing text",
+      `${rawIssue("work-2")} leak-me`,
+    ],
   ] as const)
     for (const input of [{ limit: 1 }, { kind: "bug" }, { ready: true }]) {
       const f = fixture();
@@ -2860,6 +2865,16 @@ test("list refuses a stored issue with a bad body, unknown field, nesting or nod
       f.tables();
       f.put(stored());
       insertRaw(f, "issue:work-2", text);
+      // The tampered row reads back whole, NUL byte included.
+      expect(
+        (
+          f.db
+            .query(
+              "SELECT length(CAST(body AS BLOB)) AS n FROM state_records WHERE key='issue:work-2'",
+            )
+            .get() as { n: number }
+        ).n,
+      ).toBe(bytesOf(text));
       const got = await f.send({ ...listCall, input }, { token });
       const label = JSON.stringify([name, input]);
       expect([label, got.status, got.code, got.json.error?.message]).toEqual([
