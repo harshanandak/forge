@@ -225,6 +225,7 @@ function coverShards(count: number) {
     "private-repair",
     "state-acl-cli",
     "help-examples",
+    "windows-spawn-speed",
     "vcs-git",
     "shared-store",
     "lane-run",

@@ -1,8 +1,11 @@
 import { expect, test } from "bun:test";
 import {
+  GATED_PAIRS,
+  MAX_PEAK_DELTA_MB,
   MAX_RATIO_TO_BASE,
   compareToBase,
   gateDecision,
+  medianPairedDelta,
   sampleOrder,
   type GateRow,
   type Side,
@@ -103,6 +106,7 @@ const row = (ms: number, peakMb = 50): GateRow => ({
   medianMs: ms,
   medianPeakMb: peakMb,
   timesMs: Array.from({ length: PAIRS }, () => ms),
+  peaksMb: Array.from({ length: PAIRS }, () => peakMb),
 });
 
 test("over the ceiling while the base comparison passes: a warning, no failure", () => {
@@ -128,7 +132,7 @@ test("a missing base build fails, even under the ceiling", () => {
 }, 1000);
 
 test("over the memory cap fails whether or not the base comparison passes", () => {
-  const withBase = gateDecision(LIMIT, row(300, 71), row(300), WHERE);
+  const withBase = gateDecision(LIMIT, row(300, 71), row(300, 71), WHERE);
   expect(withBase.failures).toHaveLength(1);
   expect(withBase.failures[0]).toContain("MB");
   const noBase = gateDecision(LIMIT, row(300, 71), undefined, WHERE);
@@ -184,4 +188,76 @@ test("Speed sample output keeps acquisition order and one-based positions", () =
     { side: "base", position: 3, ms: 50 },
     { side: "current", position: 4, ms: 20 },
   ]);
+}, 1000);
+
+// Peak memory, forge-1238: the cap sits inside the runner's own noise, so the gate compares paired
+// runs of this build and the base build instead. Each pair's two runs share the runner's mood.
+const BASE_PEAK_MB = 84.5;
+// Per-pair noise in MB, from -0.9 to +0.9: the spread two identical builds show in one job.
+const NOISE_MB = [
+  0.3, -0.4, 0.9, -0.2, 0.5, -0.6, 0.8, 0.1, -0.3, 0.4, -0.9, 0.6, 0.2, -0.1,
+  0.7,
+];
+const peaks = (offsetMb: number, runnerMb = 0) => ({
+  current: NOISE_MB.map((noise) => BASE_PEAK_MB + runnerMb + offsetMb + noise),
+  base: NOISE_MB.map(() => BASE_PEAK_MB + runnerMb),
+});
+const peakRow = (values: readonly number[]): GateRow => ({
+  ...row(300, 0),
+  medianPeakMb: [...values].sort((a, b) => a - b)[
+    Math.floor(values.length / 2)
+  ]!,
+  peaksMb: values,
+});
+const LINUX = { ceilingMs: 350, maxPeakMb: 85 };
+const decide = (
+  offsetMb: number,
+  runnerMb = 0,
+  platform: { pullRequest?: boolean } = { pullRequest: true },
+) => {
+  const { current, base } = peaks(offsetMb, runnerMb);
+  return gateDecision(LINUX, peakRow(current), peakRow(base), {
+    ...WHERE,
+    platform: "linux",
+    ...platform,
+  });
+};
+
+test("the gated command takes 15 interleaved pairs", () => {
+  expect(GATED_PAIRS).toBe(15);
+  expect(NOISE_MB).toHaveLength(GATED_PAIRS);
+  expect(MAX_PEAK_DELTA_MB).toBe(1.5);
+}, 1000);
+
+test("the paired difference pairs run i of one build with run i of the other", () => {
+  expect(medianPairedDelta([5, 1, 9], [4, 3, 2])).toBe(1);
+  expect(() => medianPairedDelta([1, 2], [1])).toThrow();
+}, 1000);
+
+test("identical builds pass on a pull request however high the runner's memory sits", () => {
+  for (const runnerMb of [-1.5, 0, 1.5])
+    expect(decide(0, runnerMb).failures).toEqual([]);
+}, 1000);
+
+test("a real 3 MB regression fails the paired check", () => {
+  const { failures } = decide(3);
+  expect(failures).toHaveLength(1);
+  expect(failures[0]).toContain("origin/main build");
+  expect(failures[0]).toContain("1.5 MB");
+}, 1000);
+
+test("a real 2 MB regression fails and one at the limit passes", () => {
+  expect(decide(2).failures).toHaveLength(1);
+  expect(decide(1.2).failures).toEqual([]);
+}, 1000);
+
+test("over the absolute cap warns on a pull request and fails on a push to main", () => {
+  const pull = decide(0, 1.5);
+  expect(pull.failures).toEqual([]);
+  expect(pull.warnings).toHaveLength(1);
+  expect(pull.warnings[0]).toContain("85 MB");
+  const push = decide(0, 1.5, { pullRequest: false });
+  expect(push.warnings).toEqual([]);
+  expect(push.failures).toHaveLength(1);
+  expect(push.failures[0]).toContain("85 MB");
 }, 1000);
