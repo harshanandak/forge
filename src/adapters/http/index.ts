@@ -10,6 +10,7 @@ import {
   refusalDetails,
   type RefusalDetails,
 } from "./command-refusal.ts";
+export { carriesToken } from "./command-refusal.ts";
 export type { Blocker, RefusalDetails } from "./command-refusal.ts";
 import type {
   AmbientContext,

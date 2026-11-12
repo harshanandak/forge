@@ -86,13 +86,14 @@ function* strings(value: unknown): Generator<string> {
   else if (typeof value === "object" && value !== null)
     for (const child of Object.values(value)) yield* strings(child);
 }
+/** True when any string at any depth holds the presented token; keys are not walked. */
+export const carriesToken = (value: unknown, token: string): boolean =>
+  [...strings(value)].some((text) => text.includes(token));
 /** No admitted string holds the presented token, any device token or a control character. */
 const clean = (details: RefusalDetails, token: string) =>
+  !carriesToken(details, token) &&
   [...strings(details)].every(
-    (text) =>
-      !text.includes(token) &&
-      !DEVICE_TOKEN.test(text) &&
-      !/\p{Cc}/u.test(text),
+    (text) => !DEVICE_TOKEN.test(text) && !/\p{Cc}/u.test(text),
   );
 
 /** The details this code carries for this call, or undefined when what the server sent is not usable. */
