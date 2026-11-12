@@ -123,6 +123,7 @@ interface Dump {
   readonly tables: Record<string, readonly Record<string, unknown>[]>;
 }
 interface AdminBody {
+  readonly ok?: boolean;
   readonly value?: unknown;
   readonly error?: { readonly code: string; readonly message: string };
 }
@@ -187,6 +188,61 @@ async function dumpOf(project: string): Promise<Dump> {
   const reply = await adminCall(project, "GET", "dump");
   assert.equal(reply.status, 200, JSON.stringify(reply.body));
   return reply.body.value as Dump;
+}
+// A restore into an empty project derives the issue number floor when the dump has none. These sources hold
+// only leases, so the derived floor is 0 and the target holds exactly one extra record and one extra event: the
+// floor at 0, revision 1, written by the restore as the last event. This checks that pair, then strips it, so
+// the rest of the target can be compared with the source row for row.
+function settled(dump: Dump): Dump {
+  const records = dump.tables.state_records ?? [];
+  const events = dump.tables.state_events ?? [];
+  const floors = recordsOf(dump, "forge/work", "allocation:issue:work-");
+  assert.equal(floors.length, 1, "the restore derived one floor record");
+  const floor = JSON.parse(String(floors[0]!.body)) as {
+    value: unknown;
+    revision: number;
+    updatedAt: string;
+    updatedBy: unknown;
+  };
+  assert.deepEqual(floor.value, { prefix: "issue:work-", number: 0 });
+  assert.equal(floor.revision, 1);
+  assert.deepEqual(floor.updatedBy, { kind: "agent", id: "cloud-restore" });
+  const last = events.at(-1)!;
+  assert.equal(last.sequence, events.length, "the floor event is the last");
+  const written = JSON.parse(String(last.body)) as {
+    key: string;
+    revision: number;
+    at: string;
+    actor: unknown;
+    data: unknown;
+  };
+  assert.deepEqual(
+    [written.key, written.revision, written.actor, written.data, written.at],
+    [
+      "allocation:issue:work-",
+      1,
+      { kind: "agent", id: "cloud-restore" },
+      { prefix: "issue:work-", number: 0 },
+      floor.updatedAt,
+    ],
+    "the last event writes the floor record",
+  );
+  return {
+    ...dump,
+    tables: {
+      ...dump.tables,
+      state_records: records.filter((row) => row !== floors[0]),
+      state_events: events.slice(0, -1),
+    },
+  };
+}
+// The rows of a paged export as one dump, so they compare with a whole export.
+function joined(pages: readonly DumpPage[]): Dump {
+  const tables: Record<string, Record<string, unknown>[]> = {};
+  for (const page of pages)
+    for (const [table, rows] of Object.entries(page.tables))
+      (tables[table] ??= []).push(...rows);
+  return { format: "forge-cloud-dump/1", tables };
 }
 // One page of a paged dump (GET dump?cursor=start, then the cursor each page names as `next`).
 interface DumpPage {
@@ -340,6 +396,127 @@ async function check(name: string, body: () => Promise<void>): Promise<void> {
       `FAIL ${name}: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
+}
+
+// Budget journeys (forge-1304): real exported pages restored through the Worker and compared exactly. A second
+// argument names one journey, or a prefix of its name, so a counterfactual runs only the journey it targets.
+const only = process.argv[3];
+async function journey(name: string, body: () => Promise<void>): Promise<void> {
+  if (only !== undefined && !name.startsWith(only)) return;
+  const started = performance.now();
+  await check(name, body);
+  console.log(`INFO ${name}: ${Math.round(performance.now() - started)} ms`);
+}
+const showDigests = (label: string, digests: Record<string, string>): void =>
+  console.log(
+    `INFO ${label} tables: ${Object.entries(digests)
+      .map(([table, digest]) => `${table} ${digest.slice(0, 26)}`)
+      .join("; ")}`,
+  );
+function okValue<T>(
+  reply: { status: number; body: AdminBody },
+  what: string,
+): T {
+  assert.equal(
+    reply.status,
+    200,
+    `${what}: ${JSON.stringify(reply.body).slice(0, 300)}`,
+  );
+  assert.equal(reply.body.ok, true, `${what} is not ok`);
+  return reply.body.value as T;
+}
+// The real export of `project`: GET dump?cursor=start, then only the cursor each page returns, URL-encoded, until next
+// is null. `each` sees every page once and nothing is kept after it. Each page is serialized once, and its UTF-8 bytes
+// are measured on that text; the page document, not the HTTP envelope, is what the budget bounds.
+async function walk(
+  project: string,
+  label: string,
+  budget: number,
+  each: (page: DumpPage, text: string) => Promise<void> | void,
+): Promise<{ bytes: number[]; urls: number[] }> {
+  const trip = { bytes: [] as number[], urls: [] as number[] };
+  const seen = new Set<string>();
+  let cursor = "start";
+  for (;;) {
+    assert.ok(!seen.has(cursor), `${label}: a cursor repeats`);
+    assert.ok(seen.size < 32, `${label}: the export does not end`);
+    seen.add(cursor);
+    const route = `dump?cursor=${encodeURIComponent(cursor)}`;
+    trip.urls.push(Buffer.byteLength(`${base}/p/${project}/${route}`));
+    const page = okValue<DumpPage>(
+      await adminCall(project, "GET", route),
+      `${label} export`,
+    );
+    const text = JSON.stringify(page);
+    const bytes = Buffer.byteLength(text);
+    trip.bytes.push(bytes);
+    assert.ok(
+      bytes <= budget,
+      `page ${page.page} is ${bytes} bytes, over the ${budget} byte budget`,
+    );
+    assert.equal(page.format, "forge-cloud-dump-page/1");
+    assert.equal(page.page, trip.bytes.length - 1, `${label}: page numbers`);
+    assert.equal(page.last, page.next === null, `${label}: last means no next`);
+    await each(page, text);
+    if (page.next === null) return trip;
+    cursor = page.next;
+  }
+}
+// Every real page of `source` goes unchanged and in order into the empty `target`, which is then read back page by
+// page. Digests of every column of every row stand in for copies, so one page is held at a time.
+async function roundTrip(
+  source: string,
+  target: string,
+  label: string,
+  budget: number,
+  each: (page: DumpPage, text: string) => void = () => undefined,
+) {
+  const { digester } = await import("./budget.ts");
+  const sent = digester();
+  assert.equal(await initialized(target), false, `${label}: target is empty`);
+  const trip = await walk(source, label, budget, async (page, text) => {
+    each(page, text);
+    const reply = okValue<{
+      restored: Record<string, number>;
+      page: number;
+      done: boolean;
+    }>(
+      await adminCall(target, "POST", "restore", text),
+      `${label} restore of page ${page.page}`,
+    );
+    assert.equal(reply.page, page.page, `${label}: page acknowledgement`);
+    assert.equal(reply.done, page.last, `${label}: done only on the last page`);
+    assert.deepEqual(
+      reply.restored,
+      Object.fromEntries(
+        Object.entries(page.tables).map(([table, rows]) => [
+          table,
+          rows.length,
+        ]),
+      ),
+      `${label}: restored counts of page ${page.page}`,
+    );
+    assert.equal(
+      await initialized(target),
+      page.last,
+      `${label}: provisioned only after the last page`,
+    );
+    for (const [table, rows] of Object.entries(page.tables))
+      sent.add(table, rows);
+  });
+  const back = digester();
+  const read = await walk(target, `${label} readback`, budget, (page) => {
+    for (const [table, rows] of Object.entries(page.tables))
+      back.add(table, rows);
+  });
+  const digests = sent.done();
+  assert.deepEqual(
+    back.done(),
+    digests,
+    `${label}: target differs from source`,
+  );
+  assert.deepEqual(read.bytes, trip.bytes, `${label}: target pages differ`);
+  return { ...trip, digests };
 }
 
 const lookup = (
@@ -1699,7 +1876,11 @@ if (phase === "main") {
 
       const restored = await adminCall(target, "POST", "restore", text);
       assert.equal(restored.status, 200, JSON.stringify(restored.body));
-      assert.deepEqual(await dumpOf(target), dump, "read back identical");
+      assert.deepEqual(
+        settled(await dumpOf(target)),
+        dump,
+        "read back identical",
+      );
       // The restored project serves the same lease and replays the same receipts.
       assert.deepEqual(
         granted(await holderLookup(target, "issue:dump-1")),
@@ -1875,7 +2056,11 @@ if (phase === "main") {
         JSON.stringify(dump),
       );
       assert.equal(valid.status, 200, JSON.stringify(valid.body));
-      assert.deepEqual(await dumpOf(target), dump, "read back identical");
+      assert.deepEqual(
+        settled(await dumpOf(target)),
+        dump,
+        "read back identical",
+      );
       assert.deepEqual(
         granted(await holderLookup(target, "issue:bad-1")),
         granted(await holderLookup(source, "issue:bad-1")),
@@ -1923,8 +2108,17 @@ if (phase === "main") {
         assert.equal((reply.body.value as { done: boolean }).done, page.last);
         assert.equal(await initialized(target), page.last, `page ${page.page}`);
       }
-      assert.deepEqual(await dumpOf(target), whole, "read back identical");
-      assert.deepEqual(await pagesOf(target), pages, "same pages");
+      assert.deepEqual(
+        settled(await dumpOf(target)),
+        whole,
+        "read back identical",
+      );
+      // The generated pair moves the page edges, so the pages compare as rows.
+      assert.deepEqual(
+        settled(joined(await pagesOf(target))),
+        whole,
+        "same rows in pages",
+      );
       assert.deepEqual(
         granted(await holderLookup(target, "issue:page-3")),
         granted(await holderLookup(source, "issue:page-3")),
@@ -1966,7 +2160,7 @@ if (phase === "main") {
         const reply = await sendPage(target, page);
         assert.equal(reply.status, 200, JSON.stringify(reply.body));
       }
-      assert.deepEqual(await dumpOf(target), await dumpOf(source));
+      assert.deepEqual(settled(await dumpOf(target)), await dumpOf(source));
 
       // Issuing a device token provisions a project, so it clears staged rows that were never checked.
       const issued = `${run}-page-issued`;
@@ -2036,7 +2230,7 @@ if (phase === "main") {
       const target = `${run}-page-race-copy`;
       for (const page of pages)
         assert.equal((await sendPage(target, page)).status, 200);
-      assert.deepEqual(await dumpOf(target), await dumpOf(race));
+      assert.deepEqual(settled(await dumpOf(target)), await dumpOf(race));
     },
   );
 
@@ -2238,6 +2432,57 @@ if (phase === "main") {
     "typed 1: create, comment, show, list and ready on the admitted project",
     async () => {
       assert.notEqual(typedProject, "", "FORGE_CLOUD_PROJECT is set");
+      // forge-1311: the admitted project starts as a restored legacy project: only a deleted work-2, no floor.
+      const legacyAt = "2026-01-01T00:00:00.000Z";
+      const legacyActor = { kind: "agent", id: "legacy" };
+      const legacyEvents = [
+        {
+          type: "forge/work:record.updated@1",
+          namespace: "forge/work",
+          key: "issue:work-2",
+          revision: 1,
+          at: legacyAt,
+          actor: legacyActor,
+          data: {
+            id: "work-2",
+            prefix: "ci",
+            title: "Old",
+            status: "open",
+            labels: [],
+            dependsOn: [],
+            createdAt: legacyAt,
+          },
+        },
+        {
+          type: "forge/work:record.deleted@1",
+          namespace: "forge/work",
+          key: "issue:work-2",
+          revision: 2,
+          at: legacyAt,
+          actor: legacyActor,
+        },
+      ].map((event, index) => ({
+        sequence: index + 1,
+        namespace: "forge/work",
+        key: "issue:work-2",
+        body: JSON.stringify(event),
+      }));
+      const restored = await adminCall(
+        typedProject,
+        "POST",
+        "restore",
+        JSON.stringify({
+          format: "forge-cloud-dump/1",
+          tables: {
+            state_records: [],
+            state_events: legacyEvents,
+            state_leases: [],
+            state_requests: [],
+            domain_cloud_requests: [],
+          },
+        }),
+      );
+      assert.equal(restored.status, 200, JSON.stringify(restored.body));
       // Issuing the first token provisions the admitted project.
       a = await callerFor("a");
       b = await callerFor("b");
@@ -2245,9 +2490,43 @@ if (phase === "main") {
       created = typedOk<Item>(
         await typedCall(a, { ...createOne, context: asProject(a) }),
       );
-      assert.match(created.id, /^ci-\d+$/);
+      // The saved floor is 2, so the first create is 3 at revision 1, and the deleted 2 is never reused.
+      assert.equal(created.id, "ci-3");
       assert.equal(created.status, "open");
       assert.equal(created.revision, 1);
+      const restoredDump = await dumpOf(typedProject);
+      const floorRows = recordsOf(
+        restoredDump,
+        "forge/work",
+        "allocation:issue:work-",
+      );
+      assert.equal(floorRows.length, 1);
+      assert.equal(floorRows[0]!.revision, 2);
+      assert.deepEqual(
+        (JSON.parse(String(floorRows[0]!.body)) as { value: unknown }).value,
+        { prefix: "issue:work-", number: 3 },
+      );
+      const keptEvents = restoredDump.tables.state_events!;
+      assert.deepEqual(
+        keptEvents.slice(0, 2).map((row) => row.body),
+        legacyEvents.map((row) => row.body),
+        "the legacy events are unchanged",
+      );
+      const floorEvent = JSON.parse(String(keptEvents[2]!.body)) as {
+        key: string;
+        revision: number;
+        actor: unknown;
+        data: unknown;
+      };
+      assert.deepEqual(
+        [floorEvent.key, floorEvent.revision, floorEvent.data],
+        ["allocation:issue:work-", 1, { prefix: "issue:work-", number: 2 }],
+        "the restore wrote the floor at 2 and the create advanced it",
+      );
+      assert.deepEqual(floorEvent.actor, {
+        kind: "agent",
+        id: "cloud-restore",
+      });
       one = created;
       two = typedOk<Item>(
         await typedCall(a, {
@@ -2993,9 +3272,13 @@ if (phase === "large") {
   const {
     ACTOR,
     BODY,
+    WIDE,
+    call: commandOf,
     maxSource,
     pagesOf: cut,
+    tablesOf,
   } = await import("./max-source.ts");
+  const oracle = await import("./budget.ts");
   assert.notEqual(
     typedProject,
     "",
@@ -3159,6 +3442,309 @@ if (phase === "large") {
         want.state_records!.length + 6,
       );
       assert.equal(merged.state_events!.length, want.state_events!.length + 8);
+    },
+  );
+  await journey(
+    "budget maximum: real grown pages restore exactly",
+    async () => {
+      const budget = 4 * 1024 * 1024;
+      const caller = await who();
+      // Two more creates of three-byte text. The independent fixture grows by the same commands the Worker has
+      // run (the fresh comment and two maximum creates), then these two, and the Worker is sent these two now.
+      const wide = (n: number) =>
+        commandOf(`large-wide-${n}`, "issue.create", {
+          title: `Wide ${n}`,
+          body: WIDE,
+        });
+      for (const request of [
+        commandOf("large-fresh-comment", "issue.comment", {
+          id,
+          body: "later",
+        }),
+        ...[1, 2].map((n) =>
+          commandOf(`large-grow-${n}`, "issue.create", {
+            title: `Grown ${n}`,
+            body: BODY,
+          }),
+        ),
+        wide(1),
+        wide(2),
+      ])
+        assert.equal(
+          (await source.send(request)).status,
+          200,
+          request.requestId,
+        );
+      for (const n of [1, 2])
+        typedOk(
+          await typedCall(caller, { ...wide(n), context: asProject(caller) }),
+        );
+      const grown = tablesOf(source.db);
+      const expected = oracle.cutPages(grown, budget);
+      // The fixture must tell a UTF-16 count from a byte count: cut by units, a page overfills by real bytes.
+      assert.ok(
+        oracle
+          .cutPages(grown, budget, oracle.utf16)
+          .some((page) => oracle.utf8(page) > budget),
+        "the grown fixture cannot tell a UTF-16 count from a UTF-8 byte count",
+      );
+      const stamped = oracle.digester(true);
+      const trip = await roundTrip(
+        typedProject,
+        `${run}-large-journey`,
+        "maximum",
+        budget,
+        (page) => {
+          for (const [table, rows] of Object.entries(page.tables))
+            stamped.add(table, rows);
+        },
+      );
+      assert.ok(
+        trip.bytes.length >= 2 && Math.max(...trip.bytes) >= 3 * 1024 * 1024,
+        `the real pages are ${trip.bytes.join(", ")} bytes`,
+      );
+      assert.deepEqual(
+        trip.bytes,
+        expected.map((page) => oracle.utf8(page)),
+        "the real pages are not the expected pages",
+      );
+      // Only the clock times differ from the fixture, which ran at another time; source to target is exact above.
+      assert.deepEqual(
+        stamped.done(),
+        oracle.digestOf(grown, true),
+        "the grown export differs from the independently grown project",
+      );
+      console.log(
+        `INFO maximum: pages ${trip.bytes.join(", ")} bytes of ${budget}; mutated cut: ${oracle
+          .cutPages(grown, budget, oracle.utf16)
+          .map((page) => oracle.utf8(page))
+          .join(", ")}`,
+      );
+      showDigests("maximum", trip.digests);
+    },
+  );
+}
+
+// The isolated budget runs (forge-1304) set their own DUMP_* limits from the workflow. budget-plan prints the page
+// budget a run must be given, on a line of its own that starts with PLAN (the state owner logs other lines): the byte size of a page the oracle builds from accepted rows, never one the exporter cut.
+if (phase === "budget-plan") {
+  const oracle = await import("./budget.ts");
+  const fixtures = await import("./max-source.ts");
+  if (process.argv[3] === "exact") {
+    const { tables } = await fixtures.tinySource("T");
+    const size = oracle.utf8(oracle.finalPage(tables));
+    assert.ok(
+      size <= 4096 && Object.values(tables).flat().length > 0,
+      `the exact fixture's final page is ${size} bytes`,
+    );
+    console.log(`PLAN ${size}`);
+  } else {
+    const { tables } = await fixtures.leaseSource(oracle.longSubject());
+    console.log(
+      `PLAN ${oracle.utf8(oracle.pageThrough(tables, oracle.leaseBoundary(tables)))}`,
+    );
+  }
+}
+
+if (phase === "budget") {
+  // Small caps (131,072 stored bytes, 100 rows per table) and a page budget of exactly one tiny page.
+  const budget = Number(process.env.BUDGET_PAGE_BYTES);
+  const oracle = await import("./budget.ts");
+  const { tinySource } = await import("./max-source.ts");
+  const seed = async (name: string, doc: object): Promise<void> => {
+    okValue(
+      await adminCall(name, "POST", "restore", JSON.stringify(doc)),
+      `${name} seed`,
+    );
+  };
+  await journey(
+    "budget exact: real final page restores at its inclusive limit",
+    async () => {
+      const fixture = await tinySource("T");
+      assert.equal(
+        oracle.utf8(oracle.finalPage(fixture.tables)),
+        budget,
+        "BUDGET_PAGE_BYTES is the size of the expected final page",
+      );
+      const [source, target] = [`${run}-exact-src`, `${run}-exact-dst`];
+      await seed(source, fixture.doc);
+      const trip = await roundTrip(source, target, "exact", budget);
+      assert.equal(
+        trip.bytes.length,
+        1,
+        `the export was cut into ${trip.bytes.length} pages, and the exact budget ${budget} holds one`,
+      );
+      assert.equal(
+        trip.bytes[0],
+        budget,
+        `the real page is ${trip.bytes[0]} bytes, not the ${budget} byte budget`,
+      );
+      assert.deepEqual(trip.digests, oracle.digestOf(fixture.tables));
+      showDigests("exact", trip.digests);
+    },
+  );
+  await journey(
+    "budget envelope: real continuation pages stay within their budget",
+    async () => {
+      // One more character in the title: the rows alone still fit the budget, but the page with its envelope does not.
+      const fixture = await tinySource("TT");
+      const empty = Object.fromEntries(
+        Object.keys(fixture.tables).map((table) => [table, []]),
+      );
+      const shell = oracle.utf8(oracle.finalPage(empty));
+      const bare = oracle.cutPages(fixture.tables, budget, oracle.utf8, false);
+      const expected = oracle.cutPages(fixture.tables, budget);
+      assert.equal(bare.length, 1, "the rows alone fit one page");
+      assert.ok(
+        oracle.utf8(bare[0]!) - shell <= budget &&
+          oracle.utf8(bare[0]!) > budget,
+        "the rows alone fit the budget but their page document does not",
+      );
+      assert.equal(expected.length, 2, "the last row moves to a second page");
+      assert.equal(Object.values(expected[1]!.tables).flat().length, 1);
+      const [source, target] = [`${run}-env-src`, `${run}-env-dst`];
+      await seed(source, fixture.doc);
+      const trip = await roundTrip(source, target, "envelope", budget);
+      assert.deepEqual(
+        trip.bytes,
+        expected.map((page) => oracle.utf8(page)),
+        "the real pages are not the expected pages",
+      );
+      assert.deepEqual(trip.digests, oracle.digestOf(fixture.tables));
+      showDigests("envelope", trip.digests);
+    },
+  );
+}
+
+if (phase === "budget-cursor") {
+  // The longest key state accepts (500 characters, here a lease subject) at a continuation boundary, followed through
+  // the real encoded URL. Only a local workerd answers it: no hosted ingress limit is measured.
+  const budget = Number(process.env.BUDGET_PAGE_BYTES);
+  const oracle = await import("./budget.ts");
+  const { leaseSource } = await import("./max-source.ts");
+  await journey(
+    "budget cursor: a long escaped key survives its real continuation URL",
+    async () => {
+      const subject = oracle.longSubject();
+      assert.equal(subject.length, 500);
+      const fixture = await leaseSource(subject);
+      const first = oracle.pageThrough(
+        fixture.tables,
+        oracle.leaseBoundary(fixture.tables),
+      );
+      assert.equal(
+        oracle.utf8(first),
+        budget,
+        "BUDGET_PAGE_BYTES is the size of the expected first page",
+      );
+      assert.equal(
+        (JSON.parse(first.next!) as { k: string[] }).k[1],
+        subject,
+        "the first cursor names the long subject",
+      );
+      const expected = oracle.cutPages(fixture.tables, budget);
+      assert.ok(expected.length >= 2 && expected[0]!.next === first.next);
+      const [source, target] = [`${run}-cursor-src`, `${run}-cursor-dst`];
+      okValue(
+        await adminCall(source, "POST", "restore", JSON.stringify(fixture.doc)),
+        "cursor seed",
+      );
+      const trip = await roundTrip(
+        source,
+        target,
+        "cursor",
+        budget,
+        (page, text) =>
+          assert.ok(
+            text === JSON.stringify(expected[page.page]),
+            `page ${page.page} is not the expected page`,
+          ),
+      );
+      assert.equal(trip.bytes.length, expected.length);
+      const url = Buffer.byteLength(
+        `${base}/p/${source}/dump?cursor=${encodeURIComponent(first.next!)}`,
+      );
+      const bounds = oracle.cursorBounds(base);
+      assert.equal(trip.urls[1], url, "the second request is the cursor URL");
+      assert.ok(url <= bounds.state_leases!, "the URL is over its upper bound");
+      assert.deepEqual(trip.digests, oracle.digestOf(fixture.tables));
+      console.log(
+        `INFO cursor: the continuation request URL is ${url} UTF-8 bytes for a ${subject.length} unit subject; upper bound per key shape: ${JSON.stringify(bounds)}; local workerd only`,
+      );
+      showDigests("cursor", trip.digests);
+    },
+  );
+}
+
+if (phase === "budget-body") {
+  // One page near the 8 MiB restore body: page and stored caps of 8 MiB and 100 rows per table, set by the workflow.
+  const limit = 8 * 1024 * 1024;
+  const low = limit - 65_536;
+  const oracle = await import("./budget.ts");
+  const { nearSource } = await import("./max-source.ts");
+  await journey(
+    "budget body: real near-8-MiB page restores exactly",
+    async () => {
+      // The tail body is calculated from the independent page size: four rows carry it, a byte each, so one
+      // estimate lands near the middle of the window, and at most two more builds correct it.
+      const built: { tail: number; size: number }[] = [];
+      const build = async (tail: number) => {
+        const near = await nearSource(tail);
+        const size = oracle.utf8(oracle.finalPage(near.tables));
+        built.push({ tail, size });
+        return { ...near, size };
+      };
+      let near = await build(1_000);
+      for (let n = 0; n < 2 && (near.size < low || near.size > limit); n += 1) {
+        const last = built.at(-1)!;
+        const before = built.at(-2);
+        const slope =
+          before === undefined
+            ? 4
+            : (last.size - before.size) / (last.tail - before.tail);
+        near = await build(
+          Math.max(
+            1,
+            Math.round(last.tail + ((low + limit) / 2 - last.size) / slope),
+          ),
+        );
+      }
+      const rows = Object.fromEntries(
+        Object.entries(near.tables).map(([table, list]) => [
+          table,
+          list.length,
+        ]),
+      );
+      assert.ok(
+        near.size >= low && near.size <= limit,
+        `the expected page is ${near.size} bytes, outside ${low}..${limit} after ${built.length} builds`,
+      );
+      assert.ok(
+        near.stored <= limit && Math.max(...Object.values(rows)) <= 100,
+        `the fixture holds ${near.stored} stored bytes and ${JSON.stringify(rows)} rows`,
+      );
+      const text = JSON.stringify(oracle.finalPage(near.tables));
+      assert.equal(Buffer.byteLength(text), near.size);
+      const [source, target] = [`${run}-body-src`, `${run}-body-dst`];
+      okValue(await adminCall(source, "POST", "restore", text), "body seed");
+      const trip = await roundTrip(
+        source,
+        target,
+        "body",
+        limit,
+        (_page, real) =>
+          assert.ok(real === text, "the real page is not the expected page"),
+      );
+      assert.equal(trip.bytes.length, 1, "one real page holds the project");
+      assert.ok(
+        trip.bytes[0]! >= low,
+        `the real page is ${trip.bytes[0]} bytes`,
+      );
+      assert.deepEqual(trip.digests, oracle.digestOf(near.tables));
+      console.log(
+        `INFO body: expected and real page ${near.size} bytes (${limit - near.size} under the restore body), ${near.stored} stored bytes, rows ${JSON.stringify(rows)}, builds ${JSON.stringify(built)}`,
+      );
+      showDigests("body", trip.digests);
     },
   );
 }

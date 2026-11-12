@@ -5,8 +5,10 @@ import {
   RestoreConsistencyFailure,
   StateOwner,
   verifyEventDerivedState,
+  type NumberedSummary,
 } from "../../../src/core/state/index.ts";
 import type { SqlDatabase } from "../../../src/ports/store.ts";
+import { instrument, reads } from "./numbered-fixture.ts";
 
 // The optional page size keeps this tests-first commit type-correct with the old verifier.
 const verify: (
@@ -425,3 +427,399 @@ for (const pageSize of [1, 2, undefined]) {
     }
   }, 30_000);
 }
+
+// forge-1311: the replay's numbered summary and the restore-only floor seed.
+const request = { namespace: ns, prefix: "n-" };
+const mark = (db: SqlDatabase) =>
+  Number(db.get("SELECT MAX(sequence) AS n FROM state_events")!.n);
+const write = (
+  owner: StateOwner,
+  key: string,
+  value: unknown = 1,
+  expectRevision = 0,
+  namespace = ns,
+) => owner.put(namespace, key, value, actor, { expectRevision });
+const floorKey = "allocation:n-";
+const floorValue = (number: unknown, prefix = "n-") => ({ prefix, number });
+const rowsOf = (db: SqlDatabase) =>
+  JSON.stringify(
+    [
+      db.all("SELECT * FROM state_records ORDER BY namespace,key"),
+      db.all("SELECT * FROM state_events ORDER BY sequence"),
+    ],
+    (_key, value: unknown) => (typeof value === "bigint" ? `${value}n` : value),
+  );
+
+test("the replay reports the highest number under a prefix, deleted keys included, and ignores every other key", async () => {
+  const { db, owner, close } = await open(false);
+  try {
+    for (const key of [
+      "n-9",
+      "n-10",
+      "n-2",
+      "n-x1",
+      "n-007",
+      "m-500",
+      "comment:n-600",
+    ])
+      write(owner, key);
+    write(owner, "n-500", 1, 0, "forge/other");
+    write(owner, "n-30");
+    owner.delete(ns, "n-30", actor, { expectRevision: 1 });
+    owner.acquire(ns, "n-99", holder, 100, "claim-99");
+    const high = mark(db);
+    expect(verifyEventDerivedState(db, high)).toBeUndefined();
+    expect(verifyEventDerivedState(db, high, undefined, request)).toEqual({
+      highest: 30,
+      earlier: 0,
+      floorRevision: 0,
+    });
+    expect(verifyEventDerivedState(db, high, 1, request)).toEqual({
+      highest: 30,
+      earlier: 0,
+      floorRevision: 0,
+    });
+    expect(
+      verifyEventDerivedState(db, high, undefined, {
+        namespace: ns,
+        prefix: "z-",
+      }),
+    ).toEqual({ highest: 0, earlier: 0, floorRevision: 0 });
+  } finally {
+    await close();
+  }
+}, 30_000);
+
+test("the replay remembers the highest earlier floor value after the floor is lowered or deleted, and skips values that are not a floor", async () => {
+  const { db, owner, close } = await open(false);
+  try {
+    write(owner, floorKey, floorValue(20));
+    write(owner, floorKey, floorValue(15), 1);
+    write(owner, floorKey, { ...floorValue(99), extra: true }, 2);
+    write(owner, floorKey, floorValue(98, "m-"), 3);
+    owner.delete(ns, floorKey, actor, { expectRevision: 4 });
+    expect(verifyEventDerivedState(db, mark(db), undefined, request)).toEqual({
+      highest: 0,
+      earlier: 20,
+      floorRevision: 5,
+    });
+  } finally {
+    await close();
+  }
+}, 30_000);
+
+for (const deleted of [false, true])
+  test(`the replay refuses an unsafe ${deleted ? "deleted" : "live"} number instead of rounding it`, async () => {
+    const { db, owner, close } = await open(false);
+    try {
+      write(owner, "n-9007199254740993");
+      if (deleted)
+        owner.delete(ns, "n-9007199254740993", actor, { expectRevision: 1 });
+      expectFailure(
+        () => verifyEventDerivedState(db, mark(db), undefined, request),
+        deleted ? "state_events" : "state_records",
+        "n-9007199254740993",
+      );
+    } finally {
+      await close();
+    }
+  }, 30_000);
+
+test("the replay reads a deletion type the way it parses it, last duplicate label authoritative", async () => {
+  const { db, owner, close } = await open(false);
+  try {
+    write(owner, "n-8");
+    owner.delete(ns, "n-8", actor, { expectRevision: 1 });
+    for (const sequence of [1, 2])
+      db.run(
+        `UPDATE state_events SET body=replace(body,'"type":','"type":"ignored","type":') WHERE sequence=?`,
+        [sequence],
+      );
+    expect(verifyEventDerivedState(db, mark(db), undefined, request)).toEqual({
+      highest: 8,
+      earlier: 0,
+      floorRevision: 0,
+    });
+  } finally {
+    await close();
+  }
+}, 30_000);
+
+test("the replay reads every table sixteen rows at a time and folds the summary without another pass", async () => {
+  const { db, owner, close } = await open(false);
+  try {
+    for (let n = 1; n <= 40; n++) write(owner, `n-${n}`);
+    // Forty-one events: the deletion of the highest number is in the third batch.
+    owner.delete(ns, "n-40", actor, { expectRevision: 1 });
+    const probe = instrument(db);
+    expect(
+      verifyEventDerivedState(probe.db, mark(db), undefined, request),
+    ).toEqual({ highest: 40, earlier: 0, floorRevision: 0 });
+    const lists = reads(probe.log).filter((access) =>
+      /ORDER BY/.test(access.sql),
+    );
+    for (const access of lists) expect(access.params.at(-1)).toBe(16);
+    expect(
+      lists.filter((access) => access.sql.includes("FROM state_events")).length,
+    ).toBe(3);
+  } finally {
+    await close();
+  }
+}, 30_000);
+
+const seed = (owner: StateOwner, db: SqlDatabase, found: NumberedSummary) =>
+  owner.seedNumberFloor(ns, "n-", found, actor, mark(db));
+
+test("seeding a missing floor writes one record and one event at the highest number, and the result verifies", async () => {
+  const { db, owner, close } = await open(false);
+  try {
+    write(owner, "n-3");
+    seed(owner, db, { highest: 3, earlier: 0, floorRevision: 0 });
+    expect(owner.get(ns, floorKey)).toMatchObject({
+      revision: 1,
+      value: floorValue(3),
+    });
+    expect(
+      db
+        .all("SELECT key FROM state_events ORDER BY sequence")
+        .map((row) => row.key),
+    ).toEqual(["n-3", floorKey]);
+    expect(verifyEventDerivedState(db, mark(db), undefined, request)).toEqual({
+      highest: 3,
+      earlier: 3,
+      floorRevision: 1,
+    });
+  } finally {
+    await close();
+  }
+}, 30_000);
+
+test("seeding writes 0 for an empty project, and continues a deleted floor history at the next revision", async () => {
+  const { db, owner, close } = await open(false);
+  try {
+    seed(owner, db, { highest: 0, earlier: 0, floorRevision: 0 });
+    expect(owner.get(ns, floorKey)?.value).toEqual(floorValue(0));
+  } finally {
+    await close();
+  }
+  const again = await open(false);
+  try {
+    write(again.owner, floorKey, floorValue(12));
+    again.owner.delete(ns, floorKey, actor, { expectRevision: 1 });
+    seed(again.owner, again.db, {
+      highest: 1,
+      earlier: 12,
+      floorRevision: 2,
+    });
+    // The deleted floor history continues: update 1, delete 2, restore 3.
+    expect(again.owner.get(ns, floorKey)).toMatchObject({
+      revision: 3,
+      value: floorValue(12),
+    });
+  } finally {
+    await again.close();
+  }
+}, 30_000);
+
+test("seeding keeps a floor that covers the history exactly, and writes nothing", async () => {
+  const { db, owner, close } = await open(false);
+  try {
+    write(owner, "n-3");
+    write(owner, floorKey, floorValue(12));
+    const before = rowsOf(db);
+    seed(owner, db, { highest: 3, earlier: 12, floorRevision: 1 });
+    expect(rowsOf(db)).toBe(before);
+  } finally {
+    await close();
+  }
+}, 30_000);
+
+const covered = { highest: 1, earlier: 0, floorRevision: 1 };
+for (const [name, value, found] of [
+  [
+    "below the highest number",
+    floorValue(2),
+    { highest: 3, earlier: 0, floorRevision: 1 },
+  ],
+  [
+    "below an earlier floor value",
+    floorValue(5),
+    { highest: 1, earlier: 9, floorRevision: 1 },
+  ],
+  ["holding null", null, covered],
+  ["with an extra field", { ...floorValue(5), extra: 1 }, covered],
+  ["with another prefix", floorValue(5, "m-"), covered],
+  ["with a fraction", floorValue(1.5), covered],
+  ["with a negative number", floorValue(-1), covered],
+  ["with an unsafe number", floorValue(2 ** 53), covered],
+] as const)
+  test(`seeding refuses a floor ${name} as an inconsistent state_records row, and writes nothing`, async () => {
+    const { db, owner, close } = await open(false);
+    try {
+      write(owner, floorKey, value);
+      const before = rowsOf(db);
+      expectFailure(() => seed(owner, db, found), "state_records", floorKey);
+      expect(rowsOf(db)).toBe(before);
+    } finally {
+      await close();
+    }
+  }, 30_000);
+
+test("seeding reads a malformed floor with the same loader a numbered write uses", async () => {
+  const { db, owner, close } = await open(false);
+  try {
+    write(owner, floorKey, floorValue(1.5));
+    expect(() =>
+      owner.putNext(ns, "n-", (key) => ({ value: key }), actor),
+    ).toThrow("Invalid allocation record");
+    expectFailure(
+      () => seed(owner, db, { highest: 0, earlier: 0, floorRevision: 1 }),
+      "state_records",
+      floorKey,
+    );
+  } finally {
+    await close();
+  }
+}, 30_000);
+
+for (const [name, statement, expected] of [
+  [
+    "the floor read",
+    "SELECT revision,body FROM state_records",
+    "injected storage fault",
+  ],
+  [
+    "the readback of the written event",
+    "SELECT body, (SELECT MAX(sequence)",
+    "injected readback fault",
+  ],
+] as const)
+  test(`a storage fault in ${name} is not read as a floor refusal, and rolls the seed back`, async () => {
+    const { db, owner, close } = await open(false);
+    try {
+      write(owner, "n-3");
+      const before = rowsOf(db);
+      const faulty = new StateOwner(
+        {
+          ...db,
+          get: (sql, params) => {
+            if (sql.startsWith(statement)) throw new Error(expected);
+            return db.get(sql, params);
+          },
+        },
+        { now: () => 1000 },
+      );
+      let failure: unknown;
+      try {
+        faulty.seedNumberFloor(
+          ns,
+          "n-",
+          { highest: 3, earlier: 0, floorRevision: 0 },
+          actor,
+          mark(db),
+        );
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure).not.toBeInstanceOf(RestoreConsistencyFailure);
+      expect((failure as Error).message).toBe(expected);
+      expect(rowsOf(db)).toBe(before);
+    } finally {
+      await close();
+    }
+  }, 30_000);
+
+test("seeding continues a deleted floor's verified revision when its events carry duplicate type labels, and the result replays", async () => {
+  const { db, owner, close } = await open(false);
+  try {
+    write(owner, floorKey, floorValue(12));
+    owner.delete(ns, floorKey, actor, { expectRevision: 1 });
+    // The first label is ignored by replay, which reads the last one. A SQL type filter would read the first.
+    db.run(
+      `UPDATE state_events SET body=replace(body,'"type":','"type":"ignored","type":')`,
+    );
+    const found = verifyEventDerivedState(db, mark(db), undefined, request)!;
+    expect(found).toEqual({ highest: 0, earlier: 12, floorRevision: 2 });
+    seed(owner, db, found);
+    expect(owner.get(ns, floorKey)).toMatchObject({
+      revision: 3,
+      value: floorValue(12),
+    });
+    expect(verifyEventDerivedState(db, mark(db), undefined, request)).toEqual({
+      highest: 0,
+      earlier: 12,
+      floorRevision: 3,
+    });
+  } finally {
+    await close();
+  }
+}, 30_000);
+
+const readback = "SELECT namespace,key,revision,body FROM state_records";
+const parsed = (row: { body: unknown }) =>
+  JSON.parse(String(row.body)) as Record<string, unknown>;
+for (const [name, corrupt] of [
+  [
+    "updatedBy",
+    (row: Record<string, unknown>) => ({
+      ...row,
+      body: JSON.stringify({
+        ...parsed({ body: row.body }),
+        updatedBy: { kind: "agent", id: "someone-else" },
+      }),
+    }),
+  ],
+  [
+    "updatedAt",
+    (row: Record<string, unknown>) => ({
+      ...row,
+      body: JSON.stringify({
+        ...parsed({ body: row.body }),
+        updatedAt: "2001-01-01T00:00:00.000Z",
+      }),
+    }),
+  ],
+  [
+    "indexed revision",
+    (row: Record<string, unknown>) => ({ ...row, revision: 7 }),
+  ],
+  [
+    "indexed key",
+    (row: Record<string, unknown>) => ({ ...row, key: "allocation:m-" }),
+  ],
+] as const)
+  test(`seeding refuses a floor readback that differs only in its ${name}, without a thrown fault, and rolls back`, async () => {
+    const { db, owner, close } = await open(false);
+    try {
+      write(owner, "n-3");
+      const before = rowsOf(db);
+      let reads = 0;
+      const faulty = new StateOwner(
+        {
+          ...db,
+          get: (sql, params) => {
+            const row = db.get(sql, params);
+            // Only the whole-record readback after the write lies, and it never throws.
+            if (!sql.startsWith(readback) || row === undefined) return row;
+            reads++;
+            return corrupt(row);
+          },
+        },
+        { now: () => 1000 },
+      );
+      expect(() =>
+        faulty.seedNumberFloor(
+          ns,
+          "n-",
+          { highest: 3, earlier: 0, floorRevision: 0 },
+          actor,
+          mark(db),
+        ),
+      ).toThrow("The restored floor did not read back");
+      expect(reads).toBe(1);
+      expect(rowsOf(db)).toBe(before);
+    } finally {
+      await close();
+    }
+  }, 30_000);
