@@ -4806,6 +4806,90 @@ test("a readback that is missing or different refuses the link with the local IN
   }
 }, 60_000);
 
+test("a recorded link whose stored value is no longer valid is refused as INTERNAL on replay, with the lease still held, and nothing changes", async () => {
+  for (const [name, from, to] of [
+    ["relation", '"delivers"', '"Delivers"'],
+    ["url", `"${linkIn().url}"`, '""'],
+  ] as const) {
+    const { f, token } = await linkRows();
+    const first = await f.send(linkCall("v-1"), { token });
+    expect([name, first.status]).toEqual([name, 200]);
+    f.db.run(
+      "UPDATE state_records SET body=replace(body, ?, ?) WHERE namespace='forge/cloud' AND key='request:v-1'",
+      [from, to],
+    );
+    const done = f.snapshot();
+    for (const via of ["direct", createWorker()] as const) {
+      const got = await f.send(linkCall("v-1"), { token, via });
+      expect([name, got.status, got.code, got.exit]).toEqual([
+        name,
+        500,
+        "INTERNAL",
+        1,
+      ]);
+      expect([name, got.json.error?.message, got.json.result]).toEqual([
+        name,
+        "Stored link is not valid",
+        undefined,
+      ]);
+      expect([name, f.snapshot()]).toEqual([name, done]);
+    }
+  }
+}, 60_000);
+
+test("a link record that fails the declared output schema, even when its readback is the same record, is refused before the receipt commits and leaves no link, event or receipt", async () => {
+  const { f } = await linkRows();
+  const db = sqlOf(f.db);
+  const owner = new StateOwner(db, { now: f.now });
+  const context = {
+    variant: "leased",
+    leaseMode: "held",
+    actor,
+    session: { id: "s1", device: "laptop" },
+    project: { id: "p" },
+    leaseGeneration: 2,
+  } as const;
+  const run = (requestId: string, via: StateOwner) =>
+    linkIssue(db, via, {
+      requestId,
+      input: linkIn(),
+      context,
+      device: "laptop",
+      prefix: "forge",
+      recheck: () => {},
+    });
+  // The seam bends every link record the owner puts or reads to the same malformed one: the clock is a number.
+  const bend = (record: unknown) => ({
+    ...(record as object),
+    updatedAt: 5,
+  });
+  const seam = new Proxy(owner, {
+    get(target, name) {
+      const member = Reflect.get(target, name, target) as unknown;
+      if (typeof member !== "function") return member;
+      const call = member as (...args: unknown[]) => unknown;
+      if (name === "put")
+        return (...args: unknown[]) => bend(call.apply(target, args));
+      if (name === "get")
+        return (namespace: string, key: string) => {
+          const record = call.call(target, namespace, key);
+          return record !== undefined && key.startsWith("link:")
+            ? bend(record)
+            : record;
+        };
+      return call.bind(target);
+    },
+  });
+  const before = writes(f);
+  expect(() => run("o-1", seam)).toThrow("Link result is not valid");
+  expect(writes(f)).toBe(before);
+  // Without the seam the same request appends the first link: nothing of the refused one was kept.
+  expect(run("o-2", owner)).toMatchObject({ key: linkKey(12, 1), revision: 1 });
+  expect(linksOf(f, 12)).toHaveLength(1);
+  expect(eventsOf(f.db, "forge/work")).toHaveLength(1);
+  expect(receiptOf(f, "o-1")).toBeUndefined();
+}, 30_000);
+
 // The replay scenarios update, claim, renew and release share: a leased write is answered from its receipt only while
 // the caller still holds the lease (a committed release always, as it grants nothing), and a reused id with other input conflicts.
 type Lose = (f: F, token: string) => Promise<void> | void;
