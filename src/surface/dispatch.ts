@@ -212,6 +212,8 @@ async function dispatchRaw(
             options.context ?? {},
             options.explicitContext === true,
           );
+    if (entry?.blockId !== undefined && entry.declaredOp !== undefined)
+      catalog.admit?.(entry.blockId, entry.declaredOp);
     const request = {
       schemaVersion: "forge.invocation/1",
       requestId: options.requestId ?? randomUUID(),

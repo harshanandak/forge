@@ -52,6 +52,21 @@ export function cloudRoute(
       );
 }
 
+/** Refuses an operation a bound project does not serve, before any lookup for it; an unbound project is never refused. */
+export function admitCloud(
+  deps: Pick<CloudAuthorityDeps, "root" | "env">,
+  blockId: string,
+  declared: string,
+): void {
+  const route = cloudRoute(blockId, declared);
+  if (
+    route instanceof ForgeFailure &&
+    cloudBinding(deps.root, deps.env.HOME ?? deps.env.USERPROFILE).kind ===
+      "bound"
+  )
+    throw route;
+}
+
 /** The cloud's envelope for a bound project's served operation; undefined when the local runtime should run. */
 export async function selectCloud(
   deps: CloudAuthorityDeps,

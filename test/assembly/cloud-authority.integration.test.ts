@@ -455,7 +455,18 @@ const edit = (r: Rig, op: string, context: object, dryRun = false) =>
 const sent = (r: Rig) => r.net.calls.map((c) => (c.body as { op: string }).op);
 const live = () => answer({ ...ISSUE, lease: HELD });
 
-for (const op of ["issue.close", "issue.dep", "issue.link"])
+/** Each refused held op with an input valid for its own schema, so only the routing refuses it. */
+for (const [op, input] of [
+  ["issue.close", { id: "forge-1", withoutReceipt: "guard" }],
+  [
+    "issue.dep",
+    { id: "forge-1", target: "forge-2", action: "add", expectRevision: 3 },
+  ],
+  [
+    "issue.link",
+    { id: "forge-1", relation: "pr", url: "https://example.com/pull/1" },
+  ],
+] as const)
   for (const [name, own, dryRun, lease] of [
     ["no generation", {}, false, true],
     ["no generation and no lease in the cloud", {}, false, false],
@@ -467,12 +478,11 @@ for (const op of ["issue.close", "issue.dep", "issue.link"])
       using(
         { steps: [() => answer(lease ? { ...ISSUE, lease: LEASE } : ISSUE)] },
         async (r) => {
-          const result = await dispatch(
-            r.assembly.catalog,
-            op,
-            { id: "forge-1" },
-            { caller: "agent", context: holding(r, own), dryRun },
-          );
+          const result = await dispatch(r.assembly.catalog, op, input, {
+            caller: "agent",
+            context: holding(r, own),
+            dryRun,
+          });
           expect(failed(result, "INPUT_INVALID")).toBe(6);
           expect(result).toMatchObject({ error: { message: notServed(op) } });
           expect(r.net.calls).toHaveLength(0);
@@ -958,6 +968,25 @@ test("an unbound project runs locally, with no cloud request and no credential w
     });
     expect(r.net.calls).toHaveLength(0);
     expect(existsSync(join(r.s.home, ".forge"))).toBe(false);
+  }));
+
+test("an unbound project's issue.close, which a bound project refuses, still runs locally with no cloud request", () =>
+  using({ bind: false, creds: false, sentinel: false }, async (r) => {
+    const made = await r.assembly.catalog.invoke(
+      r.request("issue.create", CREATE),
+    );
+    const { id } = (made as { result: { id: string } }).result;
+    const own = holding(r);
+    const call = (op: string, input: object) =>
+      dispatch(r.assembly.catalog, op, input, {
+        caller: "agent",
+        context: own,
+      });
+    expect(await call("issue.claim", { id })).toMatchObject({ ok: true });
+    const closed = await call("issue.close", { id, withoutReceipt: "guard" });
+    expect(closed).toMatchObject({ ok: true });
+    expect(exitCode(closed)).toBe(0);
+    expect(r.net.calls).toHaveLength(0);
   }));
 
 test("a refused preflight on a bound project is thrown, never retried on the local runtime", async () => {
