@@ -103,6 +103,7 @@ const WRITES = [
   "issue.create",
   "issue.comment",
   "issue.update",
+  "issue.dep",
   "issue.claim",
   "issue.renew",
   "issue.release",
@@ -248,7 +249,7 @@ test("a bound project's issue show is answered by the cloud with the stored toke
     expect(body).toMatchObject({ context: { device: { id: "dev-1" } } });
   }));
 
-test("the routing decision serves show, list, ready, create, comment, update, claim, renew and release, refuses every other operation of the work block by name, and leaves other blocks local", () => {
+test("the routing decision serves show, list, ready, create, comment, update, dep, claim, renew and release, refuses every other operation of the work block by name, and leaves other blocks local", () => {
   expect(DECLARED.length).toBeGreaterThan(30);
   for (const op of SERVED) expect(cloudRoute("forge/work", op)).toBe("cloud");
   expect(cloudRoute("forge/memory", "memory.list")).toBe("local");
@@ -266,11 +267,18 @@ const CREATE = { title: "x", kind: "task" };
 const COMMENT = { id: "forge-1", body: "hi" };
 const UPDATE = { id: "forge-1", expectRevision: 3, title: "Renamed" };
 const UPDATED = { ...ISSUE, title: "Renamed", revision: 4 };
+const DEP = {
+  id: "forge-1",
+  target: "forge-2",
+  action: "add",
+  expectRevision: 3,
+};
 const HELD = { ...LEASE, generation: 3 };
 const INPUTS: Record<string, object> = {
   "issue.create": CREATE,
   "issue.comment": COMMENT,
   "issue.update": UPDATE,
+  "issue.dep": DEP,
   "issue.claim": { id: "forge-1" },
   "issue.renew": { id: "forge-1" },
   "issue.release": { id: "forge-1" },
@@ -306,6 +314,10 @@ test("every other work operation is refused by name on a bound project, with no 
     for (const [op, input] of [
       ["issue.board", {}],
       ["issue.close", { id: "forge-1" }],
+      [
+        "issue.link",
+        { id: "forge-1", relation: "pr", url: "https://example.com/pull/1" },
+      ],
     ] as const) {
       const result = await r.assembly.catalog.invoke(
         r.request(op, input, { context }),
@@ -349,6 +361,7 @@ for (const [op, input] of [
   ["issue.create", CREATE],
   ["issue.comment", COMMENT],
   ["issue.update", UPDATE],
+  ["issue.dep", DEP],
   ["issue.claim", INPUTS["issue.claim"]!],
   ["issue.renew", INPUTS["issue.renew"]!],
   ["issue.release", INPUTS["issue.release"]!],
@@ -449,11 +462,19 @@ const holding = (r: Rig, own: object = {}) => ({
   ...localContext(r.assembly, { kind: "agent", id: "a1" }, "s1"),
   ...own,
 });
-const edit = (r: Rig, op: string, context: object, dryRun = false) =>
-  dispatch(r.assembly.catalog, op, UPDATE, {
+const edit = (
+  r: Rig,
+  op: string,
+  context: object,
+  dryRun = false,
+  input: object = UPDATE,
+  requestId?: string,
+) =>
+  dispatch(r.assembly.catalog, op, input, {
     caller: "agent",
     context,
     dryRun,
+    ...(requestId === undefined ? {} : { requestId }),
   });
 const sent = (r: Rig) => r.net.calls.map((c) => (c.body as { op: string }).op);
 const live = () => answer({ ...ISSUE, lease: HELD });
@@ -461,10 +482,6 @@ const live = () => answer({ ...ISSUE, lease: HELD });
 /** Each refused held op with an input valid for its own schema, so only the routing refuses it. */
 for (const [op, input] of [
   ["issue.close", { id: "forge-1", withoutReceipt: "guard" }],
-  [
-    "issue.dep",
-    { id: "forge-1", target: "forge-2", action: "add", expectRevision: 3 },
-  ],
   [
     "issue.link",
     { id: "forge-1", relation: "pr", url: "https://example.com/pull/1" },
@@ -650,6 +667,99 @@ test("issue.update through the CLI dispatch as a dry run is UNAVAILABLE and send
     expect(failed(dry, "UNAVAILABLE")).toBe(1);
     expect(sent(r)).not.toContain("issue.update");
   }));
+
+const DEPPED = { ...ISSUE, dependsOn: ["forge-2"], revision: 4 };
+const UNDEPPED = { ...ISSUE, revision: 4 };
+const depends = (r: Rig, context: object, action = "add") =>
+  edit(r, "issue.dep", context, false, { ...DEP, action });
+const COMMAND = `${fx.ORIGIN}/p/${fx.PROJECT}/command`;
+for (const [source, op, action, result] of [
+  [WORK, "issue.dep", "add", DEPPED],
+  [WORK, "issue.dep", "remove", UNDEPPED],
+  [RENAMED, "ticket.dep", "add", DEPPED],
+] as const)
+  test(`through the assembled catalog, ${op} ${action} on a bound project takes the generation from the cloud show and is answered by the cloud as issue.dep`, () =>
+    using(
+      { config: source, steps: [live, () => answer(result, "issue.dep")] },
+      async (r) => {
+        const context = holding(r);
+        // The caller's revision differs from the shown one (3), so a CLI that replaced it would fail.
+        const input = { ...DEP, action, expectRevision: 7 };
+        const done = await edit(r, op, context, false, input, "dep-1");
+        expect(done).toMatchObject({ ok: true, result });
+        expect(exitCode(done)).toBe(0);
+        expect(JSON.stringify(done)).not.toContain(TOKEN);
+        expect(sent(r)).toEqual(["issue.show", "issue.dep"]);
+        expect(r.net.calls[1]!.url).toBe(COMMAND);
+        expect(r.net.calls[1]!.body).toEqual({
+          requestId: "dep-1",
+          op: "issue.dep",
+          input,
+          context: {
+            actor: context.actor,
+            session: context.session,
+            leaseGeneration: 3,
+            device: { id: "dev-1" },
+            project: { id: fx.PROJECT },
+          },
+        });
+      },
+    ));
+
+test("an explicit generation on issue.dep reaches the cloud unchanged, a stale one is refused there, and the CLI never reads or refreshes it", () =>
+  using({ steps: [() => refusing("LEASE_STALE")] }, async (r) => {
+    const context = holding(r, { leaseGeneration: 2 });
+    const input = { ...DEP, expectRevision: 7 };
+    const stale = await edit(r, "issue.dep", context, false, input, "dep-2");
+    expect(failed(stale, "LEASE_STALE")).toBe(4);
+    expect(sent(r)).toEqual(["issue.dep"]);
+    expect(r.net.calls[0]!.url).toBe(COMMAND);
+    expect(r.net.calls[0]!.body).toEqual({
+      requestId: "dep-2",
+      op: "issue.dep",
+      input,
+      context: {
+        actor: context.actor,
+        session: context.session,
+        leaseGeneration: 2,
+        device: { id: "dev-1" },
+        project: { id: fx.PROJECT },
+      },
+    });
+  }));
+
+test("with no live lease in the cloud show the runtime's own CONTEXT_MISSING stands for issue.dep, and no dep request is sent", () =>
+  using({ steps: [() => answer()] }, async (r) => {
+    const result = await depends(r, holding(r));
+    expect(failed(result, "CONTEXT_MISSING")).toBe(6);
+    expect(sent(r)).toEqual(["issue.show"]);
+  }));
+
+for (const [code, exit] of [
+  ["NOT_FOUND", 3],
+  ["INPUT_CONFLICT", 4],
+  ["INPUT_INVALID", 6],
+  ["REVISION_CONFLICT", 4],
+  ["LEASE_NOT_HELD", 4],
+  ["AUTH_DEVICE_MISMATCH", 1],
+] as const)
+  test(`a cloud ${code} on issue.dep keeps its code and exit ${exit}, without the token`, () =>
+    using({ steps: [live, () => refusing(code)] }, async (r) => {
+      expect(failed(await depends(r, holding(r)), code)).toBe(exit);
+      expect(sent(r)).toEqual(["issue.show", "issue.dep"]);
+    }));
+
+test("a cloud issue.dep result that fails TrackerItem is refused as UNAVAILABLE", () =>
+  using(
+    {
+      steps: [live, () => answer({ ...DEPPED, revision: TOKEN }, "issue.dep")],
+    },
+    async (r) => {
+      const result = await depends(r, holding(r));
+      expect(failed(result, "UNAVAILABLE")).toBe(1);
+      expect(sent(r)).toEqual(["issue.show", "issue.dep"]);
+    },
+  ));
 
 const ITEM = { id: "forge-1" };
 const GRANT = { ...ITEM, generation: 3, expiresAt: iso(NOW + 3_600_000) };
@@ -1064,6 +1174,39 @@ test("an unbound project's issue.close, which a bound project refuses, still run
     const closed = await call("issue.close", { id, withoutReceipt: "guard" });
     expect(closed).toMatchObject({ ok: true });
     expect(exitCode(closed)).toBe(0);
+    expect(r.net.calls).toHaveLength(0);
+  }));
+
+test("an unbound project's issue.dep still runs locally with no cloud request", () =>
+  using({ bind: false, creds: false, sentinel: false }, async (r) => {
+    const own = holding(r);
+    const call = (op: string, input: object) =>
+      dispatch(r.assembly.catalog, op, input, {
+        caller: "agent",
+        context: own,
+      });
+    const create = async (title: string) =>
+      (
+        (await r.assembly.catalog.invoke(
+          r.request("issue.create", { title, kind: "task" }),
+        )) as { result: { id: string } }
+      ).result.id;
+    const id = await create("a");
+    const target = await create("b");
+    expect(await call("issue.claim", { id })).toMatchObject({ ok: true });
+    const { revision } = (
+      (await call("issue.show", { id })) as unknown as {
+        result: { revision: number };
+      }
+    ).result;
+    const done = await call("issue.dep", {
+      id,
+      target,
+      action: "add",
+      expectRevision: revision,
+    });
+    expect(done).toMatchObject({ ok: true, result: { dependsOn: [target] } });
+    expect(exitCode(done)).toBe(0);
     expect(r.net.calls).toHaveLength(0);
   }));
 
