@@ -39,6 +39,7 @@ import { listIssues } from "./issue-list.ts";
 import { updateIssue } from "./issue-update.ts";
 import { PROJECT_NAME } from "./project-name.ts";
 import { requireTokenSession } from "./token-session.ts";
+import { carriesToken } from "./tokens.ts";
 import { readOnlyStore, type DurableStorage } from "./store.ts";
 import type { StateOwner } from "../../src/core/state/index.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
@@ -272,6 +273,10 @@ export function runCommand(text: string, host: CommandRun): Response {
                       : undefined;
   let result: unknown;
   if (write !== undefined) {
+    // Both come before the store is opened, so a refusal never sets up or migrates it.
+    if (carriesToken(requestId))
+      throw fail("INPUT_INVALID", "requestId must not carry a credential");
+    host.recheck();
     const { db, owner } = host.open();
     result = write(db, owner, {
       requestId,
