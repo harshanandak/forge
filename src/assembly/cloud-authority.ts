@@ -59,6 +59,12 @@ export function cloudRoute(
 
 /** The input the cloud cannot serve for an operation it routes yet, refused in one shape before any request. */
 function unserved(declared: string, input: unknown): ForgeFailure | undefined {
+  // Fail closed: an input that was not forwarded cannot be checked, so it is never taken as empty.
+  if (input === undefined)
+    return fail(
+      "INPUT_INVALID",
+      `${declared} was not given its input to check before a cloud request.`,
+    );
   const { reopen, reason, receipt } = (input ?? {}) as Record<string, unknown>;
   const claim =
     declared === "issue.claim" &&
