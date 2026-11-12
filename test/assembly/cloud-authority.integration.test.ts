@@ -151,10 +151,12 @@ const WRITES = [
   "issue.release",
 ];
 const SERVED = [...READS, ...WRITES];
-const DECLARED = Object.keys(
+/** Every operation the work block declares, read from its manifest. */
+const MANIFEST_OPS = Object.keys(
   (JSON.parse(readFileSync(MANIFEST, "utf8")) as { operations: object })
     .operations,
-).filter((op) => !SERVED.includes(op));
+);
+const DECLARED = MANIFEST_OPS.filter((op) => !SERVED.includes(op));
 const notServed = (op: string) =>
   `${op} is not served by the cloud authority of a cloud-bound project yet.`;
 const yaml = (extra: object = {}) =>
@@ -292,7 +294,11 @@ test("a bound project's issue show is answered by the cloud with the stored toke
   }));
 
 test("the routing decision serves show, list, ready, comments, create, comment, update, dep, close, claim, renew and release, refuses every other operation of the work block by name, and leaves other blocks local", () => {
-  expect(DECLARED.length).toBeGreaterThan(30);
+  // The refused set is exactly the manifest minus the served list: a served name the manifest does not declare would hide here.
+  for (const op of SERVED) expect(MANIFEST_OPS).toContain(op);
+  expect(DECLARED).toHaveLength(MANIFEST_OPS.length - SERVED.length);
+  for (const op of ["issue.link", "issue.board"])
+    expect(DECLARED).toContain(op);
   for (const op of SERVED) expect(cloudRoute("forge/work", op)).toBe("cloud");
   expect(cloudRoute("forge/memory", "memory.list")).toBe("local");
   for (const op of DECLARED) {
