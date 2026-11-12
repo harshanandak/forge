@@ -4807,17 +4807,36 @@ test("a readback that is missing or different refuses the link with the local IN
 }, 60_000);
 
 test("a recorded link whose stored value is no longer valid is refused as INTERNAL on replay, with the lease still held, and nothing changes", async () => {
-  for (const [name, from, to] of [
-    ["relation", '"delivers"', '"Delivers"'],
-    ["url", `"${linkIn().url}"`, '""'],
+  // Each row edits one field of the stored record (the receipt's result): the value's relation or url, or the wrapper's revision.
+  // The bad scheme passes the input schema and fails only the URL pattern; the bad revision fails only the output schema.
+  for (const [name, path, to] of [
+    ["relation", "$.value.result.value.relation", "Delivers"],
+    ["url", "$.value.result.value.url", ""],
+    ["scheme", "$.value.result.value.url", "ftp://h"],
+    ["wrapper", "$.value.result.revision", 0],
   ] as const) {
     const { f, token } = await linkRows();
     const first = await f.send(linkCall("v-1"), { token });
     expect([name, first.status]).toEqual([name, 200]);
-    f.db.run(
-      "UPDATE state_records SET body=replace(body, ?, ?) WHERE namespace='forge/cloud' AND key='request:v-1'",
-      [from, to],
-    );
+    const stored = (at: string) =>
+      (
+        f.db
+          .query(
+            "SELECT json_extract(body, ?) AS v FROM state_records WHERE namespace='forge/cloud' AND key='request:v-1'",
+          )
+          .get(at) as { v: unknown }
+      ).v;
+    const was = stored(path);
+    // json_set would create a missing path, so the field must exist before and differ from the edit.
+    expect([name, was != null && was !== to]).toEqual([name, true]);
+    expect([
+      name,
+      f.db.run(
+        "UPDATE state_records SET body=json_set(body, ?, ?) WHERE namespace='forge/cloud' AND key='request:v-1'",
+        [path, to],
+      ).changes,
+      stored(path),
+    ]).toEqual([name, 1, to]);
     const done = f.snapshot();
     for (const via of ["direct", createWorker()] as const) {
       const got = await f.send(linkCall("v-1"), { token, via });
