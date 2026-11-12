@@ -24,6 +24,11 @@ export interface CloudAuthorityDeps {
 }
 const fail = (code: string, message: string) =>
   new ForgeFailure({ code, message, retry: "never" });
+const notServed = (declared: string) =>
+  fail(
+    "INPUT_INVALID",
+    `${declared} is not served by the cloud authority of a cloud-bound project yet.`,
+  );
 
 /** The work operations a cloud-bound project serves from the cloud: the one list of them. */
 const CLOUD_SERVED: ReadonlySet<string> = new Set([
@@ -41,18 +46,15 @@ const CLOUD_SERVED: ReadonlySet<string> = new Set([
   "issue.release",
 ]);
 
-/** On a bound project: show, comments, list, ready, create, comment, update, dep, close, claim, renew and release go to the cloud, other work operations are refused (a second writer), other blocks stay local. */
+/** On a bound project: show, comments, list, ready, create, comment, update, dep, close, claim, renew and release go to the cloud, other work operations and local store recovery (store.reinit) are refused (a second writer), other blocks and core operations stay local. */
 export function cloudRoute(
   blockId: string,
   declared: string,
 ): "local" | "cloud" | ForgeFailure {
+  if (blockId === "forge/core")
+    return declared === "store.reinit" ? notServed(declared) : "local";
   if (blockId !== "forge/work") return "local";
-  return CLOUD_SERVED.has(declared)
-    ? "cloud"
-    : fail(
-        "INPUT_INVALID",
-        `${declared} is not served by the cloud authority of a cloud-bound project yet.`,
-      );
+  return CLOUD_SERVED.has(declared) ? "cloud" : notServed(declared);
 }
 
 /** The input the cloud cannot serve for an operation it routes yet, refused in one shape before any request. */

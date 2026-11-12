@@ -1325,6 +1325,14 @@ export async function createAssembly(
               "ADMISSION_REQUIRED",
               `Only a human may invoke ${request.op}`,
             );
+          // Dispatch admits first; a direct invocation must not skip a bound project's refusal.
+          if (entry.blockId !== undefined && entry.declaredOp !== undefined)
+            catalog.admit?.(
+              entry.blockId,
+              entry.declaredOp,
+              request.dryRun,
+              request.input,
+            );
           const bound = bindContext(entry.declaration, request.context);
           if (!bound.ok) throw new ForgeFailure(bound.error);
           const problems = validateWithSchema(
