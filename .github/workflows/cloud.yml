@@ -87,22 +87,25 @@ jobs:
           # Budget cases (forge-1304): each runs in its own Worker, and its elapsed seconds are summed in a file because
           # some run in subshells. The client and workerd peak resident sizes are printed and held to their budgets.
           spent() { echo "$1" >> "$RUNNER_TEMP/budget.secs"; }
+          # Resource telemetry is required: a missing /usr/bin/time, an unmatched format or no workerd process fails the job.
+          [ -x /usr/bin/time ] || { echo "::error::/usr/bin/time is missing, so peak memory cannot be measured"; exit 1; }
+          reading() { [[ "$1" =~ ^[0-9]+$ ]] || { echo "::error::$2: no valid peak RSS reading"; exit 1; }; }
+          client_rss() {
+            kb=$(sed -n 's/.*Maximum resident set size (kbytes): //p' "$RUNNER_TEMP/$1.time")
+            reading "$kb" "client $1"
+            echo "client peak RSS $1: $kb kB (budget 262144 kB)"
+            [ "$kb" -lt 262144 ] || { echo "::error::$1: the client peak RSS is over 256 MiB"; exit 1; }
+          }
           measured() {
             label="$1"; shift
-            if [ -x /usr/bin/time ]; then
-              /usr/bin/time -v -o "$RUNNER_TEMP/$label.time" "$@" 2>&1 | tee "$RUNNER_TEMP/$label.out"
-              kb=$(sed -n 's/.*Maximum resident set size (kbytes): //p' "$RUNNER_TEMP/$label.time")
-            else
-              "$@" 2>&1 | tee "$RUNNER_TEMP/$label.out"
-              kb=""
-            fi
-            echo "client peak RSS $label: ${kb:-NOT_EXECUTED} kB (budget 262144 kB)"
-            [ -z "$kb" ] || [ "$kb" -lt 262144 ] || { echo "::error::$label: the client peak RSS is over 256 MiB"; exit 1; }
+            /usr/bin/time -v -o "$RUNNER_TEMP/$label.time" "$@" 2>&1 | tee "$RUNNER_TEMP/$label.out"
+            client_rss "$label"
           }
           workerd_rss() {
             kb=$(for p in $(pgrep -x workerd || true); do sed -n 's/^VmHWM:[[:space:]]*\([0-9]*\) kB/\1/p' "/proc/$p/status"; done | sort -n | tail -n 1)
-            echo "workerd peak RSS $1: ${kb:-NOT_EXECUTED} kB (budget 524288 kB)"
-            [ -z "$kb" ] || [ "$kb" -lt 524288 ] || { echo "::error::$1: workerd peak RSS is over 512 MiB"; exit 1; }
+            reading "$kb" "workerd $1"
+            echo "workerd peak RSS $1: $kb kB (budget 524288 kB)"
+            [ "$kb" -lt 524288 ] || { echo "::error::$1: workerd peak RSS is over 512 MiB"; exit 1; }
           }
           # A case with its own Worker limits (vars) and fresh persistence; `phase...` is the conformance phase and its arguments.
           budget_case() {
@@ -125,11 +128,14 @@ jobs:
             if [ "$(git diff -U0 -- src/dump.ts | grep -c '^-[^-]')" != 1 ]; then echo "::error::the $name counterfactual edit did not change exactly one line"; exit 1; fi
             persist="$RUNNER_TEMP/wrangler-$name"
             start "$name"
-            if bun conformance/conformance.ts "$@" > "$RUNNER_TEMP/$name.out" 2>&1; then
+            if /usr/bin/time -v -o "$RUNNER_TEMP/$name.time" bun conformance/conformance.ts "$@" > "$RUNNER_TEMP/$name.out" 2>&1; then
               echo "::error::$row passed with the $name counterfactual"; exit 1
             fi
             cat "$RUNNER_TEMP/$name.out"
+            client_rss "$name"
+            workerd_rss "$name"
             grep -Eq "^FAIL $row: $message" "$RUNNER_TEMP/$name.out" || { echo "::error::$name: $row did not fail as intended"; exit 1; }
+            [ "$(grep -c '^FAIL ' "$RUNNER_TEMP/$name.out")" = 1 ] || { echo "::error::$name: a row other than $row also failed"; exit 1; }
             stop
             git checkout -- src/dump.ts
             spent $((SECONDS - begin))
@@ -155,8 +161,9 @@ jobs:
             stop
           )
           # The maximum journey's own time counts toward the added time of the budget cases.
-          ms=$(sed -n 's/^INFO budget maximum: .*: \([0-9]*\) ms$/\1/p' "$RUNNER_TEMP/large.out")
-          spent $(( ${ms:-0} / 1000 ))
+          ms=$(sed -n 's/^INFO budget maximum: .*: \([0-9][0-9]*\) ms$/\1/p' "$RUNNER_TEMP/large.out")
+          [[ "$ms" =~ ^[0-9]+$ ]] || { echo "::error::large.out needs exactly one valid budget maximum duration line"; exit 1; }
+          spent $(( ms / 1000 ))
           # Budget cases (forge-1304). The exact and cursor runs get page budgets that are byte sizes the oracle computes from
           # accepted rows before the Worker starts; the body run raises the page and stored caps to the 8 MiB restore body.
           begin=$SECONDS

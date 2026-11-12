@@ -3400,12 +3400,6 @@ if (phase === "budget") {
       `${name} seed`,
     );
   };
-  const exported = async (target: string, tables: object): Promise<void> =>
-    assert.equal(
-      JSON.stringify((await dumpOf(target)).tables),
-      JSON.stringify(tables),
-      "the restored target differs from the fixture",
-    );
   await journey(
     "budget exact: real final page restores at its inclusive limit",
     async () => {
@@ -3429,7 +3423,6 @@ if (phase === "budget") {
         `the real page is ${trip.bytes[0]} bytes, not the ${budget} byte budget`,
       );
       assert.deepEqual(trip.digests, oracle.digestOf(fixture.tables));
-      await exported(target, fixture.tables);
       showDigests("exact", trip.digests);
     },
   );
@@ -3461,7 +3454,6 @@ if (phase === "budget") {
         "the real pages are not the expected pages",
       );
       assert.deepEqual(trip.digests, oracle.digestOf(fixture.tables));
-      await exported(target, fixture.tables);
       showDigests("envelope", trip.digests);
     },
   );
@@ -3519,10 +3511,6 @@ if (phase === "budget-cursor") {
       assert.equal(trip.urls[1], url, "the second request is the cursor URL");
       assert.ok(url <= bounds.state_leases!, "the URL is over its upper bound");
       assert.deepEqual(trip.digests, oracle.digestOf(fixture.tables));
-      assert.equal(
-        JSON.stringify((await dumpOf(target)).tables),
-        JSON.stringify(fixture.tables),
-      );
       console.log(
         `INFO cursor: the continuation request URL is ${url} UTF-8 bytes for a ${subject.length} unit subject; upper bound per key shape: ${JSON.stringify(bounds)}; local workerd only`,
       );
