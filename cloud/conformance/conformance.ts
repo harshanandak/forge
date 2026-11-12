@@ -3982,9 +3982,10 @@ if (phase === "numbers") {
               return [e.key, e.data, e.revision];
             })
             .sort(),
+          // The Worker stores event data with sorted keys, so the expected object is built as { number, prefix }.
           Object.entries(SETTLED).map(([key, [p, n, r]]) => [
             key,
-            { prefix: p, number: n },
+            { number: n, prefix: p },
             r,
           ]),
         );
