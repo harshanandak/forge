@@ -114,7 +114,32 @@ jobs:
           fi
           cat "$RUNNER_TEMP/counterfactual.out"
           grep -q 'FAIL a revoked token is refused on its next request' "$RUNNER_TEMP/counterfactual.out" || { echo "::error::the counterfactual failed for another reason"; exit 1; }
+          stop
           git checkout -- src/tokens.ts
+          # Counterfactuals for the device approval fix (forge-1230). Each edits the source, proves the edit
+          # applied, runs only the device journeys and needs exactly the named rows to fail.
+          counterfactual() {
+            name="$1"; file="$2"; edit="$3"; shift 3
+            sed -i "$edit" "$file"
+            if git diff --quiet -- "$file"; then echo "::error::the $name counterfactual edit did not apply"; exit 1; fi
+            persist="$RUNNER_TEMP/wrangler-$name"
+            start "$name"
+            if bun conformance/conformance.ts device > "$RUNNER_TEMP/$name.out" 2>&1; then
+              echo "::error::the device journeys passed with the $name counterfactual"; exit 1
+            fi
+            cat "$RUNNER_TEMP/$name.out"
+            for row in "$@"; do
+              grep -q "FAIL $row" "$RUNNER_TEMP/$name.out" || { echo "::error::$name: row not failed: $row"; exit 1; }
+            done
+            stop
+            git checkout -- "$file"
+          }
+          # An unconditional upsert writes the login row on a wrong ticket.
+          counterfactual upsert src/auth/project-login.ts 's/if (after !== before)/if (true)/' "device approve: wrong capabilities" "device deny: wrong capabilities"
+          # Consuming the state before its cookie is checked burns it for the right browser.
+          counterfactual consume src/auth/device-browser.ts 's/if (!same(row.decided!.bindHash, bound)) return undefined;/if (!same(row.decided!.bindHash, bound)) { state.browser = []; return undefined; }/' "device approve: wrong capabilities" "device deny: wrong capabilities"
+          # Without the admission guard there is no sixth-attempt refusal.
+          counterfactual admission src/auth/project-login.ts 's/if (full) return false;/if (false) return false;/' "device: the sixth attempt for one challenge" "device: the sixth attempt from one address" "device: six overlapping attempts admit exactly five"
       - name: wrangler log
         if: failure()
         run: tail -n 100 "$RUNNER_TEMP"/wrangler-*.log || true

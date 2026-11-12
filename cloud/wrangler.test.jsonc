@@ -17,6 +17,15 @@
     "DUMP_PAGE_BYTES": "4096",
     "DUMP_MAX_BYTES": "131072",
     "DUMP_MAX_ROWS": "100",
+    // Device login for the admitted project, with public test values only. The Clerk upstream is a test
+    // double in conformance/fault-worker.ts; nothing here reaches a real identity provider.
+    "DEVICE_LOGIN_HMAC_KEY": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+    "CLERK_ISSUER": "https://clerk.test",
+    "FORGE_OWNER_SUBJECT": "user_ConformanceOwner",
+    "CLERK_CLIENT_ID": "conformance-client",
+    "CLERK_REDIRECT_URI": "http://127.0.0.1:8787/callback",
+    "FORGE_API_RESOURCE": "http://127.0.0.1:8787",
+    "OAUTH_TIMEOUT_MS": "5000",
   },
   "dev": { "ip": "127.0.0.1", "port": 8787 },
   "send_metrics": false,

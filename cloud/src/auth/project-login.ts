@@ -22,6 +22,15 @@ export const LOGIN_MIGRATION = {
   ],
 };
 
+/** Counters for the browser's approval attempts. They live outside the login row, so a refusal never writes it. */
+export const LIMITS = "domain_cloud_browser_attempts";
+export const LIMITS_MIGRATION = {
+  id: "004_cloud_browser_attempts",
+  statements: [
+    `CREATE TABLE IF NOT EXISTS ${LIMITS} (bucket TEXT PRIMARY KEY, count INTEGER NOT NULL, reset_at INTEGER NOT NULL)`,
+  ],
+};
+
 // Public start budget: a fixed window, shared by the project and by each address.
 const WINDOW_MS = 60_000;
 const PROJECT_STARTS = 30;
@@ -90,21 +99,24 @@ export interface LoginState extends ChallengeState {
   previews?: Admission;
 }
 
+const EMPTY = JSON.stringify({ challenges: [], attempts: {} });
+
 /** The engine's store: one row, read, changed and written back inside one synchronous transaction. */
 export function loginStore(db: SqlDatabase): ChallengeStore {
   return {
     conditionalUpdate: (operation) =>
       db.transaction(() => {
         const row = db.get(`SELECT state FROM ${LOGIN} WHERE id=1`);
-        const state: LoginState =
-          row === undefined
-            ? { challenges: [], attempts: {} }
-            : (JSON.parse(String(row.state)) as LoginState);
+        const before = row === undefined ? EMPTY : String(row.state);
+        const state = JSON.parse(before) as LoginState;
         const result = operation(state);
-        db.run(
-          `INSERT INTO ${LOGIN} (id, state) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET state=excluded.state`,
-          [JSON.stringify(state)],
-        );
+        // A refusal changes nothing, so it writes nothing.
+        const after = JSON.stringify(state);
+        if (after !== before)
+          db.run(
+            `INSERT INTO ${LOGIN} (id, state) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET state=excluded.state`,
+            [after],
+          );
         return result;
       }),
   };
@@ -142,6 +154,46 @@ export function spend(
   }
   state[key] = budget;
   return allowed;
+}
+/**
+ * Admits one browser attempt (approve, deny or callback) if the project, the address and, when it is
+ * known, the challenge each have room in their fixed window, and charges all of them in one step. A
+ * refusal charges nothing and does not move a window. Run it with no await before the decision.
+ */
+export function browserAttempt(
+  db: SqlDatabase,
+  address: string,
+  challenge: string | undefined,
+  now: number,
+): boolean {
+  return db.transaction(() => {
+    const buckets: [string, number][] = [
+      ["project", PROJECT_STARTS],
+      [`address:${address}`, ADDRESS_STARTS],
+      ...(challenge === undefined
+        ? []
+        : ([[`challenge:${challenge}`, ADDRESS_STARTS]] as [string, number][])),
+    ];
+    const full = buckets.some(([bucket, cap]) => {
+      const row = db.get(
+        `SELECT count, reset_at FROM ${LIMITS} WHERE bucket=?`,
+        [bucket],
+      );
+      return (
+        row !== undefined &&
+        now < Number(row.reset_at) &&
+        Number(row.count) >= cap
+      );
+    });
+    if (full) return false;
+    db.run(`DELETE FROM ${LIMITS} WHERE reset_at<=?`, [now]);
+    for (const [bucket] of buckets)
+      db.run(
+        `INSERT INTO ${LIMITS} (bucket, count, reset_at) VALUES (?, 1, ?) ON CONFLICT(bucket) DO UPDATE SET count=count+1`,
+        [bucket, now + WINDOW_MS],
+      );
+    return true;
+  });
 }
 const admit = (store: ChallengeStore, address: string, now: number) =>
   store.conditionalUpdate((state) => spend(state as LoginState, address, now));
