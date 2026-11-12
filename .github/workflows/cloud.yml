@@ -60,7 +60,7 @@ jobs:
           export CONFORMANCE_STATE="$RUNNER_TEMP/conformance-state.json"
           persist="$RUNNER_TEMP/wrangler-state"
           start() {
-            bun x wrangler dev --local --config wrangler.test.jsonc --var ADMIN_TOKEN:"$CLOUD_ADMIN_TOKEN" --var FORGE_CLOUD_PROJECT:"$FORGE_CLOUD_PROJECT" --var FORGE_CLOUD_ID_PREFIX:"$FORGE_CLOUD_ID_PREFIX" --persist-to "$persist" > "$RUNNER_TEMP/wrangler-$1.log" 2>&1 &
+            bun x wrangler dev --local --config "${config:-wrangler.test.jsonc}" --var ADMIN_TOKEN:"$CLOUD_ADMIN_TOKEN" --var FORGE_CLOUD_PROJECT:"$FORGE_CLOUD_PROJECT" --var FORGE_CLOUD_ID_PREFIX:"$FORGE_CLOUD_ID_PREFIX" --persist-to "$persist" > "$RUNNER_TEMP/wrangler-$1.log" 2>&1 &
             echo $! > "$RUNNER_TEMP/wrangler.pid"
             for _ in $(seq 1 60); do
               if curl -s -o /dev/null "$CLOUD_BASE/p/ready/holder?subject=ready"; then return 0; fi
@@ -90,6 +90,19 @@ jobs:
           start second
           bun conformance/conformance.ts restart
           stop
+          # Large phase: the largest legal project at the Worker's default limits (4 MiB pages, 8 MiB project,
+          # 10,000 rows), so the small caps above are removed from a copy of the same config. It has its own
+          # persistence directory, and the restored target is the admitted command project.
+          sed '/"DUMP_/d' wrangler.test.jsonc > wrangler.large.jsonc
+          ! grep -q DUMP_ wrangler.large.jsonc || { echo "::error::the small dump caps are still in the large config"; exit 1; }
+          (
+            export FORGE_CLOUD_PROJECT=ci-large config=wrangler.large.jsonc
+            persist="$RUNNER_TEMP/wrangler-large"
+            start large
+            bun conformance/conformance.ts large
+            stop
+          )
+          rm -f wrangler.large.jsonc
           # Counterfactual: with the revoked-token check skipped, the revoke check must fail.
           sed -i 's/=> row.revoked_at !== null;/=> false;/' src/tokens.ts
           grep -q 'boolean => false;' src/tokens.ts || { echo "::error::the counterfactual edit did not apply"; exit 1; }

@@ -34,6 +34,14 @@ import { refuse } from "../../src/core/trust/index.ts";
 import { stateMigrations } from "../../src/core/state/migrations.ts";
 import type { SqlDatabase, SqlRow, SqlValue } from "../../src/ports/store.ts";
 import { exitCode } from "../../src/surface/result.ts";
+import {
+  BODY,
+  DUMP,
+  maxCalls,
+  pagesOf,
+  tablesOf,
+  type Tables,
+} from "../../cloud/conformance/max-source.ts";
 
 if (!("timingSafeEqual" in crypto.subtle))
   Object.defineProperty(crypto.subtle, "timingSafeEqual", {
@@ -58,6 +66,17 @@ interface Envelope {
   result?: unknown;
   error?: { code: string; message: string };
   value?: { token: string };
+}
+interface AdminEnvelope {
+  ok: boolean;
+  value?: {
+    initialized?: boolean;
+    done?: boolean;
+    page?: number;
+    next?: string | null;
+    tables: Tables;
+  };
+  error?: { code: string };
 }
 type Fetcher = { fetch: (request: Request, env: never) => Promise<Response> };
 type Options = {
@@ -184,15 +203,24 @@ function fixture(
     reached.length = 0;
     return ((await response.json()) as Envelope).value!.token;
   };
-  const dump = async () =>
-    (
-      await createWorker().fetch(
-        new Request(`https://w.example/p/${name}/dump`, {
-          headers: { authorization: `Bearer ${vars.ADMIN_TOKEN}` },
-        }),
-        bindings,
-      )
-    ).text();
+  // An admin route through the real Worker: a GET without a body, a POST with one.
+  const admin = async (route: string, body?: string) => {
+    const response = await createWorker().fetch(
+      new Request(`https://w.example/p/${name}/${route}`, {
+        method: body === undefined ? "GET" : "POST",
+        headers: { authorization: `Bearer ${vars.ADMIN_TOKEN}` },
+        ...(body === undefined ? {} : { body }),
+      }),
+      bindings,
+    );
+    const text = await response.text();
+    return {
+      status: response.status,
+      text,
+      json: JSON.parse(text) as AdminEnvelope,
+    };
+  };
+  const dump = async () => (await admin("dump")).text;
   const snapshot = () =>
     JSON.stringify({
       sql: (
@@ -207,6 +235,7 @@ function fixture(
   return {
     send,
     device,
+    admin,
     dump,
     snapshot,
     reached,
@@ -6343,6 +6372,277 @@ for (const w of WRITES) {
         ]).toEqual([canary, false]);
   }, 60_000);
 }
+
+// The largest legal issue and comment, their receipts and events, and two real refusals, through the admin
+// routes. The source runs the real commands as project "target" and device "laptop", and its tables are read
+// with plain SQL, never by export, so a restore case reaches the parser even while export is broken. The
+// restored target has the same name, actor and device, so a replay carries the fingerprint that made each receipt.
+async function largest(settings: Record<string, unknown> = vars, body = BODY) {
+  const f = fixture(settings, "target");
+  const token = await f.device();
+  const calls = maxCalls("forge-1", body);
+  const sent = {
+    create: await f.send(calls.create, { token }),
+    comment: await f.send(calls.comment, { token }),
+    badCreate: await f.send(calls.badCreate, { token }),
+    badComment: await f.send(calls.badComment, { token }),
+  };
+  expect(Object.values(sent).map((got) => got.status)).toEqual([
+    200, 200, 400, 400,
+  ]);
+  return { f, token, calls, sent, tables: tablesOf(f.db) };
+}
+// The tables that differ, by name, so a failure prints names and never megabytes of body.
+const differing = (a: Tables, b: Tables) =>
+  Object.keys(b).filter((t) => JSON.stringify(a[t]) !== JSON.stringify(b[t]));
+const ids = (t: Tables, table: string) =>
+  (t[table] ?? []).map((r) => `${r.namespace}/${r.key}`);
+const NAMED = [
+  "forge/cloud/request:max-bad-comment",
+  "forge/cloud/request:max-bad-create",
+  "forge/cloud/request:max-comment",
+  "forge/cloud/request:max-create",
+  "forge/work/comment:work-1:1",
+  "forge/work/issue:work-1",
+];
+interface Receipt {
+  fingerprint: string;
+  outcome: string;
+  result: { code?: string };
+}
+const receipt = (t: Tables, id: string) =>
+  (
+    JSON.parse(
+      String(t.state_records!.find((r) => r.key === `request:${id}`)!.body),
+    ) as { value: Receipt }
+  ).value;
+const storedBytes = (t: Tables) =>
+  Object.values(t)
+    .flat()
+    .flatMap((row) => Object.values(row))
+    .reduce<number>((sum, cell) => sum + Buffer.byteLength(String(cell)), 0);
+
+test("a whole export carries the maximum bodies, receipts and events intact, and no credential", async () => {
+  const { f, token, sent, tables } = await largest();
+  const before = f.snapshot();
+  const got = await f.admin("dump");
+  expect(got.status).toBe(200);
+  expect(differing(got.json.value!.tables, tables)).toEqual([]);
+  expect(f.snapshot()).toBe(before);
+  // Every named record and event is there, and the project is under the 3 MiB a whole export allows.
+  expect(ids(tables, "state_records")).toEqual(NAMED);
+  expect(ids(tables, "state_events").sort()).toEqual(NAMED);
+  expect(storedBytes(tables)).toBeLessThan(3 * 1024 * 1024);
+  expect(String(tables.state_records!.at(-1)!.body).length).toBeGreaterThan(
+    393_216,
+  );
+  const outcomes = [
+    "max-create",
+    "max-comment",
+    "max-bad-create",
+    "max-bad-comment",
+  ].map((id) => [receipt(tables, id).outcome, receipt(tables, id).result.code]);
+  expect(outcomes).toEqual([
+    ["ok", undefined],
+    ["ok", undefined],
+    ["refused", "INPUT_INVALID"],
+    ["refused", "INPUT_INVALID"],
+  ]);
+  expect(JSON.stringify(receipt(tables, "max-create").result)).toBe(
+    JSON.stringify(sent.create.json.result),
+  );
+  expect(receipt(tables, "max-create").fingerprint).toHaveLength(71);
+  // A refusal records the error, never the input it refused.
+  expect(JSON.stringify(receipt(tables, "max-bad-create")).length).toBeLessThan(
+    2000,
+  );
+  for (const canary of [token, token.split(".")[1]!, "fct_", "authorization"])
+    expect([canary, got.text.includes(canary)]).toEqual([canary, false]);
+}, 120_000);
+
+test("a paged export cuts consecutive pages, each complete page within its budget, and loses no row", async () => {
+  const budget = 1_000_000;
+  const { f, tables } = await largest({
+    ...vars,
+    DUMP_PAGE_BYTES: String(budget),
+  });
+  const before = f.snapshot();
+  const merged: Tables = Object.fromEntries(
+    Object.keys(tables).map((t) => [t, []]),
+  );
+  let cursor = "start";
+  for (let n = 0; ; n += 1) {
+    expect(n).toBeLessThan(20);
+    const got = await f.admin(`dump?cursor=${encodeURIComponent(cursor)}`);
+    expect([n, got.status]).toEqual([n, 200]);
+    const page = got.json.value!;
+    expect(page.page).toBe(n);
+    expect(
+      new TextEncoder().encode(JSON.stringify(page)).length,
+    ).toBeLessThanOrEqual(budget);
+    for (const [table, rows] of Object.entries(page.tables))
+      merged[table]!.push(...rows);
+    if (page.next === null) {
+      expect(n).toBeGreaterThan(1);
+      break;
+    }
+    cursor = page.next!;
+  }
+  expect(differing(merged, tables)).toEqual([]);
+  expect(f.snapshot()).toBe(before);
+}, 120_000);
+
+test("a page budget that cannot hold one row with its envelope is refused with 413, never returned", async () => {
+  const f = fixture({ ...vars, DUMP_PAGE_BYTES: "100" }, "target");
+  const token = await f.device();
+  expect((await f.send(make("p-1"), { token })).status).toBe(200);
+  const got = await f.admin("dump?cursor=start");
+  expect([got.status, got.json.error?.code]).toEqual([413, "DUMP_TOO_LARGE"]);
+}, 30_000);
+
+for (const mode of ["whole", "paged"] as const)
+  test(`a ${mode} admin restore of the maximum project reads back exactly, serves it, replays its receipts and takes a fresh command`, async () => {
+    const { calls, sent, tables } = await largest();
+    const t = fixture(vars, "target");
+    const parts =
+      mode === "whole" ? [{ format: DUMP, tables }] : pagesOf(tables, 2);
+    for (const [i, part] of parts.entries()) {
+      const got = await t.admin("restore", JSON.stringify(part));
+      expect([mode, i, got.status]).toEqual([mode, i, 200]);
+      const last = i === parts.length - 1;
+      if (mode === "paged") expect(got.json.value!.done).toBe(last);
+      // Unprovisioned until the whole project is in.
+      expect((await t.admin("status")).json.value!.initialized).toBe(last);
+    }
+    const restored = tablesOf(t.db);
+    expect(differing(restored, tables)).toEqual([]);
+    expect(ids(restored, "state_events").sort()).toEqual(NAMED);
+    expect(
+      t.db.query("SELECT COUNT(*) AS n FROM domain_cloud_tokens").get(),
+    ).toEqual({ n: 0 });
+    // Only now does the target get a device token, and then it serves the originals in full.
+    const token = await t.device();
+    const read = (op: string, requestId: string) =>
+      t.send(
+        { requestId, op, input: { id: "forge-1" }, context: { actor } },
+        { token },
+      );
+    const shown = await read("issue.show", "r-show");
+    expect([
+      shown.status,
+      shown.exit,
+      (shown.json.result as { body: string }).body === BODY,
+    ]).toEqual([200, 0, true]);
+    const listed = await read("issue.comments", "r-comments");
+    const records = (
+      listed.json.result as { records: { value: { body: string } }[] }
+    ).records;
+    expect([
+      listed.status,
+      listed.exit,
+      records.map((r) => r.value.body === BODY),
+    ]).toEqual([200, 0, [true]]);
+    // The same actor, device and project repeat each request id: the same answer, and no row changes.
+    const kept = tablesOf(t.db);
+    for (const key of [
+      "create",
+      "comment",
+      "badCreate",
+      "badComment",
+    ] as const) {
+      const again = await t.send(calls[key], { token });
+      expect([key, again.status, again.text === sent[key].text]).toEqual([
+        key,
+        sent[key].status,
+        true,
+      ]);
+    }
+    expect(differing(tablesOf(t.db), kept)).toEqual([]);
+    // A fresh command is one comment, one receipt and their two events, and no earlier row moves.
+    const fresh = await t.send(
+      note("fresh-1", { id: "forge-1", body: "later" }),
+      { token },
+    );
+    expect([fresh.status, fresh.json.result]).toEqual([
+      200,
+      { id: "forge-1", commentId: "comment:work-1:2" },
+    ]);
+    const after = tablesOf(t.db);
+    expect([
+      after.state_records!.length - 6,
+      after.state_events!.length - 6,
+    ]).toEqual([2, 2]);
+    for (const table of Object.keys(kept)) {
+      const now = new Set(after[table]!.map((r) => JSON.stringify(r)));
+      expect([
+        table,
+        kept[table]!.filter((r) => !now.has(JSON.stringify(r))),
+      ]).toEqual([table, []]);
+    }
+  }, 120_000);
+
+// Small bodies, so these refusals are reached on the row checks themselves.
+const FORGED = {
+  route: "issue.create",
+  subject: "issue:work-1",
+};
+const lease = (subject: string) => ({
+  subject,
+  holder: { actor, session: { id: "s1", device: "laptop" } },
+  generation: 1,
+  expiresAt: iso(start + day),
+});
+for (const [name, change] of [
+  [
+    "a typed receipt changed without its event",
+    (t: Tables) => {
+      const row = t.state_records!.find((r) => r.key === "request:max-create")!;
+      const value = JSON.parse(String(row.body)) as {
+        value: { fingerprint: string };
+      };
+      value.value.fingerprint = `sha256:${"0".repeat(64)}`;
+      row.body = JSON.stringify(value);
+    },
+  ],
+  [
+    "a raw receipt forged with a typed-command route",
+    (t: Tables) => {
+      t.domain_cloud_requests!.push({
+        request_id: "forged-1",
+        fingerprint: JSON.stringify(FORGED),
+        outcome: "ok",
+        result: JSON.stringify(lease("issue:work-1")),
+      });
+    },
+  ],
+  [
+    "a raw lease receipt whose result names another subject",
+    (t: Tables) => {
+      t.domain_cloud_requests!.push({
+        request_id: "forged-2",
+        fingerprint: JSON.stringify({ route: "claim", subject: "issue:a" }),
+        outcome: "ok",
+        result: JSON.stringify(lease("issue:b")),
+      });
+    },
+  ],
+] as const)
+  test(`a restore of ${name} is RESTORE_INVALID_ROW and leaves the target unprovisioned and empty`, async () => {
+    const { tables } = await largest(vars, "small");
+    const bad = structuredClone(tables);
+    change(bad);
+    const t = fixture(vars, "target");
+    const got = await t.admin(
+      "restore",
+      JSON.stringify({ format: DUMP, tables: bad }),
+    );
+    expect([got.status, got.json.error?.code]).toEqual([
+      400,
+      "RESTORE_INVALID_ROW",
+    ]);
+    expect((await t.admin("status")).json.value!.initialized).toBe(false);
+    expect(Object.values(tablesOf(t.db)).flat()).toEqual([]);
+  }, 60_000);
 
 // A token bound to a session proves it: a body that names another session, on the same device, is refused.
 test("a session-bound token cannot act as another session, on a first write or a replay, and a sessionless token keeps the device as the boundary", async () => {
