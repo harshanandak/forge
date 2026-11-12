@@ -158,7 +158,8 @@ export function spend(
 /**
  * Admits one browser attempt (approve, deny or callback) if the project, the address and, when it is
  * known, the challenge each have room in their fixed window, and charges all of them in one step. A
- * refusal charges nothing and does not move a window. Run it with no await before the decision.
+ * refusal charges nothing and does not move a window. Run it with no await before the decision. A caller
+ * with a complete bound proof (a live ticket or state with its own cookie) does not call it at all.
  */
 export function browserAttempt(
   db: SqlDatabase,
