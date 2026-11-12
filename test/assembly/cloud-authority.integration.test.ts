@@ -39,6 +39,7 @@ import { LocalState } from "../../src/assembly/state.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { mcpToolName } from "../../src/contract/naming.ts";
 import { decideLease } from "../../src/contract/lease.ts";
+import { Runtime } from "../../src/core/runtime/index.ts";
 import { discoveryOperations } from "../../src/generated/core-discovery.ts";
 import type {
   FailureEnvelope,
@@ -177,20 +178,27 @@ let staging: string;
 let capture: ReturnType<typeof spyOn<typeof blockCapture, "open">>;
 beforeAll(() => {
   staging = mkdtempSync(join(tmpdir(), "forge-authority-blocks-"));
-  const [memory, work] = ["forge/memory", "forge/work"].map((id) =>
-    fileURLToPath(firstPartyBlocks[id]!),
-  );
-  const target = join(staging, "work");
-  cpSync(work!, target, {
-    recursive: true,
-    filter: (path) => !path.endsWith(".cts"),
-  });
-  const source = readFileSync(join(work!, "entry.cts"), "utf8");
-  const entry = new Bun.Transpiler({ loader: "ts" }).transformSync(source);
-  writeFileSync(join(target, "entry.cjs"), entry);
+  const [memory, work, cloud] = [
+    "forge/memory",
+    "forge/work",
+    "forge/cloud",
+  ].map((id) => fileURLToPath(firstPartyBlocks[id]!));
+  const compiled = (source: string, name: string) => {
+    const target = join(staging, name);
+    cpSync(source, target, {
+      recursive: true,
+      filter: (path) => !path.endsWith(".cts"),
+    });
+    const entry = new Bun.Transpiler({ loader: "ts" }).transformSync(
+      readFileSync(join(source, "entry.cts"), "utf8"),
+    );
+    writeFileSync(join(target, "entry.cjs"), entry);
+    return target;
+  };
   const stages = new Map([
     [memory!, stageBlock("memory", staging)],
-    [work!, target],
+    [work!, compiled(work!, "work")],
+    [cloud!, compiled(cloud!, "cloud")],
   ]);
   const open = blockCapture.open.bind(blockCapture);
   capture = spyOn(blockCapture, "open").mockImplementation((path) =>
@@ -2117,39 +2125,236 @@ test("an unbound project's issue.link still runs locally, persists the link and 
     expect(existsSync(join(r.s.home, ".forge"))).toBe(false);
   }));
 
-test("a refused preflight on a bound project is thrown, never retried on the local runtime", async () => {
+/** A preflight that hands the request to `accepted` as the real one does, then refuses with `thrown`. */
+const preflightThrowing = (thrown: unknown) =>
+  mock(
+    (value: InvocationRequest, accepted?: (v: InvocationRequest) => void) => {
+      accepted?.(value);
+      throw thrown;
+    },
+  );
+const selectFrom = (
+  r: Awaited<ReturnType<typeof rig>>,
+  runtime: { preflight: unknown; invoke?: unknown },
+) =>
+  selectCloud(
+    {
+      root: r.s.root,
+      deviceRoot: r.s.deviceRoot,
+      scope: () => {},
+      env: { HOME: r.s.home, FORGE_DEVICE_ID: "dev-1" },
+      cloud: { fetch: r.net.fetch, now: () => NOW },
+    },
+    runtime as never,
+    r.request("issue.show", { id: "forge-1" }),
+  );
+
+test("a refused preflight on a bound project is the runtime's envelope, never retried on the local runtime", async () => {
   const refused = new ForgeFailure({
     code: "GRANT_REQUIRED",
     message: "no",
     retry: "never",
   });
-  const preflight = mock(() => {
-    throw refused;
-  });
+  const preflight = preflightThrowing(refused);
   const invoke = mock();
-  const run = (r: Awaited<ReturnType<typeof rig>>) =>
-    selectCloud(
-      {
-        root: r.s.root,
-        deviceRoot: r.s.deviceRoot,
-        scope: () => {},
-        env: { HOME: r.s.home, FORGE_DEVICE_ID: "dev-1" },
-        cloud: { fetch: r.net.fetch, now: () => NOW },
-      },
-      { preflight, invoke } as never,
-      r.request("issue.show", { id: "forge-1" }),
-    );
   await using({}, async (r) => {
-    await expect(run(r)).rejects.toBe(refused);
+    expect(await selectFrom(r, { preflight, invoke })).toEqual({
+      ok: false,
+      op: "issue.show",
+      status: "INCOMPLETE",
+      error: refused.error,
+      warnings: [],
+    });
     expect([preflight.mock.calls.length, invoke.mock.calls.length]).toEqual([
       1, 0,
     ]);
     expect(r.net.calls).toHaveLength(0);
   });
   await using({ bind: false, creds: false }, async (r) => {
-    expect(await run(r)).toBeUndefined();
+    expect(await selectFrom(r, { preflight, invoke })).toBeUndefined();
   });
 });
+
+/** The runtime maps these preflight refusals to INCOMPLETE. No real preflight reaches the limit and process ones, so the mapping is pinned here with a preflight that throws them. */
+const INCOMPLETE_CODES = [
+  "ADMISSION_REQUIRED",
+  "GRANT_REQUIRED",
+  "LIMIT_EXCEEDED",
+  "CONTAINMENT_UNAVAILABLE",
+  "PROCESS_LIMIT_EXCEEDED",
+  "PROVIDER_MISSING",
+] as const;
+for (const [code, retry, status, kept] of [
+  ...INCOMPLETE_CODES.map((c) => [c, "never", "INCOMPLETE", "never"] as const),
+  ["INPUT_INVALID", "never", "FAIL", "never"],
+  ["UNAVAILABLE", "reconcile_first", "FAIL", "reconcile_first"],
+  // A refusal has not started, so a timeout is never retried; every other code keeps its own retry.
+  ["INVOCATION_TIMEOUT", "reconcile_first", "FAIL", "never"],
+] as const)
+  test(`a bound project's preflight ${code} with retry ${retry} is the runtime's ${status} envelope with retry ${kept}`, () =>
+    using({}, async (r) => {
+      const failure = { code, message: "refused", retry } as const;
+      const preflight = preflightThrowing(new ForgeFailure(failure));
+      expect(await selectFrom(r, { preflight })).toEqual({
+        ok: false,
+        op: "issue.show",
+        status,
+        error: { ...failure, retry: kept },
+        warnings: [],
+      });
+      expect(r.net.calls).toHaveLength(0);
+    }));
+
+test("a bound project's preflight that throws something other than a refusal is the runtime's BLOCK_EXECUTION_FAILED envelope", () =>
+  using({}, async (r) => {
+    const preflight = preflightThrowing(new Error("boom"));
+    expect(await selectFrom(r, { preflight })).toMatchObject({
+      ok: false,
+      op: "issue.show",
+      status: "FAIL",
+      error: { code: "BLOCK_EXECUTION_FAILED", retry: "never" },
+      warnings: [],
+    });
+    expect(r.net.calls).toHaveLength(0);
+  }));
+
+const BOTH = JSON.stringify({
+  schemaVersion: "forge.config/1",
+  blocks: {
+    work: { source: { builtin: "forge/work" } },
+    cloud: { source: { builtin: "forge/cloud" } },
+  },
+});
+/** What one real call saw: its envelope, and how often the runtime checked a request and ran one. */
+interface Refused {
+  envelope: ResultEnvelope;
+  preflights: number;
+  invokes: number;
+  requests: number;
+}
+/** One call through the real assembly on a bound or an unbound project, under spies that call through. */
+async function refusedOn(
+  bound: boolean,
+  call: (r: Rig) => Promise<ResultEnvelope>,
+): Promise<Refused> {
+  const preflight = spyOn(Runtime.prototype, "preflight");
+  const invoke = spyOn(Runtime.prototype, "invoke");
+  let seen: Refused | undefined;
+  try {
+    await using(
+      bound
+        ? { config: BOTH }
+        : { config: BOTH, bind: false, creds: false, sentinel: false },
+      async (r) => {
+        const envelope = await call(r);
+        seen = {
+          envelope,
+          preflights: preflight.mock.calls.length,
+          invokes: invoke.mock.calls.length,
+          requests: r.net.calls.length,
+        };
+      },
+    );
+  } finally {
+    preflight.mockRestore();
+    invoke.mockRestore();
+  }
+  return seen!;
+}
+/** The bound call took the bound path (the request was checked once and the local runtime never ran); the unbound one reached the local runtime (and was checked again there). */
+const tookPaths = (bound: Refused, unbound: Refused) => {
+  expect([bound.preflights, bound.invokes, bound.requests]).toEqual([1, 0, 0]);
+  expect([unbound.preflights, unbound.invokes]).toEqual([2, 1]);
+};
+
+for (const [name, op, input, change, code, status, exit] of [
+  [
+    "a caller the operation does not allow, in another block",
+    "cloud.login",
+    {},
+    { caller: "agent" },
+    "GRANT_REQUIRED",
+    "INCOMPLETE",
+    2,
+  ],
+  [
+    "an input the schema refuses",
+    "issue.show",
+    { id: 5 },
+    {},
+    "INPUT_INVALID",
+    "FAIL",
+    6,
+  ],
+  [
+    "a dry run of another block's operation",
+    "cloud.login",
+    {},
+    { caller: "human", dryRun: true },
+    "UNAVAILABLE",
+    "FAIL",
+    1,
+  ],
+] as [
+  string,
+  string,
+  object,
+  Partial<InvocationRequest>,
+  string,
+  string,
+  number,
+][])
+  test(`a preflight refusal for ${name} is the same envelope on a bound project as on an unbound one, with no cloud request`, async () => {
+    const run = (r: Rig) =>
+      r.assembly.catalog.invoke(r.request(op, input, change));
+    const bound = await refusedOn(true, run);
+    const unbound = await refusedOn(false, run);
+    expect(unbound.envelope).toMatchObject({
+      ok: false,
+      status,
+      error: { code },
+    });
+    expect(exitCode(unbound.envelope)).toBe(exit);
+    expect(bound.envelope).toEqual(unbound.envelope);
+    tookPaths(bound, unbound);
+  }, 60_000);
+
+for (const surface of ["CLI", "MCP"] as const)
+  test(`through ${surface}, a preflight refusal on a bound project renders the same status and exit as on an unbound one`, async () => {
+    const input = { id: 5 };
+    const run = async (r: Rig) => {
+      const context = holding(r);
+      if (surface === "CLI")
+        return (
+          await runCli(
+            r.assembly.catalog,
+            ["issue", "show", "--input", JSON.stringify(input)],
+            { caller: "agent", context },
+          )
+        ).envelope;
+      const mcp = createMcpHandlers(
+        r.assembly.catalog,
+        { expose: ["issue"] },
+        { context },
+      );
+      return (await mcp.callTool("catalog_call", {
+        op: "issue.show",
+        input,
+      }))!;
+    };
+    const bound = await refusedOn(true, run);
+    const unbound = await refusedOn(false, run);
+    expect(unbound.envelope).toMatchObject({
+      ok: false,
+      status: "FAIL",
+      error: { code: "INPUT_INVALID" },
+    });
+    expect(bound.envelope).toEqual(unbound.envelope);
+    expect(exitCode(bound.envelope)).toBe(6);
+    expect(exitCode(unbound.envelope)).toBe(6);
+    expect([bound.invokes, bound.requests]).toEqual([0, 0]);
+    expect(unbound.invokes).toBe(1);
+  }, 60_000);
 
 // forge-1249: a cloud-bound project never starts a local store by recovery.
 const RECOVER = "store.reinit";
