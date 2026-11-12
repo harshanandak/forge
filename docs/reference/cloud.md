@@ -46,6 +46,8 @@ A project bound to the cloud serves `issue.show`, `issue.comments`, `issue.list`
 
 `forge store reinit` is refused on a bound project (`INPUT_INVALID`, exit 6, "store.reinit is not served by the cloud authority of a cloud-bound project yet."), with or without `--dry-run`, whether or not a local store exists. The refusal comes before any local state opens, any approval is asked or any request is sent, so it needs no login and creates no local store. A malformed or mismatched binding keeps its own refusal. Recovery on an unbound project is unchanged. Only a human can invoke it; MCP still does not expose it.
 
+A refused cloud command keeps only checked details, never the server's words. `LEASE_HELD` keeps the full lease (holder, generation, expiry) and prints the local engine's message; the other three lease codes keep a subject alone or the same full tuple. `CLAIM_BLOCKED` on `issue.claim` keeps its blocker edges in server order, each `{ id }` or `{ id, holder, holderUnverified: true }`, with no open or missing state, and no `--reason` repair, because the cloud claim refuses `reason`. A competing `issue.close` keeps its one repair, rebuilt locally; other repairs are dropped. A lease subject must be `issue:work-<digits>` for the requested id's digits. A missing, partial or extra-key detail, a bad generation, a token or control character in a kept string, or a body over 1 MiB is `UNAVAILABLE` with fixed text and no partial detail.
+
 A whole dump (`GET dump`) is one response for a small project: up to 3 MiB stored, 10,000 rows per table and 262,144 characters per value. A larger project is refused as `DUMP_TOO_LARGE` (413); a project with more than 10,000 rows in a table cannot be dumped at all yet (see the limits below).
 
 ## Device login

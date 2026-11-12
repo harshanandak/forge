@@ -45,6 +45,14 @@ function holderDescription(holder: LeaseHolder): string {
   return `device ${session.device ?? "unspecified"}, agent ${session.agent ?? actor.id}, harness ${session.harness ?? "unspecified"}, session ${session.id}`;
 }
 
+/** The refusal text for a subject that another holder still leases. */
+export const leaseHeldMessage = (
+  subject: string,
+  holder: LeaseHolder,
+  expiresAt: string,
+): string =>
+  `${subject} is leased by ${holderDescription(holder)} until ${expiresAt}; read its state to reconcile instead of retrying`;
+
 function isLive(lease: LeaseRecord, nowMs: number): boolean {
   return lease.releasedAt === undefined && Date.parse(lease.expiresAt) > nowMs;
 }
@@ -87,7 +95,7 @@ export function decideLease(
         "LEASE_HELD",
         subject,
         current,
-        `${subject} is leased by ${holderDescription(current.holder)} until ${current.expiresAt}; read its state to reconcile instead of retrying`,
+        leaseHeldMessage(subject, current.holder, current.expiresAt),
       );
     }
     const generation = current.generation + 1;
