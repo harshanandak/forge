@@ -2140,6 +2140,189 @@ if (phase === "main") {
   );
 
   await check(
+    "a restore with duplicate JSON labels is refused as RESTORE_INVALID_ROW and writes nothing",
+    async () => {
+      const { source } = await pagedSource();
+      // A real valid dump that holds a record: restoring the leases-only source derives the floor record
+      // and its event, and the dump of that project restores again as it is.
+      const base = `${run}-dupl-base`;
+      const seeded = await adminCall(
+        base,
+        "POST",
+        "restore",
+        JSON.stringify(await dumpOf(source)),
+      );
+      assert.equal(seeded.status, 200, JSON.stringify(seeded.body));
+      const dump = await dumpOf(base);
+      const pages = await pagesOf(base);
+      assert.ok(pages.length >= 3, `${pages.length} pages`);
+      const floor = "allocation:issue:work-";
+      const repeat = (from: string, to: string) => (text: string) =>
+        text.replace(from, to);
+      const generation = repeat(
+        '"generation":',
+        '"generation":9,"generation":',
+      );
+      type Row = Record<string, unknown>;
+      // [name, table, which row, column, the edit]; the last value of the label is always the original.
+      const cases: [
+        string,
+        string,
+        (row: Row) => boolean,
+        string,
+        (text: string) => string,
+      ][] = [
+        [
+          "event type",
+          "state_events",
+          (row) => row.key === floor,
+          "body",
+          repeat('"type":', '"type":"ignored","type":'),
+        ],
+        [
+          "record body",
+          "state_records",
+          (row) => row.key === floor,
+          "body",
+          repeat('"key":', '"key":"other","key":'),
+        ],
+        [
+          "event nested label",
+          "state_events",
+          (row) => row.key === floor,
+          "body",
+          repeat('"number":0', '"number":1,"number":0'),
+        ],
+        [
+          "event nested label spelled with an escape",
+          "state_events",
+          (row) => row.key === floor,
+          "body",
+          repeat('"number":0', '"\\u006eumber":0,"number":0'),
+        ],
+        [
+          "record nested label",
+          "state_records",
+          (row) => row.key === floor,
+          "body",
+          repeat('"number":0', '"number":1,"number":0'),
+        ],
+        ["lease body", "state_leases", () => true, "body", generation],
+        [
+          "owner receipt result",
+          "state_requests",
+          (row) => String(row.result).includes('"generation":'),
+          "result",
+          generation,
+        ],
+        [
+          "server receipt result",
+          "domain_cloud_requests",
+          (row) => row.outcome === "ok",
+          "result",
+          generation,
+        ],
+      ];
+      const named = (table: string, row: Row): string =>
+        table === "domain_cloud_requests"
+          ? String(row.request_id)
+          : JSON.stringify([
+              row.namespace,
+              row[
+                table === "state_leases"
+                  ? "subject"
+                  : table === "state_requests"
+                    ? "request_id"
+                    : "key"
+              ],
+            ]);
+      const empty = async (project: string, label: string): Promise<void> => {
+        assert.equal(await initialized(project), false, label);
+        for (const rows of Object.values((await dumpOf(project)).tables))
+          assert.equal(rows.length, 0, `${label}: nothing was written`);
+      };
+      const refusal = (
+        reply: Awaited<ReturnType<typeof adminCall>>,
+        label: string,
+        table: string,
+        row: Row,
+        repeated: string,
+      ): void => {
+        assert.equal(
+          reply.status,
+          400,
+          `${label}: ${JSON.stringify(reply.body)}`,
+        );
+        assert.equal(reply.body.error?.code, "RESTORE_INVALID_ROW", label);
+        assert.equal(
+          reply.body.error?.message,
+          `${table} row ${named(table, row)} is not valid state`,
+          label,
+        );
+        assert.ok(
+          !JSON.stringify(reply.body).includes(repeated),
+          `${label}: the refusal holds no body`,
+        );
+      };
+      for (const [
+        index,
+        [name, table, pick, column, edit],
+      ] of cases.entries()) {
+        // Whole: nothing is written, and the same dump with the label restored to one restores in place.
+        const whole = JSON.parse(JSON.stringify(dump)) as Dump;
+        const row = whole.tables[table]!.find(pick) as Row;
+        const original = String(row[column]);
+        const repeated = edit(original);
+        assert.notEqual(repeated, original, name);
+        assert.deepEqual(JSON.parse(repeated), JSON.parse(original), name);
+        row[column] = repeated;
+        const target = `${run}-dupl-whole-${index}`;
+        refusal(
+          await adminCall(target, "POST", "restore", JSON.stringify(whole)),
+          `whole ${name}`,
+          table,
+          row,
+          repeated,
+        );
+        await empty(target, `whole ${name}`);
+        const clean = await adminCall(
+          target,
+          "POST",
+          "restore",
+          JSON.stringify(dump),
+        );
+        assert.equal(clean.status, 200, JSON.stringify(clean.body));
+        assert.deepEqual(await dumpOf(target), dump, `whole ${name}: retry`);
+
+        // Paged: every page before the last is staged, the last refuses, and nothing stays staged.
+        const copy = JSON.parse(JSON.stringify(pages)) as DumpPage[];
+        const at = copy.findIndex((page) => page.tables[table]!.some(pick));
+        assert.ok(at >= 0 && at < copy.length - 1, `${name}: page ${at}`);
+        const staged = copy[at]!.tables[table]!.find(pick) as Row;
+        staged[column] = edit(String(staged[column]));
+        const paged = `${run}-dupl-paged-${index}`;
+        for (const page of copy) {
+          const reply = await sendPage(paged, page);
+          if (!page.last) {
+            assert.equal(reply.status, 200, JSON.stringify(reply.body));
+            continue;
+          }
+          refusal(reply, `paged ${name}`, table, staged, repeated);
+        }
+        await empty(paged, `paged ${name}`);
+        assert.equal(
+          (await sendPage(paged, pages[1])).status,
+          400,
+          `paged ${name}: abandoned`,
+        );
+        for (const page of pages)
+          assert.equal((await sendPage(paged, page)).status, 200);
+        assert.deepEqual(await dumpOf(paged), dump, `paged ${name}: retry`);
+      }
+    },
+  );
+
+  await check(
     "the size guard refuses a dump over the project limit, and a restore whose staged rows pass it, before rows load",
     async () => {
       const big = `${run}-page-big`;

@@ -172,8 +172,6 @@ jobs:
           restore_cf unmeasured cloud/src/dump.ts 's/^  assertLimits\(db, limits, "RESTORE_TOO_LARGE", "The restored project"\);/  void 0;/m' "whole restore whose generated event crosses" '[got.status, got.json.error?.code]'
           # A floor written after the restore transaction commits leaves the imported rows behind when it fails.
           restore_cf outside cloud/src/dump.ts 's/(export function restoreDump\([^{]*\{\n  )return db\.transaction\(/$1const counted = db.transaction(/; s/    settleFloor\(db, owner, limits, restored\);\n    return counts\(dump\.tables\);\n  \}\);/    globalThis.restoredFor = restored;\n    return counts(dump.tables);\n  });\n  settleFloor(db, owner, limits, globalThis.restoredFor);\n  return counted;/' "whole restore whose floor record fails" 'tablesOf(failed.t.db)'
-          # Without the replay's verified floor revision, the seed reads the first duplicate type label and reuses a deleted floor's revision.
-          restore_cf unrevised src/core/state/index.ts 's/        found\.floorRevision,\n/        undefined,\n/' "whole restore of a deleted floor under duplicate type labels" 'record?.revision'
       - name: wrangler log
         if: failure()
         run: tail -n 100 "$RUNNER_TEMP"/wrangler-*.log || true

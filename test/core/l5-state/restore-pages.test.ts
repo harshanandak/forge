@@ -88,6 +88,151 @@ function expectFailure(work: () => void, table: string, name: string): void {
   });
 }
 
+// forge-1313: nested objects, an array, an own __proto__ label, siblings that share labels and label-like text in strings.
+async function labelled() {
+  const opened = await open(false);
+  const value = {
+    meta: { kind: "x" },
+    list: [{ id: 1 }],
+    twin: { kind: "x" },
+    text: '{"kind":"x","kind":"y"} "type": }',
+    escaped: "\\u006bind",
+    ...(JSON.parse('{"__proto__":1}') as object),
+  };
+  opened.owner.acquire(ns, "l", holder, 100, "claim-l");
+  opened.owner.put(ns, "a", value, actor, {
+    expectRevision: 0,
+    requestId: "put-a",
+  });
+  return opened;
+}
+const repeat = (from: string, to: string) => (text: string) =>
+  text.replace(from, to);
+const nested = repeat('"kind":"x"', '"kind":"y","kind":"x"');
+const inArray = repeat('{"id":1}', '{"id":0,"id":1}');
+const escaped = repeat('"kind":"x"', '"\\u006bind":"x","kind":"x"');
+const proto = repeat('"__proto__":1', '"__proto__":2,"__proto__":1');
+const revision = repeat('"revision":', '"revision":9,"revision":');
+// [name, table, column, row filter, edit, reported table, reported key]
+const repeats: [
+  string,
+  string,
+  string,
+  string,
+  (text: string) => string,
+  string,
+  string,
+][] = [
+  [
+    "an event type",
+    "state_events",
+    "body",
+    "key='a'",
+    repeat('"type":', '"type":"ignored","type":'),
+    "state_events",
+    "a",
+  ],
+  [
+    "an event nested object",
+    "state_events",
+    "body",
+    "key='a'",
+    nested,
+    "state_events",
+    "a",
+  ],
+  [
+    "an event object inside an array",
+    "state_events",
+    "body",
+    "key='a'",
+    inArray,
+    "state_events",
+    "a",
+  ],
+  [
+    "an event label spelled with an escape",
+    "state_events",
+    "body",
+    "key='a'",
+    escaped,
+    "state_events",
+    "a",
+  ],
+  [
+    "an event __proto__ label",
+    "state_events",
+    "body",
+    "key='a'",
+    proto,
+    "state_events",
+    "a",
+  ],
+  [
+    "a record body",
+    "state_records",
+    "body",
+    "key='a'",
+    revision,
+    "state_records",
+    "a",
+  ],
+  [
+    "a record nested object",
+    "state_records",
+    "body",
+    "key='a'",
+    nested,
+    "state_records",
+    "a",
+  ],
+  [
+    "a record object inside an array",
+    "state_records",
+    "body",
+    "key='a'",
+    inArray,
+    "state_records",
+    "a",
+  ],
+  [
+    "a record label spelled with an escape",
+    "state_records",
+    "body",
+    "key='a'",
+    escaped,
+    "state_records",
+    "a",
+  ],
+  [
+    "a lease body",
+    "state_leases",
+    "body",
+    "subject='l'",
+    repeat('"generation":', '"generation":9,"generation":'),
+    "state_leases",
+    "l",
+  ],
+  [
+    "a request result",
+    "state_requests",
+    "result",
+    "request_id='put-a'",
+    revision,
+    "state_requests",
+    "put-a",
+  ],
+  [
+    "a request fingerprint",
+    "state_requests",
+    "fingerprint",
+    "request_id='put-a'",
+    repeat('"kind":"put"', '"kind":"get","kind":"put"'),
+    "state_requests",
+    "put-a",
+  ],
+];
+
 for (const pageSize of [1, 2, undefined]) {
   const label = pageSize ?? "default";
   test(`restore preserves the consistency failure without rowid, page size ${label}`, async () => {
@@ -176,7 +321,7 @@ for (const pageSize of [1, 2, undefined]) {
     }
   }, 30_000);
 
-  test(`restore uses the last duplicate type label, page size ${label}`, async () => {
+  test(`restore refuses a duplicate type label in an event instead of reading the last one, page size ${label}`, async () => {
     const { db, owner, close } = await open(false);
     try {
       owner.put(ns, "a", "first", actor, { expectRevision: 0 });
@@ -197,13 +342,14 @@ for (const pageSize of [1, 2, undefined]) {
       db.run("UPDATE state_records SET revision=1,body=?", [
         JSON.stringify({ ...record, revision: 1 }),
       ]);
-      expectFailure(() => verify(db, 2, pageSize), "state_records", "a");
+      // forge-1313: the last label would make this image replay cleanly; a repeated label is refused itself.
+      expectFailure(() => verify(db, 2, pageSize), "state_events", "a");
     } finally {
       await close();
     }
   }, 30_000);
 
-  test(`restore finds a request id hidden by duplicate labels, page size ${label}`, async () => {
+  test(`restore refuses a request id hidden by duplicate labels instead of finding it, page size ${label}`, async () => {
     const { db, owner, close } = await open(false);
     try {
       owner.put(ns, "a", "first", actor, {
@@ -224,11 +370,60 @@ for (const pageSize of [1, 2, undefined]) {
         ),
       ]);
       db.run("DELETE FROM state_requests WHERE request_id='first'");
-      expectFailure(() => verify(db, 2, pageSize), "state_requests", "same");
+      expectFailure(() => verify(db, 2, pageSize), "state_events", "a");
     } finally {
       await close();
     }
   }, 30_000);
+
+  // forge-1313: every JSON column is checked for a repeated label, not only the event type.
+  test(`restore accepts the same bodies when no label repeats, page size ${label}`, async () => {
+    const { db, close } = await labelled();
+    try {
+      verify(db, mark(db), pageSize);
+    } finally {
+      await close();
+    }
+  }, 30_000);
+
+  for (const [name, table, column, where, edit, failing, row] of repeats)
+    test(`restore refuses a repeated label in ${name}, page size ${label}`, async () => {
+      const { db, close } = await labelled();
+      try {
+        const before = String(
+          db.get(`SELECT ${column} AS text FROM ${table} WHERE ${where}`)!.text,
+        );
+        const after = edit(before);
+        expect(after).not.toBe(before);
+        // The last value is the original, so only the repeated label can be the reason for the refusal.
+        expect(JSON.parse(after)).toEqual(JSON.parse(before));
+        db.run(`UPDATE ${table} SET ${column}=? WHERE ${where}`, [after]);
+        expectFailure(() => verify(db, mark(db), pageSize), failing, row);
+      } finally {
+        await close();
+      }
+    }, 30_000);
+
+  for (const table of ["state_events", "state_records"] as const)
+    test(`restore refuses a repeated label in ${table} beyond the first batch, page size ${label}`, async () => {
+      const { db, owner, close } = await open(false);
+      try {
+        for (let index = 0; index < 20; index++)
+          owner.put(ns, `k${String(index).padStart(2, "0")}`, index, actor, {
+            expectRevision: 0,
+          });
+        const where = table === "state_events" ? "sequence=20" : "key='k19'";
+        const text = String(
+          db.get(`SELECT body FROM ${table} WHERE ${where}`)!.body,
+        );
+        db.run(`UPDATE ${table} SET body=? WHERE ${where}`, [
+          text.replace('"key":', '"key":"k19","key":'),
+        ]);
+        expectFailure(() => verify(db, 20, pageSize), table, "k19");
+      } finally {
+        await close();
+      }
+    }, 30_000);
 
   test(`restore preserves missing-record insertion order after recreation, page size ${label}`, async () => {
     const { db, owner, close } = await open(false);
@@ -525,21 +720,26 @@ for (const deleted of [false, true])
     }
   }, 30_000);
 
-test("the replay reads a deletion type the way it parses it, last duplicate label authoritative", async () => {
+test("the replay refuses a deletion with a duplicate type label, and the same history without one reports its number", async () => {
   const { db, owner, close } = await open(false);
   try {
     write(owner, "n-8");
     owner.delete(ns, "n-8", actor, { expectRevision: 1 });
-    for (const sequence of [1, 2])
-      db.run(
-        `UPDATE state_events SET body=replace(body,'"type":','"type":"ignored","type":') WHERE sequence=?`,
-        [sequence],
-      );
     expect(verifyEventDerivedState(db, mark(db), undefined, request)).toEqual({
       highest: 8,
       earlier: 0,
       floorRevision: 0,
     });
+    for (const sequence of [1, 2])
+      db.run(
+        `UPDATE state_events SET body=replace(body,'"type":','"type":"ignored","type":') WHERE sequence=?`,
+        [sequence],
+      );
+    expectFailure(
+      () => verifyEventDerivedState(db, mark(db), undefined, request),
+      "state_events",
+      "n-8",
+    );
   } finally {
     await close();
   }
