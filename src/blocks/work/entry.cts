@@ -584,7 +584,10 @@ function persist(
     ...(subject === undefined ? {} : { subject }),
     ...(readSet === undefined ? {} : { readSet }),
   });
-  const read = state.get(recordKey);
+  return checked(state, written);
+}
+function checked(state: LeaseStateClient, written: StateRecord): StateRecord {
+  const read = state.get(written.key);
   if (canonical(read) !== canonical(written))
     fail(
       "INTERNAL",
@@ -5514,27 +5517,26 @@ const operations: Operations<WorkOperations> = {
     const dependsOn = (input.dependsOn ?? []).map(ids.stored);
     const parent =
       input.parent === undefined ? undefined : ids.stored(input.parent);
-    const sequence = state.maxNumber(`issue:${STORED}`) + 1;
-    const id = `${STORED}${sequence}`;
-    const readSet = validateDependencies(state, id, dependsOn, ids);
-    if (parent !== undefined) get(state, parent, input.parent);
-    const value: Stored = {
-      id,
-      prefix: ids.prefix,
-      title: input.title,
-      status: "open",
-      labels: input.labels ?? [],
-      dependsOn,
-      createdAt: new Date(state.now()).toISOString(),
-      ...(input.kind ? { kind: input.kind } : {}),
-      ...(input.body === undefined ? {} : { body: input.body }),
-      ...(parent === undefined ? {} : { parent }),
-    };
-    return item(
-      state,
-      persist(state, key(id), value, 0, undefined, readSet),
-      ids,
-    );
+    // The owner picks the number and advances its floor in the write's own transaction.
+    const written = state.putNext(`issue:${STORED}`, (_key, sequence) => {
+      const id = `${STORED}${sequence}`;
+      const readSet = validateDependencies(state, id, dependsOn, ids);
+      if (parent !== undefined) get(state, parent, input.parent);
+      const value: Stored = {
+        id,
+        prefix: ids.prefix,
+        title: input.title,
+        status: "open",
+        labels: input.labels ?? [],
+        dependsOn,
+        createdAt: new Date(state.now()).toISOString(),
+        ...(input.kind ? { kind: input.kind } : {}),
+        ...(input.body === undefined ? {} : { body: input.body }),
+        ...(parent === undefined ? {} : { parent }),
+      };
+      return { value, readSet };
+    });
+    return item(state, checked(state, written), ids);
   },
   "issue.show": ({ input, services, config }) => {
     const state = client(services);
