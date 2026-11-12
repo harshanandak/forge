@@ -237,7 +237,11 @@ test("a sessionless device token keeps the device as its boundary on the raw lea
   for (const session of ["s1", "s2"]) {
     const reply = await f.write(
       "claim",
-      { subject: `issue:${session}`, holder: holder("phone", session) },
+      {
+        subject: `issue:${session}`,
+        holder: holder("phone", session),
+        requestId: `bare-${session}`,
+      },
       bare.token,
     );
     expect(reply.status).toBe(200);
@@ -297,8 +301,13 @@ for (const session of ["phone", null]) {
       now,
       expired.id,
     ]);
+    // A token bound to a session claims only as it, so another session's lease needs its own token.
     const before = await f.claim("issue:phone", first);
-    await f.claim("issue:other", first, "other");
+    await f.claim(
+      "issue:other",
+      session === null ? first : await f.issue("phone", "other"),
+      "other",
+    );
     const reply = await f.revoke(first);
     expect(reply.status).toBe(200);
     expect(reply.body.value).toMatchObject({ released: [] });

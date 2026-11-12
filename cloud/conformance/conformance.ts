@@ -280,6 +280,11 @@ const onDevice = (holder: Holder, device: string): Holder => ({
   ...holder,
   session: { ...holder.session, device },
 });
+// A session-bound token claims only as its own session.
+const asSession = (holder: Holder, device: Device): Holder => ({
+  ...holder,
+  session: { ...holder.session, id: device.session },
+});
 const claim = (
   project: string,
   subject: string,
@@ -434,7 +439,7 @@ if (phase === "main") {
       const device = await issue(project, "tablet");
       const body = {
         subject: "issue:auth-1",
-        holder: onDevice(holderOf("auth"), "tablet"),
+        holder: onDevice(asSession(holderOf("auth"), device), "tablet"),
         ttlMs: 600_000,
         requestId: "auth-1",
       };
@@ -491,7 +496,7 @@ if (phase === "main") {
         { subject: "issue:device-1", holder: named, ttlMs: 600_000, requestId },
         asDevice(tablet),
       );
-    const holder = holderOf("device");
+    const holder = asSession(holderOf("device"), tablet);
     const reply = await claimAs(onDevice(holder, "phone"), "device-1");
     assert.equal(reply.status, 403, JSON.stringify(reply.body));
     assert.equal(reply.body.error?.code, "AUTH_DEVICE_MISMATCH");
@@ -503,6 +508,18 @@ if (phase === "main") {
     const { device: _device, ...session } = holder.session;
     const lease = granted(await claimAs({ ...holder, session }, "device-2"));
     assert.equal(lease.holder.session.device, "tablet");
+    // A session-bound token cannot name another session.
+    const other = {
+      ...holder,
+      session: { ...holder.session, id: "session-other" },
+    };
+    const forged = await claimAs(other, "device-3");
+    assert.equal(forged.status, 403, JSON.stringify(forged.body));
+    assert.equal(forged.body.error?.code, "AUTH_DEVICE_MISMATCH");
+    assert.equal(
+      forged.body.error?.message,
+      "The request names a session other than the token's",
+    );
   });
 
   await check("an expired token is refused, naming the holder", async () => {
