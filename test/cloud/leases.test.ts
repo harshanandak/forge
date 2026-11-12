@@ -39,7 +39,7 @@ function fixture() {
   const clock = spyOn(Date, "now").mockReturnValue(now);
   const db = new Database(":memory:"),
     values = new Map<string, unknown>(),
-    // Every statement and key-value write, so setup shows even when no row changes.
+    // Every statement, transaction and key-value call, so setup or a stray read shows even when no row changes.
     calls: string[] = [];
   let failRelease = false;
   let claimNumber = 0;
@@ -59,8 +59,14 @@ function fixture() {
         return { toArray: () => rows };
       },
     },
-    transactionSync: (body) => db.transaction(body)(),
-    get: (key) => Promise.resolve(values.get(key)),
+    transactionSync: (body) => {
+      calls.push("transaction");
+      return db.transaction(body)();
+    },
+    get: (key) => {
+      calls.push(`get ${key}`);
+      return Promise.resolve(values.get(key));
+    },
     put: (key, value) => {
       calls.push(`put ${key}`);
       values.set(key, value);
@@ -473,7 +479,8 @@ const INVENTED = `fct_0123456789abcdef.${"A".repeat(43)}`;
 const FORGED = { "X-Forge-Owner": "phone", "X-Forge-Owner-Expires": "9e12" };
 const ROUTES = ["holder?subject=issue", "claim", "renew", "release"];
 const bearer = (token: string) => ({ authorization: `Bearer ${token}` });
-const TOKEN_READS = [TABLE_PROBE, TOKEN_LOOKUP];
+const PROVISIONED = "get provisioned";
+const TOKEN_READS = [PROVISIONED, TABLE_PROBE, TOKEN_LOOKUP];
 const LEASE_READS = [
   ...TOKEN_READS,
   "SELECT body FROM state_leases WHERE namespace=? AND subject=?",
@@ -538,11 +545,13 @@ test("an unprovisioned object runs no SQL on any raw route, a staged restore and
   using f = fixture();
   await f.storage.put("restore:next", 1);
   const via = ["direct", "worker"] as const;
-  await refused(f, "unprovisioned", bearer(INVENTED), via, "AUTH_INVALID", []);
+  await refused(f, "unprovisioned", bearer(INVENTED), via, "AUTH_INVALID", [
+    PROVISIONED,
+  ]);
   const was = f.snapshot();
   f.reopen();
   const owner = await f.raw("holder?subject=issue", undefined, FORGED);
-  expect(outcome(f, was, owner, [])).toEqual([200, null, [], true]);
+  expect(outcome(f, was, owner, [PROVISIONED])).toEqual([200, null, [], true]);
 }, 30_000);
 
 test("a missing bearer or forged owner headers grant nothing and set nothing up on a cold object", async () => {

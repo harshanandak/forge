@@ -6,7 +6,6 @@ import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Project } from "../../cloud/src/project.ts";
 import {
-  durableStore,
   readOnlyStore,
   TABLE_PROBE,
   type DurableStorage,
@@ -139,7 +138,10 @@ function fixture(
         return { toArray: () => rows };
       },
     },
-    transactionSync: (body) => db.transaction(body)(),
+    transactionSync: (body) => {
+      calls.push("transaction");
+      return db.transaction(body)();
+    },
     get: (key) => {
       calls.push(`get ${key}`);
       return Promise.resolve(values.get(key));
@@ -6836,11 +6838,10 @@ test("a command write rechecks the token before it asks to open the store", asyn
   const recheck = mock(() => {
     throw new Error("rechecked");
   });
-  // Opening for real would set up the old store; the write must never get that far.
-  const open = mock(() => ({
-    db: durableStore(f.storage),
-    owner: undefined as never,
-  }));
+  // Reaching open is the failure: opening would set up the old store.
+  const open = mock((): never => {
+    throw new Error("opened");
+  });
   const host = {
     device: "laptop",
     project: "p",
@@ -6853,6 +6854,7 @@ test("a command write rechecks the token before it asks to open the store", asyn
   expect(() => runCommand(JSON.stringify(make("p-1")), host)).toThrow(
     "rechecked",
   );
+  expect(recheck).toHaveBeenCalledTimes(1);
   expect(open).not.toHaveBeenCalled();
 }, 30_000);
 
