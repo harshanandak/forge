@@ -930,15 +930,11 @@ for (const [name, statement, expected] of [
     }
   }, 30_000);
 
-test("seeding continues a deleted floor's verified revision when its events carry duplicate type labels, and the result replays", async () => {
+test("seeding continues a deleted floor's verified revision and the result replays, and the same events with duplicate type labels are refused", async () => {
   const { db, owner, close } = await open(false);
   try {
     write(owner, floorKey, floorValue(12));
     owner.delete(ns, floorKey, actor, { expectRevision: 1 });
-    // The first label is ignored by replay, which reads the last one. A SQL type filter would read the first.
-    db.run(
-      `UPDATE state_events SET body=replace(body,'"type":','"type":"ignored","type":')`,
-    );
     const found = verifyEventDerivedState(db, mark(db), undefined, request)!;
     expect(found).toEqual({ highest: 0, earlier: 12, floorRevision: 2 });
     seed(owner, db, found);
@@ -951,6 +947,15 @@ test("seeding continues a deleted floor's verified revision when its events carr
       earlier: 12,
       floorRevision: 3,
     });
+    // forge-1313: the same history with a repeated type label is no longer read by its last label.
+    db.run(
+      `UPDATE state_events SET body=replace(body,'"type":','"type":"ignored","type":')`,
+    );
+    expectFailure(
+      () => verifyEventDerivedState(db, mark(db), undefined, request),
+      "state_events",
+      floorKey,
+    );
   } finally {
     await close();
   }
