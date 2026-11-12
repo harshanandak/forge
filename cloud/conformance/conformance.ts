@@ -682,6 +682,7 @@ async function deviceChecks(): Promise<void> {
       decision: { headers: Headers },
       cookie: string,
       fault = false,
+      ip?: string,
     ) => {
       const state =
         new URL(decision.headers.get("location") ?? "").searchParams.get("s") ??
@@ -690,13 +691,22 @@ async function deviceChecks(): Promise<void> {
         state,
         code: "owner",
       });
-      return call(`/callback?${query}`, { cookie, fault });
+      return call(`/callback?${query}`, {
+        cookie,
+        fault,
+        ...(ip === undefined ? {} : { ip }),
+      });
     };
+    // An unknown callback state from its own address: a guess that spends the address and project only.
+    const guess = () =>
+      call(
+        `/callback?${new URLSearchParams({ state: `forge-device.${crypto.randomUUID()}`, code: "owner" })}`,
+      );
     const poll = (f: Flow) =>
       call(`/p/${typedProject}/loginpoll`, {
         json: { device_code: f.deviceCode },
       });
-    return { previewed, decide, bindOf, back, poll };
+    return { previewed, decide, bindOf, back, guess, poll };
   })();
   const WRONG = "x".repeat(43);
   const outcomeOf = (reply: { status: number; word?: string | undefined }) => [
@@ -753,8 +763,19 @@ async function deviceChecks(): Promise<void> {
           400,
           "invalid_request",
         ]);
-      const sixth = await browser.decide(f, "approve", f.ticket("approve"));
+      const sixth = await browser.decide(f, "approve", WRONG);
       assert.deepEqual(outcomeOf(sixth), [429, "rate_limited"]);
+      // The right ticket is a bound proof: it needs no wait, and its callback is no guess either.
+      const decision = await browser.decide(f, "approve", f.ticket("approve"));
+      assert.equal(decision.status, 302, decision.text);
+      const own = browser.bindOf(decision);
+      const wrongBrowser = await browser.back(
+        decision,
+        `${own.split("=")[0]}=${WRONG}`,
+      );
+      assert.deepEqual(outcomeOf(wrongBrowser), [429, "rate_limited"]);
+      const done = await browser.back(decision, own);
+      assert.deepEqual(outcomeOf(done), [200, "approved"]);
     },
   );
 
@@ -768,10 +789,20 @@ async function deviceChecks(): Promise<void> {
         assert.deepEqual(outcomeOf(reply), [400, "invalid_request"]);
       }
       const f = await browser.previewed();
-      const sixth = await browser.decide(f, "approve", f.ticket("approve"), {
+      const sixth = await browser.decide(f, "approve", WRONG, { ip });
+      assert.deepEqual(outcomeOf(sixth), [429, "rate_limited"]);
+      // The right ticket from that address is a bound proof: no wait, and its callback finishes too.
+      const decision = await browser.decide(f, "approve", f.ticket("approve"), {
         ip,
       });
-      assert.deepEqual(outcomeOf(sixth), [429, "rate_limited"]);
+      assert.equal(decision.status, 302, decision.text);
+      const done = await browser.back(
+        decision,
+        browser.bindOf(decision),
+        false,
+        ip,
+      );
+      assert.deepEqual(outcomeOf(done), [200, "approved"]);
     },
   );
 
@@ -791,6 +822,46 @@ async function deviceChecks(): Promise<void> {
       );
     },
   );
+
+  // Last, because it leaves the project's guess budget full for the rest of its minute. Guesses from
+  // distinct addresses fill it, however much earlier journeys already spent; both completions then follow
+  // at once, the second after its decision was made before the budget filled.
+  for (const action of ["approve", "deny"] as const) {
+    await device(
+      `device ${action}: bound proofs finish while the project guess budget is full`,
+      async () => {
+        const fill = async () => {
+          for (let n = 0; n < 31; n++) {
+            const reply = await browser.guess();
+            if (reply.status === 429) return;
+            assert.deepEqual(outcomeOf(reply), [400, "access_denied"]);
+          }
+          assert.fail("the project guess budget never filled");
+        };
+        const word = action === "approve" ? "approved" : "denied";
+        const a = await browser.previewed();
+        await fill();
+        const decision = await browser.decide(a, action, a.ticket(action));
+        assert.equal(decision.status, 302, decision.text);
+        assert.deepEqual(outcomeOf(await browser.decide(a, action, WRONG)), [
+          429,
+          "rate_limited",
+        ]);
+        const done = await browser.back(decision, browser.bindOf(decision));
+        assert.deepEqual(outcomeOf(done), [200, word]);
+        const b = await browser.previewed();
+        const early = await browser.decide(b, action, b.ticket(action));
+        assert.equal(early.status, 302, early.text);
+        await fill();
+        const late = await browser.back(early, browser.bindOf(early));
+        assert.deepEqual(outcomeOf(late), [200, word]);
+        assert.equal(
+          (await browser.poll(b)).status,
+          action === "approve" ? 200 : 400,
+        );
+      },
+    );
+  }
 }
 
 if (phase === "revoke") await revokeCheck();
