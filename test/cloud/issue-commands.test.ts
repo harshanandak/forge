@@ -22,6 +22,7 @@ import {
   LEASE_READS,
   RECORD_READS,
   ROWS,
+  SCAN,
   type IssueViews,
 } from "../../cloud/src/issue-read.ts";
 import { createWorker } from "../../cloud/src/worker.ts";
@@ -561,8 +562,15 @@ test("issue.comments passes the envelope and context checks and is answered, not
       { ...call, op: "issue.comments", context },
       { token },
     );
-    refusal("issue.comments", got, [404, "NOT_FOUND", 3]);
+    expect([got.status, got.code, got.exit]).toEqual([404, "NOT_FOUND", 3]);
     expect(got.json.error?.message).toBe("Issue forge-1 was not found");
+    // A missing issue is a work read, not a refusal before one: exactly the issue's own row from the fixed
+    // read-only set, no comment scan, no lease table (as show's NOT_FOUND above).
+    expect(strayCalls(got.touched)).toHaveLength(1);
+    expect(readCalls(got.touched)).toEqual([]);
+    expect(got.touched).not.toContain(SCAN);
+    expect(got.touched).not.toContain(ROWS);
+    expect(got.probes).toEqual([TOKENS, "state_records"]);
   }
   expect(f.snapshot()).toBe(before);
 }, 30_000);
