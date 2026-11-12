@@ -8726,7 +8726,7 @@ for (const trip of TRIPS)
       row.body = change(String(row.body));
     };
     // Spaces after commas and an escaped spelling of a label that appears once are legal JSON.
-    const spaced = (text: string) => text.replace(/,"/g, ', "');
+    const spaced = (text: string) => text.replaceAll(',"', ', "');
     edit("state_events", issueKey(1), (text) =>
       spaced(text).replace('"type":', '"\\u0074ype":'),
     );
