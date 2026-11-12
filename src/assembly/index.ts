@@ -1003,12 +1003,13 @@ export async function createAssembly(
     };
   }
   const catalog: Assembly["catalog"] = {
-    admit(blockId, declaredOp, dryRun) {
+    admit(blockId, declaredOp, dryRun, input) {
       admitCloud(
         { root, env: options.providers?.env ?? process.env },
         blockId,
         declaredOp,
         dryRun,
+        input,
       );
     },
     templateHint(op, caller, readOnly) {

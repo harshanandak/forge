@@ -1,5 +1,5 @@
 // Forge cloud as the authority for a cloud-bound project's `issue show`, `issue comments`, `issue list`, `issue ready`, `issue create`,
-// `issue comment`, `issue update`, `issue dep`, `issue claim`, `issue renew` and `issue release`: chosen after the Runtime's own request checks and before any local project state opens. A bound project
+// `issue comment`, `issue update`, `issue dep`, `issue close`, `issue claim`, `issue renew` and `issue release`: chosen after the Runtime's own request checks and before any local project state opens. A bound project
 // writes only through the cloud, never to a local store, and no device is created.
 import { nodeDeviceIdentity } from "../adapters/fs/device-identity.ts";
 import { createCloudHttp } from "../adapters/http/index.ts";
@@ -35,12 +35,13 @@ const CLOUD_SERVED: ReadonlySet<string> = new Set([
   "issue.comment",
   "issue.update",
   "issue.dep",
+  "issue.close",
   "issue.claim",
   "issue.renew",
   "issue.release",
 ]);
 
-/** On a bound project: show, comments, list, ready, create, comment, update, dep, claim, renew and release go to the cloud, other work operations are refused (a second writer), other blocks stay local. */
+/** On a bound project: show, comments, list, ready, create, comment, update, dep, close, claim, renew and release go to the cloud, other work operations are refused (a second writer), other blocks stay local. */
 export function cloudRoute(
   blockId: string,
   declared: string,
@@ -54,21 +55,43 @@ export function cloudRoute(
       );
 }
 
-/** Refuses an operation a bound project does not serve, and a dry run of one it does, before any lookup for it; an unbound project is never refused. */
+/** The input the cloud cannot serve for an operation it routes yet, refused in one shape before any request. */
+function unserved(declared: string, input: unknown): ForgeFailure | undefined {
+  const { reopen, reason, receipt } = (input ?? {}) as Record<string, unknown>;
+  const claim =
+    declared === "issue.claim" &&
+    (reopen !== undefined || reason !== undefined);
+  const close = declared === "issue.close" && receipt !== undefined;
+  return claim || close
+    ? fail(
+        "INPUT_INVALID",
+        `${declared} with ${close ? "a receipt" : "reopen or reason"} is not supported in cloud yet.`,
+      )
+    : undefined;
+}
+
+/** Refuses an operation a bound project does not serve, a dry run of one it does, and input it cannot serve, before any lookup for it; an unbound project is never refused. */
 export function admitCloud(
   deps: Pick<CloudAuthorityDeps, "root" | "env">,
   blockId: string,
   declared: string,
   dryRun?: boolean,
+  input?: unknown,
 ): void {
   const route = cloudRoute(blockId, declared);
-  if (route === "local" || (route === "cloud" && dryRun !== true)) return;
+  const refusal =
+    route === "cloud" && dryRun !== true
+      ? unserved(declared, input)
+      : undefined;
+  if (route === "local" || (route === "cloud" && dryRun !== true && !refusal))
+    return;
   if (
     cloudBinding(deps.root, deps.env.HOME ?? deps.env.USERPROFILE).kind !==
     "bound"
   )
     return;
   if (route instanceof ForgeFailure) throw route;
+  if (refusal) throw refusal;
   refuseDryRun();
 }
 
@@ -103,15 +126,8 @@ export async function selectCloud(
       "UNAVAILABLE",
       "This profile has no dry-run execution contract.",
     );
-  const input = request.input as { reopen?: unknown; reason?: unknown };
-  if (
-    declared === "issue.claim" &&
-    (input.reopen !== undefined || input.reason !== undefined)
-  )
-    throw fail(
-      "INPUT_INVALID",
-      "issue.claim with reopen or reason is not supported in cloud yet.",
-    );
+  const refusal = unserved(declared, request.input);
+  if (refusal) throw refusal;
   let device: string | undefined;
   try {
     device =
