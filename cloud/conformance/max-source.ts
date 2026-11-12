@@ -187,9 +187,14 @@ export async function tinySource(title: string) {
   return { tables, doc: { format: DUMP, tables } };
 }
 
-/** One lease on `subject` taken through the claim route, at the fixed clock. */
+/**
+ * One lease on `subject` taken through the claim route, at the fixed clock, after one create. The create writes the
+ * issue number floor, which a restore otherwise adds with the restoring Worker's own clock: a dump that carries its
+ * floor comes back exactly as exported.
+ */
 export async function leaseSource(subject: string) {
   const h = await harness("lease", "forge", FROZEN);
+  await accepted(h, call("lease-create", "issue.create", { title: "L" }));
   const reply = await h.claim({
     subject,
     holder: { actor: ACTOR, session: { id: "lease-session" } },
