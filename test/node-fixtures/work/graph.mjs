@@ -123,6 +123,15 @@ function call(operation, input = {}) {
                 (max, key) => Math.max(max, Number(/\d+$/.exec(key)?.[0] ?? 0)),
                 0,
               ),
+            // The numbered write for this in-memory fake: the highest key plus one, through put.
+            putNext(prefix, build) {
+              const number = this.maxNumber(prefix) + 1;
+              const { value, readSet } = build(`${prefix}${number}`, number);
+              return this.put(`${prefix}${number}`, value, {
+                expectRevision: 0,
+                readSet,
+              });
+            },
             lease: () => undefined,
             acquire() {
               throw new Error("unexpected acquire");
