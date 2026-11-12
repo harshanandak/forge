@@ -1014,38 +1014,74 @@ for (const [name, bad] of [
       expect(sent(r)).toEqual(["issue.show", "issue.link"]);
     }));
 
-test("through the CLI wrapper and MCP catalog_call, issue link on a bound project is answered by the cloud, and a dry run is refused before any request", () =>
-  using({ steps: [live, () => answer(LINKED, "issue.link")] }, async (r) => {
-    const context = holding(r);
+/** The same link as the CLI wrapper makes it and as MCP catalog_call makes it, each with its rendered output. */
+const through = async (
+  r: Rig,
+  surface: "CLI" | "MCP",
+  context: ReturnType<typeof holding>,
+  dryRun = false,
+) => {
+  if (surface === "CLI") {
     const argv = ["issue", "link", "--input", JSON.stringify(LINK)];
-    const dry = await runCli(r.assembly.catalog, [...argv, "--dry-run"], {
+    return runCli(r.assembly.catalog, dryRun ? [...argv, "--dry-run"] : argv, {
       caller: "agent",
       context,
     });
-    dryRefused(r, dry.envelope);
-    expect(dry.exitCode).toBe(1);
-    const mcp = createMcpHandlers(
-      r.assembly.catalog,
-      { expose: ["issue"] },
-      { context },
-    );
-    dryRefused(
-      r,
-      (await mcp.callTool("catalog_call", {
-        op: "issue.link",
-        input: LINK,
-        dryRun: true,
-      }))!,
-    );
-    const done = await runCli(r.assembly.catalog, argv, {
-      caller: "agent",
-      context,
-    });
-    expect(done.envelope).toMatchObject({ ok: true, result: LINKED });
-    expect(done.exitCode).toBe(0);
-    expect(done.stdout).not.toContain(TOKEN);
-    expect(sent(r)).toEqual(["issue.show", "issue.link"]);
-  }));
+  }
+  const mcp = createMcpHandlers(
+    r.assembly.catalog,
+    { expose: ["issue"] },
+    { context },
+  );
+  const args = { op: "issue.link", input: LINK, ...(dryRun ? { dryRun } : {}) };
+  return respond((await mcp.callTool("catalog_call", args))!);
+};
+for (const surface of ["CLI", "MCP"] as const) {
+  for (const [mode, own] of [
+    ["no generation", {}],
+    ["an explicit generation", { leaseGeneration: 3 }],
+  ] as const)
+    test(`through ${surface}, issue link as a dry run with ${mode} on a bound project is refused before any cloud request`, () =>
+      using({ steps: [live] }, async (r) => {
+        const done = await through(r, surface, holding(r, own), true);
+        dryRefused(r, done.envelope);
+        expect(done.exitCode).toBe(1);
+      }));
+
+  test(`through ${surface}, issue link on a bound project returns the cloud's whole record from one show and one link command`, () =>
+    using({ steps: [live, () => answer(LINKED, "issue.link")] }, async (r) => {
+      const context = holding(r);
+      const done = await through(r, surface, context);
+      expect(done.envelope).toMatchObject({ ok: true, op: "issue.link" });
+      expect((done.envelope as { result: object }).result).toEqual(LINKED);
+      expect(done.exitCode).toBe(0);
+      expect(done.stdout).not.toContain(TOKEN);
+      expect(sent(r)).toEqual(["issue.show", "issue.link"]);
+      expect(r.net.calls[1]!.url).toBe(COMMAND);
+      expect(r.net.calls[1]!.body).toEqual(
+        linkBody(context, 3, expect.any(String) as unknown as string),
+      );
+    }));
+
+  for (const [what, step, code, exit] of [
+    ["a cloud refusal", () => refusing("INPUT_INVALID"), "INPUT_INVALID", 6],
+    [
+      "a malformed record",
+      () => answer({ ...LINKED, revision: TOKEN }, "issue.link"),
+      "UNAVAILABLE",
+      1,
+    ],
+  ] as const)
+    test(`through ${surface}, issue link with ${what} carrying the token keeps ${code} and leaks no token into the envelope or stdout`, () =>
+      using({ steps: [live, step] }, async (r) => {
+        const done = await through(r, surface, holding(r));
+        expect(done.envelope).toMatchObject({ ok: false, error: { code } });
+        expect(done.exitCode).toBe(exit);
+        expect(JSON.stringify(done.envelope)).not.toContain(TOKEN);
+        expect(done.stdout).not.toContain(TOKEN);
+        expect(sent(r)).toEqual(["issue.show", "issue.link"]);
+      }));
+}
 
 const CLOSED = { ...ISSUE, status: "closed", revision: 4 };
 const closes = (r: Rig, context: object, input: object = CLOSE) =>
