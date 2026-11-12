@@ -22,6 +22,7 @@ import {
   LEASE_READS,
   RECORD_READS,
   ROWS,
+  SCAN,
   type IssueViews,
 } from "../../cloud/src/issue-read.ts";
 import { createWorker } from "../../cloud/src/worker.ts";
@@ -49,7 +50,7 @@ const vars = {
   ADMIN_TOKEN: "admin-secret",
   FORGE_CLOUD_ID_PREFIX: "forge",
 };
-const refused = "not yet supported in cloud";
+const needsId = "input must be { id } with a valid issue id";
 interface Envelope {
   ok: boolean;
   op?: string;
@@ -547,9 +548,8 @@ const deep = (levels: number) => {
   for (let i = 1; i < levels; i++) value = [value];
   return value;
 };
-const allowed = ["issue.comments"];
 
-test("the other allowed operation passes the envelope and context checks, then is refused", async () => {
+test("issue.comments passes the envelope and context checks and is answered, not refused", async () => {
   const { f, token, before } = await begin();
   const named = {
     actor,
@@ -557,13 +557,20 @@ test("the other allowed operation passes the envelope and context checks, then i
     device: { id: "laptop" },
     project: { id: "p" },
   };
-  for (const [op, context] of [
-    ...allowed.map((op) => [op, { actor }] as const),
-    ["issue.comments", named],
-  ] as const) {
-    const got = await f.send({ ...call, op, context }, { token });
-    refusal(op, got, [400, "INPUT_INVALID", 6]);
-    expect(got.json.error?.message).toContain(refused);
+  for (const context of [{ actor }, named]) {
+    const got = await f.send(
+      { ...call, op: "issue.comments", context },
+      { token },
+    );
+    expect([got.status, got.code, got.exit]).toEqual([404, "NOT_FOUND", 3]);
+    expect(got.json.error?.message).toBe("Issue forge-1 was not found");
+    // A missing issue is a work read, not a refusal before one: exactly the issue's own row from the fixed
+    // read-only set, no comment scan, no lease table (as show's NOT_FOUND above).
+    expect(strayCalls(got.touched)).toHaveLength(1);
+    expect(readCalls(got.touched)).toEqual([]);
+    expect(got.touched).not.toContain(SCAN);
+    expect(got.touched).not.toContain(ROWS);
+    expect(got.probes).toEqual([TOKENS, "state_records"]);
   }
   expect(f.snapshot()).toBe(before);
 }, 30_000);
@@ -652,11 +659,11 @@ test("nesting and value limits hold at the boundary and name the limit", async (
   // The envelope is level 1 and holds 8 values of its own: the root, the request id, the op, the
   // input, the context, the actor and its two fields.
   const cases: [string, unknown, string][] = [
-    ["32 levels", deep(31), refused],
+    ["32 levels", deep(31), needsId],
     ["33 levels", deep(32), "maxDepth limit of 32"],
-    ["5000 values", new Array(4992).fill(0), refused],
+    ["5000 values", new Array(4992).fill(0), needsId],
     ["5001 values", new Array(4993).fill(0), "maxNodes limit of 5000"],
-    ["brackets inside a string", `${"[".repeat(100)}\\"{`, refused],
+    ["brackets inside a string", `${"[".repeat(100)}\\"{`, needsId],
   ];
   for (const [name, input, message] of cases) {
     const got = await f.send(
@@ -675,6 +682,7 @@ test("a dry run is unavailable before its context is bound and runs nothing", as
     ["issue.show", { actor }],
     ["issue.create", { actor }],
     ["issue.comment", { actor }],
+    ["issue.comments", { actor }],
     ["issue.update", {}],
     ["issue.claim", { actor, session: { id: "s1" } }],
     ["issue.renew", {}],
@@ -878,7 +886,7 @@ test("a missing or invalid configured prefix is UNAVAILABLE and no work table is
 }, 30_000);
 
 // The same barrier for each read: `body` is the show or the list command.
-async function barrier(body: object) {
+async function barrier(body: object, probes = WORK_PROBES) {
   const f = fixture();
   f.tables();
   f.put(stored());
@@ -910,11 +918,7 @@ async function barrier(body: object) {
     await f.send(body, { token: revoked }),
     await held(revoked, () => {}),
   ])
-    expect([got.status, got.json.ok, got.probes]).toEqual([
-      200,
-      true,
-      WORK_PROBES,
-    ]);
+    expect([got.status, got.json.ok, got.probes]).toEqual([200, true, probes]);
   const cases: [string, string, () => void, string][] = [
     [
       "revoked",
@@ -944,11 +948,15 @@ async function barrier(body: object) {
   }
 }
 
-for (const op of ["issue.show", "issue.list"])
+for (const op of ["issue.show", "issue.list", "issue.comments"])
   test(
     `a token revoked or expired after the first check, while the ${op} body is held, ends the command before any work read`,
     () =>
-      barrier({ ...call, op, input: op === "issue.show" ? call.input : {} }),
+      barrier(
+        { ...call, op, input: op === "issue.list" ? {} : call.input },
+        // A comments read never builds the lease view.
+        op === "issue.comments" ? [TOKENS, "state_records"] : WORK_PROBES,
+      ),
     30_000,
   );
 
@@ -2797,6 +2805,407 @@ test("a missing issue is NOT_FOUND and bad input is INPUT_INVALID: no comment, o
     { token },
   );
   expect([fits.status, fits.exit]).toEqual([200, 0]);
+}, 60_000);
+
+// issue.comments: the route and the real local handler read the same rows, clock and config.
+const readNotes = (input: object, more = {}) => ({
+  ...call,
+  op: "issue.comments",
+  input,
+  ...more,
+});
+const noteRecord = (
+  n: number,
+  value: object = { id: "work-12", body: `c${n}` },
+  id = "work-12",
+) => ({
+  namespace: "forge/work",
+  key: `comment:${id}:${n}`,
+  revision: 3,
+  value,
+  updatedAt: iso(start - 500),
+  updatedBy: actor,
+});
+const suffixes = (result: unknown) =>
+  (result as { records: { key: string }[] }).records.map((r) =>
+    Number(r.key.split(":")[2]),
+  );
+// Issues 1 (acme), 3 (held by another session, no comments), 12 and 007 (old), and comments numbered 1, 2 and 10
+// on issue 12 whose clocks and writers sort the other way round, one with a structured value. Issue 9 has comments but no issue.
+async function noteRows() {
+  const f = fixture();
+  const token = await f.device();
+  f.tables();
+  f.put(stored({ prefix: "acme" }));
+  f.put(stored({ id: "work-3" }), {}, "issue:work-3");
+  f.put(stored({ id: "work-12" }), {}, "issue:work-12");
+  f.put(stored({ id: "work-007", prefix: "old" }), {}, "issue:work-007");
+  for (const [n, age] of [
+    [10, 5000],
+    [2, 3000],
+    [1, 1000],
+  ] as const)
+    f.put(
+      n === 2
+        ? { id: "work-12", body: "é\n", tags: ["x", { y: [1] }] }
+        : { id: "work-12", body: `c${n}` },
+      {
+        updatedAt: iso(start - age),
+        updatedBy: { kind: "agent", id: `device-${n}` },
+      },
+      `comment:work-12:${n}`,
+    );
+  for (const key of [
+    "comment:work-1:1",
+    "comment:work-1:2",
+    "comment:work-007:1",
+    "comment:work-9:1",
+  ])
+    f.put({ id: key.split(":")[1], body: "other" }, {}, key);
+  f.lease({ expiresAt: iso(start + 1000) }, "issue:work-3");
+  return { f, token };
+}
+
+test("the cloud issue.comments agrees with the local handler on whole records, numeric order, aliases and missing issues, and reads write nothing", async () => {
+  await withLocal(async (local) => {
+    const { f, token } = await noteRows();
+    const before = f.snapshot();
+    const ids = [
+      ...["forge-12", "FORGE-12", "work-12", "forge-1", "acme-1", "ACME-1"],
+      ...["old-007", "forge-007", "forge-3"],
+      ...["forge-9", "FORGE-9", "forge-7", "forge-0012", "zzz-1"],
+    ];
+    const outcomes: Record<string, unknown>[] = [];
+    for (const [i, id] of ids.entries()) {
+      const got = await f.send(readNotes({ id }), {
+        token,
+        via: i % 2 ? "direct" : createWorker(),
+      });
+      const want = local(f, { id }, { idPrefix: "forge" }, "issue.comments");
+      const here = got.json.ok ? got.json.result : { code: got.code };
+      expect([id, here]).toEqual([id, want]);
+      if (got.json.ok)
+        expect(got.json).toEqual({
+          ok: true,
+          op: "issue.comments",
+          status: "OK",
+          result: want,
+          warnings: [],
+        } as never);
+      else if (got.code === "NOT_FOUND") {
+        expect(got.json.error?.message).toBe(`Issue ${id} was not found`);
+        // A missing issue is found before any comment is scanned.
+        expect(got.touched).not.toContain(ROWS);
+      }
+      outcomes.push(here as Record<string, unknown>);
+    }
+    expect(outcomes.filter((o) => "records" in o)).toHaveLength(9);
+    expect(outcomes.map((o) => ("code" in o ? o.code : "")).join()).toBe(
+      ",,,,,,,,,NOT_FOUND,NOT_FOUND,NOT_FOUND,NOT_FOUND,INPUT_INVALID",
+    );
+    // Append numbers, never lexical order (1, 10, 2) or the clocks (10, 2, 1); other issues' comments stay out.
+    expect(suffixes(outcomes[0])).toEqual([1, 2, 10]);
+    expect(suffixes(outcomes[8])).toEqual([]);
+    expect(outcomes[0]).toEqual({
+      records: [
+        {
+          ...noteRecord(1),
+          updatedAt: iso(start - 1000),
+          updatedBy: { kind: "agent", id: "device-1" },
+        },
+        expect.objectContaining({
+          value: { id: "work-12", body: "é\n", tags: ["x", { y: [1] }] },
+        }),
+        expect.objectContaining({ key: "comment:work-12:10" }),
+      ],
+    });
+    expect(f.snapshot()).toBe(before);
+  });
+}, 60_000);
+
+test("after A1 and B1 each append a comment, A1, A2 and B1 all read both in append order, as the local handler does", async () => {
+  await withLocal(async (local) => {
+    const f = fixture();
+    f.tables();
+    f.put(stored({ id: "work-12" }), {}, "issue:work-12");
+    const a1 = await f.device(day, "laptop", "s1");
+    const a2 = await f.device(day, "laptop", "s2");
+    const b1 = await f.device(day, "tablet", "s1");
+    for (const [id, token] of [
+      ["w-1", a1],
+      ["w-2", b1],
+    ] as const)
+      expect(
+        (
+          await f.send(note(id, { id: "forge-12", body: `from ${id}` }), {
+            token,
+          })
+        ).status,
+      ).toBe(200);
+    const after = writes(f);
+    const want = local(
+      f,
+      { id: "forge-12" },
+      { idPrefix: "forge" },
+      "issue.comments",
+    );
+    for (const token of [a1, a2, b1]) {
+      const got = await f.send(readNotes({ id: "forge-12" }), { token });
+      expect([got.status, got.json.result]).toEqual([200, want]);
+      expect(got.text).not.toContain(token);
+    }
+    expect(
+      (want as { records: { value: { body: string } }[] }).records.map(
+        (r) => r.value.body,
+      ),
+    ).toEqual(["from w-1", "from w-2"]);
+    expect(suffixes(want)).toEqual([1, 2]);
+    // Every row, lease, receipt and event the writes left is unchanged by three reads.
+    expect(writes(f)).toBe(after);
+  });
+}, 60_000);
+
+test("comments need no lease, claim or show: another session's lease and a competing issue change nothing, and the lease table is never read", async () => {
+  const { f, token } = await noteRows();
+  f.put({ slots: [] }, {}, "slots:work-3");
+  const s1 = await f.device(day, "laptop", "s1");
+  const before = f.snapshot();
+  for (const as of [token, s1])
+    for (const [id, want] of [
+      ["forge-3", []],
+      ["forge-12", [1, 2, 10]],
+    ] as [string, number[]][]) {
+      const got = await f.send(readNotes({ id }), { token: as });
+      expect([id, got.status, got.exit]).toEqual([id, 200, 0]);
+      expect(suffixes(got.json.result)).toEqual(want);
+      if (want.length === 0) expect(got.json.result).toEqual({ records: [] });
+      expect(got.probes).toEqual([TOKENS, "state_records"]);
+      expect(got.touched.filter((sql) => sql.includes("state_leases"))).toEqual(
+        [],
+      );
+      expect(readCalls(got.touched)).toEqual([]);
+    }
+  expect(f.snapshot()).toBe(before);
+}, 30_000);
+
+test("bad comments input is INPUT_INVALID with no scan, whatever the extra key names, and nothing is written", async () => {
+  const { f, token } = await noteRows();
+  const before = f.snapshot();
+  const cases: [string, unknown, string][] = [
+    ["no id", {}, needsId],
+    ["an extra field", { id: "forge-12", extra: 1 }, needsId],
+    ["limit", { id: "forge-12", limit: 1 }, needsId],
+    ["cursor", { id: "forge-12", cursor: "c" }, needsId],
+    ["offset", { id: "forge-12", offset: 1 }, needsId],
+    ["an id that is not text", { id: 12 }, needsId],
+    ["an empty id", { id: "" }, needsId],
+    ["an id over 200 characters", { id: "f".repeat(201) }, needsId],
+    ["an input that is not an object", [marker], needsId],
+    ["an invalid id", { id: "forge-x" }, "Invalid issue id"],
+    ["an unknown prefix", { id: "zzz-1" }, "Unknown issue id prefix"],
+  ];
+  for (const [name, input, message] of cases) {
+    const got = await f.send(readNotes(input as object), { token });
+    expect([
+      name,
+      got.status,
+      got.code,
+      got.exit,
+      got.json.error?.message,
+    ]).toEqual([name, 400, "INPUT_INVALID", 6, message]);
+    expect(got.touched).not.toContain(ROWS);
+    expect(got.text).not.toContain(marker);
+  }
+  expect(f.snapshot()).toBe(before);
+}, 30_000);
+
+test("a comments read is refused for a session-bound token naming another session, and for another project, an owner header, an admin or an OAuth token, before any work read", async () => {
+  const { f, token } = await begin();
+  const s1 = await f.device(day, "laptop", "s1");
+  const other = readNotes(
+    { id: "forge-12" },
+    { context: { actor, session: { id: marker } } },
+  );
+  const bad = await f.send(other, { token: s1 });
+  refusal("session", bad, [403, "AUTH_DEVICE_MISMATCH", 1]);
+  expect(bad.text).not.toContain(marker);
+  expect(bad.text).not.toContain(s1);
+  const kept = f.snapshot();
+  for (const [name, options, direct] of [
+    ["other project", { token, name: "other" }, true],
+    ["owner header", { token, headers: { "X-Forge-Owner": "phone" } }, true],
+    ["admin token", { token: vars.ADMIN_TOKEN }, true],
+    ["OAuth token", { token: oauthToken }, false],
+  ] as const)
+    for (const via of direct
+      ? (["direct", createWorker()] as const)
+      : [createWorker()]) {
+      const got = await f.send(readNotes({ id: "forge-12" }), {
+        ...options,
+        via,
+      });
+      expect([name, got.status, got.code, got.exit]).toEqual([
+        name,
+        403,
+        "AUTH_FORBIDDEN",
+        1,
+      ]);
+      expect(strayCalls(got.touched)).toEqual([]);
+    }
+  expect(f.snapshot()).toBe(kept);
+}, 30_000);
+
+test("a comments response is capped at 1 MiB of UTF-8 bytes, measured on the whole envelope", async () => {
+  const cap = 1_048_576;
+  const f = fixture();
+  const token = await f.device();
+  f.tables();
+  f.put(stored({ id: "work-12" }), {}, "issue:work-12");
+  const body = 'é"\n✓\\';
+  const record = (pad: string) =>
+    noteRecord(1, { id: "work-12", body: body + pad });
+  const room =
+    cap - bytesOf(envelope({ records: [record("")] }, "issue.comments"));
+  for (const [delta, fits] of [
+    [-1, true],
+    [0, true],
+    [1, false],
+  ] as const) {
+    const pad = "k".repeat(room + delta);
+    f.db.run("DELETE FROM state_records WHERE key LIKE 'comment:%'");
+    f.put({ id: "work-12", body: body + pad }, {}, "comment:work-12:1");
+    const got = await f.send(readNotes({ id: "forge-12" }), { token });
+    if (fits) {
+      expect([got.status, got.bytes]).toEqual([200, cap + delta]);
+      expect(got.json.result).toEqual({ records: [record(pad)] });
+      expect(got.text).toBe(JSON.stringify(got.json));
+    } else {
+      expect([got.status, got.code, got.exit]).toEqual([503, "UNAVAILABLE", 1]);
+      expect(got.json.error?.message).toBe("response too large");
+      expect(got.text).not.toContain("records");
+    }
+  }
+}, 60_000);
+
+test("an issue over 10,000 comments or 1 MiB of them is refused as UNAVAILABLE before any body is loaded, and other issues' comments are not counted", async () => {
+  const cap = 1_048_576;
+  const budget = "Issue comments are over their read budget";
+  const start12 = async () => {
+    const f = fixture();
+    const token = await f.device();
+    f.tables();
+    f.put(stored({ id: "work-12" }), {}, "issue:work-12");
+    f.put(stored(), {}, "issue:work-1");
+    return { f, token };
+  };
+  const rows = async (count: number) => {
+    const { f, token } = await start12();
+    f.db.run(
+      "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<?) INSERT INTO state_records(namespace,key,revision,body) SELECT 'forge/work','comment:work-12:'||i,3,json_object('namespace','forge/work','key','comment:work-12:'||i,'revision',3,'value',json_object('id','work-12','body',''),'updatedAt',?,'updatedBy',json_object('kind','agent','id','tester')) FROM n",
+      [count, iso(start - 500)],
+    );
+    for (const n of [1, 2, 3, 4, 5])
+      f.put({ id: "work-1", body: "" }, {}, `comment:work-1:${n}`);
+    return f.send(readNotes({ id: "forge-12" }), { token });
+  };
+  const bytes = async (delta: number) => {
+    const { f, token } = await start12();
+    f.put({ id: "work-12", body: "" }, {}, "comment:work-12:1");
+    // Another issue's comments, over the cap on their own, are not counted.
+    for (const n of [1, 2])
+      f.put(
+        { id: "work-1", body: "k".repeat(1_900_000) },
+        {},
+        `comment:work-1:${n}`,
+      );
+    const { n } = f.db
+      .query(
+        "SELECT sum(length(CAST(body AS BLOB))) AS n FROM state_records WHERE key LIKE 'comment:work-12:%'",
+      )
+      .get() as { n: number };
+    f.db.run(
+      "UPDATE state_records SET body=replace(body,'\"body\":\"\"',?) WHERE key='comment:work-12:1'",
+      ['"body":"' + "k".repeat(cap + delta - n) + '"'],
+    );
+    return f.send(readNotes({ id: "forge-12" }), { token });
+  };
+  // Even empty records are over 1 MiB well before 10,000 of them, so the byte bound decides first. At 1 MiB the bodies
+  // are loaded and the response cap decides; one byte over is refused unread.
+  for (const [name, got, fits] of [
+    ["10,001 rows", await rows(10_001), false],
+    ["1 MiB", await bytes(0), true],
+    ["1 MiB and one byte", await bytes(1), false],
+  ] as const) {
+    expect([
+      name,
+      got.status,
+      got.code,
+      got.exit,
+      got.json.error?.message,
+      got.touched.includes(ROWS),
+    ]).toEqual([
+      name,
+      503,
+      "UNAVAILABLE",
+      1,
+      fits ? "response too large" : budget,
+      fits,
+    ]);
+  }
+}, 120_000);
+
+test("a corrupt, mismatched or oversized stored comment is a fixed INTERNAL for the whole read, never a partial result", async () => {
+  const good = { id: "work-12", body: "good-body" };
+  const insert = (body: string) => (f: F) =>
+    f.db.run(
+      "INSERT INTO state_records(namespace,key,revision,body) VALUES ('forge/work','comment:work-12:3',3,?)",
+      [body],
+    );
+  const cases: [string, (f: F) => void][] = [
+    ["not JSON", insert("{")],
+    ["not an object", insert("[]")],
+    ["no wrapper", insert(JSON.stringify(good))],
+    [
+      "a record that fails StateRecord",
+      (f) => f.put(good, { revision: "x" }, "comment:work-12:3"),
+    ],
+    [
+      "another key",
+      (f) => f.put(good, { key: "comment:work-12:9" }, "comment:work-12:3"),
+    ],
+    [
+      "another namespace",
+      (f) => f.put(good, { namespace: "forge/cloud" }, "comment:work-12:3"),
+    ],
+    [
+      "over the 2 MiB record bound",
+      (f) =>
+        f.put(
+          { id: "work-12", body: "k".repeat(2 * 1024 * 1024) },
+          {},
+          "comment:work-12:3",
+        ),
+    ],
+  ];
+  for (const [name, corrupt] of cases) {
+    const f = fixture();
+    const token = await f.device();
+    f.tables();
+    f.put(stored({ id: "work-12" }), {}, "issue:work-12");
+    for (const n of [1, 2]) f.put(good, {}, `comment:work-12:${n}`);
+    corrupt(f);
+    const before = f.snapshot();
+    const got = await f.send(readNotes({ id: "forge-12" }), { token });
+    expect([
+      name,
+      got.status,
+      got.code,
+      got.exit,
+      got.json.error?.message,
+    ]).toEqual([name, 500, "INTERNAL", 1, notValid]);
+    expect(got.text).not.toContain("good-body");
+    expect(f.snapshot()).toBe(before);
+  }
 }, 60_000);
 
 // issue.update: the route and the real local handler start from the same rows, clock, config and held lease.

@@ -19,6 +19,8 @@ import type { SqlDatabase } from "../../src/ports/store.ts";
 const NAMESPACE = "forge/work";
 export const MAX_RECORD_BYTES = 2 * 1024 * 1024; // bytes; above the 1 MiB response bound so that bound can be reached
 export const MAX_LEASE_BYTES = 16 * 1024;
+/** The most a read response may be, in UTF-8 bytes, measured on the whole envelope. */
+export const MAX_SHOW_RESPONSE_BYTES = 1_048_576;
 export const MAX_DEPTH = 8;
 export const MAX_NODES = 1024;
 const QUALIFIED = /^([a-z0-9]+(?:-[a-z0-9]+)*)-(\d+)$/i;
@@ -80,6 +82,10 @@ function load(
   const row = db?.get(sql, [max, NAMESPACE, key]);
   return row === undefined ? undefined : parseBody(row.body, max);
 }
+
+/** The stored `issue:<id>` record, or undefined when there is none: no mode check, lease or projection. */
+export const issueRecord = (views: IssueViews, id: string): Json | undefined =>
+  load(views.records, RECORD, MAX_RECORD_BYTES, `issue:${id}`);
 
 /** One stored JSON object: a body that is not text, not JSON, too deep or not an object is invalid. */
 export function parseBody(body: unknown, max: number): Json {
