@@ -28,6 +28,7 @@ import {
 import { claimIssue } from "./issue-claim.ts";
 import { commentIssue } from "./issue-comment.ts";
 import { createIssue } from "./issue-create.ts";
+import { depIssue } from "./issue-dep.ts";
 import { releaseIssue, renewIssue } from "./issue-lease.ts";
 import { listIssues } from "./issue-list.ts";
 import { updateIssue } from "./issue-update.ts";
@@ -53,6 +54,7 @@ const LIMITS = {
 const EXPOSED: readonly string[] = [
   "issue.create",
   "issue.update",
+  "issue.dep",
   "issue.claim",
   "issue.renew",
   "issue.release",
@@ -234,13 +236,15 @@ export function runCommand(text: string, host: CommandRun): Response {
         ? commentIssue
         : op === "issue.update"
           ? updateIssue
-          : op === "issue.claim"
-            ? claimIssue
-            : op === "issue.renew"
-              ? renewIssue
-              : op === "issue.release"
-                ? releaseIssue
-                : undefined;
+          : op === "issue.dep"
+            ? depIssue
+            : op === "issue.claim"
+              ? claimIssue
+              : op === "issue.renew"
+                ? renewIssue
+                : op === "issue.release"
+                  ? releaseIssue
+                  : undefined;
   let result: unknown;
   if (write !== undefined) {
     const { db, owner } = host.open();
