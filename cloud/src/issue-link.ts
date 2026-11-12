@@ -72,9 +72,14 @@ export function linkIssue(
         throw fail("INTERNAL", "Link result is not valid");
       return written;
     },
-    // The recorded record names its issue in its stored value, checked against the input schema first.
+    // The recorded record names its issue in its stored value. The whole record is checked against the output schema,
+    // and its value against the input schema and the URL pattern, first.
     (prior, context) => {
-      if (validateWithSchema(LinkInput, prior.value).length > 0)
+      if (
+        schemas().validate(LinkOutput.$ref, prior).length > 0 ||
+        validateWithSchema(LinkInput, prior.value).length > 0 ||
+        !URL_PATTERN.test((prior.value as Fields).url)
+      )
         throw fail("INTERNAL", "Stored link is not valid");
       heldLease(owner, context, (prior.value as Fields).id, "issue.link");
     },
