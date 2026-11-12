@@ -2595,7 +2595,7 @@ test("a receipt failure rolls back the issue and its floor, and the retry gets t
   const f = fixture();
   const token = await f.device();
   const before = f.snapshot();
-  const exec = f.storage.sql.exec.bind(f.storage.sql);
+  const original = f.storage.sql.exec.bind(f.storage.sql);
   const fault = spyOn(f.storage.sql, "exec").mockImplementation(
     (sql, ...bindings) => {
       if (
@@ -2603,7 +2603,7 @@ test("a receipt failure rolls back the issue and its floor, and the retry gets t
         bindings.includes("request:r-1")
       )
         throw new Error("injected receipt failure");
-      return exec(sql, ...bindings);
+      return original(sql, ...bindings);
     },
   );
   const failed = await f.send(make("r-1"), { token });

@@ -10,6 +10,8 @@ import { fail, schemas, shownItem } from "./issue-read.ts";
 import { receipted, type WriteCall } from "./issue-write.ts";
 
 const NAMESPACE = "forge/work";
+const FLOOR_MISSING =
+  "Issue allocation floor is missing; dump and re-restore into an empty project before creating issues";
 const KINDS = ["task", "bug", "feature", "epic"];
 const create = manifest.operations["issue.create"];
 if (
@@ -56,25 +58,30 @@ export function createIssue(
     call,
     checked,
     (fields, actor, prefix) => {
-      const id = `work-${owner.maxNumber(NAMESPACE, "issue:work-") + 1}`;
       const now = Date.now();
-      const written = owner.put(
+      const written = owner.putNext(
         NAMESPACE,
-        `issue:${id}`,
-        {
-          id,
-          prefix,
-          title: fields.title,
-          status: "open",
-          labels: fields.labels ?? [],
-          dependsOn: [],
-          createdAt: new Date(now).toISOString(),
-          ...(fields.kind ? { kind: fields.kind } : {}),
-          ...(fields.body === undefined ? {} : { body: fields.body }),
+        "issue:work-",
+        (_key, number) => {
+          const id = `work-${number}`;
+          return {
+            value: {
+              id,
+              prefix,
+              title: fields.title,
+              status: "open",
+              labels: fields.labels ?? [],
+              dependsOn: [],
+              createdAt: new Date(now).toISOString(),
+              ...(fields.kind ? { kind: fields.kind } : {}),
+              ...(fields.body === undefined ? {} : { body: fields.body }),
+            },
+          };
         },
         actor,
-        { expectRevision: 0 },
+        { refuseMissing: FLOOR_MISSING },
       );
+      const id = `work-${written.key.slice("issue:work-".length)}`;
       return shownItem({ ...written }, id, undefined, now, prefix);
     },
   );

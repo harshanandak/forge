@@ -77,6 +77,8 @@ export interface NumberedBuild {
 }
 export interface NumberedOptions {
   readonly fence?: Fence;
+  /** With no floor, refuse with this message when live keys or record history exist, instead of backfilling. */
+  readonly refuseMissing?: string;
 }
 export interface AcquireOptions extends BatchOptions {
   readonly metadata?: unknown;
@@ -1331,7 +1333,7 @@ export class StateOwner {
       const floor = this.get(namespace, floorKey);
       const last = floor
         ? floorNumber(floor.value, prefix)
-        : this.#highest(namespace, prefix, floorKey);
+        : this.#highest(namespace, prefix, floorKey, options.refuseMissing);
       const number = last + 1;
       const key = `${prefix}${number}`;
       if (!Number.isSafeInteger(number)) invalid("Numbers are exhausted");
@@ -1372,7 +1374,12 @@ export class StateOwner {
   }
 
   /** The highest number under a prefix among live keys, all matching history and a deleted floor. */
-  #highest(namespace: string, prefix: string, floorKey: string): number {
+  #highest(
+    namespace: string,
+    prefix: string,
+    floorKey: string,
+    refuse?: string,
+  ): number {
     const upper = upperBound(prefix);
     const span = `namespace=? AND key>=?${upper === undefined ? "" : " AND key<?"}`;
     const bounds =
@@ -1381,6 +1388,26 @@ export class StateOwner {
       `${namespace}:record.updated@1`,
       `${namespace}:record.deleted@1`,
     ];
+    const typed = " AND json_extract(body,'$.type') IN (?,?)";
+    if (refuse !== undefined) {
+      // Strict mode never scans: one probe each says whether any old state exists.
+      const old =
+        this.#db.get(
+          `SELECT 1 AS n FROM state_records WHERE ${span} LIMIT 1`,
+          bounds,
+        ) ??
+        this.#db.get(
+          `SELECT 1 AS n FROM state_events WHERE ${span}${typed} LIMIT 1`,
+          [...bounds, ...types],
+        );
+      if (old)
+        throw new ForgeFailure({
+          code: "UNAVAILABLE",
+          message: refuse,
+          retry: "never",
+        });
+      return 0;
+    }
     // Only the numeric suffix leaves SQLite; the longest, then largest, decimal string is the maximum.
     const top = (table: string, filter: string, extra: string[]) =>
       this.#db.get(
@@ -1394,7 +1421,7 @@ export class StateOwner {
     return Math.max(
       ...[
         top("state_records", "", []),
-        top("state_events", " AND json_extract(body,'$.type') IN (?,?)", types),
+        top("state_events", typed, types),
         earlier,
       ].map((value) => {
         const number = Number(value ?? 0);
