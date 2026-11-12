@@ -94,10 +94,11 @@ async function issue(
   project: string,
   device: string,
   ttlMs = 3_600_000,
+  bound = true,
 ): Promise<Device> {
   const reply = await admin(project, "devices", {
     device,
-    session: `session-${device}`,
+    ...(bound ? { session: `session-${device}` } : {}),
     agent: `agent-${device}`,
     harness: "conformance",
     ttlMs,
@@ -222,7 +223,10 @@ const projectTokens = new Map<string, Promise<string>>();
 const tokenFor = (project: string): Promise<string> => {
   let token = projectTokens.get(project);
   if (token === undefined) {
-    token = issue(project, "device-default").then((device) => device.token);
+    // Sessionless: the shared token claims as any session, so only the device bounds it.
+    token = issue(project, "device-default", undefined, false).then(
+      (device) => device.token,
+    );
     projectTokens.set(project, token);
   }
   return token;
@@ -509,10 +513,7 @@ if (phase === "main") {
     const lease = granted(await claimAs({ ...holder, session }, "device-2"));
     assert.equal(lease.holder.session.device, "tablet");
     // A session-bound token cannot name another session.
-    const other = {
-      ...holder,
-      session: { ...holder.session, id: "session-other" },
-    };
+    const other = { ...holder, session: { ...session, id: "session-other" } };
     const forged = await claimAs(other, "device-3");
     assert.equal(forged.status, 403, JSON.stringify(forged.body));
     assert.equal(forged.body.error?.code, "AUTH_DEVICE_MISMATCH");
