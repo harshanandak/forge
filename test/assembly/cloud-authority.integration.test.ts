@@ -96,7 +96,14 @@ const MANIFEST = resolve(
   "../../src/blocks/work/forge.block.json",
 );
 const READS = ["issue.show", "issue.list", "issue.ready"];
-const WRITES = ["issue.create", "issue.comment", "issue.update", "issue.claim"];
+const WRITES = [
+  "issue.create",
+  "issue.comment",
+  "issue.update",
+  "issue.claim",
+  "issue.renew",
+  "issue.release",
+];
 const SERVED = [...READS, ...WRITES];
 const DECLARED = Object.keys(
   (JSON.parse(readFileSync(MANIFEST, "utf8")) as { operations: object })
@@ -238,7 +245,7 @@ test("a bound project's issue show is answered by the cloud with the stored toke
     expect(body).toMatchObject({ context: { device: { id: "dev-1" } } });
   }));
 
-test("the routing decision serves show, list, ready, create, comment, update and claim, refuses every other operation of the work block by name, and leaves other blocks local", () => {
+test("the routing decision serves show, list, ready, create, comment, update, claim, renew and release, refuses every other operation of the work block by name, and leaves other blocks local", () => {
   expect(DECLARED.length).toBeGreaterThan(30);
   for (const op of SERVED) expect(cloudRoute("forge/work", op)).toBe("cloud");
   expect(cloudRoute("forge/memory", "memory.list")).toBe("local");
@@ -262,6 +269,8 @@ const INPUTS: Record<string, object> = {
   "issue.comment": COMMENT,
   "issue.update": UPDATE,
   "issue.claim": { id: "forge-1" },
+  "issue.renew": { id: "forge-1" },
+  "issue.release": { id: "forge-1" },
 };
 for (const [source, op, input, declared, result] of [
   [WORK, "issue.create", CREATE, "issue.create", ISSUE],
@@ -294,8 +303,6 @@ test("every other work operation is refused by name on a bound project, with no 
     for (const [op, input] of [
       ["issue.board", {}],
       ["issue.close", { id: "forge-1" }],
-      ["issue.renew", { id: "forge-1" }],
-      ["issue.release", { id: "forge-1" }],
     ] as const) {
       const result = await r.assembly.catalog.invoke(
         r.request(op, input, { context }),
@@ -340,6 +347,8 @@ for (const [op, input] of [
   ["issue.comment", COMMENT],
   ["issue.update", UPDATE],
   ["issue.claim", INPUTS["issue.claim"]!],
+  ["issue.renew", INPUTS["issue.renew"]!],
+  ["issue.release", INPUTS["issue.release"]!],
 ] as const)
   test(`${op} as a dry run on a bound project is UNAVAILABLE and creates nothing`, () =>
     using({}, async (r) => {
@@ -440,7 +449,7 @@ test("a held operation's hidden show goes to the cloud, and the operation itself
     for (const dryRun of [false, true]) {
       const held = await dispatch(
         r.assembly.catalog,
-        "issue.release",
+        "issue.close",
         { id: "forge-1" },
         { caller: "agent", context, dryRun },
       );
@@ -633,6 +642,102 @@ test("a cloud issue.claim result that fails its declared output is refused as UN
       expect(wire(r)).toEqual(["command"]);
     },
   ));
+
+const SHORT = { ...GRANT, expiresAt: iso(NOW + 120_000) };
+const ENDS = [
+  {
+    name: "renew",
+    input: ITEM,
+    result: GRANT,
+    bad: { ...GRANT, generation: TOKEN },
+  },
+  {
+    name: "release",
+    input: ITEM,
+    result: ITEM,
+    bad: { ...ITEM, extra: TOKEN },
+  },
+] as const;
+
+for (const [source, noun] of NOUNS)
+  for (const t of [
+    ...ENDS,
+    { ...ENDS[0], input: { ...ITEM, ttlSeconds: 120 }, result: SHORT },
+  ])
+    test(`through the assembled catalog, ${noun}.${t.name} ${JSON.stringify(t.input)} on a bound project takes the generation from the cloud show and is one issue.${t.name} command with the caller's session, actor and device`, () =>
+      using(
+        {
+          config: source,
+          steps: [live, () => answer(t.result, `issue.${t.name}`)],
+        },
+        async (r) => {
+          const context = holding(r);
+          const done = await act(r, `${noun}.${t.name}`, t.input, context);
+          expect((done as unknown as { result: object }).result).toEqual(
+            t.result,
+          );
+          expect(exitCode(done)).toBe(0);
+          expect(JSON.stringify(done)).not.toContain(TOKEN);
+          expect(wire(r)).toEqual(["command", "command"]);
+          expect(sent(r)).toEqual(["issue.show", `issue.${t.name}`]);
+          const body = r.net.calls[1]!.body as { input: object };
+          expect(body.input).toEqual(t.input);
+          expect(body).not.toHaveProperty("subject");
+          expect(body).toMatchObject({
+            context: {
+              actor: context.actor,
+              session: context.session,
+              leaseGeneration: 3,
+              device: { id: "dev-1" },
+            },
+          });
+        },
+      ));
+
+for (const t of ENDS)
+  test(`${t.name} with an explicit generation 2 while the cloud is at 3 sends 2 and returns the cloud's LEASE_STALE, with no show`, () =>
+    using({ steps: [() => refusing("LEASE_STALE")] }, async (r) => {
+      const own = holding(r, { leaseGeneration: 2 });
+      const result = await act(r, `issue.${t.name}`, t.input, own);
+      expect(failed(result, "LEASE_STALE")).toBe(4);
+      expect(sent(r)).toEqual([`issue.${t.name}`]);
+      expect(r.net.calls[0]!.body).toMatchObject({
+        context: { leaseGeneration: 2 },
+      });
+    }));
+
+for (const t of ENDS)
+  test(`${t.name} with no live lease in the cloud show is the runtime's CONTEXT_MISSING and sends no ${t.name} command`, () =>
+    using({ steps: [() => answer()] }, async (r) => {
+      const result = await act(r, `issue.${t.name}`, t.input, holding(r));
+      expect(failed(result, "CONTEXT_MISSING")).toBe(6);
+      expect(sent(r)).toEqual(["issue.show"]);
+    }));
+
+for (const [code, exit] of [
+  ["LEASE_NOT_HELD", 4],
+  ["LEASE_EXPIRED", 4],
+  ["NOT_FOUND", 3],
+  ["AUTH_DEVICE_MISMATCH", 1],
+] as const)
+  for (const t of ENDS)
+    test(`a cloud ${code} on issue.${t.name} keeps its code and exit ${exit}, without the token`, () =>
+      using({ steps: [live, () => refusing(code)] }, async (r) => {
+        const result = await act(r, `issue.${t.name}`, t.input, holding(r));
+        expect(failed(result, code)).toBe(exit);
+        expect(sent(r)).toEqual(["issue.show", `issue.${t.name}`]);
+      }));
+
+for (const t of ENDS)
+  test(`a cloud issue.${t.name} result that fails its declared output is refused as UNAVAILABLE`, () =>
+    using(
+      { steps: [live, () => answer(t.bad, `issue.${t.name}`)] },
+      async (r) => {
+        const result = await act(r, `issue.${t.name}`, t.input, holding(r));
+        expect(failed(result, "UNAVAILABLE")).toBe(1);
+        expect(sent(r)).toEqual(["issue.show", `issue.${t.name}`]);
+      },
+    ));
 
 test("an outage is UNAVAILABLE and never a local read", () =>
   using(
