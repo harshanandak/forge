@@ -442,10 +442,13 @@ const write = (
 const floorKey = "allocation:n-";
 const floorValue = (number: unknown, prefix = "n-") => ({ prefix, number });
 const rowsOf = (db: SqlDatabase) =>
-  JSON.stringify([
-    db.all("SELECT * FROM state_records ORDER BY namespace,key"),
-    db.all("SELECT * FROM state_events ORDER BY sequence"),
-  ]);
+  JSON.stringify(
+    [
+      db.all("SELECT * FROM state_records ORDER BY namespace,key"),
+      db.all("SELECT * FROM state_events ORDER BY sequence"),
+    ],
+    (_key, value: unknown) => (typeof value === "bigint" ? `${value}n` : value),
+  );
 
 test("the replay reports the highest number under a prefix, deleted keys included, and ignores every other key", async () => {
   const { db, owner, close } = await open(false);

@@ -188,6 +188,61 @@ async function dumpOf(project: string): Promise<Dump> {
   assert.equal(reply.status, 200, JSON.stringify(reply.body));
   return reply.body.value as Dump;
 }
+// A restore into an empty project derives the issue number floor when the dump has none. These sources hold
+// only leases, so the derived floor is 0 and the target holds exactly one extra record and one extra event: the
+// floor at 0, revision 1, written by the restore as the last event. This checks that pair, then strips it, so
+// the rest of the target can be compared with the source row for row.
+function settled(dump: Dump): Dump {
+  const records = dump.tables.state_records ?? [];
+  const events = dump.tables.state_events ?? [];
+  const floors = recordsOf(dump, "forge/work", "allocation:issue:work-");
+  assert.equal(floors.length, 1, "the restore derived one floor record");
+  const floor = JSON.parse(String(floors[0]!.body)) as {
+    value: unknown;
+    revision: number;
+    updatedAt: string;
+    updatedBy: unknown;
+  };
+  assert.deepEqual(floor.value, { prefix: "issue:work-", number: 0 });
+  assert.equal(floor.revision, 1);
+  assert.deepEqual(floor.updatedBy, { kind: "agent", id: "cloud-restore" });
+  const last = events.at(-1)!;
+  assert.equal(last.sequence, events.length, "the floor event is the last");
+  const written = JSON.parse(String(last.body)) as {
+    key: string;
+    revision: number;
+    at: string;
+    actor: unknown;
+    data: unknown;
+  };
+  assert.deepEqual(
+    [written.key, written.revision, written.actor, written.data, written.at],
+    [
+      "allocation:issue:work-",
+      1,
+      { kind: "agent", id: "cloud-restore" },
+      { prefix: "issue:work-", number: 0 },
+      floor.updatedAt,
+    ],
+    "the last event writes the floor record",
+  );
+  return {
+    ...dump,
+    tables: {
+      ...dump.tables,
+      state_records: records.filter((row) => row !== floors[0]),
+      state_events: events.slice(0, -1),
+    },
+  };
+}
+// The rows of a paged export as one dump, so they compare with a whole export.
+function joined(pages: readonly DumpPage[]): Dump {
+  const tables: Record<string, Record<string, unknown>[]> = {};
+  for (const page of pages)
+    for (const [table, rows] of Object.entries(page.tables))
+      (tables[table] ??= []).push(...rows);
+  return { format: "forge-cloud-dump/1", tables };
+}
 // One page of a paged dump (GET dump?cursor=start, then the cursor each page names as `next`).
 interface DumpPage {
   readonly format: string;
@@ -1699,7 +1754,11 @@ if (phase === "main") {
 
       const restored = await adminCall(target, "POST", "restore", text);
       assert.equal(restored.status, 200, JSON.stringify(restored.body));
-      assert.deepEqual(await dumpOf(target), dump, "read back identical");
+      assert.deepEqual(
+        settled(await dumpOf(target)),
+        dump,
+        "read back identical",
+      );
       // The restored project serves the same lease and replays the same receipts.
       assert.deepEqual(
         granted(await holderLookup(target, "issue:dump-1")),
@@ -1875,7 +1934,11 @@ if (phase === "main") {
         JSON.stringify(dump),
       );
       assert.equal(valid.status, 200, JSON.stringify(valid.body));
-      assert.deepEqual(await dumpOf(target), dump, "read back identical");
+      assert.deepEqual(
+        settled(await dumpOf(target)),
+        dump,
+        "read back identical",
+      );
       assert.deepEqual(
         granted(await holderLookup(target, "issue:bad-1")),
         granted(await holderLookup(source, "issue:bad-1")),
@@ -1923,8 +1986,17 @@ if (phase === "main") {
         assert.equal((reply.body.value as { done: boolean }).done, page.last);
         assert.equal(await initialized(target), page.last, `page ${page.page}`);
       }
-      assert.deepEqual(await dumpOf(target), whole, "read back identical");
-      assert.deepEqual(await pagesOf(target), pages, "same pages");
+      assert.deepEqual(
+        settled(await dumpOf(target)),
+        whole,
+        "read back identical",
+      );
+      // The generated pair moves the page edges, so the pages compare as rows.
+      assert.deepEqual(
+        settled(joined(await pagesOf(target))),
+        whole,
+        "same rows in pages",
+      );
       assert.deepEqual(
         granted(await holderLookup(target, "issue:page-3")),
         granted(await holderLookup(source, "issue:page-3")),
@@ -1966,7 +2038,7 @@ if (phase === "main") {
         const reply = await sendPage(target, page);
         assert.equal(reply.status, 200, JSON.stringify(reply.body));
       }
-      assert.deepEqual(await dumpOf(target), await dumpOf(source));
+      assert.deepEqual(settled(await dumpOf(target)), await dumpOf(source));
 
       // Issuing a device token provisions a project, so it clears staged rows that were never checked.
       const issued = `${run}-page-issued`;
@@ -2036,7 +2108,7 @@ if (phase === "main") {
       const target = `${run}-page-race-copy`;
       for (const page of pages)
         assert.equal((await sendPage(target, page)).status, 200);
-      assert.deepEqual(await dumpOf(target), await dumpOf(race));
+      assert.deepEqual(settled(await dumpOf(target)), await dumpOf(race));
     },
   );
 
