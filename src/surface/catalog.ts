@@ -16,8 +16,8 @@ export interface SurfaceCatalog {
   admit?(
     blockId: string,
     declaredOp: string,
-    dryRun?: boolean,
-    input?: unknown,
+    dryRun: boolean | undefined,
+    input: unknown,
   ): void;
   upgradeHint?(op: string): UpgradeHint | undefined;
   templateHint?(

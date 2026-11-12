@@ -1055,6 +1055,46 @@ test("a receipt on issue.close that reaches the selector directly is refused bef
     expect(r.net.calls).toHaveLength(0);
   }));
 
+/** A caller that forwards admit only three arguments: the input is lost, and the refusal must still come before any request. */
+const droppingInput = (r: Rig) => ({
+  ...r.assembly.catalog,
+  admit: (blockId: string, op: string, dryRun: boolean | undefined) =>
+    r.assembly.catalog.admit!(blockId, op, dryRun, undefined),
+});
+for (const input of [{ ...CLOSE, ...RECEIPT }, CLOSE])
+  test(`issue.close with ${"receipt" in input ? "a receipt" : "withoutReceipt"} whose input is dropped before admission is refused before any request, through dispatch and MCP`, () =>
+    using({ steps: [live] }, async (r) => {
+      const catalog = droppingInput(r);
+      const context = holding(r);
+      const refused = (result: Awaited<ReturnType<typeof edit>>) => {
+        expect(failed(result, "INPUT_INVALID")).toBe(6);
+        expect(result).toMatchObject({
+          error: {
+            message:
+              "issue.close was not given its input to check before a cloud request.",
+          },
+        });
+        expect(r.net.calls).toHaveLength(0);
+      };
+      refused(
+        await dispatch(catalog, "issue.close", input, {
+          caller: "agent",
+          context,
+        }),
+      );
+      const handlers = createMcpHandlers(
+        catalog,
+        { expose: ["issue"] },
+        { context },
+      );
+      refused(
+        (await handlers.callTool("catalog_call", {
+          op: "issue.close",
+          input,
+        }))!,
+      );
+    }));
+
 for (const [code, exit] of [
   ["RECEIPT_REQUIRED", 1],
   ["INPUT_CONFLICT", 4],
@@ -1710,12 +1750,27 @@ test("an unbound project's issue.close, with a receipt and without, still runs l
         context: own,
       });
     expect(await call("issue.claim", { id })).toMatchObject({ ok: true });
+    const status = async () =>
+      (
+        (await call("issue.show", { id })) as unknown as {
+          result: { status: string };
+        }
+      ).result.status;
+    expect(await status()).toBe("open");
     const receipt = await call("issue.close", { id, receipt: "proof-1" });
-    expect(receipt).toMatchObject({ ok: false });
-    expect(JSON.stringify(receipt)).not.toContain("in cloud yet");
+    expect(receipt).toMatchObject({
+      ok: false,
+      error: {
+        code: "RECEIPT_INVALID",
+        message: "Closing requires an existing verified PASS receipt",
+      },
+    });
+    expect(exitCode(receipt)).toBe(1);
+    expect(await status()).toBe("open");
     const closed = await call("issue.close", { id, withoutReceipt: "guard" });
     expect(closed).toMatchObject({ ok: true });
     expect(exitCode(closed)).toBe(0);
+    expect(await status()).toBe("closed");
     expect(r.net.calls).toHaveLength(0);
   }));
 
