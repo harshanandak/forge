@@ -3628,10 +3628,21 @@ if (phase === "large") {
         for (const [table, rows] of Object.entries(page.tables))
           merged[table]!.push(...rows);
       }
-      // The two grown creates advance the allocation floor in place: its restored row (number 1, revision 1)
-      // is replaced by one at number 3, revision 3. Every other row of the source is still there unchanged.
+      // Two floors advance in place and are replaced, not added. The two grown creates move the issue floor
+      // from number 1, revision 1 to number 3, revision 3. The fresh comment moves the restored issue's comment
+      // floor from number 1, revision 1 to number 2, revision 2. Every other row of the source is unchanged.
+      const floorKeys = new Map([
+        [
+          "allocation:issue:work-",
+          { prefix: "issue:work-", number: 3, revision: 3 },
+        ],
+        [
+          `allocation:comment:${storedOf(id)}:`,
+          { prefix: `comment:${storedOf(id)}:`, number: 2, revision: 2 },
+        ],
+      ]);
       const floor = (row: Record<string, unknown>) =>
-        row.namespace === "forge/work" && row.key === "allocation:issue:work-";
+        row.namespace === "forge/work" && floorKeys.has(String(row.key));
       for (const table of Object.keys(want)) {
         const have = new Set(merged[table]!.map((row) => JSON.stringify(row)));
         assert.ok(
@@ -3642,22 +3653,23 @@ if (phase === "large") {
         );
       }
       const floors = merged.state_records!.filter(floor);
-      assert.equal(floors.length, 1, "one floor row");
-      assert.equal(floors[0]!.revision, 3);
-      assert.deepEqual(
-        (JSON.parse(String(floors[0]!.body)) as { value: unknown }).value,
-        {
-          prefix: "issue:work-",
-          number: 3,
-        },
-      );
+      assert.equal(floors.length, floorKeys.size, "one row per floor");
+      for (const [key, moved] of floorKeys) {
+        const row = floors.find((candidate) => candidate.key === key);
+        assert.equal(row?.revision, moved.revision, key);
+        assert.deepEqual(
+          (JSON.parse(String(row?.body)) as { value: unknown }).value,
+          { prefix: moved.prefix, number: moved.number },
+          key,
+        );
+      }
       // A comment and two issues joined, each with its receipt: six more records and six more events, and
-      // two more events for the floor's two advances (the floor record itself was replaced, not added).
+      // three more events for the floors' three advances (the floor records were replaced, not added).
       assert.equal(
         merged.state_records!.length,
         want.state_records!.length + 6,
       );
-      assert.equal(merged.state_events!.length, want.state_events!.length + 8);
+      assert.equal(merged.state_events!.length, want.state_events!.length + 9);
     },
   );
   await journey(
