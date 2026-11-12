@@ -67,7 +67,8 @@ const WATERMARK = /^(?:\d{1,19}\.\d{1,19})?$/;
 const encoder = new TextEncoder();
 const byteLength = (value: unknown): number =>
   encoder.encode(JSON.stringify(value)).length;
-// A whole (unpaged) dump stays well under the 8 MiB restore body: JSON escaping can double its size.
+// A whole (unpaged) dump holds at most this much stored. Escaping can grow it up to six times, so dumpOf
+// also measures the serialized size against the restore body.
 const WHOLE_DUMP_BYTES = 3 * 1024 * 1024;
 // Rows are read this many at a time, so a page never holds more than a page plus one batch.
 const BATCH = 16;
@@ -210,12 +211,24 @@ export function dumpOf(db: SqlDatabase | undefined, limits?: Limits): Dump {
     );
   const tables = emptyTables();
   const names = Object.keys(TABLES);
+  // The dump is measured as it will be sent: escaping turns one stored byte into up to six, so a project
+  // within the stored limit can still be too large for the restore body, and could never be restored.
+  let sent =
+    limits === undefined ? 0 : byteLength({ format: DUMP_FORMAT, tables });
   for (const { table, row } of rowsFrom(db, 0, null)) {
     const rows = tables[names[table]!]!;
     if (rows.length >= MAX_ROWS_PER_TABLE)
       throw new ForgeFailure({
         code: "DUMP_TOO_LARGE",
         message: `${names[table]} has more than ${MAX_ROWS_PER_TABLE} rows`,
+        retry: "never",
+      });
+    if (limits !== undefined)
+      sent += byteLength(row) + (rows.length > 0 ? 1 : 0);
+    if (sent > MAX_TEXT_BYTES)
+      throw new ForgeFailure({
+        code: "DUMP_TOO_LARGE",
+        message: `The dump is over the ${MAX_TEXT_BYTES} byte restore body once escaped. Dump it in pages with GET dump?cursor=start.`,
         retry: "never",
       });
     rows.push(row);
@@ -298,12 +311,27 @@ export function dumpPage(
 ): Page {
   const from = parseCursor(cursorText);
   const tables = emptyTables();
-  if (db === undefined) return pageOf(from.p, tables, null);
+  const budget = Math.min(limits.pageBytes, MAX_TEXT_BYTES);
+  const tooLarge = (what: string): ForgeFailure =>
+    new ForgeFailure({
+      code: "DUMP_TOO_LARGE",
+      message: `${what} is over the ${budget} byte page limit.`,
+      retry: "never",
+    });
+  // A page with no rows is still a page: its envelope alone must be within the budget.
+  const empty = (): Page => {
+    const page = pageOf(from.p, tables, null);
+    if (byteLength(page) > budget) throw tooLarge("A page envelope");
+    return page;
+  };
+  if (db === undefined) return empty();
   // A page is cut in one synchronous call, so a write cannot land inside it. A write between pages
   // would give a dump with a lease body and no event for it, which cannot be restored.
   const now = watermark(db);
-  if (from.p === 0) assertLimits(db, limits, "DUMP_TOO_LARGE", "The project");
-  else if (from.w !== now)
+  // Every page request is checked, not only the first: a forged continuation cursor must not reach rows
+  // that cursor=start refuses.
+  assertLimits(db, limits, "DUMP_TOO_LARGE", "The project");
+  if (from.p !== 0 && from.w !== now)
     throw new ForgeFailure({
       code: "DUMP_CHANGED",
       message:
@@ -311,7 +339,6 @@ export function dumpPage(
       retry: "never",
     });
   const names = Object.keys(TABLES);
-  const budget = Math.min(limits.pageBytes, MAX_TEXT_BYTES);
   const bare = emptyTables();
   let used = 0; // bytes of the rows and the commas between them
   let next: Cursor = { p: from.p + 1, t: from.t, k: from.k, w: now };
@@ -334,12 +361,7 @@ export function dumpPage(
         added >
       budget
     ) {
-      if (used === 0)
-        throw new ForgeFailure({
-          code: "DUMP_TOO_LARGE",
-          message: `A row with its page envelope is over the ${budget} byte page limit.`,
-          retry: "never",
-        });
+      if (used === 0) throw tooLarge("A row with its page envelope");
       return pageOf(from.p, tables, next);
     }
     list.push(row);
@@ -347,7 +369,7 @@ export function dumpPage(
     next = here;
     step = after;
   }
-  return pageOf(from.p, tables, null);
+  return used === 0 ? empty() : pageOf(from.p, tables, null);
 }
 
 // One pass over the text, before JSON.parse builds anything: refuses nesting deeper than the format has.
