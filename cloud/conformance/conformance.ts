@@ -2861,6 +2861,165 @@ if (phase === "main") {
   );
 }
 
+if (phase === "large") {
+  // The largest legal project through the real Worker at its default limits (4 MiB pages, 8 MiB project, no
+  // small test caps; see the large step in .github/workflows/cloud.yml). The restore input is the rows of an
+  // in-process project read with plain SQL, never an export, so a restore case reaches the parser even while
+  // export is broken. That project is named like the admitted target and acts as the same device and actor,
+  // so a replay on the restored target carries the fingerprints that made each receipt.
+  const {
+    ACTOR,
+    BODY,
+    maxSource,
+    pagesOf: cut,
+  } = await import("./max-source.ts");
+  assert.notEqual(
+    typedProject,
+    "",
+    "FORGE_CLOUD_PROJECT names the admitted target",
+  );
+  const prefix = process.env.FORGE_CLOUD_ID_PREFIX ?? "ci";
+  const id = `${prefix}-1`;
+  const source = await maxSource(typedProject, prefix);
+  const want = source.tables;
+  const differing = (got: Dump["tables"]): string[] =>
+    Object.keys(want).filter(
+      (table) => JSON.stringify(got[table]) !== JSON.stringify(want[table]),
+    );
+  const shortly = (body: unknown): string => JSON.stringify(body).slice(0, 300);
+  const pagedTarget = `${run}-large-paged`;
+  let laptop: Promise<Caller> | undefined;
+  const who = (): Promise<Caller> =>
+    (laptop ??= issue(typedProject, "laptop", undefined, false).then(
+      (device) => ({ device, actor: ACTOR, session: "unbound" }),
+    ));
+
+  await check(
+    "large whole restore: the maximum project restores into a fresh target and reads back exactly",
+    async () => {
+      assert.equal(await initialized(typedProject), false);
+      const reply = await adminCall(
+        typedProject,
+        "POST",
+        "restore",
+        JSON.stringify(source.doc),
+      );
+      assert.equal(reply.status, 200, shortly(reply.body));
+      assert.deepEqual(differing((await dumpOf(typedProject)).tables), []);
+    },
+  );
+  await check(
+    "large paged restore: independent pages in order, done only on the last, unprovisioned until then",
+    async () => {
+      const parts = cut(want, 2);
+      for (const [i, part] of parts.entries()) {
+        const reply = await adminCall(
+          pagedTarget,
+          "POST",
+          "restore",
+          JSON.stringify(part),
+        );
+        assert.equal(reply.status, 200, shortly(reply.body));
+        const last = i === parts.length - 1;
+        assert.equal((reply.body.value as { done: boolean }).done, last);
+        assert.equal(await initialized(pagedTarget), last);
+      }
+      assert.deepEqual(differing((await dumpOf(pagedTarget)).tables), []);
+    },
+  );
+  await check(
+    "large restored target: show and comments return the originals in full",
+    async () => {
+      const caller = await who();
+      assert.equal((await show(caller, id)).body === BODY, true);
+      const { records } = await typedRead<{
+        records: { value: { body: string } }[];
+      }>(caller, "issue.comments", { id });
+      assert.deepEqual(
+        records.map((record) => record.value.body === BODY),
+        [true],
+      );
+    },
+  );
+  await check(
+    "large restored target: accepted and refused requests replay unchanged and write nothing",
+    async () => {
+      const caller = await who();
+      for (const [name, sent] of Object.entries(source.sent)) {
+        const reply = await typedCall(caller, sent.request as Call);
+        assert.equal(reply.status, sent.status, name);
+        assert.equal(JSON.stringify(reply.body) === sent.text, true, name);
+      }
+      assert.deepEqual(
+        differing((await dumpOf(typedProject)).tables),
+        [],
+        "a replay wrote",
+      );
+    },
+  );
+  await check(
+    "large restored target: fresh commands write on top of the restored rows",
+    async () => {
+      const caller = await who();
+      // The restored issue is there to be written on top of: on a failed restore this read is NOT_FOUND.
+      assert.equal((await show(caller, id)).body === BODY, true);
+      typedOk(
+        await typedCall(caller, {
+          requestId: "large-fresh-comment",
+          op: "issue.comment",
+          input: { id, body: "later" },
+          context: asProject(caller),
+        }),
+      );
+      // Two more maximum issues grow the project past one 4 MiB page, and still under its 8 MiB.
+      for (const n of [1, 2])
+        typedOk(
+          await typedCall(caller, {
+            requestId: `large-grow-${n}`,
+            op: "issue.create",
+            input: { title: `Grown ${n}`, body: BODY },
+            context: asProject(caller),
+          }),
+        );
+      // The comment is the second one on the restored issue, after the restored first.
+      const { records } = await typedRead<{ records: unknown[] }>(
+        caller,
+        "issue.comments",
+        { id },
+      );
+      assert.equal(records.length, 2);
+    },
+  );
+  await check(
+    "large paged export: consecutive pages, each complete page within 4 MiB, no row lost",
+    async () => {
+      const pages = await pagesOf(typedProject);
+      assert.ok(pages.length > 1, "the grown project crosses a page");
+      const merged: Record<string, Record<string, unknown>[]> =
+        Object.fromEntries(Object.keys(want).map((table) => [table, []]));
+      for (const [n, page] of pages.entries()) {
+        assert.equal(page.page, n);
+        assert.ok(
+          Buffer.byteLength(JSON.stringify(page)) <= 4 * 1024 * 1024,
+          `page ${n} is over 4 MiB`,
+        );
+        for (const [table, rows] of Object.entries(page.tables))
+          merged[table]!.push(...rows);
+      }
+      for (const table of Object.keys(want)) {
+        const have = new Set(merged[table]!.map((row) => JSON.stringify(row)));
+        assert.ok(
+          want[table]!.every((row) => have.has(JSON.stringify(row))),
+          `${table} lost a row`,
+        );
+      }
+      // A comment and two issues joined, each with its receipt: six more records and six more events.
+      for (const table of ["state_records", "state_events"])
+        assert.equal(merged[table]!.length, want[table]!.length + 6, table);
+    },
+  );
+}
+
 if (failures.length > 0) {
   console.log(`${failures.length} failed: ${failures.join("; ")}`);
   process.exitCode = 1;
