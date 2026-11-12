@@ -11,6 +11,7 @@ import { spawnSync } from "node:child_process";
 import {
   cpSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -19,7 +20,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { blockCapture } from "../../src/assembly/capture.ts";
 import { cloudRoute, selectCloud } from "../../src/assembly/cloud-authority.ts";
@@ -38,10 +39,12 @@ import { LocalState } from "../../src/assembly/state.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { mcpToolName } from "../../src/contract/naming.ts";
 import { decideLease } from "../../src/contract/lease.ts";
+import { discoveryOperations } from "../../src/generated/core-discovery.ts";
 import type {
   FailureEnvelope,
   InvocationRequest,
   LeaseRecord,
+  ResultEnvelope,
 } from "../../src/generated/types.ts";
 import { runCli } from "../../src/surface/cli.ts";
 import { dispatch } from "../../src/surface/dispatch.ts";
@@ -92,6 +95,7 @@ const HTTP: Record<string, number> = {
   NOT_FOUND: 404,
   INPUT_CONFLICT: 409,
   INPUT_INVALID: 400,
+  RECEIPT_REQUIRED: 400,
   INTERNAL: 500,
   REVISION_CONFLICT: 409,
   LEASE_HELD: 409,
@@ -144,15 +148,18 @@ const WRITES = [
   "issue.comment",
   "issue.update",
   "issue.dep",
+  "issue.close",
   "issue.claim",
   "issue.renew",
   "issue.release",
 ];
 const SERVED = [...READS, ...WRITES];
-const DECLARED = Object.keys(
+/** Every operation the work block declares, read from its manifest. */
+const MANIFEST_OPS = Object.keys(
   (JSON.parse(readFileSync(MANIFEST, "utf8")) as { operations: object })
     .operations,
-).filter((op) => !SERVED.includes(op));
+);
+const DECLARED = MANIFEST_OPS.filter((op) => !SERVED.includes(op));
 const notServed = (op: string) =>
   `${op} is not served by the cloud authority of a cloud-bound project yet.`;
 const yaml = (extra: object = {}) =>
@@ -241,11 +248,15 @@ async function rig(o: Setup) {
     HOME: s.home,
     ...(o.device === false ? {} : { FORGE_DEVICE_ID: o.device ?? "dev-1" }),
   };
+  /** A person at a terminal who is asked and declines, so an approval request is counted and nothing is approved. */
+  const confirm = mock(() => Promise.resolve(false));
+  const terminal = { tty: () => ({ stdin: true, stderr: true }), confirm };
   const open = (root = s.root) =>
     createAssembly({
       root,
       deviceRoot: s.deviceRoot,
       providers: { env, cloudLogin: { fetch: net.fetch, now: () => NOW } },
+      terminal,
     });
   const assembly = await open(); // requests carry the context a real CLI or MCP call builds
   const request = (
@@ -261,7 +272,7 @@ async function rig(o: Setup) {
     context: localContext(assembly, { kind: "agent", id: "a1" }),
     ...change,
   });
-  return { s, net, sentinel, open, request, assembly };
+  return { s, net, sentinel, open, request, assembly, confirm };
 }
 const show = (r: Awaited<ReturnType<typeof rig>>) =>
   r.assembly.catalog.invoke(r.request("issue.show", { id: "forge-1" }));
@@ -289,8 +300,12 @@ test("a bound project's issue show is answered by the cloud with the stored toke
     expect(body).toMatchObject({ context: { device: { id: "dev-1" } } });
   }));
 
-test("the routing decision serves show, list, ready, comments, create, comment, update, dep, claim, renew and release, refuses every other operation of the work block by name, and leaves other blocks local", () => {
-  expect(DECLARED.length).toBeGreaterThan(30);
+test("the routing decision serves show, list, ready, comments, create, comment, update, dep, close, claim, renew and release, refuses every other operation of the work block by name, and leaves other blocks local", () => {
+  // The refused set is exactly the manifest minus the served list: a served name the manifest does not declare would hide here.
+  for (const op of SERVED) expect(MANIFEST_OPS).toContain(op);
+  expect(DECLARED).toHaveLength(MANIFEST_OPS.length - SERVED.length);
+  for (const op of ["issue.link", "issue.board"])
+    expect(DECLARED).toContain(op);
   for (const op of SERVED) expect(cloudRoute("forge/work", op)).toBe("cloud");
   expect(cloudRoute("forge/memory", "memory.list")).toBe("local");
   for (const op of DECLARED) {
@@ -313,12 +328,14 @@ const DEP = {
   action: "add",
   expectRevision: 3,
 };
+const CLOSE = { id: "forge-1", reason: "done", withoutReceipt: "guard" };
 const HELD = { ...LEASE, generation: 3 };
 const INPUTS: Record<string, object> = {
   "issue.create": CREATE,
   "issue.comment": COMMENT,
   "issue.update": UPDATE,
   "issue.dep": DEP,
+  "issue.close": CLOSE,
   "issue.claim": { id: "forge-1" },
   "issue.renew": { id: "forge-1" },
   "issue.release": { id: "forge-1" },
@@ -355,7 +372,6 @@ test("every other work operation is refused by name on a bound project, with no 
     const context = { ...own, session: { id: "s1" }, leaseGeneration: 3 };
     for (const [op, input] of [
       ["issue.board", {}],
-      ["issue.close", { id: "forge-1" }],
       [
         "issue.link",
         { id: "forge-1", relation: "pr", url: "https://example.com/pull/1" },
@@ -425,6 +441,7 @@ for (const [op, input] of [
   ["issue.comments", NOTES],
   ["issue.update", UPDATE],
   ["issue.dep", DEP],
+  ["issue.close", CLOSE],
   ["issue.claim", INPUTS["issue.claim"]!],
   ["issue.renew", INPUTS["issue.renew"]!],
   ["issue.release", INPUTS["issue.release"]!],
@@ -577,14 +594,13 @@ const edit = (
 const sent = (r: Rig) => r.net.calls.map((c) => (c.body as { op: string }).op);
 const live = () => answer({ ...ISSUE, lease: HELD });
 
+const LINK = {
+  id: "forge-1",
+  relation: "pr",
+  url: "https://example.com/pull/1",
+};
 /** Each refused held op with an input valid for its own schema, so only the routing refuses it. */
-for (const [op, input] of [
-  ["issue.close", { id: "forge-1", withoutReceipt: "guard" }],
-  [
-    "issue.link",
-    { id: "forge-1", relation: "pr", url: "https://example.com/pull/1" },
-  ],
-] as const)
+for (const [op, input] of [["issue.link", LINK]] as const)
   for (const [name, own, dryRun, lease] of [
     ["no generation", {}, false, true],
     ["no generation and no lease in the cloud", {}, false, false],
@@ -622,11 +638,11 @@ test("through MCP catalog_call, a refused held op on a bound project is refused 
     );
     for (const dryRun of [false, true]) {
       const result = await handlers.callTool("catalog_call", {
-        op: "issue.close",
-        input: { id: "forge-1", withoutReceipt: "guard" },
+        op: "issue.link",
+        input: LINK,
         ...(dryRun ? { dryRun } : {}),
       });
-      expect(result).toMatchObject(REFUSED("issue.close"));
+      expect(result).toMatchObject(REFUSED("issue.link"));
       expect(failed(result!, "INPUT_INVALID")).toBe(6);
     }
     expect(r.net.calls).toHaveLength(0);
@@ -657,27 +673,22 @@ for (const [name, own, dryRun, env] of [
     { FORGE_SESSION: "s1", FORGE_DEVICE_ID: "a b" },
   ],
 ] as const)
-  test(`issue.close with ${name} and the real identity resolver is refused by name, not as a missing session`, () =>
+  test(`issue.link with ${name} and the real identity resolver is refused by name, not as a missing session`, () =>
     using({}, async (r) => {
-      const result = await dispatch(
-        r.assembly.catalog,
-        "issue.close",
-        { id: "forge-1", withoutReceipt: "guard" },
-        {
-          caller: "agent",
-          context: {
-            ...localContext(r.assembly, { kind: "agent", id: "a1" }),
-            ...own,
-          },
-          resolveContext: localIdentityResolver(
-            r.s.deviceRoot,
-            { HOME: r.s.home, ...env },
-            false,
-          ),
-          dryRun,
+      const result = await dispatch(r.assembly.catalog, "issue.link", LINK, {
+        caller: "agent",
+        context: {
+          ...localContext(r.assembly, { kind: "agent", id: "a1" }),
+          ...own,
         },
-      );
-      expect(result).toMatchObject(REFUSED("issue.close"));
+        resolveContext: localIdentityResolver(
+          r.s.deviceRoot,
+          { HOME: r.s.home, ...env },
+          false,
+        ),
+        dryRun,
+      });
+      expect(result).toMatchObject(REFUSED("issue.link"));
       expect(failed(result, "INPUT_INVALID")).toBe(6);
       expect(r.net.calls).toHaveLength(0);
     }));
@@ -777,7 +788,13 @@ const dryRefused = (r: Rig, result: Awaited<ReturnType<typeof edit>>) => {
   expect(failed(result, "UNAVAILABLE")).toBe(1);
 };
 /** A bound dry run is refused at admission: not even the hidden show that fills a missing generation goes out. */
-for (const op of ["issue.update", "issue.renew", "issue.release", "issue.dep"])
+for (const op of [
+  "issue.update",
+  "issue.renew",
+  "issue.release",
+  "issue.dep",
+  "issue.close",
+])
   for (const [name, own] of [
     ["no generation", {}],
     ["an explicit generation", { leaseGeneration: 3 }],
@@ -938,6 +955,184 @@ test("a cloud issue.dep result that fails TrackerItem is refused as UNAVAILABLE"
       const result = await depends(r, holding(r));
       expect(failed(result, "UNAVAILABLE")).toBe(1);
       expect(sent(r)).toEqual(["issue.show", "issue.dep"]);
+    },
+  ));
+
+const CLOSED = { ...ISSUE, status: "closed", revision: 4 };
+const closes = (r: Rig, context: object, input: object = CLOSE) =>
+  edit(r, "issue.close", context, false, input);
+for (const [source, op] of [
+  [WORK, "issue.close"],
+  [RENAMED, "ticket.close"],
+] as const)
+  test(`through the assembled catalog, ${op} on a bound project takes the generation from the cloud show and is answered by the cloud as issue.close`, () =>
+    using(
+      { config: source, steps: [live, () => answer(CLOSED, "issue.close")] },
+      async (r) => {
+        const context = holding(r);
+        const done = await edit(r, op, context, false, CLOSE, "close-1");
+        expect(done).toMatchObject({ ok: true, result: CLOSED });
+        expect(exitCode(done)).toBe(0);
+        expect(JSON.stringify(done)).not.toContain(TOKEN);
+        expect(sent(r)).toEqual(["issue.show", "issue.close"]);
+        expect(r.net.calls[1]!.url).toBe(COMMAND);
+        expect(r.net.calls[1]!.body).toEqual({
+          requestId: "close-1",
+          op: "issue.close",
+          input: CLOSE,
+          context: {
+            actor: context.actor,
+            session: context.session,
+            leaseGeneration: 3,
+            device: { id: "dev-1" },
+            project: { id: fx.PROJECT },
+          },
+        });
+      },
+    ));
+
+test("an explicit generation on issue.close reaches the cloud unchanged, a stale one is refused there, and the CLI never reads or refreshes it", () =>
+  using({ steps: [() => refusing("LEASE_STALE")] }, async (r) => {
+    const context = holding(r, { leaseGeneration: 2 });
+    const stale = await edit(
+      r,
+      "issue.close",
+      context,
+      false,
+      CLOSE,
+      "close-2",
+    );
+    expect(failed(stale, "LEASE_STALE")).toBe(4);
+    expect(sent(r)).toEqual(["issue.close"]);
+    expect(r.net.calls[0]!.url).toBe(COMMAND);
+    expect(r.net.calls[0]!.body).toEqual({
+      requestId: "close-2",
+      op: "issue.close",
+      input: CLOSE,
+      context: {
+        actor: context.actor,
+        session: context.session,
+        leaseGeneration: 2,
+        device: { id: "dev-1" },
+        project: { id: fx.PROJECT },
+      },
+    });
+  }));
+
+test("with no live lease in the cloud show the runtime's own CONTEXT_MISSING stands for issue.close, and no close request is sent", () =>
+  using({ steps: [() => answer()] }, async (r) => {
+    const result = await closes(r, holding(r));
+    expect(failed(result, "CONTEXT_MISSING")).toBe(6);
+    expect(sent(r)).toEqual(["issue.show"]);
+  }));
+
+const RECEIPT = { id: "forge-1", receipt: "proof-1" };
+for (const [name, own] of [
+  ["no generation", {}],
+  ["an explicit generation", { leaseGeneration: 3 }],
+] as const)
+  for (const [shape, input] of [
+    ["only a receipt", RECEIPT],
+    ["a receipt and withoutReceipt", { ...CLOSE, ...RECEIPT }],
+  ] as const)
+    test(`issue.close with ${shape} and ${name} on a bound project is INPUT_INVALID before any request, the hidden show included`, () =>
+      using({ steps: [live] }, async (r) => {
+        const result = await closes(r, holding(r, own), input);
+        expect(failed(result, "INPUT_INVALID")).toBe(6);
+        expect(result).toMatchObject({
+          error: {
+            message:
+              "issue.close with a receipt is not supported in cloud yet.",
+          },
+        });
+        expect(r.net.calls).toHaveLength(0);
+      }));
+
+test("a receipt on issue.close that reaches the selector directly is refused before any request", () =>
+  using({}, async (r) => {
+    const result = await r.assembly.catalog.invoke(
+      r.request(
+        "issue.close",
+        { ...CLOSE, ...RECEIPT },
+        {
+          context: holding(r, { leaseGeneration: 3 }),
+        },
+      ),
+    );
+    expect(failed(result, "INPUT_INVALID")).toBe(6);
+    expect(result).toMatchObject({
+      error: {
+        message: "issue.close with a receipt is not supported in cloud yet.",
+      },
+    });
+    expect(r.net.calls).toHaveLength(0);
+  }));
+
+/** A caller that forwards admit only three arguments: the input is lost, and the refusal must still come before any request. */
+const droppingInput = (r: Rig) => ({
+  ...r.assembly.catalog,
+  admit: (blockId: string, op: string, dryRun: boolean | undefined) =>
+    r.assembly.catalog.admit!(blockId, op, dryRun, undefined),
+});
+for (const input of [{ ...CLOSE, ...RECEIPT }, CLOSE])
+  test(`issue.close with ${"receipt" in input ? "a receipt" : "withoutReceipt"} whose input is dropped before admission is refused before any request, through dispatch and MCP`, () =>
+    using({ steps: [live] }, async (r) => {
+      const catalog = droppingInput(r);
+      const context = holding(r);
+      const refused = (result: Awaited<ReturnType<typeof edit>>) => {
+        expect(failed(result, "INPUT_INVALID")).toBe(6);
+        expect(result).toMatchObject({
+          error: {
+            message:
+              "issue.close was not given its input to check before a cloud request.",
+          },
+        });
+        expect(r.net.calls).toHaveLength(0);
+      };
+      refused(
+        await dispatch(catalog, "issue.close", input, {
+          caller: "agent",
+          context,
+        }),
+      );
+      const handlers = createMcpHandlers(
+        catalog,
+        { expose: ["issue"] },
+        { context },
+      );
+      refused(
+        (await handlers.callTool("catalog_call", {
+          op: "issue.close",
+          input,
+        }))!,
+      );
+    }));
+
+for (const [code, exit] of [
+  ["RECEIPT_REQUIRED", 1],
+  ["INPUT_CONFLICT", 4],
+  ["NOT_FOUND", 3],
+  ["LEASE_NOT_HELD", 4],
+  ["AUTH_DEVICE_MISMATCH", 1],
+] as const)
+  test(`a cloud ${code} on issue.close keeps its code and exit ${exit}, without the token`, () =>
+    using({ steps: [live, () => refusing(code)] }, async (r) => {
+      expect(failed(await closes(r, holding(r)), code)).toBe(exit);
+      expect(sent(r)).toEqual(["issue.show", "issue.close"]);
+    }));
+
+test("a cloud issue.close result that fails TrackerItem is refused as UNAVAILABLE", () =>
+  using(
+    {
+      steps: [
+        live,
+        () => answer({ ...CLOSED, revision: TOKEN }, "issue.close"),
+      ],
+    },
+    async (r) => {
+      const result = await closes(r, holding(r));
+      expect(failed(result, "UNAVAILABLE")).toBe(1);
+      expect(sent(r)).toEqual(["issue.show", "issue.close"]);
     },
   ));
 
@@ -1462,24 +1657,29 @@ test("a direct issue show --dry-run is UNAVAILABLE with no request", () =>
     expect(r.net.calls).toHaveLength(0);
   }));
 
+/** A committed checkout with a linked worktree beside it; returns the worktree's path. */
+function addWorktree(s: fx.Sandbox): string {
+  const linked = join(s.dir, "linked");
+  for (const args of [
+    ["init", "--quiet"],
+    ["add", "-A"],
+    ["commit", "--quiet", "-m", "p"],
+    ["worktree", "add", "--quiet", linked],
+  ]) {
+    const git = ["-c", "user.name=t", "-c", "user.email=t@example.test"];
+    const run = spawnSync("git", [...git, ...args], {
+      cwd: s.root,
+      windowsHide: true,
+    });
+    expect(run.status).toBe(0);
+  }
+  return linked;
+}
 test("an existing store is left as it was, and a linked worktree is answered by the cloud too", () =>
   using({}, async (r) => {
     const store = join(r.s.root, ".forge", "state.sqlite");
     writeFileSync(store, "keep");
-    const linked = join(r.s.dir, "linked");
-    for (const args of [
-      ["init", "--quiet"],
-      ["add", "-A"],
-      ["commit", "--quiet", "-m", "p"],
-      ["worktree", "add", "--quiet", linked],
-    ]) {
-      const git = ["-c", "user.name=t", "-c", "user.email=t@example.test"];
-      const run = spawnSync("git", [...git, ...args], {
-        cwd: r.s.root,
-        windowsHide: true,
-      });
-      expect(run.status).toBe(0);
-    }
+    const linked = addWorktree(r.s);
     const other = await r.open(linked);
     try {
       const context = localContext(other, { kind: "agent", id: "a1" });
@@ -1555,7 +1755,7 @@ test("an unbound project runs locally, with no cloud request and no credential w
     expect(existsSync(join(r.s.home, ".forge"))).toBe(false);
   }));
 
-test("an unbound project's issue.close, which a bound project refuses, still runs locally with no cloud request", () =>
+test("an unbound project's issue.close, with a receipt and without, still runs locally with no cloud request", () =>
   using({ bind: false, creds: false, sentinel: false }, async (r) => {
     const made = await r.assembly.catalog.invoke(
       r.request("issue.create", CREATE),
@@ -1568,9 +1768,27 @@ test("an unbound project's issue.close, which a bound project refuses, still run
         context: own,
       });
     expect(await call("issue.claim", { id })).toMatchObject({ ok: true });
+    const status = async () =>
+      (
+        (await call("issue.show", { id })) as unknown as {
+          result: { status: string };
+        }
+      ).result.status;
+    expect(await status()).toBe("open");
+    const receipt = await call("issue.close", { id, receipt: "proof-1" });
+    expect(receipt).toMatchObject({
+      ok: false,
+      error: {
+        code: "RECEIPT_INVALID",
+        message: "Closing requires an existing verified PASS receipt",
+      },
+    });
+    expect(exitCode(receipt)).toBe(1);
+    expect(await status()).toBe("open");
     const closed = await call("issue.close", { id, withoutReceipt: "guard" });
     expect(closed).toMatchObject({ ok: true });
     expect(exitCode(closed)).toBe(0);
+    expect(await status()).toBe("closed");
     expect(r.net.calls).toHaveLength(0);
   }));
 
@@ -1640,3 +1858,358 @@ test("a refused preflight on a bound project is thrown, never retried on the loc
     expect(await run(r)).toBeUndefined();
   });
 });
+
+// forge-1249: a cloud-bound project never starts a local store by recovery.
+const RECOVER = "store.reinit";
+const NAMED = {
+  ok: false,
+  op: RECOVER,
+  status: "FAIL",
+  error: { code: "INPUT_INVALID", message: notServed(RECOVER), retry: "never" },
+};
+const human = { kind: "human", id: "h1" } as const;
+const STORE = (s: fx.Sandbox) => join(s.root, ".forge", "state.sqlite");
+const SEEDED = "closed fixture, not a database";
+const seeded = (s: fx.Sandbox) => writeFileSync(STORE(s), SEEDED);
+/** Untrusted approval content that carries the synthetic token: it must never come back. */
+const ASKED = { approval: TOKEN };
+const asHuman = (r: Rig, assembly = r.assembly) =>
+  r.request(RECOVER, ASKED, {
+    caller: "human",
+    context: localContext(assembly, human),
+  });
+
+/** Every file and folder under a directory with its bytes, so a refusal that wrote anything changes it. */
+function inventory(dir: string): Record<string, string> {
+  const found: Record<string, string> = {};
+  const walk = (at: string) => {
+    for (const e of readdirSync(at, { withFileTypes: true })) {
+      if (e.name === ".git") continue;
+      const path = join(at, e.name);
+      const name = relative(dir, path);
+      if (e.isDirectory()) {
+        found[`${name}/`] = "";
+        walk(path);
+      } else found[name] = readFileSync(path).toString("base64");
+    }
+  };
+  walk(dir);
+  return found;
+}
+
+/** A refusal that opens or creates no local state, asks no one, sends no request and writes no file. */
+async function leavingNothing(o: Setup, run: (r: Rig) => Promise<void>) {
+  await using(o, async (r) => {
+    const before = inventory(r.s.dir);
+    const spies = [
+      spyOn(LocalState.prototype, "open"),
+      spyOn(LocalState.prototype, "validateCreate"),
+      spyOn(LocalState.prototype, "create"),
+    ];
+    try {
+      await run(r);
+      expect(spies.map((spy) => spy.mock.calls.length)).toEqual([0, 0, 0]);
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+    }
+    expect(r.confirm).not.toHaveBeenCalled();
+    expect(r.net.calls).toHaveLength(0);
+    expect(inventory(r.s.dir)).toEqual(before);
+  });
+}
+const refused = (result: ResultEnvelope, name?: string) => {
+  expect(result, name).toMatchObject(NAMED);
+  expect(failed(result, "INPUT_INVALID")).toBe(6);
+};
+
+const STORES = [
+  ["missing", {}],
+  ["existing", { prepare: seeded }],
+] as const;
+for (const [store, setup] of STORES)
+  for (const dryRun of [false, true]) {
+    const how = `with ${store} store${dryRun ? ", as a dry run" : ""}`;
+    test(`a bound project's store reinit through the CLI, dispatch and catalog.call is refused by name ${how}, before identity resolution or any invoke`, () =>
+      leavingNothing(setup, async (r) => {
+        const invoke = spyOn(r.assembly.catalog, "invoke");
+        const resolveContext = mock(
+          localIdentityResolver(
+            r.s.deviceRoot,
+            { HOME: r.s.home, FORGE_DEVICE_ID: "dev-1" },
+            false,
+          ),
+        );
+        const options = {
+          caller: "human" as const,
+          context: localContext(r.assembly, human),
+          resolveContext,
+          ...(dryRun ? { dryRun } : {}),
+        };
+        const calls: [string, () => Promise<ResultEnvelope>][] = [
+          [
+            "CLI",
+            async () => {
+              const done = await runCli(
+                r.assembly.catalog,
+                [
+                  "store",
+                  "reinit",
+                  ...(dryRun ? ["--dry-run"] : []),
+                  "--input",
+                  JSON.stringify(ASKED),
+                ],
+                options,
+              );
+              expect(JSON.stringify(done)).not.toContain(TOKEN);
+              return done.envelope;
+            },
+          ],
+          [
+            "dispatch",
+            () => dispatch(r.assembly.catalog, RECOVER, ASKED, options),
+          ],
+          [
+            "catalog.call",
+            () =>
+              dispatch(
+                r.assembly.catalog,
+                "catalog.call",
+                { op: RECOVER, input: ASKED },
+                options,
+              ),
+          ],
+        ];
+        try {
+          for (const [name, call] of calls) refused(await call(), name);
+          expect(resolveContext).not.toHaveBeenCalled();
+          expect(invoke).not.toHaveBeenCalled();
+        } finally {
+          invoke.mockRestore();
+        }
+      }));
+
+    test(`a direct catalog.invoke of a bound project's store reinit is refused by name ${how}, without dispatch`, () =>
+      leavingNothing(setup, async (r) => {
+        const request = asHuman(r);
+        refused(
+          await r.assembly.catalog.invoke(
+            dryRun ? { ...request, dryRun } : request,
+          ),
+        );
+      }));
+  }
+
+test("a direct invoke of store reinit by an agent is still ADMISSION_REQUIRED, with nothing opened or asked", () =>
+  leavingNothing({}, async (r) => {
+    for (const dryRun of [false, true]) {
+      const result = await r.assembly.catalog.invoke(
+        r.request(RECOVER, ASKED, dryRun ? { dryRun } : {}),
+      );
+      expect(result).toMatchObject({
+        ok: false,
+        error: { message: `Only a human may invoke ${RECOVER}` },
+      });
+      expect(failed(result, "ADMISSION_REQUIRED")).toBe(2);
+    }
+  }));
+
+test("through MCP, store reinit stays human-only: catalog_call does not know it, as a dry run too, and no direct tool exists", () =>
+  leavingNothing({}, async (r) => {
+    const handlers = createMcpHandlers(
+      r.assembly.catalog,
+      { expose: ["issue"] },
+      { context: localContext(r.assembly, { kind: "agent", id: "a1" }) },
+    );
+    for (const dryRun of [false, true]) {
+      const result = await handlers.callTool("catalog_call", {
+        op: RECOVER,
+        input: ASKED,
+        ...(dryRun ? { dryRun } : {}),
+      });
+      expect(result).toMatchObject({
+        ok: false,
+        error: { code: "UNKNOWN_COMMAND" },
+      });
+      expect(failed(result!, "UNKNOWN_COMMAND")).toBe(3);
+    }
+    expect(await handlers.callTool(mcpToolName(RECOVER)!, ASKED)).toBe(
+      undefined,
+    );
+  }));
+
+test("a bound project with no saved login, no device identity and a dead network gets the same named refusal", () =>
+  leavingNothing(
+    {
+      creds: false,
+      device: false,
+      steps: [
+        () => {
+          throw new Error("offline");
+        },
+      ],
+    },
+    async (r) => refused(await r.assembly.catalog.invoke(asHuman(r))),
+  ));
+
+for (const [name, setup, code] of rows)
+  test(`store reinit with ${name} keeps that binding refusal and starts no local store`, () =>
+    leavingNothing(setup, async (r) => {
+      const result = await r.assembly.catalog.invoke(asHuman(r));
+      failed(result, code);
+      expect(result).not.toMatchObject(NAMED);
+    }));
+
+test("a bound project's store reinit from a nested folder and from a linked worktree gets the same named refusal", () => {
+  let linked = "";
+  return leavingNothing(
+    {
+      prepare: (s) => {
+        linked = addWorktree(s);
+        mkdirSync(join(s.root, "nested"));
+      },
+    },
+    async (r) => {
+      for (const root of [join(r.s.root, "nested"), linked]) {
+        const assembly = await r.open(root);
+        try {
+          refused(await assembly.catalog.invoke(asHuman(r, assembly)), root);
+        } finally {
+          await assembly.close();
+        }
+      }
+    },
+  );
+});
+
+test("an unbound project keeps recovery as it was: an existing store conflicts and a dry run has no contract, both leaving every record and file alone", () =>
+  using({ bind: false, creds: false, sentinel: false }, async (r) => {
+    expect(
+      await r.assembly.catalog.invoke(r.request("issue.create", CREATE)),
+    ).toMatchObject({ ok: true });
+    const before = inventory(r.s.dir);
+    const options = {
+      caller: "human" as const,
+      context: localContext(r.assembly, human),
+    };
+    const kept = await runCli(r.assembly.catalog, ["store", "reinit"], options);
+    expect(kept.exitCode).toBe(4);
+    expect(kept.envelope).toMatchObject({
+      ok: false,
+      error: { code: "INPUT_CONFLICT" },
+    });
+    expect(JSON.stringify(kept.envelope)).toContain(
+      "Forge store already exists",
+    );
+    const dry = await runCli(
+      r.assembly.catalog,
+      ["store", "reinit", "--dry-run"],
+      options,
+    );
+    expect(dry.exitCode).toBe(1);
+    expect(dry.envelope).toMatchObject({
+      ok: false,
+      error: {
+        code: "UNAVAILABLE",
+        message: "This operation has no dry-run contract",
+      },
+    });
+    expect(inventory(r.s.dir)).toEqual(before);
+    expect(r.net.calls).toHaveLength(0);
+    expect(r.confirm).not.toHaveBeenCalled();
+    expect(
+      await r.assembly.catalog.invoke(r.request("issue.list", {})),
+    ).toMatchObject({ ok: true, result: { items: [{ title: CREATE.title }] } });
+  }));
+
+/** Runs a human reinit through dispatch and a direct invoke, each past the faulted guard, and shows both reach recovery. */
+const reachesRecovery = async (r: Rig) => {
+  const validate = spyOn(LocalState.prototype, "validateCreate");
+  try {
+    const options = {
+      caller: "human" as const,
+      context: localContext(r.assembly, human),
+    };
+    for (const run of [
+      () => dispatch(r.assembly.catalog, RECOVER, ASKED, options),
+      () => r.assembly.catalog.invoke(asHuman(r)),
+    ]) {
+      validate.mockClear();
+      const result = await run();
+      expect(result).not.toMatchObject(NAMED);
+      expect(validate).toHaveBeenCalled();
+    }
+  } finally {
+    validate.mockRestore();
+  }
+};
+
+test("fault injection: with the core entry's block and operation removed, neither guard fires and store reinit reaches recovery validation", () =>
+  using({}, async (r) => {
+    const entry = discoveryOperations.find((e) => e.op === RECOVER)!;
+    const saved = { blockId: entry.blockId, declaredOp: entry.declaredOp };
+    Reflect.deleteProperty(entry, "blockId");
+    Reflect.deleteProperty(entry, "declaredOp");
+    try {
+      await reachesRecovery(r);
+    } finally {
+      Object.assign(entry, saved);
+    }
+  }));
+
+test("fault injection: with the direct admission disabled, a direct invoke reaches recovery, while dispatch with the real admission still refuses by name with nothing opened", () =>
+  using({}, async (r) => {
+    const catalog = r.assembly.catalog;
+    const real = catalog.admit!.bind(catalog);
+    const off = spyOn(catalog, "admit").mockImplementation(() => {});
+    const validate = spyOn(LocalState.prototype, "validateCreate");
+    try {
+      const direct = await catalog.invoke(asHuman(r));
+      expect(direct).not.toMatchObject(NAMED);
+      expect(validate).toHaveBeenCalledTimes(1);
+      validate.mockClear();
+      const surface = Object.create(catalog, {
+        admit: { value: real },
+      }) as typeof catalog;
+      refused(
+        await dispatch(surface, RECOVER, ASKED, {
+          caller: "human",
+          context: localContext(r.assembly, human),
+        }),
+      );
+      expect(validate).not.toHaveBeenCalled();
+    } finally {
+      validate.mockRestore();
+      off.mockRestore();
+    }
+  }));
+
+test("only forge/core's store.reinit joins the refused set: other blocks and other core operations stay local", () => {
+  const route = cloudRoute("forge/core", RECOVER);
+  expect(route).toBeInstanceOf(ForgeFailure);
+  expect(route).toMatchObject({ error: NAMED.error });
+  for (const [block, op] of [
+    ["forge/core", "project.init"],
+    ["forge/core", "config.show"],
+    ["forge/memory", "memory.add"],
+    ["forge/check", "check.run"],
+  ] as const)
+    expect(cloudRoute(block, op)).toBe("local");
+});
+
+test("the generated core discovery names forge/core and store.reinit, so dispatch admits it before identity resolution", () => {
+  expect(discoveryOperations.find((e) => e.op === RECOVER)).toMatchObject({
+    blockId: "forge/core",
+    declaredOp: RECOVER,
+  });
+});
+
+test("another core operation reads no binding: project.init on a project with a malformed binding is the manifest refusal", () =>
+  leavingNothing({ bind: "{" }, async (r) => {
+    const result = await dispatch(
+      r.assembly.catalog,
+      "project.init",
+      {},
+      { caller: "human", context: localContext(r.assembly, human) },
+    );
+    expect(failed(result, "PROJECT_MANIFEST_EXISTS")).toBe(1);
+  }));
