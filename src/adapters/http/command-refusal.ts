@@ -81,12 +81,16 @@ function closeRepair(value: unknown, suffix: string): string | undefined {
     : undefined;
 }
 
+/** Every string at any depth: each property name as well as each value. */
 function* strings(value: unknown): Generator<string> {
   if (typeof value === "string") yield value;
   else if (typeof value === "object" && value !== null)
-    for (const child of Object.values(value)) yield* strings(child);
+    for (const [key, child] of Object.entries(value)) {
+      yield key;
+      yield* strings(child);
+    }
 }
-/** True when any string at any depth holds the presented token; keys are not walked. */
+/** True when any string at any depth, property names included, holds the presented token. */
 export const carriesToken = (value: unknown, token: string): boolean =>
   [...strings(value)].some((text) => text.includes(token));
 /** No admitted string holds the presented token, any device token, a control character or a format character (bidi overrides, zero-width). */
