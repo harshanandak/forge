@@ -456,6 +456,25 @@ try {
       "PASS dependencies: blocking, cycle refusal, closure readback and missing reference refusal",
     );
   }
+  if (["all", "allocation"].includes(mode)) {
+    const one = create("Allocation one");
+    const two = create("Allocation two");
+    const top = Number(two.id.split("-").at(-1));
+    state.delete("forge/work", `issue:${two.id}`, actor("alice"), {
+      expectRevision: 1,
+    });
+    const three = create("Allocation three");
+    assert.equal(three.id, `work-${top + 1}`, "a deleted number is not reused");
+    assert.equal(state.get("forge/work", `issue:${three.id}`).revision, 1);
+    assert.equal(state.get("forge/work", `issue:${two.id}`), undefined);
+    assert.deepEqual(state.get("forge/work", "allocation:issue:work-").value, {
+      prefix: "issue:work-",
+      number: top + 1,
+    });
+    assert.ok(call("list").items.some((x) => x.id === one.id));
+    assert.ok(call("list").items.every((x) => x.id.startsWith("work-")));
+    console.log("PASS allocation: a deleted highest number is never reused");
+  }
 } finally {
   await isolation.handle.close();
   await opened.handle.close();

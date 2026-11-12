@@ -86,6 +86,7 @@ test("installed work block: CLI readback, lease fixtures and remove-the-fix chec
             "PASS dependencies",
             "PASS dependency-race",
             "PASS append-order",
+            "PASS allocation",
           ],
         },
         {
