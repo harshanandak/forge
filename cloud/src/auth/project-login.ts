@@ -23,9 +23,9 @@ export const LOGIN_MIGRATION = {
 };
 
 /** Counters for the browser's approval attempts. They live outside the login row, so a refusal never writes it. */
-export const LIMITS = "domain_cloud_login_limits";
+export const LIMITS = "domain_cloud_browser_attempts";
 export const LIMITS_MIGRATION = {
-  id: "004_cloud_login_limits",
+  id: "004_cloud_browser_attempts",
   statements: [
     `CREATE TABLE IF NOT EXISTS ${LIMITS} (bucket TEXT PRIMARY KEY, count INTEGER NOT NULL, reset_at INTEGER NOT NULL)`,
   ],

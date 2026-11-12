@@ -88,7 +88,7 @@ function fixture(
         if (/^\s*(INSERT|UPDATE|DELETE)\b/i.test(sql)) {
           if (/\bdomain_cloud_login\b/.test(sql)) writes.login++;
           if (
-            /\bdomain_cloud_login_limits\b/.test(sql) &&
+            /\bdomain_cloud_browser_attempts\b/.test(sql) &&
             ++writes.limiter > writes.failAfter
           )
             throw new Error("Injected counter write failure");
@@ -334,7 +334,7 @@ function fixture(
     limits: () => {
       try {
         return rows(
-          "SELECT bucket, count, reset_at FROM domain_cloud_login_limits ORDER BY bucket",
+          "SELECT bucket, count, reset_at FROM domain_cloud_browser_attempts ORDER BY bucket",
         );
       } catch {
         return [];
