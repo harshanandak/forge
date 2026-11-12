@@ -744,6 +744,136 @@ test("a cloud issue.update result that fails TrackerItem is refused as UNAVAILAB
     },
   ));
 
+// A schema-valid success answer that carries the presented token is refused, never printed.
+const NOT_USABLE = "The Forge cloud gave no usable answer.";
+const ECHO = `before-${TOKEN}-after`;
+
+test("through the CLI wrapper, an issue show whose title carries the presented token is the fixed UNAVAILABLE, with the token in neither the envelope nor stdout", () =>
+  using({ steps: [() => answer({ ...ISSUE, title: ECHO })] }, async (r) => {
+    const done = await runCli(
+      r.assembly.catalog,
+      ["issue", "show", "forge-1"],
+      { caller: "agent", context: holding(r) },
+    );
+    expect(errorOf(done)).toMatchObject({
+      code: "UNAVAILABLE",
+      message: NOT_USABLE,
+    });
+    for (const shown of [JSON.stringify(done.envelope), done.stdout])
+      expect(shown).not.toMatch(/fct_|before-/);
+    expect(done.exitCode).toBe(1);
+    expect(r.net.calls).toHaveLength(1);
+  }));
+
+test("a cloud issue.list item with the token in one label is refused as UNAVAILABLE", () =>
+  using(
+    {
+      steps: [
+        () =>
+          answer(
+            { items: [{ ...ISSUE, labels: ["a", ECHO] }], truncated: false },
+            "issue.list",
+          ),
+      ],
+    },
+    async (r) => {
+      const result = await r.assembly.catalog.invoke(
+        r.request("issue.list", {}),
+      );
+      expect(failed(result, "UNAVAILABLE")).toBe(1);
+      expect(r.net.calls).toHaveLength(1);
+    },
+  ));
+
+test("through the CLI wrapper, a schema-valid StateRecord whose free-form value carries the token in a url is the fixed UNAVAILABLE, with the token in neither the envelope nor stdout", () =>
+  using(
+    {
+      steps: [
+        () =>
+          answer(
+            {
+              records: [
+                {
+                  ...RECORD,
+                  value: { url: `https://example.com/?token=${TOKEN}` },
+                },
+              ],
+            },
+            "issue.comments",
+          ),
+      ],
+    },
+    async (r) => {
+      const done = await runCli(
+        r.assembly.catalog,
+        ["issue", "comments", "forge-1"],
+        { caller: "agent", context: holding(r) },
+      );
+      expect(errorOf(done)).toMatchObject({
+        code: "UNAVAILABLE",
+        message: NOT_USABLE,
+      });
+      for (const shown of [JSON.stringify(done.envelope), done.stdout])
+        expect(shown).not.toMatch(/fct_|example\.com/);
+      expect(done.exitCode).toBe(1);
+      expect(r.net.calls).toHaveLength(1);
+    },
+  ));
+
+test("a schema-valid StateRecord whose free-form value carries the token only as a property name is the fixed UNAVAILABLE through the CLI wrapper and MCP catalog_call, with the token in no output", () =>
+  using(
+    {
+      steps: [
+        () =>
+          answer(
+            { records: [{ ...RECORD, value: { [TOKEN]: "x" } }] },
+            "issue.comments",
+          ),
+      ],
+    },
+    async (r) => {
+      const done = await runCli(
+        r.assembly.catalog,
+        ["issue", "comments", "forge-1"],
+        { caller: "agent", context: holding(r) },
+      );
+      expect(errorOf(done)).toMatchObject({
+        code: "UNAVAILABLE",
+        message: NOT_USABLE,
+      });
+      for (const shown of [JSON.stringify(done.envelope), done.stdout])
+        expect(shown).not.toContain(TOKEN);
+      expect(done.exitCode).toBe(1);
+      const handlers = createMcpHandlers(
+        r.assembly.catalog,
+        { expose: ["issue"] },
+        { context: holding(r) },
+      );
+      const mcp = await handlers.callTool("catalog_call", {
+        op: "issue.comments",
+        input: NOTES,
+      });
+      expect(mcp).toMatchObject({
+        ok: false,
+        error: { code: "UNAVAILABLE", message: NOT_USABLE },
+      });
+      expect(failed(mcp!, "UNAVAILABLE")).toBe(1);
+      expect(r.net.calls).toHaveLength(2);
+    },
+  ));
+
+test("a cloud issue.update result with the token in its body is refused as UNAVAILABLE after one update request", () =>
+  using(
+    {
+      steps: [live, () => answer({ ...UPDATED, body: ECHO }, "issue.update")],
+    },
+    async (r) => {
+      const result = await edit(r, "issue.update", holding(r));
+      expect(failed(result, "UNAVAILABLE")).toBe(1);
+      expect(sent(r)).toEqual(["issue.show", "issue.update"]);
+    },
+  ));
+
 test("issue.update through the CLI dispatch as a dry run is UNAVAILABLE and sends no update", () =>
   using({ steps: [live] }, async (r) => {
     const dry = await edit(r, "issue.update", holding(r), true);
