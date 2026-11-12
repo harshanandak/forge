@@ -47,10 +47,13 @@ export const ROWS = `SELECT key, body ${ISSUES}`;
 // parse and schema checks decide it as they do for a full record. A body is blanked when its bytes are
 // at most 65,536 (never more characters than bytes), or when it holds no NUL byte and its SQL character
 // count is at most 65,536 (SQL counts characters only up to a NUL, so a NUL body is judged by bytes).
-// A row over the record cap or that is not JSON returns a NULL body, which the parse refuses. PREFLIGHT
+// A record with a NUL byte anywhere is returned whole, never compacted: SQLite's JSON functions stop at
+// the NUL, so json_valid accepts valid JSON followed by a NUL and trailing text and json_set would drop that
+// suffix, while the parse refuses the whole record. A row over the record cap or that is not JSON returns a
+// NULL body, which the parse refuses. PREFLIGHT
 // counts those rows and their payload (key, size and body bytes) without returning any of them.
 const BODY_OF = "CAST(json_extract(body,'$.value.body') AS BLOB)";
-const BLANKED = `CASE WHEN length(CAST(body AS BLOB)) <= ? AND json_valid(body) THEN CASE WHEN json_type(body,'$.value.body')='text' AND (length(${BODY_OF}) <= 65536 OR (instr(${BODY_OF}, x'00') = 0 AND length(json_extract(body,'$.value.body')) <= 65536)) THEN json_set(body,'$.value.body','') ELSE body END END`;
+const BLANKED = `CASE WHEN length(CAST(body AS BLOB)) <= ? AND json_valid(body) THEN CASE WHEN json_type(body,'$.value.body')='text' AND instr(CAST(body AS BLOB), x'00') = 0 AND (length(${BODY_OF}) <= 65536 OR (instr(${BODY_OF}, x'00') = 0 AND length(json_extract(body,'$.value.body')) <= 65536)) THEN json_set(body,'$.value.body','') ELSE body END END`;
 export const COMPACT = `SELECT key, length(CAST(body AS BLOB)) AS size, ${BLANKED} AS body ${ISSUES}`;
 export const PREFLIGHT = `SELECT count(*) AS count, coalesce(sum(length(CAST(key AS BLOB)) + length(CAST(size AS BLOB)) + coalesce(length(CAST(body AS BLOB)), 0)), 0) AS bytes FROM (${COMPACT})`;
 
