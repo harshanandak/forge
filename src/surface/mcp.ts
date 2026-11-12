@@ -85,7 +85,9 @@ export function createMcpHandlers(
     invoke: (request) => catalog.invoke(request),
     ...(catalog.admit === undefined
       ? {}
-      : { admit: (blockId, op) => catalog.admit!(blockId, op) }),
+      : {
+          admit: (blockId, op, dryRun) => catalog.admit!(blockId, op, dryRun),
+        }),
   };
   return {
     listTools: () => [

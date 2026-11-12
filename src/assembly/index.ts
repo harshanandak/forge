@@ -26,7 +26,7 @@ import {
   DEFAULT_CAPTURE_LIMITS,
   type CapturedBlock,
 } from "../core/catalog/index.ts";
-import { Runtime } from "../core/runtime/index.ts";
+import { Runtime, refuseDryRun } from "../core/runtime/index.ts";
 import { nodeRunIsolation } from "../adapters/node-runtime/isolation.ts";
 import { localForgeCommand } from "../adapters/node-runtime/catalog.ts";
 import { TrustStore, refuse, type TrustRecord } from "../core/trust/index.ts";
@@ -1003,11 +1003,12 @@ export async function createAssembly(
     };
   }
   const catalog: Assembly["catalog"] = {
-    admit(blockId, declaredOp) {
+    admit(blockId, declaredOp, dryRun) {
       admitCloud(
         { root, env: options.providers?.env ?? process.env },
         blockId,
         declaredOp,
+        dryRun,
       );
     },
     templateHint(op, caller, readOnly) {
@@ -1816,11 +1817,7 @@ export async function createAssembly(
         if (owned) {
           // The runtime refuses dry runs for these operations; refuse first so a dry run neither
           // burns a valid approval nor leaves a pending request behind.
-          if (request.dryRun === true)
-            refuse(
-              "UNAVAILABLE",
-              "this profile has no dry-run execution contract",
-            );
+          if (request.dryRun === true) refuseDryRun();
           if (owned.relayed && (owned.quote?.length ?? 0) > 2000)
             throw new ApprovalRequired(
               "The owner's reply must be at most 2000 characters; ask again with a shorter reply.",
