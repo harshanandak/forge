@@ -87,7 +87,7 @@ import {
   coreDocs,
   validateConfigValue,
 } from "./declarations.ts";
-import { selectCloud } from "./cloud-authority.ts";
+import { admitCloud, selectCloud } from "./cloud-authority.ts";
 import { LocalState } from "./state.ts";
 import {
   ApprovalRequired,
@@ -1003,6 +1003,13 @@ export async function createAssembly(
     };
   }
   const catalog: Assembly["catalog"] = {
+    admit(blockId, declaredOp) {
+      admitCloud(
+        { root, env: options.providers?.env ?? process.env },
+        blockId,
+        declaredOp,
+      );
+    },
     templateHint(op, caller, readOnly) {
       try {
         const call = callScope();
