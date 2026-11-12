@@ -83,7 +83,7 @@ interface AdminEnvelope {
     next?: string | null;
     tables: Tables;
   };
-  error?: { code: string };
+  error?: { code: string; message?: string };
 }
 type Fetcher = { fetch: (request: Request, env: never) => Promise<Response> };
 type Options = {
@@ -8073,9 +8073,11 @@ async function restoreInto(
     Object.keys(tables).map((table) => [table, []]),
   );
   let got!: Awaited<ReturnType<F["admin"]>>;
+  let at = -1;
   try {
     for (const [i, part] of parts.entries()) {
       got = await t.admin("restore", JSON.stringify(part));
+      at = i;
       if (got.status !== 200) break;
       if (i === parts.length - 1) break;
       // Before the last page the project holds exactly the rows sent so far: no derived row, and not provisioned.
@@ -8088,7 +8090,7 @@ async function restoreInto(
     spy.mockRestore();
     quiet.mockRestore();
   }
-  return { t, got, parts, calls };
+  return { t, got, parts, calls, at };
 }
 async function refuses(
   trip: Trip,
@@ -8362,7 +8364,8 @@ for (const trip of TRIPS) {
     await createsNext(t, [13]);
   }, 60_000);
 
-  test(`a ${trip} restore reads duplicate type labels the way replay does, last label authoritative, and keeps the event text`, async () => {
+  // forge-1313: a repeated label is refused as a bad row; the duplicate-free history below is what keeps restoring.
+  test(`a ${trip} restore with duplicate type labels in its events is RESTORE_INVALID_ROW naming the first event, and leaves nothing`, async () => {
     const { f, tables: plain } = await projectWith((w) => {
       w.issue(10);
       w.put(issueKey(10), stored({ id: "work-10", title: "Renamed" }), 1);
@@ -8375,13 +8378,15 @@ for (const trip of TRIPS) {
     expect(tables.state_events!.map((row) => row.body)).not.toEqual(
       plain.state_events!.map((row) => row.body),
     );
-    const { t, got } = await restoreInto(trip, tables, { per: 1 });
-    expect(got.status).toBe(200);
-    expectFloor(t, tables, 10);
-    await createsNext(t, [11]);
+    const got = await refuses(trip, tables, "RESTORE_INVALID_ROW", 400, {
+      per: 1,
+    });
+    expect(got.json.error?.message).toBe(
+      `state_events row ["${WORK}","${issueKey(10)}"] is not valid state`,
+    );
   }, 60_000);
 
-  test(`a ${trip} restore of a deleted floor under duplicate type labels continues its revision, and its own dump restores again`, async () => {
+  test(`a ${trip} restore of a deleted floor under duplicate type labels is RESTORE_INVALID_ROW naming the floor event, and leaves nothing`, async () => {
     const { f, tables: plain } = await projectWith((w) => {
       w.issue(1);
       w.floor(floorAt(12));
@@ -8395,6 +8400,20 @@ for (const trip of TRIPS) {
     expect(tables.state_events!.map((row) => row.body)).not.toEqual(
       plain.state_events!.map((row) => row.body),
     );
+    const got = await refuses(trip, tables, "RESTORE_INVALID_ROW", 400, {
+      per: 1,
+    });
+    expect(got.json.error?.message).toBe(
+      `state_events row ["${WORK}","${FLOOR}"] is not valid state`,
+    );
+  }, 60_000);
+
+  test(`a ${trip} restore of a deleted floor continues at revision 3 with no repeated label, and its own dump restores again`, async () => {
+    const { tables } = await projectWith((w) => {
+      w.issue(1);
+      w.floor(floorAt(12));
+      w.drop(FLOOR, 1);
+    });
     const { t, got } = await restoreInto(trip, tables, { per: 1 });
     expect(got.status).toBe(200);
     // The floor update was revision 1 and its deletion 2, so the restored floor is revision 3.
@@ -8515,3 +8534,269 @@ for (const trip of TRIPS)
       expect([sql.slice(0, 80), rows <= 16]).toEqual([sql.slice(0, 80), true]);
     }
   }, 60_000);
+
+// forge-1313: a restore refuses a JSON body that repeats a label anywhere in it. JSON.parse keeps the last
+// label and SQLite json_extract the first, so the two would read the row differently. Each case edits one
+// row of a real project's rows and keeps the last value, so the repeated label is the only fault.
+const MARKER = "private-marker-1313";
+const labelled: Build = (w, owner) => {
+  w.issue(1);
+  w.put("note:nested", {
+    meta: { kind: "a" },
+    list: [{ id: 1 }],
+    secret: MARKER,
+  });
+  owner.acquire(
+    WORK,
+    "issue:work-9",
+    { actor, session: { id: "s1" } },
+    day,
+    "lease-1",
+  );
+  owner.put(WORK, issueKey(2), stored({ id: "work-2" }), actor, {
+    expectRevision: 0,
+    requestId: "put-1",
+  });
+};
+/** The labelled project plus two raw lease receipts, so every dumped table holds a row and one is not last. */
+async function labelledTables() {
+  const { tables } = await projectWith(labelled);
+  for (const id of ["dup-1", "dup-2"])
+    tables.domain_cloud_requests!.push({
+      request_id: id,
+      fingerprint: JSON.stringify({ route: "claim", subject: "issue:a" }),
+      outcome: "ok",
+      result: lease("issue:a"),
+    });
+  return tables;
+}
+const label = (from: string, to: string) => (text: string) =>
+  text.replace(from, to);
+const nested = label('"kind":"a"', '"kind":"b","kind":"a"');
+const inArray = label('{"id":1}', '{"id":0,"id":1}');
+const escaped = label('"kind":"a"', '"\\u006bind":"a","kind":"a"');
+const at = (name: string) => JSON.stringify([WORK, name]);
+type Pick = (row: Tables[string][number]) => boolean;
+const byKey =
+  (key: string): Pick =>
+  (row) =>
+    row.key === key;
+// [name, table, which row, column, the edit, the row the refusal names]
+const REPEATS: [
+  string,
+  string,
+  Pick,
+  string,
+  (text: string) => string,
+  string,
+][] = [
+  [
+    "event type",
+    "state_events",
+    byKey(issueKey(1)),
+    "body",
+    label('"type":', '"type":"ignored","type":'),
+    at(issueKey(1)),
+  ],
+  [
+    "record",
+    "state_records",
+    byKey(issueKey(1)),
+    "body",
+    label('"key":', '"key":"other","key":'),
+    at(issueKey(1)),
+  ],
+  [
+    "event nested object",
+    "state_events",
+    byKey("note:nested"),
+    "body",
+    nested,
+    at("note:nested"),
+  ],
+  [
+    "event object inside an array",
+    "state_events",
+    byKey("note:nested"),
+    "body",
+    inArray,
+    at("note:nested"),
+  ],
+  [
+    "event label spelled with an escape",
+    "state_events",
+    byKey("note:nested"),
+    "body",
+    escaped,
+    at("note:nested"),
+  ],
+  [
+    "record nested object",
+    "state_records",
+    byKey("note:nested"),
+    "body",
+    nested,
+    at("note:nested"),
+  ],
+  [
+    "record object inside an array",
+    "state_records",
+    byKey("note:nested"),
+    "body",
+    inArray,
+    at("note:nested"),
+  ],
+  [
+    "record label spelled with an escape",
+    "state_records",
+    byKey("note:nested"),
+    "body",
+    escaped,
+    at("note:nested"),
+  ],
+  [
+    "lease body",
+    "state_leases",
+    (row) => row.subject === "issue:work-9",
+    "body",
+    label('"generation":', '"generation":9,"generation":'),
+    at("issue:work-9"),
+  ],
+  [
+    "request result",
+    "state_requests",
+    (row) => row.request_id === "put-1",
+    "result",
+    label('"revision":', '"revision":9,"revision":'),
+    at("put-1"),
+  ],
+  [
+    "request fingerprint",
+    "state_requests",
+    (row) => row.request_id === "put-1",
+    "fingerprint",
+    label('"kind":"put"', '"kind":"get","kind":"put"'),
+    at("put-1"),
+  ],
+  [
+    "server receipt fingerprint",
+    "domain_cloud_requests",
+    (row) => row.request_id === "dup-1",
+    "fingerprint",
+    label('"route":"claim"', '"route":"renew","route":"claim"'),
+    "dup-1",
+  ],
+  [
+    "server receipt result",
+    "domain_cloud_requests",
+    (row) => row.request_id === "dup-1",
+    "result",
+    label('"generation":', '"generation":9,"generation":'),
+    "dup-1",
+  ],
+];
+
+for (const trip of TRIPS)
+  test(`a ${trip} restore of the same project with no repeated label restores it`, async () => {
+    const tables = await labelledTables();
+    const { t, got } = await restoreInto(trip, tables, { per: 1 });
+    expect(got.status).toBe(200);
+    expectFloor(t, tables, 2);
+  }, 60_000);
+
+for (const trip of TRIPS)
+  test(`a ${trip} restore of legal bodies keeps them exactly: spaces, escaped labels, sibling labels and label-like strings`, async () => {
+    const { tables } = await projectWith((w) => {
+      w.issue(1);
+      w.put("note:legal", {
+        a: { kind: "x" },
+        b: { kind: "x" },
+        list: [{ id: 1 }, { id: 1 }],
+        text: '{"id":1,"id":2} "kind": }{][',
+        escaped: "\\u006bind",
+        big: "x".repeat(100_000),
+      });
+    });
+    const edit = (
+      table: string,
+      key: string,
+      change: (text: string) => string,
+    ) => {
+      const row = tables[table]!.find(byKey(key))!;
+      row.body = change(String(row.body));
+    };
+    // Spaces after commas and an escaped spelling of a label that appears once are legal JSON.
+    const spaced = (text: string) => text.replaceAll(',"', ', "');
+    edit("state_events", issueKey(1), (text) =>
+      spaced(text).replace('"type":', '"\\u0074ype":'),
+    );
+    edit("state_records", issueKey(1), spaced);
+    const { t, got } = await restoreInto(trip, tables, { per: 1 });
+    expect(got.status).toBe(200);
+    expectFloor(t, tables, 1);
+  }, 60_000);
+
+// The route test the duplicate-labels counterfactual runs: one whole restore, one repeated event label.
+test("a whole restore with a duplicate event label is RESTORE_INVALID_ROW and leaves nothing", async () => {
+  const tables = await labelledTables();
+  const row = tables.state_events!.find(byKey(issueKey(1)))!;
+  row.body = String(row.body).replace('"type":', '"type":"ignored","type":');
+  const t = fixture(vars);
+  const got = await t.admin(
+    "restore",
+    JSON.stringify({ format: DUMP, tables }),
+  );
+  expect([got.status, got.json.error?.code]).toEqual([
+    400,
+    "RESTORE_INVALID_ROW",
+  ]);
+  expect(got.json.error?.message).toBe(
+    `state_events row ${at(issueKey(1))} is not valid state`,
+  );
+  expect((await t.admin("status")).json.value!.initialized).toBe(false);
+  expect(Object.values(tablesOf(t.db)).flat()).toEqual([]);
+}, 60_000);
+
+for (const trip of TRIPS)
+  for (const [name, table, pick, column, edit, row] of REPEATS)
+    test(`a ${trip} restore whose ${name} repeats a label is RESTORE_INVALID_ROW naming its row, and leaves nothing`, async () => {
+      const tables = await labelledTables();
+      const target = tables[table]!.find(pick)!;
+      const original = String(target[column]);
+      const repeated = edit(original);
+      expect(repeated).not.toBe(original);
+      // The last value is the original, so the repeated label is the only fault in the row.
+      expect(JSON.parse(repeated)).toEqual(JSON.parse(original));
+      target[column] = repeated;
+      const parts: Part[] =
+        trip === "whole" ? [{ format: DUMP, tables }] : pagesOf(tables, 1);
+      // On pages the repeated row is staged before the last page, which is where it is refused.
+      if (trip === "paged")
+        expect(
+          parts.findIndex((part) => part.tables[table]!.includes(target)),
+        ).toBeLessThan(parts.length - 1);
+      const {
+        t,
+        got,
+        at: refusedAt,
+      } = await restoreInto(trip, tables, { parts });
+      expect([got.status, got.json.error?.code]).toEqual([
+        400,
+        "RESTORE_INVALID_ROW",
+      ]);
+      expect(got.text).toContain('"retry":"never"');
+      expect(got.json.error?.message).toBe(
+        `${table} row ${row} is not valid state`,
+      );
+      expect(got.text).not.toContain(MARKER);
+      expect(got.text).not.toContain(repeated);
+      expect(refusedAt).toBe(parts.length - 1);
+      expect((await t.admin("status")).json.value!.initialized).toBe(false);
+      expect(Object.values(tablesOf(t.db)).flat()).toEqual([]);
+      expect(await t.storage.get("restore:next")).toBeUndefined();
+      // The refusal is clean: the unmodified rows restore into the same target from page 0.
+      target[column] = original;
+      const retry = await restoreInto(trip, tables, { per: 1, target: t });
+      expect(retry.got.status).toBe(200);
+      expect((await t.admin("status")).json.value!.initialized).toBe(true);
+    }, 60_000);
