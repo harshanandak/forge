@@ -1,5 +1,5 @@
 // Forge cloud as the authority for a cloud-bound project's `issue show`, `issue list`, `issue ready`, `issue create`,
-// `issue comment`, `issue update` and `issue claim`: chosen after the Runtime's own request checks and before any local project state opens. A bound project
+// `issue comment`, `issue update`, `issue claim`, `issue renew` and `issue release`: chosen after the Runtime's own request checks and before any local project state opens. A bound project
 // writes only through the cloud, never to a local store, and no device is created.
 import { nodeDeviceIdentity } from "../adapters/fs/device-identity.ts";
 import { createCloudHttp } from "../adapters/http/index.ts";
@@ -34,9 +34,11 @@ const CLOUD_SERVED: ReadonlySet<string> = new Set([
   "issue.comment",
   "issue.update",
   "issue.claim",
+  "issue.renew",
+  "issue.release",
 ]);
 
-/** On a bound project: show, list, ready, create, comment, update and claim go to the cloud, other work operations are refused (a second writer), other blocks stay local. */
+/** On a bound project: show, list, ready, create, comment, update, claim, renew and release go to the cloud, other work operations are refused (a second writer), other blocks stay local. */
 export function cloudRoute(
   blockId: string,
   declared: string,
