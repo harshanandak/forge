@@ -757,76 +757,40 @@ function expectAdded(
   expect({ ...after, floorEvents: after.floorEvents - 1 }).toEqual(before);
 }
 
-for (const op of ["comment", "checkpoint", "call"] as const) {
-  for (const [name, live, gone, expected] of [
-    ["the highest comment deleted", [1], [2], 3],
-    ["every comment deleted", [], [1, 2], 3],
-    ["a deleted suffix past 9", [9], [10], 11],
-    ["sparse live suffixes", [1, 3], [], 4],
+for (const op of ["comment", "checkpoint", "call", "link"] as const) {
+  const kind = op === "link" ? "link" : "comment";
+  for (const [name, live, gone, expected, warm] of [
+    ["the highest child deleted", [1], [2], 3, false],
+    ["every child deleted", [], [1, 2], 3, false],
+    ["a deleted suffix past 9", [9], [10], 11, false],
+    ["sparse live suffixes 1 and 3", [1, 3], [], 4, false],
+    ["a floor exists and the highest child is deleted", [1], [2], 3, true],
   ] as const)
     test(
-      `issue.${op} after ${name} appends comment suffix ${expected} and advances only the floor`,
+      `issue.${op} after ${name} appends ${kind} suffix ${expected} and advances only the floor`,
       run((f) => {
         f.seed([issue(1)]);
-        past(f, "comment", live, gone);
-        noise(f);
-        const before = snapshot(f, "comment", live, gone);
-        expectAdded(f, "comment", add(f, op), expected, before, live, gone);
+        past(f, kind, live, warm ? [] : gone);
+        if (!warm) noise(f);
+        const view = kind === "link" ? held(f, lend(f)) : f.state;
+        if (warm) {
+          expect(add(f, kind, view)).toBe(`${prefixOf(kind)}2`);
+          f.owner.delete(namespace, `${prefixOf(kind)}2`, actor, {
+            expectRevision: 1,
+          });
+        }
+        const before = snapshot(f, kind, live, gone);
+        const key = add(f, op, view);
+        expectAdded(f, kind, key, expected, before, live, gone);
+        if (op === "link")
+          expect(f.owner.get(namespace, key)?.value).toEqual({
+            id: "work-1",
+            ...inputs.link,
+          });
       }),
       30_000,
     );
-  test(
-    `issue.${op} after a floor exists and the highest comment is deleted appends above it`,
-    run((f) => {
-      f.seed([issue(1)]);
-      past(f, "comment", [1], []);
-      expect(add(f, "comment")).toBe("comment:work-1:2");
-      f.owner.delete(namespace, "comment:work-1:2", actor, {
-        expectRevision: 1,
-      });
-      const before = snapshot(f, "comment", [1], [2]);
-      expectAdded(f, "comment", add(f, op), 3, before, [1], [2]);
-    }),
-    30_000,
-  );
 }
-
-for (const [name, live, gone, expected] of [
-  ["the highest link deleted", [1], [2], 3],
-  ["every link deleted", [], [1, 2], 3],
-  ["a deleted suffix past 9", [9], [10], 11],
-  ["sparse live suffixes 1 and 3", [1, 3], [], 4],
-] as const)
-  test(
-    `issue.link after ${name} appends suffix ${expected} under the held lease`,
-    run((f) => {
-      f.seed([issue(1)]);
-      past(f, "link", live, gone);
-      noise(f);
-      const lease = lend(f);
-      const before = snapshot(f, "link", live, gone);
-      const key = add(f, "link", held(f, lease));
-      expectAdded(f, "link", key, expected, before, live, gone);
-      expect(f.owner.get(namespace, key)?.value).toEqual({
-        id: "work-1",
-        ...inputs.link,
-      });
-    }),
-    30_000,
-  );
-test(
-  "issue.link after a floor exists and the highest link is deleted appends above it",
-  run((f) => {
-    f.seed([issue(1)]);
-    past(f, "link", [1], []);
-    const view = held(f, lend(f));
-    expect(add(f, "link", view)).toBe("link:work-1:2");
-    f.owner.delete(namespace, "link:work-1:2", actor, { expectRevision: 1 });
-    const before = snapshot(f, "link", [1], [2]);
-    expectAdded(f, "link", add(f, "link", view), 3, before, [1], [2]);
-  }),
-  30_000,
-);
 
 for (const kind of ["comment", "link"] as const)
   test(

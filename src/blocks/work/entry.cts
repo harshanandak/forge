@@ -595,6 +595,22 @@ function checked(state: LeaseStateClient, written: StateRecord): StateRecord {
     );
   return written;
 }
+/** Appends under a numbered prefix: the owner picks the number and advances its floor in the write's own transaction. */
+function appendNext(
+  state: LeaseStateClient,
+  prefix: string,
+  value: unknown,
+  subject?: string,
+): StateRecord {
+  return checked(
+    state,
+    state.putNext(
+      prefix,
+      () => ({ value }),
+      subject === undefined ? undefined : { subject },
+    ),
+  );
+}
 function checkKind(kind: string | undefined): void {
   if (kind !== undefined && !kinds.includes(kind))
     fail(
@@ -5442,8 +5458,6 @@ const operations: Operations<WorkOperations> = {
           pull.url,
         );
       if (!matching) {
-        const prefix = `comment:${id}:`,
-          commentId = prefix + (state.count(prefix) + 1);
         const written = recovering
           ? state.appendLandingComment({
               id,
@@ -5451,7 +5465,7 @@ const operations: Operations<WorkOperations> = {
               receipt,
               generation: generation!,
             })
-          : persist(state, commentId, { id, body: note }, 0, key(id));
+          : appendNext(state, `comment:${id}:`, { id, body: note }, key(id));
         Object.assign(progressState, { commentId: written.key });
         save();
       }
@@ -6425,10 +6439,11 @@ const operations: Operations<WorkOperations> = {
     const ids = idsFor(state, config);
     const id = ids.stored(input.id);
     get(state, id, input.id);
-    const prefix = `comment:${id}:`;
-    const commentId = `${prefix}${state.count(prefix) + 1}`;
-    persist(state, commentId, { id, body: input.body }, 0);
-    return { id: ids.shown(id), commentId };
+    const written = appendNext(state, `comment:${id}:`, {
+      id,
+      body: input.body,
+    });
+    return { id: ids.shown(id), commentId: written.key };
   },
   "issue.call": ({ input, services, config }) => {
     const state = client(services);
@@ -6445,20 +6460,31 @@ const operations: Operations<WorkOperations> = {
         `Intent ${ids.shown(id)} is limited to 60 calls and 30 hours`,
       );
     const call = used + 1;
-    const commentId = `${prefix}${comments.length + 1}`;
-    const written = persist(
+    const written = checked(
       state,
-      commentId,
-      {
-        id,
-        body: `call ${call} ${input.role}${input.route === undefined ? "" : ` ${input.route}`}`,
-        call,
-      },
-      0,
+      state.putNext(prefix, () => {
+        // The budget was read before the lock: the comments it came from must still be the whole sequence.
+        const highest = Number(comments.at(-1)?.key.slice(prefix.length) ?? 0);
+        if (
+          state.count(prefix) !== comments.length ||
+          state.maxNumber(prefix) !== highest
+        )
+          fail(
+            "REVISION_CONFLICT",
+            "Calls changed while this call was read; retry",
+          );
+        return {
+          value: {
+            id,
+            body: `call ${call} ${input.role}${input.route === undefined ? "" : ` ${input.route}`}`,
+            call,
+          },
+        };
+      }),
     );
     return {
       id: ids.shown(id),
-      commentId,
+      commentId: written.key,
       call,
       left: 60 - call,
       timeboxMinutes: Math.min(45, minutes),
@@ -6476,19 +6502,12 @@ const operations: Operations<WorkOperations> = {
     if (!length || length > 300)
       fail("INPUT_INVALID", "Checkpoint next must contain 1-300 characters");
     const { id: _given, ...checkpoint } = input;
-    const prefix = `comment:${id}:`;
-    const commentId = `${prefix}${state.count(prefix) + 1}`;
-    persist(
-      state,
-      commentId,
-      {
-        id,
-        body: `checkpoint ${input.step}${input.head ? ` ${input.head}` : ""} next: ${input.next}`,
-        checkpoint,
-      },
-      0,
-    );
-    return { id: ids.shown(id), commentId };
+    const written = appendNext(state, `comment:${id}:`, {
+      id,
+      body: `checkpoint ${input.step}${input.head ? ` ${input.head}` : ""} next: ${input.next}`,
+      checkpoint,
+    });
+    return { id: ids.shown(id), commentId: written.key };
   },
   "issue.resume": ({ input, services, config }) => {
     const state = client(services);
@@ -6595,14 +6614,7 @@ const operations: Operations<WorkOperations> = {
     get(state, id, input.id);
     if (!/^https?:\/\/[^\s/]+(?:\/[^\s]*)?$/.test(input.url))
       fail("INPUT_INVALID", "Links require an http or https URL");
-    const prefix = `link:${id}:`;
-    return persist(
-      state,
-      `${prefix}${state.count(prefix) + 1}`,
-      { ...input, id },
-      0,
-      key(id),
-    );
+    return appendNext(state, `link:${id}:`, { ...input, id }, key(id));
   },
   "issue.links": ({ input, services, config }) => {
     const state = client(services);

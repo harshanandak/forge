@@ -274,6 +274,13 @@ jobs:
           restore_cf outside cloud/src/dump.ts 's/(export function restoreDump\([^{]*\{\n  )return db\.transaction\(/$1const counted = db.transaction(/; s/    settleFloor\(db, owner, limits, restored\);\n    return counts\(dump\.tables\);\n  \}\);/    globalThis.restoredFor = restored;\n    return counts(dump.tables);\n  });\n  settleFloor(db, owner, limits, globalThis.restoredFor);\n  return counted;/' "whole restore whose floor record fails" 'tablesOf(failed.t.db)'
           # Without the replay's verified floor revision, the seed reads the first duplicate type label and reuses a deleted floor's revision.
           restore_cf unrevised src/core/state/index.ts 's/        found\.floorRevision,\n/        undefined,\n/' "whole restore of a deleted floor under duplicate type labels" 'record?.revision'
+          # Counterfactuals for comment and link numbers after a delete (forge-1306). Numbering from the live count instead
+          # of the floor must return the reused suffix at the explicit key comparison of each route test, after a valid 200.
+          restore_cf reused src/core/state/index.ts 's/const number = last \+ 1;/const number = this.count(namespace, prefix) + 1;/' "cloud comment after deleted highest allocates above it" 'FAMILY[kind].key(got.json.result)).toBe(key)'
+          restore_cf reusedlink src/core/state/index.ts 's/const number = last \+ 1;/const number = this.count(namespace, prefix) + 1;/' "cloud link after deleted highest allocates above it" 'FAMILY[kind].key(got.json.result)).toBe(key)'
+          # Leaving only the comment and link groups out of the restore fold leaves the issue floor and all validation active:
+          # the deleted child floors are then absent at their explicit readback, before any append could derive them.
+          restore_cf families cloud/src/dump.ts 's/  family: FAMILY,\n//' "whole restore derives both deleted child floors before any append" 'numRow(t, numKey(kind))?.value'
       - name: wrangler log
         if: failure()
         run: tail -n 100 "$RUNNER_TEMP"/wrangler-*.log || true

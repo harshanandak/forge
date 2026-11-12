@@ -542,8 +542,16 @@ function insertRows(db: SqlDatabase, tables: Record<string, Row[]>): void {
 }
 
 // The allocator's floor: the work block numbers issues as `issue:work-<n>` in forge/work, and a floor record
-// holds the highest number ever given. Only this file names them; the state owner takes both as arguments.
-const NUMBERED = { namespace: "forge/work", prefix: "issue:work-" };
+// holds the highest number ever given. Comments and links are numbered per issue the same way, so each
+// observed `comment:<id>:` and `link:<id>:` has its own floor. Only this file names them; the state owner
+// takes the issue prefix and the family of the others as arguments.
+const FAMILY = (key: string) =>
+  /^((?:comment|link):[^:]+:)[1-9][0-9]*$/.exec(key)?.[1];
+const NUMBERED = {
+  namespace: "forge/work",
+  prefix: "issue:work-",
+  family: FAMILY,
+};
 const SEEDER = { kind: "agent", id: "cloud-restore" } as const;
 
 // The row checks of a restore, over every row now in the project (a whole dump, or all staged pages):
@@ -568,8 +576,10 @@ function verifyRestored(db: SqlDatabase): {
 }
 
 // The last step of a restore, in its transaction: a supplied floor is checked and kept as it is, and a
-// missing one is written (0 when nothing was ever numbered). Then the project is measured again, so the
-// written pair has the same budgets as the rows that came in.
+// missing one is written (0 when nothing was ever numbered for issues), the issue floor first and then
+// each observed comment and link floor in prefix order. Each written pair is one more event, so the next
+// seed is told the count including it. Then the project is measured again, so the written pairs have the
+// same budgets as the rows that came in.
 function settleFloor(
   db: SqlDatabase,
   owner: StateOwner,
@@ -577,13 +587,15 @@ function settleFloor(
   restored: { found: NumberedSummary; events: number },
 ): void {
   try {
-    owner.seedNumberFloor(
-      NUMBERED.namespace,
-      NUMBERED.prefix,
-      restored.found,
-      SEEDER,
-      restored.events,
-    );
+    let events = restored.events;
+    for (const [prefix, found] of [
+      [NUMBERED.prefix, restored.found] as const,
+      ...(restored.found.groups ?? []),
+    ])
+      if (
+        owner.seedNumberFloor(NUMBERED.namespace, prefix, found, SEEDER, events)
+      )
+        events++;
   } catch (error) {
     if (error instanceof RestoreConsistencyFailure)
       throw rejectedRow(error.table, error.key);

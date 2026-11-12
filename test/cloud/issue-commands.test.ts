@@ -6369,26 +6369,12 @@ async function add(
   return got;
 }
 
+// The route test the CI counterfactual runs by name: the returned key is compared after a valid 200 setup.
 for (const kind of NUMBERED)
   test(`cloud ${kind} after deleted highest allocates above it`, async () => {
     for (const floors of [false, true]) {
       const { f, token } = await accepted([1], [2], floors);
-      const got = await f.send(FAMILY[kind].send("n-1"), { token });
-      expect([floors, got.status, got.exit]).toEqual([floors, 200, 0]);
-      expect([floors, FAMILY[kind].key(got.json.result)]).toEqual([
-        floors,
-        `${kind}:work-1:3`,
-      ]);
-      // The deleted child stays deleted and keeps its history; the new one is a first revision.
-      expect(rowsOf(f.db, "forge/work").map((r) => r.key)).not.toContain(
-        `${kind}:work-1:2`,
-      );
-      expect(
-        eventsOf(f.db, "forge/work").filter((e) =>
-          e.includes(seqKeyed(`${kind}:work-1:2`)),
-        ),
-      ).toHaveLength(2);
-      expect(seqFloor(f, kind)).toEqual(seqAt(kind, 1, 3));
+      await add(kind, f, token, "n-1", 3);
     }
   }, 60_000);
 

@@ -3554,16 +3554,33 @@ const NUMBERS_NAME =
   "comment and link numbers survive deleted history, restore and concurrent adds";
 const NUMBERS_RESTART_NAME =
   "comment and link floors survive a restart, and later adds continue above them";
-// Every comment and link family the legacy source holds, and the floors a restore derives for it: the highest number
-// ever accepted (live or deleted) of each, at revision 1. work-3 has no comment history, so no comment floor.
-const SETTLED: Record<string, readonly [string, number, number]> = {
-  "allocation:comment:work-1:": ["comment:work-1:", 10, 1],
-  "allocation:comment:work-2:": ["comment:work-2:", 5, 1],
+// The floors of the legacy source's families, as { key: [prefix, number, revision] }: work-1 holds comment and link
+// history, work-2 has less, and work-3 only links, so it has no comment floor. `numbers` and `revisions` are in the
+// order comment 1, comment 2, link 1, link 2, link 3; the issue floor is always 3 at revision 1.
+const FAMILIES = [
+  ["comment", 1],
+  ["comment", 2],
+  ["link", 1],
+  ["link", 2],
+  ["link", 3],
+] as const;
+const floorsFor = (
+  numbers: readonly number[],
+  revisions: readonly number[],
+): Record<string, readonly [string, number, number]> => ({
   "allocation:issue:work-": ["issue:work-", 3, 1],
-  "allocation:link:work-1:": ["link:work-1:", 10, 1],
-  "allocation:link:work-2:": ["link:work-2:", 3, 1],
-  "allocation:link:work-3:": ["link:work-3:", 3, 1],
-};
+  ...Object.fromEntries(
+    FAMILIES.map(([kind, n], i) => [
+      `allocation:${kind}:work-${n}:`,
+      [`${kind}:work-${n}:`, numbers[i]!, revisions[i]!],
+    ]),
+  ),
+});
+// What a restore derives: the highest number ever accepted (live or deleted) of each family, at revision 1.
+const SETTLED = floorsFor([10, 5, 10, 3, 3], [1, 1, 1, 1, 1]);
+// After the first typed adds and races, and after the restart's adds.
+const AFTER_ADDS = floorsFor([13, 6, 13, 4, 4], [4, 2, 4, 2, 2]);
+const AFTER_RESTART = floorsFor([14, 7, 14, 5, 4], [5, 3, 5, 3, 2]);
 interface Numbered {
   readonly namespace: string;
   readonly key: string;
@@ -3598,6 +3615,8 @@ const storedAt = (dump: Dump, key: string): Numbered | null => {
   const text = recordsOf(dump, "forge/work", key)[0]?.body;
   return typeof text === "string" ? (JSON.parse(text) as Numbered) : null;
 };
+const ok = (reply: { status: number; body: unknown }): void =>
+  assert.equal(reply.status, 200, JSON.stringify(reply.body).slice(0, 300));
 const rowsIn = (
   dump: Dump,
   table: string,
@@ -3773,23 +3792,14 @@ if (phase === "numbers") {
         "restore",
         JSON.stringify(source.doc),
       );
-      assert.equal(
-        restored.status,
-        200,
-        JSON.stringify(restored.body).slice(0, 300),
-      );
+      ok(restored);
       await step(
         "whole restore derives every comment and link floor",
         async () => settledOk(await dumpOf(typedProject)),
       );
       const parts = cut(source.tables, 3);
       for (const [i, part] of parts.entries()) {
-        const reply = await sendPage(pagedTarget, part);
-        assert.equal(
-          reply.status,
-          200,
-          JSON.stringify(reply.body).slice(0, 300),
-        );
+        ok(await sendPage(pagedTarget, part));
         assert.equal(await initialized(pagedTarget), i === parts.length - 1);
       }
       await step(
@@ -3797,7 +3807,7 @@ if (phase === "numbers") {
         async () => settledOk(await dumpOf(pagedTarget)),
       );
 
-      // 2. Devices after the restore. Two clients act as one holder; the holder takes the lease of each issue it links.
+      // 2. Devices after the restore. Two clients race; links all come from the one device that holds the lease of each issue it links.
       const a = await callerFor("numbers", false);
       const b: Caller = {
         ...a,
@@ -3843,7 +3853,7 @@ if (phase === "numbers") {
         landed(a, noteCall(a, "n-c1-12", ids[0]!)),
         landed(b, noteCall(b, "n-c1-13", ids[0]!)),
         landed(a, linkCall(a, g(1), "n-l1-12", ids[0]!)),
-        landed(b, linkCall(b, g(1), "n-l1-13", ids[0]!)),
+        landed(a, linkCall(a, g(1), "n-l1-13", ids[0]!)),
       ]);
       await step("concurrent adds get distinct consecutive suffixes", () =>
         same(
@@ -3930,14 +3940,7 @@ if (phase === "numbers") {
             delta.kept && delta.oldEvents,
             "an earlier row or event changed",
           );
-          same("floors", floorsOf(afterAdds), {
-            "allocation:comment:work-1:": ["comment:work-1:", 13, 4],
-            "allocation:comment:work-2:": ["comment:work-2:", 6, 2],
-            "allocation:issue:work-": ["issue:work-", 3, 1],
-            "allocation:link:work-1:": ["link:work-1:", 13, 4],
-            "allocation:link:work-2:": ["link:work-2:", 4, 2],
-            "allocation:link:work-3:": ["link:work-3:", 4, 2],
-          });
+          same("floors", floorsOf(afterAdds), AFTER_ADDS);
           same(
             "leases",
             rowsIn(afterAdds, "state_leases"),
@@ -3998,7 +4001,7 @@ if (phase === "numbers") {
         "restore",
         JSON.stringify({ format: whole.format, tables: whole.tables }),
       );
-      assert.equal(sent.status, 200, JSON.stringify(sent.body).slice(0, 300));
+      ok(sent);
       await step(
         "a second restore reads back every row and floor unchanged",
         async () => {
@@ -4007,12 +4010,7 @@ if (phase === "numbers") {
         },
       );
       for (const part of await pagesOf(typedProject)) {
-        const reply = await sendPage(joinedTarget, part);
-        assert.equal(
-          reply.status,
-          200,
-          JSON.stringify(reply.body).slice(0, 300),
-        );
+        ok(await sendPage(joinedTarget, part));
       }
       await step(
         "a paged second restore reads back every row and floor unchanged",
@@ -4047,14 +4045,7 @@ if (phase === "numbers-restart") {
         nameOf(await dumpOf(typedProject)),
         kept,
       );
-      same("settled floors", floorsOf(await dumpOf(typedProject)), {
-        "allocation:comment:work-1:": ["comment:work-1:", 13, 4],
-        "allocation:comment:work-2:": ["comment:work-2:", 6, 2],
-        "allocation:issue:work-": ["issue:work-", 3, 1],
-        "allocation:link:work-1:": ["link:work-1:", 13, 4],
-        "allocation:link:work-2:": ["link:work-2:", 4, 2],
-        "allocation:link:work-3:": ["link:work-3:", 4, 2],
-      });
+      same("settled floors", floorsOf(await dumpOf(typedProject)), AFTER_ADDS);
       const a = await callerFor("numbers-restart", false);
       const ids = [1, 2].map((n) => `${prefix}-${n}`);
       const leases: number[] = [];
@@ -4075,14 +4066,11 @@ if (phase === "numbers-restart") {
         "comment:work-2:7",
         "link:work-2:5",
       ]);
-      same("floors after the adds", floorsOf(await dumpOf(typedProject)), {
-        "allocation:comment:work-1:": ["comment:work-1:", 14, 5],
-        "allocation:comment:work-2:": ["comment:work-2:", 7, 3],
-        "allocation:issue:work-": ["issue:work-", 3, 1],
-        "allocation:link:work-1:": ["link:work-1:", 14, 5],
-        "allocation:link:work-2:": ["link:work-2:", 5, 3],
-        "allocation:link:work-3:": ["link:work-3:", 4, 2],
-      });
+      same(
+        "floors after the adds",
+        floorsOf(await dumpOf(typedProject)),
+        AFTER_RESTART,
+      );
     },
     120_000,
   );

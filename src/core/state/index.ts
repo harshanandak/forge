@@ -515,6 +515,8 @@ export class RestoreConsistencyFailure extends ForgeFailure {
 export interface NumberedRequest {
   readonly namespace: string;
   readonly prefix: string;
+  /** Also report every other prefix this maps a numbered key in `namespace` to; the caller names them, never core. */
+  readonly family?: (key: string) => string | undefined;
 }
 /**
  * The highest number any accepted record under the prefix ever held, the highest earlier floor value, and the
@@ -524,6 +526,8 @@ export interface NumberedSummary {
   readonly highest: number;
   readonly earlier: number;
   readonly floorRevision: number;
+  /** With a `family`, one summary per other observed prefix, in prefix order. */
+  readonly groups?: ReadonlyMap<string, NumberedSummary>;
 }
 /** The number after `prefix` when it is a positive decimal (the rule #highest applies in SQL); an unsafe one is refused. */
 function suffixNumber(key: string, prefix: string): number | undefined {
@@ -618,20 +622,39 @@ export function verifyEventDerivedState(
       plans.set(id, false);
     }
   }
-  // Two numbers folded from rows as they are verified: never the events or the keys themselves.
-  let highest = 0;
-  let earlier = 0;
+  // Two numbers per observed prefix, folded from rows as they are verified: never the events or the keys themselves.
+  const tally = new Map<string, { highest: number; earlier: number }>();
+  const slot = (prefix: string) => {
+    if (!tally.has(prefix)) tally.set(prefix, { highest: 0, earlier: 0 });
+    return tally.get(prefix)!;
+  };
+  if (numbered) slot(numbered.prefix);
+  // A floor key names its prefix; any other key belongs to the prefix its number follows.
+  const groupOf = (namespace: string, name: string, floor: boolean) => {
+    if (numbered?.namespace !== namespace) return undefined;
+    const prefix = floor ? name.slice("allocation:".length) : name;
+    if (floor && !name.startsWith("allocation:")) return undefined;
+    if (floor ? prefix === numbered.prefix : name.startsWith(numbered.prefix))
+      return numbered.prefix;
+    const family = numbered.family?.(floor ? `${prefix}1` : name);
+    return !floor || family === prefix ? family : undefined;
+  };
   const number = (namespace: string, name: string): void => {
-    if (numbered?.namespace === namespace)
-      highest = Math.max(highest, suffixNumber(name, numbered.prefix) ?? 0);
+    const prefix = groupOf(namespace, name, false);
+    if (prefix !== undefined)
+      slot(prefix).highest = Math.max(
+        slot(prefix).highest,
+        suffixNumber(name, prefix) ?? 0,
+      );
   };
   const reserved = (event: StateEvent): void => {
-    if (
-      numbered?.namespace === event.namespace &&
-      event.key === `allocation:${numbered.prefix}`
-    )
+    const prefix = groupOf(event.namespace, event.key, true);
+    if (prefix !== undefined)
       try {
-        earlier = Math.max(earlier, floorNumber(event.data, numbered.prefix));
+        slot(prefix).earlier = Math.max(
+          slot(prefix).earlier,
+          floorNumber(event.data, prefix),
+        );
       } catch {
         // A value that is not a floor reserves nothing.
       }
@@ -949,16 +972,25 @@ export function verifyEventDerivedState(
     verifyRequest,
   );
   if (requests.size) reject("state_requests", requests.values().next().value!);
-  return numbered === undefined
-    ? undefined
-    : {
-        highest,
-        earlier,
-        floorRevision:
-          recordRevisions.get(
-            key(numbered.namespace, `allocation:${numbered.prefix}`),
-          ) ?? 0,
-      };
+  if (numbered === undefined) return undefined;
+  const summary = (prefix: string): NumberedSummary => ({
+    ...tally.get(prefix)!,
+    floorRevision:
+      recordRevisions.get(key(numbered.namespace, `allocation:${prefix}`)) ?? 0,
+  });
+  const others = [...tally.keys()].filter(
+    (prefix) => prefix !== numbered.prefix,
+  );
+  return {
+    ...summary(numbered.prefix),
+    ...(numbered.family === undefined
+      ? {}
+      : {
+          groups: new Map(
+            others.sort().map((prefix) => [prefix, summary(prefix)] as const),
+          ),
+        }),
+  };
 }
 
 // Only these ledgers contain setup metadata that restore may replace in a nonempty store.
@@ -1437,6 +1469,7 @@ export class StateOwner {
    * one is written at the highest number and after the revision the replay verified for that key, in the
    * restore's own transaction, then read back whole: the event by its known sequence (`events` is the
    * replay's event count) and the record with its indexed columns. The refusals are RestoreConsistencyFailure.
+   * Returns whether it wrote a floor, so the caller advances `events` only for a pair that now exists.
    */
   seedNumberFloor(
     namespace: string,
@@ -1444,13 +1477,13 @@ export class StateOwner {
     found: NumberedSummary,
     actor: Actor,
     events: number,
-  ): void {
+  ): boolean {
     namespaceValid(namespace);
     wellFormedText(prefix, "Prefix");
     const floorKey = `allocation:${prefix}`;
     keyValid(floorKey);
     if (!validateActor(actor).ok) invalid("Invalid actor");
-    this.#db.transaction(() => {
+    return this.#db.transaction(() => {
       const refuse = () =>
         new RestoreConsistencyFailure(
           "state_records",
@@ -1465,7 +1498,7 @@ export class StateOwner {
       const needed = Math.max(found.highest, found.earlier);
       if (stored !== undefined) {
         if (stored < needed) throw refuse();
-        return;
+        return false;
       }
       const record = this.#apply(
         namespace,
@@ -1496,6 +1529,7 @@ export class StateOwner {
         String(saved.body) !== json(record)
       )
         throw new Error("The restored floor did not read back");
+      return true;
     });
   }
 
