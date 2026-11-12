@@ -669,9 +669,14 @@ test("issue.update through the CLI dispatch as a dry run is UNAVAILABLE and send
     expect(sent(r)).not.toContain("issue.update");
   }));
 
-const NO_CONTRACT = "This profile has no dry-run execution contract.";
-const dryRefused = (result: Awaited<ReturnType<typeof edit>>) => {
-  expect(result).toMatchObject({ error: { message: NO_CONTRACT } });
+/** The runtime's own preflight refusal, which a bound project reaches today (src/core/runtime/index.ts). */
+const NO_CONTRACT = "this profile has no dry-run execution contract";
+/** Requests are counted first: a refusal that came after a hidden cloud read is not the refusal this expects. */
+const dryRefused = (r: Rig, result: Awaited<ReturnType<typeof edit>>) => {
+  expect(r.net.calls).toHaveLength(0);
+  expect(result).toMatchObject({
+    error: { code: "UNAVAILABLE", message: NO_CONTRACT, retry: "never" },
+  });
   expect(failed(result, "UNAVAILABLE")).toBe(1);
 };
 /** A bound dry run is refused at admission: not even the hidden show that fills a missing generation goes out. */
@@ -682,8 +687,7 @@ for (const op of ["issue.update", "issue.renew", "issue.release", "issue.dep"])
   ] as const)
     test(`${op} as a dry run with ${name} on a bound project is refused before any cloud request`, () =>
       using({ steps: [live] }, async (r) => {
-        dryRefused(await edit(r, op, holding(r, own), true, INPUTS[op]));
-        expect(r.net.calls).toHaveLength(0);
+        dryRefused(r, await edit(r, op, holding(r, own), true, INPUTS[op]));
       }));
 
 for (const [op, input] of [
@@ -693,8 +697,7 @@ for (const [op, input] of [
 ] as const)
   test(`${op} as a dry run through dispatch on a bound project is refused before any cloud request`, () =>
     using({ steps: [() => answer(PAGE, op)] }, async (r) => {
-      dryRefused(await edit(r, op, holding(r), true, input));
-      expect(r.net.calls).toHaveLength(0);
+      dryRefused(r, await edit(r, op, holding(r), true, input));
     }));
 
 test("through MCP catalog_call and the direct tool, a held dry run on a bound project is refused before any cloud request", () =>
@@ -703,6 +706,7 @@ test("through MCP catalog_call and the direct tool, a held dry run on a bound pr
     const expose = { expose: ["issue"] };
     const handlers = createMcpHandlers(r.assembly.catalog, expose, { context });
     dryRefused(
+      r,
       (await handlers.callTool("catalog_call", {
         op: "issue.update",
         input: UPDATE,
@@ -713,8 +717,10 @@ test("through MCP catalog_call and the direct tool, a held dry run on a bound pr
       context,
       dryRun: true,
     });
-    dryRefused((await direct.callTool(mcpToolName("issue.update")!, UPDATE))!);
-    expect(r.net.calls).toHaveLength(0);
+    dryRefused(
+      r,
+      (await direct.callTool(mcpToolName("issue.update")!, UPDATE))!,
+    );
   }));
 
 test("through the CLI wrapper, issue update --dry-run on a bound project is refused before any cloud request", () =>
@@ -724,19 +730,23 @@ test("through the CLI wrapper, issue update --dry-run on a bound project is refu
       ["issue", "update", "--input", JSON.stringify(UPDATE), "--dry-run"],
       { caller: "agent", context: holding(r) },
     );
-    dryRefused(done.envelope);
+    dryRefused(r, done.envelope);
     expect(done.exitCode).toBe(1);
-    expect(r.net.calls).toHaveLength(0);
   }));
 
 for (const [op, input] of [
   ["issue.update", UPDATE],
   ["issue.close", { id: "forge-1", withoutReceipt: "guard" }],
 ] as const)
-  test(`${op} as a dry run on an unbound project sends no cloud request and is not the cloud refusal`, () =>
+  test(`${op} as a dry run on an unbound project is the local runtime's own refusal and sends no cloud request`, () =>
     using({ bind: false, creds: false, sentinel: false }, async (r) => {
       const result = await edit(r, op, holding(r), true, input);
-      expect(JSON.stringify(result)).not.toContain(NO_CONTRACT);
+      expect(result).toMatchObject({
+        ok: false,
+        status: "FAIL",
+        error: { code: "UNAVAILABLE", message: NO_CONTRACT },
+      });
+      expect(exitCode(result)).toBe(1);
       expect(r.net.calls).toHaveLength(0);
     }));
 
