@@ -36,6 +36,9 @@ jobs:
       CLOUD_BASE: http://127.0.0.1:8787
       # A throwaway admin token for this job only; no deployed Worker uses it.
       CLOUD_ADMIN_TOKEN: ci-conformance-admin-token
+      # The one project the typed /command route admits, and the prefix its issue ids show.
+      FORGE_CLOUD_PROJECT: ci-commands
+      FORGE_CLOUD_ID_PREFIX: ci
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -57,7 +60,7 @@ jobs:
           export CONFORMANCE_STATE="$RUNNER_TEMP/conformance-state.json"
           persist="$RUNNER_TEMP/wrangler-state"
           start() {
-            bun x wrangler dev --local --config wrangler.test.jsonc --var ADMIN_TOKEN:"$CLOUD_ADMIN_TOKEN" --persist-to "$persist" > "$RUNNER_TEMP/wrangler-$1.log" 2>&1 &
+            bun x wrangler dev --local --config wrangler.test.jsonc --var ADMIN_TOKEN:"$CLOUD_ADMIN_TOKEN" --var FORGE_CLOUD_PROJECT:"$FORGE_CLOUD_PROJECT" --var FORGE_CLOUD_ID_PREFIX:"$FORGE_CLOUD_ID_PREFIX" --persist-to "$persist" > "$RUNNER_TEMP/wrangler-$1.log" 2>&1 &
             echo $! > "$RUNNER_TEMP/wrangler.pid"
             for _ in $(seq 1 60); do
               if curl -s -o /dev/null "$CLOUD_BASE/p/ready/holder?subject=ready"; then return 0; fi
