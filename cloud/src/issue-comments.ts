@@ -1,6 +1,7 @@
 // Reads one issue's comments and writes nothing. Same read-only views and fixed statements as show and
 // list, and no lease. The issue must exist; its comments are scanned for key and size before any body
-// is loaded, so an issue over the row or byte budget is refused, never read partly. Every stored
+// is loaded, so an issue over the row budget, or over the response cap in stored bytes (a reply over it
+// is refused anyway), is refused, never read partly. Every stored
 // record is untrusted and checked whole: any bad row refuses the read. Parity with the local read
 // holds within these cloud limits: full records, in append-number order, with no pagination.
 import manifest from "../../src/blocks/work/forge.block.json" with { type: "json" };
@@ -14,6 +15,7 @@ import {
   invalid,
   issueRecord,
   MAX_RECORD_BYTES,
+  MAX_SHOW_RESPONSE_BYTES,
   minted,
   parseBody,
   ROWS,
@@ -22,7 +24,7 @@ import {
   storedId,
   type IssueViews,
 } from "./issue-read.ts";
-import { MAX_SCAN_BYTES, MAX_SCAN_ROWS } from "./issue-list.ts";
+import { MAX_SCAN_ROWS } from "./issue-list.ts";
 
 const NAMESPACE = "forge/work";
 const comments = manifest.operations["issue.comments"];
@@ -54,12 +56,13 @@ export function listComments(
   const start = `comment:${id}:`;
   const range = [NAMESPACE, start, `comment:${id};`, MAX_SCAN_ROWS + 1];
   const sizes = views.records?.all(SCAN, range) ?? [];
+  if (sizes.some((row) => Number(row.size) > MAX_RECORD_BYTES)) throw invalid();
   if (
     sizes.length > MAX_SCAN_ROWS ||
-    sizes.reduce((sum, row) => sum + Number(row.size), 0) > MAX_SCAN_BYTES
+    sizes.reduce((sum, row) => sum + Number(row.size), 0) >
+      MAX_SHOW_RESPONSE_BYTES
   )
     throw fail("UNAVAILABLE", "Issue comments are over their read budget");
-  if (sizes.some((row) => Number(row.size) > MAX_RECORD_BYTES)) throw invalid();
   const rows = views.records?.all(ROWS, range) ?? [];
   if (rows.length !== sizes.length) throw invalid();
   const records = rows.map((row) => {

@@ -21,6 +21,7 @@ import {
 
 import {
   LEASE_READS,
+  MAX_SHOW_RESPONSE_BYTES,
   readIssue,
   RECORD_READS,
   type IssueViews,
@@ -41,8 +42,6 @@ import type { StateOwner } from "../../src/core/state/index.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
 
 export const MAX_COMMAND_BODY = 512 * 1024;
-/** The most a show or list response may be, in UTF-8 bytes, measured on the whole envelope. */
-export const MAX_SHOW_RESPONSE_BYTES = 1_048_576;
 const COMMAND_ROUTE = new RegExp(`^/p/(${PROJECT_NAME})/command$`);
 const FIELDS = ["requestId", "op", "input", "context", "dryRun"];
 const LIMITS = {

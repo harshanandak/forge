@@ -3079,8 +3079,8 @@ test("a comments response is capped at 1 MiB of UTF-8 bytes, measured on the who
   }
 }, 60_000);
 
-test("an issue over 10,000 comments or 8 MiB of them is refused as UNAVAILABLE before any body is loaded, and other issues' comments are not counted", async () => {
-  const mib8 = 8 * 1024 * 1024;
+test("an issue over 10,000 comments or 1 MiB of them is refused as UNAVAILABLE before any body is loaded, and other issues' comments are not counted", async () => {
+  const cap = 1_048_576;
   const budget = "Issue comments are over their read budget";
   const start12 = async () => {
     const f = fixture();
@@ -3102,13 +3102,8 @@ test("an issue over 10,000 comments or 8 MiB of them is refused as UNAVAILABLE b
   };
   const bytes = async (delta: number) => {
     const { f, token } = await start12();
-    for (const n of [1, 2, 3, 4])
-      f.put(
-        { id: "work-12", body: "k".repeat(1_900_000) },
-        {},
-        `comment:work-12:${n}`,
-      );
-    f.put({ id: "work-12", body: "" }, {}, "comment:work-12:5");
+    f.put({ id: "work-12", body: "" }, {}, "comment:work-12:1");
+    // Another issue's comments, over the cap on their own, are not counted.
     for (const n of [1, 2])
       f.put(
         { id: "work-1", body: "k".repeat(1_900_000) },
@@ -3121,17 +3116,17 @@ test("an issue over 10,000 comments or 8 MiB of them is refused as UNAVAILABLE b
       )
       .get() as { n: number };
     f.db.run(
-      "UPDATE state_records SET body=replace(body,'\"body\":\"\"',?) WHERE key='comment:work-12:5'",
-      ['"body":"' + "k".repeat(mib8 + delta - n) + '"'],
+      "UPDATE state_records SET body=replace(body,'\"body\":\"\"',?) WHERE key='comment:work-12:1'",
+      ['"body":"' + "k".repeat(cap + delta - n) + '"'],
     );
     return f.send(readNotes({ id: "forge-12" }), { token });
   };
-  // At the bound the bodies are loaded and the 1 MiB response cap decides; one over is refused unread.
+  // Even empty records are over 1 MiB well before 10,000 of them, so the byte bound decides first. At 1 MiB the bodies
+  // are loaded and the response cap decides; one byte over is refused unread.
   for (const [name, got, fits] of [
-    ["10,000 rows", await rows(10_000), true],
     ["10,001 rows", await rows(10_001), false],
-    ["8 MiB", await bytes(0), true],
-    ["8 MiB and one byte", await bytes(1), false],
+    ["1 MiB", await bytes(0), true],
+    ["1 MiB and one byte", await bytes(1), false],
   ] as const) {
     expect([
       name,

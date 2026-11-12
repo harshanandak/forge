@@ -341,12 +341,31 @@ test("every other work operation is refused by name on a bound project, with no 
     expect(r.net.calls).toHaveLength(0);
   }));
 
-for (const [op, input, bad] of [
-  ["issue.create", CREATE, { ...ISSUE, revision: TOKEN }],
-  ["issue.comment", COMMENT, { ...COMMENTED, extra: TOKEN }],
-  ["issue.comment", COMMENT, { id: "forge-1" }],
+for (const [name, op, input, bad] of [
+  [
+    "a token in the revision",
+    "issue.create",
+    CREATE,
+    { ...ISSUE, revision: TOKEN },
+  ],
+  ["an extra key", "issue.comment", COMMENT, { ...COMMENTED, extra: TOKEN }],
+  ["no commentId", "issue.comment", COMMENT, { id: "forge-1" }],
+  ["no records", "issue.comments", NOTES, {}],
+  ["records that is not a list", "issue.comments", NOTES, { records: "x" }],
+  [
+    "an extra top-level key",
+    "issue.comments",
+    NOTES,
+    { records: [], truncated: false },
+  ],
+  [
+    "an invalid record carrying the token",
+    "issue.comments",
+    NOTES,
+    { records: [{ ...RECORD, revision: TOKEN }] },
+  ],
 ] as const)
-  test(`a cloud ${op} result that fails its declared output is refused as UNAVAILABLE`, () =>
+  test(`a cloud ${op} result with ${name} fails its declared output and is refused as UNAVAILABLE`, () =>
     using({ steps: [() => answer(bad, op)] }, async (r) => {
       const result = await r.assembly.catalog.invoke(r.request(op, input));
       expect(failed(result, "UNAVAILABLE")).toBe(1);
@@ -468,24 +487,6 @@ for (const op of ["issue.list", "issue.ready"])
       expect(r.net.calls).toHaveLength(0);
       const live = await r.assembly.catalog.invoke(r.request(op, {}));
       expect(failed(live, "AUTH_REVOKED")).toBe(1);
-      expect(r.net.calls).toHaveLength(1);
-    }));
-
-for (const [name, bad] of [
-  ["a missing records", {}],
-  ["records that is not a list", { records: "x" }],
-  ["an extra top-level key", { records: [], truncated: false }],
-  [
-    "an invalid record carrying the token",
-    { records: [{ ...RECORD, revision: TOKEN }] },
-  ],
-] as const)
-  test(`a cloud issue.comments result with ${name} is refused as UNAVAILABLE, never passed through`, () =>
-    using({ steps: [() => answer(bad, "issue.comments")] }, async (r) => {
-      const result = await r.assembly.catalog.invoke(
-        r.request("issue.comments", NOTES),
-      );
-      expect(failed(result, "UNAVAILABLE")).toBe(1);
       expect(r.net.calls).toHaveLength(1);
     }));
 
