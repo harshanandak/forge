@@ -105,6 +105,11 @@ writeFileSync(
   preload,
   [
     'import { writeFileSync } from "node:fs";',
+    "if (process.env.FORGE_BENCH_PLANT) {",
+    "  globalThis.planted = Buffer.alloc(3 * 1024 * 1024, 1);",
+    "  const end = performance.now() + 40;",
+    "  while (performance.now() < end);",
+    "}",
     'process.on("exit", () => {',
     "  writeFileSync(process.env.FORGE_BENCH_PEAK, String(process.resourceUsage().maxRSS));",
     "});",
@@ -138,7 +143,11 @@ function run(
     ["--import", pathToFileURL(preload).href, program, ...args],
     {
       cwd: project,
-      env: { ...env, FORGE_BENCH_PEAK: peakFile },
+      env: {
+        ...env,
+        FORGE_BENCH_PEAK: peakFile,
+        ...(program === bin ? { FORGE_BENCH_PLANT: "1" } : {}),
+      },
       encoding: "utf8",
       timeout: 60_000,
       windowsHide: true,
