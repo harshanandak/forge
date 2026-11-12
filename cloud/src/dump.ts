@@ -45,7 +45,30 @@ export const PAGE_FORMAT = "forge-cloud-dump-page/1";
 const MAX_DEPTH = 4;
 const MAX_ROWS_PER_TABLE = 10_000;
 const MAX_VALUE_LENGTH = 262_144;
-// A whole (unpaged) dump stays well under the 8 MiB restore body: JSON escaping can double its size.
+// The columns that hold open JSON (a stored record, an event, a replay request) have no schema maximum: a
+// 65,536 character body whose characters each escape to six is about 393,000 stored, and a record, its
+// event and its receipt each carry it. Their ceiling is the transport one, the 8 MiB restore body, which
+// no UTF-8 text can exceed in characters. Every other string keeps the compatibility ceiling.
+const MAX_TEXT_BYTES = 8 * 1024 * 1024;
+const WIDE_COLUMNS = [
+  "state_records.body",
+  "state_events.body",
+  "state_requests.fingerprint",
+  "state_requests.result",
+];
+const valueLimit = (table: string, column: string): number =>
+  WIDE_COLUMNS.includes(`${table}.${column}`)
+    ? MAX_TEXT_BYTES
+    : MAX_VALUE_LENGTH;
+// A cursor is two key parts of up to MAX_VALUE_LENGTH characters, each escaped to at most six, in a
+// 47 character skeleton with two 19 digit watermark numbers and their dot.
+const MAX_CURSOR_LENGTH = 47 + 2 * 6 * MAX_VALUE_LENGTH + 39;
+const WATERMARK = /^(?:\d{1,19}\.\d{1,19})?$/;
+const encoder = new TextEncoder();
+const byteLength = (value: unknown): number =>
+  encoder.encode(JSON.stringify(value)).length;
+// A whole (unpaged) dump holds at most this much stored. Escaping can grow it up to six times, so dumpOf
+// also measures the serialized size against the restore body.
 const WHOLE_DUMP_BYTES = 3 * 1024 * 1024;
 // Rows are read this many at a time, so a page never holds more than a page plus one batch.
 const BATCH = 16;
@@ -133,13 +156,14 @@ function rowOf(table: string, row: SqlRow): Row {
     TABLES[table]!.columns.map((column) => {
       const value = row[column];
       if (
-        (typeof value === "string" && value.length <= MAX_VALUE_LENGTH) ||
+        (typeof value === "string" &&
+          value.length <= valueLimit(table, column)) ||
         (typeof value === "number" && Number.isSafeInteger(value))
       )
         return [column, value];
       throw new ForgeFailure({
         code: "DUMP_UNSAFE_VALUE",
-        message: `${table}.${column} holds a value that is not a string (up to ${MAX_VALUE_LENGTH} characters) or a safe integer`,
+        message: `${table}.${column} holds a value that is not a string (up to ${valueLimit(table, column)} characters) or a safe integer`,
         retry: "never",
       });
     }),
@@ -187,12 +211,24 @@ export function dumpOf(db: SqlDatabase | undefined, limits?: Limits): Dump {
     );
   const tables = emptyTables();
   const names = Object.keys(TABLES);
+  // The dump is measured as it will be sent: escaping turns one stored byte into up to six, so a project
+  // within the stored limit can still be too large for the restore body, and could never be restored.
+  let sent =
+    limits === undefined ? 0 : byteLength({ format: DUMP_FORMAT, tables });
   for (const { table, row } of rowsFrom(db, 0, null)) {
     const rows = tables[names[table]!]!;
     if (rows.length >= MAX_ROWS_PER_TABLE)
       throw new ForgeFailure({
         code: "DUMP_TOO_LARGE",
         message: `${names[table]} has more than ${MAX_ROWS_PER_TABLE} rows`,
+        retry: "never",
+      });
+    if (limits !== undefined)
+      sent += byteLength(row) + (rows.length > 0 ? 1 : 0);
+    if (sent > MAX_TEXT_BYTES)
+      throw new ForgeFailure({
+        code: "DUMP_TOO_LARGE",
+        message: `The dump is over the ${MAX_TEXT_BYTES} byte restore body once escaped. Dump it in pages with GET dump?cursor=start.`,
         retry: "never",
       });
     rows.push(row);
@@ -204,6 +240,7 @@ function parseCursor(text: string): Cursor {
   if (text === "start") return { p: 0, t: 0, k: null, w: "" };
   const bad = (): ForgeFailure =>
     invalid("The cursor must be start or a cursor a page returned");
+  if (text.length > MAX_CURSOR_LENGTH) throw bad();
   let value: unknown;
   try {
     value = JSON.parse(text);
@@ -218,6 +255,7 @@ function parseCursor(text: string): Cursor {
     !Number.isSafeInteger(cursor.p) ||
     (cursor.p as number) < 0 ||
     typeof cursor.w !== "string" ||
+    !WATERMARK.test(cursor.w) ||
     !Number.isSafeInteger(cursor.t) ||
     (cursor.t as number) < 0
   )
@@ -233,7 +271,7 @@ function parseCursor(text: string): Cursor {
         cursor.k.some((part: unknown, index) =>
           table.keys[index] === "sequence"
             ? !Number.isSafeInteger(part)
-            : typeof part !== "string",
+            : typeof part !== "string" || part.length > MAX_VALUE_LENGTH,
         )))
   )
     throw bad();
@@ -261,7 +299,11 @@ const pageOf = (
   tables,
 });
 
-/** One page of a project, at most about `limits.pageBytes` of rows (one row is never split). */
+/**
+ * One page of a project. The whole page document, counted in UTF-8 with its arrays, commas, metadata and
+ * cursor, is within `limits.pageBytes` and the 8 MiB restore body. A row is never split, so a row that
+ * cannot fit alone with its envelope is refused as DUMP_TOO_LARGE rather than returned.
+ */
 export function dumpPage(
   db: SqlDatabase | undefined,
   cursorText: string,
@@ -269,12 +311,27 @@ export function dumpPage(
 ): Page {
   const from = parseCursor(cursorText);
   const tables = emptyTables();
-  if (db === undefined) return pageOf(from.p, tables, null);
+  const budget = Math.min(limits.pageBytes, MAX_TEXT_BYTES);
+  const tooLarge = (what: string): ForgeFailure =>
+    new ForgeFailure({
+      code: "DUMP_TOO_LARGE",
+      message: `${what} is over the ${budget} byte page limit.`,
+      retry: "never",
+    });
+  // A page with no rows is still a page: its envelope alone must be within the budget.
+  const empty = (): Page => {
+    const page = pageOf(from.p, tables, null);
+    if (byteLength(page) > budget) throw tooLarge("A page envelope");
+    return page;
+  };
+  if (db === undefined) return empty();
   // A page is cut in one synchronous call, so a write cannot land inside it. A write between pages
   // would give a dump with a lease body and no event for it, which cannot be restored.
   const now = watermark(db);
-  if (from.p === 0) assertLimits(db, limits, "DUMP_TOO_LARGE", "The project");
-  else if (from.w !== now)
+  // Every page request is checked, not only the first: a forged continuation cursor must not reach rows
+  // that cursor=start refuses.
+  assertLimits(db, limits, "DUMP_TOO_LARGE", "The project");
+  if (from.p !== 0 && from.w !== now)
     throw new ForgeFailure({
       code: "DUMP_CHANGED",
       message:
@@ -282,22 +339,37 @@ export function dumpPage(
       retry: "never",
     });
   const names = Object.keys(TABLES);
-  let used = 0;
+  const bare = emptyTables();
+  let used = 0; // bytes of the rows and the commas between them
   let next: Cursor = { p: from.p + 1, t: from.t, k: from.k, w: now };
-  for (const { table, row } of rowsFrom(db, from.t, from.k)) {
-    const size = new TextEncoder().encode(JSON.stringify(row)).length;
-    if (used > 0 && used + size > limits.pageBytes)
-      return pageOf(from.p, tables, next);
-    tables[names[table]!]!.push(row);
-    used += size;
-    next = {
+  const rows = rowsFrom(db, from.t, from.k);
+  for (let step = rows.next(); !step.done;) {
+    const { table, row } = step.value;
+    const after = rows.next();
+    const list = tables[names[table]!]!;
+    const here: Cursor = {
       p: from.p + 1,
       t: table,
       k: TABLES[names[table]!]!.keys.map((column) => row[column]!),
       w: now,
     };
+    // The page as it would be cut after this row. The last page has no cursor, so it is the smaller form.
+    const added = byteLength(row) + (list.length > 0 ? 1 : 0);
+    if (
+      byteLength(pageOf(from.p, bare, after.done ? null : here)) +
+        used +
+        added >
+      budget
+    ) {
+      if (used === 0) throw tooLarge("A row with its page envelope");
+      return pageOf(from.p, tables, next);
+    }
+    list.push(row);
+    used += added;
+    next = here;
+    step = after;
   }
-  return pageOf(from.p, tables, null);
+  return used === 0 ? empty() : pageOf(from.p, tables, null);
 }
 
 // One pass over the text, before JSON.parse builds anything: refuses nesting deeper than the format has.
@@ -320,6 +392,13 @@ function checkDepth(text: string): void {
 
 /** Checks a dump or a dump page strictly and returns it with every row in column order. */
 export function parseDump(text: string): Dump | Page {
+  // Bounded by bytes before anything is built: UTF-8 is at most three bytes per UTF-16 unit.
+  if (
+    text.length > MAX_TEXT_BYTES ||
+    (text.length * 3 > MAX_TEXT_BYTES &&
+      encoder.encode(text).length > MAX_TEXT_BYTES)
+  )
+    throw invalid(`The dump is over ${MAX_TEXT_BYTES} bytes`);
   checkDepth(text);
   let parsed: unknown;
   try {
@@ -347,7 +426,9 @@ export function parseDump(text: string): Dump | Page {
     (!Number.isSafeInteger(document.page) ||
       (document.page as number) < 0 ||
       document.last !== (document.next === null) ||
-      (document.next !== null && typeof document.next !== "string"))
+      (document.next !== null &&
+        (typeof document.next !== "string" ||
+          document.next.length > MAX_CURSOR_LENGTH)))
   )
     throw invalid(
       "A dump page needs a page number and next (null on the last)",
@@ -376,12 +457,13 @@ export function parseDump(text: string): Dump | Page {
         columns.map((column) => {
           const value = row[column];
           if (
-            (typeof value === "string" && value.length <= MAX_VALUE_LENGTH) ||
+            (typeof value === "string" &&
+              value.length <= valueLimit(table, column)) ||
             (typeof value === "number" && Number.isSafeInteger(value))
           )
             return [column, value];
           throw invalid(
-            `${table}.${column} must be a string (up to ${MAX_VALUE_LENGTH} characters) or a safe integer (53 bits)`,
+            `${table}.${column} must be a string (up to ${valueLimit(table, column)} characters) or a safe integer (53 bits)`,
           );
         }),
       );
