@@ -5850,6 +5850,8 @@ interface Write {
   record: string;
   /** The lease a successful write leaves in the dump, when it takes one. */
   lease?: string;
+  /** True when the write also advances the allocation floor: one more record and one more work event. */
+  floor?: boolean;
   /** What the first successful write returns, after a failed receipt write was rolled back. */
   result: (f: F, got: Sent) => void;
 }
@@ -5880,6 +5882,7 @@ const WRITES: Write[] = [
     empty: { title: "" },
     ok: { title: "New", kind: "task" },
     record: "forge/work/issue:work-13",
+    floor: true,
     result: (_f, got) =>
       expect([got.status, got.json.result]).toMatchObject([
         200,
@@ -6124,24 +6127,38 @@ for (const w of WRITES) {
       (value.tables[table] ?? []).map(
         (r) => `${r.namespace}/${r.key ?? r.subject ?? ""}`,
       );
+    const floorRecord = "forge/work/allocation:issue:work-";
     for (const record of [
       w.record,
       "forge/cloud/request:s-1",
       "forge/cloud/request:s-2",
+      ...(w.floor ? [floorRecord] : []),
     ])
       expect(at("state_records")).toContain(record);
     if (w.lease !== undefined) expect(at("state_leases")).toContain(w.lease);
+    // A create also writes the floor's record.updated, so dump and restore keep the floor.
     expect(
       at("state_events")
         .map((row) => row.split("/").slice(0, 2).join("/"))
         .sort(),
-    ).toEqual(["forge/cloud", "forge/cloud", "forge/work"]);
+    ).toEqual([
+      "forge/cloud",
+      "forge/cloud",
+      "forge/work",
+      ...(w.floor ? ["forge/work"] : []),
+    ]);
     // The token is the canary: it is in no response, receipt, dump or row of the project.
     const secret = token.split(".")[1]!;
     const rows = JSON.stringify(
       ["forge/work", "forge/cloud"].map((ns) => rowsOf(f.db, ns)),
     );
-    for (const text of [ok.text, bad.text, dump, rows])
+    const floorRow = JSON.stringify(
+      value.tables.state_records?.filter(
+        (r) => `${r.namespace}/${r.key}` === floorRecord,
+      ),
+    );
+    expect(floorRow.includes("allocation:issue:work-")).toBe(w.floor === true);
+    for (const text of [ok.text, bad.text, dump, rows, floorRow])
       for (const canary of [token, secret, "authorization", "fct_"])
         expect([
           canary,

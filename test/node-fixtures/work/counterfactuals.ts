@@ -120,7 +120,7 @@ export const counterfactuals: readonly {
   {
     file: "core/state/index.js",
     from: `" AND json_extract(body,'$.type') IN (?,?)"`,
-    to: '" AND 0"',
+    to: '" AND 0 AND ?<>?"',
     journey: "allocation",
     evidence: "backfill keeps a deleted identity",
   },
