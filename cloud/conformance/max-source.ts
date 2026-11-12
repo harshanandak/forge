@@ -14,6 +14,10 @@ if (!("timingSafeEqual" in crypto.subtle))
 export const BODY = '"\\é€' + "\u0001".repeat(65_532);
 /** One code point over the schema's body limit. */
 export const TOO_LONG = BODY + "\u0001";
+/** Exactly 65,536 code points of U+20AC: three UTF-8 bytes each but one UTF-16 unit, so a byte count and a unit count differ by two per character. */
+export const WIDE = "€".repeat(65_536);
+/** The fixed clock of the small fixtures, so their rows are the same in every process. */
+export const FROZEN = 1_800_000_000_000;
 export const TITLE = 'Max "quoted" \\ é€';
 export const ACTOR = { kind: "agent", id: "max-source" } as const;
 export const DEVICE = "laptop";
@@ -23,7 +27,7 @@ export type Tables = Record<string, Row[]>;
 export const DUMP = "forge-cloud-dump/1";
 export const PAGE = "forge-cloud-dump-page/1";
 // Each table's columns and primary key, in dump order.
-const SHAPE: Record<string, [string, string]> = {
+export const SHAPE: Record<string, [string, string]> = {
   state_records: ["namespace, key, revision, body", "namespace, key"],
   state_events: ["sequence, namespace, key, body", "sequence"],
   state_leases: ["namespace, subject, generation, body", "namespace, subject"],
@@ -76,7 +80,7 @@ export interface Sent {
   text: string;
 }
 
-const call = (requestId: string, op: string, input: object) => ({
+export const call = (requestId: string, op: string, input: object) => ({
   requestId,
   op,
   input,
@@ -93,8 +97,11 @@ export const maxCalls = (id: string, body = BODY) => ({
   badComment: call("max-bad-comment", "issue.comment", { id, body: TOO_LONG }),
 });
 
-/** The project `name`, with its issue prefix, holding the four calls of maxCalls, read back with plain SQL. */
-export async function maxSource(name: string, prefix = "forge") {
+/**
+ * An empty project `name` with its issue prefix, driven through the real Project and read with plain SQL. With `at`,
+ * every request sees that fixed clock, so the same commands give the same rows in any process.
+ */
+async function harness(name: string, prefix: string, at?: number) {
   const db = new Database(":memory:");
   const values = new Map<string, unknown>();
   const storage: DurableStorage = {
@@ -122,15 +129,22 @@ export async function maxSource(name: string, prefix = "forge") {
     { storage },
     { FORGE_CLOUD_PROJECT: name, FORGE_CLOUD_ID_PREFIX: prefix },
   );
-  const post = (route: string, body: object, token?: string) =>
-    project.fetch(
-      new Request(`https://source.example/p/${name}/${route}`, {
-        method: "POST",
-        headers:
-          token === undefined ? {} : { authorization: `Bearer ${token}` },
-        body: JSON.stringify(body),
-      }),
-    );
+  const post = async (route: string, body: object, token?: string) => {
+    const real = Date.now;
+    if (at !== undefined) Date.now = () => at;
+    try {
+      return await project.fetch(
+        new Request(`https://source.example/p/${name}/${route}`, {
+          method: "POST",
+          headers:
+            token === undefined ? {} : { authorization: `Bearer ${token}` },
+          body: JSON.stringify(body),
+        }),
+      );
+    } finally {
+      Date.now = real;
+    }
+  };
   const issued = (await (
     await post("devices", { device: DEVICE, ttlMs: 3_600_000 })
   ).json()) as { value: { token: string } };
@@ -138,13 +152,93 @@ export async function maxSource(name: string, prefix = "forge") {
     const response = await post("command", request, issued.value.token);
     return { request, status: response.status, text: await response.text() };
   };
+  const claim = (body: object) => post("claim", body, issued.value.token);
+  return { db, send, claim };
+}
+type Harness = Awaited<ReturnType<typeof harness>>;
+
+/** The command is accepted, or the fixture is wrong. */
+async function accepted(h: Harness, request: object): Promise<void> {
+  const reply = await h.send(request);
+  if (reply.status !== 200)
+    throw new Error(`fixture command refused: ${reply.text.slice(0, 200)}`);
+}
+
+/** The project `name`, with its issue prefix, holding the four calls of maxCalls, read back with plain SQL. */
+export async function maxSource(name: string, prefix = "forge", at?: number) {
+  const h = await harness(name, prefix, at);
   const calls = maxCalls(`${prefix}-1`);
   const sent = {
-    create: await send(calls.create),
-    comment: await send(calls.comment),
-    badCreate: await send(calls.badCreate),
-    badComment: await send(calls.badComment),
+    create: await h.send(calls.create),
+    comment: await h.send(calls.comment),
+    badCreate: await h.send(calls.badCreate),
+    badComment: await h.send(calls.badComment),
   };
-  const tables = tablesOf(db);
-  return { db, sent, tables, doc: { format: DUMP, tables } };
+  const tables = tablesOf(h.db);
+  return { ...h, sent, tables, doc: { format: DUMP, tables } };
+}
+
+/** One accepted create with a short title, at the fixed clock: a few small rows that are identical in every process. */
+export async function tinySource(title: string) {
+  const h = await harness("tiny", "forge", FROZEN);
+  await accepted(h, call("tiny-create", "issue.create", { title }));
+  const tables = tablesOf(h.db);
+  h.db.close();
+  return { tables, doc: { format: DUMP, tables } };
+}
+
+/** One lease on `subject` taken through the claim route, at the fixed clock. */
+export async function leaseSource(subject: string) {
+  const h = await harness("lease", "forge", FROZEN);
+  const reply = await h.claim({
+    subject,
+    holder: { actor: ACTOR, session: { id: "lease-session" } },
+    ttlMs: 600_000,
+    requestId: "lease-claim",
+  });
+  if (reply.status !== 200)
+    throw new Error(`fixture claim refused: ${await reply.text()}`);
+  const tables = tablesOf(h.db);
+  h.db.close();
+  return { tables, doc: { format: DUMP, tables } };
+}
+
+/** The stored bytes of every column of every row, summed by SQLite the way a restore bounds a project. */
+const storedBytes = (db: Database): number =>
+  Object.entries(SHAPE).reduce((sum, [table, [columns]]) => {
+    const sizes = columns
+      .split(", ")
+      .map((column) => `LENGTH(CAST(${column} AS BLOB))`)
+      .join(" + ");
+    const found = db
+      .query(`SELECT COALESCE(SUM(${sizes}), 0) AS n FROM ${table}`)
+      .get() as { n: number };
+    return sum + found.n;
+  }, 0);
+
+/**
+ * The maxCalls project, three more maximum creates and one create whose ASCII body is `tail` characters long: one
+ * project whose accepted commands make up a single page near the restore body. Four rows carry each created body.
+ */
+export async function nearSource(tail: number) {
+  const s = await maxSource("near", "forge", FROZEN);
+  for (const n of [1, 2, 3])
+    await accepted(
+      s,
+      call(`near-grow-${n}`, "issue.create", {
+        title: `Near ${n}`,
+        body: BODY,
+      }),
+    );
+  await accepted(
+    s,
+    call("near-tail", "issue.create", {
+      title: "Near tail",
+      body: "x".repeat(tail),
+    }),
+  );
+  const tables = tablesOf(s.db);
+  const stored = storedBytes(s.db);
+  s.db.close();
+  return { tables, stored };
 }
