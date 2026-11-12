@@ -95,6 +95,8 @@ const HTTP: Record<string, number> = {
   NOT_FOUND: 404,
   INPUT_CONFLICT: 409,
   INPUT_INVALID: 400,
+  CONTEXT_MISSING: 400,
+  UNKNOWN_COMMAND: 404,
   RECEIPT_REQUIRED: 400,
   INTERNAL: 500,
   REVISION_CONFLICT: 409,
@@ -148,6 +150,7 @@ const WRITES = [
   "issue.comment",
   "issue.update",
   "issue.dep",
+  "issue.link",
   "issue.close",
   "issue.claim",
   "issue.renew",
@@ -300,13 +303,14 @@ test("a bound project's issue show is answered by the cloud with the stored toke
     expect(body).toMatchObject({ context: { device: { id: "dev-1" } } });
   }));
 
-test("the routing decision serves show, list, ready, comments, create, comment, update, dep, close, claim, renew and release, refuses every other operation of the work block by name, and leaves other blocks local", () => {
+test("the routing decision serves show, list, ready, comments, create, comment, update, dep, link, close, claim, renew and release, refuses every other operation of the work block by name, and leaves other blocks local", () => {
   // The refused set is exactly the manifest minus the served list: a served name the manifest does not declare would hide here.
   for (const op of SERVED) expect(MANIFEST_OPS).toContain(op);
   expect(DECLARED).toHaveLength(MANIFEST_OPS.length - SERVED.length);
-  for (const op of ["issue.link", "issue.board"])
-    expect(DECLARED).toContain(op);
+  expect(DECLARED).toContain("issue.board");
+  expect(DECLARED).not.toContain("issue.link");
   for (const op of SERVED) expect(cloudRoute("forge/work", op)).toBe("cloud");
+  expect(cloudRoute("forge/work", "issue.link")).toBe("cloud");
   expect(cloudRoute("forge/memory", "memory.list")).toBe("local");
   for (const op of DECLARED) {
     const route = cloudRoute("forge/work", op);
@@ -329,12 +333,24 @@ const DEP = {
   expectRevision: 3,
 };
 const CLOSE = { id: "forge-1", reason: "done", withoutReceipt: "guard" };
+const LINK = {
+  id: "forge-1",
+  relation: "pr",
+  url: "https://example.com/pull/1",
+};
+/** The whole record the cloud stores for a link: its own id and key, never the shown prefix. */
+const LINKED = {
+  ...RECORD,
+  key: "link:work-1:1",
+  value: { id: "work-1", relation: LINK.relation, url: LINK.url },
+};
 const HELD = { ...LEASE, generation: 3 };
 const INPUTS: Record<string, object> = {
   "issue.create": CREATE,
   "issue.comment": COMMENT,
   "issue.update": UPDATE,
   "issue.dep": DEP,
+  "issue.link": LINK,
   "issue.close": CLOSE,
   "issue.claim": { id: "forge-1" },
   "issue.renew": { id: "forge-1" },
@@ -370,19 +386,13 @@ test("every other work operation is refused by name on a bound project, with no 
   using({}, async (r) => {
     const own = r.request("x", {}).context;
     const context = { ...own, session: { id: "s1" }, leaseGeneration: 3 };
-    for (const [op, input] of [
-      ["issue.board", {}],
-      [
-        "issue.link",
-        { id: "forge-1", relation: "pr", url: "https://example.com/pull/1" },
-      ],
-    ] as const) {
-      const result = await r.assembly.catalog.invoke(
-        r.request(op, input, { context }),
-      );
-      expect(failed(result, "INPUT_INVALID")).toBe(6);
-      expect(result).toMatchObject({ error: { message: notServed(op) } });
-    }
+    const result = await r.assembly.catalog.invoke(
+      r.request("issue.board", {}, { context }),
+    );
+    expect(failed(result, "INPUT_INVALID")).toBe(6);
+    expect(result).toMatchObject({
+      error: { message: notServed("issue.board") },
+    });
     expect(r.net.calls).toHaveLength(0);
   }));
 
@@ -441,6 +451,7 @@ for (const [op, input] of [
   ["issue.comments", NOTES],
   ["issue.update", UPDATE],
   ["issue.dep", DEP],
+  ["issue.link", LINK],
   ["issue.close", CLOSE],
   ["issue.claim", INPUTS["issue.claim"]!],
   ["issue.renew", INPUTS["issue.renew"]!],
@@ -594,60 +605,12 @@ const edit = (
 const sent = (r: Rig) => r.net.calls.map((c) => (c.body as { op: string }).op);
 const live = () => answer({ ...ISSUE, lease: HELD });
 
-const LINK = {
-  id: "forge-1",
-  relation: "pr",
-  url: "https://example.com/pull/1",
-};
-/** Each refused held op with an input valid for its own schema, so only the routing refuses it. */
-for (const [op, input] of [["issue.link", LINK]] as const)
-  for (const [name, own, dryRun, lease] of [
-    ["no generation", {}, false, true],
-    ["no generation and no lease in the cloud", {}, false, false],
-    ["an explicit generation", { leaseGeneration: 3 }, false, true],
-    ["no generation as a dry run", {}, true, true],
-    ["an explicit generation as a dry run", { leaseGeneration: 3 }, true, true],
-  ] as const)
-    test(`${op} with ${name} on a bound project is refused by name before any cloud request`, () =>
-      using(
-        { steps: [() => answer(lease ? { ...ISSUE, lease: LEASE } : ISSUE)] },
-        async (r) => {
-          const result = await dispatch(r.assembly.catalog, op, input, {
-            caller: "agent",
-            context: holding(r, own),
-            dryRun,
-          });
-          expect(failed(result, "INPUT_INVALID")).toBe(6);
-          expect(result).toMatchObject({ error: { message: notServed(op) } });
-          expect(r.net.calls).toHaveLength(0);
-        },
-      ));
-
+/** The runtime's own preflight refusal, which a bound project reaches today (src/core/runtime/index.ts). */
+const NO_CONTRACT = "this profile has no dry-run execution contract";
 const REFUSED = (op: string) => ({
   ok: false,
   error: { code: "INPUT_INVALID", message: notServed(op) },
 });
-test("through MCP catalog_call, a refused held op on a bound project is refused by name with no request, as a dry run too", () =>
-  using({}, async (r) => {
-    const handlers = createMcpHandlers(
-      r.assembly.catalog,
-      { expose: ["issue"] },
-      {
-        context: holding(r),
-      },
-    );
-    for (const dryRun of [false, true]) {
-      const result = await handlers.callTool("catalog_call", {
-        op: "issue.link",
-        input: LINK,
-        ...(dryRun ? { dryRun } : {}),
-      });
-      expect(result).toMatchObject(REFUSED("issue.link"));
-      expect(failed(result!, "INPUT_INVALID")).toBe(6);
-    }
-    expect(r.net.calls).toHaveLength(0);
-  }));
-
 for (const dryRun of [false, true])
   test(`through the CLI discovery wrapper, issue board${dryRun ? " --dry-run" : ""} on a bound project is refused by name with no request`, () =>
     using({}, async (r) => {
@@ -661,19 +624,30 @@ for (const dryRun of [false, true])
       expect(r.net.calls).toHaveLength(0);
     }));
 
-/** The real identity resolver, with no session in the environment or the context. */
-for (const [name, own, dryRun, env] of [
-  ["no generation", {}, false, {}],
-  ["an explicit generation", { leaseGeneration: 3 }, false, {}],
-  ["a dry run", {}, true, {}],
+/** The real identity resolver keeps its own refusal for a missing session or an invalid device, with no request, and a dry run stops at admission. */
+for (const [name, own, dryRun, env, code, exit, text] of [
+  ["no generation", {}, false, {}, "CONTEXT_MISSING", 6, "FORGE_SESSION"],
+  [
+    "an explicit generation",
+    { leaseGeneration: 3 },
+    false,
+    {},
+    "CONTEXT_MISSING",
+    6,
+    "FORGE_SESSION",
+  ],
+  ["a dry run", {}, true, {}, "UNAVAILABLE", 1, NO_CONTRACT],
   [
     "an invalid FORGE_DEVICE_ID",
     {},
     false,
     { FORGE_SESSION: "s1", FORGE_DEVICE_ID: "a b" },
+    "CONTEXT_MISSING",
+    6,
+    "Invalid FORGE_DEVICE_ID",
   ],
 ] as const)
-  test(`issue.link with ${name} and the real identity resolver is refused by name, not as a missing session`, () =>
+  test(`issue.link with ${name} and the real identity resolver keeps its own ${code} with no request`, () =>
     using({}, async (r) => {
       const result = await dispatch(r.assembly.catalog, "issue.link", LINK, {
         caller: "agent",
@@ -688,8 +662,8 @@ for (const [name, own, dryRun, env] of [
         ),
         dryRun,
       });
-      expect(result).toMatchObject(REFUSED("issue.link"));
-      expect(failed(result, "INPUT_INVALID")).toBe(6);
+      expect(failed(result, code)).toBe(exit);
+      expect(JSON.stringify(result)).toContain(text);
       expect(r.net.calls).toHaveLength(0);
     }));
 
@@ -907,8 +881,6 @@ test("issue.update through the CLI dispatch as a dry run is UNAVAILABLE and send
     expect(sent(r)).not.toContain("issue.update");
   }));
 
-/** The runtime's own preflight refusal, which a bound project reaches today (src/core/runtime/index.ts). */
-const NO_CONTRACT = "this profile has no dry-run execution contract";
 /** Requests are counted first: a refusal that came after a hidden cloud read is not the refusal this expects. */
 const dryRefused = (r: Rig, result: Awaited<ReturnType<typeof edit>>) => {
   expect(r.net.calls).toHaveLength(0);
@@ -923,6 +895,7 @@ for (const op of [
   "issue.renew",
   "issue.release",
   "issue.dep",
+  "issue.link",
   "issue.close",
 ])
   for (const [name, own] of [
@@ -981,6 +954,7 @@ test("through the CLI wrapper, issue update --dry-run on a bound project is refu
 
 for (const [op, input] of [
   ["issue.update", UPDATE],
+  ["issue.link", LINK],
   ["issue.close", { id: "forge-1", withoutReceipt: "guard" }],
 ] as const)
   test(`${op} as a dry run on an unbound project is the local runtime's own refusal and sends no cloud request`, () =>
@@ -1087,6 +1061,157 @@ test("a cloud issue.dep result that fails TrackerItem is refused as UNAVAILABLE"
       expect(sent(r)).toEqual(["issue.show", "issue.dep"]);
     },
   ));
+
+const link = (r: Rig, context: object, requestId = "link-1") =>
+  edit(r, "issue.link", context, false, LINK, requestId);
+const linkBody = (
+  context: ReturnType<typeof holding>,
+  leaseGeneration: number,
+  requestId: string,
+) => ({
+  requestId,
+  op: "issue.link",
+  input: LINK,
+  context: {
+    actor: context.actor,
+    session: context.session,
+    leaseGeneration,
+    device: { id: "dev-1" },
+    project: { id: fx.PROJECT },
+  },
+});
+for (const [source, op] of [
+  [WORK, "issue.link"],
+  [RENAMED, "ticket.link"],
+] as const)
+  test(`through the assembled catalog, ${op} on a bound project takes the generation from the cloud show and returns the cloud's whole record as issue.link`, () =>
+    using(
+      { config: source, steps: [live, () => answer(LINKED, "issue.link")] },
+      async (r) => {
+        const context = holding(r);
+        const done = await edit(r, op, context, false, LINK, "link-1");
+        expect(done).toMatchObject({ ok: true, op });
+        expect((done as unknown as { result: object }).result).toEqual(LINKED);
+        expect(exitCode(done)).toBe(0);
+        expect(JSON.stringify(done)).not.toContain(TOKEN);
+        expect(sent(r)).toEqual(["issue.show", "issue.link"]);
+        expect(r.net.calls[1]!.url).toBe(COMMAND);
+        expect(r.net.calls[1]!.body).toEqual(linkBody(context, 3, "link-1"));
+      },
+    ));
+
+test("an explicit generation on issue.link reaches the cloud unchanged, a stale one is refused there, and the CLI never reads or refreshes it", () =>
+  using({ steps: [() => refusing("LEASE_STALE")] }, async (r) => {
+    const context = holding(r, { leaseGeneration: 2 });
+    expect(failed(await link(r, context, "link-2"), "LEASE_STALE")).toBe(4);
+    expect(sent(r)).toEqual(["issue.link"]);
+    expect(r.net.calls[0]!.url).toBe(COMMAND);
+    expect(r.net.calls[0]!.body).toEqual(linkBody(context, 2, "link-2"));
+  }));
+
+test("with no live lease in the cloud show the runtime's own CONTEXT_MISSING stands for issue.link, and no link request is sent", () =>
+  using({ steps: [() => answer()] }, async (r) => {
+    expect(failed(await link(r, holding(r)), "CONTEXT_MISSING")).toBe(6);
+    expect(sent(r)).toEqual(["issue.show"]);
+  }));
+
+for (const [code, exit] of [
+  ["INPUT_INVALID", 6],
+  ["CONTEXT_MISSING", 6],
+  ["NOT_FOUND", 3],
+  ["UNKNOWN_COMMAND", 3],
+  ["INPUT_CONFLICT", 4],
+  ["REVISION_CONFLICT", 4],
+  ["LEASE_NOT_HELD", 4],
+  ["LEASE_EXPIRED", 4],
+  ["INTERNAL", 1],
+  ["AUTH_REVOKED", 1],
+  ["AUTH_DEVICE_MISMATCH", 1],
+] as const)
+  test(`a cloud ${code} on issue.link keeps its code and exit ${exit}, without the token`, () =>
+    using({ steps: [live, () => refusing(code)] }, async (r) => {
+      expect(failed(await link(r, holding(r)), code)).toBe(exit);
+      expect(sent(r)).toEqual(["issue.show", "issue.link"]);
+    }));
+
+for (const [name, bad] of [
+  ["a token in the revision", { ...LINKED, revision: TOKEN }],
+  ["an issue instead of a record", { ...ISSUE, extra: TOKEN }],
+] as const)
+  test(`a cloud issue.link result with ${name} fails its declared output and is refused as UNAVAILABLE`, () =>
+    using({ steps: [live, () => answer(bad, "issue.link")] }, async (r) => {
+      expect(failed(await link(r, holding(r)), "UNAVAILABLE")).toBe(1);
+      expect(sent(r)).toEqual(["issue.show", "issue.link"]);
+    }));
+
+/** The same link as the CLI wrapper makes it and as MCP catalog_call makes it, each with its rendered output. */
+const through = async (
+  r: Rig,
+  surface: "CLI" | "MCP",
+  context: ReturnType<typeof holding>,
+  dryRun = false,
+) => {
+  if (surface === "CLI") {
+    const argv = ["issue", "link", "--input", JSON.stringify(LINK)];
+    return runCli(r.assembly.catalog, dryRun ? [...argv, "--dry-run"] : argv, {
+      caller: "agent",
+      context,
+    });
+  }
+  const mcp = createMcpHandlers(
+    r.assembly.catalog,
+    { expose: ["issue"] },
+    { context },
+  );
+  const args = { op: "issue.link", input: LINK, ...(dryRun ? { dryRun } : {}) };
+  return respond((await mcp.callTool("catalog_call", args))!);
+};
+for (const surface of ["CLI", "MCP"] as const) {
+  for (const [mode, own] of [
+    ["no generation", {}],
+    ["an explicit generation", { leaseGeneration: 3 }],
+  ] as const)
+    test(`through ${surface}, issue link as a dry run with ${mode} on a bound project is refused before any cloud request`, () =>
+      using({ steps: [live] }, async (r) => {
+        const done = await through(r, surface, holding(r, own), true);
+        dryRefused(r, done.envelope);
+        expect(done.exitCode).toBe(1);
+      }));
+
+  test(`through ${surface}, issue link on a bound project returns the cloud's whole record from one show and one link command`, () =>
+    using({ steps: [live, () => answer(LINKED, "issue.link")] }, async (r) => {
+      const context = holding(r);
+      const done = await through(r, surface, context);
+      expect(done.envelope).toMatchObject({ ok: true, op: "issue.link" });
+      expect((done.envelope as { result: object }).result).toEqual(LINKED);
+      expect(done.exitCode).toBe(0);
+      expect(done.stdout).not.toContain(TOKEN);
+      expect(sent(r)).toEqual(["issue.show", "issue.link"]);
+      expect(r.net.calls[1]!.url).toBe(COMMAND);
+      expect(r.net.calls[1]!.body).toEqual(
+        linkBody(context, 3, expect.any(String) as unknown as string),
+      );
+    }));
+
+  for (const [what, step, code, exit] of [
+    ["a cloud refusal", () => refusing("INPUT_INVALID"), "INPUT_INVALID", 6],
+    [
+      "a malformed record",
+      () => answer({ ...LINKED, revision: TOKEN }, "issue.link"),
+      "UNAVAILABLE",
+      1,
+    ],
+  ] as const)
+    test(`through ${surface}, issue link with ${what} carrying the token keeps ${code} and leaks no token into the envelope or stdout`, () =>
+      using({ steps: [live, step] }, async (r) => {
+        const done = await through(r, surface, holding(r));
+        expect(done.envelope).toMatchObject({ ok: false, error: { code } });
+        expect(done.exitCode).toBe(exit);
+        expect(JSON.stringify(done.envelope)).not.toContain(TOKEN);
+        expect(done.stdout).not.toContain(TOKEN);
+        expect(sent(r)).toEqual(["issue.show", "issue.link"]);
+      }));
+}
 
 const CLOSED = { ...ISSUE, status: "closed", revision: 4 };
 const closes = (r: Rig, context: object, input: object = CLOSE) =>
@@ -1204,8 +1329,12 @@ const droppingInput = (r: Rig) => ({
   admit: (blockId: string, op: string, dryRun: boolean | undefined) =>
     r.assembly.catalog.admit!(blockId, op, dryRun, undefined),
 });
-for (const input of [{ ...CLOSE, ...RECEIPT }, CLOSE])
-  test(`issue.close with ${"receipt" in input ? "a receipt" : "withoutReceipt"} whose input is dropped before admission is refused before any request, through dispatch and MCP`, () =>
+for (const [op, input] of [
+  ["issue.close", { ...CLOSE, ...RECEIPT }],
+  ["issue.close", CLOSE],
+  ["issue.link", LINK],
+] as const)
+  test(`${op} with ${"receipt" in input ? "a receipt" : "withoutReceipt" in input ? "withoutReceipt" : "a valid link"} whose input is dropped before admission is refused before any request, through dispatch and MCP`, () =>
     using({ steps: [live] }, async (r) => {
       const catalog = droppingInput(r);
       const context = holding(r);
@@ -1213,14 +1342,13 @@ for (const input of [{ ...CLOSE, ...RECEIPT }, CLOSE])
         expect(failed(result, "INPUT_INVALID")).toBe(6);
         expect(result).toMatchObject({
           error: {
-            message:
-              "issue.close was not given its input to check before a cloud request.",
+            message: `${op} was not given its input to check before a cloud request.`,
           },
         });
         expect(r.net.calls).toHaveLength(0);
       };
       refused(
-        await dispatch(catalog, "issue.close", input, {
+        await dispatch(catalog, op, input, {
           caller: "agent",
           context,
         }),
@@ -1232,7 +1360,7 @@ for (const input of [{ ...CLOSE, ...RECEIPT }, CLOSE])
       );
       refused(
         (await handlers.callTool("catalog_call", {
-          op: "issue.close",
+          op,
           input,
         }))!,
       );
@@ -1953,6 +2081,40 @@ test("an unbound project's issue.dep still runs locally with no cloud request", 
     expect(done).toMatchObject({ ok: true, result: { dependsOn: [target] } });
     expect(exitCode(done)).toBe(0);
     expect(r.net.calls).toHaveLength(0);
+  }));
+
+test("an unbound project's issue.link still runs locally, persists the link and reads it back, with no cloud request", () =>
+  using({ bind: false, creds: false, sentinel: false }, async (r) => {
+    const own = holding(r);
+    const call = (op: string, input: object) =>
+      dispatch(r.assembly.catalog, op, input, {
+        caller: "agent",
+        context: own,
+      });
+    const { id } = (
+      (await r.assembly.catalog.invoke(r.request("issue.create", CREATE))) as {
+        result: { id: string };
+      }
+    ).result;
+    expect(await call("issue.claim", { id })).toMatchObject({ ok: true });
+    const done = await call("issue.link", { ...LINK, id });
+    expect(done).toMatchObject({
+      ok: true,
+      result: {
+        namespace: "forge/work",
+        revision: 1,
+        value: { relation: LINK.relation, url: LINK.url },
+      },
+    });
+    expect(exitCode(done)).toBe(0);
+    expect(await call("issue.links", { id })).toMatchObject({
+      ok: true,
+      result: {
+        records: [{ value: { relation: LINK.relation, url: LINK.url } }],
+      },
+    });
+    expect(r.net.calls).toHaveLength(0);
+    expect(existsSync(join(r.s.home, ".forge"))).toBe(false);
   }));
 
 test("a refused preflight on a bound project is thrown, never retried on the local runtime", async () => {
