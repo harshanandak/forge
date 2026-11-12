@@ -81,9 +81,18 @@ function fixture(
   spyOn(Date, "now").mockImplementation(() => t);
   const db = new Database(":memory:"),
     values = new Map<string, unknown>();
+  const writes = { login: 0, limiter: 0, failAfter: Infinity };
   const storage: DurableStorage = {
     sql: {
       exec: (sql, ...bindings) => {
+        if (/^\s*(INSERT|UPDATE|DELETE)\b/i.test(sql)) {
+          if (/\bdomain_cloud_login\b/.test(sql)) writes.login++;
+          if (
+            /\bdomain_cloud_login_limits\b/.test(sql) &&
+            ++writes.limiter > writes.failAfter
+          )
+            throw new Error("Injected counter write failure");
+        }
         const rows = db
           .query(sql)
           .all(
@@ -148,7 +157,7 @@ function fixture(
       return Promise.resolve(true);
     },
   };
-  const project = new Project({ storage }, env, { upstream, redemption });
+  let project = new Project({ storage }, env, { upstream, redemption });
   const reached: unknown[] = [];
   const bindings = {
     ...env,
@@ -209,10 +218,23 @@ function fixture(
     new RegExp(
       `action="/device/${action}"><input type="hidden" name="csrf" value="[^"]*"><input type="hidden" name="ticket" value="([^"]+)"`,
     ).exec(shown.text)?.[1] ?? "";
-  const submit = (action: "approve" | "deny", ticket: string, jar: Jar) =>
+  const selectorFor = (shown: Reply) =>
+    /name="challenge" value="([^"]*)"/.exec(shown.text)?.[1] ?? "";
+  const submit = (
+    action: "approve" | "deny",
+    ticket: string,
+    jar: Jar,
+    challenge?: string,
+    ip?: string | null,
+  ) =>
     send(`/device/${action}`, {
-      form: { csrf: jar.csrf, ticket },
+      form: {
+        csrf: jar.csrf,
+        ticket,
+        ...(challenge === undefined ? {} : { challenge }),
+      },
       cookie: jar.cookie,
+      ...(ip === undefined ? {} : { ip }),
     });
   // A decision follows its preview, as in the browser; a refused preview is the answer.
   const decide = async (
@@ -223,7 +245,7 @@ function fixture(
   ) => {
     const shown = await preview(code, jar, ip);
     return shown.status === 200
-      ? submit(action, ticketFor(shown, action), jar)
+      ? submit(action, ticketFor(shown, action), jar, selectorFor(shown), ip)
       : shown;
   };
   // The cookie a decision sets for its own callback, as the browser would send it back.
@@ -233,16 +255,27 @@ function fixture(
     new URL(
       reply.headers.get("location") ?? "https://none.example/",
     ).searchParams.get("s") ?? "";
-  const callback = (state: string, proof: string, cookie?: string) =>
+  const callback = (
+    state: string,
+    proof: string,
+    cookie?: string,
+    ip?: string | null,
+  ) =>
     send(
       `/callback?${new URLSearchParams({ state, code: "clerk-code", proof })}`,
-      cookie === undefined ? {} : { cookie },
+      {
+        ...(cookie === undefined ? {} : { cookie }),
+        ...(ip === undefined ? {} : { ip }),
+      },
     );
+  // Each browser flow comes from its own address, so one flow never spends another's client budget.
+  let addresses = 0;
+  const fresh = () => `198.18.0.${++addresses}`;
   // One whole browser approval up to the Clerk redirect; `done` returns from Clerk.
   async function through(
     action: "approve" | "deny",
     proof: string,
-    ip = "203.0.113.1",
+    ip = fresh(),
   ) {
     const login = body(await begin("laptop-1", ip));
     const jar = await open();
@@ -255,7 +288,7 @@ function fixture(
       decision,
       state,
       bind,
-      done: () => callback(state, proof, bind),
+      done: () => callback(state, proof, bind, ip),
     };
   }
   const poll = (device_code: string) =>
@@ -269,6 +302,8 @@ function fixture(
     decide,
     submit,
     ticketFor,
+    selectorFor,
+    fresh,
     bindOf,
     stateOf,
     callback,
@@ -280,6 +315,30 @@ function fixture(
     now: () => t,
     advance: (ms: number) => {
       t += ms;
+    },
+    writes,
+    restart: () => {
+      project = new Project({ storage }, env, { upstream, redemption });
+    },
+    // Everything a refused browser request must leave alone: login bytes and DML, tokens, events, receipts, calls.
+    frozen: () =>
+      JSON.stringify([
+        writes.login,
+        rows("SELECT state FROM domain_cloud_login")[0]?.state ?? null,
+        rows("SELECT COUNT(*) AS n FROM domain_cloud_tokens")[0]!.n,
+        rows("SELECT COUNT(*) AS n FROM state_events")[0]!.n,
+        rows("SELECT COUNT(*) AS n FROM domain_cloud_requests")[0]!.n,
+        seen,
+        [...claims.keys()],
+      ]),
+    limits: () => {
+      try {
+        return rows(
+          "SELECT bucket, count, reset_at FROM domain_cloud_login_limits ORDER BY bucket",
+        );
+      } catch {
+        return [];
+      }
     },
     useWorker: (next: Fetcher) => {
       worker = next;
@@ -666,9 +725,9 @@ test("the sixth failed decision by the owner within a minute is rate limited", a
   f.advance(596_000);
   await f.begin("laptop-2", ip(9));
   const results: Reply[] = [];
-  for (const decision of states)
+  for (const [n, decision] of states.entries())
     results.push(
-      await f.callback(f.stateOf(decision), "owner", f.bindOf(decision)),
+      await f.callback(f.stateOf(decision), "owner", f.bindOf(decision), ip(n)),
     );
   expect(results.map((reply) => [reply.status, outcome(reply)])).toEqual([
     ...Array.from({ length: 5 }, () => [400, "invalid_user_code"]),
@@ -740,14 +799,21 @@ test("a stolen or planted page cookie cannot finish a redirect for another brows
     ]);
   }
   expect(f.seen.begun).toEqual([]);
-  const decision = await f.submit("approve", ticket, owner);
+  const decision = await f.submit(
+    "approve",
+    ticket,
+    owner,
+    f.selectorFor(shown),
+  );
   expect(decision.status).toBe(302);
   const set = decision.headers.get("set-cookie")!;
   expect(set.startsWith("__Host-forge_device_")).toBe(true);
   for (const part of ["Secure", "HttpOnly", "SameSite=Lax", "Path=/"])
     expect(set).toContain(part);
   expect((await f.submit("approve", ticket, owner)).status).toBe(400);
-  // The owner's browser follows the Clerk link with only the page cookie it already had.
+  // The owner's browser follows the Clerk link with only the page cookie it already had. Six attempts
+  // on one challenge are over its five-a-minute bound, so the check waits for the next window.
+  f.advance(60_000);
   const phished = await f.callback(f.stateOf(decision), "owner", owner.cookie);
   expect([phished.status, outcome(phished)]).toEqual([400, "access_denied"]);
   expect(f.seen.verified).toEqual([]);
@@ -824,4 +890,283 @@ test("a second tab keeps the page cookie, so the first tab still completes", asy
   const one = await f.callback(f.stateOf(first), "owner", f.bindOf(first));
   const two = await f.callback(f.stateOf(second), "owner", f.bindOf(second));
   expect([one.status, two.status]).toEqual([200, 200]);
+}, 30_000);
+
+type Fixture = ReturnType<typeof fixture>;
+const WRONG = "x".repeat(43);
+const pair = (reply: Reply) => [reply.status, outcome(reply)];
+/** A live preview of a fresh challenge: its browser, both tickets and the challenge selector. */
+async function previewed(f: Fixture) {
+  const login = body(await f.begin("laptop-1", f.fresh()));
+  const jar = await f.open();
+  const shown = await f.preview(login.user_code, jar);
+  const ticket = (action: "approve" | "deny") => f.ticketFor(shown, action);
+  return { login, jar, selector: f.selectorFor(shown), ticket };
+}
+type Preview = Awaited<ReturnType<typeof previewed>>;
+// A decision from its own address: a wrong ticket unless one is given.
+const post = (
+  f: Fixture,
+  p: Preview,
+  o: {
+    action?: "approve" | "deny";
+    ticket?: string;
+    selector?: string;
+    ip?: string | null;
+  } = {},
+) =>
+  f.submit(
+    o.action ?? "approve",
+    o.ticket ?? WRONG,
+    p.jar,
+    o.selector ?? p.selector,
+    "ip" in o ? o.ip : f.fresh(),
+  );
+const right = (
+  f: Fixture,
+  p: Preview,
+  action: "approve" | "deny" = "approve",
+) => post(f, p, { action, ticket: p.ticket(action) });
+const finish = (f: Fixture, decision: Reply, ip: string | null = f.fresh()) =>
+  f.callback(f.stateOf(decision), "owner", f.bindOf(decision), ip);
+
+test("a wrong ticket or selector writes nothing and leaves the right ones usable", async () => {
+  for (const action of ["approve", "deny"] as const) {
+    const f = fixture();
+    await f.provision();
+    // An unrelated browser record that expires before the refusals: they must not prune it.
+    await previewed(f);
+    f.advance(300_000);
+    const [p, other] = [await previewed(f), await previewed(f)];
+    f.advance(300_001);
+    const before = f.frozen();
+    const swap = action === "approve" ? "deny" : "approve";
+    for (const o of [
+      { ticket: "" },
+      { ticket: p.ticket(swap) },
+      { ticket: p.ticket(action), selector: "" },
+      { ticket: p.ticket(action), selector: "0".repeat(64) },
+      { ticket: p.ticket(action), selector: other.selector },
+    ]) {
+      expect(pair(await post(f, p, { action, ...o }))).toEqual([
+        400,
+        "invalid_request",
+      ]);
+      expect(f.frozen()).toBe(before);
+    }
+    const decision = await post(f, p, { action, ticket: p.ticket(action) });
+    expect(decision.status).toBe(302);
+    expect(pair(await finish(f, decision))).toEqual([
+      200,
+      action === "approve" ? "approved" : "denied",
+    ]);
+    // Only polling yields a credential, once; a denial never does.
+    const polled = await f.poll(p.login.device_code);
+    expect([polled.status, (await f.poll(p.login.device_code)).status]).toEqual(
+      action === "approve" ? [200, 400] : [400, 400],
+    );
+    expect(f.tokens()).toBe(action === "approve" ? 2 : 1);
+  }
+}, 30_000);
+
+test("a wrong browser cannot burn a callback state, and a refused callback writes nothing", async () => {
+  const f = fixture();
+  await f.provision();
+  const flow = await f.through("approve", "owner");
+  const twice = new URLSearchParams([
+    ["state", flow.state],
+    ["state", flow.state],
+    ["proof", "owner"],
+  ]);
+  const before = f.frozen();
+  for (const reply of [
+    await f.callback(
+      flow.state,
+      "owner",
+      `${flow.bind.split("=")[0]}=${WRONG}`,
+      f.fresh(),
+    ),
+    await f.callback(flow.state, "owner", undefined, f.fresh()),
+    await f.send(`/callback?${twice}`, { cookie: flow.bind, ip: f.fresh() }),
+  ]) {
+    expect(pair(reply)).toEqual([400, "access_denied"]);
+    expect(f.frozen()).toBe(before);
+  }
+  expect(
+    pair(await f.callback(flow.state, "owner", flow.bind, f.fresh())),
+  ).toEqual([200, "approved"]);
+  const late = await f.through("approve", "owner");
+  f.advance(600_000);
+  const expired = f.frozen();
+  for (const state of [flow.state, "forge-device.unknown", late.state]) {
+    expect(
+      pair(await f.callback(state, "owner", late.bind, f.fresh())),
+    ).toEqual([400, "access_denied"]);
+    expect(f.frozen()).toBe(expired);
+  }
+  expect(f.seen.verified).toHaveLength(1);
+  // Two valid callbacks for one state: one decision.
+  const twin = await f.through("deny", "owner");
+  const both = await Promise.all([
+    twin.done(),
+    f.callback(twin.state, "owner", twin.bind, f.fresh()),
+  ]);
+  expect(both.map(pair).sort()).toEqual([
+    [200, "denied"],
+    [400, "access_denied"],
+  ]);
+  expect([f.seen.verified.length, f.claims.size]).toEqual([2, 2]);
+}, 30_000);
+
+test("a challenge allows five attempts a minute, whoever makes them", async () => {
+  const f = fixture();
+  await f.provision();
+  const a = await previewed(f);
+  // Five wrong tickets from five addresses, across both actions and new browsers.
+  for (let n = 0; n < 5; n++) {
+    const jar = await f.open();
+    const shown = await f.preview(a.login.user_code, jar);
+    const reply = await f.submit(
+      n % 2 ? "deny" : "approve",
+      WRONG,
+      jar,
+      f.selectorFor(shown),
+      f.fresh(),
+    );
+    expect(pair(reply)).toEqual([400, "invalid_request"]);
+  }
+  const fresh = await f.open();
+  const shown = await f.preview(a.login.user_code, fresh);
+  const sixth = () =>
+    f.submit(
+      "approve",
+      f.ticketFor(shown, "approve"),
+      fresh,
+      f.selectorFor(shown),
+      f.fresh(),
+    );
+  const [frozen, limits] = [f.frozen(), f.limits()];
+  expect(pair(await sixth())).toEqual([429, "rate_limited"]);
+  expect([f.frozen(), f.limits()]).toEqual([frozen, limits]);
+  f.advance(60_000);
+  expect((await sixth()).status).toBe(302);
+  // A known callback state is the same challenge: one decision, four wrong tickets, then the callback.
+  const b = await previewed(f);
+  const decision = await right(f, b);
+  for (let n = 0; n < 4; n++) await post(f, b);
+  expect(pair(await finish(f, decision))).toEqual([429, "rate_limited"]);
+  expect(f.seen.verified).toEqual([]);
+  f.advance(60_000);
+  expect(pair(await finish(f, decision))).toEqual([200, "approved"]);
+}, 30_000);
+
+test("an address allows five attempts a minute, and the project thirty", async () => {
+  const f = fixture();
+  await f.provision();
+  const [a, b] = [await previewed(f), await previewed(f)];
+  const x = "192.0.2.77";
+  const unknown = (state: string) =>
+    f.callback(`forge-device.${state}`, "owner", undefined, x);
+  const first = [
+    await post(f, a, { ip: x }),
+    await post(f, b, { action: "deny", ip: x }),
+    await unknown("one"),
+    await post(f, a, { ip: x }),
+    await unknown("two"),
+  ];
+  expect(first.map(pair)).toEqual([
+    [400, "invalid_request"],
+    [400, "invalid_request"],
+    [400, "access_denied"],
+    [400, "invalid_request"],
+    [400, "access_denied"],
+  ]);
+  const [frozen, limits] = [f.frozen(), f.limits()];
+  expect(
+    pair(await post(f, a, { ip: x, ticket: a.ticket("approve") })),
+  ).toEqual([429, "rate_limited"]);
+  expect([f.frozen(), f.limits()]).toEqual([frozen, limits]);
+  // The window boundary: refusals did not move it.
+  f.advance(59_999);
+  expect((await post(f, a, { ip: x })).status).toBe(429);
+  f.advance(1);
+  expect((await post(f, a, { ip: x })).status).toBe(400);
+  // Thirty admitted attempts from other addresses close the project.
+  for (let n = 0; n < 6; n++) {
+    const p = await previewed(f);
+    for (let k = 0; k < (n === 5 ? 4 : 5); k++)
+      expect((await post(f, p)).status).toBe(400);
+  }
+  const last = await previewed(f);
+  expect(pair(await right(f, last))).toEqual([429, "rate_limited"]);
+}, 30_000);
+
+test("each protected route needs a client address before it writes or calls out", async () => {
+  const f = fixture();
+  await f.provision();
+  const p = await previewed(f);
+  const before = f.frozen();
+  for (const ip of [null, ""])
+    for (const reply of [
+      await post(f, p, { ip, ticket: p.ticket("approve") }),
+      await post(f, p, { ip, action: "deny", ticket: p.ticket("deny") }),
+      await f.callback("forge-device.unknown", "owner", undefined, ip),
+    ])
+      expect(pair(reply)).toEqual([403, "AUTH_FORBIDDEN"]);
+  expect([f.frozen(), f.limits()]).toEqual([before, []]);
+}, 30_000);
+
+test("overlapping attempts cannot overspend the challenge or the address", async () => {
+  for (const bound of ["challenge", "client"] as const) {
+    const f = fixture();
+    await f.provision();
+    const p = await previewed(f);
+    const real = crypto.subtle.digest.bind(crypto.subtle) as (
+      ...args: unknown[]
+    ) => Promise<ArrayBuffer>;
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const x = f.fresh();
+    // Every request waits at its first hash, before admission, until all six are in flight.
+    const spy = spyOn(crypto.subtle, "digest").mockImplementation(
+      (...args: unknown[]) => gate.then(() => real(...args)),
+    );
+    try {
+      const runs = Array.from({ length: 6 }, () =>
+        bound === "challenge"
+          ? post(f, p)
+          : post(f, p, { ip: x, selector: "" }),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      release();
+      const statuses = (await Promise.all(runs)).map((reply) => reply.status);
+      expect(statuses.filter((status) => status === 400)).toHaveLength(5);
+      expect(statuses.filter((status) => status === 429)).toHaveLength(1);
+    } finally {
+      spy.mockRestore();
+    }
+  }
+}, 30_000);
+
+test("the budget survives a restart, and a failed counter write changes nothing", async () => {
+  const f = fixture();
+  await f.provision();
+  const p = await previewed(f);
+  for (let n = 0; n < 3; n++) await post(f, p);
+  f.restart();
+  for (let n = 0; n < 2; n++) expect((await post(f, p)).status).toBe(400);
+  expect(pair(await post(f, p))).toEqual([429, "rate_limited"]);
+
+  const g = fixture();
+  await g.provision();
+  const q = await previewed(g);
+  const [frozen, limits] = [g.frozen(), g.limits()];
+  // The first counter write succeeds and the second fails: neither may stay.
+  g.writes.failAfter = g.writes.limiter + 1;
+  expect(pair(await post(g, q))).toEqual([500, "INTERNAL"]);
+  expect([g.frozen(), g.limits()]).toEqual([frozen, limits]);
+  g.writes.failAfter = Infinity;
+  expect((await right(g, q)).status).toBe(302);
 }, 30_000);

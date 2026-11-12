@@ -3,6 +3,7 @@ import { Database } from "bun:sqlite";
 import { createDeviceLogin } from "../../../cloud/src/auth/device-login.ts";
 import {
   importLoginKey,
+  LOGIN_MIGRATION,
   LOGIN_TTL_MS,
   loginStore,
 } from "../../../cloud/src/auth/project-login.ts";
@@ -454,4 +455,38 @@ test("login input is validated and a bearer token does not divert it to OAuth", 
   );
   expect([oauth.status, oauth.body.ok]).toEqual([200, true]);
   expect((await f.send("loginapprove", { code: "x" })).status).toBe(401);
+}, 30_000);
+
+test("the login store writes the row only when the state changed", () => {
+  const raw = new Database(":memory:");
+  const writes: string[] = [];
+  const storage: DurableStorage = {
+    sql: {
+      exec: (sql, ...bindings) => {
+        if (/^\s*(INSERT|UPDATE|DELETE)\b/i.test(sql)) writes.push(sql);
+        return {
+          toArray: () => raw.query(sql).all(...(bindings as never[])) as Row[],
+        };
+      },
+    },
+    transactionSync: (body) => raw.transaction(body)(),
+    get: () => Promise.resolve(undefined),
+    put: () => Promise.resolve(),
+    delete: () => Promise.resolve(false),
+  };
+  const db = durableStore(storage);
+  db.exec(LOGIN_MIGRATION.statements[0]!);
+  const store = loginStore(db);
+  // No row and nothing to change: no row is created. A change is written once; the same state again is not.
+  store.conditionalUpdate(() => "refused");
+  expect(writes).toEqual([]);
+  store.conditionalUpdate((state) => {
+    state.attempts.x = { failed: 1, resetAt: 5 };
+  });
+  expect(writes).toHaveLength(1);
+  store.conditionalUpdate(() => "refused");
+  store.conditionalUpdate((state) => {
+    state.attempts.x = { failed: 1, resetAt: 5 };
+  });
+  expect(writes).toHaveLength(1);
 }, 30_000);
