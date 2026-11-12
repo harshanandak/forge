@@ -143,6 +143,7 @@ async function runInJob(
   // Loaded here so POSIX never loads the Windows launcher or koffi.
   const { launchCaptured, stopCaptured } =
     await import("./windows-launch-stdio.ts");
+  await new Promise((done) => setTimeout(done, 40));
   const { stdout, stderr } = captureStreams(options);
   let timedOut = false;
   let interrupted = false;
