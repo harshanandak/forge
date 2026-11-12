@@ -32,6 +32,9 @@
     "blockId": {
       "type": "string"
     },
+    "declaredOp": {
+      "type": "string"
+    },
     "digest": {
       "type": "string"
     }

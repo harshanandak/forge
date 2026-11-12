@@ -58,6 +58,8 @@ export function writeCoreManifest(root: string = repoRoot): void {
   const candidates = Object.entries(manifest.operations).map(
     ([op, declaration]) => ({
       op,
+      blockId: manifest.id,
+      declaredOp: op,
       admitted: true,
       declaration,
       docs: docs.operations[op] ?? { title: op, summary: `Run ${op}.` },
