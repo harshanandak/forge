@@ -6196,8 +6196,8 @@ interface Write {
   record: string;
   /** The lease a successful write leaves in the dump, when it takes one. */
   lease?: string;
-  /** True when the write also advances the allocation floor: one more record and one more work event. */
-  floor?: boolean;
+  /** The number a create allocates: it advances the floor to it, with one more work event. Other writes leave the floor alone. */
+  floor?: number;
   /** What the first successful write returns, after a failed receipt write was rolled back. */
   result: (f: F, got: Sent) => void;
 }
@@ -6228,7 +6228,7 @@ const WRITES: Write[] = [
     empty: { title: "" },
     ok: { title: "New", kind: "task" },
     record: "forge/work/issue:work-13",
-    floor: true,
+    floor: 13,
     result: (_f, got) =>
       expect([got.status, got.json.result]).toMatchObject([
         200,
@@ -6450,6 +6450,7 @@ for (const w of WRITES) {
 
   test(`a ${w.name} leaves its record, event and receipt in the dump, and no credential or login state anywhere`, async () => {
     const { f, token } = await w.rows();
+    const floorBefore = floorOf(f);
     const ok = await f.send(w.send("s-1", w.ok), { token });
     const bad = await f.send(w.send("s-2", w.empty), { token });
     expect([ok.status, bad.status]).toEqual([200, 400]);
@@ -6458,7 +6459,12 @@ for (const w of WRITES) {
       value: {
         tables: Record<
           string,
-          { namespace?: string; key?: string; subject?: string }[]
+          {
+            namespace?: string;
+            key?: string;
+            subject?: string;
+            body?: string;
+          }[]
         >;
       };
     };
@@ -6474,11 +6480,13 @@ for (const w of WRITES) {
         (r) => `${r.namespace}/${r.key ?? r.subject ?? ""}`,
       );
     const floorRecord = "forge/work/allocation:issue:work-";
+    // Only a create moves the floor; every other write leaves the one its project already had.
+    const floorAfter = w.floor === undefined ? floorBefore : floorAt(w.floor);
     for (const record of [
       w.record,
       "forge/cloud/request:s-1",
       "forge/cloud/request:s-2",
-      ...(w.floor ? [floorRecord] : []),
+      ...(floorAfter === undefined ? [] : [floorRecord]),
     ])
       expect(at("state_records")).toContain(record);
     if (w.lease !== undefined) expect(at("state_leases")).toContain(w.lease);
@@ -6491,19 +6499,23 @@ for (const w of WRITES) {
       "forge/cloud",
       "forge/cloud",
       "forge/work",
-      ...(w.floor ? ["forge/work"] : []),
+      ...(w.floor === undefined ? [] : ["forge/work"]),
     ]);
     // The token is the canary: it is in no response, receipt, dump or row of the project.
     const secret = token.split(".")[1]!;
     const rows = JSON.stringify(
       ["forge/work", "forge/cloud"].map((ns) => rowsOf(f.db, ns)),
     );
-    const floorRow = JSON.stringify(
-      value.tables.state_records?.filter(
-        (r) => `${r.namespace}/${r.key}` === floorRecord,
-      ),
+    const floorRows = (value.tables.state_records ?? []).filter(
+      (r) => `${r.namespace}/${r.key}` === floorRecord,
     );
-    expect(floorRow.includes("allocation:issue:work-")).toBe(w.floor === true);
+    const floorRow = JSON.stringify(floorRows);
+    expect(floorOf(f)).toEqual(floorAfter);
+    expect(
+      floorRows.map(
+        (r) => (JSON.parse(r.body ?? "null") as { value: unknown }).value,
+      ),
+    ).toEqual(floorAfter === undefined ? [] : [floorAfter]);
     for (const text of [ok.text, bad.text, dump, rows, floorRow])
       for (const canary of [token, secret, "authorization", "fct_"])
         expect([
