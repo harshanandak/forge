@@ -7916,3 +7916,513 @@ test("after a release a renew is refused and another session claims the issue at
     { id: "forge-12", generation: 3 },
   ]);
 }, 60_000);
+
+// forge-1311: a restore gives the project an issue number floor, so create works on a restored legacy project.
+const WORK = "forge/work";
+const FLOOR = "allocation:issue:work-";
+const RESTORER = { kind: "agent", id: "cloud-restore" } as const;
+const TRIPS = ["whole", "paged"] as const;
+type Trip = (typeof TRIPS)[number];
+type Part = { format: string; tables: Tables };
+const issueKey = (n: number) => `issue:work-${n}`;
+interface FloorWrite {
+  put: (key: string, value: unknown, revision?: number, ns?: string) => void;
+  drop: (key: string, revision: number) => void;
+  issue: (number: number) => void;
+  floor: (value: unknown, revision?: number) => void;
+}
+type Build = (w: FloorWrite, owner: StateOwner) => void;
+
+/** A project whose history is written through the state owner; its five tables are read with plain SQL. */
+async function projectWith(
+  build: Build,
+  settings: Record<string, unknown> = vars,
+) {
+  const f = fixture(settings);
+  await f.device();
+  const owner = owned(f);
+  const put = (key: string, value: unknown, revision = 0, ns = WORK) => {
+    owner.put(ns, key, value, actor, { expectRevision: revision });
+  };
+  build(
+    {
+      put,
+      drop: (key, revision) => {
+        owner.delete(WORK, key, actor, { expectRevision: revision });
+      },
+      issue: (n) => put(issueKey(n), stored({ id: `work-${n}` })),
+      floor: (value, revision = 0) => put(FLOOR, value, revision),
+    },
+    owner,
+  );
+  return { f, tables: tablesOf(f.db) };
+}
+// Live work-1, and work-2 created, renamed and deleted, with no floor: a project from before floors.
+const legacy: Build = (w) => {
+  w.issue(1);
+  w.issue(2);
+  w.put(issueKey(2), stored({ id: "work-2", title: "Renamed" }), 1);
+  w.drop(issueKey(2), 2);
+};
+
+/** The source's real export: the whole dump, or every page of it in order. */
+async function exported(f: F, trip: Trip): Promise<Part[]> {
+  if (trip === "whole")
+    return [(await f.admin("dump")).json.value as unknown as Part];
+  const pages: Part[] = [];
+  let cursor = "start";
+  for (;;) {
+    const page = (await f.admin(`dump?cursor=${encodeURIComponent(cursor)}`))
+      .json.value!;
+    pages.push(page as unknown as Part);
+    expect(pages.length).toBeLessThan(30);
+    if ((page.next ?? null) === null) return pages;
+    cursor = page.next!;
+  }
+}
+const asText = (row: object) => JSON.stringify(row);
+
+/** Restores `tables` through the real admin route, whole or in pages, checking what each earlier page staged. */
+async function restoreInto(
+  trip: Trip,
+  tables: Tables,
+  o: {
+    per?: number;
+    settings?: Record<string, unknown>;
+    target?: F;
+    parts?: Part[];
+    fail?: (sql: string, bindings: unknown[]) => boolean;
+  } = {},
+) {
+  const t = o.target ?? fixture(o.settings ?? vars);
+  const parts: Part[] =
+    o.parts ??
+    (trip === "whole"
+      ? [{ format: DUMP, tables }]
+      : pagesOf(tables, o.per ?? 2));
+  const calls: { sql: string; bindings: unknown[] }[] = [];
+  const original = t.storage.sql.exec.bind(t.storage.sql);
+  const quiet = spyOn(console, "error").mockImplementation(() => {});
+  const spy = spyOn(t.storage.sql, "exec").mockImplementation(
+    (sql, ...bindings) => {
+      calls.push({ sql, bindings });
+      if (o.fail?.(sql, bindings)) throw new Error("injected restore failure");
+      return original(sql, ...bindings);
+    },
+  );
+  const staged: Tables = Object.fromEntries(
+    Object.keys(tables).map((table) => [table, []]),
+  );
+  let got!: Awaited<ReturnType<F["admin"]>>;
+  try {
+    for (const [i, part] of parts.entries()) {
+      got = await t.admin("restore", JSON.stringify(part));
+      if (got.status !== 200) break;
+      if (i === parts.length - 1) break;
+      // Before the last page the project holds exactly the rows sent so far: no derived row, and not provisioned.
+      for (const [table, rows] of Object.entries(part.tables))
+        staged[table]!.push(...rows);
+      expect(differing(tablesOf(t.db), staged)).toEqual([]);
+      expect((await t.admin("status")).json.value!.initialized).toBe(false);
+    }
+  } finally {
+    spy.mockRestore();
+    quiet.mockRestore();
+  }
+  return { t, got, parts, calls };
+}
+async function refuses(
+  trip: Trip,
+  tables: Tables,
+  code: string,
+  status: number,
+  o: Parameters<typeof restoreInto>[2] = {},
+) {
+  const { t, got } = await restoreInto(trip, tables, o);
+  expect([got.status, got.json.error?.code]).toEqual([status, code]);
+  expect(got.text).toContain('"retry":"never"');
+  expect((await t.admin("status")).json.value!.initialized).toBe(false);
+  expect(Object.values(tablesOf(t.db)).flat()).toEqual([]);
+  expect(await t.storage.get("restore:next")).toBeUndefined();
+  return got;
+}
+/** Every imported row is still there, and exactly one record and one event were added: the floor, at `number`. */
+function expectFloor(t: F, tables: Tables, number: number, revision = 1) {
+  const after = tablesOf(t.db);
+  for (const [table, rows] of Object.entries(tables)) {
+    const have = new Set(after[table]!.map(asText));
+    expect([table, rows.filter((row) => !have.has(asText(row)))]).toEqual([
+      table,
+      [],
+    ]);
+    expect([table, after[table]!.length - rows.length]).toEqual([
+      table,
+      table === "state_records" || table === "state_events" ? 1 : 0,
+    ]);
+  }
+  const fresh = (table: string) => {
+    const had = new Set(tables[table]!.map(asText));
+    return after[table]!.filter((row) => !had.has(asText(row)));
+  };
+  const [record] = fresh("state_records");
+  const [event] = fresh("state_events");
+  expect([record?.namespace, record?.key, record?.revision]).toEqual([
+    WORK,
+    FLOOR,
+    revision,
+  ]);
+  expect(JSON.parse(String(record?.body))).toEqual({
+    namespace: WORK,
+    key: FLOOR,
+    revision,
+    value: floorAt(number),
+    updatedAt: iso(start),
+    updatedBy: RESTORER,
+  });
+  expect([event?.sequence, event?.namespace, event?.key]).toEqual([
+    tables.state_events!.length + 1,
+    WORK,
+    FLOOR,
+  ]);
+  expect(JSON.parse(String(event?.body))).toEqual({
+    type: `${WORK}:record.updated@1`,
+    namespace: WORK,
+    key: FLOOR,
+    revision,
+    at: iso(start),
+    actor: RESTORER,
+    data: floorAt(number),
+  });
+}
+/** Issues a device, then creates once per number: each is the next number at revision 1, and the floor follows it. */
+async function createsNext(t: F, numbers: number[]) {
+  const token = await t.device();
+  for (const [i, n] of numbers.entries()) {
+    const got = await t.send(make(`next-${i}`), { token });
+    expect([got.status, got.exit, got.json.result]).toMatchObject([
+      200,
+      0,
+      { id: `forge-${n}`, revision: 1 },
+    ]);
+    expect(floorOf(t)).toEqual(floorAt(n));
+  }
+}
+// Append-only history survives a create: every imported event, and every imported record but the floor.
+function historyKept(t: F, tables: Tables) {
+  const after = tablesOf(t.db);
+  for (const [table, rows] of [
+    ["state_events", tables.state_events!],
+    ["state_records", tables.state_records!.filter((row) => row.key !== FLOOR)],
+  ] as const) {
+    const have = new Set(after[table]!.map(asText));
+    expect([table, rows.filter((row) => !have.has(asText(row)))]).toEqual([
+      table,
+      [],
+    ]);
+  }
+}
+
+// Guard: a supplied floor already round-trips on main. The export and restore are the real routes.
+for (const trip of TRIPS)
+  test(`a ${trip} export and restore keep a supplied floor, its revision and its history exactly, and create allocates above it`, async () => {
+    const { f, tables } = await projectWith(
+      (w) => {
+        w.issue(1);
+        w.issue(2);
+        w.drop(issueKey(2), 1);
+        w.floor(floorAt(12));
+      },
+      { ...vars, DUMP_PAGE_BYTES: "1500" },
+    );
+    const parts = await exported(f, trip);
+    if (trip === "paged") expect(parts.length).toBeGreaterThan(2);
+    const { t, got } = await restoreInto(trip, tables, { parts });
+    expect(got.status).toBe(200);
+    expect(differing(tablesOf(t.db), tables)).toEqual([]);
+    await createsNext(t, [13]);
+    historyKept(t, tables);
+    expect(rowsOf(t.db, WORK).map((row) => row.key)).not.toContain(issueKey(2));
+  }, 60_000);
+
+for (const trip of TRIPS)
+  test(`a ${trip} restore of a legacy project with no floor saves floor 2, and create then allocates 3 and 4 at revision 1`, async () => {
+    const { tables } = await projectWith(legacy);
+    const { t, got } = await restoreInto(trip, tables);
+    expect(got.status).toBe(200);
+    expectFloor(t, tables, 2);
+    // The counts describe the imported rows, never the generated pair.
+    if (trip === "whole")
+      expect(
+        (got.json.value as unknown as { restored: object }).restored,
+      ).toEqual({
+        state_records: 1,
+        state_events: 4,
+        state_leases: 0,
+        state_requests: 0,
+        domain_cloud_requests: 0,
+      });
+    await createsNext(t, [3, 4]);
+    historyKept(t, tables);
+    expect(rowsOf(t.db, WORK).map((row) => row.key)).not.toContain(issueKey(2));
+  }, 60_000);
+
+for (const trip of TRIPS)
+  test(`a ${trip} restore of only deleted history saves its number, derived only when the last page lands`, async () => {
+    const { tables } = await projectWith((w) => {
+      w.issue(10);
+      w.drop(issueKey(10), 1);
+    });
+    const { t, got, parts } = await restoreInto(trip, tables, { per: 1 });
+    // The update and the delete are on separate pages.
+    expect(parts.length).toBe(trip === "paged" ? 2 : 1);
+    expect(got.status).toBe(200);
+    expectFloor(t, tables, 10);
+    await createsNext(t, [11]);
+  }, 60_000);
+
+for (const [name, build] of [
+  ["no records at all", () => {}],
+  [
+    "a lease on issue 99 and no records",
+    (_w, owner) => {
+      owner.acquire(
+        WORK,
+        "issue:work-99",
+        { actor, session: { id: "s1" } },
+        day,
+        "lease-1",
+      );
+    },
+  ],
+] as [string, Build][])
+  for (const trip of TRIPS)
+    test(`a ${trip} restore of a project with ${name} saves floor 0, and the first create is number 1`, async () => {
+      const { tables } = await projectWith(build);
+      const { t, got } = await restoreInto(trip, tables);
+      expect(got.status).toBe(200);
+      expectFloor(t, tables, 0);
+      await createsNext(t, [1]);
+      historyKept(t, tables);
+    }, 60_000);
+
+for (const [name, build] of [
+  [
+    "below a deleted issue",
+    (w: FloorWrite) => {
+      w.issue(1);
+      w.issue(2);
+      w.drop(issueKey(2), 1);
+      w.floor(floorAt(1));
+    },
+  ],
+  [
+    "below a live issue",
+    (w: FloorWrite) => {
+      w.issue(5);
+      w.floor(floorAt(4));
+    },
+  ],
+  [
+    "lowered after a higher earlier value",
+    (w: FloorWrite) => {
+      w.floor(floorAt(20));
+      w.floor(floorAt(15), 1);
+    },
+  ],
+] as const)
+  for (const trip of TRIPS)
+    test(`a ${trip} restore of a floor ${name} is RESTORE_INVALID_ROW naming the allocation row, and leaves nothing`, async () => {
+      const { tables } = await projectWith(build);
+      const got = await refuses(trip, tables, "RESTORE_INVALID_ROW", 400);
+      expect(got.text).toContain(FLOOR);
+    }, 60_000);
+
+for (const [name, value] of [
+  ["null", null],
+  ["an extra field", { ...floorAt(5), extra: true }],
+  ["another prefix", { prefix: "issue:other-", number: 5 }],
+  ["a fraction", floorAt(1.5)],
+  ["a negative number", floorAt(-1)],
+  ["an unsafe number", floorAt(2 ** 53)],
+  ["a string number", { prefix: "issue:work-", number: "5" }],
+] as const)
+  for (const trip of TRIPS)
+    test(`a ${trip} restore of a floor holding ${name} is RESTORE_INVALID_ROW and never replaced by a derived value`, async () => {
+      const { tables } = await projectWith((w) => {
+        w.issue(1);
+        w.floor(value);
+      });
+      const got = await refuses(trip, tables, "RESTORE_INVALID_ROW", 400);
+      expect(got.text).toContain(FLOOR);
+    }, 60_000);
+
+for (const trip of TRIPS) {
+  const numbers: Build = (w, owner) => {
+    w.issue(9);
+    w.issue(10);
+    // None of these is an issue number: another prefix, a non-numeric or zero-padded suffix, another namespace.
+    w.put("comment:work-99:1", { id: "work-1", body: "c" });
+    w.put("issue:other-50", stored({ id: "other-50" }));
+    w.put("issue:work-x77", stored());
+    w.put("issue:work-007", stored());
+    w.put("link:work-300", { from: "work-1" });
+    w.put(issueKey(500), stored({ id: "work-500" }), 0, "forge/cloud");
+    owner.acquire(
+      WORK,
+      "issue:work-99",
+      { actor, session: { id: "s1" } },
+      day,
+      "lease-1",
+    );
+  };
+  test(`a ${trip} restore takes the numerically highest issue key in its namespace and prefix, and ignores every other key`, async () => {
+    const { tables } = await projectWith(numbers);
+    const { t, got } = await restoreInto(trip, tables);
+    expect(got.status).toBe(200);
+    expectFloor(t, tables, 10);
+    await createsNext(t, [11]);
+  }, 60_000);
+
+  test(`a ${trip} restore refuses an unsafe issue number instead of rounding it`, async () => {
+    const { tables } = await projectWith((w) => {
+      w.issue(1);
+      w.put("issue:work-9007199254740993", stored());
+    });
+    await refuses(trip, tables, "RESTORE_INVALID_ROW", 400);
+  }, 60_000);
+
+  test(`a ${trip} restore keeps a deleted floor number at the next historical revision`, async () => {
+    const { tables } = await projectWith((w) => {
+      w.issue(1);
+      w.floor(floorAt(12));
+      w.drop(FLOOR, 1);
+    });
+    const { t, got } = await restoreInto(trip, tables);
+    expect(got.status).toBe(200);
+    expectFloor(t, tables, 12, 3);
+    await createsNext(t, [13]);
+  }, 60_000);
+
+  test(`a ${trip} restore reads duplicate type labels the way replay does, last label authoritative, and keeps the event text`, async () => {
+    const { f, tables: plain } = await projectWith((w) => {
+      w.issue(10);
+      w.put(issueKey(10), stored({ id: "work-10", title: "Renamed" }), 1);
+      w.drop(issueKey(10), 2);
+    });
+    f.db.run(
+      `UPDATE state_events SET body=replace(body,'"type":','"type":"ignored","type":')`,
+    );
+    const tables = tablesOf(f.db);
+    expect(tables.state_events!.map((row) => row.body)).not.toEqual(
+      plain.state_events!.map((row) => row.body),
+    );
+    const { t, got } = await restoreInto(trip, tables, { per: 1 });
+    expect(got.status).toBe(200);
+    expectFloor(t, tables, 10);
+    await createsNext(t, [11]);
+  }, 60_000);
+
+  test(`a ${trip} restore with the identities, the deletion and the floor on different pages derives nothing and overwrites nothing`, async () => {
+    const { tables } = await projectWith((w) => {
+      w.issue(1);
+      w.issue(2);
+      w.drop(issueKey(2), 1);
+      w.floor(floorAt(12));
+    });
+    const { t, got, parts } = await restoreInto(trip, tables, { per: 1 });
+    if (trip === "paged") expect(parts.length).toBeGreaterThan(3);
+    expect(got.status).toBe(200);
+    expect(differing(tablesOf(t.db), tables)).toEqual([]);
+  }, 60_000);
+}
+
+for (const trip of TRIPS)
+  for (const [name, build, limit] of [
+    ["event", legacy, 4],
+    [
+      "record",
+      (w: FloorWrite) => {
+        w.issue(1);
+        w.issue(2);
+      },
+      2,
+    ],
+  ] as const)
+    test(`a ${trip} restore whose generated ${name} crosses the ${limit} row limit is RESTORE_TOO_LARGE and leaves nothing`, async () => {
+      const { tables } = await projectWith(build);
+      expect(
+        Math.max(...Object.values(tables).map((rows) => rows.length)),
+      ).toBe(limit);
+      await refuses(trip, tables, "RESTORE_TOO_LARGE", 413, {
+        settings: { ...vars, DUMP_MAX_ROWS: String(limit) },
+      });
+    }, 60_000);
+
+for (const trip of TRIPS)
+  test(`a ${trip} restore whose generated floor passes the byte limit is RESTORE_TOO_LARGE, and one exactly at it is restored`, async () => {
+    const { tables } = await projectWith(legacy);
+    // The same history with the floor written the way the restore writes it: its stored size is the budget.
+    const { tables: whole } = await projectWith((w, owner) => {
+      legacy(w, owner);
+      owner.put(WORK, FLOOR, floorAt(2), RESTORER, { expectRevision: 0 });
+    });
+    const at = storedBytes(whole);
+    expect(storedBytes(tables)).toBeLessThan(at);
+    await refuses(trip, tables, "RESTORE_TOO_LARGE", 413, {
+      settings: { ...vars, DUMP_MAX_BYTES: String(at - 1) },
+    });
+    const { t, got } = await restoreInto(trip, tables, {
+      settings: { ...vars, DUMP_MAX_BYTES: String(at) },
+    });
+    expect(got.status).toBe(200);
+    expectFloor(t, tables, 2);
+  }, 60_000);
+
+for (const trip of TRIPS)
+  for (const [what, table] of [
+    ["record", /^INSERT INTO state_records/],
+    ["event", /^INSERT INTO state_events\(namespace,key,body\)/],
+  ] as const)
+    test(`a ${trip} restore whose floor ${what} write fails rolls everything back, and a retry saves the same floor`, async () => {
+      const { tables } = await projectWith(legacy);
+      const failed = await restoreInto(trip, tables, {
+        fail: (sql, bindings) => table.test(sql) && bindings.includes(FLOOR),
+      });
+      expect([failed.got.status, failed.got.json.error?.code]).toEqual([
+        500,
+        "INTERNAL",
+      ]);
+      expect((await failed.t.admin("status")).json.value!.initialized).toBe(
+        false,
+      );
+      expect(Object.values(tablesOf(failed.t.db)).flat()).toEqual([]);
+      expect(await failed.t.storage.get("restore:next")).toBeUndefined();
+      const { t, got } = await restoreInto(trip, tables, {
+        target: failed.t,
+      });
+      expect(got.status).toBe(200);
+      expectFloor(t, tables, 2);
+      await createsNext(t, [3]);
+    }, 60_000);
+
+for (const trip of TRIPS)
+  test(`a ${trip} restore reads history sixteen rows at a time, however long it is, and still finds a late deletion`, async () => {
+    const { tables } = await projectWith((w) => {
+      for (let n = 1; n <= 20; n++) w.issue(n);
+      w.drop(issueKey(20), 1);
+    });
+    // Twenty-one events: the deletion of the highest number is in the second batch of sixteen.
+    expect(tables.state_events!.length).toBe(21);
+    const { t, got, calls } = await restoreInto(trip, tables, { per: 15 });
+    expect(got.status).toBe(200);
+    expectFloor(t, tables, 20);
+    const lists = calls.filter(
+      ({ sql }) => /ORDER BY/.test(sql) && /FROM state_/.test(sql),
+    );
+    expect(lists.length).toBeGreaterThan(0);
+    for (const { sql, bindings } of lists) {
+      const limit = /LIMIT (\d+|\?)/.exec(sql)?.[1];
+      const rows = limit === "?" ? Number(bindings.at(-1)) : Number(limit);
+      expect([sql.slice(0, 80), rows <= 16]).toEqual([sql.slice(0, 80), true]);
+    }
+  }, 60_000);

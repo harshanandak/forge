@@ -2115,6 +2115,57 @@ if (phase === "main") {
     "typed 1: create, comment, show, list and ready on the admitted project",
     async () => {
       assert.notEqual(typedProject, "", "FORGE_CLOUD_PROJECT is set");
+      // forge-1311: the admitted project starts as a restored legacy project: only a deleted work-2, no floor.
+      const legacyAt = "2026-01-01T00:00:00.000Z";
+      const legacyActor = { kind: "agent", id: "legacy" };
+      const legacyEvents = [
+        {
+          type: "forge/work:record.updated@1",
+          namespace: "forge/work",
+          key: "issue:work-2",
+          revision: 1,
+          at: legacyAt,
+          actor: legacyActor,
+          data: {
+            id: "work-2",
+            prefix: "ci",
+            title: "Old",
+            status: "open",
+            labels: [],
+            dependsOn: [],
+            createdAt: legacyAt,
+          },
+        },
+        {
+          type: "forge/work:record.deleted@1",
+          namespace: "forge/work",
+          key: "issue:work-2",
+          revision: 2,
+          at: legacyAt,
+          actor: legacyActor,
+        },
+      ].map((event, index) => ({
+        sequence: index + 1,
+        namespace: "forge/work",
+        key: "issue:work-2",
+        body: JSON.stringify(event),
+      }));
+      const restored = await adminCall(
+        typedProject,
+        "POST",
+        "restore",
+        JSON.stringify({
+          format: "forge-cloud-dump/1",
+          tables: {
+            state_records: [],
+            state_events: legacyEvents,
+            state_leases: [],
+            state_requests: [],
+            domain_cloud_requests: [],
+          },
+        }),
+      );
+      assert.equal(restored.status, 200, JSON.stringify(restored.body));
       // Issuing the first token provisions the admitted project.
       a = await callerFor("a");
       b = await callerFor("b");
@@ -2122,9 +2173,43 @@ if (phase === "main") {
       created = typedOk<Item>(
         await typedCall(a, { ...createOne, context: asProject(a) }),
       );
-      assert.match(created.id, /^ci-\d+$/);
+      // The saved floor is 2, so the first create is 3 at revision 1, and the deleted 2 is never reused.
+      assert.equal(created.id, "ci-3");
       assert.equal(created.status, "open");
       assert.equal(created.revision, 1);
+      const restoredDump = await dumpOf(typedProject);
+      const floorRows = recordsOf(
+        restoredDump,
+        "forge/work",
+        "allocation:issue:work-",
+      );
+      assert.equal(floorRows.length, 1);
+      assert.equal(floorRows[0]!.revision, 2);
+      assert.deepEqual(
+        (JSON.parse(String(floorRows[0]!.body)) as { value: unknown }).value,
+        { prefix: "issue:work-", number: 3 },
+      );
+      const keptEvents = restoredDump.tables.state_events!;
+      assert.deepEqual(
+        keptEvents.slice(0, 2).map((row) => row.body),
+        legacyEvents.map((row) => row.body),
+        "the legacy events are unchanged",
+      );
+      const floorEvent = JSON.parse(String(keptEvents[2]!.body)) as {
+        key: string;
+        revision: number;
+        actor: unknown;
+        data: unknown;
+      };
+      assert.deepEqual(
+        [floorEvent.key, floorEvent.revision, floorEvent.data],
+        ["allocation:issue:work-", 1, { prefix: "issue:work-", number: 2 }],
+        "the restore wrote the floor at 2 and the create advanced it",
+      );
+      assert.deepEqual(floorEvent.actor, {
+        kind: "agent",
+        id: "cloud-restore",
+      });
       one = created;
       two = typedOk<Item>(
         await typedCall(a, {
