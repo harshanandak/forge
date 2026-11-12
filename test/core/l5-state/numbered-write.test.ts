@@ -1,14 +1,15 @@
 import { expect, test } from "bun:test";
 import { tmpdir } from "node:os";
 import { createSqliteStore } from "../../../src/adapters/store-sqlite/index.ts";
-import { StateOwner } from "../../../src/core/state/index.ts";
+import {
+  StateOwner,
+  type NumberedBuild,
+} from "../../../src/core/state/index.ts";
 import {
   historyReads,
   instrument,
   reads,
   writesKey,
-  type Built,
-  type NumberedOwner,
 } from "./numbered-fixture.ts";
 
 const ns = "forge/test";
@@ -25,13 +26,12 @@ async function open() {
   const { db, log, hooks } = instrument(opened.handle.value);
   const owner = new StateOwner(db, { now: () => 1000 });
   owner.initialize();
-  const numbered = owner as unknown as NumberedOwner;
   return {
     owner,
     log,
     hooks,
-    next: (build?: (key: string, number: number) => Built) =>
-      numbered.putNext(
+    next: (build?: (key: string, number: number) => NumberedBuild) =>
+      owner.putNext(
         ns,
         prefix,
         build ?? ((key, number) => ({ value: { key, number } })),
@@ -40,24 +40,34 @@ async function open() {
     floor: () => owner.get(ns, floorKey),
     put: (key: string, value: unknown = {}) =>
       owner.put(ns, key, value, actor, { expectRevision: 0 }),
+    remove: (n: number, expectRevision = 1) =>
+      owner.delete(ns, `item:x-${n}`, actor, { expectRevision }),
     close: () => opened.handle.close(),
   };
 }
-function codeOf(work: () => unknown): string | undefined {
+type Fixture = Awaited<ReturnType<typeof open>>;
+const run = (body: (f: Fixture) => unknown) => async () => {
+  const f = await open();
+  try {
+    await body(f);
+  } finally {
+    await f.close();
+  }
+};
+const codeOf = (work: () => unknown) => {
   try {
     work();
   } catch (error) {
     return (error as { error?: { code?: string } }).error?.code;
   }
-  return undefined;
-}
+};
 
-test("a numbered write allocates above a deleted highest number and records the floor", async () => {
-  const f = await open();
-  try {
+test(
+  "a numbered write allocates above a deleted highest number and records the floor",
+  run((f) => {
     expect(f.next().key).toBe("item:x-1");
     expect(f.next().key).toBe("item:x-2");
-    f.owner.delete(ns, "item:x-2", actor, { expectRevision: 1 });
+    f.remove(2);
     const third = f.next();
     expect([third.key, third.revision]).toEqual(["item:x-3", 1]);
     expect(f.floor()?.value).toEqual({ prefix, number: 3 });
@@ -72,30 +82,24 @@ test("a numbered write allocates above a deleted highest number and records the 
     ]);
     // Generic recreation still resumes a deleted key's revision sequence.
     expect(f.put("item:x-2").revision).toBe(3);
-  } finally {
-    await f.close();
-  }
-}, 30000);
+  }),
+  30000,
+);
 
-test("a missing floor is backfilled once under the lock from live keys and all matching history", async () => {
-  const f = await open();
-  try {
-    f.put("item:x-1");
-    f.put("item:x-9");
-    f.put("item:x-10");
-    // Updated then deleted, and a high deleted identity that is no longer live.
-    f.put("item:x-2");
+test(
+  "a missing floor is backfilled once under the lock from live keys and all matching history",
+  run((f) => {
+    for (const n of [1, 9, 10, 2, 40]) f.put(`item:x-${n}`);
     f.owner.put(ns, "item:x-2", { v: 2 }, actor, { expectRevision: 1 });
-    f.owner.delete(ns, "item:x-2", actor, { expectRevision: 2 });
-    f.put("item:x-40");
-    f.owner.delete(ns, "item:x-40", actor, { expectRevision: 1 });
-    // Ignored: lease-only history, other prefixes, nonnumeric suffixes and other namespaces.
+    f.remove(2, 2);
+    f.remove(40);
+    // Ignored: lease-only history, other prefixes, nonnumeric suffixes, other namespaces.
     f.owner.acquire(
       ns,
       "item:x-99",
       { actor, session: { id: "s" } },
       100,
-      "lease-99",
+      "l99",
     );
     for (const key of ["comment:x-77:1", "item:y-60", "item:x-abc"]) f.put(key);
     f.owner.put("forge/other", "item:x-500", {}, actor, { expectRevision: 0 });
@@ -108,18 +112,17 @@ test("a missing floor is backfilled once under the lock from live keys and all m
     f.log.length = 0;
     expect(f.next().key).toBe("item:x-42");
     expect(historyReads(f.log)).toEqual([]);
-  } finally {
-    await f.close();
-  }
-}, 30000);
+  }),
+  30000,
+);
 
-test("an empty prefix starts at 1 and a large history costs one floor read and one candidate probe", async () => {
-  const f = await open();
-  try {
+test(
+  "an empty prefix starts at 1 and a large history costs one floor read and one candidate probe",
+  run((f) => {
     expect(f.next().key).toBe("item:x-1");
     for (let n = 2; n <= 200; n++) {
       f.next();
-      f.owner.delete(ns, `item:x-${n}`, actor, { expectRevision: 1 });
+      f.remove(n);
     }
     f.log.length = 0;
     expect(f.next().key).toBe("item:x-201");
@@ -132,26 +135,32 @@ test("an empty prefix starts at 1 and a large history costs one floor read and o
     const keys = reads(f.log).flatMap((access) => access.params.slice(1));
     expect(keys).toContain(floorKey);
     expect(keys).toContain("item:x-201");
-  } finally {
-    await f.close();
-  }
-}, 30000);
+  }),
+  30000,
+);
 
-test("an occupied candidate is refused without a search or a floor reset", async () => {
-  const f = await open();
-  try {
-    f.next();
-    f.put("item:x-2");
-    const before = f.owner.export();
-    expect(codeOf(() => f.next())).toBe("INPUT_CONFLICT");
-    expect(f.owner.export()).toEqual(before);
-  } finally {
-    await f.close();
-  }
-}, 30000);
-
-test("an invalid stored floor is refused, never treated as absent or as zero", async () => {
-  for (const value of [
+const stale = (key: string, number: number): NumberedBuild => ({
+  value: { key, number },
+  readSet: [{ key: "item:x-1", expectRevision: 7 }],
+});
+type Refusal = [string, (f: Fixture) => void, typeof stale | undefined, string];
+const refusals: Refusal[] = [
+  [
+    "an occupied candidate",
+    (f) => {
+      f.next();
+      f.put("item:x-2");
+    },
+    undefined,
+    "INPUT_CONFLICT",
+  ],
+  [
+    "a stale dependency read set",
+    (f) => f.put("item:x-1"),
+    stale,
+    "REVISION_CONFLICT",
+  ],
+  ...[
     "text",
     null,
     { prefix: "item:y-", number: 1 },
@@ -160,37 +169,24 @@ test("an invalid stored floor is refused, never treated as absent or as zero", a
     { prefix, number: 2 ** 53 },
     { prefix, number: Number.MAX_SAFE_INTEGER },
     { prefix, number: 1, extra: true },
-  ]) {
-    const f = await open();
-    try {
-      f.put(floorKey, value);
+  ].map((value): Refusal => [
+    `an invalid floor ${JSON.stringify(value)}`,
+    (f) => f.put(floorKey, value),
+    undefined,
+    "INPUT_INVALID",
+  ]),
+];
+for (const [name, setup, build, code] of refusals)
+  test(
+    `${name} is refused with ${code} and writes nothing, not even a floor`,
+    run((f) => {
+      setup(f);
       const before = f.owner.export();
-      expect(codeOf(() => f.next())).toBe("INPUT_INVALID");
+      expect(codeOf(() => f.next(build))).toBe(code);
       expect(f.owner.export()).toEqual(before);
-    } finally {
-      await f.close();
-    }
-  }
-}, 30000);
-
-test("a stale dependency read set fails the whole numbered write and leaves no floor", async () => {
-  const f = await open();
-  try {
-    f.put("item:x-1");
-    const before = f.owner.export();
-    expect(
-      codeOf(() =>
-        f.next((key, number) => ({
-          value: { key, number },
-          readSet: [{ key: "item:x-1", expectRevision: 7 }],
-        })),
-      ),
-    ).toBe("REVISION_CONFLICT");
-    expect(f.owner.export()).toEqual(before);
-  } finally {
-    await f.close();
-  }
-}, 30000);
+    }),
+    30000,
+  );
 
 for (const legacy of [false, true])
   for (const [name, table, key] of [
@@ -199,18 +195,17 @@ for (const legacy of [false, true])
     ["issue record", "state_records", "item:x-3"],
     ["issue event", "state_events", "item:x-3"],
   ] as const)
-    test(`a ${name} failure rolls back the floor and issue, then the retry reuses the number (${legacy ? "legacy backfill" : "existing floor"})`, async () => {
-      const f = await open();
-      try {
+    test(
+      `a ${name} failure rolls back the floor and issue, then the retry reuses the number (${legacy ? "legacy backfill" : "existing floor"})`,
+      run((f) => {
         if (legacy) {
           f.put("item:x-1");
           f.put("item:x-2");
-          f.owner.delete(ns, "item:x-2", actor, { expectRevision: 1 });
         } else {
           f.next();
           f.next();
-          f.owner.delete(ns, "item:x-2", actor, { expectRevision: 1 });
         }
+        f.remove(2);
         const before = f.owner.export();
         f.hooks.fail = (access) => writesKey(access, table, key);
         expect(() => f.next()).toThrow("injected write failure");
@@ -218,15 +213,14 @@ for (const legacy of [false, true])
         f.hooks.fail = undefined;
         expect(f.next().key).toBe("item:x-3");
         expect(f.floor()?.value).toEqual({ prefix, number: 3 });
-      } finally {
-        await f.close();
-      }
-    }, 30000);
+      }),
+      30000,
+    );
 
-test("a peer that deletes the highest identity before the lock cannot make its number reusable", async () => {
-  for (const withFloor of [true, false]) {
-    const f = await open();
-    try {
+for (const withFloor of [true, false])
+  test(
+    `a peer deleting the highest identity before the lock cannot make its number reusable (${withFloor ? "with" : "without"} a floor)`,
+    run((f) => {
       if (withFloor) {
         f.next();
         f.next();
@@ -234,23 +228,17 @@ test("a peer that deletes the highest identity before the lock cannot make its n
         f.put("item:x-1");
         f.put("item:x-2");
       }
-      f.hooks.entry = () =>
-        f.owner.delete(ns, "item:x-2", actor, { expectRevision: 1 });
+      f.hooks.entry = () => f.remove(2);
       f.log.length = 0;
       expect(f.next().key).toBe("item:x-3");
       expect(f.owner.get(ns, "item:x-2")).toBeUndefined();
-      expect(reads(f.log).length).toBeGreaterThan(0);
-      expect(
-        reads(f.log)
-          .filter(
-            (access) =>
-              access.sql.includes("state_events") ||
-              access.params.includes(floorKey),
-          )
-          .every((access) => access.locked),
-      ).toBe(true);
-    } finally {
-      await f.close();
-    }
-  }
-}, 30000);
+      const allocation = reads(f.log).filter(
+        (access) =>
+          access.params.includes(floorKey) ||
+          (!withFloor && access.sql.includes("state_events")),
+      );
+      expect(allocation.length).toBeGreaterThan(0);
+      expect(allocation.every((access) => access.locked)).toBe(true);
+    }),
+    30000,
+  );

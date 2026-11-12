@@ -110,4 +110,18 @@ export const counterfactuals: readonly {
     journey: "append-order",
     evidence: "links must retain append order beyond nine",
   },
+  {
+    file: "core/state/index.js",
+    from: "? floorNumber(floor.value, prefix)",
+    to: "? this.maxNumber(namespace, prefix)",
+    journey: "allocation",
+    evidence: "a deleted number is not reused",
+  },
+  {
+    file: "core/state/index.js",
+    from: `" AND json_extract(body,'$.type') IN (?,?)"`,
+    to: '" AND 0"',
+    journey: "allocation",
+    evidence: "backfill keeps a deleted identity",
+  },
 ];

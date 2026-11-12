@@ -457,7 +457,28 @@ try {
     );
   }
   if (["all", "allocation"].includes(mode)) {
+    // Alone, this journey starts from a project with no floor and a deleted high identity.
+    const legacy = !state.get("forge/work", "allocation:issue:work-");
+    if (legacy) {
+      const old = {
+        id: "work-50",
+        prefix: "work",
+        title: "Old",
+        status: "open",
+        labels: [],
+        dependsOn: [],
+        createdAt: new Date(now).toISOString(),
+      };
+      state.put("forge/work", "issue:work-50", old, actor("alice"), {
+        expectRevision: 0,
+      });
+      state.delete("forge/work", "issue:work-50", actor("alice"), {
+        expectRevision: 1,
+      });
+    }
     const one = create("Allocation one");
+    if (legacy)
+      assert.equal(one.id, "work-51", "backfill keeps a deleted identity");
     const two = create("Allocation two");
     const top = Number(two.id.split("-").at(-1));
     state.delete("forge/work", `issue:${two.id}`, actor("alice"), {

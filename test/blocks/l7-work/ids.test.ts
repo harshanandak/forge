@@ -2,6 +2,7 @@ import { afterAll, beforeAll, expect, setDefaultTimeout, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { validateWithSchema } from "../../../src/contract/schema.ts";
+import { fakeNext } from "./fake-numbered.ts";
 
 setDefaultTimeout(30_000);
 
@@ -51,6 +52,8 @@ function project() {
           (max, key) => Math.max(max, Number(/\d+$/.exec(key)?.[0] ?? 0)),
           0,
         ),
+    putNext: (prefix: string, build: Parameters<typeof fakeNext>[2]): unknown =>
+      fakeNext(state, prefix, build),
     now: () => 0,
     get: (key: string) => records.get(key),
     list: (prefix = "") =>

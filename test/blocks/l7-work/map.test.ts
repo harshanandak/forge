@@ -9,6 +9,7 @@ import {
 import { SCHEMA_DOCUMENTS } from "../../../src/generated/schemas.ts";
 import { validateUpdateItemInput } from "../../../src/generated/validators.ts";
 import type { StateRecord, TrackerItem } from "../../../src/generated/types.ts";
+import { fakeNext } from "./fake-numbered.ts";
 
 type Node = {
   item: TrackerItem;
@@ -55,6 +56,8 @@ function project() {
           (max, key) => Math.max(max, Number(/\d+$/.exec(key)?.[0] ?? 0)),
           0,
         ),
+    putNext: (prefix: string, build: Parameters<typeof fakeNext>[2]): unknown =>
+      fakeNext(state, prefix, build),
     now: () => 0,
     get: (key: string) => records.get(key),
     list: (prefix: string) =>

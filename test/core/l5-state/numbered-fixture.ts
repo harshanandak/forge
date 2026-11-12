@@ -1,5 +1,4 @@
 import type { SqlDatabase, SqlValue } from "../../../src/ports/store.ts";
-import type { Actor, StateRecord } from "../../../src/generated/types.ts";
 
 export type Access = {
   op: "get" | "all" | "run";
@@ -14,7 +13,7 @@ export type Hooks = {
   fail?: ((access: Access) => boolean) | undefined;
 };
 
-/** Wraps a database to log every statement with the lock state and to inject a peer or a fault. */
+/** Logs every statement with its lock state, and injects a peer before the lock or a write fault. */
 export function instrument(real: SqlDatabase) {
   const log: Access[] = [];
   const hooks: Hooks = {};
@@ -28,8 +27,9 @@ export function instrument(real: SqlDatabase) {
     log.push(access);
     return access;
   };
+  // Spread first: the real store's image capability must stay visible to export().
   const db: SqlDatabase = {
-    exec: (sql) => real.exec(sql),
+    ...real,
     all: (sql, params) => (note("all", sql, params), real.all(sql, params)),
     get: (sql, params) => (note("get", sql, params), real.get(sql, params)),
     run(sql, params) {
@@ -56,26 +56,11 @@ export function instrument(real: SqlDatabase) {
 
 export const reads = (log: readonly Access[]) =>
   log.filter((access) => access.op !== "run");
-/** Reads of event history: any SELECT that names the event table. */
 export const historyReads = (log: readonly Access[]) =>
   reads(log).filter((access) => access.sql.includes("state_events"));
-/** A write statement into one table that carries the given record key. */
+/** A statement writing the given key into one table. */
 export const writesKey = (access: Access, table: string, key: string) =>
   access.op === "run" &&
   (access.sql.startsWith(`INSERT INTO ${table}`) ||
     access.sql.startsWith(`UPDATE ${table}`)) &&
   access.params.includes(key);
-
-export type Built = {
-  value: unknown;
-  readSet?: readonly { key: string; expectRevision: number }[];
-};
-/** The numbered write is new; this type lets the tests-only commit compile before it exists. */
-export type NumberedOwner = {
-  putNext(
-    namespace: string,
-    prefix: string,
-    build: (key: string, number: number) => Built,
-    actor: Actor,
-  ): StateRecord;
-};
