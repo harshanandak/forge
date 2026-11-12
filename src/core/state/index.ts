@@ -35,6 +35,7 @@ import {
   type Migration,
 } from "./migrations.ts";
 import { registerTables, exportTables, type DomainData } from "./domains.ts";
+import { parseRestoreJson } from "./restore-json.ts";
 
 /** Optional storage capability supplied by trusted assembly; the locked SQL port stays unchanged. */
 export interface StateImageStore extends SqlDatabase {
@@ -313,8 +314,11 @@ function digest(value: unknown): string {
   return createHash("sha256").update(json(value)).digest("hex");
 }
 function receiptPlan(row: SqlRow): ReceiptPlan {
-  const input = JSON.parse(String(row.fingerprint)) as Record<string, unknown>;
-  const result = JSON.parse(String(row.result)) as unknown;
+  const input = parseRestoreJson(String(row.fingerprint)) as Record<
+    string,
+    unknown
+  >;
+  const result = parseRestoreJson(String(row.result));
   if (
     !input ||
     Array.isArray(input) ||
@@ -360,8 +364,11 @@ function validateReceipt(
   let input: Record<string, unknown>;
   let result: unknown;
   try {
-    input = JSON.parse(String(row.fingerprint)) as Record<string, unknown>;
-    result = JSON.parse(String(row.result)) as unknown;
+    input = parseRestoreJson(String(row.fingerprint)) as Record<
+      string,
+      unknown
+    >;
+    result = parseRestoreJson(String(row.result));
     if (
       !input ||
       typeof input !== "object" ||
@@ -668,7 +675,7 @@ export function verifyEventDerivedState(
     if (row.sequence !== sequence && row.sequence !== BigInt(sequence))
       reject("state_events", id);
     inspect("state_events", id, () => {
-      const event = JSON.parse(String(row.body)) as StateEvent;
+      const event = parseRestoreJson(String(row.body)) as StateEvent;
       if (
         !validateStateEvent(event).ok ||
         !Number.isSafeInteger(event.revision) ||
@@ -916,7 +923,7 @@ export function verifyEventDerivedState(
   const verifyRecord = (row: SqlRow): void => {
     const id = rowKey("state_records", row, "key");
     inspect("state_records", id, () => {
-      const record = JSON.parse(String(row.body)) as StateRecord;
+      const record = parseRestoreJson(String(row.body)) as StateRecord;
       if (
         !validateStateRecord(record).ok ||
         !records.has(id) ||
@@ -938,7 +945,7 @@ export function verifyEventDerivedState(
   const verifyLease = (row: SqlRow): void => {
     const id = rowKey("state_leases", row, "subject");
     inspect("state_leases", id, () => {
-      const lease = JSON.parse(String(row.body)) as LeaseRecord;
+      const lease = parseRestoreJson(String(row.body)) as LeaseRecord;
       if (
         !leases.has(id) ||
         json(lease) !== json(leases.get(id)) ||

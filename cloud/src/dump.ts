@@ -8,6 +8,7 @@ import {
   type NumberedSummary,
   type StateOwner,
 } from "../../src/core/state/index.ts";
+import { parseRestoreJson } from "../../src/core/state/restore-json.ts";
 import {
   validateForgeError,
   validateLeaseRecord,
@@ -499,8 +500,8 @@ function checkServerReceipt(row: Row): void {
   let fingerprint: unknown;
   let result: unknown;
   try {
-    fingerprint = JSON.parse(String(row.fingerprint));
-    result = JSON.parse(String(row.result));
+    fingerprint = parseRestoreJson(String(row.fingerprint));
+    result = parseRestoreJson(String(row.result));
   } catch {
     return bad();
   }
