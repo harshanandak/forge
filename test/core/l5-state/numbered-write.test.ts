@@ -232,13 +232,13 @@ for (const withFloor of [true, false])
       f.log.length = 0;
       expect(f.next().key).toBe("item:x-3");
       expect(f.owner.get(ns, "item:x-2")).toBeUndefined();
-      const allocation = reads(f.log).filter(
-        (access) =>
-          access.params.includes(floorKey) ||
-          (!withFloor && access.sql.includes("state_events")),
+      const floorReads = reads(f.log).filter((a) =>
+        a.params.includes(floorKey),
       );
-      expect(allocation.length).toBeGreaterThan(0);
-      expect(allocation.every((access) => access.locked)).toBe(true);
+      expect(floorReads.length).toBeGreaterThan(0);
+      expect(
+        [...floorReads, ...historyReads(f.log)].every((a) => a.locked),
+      ).toBe(true);
     }),
     30000,
   );
