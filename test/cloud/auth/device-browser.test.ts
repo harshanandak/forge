@@ -1042,27 +1042,24 @@ test("a challenge allows five attempts a minute, whoever makes them", async () =
   }
   const fresh = await f.open();
   const shown = await f.preview(a.login.user_code, fresh);
-  const sixth = () =>
-    f.submit(
-      "approve",
-      f.ticketFor(shown, "approve"),
-      fresh,
-      f.selectorFor(shown),
-      f.fresh(),
-    );
+  const sixth = (ticket: string) =>
+    f.submit("approve", ticket, fresh, f.selectorFor(shown), f.fresh());
   const [frozen, limits] = [f.frozen(), f.limits()];
-  expect(pair(await sixth())).toEqual([429, "rate_limited"]);
+  expect(pair(await sixth(WRONG))).toEqual([429, "rate_limited"]);
   expect([f.frozen(), f.limits()]).toEqual([frozen, limits]);
-  f.advance(60_000);
-  expect((await sixth()).status).toBe(302);
-  // A known callback state is the same challenge: one decision, four wrong tickets, then the callback.
+  // The right ticket is a bound proof, not a guess: no wait, and no counter moves.
+  expect((await sixth(f.ticketFor(shown, "approve"))).status).toBe(302);
+  expect(f.limits()).toEqual(limits);
+  // A known callback state is the same challenge: five wrong tickets fill it, then the callback finishes.
   const b = await previewed(f);
   const decision = await right(f, b);
-  for (let n = 0; n < 4; n++) await post(f, b);
-  expect(pair(await finish(f, decision))).toEqual([429, "rate_limited"]);
-  expect(f.seen.verified).toEqual([]);
-  f.advance(60_000);
+  f.advance(60_000); // only the guesses fill the next window
+  for (let n = 0; n < 5; n++)
+    expect(pair(await post(f, b))).toEqual([400, "invalid_request"]);
+  expect(pair(await post(f, b))).toEqual([429, "rate_limited"]);
+  const spent = f.limits();
   expect(pair(await finish(f, decision))).toEqual([200, "approved"]);
+  expect([f.limits(), f.seen.verified.length]).toEqual([spent, 1]);
 }, 30_000);
 
 test("an address allows five attempts a minute, and the project thirty", async () => {
@@ -1087,10 +1084,13 @@ test("an address allows five attempts a minute, and the project thirty", async (
     [400, "access_denied"],
   ]);
   const [frozen, limits] = [f.frozen(), f.limits()];
-  expect(
-    pair(await post(f, a, { ip: x, ticket: a.ticket("approve") })),
-  ).toEqual([429, "rate_limited"]);
+  expect(pair(await post(f, a, { ip: x }))).toEqual([429, "rate_limited"]);
   expect([f.frozen(), f.limits()]).toEqual([frozen, limits]);
+  // The right ticket from that same address is a bound proof: no wait, and no counter moves.
+  expect(
+    (await post(f, a, { ip: x, ticket: a.ticket("approve") })).status,
+  ).toBe(302);
+  expect(f.limits()).toEqual(limits);
   // The window boundary: refusals did not move it.
   f.advance(59_999);
   expect((await post(f, a, { ip: x })).status).toBe(429);
@@ -1103,7 +1103,8 @@ test("an address allows five attempts a minute, and the project thirty", async (
       expect((await post(f, p)).status).toBe(400);
   }
   const last = await previewed(f);
-  expect(pair(await right(f, last))).toEqual([429, "rate_limited"]);
+  expect(pair(await post(f, last))).toEqual([429, "rate_limited"]);
+  expect((await right(f, last)).status).toBe(302);
 }, 30_000);
 
 test("each protected route needs a client address before it writes or calls out", async () => {
@@ -1178,4 +1179,340 @@ test("the budget survives a restart, and a failed counter write changes nothing"
   expect([g.frozen(), g.limits()]).toEqual([frozen, limits]);
   g.writes.failAfter = Infinity;
   expect((await right(g, q)).status).toBe(302);
+}, 30_000);
+
+// Bound proofs against full guess budgets (forge-1303). A guess is any attempt without a complete bound
+// proof; a right ticket, or a right state with its own cookie, is a proof and neither checks nor spends.
+const ACTIONS = ["approve", "deny"] as const;
+const BUCKETS = ["project", "challenge", "address"] as const;
+const finished = (action: "approve" | "deny") =>
+  action === "approve" ? "approved" : "denied";
+// An unknown callback state: a guess that spends the address and the project only.
+const guess = (f: Fixture, ip: string | null = f.fresh()) =>
+  f.callback(`forge-device.${crypto.randomUUID()}`, "owner", undefined, ip);
+const wrongBind = (f: Fixture, decision: Reply) =>
+  `${f.bindOf(decision).split("=")[0]}=${WRONG}`;
+/** Fills one guess budget with admitted guesses, then asserts the next guess is refused. */
+async function fill(
+  f: Fixture,
+  bucket: (typeof BUCKETS)[number],
+  p: Preview,
+  ip: string,
+  named: () => Promise<Reply>,
+) {
+  const tries: Record<
+    (typeof BUCKETS)[number],
+    [number, (n: number) => Promise<Reply>]
+  > = {
+    project: [30, () => guess(f)],
+    challenge: [5, named],
+    address: [
+      5,
+      (n) => (n % 2 ? post(f, p, { ip, selector: "" }) : guess(f, ip)),
+    ],
+  };
+  const [cap, attempt] = tries[bucket];
+  for (let n = 0; n < cap; n++) expect((await attempt(n)).status).toBe(400);
+  expect(pair(await attempt(cap))).toEqual([429, "rate_limited"]);
+}
+/** Starts every run, holds them at their first hash until all are in flight, then releases them. */
+async function together<T>(runs: (() => Promise<T>)[]): Promise<T[]> {
+  const real = crypto.subtle.digest.bind(crypto.subtle) as (
+    ...args: unknown[]
+  ) => Promise<ArrayBuffer>;
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const spy = spyOn(crypto.subtle, "digest").mockImplementation(
+    (...args: unknown[]) => gate.then(() => real(...args)),
+  );
+  try {
+    const started = runs.map((run) => run());
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    release();
+    return await Promise.all(started);
+  } finally {
+    spy.mockRestore();
+  }
+}
+
+test("a right ticket completes while any guess budget is full, and spends nothing", async () => {
+  for (const bucket of BUCKETS)
+    for (const action of ACTIONS) {
+      const f = fixture();
+      await f.provision();
+      const p = await previewed(f);
+      const ip = f.fresh();
+      await fill(f, bucket, p, ip, () => post(f, p));
+      const spent = [f.limits(), f.writes.limiter];
+      const decision = await post(f, p, {
+        action,
+        ticket: p.ticket(action),
+        ip,
+      });
+      expect(decision.status).toBe(302);
+      expect([f.limits(), f.writes.limiter]).toEqual(spent);
+      expect(pair(await finish(f, decision, ip))).toEqual([
+        200,
+        finished(action),
+      ]);
+      expect([f.limits(), f.writes.limiter]).toEqual(spent);
+      expect(f.seen.verified).toHaveLength(1);
+      expect((await f.poll(p.login.device_code)).status).toBe(
+        action === "approve" ? 200 : 400,
+      );
+    }
+}, 30_000);
+
+test("a bound callback completes while any guess budget is full, and spends nothing", async () => {
+  for (const bucket of BUCKETS)
+    for (const action of ACTIONS) {
+      const f = fixture();
+      await f.provision();
+      const p = await previewed(f);
+      const decision = await right(f, p, action);
+      expect(decision.status).toBe(302);
+      f.advance(60_000); // only the guesses fill the next window
+      const ip = f.fresh();
+      const wrong = () =>
+        f.callback(
+          f.stateOf(decision),
+          "owner",
+          wrongBind(f, decision),
+          f.fresh(),
+        );
+      await fill(f, bucket, p, ip, wrong);
+      const spent = [f.limits(), f.writes.limiter];
+      expect(pair(await finish(f, decision, ip))).toEqual([
+        200,
+        finished(action),
+      ]);
+      expect([f.limits(), f.writes.limiter]).toEqual(spent);
+      expect(f.seen.verified).toHaveLength(1);
+    }
+}, 30_000);
+
+const wrongJar = { cookie: `${COOKIE}=${WRONG}`, csrf: WRONG };
+const incompletePost: Record<
+  string,
+  (f: Fixture, p: Preview, ip: string) => Promise<Reply>
+> = {
+  "wrong action": (f, p, ip) =>
+    f.submit("deny", p.ticket("approve"), p.jar, p.selector, ip),
+  "wrong selector": (f, p, ip) =>
+    f.submit("approve", p.ticket("approve"), p.jar, "0".repeat(64), ip),
+  "another browser": (f, p, ip) =>
+    f.submit("approve", p.ticket("approve"), wrongJar, p.selector, ip),
+  "another csrf": (f, p, ip) =>
+    f.submit(
+      "approve",
+      p.ticket("approve"),
+      { cookie: p.jar.cookie, csrf: WRONG },
+      p.selector,
+      ip,
+    ),
+  "another origin": (f, p, ip) =>
+    f.send("/device/approve", {
+      form: {
+        csrf: p.jar.csrf,
+        ticket: p.ticket("approve"),
+        challenge: p.selector,
+      },
+      cookie: p.jar.cookie,
+      origin: "https://evil.example",
+      ip,
+    }),
+  "selector alone": (f, p, ip) =>
+    f.submit("approve", WRONG, p.jar, p.selector, ip),
+  "page cookie alone": (f, p, ip) =>
+    f.submit("approve", WRONG, p.jar, undefined, ip),
+};
+type Flow = Awaited<ReturnType<Fixture["through"]>>;
+const incompleteCallback: Record<
+  string,
+  {
+    prepare?: (f: Fixture, flow: Flow) => Promise<void> | void;
+    attempt: (f: Fixture, flow: Flow, ip: string) => Promise<Reply>;
+  }
+> = {
+  "no cookie": {
+    attempt: (f, flow, ip) => f.callback(flow.state, "owner", undefined, ip),
+  },
+  "wrong cookie": {
+    attempt: (f, flow, ip) =>
+      f.callback(flow.state, "owner", wrongBind(f, flow.decision), ip),
+  },
+  "duplicate state": {
+    attempt: (f, flow, ip) =>
+      f.send(
+        `/callback?${new URLSearchParams([
+          ["state", flow.state],
+          ["state", flow.state],
+          ["proof", "owner"],
+        ])}`,
+        { cookie: flow.bind, ip },
+      ),
+  },
+  "unknown state": {
+    attempt: (f, flow, ip) =>
+      f.callback("forge-device.unknown", "owner", flow.bind, ip),
+  },
+  "expired state": {
+    prepare: (f) => f.advance(600_000),
+    attempt: (f, flow, ip) => f.callback(flow.state, "owner", flow.bind, ip),
+  },
+  "replayed state": {
+    // Used once by its own browser before the replay.
+    prepare: async (_f, flow) => {
+      expect((await flow.done()).status).toBe(200);
+    },
+    attempt: (f, flow, ip) => f.callback(flow.state, "owner", flow.bind, ip),
+  },
+};
+
+test("an incomplete POST proof stays a guess: refused below the cap and at it, writing nothing", async () => {
+  for (const [name, attempt] of Object.entries(incompletePost)) {
+    const f = fixture();
+    await f.provision();
+    const p = await previewed(f);
+    const before = f.frozen();
+    const below = await attempt(f, p, f.fresh());
+    expect([name, pair(below)]).toEqual([name, [400, "invalid_request"]]);
+    expect(f.frozen()).toBe(before);
+    f.advance(60_000);
+    await fill(f, "project", p, f.fresh(), () => post(f, p));
+    const [full, limits] = [f.frozen(), f.limits()];
+    const refused = await attempt(f, p, f.fresh());
+    expect([name, pair(refused)]).toEqual([name, [429, "rate_limited"]]);
+    expect([f.frozen(), f.limits()]).toEqual([full, limits]);
+  }
+}, 30_000);
+
+test("an incomplete callback proof stays a guess: refused below the cap and at it, writing nothing", async () => {
+  for (const [name, { prepare, attempt }] of Object.entries(
+    incompleteCallback,
+  )) {
+    const f = fixture();
+    await f.provision();
+    const flow = await f.through("approve", "owner");
+    await prepare?.(f, flow);
+    const before = f.frozen();
+    const below = await attempt(f, flow, f.fresh());
+    expect([name, pair(below)]).toEqual([name, [400, "access_denied"]]);
+    expect(f.frozen()).toBe(before);
+    f.advance(60_000);
+    const p = await previewed(f);
+    await fill(f, "project", p, f.fresh(), () => post(f, p));
+    const [full, limits] = [f.frozen(), f.limits()];
+    const refused = await attempt(f, flow, f.fresh());
+    expect([name, pair(refused)]).toEqual([name, [429, "rate_limited"]]);
+    expect([f.frozen(), f.limits()]).toEqual([full, limits]);
+    expect(f.seen.verified).toHaveLength(name === "replayed state" ? 1 : 0);
+  }
+}, 30_000);
+
+test("a bound callback after exhaustion still checks the Clerk proof and the owner", async () => {
+  const cases = [
+    ["forged", 401, "AUTH_INVALID"],
+    ["expired", 401, "AUTH_INVALID"],
+    ["wrong-audience", 401, "AUTH_INVALID"],
+    ["other-subject", 403, "AUTH_FORBIDDEN"],
+    ["other-issuer", 403, "AUTH_FORBIDDEN"],
+  ] as const;
+  for (const [proof, status, word] of cases) {
+    const f = fixture();
+    await f.provision();
+    const flow = await f.through("approve", proof);
+    f.advance(60_000);
+    const p = await previewed(f);
+    await fill(f, "project", p, f.fresh(), () => post(f, p));
+    const spent = f.limits();
+    expect([proof, pair(await flow.done())]).toEqual([proof, [status, word]]);
+    expect(f.limits()).toEqual(spent);
+    // The state was used up: a replay is a guess, refused by the full budget.
+    expect(pair(await flow.done())).toEqual([429, "rate_limited"]);
+    expect(f.seen.verified).toHaveLength(1);
+    expect(await f.pending(flow.login)).toEqual([400, "authorization_pending"]);
+    expect(f.tokens()).toBe(1);
+  }
+}, 30_000);
+
+test("one right ticket and one right state each complete once when used together under full budgets", async () => {
+  for (const action of ACTIONS) {
+    const f = fixture();
+    await f.provision();
+    const p = await previewed(f);
+    await fill(f, "project", p, f.fresh(), () => post(f, p));
+    const ticket = p.ticket(action);
+    const posts = await together([
+      () => post(f, p, { action, ticket }),
+      () => post(f, p, { action, ticket }),
+    ]);
+    expect(posts.map(pair).sort()).toEqual([
+      [302, ""],
+      [429, "rate_limited"],
+    ]);
+    expect(f.seen.begun).toHaveLength(1);
+    const decision = posts.find((reply) => reply.status === 302)!;
+    const calls = await together([
+      () => finish(f, decision),
+      () => finish(f, decision),
+    ]);
+    expect(calls.map(pair).sort()).toEqual([
+      [200, finished(action)],
+      [429, "rate_limited"],
+    ]);
+    expect([f.seen.verified.length, f.claims.size]).toEqual([1, 1]);
+    const first = await f.poll(p.login.device_code);
+    expect([first.status, (await f.poll(p.login.device_code)).status]).toEqual(
+      action === "approve" ? [200, 400] : [400, 400],
+    );
+    expect(f.tokens()).toBe(action === "approve" ? 2 : 1);
+  }
+}, 30_000);
+
+test("a bound proof needs no window reset, and refused guesses never move the reset", async () => {
+  const f = fixture();
+  await f.provision();
+  const p = await previewed(f);
+  await fill(f, "challenge", p, f.fresh(), () => post(f, p));
+  const spent = f.limits();
+  f.advance(59_999);
+  expect(pair(await post(f, p))).toEqual([429, "rate_limited"]);
+  const decision = await right(f, p);
+  expect(decision.status).toBe(302);
+  expect(f.limits()).toEqual(spent);
+  expect(pair(await finish(f, decision))).toEqual([200, "approved"]);
+  expect(f.limits()).toEqual(spent);
+  f.advance(1);
+  expect(pair(await post(f, p))).toEqual([400, "invalid_request"]);
+}, 30_000);
+
+test("other address headers cannot escape the address cap, and a bound callback still needs the address", async () => {
+  const f = fixture();
+  await f.provision();
+  const p = await previewed(f);
+  const flow = await f.through("approve", "owner");
+  const before = [f.frozen(), f.limits()];
+  for (const ip of [null, ""])
+    expect(pair(await f.callback(flow.state, "owner", flow.bind, ip))).toEqual([
+      403,
+      "AUTH_FORBIDDEN",
+    ]);
+  expect([f.frozen(), f.limits()]).toEqual(before);
+  const x = f.fresh();
+  const rotate = (n: number) =>
+    f.send("/device/approve", {
+      form: { csrf: p.jar.csrf, ticket: WRONG, challenge: "" },
+      cookie: p.jar.cookie,
+      ip: x,
+      headers: {
+        "X-Forwarded-For": `203.0.113.${n}`,
+        "x-real-ip": `203.0.113.${n + 100}`,
+      },
+    });
+  for (let n = 0; n < 5; n++)
+    expect(pair(await rotate(n))).toEqual([400, "invalid_request"]);
+  expect(pair(await rotate(9))).toEqual([429, "rate_limited"]);
 }, 30_000);
