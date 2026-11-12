@@ -2420,6 +2420,47 @@ if (phase === "main") {
     },
   );
 
+  // The third issue is held by a at generation 1; the first is open, unblocked and unleased. A
+  // dependency of the third on the first blocks the third. The cloud refuses to claim a blocked issue,
+  // so the stale one is the first: a one second claim that expires unreleased.
+  await typed(
+    "typed blocked and stale: an open dependency blocks the third, an expired unreleased lease makes the first stale, and the reads write nothing",
+    async () => {
+      assert.deepEqual(await idsOf(a, "issue.blocked"), []);
+      assert.deepEqual(await idsOf(a, "issue.stale"), []);
+      const held = await show(a, third.id);
+      typedOk(
+        await typedCall(a, {
+          requestId: "typed-blocked-dep",
+          op: "issue.dep",
+          input: {
+            id: third.id,
+            target: one.id,
+            action: "add",
+            expectRevision: held.revision,
+          },
+          context: asHolder(a, 1),
+        }),
+      );
+      assert.deepEqual(await idsOf(a, "issue.blocked"), [third.id]);
+      assert.deepEqual(await idsOf(a, "issue.stale"), []);
+      typedOk<Grant>(
+        await typedCall(a, {
+          requestId: "typed-stale-claim",
+          op: "issue.claim",
+          input: { id: one.id, ttlSeconds: 1 },
+          context: asClaimer(a),
+        }),
+      );
+      await sleep(1500);
+      const before = await dumpOf(typedProject);
+      // The first issue's lease expired unreleased; it is still unblocked, and the third is still held.
+      assert.deepEqual(await idsOf(a, "issue.stale"), [one.id]);
+      assert.deepEqual(await idsOf(a, "issue.blocked"), [third.id]);
+      assert.deepEqual(await dumpOf(typedProject), before, "a read wrote");
+    },
+  );
+
   await typed(
     "typed dump and restore: the typed receipts restore with the issues, read back identical",
     async () => {
