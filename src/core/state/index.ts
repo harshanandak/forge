@@ -70,6 +70,16 @@ export interface DeleteWriteOptions extends DeleteOptions {
   readonly fence?: Fence;
   readonly guard?: () => boolean;
 }
+/** What a numbered write's builder returns: the value, and any records it depends on. */
+export interface NumberedBuild {
+  readonly value: unknown;
+  readonly readSet?: WriteOptions["readSet"];
+}
+export interface NumberedOptions {
+  readonly fence?: Fence;
+  /** With no floor, refuse with this message when live keys or record history exist, instead of backfilling. */
+  readonly refuseMissing?: string;
+}
 export interface AcquireOptions extends BatchOptions {
   readonly metadata?: unknown;
   readonly entries?: readonly BatchEntry[];
@@ -149,6 +159,23 @@ function keyValid(key: string): void {
 function wellFormedText(value: string, position: string): void {
   if (!value.isWellFormed())
     invalid(`${position} must be well-formed UTF-16 text`);
+}
+/** The longest stored floor text accepted: the wrapper of a two-field value is well under this. */
+const FLOOR_TEXT_MAX = 4096;
+/** The stored floor's number; any value that is not the exact floor shape is refused, never read as zero. */
+function floorNumber(value: unknown, prefix: string): number {
+  const floor = value as { prefix?: unknown; number?: unknown } | null;
+  if (
+    typeof floor !== "object" ||
+    floor === null ||
+    Object.keys(floor).length !== 2 ||
+    floor.prefix !== prefix ||
+    typeof floor.number !== "number" ||
+    !Number.isSafeInteger(floor.number) ||
+    floor.number < 0
+  )
+    return invalid("Invalid allocation record");
+  return floor.number;
 }
 function copyReadSet(value: unknown): WriteOptions["readSet"] {
   if (value === undefined) return undefined;
@@ -1284,6 +1311,163 @@ export class StateOwner {
     });
   }
 
+  /**
+   * Write the next unused number under `prefix`. A floor record at `allocation:<prefix>` holds the
+   * highest number ever allocated; the owner reads it, builds the record at floor + 1, and advances
+   * the floor in one transaction, so a deleted number is never reused. A missing floor is first
+   * computed from live keys and all matching history, inside this same lock.
+   */
+  putNext(
+    namespace: string,
+    prefix: string,
+    build: (key: string, number: number) => NumberedBuild,
+    actor: Actor,
+    options: NumberedOptions = {},
+  ): StateRecord {
+    namespaceValid(namespace);
+    const floorKey = `allocation:${prefix}`;
+    keyValid(floorKey);
+    wellFormedText(prefix, "Prefix");
+    if (!validateActor(actor).ok) invalid("Invalid actor");
+    return this.#db.transaction(() => {
+      const now = this.#now();
+      if (options.fence) this.#held(namespace, options.fence, now);
+      const last =
+        this.#floor(namespace, floorKey, prefix) ??
+        this.#highest(namespace, prefix, floorKey, options.refuseMissing);
+      const number = last + 1;
+      const key = `${prefix}${number}`;
+      if (!Number.isSafeInteger(number)) invalid("Numbers are exhausted");
+      if (this.get(namespace, key))
+        throw new ForgeFailure({
+          code: "INPUT_CONFLICT",
+          message: `Key ${key} is already in use`,
+          retry: "reconcile_first",
+        });
+      const built = build(key, number);
+      this.#readSetHolds(
+        namespace,
+        undefined,
+        undefined,
+        copyReadSet(built.readSet) ?? [],
+      );
+      const stored = JSON.parse(json(built.value)) as unknown;
+      // The floor covers every allocated number, so the key is new and needs no history lookup.
+      const record = this.#apply(
+        namespace,
+        key,
+        stored,
+        actor,
+        now,
+        undefined,
+        true,
+      );
+      this.#apply(
+        namespace,
+        floorKey,
+        { prefix, number },
+        actor,
+        now,
+        undefined,
+      );
+      return record;
+    });
+  }
+
+  /**
+   * The floor's number, or undefined only when its row is absent. A present row must be exactly the
+   * record the owner wrote: bounded text, valid JSON, and a wrapper that matches its indexed namespace,
+   * key and revision. Anything else, including a stored null, is refused rather than read as missing.
+   */
+  #floor(
+    namespace: string,
+    floorKey: string,
+    prefix: string,
+  ): number | undefined {
+    const row = this.#db.get(
+      "SELECT revision,body FROM state_records WHERE namespace=? AND key=?",
+      [namespace, floorKey],
+    );
+    if (row === undefined) return undefined;
+    const text = String(row.body);
+    if (text.length > FLOOR_TEXT_MAX) invalid("Invalid allocation record");
+    let stored: StateRecord;
+    try {
+      stored = JSON.parse(text) as StateRecord;
+    } catch {
+      return invalid("Invalid allocation record");
+    }
+    if (
+      !validateStateRecord(stored).ok ||
+      stored.namespace !== namespace ||
+      stored.key !== floorKey ||
+      stored.revision !== Number(row.revision)
+    )
+      invalid("Invalid allocation record");
+    return floorNumber(stored.value, prefix);
+  }
+
+  /** The highest number under a prefix among live keys, all matching history and a deleted floor. */
+  #highest(
+    namespace: string,
+    prefix: string,
+    floorKey: string,
+    refuse?: string,
+  ): number {
+    const upper = upperBound(prefix);
+    const span = `namespace=? AND key>=?${upper === undefined ? "" : " AND key<?"}`;
+    const bounds =
+      upper === undefined ? [namespace, prefix] : [namespace, prefix, upper];
+    const types = [
+      `${namespace}:record.updated@1`,
+      `${namespace}:record.deleted@1`,
+    ];
+    const typed = " AND json_extract(body,'$.type') IN (?,?)";
+    if (refuse !== undefined) {
+      // Two probes say whether any old state exists. LIMIT 1 bounds the rows returned, not the rows
+      // examined, and this runs only while no floor exists, so it is a one-time cost bounded by the
+      // project's existing event count.
+      const old =
+        this.#db.get(
+          `SELECT 1 AS n FROM state_records WHERE ${span} LIMIT 1`,
+          bounds,
+        ) ??
+        this.#db.get(
+          `SELECT 1 AS n FROM state_events WHERE ${span}${typed} LIMIT 1`,
+          [...bounds, ...types],
+        );
+      if (old)
+        throw new ForgeFailure({
+          code: "UNAVAILABLE",
+          message: refuse,
+          retry: "never",
+        });
+      return 0;
+    }
+    // Only the numeric suffix leaves SQLite; the longest, then largest, decimal string is the maximum.
+    const top = (table: string, filter: string, extra: string[]) =>
+      this.#db.get(
+        `SELECT n FROM (SELECT substr(key,?) AS n FROM ${table} WHERE ${span}${filter}) WHERE n GLOB '[1-9]*' AND n NOT GLOB '*[^0-9]*' ORDER BY length(n) DESC, n DESC LIMIT 1`,
+        [Array.from(prefix).length + 1, ...bounds, ...extra],
+      )?.n;
+    const earlier = this.#db.get(
+      "SELECT MAX(json_extract(body,'$.data.number')) AS n FROM state_events WHERE namespace=? AND key=? AND json_extract(body,'$.type')=?",
+      [namespace, floorKey, types[0]!],
+    )?.n;
+    return Math.max(
+      ...[
+        top("state_records", "", []),
+        top("state_events", typed, types),
+        earlier,
+      ].map((value) => {
+        const number = Number(value ?? 0);
+        if (!Number.isSafeInteger(number))
+          invalid("Allocation history holds an unsafe number");
+        return number;
+      }),
+    );
+  }
+
   #stale(
     entry: { readonly key: string; readonly expectRevision: number },
     revision: number,
@@ -1328,6 +1512,7 @@ export class StateOwner {
     actor: Actor,
     now: number,
     requestId: string | undefined,
+    fresh = false,
   ): StateRecord {
     const current = this.get(namespace, key);
     // An absent row can have history. Keep its last revision so recreation never revives an old
@@ -1335,15 +1520,17 @@ export class StateOwner {
     const revision =
       current?.revision ??
       body<StateEvent>(
-        this.#db.get(
-          "SELECT body FROM state_events WHERE namespace=? AND key=? AND json_extract(body,'$.type') IN (?,?) ORDER BY sequence DESC LIMIT 1",
-          [
-            namespace,
-            key,
-            `${namespace}:record.updated@1`,
-            `${namespace}:record.deleted@1`,
-          ],
-        ),
+        fresh
+          ? undefined
+          : this.#db.get(
+              "SELECT body FROM state_events WHERE namespace=? AND key=? AND json_extract(body,'$.type') IN (?,?) ORDER BY sequence DESC LIMIT 1",
+              [
+                namespace,
+                key,
+                `${namespace}:record.updated@1`,
+                `${namespace}:record.deleted@1`,
+              ],
+            ),
       )?.revision ??
       0;
     const record: StateRecord = {

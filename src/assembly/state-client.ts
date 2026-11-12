@@ -1,5 +1,6 @@
 import type {
   AcquireOptions,
+  NumberedBuild,
   StateOwner,
   WriteOptions,
 } from "../core/state/index.ts";
@@ -57,6 +58,12 @@ export interface LeaseStateClient extends DeletableStateClient {
   release(subject: string): LeaseRecord;
   releaseOwn(subject: string): LeaseRecord;
   withOwnLease(subject: string): LeaseStateClient;
+  /** Write the next unused number under a key prefix; the owner keeps the floor, never the caller. */
+  putNext(
+    prefix: string,
+    build: (key: string, number: number) => NumberedBuild,
+    options?: { readonly subject?: string },
+  ): StateRecord;
   /** Completes only the note already authorized by a fenced work landing. */
   appendLandingComment(input: LandingCommentInput): StateRecord;
   put(
@@ -221,6 +228,30 @@ export function createStateClient(options: {
           : { readSet: structuredClone(put.readSet) }),
         ...(context.variant === "leased"
           ? { fence: fence(put.subject ?? key) }
+          : {}),
+      });
+    },
+    putNext(
+      prefix: string,
+      build: (key: string, number: number) => NumberedBuild,
+      next?: { readonly subject?: string },
+    ) {
+      const state = writable();
+      if (context.variant === "stateless")
+        refuse("CONTEXT_MISSING", "Missing actor");
+      if (context.variant === "leased" && context.leaseMode !== "held")
+        refuse("CONTEXT_MISSING", "Acquisition cannot mutate records");
+      if (context.variant === "leased" && next?.subject === undefined)
+        refuse(
+          "CONTEXT_MISSING",
+          "A numbered write under a lease names its subject",
+        );
+      // The builder may run in an isolate; clone what it returns, as put does for its value.
+      const cloned = (key: string, number: number) =>
+        structuredClone(build(key, number));
+      return state.putNext(namespace, prefix, cloned, context.actor, {
+        ...(context.variant === "leased" && next?.subject !== undefined
+          ? { fence: fence(next.subject) }
           : {}),
       });
     },

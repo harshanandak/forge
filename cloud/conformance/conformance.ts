@@ -3006,16 +3006,36 @@ if (phase === "large") {
         for (const [table, rows] of Object.entries(page.tables))
           merged[table]!.push(...rows);
       }
+      // The two grown creates advance the allocation floor in place: its restored row (number 1, revision 1)
+      // is replaced by one at number 3, revision 3. Every other row of the source is still there unchanged.
+      const floor = (row: Record<string, unknown>) =>
+        row.namespace === "forge/work" && row.key === "allocation:issue:work-";
       for (const table of Object.keys(want)) {
         const have = new Set(merged[table]!.map((row) => JSON.stringify(row)));
         assert.ok(
-          want[table]!.every((row) => have.has(JSON.stringify(row))),
+          want[table]!.filter(
+            (row) => table !== "state_records" || !floor(row),
+          ).every((row) => have.has(JSON.stringify(row))),
           `${table} lost a row`,
         );
       }
-      // A comment and two issues joined, each with its receipt: six more records and six more events.
-      for (const table of ["state_records", "state_events"])
-        assert.equal(merged[table]!.length, want[table]!.length + 6, table);
+      const floors = merged.state_records!.filter(floor);
+      assert.equal(floors.length, 1, "one floor row");
+      assert.equal(floors[0]!.revision, 3);
+      assert.deepEqual(
+        (JSON.parse(String(floors[0]!.body)) as { value: unknown }).value,
+        {
+          prefix: "issue:work-",
+          number: 3,
+        },
+      );
+      // A comment and two issues joined, each with its receipt: six more records and six more events, and
+      // two more events for the floor's two advances (the floor record itself was replaced, not added).
+      assert.equal(
+        merged.state_records!.length,
+        want.state_records!.length + 6,
+      );
+      assert.equal(merged.state_events!.length, want.state_events!.length + 8);
     },
   );
 }

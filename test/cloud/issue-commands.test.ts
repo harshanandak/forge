@@ -1,6 +1,9 @@
 import { expect, mock, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { resolve } from "node:path";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { Project } from "../../cloud/src/project.ts";
 import {
   readOnlyStore,
@@ -3072,6 +3075,22 @@ const writes = (f: F) =>
   ]);
 const issuesIn = (f: F) =>
   rowsOf(f.db, "forge/work").filter((r) => r.key.startsWith("issue:")).length;
+const floorAt = (number: number) => ({ prefix: "issue:work-", number });
+const floorOf = (f: F) => {
+  const row = rowsOf(f.db, "forge/work").find(
+    (r) => r.key === "allocation:issue:work-",
+  );
+  return row === undefined
+    ? undefined
+    : (JSON.parse(row.body) as { value: unknown }).value;
+};
+const floorEvents = (f: F) =>
+  eventsOf(f.db, "forge/work").filter((e) =>
+    e.includes('"key":"allocation:issue:work-"'),
+  );
+const owned = (f: F) => new StateOwner(sqlOf(f.db), { now: f.now });
+const floorMissing =
+  "This project has issue history but no saved issue number, so creating issues is not available for it yet";
 const make = (id: string, input: object = { title: "New" }, more = {}) => ({
   requestId: id,
   op: "issue.create",
@@ -3083,7 +3102,7 @@ const revoke = (f: F, token: string) =>
   f.db
     .query("UPDATE domain_cloud_tokens SET revoked_at=? WHERE id=?")
     .run(f.now(), token.slice(4, 20));
-// Issues 1, 4 and 12 (gaps, the historical prefixes acme and old, 4 held by a live lease), and a
+// Issues 1, 4 and 12 (gaps, the historical prefixes acme and old, 4 held by a live lease), a floor at 12, and a
 // comment record numbered 30 that is not an issue and must not move the next number.
 async function createRows() {
   const f = fixture();
@@ -3094,6 +3113,7 @@ async function createRows() {
   f.put(stored({ id: "work-12" }), {}, "issue:work-12");
   f.put({ id: "work-1", body: "c" }, {}, "comment:work-1:30");
   f.lease({ expiresAt: iso(start + 1) }, "issue:work-4");
+  f.put({ prefix: "issue:work-", number: 12 }, {}, "allocation:issue:work-");
   return { f, token };
 }
 
@@ -3163,7 +3183,10 @@ test("the cloud issue.create agrees with the local handler on whole results, row
       );
     }
     expect(eventsOf(f.db, "forge/work")).toEqual(eventsOf(twin, "forge/work"));
-    expect(eventsOf(f.db, "forge/work")).toHaveLength(inputs.length);
+    // Each create writes its issue event and its floor event.
+    expect(eventsOf(f.db, "forge/work")).toHaveLength(inputs.length * 2);
+    expect(floorOf(f)).toEqual(floorAt(12 + inputs.length));
+    expect(floorOf(f)).toEqual(floorOf({ db: twin } as F));
     expect(seeded()).toBe(before);
     // Eligible while unleased; the leased issue 4 is not.
     const ready = await f.send({ ...readyCall, input: {} }, { token });
@@ -3183,8 +3206,8 @@ test("a retry returns the original result with no second issue or issue event, a
     0,
     { id: "forge-13" },
   ]);
-  // One issue and its one event; the receipt adds its own record and its own event.
-  expect([issuesIn(f), eventsOf(f.db, "forge/work").length]).toEqual([4, 1]);
+  // One issue and its two events (the issue and its floor); the receipt adds its own record and event.
+  expect([issuesIn(f), eventsOf(f.db, "forge/work").length]).toEqual([4, 2]);
   expect(rowsOf(f.db, "forge/cloud").map((r) => r.key)).toEqual([
     "request:r-1",
   ]);
@@ -3230,6 +3253,193 @@ test("a retry returns the original result with no second issue or issue event, a
   expect([dry.status, dry.code, dry.exit]).toEqual([503, "UNAVAILABLE", 1]);
   expect(f.snapshot()).toBe(revoked);
 }, 60_000);
+
+test("a fresh cloud project allocates forge-1 at revision 1 and keeps a floor, also after raw lease history", async () => {
+  for (const leased of [false, true]) {
+    const f = fixture();
+    const token = await f.device();
+    if (leased)
+      owned(f).acquire(
+        "forge/work",
+        "issue:work-7",
+        { actor, session: { id: "s1" } },
+        60_000,
+        "seed",
+      );
+    for (const [i, id] of ["forge-1", "forge-2"].entries()) {
+      const got = await f.send(make(`f-${i}`), { token });
+      expect([got.status, got.json.result]).toMatchObject([
+        200,
+        { id, revision: 1 },
+      ]);
+      expect(floorOf(f)).toEqual(floorAt(i + 1));
+    }
+    expect(floorEvents(f)).toHaveLength(2);
+  }
+}, 60_000);
+
+for (const [name, seed] of [
+  ["a live issue", (f: F) => f.put(stored())],
+  [
+    "only deleted history",
+    (f: F) => {
+      const owner = owned(f);
+      owner.put("forge/work", "issue:work-3", stored(), actor, {
+        expectRevision: 0,
+      });
+      owner.delete("forge/work", "issue:work-3", actor, { expectRevision: 1 });
+    },
+  ],
+] as const)
+  test(`a cloud project with ${name} and no floor refuses create as UNAVAILABLE and changes nothing`, async () => {
+    const f = fixture();
+    const token = await f.device();
+    f.tables();
+    seed(f);
+    const before = f.snapshot();
+    const got = await f.send(make("o-1"), { token });
+    expect([got.status, got.code, got.exit, got.json.error?.message]).toEqual([
+      503,
+      "UNAVAILABLE",
+      1,
+      floorMissing,
+    ]);
+    expect(f.snapshot()).toBe(before);
+    expect(receiptOf(f, "o-1")).toBeUndefined();
+    // Issuing another device never writes a floor over old history.
+    await f.device(day, "tablet");
+    expect(floorOf(f)).toBeUndefined();
+  }, 30_000);
+
+// The handler the way it was before the floor: the next number is one above the highest live key.
+const LEGACY_NEXT = `
+function legacyNext(owner: any, ns: string, prefix: string, build: any, actor: any) {
+  const n = owner.maxNumber(ns, prefix) + 1;
+  return owner.put(ns, prefix + n, build(prefix + n, n).value, actor, { expectRevision: 0 });
+}
+`;
+/** The real cloud create handler with its numbered write swapped for the pre-floor allocation. */
+async function createIgnoringFloor(): Promise<typeof createIssue> {
+  const file = resolve(import.meta.dirname, "../../cloud/src/issue-create.ts");
+  const text = readFileSync(file, "utf8");
+  expect(text).toContain("owner.putNext(");
+  const mutant = text
+    .replace(
+      /from "(\.[^"]+)"/g,
+      (_match, path: string) =>
+        `from ${JSON.stringify(resolve(dirname(file), path).replaceAll("\\", "/"))}`,
+    )
+    .replace("owner.putNext(", "legacyNext(owner, ");
+  const dir = mkdtempSync(join(tmpdir(), "forge-floor-"));
+  try {
+    const copy = join(dir, "issue-create.ts");
+    writeFileSync(copy, mutant + LEGACY_NEXT);
+    return (
+      (await import(pathToFileURL(copy).href)) as {
+        createIssue: typeof createIssue;
+      }
+    ).createIssue;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+/** Two accepted creates and a delete of the highest, then one more create through the given handler. */
+function createAfterDelete(create: typeof createIssue) {
+  const f = fixture();
+  f.tables();
+  const db = sqlOf(f.db);
+  const owner = new StateOwner(db, { now: f.now });
+  for (let n = 0; n < 2; n++)
+    owner.putNext(
+      "forge/work",
+      "issue:work-",
+      (key) => ({ value: stored({ id: key.slice("issue:".length) }) }),
+      actor,
+    );
+  owner.delete("forge/work", "issue:work-2", actor, { expectRevision: 1 });
+  const got = create(db, owner, {
+    requestId: "c-1",
+    input: { title: "New" },
+    context: { variant: "project", actor, project: { id: "p" } },
+    device: "laptop",
+    prefix: "forge",
+    recheck: () => {},
+  });
+  if (got.id !== "forge-3")
+    throw new Error(`a cloud create must read the floor, got ${got.id}`);
+}
+test("the cloud create handler counts the floor: without it a deleted number is reused", async () => {
+  const mutant = await createIgnoringFloor();
+  createAfterDelete(createIssue);
+  expect(() => createAfterDelete(mutant)).toThrow(
+    "a cloud create must read the floor, got forge-2",
+  );
+}, 30_000);
+
+test("an accepted create replays its original result even after the floor is gone", async () => {
+  const f = fixture();
+  const token = await f.device();
+  const first = await f.send(make("p-1"), { token });
+  f.db.run("DELETE FROM state_records WHERE key='allocation:issue:work-'");
+  const done = f.snapshot();
+  const again = await f.send(make("p-1"), { token });
+  expect([again.status, again.text]).toEqual([200, first.text]);
+  expect(f.snapshot()).toBe(done);
+}, 30_000);
+
+test("create with a floor reads the floor and one candidate, never the issue history, however long it is", async () => {
+  const f = fixture();
+  const token = await f.device();
+  const owner = owned(f);
+  for (let n = 1; n <= 120; n++) {
+    owner.putNext(
+      "forge/work",
+      "issue:work-",
+      (key) => ({ value: stored({ id: key.slice(6) }) }),
+      actor,
+    );
+    owner.delete("forge/work", `issue:work-${n}`, actor, { expectRevision: 1 });
+  }
+  const seen = spyOn(f.storage.sql, "exec");
+  const got = await f.send(make("h-1"), { token });
+  expect([got.status, got.json.result]).toMatchObject([
+    200,
+    { id: "forge-121", revision: 1 },
+  ]);
+  const history = seen.mock.calls.filter(
+    ([sql, ...bindings]) =>
+      /FROM state_events/.test(sql) && bindings[0] === "forge/work",
+  );
+  seen.mockRestore();
+  expect(history).toEqual([]);
+}, 60_000);
+
+test("a receipt failure rolls back the issue and its floor, and the retry gets the same number", async () => {
+  const f = fixture();
+  const token = await f.device();
+  const before = f.snapshot();
+  const original = f.storage.sql.exec.bind(f.storage.sql);
+  const fault = spyOn(f.storage.sql, "exec").mockImplementation(
+    (sql, ...bindings) => {
+      if (
+        /^INSERT INTO state_records/.test(sql) &&
+        bindings.includes("request:r-1")
+      )
+        throw new Error("injected receipt failure");
+      return original(sql, ...bindings);
+    },
+  );
+  const failed = await f.send(make("r-1"), { token });
+  fault.mockRestore();
+  expect(failed.status).toBe(500);
+  expect(f.snapshot()).toBe(before);
+  const retry = await f.send(make("r-1"), { token });
+  expect([retry.status, retry.json.result]).toMatchObject([
+    200,
+    { id: "forge-1", revision: 1 },
+  ]);
+  expect(floorOf(f)).toEqual(floorAt(1));
+}, 30_000);
 
 test("graph fields are refused as unsupported, recorded once for a fresh request id and never dropped", async () => {
   const { f, token } = await createRows();
@@ -6463,6 +6673,8 @@ interface Write {
   record: string;
   /** The lease a successful write leaves in the dump, when it takes one. */
   lease?: string;
+  /** The number a create allocates: it advances the floor to it, with one more work event. Other writes leave the floor alone. */
+  floor?: number;
   /** What the first successful write returns, after a failed receipt write was rolled back. */
   result: (f: F, got: Sent) => void;
 }
@@ -6493,6 +6705,7 @@ const WRITES: Write[] = [
     empty: { title: "" },
     ok: { title: "New", kind: "task" },
     record: "forge/work/issue:work-13",
+    floor: 13,
     result: (_f, got) =>
       expect([got.status, got.json.result]).toMatchObject([
         200,
@@ -6714,6 +6927,7 @@ for (const w of WRITES) {
 
   test(`a ${w.name} leaves its record, event and receipt in the dump, and no credential or login state anywhere`, async () => {
     const { f, token } = await w.rows();
+    const floorBefore = floorOf(f);
     const ok = await f.send(w.send("s-1", w.ok), { token });
     const bad = await f.send(w.send("s-2", w.empty), { token });
     expect([ok.status, bad.status]).toEqual([200, 400]);
@@ -6722,7 +6936,12 @@ for (const w of WRITES) {
       value: {
         tables: Record<
           string,
-          { namespace?: string; key?: string; subject?: string }[]
+          {
+            namespace?: string;
+            key?: string;
+            subject?: string;
+            body?: string;
+          }[]
         >;
       };
     };
@@ -6737,24 +6956,44 @@ for (const w of WRITES) {
       (value.tables[table] ?? []).map(
         (r) => `${r.namespace}/${r.key ?? r.subject ?? ""}`,
       );
+    const floorRecord = "forge/work/allocation:issue:work-";
+    // Only a create moves the floor; every other write leaves the one its project already had.
+    const floorAfter = w.floor === undefined ? floorBefore : floorAt(w.floor);
     for (const record of [
       w.record,
       "forge/cloud/request:s-1",
       "forge/cloud/request:s-2",
+      ...(floorAfter === undefined ? [] : [floorRecord]),
     ])
       expect(at("state_records")).toContain(record);
     if (w.lease !== undefined) expect(at("state_leases")).toContain(w.lease);
+    // A create also writes the floor's record.updated, so dump and restore keep the floor.
     expect(
       at("state_events")
         .map((row) => row.split("/").slice(0, 2).join("/"))
         .sort(),
-    ).toEqual(["forge/cloud", "forge/cloud", "forge/work"]);
+    ).toEqual([
+      "forge/cloud",
+      "forge/cloud",
+      "forge/work",
+      ...(w.floor === undefined ? [] : ["forge/work"]),
+    ]);
     // The token is the canary: it is in no response, receipt, dump or row of the project.
     const secret = token.split(".")[1]!;
     const rows = JSON.stringify(
       ["forge/work", "forge/cloud"].map((ns) => rowsOf(f.db, ns)),
     );
-    for (const text of [ok.text, bad.text, dump, rows])
+    const floorRows = (value.tables.state_records ?? []).filter(
+      (r) => `${r.namespace}/${r.key}` === floorRecord,
+    );
+    const floorRow = JSON.stringify(floorRows);
+    expect(floorOf(f)).toEqual(floorAfter);
+    expect(
+      floorRows.map(
+        (r) => (JSON.parse(r.body ?? "null") as { value: unknown }).value,
+      ),
+    ).toEqual(floorAfter === undefined ? [] : [floorAfter]);
+    for (const text of [ok.text, bad.text, dump, rows, floorRow])
       for (const canary of [token, secret, "authorization", "fct_"])
         expect([
           canary,
@@ -6787,11 +7026,13 @@ const differing = (a: Tables, b: Tables) =>
   Object.keys(b).filter((t) => JSON.stringify(a[t]) !== JSON.stringify(b[t]));
 const ids = (t: Tables, table: string) =>
   (t[table] ?? []).map((r) => `${r.namespace}/${r.key}`);
+// The accepted create also writes the allocation floor, so its record and its record.updated event are named too.
 const NAMED = [
   "forge/cloud/request:max-bad-comment",
   "forge/cloud/request:max-bad-create",
   "forge/cloud/request:max-comment",
   "forge/cloud/request:max-create",
+  "forge/work/allocation:issue:work-",
   "forge/work/comment:work-1:1",
   "forge/work/issue:work-1",
 ];
@@ -6971,7 +7212,8 @@ for (const mode of ["whole", "paged"] as const)
       ]);
     }
     expect(differing(tablesOf(t.db), kept)).toEqual([]);
-    // A fresh command is one comment, one receipt and their two events, and no earlier row moves.
+    // A fresh command is one comment, one receipt and their two events, and no earlier row moves. A comment
+    // allocates nothing, so the restored floor row stays as it was. The count is against the source's own rows.
     const fresh = await t.send(
       note("fresh-1", { id: "forge-1", body: "later" }),
       { token },
@@ -6982,8 +7224,8 @@ for (const mode of ["whole", "paged"] as const)
     ]);
     const after = tablesOf(t.db);
     expect([
-      after.state_records!.length - 6,
-      after.state_events!.length - 6,
+      after.state_records!.length - tables.state_records!.length,
+      after.state_events!.length - tables.state_events!.length,
     ]).toEqual([2, 2]);
     for (const table of Object.keys(kept)) {
       const now = new Set(after[table]!.map((r) => JSON.stringify(r)));
