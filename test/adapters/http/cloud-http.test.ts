@@ -68,7 +68,11 @@ async function failure(run: () => Promise<unknown>): Promise<ForgeFailure> {
 }
 const http = (
   fetch: CloudFetch,
-  more: { timeoutMs?: number; maxBytes?: number } = {},
+  more: {
+    timeoutMs?: number;
+    maxBytes?: number;
+    commandMaxBytes?: number;
+  } = {},
 ) => createCloudHttp({ origin: ORIGIN, project: "proj", fetch, ...more });
 
 for (const origin of [
@@ -664,7 +668,7 @@ for (const [name, run] of operations) {
 
 const commands = (
   "INPUT_INVALID:400 CONTEXT_MISSING:400 UNKNOWN_COMMAND:404 NOT_FOUND:404 " +
-  "INPUT_CONFLICT:409 INTERNAL:500 UNAVAILABLE:503 AUTH_REQUIRED:401 " +
+  "INPUT_CONFLICT:409 REVISION_CONFLICT:409 INTERNAL:500 UNAVAILABLE:503 AUTH_REQUIRED:401 " +
   "AUTH_INVALID:401 AUTH_REVOKED:401 AUTH_EXPIRED:401 " +
   "AUTH_DEVICE_MISMATCH:403 AUTH_FORBIDDEN:403"
 ).split(" ");
@@ -713,7 +717,13 @@ test("a command answer may be up to 1 MiB while a lease answer stays at 64 KiB",
 test("each refusal the command route sends keeps its code at its mapped status and never the server's words", async () => {
   for (const entry of commands) {
     const [code = "", status = ""] = entry.split(":");
-    const answer = refused(code, Number(status), { lease: details });
+    const answer = refused(code, Number(status), {
+      lease: details,
+      observed: { blockers: [{ id: "forge-1" }] },
+      repair: `forge ${SECRET}`,
+      details: { SECRET },
+      expected: SECRET,
+    });
     const result = await http(network(() => answer).fetch).command(TOKEN, wire);
     expect(result).toEqual({ kind: "refused", code } as never);
     expect(JSON.stringify(result)).not.toContain(SECRET);
@@ -801,3 +811,336 @@ for (const [name, run] of routes)
       expect(net.calls).toHaveLength(1);
     }
   }, 10_000);
+
+// What a losing claim or a blocked claim carries: checked lease, blocker and repair details, never the server's words.
+const OWNER = {
+  actor: { kind: "agent" as const, id: "a2" },
+  session: { id: "s9", device: "dev-9", agent: "a2", harness: "claude" },
+};
+const HELD = {
+  subject: "issue:work-0007",
+  holder: OWNER,
+  generation: 4,
+  expiresAt: "2026-11-11T12:00:00.000Z",
+};
+const claimWire = (id = "forge-0007"): CommandWire => ({
+  ...wire,
+  op: "issue.claim",
+  input: { id },
+});
+const closeWire = (id = "forge-0042"): CommandWire => ({
+  ...wire,
+  op: "issue.close",
+  input: { id, withoutReceipt: "x" },
+});
+const FIXED =
+  "The Forge cloud gave no usable answer: the command answer failed its checks.";
+const ask = (response: Response, call: CommandWire, more = {}) =>
+  http(network(() => response).fetch, more).command(TOKEN, call);
+/** The refusal is the fixed unavailable: no partial detail and none of the planted words. */
+async function unusable(response: Response, call: CommandWire) {
+  const net = network(() => response);
+  const failed = await failure(() => http(net.fetch).command(TOKEN, call));
+  expect([failed.error.code, failed.error.message]).toEqual([
+    "UNAVAILABLE",
+    FIXED,
+  ]);
+  expect(JSON.stringify(failed.error)).not.toMatch(/fct_|SERVER-TEXT|dev-9/);
+  sentOnce(net, "POST", "command");
+}
+const withLease = (code: string, lease: unknown, more = {}) =>
+  refused(code, 409, { lease, ...more });
+
+for (const id of ["forge-0007", "work-0007", "FORGE-0007", "legacy-0007"])
+  test(`LEASE_HELD for ${id} keeps the full lease on the canonical subject and nothing else`, async () => {
+    const result = await ask(withLease("LEASE_HELD", HELD), claimWire(id));
+    expect(result).toStrictEqual({
+      kind: "refused",
+      code: "LEASE_HELD",
+      lease: HELD,
+    } as never);
+    expect(JSON.stringify(result)).not.toContain(SECRET);
+  }, 10_000);
+
+for (const code of ["LEASE_STALE", "LEASE_NOT_HELD", "LEASE_EXPIRED"])
+  for (const lease of [
+    HELD,
+    { ...HELD, expiresAt: "2020-01-01T00:00:00.000Z" },
+    { subject: HELD.subject },
+  ])
+    test(`${code} keeps ${Object.keys(lease).length === 1 ? "a subject-only" : "a full"} lease, even one that is already past`, async () => {
+      const result = await ask(withLease(code, lease), claimWire());
+      expect(result).toStrictEqual({ kind: "refused", code, lease } as never);
+    }, 10_000);
+
+const { generation: _g, ...noGeneration } = HELD;
+const { holder: _h, ...noHolder } = HELD;
+const { expiresAt: _e, ...noExpiry } = HELD;
+const mod = (more: object) => ({ ...HELD, ...more });
+const owner = (more: object) => mod({ holder: { ...OWNER, ...more } });
+const session = (more: object) =>
+  owner({ session: { ...OWNER.session, ...more } });
+const actor = (more: object) => owner({ actor: { ...OWNER.actor, ...more } });
+const long = (n: number) => "a".repeat(n);
+const badLeases: [string, unknown][] = [
+  ["no lease", undefined],
+  ["a subject-only lease", { subject: HELD.subject }],
+  ["a lease that is not an object", "issue:work-0007"],
+  ["another issue's subject", mod({ subject: "issue:work-8" })],
+  ["the shown prefix as subject", mod({ subject: "issue:forge-0007" })],
+  ["a normalised number in the subject", mod({ subject: "issue:work-7" })],
+  ["an extra lease key", mod({ note: 1 })],
+  ["a releasedAt", mod({ releasedAt: "2026-11-11T11:00:00.000Z" })],
+  ["an extra holder key", owner({ extra: 1 })],
+  ["an extra actor key", actor({ extra: 1 })],
+  ["an extra session key", session({ extra: 1 })],
+  ["an actor kind that is not agent or human", actor({ kind: "bot" })],
+  ["an empty actor id", actor({ id: "" })],
+  ["an actor id over 200 characters", actor({ id: long(201) })],
+  ["an empty session id", session({ id: "" })],
+  ["an agent over 200 characters", session({ agent: long(201) })],
+  ["an empty harness", session({ harness: "" })],
+  ["an empty device", session({ device: "" })],
+  ["a device over 256 characters", session({ device: long(257) })],
+  ["an expiry that is not a timestamp", mod({ expiresAt: "yesterday" })],
+  ["a generation of zero", mod({ generation: 0 })],
+  ["a fractional generation", mod({ generation: 1.5 })],
+  ["an unsafe generation", mod({ generation: 2 ** 53 })],
+  ["a generation sent as text", mod({ generation: "4" })],
+];
+for (const [name, lease] of badLeases)
+  test(`LEASE_HELD with ${name} is the fixed unavailable with no partial detail`, async () => {
+    await unusable(withLease("LEASE_HELD", lease), claimWire());
+  }, 10_000);
+const partials: [string, unknown][] = [
+  ["a holder without the rest", { subject: HELD.subject, holder: OWNER }],
+  ["a tuple without a generation", noGeneration],
+  ["a tuple without a holder", noHolder],
+  ["a tuple without an expiry", noExpiry],
+];
+for (const [name, lease] of partials)
+  test(`LEASE_STALE with ${name} is the fixed unavailable with no partial detail`, async () => {
+    await unusable(withLease("LEASE_STALE", lease), claimWire());
+  }, 10_000);
+
+const FOREIGN = `fct_ffffffffffffffff.${"Z".repeat(43)}`;
+const leaves: [string, (value: string) => unknown][] = [
+  ["actor id", (v) => owner({ actor: { kind: "agent", id: v } })],
+  ["session id", (v) => session({ id: v })],
+  ["session device", (v) => session({ device: v })],
+  ["session agent", (v) => session({ agent: v })],
+  ["session harness", (v) => session({ harness: v })],
+];
+const canaries: [string, string][] = [
+  ["the presented token", TOKEN],
+  ["a foreign device token", FOREIGN],
+  ["a token inside other text", `before-${TOKEN}-after`],
+  ["a terminal escape", "a\u001b[31mb"],
+  ["a bell", "a\u0007b"],
+];
+for (const [leaf, plant] of leaves)
+  test(`a ${leaf} that holds a token or a control character is the fixed unavailable, as written or JSON-escaped`, async () => {
+    for (const [, canary] of canaries) {
+      await unusable(withLease("LEASE_HELD", plant(canary)), claimWire());
+      const text = JSON.stringify({
+        ...refusalBody("LEASE_HELD"),
+        error: { code: "LEASE_HELD", lease: plant(canary) },
+      }).replaceAll("fct_", "\\u0066ct_");
+      await unusable(new Response(text, { status: 409 }), claimWire());
+    }
+  }, 10_000);
+
+test("a valid refusal survives token text in every field the client discards", async () => {
+  const hostile = {
+    ...refusalBody("LEASE_HELD"),
+    error: {
+      ...refusalBody("LEASE_HELD").error,
+      message: TOKEN,
+      expected: TOKEN,
+      hint: { template: TOKEN, command: TOKEN },
+      suggest: [TOKEN],
+      details: { token: TOKEN },
+      reconcileWith: TOKEN,
+      repair: TOKEN,
+      lease: HELD,
+    },
+    warnings: [{ code: "W", message: TOKEN }],
+  };
+  const result = await ask(json(hostile, 409), claimWire());
+  expect(result).toStrictEqual({
+    kind: "refused",
+    code: "LEASE_HELD",
+    lease: HELD,
+  } as never);
+  expect(JSON.stringify(result)).not.toContain(TOKEN);
+}, 10_000);
+
+const BLOCKERS = [
+  { id: "forge-8" },
+  { id: "forge-9", holder: OWNER, holderUnverified: true },
+  {
+    id: "legacy-10",
+    holder: { ...OWNER, actor: { kind: "human", id: "h" } },
+    holderUnverified: true,
+  },
+];
+const blocked = (observed: unknown, more = {}) =>
+  refused("CLAIM_BLOCKED", 409, { observed, ...more });
+test("CLAIM_BLOCKED keeps exactly the blocker edges in server order, with no invented state", async () => {
+  const result = await ask(
+    blocked(
+      { blockers: BLOCKERS },
+      { repair: "forge issue claim x --reason y" },
+    ),
+    claimWire(),
+  );
+  expect(result).toStrictEqual({
+    kind: "refused",
+    code: "CLAIM_BLOCKED",
+    observed: { blockers: BLOCKERS },
+  } as never);
+}, 10_000);
+
+const edge = (more: object) => ({ blockers: [{ id: "forge-8", ...more }] });
+const asked = { holder: OWNER, holderUnverified: true };
+const badBlockers: [string, unknown][] = [
+  ["no observed", undefined],
+  ["an observed list", [{ id: "forge-8" }]],
+  ["no blockers", {}],
+  ["an empty list", { blockers: [] }],
+  ["a blockers that is not a list", { blockers: "forge-8" }],
+  ["an edge that is not an object", { blockers: ["forge-8"] }],
+  ["an empty id", edge({ id: "" })],
+  ["an id that is not an id", edge({ id: "not an id" })],
+  ["an id over 200 characters", edge({ id: `forge-${"9".repeat(200)}` })],
+  ["an id that is a number", edge({ id: 8 })],
+  [
+    "a holder without a session",
+    edge({ holder: { actor: OWNER.actor }, holderUnverified: true }),
+  ],
+  ["an extra observed key", { ...edge({}), note: 1 }],
+  ["an extra edge key", edge({ ...asked, extra: 1 })],
+  ["a holder without holderUnverified", edge({ holder: OWNER })],
+  ["holderUnverified without a holder", edge({ holderUnverified: true })],
+  ["holderUnverified false", edge({ holder: OWNER, holderUnverified: false })],
+  ["an invented state", edge({ state: "open" })],
+];
+for (const [name, observed] of badBlockers)
+  test(`CLAIM_BLOCKED with ${name} is the fixed unavailable with no partial list`, async () => {
+    await unusable(blocked(observed), claimWire());
+  }, 10_000);
+
+test("a token or control character in a blocker's holder is the fixed unavailable", async () => {
+  for (const [, canary] of canaries)
+    await unusable(
+      blocked({
+        blockers: [
+          {
+            id: "forge-9",
+            holder: owner({ actor: { kind: "agent", id: canary } }).holder,
+            holderUnverified: true,
+          },
+        ],
+      }),
+      claimWire(),
+    );
+}, 10_000);
+
+const repairFor = (shown: string) =>
+  `forge attempt select ${shown} --attempt <attempt-id> --reason "<why>"; or forge attempt select ${shown} --none --reason "<why>"`;
+const conflict = (repair?: unknown) =>
+  refused("INPUT_CONFLICT", 409, repair === undefined ? {} : { repair });
+for (const [asked, shown] of [
+  ["forge-0042", "forge-0042"],
+  ["FORGE-0042", "forge-0042"],
+  ["work-0042", "forge-0042"],
+  ["legacy-0042", "forge-0042"],
+  ["forge-0042", "legacy-0042"],
+] as const)
+  test(`a competing close of ${asked} keeps the exact repair rebuilt from the shown id ${shown}`, async () => {
+    const result = await ask(conflict(repairFor(shown)), closeWire(asked));
+    expect(result).toStrictEqual({
+      kind: "refused",
+      code: "INPUT_CONFLICT",
+      repair: repairFor(shown),
+    } as never);
+  }, 10_000);
+
+const alone = { kind: "refused", code: "INPUT_CONFLICT" };
+const [first = ""] = repairFor("forge-0042").split("; or ");
+const none = repairFor("forge-0042");
+const droppedRepairs: [string, unknown, CommandWire][] = [
+  ["no repair", undefined, closeWire()],
+  ["a number", 7, closeWire()],
+  ["a short arbitrary string", "forge issue reopen", closeWire()],
+  ["a suffix without its zeros", repairFor("forge-42"), closeWire()],
+  ["another issue's suffix", repairFor("forge-0043"), closeWire()],
+  [
+    "two different ids",
+    `${first}; or forge attempt select forge-0043 --none --reason "<why>"`,
+    closeWire(),
+  ],
+  ["trailing text", `${none} now`, closeWire()],
+  ["a missing alternative", first, closeWire()],
+  ["a token", `${none} ${TOKEN}`, closeWire()],
+  ["a shown id that is not an id", repairFor("not an id"), closeWire()],
+  [
+    "a shown id over 200 characters",
+    repairFor(`${"a".repeat(1_000)}-0042`),
+    closeWire(),
+  ],
+  ["the template on another operation", repairFor("forge-0007"), claimWire()],
+];
+for (const [name, repair, call] of droppedRepairs)
+  test(`INPUT_CONFLICT with ${name} stays INPUT_CONFLICT with no repair`, async () => {
+    expect(await ask(conflict(repair), call)).toStrictEqual(alone as never);
+  }, 10_000);
+
+// The whole refusal, multibyte text included, is bounded by commandMaxBytes before it is decoded.
+const multibyte = JSON.stringify({
+  ...refusalBody("LEASE_HELD"),
+  error: {
+    code: "LEASE_HELD",
+    lease: owner({ actor: { kind: "agent", id: "é".repeat(60) } }),
+  },
+});
+const SIZE = new TextEncoder().encode(multibyte).length;
+// Over the cap the source stays open, as a server still sending would: only then is there a stream to cancel.
+const streamed = (cap: number) => {
+  let cancelled = false;
+  const body = new ReadableStream<Uint8Array>({
+    start(c) {
+      c.enqueue(new TextEncoder().encode(multibyte));
+      if (SIZE <= cap) c.close();
+    },
+    cancel: () => void (cancelled = true),
+  });
+  const run = ask(new Response(body, { status: 409 }), claimWire(), {
+    commandMaxBytes: cap,
+  });
+  return { run, cancelled: () => cancelled };
+};
+const declared = (cap: number) =>
+  ask(
+    new Response(multibyte, {
+      status: 409,
+      headers: { "content-length": String(SIZE) },
+    }),
+    claimWire(),
+    { commandMaxBytes: cap },
+  );
+test("a valid multibyte refusal is accepted exactly at commandMaxBytes and refused one byte over, declared or streamed", async () => {
+  expect(SIZE).toBeGreaterThan(multibyte.length);
+  const want = { kind: "refused", code: "LEASE_HELD" };
+  expect(await declared(SIZE)).toMatchObject(want);
+  await expect(declared(SIZE - 1)).rejects.toMatchObject({
+    error: { code: "UNAVAILABLE" },
+  });
+  const at = streamed(SIZE);
+  expect(await at.run).toMatchObject(want);
+  const over = streamed(SIZE - 1);
+  await expect(over.run).rejects.toMatchObject({
+    error: { code: "UNAVAILABLE" },
+  });
+  expect(over.cancelled()).toBe(true);
+}, 10_000);

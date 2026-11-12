@@ -16,6 +16,7 @@ import {
   type CredentialKey,
 } from "../../src/assembly/cloud-profile.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
+import { decideLease } from "../../src/contract/lease.ts";
 import type { LeaseRecord } from "../../src/generated/types.ts";
 import type { DeviceFiles } from "../../src/ports/device-files.ts";
 import { exitCode } from "../../src/surface/result.ts";
@@ -407,4 +408,100 @@ test("a result that fails the output schema, or a validator that throws, is UNAV
     expect(calls).toHaveLength(1);
   }
   expect(seen).toEqual([LEASE, LEASE]);
+}, 10_000);
+
+// A refused command carries the checked lease, blocker and repair details into the failure, as the local engine would.
+const OWNED: LeaseRecord = {
+  subject: SUBJECT,
+  holder: holderOf("s9", "dev-9"),
+  generation: 4,
+  expiresAt: "2026-11-11T12:00:00.000Z",
+};
+const conflictOf = (lease: LeaseRecord) => ({
+  subject: lease.subject,
+  holder: lease.holder,
+  generation: lease.generation,
+  expiresAt: lease.expiresAt,
+});
+function localError(
+  current: LeaseRecord | undefined,
+  mode: "acquire" | "held",
+  generation = 3,
+) {
+  const decision = decideLease(current, {
+    mode,
+    subject: SUBJECT,
+    holder: holderOf("s1"),
+    nowMs: NOW,
+    generation,
+  });
+  if (decision.ok) throw new Error("the local engine granted the lease");
+  return decision.error;
+}
+const refusedWith = (code: string, more: object) =>
+  ({ kind: "refused", code, ...more }) as never;
+const commandFailure = (answer: LeaseResult) =>
+  failureOf(() => rig({ answer }).client.command(cmd, () => true));
+
+test("a refused command's LEASE_HELD is the complete local error, with the holder, generation and expiry", async () => {
+  const answer = refusedWith("LEASE_HELD", { lease: conflictOf(OWNED) });
+  const { client, calls } = rig({ answer });
+  const failed = await failureOf(() => client.command(cmd, () => true));
+  expect(failed.error).toEqual(localError(OWNED, "acquire"));
+  expect(exit(failed)).toBe(4);
+  expect(calls).toHaveLength(1);
+}, 10_000);
+
+const lapsed = { ...OWNED, expiresAt: "2026-11-10T00:00:00.000Z" };
+const others: [string, LeaseRecord | undefined, "held", number][] = [
+  ["LEASE_STALE", OWNED, "held", 3],
+  ["LEASE_NOT_HELD", undefined, "held", 3],
+  ["LEASE_NOT_HELD", OWNED, "held", 4],
+  ["LEASE_EXPIRED", { ...lapsed, holder: holderOf("s1") }, "held", 4],
+];
+for (const [code, current, mode, generation] of others)
+  test(`a refused command's ${code} keeps the local lease fields and retry posture${current === undefined ? " with only the subject" : ""}`, async () => {
+    const want = localError(current, mode, generation);
+    expect(want.code).toBe(code as never);
+    const lease = want.lease;
+    const failed = await commandFailure(refusedWith(code, { lease }));
+    expect([failed.error.code, failed.error.retry, failed.error.lease]).toEqual(
+      [want.code, want.retry, want.lease],
+    );
+    expect(exit(failed)).toBe(4);
+    expect(failed.error.message).not.toContain(TOKEN);
+  }, 10_000);
+
+test("a refused command's CLAIM_BLOCKED keeps exactly the blocker edges, retry never, and no repair", async () => {
+  const blockers = [
+    { id: "forge-8" },
+    { id: "forge-9", holder: holderOf("s9"), holderUnverified: true },
+  ];
+  const failed = await commandFailure(
+    refusedWith("CLAIM_BLOCKED", { observed: { blockers } }),
+  );
+  expect(failed.error.observed).toEqual({ blockers });
+  expect([failed.error.retry, failed.error.repair]).toEqual([
+    "never",
+    undefined,
+  ]);
+  expect(Object.keys(failed.error).sort()).toEqual([
+    "code",
+    "message",
+    "observed",
+    "retry",
+  ]);
+  expect(exit(failed)).toBe(1);
+}, 10_000);
+
+test("a refused command's INPUT_CONFLICT keeps a checked repair, and has none when the adapter gave none", async () => {
+  const repair = `forge attempt select forge-1 --attempt <attempt-id> --reason "<why>"; or forge attempt select forge-1 --none --reason "<why>"`;
+  const kept = await commandFailure(refusedWith("INPUT_CONFLICT", { repair }));
+  expect([kept.error.repair, kept.error.retry, exit(kept)]).toEqual([
+    repair,
+    "never",
+    4,
+  ]);
+  const bare = await commandFailure(refusedWith("INPUT_CONFLICT", {}));
+  expect(Object.keys(bare.error).sort()).toEqual(["code", "message", "retry"]);
 }, 10_000);
