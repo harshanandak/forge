@@ -5,6 +5,8 @@ import { ForgeFailure } from "../../src/contract/failure.ts";
 import {
   RestoreConsistencyFailure,
   verifyEventDerivedState,
+  type NumberedSummary,
+  type StateOwner,
 } from "../../src/core/state/index.ts";
 import {
   validateForgeError,
@@ -539,17 +541,25 @@ function insertRows(db: SqlDatabase, tables: Record<string, Row[]>): void {
       }
 }
 
+// The allocator's floor: the work block numbers issues as `issue:work-<n>` in forge/work, and a floor record
+// holds the highest number ever given. Only this file names them; the state owner takes both as arguments.
+const NUMBERED = { namespace: "forge/work", prefix: "issue:work-" };
+const SEEDER = { kind: "agent", id: "cloud-restore" } as const;
+
 // The row checks of a restore, over every row now in the project (a whole dump, or all staged pages):
 // the server's receipts, then the state owner's own check of an imported image. Every body parses with
-// the runtime parsers, agrees with its indexed columns and replays from the events.
-function verifyRestored(db: SqlDatabase): void {
+// the runtime parsers, agrees with its indexed columns and replays from the events. The same replay
+// reports the highest issue number its history holds.
+function verifyRestored(db: SqlDatabase): {
+  found: NumberedSummary;
+  events: number;
+} {
   const receipts = Object.keys(TABLES).indexOf("domain_cloud_requests");
   for (const { row } of rowsFrom(db, receipts, null)) checkServerReceipt(row);
+  const events = Number(db.get("SELECT COUNT(*) AS n FROM state_events")!.n);
   try {
-    verifyEventDerivedState(
-      db,
-      Number(db.get("SELECT COUNT(*) AS n FROM state_events")!.n),
-    );
+    const found = verifyEventDerivedState(db, events, undefined, NUMBERED);
+    return { found: found!, events };
   } catch (error) {
     if (error instanceof RestoreConsistencyFailure)
       throw rejectedRow(error.table, error.key);
@@ -557,10 +567,37 @@ function verifyRestored(db: SqlDatabase): void {
   }
 }
 
+// The last step of a restore, in its transaction: a supplied floor is checked and kept as it is, and a
+// missing one is written (0 when nothing was ever numbered). Then the project is measured again, so the
+// written pair has the same budgets as the rows that came in.
+function settleFloor(
+  db: SqlDatabase,
+  owner: StateOwner,
+  limits: Limits,
+  restored: { found: NumberedSummary; events: number },
+): void {
+  try {
+    owner.seedNumberFloor(
+      NUMBERED.namespace,
+      NUMBERED.prefix,
+      restored.found,
+      SEEDER,
+      restored.events,
+    );
+  } catch (error) {
+    if (error instanceof RestoreConsistencyFailure)
+      throw rejectedRow(error.table, error.key);
+    throw error;
+  }
+  assertLimits(db, limits, "RESTORE_TOO_LARGE", "The restored project");
+}
+
 /** Writes a dump into an empty project and reads it back in the same transaction; any difference rolls it back. */
 export function restoreDump(
   db: SqlDatabase,
+  owner: StateOwner,
   dump: Dump,
+  limits: Limits,
 ): Record<string, number> {
   return db.transaction(() => {
     const before = dumpOf(db);
@@ -571,11 +608,13 @@ export function restoreDump(
         retry: "never",
       });
     insertRows(db, dump.tables);
-    verifyRestored(db);
+    assertLimits(db, limits, "RESTORE_TOO_LARGE", "The restored project");
+    const restored = verifyRestored(db);
     if (JSON.stringify(dumpOf(db)) !== JSON.stringify(dump))
       throw invalid(
         "The dump rows must be in dump order and read back identical",
       );
+    settleFloor(db, owner, limits, restored);
     return counts(dump.tables);
   });
 }
@@ -590,11 +629,12 @@ export function clearStaged(db: SqlDatabase): void {
 /**
  * Stages one page of a paged restore. Page 0 clears what an earlier try staged. The limits are checked
  * after every page is written, in the same transaction, so the page that crosses one is the page that
- * is refused. The last page then runs the row checks over everything staged; a refusal rolls that page
- * back, and the caller clears the rest.
+ * is refused. The last page then runs the row checks over everything staged and settles the issue number
+ * floor; a refusal rolls that page back, and the caller clears the rest.
  */
 export function restorePage(
   db: SqlDatabase,
+  owner: StateOwner,
   page: Page,
   limits: Limits,
 ): Record<string, number> {
@@ -602,7 +642,8 @@ export function restorePage(
     if (page.page === 0) clearStaged(db);
     insertRows(db, page.tables);
     assertLimits(db, limits, "RESTORE_TOO_LARGE", "The staged restore");
-    if (page.last) verifyRestored(db);
+    // Only the last page looks at the whole staged set, so nothing is derived or written before it.
+    if (page.last) settleFloor(db, owner, limits, verifyRestored(db));
     return counts(page.tables);
   });
 }

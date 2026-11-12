@@ -145,6 +145,35 @@ jobs:
           # Charging the budget before the proof on both paths (forge-1303) refuses a right ticket or state
           # once a guess budget is full. Two lines change: the POST guard and the callback guard.
           edits=2 counterfactual budget src/auth/device-browser.ts '/^ *row === undefined &&$/d;s/if (!owned && !browserAttempt(/if (!browserAttempt(/' "device: the sixth attempt for one challenge" "device: the sixth attempt from one address" "device approve: bound proofs finish" "device deny: bound proofs finish"
+          # Counterfactuals for restoring the issue number floor (forge-1311). Each edits the fix, proves the edit
+          # applied, runs only the named route test and needs it to fail at the named assertion after a valid setup.
+          restore_cf() {
+            name="$1"; file="$2"; edit="$3"; row="$4"; where="$5"
+            (
+              cd "$GITHUB_WORKSPACE"
+              perl -0pi -e "$edit" "$file"
+              if git diff --quiet -- "$file"; then echo "::error::the $name counterfactual edit did not apply"; exit 1; fi
+              if bun test test/cloud/issue-commands.test.ts -t "$row" > "$RUNNER_TEMP/$name.out" 2>&1; then
+                echo "::error::the restore test passed with the $name counterfactual"; exit 1
+              fi
+              cat "$RUNNER_TEMP/$name.out"
+              grep -q "(fail) .*$row" "$RUNNER_TEMP/$name.out" || { echo "::error::$name: row not failed: $row"; exit 1; }
+              grep -qF -- "$where" "$RUNNER_TEMP/$name.out" || { echo "::error::$name: failed at another assertion, not $where"; exit 1; }
+              git checkout -- "$file"
+            )
+          }
+          # Without the seed, a floorless restore adds no floor row.
+          restore_cf unseeded src/core/state/index.ts 's/(      const record = this\.#apply\(\n        namespace,\n        floorKey,\n        \{ prefix, number: needed \},)/      if (found.highest >= 0) return;\n$1/' "whole restore of a legacy project with no floor" 'after[table]!.length - rows.length'
+          # Without deleted keys, a project whose only issue was deleted gets a floor below the number it used.
+          restore_cf undeleted src/core/state/index.ts 's/        number\(event\.namespace, event\.key\);/        void 0;/' "whole restore of only deleted history" 'JSON.parse(String(record?.body))'
+          # A floor written on every page, not only the last, shows up in the staged rows.
+          restore_cf early cloud/src/dump.ts 's/(    if \(page\.last\) settleFloor\(db, owner, limits, verifyRestored\(db\)\);)/$1\n    else settleFloor(db, owner, limits, { found: { highest: 0, earlier: 0 }, events: Number(db.get("SELECT COUNT(*) AS n FROM state_events")!.n) });/' "paged restore of a legacy project with no floor" 'differing(tablesOf(t.db), staged)'
+          # Without the final limit check, the generated pair can cross a cap the imported rows fit under.
+          restore_cf unmeasured cloud/src/dump.ts 's/^  assertLimits\(db, limits, "RESTORE_TOO_LARGE", "The restored project"\);/  void 0;/m' "whole restore whose generated event crosses" '[got.status, got.json.error?.code]'
+          # A floor written after the restore transaction commits leaves the imported rows behind when it fails.
+          restore_cf outside cloud/src/dump.ts 's/(export function restoreDump\([^{]*\{\n  )return db\.transaction\(/$1const counted = db.transaction(/; s/    settleFloor\(db, owner, limits, restored\);\n    return counts\(dump\.tables\);\n  \}\);/    globalThis.restoredFor = restored;\n    return counts(dump.tables);\n  });\n  settleFloor(db, owner, limits, globalThis.restoredFor);\n  return counted;/' "whole restore whose floor record fails" 'tablesOf(failed.t.db)'
+          # Without the replay's verified floor revision, the seed reads the first duplicate type label and reuses a deleted floor's revision.
+          restore_cf unrevised src/core/state/index.ts 's/        found\.floorRevision,\n/        undefined,\n/' "whole restore of a deleted floor under duplicate type labels" 'record?.revision'
       - name: wrangler log
         if: failure()
         run: tail -n 100 "$RUNNER_TEMP"/wrangler-*.log || true
