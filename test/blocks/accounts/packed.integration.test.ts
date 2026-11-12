@@ -1279,6 +1279,21 @@ let setupUses = 0;
 afterAll(() => {
   if (interrupted) rmSync(interrupted.root, { recursive: true, force: true });
 });
+// Makes `to` hold the files of `from`. Files that exist are overwritten in place and directories
+// are never replaced: on Windows the device files carry a private ACL that a fresh copy would lose.
+function syncDirectory(from: string, to: string, keep = new Set<string>()) {
+  const wanted = new Set(readdirSync(from));
+  for (const name of readdirSync(to))
+    if (!wanted.has(name) && !keep.has(name))
+      rmSync(join(to, name), { recursive: true, force: true });
+  for (const name of wanted) {
+    const target = join(to, name);
+    if (statSync(join(from, name)).isDirectory()) {
+      mkdirSync(target, { recursive: true });
+      syncDirectory(join(from, name), target);
+    } else writeFileSync(target, readFileSync(join(from, name)));
+  }
+}
 function interruptedApply() {
   interrupted ??= buildInterruptedApply();
   return interrupted;
@@ -1304,9 +1319,7 @@ function buildInterruptedApply() {
   function restore() {
     for (const name of staged.splice(0))
       rmSync(join(root, name), { recursive: true, force: true });
-    for (const name of mutable())
-      rmSync(join(home, name), { recursive: true, force: true });
-    cpSync(saved, home, { recursive: true });
+    syncDirectory(saved, home, new Set(["bin"]));
   }
   const paths = [
     "forge/accounts.gitconfig",
