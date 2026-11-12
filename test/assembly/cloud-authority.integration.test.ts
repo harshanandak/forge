@@ -468,11 +468,13 @@ const edit = (
   context: object,
   dryRun = false,
   input: object = UPDATE,
+  requestId?: string,
 ) =>
   dispatch(r.assembly.catalog, op, input, {
     caller: "agent",
     context,
     dryRun,
+    ...(requestId === undefined ? {} : { requestId }),
   });
 const sent = (r: Rig) => r.net.calls.map((c) => (c.body as { op: string }).op);
 const live = () => answer({ ...ISSUE, lease: HELD });
@@ -670,6 +672,7 @@ const DEPPED = { ...ISSUE, dependsOn: ["forge-2"], revision: 4 };
 const UNDEPPED = { ...ISSUE, revision: 4 };
 const depends = (r: Rig, context: object, action = "add") =>
   edit(r, "issue.dep", context, false, { ...DEP, action });
+const COMMAND = `${fx.ORIGIN}/p/${fx.PROJECT}/command`;
 for (const [source, op, action, result] of [
   [WORK, "issue.dep", "add", DEPPED],
   [WORK, "issue.dep", "remove", UNDEPPED],
@@ -680,13 +683,16 @@ for (const [source, op, action, result] of [
       { config: source, steps: [live, () => answer(result, "issue.dep")] },
       async (r) => {
         const context = holding(r);
-        const input = { ...DEP, action };
-        const done = await edit(r, op, context, false, input);
+        // The caller's revision differs from the shown one (3), so a CLI that replaced it would fail.
+        const input = { ...DEP, action, expectRevision: 7 };
+        const done = await edit(r, op, context, false, input, "dep-1");
         expect(done).toMatchObject({ ok: true, result });
         expect(exitCode(done)).toBe(0);
         expect(JSON.stringify(done)).not.toContain(TOKEN);
         expect(sent(r)).toEqual(["issue.show", "issue.dep"]);
-        expect(r.net.calls[1]!.body).toMatchObject({
+        expect(r.net.calls[1]!.url).toBe(COMMAND);
+        expect(r.net.calls[1]!.body).toEqual({
+          requestId: "dep-1",
           op: "issue.dep",
           input,
           context: {
@@ -694,6 +700,7 @@ for (const [source, op, action, result] of [
             session: context.session,
             leaseGeneration: 3,
             device: { id: "dev-1" },
+            project: { id: fx.PROJECT },
           },
         });
       },
@@ -701,11 +708,23 @@ for (const [source, op, action, result] of [
 
 test("an explicit generation on issue.dep reaches the cloud unchanged, a stale one is refused there, and the CLI never reads or refreshes it", () =>
   using({ steps: [() => refusing("LEASE_STALE")] }, async (r) => {
-    const stale = await depends(r, holding(r, { leaseGeneration: 2 }));
+    const context = holding(r, { leaseGeneration: 2 });
+    const input = { ...DEP, expectRevision: 7 };
+    const stale = await edit(r, "issue.dep", context, false, input, "dep-2");
     expect(failed(stale, "LEASE_STALE")).toBe(4);
     expect(sent(r)).toEqual(["issue.dep"]);
-    expect(r.net.calls[0]!.body).toMatchObject({
-      context: { leaseGeneration: 2 },
+    expect(r.net.calls[0]!.url).toBe(COMMAND);
+    expect(r.net.calls[0]!.body).toEqual({
+      requestId: "dep-2",
+      op: "issue.dep",
+      input,
+      context: {
+        actor: context.actor,
+        session: context.session,
+        leaseGeneration: 2,
+        device: { id: "dev-1" },
+        project: { id: fx.PROJECT },
+      },
     });
   }));
 
