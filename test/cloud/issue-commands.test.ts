@@ -686,6 +686,7 @@ test("a dry run is unavailable before its context is bound and runs nothing", as
     ["issue.create", { actor }],
     ["issue.comment", { actor }],
     ["issue.comments", { actor }],
+    ["issue.links", { actor }],
     ["issue.update", {}],
     ["issue.claim", { actor, session: { id: "s1" } }],
     ["issue.renew", {}],
@@ -951,14 +952,16 @@ async function barrier(body: object, probes = WORK_PROBES) {
   }
 }
 
-for (const op of ["issue.show", "issue.list", "issue.comments"])
+for (const op of ["issue.show", "issue.list", "issue.comments", "issue.links"])
   test(
     `a token revoked or expired after the first check, while the ${op} body is held, ends the command before any work read`,
     () =>
       barrier(
         { ...call, op, input: op === "issue.list" ? {} : call.input },
-        // A comments read never builds the lease view.
-        op === "issue.comments" ? [TOKENS, "state_records"] : WORK_PROBES,
+        // A comments or links read never builds the lease view.
+        op === "issue.comments" || op === "issue.links"
+          ? [TOKENS, "state_records"]
+          : WORK_PROBES,
       ),
     30_000,
   );
@@ -3207,6 +3210,287 @@ test("a corrupt, mismatched or oversized stored comment is a fixed INTERNAL for 
       got.json.error?.message,
     ]).toEqual([name, 500, "INTERNAL", 1, notValid]);
     expect(got.text).not.toContain("good-body");
+    expect(f.snapshot()).toBe(before);
+  }
+}, 60_000);
+
+// issue.links: the route and the real local handler read the same rows, clock and config.
+const readLinks = (input: object, more = {}) => ({
+  ...call,
+  op: "issue.links",
+  input,
+  ...more,
+});
+const linkValue = (id: string, n: number) => ({
+  id,
+  relation: n % 2 ? "delivers" : "references",
+  url: `https://e.example/${id}/${n}`,
+});
+const linkNumbers = (result: unknown) =>
+  (result as { records: { key: string }[] }).records.map((r) =>
+    Number(r.key.split(":")[2]),
+  );
+const budgetOfLinks = "Issue links are over their read budget";
+// Issues 1 (acme, one link), 3 (no links), 12 (links 1 to 11, stored out of order, with clocks and writers that sort the
+// other way round) and 007 (old, one link). Rows that look like issue 12's links and are not: its comment, another
+// issue's link, issue 120's link, and link 99 under issue 12 in another namespace. Issue 9 has a link but no issue.
+async function linkSeed() {
+  const f = fixture();
+  const token = await f.device();
+  f.tables();
+  f.put(stored({ prefix: "acme" }));
+  for (const id of ["work-3", "work-12"])
+    f.put(stored({ id }), {}, `issue:${id}`);
+  f.put(stored({ id: "work-007", prefix: "old" }), {}, "issue:work-007");
+  for (const n of [10, 2, 11, 1, 9, 3, 8, 4, 7, 5, 6])
+    f.put(
+      linkValue("work-12", n),
+      {
+        updatedAt: iso(start - n * 1000),
+        updatedBy: { kind: "agent", id: `device-${n}` },
+      },
+      `link:work-12:${n}`,
+    );
+  for (const [id, n] of [
+    ["work-1", 1],
+    ["work-007", 1],
+    ["work-9", 1],
+    ["work-120", 1],
+  ] as const)
+    f.put(linkValue(id, n), {}, `link:${id}:${n}`);
+  f.put({ id: "work-12", body: "note" }, {}, "comment:work-12:1");
+  f.put(linkValue("work-12", 99), {}, "link:work-12:99", "forge/cloud");
+  return { f, token };
+}
+
+test("the cloud issue.links agrees with the local handler on whole records, numeric order, aliases and missing issues, and reads write nothing", async () => {
+  await withLocal(async (local) => {
+    const { f, token } = await linkSeed();
+    const before = f.snapshot();
+    const ids = [
+      ...["forge-12", "FORGE-12", "work-12", "forge-1", "acme-1", "ACME-1"],
+      ...["old-007", "forge-007", "forge-3"],
+      ...["forge-9", "FORGE-9", "forge-7", "forge-0012", "zzz-1"],
+    ];
+    const outcomes: Record<string, unknown>[] = [];
+    for (const [i, id] of ids.entries()) {
+      const got = await f.send(readLinks({ id }), {
+        token,
+        via: i % 2 ? "direct" : createWorker(),
+      });
+      const want = local(f, { id }, { idPrefix: "forge" }, "issue.links");
+      const here = got.json.ok ? got.json.result : { code: got.code };
+      expect([id, here]).toEqual([id, want]);
+      if (got.json.ok)
+        expect(got.json).toEqual({
+          ok: true,
+          op: "issue.links",
+          status: "OK",
+          result: want,
+          warnings: [],
+        } as never);
+      else if (got.code === "NOT_FOUND") {
+        expect([got.status, got.exit]).toEqual([404, 3]);
+        expect(got.json.error?.message).toBe(`Issue ${id} was not found`);
+        // A missing issue is found before any link is scanned.
+        expect(got.touched).not.toContain(ROWS);
+      }
+      outcomes.push(here as Record<string, unknown>);
+    }
+    expect(outcomes.filter((o) => "records" in o)).toHaveLength(9);
+    expect(outcomes.map((o) => ("code" in o ? o.code : "")).join()).toBe(
+      ",,,,,,,,,NOT_FOUND,NOT_FOUND,NOT_FOUND,NOT_FOUND,INPUT_INVALID",
+    );
+    // Link numbers, never lexical order (1, 10, 11, 2) or the clocks (11 first); other rows stay out.
+    expect(linkNumbers(outcomes[0])).toEqual([
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
+    ]);
+    expect(linkNumbers(outcomes[3])).toEqual([1]);
+    expect(linkNumbers(outcomes[8])).toEqual([]);
+    expect(outcomes[8]).toEqual({ records: [] });
+    expect((outcomes[0] as { records: unknown[] }).records[0]).toEqual({
+      namespace: "forge/work",
+      key: "link:work-12:1",
+      revision: 3,
+      value: linkValue("work-12", 1),
+      updatedAt: iso(start - 1000),
+      updatedBy: { kind: "agent", id: "device-1" },
+    });
+    expect(f.snapshot()).toBe(before);
+  });
+}, 60_000);
+
+test("issue.links passes the envelope and context checks and is answered by the route, not refused", async () => {
+  const { f, token, before } = await begin();
+  const named = {
+    actor,
+    session: { id: "s1" },
+    device: { id: "laptop" },
+    project: { id: "p" },
+  };
+  for (const context of [{ actor }, named]) {
+    const got = await f.send(
+      { ...call, op: "issue.links", context },
+      { token },
+    );
+    expect([got.status, got.code, got.exit]).toEqual([404, "NOT_FOUND", 3]);
+    expect(got.json.error?.message).toBe("Issue forge-1 was not found");
+    expect(got.probes).toEqual([TOKENS, "state_records"]);
+  }
+  expect(f.snapshot()).toBe(before);
+}, 30_000);
+
+test("bad links input is INPUT_INVALID with no scan, whatever the extra key names, and nothing is written", async () => {
+  const { f, token } = await linkSeed();
+  const before = f.snapshot();
+  const cases: [string, unknown, string][] = [
+    ["no id", {}, needsId],
+    ["an extra field", { id: "forge-12", extra: 1 }, needsId],
+    ["limit", { id: "forge-12", limit: 1 }, needsId],
+    ["cursor", { id: "forge-12", cursor: "c" }, needsId],
+    ["an id that is not text", { id: 12 }, needsId],
+    ["an empty id", { id: "" }, needsId],
+    ["an input that is not an object", [marker], needsId],
+    ["an invalid id", { id: "forge-x" }, "Invalid issue id"],
+    ["an unknown prefix", { id: "zzz-1" }, "Unknown issue id prefix"],
+  ];
+  for (const [name, input, message] of cases) {
+    const got = await f.send(readLinks(input as object), { token });
+    expect([
+      name,
+      got.status,
+      got.code,
+      got.exit,
+      got.json.error?.message,
+    ]).toEqual([name, 400, "INPUT_INVALID", 6, message]);
+    expect(got.touched).not.toContain(ROWS);
+    expect(got.text).not.toContain(marker);
+  }
+  expect(f.snapshot()).toBe(before);
+}, 30_000);
+
+test("an issue over 10,000 links or 1 MiB of them is refused as UNAVAILABLE before any body is loaded, and other issues' links are not counted", async () => {
+  const start12 = async () => {
+    const f = fixture();
+    const token = await f.device();
+    f.tables();
+    f.put(stored({ id: "work-12" }), {}, "issue:work-12");
+    f.put(stored(), {}, "issue:work-1");
+    f.put(
+      { ...linkValue("work-1", 1), url: `https://h/${"k".repeat(2_000_000)}` },
+      {},
+      "link:work-1:1",
+    );
+    return { f, token };
+  };
+  const count = async () => {
+    const { f, token } = await start12();
+    f.db.run(
+      "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<?) INSERT INTO state_records(namespace,key,revision,body) SELECT 'forge/work','link:work-12:'||i,3,json_object('namespace','forge/work','key','link:work-12:'||i,'revision',3,'value',json_object('id','work-12','relation','x','url','https://h'),'updatedAt',?,'updatedBy',json_object('kind','agent','id','tester')) FROM n",
+      [10_001, iso(start - 500)],
+    );
+    expect(
+      f.db
+        .query(
+          "SELECT count(*) AS n FROM state_records WHERE key LIKE 'link:work-12:%'",
+        )
+        .get(),
+    ).toEqual({ n: 10_001 });
+    return f.send(readLinks({ id: "forge-12" }), { token });
+  };
+  const bytes = async () => {
+    const { f, token } = await start12();
+    for (const n of [1, 2])
+      f.put(
+        { ...linkValue("work-12", n), url: `https://h/${"k".repeat(600_000)}` },
+        {},
+        `link:work-12:${n}`,
+      );
+    return f.send(readLinks({ id: "forge-12" }), { token });
+  };
+  for (const [name, got] of [
+    ["10,001 rows", await count()],
+    ["two rows over 1 MiB together", await bytes()],
+  ] as const) {
+    expect([
+      name,
+      got.status,
+      got.code,
+      got.exit,
+      got.json.error?.message,
+      got.touched.includes(ROWS),
+    ]).toEqual([name, 503, "UNAVAILABLE", 1, budgetOfLinks, false]);
+  }
+}, 120_000);
+
+test("a corrupt, mismatched or oversized stored link is a fixed INTERNAL for the whole read, never a partial result", async () => {
+  const good = linkValue("work-12", 3);
+  const at = "link:work-12:3";
+  const pristine = JSON.stringify({
+    namespace: "forge/work",
+    key: at,
+    revision: 3,
+    value: good,
+    updatedAt: iso(start - 500),
+    updatedBy: actor,
+  });
+  const insert = (body: string) => (f: F) =>
+    f.db.run(
+      "INSERT INTO state_records(namespace,key,revision,body) VALUES ('forge/work',?,3,?)",
+      [at, body],
+    );
+  const cases: [string, (f: F) => void][] = [
+    ["not JSON", insert("{")],
+    ["not an object", insert("[]")],
+    ["no wrapper", insert(JSON.stringify(good))],
+    [
+      "a record that fails StateRecord",
+      (f) => f.put(good, { revision: "x" }, at),
+    ],
+    ["another key", (f) => f.put(good, { key: "link:work-12:9" }, at)],
+    ["another namespace", (f) => f.put(good, { namespace: "forge/cloud" }, at)],
+    [
+      "over the 2 MiB record bound",
+      (f) =>
+        f.put(
+          { ...good, url: `https://h/${"k".repeat(2 * 1024 * 1024)}` },
+          {},
+          at,
+        ),
+    ],
+  ];
+  for (const [name, corrupt] of cases) {
+    const f = fixture();
+    const token = await f.device();
+    f.tables();
+    f.put(stored({ id: "work-12" }), {}, "issue:work-12");
+    for (const n of [1, 2])
+      f.put(linkValue("work-12", n), {}, `link:work-12:${n}`);
+    corrupt(f);
+    // Read back the tampered row: three rows are scanned, and the one at the third key is not the good record.
+    const row = f.db
+      .query(
+        "SELECT body FROM state_records WHERE namespace='forge/work' AND key=?",
+      )
+      .get(at) as { body: string } | null;
+    expect([name, row === null]).toEqual([name, false]);
+    expect([name, row?.body === pristine]).toEqual([name, false]);
+    const scanned = f.db
+      .query(
+        "SELECT count(*) AS n FROM state_records WHERE namespace='forge/work' AND key LIKE 'link:work-12:%'",
+      )
+      .get();
+    expect([name, scanned]).toEqual([name, { n: 3 }]);
+    const before = f.snapshot();
+    const got = await f.send(readLinks({ id: "forge-12" }), { token });
+    expect([
+      name,
+      got.status,
+      got.code,
+      got.exit,
+      got.json.error?.message,
+    ]).toEqual([name, 500, "INTERNAL", 1, notValid]);
+    expect(got.text).not.toContain("e.example");
     expect(f.snapshot()).toBe(before);
   }
 }, 60_000);
