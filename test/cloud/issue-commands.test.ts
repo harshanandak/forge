@@ -6039,12 +6039,13 @@ test("a lease lost after the input was read refuses the link with the local leas
     const before = writes(f);
     const real = f.storage.sql.exec.bind(f.storage.sql);
     let tripped = false;
-    // The first lease read of the numbered write (the fence check that opens putNext's transaction, forge-1306)
-    // is the first statement after the input was read: the authority changes there. It was the old count's seam.
+    // The issue read of the input check is the last statement before the numbered write: the authority changes there,
+    // so putNext's fence check (forge-1306), which samples its own clock afterwards, finds it lost. It was the old
+    // count's seam; a trip on putNext's own lease read would come after that clock sample and lose nothing.
     f.storage.sql.exec = (sql, ...bindings) => {
       if (
         !tripped &&
-        /state_leases/.test(sql) &&
+        /FROM state_records/.test(sql) &&
         bindings.includes("issue:work-12")
       ) {
         tripped = true;
@@ -9157,7 +9158,7 @@ const settled = (w: FloorWrite) => {
 // canonical number, a key with no suffix, and a lease-only number.
 const noise: Build = (w, owner) => {
   w.put(childKey("comment", "work-1", 99), {}, 0, "forge/other");
-  w.put("participant:work-1:50", { holder: "x" });
+  w.put("participant:work-9:50", { holder: "x" });
   w.put("comment:work-1:007", childValue("comment", "work-1", 7));
   w.put("link:work-300", { from: "work-1" });
   owner.acquire(
