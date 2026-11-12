@@ -6439,10 +6439,8 @@ const operations: Operations<WorkOperations> = {
     const ids = idsFor(state, config);
     const id = ids.stored(input.id);
     get(state, id, input.id);
-    const written = appendNext(state, `comment:${id}:`, {
-      id,
-      body: input.body,
-    });
+    const comment = { id, body: input.body };
+    const written = appendNext(state, `comment:${id}:`, comment);
     return { id: ids.shown(id), commentId: written.key };
   },
   "issue.call": ({ input, services, config }) => {
