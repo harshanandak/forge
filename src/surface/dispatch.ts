@@ -9,6 +9,7 @@ import type {
   ResultEnvelope,
   OperationDeclaration,
 } from "../generated/types.ts";
+import type { McpCandidate } from "../contract/mcp.ts";
 import type { SurfaceCatalog } from "./catalog.ts";
 import { displayEnvelope, failure } from "./result.ts";
 import { discoveryOperations } from "./discovery.ts";
@@ -46,6 +47,13 @@ export function visible(
       (c.declaration.callers?.includes(caller) ?? caller === "human") &&
       (!readOnly || c.declaration.effects.length === 0),
   );
+}
+
+/** Core entries carry their block and operation for admission only; the public listing never shows them. */
+function publicEntry(entry: McpCandidate): McpCandidate {
+  if (!discoveryOperations.includes(entry)) return entry;
+  const { blockId: _block, declaredOp: _declared, ...shown } = entry;
+  return shown;
 }
 
 export function suggestions(
@@ -119,13 +127,13 @@ async function dispatchRaw(
         warnings: [],
       };
   }
-  if (op === "catalog.list") return success(op, entries);
+  if (op === "catalog.list") return success(op, entries.map(publicEntry));
   if (op === "catalog.describe") {
     const name = record(input)?.op;
     const entry = entries.find((c) => c.op === name);
     return entry === undefined
       ? failure("UNKNOWN_COMMAND", `Unknown operation: ${String(name)}`)
-      : success(op, entry);
+      : success(op, publicEntry(entry));
   }
   if (op === "catalog.call") {
     const args = record(input);

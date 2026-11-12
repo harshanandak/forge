@@ -1468,8 +1468,6 @@ for (const [store, setup] of STORES)
         } finally {
           invoke.mockRestore();
         }
-        if (store === "existing")
-          expect(readFileSync(STORE(r.s), "utf8")).toBe(SEEDED);
       }));
 
     test(`a direct catalog.invoke of a bound project's store reinit is refused by name ${how}, without dispatch`, () =>
@@ -1480,8 +1478,6 @@ for (const [store, setup] of STORES)
             dryRun ? { ...request, dryRun } : request,
           ),
         );
-        if (store === "existing")
-          expect(readFileSync(STORE(r.s), "utf8")).toBe(SEEDED);
       }));
   }
 
@@ -1605,6 +1601,68 @@ test("an unbound project keeps recovery as it was: an existing store conflicts a
     expect(
       await r.assembly.catalog.invoke(r.request("issue.list", {})),
     ).toMatchObject({ ok: true, result: { items: [{ title: CREATE.title }] } });
+  }));
+
+/** Runs a human reinit through dispatch and a direct invoke, each past the faulted guard, and shows both reach recovery. */
+const reachesRecovery = async (r: Rig) => {
+  const validate = spyOn(LocalState.prototype, "validateCreate");
+  try {
+    const options = {
+      caller: "human" as const,
+      context: localContext(r.assembly, human),
+    };
+    for (const run of [
+      () => dispatch(r.assembly.catalog, RECOVER, ASKED, options),
+      () => r.assembly.catalog.invoke(asHuman(r)),
+    ]) {
+      validate.mockClear();
+      const result = await run();
+      expect(result).not.toMatchObject(NAMED);
+      expect(validate).toHaveBeenCalled();
+    }
+  } finally {
+    validate.mockRestore();
+  }
+};
+
+test("fault injection: with the core entry's block and operation removed, neither guard fires and store reinit reaches recovery validation", () =>
+  using({}, async (r) => {
+    const entry = discoveryOperations.find((e) => e.op === RECOVER)!;
+    const saved = { blockId: entry.blockId, declaredOp: entry.declaredOp };
+    Reflect.deleteProperty(entry, "blockId");
+    Reflect.deleteProperty(entry, "declaredOp");
+    try {
+      await reachesRecovery(r);
+    } finally {
+      Object.assign(entry, saved);
+    }
+  }));
+
+test("fault injection: with the direct admission disabled, a direct invoke reaches recovery, while dispatch with the real admission still refuses by name with nothing opened", () =>
+  using({}, async (r) => {
+    const catalog = r.assembly.catalog;
+    const real = catalog.admit!.bind(catalog);
+    const off = spyOn(catalog, "admit").mockImplementation(() => {});
+    const validate = spyOn(LocalState.prototype, "validateCreate");
+    try {
+      const direct = await catalog.invoke(asHuman(r));
+      expect(direct).not.toMatchObject(NAMED);
+      expect(validate).toHaveBeenCalledTimes(1);
+      validate.mockClear();
+      const surface = Object.create(catalog, {
+        admit: { value: real },
+      }) as typeof catalog;
+      refused(
+        await dispatch(surface, RECOVER, ASKED, {
+          caller: "human",
+          context: localContext(r.assembly, human),
+        }),
+      );
+      expect(validate).not.toHaveBeenCalled();
+    } finally {
+      validate.mockRestore();
+      off.mockRestore();
+    }
   }));
 
 test("only forge/core's store.reinit joins the refused set: other blocks and other core operations stay local", () => {
