@@ -2270,6 +2270,342 @@ test("ready refuses an over-budget project as UNAVAILABLE before it loads any bo
   }
 }, 120_000);
 
+// issue.blocked and issue.stale: the route and the local handler read the same rows, clock and config.
+// Rows 1 to 12 are readyRows. Added: 13 is closed, depends on the open work-1 and holds an expired
+// lease. 14 is open, depends on a closed and an open issue and holds an expired lease. 15 is open,
+// depends on a missing issue and holds a live lease.
+// Blocked: 1, 14, 15, 5, 6 and 7. Stale (expired and not released): 10, 11 and 14.
+async function modeRows() {
+  const { f } = await readyRows();
+  // The clock moves a day and more, so the caller's token must outlive that.
+  const token = await f.device(4 * day, "late");
+  const put = (n: number, over: object, lease: object) => {
+    f.put(stored({ id: `work-${n}`, ...over }), {}, `issue:work-${n}`);
+    f.lease(lease, `issue:work-${n}`);
+  };
+  put(
+    13,
+    { status: "closed", kind: "task", dependsOn: ["work-1"] },
+    { expiresAt: iso(start - 10) },
+  );
+  put(
+    14,
+    {
+      parent: "work-2",
+      kind: "task",
+      labels: ["a", "c"],
+      createdAt: iso(start + 10),
+      dependsOn: ["work-2", "work-4"],
+    },
+    { expiresAt: iso(start - 100) },
+  );
+  put(
+    15,
+    {
+      kind: "bug",
+      labels: ["b"],
+      createdAt: iso(start - 500),
+      dependsOn: ["work-99"],
+    },
+    { expiresAt: iso(start + day) },
+  );
+  return { f, token };
+}
+// Each row is an input and the ids it returns, `+` when truncated. `ready` is ignored in both modes,
+// and a labelOrder in the local config never sorts them.
+const MODES = {
+  "issue.blocked": {
+    rows: [
+      [{}, "1,14,15,5,6,7"],
+      [{ ready: false }, "1,14,15,5,6,7"],
+      [{ ready: true }, "1,14,15,5,6,7"],
+      [{ status: "open" }, "1,14,15,5,6,7"],
+      [{ status: "closed" }, ""],
+      [{ status: "closed", ready: true }, ""],
+      [{ parent: "forge-2" }, "14"],
+      [{ parent: "none" }, "1,15,5,6,7"],
+      [{ kind: "task" }, "1,14"],
+      [{ kind: "bug", ready: true }, "15"],
+      [{ label: ["a"] }, "1,14,5,6,7"],
+      [{ labels: ["a", "c"] }, "14"],
+      [{ label: ["c"], labels: ["a"] }, "14"],
+      [{ labels: ["b"], kind: "task" }, ""],
+      [{ createdSince: iso(start - 1000) }, "1,14,15,5,6,7"],
+      [{ createdSince: iso(start - 500) }, "14,15"],
+      [{ createdSince: iso(start + 10) }, "14"],
+      [{ createdSince: iso(start + 11) }, ""],
+      [{ limit: 1 }, "1+"],
+      [{ limit: 3 }, "1,14,15+"],
+      [{ limit: 6 }, "1,14,15,5,6,7"],
+      [{ limit: 2, label: ["a"] }, "1,14+"],
+      [{ limit: 5, label: ["a"] }, "1,14,5,6,7"],
+    ],
+    // Advance the clock, then ask: 15's lease expires, which changes nothing for blocked.
+    later: [
+      [2, {}, "1,14,15,5,6,7"],
+      [day, {}, "1,14,15,5,6,7"],
+      [0, { limit: 2 }, "1,14+"],
+    ],
+  },
+  "issue.stale": {
+    rows: [
+      [{}, "10,11,14"],
+      [{ ready: false }, "10,11,14"],
+      [{ ready: true }, "10,11,14"],
+      [{ status: "open" }, "10,11,14"],
+      [{ status: "closed" }, ""],
+      [{ status: "closed", ready: true }, ""],
+      [{ parent: "forge-2" }, "14"],
+      [{ parent: "none" }, "10,11"],
+      [{ kind: "task" }, "14"],
+      [{ kind: "bug" }, ""],
+      [{ label: ["c"] }, "10,14"],
+      [{ labels: ["a", "c"] }, "14"],
+      [{ label: ["a"] }, "14"],
+      [{ createdSince: iso(start - 1000) }, "10,11,14"],
+      [{ createdSince: iso(start) }, "14"],
+      [{ createdSince: iso(start + 11) }, ""],
+      [{ limit: 1 }, "10+"],
+      [{ limit: 2 }, "10,11+"],
+      [{ limit: 3 }, "10,11,14"],
+      [{ limit: 1, label: ["c"] }, "10+"],
+      [{ limit: 2, label: ["c"] }, "10,14"],
+    ],
+    // Work-3 expires at start + 1 and work-15 at start + one day; work-12 was released and never turns stale.
+    later: [
+      [2, {}, "10,11,14,3"],
+      [day, {}, "10,11,14,15,3"],
+      [0, { limit: 1, label: ["b"] }, "15+"],
+      [0, { label: ["b"] }, "15,3"],
+    ],
+  },
+} as const;
+
+for (const [op, { rows, later }] of Object.entries(MODES))
+  test(`the cloud ${op} agrees with the local handler on filters, leases, a fixed clock, order and limits, and writes nothing`, async () => {
+    await withLocal(async (local) => {
+      const { f, token } = await modeRows();
+      const config = { idPrefix: "forge", labelOrder: ["c", "b"] };
+      const ask = async (input: object, want: string) => {
+        const name = JSON.stringify([op, input, f.now() - start]);
+        const before = f.snapshot();
+        const got = await f.send({ ...call, op, input }, { token });
+        expect([name, got.status, got.json.op, got.exit]).toEqual([
+          name,
+          200,
+          op,
+          0,
+        ]);
+        expect([name, got.json.result]).toEqual([
+          name,
+          local(f, input, config, op),
+        ]);
+        expect([name, idsOf(got.json.result as Listed)]).toEqual([name, want]);
+        expect(readCalls(got.touched)).toEqual([]);
+        expect(f.snapshot()).toBe(before);
+      };
+      for (const [input, want] of rows) await ask(input, want);
+      for (const [ms, input, want] of later) {
+        f.advance(ms);
+        await ask(input, want);
+      }
+    });
+  }, 60_000);
+
+test("blocked and stale refuse bad input before any work table is probed", async () => {
+  const { f, token } = await modeRows();
+  const before = f.snapshot();
+  for (const op of Object.keys(MODES))
+    for (const input of [
+      { extra: 1 },
+      { createdSince: "yesterday" },
+      { limit: 1.5 },
+      { limit: 0 },
+      { limit: 1001 },
+    ]) {
+      const got = await f.send({ ...call, op, input }, { token });
+      const name = JSON.stringify([op, input]);
+      expect([name, got.status, got.code, got.exit]).toEqual([
+        name,
+        400,
+        "INPUT_INVALID",
+        6,
+      ]);
+      expect(got.json.error?.message).toBe("Invalid issue list input");
+      expect(got.probes).toEqual(TOKEN_PROBE);
+    }
+  expect(f.snapshot()).toBe(before);
+}, 30_000);
+
+test("blocked and stale refuse a corrupt row, and a corrupt lease only where one is read, with the fixed 500", async () => {
+  const lease =
+    "INSERT INTO state_leases(namespace,subject,generation,body) VALUES (?,?,2,?)";
+  const row =
+    "INSERT INTO state_records(namespace,key,revision,body) VALUES (?,?,3,?)";
+  const holder = { actor, session: { id: marker } };
+  const broken = (subject: string) => (f: F) =>
+    f.db.run(lease, ["forge/work", subject, `{${marker}`]);
+  // Work-1 is open and unblocked, work-2 is closed, work-3 is open and blocked by a missing issue.
+  // The op, the status and the ids returned, and how many work tables were probed.
+  for (const [op, name, setup, input, want, probes] of [
+    [
+      "issue.blocked",
+      "empty row past the limit",
+      (f: F) => f.db.run(row, ["forge/work", "issue:work-9", "{}"]),
+      { limit: 1 },
+      "500 ",
+      2,
+    ],
+    [
+      "issue.stale",
+      "empty row past the limit",
+      (f: F) => f.db.run(row, ["forge/work", "issue:work-9", "{}"]),
+      { limit: 1 },
+      "500 ",
+      2,
+    ],
+    [
+      "issue.stale",
+      "malformed lease on a candidate",
+      broken("issue:work-1"),
+      {},
+      "500 ",
+      3,
+    ],
+    [
+      "issue.stale",
+      "wrong subject on a candidate",
+      (f: F) => f.lease({ subject: "issue:work-9", holder }),
+      {},
+      "500 ",
+      3,
+    ],
+    [
+      "issue.stale",
+      "malformed lease on a closed issue",
+      broken("issue:work-2"),
+      {},
+      "200 ",
+      3,
+    ],
+    [
+      "issue.stale",
+      "malformed lease on a filtered-out issue",
+      broken("issue:work-1"),
+      { kind: "bug" },
+      "200 ",
+      3,
+    ],
+    [
+      "issue.blocked",
+      "malformed lease on a returned issue",
+      broken("issue:work-3"),
+      {},
+      "500 ",
+      3,
+    ],
+    [
+      "issue.blocked",
+      "malformed lease on an issue that is not blocked",
+      broken("issue:work-1"),
+      {},
+      "200 forge-3",
+      3,
+    ],
+    [
+      "issue.blocked",
+      "malformed lease on a closed issue",
+      broken("issue:work-2"),
+      {},
+      "200 forge-3",
+      3,
+    ],
+  ] as const) {
+    const f = fixture();
+    const token = await f.device();
+    f.tables();
+    f.put(stored());
+    f.put(stored({ id: "work-2", status: "closed" }), {}, "issue:work-2");
+    f.put(
+      stored({ id: "work-3", kind: "bug", dependsOn: ["work-99"] }),
+      {},
+      "issue:work-3",
+    );
+    setup(f);
+    const before = f.snapshot();
+    const got = await f.send({ ...call, op, input }, { token });
+    const items = (got.json.result as Listed | undefined)?.items ?? [];
+    const label = `${op}: ${name}`;
+    expect([label, `${got.status} ${items.map((i) => i.id).join()}`]).toEqual([
+      label,
+      want,
+    ]);
+    expect(got.probes).toEqual(WORK_PROBES.slice(0, probes));
+    if (got.status === 500) {
+      expect([got.code, got.exit, got.json.error?.message]).toEqual([
+        "INTERNAL",
+        1,
+        notValid,
+      ]);
+      expect(JSON.stringify(got.json)).not.toContain(marker);
+    }
+    expect(f.snapshot()).toBe(before);
+  }
+}, 60_000);
+
+test("blocked and stale refuse an over-budget project as UNAVAILABLE before they load any body, whatever the filter", async () => {
+  for (const [name, fill] of [
+    [
+      "10,001 rows",
+      (f: F) =>
+        f.db.run(
+          "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<?) INSERT INTO state_records(namespace,key,revision,body) SELECT 'forge/work','issue:work-'||i,3,json_object('namespace','forge/work','key','issue:work-'||i,'revision',3,'value',json_object('id','work-'||i,'title','t','status','open','labels',json('[]'),'dependsOn',json('[]'),'createdAt',?),'updatedAt',?,'updatedBy',json_object('kind','agent','id','tester')) FROM n",
+          [10_001, iso(start - 1000), iso(start - 500)],
+        ),
+    ],
+    [
+      "over 8 MiB",
+      (f: F) => {
+        for (let n = 1; n <= 5; n++)
+          f.put(
+            stored({ id: `work-${n}`, kind: "k".repeat(1_700_000) }),
+            {},
+            `issue:work-${n}`,
+          );
+      },
+    ],
+  ] as const) {
+    const f = fixture();
+    const token = await f.device();
+    f.tables();
+    fill(f);
+    const before = f.snapshot();
+    for (const op of Object.keys(MODES))
+      for (const input of [{}, { limit: 1, kind: "none", ready: true }]) {
+        const got = await f.send({ ...call, op, input }, { token });
+        expect([
+          name,
+          op,
+          got.status,
+          got.code,
+          got.exit,
+          got.json.error?.message,
+        ]).toEqual([
+          name,
+          op,
+          503,
+          "UNAVAILABLE",
+          1,
+          "Issue list is over its read budget",
+        ]);
+        expect(got.probes).toEqual(WORK_PROBES.slice(0, 2));
+        // The bodies are never loaded: the row-with-body query does not run.
+        expect(got.touched).not.toContain(ROWS);
+      }
+    expect(f.snapshot()).toBe(before);
+  }
+}, 120_000);
+
 // issue.create: the route and the real local handler start from the same rows, clock and config.
 const sqlOf = (db: Database): SqlDatabase => ({
   exec: (sql) => {

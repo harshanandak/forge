@@ -2373,6 +2373,54 @@ if (phase === "main") {
     },
   );
 
+  // The third issue is held by a at generation 1; the first is open and unleased. A dependency of
+  // the third on the first blocks it, and a one second lease that expires unreleased makes it stale.
+  await typed(
+    "typed blocked and stale: an open dependency blocks, an expired unreleased lease is stale, and the reads write nothing",
+    async () => {
+      assert.deepEqual(await idsOf(a, "issue.blocked"), []);
+      assert.deepEqual(await idsOf(a, "issue.stale"), []);
+      const held = await show(a, third.id);
+      typedOk(
+        await typedCall(a, {
+          requestId: "typed-blocked-dep",
+          op: "issue.dep",
+          input: {
+            id: third.id,
+            target: one.id,
+            action: "add",
+            expectRevision: held.revision,
+          },
+          context: asHolder(a, 1),
+        }),
+      );
+      assert.deepEqual(await idsOf(a, "issue.blocked"), [third.id]);
+      assert.deepEqual(await idsOf(a, "issue.stale"), []);
+      typedOk(
+        await typedCall(a, {
+          requestId: "typed-blocked-release",
+          op: "issue.release",
+          input: { id: third.id },
+          context: asHolder(a, 1),
+        }),
+      );
+      const short = typedOk<Grant>(
+        await typedCall(a, {
+          requestId: "typed-stale-claim",
+          op: "issue.claim",
+          input: { id: third.id, ttlSeconds: 1 },
+          context: asClaimer(a),
+        }),
+      );
+      assert.equal(short.generation, 2);
+      await sleep(1500);
+      const before = await dumpOf(typedProject);
+      assert.deepEqual(await idsOf(a, "issue.stale"), [third.id]);
+      assert.deepEqual(await idsOf(a, "issue.blocked"), [third.id]);
+      assert.deepEqual(await dumpOf(typedProject), before, "a read wrote");
+    },
+  );
+
   await typed(
     "typed dump and restore: the typed receipts restore with the issues, read back identical",
     async () => {
