@@ -86,13 +86,13 @@ function* strings(value: unknown): Generator<string> {
   else if (typeof value === "object" && value !== null)
     for (const child of Object.values(value)) yield* strings(child);
 }
-/** No admitted string holds the presented token, any device token or a control character. */
+/** No admitted string holds the presented token, any device token, a control character or a format character (bidi overrides, zero-width). */
 const clean = (details: RefusalDetails, token: string) =>
   [...strings(details)].every(
     (text) =>
       !text.includes(token) &&
       !DEVICE_TOKEN.test(text) &&
-      !/\p{Cc}/u.test(text),
+      !/[\p{Cc}\p{Cf}]/u.test(text),
   );
 
 /** The details this code carries for this call, or undefined when what the server sent is not usable. */
