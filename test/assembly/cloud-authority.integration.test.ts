@@ -846,6 +846,48 @@ test("through the CLI wrapper, a schema-valid StateRecord whose free-form value 
     },
   ));
 
+test("a schema-valid StateRecord whose free-form value carries the token only as a property name is the fixed UNAVAILABLE through the CLI wrapper and MCP catalog_call, with the token in no output", () =>
+  using(
+    {
+      steps: [
+        () =>
+          answer(
+            { records: [{ ...RECORD, value: { [TOKEN]: "x" } }] },
+            "issue.comments",
+          ),
+      ],
+    },
+    async (r) => {
+      const done = await runCli(
+        r.assembly.catalog,
+        ["issue", "comments", "forge-1"],
+        { caller: "agent", context: holding(r) },
+      );
+      expect(errorOf(done)).toMatchObject({
+        code: "UNAVAILABLE",
+        message: NOT_USABLE,
+      });
+      for (const shown of [JSON.stringify(done.envelope), done.stdout])
+        expect(shown).not.toContain(TOKEN);
+      expect(done.exitCode).toBe(1);
+      const handlers = createMcpHandlers(
+        r.assembly.catalog,
+        { expose: ["issue"] },
+        { context: holding(r) },
+      );
+      const mcp = await handlers.callTool("catalog_call", {
+        op: "issue.comments",
+        input: NOTES,
+      });
+      expect(mcp).toMatchObject({
+        ok: false,
+        error: { code: "UNAVAILABLE", message: NOT_USABLE },
+      });
+      expect(failed(mcp!, "UNAVAILABLE")).toBe(1);
+      expect(r.net.calls).toHaveLength(2);
+    },
+  ));
+
 test("a cloud issue.update result with the token in its body is refused as UNAVAILABLE after one update request", () =>
   using(
     {

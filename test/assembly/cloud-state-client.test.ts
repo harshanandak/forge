@@ -537,6 +537,10 @@ for (const [where, result] of [
   ["a top-level string", { title: ECHO }],
   ["a string in a list", { id: "forge-1", labels: ["a", ECHO] }],
   ["a string deep in objects and lists", { items: [{ notes: [{ b: ECHO }] }] }],
+  [
+    "a property name deep in objects",
+    { items: [{ notes: [{ [TOKEN]: "x" }] }] },
+  ],
 ] as const)
   test(`a command result with the token in ${where} is refused as the fixed UNAVAILABLE`, async () => {
     const { client, calls } = rig({
@@ -590,6 +594,17 @@ const ESCAPED_ROWS: [string, string, Run][] = [
       op: "issue.show",
       status: "OK",
       result: { id: "forge-1", title: ECHO },
+      warnings: [],
+    }),
+    (c) => c.command(cmd, () => true),
+  ],
+  [
+    "a command result with the token as a property name",
+    escaped({
+      ok: true,
+      op: "issue.show",
+      status: "OK",
+      result: { id: "forge-1", value: { [TOKEN]: "x" } },
       warnings: [],
     }),
     (c) => c.command(cmd, () => true),
