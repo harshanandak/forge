@@ -1,12 +1,13 @@
 // The async cloud lease client: claim, renew, release and holder over the project's lease routes. It
 // reads the stored credential for one exact key, keeps the caller's holder, and hands the request to
 // the HTTP adapter. It never writes a credential, opens local state or retries. Nothing calls it yet.
-import type {
-  CloudHttp,
-  CommandWire,
-  LeaseRoute,
-  LeaseWriteBody,
-  RefusalDetails,
+import {
+  carriesToken,
+  type CloudHttp,
+  type CommandWire,
+  type LeaseRoute,
+  type LeaseWriteBody,
+  type RefusalDetails,
 } from "../adapters/http/index.ts";
 import { ForgeFailure } from "../contract/failure.ts";
 import { leaseHeldMessage } from "../contract/lease.ts";
@@ -142,7 +143,9 @@ export function createCloudLeaseClient(
     const { lease } = await exchange(() =>
       http.leaseWrite(token, route, { ...body, holder }, signal),
     );
-    if (lease === null) throw failure("UNAVAILABLE", UNAVAILABLE);
+    // A success answer that echoes the presented token is refused whole, as unusable.
+    if (lease === null || carriesToken(lease, token))
+      throw failure("UNAVAILABLE", UNAVAILABLE);
     return lease;
   }
 
@@ -162,7 +165,8 @@ export function createCloudLeaseClient(
       const valid = await Promise.resolve()
         .then(() => validate(result))
         .catch(() => false);
-      if (!valid) throw failure("UNAVAILABLE", UNAVAILABLE);
+      if (!valid || carriesToken(result, token))
+        throw failure("UNAVAILABLE", UNAVAILABLE);
       return result;
     },
     claim: (input) => write("claim", input),
@@ -173,6 +177,7 @@ export function createCloudLeaseClient(
       const { lease } = await exchange(() =>
         http.leaseHolder(token, subject, signal),
       );
+      if (carriesToken(lease, token)) throw failure("UNAVAILABLE", UNAVAILABLE);
       return lease;
     },
   };
