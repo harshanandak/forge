@@ -1,15 +1,10 @@
 import { expect, test } from "bun:test";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import {
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { removeQuietly } from "../spawn-budget.ts";
 
 // One project with the three blocks the Speed job enables, run through the built package.
 const found = Bun.which("node");
@@ -63,8 +58,8 @@ const sha = (text: string) => createHash("sha256").update(text).digest("hex");
 // Modules `issue show` never calls. Loading them is memory spent on nothing, so each
 // is imported only by the operation that uses it.
 const unrelated = [
-  "/src/adapters/http/",
-  "/src/adapters/runner-output",
+  "/src/adapters/http/index.js",
+  "/src/adapters/http/command-refusal.js",
   "/src/assembly/cloud-login.js",
   "/src/assembly/cloud-state-client.js",
   "/src/assembly/skills.js",
@@ -100,7 +95,7 @@ test("issue show loads none of the modules it never calls", () => {
     );
     expect(stray, "modules loaded by issue show but never called").toEqual([]);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    removeQuietly(root);
   }
 }, 60_000);
 
@@ -134,8 +129,9 @@ function mcpTools(root: string, env: NodeJS.ProcessEnv): Promise<string> {
         .find((text) => text.includes('"id":2'));
       if (line === undefined) return;
       clearTimeout(timer);
+      // Windows keeps the project folder locked until the server has exited.
+      child.once("close", () => done(line));
       child.kill();
-      done(line);
     });
     for (const message of [
       {
@@ -158,12 +154,15 @@ function mcpTools(root: string, env: NodeJS.ProcessEnv): Promise<string> {
 test("help, the help contract and the MCP tool listing are unchanged", async () => {
   const { root, env, cli } = project();
   try {
-    expect({
-      help: sha(cli(["--help"])),
-      helpJson: sha(cli(["--help", "--json"])),
-      mcpTools: sha(await mcpTools(root, env)),
-    }).toEqual(catalog);
+    expect(
+      {
+        help: sha(cli(["--help"])),
+        helpJson: sha(cli(["--help", "--json"])),
+        mcpTools: sha(await mcpTools(root, env)),
+      },
+      "Help or the MCP tool listing changed. If that is intended, replace the digests in `catalog` above with the Received values shown below.",
+    ).toEqual(catalog);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    removeQuietly(root);
   }
 }, 60_000);
