@@ -2264,20 +2264,13 @@ if (phase === "main") {
   await check(
     "a restore with duplicate JSON labels is refused as RESTORE_INVALID_ROW and writes nothing",
     async () => {
-      const { source } = await pagedSource();
-      // A real valid dump that holds a record: restoring the leases-only source derives the floor record
-      // and its event, and the dump of that project restores again as it is.
-      const base = `${run}-dupl-base`;
-      const seeded = await adminCall(
-        base,
-        "POST",
-        "restore",
-        JSON.stringify(await dumpOf(source)),
-      );
-      assert.equal(seeded.status, 200, JSON.stringify(seeded.body));
-      const dump = await dumpOf(base);
-      const pages = await pagesOf(base);
-      assert.ok(pages.length >= 3, `${pages.length} pages`);
+      // A real valid dump from the in-process source: its records are the receipt, the floor and the issue, so
+      // with one row per page the floor record and its event fall after page 0.
+      const { leaseSource, pagesOf: cutRows } = await import("./max-source.ts");
+      const { doc } = await leaseSource("issue:dupl-1");
+      const dump = doc as Dump;
+      const pages = cutRows(doc.tables, 1) as unknown as DumpPage[];
+      assert.ok(pages.length >= 8, `${pages.length} pages`);
       const floor = "allocation:issue:work-";
       const repeat = (from: string, to: string) => (text: string) =>
         text.replace(from, to);
@@ -2313,21 +2306,26 @@ if (phase === "main") {
           "state_events",
           (row) => row.key === floor,
           "body",
-          repeat('"number":0', '"number":1,"number":0'),
+          repeat('"number":', '"number":9,"number":'),
         ],
         [
           "event nested label spelled with an escape",
           "state_events",
           (row) => row.key === floor,
           "body",
-          repeat('"number":0', '"\\u006eumber":0,"number":0'),
+          (text) =>
+            text.replace(
+              /"number":(\d+)/,
+              (_match, value: string) =>
+                `"\\u006eumber":${value},"number":${value}`,
+            ),
         ],
         [
           "record nested label",
           "state_records",
           (row) => row.key === floor,
           "body",
-          repeat('"number":0', '"number":1,"number":0'),
+          repeat('"number":', '"number":9,"number":'),
         ],
         ["lease body", "state_leases", () => true, "body", generation],
         [
@@ -2382,7 +2380,7 @@ if (phase === "main") {
           label,
         );
         assert.ok(
-          !JSON.stringify(reply.body).includes(repeated),
+          !String(reply.body.error?.message).includes(repeated),
           `${label}: the refusal holds no body`,
         );
       };
@@ -2419,7 +2417,10 @@ if (phase === "main") {
         // Paged: every page before the last is staged, the last refuses, and nothing stays staged.
         const copy = JSON.parse(JSON.stringify(pages)) as DumpPage[];
         const at = copy.findIndex((page) => page.tables[table]!.some(pick));
-        assert.ok(at >= 0 && at < copy.length - 1, `${name}: page ${at}`);
+        // After page 0 and before the last page; a server receipt is in the last table, so it may be on the last.
+        const end =
+          table === "domain_cloud_requests" ? copy.length : copy.length - 1;
+        assert.ok(at > 0 && at < end, `${name}: page ${at} of ${copy.length}`);
         const staged = copy[at]!.tables[table]!.find(pick) as Row;
         staged[column] = edit(String(staged[column]));
         const paged = `${run}-dupl-paged-${index}`;

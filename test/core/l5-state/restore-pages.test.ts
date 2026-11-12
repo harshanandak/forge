@@ -88,6 +88,31 @@ function expectFailure(work: () => void, table: string, name: string): void {
   });
 }
 
+// forge-1313: a refused verification reads the rows and changes none of them.
+function expectRefusedUnchanged(
+  db: SqlDatabase,
+  work: () => void,
+  table: string,
+  name: string,
+): void {
+  const rows = () =>
+    JSON.stringify(
+      [
+        ["state_records", "namespace,key"],
+        ["state_events", "sequence"],
+        ["state_leases", "namespace,subject"],
+        ["state_requests", "namespace,request_id"],
+      ].map(([from, order]) =>
+        db.all(`SELECT * FROM ${from} ORDER BY ${order}`),
+      ),
+      (_key, value: unknown) =>
+        typeof value === "bigint" ? `${value}n` : value,
+    );
+  const before = rows();
+  expectFailure(work, table, name);
+  expect(rows()).toBe(before);
+}
+
 // forge-1313: nested objects, an array, an own __proto__ label, siblings that share labels and label-like text in strings.
 async function labelled() {
   const opened = await open(false);
@@ -343,7 +368,12 @@ for (const pageSize of [1, 2, undefined]) {
         JSON.stringify({ ...record, revision: 1 }),
       ]);
       // forge-1313: the last label would make this image replay cleanly; a repeated label is refused itself.
-      expectFailure(() => verify(db, 2, pageSize), "state_events", "a");
+      expectRefusedUnchanged(
+        db,
+        () => verify(db, 2, pageSize),
+        "state_events",
+        "a",
+      );
     } finally {
       await close();
     }
@@ -370,7 +400,12 @@ for (const pageSize of [1, 2, undefined]) {
         ),
       ]);
       db.run("DELETE FROM state_requests WHERE request_id='first'");
-      expectFailure(() => verify(db, 2, pageSize), "state_events", "a");
+      expectRefusedUnchanged(
+        db,
+        () => verify(db, 2, pageSize),
+        "state_events",
+        "a",
+      );
     } finally {
       await close();
     }
@@ -735,7 +770,8 @@ test("the replay refuses a deletion with a duplicate type label, and the same hi
         `UPDATE state_events SET body=replace(body,'"type":','"type":"ignored","type":') WHERE sequence=?`,
         [sequence],
       );
-    expectFailure(
+    expectRefusedUnchanged(
+      db,
       () => verifyEventDerivedState(db, mark(db), undefined, request),
       "state_events",
       "n-8",
@@ -951,7 +987,8 @@ test("seeding continues a deleted floor's verified revision and the result repla
     db.run(
       `UPDATE state_events SET body=replace(body,'"type":','"type":"ignored","type":')`,
     );
-    expectFailure(
+    expectRefusedUnchanged(
+      db,
       () => verifyEventDerivedState(db, mark(db), undefined, request),
       "state_events",
       floorKey,
