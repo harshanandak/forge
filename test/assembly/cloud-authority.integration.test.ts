@@ -500,7 +500,7 @@ test("through MCP catalog_call, a refused held op on a bound project is refused 
   using({}, async (r) => {
     const handlers = createMcpHandlers(
       r.assembly.catalog,
-      r.assembly.exposure,
+      { expose: ["issue"] },
       {
         context: holding(r),
       },
