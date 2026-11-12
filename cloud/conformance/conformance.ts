@@ -2151,12 +2151,13 @@ if (phase === "main") {
         "INPUT_CONFLICT",
       );
       assert.deepEqual(await dumpOf(typedProject), after, "a replay wrote");
-      // The holder of the other issue cannot link this one.
+      // The holder of the other issue cannot link this one. The lease engine checks the generation before the holder,
+      // so the caller names the issue's own generation (1) to reach the holder check.
       typedFail(
         await typedCall(loser, {
           ...linkTo(one.id),
           requestId: "typed-link-2",
-          context: asHolder(loser, 2),
+          context: asHolder(loser, 1),
         }),
         409,
         "LEASE_NOT_HELD",
