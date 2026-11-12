@@ -2607,10 +2607,11 @@ const storedBytes = (f: F) =>
       .get() as { n: number }
   ).n;
 // `count` open issues: odd ones tasks, the rest bugs, every fifth blocked by the one before it, every 11th with
-// an expired lease and every 13th with a live one. A body is `size` (a SQL expression over i) characters, led by `b<i>:`.
-function bulk(f: F, count: number, size: string) {
+// an expired lease and every 13th with a live one. A body is `size` (a SQL expression over i) characters, led by
+// `b<i>:` and filled with `fill`.
+function bulk(f: F, count: number, size: string, fill: string) {
   f.db.run(
-    `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<?) INSERT INTO state_records(namespace,key,revision,body) SELECT 'forge/work','issue:work-'||i,3,json_object('namespace','forge/work','key','issue:work-'||i,'revision',3,'value',json_object('id','work-'||i,'title','t'||i,'status','open','kind',CASE WHEN i%2=1 THEN 'task' ELSE 'bug' END,'labels',json('[]'),'dependsOn',CASE WHEN i%5=0 THEN json_array('work-'||(i-1)) ELSE json('[]') END,'createdAt',?,'body',substr('b'||i||':'||replace(hex(zeroblob(32768)),'0','x'),1,${size})),'updatedAt',?,'updatedBy',json_object('kind','agent','id','tester')) FROM n`,
+    `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<?) INSERT INTO state_records(namespace,key,revision,body) SELECT 'forge/work','issue:work-'||i,3,json_object('namespace','forge/work','key','issue:work-'||i,'revision',3,'value',json_object('id','work-'||i,'title','t'||i,'status','open','kind',CASE WHEN i%2=1 THEN 'task' ELSE 'bug' END,'labels',json('[]'),'dependsOn',CASE WHEN i%5=0 THEN json_array('work-'||(i-1)) ELSE json('[]') END,'createdAt',?,'body',substr('b'||i||':'||replace(hex(zeroblob(32768)),'0','${fill}'),1,${size})),'updatedAt',?,'updatedBy',json_object('kind','agent','id','tester')) FROM n`,
     [count, iso(start - 1000), iso(start - 500)],
   );
   for (let i = 11; i <= count; i += 11)
@@ -2618,57 +2619,63 @@ function bulk(f: F, count: number, size: string) {
   for (let i = 13; i <= count; i += 13)
     f.lease({ expiresAt: iso(start + day) }, `issue:work-${i}`);
 }
-const bigProject = async (count: number, size: string) => {
+const bigProject = async (count: number, size: string, fill = "x") => {
   const f = fixture();
   const token = await f.device();
   f.tables();
-  bulk(f, count, size);
+  bulk(f, count, size, fill);
   expect(storedBytes(f)).toBeGreaterThan(MIB8);
   return { f, token };
 };
 const LIST_OPS = ["issue.list", "issue.ready", "issue.blocked", "issue.stale"];
 type Bodied = { items: { id: string; body: string }[]; truncated: boolean };
 
-test("list, ready, blocked and stale return the requested page of a project whose stored JSON is over 8 MiB, equal to the local handler", async () => {
-  await withLocal(async (local) => {
-    const { f, token } = await bigProject(130, "65536");
-    const config = { idPrefix: "forge", labelOrder: [] };
-    const before = f.snapshot();
-    for (const [op, input, want] of [
-      ["issue.list", { limit: 1 }, "1+"],
-      ["issue.list", { kind: "bug", limit: 2 }, "10,100+"],
-      ["issue.ready", { limit: 1, ready: false }, "1+"],
-      ["issue.blocked", { limit: 1 }, "10+"],
-      ["issue.stale", { limit: 1 }, "11+"],
-    ] as const) {
-      const name = JSON.stringify([op, input]);
-      const got = await f.send({ ...call, op, input }, { token });
-      expect([name, got.status, got.exit]).toEqual([name, 200, 0]);
-      const result = got.json.result as Bodied;
-      expect([name, result]).toEqual([
-        name,
-        local(f, input, config, op) as typeof result,
-      ]);
-      expect([name, idsOf(result)]).toEqual([name, want]);
-      // Each body is whole: 65,536 characters led by its own marker.
-      for (const { id, body } of result.items)
-        expect([
+// One test per mode, from this table, so a failing mode never hides the next: the input rows and the ids each
+// returns over the 130-issue project, in key order.
+const BIG_ROWS = {
+  "issue.list": [
+    [{ limit: 1 }, "1+"],
+    [{ kind: "bug", limit: 2 }, "10,100+"],
+  ],
+  "issue.ready": [[{ limit: 1, ready: false }, "1+"]],
+  "issue.blocked": [[{ limit: 1 }, "10+"]],
+  "issue.stale": [[{ limit: 1 }, "11+"]],
+} as const;
+for (const [op, rows] of Object.entries(BIG_ROWS))
+  test(`${op} returns the requested page of a project whose stored JSON is over 8 MiB, equal to the local handler`, async () => {
+    await withLocal(async (local) => {
+      const { f, token } = await bigProject(130, "65536");
+      const config = { idPrefix: "forge", labelOrder: [] };
+      const before = f.snapshot();
+      for (const [input, want] of rows) {
+        const name = JSON.stringify([op, input]);
+        const got = await f.send({ ...call, op, input }, { token });
+        expect([name, got.status, got.exit]).toEqual([name, 200, 0]);
+        const result = got.json.result as Bodied;
+        expect([name, result]).toEqual([
           name,
-          body.length,
-          body.startsWith(`b${id.slice(6)}:x`),
-        ]).toEqual([name, 65_536, true]);
-      expect(readCalls(got.touched)).toEqual([]);
-    }
-    expect(f.snapshot()).toBe(before);
-  });
-}, 120_000);
+          local(f, input, config, op) as typeof result,
+        ]);
+        expect([name, idsOf(result)]).toEqual([name, want]);
+        // Each body is whole: 65,536 characters led by its own marker.
+        for (const { id, body } of result.items)
+          expect([
+            name,
+            body.length,
+            body.startsWith(`b${id.slice(6)}:x`),
+          ]).toEqual([name, 65_536, true]);
+        expect(readCalls(got.touched)).toEqual([]);
+      }
+      expect(f.snapshot()).toBe(before);
+    });
+  }, 120_000);
 
-test("an import-sized tracker of 1,300 issues with mixed long bodies lists in every mode, equal to the local handler", async () => {
-  await withLocal(async (local) => {
-    const { f, token } = await bigProject(1300, "1000+(i%10)*1500");
-    const config = { idPrefix: "forge", labelOrder: [] };
-    const before = f.snapshot();
-    for (const op of LIST_OPS)
+for (const op of LIST_OPS)
+  test(`${op} lists an import-sized tracker of 1,300 issues with mixed long bodies, equal to the local handler`, async () => {
+    await withLocal(async (local) => {
+      const { f, token } = await bigProject(1300, "1000+(i%10)*1500");
+      const config = { idPrefix: "forge", labelOrder: [] };
+      const before = f.snapshot();
       for (const limit of [1, 25]) {
         const input = { limit };
         const name = JSON.stringify([op, input]);
@@ -2685,30 +2692,35 @@ test("an import-sized tracker of 1,300 issues with mixed long bodies lists in ev
           true,
         ]);
       }
-    expect(f.snapshot()).toBe(before);
-  });
-}, 180_000);
+      expect(f.snapshot()).toBe(before);
+    });
+  }, 180_000);
 
-test("only the selected page loads full records: the SQL results are compact rows plus one record, within 8 MiB", async () => {
-  await withLocal(async (local) => {
-    const { f, token } = await bigProject(130, "65536");
-    const input = { kind: "bug", limit: 1 };
-    f.meter.on = true;
-    const got = await f.send({ ...listCall, input }, { token });
-    f.meter.on = false;
-    expect([got.status, got.exit]).toEqual([200, 0]);
-    expect(got.json.result).toEqual(
-      local(f, input, { idPrefix: "forge", labelOrder: [] }, "issue.list"),
-    );
-    // Matches outside the page are counted (truncated), but only one body ever left SQL.
-    expect(idsOf(got.json.result as Listed)).toBe("10+");
-    expect(f.meter.cells.join("").match(/b\d+:x{10}/g)).toEqual([
-      "b10:xxxxxxxxxx",
-    ]);
-    expect(f.meter.bytes).toBeLessThan(262_144);
-    expect(got.touched).not.toContain(ROWS);
-  });
-}, 120_000);
+// The SQL meter table: the same page of a project over 8 MiB with one-byte and two-byte characters.
+for (const [name, count, fill] of [
+  ["ASCII bodies", 130, "x"],
+  ["multibyte bodies, 65 issues of 65,536 characters", 65, "é"],
+] as const)
+  test(`only the selected page loads full records, ${name}: the SQL results are compact rows plus one record, within 8 MiB`, async () => {
+    await withLocal(async (local) => {
+      const { f, token } = await bigProject(count, "65536", fill);
+      const input = { kind: "bug", limit: 1 };
+      f.meter.on = true;
+      const got = await f.send({ ...listCall, input }, { token });
+      f.meter.on = false;
+      expect([got.status, got.exit]).toEqual([200, 0]);
+      expect(got.json.result).toEqual(
+        local(f, input, { idPrefix: "forge", labelOrder: [] }, "issue.list"),
+      );
+      // Matches outside the page are counted (truncated), but only one body ever left SQL.
+      expect(idsOf(got.json.result as Listed)).toBe("10+");
+      expect(
+        f.meter.cells.join("").match(new RegExp(`b\\d+:${fill}`, "g")),
+      ).toEqual([`b10:${fill}`]);
+      expect(f.meter.bytes).toBeLessThan(262_144);
+      expect(got.touched).not.toContain(ROWS);
+    });
+  }, 120_000);
 
 test("the list byte budget charges the compact rows and the selected page together: exactly 8 MiB is read, one byte more is refused before the page loads", async () => {
   const body = 'sel☃é"\n';
@@ -2784,8 +2796,8 @@ test("the list byte budget charges the compact rows and the selected page togeth
 }, 180_000);
 
 // A raw stored issue; `over` is raw JSON appended to the value's fields.
-const rawIssue = (id: string, over = "", labels = "[]") =>
-  `{"namespace":"forge/work","key":"issue:${id}","revision":3,"value":{"id":"${id}","title":"t","status":"open","labels":${labels},"dependsOn":[],"createdAt":"${iso(start - 1000)}"${over}},"updatedAt":"${iso(start - 500)}","updatedBy":{"kind":"agent","id":"tester"}}`;
+const rawIssue = (id: string, over = "") =>
+  `{"namespace":"forge/work","key":"issue:${id}","revision":3,"value":{"id":"${id}","title":"t","status":"open","labels":[],"dependsOn":[],"createdAt":"${iso(start - 1000)}"${over}},"updatedAt":"${iso(start - 500)}","updatedBy":{"kind":"agent","id":"tester"}}`;
 const insertRaw = (f: F, key: string, body: string) =>
   f.db.run(
     "INSERT INTO state_records(namespace,key,revision,body) VALUES ('forge/work',?,3,?)",
@@ -2793,7 +2805,8 @@ const insertRaw = (f: F, key: string, body: string) =>
   );
 
 test("list refuses a stored issue with a bad body, unknown field, nesting or node count with the fixed 500, whatever the filter or limit excludes", async () => {
-  const deep = `${"[".repeat(8)}"leak-me"${"]".repeat(8)}`;
+  // `closeReason` is dropped before the item schema runs, so only the parse bounds can refuse these two rows.
+  const nested = `${"[".repeat(8)}"leak-me"${"]".repeat(8)}`;
   const nodes = `[${'"l",'.repeat(1_100)}"l"]`;
   for (const [name, text] of [
     ["unknown field", rawIssue("work-2", ',"extra":"leak-me"')],
@@ -2809,8 +2822,8 @@ test("list refuses a stored issue with a bad body, unknown field, nesting or nod
       "body of 65,537 astral characters",
       rawIssue("work-2", `,"body":"${"𝒳".repeat(65_537)}"`),
     ],
-    ["nesting over 8", rawIssue("work-2", "", deep)],
-    ["over 1,024 nodes", rawIssue("work-2", "", nodes)],
+    ["nesting over 8", rawIssue("work-2", `,"closeReason":${nested}`)],
+    ["over 1,024 nodes", rawIssue("work-2", `,"closeReason":${nodes}`)],
   ] as const)
     for (const input of [{ limit: 1 }, { kind: "bug" }, { ready: true }]) {
       const f = fixture();
