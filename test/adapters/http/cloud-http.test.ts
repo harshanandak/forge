@@ -1084,6 +1084,11 @@ const droppedRepairs: [string, unknown, CommandWire][] = [
   ["a missing alternative", first, closeWire()],
   ["a token", `${none} ${TOKEN}`, closeWire()],
   ["a shown id that is not an id", repairFor("not an id"), closeWire()],
+  [
+    "a shown id over 200 characters",
+    repairFor(`${"a".repeat(1_000)}-0042`),
+    closeWire(),
+  ],
   ["the template on another operation", repairFor("forge-0007"), claimWire()],
 ];
 for (const [name, repair, call] of droppedRepairs)

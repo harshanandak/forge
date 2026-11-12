@@ -958,43 +958,43 @@ const claimVia = (r: Rig, noun: string, id: string, text: boolean) =>
 const errorOf = (done: { envelope: unknown }) =>
   (done.envelope as { error: object }).error;
 
-for (const [source, noun, id] of [
-  [WORK, "issue", "forge-0007"],
-  [WORK, "issue", "work-0007"],
-  [WORK, "issue", "FORGE-0007"],
-  [WORK, "issue", "legacy-0007"],
-  [RENAMED, "ticket", "forge-0007"],
+for (const [source, noun, ids] of [
+  [WORK, "issue", ["forge-0007", "work-0007", "FORGE-0007", "legacy-0007"]],
+  [RENAMED, "ticket", ["forge-0007"]],
 ] as const)
-  for (const text of [false, true])
-    test(`${noun}.claim ${id} lost to another holder shows that holder in ${text ? "--text" : "--json"} exactly as the local engine refuses, with exit 4 and no local state`, () =>
-      using(
-        {
-          config: source,
-          steps: [() => refusing("LEASE_HELD", { lease: heldBy("0007") })],
-        },
-        async (r) => {
-          const done = await claimVia(r, noun, id, text);
-          const want = localRefusal(heldBy("0007"), 0);
-          expect(want.code).toBe("LEASE_HELD");
-          expect(errorOf(done)).toEqual(want);
-          expect(done.stdout).toBe(
-            respond(
-              { ...(done.envelope as FailureEnvelope), error: want },
-              text,
-            ).stdout,
-          );
-          for (const shown of ["dev-9", "a2", "claude", "s9", "0007"])
-            expect(done.stdout).toContain(shown);
-          expect(done.stdout).toContain(heldBy().expiresAt);
-          expect(done.exitCode).toBe(4);
-          expect(done.stdout).not.toContain(TOKEN);
-          expect(wire(r)).toEqual(["command"]);
-          expect(r.net.calls[0]!.body).toMatchObject({
-            op: "issue.claim",
-            input: { id },
-          });
-        },
-      ));
+  test(`${noun}.claim for ${ids.join(", ")} lost to another holder shows that holder in --json and --text exactly as the local engine refuses, with exit 4 and no local state`, () =>
+    using(
+      {
+        config: source,
+        steps: [() => refusing("LEASE_HELD", { lease: heldBy("0007") })],
+      },
+      async (r) => {
+        const want = localRefusal(heldBy("0007"), 0);
+        expect(want.code).toBe("LEASE_HELD");
+        let sent = 0;
+        for (const id of ids)
+          for (const text of [false, true]) {
+            const done = await claimVia(r, noun, id, text);
+            expect(errorOf(done)).toEqual(want);
+            expect(done.stdout).toBe(
+              respond(
+                { ...(done.envelope as FailureEnvelope), error: want },
+                text,
+              ).stdout,
+            );
+            for (const shown of ["dev-9", "a2", "claude", "s9", "0007"])
+              expect(done.stdout).toContain(shown);
+            expect(done.stdout).toContain(heldBy().expiresAt);
+            expect(done.exitCode).toBe(4);
+            expect(done.stdout).not.toContain(TOKEN);
+            expect(wire(r)).toEqual(Array(++sent).fill("command"));
+            expect(r.net.calls.at(-1)!.body).toMatchObject({
+              op: "issue.claim",
+              input: { id },
+            });
+          }
+      },
+    ));
 
 test("a fresh checkout in another home with its own credential names the same holder, and creates no local store", async () => {
   const outputs: string[] = [];

@@ -72,7 +72,9 @@ function blockersOf(value: unknown): readonly Blocker[] | undefined {
 function closeRepair(value: unknown, suffix: string): string | undefined {
   if (typeof value !== "string") return undefined;
   const shown = /^forge attempt select (\S+) /.exec(value)?.[1];
+  // A valid ItemId keeps the whole repair, about 540 characters at most, far under ForgeError's 2,000.
   return shown !== undefined &&
+    validateItemId(shown).ok &&
     QUALIFIED.exec(shown)?.[2] === suffix &&
     value === repairFor(shown)
     ? repairFor(shown)
