@@ -15,6 +15,7 @@ import { commentIssue } from "../../cloud/src/issue-comment.ts";
 import { createIssue } from "../../cloud/src/issue-create.ts";
 import { updateIssue } from "../../cloud/src/issue-update.ts";
 import { depIssue } from "../../cloud/src/issue-dep.ts";
+import { closeIssue } from "../../cloud/src/issue-close.ts";
 import { claimIssue } from "../../cloud/src/issue-claim.ts";
 import { releaseIssue, renewIssue } from "../../cloud/src/issue-lease.ts";
 import {
@@ -3150,6 +3151,7 @@ test("the shared write path takes a project context for create and comment and a
     ["issue.comment", commentIssue, lease, "project"],
     ["issue.update", updateIssue, project, "leased"],
     ["issue.dep", depIssue, project, "leased"],
+    ["issue.close", closeIssue, project, "leased"],
     ["issue.claim", claimIssue, project, "leased"],
     ["issue.renew", renewIssue, project, "leased"],
     ["issue.release", releaseIssue, project, "leased"],
@@ -3314,6 +3316,27 @@ const renewal = (id: string, input: object = { id: "forge-12" }, more = {}) =>
 const giveUp = (id: string, input: object = { id: "forge-12" }, more = {}) =>
   make(id, input, { op: "issue.release", context: leased, ...more });
 // The real local handler for `op` against `twin`, as session s1 on the laptop holding generation 2 unless given.
+const heldServices = (
+  twin: Database,
+  f: F,
+  requestId: string,
+  who: { generation?: number; session?: string },
+) => ({
+  state: createStateClient({
+    owner: new StateOwner(sqlOf(twin), { now: f.now }),
+    namespace: "forge/work",
+    context: {
+      variant: "leased",
+      leaseMode: "held",
+      actor,
+      session: { id: who.session ?? "s1", device: "laptop" },
+      project: { id: "p" },
+      leaseGeneration: who.generation ?? 2,
+    },
+    write: true,
+    requestId,
+  }),
+});
 function localLease(
   op: "issue.renew" | "issue.release" | "issue.dep",
   twin: Database,
@@ -3333,22 +3356,36 @@ function localLease(
       result: handlers[op]!({
         input,
         config: { idPrefix: "forge" },
-        services: {
-          state: createStateClient({
-            owner: new StateOwner(sqlOf(twin), { now: f.now }),
-            namespace: "forge/work",
-            context: {
-              variant: "leased",
-              leaseMode: "held",
-              actor,
-              session: { id: who.session ?? "s1", device: "laptop" },
-              project: { id: "p" },
-              leaseGeneration: who.generation ?? 2,
-            },
-            write: true,
-            requestId,
-          }),
-        },
+        services: heldServices(twin, f, requestId, who),
+      }),
+    };
+  } catch (error) {
+    return { error: (error as { error?: unknown }).error ?? String(error) };
+  } finally {
+    if (had) globals.fail = previous;
+    else delete globals.fail;
+  }
+}
+// The real local issue.close, which is async, as localLease runs the others.
+async function localClose(
+  twin: Database,
+  f: F,
+  requestId: string,
+  input: object,
+  who: { generation?: number; session?: string } = {},
+): Promise<{ result?: unknown; error?: unknown }> {
+  const had = "fail" in globals,
+    previous = globals.fail;
+  globals.fail = refuse;
+  try {
+    const handlers = require(
+      resolve(import.meta.dirname, "../../src/blocks/work/entry.cts"),
+    ) as Record<string, Handler>;
+    return {
+      result: await handlers["issue.close"]!({
+        input,
+        config: { idPrefix: "forge" },
+        services: heldServices(twin, f, requestId, who),
       }),
     };
   } catch (error) {
@@ -3659,6 +3696,285 @@ test("bad issue.dep input is refused as INPUT_INVALID with one refusal receipt p
   expect(f.snapshot()).toBe(done);
 }, 60_000);
 
+// issue.close without a receipt: the route and the real local handler start from the same rows, clock, config and held lease.
+const closeIn = (over: object = {}) => ({
+  id: "forge-12",
+  withoutReceipt: "done",
+  ...over,
+});
+const closeCall = (id: string, input: object = closeIn(), more = {}) =>
+  make(id, input, { op: "issue.close", context: leased, ...more });
+const noReceipt = "issue.close with a receipt is not supported in cloud yet";
+const valueOf = (f: F, n: number) =>
+  (
+    JSON.parse(issueRow(f, `issue:work-${n}`)!.body) as {
+      value: Record<string, unknown>;
+    }
+  ).value;
+// fenceRows, plus held issues 60 (closed, an old receipt and reason), 61 (an old exemption), 62 (slots and a selection),
+// 63 (slots, no selection) and 65 (an old receipt), and 64 (slots, no selection) that nobody holds.
+async function closeRows() {
+  const rows = await fenceRows();
+  const { f } = rows;
+  const put = (n: number, over: object = {}, held = true) => {
+    f.put(stored({ id: `work-${n}`, ...over }), {}, `issue:work-${n}`);
+    if (held) f.lease({ holder }, `issue:work-${n}`);
+  };
+  put(60, { status: "closed", receipt: "forge-9", closeReason: "old" });
+  put(61, { withoutReceipt: "old exemption" });
+  put(62);
+  put(63);
+  put(64, {}, false);
+  put(65, { receipt: "forge-9" });
+  for (const n of [62, 63, 64])
+    f.put({ count: 2, next: 0 }, {}, `slots:work-${n}`);
+  f.put({ attempt: "attempt-1", reason: "r" }, {}, "selection:work-62");
+  return rows;
+}
+
+test("the cloud issue.close agrees with the local handler on whole results, rows, leases and events, for a reason, a replaced receipt or exemption, a closed issue, a selected competing issue and every id form", async () => {
+  const { f, token } = await closeRows();
+  const twin = Database.deserialize(f.db.serialize());
+  const cases: [string, object][] = [
+    ["x-0", closeIn()],
+    ["x-1", closeIn({ id: "acme-1", reason: 'é\n"x"' })],
+    [
+      "x-2",
+      closeIn({
+        id: "FORGE-20",
+        withoutReceipt: "w".repeat(2000),
+        reason: "r".repeat(2000),
+      }),
+    ],
+    ["x-3", closeIn({ id: "work-60" })],
+    ["x-4", closeIn({ id: "forge-61", reason: "again" })],
+    ["x-5", closeIn({ id: "forge-65" })],
+    ["x-6", closeIn({ id: "forge-62" })],
+  ];
+  const touched = [12, 1, 20, 60, 61, 65, 62].map((n) => `issue:work-${n}`);
+  const others = () =>
+    JSON.stringify(
+      rowsOf(f.db, "forge/work").filter((r) => !touched.includes(r.key)),
+    );
+  const before = [others(), leasesIn(f.db)];
+  for (const [i, [requestId, input]] of cases.entries()) {
+    const got = await f.send(closeCall(requestId, input), {
+      token,
+      via: i % 2 ? "direct" : createWorker(),
+    });
+    const want = await localClose(twin, f, requestId, input);
+    expect([requestId, got.status, got.exit]).toEqual([requestId, 200, 0]);
+    expect(got.json).toEqual({
+      ok: true,
+      op: "issue.close",
+      status: "OK",
+      result: want.result,
+      warnings: [],
+    } as never);
+  }
+  expect(eventsOf(f.db, "forge/work")).toEqual(eventsOf(twin, "forge/work"));
+  expect(eventsOf(f.db, "forge/work")).toHaveLength(cases.length);
+  expect(rowsOf(f.db, "forge/work")).toEqual(rowsOf(twin, "forge/work"));
+  expect(rowsOf(f.db, "forge/cloud")).toHaveLength(cases.length);
+  // Every lease stays held, and no other issue moves.
+  expect([others(), leasesIn(f.db)]).toEqual(before);
+  expect(leasesIn(f.db)).toBe(leasesIn(twin));
+  // The reason is stored and never shown; a new exemption replaces the old receipt and exemption.
+  expect(valueOf(f, 12)).toMatchObject({
+    status: "closed",
+    withoutReceipt: "done",
+  });
+  expect(valueOf(f, 12)).not.toHaveProperty("closeReason");
+  expect(valueOf(f, 1)).toMatchObject({ closeReason: 'é\n"x"' });
+  for (const n of [60, 65]) expect(valueOf(f, n)).not.toHaveProperty("receipt");
+  expect(valueOf(f, 61)).toMatchObject({ withoutReceipt: "done" });
+}, 60_000);
+
+test("a closed issue is no longer eligible, and the caller still holds its lease and can close it again", async () => {
+  const { f, token } = await closeRows();
+  const free = () =>
+    f.db.run("DELETE FROM state_leases WHERE subject='issue:work-12'");
+  const hold = () => f.lease({ holder }, "issue:work-12");
+  free();
+  expect(await readyIds(f, token)).toContain("12");
+  hold();
+  const held = leasesIn(f.db);
+  const first = await f.send(closeCall("e-1"), { token });
+  expect([first.status, first.json.result]).toMatchObject([
+    200,
+    { status: "closed", lease: { generation: 2 } },
+  ]);
+  expect(leasesIn(f.db)).toBe(held);
+  const again = await f.send(closeCall("e-2", closeIn({ reason: "twice" })), {
+    token,
+  });
+  expect([again.status, again.json.result]).toMatchObject([
+    200,
+    { status: "closed", revision: 5 },
+  ]);
+  expect(leasesIn(f.db)).toBe(held);
+  free();
+  expect(await readyIds(f, token)).not.toContain("12");
+}, 60_000);
+
+test("issue.close refuses no reason, a competing issue and every lease the caller does not hold with the local code, message and repair, writes nothing and records nothing, so a retry runs again", async () => {
+  const { f, token } = await closeRows();
+  const twin = Database.deserialize(f.db.serialize());
+  const before = writes(f);
+  const clash = [409, "INPUT_CONFLICT", 4] as const;
+  const held = [409, "LEASE_NOT_HELD", 4] as const;
+  const stale = [409, "LEASE_STALE", 4] as const;
+  const needed = [400, "RECEIPT_REQUIRED", 1] as const;
+  type Who = { generation?: number; session?: string };
+  const refusals: [string, object, Who, readonly [number, string, number]][] = [
+    ["no reason", { id: "forge-12" }, {}, needed],
+    ["no reason, no lease", { id: "forge-31" }, {}, needed],
+    ["no reason, competing", { id: "forge-63" }, {}, clash],
+    ["no reason, competing, no lease", { id: "forge-64" }, {}, held],
+    ["competing", closeIn({ id: "forge-63" }), {}, clash],
+    ["competing, no lease", closeIn({ id: "forge-64" }), {}, held],
+    ["no lease", closeIn({ id: "forge-31" }), {}, held],
+    ["another device", closeIn({ id: "forge-32" }), {}, held],
+    ["another session", closeIn({ id: "forge-33" }), {}, held],
+    ["the caller names another session", closeIn(), { session: "s2" }, held],
+    ["an older generation", closeIn(), { generation: 1 }, stale],
+    ["a newer generation", closeIn(), { generation: 3 }, stale],
+    ["expired", closeIn({ id: "forge-34" }), {}, [409, "LEASE_EXPIRED", 4]],
+    ["released", closeIn({ id: "forge-35" }), {}, held],
+  ];
+  for (const [i, [name, input, who, want]] of refusals.entries()) {
+    const context = {
+      actor,
+      session: { id: who.session ?? "s1" },
+      leaseGeneration: who.generation ?? 2,
+    };
+    const run = () =>
+      f.send(closeCall(`f-${i}`, input, { context }), { token });
+    const got = await run();
+    const local = await localClose(twin, f, `f-${i}`, input, who);
+    expect([name, got.status, got.code, got.exit]).toEqual([name, ...want]);
+    expect(local.error).toBeDefined();
+    // The competing refusal carries its repair; the lease engine's refusals have none to match.
+    expect([name, got.json.error]).toEqual([
+      name,
+      want === clash ? local.error : withoutRepair(local.error),
+    ] as never);
+    expect([name, writes(f)]).toEqual([name, before]);
+    const again = await run();
+    expect([name, again.text]).toEqual([name, got.text]);
+    expect([name, writes(f)]).toEqual([name, before]);
+  }
+  // No refusal receipt blocks a retry: the same request id works once the caller holds the lease.
+  f.lease({ holder }, "issue:work-31");
+  const retry = await f.send(
+    closeCall("f-6", closeIn({ id: "forge-31" }), { context: leased }),
+    { token },
+  );
+  expect(retry.status).toBe(200);
+}, 120_000);
+
+test("an absent issue is NOT_FOUND with the id as written, and is recorded once per request id", async () => {
+  const { f, token } = await closeRows();
+  const twin = Database.deserialize(f.db.serialize());
+  const before = work(f);
+  const cases: [string, object][] = [
+    ["absent", closeIn({ id: "forge-98" })],
+    ["absent, as written", closeIn({ id: "FORGE-98" })],
+    ["absent, historical prefix", closeIn({ id: "old-98" })],
+    ["absent, no reason", { id: "forge-98" }],
+  ];
+  for (const [i, [name, input]] of cases.entries()) {
+    const run = () => f.send(closeCall(`a-${i}`, input), { token });
+    const got = await run();
+    const local = await localClose(twin, f, `a-${i}`, input);
+    expect([name, got.status, got.code, got.exit]).toEqual([
+      name,
+      404,
+      "NOT_FOUND",
+      3,
+    ]);
+    expect([name, got.json.error]).toEqual([
+      name,
+      withoutRepair(local.error),
+    ] as never);
+    expect([name, work(f)]).toEqual([name, before]);
+    expect(receiptOf(f, `a-${i}`)).toMatchObject({
+      outcome: "refused",
+      result: got.json.error,
+    });
+    expect([name, (await run()).text]).toEqual([name, got.text]);
+  }
+}, 60_000);
+
+test("bad issue.close input and a receipt are refused as INPUT_INVALID with one refusal receipt per fresh request id, replayed unchanged, and nothing is written", async () => {
+  const { f, token } = await closeRows();
+  const before = work(f);
+  const id = "forge-12";
+  const cases: [string, object, boolean][] = [
+    ["no id", { withoutReceipt: "x" }, false],
+    ["blank exemption", closeIn({ withoutReceipt: "  \n" }), false],
+    ["empty exemption", closeIn({ withoutReceipt: "" }), false],
+    ["exemption not text", closeIn({ withoutReceipt: 1 }), false],
+    [
+      "over-long exemption",
+      closeIn({ withoutReceipt: "x".repeat(2001) }),
+      false,
+    ],
+    ["over-long reason", closeIn({ reason: "x".repeat(2001) }), false],
+    ["reason not text", closeIn({ reason: 1 }), false],
+    ["unknown key", closeIn({ extra: marker }), false],
+    ["caller key", closeIn({ key: "issue:work-12" }), false],
+    ["revision", closeIn({ expectRevision: 3 }), false],
+    ["malformed id", closeIn({ id: "nope" }), false],
+    ["unknown id prefix", closeIn({ id: "zzz-1" }), false],
+    ["id not text", closeIn({ id: 12 }), false],
+    ["a receipt", { id, receipt: "forge-5" }, true],
+    ["a receipt and an exemption", closeIn({ receipt: "forge-5" }), true],
+    [
+      "a receipt on an absent issue",
+      { id: "forge-98", receipt: "forge-5" },
+      true,
+    ],
+    ["a malformed receipt", { id, receipt: "nope" }, true],
+    ["a null receipt", { id, receipt: null }, true],
+  ];
+  const texts: string[] = [];
+  for (const [i, [name, input, byName]] of cases.entries()) {
+    const got = await f.send(closeCall(`b-${i}`, input), { token });
+    expect([name, got.status, got.code, got.exit]).toEqual([
+      name,
+      400,
+      "INPUT_INVALID",
+      6,
+    ]);
+    // A receipt is refused by name; no refusal repeats what the caller sent.
+    expect([name, got.json.error?.message === noReceipt]).toEqual([
+      name,
+      byName,
+    ]);
+    expect(JSON.stringify(got.json)).not.toContain(marker);
+    expect([name, work(f)]).toEqual([name, before]);
+    expect(receiptOf(f, `b-${i}`)).toMatchObject({
+      outcome: "refused",
+      result: got.json.error,
+    });
+    expect(eventsOf(f.db, "forge/cloud")).toHaveLength(i + 1);
+    texts.push(got.text);
+  }
+  const done = f.snapshot();
+  const again = await f.send(closeCall("b-0", cases[0]![1]), { token });
+  expect([again.status, again.text]).toEqual([400, texts[0]!]);
+  const changed = await f.send(closeCall("b-0"), { token });
+  expect([changed.status, changed.code, changed.exit]).toEqual([
+    409,
+    "INPUT_CONFLICT",
+    4,
+  ]);
+  const unnamed = closeCall("b-99", cases[0]![1], { requestId: "bad id!" });
+  expect((await f.send(unnamed, { token })).status).toBe(400);
+  expect(f.snapshot()).toBe(done);
+}, 60_000);
+
 // The replay scenarios update, claim, renew and release share: a leased write is answered from its receipt only while
 // the caller still holds the lease (a committed release always, as it grants nothing), and a reused id with other input conflicts.
 type Lose = (f: F, token: string) => Promise<void> | void;
@@ -3764,6 +4080,55 @@ const REPLAYS: Replay[] = [
         "session",
         false,
         depIn(),
+        { context: { ...leased, session: { id: "s2" } } },
+      ],
+      ["device", true],
+    ],
+    losses: [
+      [
+        "released",
+        (f) => f.lease({ holder, releasedAt: iso(start) }, "issue:work-12"),
+      ],
+      ["expired", (f) => f.advance(1001)],
+      ["exactly at expiry", (f) => f.advance(1000)],
+      ["taken over", takeover("s2", "laptop")],
+      ["taken over by another device", takeover("s1", "tablet")],
+      [
+        "gone",
+        (f) => {
+          f.db.run("DELETE FROM state_leases WHERE subject='issue:work-12'");
+        },
+      ],
+    ],
+  },
+  {
+    name: "close",
+    rows: updateRows,
+    send: (id, input = closeIn(), more = {}) => closeCall(id, input, more),
+    result: { status: "closed", withoutReceipt: "done", revision: 4 },
+    old: '"withoutReceipt":"done"',
+    // A later close moves the issue on; the replay still answers with the original.
+    moveOn: async (f, token) => {
+      const next = await f.send(
+        closeCall("r-2", closeIn({ withoutReceipt: "later" })),
+        { token },
+      );
+      expect(next.status).toBe(200);
+    },
+    conflicts: [
+      ["exemption", false, closeIn({ withoutReceipt: "other" })],
+      ["reason", false, closeIn({ reason: "why" })],
+      ["issue", false, closeIn({ id: "forge-1" })],
+      [
+        "generation",
+        false,
+        closeIn(),
+        { context: { ...leased, leaseGeneration: 3 } },
+      ],
+      [
+        "session",
+        false,
+        closeIn(),
         { context: { ...leased, session: { id: "s2" } } },
       ],
       ["device", true],
@@ -4163,6 +4528,23 @@ const WRITES: Write[] = [
     },
   },
   {
+    name: "close",
+    rows: updateRows,
+    send: (id, input) => closeCall(id, input),
+    // A receipt is refused by name: the refusal is recorded.
+    bad: closeIn({ receipt: "forge-5" }),
+    badWant: [400, "INPUT_INVALID"],
+    empty: closeIn({ withoutReceipt: "" }),
+    record: "forge/work/issue:work-12",
+    result: (f, got) => {
+      expect([got.status, got.json.result]).toMatchObject([
+        200,
+        { status: "closed", withoutReceipt: "done", revision: 4 },
+      ]);
+      expect(eventsOf(f.db, "forge/work")).toHaveLength(1);
+    },
+  },
+  {
     name: "renew",
     rows: updateRows,
     send: renewal,
@@ -4352,6 +4734,7 @@ test("a session-bound token cannot act as another session, on a first write or a
   for (const [name, send] of [
     ["update", revise("m-1")],
     ["dep", depCall("m-9")],
+    ["close", closeCall("m-10")],
     ["claim", claim("m-6", { id: "forge-12" })],
     ["renew", renewal("m-7")],
     ["release", giveUp("m-8")],
