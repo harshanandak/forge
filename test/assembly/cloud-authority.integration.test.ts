@@ -440,25 +440,6 @@ for (const op of ["issue.list", "issue.ready"])
       expect(r.net.calls).toHaveLength(1);
     }));
 
-test("a held operation's hidden show goes to the cloud, and the operation itself is refused, even as a dry run", () =>
-  using({ steps: [() => answer({ ...ISSUE, lease: LEASE })] }, async (r) => {
-    const context = {
-      ...r.request("x", {}).context,
-      session: { id: "s1", device: "dev-1" },
-    };
-    for (const dryRun of [false, true]) {
-      const held = await dispatch(
-        r.assembly.catalog,
-        "issue.close",
-        { id: "forge-1" },
-        { caller: "agent", context, dryRun },
-      );
-      failed(held, dryRun ? "UNAVAILABLE" : "INPUT_INVALID");
-    }
-    const ops = r.net.calls.map((c) => (c.body as { op: string }).op);
-    expect(ops).toEqual(["issue.show", "issue.show"]);
-  }));
-
 type Rig = Awaited<ReturnType<typeof rig>>;
 /** A held write as the CLI makes it: a session, the caller's own context, and a generation only if the caller names one. */
 const holding = (r: Rig, own: object = {}) => ({
@@ -473,6 +454,30 @@ const edit = (r: Rig, op: string, context: object, dryRun = false) =>
   });
 const sent = (r: Rig) => r.net.calls.map((c) => (c.body as { op: string }).op);
 const live = () => answer({ ...ISSUE, lease: HELD });
+
+for (const op of ["issue.close", "issue.dep", "issue.link"])
+  for (const [name, own, dryRun, lease] of [
+    ["no generation", {}, false, true],
+    ["no generation and no lease in the cloud", {}, false, false],
+    ["an explicit generation", { leaseGeneration: 3 }, false, true],
+    ["no generation as a dry run", {}, true, true],
+    ["an explicit generation as a dry run", { leaseGeneration: 3 }, true, true],
+  ] as const)
+    test(`${op} with ${name} on a bound project is refused by name before any cloud request`, () =>
+      using(
+        { steps: [() => answer(lease ? { ...ISSUE, lease: LEASE } : ISSUE)] },
+        async (r) => {
+          const result = await dispatch(
+            r.assembly.catalog,
+            op,
+            { id: "forge-1" },
+            { caller: "agent", context: holding(r, own), dryRun },
+          );
+          expect(failed(result, "INPUT_INVALID")).toBe(6);
+          expect(result).toMatchObject({ error: { message: notServed(op) } });
+          expect(r.net.calls).toHaveLength(0);
+        },
+      ));
 
 for (const [source, op] of [
   [WORK, "issue.update"],
