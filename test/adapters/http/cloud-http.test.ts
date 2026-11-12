@@ -937,15 +937,23 @@ const canaries: [string, string][] = [
   ["a token inside other text", `before-${TOKEN}-after`],
   ["a terminal escape", "a\u001b[31mb"],
   ["a bell", "a\u0007b"],
+  ["a bidi override", "a\u202eb"],
+  ["a bidi isolate", "a\u2066b"],
+  ["a zero-width space", "a\u200bb"],
 ];
 for (const [leaf, plant] of leaves)
-  test(`a ${leaf} that holds a token or a control character is the fixed unavailable, as written or JSON-escaped`, async () => {
+  test(`a ${leaf} that holds a token, a control or a format character is the fixed unavailable, as written or JSON-escaped`, async () => {
     for (const [, canary] of canaries) {
       await unusable(withLease("LEASE_HELD", plant(canary)), claimWire());
       const text = JSON.stringify({
         ...refusalBody("LEASE_HELD"),
         error: { code: "LEASE_HELD", lease: plant(canary) },
-      }).replaceAll("fct_", "\\u0066ct_");
+      })
+        .replaceAll("fct_", "\\u0066ct_")
+        .replace(
+          /\p{Cf}/gu,
+          (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`,
+        );
       await unusable(new Response(text, { status: 409 }), claimWire());
     }
   }, 10_000);
@@ -1001,6 +1009,25 @@ test("CLAIM_BLOCKED keeps exactly the blocker edges in server order, with no inv
   } as never);
 }, 10_000);
 
+test("a holder with non-ASCII letters is kept unchanged in a lease and in a blocker", async () => {
+  const holder = session({ agent: "agent-é" }).holder;
+  const lease = { ...HELD, holder };
+  const leased = await ask(withLease("LEASE_HELD", lease), claimWire());
+  expect(leased).toStrictEqual({
+    kind: "refused",
+    code: "LEASE_HELD",
+    lease,
+  } as never);
+  const observed = {
+    blockers: [{ id: "forge-9", holder, holderUnverified: true }],
+  };
+  expect(await ask(blocked(observed), claimWire())).toStrictEqual({
+    kind: "refused",
+    code: "CLAIM_BLOCKED",
+    observed,
+  } as never);
+}, 10_000);
+
 const edge = (more: object) => ({ blockers: [{ id: "forge-8", ...more }] });
 const asked = { holder: OWNER, holderUnverified: true };
 const badBlockers: [string, unknown][] = [
@@ -1030,7 +1057,7 @@ for (const [name, observed] of badBlockers)
     await unusable(blocked(observed), claimWire());
   }, 10_000);
 
-test("a token or control character in a blocker's holder is the fixed unavailable", async () => {
+test("a token, control or format character in a blocker's holder is the fixed unavailable", async () => {
   for (const [, canary] of canaries)
     await unusable(
       blocked({
