@@ -516,10 +516,14 @@ export interface NumberedRequest {
   readonly namespace: string;
   readonly prefix: string;
 }
-/** The highest number any accepted record under the prefix ever held, and the highest earlier floor value. */
+/**
+ * The highest number any accepted record under the prefix ever held, the highest earlier floor value, and the
+ * floor key's last verified revision (0 when it has no history), read from the replay's parsed event types.
+ */
 export interface NumberedSummary {
   readonly highest: number;
   readonly earlier: number;
+  readonly floorRevision: number;
 }
 /** The number after `prefix` when it is a positive decimal (the rule #highest applies in SQL); an unsafe one is refused. */
 function suffixNumber(key: string, prefix: string): number | undefined {
@@ -945,7 +949,16 @@ export function verifyEventDerivedState(
     verifyRequest,
   );
   if (requests.size) reject("state_requests", requests.values().next().value!);
-  return numbered === undefined ? undefined : { highest, earlier };
+  return numbered === undefined
+    ? undefined
+    : {
+        highest,
+        earlier,
+        floorRevision:
+          recordRevisions.get(
+            key(numbered.namespace, `allocation:${numbered.prefix}`),
+          ) ?? 0,
+      };
 }
 
 // Only these ledgers contain setup metadata that restore may replace in a nonempty store.
@@ -1404,7 +1417,7 @@ export class StateOwner {
         actor,
         now,
         undefined,
-        true,
+        0,
       );
       this.#apply(
         namespace,
@@ -1421,8 +1434,9 @@ export class StateOwner {
   /**
    * Restore only, after a verified replay: make the floor at `allocation:<prefix>` cover every number the
    * replay found. A present floor is kept exactly, and refused when malformed or below `found`. A missing
-   * one is written at the highest number, in the restore's own transaction, then read back by its known
-   * sequence (`events` is the replay's event count). The refusals are RestoreConsistencyFailure.
+   * one is written at the highest number and after the revision the replay verified for that key, in the
+   * restore's own transaction, then read back whole: the event by its known sequence (`events` is the
+   * replay's event count) and the record with its indexed columns. The refusals are RestoreConsistencyFailure.
    */
   seedNumberFloor(
     namespace: string,
@@ -1460,16 +1474,25 @@ export class StateOwner {
         actor,
         this.#now(),
         undefined,
+        found.floorRevision,
       );
       const written = this.#db.get(
         "SELECT body, (SELECT MAX(sequence) FROM state_events) AS last FROM state_events WHERE sequence=?",
         [events + 1],
       );
+      const saved = this.#db.get(
+        "SELECT namespace,key,revision,body FROM state_records WHERE namespace=? AND key=?",
+        [namespace, floorKey],
+      );
       if (
         written === undefined ||
         Number(written.last) !== events + 1 ||
         json(body(written)) !== json(recordEvent(record)) ||
-        this.#floor(namespace, floorKey, prefix) !== needed
+        saved === undefined ||
+        saved.namespace !== namespace ||
+        saved.key !== floorKey ||
+        Number(saved.revision) !== record.revision ||
+        String(saved.body) !== json(record)
       )
         throw new Error("The restored floor did not read back");
     });
@@ -1613,25 +1636,25 @@ export class StateOwner {
     actor: Actor,
     now: number,
     requestId: string | undefined,
-    fresh = false,
+    last?: number,
   ): StateRecord {
     const current = this.get(namespace, key);
     // An absent row can have history. Keep its last revision so recreation never revives an old
-    // reader's compare-and-set token. The existing key index bounds this lookup to one key.
+    // reader's compare-and-set token. The existing key index bounds this lookup to one key. A caller that
+    // already holds the verified last revision (0 for a new key) passes it and skips the lookup.
     const revision =
       current?.revision ??
+      last ??
       body<StateEvent>(
-        fresh
-          ? undefined
-          : this.#db.get(
-              "SELECT body FROM state_events WHERE namespace=? AND key=? AND json_extract(body,'$.type') IN (?,?) ORDER BY sequence DESC LIMIT 1",
-              [
-                namespace,
-                key,
-                `${namespace}:record.updated@1`,
-                `${namespace}:record.deleted@1`,
-              ],
-            ),
+        this.#db.get(
+          "SELECT body FROM state_events WHERE namespace=? AND key=? AND json_extract(body,'$.type') IN (?,?) ORDER BY sequence DESC LIMIT 1",
+          [
+            namespace,
+            key,
+            `${namespace}:record.updated@1`,
+            `${namespace}:record.deleted@1`,
+          ],
+        ),
       )?.revision ??
       0;
     const record: StateRecord = {

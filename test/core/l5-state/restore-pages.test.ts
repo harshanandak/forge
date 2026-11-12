@@ -472,17 +472,19 @@ test("the replay reports the highest number under a prefix, deleted keys include
     expect(verifyEventDerivedState(db, high, undefined, request)).toEqual({
       highest: 30,
       earlier: 0,
+      floorRevision: 0,
     });
     expect(verifyEventDerivedState(db, high, 1, request)).toEqual({
       highest: 30,
       earlier: 0,
+      floorRevision: 0,
     });
     expect(
       verifyEventDerivedState(db, high, undefined, {
         namespace: ns,
         prefix: "z-",
       }),
-    ).toEqual({ highest: 0, earlier: 0 });
+    ).toEqual({ highest: 0, earlier: 0, floorRevision: 0 });
   } finally {
     await close();
   }
@@ -499,6 +501,7 @@ test("the replay remembers the highest earlier floor value after the floor is lo
     expect(verifyEventDerivedState(db, mark(db), undefined, request)).toEqual({
       highest: 0,
       earlier: 20,
+      floorRevision: 5,
     });
   } finally {
     await close();
@@ -535,6 +538,7 @@ test("the replay reads a deletion type the way it parses it, last duplicate labe
     expect(verifyEventDerivedState(db, mark(db), undefined, request)).toEqual({
       highest: 8,
       earlier: 0,
+      floorRevision: 0,
     });
   } finally {
     await close();
@@ -550,7 +554,7 @@ test("the replay reads every table sixteen rows at a time and folds the summary 
     const probe = instrument(db);
     expect(
       verifyEventDerivedState(probe.db, mark(db), undefined, request),
-    ).toEqual({ highest: 40, earlier: 0 });
+    ).toEqual({ highest: 40, earlier: 0, floorRevision: 0 });
     const lists = reads(probe.log).filter((access) =>
       /ORDER BY/.test(access.sql),
     );
@@ -570,7 +574,7 @@ test("seeding a missing floor writes one record and one event at the highest num
   const { db, owner, close } = await open(false);
   try {
     write(owner, "n-3");
-    seed(owner, db, { highest: 3, earlier: 0 });
+    seed(owner, db, { highest: 3, earlier: 0, floorRevision: 0 });
     expect(owner.get(ns, floorKey)).toMatchObject({
       revision: 1,
       value: floorValue(3),
@@ -583,6 +587,7 @@ test("seeding a missing floor writes one record and one event at the highest num
     expect(verifyEventDerivedState(db, mark(db), undefined, request)).toEqual({
       highest: 3,
       earlier: 3,
+      floorRevision: 1,
     });
   } finally {
     await close();
@@ -592,7 +597,7 @@ test("seeding a missing floor writes one record and one event at the highest num
 test("seeding writes 0 for an empty project, and continues a deleted floor history at the next revision", async () => {
   const { db, owner, close } = await open(false);
   try {
-    seed(owner, db, { highest: 0, earlier: 0 });
+    seed(owner, db, { highest: 0, earlier: 0, floorRevision: 0 });
     expect(owner.get(ns, floorKey)?.value).toEqual(floorValue(0));
   } finally {
     await close();
@@ -601,7 +606,11 @@ test("seeding writes 0 for an empty project, and continues a deleted floor histo
   try {
     write(again.owner, floorKey, floorValue(12));
     again.owner.delete(ns, floorKey, actor, { expectRevision: 1 });
-    seed(again.owner, again.db, { highest: 1, earlier: 12 });
+    seed(again.owner, again.db, {
+      highest: 1,
+      earlier: 12,
+      floorRevision: 2,
+    });
     // The deleted floor history continues: update 1, delete 2, restore 3.
     expect(again.owner.get(ns, floorKey)).toMatchObject({
       revision: 3,
@@ -618,17 +627,25 @@ test("seeding keeps a floor that covers the history exactly, and writes nothing"
     write(owner, "n-3");
     write(owner, floorKey, floorValue(12));
     const before = rowsOf(db);
-    seed(owner, db, { highest: 3, earlier: 12 });
+    seed(owner, db, { highest: 3, earlier: 12, floorRevision: 1 });
     expect(rowsOf(db)).toBe(before);
   } finally {
     await close();
   }
 }, 30_000);
 
-const covered = { highest: 1, earlier: 0 };
+const covered = { highest: 1, earlier: 0, floorRevision: 1 };
 for (const [name, value, found] of [
-  ["below the highest number", floorValue(2), { highest: 3, earlier: 0 }],
-  ["below an earlier floor value", floorValue(5), { highest: 1, earlier: 9 }],
+  [
+    "below the highest number",
+    floorValue(2),
+    { highest: 3, earlier: 0, floorRevision: 1 },
+  ],
+  [
+    "below an earlier floor value",
+    floorValue(5),
+    { highest: 1, earlier: 9, floorRevision: 1 },
+  ],
   ["holding null", null, covered],
   ["with an extra field", { ...floorValue(5), extra: 1 }, covered],
   ["with another prefix", floorValue(5, "m-"), covered],
@@ -656,7 +673,7 @@ test("seeding reads a malformed floor with the same loader a numbered write uses
       owner.putNext(ns, "n-", (key) => ({ value: key }), actor),
     ).toThrow("Invalid allocation record");
     expectFailure(
-      () => seed(owner, db, { highest: 0, earlier: 0 }),
+      () => seed(owner, db, { highest: 0, earlier: 0, floorRevision: 1 }),
       "state_records",
       floorKey,
     );
@@ -697,7 +714,7 @@ for (const [name, statement, expected] of [
         faulty.seedNumberFloor(
           ns,
           "n-",
-          { highest: 3, earlier: 0 },
+          { highest: 3, earlier: 0, floorRevision: 0 },
           actor,
           mark(db),
         );
@@ -707,6 +724,100 @@ for (const [name, statement, expected] of [
       expect(failure).toBeInstanceOf(Error);
       expect(failure).not.toBeInstanceOf(RestoreConsistencyFailure);
       expect((failure as Error).message).toBe(expected);
+      expect(rowsOf(db)).toBe(before);
+    } finally {
+      await close();
+    }
+  }, 30_000);
+
+test("seeding continues a deleted floor's verified revision when its events carry duplicate type labels, and the result replays", async () => {
+  const { db, owner, close } = await open(false);
+  try {
+    write(owner, floorKey, floorValue(12));
+    owner.delete(ns, floorKey, actor, { expectRevision: 1 });
+    // The first label is ignored by replay, which reads the last one. A SQL type filter would read the first.
+    db.run(
+      `UPDATE state_events SET body=replace(body,'"type":','"type":"ignored","type":')`,
+    );
+    const found = verifyEventDerivedState(db, mark(db), undefined, request)!;
+    expect(found).toEqual({ highest: 0, earlier: 12, floorRevision: 2 });
+    seed(owner, db, found);
+    expect(owner.get(ns, floorKey)).toMatchObject({
+      revision: 3,
+      value: floorValue(12),
+    });
+    expect(verifyEventDerivedState(db, mark(db), undefined, request)).toEqual({
+      highest: 0,
+      earlier: 12,
+      floorRevision: 3,
+    });
+  } finally {
+    await close();
+  }
+}, 30_000);
+
+const readback = "SELECT namespace,key,revision,body FROM state_records";
+const parsed = (row: { body: unknown }) =>
+  JSON.parse(String(row.body)) as Record<string, unknown>;
+for (const [name, corrupt] of [
+  [
+    "updatedBy",
+    (row: Record<string, unknown>) => ({
+      ...row,
+      body: JSON.stringify({
+        ...parsed({ body: row.body }),
+        updatedBy: { kind: "agent", id: "someone-else" },
+      }),
+    }),
+  ],
+  [
+    "updatedAt",
+    (row: Record<string, unknown>) => ({
+      ...row,
+      body: JSON.stringify({
+        ...parsed({ body: row.body }),
+        updatedAt: "2001-01-01T00:00:00.000Z",
+      }),
+    }),
+  ],
+  [
+    "indexed revision",
+    (row: Record<string, unknown>) => ({ ...row, revision: 7 }),
+  ],
+  [
+    "indexed key",
+    (row: Record<string, unknown>) => ({ ...row, key: "allocation:m-" }),
+  ],
+] as const)
+  test(`seeding refuses a floor readback that differs only in its ${name}, without a thrown fault, and rolls back`, async () => {
+    const { db, owner, close } = await open(false);
+    try {
+      write(owner, "n-3");
+      const before = rowsOf(db);
+      let reads = 0;
+      const faulty = new StateOwner(
+        {
+          ...db,
+          get: (sql, params) => {
+            const row = db.get(sql, params);
+            // Only the whole-record readback after the write lies, and it never throws.
+            if (!sql.startsWith(readback) || row === undefined) return row;
+            reads++;
+            return corrupt(row);
+          },
+        },
+        { now: () => 1000 },
+      );
+      expect(() =>
+        faulty.seedNumberFloor(
+          ns,
+          "n-",
+          { highest: 3, earlier: 0, floorRevision: 0 },
+          actor,
+          mark(db),
+        ),
+      ).toThrow("The restored floor did not read back");
+      expect(reads).toBe(1);
       expect(rowsOf(db)).toBe(before);
     } finally {
       await close();

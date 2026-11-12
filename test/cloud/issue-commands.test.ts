@@ -8322,6 +8322,34 @@ for (const trip of TRIPS) {
     await createsNext(t, [11]);
   }, 60_000);
 
+  test(`a ${trip} restore of a deleted floor under duplicate type labels continues its revision, and its own dump restores again`, async () => {
+    const { f, tables: plain } = await projectWith((w) => {
+      w.issue(1);
+      w.floor(floorAt(12));
+      w.drop(FLOOR, 1);
+    });
+    f.db.run(
+      `UPDATE state_events SET body=replace(body,'"type":','"type":"ignored","type":') WHERE key=?`,
+      [FLOOR],
+    );
+    const tables = tablesOf(f.db);
+    expect(tables.state_events!.map((row) => row.body)).not.toEqual(
+      plain.state_events!.map((row) => row.body),
+    );
+    const { t, got } = await restoreInto(trip, tables, { per: 1 });
+    expect(got.status).toBe(200);
+    // The floor update was revision 1 and its deletion 2, so the restored floor is revision 3.
+    expectFloor(t, tables, 12, 3);
+    // The restored history must itself replay: dump the target and restore that dump into a new project.
+    const copied = tablesOf(t.db);
+    const again = await restoreInto(trip, copied, {
+      parts: await exported(t, trip),
+    });
+    expect(again.got.status).toBe(200);
+    expect(differing(tablesOf(again.t.db), copied)).toEqual([]);
+    await createsNext(again.t, [13]);
+  }, 60_000);
+
   test(`a ${trip} restore with the identities, the deletion and the floor on different pages derives nothing and overwrites nothing`, async () => {
     const { tables } = await projectWith((w) => {
       w.issue(1);
