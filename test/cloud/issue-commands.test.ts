@@ -7879,7 +7879,12 @@ for (const mode of ["whole", "paged"] as const)
       expect([
         table,
         kept[table]!.filter(
-          (r) => r.key !== commentFloor && !now.has(JSON.stringify(r)),
+          (r) =>
+            !(
+              table === "state_records" &&
+              r.namespace === "forge/work" &&
+              r.key === commentFloor
+            ) && !now.has(JSON.stringify(r)),
         ),
       ]).toEqual([table, []]);
     }
@@ -8697,45 +8702,51 @@ async function refuses(
   expect(await t.storage.get("restore:next")).toBeUndefined();
   return got;
 }
-/** A floor the restore itself added, besides the issue floor: its record key, value and revision. */
+/** A floor the restore added: its record key, value and revision (default 1). */
 type Added = { key: string; value: unknown; revision?: number };
+const issueFloor = (number: number, revision = 1): Added => ({
+  key: FLOOR,
+  value: floorAt(number),
+  revision,
+});
+/** One comment or link floor per `allocation:<prefix>` key, at `number`, all at `revision`. */
+const childFloors = (want: Record<string, number>, revision = 1): Added[] =>
+  Object.entries(want).map(([key, number]) => ({
+    key,
+    value: { prefix: key.slice("allocation:".length), number },
+    revision,
+  }));
 /**
- * Every imported row is still there, and the restore added exactly the issue floor at `number` plus each floor in
- * `extra`, each as one record and one event naming its key, value and revision; nothing else.
+ * Every imported row is still there, and the restore added exactly `floors`, each as one record and one event naming
+ * its key, value and revision, in consecutive sequences after the imported events; nothing else.
  */
-function expectFloor(
-  t: F,
-  tables: Tables,
-  number: number,
-  revision = 1,
-  extra: readonly Added[] = [],
-) {
-  const floors: Added[] = [
-    { key: FLOOR, value: floorAt(number), revision },
-    ...extra,
-  ];
+function expectFloor(t: F, tables: Tables, floors: readonly Added[]) {
   const after = tablesOf(t.db);
+  const fresh = (table: string) => {
+    const had = new Set(tables[table]!.map(asText));
+    return after[table]!.filter((row) => !had.has(asText(row)));
+  };
   for (const [table, rows] of Object.entries(tables)) {
     const have = new Set(after[table]!.map(asText));
     expect([table, rows.filter((row) => !have.has(asText(row)))]).toEqual([
       table,
       [],
     ]);
-    expect([table, after[table]!.length - rows.length]).toEqual([
-      table,
-      table === "state_records" || table === "state_events" ? floors.length : 0,
-    ]);
+    const made =
+      table === "state_records" || table === "state_events" ? floors.length : 0;
+    expect([table, after[table]!.length - rows.length]).toEqual([table, made]);
+    expect([table, fresh(table).length]).toEqual([table, made]);
   }
-  const fresh = (table: string) => {
-    const had = new Set(tables[table]!.map(asText));
-    return after[table]!.filter((row) => !had.has(asText(row)));
-  };
+  const records = fresh("state_records");
   const events = fresh("state_events");
-  expect(events.map((e) => Number(e.sequence)).sort((a, b) => a - b)).toEqual(
+  expect(records.map((r) => r.key).sort()).toEqual(
+    floors.map((f) => f.key).sort(),
+  );
+  expect(events.map((e) => Number(e.sequence)).sort((x, y) => x - y)).toEqual(
     floors.map((_, i) => tables.state_events!.length + 1 + i),
   );
   for (const { key, value, revision: rev = 1 } of floors) {
-    const record = fresh("state_records").find((r) => r.key === key);
+    const record = records.find((r) => r.key === key);
     expect([record?.namespace, record?.key, record?.revision]).toEqual([
       WORK,
       key,
@@ -8817,7 +8828,7 @@ for (const trip of TRIPS)
     const { tables } = await projectWith(legacy);
     const { t, got } = await restoreInto(trip, tables);
     expect(got.status).toBe(200);
-    expectFloor(t, tables, 2);
+    expectFloor(t, tables, [issueFloor(2)]);
     // The counts describe the imported rows, never the generated pair.
     if (trip === "whole")
       expect(
@@ -8844,7 +8855,7 @@ for (const trip of TRIPS)
     // The update and the delete are on separate pages.
     expect(parts.length).toBe(trip === "paged" ? 2 : 1);
     expect(got.status).toBe(200);
-    expectFloor(t, tables, 10);
+    expectFloor(t, tables, [issueFloor(10)]);
     await createsNext(t, [11]);
   }, 60_000);
 
@@ -8868,7 +8879,7 @@ for (const [name, build] of [
       const { tables } = await projectWith(build);
       const { t, got } = await restoreInto(trip, tables);
       expect(got.status).toBe(200);
-      expectFloor(t, tables, 0);
+      expectFloor(t, tables, [issueFloor(0)]);
       await createsNext(t, [1]);
       historyKept(t, tables);
     }, 60_000);
@@ -8948,7 +8959,8 @@ for (const trip of TRIPS) {
     const { t, got } = await restoreInto(trip, tables);
     expect(got.status).toBe(200);
     // The live comment:work-99:1 is an observed comment group, so the restore also settles its floor (forge-1306).
-    expectFloor(t, tables, 10, 1, [
+    expectFloor(t, tables, [
+      issueFloor(10),
       {
         key: "allocation:comment:work-99:",
         value: { prefix: "comment:work-99:", number: 1 },
@@ -8973,7 +8985,7 @@ for (const trip of TRIPS) {
     });
     const { t, got } = await restoreInto(trip, tables);
     expect(got.status).toBe(200);
-    expectFloor(t, tables, 12, 3);
+    expectFloor(t, tables, [issueFloor(12, 3)]);
     await createsNext(t, [13]);
   }, 60_000);
 
@@ -9030,7 +9042,7 @@ for (const trip of TRIPS) {
     const { t, got } = await restoreInto(trip, tables, { per: 1 });
     expect(got.status).toBe(200);
     // The floor update was revision 1 and its deletion 2, so the restored floor is revision 3.
-    expectFloor(t, tables, 12, 3);
+    expectFloor(t, tables, [issueFloor(12, 3)]);
     // The restored history must itself replay: dump the target and restore that dump into a new project.
     const copied = tablesOf(t.db);
     const again = await restoreInto(trip, copied, {
@@ -9094,7 +9106,7 @@ for (const trip of TRIPS)
       settings: { ...vars, DUMP_MAX_BYTES: String(at) },
     });
     expect(got.status).toBe(200);
-    expectFloor(t, tables, 2);
+    expectFloor(t, tables, [issueFloor(2)]);
   }, 60_000);
 
 for (const trip of TRIPS)
@@ -9122,7 +9134,7 @@ for (const trip of TRIPS)
         target: failed.t,
       });
       expect(got.status).toBe(200);
-      expectFloor(t, tables, 2);
+      expectFloor(t, tables, [issueFloor(2)]);
       await createsNext(t, [3]);
     }, 60_000);
 
@@ -9198,63 +9210,6 @@ const smallSource = (w: FloorWrite) => {
 const FLOORS_20 = { [numKey("comment")]: 20, [numKey("link")]: 20 };
 const FLOORS_1 = { [numKey("comment")]: 1, [numKey("link")]: 1 };
 
-/** The restored project holds every imported row and exactly these new floor pairs, each a full record and event. */
-function expectFloors(
-  t: F,
-  tables: Tables,
-  want: Record<string, number>,
-  revision = 1,
-) {
-  const after = tablesOf(t.db);
-  const keys = Object.keys(want).sort();
-  const added = (table: string) => {
-    const had = new Set(tables[table]!.map(asText));
-    return after[table]!.filter((row) => !had.has(asText(row)));
-  };
-  for (const [table, rows] of Object.entries(tables)) {
-    const have = new Set(after[table]!.map(asText));
-    expect([table, rows.filter((row) => !have.has(asText(row)))]).toEqual([
-      table,
-      [],
-    ]);
-    const made =
-      table === "state_records" || table === "state_events" ? keys.length : 0;
-    expect([table, added(table).length]).toEqual([table, made]);
-  }
-  const records = added("state_records");
-  const events = added("state_events");
-  expect(records.map((r) => r.key).sort()).toEqual(keys);
-  expect(events.map((e) => Number(e.sequence)).sort((a, b) => a - b)).toEqual(
-    keys.map((_, i) => tables.state_events!.length + 1 + i),
-  );
-  for (const key of keys) {
-    const value = {
-      prefix: key.slice("allocation:".length),
-      number: want[key],
-    };
-    expect(
-      JSON.parse(String(records.find((r) => r.key === key)?.body ?? "null")),
-    ).toEqual({
-      namespace: WORK,
-      key,
-      revision,
-      value,
-      updatedAt: iso(start),
-      updatedBy: RESTORER,
-    });
-    expect(
-      JSON.parse(String(events.find((e) => e.key === key)?.body ?? "null")),
-    ).toEqual({
-      type: `${WORK}:record.updated@1`,
-      namespace: WORK,
-      key,
-      revision,
-      at: iso(start),
-      actor: RESTORER,
-      data: value,
-    });
-  }
-}
 /** Through the real routes, a comment and a link (by two spellings of the issue) take the numbers above the floors. */
 async function appendsAbove(t: F, token: string, want: Record<string, number>) {
   const claimed = await t.send(claim("ap-claim", { id: "forge-1" }), { token });
@@ -9341,7 +9296,7 @@ for (const [name, build, want] of GROUPS)
       );
       if (trip === "paged") expect(parts.length).toBeGreaterThan(1);
       expect(got.status).toBe(200);
-      expectFloors(t, tables, want);
+      expectFloor(t, tables, childFloors(want));
       const token = await t.device();
       expect(await readyIds(t, token)).toEqual(
         await readyIds(f, await f.device()),
@@ -9363,7 +9318,7 @@ test("whole restore derives both deleted child floors before any append", async 
       numFloor(kind, 10),
     ]);
   const want = { [numKey("comment")]: 10, [numKey("link")]: 10 };
-  expectFloors(t, tables, want);
+  expectFloor(t, tables, childFloors(want));
   await appendsAbove(t, await t.device(), want);
 }, 60_000);
 
@@ -9400,7 +9355,7 @@ for (const trip of TRIPS) {
     });
     const { t, got } = await restoreInto(trip, tables, { per: 1 });
     expect(got.status).toBe(200);
-    expectFloors(t, tables, FLOORS_20, 3);
+    expectFloor(t, tables, childFloors(FLOORS_20, 3));
     const copied = tablesOf(t.db);
     const again = await restoreInto(trip, copied, {
       parts: await exported(t, trip),
@@ -9481,7 +9436,7 @@ for (const trip of TRIPS) {
       settings: { ...vars, DUMP_MAX_ROWS: "6" },
     });
     expect(got.status).toBe(200);
-    expectFloors(t, tables, FLOORS_1);
+    expectFloor(t, tables, childFloors(FLOORS_1));
   }, 60_000);
 
   test(`a ${trip} restore whose generated comment and link floors pass the byte limit is RESTORE_TOO_LARGE, and one exactly at it is restored`, async () => {
@@ -9503,7 +9458,7 @@ for (const trip of TRIPS) {
       settings: { ...vars, DUMP_MAX_BYTES: String(at) },
     });
     expect(got.status).toBe(200);
-    expectFloors(t, tables, FLOORS_1);
+    expectFloor(t, tables, childFloors(FLOORS_1));
   }, 60_000);
 
   for (const [what, table, key] of [
@@ -9538,7 +9493,7 @@ for (const trip of TRIPS) {
       expect(await failed.t.storage.get("restore:next")).toBeUndefined();
       const { t, got } = await restoreInto(trip, tables, { target: failed.t });
       expect(got.status).toBe(200);
-      expectFloors(t, tables, FLOORS_1);
+      expectFloor(t, tables, childFloors(FLOORS_1));
       await appendsAbove(t, await t.device(), FLOORS_1);
     }, 60_000);
 }
@@ -9554,7 +9509,7 @@ for (const trip of TRIPS)
     expect(tables.state_events!.length).toBe(21);
     const { t, got, calls } = await restoreInto(trip, tables, { per: 15 });
     expect(got.status).toBe(200);
-    expectFloor(t, tables, 20);
+    expectFloor(t, tables, [issueFloor(20)]);
     const lists = calls.filter(
       ({ sql }) => /ORDER BY/.test(sql) && /FROM state_/.test(sql),
     );
@@ -9732,7 +9687,7 @@ for (const trip of TRIPS)
     const tables = await labelledTables();
     const { t, got } = await restoreInto(trip, tables, { per: 1 });
     expect(got.status).toBe(200);
-    expectFloor(t, tables, 2);
+    expectFloor(t, tables, [issueFloor(2)]);
   }, 60_000);
 
 for (const trip of TRIPS)
@@ -9764,7 +9719,7 @@ for (const trip of TRIPS)
     edit("state_records", issueKey(1), spaced);
     const { t, got } = await restoreInto(trip, tables, { per: 1 });
     expect(got.status).toBe(200);
-    expectFloor(t, tables, 1);
+    expectFloor(t, tables, [issueFloor(1)]);
   }, 60_000);
 
 // The route test the duplicate-labels counterfactual runs: one whole restore, one repeated event label.
