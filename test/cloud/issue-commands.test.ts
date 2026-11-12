@@ -2825,6 +2825,8 @@ test("the list byte budget charges the compact rows and the selected page togeth
 }, 180_000);
 
 // A raw stored issue; `over` is raw JSON appended to the value's fields.
+// A literal NUL byte, built at run time so the source file holds none.
+const NUL = String.fromCharCode(0);
 const rawIssue = (id: string, over = "") =>
   `{"namespace":"forge/work","key":"issue:${id}","revision":3,"value":{"id":"${id}","title":"t","status":"open","labels":[],"dependsOn":[],"createdAt":"${iso(start - 1000)}"${over}},"updatedAt":"${iso(start - 500)}","updatedBy":{"kind":"agent","id":"tester"}}`;
 const insertRaw = (f: F, key: string, body: string) =>
@@ -2853,10 +2855,14 @@ test("list refuses a stored issue with a bad body, unknown field, nesting or nod
     ],
     ["nesting over 8", rawIssue("work-2", `,"closeReason":${nested}`)],
     ["over 1,024 nodes", rawIssue("work-2", `,"closeReason":${nodes}`)],
-    // SQLite text functions stop at a literal NUL byte, so json_valid would accept this and json_set would drop the suffix.
+    // SQLite json_valid accepts this and json_set drops the suffix, but only a text body takes the json_set path.
     [
-      "valid JSON, a literal NUL byte, then trailing text",
-      `${rawIssue("work-2")} leak-me`,
+      "text body, a literal NUL byte, then trailing text",
+      `${rawIssue("work-2", ',"body":"b"')}${NUL}leak-me`,
+    ],
+    [
+      "no body, a literal NUL byte, then trailing text",
+      `${rawIssue("work-2")}${NUL}leak-me`,
     ],
   ] as const)
     for (const input of [{ limit: 1 }, { kind: "bug" }, { ready: true }]) {
