@@ -4,6 +4,16 @@
 /** This build may take at most this multiple of the base build's time. */
 export const MAX_RATIO_TO_BASE = 1.05;
 
+/** Interleaved pairs for the gated command. More pairs shrink the noise of the statistics below. */
+export const GATED_PAIRS = 15;
+
+/**
+ * This build's peak memory may exceed the base build's by this much (MB), as the median of the
+ * pairs' differences. Identical builds differ by under 1 MB in one job; the absolute peak moves
+ * 2 MB between jobs, so only the paired difference can hold a tight limit.
+ */
+export const MAX_PEAK_DELTA_MB = 1.5;
+
 export type Side = "current" | "base";
 
 /**
@@ -57,6 +67,8 @@ export interface GateRow {
   readonly medianMs: number;
   readonly medianPeakMb: number;
   readonly timesMs: readonly number[];
+  /** Every run's peak memory, in run order, for the paired comparison with the base build. */
+  readonly peaksMb: readonly number[];
 }
 
 export interface GateDecision {
@@ -65,8 +77,25 @@ export interface GateDecision {
 }
 
 /**
+ * Median of `current[i] - base[i]`. Run i of each build came from the same pair, so the runner's
+ * mood at that moment cancels.
+ */
+export function medianPairedDelta(
+  current: readonly number[],
+  base: readonly number[],
+): number {
+  if (current.length === 0 || current.length !== base.length)
+    throw new Error("paired runs must be the same non-zero count");
+  return sorted(current.map((value, index) => value - base[index]!))[
+    Math.floor(current.length / 2)
+  ]!;
+}
+
+/**
  * The Speed gate's whole decision for the gated command. `baseRow` is the base build measured in
- * the same job, or undefined when it is missing. `where` only words the messages.
+ * the same job, or undefined when it is missing. `where` words the messages; `pullRequest` turns
+ * the absolute memory cap into a warning, because only the paired difference is steady enough to
+ * fail a pull request. A push to main keeps the cap as a failure, so slow creep cannot build up.
  */
 export function gateDecision(
   limit: GateLimit,
@@ -76,13 +105,17 @@ export function gateDecision(
     readonly command: string;
     readonly platform: string;
     readonly baseMissing: string;
+    readonly pullRequest?: boolean;
   },
 ): GateDecision {
   const { command, platform } = where;
   const failures: string[] = [];
   const warnings: string[] = [];
   if (row.medianPeakMb > limit.maxPeakMb)
-    failures.push(
+    (where.pullRequest === true && baseRow !== undefined
+      ? warnings
+      : failures
+    ).push(
       `${command} peak ${row.medianPeakMb.toFixed(1)} MB is over the ${limit.maxPeakMb} MB limit on ${platform}`,
     );
   const overCeiling = row.medianMs > limit.ceilingMs;
@@ -91,6 +124,11 @@ export function gateDecision(
     if (overCeiling) failures.push(ceilingMessage);
     failures.push(where.baseMissing);
   } else {
+    const delta = medianPairedDelta(row.peaksMb, baseRow.peaksMb);
+    if (delta > MAX_PEAK_DELTA_MB)
+      failures.push(
+        `${command} peak is ${delta.toFixed(1)} MB over the origin/main build's in the same job on ${platform}, more than the ${MAX_PEAK_DELTA_MB} MB limit`,
+      );
     const verdict = compareToBase(row.timesMs, baseRow.timesMs);
     if (overCeiling) {
       // Runner speed does not cancel in an absolute time, so the ceiling fails the job only when
