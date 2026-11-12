@@ -3369,7 +3369,7 @@ if (phase === "large") {
 }
 
 // The isolated budget runs (forge-1304) set their own DUMP_* limits from the workflow. budget-plan prints the page
-// budget a run must be given: the byte size of a page the oracle builds from accepted rows, never one the exporter cut.
+// budget a run must be given, on a line of its own that starts with PLAN (the state owner logs other lines): the byte size of a page the oracle builds from accepted rows, never one the exporter cut.
 if (phase === "budget-plan") {
   const oracle = await import("./budget.ts");
   const fixtures = await import("./max-source.ts");
@@ -3380,11 +3380,11 @@ if (phase === "budget-plan") {
       size <= 4096 && Object.values(tables).flat().length > 0,
       `the exact fixture's final page is ${size} bytes`,
     );
-    console.log(size);
+    console.log(`PLAN ${size}`);
   } else {
     const { tables } = await fixtures.leaseSource(oracle.longSubject());
     console.log(
-      oracle.utf8(oracle.pageThrough(tables, oracle.leaseBoundary(tables))),
+      `PLAN ${oracle.utf8(oracle.pageThrough(tables, oracle.leaseBoundary(tables)))}`,
     );
   }
 }

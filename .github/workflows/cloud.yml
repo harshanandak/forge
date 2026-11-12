@@ -100,7 +100,7 @@ jobs:
             [ -z "$kb" ] || [ "$kb" -lt 262144 ] || { echo "::error::$label: the client peak RSS is over 256 MiB"; exit 1; }
           }
           workerd_rss() {
-            kb=$(for p in $(pgrep -x workerd || true); do sed -n 's/^VmHWM: *\([0-9]*\) kB/\1/p' "/proc/$p/status"; done | sort -n | tail -n 1)
+            kb=$(for p in $(pgrep -x workerd || true); do sed -n 's/^VmHWM:[[:space:]]*\([0-9]*\) kB/\1/p' "/proc/$p/status"; done | sort -n | tail -n 1)
             echo "workerd peak RSS $1: ${kb:-NOT_EXECUTED} kB (budget 524288 kB)"
             [ -z "$kb" ] || [ "$kb" -lt 524288 ] || { echo "::error::$1: workerd peak RSS is over 512 MiB"; exit 1; }
           }
@@ -160,8 +160,9 @@ jobs:
           # Budget cases (forge-1304). The exact and cursor runs get page budgets that are byte sizes the oracle computes from
           # accepted rows before the Worker starts; the body run raises the page and stored caps to the 8 MiB restore body.
           begin=$SECONDS
-          exact=$(bun conformance/conformance.ts budget-plan exact)
-          cursor=$(bun conformance/conformance.ts budget-plan cursor)
+          exact=$(bun conformance/conformance.ts budget-plan exact | sed -n 's/^PLAN //p')
+          cursor=$(bun conformance/conformance.ts budget-plan cursor | sed -n 's/^PLAN //p')
+          [ -n "$exact" ] && [ -n "$cursor" ] || { echo "::error::budget-plan printed no page size"; exit 1; }
           echo "budget plan: exact page $exact bytes, cursor page $cursor bytes"
           spent $((SECONDS - begin))
           vars="--var DUMP_PAGE_BYTES:$exact" BUDGET_PAGE_BYTES="$exact" budget_case budget budget
