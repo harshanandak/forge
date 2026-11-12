@@ -873,93 +873,54 @@ for (const code of ["LEASE_STALE", "LEASE_NOT_HELD", "LEASE_EXPIRED"])
       expect(result).toStrictEqual({ kind: "refused", code, lease } as never);
     }, 10_000);
 
-const { generation: _generation, ...noGeneration } = HELD;
-const { holder: _holder, ...noHolder } = HELD;
-const { expiresAt: _expiresAt, ...noExpiry } = HELD;
-const owner = (more: object) => ({ ...HELD, holder: { ...OWNER, ...more } });
+const { generation: _g, ...noGeneration } = HELD;
+const { holder: _h, ...noHolder } = HELD;
+const { expiresAt: _e, ...noExpiry } = HELD;
+const mod = (more: object) => ({ ...HELD, ...more });
+const owner = (more: object) => mod({ holder: { ...OWNER, ...more } });
 const session = (more: object) =>
   owner({ session: { ...OWNER.session, ...more } });
-const badLeases: [string, string, unknown][] = [
-  ["LEASE_HELD", "no lease", undefined],
-  ["LEASE_HELD", "a subject-only lease", { subject: HELD.subject }],
-  ["LEASE_HELD", "a lease that is not an object", "issue:work-0007"],
-  [
-    "LEASE_STALE",
-    "a holder without the rest",
-    { subject: HELD.subject, holder: OWNER },
-  ],
-  ["LEASE_STALE", "a tuple without a generation", noGeneration],
-  ["LEASE_STALE", "a tuple without a holder", noHolder],
-  ["LEASE_STALE", "a tuple without an expiry", noExpiry],
-  [
-    "LEASE_HELD",
-    "another issue's subject",
-    { ...HELD, subject: "issue:work-8" },
-  ],
-  [
-    "LEASE_HELD",
-    "the shown prefix as the subject",
-    { ...HELD, subject: "issue:forge-0007" },
-  ],
-  [
-    "LEASE_HELD",
-    "a subject whose number was normalised",
-    { ...HELD, subject: "issue:work-7" },
-  ],
-  ["LEASE_HELD", "an extra lease key", { ...HELD, note: 1 }],
-  [
-    "LEASE_HELD",
-    "a releasedAt",
-    { ...HELD, releasedAt: "2026-11-11T11:00:00.000Z" },
-  ],
-  ["LEASE_HELD", "an extra holder key", owner({ extra: 1 })],
-  [
-    "LEASE_HELD",
-    "an extra actor key",
-    owner({ actor: { ...OWNER.actor, extra: 1 } }),
-  ],
-  ["LEASE_HELD", "an extra session key", session({ extra: 1 })],
-  [
-    "LEASE_HELD",
-    "an actor kind that is neither agent nor human",
-    owner({ actor: { kind: "bot", id: "a2" } }),
-  ],
-  [
-    "LEASE_HELD",
-    "an empty actor id",
-    owner({ actor: { kind: "agent", id: "" } }),
-  ],
-  [
-    "LEASE_HELD",
-    "an actor id over 200 characters",
-    owner({ actor: { kind: "agent", id: "a".repeat(201) } }),
-  ],
-  ["LEASE_HELD", "an empty session id", session({ id: "" })],
-  [
-    "LEASE_HELD",
-    "an agent over 200 characters",
-    session({ agent: "a".repeat(201) }),
-  ],
-  ["LEASE_HELD", "an empty harness", session({ harness: "" })],
-  ["LEASE_HELD", "an empty device", session({ device: "" })],
-  [
-    "LEASE_HELD",
-    "a device over 256 characters",
-    session({ device: "d".repeat(257) }),
-  ],
-  [
-    "LEASE_HELD",
-    "an expiry that is not a timestamp",
-    { ...HELD, expiresAt: "yesterday" },
-  ],
-  ["LEASE_HELD", "a generation of zero", { ...HELD, generation: 0 }],
-  ["LEASE_HELD", "a fractional generation", { ...HELD, generation: 1.5 }],
-  ["LEASE_HELD", "an unsafe generation", { ...HELD, generation: 2 ** 53 }],
-  ["LEASE_HELD", "a generation sent as text", { ...HELD, generation: "4" }],
+const actor = (more: object) => owner({ actor: { ...OWNER.actor, ...more } });
+const long = (n: number) => "a".repeat(n);
+const badLeases: [string, unknown][] = [
+  ["no lease", undefined],
+  ["a subject-only lease", { subject: HELD.subject }],
+  ["a lease that is not an object", "issue:work-0007"],
+  ["another issue's subject", mod({ subject: "issue:work-8" })],
+  ["the shown prefix as subject", mod({ subject: "issue:forge-0007" })],
+  ["a normalised number in the subject", mod({ subject: "issue:work-7" })],
+  ["an extra lease key", mod({ note: 1 })],
+  ["a releasedAt", mod({ releasedAt: "2026-11-11T11:00:00.000Z" })],
+  ["an extra holder key", owner({ extra: 1 })],
+  ["an extra actor key", actor({ extra: 1 })],
+  ["an extra session key", session({ extra: 1 })],
+  ["an actor kind that is not agent or human", actor({ kind: "bot" })],
+  ["an empty actor id", actor({ id: "" })],
+  ["an actor id over 200 characters", actor({ id: long(201) })],
+  ["an empty session id", session({ id: "" })],
+  ["an agent over 200 characters", session({ agent: long(201) })],
+  ["an empty harness", session({ harness: "" })],
+  ["an empty device", session({ device: "" })],
+  ["a device over 256 characters", session({ device: long(257) })],
+  ["an expiry that is not a timestamp", mod({ expiresAt: "yesterday" })],
+  ["a generation of zero", mod({ generation: 0 })],
+  ["a fractional generation", mod({ generation: 1.5 })],
+  ["an unsafe generation", mod({ generation: 2 ** 53 })],
+  ["a generation sent as text", mod({ generation: "4" })],
 ];
-for (const [code, name, lease] of badLeases)
-  test(`${code} with ${name} is the fixed unavailable with no partial detail`, async () => {
-    await unusable(withLease(code, lease), claimWire());
+for (const [name, lease] of badLeases)
+  test(`LEASE_HELD with ${name} is the fixed unavailable with no partial detail`, async () => {
+    await unusable(withLease("LEASE_HELD", lease), claimWire());
+  }, 10_000);
+const partials: [string, unknown][] = [
+  ["a holder without the rest", { subject: HELD.subject, holder: OWNER }],
+  ["a tuple without a generation", noGeneration],
+  ["a tuple without a holder", noHolder],
+  ["a tuple without an expiry", noExpiry],
+];
+for (const [name, lease] of partials)
+  test(`LEASE_STALE with ${name} is the fixed unavailable with no partial detail`, async () => {
+    await unusable(withLease("LEASE_STALE", lease), claimWire());
   }, 10_000);
 
 const FOREIGN = `fct_ffffffffffffffff.${"Z".repeat(43)}`;
@@ -1041,10 +1002,10 @@ test("CLAIM_BLOCKED keeps exactly the blocker edges in server order, with no inv
 }, 10_000);
 
 const edge = (more: object) => ({ blockers: [{ id: "forge-8", ...more }] });
-const unpaired = { id: "forge-9", holder: OWNER };
+const asked = { holder: OWNER, holderUnverified: true };
 const badBlockers: [string, unknown][] = [
   ["no observed", undefined],
-  ["an observed that is a list", [{ id: "forge-8" }]],
+  ["an observed list", [{ id: "forge-8" }]],
   ["no blockers", {}],
   ["an empty list", { blockers: [] }],
   ["a blockers that is not a list", { blockers: "forge-8" }],
@@ -1054,17 +1015,14 @@ const badBlockers: [string, unknown][] = [
   ["an id over 200 characters", edge({ id: `forge-${"9".repeat(200)}` })],
   ["an id that is a number", edge({ id: 8 })],
   [
-    "a holder without its session",
+    "a holder without a session",
     edge({ holder: { actor: OWNER.actor }, holderUnverified: true }),
   ],
   ["an extra observed key", { ...edge({}), note: 1 }],
-  ["an extra edge key", edge({ extra: 1 })],
-  ["a holder without holderUnverified", { blockers: [unpaired] }],
+  ["an extra edge key", edge({ ...asked, extra: 1 })],
+  ["a holder without holderUnverified", edge({ holder: OWNER })],
   ["holderUnverified without a holder", edge({ holderUnverified: true })],
-  [
-    "holderUnverified false",
-    { blockers: [{ ...unpaired, holderUnverified: false }] },
-  ],
+  ["holderUnverified false", edge({ holder: OWNER, holderUnverified: false })],
   ["an invented state", edge({ state: "open" })],
 ];
 for (const [name, observed] of badBlockers)
@@ -1109,27 +1067,24 @@ for (const [asked, shown] of [
   }, 10_000);
 
 const alone = { kind: "refused", code: "INPUT_CONFLICT" };
-const first = repairFor("forge-0042").split("; or ")[0] ?? "";
+const [first = ""] = repairFor("forge-0042").split("; or ");
+const none = repairFor("forge-0042");
 const droppedRepairs: [string, unknown, CommandWire][] = [
   ["no repair", undefined, closeWire()],
   ["a number", 7, closeWire()],
   ["a short arbitrary string", "forge issue reopen", closeWire()],
-  ["a suffix without its leading zeros", repairFor("forge-42"), closeWire()],
+  ["a suffix without its zeros", repairFor("forge-42"), closeWire()],
   ["another issue's suffix", repairFor("forge-0043"), closeWire()],
   [
-    "different ids in its two halves",
+    "two different ids",
     `${first}; or forge attempt select forge-0043 --none --reason "<why>"`,
     closeWire(),
   ],
-  ["trailing text", `${repairFor("forge-0042")} now`, closeWire()],
+  ["trailing text", `${none} now`, closeWire()],
   ["a missing alternative", first, closeWire()],
-  ["a token", `${repairFor("forge-0042")} ${TOKEN}`, closeWire()],
+  ["a token", `${none} ${TOKEN}`, closeWire()],
   ["a shown id that is not an id", repairFor("not an id"), closeWire()],
-  [
-    "the right template on another operation",
-    repairFor("forge-0007"),
-    claimWire(),
-  ],
+  ["the template on another operation", repairFor("forge-0007"), claimWire()],
 ];
 for (const [name, repair, call] of droppedRepairs)
   test(`INPUT_CONFLICT with ${name} stays INPUT_CONFLICT with no repair`, async () => {

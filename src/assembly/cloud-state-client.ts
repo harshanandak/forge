@@ -6,11 +6,12 @@ import type {
   CommandWire,
   LeaseRoute,
   LeaseWriteBody,
+  RefusalDetails,
 } from "../adapters/http/index.ts";
 import { ForgeFailure } from "../contract/failure.ts";
+import { leaseHeldMessage } from "../contract/lease.ts";
 import type {
   AmbientContext,
-  LeaseConflict,
   LeaseHolder,
   LeaseRecord,
 } from "../generated/types.ts";
@@ -90,12 +91,24 @@ export function createCloudLeaseClient(
       throw failure("UNAVAILABLE", UNAVAILABLE);
     }
     if (result.kind === "ok") return result as Extract<T, { kind: "ok" }>;
-    const bad = result as unknown as { code: string; lease?: LeaseConflict };
+    const bad = result as unknown as {
+      code: string;
+    } & RefusalDetails;
+    const held =
+      bad.code === "LEASE_HELD" && bad.lease?.holder !== undefined
+        ? leaseHeldMessage(
+            bad.lease.subject,
+            bad.lease.holder,
+            bad.lease.expiresAt ?? "",
+          )
+        : undefined;
     throw new ForgeFailure({
       code: bad.code,
-      message: `The Forge cloud refused the request (${bad.code}).`,
+      message: held ?? `The Forge cloud refused the request (${bad.code}).`,
       retry: bad.code.startsWith("LEASE_") ? "reconcile_first" : "never",
       ...(bad.lease === undefined ? {} : { lease: bad.lease }),
+      ...(bad.observed === undefined ? {} : { observed: bad.observed }),
+      ...(bad.repair === undefined ? {} : { repair: bad.repair }),
     });
   }
 
