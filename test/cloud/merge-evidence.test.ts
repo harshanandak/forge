@@ -93,6 +93,30 @@ const rows: Row[] = [
     null,
   ],
   ["squash or rebase keeps final head separately", () => {}, null],
+  [
+    "custom array iterator is refused without invocation",
+    (f) => {
+      let calls = 0;
+      Object.defineProperty(f.observation.runs, Symbol.iterator, {
+        value: () => {
+          calls++;
+          throw new Error("Untrusted iterator must not run");
+        },
+      });
+      detailReads.set(f, () => calls);
+    },
+    "INPUT_INVALID",
+  ],
+  [
+    "non-enumerable workflow pin still rejects a different run workflow",
+    (f) => {
+      Object.defineProperty(f.policy.producer, "workflowId", {
+        enumerable: false,
+      });
+      f.observation.runs[0]!.workflowId++;
+    },
+    "RECEIPT_INVALID",
+  ],
   ...["OPEN", "CLOSED"].map((state): Row => [
     state,
     (f) => {
