@@ -79,6 +79,7 @@ function fixture() {
   };
 }
 type Fixture = ReturnType<typeof fixture>;
+const detailReads = new WeakMap<Fixture, () => number>();
 type Row = readonly [string, (f: Fixture) => void, string | null];
 const rows: Row[] = [
   [
@@ -268,6 +269,50 @@ const rows: Row[] = [
       f.observation.runs.push(newer);
     },
     "RECEIPT_INVALID",
+  ],
+  ...["failure", "cancelled", "pending"].flatMap((conclusion) =>
+    [false, true].flatMap((reverse) =>
+      ["workflow", "check"].map((subject): Row => [
+        `lower-numbered ${subject} rerun ${conclusion}, reversed=${reverse}`,
+        (f) => {
+          const run10 = structuredClone(f.observation.runs[0]!);
+          const run11 = structuredClone(run10);
+          Object.assign(run11, {
+            id: 202,
+            runNumber: 11,
+            completedAt: "2026-11-13T10:20:00.000Z",
+          });
+          const rerun10 = structuredClone(run10);
+          Object.assign(rerun10, {
+            attempt: 2,
+            completedAt: "2026-11-13T10:40:00.000Z",
+          });
+          const outcome = subject === "workflow" ? rerun10 : rerun10.checks[0]!;
+          Object.assign(
+            outcome,
+            conclusion === "pending"
+              ? { status: "in_progress", conclusion: null, completedAt: null }
+              : { conclusion, completedAt: "2026-11-13T10:40:00.000Z" },
+          );
+          f.observation.runs = [run10, run11, rerun10];
+          if (reverse) f.observation.runs.reverse();
+        },
+        conclusion === "pending" ? "UNAVAILABLE" : "RECEIPT_INVALID",
+      ]),
+    ),
+  ),
+  [
+    "all runs latest attempts succeed",
+    (f) => {
+      const earlier = structuredClone(f.observation.runs[0]!);
+      earlier.conclusion = "failure";
+      const rerun = structuredClone(f.observation.runs[0]!);
+      rerun.attempt = 2;
+      const other = structuredClone(f.observation.runs[0]!);
+      Object.assign(other, { id: 202, runNumber: 11 });
+      f.observation.runs = [other, earlier, rerun];
+    },
+    null,
   ],
   [
     "newer cancelled run",
@@ -467,6 +512,52 @@ const rows: Row[] = [
     "INPUT_INVALID",
   ],
   [
+    "object width over known field limit",
+    (f) => {
+      Object.assign(
+        f.observation,
+        Object.fromEntries(
+          Array.from({ length: 1024 }, (_, i) => [`extra${i}`, i]),
+        ),
+      );
+    },
+    "INPUT_INVALID",
+  ],
+  ...[4096, 4097].map((count): Row => [
+    `aggregate check count ${count}`,
+    (f) => {
+      const base = f.observation.runs[0]!;
+      f.observation.runs = Array.from(
+        { length: Math.ceil(count / 256) },
+        (_, i) => ({
+          ...base,
+          id: 201 + i,
+          runNumber: 10 + i,
+          checks: Array.from(
+            { length: Math.min(256, count - i * 256) },
+            (_, j) => ({
+              ...base.checks[0]!,
+              id: 301 + i * 256 + j,
+              attempt: j + 1,
+            }),
+          ),
+        }),
+      );
+      if (count > 4096) {
+        let reads = 0;
+        Object.defineProperty(f.observation.runs[0]!.checks[0]!, "name", {
+          enumerable: true,
+          get: () => {
+            reads++;
+            return "CI Gate";
+          },
+        });
+        detailReads.set(f, () => reads);
+      }
+    },
+    count > 4096 ? "INPUT_INVALID" : null,
+  ]),
+  [
     "too many checks",
     (f) => {
       const run = f.observation.runs[0]!;
@@ -483,12 +574,15 @@ for (const [name, change, code] of rows) {
       const f = fixture();
       change(f);
       const before = structuredClone(f);
+      const readCount = detailReads.get(f);
+      const readsBefore = readCount?.() ?? 0;
       const result = evaluateMergeEvidence(
         f.policy,
         f.expected,
         f.observation,
         now,
       );
+      if (readCount) expect(readCount()).toBe(readsBefore);
       expect(result.eligible).toBe(code === null);
       if (result.eligible) {
         expect(

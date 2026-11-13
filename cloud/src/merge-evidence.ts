@@ -6,12 +6,14 @@ type Shape<S extends Fields> = { readonly [K in keyof S]: Value<S[K]> };
 const record = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v);
 function shape<S extends Fields>(fields: S): Guard<Shape<S>> {
-  return (v): v is Shape<S> =>
-    record(v) &&
-    Object.keys(v).length === Object.keys(fields).length &&
-    Object.entries(fields).every(
+  return (v): v is Shape<S> => {
+    if (!record(v)) return false;
+    // Unique known keys bound enumeration to at most the field count plus one.
+    for (const key in v) if (!Object.hasOwn(fields, key)) return false;
+    return Object.entries(fields).every(
       ([key, valid]) => Object.hasOwn(v, key) && valid(v[key]),
     );
+  };
 }
 const text: Guard<string> = (v): v is string =>
   typeof v === "string" &&
@@ -21,23 +23,16 @@ const text: Guard<string> = (v): v is string =>
   !/[\p{Cc}]/u.test(v);
 const positive: Guard<number> = (v): v is number =>
   typeof v === "number" && Number.isSafeInteger(v) && v > 0;
-const pattern =
-  (re: RegExp): Guard<string> =>
-  (v): v is string =>
-    text(v) && re.test(v);
+function pattern(re: RegExp): Guard<string> {
+  return (v): v is string => text(v) && re.test(v);
+}
 const sha = pattern(/^[a-f0-9]{40}$/);
 const digest = pattern(/^[a-f0-9]{64}$/);
 const project = pattern(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/);
-const timestamp: Guard<string> = (v): v is string => {
-  if (!text(v) || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{3})?Z$/.test(v))
-    return false;
-  const time = Date.parse(v);
-  return (
-    Number.isFinite(time) &&
-    new Date(time).toISOString() ===
-      (v.length === 20 ? v.replace("Z", ".000Z") : v)
-  );
-};
+const timestamp: Guard<string> = (v): v is string =>
+  text(v) &&
+  /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{3})?Z$/.test(v) &&
+  new Date(v).toJSON() === (v.length === 20 ? v.replace("Z", ".000Z") : v);
 function oneOf<const T extends readonly (string | null)[]>(
   ...values: T
 ): Guard<T[number]> {
@@ -46,10 +41,14 @@ function oneOf<const T extends readonly (string | null)[]>(
 function nullable<T>(valid: Guard<T>): Guard<T | null> {
   return (v): v is T | null => v === null || valid(v);
 }
-function list<T>(valid: Guard<T>): Guard<readonly T[]> {
+type Weight = (v: unknown) => number;
+function list<T>(valid: Guard<T>, weight?: Weight): Guard<readonly T[]> {
   return (v): v is readonly T[] =>
     Array.isArray(v) &&
     v.length <= 256 &&
+    (!weight ||
+      (v as unknown[]).reduce<number>((n, row) => n + weight(row), 0) <=
+        4096) &&
     Array.from(v as unknown[]).every(valid);
 }
 const producerFields = {
@@ -113,12 +112,8 @@ const runGuard = shape({
   attempt: positive,
   checks: list(checkGuard),
 });
-const completeness = oneOf(
-  "complete",
-  "outage",
-  "permission",
-  "truncated",
-  "page-cap",
+const completeness = pattern(
+  /^(complete|outage|permission|truncated|page-cap)$/,
 );
 const observationGuard = shape({
   binding: bindingGuard,
@@ -127,22 +122,24 @@ const observationGuard = shape({
   targetTip: sha,
   ancestry: oneOf("ancestor", "not-ancestor", "unknown"),
   completeness,
-  runs: list(runGuard),
+  runs: list(runGuard, (run) =>
+    record(run) && Array.isArray(run.checks) ? run.checks.length : Infinity,
+  ),
 });
 export type MergePolicy = Value<typeof policyGuard>;
 export type DeliveryBinding = Value<typeof bindingGuard>;
 export type MergeObservations = Value<typeof observationGuard>;
-export type MergeCandidate = Readonly<{
-  format: "forge.cloud-merge-evidence/1";
-  policyVersion: string;
-  policyDigest: string;
-  binding: DeliveryBinding;
-  finalPr: MergeObservations["finalPr"];
-  targetTip: string;
-  ancestry: "ancestor";
-  verifiedAt: string;
-  run: Value<typeof runGuard>;
-}>;
+export type MergeCandidate = Pick<
+  MergeObservations,
+  "binding" | "finalPr" | "targetTip" | "runs"
+> &
+  Readonly<{
+    format: "forge.cloud-merge-evidence/1";
+    policyVersion: string;
+    policyDigest: string;
+    ancestry: "ancestor";
+    verifiedAt: string;
+  }>;
 export type MergeRefusalCode =
   | "INPUT_INVALID"
   | "INPUT_CONFLICT"
@@ -214,7 +211,6 @@ export function evaluateMergeEvidence(
           Date.parse(pr.mergedAt) > now
         : pr.mergeSha !== null || pr.mergedAt !== null,
     ) ||
-    runs.reduce((n, run) => n + run.checks.length, 0) > 4096 ||
     runs.some(
       (run) =>
         !coherentOutcome(run, now) ||
@@ -256,33 +252,36 @@ export function evaluateMergeEvidence(
     return refuse("PR_NOT_MERGED", "PR has not landed on target");
   if (!runs.length || runs.some((run) => !same(policy.producer, run)))
     return refuse("RECEIPT_INVALID", "Missing or unapproved workflow evidence");
-  // Run number orders executions of the pinned workflow; attempt orders its reruns.
-  const latest = runs.reduce((a, b) =>
-    b.runNumber > a.runNumber ||
-    (b.runNumber === a.runNumber && b.attempt > a.attempt)
-      ? b
-      : a,
+  const current = runs.filter(
+    (run) =>
+      run.headSha === finalPr.mergeSha &&
+      !runs.some((other) => other.id === run.id && other.attempt > run.attempt),
   );
-  if (latest.headSha !== finalPr.mergeSha)
+  if (!current.length)
     return refuse("RECEIPT_HEAD_MISMATCH", "Workflow must cover merge commit");
-  if (latest.status !== "completed")
-    return refuse("UNAVAILABLE", "Latest workflow attempt is pending");
-  if (latest.conclusion !== "success")
-    return refuse("RECEIPT_INVALID", "Latest workflow attempt did not succeed");
-  for (const name of policy.requiredChecks) {
-    const checks = latest.checks.filter((check) => check.name === name);
-    if (!checks.length)
-      return refuse("RECEIPT_INVALID", "Required check is missing");
-    const check = checks.reduce((a, b) => (b.attempt > a.attempt ? b : a));
-    if (check.appId !== policy.producer.appId)
-      return refuse("RECEIPT_INVALID", "Wrong check producer");
-    if (check.headSha !== finalPr.mergeSha)
-      return refuse("RECEIPT_HEAD_MISMATCH", "Check must cover merge commit");
-    if (check.status !== "completed")
-      return refuse("UNAVAILABLE", "Required check is pending");
-    if (check.conclusion !== "success")
-      return refuse("RECEIPT_INVALID", "Required check did not succeed");
-  }
+  const evidence = current
+    .filter((run) => run.status === "completed")
+    .flatMap((run) =>
+      policy.requiredChecks.map((name) =>
+        run.checks
+          .toSorted((a, b) => b.attempt - a.attempt)
+          .find((check) => check.name === name),
+      ),
+    );
+  const outcomes = [...current, ...evidence.filter((o) => o !== undefined)];
+  if (
+    outcomes.length !== current.length + evidence.length ||
+    outcomes.some((o) => o.appId !== policy.producer.appId)
+  )
+    return refuse("RECEIPT_INVALID", "Missing or unapproved required check");
+  if (outcomes.some((o) => o.headSha !== finalPr.mergeSha))
+    return refuse("RECEIPT_HEAD_MISMATCH", "Evidence must cover merge commit");
+  if (
+    outcomes.some((o) => o.status === "completed" && o.conclusion !== "success")
+  )
+    return refuse("RECEIPT_INVALID", "Required evidence did not succeed");
+  if (outcomes.some((o) => o.status !== "completed"))
+    return refuse("UNAVAILABLE", "Required evidence is pending");
   return {
     eligible: true,
     candidate: {
@@ -294,7 +293,7 @@ export function evaluateMergeEvidence(
       targetTip: observation.targetTip,
       ancestry: "ancestor",
       verifiedAt,
-      run: { ...latest, checks: latest.checks.map((check) => ({ ...check })) },
+      runs: structuredClone(current),
     },
   };
 }
