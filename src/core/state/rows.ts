@@ -21,16 +21,6 @@ export const STATE_TABLES = {
 } as const;
 export type StateTable = keyof typeof STATE_TABLES;
 
-/** Every namespace that holds a row in any state table, sorted. Reads only. */
-export function namespacesOf(db: SqlDatabase): string[] {
-  const union = Object.keys(STATE_TABLES)
-    .map((table) => `SELECT namespace FROM ${table}`)
-    .join(" UNION ");
-  return db
-    .all(`${union} ORDER BY namespace`)
-    .map((row) => String(row.namespace));
-}
-
 /**
  * Every row of one namespace in one table, in key order, read `batch` rows at a time by keyset so a caller
  * that stops early never loads the rest. It opens, migrates, repairs and writes nothing.
@@ -41,6 +31,9 @@ export function* readRows(
   namespace: string,
   batch = 500,
 ): Generator<SqlRow> {
+  // A batch that is not a positive safe integer would never advance.
+  if (!Number.isSafeInteger(batch) || batch < 1)
+    throw new RangeError("batch must be a positive safe integer");
   const { columns, key } = STATE_TABLES[table];
   let after: SqlRow[string] | undefined;
   for (;;) {

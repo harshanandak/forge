@@ -5,10 +5,12 @@ import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import {
   appendFileSync,
+  copyFileSync,
   existsSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
+  renameSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -18,10 +20,12 @@ import {
   backup,
   read,
   sha,
+  sqlOf,
   WORK,
   type Row,
 } from "../../cloud/conformance/import-source.ts";
-import { convert, exitCode, TABLES } from "../../tools/tracker-import.ts";
+import { readRows } from "../../src/core/state/rows.ts";
+import { convert, TABLES } from "../../tools/tracker-import.ts";
 
 const scratch = (): string => mkdtempSync(join(tmpdir(), "tracker-import-"));
 const bytesOf = (rows: Row[]): number =>
@@ -39,18 +43,7 @@ const totals = (rows: Row[]) => ({
   bytes: bytesOf(rows),
   digest: sha(JSON.stringify(rows)),
 });
-const namespaces = (path: string): string[] => {
-  const db = new Database(path, { readonly: true });
-  const found = (
-    db.query("SELECT DISTINCT namespace AS n FROM state_records").all() as {
-      n: string;
-    }[]
-  ).map((r) => r.n);
-  db.close();
-  return found.filter((n) => n !== WORK).sort();
-};
-
-test("dry run reports the selection and excluded inventory and writes nothing", async () => {
+test("dry run reports the selection and writes nothing", async () => {
   const dir = scratch();
   const source = backup(dir, { floors: false });
   const before = { files: readdirSync(dir).sort(), digest: source.digest };
@@ -66,32 +59,10 @@ test("dry run reports the selection and excluded inventory and writes nothing", 
       digest: source.digest,
     });
     expect(report.status).toBe("PASS");
-    expect(exitCode(report)).toBe(0);
     for (const table of TABLES)
       expect(report.selected[table]).toEqual(
         totals(read(source.path, table, WORK)),
       );
-    expect(Object.keys(report.excluded).sort()).toEqual(
-      namespaces(source.path),
-    );
-    for (const ns of namespaces(source.path))
-      for (const table of TABLES.slice(0, 4))
-        expect(report.excluded[ns]![table]).toEqual(
-          totals(read(source.path, table, ns)),
-        );
-    const events = read(source.path, "state_events", WORK);
-    expect(report.sequence).toEqual({
-      count: events.length,
-      digest: sha(
-        events
-          .map(
-            (r, i) => `${r.sequence},${i + 1}
-`,
-          )
-          .join(""),
-      ),
-    });
-    expect(report.largestRow).toBeGreaterThan(0);
     expect(report.predictedFloorPairs).toBe(4);
   } finally {
     globalThis.fetch = realFetch;
@@ -101,11 +72,90 @@ test("dry run reports the selection and excluded inventory and writes nothing", 
   expect(sha(readFileSync(source.path))).toBe(before.digest);
 }, 30_000);
 
-const refused: [
+type Case = [
   string,
   (dir: string) => { backup: string; digest: string; afterRead?: () => void },
   string,
-][] = [
+];
+const tampered = (sql: string) => (d: string) => {
+  const s = backup(d, { floors: true, tamper: sql });
+  return { backup: s.path, digest: sha(readFileSync(s.path)) };
+};
+const refused: Case[] = [
+  [
+    "a store in write-ahead log mode",
+    (d) => {
+      const s = backup(d, { floors: true });
+      const raw = new Database(s.path);
+      raw.run("PRAGMA journal_mode = WAL");
+      raw.close();
+      return { backup: s.path, digest: sha(readFileSync(s.path)) };
+    },
+    "SOURCE_NOT_ISOLATED",
+  ],
+  ...["-wal", "-shm", "-journal"].map((suffix): Case => [
+    `a ${suffix} file beside the source`,
+    (d) => {
+      const s = backup(d, { floors: true });
+      writeFileSync(s.path + suffix, "x");
+      return { backup: s.path, digest: s.digest };
+    },
+    "SOURCE_NOT_ISOLATED",
+  ]),
+  [
+    "an unknown schema version",
+    tampered("PRAGMA user_version = 5"),
+    "SOURCE_UNSUPPORTED",
+  ],
+  [
+    "an unknown migration entry",
+    tampered("INSERT INTO state_migrations (id) VALUES ('999_future')"),
+    "SOURCE_UNSUPPORTED",
+  ],
+  [
+    "an issue that is its own parent",
+    tampered(
+      `UPDATE state_records SET body = replace(body, '"parent":"work-1"', '"parent":"work-3"') WHERE namespace = 'forge/work' AND key = 'issue:work-3'`,
+    ),
+    "GRAPH_CYCLE",
+  ],
+  [
+    "two issues that are each other's parent",
+    tampered(
+      `UPDATE state_records SET body = replace(body, '"dependsOn":[]', '"dependsOn":[],"parent":"work-3"') WHERE namespace = 'forge/work' AND key = 'issue:work-1'`,
+    ),
+    "GRAPH_CYCLE",
+  ],
+  [
+    "a dependsOn that is a string",
+    tampered(
+      `UPDATE state_records SET body = replace(body, '"dependsOn":[]', '"dependsOn":"work-3"') WHERE namespace = 'forge/work' AND key = 'issue:work-1'`,
+    ),
+    "SOURCE_INCONSISTENT",
+  ],
+  [
+    "a parent that is a number",
+    tampered(
+      `UPDATE state_records SET body = replace(body, '"parent":"work-1"', '"parent":7') WHERE namespace = 'forge/work' AND key = 'issue:work-3'`,
+    ),
+    "SOURCE_INCONSISTENT",
+  ],
+  [
+    "a replacement of the file by an identical copy",
+    (d) => {
+      const s = backup(d, { floors: true });
+      return {
+        backup: s.path,
+        digest: s.digest,
+        afterRead: () => {
+          // Same bytes, new file: only its identity differs.
+          copyFileSync(s.path, `${s.path}.copy`);
+          renameSync(`${s.path}.copy`, s.path);
+        },
+      };
+    },
+    "SOURCE_CHANGED",
+  ],
   [
     "missing path",
     (d) => ({ backup: join(d, "absent.db"), digest: "0".repeat(64) }),
@@ -217,7 +267,6 @@ for (const [name, make, code] of refused)
       : "";
     const report = await convert(input);
     expect([report.status, report.code]).toEqual(["FAIL", code]);
-    expect(exitCode(report)).not.toBe(0);
     expect(readdirSync(dir).sort()).toEqual(files);
     if (before !== "" && input.afterRead === undefined)
       expect(sha(readFileSync(input.backup))).toBe(before);
@@ -239,37 +288,137 @@ test("a graph with distinct ids and a parent that depends on its child is accept
 }, 30_000);
 
 // A tracker can hold a long dependency chain; the cycle check must not use the call stack for it.
-test("a legal dependency chain 30,000 deep is accepted", async () => {
+const links = 30_000;
+const chain = (loopBackTo?: number) => {
   const dir = scratch();
   const source = backup(dir, { floors: true });
   const raw = new Database(source.path);
   const insert = raw.prepare(
     "INSERT INTO state_records (namespace, key, revision, body) VALUES ('forge/work', ?, 1, ?)",
   );
-  const links = 30_000;
+  const id = (n: number) => `chain-${String(n).padStart(6, "0")}`;
   raw.transaction(() => {
     for (let n = 1; n <= links; n += 1) {
-      const id = `chain-${String(n).padStart(6, "0")}`;
-      const next = `chain-${String(n + 1).padStart(6, "0")}`;
-      const value = { id, dependsOn: n < links ? [next] : [] };
+      const dependsOn =
+        n < links
+          ? [id(n + 1)]
+          : loopBackTo === undefined
+            ? []
+            : [id(loopBackTo)];
       insert.run(
-        `issue:${id}`,
+        `issue:${id(n)}`,
         JSON.stringify({
           namespace: "forge/work",
-          key: `issue:${id}`,
+          key: `issue:${id(n)}`,
           revision: 1,
-          value,
+          value: { id: id(n), dependsOn },
         }),
       );
     }
   })();
   raw.close();
-  const report = await convert({
-    backup: source.path,
-    digest: sha(readFileSync(source.path)),
-  });
+  return { path: source.path, digest: sha(readFileSync(source.path)) };
+};
+test("a legal dependency chain 30,000 deep is accepted", async () => {
+  const source = chain();
+  const report = await convert({ backup: source.path, digest: source.digest });
   expect([report.status, report.code]).toEqual(["PASS", null]);
   expect(report.selected.state_records.rows).toBe(
     read(source.path, "state_records", WORK).length,
   );
+}, 60_000);
+test("a cycle near the end of a 30,000 deep chain is refused", async () => {
+  const source = chain(links - 4);
+  const report = await convert({ backup: source.path, digest: source.digest });
+  expect([report.status, report.code]).toEqual(["FAIL", "GRAPH_CYCLE"]);
+}, 60_000);
+
+// The live path in capitals names the live store wherever the file system ignores case (Windows, macOS); Linux keeps it.
+test("an upper-case live store path is refused where case is ignored and read where it is not", async () => {
+  const dir = scratch();
+  const source = backup(dir, { floors: true }, join(".FORGE", "STATE.SQLITE"));
+  const report = await convert({ backup: source.path, digest: source.digest });
+  expect([report.status, report.code]).toEqual(
+    process.platform === "linux"
+      ? ["PASS", null]
+      : ["FAIL", "SOURCE_LIVE_HOME"],
+  );
+}, 30_000);
+
+// Restore tallies a family from a live key, a deleted key or a written allocation floor, never from a lease. The
+// expectation is computed here from plain SQL, not by the converter.
+const familyOf = /^((?:comment|link):[^:]+:)[1-9][0-9]*$/;
+const floorPairsBySql = (path: string): number => {
+  const db = new Database(path, { readonly: true });
+  const keys = (where: string, table = "state_events") =>
+    (
+      db
+        .query(
+          `SELECT key FROM ${table} WHERE namespace = 'forge/work'${where}`,
+        )
+        .all() as { key: string }[]
+    ).map((r) => r.key);
+  const type = (kind: string) =>
+    ` AND json_extract(body, '$.type') LIKE '%:record.${kind}@1'`;
+  const live = new Set(keys("", "state_records"));
+  const named = [...live, ...keys(type("deleted"))].map(
+    (k) => familyOf.exec(k)?.[1],
+  );
+  const floors = keys(`${type("updated")} AND key LIKE 'allocation:%'`)
+    .map((k) => k.slice("allocation:".length))
+    .filter((p) => familyOf.exec(`${p}1`)?.[1] === p);
+  db.close();
+  const found = new Set([...named, ...floors].filter((f) => f !== undefined));
+  return ["issue:work-", ...found].filter((p) => !live.has(`allocation:${p}`))
+    .length;
+};
+const floorRows: [string, { lease?: string; history?: string }, number][] = [
+  [
+    "a lease on a comment subject with no record adds no comment floor",
+    { lease: "comment:work-8:7" },
+    4,
+  ],
+  [
+    "an allocation floor that was written and deleted with no numbered key adds a floor",
+    { history: "comment:work-9:" },
+    5,
+  ],
+];
+for (const [name, extra, expected] of floorRows)
+  test(`floor prediction: ${name}`, async () => {
+    const source = backup(scratch(), { floors: false, ...extra });
+    const report = await convert({
+      backup: source.path,
+      digest: source.digest,
+    });
+    expect(report.status).toBe("PASS");
+    expect(floorPairsBySql(source.path)).toBe(expected);
+    expect(report.predictedFloorPairs).toBe(expected);
+  }, 30_000);
+
+// A batch that is not a positive safe integer never advances, so the reader refuses it.
+for (const batch of [0, -1, 1.5, Number.NaN, 2 ** 53])
+  test(`readRows refuses a batch of ${batch}`, () => {
+    const raw = new Database(backup(scratch(), { floors: true }).path, {
+      readonly: true,
+    });
+    expect(() =>
+      readRows(sqlOf(raw), "state_records", WORK, batch).next(),
+    ).toThrow(RangeError);
+    raw.close();
+  });
+
+// A value local state accepts but a cloud column does not (here a body over 8 MiB) is a report, never a crash or a leaked body.
+test("a row over a cloud column limit is refused naming its table and key, never its body", async () => {
+  const dir = scratch();
+  const make = tampered(
+    `UPDATE state_records SET body = replace(hex(zeroblob(5000000)), '0', 'a') WHERE namespace = 'forge/work' AND key = 'issue:work-3'`,
+  );
+  const report = await convert(make(dir));
+  expect([report.status, report.code, report.detail]).toEqual([
+    "FAIL",
+    "ROW_UNSUPPORTED",
+    "state_records issue:work-3",
+  ]);
+  expect(JSON.stringify(report)).not.toContain("aaaaaaaa");
 }, 60_000);

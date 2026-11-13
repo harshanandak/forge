@@ -48,6 +48,10 @@ export interface Shape {
   deps?: string[];
   /** A raw SQL statement applied to the finished backup. */
   tamper?: string;
+  /** A lease on this subject and no record for it. */
+  lease?: string;
+  /** An allocation floor for this family that was written and then deleted, with no numbered key. */
+  history?: string;
 }
 export const issue = (n: number, extra: object = {}) => ({
   id: `work-${n}`,
@@ -105,6 +109,13 @@ export function backup(dir: string, shape: Shape, name = "source.db") {
     fence: { subject, holder: HOLDER, generation: lease.generation },
   });
   put("forge/other", "other:key", { x: 1 });
+  if (shape.lease !== undefined)
+    owner.acquire(WORK, shape.lease, HOLDER, 100, "claim-extra");
+  if (shape.history !== undefined) {
+    const floor = `allocation:${shape.history}`;
+    put(WORK, floor, { prefix: shape.history, number: 3 });
+    owner.delete(WORK, floor, ACTOR, { expectRevision: 1 });
+  }
   if (shape.floors)
     for (const [prefix, number] of [
       ["issue:work-", 3],

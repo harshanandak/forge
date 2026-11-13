@@ -68,7 +68,7 @@ const valueLimit = (table: string, column: string): number =>
 const MAX_CURSOR_LENGTH = 47 + 2 * 6 * MAX_VALUE_LENGTH + 39;
 const WATERMARK = /^(?:\d{1,19}\.\d{1,19})?$/;
 const encoder = new TextEncoder();
-export const byteLength = (value: unknown): number =>
+const byteLength = (value: unknown): number =>
   encoder.encode(JSON.stringify(value)).length;
 // A whole (unpaged) dump holds at most this much stored. Escaping can grow it up to six times, so dumpOf
 // also measures the serialized size against the restore body.
