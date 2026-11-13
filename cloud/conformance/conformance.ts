@@ -4750,37 +4750,52 @@ if (phase === "budget-body") {
         built.push({ tail, size });
         return { ...near, size };
       };
-      let near = await build(1_000);
-      for (let n = 0; n < 2 && (near.size < low || near.size > limit); n += 1) {
-        const last = built.at(-1)!;
-        const before = built.at(-2);
-        const slope =
-          before === undefined
-            ? 4
-            : (last.size - before.size) / (last.tail - before.tail);
-        near = await build(
-          Math.max(
+      const fixture = async () => {
+        let near = await build(1_000);
+        for (
+          let n = 0;
+          n < 2 && (near.size < low || near.size > limit);
+          n += 1
+        ) {
+          const last = built.at(-1)!;
+          const before = built.at(-2);
+          const slope =
+            before === undefined
+              ? 4
+              : (last.size - before.size) / (last.tail - before.tail);
+          const tail = Math.max(
             1,
             Math.round(last.tail + ((low + limit) / 2 - last.size) / slope),
-          ),
+          );
+          // Drop the previous tables before building the next fixture.
+          near.tables = {};
+          near = await build(tail);
+        }
+        const rows = Object.fromEntries(
+          Object.entries(near.tables).map(([table, list]) => [
+            table,
+            list.length,
+          ]),
         );
-      }
-      const rows = Object.fromEntries(
-        Object.entries(near.tables).map(([table, list]) => [
-          table,
-          list.length,
-        ]),
-      );
-      assert.ok(
-        near.size >= low && near.size <= limit,
-        `the expected page is ${near.size} bytes, outside ${low}..${limit} after ${built.length} builds`,
-      );
-      assert.ok(
-        near.stored <= limit && Math.max(...Object.values(rows)) <= 100,
-        `the fixture holds ${near.stored} stored bytes and ${JSON.stringify(rows)} rows`,
-      );
-      const text = JSON.stringify(oracle.finalPage(near.tables));
-      assert.equal(Buffer.byteLength(text), near.size);
+        assert.ok(
+          near.size >= low && near.size <= limit,
+          `the expected page is ${near.size} bytes, outside ${low}..${limit} after ${built.length} builds`,
+        );
+        assert.ok(
+          near.stored <= limit && Math.max(...Object.values(rows)) <= 100,
+          `the fixture holds ${near.stored} stored bytes and ${JSON.stringify(rows)} rows`,
+        );
+        const text = JSON.stringify(oracle.finalPage(near.tables));
+        assert.equal(Buffer.byteLength(text), near.size);
+        return {
+          text,
+          size: near.size,
+          stored: near.stored,
+          rows,
+          expected: oracle.digestOf(near.tables),
+        };
+      };
+      const { text, size, stored, rows, expected } = await fixture();
       const [source, target] = [`${run}-body-src`, `${run}-body-dst`];
       okValue(await adminCall(source, "POST", "restore", text), "body seed");
       const trip = await roundTrip(
@@ -4796,9 +4811,9 @@ if (phase === "budget-body") {
         trip.bytes[0]! >= low,
         `the real page is ${trip.bytes[0]} bytes`,
       );
-      assert.deepEqual(trip.digests, oracle.digestOf(near.tables));
+      assert.deepEqual(trip.digests, expected);
       console.log(
-        `INFO body: expected and real page ${near.size} bytes (${limit - near.size} under the restore body), ${near.stored} stored bytes, rows ${JSON.stringify(rows)}, builds ${JSON.stringify(built)}`,
+        `INFO body: expected and real page ${size} bytes (${limit - size} under the restore body), ${stored} stored bytes, rows ${JSON.stringify(rows)}, builds ${JSON.stringify(built)}`,
       );
       showDigests("body", trip.digests);
     },
