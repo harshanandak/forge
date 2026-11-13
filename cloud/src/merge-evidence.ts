@@ -1,4 +1,5 @@
 // Caller-created observations confer no provenance or admission/close authority.
+import { isPlainJson } from "./plain-json.ts";
 type Guard<T> = (value: unknown) => value is T;
 type Value<G> = G extends Guard<infer T> ? T : never;
 type Fields = Readonly<Record<string, Guard<unknown>>>;
@@ -6,14 +7,12 @@ type Shape<S extends Fields> = { readonly [K in keyof S]: Value<S[K]> };
 const record = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v);
 function shape<S extends Fields>(fields: S): Guard<Shape<S>> {
-  return (v): v is Shape<S> => {
-    if (!record(v)) return false;
-    // Unique known keys bound enumeration to at most the field count plus one.
-    for (const key in v) if (!Object.hasOwn(fields, key)) return false;
-    return Object.entries(fields).every(
+  return (v): v is Shape<S> =>
+    record(v) &&
+    Object.keys(v).length === Object.keys(fields).length &&
+    Object.entries(fields).every(
       ([key, valid]) => Object.hasOwn(v, key) && valid(v[key]),
     );
-  };
 }
 const text: Guard<string> = (v): v is string =>
   typeof v === "string" &&
@@ -47,7 +46,7 @@ function list<T>(valid: Guard<T>, weight?: Weight): Guard<readonly T[]> {
     if (!Array.isArray(v)) return false;
     const rows = v as unknown[];
     const length = rows.length;
-    if (length > 256 || Object.hasOwn(rows, Symbol.iterator)) return false;
+    if (length > 256) return false;
     let total = 0;
     if (weight) for (let i = 0; i < length; i++) total += weight(rows[i]);
     if (total > 4096) return false;
@@ -186,6 +185,9 @@ export function evaluateMergeEvidence(
   observation: unknown,
   verifiedAt: unknown,
 ): MergeEligibility {
+  const inputs = [policy, expected, observation, verifiedAt];
+  if (!isPlainJson(inputs.map((v) => v ?? null)))
+    return refuse("INPUT_INVALID", "Inputs must be plain JSON data");
   if (
     !policyGuard(policy) ||
     !policy.requiredChecks.length ||
@@ -312,6 +314,7 @@ export function evaluateMergeEvidence(
       targetTip: observation.targetTip,
       ancestry: "ancestor",
       verifiedAt,
+      // Entry validation guarantees enumerable plain data, so cloning preserves every field.
       runs: structuredClone(current),
     },
   };
