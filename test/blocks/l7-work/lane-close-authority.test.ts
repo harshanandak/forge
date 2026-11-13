@@ -118,12 +118,13 @@ async function fixture(seedLink = true) {
     state: {
       ...state,
       now: () => now,
-      put: (...args: Parameters<typeof state.put>) => {
+      // The landing note is a numbered write, so the injected failure fires at the numbered-write seam.
+      putNext: (...args: Parameters<typeof state.putNext>) => {
         if (args[0].startsWith("comment:") && flags.failComment) {
           flags.failComment = false;
           throw new Error("injected landing comment failure");
         }
-        return state.put(...args);
+        return state.putNext(...args);
       },
     },
     receipts: {
@@ -682,3 +683,57 @@ test("the next close removes a stale private ref and keeps a fresh one", async (
     await f.dispose();
   }
 }, 30_000);
+
+for (const mode of [
+  "ordinary",
+  "recovered after release",
+  "recovered after expiry",
+])
+  test(`a landing note after a deleted high comment takes the next shared suffix (${mode})`, async () => {
+    const f = await fixture();
+    try {
+      for (const n of [1, 2])
+        f.owner.put(
+          namespace,
+          `comment:${id}:${n}`,
+          { id, body: `earlier ${n}` },
+          f.holder.actor,
+          { expectRevision: 0 },
+        );
+      f.owner.delete(namespace, `comment:${id}:2`, f.holder.actor, {
+        expectRevision: 1,
+      });
+      const deleted = f.owner.events(namespace, `comment:${id}:2`);
+      const key = `comment:${id}:3`;
+      if (mode === "ordinary") await f.close();
+      else {
+        f.flags.failComment = true;
+        await expect(f.close()).rejects.toThrow(
+          "injected landing comment failure",
+        );
+        if (mode.endsWith("release")) f.state.release(`issue:${id}`);
+        else f.expire();
+        const issue = f.state.get(`issue:${id}`),
+          lease = f.state.lease(`issue:${id}`);
+        const input = { id, pr: 1, receipt: "proof", generation: 1 };
+        const written = f.state.appendLandingComment(input);
+        expect(written.key).toBe(key);
+        // The matching-note early return writes nothing and takes no number.
+        const events = f.owner.events(namespace);
+        expect(f.state.appendLandingComment(input)).toEqual(written);
+        expect(f.owner.events(namespace)).toEqual(events);
+        expect(f.state.get(`issue:${id}`)).toEqual(issue);
+        expect(f.state.lease(`issue:${id}`)).toEqual(lease);
+      }
+      expect(f.comments().map((row) => row.key)).toEqual([
+        `comment:${id}:1`,
+        key,
+      ]);
+      expect(
+        f.owner.get(namespace, `allocation:comment:${id}:`)?.value,
+      ).toEqual({ prefix: `comment:${id}:`, number: 3 });
+      expect(f.owner.events(namespace, `comment:${id}:2`)).toEqual(deleted);
+    } finally {
+      await f.dispose();
+    }
+  }, 30_000);

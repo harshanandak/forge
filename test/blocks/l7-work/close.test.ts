@@ -9,6 +9,7 @@ import type { ProcessService } from "../../../src/assembly/providers.ts";
 import type { ProcessResult } from "../../../src/ports/process.ts";
 import { ForgeFailure } from "../../../src/contract/failure.ts";
 import { refuse } from "../../../src/core/trust/index.ts";
+import { fakeNext } from "./fake-numbered.ts";
 
 setDefaultTimeout(30_000);
 
@@ -91,12 +92,29 @@ test("lane close retries an injected landing-comment write failure exactly once"
           put(prefix + (comments.length + 1), { id: input.id, body: note })
         );
       },
-      put: (key: string, value: Record<string, unknown>) => {
-        if (key.startsWith("comment:") && flags.fail) {
+      put: (key: string, value: Record<string, unknown>) => put(key, value),
+      // The landing note is a numbered write, so the injected failure fires at the numbered-write seam.
+      putNext: (prefix: string, build: Parameters<typeof fakeNext>[2]) => {
+        if (prefix.startsWith("comment:") && flags.fail) {
           flags.fail = false;
           throw new Error("injected comment failure");
         }
-        return put(key, value);
+        return fakeNext(
+          {
+            maxNumber: (p: string) =>
+              [...rows.keys()]
+                .filter((key) => key.startsWith(p))
+                .reduce(
+                  (max, key) =>
+                    Math.max(max, Number(/\d+$/.exec(key)?.[0] ?? 0)),
+                  0,
+                ),
+            put: (key: string, value: unknown) =>
+              put(key, value as Record<string, unknown>),
+          },
+          prefix,
+          build,
+        );
       },
     },
     receipts: { get: () => ({ id: "proof", status: "PASS", subject: merge }) },

@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, expect, setDefaultTimeout, test } from "bun:test";
 import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
+import { fakeNext } from "./fake-numbered.ts";
 import {
   SchemaRegistry,
   type SchemaObject,
@@ -109,6 +110,8 @@ function project(stampDelay = 0) {
       records.set(key, record);
       return record;
     },
+    putNext: (prefix: string, build: Parameters<typeof fakeNext>[2]): unknown =>
+      fakeNext(state, prefix, build),
   };
   const run = (
     op: string,
