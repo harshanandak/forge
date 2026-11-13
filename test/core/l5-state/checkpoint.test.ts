@@ -205,8 +205,7 @@ for (const kind of [
     ["duplicate", (rows: unknown[][]) => rows.push([...rows[0]!])],
     [
       "out of order",
-      (rows: unknown[][]) =>
-        rows.unshift(["forge/zz", ...rows[0]!.slice(1)]),
+      (rows: unknown[][]) => rows.unshift(["forge/zz", ...rows[0]!.slice(1)]),
     ],
     [
       "entry past C",
