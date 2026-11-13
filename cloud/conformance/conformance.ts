@@ -138,15 +138,12 @@ async function adminCall(
   body?: string,
   token = adminToken,
 ): Promise<{ status: number; body: AdminBody }> {
-  recordBodyMemory(`before ${project} ${method} ${route}`);
   const response = await fetch(`${base}/p/${project}/${route}`, {
     method,
     headers: token === "" ? {} : { authorization: `Bearer ${token}` },
     ...(body === undefined ? {} : { body }),
     signal: AbortSignal.timeout(60_000),
   });
-  if (phase === "large")
-    recordBodyMemory(`headers ${project} ${method} ${route}`);
   let bodyValue: AdminBody;
   if (
     (phase === "large" || phase === "budget-body") &&
@@ -154,9 +151,7 @@ async function adminCall(
     route.startsWith("dump")
   ) {
     const text = await response.text();
-    recordBodyMemory(`dump read ${project} ${route}`);
     bodyValue = JSON.parse(text) as AdminBody;
-    recordBodyMemory(`dump parsed ${project} ${route}`);
     if (response.status === 200 && route.startsWith("dump?")) {
       const prefix = '{"ok":true,"value":';
       assert.ok(
@@ -173,7 +168,6 @@ async function adminCall(
     bodyValue = (await response.json()) as AdminBody;
   }
   const result = { status: response.status, body: bodyValue };
-  recordBodyMemory(`after ${project} ${method} ${route}`);
   return result;
 }
 // An admin restore that declares `length` bytes in Content-Length and sends none of them. The reply is
@@ -448,7 +442,6 @@ const SKIP_UPLOAD =
   "requires the local Worker to answer an incomplete upload before the body arrives; deployed ingress is not covered by that transport assumption";
 const failures: string[] = [];
 async function check(name: string, body: () => Promise<void>): Promise<void> {
-  if (phase === "large") recordBodyMemory(`check start ${name}`);
   try {
     await body();
     console.log(`PASS ${name}`);
@@ -458,7 +451,6 @@ async function check(name: string, body: () => Promise<void>): Promise<void> {
       `FAIL ${name}: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
-  if (phase === "large") recordBodyMemory(`check end ${name}`);
 }
 
 // Budget journeys (forge-1304): real exported pages restored through the Worker and compared exactly. A second
@@ -509,13 +501,6 @@ function okValue<T>(
   assert.equal(reply.body.ok, true, `${what} is not ok`);
   return reply.body.value as T;
 }
-const bodyMemory: Record<string, NodeJS.MemoryUsage> = {};
-const largeMemory: { step: string; memory: NodeJS.MemoryUsage }[] = [];
-function recordBodyMemory(step: string): void {
-  if (phase === "budget-body") bodyMemory[step] = process.memoryUsage();
-  if (phase === "large")
-    largeMemory.push({ step, memory: process.memoryUsage() });
-}
 // The real export of `project`: GET dump?cursor=start, then only the cursor each page returns, URL-encoded, until next
 // is null. `each` sees every page once and nothing is kept after it. The page document, not the HTTP envelope,
 // is what the budget bounds. Body readback counts its JSON bytes incrementally instead of keeping a full string.
@@ -538,13 +523,11 @@ async function walk(
       await adminCall(project, "GET", route),
       `${label} export`,
     );
-    recordBodyMemory(`${label} parsed`);
     const received = pageWire.get(page);
     pageWire.delete(page);
     const readback = phase === "budget-body" && label === "body readback";
     const text = readback ? "" : (received?.text ?? JSON.stringify(page));
     const bytes = received?.bytes ?? Buffer.byteLength(text);
-    recordBodyMemory(`${label} sized`);
     trip.bytes.push(bytes);
     assert.ok(
       bytes <= budget,
@@ -599,13 +582,11 @@ async function roundTrip(
     );
     for (const [table, rows] of Object.entries(page.tables))
       sent.add(table, rows);
-    recordBodyMemory(`${label} sent digest`);
   });
   const back = digester();
   const read = await walk(target, `${label} readback`, budget, (page) => {
     for (const [table, rows] of Object.entries(page.tables))
       back.add(table, rows);
-    recordBodyMemory(`${label} readback digest`);
   });
   const digests = sent.done();
   assert.deepEqual(
@@ -3839,7 +3820,6 @@ if (phase === "large") {
   const prefix = process.env.FORGE_CLOUD_ID_PREFIX ?? "ci";
   const id = `${prefix}-1`;
   const source = await maxSource(typedProject, prefix);
-  recordBodyMemory("maximum fixture built");
   const want = source.tables;
   const differing = (got: Dump["tables"]): string[] =>
     Object.keys(want).filter(
@@ -4050,16 +4030,14 @@ if (phase === "large") {
           await typedCall(caller, { ...wide(n), context: asProject(caller) }),
         );
       const grown = tablesOf(source.db);
-      recordBodyMemory("maximum grown tables");
       const expected = Array.from(
         oracle.eachCutPage(grown, budget),
-        oracle.utf8,
+        oracle.pageBytes,
       );
-      recordBodyMemory("maximum expected pages");
       // The fixture must tell a UTF-16 count from a byte count: cut by units, a page overfills by real bytes.
       const units = Array.from(
         oracle.eachCutPage(grown, budget, oracle.utf16),
-        oracle.utf8,
+        oracle.pageBytes,
       );
       assert.ok(
         units.some((size) => size > budget),
@@ -4097,7 +4075,9 @@ if (phase === "large") {
       showDigests("maximum", trip.digests);
     },
   );
-  console.log(`INFO large memory summary: ${JSON.stringify(largeMemory)}`);
+  console.log(
+    `INFO large final memory: ${JSON.stringify(process.memoryUsage())}`,
+  );
 }
 
 // forge-1306: comment and link numbers are never reused after a delete. The isolated "numbers" and "numbers-restart" runs
@@ -4801,9 +4781,7 @@ if (phase === "budget-body") {
       const built: { tail: number; size: number }[] = [];
       const build = async (tail: number) => {
         const near = await nearSource(tail);
-        recordBodyMemory(`fixture ${tail}`);
         const size = oracle.utf8(oracle.finalPage(near.tables));
-        recordBodyMemory(`fixture size ${tail}`);
         built.push({ tail, size });
         return { ...near, size };
       };
@@ -4856,7 +4834,6 @@ if (phase === "budget-body") {
       let { text } = fixtureResult;
       const { size, stored, rows, expected } = fixtureResult;
       fixtureResult.text = "";
-      recordBodyMemory("expected digest");
       const [source, target] = [`${run}-body-src`, `${run}-body-dst`];
       okValue(await adminCall(source, "POST", "restore", text), "body seed");
       const trip = await roundTrip(
@@ -4879,7 +4856,9 @@ if (phase === "budget-body") {
         `INFO body: expected and real page ${size} bytes (${limit - size} under the restore body), ${stored} stored bytes, rows ${JSON.stringify(rows)}, builds ${JSON.stringify(built)}`,
       );
       showDigests("body", trip.digests);
-      console.log(`INFO body memory summary: ${JSON.stringify(bodyMemory)}`);
+      console.log(
+        `INFO body final memory: ${JSON.stringify(process.memoryUsage())}`,
+      );
     },
   );
 }
