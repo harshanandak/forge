@@ -1,9 +1,10 @@
 // Operator tool: reads an isolated local state backup and reports what converting its forge/work namespace for
-// cloud restore would select (forge-1231). It is a dry run: it writes nothing, uses no network and never opens
-// the home store. Writing the page files, the command line, the sequence map and the other-namespace inventory are follow-up slices.
+// cloud restore would select (forge-1231). It is a dry run: it uses no network, never opens the home store and
+// writes only a private temporary copy of the source bytes, deleted before it returns. Writing the page files, the command line, the sequence map and the other-namespace inventory are follow-up slices.
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import * as fs from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { rowOf, type Row } from "../cloud/src/dump.ts";
 import { createSqliteStore } from "../src/adapters/store-sqlite/index.ts";
 import { ForgeFailure } from "../src/contract/failure.ts";
@@ -31,7 +32,7 @@ export interface Options {
   /** The isolated backup file, and the sha256 the lead recorded for it. */
   readonly backup: string;
   readonly digest: string;
-  /** Test seam: runs after the rows are read and before the second digest check. */
+  /** Test seam: runs once the source bytes are read, before they are checked or copied. */
   readonly afterRead?: () => void;
 }
 export interface Report {
@@ -51,10 +52,9 @@ const isLive = (path: string): boolean =>
     process.platform === "linux" ? "" : "i",
   ).test(path.replaceAll("\\", "/"));
 const SIDECARS = ["-wal", "-shm", "-journal"];
-const identity = (path: string): string => {
-  const { dev, ino } = statSync(path, { bigint: true });
-  return `${dev}:${ino}`;
-};
+/** The largest source read into memory; a bigger file is refused before it is read. */
+export const MAX_SOURCE_BYTES = 256 * 1024 * 1024;
+export const COPY_PREFIX = "forge-import-copy-";
 const FAMILY = /^((?:comment|link):[^:]+:)[1-9][0-9]*$/;
 /** The family restore tallies from one event: a deleted key's own, or an allocation floor that was written; never a lease's. */
 function eventFamily(key: string, body: unknown): string | undefined {
@@ -111,11 +111,7 @@ function totals() {
   };
 }
 
-interface Stored {
-  id?: unknown;
-  dependsOn?: unknown;
-  parent?: unknown;
-}
+type Stored = { id?: unknown; dependsOn?: unknown; parent?: unknown };
 interface Issue {
   deps: string[];
   parent?: string;
@@ -232,26 +228,35 @@ function analyse(db: SqlDatabase): Omit<Report, "status" | "code" | "detail"> {
 
 export async function convert(options: Options): Promise<Report> {
   let path = resolve(options.backup);
+  const dir = fs.mkdtempSync(join(tmpdir(), COPY_PREFIX));
   try {
     // The live store is refused by its own path and by where any link to it really leads.
     if (isLive(path)) throw new Refusal("SOURCE_LIVE_HOME");
     try {
-      path = realpathSync.native(path);
+      path = fs.realpathSync.native(path);
     } catch {
       throw new Refusal("SOURCE_MISSING");
     }
     if (isLive(path)) throw new Refusal("SOURCE_LIVE_HOME");
     // A write-ahead log or a hot journal can change committed rows that the hash of this file does not cover.
-    if (SIDECARS.some((suffix) => existsSync(path + suffix)))
+    if (SIDECARS.some((suffix) => fs.existsSync(path + suffix)))
       throw new Refusal("SOURCE_NOT_ISOLATED");
+    // The file is read once; every later check, the digest and the open use these bytes, never the path.
     let bytes: Buffer;
-    let first: string;
     try {
-      first = identity(path);
-      bytes = readFileSync(path);
-    } catch {
-      throw new Refusal("SOURCE_MISSING");
+      const fd = fs.openSync(path, "r");
+      try {
+        if (fs.fstatSync(fd).size > MAX_SOURCE_BYTES)
+          throw new Refusal("SOURCE_TOO_LARGE");
+        bytes = fs.readFileSync(fd);
+      } finally {
+        fs.closeSync(fd);
+      }
+    } catch (error) {
+      throw error instanceof Refusal ? error : new Refusal("SOURCE_MISSING");
     }
+    options.afterRead?.();
+    if (bytes.length > MAX_SOURCE_BYTES) throw new Refusal("SOURCE_TOO_LARGE");
     if (sha(bytes) !== options.digest)
       throw new Refusal("SOURCE_DIGEST_MISMATCH");
     if (bytes.subarray(0, 15).toString() !== "SQLite format 3")
@@ -259,8 +264,11 @@ export async function convert(options: Options): Promise<Report> {
     // File-format bytes 18 and 19 are 2 in write-ahead log mode, and opening such a file can create -wal and -shm.
     if (bytes[18] === 2 || bytes[19] === 2)
       throw new Refusal("SOURCE_NOT_ISOLATED");
-    const opened = await createSqliteStore(dirname(path)).open({
-      path,
+    // SQLite reads a private copy of exactly the bytes that were hashed (removed on every path, refusals included).
+    const copy = join(dir, "source.sqlite");
+    fs.writeFileSync(copy, bytes, { mode: 0o600 });
+    const opened = await createSqliteStore(dir).open({
+      path: copy,
       readOnly: true,
     });
     if (!opened.ok) throw new Refusal("SOURCE_UNSUPPORTED");
@@ -290,18 +298,6 @@ export async function convert(options: Options): Promise<Report> {
     } finally {
       await opened.handle.close();
     }
-    options.afterRead?.();
-    // The same canonical file, with the same bytes, must still be there.
-    try {
-      if (
-        realpathSync.native(path) !== path ||
-        identity(path) !== first ||
-        sha(readFileSync(path)) !== options.digest
-      )
-        throw new Refusal("SOURCE_CHANGED");
-    } catch (error) {
-      throw error instanceof Refusal ? error : new Refusal("SOURCE_CHANGED");
-    }
     return { status: "PASS", code: null, detail: null, ...found };
   } catch (error) {
     if (!(error instanceof Refusal)) throw error;
@@ -316,5 +312,7 @@ export async function convert(options: Options): Promise<Report> {
       >,
       predictedFloorPairs: 0,
     };
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
   }
 }

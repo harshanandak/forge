@@ -4,14 +4,14 @@
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import {
-  appendFileSync,
   copyFileSync,
   existsSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
-  renameSync,
+  rmSync,
   symlinkSync,
+  truncateSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -25,9 +25,19 @@ import {
   type Row,
 } from "../../cloud/conformance/import-source.ts";
 import { readRows } from "../../src/core/state/rows.ts";
-import { convert, TABLES } from "../../tools/tracker-import.ts";
+import {
+  convert,
+  COPY_PREFIX,
+  MAX_SOURCE_BYTES,
+  TABLES,
+} from "../../tools/tracker-import.ts";
 
 const scratch = (): string => mkdtempSync(join(tmpdir(), "tracker-import-"));
+// The converter's private copy of the source lives in its own temporary directory, which must never outlive a call.
+const copies = (): string[] =>
+  readdirSync(tmpdir())
+    .filter((name) => name.startsWith(COPY_PREFIX))
+    .sort();
 const bytesOf = (rows: Row[]): number =>
   rows.reduce(
     (sum, row) =>
@@ -47,6 +57,7 @@ test("dry run reports the selection and writes nothing", async () => {
   const dir = scratch();
   const source = backup(dir, { floors: false });
   const before = { files: readdirSync(dir).sort(), digest: source.digest };
+  const leftovers = copies();
   const fetched: unknown[] = [];
   const realFetch = globalThis.fetch;
   globalThis.fetch = ((...args: unknown[]) => (
@@ -68,13 +79,14 @@ test("dry run reports the selection and writes nothing", async () => {
     globalThis.fetch = realFetch;
   }
   expect(fetched).toEqual([]);
+  expect(copies()).toEqual(leftovers);
   expect(readdirSync(dir).sort()).toEqual(before.files);
   expect(sha(readFileSync(source.path))).toBe(before.digest);
 }, 30_000);
 
 type Case = [
   string,
-  (dir: string) => { backup: string; digest: string; afterRead?: () => void },
+  (dir: string) => { backup: string; digest: string },
   string,
 ];
 const tampered = (sql: string) => (d: string) => {
@@ -141,22 +153,6 @@ const refused: Case[] = [
     "SOURCE_INCONSISTENT",
   ],
   [
-    "a replacement of the file by an identical copy",
-    (d) => {
-      const s = backup(d, { floors: true });
-      return {
-        backup: s.path,
-        digest: s.digest,
-        afterRead: () => {
-          // Same bytes, new file: only its identity differs.
-          copyFileSync(s.path, `${s.path}.copy`);
-          renameSync(`${s.path}.copy`, s.path);
-        },
-      };
-    },
-    "SOURCE_CHANGED",
-  ],
-  [
     "missing path",
     (d) => ({ backup: join(d, "absent.db"), digest: "0".repeat(64) }),
     "SOURCE_MISSING",
@@ -190,18 +186,6 @@ const refused: Case[] = [
       return { backup: join(d, "alias", "state.sqlite"), digest: live.digest };
     },
     "SOURCE_LIVE_HOME",
-  ],
-  [
-    "a source that changes between the two digest checks",
-    (d) => {
-      const s = backup(d, { floors: true });
-      return {
-        backup: s.path,
-        digest: s.digest,
-        afterRead: () => appendFileSync(s.path, "x"),
-      };
-    },
-    "SOURCE_CHANGED",
   ],
   [
     "jsonl input",
@@ -262,14 +246,15 @@ for (const [name, make, code] of refused)
     const dir = scratch();
     const input = make(dir);
     const files = readdirSync(dir).sort();
+    const leftovers = copies();
     const before = existsSync(input.backup)
       ? sha(readFileSync(input.backup))
       : "";
     const report = await convert(input);
     expect([report.status, report.code]).toEqual(["FAIL", code]);
     expect(readdirSync(dir).sort()).toEqual(files);
-    if (before !== "" && input.afterRead === undefined)
-      expect(sha(readFileSync(input.backup))).toBe(before);
+    expect(copies()).toEqual(leftovers);
+    if (before !== "") expect(sha(readFileSync(input.backup))).toBe(before);
   }, 30_000);
 
 // Real stores wrap each issue in its record's `value`, and an epic may depend on its own children: both are legal.
@@ -396,6 +381,50 @@ for (const [name, extra, expected] of floorRows)
     expect(report.predictedFloorPairs).toBe(expected);
   }, 30_000);
 
+// The report describes the bytes that were read once, even when the source path is swapped before anything opens them.
+test("a swap of the source after it is read still reports the original bytes", async () => {
+  const source = backup(scratch(), { floors: true });
+  const other = backup(scratch(), { floors: false });
+  const of = (path: string, table: (typeof TABLES)[number]) =>
+    totals(read(path, table, WORK));
+  // Read before the swap: the swapped-in store would select different rows, so a report that followed the path could not match.
+  const expected = Object.fromEntries(
+    TABLES.map((table) => [table, of(source.path, table)]),
+  ) as Record<(typeof TABLES)[number], ReturnType<typeof totals>>;
+  expect(of(other.path, "state_records")).not.toEqual(expected.state_records);
+  const floors = floorPairsBySql(source.path);
+  const leftovers = copies();
+  const report = await convert({
+    backup: source.path,
+    digest: source.digest,
+    afterRead: () => copyFileSync(other.path, source.path),
+  });
+  expect(sha(readFileSync(source.path))).toBe(other.digest);
+  expect(report.status).toBe("PASS");
+  for (const table of TABLES)
+    expect(report.selected[table]).toEqual(expected[table]);
+  expect(report.predictedFloorPairs).toBe(floors);
+  expect(copies()).toEqual(leftovers);
+}, 30_000);
+
+// A source over the limit is refused by its size, before it is read into memory.
+test("a source over the size limit is refused with a fixed code and leaves no copy", async () => {
+  const dir = scratch();
+  try {
+    const source = backup(dir, { floors: true });
+    truncateSync(source.path, MAX_SOURCE_BYTES + 1);
+    const leftovers = copies();
+    const report = await convert({
+      backup: source.path,
+      digest: source.digest,
+    });
+    expect([report.status, report.code]).toEqual(["FAIL", "SOURCE_TOO_LARGE"]);
+    expect(copies()).toEqual(leftovers);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 30_000);
+
 // A batch that is not a positive safe integer never advances, so the reader refuses it.
 for (const batch of [0, -1, 1.5, Number.NaN, 2 ** 53])
   test(`readRows refuses a batch of ${batch}`, () => {
@@ -406,7 +435,7 @@ for (const batch of [0, -1, 1.5, Number.NaN, 2 ** 53])
       readRows(sqlOf(raw), "state_records", WORK, batch).next(),
     ).toThrow(RangeError);
     raw.close();
-  });
+  }, 30_000);
 
 // A value local state accepts but a cloud column does not (here a body over 8 MiB) is a report, never a crash or a leaked body.
 test("a row over a cloud column limit is refused naming its table and key, never its body", async () => {
