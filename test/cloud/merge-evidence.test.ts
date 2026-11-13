@@ -155,6 +155,7 @@ const rows: Row[] = [
     "wrong policy repository",
     (f) => {
       f.policy.repositoryId++;
+      f.policy.producer.repositoryId = f.policy.repositoryId;
     },
     "INPUT_CONFLICT",
   ],
