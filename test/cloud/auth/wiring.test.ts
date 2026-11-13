@@ -482,46 +482,51 @@ test("device issuance and project reads still require the issued device token", 
   }
 }, 30_000);
 
-test("rejected owner writes preserve provisioning and a paged admin restore", async () => {
-  const f = await ownerFixture();
-  try {
-    expect((await f.post("claim", "{")).status).toBe(400);
-    expect(f.values.get("provisioned")).toBeUndefined();
-    const dumped = await f.configured.fetch(
-      f.request("dump", "fixture-admin"),
-      f.env,
-    );
-    const {
-      value: { tables },
-    } = (await dumped.json()) as {
-      value: { tables: Record<string, unknown[]> };
-    };
-    tables.state_records = [
-      { namespace: "n", key: "staged", revision: 1, body: "{}" },
-    ];
-    const page = {
-      format: "forge-cloud-dump-page/1",
-      page: 0,
-      last: false,
-      next: "more",
-      tables,
-    };
-    expect((await f.post("restore", page, "fixture-admin")).status).toBe(200);
-    const staged = f.db.query("SELECT * FROM state_records").all();
-    for (const body of ["{", { subject: "issue" }]) {
-      expect((await f.post("claim", body)).status).toBe(409);
+for (const version of [1, 2])
+  test(`rejected owner writes preserve provisioning and a version ${version} paged admin restore`, async () => {
+    const f = await ownerFixture();
+    try {
+      expect((await f.post("claim", "{")).status).toBe(400);
       expect(f.values.get("provisioned")).toBeUndefined();
-      expect(f.values.get("restore:next")).toBe(1);
-      expect(f.db.query("SELECT * FROM state_records").all()).toEqual(staged);
+      const dumped = await f.configured.fetch(
+        f.request("dump", "fixture-admin"),
+        f.env,
+      );
+      const {
+        value: { tables },
+      } = (await dumped.json()) as {
+        value: { tables: Record<string, unknown[]> };
+      };
+      if (version === 1) delete tables.domain_cloud_command_receipts;
+      tables.state_records = [
+        { namespace: "n", key: "staged", revision: 1, body: "{}" },
+      ];
+      const page = {
+        format: `forge-cloud-dump-page/${version}`,
+        page: 0,
+        last: false,
+        next: "more",
+        tables,
+      };
+      expect((await f.post("restore", page, "fixture-admin")).status).toBe(200);
+      const staged = f.db.query("SELECT * FROM state_records").all();
+      for (const body of ["{", { subject: "issue" }]) {
+        expect((await f.post("claim", body)).status).toBe(409);
+        expect(f.values.get("provisioned")).toBeUndefined();
+        expect(f.values.get("restore:next")).toEqual({
+          next: 1,
+          format: page.format,
+        });
+        expect(f.db.query("SELECT * FROM state_records").all()).toEqual(staged);
+      }
+      tables.state_records = [];
+      expect(
+        (await f.post("restore", { ...page, page: 1 }, "fixture-admin")).status,
+      ).toBe(200);
+    } finally {
+      f.close();
     }
-    tables.state_records = [];
-    expect(
-      (await f.post("restore", { ...page, page: 1 }, "fixture-admin")).status,
-    ).toBe(200);
-  } finally {
-    f.close();
-  }
-}, 30_000);
+  }, 30_000);
 
 test("owner writes recheck credential expiry after the body finishes streaming", async () => {
   const expiresAt = Math.floor(Date.now() / 1000) * 1000 + 60_000;

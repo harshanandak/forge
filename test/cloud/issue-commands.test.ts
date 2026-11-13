@@ -7595,6 +7595,7 @@ for (const w of WRITES) {
       };
     };
     expect(Object.keys(value.tables).sort()).toEqual([
+      "domain_cloud_command_receipts",
       "domain_cloud_requests",
       "state_events",
       "state_leases",
@@ -7738,7 +7739,7 @@ test("a whole export carries the maximum bodies, receipts and events intact, and
   const before = f.snapshot();
   const got = await f.admin("dump");
   expect(got.status).toBe(200);
-  // Exactly the five tables: differing() only looks at the keys of its second argument.
+  // Exactly the version-2 tables: differing() only looks at the keys of its second argument.
   expect(Object.keys(got.json.value!.tables)).toEqual(Object.keys(tables));
   expect(Object.keys(tables)).toEqual([
     "state_records",
@@ -7746,6 +7747,7 @@ test("a whole export carries the maximum bodies, receipts and events intact, and
     "state_leases",
     "state_requests",
     "domain_cloud_requests",
+    "domain_cloud_command_receipts",
   ]);
   expect(differing(got.json.value!.tables, tables)).toEqual([]);
   expect(f.snapshot()).toBe(before);
@@ -8922,6 +8924,7 @@ for (const trip of TRIPS)
         state_leases: 0,
         state_requests: 0,
         domain_cloud_requests: 0,
+        domain_cloud_command_receipts: 0,
       });
     await createsNext(t, [3, 4]);
     historyKept(t, tables);
@@ -10056,6 +10059,7 @@ const none = (): Tables => ({
   state_leases: [],
   state_requests: [],
   domain_cloud_requests: [],
+  domain_cloud_command_receipts: [],
 });
 const six = (i: number) => String(i).padStart(6, "0");
 const RAW: Record<string, (i: number) => Tables[string][number]> = {
@@ -10302,3 +10306,65 @@ test("a paged restore of 31 deeply nested bodies is refused before any inner JSO
   expect((await run.t.admin("status")).json.value!.initialized).toBe(false);
   expect(Object.values(tablesOf(run.t.db)).flat()).toEqual([]);
 }, 120_000);
+
+for (const trip of TRIPS)
+  test(`a version 1 ${trip} dump restores with an empty command receipt table`, async () => {
+    const { f, tables } = await projectWith((w) => {
+      w.issue(1);
+      w.floor(floorAt(1));
+    });
+    const parts = (await exported(f, trip)).map((part) => {
+      const old = { ...part.tables };
+      delete old.domain_cloud_command_receipts;
+      return {
+        ...part,
+        format:
+          trip === "whole" ? "forge-cloud-dump/1" : "forge-cloud-dump-page/1",
+        tables: old,
+      };
+    });
+    const { t, got } = await restoreInto(trip, tables, { parts });
+    expect(got.status).toBe(200);
+    expect(tablesOf(t.db)).toEqual(tables);
+    expect(tablesOf(t.db).domain_cloud_command_receipts).toEqual([]);
+  }, 30_000);
+
+for (const [first, last, status] of [
+  [1, 1, 200],
+  [2, 2, 200],
+  [1, 2, 400],
+  [2, 1, 400],
+] as const)
+  test(`paged restore version ${first} then ${last} returns ${status} and preserves its target on refusal`, async () => {
+    const { tables } = await projectWith((w) => {
+      w.issue(1);
+      w.floor(floorAt(1));
+    });
+    const parts = pagesOf(tables, 2);
+    expect(parts).toHaveLength(2);
+    const page = (index: number, version: number) => ({
+      ...parts[index]!,
+      format: `forge-cloud-dump-page/${version}`,
+      tables: Object.fromEntries(
+        Object.entries(parts[index]!.tables).filter(
+          ([table]) =>
+            version === 2 || table !== "domain_cloud_command_receipts",
+        ),
+      ),
+    });
+    const t = fixture();
+    const before = (await t.admin("dump")).json;
+    expect(
+      (await t.admin("restore", JSON.stringify(page(0, first)))).status,
+    ).toBe(200);
+    t.reopen();
+    const got = await t.admin("restore", JSON.stringify(page(1, last)));
+    expect([first, last, got.status]).toEqual([first, last, status]);
+    if (status === 400) {
+      expect(got.json.error?.code).toBe("INPUT_INVALID");
+      expect(got.json.error?.message).toContain("version");
+      expect(await t.storage.get("restore:next")).toBeUndefined();
+      expect((await t.admin("status")).json.value!.initialized).toBe(false);
+      expect((await t.admin("dump")).json).toEqual(before);
+    } else expect(tablesOf(t.db)).toEqual(tables);
+  }, 30_000);

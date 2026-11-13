@@ -62,9 +62,8 @@ const rowsOf = (tables: Tables) =>
     rows.map((row) => ({ table, t, row })),
   );
 type Entry = ReturnType<typeof rowsOf>[number];
-// The watermark a cursor carries: the greatest event sequence, and how many receipts the source holds.
-const markOf = (tables: Tables): string =>
-  `${tables.state_events!.reduce((top, row) => Math.max(top, Number(row.sequence)), 0)}.${tables.domain_cloud_requests!.length}`;
+// A restored source starts a fresh epoch at revision zero. Its random epoch has a fixed width.
+const RESTORED_MARK = `${"0".repeat(32)}.${"0".repeat(19)}`;
 const cursorOf = (entry: Entry, p: number, w: string): string =>
   JSON.stringify({
     p,
@@ -88,7 +87,7 @@ export function pageThrough(tables: Tables, count: number): Page {
   const entries = rowsOf(tables).slice(0, count);
   const rows = blank();
   for (const { table, row } of entries) rows[table]!.push(row);
-  return pageOf(0, false, cursorOf(entries.at(-1)!, 1, markOf(tables)), rows);
+  return pageOf(0, false, cursorOf(entries.at(-1)!, 1, RESTORED_MARK), rows);
 }
 
 /**
@@ -103,7 +102,7 @@ export function* eachCutPage(
   envelope = true,
 ): Generator<Page> {
   const rows = rowsOf(tables);
-  const w = markOf(tables);
+  const w = RESTORED_MARK;
   let page = 0;
   let held = blank();
   let used = 0;
@@ -195,7 +194,7 @@ const WIDTH: Record<string, number> = {
  * 64-character project name and a watermark of two 19-digit numbers.
  */
 export function cursorBounds(origin: string): Record<string, number> {
-  const w = `${"9".repeat(19)}.${"9".repeat(19)}`;
+  const w = `${"f".repeat(32)}.${"9".repeat(19)}`;
   return Object.fromEntries(
     Object.keys(SHAPE).map((table, t) => {
       const k = KEYS[table]!.map((column) =>

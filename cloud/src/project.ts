@@ -20,6 +20,9 @@ import { validateLeaseHolder } from "../../src/generated/validators.ts";
 import {
   clearStaged,
   DUMP_FORMAT,
+  DUMP_MIGRATION,
+  COMMAND_RECEIPTS,
+  EXPORT_STATE,
   dumpOf,
   dumpPage,
   limitsFrom,
@@ -88,9 +91,9 @@ const MAX_RESTORE_BODY = 8 * 1024 * 1024;
 // Set in the object's key-value storage when an admin first issues a token. Until then the object
 // runs no SQL at all, so a request that is not authenticated never makes a project database.
 const PROVISIONED = "provisioned";
-// The next page a paged restore expects. Absent when none is under way. The staged rows sit in the
-// project's own tables, but the project is not provisioned until the last page, so no device route
-// reads them: every device route stops at "not provisioned" before it runs any SQL.
+// The next page and original format share one persisted checkpoint, absent outside a restore.
+// Staged rows sit in the project's tables, but no device route reads them before the last page:
+// every device route stops at "not provisioned" before it runs any SQL.
 const STAGED = "restore:next";
 const REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 // StateOwner.lease's own statement, the only one the holder view may run.
@@ -112,8 +115,17 @@ const domain = {
     TOKEN_MIGRATION,
     LOGIN_MIGRATION,
     LIMITS_MIGRATION,
+    DUMP_MIGRATION,
   ],
-  tables: [PRAGMA_TABLE, REQUESTS, TOKENS, LOGIN, LIMITS],
+  tables: [
+    PRAGMA_TABLE,
+    REQUESTS,
+    TOKENS,
+    LOGIN,
+    LIMITS,
+    COMMAND_RECEIPTS,
+    EXPORT_STATE,
+  ],
 };
 
 const fail = (code: string, message: string): ForgeFailure =>
@@ -555,7 +567,8 @@ export class Project {
         message: "A dump restores only into an empty project",
         retry: "never",
       });
-    const staged = (await this.#storage.get(STAGED)) as number | undefined;
+    const staged = (await this.#storage.get(STAGED)) as
+      { next: number; format: string } | undefined;
     let value: Record<string, unknown>;
     if (dump.format === DUMP_FORMAT) {
       if (staged !== undefined) await this.#abandon();
@@ -564,12 +577,17 @@ export class Project {
     } else {
       const page = dump as Page;
       // Page 0 starts again; any other page must be the one the last accepted page named.
-      if (page.page !== 0 && page.page !== staged)
+      if (
+        page.page !== 0 &&
+        (page.page !== staged?.next || page.format !== staged?.format)
+      )
         throw fail(
           "INPUT_INVALID",
           staged === undefined
             ? "No restore is under way: send page 0 first"
-            : `Expected page ${staged}, or page 0 to start again`,
+            : page.format !== staged.format
+              ? "Restore page version changed; send page 0 to start again"
+              : `Expected page ${staged.next}, or page 0 to start again`,
         );
       const { db, owner } = this.#open();
       value = {
@@ -578,7 +596,10 @@ export class Project {
         done: page.last,
       };
       if (!page.last) {
-        await this.#storage.put(STAGED, page.page + 1);
+        await this.#storage.put(STAGED, {
+          next: page.page + 1,
+          format: page.format,
+        });
         return Response.json({ ok: true, value });
       }
       await this.#storage.delete(STAGED);

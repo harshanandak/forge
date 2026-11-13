@@ -4,6 +4,7 @@ import { Database } from "bun:sqlite";
 import {
   dumpOf,
   dumpPage,
+  DUMP_MIGRATION,
   limitsFrom,
   PAGE_FORMAT,
   parseDump,
@@ -34,6 +35,17 @@ const ROW: Record<string, [Row, string]> = {
     { request_id: "r", fingerprint: "{}", outcome: "ok", result: "{}" },
     "",
   ],
+  domain_cloud_command_receipts: [
+    {
+      request_id: "r",
+      fingerprint: "{}",
+      outcome: "ok",
+      result: "{}",
+      created_at: 1,
+      expires_at: 2,
+    },
+    "",
+  ],
 };
 const empty = (): Record<string, Row[]> =>
   Object.fromEntries(Object.keys(ROW).map((table) => [table, []]));
@@ -45,11 +57,14 @@ const row = (table: string, over: Row = {}): [string, Row] => [
 function database(rows: [string, Row][] = []): SqlDatabase {
   const db = new Database(":memory:");
   for (const [table, [sample, key]] of Object.entries(ROW))
-    db.run(
-      `CREATE TABLE ${table} (${Object.entries(sample)
-        .map(([c, v]) => `${c} ${typeof v === "number" ? "INTEGER" : "TEXT"}`)
-        .join(", ")}${key})`,
-    );
+    if (table !== "domain_cloud_command_receipts")
+      db.run(
+        `CREATE TABLE ${table} (${Object.entries(sample)
+          .map(([c, v]) => `${c} ${typeof v === "number" ? "INTEGER" : "TEXT"}`)
+          .join(", ")}${key})`,
+      );
+  for (const sql of DUMP_MIGRATION.statements) db.run(sql);
+  db.run("UPDATE domain_cloud_export SET epoch=?", ["0".repeat(32)]);
   for (const [table, values] of rows)
     db.run(
       `INSERT INTO ${table} (${Object.keys(values).join(", ")}) VALUES (${Object.keys(
@@ -86,7 +101,7 @@ const bytes = (value: unknown): number =>
   new TextEncoder().encode(JSON.stringify(value)).length;
 const dumpText = (table: string, over: Row) =>
   JSON.stringify({
-    format: "forge-cloud-dump/1",
+    format: "forge-cloud-dump/2",
     tables: { ...empty(), [table]: [row(table, over)[1]] },
   });
 const pageText = (tables: Record<string, Row[]>, next: string | null = null) =>
@@ -123,6 +138,7 @@ for (const [table, column, cap] of [
   ["state_events", "body", CAP],
   ["state_requests", "fingerprint", CAP],
   ["state_requests", "result", CAP],
+  ["domain_cloud_command_receipts", "result", CAP],
   ["state_leases", "body", SCALAR],
   ["domain_cloud_requests", "fingerprint", SCALAR],
   ["domain_cloud_requests", "result", SCALAR],
@@ -205,7 +221,13 @@ for (const [name, body] of [
   }, 30_000);
 
 const cursor = (over: object = {}) =>
-  JSON.stringify({ p: 1, t: 0, k: ["n", "k"], w: "1.1", ...over });
+  JSON.stringify({
+    p: 1,
+    t: 0,
+    k: ["n", "k"],
+    w: `${"0".repeat(32)}.${"1".padStart(19, "0")}`,
+    ...over,
+  });
 for (const [name, text] of [
   ["a key part over its ceiling", cursor({ k: ["n", "k".repeat(SCALAR + 1)] })],
   ["a watermark with letters", cursor({ w: "1.x" })],
@@ -213,7 +235,7 @@ for (const [name, text] of [
   ["a watermark number over 19 digits", cursor({ w: `${"1".repeat(20)}.1` })],
   [
     "text over the cursor ceiling",
-    `${JSON.stringify({ p: 0, t: 0, k: null, w: "" })}${" ".repeat(3_145_815)}`,
+    `${JSON.stringify({ p: 0, t: 0, k: null, w: "" })}${" ".repeat(3_145_828)}`,
   ],
 ] as const)
   test(`a cursor is INPUT_INVALID: ${name}`, () => {
@@ -229,8 +251,8 @@ test("the empty start watermark is accepted", () => {
 }, 30_000);
 
 for (const [length, code] of [
-  [3_145_814, undefined],
-  [3_145_815, "INPUT_INVALID"],
+  [3_145_827, undefined],
+  [3_145_828, "INPUT_INVALID"],
 ] as const)
   test(`a page's next of ${length} characters is ${code ?? "accepted"} by the parser`, () => {
     expect(codeOf(() => parseDump(pageText(empty(), "n".repeat(length))))).toBe(
@@ -238,7 +260,25 @@ for (const [length, code] of [
     );
   }, 30_000);
 
-const NOW = "0.0";
+const NOW = `${"0".repeat(32)}.${"0".repeat(19)}`;
+for (const revision of [0, 9, 10, 999])
+  test(`export counter ${revision} keeps continuation bytes fixed across restores`, () => {
+    const db = database([
+      row("state_records", { key: "a", body: "x".repeat(700) }),
+      row("state_records", { key: "b", body: "x".repeat(700) }),
+    ]);
+    const budget = { ...limits, pageBytes: 1600 };
+    const before = dumpPage(db, "start", budget);
+    expect(before.next).not.toBeNull();
+    db.run("UPDATE domain_cloud_export SET revision=?", [revision]);
+    const after = dumpPage(db, "start", budget);
+    const marker = (JSON.parse(after.next!) as { w: string }).w;
+    expect(marker).toBe(
+      `${"0".repeat(32)}.${String(revision).padStart(19, "0")}`,
+    );
+    expect(bytes(after)).toBe(bytes(before));
+    expect(after.tables).toEqual(before.tables);
+  }, 30_000);
 const forged = (over: object = {}) =>
   JSON.stringify({ p: 1, t: 0, k: null, w: NOW, ...over });
 // Every page request is checked against the project limits, so a forged continuation cursor cannot reach
@@ -266,7 +306,12 @@ for (const [name, small, rows] of [
 // A page that is empty or final is a page too: its whole document is within the budget, or it is refused.
 test("an empty or final page over the budget is DUMP_TOO_LARGE, and a final page within it is accepted", () => {
   const tiny = { ...limits, pageBytes: 100 };
-  const past = JSON.stringify({ p: 1, t: 4, k: ["r"], w: "0.1" });
+  const past = JSON.stringify({
+    p: 1,
+    t: 5,
+    k: ["z"],
+    w: `${"0".repeat(32)}.${"1".padStart(19, "0")}`,
+  });
   const one = database([row("domain_cloud_requests")]);
   expect(codeOf(() => dumpPage(undefined, "start", tiny))).toBe(
     "DUMP_TOO_LARGE",
