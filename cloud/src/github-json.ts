@@ -63,53 +63,56 @@ export async function parseGithubJson(
       signal.addEventListener("abort", abort, { once: true });
       detach = () => signal.removeEventListener("abort", abort);
     });
-    const media = response.headers.get("Content-Type") ?? "";
-    if (
-      !/^application\/(?:json|[a-z0-9!#$&^_.+-]+\+json)(?:\s*;.*)?$/i.test(
-        media,
-      )
-    )
-      throw new Error(refuse().reason);
-    const decoder = new TextDecoder("utf-8", { fatal: true });
-    let body = "",
-      size = 0;
-    for (;;) {
-      const chunk = await Promise.race([reader.read(), interrupted]);
-      if (chunk === null || signal.aborted || state.refusal)
-        throw new Error(refuse().reason);
-      if (chunk.done) break;
-      const value: unknown = chunk.value;
-      if (!(value instanceof Uint8Array)) throw new Error(refuse().reason);
-      size += value.byteLength;
-      state.bytes += value.byteLength;
-      if (size > BODY_BYTES || state.bytes > TOTAL_BYTES)
-        throw new Error(refuse().reason);
-      body += decoder.decode(value, { stream: true });
-    }
-    body += decoder.decode();
-    // Syntax accounting precedes parsing, so overwritten and unknown keys are charged.
-    // This token scan is separate from the shared descriptor/depth/node guard.
-    const stack: string[] = [];
-    let previous = "";
-    for (const match of body.matchAll(
-      /"(?:[^"\\]|\\[\s\S])*"|[{}[\],:]|[^\s{}[\],:]+/g,
-    )) {
-      const token = match[0];
+    const reading = async (): Promise<{ ok: true; value: unknown }> => {
+      const media = response.headers.get("Content-Type") ?? "";
       if (
-        (token === ":" ||
-          (stack.at(-1) === "[" &&
-            (previous === "[" || previous === ",") &&
-            token !== "]")) &&
-        ++state.keys > JSON_KEYS
+        !/^application\/(?:json|[a-z0-9!#$&^_.+-]+\+json)(?:\s*;.*)?$/i.test(
+          media,
+        )
       )
-        throw new Error(refuse("INPUT_INVALID").reason);
-      if (token === "[" || token === "{") stack.push(token);
-      if (token === "]" || token === "}") stack.pop();
-      previous = token;
-    }
-    const value: unknown = JSON.parse(body);
-    if (!isPlainJson(value)) throw new Error(refuse("INPUT_INVALID").reason);
-    return { ok: true, value };
+        throw new Error(refuse().reason);
+      const decoder = new TextDecoder("utf-8", { fatal: true });
+      let body = "",
+        size = 0;
+      for (;;) {
+        const chunk = await reader.read();
+        if (signal.aborted || state.refusal) throw new Error(refuse().reason);
+        if (chunk.done) break;
+        const value: unknown = chunk.value;
+        if (!(value instanceof Uint8Array) || value.byteLength === 0)
+          throw new Error(refuse().reason);
+        size += value.byteLength;
+        state.bytes += value.byteLength;
+        if (size > BODY_BYTES || state.bytes > TOTAL_BYTES)
+          throw new Error(refuse().reason);
+        body += decoder.decode(value, { stream: true });
+      }
+      body += decoder.decode();
+      // Syntax accounting precedes parsing, so overwritten and unknown keys are charged.
+      // This token scan is separate from the shared descriptor/depth/node guard.
+      const stack: string[] = [];
+      let previous = "";
+      for (const match of body.matchAll(
+        /"(?:[^"\\]|\\[\s\S])*"|[{}[\],:]|[^\s{}[\],:]+/g,
+      )) {
+        const token = match[0];
+        if (
+          (token === ":" ||
+            (stack.at(-1) === "[" &&
+              (previous === "[" || previous === ",") &&
+              token !== "]")) &&
+          ++state.keys > JSON_KEYS
+        )
+          throw new Error(refuse("INPUT_INVALID").reason);
+        if (token === "[" || token === "{") stack.push(token);
+        if (token === "]" || token === "}") stack.pop();
+        previous = token;
+      }
+      const value: unknown = JSON.parse(body);
+      if (!isPlainJson(value)) throw new Error(refuse("INPUT_INVALID").reason);
+      return { ok: true, value };
+    };
+    return (await Promise.race([reading(), interrupted])) ?? refuse();
   } catch {
     return refuse();
   } finally {

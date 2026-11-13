@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { exitCode, failure } from "../../src/surface/result.ts";
 type Code = "INPUT_INVALID" | "UNAVAILABLE";
 type Result =
@@ -45,6 +45,8 @@ const rows: Row[] = [
   ["keys", 16385, "INPUT_INVALID"],
   ["aggregate keys", 16384, null],
   ["aggregate keys", 16385, "INPUT_INVALID"],
+  ["tiny chunks", 0, null],
+  ["empty chunk", 0, "UNAVAILABLE"],
   ...["width", "array", "depth", "entries", "nonfinite"].map((s): Row => [
     "guard",
     s,
@@ -85,6 +87,7 @@ for (const [kind, value, code] of rows) {
       bodies[0] = JSON.stringify(Array(256).fill(Array(64).fill(0)));
     if (value === "depth") bodies[0] = "[".repeat(17) + "0" + "]".repeat(17);
     if (value === "nonfinite") bodies[0] = "1e999";
+    if (kind === "tiny chunks") bodies[0] = JSON.stringify("é".repeat(4096));
     if (value === "before") controller.abort("secret-sentinel");
     let result: Result | undefined;
     for (const body of bodies) {
@@ -98,6 +101,10 @@ for (const [kind, value, code] of rows) {
         {
           pull(target) {
             pulls++;
+            if (kind === "empty chunk") {
+              target.enqueue(new Uint8Array());
+              return;
+            }
             if (value === "during") {
               queueMicrotask(() => controller.abort("secret-sentinel"));
               return;
@@ -107,7 +114,13 @@ for (const [kind, value, code] of rows) {
               return;
             }
             if (offset === bytes.length) target.close();
-            else target.enqueue(bytes.slice(offset, (offset += 8191)));
+            else
+              target.enqueue(
+                bytes.slice(
+                  offset,
+                  (offset += kind === "tiny chunks" ? 1 : 8191),
+                ),
+              );
           },
           cancel() {
             cancelled++;
@@ -124,11 +137,17 @@ for (const [kind, value, code] of rows) {
         headers,
       });
       responses.push(response);
-      result = await parser.parseGithubJson(
-        response,
-        budget,
-        controller.signal,
-      );
+      const race = kind === "tiny chunks" ? spyOn(Promise, "race") : null;
+      try {
+        result = await parser.parseGithubJson(
+          response,
+          budget,
+          controller.signal,
+        );
+        if (race) expect(race.mock.calls.length).toBeLessThanOrEqual(1);
+      } finally {
+        race?.mockRestore();
+      }
       expect(bytes).toEqual(before);
       if (result.ok) expect(result.value).toEqual(JSON.parse(body));
     }
