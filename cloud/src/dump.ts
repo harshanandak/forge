@@ -8,7 +8,10 @@ import {
   type NumberedSummary,
   type StateOwner,
 } from "../../src/core/state/index.ts";
-import { parseRestoreJson } from "../../src/core/state/restore-json.ts";
+import {
+  parseRestoreJson,
+  withinRestoreBudget,
+} from "../../src/core/state/restore-json.ts";
 import {
   validateForgeError,
   validateLeaseRecord,
@@ -48,6 +51,10 @@ export const PAGE_FORMAT = "forge-cloud-dump-page/1";
 // document, tables, rows array, row. The caps keep a hostile or broken document from filling the isolate.
 const MAX_DEPTH = 4;
 const MAX_ROWS_PER_TABLE = 10_000;
+// The project limits a deploy gets when DUMP_MAX_ROWS and DUMP_MAX_BYTES are not set (measured in forge-1040).
+// The whole format keeps MAX_ROWS_PER_TABLE and its own byte ceiling below; only the paged format reaches these.
+const DEFAULT_MAX_ROWS = 20_000;
+const DEFAULT_MAX_BYTES = 32 * 1024 * 1024;
 const MAX_VALUE_LENGTH = 262_144;
 // The columns that hold open JSON (a stored record, an event, a replay request) have no schema maximum: a
 // 65,536 character body whose characters each escape to six is about 393,000 stored, and a record, its
@@ -91,8 +98,8 @@ export function limitsFrom(env: unknown): Limits {
   };
   return {
     pageBytes: read("DUMP_PAGE_BYTES", 4 * 1024 * 1024),
-    maxBytes: read("DUMP_MAX_BYTES", 8 * 1024 * 1024),
-    maxRows: read("DUMP_MAX_ROWS", MAX_ROWS_PER_TABLE),
+    maxBytes: read("DUMP_MAX_BYTES", DEFAULT_MAX_BYTES),
+    maxRows: read("DUMP_MAX_ROWS", DEFAULT_MAX_ROWS),
   };
 }
 
@@ -531,6 +538,35 @@ function checkServerReceipt(row: Row): void {
   }
 }
 
+// Every column that holds JSON the restore will parse, in dump order.
+const JSON_COLUMNS: Record<string, string[]> = {
+  state_records: ["body"],
+  state_events: ["body"],
+  state_leases: ["body"],
+  state_requests: ["fingerprint", "result"],
+  domain_cloud_requests: ["fingerprint", "result"],
+};
+
+/**
+ * Refuses the first body, fingerprint or result past the raw-text JSON budget (32 levels, 5,000 values), naming its
+ * table and key, before any of it is parsed: the verifier's JSON.parse would build a tree as large as the text asks.
+ */
+function admitJson(tables: Record<string, Row[]>): void {
+  for (const [table, columns] of Object.entries(JSON_COLUMNS))
+    for (const row of tables[table]!)
+      for (const column of columns)
+        if (!withinRestoreBudget(String(row[column])))
+          throw rejectedRow(
+            table,
+            table === "domain_cloud_requests"
+              ? String(row.request_id)
+              : JSON.stringify([
+                  row.namespace,
+                  row.key ?? row.subject ?? row.request_id,
+                ]),
+          );
+}
+
 function insertRows(db: SqlDatabase, tables: Record<string, Row[]>): void {
   for (const [table, { columns }] of Object.entries(TABLES))
     for (const row of tables[table]!)
@@ -624,6 +660,7 @@ export function restoreDump(
       });
     insertRows(db, dump.tables);
     assertLimits(db, limits, "RESTORE_TOO_LARGE", "The restored project");
+    admitJson(dump.tables);
     const restored = verifyRestored(db);
     if (JSON.stringify(dumpOf(db)) !== JSON.stringify(dump))
       throw invalid(
@@ -657,6 +694,7 @@ export function restorePage(
     if (page.page === 0) clearStaged(db);
     insertRows(db, page.tables);
     assertLimits(db, limits, "RESTORE_TOO_LARGE", "The staged restore");
+    admitJson(page.tables);
     // Only the last page looks at the whole staged set, so nothing is derived or written before it.
     if (page.last) settleFloor(db, owner, limits, verifyRestored(db));
     return counts(page.tables);
