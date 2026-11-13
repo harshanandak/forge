@@ -230,8 +230,8 @@ beforeAll(() => {
   });
   const verbs = [
     "put",
-    "putMany",
-    "putNext",
+    "put-many",
+    "put-next",
     "delete",
     "acquire",
     "renew",
@@ -291,8 +291,8 @@ beforeAll(() => {
     `module.exports=Object.fromEntries(${JSON.stringify(verbs)}.map(verb=>["probe."+verb,async({services,input})=>{
     const s=verb==="escalate"?(await services.levels.project()).state:services.state;
     if(verb==="read")return s.list();
-    if(verb==="putMany")return s.putMany([{key:"batch",value:1,expectRevision:0}]);
-    if(verb==="putNext")return s.putNext("number/",()=>({value:1}));
+    if(verb==="put-many")return s.putMany([{key:"batch",value:1,expectRevision:0}]);
+    if(verb==="put-next")return s.putNext("number/",()=>({value:1}));
     if(verb==="delete")return s.delete("record",{expectRevision:1});
     if(verb==="acquire")return s.acquire("probe:record",60000);
     if(verb==="renew")return s.renew("probe:record",60000);
@@ -3308,8 +3308,8 @@ test.each(acceptance)(
             case "All state mutation families":
               for (const verb of [
                 "put",
-                "putMany",
-                "putNext",
+                "put-many",
+                "put-next",
                 "delete",
                 "acquire",
                 "renew",
