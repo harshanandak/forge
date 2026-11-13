@@ -13,6 +13,7 @@ import {
 import { TOKEN_LOOKUP, TOKENS } from "../../cloud/src/tokens.ts";
 import { prepareCommand, runCommand } from "../../cloud/src/issue-commands.ts";
 import { OLD_SCHEMA } from "./old-schema.ts";
+import { receiptScope } from "../../cloud/src/issue-request-id.ts";
 import { MAX_RECEIPTS } from "../../cloud/src/issue-receipts.ts";
 import { listIssues } from "../../cloud/src/issue-list.ts";
 import { commentIssue } from "../../cloud/src/issue-comment.ts";
@@ -339,6 +340,7 @@ function fixture(
   };
 }
 const actor = { kind: "agent", id: "tester" } as const;
+const receiptIdentity = receiptScope(["token", "fixture", "laptop"]);
 const iso = (ms: number) => new Date(ms).toISOString();
 const stored = (over: object = {}) => ({
   id: "work-1",
@@ -3384,6 +3386,7 @@ function createAfterDelete(create: typeof createIssue) {
     context: { variant: "project", actor, project: { id: "p" } },
     device: "laptop",
     prefix: "forge",
+    scope: receiptIdentity,
     recheck: () => {},
   });
   if (got.id !== "forge-3")
@@ -4861,6 +4864,7 @@ test("the shared write path takes a project context for create and comment and a
         context,
         device: "laptop",
         prefix: "forge",
+        scope: receiptIdentity,
         recheck: () => {},
       }),
     ).toThrow(`${op} needs a ${want} context`);
@@ -4873,6 +4877,7 @@ test("the shared write path takes a project context for create and comment and a
       context: lease,
       device: "laptop",
       prefix: "forge",
+      scope: receiptIdentity,
       recheck: () => {},
     }),
   ).toThrow("issue.claim needs an acquire lease context");
@@ -4888,6 +4893,7 @@ test("the shared write path takes a project context for create and comment and a
         context: { ...lease, leaseMode: "acquire" } as never,
         device: "laptop",
         prefix: "forge",
+        scope: receiptIdentity,
         recheck: () => {},
       }),
     ).toThrow(`${op} needs a held lease context`);
@@ -6196,6 +6202,7 @@ test("a link record that fails the declared output schema, even when its readbac
       context,
       device: "laptop",
       prefix: "forge",
+      scope: receiptIdentity,
       recheck: () => {},
     });
   // The seam bends every link record the owner writes or reads to the same malformed one: the clock is a number.
@@ -7425,6 +7432,7 @@ test("a command write rechecks the token before it asks to open the store", asyn
     now: start,
     recheck,
     open,
+    principal: ["token", "fixture", "laptop"] as const,
   };
   expect(() => runCommand(JSON.stringify(make("p-1")), host)).toThrow(
     "rechecked",
@@ -7761,9 +7769,17 @@ test("a whole export carries the maximum bodies, receipts and events intact, and
   expect(JSON.stringify(receipt(tables, "max-create", f).result)).toBe(
     JSON.stringify(sent.create.json.result),
   );
-  expect(receipt(tables, "max-create", f).fingerprint).toMatch(
-    /sha256:[a-f0-9]{64}/,
+  const fingerprint = JSON.parse(
+    receipt(tables, "max-create", f).fingerprint,
+  ) as {
+    scope: unknown;
+    input: string;
+  };
+  expect(Object.keys(fingerprint).sort()).toEqual(["input", "scope"]);
+  expect(fingerprint.scope).toEqual(
+    receiptScope(["token", token.slice(4, 20), "laptop"]),
   );
+  expect(fingerprint.input).toMatch(/^sha256:[a-f0-9]{64}$/);
   // A refusal records the error, never the input it refused.
   expect(
     JSON.stringify(receipt(tables, "max-bad-create", f)).length,
@@ -7963,6 +7979,32 @@ for (const [name, change] of [
     "a raw lease receipt whose result names another subject",
     forged("forged-2", "claim", "issue:b"),
   ],
+  ...[
+    null,
+    [],
+    {},
+    { version: 1, principal: "sha256:" + "a".repeat(64) },
+    { version: 2, principal: 0 },
+    { version: 2, principal: "not-a-digest" },
+    { version: 2, principal: "sha256:" + "a".repeat(64), extra: true },
+  ].map(
+    (scope) =>
+      [
+        `a raw receipt with malformed scope ${JSON.stringify(scope)}`,
+        (t: Tables) => {
+          t.domain_cloud_requests!.push({
+            request_id: "bad-scope",
+            outcome: "ok",
+            result: lease("issue:a"),
+            fingerprint: JSON.stringify({
+              route: "claim",
+              subject: "issue:a",
+              scope,
+            }),
+          });
+        },
+      ] as const,
+  ),
 ] as const)
   test(`a restore of ${name} is RESTORE_INVALID_ROW and leaves the target unprovisioned and empty`, async () => {
     const bad = structuredClone((await largest(vars, "small")).tables);

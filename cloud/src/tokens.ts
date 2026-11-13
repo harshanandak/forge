@@ -141,7 +141,7 @@ export function authorizeToken(
   db: SqlDatabase,
   parts: { id: string; hash: string },
   now: number,
-): { device: string; session: string | null; expiresAt: number } {
+): { id: string; device: string; session: string | null; expiresAt: number } {
   const row = db.get(TOKEN_LOOKUP, [parts.id]);
   const match = same(
     parts.hash,
@@ -154,6 +154,7 @@ export function authorizeToken(
     throw refuse("AUTH_EXPIRED", "expired", row);
   console.log(JSON.stringify({ auth: "granted", ...holderOf(row) }));
   return {
+    id: String(row.id),
     device: String(row.device),
     session: typeof row.session === "string" ? row.session : null,
     expiresAt: Number(row.expires_at),

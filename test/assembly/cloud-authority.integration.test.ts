@@ -2923,7 +2923,11 @@ test("every public pinning path keeps the cloud id and refusal mapping; ordinary
       context = holding(r);
     const options = { caller: "agent" as const, context, requestId: "x" };
     const call = { op: "issue.comment", input: COMMENT, requestId: "x" };
-    const mcp = createMcpHandlers(catalog, {}, options);
+    const mcp = createMcpHandlers(
+      catalog,
+      { expose: ["issue.comment"] },
+      options,
+    );
     const cli = ["catalog", "call", "--input", JSON.stringify(call)];
     const paths = [
       () => dispatch(catalog, "catalog.call", call, options),

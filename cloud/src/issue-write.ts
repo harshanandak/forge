@@ -3,15 +3,17 @@
 // fails its check is recorded as a refusal, and the recheck, admission, work and receipt share one
 // transaction. A command supplies only its own check and its own write.
 import { ForgeFailure } from "../../src/contract/failure.ts";
-import { digestValue } from "../../src/core/config/pointer.ts";
+import { canonicalJson, digestValue } from "../../src/core/config/pointer.ts";
 import type { StateOwner } from "../../src/core/state/index.ts";
 import type { Actor, BoundContext } from "../../src/generated/types.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
 import { configured, fail } from "./issue-read.ts";
 import { admit, record, refused, replay } from "./issue-receipts.ts";
 import { carriesToken } from "./tokens.ts";
+import type { ReceiptScope } from "./issue-request-id.ts";
 
 export interface WriteCall {
+  readonly scope: ReceiptScope;
   readonly requestId: string;
   readonly input: unknown;
   readonly context: BoundContext;
@@ -56,7 +58,10 @@ export function receipted<Fields, Result>(
   if (context.variant !== variant)
     throw fail("INTERNAL", `${op} needs a ${variant} context`);
   const { actor } = context;
-  const fingerprint = digestValue({ op, input, context, device });
+  const fingerprint = canonicalJson({
+    scope: call.scope,
+    input: digestValue({ op, input, context, device }),
+  });
   const prior = replay(owner, requestId, fingerprint);
   if (prior !== undefined) {
     replayed?.(prior as Result, context);

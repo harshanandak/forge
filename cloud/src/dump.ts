@@ -14,6 +14,7 @@ import {
   validateLeaseRecord,
 } from "../../src/generated/validators.ts";
 import type { SqlDatabase, SqlRow } from "../../src/ports/store.ts";
+import { versioned } from "./issue-request-id.ts";
 
 export const DUMP_FORMAT = "forge-cloud-dump/1";
 
@@ -511,7 +512,8 @@ function checkServerReceipt(row: Row): void {
     input === null ||
     typeof input !== "object" ||
     !["claim", "renew", "release"].includes(String(input.route)) ||
-    typeof input.subject !== "string"
+    typeof input.subject !== "string" ||
+    ("scope" in input && !versioned(input))
   )
     bad();
   if (row.outcome === "ok") {
