@@ -23,8 +23,8 @@ export interface WriteCall {
   readonly prefix: unknown;
   /** Throws AUTH_EXPIRED or AUTH_REVOKED when the token is no longer valid. */
   readonly recheck: () => void;
-  /** When the token expires, in milliseconds: a lease it takes may not outlast it. */
-  readonly expiresAt?: number | undefined;
+  /** Token expiry bounds receipt retention and any lease this write takes. */
+  readonly expiresAt: number | undefined;
 }
 
 /**

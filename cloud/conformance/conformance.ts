@@ -2606,10 +2606,9 @@ if (phase === "main") {
   await check(
     "a restore with duplicate JSON labels is refused as RESTORE_INVALID_ROW and writes nothing",
     async () => {
-      // A real valid dump from the in-process source: its records are the receipt, the floor and the issue, so
-      // with one row per page the floor record and its event fall after page 0.
+      // A valid work record precedes the floor, so malformed rows follow an already staged page.
       const { leaseSource, pagesOf: cutRows } = await import("./max-source.ts");
-      const { doc } = await leaseSource("issue:dupl-1");
+      const { doc } = await leaseSource("issue:dupl-1", true);
       const dump = doc as Dump;
       const pages = cutRows(doc.tables, 1) as unknown as DumpPage[];
       assert.ok(pages.length >= 8, `${pages.length} pages`);

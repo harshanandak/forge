@@ -4905,6 +4905,7 @@ test("the shared write path takes a project context for create and comment and a
         prefix: "forge",
         scope: receiptIdentity,
         recheck: () => {},
+        expiresAt: start + day,
       }),
     ).toThrow(`${op} needs a ${want} context`);
   }
@@ -4918,6 +4919,7 @@ test("the shared write path takes a project context for create and comment and a
       prefix: "forge",
       scope: receiptIdentity,
       recheck: () => {},
+      expiresAt: start + day,
     }),
   ).toThrow("issue.claim needs an acquire lease context");
   // Renew and release take a held context: an acquire one is refused after the input is read, and writes nothing.
@@ -4934,6 +4936,7 @@ test("the shared write path takes a project context for create and comment and a
         prefix: "forge",
         scope: receiptIdentity,
         recheck: () => {},
+        expiresAt: start + day,
       }),
     ).toThrow(`${op} needs a held lease context`);
   expect(f.snapshot()).toBe(before);
@@ -6252,6 +6255,7 @@ test("a link record that fails the declared output schema, even when its readbac
       prefix: "forge",
       scope: receiptIdentity,
       recheck: () => {},
+      expiresAt: start + day,
     });
   // The seam bends every link record the owner writes or reads to the same malformed one: the clock is a number.
   // The link is written through putNext (forge-1306), so that is the write the seam bends; the old seam on put

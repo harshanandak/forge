@@ -89,13 +89,13 @@ export function record(
   expiresAt: number | undefined,
 ): unknown {
   const now = Date.now();
-  if (!Number.isSafeInteger(expiresAt))
+  if (typeof expiresAt !== "number" || !Number.isSafeInteger(expiresAt))
     throw new ForgeFailure({
       code: "INTERNAL",
       message: "Command receipt needs a token expiry",
       retry: "never",
     });
-  if (expiresAt! <= now)
+  if (expiresAt <= now)
     throw new ForgeFailure({
       code: "AUTH_EXPIRED",
       message: "Token expired before recording the command",
@@ -109,7 +109,7 @@ export function record(
       receipt.outcome,
       canonicalJson(receipt.result),
       now,
-      expiresAt!,
+      expiresAt,
     ],
   );
   return JSON.parse(
