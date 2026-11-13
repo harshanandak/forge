@@ -108,14 +108,59 @@ const rows: Row[] = [
     "INPUT_INVALID",
   ],
   [
-    "non-enumerable workflow pin still rejects a different run workflow",
+    "non-enumerable workflow pin is malformed JSON data",
     (f) => {
       Object.defineProperty(f.policy.producer, "workflowId", {
         enumerable: false,
       });
       f.observation.runs[0]!.workflowId++;
     },
-    "RECEIPT_INVALID",
+    "INPUT_INVALID",
+  ],
+  ...[
+    "non-enumerable field",
+    "accessor field",
+    "symbol key",
+    "non-plain prototype",
+    "array extra property",
+  ].map((family): Row => [
+    `plain JSON rejects ${family}`,
+    (f) => {
+      if (family === "non-enumerable field")
+        Object.defineProperty(f.expected, "linkRevision", {
+          enumerable: false,
+        });
+      if (family === "accessor field") {
+        let reads = 0;
+        Object.defineProperty(f.observation.finalPr, "headSha", {
+          enumerable: true,
+          get: () => {
+            reads++;
+            return head;
+          },
+        });
+        detailReads.set(f, () => reads);
+      }
+      if (family === "symbol key")
+        Object.defineProperty(f.observation.finalPr, Symbol("extra"), {
+          value: 1,
+        });
+      if (family === "non-plain prototype")
+        Object.setPrototypeOf(f.observation.finalPr, {});
+      if (family === "array extra property")
+        Object.defineProperty(f.observation.runs, "extra", {
+          value: 1,
+          enumerable: true,
+        });
+    },
+    "INPUT_INVALID",
+  ]),
+  [
+    "null-prototype JSON object remains valid",
+    (f) => {
+      Object.setPrototypeOf(f.expected, null);
+    },
+    null,
   ],
   ...["OPEN", "CLOSED"].map((state): Row => [
     state,
