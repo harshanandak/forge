@@ -3436,10 +3436,14 @@ test.each(acceptance)(
               break;
             case "Existing unsupported work / reinit":
               for (const op of [...DECLARED, RECOVER]) {
+                const input = assembly.catalog
+                  .list()
+                  .find((entry) => entry.op === op)?.docs?.examples?.[0]
+                  ?.input as object | undefined;
                 for (const surface of ["direct", "CLI JSON"])
                   await check(
                     op,
-                    {},
+                    input ?? {},
                     "INPUT_INVALID",
                     [],
                     notServed(op),
