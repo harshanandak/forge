@@ -144,10 +144,18 @@ async function adminCall(
     ...(body === undefined ? {} : { body }),
     signal: AbortSignal.timeout(60_000),
   });
-  const result = {
-    status: response.status,
-    body: (await response.json()) as AdminBody,
-  };
+  if (phase === "large")
+    recordBodyMemory(`headers ${project} ${method} ${route}`);
+  let bodyValue: AdminBody;
+  if (phase === "large" && method === "GET" && route.startsWith("dump")) {
+    const text = await response.text();
+    recordBodyMemory(`dump read ${project} ${route}`);
+    bodyValue = JSON.parse(text) as AdminBody;
+    recordBodyMemory(`dump parsed ${project} ${route}`);
+  } else {
+    bodyValue = (await response.json()) as AdminBody;
+  }
+  const result = { status: response.status, body: bodyValue };
   recordBodyMemory(`after ${project} ${method} ${route}`);
   return result;
 }
@@ -419,6 +427,7 @@ const SKIP_UPLOAD =
   "requires the local Worker to answer an incomplete upload before the body arrives; deployed ingress is not covered by that transport assumption";
 const failures: string[] = [];
 async function check(name: string, body: () => Promise<void>): Promise<void> {
+  if (phase === "large") recordBodyMemory(`check start ${name}`);
   try {
     await body();
     console.log(`PASS ${name}`);
@@ -428,6 +437,7 @@ async function check(name: string, body: () => Promise<void>): Promise<void> {
       `FAIL ${name}: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
+  if (phase === "large") recordBodyMemory(`check end ${name}`);
 }
 
 // Budget journeys (forge-1304): real exported pages restored through the Worker and compared exactly. A second
@@ -479,8 +489,11 @@ function okValue<T>(
   return reply.body.value as T;
 }
 const bodyMemory: Record<string, NodeJS.MemoryUsage> = {};
+const largeMemory: { step: string; memory: NodeJS.MemoryUsage }[] = [];
 function recordBodyMemory(step: string): void {
   if (phase === "budget-body") bodyMemory[step] = process.memoryUsage();
+  if (phase === "large")
+    largeMemory.push({ step, memory: process.memoryUsage() });
 }
 // The real export of `project`: GET dump?cursor=start, then only the cursor each page returns, URL-encoded, until next
 // is null. `each` sees every page once and nothing is kept after it. The page document, not the HTTP envelope,
@@ -3806,6 +3819,7 @@ if (phase === "large") {
   const prefix = process.env.FORGE_CLOUD_ID_PREFIX ?? "ci";
   const id = `${prefix}-1`;
   const source = await maxSource(typedProject, prefix);
+  recordBodyMemory("maximum fixture built");
   const want = source.tables;
   const differing = (got: Dump["tables"]): string[] =>
     Object.keys(want).filter(
@@ -4016,7 +4030,9 @@ if (phase === "large") {
           await typedCall(caller, { ...wide(n), context: asProject(caller) }),
         );
       const grown = tablesOf(source.db);
+      recordBodyMemory("maximum grown tables");
       const expected = oracle.cutPages(grown, budget);
+      recordBodyMemory("maximum expected pages");
       // The fixture must tell a UTF-16 count from a byte count: cut by units, a page overfills by real bytes.
       assert.ok(
         oracle
@@ -4059,6 +4075,7 @@ if (phase === "large") {
       showDigests("maximum", trip.digests);
     },
   );
+  console.log(`INFO large memory summary: ${JSON.stringify(largeMemory)}`);
 }
 
 // forge-1306: comment and link numbers are never reused after a delete. The isolated "numbers" and "numbers-restart" runs
