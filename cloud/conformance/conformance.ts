@@ -137,16 +137,19 @@ async function adminCall(
   body?: string,
   token = adminToken,
 ): Promise<{ status: number; body: AdminBody }> {
+  recordBodyMemory(`before ${project} ${method} ${route}`);
   const response = await fetch(`${base}/p/${project}/${route}`, {
     method,
     headers: token === "" ? {} : { authorization: `Bearer ${token}` },
     ...(body === undefined ? {} : { body }),
     signal: AbortSignal.timeout(60_000),
   });
-  return {
+  const result = {
     status: response.status,
     body: (await response.json()) as AdminBody,
   };
+  recordBodyMemory(`after ${project} ${method} ${route}`);
+  return result;
 }
 // An admin restore that declares `length` bytes in Content-Length and sends none of them. The reply is
 // read as soon as the Worker sends it, then the request is dropped.
@@ -466,17 +469,22 @@ function okValue<T>(
   reply: { status: number; body: AdminBody },
   what: string,
 ): T {
-  assert.equal(
-    reply.status,
-    200,
-    `${what}: ${JSON.stringify(reply.body).slice(0, 300)}`,
-  );
+  if (reply.status !== 200)
+    assert.equal(
+      reply.status,
+      200,
+      `${what}: ${JSON.stringify(reply.body).slice(0, 300)}`,
+    );
   assert.equal(reply.body.ok, true, `${what} is not ok`);
   return reply.body.value as T;
 }
+const bodyMemory: Record<string, NodeJS.MemoryUsage> = {};
+function recordBodyMemory(step: string): void {
+  if (phase === "budget-body") bodyMemory[step] = process.memoryUsage();
+}
 // The real export of `project`: GET dump?cursor=start, then only the cursor each page returns, URL-encoded, until next
-// is null. `each` sees every page once and nothing is kept after it. Each page is serialized once, and its UTF-8 bytes
-// are measured on that text; the page document, not the HTTP envelope, is what the budget bounds.
+// is null. `each` sees every page once and nothing is kept after it. The page document, not the HTTP envelope,
+// is what the budget bounds. Body readback counts its JSON bytes incrementally instead of keeping a full string.
 async function walk(
   project: string,
   label: string,
@@ -496,8 +504,14 @@ async function walk(
       await adminCall(project, "GET", route),
       `${label} export`,
     );
-    const text = JSON.stringify(page);
-    const bytes = Buffer.byteLength(text);
+    recordBodyMemory(`${label} parsed`);
+    // Readback does not send the page: count the same JSON bytes one value at a time.
+    const readback = phase === "budget-body" && label === "body readback";
+    const text = readback ? "" : JSON.stringify(page);
+    const bytes = readback
+      ? (await import("./budget.ts")).pageBytes(page)
+      : Buffer.byteLength(text);
+    recordBodyMemory(`${label} sized`);
     trip.bytes.push(bytes);
     assert.ok(
       bytes <= budget,
@@ -552,11 +566,13 @@ async function roundTrip(
     );
     for (const [table, rows] of Object.entries(page.tables))
       sent.add(table, rows);
+    recordBodyMemory(`${label} sent digest`);
   });
   const back = digester();
   const read = await walk(target, `${label} readback`, budget, (page) => {
     for (const [table, rows] of Object.entries(page.tables))
       back.add(table, rows);
+    recordBodyMemory(`${label} readback digest`);
   });
   const digests = sent.done();
   assert.deepEqual(
@@ -4746,41 +4762,62 @@ if (phase === "budget-body") {
       const built: { tail: number; size: number }[] = [];
       const build = async (tail: number) => {
         const near = await nearSource(tail);
+        recordBodyMemory(`fixture ${tail}`);
         const size = oracle.utf8(oracle.finalPage(near.tables));
+        recordBodyMemory(`fixture size ${tail}`);
         built.push({ tail, size });
         return { ...near, size };
       };
-      let near = await build(1_000);
-      for (let n = 0; n < 2 && (near.size < low || near.size > limit); n += 1) {
-        const last = built.at(-1)!;
-        const before = built.at(-2);
-        const slope =
-          before === undefined
-            ? 4
-            : (last.size - before.size) / (last.tail - before.tail);
-        near = await build(
-          Math.max(
+      const fixture = async () => {
+        let near = await build(1_000);
+        for (
+          let n = 0;
+          n < 2 && (near.size < low || near.size > limit);
+          n += 1
+        ) {
+          const last = built.at(-1)!;
+          const before = built.at(-2);
+          const slope =
+            before === undefined
+              ? 4
+              : (last.size - before.size) / (last.tail - before.tail);
+          const tail = Math.max(
             1,
             Math.round(last.tail + ((low + limit) / 2 - last.size) / slope),
-          ),
+          );
+          // Drop the previous tables before building the next fixture.
+          near.tables = {};
+          near = await build(tail);
+        }
+        const rows = Object.fromEntries(
+          Object.entries(near.tables).map(([table, list]) => [
+            table,
+            list.length,
+          ]),
         );
-      }
-      const rows = Object.fromEntries(
-        Object.entries(near.tables).map(([table, list]) => [
-          table,
-          list.length,
-        ]),
-      );
-      assert.ok(
-        near.size >= low && near.size <= limit,
-        `the expected page is ${near.size} bytes, outside ${low}..${limit} after ${built.length} builds`,
-      );
-      assert.ok(
-        near.stored <= limit && Math.max(...Object.values(rows)) <= 100,
-        `the fixture holds ${near.stored} stored bytes and ${JSON.stringify(rows)} rows`,
-      );
-      const text = JSON.stringify(oracle.finalPage(near.tables));
-      assert.equal(Buffer.byteLength(text), near.size);
+        assert.ok(
+          near.size >= low && near.size <= limit,
+          `the expected page is ${near.size} bytes, outside ${low}..${limit} after ${built.length} builds`,
+        );
+        assert.ok(
+          near.stored <= limit && Math.max(...Object.values(rows)) <= 100,
+          `the fixture holds ${near.stored} stored bytes and ${JSON.stringify(rows)} rows`,
+        );
+        const text = JSON.stringify(oracle.finalPage(near.tables));
+        assert.equal(Buffer.byteLength(text), near.size);
+        return {
+          text,
+          size: near.size,
+          stored: near.stored,
+          rows,
+          expected: oracle.digestOf(near.tables),
+        };
+      };
+      const fixtureResult = await fixture();
+      let { text } = fixtureResult;
+      const { size, stored, rows, expected } = fixtureResult;
+      fixtureResult.text = "";
+      recordBodyMemory("expected digest");
       const [source, target] = [`${run}-body-src`, `${run}-body-dst`];
       okValue(await adminCall(source, "POST", "restore", text), "body seed");
       const trip = await roundTrip(
@@ -4788,19 +4825,22 @@ if (phase === "budget-body") {
         target,
         "body",
         limit,
-        (_page, real) =>
-          assert.ok(real === text, "the real page is not the expected page"),
+        (_page, real) => {
+          assert.ok(real === text, "the real page is not the expected page");
+          text = "";
+        },
       );
       assert.equal(trip.bytes.length, 1, "one real page holds the project");
       assert.ok(
         trip.bytes[0]! >= low,
         `the real page is ${trip.bytes[0]} bytes`,
       );
-      assert.deepEqual(trip.digests, oracle.digestOf(near.tables));
+      assert.deepEqual(trip.digests, expected);
       console.log(
-        `INFO body: expected and real page ${near.size} bytes (${limit - near.size} under the restore body), ${near.stored} stored bytes, rows ${JSON.stringify(rows)}, builds ${JSON.stringify(built)}`,
+        `INFO body: expected and real page ${size} bytes (${limit - size} under the restore body), ${stored} stored bytes, rows ${JSON.stringify(rows)}, builds ${JSON.stringify(built)}`,
       );
       showDigests("body", trip.digests);
+      console.log(`INFO body memory summary: ${JSON.stringify(bodyMemory)}`);
     },
   );
 }

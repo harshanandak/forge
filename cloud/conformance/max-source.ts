@@ -238,7 +238,12 @@ const storedBytes = (db: Database): number =>
  * project whose accepted commands make up a single page near the restore body. Four rows carry each created body.
  */
 export async function nearSource(tail: number) {
-  const s = await maxSource("near", "forge", FROZEN);
+  const s = await harness("near", "forge", FROZEN);
+  const calls = maxCalls("forge-1");
+  await accepted(s, calls.create);
+  await accepted(s, calls.comment);
+  await s.send(calls.badCreate);
+  await s.send(calls.badComment);
   for (const n of [1, 2, 3])
     await accepted(
       s,
