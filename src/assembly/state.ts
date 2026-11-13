@@ -64,6 +64,7 @@ export class LocalState {
   readonly #store: StorePort;
   readonly #directories: DirectoryCreatePort | undefined;
   readonly #missing: ((write: boolean) => Promise<void>) | undefined;
+  readonly #beforeWrite: (() => void) | undefined;
   readonly #entries = new Map<boolean, Entry>();
   #queue: Promise<void> = Promise.resolve();
   #closed = false;
@@ -73,12 +74,14 @@ export class LocalState {
     directories?: DirectoryCreatePort,
     missing?: (write: boolean) => Promise<void>,
     projectRoot?: string,
+    beforeWrite?: () => void,
   ) {
     this.#path = path;
     this.#projectRoot = projectRoot;
     this.#store = store;
     this.#directories = directories;
     this.#missing = missing;
+    this.#beforeWrite = beforeWrite;
   }
   #resolveProjectPath(): void {
     try {
@@ -161,6 +164,7 @@ export class LocalState {
   }
   async #entry(write: boolean): Promise<Entry | undefined> {
     if (this.#closed) refuse("UNAVAILABLE", "State lifetime is closed");
+    if (write) this.#beforeWrite?.();
     this.#resolveProjectPath();
     const current =
       this.#entries.get(true) ??

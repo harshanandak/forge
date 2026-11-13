@@ -38,6 +38,33 @@ const notServed = (declared: string) =>
     `${declared} is not served by the cloud authority of a cloud-bound project yet.`,
   );
 
+/** Recheck authority for every writable owner, including an already cached owner. */
+export function refuseUnsyncedProjectWrite(
+  root: string,
+  home: string | undefined,
+): void {
+  if (cloudBinding(root, home).kind === "bound")
+    throw new ForgeFailure({
+      code: "UNAVAILABLE",
+      message:
+        "This project is cloud-bound. Local project-state writes are unavailable because this block does not sync project state in Forge 0.0.1.",
+      retry: "never",
+      repair:
+        "Use cloud-served forge issue commands for issue work. For device-only notes, use memory.add with level=device; block authors must declare context=device and use device state. Other project-state writes must wait for cloud sync (forge-1345). Do not run forge store reinit or remove the cloud binding to bypass this refusal.",
+    });
+}
+
+/** Selected lazily, only after device registration proves a store was lost. */
+export function boundMissingStoreRemedy(
+  root: string,
+  home: string | undefined,
+  path: string,
+): string | undefined {
+  return cloudBinding(root, home).kind === "bound"
+    ? `Missing local Forge store at ${path}. This project is cloud-bound; forge store reinit is disabled. Use cloud-served forge issue commands for shared issue state. To inspect historical local-only records, restore a backup; unsupported project-state writes remain disabled.`
+    : undefined;
+}
+
 /** The work operations a cloud-bound project serves from the cloud: the one list of them. */
 const CLOUD_SERVED: ReadonlySet<string> = new Set([
   "issue.show",
