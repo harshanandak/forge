@@ -3050,7 +3050,6 @@ test("every public pinning path keeps the cloud id and refusal mapping; ordinary
       );
   });
 }, 30_000);
-
 const FENCE_MESSAGE =
   "This project is cloud-bound. Local project-state writes are unavailable because this block does not sync project state in Forge 0.0.1.";
 const FENCE_REPAIR =
@@ -3201,7 +3200,7 @@ test.each(acceptance)(
                     await runCli(
                       assembly.catalog,
                       [
-                        ...op.replace(/^renamed\./, "alias.").split("."),
+                        ...op.split("."),
                         "--input",
                         JSON.stringify(input),
                         ...(surface === "CLI text" ? ["--text"] : []),
