@@ -25,6 +25,8 @@ export interface Options {
   /** With `out` the run writes page files, the sequence map and the manifest; without it the run is a dry run. */
   readonly out?: string;
   readonly pageBytes?: number;
+  /** Test seam: runs after the rows are read and before the second digest check. */
+  readonly afterRead?: () => void;
 }
 export interface Report {
   readonly status: Status;

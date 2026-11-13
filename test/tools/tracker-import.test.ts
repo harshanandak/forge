@@ -4,14 +4,16 @@ import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import {
+  appendFileSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   dumpOf,
   limitsFrom,
@@ -84,6 +86,7 @@ const issue = (n: number, extra: object = {}) => ({
 /** A kernel store with interleaved namespaces, every tracker key family, deletions, a lease and a shared request id. */
 function backup(dir: string, shape: Shape, name = "source.db") {
   const path = join(dir, name);
+  mkdirSync(dirname(path), { recursive: true });
   const raw = new Database(path);
   const owner = new StateOwner(sqlOf(raw), { now: () => NOW });
   owner.initialize();
@@ -325,7 +328,7 @@ test("ids, parents, dependencies, history and request ids come back exactly", as
 
 const refused: [
   string,
-  (dir: string) => { backup: string; digest: string },
+  (dir: string) => { backup: string; digest: string; afterRead?: () => void },
   string,
 ][] = [
   [
@@ -340,6 +343,26 @@ const refused: [
       digest: "0".repeat(64),
     }),
     "SOURCE_DIGEST_MISMATCH",
+  ],
+  [
+    "the live default home store",
+    (d) => {
+      const s = backup(d, { floors: true }, join(".forge", "state.sqlite"));
+      return { backup: s.path, digest: s.digest };
+    },
+    "SOURCE_LIVE_HOME",
+  ],
+  [
+    "a source that changes between the two digest checks",
+    (d) => {
+      const s = backup(d, { floors: true });
+      return {
+        backup: s.path,
+        digest: s.digest,
+        afterRead: () => appendFileSync(s.path, "x"),
+      };
+    },
+    "SOURCE_CHANGED",
   ],
   [
     "jsonl input",
@@ -396,7 +419,8 @@ for (const [name, make, code] of refused)
     expect([report.status, report.code]).toEqual(["FAIL", code]);
     expect(exitCode(report)).not.toBe(0);
     expect(existsSync(join(out, "manifest.json"))).toBe(false);
-    if (before !== "") expect(sha(readFileSync(input.backup))).toBe(before);
+    if (before !== "" && input.afterRead === undefined)
+      expect(sha(readFileSync(input.backup))).toBe(before);
   }, 30_000);
 
 const corrupt: [string, string, string][] = [
