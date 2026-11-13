@@ -101,7 +101,8 @@ function page(status: number, content: string, cookie?: string): Response {
     "X-Frame-Options": "DENY",
     "Content-Security-Policy":
       "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
-    "Referrer-Policy": "no-referrer",
+    // no-referrer makes the browser send Origin: null on its own form POSTs.
+    "Referrer-Policy": "same-origin",
   });
   if (cookie !== undefined) headers.set("Set-Cookie", cookie);
   return new Response(

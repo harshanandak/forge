@@ -374,7 +374,7 @@ test("GET /device serves a fixed page and a csrf cookie, with no secret in the U
     headers.get("cache-control"),
     headers.get("x-frame-options"),
     headers.get("referrer-policy"),
-  ]).toEqual(["no-store", "DENY", "no-referrer"]);
+  ]).toEqual(["no-store", "DENY", "same-origin"]);
   expect(headers.get("content-security-policy")).toContain(
     "frame-ancestors 'none'",
   );
@@ -414,6 +414,10 @@ test("a preview shows the project and device, grants nothing and needs a same-or
   const jar = await f.open();
   const shown = await f.preview(login.user_code, jar);
   expect(shown.status).toBe(200);
+  for (const page of [jar.page, shown, await f.preview("BCDF-BCDF", jar)]) {
+    const policy = page.headers.get("referrer-policy");
+    expect(policy === "same-origin" ? ORIGIN : "null").toBe(ORIGIN);
+  }
   for (const part of [
     "<code>p</code>",
     "<code>laptop-1</code>",
@@ -454,7 +458,9 @@ test("a preview shows the project and device, grants nothing and needs a same-or
       },
     ],
   ];
+  bad.push(["opaque origin", { ...bad[3]![1], origin: "null" }]);
   for (const [, init] of bad) {
+    if (init) init.ip = f.fresh();
     const refused = await f.send("/device", init);
     expect([refused.status, outcome(refused)]).toEqual([
       400,
