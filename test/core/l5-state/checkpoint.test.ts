@@ -206,7 +206,7 @@ for (const kind of [
     [
       "out of order",
       (rows: unknown[][]) =>
-        rows.unshift(["forge/test", "z", ...rows[0]!.slice(2)]),
+        rows.unshift(["forge/zz", ...rows[0]!.slice(1)]),
     ],
     [
       "entry past C",
