@@ -275,6 +275,17 @@ const refused: [
     "GRAPH_MISSING_TARGET",
   ],
   [
+    "two live issues with one id",
+    (d) => {
+      const s = backup(d, {
+        floors: true,
+        tamper: `UPDATE state_records SET body = replace(body, '"id":"work-3"', '"id":"work-1"') WHERE namespace = 'forge/work' AND key = 'issue:work-3'`,
+      });
+      return { backup: s.path, digest: sha(readFileSync(s.path)) };
+    },
+    "GRAPH_DUPLICATE_ID",
+  ],
+  [
     "dependency cycle",
     (d) => {
       const s = backup(d, {
@@ -301,6 +312,21 @@ for (const [name, make, code] of refused)
     if (before !== "" && input.afterRead === undefined)
       expect(sha(readFileSync(input.backup))).toBe(before);
   }, 30_000);
+
+// Real stores wrap each issue in its record's `value`, and an epic may depend on its own children: both are legal.
+test("a graph with distinct ids and a parent that depends on its child is accepted", async () => {
+  const dir = scratch();
+  const source = backup(dir, {
+    floors: true,
+    deps: [],
+    tamper: `UPDATE state_records SET body = replace(body, '"dependsOn":[]', '"dependsOn":["work-3"]') WHERE namespace = 'forge/work' AND key = 'issue:work-1'`,
+  });
+  const report = await convert({
+    backup: source.path,
+    digest: sha(readFileSync(source.path)),
+  });
+  expect([report.status, report.code]).toEqual(["PASS", null]);
+}, 30_000);
 
 const corrupt: [string, string, string][] = [
   [
