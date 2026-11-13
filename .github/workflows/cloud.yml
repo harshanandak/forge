@@ -337,6 +337,19 @@ jobs:
           cat "$RUNNER_TEMP/old.out"
           grep -Eq '^FAIL capacity real: page [0-9]+: 413 RESTORE_TOO_LARGE$' "$RUNNER_TEMP/old.out" || { echo "::error::the old caps did not refuse at admission"; exit 1; }
           [ "$(grep -c '^FAIL ' "$RUNNER_TEMP/old.out")" = 1 ] || { echo "::error::a row other than the real-size import failed"; exit 1; }
+      # Every restore is also compared with the source tables. With the last record of the 19,999 record shape (and its event)
+      # left out of the export, all pages still restore with 200, so only that comparison can fail the gate.
+      - name: A short export fails the gate
+        working-directory: cloud
+        run: |
+          sed -i 's/^        yield { table: t, row };$/        if (row.key !== "k-19998") yield { table: t, row };/' src/dump.ts
+          grep -q 'row.key !== "k-19998"' src/dump.ts || { echo "::error::the counterfactual edit did not apply"; exit 1; }
+          if node conformance/capacity.ts measure rows-records > "$RUNNER_TEMP/short.out" 2>&1; then
+            echo "::error::an export that drops a record passed the gate"; exit 1
+          fi
+          cat "$RUNNER_TEMP/short.out"
+          grep -Eq '^FAIL capacity rows-records: restored run 0: .*state_records has 19998 rows besides the generated floor, the source had 19999' "$RUNNER_TEMP/short.out" || { echo "::error::the gate did not report the dropped record"; exit 1; }
+          [ "$(grep -c '^FAIL ' "$RUNNER_TEMP/short.out")" = 1 ] || { echo "::error::a row other than the short export failed"; exit 1; }
 
   bundle:
     name: Cloud bundle (wrangler deploy --dry-run)

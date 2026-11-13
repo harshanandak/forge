@@ -7,6 +7,7 @@ import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { type Expected, fold, problems, type Table, tally } from "./digest.ts";
 
 interface Holder {
   readonly actor: { readonly kind: "agent"; readonly id: string };
@@ -252,10 +253,13 @@ interface DumpPage {
   readonly next: string | null;
   readonly tables: Record<string, readonly Record<string, unknown>[]>;
 }
-async function pagesOf(project: string): Promise<DumpPage[]> {
-  const pages: DumpPage[] = [];
+// Visits each page of a paged dump as it arrives, so a caller can fold it and let it go.
+async function eachPage(
+  project: string,
+  visit: (page: DumpPage) => void,
+): Promise<number> {
   let cursor = "start";
-  for (;;) {
+  for (let seen = 1; ; seen += 1) {
     const reply = await adminCall(
       project,
       "GET",
@@ -264,11 +268,16 @@ async function pagesOf(project: string): Promise<DumpPage[]> {
     assert.equal(reply.status, 200, JSON.stringify(reply.body));
     const page = reply.body.value as DumpPage;
     assert.equal(page.format, "forge-cloud-dump-page/1");
-    pages.push(page);
-    if (page.next === null) return pages;
-    assert.ok(pages.length < 200, "the pages end");
+    visit(page);
+    if (page.next === null) return seen;
+    assert.ok(seen < 200, "the pages end");
     cursor = page.next;
   }
+}
+async function pagesOf(project: string): Promise<DumpPage[]> {
+  const pages: DumpPage[] = [];
+  await eachPage(project, (page) => pages.push(page));
+  return pages;
 }
 const sendPage = (
   project: string,
@@ -4513,55 +4522,46 @@ if (phase === "budget-body") {
   );
 }
 
-// forge-1040: generated pages of the real-tracker shapes (capacity.ts writes them), restored through the Worker under
-// the limits the workflow sets, then read back. The projects are fresh and named for this run.
+// forge-1040: generated pages of the real-tracker shapes (capacity.ts writes them and, from the source tables by raw SQL, what
+// a restored project must hold), restored through the Worker under the limits the workflow sets, then read back. Each page is
+// sent, and each read back page folded, one at a time: the client never holds the project. The projects are fresh and named
+// for this run.
 if (phase === "capacity-wire") {
   const dir = process.env.CAPACITY_DIR ?? "";
-  const floor = "allocation:issue:work-";
-  const digest = (pages: readonly DumpPage[], table: string): string =>
-    createHash("sha256")
-      .update(
-        JSON.stringify(
-          pages
-            .flatMap((page) => page.tables[table] ?? [])
-            .filter((row) => row.key !== floor),
-        ),
-      )
-      .digest("hex");
   for (const shape of (process.env.CAPACITY_SHAPES ?? "real").split(" "))
     await journey(
       `capacity wire: ${shape} pages restore through the Worker and read back identical`,
       async () => {
-        const texts = readdirSync(join(dir, shape))
+        const files = readdirSync(join(dir, shape))
           .filter((file) => file.startsWith("page-"))
-          .sort()
-          .map((file) => readFileSync(join(dir, shape, file), "utf8"));
-        assert.ok(texts.length > 0, `${shape} has no pages in ${dir}`);
+          .sort();
+        assert.ok(files.length > 0, `${shape} has no pages in ${dir}`);
+        const { expect } = JSON.parse(
+          readFileSync(join(dir, shape, "meta.json"), "utf8"),
+        ) as { expect: Expected };
         const target = `${run}-cap-${shape}`;
         const times: number[] = [];
-        for (const [n, body] of texts.entries()) {
+        for (const [n, file] of files.entries()) {
+          const body = readFileSync(join(dir, shape, file), "utf8");
           const started = performance.now();
           const reply = await adminCall(target, "POST", "restore", body);
           times.push(Math.round(performance.now() - started));
           okValue(reply, `${shape} page ${n}`);
         }
         assert.equal(await initialized(target), true);
-        const back = await pagesOf(target);
-        const sent = texts.map((text) => JSON.parse(text) as DumpPage);
-        for (const table of [
-          "state_records",
-          "state_events",
-          "state_leases",
-          "state_requests",
-          "domain_cloud_requests",
-        ])
-          assert.equal(
-            digest(back, table),
-            digest(sent, table),
-            `${table} differs after the read back`,
-          );
+        const back = tally(expect);
+        const exported = await eachPage(target, (page) => {
+          for (const [table, rows] of Object.entries(page.tables))
+            for (const row of rows) fold(back, table as Table, row);
+        });
+        const wrong = problems(back, expect);
+        assert.deepEqual(
+          wrong,
+          [],
+          `${shape} differs from its source after the read back`,
+        );
         console.log(
-          `INFO capacity wire ${shape}: ${texts.length} pages, restore request ms ${JSON.stringify(times)}, ${back.length} export pages; Worker memory and CPU are not measured here`,
+          `INFO capacity wire ${shape}: ${files.length} pages, restore request ms ${JSON.stringify(times)}, ${exported} export pages; Worker memory and CPU are not measured here`,
         );
       },
       600_000,

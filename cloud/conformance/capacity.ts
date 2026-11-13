@@ -25,6 +25,17 @@ import { StateOwner } from "../../src/core/state/index.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
 import { Project } from "../src/project.ts";
 import type { DurableStorage } from "../src/store.ts";
+import {
+  COLUMNS,
+  digests,
+  type Expected,
+  FLOOR,
+  fold,
+  KEYS,
+  problems as compare,
+  TABLES,
+  tally,
+} from "./digest.ts";
 
 if (!("timingSafeEqual" in crypto.subtle))
   Object.defineProperty(crypto.subtle, "timingSafeEqual", {
@@ -55,20 +66,6 @@ const HEAP_LIMIT = 96 * MIB;
 const CPU_LIMIT_MS = 10_000;
 const WALL_LIMIT_MS = 60_000;
 const queryBudget = (rows: number): number => 1_000 + 8 * rows;
-const TABLES = [
-  "state_records",
-  "state_events",
-  "state_leases",
-  "state_requests",
-  "domain_cloud_requests",
-] as const;
-const COLUMNS: Record<(typeof TABLES)[number], string[]> = {
-  state_records: ["namespace", "key", "revision", "body"],
-  state_events: ["sequence", "namespace", "key", "body"],
-  state_leases: ["namespace", "subject", "generation", "body"],
-  state_requests: ["namespace", "request_id", "fingerprint", "result"],
-  domain_cloud_requests: ["request_id", "fingerprint", "outcome", "result"],
-};
 const actor = { kind: "agent", id: "capacity" } as const;
 const env = (extra: Record<string, string> = {}): Record<string, string> => ({
   FORGE_CLOUD_PROJECT: NAME,
@@ -318,6 +315,47 @@ const rowsOf = (db: DatabaseSync): Record<string, number> =>
     ]),
   );
 
+function scan(db: DatabaseSync, t: ReturnType<typeof tally>): void {
+  for (const table of TABLES)
+    for (const row of db
+      .prepare(
+        `SELECT ${COLUMNS[table].join(", ")} FROM ${table} ORDER BY ${KEYS[table].join(", ")}`,
+      )
+      .iterate())
+      fold(t, table, row);
+}
+/** What the source holds, by raw SQL over its own tables: a count and a digest of every row in dump order, per table. */
+function expectOf(db: DatabaseSync): Expected {
+  const t = tally();
+  scan(db, t);
+  const counted = rowsOf(db);
+  for (const table of TABLES)
+    if (t.rows[table] !== counted[table])
+      throw new Error(
+        `${table}: ${counted[table]} rows counted, ${t.rows[table]} read`,
+      );
+  const one = (sql: string, ...bind: string[]): number =>
+    (db.prepare(sql).get(...bind) as { n: number }).n;
+  return {
+    floorSupplied:
+      one(
+        "SELECT COUNT(*) AS n FROM state_records WHERE namespace = ? AND key = ?",
+        FLOOR.namespace,
+        FLOOR.key,
+      ) > 0,
+    lastSequence: one(
+      "SELECT COALESCE(MAX(sequence), 0) AS n FROM state_events",
+    ),
+    tables: digests(t),
+  };
+}
+/** How a restored target differs from the source expectations; its generated floor rows are counted, not digested. */
+function differences(db: DatabaseSync, expected: Expected): string[] {
+  const t = tally(expected);
+  scan(db, t);
+  return compare(t, expected);
+}
+
 /** Every page of the real export, as the exact document a restore request carries. */
 async function exported(project: Project): Promise<string[]> {
   const pages: string[] = [];
@@ -341,6 +379,8 @@ async function exported(project: Project): Promise<string[]> {
 }
 
 interface Meta {
+  // Taken from the source tables before the export runs; every restored target is checked against it.
+  expect: Expected;
   rows: Record<string, number>;
   stored: number;
   pages: number[];
@@ -349,8 +389,10 @@ interface Meta {
 async function write(dir: string, name: string): Promise<Meta> {
   const shape = await SHAPES[name]!();
   const { db, project } = await source(shape);
+  const expect = expectOf(db);
   const pages = await exported(project);
   const meta: Meta = {
+    expect,
     rows: rowsOf(db),
     stored: storedBytes(db),
     pages: pages.map((p) => Buffer.byteLength(p)),
@@ -380,17 +422,24 @@ interface Sample {
   external: number;
   malloced: number;
 }
-/** The worker: restore the pages `runs` times into fresh targets. The first run is cold, the rest warm. */
-async function restoreAll(): Promise<Sample[]> {
-  const { dir, runs, limits } = workerData as {
+interface Done {
+  samples: Sample[];
+  mismatches: string[];
+}
+/** The worker: restore the pages `runs` times into fresh targets. The first run is cold, the rest warm. A target that took
+ * all its pages is compared with the source expectations before it is closed. */
+async function restoreAll(): Promise<Done> {
+  const { dir, runs, limits, expect } = workerData as {
     dir: string;
     runs: number;
     limits: Record<string, string>;
+    expect: Expected;
   };
   const files = readdirSync(dir)
     .filter((f) => f.startsWith("page-"))
     .sort();
   const samples: Sample[] = [];
+  const mismatches: string[] = [];
   for (let run = 0; run < runs; run += 1) {
     const db = new DatabaseSync(":memory:");
     const count = { n: 0 };
@@ -423,22 +472,22 @@ async function restoreAll(): Promise<Sample[]> {
         external: heap.external_memory,
         malloced: heap.peak_malloced_memory,
       });
-      if (reply.status !== 200) return samples;
+      if (reply.status !== 200) return { samples, mismatches };
     }
+    const wrong = differences(db, expect);
+    if (wrong.length > 0) mismatches.push(`run ${run}: ${wrong.join("; ")}`);
     db.close();
   }
-  return samples;
+  return { samples, mismatches };
 }
 
-function inWorker(
-  data: object,
-): Promise<{ samples?: Sample[]; error?: string }> {
+function inWorker(data: object): Promise<Partial<Done> & { error?: string }> {
   return new Promise((resolve) => {
     const worker = new Worker(new URL(import.meta.url), {
       workerData: data,
       resourceLimits: HEAP,
     });
-    worker.once("message", (samples: Sample[]) => resolve({ samples }));
+    worker.once("message", (done: Done) => resolve(done));
     worker.once("error", (error: NodeJS.ErrnoException) =>
       resolve({ error: error.code ?? error.message }),
     );
@@ -464,6 +513,7 @@ async function measure(
     dir: join(dir, name),
     runs: meta.runs,
     limits,
+    expect: meta.expect,
   });
   const problems: string[] = [];
   const samples = done.samples ?? [];
@@ -493,6 +543,8 @@ async function measure(
         `heap cap ${HEAP_LIMIT / MIB} MiB held`,
     );
   }
+  // Accepting a restore on its HTTP status alone would let an export that drops rows pass.
+  for (const wrong of done.mismatches ?? []) problems.push(`restored ${wrong}`);
   if (name === "real") {
     for (const [what, have, need] of [
       ["records", meta.rows.state_records!, TRACKER.records],
@@ -526,6 +578,36 @@ async function capBinds(): Promise<boolean> {
   return ok;
 }
 
+/** The comparison is not blind: a copy that drops a row or changes one is reported. The wire journey shares it. */
+function gateCatches(): boolean {
+  const rows = [
+    { namespace: "n", key: "a", revision: 1, body: "{}" },
+    { namespace: "n", key: "b", revision: 1, body: "{}" },
+  ];
+  const skip = { floorSupplied: true, lastSequence: 0 };
+  const of = (list: typeof rows) => {
+    const t = tally(skip);
+    for (const row of list) fold(t, "state_records", row);
+    return t;
+  };
+  const expected: Expected = { ...skip, tables: digests(of(rows)) };
+  const clean = compare(of(rows), expected).length === 0;
+  const dropped = compare(of(rows.slice(0, 1)), expected).some((p) =>
+    p.startsWith("state_records has 1 rows"),
+  );
+  const changed = compare(
+    of([rows[0]!, { ...rows[1]!, body: "{ }" }]),
+    expected,
+  ).some((p) => p.includes("different content"));
+  const ok = clean && dropped && changed;
+  console.log(
+    ok
+      ? "PASS capacity gate reports a dropped row and a changed row"
+      : `FAIL capacity gate reports a dropped row and a changed row: clean ${clean}, dropped ${dropped}, changed ${changed}`,
+  );
+  return ok;
+}
+
 if (!isMainThread) {
   const data = workerData as { allocate?: boolean };
   if (data.allocate) {
@@ -545,7 +627,8 @@ if (!isMainThread) {
     }
   } else {
     const dir = mkdtempSync(join(tmpdir(), "forge-capacity-"));
-    let ok = await capBinds();
+    let ok = gateCatches();
+    ok = (await capBinds()) && ok;
     for (const name of rest.length > 0 ? rest : Object.keys(SHAPES))
       ok = (await measure(dir, name, await write(dir, name))) && ok;
     process.exitCode = ok ? 0 : 1;
