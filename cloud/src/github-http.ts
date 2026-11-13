@@ -2,6 +2,11 @@ import { createGithubJsonBudget, parseGithubJson } from "./github-json.ts";
 import { isPlainJson } from "./plain-json.ts";
 type Query = Readonly<Record<string, string>>;
 type Get = (path: readonly string[], query?: Query) => Promise<unknown>;
+type Collect = (
+  path: readonly string[],
+  query?: Query,
+  key?: string,
+) => Promise<unknown[]>;
 type Ports = {
   fetch(url: string, init: RequestInit): Promise<Response>;
   credential(
@@ -19,11 +24,12 @@ type Refusal = {
 };
 const ORIGIN = "https://api.github.com",
   REQUESTS = 32,
+  PAGE_SIZE = 100,
   DEADLINE = 10_000;
 export async function withGithubHttp<T>(
   locator: unknown,
   ports: Ports,
-  read: (session: { get: Get }) => Promise<T>,
+  read: (session: { get: Get; collect: Collect }) => Promise<T>,
 ): Promise<{ ok: true; value: T } | Refusal> {
   const controller = new AbortController(),
     budget = createGithubJsonBudget();
@@ -150,7 +156,55 @@ export async function withGithubHttp<T>(
           active--;
         }
       };
-      const value = await read({ get });
+      const collect: Collect = async (path, query = {}, key) => {
+        active++;
+        try {
+          check();
+          if (
+            !isPlainJson([path, query]) ||
+            Object.hasOwn(query, "page") ||
+            Object.hasOwn(query, "per_page")
+          )
+            fail("INPUT_INVALID");
+          // One response avoids inconsistent offset snapshots; never follow Link.
+          const value = await get(path, {
+            ...query,
+            per_page: String(PAGE_SIZE),
+          });
+          let rows = value;
+          if (key !== undefined) {
+            if (!value || typeof value !== "object" || Array.isArray(value))
+              fail();
+            const envelope = value as Record<string, unknown>;
+            rows = envelope[key];
+            if (
+              envelope.incomplete_results === true ||
+              (Object.hasOwn(envelope, "total_count") &&
+                (!Array.isArray(rows) || envelope.total_count !== rows.length))
+            )
+              fail();
+          }
+          if (!Array.isArray(rows)) fail();
+          const items: unknown[] = rows;
+          const identities = new Set<number>();
+          for (const row of items) {
+            const id =
+              row && typeof row === "object" && !Array.isArray(row)
+                ? (row as Record<string, unknown>).id
+                : undefined;
+            if (!positive(id)) fail();
+            if (identities.has(id)) fail("INPUT_INVALID");
+            identities.add(id);
+          }
+          if (items.length >= PAGE_SIZE) fail();
+          return items;
+        } catch {
+          return fail();
+        } finally {
+          active--;
+        }
+      };
+      const value = await read({ get, collect });
       check();
       if (active) fail();
       return { ok: true as const, value };
