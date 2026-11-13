@@ -1,5 +1,7 @@
 import { expect, mock, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
+import type { Dump } from "../../cloud/src/dump.ts";
+import { PAGE_FORMAT } from "../../cloud/src/dump.ts";
 import { Project } from "../../cloud/src/project.ts";
 import { TABLE_PROBE, type DurableStorage } from "../../cloud/src/store.ts";
 import { TOKEN_LOOKUP } from "../../cloud/src/tokens.ts";
@@ -35,19 +37,27 @@ const defaults = {
   generation: 1,
   ttlMs: minute,
 };
-function fixture() {
+function fixture(env?: unknown) {
   const clock = spyOn(Date, "now").mockReturnValue(now);
   const db = new Database(":memory:"),
     values = new Map<string, unknown>(),
     // Every statement, transaction and key-value call, so setup or a stray read shows even when no row changes.
     calls: string[] = [];
   let failRelease = false;
+  let failRestoredRelease = false;
   let claimNumber = 0;
   const storage: DurableStorage = {
     sql: {
       exec: (sql, ...bindings) => {
         calls.push(sql);
-        if (failRelease && sql.startsWith("INSERT INTO state_events"))
+        if (
+          (failRelease ||
+            (failRestoredRelease &&
+              bindings.some(
+                (v) => typeof v === "string" && v.includes(":lease.released@1"),
+              ))) &&
+          sql.startsWith("INSERT INTO state_events")
+        )
           throw new Error("injected event failure");
         const rows = db
           .query(sql)
@@ -77,7 +87,7 @@ function fixture() {
       return Promise.resolve(values.delete(key));
     },
   };
-  let project = new Project({ storage });
+  let project = new Project({ storage }, env);
   const bindings = {
     PROJECTS: { idFromName: (name: string) => name, get: () => project },
   };
@@ -204,6 +214,9 @@ function fixture() {
     row,
     rows,
     revoke: (device: Device) => send("revoke", { id: device.id }),
+    failRestore: () => {
+      failRestoredRelease = true;
+    },
     fail: () => {
       failRelease = true;
     },
@@ -664,3 +677,173 @@ test("a cold object migrates once its token is accepted, then serves the lease j
   expect(sent[3]?.body).toEqual(sent[2]?.body);
   expect(f.snapshot()).toContain("domain_cloud_login");
 }, 30_000);
+
+// Table cases share the same valid history; only the final renewal and matching lease are forged.
+for (const mode of ["whole", "paged"] as const)
+  for (const state of ["future", "released", "expired"] as const)
+    for (const limit of ["fits", "rows", "bytes", "event failure"] as const) {
+      if (state !== "future" && limit !== "fits") continue;
+      test(`${mode} restore: ${state} leases, ${limit}`, async () => {
+        using source = fixture();
+        const empty = (await source.send("dump")).body.value;
+        expect((await source.send("restore", empty)).status).toBe(200);
+        for (const subject of ["issue", "other"]) {
+          expect(
+            (await source.write("claim", { subject }, "owner")).status,
+          ).toBe(200);
+          expect(
+            (await source.write("renew", { subject }, "owner")).status,
+          ).toBe(200);
+          if (state === "released")
+            expect(
+              (await source.write("release", { subject }, "owner")).status,
+            ).toBe(200);
+        }
+        if (state === "expired") source.clock.mockReturnValue(now + minute);
+        const dump = (await source.send("dump")).body.value as Dump;
+        if (state === "future") {
+          for (const row of dump.tables.state_leases!) {
+            const lease = JSON.parse(String(row.body)) as LeaseRecord;
+            row.body = JSON.stringify({
+              ...lease,
+              expiresAt: "9999-01-01T00:00:00.000Z",
+            });
+          }
+          for (const row of dump.tables.state_events!) {
+            const event = JSON.parse(String(row.body));
+            if (event.type.endsWith(":lease.renewed@1")) {
+              event.data.expiresAt = "9999-01-01T00:00:00.000Z";
+              row.body = JSON.stringify(event);
+            }
+          }
+        }
+        const storedBytes = Object.values(dump.tables)
+          .flat()
+          .reduce(
+            (sum, row) =>
+              sum +
+              Object.values(row).reduce<number>(
+                (n, value) =>
+                  n + new TextEncoder().encode(String(value)).length,
+                0,
+              ),
+            0,
+          );
+        using target = fixture({
+          ...(limit === "rows"
+            ? { DUMP_MAX_ROWS: dump.tables.state_events!.length }
+            : {}),
+          ...(limit === "bytes" ? { DUMP_MAX_BYTES: storedBytes } : {}),
+        });
+        if (state === "expired") target.clock.mockReturnValue(now + minute);
+        if (limit === "event failure") target.failRestore();
+        const pages =
+          mode === "whole"
+            ? [dump]
+            : [
+                {
+                  format: PAGE_FORMAT,
+                  page: 0,
+                  last: false,
+                  next: "next",
+                  tables: {
+                    ...Object.fromEntries(
+                      Object.keys(dump.tables).map((t) => [t, []]),
+                    ),
+                    state_records: dump.tables.state_records!,
+                  },
+                },
+                {
+                  format: PAGE_FORMAT,
+                  page: 1,
+                  last: true,
+                  next: null,
+                  tables: { ...dump.tables, state_records: [] },
+                },
+              ];
+        for (const [index, page] of pages.entries()) {
+          const reply = await target.send("restore", page);
+          const final = index === pages.length - 1;
+          expect(reply.status).toBe(
+            !final || limit === "fits"
+              ? 200
+              : limit === "event failure"
+                ? 500
+                : 400,
+          );
+          if (!final) {
+            expect((await target.send("status")).body.value).toEqual({
+              initialized: false,
+            });
+            expect(target.rows("state_leases")).toEqual([]);
+          } else if (limit !== "fits") {
+            if (limit !== "event failure")
+              expect(reply.body.error?.code).toBe("RESTORE_TOO_LARGE");
+            expect((await target.send("status")).body.value).toEqual({
+              initialized: false,
+            });
+            for (const table of Object.keys(dump.tables))
+              expect(target.rows(table)).toEqual([]);
+          }
+        }
+        if (limit !== "fits") return;
+        const restored = (await target.send("dump")).body.value as Dump;
+        for (const [table, rows] of Object.entries(dump.tables)) {
+          if (!["state_leases", "state_events"].includes(table))
+            expect(restored.tables[table]).toEqual(rows);
+        }
+        const events = restored.tables.state_events!;
+        expect(events.slice(0, dump.tables.state_events!.length)).toEqual(
+          dump.tables.state_events!,
+        );
+        expect(events.length).toBe(
+          dump.tables.state_events!.length + (state === "future" ? 2 : 0),
+        );
+        for (const [index, row] of restored.tables.state_leases!.entries()) {
+          const original = JSON.parse(
+            String(dump.tables.state_leases![index]!.body),
+          ) as LeaseRecord;
+          const lease = JSON.parse(String(row.body)) as LeaseRecord;
+          expect(lease).toEqual(
+            state === "future"
+              ? { ...original, releasedAt: new Date(now).toISOString() }
+              : original,
+          );
+          expect(row.generation).toBe(original.generation);
+          if (state === "future") {
+            const event = JSON.parse(
+              String(events[dump.tables.state_events!.length + index]!.body),
+            );
+            expect(event).toEqual({
+              type: "forge/work:lease.released@1",
+              namespace: "forge/work",
+              key: lease.subject,
+              revision: lease.generation,
+              at: lease.releasedAt,
+              actor: lease.holder.actor,
+              data: lease,
+            });
+          }
+          const other = restored.tables.state_leases!.find(
+            (r) => r.subject !== row.subject,
+          )!;
+          const beforeOther = await target.lookup(String(other.subject));
+          const claim = await target.write(
+            "claim",
+            {
+              subject: lease.subject,
+              holder: holder("phone", "fresh"),
+              requestId: `fresh-${lease.subject}`,
+            },
+            "owner",
+          );
+          expect(claim.status).toBe(200);
+          expect((claim.body.value as LeaseRecord).generation).toBe(
+            original.generation + 1,
+          );
+          expect(await target.lookup(String(other.subject))).toEqual(
+            beforeOther,
+          );
+        }
+      }, 30_000);
+    }
