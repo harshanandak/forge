@@ -51,7 +51,7 @@ import {
   validateInvocationRequest,
   validateBlockManifest,
 } from "../generated/validators.ts";
-import type { McpCandidate } from "../contract/mcp.ts";
+import { cliOperation, type McpCandidate } from "../contract/mcp.ts";
 import type {
   Actor,
   BlockSource,
@@ -498,10 +498,7 @@ export async function createAssembly(
       commandsFor: (declaredOp: string): readonly string[] =>
         snapshot(callScope())
           .candidates.filter((entry) => entry.declaredOp === declaredOp)
-          .map(
-            (entry) =>
-              `forge ${cliWords(entry.declaration.cli ?? entry.op)!.join(" ")}`,
-          ),
+          .map((entry) => `forge ${cliWords(cliOperation(entry))!.join(" ")}`),
       // what the enabled, loadable, admitted blocks declare they enforce, for laws.check
       enforcers: (): readonly Enforcer[] =>
         [...snapshot(callScope()).blocks].flatMap(([name, block]) => {

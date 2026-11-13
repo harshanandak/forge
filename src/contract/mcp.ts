@@ -73,6 +73,13 @@ export function renamedOperation(
     : `${noun}.${parsed.verb}`;
 }
 
+/** Explicit composition renames take precedence over the manifest's CLI spelling. */
+export function cliOperation(entry: McpCandidate): string {
+  return entry.op === (entry.declaredOp ?? entry.op)
+    ? (entry.declaration.cli ?? entry.op)
+    : entry.op;
+}
+
 export function projectMcpTool(
   candidate: McpCandidate,
   prefix?: string,
