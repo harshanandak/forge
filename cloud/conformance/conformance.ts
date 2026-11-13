@@ -624,6 +624,7 @@ interface TypedSaved {
   readonly create: Call;
   readonly created: Item;
   readonly latest: readonly Item[];
+  readonly ids: readonly string[];
   readonly ready: readonly string[];
   readonly dump: Dump;
 }
@@ -1312,17 +1313,29 @@ async function ownershipJourney(): Promise<void> {
     const held = await rawFor(b, "o-held", "issue:o-held");
     assert.deepEqual([held.status, held.body.error?.code], [409, "LEASE_HELD"]);
     const kept = await dump();
-    for (const [body, headers, project, code] of [
-      [
-        { ...create, context: { ...asProject(a), device: { id: "forged" } } },
-        {},
-        typedProject,
-        "AUTH_DEVICE_MISMATCH",
-      ],
-      [create, {}, `${typedProject}-wrong`, "AUTH_FORBIDDEN"],
-      [create, { "X-Forge-Owner": "forged" }, typedProject, "AUTH_FORBIDDEN"],
+    typedFail(
+      await typedCall(a, {
+        ...create,
+        context: { ...asProject(a), device: { id: "forged" } },
+      }),
+      403,
+      "AUTH_DEVICE_MISMATCH",
+    );
+    for (const [headers, project] of [
+      [{}, `${typedProject}-wrong`],
+      [{ "X-Forge-Owner": "forged" }, typedProject],
     ] as const)
-      typedFail(await typedCall(a, body, headers, project), 403, code);
+      assert.deepEqual(await typedCall(a, create, headers, project), {
+        status: 403,
+        body: {
+          ok: false,
+          error: {
+            code: "AUTH_FORBIDDEN",
+            message: "Commands are for a device token on the admitted project",
+            retry: "never",
+          },
+        },
+      });
     assert.deepEqual(await dump(), kept);
   });
 }
@@ -3614,6 +3627,12 @@ if (phase === "main") {
   else await ownershipJourney();
 
   await typed("typed state is saved for the restart phase", async () => {
+    const ids = await idsOf(a, "issue.list");
+    assert.equal(
+      ids.length,
+      6,
+      "the original and ownership issues are all saved",
+    );
     typedSaved = {
       caller: a,
       create: { ...createOne, context: asProject(a) },
@@ -3621,6 +3640,7 @@ if (phase === "main") {
       latest: await Promise.all(
         [one, two, third].map((item) => show(a, item.id)),
       ),
+      ids,
       ready: await idsOf(a, "issue.ready"),
       dump: await dumpOf(typedProject),
     };
@@ -3653,6 +3673,7 @@ if (phase === "main") {
     stateFile,
     JSON.stringify({
       project,
+      rawToken: await tokenFor(project),
       holder,
       claimed,
       freed,
@@ -3664,12 +3685,14 @@ if (phase === "main") {
 } else if (phase === "restart") {
   const saved = JSON.parse(readFileSync(stateFile, "utf8")) as {
     project: string;
+    rawToken: string;
     holder: Holder;
     claimed: Lease;
     freed: Lease;
     revoked: Device;
     typed?: TypedSaved;
   };
+  projectTokens.set(saved.project, Promise.resolve(saved.rawToken));
   await (live ? skip(SKIP_TYPED_RESTART) : check)(
     "typed replay, show, list and ready survive a restart, and add no row",
     async () => {
@@ -3682,10 +3705,7 @@ if (phase === "main") {
       );
       for (const item of kept.latest)
         assert.deepEqual(await show(kept.caller, item.id), item);
-      assert.deepEqual(
-        await idsOf(kept.caller, "issue.list"),
-        kept.latest.map((item) => item.id).sort(),
-      );
+      assert.deepEqual(await idsOf(kept.caller, "issue.list"), kept.ids);
       assert.deepEqual(await idsOf(kept.caller, "issue.ready"), kept.ready);
       // Neither the replay nor any read wrote an issue, comment, receipt, event or lease.
       assert.deepEqual(await dumpOf(typedProject), kept.dump);
@@ -3750,8 +3770,7 @@ if (phase === "large") {
   // The largest legal project through the real Worker at its default limits (4 MiB pages, 8 MiB project, no
   // small test caps; see the large step in .github/workflows/cloud.yml). The restore input is the rows of an
   // in-process project read with plain SQL, never an export, so a restore case reaches the parser even while
-  // export is broken. That project is named like the admitted target and acts as the same device and actor,
-  // so a replay on the restored target carries the fingerprints that made each receipt.
+  // export is broken. The project name, device and actor match; replacement tokens execute independently.
   const {
     ACTOR,
     BODY,
@@ -3866,7 +3885,7 @@ if (phase === "large") {
           context: asProject(caller),
         }),
       );
-      // Two more maximum issues grow the project past one 4 MiB page, and still under its 8 MiB.
+      // Together with the replacement-token create, one more maximum issue grows past a 4 MiB page.
       for (const n of [2])
         typedOk(
           await typedCall(caller, {
@@ -3950,24 +3969,23 @@ if (phase === "large") {
     async () => {
       const budget = 4 * 1024 * 1024;
       const caller = await who();
-      // Two more creates of three-byte text. The independent fixture grows by the same commands the Worker has
-      // run (the fresh comment and two maximum creates), then these two, and the Worker is sent these two now.
+      // Match the authenticated caller and operation order, preserving exact scoped receipt and page comparisons.
+      await source.useToken(caller.device.token);
       const wide = (n: number) =>
         commandOf(`large-wide-${n}`, "issue.create", {
           title: `Wide ${n}`,
           body: WIDE,
         });
       for (const request of [
+        source.sent.create.request as Call,
         commandOf("large-fresh-comment", "issue.comment", {
           id,
           body: "later",
         }),
-        ...[1, 2].map((n) =>
-          commandOf(`large-grow-${n}`, "issue.create", {
-            title: `Grown ${n}`,
-            body: BODY,
-          }),
-        ),
+        commandOf("large-grow-2", "issue.create", {
+          title: "Grown 2",
+          body: BODY,
+        }),
         wide(1),
         wide(2),
       ])

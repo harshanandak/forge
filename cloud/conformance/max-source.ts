@@ -5,6 +5,7 @@ import { Database } from "bun:sqlite";
 import { StateOwner } from "../../src/core/state/index.ts";
 import type { SqlDatabase, SqlRow } from "../../src/ports/store.ts";
 import { Project } from "../src/project.ts";
+import { tokenParts } from "../src/tokens.ts";
 import type { DurableStorage } from "../src/store.ts";
 
 if (!("timingSafeEqual" in crypto.subtle))
@@ -155,7 +156,16 @@ async function harness(name: string, prefix: string, at?: number) {
     return { request, status: response.status, text: await response.text() };
   };
   const claim = (body: object) => post("claim", body, issued.value.token);
-  return { db, send, claim };
+  // This isolated oracle uses the real Worker's disposable caller, never its work rows or results.
+  const useToken = async (presented: string) => {
+    const { id, hash } = await tokenParts(presented);
+    db.run(
+      "INSERT INTO domain_cloud_tokens(id,hash,device,expires_at) VALUES (?,?,?,?)",
+      [id, hash, DEVICE, (at ?? Date.now()) + 3_600_000],
+    );
+    issued.value.token = presented;
+  };
+  return { db, send, claim, useToken };
 }
 type Harness = Awaited<ReturnType<typeof harness>>;
 
