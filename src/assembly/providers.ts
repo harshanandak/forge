@@ -49,7 +49,8 @@ import { firstPartyBlocks, firstPartyTemplates } from "./first-party.ts";
 import { createDeviceFiles } from "../adapters/fs/device-identity.ts";
 import type { DeviceFiles } from "../ports/device-files.ts";
 import type { CloudLogin } from "../ports/cloud-login.ts";
-import { createCloudLogin, type CloudLoginDeps } from "./cloud-login.ts";
+import type { CloudLoginDeps } from "./cloud-login.ts";
+import { lazy } from "./lazy.ts";
 import { windowsPrivateFiles } from "../adapters/process/windows-acl.ts";
 import { privateFileGuard } from "../adapters/store-sqlite/private-files.ts";
 
@@ -170,6 +171,9 @@ interface InternalProviders extends AssemblyProviders {
     executor: ProcessPort,
   ): Promise<OwnedHandle<FilesService>>;
 }
+
+// Only cloud login talks to the cloud, so no other command loads its client.
+const loadCloudLogin = lazy(() => import("./cloud-login.ts"));
 
 /** Host cleanup ceilings, not workflow policy. No supervisor exists until a launch. */
 const CLEANUP: SupervisionOptions = {
@@ -570,15 +574,21 @@ export function createAssemblyProviders(
               refuse("EFFECT_UNDECLARED", `Cloud login requires ${effect}`);
           if (options.deviceRoot === undefined)
             refuse("UNAVAILABLE", "Cloud login requires a device folder");
-          return createCloudLogin({
-            // The checkout root, so a call from a nested folder reads and writes the same files.
-            root: projectManifestRoot(root),
-            home: env.HOME ?? env.USERPROFILE,
-            deviceRoot: options.deviceRoot,
-            env,
-            signal: scope.signal,
-            ...options.cloudLogin,
-          }).login(input);
+          // Loaded here, so only a login pays for the cloud client. The refusals above stay synchronous.
+          const deviceRoot = options.deviceRoot;
+          return loadCloudLogin().then(({ createCloudLogin }) => {
+            // The load takes time, and a cancelled or expired call must not read or write device files.
+            active(scope);
+            return createCloudLogin({
+              // The checkout root, so a call from a nested folder reads and writes the same files.
+              root: projectManifestRoot(root),
+              home: env.HOME ?? env.USERPROFILE,
+              deviceRoot,
+              env,
+              signal: scope.signal,
+              ...options.cloudLogin,
+            }).login(input);
+          });
         },
       };
     },

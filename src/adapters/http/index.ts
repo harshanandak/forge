@@ -10,6 +10,12 @@ import {
   refusalDetails,
   type RefusalDetails,
 } from "./command-refusal.ts";
+import {
+  invalid as inputInvalid,
+  validateOrigin,
+  validateProject,
+} from "./origin.ts";
+export { validateOrigin, validateProject } from "./origin.ts";
 export { carriesToken } from "./command-refusal.ts";
 export type { Blocker, RefusalDetails } from "./command-refusal.ts";
 import type {
@@ -125,7 +131,6 @@ export interface CloudHttp {
 type ReadResult =
   | { readonly done: true; readonly value?: undefined }
   | { readonly done: false; readonly value: Uint8Array };
-const PROJECT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const DEVICE_CODE = /^[A-Za-z0-9_-]{43}$/;
 const USER_CODE = /^[BCDFGHJKLMNPQRSTVWXYZ]{4}-[BCDFGHJKLMNPQRSTVWXYZ]{4}$/;
 const MAX_CREDENTIAL = 4_096;
@@ -194,8 +199,7 @@ const mine = (failure: ForgeFailure): ForgeFailure => (
   own.add(failure),
   failure
 );
-const invalid = (message: string): ForgeFailure =>
-  mine(new ForgeFailure({ code: "INPUT_INVALID", message, retry: "never" }));
+const invalid = (message: string): ForgeFailure => mine(inputInvalid(message));
 const unavailable = (why: string): ForgeFailure =>
   mine(
     new ForgeFailure({
@@ -212,35 +216,6 @@ const cancelled = (): ForgeFailure =>
       retry: "never",
     }),
   );
-
-/** An HTTPS origin and nothing else: no credentials, path, query or fragment, and already canonical. */
-export function validateOrigin(origin: string): string {
-  let url: URL;
-  try {
-    url = new URL(origin);
-  } catch {
-    throw invalid("origin must be an HTTPS origin such as https://host");
-  }
-  if (
-    url.protocol !== "https:" ||
-    url.username !== "" ||
-    url.password !== "" ||
-    url.origin !== origin
-  )
-    throw invalid(
-      "origin must be an HTTPS origin with no credentials, path, query or fragment",
-    );
-  return origin;
-}
-
-/** The Worker's route grammar for a project name. */
-export function validateProject(project: string): string {
-  if (!PROJECT.test(project))
-    throw invalid(
-      "project must be 1 to 64 letters, digits, dots, hyphens or underscores, starting with a letter or digit",
-    );
-  return project;
-}
 
 /** Node's https module never follows a redirect, so a 3xx arrives as an ordinary response. */
 export const defaultCloudFetch: CloudFetch = (url, init) =>

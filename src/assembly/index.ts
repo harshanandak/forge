@@ -115,7 +115,8 @@ import {
   localIdentityResolver,
   sessionIdentity,
 } from "./identity.ts";
-import { syncSkills, type TemplateFile } from "./skills.ts";
+import { lazy } from "./lazy.ts";
+import type { TemplateFile } from "./skills.ts";
 import { shippedTemplates, TEMPLATE_FILE } from "./templates.ts";
 import { openLevels, PROJECT_STATE, requireRegisteredStore } from "./levels.ts";
 import {
@@ -137,6 +138,9 @@ import {
   projectManifestRoot,
   type ProviderOptions,
 } from "./providers.ts";
+
+// Only skills.sync writes skill files, so no other command loads the writer.
+const loadSkills = lazy(() => import("./skills.ts"));
 
 const TRUST_NAMESPACE = "forge/core-trust";
 const DEVICE_MEMORY: BlockInstance = {
@@ -1541,6 +1545,7 @@ export async function createAssembly(
                 code: "CLAIM_TTL_CONFIG_MOVE",
                 message: `Move /values/claims/ttlSeconds to /blocks/work/config/claimTtlSeconds with value ${JSON.stringify(legacyClaimTtl.value)} to preserve the claim lease duration.`,
               });
+            const { syncSkills } = await loadSkills();
             const synced = syncSkills(
               root,
               catalog.list(),

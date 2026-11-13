@@ -16,7 +16,7 @@ import type {
   LeaseHolder,
   LeaseRecord,
 } from "../generated/types.ts";
-import { wireDeviceId } from "./cloud-login.ts";
+import { wireDeviceId } from "./wire-device.ts";
 import type { CredentialKey, CredentialStore } from "./cloud-profile.ts";
 
 export interface CloudLeaseOptions {
