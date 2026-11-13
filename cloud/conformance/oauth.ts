@@ -180,6 +180,22 @@ async function main() {
     }
     await revoke({ ...family, client: unrelated.client }, family[kind]);
     await access(family, true);
+    if (kind === "access_token") {
+      const failed = await send("/oauth/revoke", {
+        method: "POST",
+        headers: { "x-oauth-token-read-fault": "1" },
+        body: new URLSearchParams({
+          token: family.access_token,
+          client_id: family.client,
+        }),
+      });
+      assert.equal(failed.status, 503, "token-record read must fail closed");
+      assert.deepEqual(await failed.json(), {
+        error: "temporarily_unavailable",
+      });
+      assert.equal(failed.headers.get("cache-control"), "no-store");
+      await access(family, true);
+    }
     await revoke(family, family[kind]);
     await access(family, false);
     await revoke(family, family[kind]);

@@ -17,15 +17,17 @@ assert.equal(
   "counterfactual must identify exactly one durable check",
 );
 let worker: ChildProcess | undefined;
+const ready = () =>
+  fetch("http://127.0.0.1:8788/fixture/ready", {
+    signal: AbortSignal.timeout(1000),
+  });
 async function stop() {
   if (!worker?.pid) return;
   process.kill(-worker.pid, "SIGTERM");
   worker = undefined;
   for (let n = 0; n < 40; n++) {
     try {
-      await fetch("http://127.0.0.1:8788/fixture/ready", {
-        signal: AbortSignal.timeout(1000),
-      });
+      await ready();
     } catch {
       return;
     }
@@ -55,14 +57,7 @@ async function start(label: string) {
   closeSync(log);
   for (let n = 0; n < 60; n++) {
     try {
-      if (
-        (
-          await fetch("http://127.0.0.1:8788/fixture/ready", {
-            signal: AbortSignal.timeout(1000),
-          })
-        ).ok
-      )
-        return;
+      if ((await ready()).ok) return;
     } catch {
       /* startup */
     }

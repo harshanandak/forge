@@ -51,7 +51,16 @@ export default {
     const options: OAuthOptions = {
       issuer,
       resources: [issuer],
-      storage: env.OAUTH_KV,
+      storage: {
+        get: <T>(key: string, options?: { type: "json" }) =>
+          request.headers.has("x-oauth-token-read-fault") &&
+          key.startsWith("token:")
+            ? Promise.reject(new Error("fixture token-record failure"))
+            : env.OAUTH_KV.get<T>(key, options),
+        put: (...args) => env.OAUTH_KV.put(...args),
+        delete: (key) => env.OAUTH_KV.delete(key),
+        list: (options) => env.OAUTH_KV.list(options),
+      },
       codeRedemption: durableRedemption(env.CODE_REDEMPTION),
       grantRevocation: durableGrants(env.GRANT_STATE),
       clock: { now: Date.now },

@@ -308,6 +308,7 @@ export function createConfiguredWorker(
             {
               ...((await response.json()) as Record<string, unknown>),
               revocation_endpoint: new URL("/oauth/revoke", request.url).href,
+              revocation_endpoint_auth_methods_supported: ["none"],
               grant_types_supported: ["authorization_code"],
             },
             { headers: response.headers },

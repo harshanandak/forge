@@ -93,10 +93,10 @@ export function createOAuthAdapter(options: OAuthOptions): OAuthAdapter {
   });
   const oauth = server.getOAuthApi(env);
   async function accessProof(token: string, resource: string) {
+    const validated = await server.validateToken<
+      IdentityClaims & { verifiedAudience: string }
+    >(resource, token, env);
     try {
-      const validated = await server.validateToken<
-        IdentityClaims & { verifiedAudience: string }
-      >(resource, token, env);
       const now = options.clock.now();
       if (
         !validated ||
