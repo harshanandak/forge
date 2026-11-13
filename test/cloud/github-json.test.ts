@@ -113,7 +113,7 @@ for (const [kind, value, code] of rows) {
               target.error(new Error("secret-sentinel raw-body"));
               return;
             }
-            if (offset === bytes.length) target.close();
+            if (offset >= bytes.length) target.close();
             else
               target.enqueue(
                 bytes.slice(
