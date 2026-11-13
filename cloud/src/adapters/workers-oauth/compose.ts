@@ -302,7 +302,7 @@ export function createConfiguredWorker(
         if (
           path === "/.well-known/oauth-authorization-server" &&
           response.ok &&
-          request.method !== "HEAD"
+          request.method === "GET"
         )
           return Response.json(
             {
