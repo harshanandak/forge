@@ -24,7 +24,6 @@ type Refusal = {
 };
 const ORIGIN = "https://api.github.com",
   REQUESTS = 32,
-  PAGES = 3,
   PAGE_SIZE = 100,
   DEADLINE = 10_000;
 export async function withGithubHttp<T>(
@@ -167,50 +166,38 @@ export async function withGithubHttp<T>(
             Object.hasOwn(query, "per_page")
           )
             fail("INPUT_INVALID");
-          // Snapshot server-owned filters before the first await; never follow Link.
-          const fixedPath = [...path],
-            fixedQuery = { ...query };
-          const rows: unknown[] = [];
-          let total: number | undefined;
-          for (let page = 1; page <= PAGES; page++) {
-            const value = await get(fixedPath, {
-              ...fixedQuery,
-              page: String(page),
-              per_page: String(PAGE_SIZE),
-            });
-            let batch = value;
-            if (key !== undefined) {
-              if (!value || typeof value !== "object" || Array.isArray(value))
-                fail();
-              const envelope = value as Record<string, unknown>;
-              if (
-                Object.hasOwn(envelope, "incomplete_results") &&
-                envelope.incomplete_results !== false
-              )
-                fail();
-              const count = envelope.total_count;
-              if (
-                typeof count !== "number" ||
-                !Number.isSafeInteger(count) ||
-                count < 0 ||
-                (total !== undefined && total !== count)
-              )
-                fail();
-              total = count;
-              batch = envelope[key];
-            }
-            if (!Array.isArray(batch) || batch.length > PAGE_SIZE) fail();
-            const items: unknown[] = batch;
-            rows.push(...items);
+          // One response avoids inconsistent offset snapshots; never follow Link.
+          const value = await get(path, {
+            ...query,
+            per_page: String(PAGE_SIZE),
+          });
+          let rows = value;
+          if (key !== undefined) {
+            if (!value || typeof value !== "object" || Array.isArray(value))
+              fail();
+            const envelope = value as Record<string, unknown>;
+            rows = envelope[key];
             if (
-              total !== undefined &&
-              (rows.length > total ||
-                (batch.length < PAGE_SIZE && rows.length !== total))
+              envelope.incomplete_results === true ||
+              (Object.hasOwn(envelope, "total_count") &&
+                (!Array.isArray(rows) || envelope.total_count !== rows.length))
             )
               fail();
-            if (rows.length === total || batch.length < PAGE_SIZE) return rows;
           }
-          return fail();
+          if (!Array.isArray(rows)) fail();
+          const items: unknown[] = rows;
+          const identities = new Set<number>();
+          for (const row of items) {
+            const id =
+              row && typeof row === "object" && !Array.isArray(row)
+                ? (row as Record<string, unknown>).id
+                : undefined;
+            if (!positive(id)) fail();
+            if (identities.has(id)) fail("INPUT_INVALID");
+            identities.add(id);
+          }
+          if (items.length >= PAGE_SIZE) fail();
+          return items;
         } catch {
           return fail();
         } finally {
