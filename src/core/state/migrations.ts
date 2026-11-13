@@ -1,4 +1,5 @@
 import type { SqlDatabase } from "../../ports/store.ts";
+import { checkpointTables } from "./checkpoint.ts";
 
 export interface Migration {
   readonly id: string;
@@ -35,6 +36,12 @@ export const stateMigrations: readonly Migration[] = [
   baseline,
   eventKeyIndex,
   deviceSessionIdentity,
+  {
+    id: "004_state_checkpoint",
+    statements: Object.entries(checkpointTables).map(
+      ([table, columns]) => `CREATE TABLE IF NOT EXISTS ${table} (${columns})`,
+    ),
+  },
 ];
 
 export function identifier(value: string): string {

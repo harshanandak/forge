@@ -1,5 +1,13 @@
 # State owner
 
+## Checkpoint format
+
+Migration `004_state_checkpoint` reserves eight normalized owner tables. The codec uses
+version 1, ordered tuples in SQL column order, per-entry covered sequences and SHA-256
+digests. Lease bodies are canonical JSON. No checkpoint is written or used for replay
+yet. Empty tables preserve existing behavior; local image restore and cloud v2 export
+refuse non-empty checkpoint tables. The six-table cloud v2 wire format is unchanged.
+
 `StateOwner` accepts the locked `SqlDatabase` and `ClockPort` ports. `initialize()` is an explicit write; construction and reads do not initialize anything. `client(namespace, actor)` returns a `DeletableStateClient`, with namespace and actor captured. It never exposes a connection.
 
 `put` atomically checks the expected revision, checks any lease fence on the owner's clock, writes the record, appends its event, and saves the idempotent result. A reused request ID with different input is refused. Acquisition takes a holder and request ID, without a generation. Renewal, release and fenced writes require the current generation. A device-qualified lease authorizes the same device and session, independently of actor, agent or harness labels. A stored legacy lease without device identity retains actor-plus-session authorization until a holder-checked rewrite records the qualified caller. Renew and release record the current caller's actor and holder labels; reading historical events preserves the identities accepted at that time. Released and expired generations are never reused. A historical acquisition replay cannot revive authority.
