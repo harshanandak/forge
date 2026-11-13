@@ -56,6 +56,7 @@ import * as fx from "./cloud-fixture.ts";
 import * as launch from "../../src/adapters/process/run.ts";
 import * as authority from "../../src/assembly/cloud-binding.ts";
 import { relay } from "../fixtures/owner-approval.ts";
+import { approvalReply } from "../fixtures/owner-approval.mjs";
 
 setDefaultTimeout(30_000);
 const NOW = Date.UTC(2026, 10, 11);
@@ -3443,7 +3444,67 @@ test.each(acceptance)(
                         key in (entry.argumentSchema!.properties as object),
                     ),
                   );
-                for (const surface of ["direct", "CLI JSON"])
+                for (const surface of ["direct", "CLI JSON"]) {
+                  if (op === "lane.resume" && surface === "direct") {
+                    const trust = new LocalState(
+                      join(r.s.deviceRoot, "trust.sqlite"),
+                    );
+                    try {
+                      const owner = (await trust.open(false))!,
+                        prior = owner.export(),
+                        filesBefore = snapshot(["trust.sqlite"]);
+                      const approval = approvalReply(await call(op, input));
+                      expect(
+                        owner.get("forge/core-approvals", approval.request),
+                      ).toMatchObject({
+                        revision: 1,
+                        value: { status: "pending" },
+                      });
+                      await check(
+                        op,
+                        { ...input, approval },
+                        "INPUT_INVALID",
+                        ["trust.sqlite"],
+                        notServed(op),
+                      );
+                      expect(
+                        owner.get("forge/core-approvals", approval.request),
+                      ).toMatchObject({
+                        revision: 2,
+                        value: { status: "used", method: "relayed" },
+                      });
+                      const after = owner.export();
+                      expect(after).toEqual({
+                        ...prior,
+                        image: after.image,
+                        eventHighWaterMark: prior.eventHighWaterMark + 2,
+                        records: after.records,
+                        events: after.events,
+                      });
+                      for (const record of prior.records)
+                        expect(after.records).toContainEqual(record);
+                      for (const event of prior.events)
+                        expect(after.events).toContainEqual(event);
+                      expect([
+                        after.records.length,
+                        after.events.length,
+                      ]).toEqual([
+                        prior.records.length + 1,
+                        prior.events.length + 2,
+                      ]);
+                      expect(after.events.slice(-2)).toMatchObject(
+                        [1, 2].map((revision) => ({
+                          namespace: "forge/core-approvals",
+                          key: approval.request,
+                          revision,
+                        })),
+                      );
+                      expect(snapshot(["trust.sqlite"])).toEqual(filesBefore);
+                    } finally {
+                      await trust.close();
+                    }
+                    continue;
+                  }
                   await check(
                     op,
                     input,
@@ -3452,6 +3513,7 @@ test.each(acceptance)(
                     notServed(op),
                     surface,
                   );
+                }
               }
               break;
             case "Invalid authority binding":
