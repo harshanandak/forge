@@ -1,7 +1,8 @@
-// issue.comment at the project authority. The authority numbers the comment from its own count inside
-// the transaction and writes the comment, its event and the command receipt together. Nothing the
+// issue.comment at the project authority. The state owner numbers the comment above every number ever accepted
+// for its issue and moves that floor inside the transaction and writes the comment, its event and the command receipt together. Nothing the
 // caller sends names a key or a namespace: the input is checked against the work block's declared
 // schema, the id resolves to a stored issue, and the body is only bound as a value.
+import { canonicalJson } from "../../src/core/config/pointer.ts";
 import manifest from "../../src/blocks/work/forge.block.json" with { type: "json" };
 import CommentInput from "../../src/blocks/work/schemas/CommentInput.json" with { type: "json" };
 import CommentOutput from "../../src/blocks/work/schemas/CommentOutput.json" with { type: "json" };
@@ -46,12 +47,21 @@ export function commentIssue(
       return { id, body };
     },
     ({ id, body }, actor, prefix) => {
-      const key = `comment:${id}:`;
-      const commentId = `${key}${owner.count(NAMESPACE, key) + 1}`;
-      owner.put(NAMESPACE, commentId, { id, body }, actor, {
-        expectRevision: 0,
-      });
-      const result = { id: `${prefix}-${id.slice(5)}`, commentId };
+      const written = owner.putNext(
+        NAMESPACE,
+        `comment:${id}:`,
+        () => ({ value: { id, body } }),
+        actor,
+      );
+      if (
+        canonicalJson(owner.get(NAMESPACE, written.key)) !==
+        canonicalJson(written)
+      )
+        throw fail(
+          "INTERNAL",
+          "Accepted write did not match its readback; reconcile before retrying",
+        );
+      const result = { id: `${prefix}-${id.slice(5)}`, commentId: written.key };
       if (schemas().validate(CommentOutput.$ref, result).length > 0)
         throw fail("INTERNAL", "Comment result is not valid");
       return result;

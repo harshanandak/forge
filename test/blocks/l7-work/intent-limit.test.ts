@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, expect, setDefaultTimeout, test } from "bun:test";
 import { resolve } from "node:path";
+import { fakeNext } from "./fake-numbered.ts";
 
 setDefaultTimeout(30_000);
 type RecordValue = {
@@ -76,6 +77,8 @@ function project(stampDelay = 0) {
     list: (prefix: string) =>
       [...records.values()].filter((r) => r.key.startsWith(prefix)).reverse(),
     put,
+    putNext: (prefix: string, build: Parameters<typeof fakeNext>[2]): unknown =>
+      fakeNext({ maxNumber: state.maxNumber, put }, prefix, build),
     lease: () => undefined,
     acquire: () => undefined,
   };
@@ -157,6 +160,23 @@ test("two callers reading the same snapshot cannot both record call n+1", () => 
   ).toHaveLength(1);
   expect(p.records.size).toBe(3);
 });
+test("a comment key with no numeric suffix gives no false conflict, and a stale second caller is still refused", () => {
+  const p = project();
+  p.records.set("comment:work-1:draft", {
+    key: "comment:work-1:draft",
+    value: { id: "work-1", body: "imported" },
+    revision: 1,
+    updatedAt: "2026-01-01T00:00:00.000Z",
+  });
+  expect(p.call()).toMatchObject({ call: 1 });
+  const first = p.snapshotCall();
+  const second = p.snapshotCall();
+  expect(first()).toMatchObject({ call: 2 });
+  expect(second).toThrow("REVISION_CONFLICT");
+  expect(
+    [...p.records.values()].filter((r) => r.value.call === 2),
+  ).toHaveLength(1);
+}, 10_000);
 test("missing issue names the id as typed", () => {
   expect(() => project().call("WORK-99")).toThrow(
     "Issue WORK-99 was not found",

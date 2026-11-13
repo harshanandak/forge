@@ -401,10 +401,30 @@ async function check(name: string, body: () => Promise<void>): Promise<void> {
 // Budget journeys (forge-1304): real exported pages restored through the Worker and compared exactly. A second
 // argument names one journey, or a prefix of its name, so a counterfactual runs only the journey it targets.
 const only = process.argv[3];
-async function journey(name: string, body: () => Promise<void>): Promise<void> {
+// A journey may also name a deadline in milliseconds: past it the journey fails by name instead of hanging the job.
+async function journey(
+  name: string,
+  body: () => Promise<void>,
+  deadline?: number,
+): Promise<void> {
   if (only !== undefined && !name.startsWith(only)) return;
   const started = performance.now();
-  await check(name, body);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await check(
+    name,
+    deadline === undefined
+      ? body
+      : () =>
+          Promise.race([
+            body(),
+            new Promise<never>((_, reject) => {
+              timer = setTimeout(
+                () => reject(new Error(`no result within ${deadline} ms`)),
+                deadline,
+              );
+            }),
+          ]).finally(() => clearTimeout(timer)),
+  );
   console.log(`INFO ${name}: ${Math.round(performance.now() - started)} ms`);
 }
 const showDigests = (label: string, digests: Record<string, string>): void =>
@@ -2932,9 +2952,21 @@ if (phase === "main") {
         ),
         [record],
       );
+      // Two work events (forge-1306): the link and the first move of its issue's link floor, which is the one new
+      // floor record and holds the number the link took.
       assert.equal(
         eventsIn(after, "forge/work"),
-        eventsIn(before, "forge/work") + 1,
+        eventsIn(before, "forge/work") + 2,
+      );
+      assert.deepEqual(
+        recordsOf(
+          after,
+          "forge/work",
+          `allocation:link:${storedOf(one.id)}:`,
+        ).map(
+          (row) => (JSON.parse(String(row.body)) as { value: unknown }).value,
+        ),
+        [{ prefix: `link:${storedOf(one.id)}:`, number: 1 }],
       );
       assert.equal(
         recordsOf(after, "forge/cloud", "request:typed-link-1").length,
@@ -3596,10 +3628,21 @@ if (phase === "large") {
         for (const [table, rows] of Object.entries(page.tables))
           merged[table]!.push(...rows);
       }
-      // The two grown creates advance the allocation floor in place: its restored row (number 1, revision 1)
-      // is replaced by one at number 3, revision 3. Every other row of the source is still there unchanged.
+      // Two floors advance in place and are replaced, not added. The two grown creates move the issue floor
+      // from number 1, revision 1 to number 3, revision 3. The fresh comment moves the restored issue's comment
+      // floor from number 1, revision 1 to number 2, revision 2. Every other row of the source is unchanged.
+      const floorKeys = new Map([
+        [
+          "allocation:issue:work-",
+          { prefix: "issue:work-", number: 3, revision: 3 },
+        ],
+        [
+          `allocation:comment:${storedOf(id)}:`,
+          { prefix: `comment:${storedOf(id)}:`, number: 2, revision: 2 },
+        ],
+      ]);
       const floor = (row: Record<string, unknown>) =>
-        row.namespace === "forge/work" && row.key === "allocation:issue:work-";
+        row.namespace === "forge/work" && floorKeys.has(String(row.key));
       for (const table of Object.keys(want)) {
         const have = new Set(merged[table]!.map((row) => JSON.stringify(row)));
         assert.ok(
@@ -3610,22 +3653,23 @@ if (phase === "large") {
         );
       }
       const floors = merged.state_records!.filter(floor);
-      assert.equal(floors.length, 1, "one floor row");
-      assert.equal(floors[0]!.revision, 3);
-      assert.deepEqual(
-        (JSON.parse(String(floors[0]!.body)) as { value: unknown }).value,
-        {
-          prefix: "issue:work-",
-          number: 3,
-        },
-      );
+      assert.equal(floors.length, floorKeys.size, "one row per floor");
+      for (const [key, moved] of floorKeys) {
+        const row = floors.find((candidate) => candidate.key === key);
+        assert.equal(row?.revision, moved.revision, key);
+        assert.deepEqual(
+          (JSON.parse(String(row?.body)) as { value: unknown }).value,
+          { prefix: moved.prefix, number: moved.number },
+          key,
+        );
+      }
       // A comment and two issues joined, each with its receipt: six more records and six more events, and
-      // two more events for the floor's two advances (the floor record itself was replaced, not added).
+      // three more events for the floors' three advances (the floor records were replaced, not added).
       assert.equal(
         merged.state_records!.length,
         want.state_records!.length + 6,
       );
-      assert.equal(merged.state_events!.length, want.state_events!.length + 8);
+      assert.equal(merged.state_events!.length, want.state_events!.length + 9);
     },
   );
   await journey(
@@ -3706,6 +3750,542 @@ if (phase === "large") {
       );
       showDigests("maximum", trip.digests);
     },
+  );
+}
+
+// forge-1306: comment and link numbers are never reused after a delete. The isolated "numbers" and "numbers-restart" runs
+// (see .github/workflows/cloud.yml) share one fresh persistence directory and the default dump limits. The first Worker admits
+// project *-a, the second admits *-b, because the typed /command route admits one project. The source is a legacy project
+// built by the real state owner in this process and read with plain SQL; nothing here deletes through the Worker.
+const numbersState = `${stateFile}.numbers`;
+const NUMBERS_NAME =
+  "comment and link numbers survive deleted history, restore and concurrent adds";
+const NUMBERS_RESTART_NAME =
+  "comment and link floors survive a restart, and later adds continue above them";
+// The floors of the legacy source's families, as { key: [prefix, number, revision] }: work-1 holds comment and link
+// history, work-2 has less, and work-3 only links, so it has no comment floor. `numbers` and `revisions` are in the
+// order comment 1, comment 2, link 1, link 2, link 3; the issue floor is always 3 at revision 1.
+const FAMILIES = [
+  ["comment", 1],
+  ["comment", 2],
+  ["link", 1],
+  ["link", 2],
+  ["link", 3],
+] as const;
+const floorsFor = (
+  numbers: readonly number[],
+  revisions: readonly number[],
+): Record<string, readonly [string, number, number]> =>
+  // In key order, like floorsOf: the checks compare the serialized objects, so order is part of the match.
+  Object.fromEntries(
+    Object.entries({
+      "allocation:issue:work-": ["issue:work-", 3, 1] as const,
+      ...Object.fromEntries(
+        FAMILIES.map(([kind, n], i) => [
+          `allocation:${kind}:work-${n}:`,
+          [`${kind}:work-${n}:`, numbers[i]!, revisions[i]!] as const,
+        ]),
+      ),
+    }).sort(([x], [y]) => (x < y ? -1 : 1)),
+  );
+// What a restore derives: the highest number ever accepted (live or deleted) of each family, at revision 1.
+const SETTLED = floorsFor([10, 5, 10, 3, 3], [1, 1, 1, 1, 1]);
+// After the first typed adds and races, and after the restart's adds.
+const AFTER_ADDS = floorsFor([13, 6, 13, 4, 4], [4, 2, 4, 2, 2]);
+const AFTER_RESTART = floorsFor([14, 7, 14, 5, 4], [5, 3, 5, 3, 2]);
+interface Numbered {
+  readonly namespace: string;
+  readonly key: string;
+  readonly revision: number;
+  readonly value: unknown;
+  readonly updatedBy: { readonly id: string };
+}
+const same = (label: string, got: unknown, want: unknown): void => {
+  const [g, w] = [JSON.stringify(got), JSON.stringify(want)];
+  assert.ok(
+    g === w,
+    `${label}: got ${g?.slice(0, 500)}, want ${w?.slice(0, 500)}`,
+  );
+};
+// The floor records of one project as { key: [prefix, number, revision] }, in key order.
+const floorsOf = (
+  dump: Dump,
+): Record<string, readonly [string, number, number]> =>
+  Object.fromEntries(
+    recordsOf(dump, "forge/work", "allocation:").map((row) => {
+      const floor = JSON.parse(String(row.body)) as Numbered & {
+        value: { prefix: string; number: number };
+      };
+      return [
+        String(row.key),
+        [floor.value.prefix, floor.value.number, floor.revision],
+      ];
+    }),
+  );
+// The stored record at one work key, or null.
+const storedAt = (dump: Dump, key: string): Numbered | null => {
+  const text = recordsOf(dump, "forge/work", key)[0]?.body;
+  return typeof text === "string" ? (JSON.parse(text) as Numbered) : null;
+};
+const ok = (reply: { status: number; body: unknown }): void =>
+  assert.equal(reply.status, 200, JSON.stringify(reply.body).slice(0, 300));
+const rowsIn = (
+  dump: Dump,
+  table: string,
+): readonly Record<string, unknown>[] => dump.tables[table] ?? [];
+// What one batch of writes changed between two whole dumps: records added or rewritten, and the work events appended.
+function changes(before: Dump, after: Dump) {
+  const named = (row: Record<string, unknown>) =>
+    `${String(row.namespace)} ${String(row.key)}`;
+  const had = new Map(
+    rowsIn(before, "state_records").map((row) => [
+      named(row),
+      JSON.stringify(row),
+    ]),
+  );
+  const added: string[] = [];
+  const rewritten: string[] = [];
+  for (const row of rowsIn(after, "state_records")) {
+    const old = had.get(named(row));
+    if (old === undefined) added.push(named(row));
+    else if (old !== JSON.stringify(row)) rewritten.push(named(row));
+  }
+  const events = rowsIn(after, "state_events");
+  const first = rowsIn(before, "state_events").length;
+  return {
+    added: added.sort(),
+    rewritten: rewritten.sort(),
+    kept: had.size + added.length === rowsIn(after, "state_records").length,
+    oldEvents:
+      JSON.stringify(events.slice(0, first)) ===
+      JSON.stringify(rowsIn(before, "state_events")),
+    workEvents: events
+      .slice(first)
+      .filter((row) => row.namespace === "forge/work")
+      .map(
+        (row) =>
+          `forge/work ${(JSON.parse(String(row.body)) as { key: string }).key}`,
+      )
+      .sort(),
+  };
+}
+// One typed write: the stored key it reports, or the refusal it got instead, and its result as returned.
+async function landed(who: Caller, call: Call) {
+  const reply = await typedCall(who, call);
+  const result = reply.body.result as
+    { commentId?: string; key?: string } | undefined;
+  return {
+    got:
+      reply.status === 200
+        ? (result?.commentId ?? result?.key ?? "no key")
+        : `HTTP ${reply.status} ${reply.body.error?.code}`,
+    result,
+  };
+}
+const noteCall = (who: Caller, requestId: string, id: string): Call => ({
+  requestId,
+  op: "issue.comment",
+  input: { id, body: `Note ${requestId}` },
+  context: asProject(who),
+});
+const linkCall = (
+  who: Caller,
+  generation: number,
+  requestId: string,
+  id: string,
+): Call => ({
+  requestId,
+  op: "issue.link",
+  input: { id, relation: "delivers", url: `https://example.com/${requestId}` },
+  context: asHolder(who, generation),
+});
+const suffixesOf = (result: unknown): number[] =>
+  (result as { records: { key: string }[] }).records.map((record) =>
+    Number(record.key.split(":")[2]),
+  );
+// A whole dump or a joined export as comparable text: the five tables in dump order, however the object lists them.
+const TABLES = [
+  "state_records",
+  "state_events",
+  "state_leases",
+  "state_requests",
+  "domain_cloud_requests",
+] as const;
+const nameOf = (dump: Dump) =>
+  JSON.stringify(TABLES.map((table) => rowsIn(dump, table)));
+
+if (phase === "numbers") {
+  const { numberSource, pagesOf: cut } = await import("./max-source.ts");
+  assert.notEqual(
+    typedProject,
+    "",
+    "FORGE_CLOUD_PROJECT names the admitted project",
+  );
+  const prefix = process.env.FORGE_CLOUD_ID_PREFIX ?? "ci";
+  const second = typedProject.replace(/a$/, "b");
+  assert.notEqual(second, typedProject, "FORGE_CLOUD_PROJECT must end in a");
+  const [pagedTarget, joinedTarget] = [
+    `${run}-numbers-paged`,
+    `${run}-numbers-joined`,
+  ];
+  await journey(
+    NUMBERS_NAME,
+    async () => {
+      const source = await numberSource(typedProject, prefix);
+      const problems: string[] = [];
+      // A failed check is kept and the journey goes on, so one red run names every defect the fix must remove.
+      const step = async (
+        label: string,
+        body: () => unknown,
+      ): Promise<void> => {
+        try {
+          await body();
+        } catch (error) {
+          problems.push(
+            `${label}: ${(error instanceof Error ? error.message : String(error)).split("\n")[0]}`,
+          );
+        }
+      };
+      // A restored project holds every imported row unchanged, plus exactly one record and one event per derived floor.
+      const settledOk = (dump: Dump): void => {
+        same("derived floors", floorsOf(dump), SETTLED);
+        for (const key of Object.keys(SETTLED))
+          assert.equal(
+            storedAt(dump, key)?.updatedBy.id,
+            "cloud-restore",
+            `${key} is written by the restore`,
+          );
+        same(
+          "imported records",
+          rowsIn(dump, "state_records").filter(
+            (row) => !String(row.key).startsWith("allocation:"),
+          ),
+          source.tables.state_records,
+        );
+        const events = rowsIn(dump, "state_events");
+        const imported = source.tables.state_events!.length;
+        same(
+          "imported events",
+          events.slice(0, imported),
+          source.tables.state_events,
+        );
+        same(
+          "derived events",
+          events
+            .slice(imported)
+            .map((row) => {
+              const e = JSON.parse(String(row.body)) as {
+                key: string;
+                data: unknown;
+                revision: number;
+              };
+              return [e.key, e.data, e.revision];
+            })
+            .sort(),
+          // The Worker stores event data with sorted keys, so the expected object is built as { number, prefix }.
+          Object.entries(SETTLED).map(([key, [p, n, r]]) => [
+            key,
+            { number: n, prefix: p },
+            r,
+          ]),
+        );
+        for (const table of [
+          "state_leases",
+          "state_requests",
+          "domain_cloud_requests",
+        ])
+          same(table, rowsIn(dump, table), source.tables[table]);
+      };
+
+      // 1. A whole restore and a paged restore of the legacy source, each read back before any device exists.
+      assert.equal(await initialized(typedProject), false);
+      const restored = await adminCall(
+        typedProject,
+        "POST",
+        "restore",
+        JSON.stringify(source.doc),
+      );
+      ok(restored);
+      await step(
+        "whole restore derives every comment and link floor",
+        async () => settledOk(await dumpOf(typedProject)),
+      );
+      const parts = cut(source.tables, 3);
+      for (const [i, part] of parts.entries()) {
+        ok(await sendPage(pagedTarget, part));
+        assert.equal(await initialized(pagedTarget), i === parts.length - 1);
+      }
+      await step(
+        "paged restore derives every comment and link floor",
+        async () => settledOk(await dumpOf(pagedTarget)),
+      );
+
+      // 2. Devices after the restore. Two clients race; links all come from the one device that holds the lease of each issue it links.
+      const a = await callerFor("numbers", false);
+      const b: Caller = {
+        ...a,
+        device: await issue(typedProject, "typed-numbers-2", undefined, false),
+      };
+      const ids = [1, 2, 3].map((n) => `${prefix}-${n}`);
+      const leases: number[] = [];
+      for (const id of ids)
+        leases.push(
+          typedOk<Grant>(await typedCall(a, claimOf(`n-claim-${id}`, a, id)))
+            .generation,
+        );
+      const g = (n: number): number => leases[n - 1]!;
+      const before = await dumpOf(typedProject);
+
+      // 3. Fresh adds, one at a time: each takes the number above everything ever accepted for its issue and kind.
+      const key = (kind: string, issue: number, n: number): string =>
+        `${kind}:work-${issue}:${n}`;
+      const ordered: [Caller, Call, string][] = [
+        [a, noteCall(a, "n-c1-11", ids[0]!), key("comment", 1, 11)],
+        [a, linkCall(a, g(1), "n-l1-11", ids[0]!), key("link", 1, 11)],
+        [a, noteCall(a, "n-c2-6", ids[1]!), key("comment", 2, 6)],
+        [a, linkCall(a, g(2), "n-l2-4", ids[1]!), key("link", 2, 4)],
+        [a, linkCall(a, g(3), "n-l3-4", ids[2]!), key("link", 3, 4)],
+      ];
+      const results = new Map<string, unknown>();
+      const seen: string[] = [];
+      for (const [who, call] of ordered) {
+        const out = await landed(who, call);
+        seen.push(out.got);
+        results.set(call.requestId, out.result);
+      }
+      await step("fresh adds allocate above deleted and sparse history", () =>
+        same(
+          "keys",
+          seen,
+          ordered.map(([, , want]) => want),
+        ),
+      );
+
+      // 4. Two clients race distinct adds of each kind: distinct, consecutive and above every earlier number.
+      const raced = await Promise.all([
+        landed(a, noteCall(a, "n-c1-12", ids[0]!)),
+        landed(b, noteCall(b, "n-c1-13", ids[0]!)),
+        landed(a, linkCall(a, g(1), "n-l1-12", ids[0]!)),
+        landed(a, linkCall(a, g(1), "n-l1-13", ids[0]!)),
+      ]);
+      await step("concurrent adds get distinct consecutive suffixes", () =>
+        same(
+          "keys",
+          [
+            raced
+              .slice(0, 2)
+              .map((out) => out.got)
+              .sort(),
+            raced
+              .slice(2)
+              .map((out) => out.got)
+              .sort(),
+          ],
+          [
+            [key("comment", 1, 12), key("comment", 1, 13)],
+            [key("link", 1, 12), key("link", 1, 13)],
+          ],
+        ),
+      );
+
+      // 5. Replays keep their answer, burn no number and write nothing. The link replay still holds its lease.
+      const afterAdds = await dumpOf(typedProject);
+      for (const [who, call] of [ordered[0]!, ordered[1]!])
+        await step(`replay of ${call.requestId}`, async () => {
+          same(
+            "answer",
+            (await landed(who, call)).result,
+            results.get(call.requestId),
+          );
+        });
+      await step("replays write nothing", async () =>
+        same("dump", nameOf(await dumpOf(typedProject)), nameOf(afterAdds)),
+      );
+
+      // 6. Exact deltas: nine new records and receipts, five floors rewritten in place, two events per add, nothing else.
+      const records = [
+        ...ordered.map(([, , want]) => want),
+        key("comment", 1, 12),
+        key("comment", 1, 13),
+        key("link", 1, 12),
+        key("link", 1, 13),
+      ];
+      const floorKeys = [
+        "comment:work-1:",
+        "comment:work-1:",
+        "comment:work-1:",
+        "comment:work-2:",
+        "link:work-1:",
+        "link:work-1:",
+        "link:work-1:",
+        "link:work-2:",
+        "link:work-3:",
+      ].map((prefixed) => `allocation:${prefixed}`);
+      const delta = changes(before, afterAdds);
+      await step(
+        "each add writes one record, one floor advance and one receipt",
+        () => {
+          same(
+            "added",
+            delta.added,
+            [
+              ...records.map((k) => `forge/work ${k}`),
+              ...[
+                ...ordered.map(([, c]) => c.requestId),
+                "n-c1-12",
+                "n-c1-13",
+                "n-l1-12",
+                "n-l1-13",
+              ].map((id) => `forge/cloud request:${id}`),
+            ].sort(),
+          );
+          same(
+            "rewritten",
+            delta.rewritten,
+            [...new Set(floorKeys)].map((k) => `forge/work ${k}`).sort(),
+          );
+          same(
+            "events",
+            delta.workEvents,
+            [...records, ...floorKeys].map((k) => `forge/work ${k}`).sort(),
+          );
+          assert.ok(
+            delta.kept && delta.oldEvents,
+            "an earlier row or event changed",
+          );
+          same("floors", floorsOf(afterAdds), AFTER_ADDS);
+          same(
+            "leases",
+            rowsIn(afterAdds, "state_leases"),
+            rowsIn(before, "state_leases"),
+          );
+        },
+      );
+
+      // 7. Full link records, and the read lists, in number order with the deleted numbers absent.
+      await step(
+        "link results are the stored records and the lists skip deleted numbers",
+        async () => {
+          for (const [, call, want] of ordered.filter(
+            ([, c]) => c.op === "issue.link",
+          )) {
+            const stored = storedAt(afterAdds, want);
+            same(call.requestId, results.get(call.requestId), stored);
+            assert.equal(stored?.revision, 1, `${want} is at revision 1`);
+          }
+          const lists: [string, number, number[]][] = [
+            ["issue.comments", 0, [1, 11, 12, 13]],
+            ["issue.links", 0, [1, 11, 12, 13]],
+            ["issue.comments", 1, [6]],
+            ["issue.links", 1, [4]],
+            ["issue.links", 2, [1, 3, 4]],
+          ];
+          for (const [op, n, want] of lists)
+            same(
+              `${op} ${ids[n]}`,
+              suffixesOf(await typedRead(a, op, { id: ids[n]! })),
+              want,
+            );
+        },
+      );
+
+      // 8. The holder lets go. A whole dump equals the pages of the same export; both restore into empty targets exactly,
+      // floors included, with no replacement floor written.
+      for (const id of ids)
+        typedOk(
+          await typedCall(a, {
+            requestId: `n-release-${id}`,
+            op: "issue.release",
+            input: { id },
+            context: asHolder(a, g(ids.indexOf(id) + 1)),
+          }),
+        );
+      const whole = await dumpOf(typedProject);
+      await step("the whole export equals its pages", async () =>
+        same(
+          "pages",
+          nameOf(joined(await pagesOf(typedProject))),
+          nameOf(whole),
+        ),
+      );
+      const sent = await adminCall(
+        second,
+        "POST",
+        "restore",
+        JSON.stringify({ format: whole.format, tables: whole.tables }),
+      );
+      ok(sent);
+      await step(
+        "a second restore reads back every row and floor unchanged",
+        async () => {
+          same("whole", nameOf(await dumpOf(second)), nameOf(whole));
+          same("floors", floorsOf(await dumpOf(second)), floorsOf(whole));
+        },
+      );
+      for (const part of await pagesOf(typedProject)) {
+        ok(await sendPage(joinedTarget, part));
+      }
+      await step(
+        "a paged second restore reads back every row and floor unchanged",
+        async () =>
+          same("paged", nameOf(await dumpOf(joinedTarget)), nameOf(whole)),
+      );
+      writeFileSync(numbersState, JSON.stringify({ tables: whole.tables }));
+      if (problems.length > 0)
+        throw new Error(problems.join(" | ").slice(0, 3000));
+    },
+    240_000,
+  );
+}
+if (phase === "numbers-restart") {
+  // The second Worker, started on the same persistence, admits project *-b: the dump restored from *-a in the first run.
+  const first = typedProject.replace(/b$/, "a");
+  assert.notEqual(first, typedProject, "FORGE_CLOUD_PROJECT must end in b");
+  const prefix = process.env.FORGE_CLOUD_ID_PREFIX ?? "ci";
+  await journey(
+    NUMBERS_RESTART_NAME,
+    async () => {
+      const saved = JSON.parse(readFileSync(numbersState, "utf8")) as {
+        tables: Dump["tables"];
+      };
+      const kept = nameOf({
+        format: "forge-cloud-dump/1",
+        tables: saved.tables,
+      });
+      same("project a after the restart", nameOf(await dumpOf(first)), kept);
+      same(
+        "project b after the restart",
+        nameOf(await dumpOf(typedProject)),
+        kept,
+      );
+      same("settled floors", floorsOf(await dumpOf(typedProject)), AFTER_ADDS);
+      const a = await callerFor("numbers-restart", false);
+      const ids = [1, 2].map((n) => `${prefix}-${n}`);
+      const leases: number[] = [];
+      for (const id of ids)
+        leases.push(
+          typedOk<Grant>(await typedCall(a, claimOf(`r-claim-${id}`, a, id)))
+            .generation,
+        );
+      const out = [
+        await landed(a, noteCall(a, "r-c1", ids[0]!)),
+        await landed(a, linkCall(a, leases[0]!, "r-l1", ids[0]!)),
+        await landed(a, noteCall(a, "r-c2", ids[1]!)),
+        await landed(a, linkCall(a, leases[1]!, "r-l2", ids[1]!)),
+      ].map((one) => one.got);
+      same("adds after the restart", out, [
+        "comment:work-1:14",
+        "link:work-1:14",
+        "comment:work-2:7",
+        "link:work-2:5",
+      ]);
+      same(
+        "floors after the adds",
+        floorsOf(await dumpOf(typedProject)),
+        AFTER_RESTART,
+      );
+    },
+    120_000,
   );
 }
 

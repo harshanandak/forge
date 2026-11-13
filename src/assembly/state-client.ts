@@ -176,22 +176,20 @@ export function createStateClient(options: {
         );
       });
       if (matching) return matching;
-      const key = prefix + (comments.length + 1);
       // Only this accepted note may cross the expired lease boundary, never an issue write.
-      const written = state.put(
+      const written = state.putNext(
         namespace,
-        key,
-        { id: input.id, body: landing.note },
-        held.holder.actor,
-        {
-          expectRevision: 0,
+        prefix,
+        () => ({
+          value: { id: input.id, body: landing.note },
           readSet: [
             { key: authorityKey, expectRevision: authority.revision },
             { key: held.subject, expectRevision: issue.revision },
           ],
-        },
+        }),
+        held.holder.actor,
       );
-      if (!jsonEqual(state.get(namespace, key), written))
+      if (!jsonEqual(state.get(namespace, written.key), written))
         refuse(
           "INTERNAL",
           "Accepted landing comment did not match its readback",

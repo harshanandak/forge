@@ -1,8 +1,8 @@
 // issue.link at the project authority, for a caller that holds the issue's live lease. It follows the local
 // handler: the input is checked against the declared schema, the id resolves to a stored issue that must
 // exist, then the URL pattern is applied, as the local handler does and with no other URL policy. The link
-// is numbered from the count of the issue's links and written once (expected revision 0) through the
-// state owner, fenced on the issue's lease. The check refusals are recorded; the fence, revision and
+// is numbered by the state owner above every link number ever accepted for the issue and written once through
+// it, fenced on the issue's lease. The check refusals are recorded; the fence, revision and
 // readback refusals run in the transaction that also writes the event and the receipt, so they roll
 // back and are not recorded. The answer is the whole stored record, and a replay checks the lease again.
 import manifest from "../../src/blocks/work/forge.block.json" with { type: "json" };
@@ -57,13 +57,17 @@ export function linkIssue(
     },
     (fields, actor, _prefix, context) => {
       const held = fence(context, fields.id, "issue.link");
-      const base = `link:${fields.id}:`;
-      const key = `${base}${owner.count(NAMESPACE, base) + 1}`;
-      const written = owner.put(NAMESPACE, key, fields, actor, {
-        expectRevision: 0,
-        fence: held,
-      });
-      if (canonicalJson(owner.get(NAMESPACE, key)) !== canonicalJson(written))
+      const written = owner.putNext(
+        NAMESPACE,
+        `link:${fields.id}:`,
+        () => ({ value: fields }),
+        actor,
+        { fence: held },
+      );
+      if (
+        canonicalJson(owner.get(NAMESPACE, written.key)) !==
+        canonicalJson(written)
+      )
         throw fail(
           "INTERNAL",
           "Accepted write did not match its readback; reconcile before retrying",

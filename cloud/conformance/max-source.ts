@@ -2,6 +2,8 @@
 // large conformance phase. Its rows are read back with plain SQL, never through dump export, so a restore
 // case reaches the parser even while export is broken. Test code only: the Worker never imports it.
 import { Database } from "bun:sqlite";
+import { StateOwner } from "../../src/core/state/index.ts";
+import type { SqlDatabase, SqlRow } from "../../src/ports/store.ts";
 import { Project } from "../src/project.ts";
 import type { DurableStorage } from "../src/store.ts";
 
@@ -246,4 +248,69 @@ export async function nearSource(tail: number) {
   const stored = storedBytes(s.db);
   s.db.close();
   return { tables, stored };
+}
+
+const sqlOf = (db: Database): SqlDatabase => ({
+  exec: (sql) => {
+    db.run(sql);
+  },
+  run: (sql, params = []) => db.query(sql).run(...(params as never[])),
+  all: (sql, params = []) =>
+    db.query(sql).all(...(params as never[])) as SqlRow[],
+  get: (sql, params = []) =>
+    (db.query(sql).get(...(params as never[])) ?? undefined) as
+      SqlRow | undefined,
+  transaction: (body) => db.transaction(body)(),
+});
+
+/**
+ * A project from before comment and link floors (forge-1306), written through the real state owner and read back with plain
+ * SQL: work-1 has live comment and link 1 and a comment and link 10 that were accepted and deleted, work-2 has only deleted
+ * history (comment 5, link 3), and work-3 has sparse live links 1 and 3. No allocation record exists, so each number
+ * above a live one survives only in history.
+ */
+export async function numberSource(name: string, prefix: string) {
+  const h = await harness(name, prefix, FROZEN);
+  const owner = new StateOwner(sqlOf(h.db), { now: () => FROZEN });
+  const put = (key: string, value: unknown): void => {
+    owner.put("forge/work", key, value, ACTOR, { expectRevision: 0 });
+  };
+  const drop = (key: string): void => {
+    owner.delete("forge/work", key, ACTOR, { expectRevision: 1 });
+  };
+  for (const n of [1, 2, 3])
+    put(`issue:work-${n}`, {
+      id: `work-${n}`,
+      prefix,
+      title: `Numbers ${n}`,
+      status: "open",
+      labels: [],
+      dependsOn: [],
+      createdAt: new Date(FROZEN).toISOString(),
+    });
+  const comment = (issue: number, n: number, gone = false): void => {
+    const key = `comment:work-${issue}:${n}`;
+    put(key, { id: `work-${issue}`, body: `Note ${n}` });
+    if (gone) drop(key);
+  };
+  const link = (issue: number, n: number, gone = false): void => {
+    const key = `link:work-${issue}:${n}`;
+    put(key, {
+      id: `work-${issue}`,
+      relation: "delivers",
+      url: `https://example.com/${issue}/${n}`,
+    });
+    if (gone) drop(key);
+  };
+  comment(1, 1);
+  comment(1, 10, true);
+  link(1, 1);
+  link(1, 10, true);
+  comment(2, 5, true);
+  link(2, 3, true);
+  link(3, 1);
+  link(3, 3);
+  const tables = tablesOf(h.db);
+  h.db.close();
+  return { tables, doc: { format: DUMP, tables } };
 }
