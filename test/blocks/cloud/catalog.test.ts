@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import { blockCapture } from "../../../src/assembly/capture.ts";
 import { firstPartyBlocks } from "../../../src/assembly/first-party.ts";
 import { createAssembly, type Assembly } from "../../../src/assembly/index.ts";
+import { runCli } from "../../../src/surface/cli.ts";
 import { createMcpHandlers } from "../../../src/surface/mcp.ts";
 import type {
   AmbientContext,
@@ -73,7 +74,7 @@ function stage(into: string): string {
 
 async function openCloud(
   steps: Step[],
-  options: { nested?: boolean } = {},
+  options: { nested?: boolean; renames?: readonly string[] } = {},
 ): Promise<Open> {
   const work = mkdtempSync(join(tmpdir(), "forge-cloud-block-"));
   const checkout = join(work, "project");
@@ -90,7 +91,18 @@ async function openCloud(
     join(root, ".forge", "config.yaml"),
     JSON.stringify({
       schemaVersion: "forge.config/1",
-      blocks: { cloud: { source: { builtin: "forge/cloud" } } },
+      blocks:
+        options.renames === undefined
+          ? { cloud: { source: { builtin: "forge/cloud" } } }
+          : Object.fromEntries(
+              options.renames.map((noun) => [
+                noun,
+                {
+                  source: { builtin: "forge/cloud" },
+                  rename: { cloud: noun },
+                },
+              ]),
+            ),
     }),
   );
   writeFileSync(
@@ -266,3 +278,29 @@ test("an input that carries a token is refused as invalid and the value is never
   expect(JSON.stringify(named)).not.toContain(SECRET);
   expect(open.net.calls).toHaveLength(0);
 }, 60_000);
+
+for (const noun of ["first", "second"]) {
+  test(`two cloud instances preserve ${noun} CLI spelling and help`, async () => {
+    open = await openCloud([], { renames: ["first", "second"] });
+    const options = { caller: "human" as const, context: open.ambient };
+    const help = await runCli(open.assembly.catalog, ["--help"], options);
+    expect(help.exitCode).toBe(0);
+    for (const name of ["first", "second"]) expect(help.stdout).toContain(name);
+    const reply = await runCli(
+      open.assembly.catalog,
+      [
+        noun,
+        "login",
+        "--input",
+        '{"origin":"http://invalid","project":"proj"}',
+      ],
+      options,
+    );
+    expect(reply.exitCode).toBe(6);
+    expect(JSON.parse(reply.stdout)).toMatchObject({
+      op: `${noun}.login`,
+      error: { code: "INPUT_INVALID" },
+    });
+    expect(open.net.calls).toHaveLength(0);
+  }, 60_000);
+}
