@@ -12,6 +12,7 @@ import type {
   ForgeError,
   LeaseHolder,
   LeaseRecord,
+  StateEvent,
 } from "../../src/generated/types.ts";
 import { OLD_SCHEMA } from "./old-schema.ts";
 
@@ -710,10 +711,15 @@ for (const mode of ["whole", "paged"] as const)
             });
           }
           for (const row of dump.tables.state_events!) {
-            const event = JSON.parse(String(row.body));
+            const event = JSON.parse(String(row.body)) as StateEvent;
             if (event.type.endsWith(":lease.renewed@1")) {
-              event.data.expiresAt = "9999-01-01T00:00:00.000Z";
-              row.body = JSON.stringify(event);
+              row.body = JSON.stringify({
+                ...event,
+                data: {
+                  ...(event.data as LeaseRecord),
+                  expiresAt: "9999-01-01T00:00:00.000Z",
+                },
+              });
             }
           }
         }
@@ -813,7 +819,7 @@ for (const mode of ["whole", "paged"] as const)
           if (state === "future") {
             const event = JSON.parse(
               String(events[dump.tables.state_events!.length + index]!.body),
-            );
+            ) as StateEvent;
             expect(event).toEqual({
               type: "forge/work:lease.released@1",
               namespace: "forge/work",
