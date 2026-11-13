@@ -130,6 +130,13 @@ interface AdminBody {
   readonly value?: unknown;
   readonly error?: { readonly code: string; readonly message: string };
 }
+function bodyMemory(step: string): void {
+  if (phase !== "budget-body") return;
+  const { rss, heapUsed, external, arrayBuffers } = process.memoryUsage();
+  console.log(
+    `INFO body memory ${step}: ${JSON.stringify({ rss, heapUsed, external, arrayBuffers })}`,
+  );
+}
 async function adminCall(
   project: string,
   method: "GET" | "POST",
@@ -137,16 +144,31 @@ async function adminCall(
   body?: string,
   token = adminToken,
 ): Promise<{ status: number; body: AdminBody }> {
+  bodyMemory(`before ${method} ${route}`);
   const response = await fetch(`${base}/p/${project}/${route}`, {
     method,
     headers: token === "" ? {} : { authorization: `Bearer ${token}` },
     ...(body === undefined ? {} : { body }),
     signal: AbortSignal.timeout(60_000),
   });
-  return {
+  bodyMemory(`after fetch ${method} ${route}`);
+  if (
+    phase === "budget-body" &&
+    method === "GET" &&
+    route.startsWith("dump?")
+  ) {
+    const text = await response.text();
+    bodyMemory(`after dump read ${project}`);
+    const body = JSON.parse(text) as AdminBody;
+    bodyMemory(`after dump parse ${project}`);
+    return { status: response.status, body };
+  }
+  const result = {
     status: response.status,
     body: (await response.json()) as AdminBody,
   };
+  bodyMemory(`after response ${method} ${route}`);
+  return result;
 }
 // An admin restore that declares `length` bytes in Content-Length and sends none of them. The reply is
 // read as soon as the Worker sends it, then the request is dropped.
@@ -496,7 +518,9 @@ async function walk(
       await adminCall(project, "GET", route),
       `${label} export`,
     );
+    bodyMemory(`${label} after page parse`);
     const text = JSON.stringify(page);
+    bodyMemory(`${label} after page serialization`);
     const bytes = Buffer.byteLength(text);
     trip.bytes.push(bytes);
     assert.ok(
@@ -552,11 +576,13 @@ async function roundTrip(
     );
     for (const [table, rows] of Object.entries(page.tables))
       sent.add(table, rows);
+    bodyMemory(`${label} after sent digest`);
   });
   const back = digester();
   const read = await walk(target, `${label} readback`, budget, (page) => {
     for (const [table, rows] of Object.entries(page.tables))
       back.add(table, rows);
+    bodyMemory(`${label} after readback digest`);
   });
   const digests = sent.done();
   assert.deepEqual(
@@ -4746,7 +4772,9 @@ if (phase === "budget-body") {
       const built: { tail: number; size: number }[] = [];
       const build = async (tail: number) => {
         const near = await nearSource(tail);
+        bodyMemory(`after nearSource ${tail}`);
         const size = oracle.utf8(oracle.finalPage(near.tables));
+        bodyMemory(`after size finalPage ${tail}`);
         built.push({ tail, size });
         return { ...near, size };
       };
@@ -4786,13 +4814,16 @@ if (phase === "budget-body") {
           `the fixture holds ${near.stored} stored bytes and ${JSON.stringify(rows)} rows`,
         );
         const text = JSON.stringify(oracle.finalPage(near.tables));
+        bodyMemory("after finalPage serialization");
         assert.equal(Buffer.byteLength(text), near.size);
+        const expected = oracle.digestOf(near.tables);
+        bodyMemory("after expected digest");
         return {
           text,
           size: near.size,
           stored: near.stored,
           rows,
-          expected: oracle.digestOf(near.tables),
+          expected,
         };
       };
       const { text, size, stored, rows, expected } = await fixture();
