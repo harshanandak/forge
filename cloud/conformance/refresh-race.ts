@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { AssertionError } from "node:assert";
 import { readFileSync, writeFileSync } from "node:fs";
 import { access, issue, revoke, send, type Family } from "./oauth.ts";
+import { duplicateCanary } from "./refresh-canary.ts";
 
 const refresh = (family: Family, headers: Record<string, string>) =>
   send("/oauth/token", {
@@ -67,6 +68,45 @@ async function main() {
   console.log(
     "PASS OAuth real-DO overlap: one provider entry, one response winner, whole family refused",
   );
+  for (const parameter of ["extra", "redirect_uri", duplicateCanary]) {
+    const untouched = await issue(),
+      observed = crypto.randomUUID();
+    const form = new URLSearchParams({
+      grant_type: "refresh_token",
+      client_id: untouched.client,
+      refresh_token: untouched.refresh_token,
+    });
+    form.append(parameter, "a");
+    form.append(parameter, "b");
+    const rejected = await send("/oauth/token", {
+      method: "POST",
+      headers: { "x-refresh-observe": observed },
+      body: form,
+    });
+    assert.equal(rejected.status, 400);
+    const text = await rejected.text();
+    assert.deepEqual(JSON.parse(text), { error: "invalid_request" });
+    assert(
+      !text.includes(duplicateCanary),
+      "duplicate canary must not reach response",
+    );
+    assert.equal(rejected.headers.get("cache-control"), "no-store");
+    const activity = await (
+      await send(`/fixture/refresh-state?group=${observed}`)
+    ).json();
+    assert.deepEqual(
+      activity,
+      { entries: 0, arrived: 0 },
+      "duplicates must not claim or enter provider",
+    );
+    const corrected = await refresh(untouched, {});
+    assert.equal(corrected.status, 200, "corrected request must still refresh");
+    const correctedTokens = (await corrected.json()) as Omit<Family, "client">;
+    await access({ client: untouched.client, ...correctedTokens }, true);
+  }
+  console.log(
+    "PASS OAuth duplicate extensions refuse before claim; corrected requests refresh",
+  );
   const late = await issue(),
     hold = crypto.randomUUID();
   const pending = refresh(late, { "x-refresh-late": hold });
@@ -85,10 +125,18 @@ async function main() {
     (await refresh({ client: late.client, ...lateTokens }, {})).status,
     400,
   );
-  for (const fault of ["x-refresh-write-fault", "x-refresh-drop"]) {
+  for (const fault of [
+    "x-refresh-write-fault",
+    "x-refresh-rate-fault",
+    "x-refresh-drop",
+  ]) {
     const failed = await issue();
     const failedResponse = await refresh(failed, { [fault]: "1" });
     assert.equal(failedResponse.status, 503, "claim stays spent");
+    assert.deepEqual(await failedResponse.json(), {
+      error: "temporarily_unavailable",
+    });
+    assert.equal(failedResponse.headers.get("cache-control"), "no-store");
     const retry = await refresh(failed, {});
     assert.equal(retry.status, 400);
     assert.deepEqual(await retry.json(), { error: "invalid_grant" });

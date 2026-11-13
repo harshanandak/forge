@@ -20,11 +20,12 @@ export function refreshPolicy(
     );
   return {
     async admit(form, authorization) {
+      for (const key of form.keys())
+        if (form.getAll(key).length > 1) return refuse("invalid_request");
       if (
         ["grant_type", "refresh_token", "client_id"].some(
           (key) => form.getAll(key).length !== 1 || !form.get(key),
         ) ||
-        ["scope", "resource"].some((key) => form.getAll(key).length > 1) ||
         authorization ||
         ["client_secret", "client_assertion", "client_assertion_type"].some(
           (key) => form.has(key),

@@ -31,7 +31,8 @@ export async function refreshControls(
   const url = new URL(request.url),
     name =
       request.headers.get("x-refresh-race") ??
-      request.headers.get("x-refresh-late");
+      request.headers.get("x-refresh-late") ??
+      request.headers.get("x-refresh-observe");
   const state = name ? get(name) : undefined;
   const failure = () =>
     Response.json(
@@ -87,6 +88,8 @@ export async function refreshControls(
     },
     async put(key, value, options) {
       if (key.startsWith("token:")) {
+        if (request.headers.has("x-refresh-rate-fault"))
+          throw new Error("429 Too Many Requests");
         if (request.headers.has("x-refresh-write-fault"))
           throw new Error("fixture provider write failure");
         if (state && request.headers.has("x-refresh-late")) {

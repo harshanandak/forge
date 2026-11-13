@@ -4,6 +4,7 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { openSync, closeSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { duplicateCanary } from "./refresh-canary.ts";
 
 const temp = process.env.RUNNER_TEMP;
 assert(temp, "RUNNER_TEMP is required; never run this against a live Worker");
@@ -25,6 +26,7 @@ assert.equal(
   "counterfactual must identify exactly one durable check",
 );
 let worker: ChildProcess | undefined;
+const logs: string[] = [];
 const ready = () =>
   fetch("http://127.0.0.1:8788/fixture/ready", {
     signal: AbortSignal.timeout(1000),
@@ -44,7 +46,9 @@ async function stop() {
   throw new Error("OAuth fixture did not stop");
 }
 async function start(label: string) {
-  const log = openSync(join(temp!, `oauth-${label}.log`), "w");
+  const path = join(temp!, `oauth-${label}.log`);
+  logs.push(path);
+  const log = openSync(path, "w");
   worker = spawn(
     "bun",
     [
@@ -179,4 +183,9 @@ try {
   writeFileSync(file, original);
   writeFileSync(grantFile, grantSource);
   await stop();
+  for (const path of logs)
+    assert(
+      !readFileSync(path, "utf8").includes(duplicateCanary),
+      "duplicate canary must not reach Worker logs",
+    );
 }

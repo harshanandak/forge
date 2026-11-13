@@ -76,6 +76,7 @@ export interface OAuthOptions {
       form: {
         get(key: string): unknown;
         getAll(key: string): unknown[];
+        keys(): IterableIterator<string>;
         has(key: string): boolean;
       },
       authorization: boolean,
@@ -394,6 +395,8 @@ export function createOAuthAdapter(options: OAuthOptions): OAuthAdapter {
           props: {},
         });
         await Promise.all(tasks);
+        if (response.status === 429 || response.status >= 500)
+          return failure("temporarily_unavailable", 503);
         return response.ok
           ? response
           : failure("invalid_grant", response.status);
