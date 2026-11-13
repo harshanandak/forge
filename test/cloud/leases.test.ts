@@ -235,6 +235,9 @@ for (const route of ["claim", "renew"])
           );
         const before = await f.lookup(subject),
           requestId = `${route}-${limit}`;
+        const priorIds = new Set(
+          f.rows("domain_cloud_requests").map((r) => r.request_id),
+        );
         const refused = await send(route, limit + 1, requestId);
         expect(refused.status).toBe(400);
         expect(refused.body.error?.code).toBe("INPUT_INVALID");
@@ -245,11 +248,11 @@ for (const route of ["claim", "renew"])
         );
         expect(await f.lookup(subject)).toEqual(before);
         expect(
-          f.row(
-            "SELECT outcome FROM domain_cloud_requests WHERE request_id=?",
-            requestId,
-          ),
-        ).toEqual({ outcome: "INPUT_INVALID" });
+          f
+            .rows("domain_cloud_requests")
+            .filter((r) => !priorIds.has(r.request_id))
+            .map((r) => r.outcome),
+        ).toEqual(["INPUT_INVALID"]);
         f.clock.mockReturnValue(now + 1);
         expect(await send(route, limit + 1, requestId)).toEqual(refused);
         f.clock.mockReturnValue(now);
@@ -451,7 +454,7 @@ for (const route of ["acquire", "renew"]) {
   }, 30_000);
 }
 
-test("whole and paged restores preserve an oversized claim refusal and its replay", async () => {
+test("whole and paged restores preserve a refusal while a replacement token records its own refusal", async () => {
   for (const route of ["dump", "dump?cursor=start"]) {
     using source = fixture();
     const phone = await source.issue();
@@ -469,6 +472,12 @@ test("whole and paged restores preserve an oversized claim refusal and its repla
     );
     const token = (await target.issue()).token;
     expect(await target.write("claim", input, token)).toEqual(refused);
+    const after = target.rows("domain_cloud_requests");
+    expect(after).toHaveLength(source.rows("domain_cloud_requests").length + 1);
+    for (const row of source.rows("domain_cloud_requests"))
+      expect(after).toContainEqual(row);
+    expect(await target.write("claim", input, token)).toEqual(refused);
+    expect(target.rows("domain_cloud_requests")).toEqual(after);
   }
 }, 30_000);
 

@@ -314,3 +314,50 @@ export async function numberSource(name: string, prefix: string) {
   h.db.close();
   return { tables, doc: { format: DUMP, tables } };
 }
+
+/** Pre-change receipts and valid history, shared by route and real Worker restore cases. */
+export async function legacySource(family: string, requestId: string) {
+  const h = await harness("legacy", "forge", FROZEN);
+  await accepted(h, call("legacy-seed", "issue.create", { title: "Legacy" }));
+  const owner = new StateOwner(sqlOf(h.db), { now: () => FROZEN });
+  const namespace = "forge/work",
+    subject = "issue:work-1",
+    ttlMs = 60_000;
+  const holder = { actor: ACTOR, session: { id: "s1", device: DEVICE } };
+  const outcome = family.endsWith("refusal") ? "refused" : "ok";
+  const failure = {
+    code: "INPUT_INVALID",
+    message: "legacy refusal",
+    retry: "never",
+  };
+  if (family.startsWith("typed")) {
+    const prior = {
+      fingerprint: `sha256:${"0".repeat(64)}`,
+      outcome,
+      result: outcome === "ok" ? { id: "forge-1" } : failure,
+    };
+    owner.put("forge/cloud", `request:${requestId}`, prior, ACTOR, {
+      expectRevision: 0,
+    });
+  } else {
+    const lease = owner.acquire(namespace, subject, holder, ttlMs, requestId);
+    const fingerprint = JSON.stringify({
+      route: "claim",
+      subject,
+      holder,
+      generation: null,
+      ttlMs,
+    });
+    if (family === "raw")
+      h.db.run(
+        "INSERT INTO domain_cloud_requests(request_id,fingerprint,outcome,result) VALUES (?,?,?,?)",
+        [requestId, fingerprint, "ok", JSON.stringify(lease)],
+      );
+  }
+  const tables = tablesOf(h.db);
+  h.db.close();
+  return { format: DUMP, tables };
+}
+
+export const receiptResult = (row: { body: unknown }): unknown =>
+  (JSON.parse(String(row.body)) as { value: { result: unknown } }).value.result;

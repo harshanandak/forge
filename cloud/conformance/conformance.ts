@@ -94,11 +94,13 @@ async function issue(
   project: string,
   device: string,
   ttlMs = 3_600_000,
-  bound = true,
+  bound: boolean | string = true,
 ): Promise<Device> {
   const reply = await admin(project, "devices", {
     device,
-    ...(bound ? { session: `session-${device}` } : {}),
+    ...(bound
+      ? { session: typeof bound === "string" ? bound : `session-${device}` }
+      : {}),
     agent: `agent-${device}`,
     harness: "conformance",
     ttlMs,
@@ -634,6 +636,9 @@ async function callerFor(name: string, bound = true): Promise<Caller> {
     session: bound ? device.session : `session-chosen-${name}`,
   };
 }
+const receiptKeys = new Map<string, string>();
+const { receiptResult } = await import("./max-source.ts");
+const receiptKey = (id: string) => receiptKeys.get(id) ?? `request:${id}`;
 async function typedCall(
   who: Caller,
   call: Call,
@@ -652,7 +657,31 @@ async function typedCall(
   });
   const text = await response.text();
   try {
-    return { status: response.status, body: JSON.parse(text) as Envelope };
+    const body = JSON.parse(text) as Envelope;
+    if (
+      project === typedProject &&
+      response.status < 500 &&
+      !receiptKeys.has(call.requestId) &&
+      /issue\.(create|comment|claim|update|dep|link|close|renew|release)$/.test(
+        call.op,
+      )
+    ) {
+      const used = new Set(receiptKeys.values()),
+        result = body.ok ? body.result : body.error;
+      const added = recordsOf(
+        await dumpOf(project),
+        "forge/cloud",
+        "request:",
+      ).filter(
+        (r) =>
+          !used.has(String(r.key)) &&
+          JSON.stringify(receiptResult(r as { body: unknown })) ===
+            JSON.stringify(result),
+      );
+      if (added.length === 1)
+        receiptKeys.set(call.requestId, String(added[0]!.key));
+    }
+    return { status: response.status, body };
   } catch {
     throw new Error(
       `HTTP ${response.status} was not JSON: ${text.slice(0, 300)}`,
@@ -1156,6 +1185,145 @@ if (phase === "latency") {
     `claims=${times.length} p50=${at(0.5)}ms p95=${at(0.95)}ms max=${times.at(-1)!.toFixed(1)}ms`,
   );
 }
+
+// Compare imported bytes directly, including every table and event the caller selects.
+function keepsRows(
+  before: Dump,
+  after: Dump,
+  tables = Object.keys(before.tables),
+  keep: (row: Record<string, unknown>, table: string) => boolean = () => true,
+) {
+  for (const table of tables) {
+    const current = new Set(
+      (after.tables[table] ?? []).map((r) => JSON.stringify(r)),
+    );
+    for (const row of before.tables[table] ?? [])
+      if (keep(row, table))
+        assert.ok(current.has(JSON.stringify(row)), "imported bytes unchanged");
+  }
+}
+const rawFor = (who: Caller, requestId: string, subject: string) =>
+  send(
+    typedProject,
+    "POST",
+    "claim",
+    {
+      requestId,
+      subject,
+      holder: asSession(holderOf("ownership"), who.device),
+      ttlMs: 60_000,
+    },
+    asDevice(who.device),
+  );
+const OWNERSHIP =
+  "a pinned request id belongs to its authenticated token on cloud writes";
+async function ownershipJourney(): Promise<void> {
+  await journey(OWNERSHIP, async () => {
+    const dump = () => dumpOf(typedProject);
+    const count = (d: Dump, ns: string, key: string) =>
+      recordsOf(d, ns, key).length;
+    const work = "forge/work",
+      cloud = "forge/cloud";
+    const callers = await Promise.all(
+      ["s1", "s2"].map(async (session): Promise<Caller> => ({
+        device: await issue(typedProject, "ownership", undefined, session),
+        actor: { kind: "agent", id: "ownership" },
+        session,
+      })),
+    );
+    const [a, b] = callers as [Caller, Caller];
+    const create: Call = {
+      requestId: "ownership-x",
+      op: "issue.create",
+      input: { title: "Ownership" },
+      context: asProject(a),
+    };
+    const before = await dump();
+    const first = await typedCall(a, create);
+    const one = typedOk<Item>(first);
+    const afterA = await dump();
+    const second = await typedCall(b, create);
+    const two = second.body.result as Item | undefined;
+    assert.deepEqual(
+      [second.status, typeof two?.id === "string" && two.id !== one.id],
+      [200, true],
+      "another token must make its own write",
+    );
+    const afterB = await dump();
+    assert.equal(
+      count(afterB, work, "issue:"),
+      count(before, work, "issue:") + 2,
+    );
+    assert.equal(
+      count(afterB, cloud, "request:"),
+      count(before, cloud, "request:") + 2,
+    );
+    keepsRows(
+      afterA,
+      afterB,
+      ["state_records", "state_events"],
+      (r) => r.namespace === cloud,
+    );
+    for (const [who, reply] of [
+      [a, first],
+      [b, second],
+    ] as const)
+      assert.deepEqual(await typedCall(who, create), reply);
+    assert.deepEqual(await dump(), afterB, "own retries write nothing");
+    const bad = {
+      ...create,
+      requestId: "ownership-preempt",
+      input: { title: "" },
+    };
+    typedFail(await typedCall(b, bad), 400, "INPUT_INVALID");
+    const refusal = await dump();
+    const third = typedOk<Item>(
+      await typedCall(a, { ...bad, input: create.input }),
+    );
+    const independent = await dump();
+    assert.equal(
+      count(independent, work, "issue:"),
+      count(refusal, work, "issue:") + 1,
+    );
+    typedFail(await typedCall(b, bad), 400, "INPUT_INVALID");
+    typedFail(
+      await typedCall(b, { ...bad, input: create.input }),
+      409,
+      "INPUT_CONFLICT",
+    );
+    assert.deepEqual(await dump(), independent);
+    for (const [who, id] of [
+      [a, one.id],
+      [b, two!.id],
+    ] as const)
+      granted(await rawFor(who, "o-inner", `issue:${storedOf(id)}`));
+    // The same principal and raw id must not collide with the raw family's inner acquisition.
+    typedOk(await typedCall(a, claimOf("o-inner", a, third.id)));
+    const claims = await dump();
+    assert.equal(
+      (claims.tables.state_requests ?? []).length -
+        (independent.tables.state_requests ?? []).length,
+      3,
+    );
+    granted(await rawFor(a, "o-held", "issue:o-held"));
+    const held = await rawFor(b, "o-held", "issue:o-held");
+    assert.deepEqual([held.status, held.body.error?.code], [409, "LEASE_HELD"]);
+    const kept = await dump();
+    for (const [body, headers, project, code] of [
+      [
+        { ...create, context: { ...asProject(a), device: { id: "forged" } } },
+        {},
+        typedProject,
+        "AUTH_DEVICE_MISMATCH",
+      ],
+      [create, {}, `${typedProject}-wrong`, "AUTH_FORBIDDEN"],
+      [create, { "X-Forge-Owner": "forged" }, typedProject, "AUTH_FORBIDDEN"],
+    ] as const)
+      typedFail(await typedCall(a, body, headers, project), 403, code);
+    assert.deepEqual(await dump(), kept);
+  });
+}
+if (phase === "ownership") await ownershipJourney();
 
 if (phase === "main") {
   await revokeCheck();
@@ -1919,14 +2087,48 @@ if (phase === "main") {
         dump,
         "read back identical",
       );
-      // The restored project serves the same lease and replays the same receipts.
+      // Imported leases stay readable. Replacement tokens execute independently and cannot borrow receipts.
       assert.deepEqual(
         granted(await holderLookup(target, "issue:dump-1")),
         granted(await holderLookup(source, "issue:dump-1")),
       );
+      granted(await claim(source, "issue:dump-2", holder, "dump-2"));
+      refused(
+        await claim(target, "issue:dump-2", holder, "dump-2"),
+        "LEASE_HELD",
+      );
+      const prior = await dumpOf(target);
+      const independent = granted(
+        await claim(target, "issue:independent", holder, "dump-1"),
+      );
+      assert.equal(independent.subject, "issue:independent");
+      const after = await dumpOf(target);
+      keepsRows(prior, after);
+      assert.equal(
+        after.tables.state_requests!.length,
+        prior.tables.state_requests!.length + 1,
+      );
+      // An old id resembling the new internal spelling remains unowned after restore.
+      const { legacySource } = await import("./max-source.ts");
+      const id = `c2:${"a".repeat(64)}`,
+        legacy = await legacySource("raw", id);
+      const oldTarget = `${run}-legacy-receipt`;
+      assert.equal(
+        (await adminCall(oldTarget, "POST", "restore", JSON.stringify(legacy)))
+          .status,
+        200,
+      );
+      assert.deepEqual(await dumpOf(oldTarget), legacy);
+      const old = await dumpOf(oldTarget);
+      const denied = await claim(oldTarget, "issue:independent", holder, id);
       assert.deepEqual(
-        granted(await claim(target, "issue:dump-2", holder, "dump-2")),
-        granted(await claim(source, "issue:dump-2", holder, "dump-2")),
+        [denied.status, denied.body.error?.code],
+        [503, "UNAVAILABLE"],
+      );
+      assert.deepEqual(
+        await dumpOf(oldTarget),
+        old,
+        "legacy refusal writes nothing",
       );
 
       // Restore goes only into an empty project and only with a clean document.
@@ -3004,7 +3206,7 @@ if (phase === "main") {
         [{ prefix: `link:${storedOf(one.id)}:`, number: 1 }],
       );
       assert.equal(
-        recordsOf(after, "forge/cloud", "request:typed-link-1").length,
+        recordsOf(after, "forge/cloud", receiptKey("typed-link-1")).length,
         1,
       );
       assert.deepEqual(
@@ -3261,7 +3463,8 @@ if (phase === "main") {
         recordsOf(snapshot, "forge/work", "issue:").length + 1,
       );
       assert.equal(
-        recordsOf(after, "forge/cloud", "request:typed-fault-create").length,
+        recordsOf(after, "forge/cloud", receiptKey("typed-fault-create"))
+          .length,
         1,
       );
       assert.deepEqual(typedOk<Item>(await typedCall(a, create)), third);
@@ -3285,7 +3488,7 @@ if (phase === "main") {
         1,
       );
       assert.equal(
-        recordsOf(after, "forge/cloud", "request:typed-fault-claim").length,
+        recordsOf(after, "forge/cloud", receiptKey("typed-fault-claim")).length,
         1,
       );
       assert.deepEqual(await idsOf(a, "issue.ready"), [one.id]);
@@ -3362,7 +3565,7 @@ if (phase === "main") {
         ]);
         for (const requestId of receipts)
           assert.equal(
-            recordsOf(dump, "forge/cloud", `request:${requestId}`).length,
+            recordsOf(dump, "forge/cloud", receiptKey(requestId)).length,
             1,
             requestId,
           );
@@ -3380,6 +3583,9 @@ if (phase === "main") {
       assert.equal(refusedHere.body.error?.code, "AUTH_FORBIDDEN");
     },
   );
+
+  if (live) await skip(SKIP_TYPED)(OWNERSHIP, async () => {});
+  else await ownershipJourney();
 
   await typed("typed state is saved for the restart phase", async () => {
     typedSaved = {
@@ -3599,18 +3805,24 @@ if (phase === "large") {
     },
   );
   await check(
-    "large restored target: accepted and refused requests replay unchanged and write nothing",
+    "large restored target: replacement credentials cannot replay imported receipts",
     async () => {
       const caller = await who();
-      for (const [name, sent] of Object.entries(source.sent)) {
-        const reply = await typedCall(caller, sent.request as Call);
-        assert.equal(reply.status, sent.status, name);
-        assert.equal(JSON.stringify(reply.body) === sent.text, true, name);
-      }
-      assert.deepEqual(
-        differing((await dumpOf(typedProject)).tables),
-        [],
-        "a replay wrote",
+      const sent = source.sent.create;
+      const reply = await typedCall(caller, sent.request as Call);
+      const own = typedOk<Item>(reply);
+      assert.notEqual(own.id, id, "a replacement token makes its own write");
+      assert.deepEqual(await typedCall(caller, sent.request as Call), reply);
+      const after = await dumpOf(typedProject);
+      keepsRows(
+        { format: source.doc.format, tables: want },
+        after,
+        ["state_records", "state_events"],
+        (row, table) =>
+          !(
+            table === "state_records" &&
+            String(row.key).startsWith("allocation:")
+          ),
       );
     },
   );
@@ -3629,7 +3841,7 @@ if (phase === "large") {
         }),
       );
       // Two more maximum issues grow the project past one 4 MiB page, and still under its 8 MiB.
-      for (const n of [1, 2])
+      for (const n of [2])
         typedOk(
           await typedCall(caller, {
             requestId: `large-grow-${n}`,
@@ -4171,7 +4383,7 @@ if (phase === "numbers") {
                 "n-c1-13",
                 "n-l1-12",
                 "n-l1-13",
-              ].map((id) => `forge/cloud request:${id}`),
+              ].map((id) => `forge/cloud ${receiptKey(id)}`),
             ].sort(),
           );
           same(
