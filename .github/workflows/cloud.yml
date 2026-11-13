@@ -295,6 +295,8 @@ jobs:
           # Leaving only the comment and link groups out of the restore fold leaves the issue floor and all validation active:
           # the deleted child floors are then absent at their explicit readback, before any append could derive them.
           restore_cf families cloud/src/dump.ts 's/  family: FAMILY,\n//' "whole restore derives both deleted child floors before any append" 'numRow(t, numKey(kind))?.value'
+          # Without the inner-budget admission, the nested bodies reach the verifier's JSON.parse: the parse probe of the 31-body test sees them.
+          restore_cf inner-budget cloud/src/dump.ts 's/^    admitJson\(page\.tables\);\n//m; s/^    admitJson\(dump\.tables\);\n//m' "a paged restore of 31 deeply nested bodies is refused before any inner JSON.parse reads them" 'expect(probed).toEqual([])'
           # Without the label scan, a repeated label reads as its last copy and the restore wrongly succeeds (forge-1313).
           restore_cf duplicate-labels src/core/state/restore-json.ts 's/^  checkLabels\(text\);$/  void 0;/m' "a whole restore with a duplicate event label is RESTORE_INVALID_ROW and leaves nothing" '[got.status, got.json.error?.code]'
       - name: wrangler log
