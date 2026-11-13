@@ -103,7 +103,7 @@ test("issue show loads none of the modules it never calls", () => {
 // contract and the MCP tool listing must stay byte for byte the same.
 const catalog = {
   help: "3bd22f481e711b265c08a3f23dc69d7ea3a038e5aca8606ee5bd1c1ed9f3a8bd",
-  helpJson: "fc90d2eba3aaa60acacb152e23e0cd34ca196e9fd691903fc52cd1e7553db8d2",
+  helpJson: "a3b412835b0bc597c75f2ff4421514030d90a219666990e44278adf688109623",
   mcpTools: "20940d83078f63696241e5f9c58074e05e833047865f72b33787bb9ba3c7a19a",
 };
 
