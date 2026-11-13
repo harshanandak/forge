@@ -48,10 +48,8 @@ export async function parseGithubJson(
     cancel = () => {
       if (cancelled) return;
       cancelled = true;
-      void reader
-        .cancel()
-        .finally(() => reader.releaseLock())
-        .catch(() => {});
+      void reader.cancel().catch(() => {});
+      reader.releaseLock();
     };
     if (!state || state.refusal || signal.aborted)
       throw new Error(refuse().reason);

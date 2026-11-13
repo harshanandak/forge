@@ -47,12 +47,18 @@ const rows: Row[] = [
   ["aggregate keys", 16385, "INPUT_INVALID"],
   ["tiny chunks", 0, null],
   ["empty chunk", 0, "UNAVAILABLE"],
-  ...["width", "array", "depth", "entries", "nonfinite"].map((s): Row => [
-    "guard",
-    s,
-    "INPUT_INVALID",
+  ...[256, 257].flatMap((n): Row[] => [
+    ["width", n, n === 256 ? null : "INPUT_INVALID"],
+    ["array", n, n === 256 ? null : "INPUT_INVALID"],
   ]),
-  ...["before", "during", "error"].map((s): Row => ["abort", s, "UNAVAILABLE"]),
+  ...[16, 17].map((n): Row => ["depth", n, n === 16 ? null : "INPUT_INVALID"]),
+  // The 16,384-key budget makes the guard's 65,536-node ceiling unreachable for parsed JSON.
+  ["guard", "nonfinite", "INPUT_INVALID"],
+  ...["before", "during", "error", "stalled cancel"].map((s): Row => [
+    "abort",
+    s,
+    "UNAVAILABLE",
+  ]),
 ];
 for (const [kind, value, code] of rows) {
   test(`${kind} ${value}`, async () => {
@@ -78,14 +84,16 @@ for (const [kind, value, code] of rows) {
     if (kind === "keys") bodies[0] = keys(Number(value));
     if (kind === "aggregate keys")
       bodies.splice(0, 1, keys(8192), keys(Number(value) - 8192));
-    if (value === "width")
+    if (kind === "width")
       bodies[0] = JSON.stringify(
-        Object.fromEntries(Array.from({ length: 257 }, (_, i) => [i, 0])),
+        Object.fromEntries(
+          Array.from({ length: Number(value) }, (_, i) => [i, 0]),
+        ),
       );
-    if (value === "array") bodies[0] = JSON.stringify(Array(257).fill(0));
-    if (value === "entries")
-      bodies[0] = JSON.stringify(Array(256).fill(Array(64).fill(0)));
-    if (value === "depth") bodies[0] = "[".repeat(17) + "0" + "]".repeat(17);
+    if (kind === "array")
+      bodies[0] = JSON.stringify(Array(Number(value)).fill(0));
+    if (kind === "depth")
+      bodies[0] = "[".repeat(Number(value)) + "0" + "]".repeat(Number(value));
     if (value === "nonfinite") bodies[0] = "1e999";
     if (kind === "tiny chunks") bodies[0] = JSON.stringify("é".repeat(4096));
     if (value === "before") controller.abort("secret-sentinel");
@@ -105,7 +113,7 @@ for (const [kind, value, code] of rows) {
               target.enqueue(new Uint8Array());
               return;
             }
-            if (value === "during") {
+            if (value === "during" || value === "stalled cancel") {
               queueMicrotask(() => controller.abort("secret-sentinel"));
               return;
             }
@@ -124,6 +132,7 @@ for (const [kind, value, code] of rows) {
           },
           cancel() {
             cancelled++;
+            if (value === "stalled cancel") return new Promise<void>(() => {});
           },
         },
         { highWaterMark: 0 },
@@ -149,6 +158,7 @@ for (const [kind, value, code] of rows) {
         race?.mockRestore();
       }
       expect(bytes).toEqual(before);
+      expect(response.body?.locked ?? false).toBe(false);
       if (result.ok) expect(result.value).toEqual(JSON.parse(body));
     }
     expect(result?.ok).toBe(code === null);
@@ -172,6 +182,7 @@ for (const [kind, value, code] of rows) {
       expect(later.bodyUsed).toBe(true);
     }
     if (value === "before") expect(pulls).toBe(0);
+    if (value === "stalled cancel") expect(cancelled).toBe(1);
     if (
       value === "during" ||
       (kind === "bytes" && code) ||
