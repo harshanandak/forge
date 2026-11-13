@@ -771,7 +771,22 @@ const recordsOf = (
   namespace: string,
   prefix: string,
 ): readonly Record<string, unknown>[] =>
-  (dump.tables.state_records ?? []).filter(
+  [
+    ...(dump.tables.state_records ?? []),
+    ...(namespace === "forge/cloud"
+      ? (dump.tables.domain_cloud_command_receipts ?? []).map((r) => ({
+          namespace,
+          key: "request:" + String(r.request_id),
+          body: JSON.stringify({
+            value: {
+              fingerprint: r.fingerprint,
+              outcome: r.outcome,
+              result: JSON.parse(String(r.result)) as unknown,
+            },
+          }),
+        }))
+      : []),
+  ].filter(
     (row) => row.namespace === namespace && String(row.key).startsWith(prefix),
   );
 // The stored id behind a shown one: the prefix is only how the id is displayed.
@@ -1295,8 +1310,8 @@ async function ownershipJourney(): Promise<void> {
     keepsRows(
       afterA,
       afterB,
-      ["state_records", "state_events"],
-      (r) => r.namespace === cloud,
+      ["state_records", "state_events", "domain_cloud_command_receipts"],
+      (r) => r.namespace === cloud || "request_id" in r,
     );
     for (const [who, reply] of [
       [a, first],
@@ -3644,7 +3659,7 @@ if (phase === "main") {
             1,
             requestId,
           );
-        // Typed receipts live in state_records, never in the raw routes' table.
+        // Typed receipts live in their own server table, never in the raw routes' table.
         assert.deepEqual(
           (dump.tables.domain_cloud_requests ?? []).filter((row) =>
             String(row.request_id).startsWith("typed-"),
@@ -3995,9 +4010,13 @@ if (phase === "large") {
       // three more events for the floors' three advances (the floor records were replaced, not added).
       assert.equal(
         merged.state_records!.length,
-        want.state_records!.length + 6,
+        want.state_records!.length + 3,
       );
-      assert.equal(merged.state_events!.length, want.state_events!.length + 9);
+      assert.equal(merged.state_events!.length, want.state_events!.length + 6);
+      assert.equal(
+        merged.domain_cloud_command_receipts!.length,
+        want.domain_cloud_command_receipts!.length + 3,
+      );
     },
   );
   await journey(
@@ -4169,15 +4188,20 @@ const rowsIn = (
 function changes(before: Dump, after: Dump) {
   const named = (row: Record<string, unknown>) =>
     `${String(row.namespace)} ${String(row.key)}`;
+  const receipts = (dump: Dump) =>
+    (dump.tables.domain_cloud_command_receipts ?? []).map((r) => ({
+      ...r,
+      namespace: "forge/cloud",
+      key: "request:" + String(r.request_id),
+    }));
+  const beforeRows = [...rowsIn(before, "state_records"), ...receipts(before)];
+  const afterRows = [...rowsIn(after, "state_records"), ...receipts(after)];
   const had = new Map(
-    rowsIn(before, "state_records").map((row) => [
-      named(row),
-      JSON.stringify(row),
-    ]),
+    beforeRows.map((row) => [named(row), JSON.stringify(row)]),
   );
   const added: string[] = [];
   const rewritten: string[] = [];
-  for (const row of rowsIn(after, "state_records")) {
+  for (const row of afterRows) {
     const old = had.get(named(row));
     if (old === undefined) added.push(named(row));
     else if (old !== JSON.stringify(row)) rewritten.push(named(row));
@@ -4187,7 +4211,7 @@ function changes(before: Dump, after: Dump) {
   return {
     added: added.sort(),
     rewritten: rewritten.sort(),
-    kept: had.size + added.length === rowsIn(after, "state_records").length,
+    kept: had.size + added.length === afterRows.length,
     oldEvents:
       JSON.stringify(events.slice(0, first)) ===
       JSON.stringify(rowsIn(before, "state_events")),

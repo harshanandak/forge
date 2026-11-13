@@ -157,7 +157,11 @@ export function digester(stamped = false) {
     add(table: string, rows: readonly Record<string, unknown>[]): void {
       const entry = state[table]!;
       for (const row of rows) {
-        const text = JSON.stringify(row);
+        const text = JSON.stringify(row, (key: string, value: unknown) =>
+          stamped && (key === "created_at" || key === "expires_at")
+            ? "<time>"
+            : value,
+        );
         entry.hash.update(stamped ? text.replace(TIME, "<time>") : text);
         entry.hash.update("\n");
         entry.rows += 1;

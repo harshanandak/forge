@@ -62,7 +62,7 @@ export function receipted<Fields, Result>(
     scope: call.scope,
     input: digestValue({ op, input, context, device }),
   });
-  const prior = replay(owner, requestId, fingerprint);
+  const prior = replay(db, owner, requestId, fingerprint);
   if (prior !== undefined) {
     replayed?.(prior as Result, context);
     return prior as Result;
@@ -72,17 +72,22 @@ export function receipted<Fields, Result>(
     fields = check(input, prefix);
   } catch (error) {
     throw error instanceof ForgeFailure
-      ? refused(db, owner, requestId, actor, fingerprint, error, recheck)
+      ? refused(db, requestId, fingerprint, error, recheck, call.expiresAt)
       : error;
   }
   return db.transaction(() => {
     // The token may have expired or been revoked since the route's check: nothing is written then.
     recheck();
-    admit(owner);
-    return record(owner, requestId, actor, {
-      fingerprint,
-      outcome: "ok",
-      result: write(fields, actor, prefix, context),
-    }) as Result;
+    admit(db);
+    return record(
+      db,
+      requestId,
+      {
+        fingerprint,
+        outcome: "ok",
+        result: write(fields, actor, prefix, context),
+      },
+      call.expiresAt,
+    ) as Result;
   });
 }
