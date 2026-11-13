@@ -44,6 +44,7 @@ import manifest from "../../src/blocks/work/forge.block.json" with { type: "json
 import { createStateClient } from "../../src/assembly/state-client.ts";
 import { StateOwner } from "../../src/core/state/index.ts";
 import type { LeaseRecord } from "../../src/generated/types.ts";
+import { canonicalJson } from "../../src/core/config/pointer.ts";
 import { refuse } from "../../src/core/trust/index.ts";
 import { stateMigrations } from "../../src/core/state/migrations.ts";
 import type { SqlDatabase, SqlRow, SqlValue } from "../../src/ports/store.ts";
@@ -8924,8 +8925,8 @@ const childFloors = (want: Record<string, number>, revision = 1): Added[] =>
     revision,
   }));
 /**
- * Every imported row is still there, and the restore added exactly `floors`, each as one record and one event naming
- * its key, value and revision, in consecutive sequences after the imported events; nothing else.
+ * Imported history is retained, live leases are released, and the restore adds exactly `floors`,
+ * each as one record and event before the release events.
  */
 function expectFloor(t: F, tables: Tables, floors: readonly Added[]) {
   const importedEvents = tables.state_events!.length;
@@ -8935,12 +8936,12 @@ function expectFloor(t: F, tables: Tables, floors: readonly Added[]) {
     if (lease.releasedAt !== undefined || Date.parse(lease.expiresAt) <= start)
       continue;
     const released = { ...lease, releasedAt: iso(start) };
-    row.body = JSON.stringify(released);
+    row.body = canonicalJson(released);
     tables.state_events!.push({
       sequence: tables.state_events!.length + floors.length + 1,
       namespace: row.namespace!,
       key: row.subject!,
-      body: JSON.stringify({
+      body: canonicalJson({
         type: `${String(row.namespace)}:lease.released@1`,
         namespace: row.namespace,
         key: row.subject,
