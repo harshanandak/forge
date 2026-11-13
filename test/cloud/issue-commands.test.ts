@@ -10599,6 +10599,7 @@ for (const [first, last, status] of [
       expect(got.json.error?.message).toContain("version");
       expect(await t.storage.get("restore:next")).toBeUndefined();
       expect((await t.admin("status")).json.value!.initialized).toBe(false);
+      expect(Object.values(tablesOf(t.db)).flat()).toEqual([]);
       expect((await t.admin("dump")).json).toEqual(before);
     } else expect(tablesOf(t.db)).toEqual(tables);
   }, 30_000);
