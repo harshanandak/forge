@@ -153,14 +153,29 @@ jobs:
             "the size guard refuses a dump over the project limit, and a restore whose staged rows pass it, before rows load"
             "a restore over its size bound is refused as RESTORE_TOO_LARGE and creates nothing"
           )
+          # Prints one line for each way a run falls short of the full-strength suite: a missing exact PASS row, or any SKIP row.
+          full_gaps() {
+            for row in "${FULL_ROWS[@]}"; do
+              grep -Fxq -- "PASS $row" "$1" || echo "no PASS: $row"
+            done
+            if grep -q '^SKIP ' "$1"; then echo "a journey was skipped"; fi
+          }
           (
             unset CLOUD_LIVE
             bun conformance/conformance.ts main 2>&1 | tee "$RUNNER_TEMP/main.out"
           )
-          for row in "${FULL_ROWS[@]}"; do
-            grep -Fxq -- "PASS $row" "$RUNNER_TEMP/main.out" || { echo "::error::the full-strength run did not print PASS $row"; exit 1; }
-          done
-          ! grep -q '^SKIP ' "$RUNNER_TEMP/main.out" || { echo "::error::the full-strength run skipped a journey"; exit 1; }
+          gaps=$(full_gaps "$RUNNER_TEMP/main.out")
+          [ -z "$gaps" ] || { echo "::error::the full-strength run fell short"; echo "$gaps"; exit 1; }
+          # Counterfactual "live mode leaked into the full CI run": the same Worker and test limits with CLOUD_LIVE=1 forced for the
+          # run (a subshell, with its own state file, so the environment and the restart state are untouched). The guard above must
+          # then name exactly the four journeys that need the small limits, which print SKIP instead of PASS.
+          (
+            export CLOUD_LIVE=1 CONFORMANCE_STATE="$RUNNER_TEMP/leak-state.json"
+            bun conformance/conformance.ts main > "$RUNNER_TEMP/leak.out" 2>&1 || true
+          )
+          leaked=$(full_gaps "$RUNNER_TEMP/leak.out")
+          wanted=$(printf 'no PASS: %s\n' "${FULL_ROWS[0]}" "${FULL_ROWS[2]}" "${FULL_ROWS[4]}" "${FULL_ROWS[5]}"; echo "a journey was skipped")
+          [ "$leaked" = "$wanted" ] || { echo "::error::live mode leaked into the full run: the guard did not name exactly the four skipped journeys"; echo "$leaked"; exit 1; }
           stop
           start second
           bun conformance/conformance.ts restart
