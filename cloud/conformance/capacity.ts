@@ -47,7 +47,6 @@ if (!("timingSafeEqual" in crypto.subtle))
 const MIB = 1024 * 1024;
 const NAME = "cap";
 const NS = "forge/capacity";
-const FROZEN = 1_800_000_000_000;
 const CANDIDATE_BYTES = 32 * MIB;
 // The real tracker, measured locally: rows per table and stored bytes of the four exported state tables.
 const TRACKER = {
@@ -148,6 +147,7 @@ const sqlOf = (db: DatabaseSync): SqlDatabase => ({
 // One project shape: distinct keys, updates of them, leases, and how many writes carry request ids. A fenced write
 // holds its own lease and a read set; the value is what each write stores.
 interface Shape {
+  at?: number;
   records: number;
   updates: number;
   leases: number;
@@ -199,6 +199,8 @@ const SHAPES: Record<string, () => Shape | Promise<Shape>> = {
   // 9,999 acquisitions + 9,999 releases + one record event + the derived floor = 20,000 events.
   "rows-leases": () => ceiling({ records: 1, leases: 9_999 }),
   "rows-leases-over": () => ceiling({ records: 2, leases: 9_999, runs: 1 }),
+  "leases-after-deadline": () =>
+    ceiling({ leases: 1, at: Date.UTC(2027, 0, 16), runs: 1 }),
   // Stored bytes at the candidate cap, to within one byte, with the supplied floor making 10,000 records and events, the old row cap.
   bytes: async () => {
     const base = ceiling({
@@ -290,7 +292,8 @@ async function source(shape: Shape) {
     }),
   );
   if (issued.status !== 200) throw new Error(`source setup: ${issued.status}`);
-  build(new StateOwner(sqlOf(db), { now: () => FROZEN }), shape);
+  const at = shape.at ?? Date.now();
+  build(new StateOwner(sqlOf(db), { now: () => at }), shape);
   return { db, project };
 }
 
@@ -380,6 +383,7 @@ async function exported(project: Project): Promise<string[]> {
 }
 
 interface Meta {
+  at?: number;
   // Taken from the source tables before the export runs; every restored target is checked against it.
   expect: Expected;
   rows: Record<string, number>;
@@ -393,6 +397,7 @@ async function write(dir: string, name: string): Promise<Meta> {
   const expect = expectOf(db);
   const pages = await exported(project);
   const meta: Meta = {
+    ...(shape.at === undefined ? {} : { at: shape.at }),
     expect,
     rows: rowsOf(db),
     stored: storedBytes(db),
@@ -540,6 +545,7 @@ async function measure(
     dir: join(dir, name),
     refuse,
     runs: meta.runs,
+    at: meta.at,
     limits,
     expect: meta.expect,
   });
@@ -645,12 +651,20 @@ function gateCatches(): boolean {
 }
 
 if (!isMainThread) {
-  const data = workerData as { allocate?: boolean };
+  const data = workerData as { allocate?: boolean; at?: number };
   if (data.allocate) {
     const keep: string[] = [];
     for (;;) keep.push("x".repeat(MIB) + keep.length);
   }
-  parentPort!.postMessage(await restoreAll());
+  // The same scoped override as max-source.ts:post, including the digest's clock checks.
+  const real = Date.now;
+  const at = data.at;
+  if (at !== undefined) Date.now = () => at;
+  try {
+    parentPort!.postMessage(await restoreAll());
+  } finally {
+    Date.now = real;
+  }
 } else {
   const [command = "measure", ...rest] = process.argv.slice(2);
   if (command === "pages") {
