@@ -131,6 +131,7 @@ for (const value of [
         body: new URLSearchParams({
           grant_type: "authorization_code",
           code: value,
+          code_verifier: verifier,
         }),
       }),
     );
