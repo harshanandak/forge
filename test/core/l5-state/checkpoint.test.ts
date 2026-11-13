@@ -63,6 +63,52 @@ test("checkpoint encoding is canonical, lossless and has a SHA-256 digest", () =
 }, 30000);
 
 type Mutable = Record<string, unknown>;
+for (const [name, input] of [
+  ["zero floor", { ...value(), floors: [["forge/test", "item-", 10, 0]] }],
+  [
+    "UTF-8 primary key order",
+    {
+      ...value(),
+      live: [
+        ["forge/test", "\ue000", 3, 2, hash],
+        ["forge/test", "\u{10000}", 4, 1, hash],
+      ],
+    },
+  ],
+  [
+    "numeric reservation order",
+    {
+      ...value(),
+      reservations: [
+        ["forge/test", "item-", 8, 2],
+        ["forge/test", "item-", 9, 10],
+      ],
+    },
+  ],
+  [
+    "released lease",
+    {
+      ...value(),
+      leases: [
+        [
+          "forge/test",
+          "subject",
+          6,
+          2,
+          lease.replace(
+            '"subject"',
+            '"releasedAt":"1970-01-01T00:00:00.000Z","subject"',
+          ),
+        ],
+      ],
+    },
+  ],
+] as const)
+  test(`checkpoint accepts ${name}`, () => {
+    const decoded = decodeCheckpoint(JSON.stringify(input));
+    expect(decoded).toEqual(input);
+    expect(decodeCheckpoint(encodeCheckpoint(decoded))).toEqual(input);
+  }, 30000);
 const malformed: [string, (input: Mutable) => void][] = [
   [
     "unknown field",
