@@ -1991,48 +1991,10 @@ export class StateOwner {
       (candidate) => {
         new StateOwner(candidate, this.#clock).initialize(this.#domains);
         migrated = true;
-        // Preserve lease counters and receipts, but never revive authority from a backup.
-        const at = new Date(this.#now()).toISOString();
-        candidate.transaction(() => {
-          // Only body changes below, never the (namespace, subject) keyset, so paging stays exact.
-          for (const row of restoredRows(
-            candidate,
-            "state_leases",
-            "namespace,subject,body",
-            ["namespace", "subject"],
-            pageSize,
-          )) {
-            const lease = JSON.parse(String(row.body)) as LeaseRecord;
-            if (!validateLeaseRecord(lease).ok)
-              invalid("Invalid imported lease");
-            if (
-              !decideLease(lease, {
-                mode: "held",
-                subject: lease.subject,
-                holder: lease.holder,
-                generation: lease.generation,
-                nowMs: Date.parse(at),
-              }).ok
-            )
-              continue;
-            const event = changedLeaseEvent(
-              String(row.namespace),
-              lease,
-              lease.holder,
-              at,
-            );
-            const released = event.data as LeaseRecord;
-            candidate.run(
-              "UPDATE state_leases SET body=? WHERE namespace=? AND subject=?",
-              [json(released), row.namespace!, row.subject!],
-            );
-            candidate.run(
-              "INSERT INTO state_events(namespace,key,body) VALUES (?,?,?)",
-              [row.namespace!, row.subject!, json(event)],
-            );
-            eventHighWaterMark++;
-          }
-        });
+        eventHighWaterMark += new StateOwner(
+          candidate,
+          this.#clock,
+        ).releaseRestoredLeases(pageSize);
         validate(candidate);
       },
       () => {
@@ -2043,6 +2005,52 @@ export class StateOwner {
       },
     );
   }
+  /** Preserve lease counters and history, but never revive authority from a backup. */
+  releaseRestoredLeases(pageSize: number = restorePageSize): number {
+    const at = new Date(this.#now()).toISOString();
+    return this.#db.transaction(() => {
+      let releasedCount = 0;
+      // Only body changes below, never the (namespace, subject) keyset, so paging stays exact.
+      for (const row of restoredRows(
+        this.#db,
+        "state_leases",
+        "namespace,subject,body",
+        ["namespace", "subject"],
+        pageSize,
+      )) {
+        const lease = JSON.parse(String(row.body)) as LeaseRecord;
+        if (!validateLeaseRecord(lease).ok) invalid("Invalid imported lease");
+        if (
+          !decideLease(lease, {
+            mode: "held",
+            subject: lease.subject,
+            holder: lease.holder,
+            generation: lease.generation,
+            nowMs: Date.parse(at),
+          }).ok
+        )
+          continue;
+        const event = changedLeaseEvent(
+          String(row.namespace),
+          lease,
+          lease.holder,
+          at,
+        );
+        const released = event.data as LeaseRecord;
+        this.#db.run(
+          "UPDATE state_leases SET body=? WHERE namespace=? AND subject=?",
+          [json(released), row.namespace!, row.subject!],
+        );
+        this.#db.run(
+          "INSERT INTO state_events(namespace,key,body) VALUES (?,?,?)",
+          [row.namespace!, row.subject!, json(event)],
+        );
+        releasedCount++;
+      }
+      return releasedCount;
+    });
+  }
+
   #images(): StateImageStore {
     const db = this.#db as Partial<StateImageStore>;
     if (!db.exportImage || !db.restoreImage)

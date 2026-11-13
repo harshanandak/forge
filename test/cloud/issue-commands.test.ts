@@ -43,6 +43,7 @@ import { createWorker } from "../../cloud/src/worker.ts";
 import manifest from "../../src/blocks/work/forge.block.json" with { type: "json" };
 import { createStateClient } from "../../src/assembly/state-client.ts";
 import { StateOwner } from "../../src/core/state/index.ts";
+import { releasedTables } from "../../cloud/conformance/restored.ts";
 import { refuse } from "../../src/core/trust/index.ts";
 import { stateMigrations } from "../../src/core/state/migrations.ts";
 import type { SqlDatabase, SqlRow, SqlValue } from "../../src/ports/store.ts";
@@ -8923,10 +8924,12 @@ const childFloors = (want: Record<string, number>, revision = 1): Added[] =>
     revision,
   }));
 /**
- * Every imported row is still there, and the restore added exactly `floors`, each as one record and one event naming
- * its key, value and revision, in consecutive sequences after the imported events; nothing else.
+ * Imported history is retained, live leases are released, and the restore adds exactly `floors`,
+ * each as one record and event before the release events.
  */
 function expectFloor(t: F, tables: Tables, floors: readonly Added[]) {
+  const importedEvents = tables.state_events!.length;
+  tables = releasedTables(tables, iso(start), floors.length);
   const after = tablesOf(t.db);
   const fresh = (table: string) => {
     const had = new Set(tables[table]!.map(asText));
@@ -8949,7 +8952,7 @@ function expectFloor(t: F, tables: Tables, floors: readonly Added[]) {
     floors.map((f) => f.key).sort(),
   );
   expect(events.map((e) => Number(e.sequence)).sort((x, y) => x - y)).toEqual(
-    floors.map((_, i) => tables.state_events!.length + 1 + i),
+    floors.map((_, i) => importedEvents + 1 + i),
   );
   for (const { key, value, revision: rev = 1 } of floors) {
     const record = records.find((r) => r.key === key);

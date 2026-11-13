@@ -698,6 +698,7 @@ function settleFloor(
       throw rejectedRow(error.table, error.key);
     throw error;
   }
+  owner.releaseRestoredLeases();
   assertLimits(db, limits, "RESTORE_TOO_LARGE", "The restored project");
   db.run(`UPDATE ${COMMAND_RECEIPTS} SET imported=1`);
   freshEpoch(db);

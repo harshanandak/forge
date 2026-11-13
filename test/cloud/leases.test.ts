@@ -1,5 +1,8 @@
 import { expect, mock, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
+import type { Dump } from "../../cloud/src/dump.ts";
+import { releasedTables } from "../../cloud/conformance/restored.ts";
+import { PAGE_FORMAT } from "../../cloud/src/dump.ts";
 import { Project } from "../../cloud/src/project.ts";
 import { TABLE_PROBE, type DurableStorage } from "../../cloud/src/store.ts";
 import { TOKEN_LOOKUP } from "../../cloud/src/tokens.ts";
@@ -10,6 +13,7 @@ import type {
   ForgeError,
   LeaseHolder,
   LeaseRecord,
+  StateEvent,
 } from "../../src/generated/types.ts";
 import { OLD_SCHEMA } from "./old-schema.ts";
 
@@ -35,19 +39,27 @@ const defaults = {
   generation: 1,
   ttlMs: minute,
 };
-function fixture() {
+function fixture(env?: unknown) {
   const clock = spyOn(Date, "now").mockReturnValue(now);
   const db = new Database(":memory:"),
     values = new Map<string, unknown>(),
     // Every statement, transaction and key-value call, so setup or a stray read shows even when no row changes.
     calls: string[] = [];
   let failRelease = false;
+  let failRestoredRelease = false;
   let claimNumber = 0;
   const storage: DurableStorage = {
     sql: {
       exec: (sql, ...bindings) => {
         calls.push(sql);
-        if (failRelease && sql.startsWith("INSERT INTO state_events"))
+        if (
+          (failRelease ||
+            (failRestoredRelease &&
+              bindings.some(
+                (v) => typeof v === "string" && v.includes(":lease.released@1"),
+              ))) &&
+          sql.startsWith("INSERT INTO state_events")
+        )
           throw new Error("injected event failure");
         const rows = db
           .query(sql)
@@ -77,7 +89,7 @@ function fixture() {
       return Promise.resolve(values.delete(key));
     },
   };
-  let project = new Project({ storage });
+  let project = new Project({ storage }, env);
   const bindings = {
     PROJECTS: { idFromName: (name: string) => name, get: () => project },
   };
@@ -204,6 +216,9 @@ function fixture() {
     row,
     rows,
     revoke: (device: Device) => send("revoke", { id: device.id }),
+    failRestore: () => {
+      failRestoredRelease = true;
+    },
     fail: () => {
       failRelease = true;
     },
@@ -664,3 +679,136 @@ test("a cold object migrates once its token is accepted, then serves the lease j
   expect(sent[3]?.body).toEqual(sent[2]?.body);
   expect(f.snapshot()).toContain("domain_cloud_login");
 }, 30_000);
+
+// Table cases share the same valid history; only the final renewal and matching lease are forged.
+for (const mode of ["whole", "paged"] as const)
+  for (const state of ["future", "released", "expired"] as const)
+    for (const limit of ["fits", "rows", "bytes", "event failure"] as const) {
+      if (state !== "future" && limit !== "fits") continue;
+      test(`${mode} restore: ${state} leases, ${limit}`, async () => {
+        using source = fixture();
+        const empty = (await source.send("dump")).body.value;
+        expect((await source.send("restore", empty)).status).toBe(200);
+        for (const subject of ["issue", "other"])
+          for (const route of state === "released"
+            ? ["claim", "renew", "release"]
+            : ["claim", "renew"]) {
+            const seeded = await source.write(
+              route,
+              { subject, requestId: `${route}-${subject}` },
+              "owner",
+            );
+            expect(seeded.status).toBe(200);
+          }
+        if (state === "expired") source.clock.mockReturnValue(now + minute);
+        const dump = (await source.send("dump")).body.value as Dump;
+        if (state === "future") {
+          for (const row of dump.tables.state_leases!) {
+            const lease = JSON.parse(String(row.body)) as LeaseRecord;
+            row.body = JSON.stringify({
+              ...lease,
+              expiresAt: "9999-01-01T00:00:00.000Z",
+            });
+          }
+          for (const row of dump.tables.state_events!) {
+            const event = JSON.parse(String(row.body)) as StateEvent;
+            if (event.type.endsWith(":lease.renewed@1")) {
+              row.body = JSON.stringify({
+                ...event,
+                data: {
+                  ...(event.data as LeaseRecord),
+                  expiresAt: "9999-01-01T00:00:00.000Z",
+                },
+              });
+            }
+          }
+        }
+        const storedBytes = Object.values(dump.tables)
+          .flat()
+          .flatMap(Object.values)
+          .reduce<number>(
+            (sum, value) => sum + Buffer.byteLength(String(value)),
+            0,
+          );
+        using target = fixture({
+          ...(limit === "rows"
+            ? { DUMP_MAX_ROWS: dump.tables.state_events!.length }
+            : {}),
+          ...(limit === "bytes" ? { DUMP_MAX_BYTES: storedBytes } : {}),
+        });
+        if (state === "expired") target.clock.mockReturnValue(now + minute);
+        if (limit === "event failure") target.failRestore();
+        const first = {
+          ...Object.fromEntries(Object.keys(dump.tables).map((t) => [t, []])),
+          state_records: dump.tables.state_records!,
+        };
+        const pages =
+          mode === "whole"
+            ? [dump]
+            : [first, { ...dump.tables, state_records: [] }].map(
+                (tables, page) => ({
+                  format: PAGE_FORMAT,
+                  page,
+                  last: page === 1,
+                  next: page === 1 ? null : "next",
+                  tables,
+                }),
+              );
+        for (const [index, page] of pages.entries()) {
+          const reply = await target.send("restore", page);
+          const final = index === pages.length - 1;
+          expect(reply.status).toBe(
+            !final || limit === "fits"
+              ? 200
+              : limit === "event failure"
+                ? 500
+                : 413,
+          );
+          if (!final) {
+            expect((await target.send("status")).body.value).toEqual({
+              initialized: false,
+            });
+            expect(target.rows("state_leases")).toEqual([]);
+          } else if (limit !== "fits") {
+            if (limit !== "event failure")
+              expect(reply.body.error?.code).toBe("RESTORE_TOO_LARGE");
+            expect((await target.send("status")).body.value).toEqual({
+              initialized: false,
+            });
+            for (const table of Object.keys(dump.tables))
+              expect(target.rows(table)).toEqual([]);
+          }
+        }
+        if (limit !== "fits") return;
+        const restored = (await target.send("dump")).body.value as Dump;
+        expect(restored.tables).toEqual(
+          releasedTables(
+            dump.tables,
+            new Date(state === "expired" ? now + minute : now).toISOString(),
+          ),
+        );
+        for (const row of restored.tables.state_leases!) {
+          const lease = JSON.parse(String(row.body)) as LeaseRecord;
+          const other = restored.tables.state_leases!.find(
+            (r) => r.subject !== row.subject,
+          )!;
+          const beforeOther = await target.lookup(String(other.subject));
+          const claim = await target.write(
+            "claim",
+            {
+              subject: lease.subject,
+              holder: holder("phone", "fresh"),
+              requestId: `fresh-${lease.subject}`,
+            },
+            "owner",
+          );
+          expect(claim.status).toBe(200);
+          expect((claim.body.value as LeaseRecord).generation).toBe(
+            Number(row.generation) + 1,
+          );
+          expect(await target.lookup(String(other.subject))).toEqual(
+            beforeOther,
+          );
+        }
+      }, 30_000);
+    }
