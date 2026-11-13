@@ -281,8 +281,15 @@ CLOUD_BASE=https://<worker>.workers.dev CLOUD_LIVE=1 \
   bun conformance/conformance.ts main
 ```
 
-Use the phase `latency` instead of `main` for claim p50 and p95 over 200 claims. `CLOUD_LIVE=1` skips only
-the receipt-failure case, because the deployed Worker has no fault switch.
+Use the phase `latency` instead of `main` for claim p50 and p95 over 200 claims.
+
+A live `main` run keeps the Worker's production limits, so it does not run the journeys that need the small limits of `wrangler.test.jsonc` (a 4096-byte page, 131072 stored bytes, 100 rows per table). It prints one `SKIP <name> -- <reason>` row for each skipped journey and never skips by catching a failure: whether a journey runs is decided before its body starts, and an eligible journey that fails is a `FAIL`. Live limits are not discovered. The skipped journeys are:
+
+- **Needs the test Worker's wrapper:** the 8 device login journeys (the local Clerk double), the 2 fault-header journeys (the wrapper's fault headers) and the 18 typed command journeys (the admitted fixture project). The typed restart check in the `restart` phase also skips, because it needs the typed state the main run saves.
+- **Needs the small CI limits:** the byte-bounded export and identical restore, the `DUMP_CHANGED` check between export pages (it needs a real continuation cursor under the small page limit), and the project size guard (131072 bytes, 100 rows per table).
+- **Needs an incomplete upload answered early:** the 9 MiB header-only restore. The local Worker answers it with `RESTORE_TOO_LARGE` before a body arrives; deployed ingress is not covered by that transport assumption, so this is a transport exclusion, not a project limit. The 8 MiB body cap is checked only in CI.
+
+That is 32 skipped journeys in `main`. Two journeys run live on adapted input: the restore-order check and the staged-row validation cut their restore pages from the real dump of a small project, in table and row order, into at least four pages. These test the restore protocol (order, abandonment, row checks), not where the server cuts an export. CI still runs all the original journeys against the small limits, and a CI job fails if any of them is skipped there. A passing live `main` is narrower than the two-machine proof: it checks the route behavior of the deployed Worker, not the step-by-step dump and restore comparison of every table in the two-machine runbook.
 
 ## Delete
 

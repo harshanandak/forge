@@ -390,10 +390,28 @@ function refused(
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
-function skip(name: string, _body: () => Promise<void>): Promise<void> {
-  console.log(`SKIP ${name}`);
-  return Promise.resolve();
-}
+// A live run skips a journey only by a rule chosen before its body runs, and every skipped row says why (forge-1318).
+const skip =
+  (reason: string) =>
+  (name: string, _body: () => Promise<void>): Promise<void> => {
+    console.log(`SKIP ${name} -- ${reason}`);
+    return Promise.resolve();
+  };
+const SKIP_DEVICE = "requires the local Clerk double";
+const SKIP_FAULT = "requires the wrapper's fault headers";
+const SKIP_TYPED = "requires the admitted fixture project";
+const SKIP_TYPED_RESTART = "requires saved typed state";
+// These four journeys need the small limits of wrangler.test.jsonc, or a transport the deployed ingress does not give. Live
+// limits are not discovered, so each is skipped live with its reason and runs unchanged everywhere else.
+const smallLimit = (reason: string) => (live ? skip(reason) : check);
+const SKIP_PAGES =
+  "requires the small CI page limit; live limits are not discovered";
+const SKIP_CURSOR =
+  "requires a real continuation cursor under the small CI page limit";
+const SKIP_PROJECT =
+  "requires the small CI project limits (131072 bytes, 100 rows per table)";
+const SKIP_UPLOAD =
+  "requires the local Worker to answer an incomplete upload before the body arrives; deployed ingress is not covered by that transport assumption";
 const failures: string[] = [];
 async function check(name: string, body: () => Promise<void>): Promise<void> {
   try {
@@ -786,7 +804,7 @@ const revokeCheck = (): Promise<void> =>
 
 // Device login journeys (forge-1230). The deployed Worker has no test wrapper, so live runs skip them.
 async function deviceChecks(): Promise<void> {
-  const device = live ? skip : check;
+  const device = live ? skip(SKIP_DEVICE) : check;
   // Owner approval of a device login over real HTTP (forge-1230). Every request names its own address,
   // and a wrong-capability request also arms a fault that fails any write to the login row: its normal
   // 400 proves the request never reached one. The limit journeys arm no fault, so a missing limit shows
@@ -1151,7 +1169,7 @@ if (phase === "latency") {
 if (phase === "main") {
   await revokeCheck();
   // The deployed Worker has no fault switch, so live runs skip that one case.
-  const faulty = live ? skip : check;
+  const faulty = live ? skip(SKIP_FAULT) : check;
 
   await check(
     "no token, a wrong token, or a device token on an admin route is refused before any state is read",
@@ -2098,7 +2116,7 @@ if (phase === "main") {
   );
 
   // The test config (wrangler.test.jsonc) sets a 4096-byte page and a 131072-byte project limit, so a
-  // small project needs several pages and a larger one trips the size guard.
+  // small project needs several pages and a larger one trips the size guard. A live run cuts its own restore pages.
   let paged: Promise<{ source: string; pages: DumpPage[] }> | undefined;
   const pagedSource = (): Promise<{ source: string; pages: DumpPage[] }> =>
     (paged ??= (async () => {
@@ -2107,10 +2125,27 @@ if (phase === "main") {
         granted(
           await claim(source, `issue:page-${i}`, holderOf("page"), `page-${i}`),
         );
-      return { source, pages: await pagesOf(source) };
+      if (!live) return { source, pages: await pagesOf(source) };
+      // A production Worker exports this small project as one page, so the restore protocol is checked on pages cut from
+      // its real dump, in table and row order. They are restore pages, not evidence of export boundaries.
+      const { pagesOf: cut } = await import("./max-source.ts");
+      const { tables } = await dumpOf(source);
+      const rows = Object.values(tables).reduce(
+        (n, list) => n + list.length,
+        0,
+      );
+      const pages = cut(
+        tables as Parameters<typeof cut>[0],
+        Math.max(1, Math.floor(rows / 4)),
+      ) as unknown as DumpPage[];
+      assert.ok(
+        pages.length >= 4,
+        `${pages.length} restore pages from ${rows} rows`,
+      );
+      return { source, pages };
     })());
 
-  await check(
+  await smallLimit(SKIP_PAGES)(
     "a project dumps in byte-bounded pages and restores the same pages into an empty project, read back identical",
     async () => {
       const { source, pages } = await pagedSource();
@@ -2214,7 +2249,7 @@ if (phase === "main") {
     },
   );
 
-  await check(
+  await smallLimit(SKIP_CURSOR)(
     "a write between dump pages makes the next page DUMP_CHANGED, and a fresh export restores identical",
     async () => {
       const race = `${run}-page-race`;
@@ -2474,7 +2509,7 @@ if (phase === "main") {
     },
   );
 
-  await check(
+  await smallLimit(SKIP_PROJECT)(
     "the size guard refuses a dump over the project limit, and a restore whose staged rows pass it, before rows load",
     async () => {
       const big = `${run}-page-big`;
@@ -2593,7 +2628,7 @@ if (phase === "main") {
     },
   );
 
-  await check(
+  await smallLimit(SKIP_UPLOAD)(
     "a restore over its size bound is refused as RESTORE_TOO_LARGE and creates nothing",
     async () => {
       const project = `${run}-restore-big`;
@@ -2610,7 +2645,7 @@ if (phase === "main") {
   // The typed command route on real workerd: cases 1 to 9, the links case and the comments case run in order on the admitted project and
   // share what they create. The deployed Worker has no fault switch and a live run names no admitted
   // project, so live runs skip them.
-  const typed = live ? skip : check;
+  const typed = live ? skip(SKIP_TYPED) : check;
   let a!: Caller;
   let b!: Caller;
   let c!: Caller;
@@ -3412,7 +3447,7 @@ if (phase === "main") {
     revoked: Device;
     typed?: TypedSaved;
   };
-  await (live ? skip : check)(
+  await (live ? skip(SKIP_TYPED_RESTART) : check)(
     "typed replay, show, list and ready survive a restart, and add no row",
     async () => {
       const kept = saved.typed;
