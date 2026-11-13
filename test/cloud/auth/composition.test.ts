@@ -111,6 +111,7 @@ async function fixture(denied = false, expectedResource = resource) {
   );
   const env = {
     ADMIN_TOKEN: "fixture-admin",
+    GRANT_STATE: harness.grantNamespace,
     PROJECTS: {
       idFromName: (name: string) => name,
       get: () => ({ fetch: () => Promise.resolve(new Response("legacy")) }),
@@ -497,6 +498,15 @@ test("real provider registration and canonical resource metadata handle requests
       CODE_REDEMPTION: f.env.PROJECTS,
     },
     worker = createConfiguredWorker();
+  const metadata = await worker.fetch(
+    new Request(`${issuer}/.well-known/oauth-authorization-server`),
+    env,
+  );
+  expect(metadata.status).toBe(200);
+  expect(await metadata.json()).toMatchObject({
+    revocation_endpoint: `${issuer}/oauth/revoke`,
+    grant_types_supported: ["authorization_code"],
+  });
   const registration = await worker.fetch(
     new Request(`${issuer}/register`, {
       method: "POST",

@@ -8,9 +8,15 @@
   "preview_urls": false,
   "kv_namespaces": [{ "binding": "OAUTH_KV", "id": "oauth-conformance" }],
   "durable_objects": {
-    "bindings": [{ "name": "CODE_REDEMPTION", "class_name": "CodeRedemption" }],
+    "bindings": [
+      { "name": "CODE_REDEMPTION", "class_name": "CodeRedemption" },
+      { "name": "GRANT_STATE", "class_name": "GrantState" },
+    ],
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CodeRedemption"] }],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["CodeRedemption"] },
+    { "tag": "v2", "new_sqlite_classes": ["GrantState"] },
+  ],
   "dev": { "ip": "127.0.0.1", "port": 8788 },
   "send_metrics": false,
 }

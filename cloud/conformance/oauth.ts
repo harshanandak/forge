@@ -113,6 +113,45 @@ async function main() {
   const unrelated = await issue(),
     revoked: Family[] = [];
   await access(unrelated, true);
+  async function outages() {
+    for (const fault of ["read", "write", "stub"]) {
+      const headers = {
+        "x-oauth-state-fault": fault,
+        Authorization: `Bearer ${unrelated.access_token}`,
+      };
+      if (fault !== "write") {
+        const response = await send("/fixture/verify", { headers });
+        assert.deepEqual(
+          await response.json(),
+          { verified: false, accepts: false },
+          "state read failure must refuse access",
+        );
+      }
+      if (fault !== "read") {
+        const response = await send("/oauth/revoke", {
+          method: "POST",
+          headers: { "x-oauth-state-fault": fault },
+          body: new URLSearchParams({
+            token: unrelated.access_token,
+            client_id: unrelated.client,
+          }),
+        });
+        assert.equal(
+          response.status,
+          503,
+          "state write failure cannot claim a successful revoke",
+        );
+        assert.deepEqual(await response.json(), {
+          error: "temporarily_unavailable",
+        });
+        assert.equal(response.headers.get("cache-control"), "no-store");
+      }
+      await access(unrelated, true);
+    }
+    console.log(
+      "PASS OAuth state outage refuses without revoking the unrelated grant",
+    );
+  }
   for (const kind of ["access_token", "refresh_token"] as const) {
     const family = await issue();
     await access(family, true);
@@ -149,6 +188,7 @@ async function main() {
       `PASS OAuth ${kind} revoke refuses subsequent and stale-KV access`,
     );
   }
+  await outages();
   writeFileSync(state!, JSON.stringify({ revoked, unrelated }), {
     mode: 0o600,
   });

@@ -36,11 +36,30 @@ export interface OAuthStorage {
 export interface CodeRedemption {
   claimOnce(codeHash: string, expiresAt: number): Promise<boolean>;
 }
+export interface GrantRevocation {
+  isActive(grantHash: string): Promise<boolean>;
+  revoke(grantHash: string): Promise<void>;
+}
+export async function grantHash(
+  token: string,
+  userId: string,
+): Promise<string | null> {
+  const parts = token.split(":");
+  if (parts.length !== 3 || parts.some((part) => !part) || parts[0] !== userId)
+    return null;
+  const input = `forge:oauth-grant:1:${JSON.stringify(parts.slice(0, 2))}`;
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(input),
+  );
+  return Buffer.from(digest).toString("hex");
+}
 export interface OAuthOptions {
   issuer: string;
   resources: readonly string[];
   storage: OAuthStorage;
   codeRedemption: CodeRedemption;
+  grantRevocation: GrantRevocation;
   clock: ClockPort;
   upstream: {
     begin(state: string, verifier?: string): Promise<string>;
@@ -57,6 +76,8 @@ export interface OAuthAdapter extends OAuthVerificationPort {
   consent(request: Request, allow: boolean): Promise<Response>;
   callback(request: Request): Promise<Response>;
   token(request: Request): Promise<Response>;
+  proveAccess(token: string, clientId: string): Promise<string | null>;
+  isPublicClient(clientId: string): Promise<boolean>;
   accepts(
     token: Parameters<OAuthAuthorizationServer["validateToken"]>[1],
     resource: Parameters<OAuthAuthorizationServer["validateToken"]>[0],
@@ -71,10 +92,7 @@ export function createOAuthAdapter(options: OAuthOptions): OAuthAdapter {
     clientIdMetadataDocumentEnabled: false,
   });
   const oauth = server.getOAuthApi(env);
-  async function verifyProviderToken(
-    token: string,
-    resource: string,
-  ): Promise<VerifiedIdentity | null> {
+  async function accessProof(token: string, resource: string) {
     try {
       const validated = await server.validateToken<
         IdentityClaims & { verifiedAudience: string }
@@ -97,7 +115,24 @@ export function createOAuthAdapter(options: OAuthOptions): OAuthAdapter {
           encodeURIComponent(JSON.stringify([claims.issuer, claims.subject]))
       )
         return null;
-      return mintIdentity({ ...claims, audience: resource, expiresAt });
+      return {
+        validated,
+        claims: { ...claims, audience: resource, expiresAt },
+      };
+    } catch {
+      return null;
+    }
+  }
+  async function verifyProviderToken(
+    token: string,
+    resource: string,
+  ): Promise<VerifiedIdentity | null> {
+    try {
+      const proof = await accessProof(token, resource);
+      if (!proof) return null;
+      const hash = await grantHash(token, proof.validated.userId);
+      if (!hash || !(await options.grantRevocation.isActive(hash))) return null;
+      return mintIdentity(proof.claims);
     } catch {
       return null;
     }
@@ -124,6 +159,16 @@ export function createOAuthAdapter(options: OAuthOptions): OAuthAdapter {
   };
   return {
     verify: verifyProviderToken,
+    isPublicClient: async (clientId) =>
+      (await oauth.lookupClient(clientId))?.tokenEndpointAuthMethod === "none",
+    proveAccess: async (token, clientId) => {
+      for (const resource of options.resources) {
+        const proof = await accessProof(token, resource);
+        if (proof?.validated.clientId === clientId)
+          return grantHash(token, proof.validated.userId);
+      }
+      return null;
+    },
     register: async (redirectUri) =>
       (
         await oauth.createClient({

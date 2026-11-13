@@ -57,35 +57,7 @@ jobs:
         env:
           WRANGLER_SEND_METRICS: "false"
           OAUTH_CONFORMANCE_STATE: ${{ runner.temp }}/oauth-state.json
-        run: |
-          start_oauth() {
-            bun x wrangler dev --local --config wrangler.oauth-test.jsonc --persist-to "$RUNNER_TEMP/oauth-storage" > "$RUNNER_TEMP/oauth-worker.log" 2>&1 &
-            oauth_pid=$!
-            for _ in $(seq 1 60); do
-              if curl -sf http://127.0.0.1:8788/fixture/ready > /dev/null; then return 0; fi
-              sleep 1
-            done
-            cat "$RUNNER_TEMP/oauth-worker.log"
-            return 1
-          }
-          stop_oauth() {
-            pkill -P "$oauth_pid" || true
-            kill "$oauth_pid" || true
-            pkill -f workerd || true
-            for _ in $(seq 1 20); do
-              if ! curl -s -o /dev/null http://127.0.0.1:8788/fixture/ready; then return 0; fi
-              sleep 0.5
-            done
-            return 1
-          }
-          trap 'stop_oauth' EXIT
-          start_oauth
-          bun conformance/oauth.ts
-          stop_oauth
-          start_oauth
-          bun conformance/oauth.ts restart
-          stop_oauth
-          trap - EXIT
+        run: bun conformance/oauth-ci.ts
       - name: Capacity pages
         working-directory: cloud
         run: node conformance/capacity.ts pages "$RUNNER_TEMP/capacity" real

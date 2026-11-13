@@ -9,13 +9,18 @@ import {
   durableRedemption,
   type RedemptionNamespace,
 } from "../src/adapters/workers-oauth/redemption.ts";
-import { mintIdentity } from "../../src/ports/identity-mint.ts";
+import { testIdentityVerifier } from "../../test/contract/lib/identity-verifier.ts";
+import { durableGrants } from "../src/adapters/workers-oauth/grant-state.ts";
 import { createWorker } from "../src/worker.ts";
-export { CodeRedemption } from "../src/adapters/workers-oauth/compose.ts";
+export {
+  CodeRedemption,
+  GrantState,
+} from "../src/adapters/workers-oauth/compose.ts";
 
 interface Env {
   OAUTH_KV: OAuthStorage;
   CODE_REDEMPTION: RedemptionNamespace;
+  GRANT_STATE: RedemptionNamespace;
 }
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -43,23 +48,44 @@ export default {
       resources: [issuer],
       storage: env.OAUTH_KV,
       codeRedemption: durableRedemption(env.CODE_REDEMPTION),
+      grantRevocation: durableGrants(env.GRANT_STATE),
       clock: { now: Date.now },
       upstream: {
         begin: (state) =>
           Promise.resolve(`${issuer}/fixture/login?state=${state}`),
-        verify: () =>
-          Promise.resolve({
-            ok: true,
-            identity: mintIdentity({
-              issuer: "https://identity.test",
-              subject: "owner",
-              audience: issuer,
-              authenticatedAt: Date.now() - 1000,
-              expiresAt: Date.now() + 7_200_000,
-            }),
-          }),
+        verify: (_request, now) =>
+          testIdentityVerifier(
+            new Map([
+              [
+                "fixture",
+                {
+                  issuer: "https://identity.test",
+                  subject: "owner",
+                  audience: issuer,
+                  authenticatedAt: now - 1000,
+                  expiresAt: now + 7_200_000,
+                },
+              ],
+            ]),
+          ).verify("fixture", issuer, now),
       },
     };
+    const fault = request.headers.get("x-oauth-state-fault");
+    if (fault)
+      options.grantRevocation = durableGrants({
+        idFromName: (name) => env.GRANT_STATE.idFromName(name),
+        get: (id) => ({
+          fetch: (input) => {
+            if (
+              fault === "stub" ||
+              (fault === "read" && input.method === "GET") ||
+              (fault === "write" && input.method === "POST")
+            )
+              return Promise.reject(new Error("fixture private fault"));
+            return env.GRANT_STATE.get(id).fetch(input);
+          },
+        }),
+      });
     const adapter = createOAuthAdapter(options);
     if (url.pathname === "/fixture/register")
       return Response.json({

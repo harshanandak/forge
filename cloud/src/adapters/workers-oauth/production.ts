@@ -5,6 +5,7 @@ import { durableRedemption, type RedemptionNamespace } from "./redemption.ts";
 import type { OAuthOptions, OAuthStorage } from "./index.ts";
 import type { readOAuthConfig } from "./config.ts";
 import type { WorkerDependencies } from "./compose.ts";
+import { durableGrants } from "./grant-state.ts";
 
 // One cached verifier per Worker instance in this isolate, replaced on config change.
 const verifiers = new WeakMap<
@@ -64,6 +65,7 @@ export function productionOptions(
     issuer: new URL(config.redirectUri).origin,
     resources: [config.resource],
     storage: env.OAUTH_KV as OAuthStorage,
+    grantRevocation: durableGrants(env.GRANT_STATE as RedemptionNamespace),
     codeRedemption: durableRedemption(
       env.CODE_REDEMPTION as RedemptionNamespace,
     ),

@@ -12,7 +12,7 @@ export function registerDurableRedemption<T extends object>(port: T): T {
 }
 
 export const isOAuthRoute = (request: Request) =>
-  /^\/(authorize|callback|oauth\/token|register|\.well-known\/oauth-(authorization-server|protected-resource))$/.test(
+  /^\/(authorize|callback|oauth\/(token|revoke)|register|\.well-known\/oauth-(authorization-server|protected-resource))$/.test(
     new URL(request.url).pathname,
   );
 export const configUnavailable = (

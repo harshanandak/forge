@@ -60,6 +60,7 @@ function fixture() {
       get: () => limiter,
     },
     CODE_REDEMPTION: { idFromName: () => "", get: () => limiter },
+    GRANT_STATE: createOAuthHarness().grantNamespace,
     OAUTH_KV: {
       ...kv,
       async put(...args: Parameters<typeof kv.put>) {
