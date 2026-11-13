@@ -219,7 +219,8 @@ export function evaluateMergeEvidence(
           .size !== run.checks.length ||
         runs.some(
           (other) =>
-            (other.id === run.id) !== (other.runNumber === run.runNumber),
+            (other.id === run.id) !== (other.runNumber === run.runNumber) ||
+            (other.id === run.id && other.headSha !== run.headSha),
         ) ||
         new Set(run.checks.map((check) => check.id)).size !== run.checks.length,
     ) ||
