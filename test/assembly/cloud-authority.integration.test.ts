@@ -199,11 +199,10 @@ const PROBE_MUTATIONS =
   "put put-many put-next delete acquire renew release".split(" ");
 beforeAll(() => {
   staging = mkdtempSync(join(tmpdir(), "forge-authority-blocks-"));
-  const [memory, work, cloud, check] = [
+  const [memory, work, cloud] = [
     "forge/memory",
     "forge/work",
     "forge/cloud",
-    "forge/check",
   ].map((id) => fileURLToPath(firstPartyBlocks[id]!));
   const compiled = (source: string, name: string) => {
     const target = join(staging, name);
@@ -217,11 +216,12 @@ beforeAll(() => {
     writeFileSync(join(target, "entry.cjs"), entry);
     return target;
   };
+  const check = fileURLToPath(firstPartyBlocks["forge/check"]!);
   const stages = new Map([
     [memory!, stageBlock("memory", staging)],
     [work!, compiled(work!, "work")],
     [cloud!, compiled(cloud!, "cloud")],
-    [check!, compiled(check!, "check")],
+    [check, compiled(check, "check")],
   ]);
   const open = blockCapture.open.bind(blockCapture);
   capture = spyOn(blockCapture, "open").mockImplementation((path) =>
@@ -3428,7 +3428,9 @@ test.each(acceptance)(
               for (const op of [...DECLARED, RECOVER]) {
                 const entry = assembly.catalog
                   .list()
+                  .concat(discoveryOperations)
                   .find((entry) => entry.op === op)!;
+                expect(entry, op).toBeDefined();
                 const input =
                   entry.docs.examples?.[0]?.input ??
                   Object.fromEntries(
