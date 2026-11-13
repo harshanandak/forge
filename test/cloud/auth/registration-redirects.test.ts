@@ -69,6 +69,7 @@ function fixture(extra: Record<string, unknown> = {}) {
     worker.fetch(
       new Request(
         `${issuer}/authorize?${new URLSearchParams({ response_type: "code", client_id: client, redirect_uri: redirect, resource, state: "client-state", code_challenge: challenge, code_challenge_method: "S256" })}`,
+        { headers: { "CF-Connecting-IP": "203.0.113.7" } },
       ),
       env,
     );

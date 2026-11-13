@@ -21,6 +21,7 @@ import {
 } from "@cloudflare/workers-oauth-provider";
 import {
   guardRegistration,
+  guardAuthorizationStart,
   isLoopbackRedirect,
   REGISTRATION_LIMITS,
 } from "./registration.ts";
@@ -250,6 +251,13 @@ export function createConfiguredWorker(
             request,
             env,
           );
+        }
+        if (path === "/authorize" && request.method === "GET") {
+          const refusal = await guardAuthorizationStart(
+            request,
+            env.REGISTRATION_LIMITER,
+          );
+          if (refusal) return refusal;
         }
         if (
           ["/authorize", "/callback", "/oauth/token", "/oauth/revoke"].includes(
