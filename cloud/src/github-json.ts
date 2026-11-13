@@ -49,14 +49,18 @@ export async function parseGithubJson(
       if (cancelled) return;
       cancelled = true;
       void reader.cancel().catch(() => {});
-      reader.releaseLock();
+      try {
+        reader.releaseLock();
+      } catch {
+        // A pending read must not prevent cancellation from completing.
+      }
     };
     if (!state || state.refusal || signal.aborted)
       throw new Error(refuse().reason);
     const interrupted = new Promise<null>((resolve) => {
       const abort = () => {
-        cancel();
         resolve(null);
+        cancel();
       };
       signal.addEventListener("abort", abort, { once: true });
       detach = () => signal.removeEventListener("abort", abort);
