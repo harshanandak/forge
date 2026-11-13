@@ -194,6 +194,15 @@ const WORK = yaml();
 /** The shipped blocks are staged as the installed package carries them: compiled entries. */
 let staging: string;
 let capture: ReturnType<typeof spyOn<typeof blockCapture, "open">>;
+const PROBE_MUTATIONS = [
+  "put",
+  "put-many",
+  "put-next",
+  "delete",
+  "acquire",
+  "renew",
+  "release",
+];
 beforeAll(() => {
   staging = mkdtempSync(join(tmpdir(), "forge-authority-blocks-"));
   const [memory, work, cloud, check] = [
@@ -229,13 +238,7 @@ beforeAll(() => {
     recursive: true,
   });
   const verbs = [
-    "put",
-    "put-many",
-    "put-next",
-    "delete",
-    "acquire",
-    "renew",
-    "release",
+    ...PROBE_MUTATIONS,
     "device",
     "escalate",
     "read",
@@ -353,6 +356,12 @@ async function rig(o: Setup) {
           throw new Error("local state acquired");
         });
   const env = {
+    PATH: process.env.PATH ?? "",
+    PATHEXT: process.env.PATHEXT ?? "",
+    SystemRoot: process.env.SystemRoot ?? "",
+    WINDIR: process.env.WINDIR ?? "",
+    TEMP: process.env.TEMP ?? "",
+    TMP: process.env.TMP ?? "",
     FORGE_NO_BROWSER: "1",
     HOME: s.home,
     ...(o.device === false ? {} : { FORGE_DEVICE_ID: o.device ?? "dev-1" }),
@@ -3306,15 +3315,7 @@ test.each(acceptance)(
               }
               break;
             case "All state mutation families":
-              for (const verb of [
-                "put",
-                "put-many",
-                "put-next",
-                "delete",
-                "acquire",
-                "renew",
-                "release",
-              ])
+              for (const verb of PROBE_MUTATIONS)
                 await check(`renamed.${verb}`, { revision: 1 });
               break;
             case "Writable cache hit / promotion": {
