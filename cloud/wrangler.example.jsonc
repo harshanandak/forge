@@ -30,6 +30,7 @@
       { "name": "PROJECTS", "class_name": "Project" },
       { "name": "CODE_REDEMPTION", "class_name": "CodeRedemption" },
       { "name": "REGISTRATION_LIMITER", "class_name": "RegistrationLimiter" },
+      { "name": "GRANT_STATE", "class_name": "GrantState" },
     ],
   },
   "migrations": [
@@ -39,6 +40,7 @@
       "tag": "v3-registration-limits",
       "new_sqlite_classes": ["RegistrationLimiter"],
     },
+    { "tag": "v4-oauth-grant-state", "new_sqlite_classes": ["GrantState"] },
   ],
   "dev": { "ip": "127.0.0.1", "port": 8787 },
   "send_metrics": false,

@@ -746,6 +746,10 @@ test("a device state never reaches the OAuth callback, and an OAuth state never 
   };
   const f = fixture(vars, {
     OAUTH_KV: kv,
+    GRANT_STATE: {
+      idFromName: (name: string) => name,
+      get: () => ({ fetch: () => Promise.resolve(new Response()) }),
+    },
     CODE_REDEMPTION: {
       idFromName: (name: string) => name,
       get: () => ({

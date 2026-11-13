@@ -33,6 +33,7 @@ function fixture(extra: Record<string, unknown> = {}) {
     ...extra,
     PROJECTS: idle,
     CODE_REDEMPTION: idle,
+    GRANT_STATE: harness.grantNamespace,
     REGISTRATION_LIMITER: {
       idFromName: (name: string) => name,
       get: () => ({

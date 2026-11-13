@@ -30,6 +30,8 @@ import { durableRedemption, type RedemptionNamespace } from "./redemption.ts";
 import { isLoginRoute } from "../../auth/project-login.ts";
 import { commandProject } from "../../issue-commands.ts";
 import { boundedOAuthRequest } from "./body.ts";
+import { revokeOAuth } from "./revocation.ts";
+export { GrantState } from "./grant-state.ts";
 export { CodeRedemption } from "./redemption.ts";
 export { RegistrationLimiter } from "./registration.ts";
 /** The Clerk upstream and durable redemption the project object needs for owner approval; absent when unconfigured. */
@@ -85,14 +87,22 @@ export function composeOAuth(
       const path = new URL(request.url).pathname;
       if (
         request.method === "POST" &&
-        ["/authorize", "/oauth/token"].includes(path)
+        ["/authorize", "/oauth/token", "/oauth/revoke"].includes(path)
       ) {
         const bounded = await boundedOAuthRequest(request);
-        if (bounded instanceof Response) return bounded;
+        if (bounded instanceof Response)
+          return path === "/oauth/revoke"
+            ? Response.json(
+                { error: "invalid_request" },
+                { status: 400, headers: bounded.headers },
+              )
+            : bounded;
         request = bounded;
       }
       if (path === "/callback") return adapter.callback(request);
       if (path === "/oauth/token") return adapter.token(request);
+      if (path === "/oauth/revoke")
+        return revokeOAuth(request, options, adapter);
       if (protocol) return protocol(request);
       if (path === "/authorize") {
         try {
@@ -198,6 +208,15 @@ export function createConfiguredWorker(
           "Atomic redemption unavailable",
         );
       try {
+        if (
+          !env.GRANT_STATE ||
+          !["idFromName", "get"].every(
+            (key) =>
+              typeof (env.GRANT_STATE as Record<string, unknown>)[key] ===
+              "function",
+          )
+        )
+          return configUnavailable("GRANT_STATE");
         const auth = composeOAuth(
           productionOptions(config, env, dependencies),
           config.resource,
@@ -230,7 +249,11 @@ export function createConfiguredWorker(
             env,
           );
         }
-        if (["/authorize", "/callback", "/oauth/token"].includes(path))
+        if (
+          ["/authorize", "/callback", "/oauth/token", "/oauth/revoke"].includes(
+            path,
+          )
+        )
           return await auth.route(request);
         const refusal = await guardRegistration(
           request,
@@ -276,6 +299,20 @@ export function createConfiguredWorker(
           props: {},
         });
         await Promise.all(tasks);
+        if (
+          path === "/.well-known/oauth-authorization-server" &&
+          response.ok &&
+          request.method === "GET"
+        )
+          return Response.json(
+            {
+              ...((await response.json()) as Record<string, unknown>),
+              revocation_endpoint: new URL("/oauth/revoke", request.url).href,
+              revocation_endpoint_auth_methods_supported: ["none"],
+              grant_types_supported: ["authorization_code"],
+            },
+            { headers: response.headers },
+          );
         return new URL(request.url).pathname === "/register" && !response.ok
           ? Response.json(
               { error: "invalid_client_metadata" },

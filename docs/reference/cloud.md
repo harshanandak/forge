@@ -279,6 +279,16 @@ The owner runs these steps. Replace angle-bracket placeholders; `<worker-origin>
 
 7. **Known limits.** Links point to the originating reviews; issue IDs are tracked in Forge. [forge-1121 (registration residuals)](https://github.com/harshanandak/forge/pull/406): provider-invalid requests consume quota, fixed windows allow boundary bursts, shared or Worker-origin IPs affect quotas, and pre-existing clients retain their old TTL. [forge-1122 (replay revocation race)](https://github.com/harshanandak/forge/pull/404): a refused replay can race the winning token write, so its tokens may survive revocation, while the code still issues tokens at most once.
 
+## OAuth holder revocation
+
+`POST /oauth/revoke` takes an `application/x-www-form-urlencoded` body with exactly one nonempty `token` and `client_id`, and at most one `token_type_hint` (lookup order only). The body limit is 8192 bytes. The client must be registered with authentication method `none`; Authorization headers, client secrets and assertions are refused.
+
+A live access token or a current/previous issued refresh token with its matching public client id can revoke the whole grant, including sibling access tokens. A public client id alone grants no authority. Successful and repeated revokes return empty HTTP 200 with `Cache-Control: no-store`; unknown, expired or wrong-client tokens for a known public client return the same response without revoking a victim.
+
+Malformed requests return 400 `invalid_request`, unknown/non-public clients return 400 `invalid_client`, and unavailable durable state returns 503 rather than claiming an uncommitted revoke. OAuth paths require `GRANT_STATE`. Each access verification reads the permanent hashed grant marker after provider/identity validation, so stale or late KV writes cannot reopen access. Revocation does not sweep KV or recall work authorized before its commit.
+
+Discovery advertises `/oauth/revoke` and only `authorization_code`. Refresh and native revoke operations at `/oauth/token` remain refused. Upstream identity expiry, device credentials and the admin-only `POST /p/<project>/revoke` device route retain their contracts. The isolated CI OAuth journey checks restart, stale records and the durable-check-removal counterfactual; it does not prove deployed behavior.
+
 ## Check a live Worker
 
 ```sh

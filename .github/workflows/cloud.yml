@@ -52,6 +52,12 @@ jobs:
       - run: bun run gen
       - run: bun install --frozen-lockfile
         working-directory: cloud
+      - name: OAuth holder revocation and persisted restart
+        working-directory: cloud
+        env:
+          WRANGLER_SEND_METRICS: "false"
+          OAUTH_CONFORMANCE_STATE: ${{ runner.temp }}/oauth-state.json
+        run: bun conformance/oauth-ci.ts
       - name: Capacity pages
         working-directory: cloud
         run: node conformance/capacity.ts pages "$RUNNER_TEMP/capacity" real

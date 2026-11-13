@@ -71,6 +71,7 @@ async function fixture(claims = {}, alg = "RS256") {
     PROJECTS: transport,
     REGISTRATION_LIMITER: transport,
     OAUTH_KV: harness.options.storage,
+    GRANT_STATE: harness.grantNamespace,
     CODE_REDEMPTION: {
       idFromName: (hash: string) => hash,
       get: (hash: unknown) => ({
@@ -634,12 +635,11 @@ test("configured callbacks refuse replay, foreign state and invalid ID tokens", 
 
 test("missing redemption refuses while device/admin and unmarked composition remain safe", async () => {
   const f = await fixture();
-  for (const binding of [
-    undefined,
-    {},
-    { idFromName: "invalid", get: () => ({}) },
-  ]) {
-    const env = { ...f.env, CODE_REDEMPTION: binding };
+  const bindings = [undefined, {}, { idFromName: "invalid", get: () => ({}) }];
+  for (const [variable, binding] of ["CODE_REDEMPTION", "GRANT_STATE"].flatMap(
+    (variable) => bindings.map((binding) => [variable, binding] as const),
+  )) {
+    const env = { ...f.env, [variable]: binding };
     const response = await f.worker.fetch(
       new Request(`${issuer}/oauth/token`),
       env,
@@ -647,7 +647,7 @@ test("missing redemption refuses while device/admin and unmarked composition rem
     expect(response.status).toBe(503);
     const body = await response.text();
     expect(JSON.parse(body)).toMatchObject({
-      error: { code: "AUTH_CONFIG_UNAVAILABLE", variable: "CODE_REDEMPTION" },
+      error: { code: "AUTH_CONFIG_UNAVAILABLE", variable },
     });
     sanitized(body);
     for (const [path, token] of [

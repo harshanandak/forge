@@ -4,16 +4,33 @@ import type {
 } from "../../../cloud/src/adapters/workers-oauth/index.ts";
 import { testIdentityVerifier } from "../../contract/lib/identity-verifier.ts";
 import { durableRedemption } from "../../../cloud/src/adapters/workers-oauth/redemption.ts";
+import type { RedemptionNamespace } from "../../../cloud/src/adapters/workers-oauth/redemption.ts";
+import { durableGrants } from "../../../cloud/src/adapters/workers-oauth/grant-state.ts";
 
 export interface OAuthHarness {
   options: OAuthOptions;
   advance(milliseconds?: number): void;
+  grantNamespace: RedemptionNamespace;
 }
 
 /** Test-only upstream proof and storage; no provider, network or runtime host is loaded. */
 export function createOAuthHarness(identityTtlMs = 3_600_000): OAuthHarness {
   let now = 1_000_000;
   const redemptions = new Map<string, number>();
+  const revoked = new Set<unknown>();
+  const grantNamespace: RedemptionNamespace = {
+    idFromName: (hash) => hash,
+    get: (hash) => ({
+      fetch: (request) => {
+        if (request.method === "POST") revoked.add(hash);
+        return Promise.resolve(
+          new Response(null, {
+            status: request.method === "GET" && revoked.has(hash) ? 403 : 200,
+          }),
+        );
+      },
+    }),
+  };
   const entries = new Map<
     string,
     {
@@ -75,10 +92,12 @@ export function createOAuthHarness(identityTtlMs = 3_600_000): OAuthHarness {
     ]),
   );
   const harness: OAuthHarness = {
+    grantNamespace,
     options: {
       issuer,
       resources: ["https://api.example/a", "https://api.example/b"],
       storage,
+      grantRevocation: durableGrants(grantNamespace),
       codeRedemption: {
         claimOnce(hash, expiresAt) {
           if (!Number.isFinite(expiresAt) || expiresAt <= now)

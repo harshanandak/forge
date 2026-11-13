@@ -122,7 +122,7 @@ const b64 = (value: string | ArrayBuffer): string =>
   ).toString("base64url");
 
 /** The Clerk double: the code "owner" returns the owner's signed ID token; any other code is refused. */
-function clerk(env: unknown): DeviceUpstream {
+export function clerk(env: unknown): DeviceUpstream {
   const vars = (env ?? {}) as Record<string, string>;
   const audience = String(vars.CLERK_CLIENT_ID);
   const verifier = createOidcVerifier(

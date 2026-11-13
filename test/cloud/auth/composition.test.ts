@@ -111,6 +111,7 @@ async function fixture(denied = false, expectedResource = resource) {
   );
   const env = {
     ADMIN_TOKEN: "fixture-admin",
+    GRANT_STATE: harness.grantNamespace,
     PROJECTS: {
       idFromName: (name: string) => name,
       get: () => ({ fetch: () => Promise.resolve(new Response("legacy")) }),
@@ -497,6 +498,38 @@ test("real provider registration and canonical resource metadata handle requests
       CODE_REDEMPTION: f.env.PROJECTS,
     },
     worker = createConfiguredWorker();
+  const origin = "https://browser.example";
+  for (const [method, expected] of [
+    ["GET", 200],
+    ["OPTIONS", 204],
+  ] as const) {
+    const metadata = await worker.fetch(
+      new Request(`${issuer}/.well-known/oauth-authorization-server`, {
+        method,
+        headers: { Origin: origin },
+      }),
+      env,
+    );
+    expect(metadata.status).toBe(expected);
+    if (method === "GET")
+      expect(await metadata.json()).toMatchObject({
+        revocation_endpoint: `${issuer}/oauth/revoke`,
+        revocation_endpoint_auth_methods_supported: ["none"],
+        grant_types_supported: ["authorization_code"],
+      });
+    else {
+      expect(await metadata.text()).toBe("");
+      for (const [header, value] of [
+        ["access-control-allow-origin", origin],
+        ["access-control-allow-methods", "*"],
+        ["access-control-allow-headers", "Authorization, *"],
+        ["access-control-max-age", "86400"],
+        ["vary", "Origin"],
+        ["access-control-expose-headers", "WWW-Authenticate, Retry-After"],
+      ] as const)
+        expect(metadata.headers.get(header)).toBe(value);
+    }
+  }
   const registration = await worker.fetch(
     new Request(`${issuer}/register`, {
       method: "POST",
