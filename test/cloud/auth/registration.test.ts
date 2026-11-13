@@ -30,6 +30,7 @@ function fixture() {
     mutations: string[] = [],
     lookups: string[] = [],
     entries = new Map<string, string>();
+  const record = (op: string) => Promise.resolve(void mutations.push(op));
   const store = (name: string) => ({
     get: <T>(key: string) =>
       Promise.resolve(
@@ -40,14 +41,8 @@ function fixture() {
       counters.set(`${name}:${key}`, structuredClone(value));
       return Promise.resolve();
     },
-    delete: () => {
-      mutations.push("delete");
-      return Promise.resolve(true);
-    },
-    setAlarm: () => {
-      mutations.push("alarm");
-      return Promise.resolve();
-    },
+    delete: () => record("delete").then(() => true),
+    setAlarm: () => record("alarm"),
   });
   const storage = (name: string) => ({
     ...store(name),
@@ -83,8 +78,7 @@ function fixture() {
     }),
   };
   const kv = createOAuthHarness().options.storage,
-    worker = createConfiguredWorker(),
-    secondWorker = createConfiguredWorker();
+    worker = createConfiguredWorker();
   const env = {
     CLERK_ISSUER: "https://clerk.example",
     CLERK_CLIENT_ID: "private-var-marker",
@@ -95,10 +89,7 @@ function fixture() {
     PROJECTS: {
       idFromName: () => "",
       get: () => ({
-        fetch: () => {
-          mutations.push("project");
-          return Promise.resolve(new Response());
-        },
+        fetch: () => record("project").then(() => new Response()),
       }),
     },
     REGISTRATION_LIMITER: namespace as unknown,
@@ -145,13 +136,9 @@ function fixture() {
     entries,
     lookups,
     send: (request: Request, second = false) =>
-      (second ? secondWorker : worker).fetch(request, env),
-    time: (value: number) => {
-      now = value;
-    },
-    fault: (value: string) => {
-      fault = value;
-    },
+      (second ? createConfiguredWorker() : worker).fetch(request, env),
+    time: (value: number) => (now = value),
+    fault: (value: string) => (fault = value),
   };
 }
 async function refused(response: Response) {
@@ -259,10 +246,8 @@ async function authAdmitted(
   expect(await response.text()).toContain(
     '<form method="post" action="/authorize">',
   );
-  expect(f.mutations.slice(before.mutations.length).sort()).toEqual([
-    "authorizations",
-    "kv.put",
-  ]);
+  const writes = f.mutations.slice(before.mutations.length).sort();
+  expect(writes).toEqual(["authorizations", "kv.put"]);
   expect(f.ttls.at(-1)).toBe(600);
   expect(f.entries.size).toBe(before.entries.size + 1);
   for (const [key, value] of before.entries)
@@ -317,10 +302,8 @@ for (const [name, total, count, addresses] of [
     await authRefused(f, () =>
       Promise.resolve(responses.find((r) => r.status === 429)!),
     );
-    expect(f.mutations.slice(before.mutations.length).sort()).toEqual([
-      "authorizations",
-      "kv.put",
-    ]);
+    const writes = f.mutations.slice(before.mutations.length).sort();
+    expect(writes).toEqual(["authorizations", "kv.put"]);
     expect(f.counts().total).toBe(total + 1);
     if (name === "address") expect(f.counts().ips[await sha256(ip)]).toBe(10);
     else
@@ -460,7 +443,7 @@ test("window rollover replaces old counters and abandoned registrations use a da
 test("byte, redirect count and redirect length caps refuse before any storage", async () => {
   const uriKey = "redirect_uris";
   for (const [field, key, value] of [
-    ["body", "client_name", "??".repeat(limits.bodyBytes / 2)],
+    ["body", "client_name", "\u00e9".repeat(limits.bodyBytes / 2)],
     [uriKey, uriKey, Array(limits.redirects + 1).fill(redirect)],
     [uriKey, uriKey, [redirect + "x".repeat(limits.redirectLength)]],
   ] as const) {
@@ -474,7 +457,7 @@ test("byte, redirect count and redirect length caps refuse before any storage", 
     expect(JSON.parse(body)).toEqual({
       error: { code: "REGISTRATION_INVALID", field },
     });
-    for (const content of [...privateInputs, "??", "x".repeat(20)])
+    for (const content of [...privateInputs, "\u00e9", "x".repeat(20)])
       expect(body).not.toContain(content);
     expect(f.ttls).toHaveLength(0);
     expect(f.counters.size).toBe(0);

@@ -42,7 +42,7 @@ function sanitized(body: string, ...proofs: string[]) {
   ])
     expect(body).not.toContain(value);
 }
-async function fixture(claims = {}, alg = "RS256") {
+async function fixture(claims = {}, alg = "RS256", admission = "refuse") {
   const harness = createOAuthHarness();
   harness.advance(Date.now() - harness.options.clock.now());
   const now = Math.floor(harness.options.clock.now() / 1000);
@@ -128,6 +128,7 @@ async function fixture(claims = {}, alg = "RS256") {
     forward,
   });
   const send = async (path: string, form?: Record<string, string>) => {
+    const charged = admissions.mock.calls.length;
     const response = await worker.fetch(
       new Request(new URL(path, issuer).href, {
         headers: {
@@ -138,12 +139,15 @@ async function fixture(claims = {}, alg = "RS256") {
       }),
       env,
     );
+    if (form || new URL(path, issuer).pathname === "/callback")
+      expect(admissions).toHaveBeenCalledTimes(charged);
     for (const cookie of response.headers.getSetCookie())
       cookies.set(cookie.split("=")[0]!, cookie.split(";")[0]!);
     return response;
   };
-  async function start() {
+  async function start(allow = true) {
     const charged = admissions.mock.calls.length;
+    admissions.mockResolvedValue(new Response());
     const registered = await worker.fetch(
       new Request(`${issuer}/register`, {
         method: "POST",
@@ -193,20 +197,25 @@ async function fixture(claims = {}, alg = "RS256") {
     expect(auth.headers.getSetCookie().length).toBeGreaterThan(0);
     const handle = /name="handle" value="([^"]+)"/.exec(page)?.[1];
     expect(handle).toBeDefined();
+    if (admission === "throw") admissions.mockRejectedValue(new Error());
+    else admissions.mockResolvedValue(new Response(null, { status: 429 }));
     const login = await send("/authorize", {
       handle: handle!,
-      allow: "true",
+      allow: String(allow),
     });
     expect(admissions).toHaveBeenCalledTimes(charged + 1);
     expect(login.status).toBe(302);
     const target = new URL(login.headers.get("location")!);
     expect(target.origin + target.pathname).toBe(
-      `${vars.CLERK_ISSUER}/oauth/authorize`,
+      allow ? `${vars.CLERK_ISSUER}/oauth/authorize` : redirect,
     );
-    expect(target.searchParams.get("code_challenge_method")).toBe("S256");
+    expect(
+      target.searchParams.get(allow ? "code_challenge_method" : "error"),
+    ).toBe(allow ? "S256" : "access_denied");
     challenge = target.searchParams.get("code_challenge")!;
     const callback = `${vars.CLERK_REDIRECT_URI}?${new URLSearchParams({ state: target.searchParams.get("state")!, code: "clerk-code" })}`;
     return {
+      client,
       callback,
       finish: () => send(callback),
       exchange: (code: string) =>
@@ -591,24 +600,46 @@ async function refused(
   sanitized(body, proof);
 }
 
-test("configured login uses cached JWKS and verified project authorization", async () => {
-  const f = await fixture(),
+async function configuredLogin(admission: string) {
+  const f = await fixture({}, "RS256", admission),
     a = await f.start(),
     callback = await a.finish();
   expect(callback.status).toBe(302);
   const issued = await a.exchange(codeOf(callback));
   expect(issued.status).toBe(200);
+  const tokens = (await issued.json()) as Record<string, string>;
   const project = new Request(`${issuer}/p/a/holder`, {
-    headers: { authorization: `Bearer ${await field(issued, "access_token")}` },
+    headers: { authorization: `Bearer ${tokens.access_token}` },
   });
   expect(await status(f.worker.fetch(project, f.env))).toBe(200);
   expect(f.forward).toHaveBeenCalledTimes(1);
-  const defaultPolicy = createConfiguredWorker(undefined, { fetch: f.network });
+  const defaultPolicy = createConfiguredWorker(undefined, {
+    fetch: f.network,
+  });
   expect(await status(defaultPolicy.fetch(project, f.env))).toBe(403);
   const b = await f.start();
   expect((await b.finish()).status).toBe(302);
   expect(f.jwksCount()).toBe(1);
-}, 30_000);
+  let token = tokens.refresh_token!;
+  for (const path of ["/oauth/token", "/oauth/revoke"]) {
+    const response = await f.send(path, {
+      client_id: a.client,
+      ...(path.endsWith("token")
+        ? { grant_type: "refresh_token", refresh_token: token }
+        : { token }),
+    });
+    expect(response.status).toBe(200);
+    if (path.endsWith("token")) token = await field(response, "refresh_token");
+    else expect(await response.text()).toBe("");
+  }
+  await f.start(false);
+}
+for (const mode of ["refuse", "throw"])
+  test(
+    `configured login with ${mode} admission`,
+    () => configuredLogin(mode),
+    30_000,
+  );
 
 test("configured token exchange permits one success and refuses races and replay", async () => {
   const f = await fixture(),
