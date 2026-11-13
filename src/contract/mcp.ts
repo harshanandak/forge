@@ -73,18 +73,6 @@ export function renamedOperation(
     : `${noun}.${parsed.verb}`;
 }
 
-/** A CLI spelling follows the instance's explicit noun rename before its manifest default. */
-export function cliOperation(entry: McpCandidate): string {
-  if (entry.declaration.cli === undefined) return entry.op;
-  const declared = parseOperationName(entry.declaredOp ?? entry.op)!;
-  const command = parseOperationName(entry.declaration.cli)!;
-  const noun =
-    entry.rename?.[declared.noun] ??
-    entry.rename?.[command.noun] ??
-    command.noun;
-  return `${noun}.${command.verb}`;
-}
-
 export function projectMcpTool(
   candidate: McpCandidate,
   prefix?: string,
