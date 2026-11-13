@@ -1,6 +1,6 @@
 // Test-only entry for the conformance run (wrangler.test.jsonc). It wraps the shipped Project so a
 // request carrying `x-cloud-fault: receipt-insert` fails its receipt insert: the raw routes' row in
-// domain_cloud_requests and a typed command's receipt in state_records. The shipped Worker
+// domain_cloud_requests and typed receipts in domain_cloud_command_receipts. The shipped Worker
 // (src/worker.ts, wrangler.example.jsonc) imports nothing from this file, so a deploy cannot carry the switch.
 //
 // It also holds a faulted request inside the wrapper so a test can force two requests to overlap:
@@ -24,7 +24,8 @@ import { createOidcVerifier } from "../../src/assembly/oidc.ts";
 
 export { default } from "../src/worker.ts";
 
-const RECEIPT_INSERT = /^\s*INSERT INTO domain_cloud_requests\b/i;
+const RECEIPT_INSERT =
+  /^\s*INSERT INTO domain_cloud_(?:requests|command_receipts)\b/i;
 const LOGIN_WRITE = /^\s*(INSERT|UPDATE|DELETE)\b[^;]*\bdomain_cloud_login\b/i;
 // A typed command receipt is a state record in namespace forge/cloud keyed request:<requestId>, so the fault
 // matches the state owner's insert on its bound namespace and key, never on caller text.

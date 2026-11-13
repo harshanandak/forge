@@ -21,6 +21,7 @@ import {
   clearStaged,
   DUMP_FORMAT,
   DUMP_MIGRATION,
+  IMPORT_MIGRATION,
   COMMAND_RECEIPTS,
   EXPORT_STATE,
   dumpOf,
@@ -116,6 +117,7 @@ const domain = {
     LOGIN_MIGRATION,
     LIMITS_MIGRATION,
     DUMP_MIGRATION,
+    IMPORT_MIGRATION,
   ],
   tables: [
     PRAGMA_TABLE,

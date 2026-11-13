@@ -4,7 +4,11 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { limitsFrom } from "../../cloud/src/dump.ts";
+import {
+  DUMP_MIGRATION,
+  IMPORT_MIGRATION,
+  limitsFrom,
+} from "../../cloud/src/dump.ts";
 import { Project } from "../../cloud/src/project.ts";
 import {
   readOnlyStore,
@@ -3070,10 +3074,38 @@ const sqlOf = (db: Database): SqlDatabase => ({
       SqlRow | undefined,
   transaction: (body) => db.transaction(body)(),
 });
-const rowsOf = (db: Database, namespace: string) =>
+const commandRows = (db: Database) =>
   db
-    .query("SELECT key, body FROM state_records WHERE namespace=? ORDER BY key")
-    .all(namespace) as { key: string; body: string }[];
+    .query(
+      "SELECT 1 FROM sqlite_schema WHERE name='domain_cloud_command_receipts'",
+    )
+    .get()
+    ? (
+        db
+          .query(
+            "SELECT * FROM domain_cloud_command_receipts ORDER BY request_id",
+          )
+          .all() as SqlRow[]
+      ).map((r) => ({
+        key: "request:" + String(r.request_id),
+        body: JSON.stringify({
+          value: {
+            fingerprint: r.fingerprint,
+            outcome: r.outcome,
+            result: JSON.parse(String(r.result)) as unknown,
+          },
+        }),
+      }))
+    : [];
+const rowsOf = (db: Database, namespace: string) =>
+  [
+    ...(db
+      .query(
+        "SELECT key, body FROM state_records WHERE namespace=? ORDER BY key",
+      )
+      .all(namespace) as { key: string; body: string }[]),
+    ...(namespace === "forge/cloud" ? commandRows(db) : []),
+  ].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
 const eventsOf = (db: Database, namespace: string) =>
   (
     db
@@ -3098,6 +3130,7 @@ const writes = (f: F) =>
       eventsOf(f.db, ns),
     ]),
     f.db.query("SELECT * FROM state_leases ORDER BY subject").all(),
+    commandRows(f.db),
   ]);
 const issuesIn = (f: F) =>
   rowsOf(f.db, "forge/work").filter((r) => r.key.startsWith("issue:")).length;
@@ -3236,7 +3269,8 @@ test("a retry returns the original result with no second issue or issue event, a
   expect(rowsOf(f.db, "forge/cloud").map((r) => r.key)).toEqual([
     f.receiptKey("r-1"),
   ]);
-  expect(eventsOf(f.db, "forge/cloud")).toHaveLength(1);
+  expect(commandRows(f.db)).toHaveLength(1);
+  expect(eventsOf(f.db, "forge/cloud")).toHaveLength(0);
   const receipt = receiptOf(f, "r-1")!;
   expect(Object.keys(receipt).sort()).toEqual([
     "fingerprint",
@@ -3372,6 +3406,14 @@ function createAfterDelete(create: typeof createIssue) {
   const f = fixture();
   f.tables();
   const db = sqlOf(f.db);
+  db.exec(
+    "CREATE TABLE domain_cloud_requests(request_id TEXT PRIMARY KEY, fingerprint TEXT, outcome TEXT, result TEXT)",
+  );
+  for (const sql of [
+    ...DUMP_MIGRATION.statements,
+    ...IMPORT_MIGRATION.statements,
+  ])
+    db.exec(sql);
   const owner = new StateOwner(db, { now: f.now });
   for (let n = 0; n < 2; n++)
     owner.putNext(
@@ -3389,6 +3431,7 @@ function createAfterDelete(create: typeof createIssue) {
     prefix: "forge",
     scope: receiptIdentity,
     recheck: () => {},
+    expiresAt: start + day,
   });
   if (got.id !== "forge-3")
     throw new Error(`a cloud create must read the floor, got ${got.id}`);
@@ -3446,10 +3489,7 @@ test("a receipt failure rolls back the issue and its floor, and the retry gets t
   const original = f.storage.sql.exec.bind(f.storage.sql);
   const fault = spyOn(f.storage.sql, "exec").mockImplementation(
     (sql, ...bindings) => {
-      if (
-        /^INSERT INTO state_records/.test(sql) &&
-        bindings.some((v) => typeof v === "string" && v.startsWith("request:"))
-      )
+      if (/^INSERT INTO domain_cloud_command_receipts/.test(sql))
         throw new Error("injected receipt failure");
       return original(sql, ...bindings);
     },
@@ -3489,7 +3529,8 @@ test("graph fields are refused as unsupported, recorded once for a fresh request
       outcome: "refused",
       result: got.json.error,
     });
-    expect(eventsOf(f.db, "forge/cloud")).toHaveLength(i + 1);
+    expect(commandRows(f.db)).toHaveLength(i + 1);
+    expect(eventsOf(f.db, "forge/cloud")).toHaveLength(0);
     texts.push(got.text);
   }
   const done = f.snapshot();
@@ -3544,7 +3585,8 @@ test("bad input is refused as INPUT_INVALID with no work record, and the schema 
     expect(JSON.stringify(got.json)).not.toContain(marker);
     expect([name, work()]).toEqual([name, before]);
   }
-  expect(eventsOf(f.db, "forge/cloud")).toHaveLength(cases.length);
+  expect(commandRows(f.db)).toHaveLength(cases.length);
+  expect(eventsOf(f.db, "forge/cloud")).toHaveLength(0);
   const labels = Array.from({ length: 64 }, (_, i) => `l${i}`);
   const fits = await f.send(
     make("b-ok", { title: "t".repeat(500), body: "é".repeat(65_536), labels }),
@@ -3722,7 +3764,8 @@ test("a comment retry returns the original comment with no second comment or com
   expect(rowsOf(f.db, "forge/cloud").map((r) => r.key)).toEqual([
     f.receiptKey("r-1"),
   ]);
-  expect(eventsOf(f.db, "forge/cloud")).toHaveLength(1);
+  expect(commandRows(f.db)).toHaveLength(1);
+  expect(eventsOf(f.db, "forge/cloud")).toHaveLength(0);
   const receipt = receiptOf(f, "r-1")!;
   expect(Object.keys(receipt).sort()).toEqual([
     "fingerprint",
@@ -3789,7 +3832,8 @@ test("a missing issue is NOT_FOUND and bad input is INPUT_INVALID: no comment, o
       outcome: "refused",
       result: got.json.error,
     });
-    expect(eventsOf(f.db, "forge/cloud")).toHaveLength(i + 1);
+    expect(commandRows(f.db)).toHaveLength(i + 1);
+    expect(eventsOf(f.db, "forge/cloud")).toHaveLength(0);
     texts.push(got.text);
   }
   const done = f.snapshot();
@@ -4697,7 +4741,8 @@ test("a missing, zero or invalid expectRevision, a missing issue and bad input w
       outcome: "refused",
       result: got.json.error,
     });
-    expect(eventsOf(f.db, "forge/cloud")).toHaveLength(i + 1);
+    expect(commandRows(f.db)).toHaveLength(i + 1);
+    expect(eventsOf(f.db, "forge/cloud")).toHaveLength(0);
     texts.push(got.text);
   }
   const done = f.snapshot();
@@ -4747,7 +4792,8 @@ test("kind, parent and dependsOn are refused as unsupported, recorded once for a
       outcome: "refused",
       result: got.json.error,
     });
-    expect(eventsOf(f.db, "forge/cloud")).toHaveLength(i + 1);
+    expect(commandRows(f.db)).toHaveLength(i + 1);
+    expect(eventsOf(f.db, "forge/cloud")).toHaveLength(0);
     texts.push(got.text);
   }
   const done = f.snapshot();
@@ -4867,6 +4913,7 @@ test("the shared write path takes a project context for create and comment and a
         prefix: "forge",
         scope: receiptIdentity,
         recheck: () => {},
+        expiresAt: start + day,
       }),
     ).toThrow(`${op} needs a ${want} context`);
   }
@@ -4880,6 +4927,7 @@ test("the shared write path takes a project context for create and comment and a
       prefix: "forge",
       scope: receiptIdentity,
       recheck: () => {},
+      expiresAt: start + day,
     }),
   ).toThrow("issue.claim needs an acquire lease context");
   // Renew and release take a held context: an acquire one is refused after the input is read, and writes nothing.
@@ -4896,6 +4944,7 @@ test("the shared write path takes a project context for create and comment and a
         prefix: "forge",
         scope: receiptIdentity,
         recheck: () => {},
+        expiresAt: start + day,
       }),
     ).toThrow(`${op} needs a held lease context`);
   expect(f.snapshot()).toBe(before);
@@ -5385,7 +5434,8 @@ test("bad issue.dep input is refused as INPUT_INVALID with one refusal receipt p
       outcome: "refused",
       result: got.json.error,
     });
-    expect(eventsOf(f.db, "forge/cloud")).toHaveLength(i + 1);
+    expect(commandRows(f.db)).toHaveLength(i + 1);
+    expect(eventsOf(f.db, "forge/cloud")).toHaveLength(0);
     texts.push(got.text);
   }
   const done = f.snapshot();
@@ -5664,7 +5714,8 @@ test("bad issue.close input and a receipt are refused as INPUT_INVALID with one 
       outcome: "refused",
       result: got.json.error,
     });
-    expect(eventsOf(f.db, "forge/cloud")).toHaveLength(i + 1);
+    expect(commandRows(f.db)).toHaveLength(i + 1);
+    expect(eventsOf(f.db, "forge/cloud")).toHaveLength(0);
     texts.push(got.text);
   }
   const done = f.snapshot();
@@ -6072,7 +6123,7 @@ test("a lease lost after the input was read refuses the link with the local leas
       if (
         !tripped &&
         /COUNT\(\*\)/.test(sql) &&
-        bindings.includes("request:")
+        sql.includes("domain_cloud_command_receipts")
       ) {
         tripped = true;
         lose(f);
@@ -6139,10 +6190,10 @@ test("a recorded link whose stored value is no longer valid is refused as INTERN
   // Each row edits one field of the stored record (the receipt's result): the value's relation or url, or the wrapper's revision.
   // The bad scheme passes the input schema and fails only the URL pattern; the bad revision fails only the output schema.
   for (const [name, path, to] of [
-    ["relation", "$.value.result.value.relation", "Delivers"],
-    ["url", "$.value.result.value.url", ""],
-    ["scheme", "$.value.result.value.url", "ftp://h"],
-    ["wrapper", "$.value.result.revision", 0],
+    ["relation", "$.result.value.relation", "Delivers"],
+    ["url", "$.result.value.url", ""],
+    ["scheme", "$.result.value.url", "ftp://h"],
+    ["wrapper", "$.result.revision", 0],
   ] as const) {
     const { f, token } = await linkRows();
     const first = await f.send(linkCall("v-1"), { token });
@@ -6151,20 +6202,26 @@ test("a recorded link whose stored value is no longer valid is refused as INTERN
       (
         f.db
           .query(
-            "SELECT json_extract(body, ?) AS v FROM state_records WHERE namespace='forge/cloud' AND key=?",
+            "SELECT json_extract(result, ?) AS v FROM domain_cloud_command_receipts WHERE request_id=?",
           )
-          .get(at, f.receiptKey("v-1")) as { v: unknown }
+          .get(at, f.receiptKey("v-1").slice("request:".length)) as {
+          v: unknown;
+        }
       ).v;
-    const was = stored(path);
+    const was = stored(path.replace("$.result.", "$."));
     // json_set would create a missing path, so the field must exist before and differ from the edit.
     expect([name, was != null && was !== to]).toEqual([name, true]);
     expect([
       name,
       f.db.run(
-        "UPDATE state_records SET body=json_set(body, ?, ?) WHERE namespace='forge/cloud' AND key=?",
-        [path, to, f.receiptKey("v-1")],
+        "UPDATE domain_cloud_command_receipts SET result=json_set(result, ?, ?) WHERE request_id=?",
+        [
+          path.replace("$.result.", "$."),
+          to,
+          f.receiptKey("v-1").slice("request:".length),
+        ],
       ).changes,
-      stored(path),
+      stored(path.replace("$.result.", "$.")),
     ]).toEqual([name, 1, to]);
     const done = f.snapshot();
     for (const via of ["direct", createWorker()] as const) {
@@ -6206,6 +6263,7 @@ test("a link record that fails the declared output schema, even when its readbac
       prefix: "forge",
       scope: receiptIdentity,
       recheck: () => {},
+      expiresAt: start + day,
     });
   // The seam bends every link record the owner writes or reads to the same malformed one: the clock is a number.
   // The link is written through putNext (forge-1306), so that is the write the seam bends; the old seam on put
@@ -6656,10 +6714,14 @@ test("a link refused for its lease allocates nothing, writes nothing and records
 const POINTS: [string, RegExp, (kind: Family, id: string) => string][] = [
   [
     "receipt record",
-    /^(INSERT INTO|UPDATE) state_records/,
+    /^(INSERT INTO|UPDATE) domain_cloud_command_receipts/,
     (_k, _id) => "request:",
   ],
-  ["receipt event", /^INSERT INTO state_events/, (_k, _id) => "request:"],
+  [
+    "receipt readback",
+    /^SELECT result FROM domain_cloud_command_receipts/,
+    (_k, _id) => "request:",
+  ],
   [
     "child record",
     /^(INSERT INTO|UPDATE) state_records/,
@@ -6683,7 +6745,7 @@ for (const kind of NUMBERED)
               table.test(sql) &&
               bindings.some((v) =>
                 key === "request:"
-                  ? typeof v === "string" && v.startsWith(key)
+                  ? typeof v === "string" && v.startsWith("c2:")
                   : v === key,
               )
             )
@@ -7139,7 +7201,8 @@ for (const r of REPLAYS) {
     expect(rowsOf(f.db, "forge/cloud").map((row) => row.key)).toEqual([
       f.receiptKey("r-1"),
     ]);
-    expect(eventsOf(f.db, "forge/cloud")).toHaveLength(1);
+    expect(commandRows(f.db)).toHaveLength(1);
+    expect(eventsOf(f.db, "forge/cloud")).toHaveLength(0);
     const receipt = receiptOf(f, "r-1")!;
     expect(Object.keys(receipt).sort()).toEqual([
       "fingerprint",
@@ -7516,7 +7579,9 @@ for (const w of WRITES) {
         if (
           !tripped &&
           bindings.some(
-            (v) => typeof v === "string" && v.startsWith("request:"),
+            (v) =>
+              typeof v === "string" &&
+              (v.startsWith("request:") || v.startsWith("c2:")),
           )
         ) {
           tripped = true;
@@ -7540,13 +7605,14 @@ for (const w of WRITES) {
     const first = await f.send(w.send("l-0"), { token });
     expect(first.status).toBe(200);
     f.db.run(
-      "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < ?) INSERT INTO state_records(namespace,key,revision,body) SELECT 'forge/cloud', 'request:fill-' || i, 1, '{}' FROM n",
-      [MAX_RECEIPTS - 1],
+      "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < ?) INSERT INTO domain_cloud_command_receipts(request_id,fingerprint,outcome,result,created_at,expires_at) SELECT 'c2:fill-' || i, '{}', 'ok', '{}', ?, ? FROM n",
+      [MAX_RECEIPTS - 1, f.now(), f.now() + day],
     );
     const full = f.snapshot();
     const got = await f.send(w.send("l-1", w.next), { token });
     expect([got.status, got.code, got.exit]).toEqual([503, "UNAVAILABLE", 1]);
     expect(got.json.error?.message).toContain("receipts");
+    expect(got.json.error?.message).toContain("expire");
     expect(f.snapshot()).toBe(full);
     const refused = await f.send(w.send("l-2", w.bad), { token });
     expect([refused.status, refused.code]).toEqual([...w.badWant]);
@@ -7554,13 +7620,21 @@ for (const w of WRITES) {
     const again = await f.send(w.send("l-0"), { token });
     expect([again.status, again.text]).toEqual([200, first.text]);
     expect(f.snapshot()).toBe(full);
+    f.db.run(
+      "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < 8) INSERT INTO domain_cloud_command_receipts(request_id,fingerprint,outcome,result,created_at,expires_at) SELECT 'expired-' || i, '{}', 'ok', '{}', ?, ? FROM n",
+      [f.now() - day, f.now() - 1],
+    );
+    const mixed = f.snapshot();
+    const mixedRefusal = await f.send(w.send("l-3", w.bad), { token });
+    expect([mixedRefusal.status, mixedRefusal.code]).toEqual([...w.badWant]);
+    expect(f.snapshot()).toBe(mixed);
   }, 60_000);
 
   test(`a failed receipt write rolls the whole ${w.name} back, and the retry applies it once`, async () => {
     const { f, token } = await w.rows();
     const before = writes(f);
     f.db.run(
-      "CREATE TRIGGER no_receipt BEFORE INSERT ON state_records WHEN NEW.namespace='forge/cloud' BEGIN SELECT RAISE(ABORT, 'boom'); END",
+      "CREATE TRIGGER no_receipt BEFORE INSERT ON domain_cloud_command_receipts BEGIN SELECT RAISE(ABORT, 'boom'); END",
     );
     const quiet = spyOn(console, "error").mockImplementation(() => {});
     try {
@@ -7610,15 +7684,20 @@ for (const w of WRITES) {
     // Only a create moves the floor; every other write leaves the one its project already had.
     const floorAfter = w.floor === undefined ? floorBefore : floorAt(w.floor);
     for (const record of [
-      w.record === "forge/cloud/request:s-1"
-        ? `forge/cloud/${f.receiptKey("s-1")}`
-        : w.record,
-      `forge/cloud/${f.receiptKey("s-1")}`,
-      `forge/cloud/${f.receiptKey("s-2")}`,
+      ...(w.record === "forge/cloud/request:s-1" ? [] : [w.record]),
       ...(floorAfter === undefined ? [] : [floorRecord]),
       ...(w.numbered === undefined ? [] : [`forge/work/${w.numbered.key}`]),
     ])
       expect(at("state_records")).toContain(record);
+    expect(
+      (value.tables.domain_cloud_command_receipts ?? [])
+        .map((r) => (r as unknown as { request_id: string }).request_id)
+        .sort(),
+    ).toEqual(
+      [f.receiptKey("s-1"), f.receiptKey("s-2")]
+        .map((key) => key.slice("request:".length))
+        .sort(),
+    );
     if (w.lease !== undefined) expect(at("state_leases")).toContain(w.lease);
     // A create also writes the floor's record.updated, so dump and restore keep the floor.
     expect(
@@ -7626,8 +7705,6 @@ for (const w of WRITES) {
         .map((row) => row.split("/").slice(0, 2).join("/"))
         .sort(),
     ).toEqual([
-      "forge/cloud",
-      "forge/cloud",
       "forge/work",
       ...(w.floor === undefined ? [] : ["forge/work"]),
       // forge-1306: a comment or link also writes its number floor's record.updated, so dump and restore keep it.
@@ -7699,12 +7776,8 @@ const ids = (t: Tables, table: string) =>
   (t[table] ?? []).map((r) => `${r.namespace}/${r.key}`);
 // The accepted create also writes the allocation floor, so its record and its record.updated event are named too.
 // forge-1306: so does the accepted comment, which starts the comment number floor of its issue.
-const named = (f: F) =>
+const named = () =>
   [
-    `forge/cloud/${f.receiptKey("max-bad-comment")}`,
-    `forge/cloud/${f.receiptKey("max-bad-create")}`,
-    `forge/cloud/${f.receiptKey("max-comment")}`,
-    `forge/cloud/${f.receiptKey("max-create")}`,
     "forge/work/allocation:comment:work-1:",
     "forge/work/allocation:issue:work-",
     "forge/work/comment:work-1:1",
@@ -7715,12 +7788,16 @@ interface Receipt {
   outcome: string;
   result: { code?: string };
 }
-const receipt = (t: Tables, id: string, f: F) =>
-  (
-    JSON.parse(
-      String(t.state_records!.find((r) => r.key === f.receiptKey(id))!.body),
-    ) as { value: Receipt }
-  ).value;
+const receipt = (t: Tables, id: string, f: F) => {
+  const row = t.domain_cloud_command_receipts!.find(
+    (r) => r.request_id === f.receiptKey(id).slice("request:".length),
+  )!;
+  return {
+    fingerprint: String(row.fingerprint),
+    outcome: String(row.outcome),
+    result: JSON.parse(String(row.result)) as Receipt["result"],
+  };
+};
 const storedBytes = (t: Tables) =>
   Object.values(t)
     .flat()
@@ -7752,8 +7829,8 @@ test("a whole export carries the maximum bodies, receipts and events intact, and
   expect(differing(got.json.value!.tables, tables)).toEqual([]);
   expect(f.snapshot()).toBe(before);
   // Every named record and event is there, and the project is under the 3 MiB a whole export allows.
-  expect(ids(tables, "state_records")).toEqual(named(f));
-  expect(ids(tables, "state_events").sort()).toEqual(named(f));
+  expect(ids(tables, "state_records")).toEqual(named());
+  expect(ids(tables, "state_events").sort()).toEqual(named());
   expect(storedBytes(tables)).toBeLessThan(3 * 1024 * 1024);
   expect(String(tables.state_records!.at(-1)!.body).length).toBeGreaterThan(
     393_216,
@@ -7841,7 +7918,7 @@ test("a page budget that cannot hold one row with its envelope is refused with 4
 
 for (const mode of ["whole", "paged"] as const)
   test(`a ${mode} admin restore of the maximum project reads back exactly, serves it, isolates replacement-token receipts and takes a fresh command`, async () => {
-    const { f, calls, sent, tables } = await largest();
+    const { calls, sent, tables } = await largest();
     const t = fixture(vars, "target");
     const parts =
       mode === "whole" ? [{ format: DUMP, tables }] : pagesOf(tables, 2);
@@ -7855,7 +7932,7 @@ for (const mode of ["whole", "paged"] as const)
     }
     const restored = tablesOf(t.db);
     expect(differing(restored, tables)).toEqual([]);
-    expect(ids(restored, "state_events").sort()).toEqual(named(f));
+    expect(ids(restored, "state_events").sort()).toEqual(named());
     expect(
       t.db.query("SELECT COUNT(*) AS n FROM domain_cloud_tokens").get(),
     ).toEqual({ n: 0 });
@@ -7921,7 +7998,11 @@ for (const mode of ["whole", "paged"] as const)
     expect([
       after.state_records!.length - independentlyWritten.state_records!.length,
       after.state_events!.length - independentlyWritten.state_events!.length,
-    ]).toEqual([2, 3]);
+    ]).toEqual([1, 2]);
+    expect(
+      after.domain_cloud_command_receipts!.length -
+        independentlyWritten.domain_cloud_command_receipts!.length,
+    ).toBe(1);
     const commentFloor = "allocation:comment:work-1:";
     const advanced = after.state_records!.find((r) => r.key === commentFloor)!;
     expect([
@@ -7964,12 +8045,50 @@ for (const [name, change] of [
   [
     "a typed receipt changed without its event",
     (t: Tables) => {
-      const row = t.state_records!.find(
+      const prior = t.domain_cloud_command_receipts!.find(
         (r) =>
-          r.namespace === "forge/cloud" &&
-          (receiptResult(r as { body: unknown }) as { id?: string }).id ===
-            "forge-1",
+          (JSON.parse(String(r.result)) as { id?: string }).id === "forge-1",
       )!;
+      const value = {
+        fingerprint: String(prior.fingerprint),
+        outcome: String(prior.outcome),
+        result: JSON.parse(String(prior.result)) as unknown,
+      };
+      const key = "request:" + String(prior.request_id);
+      const row = {
+        namespace: "forge/cloud",
+        key,
+        revision: 1,
+        body: JSON.stringify({
+          namespace: "forge/cloud",
+          key,
+          revision: 1,
+          value,
+          updatedAt: iso(start),
+          updatedBy: actor,
+        }),
+      };
+      t.state_records!.push(row);
+      t.state_records!.sort((a, b) =>
+        String(a.namespace) + "/" + String(a.key) <
+        String(b.namespace) + "/" + String(b.key)
+          ? -1
+          : 1,
+      );
+      t.state_events!.push({
+        sequence: t.state_events!.length + 1,
+        namespace: "forge/cloud",
+        key,
+        body: JSON.stringify({
+          type: "forge/cloud:record.updated@1",
+          namespace: "forge/cloud",
+          key,
+          revision: 1,
+          at: iso(start),
+          actor,
+          data: value,
+        }),
+      });
       const stored = JSON.parse(String(row.body)) as { value: Receipt };
       stored.value.fingerprint = `sha256:${"0".repeat(64)}`;
       row.body = JSON.stringify(stored);
@@ -8273,7 +8392,8 @@ test("bad input and reopen or reason are refused as INPUT_INVALID with one refus
       outcome: "refused",
       result: got.json.error,
     });
-    expect(eventsOf(f.db, "forge/cloud")).toHaveLength(i + 1);
+    expect(commandRows(f.db)).toHaveLength(i + 1);
+    expect(eventsOf(f.db, "forge/cloud")).toHaveLength(0);
     texts.push(got.text);
   }
   const done = f.snapshot();
@@ -8567,7 +8687,8 @@ for (const [op, send] of LEASE_OPS) {
         outcome: "refused",
         result: got.json.error,
       });
-      expect(eventsOf(f.db, "forge/cloud")).toHaveLength(i + 1);
+      expect(commandRows(f.db)).toHaveLength(i + 1);
+      expect(eventsOf(f.db, "forge/cloud")).toHaveLength(0);
       texts.push(got.text);
     }
     const done = f.snapshot();
@@ -9975,7 +10096,7 @@ function scopeCase(
           eventsOf(f.db, "forge/work").length - before[1]!,
           rowsOf(f.db, "forge/cloud").length,
           eventsOf(f.db, "forge/cloud").length,
-        ]).toEqual([3, 4, 2, 2]);
+        ]).toEqual([3, 4, 2, 0]);
     }
     await ownRetry(f, scope.first, scope.one, first);
     await ownRetry(f, scope.second, scope.two, second);
@@ -10329,6 +10450,135 @@ for (const trip of TRIPS)
     expect(tablesOf(t.db).domain_cloud_command_receipts).toEqual([]);
   }, 30_000);
 
+for (const [name, expiry, count] of [
+  ["expired", -1, MAX_RECEIPTS],
+  ["mixed", -1, MAX_RECEIPTS - 1],
+] as const)
+  test(`typed receipt retention: ${name} rows are pruned eight at a time in expiry order`, async () => {
+    const f = fixture();
+    const token = await f.device();
+    f.db.run(
+      "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < ?) INSERT INTO domain_cloud_command_receipts(request_id,fingerprint,outcome,result,created_at,expires_at) SELECT 'fill-' || printf('%04d',i), '{}', 'ok', '{}', ?, ? + i FROM n",
+      [count, start - day, start + expiry - count],
+    );
+    const live = ["c2:live", "{}", "ok", "{}", start, start + day];
+    if (name === "mixed")
+      f.db.run(
+        "INSERT INTO domain_cloud_command_receipts(request_id,fingerprint,outcome,result,created_at,expires_at) VALUES (?,?,?,?,?,?)",
+        live,
+      );
+    const got = await f.send(make("retention"), { token });
+    expect([got.status, got.exit]).toEqual([200, 0]);
+    const rows = f.db
+      .query(
+        "SELECT * FROM domain_cloud_command_receipts ORDER BY expires_at,request_id",
+      )
+      .all() as SqlRow[];
+    expect(rows).toHaveLength(MAX_RECEIPTS - 8 + 1);
+    expect(rows[0]!.request_id).toBe("fill-0009");
+    if (name === "mixed")
+      expect(rows.some((r) => r.request_id === "c2:live")).toBe(true);
+    const prior = f.snapshot();
+    expect((await f.send(make("retention"), { token })).text).toBe(got.text);
+    expect(f.snapshot()).toBe(prior);
+    expect(eventsOf(f.db, "forge/cloud")).toEqual([]);
+  }, 30_000);
+
+for (const refused of [false, true])
+  test(`typed receipt retention: ${refused ? "refusal" : "success"} expires with its token and replays byte-identically`, async () => {
+    const f = fixture();
+    const token = await f.device(1000);
+    const input = refused ? {} : { title: "Expiry" };
+    const first = await f.send(make("expiry", input), { token });
+    expect(first.status).toBe(refused ? 400 : 200);
+    const rows = f.db
+      .query("SELECT * FROM domain_cloud_command_receipts")
+      .all() as SqlRow[];
+    expect(rows).toHaveLength(1);
+    expect([
+      rows[0]!.created_at,
+      rows[0]!.expires_at,
+      rows[0]!.outcome,
+    ]).toEqual([start, start + 1000, refused ? "refused" : "ok"]);
+    const before = f.snapshot();
+    expect((await f.send(make("expiry", input), { token })).text).toBe(
+      first.text,
+    );
+    expect(
+      (await f.send(make("expiry", { title: "Different" }), { token })).code,
+    ).toBe("INPUT_CONFLICT");
+    expect(f.snapshot()).toBe(before);
+    f.advance(1000);
+    const expired = await f.send(make("expiry", input), { token });
+    expect([expired.status, expired.code]).toEqual([401, "AUTH_EXPIRED"]);
+    expect(f.snapshot()).toBe(before);
+    const replacement = await f.device();
+    expect((await f.send(make("expiry"), { token: replacement })).status).toBe(
+      200,
+    );
+    expect(
+      f.db
+        .query("SELECT COUNT(*) AS n FROM domain_cloud_command_receipts")
+        .get(),
+    ).toEqual({ n: 1 });
+  }, 30_000);
+
+for (const trip of TRIPS)
+  test(`typed receipt retention: ${trip} restore keeps legacy fallback and safely prunes expired server receipts`, async () => {
+    const f = fixture();
+    const token = await f.device(1000);
+    const first = await f.send(make("legacy-live"), { token });
+    const key = f.receiptKey("legacy-live").slice("request:".length);
+    const row = f.db
+      .query("SELECT * FROM domain_cloud_command_receipts WHERE request_id=?")
+      .get(key) as SqlRow;
+    const owner = new StateOwner(sqlOf(f.db), { now: f.now });
+    owner.put(
+      "forge/cloud",
+      "request:" + key,
+      {
+        fingerprint: row.fingerprint,
+        outcome: row.outcome,
+        result: JSON.parse(String(row.result)) as unknown,
+      },
+      actor,
+      { expectRevision: 0 },
+    );
+    f.db.run("DELETE FROM domain_cloud_command_receipts WHERE request_id=?", [
+      key,
+    ]);
+    const frozen = f.snapshot();
+    expect((await f.send(make("legacy-live"), { token })).text).toBe(
+      first.text,
+    );
+    expect(f.snapshot()).toBe(frozen);
+    expect((await f.send(make("expires"), { token })).status).toBe(200);
+    const tables = tablesOf(f.db);
+    const parts = await exported(f, trip);
+    const { t, got } = await restoreInto(trip, tables, { parts });
+    expect(got.status).toBe(200);
+    expect(tablesOf(t.db)).toEqual(tables);
+    t.advance(1000);
+    const replacement = await t.device();
+    const before = tablesOf(t.db);
+    expect(
+      (await t.send(make("after-restore"), { token: replacement })).status,
+    ).toBe(200);
+    expect(tablesOf(t.db).domain_cloud_command_receipts).toHaveLength(1);
+    expect(
+      tablesOf(t.db).state_records!.filter(
+        (r) => r.namespace === "forge/cloud",
+      ),
+    ).toEqual(
+      before.state_records!.filter((r) => r.namespace === "forge/cloud"),
+    );
+    expect(
+      tablesOf(t.db).state_events!.filter((r) => r.namespace === "forge/cloud"),
+    ).toEqual(
+      before.state_events!.filter((r) => r.namespace === "forge/cloud"),
+    );
+  }, 30_000);
+
 for (const [first, last, status] of [
   [1, 1, 200],
   [2, 2, 200],
@@ -10365,6 +10615,66 @@ for (const [first, last, status] of [
       expect(got.json.error?.message).toContain("version");
       expect(await t.storage.get("restore:next")).toBeUndefined();
       expect((await t.admin("status")).json.value!.initialized).toBe(false);
+      expect(Object.values(tablesOf(t.db)).flat()).toEqual([]);
       expect((await t.admin("dump")).json).toEqual(before);
     } else expect(tablesOf(t.db)).toEqual(tables);
   }, 30_000);
+
+for (const [trip, upgrade] of [
+  ["whole", false],
+  ["paged", false],
+  ["whole", true],
+] as const)
+  test(`restored ${trip} receipts with tampered distant expiry cannot pin live admission${upgrade ? " after a 005 upgrade" : ""}`, async () => {
+    const f = fixture();
+    const token = await f.device();
+    expect((await f.send(make("audit-source"), { token })).status).toBe(200);
+    const tables = tablesOf(f.db);
+    const sample = tables.domain_cloud_command_receipts![0]!;
+    tables.domain_cloud_command_receipts = Array.from(
+      { length: MAX_RECEIPTS },
+      (_, i) => ({
+        ...sample,
+        request_id: "c2:" + i.toString(16).padStart(64, "0"),
+        expires_at: Number.MAX_SAFE_INTEGER,
+      }),
+    );
+    const { t, got } = await restoreInto(trip, tables, { per: 1000 });
+    expect(got.status).toBe(200);
+    expect(tablesOf(t.db)).toEqual(tables);
+    if (upgrade) {
+      t.db.run("DROP INDEX command_receipts_live");
+      t.db.run(
+        "ALTER TABLE domain_cloud_command_receipts DROP COLUMN imported",
+      );
+      t.db.run(
+        "DELETE FROM state_migrations WHERE id='006_cloud_imported_receipts'",
+      );
+      t.reopen();
+    }
+    const current = await t.device();
+    const wrote = await t.send(make("audit-fresh"), { token: current });
+    expect([wrote.status, wrote.exit]).toEqual([200, 0]);
+    expect(tablesOf(t.db).domain_cloud_command_receipts).toHaveLength(
+      MAX_RECEIPTS - 8 + 1,
+    );
+  }, 60_000);
+
+test("an imported receipt never proves ownership of an unowned inner acquisition", async () => {
+  const id = "c2:" + "a".repeat(64);
+  const source = await legacySource("inner", id);
+  const rows = source.tables.domain_cloud_command_receipts!;
+  rows.push({
+    ...rows[0]!,
+    request_id: id,
+    expires_at: Number.MAX_SAFE_INTEGER,
+  });
+  rows.sort((a, b) => (String(a.request_id) < String(b.request_id) ? -1 : 1));
+  const { t, got } = await restoreInto("whole", source.tables);
+  expect(got.status).toBe(200);
+  const token = await t.device();
+  const before = t.snapshot();
+  const attempted = await t.send(make(id), { token });
+  expect([attempted.status, attempted.code]).toEqual([503, "UNAVAILABLE"]);
+  expect(t.snapshot()).toBe(before);
+}, 30_000);

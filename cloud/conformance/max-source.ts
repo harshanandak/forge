@@ -208,9 +208,17 @@ export async function tinySource(title: string) {
  * issue number floor, which a restore otherwise adds with the restoring Worker's own clock: a dump that carries its
  * floor comes back exactly as exported.
  */
-export async function leaseSource(subject: string) {
+export async function leaseSource(subject: string, stageFirst = false) {
   const h = await harness("lease", "forge", FROZEN);
   await accepted(h, call("lease-create", "issue.create", { title: "L" }));
+  if (stageFirst)
+    new StateOwner(sqlOf(h.db), { now: () => FROZEN }).put(
+      "forge/work",
+      "a:staged-guard",
+      {},
+      ACTOR,
+      { expectRevision: 0 },
+    );
   const reply = await h.claim({
     subject,
     holder: { actor: ACTOR, session: { id: "lease-session" } },
@@ -238,8 +246,8 @@ const storedBytes = (db: Database): number =>
   }, 0);
 
 /**
- * The maxCalls project, three more maximum creates and one create whose ASCII body is `tail` characters long: one
- * project whose accepted commands make up a single page near the restore body. Four rows carry each created body.
+ * Five maximum creates, a maximum comment, a bounded filler and an ASCII tail: one page near the
+ * restore body. Each create body occupies its record, event and server receipt, three rows.
  */
 export async function nearSource(tail: number) {
   const s = await harness("near", "forge", FROZEN);
@@ -248,7 +256,7 @@ export async function nearSource(tail: number) {
   await accepted(s, calls.comment);
   await s.send(calls.badCreate);
   await s.send(calls.badComment);
-  for (const n of [1, 2, 3])
+  for (const n of [1, 2, 3, 4])
     await accepted(
       s,
       call(`near-grow-${n}`, "issue.create", {
@@ -256,6 +264,13 @@ export async function nearSource(tail: number) {
         body: BODY,
       }),
     );
+  await accepted(
+    s,
+    call("near-fill", "issue.create", {
+      title: "Near fill",
+      body: "\u0001".repeat(24_000),
+    }),
+  );
   await accepted(
     s,
     call("near-tail", "issue.create", {

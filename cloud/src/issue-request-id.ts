@@ -60,6 +60,10 @@ export function guardLegacy(
       "SELECT fingerprint FROM domain_cloud_requests WHERE request_id=?",
       [id],
     );
+    const command = db.get(
+      "SELECT fingerprint FROM domain_cloud_command_receipts WHERE request_id=? AND imported=0",
+      [id],
+    );
     const inner = db.get(
       "SELECT 1 FROM state_requests WHERE namespace=? AND request_id=?",
       ["forge/work", id],
@@ -67,10 +71,12 @@ export function guardLegacy(
     // An inner acquisition is scoped only when its versioned outer receipt proves it.
     const typedOwned = ownedFingerprint(typedFingerprint(typed));
     const leaseOwned = ownedFingerprint(lease?.fingerprint);
+    const commandOwned = ownedFingerprint(command?.fingerprint);
     if (
       (typed !== undefined && !typedOwned) ||
       (lease !== undefined && !leaseOwned) ||
-      (inner !== undefined && !typedOwned && !leaseOwned)
+      (command !== undefined && !commandOwned) ||
+      (inner !== undefined && !typedOwned && !leaseOwned && !commandOwned)
     )
       throw new ForgeFailure({
         code: "UNAVAILABLE",
