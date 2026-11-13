@@ -1,4 +1,4 @@
-import type { McpCandidate } from "../contract/mcp.ts";
+import { cliOperation, type McpCandidate } from "../contract/mcp.ts";
 import { ForgeFailure } from "../contract/failure.ts";
 import { inputError } from "../contract/input-error.ts";
 import {
@@ -256,10 +256,11 @@ export async function runCli(
     const entries = catalog.list();
     const commands = entries.map((entry) => ({
       ...entry,
-      op: entry.declaration.cli ?? entry.op,
+      op: cliOperation(entry),
     }));
     for (const entry of entries) {
-      const name = entry.declaration.cli;
+      const name =
+        entry.declaration.cli === undefined ? undefined : cliOperation(entry);
       if (
         name !== undefined &&
         (builtins.includes(name) ||
@@ -273,8 +274,7 @@ export async function runCli(
     const entry = [...discoveryOperations, ...commands].find(
       (c) => c.op === op,
     );
-    const target =
-      entries.find((c) => (c.declaration.cli ?? c.op) === op)?.op ?? op;
+    const target = entries.find((c) => cliOperation(c) === op)?.op ?? op;
     if (
       helpRequested ||
       op === undefined ||

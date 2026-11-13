@@ -265,3 +265,28 @@ for (const command of [["auth", "login"], ["auth.login"]]) {
     ).toContainEqual(catalog.list()[0]);
   }, 30_000);
 }
+
+for (const noun of ["first", "second"]) {
+  test(`CLI spelling keeps the configured noun ${noun}`, async () => {
+    const entries = ["first", "second"].map((name) => ({
+      ...candidate(`${name}.login`, { cli: "auth.login" }),
+      declaredOp: "cloud.login",
+      rename: { cloud: name },
+    }));
+    const catalog = fakeCatalog(entries);
+    const help = await runCli(catalog, ["--help"]);
+    expect(help.exitCode).toBe(0);
+    for (const name of ["first", "second"]) expect(help.stdout).toContain(name);
+    const reply = await runCli(catalog, [
+      noun,
+      "login",
+      "--input",
+      '{"value":"hello"}',
+    ]);
+    expect(JSON.parse(reply.stdout)).toMatchObject({
+      ok: true,
+      op: `${noun}.login`,
+    });
+    expect(catalog.calls.map((call) => call.op)).toEqual([`${noun}.login`]);
+  }, 30_000);
+}
