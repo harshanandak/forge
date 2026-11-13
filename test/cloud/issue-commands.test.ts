@@ -43,8 +43,7 @@ import { createWorker } from "../../cloud/src/worker.ts";
 import manifest from "../../src/blocks/work/forge.block.json" with { type: "json" };
 import { createStateClient } from "../../src/assembly/state-client.ts";
 import { StateOwner } from "../../src/core/state/index.ts";
-import type { LeaseRecord } from "../../src/generated/types.ts";
-import { canonicalJson } from "../../src/core/config/pointer.ts";
+import { releasedTables } from "../../cloud/conformance/restored.ts";
 import { refuse } from "../../src/core/trust/index.ts";
 import { stateMigrations } from "../../src/core/state/migrations.ts";
 import type { SqlDatabase, SqlRow, SqlValue } from "../../src/ports/store.ts";
@@ -8930,28 +8929,7 @@ const childFloors = (want: Record<string, number>, revision = 1): Added[] =>
  */
 function expectFloor(t: F, tables: Tables, floors: readonly Added[]) {
   const importedEvents = tables.state_events!.length;
-  tables = structuredClone(tables);
-  for (const row of tables.state_leases!) {
-    const lease = JSON.parse(String(row.body)) as LeaseRecord;
-    if (lease.releasedAt !== undefined || Date.parse(lease.expiresAt) <= start)
-      continue;
-    const released = { ...lease, releasedAt: iso(start) };
-    row.body = canonicalJson(released);
-    tables.state_events!.push({
-      sequence: tables.state_events!.length + floors.length + 1,
-      namespace: row.namespace!,
-      key: row.subject!,
-      body: canonicalJson({
-        type: `${String(row.namespace)}:lease.released@1`,
-        namespace: row.namespace,
-        key: row.subject,
-        revision: lease.generation,
-        at: iso(start),
-        actor: lease.holder.actor,
-        data: released,
-      }),
-    });
-  }
+  tables = releasedTables(tables, iso(start), floors.length);
   const after = tablesOf(t.db);
   const fresh = (table: string) => {
     const had = new Set(tables[table]!.map(asText));

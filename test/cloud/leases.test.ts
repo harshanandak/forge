@@ -1,6 +1,7 @@
 import { expect, mock, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import type { Dump } from "../../cloud/src/dump.ts";
+import { releasedTables } from "../../cloud/conformance/restored.ts";
 import { PAGE_FORMAT } from "../../cloud/src/dump.ts";
 import { Project } from "../../cloud/src/project.ts";
 import { TABLE_PROBE, type DurableStorage } from "../../cloud/src/store.ts";
@@ -688,36 +689,17 @@ for (const mode of ["whole", "paged"] as const)
         using source = fixture();
         const empty = (await source.send("dump")).body.value;
         expect((await source.send("restore", empty)).status).toBe(200);
-        for (const subject of ["issue", "other"]) {
-          expect(
-            (
-              await source.write(
-                "claim",
-                { subject, requestId: `claim-${subject}` },
-                "owner",
-              )
-            ).status,
-          ).toBe(200);
-          expect(
-            (
-              await source.write(
-                "renew",
-                { subject, requestId: `renew-${subject}` },
-                "owner",
-              )
-            ).status,
-          ).toBe(200);
-          if (state === "released")
-            expect(
-              (
-                await source.write(
-                  "release",
-                  { subject, requestId: `release-${subject}` },
-                  "owner",
-                )
-              ).status,
-            ).toBe(200);
-        }
+        for (const subject of ["issue", "other"])
+          for (const route of state === "released"
+            ? ["claim", "renew", "release"]
+            : ["claim", "renew"]) {
+            const seeded = await source.write(
+              route,
+              { subject, requestId: `${route}-${subject}` },
+              "owner",
+            );
+            expect(seeded.status).toBe(200);
+          }
         if (state === "expired") source.clock.mockReturnValue(now + minute);
         const dump = (await source.send("dump")).body.value as Dump;
         if (state === "future") {
@@ -743,14 +725,9 @@ for (const mode of ["whole", "paged"] as const)
         }
         const storedBytes = Object.values(dump.tables)
           .flat()
-          .reduce(
-            (sum, row) =>
-              sum +
-              Object.values(row).reduce<number>(
-                (n, value) =>
-                  n + new TextEncoder().encode(String(value)).length,
-                0,
-              ),
+          .flatMap(Object.values)
+          .reduce<number>(
+            (sum, value) => sum + Buffer.byteLength(String(value)),
             0,
           );
         using target = fixture({
@@ -761,30 +738,22 @@ for (const mode of ["whole", "paged"] as const)
         });
         if (state === "expired") target.clock.mockReturnValue(now + minute);
         if (limit === "event failure") target.failRestore();
+        const first = {
+          ...Object.fromEntries(Object.keys(dump.tables).map((t) => [t, []])),
+          state_records: dump.tables.state_records!,
+        };
         const pages =
           mode === "whole"
             ? [dump]
-            : [
-                {
+            : [first, { ...dump.tables, state_records: [] }].map(
+                (tables, page) => ({
                   format: PAGE_FORMAT,
-                  page: 0,
-                  last: false,
-                  next: "next",
-                  tables: {
-                    ...Object.fromEntries(
-                      Object.keys(dump.tables).map((t) => [t, []]),
-                    ),
-                    state_records: dump.tables.state_records!,
-                  },
-                },
-                {
-                  format: PAGE_FORMAT,
-                  page: 1,
-                  last: true,
-                  next: null,
-                  tables: { ...dump.tables, state_records: [] },
-                },
-              ];
+                  page,
+                  last: page === 1,
+                  next: page === 1 ? null : "next",
+                  tables,
+                }),
+              );
         for (const [index, page] of pages.entries()) {
           const reply = await target.send("restore", page);
           const final = index === pages.length - 1;
@@ -812,42 +781,14 @@ for (const mode of ["whole", "paged"] as const)
         }
         if (limit !== "fits") return;
         const restored = (await target.send("dump")).body.value as Dump;
-        for (const [table, rows] of Object.entries(dump.tables)) {
-          if (!["state_leases", "state_events"].includes(table))
-            expect(restored.tables[table]).toEqual(rows);
-        }
-        const events = restored.tables.state_events!;
-        expect(events.slice(0, dump.tables.state_events!.length)).toEqual(
-          dump.tables.state_events!,
+        expect(restored.tables).toEqual(
+          releasedTables(
+            dump.tables,
+            new Date(state === "expired" ? now + minute : now).toISOString(),
+          ),
         );
-        expect(events.length).toBe(
-          dump.tables.state_events!.length + (state === "future" ? 2 : 0),
-        );
-        for (const [index, row] of restored.tables.state_leases!.entries()) {
-          const original = JSON.parse(
-            String(dump.tables.state_leases![index]!.body),
-          ) as LeaseRecord;
+        for (const row of restored.tables.state_leases!) {
           const lease = JSON.parse(String(row.body)) as LeaseRecord;
-          expect(lease).toEqual(
-            state === "future"
-              ? { ...original, releasedAt: new Date(now).toISOString() }
-              : original,
-          );
-          expect(row.generation).toBe(original.generation);
-          if (state === "future") {
-            const event = JSON.parse(
-              String(events[dump.tables.state_events!.length + index]!.body),
-            ) as StateEvent;
-            expect(event).toEqual({
-              type: "forge/work:lease.released@1",
-              namespace: "forge/work",
-              key: lease.subject,
-              revision: lease.generation,
-              at: new Date(now).toISOString(),
-              actor: lease.holder.actor,
-              data: lease,
-            });
-          }
           const other = restored.tables.state_leases!.find(
             (r) => r.subject !== row.subject,
           )!;
@@ -863,7 +804,7 @@ for (const mode of ["whole", "paged"] as const)
           );
           expect(claim.status).toBe(200);
           expect((claim.body.value as LeaseRecord).generation).toBe(
-            original.generation + 1,
+            Number(row.generation) + 1,
           );
           expect(await target.lookup(String(other.subject))).toEqual(
             beforeOther,

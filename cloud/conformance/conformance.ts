@@ -7,6 +7,10 @@ import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { releasedTables } from "./restored.ts";
+import type { Tables } from "./max-source.ts";
+import { canonicalJson } from "../../src/core/config/pointer.ts";
+import type { StateEvent } from "../../src/generated/types.ts";
 import { type Expected, fold, problems, type Table, tally } from "./digest.ts";
 
 interface Holder {
@@ -215,11 +219,27 @@ async function dumpOf(project: string): Promise<Dump> {
     assert.equal(reply.status, 200, JSON.stringify(reply.body));
   return reply.body.value as Dump;
 }
+function released(source: Dump, actual: Dump, floors = 0): Dump {
+  const event = actual.tables
+    .state_events!.slice(source.tables.state_events!.length)
+    .map((row) => JSON.parse(String(row.body)) as StateEvent)
+    .find((event) => event.type.endsWith(":lease.released@1"));
+  const at = event?.at ?? new Date().toISOString();
+  assert.ok(Date.parse(at) <= Date.now(), "restore release time");
+  return {
+    ...source,
+    tables: releasedTables(source.tables as Tables, at, floors),
+  };
+}
+const imported = (lease: Lease): Lease => {
+  assert.ok(lease.releasedAt, "the imported lease was released");
+  const { releasedAt: _at, ...original } = lease;
+  return original;
+};
 // A restore into an empty project derives the issue number floor when the dump has none. These sources hold
-// only leases, so the derived floor is 0 and the target holds exactly one extra record and one extra event: the
-// floor at 0, revision 1, written by the restore as the last event. This checks that pair, then strips it, so
-// the rest of the target can be compared with the source row for row.
-function settled(dump: Dump): Dump {
+// only leases, so the derived floor is 0, revision 1, followed by the release events. Check those exact
+// additions and the changed lease rows before normalizing the target for source row comparisons.
+function settled(dump: Dump, source: Dump): Dump {
   const records = dump.tables.state_records ?? [];
   const events = dump.tables.state_events ?? [];
   const floors = recordsOf(dump, "forge/work", "allocation:issue:work-");
@@ -233,8 +253,15 @@ function settled(dump: Dump): Dump {
   assert.deepEqual(floor.value, { prefix: "issue:work-", number: 0 });
   assert.equal(floor.revision, 1);
   assert.deepEqual(floor.updatedBy, { kind: "agent", id: "cloud-restore" });
-  const last = events.at(-1)!;
-  assert.equal(last.sequence, events.length, "the floor event is the last");
+  const last = events.find(
+    (row) =>
+      row.namespace === "forge/work" && row.key === "allocation:issue:work-",
+  )!;
+  assert.equal(
+    last.sequence,
+    source.tables.state_events!.length + 1,
+    "the floor precedes releases",
+  );
   const written = JSON.parse(String(last.body)) as {
     key: string;
     revision: number;
@@ -251,14 +278,27 @@ function settled(dump: Dump): Dump {
       { prefix: "issue:work-", number: 0 },
       floor.updatedAt,
     ],
-    "the last event writes the floor record",
+    "the event writes the floor record",
   );
-  return {
+  const checked = {
     ...dump,
     tables: {
       ...dump.tables,
       state_records: records.filter((row) => row !== floors[0]),
-      state_events: events.slice(0, -1),
+      state_events: events.filter((row) => row !== last),
+    },
+  };
+  assert.deepEqual(
+    checked,
+    released(source, checked, 1),
+    "exact release rows and events",
+  );
+  return {
+    ...checked,
+    tables: {
+      ...checked.tables,
+      state_leases: source.tables.state_leases!,
+      state_events: events.slice(0, source.tables.state_events!.length),
     },
   };
 }
@@ -2145,19 +2185,22 @@ if (phase === "main") {
       const restored = await adminCall(target, "POST", "restore", text);
       assert.equal(restored.status, 200, JSON.stringify(restored.body));
       assert.deepEqual(
-        settled(await dumpOf(target)),
+        settled(await dumpOf(target), dump),
         dump,
         "read back identical",
       );
       // Imported leases stay readable. Replacement tokens execute independently and cannot borrow receipts.
       assert.deepEqual(
-        granted(await holderLookup(target, "issue:dump-1")),
+        imported(granted(await holderLookup(target, "issue:dump-1"))),
         granted(await holderLookup(source, "issue:dump-1")),
       );
       granted(await claim(source, "issue:dump-2", holder, "dump-2"));
-      refused(
-        await claim(target, "issue:dump-2", holder, "dump-2"),
-        "LEASE_HELD",
+      const fresh = granted(
+        await claim(target, "issue:dump-2", holderOf("restored"), "dump-2"),
+      );
+      assert.equal(
+        fresh.generation,
+        granted(await holderLookup(source, "issue:dump-2")).generation + 1,
       );
       const prior = await dumpOf(target);
       const independent = granted(
@@ -2359,12 +2402,12 @@ if (phase === "main") {
       );
       assert.equal(valid.status, 200, JSON.stringify(valid.body));
       assert.deepEqual(
-        settled(await dumpOf(target)),
+        settled(await dumpOf(target), dump),
         dump,
         "read back identical",
       );
       assert.deepEqual(
-        granted(await holderLookup(target, "issue:bad-1")),
+        imported(granted(await holderLookup(target, "issue:bad-1"))),
         granted(await holderLookup(source, "issue:bad-1")),
       );
     },
@@ -2428,50 +2471,75 @@ if (phase === "main") {
         assert.equal(await initialized(target), page.last, `page ${page.page}`);
       }
       assert.deepEqual(
-        settled(await dumpOf(target)),
+        settled(await dumpOf(target), whole),
         whole,
         "read back identical",
       );
       // The generated pair moves the page edges, so the pages compare as rows.
       assert.deepEqual(
-        settled(joined(await pagesOf(target))),
+        settled(joined(await pagesOf(target)), whole),
         whole,
         "same rows in pages",
       );
       assert.deepEqual(
-        granted(await holderLookup(target, "issue:page-3")),
+        imported(granted(await holderLookup(target, "issue:page-3"))),
         granted(await holderLookup(source, "issue:page-3")),
       );
       assert.deepEqual(
-        granted(await holderLookup(target, "issue:page-4")),
+        imported(granted(await holderLookup(target, "issue:page-4"))),
         granted(
           await claim(source, "issue:page-4", holderOf("page"), "page-4"),
         ),
       );
-      // A restored token is a new caller: its claim reaches the held lease, not the imported receipt.
+      // A new holder takes fresh authority, independently of the imported receipt.
       const prior = await dumpOf(target);
       const collision = await claim(
         target,
         "issue:page-4",
-        holderOf("page"),
+        holderOf("restored"),
         "page-4",
       );
-      refused(collision, "LEASE_HELD");
+      const fresh = granted(collision);
+      assert.equal(
+        fresh.generation,
+        Number(
+          prior.tables.state_leases!.find(
+            (row) => row.subject === "issue:page-4",
+          )!.generation,
+        ) + 1,
+      );
       const recorded = await dumpOf(target);
-      keepsRows(prior, recorded);
-      assert.deepEqual(recorded.tables.state_leases, prior.tables.state_leases);
+      keepsRows(
+        prior,
+        recorded,
+        undefined,
+        (row, table) =>
+          table !== "state_leases" || row.subject !== "issue:page-4",
+      );
+      assert.deepEqual(
+        recorded.tables.state_leases,
+        prior.tables.state_leases!.map((row) =>
+          row.subject === "issue:page-4"
+            ? {
+                ...row,
+                generation: fresh.generation,
+                body: canonicalJson(fresh),
+              }
+            : row,
+        ),
+      );
       assert.equal(
         recorded.tables.domain_cloud_requests!.length,
         prior.tables.domain_cloud_requests!.length + 1,
       );
       assert.deepEqual(
-        await claim(target, "issue:page-4", holderOf("page"), "page-4"),
+        await claim(target, "issue:page-4", holderOf("restored"), "page-4"),
         collision,
       );
       assert.deepEqual(
         await dumpOf(target),
         recorded,
-        "own refusal retry writes nothing",
+        "own claim retry writes nothing",
       );
       const again = await sendPage(target, pages[0]);
       assert.equal(again.status, 409, JSON.stringify(again.body));
@@ -2502,7 +2570,10 @@ if (phase === "main") {
         const reply = await sendPage(target, page);
         assert.equal(reply.status, 200, JSON.stringify(reply.body));
       }
-      assert.deepEqual(settled(await dumpOf(target)), await dumpOf(source));
+      assert.deepEqual(
+        settled(await dumpOf(target), await dumpOf(source)),
+        await dumpOf(source),
+      );
 
       // Issuing a device token provisions a project, so it clears staged rows that were never checked.
       const issued = `${run}-page-issued`;
@@ -2572,7 +2643,10 @@ if (phase === "main") {
       const target = `${run}-page-race-copy`;
       for (const page of pages)
         assert.equal((await sendPage(target, page)).status, 200);
-      assert.deepEqual(settled(await dumpOf(target)), await dumpOf(race));
+      assert.deepEqual(
+        settled(await dumpOf(target), await dumpOf(race)),
+        await dumpOf(race),
+      );
     },
   );
 
@@ -3640,7 +3714,11 @@ if (phase === "main") {
       );
       assert.equal(restored.status, 200, JSON.stringify(restored.body));
       const copy = await dumpOf(target);
-      assert.deepEqual(copy, source, "read back identical");
+      assert.deepEqual(
+        copy,
+        released(source, copy),
+        "read back with exact lease releases",
+      );
       const receipts = (
         "create-1 create-2 comment-1 claim-1 update-1 renew-1 release-1 " +
         "claim-2 dep-1 close-1 fault-create fault-claim"
