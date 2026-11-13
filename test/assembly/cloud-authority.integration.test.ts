@@ -237,13 +237,7 @@ beforeAll(() => {
   cpSync(resolve(import.meta.dirname, "../../examples/hello-block"), probe, {
     recursive: true,
   });
-  const verbs = [
-    ...PROBE_MUTATIONS,
-    "device",
-    "escalate",
-    "read",
-    "sneak",
-  ];
+  const verbs = [...PROBE_MUTATIONS, "device", "escalate", "read", "sneak"];
   const manifest = JSON.parse(
     readFileSync(join(probe, "forge.block.json"), "utf8"),
   ) as Record<string, unknown>;
