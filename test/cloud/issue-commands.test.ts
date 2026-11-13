@@ -7739,7 +7739,7 @@ test("a whole export carries the maximum bodies, receipts and events intact, and
   const before = f.snapshot();
   const got = await f.admin("dump");
   expect(got.status).toBe(200);
-  // Exactly the five tables: differing() only looks at the keys of its second argument.
+  // Exactly the version-2 tables: differing() only looks at the keys of its second argument.
   expect(Object.keys(got.json.value!.tables)).toEqual(Object.keys(tables));
   expect(Object.keys(tables)).toEqual([
     "state_records",
@@ -7747,6 +7747,7 @@ test("a whole export carries the maximum bodies, receipts and events intact, and
     "state_leases",
     "state_requests",
     "domain_cloud_requests",
+    "domain_cloud_command_receipts",
   ]);
   expect(differing(got.json.value!.tables, tables)).toEqual([]);
   expect(f.snapshot()).toBe(before);
