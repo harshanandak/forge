@@ -7540,13 +7540,14 @@ for (const w of WRITES) {
     const first = await f.send(w.send("l-0"), { token });
     expect(first.status).toBe(200);
     f.db.run(
-      "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < ?) INSERT INTO state_records(namespace,key,revision,body) SELECT 'forge/cloud', 'request:fill-' || i, 1, '{}' FROM n",
-      [MAX_RECEIPTS - 1],
+      "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < ?) INSERT INTO domain_cloud_command_receipts SELECT 'c2:fill-' || i, '{}', 'ok', '{}', ?, ? FROM n",
+      [MAX_RECEIPTS - 1, f.now(), f.now() + day],
     );
     const full = f.snapshot();
     const got = await f.send(w.send("l-1", w.next), { token });
     expect([got.status, got.code, got.exit]).toEqual([503, "UNAVAILABLE", 1]);
     expect(got.json.error?.message).toContain("receipts");
+    expect(got.json.error?.message).toContain("expire");
     expect(f.snapshot()).toBe(full);
     const refused = await f.send(w.send("l-2", w.bad), { token });
     expect([refused.status, refused.code]).toEqual([...w.badWant]);
@@ -10327,4 +10328,77 @@ for (const trip of TRIPS)
     expect(got.status).toBe(200);
     expect(tablesOf(t.db)).toEqual(tables);
     expect(tablesOf(t.db).domain_cloud_command_receipts).toEqual([]);
+  }, 30_000);
+
+for (const [name, expiry, count] of [
+  ["expired", -1, MAX_RECEIPTS],
+  ["mixed", -1, MAX_RECEIPTS - 1],
+] as const)
+  test(`typed receipt retention: ${name} rows are pruned eight at a time in expiry order`, async () => {
+    const f = fixture();
+    const token = await f.device();
+    f.db.run(
+      "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < ?) INSERT INTO domain_cloud_command_receipts SELECT 'fill-' || printf('%04d',i), '{}', 'ok', '{}', ?, ? + i FROM n",
+      [count, start - day, start + expiry - count],
+    );
+    const live = ["c2:live", "{}", "ok", "{}", start, start + day];
+    if (name === "mixed")
+      f.db.run(
+        "INSERT INTO domain_cloud_command_receipts VALUES (?,?,?,?,?,?)",
+        live,
+      );
+    const got = await f.send(make("retention"), { token });
+    expect([got.status, got.exit]).toEqual([200, 0]);
+    const rows = f.db
+      .query(
+        "SELECT * FROM domain_cloud_command_receipts ORDER BY expires_at,request_id",
+      )
+      .all() as SqlRow[];
+    expect(rows).toHaveLength(MAX_RECEIPTS - 8 + 1);
+    expect(rows[0]!.request_id).toBe("fill-0009");
+    if (name === "mixed")
+      expect(rows.some((r) => r.request_id === "c2:live")).toBe(true);
+    const prior = f.snapshot();
+    expect((await f.send(make("retention"), { token })).text).toBe(got.text);
+    expect(f.snapshot()).toBe(prior);
+    expect(eventsOf(f.db, "forge/cloud")).toEqual([]);
+  }, 30_000);
+
+for (const refused of [false, true])
+  test(`typed receipt retention: ${refused ? "refusal" : "success"} expires with its token and replays byte-identically`, async () => {
+    const f = fixture();
+    const token = await f.device(1000);
+    const input = refused ? {} : { title: "Expiry" };
+    const first = await f.send(make("expiry", input), { token });
+    expect(first.status).toBe(refused ? 400 : 200);
+    const rows = f.db
+      .query("SELECT * FROM domain_cloud_command_receipts")
+      .all() as SqlRow[];
+    expect(rows).toHaveLength(1);
+    expect([
+      rows[0]!.created_at,
+      rows[0]!.expires_at,
+      rows[0]!.outcome,
+    ]).toEqual([start, start + 1000, refused ? "refused" : "ok"]);
+    const before = f.snapshot();
+    expect((await f.send(make("expiry", input), { token })).text).toBe(
+      first.text,
+    );
+    expect(
+      (await f.send(make("expiry", { title: "Different" }), { token })).code,
+    ).toBe("INPUT_CONFLICT");
+    expect(f.snapshot()).toBe(before);
+    f.advance(1000);
+    const expired = await f.send(make("expiry", input), { token });
+    expect([expired.status, expired.code]).toEqual([401, "AUTH_EXPIRED"]);
+    expect(f.snapshot()).toBe(before);
+    const replacement = await f.device();
+    expect((await f.send(make("expiry"), { token: replacement })).status).toBe(
+      200,
+    );
+    expect(
+      f.db
+        .query("SELECT COUNT(*) AS n FROM domain_cloud_command_receipts")
+        .get(),
+    ).toEqual({ n: 1 });
   }, 30_000);
