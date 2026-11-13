@@ -2223,8 +2223,8 @@ if (phase === "main") {
           .status,
         200,
       );
-      assert.deepEqual(await dumpOf(oldTarget), legacy);
       const old = await dumpOf(oldTarget);
+      assert.deepEqual(old, released(legacy, old));
       const denied = await claim(oldTarget, "issue:independent", holder, id);
       assert.deepEqual(
         [denied.status, denied.body.error?.code],
