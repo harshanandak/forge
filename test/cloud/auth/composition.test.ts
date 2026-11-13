@@ -444,11 +444,17 @@ test("configured OAuth dispatch uses the protocol handler without project forwar
       ...vars,
       OAUTH_KV: f.options.storage,
       CODE_REDEMPTION: f.env.PROJECTS,
+      REGISTRATION_LIMITER: f.env.PROJECTS,
     };
   for (const path of oauthPaths.filter(
     (path) => path !== "/callback" && path !== "/oauth/token",
   )) {
-    const response = await worker.fetch(projectRequest("", path), env);
+    const response = await worker.fetch(
+      new Request(projectRequest("", path), {
+        headers: { "CF-Connecting-IP": "203.0.113.7" },
+      }),
+      env,
+    );
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ path });
   }

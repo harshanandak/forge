@@ -60,6 +60,7 @@ async function fixture(claims = {}, alg = "RS256") {
     },
   );
   const cookies = new Map<string, string>();
+  const admissions = mock(() => Promise.resolve(new Response()));
   const transport = {
     idFromName: (name: string) => name,
     get: () => ({ fetch: () => Promise.resolve(new Response("legacy")) }),
@@ -69,7 +70,11 @@ async function fixture(claims = {}, alg = "RS256") {
     FORGE_OAUTH_REDIRECTS: redirect,
     ADMIN_TOKEN: "fixture-admin",
     PROJECTS: transport,
-    REGISTRATION_LIMITER: transport,
+    REGISTRATION_LIMITER: {
+      ...transport,
+      get: (name: string) =>
+        name === "authorizations" ? { fetch: admissions } : transport.get(),
+    },
     OAUTH_KV: harness.options.storage,
     GRANT_STATE: harness.grantNamespace,
     CODE_REDEMPTION: {
@@ -125,7 +130,10 @@ async function fixture(claims = {}, alg = "RS256") {
   const send = async (path: string, form?: Record<string, string>) => {
     const response = await worker.fetch(
       new Request(new URL(path, issuer).href, {
-        headers: { cookie: [...cookies.values()].join("; ") },
+        headers: {
+          cookie: [...cookies.values()].join("; "),
+          "CF-Connecting-IP": "203.0.113.1",
+        },
         ...(form ? { method: "POST", body: new URLSearchParams(form) } : {}),
       }),
       env,
@@ -135,6 +143,7 @@ async function fixture(claims = {}, alg = "RS256") {
     return response;
   };
   async function start() {
+    const charged = admissions.mock.calls.length;
     const registered = await worker.fetch(
       new Request(`${issuer}/register`, {
         method: "POST",
@@ -188,6 +197,7 @@ async function fixture(claims = {}, alg = "RS256") {
       handle: handle!,
       allow: "true",
     });
+    expect(admissions).toHaveBeenCalledTimes(charged + 1);
     expect(login.status).toBe(302);
     const target = new URL(login.headers.get("location")!);
     expect(target.origin + target.pathname).toBe(
