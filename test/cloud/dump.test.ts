@@ -12,7 +12,7 @@ import {
   restorePage,
 } from "../../cloud/src/dump.ts";
 import type { SqlDatabase, SqlRow } from "../../src/ports/store.ts";
-import { migrate } from "../../src/core/state/migrations.ts";
+import { baseline, migrate } from "../../src/core/state/migrations.ts";
 import { StateOwner } from "../../src/core/state/index.ts";
 
 const MIB = 1024 * 1024;
@@ -58,12 +58,17 @@ const row = (table: string, over: Row = {}): [string, Row] => [
   { ...ROW[table]![0], ...over },
 ];
 
-function database(rows: [string, Row][] = []): SqlDatabase {
+function database(
+  rows: [string, Row][] = [],
+  ownerSchema = false,
+): SqlDatabase {
   const db = new Database(":memory:");
+  // Restores need the owner's sequence primary key, not plain boundary-test columns.
+  if (ownerSchema) for (const sql of baseline.statements) db.run(sql);
   for (const [table, [sample, key]] of Object.entries(ROW))
     if (table !== "domain_cloud_command_receipts")
       db.run(
-        `CREATE TABLE ${table} (${Object.entries(sample)
+        `CREATE TABLE IF NOT EXISTS ${table} (${Object.entries(sample)
           .map(([c, v]) => `${c} ${typeof v === "number" ? "INTEGER" : "TEXT"}`)
           .join(", ")}${key})`,
       );
@@ -138,7 +143,7 @@ for (const [table, values] of Object.entries(checkpointRows)) {
       expect(read()).toEqual(saved);
     }, 30000);
   test(`v2 final page refuses ${table} before clearing or staging the target`, () => {
-    const db = database([row("state_records")]);
+    const db = database([row("state_records")], true);
     for (const sql of IMPORT_MIGRATION.statements) db.exec(sql);
     migrate(db);
     db.run(
