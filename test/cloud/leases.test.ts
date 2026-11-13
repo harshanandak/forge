@@ -775,7 +775,7 @@ for (const mode of ["whole", "paged"] as const)
               ? 200
               : limit === "event failure"
                 ? 500
-                : 400,
+                : 413,
           );
           if (!final) {
             expect((await target.send("status")).body.value).toEqual({
@@ -825,7 +825,7 @@ for (const mode of ["whole", "paged"] as const)
               namespace: "forge/work",
               key: lease.subject,
               revision: lease.generation,
-              at: lease.releasedAt,
+              at: new Date(now).toISOString(),
               actor: lease.holder.actor,
               data: lease,
             });
