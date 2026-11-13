@@ -2,7 +2,6 @@
 // `issue comment`, `issue update`, `issue dep`, `issue link`, `issue close`, `issue claim`, `issue renew` and `issue release`: chosen after the Runtime's own request checks and before any local project state opens. A bound project
 // writes only through the cloud, never to a local store, and no device is created.
 import { nodeDeviceIdentity } from "../adapters/fs/device-identity.ts";
-import { createCloudHttp } from "../adapters/http/index.ts";
 import { ForgeFailure } from "../contract/failure.ts";
 import {
   failureEnvelope,
@@ -12,9 +11,14 @@ import {
 import type { BoundContext } from "../generated/types.ts";
 import type { InvocationRequest, ResultEnvelope } from "../generated/types.ts";
 import { cloudBinding } from "./cloud-binding.ts";
-import { wireDeviceId, type CloudLoginDeps } from "./cloud-login.ts";
+import type { CloudLoginDeps } from "./cloud-login.ts";
 import { credentialStore, openCloudFiles } from "./cloud-profile.ts";
-import { createCloudLeaseClient } from "./cloud-state-client.ts";
+import { lazy } from "./lazy.ts";
+import { wireDeviceId } from "./wire-device.ts";
+
+// Only a routed call to a cloud-bound project reaches the network, so a local call never loads these.
+const loadHttp = lazy(() => import("../adapters/http/index.ts"));
+const loadLeaseClient = lazy(() => import("./cloud-state-client.ts"));
 
 export interface CloudAuthorityDeps {
   readonly root: string;
@@ -167,6 +171,10 @@ export async function selectCloud(
     wireDeviceId(named) !== wireDeviceId(device)
   )
     throw fail("AUTH_DEVICE_MISMATCH", "This session is not on this machine.");
+  const [{ createCloudHttp }, { createCloudLeaseClient }] = await Promise.all([
+    loadHttp(),
+    loadLeaseClient(),
+  ]);
   const { fetch, now, security } = deps.cloud ?? {};
   const client = createCloudLeaseClient({
     key: { origin, identity, project },

@@ -5,7 +5,6 @@
 // locked only to merge one verified entry, and the project binding is written last, after the
 // credential has read back. Nothing here sends a bearer token, and nothing routes any other command
 // to the cloud. The forge/cloud block declares the operation; this is the service it calls.
-import { createHash } from "node:crypto";
 import { nodeDeviceIdentity } from "../adapters/fs/device-identity.ts";
 import {
   createCloudHttp,
@@ -26,6 +25,9 @@ import {
   writeBinding,
 } from "./cloud-profile.ts";
 import { readProjectManifest } from "./project-manifest.ts";
+import { wireDeviceId } from "./wire-device.ts";
+
+export { wireDeviceId };
 
 export const CLOUD_LOGIN_OP = "cloud.login";
 
@@ -50,19 +52,6 @@ export interface CloudLoginDeps {
     directory(path: string, created?: boolean): void;
     file(path: string): void;
   };
-}
-
-const WIRE_DEVICE = /^[A-Za-z0-9][\w.:-]{0,127}$/;
-
-/**
- * The device id sent to the Worker. An id the Worker accepts goes unchanged; any other becomes
- * `device-` plus the SHA-256 of the full local id. The local device-id file never changes, and
- * whatever compares holder identity later must apply this same mapping.
- */
-export function wireDeviceId(local: string): string {
-  return WIRE_DEVICE.test(local)
-    ? local
-    : `device-${createHash("sha256").update(local).digest("hex")}`;
 }
 
 /** What the operation accepts. The block's own schema is loose on purpose: the shared validator quotes a rejected value, and this input can hold a token pasted into the wrong place. */

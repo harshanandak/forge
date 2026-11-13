@@ -6,7 +6,7 @@
 // (.forge/cloud.json) holds no secret; it is written only after the credential has read back.
 import { entryKind, nodeConfigFiles } from "../adapters/fs/index.ts";
 import { createDeviceFiles } from "../adapters/fs/device-identity.ts";
-import { validateOrigin, validateProject } from "../adapters/http/index.ts";
+import { validateOrigin, validateProject } from "../adapters/http/origin.ts";
 import { windowsPrivateFiles } from "../adapters/process/windows-acl.ts";
 import { privateFileGuard } from "../adapters/store-sqlite/private-files.ts";
 import type { PrivateFiles } from "../ports/private-files.ts";

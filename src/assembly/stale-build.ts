@@ -1,7 +1,7 @@
 import { nodeConfigFiles } from "../adapters/fs/index.ts";
 import { localUpgradeCommand } from "../adapters/node-runtime/catalog.ts";
 import type { UpgradeHint } from "../generated/types.ts";
-import { GENERATED_MARKER } from "../surface/skills.ts";
+import { GENERATED_MARKER } from "../surface/generated-marker.ts";
 import { buildIdentity, packageRoot } from "../version.ts";
 import { compareVersions, parseVersion } from "../contract/version.ts";
 
