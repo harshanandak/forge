@@ -172,10 +172,10 @@ interface InternalProviders extends AssemblyProviders {
   ): Promise<OwnedHandle<FilesService>>;
 }
 
-/** Host cleanup ceilings, not workflow policy. No supervisor exists until a launch. */
 // Only cloud login talks to the cloud, so no other command loads its client.
 const loadCloudLogin = lazy(() => import("./cloud-login.ts"));
 
+/** Host cleanup ceilings, not workflow policy. No supervisor exists until a launch. */
 const CLEANUP: SupervisionOptions = {
   cleanupTimeoutMs: 5000,
   pollIntervalMs: 25,
