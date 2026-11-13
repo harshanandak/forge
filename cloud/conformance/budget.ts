@@ -96,26 +96,26 @@ export function pageThrough(tables: Tables, count: number): Page {
  * envelope (arrays, metadata and the cursor after it, or the last-page form for the final row) is at most the budget.
  * `measure` and `envelope: false` are the counterfactual rules, used only to show a fixture can tell them apart.
  */
-export function cutPages(
+export function* eachCutPage(
   tables: Tables,
   budget: number,
   measure: Measure = utf8,
   envelope = true,
-): Page[] {
+): Generator<Page> {
   const rows = rowsOf(tables);
   const w = markOf(tables);
-  const pages: Page[] = [];
+  let page = 0;
   let held = blank();
   let used = 0;
   let here: string | null = null;
   for (const [i, entry] of rows.entries())
     for (;;) {
       const last = i === rows.length - 1;
-      const key = cursorOf(entry, pages.length + 1, w);
+      const key = cursorOf(entry, page + 1, w);
       const added =
         measure(entry.row) + (held[entry.table]!.length > 0 ? 1 : 0);
       const shell = envelope
-        ? measure(pageOf(pages.length, last, last ? null : key, blank()))
+        ? measure(pageOf(page, last, last ? null : key, blank()))
         : 0;
       if (shell + used + added <= budget) {
         held[entry.table]!.push(entry.row);
@@ -124,13 +124,22 @@ export function cutPages(
         break;
       }
       if (used === 0) throw new Error(`a row does not fit ${budget} bytes`);
-      pages.push(pageOf(pages.length, false, here, held));
+      yield pageOf(page, false, here, held);
+      page += 1;
       held = blank();
       used = 0;
       here = null;
     }
-  pages.push(pageOf(pages.length, true, null, held));
-  return pages;
+  yield pageOf(page, true, null, held);
+}
+
+export function cutPages(
+  tables: Tables,
+  budget: number,
+  measure: Measure = utf8,
+  envelope = true,
+): Page[] {
+  return Array.from(eachCutPage(tables, budget, measure, envelope));
 }
 
 const TIME = /\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z/g;

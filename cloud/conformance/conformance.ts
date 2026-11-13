@@ -130,6 +130,7 @@ interface AdminBody {
   readonly value?: unknown;
   readonly error?: { readonly code: string; readonly message: string };
 }
+const pageWire = new WeakMap<object, { text: string; bytes: number }>();
 async function adminCall(
   project: string,
   method: "GET" | "POST",
@@ -147,11 +148,27 @@ async function adminCall(
   if (phase === "large")
     recordBodyMemory(`headers ${project} ${method} ${route}`);
   let bodyValue: AdminBody;
-  if (phase === "large" && method === "GET" && route.startsWith("dump")) {
+  if (
+    (phase === "large" || phase === "budget-body") &&
+    method === "GET" &&
+    route.startsWith("dump")
+  ) {
     const text = await response.text();
     recordBodyMemory(`dump read ${project} ${route}`);
     bodyValue = JSON.parse(text) as AdminBody;
     recordBodyMemory(`dump parsed ${project} ${route}`);
+    if (response.status === 200 && route.startsWith("dump?")) {
+      const prefix = '{"ok":true,"value":';
+      assert.ok(
+        text.startsWith(prefix) && text.endsWith("}"),
+        "dump response envelope",
+      );
+      const page = text.slice(prefix.length, -1);
+      pageWire.set(bodyValue.value as object, {
+        text: page,
+        bytes: Buffer.byteLength(page),
+      });
+    }
   } else {
     bodyValue = (await response.json()) as AdminBody;
   }
@@ -200,7 +217,8 @@ function refusedBeforeUpload(
 }
 async function dumpOf(project: string): Promise<Dump> {
   const reply = await adminCall(project, "GET", "dump");
-  assert.equal(reply.status, 200, JSON.stringify(reply.body));
+  if (reply.status !== 200)
+    assert.equal(reply.status, 200, JSON.stringify(reply.body));
   return reply.body.value as Dump;
 }
 // A restore into an empty project derives the issue number floor when the dump has none. These sources hold
@@ -278,9 +296,12 @@ async function eachPage(
       "GET",
       `dump?cursor=${encodeURIComponent(cursor)}`,
     );
-    assert.equal(reply.status, 200, JSON.stringify(reply.body));
+    if (reply.status !== 200)
+      assert.equal(reply.status, 200, JSON.stringify(reply.body));
     const page = reply.body.value as DumpPage;
     assert.equal(page.format, "forge-cloud-dump-page/1");
+    const received = pageWire.get(page);
+    if (received !== undefined) received.text = "";
     visit(page);
     if (page.next === null) return seen;
     assert.ok(seen < 200, "the pages end");
@@ -518,12 +539,11 @@ async function walk(
       `${label} export`,
     );
     recordBodyMemory(`${label} parsed`);
-    // Readback does not send the page: count the same JSON bytes one value at a time.
+    const received = pageWire.get(page);
+    pageWire.delete(page);
     const readback = phase === "budget-body" && label === "body readback";
-    const text = readback ? "" : JSON.stringify(page);
-    const bytes = readback
-      ? (await import("./budget.ts")).pageBytes(page)
-      : Buffer.byteLength(text);
+    const text = readback ? "" : (received?.text ?? JSON.stringify(page));
+    const bytes = received?.bytes ?? Buffer.byteLength(text);
     recordBodyMemory(`${label} sized`);
     trip.bytes.push(bytes);
     assert.ok(
@@ -3945,7 +3965,7 @@ if (phase === "large") {
       for (const [n, page] of pages.entries()) {
         assert.equal(page.page, n);
         assert.ok(
-          Buffer.byteLength(JSON.stringify(page)) <= 4 * 1024 * 1024,
+          pageWire.get(page)!.bytes <= 4 * 1024 * 1024,
           `page ${n} is over 4 MiB`,
         );
         for (const [table, rows] of Object.entries(page.tables))
@@ -4031,13 +4051,18 @@ if (phase === "large") {
         );
       const grown = tablesOf(source.db);
       recordBodyMemory("maximum grown tables");
-      const expected = oracle.cutPages(grown, budget);
+      const expected = Array.from(
+        oracle.eachCutPage(grown, budget),
+        oracle.utf8,
+      );
       recordBodyMemory("maximum expected pages");
       // The fixture must tell a UTF-16 count from a byte count: cut by units, a page overfills by real bytes.
+      const units = Array.from(
+        oracle.eachCutPage(grown, budget, oracle.utf16),
+        oracle.utf8,
+      );
       assert.ok(
-        oracle
-          .cutPages(grown, budget, oracle.utf16)
-          .some((page) => oracle.utf8(page) > budget),
+        units.some((size) => size > budget),
         "the grown fixture cannot tell a UTF-16 count from a UTF-8 byte count",
       );
       const stamped = oracle.digester(true);
@@ -4057,7 +4082,7 @@ if (phase === "large") {
       );
       assert.deepEqual(
         trip.bytes,
-        expected.map((page) => oracle.utf8(page)),
+        expected,
         "the real pages are not the expected pages",
       );
       // Only the clock times differ from the fixture, which ran at another time; source to target is exact above.
@@ -4067,10 +4092,7 @@ if (phase === "large") {
         "the grown export differs from the independently grown project",
       );
       console.log(
-        `INFO maximum: pages ${trip.bytes.join(", ")} bytes of ${budget}; mutated cut: ${oracle
-          .cutPages(grown, budget, oracle.utf16)
-          .map((page) => oracle.utf8(page))
-          .join(", ")}`,
+        `INFO maximum: pages ${trip.bytes.join(", ")} bytes of ${budget}; mutated cut: ${units.join(", ")}`,
       );
       showDigests("maximum", trip.digests);
     },
