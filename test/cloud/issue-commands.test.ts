@@ -7612,6 +7612,14 @@ for (const w of WRITES) {
     const again = await f.send(w.send("l-0"), { token });
     expect([again.status, again.text]).toEqual([200, first.text]);
     expect(f.snapshot()).toBe(full);
+    f.db.run(
+      "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < 8) INSERT INTO domain_cloud_command_receipts(request_id,fingerprint,outcome,result,created_at,expires_at) SELECT 'expired-' || i, '{}', 'ok', '{}', ?, ? FROM n",
+      [f.now() - day, f.now() - 1],
+    );
+    const mixed = f.snapshot();
+    const mixedRefusal = await f.send(w.send("l-3", w.bad), { token });
+    expect([mixedRefusal.status, mixedRefusal.code]).toEqual([...w.badWant]);
+    expect(f.snapshot()).toBe(mixed);
   }, 60_000);
 
   test(`a failed receipt write rolls the whole ${w.name} back, and the retry applies it once`, async () => {
@@ -10603,3 +10611,48 @@ for (const [first, last, status] of [
       expect((await t.admin("dump")).json).toEqual(before);
     } else expect(tablesOf(t.db)).toEqual(tables);
   }, 30_000);
+
+for (const trip of TRIPS)
+  test(`restored ${trip} receipts with tampered distant expiry cannot pin live admission`, async () => {
+    const f = fixture();
+    const token = await f.device();
+    expect((await f.send(make("audit-source"), { token })).status).toBe(200);
+    const tables = tablesOf(f.db);
+    const sample = tables.domain_cloud_command_receipts![0]!;
+    tables.domain_cloud_command_receipts = Array.from(
+      { length: MAX_RECEIPTS },
+      (_, i) => ({
+        ...sample,
+        request_id: "c2:" + i.toString(16).padStart(64, "0"),
+        expires_at: Number.MAX_SAFE_INTEGER,
+      }),
+    );
+    const { t, got } = await restoreInto(trip, tables, { per: 1000 });
+    expect(got.status).toBe(200);
+    expect(tablesOf(t.db)).toEqual(tables);
+    const current = await t.device();
+    const wrote = await t.send(make("audit-fresh"), { token: current });
+    expect([wrote.status, wrote.exit]).toEqual([200, 0]);
+    expect(tablesOf(t.db).domain_cloud_command_receipts).toHaveLength(
+      MAX_RECEIPTS - 8 + 1,
+    );
+  }, 60_000);
+
+test("an imported receipt never proves ownership of an unowned inner acquisition", async () => {
+  const id = "c2:" + "a".repeat(64);
+  const source = await legacySource("inner", id);
+  const rows = source.tables.domain_cloud_command_receipts!;
+  rows.push({
+    ...rows[0]!,
+    request_id: id,
+    expires_at: Number.MAX_SAFE_INTEGER,
+  });
+  rows.sort((a, b) => (String(a.request_id) < String(b.request_id) ? -1 : 1));
+  const { t, got } = await restoreInto("whole", source.tables);
+  expect(got.status).toBe(200);
+  const token = await t.device();
+  const before = t.snapshot();
+  const attempted = await t.send(make(id), { token });
+  expect([attempted.status, attempted.code]).toEqual([503, "UNAVAILABLE"]);
+  expect(t.snapshot()).toBe(before);
+}, 30_000);
