@@ -53,6 +53,7 @@ function fixture() {
         USERPROFILE: home,
         FORGE_DEVICE_ROOT: join(dir, "device"),
         FORGE_DEVICE_ID: "cli-device-1",
+        FORGE_NO_BROWSER: "1",
         FORGE_SESSION: "cloud-login-test",
       },
       encoding: "utf8",
@@ -114,7 +115,7 @@ test("without a project identity login is a context failure and writes nothing",
   const f = fixture();
   try {
     const out = f.run([
-      "cloud",
+      "auth",
       "login",
       "--origin",
       ORIGIN,
@@ -137,7 +138,7 @@ test("an input with a credential as a property name or value prints it nowhere",
     const name = `fct_0123456789abcdef.${SECRET}`;
     const value = `fct_fedcba9876543210.${"V".repeat(43)}`;
     for (const input of [{ [name]: value }, { origin: { [name]: value } }]) {
-      const out = f.run(["cloud", "login", "--input", JSON.stringify(input)]);
+      const out = f.run(["auth", "login", "--input", JSON.stringify(input)]);
       expect(out.status).toBe(6);
       expect(code(out.envelope)).toBe("INPUT_INVALID");
       const shown = out.stdout + out.stderr;
@@ -156,7 +157,7 @@ test("a non-object input prints its value nowhere", () => {
   try {
     f.manifest();
     for (const raw of ['["fct_x"]', '"fct_x"', "5", "null"]) {
-      const out = f.run(["cloud", "login", "--input", raw]);
+      const out = f.run(["auth", "login", "--input", raw]);
       expect(out.status).toBe(6);
       expect(code(out.envelope)).toBe("INPUT_INVALID");
       expect(out.stdout + out.stderr).not.toContain("fct_x");
@@ -173,7 +174,7 @@ test("an http origin is refused before any request", () => {
   try {
     f.manifest();
     const out = f.run([
-      "cloud",
+      "auth",
       "login",
       "--origin",
       "http://forge.example.test",
@@ -203,7 +204,7 @@ test("a binding edited to another origin than the saved credential is refused wi
       readFileSync(f.credentials, "utf8"),
       readFileSync(f.binding, "utf8"),
     ];
-    const out = f.run(["cloud", "login"]);
+    const out = f.run(["auth", "login"]);
     expect(out.status).toBe(4);
     expect(code(out.envelope)).toBe("INPUT_CONFLICT");
     expect([
@@ -221,7 +222,7 @@ test("an unreachable origin is unavailable, leaves no credential or binding, and
   try {
     f.manifest();
     const out = f.run([
-      "cloud",
+      "auth",
       "login",
       "--origin",
       "https://127.0.0.1:1",
@@ -238,3 +239,19 @@ test("an unreachable origin is unavailable, leaves no credential or binding, and
     f.close();
   }
 }, 60_000);
+
+for (const [command, status, error] of [
+  [["auth", "login"], 6, "CONTEXT_MISSING"],
+  [["cloud", "login"], 2, "UNKNOWN_COMMAND"],
+  [["cloud.login"], 2, "UNKNOWN_COMMAND"],
+] as const) {
+  test(`login command ${command.join(" ")}`, () => {
+    const f = fixture();
+    try {
+      const out = f.run([...command]);
+      expect([out.status, code(out.envelope)]).toEqual([status, error]);
+    } finally {
+      f.close();
+    }
+  }, 60_000);
+}

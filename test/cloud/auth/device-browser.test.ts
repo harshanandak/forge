@@ -359,7 +359,7 @@ function fixture(
   };
 }
 
-test("GET /device serves a fixed page and a csrf cookie, with no secret in the URL", async () => {
+test("GET /device serves a page and a csrf cookie", async () => {
   const f = fixture();
   await f.provision();
   const jar = await f.open();
@@ -381,7 +381,7 @@ test("GET /device serves a fixed page and a csrf cookie, with no secret in the U
   expect(jar.page.text).toContain(`name="csrf" value="${jar.csrf}"`);
   expect(jar.page.text).toContain('action="/device"');
   const prefilled = await f.send("/device?code=BCDF-GHJK");
-  expect(prefilled.text).not.toContain("BCDF-GHJK");
+  expect(prefilled.text).toContain('name="code" value="BCDF-GHJK"');
 }, 30_000);
 
 test("the device routes need configuration and a provisioned project", async () => {
@@ -1526,3 +1526,30 @@ test("other address headers cannot escape the address cap, and a bound callback 
     expect(pair(await rotate(n))).toEqual([400, "invalid_request"]);
   expect(pair(await rotate(9))).toEqual([429, "rate_limited"]);
 }, 30_000);
+
+for (const [query, code] of [
+  ["code=BCDF-GHJK", "BCDF-GHJK"],
+  ["code=ABCD-EFGH", ""],
+  ["code=%3Cscript%3E", ""],
+  ["code=%22%3E%3Cscript%3E", ""],
+  [`code=${"B".repeat(1000)}`, ""],
+  ["code=BCDF-GHJK&code=BCDF-GHJK", ""],
+  ["code=bcdf-ghjk", ""],
+  ["", ""],
+]) {
+  test(`device code prefill: ${query!.slice(0, 60)}`, async () => {
+    const f = fixture();
+    await f.provision();
+    const before = f.frozen();
+    const reply = await f.send(`/device?${query}`);
+    expect(reply.status).toBe(200);
+    expect(reply.text).toContain(`name="code" value="${code}"`);
+    expect(reply.text).not.toContain("<script>");
+    expect(reply.text).toContain("<button>Continue</button>");
+    expect(reply.headers.get("set-cookie")).toContain(
+      "Secure; HttpOnly; SameSite=Lax",
+    );
+    expect(reply.headers.get("referrer-policy")).toBe("same-origin");
+    expect(f.frozen()).toBe(before);
+  }, 30_000);
+}

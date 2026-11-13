@@ -13,6 +13,7 @@ import {
 } from "../../src/assembly/cloud-profile.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import type { ResultEnvelope } from "../../src/generated/types.ts";
+import type { ProcessPort } from "../../src/ports/process.ts";
 import { exitCode } from "../../src/surface/result.ts";
 import {
   approved,
@@ -63,7 +64,7 @@ async function login(
     root: r.sb.root,
     home: r.sb.home,
     deviceRoot: r.sb.deviceRoot,
-    env: { FORGE_DEVICE_ID: "dev-1" },
+    env: { FORGE_DEVICE_ID: "dev-1", FORGE_NO_BROWSER: "1" },
     signal: new AbortController().signal,
     fetch: net.fetch,
     now: r.clk.now,
@@ -893,3 +894,57 @@ test("an invalid FORGE_DEVICE_ID is a context failure with no request", async ()
     r.sb.close();
   }
 }, 30_000);
+
+for (const [platform, env, result, expected] of [
+  ["linux", { DISPLAY: ":0" }, "ok", ["xdg-open"]],
+  ["linux", { WAYLAND_DISPLAY: "wayland-0" }, "throw", ["xdg-open"]],
+  ["linux", { DISPLAY: ":0" }, "missing", []],
+  ["linux", {}, "ok", []],
+  ["linux", { DISPLAY: ":0", FORGE_NO_BROWSER: "1" }, "ok", []],
+  ["darwin", {}, "ok", ["open"]],
+  ["win32", {}, "ok", ["rundll32.exe", "url.dll,FileProtocolHandler"]],
+] as const) {
+  test(`browser opening: ${platform} ${JSON.stringify(env)} ${result}`, async () => {
+    const r = rig();
+    const calls: string[][] = [];
+    const browser: ProcessPort = {
+      capability: "forge.process/v1",
+      resolve(name) {
+        return result === "missing"
+          ? { kind: "unavailable", reason: "missing", remedy: "open the link" }
+          : { kind: "resolved", path: name };
+      },
+      run(executable, args) {
+        calls.push([executable.path, ...args]);
+        if (result === "throw") return Promise.reject(new Error("no browser"));
+        return Promise.resolve({
+          exitCode: 0,
+          signal: null,
+          stdout: "",
+          stderr: "",
+          timedOut: false,
+          truncated: false,
+          durationMs: 0,
+        });
+      },
+    };
+    const more = {
+      browser,
+      platform,
+      env: { FORGE_DEVICE_ID: "dev-1", ...env },
+    };
+    try {
+      const out = await login(r, [() => json(startBody()), goodPoll(r)], more);
+      const link = `${ORIGIN}/device?code=${USER_CODE}`;
+      expect(out.exit).toBe(0);
+      expect(r.lines).toContain(`Open ${link}`);
+      expect(r.lines).toContain(`Code: ${USER_CODE}`);
+      expect(r.lines).toContain(
+        "Waiting for the owner to approve; the code expires in 600 seconds.",
+      );
+      expect(calls).toEqual(expected.length ? [[...expected, link]] : []);
+    } finally {
+      r.sb.close();
+    }
+  }, 30_000);
+}
