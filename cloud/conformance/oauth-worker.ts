@@ -9,7 +9,7 @@ import {
   durableRedemption,
   type RedemptionNamespace,
 } from "../src/adapters/workers-oauth/redemption.ts";
-import { testIdentityVerifier } from "../../test/contract/lib/identity-verifier.ts";
+import { clerk } from "./fault-worker.ts";
 import { durableGrants } from "../src/adapters/workers-oauth/grant-state.ts";
 import { createWorker } from "../src/worker.ts";
 export {
@@ -26,6 +26,11 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url),
       issuer = url.origin;
+    const upstream = clerk({
+      CLERK_CLIENT_ID: issuer,
+      CLERK_ISSUER: "https://clerk.test",
+      FORGE_OWNER_SUBJECT: "user_ConformanceOwner",
+    });
     if (url.pathname === "/fixture/ready") return new Response("ready");
     if (url.pathname === "/fixture/snapshot") {
       const entries = await env.OAUTH_KV.list({ prefix: "" });
@@ -53,21 +58,8 @@ export default {
       upstream: {
         begin: (state) =>
           Promise.resolve(`${issuer}/fixture/login?state=${state}`),
-        verify: (_request, now) =>
-          testIdentityVerifier(
-            new Map([
-              [
-                "fixture",
-                {
-                  issuer: "https://identity.test",
-                  subject: "owner",
-                  audience: issuer,
-                  authenticatedAt: now - 1000,
-                  expiresAt: now + 7_200_000,
-                },
-              ],
-            ]),
-          ).verify("fixture", issuer, now),
+        verify: (request, now, verifier) =>
+          upstream.verify(request, now, verifier ?? ""),
       },
     };
     const fault = request.headers.get("x-oauth-state-fault");

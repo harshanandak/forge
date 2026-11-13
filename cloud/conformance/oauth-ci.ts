@@ -93,7 +93,7 @@ try {
       );
       assert.match(
         result.stderr,
-        /FAIL OAuth holder revocation: verification must reflect durable grant revocation/,
+        /FAIL OAuth holder revocation: owner access must reflect durable grant revocation \(expected 401, observed 2\d\d\)/,
       );
       console.log(
         "PASS counterfactual: revoke succeeded but subsequent access was admitted",

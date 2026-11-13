@@ -45,7 +45,7 @@ async function issue(): Promise<Family> {
   assert.equal(consent.status, 302, "fixture consent must work");
   const upstream = new URL(consent.headers.get("location")!);
   const callback = await browser(
-    `/callback?state=${upstream.searchParams.get("state")}`,
+    `/callback?state=${upstream.searchParams.get("state")}&code=owner`,
   );
   assert.equal(callback.status, 302, "fixture callback must work");
   const code = new URL(callback.headers.get("location")!).searchParams.get(
@@ -75,15 +75,30 @@ async function issue(): Promise<Family> {
 async function access(family: Family, active: boolean) {
   const headers = { Authorization: `Bearer ${family.access_token}` };
   const verified = await send("/fixture/verify", { headers });
+  const owner = await send("/p/oauth/holder?subject=owner", { headers });
+  const expected = active ? 200 : 401;
+  assert.equal(
+    owner.status,
+    expected,
+    `owner access must reflect durable grant revocation (expected ${expected}, observed ${owner.status})`,
+  );
+  if (!active)
+    assert.deepEqual(
+      await owner.json(),
+      {
+        ok: false,
+        error: {
+          code: "AUTH_INVALID",
+          message: "Token is not valid",
+          retry: "never",
+        },
+      },
+      "revoked tokens keep the exact invalid-token envelope",
+    );
   assert.deepEqual(
     await verified.json(),
     { verified: active, accepts: active },
     "verification must reflect durable grant revocation",
-  );
-  assert.equal(
-    (await send("/p/oauth/holder?subject=owner", { headers })).status,
-    active ? 200 : 403,
-    "owner access must reflect durable grant revocation",
   );
 }
 async function revoke(family: Family, token: string) {
