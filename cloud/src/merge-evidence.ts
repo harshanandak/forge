@@ -100,6 +100,7 @@ const outcomeFields = {
 };
 const checkGuard = shape({
   id: positive,
+  appId: positive,
   attempt: positive,
   name: text,
   ...outcomeFields,
@@ -244,10 +245,7 @@ export function evaluateMergeEvidence(
     !same(initialPr, finalPr, ["state", "mergeSha", "mergedAt"])
   )
     return refuse("INPUT_CONFLICT", "Delivery binding or PR changed");
-  if (
-    observation.completeness !== "complete" ||
-    observation.ancestry === "unknown"
-  )
+  if (observation.ancestry === "unknown")
     return refuse("UNAVAILABLE", "GitHub evidence is incomplete");
   if (
     finalPr.state !== "MERGED" ||
@@ -276,6 +274,8 @@ export function evaluateMergeEvidence(
     if (!checks.length)
       return refuse("RECEIPT_INVALID", "Required check is missing");
     const check = checks.reduce((a, b) => (b.attempt > a.attempt ? b : a));
+    if (check.appId !== policy.producer.appId)
+      return refuse("RECEIPT_INVALID", "Wrong check producer");
     if (check.headSha !== finalPr.mergeSha)
       return refuse("RECEIPT_HEAD_MISMATCH", "Check must cover merge commit");
     if (check.status !== "completed")

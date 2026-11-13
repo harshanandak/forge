@@ -27,6 +27,7 @@ function fixture() {
   };
   const check = {
     id: 301,
+    appId: producer.appId,
     attempt: 1,
     name: "CI Gate",
     headSha: merge,
@@ -106,7 +107,7 @@ const rows: Row[] = [
   ]),
   ...["project", "issueId", "linkKey", "prId", "headSha"].map((field): Row => [
     `binding ${field}`,
-    (f) =>
+    (f) => {
       Object.assign(f.observation.binding, {
         [field]: (
           {
@@ -117,7 +118,9 @@ const rows: Row[] = [
             headSha: tip,
           } as Record<string, string>
         )[field],
-      }),
+      });
+      if (field === "issueId") f.observation.binding.linkKey = "link:work-2:1";
+    },
     "INPUT_CONFLICT",
   ]),
   [
@@ -224,6 +227,13 @@ const rows: Row[] = [
     "empty evidence",
     (f) => {
       f.observation.runs = [];
+    },
+    "RECEIPT_INVALID",
+  ],
+  [
+    "wrong check App",
+    (f) => {
+      f.observation.runs[0]!.checks[0]!.appId++;
     },
     "RECEIPT_INVALID",
   ],
