@@ -6462,7 +6462,13 @@ const operations: Operations<WorkOperations> = {
       state,
       state.putNext(prefix, () => {
         // The budget was read before the lock: the comments it came from must still be the whole sequence.
-        const highest = Number(comments.at(-1)?.key.slice(prefix.length) ?? 0);
+        // The same number maxNumber sees: the trailing digits of each key, so a key with none (an imported
+        // comment:<id>:draft) counts for 0 and cannot read as NaN against it.
+        const highest = comments.reduce(
+          (max, record) =>
+            Math.max(max, Number(/\d+$/.exec(record.key)?.[0] ?? 0)),
+          0,
+        );
         if (
           state.count(prefix) !== comments.length ||
           state.maxNumber(prefix) !== highest

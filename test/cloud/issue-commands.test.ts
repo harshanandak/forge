@@ -6457,11 +6457,11 @@ for (const kind of NUMBERED)
   test(`two concurrent ${kind} adds from two clients get distinct consecutive numbers above deleted history, and one repeated request id is one add`, async () => {
     const { f, token } = await accepted([1], [2], false);
     const second = await f.device();
+    // Allocation follows completion order, not the order the calls were started, so the results are sorted by key.
     const keys = async (calls: Promise<Sent>[]) =>
-      (await Promise.all(calls)).map((got) => [
-        got.status,
-        FAMILY[kind].key(got.json.result),
-      ]);
+      (await Promise.all(calls))
+        .map((got) => [got.status, FAMILY[kind].key(got.json.result)] as const)
+        .sort((x, y) => x[1].localeCompare(y[1]));
     expect(
       await keys([
         f.send(FAMILY[kind].send("c-1"), { token }),
