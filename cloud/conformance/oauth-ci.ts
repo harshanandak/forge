@@ -99,6 +99,15 @@ try {
         0,
         "OAuth holder revocation journey must pass",
       );
+      const refreshed = spawnSync("bun", ["conformance/refresh.ts"], {
+        stdio: "inherit",
+        timeout: 90_000,
+      });
+      assert.equal(
+        refreshed.status,
+        0,
+        "OAuth guarded refresh journey must pass",
+      );
       await stop();
       await start(`${mode}-restart`);
       const restart = spawnSync("bun", ["conformance/oauth.ts", "restart"], {
