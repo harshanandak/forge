@@ -2,7 +2,7 @@
 // Phase "main" runs every check and saves what must survive a restart; phase "restart" reads it back.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { tmpdir } from "node:os";
@@ -4511,6 +4511,63 @@ if (phase === "budget-body") {
       showDigests("body", trip.digests);
     },
   );
+}
+
+// forge-1040: generated pages of the real-tracker shapes (capacity.ts writes them), restored through the Worker under
+// the limits the workflow sets, then read back. The projects are fresh and named for this run.
+if (phase === "capacity-wire") {
+  const dir = process.env.CAPACITY_DIR ?? "";
+  const floor = "allocation:issue:work-";
+  const digest = (pages: readonly DumpPage[], table: string): string =>
+    createHash("sha256")
+      .update(
+        JSON.stringify(
+          pages
+            .flatMap((page) => page.tables[table] ?? [])
+            .filter((row) => row.key !== floor),
+        ),
+      )
+      .digest("hex");
+  for (const shape of (process.env.CAPACITY_SHAPES ?? "baseline real").split(
+    " ",
+  ))
+    await journey(
+      `capacity wire: ${shape} pages restore through the Worker and read back identical`,
+      async () => {
+        const texts = readdirSync(join(dir, shape))
+          .filter((file) => file.startsWith("page-"))
+          .sort()
+          .map((file) => readFileSync(join(dir, shape, file), "utf8"));
+        assert.ok(texts.length > 0, `${shape} has no pages in ${dir}`);
+        const target = `${run}-cap-${shape}`;
+        const times: number[] = [];
+        for (const [n, body] of texts.entries()) {
+          const started = performance.now();
+          const reply = await adminCall(target, "POST", "restore", body);
+          times.push(Math.round(performance.now() - started));
+          okValue(reply, `${shape} page ${n}`);
+        }
+        assert.equal(await initialized(target), true);
+        const back = await pagesOf(target);
+        const sent = texts.map((text) => JSON.parse(text) as DumpPage);
+        for (const table of [
+          "state_records",
+          "state_events",
+          "state_leases",
+          "state_requests",
+          "domain_cloud_requests",
+        ])
+          assert.equal(
+            digest(back, table),
+            digest(sent, table),
+            `${table} differs after the read back`,
+          );
+        console.log(
+          `INFO capacity wire ${shape}: ${texts.length} pages, restore request ms ${JSON.stringify(times)}, ${back.length} export pages; Worker memory and CPU are not measured here`,
+        );
+      },
+      600_000,
+    );
 }
 
 if (failures.length > 0) {

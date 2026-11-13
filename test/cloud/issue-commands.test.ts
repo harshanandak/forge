@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { limitsFrom } from "../../cloud/src/dump.ts";
 import { Project } from "../../cloud/src/project.ts";
 import {
   readOnlyStore,
@@ -9786,3 +9787,244 @@ for (const trip of TRIPS)
       expect(retry.got.status).toBe(200);
       expect((await t.admin("status")).json.value!.initialized).toBe(true);
     }, 60_000);
+
+// forge-1040: measured capacity. Production limits stay at 10,000 rows and 8 MiB. These rows hold the candidate
+// (20,000 rows, 32 MiB) and the raw-text JSON budget (32 levels of depth, 5,000 values in a body) to their edges
+// through the real admin routes. Rows that refuse a legal-looking body are red until the budget exists.
+const CANDIDATE = { DUMP_MAX_ROWS: "20000", DUMP_MAX_BYTES: "33554432" };
+for (const [name, given, want] of [
+  [
+    "production defaults",
+    {},
+    { maxRows: 10_000, maxBytes: 8_388_608, pageBytes: 4_194_304 },
+  ],
+  [
+    "the candidate",
+    CANDIDATE,
+    { maxRows: 20_000, maxBytes: 33_554_432, pageBytes: 4_194_304 },
+  ],
+] as const)
+  test(`limitsFrom reads ${name}`, () => {
+    expect(limitsFrom(given)).toMatchObject(want);
+  }, 10_000);
+
+const none = (): Tables => ({
+  state_records: [],
+  state_events: [],
+  state_leases: [],
+  state_requests: [],
+  domain_cloud_requests: [],
+});
+const six = (i: number) => String(i).padStart(6, "0");
+const RAW: Record<string, (i: number) => Tables[string][number]> = {
+  state_records: (i) => ({
+    namespace: WORK,
+    key: `k${six(i)}`,
+    revision: 1,
+    body: "{}",
+  }),
+  state_events: (i) => ({
+    sequence: i + 1,
+    namespace: WORK,
+    key: `k${six(i)}`,
+    body: "{}",
+  }),
+  state_leases: (i) => ({
+    namespace: WORK,
+    subject: `s${six(i)}`,
+    generation: 1,
+    body: "{}",
+  }),
+  state_requests: (i) => ({
+    namespace: WORK,
+    request_id: `r${six(i)}`,
+    fingerprint: "{}",
+    result: "{}",
+  }),
+  domain_cloud_requests: (i) => ({
+    request_id: `r${six(i)}`,
+    fingerprint: "{}",
+    outcome: "ok",
+    result: "{}",
+  }),
+};
+// Each table's row edge, alone, by its own COUNT: one over is refused at admission, and the limit itself is not.
+for (const [name, settings, rows, refused] of [
+  ["production defaults", vars, 10_001, true],
+  ["the candidate, one row over", { ...vars, ...CANDIDATE }, 20_001, true],
+  ["the candidate, at the limit", { ...vars, ...CANDIDATE }, 20_000, false],
+] as const)
+  for (const table of Object.keys(RAW))
+    test(`a paged restore of ${rows} ${table} rows under ${name} is ${refused ? "RESTORE_TOO_LARGE" : "not refused for size"}`, async () => {
+      const parts = pagesOf(
+        {
+          ...none(),
+          [table]: Array.from({ length: rows }, (_, i) => RAW[table]!(i)),
+        },
+        10_000,
+      );
+      if (refused) {
+        await refuses("paged", none(), "RESTORE_TOO_LARGE", 413, {
+          parts,
+          settings,
+        });
+        return;
+      }
+      const { got } = await restoreInto("paged", none(), { parts, settings });
+      expect(got.json.error?.code).not.toBe("RESTORE_TOO_LARGE");
+    }, 120_000);
+
+// The stored-byte cap is inclusive, after any floor rows: a project of exactly N bytes restores under N and not under N - 1.
+for (const trip of TRIPS)
+  for (const [name, delta] of [
+    ["at the limit", 0],
+    ["one byte over", -1],
+  ] as const)
+    test(`a ${trip} restore of a project ${name} of the stored-byte cap is ${delta === 0 ? "accepted" : "RESTORE_TOO_LARGE"}`, async () => {
+      const { tables } = await projectWith((w) => {
+        w.issue(1);
+        w.floor(floorAt(1));
+        w.put("note:size", "x".repeat(500));
+      });
+      const settings = {
+        ...vars,
+        DUMP_MAX_BYTES: String(storedBytes(tables) + delta),
+      };
+      if (delta !== 0) {
+        await refuses(trip, tables, "RESTORE_TOO_LARGE", 413, {
+          per: 2,
+          settings,
+        });
+        return;
+      }
+      const { t, got } = await restoreInto(trip, tables, { per: 2, settings });
+      expect(got.status).toBe(200);
+      expectFloor(t, tables, []);
+    }, 60_000);
+
+// The inner budget. The oracle counts a parsed body: depth is open containers, a value is any object, array or
+// scalar, root included, object labels excluded. The cases restore a legal project whose one note is at or past an edge.
+const countValues = (v: unknown): number =>
+  v !== null && typeof v === "object"
+    ? 1 + Object.values(v).reduce<number>((n, c) => n + countValues(c), 0)
+    : 1;
+const depthOf = (v: unknown): number =>
+  v !== null && typeof v === "object"
+    ? 1 + Math.max(0, ...Object.values(v).map(depthOf))
+    : 0;
+const overBudget = (body: unknown) =>
+  depthOf(body) > 32 || countValues(body) > 5_000;
+const withValue = (value: unknown) =>
+  projectWith((w) => {
+    w.issue(1);
+    w.floor(floorAt(1));
+    w.put("note:deep", value);
+  });
+const widest = (tables: Tables) =>
+  Math.max(
+    ...[...tables.state_records!, ...tables.state_events!]
+      .filter((r) => r.key === "note:deep")
+      .map((r) => countValues(JSON.parse(String(r.body)))),
+  );
+const ones = (n: number) => Array.from({ length: n }, () => 1);
+const levels = (n: number): unknown =>
+  Array.from({ length: n }).reduce<unknown>((v) => [v], 1);
+const SIZE_MODES = [
+  ["whole", "whole", 2],
+  ["pages of 1", "paged", 1],
+  ["pages of 2", "paged", 2],
+] as const;
+// [name, the value given the count of an empty one, whether the body is past the budget]
+const INNER: [string, (base: number) => unknown, boolean][] = [
+  ["32 levels of depth", () => levels(31), false],
+  ["33 levels of depth", () => levels(32), true],
+  ["5,000 values", (base) => ones(5_000 - base), false],
+  ["5,001 values", (base) => ones(5_001 - base), true],
+];
+for (const [name, make, bad] of INNER)
+  for (const [mode, trip, per] of SIZE_MODES)
+    test(`a ${mode} restore of a body with ${name} ${bad ? "is RESTORE_INVALID_ROW naming its row, and leaves nothing" : "restores exactly"}`, async () => {
+      const { tables } = await withValue(
+        make(widest((await withValue([])).tables)),
+      );
+      // The first row in dump order that is past the budget: records come before events.
+      const first = ["state_records", "state_events"]
+        .map(
+          (table) =>
+            [
+              table,
+              tables[table]!.find(
+                (r) =>
+                  r.key === "note:deep" &&
+                  overBudget(JSON.parse(String(r.body))),
+              ),
+            ] as const,
+        )
+        .find(([, row]) => row !== undefined);
+      expect(first !== undefined).toBe(bad);
+      const { t, got } = await restoreInto(trip, tables, { per });
+      if (!bad) {
+        expect(got.status).toBe(200);
+        expectFloor(t, tables, []);
+        return;
+      }
+      expect([
+        got.status,
+        got.json.error?.code,
+        got.json.error?.message,
+      ]).toEqual([
+        400,
+        "RESTORE_INVALID_ROW",
+        `${first![0]} row ${at("note:deep")} is not valid state`,
+      ]);
+      expect(got.text).toContain('"retry":"never"');
+      expect(got.text.length).toBeLessThan(1_000);
+      expect((await t.admin("status")).json.value!.initialized).toBe(false);
+      expect(Object.values(tablesOf(t.db)).flat()).toEqual([]);
+      expect(await t.storage.get("restore:next")).toBeUndefined();
+      // The refusal is clean: a legal project restores into the same target from page 0.
+      const retry = await restoreInto(trip, (await withValue(1)).tables, {
+        per,
+        target: t,
+      });
+      expect(retry.got.status).toBe(200);
+    }, 60_000);
+
+// The PR 341 shape: 31 event bodies of about 252,000 characters of singleton arrays, 126,000 levels deep, which
+// expanded to millions of arrays inside the Worker. No inner JSON.parse may read one. The parse probe comes first:
+// the old code also refuses these rows, by a native parse failure, so only the probe tells the two apart.
+test("a paged restore of 31 deeply nested bodies is refused before any inner JSON.parse reads them", async () => {
+  const { tables } = await projectWith((w) => {
+    for (let i = 0; i < 31; i += 1) w.put(`note:a${i}`, i);
+  });
+  const deep = `{"data":${"[".repeat(126_000)}${"]".repeat(126_000)}}`;
+  for (const row of tables.state_events!) row.body = deep;
+  const parse = spyOn(JSON, "parse");
+  let probed: number[];
+  let run!: Awaited<ReturnType<typeof restoreInto>>;
+  try {
+    run = await restoreInto("paged", tables, { per: 4 });
+    probed = parse.mock.calls
+      .map(([text]) => String(text))
+      .filter(
+        (text) =>
+          !text.startsWith('{"format":') && text.includes("[".repeat(1_000)),
+      )
+      .map((text) => text.length);
+  } finally {
+    parse.mockRestore();
+  }
+  expect(probed).toEqual([]);
+  expect([
+    run.got.status,
+    run.got.json.error?.code,
+    run.got.json.error?.message,
+  ]).toEqual([
+    400,
+    "RESTORE_INVALID_ROW",
+    `state_events row ${at("note:a0")} is not valid state`,
+  ]);
+  expect(run.got.text.length).toBeLessThan(1_000);
+  expect((await run.t.admin("status")).json.value!.initialized).toBe(false);
+  expect(Object.values(tablesOf(run.t.db)).flat()).toEqual([]);
+}, 120_000);
