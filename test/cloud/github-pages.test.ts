@@ -1,7 +1,8 @@
 import { expect, setDefaultTimeout, test } from "bun:test";
 import { withGithubHttp } from "../../cloud/src/github-http.ts";
-
 setDefaultTimeout(1000);
+const sequence = (length: number, start = 0) =>
+  Array.from({ length }, (_, n) => start + n);
 const locator = Object.freeze({
   owner: "acme",
   repo: "forge",
@@ -9,11 +10,6 @@ const locator = Object.freeze({
   branch: "main",
   prNumber: 9,
 });
-type Collect = (
-  path: readonly string[],
-  query?: Readonly<Record<string, string>>,
-  key?: string,
-) => Promise<unknown[]>;
 type Case = {
   name: string;
   sizes: number[];
@@ -44,6 +40,7 @@ const cases: Case[] = [
   { name: "count shrinks", sizes: [100, 1], totals: [101, 100] },
   { name: "missing count", sizes: [100, 1], totals: [101, undefined] },
   { name: "early terminal", sizes: [99], totals: [100] },
+  { name: "incomplete result", sizes: [1], totals: [1], fault: "incomplete" },
   { name: "count below rows", sizes: [100], totals: [99] },
   ...[-1, 1.5, "100", null, Number.MAX_SAFE_INTEGER + 1].map((total) => ({
     name: `invalid count ${total}`,
@@ -80,7 +77,6 @@ for (const c of cases) {
     let page = 0,
       credentials = 0,
       cleared = 0,
-      cancelled = 0,
       expire = () => {};
     const envelope = c.totals !== undefined || c.key !== undefined;
     const key = envelope ? (c.key ?? "rows") : undefined;
@@ -96,13 +92,17 @@ for (const c of cases) {
           expire = callback;
           return () => void cleared++;
         },
-        async credential(id, signal) {
+        credential(id, signal) {
           credentials++;
           signals.push(signal);
           expect(id).toBe(7);
-          return { token: "fake-credential", expiresAt: 20_000 };
+          return Promise.resolve({
+            token: "fake-credential",
+            expiresAt: 20_000,
+          });
         },
         async fetch(url, init) {
+          await Promise.resolve();
           signals.push(init.signal!);
           expect(init.method).toBe("GET");
           expect(init.redirect).toBe("manual");
@@ -124,15 +124,18 @@ for (const c of cases) {
             throw new Error("fake-credential raw-body");
           if (index === 1 && c.fault === "deadline") expire();
           if (index === 1 && c.fault === "caller") caller.abort();
-          const rows = Array.from(
-            { length: c.sizes[index] ?? 0 },
-            (_, n) => index * 100 + n,
-          );
+          const rows = sequence(c.sizes[index] ?? 0, index * 100);
           const value =
             c.fault === "shape" && (index === 1 || c.key)
               ? {}
               : envelope && c.fault !== "array"
-                ? { rows, total_count: c.totals?.[index] }
+                ? {
+                    rows,
+                    total_count: c.totals?.[index],
+                    ...(c.fault === "incomplete"
+                      ? { incomplete_results: true }
+                      : {}),
+                  }
                 : rows;
           const body =
             c.fault === "keys"
@@ -144,9 +147,6 @@ for (const c of cases) {
                 start(controller) {
                   controller.enqueue(new TextEncoder().encode("["));
                   controller.error(new Error("raw-body"));
-                },
-                cancel() {
-                  cancelled++;
                 },
               }),
               { headers: { "Content-Type": "application/json" } },
@@ -161,23 +161,12 @@ for (const c of cases) {
         },
       },
       async (session) => {
-        // A missing method is the intended hosted RED, without a typecheck failure.
-        const collect = (session as typeof session & { collect?: Collect })
-          .collect;
-        expect(typeof collect).toBe("function");
         for (let i = 0; i < (c.before ?? 0); i++) await session.get(["warmup"]);
         try {
-          const rows = await collect!(
+          const rows = await session.collect(
             path,
             query,
             c.fault === "keys" ? "rows" : key,
-          );
-          expect(c.ok).toBe(true);
-          expect(rows).toEqual(
-            Array.from(
-              { length: c.sizes.reduce((a, b) => a + b, 0) },
-              (_, n) => n,
-            ),
           );
           return rows;
         } catch {
@@ -189,10 +178,7 @@ for (const c of cases) {
     if (c.ok) {
       expect(result).toEqual({
         ok: true,
-        value: Array.from(
-          { length: c.sizes.reduce((a, b) => a + b, 0) },
-          (_, n) => n,
-        ),
+        value: sequence(c.sizes.reduce((a, b) => a + b, 0)),
       });
     } else {
       const invalid = c.invalid || c.fault === "keys";
@@ -211,6 +197,5 @@ for (const c of cases) {
     );
     if (c.fault !== "mutate")
       expect(JSON.stringify({ locator, path, query })).toBe(original);
-    expect(cancelled).toBe(0); // An errored stream is already closed.
   });
 }

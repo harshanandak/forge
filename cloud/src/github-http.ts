@@ -2,6 +2,11 @@ import { createGithubJsonBudget, parseGithubJson } from "./github-json.ts";
 import { isPlainJson } from "./plain-json.ts";
 type Query = Readonly<Record<string, string>>;
 type Get = (path: readonly string[], query?: Query) => Promise<unknown>;
+type Collect = (
+  path: readonly string[],
+  query?: Query,
+  key?: string,
+) => Promise<unknown[]>;
 type Ports = {
   fetch(url: string, init: RequestInit): Promise<Response>;
   credential(
@@ -19,11 +24,13 @@ type Refusal = {
 };
 const ORIGIN = "https://api.github.com",
   REQUESTS = 32,
+  PAGES = 3,
+  PAGE_SIZE = 100,
   DEADLINE = 10_000;
 export async function withGithubHttp<T>(
   locator: unknown,
   ports: Ports,
-  read: (session: { get: Get }) => Promise<T>,
+  read: (session: { get: Get; collect: Collect }) => Promise<T>,
 ): Promise<{ ok: true; value: T } | Refusal> {
   const controller = new AbortController(),
     budget = createGithubJsonBudget();
@@ -150,7 +157,67 @@ export async function withGithubHttp<T>(
           active--;
         }
       };
-      const value = await read({ get });
+      const collect: Collect = async (path, query = {}, key) => {
+        active++;
+        try {
+          check();
+          if (
+            !isPlainJson([path, query]) ||
+            Object.hasOwn(query, "page") ||
+            Object.hasOwn(query, "per_page")
+          )
+            fail("INPUT_INVALID");
+          // Snapshot server-owned filters before the first await; never follow Link.
+          const fixedPath = [...path],
+            fixedQuery = { ...query };
+          const rows: unknown[] = [];
+          let total: number | undefined;
+          for (let page = 1; page <= PAGES; page++) {
+            const value = await get(fixedPath, {
+              ...fixedQuery,
+              page: String(page),
+              per_page: String(PAGE_SIZE),
+            });
+            let batch = value;
+            if (key !== undefined) {
+              if (!value || typeof value !== "object" || Array.isArray(value))
+                fail();
+              const envelope = value as Record<string, unknown>;
+              if (
+                Object.hasOwn(envelope, "incomplete_results") &&
+                envelope.incomplete_results !== false
+              )
+                fail();
+              const count = envelope.total_count;
+              if (
+                typeof count !== "number" ||
+                !Number.isSafeInteger(count) ||
+                count < 0 ||
+                (total !== undefined && total !== count)
+              )
+                fail();
+              total = count;
+              batch = envelope[key];
+            }
+            if (!Array.isArray(batch) || batch.length > PAGE_SIZE) fail();
+            const items: unknown[] = batch;
+            rows.push(...items);
+            if (
+              total !== undefined &&
+              (rows.length > total ||
+                (batch.length < PAGE_SIZE && rows.length !== total))
+            )
+              fail();
+            if (rows.length === total || batch.length < PAGE_SIZE) return rows;
+          }
+          return fail();
+        } catch {
+          return fail();
+        } finally {
+          active--;
+        }
+      };
+      const value = await read({ get, collect });
       check();
       if (active) fail();
       return { ok: true as const, value };
