@@ -19,6 +19,7 @@ import {
 } from "../../src/generated/validators.ts";
 import type { SqlDatabase, SqlRow } from "../../src/ports/store.ts";
 import { versioned } from "./issue-request-id.ts";
+import { assertNoCheckpoint } from "../../src/core/state/checkpoint.ts";
 
 export const DUMP_FORMAT = "forge-cloud-dump/2";
 export const COMMAND_RECEIPTS = "domain_cloud_command_receipts";
@@ -255,6 +256,7 @@ function* rowsFrom(
 /** The whole dump of a project; undefined means it was never provisioned, so it has no database. */
 export function dumpOf(db: SqlDatabase | undefined, limits?: Limits): Dump {
   if (db === undefined) return { format: DUMP_FORMAT, tables: emptyTables() };
+  assertNoCheckpoint(db);
   if (limits !== undefined)
     assertLimits(
       db,
@@ -377,6 +379,7 @@ export function dumpPage(
     return page;
   };
   if (db === undefined) return empty();
+  assertNoCheckpoint(db);
   // A page is cut in one synchronous call, so a write cannot land inside it. A write between pages
   // would give a dump with a lease body and no event for it, which cannot be restored.
   const now = watermark(db);
@@ -748,6 +751,7 @@ export function restorePage(
   limits: Limits,
 ): Record<string, number> {
   return db.transaction(() => {
+    assertNoCheckpoint(db);
     if (page.page === 0) clearStaged(db);
     insertRows(db, page.tables);
     assertLimits(db, limits, "RESTORE_TOO_LARGE", "The staged restore");
