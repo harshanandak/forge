@@ -142,7 +142,58 @@ jobs:
           }
           bun conformance/store-join.ts
           start first
-          bun conformance/conformance.ts main
+          # The full-strength run (forge-1318): CLOUD_LIVE is unset, so the original journeys run against the small test
+          # limits. The exit status is kept through the pipe, and the six paging, size and staged-validation journeys must
+          # print their exact PASS row. Nothing may be skipped.
+          FULL_ROWS=(
+            "a project dumps in byte-bounded pages and restores the same pages into an empty project, read back identical"
+            "pages restore in order only, and a half restore is abandoned by starting again at page 0"
+            "a write between dump pages makes the next page DUMP_CHANGED, and a fresh export restores identical"
+            "a paged restore runs the same row checks on the whole staged set, and a refusal leaves nothing staged"
+            "the size guard refuses a dump over the project limit, and a restore whose staged rows pass it, before rows load"
+            "a restore over its size bound is refused as RESTORE_TOO_LARGE and creates nothing"
+          )
+          # The four journeys a live run skips for the small CI limits or the upload transport, with their reasons. The leak
+          # counterfactual and the live simulation below both require these exact rows.
+          LIVE_SKIPS=(
+            "a project dumps in byte-bounded pages and restores the same pages into an empty project, read back identical -- requires the small CI page limit; live limits are not discovered"
+            "a write between dump pages makes the next page DUMP_CHANGED, and a fresh export restores identical -- requires a real continuation cursor under the small CI page limit"
+            "the size guard refuses a dump over the project limit, and a restore whose staged rows pass it, before rows load -- requires the small CI project limits (131072 bytes, 100 rows per table)"
+            "a restore over its size bound is refused as RESTORE_TOO_LARGE and creates nothing -- requires the local Worker to answer an incomplete upload before the body arrives; deployed ingress is not covered by that transport assumption"
+          )
+          # Prints one line for each way a run falls short of the full-strength suite: a missing exact PASS row, or any SKIP row.
+          full_gaps() {
+            for row in "${FULL_ROWS[@]}"; do
+              grep -Fxq -- "PASS $row" "$1" || echo "no PASS: $row"
+            done
+            if grep -q '^SKIP ' "$1"; then echo "a journey was skipped"; fi
+          }
+          (
+            unset CLOUD_LIVE
+            bun conformance/conformance.ts main 2>&1 | tee "$RUNNER_TEMP/main.out"
+          )
+          gaps=$(full_gaps "$RUNNER_TEMP/main.out")
+          [ -z "$gaps" ] || { echo "::error::the full-strength run fell short"; echo "$gaps"; exit 1; }
+          # Counterfactual "live mode leaked into the full CI run": the same Worker and test limits with CLOUD_LIVE=1 forced for the
+          # run (a subshell, with its own state file, so the environment and the restart state are untouched). The guard above must
+          # then name exactly the four journeys that need the small limits, which print SKIP instead of PASS, and the run must exit 0
+          # with no FAIL and those four SKIP rows with their reasons.
+          leak=0
+          (
+            export CLOUD_LIVE=1 CONFORMANCE_STATE="$RUNNER_TEMP/leak-state.json"
+            bun conformance/conformance.ts main > "$RUNNER_TEMP/leak.out" 2>&1
+          ) || leak=$?
+          leaked=$(full_gaps "$RUNNER_TEMP/leak.out")
+          wanted=$(printf 'no PASS: %s\n' "${FULL_ROWS[0]}" "${FULL_ROWS[2]}" "${FULL_ROWS[4]}" "${FULL_ROWS[5]}"; echo "a journey was skipped")
+          [ "$leaked" = "$wanted" ] || { echo "::error::live mode leaked into the full run: the guard did not name exactly the four skipped journeys"; echo "$leaked"; exit 1; }
+          # The four are SKIP rows with their reasons, not FAIL rows: the run exits 0 and no journey failed.
+          [ "$leak" = 0 ] || { echo "::error::the leaked live run exited $leak"; exit 1; }
+          [ "$(grep -c '^FAIL ' "$RUNNER_TEMP/leak.out")" = 0 ] || { echo "::error::the leaked live run failed a journey"; exit 1; }
+          for row in "${LIVE_SKIPS[@]}"; do
+            grep -Fxq -- "SKIP $row" "$RUNNER_TEMP/leak.out" || { echo "::error::the leaked live run did not print SKIP $row"; exit 1; }
+            echo "leak counterfactual matched: SKIP $row"
+          done
+          echo "leak counterfactual: the guard named exactly the four skipped journeys:"; echo "$leaked"
           stop
           start second
           bun conformance/conformance.ts restart
@@ -177,6 +228,36 @@ jobs:
             stop
             grep -q "^PASS comment and link numbers survive deleted history, restore and concurrent adds$" "$RUNNER_TEMP/numbers.out" || { echo "::error::the number journey did not pass"; exit 1; }
             grep -q "^PASS comment and link floors survive a restart, and later adds continue above them$" "$RUNNER_TEMP/numbers-restart.out" || { echo "::error::the number restart journey did not pass"; exit 1; }
+          )
+          # Live-mode simulation (forge-1318): the main journeys on the production-default Worker (the config copy above, no DUMP_*
+          # overrides) with CLOUD_LIVE=1, fresh persistence and its own state file, so nothing leaks into the runs above or below.
+          # It needs no FAIL, the four production-limit exclusions and the existing ones each with a reason, and the restore-order
+          # and staged-validation journeys to pass on pages split from the real source. Every check is reported before it fails.
+          (
+            export CLOUD_LIVE=1 config=wrangler.large.jsonc FORGE_CLOUD_PROJECT=ci-live-sim CONFORMANCE_STATE="$RUNNER_TEMP/live-sim-state.json"
+            persist="$RUNNER_TEMP/wrangler-live-sim"
+            start live-sim
+            code=0
+            bun conformance/conformance.ts main > "$RUNNER_TEMP/live-sim.out" 2>&1 || code=$?
+            stop
+            cat "$RUNNER_TEMP/live-sim.out"
+            out="$RUNNER_TEMP/live-sim.out"
+            bad=0
+            fail() { echo "::error::live simulation: $1"; bad=1; }
+            [ "$code" = 0 ] || fail "main exited $code"
+            [ "$(grep -c '^FAIL ' "$out")" = 0 ] || fail "a journey failed"
+            for row in "${LIVE_SKIPS[@]}"; do
+              grep -Fxq -- "SKIP $row" "$out" || fail "missing SKIP $row"
+            done
+            for row in "${FULL_ROWS[1]}" "${FULL_ROWS[3]}"; do
+              grep -Fxq -- "PASS $row" "$out" || fail "missing PASS $row"
+            done
+            [ "$(grep -c '^SKIP ' "$out")" = 32 ] || fail "expected 32 skipped journeys"
+            [ "$(grep -c '^SKIP .* -- .\+$' "$out")" = 32 ] || fail "a skipped journey has no reason"
+            [ "$(grep -c -- ' -- requires the local Clerk double' "$out")" = 8 ] || fail "expected 8 device skips with their reason"
+            [ "$(grep -c -- " -- requires the wrapper's fault headers" "$out")" = 2 ] || fail "expected 2 fault skips with their reason"
+            [ "$(grep -c -- ' -- requires the admitted fixture project' "$out")" = 18 ] || fail "expected 18 typed skips with their reason"
+            [ "$bad" = 0 ]
           )
           # The maximum journey's own time counts toward the added time of the budget cases.
           ms=$(sed -n 's/^INFO budget maximum: .*: \([0-9][0-9]*\) ms$/\1/p' "$RUNNER_TEMP/large.out")
