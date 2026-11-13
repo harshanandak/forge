@@ -24,13 +24,21 @@ export interface RedemptionNamespace {
 const CLOCK_SKEW_MS = 30_000;
 export const CODE_REPLAY_HORIZON_MS = 600_000 + CLOCK_SKEW_MS;
 const MAX_CLAIM_MS = CODE_REPLAY_HORIZON_MS + CLOCK_SKEW_MS;
-export async function codeExpiresAt(code: string, storage: OAuthStorage) {
-  const [user, id] = code.split(":");
-  const grant = await storage.get<{ createdAt: number }>(
+export async function codeExpiresAt(
+  code: string,
+  storage: OAuthStorage,
+  codeHash: string,
+) {
+  const parts = code.split(":");
+  if (parts.length !== 3 || parts.some((part) => !part)) return 0;
+  const [user, id] = parts;
+  const grant = await storage.get<{ createdAt: number; authCodeId?: string }>(
     `grant:${user}:${id}`,
     { type: "json" },
   );
-  return grant && Number.isSafeInteger(grant.createdAt)
+  return grant &&
+    grant.authCodeId === codeHash &&
+    Number.isSafeInteger(grant.createdAt)
     ? grant.createdAt * 1_000 + CODE_REPLAY_HORIZON_MS
     : 0;
 }

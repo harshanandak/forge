@@ -103,7 +103,46 @@ function durableFixture(now = Date.now()) {
   const advance = () => {
     now = alarm;
   };
-  return { object, port, values, names, payloads, responses, advance };
+  return {
+    object,
+    port,
+    values,
+    names,
+    payloads,
+    responses,
+    advance,
+    alarm: () => alarm,
+  };
+}
+
+for (const value of [
+  "person:grant:guess",
+  "person:grant",
+  "person:grant:",
+  "person:grant:private-code:extra",
+]) {
+  test(`invalid code creates no durable redemption: ${value}`, async () => {
+    const f = await fixture(),
+      d = durableFixture(f.options.clock.now());
+    f.options.codeRedemption = d.port;
+    const response = await createOAuthAdapter(f.options).token(
+      new Request("https://auth.example/oauth/token", {
+        method: "POST",
+        body: new URLSearchParams({
+          grant_type: "authorization_code",
+          code: value,
+          code_verifier: verifier,
+        }),
+      }),
+    );
+    expect([response.status, await response.json()]).toEqual([
+      400,
+      { error: "invalid_grant" },
+    ]);
+    expect(d.names).toEqual([]);
+    expect(d.values.size).toBe(0);
+    expect(d.alarm()).toBe(0);
+  }, 30_000);
 }
 
 test("two concurrent durable claims have one winner and replay loses", async () => {
@@ -133,7 +172,7 @@ test("alarm cleanup cannot revive a code after its issuance horizon", async () =
   const f = await fixture(),
     d = durableFixture(f.options.clock.now() - 30_000);
   f.options.codeRedemption = d.port;
-  const expiresAt = await codeExpiresAt(code, f.options.storage);
+  const expiresAt = await codeExpiresAt(code, f.options.storage, f.hash);
   expect(await d.port.claimOnce(f.hash, expiresAt)).toBe(true);
   f.advance(CODE_REPLAY_HORIZON_MS);
   d.advance();

@@ -330,7 +330,7 @@ export function createOAuthAdapter(options: OAuthOptions): OAuthAdapter {
             const hash = Array.from(new Uint8Array(digest), (byte) =>
               byte.toString(16).padStart(2, "0"),
             ).join("");
-            const expiresAt = await codeExpiresAt(code, options.storage);
+            const expiresAt = await codeExpiresAt(code, options.storage, hash);
             const now = options.clock.now();
             if (!Number.isFinite(now) || now >= expiresAt)
               return failure("invalid_grant", 400);
@@ -367,8 +367,10 @@ export function createOAuthAdapter(options: OAuthOptions): OAuthAdapter {
                     grant.clientId === clientId &&
                     !("authCodeWrappedKey" in grant)
                   ) {
-                    // Provider 1.2.4 has no revocation tombstone: an in-flight first
-                    // exchange can persist tokens after this sweep. Claim still limits issuance to one.
+                    // An in-flight exchange can save tokens after the KV sweep.
+                    const hash = await grantHash(code, userId);
+                    if (!hash) return failure("invalid_grant", 400);
+                    await options.grantRevocation.revoke(hash);
                     await oauth.revokeGrant(grantId, userId);
                   }
                 }

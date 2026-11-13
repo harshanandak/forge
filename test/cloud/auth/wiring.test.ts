@@ -618,6 +618,86 @@ test("configured token exchange permits one success and refuses races and replay
   expect(results.map((r) => r.status).sort()).toEqual([200, 400]);
 }, 30_000);
 
+for (const phase of ["unconsumed", "late-save", "sweep-failure"] as const) {
+  test(`configured code replay interleaving: ${phase}`, async () => {
+    const f = await fixture(),
+      other = await f.start();
+    const otherToken = await field(
+      await other.exchange(codeOf(await other.finish())),
+      "access_token",
+    );
+    const flow = await f.start(),
+      code = codeOf(await flow.finish());
+    const [user, id] = code.split(":"),
+      key = `grant:${user}:${id}`;
+    const hash = await sha256(
+      `forge:oauth-grant:1:${JSON.stringify([user, id])}`,
+    );
+    const active = async () =>
+      (
+        await f.env.GRANT_STATE.get(hash).fetch(
+          new Request(`https://grant.internal/${hash}`),
+        )
+      ).status;
+    const storage = f.env.OAUTH_KV,
+      put = storage.put.bind(storage),
+      remove = storage.delete.bind(storage);
+    const reached = Promise.withResolvers<void>(),
+      resume = Promise.withResolvers<void>();
+    let paused = false,
+      swept = false;
+    storage.put = async (name, value, options) => {
+      const pause =
+        phase === "unconsumed"
+          ? name === key
+          : name.startsWith(`token:${user}:${id}:`);
+      if (pause && !paused) {
+        paused = true;
+        reached.resolve();
+        await resume.promise;
+      }
+      await put(name, value, options);
+    };
+    storage.delete = async (name) => {
+      if (name === key) {
+        expect(await active()).toBe(403);
+        swept = true;
+        if (phase === "sweep-failure") throw new Error("injected KV failure");
+      }
+      await remove(name);
+    };
+    const winner = flow.exchange(code);
+    try {
+      await reached.promise;
+      await refused(await flow.exchange(code), code, "invalid_grant");
+      expect(await active()).toBe(phase === "unconsumed" ? 200 : 403);
+      expect(swept).toBe(phase !== "unconsumed");
+    } finally {
+      resume.resolve();
+    }
+    const issued = await winner;
+    expect(issued.status).toBe(200);
+    expect(
+      (await storage.list({ prefix: `token:${user}:${id}:` })).keys,
+    ).toHaveLength(1);
+    for (const [token, expected] of [
+      [await field(issued, "access_token"), phase === "unconsumed" ? 200 : 401],
+      [otherToken, 200],
+    ] as const) {
+      expect(
+        await status(
+          f.worker.fetch(
+            new Request(`${issuer}/p/a/holder`, {
+              headers: { authorization: `Bearer ${token}` },
+            }),
+            f.env,
+          ),
+        ),
+      ).toBe(expected);
+    }
+  }, 30_000);
+}
+
 test("configured callbacks refuse replay, foreign state and invalid ID tokens", async () => {
   for (const [claims, alg] of [
     [{ aud: "other" }, "RS256"],
