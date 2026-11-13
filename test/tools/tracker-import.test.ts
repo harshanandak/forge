@@ -9,6 +9,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -127,6 +128,20 @@ const refused: [
     "SOURCE_LIVE_HOME",
   ],
   [
+    "a directory link to the live store",
+    (d) => {
+      // The path itself looks harmless; only following the link reaches `.forge/state.sqlite`. A junction runs on every OS.
+      const live = backup(
+        d,
+        { floors: true },
+        join("live", ".forge", "state.sqlite"),
+      );
+      symlinkSync(join(d, "live", ".forge"), join(d, "alias"), "junction");
+      return { backup: join(d, "alias", "state.sqlite"), digest: live.digest };
+    },
+    "SOURCE_LIVE_HOME",
+  ],
+  [
     "a source that changes between the two digest checks",
     (d) => {
       const s = backup(d, { floors: true });
@@ -222,3 +237,39 @@ test("a graph with distinct ids and a parent that depends on its child is accept
   });
   expect([report.status, report.code]).toEqual(["PASS", null]);
 }, 30_000);
+
+// A tracker can hold a long dependency chain; the cycle check must not use the call stack for it.
+test("a legal dependency chain 30,000 deep is accepted", async () => {
+  const dir = scratch();
+  const source = backup(dir, { floors: true });
+  const raw = new Database(source.path);
+  const insert = raw.prepare(
+    "INSERT INTO state_records (namespace, key, revision, body) VALUES ('forge/work', ?, 1, ?)",
+  );
+  const links = 30_000;
+  raw.transaction(() => {
+    for (let n = 1; n <= links; n += 1) {
+      const id = `chain-${String(n).padStart(6, "0")}`;
+      const next = `chain-${String(n + 1).padStart(6, "0")}`;
+      const value = { id, dependsOn: n < links ? [next] : [] };
+      insert.run(
+        `issue:${id}`,
+        JSON.stringify({
+          namespace: "forge/work",
+          key: `issue:${id}`,
+          revision: 1,
+          value,
+        }),
+      );
+    }
+  })();
+  raw.close();
+  const report = await convert({
+    backup: source.path,
+    digest: sha(readFileSync(source.path)),
+  });
+  expect([report.status, report.code]).toEqual(["PASS", null]);
+  expect(report.selected.state_records.rows).toBe(
+    read(source.path, "state_records", WORK).length,
+  );
+}, 60_000);

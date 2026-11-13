@@ -2,7 +2,7 @@
 // cloud restore would select (forge-1231). It is a dry run: it writes nothing, uses no network and never opens
 // the home store. Writing the page files is a follow-up slice.
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { byteLength, rowOf, type Row } from "../cloud/src/dump.ts";
@@ -47,6 +47,8 @@ export interface Report {
 
 const NAMESPACE = "forge/work";
 const ISSUE_FLOOR = "issue:work-";
+const isLive = (path: string): boolean =>
+  /\/\.forge\/state\.sqlite$/i.test(path.replaceAll("\\", "/"));
 const FAMILY = /^((?:comment|link):[^:]+:)[1-9][0-9]*$/;
 const STATE = TABLES.slice(0, 4) as StateTable[];
 
@@ -112,20 +114,30 @@ function addIssue(issues: Map<string, Issue>, body: string): void {
 }
 /** Every dependency and parent must be a selected issue; dependencies must not cycle (a parent may depend on its children). */
 function checkGraph(issues: Map<string, Issue>): void {
-  const state = new Map<string, boolean>();
-  const visit = (id: string): void => {
-    const issue = issues.get(id);
-    if (issue === undefined) throw new Refusal("GRAPH_MISSING_TARGET");
-    if (state.get(id) === false) throw new Refusal("GRAPH_CYCLE");
-    if (state.has(id)) return;
-    state.set(id, false);
-    issue.deps.forEach(visit);
-    state.set(id, true);
-  };
-  for (const [id, { parent }] of issues) {
+  // An explicit stack keeps a chain of any depth off the call stack. 1 is on the path, 2 is finished.
+  const colour = new Map<string, 1 | 2>();
+  for (const [root, { parent }] of issues) {
     if (parent !== undefined && !issues.has(parent))
       throw new Refusal("GRAPH_MISSING_TARGET");
-    visit(id);
+    if (colour.has(root)) continue;
+    colour.set(root, 1);
+    const stack: { id: string; next: number }[] = [{ id: root, next: 0 }];
+    while (stack.length > 0) {
+      const top = stack[stack.length - 1]!;
+      const deps = issues.get(top.id)!.deps;
+      if (top.next === deps.length) {
+        colour.set(top.id, 2);
+        stack.pop();
+        continue;
+      }
+      const id = deps[top.next++]!;
+      if (!issues.has(id)) throw new Refusal("GRAPH_MISSING_TARGET");
+      if (colour.get(id) === 1) throw new Refusal("GRAPH_CYCLE");
+      if (!colour.has(id)) {
+        colour.set(id, 1);
+        stack.push({ id, next: 0 });
+      }
+    }
   }
 }
 
@@ -182,10 +194,16 @@ function analyse(db: SqlDatabase): Omit<Report, "status" | "code"> {
 }
 
 export async function convert(options: Options): Promise<Report> {
-  const path = resolve(options.backup);
+  let path = resolve(options.backup);
   try {
-    if (/\/\.forge\/state\.sqlite$/.test(path.replaceAll("\\", "/")))
-      throw new Refusal("SOURCE_LIVE_HOME");
+    // The live store is refused by its own path and by where any link to it really leads.
+    if (isLive(path)) throw new Refusal("SOURCE_LIVE_HOME");
+    try {
+      path = realpathSync.native(path);
+    } catch {
+      throw new Refusal("SOURCE_MISSING");
+    }
+    if (isLive(path)) throw new Refusal("SOURCE_LIVE_HOME");
     let bytes: Buffer;
     try {
       bytes = readFileSync(path);
