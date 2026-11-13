@@ -460,6 +460,7 @@ test("a preview shows the project and device, grants nothing and needs a same-or
   ];
   bad.push(["opaque origin", { ...bad[3]![1], origin: "null" }]);
   for (const [, init] of bad) {
+    if (init) init.ip = f.fresh();
     const refused = await f.send("/device", init);
     expect([refused.status, outcome(refused)]).toEqual([
       400,
