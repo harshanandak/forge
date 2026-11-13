@@ -87,7 +87,12 @@ import {
   coreDocs,
   validateConfigValue,
 } from "./declarations.ts";
-import { admitCloud, selectCloud } from "./cloud-authority.ts";
+import {
+  admitCloud,
+  boundMissingStoreRemedy,
+  refuseUnsyncedProjectWrite,
+  selectCloud,
+} from "./cloud-authority.ts";
 import { LocalState } from "./state.ts";
 import {
   ApprovalRequired,
@@ -294,12 +299,18 @@ export async function createAssembly(
   const scopeRoot = await checkoutScopeRoot(root, options.providers);
   const manifestRoot = projectManifestRoot(root);
   const deviceState = new LocalState(join(deviceRoot, "records.sqlite"));
+  const env = options.providers?.env ?? process.env;
+  const home = env.HOME ?? env.USERPROFILE;
   const projectState = new LocalState(
     join(stateRoot, ".forge", "state.sqlite"),
     undefined,
     undefined,
-    () => requireRegisteredStore(deviceState, stateRoot),
+    () =>
+      requireRegisteredStore(deviceState, stateRoot, (path) =>
+        boundMissingStoreRemedy(root, home, path),
+      ),
     stateRoot,
+    () => refuseUnsyncedProjectWrite(root, home),
   );
   let trustActor: Actor | undefined;
   const trust = new TrustStore(

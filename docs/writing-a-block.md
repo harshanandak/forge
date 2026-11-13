@@ -60,6 +60,13 @@ into a digest before executing code.
 - `callers: [human, agent]` allows both caller kinds to invoke it.
 - `stability: stable` marks the public operation contract stable.
 
+For device-only records, declare `context: device` on the operation and obtain
+`forge.state@1` from core. That capability writes the device store. In Forge
+0.0.1, a cloud-bound project refuses unsupported local project-state writes,
+including `forge.project-state@1` project selection from a device operation.
+Project and leased operations require cloud sync; do not relabel shared records
+as device-local to bypass the refusal. Generic sync follows in forge-1345.
+
 Input fields whose names map to reserved CLI flags, such as `text`, `json`,
 `help`, `input` or `dryRun`, must be passed using `--input JSON`. For an operation
 `greet.shout` with a `text` field, use `npx forge greet shout --input '{"text":"quiet"}'`
