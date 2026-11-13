@@ -515,7 +515,7 @@ test("real provider registration and canonical resource metadata handle requests
       expect(await metadata.json()).toMatchObject({
         revocation_endpoint: `${issuer}/oauth/revoke`,
         revocation_endpoint_auth_methods_supported: ["none"],
-        grant_types_supported: ["authorization_code"],
+        grant_types_supported: ["authorization_code", "refresh_token"],
       });
     else {
       expect(await metadata.text()).toBe("");

@@ -31,6 +31,7 @@ import { isLoginRoute } from "../../auth/project-login.ts";
 import { commandProject } from "../../issue-commands.ts";
 import { boundedOAuthRequest } from "./body.ts";
 import { revokeOAuth } from "./revocation.ts";
+import { refreshPolicy } from "./refresh.ts";
 export { GrantState } from "./grant-state.ts";
 export { CodeRedemption } from "./redemption.ts";
 export { RegistrationLimiter } from "./registration.ts";
@@ -77,7 +78,8 @@ export function composeOAuth(
   team?: AuthorizationPort,
   protocol?: (request: Request) => Promise<Response>,
 ) {
-  const adapter = createOAuthAdapter(options);
+  const configured = { ...options, refresh: refreshPolicy(options) };
+  const adapter = createOAuthAdapter(configured);
   return composeAuth(
     adapter,
     resource,
@@ -309,7 +311,7 @@ export function createConfiguredWorker(
               ...((await response.json()) as Record<string, unknown>),
               revocation_endpoint: new URL("/oauth/revoke", request.url).href,
               revocation_endpoint_auth_methods_supported: ["none"],
-              grant_types_supported: ["authorization_code"],
+              grant_types_supported: ["authorization_code", "refresh_token"],
             },
             { headers: response.headers },
           );

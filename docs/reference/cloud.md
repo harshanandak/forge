@@ -287,7 +287,9 @@ A live access token or a current/previous issued refresh token with its matching
 
 Malformed requests return 400 `invalid_request`, unknown/non-public clients return 400 `invalid_client`, and unavailable durable state returns 503 rather than claiming an uncommitted revoke. OAuth paths require `GRANT_STATE`. Each access verification reads the permanent hashed grant marker after provider/identity validation, so stale or late KV writes cannot reopen access. Revocation does not sweep KV or recall work authorized before its commit.
 
-Discovery advertises `/oauth/revoke` and only `authorization_code`. Refresh and native revoke operations at `/oauth/token` remain refused. Upstream identity expiry, device credentials and the admin-only `POST /p/<project>/revoke` device route retain their contracts. The isolated CI OAuth journey checks restart, stale records and the durable-check-removal counterfactual; it does not prove deployed behavior.
+GET discovery advertises `/oauth/revoke`, `authorization_code` and guarded `refresh_token`. A public client posts exactly one `grant_type=refresh_token`, full `refresh_token` and `client_id`; optional scope/resource cannot widen the original grant. Each token is durably spent before provider rotation. Proven reuse revokes the whole grant, including a concurrent winner's returned tokens. Claims stay spent after a provider failure or lost reply; unavailable state gives sanitized 503. Native revoke at `/oauth/token` remains refused.
+
+Access lifetime is explicitly 3600 seconds, refresh lifetime 2592000 seconds, with no idle renewal. The first refresh pins the absolute grant deadline; fewer than 60 seconds remaining refuses, and near-boundary access is shortened. Upstream proof expiry remains an earlier limit and refresh never renews it. Cleanup after deadline plus 30 seconds removes spent hashes but retains closed/revoked authority. Device credentials, CLI behavior and the admin-only device revoke route retain their contracts. CI-local workerd covers overlap, restart, late writes and claim/access-check-removal counterfactuals; deployed refresh remains unverified.
 
 ## Check a live Worker
 

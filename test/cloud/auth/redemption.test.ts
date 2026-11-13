@@ -210,7 +210,9 @@ test("adapter burns a mismatched code, sanitizes errors and refuses a correct re
       error:
         grant === "authorization_code"
           ? "invalid_grant"
-          : "unsupported_grant_type",
+          : grant === "refresh_token"
+            ? "invalid_client"
+            : "unsupported_grant_type",
     });
     for (const secret of [code, verifier, "wrong", "private-token"])
       expect(text).not.toContain(secret);

@@ -61,7 +61,7 @@ function gate(): Gate {
   return { promise, open };
 }
 // True when the gate opened, false when the limit passed first.
-async function opens(wait: Promise<void>): Promise<boolean> {
+export async function opens(wait: Promise<void>): Promise<boolean> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const limit = new Promise<boolean>((resolve) => {
     timer = setTimeout(() => resolve(false), WAIT_LIMIT_MS);
@@ -122,7 +122,7 @@ const b64 = (value: string | ArrayBuffer): string =>
   ).toString("base64url");
 
 /** The Clerk double: the code "owner" returns the owner's signed ID token; any other code is refused. */
-export function clerk(env: unknown): DeviceUpstream {
+export function clerk(env: unknown, identityTtl = 3600): DeviceUpstream {
   const vars = (env ?? {}) as Record<string, string>;
   const audience = String(vars.CLERK_CLIENT_ID);
   const verifier = createOidcVerifier(
@@ -154,7 +154,7 @@ export function clerk(env: unknown): DeviceUpstream {
           aud: audience,
           iat: at - 2,
           auth_time: at - 2,
-          exp: at + 3_600,
+          exp: at + identityTtl,
         }),
       )}`;
       const signature = await crypto.subtle.sign(

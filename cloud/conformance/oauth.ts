@@ -215,7 +215,7 @@ async function main() {
       client_id: family.client,
     });
     assert.equal(refresh.status, 400);
-    assert.deepEqual(await refresh.json(), { error: "unsupported_grant_type" });
+    assert.deepEqual(await refresh.json(), { error: "invalid_grant" });
     revoked.push(family);
     console.log(
       `PASS OAuth ${kind} revoke refuses subsequent and stale-KV access`,
