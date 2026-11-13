@@ -26,6 +26,29 @@ export const utf8: Measure = (value) =>
   Buffer.byteLength(JSON.stringify(value));
 export const utf16: Measure = (value) => JSON.stringify(value).length;
 
+/** JSON byte length of a parsed page, without allocating its complete serialization. */
+export function pageBytes(value: unknown): number {
+  if (Array.isArray(value))
+    return (
+      2 +
+      Math.max(0, value.length - 1) +
+      (value as unknown[]).reduce<number>((n, item) => n + pageBytes(item), 0)
+    );
+  if (value !== null && typeof value === "object") {
+    const entries = Object.entries(value);
+    return (
+      2 +
+      Math.max(0, entries.length - 1) +
+      entries.reduce(
+        (n, [key, item]) =>
+          n + Buffer.byteLength(JSON.stringify(key)) + 1 + pageBytes(item),
+        0,
+      )
+    );
+  }
+  return Buffer.byteLength(JSON.stringify(value));
+}
+
 const blank = (): Tables =>
   Object.fromEntries(Object.keys(SHAPE).map((table) => [table, []]));
 const pageOf = (
