@@ -2,6 +2,7 @@
 // Device tokens and their hashes are never part of a dump. The database image is never used.
 // Every value is a string or a safe integer; anything else is refused on the way out and on the way in.
 import { ForgeFailure } from "../../src/contract/failure.ts";
+import { isObject } from "../../src/core/config/pointer.ts";
 import {
   RestoreConsistencyFailure,
   verifyEventDerivedState,
@@ -19,7 +20,9 @@ import {
 import type { SqlDatabase, SqlRow } from "../../src/ports/store.ts";
 import { versioned } from "./issue-request-id.ts";
 
-export const DUMP_FORMAT = "forge-cloud-dump/1";
+export const DUMP_FORMAT = "forge-cloud-dump/2";
+export const COMMAND_RECEIPTS = "domain_cloud_command_receipts";
+export const EXPORT_STATE = "domain_cloud_export";
 
 // `keys` is each table's primary key in order: dump order, and the position a page cursor resumes after.
 const TABLES: Record<string, { columns: string[]; keys: string[] }> = {
@@ -43,9 +46,38 @@ const TABLES: Record<string, { columns: string[]; keys: string[] }> = {
     columns: ["request_id", "fingerprint", "outcome", "result"],
     keys: ["request_id"],
   },
+  [COMMAND_RECEIPTS]: {
+    columns: [
+      "request_id",
+      "fingerprint",
+      "outcome",
+      "result",
+      "created_at",
+      "expires_at",
+    ],
+    keys: ["request_id"],
+  },
 };
 
-export const PAGE_FORMAT = "forge-cloud-dump-page/1";
+export const PAGE_FORMAT = "forge-cloud-dump-page/2";
+
+// Triggers cover every mutation, including receipt-only refusals and deletes, in its transaction.
+// Export metadata is server-local: restoring rows never imports another project's epoch.
+export const DUMP_MIGRATION = {
+  id: "005_cloud_command_receipts",
+  statements: [
+    `CREATE TABLE ${COMMAND_RECEIPTS} (request_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, outcome TEXT NOT NULL, result TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL)`,
+    `CREATE INDEX command_receipts_expiry ON ${COMMAND_RECEIPTS} (expires_at, request_id)`,
+    `CREATE TABLE ${EXPORT_STATE} (id INTEGER PRIMARY KEY CHECK(id=1), epoch TEXT NOT NULL, revision INTEGER NOT NULL)`,
+    `INSERT INTO ${EXPORT_STATE} VALUES (1, lower(hex(randomblob(16))), 0)`,
+    ...Object.keys(TABLES).flatMap((table) =>
+      ["INSERT", "UPDATE", "DELETE"].map(
+        (action) =>
+          `CREATE TRIGGER export_${table}_${action.toLowerCase()} AFTER ${action} ON ${table} BEGIN UPDATE ${EXPORT_STATE} SET revision=revision+1 WHERE id=1; END`,
+      ),
+    ),
+  ],
+};
 
 // Limits on a dump, on the way out and on the way in. The depth is exactly what the format needs:
 // document, tables, rows array, row. The caps keep a hostile or broken document from filling the isolate.
@@ -66,6 +98,7 @@ const WIDE_COLUMNS = [
   "state_events.body",
   "state_requests.fingerprint",
   "state_requests.result",
+  `${COMMAND_RECEIPTS}.result`,
 ];
 const valueLimit = (table: string, column: string): number =>
   WIDE_COLUMNS.includes(`${table}.${column}`)
@@ -73,8 +106,8 @@ const valueLimit = (table: string, column: string): number =>
     : MAX_VALUE_LENGTH;
 // A cursor is two key parts of up to MAX_VALUE_LENGTH characters, each escaped to at most six, in a
 // 47 character skeleton with two 19 digit watermark numbers and their dot.
-const MAX_CURSOR_LENGTH = 47 + 2 * 6 * MAX_VALUE_LENGTH + 39;
-const WATERMARK = /^(?:\d{1,19}\.\d{1,19})?$/;
+const MAX_CURSOR_LENGTH = 47 + 2 * 6 * MAX_VALUE_LENGTH + 52;
+const WATERMARK = /^(?:[a-f0-9]{32}\.\d{1,19})?$/;
 const encoder = new TextEncoder();
 const byteLength = (value: unknown): number =>
   encoder.encode(JSON.stringify(value)).length;
@@ -289,13 +322,10 @@ function parseCursor(text: string): Cursor {
   return cursor as unknown as Cursor;
 }
 
-// Where the project's writes have got to. Every write to the five dumped tables is a receipt (a
-// domain_cloud_requests row, whose rowid only grows) or an event (state_events, whose sequence only
-// grows), and the Worker writes the receipt with the event in one transaction. Rows are never deleted,
-// so a changed project has a different pair. The dump takes it at page 0 and checks it on every page.
+// An epoch distinguishes restores; the transactional counter also detects deletions and updates.
 function watermark(db: SqlDatabase): string {
-  const last = (sql: string): number => Number(db.get(sql)!.n);
-  return `${last("SELECT COALESCE(MAX(sequence), 0) AS n FROM state_events")}.${last("SELECT COALESCE(MAX(rowid), 0) AS n FROM domain_cloud_requests")}`;
+  const row = db.get(`SELECT epoch, revision FROM ${EXPORT_STATE} WHERE id=1`)!;
+  return `${String(row.epoch)}.${String(row.revision)}`;
 }
 
 const pageOf = (
@@ -420,7 +450,12 @@ export function parseDump(text: string): Dump | Page {
   const document = parsed as Record<string, unknown> | null;
   if (document === null || typeof document !== "object")
     throw invalid("The dump must be a JSON object");
-  const paged = document.format === PAGE_FORMAT;
+  const old =
+    document.format === "forge-cloud-dump/1" ||
+    document.format === "forge-cloud-dump-page/1";
+  const paged =
+    document.format === PAGE_FORMAT ||
+    document.format === "forge-cloud-dump-page/1";
   if (
     Object.keys(document).sort().join() !==
     (paged ? "format,last,next,page,tables" : "format,tables")
@@ -430,7 +465,7 @@ export function parseDump(text: string): Dump | Page {
         ? "A dump page must have exactly format, page, last, next and tables"
         : "The dump must have exactly format and tables",
     );
-  if (!paged && document.format !== DUMP_FORMAT)
+  if (!paged && document.format !== DUMP_FORMAT && !old)
     throw invalid(`The dump format must be ${DUMP_FORMAT}`);
   if (
     paged &&
@@ -447,11 +482,17 @@ export function parseDump(text: string): Dump | Page {
   const given = document.tables as Record<string, unknown> | null;
   if (given === null || typeof given !== "object" || Array.isArray(given))
     throw invalid("The dump needs a tables object");
-  const names = Object.keys(TABLES);
+  const names = Object.keys(TABLES).filter(
+    (table) => !old || table !== COMMAND_RECEIPTS,
+  );
   if (Object.keys(given).sort().join() !== [...names].sort().join())
     throw invalid(`The dump tables must be exactly ${names.join(", ")}`);
   const tables: Record<string, Row[]> = {};
   for (const [table, { columns }] of Object.entries(TABLES)) {
+    if (old && table === COMMAND_RECEIPTS) {
+      tables[table] = [];
+      continue;
+    }
     const rows = given[table];
     if (!Array.isArray(rows)) throw invalid(`${table} must be an array`);
     // A page is bounded by its bytes (the restore body limit), a whole dump by its rows.
@@ -545,6 +586,7 @@ const JSON_COLUMNS: Record<string, string[]> = {
   state_leases: ["body"],
   state_requests: ["fingerprint", "result"],
   domain_cloud_requests: ["fingerprint", "result"],
+  [COMMAND_RECEIPTS]: ["fingerprint", "result"],
 };
 
 /**
@@ -558,7 +600,7 @@ function admitJson(tables: Record<string, Row[]>): void {
         if (!withinRestoreBudget(String(row[column])))
           throw rejectedRow(
             table,
-            table === "domain_cloud_requests"
+            table === "domain_cloud_requests" || table === COMMAND_RECEIPTS
               ? String(row.request_id)
               : JSON.stringify([
                   row.namespace,
@@ -602,7 +644,9 @@ function verifyRestored(db: SqlDatabase): {
   events: number;
 } {
   const receipts = Object.keys(TABLES).indexOf("domain_cloud_requests");
-  for (const { row } of rowsFrom(db, receipts, null)) checkServerReceipt(row);
+  for (const { table, row } of rowsFrom(db, receipts, null))
+    if (table === receipts) checkServerReceipt(row);
+    else checkCommandReceipt(row);
   const events = Number(db.get("SELECT COUNT(*) AS n FROM state_events")!.n);
   try {
     const found = verifyEventDerivedState(db, events, undefined, NUMBERED);
@@ -641,6 +685,7 @@ function settleFloor(
     throw error;
   }
   assertLimits(db, limits, "RESTORE_TOO_LARGE", "The restored project");
+  freshEpoch(db);
 }
 
 /** Writes a dump into an empty project and reads it back in the same transaction; any difference rolls it back. */
@@ -699,4 +744,37 @@ export function restorePage(
     if (page.last) settleFloor(db, owner, limits, verifyRestored(db));
     return counts(page.tables);
   });
+}
+
+function freshEpoch(db: SqlDatabase): void {
+  db.run(
+    `UPDATE ${EXPORT_STATE} SET epoch=lower(hex(randomblob(16))), revision=0 WHERE id=1`,
+  );
+}
+
+function checkCommandReceipt(row: Row): void {
+  const bad = (): never => {
+    throw rejectedRow(COMMAND_RECEIPTS, String(row.request_id));
+  };
+  let fingerprint: unknown, result: unknown;
+  try {
+    fingerprint = parseRestoreJson(String(row.fingerprint));
+    result = parseRestoreJson(String(row.result));
+  } catch {
+    return bad();
+  }
+  if (
+    !/^c2:[a-f0-9]{64}$/.test(String(row.request_id)) ||
+    !isObject(fingerprint) ||
+    !versioned(fingerprint) ||
+    typeof fingerprint.input !== "string" ||
+    !/^sha256:[a-f0-9]{64}$/.test(fingerprint.input) ||
+    typeof row.created_at !== "number" ||
+    typeof row.expires_at !== "number" ||
+    row.created_at < 0 ||
+    row.expires_at <= row.created_at ||
+    !["ok", "refused"].includes(String(row.outcome)) ||
+    (row.outcome === "refused" && !validateForgeError(result).ok)
+  )
+    bad();
 }

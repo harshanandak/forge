@@ -268,7 +268,7 @@ function joined(pages: readonly DumpPage[]): Dump {
   for (const page of pages)
     for (const [table, rows] of Object.entries(page.tables))
       (tables[table] ??= []).push(...rows);
-  return { format: "forge-cloud-dump/1", tables };
+  return { format: "forge-cloud-dump/2", tables };
 }
 // One page of a paged dump (GET dump?cursor=start, then the cursor each page names as `next`).
 interface DumpPage {
@@ -293,7 +293,7 @@ async function eachPage(
     if (reply.status !== 200)
       assert.equal(reply.status, 200, JSON.stringify(reply.body));
     const page = reply.body.value as DumpPage;
-    assert.equal(page.format, "forge-cloud-dump-page/1");
+    assert.equal(page.format, "forge-cloud-dump-page/2");
     const received = pageWire.get(page);
     if (received !== undefined) received.text = "";
     visit(page);
@@ -533,7 +533,7 @@ async function walk(
       bytes <= budget,
       `page ${page.page} is ${bytes} bytes, over the ${budget} byte budget`,
     );
-    assert.equal(page.format, "forge-cloud-dump-page/1");
+    assert.equal(page.format, "forge-cloud-dump-page/2");
     assert.equal(page.page, trip.bytes.length - 1, `${label}: page numbers`);
     assert.equal(page.last, page.next === null, `${label}: last means no next`);
     await each(page, text);
@@ -2105,8 +2105,9 @@ if (phase === "main") {
       const device = await issue(source, "tablet");
 
       const dump = await dumpOf(source);
-      assert.equal(dump.format, "forge-cloud-dump/1");
+      assert.equal(dump.format, "forge-cloud-dump/2");
       assert.deepEqual(Object.keys(dump.tables).sort(), [
+        "domain_cloud_command_receipts",
         "domain_cloud_requests",
         "state_events",
         "state_leases",
@@ -2793,7 +2794,7 @@ if (phase === "main") {
       }
       const target = `${run}-page-guard`;
       const record = (index: number): object => ({
-        format: "forge-cloud-dump-page/1",
+        format: "forge-cloud-dump-page/2",
         page: index,
         last: false,
         next: "more",
@@ -2810,6 +2811,7 @@ if (phase === "main") {
           state_leases: [],
           state_requests: [],
           domain_cloud_requests: [],
+          domain_cloud_command_receipts: [],
         },
       });
       // The page that crosses the limit is the page that is refused: 80,000 fits, 160,000 does not.
@@ -2862,12 +2864,13 @@ if (phase === "main") {
   await check(
     "a restore with deep nesting or an extra top-level field is refused before anything is built",
     async () => {
-      const head = '{"format":"forge-cloud-dump/1","tables":';
+      const head = '{"format":"forge-cloud-dump/2","tables":';
       const tables = [
         "state_records",
         "state_events",
         "state_leases",
         "state_requests",
+        "domain_cloud_command_receipts",
         "domain_cloud_requests",
       ].map((table) => `"${table}":[]`);
       const documents = {
@@ -2982,13 +2985,14 @@ if (phase === "main") {
         "POST",
         "restore",
         JSON.stringify({
-          format: "forge-cloud-dump/1",
+          format: "forge-cloud-dump/2",
           tables: {
             state_records: [],
             state_events: legacyEvents,
             state_leases: [],
             state_requests: [],
             domain_cloud_requests: [],
+            domain_cloud_command_receipts: [],
           },
         }),
       );
@@ -4238,6 +4242,7 @@ const TABLES = [
   "state_leases",
   "state_requests",
   "domain_cloud_requests",
+  "domain_cloud_command_receipts",
 ] as const;
 const nameOf = (dump: Dump) =>
   JSON.stringify(TABLES.map((table) => rowsIn(dump, table)));
@@ -4320,6 +4325,7 @@ if (phase === "numbers") {
         for (const table of [
           "state_leases",
           "state_requests",
+          "domain_cloud_command_receipts",
           "domain_cloud_requests",
         ])
           same(table, rowsIn(dump, table), source.tables[table]);
@@ -4577,7 +4583,7 @@ if (phase === "numbers-restart") {
         tables: Dump["tables"];
       };
       const kept = nameOf({
-        format: "forge-cloud-dump/1",
+        format: "forge-cloud-dump/2",
         tables: saved.tables,
       });
       same("project a after the restart", nameOf(await dumpOf(first)), kept);
@@ -4748,7 +4754,16 @@ if (phase === "budget-cursor") {
         budget,
         (page, text) =>
           assert.ok(
-            text === JSON.stringify(expected[page.page]),
+            JSON.stringify({
+              ...JSON.parse(text),
+              next:
+                page.next === null
+                  ? null
+                  : JSON.stringify({
+                      ...JSON.parse(page.next),
+                      w: "0".repeat(32) + ".0",
+                    }),
+            }) === JSON.stringify(expected[page.page]),
             `page ${page.page} is not the expected page`,
           ),
       );

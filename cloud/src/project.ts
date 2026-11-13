@@ -20,6 +20,9 @@ import { validateLeaseHolder } from "../../src/generated/validators.ts";
 import {
   clearStaged,
   DUMP_FORMAT,
+  DUMP_MIGRATION,
+  COMMAND_RECEIPTS,
+  EXPORT_STATE,
   dumpOf,
   dumpPage,
   limitsFrom,
@@ -112,8 +115,17 @@ const domain = {
     TOKEN_MIGRATION,
     LOGIN_MIGRATION,
     LIMITS_MIGRATION,
+    DUMP_MIGRATION,
   ],
-  tables: [PRAGMA_TABLE, REQUESTS, TOKENS, LOGIN, LIMITS],
+  tables: [
+    PRAGMA_TABLE,
+    REQUESTS,
+    TOKENS,
+    LOGIN,
+    LIMITS,
+    COMMAND_RECEIPTS,
+    EXPORT_STATE,
+  ],
 };
 
 const fail = (code: string, message: string): ForgeFailure =>

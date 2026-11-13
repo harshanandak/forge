@@ -9,6 +9,7 @@ export const TABLES = [
   "state_leases",
   "state_requests",
   "domain_cloud_requests",
+  "domain_cloud_command_receipts",
 ] as const;
 export type Table = (typeof TABLES)[number];
 // The columns a dump carries, and each table's key in dump order: the order every digest is taken in.
@@ -18,6 +19,14 @@ export const COLUMNS: Record<Table, string[]> = {
   state_leases: ["namespace", "subject", "generation", "body"],
   state_requests: ["namespace", "request_id", "fingerprint", "result"],
   domain_cloud_requests: ["request_id", "fingerprint", "outcome", "result"],
+  domain_cloud_command_receipts: [
+    "request_id",
+    "fingerprint",
+    "outcome",
+    "result",
+    "created_at",
+    "expires_at",
+  ],
 };
 export const KEYS: Record<Table, string[]> = {
   state_records: ["namespace", "key"],
@@ -25,6 +34,7 @@ export const KEYS: Record<Table, string[]> = {
   state_leases: ["namespace", "subject"],
   state_requests: ["namespace", "request_id"],
   domain_cloud_requests: ["request_id"],
+  domain_cloud_command_receipts: ["request_id"],
 };
 // The issue number floor a restore writes (one record and one event) when the dump has none.
 export const FLOOR = { namespace: "forge/work", key: "allocation:issue:work-" };

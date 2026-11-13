@@ -27,8 +27,8 @@ export const DEVICE = "laptop";
 
 export type Row = Record<string, string | number>;
 export type Tables = Record<string, Row[]>;
-export const DUMP = "forge-cloud-dump/1";
-export const PAGE = "forge-cloud-dump-page/1";
+export const DUMP = "forge-cloud-dump/2";
+export const PAGE = "forge-cloud-dump-page/2";
 // Each table's columns and primary key, in dump order.
 export const SHAPE: Record<string, [string, string]> = {
   state_records: ["namespace, key, revision, body", "namespace, key"],
@@ -40,6 +40,10 @@ export const SHAPE: Record<string, [string, string]> = {
   ],
   domain_cloud_requests: [
     "request_id, fingerprint, outcome, result",
+    "request_id",
+  ],
+  domain_cloud_command_receipts: [
+    "request_id, fingerprint, outcome, result, created_at, expires_at",
     "request_id",
   ],
 };
