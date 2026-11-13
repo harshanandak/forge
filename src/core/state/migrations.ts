@@ -39,7 +39,7 @@ export const stateMigrations: readonly Migration[] = [
   {
     id: "004_state_checkpoint",
     statements: Object.entries(checkpointTables).map(
-      ([table, columns]) => `CREATE TABLE ${table} (${columns})`,
+      ([table, columns]) => `CREATE TABLE IF NOT EXISTS ${table} (${columns})`,
     ),
   },
 ];

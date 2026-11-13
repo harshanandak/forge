@@ -64,6 +64,14 @@ test("checkpoint encoding is canonical, lossless and has a SHA-256 digest", () =
 
 type Mutable = Record<string, unknown>;
 for (const [name, input] of [
+  [
+    "empty allocation prefixes",
+    {
+      ...value(),
+      reservations: [["forge/test", "", 8, 1]],
+      floors: [["forge/test", "", 10, 1]],
+    },
+  ],
   ["zero floor", { ...value(), floors: [["forge/test", "item-", 10, 0]] }],
   [
     "UTF-8 primary key order",
@@ -241,6 +249,13 @@ for (const kind of ["live", "deleted", "leases"])
         (v[kind] as unknown[][])[0]![3] = bad;
       },
     ]);
+for (const kind of ["live", "deleted", "leases", "receipts", "denied"])
+  malformed.push([
+    `${kind}: empty identity`,
+    (v) => {
+      (v[kind] as unknown[][])[0]![1] = "";
+    },
+  ]);
 for (const index of [2, 4])
   for (const bad of [0, -1])
     malformed.push([

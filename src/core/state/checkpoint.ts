@@ -83,14 +83,14 @@ export interface Checkpoint {
   ])[];
 }
 
-// s: nonempty text; p: positive integer; z: nonnegative integer; d: SHA-256; b: lease body.
+// s: nonempty text; e: prefix text; p: positive; z: nonnegative; d: SHA-256; b: lease body.
 const shapes = {
   header: "pspzpz",
   live: "ssppd",
   deleted: "sspp",
   leases: "ssppb",
-  reservations: "sspp",
-  floors: "sspz",
+  reservations: "sepp",
+  floors: "sepz",
   receipts: "sspdd",
   denied: "ssp",
 } as const;
@@ -127,7 +127,7 @@ function rowValid(
         invalid();
     } else if (
       typeof cell !== "string" ||
-      !cell.length ||
+      (rule !== "e" && !cell.length) ||
       !cell.isWellFormed() ||
       (rule === "d" && !/^sha256:[0-9a-f]{64}$/.test(cell))
     )
