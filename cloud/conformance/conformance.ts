@@ -2,7 +2,7 @@
 // Phase "main" runs every check and saves what must survive a restart; phase "restart" reads it back.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { tmpdir } from "node:os";
@@ -4544,6 +4544,79 @@ if (phase === "budget-body") {
         `INFO body: expected and real page ${near.size} bytes (${limit - near.size} under the restore body), ${near.stored} stored bytes, rows ${JSON.stringify(rows)}, builds ${JSON.stringify(built)}`,
       );
       showDigests("body", trip.digests);
+    },
+  );
+}
+
+if (phase === "import") {
+  // forge-1231: a synthetic local state backup is converted, its pages go through this Worker's paged restore, and the
+  // project is read back whole. Only the sequence numbers and the floor pairs the restore adds may differ from the source.
+  const { backup, mapped, read, WORK } = await import("./import-source.ts");
+  const { convert } = await import("../../tools/tracker-import.ts");
+  await journey(
+    "tracker import: converted pages restore through the Worker and read back whole",
+    async () => {
+      const dir = mkdtempSync(join(tmpdir(), "tracker-import-"));
+      const source = backup(dir, { floors: false });
+      const out = join(dir, "out");
+      const report = await convert({
+        backup: source.path,
+        digest: source.digest,
+        out,
+        pageBytes: 3000,
+      });
+      assert.equal(report.status, "PASS", `converter: ${report.code}`);
+      assert.ok(report.pages > 1, "the small page budget cuts several pages");
+      const target = `${run}-import-dst`;
+      assert.equal(await initialized(target), false, "target is empty");
+      const files = readdirSync(out).filter((f) =>
+        /^page-\d{6}\.json$/.test(f),
+      );
+      assert.equal(files.length, report.pages);
+      for (const [index, name] of files.sort().entries()) {
+        const text = readFileSync(join(out, name), "utf8");
+        const reply = okValue<{ page: number; done: boolean }>(
+          await adminCall(target, "POST", "restore", text),
+          `import restore of page ${index}`,
+        );
+        const last = index === files.length - 1;
+        assert.deepEqual([reply.page, reply.done], [index, last]);
+        assert.equal(
+          await initialized(target),
+          last,
+          "provisioned on the last page only",
+        );
+      }
+      const got: Record<string, Record<string, unknown>[]> = {};
+      await walk(target, "import readback", 4 * 1024 * 1024, (page) => {
+        for (const [table, rows] of Object.entries(page.tables))
+          (got[table] ??= []).push(...rows);
+      });
+      const kept = (got.state_records ?? []).filter(
+        (r) => !String(r.key).startsWith("allocation:"),
+      );
+      assert.deepEqual(kept, read(source.path, "state_records", WORK));
+      const added = (got.state_records ?? []).length - kept.length;
+      assert.equal(
+        added,
+        report.predictedFloorPairs,
+        "one floor record per predicted pair",
+      );
+      const events = mapped(source.path);
+      assert.deepEqual(
+        (got.state_events ?? []).slice(0, events.length),
+        events,
+      );
+      assert.equal((got.state_events ?? []).length, events.length + added);
+      assert.deepEqual(
+        got.state_leases ?? [],
+        read(source.path, "state_leases", WORK),
+      );
+      assert.deepEqual(
+        got.state_requests ?? [],
+        read(source.path, "state_requests", WORK),
+      );
+      assert.deepEqual(got.domain_cloud_requests ?? [], []);
     },
   );
 }

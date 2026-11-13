@@ -68,7 +68,7 @@ const valueLimit = (table: string, column: string): number =>
 const MAX_CURSOR_LENGTH = 47 + 2 * 6 * MAX_VALUE_LENGTH + 39;
 const WATERMARK = /^(?:\d{1,19}\.\d{1,19})?$/;
 const encoder = new TextEncoder();
-const byteLength = (value: unknown): number =>
+export const byteLength = (value: unknown): number =>
   encoder.encode(JSON.stringify(value)).length;
 // A whole (unpaged) dump holds at most this much stored. Escaping can grow it up to six times, so dumpOf
 // also measures the serialized size against the restore body.
@@ -95,7 +95,7 @@ export function limitsFrom(env: unknown): Limits {
   };
 }
 
-type Row = Record<string, string | number>;
+export type Row = Record<string, string | number>;
 type Key = (string | number)[];
 export interface Dump {
   format: string;
@@ -107,7 +107,7 @@ export interface Page extends Dump {
   last: boolean;
   next: string | null;
 }
-interface Cursor {
+export interface Cursor {
   p: number; // page number
   t: number; // table index
   k: Key | null; // last key written in that table
@@ -116,7 +116,7 @@ interface Cursor {
 
 const invalid = (message: string): ForgeFailure =>
   new ForgeFailure({ code: "INPUT_INVALID", message, retry: "never" });
-const emptyTables = (): Record<string, Row[]> =>
+export const emptyTables = (): Record<string, Row[]> =>
   Object.fromEntries(Object.keys(TABLES).map((table) => [table, []]));
 const counts = (tables: Record<string, Row[]>): Record<string, number> =>
   Object.fromEntries(
@@ -154,7 +154,7 @@ function assertLimits(
     });
 }
 
-function rowOf(table: string, row: SqlRow): Row {
+export function rowOf(table: string, row: SqlRow): Row {
   return Object.fromEntries(
     TABLES[table]!.columns.map((column) => {
       const value = row[column];
@@ -290,7 +290,7 @@ function watermark(db: SqlDatabase): string {
   return `${last("SELECT COALESCE(MAX(sequence), 0) AS n FROM state_events")}.${last("SELECT COALESCE(MAX(rowid), 0) AS n FROM domain_cloud_requests")}`;
 }
 
-const pageOf = (
+export const pageOf = (
   page: number,
   tables: Record<string, Row[]>,
   next: Cursor | null,

@@ -112,6 +112,19 @@ The generated pair counts against the same row and byte limits as the imported r
 
 A device token acts only as its own device. The admin token is the Worker secret `ADMIN_TOKEN`.
 
+## Converting a local state backup for restore
+
+`bun tools/tracker-import.ts --backup <file> --digest <sha256> [--out <dir>] [--page-bytes <n>]` turns an isolated backup of the local store into the pages above. It is an operator tool, not a CLI or MCP operation, and it never writes to a project, uses the network or opens the home store.
+
+- **Source.** An explicit backup file and the sha256 recorded for it, checked before and after the read. It refuses a missing file (`SOURCE_MISSING`), a path ending `.forge/state.sqlite` (`SOURCE_LIVE_HOME`), a wrong digest (`SOURCE_DIGEST_MISMATCH`), a file that is not a store, or a store with rows in a `domain_` table (`SOURCE_UNSUPPORTED`), and a file that changed during the read (`SOURCE_CHANGED`). The backup must be a consistent copy; the converter does not make it one.
+- **Selection.** Exactly the `forge/work` namespace in the four state tables, every key. `domain_cloud_requests` is empty. Every other namespace is listed with rows, stored bytes and a digest per table, and none is copied. The digest is the sha256 of the JSON of the rows in key order.
+- **History.** Ids, revisions, timestamps and body text are kept byte for byte. Only the outer event sequence changes: each selected event gets its one-based position, and `sequence-map.csv` lists `old,new` for every event with its digest in the report. Parents and dependencies must point at issues in the namespace, ids must be unique and dependencies must not cycle (`GRAPH_MISSING_TARGET`, `GRAPH_DUPLICATE_ID`, `GRAPH_CYCLE`).
+- **Floors.** Existing floors are kept. The report predicts the pairs restore will add (the issue floor and each observed comment or link prefix without one); the converter adds none. Each pair is one record and one event.
+- **Output.** Without `--out` it is a dry run that prints counts, bytes and digests only, never a body. With `--out` it writes `page-NNNNNN.json` files cut by the same envelope rules as `GET dump`, `sequence-map.csv` and last `manifest.json`, into `<dir>.partial`, then renames it. A row that cannot fit a page alone is `DUMP_TOO_LARGE`. The same source and options give the same files; an existing output directory is kept only if every file digest agrees, otherwise `OUTPUT_MISMATCH`.
+- **Capacity.** The report gives each table's rows and bytes, the largest row and each page size for the caps decision (forge-1040). It changes no cap: a selection over 10,000 rows in a table is still refused at restore.
+
+This is proven on synthetic backups in CI only. No real tracker has been converted or restored, and the real-size fit is not verified.
+
 ## Deploy
 
 The owner runs these steps. Replace angle-bracket placeholders; `<worker-origin>` is an HTTPS origin without a trailing slash. Use an existing Cloudflare login with Workers/KV write access. Run every command from `cloud/` with the git-ignored `wrangler.local.jsonc` (copied from `wrangler.example.jsonc`) as `--config`; a bare `wrangler deploy` finds no `wrangler.jsonc` and stops. Commit no real value.

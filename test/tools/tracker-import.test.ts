@@ -1,19 +1,17 @@
-// forge-1231 acceptance: the converter turns an isolated kernel backup into restorable pages. Every expectation is
+// forge-1231 acceptance: the converter turns an isolated local state backup into restorable pages. Every expectation is
 // read from the fixture with plain SQL, never from the converter. Sources are synthetic and built in a temp dir.
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { createHash } from "node:crypto";
 import {
   appendFileSync,
   existsSync,
-  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import {
   dumpOf,
   limitsFrom,
@@ -22,142 +20,20 @@ import {
   type Page,
 } from "../../cloud/src/dump.ts";
 import { StateOwner } from "../../src/core/state/index.ts";
-import type { SqlDatabase, SqlRow } from "../../src/ports/store.ts";
 import {
-  convert,
-  exitCode,
-  TABLES,
-  type Table,
-} from "../../tools/tracker-import.ts";
+  backup,
+  mapped,
+  NOW,
+  read,
+  sha,
+  sqlOf,
+  WORK,
+  type Row,
+  type Shape,
+} from "../../cloud/conformance/import-source.ts";
+import { convert, exitCode, TABLES } from "../../tools/tracker-import.ts";
 
-const NOW = 1_800_000_000_000;
-const ISO = new Date(NOW).toISOString();
-const WORK = "forge/work";
-const ACTOR = { kind: "agent", id: "fixture" } as const;
-const HOLDER = { actor: ACTOR, session: { id: "session" } };
-const KEYS: Record<Table, string> = {
-  state_records: "namespace, key",
-  state_events: "sequence",
-  state_leases: "namespace, subject",
-  state_requests: "namespace, request_id",
-  domain_cloud_requests: "request_id",
-};
-const COLUMNS: Record<Table, string> = {
-  state_records: "namespace, key, revision, body",
-  state_events: "sequence, namespace, key, body",
-  state_leases: "namespace, subject, generation, body",
-  state_requests: "namespace, request_id, fingerprint, result",
-  domain_cloud_requests: "request_id, fingerprint, outcome, result",
-};
-type Row = Record<string, string | number>;
-const sha = (text: string | Uint8Array): string =>
-  createHash("sha256").update(text).digest("hex");
-const sqlOf = (db: Database): SqlDatabase => ({
-  exec: (sql) => void db.run(sql),
-  run: (sql, params = []) => db.query(sql).run(...(params as never[])),
-  all: (sql, params = []) =>
-    db.query(sql).all(...(params as never[])) as SqlRow[],
-  get: (sql, params = []) =>
-    (db.query(sql).get(...(params as never[])) ?? undefined) as
-      SqlRow | undefined,
-  transaction: (body) => db.transaction(body)(),
-});
 const scratch = (): string => mkdtempSync(join(tmpdir(), "tracker-import-"));
-
-interface Shape {
-  /** Write the four allocation floors, or leave the history to carry the numbers. */
-  floors: boolean;
-  /** work-3 depends on these ids; the default is the coherent graph. */
-  deps?: string[];
-  /** A raw SQL statement applied to the finished backup. */
-  tamper?: string;
-}
-const issue = (n: number, extra: object = {}) => ({
-  id: `work-${n}`,
-  prefix: "forge",
-  title: `Issue ${n}`,
-  status: "open",
-  labels: [],
-  dependsOn: [],
-  createdAt: ISO,
-  ...extra,
-});
-
-/** A kernel store with interleaved namespaces, every tracker key family, deletions, a lease and a shared request id. */
-function backup(dir: string, shape: Shape, name = "source.db") {
-  const path = join(dir, name);
-  mkdirSync(dirname(path), { recursive: true });
-  const raw = new Database(path);
-  const owner = new StateOwner(sqlOf(raw), { now: () => NOW });
-  owner.initialize();
-  const put = (ns: string, key: string, value: unknown, requestId?: string) =>
-    owner.put(ns, key, value, ACTOR, {
-      expectRevision: 0,
-      ...(requestId === undefined ? {} : { requestId }),
-    });
-  put("forge/identity", "project", { name: "excluded" });
-  put(
-    WORK,
-    "issue:work-1",
-    issue(1, { title: 'Ünï "q" \\ € \u0001' }),
-    "put-a",
-  );
-  put("forge/other", "issue:work-1", { other: true }, "put-a");
-  put(WORK, "issue:work-2", issue(2));
-  put(
-    WORK,
-    "issue:work-3",
-    issue(3, { parent: "work-1", dependsOn: shape.deps ?? ["work-1"] }),
-  );
-  owner.delete(WORK, "issue:work-2", ACTOR, { expectRevision: 1 });
-  put(WORK, "comment:work-1:1", { id: "work-1", body: "one" });
-  put(WORK, "comment:work-1:4", { id: "work-1", body: "four" });
-  owner.delete(WORK, "comment:work-1:4", ACTOR, { expectRevision: 1 });
-  put(WORK, "comment:work-3:2", { id: "work-3", body: "two" });
-  owner.delete(WORK, "comment:work-3:2", ACTOR, { expectRevision: 1 });
-  put(WORK, "link:work-1:1", {
-    id: "work-1",
-    relation: "delivers",
-    url: "https://example.com/1",
-  });
-  const subject = "lane:work-1:attempt-1";
-  const lease = owner.acquire(WORK, subject, HOLDER, 100, "claim-lane");
-  owner.put(WORK, subject, { attempt: 1 }, ACTOR, {
-    expectRevision: 0,
-    requestId: "put-lane",
-    fence: { subject, holder: HOLDER, generation: lease.generation },
-  });
-  put("forge/other", "other:key", { x: 1 });
-  if (shape.floors)
-    for (const [prefix, number] of [
-      ["issue:work-", 3],
-      ["comment:work-1:", 4],
-      ["comment:work-3:", 2],
-      ["link:work-1:", 1],
-    ] as const)
-      put(WORK, `allocation:${prefix}`, { prefix, number });
-  if (shape.tamper !== undefined) raw.run(shape.tamper);
-  raw.close();
-  return { path, digest: sha(readFileSync(path)) };
-}
-
-// Independent reads of the finished backup, in plain SQL.
-function read(path: string, table: Table, ns: string | null): Row[] {
-  const db = new Database(path, { readonly: true });
-  try {
-    if (table === "domain_cloud_requests" && !tableExists(db, table)) return [];
-    const where = ns === null ? "" : ` WHERE namespace = '${ns}'`;
-    return db
-      .query(
-        `SELECT ${COLUMNS[table]} FROM ${table}${where} ORDER BY ${KEYS[table]}`,
-      )
-      .all() as Row[];
-  } finally {
-    db.close();
-  }
-}
-const tableExists = (db: Database, table: string): boolean =>
-  db.query("SELECT 1 FROM sqlite_master WHERE name = ?").get(table) !== null;
 const bytesOf = (rows: Row[]): number =>
   rows.reduce(
     (sum, row) =>
@@ -200,11 +76,6 @@ function restoreAll(out: string, limits = limitsFrom({})) {
   for (const page of pages) restorePage(db, owner, page, limits);
   return { db, owner, pages };
 }
-const mapped = (path: string): Row[] =>
-  read(path, "state_events", WORK).map((row, i) => ({
-    ...row,
-    sequence: i + 1,
-  }));
 const fresh = async (shape: Shape, extra: { pageBytes?: number } = {}) => {
   const dir = scratch();
   const source = backup(dir, shape);
@@ -263,7 +134,15 @@ test("generation writes exactly the forge/work rows, the sequence map and the ma
   const { source, out, report } = await fresh({ floors: true });
   expect(report.status).toBe("PASS");
   const names = readdirSync(out).sort();
-  expect(names.at(-1)).toBe("manifest.json");
+  // The manifest is published last, so it lists every other file with its digest, and nothing else is there.
+  const manifest = JSON.parse(
+    readFileSync(join(out, "manifest.json"), "utf8"),
+  ) as { files: Record<string, string> };
+  expect(Object.keys(manifest.files).sort()).toEqual(
+    names.filter((name) => name !== "manifest.json"),
+  );
+  for (const [name, digest] of Object.entries(manifest.files))
+    expect(sha(readFileSync(join(out, name)))).toBe(digest);
   expect(names).toContain("sequence-map.csv");
   const map = read(source.path, "state_events", WORK)
     .map((r, i) => `${r.sequence},${i + 1}\n`)
@@ -525,7 +404,7 @@ test("a missing floor is predicted, not written, and restore adds exactly one re
   ).toEqual(mapped(source.path));
   const capped = {
     ...limitsFrom({}),
-    maxRows: read(source.path, "state_records", WORK).length,
+    maxRows: read(source.path, "state_events", WORK).length,
   };
   expect(() => restoreAll(out, capped)).toThrow(/RESTORE_TOO_LARGE|row limit/);
 }, 30_000);
@@ -551,7 +430,9 @@ test("the same source twice gives identical artifacts, and altered output is ref
     );
   expect((await run("a")).status).toBe("PASS");
   const page = join(dir, "a", "page-000000.json");
-  const altered = readFileSync(page, "utf8").replace("Issue 1", "Issue X");
+  const original = readFileSync(page, "utf8");
+  const altered = original.replace("Issue 3", "Issue X");
+  expect(altered).not.toBe(original);
   writeFileSync(page, altered);
   const again = await run("a");
   expect([again.status, again.code]).toEqual(["FAIL", "OUTPUT_MISMATCH"]);
