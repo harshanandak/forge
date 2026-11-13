@@ -10,6 +10,7 @@ import {
   parseDump,
 } from "../../cloud/src/dump.ts";
 import type { SqlDatabase, SqlRow } from "../../src/ports/store.ts";
+import { migrate } from "../../src/core/state/migrations.ts";
 
 const MIB = 1024 * 1024;
 const SCALAR = 262_144;
@@ -104,6 +105,34 @@ const dumpText = (table: string, over: Row) =>
     format: "forge-cloud-dump/2",
     tables: { ...empty(), [table]: [row(table, over)[1]] },
   });
+for (const [table, values] of Object.entries({
+  state_checkpoint_header: [1, 1, "lineage", 1, 20, 1, 20],
+  state_checkpoint_live: ["forge/test", "a", 1, 1, "digest"],
+  state_checkpoint_deleted: ["forge/test", "a", 1, 1],
+  state_checkpoint_leases: ["forge/test", "a", 1, 1, "{}"],
+  state_checkpoint_reservations: ["forge/test", "a", 1, 1],
+  state_checkpoint_floors: ["forge/test", "a", 1, 0],
+  state_checkpoint_receipts: ["forge/test", "a", 1, "digest", "digest"],
+  state_checkpoint_denied: ["forge/test", "a", 1],
+}))
+  for (const paged of [false, true])
+    test(`v2 ${paged ? "paged" : "whole"} export refuses ${table} without mutation`, () => {
+      const db = database();
+      migrate(db);
+      const before = dumpOf(db);
+      expect(Object.keys(before.tables)).toEqual(Object.keys(ROW));
+      expect(parseDump(JSON.stringify(before))).toEqual(before);
+      db.run(
+        `INSERT INTO ${table} VALUES (${values.map(() => "?").join(",")})`,
+        values,
+      );
+      const read = () => db.all(`SELECT * FROM ${table}`);
+      const saved = read();
+      expect(() =>
+        paged ? dumpPage(db, "start", limits) : dumpOf(db),
+      ).toThrow(/newer Forge/i);
+      expect(read()).toEqual(saved);
+    }, 30000);
 const pageText = (tables: Record<string, Row[]>, next: string | null = null) =>
   JSON.stringify({
     format: PAGE_FORMAT,
