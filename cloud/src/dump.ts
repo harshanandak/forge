@@ -751,6 +751,7 @@ export function restorePage(
   limits: Limits,
 ): Record<string, number> {
   return db.transaction(() => {
+    assertNoCheckpoint(db);
     if (page.page === 0) clearStaged(db);
     insertRows(db, page.tables);
     assertLimits(db, limits, "RESTORE_TOO_LARGE", "The staged restore");

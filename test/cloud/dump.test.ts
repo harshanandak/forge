@@ -5,12 +5,15 @@ import {
   dumpOf,
   dumpPage,
   DUMP_MIGRATION,
+  IMPORT_MIGRATION,
   limitsFrom,
   PAGE_FORMAT,
   parseDump,
+  restorePage,
 } from "../../cloud/src/dump.ts";
 import type { SqlDatabase, SqlRow } from "../../src/ports/store.ts";
 import { migrate } from "../../src/core/state/migrations.ts";
+import { StateOwner } from "../../src/core/state/index.ts";
 
 const MIB = 1024 * 1024;
 const SCALAR = 262_144;
@@ -105,7 +108,7 @@ const dumpText = (table: string, over: Row) =>
     format: "forge-cloud-dump/2",
     tables: { ...empty(), [table]: [row(table, over)[1]] },
   });
-for (const [table, values] of Object.entries({
+const checkpointRows = {
   state_checkpoint_header: [1, 1, "lineage", 1, 20, 1, 20],
   state_checkpoint_live: ["forge/test", "a", 1, 1, "digest"],
   state_checkpoint_deleted: ["forge/test", "a", 1, 1],
@@ -114,7 +117,8 @@ for (const [table, values] of Object.entries({
   state_checkpoint_floors: ["forge/test", "a", 1, 0],
   state_checkpoint_receipts: ["forge/test", "a", 1, "digest", "digest"],
   state_checkpoint_denied: ["forge/test", "a", 1],
-}))
+};
+for (const [table, values] of Object.entries(checkpointRows)) {
   for (const paged of [false, true])
     test(`v2 ${paged ? "paged" : "whole"} export refuses ${table} without mutation`, () => {
       const db = database();
@@ -133,6 +137,51 @@ for (const [table, values] of Object.entries({
       ).toThrow(/newer Forge/i);
       expect(read()).toEqual(saved);
     }, 30000);
+  test(`v2 final page refuses ${table} before clearing or staging the target`, () => {
+    const db = database([row("state_records")]);
+    for (const sql of IMPORT_MIGRATION.statements) db.exec(sql);
+    migrate(db);
+    db.run(
+      `INSERT INTO ${table} VALUES (${values.map(() => "?").join(",")})`,
+      values,
+    );
+    const owner = new StateOwner(db, { now: () => 1000 });
+    const page = {
+      format: PAGE_FORMAT,
+      page: 0,
+      last: true,
+      next: null,
+      tables: empty(),
+    };
+    const snapshot = () =>
+      db
+        .all(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+        )
+        .map(({ name }) => [
+          name,
+          db.all(`SELECT * FROM ${String(name)} ORDER BY rowid`),
+        ]);
+    const before = snapshot(),
+      changes = db.get("SELECT total_changes() AS n");
+    let failure: unknown;
+    try {
+      restorePage(db, owner, page, limits);
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({
+      error: {
+        code: "INPUT_INVALID",
+      },
+    });
+    expect(String(failure)).toMatch(/newer Forge/i);
+    expect(snapshot()).toEqual(before);
+    expect(db.get("SELECT total_changes() AS n")).toEqual(changes);
+    db.run(`DELETE FROM ${table}`);
+    expect(() => restorePage(db, owner, page, limits)).not.toThrow();
+  }, 30000);
+}
 const pageText = (tables: Record<string, Row[]>, next: string | null = null) =>
   JSON.stringify({
     format: PAGE_FORMAT,

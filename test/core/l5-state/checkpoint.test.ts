@@ -345,7 +345,7 @@ for (const table of ["empty", ...Object.keys(rows)])
       await target.close();
     }
   }, 30000);
-test("the previous migration set refuses a checkpoint-aware store without writes", async () => {
+test("the previous initializer rejects migration 004 without writes", async () => {
   const source = await open();
   try {
     expect(stateMigrations.at(-1)?.id).toBe("004_state_checkpoint");
