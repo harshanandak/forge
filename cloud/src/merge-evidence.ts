@@ -46,7 +46,6 @@ function list<T>(valid: Guard<T>, weight?: Weight): Guard<readonly T[]> {
     if (!Array.isArray(v)) return false;
     const rows = v as unknown[];
     const length = rows.length;
-    if (length > 256) return false;
     let total = 0;
     if (weight) for (let i = 0; i < length; i++) total += weight(rows[i]);
     if (total > 4096) return false;
