@@ -231,6 +231,7 @@ function fixture(
       form: {
         csrf: jar.csrf,
         ticket,
+        ...(action === "approve" ? { confirm: "yes" } : {}),
         ...(challenge === undefined ? {} : { challenge }),
       },
       cookie: jar.cookie,
@@ -359,7 +360,7 @@ function fixture(
   };
 }
 
-test("GET /device serves a fixed page and a csrf cookie, with no secret in the URL", async () => {
+test("GET /device serves a page and a csrf cookie", async () => {
   const f = fixture();
   await f.provision();
   const jar = await f.open();
@@ -381,7 +382,7 @@ test("GET /device serves a fixed page and a csrf cookie, with no secret in the U
   expect(jar.page.text).toContain(`name="csrf" value="${jar.csrf}"`);
   expect(jar.page.text).toContain('action="/device"');
   const prefilled = await f.send("/device?code=BCDF-GHJK");
-  expect(prefilled.text).not.toContain("BCDF-GHJK");
+  expect(prefilled.text).toContain('name="code" value="BCDF-GHJK"');
 }, 30_000);
 
 test("the device routes need configuration and a provisioned project", async () => {
@@ -1327,6 +1328,7 @@ const incompletePost: Record<
       form: {
         csrf: p.jar.csrf,
         ticket: p.ticket("approve"),
+        confirm: "yes",
         challenge: p.selector,
       },
       cookie: p.jar.cookie,
@@ -1526,3 +1528,91 @@ test("other address headers cannot escape the address cap, and a bound callback 
     expect(pair(await rotate(n))).toEqual([400, "invalid_request"]);
   expect(pair(await rotate(9))).toEqual([429, "rate_limited"]);
 }, 30_000);
+
+for (const [query, code] of [
+  ["code=BCDF-GHJK", "BCDF-GHJK"],
+  ["code=ABCD-EFGH", ""],
+  ["code=%3Cscript%3E", ""],
+  ["code=%22%3E%3Cscript%3E", ""],
+  [`code=${"B".repeat(1000)}`, ""],
+  ["code=BCDF-GHJK&code=BCDF-GHJK", ""],
+  ["code=bcdf-ghjk", ""],
+  ["", ""],
+]) {
+  test(`device code prefill: ${query!.slice(0, 60)}`, async () => {
+    const f = fixture();
+    await f.provision();
+    const before = f.frozen();
+    const reply = await f.send(`/device?${query}`);
+    expect(reply.status).toBe(200);
+    expect(reply.text).toContain(`name="code" value="${code}"`);
+    expect(reply.text).not.toContain("<script>");
+    expect(reply.text).toContain("<button>Continue</button>");
+    expect(reply.headers.get("set-cookie")).toContain(
+      "Secure; HttpOnly; SameSite=Lax",
+    );
+    expect(reply.headers.get("referrer-policy")).toBe("same-origin");
+    expect(f.frozen()).toBe(before);
+  }, 30_000);
+}
+
+for (const stage of ["prefill", "approval"] as const) {
+  test(`device confirmation shows the terminal code at ${stage}`, async () => {
+    const f = fixture();
+    await f.provision();
+    const login = body(await f.begin());
+    const jar = await f.open();
+    const shown =
+      stage === "prefill"
+        ? await f.send(`/device?code=${login.user_code}`)
+        : await f.preview(login.user_code, jar);
+    expect(shown.status).toBe(200);
+    expect(shown.text).toContain(`Code <code>${login.user_code}</code>`);
+    if (stage === "approval") {
+      expect(shown.text).toContain(
+        'type="checkbox" name="confirm" value="yes" required',
+      );
+      expect(shown.text).toContain("I started this login myself");
+      expect(shown.text).toContain("this code matches the one in my terminal");
+    }
+  }, 30_000);
+}
+for (const [confirm, status] of [
+  [undefined, 400],
+  ["", 400],
+  ["no", 400],
+  ["yes", 302],
+] as const) {
+  test(`device approval confirmation: ${String(confirm)}`, async () => {
+    const f = fixture();
+    await f.provision();
+    const login = body(await f.begin());
+    const jar = await f.open();
+    const shown = await f.preview(login.user_code, jar);
+    const before = f.frozen();
+    const decision = await f.send("/device/approve", {
+      form: {
+        csrf: jar.csrf,
+        ticket: f.ticketFor(shown, "approve"),
+        challenge: f.selectorFor(shown),
+        ...(confirm === undefined ? {} : { confirm }),
+      },
+      cookie: jar.cookie,
+    });
+    expect(decision.status).toBe(status);
+    if (status === 400) {
+      expect(outcome(decision)).toBe("invalid_request");
+      expect(f.frozen()).toBe(before);
+      expect(f.seen.begun).toHaveLength(0);
+      expect(await f.pending(login)).toEqual([400, "authorization_pending"]);
+    } else {
+      const done = await f.callback(
+        f.stateOf(decision),
+        "owner",
+        f.bindOf(decision),
+      );
+      expect([done.status, outcome(done)]).toEqual([200, "approved"]);
+      expect((await f.poll(login.device_code)).status).toBe(200);
+    }
+  }, 30_000);
+}

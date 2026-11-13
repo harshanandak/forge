@@ -218,3 +218,75 @@ test("help alias preserves scoped text and JSON help without invoking commands",
   expect(literal.exitCode).toBe(0);
   expect(catalog.calls).toHaveLength(1);
 }, 30000);
+
+for (const command of [[], ["auth", "--help"], ["auth", "login", "--help"]]) {
+  test(`a CLI rename projects help: ${command.join(" ")}`, async () => {
+    const catalog = fakeCatalog([
+      candidate("cloud.login", { cli: "auth.login" }),
+    ]);
+    const reply = await runCli(catalog, command);
+    expect(reply.stdout).toContain("auth");
+    expect(reply.stdout).not.toContain("forge cloud login");
+    expect(catalog.calls).toHaveLength(0);
+  }, 30_000);
+}
+for (const name of ["catalog.list", "sample.echo"]) {
+  test(`CLI rename refuses a collision with ${name}`, async () => {
+    const catalog = fakeCatalog([
+      candidate("cloud.login", { cli: name }),
+      candidate("sample.echo"),
+    ]);
+    const reply = await runCli(catalog, name.split("."));
+    expect(JSON.parse(reply.stdout)).toMatchObject({
+      error: { code: "NOUN_COLLISION" },
+    });
+    expect(catalog.calls).toHaveLength(0);
+  }, 30_000);
+}
+
+for (const command of [["auth", "login"], ["auth.login"]]) {
+  test(`a CLI rename dispatches the stable operation: ${command.join(" ")}`, async () => {
+    const catalog = fakeCatalog([
+      candidate("cloud.login", { cli: "auth.login" }),
+    ]);
+    const reply = await runCli(catalog, [
+      ...command,
+      "--input",
+      '{"value":"hello"}',
+    ]);
+    expect(JSON.parse(reply.stdout)).toMatchObject({
+      ok: true,
+      op: "cloud.login",
+    });
+    expect(catalog.calls.map((call) => call.op)).toEqual(["cloud.login"]);
+    const listing = await runCli(catalog, ["catalog", "list"]);
+    expect(
+      (JSON.parse(listing.stdout) as { result: unknown }).result,
+    ).toContainEqual(catalog.list()[0]);
+  }, 30_000);
+}
+
+for (const noun of ["first", "second"]) {
+  test(`CLI spelling keeps the configured noun ${noun}`, async () => {
+    const entries = ["first", "second"].map((name) => ({
+      ...candidate(`${name}.login`, { cli: "auth.login" }),
+      declaredOp: "cloud.login",
+      rename: { cloud: name },
+    }));
+    const catalog = fakeCatalog(entries);
+    const help = await runCli(catalog, ["--help"]);
+    expect(help.exitCode).toBe(0);
+    for (const name of ["first", "second"]) expect(help.stdout).toContain(name);
+    const reply = await runCli(catalog, [
+      noun,
+      "login",
+      "--input",
+      '{"value":"hello"}',
+    ]);
+    expect(JSON.parse(reply.stdout)).toMatchObject({
+      ok: true,
+      op: `${noun}.login`,
+    });
+    expect(catalog.calls.map((call) => call.op)).toEqual([`${noun}.login`]);
+  }, 30_000);
+}

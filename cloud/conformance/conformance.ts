@@ -945,6 +945,7 @@ async function deviceChecks(): Promise<void> {
         form: {
           csrf: f.csrf,
           ticket,
+          ...(action === "approve" ? { confirm: "yes" } : {}),
           challenge: more.selector ?? f.selector,
         },
         cookie: f.cookie,

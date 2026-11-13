@@ -14,11 +14,12 @@
   ],
   "operations": {
     "cloud.login": {
+      "cli": "auth.login",
       "input": "schemas/input.json",
       "output": "schemas/output.json",
       "context": "device",
       "timeoutMs": 3700000,
-      "effects": ["files:write", "external:forge-cloud"],
+      "effects": ["files:write", "external:forge-cloud", "external:process"],
       "idempotent": false,
       "callers": ["human"],
       "stability": "experimental"

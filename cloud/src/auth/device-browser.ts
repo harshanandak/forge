@@ -161,9 +161,12 @@ export async function deviceRoute(
       existing !== undefined && /^[A-Za-z0-9_-]{43}$/.test(existing)
         ? existing
         : token();
+    const codes = url.searchParams.getAll("code");
+    const code =
+      codes.length === 1 && USER_CODE.test(codes[0]!) ? codes[0]! : "";
     return page(
       200,
-      `<h1>Approve a device</h1><form method="post" action="/device"><input type="hidden" name="csrf" value="${csrf}"><label>Code <input name="code" autocomplete="off" required></label><button>Continue</button></form>`,
+      `<h1>Approve a device</h1><p>Code <code>${esc(code)}</code></p><form method="post" action="/device"><input type="hidden" name="csrf" value="${csrf}"><label>Code <input name="code" value="${esc(code)}" autocomplete="off" required></label><button>Continue</button></form>`,
       `${COOKIE}=${csrf}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=900`,
     );
   }
@@ -293,7 +296,8 @@ export async function deviceRoute(
       request.headers.get("Origin") === url.origin &&
       !!csrf &&
       jar !== undefined &&
-      same(jarHash, csrfHash);
+      same(jarHash, csrfHash) &&
+      (action !== "approve" || form.get("confirm") === "yes");
     const now = Date.now();
     const chosen = store.conditionalUpdate((base) => {
       const held = base as Held;
@@ -403,10 +407,12 @@ export async function deviceRoute(
   });
   if ("refused" in shown)
     return result(shown.refused === "invalid_code" ? 400 : 429, shown.refused);
+  const confirmation =
+    '<label><input type="checkbox" name="confirm" value="yes" required> I started this login myself, and this code matches the one in my terminal.</label>';
   const choice = (action: "approve" | "deny") =>
-    `<form method="post" action="/device/${action}"><input type="hidden" name="csrf" value="${esc(csrf)}"><input type="hidden" name="ticket" value="${tickets[action]}"><input type="hidden" name="challenge" value="${esc(hash)}"><button>${action === "approve" ? "Approve" : "Deny"}</button></form>`;
+    `<form method="post" action="/device/${action}"><input type="hidden" name="csrf" value="${esc(csrf)}"><input type="hidden" name="ticket" value="${tickets[action]}"><input type="hidden" name="challenge" value="${esc(hash)}">${action === "approve" ? confirmation : ""}<button>${action === "approve" ? "Approve" : "Deny"}</button></form>`;
   return page(
     200,
-    `<h1>Approve this device?</h1><p>Project <code>${esc(project)}</code></p><p>Device <code>${esc(shown.device)}</code></p>${choice("approve")}${choice("deny")}`,
+    `<h1>Approve this device?</h1><p>Code <code>${esc(code)}</code></p><p>Project <code>${esc(project)}</code></p><p>Device <code>${esc(shown.device)}</code></p>${choice("approve")}${choice("deny")}`,
   );
 }

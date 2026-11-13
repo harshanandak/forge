@@ -140,7 +140,7 @@ const two = (change: Partial<CredentialEntry>) => async (s: Box) => {
 const origins = two({ origin: fx.OTHER_ORIGIN });
 const names = two({ project: "other" });
 const extra = bad(JSON.stringify({ ...fx.bindingFor(), x: 1 }));
-const login = "forge cloud login";
+const login = "forge auth login";
 const refused: [string, (s: Box) => unknown, string, string?][] = [
   ["another identity", other, "INPUT_CONFLICT"],
   ["no manifest", gone, "CONTEXT_MISSING"],

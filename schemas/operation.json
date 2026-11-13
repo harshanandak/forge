@@ -22,6 +22,10 @@
     },
     "input": { "$ref": "common.json#/$defs/RelativePath" },
     "output": { "$ref": "common.json#/$defs/RelativePath" },
+    "cli": {
+      "description": "CLI command name when it differs from the stable operation ID; replaces its default CLI spelling.",
+      "$ref": "common.json#/$defs/OperationName"
+    },
     "args": {
       "description": "Ordered required scalar input properties that the CLI also accepts positionally.",
       "type": "array",

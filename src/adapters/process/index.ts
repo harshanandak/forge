@@ -1,6 +1,8 @@
+import { spawn } from "node:child_process";
 import type { Unavailable } from "../../generated/types.ts";
 import { isAbsolute, relative, sep } from "node:path";
 import type {
+  DesktopLauncher,
   ProcessPort,
   ProcessResult,
   ResolvedExecutable,
@@ -50,6 +52,37 @@ export function createProcessPort(
           process.chdir(spawnOptions.cwd);
       }
       return runProcess(executable.path, args, spawnOptions, platform, options);
+    },
+  };
+}
+
+/** Desktop handoff deliberately leaves the application running after the CLI exits. */
+export function createDesktopLauncher(
+  start: typeof spawn = spawn,
+): DesktopLauncher {
+  return {
+    resolve: (name, env) =>
+      resolveExecutable(name, env, process.platform, realFileProbe),
+    launch(executable, args, options) {
+      return new Promise<void>((resolve, reject) => {
+        if (options.signal?.aborted) {
+          reject(new Error("Cancelled"));
+          return;
+        }
+        const child = start(executable.path, [...args], {
+          cwd: options.cwd,
+          env: { ...options.env },
+          detached: true,
+          stdio: "ignore",
+          shell: false,
+          windowsHide: true,
+        });
+        child.once("error", reject);
+        child.once("spawn", () => {
+          child.unref();
+          resolve();
+        });
+      });
     },
   };
 }

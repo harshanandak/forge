@@ -103,3 +103,13 @@ export interface ProcessPort {
     options: SpawnOptions,
   ): Promise<ProcessResult>;
 }
+
+/** Starts a user-owned desktop application; it outlives the invoking command. */
+export interface DesktopLauncher {
+  resolve: ProcessPort["resolve"];
+  launch(
+    executable: ResolvedExecutable,
+    args: readonly string[],
+    options: Pick<SpawnOptions, "cwd" | "env" | "signal">,
+  ): Promise<void>;
+}
