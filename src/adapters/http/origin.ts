@@ -4,7 +4,8 @@ import { ForgeFailure } from "../../contract/failure.ts";
 
 const PROJECT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
-const invalid = (message: string): ForgeFailure =>
+/** The adapter's own INPUT_INVALID failure; index.ts marks it as its own for the request path. */
+export const invalid = (message: string): ForgeFailure =>
   new ForgeFailure({ code: "INPUT_INVALID", message, retry: "never" });
 
 /** An HTTPS origin and nothing else: no credentials, path, query or fragment, and already canonical. */

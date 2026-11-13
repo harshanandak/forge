@@ -60,9 +60,6 @@ export type {
   OutputReport,
   ReportFormat,
 } from "../ports/runner-output.ts";
-
-// Only cloud login talks to the cloud, so no other command loads its client.
-const loadCloudLogin = lazy(() => import("./cloud-login.ts"));
 export interface FileSnapshotInput {
   readonly tracked?: boolean;
   readonly paths: readonly string[];
@@ -176,6 +173,9 @@ interface InternalProviders extends AssemblyProviders {
 }
 
 /** Host cleanup ceilings, not workflow policy. No supervisor exists until a launch. */
+// Only cloud login talks to the cloud, so no other command loads its client.
+const loadCloudLogin = lazy(() => import("./cloud-login.ts"));
+
 const CLEANUP: SupervisionOptions = {
   cleanupTimeoutMs: 5000,
   pollIntervalMs: 25,
@@ -576,8 +576,10 @@ export function createAssemblyProviders(
             refuse("UNAVAILABLE", "Cloud login requires a device folder");
           // Loaded here, so only a login pays for the cloud client. The refusals above stay synchronous.
           const deviceRoot = options.deviceRoot;
-          return loadCloudLogin().then(({ createCloudLogin }) =>
-            createCloudLogin({
+          return loadCloudLogin().then(({ createCloudLogin }) => {
+            // The load takes time, and a cancelled or expired call must not read or write device files.
+            active(scope);
+            return createCloudLogin({
               // The checkout root, so a call from a nested folder reads and writes the same files.
               root: projectManifestRoot(root),
               home: env.HOME ?? env.USERPROFILE,
@@ -585,8 +587,8 @@ export function createAssemblyProviders(
               env,
               signal: scope.signal,
               ...options.cloudLogin,
-            }).login(input),
-          );
+            }).login(input);
+          });
         },
       };
     },

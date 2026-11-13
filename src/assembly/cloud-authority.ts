@@ -14,10 +14,10 @@ import { cloudBinding } from "./cloud-binding.ts";
 import type { CloudLoginDeps } from "./cloud-login.ts";
 import { credentialStore, openCloudFiles } from "./cloud-profile.ts";
 import { lazy } from "./lazy.ts";
+import { wireDeviceId } from "./wire-device.ts";
 
 // Only a routed call to a cloud-bound project reaches the network, so a local call never loads these.
 const loadHttp = lazy(() => import("../adapters/http/index.ts"));
-const loadLogin = lazy(() => import("./cloud-login.ts"));
 const loadLeaseClient = lazy(() => import("./cloud-state-client.ts"));
 
 export interface CloudAuthorityDeps {
@@ -163,8 +163,6 @@ export async function selectCloud(
       "A cloud-bound project needs this machine's device identity; run forge cloud login or set FORGE_DEVICE_ID.",
     );
   const { origin, project, identity } = bound;
-  const [{ createCloudHttp }, { wireDeviceId }, { createCloudLeaseClient }] =
-    await Promise.all([loadHttp(), loadLogin(), loadLeaseClient()]);
   const named = request.context.device?.id;
   // A supplied device must be this machine: its device root, or an id in the same wire form.
   if (
@@ -173,6 +171,10 @@ export async function selectCloud(
     wireDeviceId(named) !== wireDeviceId(device)
   )
     throw fail("AUTH_DEVICE_MISMATCH", "This session is not on this machine.");
+  const [{ createCloudHttp }, { createCloudLeaseClient }] = await Promise.all([
+    loadHttp(),
+    loadLeaseClient(),
+  ]);
   const { fetch, now, security } = deps.cloud ?? {};
   const client = createCloudLeaseClient({
     key: { origin, identity, project },

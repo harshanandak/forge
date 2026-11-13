@@ -107,19 +107,27 @@ const catalog = {
   mcpTools: "20940d83078f63696241e5f9c58074e05e833047865f72b33787bb9ba3c7a19a",
 };
 
-function mcpTools(root: string, env: NodeJS.ProcessEnv): Promise<string> {
-  return new Promise((done, fail) => {
-    const child = spawn(node, [bin, "--mcp"], {
-      cwd: root,
-      env,
-      windowsHide: true,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    let buffer = "";
-    const timer = setTimeout(() => {
-      child.kill();
-      fail(new Error(`MCP tools/list timed out: ${buffer}`));
-    }, 20_000);
+async function mcpTools(root: string, env: NodeJS.ProcessEnv): Promise<string> {
+  const child = spawn(node, [bin, "--mcp"], {
+    cwd: root,
+    env,
+    windowsHide: true,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  let buffer = "";
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const exited = new Promise<void>((done) => child.once("close", () => done()));
+  const answer = new Promise<string>((done, fail) => {
+    timer = setTimeout(
+      () => fail(new Error(`MCP tools/list timed out: ${buffer}`)),
+      20_000,
+    );
+    child.once("error", fail);
+    // The server may exit before the requests are written.
+    child.stdin.on("error", () => {});
+    void exited.then(() =>
+      fail(new Error(`MCP server exited before tools/list: ${buffer}`)),
+    );
     child.stdout.on("data", (data: Buffer) => {
       buffer += data.toString();
       // The last piece may be half a line, so only whole lines count.
@@ -127,11 +135,7 @@ function mcpTools(root: string, env: NodeJS.ProcessEnv): Promise<string> {
         .split("\n")
         .slice(0, -1)
         .find((text) => text.includes('"id":2'));
-      if (line === undefined) return;
-      clearTimeout(timer);
-      // Windows keeps the project folder locked until the server has exited.
-      child.once("close", () => done(line));
-      child.kill();
+      if (line !== undefined) done(line);
     });
     for (const message of [
       {
@@ -149,6 +153,14 @@ function mcpTools(root: string, env: NodeJS.ProcessEnv): Promise<string> {
     ])
       child.stdin.write(`${JSON.stringify(message)}\n`);
   });
+  try {
+    return await answer;
+  } finally {
+    clearTimeout(timer);
+    child.kill();
+    // Windows keeps the project folder locked until the server has exited.
+    if (child.pid !== undefined) await exited;
+  }
 }
 
 test("help, the help contract and the MCP tool listing are unchanged", async () => {

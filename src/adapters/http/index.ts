@@ -10,7 +10,11 @@ import {
   refusalDetails,
   type RefusalDetails,
 } from "./command-refusal.ts";
-import { validateOrigin, validateProject } from "./origin.ts";
+import {
+  invalid as inputInvalid,
+  validateOrigin,
+  validateProject,
+} from "./origin.ts";
 export { validateOrigin, validateProject } from "./origin.ts";
 export { carriesToken } from "./command-refusal.ts";
 export type { Blocker, RefusalDetails } from "./command-refusal.ts";
@@ -195,8 +199,7 @@ const mine = (failure: ForgeFailure): ForgeFailure => (
   own.add(failure),
   failure
 );
-const invalid = (message: string): ForgeFailure =>
-  mine(new ForgeFailure({ code: "INPUT_INVALID", message, retry: "never" }));
+const invalid = (message: string): ForgeFailure => mine(inputInvalid(message));
 const unavailable = (why: string): ForgeFailure =>
   mine(
     new ForgeFailure({
