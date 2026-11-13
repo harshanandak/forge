@@ -10562,3 +10562,43 @@ for (const trip of TRIPS)
       before.state_events!.filter((r) => r.namespace === "forge/cloud"),
     );
   }, 30_000);
+
+for (const [first, last, status] of [
+  [1, 1, 200],
+  [2, 2, 200],
+  [1, 2, 400],
+  [2, 1, 400],
+] as const)
+  test(`paged restore version ${first} then ${last} returns ${status} and preserves its target on refusal`, async () => {
+    const { tables } = await projectWith((w) => {
+      w.issue(1);
+      w.floor(floorAt(1));
+    });
+    const parts = pagesOf(tables, 2);
+    expect(parts).toHaveLength(2);
+    const page = (index: number, version: number) => ({
+      ...parts[index]!,
+      format: `forge-cloud-dump-page/${version}`,
+      tables: Object.fromEntries(
+        Object.entries(parts[index]!.tables).filter(
+          ([table]) =>
+            version === 2 || table !== "domain_cloud_command_receipts",
+        ),
+      ),
+    });
+    const t = fixture();
+    const before = (await t.admin("dump")).json;
+    expect(
+      (await t.admin("restore", JSON.stringify(page(0, first)))).status,
+    ).toBe(200);
+    t.reopen();
+    const got = await t.admin("restore", JSON.stringify(page(1, last)));
+    expect([first, last, got.status]).toEqual([first, last, status]);
+    if (status === 400) {
+      expect(got.json.error?.code).toBe("INPUT_INVALID");
+      expect(got.json.error?.message).toContain("version");
+      expect(await t.storage.get("restore:next")).toBeUndefined();
+      expect((await t.admin("status")).json.value!.initialized).toBe(false);
+      expect((await t.admin("dump")).json).toEqual(before);
+    } else expect(tablesOf(t.db)).toEqual(tables);
+  }, 30_000);

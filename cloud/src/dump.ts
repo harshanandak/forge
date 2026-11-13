@@ -523,7 +523,7 @@ export function parseDump(text: string): Dump | Page {
   }
   return paged
     ? {
-        format: PAGE_FORMAT,
+        format: document.format as string,
         page: document.page as number,
         last: document.last as boolean,
         next: document.next as string | null,
