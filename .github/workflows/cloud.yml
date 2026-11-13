@@ -14,8 +14,6 @@ on:
       - "package.json"
       - "bun.lock"
       - "tsconfig*.json"
-      - "tools/tracker-import.ts"
-      - "test/tools/tracker-import.test.ts"
       - ".github/workflows/cloud.yml"
 
 permissions:
@@ -231,17 +229,6 @@ jobs:
             grep -q "^PASS comment and link numbers survive deleted history, restore and concurrent adds$" "$RUNNER_TEMP/numbers.out" || { echo "::error::the number journey did not pass"; exit 1; }
             grep -q "^PASS comment and link floors survive a restart, and later adds continue above them$" "$RUNNER_TEMP/numbers-restart.out" || { echo "::error::the number restart journey did not pass"; exit 1; }
           )
-          # Import journey (forge-1231): a synthetic local state backup is converted and its pages restore through this Worker, then the
-          # project is read back whole. Fresh persistence and the default dump limits (the large config).
-          (
-            export config=wrangler.large.jsonc FORGE_CLOUD_PROJECT=ci-import
-            persist="$RUNNER_TEMP/wrangler-import"
-            start import
-            measured import bun conformance/conformance.ts import
-            workerd_rss import
-            stop
-            grep -q "^PASS tracker import: converted pages restore through the Worker and read back whole$" "$RUNNER_TEMP/import.out" || { echo "::error::the import journey did not pass"; exit 1; }
-          )
           # Live-mode simulation (forge-1318): the main journeys on the production-default Worker (the config copy above, no DUMP_*
           # overrides) with CLOUD_LIVE=1, fresh persistence and its own state file, so nothing leaks into the runs above or below.
           # It needs no FAIL, the four production-limit exclusions and the existing ones each with a reason, and the restore-order
@@ -347,7 +334,7 @@ jobs:
               cd "$GITHUB_WORKSPACE"
               perl -0pi -e "$edit" "$file"
               if git diff --quiet -- "$file"; then echo "::error::the $name counterfactual edit did not apply"; exit 1; fi
-              if bun test "${suite:-test/cloud/issue-commands.test.ts}" -t "$row" > "$RUNNER_TEMP/$name.out" 2>&1; then
+              if bun test test/cloud/issue-commands.test.ts -t "$row" > "$RUNNER_TEMP/$name.out" 2>&1; then
                 echo "::error::the restore test passed with the $name counterfactual"; exit 1
               fi
               cat "$RUNNER_TEMP/$name.out"
@@ -375,13 +362,6 @@ jobs:
           restore_cf families cloud/src/dump.ts 's/  family: FAMILY,\n//' "whole restore derives both deleted child floors before any append" 'numRow(t, numKey(kind))?.value'
           # Without the label scan, a repeated label reads as its last copy and the restore wrongly succeeds (forge-1313).
           restore_cf duplicate-labels src/core/state/restore-json.ts 's/^  checkLabels\(text\);$/  void 0;/m' "a whole restore with a duplicate event label is RESTORE_INVALID_ROW and leaves nothing" '[got.status, got.json.error?.code]'
-          # Counterfactuals for the tracker import converter (forge-1231). Each edits one guard, proves the edit applied, runs only the
-          # named converter test and needs it to fail at the named assertion. Selecting every namespace, leaving event sequences
-          # unmapped, skipping the cycle check and skipping the second digest check must each be caught.
-          suite=test/tools/tracker-import.test.ts restore_cf import-all src/core/state/rows.ts 's/WHERE namespace = \?/WHERE ? IS NOT NULL/' "generation writes exactly the forge/work rows, the sequence map and the manifest last" 'report.sequence'
-          suite=test/tools/tracker-import.test.ts restore_cf import-unmapped tools/tracker-import.ts 's/yield \{ t, row: \{ \.\.\.row, sequence: ordinal \} \};/yield { t, row };/' "generation writes exactly the forge/work rows, the sequence map and the manifest last" 'is not valid state'
-          suite=test/tools/tracker-import.test.ts restore_cf import-cycle tools/tracker-import.ts 's/if \(state\.get\(id\) === false\) throw new Refusal\("GRAPH_CYCLE"\);/if (state.get(id) === false) return;/' "refuses dependency cycle with a fixed code and no manifest" '"GRAPH_CYCLE"'
-          suite=test/tools/tracker-import.test.ts restore_cf import-changed tools/tracker-import.ts 's/throw new Refusal\("SOURCE_CHANGED"\);/void 0;/' "refuses a source that changes between the two digest checks with a fixed code and no manifest" '"SOURCE_CHANGED"'
       - name: wrangler log
         if: failure()
         run: tail -n 100 "$RUNNER_TEMP"/wrangler-*.log || true

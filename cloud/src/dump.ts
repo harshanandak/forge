@@ -107,7 +107,7 @@ export interface Page extends Dump {
   last: boolean;
   next: string | null;
 }
-export interface Cursor {
+interface Cursor {
   p: number; // page number
   t: number; // table index
   k: Key | null; // last key written in that table
@@ -116,7 +116,7 @@ export interface Cursor {
 
 const invalid = (message: string): ForgeFailure =>
   new ForgeFailure({ code: "INPUT_INVALID", message, retry: "never" });
-export const emptyTables = (): Record<string, Row[]> =>
+const emptyTables = (): Record<string, Row[]> =>
   Object.fromEntries(Object.keys(TABLES).map((table) => [table, []]));
 const counts = (tables: Record<string, Row[]>): Record<string, number> =>
   Object.fromEntries(
@@ -290,7 +290,7 @@ function watermark(db: SqlDatabase): string {
   return `${last("SELECT COALESCE(MAX(sequence), 0) AS n FROM state_events")}.${last("SELECT COALESCE(MAX(rowid), 0) AS n FROM domain_cloud_requests")}`;
 }
 
-export const pageOf = (
+const pageOf = (
   page: number,
   tables: Record<string, Row[]>,
   next: Cursor | null,
