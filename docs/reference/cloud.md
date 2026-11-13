@@ -281,7 +281,11 @@ The owner runs these steps. Replace angle-bracket placeholders; `<worker-origin>
 
    Expect the selected version to become active. A rollback swaps code only. It does not undo the SQL migrations a project applies when it first opens (`src/core/state/migrations.ts` and the cloud domain migrations registered in `cloud/src/project.ts`), stored data, KV clients and grants, claims, registration counters or a rotated secret. After new code has opened a project, an older binary may refuse the upgraded store and the project may break; restore your private dump into an empty project if so. Wrangler's Durable Object class migrations are separate: Cloudflare refuses rollback across them, so do not delete namespaces or migrations to force it. See [rollback limits](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/).
 
-7. **Known limits.** Links point to the originating reviews; issue IDs are tracked in Forge. [forge-1121 (registration residuals)](https://github.com/harshanandak/forge/pull/406): provider-invalid requests consume quota, fixed windows allow boundary bursts, shared or Worker-origin IPs affect quotas, and pre-existing clients retain their old TTL. [forge-1122 (replay revocation race)](https://github.com/harshanandak/forge/pull/404): a refused replay can race the winning token write, so its tokens may survive revocation, while the code still issues tokens at most once.
+7. **Known limits.** Links point to the originating reviews; issue IDs are tracked in Forge. [forge-1121 (registration residuals)](https://github.com/harshanandak/forge/pull/406): provider-invalid requests consume quota, fixed windows allow boundary bursts, shared or Worker-origin IPs affect quotas, and pre-existing clients retain their old TTL.
+
+Authorization-code redemption validates the code shape and stored code hash before allocating durable claim state or an alarm. The atomic claim still precedes the token exchange, so failed binding checks burn a valid code.
+
+A proven replay of a consumed code durably revokes its grant before sweeping provider KV. Access verification checks that permanent marker, so a winner that saves its token after the sweep cannot reopen access. A concurrent loser leaves an unconsumed winner's grant active.
 
 ## OAuth holder revocation
 

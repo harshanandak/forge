@@ -172,7 +172,7 @@ test("alarm cleanup cannot revive a code after its issuance horizon", async () =
   const f = await fixture(),
     d = durableFixture(f.options.clock.now() - 30_000);
   f.options.codeRedemption = d.port;
-  const expiresAt = await codeExpiresAt(code, f.options.storage);
+  const expiresAt = await codeExpiresAt(code, f.options.storage, f.hash);
   expect(await d.port.claimOnce(f.hash, expiresAt)).toBe(true);
   f.advance(CODE_REPLAY_HORIZON_MS);
   d.advance();
