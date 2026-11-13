@@ -637,9 +637,18 @@ async function callerFor(name: string, bound = true): Promise<Caller> {
     session: bound ? device.session : `session-chosen-${name}`,
   };
 }
-const receiptKeys = new Map<string, string>();
+// Resolve keys only from a caller's explicit snapshot; sending a command performs no hidden export.
+const receiptResults = new Map<string, string>();
 const { receiptResult } = await import("./max-source.ts");
-const receiptKey = (id: string) => receiptKeys.get(id) ?? `request:${id}`;
+function receiptKey(id: string, dump: Dump): string {
+  const rows = recordsOf(dump, "forge/cloud", "request:").filter(
+    (row) =>
+      JSON.stringify(receiptResult(row as { body: unknown })) ===
+      receiptResults.get(id),
+  );
+  assert.equal(rows.length, 1, `one receipt for ${id}`);
+  return String(rows[0]!.key);
+}
 async function typedCall(
   who: Caller,
   call: Call,
@@ -657,38 +666,19 @@ async function typedCall(
     signal: AbortSignal.timeout(20_000),
   });
   const text = await response.text();
+  let body: Envelope;
   try {
-    const body = JSON.parse(text) as Envelope;
-    if (
-      project === typedProject &&
-      response.status < 500 &&
-      !receiptKeys.has(call.requestId) &&
-      /issue\.(create|comment|claim|update|dep|link|close|renew|release)$/.test(
-        call.op,
-      )
-    ) {
-      const used = new Set(receiptKeys.values()),
-        result = body.ok ? body.result : body.error;
-      const added = recordsOf(
-        await dumpOf(project),
-        "forge/cloud",
-        "request:",
-      ).filter(
-        (r) =>
-          !used.has(String(r.key)) &&
-          JSON.stringify(receiptResult(r as { body: unknown })) ===
-            JSON.stringify(result),
-      );
-      if (added.length === 1)
-        receiptKeys.set(call.requestId, String(added[0]!.key));
-    }
-    return { status: response.status, body };
+    body = JSON.parse(text) as Envelope;
   } catch {
     throw new Error(
       `HTTP ${response.status} was not JSON: ${text.slice(0, 300)}`,
     );
   }
+  if (body.ok && !receiptResults.has(call.requestId))
+    receiptResults.set(call.requestId, JSON.stringify(body.result));
+  return { status: response.status, body };
 }
+
 const asProject = (who: Caller): object => ({ actor: who.actor });
 const asClaimer = (who: Caller): object => ({
   actor: who.actor,
@@ -1254,14 +1244,14 @@ async function ownershipJourney(): Promise<void> {
       "another token must make its own write",
     );
     const afterB = await dump();
-    assert.equal(
-      count(afterB, work, "issue:"),
-      count(before, work, "issue:") + 2,
-    );
-    assert.equal(
-      count(afterB, cloud, "request:"),
-      count(before, cloud, "request:") + 2,
-    );
+    for (const [namespace, key] of [
+      [work, "issue:"],
+      [cloud, "request:"],
+    ] as const)
+      assert.equal(
+        count(afterB, namespace, key),
+        count(before, namespace, key) + 2,
+      );
     keepsRows(
       afterA,
       afterB,
@@ -3245,7 +3235,8 @@ if (phase === "main") {
         [{ prefix: `link:${storedOf(one.id)}:`, number: 1 }],
       );
       assert.equal(
-        recordsOf(after, "forge/cloud", receiptKey("typed-link-1")).length,
+        recordsOf(after, "forge/cloud", receiptKey("typed-link-1", after))
+          .length,
         1,
       );
       assert.deepEqual(
@@ -3502,7 +3493,7 @@ if (phase === "main") {
         recordsOf(snapshot, "forge/work", "issue:").length + 1,
       );
       assert.equal(
-        recordsOf(after, "forge/cloud", receiptKey("typed-fault-create"))
+        recordsOf(after, "forge/cloud", receiptKey("typed-fault-create", after))
           .length,
         1,
       );
@@ -3527,7 +3518,8 @@ if (phase === "main") {
         1,
       );
       assert.equal(
-        recordsOf(after, "forge/cloud", receiptKey("typed-fault-claim")).length,
+        recordsOf(after, "forge/cloud", receiptKey("typed-fault-claim", after))
+          .length,
         1,
       );
       assert.deepEqual(await idsOf(a, "issue.ready"), [one.id]);
@@ -3604,7 +3596,7 @@ if (phase === "main") {
         ]);
         for (const requestId of receipts)
           assert.equal(
-            recordsOf(dump, "forge/cloud", receiptKey(requestId)).length,
+            recordsOf(dump, "forge/cloud", receiptKey(requestId, dump)).length,
             1,
             requestId,
           );
@@ -3858,7 +3850,7 @@ if (phase === "large") {
       const own = typedOk<Item>(reply);
       assert.notEqual(own.id, id, "a replacement token makes its own write");
       assert.deepEqual(await typedCall(caller, sent.request as Call), reply);
-      const after = await dumpOf(typedProject);
+      const after = joined(await pagesOf(typedProject));
       keepsRows(
         { format: source.doc.format, tables: want },
         after,
@@ -4427,7 +4419,7 @@ if (phase === "numbers") {
                 "n-c1-13",
                 "n-l1-12",
                 "n-l1-13",
-              ].map((id) => `forge/cloud ${receiptKey(id)}`),
+              ].map((id) => `forge/cloud ${receiptKey(id, afterAdds)}`),
             ].sort(),
           );
           same(
