@@ -53,6 +53,7 @@ export interface Tally {
   hashes: Record<Table, Hash>;
   generated: { records: number; events: number; releases: number };
   releaseHash: Hash;
+  leaseHash: Hash;
   // Set for a restored target: its generated floor rows are counted apart and left out of the digests.
   skip: Pick<Expected, "floorSupplied" | "lastSequence"> | undefined;
 }
@@ -66,6 +67,7 @@ export function tally(skip?: Tally["skip"]): Tally {
     hashes: each(() => createHash("sha256")),
     generated: { records: 0, events: 0, releases: 0 },
     releaseHash: createHash("sha256"),
+    leaseHash: createHash("sha256"),
     skip,
   };
 }
@@ -112,20 +114,18 @@ export function fold(t: Tally, table: Table, row: Row): void {
             namespace: row.namespace,
             subject: row.key,
             generation: event.revision,
-            body: canonicalJson(lease),
+            body: canonicalJson(event.data),
           }),
         );
       } else t.generated.events += 1;
       return;
     }
   }
-  if (t.skip !== undefined && table === "state_leases")
-    row = {
-      ...row,
-      body: canonicalJson(
-        originalLease(JSON.parse(String(row.body)) as unknown),
-      ),
-    };
+  if (t.skip !== undefined && table === "state_leases") {
+    t.leaseHash.update(encoded(table, row));
+    const lease = originalLease(JSON.parse(String(row.body)) as unknown);
+    row = { ...row, body: canonicalJson(lease) };
+  }
   t.rows[table] += 1;
   t.hashes[table].update(encoded(table, row));
 }
@@ -151,7 +151,7 @@ export function problems(t: Tally, expected: Expected): string[] {
       found.push(`the restore generated ${have} ${what}, expected ${floors}`);
   if (
     t.generated.releases !== expected.tables.state_leases.rows ||
-    t.releaseHash.digest("hex") !== expected.tables.state_leases.digest
+    t.releaseHash.digest("hex") !== t.leaseHash.digest("hex")
   )
     found.push("release events differ from imported live leases");
   const got = digests(t);
