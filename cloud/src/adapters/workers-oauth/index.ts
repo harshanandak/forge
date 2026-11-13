@@ -49,9 +49,8 @@ export interface GrantRevocation {
   spent?(grant: string, token: string, client: string): Promise<boolean>;
 }
 // Provider lifetime policy, in seconds; refresh never renews upstream identity.
-export const ACCESS_TOKEN_TTL = 3600,
-  REFRESH_TOKEN_TTL = 2592000;
-class RefreshRefusal extends Error {}
+const ACCESS_TOKEN_TTL = 3600;
+export const REFRESH_TOKEN_TTL = 2592000;
 export async function grantHash(
   token: string,
   userId: string,
@@ -108,6 +107,7 @@ export interface OAuthAdapter extends OAuthVerificationPort {
 }
 
 export function createOAuthAdapter(options: OAuthOptions): OAuthAdapter {
+  class RefreshRefusal extends Error {}
   const env = { OAUTH_KV: options.storage };
   const server = new OAuthAuthorizationServer<typeof env>({
     issuer: options.issuer,
