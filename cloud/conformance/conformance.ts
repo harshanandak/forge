@@ -4528,9 +4528,7 @@ if (phase === "capacity-wire") {
         ),
       )
       .digest("hex");
-  for (const shape of (process.env.CAPACITY_SHAPES ?? "baseline real").split(
-    " ",
-  ))
+  for (const shape of (process.env.CAPACITY_SHAPES ?? "real").split(" "))
     await journey(
       `capacity wire: ${shape} pages restore through the Worker and read back identical`,
       async () => {

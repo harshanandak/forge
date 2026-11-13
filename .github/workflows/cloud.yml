@@ -54,7 +54,7 @@ jobs:
         working-directory: cloud
       - name: Capacity pages
         working-directory: cloud
-        run: node conformance/capacity.ts pages "$RUNNER_TEMP/capacity" baseline real
+        run: node conformance/capacity.ts pages "$RUNNER_TEMP/capacity" real
       - name: Conformance checks
         working-directory: cloud
         env:

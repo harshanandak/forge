@@ -155,6 +155,7 @@ interface Shape {
   leases: number;
   ids: number;
   fenced: boolean;
+  floor: boolean;
   runs: number;
   value: (i: number, step: number) => unknown;
 }
@@ -168,6 +169,7 @@ const ceiling = (over: Partial<Shape>): Shape => ({
   leases: 0,
   ids: 0,
   fenced: false,
+  floor: false,
   runs: 2,
   value: small,
   ...over,
@@ -180,10 +182,8 @@ const withPad = (pad: (i: number) => number) => (i: number, step: number) => ({
 // The largest legal text: 65,536 code points of a quote, a backslash, two multibyte characters and U+0001, six JSON characters each.
 const BODY = '"\\é€' + "\u0001".repeat(65_532);
 
-const BYTES_ROWS = 10_000;
+const BYTES_ROWS = 9_999;
 const SHAPES: Record<string, () => Shape | Promise<Shape>> = {
-  baseline: () =>
-    ceiling({ records: 200, updates: 100, leases: 20, ids: 10, fenced: true }),
   // The real tracker's row counts, with text sized so the four state tables hold about 27 MB.
   real: () =>
     ceiling({
@@ -195,13 +195,19 @@ const SHAPES: Record<string, () => Shape | Promise<Shape>> = {
       runs: 3,
       value: withPad(() => 1_050),
     }),
-  "rows-records": () => ceiling({ records: 20_000 }),
-  "rows-events": () => ceiling({ records: 1, updates: 19_999 }),
-  "rows-leases": () => ceiling({ leases: 20_000 }),
-  "rows-requests": () => ceiling({ records: 1, updates: 19_999, ids: 20_000 }),
-  // Stored bytes at the candidate cap, to within one byte, with every table under the old row cap.
+  // A restore adds an issue number floor (one record and one event) when the dump has none, then measures the project
+  // again. So 19,999 rows in, 20,000 out: both tables sit exactly on the candidate row cap after the floor.
+  "rows-records": () => ceiling({ records: 19_999 }),
+  // Every lease writes an event and a receipt, so events reach the cap with the floor first: 19,999 leases, 19,999
+  // receipts and 20,000 events out. Exactly 20,000 leases or receipts would need 20,001 events.
+  "rows-leases": () => ceiling({ leases: 19_999 }),
+  // Stored bytes at the candidate cap, to within one byte, with the supplied floor making 10,000 records and events, the old row cap.
   bytes: async () => {
-    const base = ceiling({ records: BYTES_ROWS, value: withPad(() => 0) });
+    const base = ceiling({
+      records: BYTES_ROWS,
+      floor: true,
+      value: withPad(() => 0),
+    });
     const zero = await source(base);
     const empty = storedBytes(zero.db);
     zero.db.close();
@@ -213,23 +219,30 @@ const SHAPES: Record<string, () => Shape | Promise<Shape>> = {
   },
   text: () =>
     ceiling({ records: 30, value: (i, step) => ({ i, step, body: BODY }) }),
-  // 5,000 values in each body, the most the raw-text budget admits, and 32 levels of depth, the deepest.
-  values: () =>
+  // The edge of the raw-text budget in every body: 32 levels of depth and 5,000 values (10 fixed values, 31 arrays, 4,959 scalars).
+  edge: () =>
     ceiling({
-      records: 1_000,
-      value: () => Array.from({ length: 4_990 }, (_, j) => j % 10),
-    }),
-  depth: () =>
-    ceiling({
-      records: 5_000,
-      value: (i, step) =>
-        nest(30, [i, step, ...Array.from({ length: 18 }, (_, j) => j)]),
+      records: 500,
+      value: () =>
+        nest(
+          30,
+          Array.from({ length: 4_959 }, (_, j) => j % 10),
+        ),
     }),
 };
 
 function build(owner: StateOwner, s: Shape): void {
   const revision: number[] = [];
   let ids = s.ids;
+  // A supplied floor is a record and an event the restore then keeps as they are, so stored bytes are exact.
+  if (s.floor)
+    owner.put(
+      "forge/work",
+      "allocation:issue:work-",
+      { prefix: "issue:work-", number: 0 },
+      actor,
+      { expectRevision: 0 },
+    );
   const put = (i: number, fence?: { subject: string; generation: number }) => {
     const step = revision[i] ?? 0;
     const holder = { actor, session: { id: `s-${i}` } };
