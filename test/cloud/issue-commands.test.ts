@@ -14,6 +14,7 @@ import {
 import { TOKEN_LOOKUP, TOKENS } from "../../cloud/src/tokens.ts";
 import { prepareCommand, runCommand } from "../../cloud/src/issue-commands.ts";
 import { OLD_SCHEMA } from "./old-schema.ts";
+import { receiptScope } from "../../cloud/src/issue-request-id.ts";
 import { MAX_RECEIPTS } from "../../cloud/src/issue-receipts.ts";
 import { listIssues } from "../../cloud/src/issue-list.ts";
 import { commentIssue } from "../../cloud/src/issue-comment.ts";
@@ -46,6 +47,8 @@ import {
   BODY,
   DUMP,
   maxCalls,
+  legacySource,
+  receiptResult,
   pagesOf,
   tablesOf,
   type Tables,
@@ -170,7 +173,14 @@ function fixture(
       },
     },
   };
+  const receiptKeys = new Map<string, string>();
+  const receiptKey = (id: string) => receiptKeys.get(id) ?? `request:${id}`;
+  const receiptRows = () =>
+    db.query("SELECT 1 FROM sqlite_master WHERE name='state_records'").get()
+      ? rowsOf(db, "forge/cloud")
+      : [];
   async function send(body: unknown, o: Options = {}) {
+    const beforeKeys = new Set(receiptRows().map((r) => r.key));
     const request = new Request(
       `https://w.example/p/${o.name ?? name}/${o.path ?? "command"}`,
       {
@@ -200,6 +210,18 @@ function fixture(
         : await (o.via ?? createWorker()).fetch(request, bindings as never);
     const text = await response.text();
     const json = JSON.parse(text) as Envelope;
+    const raw =
+      typeof body === "object" && body !== null && "requestId" in body
+        ? String(body.requestId)
+        : undefined;
+    const added = receiptRows().filter(
+      (r) =>
+        !beforeKeys.has(r.key) &&
+        JSON.stringify(receiptResult(r)) ===
+          JSON.stringify(json.ok ? json.result : json.error),
+    );
+    if (raw !== undefined && added.length === 1 && !receiptKeys.has(raw))
+      receiptKeys.set(raw, added[0]!.key);
     return {
       status: response.status,
       text,
@@ -259,6 +281,7 @@ function fixture(
     });
   return {
     send,
+    receiptKey,
     device,
     admin,
     dump,
@@ -318,6 +341,7 @@ function fixture(
   };
 }
 const actor = { kind: "agent", id: "tester" } as const;
+const receiptIdentity = receiptScope(["token", "fixture", "laptop"]);
 const iso = (ms: number) => new Date(ms).toISOString();
 const stored = (over: object = {}) => ({
   id: "work-1",
@@ -3060,7 +3084,7 @@ const eventsOf = (db: Database, namespace: string) =>
   ).map((row) => row.body);
 const receiptOf = (f: F, id: string) => {
   const row = rowsOf(f.db, "forge/cloud").find(
-    (r) => r.key === `request:${id}`,
+    (r) => r.key === f.receiptKey(id),
   );
   return row === undefined
     ? undefined
@@ -3200,7 +3224,6 @@ test("the cloud issue.create agrees with the local handler on whole results, row
 test("a retry returns the original result with no second issue or issue event, and a reused id with other input conflicts", async () => {
   const { f, token } = await createRows();
   const other = await f.device();
-  const tablet = await f.device(day, "tablet");
   const input = { title: "Once", kind: "bug" };
   const first = await f.send(make("r-1", input), { token });
   expect([first.status, first.exit, first.json.result]).toMatchObject([
@@ -3211,7 +3234,7 @@ test("a retry returns the original result with no second issue or issue event, a
   // One issue and its two events (the issue and its floor); the receipt adds its own record and event.
   expect([issuesIn(f), eventsOf(f.db, "forge/work").length]).toEqual([4, 2]);
   expect(rowsOf(f.db, "forge/cloud").map((r) => r.key)).toEqual([
-    "request:r-1",
+    f.receiptKey("r-1"),
   ]);
   expect(eventsOf(f.db, "forge/cloud")).toHaveLength(1);
   const receipt = receiptOf(f, "r-1")!;
@@ -3224,7 +3247,7 @@ test("a retry returns the original result with no second issue or issue event, a
   const done = f.snapshot();
   for (const [via, bearer, body] of [
     ["direct", token, input],
-    [createWorker(), other, { kind: "bug", title: "Once" }],
+    [createWorker(), token, { kind: "bug", title: "Once" }],
   ] as const) {
     const again = await f.send(make("r-1", body), { token: bearer, via });
     expect([again.status, again.text]).toEqual([200, first.text]);
@@ -3234,7 +3257,6 @@ test("a retry returns the original result with no second issue or issue event, a
     ["title", token, { title: "Twice", kind: "bug" }],
     ["kind", token, { title: "Once", kind: "task" }],
     ["labels", token, { ...input, labels: ["x"] }],
-    ["device", tablet, input],
   ] as const) {
     const got = await f.send(make("r-1", body), { token: bearer });
     expect([name, got.status, got.code, got.exit]).toEqual([
@@ -3365,6 +3387,7 @@ function createAfterDelete(create: typeof createIssue) {
     context: { variant: "project", actor, project: { id: "p" } },
     device: "laptop",
     prefix: "forge",
+    scope: receiptIdentity,
     recheck: () => {},
   });
   if (got.id !== "forge-3")
@@ -3425,7 +3448,7 @@ test("a receipt failure rolls back the issue and its floor, and the retry gets t
     (sql, ...bindings) => {
       if (
         /^INSERT INTO state_records/.test(sql) &&
-        bindings.includes("request:r-1")
+        bindings.some((v) => typeof v === "string" && v.startsWith("request:"))
       )
         throw new Error("injected receipt failure");
       return original(sql, ...bindings);
@@ -3682,8 +3705,6 @@ test("the cloud issue.comment agrees with the local handler on whole results, ro
 
 test("a comment retry returns the original comment with no second comment or comment event, and a reused id with other input conflicts", async () => {
   const { f, token } = await commentRows();
-  const other = await f.device();
-  const tablet = await f.device(day, "tablet");
   const input = { id: "forge-12", body: "Once" };
   const first = await f.send(note("r-1", input), { token });
   expect([first.status, first.exit, first.json.result]).toEqual([
@@ -3699,7 +3720,7 @@ test("a comment retry returns the original comment with no second comment or com
   expect(seqFloor(f, "comment", 12)).toEqual(seqAt("comment", 12, 4));
   expect(seqEvents(f, "comment", 12)).toHaveLength(1);
   expect(rowsOf(f.db, "forge/cloud").map((r) => r.key)).toEqual([
-    "request:r-1",
+    f.receiptKey("r-1"),
   ]);
   expect(eventsOf(f.db, "forge/cloud")).toHaveLength(1);
   const receipt = receiptOf(f, "r-1")!;
@@ -3712,7 +3733,7 @@ test("a comment retry returns the original comment with no second comment or com
   const done = f.snapshot();
   for (const [via, bearer, body] of [
     ["direct", token, input],
-    [createWorker(), other, { body: "Once", id: "forge-12" }],
+    [createWorker(), token, { body: "Once", id: "forge-12" }],
   ] as const) {
     const again = await f.send(note("r-1", body), { token: bearer, via });
     expect([again.status, again.text]).toEqual([200, first.text]);
@@ -3721,7 +3742,6 @@ test("a comment retry returns the original comment with no second comment or com
   for (const [name, bearer, body] of [
     ["body", token, { id: "forge-12", body: "Twice" }],
     ["issue", token, { id: "forge-1", body: "Once" }],
-    ["device", tablet, input],
   ] as const) {
     const got = await f.send(note("r-1", body), { token: bearer });
     expect([name, got.status, got.code, got.exit]).toEqual([
@@ -4845,6 +4865,7 @@ test("the shared write path takes a project context for create and comment and a
         context,
         device: "laptop",
         prefix: "forge",
+        scope: receiptIdentity,
         recheck: () => {},
       }),
     ).toThrow(`${op} needs a ${want} context`);
@@ -4857,6 +4878,7 @@ test("the shared write path takes a project context for create and comment and a
       context: lease,
       device: "laptop",
       prefix: "forge",
+      scope: receiptIdentity,
       recheck: () => {},
     }),
   ).toThrow("issue.claim needs an acquire lease context");
@@ -4872,6 +4894,7 @@ test("the shared write path takes a project context for create and comment and a
         context: { ...lease, leaseMode: "acquire" } as never,
         device: "laptop",
         prefix: "forge",
+        scope: receiptIdentity,
         recheck: () => {},
       }),
     ).toThrow(`${op} needs a held lease context`);
@@ -4958,7 +4981,8 @@ function localClaim(
               project: { id: "p" },
             },
             write: true,
-            requestId,
+            // Match the cloud's actual acquisition ID; parity still compares every event and row.
+            requestId: f.receiptKey(requestId).slice("request:".length),
           }),
         },
       }),
@@ -6127,9 +6151,9 @@ test("a recorded link whose stored value is no longer valid is refused as INTERN
       (
         f.db
           .query(
-            "SELECT json_extract(body, ?) AS v FROM state_records WHERE namespace='forge/cloud' AND key='request:v-1'",
+            "SELECT json_extract(body, ?) AS v FROM state_records WHERE namespace='forge/cloud' AND key=?",
           )
-          .get(at) as { v: unknown }
+          .get(at, f.receiptKey("v-1")) as { v: unknown }
       ).v;
     const was = stored(path);
     // json_set would create a missing path, so the field must exist before and differ from the edit.
@@ -6137,8 +6161,8 @@ test("a recorded link whose stored value is no longer valid is refused as INTERN
     expect([
       name,
       f.db.run(
-        "UPDATE state_records SET body=json_set(body, ?, ?) WHERE namespace='forge/cloud' AND key='request:v-1'",
-        [path, to],
+        "UPDATE state_records SET body=json_set(body, ?, ?) WHERE namespace='forge/cloud' AND key=?",
+        [path, to, f.receiptKey("v-1")],
       ).changes,
       stored(path),
     ]).toEqual([name, 1, to]);
@@ -6180,6 +6204,7 @@ test("a link record that fails the declared output schema, even when its readbac
       context,
       device: "laptop",
       prefix: "forge",
+      scope: receiptIdentity,
       recheck: () => {},
     });
   // The seam bends every link record the owner writes or reads to the same malformed one: the clock is a number.
@@ -6414,7 +6439,6 @@ for (const kind of NUMBERED)
 for (const kind of NUMBERED)
   test(`${kind} replays keep their original answer and burn no number across a deletion`, async () => {
     const { f, token } = await accepted([], [], false);
-    const other = await f.device();
     const first: Sent[] = [];
     for (const id of ["p-1", "p-2"])
       first.push(await f.send(FAMILY[kind].send(id), { token }));
@@ -6433,7 +6457,7 @@ for (const kind of NUMBERED)
       ] as const)
         for (const [via, bearer] of [
           ["direct", token],
-          [createWorker(), other],
+          [createWorker(), token],
         ] as const) {
           const again = await f.send(FAMILY[kind].send(id), {
             token: bearer,
@@ -6480,13 +6504,12 @@ for (const kind of NUMBERED)
     ).toEqual([1, 3, 4].map((i) => `${kind}:work-1:${i}`));
     expect(seqFloor(f, kind)).toEqual(seqAt(kind, 1, 4));
     expect(seqEvents(f, kind)).toHaveLength(2);
-    expect(rowsOf(f.db, "forge/cloud").map((r) => r.key)).toEqual([
-      "request:c-1",
-      "request:c-2",
-    ]);
+    expect(rowsOf(f.db, "forge/cloud").map((r) => r.key)).toEqual(
+      [f.receiptKey("c-1"), f.receiptKey("c-2")].sort(),
+    );
     const same = await Promise.all([
       f.send(FAMILY[kind].send("c-3"), { token }),
-      f.send(FAMILY[kind].send("c-3"), { token: second, via: "direct" }),
+      f.send(FAMILY[kind].send("c-3"), { token, via: "direct" }),
     ]);
     expect(same.map((got) => got.status)).toEqual([200, 200]);
     expect(same[1].text).toBe(same[0].text);
@@ -6634,9 +6657,9 @@ const POINTS: [string, RegExp, (kind: Family, id: string) => string][] = [
   [
     "receipt record",
     /^(INSERT INTO|UPDATE) state_records/,
-    (_k, id) => `request:${id}`,
+    (_k, _id) => "request:",
   ],
-  ["receipt event", /^INSERT INTO state_events/, (_k, id) => `request:${id}`],
+  ["receipt event", /^INSERT INTO state_events/, (_k, _id) => "request:"],
   [
     "child record",
     /^(INSERT INTO|UPDATE) state_records/,
@@ -6656,7 +6679,14 @@ for (const kind of NUMBERED)
         const key = keyOf(kind, "x-1");
         const fault = spyOn(f.storage.sql, "exec").mockImplementation(
           (sql, ...bindings) => {
-            if (table.test(sql) && bindings.includes(key))
+            if (
+              table.test(sql) &&
+              bindings.some((v) =>
+                key === "request:"
+                  ? typeof v === "string" && v.startsWith(key)
+                  : v === key,
+              )
+            )
               throw new Error("injected write failure");
             return original(sql, ...bindings);
           },
@@ -6762,7 +6792,6 @@ const REPLAYS: Replay[] = [
         linkIn(),
         { context: { ...leased, session: { id: "s2" } } },
       ],
-      ["device", true],
     ],
     losses: [
       [
@@ -6811,7 +6840,6 @@ const REPLAYS: Replay[] = [
         patch(),
         { context: { ...leased, session: { id: "s2" } } },
       ],
-      ["device", true],
     ],
     losses: [
       [
@@ -6861,7 +6889,6 @@ const REPLAYS: Replay[] = [
         depIn(),
         { context: { ...leased, session: { id: "s2" } } },
       ],
-      ["device", true],
     ],
     losses: [
       [
@@ -6910,7 +6937,6 @@ const REPLAYS: Replay[] = [
         closeIn(),
         { context: { ...leased, session: { id: "s2" } } },
       ],
-      ["device", true],
     ],
     losses: [
       [
@@ -6949,7 +6975,6 @@ const REPLAYS: Replay[] = [
       ["ttl", false, { id: "forge-12", ttlSeconds: 60 }],
       ["issue", false, { id: "forge-1" }],
       ["session", false, { id: "forge-12" }, asSession("s2")],
-      ["device", true],
     ],
     losses: [
       [
@@ -7029,7 +7054,6 @@ const REPLAYS: Replay[] = [
         { id: "forge-12" },
         { context: { ...leased, session: { id: "s2" } } },
       ],
-      ["device", true],
     ],
     losses: [
       [
@@ -7077,7 +7101,6 @@ const REPLAYS: Replay[] = [
         { id: "forge-12" },
         { context: { ...leased, session: { id: "s2" } } },
       ],
-      ["device", true],
     ],
     kept: true,
     losses: [
@@ -7095,10 +7118,9 @@ const REPLAYS: Replay[] = [
 ];
 
 for (const r of REPLAYS) {
-  test(`a ${r.name} retry with the lease still held returns the original result with no second write or event, and a reused id with other input, fence or device conflicts`, async () => {
+  test(`a ${r.name} retry with the lease still held returns the original result with no second write or event, and a reused id with other input or fence conflicts`, async () => {
     const { f, token } = await r.rows();
     const other = await f.device();
-    const tablet = await f.device(day, "tablet");
     const first = await f.send(r.send("r-1"), { token });
     expect([first.status, first.exit, first.json.result]).toMatchObject([
       200,
@@ -7115,7 +7137,7 @@ for (const r of REPLAYS) {
       expect(seqEvents(f, "link", 12)).toHaveLength(1);
     }
     expect(rowsOf(f.db, "forge/cloud").map((row) => row.key)).toEqual([
-      "request:r-1",
+      f.receiptKey("r-1"),
     ]);
     expect(eventsOf(f.db, "forge/cloud")).toHaveLength(1);
     const receipt = receiptOf(f, "r-1")!;
@@ -7131,7 +7153,7 @@ for (const r of REPLAYS) {
     const done = f.snapshot();
     for (const [via, bearer] of [
       ["direct", token],
-      [createWorker(), other],
+      [createWorker(), token],
     ] as const) {
       const again = await f.send(r.send("r-1"), { token: bearer, via });
       expect([again.status, again.text]).toEqual([200, first.text]);
@@ -7143,9 +7165,9 @@ for (const r of REPLAYS) {
     expect([again.status, again.text]).toEqual([200, first.text]);
     expect(f.snapshot()).toBe(later);
     const sent = JSON.stringify(receiptOf(f, "r-1"));
-    for (const [name, onTablet, input, more] of r.conflicts) {
+    for (const [name, _onTablet, input, more] of r.conflicts) {
       const got = await f.send(r.send("r-1", input, more), {
-        token: onTablet ? tablet : token,
+        token,
       });
       expect([name, got.status, got.code, got.exit]).toEqual([
         name,
@@ -7412,6 +7434,7 @@ test("a command write rechecks the token before it asks to open the store", asyn
     now: start,
     recheck,
     open,
+    principal: ["token", "fixture", "laptop"] as const,
   };
   expect(() => runCommand(JSON.stringify(make("p-1")), host)).toThrow(
     "rechecked",
@@ -7490,7 +7513,12 @@ for (const w of WRITES) {
       let tripped = false;
       // The first statement after the route's checks is the receipt lookup: the clock passes expiry there.
       f.storage.sql.exec = (sql, ...bindings) => {
-        if (!tripped && bindings.includes("request:e-1")) {
+        if (
+          !tripped &&
+          bindings.some(
+            (v) => typeof v === "string" && v.startsWith("request:"),
+          )
+        ) {
           tripped = true;
           f.advance(2 * day);
         }
@@ -7581,9 +7609,11 @@ for (const w of WRITES) {
     // Only a create moves the floor; every other write leaves the one its project already had.
     const floorAfter = w.floor === undefined ? floorBefore : floorAt(w.floor);
     for (const record of [
-      w.record,
-      "forge/cloud/request:s-1",
-      "forge/cloud/request:s-2",
+      w.record === "forge/cloud/request:s-1"
+        ? `forge/cloud/${f.receiptKey("s-1")}`
+        : w.record,
+      `forge/cloud/${f.receiptKey("s-1")}`,
+      `forge/cloud/${f.receiptKey("s-2")}`,
       ...(floorAfter === undefined ? [] : [floorRecord]),
       ...(w.numbered === undefined ? [] : [`forge/work/${w.numbered.key}`]),
     ])
@@ -7668,25 +7698,26 @@ const ids = (t: Tables, table: string) =>
   (t[table] ?? []).map((r) => `${r.namespace}/${r.key}`);
 // The accepted create also writes the allocation floor, so its record and its record.updated event are named too.
 // forge-1306: so does the accepted comment, which starts the comment number floor of its issue.
-const NAMED = [
-  "forge/cloud/request:max-bad-comment",
-  "forge/cloud/request:max-bad-create",
-  "forge/cloud/request:max-comment",
-  "forge/cloud/request:max-create",
-  "forge/work/allocation:comment:work-1:",
-  "forge/work/allocation:issue:work-",
-  "forge/work/comment:work-1:1",
-  "forge/work/issue:work-1",
-];
+const named = (f: F) =>
+  [
+    `forge/cloud/${f.receiptKey("max-bad-comment")}`,
+    `forge/cloud/${f.receiptKey("max-bad-create")}`,
+    `forge/cloud/${f.receiptKey("max-comment")}`,
+    `forge/cloud/${f.receiptKey("max-create")}`,
+    "forge/work/allocation:comment:work-1:",
+    "forge/work/allocation:issue:work-",
+    "forge/work/comment:work-1:1",
+    "forge/work/issue:work-1",
+  ].sort();
 interface Receipt {
   fingerprint: string;
   outcome: string;
   result: { code?: string };
 }
-const receipt = (t: Tables, id: string) =>
+const receipt = (t: Tables, id: string, f: F) =>
   (
     JSON.parse(
-      String(t.state_records!.find((r) => r.key === `request:${id}`)!.body),
+      String(t.state_records!.find((r) => r.key === f.receiptKey(id))!.body),
     ) as { value: Receipt }
   ).value;
 const storedBytes = (t: Tables) =>
@@ -7719,15 +7750,15 @@ test("a whole export carries the maximum bodies, receipts and events intact, and
   expect(differing(got.json.value!.tables, tables)).toEqual([]);
   expect(f.snapshot()).toBe(before);
   // Every named record and event is there, and the project is under the 3 MiB a whole export allows.
-  expect(ids(tables, "state_records")).toEqual(NAMED);
-  expect(ids(tables, "state_events").sort()).toEqual(NAMED);
+  expect(ids(tables, "state_records")).toEqual(named(f));
+  expect(ids(tables, "state_events").sort()).toEqual(named(f));
   expect(storedBytes(tables)).toBeLessThan(3 * 1024 * 1024);
   expect(String(tables.state_records!.at(-1)!.body).length).toBeGreaterThan(
     393_216,
   );
   const outcomes = ["create", "comment", "bad-create", "bad-comment"].map(
     (id) => {
-      const { outcome, result } = receipt(tables, `max-${id}`);
+      const { outcome, result } = receipt(tables, `max-${id}`, f);
       return [outcome, result.code];
     },
   );
@@ -7737,14 +7768,24 @@ test("a whole export carries the maximum bodies, receipts and events intact, and
     ["refused", "INPUT_INVALID"],
     ["refused", "INPUT_INVALID"],
   ]);
-  expect(JSON.stringify(receipt(tables, "max-create").result)).toBe(
+  expect(JSON.stringify(receipt(tables, "max-create", f).result)).toBe(
     JSON.stringify(sent.create.json.result),
   );
-  expect(receipt(tables, "max-create").fingerprint).toHaveLength(71);
-  // A refusal records the error, never the input it refused.
-  expect(JSON.stringify(receipt(tables, "max-bad-create")).length).toBeLessThan(
-    2000,
+  const fingerprint = JSON.parse(
+    receipt(tables, "max-create", f).fingerprint,
+  ) as {
+    scope: unknown;
+    input: string;
+  };
+  expect(Object.keys(fingerprint).sort()).toEqual(["input", "scope"]);
+  expect(fingerprint.scope).toEqual(
+    receiptScope(["token", token.slice(4, 20), "laptop"]),
   );
+  expect(fingerprint.input).toMatch(/^sha256:[a-f0-9]{64}$/);
+  // A refusal records the error, never the input it refused.
+  expect(
+    JSON.stringify(receipt(tables, "max-bad-create", f)).length,
+  ).toBeLessThan(2000);
   for (const canary of [
     token,
     token.split(".")[1]!,
@@ -7797,8 +7838,8 @@ test("a page budget that cannot hold one row with its envelope is refused with 4
 }, 30_000);
 
 for (const mode of ["whole", "paged"] as const)
-  test(`a ${mode} admin restore of the maximum project reads back exactly, serves it, replays its receipts and takes a fresh command`, async () => {
-    const { calls, sent, tables } = await largest();
+  test(`a ${mode} admin restore of the maximum project reads back exactly, serves it, isolates replacement-token receipts and takes a fresh command`, async () => {
+    const { f, calls, sent, tables } = await largest();
     const t = fixture(vars, "target");
     const parts =
       mode === "whole" ? [{ format: DUMP, tables }] : pagesOf(tables, 2);
@@ -7812,7 +7853,7 @@ for (const mode of ["whole", "paged"] as const)
     }
     const restored = tablesOf(t.db);
     expect(differing(restored, tables)).toEqual([]);
-    expect(ids(restored, "state_events").sort()).toEqual(NAMED);
+    expect(ids(restored, "state_events").sort()).toEqual(named(f));
     expect(
       t.db.query("SELECT COUNT(*) AS n FROM domain_cloud_tokens").get(),
     ).toEqual({ n: 0 });
@@ -7838,7 +7879,7 @@ for (const mode of ["whole", "paged"] as const)
       listed.exit,
       records.map((r) => r.value.body === BODY),
     ]).toEqual([200, 0, [true]]);
-    // The same actor, device and project repeat each request id: the same answer, and no row changes.
+    // Replacement credentials execute independently, preserving every imported receipt and event.
     const kept = tablesOf(t.db);
     for (const key of [
       "create",
@@ -7847,13 +7888,23 @@ for (const mode of ["whole", "paged"] as const)
       "badComment",
     ] as const) {
       const again = await t.send(calls[key], { token });
-      expect([key, again.status, again.text === sent[key].text]).toEqual([
-        key,
-        sent[key].status,
-        true,
-      ]);
+      expect([key, again.status]).toEqual([key, sent[key].status]);
+      if (key === "create" || key === "comment")
+        expect([key, again.text === sent[key].text]).toEqual([key, false]);
+      await ownRetry(t, calls[key], { token }, again);
     }
-    expect(differing(tablesOf(t.db), kept)).toEqual([]);
+    const independentlyWritten = tablesOf(t.db);
+    for (const table of ["state_records", "state_events"]) {
+      const current = new Set(
+        independentlyWritten[table]!.map((r) => JSON.stringify(r)),
+      );
+      for (const row of kept[table]!)
+        if (!(
+          table === "state_records" && String(row.key).startsWith("allocation:")
+        ))
+          expect(current.has(JSON.stringify(row))).toBe(true);
+    }
+    expect(issuesIn(t)).toBe(2);
     // A fresh command is one comment and one receipt, their two events and the comment floor's advance event.
     // Only the comment floor row changes; no other earlier row moves. The count is against the source's own rows.
     const fresh = await t.send(
@@ -7862,24 +7913,24 @@ for (const mode of ["whole", "paged"] as const)
     );
     expect([fresh.status, fresh.json.result]).toEqual([
       200,
-      { id: "forge-1", commentId: "comment:work-1:2" },
+      { id: "forge-1", commentId: "comment:work-1:3" },
     ]);
     const after = tablesOf(t.db);
     expect([
-      after.state_records!.length - tables.state_records!.length,
-      after.state_events!.length - tables.state_events!.length,
+      after.state_records!.length - independentlyWritten.state_records!.length,
+      after.state_events!.length - independentlyWritten.state_events!.length,
     ]).toEqual([2, 3]);
     const commentFloor = "allocation:comment:work-1:";
     const advanced = after.state_records!.find((r) => r.key === commentFloor)!;
     expect([
       advanced.revision,
       (JSON.parse(String(advanced.body)) as { value: unknown }).value,
-    ]).toEqual([2, { prefix: "comment:work-1:", number: 2 }]);
-    for (const table of Object.keys(kept)) {
+    ]).toEqual([3, { prefix: "comment:work-1:", number: 3 }]);
+    for (const table of Object.keys(independentlyWritten)) {
       const now = new Set(after[table]!.map((r) => JSON.stringify(r)));
       expect([
         table,
-        kept[table]!.filter(
+        independentlyWritten[table]!.filter(
           (r) =>
             !(
               table === "state_records" &&
@@ -7911,7 +7962,12 @@ for (const [name, change] of [
   [
     "a typed receipt changed without its event",
     (t: Tables) => {
-      const row = t.state_records!.find((r) => r.key === "request:max-create")!;
+      const row = t.state_records!.find(
+        (r) =>
+          r.namespace === "forge/cloud" &&
+          (receiptResult(r as { body: unknown }) as { id?: string }).id ===
+            "forge-1",
+      )!;
       const stored = JSON.parse(String(row.body)) as { value: Receipt };
       stored.value.fingerprint = `sha256:${"0".repeat(64)}`;
       row.body = JSON.stringify(stored);
@@ -7925,6 +7981,32 @@ for (const [name, change] of [
     "a raw lease receipt whose result names another subject",
     forged("forged-2", "claim", "issue:b"),
   ],
+  ...[
+    null,
+    [],
+    {},
+    { version: 1, principal: "sha256:" + "a".repeat(64) },
+    { version: 2, principal: 0 },
+    { version: 2, principal: "not-a-digest" },
+    { version: 2, principal: "sha256:" + "a".repeat(64), extra: true },
+  ].map(
+    (scope) =>
+      [
+        `a raw receipt with malformed scope ${JSON.stringify(scope)}`,
+        (t: Tables) => {
+          t.domain_cloud_requests!.push({
+            request_id: "bad-scope",
+            outcome: "ok",
+            result: lease("issue:a"),
+            fingerprint: JSON.stringify({
+              route: "claim",
+              subject: "issue:a",
+              scope,
+            }),
+          });
+        },
+      ] as const,
+  ),
 ] as const)
   test(`a restore of ${name} is RESTORE_INVALID_ROW and leaves the target unprovisioned and empty`, async () => {
     const bad = structuredClone((await largest(vars, "small")).tables);
@@ -9786,6 +9868,165 @@ for (const trip of TRIPS)
       const retry = await restoreInto(trip, tables, { per: 1, target: t });
       expect(retry.got.status).toBe(200);
       expect((await t.admin("status")).json.value!.initialized).toBe(true);
+    }, 60_000);
+
+// All ownership cases share callers, exact retries, receipt preservation and state deltas.
+type TokenSpec = readonly [string, string | undefined];
+const laptop = ["laptop", undefined] as const,
+  tablet = ["tablet", undefined] as const;
+const tokenPairs = [
+  ["bound sessions", ["laptop", "s1"], ["laptop", "s2"]],
+  ["same bound session", ["laptop", "s1"], ["laptop", "s1"]],
+  ["sessionless tokens", laptop, laptop],
+  ["different devices", laptop, tablet],
+] as const;
+const rawClaim = (subject = "issue:work-12", ttlMs = 60_000) => ({
+  requestId: "x",
+  subject,
+  holder,
+  ttlMs,
+});
+async function scopeFixture(mode: string, left: TokenSpec, right: TokenSpec) {
+  const raw = ["raw", "typed/raw", "held", "raw refusal"].includes(mode);
+  const f = raw ? (await claimRows()).f : fixture();
+  const a = await f.device(day, ...left),
+    b = await f.device(day, ...right);
+  f.tables();
+  if (mode === "comment") f.put(stored());
+  const refused = mode.endsWith("refusal"),
+    preempted = mode.startsWith("preempt");
+  let first: object = make(
+    "x",
+    preempted ? { title: refused ? "" : "other" } : { title: "New" },
+  );
+  if (mode === "comment") first = note("x", { id: "forge-1", body: "same" });
+  if (raw)
+    first =
+      mode === "typed/raw"
+        ? claim("x")
+        : rawClaim(undefined, refused ? 0 : 60_000);
+  let second = first;
+  if (raw)
+    second = rawClaim(mode === "held" ? "issue:work-12" : "issue:work-1");
+  if (preempted) second = make("x");
+  const one: Options = { token: a },
+    two: Options = { token: mode === "typed/raw" ? a : b };
+  if (raw && mode !== "typed/raw") one.path = "claim";
+  if (raw) two.path = "claim";
+  return { f, a, b, raw, refused, preempted, first, second, one, two };
+}
+async function ownRetry(f: F, call: object, options: Options, prior: Sent) {
+  const before = f.snapshot(),
+    again = await f.send(call, options);
+  const fields =
+    options.path === undefined
+      ? (["status", "text"] as const)
+      : (["status", "type", "bytes", "json"] as const);
+  expect(fields.map((key) => again[key])).toEqual(
+    fields.map((key) => prior[key]),
+  );
+  expect(f.snapshot()).toBe(before);
+}
+function scopeCase(
+  name: string,
+  mode: string,
+  left: TokenSpec,
+  right: TokenSpec,
+) {
+  test(`a pinned id belongs to its token: ${name}`, async () => {
+    const scope = await scopeFixture(mode, left, right);
+    const { f, a, b } = scope;
+    const before = [
+      rowsOf(f.db, "forge/work").length,
+      eventsOf(f.db, "forge/work").length,
+    ];
+    const first = await f.send(scope.first, scope.one);
+    expect([first.status, first.exit]).toEqual(
+      scope.refused ? [400, 6] : [200, 0],
+    );
+    const saved = tablesOf(f.db),
+      receipts = rowsOf(f.db, "forge/cloud");
+    const second = await f.send(scope.second, scope.two);
+    expect([second.status, second.code, second.exit]).toEqual(
+      mode === "held" ? [409, "LEASE_HELD", 4] : [200, undefined, 0],
+    );
+    for (const receipt of receipts)
+      expect(rowsOf(f.db, "forge/cloud")).toContainEqual(receipt);
+    if (scope.raw) {
+      const after = tablesOf(f.db);
+      for (const table of ["state_requests", "domain_cloud_requests"]) {
+        for (const prior of saved[table]!)
+          expect(after[table]).toContainEqual(prior);
+      }
+      for (const table of ["state_requests", "state_leases"])
+        expect(after[table]!.length - saved[table]!.length).toBe(
+          mode === "held" ? 0 : 1,
+        );
+    } else {
+      expect(second.text === first.text).toBe(false);
+      expect(rowsOf(f.db, "forge/cloud")).toHaveLength(2);
+      if (scope.preempted) expect(issuesIn(f)).toBe(scope.refused ? 1 : 2);
+      else
+        expect([
+          rowsOf(f.db, "forge/work").length - before[0]!,
+          eventsOf(f.db, "forge/work").length - before[1]!,
+          rowsOf(f.db, "forge/cloud").length,
+          eventsOf(f.db, "forge/cloud").length,
+        ]).toEqual([3, 4, 2, 2]);
+    }
+    await ownRetry(f, scope.first, scope.one, first);
+    await ownRetry(f, scope.second, scope.two, second);
+    if (scope.preempted) {
+      const unchanged = f.snapshot();
+      for (const [call, token] of [
+        [make("x", { title: "corrected" }), a],
+        [note("x", { id: "forge-1", body: "changed op" }), b],
+      ] as const) {
+        const changed = await f.send(call, { token });
+        expect([changed.status, changed.code, changed.exit]).toEqual([
+          409,
+          "INPUT_CONFLICT",
+          4,
+        ]);
+        expect(f.snapshot()).toBe(unchanged);
+      }
+    }
+  }, 60_000);
+}
+for (const [name, a, b] of tokenPairs)
+  for (const op of ["create", "comment"]) scopeCase(`${op}: ${name}`, op, a, b);
+for (const mode of [
+  "preempt success",
+  "preempt refusal",
+  "raw",
+  "typed/raw",
+  "held",
+  "raw refusal",
+])
+  scopeCase(mode, mode, mode.startsWith("preempt") ? tablet : laptop, laptop);
+
+for (const family of [
+  "typed success",
+  "typed refusal",
+  "raw",
+  "inner",
+] as const)
+  for (const id of ["x", `c2:${"a".repeat(64)}`, `l2:${"b".repeat(64)}`])
+    test(`a genuine legacy ${family} receipt refuses id ${id.slice(0, 3)} without writing, including after restore`, async () => {
+      const source = await legacySource(family, id);
+      const { t, got: restored } = await restoreInto("whole", source.tables);
+      expect(restored.status).toBe(200);
+      const token = await t.device();
+      const before = t.snapshot();
+      const got = family.startsWith("typed")
+        ? await t.send(make(id), { token })
+        : await t.send(
+            { requestId: id, subject: "issue:work-2", holder, ttlMs: 60_000 },
+            { token, path: "claim" },
+          );
+      expect([got.status, got.code, got.exit]).toEqual([503, "UNAVAILABLE", 1]);
+      expect((got.json.error as { retry?: string }).retry).toBe("never");
+      expect(t.snapshot()).toBe(before);
     }, 60_000);
 
 // forge-1040: measured capacity. The agreed limits are 20,000 rows per table and 32 MiB stored (33,554,432 bytes),

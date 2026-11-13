@@ -201,6 +201,30 @@ jobs:
           start second
           bun conformance/conformance.ts restart
           stop
+          # forge-1262: only the scope helper changes; fresh persistence must expose the ownership assertion.
+          (
+            file=src/issue-request-id.ts
+            trap 'git restore -- "$file"; pkill -f workerd || true' EXIT
+            python3 - <<'PY_SCOPE'
+          from pathlib import Path
+          p = Path("src/issue-request-id.ts")
+          text = p.read_text()
+          line = 'return (family === "command" ? "c2:" : "l2:") + hash;'
+          assert text.count(line) == 1, "scope counterfactual must edit exactly once"
+          p.write_text(text.replace(line, "return raw;"))
+          PY_SCOPE
+            [ "$(git diff -U0 -- "$file" | grep -c '^-[^-]')" = 1 ]
+            persist="$RUNNER_TEMP/wrangler-request-scope"
+            start request-scope
+            row='a pinned request id belongs to its authenticated token on cloud writes'
+            code=0
+            bun conformance/conformance.ts ownership "$row" > "$RUNNER_TEMP/request-scope.out" 2>&1 || code=$?
+            cat "$RUNNER_TEMP/request-scope.out"
+            [ "$code" != 0 ]
+            grep -Fxq "FAIL $row: another token must make its own write" "$RUNNER_TEMP/request-scope.out"
+            [ "$(grep -c '^FAIL ' "$RUNNER_TEMP/request-scope.out")" = 1 ]
+            stop
+          )
           # Large phase: the largest legal project at the Worker's default limits (4 MiB pages, 8 MiB project,
           # 10,000 rows), so the small caps above are removed from a copy of the same config. It has its own
           # persistence directory, and the restored target is the admitted command project.
@@ -255,11 +279,11 @@ jobs:
             for row in "${FULL_ROWS[1]}" "${FULL_ROWS[3]}"; do
               grep -Fxq -- "PASS $row" "$out" || fail "missing PASS $row"
             done
-            [ "$(grep -c '^SKIP ' "$out")" = 32 ] || fail "expected 32 skipped journeys"
-            [ "$(grep -c '^SKIP .* -- .\+$' "$out")" = 32 ] || fail "a skipped journey has no reason"
+            [ "$(grep -c '^SKIP ' "$out")" = 33 ] || fail "expected 33 skipped journeys"
+            [ "$(grep -c '^SKIP .* -- .\+$' "$out")" = 33 ] || fail "a skipped journey has no reason"
             [ "$(grep -c -- ' -- requires the local Clerk double' "$out")" = 8 ] || fail "expected 8 device skips with their reason"
             [ "$(grep -c -- " -- requires the wrapper's fault headers" "$out")" = 2 ] || fail "expected 2 fault skips with their reason"
-            [ "$(grep -c -- ' -- requires the admitted fixture project' "$out")" = 18 ] || fail "expected 18 typed skips with their reason"
+            [ "$(grep -c -- ' -- requires the admitted fixture project' "$out")" = 19 ] || fail "expected 19 typed skips with their reason"
             [ "$bad" = 0 ]
           )
           # The maximum journey's own time counts toward the added time of the budget cases.

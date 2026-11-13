@@ -2908,3 +2908,69 @@ test("another core operation reads no binding: project.init on a project with a 
     );
     expect(failed(result, "PROJECT_MANIFEST_EXISTS")).toBe(1);
   }));
+
+const PIN_REPLIES = [undefined, "INPUT_CONFLICT", "INPUT_INVALID"] as const;
+const pinReply = (code?: string) =>
+  code ? refusing(code) : answer(COMMENTED, "issue.comment");
+test("every public pinning path keeps the cloud id and refusal mapping; ordinary CLI ids stay fresh", async () => {
+  const steps = [
+    ...Array.from({ length: 6 }, () => PIN_REPLIES).flat(),
+    undefined,
+    undefined,
+  ].map((code) => () => pinReply(code));
+  await using({ steps }, async (r) => {
+    const catalog = r.assembly.catalog,
+      context = holding(r);
+    const options = { caller: "agent" as const, context, requestId: "x" };
+    const call = { op: "issue.comment", input: COMMENT, requestId: "x" };
+    const mcp = createMcpHandlers(
+      catalog,
+      { expose: ["issue.comment"] },
+      options,
+    );
+    const cli = ["catalog", "call", "--input", JSON.stringify(call)];
+    const paths = [
+      () => dispatch(catalog, "catalog.call", call, options),
+      () => dispatch(catalog, call.op, call.input, options),
+      () => mcp.callTool("catalog_call", call),
+      () => mcp.callTool("issue_comment", call.input),
+      async () => (await runCli(catalog, cli, options)).envelope,
+      () => catalog.invoke(r.request(call.op, call.input, { requestId: "x" })),
+    ];
+    for (const run of paths)
+      for (const [code, exit] of [
+        [undefined, 0],
+        ["INPUT_CONFLICT", 4],
+        ["INPUT_INVALID", 6],
+      ] as const) {
+        const count = r.net.calls.length,
+          result = await run();
+        expect(result).toBeDefined();
+        expect(exitCode(result!)).toBe(exit);
+        expect(result).toMatchObject(
+          code
+            ? { ok: false, error: { code } }
+            : { ok: true, result: COMMENTED },
+        );
+        expect(wire(r).slice(count)).toEqual(["command"]);
+        expect(r.net.calls.at(-1)!.body).toMatchObject(call);
+      }
+    const count = r.net.calls.length;
+    for (const _ of [1, 2]) {
+      const reply = await runCli(
+        catalog,
+        ["issue", "comment", "--input", JSON.stringify(COMMENT)],
+        { caller: "agent", context },
+      );
+      expect(reply.exitCode).toBe(0);
+    }
+    const ids = r.net.calls
+      .slice(count)
+      .map((call) => (call.body as { requestId: string }).requestId);
+    expect(new Set(ids).size).toBe(2);
+    for (const id of ids)
+      expect(id).toMatch(
+        /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i,
+      );
+  });
+}, 30_000);

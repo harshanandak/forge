@@ -40,6 +40,12 @@ import { updateIssue } from "./issue-update.ts";
 import { PROJECT_NAME } from "./project-name.ts";
 import { requireTokenSession } from "./token-session.ts";
 import { carriesToken } from "./tokens.ts";
+import {
+  guardLegacy,
+  receiptScope,
+  scopeRequestId,
+  type ReceiptPrincipal,
+} from "./issue-request-id.ts";
 import { readOnlyStore, type DurableStorage } from "./store.ts";
 import type { StateOwner } from "../../src/core/state/index.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
@@ -195,6 +201,7 @@ const staleIssues: typeof listIssues = (views, input, now, prefix) =>
   listIssues(views, input, now, prefix, undefined, "stale");
 
 export interface CommandRun extends CommandHost {
+  readonly principal: ReceiptPrincipal;
   readonly storage: DurableStorage;
   /** The server's configured id prefix, as set: readIssue checks it. */
   readonly idPrefix: unknown;
@@ -277,9 +284,12 @@ export function runCommand(text: string, host: CommandRun): Response {
     if (carriesToken(requestId))
       throw fail("INPUT_INVALID", "requestId must not carry a credential");
     host.recheck();
+    const scoped = scopeRequestId("command", host.principal, requestId);
     const { db, owner } = host.open();
+    guardLegacy(db, requestId, scoped);
     result = write(db, owner, {
-      requestId,
+      requestId: scoped,
+      scope: receiptScope(host.principal),
       input,
       context,
       device: host.device,

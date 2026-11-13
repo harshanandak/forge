@@ -57,6 +57,12 @@ import {
   MAX_COMMAND_BODY,
   runCommand,
 } from "./issue-commands.ts";
+import {
+  guardLegacy,
+  receiptScope,
+  scopeRequestId,
+  type ReceiptPrincipal,
+} from "./issue-request-id.ts";
 import { checkTtl } from "./lease-ttl.ts";
 import { requireTokenSession } from "./token-session.ts";
 import {
@@ -447,6 +453,12 @@ export class Project {
         body,
         device,
         token?.session ?? null,
+        token === undefined
+          ? ["owner", owner!, device]
+          : ["token", token.id, device],
+        () => {
+          if (parts !== undefined) authorize(view!, parts, Date.now());
+        },
         token?.expiresAt ??
           Number(request.headers.get("X-Forge-Owner-Expires")),
       );
@@ -509,8 +521,10 @@ export class Project {
       authorize(db, parts, Date.now());
       const body = await bounded(request, MAX_COMMAND_BODY);
       // No await from here to the response: the second check below stays current while it is built.
+      const token = authorizeToken(db, parts, Date.now());
       return runCommand(body, {
-        ...authorizeToken(db, parts, Date.now()),
+        ...token,
+        principal: ["token", token.id, token.device],
         project: commandProject(request)!,
         storage: this.#storage,
         idPrefix: (this.#env as { FORGE_CLOUD_ID_PREFIX?: unknown })
@@ -579,9 +593,12 @@ export class Project {
     body: string,
     device: string,
     tokenSession: string | null,
+    principal: ReceiptPrincipal,
+    recheck: () => void,
     expiresAt?: number,
   ): LeaseRecord {
     const checkExpiry = () => {
+      recheck();
       if (expiresAt !== undefined && !(expiresAt > Date.now()))
         throw fail("AUTH_EXPIRED", "Token expired");
     };
@@ -596,8 +613,8 @@ export class Project {
       throw fail("INPUT_INVALID", "body must be a JSON object");
     const input = parsed as Record<string, unknown>;
     const subject = text(input, "subject");
-    const requestId = text(input, "requestId");
-    if (!REQUEST_ID.test(requestId))
+    const rawId = text(input, "requestId");
+    if (!REQUEST_ID.test(rawId))
       throw fail("INPUT_INVALID", "requestId has an invalid shape");
     const checked = validateLeaseHolder(input.holder);
     if (!checked.ok)
@@ -627,7 +644,10 @@ export class Project {
     // - Another route or input under that id is INPUT_CONFLICT, forever.
     // - A recorded refusal is returned again, never re-run.
     // - A recorded success never returns its old lease: the answer is read from the current lease.
+    const requestId = scopeRequestId("lease", principal, rawId);
+    guardLegacy(this.#open().db, rawId, requestId);
     const fingerprint = canonicalJson({
+      scope: receiptScope(principal),
       route,
       subject,
       holder,
@@ -679,9 +699,10 @@ export class Project {
         (error.error.code.startsWith("LEASE_") ||
           error.error.code === "INPUT_INVALID")
       )
-        this.#open().db.transaction(() =>
-          this.#record(requestId, fingerprint, error.error.code, error.error),
-        );
+        this.#open().db.transaction(() => {
+          checkExpiry();
+          this.#record(requestId, fingerprint, error.error.code, error.error);
+        });
       throw error;
     }
   }
