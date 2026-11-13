@@ -225,7 +225,7 @@ const cursor = (over: object = {}) =>
     p: 1,
     t: 0,
     k: ["n", "k"],
-    w: `${"0".repeat(32)}.1`,
+    w: `${"0".repeat(32)}.${"1".padStart(19, "0")}`,
     ...over,
   });
 for (const [name, text] of [
@@ -260,7 +260,25 @@ for (const [length, code] of [
     );
   }, 30_000);
 
-const NOW = `${"0".repeat(32)}.0`;
+const NOW = `${"0".repeat(32)}.${"0".repeat(19)}`;
+for (const revision of [0, 9, 10, 999])
+  test(`export counter ${revision} keeps continuation bytes fixed across restores`, () => {
+    const db = database([
+      row("state_records", { key: "a", body: "x".repeat(700) }),
+      row("state_records", { key: "b", body: "x".repeat(700) }),
+    ]);
+    const budget = { ...limits, pageBytes: 1600 };
+    const before = dumpPage(db, "start", budget);
+    expect(before.next).not.toBeNull();
+    db.run("UPDATE domain_cloud_export SET revision=?", [revision]);
+    const after = dumpPage(db, "start", budget);
+    const marker = (JSON.parse(after.next!) as { w: string }).w;
+    expect(marker).toBe(
+      `${"0".repeat(32)}.${String(revision).padStart(19, "0")}`,
+    );
+    expect(bytes(after)).toBe(bytes(before));
+    expect(after.tables).toEqual(before.tables);
+  }, 30_000);
 const forged = (over: object = {}) =>
   JSON.stringify({ p: 1, t: 0, k: null, w: NOW, ...over });
 // Every page request is checked against the project limits, so a forged continuation cursor cannot reach
@@ -292,7 +310,7 @@ test("an empty or final page over the budget is DUMP_TOO_LARGE, and a final page
     p: 1,
     t: 5,
     k: ["z"],
-    w: `${"0".repeat(32)}.1`,
+    w: `${"0".repeat(32)}.${"1".padStart(19, "0")}`,
   });
   const one = database([row("domain_cloud_requests")]);
   expect(codeOf(() => dumpPage(undefined, "start", tiny))).toBe(

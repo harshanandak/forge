@@ -4761,7 +4761,7 @@ if (phase === "budget-cursor") {
                   ? null
                   : JSON.stringify({
                       ...JSON.parse(page.next),
-                      w: "0".repeat(32) + ".0",
+                      w: "0".repeat(32) + "." + "0".repeat(19),
                     }),
             }) === JSON.stringify(expected[page.page]),
             `page ${page.page} is not the expected page`,

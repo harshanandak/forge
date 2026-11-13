@@ -63,7 +63,7 @@ const rowsOf = (tables: Tables) =>
   );
 type Entry = ReturnType<typeof rowsOf>[number];
 // A restored source starts a fresh epoch at revision zero. Its random epoch has a fixed width.
-const RESTORED_MARK = `${"0".repeat(32)}.0`;
+const RESTORED_MARK = `${"0".repeat(32)}.${"0".repeat(19)}`;
 const cursorOf = (entry: Entry, p: number, w: string): string =>
   JSON.stringify({
     p,

@@ -325,7 +325,7 @@ function parseCursor(text: string): Cursor {
 // An epoch distinguishes restores; the transactional counter also detects deletions and updates.
 function watermark(db: SqlDatabase): string {
   const row = db.get(`SELECT epoch, revision FROM ${EXPORT_STATE} WHERE id=1`)!;
-  return `${String(row.epoch)}.${String(row.revision)}`;
+  return `${String(row.epoch)}.${String(row.revision).padStart(19, "0")}`;
 }
 
 const pageOf = (
