@@ -513,7 +513,10 @@ for (const version of [1, 2])
       for (const body of ["{", { subject: "issue" }]) {
         expect((await f.post("claim", body)).status).toBe(409);
         expect(f.values.get("provisioned")).toBeUndefined();
-        expect(f.values.get("restore:next")).toBe(1);
+        expect(f.values.get("restore:next")).toEqual({
+          next: 1,
+          format: page.format,
+        });
         expect(f.db.query("SELECT * FROM state_records").all()).toEqual(staged);
       }
       tables.state_records = [];
