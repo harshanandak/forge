@@ -243,3 +243,25 @@ for (const name of ["catalog.list", "sample.echo"]) {
     expect(catalog.calls).toHaveLength(0);
   }, 30_000);
 }
+
+for (const command of [["auth", "login"], ["auth.login"]]) {
+  test(`a CLI rename dispatches the stable operation: ${command.join(" ")}`, async () => {
+    const catalog = fakeCatalog([
+      candidate("cloud.login", { cli: "auth.login" }),
+    ]);
+    const reply = await runCli(catalog, [
+      ...command,
+      "--input",
+      '{"value":"hello"}',
+    ]);
+    expect(JSON.parse(reply.stdout)).toMatchObject({
+      ok: true,
+      op: "cloud.login",
+    });
+    expect(catalog.calls.map((call) => call.op)).toEqual(["cloud.login"]);
+    const listing = await runCli(catalog, ["catalog", "list"]);
+    expect(
+      (JSON.parse(listing.stdout) as { result: unknown }).result,
+    ).toContainEqual(catalog.list()[0]);
+  }, 30_000);
+}

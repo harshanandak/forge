@@ -498,7 +498,10 @@ export async function createAssembly(
       commandsFor: (declaredOp: string): readonly string[] =>
         snapshot(callScope())
           .candidates.filter((entry) => entry.declaredOp === declaredOp)
-          .map((entry) => `forge ${cliWords(entry.op)!.join(" ")}`),
+          .map(
+            (entry) =>
+              `forge ${cliWords(entry.declaration.cli ?? entry.op)!.join(" ")}`,
+          ),
       // what the enabled, loadable, admitted blocks declare they enforce, for laws.check
       enforcers: (): readonly Enforcer[] =>
         [...snapshot(callScope()).blocks].flatMap(([name, block]) => {
