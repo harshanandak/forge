@@ -314,6 +314,21 @@ const rows: Row[] = [
     },
     null,
   ],
+  ...[false, true].map((reverse): Row => [
+    `same run conflicting commit identities, reversed=${reverse}`,
+    (f) => {
+      const failed = structuredClone(f.observation.runs[0]!);
+      failed.conclusion = "failure";
+      const changed = structuredClone(f.observation.runs[0]!);
+      Object.assign(changed, { attempt: 2, headSha: head });
+      changed.checks[0]!.headSha = head;
+      const successful = structuredClone(f.observation.runs[0]!);
+      Object.assign(successful, { id: 202, runNumber: 11 });
+      f.observation.runs = [failed, changed, successful];
+      if (reverse) f.observation.runs.reverse();
+    },
+    "INPUT_INVALID",
+  ]),
   [
     "newer cancelled run",
     (f) => {
