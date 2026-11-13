@@ -48,6 +48,19 @@ const MIB = 1024 * 1024;
 const NAME = "cap";
 const NS = "forge/capacity";
 const CANDIDATE_BYTES = 32 * MIB;
+// The scoped clock pattern from max-source.ts:post, shared by fixture creation and restore.
+async function atClock<T>(
+  at: number | undefined,
+  body: () => Promise<T>,
+): Promise<T> {
+  const real = Date.now;
+  if (at !== undefined) Date.now = () => at;
+  try {
+    return await body();
+  } finally {
+    Date.now = real;
+  }
+}
 // The real tracker, measured locally: rows per table and stored bytes of the four exported state tables.
 const TRACKER = {
   records: 7_366,
@@ -292,7 +305,7 @@ async function source(shape: Shape) {
     }),
   );
   if (issued.status !== 200) throw new Error(`source setup: ${issued.status}`);
-  const at = shape.at ?? Date.now();
+  const at = Date.now();
   build(new StateOwner(sqlOf(db), { now: () => at }), shape);
   return { db, project };
 }
@@ -393,7 +406,7 @@ interface Meta {
 }
 async function write(dir: string, name: string): Promise<Meta> {
   const shape = await SHAPES[name]!();
-  const { db, project } = await source(shape);
+  const { db, project } = await atClock(shape.at, () => source(shape));
   const expect = expectOf(db);
   const pages = await exported(project);
   const meta: Meta = {
@@ -656,15 +669,7 @@ if (!isMainThread) {
     const keep: string[] = [];
     for (;;) keep.push("x".repeat(MIB) + keep.length);
   }
-  // The same scoped override as max-source.ts:post, including the digest's clock checks.
-  const real = Date.now;
-  const at = data.at;
-  if (at !== undefined) Date.now = () => at;
-  try {
-    parentPort!.postMessage(await restoreAll());
-  } finally {
-    Date.now = real;
-  }
+  parentPort!.postMessage(await atClock(data.at, restoreAll));
 } else {
   const [command = "measure", ...rest] = process.argv.slice(2);
   if (command === "pages") {
