@@ -51,8 +51,12 @@ import { runCli } from "../../src/surface/cli.ts";
 import { dispatch } from "../../src/surface/dispatch.ts";
 import { createMcpHandlers } from "../../src/surface/mcp.ts";
 import { exitCode, respond } from "../../src/surface/result.ts";
-import { stageBlock } from "../blocks/memory/lib.ts";
+import { done, stageBlock } from "../blocks/memory/lib.ts";
 import * as fx from "./cloud-fixture.ts";
+import * as launch from "../../src/adapters/process/run.ts";
+import * as authority from "../../src/assembly/cloud-binding.ts";
+import { relay } from "../fixtures/owner-approval.ts";
+import { approvalReply } from "../fixtures/owner-approval.mjs";
 
 setDefaultTimeout(30_000);
 const NOW = Date.UTC(2026, 10, 11);
@@ -191,6 +195,8 @@ const WORK = yaml();
 /** The shipped blocks are staged as the installed package carries them: compiled entries. */
 let staging: string;
 let capture: ReturnType<typeof spyOn<typeof blockCapture, "open">>;
+const PROBE_MUTATIONS =
+  "put put-many put-next delete acquire renew release".split(" ");
 beforeAll(() => {
   staging = mkdtempSync(join(tmpdir(), "forge-authority-blocks-"));
   const [memory, work, cloud] = [
@@ -210,14 +216,77 @@ beforeAll(() => {
     writeFileSync(join(target, "entry.cjs"), entry);
     return target;
   };
+  const check = fileURLToPath(firstPartyBlocks["forge/check"]!);
   const stages = new Map([
     [memory!, stageBlock("memory", staging)],
     [work!, compiled(work!, "work")],
     [cloud!, compiled(cloud!, "cloud")],
+    [check, compiled(check, "check")],
   ]);
   const open = blockCapture.open.bind(blockCapture);
   capture = spyOn(blockCapture, "open").mockImplementation((path) =>
     open(stages.get(path) ?? path),
+  );
+  const probe = join(staging, "probe");
+  cpSync(resolve(import.meta.dirname, "../../examples/hello-block"), probe, {
+    recursive: true,
+  });
+  const verbs = [...PROBE_MUTATIONS, "device", "escalate", "read", "sneak"];
+  const manifest = JSON.parse(
+    readFileSync(join(probe, "forge.block.json"), "utf8"),
+  ) as Record<string, unknown>;
+  manifest.id = "test/probe";
+  manifest.requires = ["state", "levels"].map((slot) => ({
+    slot,
+    interface: slot === "state" ? "forge.state@1" : "forge.project-state@1",
+  }));
+  manifest.operations = Object.fromEntries(
+    verbs.map((verb) => {
+      const leased = ["acquire", "renew", "release"].includes(verb);
+      return [
+        `probe.${verb}`,
+        {
+          ...(manifest.operations as Record<string, object>)["hello.say"],
+          context: leased
+            ? "leased"
+            : ["device", "escalate"].includes(verb)
+              ? "device"
+              : "project",
+          ...(leased
+            ? { leaseMode: verb === "acquire" ? "acquire" : "held" }
+            : {}),
+          cli: `alias.${verb}`,
+          effects: ["read", "sneak"].includes(verb) ? [] : ["probe:write"],
+          idempotent: false,
+          timeoutMs: 5000,
+        },
+      ];
+    }),
+  );
+  writeFileSync(join(probe, "forge.block.json"), JSON.stringify(manifest));
+  for (const name of ["input.schema.json", "output.schema.json"])
+    writeFileSync(join(probe, name), "{}");
+  writeFileSync(
+    join(probe, "docs.json"),
+    JSON.stringify({
+      operations: Object.fromEntries(
+        verbs.map((verb) => [`probe.${verb}`, { title: verb, summary: verb }]),
+      ),
+    }),
+  );
+  writeFileSync(
+    join(probe, "index.cjs"),
+    `module.exports=Object.fromEntries(${JSON.stringify(verbs)}.map(verb=>["probe."+verb,async({services,input})=>{
+    const s=verb==="escalate"?(await services.levels.project()).state:services.state;
+    if(verb==="read")return s.list();
+    if(verb==="put-many")return s.putMany([{key:"batch",value:1,expectRevision:0}]);
+    if(verb==="put-next")return s.putNext("number/",()=>({value:1}));
+    if(verb==="delete")return s.delete("record",{expectRevision:1});
+    if(verb==="acquire")return s.acquire("probe:record",60000);
+    if(verb==="renew")return s.renew("probe:record",60000);
+    if(verb==="release")return s.release("probe:record");
+    return s.put("record",1,{expectRevision:input.revision||0});
+  }]));`,
   );
 });
 afterAll(() => {
@@ -244,6 +313,7 @@ async function using(
   try {
     await run(r);
     expect(r.sentinel?.mock.calls.length ?? 0).toBe(0);
+    expect(r.sentinel?.mock.calls.filter(([write]) => write) ?? []).toEqual([]);
   } finally {
     await r.assembly.close();
     r.sentinel?.mockRestore();
@@ -271,6 +341,12 @@ async function rig(o: Setup) {
           throw new Error("local state acquired");
         });
   const env = {
+    PATH: process.env.PATH ?? "",
+    PATHEXT: process.env.PATHEXT ?? "",
+    SystemRoot: process.env.SystemRoot ?? "",
+    WINDIR: process.env.WINDIR ?? "",
+    TEMP: process.env.TEMP ?? "",
+    TMP: process.env.TMP ?? "",
     FORGE_NO_BROWSER: "1",
     HOME: s.home,
     ...(o.device === false ? {} : { FORGE_DEVICE_ID: o.device ?? "dev-1" }),
@@ -2975,3 +3051,487 @@ test("every public pinning path keeps the cloud id and refusal mapping; ordinary
       );
   });
 }, 30_000);
+const FENCE_MESSAGE =
+  "This project is cloud-bound. Local project-state writes are unavailable because this block does not sync project state in Forge 0.0.1.";
+const FENCE_REPAIR =
+  "Use cloud-served forge issue commands for issue work. For device-only notes, use memory.add with level=device; block authors must declare context=device and use device state. Other project-state writes must wait for cloud sync (forge-1345). Do not run forge store reinit or remove the cloud binding to bypass this refusal.";
+const acceptance = [
+  "Bound native check writer",
+  "Bound decision writers",
+  "Custom project writer",
+  "All state mutation families",
+  "Writable cache hit / promotion",
+  "Bound project memory",
+  "Bound cross-level moves",
+  "Explicit device memory",
+  "Explicit custom device state",
+  "Device declaration with project capability",
+  "Bound reads",
+  "Undeclared write",
+  "Bound registered missing read",
+  "Bound unregistered missing read",
+  "Unbound registered missing read/write",
+  "Unbound writers and reads",
+  "Existing unsupported work / reinit",
+  "Invalid authority binding",
+  "Missing bound manifest",
+]; // The twentieth row (all sixteen served operations) extends the existing route matrix above.
+test.each(acceptance)(
+  "project-state fence: %s",
+  async (name) => {
+    const config = JSON.stringify({
+      schemaVersion: "forge.config/1",
+      blocks: {
+        work: { source: { builtin: "forge/work" } },
+        memory: {
+          source: { builtin: "forge/memory" },
+          config: {
+            levels: { human: "nearest", agent: "nearest" },
+            decisions: { idPattern: "D-N" },
+          },
+        },
+        check: {
+          source: { builtin: "forge/check" },
+          config: {
+            commands: {
+              test: {
+                argv: [
+                  process.execPath,
+                  "-e",
+                  "require('node:fs').writeFileSync('command-marker','ran')",
+                ],
+              },
+            },
+            report: "exit-code",
+          },
+        },
+        renamed: {
+          source: { path: "./probe" },
+          rename: { probe: "renamed" },
+        },
+      },
+    });
+    await using(
+      {
+        config,
+        bind: false,
+        creds: false,
+        sentinel: false,
+        prepare: (s) => {
+          cpSync(join(staging, "probe"), join(s.root, "probe"), {
+            recursive: true,
+          });
+          addWorktree(s);
+        },
+      },
+      async (r) => {
+        let assembly = r.assembly,
+          sequence = 0;
+        const call = (
+          op: string,
+          input: object = {},
+        ): Promise<ResultEnvelope> =>
+          assembly.catalog.invoke({
+            ...r.request(op, input, {
+              caller: "human",
+              context: holding(r, { actor: human, leaseGeneration: 1 }),
+            }),
+            requestId: `fence-${++sequence}`,
+          });
+        const { digest } = done(
+          await call("block.check", { path: "./probe" }),
+        ) as { digest: string };
+        done(await relay(call, "block.admit", { digest }));
+        done(
+          await relay(call, "config.grant", {
+            digest,
+            effects: ["probe:write"],
+          }),
+        );
+        const device = done(
+          await call("memory.add", {
+            text: "device",
+            level: "device",
+            scope: "project",
+          }),
+        ) as { id: string };
+        const project = done(
+          await call("memory.add", { text: "project", level: "project" }),
+        ) as { id: string };
+        const decision = done(
+          await call("decision.propose", { title: "seed", text: "evidence" }),
+        ) as { id: string };
+        const receipt = done(await call("check.run", { checks: ["test"] })) as {
+          id: string;
+          status: string;
+        };
+        expect(receipt.status).toBe("PASS");
+        done(await call("renamed.put"));
+        done(await call("renamed.acquire"));
+        const bind = () =>
+          writeFileSync(r.s.binding, JSON.stringify(fx.bindingFor()));
+        bind();
+        const snapshot = (allow: string[]) => [
+          Object.fromEntries(
+            Object.entries(inventory(r.s.dir)).filter(
+              ([path]) => !allow.some((part) => path.includes(part)),
+            ),
+          ),
+          r.net.calls.length,
+        ];
+        const check = async (
+          op: string,
+          input: object = {},
+          code = "UNAVAILABLE",
+          allow: string[] = [],
+          message?: string,
+          surface = "direct",
+        ) => {
+          const before = snapshot(allow),
+            context = localContext(assembly, human);
+          const result =
+            surface === "MCP"
+              ? (await createMcpHandlers(
+                  assembly.catalog,
+                  { expose: [op] },
+                  { context },
+                ).callTool("catalog_call", { op, input }))!
+              : surface.startsWith("CLI")
+                ? (
+                    await runCli(
+                      assembly.catalog,
+                      [
+                        ...op.split("."),
+                        "--input",
+                        JSON.stringify(input),
+                        ...(surface === "CLI text" ? ["--text"] : []),
+                      ],
+                      { caller: "human", context },
+                    )
+                  ).envelope
+                : op === "decision.adopt" || op === "memory.restore"
+                  ? await relay(call, op, {
+                      ...input,
+                      approval: { by: "owner", quote: "yes" },
+                    })
+                  : await call(op, input);
+          expect(result).toMatchObject(
+            code === "OK"
+              ? { ok: true, status: "OK" }
+              : {
+                  ok: false,
+                  status: code === "GRANT_REQUIRED" ? "INCOMPLETE" : "FAIL",
+                  error: {
+                    code,
+                    retry:
+                      code === "GRANT_REQUIRED" ||
+                      (code === "UNAVAILABLE" &&
+                        !message &&
+                        (op.startsWith("memory.") || op === "renamed.escalate"))
+                        ? "reconcile_first"
+                        : "never",
+                    ...(message ? { message } : {}),
+                  },
+                },
+          );
+          const exits: Record<string, number> = {
+            OK: 0,
+            GRANT_REQUIRED: 2,
+            INPUT_CONFLICT: 4,
+            INPUT_INVALID: 6,
+            CONTEXT_MISSING: 6,
+          };
+          expect(exitCode(result)).toBe(exits[code] ?? 1);
+          if (code === "UNAVAILABLE" && !message)
+            expect(result).toMatchObject({
+              error: { message: FENCE_MESSAGE, repair: FENCE_REPAIR },
+            });
+          expect(snapshot(allow)).toEqual(before);
+        };
+        const reset = async (drop = false) => {
+          await assembly.close();
+          if (drop) rmSync(STORE(r.s));
+          assembly = await r.open();
+        };
+        const missing = (bound: boolean) =>
+          bound
+            ? `Missing local Forge store at ${STORE(r.s)}. This project is cloud-bound; forge store reinit is disabled. Use cloud-served forge issue commands for shared issue state. To inspect historical local-only records, restore a backup; unsupported project-state writes remain disabled.`
+            : `Missing Forge store at ${STORE(r.s)}. Fix: restore it from a backup, or run forge store reinit to start a new empty store.`;
+        const launchSpy = spyOn(launch, "runProcess");
+        try {
+          switch (name) {
+            case "Bound native check writer":
+              for (const absent of [false, true]) {
+                if (absent) await reset(true);
+                await check("check.run", { checks: ["test"] });
+              }
+              expect(
+                launchSpy.mock.calls.filter(([, args]) =>
+                  args.some((arg) => arg.includes("command-marker")),
+                ),
+              ).toEqual([]);
+              break;
+            case "Bound decision writers":
+              await check("decision.propose", {
+                title: "decision",
+                text: "evidence",
+              });
+              await check(
+                "decision.adopt",
+                { id: decision.id },
+                "UNAVAILABLE",
+                ["trust.sqlite"],
+              );
+              break;
+            case "Custom project writer":
+              for (const absent of [false, true]) {
+                if (absent) await reset(true);
+                for (const surface of ["direct", "CLI JSON", "CLI text", "MCP"])
+                  await check(
+                    "renamed.put",
+                    { revision: absent ? 0 : 1 },
+                    "UNAVAILABLE",
+                    [],
+                    undefined,
+                    surface,
+                  );
+                await check("renamed.acquire");
+              }
+              break;
+            case "All state mutation families":
+              for (const verb of PROBE_MUTATIONS)
+                await check(`renamed.${verb}`, { revision: 1 });
+              break;
+            case "Writable cache hit / promotion": {
+              rmSync(r.s.binding);
+              const acquire = Object.getOwnPropertyDescriptor(
+                LocalState.prototype,
+                "acquire",
+              )!.value as LocalState["acquire"];
+              const keep = spyOn(
+                LocalState.prototype,
+                "acquire",
+              ).mockImplementation(async function (this: LocalState, write) {
+                const lease = await acquire.call(this, write);
+                await this.open(write);
+                return lease;
+              });
+              try {
+                done(await call("renamed.put", { revision: 1 }));
+                bind();
+                await check("renamed.put", { revision: 2 });
+                await reset();
+                done(await call("renamed.read"));
+                await check("renamed.put", { revision: 2 });
+              } finally {
+                keep.mockRestore();
+              }
+              await reset();
+              const fault = spyOn(authority, "cloudBinding").mockReturnValue({
+                kind: "unbound",
+              });
+              try {
+                done(await call("renamed.put", { revision: 2 }));
+              } finally {
+                fault.mockRestore();
+              }
+              break;
+            }
+            case "Bound project memory":
+              for (const input of [
+                { text: "project", level: "project" },
+                { text: "nearest" },
+                { id: project.id, expectRevision: 1, text: "edit" },
+              ])
+                await check("memory.add", input);
+              await check(
+                "memory.restore",
+                {
+                  format: "forge.memory.export/3",
+                  level: "project",
+                  notes: [],
+                },
+                "UNAVAILABLE",
+                ["trust.sqlite"],
+              );
+              break;
+            case "Bound cross-level moves":
+              for (const [id, to] of [
+                [device.id, "project"],
+                [project.id, "device"],
+              ])
+                await check("memory.move", { id, expectRevision: 1, to });
+              await check("memory.move", { scope: "project", to: "project" });
+              break;
+            case "Explicit device memory":
+              await check(
+                "memory.add",
+                { text: "device only", level: "device" },
+                "OK",
+                ["records.sqlite"],
+              );
+              await check("memory.propose-forget", { id: device.id }, "OK", [
+                "records.sqlite",
+              ]);
+              break;
+            case "Explicit custom device state":
+              await check("renamed.device", {}, "OK", ["records.sqlite"]);
+              break;
+            case "Device declaration with project capability":
+              await check("renamed.escalate", { revision: 1 });
+              break;
+            case "Bound reads":
+              for (const op of ["check.list", "decision.list", "renamed.read"])
+                await check(op, {}, "OK");
+              await check("check.show", { id: receipt.id }, "OK");
+              break;
+            case "Undeclared write":
+              await check("renamed.sneak", { revision: 1 }, "GRANT_REQUIRED");
+              break;
+            case "Bound registered missing read":
+              await reset(true);
+              await check("renamed.read", {}, "UNAVAILABLE", [], missing(true));
+              await check("renamed.put");
+              break;
+            case "Bound unregistered missing read":
+              await reset(true);
+              await assembly.close();
+              rmSync(join(r.s.deviceRoot, "records.sqlite"));
+              assembly = await r.open();
+              await check("renamed.read", {}, "OK");
+              break;
+            case "Unbound registered missing read/write":
+              rmSync(r.s.binding);
+              await reset(true);
+              for (const op of ["renamed.read", "renamed.put"])
+                await check(op, {}, "UNAVAILABLE", [], missing(false));
+              break;
+            case "Unbound writers and reads":
+              rmSync(r.s.binding);
+              for (const [op, input] of [
+                ["check.run", { checks: ["test"] }],
+                ["decision.propose", { title: "local", text: "evidence" }],
+                ["renamed.put", { revision: 1 }],
+                ["renamed.device", {}],
+                ["memory.add", { text: "project two", level: "project" }],
+                ["memory.add", { text: "device two", level: "device" }],
+              ] as const)
+                await check(op, input, "OK", [
+                  "state.sqlite",
+                  "records.sqlite",
+                  "command-marker",
+                ]);
+              for (const op of ["check.list", "decision.list", "renamed.read"])
+                await check(op, {}, "OK");
+              break;
+            case "Existing unsupported work / reinit":
+              for (const op of [...DECLARED, RECOVER]) {
+                const entry = assembly.catalog
+                  .list()
+                  .concat(discoveryOperations)
+                  .find((entry) => entry.op === op)!;
+                expect(entry, op).toBeDefined();
+                const input =
+                  entry.docs.examples?.[0]?.input ??
+                  Object.fromEntries(
+                    Object.entries({
+                      ...COMMENT,
+                      ...CLOSE,
+                      session: "s2",
+                      count: 1,
+                      attempt: "attempt-1",
+                      sha: "a".repeat(40),
+                    }).filter(
+                      ([key]) =>
+                        key in (entry.argumentSchema!.properties as object),
+                    ),
+                  );
+                for (const surface of ["direct", "CLI JSON"]) {
+                  if (op === "lane.resume" && surface === "direct") {
+                    const trust = new LocalState(
+                      join(r.s.deviceRoot, "trust.sqlite"),
+                    );
+                    try {
+                      const owner = (await trust.open(false))!,
+                        prior = owner.export(),
+                        filesBefore = snapshot(["trust.sqlite"]);
+                      const approval = approvalReply(await call(op, input));
+                      expect(
+                        owner.get("forge/core-approvals", approval.request),
+                      ).toMatchObject({
+                        revision: 1,
+                        value: { status: "pending" },
+                      });
+                      await check(
+                        op,
+                        { ...input, approval },
+                        "INPUT_INVALID",
+                        ["trust.sqlite"],
+                        notServed(op),
+                      );
+                      expect(
+                        owner.get("forge/core-approvals", approval.request),
+                      ).toMatchObject({
+                        revision: 2,
+                        value: { status: "used", method: "relayed" },
+                      });
+                      const after = owner.export();
+                      expect(after).toEqual({
+                        ...prior,
+                        image: after.image,
+                        eventHighWaterMark: prior.eventHighWaterMark + 2,
+                        records: after.records,
+                        events: after.events,
+                      });
+                      for (const record of prior.records)
+                        expect(after.records).toContainEqual(record);
+                      for (const event of prior.events)
+                        expect(after.events).toContainEqual(event);
+                      expect([
+                        after.records.length,
+                        after.events.length,
+                      ]).toEqual([
+                        prior.records.length + 1,
+                        prior.events.length + 2,
+                      ]);
+                      expect(after.events.slice(-2)).toMatchObject(
+                        [1, 2].map((revision) => ({
+                          namespace: "forge/core-approvals",
+                          key: approval.request,
+                          revision,
+                        })),
+                      );
+                      expect(snapshot(["trust.sqlite"])).toEqual(filesBefore);
+                    } finally {
+                      await trust.close();
+                    }
+                    continue;
+                  }
+                  await check(
+                    op,
+                    input,
+                    "INPUT_INVALID",
+                    [],
+                    notServed(op),
+                    surface,
+                  );
+                }
+              }
+              break;
+            case "Invalid authority binding":
+              writeFileSync(r.s.binding, JSON.stringify(fx.bindingFor(other)));
+              await check("renamed.put", {}, "INPUT_CONFLICT");
+              break;
+            case "Missing bound manifest":
+              dropped(r.s);
+              await check("renamed.put", {}, "CONTEXT_MISSING");
+          }
+        } finally {
+          launchSpy.mockRestore();
+          await assembly.close();
+        }
+      },
+    );
+  },
+  120_000,
+);

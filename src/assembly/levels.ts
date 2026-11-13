@@ -176,13 +176,15 @@ function wasRegisteredAt(
 export async function requireRegisteredStore(
   deviceState: LocalState,
   root: string,
+  remedy?: (path: string) => string | undefined,
 ): Promise<void> {
   const lease = await deviceState.acquire(false);
   try {
     if (wasRegisteredAt(lease.value, root))
       refuse(
         "UNAVAILABLE",
-        `Missing Forge store at ${join(root, ".forge", "state.sqlite")}. Fix: restore it from a backup, or run forge store reinit to start a new empty store.`,
+        remedy?.(join(root, ".forge", "state.sqlite")) ??
+          `Missing Forge store at ${join(root, ".forge", "state.sqlite")}. Fix: restore it from a backup, or run forge store reinit to start a new empty store.`,
       );
   } finally {
     await lease.close();

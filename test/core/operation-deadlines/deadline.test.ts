@@ -385,6 +385,42 @@ test("the live operation timer preserves its budget diagnostic", async () => {
     expect(result.error.message).toContain(text);
 }, 1000);
 
+test("the handler gap preserves the operation diagnostic", async () => {
+  const f = fixture(10);
+  let reads = -Infinity;
+  const runtime = new Runtime(f.catalog, f.trust, {
+    // Four reads after open reach startHandler; the next is in the handler gap.
+    clock: { now: () => (++reads > 4 ? 11 : 0) },
+    isolation: {
+      open: () => {
+        reads = 0;
+        return Promise.resolve({
+          ok: true,
+          handle: {
+            ownership: "owned",
+            close: () => Promise.resolve(),
+            value: { run: () => new Promise(() => {}) },
+          },
+        });
+      },
+    },
+  });
+  const result = await runtime.invoke(f.request);
+  expect(result).toMatchObject({
+    ok: false,
+    status: "FAIL",
+    error: { code: "INVOCATION_TIMEOUT", retry: "never" },
+  });
+  if (result.ok) throw new Error("Expected expiry before the handler starts");
+  for (const text of [
+    'blocks.sample.operationTimeouts["sample.run"]',
+    "operation deadline expired",
+    "(0.01 s)",
+    "more than",
+  ])
+    expect(result.error.message).toContain(text);
+}, 1000);
+
 test("the preparation safety maximum names the config budgets to lower", async () => {
   const f = fixture(1000);
   let now = 0;
