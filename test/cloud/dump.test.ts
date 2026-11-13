@@ -1,4 +1,4 @@
-// Column, cursor and page boundaries of the dump, on plain tables: no Worker, no state owner.
+// Dump boundaries and checkpoint-target refusals on SQLite, without a Worker.
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import {
