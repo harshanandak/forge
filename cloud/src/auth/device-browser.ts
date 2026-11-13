@@ -161,9 +161,12 @@ export async function deviceRoute(
       existing !== undefined && /^[A-Za-z0-9_-]{43}$/.test(existing)
         ? existing
         : token();
+    const codes = url.searchParams.getAll("code");
+    const code =
+      codes.length === 1 && USER_CODE.test(codes[0]!) ? codes[0]! : "";
     return page(
       200,
-      `<h1>Approve a device</h1><form method="post" action="/device"><input type="hidden" name="csrf" value="${csrf}"><label>Code <input name="code" autocomplete="off" required></label><button>Continue</button></form>`,
+      `<h1>Approve a device</h1><form method="post" action="/device"><input type="hidden" name="csrf" value="${csrf}"><label>Code <input name="code" value="${esc(code)}" autocomplete="off" required></label><button>Continue</button></form>`,
       `${COOKIE}=${csrf}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=900`,
     );
   }

@@ -242,8 +242,8 @@ test("an unreachable origin is unavailable, leaves no credential or binding, and
 
 for (const [command, status, error] of [
   [["auth", "login"], 6, "CONTEXT_MISSING"],
-  [["cloud", "login"], 2, "UNKNOWN_COMMAND"],
-  [["cloud.login"], 2, "UNKNOWN_COMMAND"],
+  [["cloud", "login"], 3, "UNKNOWN_COMMAND"],
+  [["cloud.login"], 3, "UNKNOWN_COMMAND"],
 ] as const) {
   test(`login command ${command.join(" ")}`, () => {
     const f = fixture();

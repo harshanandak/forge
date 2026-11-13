@@ -160,7 +160,7 @@ export async function selectCloud(
   if (device === undefined)
     throw fail(
       "CONTEXT_MISSING",
-      "A cloud-bound project needs this machine's device identity; run forge cloud login or set FORGE_DEVICE_ID.",
+      "A cloud-bound project needs this machine's device identity; run forge auth login or set FORGE_DEVICE_ID.",
     );
   const { origin, project, identity } = bound;
   const named = request.context.device?.id;

@@ -109,7 +109,12 @@ async function openCloud(
     root,
     deviceRoot,
     providers: {
-      env: { HOME: home, USERPROFILE: home, FORGE_DEVICE_ID: "dev-1" },
+      env: {
+        HOME: home,
+        USERPROFILE: home,
+        FORGE_DEVICE_ID: "dev-1",
+        FORGE_NO_BROWSER: "1",
+      },
       cloudLogin: {
         fetch: net.fetch,
         wait: () => Promise.resolve(),
@@ -179,6 +184,7 @@ test("cloud.login is declared by the block for a person only, so it is in the ca
   expect(entry?.declaration.effects).toEqual([
     "files:write",
     "external:forge-cloud",
+    "external:process",
   ]);
   expect(entry?.declaration.idempotent).toBe(false);
   expect(entry?.docs.title.length).toBeGreaterThan(0);

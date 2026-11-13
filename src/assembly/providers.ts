@@ -11,6 +11,7 @@ import { cpus, freemem, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { createHash, randomUUID } from "node:crypto";
 import {
+  createDesktopLauncher,
   createProcessPort,
   processStartTime,
   ProcessSpawnError,
@@ -585,6 +586,9 @@ export function createAssemblyProviders(
               home: env.HOME ?? env.USERPROFILE,
               deviceRoot,
               env,
+              ...(scope.effects.includes("external:process")
+                ? { browser: createDesktopLauncher() }
+                : {}),
               signal: scope.signal,
               ...options.cloudLogin,
             }).login(input);

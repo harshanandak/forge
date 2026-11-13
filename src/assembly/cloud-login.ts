@@ -1,4 +1,4 @@
-// `forge cloud login`: the device flow against one Forge cloud project, then a private credential.
+// `forge auth login`: the device flow against one Forge cloud project, then a private credential.
 //
 // The CLI starts a challenge, prints the verification address and the user code on stderr, and polls
 // until the owner approves it in a browser. Nothing is held while waiting: the credential file is
@@ -15,6 +15,7 @@ import {
 } from "../adapters/http/index.ts";
 import { ForgeFailure } from "../contract/failure.ts";
 import { validateWithSchema } from "../contract/schema.ts";
+import type { DesktopLauncher } from "../ports/process.ts";
 import type { CloudLogin, CloudLoginResult } from "../ports/cloud-login.ts";
 import {
   credentialStore,
@@ -40,6 +41,8 @@ export interface CloudLoginDeps {
   readonly deviceRoot: string;
   readonly env: Readonly<Record<string, string | undefined>>;
   readonly fetch?: CloudFetch;
+  readonly browser?: DesktopLauncher;
+  readonly platform?: NodeJS.Platform;
   readonly now?: () => number;
   /** Sleep that rejects when the signal aborts. */
   readonly wait?: (ms: number, signal: AbortSignal) => Promise<void>;
@@ -75,7 +78,7 @@ function refusalFailure(name: string): ForgeFailure {
     return failed("The owner denied this login.", "LOGIN_DENIED");
   if (name === "expired_token")
     return failed(
-      "The login code expired; run forge cloud login again.",
+      "The login code expired; run forge auth login again.",
       "LOGIN_EXPIRED",
     );
   return failed(
@@ -127,11 +130,11 @@ async function pollForCredential(
   http: ReturnType<typeof createCloudHttp>,
   challenge: LoginChallenge,
   signal: AbortSignal,
+  deadline: number,
 ): Promise<string> {
   const now = deps.now ?? Date.now;
   const wait = deps.wait ?? sleep;
   // The deadline is fixed when the challenge starts; a server that keeps saying pending cannot move it.
-  const deadline = now() + challenge.expiresIn * 1_000;
   let interval = challenge.interval;
   for (;;) {
     // No wait, however long the server asks, runs past the challenge's own lifetime.
@@ -172,6 +175,42 @@ async function pollForCredential(
   }
 }
 
+/** Browser launch is best effort; the printed link remains usable on every host. */
+async function openBrowser(deps: CloudLoginDeps, url: string): Promise<void> {
+  const platform = deps.platform ?? process.platform;
+  if (
+    !deps.browser ||
+    deps.env.FORGE_NO_BROWSER === "1" ||
+    (platform === "linux" && !deps.env.DISPLAY && !deps.env.WAYLAND_DISPLAY)
+  )
+    return;
+  const command =
+    platform === "win32"
+      ? ["rundll32.exe", "url.dll,FileProtocolHandler"]
+      : platform === "darwin"
+        ? ["open"]
+        : platform === "linux"
+          ? ["xdg-open"]
+          : [];
+  if (!command.length) return;
+  try {
+    const env = Object.fromEntries(
+      Object.entries(deps.env).filter(
+        (entry): entry is [string, string] => entry[1] !== undefined,
+      ),
+    );
+    const executable = deps.browser.resolve(command[0]!, env);
+    if (executable.kind !== "resolved") return;
+    await deps.browser.launch(executable, [...command.slice(1), url], {
+      cwd: deps.root,
+      env,
+      signal: deps.signal,
+    });
+  } catch {
+    // Missing desktops and failed openers do not stop the device flow.
+  }
+}
+
 async function login(
   deps: CloudLoginDeps,
   input: unknown,
@@ -200,7 +239,7 @@ async function login(
     throw new ForgeFailure({
       code: "CONTEXT_MISSING",
       message:
-        "This checkout has no project identity (.forge/project.json); cloud login never creates one.",
+        "This checkout has no project identity (.forge/project.json); auth login never creates one.",
       missing: ["project"],
       retry: "never",
       repair: "Run forge project init, commit the file, then log in.",
@@ -225,18 +264,20 @@ async function login(
   const started = await http.loginStart(wire, signal);
   if (started.kind === "refused") throw refusalFailure(started.error);
   const { challenge } = started;
+  const deadline = (deps.now ?? Date.now)() + challenge.expiresIn * 1_000;
   const progress =
     deps.progress ??
     ((line: string) =>
       process.stderr.write(`${line}
 `));
-  progress(
-    `Open ${target.origin}/device and enter the code ${challenge.userCode}`,
-  );
+  const link = `${target.origin}/device?code=${encodeURIComponent(challenge.userCode)}`;
+  progress(`Open ${link}`);
+  progress(`Code: ${challenge.userCode}`);
   progress(
     `Waiting for the owner to approve; the code expires in ${challenge.expiresIn} seconds.`,
   );
-  const text = await pollForCredential(deps, http, challenge, signal);
+  await openBrowser(deps, link);
+  const text = await pollForCredential(deps, http, challenge, signal, deadline);
   const credential = parseDeviceCredential(
     text,
     wire,
@@ -267,7 +308,7 @@ async function login(
             retry: "never" as const,
           }),
       repair:
-        "The credential was saved. Run forge cloud login again to finish the binding.",
+        "The credential was saved. Run forge auth login again to finish the binding.",
     });
   }
   return {

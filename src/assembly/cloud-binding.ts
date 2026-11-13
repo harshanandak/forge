@@ -52,6 +52,6 @@ export function cloudBinding(
   if (known.length === 0) return { kind: "unbound" };
   throw refuse(
     "INPUT_CONFLICT",
-    `${known.length > 1 ? "Saved cloud credentials name different servers or projects" : "This project has a saved cloud credential but no .forge/cloud.json"}; run forge cloud login again`,
+    `${known.length > 1 ? "Saved cloud credentials name different servers or projects" : "This project has a saved cloud credential but no .forge/cloud.json"}; run forge auth login again`,
   );
 }

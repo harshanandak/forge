@@ -254,7 +254,27 @@ export async function runCli(
           ? first
           : `${first}.${tokens.shift() ?? ""}`;
     const entries = catalog.list();
-    const entry = [...discoveryOperations, ...entries].find((c) => c.op === op);
+    const commands = entries.map((entry) => ({
+      ...entry,
+      op: entry.declaration.cli ?? entry.op,
+    }));
+    for (const entry of entries) {
+      const name = entry.declaration.cli;
+      if (
+        name !== undefined &&
+        (builtins.includes(name) ||
+          commands.filter((command) => command.op === name).length > 1)
+      )
+        return respond(
+          failure("NOUN_COLLISION", `CLI command collision: ${name}`),
+          text,
+        );
+    }
+    const entry = [...discoveryOperations, ...commands].find(
+      (c) => c.op === op,
+    );
+    const target =
+      entries.find((c) => (c.declaration.cli ?? c.op) === op)?.op ?? op;
     if (
       helpRequested ||
       op === undefined ||
@@ -282,7 +302,7 @@ export async function runCli(
       };
     }
     if (helpRequested || op === undefined) {
-      const result = help(catalog, options, op);
+      const result = help({ ...catalog, list: () => commands }, options, op);
       const response = respond(success("catalog.list", result), text);
       return jsonHelp
         ? response
@@ -295,7 +315,7 @@ export async function runCli(
       rawInput === undefined
     ) {
       const operations = visible(
-        catalog,
+        { ...catalog, list: () => commands },
         options.caller,
         options.readOnly,
       ).filter((entry) => entry.op.startsWith(op));
@@ -316,8 +336,13 @@ export async function runCli(
           : response;
       }
     }
-    if (![...builtins, ...entries.map((c) => c.op)].includes(op))
-      return respond(await dispatch(catalog, op, {}, options), text);
+    if (![...builtins, ...commands.map((c) => c.op)].includes(op))
+      return respond(
+        entries.some((c) => c.op === op && c.declaration.cli !== undefined)
+          ? failure("UNKNOWN_COMMAND", `Unknown operation: ${op}`)
+          : await dispatch(catalog, op, {}, options),
+        text,
+      );
     let input: unknown;
     if (rawInput !== undefined) {
       if (tokens.length !== 0)
@@ -335,7 +360,7 @@ export async function runCli(
       }
       input = mapArguments(tokens, entry);
     }
-    const envelope = await dispatch(catalog, op, input, {
+    const envelope = await dispatch(catalog, target ?? op, input, {
       ...options,
       ...(dryRun === undefined ? {} : { dryRun }),
     });

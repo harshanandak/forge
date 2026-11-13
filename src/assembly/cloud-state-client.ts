@@ -71,7 +71,7 @@ export function createCloudLeaseClient(
     if (found === undefined)
       throw failure(
         "AUTH_REQUIRED",
-        "No usable cloud credential is stored; run forge cloud login.",
+        "No usable cloud credential is stored; run forge auth login.",
       );
     return found;
   }

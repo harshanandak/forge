@@ -271,6 +271,7 @@ async function rig(o: Setup) {
           throw new Error("local state acquired");
         });
   const env = {
+    FORGE_NO_BROWSER: "1",
     HOME: s.home,
     ...(o.device === false ? {} : { FORGE_DEVICE_ID: o.device ?? "dev-1" }),
   };

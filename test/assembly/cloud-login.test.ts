@@ -13,7 +13,7 @@ import {
 } from "../../src/assembly/cloud-profile.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import type { ResultEnvelope } from "../../src/generated/types.ts";
-import type { ProcessPort } from "../../src/ports/process.ts";
+import type { DesktopLauncher } from "../../src/ports/process.ts";
 import { exitCode } from "../../src/surface/result.ts";
 import {
   approved,
@@ -907,25 +907,16 @@ for (const [platform, env, result, expected] of [
   test(`browser opening: ${platform} ${JSON.stringify(env)} ${result}`, async () => {
     const r = rig();
     const calls: string[][] = [];
-    const browser: ProcessPort = {
-      capability: "forge.process/v1",
+    const browser: DesktopLauncher = {
       resolve(name) {
         return result === "missing"
           ? { kind: "unavailable", reason: "missing", remedy: "open the link" }
           : { kind: "resolved", path: name };
       },
-      run(executable, args) {
+      launch(executable, args) {
         calls.push([executable.path, ...args]);
         if (result === "throw") return Promise.reject(new Error("no browser"));
-        return Promise.resolve({
-          exitCode: 0,
-          signal: null,
-          stdout: "",
-          stderr: "",
-          timedOut: false,
-          truncated: false,
-          durationMs: 0,
-        });
+        return Promise.resolve();
       },
     };
     const more = {

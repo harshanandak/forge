@@ -218,3 +218,28 @@ test("help alias preserves scoped text and JSON help without invoking commands",
   expect(literal.exitCode).toBe(0);
   expect(catalog.calls).toHaveLength(1);
 }, 30000);
+
+for (const command of [[], ["auth", "--help"], ["auth", "login", "--help"]]) {
+  test(`a CLI rename projects help: ${command.join(" ")}`, async () => {
+    const catalog = fakeCatalog([
+      candidate("cloud.login", { cli: "auth.login" }),
+    ]);
+    const reply = await runCli(catalog, command);
+    expect(reply.stdout).toContain("auth");
+    expect(reply.stdout).not.toContain("forge cloud login");
+    expect(catalog.calls).toHaveLength(0);
+  }, 30_000);
+}
+for (const name of ["catalog.list", "sample.echo"]) {
+  test(`CLI rename refuses a collision with ${name}`, async () => {
+    const catalog = fakeCatalog([
+      candidate("cloud.login", { cli: name }),
+      candidate("sample.echo"),
+    ]);
+    const reply = await runCli(catalog, name.split("."));
+    expect(JSON.parse(reply.stdout)).toMatchObject({
+      error: { code: "NOUN_COLLISION" },
+    });
+    expect(catalog.calls).toHaveLength(0);
+  }, 30_000);
+}
