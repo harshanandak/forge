@@ -405,6 +405,7 @@ export class Runtime {
     let handle: ServiceHandle | undefined;
     let request: InvocationRequest | undefined;
     let started = false;
+    let handlerDeadlineStarted = false;
     let timeoutMessage: (() => string) | undefined;
     let result: ResultEnvelope;
     const clock = this.#options.clock ?? { now: () => Date.now() };
@@ -436,8 +437,10 @@ export class Runtime {
       timeoutMessage = () => {
         const host = this.#catalog.config.runtime?.timeoutMs;
         const embedding = this.#limits.timeoutMs;
-        const value = started ? budget.timeoutMs : preparationTimeoutMs;
-        if (!started && host !== value && embedding !== value)
+        const value = handlerDeadlineStarted
+          ? budget.timeoutMs
+          : preparationTimeoutMs;
+        if (!handlerDeadlineStarted && host !== value && embedding !== value)
           return formatConfigProblem(
             `blocks.${operation.instance}.operationTimeouts["${operation.declaredOp}"]`,
             "Invocation host preparation deadline expired: configured operation and command timeouts add up to more than Node's largest supported timer (2147483647 ms, about 24.8 days)",
@@ -451,7 +454,7 @@ export class Runtime {
               : `blocks.${operation.instance}.operationTimeouts["${operation.declaredOp}"]`;
         return formatConfigProblem(
           key,
-          `Invocation ${started ? "operation" : "host preparation"} deadline expired: ${key} (${value / 1000} s)`,
+          `Invocation ${handlerDeadlineStarted ? "operation" : "host preparation"} deadline expired: ${key} (${value / 1000} s)`,
           `increase ${key} to more than ${value / 1000} s`,
           embedding === value ? "embedding host" : ".forge/config.yaml",
         );
@@ -533,6 +536,7 @@ export class Runtime {
         // Host preparation has its own ceiling; the handler receives its whole declared budget.
         const handlerStartedAt = clock.now();
         scope.startHandler(handlerStartedAt + budget.remaining());
+        handlerDeadlineStarted = true;
         armDeadline(
           Math.max(TIMEOUT_BOUNDS.minimum, scope.deadline - clock.now()),
         );
