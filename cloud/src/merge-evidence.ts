@@ -43,13 +43,17 @@ function nullable<T>(valid: Guard<T>): Guard<T | null> {
 }
 type Weight = (v: unknown) => number;
 function list<T>(valid: Guard<T>, weight?: Weight): Guard<readonly T[]> {
-  return (v): v is readonly T[] =>
-    Array.isArray(v) &&
-    v.length <= 256 &&
-    (!weight ||
-      (v as unknown[]).reduce<number>((n, row) => n + weight(row), 0) <=
-        4096) &&
-    Array.from(v as unknown[]).every(valid);
+  return (v): v is readonly T[] => {
+    if (!Array.isArray(v)) return false;
+    const rows = v as unknown[];
+    const length = rows.length;
+    if (length > 256 || Object.hasOwn(rows, Symbol.iterator)) return false;
+    let total = 0;
+    if (weight) for (let i = 0; i < length; i++) total += weight(rows[i]);
+    if (total > 4096) return false;
+    for (let i = 0; i < length; i++) if (!valid(rows[i])) return false;
+    return true;
+  };
 }
 const producerFields = {
   repositoryId: positive,
@@ -58,6 +62,13 @@ const producerFields = {
   workflowPath: pattern(/^\.github\/workflows\/[A-Za-z0-9._-]+\.ya?ml$/),
   workflowDigest: digest,
 };
+const pins = [
+  "repositoryId",
+  "appId",
+  "workflowId",
+  "workflowPath",
+  "workflowDigest",
+] as const;
 const policyGuard = shape({
   project,
   repositoryId: positive,
@@ -155,11 +166,9 @@ const refuse = (code: MergeRefusalCode, reason: string): MergeEligibility => ({
   code,
   reason,
 });
-const same = <T extends object>(
-  a: T,
-  b: T,
-  keys = Object.keys(a) as (keyof T)[],
-) => keys.every((key) => a[key] === b[key]);
+function same<T>(a: T, b: T, keys: readonly (keyof T)[]): boolean {
+  return keys.every((key) => a[key] === b[key]);
+}
 const linked = (b: DeliveryBinding) =>
   new RegExp(`^link:${b.issueId}:\\d+$`).test(b.linkKey);
 type Outcome = Shape<typeof outcomeFields>;
@@ -231,7 +240,16 @@ export function evaluateMergeEvidence(
   if (
     policy.project !== expected.project ||
     policy.repositoryId !== expected.repositoryId ||
-    !same(expected, observation.binding) ||
+    !same(expected, observation.binding, [
+      "project",
+      "issueId",
+      "linkKey",
+      "linkRevision",
+      "repositoryId",
+      "prNumber",
+      "prId",
+      "headSha",
+    ]) ||
     [initialPr, finalPr].some(
       (pr) =>
         pr.repositoryId !== expected.repositoryId ||
@@ -251,7 +269,7 @@ export function evaluateMergeEvidence(
     observation.ancestry !== "ancestor"
   )
     return refuse("PR_NOT_MERGED", "PR has not landed on target");
-  if (!runs.length || runs.some((run) => !same(policy.producer, run)))
+  if (!runs.length || runs.some((run) => !same(policy.producer, run, pins)))
     return refuse("RECEIPT_INVALID", "Missing or unapproved workflow evidence");
   const current = runs.filter(
     (run) =>
