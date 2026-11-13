@@ -178,6 +178,8 @@ function coherentOutcome(o: Outcome, now: number): boolean {
     : o.conclusion === null && o.completedAt === null;
 }
 
+// Callers must bound total input bytes/keys before entry (forge-1362):
+// Object.keys/Reflect.ownKeys enumerate width before these guards reject it.
 export function evaluateMergeEvidence(
   policy: unknown,
   expected: unknown,
