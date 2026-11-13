@@ -12,7 +12,10 @@ const TABLE = "domain_cloud_command_receipts";
 const limits = { ...limitsFrom({}), pageBytes: 1600 };
 
 for (const [name, mutate] of [
-  ["insert", `INSERT INTO ${TABLE} VALUES ('c2:new', '{}', 'ok', '{}', 1, 2)`],
+  [
+    "insert",
+    `INSERT INTO ${TABLE}(request_id,fingerprint,outcome,result,created_at,expires_at) VALUES ('c2:new', '{}', 'ok', '{}', 1, 2)`,
+  ],
   ["update", `UPDATE ${TABLE} SET expires_at=3 WHERE request_id='c2:old'`],
   ["delete", `DELETE FROM ${TABLE} WHERE request_id='c2:old'`],
 ] as const)
@@ -36,7 +39,9 @@ for (const [name, mutate] of [
           .query("SELECT name FROM sqlite_schema WHERE type='table' AND name=?")
           .get(TABLE),
       ).not.toBeNull();
-      db.run(`INSERT INTO ${TABLE} VALUES ('c2:old', '{}', 'ok', '{}', 1, 2)`);
+      db.run(
+        `INSERT INTO ${TABLE}(request_id,fingerprint,outcome,result,created_at,expires_at) VALUES ('c2:old', '{}', 'ok', '{}', 1, 2)`,
+      );
       const page = dumpPage(db, "start", {
         ...limits,
         pageBytes: 2_000_000,

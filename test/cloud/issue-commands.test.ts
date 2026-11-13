@@ -4,7 +4,11 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { DUMP_MIGRATION, limitsFrom } from "../../cloud/src/dump.ts";
+import {
+  DUMP_MIGRATION,
+  IMPORT_MIGRATION,
+  limitsFrom,
+} from "../../cloud/src/dump.ts";
 import { Project } from "../../cloud/src/project.ts";
 import {
   readOnlyStore,
@@ -3405,7 +3409,11 @@ function createAfterDelete(create: typeof createIssue) {
   db.exec(
     "CREATE TABLE domain_cloud_requests(request_id TEXT PRIMARY KEY, fingerprint TEXT, outcome TEXT, result TEXT)",
   );
-  for (const sql of DUMP_MIGRATION.statements) db.exec(sql);
+  for (const sql of [
+    ...DUMP_MIGRATION.statements,
+    ...IMPORT_MIGRATION.statements,
+  ])
+    db.exec(sql);
   const owner = new StateOwner(db, { now: f.now });
   for (let n = 0; n < 2; n++)
     owner.putNext(
@@ -7597,7 +7605,7 @@ for (const w of WRITES) {
     const first = await f.send(w.send("l-0"), { token });
     expect(first.status).toBe(200);
     f.db.run(
-      "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < ?) INSERT INTO domain_cloud_command_receipts SELECT 'c2:fill-' || i, '{}', 'ok', '{}', ?, ? FROM n",
+      "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < ?) INSERT INTO domain_cloud_command_receipts(request_id,fingerprint,outcome,result,created_at,expires_at) SELECT 'c2:fill-' || i, '{}', 'ok', '{}', ?, ? FROM n",
       [MAX_RECEIPTS - 1, f.now(), f.now() + day],
     );
     const full = f.snapshot();
@@ -10450,13 +10458,13 @@ for (const [name, expiry, count] of [
     const f = fixture();
     const token = await f.device();
     f.db.run(
-      "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < ?) INSERT INTO domain_cloud_command_receipts SELECT 'fill-' || printf('%04d',i), '{}', 'ok', '{}', ?, ? + i FROM n",
+      "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < ?) INSERT INTO domain_cloud_command_receipts(request_id,fingerprint,outcome,result,created_at,expires_at) SELECT 'fill-' || printf('%04d',i), '{}', 'ok', '{}', ?, ? + i FROM n",
       [count, start - day, start + expiry - count],
     );
     const live = ["c2:live", "{}", "ok", "{}", start, start + day];
     if (name === "mixed")
       f.db.run(
-        "INSERT INTO domain_cloud_command_receipts VALUES (?,?,?,?,?,?)",
+        "INSERT INTO domain_cloud_command_receipts(request_id,fingerprint,outcome,result,created_at,expires_at) VALUES (?,?,?,?,?,?)",
         live,
       );
     const got = await f.send(make("retention"), { token });
@@ -10612,8 +10620,12 @@ for (const [first, last, status] of [
     } else expect(tablesOf(t.db)).toEqual(tables);
   }, 30_000);
 
-for (const trip of TRIPS)
-  test(`restored ${trip} receipts with tampered distant expiry cannot pin live admission`, async () => {
+for (const [trip, upgrade] of [
+  ["whole", false],
+  ["paged", false],
+  ["whole", true],
+] as const)
+  test(`restored ${trip} receipts with tampered distant expiry cannot pin live admission${upgrade ? " after a 005 upgrade" : ""}`, async () => {
     const f = fixture();
     const token = await f.device();
     expect((await f.send(make("audit-source"), { token })).status).toBe(200);
@@ -10630,6 +10642,16 @@ for (const trip of TRIPS)
     const { t, got } = await restoreInto(trip, tables, { per: 1000 });
     expect(got.status).toBe(200);
     expect(tablesOf(t.db)).toEqual(tables);
+    if (upgrade) {
+      t.db.run("DROP INDEX command_receipts_live");
+      t.db.run(
+        "ALTER TABLE domain_cloud_command_receipts DROP COLUMN imported",
+      );
+      t.db.run(
+        "DELETE FROM state_migrations WHERE id='006_cloud_imported_receipts'",
+      );
+      t.reopen();
+    }
     const current = await t.device();
     const wrote = await t.send(make("audit-fresh"), { token: current });
     expect([wrote.status, wrote.exit]).toEqual([200, 0]);

@@ -21,16 +21,18 @@ interface Receipt {
 
 const full = (db: SqlDatabase, now: number): boolean =>
   Number(
-    db.get(`SELECT COUNT(*) AS n FROM ${COMMAND_RECEIPTS} WHERE expires_at>?`, [
-      now,
-    ])!.n,
+    db.get(
+      `SELECT COUNT(*) AS n FROM ${COMMAND_RECEIPTS} WHERE imported=0 AND expires_at>?`,
+      [now],
+    )!.n,
   ) >= MAX_RECEIPTS;
 
 function prune(db: SqlDatabase, now: number): void {
   // Authentication precedes lookup and token identities cannot renew: expired rows have no caller.
+  // Imported audit rows keep their bytes until expiry, or until the stored cap needs space.
   db.run(
-    `DELETE FROM ${COMMAND_RECEIPTS} WHERE request_id IN (SELECT request_id FROM ${COMMAND_RECEIPTS} WHERE expires_at<=? ORDER BY expires_at, request_id LIMIT ?)`,
-    [now, PRUNE_RECEIPTS],
+    `DELETE FROM ${COMMAND_RECEIPTS} WHERE request_id IN (SELECT request_id FROM ${COMMAND_RECEIPTS} WHERE expires_at<=? OR (imported=1 AND (SELECT COUNT(*) FROM ${COMMAND_RECEIPTS})>=?) ORDER BY expires_at, request_id LIMIT ?)`,
+    [now, MAX_RECEIPTS, PRUNE_RECEIPTS],
   );
 }
 
@@ -45,7 +47,7 @@ export function replay(
   fingerprint: string,
 ): unknown {
   const row = db.get(
-    `SELECT fingerprint, outcome, result FROM ${COMMAND_RECEIPTS} WHERE request_id=?`,
+    `SELECT fingerprint, outcome, result FROM ${COMMAND_RECEIPTS} WHERE request_id=? AND imported=0`,
     [requestId],
   );
   const prior =
@@ -138,18 +140,18 @@ export function refused(
     // An expired or revoked token records nothing.
     recheck();
     const now = Date.now();
+    if (full(db, now)) return;
     prune(db, now);
-    if (!full(db, now))
-      record(
-        db,
-        requestId,
-        {
-          fingerprint,
-          outcome: "refused",
-          result: failure.error,
-        },
-        expiresAt,
-      );
+    record(
+      db,
+      requestId,
+      {
+        fingerprint,
+        outcome: "refused",
+        result: failure.error,
+      },
+      expiresAt,
+    );
   });
   return failure;
 }

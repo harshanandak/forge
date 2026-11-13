@@ -79,6 +79,17 @@ export const DUMP_MIGRATION = {
   ],
 };
 
+// Server-local provenance preserves audit bytes without trusting an imported expiry for admission.
+export const IMPORT_MIGRATION = {
+  id: "006_cloud_imported_receipts",
+  statements: [
+    `ALTER TABLE ${COMMAND_RECEIPTS} ADD COLUMN imported INTEGER NOT NULL DEFAULT 0 CHECK(imported IN (0, 1))`,
+    // The shipped 005 schema writes this table only through restore; typed writes still use legacy records.
+    `UPDATE ${COMMAND_RECEIPTS} SET imported=1`,
+    `CREATE INDEX command_receipts_live ON ${COMMAND_RECEIPTS} (imported, expires_at)`,
+  ],
+};
+
 // Limits on a dump, on the way out and on the way in. The depth is exactly what the format needs:
 // document, tables, rows array, row. The caps keep a hostile or broken document from filling the isolate.
 const MAX_DEPTH = 4;
@@ -685,6 +696,7 @@ function settleFloor(
     throw error;
   }
   assertLimits(db, limits, "RESTORE_TOO_LARGE", "The restored project");
+  db.run(`UPDATE ${COMMAND_RECEIPTS} SET imported=1`);
   freshEpoch(db);
 }
 

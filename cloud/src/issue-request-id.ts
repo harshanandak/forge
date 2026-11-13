@@ -61,7 +61,7 @@ export function guardLegacy(
       [id],
     );
     const command = db.get(
-      "SELECT fingerprint FROM domain_cloud_command_receipts WHERE request_id=?",
+      "SELECT fingerprint FROM domain_cloud_command_receipts WHERE request_id=? AND imported=0",
       [id],
     );
     const inner = db.get(
