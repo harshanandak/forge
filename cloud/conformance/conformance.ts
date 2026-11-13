@@ -1210,7 +1210,10 @@ const rawFor = (who: Caller, requestId: string, subject: string) =>
     {
       requestId,
       subject,
-      holder: asSession(holderOf("ownership"), who.device),
+      holder: onDevice(
+        asSession(holderOf("ownership"), who.device),
+        who.device.device,
+      ),
       ttlMs: 60_000,
     },
     asDevice(who.device),
@@ -2381,12 +2384,35 @@ if (phase === "main") {
         granted(await holderLookup(source, "issue:page-3")),
       );
       assert.deepEqual(
-        granted(
-          await claim(target, "issue:page-4", holderOf("page"), "page-4"),
-        ),
+        granted(await holderLookup(target, "issue:page-4")),
         granted(
           await claim(source, "issue:page-4", holderOf("page"), "page-4"),
         ),
+      );
+      // A restored token is a new caller: its claim reaches the held lease, not the imported receipt.
+      const prior = await dumpOf(target);
+      const collision = await claim(
+        target,
+        "issue:page-4",
+        holderOf("page"),
+        "page-4",
+      );
+      refused(collision, "LEASE_HELD");
+      const recorded = await dumpOf(target);
+      keepsRows(prior, recorded);
+      assert.deepEqual(recorded.tables.state_leases, prior.tables.state_leases);
+      assert.equal(
+        recorded.tables.domain_cloud_requests!.length,
+        prior.tables.domain_cloud_requests!.length + 1,
+      );
+      assert.deepEqual(
+        await claim(target, "issue:page-4", holderOf("page"), "page-4"),
+        collision,
+      );
+      assert.deepEqual(
+        await dumpOf(target),
+        recorded,
+        "own refusal retry writes nothing",
       );
       const again = await sendPage(target, pages[0]);
       assert.equal(again.status, 409, JSON.stringify(again.body));

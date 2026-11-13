@@ -4980,7 +4980,8 @@ function localClaim(
               project: { id: "p" },
             },
             write: true,
-            requestId,
+            // Match the cloud's actual acquisition ID; parity still compares every event and row.
+            requestId: f.receiptKey(requestId).slice("request:".length),
           }),
         },
       }),
@@ -9916,7 +9917,15 @@ async function scopeFixture(mode: string, left: TokenSpec, right: TokenSpec) {
 async function ownRetry(f: F, call: object, options: Options, prior: Sent) {
   const before = f.snapshot(),
     again = await f.send(call, options);
-  expect([again.status, again.text]).toEqual([prior.status, prior.text]);
+  if (options.path === undefined)
+    expect([again.status, again.text]).toEqual([prior.status, prior.text]);
+  else
+    expect([again.status, again.type, again.bytes, again.json]).toEqual([
+      prior.status,
+      prior.type,
+      prior.bytes,
+      prior.json,
+    ]);
   expect(f.snapshot()).toBe(before);
 }
 function scopeCase(
