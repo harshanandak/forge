@@ -202,12 +202,12 @@ jobs:
           vars="--var DUMP_PAGE_BYTES:$exact" BUDGET_PAGE_BYTES="$exact" budget_counterfactual envelope 's/byteLength(pageOf(from.p, bare, after.done ? null : here)) +/0 +/' "budget envelope: real continuation pages stay within their budget" "page [0-9]+ is [0-9]+ bytes, over the [0-9]+ byte budget" budget "budget envelope"
           vars="--var DUMP_PAGE_BYTES:$exact" BUDGET_PAGE_BYTES="$exact" budget_counterfactual inclusive 's/^        added >$/        added >=/' "budget exact: real final page restores at its inclusive limit" "the export was cut into [0-9]+ pages" budget "budget exact"
           FORGE_CLOUD_PROJECT=ci-large config=wrangler.large.jsonc budget_counterfactual units 's/encoder.encode(JSON.stringify(value)).length;/JSON.stringify(value).length;/' "budget maximum: real grown pages restore exactly" "page [0-9]+ is [0-9]+ bytes, over the 4194304 byte budget" large "budget maximum"
-          # Capacity (forge-1040): the generated real-tracker pages through the Worker, with the candidate limits set
-          # explicitly on top of the default config. Fresh persistence. Client and workerd peak RSS keep their budgets;
+          # Capacity (forge-1040): the generated real-tracker pages through the Worker under the default limits (no DUMP_
+          # variable set; the generated config removes the small-cap ones). Fresh persistence. Client and workerd peak RSS keep their budgets;
           # Worker isolate memory and CPU are measured by the capacity job, not here. Its time is not budget-case time.
           (
             export FORGE_CLOUD_PROJECT=ci-capacity config=wrangler.large.jsonc CAPACITY_DIR="$RUNNER_TEMP/capacity"
-            vars="--var DUMP_MAX_ROWS:20000 --var DUMP_MAX_BYTES:33554432"
+            vars=""
             persist="$RUNNER_TEMP/wrangler-capacity"
             start capacity
             measured capacity bun conformance/conformance.ts capacity-wire
@@ -320,16 +320,16 @@ jobs:
       - run: bun install --frozen-lockfile
         working-directory: cloud
       # Every shape is restored page by page through the real Project in a worker thread with a 96 MiB heap cap, under the
-      # candidate limits set explicitly. This stands in for one isolate; it does not measure the deployed service.
-      - name: Candidate limits
+      # default limits (no DUMP_ variable set). This stands in for one isolate; it does not measure the deployed service.
+      - name: Default limits
         working-directory: cloud
-        env:
-          DUMP_MAX_ROWS: "20000"
-          DUMP_MAX_BYTES: "33554432"
         run: node conformance/capacity.ts measure
-      # With the old total caps (no DUMP_ variables) the real-size import must be refused at admission, and only that row fails.
+      # With the old total caps set explicitly the real-size import must be refused at admission, and only that row fails.
       - name: Old total caps refuse the real-size import
         working-directory: cloud
+        env:
+          DUMP_MAX_ROWS: "10000"
+          DUMP_MAX_BYTES: "8388608"
         run: |
           if node conformance/capacity.ts measure real > "$RUNNER_TEMP/old.out" 2>&1; then
             echo "::error::the real-size import passed under the old caps"; exit 1

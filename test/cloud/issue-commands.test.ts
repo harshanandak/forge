@@ -9788,20 +9788,21 @@ for (const trip of TRIPS)
       expect((await t.admin("status")).json.value!.initialized).toBe(true);
     }, 60_000);
 
-// forge-1040: measured capacity. Production limits stay at 10,000 rows and 8 MiB. These rows hold the candidate
-// (20,000 rows, 32 MiB) and the raw-text JSON budget (32 levels of depth, 5,000 values in a body) to their edges
-// through the real admin routes. Rows that refuse a legal-looking body are red until the budget exists.
-const CANDIDATE = { DUMP_MAX_ROWS: "20000", DUMP_MAX_BYTES: "33554432" };
+// forge-1040: measured capacity. The agreed limits are 20,000 rows per table and 32 MiB stored (33,554,432 bytes),
+// with 4 MiB pages. These rows hold the defaults (no DUMP_ variable set) and the raw-text JSON budget (32 levels of
+// depth, 5,000 values in a body) to their edges through the real admin routes. OLD is the previous limits, set
+// explicitly, so an override still wins over the defaults.
+const OLD = { DUMP_MAX_ROWS: "10000", DUMP_MAX_BYTES: "8388608" };
 for (const [name, given, want] of [
   [
-    "production defaults",
+    "the defaults",
     {},
-    { maxRows: 10_000, maxBytes: 8_388_608, pageBytes: 4_194_304 },
+    { maxRows: 20_000, maxBytes: 33_554_432, pageBytes: 4_194_304 },
   ],
   [
-    "the candidate",
-    CANDIDATE,
-    { maxRows: 20_000, maxBytes: 33_554_432, pageBytes: 4_194_304 },
+    "explicit old limits",
+    OLD,
+    { maxRows: 10_000, maxBytes: 8_388_608, pageBytes: 4_194_304 },
   ],
 ] as const)
   test(`limitsFrom reads ${name}`, () => {
@@ -9850,9 +9851,9 @@ const RAW: Record<string, (i: number) => Tables[string][number]> = {
 };
 // Each table's row edge, alone, by its own COUNT: one over is refused at admission, and the limit itself is not.
 for (const [name, settings, rows, refused] of [
-  ["production defaults", vars, 10_001, true],
-  ["the candidate, one row over", { ...vars, ...CANDIDATE }, 20_001, true],
-  ["the candidate, at the limit", { ...vars, ...CANDIDATE }, 20_000, false],
+  ["explicit old limits, one row over", { ...vars, ...OLD }, 10_001, true],
+  ["the defaults, one row over", vars, 20_001, true],
+  ["the defaults, at the limit", vars, 20_000, false],
 ] as const)
   for (const table of Object.keys(RAW))
     test(`a paged restore of ${rows} ${table} rows under ${name} is ${refused ? "RESTORE_TOO_LARGE" : "not refused for size"}`, async () => {
@@ -9873,6 +9874,38 @@ for (const [name, settings, rows, refused] of [
       const { got } = await restoreInto("paged", none(), { parts, settings });
       expect(got.json.error?.code).not.toBe("RESTORE_TOO_LARGE");
     }, 120_000);
+
+// The stored-byte default, with no DUMP_ variable: a project of about 10 MB stored (past the old 8 MiB, legal values of
+// 200,000 characters) restores, and raw rows past 32 MiB are refused as 413 on the page that crosses it.
+test("a paged restore of a project of about 10 MB stored restores under the defaults", async () => {
+  const { tables } = await projectWith((w) => {
+    w.issue(1);
+    w.floor(floorAt(1));
+    for (let i = 0; i < 25; i += 1) w.put(`note:big${i}`, "x".repeat(200_000));
+  });
+  const stored = storedBytes(tables);
+  expect(stored).toBeGreaterThan(8_388_608);
+  expect(stored).toBeLessThan(33_554_432);
+  const { t, got } = await restoreInto("paged", tables, {
+    per: 4,
+    settings: vars,
+  });
+  expect(got.status).toBe(200);
+  expectFloor(t, tables, []);
+}, 120_000);
+
+test("a paged restore of raw rows past 32 MiB stored is RESTORE_TOO_LARGE under the defaults", async () => {
+  const body = `{"p":"${"x".repeat(1_000_000)}"}`;
+  const rows = Array.from({ length: 34 }, (_, i) => ({
+    ...RAW.state_records!(i),
+    body,
+  }));
+  const parts = pagesOf({ ...none(), state_records: rows }, 4);
+  await refuses("paged", none(), "RESTORE_TOO_LARGE", 413, {
+    parts,
+    settings: vars,
+  });
+}, 120_000);
 
 // The stored-byte cap is inclusive, after any floor rows: a project of exactly N bytes restores under N and not under N - 1.
 for (const trip of TRIPS)
