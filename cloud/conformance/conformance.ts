@@ -4815,7 +4815,7 @@ if (phase === "budget-body") {
   await journey(
     "budget body: real near-8-MiB page restores exactly",
     async () => {
-      // The tail body is calculated from the independent page size: four rows carry it, a byte each, so one
+      // The tail body is calculated from the independent page size: three rows carry it, a byte each, so one
       // estimate lands near the middle of the window, and at most two more builds correct it.
       const built: { tail: number; size: number }[] = [];
       const build = async (tail: number) => {
@@ -4835,7 +4835,7 @@ if (phase === "budget-body") {
           const before = built.at(-2);
           const slope =
             before === undefined
-              ? 4
+              ? 3
               : (last.size - before.size) / (last.tail - before.tail);
           const tail = Math.max(
             1,
