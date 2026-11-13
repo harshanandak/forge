@@ -43,6 +43,7 @@ import { createWorker } from "../../cloud/src/worker.ts";
 import manifest from "../../src/blocks/work/forge.block.json" with { type: "json" };
 import { createStateClient } from "../../src/assembly/state-client.ts";
 import { StateOwner } from "../../src/core/state/index.ts";
+import type { LeaseRecord } from "../../src/generated/types.ts";
 import { refuse } from "../../src/core/trust/index.ts";
 import { stateMigrations } from "../../src/core/state/migrations.ts";
 import type { SqlDatabase, SqlRow, SqlValue } from "../../src/ports/store.ts";
@@ -8927,6 +8928,29 @@ const childFloors = (want: Record<string, number>, revision = 1): Added[] =>
  * its key, value and revision, in consecutive sequences after the imported events; nothing else.
  */
 function expectFloor(t: F, tables: Tables, floors: readonly Added[]) {
+  const importedEvents = tables.state_events!.length;
+  tables = structuredClone(tables);
+  for (const row of tables.state_leases!) {
+    const lease = JSON.parse(String(row.body)) as LeaseRecord;
+    if (lease.releasedAt !== undefined || Date.parse(lease.expiresAt) <= start)
+      continue;
+    const released = { ...lease, releasedAt: iso(start) };
+    row.body = JSON.stringify(released);
+    tables.state_events!.push({
+      sequence: tables.state_events!.length + floors.length + 1,
+      namespace: row.namespace!,
+      key: row.subject!,
+      body: JSON.stringify({
+        type: `${String(row.namespace)}:lease.released@1`,
+        namespace: row.namespace,
+        key: row.subject,
+        revision: lease.generation,
+        at: iso(start),
+        actor: lease.holder.actor,
+        data: released,
+      }),
+    });
+  }
   const after = tablesOf(t.db);
   const fresh = (table: string) => {
     const had = new Set(tables[table]!.map(asText));
@@ -8949,7 +8973,7 @@ function expectFloor(t: F, tables: Tables, floors: readonly Added[]) {
     floors.map((f) => f.key).sort(),
   );
   expect(events.map((e) => Number(e.sequence)).sort((x, y) => x - y)).toEqual(
-    floors.map((_, i) => tables.state_events!.length + 1 + i),
+    floors.map((_, i) => importedEvents + 1 + i),
   );
   for (const { key, value, revision: rev = 1 } of floors) {
     const record = records.find((r) => r.key === key);
