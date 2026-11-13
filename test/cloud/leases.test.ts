@@ -690,14 +690,32 @@ for (const mode of ["whole", "paged"] as const)
         expect((await source.send("restore", empty)).status).toBe(200);
         for (const subject of ["issue", "other"]) {
           expect(
-            (await source.write("claim", { subject }, "owner")).status,
+            (
+              await source.write(
+                "claim",
+                { subject, requestId: `claim-${subject}` },
+                "owner",
+              )
+            ).status,
           ).toBe(200);
           expect(
-            (await source.write("renew", { subject }, "owner")).status,
+            (
+              await source.write(
+                "renew",
+                { subject, requestId: `renew-${subject}` },
+                "owner",
+              )
+            ).status,
           ).toBe(200);
           if (state === "released")
             expect(
-              (await source.write("release", { subject }, "owner")).status,
+              (
+                await source.write(
+                  "release",
+                  { subject, requestId: `release-${subject}` },
+                  "owner",
+                )
+              ).status,
             ).toBe(200);
         }
         if (state === "expired") source.clock.mockReturnValue(now + minute);
