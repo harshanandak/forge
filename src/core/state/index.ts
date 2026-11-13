@@ -36,6 +36,7 @@ import {
 } from "./migrations.ts";
 import { registerTables, exportTables, type DomainData } from "./domains.ts";
 import { parseRestoreJson } from "./restore-json.ts";
+import { checkpointTables, assertNoCheckpoint } from "./checkpoint.ts";
 
 /** Optional storage capability supplied by trusted assembly; the locked SQL port stays unchanged. */
 export interface StateImageStore extends SqlDatabase {
@@ -1003,6 +1004,7 @@ export function verifyEventDerivedState(
 // Only these ledgers contain setup metadata that restore may replace in a nonempty store.
 const metadataTables = new Set(["state_migrations", "state_domains"]);
 const stateDataTables = new Set([
+  ...Object.keys(checkpointTables),
   "state_records",
   "state_events",
   "state_leases",
@@ -1977,6 +1979,7 @@ export class StateOwner {
           invalid(`Snapshot version ${String(row.id)}; newest known ${newest}`);
       if (!applied.some((row) => row.id === baseline.id))
         invalid("Missing baseline");
+      assertNoCheckpoint(candidate);
       assertRegistered(candidate);
       if (migrated && signature(candidate) !== expected)
         invalid("Snapshot schema or reviewed table registration differs");

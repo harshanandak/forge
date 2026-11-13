@@ -317,6 +317,7 @@ test("a migration list without 003_device_session_identity refuses a qualified s
   const source = await open(false);
   try {
     migrate(source.db, [baseline, eventKeyIndex]);
+    source.owner.initialize();
     const schema = source.db.all(
       "SELECT type,name,sql FROM sqlite_schema ORDER BY name",
     );
@@ -324,11 +325,17 @@ test("a migration list without 003_device_session_identity refuses a qualified s
     expect(
       source.db.all("SELECT type,name,sql FROM sqlite_schema ORDER BY name"),
     ).toEqual(schema);
+    expect(
+      source.db.all(
+        "SELECT name FROM sqlite_schema WHERE type='table' AND name LIKE 'state_checkpoint_%'",
+      ),
+    ).toHaveLength(8);
     const ledger = source.db.all("SELECT id FROM state_migrations ORDER BY id");
     expect(ledger.map((row) => row.id)).toEqual([
       baseline.id,
       eventKeyIndex.id,
       "003_device_session_identity",
+      "004_state_checkpoint",
     ]);
     const before = source.db.get("SELECT total_changes() AS total")?.total;
     expect(() => migrate(source.db, [baseline, eventKeyIndex])).toThrow(

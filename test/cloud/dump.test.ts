@@ -1,15 +1,19 @@
-// Column, cursor and page boundaries of the dump, on plain tables: no Worker, no state owner.
+// Dump boundaries and checkpoint-target refusals on SQLite, without a Worker.
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import {
   dumpOf,
   dumpPage,
   DUMP_MIGRATION,
+  IMPORT_MIGRATION,
   limitsFrom,
   PAGE_FORMAT,
   parseDump,
+  restorePage,
 } from "../../cloud/src/dump.ts";
 import type { SqlDatabase, SqlRow } from "../../src/ports/store.ts";
+import { baseline, migrate } from "../../src/core/state/migrations.ts";
+import { StateOwner } from "../../src/core/state/index.ts";
 
 const MIB = 1024 * 1024;
 const SCALAR = 262_144;
@@ -54,12 +58,17 @@ const row = (table: string, over: Row = {}): [string, Row] => [
   { ...ROW[table]![0], ...over },
 ];
 
-function database(rows: [string, Row][] = []): SqlDatabase {
+function database(
+  rows: [string, Row][] = [],
+  ownerSchema = false,
+): SqlDatabase {
   const db = new Database(":memory:");
+  // Restores need the owner's sequence primary key, not plain boundary-test columns.
+  if (ownerSchema) for (const sql of baseline.statements) db.run(sql);
   for (const [table, [sample, key]] of Object.entries(ROW))
     if (table !== "domain_cloud_command_receipts")
       db.run(
-        `CREATE TABLE ${table} (${Object.entries(sample)
+        `CREATE TABLE IF NOT EXISTS ${table} (${Object.entries(sample)
           .map(([c, v]) => `${c} ${typeof v === "number" ? "INTEGER" : "TEXT"}`)
           .join(", ")}${key})`,
       );
@@ -104,6 +113,80 @@ const dumpText = (table: string, over: Row) =>
     format: "forge-cloud-dump/2",
     tables: { ...empty(), [table]: [row(table, over)[1]] },
   });
+const checkpointRows = {
+  state_checkpoint_header: [1, 1, "lineage", 1, 20, 1, 20],
+  state_checkpoint_live: ["forge/test", "a", 1, 1, "digest"],
+  state_checkpoint_deleted: ["forge/test", "a", 1, 1],
+  state_checkpoint_leases: ["forge/test", "a", 1, 1, "{}"],
+  state_checkpoint_reservations: ["forge/test", "a", 1, 1],
+  state_checkpoint_floors: ["forge/test", "a", 1, 0],
+  state_checkpoint_receipts: ["forge/test", "a", 1, "digest", "digest"],
+  state_checkpoint_denied: ["forge/test", "a", 1],
+};
+for (const [table, values] of Object.entries(checkpointRows)) {
+  for (const paged of [false, true])
+    test(`v2 ${paged ? "paged" : "whole"} export refuses ${table} without mutation`, () => {
+      const db = database();
+      migrate(db);
+      const before = dumpOf(db);
+      expect(Object.keys(before.tables)).toEqual(Object.keys(ROW));
+      expect(parseDump(JSON.stringify(before))).toEqual(before);
+      db.run(
+        `INSERT INTO ${table} VALUES (${values.map(() => "?").join(",")})`,
+        values,
+      );
+      const read = () => db.all(`SELECT * FROM ${table}`);
+      const saved = read();
+      expect(() =>
+        paged ? dumpPage(db, "start", limits) : dumpOf(db),
+      ).toThrow(/newer Forge/i);
+      expect(read()).toEqual(saved);
+    }, 30000);
+  test(`v2 final page refuses ${table} before clearing or staging the target`, () => {
+    const db = database([row("state_records")], true);
+    for (const sql of IMPORT_MIGRATION.statements) db.exec(sql);
+    migrate(db);
+    db.run(
+      `INSERT INTO ${table} VALUES (${values.map(() => "?").join(",")})`,
+      values,
+    );
+    const owner = new StateOwner(db, { now: () => 1000 });
+    const page = {
+      format: PAGE_FORMAT,
+      page: 0,
+      last: true,
+      next: null,
+      tables: empty(),
+    };
+    const snapshot = () =>
+      db
+        .all(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+        )
+        .map(({ name }) => [
+          name,
+          db.all(`SELECT * FROM ${String(name)} ORDER BY rowid`),
+        ]);
+    const before = snapshot(),
+      changes = db.get("SELECT total_changes() AS n");
+    let failure: unknown;
+    try {
+      restorePage(db, owner, page, limits);
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({
+      error: {
+        code: "INPUT_INVALID",
+      },
+    });
+    expect(String(failure)).toMatch(/newer Forge/i);
+    expect(snapshot()).toEqual(before);
+    expect(db.get("SELECT total_changes() AS n")).toEqual(changes);
+    db.run(`DELETE FROM ${table}`);
+    expect(() => restorePage(db, owner, page, limits)).not.toThrow();
+  }, 30000);
+}
 const pageText = (tables: Record<string, Row[]>, next: string | null = null) =>
   JSON.stringify({
     format: PAGE_FORMAT,
