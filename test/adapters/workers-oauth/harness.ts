@@ -5,31 +5,67 @@ import type {
 import { testIdentityVerifier } from "../../contract/lib/identity-verifier.ts";
 import { durableRedemption } from "../../../cloud/src/adapters/workers-oauth/redemption.ts";
 import type { RedemptionNamespace } from "../../../cloud/src/adapters/workers-oauth/redemption.ts";
-import { durableGrants } from "../../../cloud/src/adapters/workers-oauth/grant-state.ts";
+import { mock } from "bun:test";
+await mock.module("cloudflare:workers", () => ({ WorkerEntrypoint: class {} }));
+const { durableGrants, GrantState } =
+  await import("../../../cloud/src/adapters/workers-oauth/grant-state.ts");
+const { refreshPolicy } =
+  await import("../../../cloud/src/adapters/workers-oauth/refresh.ts");
 
 export interface OAuthHarness {
   options: OAuthOptions;
   advance(milliseconds?: number): void;
   grantNamespace: RedemptionNamespace;
+  grantObject(hash: string): InstanceType<typeof GrantState>;
+  grantAlarms: Map<unknown, number>;
 }
 
-/** Test-only upstream proof and storage; no provider, network or runtime host is loaded. */
+/** Test-only proof and clock; real state code runs on an in-memory storage host. */
 export function createOAuthHarness(identityTtlMs = 3_600_000): OAuthHarness {
   let now = 1_000_000;
   const redemptions = new Map<string, number>();
-  const revoked = new Set<unknown>();
+  const grants = new Map<unknown, Map<string, unknown>>();
+  const grantAlarms = new Map<unknown, number>();
+  let tail = Promise.resolve();
+  const grantObject = (hash: unknown) => {
+    let values = grants.get(hash);
+    if (!values) {
+      values = new Map();
+      grants.set(hash, values);
+    }
+    const store = {
+      get: <T>(key: string) =>
+        Promise.resolve(structuredClone(values.get(key)) as T | undefined),
+      put: (key: string, value: unknown) => {
+        values.set(key, value);
+        return Promise.resolve();
+      },
+      setAlarm: (at: number) => {
+        grantAlarms.set(hash, at);
+        return Promise.resolve();
+      },
+    };
+    return new GrantState(
+      {
+        storage: {
+          ...store,
+          transaction: (operation) => {
+            const result = tail.then(() => operation(store));
+            tail = result.then(
+              () => undefined,
+              () => undefined,
+            );
+            return result;
+          },
+        },
+      },
+      undefined,
+      { now: () => now },
+    );
+  };
   const grantNamespace: RedemptionNamespace = {
     idFromName: (hash) => hash,
-    get: (hash) => ({
-      fetch: (request) => {
-        if (request.method === "POST") revoked.add(hash);
-        return Promise.resolve(
-          new Response(null, {
-            status: request.method === "GET" && revoked.has(hash) ? 403 : 200,
-          }),
-        );
-      },
-    }),
+    get: grantObject,
   };
   const entries = new Map<
     string,
@@ -93,6 +129,8 @@ export function createOAuthHarness(identityTtlMs = 3_600_000): OAuthHarness {
   );
   const harness: OAuthHarness = {
     grantNamespace,
+    grantObject,
+    grantAlarms,
     options: {
       issuer,
       resources: ["https://api.example/a", "https://api.example/b"],
@@ -140,5 +178,6 @@ export function createOAuthHarness(identityTtlMs = 3_600_000): OAuthHarness {
         }),
     }),
   });
+  harness.options.refresh = refreshPolicy(harness.options);
   return harness;
 }

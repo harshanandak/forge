@@ -1,12 +1,10 @@
 import { expect, mock, test } from "bun:test";
 import { createOAuthHarness } from "../../adapters/workers-oauth/harness.ts";
-import {
-  GrantState,
-  durableGrants,
-  type GrantStorage,
-} from "../../../cloud/src/adapters/workers-oauth/grant-state.ts";
+import type { GrantStorage } from "../../../cloud/src/adapters/workers-oauth/grant-state.ts";
 import { sha256 } from "../../../cloud/src/tokens.ts";
 await mock.module("cloudflare:workers", () => ({ WorkerEntrypoint: class {} }));
+const { GrantState, durableGrants } =
+  await import("../../../cloud/src/adapters/workers-oauth/grant-state.ts");
 const { composeOAuth } =
   await import("../../../cloud/src/adapters/workers-oauth/compose.ts");
 const { createOAuthAdapter, grantHash } =
@@ -55,7 +53,7 @@ async function revokeFixture(
 
 for (const fault of ["none", "read", "write", "stub"] as const) {
   test(`durable grant state is monotonic and fail-closed: ${fault}`, async () => {
-    const values = new Map<string, boolean>(),
+    const values = new Map<string, unknown>(),
       hash = "a".repeat(64),
       names: string[] = [];
     const storage: GrantStorage = {

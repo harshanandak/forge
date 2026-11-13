@@ -62,8 +62,15 @@ export async function revokeOAuth(
       )
         return null;
       const hash = await sha256(token);
-      return [grant.refreshTokenId, grant.previousRefreshTokenId].includes(hash)
-        ? grantHash(token, user)
+      const key = await grantHash(token, user);
+      return key &&
+        ([grant.refreshTokenId, grant.previousRefreshTokenId].includes(hash) ||
+          (await options.grantRevocation.spent?.(
+            key,
+            await sha256(`forge:refresh:1:${token}`),
+            await sha256(client),
+          )))
+        ? key
         : null;
     };
     const accessProof = () => adapter.proveAccess(token, client);

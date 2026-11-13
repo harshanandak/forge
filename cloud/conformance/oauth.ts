@@ -2,24 +2,26 @@ import assert from "node:assert/strict";
 import { AssertionError } from "node:assert";
 import { readFileSync, writeFileSync } from "node:fs";
 
-const base = "http://127.0.0.1:8788";
+export const base = "http://127.0.0.1:8788";
 const state = process.env.OAUTH_CONFORMANCE_STATE;
 assert(state, "OAUTH_CONFORMANCE_STATE is required");
 const timeout = 10_000;
-const send = (path: string, init: RequestInit = {}) =>
+export const send = (path: string, init: RequestInit = {}) =>
   fetch(`${base}${path}`, {
     ...init,
     redirect: "manual",
     signal: AbortSignal.timeout(timeout),
   });
-const post = (path: string, fields: Record<string, string>) =>
+export const post = (path: string, fields: Record<string, string>) =>
   send(path, { method: "POST", body: new URLSearchParams(fields) });
-interface Family {
+export interface Family {
   client: string;
   access_token: string;
   refresh_token: string;
+  expires_in: number;
+  scope: string;
 }
-async function issue(): Promise<Family> {
+export async function issue(scope = ""): Promise<Family> {
   const registered = await send("/fixture/register");
   assert.equal(registered.status, 200, "fixture registration must work");
   const { client } = (await registered.json()) as { client: string };
@@ -34,7 +36,7 @@ async function issue(): Promise<Family> {
     return response;
   }
   const authorize = await browser(
-    `/authorize?${new URLSearchParams({ response_type: "code", client_id: client, redirect_uri: "http://127.0.0.1:9999/callback", resource: base, state: "fixture", code_challenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM", code_challenge_method: "S256" }).toString()}`,
+    `/authorize?${new URLSearchParams({ response_type: "code", client_id: client, redirect_uri: "http://127.0.0.1:9999/callback", resource: base, scope, state: "fixture", code_challenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM", code_challenge_method: "S256" }).toString()}`,
   );
   assert.equal(authorize.status, 200, "fixture authorization must work");
   const handle = /name="handle" value="([^"]+)"/.exec(
@@ -72,7 +74,7 @@ async function issue(): Promise<Family> {
   );
   return { client, ...tokens };
 }
-async function access(family: Family, active: boolean) {
+export async function access(family: Family, active: boolean) {
   const headers = { Authorization: `Bearer ${family.access_token}` };
   const verified = await send("/fixture/verify", { headers });
   const owner = await send("/p/oauth/holder?subject=owner", { headers });
@@ -101,7 +103,7 @@ async function access(family: Family, active: boolean) {
     "verification must reflect durable grant revocation",
   );
 }
-async function revoke(family: Family, token: string) {
+export async function revoke(family: Family, token: string) {
   const response = await post("/oauth/revoke", {
     token,
     client_id: family.client,
@@ -213,7 +215,7 @@ async function main() {
       client_id: family.client,
     });
     assert.equal(refresh.status, 400);
-    assert.deepEqual(await refresh.json(), { error: "unsupported_grant_type" });
+    assert.deepEqual(await refresh.json(), { error: "invalid_grant" });
     revoked.push(family);
     console.log(
       `PASS OAuth ${kind} revoke refuses subsequent and stale-KV access`,
@@ -224,9 +226,10 @@ async function main() {
     mode: 0o600,
   });
 }
-await main().catch((error: unknown) => {
-  console.error(
-    `FAIL OAuth holder revocation: ${error instanceof AssertionError ? error.message.split("\n")[0] : "fixture unavailable"}`,
-  );
-  process.exitCode = 1;
-});
+if (process.argv[1]?.replaceAll("\\", "/").endsWith("/oauth.ts"))
+  await main().catch((error: unknown) => {
+    console.error(
+      `FAIL OAuth holder revocation: ${error instanceof AssertionError ? error.message.split("\n")[0] : "fixture unavailable"}`,
+    );
+    process.exitCode = 1;
+  });

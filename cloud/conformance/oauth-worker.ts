@@ -12,6 +12,7 @@ import {
 import { clerk } from "./fault-worker.ts";
 import { durableGrants } from "../src/adapters/workers-oauth/grant-state.ts";
 import { createWorker } from "../src/worker.ts";
+import { refreshControls } from "./refresh-controls.ts";
 export {
   CodeRedemption,
   GrantState,
@@ -26,11 +27,21 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url),
       issuer = url.origin;
-    const upstream = clerk({
-      CLERK_CLIENT_ID: issuer,
-      CLERK_ISSUER: "https://clerk.test",
-      FORGE_OWNER_SUBJECT: "user_ConformanceOwner",
-    });
+    const upstream = clerk(
+      {
+        CLERK_CLIENT_ID: issuer,
+        CLERK_ISSUER: "https://clerk.test",
+        FORGE_OWNER_SUBJECT: "user_ConformanceOwner",
+      },
+      7200,
+    );
+    const controls = await refreshControls(
+      request,
+      env.OAUTH_KV,
+      env.GRANT_STATE,
+    );
+    if (controls instanceof Response) return controls;
+    const kv = controls.storage;
     if (url.pathname === "/fixture/ready") return new Response("ready");
     if (url.pathname === "/fixture/snapshot") {
       const entries = await env.OAUTH_KV.list({ prefix: "" });
@@ -56,14 +67,17 @@ export default {
           request.headers.has("x-oauth-token-read-fault") &&
           key.startsWith("token:")
             ? Promise.reject(new Error("fixture token-record failure"))
-            : env.OAUTH_KV.get<T>(key, options),
-        put: (...args) => env.OAUTH_KV.put(...args),
-        delete: (key) => env.OAUTH_KV.delete(key),
-        list: (options) => env.OAUTH_KV.list(options),
+            : kv.get<T>(key, options),
+        put: (...args) => kv.put(...args),
+        delete: (key) => kv.delete(key),
+        list: (options) => kv.list(options),
       },
       codeRedemption: durableRedemption(env.CODE_REDEMPTION),
-      grantRevocation: durableGrants(env.GRANT_STATE),
-      clock: { now: Date.now },
+      grantRevocation: durableGrants(controls.namespace),
+      clock: {
+        now: () =>
+          Date.now() + Number(request.headers.get("x-refresh-clock") ?? 0),
+      },
       upstream: {
         begin: (state) =>
           Promise.resolve(`${issuer}/fixture/login?state=${state}`),
@@ -114,6 +128,6 @@ export default {
           }),
         },
       });
-    return auth.route(request);
+    return controls.finish(await auth.route(request));
   },
 };

@@ -39,7 +39,18 @@ export interface CodeRedemption {
 export interface GrantRevocation {
   isActive(grantHash: string): Promise<boolean>;
   revoke(grantHash: string): Promise<void>;
+  claim?(
+    grant: string,
+    token: string,
+    client: string,
+    deadline: number,
+    current: boolean,
+  ): Promise<"won" | "reused" | "refused">;
+  spent?(grant: string, token: string, client: string): Promise<boolean>;
 }
+// Provider lifetime policy, in seconds; refresh never renews upstream identity.
+const ACCESS_TOKEN_TTL = 3600;
+export const REFRESH_TOKEN_TTL = 2592000;
 export async function grantHash(
   token: string,
   userId: string,
@@ -60,6 +71,18 @@ export interface OAuthOptions {
   storage: OAuthStorage;
   codeRedemption: CodeRedemption;
   grantRevocation: GrantRevocation;
+  refresh?: {
+    admit(
+      form: {
+        get(key: string): unknown;
+        getAll(key: string): unknown[];
+        keys(): IterableIterator<string>;
+        has(key: string): boolean;
+      },
+      authorization: boolean,
+    ): Promise<Response | undefined>;
+    valid(props: unknown, user: string): boolean;
+  };
   clock: ClockPort;
   upstream: {
     begin(state: string, verifier?: string): Promise<string>;
@@ -85,11 +108,22 @@ export interface OAuthAdapter extends OAuthVerificationPort {
 }
 
 export function createOAuthAdapter(options: OAuthOptions): OAuthAdapter {
+  class RefreshRefusal extends Error {}
   const env = { OAUTH_KV: options.storage };
   const server = new OAuthAuthorizationServer<typeof env>({
     issuer: options.issuer,
     resources: options.resources,
     clientIdMetadataDocumentEnabled: false,
+    accessTokenTTL: ACCESS_TOKEN_TTL,
+    refreshTokenTTL: REFRESH_TOKEN_TTL,
+    tokenExchangeCallback: ({ grantType, props, userId }) => {
+      if (
+        grantType.toString() === "refresh_token" &&
+        !options.refresh?.valid(props, userId)
+      )
+        throw new RefreshRefusal();
+      return Promise.resolve({});
+    },
   });
   const oauth = server.getOAuthApi(env);
   async function accessProof(token: string, resource: string) {
@@ -150,6 +184,7 @@ export function createOAuthAdapter(options: OAuthOptions): OAuthAdapter {
     try {
       return await operation();
     } catch (error) {
+      if (error instanceof RefreshRefusal) return failure("invalid_grant", 400);
       const invalid = error instanceof AuthorizationError;
       return failure(
         invalid ? error.code : "temporarily_unavailable",
@@ -273,7 +308,16 @@ export function createOAuthAdapter(options: OAuthOptions): OAuthAdapter {
             "application/x-www-form-urlencoded"
         ) {
           const form = await request.clone().formData();
-          if (form.get("grant_type") !== "authorization_code")
+          if (form.has("refresh_token") && !form.get("grant_type"))
+            return failure("invalid_request", 400);
+          if (form.get("grant_type") === "refresh_token") {
+            if (!options.refresh) return failure("unsupported_grant_type", 400);
+            const refused = await options.refresh.admit(
+              form,
+              request.headers.has("Authorization"),
+            );
+            if (refused) return refused;
+          } else if (form.get("grant_type") !== "authorization_code")
             return failure("unsupported_grant_type", 400);
           if (form.get("grant_type") === "authorization_code") {
             const code = form.get("code");
@@ -351,6 +395,8 @@ export function createOAuthAdapter(options: OAuthOptions): OAuthAdapter {
           props: {},
         });
         await Promise.all(tasks);
+        if (response.status === 429 || response.status >= 500)
+          return failure("temporarily_unavailable", 503);
         return response.ok
           ? response
           : failure("invalid_grant", response.status);
