@@ -204,9 +204,8 @@ export async function tinySource(title: string) {
 }
 
 /**
- * One lease on `subject` taken through the claim route, at the fixed clock, after one create. The create writes the
- * issue number floor, which a restore otherwise adds with the restoring Worker's own clock: a dump that carries its
- * floor comes back exactly as exported.
+ * One released lease on `subject`, after one create, at the fixed clock. Supplying the floor and
+ * releasing before export keeps byte/cursor boundary fixtures stable through restore.
  */
 export async function leaseSource(subject: string, stageFirst = false) {
   const h = await harness("lease", "forge", FROZEN);
@@ -227,6 +226,8 @@ export async function leaseSource(subject: string, stageFirst = false) {
   });
   if (reply.status !== 200)
     throw new Error(`fixture claim refused: ${await reply.text()}`);
+  const owner = new StateOwner(sqlOf(h.db), { now: () => FROZEN });
+  owner.release("forge/work", owner.lease("forge/work", subject)!);
   const tables = tablesOf(h.db);
   h.db.close();
   return { tables, doc: { format: DUMP, tables } };

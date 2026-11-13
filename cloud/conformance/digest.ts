@@ -2,6 +2,10 @@
 // exported (forge-1040). The same fold checks a node:sqlite target in capacity.ts and the Worker read back in
 // conformance.ts, page by page, so no run keeps a whole project in memory.
 import { createHash, type Hash } from "node:crypto";
+import assert from "node:assert/strict";
+import { canonicalJson } from "../../src/core/config/pointer.ts";
+import type { LeaseRecord, StateEvent } from "../../src/generated/types.ts";
+import { releaseEvent } from "./restored.ts";
 
 export const TABLES = [
   "state_records",
@@ -47,7 +51,9 @@ export interface Expected {
 export interface Tally {
   rows: Record<Table, number>;
   hashes: Record<Table, Hash>;
-  generated: { records: number; events: number };
+  generated: { records: number; events: number; releases: number };
+  releaseHash: Hash;
+  leaseHash: Hash;
   // Set for a restored target: its generated floor rows are counted apart and left out of the digests.
   skip: Pick<Expected, "floorSupplied" | "lastSequence"> | undefined;
 }
@@ -59,12 +65,27 @@ export function tally(skip?: Tally["skip"]): Tally {
   return {
     rows: each(() => 0),
     hashes: each(() => createHash("sha256")),
-    generated: { records: 0, events: 0 },
+    generated: { records: 0, events: 0, releases: 0 },
+    releaseHash: createHash("sha256"),
+    leaseHash: createHash("sha256"),
     skip,
   };
 }
 
-/** Counts one row. A restored target's generated floor record and event are tallied apart, not digested. */
+const encoded = (table: Table, row: Row): string =>
+  `${JSON.stringify(COLUMNS[table].map((column) => row[column]))}\n`;
+// Capacity fixtures contain live leases only; compare every original byte after checking release metadata.
+function originalLease(value: unknown): LeaseRecord {
+  const { releasedAt, ...lease } = value as LeaseRecord;
+  assert.ok(
+    releasedAt &&
+      Number.isFinite(Date.parse(releasedAt)) &&
+      Date.parse(releasedAt) <= Date.now(),
+  );
+  return lease;
+}
+
+/** Preserve source digests while checking generated floor rows and exact lease releases separately. */
 export function fold(t: Tally, table: Table, row: Row): void {
   if (t.skip !== undefined) {
     if (
@@ -80,14 +101,33 @@ export function fold(t: Tally, table: Table, row: Row): void {
       table === "state_events" &&
       Number(row.sequence) > t.skip.lastSequence
     ) {
-      t.generated.events += 1;
+      const event = JSON.parse(String(row.body)) as StateEvent;
+      if (event.type.endsWith(":lease.released@1")) {
+        const lease = originalLease(event.data);
+        assert.deepEqual(
+          event,
+          releaseEvent(String(row.namespace), lease, event.at),
+        );
+        t.generated.releases++;
+        t.releaseHash.update(
+          encoded("state_leases", {
+            namespace: row.namespace,
+            subject: row.key,
+            generation: event.revision,
+            body: canonicalJson(event.data),
+          }),
+        );
+      } else t.generated.events += 1;
       return;
     }
   }
+  if (t.skip !== undefined && table === "state_leases") {
+    t.leaseHash.update(encoded(table, row));
+    const lease = originalLease(JSON.parse(String(row.body)) as unknown);
+    row = { ...row, body: canonicalJson(lease) };
+  }
   t.rows[table] += 1;
-  t.hashes[table].update(
-    `${JSON.stringify(COLUMNS[table].map((column) => row[column]))}\n`,
-  );
+  t.hashes[table].update(encoded(table, row));
 }
 
 export function digests(t: Tally): Expected["tables"] {
@@ -109,6 +149,11 @@ export function problems(t: Tally, expected: Expected): string[] {
   ] as const)
     if (have !== floors)
       found.push(`the restore generated ${have} ${what}, expected ${floors}`);
+  if (
+    t.generated.releases !== expected.tables.state_leases.rows ||
+    t.releaseHash.digest("hex") !== t.leaseHash.digest("hex")
+  )
+    found.push("release events differ from imported live leases");
   const got = digests(t);
   for (const table of TABLES) {
     const want = expected.tables[table];

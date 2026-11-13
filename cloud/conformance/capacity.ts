@@ -3,6 +3,7 @@
 // through the real Project inside a worker thread with a hard V8 heap cap, reading that thread's own CPU time.
 // This is a stand-in for one Durable Object isolate, not the isolate: nothing here measures the deployed service.
 // `node capacity.ts pages <dir> [shape...]` only writes the pages, for the workerd phase of conformance.ts.
+import assert from "node:assert/strict";
 import { timingSafeEqual } from "node:crypto";
 import {
   mkdirSync,
@@ -46,8 +47,20 @@ if (!("timingSafeEqual" in crypto.subtle))
 const MIB = 1024 * 1024;
 const NAME = "cap";
 const NS = "forge/capacity";
-const FROZEN = 1_800_000_000_000;
 const CANDIDATE_BYTES = 32 * MIB;
+// The scoped clock pattern from max-source.ts:post, shared by fixture creation and restore.
+async function atClock<T>(
+  at: number | undefined,
+  body: () => Promise<T>,
+): Promise<T> {
+  const real = Date.now;
+  if (at !== undefined) Date.now = () => at;
+  try {
+    return await body();
+  } finally {
+    Date.now = real;
+  }
+}
 // The real tracker, measured locally: rows per table and stored bytes of the four exported state tables.
 const TRACKER = {
   records: 7_366,
@@ -147,6 +160,7 @@ const sqlOf = (db: DatabaseSync): SqlDatabase => ({
 // One project shape: distinct keys, updates of them, leases, and how many writes carry request ids. A fenced write
 // holds its own lease and a read set; the value is what each write stores.
 interface Shape {
+  at?: number;
   records: number;
   updates: number;
   leases: number;
@@ -195,9 +209,11 @@ const SHAPES: Record<string, () => Shape | Promise<Shape>> = {
   // A restore adds an issue number floor (one record and one event) when the dump has none, then measures the project
   // again. So 19,999 rows in, 20,000 out: both tables sit exactly on the candidate row cap after the floor.
   "rows-records": () => ceiling({ records: 19_999 }),
-  // Every lease writes an event and a receipt, so events reach the cap with the floor first: 19,999 leases, 19,999
-  // receipts and 20,000 events out. Exactly 20,000 leases or receipts would need 20,001 events.
-  "rows-leases": () => ceiling({ leases: 19_999 }),
+  // 9,999 acquisitions + 9,999 releases + one record event + the derived floor = 20,000 events.
+  "rows-leases": () => ceiling({ records: 1, leases: 9_999 }),
+  "rows-leases-over": () => ceiling({ records: 2, leases: 9_999, runs: 1 }),
+  "leases-after-deadline": () =>
+    ceiling({ leases: 1, at: Date.UTC(2027, 0, 16), runs: 1 }),
   // Stored bytes at the candidate cap, to within one byte, with the supplied floor making 10,000 records and events, the old row cap.
   bytes: async () => {
     const base = ceiling({
@@ -289,7 +305,8 @@ async function source(shape: Shape) {
     }),
   );
   if (issued.status !== 200) throw new Error(`source setup: ${issued.status}`);
-  build(new StateOwner(sqlOf(db), { now: () => FROZEN }), shape);
+  const at = Date.now();
+  build(new StateOwner(sqlOf(db), { now: () => at }), shape);
   return { db, project };
 }
 
@@ -379,6 +396,7 @@ async function exported(project: Project): Promise<string[]> {
 }
 
 interface Meta {
+  at?: number;
   // Taken from the source tables before the export runs; every restored target is checked against it.
   expect: Expected;
   rows: Record<string, number>;
@@ -388,10 +406,11 @@ interface Meta {
 }
 async function write(dir: string, name: string): Promise<Meta> {
   const shape = await SHAPES[name]!();
-  const { db, project } = await source(shape);
+  const { db, project } = await atClock(shape.at, () => source(shape));
   const expect = expectOf(db);
   const pages = await exported(project);
   const meta: Meta = {
+    ...(shape.at === undefined ? {} : { at: shape.at }),
     expect,
     rows: rowsOf(db),
     stored: storedBytes(db),
@@ -429,11 +448,12 @@ interface Done {
 /** The worker: restore the pages `runs` times into fresh targets. The first run is cold, the rest warm. A target that took
  * all its pages is compared with the source expectations before it is closed. */
 async function restoreAll(): Promise<Done> {
-  const { dir, runs, limits, expect } = workerData as {
+  const { dir, runs, limits, expect, refuse } = workerData as {
     dir: string;
     runs: number;
     limits: Record<string, string>;
     expect: Expected;
+    refuse: boolean;
   };
   const files = readdirSync(dir)
     .filter((f) => f.startsWith("page-"))
@@ -443,7 +463,8 @@ async function restoreAll(): Promise<Done> {
   for (let run = 0; run < runs; run += 1) {
     const db = new DatabaseSync(":memory:");
     const count = { n: 0 };
-    const project = new Project({ storage: storageOf(db, count) }, env(limits));
+    const storage = storageOf(db, count);
+    const project = new Project({ storage }, env(limits));
     for (const [page, file] of files.entries()) {
       const body = readFileSync(join(dir, file), "utf8");
       const queries = count.n;
@@ -472,8 +493,26 @@ async function restoreAll(): Promise<Done> {
         external: heap.external_memory,
         malloced: heap.peak_malloced_memory,
       });
-      if (reply.status !== 200) return { samples, mismatches };
+      if (reply.status !== 200) {
+        if (refuse) {
+          assert.equal(
+            page,
+            files.length - 1,
+            "only final releases cross the cap",
+          );
+          assert.equal(reply.status, 413);
+          assert.equal(samples.at(-1)!.code, "RESTORE_TOO_LARGE");
+          assert.notEqual(await storage.get("provisioned"), true);
+          assert.ok(
+            Object.values(rowsOf(db)).every((n) => n === 0),
+            "refused restore leaves no rows",
+          );
+        }
+        db.close();
+        return { samples, mismatches };
+      }
     }
+    assert.equal(refuse, false, "release-only overflow must be refused");
     const wrong = differences(db, expect);
     if (wrong.length > 0) mismatches.push(`run ${run}: ${wrong.join("; ")}`);
     db.close();
@@ -509,9 +548,17 @@ async function measure(
       .filter((k) => process.env[k] !== undefined)
       .map((k) => [k, process.env[k]!]),
   );
+  const refuse = name === "rows-leases-over";
+  if (name === "rows-leases" || refuse)
+    assert.equal(
+      meta.rows.state_events! + meta.rows.state_leases! + 1,
+      20_000 + Number(refuse),
+    );
   const done = await inWorker({
     dir: join(dir, name),
+    refuse,
     runs: meta.runs,
+    at: meta.at,
     limits,
     expect: meta.expect,
   });
@@ -519,7 +566,15 @@ async function measure(
   const samples = done.samples ?? [];
   if (done.error !== undefined) problems.push(`worker failed: ${done.error}`);
   const refused = samples.find((s) => s.status !== 200);
-  if (refused !== undefined)
+  if (
+    refused !== undefined &&
+    !(
+      refuse &&
+      refused.last &&
+      refused.status === 413 &&
+      refused.code === "RESTORE_TOO_LARGE"
+    )
+  )
     problems.push(`page ${refused.page}: ${refused.status} ${refused.code}`);
   const total = Object.values(meta.rows).reduce((a, b) => a + b, 0);
   if (problems.length === 0) {
@@ -609,12 +664,12 @@ function gateCatches(): boolean {
 }
 
 if (!isMainThread) {
-  const data = workerData as { allocate?: boolean };
+  const data = workerData as { allocate?: boolean; at?: number };
   if (data.allocate) {
     const keep: string[] = [];
     for (;;) keep.push("x".repeat(MIB) + keep.length);
   }
-  parentPort!.postMessage(await restoreAll());
+  parentPort!.postMessage(await atClock(data.at, restoreAll));
 } else {
   const [command = "measure", ...rest] = process.argv.slice(2);
   if (command === "pages") {
