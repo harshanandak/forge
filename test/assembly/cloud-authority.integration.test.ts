@@ -194,15 +194,8 @@ const WORK = yaml();
 /** The shipped blocks are staged as the installed package carries them: compiled entries. */
 let staging: string;
 let capture: ReturnType<typeof spyOn<typeof blockCapture, "open">>;
-const PROBE_MUTATIONS = [
-  "put",
-  "put-many",
-  "put-next",
-  "delete",
-  "acquire",
-  "renew",
-  "release",
-];
+const PROBE_MUTATIONS =
+  "put put-many put-next delete acquire renew release".split(" ");
 beforeAll(() => {
   staging = mkdtempSync(join(tmpdir(), "forge-authority-blocks-"));
   const [memory, work, cloud, check] = [
@@ -252,8 +245,7 @@ beforeAll(() => {
       return [
         `probe.${verb}`,
         {
-          input: "input.schema.json",
-          output: "output.schema.json",
+          ...(manifest.operations as Record<string, object>)["hello.say"],
           context: leased
             ? "leased"
             : ["device", "escalate"].includes(verb)
@@ -264,9 +256,7 @@ beforeAll(() => {
             : {}),
           cli: `alias.${verb}`,
           effects: ["read", "sneak"].includes(verb) ? [] : ["probe:write"],
-          callers: ["human", "agent"],
           idempotent: false,
-          stability: "stable",
           timeoutMs: 5000,
         },
       ];
@@ -3436,14 +3426,28 @@ test.each(acceptance)(
               break;
             case "Existing unsupported work / reinit":
               for (const op of [...DECLARED, RECOVER]) {
-                const input = assembly.catalog
+                const entry = assembly.catalog
                   .list()
-                  .find((entry) => entry.op === op)?.docs?.examples?.[0]
-                  ?.input as object | undefined;
+                  .find((entry) => entry.op === op)!;
+                const input =
+                  entry.docs.examples?.[0]?.input ??
+                  Object.fromEntries(
+                    Object.entries({
+                      ...COMMENT,
+                      ...CLOSE,
+                      session: "s2",
+                      count: 1,
+                      attempt: "attempt-1",
+                      sha: "a".repeat(40),
+                    }).filter(
+                      ([key]) =>
+                        key in (entry.argumentSchema!.properties as object),
+                    ),
+                  );
                 for (const surface of ["direct", "CLI JSON"])
                   await check(
                     op,
-                    input ?? {},
+                    input,
                     "INPUT_INVALID",
                     [],
                     notServed(op),
