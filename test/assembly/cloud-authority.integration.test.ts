@@ -1324,6 +1324,7 @@ for (const [name, variants] of [
       "regrant time",
       "regrant review ask",
       "regrant review held",
+      "regrant review retry",
       "regrant ci ask",
       "regrant ci held",
     ],
@@ -1737,10 +1738,21 @@ for (const [name, variants] of [
                       done: true,
                       ...(variant.includes("review") ? { review: true } : {}),
                       ...(variant.includes("ci") ? { ci: true } : {}),
-                      ...(variant.endsWith("ask") ? { ask } : {}),
+                      ...(variant.endsWith("ask") || variant.endsWith("retry")
+                        ? { ask }
+                        : {}),
                     })
                   ).ok,
                 ).toBe(true);
+                if (variant.endsWith("retry")) {
+                  expect((await record({ head, review: true, ask })).ok).toBe(
+                    true,
+                  );
+                  expect((await saved()).value).toHaveProperty(
+                    "progress.review",
+                    1,
+                  );
+                }
                 if (["activeHours", "regrant time"].includes(variant)) {
                   time += 3_600_000;
                   lease = { ...lease, expiresAt: iso(time + 60_000) };
