@@ -361,3 +361,20 @@ That is 33 skipped journeys in `main`. Two journeys run live on adapted input: t
 
 From `cloud/`: `bun x wrangler delete --config wrangler.local.jsonc`. This removes the Worker and
 all project data in its Durable Objects. Dump the projects first if you need them.
+
+## Credentialed record client
+
+`createCloudRecordClient` in `src/assembly/cloud-state-client.ts` reads and commits
+records for one bound cloud project through the checked HTTP state adapter.
+It reuses the lease client's exact origin/project transport check, the stored
+origin/identity/project credential key, wire device mapping and safe refusals.
+A mismatch fails before sending. Named devices must match the credential;
+project roots are removed and the bound cloud project name goes on the wire.
+Reads return checked server facts without opening a local state owner.
+No operation logs in, rotates credentials, writes a local fallback or resends.
+An unusable or lost commit reply is `UNAVAILABLE`, with reconciliation required:
+retain the exact commit input and request ID until acceptance is established.
+An explicit replay uses that same request; do not rerun the domain command to
+recover an uncertain write. An already-aborted commit keeps its cancellation code;
+cancellation during a commit attempt requires reconciliation, as a lost reply does.
+The async state provider and memory/decision routing are separate integrations.
