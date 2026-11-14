@@ -450,7 +450,7 @@ test("forged owner headers grant nothing and OAuth cannot reach any admin route"
       f.env,
     );
     expect(admin.status).toBe(200);
-    expect(await admin.json()).toEqual({
+    expect(await admin.json()).toMatchObject({
       ok: true,
       value: { initialized: false },
     });

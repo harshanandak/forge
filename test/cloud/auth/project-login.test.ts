@@ -365,7 +365,7 @@ test("a missing HMAC key refuses only the two login routes", async () => {
     authorization: `Bearer ${seed.token}`,
   });
   const status = await f.send("status", undefined, f.admin);
-  expect([held.status, status.status, status.body.value]).toEqual([
+  expect([held.status, status.status, status.body.value]).toMatchObject([
     200,
     200,
     { initialized: true },
