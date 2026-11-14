@@ -33,6 +33,7 @@ import { commandProject } from "../../issue-commands.ts";
 import { boundedOAuthRequest } from "./body.ts";
 import { revokeOAuth } from "./revocation.ts";
 import { refreshPolicy } from "./refresh.ts";
+import { composeGithub } from "../../github-compose.ts";
 export { GrantState } from "./grant-state.ts";
 export { CodeRedemption } from "./redemption.ts";
 export { RegistrationLimiter } from "./registration.ts";
@@ -58,11 +59,13 @@ function deviceBrowser(env: unknown): DeviceBrowserOptions {
 }
 /** The deployed project object: the claim server, plus the browser approval of device logins. */
 export class Project extends BaseProject {
+  protected readonly github: ReturnType<typeof composeGithub>;
   constructor(
     ctx: ConstructorParameters<typeof BaseProject>[0],
     env?: unknown,
   ) {
     super(ctx, env, deviceBrowser(env));
+    this.github = composeGithub(env);
   }
 }
 export interface WorkerDependencies {
