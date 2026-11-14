@@ -3238,7 +3238,7 @@ for (const boundary of ["token", "transport"] as const)
     const identities = [
       prepareReceipt("command", receiptPrincipal, "shared-id", {}),
       prepareReceipt(
-        boundary === "transport" ? "state" : "command",
+        boundary === "transport" ? "lease" : "command",
         other,
         "shared-id",
         {},
@@ -3272,6 +3272,52 @@ for (const boundary of ["token", "transport"] as const)
     expect(commandRows(f.db)).toHaveLength(2);
     expect(f.snapshot()).toBe(before);
   }, 30_000);
+
+test("fresh receipt modules reproduce fixed main-branch identity bytes", async () => {
+  const expected = {
+    requestId:
+      "c2:ba6c8d40eb8a38a7456ba5b6e9cb0bbcb823330084c97552eda09c4ab67ffc77",
+    fingerprint:
+      '{"input":"sha256:f89b1aa36ba3e0de474c783ef3485fe62e233357fc9c806a794399f1464e6675","scope":{"principal":"sha256:2bb55aa0a9bb36abe4e259ea3f1ef4903ca9942c1fcfb441fb853f95fd7b255c","version":2}}',
+  };
+  for (const instance of ["left", "right"]) {
+    const source = (await import(
+      new URL(
+        `../../cloud/src/command-write.ts?identity=${instance}`,
+        import.meta.url,
+      ).href
+    )) as typeof import("../../cloud/src/command-write.ts");
+    const principal = ["token", "fixture", "laptop"] as const;
+    const binding = {
+      op: "issue.create",
+      input: { title: "New" },
+      device: "laptop",
+      context: {
+        variant: "project",
+        actor: { kind: "agent", id: "tester" },
+        project: { id: "p" },
+      },
+    };
+    // The pre-extraction issue route key and issue-write fingerprint expressions.
+    expect({
+      requestId: scopeRequestId("command", principal, "stable"),
+      fingerprint: canonicalJson({
+        scope: receiptScope(principal),
+        input: digestValue(binding),
+      }),
+    }).toEqual(expected);
+    const identity = source.prepareReceipt(
+      "command",
+      principal,
+      "stable",
+      binding,
+    );
+    expect({
+      requestId: identity.requestId,
+      fingerprint: identity.fingerprint,
+    }).toEqual(expected);
+  }
+}, 30_000);
 
 test("issue command receipt key and fingerprint keep their pre-extraction bytes", async () => {
   const f = fixture(),

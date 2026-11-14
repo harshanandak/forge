@@ -4,18 +4,22 @@ import { canonicalJson, digestValue } from "../../src/core/config/pointer.ts";
 import type { StateOwner } from "../../src/core/state/index.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
 import { admit, record, refused, replay } from "./issue-receipts.ts";
-import { receiptScope, type ReceiptPrincipal } from "./issue-request-id.ts";
+import {
+  receiptScope,
+  scopeRequestId,
+  type ReceiptPrincipal,
+} from "./issue-request-id.ts";
 
 class ReceiptIdentity {
   readonly #bytes: { readonly requestId: string; readonly fingerprint: string };
   constructor(
-    family: "command" | "state",
+    family: "command" | "lease",
     principal: ReceiptPrincipal,
     raw: string,
     input: unknown,
   ) {
     this.#bytes = {
-      requestId: "c2:" + digestValue([2, family, principal, raw]).slice(7),
+      requestId: scopeRequestId(family, principal, raw),
       fingerprint: canonicalJson({
         scope: receiptScope(principal),
         input: digestValue(input),
@@ -33,7 +37,7 @@ class ReceiptIdentity {
 
 /** Principal and transport family come from the server, never from the request body. */
 export function prepareReceipt(
-  family: "command" | "state",
+  family: "command" | "lease",
   principal: ReceiptPrincipal,
   raw: string,
   input: unknown,
