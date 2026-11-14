@@ -46,6 +46,8 @@ async function stop() {
   throw new Error("OAuth fixture did not stop");
 }
 async function start(label: string) {
+  process.env.OAUTH_CONFORMANCE_MODE = label;
+  console.log(`OAuth runner mode: ${label}`);
   const path = join(temp!, `oauth-${label}.log`);
   logs.push(path);
   const log = openSync(path, "w");
