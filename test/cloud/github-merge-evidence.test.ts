@@ -41,7 +41,7 @@ const rows: [string, string, unknown, string | null][] = [
     v,
     "UNAVAILABLE",
   ]),
-  ..."jobs-count jobs-full duplicate-check later-check pr-changed normalized server-budget"
+  ..."jobs-count jobs-count-missing runs-count-missing jobs-full duplicate-check later-check pr-changed normalized server-budget run-advanced run-status"
     .split(" ")
     .map((n): [string, string, unknown, string] => [
       n,
@@ -198,7 +198,10 @@ for (const [name, path, value, code] of rows)
             jobs,
             total_count: jobs.length + (name === "jobs-count" ? 1 : 0),
           };
+          if (name === "jobs-count-missing")
+            delete (body as Record<string, unknown>).total_count;
         } else if (parts.includes("actions")) {
+          const current = parts.at(-2) === "runs";
           const attempt = parts.includes("attempts") ? Number(parts.at(-1)) : 2;
           const run = {
             id: 10,
@@ -217,14 +220,28 @@ for (const [name, path, value, code] of rows)
                   ? name
                   : "success",
           };
-          body = parts.includes("attempts")
-            ? run
-            : { workflow_runs: [run], total_count: 1 };
-          if (!parts.includes("attempts"))
+          body =
+            current || parts.includes("attempts")
+              ? run
+              : { workflow_runs: [run], total_count: 1 };
+          if (current) {
+            expect(
+              urls.filter((url) => new URL(url).pathname.endsWith("/jobs")),
+            ).toHaveLength(2);
+            expect(u.searchParams.size).toBe(0);
+            if (name === "run-advanced") run.run_attempt = 3;
+            if (name === "run-status") {
+              run.status = "in_progress";
+              run.conclusion = null;
+            }
+          } else if (!parts.includes("attempts")) {
             expect([...u.searchParams]).toEqual([
               ["head_sha", actual],
               ["per_page", "100"],
             ]);
+            if (name === "runs-count-missing")
+              delete (body as Record<string, unknown>).total_count;
+          }
         } else throw new Error("Unexpected endpoint");
         return Promise.resolve(
           new Response(JSON.stringify(body), {

@@ -36,6 +36,8 @@ const cases: [string, string, unknown, string | null][] = [
   ),
   ...[
     "count drift",
+    "missing count",
+    "count invalid",
     "incomplete",
     "full",
     "later failure",
@@ -129,9 +131,14 @@ for (const [name, path, replacement, code] of cases)
                       : [fixture.latest];
             body = {
               workflow_runs: rows,
-              total_count: rows.length + (name === "count drift" ? 1 : 0),
+              total_count:
+                name === "count invalid"
+                  ? 1.5
+                  : rows.length + (name === "count drift" ? 1 : 0),
               incomplete_results: name === "incomplete",
             };
+            if (name === "missing count")
+              delete (body as Record<string, unknown>).total_count;
           } else if (p.includes("/contents/")) {
             expect(p).toBe(
               "/repos/acme/forge/contents/.github/workflows/ci.yml",

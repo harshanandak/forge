@@ -73,6 +73,7 @@ export async function readGithubWorkflowEvidence(
       ["actions", "runs"],
       { head_sha: pr.mergeSha },
       "workflow_runs",
+      true,
     );
     const runs: WorkflowAttempt[] = [];
     for (const row of rows) {

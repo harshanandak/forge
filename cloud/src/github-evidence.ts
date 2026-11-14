@@ -218,8 +218,8 @@ export async function readGithubMergeEvidence(
     failure.code = code;
     throw new Error("GitHub evidence refused");
   }
-  function object(v: unknown) {
-    if (!v || typeof v !== "object" || Array.isArray(v)) fail();
+  function object(v: unknown, code: Code = "INPUT_INVALID") {
+    if (!v || typeof v !== "object" || Array.isArray(v)) fail(code);
     return v as Record<string, unknown>;
   }
   function budget(value: unknown) {
@@ -252,6 +252,7 @@ export async function readGithubMergeEvidence(
             ],
             {},
             "jobs",
+            true,
           );
           const checks: Evidence.MergeObservations["runs"][number]["checks"][number][] =
             [];
@@ -318,6 +319,28 @@ export async function readGithubMergeEvidence(
           }
           runs.push({ ...run, checks });
           budget([snapshot, runs]);
+        }
+        const latest = new Map(workflow.value.map((run) => [run.id, run]));
+        for (const run of latest.values()) {
+          const current = object(
+            await session.get(["actions", "runs", String(run.id)]),
+            "UNAVAILABLE",
+          );
+          if (
+            object(current.repository, "UNAVAILABLE").id !== run.repositoryId ||
+            Object.entries({
+              id: run.id,
+              run_number: run.runNumber,
+              run_attempt: run.attempt,
+              workflow_id: run.workflowId,
+              path: run.workflowPath,
+              head_sha: run.headSha,
+              check_suite_id: run.checkSuiteId,
+              status: run.status,
+              conclusion: run.conclusion,
+            }).some(([key, value]) => current[key] !== value)
+          )
+            fail("UNAVAILABLE");
         }
         return { ok: true as const, value: runs };
       },
