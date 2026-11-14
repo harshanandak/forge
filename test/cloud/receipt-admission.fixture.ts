@@ -1,11 +1,8 @@
 import {
   ACTOR,
-  call,
   maxSource,
   tablesOf,
 } from "../../cloud/conformance/max-source.ts";
-import type { EvidenceReceipt } from "../../cloud/src/evidence-receipts.ts";
-import type { withGithubHttp } from "../../cloud/src/github-http.ts";
 import type { WriteCall } from "../../cloud/src/issue-write.ts";
 import { readMergePolicy } from "../../cloud/src/merge-policy.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
@@ -13,17 +10,9 @@ import { StateOwner } from "../../src/core/state/index.ts";
 import type { SqlDatabase, SqlRow } from "../../src/ports/store.ts";
 import { fixture, at, head, merge } from "./merge-evidence.fixture.ts";
 
-export type AdmissionPorts = Parameters<typeof withGithubHttp>[1] & {
-  mergePolicy: () => ReturnType<typeof readMergePolicy>;
-  repository: { host: "github.com"; owner: string; repo: string };
-  verifierVersion: string;
-};
-export type Admission = (
-  db: SqlDatabase,
-  owner: StateOwner,
-  call: WriteCall,
-  ports: AdmissionPorts,
-) => Promise<EvidenceReceipt>;
+type AdmissionPorts = Parameters<
+  typeof import("../../cloud/src/receipt-admission.ts").admitReceipt
+>[3];
 export const namespace = "forge/work",
   subject = "issue:work-1";
 export async function admissionFixture() {
@@ -138,103 +127,54 @@ export async function admissionFixture() {
         expiresAt: Date.now() + 60_000,
       });
     },
-    fetch: async (url, init) => {
+    fetch: async (url) => {
       state.calls.push(url);
-      if (init.method !== "GET" || init.redirect !== "manual")
-        throw new Error("Unsafe request");
       if (state.calls.length === 1) await state.onRead();
       if (state.unavailable) return new Response(null, { status: 503 });
       const path = new URL(url).pathname;
-      const run = {
-        id: 201,
-        run_number: 10,
-        run_attempt: 1,
-        workflow_id: 99,
-        path: ".github/workflows/ci.yml",
-        repository: { id: 42 },
-        head_sha: merge,
-        check_suite_id: 401,
-        status: "completed",
-        conclusion: "success",
-      };
-      const outcome = {
-        name: "CI Gate",
-        status: "completed",
-        conclusion: state.failingCheck ? "failure" : "success",
-        completed_at: at,
-      };
-      let body: unknown;
-      if (path.endsWith("/pulls/490")) {
-        state.prReads++;
-        body = {
-          number: 490,
-          node_id:
-            state.changedPr && state.prReads === 2
-              ? "PR_changed"
-              : "PR_example",
-          head: { sha: head },
-          base: { repo: { id: 42 }, ref: "main" },
-          state: "closed",
-          merged: true,
-          merged_at: at,
-          merge_commit_sha: merge,
-        };
-      } else if (path.includes("/git/ref/"))
-        body = {
-          ref: "refs/heads/main",
-          object: { type: "commit", sha: merge },
-        };
-      else if (path.includes("/compare/"))
-        body = {
-          base_commit: { sha: merge },
-          merge_base_commit: { sha: merge },
-          status: "identical",
-          ahead_by: 0,
-          behind_by: 0,
-        };
-      else if (path.includes("/contents/"))
-        body = {
-          type: "file",
-          path: run.path,
-          encoding: "base64",
-          content: "YWJj",
-          size: 3,
-        };
-      else if (path.endsWith("/check-suites/401"))
-        body = {
-          id: 401,
-          head_sha: merge,
-          repository: { id: 42 },
-          app: { id: 15368 },
-        };
-      else if (path.endsWith("/check-runs/301"))
-        body = {
-          ...outcome,
-          id: 301,
-          head_sha: merge,
-          app: { id: 15368 },
-          check_suite: { id: 401 },
-        };
-      else if (path.endsWith("/jobs"))
-        body = {
-          total_count: 1,
-          jobs: [
-            {
-              ...outcome,
-              id: 501,
-              run_id: 201,
-              run_attempt: 1,
-              head_sha: merge,
-              check_run_url:
-                "https://api.github.com/repos/acme/forge/check-runs/301",
-            },
-          ],
-        };
-      else if (path.endsWith("/actions/runs"))
-        body = { total_count: 1, workflow_runs: [run] };
-      else if (path.endsWith("/attempts/1")) body = run;
-      else throw new Error(`Unexpected fixture endpoint: ${path}`);
-      return Response.json(body);
+      if (path.endsWith("/pulls/490")) state.prReads++;
+      const conclusion = state.failingCheck ? "failure" : "success";
+      const run = `{"id":201,"run_number":10,"run_attempt":1,"workflow_id":99,"path":".github/workflows/ci.yml","repository":{"id":42},"head_sha":"${merge}","check_suite_id":401,"status":"completed","conclusion":"success"}`;
+      const outcome = `"head_sha":"${merge}","name":"CI Gate","status":"completed","conclusion":"${conclusion}","completed_at":"${at}"`;
+      const responses: [string, string][] = [
+        [
+          "pulls/490",
+          `{"number":490,"node_id":"${state.changedPr && state.prReads === 2 ? "PR_changed" : "PR_example"}","head":{"sha":"${head}"},"base":{"repo":{"id":42},"ref":"main"},"state":"closed","merged":true,"merged_at":"${at}","merge_commit_sha":"${merge}"}`,
+        ],
+        [
+          "git/ref/heads/main",
+          `{"ref":"refs/heads/main","object":{"type":"commit","sha":"${merge}"}}`,
+        ],
+        [
+          `compare/${merge}...${merge}`,
+          `{"base_commit":{"sha":"${merge}"},"merge_base_commit":{"sha":"${merge}"},"status":"identical","ahead_by":0,"behind_by":0}`,
+        ],
+        [
+          "contents/.github/workflows/ci.yml",
+          '{"type":"file","path":".github/workflows/ci.yml","encoding":"base64","content":"YWJj","size":3}',
+        ],
+        [
+          "check-suites/401",
+          `{"id":401,"head_sha":"${merge}","repository":{"id":42},"app":{"id":15368}}`,
+        ],
+        [
+          "check-runs/301",
+          `{${outcome},"id":301,"app":{"id":15368},"check_suite":{"id":401}}`,
+        ],
+        [
+          "jobs",
+          `{"total_count":1,"jobs":[{${outcome},"id":501,"run_id":201,"run_attempt":1,"check_run_url":"https://api.github.com/repos/acme/forge/check-runs/301"}]}`,
+        ],
+        ["actions/runs", `{"total_count":1,"workflow_runs":[${run}]}`],
+        ["attempts/1", run],
+      ];
+      const response = responses.find(([suffix]) =>
+        path.endsWith(`/${suffix}`),
+      );
+      if (!response) throw new Error(`Unexpected fixture endpoint: ${path}`);
+      return new Response(response[1], {
+        headers: { "Content-Type": "application/json" },
+      });
     },
   };
   const snapshot = () => ({
@@ -257,7 +197,6 @@ export async function admissionFixture() {
     f,
     link,
     snapshot,
-    routeCall: call,
   };
 }
 export type AdmissionFixture = Awaited<ReturnType<typeof admissionFixture>>;

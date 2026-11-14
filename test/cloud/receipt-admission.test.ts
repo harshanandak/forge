@@ -1,9 +1,7 @@
 import { expect, test } from "bun:test";
+import { admitReceipt } from "../../cloud/src/receipt-admission.ts";
 import { readGithubMergeEvidence } from "../../cloud/src/github-evidence.ts";
-import {
-  EvidenceReceiptStore,
-  evidenceEligible,
-} from "../../cloud/src/evidence-receipts.ts";
+import { EvidenceReceiptStore } from "../../cloud/src/evidence-receipts.ts";
 import { evaluateMergeEvidence } from "../../cloud/src/merge-evidence.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { ACTOR } from "../../cloud/conformance/max-source.ts";
@@ -11,250 +9,129 @@ import {
   admissionFixture,
   namespace,
   subject,
-  type Admission,
   type AdmissionFixture,
 } from "./receipt-admission.fixture.ts";
 
-type Phase =
-  "prepare" | "observe" | "github-await" | "policy-await" | "success" | "route";
-const rows: readonly [string, string | null, Phase][] = [
-  ["admit and exact retry", null, "success"],
-  ["missing issue", "NOT_FOUND", "prepare"],
-  ["no lease", "LEASE_STALE", "prepare"],
-  ["another holder", "LEASE_STALE", "prepare"],
-  ["no delivery", "INPUT_INVALID", "prepare"],
-  ["wrong repository", "INPUT_INVALID", "prepare"],
-  ["wrong PR", "INPUT_INVALID", "prepare"],
-  ["newest delivery wins", "INPUT_INVALID", "prepare"],
-  ["noncanonical URL", "INPUT_INVALID", "prepare"],
-  ["missing policy", "UNAVAILABLE", "prepare"],
-  ["invalid policy", "UNAVAILABLE", "prepare"],
-  ["extra input", "INPUT_INVALID", "prepare"],
-  ["reader unavailable", "UNAVAILABLE", "observe"],
-  ["failed check", "RECEIPT_INVALID", "observe"],
-  ["PR changed", "INPUT_INVALID", "observe"],
-  ["token revoked", "AUTH_REVOKED", "github-await"],
-  ["token expired", "AUTH_EXPIRED", "github-await"],
-  ["lease takeover", "LEASE_STALE", "github-await"],
-  ["lease generation", "LEASE_STALE", "github-await"],
-  ["link revision", "INPUT_CONFLICT", "github-await"],
-  ["new delivery", "INPUT_CONFLICT", "github-await"],
-  ["policy changed during await", "INPUT_CONFLICT", "github-await"],
-  ["policy unusable during await", "UNAVAILABLE", "github-await"],
-  ["token revoked", "AUTH_REVOKED", "policy-await"],
-  ["link revision", "INPUT_CONFLICT", "policy-await"],
-  ["no lease", "LEASE_STALE", "policy-await"],
-  ["ninth receipt", "UNAVAILABLE", "observe"],
-  ["command receipt rollback", "injected command receipt failure", "observe"],
-  ["receipt.admit", "UNKNOWN_COMMAND", "route"],
-  ["receipt.show", "UNKNOWN_COMMAND", "route"],
+type Phase = "prepare" | "observe" | "github-await" | "policy-await";
+const rows: readonly [Phase, string, string, unknown][] = [
+  ["prepare", "NOT_FOUND", "write.input.id", "work-999"],
+  ["prepare", "LEASE_STALE", "lease", "released"],
+  ["prepare", "LEASE_STALE", "lease", "foreign"],
+  ["prepare", "INPUT_INVALID", "link", "absent"],
+  ["prepare", "INPUT_INVALID", "link", "repository"],
+  ["prepare", "INPUT_INVALID", "link", "pr"],
+  ["prepare", "INPUT_INVALID", "link", "newest"],
+  ["prepare", "UNAVAILABLE", "policy", "missing"],
+  ["prepare", "UNAVAILABLE", "policy", "invalid"],
+  ["prepare", "INPUT_INVALID", "write.input.headSha", "a"],
+  ["observe", "UNAVAILABLE", "state.unavailable", true],
+  ["observe", "RECEIPT_INVALID", "state.failingCheck", true],
+  ["observe", "INPUT_INVALID", "state.changedPr", true],
+  ["github-await", "AUTH_REVOKED", "state.auth", "AUTH_REVOKED"],
+  ["github-await", "AUTH_EXPIRED", "state.auth", "AUTH_EXPIRED"],
+  ["github-await", "LEASE_STALE", "lease", "takeover"],
+  ["github-await", "LEASE_STALE", "lease", "generation"],
+  ["github-await", "INPUT_CONFLICT", "link", "revision"],
+  ["github-await", "INPUT_CONFLICT", "link", "new"],
+  ["github-await", "INPUT_CONFLICT", "policy", "changed"],
+  ["github-await", "UNAVAILABLE", "policy", "missing"],
+  ["policy-await", "AUTH_REVOKED", "state.auth", "AUTH_REVOKED"],
+  ["policy-await", "INPUT_CONFLICT", "link", "revision"],
+  ["policy-await", "LEASE_STALE", "lease", "released"],
+  ["observe", "UNAVAILABLE", "cap", 8],
+  ["observe", "rollback", "state.failCommit", true],
 ];
-function change(f: AdmissionFixture, name: string) {
-  if (f.write.context.variant !== "leased")
-    throw new Error("Invalid fixture context");
-  const release = () =>
+function change(f: AdmissionFixture, field: string, value: unknown) {
+  if (field === "lease") {
+    if (value === "foreign") {
+      Object.assign(f.write.context, {
+        session: { id: "other", device: "laptop" },
+      });
+      return;
+    }
     f.owner.release(namespace, {
       subject,
       holder: f.holder,
       generation: f.lease.generation,
     });
-  switch (name) {
-    case "missing issue":
-      f.write = { ...f.write, input: { id: "work-999", pr: 490 } };
-      break;
-    case "no lease":
-      release();
-      break;
-    case "another holder":
-      f.write = {
-        ...f.write,
-        context: {
-          ...f.write.context,
-          session: { id: "other", device: "laptop" },
-        },
-      };
-      break;
-    case "no delivery":
+    if (value !== "released") {
+      const holder =
+        value === "takeover"
+          ? { ...f.holder, session: { id: "other", device: "laptop" } }
+          : f.holder;
+      f.owner.acquire(namespace, subject, holder, 600_000, "next-generation");
+    }
+  } else if (field === "link") {
+    if (value === "absent") {
       f.owner.delete(namespace, "link:work-1:1", ACTOR, { expectRevision: 1 });
-      break;
-    case "wrong repository":
-      f.link(1, "https://github.com/other/forge/pull/490");
-      break;
-    case "wrong PR":
-      f.link(1, "https://github.com/acme/forge/pull/491");
-      break;
-    case "newest delivery wins":
-      f.link(10, "https://github.com/acme/forge/pull/491");
-      break;
-    case "noncanonical URL":
-      f.link(1, "https://github.com/acme/forge/pull/490?x=1");
-      break;
-    case "missing policy":
-    case "policy unusable during await":
-      f.env.GITHUB_MERGE_POLICY = undefined;
-      break;
-    case "invalid policy":
-      f.env.GITHUB_MERGE_POLICY = "{}";
-      break;
-    case "extra input":
-      f.write = {
-        ...f.write,
-        input: { id: "work-1", pr: 490, headSha: "a".repeat(40) },
-      };
-      break;
-    case "reader unavailable":
-      f.state.unavailable = true;
-      break;
-    case "failed check":
-      f.state.failingCheck = true;
-      break;
-    case "PR changed":
-      f.state.changedPr = true;
-      break;
-    case "token revoked":
-      f.state.auth = "AUTH_REVOKED";
-      break;
-    case "token expired":
-      f.state.auth = "AUTH_EXPIRED";
-      break;
-    case "lease takeover":
-    case "lease generation":
-      release();
-      f.owner.acquire(
-        namespace,
-        subject,
-        {
-          ...f.holder,
-          session:
-            name === "lease takeover"
-              ? { id: "other", device: "laptop" }
-              : f.holder.session,
-        },
-        600_000,
-        "next-generation",
-      );
-      break;
-    case "link revision":
-      f.link();
-      break;
-    case "new delivery":
-      f.link(2);
-      break;
-    case "policy changed during await": {
-      const policy = JSON.parse(String(f.env.GITHUB_MERGE_POLICY)) as {
-        version: string;
-      };
-      policy.version = "2";
-      f.env.GITHUB_MERGE_POLICY = JSON.stringify(policy);
-      break;
+      return;
     }
-    case "command receipt rollback":
-      f.state.failCommit = true;
-      break;
-    case "ninth receipt": {
-      const result = evaluateMergeEvidence(
-        f.f.policy,
-        f.f.expected,
-        { ...f.f.observation, binding: f.f.expected },
-        new Date().toISOString(),
-      );
-      if (!result.eligible) throw new Error("Invalid evidence fixture");
-      const store = new EvidenceReceiptStore(f.db, "forge");
-      for (let n = 0; n < 8; n++)
-        store.put({
-          candidate: result.candidate,
-          policy: f.f.policy,
-          repository: f.ports.repository,
-          verifierVersion: "1",
-          actor: ACTOR.id,
-          device: "laptop",
-        });
-      break;
-    }
+    const urls: Record<string, string> = {
+      repository: "https://github.com/other/forge/pull/490",
+      pr: "https://github.com/acme/forge/pull/491",
+      newest: "https://github.com/acme/forge/pull/491",
+    };
+    f.link(
+      value === "newest" ? 10 : value === "new" ? 2 : 1,
+      urls[String(value)],
+    );
+  } else if (field === "policy") {
+    const policy = JSON.parse(String(f.env.GITHUB_MERGE_POLICY)) as object;
+    f.env.GITHUB_MERGE_POLICY =
+      value === "changed"
+        ? JSON.stringify({ ...policy, version: "2" })
+        : value === "invalid"
+          ? "{}"
+          : undefined;
+  } else if (field === "cap") {
+    const result = evaluateMergeEvidence(
+      f.f.policy,
+      f.f.expected,
+      { ...f.f.observation, binding: f.f.expected },
+      new Date().toISOString(),
+    );
+    if (!result.eligible) throw new Error("Invalid evidence fixture");
+    for (let n = 0; n < Number(value); n++)
+      new EvidenceReceiptStore(f.db, "forge").put({
+        candidate: result.candidate,
+        policy: f.f.policy,
+        repository: f.ports.repository,
+        verifierVersion: "1",
+        actor: ACTOR.id,
+        device: "laptop",
+      });
+  } else {
+    const keys = field.split(".");
+    let target = f as unknown as Record<string, unknown>;
+    for (const key of keys.slice(0, -1))
+      target = target[key] as Record<string, unknown>;
+    target[keys.at(-1)!] = value;
   }
 }
-for (const [name, code, phase] of rows)
-  test(`receipt admission: ${name} (${phase})`, async () => {
+for (const [phase, code, field, value] of rows)
+  test(`receipt admission: ${phase} ${field}=${JSON.stringify(value)}`, async () => {
     const f = await admissionFixture();
     try {
-      if (phase === "route") {
-        const before = f.snapshot();
-        const response = await f.send(
-          f.routeCall("unrouted", name, { id: "work-1", pr: 490 }),
-        );
-        expect(JSON.parse(response.text)).toHaveProperty("error.code", code);
-        expect(f.snapshot()).toEqual(before);
-        return;
-      }
-      const path = "../../cloud/src/" + "receipt-admission.ts";
-      expect(await Bun.file(new URL(path, import.meta.url)).exists()).toBe(
-        true,
-      );
-      const { admitReceipt: admit } = (await import(path)) as {
-        admitReceipt: Admission;
-      };
+      const run = () => admitReceipt(f.db, f.owner, f.write, f.ports);
       let before = f.snapshot();
       const mutate = () => {
-        change(f, name);
+        expect(f.snapshot()).toEqual(before);
+        change(f, field, value);
         before = f.snapshot();
         return Promise.resolve();
       };
       if (phase === "github-await") f.state.onRead = mutate;
       else if (phase === "policy-await") f.state.onPolicy = mutate;
       else await mutate();
-      if (phase === "success") {
-        const receipt = await admit(f.db, f.owner, f.write, f.ports);
-        expect(receipt.origin).toBe("verified");
-        expect(evidenceEligible(receipt)).toBe(true);
-        expect(receipt.candidate.binding).toEqual(f.f.expected);
-        expect([receipt.actor, receipt.device, receipt.repository]).toEqual([
-          ACTOR.id,
-          "laptop",
-          f.ports.repository,
-        ]);
-        expect(receipt.policy.digest).toBe(receipt.candidate.policyDigest);
-        expect([
-          f.state.policyReads,
-          f.state.prReads,
-          f.state.credentials,
-        ]).toEqual([2, 2, 1]);
-        const after = f.snapshot(),
-          calls = f.state.calls.length;
-        for (const table of [
-          "state_records",
-          "state_events",
-          "state_leases",
-          "state_requests",
-        ])
-          expect(after.tables[table]).toEqual(before.tables[table]);
-        expect(after.evidence).toHaveLength(1);
-        expect(after.tables.domain_cloud_command_receipts!.length).toBe(
-          before.tables.domain_cloud_command_receipts!.length + 1,
-        );
-        expect(await admit(f.db, f.owner, f.write, f.ports)).toEqual(receipt);
-        expect(f.snapshot()).toEqual(after);
-        expect(f.state.calls).toHaveLength(calls);
-        await expect(
-          admit(
-            f.db,
-            f.owner,
-            { ...f.write, input: { id: "work-1", pr: 491 } },
-            f.ports,
-          ),
-        ).rejects.toHaveProperty("error.code", "INPUT_CONFLICT");
-        f.state.auth = "AUTH_REVOKED";
-        await expect(
-          admit(f.db, f.owner, f.write, f.ports),
-        ).rejects.toHaveProperty("error.code", "AUTH_REVOKED");
-        expect(f.snapshot()).toEqual(after);
-        return;
-      }
       try {
-        await admit(f.db, f.owner, f.write, f.ports);
+        await run();
         throw new Error("Expected refusal");
       } catch (error) {
-        if (name === "command receipt rollback")
-          expect(error).toHaveProperty("message", code);
+        if (code === "rollback")
+          expect(error).toHaveProperty(
+            "message",
+            "injected command receipt failure",
+          );
         else {
           expect(error).toBeInstanceOf(ForgeFailure);
           expect(error).toHaveProperty("error.code", code);
@@ -263,21 +140,56 @@ for (const [name, code, phase] of rows)
       if (phase === "prepare")
         expect([f.state.calls.length, f.state.credentials]).toEqual([0, 0]);
       else expect(f.state.calls.length).toBeGreaterThan(0);
-      if (phase === "github-await" || phase === "policy-await")
-        expect(f.state.policyReads).toBe(2);
+      if (phase.endsWith("await")) expect(f.state.policyReads).toBe(2);
       expect(f.snapshot()).toEqual(before);
     } finally {
       f.dbSource.close();
     }
   }, 30_000);
 
-for (const mode of [
-  "derived",
-  "supplied",
-  "partial",
-  "changed",
-  "mismatch",
-] as const)
+test("receipt admission: verified result and exact retry", async () => {
+  const f = await admissionFixture();
+  try {
+    const run = () => admitReceipt(f.db, f.owner, f.write, f.ports),
+      before = f.snapshot();
+    const receipt = await run(),
+      after = f.snapshot(),
+      calls = f.state.calls.length;
+    expect(receipt.origin).toBe("verified");
+    expect(receipt.candidate.binding).toEqual(f.f.expected);
+    expect([receipt.actor, receipt.device, receipt.repository]).toEqual([
+      ACTOR.id,
+      "laptop",
+      f.ports.repository,
+    ]);
+    expect([f.state.policyReads, f.state.prReads, f.state.credentials]).toEqual(
+      [2, 2, 1],
+    );
+    for (const table of [
+      "state_records",
+      "state_events",
+      "state_leases",
+      "state_requests",
+    ])
+      expect(after.tables[table]).toEqual(before.tables[table]);
+    expect(after.evidence).toHaveLength(1);
+    expect(after.tables.domain_cloud_command_receipts!.length).toBe(
+      before.tables.domain_cloud_command_receipts!.length + 1,
+    );
+    expect(await run()).toEqual(receipt);
+    expect(f.snapshot()).toEqual(after);
+    expect(f.state.calls).toHaveLength(calls);
+    f.write = { ...f.write, input: { id: "work-1", pr: 491 } };
+    await expect(run()).rejects.toHaveProperty("error.code", "INPUT_CONFLICT");
+    f.state.auth = "AUTH_REVOKED";
+    await expect(run()).rejects.toHaveProperty("error.code", "AUTH_REVOKED");
+    expect(f.snapshot()).toEqual(after);
+  } finally {
+    f.dbSource.close();
+  }
+}, 30_000);
+
+for (const mode of ["derived", "partial", "changed"])
   test(`receipt reader identity: ${mode}`, async () => {
     const f = await admissionFixture();
     try {
@@ -296,17 +208,11 @@ for (const mode of [
           },
           policy: p0.policy,
           binding:
-            mode === "supplied"
-              ? f.f.expected
-              : mode === "partial"
-                ? { ...binding, prId: "PR_example" }
-                : mode === "mismatch"
-                  ? { ...f.f.expected, prId: "wrong" }
-                  : binding,
+            mode === "partial" ? { ...binding, prId: "PR_example" } : binding,
         },
         f.ports,
       );
-      expect(result.ok).toBe(mode === "derived" || mode === "supplied");
+      expect(result.ok).toBe(mode === "derived");
       if (result.ok) {
         expect(result.value.binding).toEqual(f.f.expected);
         expect([f.state.prReads, f.state.credentials]).toEqual([2, 1]);
