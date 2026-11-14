@@ -3583,6 +3583,13 @@ for (const [name, op, input, result, dryRun] of [
   ["stop all", "lane.stop", { all: true }, LANE_CONTROL, false],
   ["control", "lane.control", {}, LANE_CONTROL, false],
   [
+    "control displayed id",
+    "lane.control",
+    { id: "forge-7" },
+    LANE_CONTROL,
+    false,
+  ],
+  [
     "approved resume",
     "lane.resume",
     { id: "forge-1", approval: { request: LANE_REQUEST } },
