@@ -80,6 +80,10 @@ for (const name of cases) {
         expect(new Headers(init.headers).get("Accept")).toBe(
           "application/vnd.github+json",
         );
+        expect(new Headers(init.headers).get("User-Agent")).toBe("forge-cloud");
+        expect(new Headers(init.headers).get("X-GitHub-Api-Version")).toBe(
+          "2022-11-28",
+        );
         if (name === "abort:throw") throw new Error("secret-sentinel raw-body");
         if (name === "abort:clock") clock = 10_000;
         if (name === "abort:fetch" || name === "abort:late") {
