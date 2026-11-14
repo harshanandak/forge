@@ -140,10 +140,7 @@ const changes: Record<string, Change> = {
     "verifyEventDerivedState(\n      source,\n      manifest.eventHighWaterMark,\n      undefined,\n      numbered,\n    )",
     "({ highest: 0, earlier: 0, floorRevision: 0 })",
   ],
-  scope: [
-    "if (!ordinaryKey(String(row.namespace), String(row.key)))",
-    "if (false)",
-  ],
+  scope: ["ns === namespace &&", "true || ns === namespace &&"],
   migration: [
     "canonicalJson(source.all(sql)) !== canonicalJson(schema.all(sql))",
     "false",
@@ -159,8 +156,8 @@ const changes: Record<string, Change> = {
   ],
   revision: ["event.revision !== (recordRevisions.get(id) ?? 0) + 1", "false"],
   fence: [
-    "if (options.fence) this.#held(namespace, options.fence, now);\n      return this.#request(\n        namespace,\n        options.requestId,\n        {\n          kind: \"put\",",
-    "return this.#request(\n        namespace,\n        options.requestId,\n        {\n          kind: \"put\",",
+    'if (options.fence) this.#held(namespace, options.fence, now);\n      return this.#request(\n        namespace,\n        options.requestId,\n        {\n          kind: "put",',
+    'return this.#request(\n        namespace,\n        options.requestId,\n        {\n          kind: "put",',
   ],
 };
 async function moduleUrl(
@@ -169,7 +166,7 @@ async function moduleUrl(
   dependency?: readonly [string, string],
 ) {
   const url = new URL(path, import.meta.url);
-  let text = await Bun.file(url).text();
+  let text = (await Bun.file(url).text()).replaceAll("\r\n", "\n");
   if (change) {
     assert.equal(text.split(change[0]).length, 2);
     text = text.replace(...change);

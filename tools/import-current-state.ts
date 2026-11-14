@@ -95,6 +95,17 @@ export function verifySource(
       undefined,
       numbered,
     )!;
+    let sequence = 0;
+    for (;;) {
+      const events = source.all(
+        "SELECT sequence,namespace,key FROM state_events WHERE sequence>? ORDER BY sequence LIMIT 128",
+        [sequence],
+      );
+      for (const row of events)
+        if (!ordinaryKey(String(row.namespace), String(row.key))) invalid();
+      if (events.length < 128) break;
+      sequence = Number(events.at(-1)!.sequence);
+    }
     let records = 0;
     for (const _record of workRecords(source)) records++;
     if (records !== manifest.records) invalid();
