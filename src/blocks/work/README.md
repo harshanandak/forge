@@ -79,7 +79,7 @@ Close refuses nonempty run locks, then holds the shared run lock through tracker
 
 On a cloud-bound project, `forge lane stop <id>` or `--all` records the shared stop in the cloud without local project or approval writes. `--dry-run` sends a cloud dry run and records no stop. A cloud outage or invalid answer returns `UNAVAILABLE` without a local fallback.
 
-On a cloud-bound project, `forge lane control` reads shared control from the cloud. It writes no local project state. Dry runs return `UNAVAILABLE`; on an unbound project, this command still returns `UNAVAILABLE` because shared control requires a cloud binding.
+On a cloud-bound project, `forge lane control` reads shared control from the cloud and accepts displayed or canonical issue ids; the cloud checks the prefix and format. It writes no local project state. Dry runs return `UNAVAILABLE`; on an unbound project, this command still returns `UNAVAILABLE` because shared control requires a cloud binding.
 
 On a cloud-bound project, `forge lane resume <id>` or `--all` returns `APPROVAL_REQUIRED` with `result.request` and `result.url`. The agent gives that HTTPS link to the owner, then retries with `approval: {request}` after approval. A pending, denied or expired request returns `APPROVAL_REQUIRED` with a fixed local explanation and no new link; server message text is never relayed. Forge opens no browser and does not poll. A local `quote` or `source` returns `INPUT_INVALID` before HTTP, dry runs return `UNAVAILABLE`, and only schema-valid results with the configured cloud origin and request's lane approval path are accepted. Unbound resume keeps the local `approval: {request, quote, source}` flow. Other bound lane operations remain refused.
 

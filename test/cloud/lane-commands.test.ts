@@ -251,6 +251,7 @@ const refusals: [string, string, object, object, string, number][] = [
   ],
   ["missing scope", "lane.stop", {}, {}, "INPUT_INVALID", 6],
   ["read extra key", "lane.control", { key: "other" }, {}, "INPUT_INVALID", 6],
+  ["read malformed id", "lane.control", { id: "7" }, {}, "INPUT_INVALID", 6],
   [
     "read foreign prefix",
     "lane.control",

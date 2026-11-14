@@ -111,10 +111,7 @@ export function laneCommand(
       "INPUT_INVALID",
       "Cloud resume accepts only an approval request id",
     );
-  if (
-    fields.id !== undefined &&
-    validateWithSchema(ControlInput, { id: fields.id }).length > 0
-  )
+  if (fields.id !== undefined && !/^work-[1-9][0-9]*$/.test(fields.id))
     throw fail("INPUT_INVALID", "Expected a canonical issue id");
   const scope: LaneScope =
     fields.id === undefined ? { all: true } : { id: fields.id };
