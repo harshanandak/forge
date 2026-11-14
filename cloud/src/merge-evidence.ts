@@ -188,6 +188,8 @@ function coherentOutcome(o: Outcome, now: number): boolean {
 // including unknown keys and duplicate key occurrences before JSON.parse.
 // Its post-parse isPlainJson guard caps objects/arrays at 256 entries, depth 16.
 // readGithubMergeEvidence also caps normalized inputs plus observations at 128 KiB.
+// decodeEvidence caps stored receipts at 16 KiB and 4,096 nodes before its
+// recursive isPlainJson guard enforces the same 256-entry width and depth 16.
 // Direct callers must supply equivalent budgets; these guards cannot impose them:
 // Object.keys/Reflect.ownKeys collect full object width before rejecting it.
 export function evaluateMergeEvidence(
