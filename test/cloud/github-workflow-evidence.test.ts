@@ -137,7 +137,7 @@ for (const [name, path, replacement, code] of cases)
             if (name === "later failure" && attempt === 2)
               throw new Error("credential-sentinel upstream-sentinel");
             body =
-              attempt === 2
+              attempt === 2 && name !== "request cap"
                 ? fixture.second
                 : {
                     ...base,
