@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { createSqliteStore } from "../src/adapters/store-sqlite/index.ts";
@@ -70,7 +70,7 @@ async function opened(
   readOnly: boolean,
   handles: OwnedHandle<SqlDatabase>[],
 ): Promise<SqlDatabase> {
-  const result = await createSqliteStore(dirname(resolve(path))).open({
+  const result = await createSqliteStore(process.cwd()).open({
     path,
     readOnly,
   });
@@ -168,7 +168,14 @@ export async function convert(options: Options) {
     if (process.platform === "win32")
       await hardenPrivatePaths(
         [out],
-        createProcessPort(),
+        createProcessPort({
+          supervision: {
+            cleanupTimeoutMs: 5000,
+            pollIntervalMs: 25,
+            drainTimeoutMs: 250,
+            maxConcurrent: 1,
+          },
+        }),
         Object.fromEntries(
           Object.entries(process.env).filter(
             (entry): entry is [string, string] => entry[1] !== undefined,
