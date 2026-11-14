@@ -289,6 +289,8 @@ export async function boundLaneProgress(
       const result = parsed as Record<string, unknown>;
       if (result.head !== p.head)
         refuse("INPUT_CONFLICT", "Result must name the current reserved head.");
+      p.review += result.review === true ? 1 : 0;
+      p.ci += result.ci === true ? 1 : 0;
       if (result.ask !== undefined)
         p.ask = result.ask as NonNullable<BoundProgress["ask"]>;
       else if (result.answer !== undefined) {
@@ -296,8 +298,6 @@ export async function boundLaneProgress(
         p.ask.answer = result.answer as string;
       } else if (!p.ask) {
         p.pending = false;
-        p.review += result.review === true ? 1 : 0;
-        p.ci += result.ci === true ? 1 : 0;
       }
       p.records++;
     }
