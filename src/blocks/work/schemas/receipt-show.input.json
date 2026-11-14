@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "required": ["id", "receipt"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^work-[1-9][0-9]*$" },
+    "receipt": { "$ref": "receipt.output.json#/$defs/id" }
+  },
+  "additionalProperties": false
+}
