@@ -1221,6 +1221,10 @@ ${["builder", "fixer", "tester", "reviewer"]
 test("bound runner refuses run, resume and detached auto before any provider spawn", async () => {
   const f = roleFixture();
   writeFileSync(
+    join(f.caller, ".forge", "project.json"),
+    JSON.stringify({ schema: 1, id: bindingFor().identity }),
+  );
+  writeFileSync(
     join(f.caller, ".forge", "cloud.json"),
     JSON.stringify(bindingFor()),
   );

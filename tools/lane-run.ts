@@ -15,10 +15,14 @@ import {
 import { delimiter, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { laneTier, type LaneTier, type ReviewTier } from "./lane-tier.ts";
-import { readBinding } from "../src/assembly/cloud-profile.ts";
+import { cloudBinding } from "../src/assembly/cloud-binding.ts";
 
 export function refuseBoundRunner(root: string) {
-  if (readBinding(root))
+  const binding = cloudBinding(
+    root,
+    process.env.HOME ?? process.env.USERPROFILE,
+  );
+  if (binding.kind === "bound")
     throw new Error(
       "Bound lane dispatch requires the fresh control boundary in PR 2b.",
     );
