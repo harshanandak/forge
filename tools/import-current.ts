@@ -130,7 +130,7 @@ export async function convert(options: Options) {
   const checkPin = async (file = backup) => {
     if ((await digest(file)) !== manifest.sha256) invalid();
   };
-  try {
+  const bundle = await (async () => {
     isolatedBackup(backup);
     await checkPin();
     fs.mkdirSync(out, { mode: 0o700 });
@@ -193,7 +193,7 @@ export async function convert(options: Options) {
     await checkPin();
     const count = (table: string) =>
       Number(source.get(`SELECT COUNT(*) AS n FROM ${table}`)!.n);
-    const bundle = {
+    return {
       format: "forge-current-bundle/1",
       source: manifest,
       N: projected.records,
@@ -208,28 +208,28 @@ export async function convert(options: Options) {
       droppedRequests: count("state_requests"),
       activation: "requires-step-8-stop",
     };
-    const file = join(out, "manifest.json"),
-      bytes = JSON.stringify(bundle);
-    let owned = false;
-    try {
-      const fd = fs.openSync(file, "wx", 0o600);
-      owned = true;
-      try {
-        fs.writeFileSync(fd, bytes);
-      } finally {
-        fs.closeSync(fd);
-      }
-      if (JSON.stringify(JSON.parse(fs.readFileSync(file, "utf8"))) !== bytes)
-        invalid();
-    } catch (error) {
-      if (owned) fs.unlinkSync(file);
-      throw error;
-    }
-    return bundle;
-  } finally {
+  })().finally(async () => {
     await Promise.all(handles.reverse().map(async (handle) => handle.close()));
     if (retained) fs.unlinkSync(retained);
+  });
+  const file = join(out, "manifest.json"),
+    bytes = JSON.stringify(bundle);
+  let owned = false;
+  try {
+    const fd = fs.openSync(file, "wx", 0o600);
+    owned = true;
+    try {
+      fs.writeFileSync(fd, bytes);
+    } finally {
+      fs.closeSync(fd);
+    }
+    if (JSON.stringify(JSON.parse(fs.readFileSync(file, "utf8"))) !== bytes)
+      invalid();
+  } catch (error) {
+    if (owned) fs.unlinkSync(file);
+    throw error;
   }
+  return bundle;
 }
 export async function run(options: Options) {
   try {
