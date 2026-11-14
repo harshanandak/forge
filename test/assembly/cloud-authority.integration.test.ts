@@ -1182,7 +1182,7 @@ const holding = (r: Rig, own: object = {}) => ({
   ...localContext(r.assembly, { kind: "agent", id: "a1" }, "s1"),
   ...own,
 });
-const OWN_GRANT = {
+const OWN_GRANT: LeaseRecord = {
   ...heldBy(),
   holder: {
     actor: { kind: "agent", id: "a1" },
@@ -1352,7 +1352,7 @@ for (const [name, variants] of [
                             project: localContext(clone, {
                               kind: "agent",
                               id: "a1",
-                            }).project,
+                            }).project!,
                           },
                         },
                       ),
@@ -2100,11 +2100,9 @@ for (const [name, variants] of [
                       ? "UNAVAILABLE"
                       : "OK";
           const input =
-            variant === "lane.record"
-              ? { id: ISSUE.id, action: 1, result: "{}" }
-              : variant === "lane.close"
-                ? { id: ISSUE.id, noPr: true, dropped: "stopped" }
-                : { id: ISSUE.id };
+            variant === "lane.close"
+              ? { id: ISSUE.id, noPr: true, dropped: "stopped" }
+              : { id: ISSUE.id };
           const result = await r.assembly.catalog.invoke(
             r.request(
               name === "Still refused" ? variant : "lane.release",
