@@ -412,7 +412,7 @@ jobs:
           restore_cf duplicate-labels src/core/state/restore-json.ts 's/^  checkLabels\(text\);$/  void 0;/m' "a whole restore with a duplicate event label is RESTORE_INVALID_ROW and leaves nothing" '[got.status, got.json.error?.code]'
       - name: wrangler log
         if: failure()
-        run: tail -n 100 "$RUNNER_TEMP"/wrangler-*.log || true
+        run: tail -n 100 "$RUNNER_TEMP"/wrangler-*.log "$RUNNER_TEMP"/oauth-*.log || true
 
   capacity:
     name: Cloud restore capacity (heap cap, CPU)

@@ -28,7 +28,7 @@ async function main() {
     );
     await access(spent, false);
     await access(issued, false);
-    assert.equal((await refresh(issued, {})).status, 400);
+    assert.equal((await refresh(issued, {})).status, 400, "restart descendant");
     console.log(
       "PASS OAuth spent refresh survives workerd restart and revokes its family",
     );
@@ -63,6 +63,7 @@ async function main() {
   assert.equal(
     (await refresh({ client: family.client, ...tokens }, {})).status,
     400,
+    "overlap descendant refresh",
   );
   await access(unrelated, true);
   console.log(
@@ -83,7 +84,7 @@ async function main() {
       headers: { "x-refresh-observe": observed },
       body: form,
     });
-    assert.equal(rejected.status, 400);
+    assert.equal(rejected.status, 400, "duplicate extension refresh");
     const text = await rejected.text();
     assert.deepEqual(JSON.parse(text), { error: "invalid_request" });
     assert(
@@ -124,6 +125,7 @@ async function main() {
   assert.equal(
     (await refresh({ client: late.client, ...lateTokens }, {})).status,
     400,
+    "refresh after revoke and late write",
   );
   for (const fault of [
     "x-refresh-write-fault",
@@ -132,13 +134,13 @@ async function main() {
   ]) {
     const failed = await issue();
     const failedResponse = await refresh(failed, { [fault]: "1" });
-    assert.equal(failedResponse.status, 503, "claim stays spent");
+    assert.equal(failedResponse.status, 503, `${fault}: claim stays spent`);
     assert.deepEqual(await failedResponse.json(), {
       error: "temporarily_unavailable",
     });
     assert.equal(failedResponse.headers.get("cache-control"), "no-store");
     const retry = await refresh(failed, {});
-    assert.equal(retry.status, 400);
+    assert.equal(retry.status, 400, `${fault}: spent token retry`);
     assert.deepEqual(await retry.json(), { error: "invalid_grant" });
     await access(failed, false);
   }
@@ -147,7 +149,7 @@ async function main() {
   );
   const saved = await issue(),
     response = await refresh(saved, {});
-  assert.equal(response.status, 200);
+  assert.equal(response.status, 200, "refresh saved for restart");
   const savedTokens = (await response.json()) as Omit<Family, "client">;
   writeFileSync(
     file,
@@ -157,7 +159,8 @@ async function main() {
 }
 await main().catch((error: unknown) => {
   console.error(
-    `FAIL OAuth refresh race: ${error instanceof AssertionError ? error.message.split("\n")[0] : "fixture unavailable"}`,
+    `FAIL OAuth refresh race: ${error instanceof AssertionError ? `${error.message} (expected ${JSON.stringify(error.expected)}, observed ${JSON.stringify(error.actual)})` : "fixture unavailable"}`,
   );
+  console.error(error);
   process.exitCode = 1;
 });

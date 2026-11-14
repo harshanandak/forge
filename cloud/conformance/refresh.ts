@@ -46,7 +46,7 @@ async function refused(
   error = "invalid_grant",
   status = 400,
 ) {
-  assert.equal(response.status, status, "refresh status");
+  assert.equal(response.status, status, `refresh refusal: ${error}`);
   assert.deepEqual(await response.json(), { error }, "sanitized refresh error");
   assert.equal(response.headers.get("cache-control"), "no-store");
 }
@@ -64,7 +64,7 @@ async function main() {
         access,
       }),
     });
-  assert.equal((await expiry(original, -1, true)).status, 200);
+  assert.equal((await expiry(original, -1, true)).status, 200, "expire access");
   await access(original, false);
   const snapshot = await (await send("/fixture/snapshot")).text();
   const first = await rotate(original);
@@ -96,7 +96,7 @@ async function main() {
     headers: { "Content-Type": "application/json" },
     body: snapshot,
   });
-  assert.equal(restored.status, 204);
+  assert.equal(restored.status, 204, "restore pre-rotation KV snapshot");
   await refused(await refresh(original));
   for (const family of [original, first, next, newest])
     await access(family, false);
@@ -128,11 +128,11 @@ async function main() {
     [120, 200],
   ] as const) {
     const bounded = await issue();
-    assert.equal((await expiry(bounded, remaining)).status, 200);
+    assert.equal((await expiry(bounded, remaining)).status, 200, "set expiry");
     const response = await refresh(bounded);
     if (status === 400) await refused(response);
     else {
-      assert.equal(response.status, 200);
+      assert.equal(response.status, 200, "refresh within fixed grant expiry");
       const tokens = (await response.json()) as Omit<Family, "client">;
       assert(
         tokens.expires_in >= 60 && tokens.expires_in <= 120,
@@ -151,7 +151,8 @@ async function main() {
 }
 await main().catch((error: unknown) => {
   console.error(
-    `FAIL OAuth refresh: ${error instanceof AssertionError ? error.message.split("\n")[0] : "fixture unavailable"}`,
+    `FAIL OAuth refresh: ${error instanceof AssertionError ? `${error.message} (expected ${JSON.stringify(error.expected)}, observed ${JSON.stringify(error.actual)})` : "fixture unavailable"}`,
   );
+  console.error(error);
   process.exitCode = 1;
 });

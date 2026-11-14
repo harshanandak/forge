@@ -214,7 +214,7 @@ async function main() {
       refresh_token: family.refresh_token,
       client_id: family.client,
     });
-    assert.equal(refresh.status, 400);
+    assert.equal(refresh.status, 400, `${kind} revoke refuses refresh`);
     assert.deepEqual(await refresh.json(), { error: "invalid_grant" });
     revoked.push(family);
     console.log(
@@ -229,7 +229,8 @@ async function main() {
 if (process.argv[1]?.replaceAll("\\", "/").endsWith("/oauth.ts"))
   await main().catch((error: unknown) => {
     console.error(
-      `FAIL OAuth holder revocation: ${error instanceof AssertionError ? error.message.split("\n")[0] : "fixture unavailable"}`,
+      `FAIL OAuth holder revocation: ${error instanceof AssertionError ? `${error.message} (expected ${JSON.stringify(error.expected)}, observed ${JSON.stringify(error.actual)})` : "fixture unavailable"}`,
     );
+    console.error(error);
     process.exitCode = 1;
   });
