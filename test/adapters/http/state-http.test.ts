@@ -142,7 +142,7 @@ for (const [name, request, inner] of valid)
     const result = resultFor(request, inner);
     const f = fixture(() => json(envelope(result)));
     const before = JSON.stringify(request);
-    expect(await f.send(request)).toEqual({ kind: "ok", result });
+    expect<unknown>(await f.send(request)).toEqual({ kind: "ok", result });
     expect(JSON.stringify(request)).toBe(before);
     expect(f.calls).toHaveLength(1);
     expect(f.calls[0]!.url).toBe(

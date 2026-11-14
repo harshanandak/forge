@@ -4,6 +4,9 @@
 import { request } from "node:https";
 import { Readable } from "node:stream";
 import { ForgeFailure } from "../../contract/failure.ts";
+import { parseUntrustedJson } from "../../contract/untrusted.ts";
+import type * as State from "../../ports/state-protocol.ts";
+import { decodeState, type StateAnswer } from "./state-response.ts";
 import { validateLeaseRecord } from "../../generated/validators.ts";
 import {
   conflictOf,
@@ -130,6 +133,16 @@ export interface CloudHttp {
     body: CommandWire,
     signal?: AbortSignal,
   ): Promise<CommandResult>;
+  stateRead(
+    token: string,
+    body: State.StateReadRequest,
+    signal?: AbortSignal,
+  ): Promise<StateAnswer<State.StateReadResult>>;
+  stateCommit(
+    token: string,
+    body: State.StateCommitRequest,
+    signal?: AbortSignal,
+  ): Promise<StateAnswer<State.StateCommitResult>>;
 }
 
 type ReadResult =
@@ -432,8 +445,15 @@ export function createCloudHttp(options: CloudHttpOptions): CloudHttp {
     );
     const signal =
       caller === undefined ? deadline : AbortSignal.any([caller, deadline]);
+    let onAbort = () => {};
+    const stop = new Promise<never>((_, reject) => {
+      onAbort = () => reject(new Error("aborted"));
+      if (signal.aborted) onAbort();
+      else signal.addEventListener("abort", onAbort, { once: true });
+    });
     try {
-      const response = await send(`${origin}/p/${project}/${path}`, {
+      signal.throwIfAborted();
+      const pending = send(`${origin}/p/${project}/${path}`, {
         method,
         headers: {
           accept: "application/json",
@@ -444,13 +464,38 @@ export function createCloudHttp(options: CloudHttpOptions): CloudHttp {
         redirect: "manual",
         signal,
       });
+      void pending.then(
+        (response) => {
+          if (signal.aborted)
+            void response.body?.cancel().catch(() => undefined);
+        },
+        () => undefined,
+      );
+      const response = await Promise.race([pending, stop]);
       if (response.status >= 300 && response.status < 400) {
         void response.body?.cancel().catch(() => undefined);
         throw unavailable("a redirect was refused");
       }
       let parsed: unknown;
       try {
-        parsed = JSON.parse(await readBody(response, limit, signal));
+        const text = await readBody(response, limit, signal);
+        if (path.startsWith("state/")) {
+          const checked = parseUntrustedJson(
+            text,
+            {
+              maxBytes: limit,
+              maxDepth: 64,
+              maxNodes: 100_000,
+              maxStringLength: limit,
+            },
+            (v) => {
+              if (typeof v === "number" && !Number.isFinite(v))
+                throw unavailable("the answer has invalid numbers");
+            },
+          );
+          if (!checked.ok) throw unavailable("the answer exceeds JSON limits");
+          parsed = checked.value;
+        } else parsed = JSON.parse(text);
       } catch (error) {
         if (error instanceof ForgeFailure) throw error;
         if (signal.aborted) throw error;
@@ -465,6 +510,8 @@ export function createCloudHttp(options: CloudHttpOptions): CloudHttp {
       throw unavailable(
         deadline.aborted ? "the request timed out" : "the request failed",
       );
+    } finally {
+      signal.removeEventListener("abort", onAbort);
     }
   }
   const post = async (
@@ -487,10 +534,35 @@ export function createCloudHttp(options: CloudHttpOptions): CloudHttp {
     const answer = await exchange(method, path, body, token, caller);
     return decodeLease(answer, subject, body !== undefined);
   }
+  async function state<
+    T extends State.StateReadResult | State.StateCommitResult,
+  >(
+    token: string,
+    body: State.StateReadRequest | State.StateCommitRequest,
+    signal?: AbortSignal,
+  ): Promise<StateAnswer<T>> {
+    if (!TOKEN.test(token))
+      throw invalid("the device token is not well formed");
+    const wire = JSON.stringify(body);
+    const call = JSON.parse(wire) as typeof body;
+    const answer = await exchange(
+      "POST",
+      `state/${call.kind}`,
+      wire,
+      token,
+      signal,
+      Math.min(commandMax, 1_048_576),
+    );
+    return decodeState<T>(answer.status, answer.value, call, project, token);
+  }
 
   return {
     origin,
     project,
+    stateRead: (token, body, signal) =>
+      state<State.StateReadResult>(token, body, signal),
+    stateCommit: (token, body, signal) =>
+      state<State.StateCommitResult>(token, body, signal),
     async loginStart(device, signal) {
       const body = await post("loginstart", { device }, signal);
       if (body.ok !== true) return refusal(body);
