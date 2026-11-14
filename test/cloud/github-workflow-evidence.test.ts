@@ -152,7 +152,7 @@ for (const [name, path, replacement, code] of cases)
                     conclusion: "success",
                   };
             if (name === "workflows" && p.split("/").at(-3) === "11")
-              Object.assign(body as object, { id: 11, workflow_id: 10 });
+              body = { ...(body as object), id: 11, workflow_id: 10 };
           } else if (p.split("/").at(-2) === "check-suites")
             body = name === "missing suite" ? null : fixture.suite;
           else if (p.endsWith("/probe")) body = {};
