@@ -10,6 +10,7 @@ import {
   type Page,
 } from "../../cloud/src/dump.ts";
 import { TABLES } from "../../cloud/conformance/digest.ts";
+import { pageOrder } from "../../cloud/conformance/page-order.ts";
 import { success } from "../../src/surface/dispatch.ts";
 import { failure, respond } from "../../src/surface/result.ts";
 import { consumeLaneApproval } from "../../cloud/src/lane-approval.ts";
@@ -20,6 +21,12 @@ import { currentState, pagesOf } from "../../tools/import-current-state.ts";
 
 const eq: typeof assert.deepStrictEqual = assert.deepStrictEqual;
 const ne: typeof assert.notDeepStrictEqual = assert.notDeepStrictEqual;
+test("numeric page order crosses four digits", () => {
+  eq(["page-10000.json", "page-9999.json"].sort(pageOrder), [
+    "page-9999.json",
+    "page-10000.json",
+  ]);
+}, 1000);
 beforeEach(() => setSystemTime(f.at));
 afterEach(() => setSystemTime());
 const rows = [

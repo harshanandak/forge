@@ -27,6 +27,7 @@ import {
 import { StateOwner } from "../../src/core/state/index.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
 import { Project } from "../src/project.ts";
+import { pageOrder } from "./page-order.ts";
 import type { DurableStorage } from "../src/store.ts";
 import {
   COLUMNS,
@@ -465,7 +466,7 @@ async function restoreAll(): Promise<Done> {
   };
   const files = readdirSync(dir)
     .filter((f) => f.startsWith("page-"))
-    .sort();
+    .sort(pageOrder);
   const samples: Sample[] = [];
   const mismatches: string[] = [];
   for (let run = 0; run < runs; run += 1) {
@@ -731,7 +732,7 @@ if (!isMainThread) {
     assert.deepEqual(
       readdirSync(dir)
         .filter((name) => name.startsWith("page-"))
-        .sort(),
+        .sort(pageOrder),
       bundle.pages.map((p) => p.name),
     );
     for (const [i, page] of bundle.pages.entries()) {
