@@ -695,7 +695,10 @@ const pageTicket = (page: { text: string }, action: string) =>
   new RegExp(
     `/${action}"><input type="hidden" name="ticket" value="([^"]+)"`,
   ).exec(page.text)?.[1] ?? "";
-async function browserFixture(scope: "all" | "issue" = "all") {
+async function browserFixture(
+  scope: "all" | "issue" = "all",
+  issuer = "https://identity.example",
+) {
   const begun: { state: string; verifier: string }[] = [];
   const spent = new Set<string>();
   let duringBegin = () => {};
@@ -705,7 +708,7 @@ async function browserFixture(scope: "all" | "issue" = "all") {
         begun.push({ state, verifier });
         duringBegin();
         return Promise.resolve(
-          `https://identity.example/oauth/authorize?state=${state}&redirect_uri=https%3A%2F%2Fw.example%2Fcallback`,
+          `${new URL("/oauth/authorize", issuer).href}?state=${state}&redirect_uri=https%3A%2F%2Fw.example%2Fcallback`,
         );
       },
       verify: () => {
@@ -720,6 +723,7 @@ async function browserFixture(scope: "all" | "issue" = "all") {
       },
     },
   });
+  f.env.CLERK_ISSUER = issuer;
   f.put("lane-control:global", running);
   const input = scope === "all" ? { all: true } : { id: "work-7" };
   await f.send(call("lane.stop", input, "browser-stop"));
@@ -981,6 +985,75 @@ test.each(["lane", "mixed lane and device", "device", "generic"])(
         expect(reply.text).toContain("not available yet");
       if (mode !== "device") expect(f.snapshot()).toBe(before);
       expect(f.begun).toEqual([]);
+    } finally {
+      f.close();
+    }
+  },
+  10_000,
+);
+
+test.each(["https://identity.example", "https://other-clerk.example:8443/"])(
+  "lane preview CSP allows exactly the configured Clerk origin %s",
+  async (issuer) => {
+    const f = await browserFixture("all", issuer);
+    try {
+      const page = await f.browser(f.path, undefined, {
+        Host: "evil.example",
+        Origin: "https://evil.example",
+        "X-Forwarded-Host": "evil.example",
+      });
+      expect(page.status).toBe(200);
+      expect(page.headers.get("content-security-policy")).toBe(
+        `default-src 'none'; form-action 'self' ${new URL(issuer).origin}; frame-ancestors 'none'`,
+      );
+    } finally {
+      f.close();
+    }
+  },
+  10_000,
+);
+
+test.each(["approve", "deny"])(
+  "repeated %s starts on one request leave capacity for another",
+  async (action) => {
+    const f = await browserFixture();
+    try {
+      const other = await f.send(
+        call("lane.resume", { all: true }, "other-browser-ask"),
+      );
+      expect(other.verdict).toEqual(["FAIL", "APPROVAL_REQUIRED", 1]);
+      expect(other.status).toBe(409);
+      const otherId = (
+        other.envelope as unknown as { result: { request: string } }
+      ).result.request;
+      for (let n = 0; n < 257; n++) {
+        const page = await f.browser(f.path);
+        const reply = await f.browser(
+          `${f.path}/${action}`,
+          new URLSearchParams({ ticket: pageTicket(page, action) }).toString(),
+          { Origin: "https://w.example", Cookie: pageCookie(page) },
+        );
+        expect(reply.status).toBe(302);
+      }
+      const path = `/lane-approval/${otherId}`;
+      const page = await f.browser(path);
+      const reply = await f.browser(
+        `${path}/${action}`,
+        new URLSearchParams({ ticket: pageTicket(page, action) }).toString(),
+        { Origin: "https://w.example", Cookie: pageCookie(page) },
+      );
+      expect(reply.status).toBe(302);
+      const stored = f.db
+        .query("SELECT state FROM domain_cloud_lane_browser WHERE id=1")
+        .get() as { state: string };
+      const states = JSON.parse(stored.state) as {
+        request: string;
+        action: string;
+      }[];
+      expect(states.map((entry) => [entry.request, entry.action])).toEqual([
+        [f.pending.request, action],
+        [otherId, action],
+      ]);
     } finally {
       f.close();
     }

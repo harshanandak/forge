@@ -1,4 +1,4 @@
-import { ForgeFailure } from "../../../src/contract/failure.ts";
+import { fail } from "../issue-read.ts";
 import { digestValue } from "../../../src/core/config/pointer.ts";
 import { StateOwner } from "../../../src/core/state/index.ts";
 import type { SqlDatabase } from "../../../src/ports/store.ts";
@@ -63,11 +63,12 @@ const esc = (value: string) =>
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
-const token = () =>
-  btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))))
+const encode = (bytes: Uint8Array) =>
+  btoa(String.fromCharCode(...bytes))
     .replaceAll("+", "-")
     .replaceAll("/", "_")
     .replaceAll("=", "");
+const token = () => encode(crypto.getRandomValues(new Uint8Array(32)));
 function cookieOf(request: Request): string | undefined {
   const values = (request.headers.get("Cookie") ?? "")
     .split(";")
@@ -77,13 +78,17 @@ function cookieOf(request: Request): string | undefined {
     ? values[0]!.slice(COOKIE.length + 1)
     : undefined;
 }
-function page(status: number, content: string, cookie?: string): Response {
+function page(
+  status: number,
+  content: string,
+  cookie?: string,
+  formAction = "'self'",
+): Response {
   const headers = new Headers({
     "Content-Type": "text/html; charset=utf-8",
     "Cache-Control": "no-store",
     "X-Frame-Options": "DENY",
-    "Content-Security-Policy":
-      "default-src 'none'; form-action 'self'; frame-ancestors 'none'",
+    "Content-Security-Policy": `default-src 'none'; form-action ${formAction}; frame-ancestors 'none'`,
     "Referrer-Policy": "same-origin",
   });
   if (cookie !== undefined) headers.set("Set-Cookie", cookie);
@@ -98,11 +103,7 @@ const refused = () =>
     "<h1>Lane approval unavailable</h1><p>This request cannot be used.</p>",
   );
 const unavailable = () =>
-  new ForgeFailure({
-    code: "AUTH_CONFIG_UNAVAILABLE",
-    message: "Lane browser configuration unavailable",
-    retry: "never",
-  });
+  fail("AUTH_CONFIG_UNAVAILABLE", "Lane browser configuration unavailable");
 
 /** GET uses SELECT-only storage. Only a valid POST opens the isolated browser-state table. */
 export async function laneRoute(
@@ -115,7 +116,7 @@ export async function laneRoute(
 ): Promise<Response> {
   if (isLaneCallback(request))
     return page(400, "<h1>Lane approval callback is not available yet</h1>");
-  let origin: string;
+  let origin: string, clerkOrigin: string;
   try {
     const callback = new URL(String(env.CLERK_REDIRECT_URI));
     if (
@@ -128,6 +129,8 @@ export async function laneRoute(
     )
       throw unavailable();
     origin = callback.origin;
+    clerkOrigin = new URL(String(env.CLERK_ISSUER)).origin;
+    if (!/^https:\/\/[\w.:[\]-]+$/.test(clerkOrigin)) throw unavailable();
   } catch {
     throw unavailable();
   }
@@ -198,10 +201,7 @@ export async function laneRoute(
         JSON.stringify([`lane.${action}`, row, browser]),
       ),
     );
-    return btoa(String.fromCharCode(...new Uint8Array(mac)))
-      .replaceAll("+", "-")
-      .replaceAll("/", "_")
-      .replaceAll("=", "");
+    return encode(new Uint8Array(mac));
   };
   if (request.method === "GET") {
     const tickets = await Promise.all([
@@ -216,6 +216,7 @@ export async function laneRoute(
       200,
       `<h1>Lane approval</h1><p>Project: ${esc(row.project)}</p><p>Affected scope: ${esc(scope)}</p><p>Current stop: ${esc(control.scope ?? "individual lanes")}; epoch ${control.epoch}; ${esc(control.since ?? "")}</p><p>Expiry: ${esc(row.expiresAt)}</p>${choice("approve", tickets[0])}${choice("deny", tickets[1])}`,
       `${COOKIE}=${browser}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=600`,
+      `'self' ${clerkOrigin}`,
     );
   }
   const action = path[2];
@@ -263,7 +264,11 @@ export async function laneRoute(
       before === undefined
         ? []
         : (JSON.parse(String(before.state)) as Pending[]);
-    const live = pending.filter((entry) => Date.now() < entry.expiresAt);
+    const live = pending.filter(
+      (entry) =>
+        Date.now() < entry.expiresAt &&
+        !(entry.request === row.request && entry.action === action),
+    );
     if (live.length >= 256) return false;
     live.push({
       request: row.request,
