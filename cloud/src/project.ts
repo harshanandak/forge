@@ -79,6 +79,8 @@ import {
   LANE_BROWSER_MIGRATION,
 } from "./auth/lane-browser.ts";
 import { requireTokenSession } from "./token-session.ts";
+import { admitState, isStatePath, stateRoute } from "./state-access.ts";
+import { parseStateInput } from "./state-input.ts";
 import {
   authorize,
   authorizeToken,
@@ -213,6 +215,7 @@ async function bounded(
   request: Request,
   max = MAX_BODY,
   code = "INPUT_INVALID",
+  strictUtf8 = false,
 ): Promise<string> {
   const tooBig = (): ForgeFailure => fail(code, `body is over ${max} bytes`);
   if (Number(request.headers.get("content-length")) > max) throw tooBig();
@@ -234,7 +237,12 @@ async function bounded(
     }
     chunks.push(value);
   }
-  return new TextDecoder().decode(await new Blob(chunks).arrayBuffer());
+  const bytes = await new Blob(chunks).arrayBuffer();
+  try {
+    return new TextDecoder("utf-8", { fatal: strictUtf8 }).decode(bytes);
+  } catch {
+    throw fail("INPUT_INVALID", "body must be valid UTF-8");
+  }
 }
 
 // A refusal before the body is read drops the body, so nothing reads the stream after the response.
@@ -300,6 +308,7 @@ export class Project {
     try {
       const url = new URL(request.url);
       const route = url.pathname.split("/")[3] ?? "";
+      if (isStatePath(request)) return await this.#state(request);
       // Login is public: the capability is the device code, and nothing here approves or mints for a caller.
       if (isLoginRoute(request)) {
         if (!(await this.#isProvisioned()))
@@ -534,6 +543,58 @@ export class Project {
         { ok: false, error: error.error },
         { status: STATUS[error.error.code] ?? 500 },
       );
+    }
+  }
+
+  async #state(request: Request): Promise<Response> {
+    try {
+      const route = stateRoute(request);
+      if (route === undefined || request.method !== "POST")
+        throw fail("UNKNOWN_COMMAND", "No such state route");
+      if (
+        route.project !== this.#env.FORGE_CLOUD_PROJECT ||
+        request.headers.has("X-Forge-Owner") ||
+        request.headers.has("X-Forge-Owner-Expires")
+      )
+        throw fail(
+          "AUTH_FORBIDDEN",
+          "State routes need a device token on the admitted project",
+        );
+      const presented = bearer(request);
+      if (presented === undefined)
+        throw fail("AUTH_REQUIRED", "A device token is required");
+      if (!wellFormed(presented))
+        throw fail("AUTH_FORBIDDEN", "State routes need a device token");
+      const parts = await tokenParts(presented);
+      if (!(await this.#isProvisioned()))
+        throw fail("AUTH_INVALID", "Token is not valid");
+      const db = readOnlyStore(this.#storage, TOKENS, [TOKEN_LOOKUP]);
+      if (db === undefined) throw fail("AUTH_INVALID", "Token is not valid");
+      authorizeToken(db, parts, Date.now());
+      const body = await bounded(
+        request,
+        MAX_COMMAND_BODY,
+        "INPUT_INVALID",
+        true,
+      );
+      // Recheck after the stream; no writable owner is opened by admission.
+      const token = authorizeToken(db, parts, Date.now());
+      const input = parseStateInput(body);
+      if (input.kind !== route.kind)
+        throw fail("INPUT_INVALID", "State route and kind must agree");
+      admitState(
+        input,
+        { ...token, project: route.project },
+        (this.#env as { FORGE_STATE_NAMESPACES?: unknown })
+          .FORGE_STATE_NAMESPACES,
+      );
+      throw fail("UNAVAILABLE", "State read and commit are not available yet");
+    } catch (error) {
+      if (!(error instanceof ForgeFailure)) throw error;
+      await discard(request);
+      return Response.json(failed(error.error), {
+        status: STATUS[error.error.code] ?? 500,
+      });
     }
   }
 
