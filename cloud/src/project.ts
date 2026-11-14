@@ -538,6 +538,7 @@ export class Project {
       const token = authorizeToken(db, parts, Date.now());
       return runCommand(body, {
         ...token,
+        approvalConfig: this.#env,
         principal: ["token", token.id, token.device],
         project: commandProject(request)!,
         storage: this.#storage,
