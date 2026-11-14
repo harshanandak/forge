@@ -175,6 +175,7 @@ for (const [name, path, value, code] of rows)
             throw new Error("credential-sentinel upstream-sentinel");
           body = {
             ...fixture.check,
+            name: timed && id !== 41 ? String(id) : fixture.check!.name,
             id:
               name === "malformed" && path === "check.id"
                 ? fixture.check!.id
@@ -208,6 +209,7 @@ for (const [name, path, value, code] of rows)
                     : 1;
           const jobs = Array.from({ length: jobCount }, (_, i) => ({
             ...fixture.job,
+            name: timed && i ? String(41 + i) : fixture.job!.name,
             id: 50 + i,
             run_attempt:
               name === "malformed" && path === "job.run_attempt" ? 1 : attempt,
@@ -225,11 +227,7 @@ for (const [name, path, value, code] of rows)
         } else if (parts.includes("actions")) {
           const collection = parts.at(-1) === "runs",
             current = collection && ++runLists === 2;
-          const attempt = parts.includes("attempts")
-            ? Number(parts.at(-1))
-            : timed
-              ? 1
-              : 2;
+          const attempt = Number(parts.at(-1)) || (timed ? 1 : 2);
           const run = {
             id: 10,
             repository: { id: 7 },
