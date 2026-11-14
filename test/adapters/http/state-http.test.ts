@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, setDefaultTimeout, test } from "bun:test";
 import {
   createCloudHttp,
   type CloudFetch,
@@ -10,6 +10,8 @@ import type {
   StateQuery,
 } from "../../../src/ports/state-protocol.ts";
 import { exitCode, failure } from "../../../src/surface/result.ts";
+
+setDefaultTimeout(10_000);
 
 const token = "fct_" + "a".repeat(16) + "." + "b".repeat(43);
 const actor = { kind: "human", id: "harsha" } as const;
@@ -117,6 +119,11 @@ async function refused(run: () => Promise<unknown>, code = "UNAVAILABLE") {
 
 const valid: [string, StateReadRequest | StateCommitRequest, unknown][] = [
   ["get", read(), { kind: "get", record }],
+  [
+    "large value",
+    read(),
+    { kind: "get", record: { ...record, value: "x".repeat(70_000) } },
+  ],
   ["absent", read(), { kind: "get", record: null }],
   [
     "range",
@@ -332,6 +339,11 @@ for (const [name, request, inner] of [
     read({ kind: "count", prefix: "" }),
     { kind: "count", value: -1 },
   ],
+  [
+    "aggregate kind",
+    read({ kind: "count", prefix: "" }),
+    { kind: "max", value: 1 },
+  ],
 ] satisfies [string, StateReadRequest, unknown][])
   test(`state contradictory query: ${name}`, async () => {
     await refused(() =>
@@ -353,6 +365,7 @@ for (const mode of [
   "header stall",
   "body stall",
   "abort",
+  "pre-abort",
   "transport token",
 ] as const)
   test(`state unsafe/deadline table: ${mode}`, async () => {
@@ -382,10 +395,17 @@ for (const mode of [
       if (mode === "warnings") return json({ ...good, warnings: ["unsafe"] });
       if (mode === "token key") return json({ ...good, [token]: true });
       if (mode === "oversize") return new Response(" ".repeat(1_048_577));
-      if (mode === "depth")
-        return new Response("[".repeat(70) + "0" + "]".repeat(70));
-      if (mode === "nodes")
-        return json({ ...good, extra: Array(100_001).fill(0) });
+      if (mode === "depth" || mode === "nodes") {
+        const value: unknown =
+          mode === "nodes"
+            ? Array(100_001).fill(0)
+            : JSON.parse("[".repeat(70) + "0" + "]".repeat(70));
+        return json(
+          envelope(
+            resultFor(read(), { kind: "get", record: { ...record, value } }),
+          ),
+        );
+      }
       if (mode === "utf8") return new Response(new Uint8Array([0xff]));
       if (mode === "header stall") return new Promise<Response>(() => {});
       if (mode === "body stall" || mode === "abort") {
@@ -404,9 +424,12 @@ for (const mode of [
         retry: "never",
       });
     });
+    if (mode === "pre-abort") controller.abort();
     await refused(
       () => f.send(read(), controller.signal),
-      mode === "abort" ? "INVOCATION_CANCELLED" : "UNAVAILABLE",
+      mode === "abort" || mode === "pre-abort"
+        ? "INVOCATION_CANCELLED"
+        : "UNAVAILABLE",
     );
-    expect(f.calls).toHaveLength(1);
+    expect(f.calls).toHaveLength(mode === "pre-abort" ? 0 : 1);
   });

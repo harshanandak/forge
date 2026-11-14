@@ -445,11 +445,10 @@ export function createCloudHttp(options: CloudHttpOptions): CloudHttp {
     );
     const signal =
       caller === undefined ? deadline : AbortSignal.any([caller, deadline]);
-    let onAbort = () => {};
+    let onAbort: () => void = () => undefined;
     const stop = new Promise<never>((_, reject) => {
       onAbort = () => reject(new Error("aborted"));
-      if (signal.aborted) onAbort();
-      else signal.addEventListener("abort", onAbort, { once: true });
+      signal.addEventListener("abort", onAbort, { once: true });
     });
     try {
       signal.throwIfAborted();
