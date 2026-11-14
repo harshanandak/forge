@@ -1092,6 +1092,9 @@ function assertRegistered(db: SqlDatabase): void {
       invalid(`Unregistered user table: ${table}`);
 }
 
+export const NAMESPACE_WATERMARK =
+  "SELECT coalesce(MAX(sequence),0) AS revision FROM state_events WHERE namespace=?";
+
 export class StateOwner {
   readonly #db: SqlDatabase;
   readonly #clock: ClockPort;
@@ -1166,6 +1169,17 @@ export class StateOwner {
       history: (options: HistoryOptions) => this.history(namespace, options),
       events: (key?: string) => this.events(namespace, key),
     });
+  }
+
+  /** Event pruning must preserve this monotonic watermark before it can remove events. */
+  namespaceRevision(namespace: string): number {
+    namespaceValid(namespace);
+    const revision = Number(
+      this.#db.get(NAMESPACE_WATERMARK, [namespace])?.revision ?? 0,
+    );
+    if (!Number.isSafeInteger(revision) || revision < 0)
+      invalid("Invalid namespace revision");
+    return revision;
   }
 
   get(namespace: string, key: string): StateRecord | undefined {
