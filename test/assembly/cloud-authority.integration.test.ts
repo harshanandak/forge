@@ -649,7 +649,7 @@ for (const [name, value, identity, id, code] of [
 for (const [op, input] of [
   ["lane.next", { id: "forge-1" }],
   ["lane.record", { id: "forge-1", action: 1, result: "{}" }],
-  ["lane.release", { id: "forge-1" }],
+  ["lane.release", { id: "forge-1", attempt: "attempt-1" }],
   ["lane.close", { id: "forge-1", noPr: true, dropped: "stopped" }],
   ["lane.show", { id: "forge-1", attempt: "attempt-1" }],
 ] as const)
@@ -1601,6 +1601,257 @@ for (const [name, code] of [
       s.close();
     }
   });
+
+for (const [name, variants] of [
+  ["Explicit release while stopped", ["stopped"]],
+  ["Release of another generation", ["cloud generation", "caller generation"]],
+  [
+    "Release by another holder",
+    ["actor", "session", "device", "journal holder"],
+  ],
+  [
+    "Lost release answer",
+    ["accepted", "still held", "read unavailable", "replacement", "retry"],
+  ],
+  ["Release with no attachment", ["no journal", "unknown issue"]],
+  ["Still refused", ["lane.next", "lane.record", "lane.close"]],
+] as const)
+  test(`bound release table: ${name}`, async () => {
+    for (const variant of variants) {
+      const grant = readBoundLane(
+        { ...journal, grant: OWN_GRANT },
+        "work-1",
+      ).grant;
+      let current: LeaseRecord | undefined =
+        variant === "cloud generation"
+          ? { ...grant, generation: grant.generation + 1 }
+          : variant === "actor"
+            ? {
+                ...grant,
+                holder: {
+                  ...grant.holder,
+                  actor: { kind: "agent", id: "other" },
+                },
+              }
+            : variant === "session"
+              ? {
+                  ...grant,
+                  holder: {
+                    ...grant.holder,
+                    session: { ...grant.holder.session, id: "other" },
+                  },
+                }
+              : variant === "device"
+                ? {
+                    ...grant,
+                    holder: {
+                      ...grant.holder,
+                      session: { ...grant.holder.session, device: "other" },
+                    },
+                  }
+                : grant;
+      let releases = 0,
+        reads = 0,
+        stopped = false;
+      let sandbox: fx.Sandbox, before: ReturnType<typeof attachmentBytes>;
+      const issue = { ...ISSUE, body: "retained cloud body" };
+      await using(
+        {
+          prepare: async (s) => {
+            sandbox = s;
+            const git = spawnSync(
+              "git",
+              ["init", "--quiet", "--initial-branch=feat/one", s.root],
+              { encoding: "utf8", windowsHide: true },
+            );
+            expect(git.status, git.stderr).toBe(0);
+            writeFileSync(join(s.root, "brief.md"), PREPARED_BRIEF);
+            writeFileSync(join(s.root, "action.log"), "retained output");
+            writeFileSync(
+              join(s.root, ".git", "forge-lanes.json"),
+              JSON.stringify([attachment]),
+            );
+            if (name !== "Release with no attachment")
+              await seedJournal(s, {
+                ...journal,
+                grant: variant === "journal holder" ? heldBy() : grant,
+                releaseNeeded: true,
+              });
+          },
+          steps: [
+            ({ body }) => {
+              const call = body as {
+                op: string;
+                input: { id?: string };
+                context: { leaseGeneration?: number };
+              };
+              expect(attachmentBytes(sandbox)).toEqual(before);
+              if (call.op === "lane.stop") {
+                stopped = true;
+                return answer(
+                  { incarnation: "cloud-1", epoch: 2, stopped },
+                  call.op,
+                );
+              }
+              if (call.op === "issue.release") {
+                expect(call.input.id).toBe(journal.cloudId);
+                expect(call.context.leaseGeneration).toBe(grant.generation);
+                releases++;
+                if (name === "Lost release answer") {
+                  current =
+                    variant === "still held"
+                      ? grant
+                      : variant === "replacement"
+                        ? { ...grant, generation: grant.generation + 1 }
+                        : undefined;
+                  throw new Error("release reply lost");
+                }
+                current = undefined;
+                return answer({ id: ISSUE.id }, call.op);
+              }
+              expect(call.op).toBe("issue.show");
+              reads++;
+              if (variant === "unknown issue") return refusing("NOT_FOUND");
+              if (
+                releases &&
+                (variant === "read unavailable" || variant === "retry") &&
+                reads === 2
+              )
+                throw new Error("authority unavailable");
+              return answer({
+                ...issue,
+                ...(current ? { lease: current } : {}),
+              });
+            },
+          ],
+        },
+        async (r) => {
+          before = attachmentBytes(r.s);
+          const projectBytes = () =>
+            bytes(r.s).filter(
+              ([path]) =>
+                typeof path === "string" && path.startsWith("project"),
+            );
+          const files = projectBytes();
+          const context = holding(
+            r,
+            variant === "caller generation" ? { leaseGeneration: 99 } : {},
+          );
+          if (variant === "stopped")
+            expect(
+              (
+                await r.assembly.catalog.invoke(
+                  r.request("lane.stop", { id: ISSUE.id }, { context }),
+                )
+              ).ok,
+            ).toBe(true);
+          const expected =
+            name === "Still refused"
+              ? "INPUT_INVALID"
+              : name === "Release with no attachment"
+                ? "NOT_FOUND"
+                : name === "Release of another generation" ||
+                    variant === "replacement"
+                  ? "LEASE_STALE"
+                  : name === "Release by another holder"
+                    ? "LEASE_NOT_HELD"
+                    : ["still held", "read unavailable", "retry"].includes(
+                          variant,
+                        )
+                      ? "UNAVAILABLE"
+                      : "OK";
+          const input =
+            variant === "lane.record"
+              ? { id: ISSUE.id, action: 1, result: "{}" }
+              : variant === "lane.close"
+                ? { id: ISSUE.id, noPr: true, dropped: "stopped" }
+                : { id: ISSUE.id };
+          const result = await r.assembly.catalog.invoke(
+            r.request(
+              name === "Still refused" ? variant : "lane.release",
+              input,
+              { context },
+            ),
+          );
+          expect(result.ok ? "OK" : result.error.code).toBe(expected);
+          expect(exitCode(result)).toBe(
+            expected === "OK"
+              ? 0
+              : expected === "INPUT_INVALID"
+                ? 6
+                : expected === "NOT_FOUND"
+                  ? 3
+                  : expected === "UNAVAILABLE"
+                    ? 1
+                    : 4,
+          );
+          expect(projectBytes()).toEqual(files);
+          expect(existsSync(join(r.s.root, ".forge", "state.sqlite"))).toBe(
+            false,
+          );
+          expect(issue).toEqual({ ...ISSUE, body: "retained cloud body" });
+          expect(stopped).toBe(variant === "stopped");
+          if (expected !== "OK") expect(attachmentBytes(r.s)).toEqual(before);
+          if (name !== "Lost release answer" && expected !== "OK")
+            expect(releases).toBe(0);
+          if (name === "Still refused") expect(r.net.calls).toHaveLength(0);
+          if (expected === "OK" || variant === "retry") {
+            if (variant === "retry") {
+              expect(releases).toBe(1);
+              expect(
+                (
+                  await r.assembly.catalog.invoke(
+                    r.request(
+                      "lane.release",
+                      { id: ISSUE.id },
+                      { context, requestId: "release-retry" },
+                    ),
+                  )
+                ).ok,
+              ).toBe(true);
+            }
+            const local = new LocalState(
+              join(r.s.deviceRoot, "records.sqlite"),
+            );
+            try {
+              const saved = (await local.open(false))!.get(
+                "forge/work",
+                journalKey(),
+              )!;
+              expect(saved.revision).toBe(2);
+              expect(saved.value).toMatchObject({
+                ...journal,
+                grant,
+                active: false,
+                releaseNeeded: false,
+              });
+            } finally {
+              await local.close();
+            }
+            expect(releases).toBe(1);
+            if (name === "Lost release answer")
+              expect(reads).toBeGreaterThanOrEqual(2);
+            if (variant === "accepted") {
+              before = attachmentBytes(r.s);
+              expect(
+                (
+                  await r.assembly.catalog.invoke(
+                    r.request(
+                      "lane.release",
+                      { id: ISSUE.id },
+                      { context, requestId: "release-again" },
+                    ),
+                  )
+                ).ok,
+              ).toBe(true);
+              expect(releases).toBe(1);
+              expect(attachmentBytes(r.s)).toEqual(before);
+            }
+          }
+        },
+      );
+    }
+  }, 60000);
 
 const edit = (
   r: Rig,
