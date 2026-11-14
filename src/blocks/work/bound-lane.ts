@@ -258,14 +258,15 @@ export async function boundLaneProgress(
     } else {
       if (!p.pending || input.action !== p.actions)
         refuse("INPUT_CONFLICT", "Only the pending action can be recorded.");
-      let result: Record<string, unknown>;
+      let parsed: unknown;
       try {
-        result = JSON.parse(input.result!);
+        parsed = JSON.parse(input.result!);
       } catch {
         return refuse("INPUT_INVALID", "Result must be a JSON object.");
       }
-      if (!result || typeof result !== "object" || Array.isArray(result))
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
         refuse("INPUT_INVALID", "Result must be a JSON object.");
+      const result = parsed as Record<string, unknown>;
       if (p.head !== undefined && result.head !== p.head)
         refuse("INPUT_CONFLICT", "Result must name the current reserved head.");
       if (result.ask !== undefined)
