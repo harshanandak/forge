@@ -176,11 +176,13 @@ test.each(rows)(
                   number: mutant ? 0 : number,
                 });
             }
-            for (const record of impl.workRecords(source.db))
+            for (const record of impl.workRecords(source.db)) {
+              eq(state.get(f.ns, record.key)?.revision, 1);
               eq(
                 canonicalJson(state.get(f.ns, record.key)?.value),
                 canonicalJson(record.value),
               );
+            }
             const usage = projected.usage.rows;
             eq(usage.state_records, manifest.records + projected.floors);
             if (kind !== "authority" || !mutant) {
@@ -215,9 +217,14 @@ test.each(rows)(
                   ["link:work-1:", 9001],
                 ] as const)
                   eq(
-                    targetOwner.putNext(f.ns, prefix, f.actor, (key) => ({
-                      value: { key },
-                    })).key,
+                    targetOwner.putNext(
+                      f.ns,
+                      prefix,
+                      (key) => ({
+                        value: { key },
+                      }),
+                      f.actor,
+                    ).key,
                     `${prefix}${number}`,
                   );
             }

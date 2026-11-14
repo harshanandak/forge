@@ -84,7 +84,7 @@ export function verifySource(
     )
       invalid();
     for (const sql of [
-      "PRAGMA user_version",
+      "SELECT CAST(user_version AS TEXT) AS version FROM pragma_user_version",
       "SELECT id FROM state_migrations ORDER BY id",
       "SELECT namespace,table_name,reviewed_digest FROM state_domains ORDER BY table_name",
       "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name",

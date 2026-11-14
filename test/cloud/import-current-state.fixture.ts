@@ -25,7 +25,7 @@ afterEach(() =>
     .forEach((close) => close()),
 );
 export function database(path = ":memory:", readOnly = false): SqlDatabase {
-  const db = new Database(path, { readonly: readOnly });
+  const db = new Database(path, { readonly: readOnly, safeIntegers: true });
   resources.push(() => db.close());
   return {
     exec: (sql) => {
