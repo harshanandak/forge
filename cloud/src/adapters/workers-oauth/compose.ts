@@ -31,6 +31,7 @@ import { durableRedemption, type RedemptionNamespace } from "./redemption.ts";
 import { isLaneCallback } from "../../auth/lane-browser.ts";
 import { isLoginRoute } from "../../auth/project-login.ts";
 import { commandProject } from "../../issue-commands.ts";
+import { isStatePath } from "../../state-access.ts";
 import { boundedOAuthRequest } from "./body.ts";
 import { revokeOAuth } from "./revocation.ts";
 import { refreshPolicy } from "./refresh.ts";
@@ -178,6 +179,7 @@ export function createConfiguredWorker(
         isDeviceRoute(request) ||
         isDeviceCallback(request) ||
         commandProject(request) !== undefined ||
+        isStatePath(request) ||
         (!isOAuthRoute(request) &&
           (isLoginRoute(request) ||
             !token ||

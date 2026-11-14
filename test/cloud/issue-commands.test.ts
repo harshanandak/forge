@@ -499,6 +499,21 @@ for (const kind of ["read", "commit"] as const)
         "UNKNOWN_COMMAND",
       ],
       ["bare state", input, {}, { path: "state" }, 404, "UNKNOWN_COMMAND"],
+      ...[vars.ADMIN_TOKEN, oauthToken].flatMap((token) =>
+        [
+          { method: "GET" },
+          { method: "PUT" },
+          { path: `state/${kind}/extra` },
+          { path: "state" },
+        ].map((options): Row => [
+          "non-device bearer on malformed state route",
+          input,
+          {},
+          { ...options, token },
+          404,
+          "UNKNOWN_COMMAND",
+        ]),
+      ),
       [
         "wrong kind",
         {

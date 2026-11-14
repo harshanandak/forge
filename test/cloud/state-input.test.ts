@@ -148,7 +148,8 @@ const rows: readonly [string, unknown, boolean][] = [
     true,
   ],
   ["exact bytes", padded(bodyLimit), true],
-  ["exact values", { ...commit, input: Array(4975).fill(null) }, true],
+  ["exact values", { ...commit, input: Array(4964).fill(null) }, true],
+  ["one over values", { ...commit, input: Array(4965).fill(null) }, false],
   [
     "exact depth",
     {
