@@ -10442,6 +10442,32 @@ async function restoreInto(
   }
   return { t, got, parts, calls, at };
 }
+for (const trip of TRIPS)
+  for (const prefix of ["s2:", "l2:", "x2:"])
+    test(`state receipt restore table: ${trip}/${prefix}`, async () => {
+      const f = await stateFixture(),
+        target = fixture();
+      try {
+        expect((await f.commit(await f.plan(stateEntries("one")))).status).toBe(
+          200,
+        );
+        const tables = (await f.admin("dump")).json.value!.tables;
+        const receipt = tables.domain_cloud_command_receipts![0]!;
+        expect(String(receipt.request_id)).toMatch(/^s2:[a-f0-9]{64}$/);
+        receipt.request_id = String(receipt.request_id).replace("s2:", prefix);
+        const { got } = await restoreInto(trip, tables, { target, per: 1 });
+        expect([got.status, got.json.error?.code]).toEqual(
+          prefix === "s2:" ? [200, undefined] : [400, "RESTORE_INVALID_ROW"],
+        );
+        if (prefix === "s2:") expect(tablesOf(target.db)).toEqual(tables);
+        else expect(Object.values(tablesOf(target.db)).flat()).toEqual([]);
+      } finally {
+        f.db.close();
+        target.db.close();
+        mock.restore();
+      }
+    }, 30_000);
+
 async function refuses(
   trip: Trip,
   tables: Tables,
