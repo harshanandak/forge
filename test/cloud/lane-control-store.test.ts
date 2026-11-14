@@ -31,8 +31,11 @@ function fixture() {
   const storage: DurableStorage = {
     sql: {
       exec: (sql, ...bindings) => {
-        if (sql.startsWith("SELECT body FROM state_records"))
-          reads.push(String(bindings[1]));
+        if (sql.startsWith("SELECT body FROM state_records")) {
+          const key = bindings[1];
+          if (typeof key !== "string") throw new Error("Expected a record key");
+          reads.push(key);
+        }
         if (
           failAudit &&
           sql.startsWith("INSERT INTO state_records") &&
