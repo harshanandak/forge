@@ -18,6 +18,7 @@ import type {
 } from "../generated/types.ts";
 import { wireDeviceId } from "./wire-device.ts";
 import type { CredentialKey, CredentialStore } from "./cloud-profile.ts";
+import type * as State from "../ports/state-protocol.ts";
 
 export interface CloudLeaseOptions {
   /** The exact origin, project UUID and cloud project name the credential was saved under. */
@@ -68,9 +69,11 @@ export class CloudCommandFailure extends ForgeFailure {
   }
 }
 
-export function createCloudLeaseClient(
-  options: CloudLeaseOptions,
-): CloudLeaseClient {
+function cloudExchange(
+  options: Pick<CloudLeaseOptions, "key" | "credentials" | "now" | "signal"> & {
+    readonly http: Pick<CloudHttp, "origin" | "project">;
+  },
+) {
   const { key, credentials, now, http, signal } = options;
 
   /** The stored credential for the exact key, and only when the transport is bound to that key. */
@@ -155,6 +158,15 @@ export function createCloudLeaseClient(
     };
   }
 
+  return { stored, exchange, wired, contextFor };
+}
+
+export function createCloudLeaseClient(
+  options: CloudLeaseOptions,
+): CloudLeaseClient {
+  const { key, http, signal } = options;
+  const { stored, exchange, wired, contextFor } = cloudExchange(options);
+
   async function write(route: LeaseRoute, body: LeaseWriteBody) {
     const { token, device } = stored();
     const holder = wired(body.holder, device);
@@ -208,6 +220,59 @@ export function createCloudLeaseClient(
       );
       if (carriesToken(lease, token)) throw failure("UNAVAILABLE", UNAVAILABLE);
       return lease;
+    },
+  };
+}
+
+export interface CloudRecordOptions extends Omit<CloudLeaseOptions, "http"> {
+  readonly http: Pick<
+    CloudHttp,
+    "origin" | "project" | "stateRead" | "stateCommit"
+  >;
+}
+export interface CloudRecordClient {
+  read(call: State.StateReadRequest): Promise<State.StateReadResult>;
+  commit(call: State.StateCommitRequest): Promise<State.StateCommitResult>;
+}
+
+/** One bound project's checked record transport, with no local state or automatic resend. */
+export function createCloudRecordClient(
+  options: CloudRecordOptions,
+): CloudRecordClient {
+  const { http, signal } = options;
+  const { stored, exchange, contextFor } = cloudExchange(options);
+  const unknownCommit = () =>
+    new ForgeFailure({
+      code: "UNAVAILABLE",
+      message:
+        "Commit acceptance is unknown; reconciliation required with the exact request and request ID.",
+      retry: "reconcile_first",
+    });
+  return {
+    async read(call) {
+      const { token, device } = stored();
+      const body = { ...call, context: contextFor(call.context, device) };
+      const { result } = await exchange(() =>
+        http.stateRead(token, body, signal),
+      );
+      if (carriesToken(result, token))
+        throw failure("UNAVAILABLE", UNAVAILABLE);
+      return result;
+    },
+    async commit(call) {
+      const { token, device } = stored();
+      const body = { ...call, context: contextFor(call.context, device) };
+      try {
+        const { result } = await exchange(() =>
+          http.stateCommit(token, body, signal),
+        );
+        if (carriesToken(result, token)) throw unknownCommit();
+        return result;
+      } catch (error) {
+        if (error instanceof ForgeFailure && error.error.code === "UNAVAILABLE")
+          throw unknownCommit();
+        throw error;
+      }
     },
   };
 }
