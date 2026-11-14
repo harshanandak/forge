@@ -6,8 +6,11 @@ import {
   writeFileSync,
   mkdirSync,
   readdirSync,
+  symlinkSync,
+  unlinkSync,
+  rmdirSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { test } from "bun:test";
 import { limitsFrom } from "../../cloud/src/dump.ts";
 import { TABLES } from "../../cloud/conformance/digest.ts";
@@ -50,7 +53,11 @@ async function moduleUrl(
 }
 const compareGuard =
   "JSON.stringify(imageDigests(target)) !== JSON.stringify(expected)";
-const pinGuard = "(await digest(backup)) !== manifest.sha256";
+const pinGuard = /\(await digest\((?:backup|file)\)\) !== manifest.sha256/.exec(
+  await Bun.file(
+    new URL("../../tools/import-current.ts", import.meta.url),
+  ).text(),
+)![0];
 const limits = { ...limitsFrom({}), pageBytes: 4096 };
 // Each CF runs the original guard and its removal against the same synthetic bad input.
 test.each(rows)(
@@ -264,6 +271,95 @@ test.each(rows)(
           continue;
         }
       }
+  },
+  120_000,
+);
+
+// A parent alias can change while both pathname hashes still see the pinned original.
+test.each([false, true])(
+  "CF parent-directory link swap (binding removed: %s)",
+  async (mutant) => {
+    const make = (title: string) =>
+      f.source(9, false, false, (_db, owner) => {
+        owner.put(f.ns, "issue:work-1", { title }, f.actor, {
+          expectRevision: 1,
+        });
+      });
+    const a = make("Pinned A"),
+      b = make("Swapped B");
+    eq(a.manifest.records, b.manifest.records);
+    eq(a.manifest.eventHighWaterMark, b.manifest.eventHighWaterMark);
+    const pathA = String(a.db.all("PRAGMA database_list")[0]!.file);
+    const pathB = String(b.db.all("PRAGMA database_list")[0]!.file);
+    const root = dirname(pathA),
+      link = join(root, "parent-link");
+    const out = join(root, "bundle"),
+      manifest = join(root, "source.json");
+    writeFileSync(manifest, JSON.stringify(a.manifest));
+    const type = process.platform === "win32" ? "junction" : "dir";
+    symlinkSync(dirname(pathA), link, type);
+    const swap = (target: string) =>
+      `if (process.platform === "win32") fs.rmdirSync(${JSON.stringify(link)}); else fs.unlinkSync(${JSON.stringify(link)}); fs.symlinkSync(${JSON.stringify(target)}, ${JSON.stringify(link)}, ${JSON.stringify(type)});`;
+    const changes: Change[] = [
+      ["const checkPin = async", "let pins = 0; const checkPin = async"],
+      [
+        `if (${pinGuard}) invalid();`,
+        `if (${pinGuard}) invalid(); if (++pins === 1) { ${swap(dirname(pathB))} }`,
+      ],
+      [
+        'source.exec("BEGIN");',
+        `source.exec("BEGIN"); ${swap(dirname(pathA))}`,
+      ],
+    ];
+    // The tests-first head lacks the copy; the intact row must expose its successful substitution.
+    const source = await Bun.file(
+      new URL("../../tools/import-current.ts", import.meta.url),
+    ).text();
+    if (mutant && source.includes("await checkPin(copy);"))
+      changes.push(
+        ["await checkPin(copy);", ""],
+        [
+          "await opened(copy, true, handles)",
+          "await opened(resolve(backup), true, handles)",
+        ],
+      );
+    try {
+      const impl = (await import(
+        await moduleUrl("../../tools/import-current.ts", changes)
+      )) as typeof converter;
+      const r = await impl.run({
+        backup: join(link, basename(pathA)),
+        manifest,
+        out,
+        limits,
+      });
+      eq(status(r), mutant ? ["OK", 0, null] : ["FAIL", 6, "INPUT_INVALID"]);
+      eq(a.bytes(), a.manifest.sha256);
+      eq(b.bytes(), b.manifest.sha256);
+      if (!mutant) eq(existsSync(join(out, "manifest.json")), false);
+      else {
+        const bundle = JSON.parse(
+          readFileSync(join(out, "manifest.json"), "utf8"),
+        ) as Awaited<ReturnType<typeof converter.convert>>;
+        eq(bundle.source.sha256, a.manifest.sha256);
+        const values = bundle.pages.flatMap((page) => {
+          const body = JSON.parse(
+            readFileSync(join(out, page.name), "utf8"),
+          ) as { tables: { state_records: { key: string; body: string }[] } };
+          return body.tables.state_records
+            .filter((row) => row.key === "issue:work-1")
+            .map(
+              (row) =>
+                (JSON.parse(row.body) as { value: { title: string } }).value
+                  .title,
+            );
+        });
+        eq(values, ["Swapped B"]);
+      }
+    } finally {
+      if (process.platform === "win32") rmdirSync(link);
+      else unlinkSync(link);
+    }
   },
   120_000,
 );
