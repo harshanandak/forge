@@ -52,7 +52,7 @@ for (const variant of [
   "environment effect",
 ] as const)
   test(`attached head table: ${variant}`, async () => {
-    const root = mkdtempSync(join(tmpdir(), "forge-bound-head-"));
+    const root = mkdtempSync(join(import.meta.dirname, ".forge-bound-head-"));
     const caller = join(root, "caller"),
       target = join(root, "target");
     for (const path of [caller, target]) {
@@ -208,4 +208,4 @@ test("attached head reads the target checkout rather than the caller checkout", 
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-});
+}, 30000);

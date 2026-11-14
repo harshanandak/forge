@@ -279,7 +279,7 @@ export function boundLaneGit(
     "TEMP",
     "TMP",
   ]);
-  const git = resolveOutside(process, "git", env, cwd);
+  const git = resolveOutside(process, "git", env, [process.cwd, cwd]);
   if (git.kind !== "resolved") refuse("UNAVAILABLE", "Git is unavailable.");
   const readGit = async (args: string[]) => {
     const result = await process.run(git, args, {
