@@ -20,6 +20,7 @@ import {
 import type { SqlDatabase, SqlRow } from "../../src/ports/store.ts";
 import { versioned } from "./issue-request-id.ts";
 import { assertNoCheckpoint } from "../../src/core/state/checkpoint.ts";
+import { assertNoEvidence } from "./evidence-receipts.ts";
 
 export const DUMP_FORMAT = "forge-cloud-dump/2";
 export const COMMAND_RECEIPTS = "domain_cloud_command_receipts";
@@ -257,6 +258,7 @@ function* rowsFrom(
 export function dumpOf(db: SqlDatabase | undefined, limits?: Limits): Dump {
   if (db === undefined) return { format: DUMP_FORMAT, tables: emptyTables() };
   assertNoCheckpoint(db);
+  assertNoEvidence(db);
   if (limits !== undefined)
     assertLimits(
       db,
@@ -380,6 +382,7 @@ export function dumpPage(
   };
   if (db === undefined) return empty();
   assertNoCheckpoint(db);
+  assertNoEvidence(db);
   // A page is cut in one synchronous call, so a write cannot land inside it. A write between pages
   // would give a dump with a lease body and no event for it, which cannot be restored.
   const now = watermark(db);

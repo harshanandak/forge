@@ -68,6 +68,7 @@ import {
   type ReceiptPrincipal,
 } from "./issue-request-id.ts";
 import { checkTtl } from "./lease-ttl.ts";
+import { EVIDENCE_MIGRATION, EVIDENCE_RECEIPTS } from "./evidence-receipts.ts";
 import { LANE_APPROVALS, LANE_APPROVAL_MIGRATION } from "./lane-approval.ts";
 import { requireTokenSession } from "./token-session.ts";
 import {
@@ -120,6 +121,7 @@ const domain = {
     DUMP_MIGRATION,
     IMPORT_MIGRATION,
     LANE_APPROVAL_MIGRATION,
+    EVIDENCE_MIGRATION,
   ],
   tables: [
     PRAGMA_TABLE,
@@ -130,6 +132,7 @@ const domain = {
     COMMAND_RECEIPTS,
     EXPORT_STATE,
     LANE_APPROVALS,
+    EVIDENCE_RECEIPTS,
   ],
 };
 
