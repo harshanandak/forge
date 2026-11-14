@@ -371,7 +371,13 @@ const policyRows: [string, unknown, unknown?, unknown?][] = [
   ["oversized", " ".repeat(16_385)],
   [
     "oversized utf8",
-    JSON.stringify({ ...configuredPolicy, version: "?".repeat(8_192) }),
+    JSON.stringify({
+      ...configuredPolicy,
+      requiredChecks: Array.from(
+        { length: 70 },
+        (_, index) => index + "\u754c".repeat(100),
+      ),
+    }),
   ],
   [
     "project mismatch",
@@ -443,6 +449,21 @@ for (const [name, raw, repository = "7", project = "forge"] of policyRows)
   test(
     "server policy:" + name,
     async () => {
+      if (name === "oversized utf8") {
+        if (typeof raw !== "string") throw new Error("Expected JSON fixture");
+        expect(raw.length).toBeLessThan(16_384);
+        expect(new TextEncoder().encode(raw).byteLength).toBeGreaterThan(
+          16_384,
+        );
+        const { policyGuard } =
+          await import("../../cloud/src/merge-evidence.ts");
+        expect(
+          policyGuard({
+            ...(JSON.parse(raw) as object),
+            digest: "d".repeat(64),
+          }),
+        ).toBe(true);
+      }
       const bindings = {
         ...env,
         GITHUB_REPOSITORY_ID: repository,
