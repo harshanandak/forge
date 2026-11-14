@@ -154,7 +154,7 @@ test("close without receipt preserves the existing route and skips GitHub", asyn
 }, 30_000);
 
 for (const op of ["receipt.admit", "receipt.show"])
-  test(`${op} stays declared and refused by the cloud`, async () => {
+  test(`${op} is absent from the catalog and refused by the cloud`, async () => {
     const f = await admissionFixture();
     try {
       const before = f.snapshot();
@@ -162,7 +162,7 @@ for (const op of ["receipt.admit", "receipt.show"])
         f.command({ id: "work-1", pr: 490 }, op),
       ).rejects.toHaveProperty("error.code", "UNKNOWN_COMMAND");
       expect(f.snapshot()).toEqual(before);
-      expect(Object.hasOwn(manifest.operations, op)).toBe(true);
+      expect(Object.hasOwn(manifest.operations, op)).toBe(false);
     } finally {
       f.dbSource.close();
     }
