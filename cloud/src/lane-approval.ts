@@ -6,12 +6,19 @@ import type {
 import { validateWithSchema } from "../../src/contract/schema.ts";
 import { digestValue } from "../../src/core/config/pointer.ts";
 import type { StateOwner } from "../../src/core/state/index.ts";
+import type { SqlDatabase } from "../../src/ports/store.ts";
 import type { CommandRun } from "./issue-commands.ts";
 import { fail } from "./issue-read.ts";
 import { LaneControlStore } from "./lane-control-store.ts";
 
 const NS = "forge/work";
-const KEY = "lane-approval:requests";
+export const LANE_APPROVALS = "domain_cloud_lane_approvals";
+export const LANE_APPROVAL_MIGRATION = {
+  id: "007_cloud_lane_approvals",
+  statements: [
+    `CREATE TABLE ${LANE_APPROVALS} (id INTEGER PRIMARY KEY CHECK (id = 1), state TEXT NOT NULL)`,
+  ],
+};
 export interface ApprovalRequired {
   readonly request: string;
   readonly scope: LaneScope;
@@ -50,6 +57,7 @@ export function checkedApproval(value: unknown): ApprovalRequired {
 
 /** Runs only inside commandWrite's synchronous transaction, together with its receipt. */
 export function requestLaneApproval(
+  db: SqlDatabase,
   owner: StateOwner,
   scope: LaneScope,
   host: CommandRun,
@@ -119,8 +127,11 @@ export function requestLaneApproval(
       "Lane approval origin is unavailable",
     );
   }
-  const held = owner.get(NS, KEY);
-  const prior = held?.value as { requests: LaneApproval[] } | undefined;
+  const held = db.get(`SELECT state FROM ${LANE_APPROVALS} WHERE id=1`);
+  const prior =
+    held === undefined
+      ? undefined
+      : (JSON.parse(String(held.state)) as { requests: LaneApproval[] });
   if (
     prior !== undefined &&
     (!Array.isArray(prior.requests) || prior.requests.length > 128)
@@ -147,29 +158,28 @@ export function requestLaneApproval(
     expiresAt: new Date(host.now + 600_000).toISOString(),
     url: `${origin}/lane-approval/${request}`,
   });
-  // Like device login, keep a bounded collection; retain at most 64 terminal audit rows.
-  owner.put(
-    NS,
-    KEY,
-    {
-      requests: [
-        ...rows.filter((row) => row.status !== "pending").slice(-64),
-        ...live,
-        {
-          ...pending,
-          project: host.project,
-          incarnation: control.result.incarnation,
-          epoch: control.result.epoch,
-          policyIdentity,
-          device: host.device,
-          session: host.session ?? null,
-          token: host.principal[1],
-          status: "pending",
-        },
-      ],
-    },
-    { kind: "agent", id: host.session ?? host.principal[1] },
-    { expectRevision: held?.revision ?? 0 },
+  // Like loginStore, replace private state without copying trimmed requests into events.
+  db.run(
+    `INSERT INTO ${LANE_APPROVALS} (id, state) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET state=excluded.state`,
+    [
+      JSON.stringify({
+        requests: [
+          ...rows.filter((row) => row.status !== "pending").slice(-64),
+          ...live,
+          {
+            ...pending,
+            project: host.project,
+            incarnation: control.result.incarnation,
+            epoch: control.result.epoch,
+            policyIdentity,
+            device: host.device,
+            session: host.session ?? null,
+            token: host.principal[1],
+            status: "pending",
+          },
+        ],
+      }),
+    ],
   );
   return pending;
 }

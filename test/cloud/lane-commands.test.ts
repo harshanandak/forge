@@ -7,6 +7,7 @@ import { StateOwner } from "../../src/core/state/index.ts";
 import type { ResultEnvelope } from "../../src/generated/types.ts";
 import { exitCode } from "../../src/surface/result.ts";
 import {
+  LANE_APPROVALS,
   laneApprovalStatus,
   type LaneApproval,
 } from "../../cloud/src/lane-approval.ts";
@@ -103,6 +104,7 @@ async function fixture(projectName = "p", session: string | null = "s1") {
         "state_leases",
         "state_requests",
         "domain_cloud_command_receipts",
+        LANE_APPROVALS,
       ].map((name) => db.query(`SELECT * FROM ${name}`).all()),
       [...values],
     ]);
@@ -520,7 +522,7 @@ test.each(["audit", "receipt", "approval", "approval receipt"])(
         where === "audit"
           ? "state_records WHEN NEW.key LIKE 'lane-control:audit:%'"
           : where === "approval"
-            ? "state_records WHEN NEW.key = 'lane-approval:requests'"
+            ? LANE_APPROVALS
             : "domain_cloud_command_receipts";
       f.db.run(
         `CREATE TRIGGER refuse_write BEFORE INSERT ON ${target} BEGIN SELECT RAISE(ABORT, 'injected write failure'); END`,
@@ -549,7 +551,15 @@ test.each(["project cap", "expired", "epoch", "incarnation", "retention"])(
       expect(reply.verdict).toEqual(["FAIL", "APPROVAL_REQUIRED", 1]);
       const rows = () =>
         (
-          f.owner.get("forge/work", "lane-approval:requests")!.value as {
+          JSON.parse(
+            String(
+              (
+                f.db
+                  .query(`SELECT state FROM ${LANE_APPROVALS} WHERE id=1`)
+                  .get() as { state: string }
+              ).state,
+            ),
+          ) as {
             requests: LaneApproval[];
           }
         ).requests;

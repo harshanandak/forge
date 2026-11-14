@@ -129,7 +129,7 @@ export function laneCommand(
       owner,
       { identity, recheck: host.recheck, expiresAt: host.expiresAt },
       () => scope,
-      (target) => requestLaneApproval(owner, scopeOf(owner, target), host),
+      (target) => requestLaneApproval(db, owner, scopeOf(owner, target), host),
       checkedApproval,
     );
   return commandWrite(
