@@ -99,11 +99,11 @@ test("issue show loads none of the modules it never calls", () => {
   }
 }, 60_000);
 
-// The public catalog after adding lane.control: help, its full contract and the MCP
+// The public catalog after removing receipt.admit/show: help, its full contract and the MCP
 // tool listing must stay byte for byte the same until an intentional catalog change.
 const catalog = {
-  help: "2b4573eef91ecebaa960b587a84ae193c744c901407a157fe5f7b036937bab0d",
-  helpJson: "7c9e1919753cf9b0ba7907b878fa56fc1f316f57307c1a7011ac9085096e9edf",
+  help: "fc6b8fad9c4e7ef0c465ddd35ec2d2bef6cb1029ec43d40793b739f91d2cd8a5",
+  helpJson: "9be92864d5644d3ec74560bf21f06ae5f8d5083586ca88924e2ceb480382cb63",
   mcpTools: "20940d83078f63696241e5f9c58074e05e833047865f72b33787bb9ba3c7a19a",
 };
 
