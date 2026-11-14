@@ -118,7 +118,7 @@ function unserved(declared: string, input: unknown): ForgeFailure | undefined {
       "lane.next",
       "lane.record",
     ].includes(declared) ||
-      (declared === "lane.next" && !(input as { id?: string })?.id) ||
+      (declared === "lane.next" && !(input as { head?: string })?.head) ||
       (declared === "lane.record" && !(input as { id?: string })?.id) ||
       (typeof input === "object" && input !== null && "attempt" in input))
   )

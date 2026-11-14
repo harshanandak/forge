@@ -2719,7 +2719,7 @@ function limitsOf(config: unknown) {
     lanes: lanes?.max ?? DEFAULT_LIMITS.lanes,
   };
 }
-type Limits = ReturnType<typeof limitsOf>;
+export type Limits = ReturnType<typeof limitsOf>;
 /** A stored autopilot record that is present but unreadable. Only an absent record gets defaults. */
 class StateProblem extends Error {
   readonly global: boolean;

@@ -12,6 +12,7 @@ import type {
   EnvironmentService,
 } from "../../assembly/providers.ts";
 import entry from "./entry.cts";
+import type { Limits } from "./entry.cts";
 import type { StateClient } from "../../ports/state.ts";
 import {
   boundLaneKey,
@@ -102,13 +103,7 @@ function refuse(code: string, message: string): never {
   throw new ForgeFailure({ code, message, retry: "reconcile_first" });
 }
 const helpers = entry as unknown as {
-  limitsOf(config: unknown): {
-    enabled: boolean;
-    calls: number;
-    reviewRounds: number;
-    ciFixRounds: number;
-    activeHours: number;
-  };
+  limitsOf(config: unknown): Limits;
   briefProblems(text: string): string[];
   briefPath(files: FilesService, path: string, windows: boolean): string;
   laneRegistry(
@@ -167,7 +162,8 @@ export async function boundLaneStart(
   const fresh = (await command("issue.show", { id: input.id })) as TrackerItem;
   const id = `work-${fresh.id.replace(/^.*-/, "")}`;
   const found = state?.get(boundLaneKey(project, id));
-  if (found && readBoundLane(found.value, id).releaseRequestId)
+  const previous = found ? readBoundLane(found.value, id) : undefined;
+  if (previous?.releaseRequestId)
     refuse("INPUT_CONFLICT", "Reconcile the pending release before attaching.");
   const own = (issue: TrackerItem, generation?: number) => {
     if (issue.status !== "open")
@@ -175,6 +171,11 @@ export async function boundLaneStart(
     return ownBoundGrant(issue.lease, context, device, generation, now);
   };
   const grant = own(fresh, context.leaseGeneration);
+  let progress = previous?.progress;
+  if (progress && progress.generation !== grant.generation) {
+    const { ask: _ask, verdict: _verdict, ...usage } = progress;
+    progress = { ...usage, generation: grant.generation, pending: false };
+  }
   let record: BoundLaneRecord = {
     version: 1,
     id,
@@ -182,10 +183,7 @@ export async function boundLaneStart(
     grant,
     active: false,
     releaseNeeded: true,
-    ...(found &&
-    readBoundLane(found.value, id).grant.generation === grant.generation
-      ? { progress: readBoundLane(found.value, id).progress }
-      : {}),
+    ...(progress ? { progress } : {}),
     lane: {
       issue: id,
       issueId: id,
@@ -230,12 +228,18 @@ export async function boundLaneProgress(
   const found = state?.get(boundLaneKey(project, id));
   if (!found) refuse("NOT_FOUND", `No device lane for ${fresh.id}`);
   const record = readBoundLane(found.value, id);
+  if (
+    op === "lane.record" &&
+    context.leaseGeneration !== record.progress?.generation
+  )
+    refuse("INPUT_CONFLICT", "Record must match the reservation generation.");
   ownBoundGrant(record.grant, context, device);
   ownBoundGrant(fresh.lease, context, device, record.grant.generation, now);
   if (!record.active || record.releaseRequestId || fresh.status !== "open")
     refuse("INPUT_CONFLICT", "The lane is inactive, releasing or closed.");
   const p: BoundProgress = structuredClone(
     record.progress ?? {
+      generation: record.grant.generation,
       actions: 0,
       records: 0,
       review: 0,
@@ -267,7 +271,7 @@ export async function boundLaneProgress(
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
         refuse("INPUT_INVALID", "Result must be a JSON object.");
       const result = parsed as Record<string, unknown>;
-      if (p.head !== undefined && result.head !== p.head)
+      if (result.head !== p.head)
         refuse("INPUT_CONFLICT", "Result must name the current reserved head.");
       if (result.ask !== undefined)
         p.ask = result.ask as NonNullable<BoundProgress["ask"]>;
@@ -296,17 +300,19 @@ export async function boundLaneProgress(
   }
   const limits = helpers.limitsOf(config);
   const exhausted =
-    !limits.enabled ||
     p.actions >= limits.calls ||
     p.review >= limits.reviewRounds ||
-    p.ci >= limits.ciFixRounds ||
-    now() - p.started >= limits.activeHours * 3_600_000;
+    p.ci >= limits.ciFixRounds;
   let kind = "harness",
     why = "Reserved local action; this is not dispatch permission.";
   if (p.ask) {
     kind = p.ask.answer ? "pause" : "ask-owner";
     why = JSON.stringify(p.ask);
-  } else if (!limits.enabled || (!p.pending && exhausted)) {
+  } else if (
+    !limits.enabled ||
+    now() - p.started >= limits.activeHours * 3_600_000 ||
+    (!p.pending && exhausted)
+  ) {
     kind = "pause";
     why = "Configured device budget or autopilot switch requires a pause.";
   } else if (!p.pending) {
@@ -324,6 +330,7 @@ export async function boundLaneProgress(
     expect:
       "Record the local action; bound runner dispatch remains unavailable until PR 2b.",
     budget: { actions: p.actions, records: p.records },
+    raw: JSON.stringify({ generation: p.generation, head: p.head }),
     ...(p.ask && !p.ask.answer ? { ask: why } : {}),
   };
 }

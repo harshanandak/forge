@@ -1,26 +1,13 @@
-# Bound lane device progress
+﻿# Bound lane progress
 
-Bound lane journals belong to this device and project, fenced by the cloud issue grant.
-Claim the issue first, prepare its checkout and brief, then attach with `lane.start`.
-`lane.status` enumerates this device's attachments. Retained files do not prove ownership.
+Read before bound start, next or record. Claim, prepare the checkout and brief, then attach. Status lists this device's attachments; retained files are not ownership.
 
-`lane.next {id,head}` reserves one numbered local action; repeated calls return that number.
-Supply the actual full Git head. A changed head invalidates the stored review verdict.
-A reservation is never a permit. Bound `run` and `auto` refuse dispatch until PR 2b.
-Do not spawn an agent from a reservation or cache it as permission.
-The complete dispatch boundary must read typed `lane.control {id}` fresh before every spawn,
-including capacity retries and detached children; it must let an already running action finish.
+`lane.next {id,head}` requires the full Git head and reserves one numbered action. Repeats retain its number. Its `raw` JSON gives the reservation's generation and head. A changed head invalidates review.
 
-Record only the current action with `lane.record {id,action,result}`; result is a JSON object.
-Its `head` must match the reserved head. Old heads or generations cannot advance progress.
-Use `review:true` or `ci:true` for completed review/CI rounds. Call and round budgets persist
-across restarts on this device; the time budget measures elapsed time since its first reservation.
-Limits come from the existing autopilot configuration. A budget pause never clears counters.
-Record a review with `mergeGate:{head,verdict,reviewer}` for the current reserved head only.
+For `lane.record`, set `context.leaseGeneration` to that reserved generation and `result.head` to that head. Results and merge-gate verdicts require the original generation. Keep rejected old output as a diagnostic; never relabel it for the current grant.
 
-For a scope question record `ask:{reason,releaseTotal,default}` in the action result.
-Include the total release size and the smallest default; next returns that local ask.
-Record the owner's verbatim `answer` on the same action; next stays paused for inspection.
-An answer grants no cloud resume approval. Record completion only after handling the decision.
-Push, PR creation, merge and each advancing cloud mutation are separate guarded actions.
-`lane.close` remains refused until PR 3; never use a local verdict as close authority.
+Counters survive reattachment and regrant on this device; pending actions, asks and verdicts do not cross generations. Existing autopilot limits apply, including elapsed time since the first reservation. Record completed review/CI rounds with `review:true`/`ci:true`.
+
+Record scope questions as `ask:{reason,releaseTotal,default}`, including the total release size and smallest default. Record the owner's verbatim `answer` on that action; next stays paused. Answers never grant cloud resume approval.
+
+Reservations grant no dispatch permission. Bound run/auto refuse until PR 2b reads typed `lane.control {id}` fresh before each spawn, capacity retry and detached child. Running work finishes normally. Push, PR creation, merge and each advancing cloud mutation remain separate guarded actions. Close stays refused until PR 3; local verdicts are not close authority.

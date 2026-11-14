@@ -1309,6 +1309,7 @@ for (const [name, variants] of [
       const head = "a".repeat(40),
         moved = "b".repeat(40);
       const progress = {
+        generation: OWN_GRANT.generation,
         actions: 1,
         records: 0,
         review: 0,

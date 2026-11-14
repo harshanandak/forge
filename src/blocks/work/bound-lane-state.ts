@@ -13,6 +13,7 @@ export interface BoundProject {
   readonly project: string;
 }
 export interface BoundProgress {
+  generation: number;
   actions: number;
   records: number;
   review: number;
@@ -43,12 +44,14 @@ export function validBoundProgress(value: unknown): value is BoundProgress {
     !shape(
       value,
       ["actions", "records", "review", "ci", "started", "pending"],
-      ["head", "verdict", "ask"],
+      ["head", "verdict", "ask", "generation"],
     )
   )
     return false;
   const p = value as BoundProgress;
   return (
+    Number.isSafeInteger(p.generation) &&
+    p.generation > 0 &&
     [p.actions, p.records, p.review, p.ci, p.started].every(
       (n) => Number.isSafeInteger(n) && n >= 0,
     ) &&
@@ -115,7 +118,9 @@ export function readBoundLane(value: unknown, id: string): BoundLaneRecord {
     record.cloudId.match(/^[a-z0-9]+(?:-[a-z0-9]+)*-(\d+)$/)?.[1] !==
       id.slice(5) ||
     typeof record.active !== "boolean" ||
-    (record.progress !== undefined && !validBoundProgress(record.progress)) ||
+    (record.progress !== undefined &&
+      (!validBoundProgress(record.progress) ||
+        record.progress.generation !== record.grant?.generation)) ||
     (record.releaseNeeded !== undefined &&
       typeof record.releaseNeeded !== "boolean") ||
     (record.releaseRequestId !== undefined &&
