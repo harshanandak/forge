@@ -213,6 +213,7 @@ export async function readGithubMergeEvidence(
 ) {
   type Code = "INPUT_INVALID" | "UNAVAILABLE";
   const failure: { code: Code } = { code: "UNAVAILABLE" };
+  let failed = false;
   const refuse = (code: Code) => ({
     ok: false as const,
     code,
@@ -222,6 +223,7 @@ export async function readGithubMergeEvidence(
         : "GitHub unavailable",
   });
   function fail(code: Code = "INPUT_INVALID"): never {
+    failed = true;
     failure.code = code;
     throw new Error("GitHub evidence refused");
   }
@@ -263,7 +265,7 @@ export async function readGithubMergeEvidence(
           );
           const checks: Evidence.MergeObservations["runs"][number]["checks"][number][] =
             [];
-          const readCheck = async (raw: unknown) => {
+          const prepareCheck = (raw: unknown) => {
             const job = object(raw);
             if (
               job.run_id !== run.id ||
@@ -291,7 +293,17 @@ export async function readGithubMergeEvidence(
             if (!positive(id) || String(id) !== suffix) fail("UNAVAILABLE");
             if (seen.has(id)) fail();
             seen.add(id);
-            const check = object(await session.get(["check-runs", suffix]));
+            return { job, id, suffix };
+          };
+          const readCheck = async ({
+            job,
+            id,
+            suffix,
+          }: ReturnType<typeof prepareCheck>) => {
+            if (failed) fail(failure.code);
+            const value = await session.get(["check-runs", suffix]);
+            if (failed) fail(failure.code);
+            const check = object(value);
             if (
               check.id !== id ||
               object(check.check_suite).id !== checkSuiteId ||
@@ -324,14 +336,18 @@ export async function readGithubMergeEvidence(
               completedAt: check.completed_at,
             } as Evidence.MergeObservations["runs"][number]["checks"][number];
           };
-          // Bound fan-out, retaining job order and stopping before the next batch on failure.
+          // Validate the whole batch before dispatch; Promise.all retains job order.
           const checkConcurrency = 6;
-          for (let offset = 0; offset < jobs.length; offset += checkConcurrency)
-            checks.push(
-              ...(await Promise.all(
-                jobs.slice(offset, offset + checkConcurrency).map(readCheck),
-              )),
-            );
+          for (
+            let offset = 0;
+            offset < jobs.length;
+            offset += checkConcurrency
+          ) {
+            const batch = jobs
+              .slice(offset, offset + checkConcurrency)
+              .map(prepareCheck);
+            checks.push(...(await Promise.all(batch.map(readCheck))));
+          }
           runs.push({ ...run, checks });
           budget([snapshot, runs]);
         }
