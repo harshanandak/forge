@@ -55,6 +55,8 @@ import manifest from "../../src/blocks/work/forge.block.json" with { type: "json
 import { createStateClient } from "../../src/assembly/state-client.ts";
 import { StateOwner } from "../../src/core/state/index.ts";
 import type {
+  StateCommitRequest,
+  StateCommitResult,
   StateQuery,
   StateReadResult,
   StateReadVersion,
@@ -126,6 +128,7 @@ function fixture(
   settings: Record<string, unknown> = vars,
   name = "p",
   registry = new Map<string, () => Project>(),
+  ProjectType: typeof Project = Project,
 ) {
   const env = { ...settings, FORGE_CLOUD_PROJECT: name };
   let t = start;
@@ -181,7 +184,7 @@ function fixture(
       return Promise.resolve(values.delete(key));
     },
   };
-  let project = new Project({ storage }, env);
+  let project = new ProjectType({ storage }, env);
   registry.set(name, () => project);
   const reached: string[] = [];
   const bindings = {
@@ -355,7 +358,7 @@ function fixture(
       );
     },
     reopen: () => {
-      project = new Project({ storage }, env);
+      project = new ProjectType({ storage }, env);
     },
     advance: (ms: number) => {
       t += ms;
@@ -365,8 +368,16 @@ function fixture(
 }
 const stateNamespaces = ["forge/memory"];
 const statePolicy = digestValue(stateNamespaces);
-async function stateFixture() {
-  const f = fixture({ ...vars, FORGE_STATE_NAMESPACES: stateNamespaces });
+async function stateFixture(
+  namespaces = stateNamespaces,
+  ProjectType: typeof Project = Project,
+) {
+  const f = fixture(
+    { ...vars, FORGE_STATE_NAMESPACES: namespaces },
+    "p",
+    new Map(),
+    ProjectType,
+  );
   const token = await f.device(day, "laptop", "s1");
   const owner = new StateOwner(durableStore(f.storage), { now: f.now });
   const put = (key: string, value: unknown = key, namespace = "forge/memory") =>
@@ -376,7 +387,7 @@ async function stateFixture() {
   const read = async (
     query: StateQuery,
     readVersion?: StateReadVersion,
-    policyRevision = statePolicy,
+    policyRevision = digestValue([...new Set(namespaces)].sort()),
   ) => {
     const before = f.snapshot();
     const got = await f.send(
@@ -397,8 +408,455 @@ async function stateFixture() {
     ).toEqual([]);
     return { ...got, value: got.json.result as StateReadResult };
   };
-  return { ...f, token, owner, put, read };
+  const plan = async (
+    entries: StateCommitRequest["entries"],
+    namespace = "forge/memory",
+    requestId = "state-1",
+  ): Promise<StateCommitRequest> => {
+    const got = await f.send(
+      {
+        ...stateRead,
+        namespace,
+        policyRevision: "discover",
+        query: { kind: "get", key: "absent" },
+      },
+      { token, path: "state/read" },
+    );
+    expect(got.status).toBe(200);
+    const version = got.json.result as StateReadResult;
+    return {
+      ...stateCommit,
+      version: 1,
+      kind: "commit",
+      context: {
+        actor,
+        project: { id: "p" },
+        device: { id: "laptop" },
+        session: { id: "s1", device: "laptop" },
+      },
+      namespace,
+      requestId,
+      policyRevision: version.policyRevision,
+      readVersion: version.readVersion,
+      readSet: [],
+      entries,
+    };
+  };
+  const commit = (input: unknown, options: Options = {}) =>
+    f.send(input, { token, path: "state/commit", ...options });
+  const stable = () => {
+    const snapshot = JSON.parse(f.snapshot()) as {
+      sql: [string, unknown][];
+      kv: unknown;
+    };
+    return JSON.stringify({
+      ...snapshot,
+      sql: snapshot.sql.filter(
+        ([name]) =>
+          !["domain_cloud_command_receipts", "domain_cloud_export"].includes(
+            name,
+          ),
+      ),
+    });
+  };
+  const successes = () =>
+    JSON.stringify(
+      f.db
+        .query(
+          "SELECT * FROM domain_cloud_command_receipts WHERE outcome='ok' ORDER BY request_id",
+        )
+        .all(),
+    );
+  return { ...f, token, owner, put, read, plan, commit, stable, successes };
 }
+
+for (const keys of [
+  ["note:1", "counter"],
+  ["decision:1", "index", "counter"],
+])
+  test(`state commit atomic/replay table: ${keys.length} entries`, async () => {
+    const f = await stateFixture();
+    try {
+      f.put("foreign", "keep", "other/state");
+      const foreign = rowsOf(f.db, "other/state");
+      const input = await f.plan(
+        keys.map((key) => ({ key, value: { key }, expectRevision: 0 })),
+      );
+      const request = {
+        ...input,
+        readSet: [
+          {
+            namespace: input.namespace,
+            key: "absent",
+            expectRevision: 0,
+            readVersion: input.readVersion,
+          },
+        ],
+      };
+      const got = await f.commit(request);
+      expect([got.status, got.exit]).toEqual([200, 0]);
+      const result = got.json.result as StateCommitResult;
+      expect(
+        result.records.map((r) => [r.key, r.revision, r.updatedBy]),
+      ).toEqual(keys.map((key) => [key, 1, actor]));
+      expect(result.readVersion.revision).toBe(
+        f.owner.namespaceRevision(input.namespace),
+      );
+      expect(rowsOf(f.db, "other/state")).toEqual(foreign);
+      const saved = f.snapshot();
+      expect((await f.commit(request)).text).toBe(got.text);
+      expect(f.snapshot()).toBe(saved);
+      for (const changed of [
+        { input: { changed: true } },
+        { entries: [{ ...input.entries[0]!, value: "changed" }] },
+        { operation: "record.other" },
+        {
+          context: {
+            ...input.context,
+            actor: { kind: "human", id: "different" },
+          },
+        },
+      ]) {
+        const refused = await f.commit({ ...request, ...changed });
+        expect([refused.status, refused.code, refused.exit]).toEqual([
+          409,
+          "INPUT_CONFLICT",
+          4,
+        ]);
+        expect(f.snapshot()).toBe(saved);
+      }
+    } finally {
+      f.db.close();
+      mock.restore();
+    }
+  }, 30_000);
+
+for (const mode of [
+  "entry",
+  "dependency",
+  "phantom",
+  "epoch",
+  "config",
+  "cross namespace",
+] as const)
+  test(`state commit conflict table: ${mode}`, async () => {
+    const f = await stateFixture();
+    try {
+      f.put("existing");
+      let input = await f.plan([
+        { key: "one", value: 1, expectRevision: 0 },
+        { key: "two", value: 2, expectRevision: 0 },
+      ]);
+      if (mode === "entry")
+        input = {
+          ...input,
+          entries: [
+            { key: "existing", value: "stale", expectRevision: 0 },
+            input.entries[1]!,
+          ],
+        };
+      if (mode === "dependency" || mode === "cross namespace")
+        input = {
+          ...input,
+          readSet: [
+            {
+              namespace:
+                mode === "dependency" ? input.namespace : "other/state",
+              key: "existing",
+              expectRevision: 0,
+              readVersion: input.readVersion,
+            },
+          ],
+        };
+      if (mode === "phantom") f.put("phantom");
+      if (mode === "epoch") await f.storage.put("state:epoch", "new-epoch");
+      if (mode === "config") input = { ...input, policyRevision: "old-policy" };
+      const before = f.stable(),
+        successes = f.successes();
+      const got = await f.commit(input);
+      expect([got.status, got.code, got.exit]).toEqual(
+        mode === "cross namespace"
+          ? [400, "INPUT_INVALID", 6]
+          : [409, "REVISION_CONFLICT", 4],
+      );
+      expect(f.stable()).toBe(before);
+      expect(f.successes()).toBe(successes);
+      const receipts = f.db
+        .query("SELECT outcome FROM domain_cloud_command_receipts")
+        .all() as { outcome: string }[];
+      expect(receipts.every((r) => r.outcome === "refused")).toBe(true);
+    } finally {
+      f.db.close();
+      mock.restore();
+    }
+  }, 30_000);
+
+test("state receipt keys isolate namespace, principal and typed command families", async () => {
+  const f = await stateFixture(["forge/memory", "other/state"]);
+  try {
+    const answers: [StateCommitRequest, string][] = [];
+    for (const namespace of ["forge/memory", "other/state"]) {
+      const input = await f.plan(
+        [{ key: "one", value: namespace, expectRevision: 0 }],
+        namespace,
+        "shared-1",
+      );
+      const got = await f.commit(input);
+      expect(got.status).toBe(200);
+      answers.push([input, got.text]);
+    }
+    const typed = await f.send(
+      {
+        requestId: "shared-1",
+        op: "issue.create",
+        input: { title: "Typed" },
+        context: { actor },
+      },
+      { token: f.token },
+    );
+    expect(typed.status).toBe(200);
+    const otherToken = await f.device(day, "laptop", "s1");
+    const input = await f.plan(
+      [{ key: "two", value: 2, expectRevision: 0 }],
+      "forge/memory",
+      "shared-1",
+    );
+    expect((await f.commit(input, { token: otherToken })).status).toBe(200);
+    const saved = f.snapshot();
+    for (const [request, text] of answers)
+      expect((await f.commit(request)).text).toBe(text);
+    expect(f.snapshot()).toBe(saved);
+    const ids = f.db
+      .query("SELECT request_id FROM domain_cloud_command_receipts")
+      .all() as { request_id: string }[];
+    expect(new Set(ids.map((r) => r.request_id)).size).toBe(4);
+    expect(ids.filter((r) => r.request_id.startsWith("s2:")).length).toBe(3);
+    for (const [family, prefix] of [
+      ["command", "c2:"],
+      ["lease", "l2:"],
+    ] as const)
+      expect(scopeRequestId(family, receiptPrincipal, "raw")).toBe(
+        prefix + digestValue([2, family, receiptPrincipal, "raw"]).slice(7),
+      );
+  } finally {
+    f.db.close();
+    mock.restore();
+  }
+}, 30_000);
+
+for (const mode of [
+  "valid",
+  "expired fence",
+  "replaced fence",
+  "spoofed holder",
+  "replay expired",
+  "final revoke",
+  "epoch expiry",
+  "config changed",
+] as const)
+  test(`state commit final authority table: ${mode}`, async () => {
+    const namespaces = ["forge/memory"];
+    const f = await stateFixture(namespaces);
+    try {
+      const holder = { actor, session: { id: "s1", device: "laptop" } };
+      const lease = f.owner.acquire(
+        "forge/memory",
+        "subject",
+        mode === "spoofed holder"
+          ? { actor, session: { id: "foreign", device: "other" } }
+          : holder,
+        1000,
+        "held",
+      );
+      const fence = {
+        subject: "subject",
+        holder,
+        generation: lease.generation,
+      };
+      const plan = await f.plan([{ key: "one", value: 1, expectRevision: 0 }]);
+      const input = {
+        ...plan,
+        fence: { subject: "subject", generation: lease.generation },
+        input: { holder },
+      };
+      if (mode === "replay expired")
+        expect((await f.commit(input)).status).toBe(200);
+      if (mode === "expired fence" || mode === "replay expired")
+        f.advance(1000);
+      if (mode === "replaced fence") {
+        f.owner.release(input.namespace, fence);
+        f.owner.acquire(
+          input.namespace,
+          "subject",
+          holder,
+          1000,
+          "replacement",
+        );
+      }
+      if (mode === "epoch expiry") {
+        const get = f.storage.get.bind(f.storage);
+        spyOn(f.storage, "get").mockImplementation(async (key) => {
+          const value = await get(key);
+          if (key === "state:epoch") f.advance(2 * day);
+          return value;
+        });
+      }
+      let before = f.stable();
+      const successes = f.successes();
+      if (mode === "final revoke" || mode === "config changed") {
+        const transaction = f.storage.transactionSync.bind(f.storage);
+        spyOn(f.storage, "transactionSync").mockImplementation((run) => {
+          if (mode === "final revoke") revoke(f, f.token);
+          else namespaces.push("other/state");
+          before = f.stable();
+          return transaction(run);
+        });
+      }
+      const got = await f.commit(input);
+      const code =
+        mode === "valid"
+          ? undefined
+          : mode === "replaced fence"
+            ? "LEASE_STALE"
+            : mode === "spoofed holder"
+              ? "LEASE_NOT_HELD"
+              : mode === "final revoke"
+                ? "AUTH_REVOKED"
+                : mode === "epoch expiry"
+                  ? "AUTH_EXPIRED"
+                  : mode === "config changed"
+                    ? "REVISION_CONFLICT"
+                    : "LEASE_EXPIRED";
+      expect([got.status, got.code, got.exit]).toEqual(
+        code === undefined
+          ? [200, undefined, 0]
+          : [
+              code.startsWith("AUTH") ? 401 : 409,
+              code,
+              code.startsWith("AUTH") ? 1 : 4,
+            ],
+      );
+      if (mode !== "valid") {
+        expect(f.stable()).toBe(before);
+        expect(f.successes()).toBe(successes);
+      }
+    } finally {
+      f.db.close();
+      mock.restore();
+    }
+  }, 30_000);
+
+for (const fault of [
+  "second record",
+  "version result",
+  "receipt",
+  "full budget",
+  "prune",
+  "dropped reply",
+] as const)
+  test(`state commit transaction fault table: ${fault}`, async () => {
+    const f = await stateFixture();
+    try {
+      const input = await f.plan([
+        { key: "one", value: 1, expectRevision: 0 },
+        { key: "two", value: 2, expectRevision: 0 },
+      ]);
+      if (fault === "full budget" || fault === "prune") {
+        const insert = f.db.query(
+          "INSERT INTO domain_cloud_command_receipts(request_id,fingerprint,outcome,result,created_at,expires_at) VALUES (?,?, 'ok','{}',?,?)",
+        );
+        for (let i = 0; i < (fault === "prune" ? 1 : MAX_RECEIPTS); i++)
+          insert.run(
+            `seed-${i}`,
+            "seed",
+            f.now(),
+            fault === "prune" ? f.now() - 1 : f.now() + day,
+          );
+      }
+      const before = f.snapshot(),
+        domain = f.stable(),
+        successes = f.successes();
+      const original = f.storage.sql.exec.bind(f.storage.sql);
+      let versions = 0;
+      const injected = spyOn(f.storage.sql, "exec").mockImplementation(
+        (sql, ...bindings) => {
+          if (
+            (fault === "second record" &&
+              sql.startsWith("INSERT INTO state_records") &&
+              bindings[1] === "two") ||
+            (fault === "version result" &&
+              sql.includes("MAX(sequence)") &&
+              bindings[0] === input.namespace &&
+              ++versions === 2) ||
+            (fault === "receipt" &&
+              sql.startsWith("INSERT INTO domain_cloud_command_receipts"))
+          )
+            throw new Error("injected state commit failure");
+          return original(sql, ...bindings);
+        },
+      );
+      let acceptedText: string | undefined;
+      const dropped: Fetcher = {
+        fetch: async (request, env) => {
+          const response = await createWorker().fetch(request, env);
+          expect(response.status).toBe(200);
+          acceptedText = await response.text();
+          return Response.json(
+            {
+              ok: false,
+              status: "FAIL",
+              error: {
+                code: "UNAVAILABLE",
+                message: "Reply lost",
+                retry: "reconcile_first",
+              },
+              warnings: [],
+            },
+            { status: 503 },
+          );
+        },
+      };
+      const got = await f.commit(
+        input,
+        fault === "dropped reply" ? { via: dropped } : {},
+      );
+      injected.mockRestore();
+      if (
+        ["second record", "version result", "receipt", "full budget"].includes(
+          fault,
+        )
+      ) {
+        expect([got.status, got.code, got.exit]).toEqual(
+          fault === "full budget"
+            ? [503, "UNAVAILABLE", 1]
+            : [500, "INTERNAL", 1],
+        );
+        expect(f.snapshot()).toBe(before);
+        expect(f.stable()).toBe(domain);
+        expect(f.successes()).toBe(successes);
+      } else {
+        expect([got.status, got.code, got.exit]).toEqual(
+          fault === "dropped reply"
+            ? [503, "UNAVAILABLE", 1]
+            : [200, undefined, 0],
+        );
+        if (fault === "prune")
+          expect(
+            f.db
+              .query(
+                "SELECT * FROM domain_cloud_command_receipts WHERE request_id='seed-0'",
+              )
+              .all(),
+          ).toEqual([]);
+        const saved = f.snapshot();
+        expect((await f.commit(input)).text).toBe(acceptedText ?? got.text);
+        expect(f.snapshot()).toBe(saved);
+      }
+    } finally {
+      f.db.close();
+      mock.restore();
+    }
+  }, 30_000);
 test("state read query and cursor table returns facts without writes", async () => {
   const f = await stateFixture();
   try {
@@ -4253,7 +4711,7 @@ const make = (id: string, input: object = { title: "New" }, more = {}) => ({
   context: { actor },
   ...more,
 });
-const revoke = (f: F, token: string) =>
+const revoke = (f: { db: Database; now: () => number }, token: string) =>
   f.db
     .query("UPDATE domain_cloud_tokens SET revoked_at=? WHERE id=?")
     .run(f.now(), token.slice(4, 20));
