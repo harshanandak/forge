@@ -41,7 +41,12 @@ export function decodeEvidence(text: string): EvidenceReceipt {
     maxNodes: 4096,
     maxStringLength: 256,
   });
-  if (!parsed.ok || registry.validate("#", parsed.value).length) return fail();
+  if (
+    !parsed.ok ||
+    !isPlainJson(parsed.value) ||
+    registry.validate("#", parsed.value).length
+  )
+    return fail();
   const receipt = parsed.value as EvidenceReceipt;
   const c = receipt.candidate;
   const result = merge.evaluateMergeEvidence(
