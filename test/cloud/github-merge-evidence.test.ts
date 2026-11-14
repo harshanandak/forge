@@ -21,6 +21,8 @@ const rows: [string, string, unknown, string | null][] = [
   ["budget:concurrency", "", null, null],
   ["budget:client", "", null, null],
   ["budget:abort", "", null, "UNAVAILABLE"],
+  ["budget:bad-job", "", null, "INPUT_INVALID"],
+  ["budget:bad-response", "", null, "INPUT_INVALID"],
   ..."ok squash failure cancelled queued missing-check wrong-producer not-ancestor mixed-case"
     .split(" ")
     .map((n): [string, string, unknown, null] => [n, "", null, null]),
@@ -102,6 +104,10 @@ for (const [name, path, value, code] of rows)
       active = 0,
       peak = 0;
     const pending: (() => void)[] = [];
+    const late: (() => void)[] = [],
+      drained = Promise.withResolvers<void>();
+    let discarded = 0,
+      lateReads = 0;
     const result = await module.readGithubMergeEvidence!(input, {
       now: () => clock,
       signal: new AbortController().signal,
@@ -194,6 +200,24 @@ for (const [name, path, value, code] of rows)
               conclusion: "success",
               completed_at: time,
             };
+          if (name === "budget:bad-response" && id === 41)
+            body = { ...(body as object), head_sha: "bad" };
+          else if (name === "budget:bad-response") {
+            await new Promise<void>((resolve) => late.push(resolve));
+            return new Response(
+              new ReadableStream(
+                {
+                  pull: () => {
+                    lateReads++;
+                  },
+                  cancel: () => {
+                    if (++discarded === 5) drained.resolve();
+                  },
+                },
+                { highWaterMark: 0 },
+              ),
+            );
+          }
         } else if (parts.at(-1) === "jobs") {
           expect(u.searchParams.get("per_page")).toBe("100");
           expect(u.searchParams.has("page")).toBe(false);
@@ -218,6 +242,8 @@ for (const [name, path, value, code] of rows)
                 ? value
                 : `https://api.github.com/repos/acme/forge/check-runs/${timed ? 41 + i : name === "duplicate-check" ? 42 : attempt === 1 ? 41 : 42}`,
           }));
+          if (name === "budget:bad-job")
+            Object.assign(jobs[0]!, { run_id: 99 });
           body = {
             jobs,
             total_count: jobs.length + (name === "jobs-count" ? 1 : 0),
@@ -305,16 +331,25 @@ for (const [name, path, value, code] of rows)
         });
       },
     });
+    if (name === "budget:bad-response") {
+      expect(late).toHaveLength(5);
+      for (const release of late) release();
+      await drained.promise;
+      expect(lateReads).toBe(0);
+      expect([prReads, runLists]).toEqual([1, 1]);
+    }
     expect(result.ok).toBe(code === null);
     if (timed) {
-      expect(peak).toBe(6);
+      expect(peak).toBe(name === "budget:bad-job" ? 0 : 6);
       if (code === null) expect(clock - Date.parse(time)).toBeLessThan(10_000);
-      if (name === "budget:abort") {
+      if (
+        ["budget:abort", "budget:bad-job", "budget:bad-response"].includes(name)
+      ) {
         expect(
           urls.filter(
             (url) => new URL(url).pathname.split("/").at(-2) === "check-runs",
           ),
-        ).toHaveLength(6);
+        ).toHaveLength(name === "budget:bad-job" ? 0 : 6);
       }
       if (name === "budget:client") {
         const deadline = spyOn(AbortSignal, "timeout").mockReturnValue(
