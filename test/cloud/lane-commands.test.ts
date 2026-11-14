@@ -1261,7 +1261,7 @@ test.each(["approval", "control", "receipt"])(
           : where === "control"
             ? "state_records WHEN NEW.key = 'lane-control:global'"
             : "domain_cloud_command_receipts";
-      const operation = where === "approval" ? "UPDATE" : "INSERT";
+      const operation = where === "receipt" ? "INSERT" : "UPDATE";
       f.db.run(
         `CREATE TRIGGER refuse_resume BEFORE ${operation} ON ${target} BEGIN SELECT RAISE(ABORT, 'injected resume failure'); END`,
       );
