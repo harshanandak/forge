@@ -1,6 +1,8 @@
 import { ForgeFailure } from "../../contract/failure.ts";
 import type { LeaseRecord } from "../../generated/types.ts";
 import { validateLeaseRecord } from "../../generated/validators.ts";
+import type { StateClient } from "../../ports/state.ts";
+import type { StateRecord } from "../../generated/types.ts";
 
 export interface BoundProject {
   readonly origin: string;
@@ -20,6 +22,7 @@ export interface BoundLaneRecord {
   };
   readonly grant: LeaseRecord;
   readonly active: boolean;
+  readonly releaseNeeded?: boolean;
 }
 export const boundLaneKey = (project: BoundProject, id = "") =>
   `bound-lane:${JSON.stringify([project.origin, project.identity, project.project])}:${id}`;
@@ -32,7 +35,15 @@ export function readBoundLane(value: unknown, id: string): BoundLaneRecord {
     record?.version !== 1 ||
     Object.keys(record).some(
       (key) =>
-        !["version", "id", "cloudId", "lane", "grant", "active"].includes(key),
+        ![
+          "version",
+          "id",
+          "cloudId",
+          "lane",
+          "grant",
+          "active",
+          "releaseNeeded",
+        ].includes(key),
     ) ||
     record.id !== id ||
     !/^work-\d+$/.test(id) ||
@@ -41,6 +52,8 @@ export function readBoundLane(value: unknown, id: string): BoundLaneRecord {
     record.cloudId.match(/^[a-z0-9]+(?:-[a-z0-9]+)*-(\d+)$/)?.[1] !==
       id.slice(5) ||
     typeof record.active !== "boolean" ||
+    (record.releaseNeeded !== undefined &&
+      typeof record.releaseNeeded !== "boolean") ||
     !lane ||
     Object.keys(lane).some(
       (key) =>
@@ -60,4 +73,17 @@ export function readBoundLane(value: unknown, id: string): BoundLaneRecord {
       retry: "never",
     });
   return record as BoundLaneRecord;
+}
+
+export function writeBoundLane(
+  state: StateClient,
+  project: BoundProject,
+  value: BoundLaneRecord,
+  expectRevision: number,
+): StateRecord {
+  return state.put(
+    boundLaneKey(project, value.id),
+    readBoundLane(value, value.id),
+    { expectRevision },
+  );
 }
