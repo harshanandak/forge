@@ -79,6 +79,9 @@ import {
   LANE_BROWSER_MIGRATION,
 } from "./auth/lane-browser.ts";
 import { requireTokenSession } from "./token-session.ts";
+import { admitState, isStatePath, stateRoute } from "./state-access.ts";
+import { parseStateInput } from "./state-input.ts";
+import { readState, STATE_EPOCH } from "./state-read.ts";
 import {
   authorize,
   authorizeToken,
@@ -213,6 +216,7 @@ async function bounded(
   request: Request,
   max = MAX_BODY,
   code = "INPUT_INVALID",
+  strictUtf8 = false,
 ): Promise<string> {
   const tooBig = (): ForgeFailure => fail(code, `body is over ${max} bytes`);
   if (Number(request.headers.get("content-length")) > max) throw tooBig();
@@ -234,7 +238,12 @@ async function bounded(
     }
     chunks.push(value);
   }
-  return new TextDecoder().decode(await new Blob(chunks).arrayBuffer());
+  const bytes = await new Blob(chunks).arrayBuffer();
+  try {
+    return new TextDecoder("utf-8", { fatal: strictUtf8 }).decode(bytes);
+  } catch {
+    throw fail("INPUT_INVALID", "body must be valid UTF-8");
+  }
 }
 
 // A refusal before the body is read drops the body, so nothing reads the stream after the response.
@@ -300,6 +309,7 @@ export class Project {
     try {
       const url = new URL(request.url);
       const route = url.pathname.split("/")[3] ?? "";
+      if (isStatePath(request)) return await this.#state(request);
       // Login is public: the capability is the device code, and nothing here approves or mints for a caller.
       if (isLoginRoute(request)) {
         if (!(await this.#isProvisioned()))
@@ -357,6 +367,9 @@ export class Project {
         // Issuing a token provisions the project, so staged rows are cleared first: they were never checked.
         if ((await this.#storage.get(STAGED)) !== undefined)
           await this.#abandon();
+        const epoch = await this.#storage.get(STATE_EPOCH);
+        if (typeof epoch !== "string" || epoch.length === 0)
+          await this.#storage.put(STATE_EPOCH, crypto.randomUUID());
         await this.#storage.put(PROVISIONED, true);
         this.#provisioned = true;
         const value = await issueToken(
@@ -537,6 +550,69 @@ export class Project {
     }
   }
 
+  async #state(request: Request): Promise<Response> {
+    try {
+      const route = stateRoute(request);
+      if (route === undefined || request.method !== "POST")
+        throw fail("UNKNOWN_COMMAND", "No such state route");
+      if (
+        route.project !== this.#env.FORGE_CLOUD_PROJECT ||
+        request.headers.has("X-Forge-Owner") ||
+        request.headers.has("X-Forge-Owner-Expires")
+      )
+        throw fail(
+          "AUTH_FORBIDDEN",
+          "State routes need a device token on the admitted project",
+        );
+      const presented = bearer(request);
+      if (presented === undefined)
+        throw fail("AUTH_REQUIRED", "A device token is required");
+      if (!wellFormed(presented))
+        throw fail("AUTH_FORBIDDEN", "State routes need a device token");
+      const parts = await tokenParts(presented);
+      if (!(await this.#isProvisioned()))
+        throw fail("AUTH_INVALID", "Token is not valid");
+      const db = readOnlyStore(this.#storage, TOKENS, [TOKEN_LOOKUP]);
+      if (db === undefined) throw fail("AUTH_INVALID", "Token is not valid");
+      authorizeToken(db, parts, Date.now());
+      const body = await bounded(
+        request,
+        MAX_COMMAND_BODY,
+        "INPUT_INVALID",
+        true,
+      );
+      // Recheck after the stream; no writable owner is opened by admission.
+      const token = authorizeToken(db, parts, Date.now());
+      const input = parseStateInput(body);
+      if (input.kind !== route.kind)
+        throw fail("INPUT_INVALID", "State route and kind must agree");
+      const admission = admitState(
+        input,
+        { ...token, project: route.project },
+        (this.#env as { FORGE_STATE_NAMESPACES?: unknown })
+          .FORGE_STATE_NAMESPACES,
+      );
+      if (input.kind === "read") {
+        const epoch = await this.#storage.get(STATE_EPOCH);
+        authorizeToken(db, parts, Date.now());
+        return readState(
+          this.#storage,
+          input,
+          route.project,
+          admission.policyRevision,
+          epoch,
+        );
+      }
+      throw fail("UNAVAILABLE", "State commits are not available yet");
+    } catch (error) {
+      if (!(error instanceof ForgeFailure)) throw error;
+      await discard(request);
+      return Response.json(failed(error.error), {
+        status: STATUS[error.error.code] ?? 500,
+      });
+    }
+  }
+
   // A typed command, for a device token only: never the owner-forward path, never an admin token.
   // Every refusal is a FAIL envelope. The token is checked before the body is read and again, with
   // no await before the command would run, so a revoke or expiry during the read ends it.
@@ -644,6 +720,7 @@ export class Project {
       }
       await this.#storage.delete(STAGED);
     }
+    await this.#storage.put(STATE_EPOCH, crypto.randomUUID());
     await this.#storage.put(PROVISIONED, true);
     this.#provisioned = true;
     return Response.json({ ok: true, value });

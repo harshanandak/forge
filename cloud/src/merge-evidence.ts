@@ -225,7 +225,10 @@ export function evaluateMergeEvidence(
     return refuse("UNAVAILABLE", "GitHub evidence is incomplete");
   if (!observationGuard(observation) || !linked(observation.binding))
     return refuse("INPUT_INVALID", "Invalid normalized observations");
-  const { initialPr, finalPr, runs } = observation;
+  const { initialPr, finalPr } = observation;
+  const runs = observation.runs.filter(
+    (run) => run.workflowId === policy.producer.workflowId,
+  );
   const now = Date.parse(verifiedAt);
   if (
     [initialPr, finalPr].some((pr) =>

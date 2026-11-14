@@ -8,7 +8,8 @@ import type { Access, AuthComposition } from "./auth/compose.ts";
 import { configUnavailable, isOAuthRoute } from "./auth/compose.ts";
 import { isDeviceCallback, isDeviceRoute } from "./auth/device-browser.ts";
 import { isLaneCallback, isLaneRoute } from "./auth/lane-browser.ts";
-import { commandProject } from "./issue-commands.ts";
+import { commandProject, failed } from "./issue-commands.ts";
+import { isStatePath, stateRoute } from "./state-access.ts";
 import { PROJECT_NAME } from "./project-name.ts";
 import {
   isLoginRoute,
@@ -39,10 +40,13 @@ const unauthorized = (
   code: string,
   message: string,
   status = 401,
+  state = false,
 ): Response => {
   void request.body?.cancel().catch(() => undefined);
   return Response.json(
-    { ok: false, error: { code, message, retry: "never" } },
+    state
+      ? failed({ code, message, retry: "never" })
+      : { ok: false, error: { code, message, retry: "never" } },
     { status },
   );
 };
@@ -62,7 +66,17 @@ const legacyWorker = {
   ): Promise<Response> {
     // Commands are for a device token on the one admitted project. Refuse everything else first:
     // before owner headers are stripped, before OAuth is read and before any object is looked up.
-    const target = commandProject(request);
+    const state = isStatePath(request);
+    const route = stateRoute(request);
+    if (state && (route === undefined || request.method !== "POST"))
+      return unauthorized(
+        request,
+        "UNKNOWN_COMMAND",
+        "No such state route",
+        404,
+        true,
+      );
+    const target = route?.project ?? commandProject(request);
     if (target !== undefined) {
       const token = bearer(request);
       const refusal: [string, string, number] | undefined =
@@ -79,12 +93,20 @@ const legacyWorker = {
             : wellFormed(token)
               ? undefined
               : ["AUTH_FORBIDDEN", "Commands need a device token", 403];
-      if (refusal) return unauthorized(request, ...refusal);
+      if (refusal) return unauthorized(request, ...refusal, state);
       try {
         return await env.PROJECTS.get(env.PROJECTS.idFromName(target)).fetch(
           request,
         );
       } catch {
+        if (state)
+          return unauthorized(
+            request,
+            "UNAVAILABLE",
+            "State routes unavailable",
+            503,
+            true,
+          );
         return configUnavailable("PROJECTS", "Commands unavailable");
       }
     }

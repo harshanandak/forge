@@ -10,6 +10,7 @@ type Attempt = Omit<
 type Reader = (
   s: Session,
   pr: { repositoryId: number; mergeSha: string | null },
+  workflowId: number,
 ) => Promise<
   { ok: true; value: Attempt[] } | { ok: false; code: string; reason: string }
 >;
@@ -21,6 +22,7 @@ const cases: [string, string, unknown, string | null][] = [
   ),
   ["empty", "", null, null],
   ["workflows", "", null, null],
+  ["latest", "latest.workflow_id", 10, "INPUT_INVALID"],
   ["absent merge", "", null, "UNAVAILABLE"],
   ...Object.entries(
     JSON.parse(
@@ -108,7 +110,7 @@ for (const [name, path, replacement, code] of cases)
             "Bearer credential-sentinel",
           );
           let body: unknown;
-          if (p.endsWith("/actions/runs")) {
+          if (p.endsWith("/runs")) {
             expect([...u.searchParams]).toEqual([
               ["head_sha", merge],
               ["per_page", "100"],
@@ -126,7 +128,7 @@ for (const [name, path, replacement, code] of cases)
                     : name === "workflows"
                       ? [
                           fixture.latest,
-                          { ...fixture.latest, id: 11, workflow_id: 10 },
+                          { ...fixture.latest, id: 11, run_number: 4 },
                         ]
                       : [fixture.latest];
             body = {
@@ -159,7 +161,7 @@ for (const [name, path, replacement, code] of cases)
                     conclusion: "success",
                   };
             if (name === "workflows" && p.split("/").at(-3) === "11")
-              body = { ...(body as object), id: 11, workflow_id: 10 };
+              body = { ...(body as object), id: 11, run_number: 4 };
           } else if (p.split("/").at(-2) === "check-suites")
             body = name === "missing suite" ? null : fixture.suite;
           else if (p.endsWith("/probe")) body = {};
@@ -172,24 +174,33 @@ for (const [name, path, replacement, code] of cases)
         },
       },
       async (session) => {
-        const result = await module!.readGithubWorkflowEvidence!(session, {
-          repositoryId: 7,
-          mergeSha: name === "absent merge" ? null : merge,
-        });
+        const result = await module!.readGithubWorkflowEvidence!(
+          session,
+          {
+            repositoryId: 7,
+            mergeSha: name === "absent merge" ? null : merge,
+          },
+          9,
+        );
         if (result.ok) await session.get(["probe"]);
         return result;
       },
     );
     const result = outer.ok ? outer.value : outer;
+    if (path === "latest.workflow_id" && replacement === 10)
+      expect(urls).toHaveLength(1);
     expect(result.ok).toBe(code === null);
     if (result.ok) {
+      expect(new URL(urls[0]!).pathname).toBe(
+        "/repos/acme/forge/actions/workflows/9/runs",
+      );
       expect(result.value).toHaveLength(
         name === "empty" ? 0 : name === "workflows" ? 4 : 2,
       );
       for (const [i, run] of result.value.entries()) {
         expect<unknown>(run).toEqual({
           ...(JSON.parse(
-            `{"repositoryId":7,"appId":77,"workflowId":${i < 2 ? 9 : 10},"workflowPath":".github/workflows/ci.yml","workflowDigest":"${digest}","id":${i < 2 ? 10 : 11},"runNumber":3,"headSha":"${merge}","checkSuiteId":20}`,
+            `{"repositoryId":7,"appId":77,"workflowId":9,"workflowPath":".github/workflows/ci.yml","workflowDigest":"${digest}","id":${i < 2 ? 10 : 11},"runNumber":${i < 2 ? 3 : 4},"headSha":"${merge}","checkSuiteId":20}`,
           ) as Record<string, unknown>),
           attempt: (i % 2) + 1,
           status: i === 0 ? "completed" : base.status,

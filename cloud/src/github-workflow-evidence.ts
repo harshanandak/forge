@@ -11,6 +11,7 @@ export type WorkflowAttempt = Omit<
 export async function readGithubWorkflowEvidence(
   session: Parameters<Parameters<typeof withGithubPrEvidence>[2]>[0],
   pr: Pick<MergeObservations["initialPr"], "repositoryId" | "mergeSha">,
+  workflowId: unknown,
 ) {
   type Code = "INPUT_INVALID" | "UNAVAILABLE";
   const failure: { code: Code } = { code: "UNAVAILABLE" };
@@ -30,6 +31,7 @@ export async function readGithubWorkflowEvidence(
     if (
       ![v.id, v.run_number, v.run_attempt, v.workflow_id].every(positive) ||
       !positive(v.check_suite_id) ||
+      v.workflow_id !== workflowId ||
       object(v.repository).id !== pr.repositoryId ||
       v.head_sha !== pr.mergeSha ||
       typeof v.path !== "string" ||
@@ -65,12 +67,13 @@ export async function readGithubWorkflowEvidence(
     if (pr.mergeSha === null) fail("UNAVAILABLE");
     if (
       !positive(pr.repositoryId) ||
+      !positive(workflowId) ||
       pr.mergeSha.length !== 40 ||
       !/^[a-f0-9]{40}$/.test(pr.mergeSha)
     )
       fail();
     const rows = await session.collect(
-      ["actions", "runs"],
+      ["actions", "workflows", String(workflowId), "runs"],
       { head_sha: pr.mergeSha },
       "workflow_runs",
       true,

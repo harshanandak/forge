@@ -8,6 +8,21 @@ type Fixture = ReturnType<typeof fixture>;
 const detailReads = new WeakMap<Fixture, () => number>();
 type Row = readonly [string, (f: Fixture) => void, string | null];
 const rows: Row[] = [
+  ...[false, true].flatMap((missing) =>
+    ["success", "failure"].map((conclusion): Row => [
+      `unrelated workflow ${conclusion}, producer missing check=${missing}`,
+      (f) => {
+        const other = structuredClone(f.observation.runs[0]!);
+        other.id++;
+        other.workflowId++;
+        other.conclusion = conclusion;
+        other.checks[0]!.conclusion = conclusion;
+        f.observation.runs.push(other);
+        if (missing) f.observation.runs[0]!.checks = [];
+      },
+      missing ? "RECEIPT_INVALID" : null,
+    ]),
+  ),
   [
     "valid merge",
     (f) => {

@@ -12,12 +12,17 @@ import {
 import { Project } from "../../cloud/src/project.ts";
 import {
   readOnlyStore,
+  durableStore,
   TABLE_PROBE,
   type DurableStorage,
 } from "../../cloud/src/store.ts";
 import { TOKEN_LOOKUP, TOKENS } from "../../cloud/src/tokens.ts";
 import { prepareCommand, runCommand } from "../../cloud/src/issue-commands.ts";
 import { OLD_SCHEMA } from "./old-schema.ts";
+import {
+  commit as stateCommit,
+  read as stateRead,
+} from "./state-input.fixture.ts";
 import {
   receiptScope,
   scopeRequestId,
@@ -49,6 +54,11 @@ import { createWorker } from "../../cloud/src/worker.ts";
 import manifest from "../../src/blocks/work/forge.block.json" with { type: "json" };
 import { createStateClient } from "../../src/assembly/state-client.ts";
 import { StateOwner } from "../../src/core/state/index.ts";
+import type {
+  StateQuery,
+  StateReadResult,
+  StateReadVersion,
+} from "../../src/ports/state-protocol.ts";
 import { releasedTables } from "../../cloud/conformance/restored.ts";
 import { refuse } from "../../src/core/trust/index.ts";
 import { stateMigrations } from "../../src/core/state/migrations.ts";
@@ -206,7 +216,9 @@ function fixture(
           ? {}
           : {
               body:
-                typeof body === "string" || body instanceof ReadableStream
+                typeof body === "string" ||
+                body instanceof ReadableStream ||
+                body instanceof Uint8Array
                   ? body
                   : JSON.stringify(body),
               duplex: "half",
@@ -351,6 +363,870 @@ function fixture(
     now: () => t,
   };
 }
+const stateNamespaces = ["forge/memory"];
+const statePolicy = digestValue(stateNamespaces);
+async function stateFixture() {
+  const f = fixture({ ...vars, FORGE_STATE_NAMESPACES: stateNamespaces });
+  const token = await f.device(day, "laptop", "s1");
+  const owner = new StateOwner(durableStore(f.storage), { now: f.now });
+  const put = (key: string, value: unknown = key, namespace = "forge/memory") =>
+    owner.put(namespace, key, value, actor, {
+      expectRevision: owner.get(namespace, key)?.revision ?? 0,
+    });
+  const read = async (
+    query: StateQuery,
+    readVersion?: StateReadVersion,
+    policyRevision = statePolicy,
+  ) => {
+    const before = f.snapshot();
+    const got = await f.send(
+      {
+        ...stateRead,
+        namespace: "forge/memory",
+        policyRevision,
+        query,
+        ...(readVersion === undefined ? {} : { readVersion }),
+      },
+      { token, path: "state/read" },
+    );
+    expect(f.snapshot()).toBe(before);
+    expect(
+      got.touched.filter(
+        (sql) => !sql.startsWith("SELECT ") && !sql.startsWith("get "),
+      ),
+    ).toEqual([]);
+    return { ...got, value: got.json.result as StateReadResult };
+  };
+  return { ...f, token, owner, put, read };
+}
+test("state read query and cursor table returns facts without writes", async () => {
+  const f = await stateFixture();
+  try {
+    f.put("note:1", { n: 1 });
+    f.put("note:2", { n: 2 });
+    f.put("note:1", { n: 3 });
+    const holder = { actor, session: { id: "s1", device: "laptop" } };
+    const lease = f.owner.acquire(
+      "forge/memory",
+      "lease:1",
+      holder,
+      1000,
+      "history-lease",
+    );
+    const fence = { subject: "lease:1", holder, generation: lease.generation };
+    f.owner.renew("forge/memory", fence, 2000);
+    f.owner.release("forge/memory", fence);
+    const rows: [StateQuery, unknown][] = [
+      [
+        { kind: "get", key: "note:1" },
+        {
+          kind: "get",
+          record: { key: "note:1", revision: 2, value: { n: 3 } },
+        },
+      ],
+      [
+        { kind: "get", key: "absent" },
+        { kind: "get", record: null },
+      ],
+      [
+        { kind: "range", limit: 3 },
+        {
+          kind: "range",
+          records: [{ key: "note:1" }, { key: "note:2" }],
+          next: null,
+        },
+      ],
+      [
+        { kind: "range", limit: 1 },
+        { kind: "range", records: [{ key: "note:1" }], next: "note:1\0" },
+      ],
+      [
+        { kind: "range", limit: 1, from: "note:1\0" },
+        { records: [{ key: "note:2" }], next: "note:2\0" },
+      ],
+      [
+        { kind: "range", limit: 1, descending: true },
+        { records: [{ key: "note:2" }], next: "note:2" },
+      ],
+      [
+        { kind: "range", limit: 1, descending: true, to: "note:2" },
+        { records: [{ key: "note:1" }], next: "note:1" },
+      ],
+      [
+        { kind: "range", limit: 1, from: "z" },
+        { records: [], next: null },
+      ],
+      ...(["count", "max"] as const).flatMap(
+        (kind): [StateQuery, unknown][] => [
+          [
+            { kind, prefix: "note:" },
+            { kind, value: 2 },
+          ],
+          [
+            { kind, prefix: "absent" },
+            { kind, value: 0 },
+          ],
+        ],
+      ),
+      [
+        { kind: "history", key: "note:1", limit: 1 },
+        { events: [{ revision: 2 }], next: 3 },
+      ],
+      [
+        { kind: "history", key: "note:1", limit: 1, before: 3 },
+        { events: [{ revision: 1 }], next: 1 },
+      ],
+      [
+        { kind: "history", key: "note:1", limit: 1, before: 1 },
+        { events: [], next: null },
+      ],
+      [
+        { kind: "history", key: "lease:1", limit: 1 },
+        {
+          events: [{ revision: 1, type: "forge/memory:lease.released@1" }],
+          next: 6,
+        },
+      ],
+    ];
+    for (const [query, want] of rows) {
+      const got = await f.read(query, undefined, "discover");
+      expect([got.status, got.exit]).toEqual([200, 0]);
+      expect(got.value).toMatchObject({
+        version: 1,
+        project: "p",
+        namespace: "forge/memory",
+        policyRevision: statePolicy,
+        readVersion: { revision: 6 },
+      });
+      expect(got.value.result).toMatchObject(want as object);
+      if (query.kind === "history" && query.key === "lease:1") {
+        let page = got;
+        for (const [sequence, type] of [
+          [6, "released"],
+          [5, "renewed"],
+          [4, "acquired"],
+        ] as const) {
+          const result = page.value.result;
+          expect(result.kind).toBe("history");
+          if (result.kind !== "history")
+            throw new Error("Expected history page");
+          expect(result.events).toHaveLength(1);
+          expect([
+            result.events[0]?.type,
+            result.events[0]?.revision,
+            result.next,
+          ]).toEqual([`forge/memory:lease.${type}@1`, 1, sequence]);
+          page = await f.read(
+            { kind: "history", key: query.key, limit: 1, before: result.next! },
+            got.value.readVersion,
+          );
+          expect(page.status).toBe(200);
+        }
+        expect(page.value.result).toEqual({
+          kind: "history",
+          events: [],
+          next: null,
+        });
+      }
+    }
+  } finally {
+    f.db.close();
+    mock.restore();
+  }
+}, 30_000);
+
+for (const mutation of [
+  "insert",
+  "update",
+  "delete",
+  "aba",
+  "lease",
+  "other namespace",
+] as const)
+  test(`state version table: ${mutation}`, async () => {
+    const f = await stateFixture();
+    try {
+      f.put("note:1");
+      f.put("note:2");
+      const query: StateQuery =
+        mutation === "aba"
+          ? { kind: "get", key: "absent" }
+          : { kind: "range", limit: 1 };
+      const first = await f.read(query);
+      expect(first.status).toBe(200);
+      const nextQuery =
+        query.kind === "range" && first.value.result.kind === "range"
+          ? { ...query, from: first.value.result.next! }
+          : query;
+      if (mutation === "insert") f.put("note:0");
+      if (mutation === "update") f.put("note:1", "updated");
+      if (mutation === "delete")
+        f.owner.delete("forge/memory", "note:2", actor, { expectRevision: 1 });
+      if (mutation === "aba") {
+        f.put("absent");
+        f.owner.delete("forge/memory", "absent", actor, { expectRevision: 1 });
+      }
+      if (mutation === "lease")
+        f.owner.acquire(
+          "forge/memory",
+          "subject",
+          { actor, session: { id: "s1", device: "laptop" } },
+          1000,
+          "lease-request",
+        );
+      if (mutation === "other namespace")
+        f.put("note:0", "foreign", "other/state");
+      const got = await f.read(nextQuery, first.value.readVersion);
+      expect([got.status, got.code, got.exit]).toEqual(
+        mutation === "other namespace"
+          ? [200, undefined, 0]
+          : [409, "REVISION_CONFLICT", 4],
+      );
+      if (got.status === 200)
+        expect(got.value.readVersion).toEqual(first.value.readVersion);
+      else expect(got.json.result).toBeUndefined();
+    } finally {
+      f.db.close();
+      mock.restore();
+    }
+  }, 30_000);
+
+for (const mode of [
+  "missing schema",
+  "missing epoch",
+  "old epoch",
+  "reprovision",
+  "cursor boundary",
+  "expiry at epoch",
+] as const)
+  test(`state read metadata table: ${mode}`, async () => {
+    const f = await stateFixture();
+    try {
+      if (mode === "missing schema") {
+        f.db.run("DROP TABLE state_records");
+        f.db.run("DROP TABLE state_events");
+      }
+      if (mode === "missing epoch") await f.storage.delete("state:epoch");
+      if (mode === "old epoch")
+        await f.storage.put("state:epoch", "new-target-epoch");
+      if (mode === "reprovision") {
+        const epoch = await f.storage.get("state:epoch");
+        expect(typeof epoch).toBe("string");
+        await f.device();
+        expect(await f.storage.get("state:epoch")).toBe(epoch);
+      }
+      if (mode === "cursor boundary") f.put("z".repeat(500));
+      if (mode === "expiry at epoch") {
+        const get = f.storage.get.bind(f.storage);
+        spyOn(f.storage, "get").mockImplementation(async (key) => {
+          const value = await get(key);
+          if (key === "state:epoch") f.advance(2 * day);
+          return value;
+        });
+      }
+      const version =
+        mode === "old epoch"
+          ? { epoch: "previous-epoch", revision: 0 }
+          : undefined;
+      const got = await f.read(
+        mode === "cursor boundary"
+          ? { kind: "range", limit: 1 }
+          : { kind: "get", key: "absent" },
+        version,
+      );
+      expect([got.status, got.code, got.exit]).toEqual(
+        mode === "missing epoch"
+          ? [503, "UNAVAILABLE", 1]
+          : mode === "old epoch"
+            ? [409, "REVISION_CONFLICT", 4]
+            : mode === "expiry at epoch"
+              ? [401, "AUTH_EXPIRED", 1]
+              : [200, undefined, 0],
+      );
+      if (mode === "missing epoch")
+        expect(got.json.error?.message).toMatch(/provision|device.*token/i);
+      if (mode === "missing schema") {
+        expect(got.value.result).toEqual({ kind: "get", record: null });
+        expect(
+          f.db
+            .query(
+              "SELECT name FROM sqlite_schema WHERE name IN ('state_records','state_events')",
+            )
+            .all(),
+        ).toEqual([]);
+      }
+      if (mode === "cursor boundary") {
+        const result = got.value.result;
+        expect(result.kind).toBe("range");
+        if (result.kind === "range") {
+          expect(result.next).toBe("z".repeat(500) + "\0");
+          const end = await f.read(
+            { kind: "range", limit: 1, from: result.next! },
+            got.value.readVersion,
+          );
+          expect(end.status).toBe(200);
+          expect(end.value.result).toEqual({
+            kind: "range",
+            records: [],
+            next: null,
+          });
+        }
+      }
+    } finally {
+      f.db.close();
+      mock.restore();
+    }
+  }, 30_000);
+
+for (const bad of [
+  "huge record",
+  "huge page",
+  "huge event",
+  "bad wrapper",
+  "duplicate wrapper",
+  "nonfinite value",
+  "wrong namespace",
+  "wrong key",
+  "wrong revision",
+  "bad event",
+  "duplicate event",
+] as const)
+  test(`state stored-data bounds table: ${bad}`, async () => {
+    const f = await stateFixture();
+    try {
+      const record = f.put("note:1");
+      if (bad === "duplicate event") {
+        const event = f.owner.history("forge/memory", {
+          key: "note:1",
+          limit: 1,
+        })[0]!;
+        f.db.run("UPDATE state_events SET body=? WHERE namespace=?", [
+          JSON.stringify(event).replace(
+            '"revision":1',
+            '"revision":99,"revision":1',
+          ),
+          "forge/memory",
+        ]);
+      }
+      if (bad === "nonfinite value")
+        f.db.run("UPDATE state_records SET body=? WHERE namespace=?", [
+          JSON.stringify({ ...record, value: "NONFINITE" }).replace(
+            '"NONFINITE"',
+            "1e400",
+          ),
+          "forge/memory",
+        ]);
+      if (bad === "huge record") f.put("note:1", "x".repeat(1_048_576));
+      if (bad === "huge event") f.put("note:1", "x".repeat(1_048_576));
+      if (bad === "huge page") {
+        f.put("note:1", "x".repeat(600_000));
+        f.put("note:2", "x".repeat(600_000));
+      }
+      if (bad === "bad event")
+        f.db.run("UPDATE state_events SET body='{}' WHERE namespace=?", [
+          "forge/memory",
+        ]);
+      if (bad === "bad wrapper")
+        f.db.run("UPDATE state_records SET body='{}' WHERE namespace=?", [
+          "forge/memory",
+        ]);
+      if (bad === "duplicate wrapper")
+        f.db.run("UPDATE state_records SET body=? WHERE namespace=?", [
+          JSON.stringify(record).replace(
+            '"revision":1',
+            '"revision":1,"revision":1',
+          ),
+          "forge/memory",
+        ]);
+      for (const [mode, changed] of [
+        ["wrong namespace", { namespace: "other/state" }],
+        ["wrong key", { key: "other" }],
+        ["wrong revision", { revision: 9 }],
+      ] as const)
+        if (bad === mode)
+          f.db.run("UPDATE state_records SET body=? WHERE namespace=?", [
+            JSON.stringify({ ...record, ...changed }),
+            "forge/memory",
+          ]);
+      f.meter.on = true;
+      const got = await f.read(
+        bad === "bad event" || bad === "huge event" || bad === "duplicate event"
+          ? {
+              kind: "history",
+              key: "note:1",
+              limit: 1,
+              ...(bad === "duplicate event" ? { before: 2 } : {}),
+            }
+          : bad === "huge page"
+            ? { kind: "range", limit: 2 }
+            : { kind: "get", key: "note:1" },
+      );
+      expect([got.status, got.code, got.exit]).toEqual(
+        bad.startsWith("huge") ? [503, "UNAVAILABLE", 1] : [500, "INTERNAL", 1],
+      );
+      expect(got.json.result).toBeUndefined();
+      if (bad.startsWith("huge")) {
+        expect(f.meter.cells).toEqual([]);
+        expect(
+          got.touched.some(
+            (sql) =>
+              sql.startsWith("SELECT key,") && sql.includes(", body FROM"),
+          ),
+        ).toBe(false);
+      }
+    } finally {
+      f.db.close();
+      mock.restore();
+    }
+  }, 30_000);
+
+for (const trip of ["whole", "paged"] as const)
+  test(`state restore epoch table: ${trip}`, async () => {
+    const source = await stateFixture();
+    const target = fixture({
+      ...vars,
+      FORGE_STATE_NAMESPACES: stateNamespaces,
+    });
+    try {
+      source.put("note:1");
+      const before = await source.read({ kind: "get", key: "note:1" });
+      expect(before.status).toBe(200);
+      const tables = (
+        JSON.parse(await source.dump()) as { value: { tables: Tables } }
+      ).value.tables;
+      expect(JSON.stringify(tables)).not.toContain(
+        before.value.readVersion.epoch,
+      );
+      const parts =
+        trip === "whole" ? [{ format: DUMP, tables }] : pagesOf(tables, 1);
+      for (let i = 0; i < parts.length; i++) {
+        const restored = await target.admin(
+          "restore",
+          JSON.stringify(parts[i]),
+        );
+        expect(restored.status).toBe(200);
+        if (i < parts.length - 1) {
+          expect(await target.storage.get("state:epoch")).toBeUndefined();
+          const saved = target.snapshot();
+          const refused = await target.send(
+            { ...stateRead, namespace: "forge/memory" },
+            { token: fakeToken, path: "state/read" },
+          );
+          expect(refused.code).toBe("AUTH_INVALID");
+          expect(target.snapshot()).toBe(saved);
+        }
+      }
+      const epoch = await target.storage.get("state:epoch");
+      expect(typeof epoch).toBe("string");
+      expect(epoch).not.toBe(before.value.readVersion.epoch);
+      const token = await target.device(day, "laptop", "s1");
+      expect(await target.storage.get("state:epoch")).toBe(epoch);
+      const saved = target.snapshot();
+      const request = {
+        ...stateRead,
+        namespace: "forge/memory",
+        policyRevision: statePolicy,
+        query: { kind: "get", key: "note:1" },
+      };
+      const fresh = await target.send(request, { token, path: "state/read" });
+      expect(fresh.status).toBe(200);
+      expect((fresh.json.result as StateReadResult).readVersion.revision).toBe(
+        before.value.readVersion.revision,
+      );
+      const stale = await target.send(
+        { ...request, readVersion: before.value.readVersion },
+        { token, path: "state/read" },
+      );
+      expect([stale.status, stale.code, stale.exit]).toEqual([
+        409,
+        "REVISION_CONFLICT",
+        4,
+      ]);
+      expect(target.snapshot()).toBe(saved);
+    } finally {
+      source.db.close();
+      target.db.close();
+      mock.restore();
+    }
+  }, 30_000);
+for (const kind of ["read", "commit"] as const)
+  test(`state ${kind}: device admission and refusal table`, async () => {
+    const input = {
+      ...(kind === "read" ? stateRead : stateCommit),
+      namespace: "forge/memory",
+      policyRevision: statePolicy,
+      ...(kind === "read" ? {} : { readSet: [] }),
+    };
+    type Row = [
+      string,
+      unknown,
+      Record<string, unknown>,
+      Options,
+      number,
+      string,
+    ];
+    const invalidUtf8 = new TextEncoder()
+      .encode(
+        JSON.stringify({
+          ...input,
+          ...(kind === "read"
+            ? { query: { kind: "get", key: "bad\u007futf8" } }
+            : { input: "bad\u007futf8" }),
+        }),
+      )
+      .map((byte) => (byte === 0x7f ? 0xff : byte));
+    const rows: Row[] = [
+      ["admitted", input, {}, {}, 503, "UNAVAILABLE"],
+      ["invalid UTF-8 in string", invalidUtf8, {}, {}, 400, "INPUT_INVALID"],
+      [
+        "canonical config",
+        { ...input, policyRevision: digestValue(["a/state", "forge/memory"]) },
+        { FORGE_STATE_NAMESPACES: ["forge/memory", "a/state", "forge/memory"] },
+        {},
+        503,
+        "UNAVAILABLE",
+      ],
+      [
+        "discovery",
+        { ...input, policyRevision: "discover" },
+        {},
+        {},
+        kind === "read" ? 503 : 400,
+        kind === "read" ? "UNAVAILABLE" : "INPUT_INVALID",
+      ],
+      [
+        "config missing",
+        input,
+        { FORGE_STATE_NAMESPACES: undefined },
+        {},
+        503,
+        "UNAVAILABLE",
+      ],
+      [
+        "config malformed",
+        input,
+        { FORGE_STATE_NAMESPACES: "[" },
+        {},
+        503,
+        "UNAVAILABLE",
+      ],
+      [
+        "config wrong shape",
+        input,
+        { FORGE_STATE_NAMESPACES: {} },
+        {},
+        503,
+        "UNAVAILABLE",
+      ],
+      [
+        "config invalid entry",
+        input,
+        { FORGE_STATE_NAMESPACES: [1] },
+        {},
+        503,
+        "UNAVAILABLE",
+      ],
+      [
+        "config wildcard",
+        input,
+        { FORGE_STATE_NAMESPACES: ["forge/*"] },
+        {},
+        503,
+        "UNAVAILABLE",
+      ],
+      [
+        "config empty",
+        input,
+        { FORGE_STATE_NAMESPACES: [] },
+        {},
+        403,
+        "AUTH_FORBIDDEN",
+      ],
+      [
+        "not listed",
+        input,
+        { FORGE_STATE_NAMESPACES: ["other/state"] },
+        {},
+        403,
+        "AUTH_FORBIDDEN",
+      ],
+      ...[
+        "forge/work",
+        "forge/cloud",
+        "forge/core-project",
+        "forge/core-trust",
+      ].map((namespace): Row => [
+        "fixed deny",
+        { ...input, namespace },
+        { FORGE_STATE_NAMESPACES: [namespace] },
+        {},
+        403,
+        "AUTH_FORBIDDEN",
+      ]),
+      [
+        "old config revision",
+        { ...input, policyRevision: "old" },
+        {},
+        {},
+        409,
+        "REVISION_CONFLICT",
+      ],
+      ["wrong project", input, {}, { name: "other" }, 403, "AUTH_FORBIDDEN"],
+      [
+        "owner header",
+        input,
+        {},
+        { headers: { "X-Forge-Owner": "owner" } },
+        403,
+        "AUTH_FORBIDDEN",
+      ],
+      [
+        "owner expiry",
+        input,
+        {},
+        { headers: { "X-Forge-Owner-Expires": "9999999999999" } },
+        403,
+        "AUTH_FORBIDDEN",
+      ],
+      ["admin", input, {}, { token: vars.ADMIN_TOKEN }, 403, "AUTH_FORBIDDEN"],
+      ["OAuth", input, {}, { token: oauthToken }, 403, "AUTH_FORBIDDEN"],
+      ["missing token", input, {}, { token: "" }, 401, "AUTH_REQUIRED"],
+      ["invalid token", input, {}, { token: fakeToken }, 401, "AUTH_INVALID"],
+      ["wrong method", input, {}, { method: "GET" }, 404, "UNKNOWN_COMMAND"],
+      [
+        "suffix",
+        input,
+        {},
+        { path: `state/${kind}/extra` },
+        404,
+        "UNKNOWN_COMMAND",
+      ],
+      ["bare state", input, {}, { path: "state" }, 404, "UNKNOWN_COMMAND"],
+      ...[vars.ADMIN_TOKEN, oauthToken].flatMap((token) =>
+        [
+          { method: "GET" },
+          { method: "PUT" },
+          { path: `state/${kind}/extra` },
+          { path: "state" },
+        ].map((options): Row => [
+          "non-device bearer on malformed state route",
+          input,
+          {},
+          { ...options, token },
+          404,
+          "UNKNOWN_COMMAND",
+        ]),
+      ),
+      [
+        "wrong kind",
+        {
+          ...(kind === "read" ? stateCommit : stateRead),
+          namespace: "forge/memory",
+          policyRevision: statePolicy,
+          readSet: undefined,
+          ...(kind === "read" ? { readSet: [] } : {}),
+        },
+        {},
+        {},
+        400,
+        "INPUT_INVALID",
+      ],
+      [
+        "extra field",
+        { ...input, owner: "owner" },
+        {},
+        {},
+        400,
+        "INPUT_INVALID",
+      ],
+      [
+        "unknown version",
+        { ...input, version: 2 },
+        {},
+        {},
+        400,
+        "INPUT_INVALID",
+      ],
+      [
+        "duplicate key",
+        JSON.stringify(input).replace('"version":1', '"version":1,"version":1'),
+        {},
+        {},
+        400,
+        "INPUT_INVALID",
+      ],
+      ...(
+        [
+          ["project mismatch", { project: { id: "other" } }, "INPUT_INVALID"],
+          ["root", { project: { id: "p", root: "/tmp" } }, "INPUT_INVALID"],
+          [
+            "device mismatch",
+            { device: { id: "other" } },
+            "AUTH_DEVICE_MISMATCH",
+          ],
+          [
+            "session device",
+            { session: { id: "s1", device: "other" } },
+            "AUTH_DEVICE_MISMATCH",
+          ],
+          [
+            "session mismatch",
+            { session: { id: "other" } },
+            "AUTH_DEVICE_MISMATCH",
+          ],
+          ["missing actor", { actor: undefined }, "CONTEXT_MISSING"],
+        ] as const
+      ).map(([name, context, code]): Row => [
+        name,
+        { ...input, context: { ...input.context, ...context } },
+        {},
+        {},
+        code === "AUTH_DEVICE_MISMATCH" ? 403 : 400,
+        code,
+      ]),
+    ];
+    for (const via of ["direct", createWorker(), configured()] as const)
+      for (const [name, body, settings, options, status, code] of rows) {
+        const f = fixture({
+          ...vars,
+          FORGE_STATE_NAMESPACES: stateNamespaces,
+          ...settings,
+        });
+        try {
+          const token = await f.device(day, "laptop", "s1");
+          // Keep the admission matrix at the provisioning gate; read results have their own tables.
+          await f.storage.delete("state:epoch");
+          const before = f.snapshot();
+          const got = await f.send(body, {
+            token,
+            path: `state/${kind}`,
+            ...options,
+            via,
+          });
+          expect([got.status, got.code], name).toEqual([status, code]);
+          expect((got.json as { status?: string }).status, name).toBe("FAIL");
+          expect(got.exit, name).toBe(
+            code === "UNKNOWN_COMMAND"
+              ? 3
+              : code === "INPUT_INVALID" || code === "CONTEXT_MISSING"
+                ? 6
+                : code === "REVISION_CONFLICT"
+                  ? 4
+                  : 1,
+          );
+          expect(f.snapshot(), name).toBe(before);
+          expect(
+            strayCalls(got.touched).filter(
+              (call) => call !== "get state:epoch",
+            ),
+            name,
+          ).toEqual([]);
+          if (
+            via !== "direct" &&
+            (options.name ||
+              options.headers ||
+              options.method ||
+              options.path ||
+              ["admin", "OAuth", "missing token"].includes(name))
+          )
+            expect(f.reached, name).toEqual([]);
+        } finally {
+          f.db.close();
+          mock.restore();
+        }
+      }
+  }, 30_000);
+
+for (const kind of ["read", "commit"] as const)
+  test(`state ${kind}: cold, expired, revoked and sessionless admission table`, async () => {
+    for (const mode of [
+      "cold",
+      "expired",
+      "revoked",
+      "expire during read",
+      "revoke during read",
+      "sessionless",
+      "sessionless fence",
+    ] as const) {
+      if (mode === "sessionless fence" && kind === "read") continue;
+      const f = fixture({ ...vars, FORGE_STATE_NAMESPACES: stateNamespaces });
+      try {
+        const body = {
+          ...(kind === "read" ? stateRead : stateCommit),
+          namespace: "forge/memory",
+          policyRevision: statePolicy,
+          ...(kind === "commit"
+            ? {
+                readSet: [],
+                ...(mode === "sessionless fence"
+                  ? { fence: { subject: "record:1", generation: 1 } }
+                  : {}),
+              }
+            : {}),
+        };
+        const token =
+          mode === "cold"
+            ? fakeToken
+            : await f.device(
+                day,
+                "laptop",
+                mode.startsWith("sessionless") ? undefined : "s1",
+              );
+        const change = () =>
+          mode.startsWith("expire") ? f.advance(2 * day) : revoke(f, token);
+        if (mode === "expired" || mode === "revoked") change();
+        await f.storage.delete("state:epoch");
+        let before = f.snapshot();
+        const text = JSON.stringify(body);
+        const input = !mode.endsWith("during read")
+          ? body
+          : new ReadableStream(
+              {
+                start: (c) =>
+                  c.enqueue(new TextEncoder().encode(text.slice(0, 9))),
+                pull(c) {
+                  change();
+                  before = f.snapshot();
+                  c.enqueue(new TextEncoder().encode(text.slice(9)));
+                  c.close();
+                },
+              },
+              { highWaterMark: 0 },
+            );
+        const got = await f.send(input, { token, path: `state/${kind}` });
+        const code =
+          mode === "cold"
+            ? "AUTH_INVALID"
+            : mode.startsWith("expire")
+              ? "AUTH_EXPIRED"
+              : mode.startsWith("revoke")
+                ? "AUTH_REVOKED"
+                : mode === "sessionless fence"
+                  ? "AUTH_DEVICE_MISMATCH"
+                  : "UNAVAILABLE";
+        expect([got.status, got.code, got.exit], mode).toEqual([
+          code === "UNAVAILABLE"
+            ? 503
+            : code === "AUTH_DEVICE_MISMATCH"
+              ? 403
+              : 401,
+          code,
+          1,
+        ]);
+        expect(f.snapshot(), mode).toBe(before);
+        expect(
+          strayCalls(got.touched).filter((call) => call !== "get state:epoch"),
+          mode,
+        ).toEqual([]);
+        if (mode === "cold")
+          expect(got.touched, mode).toEqual(["get provisioned"]);
+      } finally {
+        f.db.close();
+        mock.restore();
+      }
+    }
+  }, 30_000);
+
 const actor = { kind: "agent", id: "tester" } as const;
 const receiptPrincipal = ["token", "fixture", "laptop"] as const;
 const iso = (ms: number) => new Date(ms).toISOString();
@@ -722,12 +1598,16 @@ test("an op that is excluded, undeclared or prototype-like is unknown, even as a
   expect(f.snapshot()).toBe(before);
 }, 30_000);
 
-for (const path of ["state/read", "state/commit"])
-  test(`${path} stays an unknown route through the Worker and the object`, async () => {
+for (const [path, status, code, exit] of [
+  ["state/read", 400, "INPUT_INVALID", 6],
+  ["state/commit", 400, "INPUT_INVALID", 6],
+  ["command/extra", 404, "UNKNOWN_COMMAND", 3],
+] as const)
+  test(`${path} refuses an empty envelope through the Worker and the object`, async () => {
     const { f, token, before } = await begin();
     for (const via of [createWorker(), "direct"] as const) {
       const got = await f.send({}, { token, path, via });
-      refusal(path, got, [404, "UNKNOWN_COMMAND", 3]);
+      refusal(path, got, [status, code, exit]);
       expect(f.snapshot()).toBe(before);
     }
   }, 30_000);

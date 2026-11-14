@@ -1,4 +1,8 @@
-import type { StateEvent, StateRecord } from "../generated/types.ts";
+import type {
+  AmbientContext,
+  StateEvent,
+  StateRecord,
+} from "../generated/types.ts";
 import type { BatchEntry, HistoryOptions, RangeOptions } from "./state.ts";
 
 /** Server-issued version, scoped to a namespace and a restore epoch. */
@@ -10,13 +14,20 @@ export type StateQuery =
   | { readonly kind: "get"; readonly key: string }
   | ({ readonly kind: "range" } & RangeOptions)
   | { readonly kind: "count" | "max"; readonly prefix: string }
-  | ({ readonly kind: "history" } & HistoryOptions);
+  | ({
+      readonly kind: "history";
+      /** Exclusive event sequence cursor from the preceding page, not a record revision. */
+      readonly before?: number;
+    } & Omit<HistoryOptions, "before">);
 
 interface StateCapability {
   readonly version: 1;
-  /** Names an enrolled capability; spelling alone never grants access. */
+  /** Exact namespace allowed by deployment config; server authority namespaces are denied. */
   readonly namespace: string;
+  /** Bounded audit metadata, not a server business-rule selector. */
   readonly operation: string;
+  readonly context: AmbientContext;
+  /** Digest of canonical namespace config; `discover` only on an unpinned read. */
   readonly policyRevision: string;
 }
 export interface StateReadRequest extends StateCapability {
@@ -33,7 +44,7 @@ export interface StateReadDependency {
 export interface StateCommitRequest extends StateCapability {
   readonly kind: "commit";
   readonly requestId: string;
-  /** Data only; the server must validate it against the enrolled operation. */
+  /** Bounded data, fingerprinted for replay; business rules remain on the device. */
   readonly input: unknown;
   readonly readVersion: StateReadVersion;
   readonly readSet: readonly StateReadDependency[];
