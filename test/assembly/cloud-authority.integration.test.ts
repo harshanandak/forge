@@ -1496,6 +1496,122 @@ for (const surface of ["CLI", "MCP"] as const) {
 }
 
 const CLOSED = { ...ISSUE, status: "closed", revision: 4 };
+const VERIFIED_CLOSE = { id: "forge-1", pr: 490 };
+const verifiedClosed = { ...CLOSED, receipt: "verified-1" };
+for (const surface of ["CLI", "MCP", "catalog"] as const)
+  for (const [name, bound, extra, flags, code, exit, requests] of [
+    ["verified", true, {}, [], undefined, 0, 1],
+    ["not merged", true, {}, [], "UNAVAILABLE", 1, 1],
+    [
+      "with receipt",
+      true,
+      { receipt: "local-1" },
+      ["--receipt", "local-1"],
+      "INPUT_INVALID",
+      6,
+      0,
+    ],
+    [
+      "with exemption",
+      true,
+      { withoutReceipt: "manual" },
+      ["--without-receipt", "manual"],
+      "INPUT_INVALID",
+      6,
+      0,
+    ],
+    ["unbound", false, {}, [], "INPUT_INVALID", 6, 0],
+  ] as const)
+    test(
+      `${surface} verified close: ${name}`,
+      () =>
+        using(
+          {
+            bind: bound ? {} : false,
+            steps: [
+              () =>
+                code === "UNAVAILABLE"
+                  ? refusing(code)
+                  : answer(verifiedClosed, "issue.close"),
+            ],
+          },
+          async (r) => {
+            const input = { ...VERIFIED_CLOSE, ...extra };
+            const context = holding(r, { leaseGeneration: 3 });
+            const result =
+              surface === "CLI"
+                ? (
+                    await runCli(
+                      r.assembly.catalog,
+                      ["issue", "close", "forge-1", "--pr", "490", ...flags],
+                      { caller: "agent", context },
+                    )
+                  ).envelope
+                : surface === "MCP"
+                  ? (await createMcpHandlers(
+                      r.assembly.catalog,
+                      { expose: ["issue"] },
+                      { context },
+                    ).callTool("issue_close", input))!
+                  : await r.assembly.catalog.invoke(
+                      r.request("issue.close", input, { context }),
+                    );
+            expect(result).toMatchObject(
+              code === undefined
+                ? { ok: true, status: "OK", result: verifiedClosed }
+                : { ok: false, status: "FAIL", error: { code } },
+            );
+            expect(exitCode(result)).toBe(exit);
+            expect(r.net.calls).toHaveLength(requests);
+            if (requests > 0)
+              expect(r.net.calls[0]!.body).toMatchObject({
+                op: "issue.close",
+                input,
+                context: { leaseGeneration: 3 },
+              });
+          },
+        ),
+      30_000,
+    );
+
+for (const surface of ["CLI", "MCP"] as const)
+  for (const verb of ["admit", "show"])
+    test(
+      `${surface} receipt.${verb} is UNKNOWN_COMMAND and not exposed`,
+      () =>
+        using({}, async (r) => {
+          const handlers = createMcpHandlers(r.assembly.catalog, {
+            expose: ["receipt"],
+          });
+          expect(
+            handlers
+              .listTools()
+              .some((tool) => tool.name === `receipt_${verb}`),
+          ).toBe(false);
+          const result =
+            surface === "CLI"
+              ? (
+                  await runCli(r.assembly.catalog, [
+                    "receipt",
+                    verb,
+                    "--input",
+                    "{}",
+                  ])
+                ).envelope
+              : (await handlers.callTool("catalog_call", {
+                  op: `receipt.${verb}`,
+                  input: {},
+                }))!;
+          expect(result).toMatchObject({
+            ok: false,
+            status: "FAIL",
+            error: { code: "UNKNOWN_COMMAND" },
+          });
+          expect(r.net.calls).toHaveLength(0);
+        }),
+      30_000,
+    );
+
 const closes = (r: Rig, context: object, input: object = CLOSE) =>
   edit(r, "issue.close", context, false, input);
 for (const [source, op] of [
