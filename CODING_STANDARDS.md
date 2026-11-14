@@ -61,7 +61,8 @@ These govern this repository and Forge's shipped behaviour. They are not imposed
 - Document byte caps live in `test/structure/budget.json`; prune before growing. **Guard:** `budget`.
 - One decision record namespace (`ADR-NNN`) with a title; refer to a decision by name. Records hold durable choices only.
 - Reports lead with the answer in plain language, then evidence and what would change it.
-- Aim for about 400 changed lines per PR, counting additions plus deletions across all files, including tests. Write the hard cap in the lane brief; measure with `git diff --numstat origin/main...HEAD`. If over cap, split or park.
+- Aim for about 200 changed non-test lines per PR, limit about 300, with about 10 percent leeway; not a hard wall. Test lines are not counted but must stay lean (tables, no padding). Measure with `git diff --numstat origin/main...HEAD`, split by test and non-test paths. Before building anything expected to pass 100 lines, measure and propose slices first.
+- Tests run in hosted CI, not on the laptop. One exception: after a CI red caused only by a test's own setup, the builder may run that one test file locally, once.
 - Review ends with no P0/P1 and own regressions fixed; file adjacent findings. At most 2 review rounds per mechanism, then write a 3-line threat model (asset, threat, mitigation) and choose ship, simplify or park. Never waive P0/P1.
 - The pull request title is a conventional commit title; it becomes the changelog line. Do not edit the changelog by hand.
 - PR CI budget: 12 minutes wall. Explain additions over ~30 s in the PR. The CI Gate prints wall time.
