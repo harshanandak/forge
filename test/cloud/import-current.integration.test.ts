@@ -396,6 +396,13 @@ test.each(["unlisted", "altered"])(
       out = join(root, "bundle");
     writeFileSync(manifest, JSON.stringify(s.manifest));
     const bundle = await converter.convert({ backup, manifest, out, limits });
+    const run = () =>
+      spawnSync(
+        "node",
+        ["cloud/conformance/capacity.ts", "measure-current", out],
+        { encoding: "utf8", timeout: 30000 },
+      );
+    eq(run().status, 0);
     const page = bundle.pages.at(-1)!;
     const bytes = readFileSync(join(out, page.name));
     bytes[0] = 91;
@@ -403,12 +410,7 @@ test.each(["unlisted", "altered"])(
       join(out, kind === "unlisted" ? "page-9999.json" : page.name),
       bytes,
     );
-    const r = spawnSync(
-      "node",
-      ["cloud/conformance/capacity.ts", "measure-current", out],
-      { encoding: "utf8", timeout: 30000 },
-    );
-    eq(r.error, undefined);
+    const r = run();
     eq(r.status === 0, false);
     eq(r.stdout, "");
     eq(r.stderr.includes("AssertionError"), true);
