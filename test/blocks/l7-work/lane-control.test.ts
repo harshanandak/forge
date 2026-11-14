@@ -37,14 +37,71 @@ function fixture() {
       epoch: 4,
       expiresAt: "2026-11-14T01:10:00.000Z",
     },
+    observation: {
+      id: "work-1367",
+      requestedAt: 100,
+      control: { incarnation: "history-1", epoch: 4, stopped: false },
+    } as {
+      id: string;
+      requestedAt: number;
+      control: { incarnation: string; epoch: number; stopped: boolean };
+    } | null,
+    expected: { id: "work-1367", incarnation: "history-1", epoch: 4 },
+    observedNow: 101,
   };
 }
 type Fixture = ReturnType<typeof fixture>;
-function unchanged<T, R>(input: T, run: () => R): R {
-  const before = structuredClone(input);
+function unchanged<T, R>(
+  input: T,
+  run: () => R,
+  snapshot: (value: T) => unknown = structuredClone,
+): R {
+  const before = snapshot(input);
   const result = run();
-  expect(input).toEqual(before);
+  expect(snapshot(input)).toEqual(before);
   return result;
+}
+
+for (const field of [
+  "global",
+  "issue",
+  "command",
+  "context",
+  "authorization",
+] as const) {
+  test(`accessor in ${field} is refused without invocation`, () => {
+    const f = fixture();
+    let calls = 0;
+    const value = { ...f[field] };
+    const key = Object.keys(value)[0]!;
+    Object.defineProperty(value, key, {
+      get() {
+        calls++;
+        return "untrusted";
+      },
+      enumerable: true,
+    });
+    const inputs = { ...f, [field]: value };
+    const snapshot = () => ({
+      ...structuredClone(f),
+      accessor: Object.getOwnPropertyDescriptors(value),
+    });
+    const result = unchanged(
+      inputs,
+      () =>
+        transitionLaneControl(
+          inputs.global,
+          inputs.issue,
+          inputs.command,
+          inputs.context,
+          inputs.authorization,
+        ),
+      snapshot,
+    );
+    expect(result.ok).toBe(false);
+    expect(result).not.toHaveProperty("result.candidate");
+    expect(calls).toBe(0);
+  }, 1000);
 }
 type Row = readonly [string, (f: Fixture) => void, string | null];
 const transitions: Row[] = [
@@ -449,7 +506,7 @@ test("resume all clears multiple rows without scanning, then a later stop wins",
   if (!result.ok) return;
   for (const id of ["work-1367", "work-2"]) {
     const inputs = {
-      global: result.result.candidate.global,
+      global: { ...result.result.candidate.global },
       issue: { ...f.issue, id },
       scope: { id },
     };
@@ -505,12 +562,12 @@ for (const global of [null, undefined, {}, { version: 1 }, []]) {
   }, 1000);
 }
 
-for (const [name, change, code] of [
+const observations: Row[] = [
   ["fresh from request start", () => {}, null],
   [
     "expiry at 20 seconds",
     (f) => {
-      f.now = 20100;
+      f.observedNow = 20100;
     },
     "UNAVAILABLE",
   ],
@@ -549,37 +606,33 @@ for (const [name, change, code] of [
     },
     "UNAVAILABLE",
   ],
-] satisfies readonly (readonly [
-  string,
-  (f: {
-    observation: {
-      id: string;
-      requestedAt: number;
-      control: { incarnation: string; epoch: number; stopped: boolean };
-    } | null;
-    expected: { id: string; incarnation: string; epoch: number };
-    now: number;
-  }) => void,
-  string | null,
-])[]) {
+  [
+    "last fresh millisecond",
+    (f) => {
+      f.observedNow = 20099;
+    },
+    null,
+  ],
+  [
+    "invalid monotonic clock",
+    (f) => {
+      f.observedNow = NaN;
+    },
+    "UNAVAILABLE",
+  ],
+];
+for (const [name, change, code] of observations) {
   test(
     name,
     () => {
-      const f = {
-        observation: {
-          id: "work-1367",
-          requestedAt: 100,
-          control: { incarnation: "history-1", epoch: 4, stopped: false },
-        },
-        expected: { id: "work-1367", incarnation: "history-1", epoch: 4 },
-        now: 101,
-      };
+      const f = fixture();
       change(f);
       const result = unchanged(f, () =>
-        checkLaneObservation(f.observation, f.expected, f.now),
+        checkLaneObservation(f.observation, f.expected, f.observedNow),
       );
       expect(result.ok).toBe(code === null);
       if (!result.ok) expect(result.error.code).toBe(code!);
+      else expect(result.result).not.toBe(f.observation?.control);
     },
     1000,
   );
