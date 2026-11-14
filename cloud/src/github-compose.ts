@@ -26,10 +26,17 @@ export function composeGithub(
     env && typeof env === "object"
       ? (env as GithubAppBindings & MergePolicyBindings)
       : {};
+  const name = (env as { GITHUB_REPOSITORY?: unknown } | undefined)
+    ?.GITHUB_REPOSITORY;
+  const [owner = "", repo = ""] =
+    typeof name === "string" && /^[^/]+\/[^/]+$/.test(name)
+      ? name.split("/")
+      : [];
   return {
     ...ports,
     credential: createGithubAppCredential(bindings, ports),
     mergePolicy: () => readMergePolicy(bindings),
     mergePolicyBinding: () => mergePolicyBinding(bindings),
+    repository: { host: "github.com" as const, owner, repo },
   };
 }

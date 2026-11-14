@@ -1,20 +1,23 @@
-import Input from "../../src/blocks/work/schemas/receipt-admit.input.json" with { type: "json" };
-import { validateWithSchema } from "../../src/contract/schema.ts";
+import { ForgeFailure } from "../../src/contract/failure.ts";
 import type { StateOwner } from "../../src/core/state/index.ts";
-import type { StateRecord } from "../../src/generated/types.ts";
+import type { StateRecord, TrackerItem } from "../../src/generated/types.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
 import { commandWrite, prepareReceipt } from "./command-write.ts";
-import {
-  decodeEvidence,
-  EvidenceReceiptStore,
-  type EvidenceReceipt,
-} from "./evidence-receipts.ts";
+import { decodeEvidence } from "./evidence-receipts.ts";
+import { closeIssue } from "./issue-close.ts";
 import { readGithubMergeEvidence } from "./github-evidence.ts";
 import type { composeGithub } from "./github-compose.ts";
 import { listLinks } from "./issue-links.ts";
-import { fail } from "./issue-read.ts";
-import { replay } from "./issue-receipts.ts";
-import { heldLease } from "./issue-update.ts";
+import {
+  checkedValue,
+  configured,
+  fail,
+  minted,
+  storedId,
+  validateCloseInput,
+} from "./issue-read.ts";
+import { refused, replay } from "./issue-receipts.ts";
+import { heldLease, heldReplay } from "./issue-update.ts";
 import type { WriteCall } from "./issue-write.ts";
 import { evaluateMergeEvidence } from "./merge-evidence.ts";
 import { carriesToken } from "./tokens.ts";
@@ -28,7 +31,7 @@ type Ports = ReturnType<typeof composeGithub> & {
   };
   readonly verifierVersion: string;
 };
-const OP = "receipt.admit",
+const OP = "issue.close",
   NAMESPACE = "forge/work";
 
 /** Server-only coordinator: observe outside the transaction, recheck and commit without an await. */
@@ -37,7 +40,7 @@ export async function admitReceipt(
   owner: StateOwner,
   call: WriteCall,
   ports: Ports,
-): Promise<EvidenceReceipt> {
+): Promise<TrackerItem> {
   const { input, context } = structuredClone({
     input: call.input,
     context: call.context,
@@ -52,25 +55,46 @@ export async function admitReceipt(
     context,
     device: call.device,
   });
-  const replayed = (receipt: EvidenceReceipt) =>
-    heldLease(owner, context, receipt.candidate.binding.issueId, OP);
+  configured(call.prefix);
+  const replayed = (issue: TrackerItem) =>
+    heldReplay(owner, OP)(issue, context);
   call.recheck();
   const prior = replay(db, owner, identity.requestId, identity.fingerprint);
   if (prior !== undefined) {
-    const receipt = decodeEvidence(JSON.stringify(prior));
-    replayed(receipt);
-    return receipt;
+    replayed(prior as TrackerItem);
+    return prior as TrackerItem;
   }
   const binding = ports.mergePolicyBinding();
   const p0 = await ports.mergePolicy();
   // Prepare is synchronous; P0 is the server snapshot resolved before entering it.
   call.recheck();
-  if (validateWithSchema(Input, input).length)
-    throw fail("INPUT_INVALID", "input must be { id, pr }");
-  const { id, pr } = input as { id: string; pr: number };
-  if (!owner.get(NAMESPACE, `issue:${id}`))
-    throw fail("NOT_FOUND", "Issue was not found");
+  let id: string, pr: number;
+  try {
+    if (validateCloseInput(input).length || !(input as { pr?: unknown }).pr)
+      throw fail("INPUT_INVALID", "input must be { id, pr }");
+    const fields = input as { id: string; pr: number };
+    pr = fields.pr;
+    id = storedId(fields.id, call.prefix as string, minted(db));
+  } catch (error) {
+    if (
+      !(error instanceof ForgeFailure) ||
+      error.error.code !== "INPUT_INVALID"
+    )
+      throw error;
+    throw refused(
+      db,
+      identity.requestId,
+      identity.fingerprint,
+      error,
+      call.recheck,
+      call.expiresAt,
+    );
+  }
+  const issue = owner.get(NAMESPACE, `issue:${id}`);
+  if (!issue) throw fail("NOT_FOUND", "Issue was not found");
   heldLease(owner, context, id, OP);
+  if (checkedValue({ ...issue }, id).status === "closed")
+    throw fail("INPUT_CONFLICT", "Issue is already closed");
   const delivery = () =>
     (
       listLinks({ records: db, leases: db }, { id }, ports.now(), "work")
@@ -148,14 +172,24 @@ export async function admitReceipt(
           "INPUT_CONFLICT",
           "Merge policy changed during evidence verification",
         );
-      return new EvidenceReceiptStore(db, policy.project).put({
-        candidate: evaluated.candidate,
-        policy,
-        repository,
-        verifierVersion: ports.verifierVersion,
-        actor: context.actor.id,
-        device: call.device,
+      const receipt = decodeEvidence(
+        JSON.stringify({
+          format: "forge.cloud-evidence-receipt/1",
+          id: crypto.randomUUID(),
+          origin: "verified",
+          subjectKind: "merge-commit",
+          candidate: evaluated.candidate,
+          policy,
+          repository,
+          verifierVersion: ports.verifierVersion,
+          actor: context.actor.id,
+          device: call.device,
+        }),
+      );
+      owner.put(NAMESPACE, `evidence:${id}`, receipt, context.actor, {
+        expectRevision: 0,
       });
+      return closeIssue(db, owner, { ...call, input, context }, receipt.id);
     },
     replayed,
   );
