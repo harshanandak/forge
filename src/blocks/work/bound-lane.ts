@@ -245,10 +245,10 @@ export async function boundLaneProgress(
   ownBoundGrant(fresh.lease, context, device, record.grant.generation, now);
   if (!record.active || record.releaseRequestId || fresh.status !== "open")
     refuse("INPUT_CONFLICT", "The lane is inactive, releasing or closed.");
-  if (
-    input.head &&
-    input.head.toLowerCase() !== (await readHead(record.lane.worktree))
-  )
+  const actualHead = await readHead(record.lane.worktree);
+  const effectiveHead =
+    op === "lane.next" ? input.head?.toLowerCase() : record.progress?.head;
+  if (effectiveHead !== actualHead)
     refuse(
       "INPUT_CONFLICT",
       "Supplied head differs from the attached checkout.",

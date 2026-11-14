@@ -1356,7 +1356,9 @@ for (const [name, variants] of [
         counter: { ...progress, actions: -1 },
         permit: { ...progress, permit: true },
         pending: { ...progress, pending: "yes" },
-        "missing head": { ...progress, head: undefined },
+        "missing head": Object.fromEntries(
+          Object.entries(progress).filter(([key]) => key !== "head"),
+        ),
         verdict: { ...progress, verdict: { head, verdict: "PASS" } },
         ask: { ...progress, ask: { reason: "scope" } },
       };

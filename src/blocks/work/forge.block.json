@@ -407,7 +407,7 @@
       "output": "schemas/lane-record.output.json",
       "context": "project",
       "timeoutMs": 15000,
-      "effects": ["lane:write"],
+      "effects": ["lane:write", "external:process", "environment:read"],
       "idempotent": false,
       "callers": ["agent", "human"],
       "stability": "experimental",
