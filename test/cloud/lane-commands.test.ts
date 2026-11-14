@@ -6,6 +6,8 @@ import { durableStore } from "../../cloud/src/store.ts";
 import { StateOwner } from "../../src/core/state/index.ts";
 import type { ResultEnvelope } from "../../src/generated/types.ts";
 import { exitCode } from "../../src/surface/result.ts";
+import ResumeInput from "../../src/blocks/work/schemas/lane-resume.input.json" with { type: "json" };
+import { validateWithSchema } from "../../src/contract/schema.ts";
 import {
   LANE_APPROVALS,
   laneApprovalStatus,
@@ -1034,6 +1036,282 @@ const ownerProof = (changes: Partial<IdentityClaims> = {}) => {
     now,
   );
 };
+
+async function resumeFixture(scope: "all" | "issue" = "all") {
+  const f = await browserFixture(scope, undefined, async () => ownerProof());
+  for (const id of scope === "all" ? ["work-7", "work-8"] : ["work-8"])
+    f.put(`lane-control:${id}`, {
+      version: 1,
+      incarnation: "history",
+      id,
+      epoch: 4,
+      stoppedAt: new Date(now).toISOString(),
+    });
+  const back = await laneReturn(f);
+  expect(
+    (await f.browser(back.path, undefined, { Cookie: back.cookie }, true))
+      .status,
+  ).toBe(200);
+  const input = {
+    ...(scope === "all" ? { all: true } : { id: "work-7" }),
+    approval: { request: f.pending.request },
+  };
+  return { ...f, input, resume: call("lane.resume", input, "consume") };
+}
+const replaceApproval = (f: Fixture, changes: Partial<LaneApproval>) =>
+  f.db.run(`UPDATE ${LANE_APPROVALS} SET state=? WHERE id=1`, [
+    JSON.stringify({
+      requests: approvalRows(f).map((row) => ({ ...row, ...changes })),
+    }),
+  ]);
+
+test.each(["all", "issue"] as const)(
+  "approved resume %s commits once and replays historically after a later stop",
+  async (scope) => {
+    const f = await resumeFixture(scope);
+    try {
+      const before = (await control(f)).result as { epoch: number };
+      const unrelated = f.owner.get("forge/work", "issue:work-8");
+      const reply = await f.send(f.resume);
+      expect(reply.verdict).toEqual(["OK", "OK", 0]);
+      expect(reply.status).toBe(200);
+      expect(reply.result).toEqual({
+        resumed: scope === "all" ? "all" : "work-7",
+      });
+      expect(approvalRows(f)[0]!.status).toBe("spent");
+      expect((await control(f, "work-7")).result).toMatchObject({
+        epoch: before.epoch + 1,
+        stopped: false,
+      });
+      expect((await control(f, "work-8")).result).toMatchObject({
+        stopped: scope === "issue",
+      });
+      expect(f.owner.get("forge/work", "issue:work-8")).toEqual(unrelated);
+      const global = f.owner.get("forge/work", "lane-control:global")!.value;
+      expect(global).toMatchObject({
+        stopAll: null,
+        resumeAllEpoch: scope === "all" ? before.epoch + 1 : 0,
+      });
+      await f.send(call("lane.stop", { id: "work-7" }, "later-stop"));
+      const stoppedAgain = f.snapshot();
+      expect((await f.send(f.resume)).envelope).toEqual(reply.envelope);
+      expect(f.snapshot()).toBe(stoppedAgain);
+      expect((await control(f, "work-7")).result).toMatchObject({
+        stopped: true,
+      });
+    } finally {
+      f.close();
+    }
+  },
+  10_000,
+);
+
+test.each([
+  ["pending", "APPROVAL_REQUIRED"],
+  ["denied", "APPROVAL_REQUIRED"],
+  ["spent", "APPROVAL_REQUIRED"],
+  ["expired", "APPROVAL_REQUIRED"],
+  ["missing", "APPROVAL_REQUIRED"],
+  ["epoch", "INPUT_CONFLICT"],
+  ["incarnation", "INPUT_CONFLICT"],
+  ["policy", "INPUT_CONFLICT"],
+  ["project", "INPUT_CONFLICT"],
+  ["other issue", "INPUT_CONFLICT"],
+  ["all scope", "INPUT_CONFLICT"],
+  ["global stop", "INPUT_CONFLICT"],
+  ["all later stop", "INPUT_CONFLICT"],
+  ["quote", "INPUT_INVALID"],
+  ["source", "INPUT_INVALID"],
+] as const)(
+  "resume refuses %s approval without changing storage",
+  async (mode, code) => {
+    const f = await resumeFixture(mode === "all later stop" ? "all" : "issue");
+    try {
+      let input: object = f.input;
+      if (["pending", "denied", "spent"].includes(mode))
+        replaceApproval(f, { status: mode as LaneApproval["status"] });
+      if (mode === "expired") f.clock.mockReturnValue(now + 600_000);
+      if (mode === "missing")
+        input = { ...f.input, approval: { request: "missing" } };
+      if (["epoch", "global stop", "all later stop"].includes(mode))
+        await f.send(
+          call(
+            "lane.stop",
+            mode === "global stop" ? { all: true } : { id: "work-8" },
+            "changed-stop",
+          ),
+        );
+      if (mode === "incarnation")
+        replaceApproval(f, { incarnation: "old-history" });
+      if (mode === "policy") f.env.FORGE_OWNER_SUBJECT = "user_Changed2";
+      if (mode === "project") replaceApproval(f, { project: "other" });
+      if (mode === "other issue") input = { ...f.input, id: "work-8" };
+      if (mode === "all scope")
+        input = { all: true, approval: f.input.approval };
+      if (mode === "quote" || mode === "source")
+        input = {
+          ...f.input,
+          approval: {
+            ...f.input.approval,
+            [mode]:
+              mode === "quote" ? "yes" : { harness: "test", thread: "owner" },
+          },
+        };
+      const before = f.snapshot();
+      const reply = await f.send(call("lane.resume", input, "refused-resume"));
+      expect(reply.verdict).toEqual([
+        "FAIL",
+        code,
+        code === "INPUT_INVALID" ? 6 : code === "INPUT_CONFLICT" ? 4 : 1,
+      ]);
+      expect(f.snapshot()).toBe(before);
+    } finally {
+      f.close();
+    }
+  },
+  10_000,
+);
+
+test.each(["device", "renewed token", "body", "new request"])(
+  "a successful resume cannot be reused with a changed %s",
+  async (mode) => {
+    const f = await resumeFixture();
+    try {
+      const alternate = await f.admit(mode === "device" ? "desktop" : "laptop");
+      expect((await f.send(f.resume)).verdict).toEqual(["OK", "OK", 0]);
+      await f.send(call("lane.stop", { all: true }, "stopped-again"));
+      const before = f.snapshot();
+      const reply = await f.send(
+        mode === "body"
+          ? { ...f.resume, input: { id: "work-7", approval: f.input.approval } }
+          : mode === "new request"
+            ? { ...f.resume, requestId: "another-consume" }
+            : f.resume,
+        "p",
+        mode === "device" || mode === "renewed token"
+          ? { authorization: `Bearer ${alternate}` }
+          : {},
+      );
+      expect(reply.verdict).toEqual([
+        "FAIL",
+        mode === "body" ? "INPUT_CONFLICT" : "APPROVAL_REQUIRED",
+        mode === "body" ? 4 : 1,
+      ]);
+      expect(f.snapshot()).toBe(before);
+      expect((await control(f)).result).toMatchObject({ stopped: true });
+    } finally {
+      f.close();
+    }
+  },
+  10_000,
+);
+
+test("an approval from another project changes neither project", async () => {
+  const f = await resumeFixture();
+  const other = await fixture("other");
+  try {
+    await other.send(call("lane.stop", { all: true }, "other-stop"));
+    other.db.run(`INSERT INTO ${LANE_APPROVALS} (id, state) VALUES (1, ?)`, [
+      JSON.stringify({ requests: approvalRows(f) }),
+    ]);
+    const before = [f.snapshot(), other.snapshot()];
+    expect((await other.send(f.resume)).verdict).toEqual([
+      "FAIL",
+      "INPUT_CONFLICT",
+      4,
+    ]);
+    expect([f.snapshot(), other.snapshot()]).toEqual(before);
+  } finally {
+    other.close();
+    f.close();
+  }
+}, 10_000);
+
+test("two admitted devices racing for one approval have one winner", async () => {
+  const f = await resumeFixture();
+  try {
+    const alternate = await f.admit("desktop");
+    const before = (await control(f)).result as { epoch: number };
+    const replies = await Promise.all([
+      f.send(f.resume),
+      f.send(f.resume, "p", { authorization: `Bearer ${alternate}` }),
+    ]);
+    expect(replies.map((reply) => reply.verdict).sort()).toEqual([
+      ["FAIL", "APPROVAL_REQUIRED", 1],
+      ["OK", "OK", 0],
+    ]);
+    expect(approvalRows(f)[0]!.status).toBe("spent");
+    expect((await control(f)).result).toMatchObject({
+      epoch: before.epoch + 1,
+      stopped: false,
+    });
+  } finally {
+    f.close();
+  }
+}, 10_000);
+
+test.each(["approval", "control", "receipt"])(
+  "resume rolls back approval, control and receipt on a failed %s write",
+  async (where) => {
+    const f = await resumeFixture();
+    try {
+      const target =
+        where === "approval"
+          ? LANE_APPROVALS
+          : where === "control"
+            ? "state_records WHEN NEW.key = 'lane-control:global'"
+            : "domain_cloud_command_receipts";
+      const operation = where === "approval" ? "UPDATE" : "INSERT";
+      f.db.run(
+        `CREATE TRIGGER refuse_resume BEFORE ${operation} ON ${target} BEGIN SELECT RAISE(ABORT, 'injected resume failure'); END`,
+      );
+      const before = f.snapshot();
+      expect((await f.send(f.resume)).envelope.ok).toBe(false);
+      expect(f.snapshot()).toBe(before);
+      f.db.run("DROP TRIGGER refuse_resume");
+      expect((await f.send(f.resume)).verdict).toEqual(["OK", "OK", 0]);
+      expect(approvalRows(f)[0]!.status).toBe("spent");
+    } finally {
+      f.close();
+    }
+  },
+  10_000,
+);
+
+test.each([false, true])(
+  "an executor revoked before resume or replay is refused, replay %s",
+  async (replayed) => {
+    const f = await resumeFixture();
+    try {
+      if (replayed)
+        expect((await f.send(f.resume)).verdict).toEqual(["OK", "OK", 0]);
+      f.db.run("UPDATE domain_cloud_tokens SET revoked_at=?", [now]);
+      const before = f.snapshot();
+      expect((await f.send(f.resume)).envelope.ok).toBe(false);
+      expect(f.snapshot()).toBe(before);
+    } finally {
+      f.close();
+    }
+  },
+  10_000,
+);
+
+test.each(["cloud", "local", "partial local"])(
+  "resume schema accepts the distinct %s approval variant",
+  (mode) => {
+    const approval = {
+      request: "request-1",
+      ...(mode === "cloud" ? {} : { quote: "yes" }),
+      ...(mode === "local"
+        ? { source: { harness: "test", thread: "owner" } }
+        : {}),
+    };
+    expect(
+      validateWithSchema(ResumeInput, { all: true, approval }).length === 0,
+    ).toBe(mode !== "partial local");
+  },
+  10_000,
+);
 type BrowserFixture = Awaited<ReturnType<typeof browserFixture>>;
 async function laneReturn(
   f: BrowserFixture,
