@@ -333,3 +333,225 @@ for (const name of cases) {
     }
   });
 }
+
+const configuredPolicy = {
+  project: "forge",
+  repositoryId: 7,
+  baseBranch: "main",
+  version: "1",
+  producer: {
+    repositoryId: 7,
+    appId: 11,
+    workflowId: 2,
+    workflowPath: ".github/workflows/ci.yml",
+    workflowDigest: "e".repeat(64),
+  },
+  requiredChecks: ["ci", "security"],
+};
+type Policy = import("../../cloud/src/merge-evidence.ts").MergePolicy;
+type PolicyResult =
+  | { ok: true; policy: Policy }
+  | { ok: false; code: "UNAVAILABLE"; reason: string };
+const policyRows: [string, unknown, unknown?, unknown?][] = [
+  ["valid", JSON.stringify(configuredPolicy)],
+  [
+    "reordered",
+    JSON.stringify({
+      ...Object.fromEntries(Object.entries(configuredPolicy).reverse()),
+      producer: Object.fromEntries(
+        Object.entries(configuredPolicy.producer).reverse(),
+      ),
+    }),
+  ],
+  ["missing", undefined],
+  ["not string", configuredPolicy],
+  ["malformed", "{"],
+  ["array", "[]"],
+  ["null", "null"],
+  ["oversized", " ".repeat(16_385)],
+  [
+    "oversized utf8",
+    JSON.stringify({
+      ...configuredPolicy,
+      requiredChecks: Array.from(
+        { length: 70 },
+        (_, index) => index + "\u754c".repeat(100),
+      ),
+    }),
+  ],
+  [
+    "project mismatch",
+    JSON.stringify({ ...configuredPolicy, project: "other" }),
+  ],
+  ["missing admitted project", JSON.stringify(configuredPolicy), "7", null],
+  ...[null, 7, "0", "07", " 7", "9007199254740992"].map(
+    (id): [string, unknown, unknown] => [
+      "bad admitted repository:" + String(id),
+      JSON.stringify(configuredPolicy),
+      id,
+    ],
+  ),
+  ...Object.entries({
+    repositoryId: 8,
+    requiredChecks: [],
+    digest: "d".repeat(64),
+    extra: true,
+  }).map(([key, value]): [string, unknown] => [
+    key,
+    JSON.stringify({ ...configuredPolicy, [key]: value }),
+  ]),
+  [
+    "duplicate checks",
+    JSON.stringify({ ...configuredPolicy, requiredChecks: ["ci", "ci"] }),
+  ],
+  ...Object.entries({
+    repositoryId: 8,
+    workflowPath: "../ci.yml",
+    extra: true,
+  }).map(([key, value]): [string, unknown] => [
+    "producer:" + key,
+    JSON.stringify({
+      ...configuredPolicy,
+      producer: { ...configuredPolicy.producer, [key]: value },
+    }),
+  ]),
+  [
+    "duplicate",
+    JSON.stringify(configuredPolicy).replace(
+      '"version":"1"',
+      '"version":"bad","version":"1"',
+    ),
+  ],
+  [
+    "escaped duplicate",
+    JSON.stringify(configuredPolicy).replace(
+      '"version":"1"',
+      '"ver\\u0073ion":"bad","version":"1"',
+    ),
+  ],
+  [
+    "nested duplicate",
+    JSON.stringify(configuredPolicy).replace(
+      '"appId":11',
+      '"appId":0,"appId":11',
+    ),
+  ],
+  ...Object.keys(configuredPolicy).map((key): [string, unknown] => [
+    "missing:" + key,
+    JSON.stringify(
+      Object.fromEntries(
+        Object.entries(configuredPolicy).filter(([k]) => k !== key),
+      ),
+    ),
+  ]),
+];
+for (const [name, raw, repository = "7", project = "forge"] of policyRows)
+  test(
+    "server policy:" + name,
+    async () => {
+      if (name === "oversized utf8") {
+        if (typeof raw !== "string") throw new Error("Expected JSON fixture");
+        expect(raw.length).toBeLessThan(16_384);
+        expect(new TextEncoder().encode(raw).byteLength).toBeGreaterThan(
+          16_384,
+        );
+        const { policyGuard } =
+          await import("../../cloud/src/merge-evidence.ts");
+        expect(
+          policyGuard({
+            ...(JSON.parse(raw) as object),
+            digest: "d".repeat(64),
+          }),
+        ).toBe(true);
+      }
+      const bindings = {
+        ...env,
+        GITHUB_REPOSITORY_ID: repository,
+        FORGE_CLOUD_PROJECT: project,
+        GITHUB_MERGE_POLICY: raw,
+      };
+      let calls = 0;
+      const composed: ReturnType<typeof composeGithub> & {
+        mergePolicy?: () => Promise<PolicyResult>;
+      } = composeGithub(bindings, {
+        fetch: () => {
+          calls++;
+          return Promise.reject(new Error("No policy I/O"));
+        },
+        now: () => 1_000_000,
+        deadline: () => {
+          calls++;
+          return () => {};
+        },
+      });
+      expect(calls).toBe(0);
+      expect(typeof composed.mergePolicy).toBe("function");
+      if (!composed.mergePolicy)
+        throw new Error("Server policy reader missing");
+      const result = await composed.mergePolicy();
+      expect(calls).toBe(0);
+      expect(bindings.GITHUB_MERGE_POLICY).toBe(raw);
+      expect(bindings.GITHUB_APP_ID).toBe(env.GITHUB_APP_ID);
+      if (name === "valid" || name === "reordered") {
+        const { canonicalJson } =
+          await import("../../src/core/config/pointer.ts");
+        const hash = new Uint8Array(
+          await crypto.subtle.digest(
+            "SHA-256",
+            new TextEncoder().encode(canonicalJson(configuredPolicy)),
+          ),
+        );
+        const digest = Array.from(hash, (byte) =>
+          byte.toString(16).padStart(2, "0"),
+        ).join("");
+        expect(result).toEqual({
+          ok: true,
+          policy: { ...configuredPolicy, digest },
+        });
+        if (!result.ok) throw new Error("Valid policy refused");
+        const { withGithubPrEvidence } =
+          await import("../../cloud/src/github-evidence.ts");
+        let credentials = 0;
+        const accepted = await withGithubPrEvidence(
+          {
+            locator: {
+              owner: "acme",
+              repo: "forge",
+              repositoryId: 7,
+              branch: "main",
+              prNumber: 9,
+            },
+            policy: result.policy,
+            binding: {
+              project: "forge",
+              issueId: "work-1",
+              linkKey: "link:work-1:1",
+              linkRevision: 1,
+              repositoryId: 7,
+              prNumber: 9,
+              prId: "PR_node",
+              headSha: "a".repeat(40),
+            },
+          },
+          {
+            ...composed,
+            signal: new AbortController().signal,
+            credential: () => {
+              credentials++;
+              return Promise.resolve(null);
+            },
+          },
+          () => Promise.resolve(null),
+        );
+        expect(accepted).toMatchObject({ ok: false, code: "UNAVAILABLE" });
+        expect(credentials).toBe(1);
+      } else {
+        expect(result).toEqual({
+          ok: false,
+          code: "UNAVAILABLE",
+          reason: "Server merge policy is missing or invalid",
+        });
+      }
+    },
+    1000,
+  );

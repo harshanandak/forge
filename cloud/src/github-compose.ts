@@ -4,6 +4,8 @@ import {
   type GithubCredentialPorts,
 } from "./github-app-credential.ts";
 
+import { readMergePolicy, type MergePolicyBindings } from "./merge-policy.ts";
+
 /** Ports reserved for server-owned evidence reads; construction performs no I/O. */
 export function composeGithub(
   env: unknown,
@@ -17,6 +19,12 @@ export function composeGithub(
   },
 ) {
   const bindings =
-    env && typeof env === "object" ? (env as GithubAppBindings) : {};
-  return { ...ports, credential: createGithubAppCredential(bindings, ports) };
+    env && typeof env === "object"
+      ? (env as GithubAppBindings & MergePolicyBindings)
+      : {};
+  return {
+    ...ports,
+    credential: createGithubAppCredential(bindings, ports),
+    mergePolicy: () => readMergePolicy(bindings),
+  };
 }

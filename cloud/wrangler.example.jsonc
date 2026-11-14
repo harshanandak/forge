@@ -26,6 +26,8 @@
     "GITHUB_APP_ID": "<github-app-id>",
     "GITHUB_APP_INSTALLATION_ID": "<github-installation-id>",
     "GITHUB_REPOSITORY_ID": "<admitted-repository-id>",
+    // producer.appId is app.id from the approved workflow check suite, independent of credential GITHUB_APP_ID.
+    "GITHUB_MERGE_POLICY": "{\"project\":\"<project-name>\",\"repositoryId\":<admitted-repository-id>,\"baseBranch\":\"<base-branch>\",\"version\":\"<policy-version>\",\"producer\":{\"repositoryId\":<admitted-repository-id>,\"appId\":<producer-app-id>,\"workflowId\":<workflow-id>,\"workflowPath\":\".github/workflows/<workflow-file>.yml\",\"workflowDigest\":\"<workflow-sha256>\"},\"requiredChecks\":[\"<required-check-name>\"]}",
     // Optional FORGE_OAUTH_REDIRECTS: comma-separated https redirect URLs that may register besides loopback.
   },
   // Secrets, set with `wrangler secret put` and never written here: DEVICE_LOGIN_HMAC_KEY, ADMIN_TOKEN, GITHUB_APP_PRIVATE_KEY (PKCS#8 PEM).
