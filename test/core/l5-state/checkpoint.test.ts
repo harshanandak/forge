@@ -2,7 +2,10 @@ import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { createSqliteStore } from "../../../src/adapters/store-sqlite/index.ts";
-import { StateOwner } from "../../../src/core/state/index.ts";
+import {
+  StateOwner,
+  verifyEventDerivedState,
+} from "../../../src/core/state/index.ts";
 import {
   checkpointTables,
   decodeCheckpoint,
@@ -358,3 +361,277 @@ test("the previous initializer rejects migration 004 without writes", async () =
     await source.close();
   }
 }, 30000);
+
+function canonicalDigest(input: unknown): string {
+  const encoded = JSON.stringify(input, (_key, entry: unknown) =>
+    entry !== null && typeof entry === "object" && !Array.isArray(entry)
+      ? Object.fromEntries(
+          Object.entries(entry).sort(([a], [b]) =>
+            a < b ? -1 : a > b ? 1 : 0,
+          ),
+        )
+      : entry,
+  );
+  return `sha256:${createHash("sha256").update(encoded).digest("hex")}`;
+}
+
+type Store = Awaited<ReturnType<typeof open>>;
+const actor = { kind: "agent", id: "builder" } as const;
+const ns = "forge/test";
+const write = (store: Store, key: string, revision = 0, requestId?: string) =>
+  store.owner.put(ns, key, revision + 1, actor, {
+    expectRevision: revision,
+    ...(requestId === undefined ? {} : { requestId }),
+  });
+function publishFixture(store: Store, checkpoint: Checkpoint): void {
+  const checked = decodeCheckpoint(encodeCheckpoint(checkpoint));
+  for (const kind of Object.keys(checked) as (keyof Checkpoint)[]) {
+    const table =
+      kind === "header"
+        ? "state_checkpoint_header"
+        : `state_checkpoint_${kind}`;
+    const tuples = kind === "header" ? [[1, ...checked.header]] : checked[kind];
+    for (const tuple of tuples)
+      store.db.run(
+        `INSERT INTO ${table} VALUES (${tuple.map(() => "?").join(",")})`,
+        tuple,
+      );
+  }
+}
+function prefix(store: Store): Checkpoint {
+  const a = write(store, "a");
+  write(store, "gone");
+  store.owner.delete(ns, "gone", actor, { expectRevision: 1 });
+  const retained = write(store, "retained", 0, "covered-request");
+  const receipt = store.db.get(
+    "SELECT fingerprint,result FROM state_requests",
+  )!;
+  return {
+    header: [1, "lineage", 1, 4, 1, 4],
+    live: [
+      [ns, "a", 1, 1, canonicalDigest(a)],
+      [ns, "retained", 4, 1, canonicalDigest(retained)],
+    ],
+    deleted: [[ns, "gone", 3, 2]],
+    receipts: [
+      [
+        ns,
+        "covered-request",
+        4,
+        canonicalDigest(JSON.parse(String(receipt.fingerprint))),
+        canonicalDigest(JSON.parse(String(receipt.result))),
+      ],
+    ],
+    leases: [],
+    reservations: [],
+    floors: [],
+    denied: [],
+  };
+}
+function tail(store: Store): void {
+  write(store, "a", 1);
+  write(store, "new", 0, "tail-request");
+  store.owner.delete(ns, "retained", actor, { expectRevision: 1 });
+  write(store, "gone");
+}
+const cases: readonly (readonly [
+  string,
+  boolean,
+  (store: Store) => void,
+  RegExp | undefined,
+])[] = [
+  ["empty tail and exact retained receipt", false, () => {}, undefined],
+  [
+    "writes updates deletes and revision 3 recreation",
+    true,
+    () => {},
+    undefined,
+  ],
+  [
+    "record digest mismatch",
+    false,
+    (s) => {
+      const record = s.owner.get(ns, "a")!;
+      s.db.run("UPDATE state_records SET body=? WHERE key='a'", [
+        JSON.stringify({ ...record, value: 999 }),
+      ]);
+    },
+    /state_records/,
+  ],
+  [
+    "extra live row",
+    false,
+    (s) => {
+      const record = { ...s.owner.get(ns, "a")!, key: "extra" };
+      s.db.run("INSERT INTO state_records VALUES (?,?,?,?)", [
+        ns,
+        "extra",
+        1,
+        JSON.stringify(record),
+      ]);
+    },
+    /state_records/,
+  ],
+  [
+    "missing checkpoint live row",
+    false,
+    (s) => {
+      s.db.run("DELETE FROM state_records WHERE key='a'");
+    },
+    /state_records/,
+  ],
+  [
+    "missing checkpoint live row after tail",
+    true,
+    (s) => {
+      s.db.run("DELETE FROM state_records WHERE key='a'");
+    },
+    /state_records/,
+  ],
+  [
+    "recreation at revision 1",
+    true,
+    (s) => {
+      const event = s.db.get("SELECT body FROM state_events WHERE key='gone'")!;
+      const record = s.owner.get(ns, "gone")!;
+      s.db.run("UPDATE state_events SET body=? WHERE key='gone'", [
+        JSON.stringify({ ...JSON.parse(String(event.body)), revision: 1 }),
+      ]);
+      s.db.run("UPDATE state_records SET revision=1,body=? WHERE key='gone'", [
+        JSON.stringify({ ...record, revision: 1 }),
+      ]);
+    },
+    /state_records/,
+  ],
+  ...(["fingerprint", "result"] as const).map(
+    (column) =>
+      [
+        `changed retained receipt ${column}`,
+        false,
+        (s: Store) => {
+          s.db.run(
+            `UPDATE state_requests SET ${column}='{}' WHERE request_id='covered-request'`,
+          );
+        },
+        /state_requests/,
+      ] as const,
+  ),
+  [
+    "missing retained receipt",
+    false,
+    (s) => {
+      s.db.run("DELETE FROM state_requests WHERE request_id='covered-request'");
+    },
+    /state_requests/,
+  ],
+  [
+    "missing tail receipt",
+    true,
+    (s) => {
+      s.db.run("DELETE FROM state_requests WHERE request_id='tail-request'");
+    },
+    /state_requests/,
+  ],
+  [
+    "invalid tail receipt",
+    true,
+    (s) => {
+      s.db.run(
+        "UPDATE state_requests SET result='{}' WHERE request_id='tail-request'",
+      );
+    },
+    /state_requests/,
+  ],
+  [
+    "extra receipt",
+    false,
+    (s) => {
+      s.db.run(
+        "INSERT INTO state_requests SELECT namespace,'extra-request',fingerprint,result FROM state_requests",
+      );
+    },
+    /state_requests/,
+  ],
+  [
+    "reused covered request identity",
+    true,
+    (s) => {
+      const row = s.db.get("SELECT body FROM state_events WHERE key='new'")!;
+      s.db.run("UPDATE state_events SET body=? WHERE key='new'", [
+        JSON.stringify({
+          ...JSON.parse(String(row.body)),
+          requestId: "covered-request",
+        }),
+      ]);
+    },
+    /state_requests/,
+  ],
+  [
+    "tail starts after C plus 1",
+    true,
+    (s) => {
+      s.db.run("DELETE FROM state_events WHERE sequence=5");
+    },
+    /state_events/,
+  ],
+];
+for (const [name, withTail, change, error] of cases)
+  for (const pageSize of [1, 100])
+    test(`checkpoint replay: ${name}, page ${pageSize}`, async () => {
+      const store = await open();
+      try {
+        const checkpoint = prefix(store);
+        if (withTail) tail(store);
+        publishFixture(store, checkpoint);
+        store.db.run("DELETE FROM state_events WHERE sequence<=4");
+        change(store);
+        const before = store.owner.export();
+        const changes = store.db.get("SELECT total_changes() AS n");
+        const verify = () =>
+          verifyEventDerivedState(store.db, withTail ? 8 : 4, pageSize);
+        if (error) expect(verify).toThrow(error);
+        else {
+          expect(verify()).toBeUndefined();
+          if (withTail) expect(store.owner.get(ns, "gone")?.revision).toBe(3);
+        }
+        expect(store.owner.export()).toEqual(before);
+        expect(store.db.get("SELECT total_changes() AS n")).toEqual(changes);
+      } finally {
+        await store.close();
+      }
+    }, 30000);
+
+for (const kind of ["leases", "floors", "reservations", "denied"] as const)
+  test(`checkpoint replay refuses unsupported ${kind}`, async () => {
+    const store = await open();
+    try {
+      const checkpoint = { ...prefix(store), [kind]: value()[kind] };
+      publishFixture(store, { ...checkpoint, header: value().header });
+      store.db.run("DELETE FROM state_events");
+      const before = store.owner.export();
+      expect(() => verifyEventDerivedState(store.db, 20)).toThrow(
+        new RegExp(kind),
+      );
+      expect(store.owner.export()).toEqual(before);
+    } finally {
+      await store.close();
+    }
+  }, 30000);
+
+for (const prune of [false, true])
+  test(`checkpoint replay ignores covered events: ${prune}`, async () => {
+    const store = await open();
+    try {
+      const checkpoint = prefix(store);
+      tail(store);
+      if (prune) {
+        publishFixture(store, checkpoint);
+        store.db.run("UPDATE state_events SET body='{}' WHERE sequence<=4");
+      }
+      const before = store.owner.export();
+      expect(verifyEventDerivedState(store.db, 8, 1)).toBeUndefined();
+      expect(store.owner.export()).toEqual(before);
+    } finally {
+      await store.close();
+    }
+  }, 30000);
