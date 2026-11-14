@@ -95,6 +95,7 @@ import {
   selectCloud,
 } from "./cloud-authority.ts";
 import { LocalState } from "./state.ts";
+import { coordinateLane } from "./cloud-lane-coordinator.ts";
 import {
   ApprovalRequired,
   agentSession,
@@ -1818,15 +1819,40 @@ export async function createAssembly(
               scope: ownContext,
               env: options.providers?.env ?? process.env,
               cloud: options.providers?.cloudLogin,
+              coordinate: (flight, project) =>
+                coordinateLane(
+                  flight,
+                  project,
+                  deviceState,
+                  async (op, input) => {
+                    const nested = current.candidates.find(
+                      (entry) =>
+                        entry.builtin === true &&
+                        entry.blockId === "forge/work" &&
+                        entry.declaredOp === op,
+                    );
+                    if (!nested)
+                      refuse("UNKNOWN_COMMAND", "Issue read is not assembled.");
+                    const answer = await catalog.invoke({
+                      ...request,
+                      op: nested.op,
+                      input,
+                    });
+                    if (!answer.ok) throw new ForgeFailure(answer.error);
+                    return answer.result;
+                  },
+                ),
             },
             runtime,
             request,
             target?.declaredOp,
             target?.blockId,
           );
-        const routed =
-          target?.blockId === "forge/work" &&
-          cloudRoute(target.blockId, target.declaredOp ?? "") === "cloud";
+        const route =
+          target?.blockId === "forge/work"
+            ? cloudRoute(target.blockId, target.declaredOp ?? "")
+            : "local";
+        const routed = route === "cloud" || route === "coordinator";
         if (routed) {
           const cloud = await fromCloud(new Runtime(current.catalog, trust));
           if (cloud) return cloud;

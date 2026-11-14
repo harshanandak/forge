@@ -2,10 +2,13 @@
 // A bound project writes only through the cloud; no local store or device is created.
 import { nodeDeviceIdentity } from "../adapters/fs/device-identity.ts";
 import { ForgeFailure } from "../contract/failure.ts";
+import { BOUND_LANES } from "../blocks/work/bound-lane.ts";
+import type { BoundProject } from "../blocks/work/bound-lane-state.ts";
 import {
   failureEnvelope,
   refuseDryRun,
   type Runtime,
+  type Preflight,
 } from "../core/runtime/index.ts";
 import type { BoundContext } from "../generated/types.ts";
 import type { InvocationRequest, ResultEnvelope } from "../generated/types.ts";
@@ -20,6 +23,10 @@ const loadHttp = lazy(() => import("../adapters/http/index.ts"));
 const loadLeaseClient = lazy(() => import("./cloud-state-client.ts"));
 
 export interface CloudAuthorityDeps {
+  readonly coordinate?: (
+    flight: Preflight,
+    project: BoundProject,
+  ) => Promise<unknown>;
   readonly root: string;
   readonly deviceRoot: string;
   /** The runtime's own check that a context is this project's; it throws the refusal. */
@@ -91,15 +98,22 @@ const CLOUD_SERVED: ReadonlySet<string> = new Set([
 export function cloudRoute(
   blockId: string,
   declared: string,
-): "local" | "cloud" | ForgeFailure {
+): "local" | "cloud" | "coordinator" | ForgeFailure {
   if (blockId === "forge/core")
     return declared === "store.reinit" ? notServed(declared) : "local";
   if (blockId !== "forge/work") return "local";
+  if (BOUND_LANES.has(declared)) return "coordinator";
   return CLOUD_SERVED.has(declared) ? "cloud" : notServed(declared);
 }
 
 /** The input the cloud cannot serve for an operation it routes yet, refused in one shape before any request. */
 function unserved(declared: string, input: unknown): ForgeFailure | undefined {
+  if (
+    BOUND_LANES.has(declared) &&
+    (!["lane.show", "lane.status"].includes(declared) ||
+      (typeof input === "object" && input !== null && "attempt" in input))
+  )
+    return notServed(declared);
   // Fail closed: an input that was not forwarded cannot be checked, so it is never taken as empty.
   if (input === undefined)
     return fail(
@@ -174,10 +188,9 @@ export function admitCloud(
   if (blockId === "forge/work") admitPrClose(deps, declared, input);
   const route = cloudRoute(blockId, declared);
   const dryRefused = dryRun === true && declared !== "lane.stop";
-  const refusal =
-    route === "cloud" && !dryRefused ? unserved(declared, input) : undefined;
-  if (route === "local" || (route === "cloud" && !dryRefused && !refusal))
-    return;
+  const remote = route === "cloud" || route === "coordinator";
+  const refusal = remote && !dryRefused ? unserved(declared, input) : undefined;
+  if (route === "local" || (remote && !dryRefused && !refusal)) return;
   if (
     cloudBinding(deps.root, deps.env.HOME ?? deps.env.USERPROFILE).kind !==
     "bound"
@@ -224,6 +237,17 @@ export async function selectCloud(
   const bound = binding();
   if (bound.kind === "unbound") return undefined;
   deps.scope(flight.context);
+  if (route === "coordinator") {
+    if (!block.shipped) throw notServed(declared);
+    const refusal = unserved(declared, request.input);
+    if (refusal) throw refusal;
+    if (!deps.coordinate)
+      throw fail("UNAVAILABLE", "Device lane coordinator is not assembled.");
+    const result = await deps.coordinate(flight, bound);
+    if (!block.validate(operation.declaration.output, result))
+      throw fail("OUTPUT_INVALID", "Invalid lane coordinator result.");
+    return { ok: true, op: request.op, status: "OK", result, warnings: [] };
+  }
   if (route !== "cloud") throw route;
   // Only stop may forward a dry run, and its original flag must reach the cloud.
   if (request.dryRun === true && declared !== "lane.stop")
