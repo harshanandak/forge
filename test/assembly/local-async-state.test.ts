@@ -4,6 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSqliteStore } from "../../src/adapters/store-sqlite/index.ts";
 import * as levelsModule from "../../src/assembly/levels.ts";
+import type {
+  PeerLookup,
+  ProjectStore,
+  StoreLevels,
+} from "../../src/assembly/levels.ts";
+import type { ExtendedStateClient } from "../../src/ports/state.ts";
 import {
   ASSEMBLY_PROVIDES,
   assemblyProvides,
@@ -17,17 +23,56 @@ setDefaultTimeout(30_000);
 const actor = { kind: "human" as const, id: "async-state" };
 const namespace = "forge/test";
 
+// Describe the consumer contract locally so the pre-implementation table compiles on v1.
+type Lift<C> = {
+  [K in keyof C]: C[K] extends (...args: infer A) => infer R
+    ? (...args: A) => Promise<R>
+    : never;
+};
+type AsyncState = Lift<
+  Pick<ExtendedStateClient, "get" | "put" | "putMany" | "history" | "count">
+> & {
+  range: Lift<ExtendedStateClient>["listRange"];
+  max: Lift<ExtendedStateClient>["maxNumber"];
+};
+type AsyncLevels = Omit<StoreLevels, "project" | "peer"> & {
+  project(): Promise<
+    (Omit<ProjectStore, "state"> & { state: AsyncState }) | undefined
+  >;
+  peer(ref: string): Promise<
+    | Exclude<PeerLookup, { status: "found" }>
+    | (Omit<Extract<PeerLookup, { status: "found" }>, "state"> & {
+        state: AsyncState;
+      })
+  >;
+};
+
 async function promised<T>(value: Promise<T>): Promise<T> {
   expect(value).toBeInstanceOf(Promise);
   return value;
+}
+
+async function refused(result: Promise<unknown>, code = "GRANT_REQUIRED") {
+  const envelope = await promised(result).then(
+    () => undefined,
+    (error: unknown) => failureEnvelope(undefined, error),
+  );
+  const status = code === "GRANT_REQUIRED" ? "INCOMPLETE" : "FAIL";
+  expect(envelope).toMatchObject({ status, error: { code } });
+  expect(exitCode(envelope!)).toBe(status === "INCOMPLETE" ? 2 : 4);
 }
 
 async function fixture() {
   // This assertion is the intentional red on the unmodified catalog, before any new module loads.
   expect(assemblyProvides("forge.state@2")).toBe(true);
   expect(assemblyProvides("forge.project-state@2")).toBe(true);
-  const { createLocalAsyncStateClient } =
-    await import("../../src/assembly/async-state-client.ts");
+  const path = new URL(
+    "../../src/assembly/async-state-client.ts",
+    import.meta.url,
+  );
+  const { createLocalAsyncStateClient } = (await import(path.href)) as {
+    createLocalAsyncStateClient(client: ExtendedStateClient): AsyncState;
+  };
   const root = realpathSync.native(
     mkdtempSync(join(tmpdir(), "forge-async-state-")),
   );
@@ -35,15 +80,13 @@ async function fixture() {
   const device = new LocalState(":memory:", store);
   const project = new LocalState(":memory:", store);
   const owner = (await device.open(true))!;
-  const client = (write = true, source = owner) =>
-    createStateClient({
-      owner: source,
-      namespace,
-      context: { variant: "device", actor, device: { id: "test" } },
-      write,
-      requestId: "async-state",
-    });
-  const sync = client();
+  const sync = createStateClient({
+    owner,
+    namespace,
+    context: { variant: "device", actor, device: { id: "test" } },
+    write: true,
+    requestId: "async-state",
+  });
   const opened: ReturnType<typeof levelsModule.openLevels>[] = [];
   const peers: LocalState[] = [];
   const open = (stateRoot: string, write: boolean, state = project) => {
@@ -62,7 +105,11 @@ async function fixture() {
     opened.push(result);
     return {
       sync: result.levels,
-      async: levelsModule.createAsyncLevels(result.levels),
+      async: (
+        Reflect.get(levelsModule, "createAsyncLevels") as (
+          levels: StoreLevels,
+        ) => AsyncLevels
+      )(result.levels),
     };
   };
   return {
@@ -72,7 +119,6 @@ async function fixture() {
     project,
     owner,
     sync,
-    client,
     open,
     peers,
     bridge: createLocalAsyncStateClient,
@@ -89,7 +135,7 @@ async function fixture() {
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 
 // The design's acceptance table: input / status / exit / eligibility / unchanged.
-const cases: readonly [string, (f: Fixture) => Promise<void>][] = [
+const cases: readonly [string, (f: Fixture) => void | Promise<void>][] = [
   [
     "Local parity",
     async (f) => {
@@ -142,26 +188,13 @@ const cases: readonly [string, (f: Fixture) => Promise<void>][] = [
             readSet: [{ key: "note/1", expectRevision: 1 }],
           }),
       ]) {
-        const refusal = await promised(attempt()).catch((error: unknown) =>
-          failureEnvelope(undefined, error),
-        );
-        expect(refusal).toMatchObject({
-          status: "FAIL",
-          error: { code: "REVISION_CONFLICT" },
-        });
-        expect(exitCode(refusal as ReturnType<typeof failureEnvelope>)).toBe(4);
+        await refused(attempt(), "REVISION_CONFLICT");
       }
       expect(f.sync.get("note/4")).toBeUndefined();
       expect(f.sync.events()).toEqual(before);
-      expect(Object.keys(f.async).sort()).toEqual([
-        "count",
-        "get",
-        "history",
-        "max",
-        "put",
-        "putMany",
-        "range",
-      ]);
+      expect(Object.keys(f.async).sort()).toEqual(
+        "count get history max put putMany range".split(" "),
+      );
     },
   ],
   [
@@ -181,9 +214,9 @@ const cases: readonly [string, (f: Fixture) => Promise<void>][] = [
       await ownProject.state.put("note/1", "own", { expectRevision: 0 });
       await f.async.put("note/1", "device", { expectRevision: 0 });
       expect((await f.async.get("note/1"))?.value).toBe("device");
-      expect(
-        (await (await own.sync.project())!.state.get("note/1"))?.value,
-      ).toBe("own");
+      expect((await own.sync.project())!.state.get("note/1")?.value).toBe(
+        "own",
+      );
       expect(ownProject.identity).toEqual((await own.sync.project())!.identity);
       expect(ownProject.projectId).toBe((await own.sync.project())!.projectId);
       const registryBefore = f.owner.events("forge/core-projects");
@@ -209,16 +242,7 @@ const cases: readonly [string, (f: Fixture) => Promise<void>][] = [
               { key: "note/2", value: "forbidden", expectRevision: 0 },
             ]),
         ]) {
-          const refusal = await attempt().catch((error: unknown) =>
-            failureEnvelope(undefined, error),
-          );
-          expect(refusal).toMatchObject({
-            status: "INCOMPLETE",
-            error: { code: "GRANT_REQUIRED" },
-          });
-          expect(exitCode(refusal as ReturnType<typeof failureEnvelope>)).toBe(
-            2,
-          );
+          await refused(attempt());
         }
       }
       expect(await reader.async.peer("unknown")).toEqual({
@@ -235,7 +259,7 @@ const cases: readonly [string, (f: Fixture) => Promise<void>][] = [
   ],
   [
     "v1 consumer",
-    async (f) => {
+    (f) => {
       expect(
         ASSEMBLY_PROVIDES.filter((id) =>
           /forge\.(state|project-state)@1\./.test(id),
@@ -293,16 +317,7 @@ const cases: readonly [string, (f: Fixture) => Promise<void>][] = [
           () =>
             empty.putMany([{ key: "none", value: "no", expectRevision: 0 }]),
         ]) {
-          const refusal = await promised(attempt()).catch((error: unknown) =>
-            failureEnvelope(undefined, error),
-          );
-          expect(refusal).toMatchObject({
-            status: "INCOMPLETE",
-            error: { code: "GRANT_REQUIRED" },
-          });
-          expect(exitCode(refusal as ReturnType<typeof failureEnvelope>)).toBe(
-            2,
-          );
+          await refused(attempt());
         }
         expect(existsSync(missingRoot)).toBe(false);
         expect(missing.current).toBeUndefined();
