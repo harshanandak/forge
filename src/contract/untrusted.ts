@@ -53,14 +53,18 @@ function nestingDepth(text: string): number {
   return deepest;
 }
 
-/** Parse JSON from outside the trust boundary under explicit budgets. */
+/** Parse under explicit budgets; an optional inspector may refuse a parsed value by throwing. */
 export function parseUntrustedJson(
   input: string | Uint8Array,
   limits: ParseLimits = DEFAULT_PARSE_LIMITS,
+  inspect?: (value: unknown) => void,
 ): ParseResult {
   let text: string;
   if (typeof input === "string") {
-    if (new TextEncoder().encode(input).length > limits.maxBytes) {
+    if (
+      input.length > limits.maxBytes ||
+      new TextEncoder().encode(input).length > limits.maxBytes
+    ) {
       return limitExceeded("maxBytes", limits.maxBytes);
     }
     text = input;
@@ -102,6 +106,7 @@ export function parseUntrustedJson(
     nodes += 1;
     if (nodes > limits.maxNodes)
       return limitExceeded("maxNodes", limits.maxNodes);
+    inspect?.(node);
     if (typeof node === "string" && node.length > limits.maxStringLength) {
       return limitExceeded("maxStringLength", limits.maxStringLength);
     }

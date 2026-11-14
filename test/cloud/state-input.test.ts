@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { parseStateInput } from "../../cloud/src/state-input.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { exitCode, failure } from "../../src/surface/result.ts";
@@ -194,6 +194,37 @@ const rows: readonly [string, unknown, boolean][] = [
   ],
   ["sibling keys", { ...commit, input: [{ a: 1 }, { a: 2 }] }, true],
   ["key-like string", { ...commit, input: '{"a":1,"a":2}' }, true],
+  [
+    "prototype labels as data",
+    { ...commit, input: ["__proto__", "constructor", "prototype"] },
+    true,
+  ],
+  ...[
+    '{"__proto__":{"polluted":true}}',
+    '{"constructor":{"prototype":{}}}',
+    '{"prototype":{}}',
+    String.raw`[{"nested":{"\u005f_proto__":{}}}]`,
+    String.raw`[{"constr\u0075ctor":{}}]`,
+    String.raw`[{"proto\u0074ype":{}}]`,
+    "1e400",
+    "-1e400",
+    '{"nested":[1e400]}',
+    "[-1e400]",
+  ].flatMap((payload): [string, unknown, boolean][] => [
+    [
+      "unsafe input",
+      encode({ ...commit, input: "PAYLOAD" }).replace('"PAYLOAD"', payload),
+      false,
+    ],
+    [
+      "unsafe entry value",
+      encode({
+        ...commit,
+        entries: [{ ...commit.entries[0], value: "PAYLOAD" }],
+      }).replace('"PAYLOAD"', payload),
+      false,
+    ],
+  ]),
   ["over bytes", padded(bodyLimit + 1), false],
   ["UTF-8 bytes", { ...commit, input: "é".repeat(bodyLimit / 2) }, false],
   ["over values", { ...commit, input: Array(5000).fill(null) }, false],
@@ -276,14 +307,25 @@ for (const [name, input, accepted] of rows) {
       let value: ReturnType<typeof parseStateInput> | undefined;
       let status = "OK",
         exit = 0;
+      const encoder =
+        typeof body === "string" && body.length > bodyLimit
+          ? spyOn(TextEncoder.prototype, "encode").mockImplementation(() => {
+              throw new Error("oversized string reached encoder");
+            })
+          : undefined;
       try {
         value = parseStateInput(body);
       } catch (error) {
         expect(error).toBeInstanceOf(ForgeFailure);
+        expect((error as ForgeFailure).error.message).toBe(
+          "Invalid state request or input budget exceeded",
+        );
         const refusal = failure((error as ForgeFailure).error.code, "refused");
         expect(refusal.error.code).toBe("INPUT_INVALID");
         status = refusal.status;
         exit = exitCode(refusal);
+      } finally {
+        encoder?.mockRestore();
       }
       expect(status).toBe(accepted ? "OK" : "FAIL");
       expect(exit).toBe(accepted ? 0 : 6);

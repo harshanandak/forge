@@ -123,12 +123,22 @@ const invalid = (): never => {
     retry: "never",
   });
 };
+function inspectValue(value: unknown): void {
+  if (
+    (typeof value === "number" && !Number.isFinite(value)) ||
+    (object(value) &&
+      Object.keys(value).some((label) =>
+        ["__proto__", "constructor", "prototype"].includes(label),
+      ))
+  )
+    invalid();
+}
 
 /** Pure byte boundary. Policy validates operation data and authority before any state access. */
 export function parseStateInput(
   body: string | Uint8Array,
 ): StateReadRequest | StateCommitRequest {
-  const parsed = parseUntrustedJson(body, LIMITS);
+  const parsed = parseUntrustedJson(body, LIMITS, inspectValue);
   if (!parsed.ok) return invalid();
   // The bounded parser keeps the last duplicate. Reuse the restore scanner to reject ambiguity,
   // including escaped labels and duplicates inside opaque operation data.
