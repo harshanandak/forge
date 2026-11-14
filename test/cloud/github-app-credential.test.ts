@@ -153,6 +153,13 @@ for (const name of cases) {
         );
         expect(init.method).toBe("POST");
         expect(init.redirect).toBe("manual");
+        expect(new Headers(init.headers).get("User-Agent")).toBe("forge-cloud");
+        expect(new Headers(init.headers).get("Accept")).toBe(
+          "application/vnd.github+json",
+        );
+        expect(new Headers(init.headers).get("X-GitHub-Api-Version")).toBe(
+          "2022-11-28",
+        );
         expect(typeof init.body).toBe("string");
         expect(JSON.parse(init.body as string)).toEqual({
           repository_ids: [7],

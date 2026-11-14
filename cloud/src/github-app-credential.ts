@@ -1,5 +1,6 @@
 import { createGithubJsonBudget, parseGithubJson } from "./github-json.ts";
 import { isPlainJson } from "./plain-json.ts";
+import { GITHUB_HEADERS } from "./github-headers.ts";
 type Credential = Readonly<{ token: string; expiresAt: number }>;
 export type GithubCredentialPorts = Readonly<{
   fetch(url: string, init: RequestInit): Promise<Response>;
@@ -90,8 +91,8 @@ export function createGithubAppCredential(
           redirect: "manual",
           signal: controller.signal,
           headers: {
+            ...GITHUB_HEADERS,
             Authorization: `Bearer ${unsigned}.${encode(new Uint8Array(signature))}`,
-            Accept: "application/vnd.github+json",
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
