@@ -68,6 +68,31 @@ for (const [name, input, valid] of shapes)
     ).toBe(valid);
   }, 30_000);
 
+test("concurrent same-ID invalid input records once and replays the refusal", async () => {
+  const f = await admissionFixture();
+  try {
+    const before = f.snapshot();
+    const bad = { id: "work-1", pr: 0 };
+    const results = await Promise.allSettled([f.command(bad), f.command(bad)]);
+    for (const result of results) {
+      expect(result.status).toBe("rejected");
+      if (result.status === "rejected")
+        expect(result.reason).toHaveProperty("error.code", "INPUT_INVALID");
+    }
+    const after = f.snapshot();
+    expect(after.tables.domain_cloud_command_receipts!.length).toBe(
+      before.tables.domain_cloud_command_receipts!.length + 1,
+    );
+    after.tables.domain_cloud_command_receipts =
+      before.tables.domain_cloud_command_receipts!;
+    expect(after).toEqual(before);
+    expect(f.state.calls).toEqual([]);
+    expect(f.state.policyReads).toBe(0);
+  } finally {
+    f.dbSource.close();
+  }
+}, 30_000);
+
 for (const [name, input, code] of [
   ["local receipt", { receipt: "local-receipt" }, "INPUT_INVALID"],
   ["pr and receipt", { pr: 490, receipt: "local-receipt" }, "INPUT_INVALID"],
@@ -181,18 +206,16 @@ test("verified close preserves whole and paged dumps with its evidence record", 
   }
 }, 30_000);
 
-for (const [name, input] of [
-  ["invalid pr", { id: "work-1", pr: 0 }],
-  ["invalid id", { id: "bad", pr: 490 }],
+for (const [name, input, code] of [
+  ["invalid pr", { id: "work-1", pr: 0 }, "INPUT_INVALID"],
+  ["invalid id", { id: "bad", pr: 490 }, "INPUT_INVALID"],
+  ["unknown id", { id: "work-999", pr: 490 }, "NOT_FOUND"],
 ] as const)
   test(`${name} records its refusal and conflicts with a changed retry`, async () => {
     const f = await admissionFixture();
     try {
       const before = f.snapshot();
-      await expect(f.command(input)).rejects.toHaveProperty(
-        "error.code",
-        "INPUT_INVALID",
-      );
+      await expect(f.command(input)).rejects.toHaveProperty("error.code", code);
       const refused = f.snapshot();
       expect(refused.tables.domain_cloud_command_receipts!.length).toBe(
         before.tables.domain_cloud_command_receipts!.length + 1,

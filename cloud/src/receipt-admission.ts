@@ -64,21 +64,20 @@ export async function admitReceipt(
     replayed(prior as TrackerItem);
     return prior as TrackerItem;
   }
-  const binding = ports.mergePolicyBinding();
-  const p0 = await ports.mergePolicy();
-  // Prepare is synchronous; P0 is the server snapshot resolved before entering it.
-  call.recheck();
   let id: string, pr: number;
+  let issue: ReturnType<StateOwner["get"]>;
   try {
     if (validateCloseInput(input).length || !(input as { pr?: unknown }).pr)
       throw fail("INPUT_INVALID", "input must be { id, pr }");
     const fields = input as { id: string; pr: number };
     pr = fields.pr;
     id = storedId(fields.id, call.prefix as string, minted(db));
+    issue = owner.get(NAMESPACE, `issue:${id}`);
+    if (!issue) throw fail("NOT_FOUND", "Issue was not found");
   } catch (error) {
     if (
       !(error instanceof ForgeFailure) ||
-      error.error.code !== "INPUT_INVALID"
+      !["INPUT_INVALID", "NOT_FOUND"].includes(error.error.code)
     )
       throw error;
     throw refused(
@@ -90,8 +89,10 @@ export async function admitReceipt(
       call.expiresAt,
     );
   }
-  const issue = owner.get(NAMESPACE, `issue:${id}`);
-  if (!issue) throw fail("NOT_FOUND", "Issue was not found");
+  const binding = ports.mergePolicyBinding();
+  const p0 = await ports.mergePolicy();
+  // Prepare is synchronous; P0 is the server snapshot resolved before entering it.
+  call.recheck();
   heldLease(owner, context, id, OP);
   if (checkedValue({ ...issue }, id).status === "closed")
     throw fail("INPUT_CONFLICT", "Issue is already closed");
