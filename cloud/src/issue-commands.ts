@@ -52,7 +52,7 @@ import type { SqlDatabase } from "../../src/ports/store.ts";
 export const MAX_COMMAND_BODY = 512 * 1024;
 const COMMAND_ROUTE = new RegExp(`^/p/(${PROJECT_NAME})/command$`);
 const FIELDS = ["requestId", "op", "input", "context", "dryRun"];
-const LIMITS = {
+export const LIMITS = {
   maxBytes: MAX_COMMAND_BODY,
   maxDepth: 32,
   maxNodes: 5000,
