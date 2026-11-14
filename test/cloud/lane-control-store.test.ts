@@ -44,16 +44,14 @@ function fixture() {
           )
         )
           throw new Error("injected audit failure");
-        return {
-          toArray: () =>
-            db
-              .query(sql)
-              .all(
-                ...bindings.map((v) =>
-                  v instanceof ArrayBuffer ? new Uint8Array(v) : v,
-                ),
-              ) as Record<string, unknown>[],
-        };
+        const rows = db
+          .query(sql)
+          .all(
+            ...bindings.map((v) =>
+              v instanceof ArrayBuffer ? new Uint8Array(v) : v,
+            ),
+          ) as Record<string, unknown>[];
+        return { toArray: () => rows };
       },
     },
     transactionSync: (body) => db.transaction(body)(),
