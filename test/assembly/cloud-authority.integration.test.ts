@@ -1494,12 +1494,12 @@ const CLOSED = { ...ISSUE, status: "closed", revision: 4 };
 const VERIFIED_CLOSE = { id: "forge-1", pr: 490 };
 const verifiedClosed = { ...CLOSED, receipt: "verified-1" };
 for (const surface of ["CLI", "MCP", "catalog"] as const)
-  for (const [name, bound, extra, flags, code, exit, requests] of [
-    ["verified", true, {}, [], undefined, 0, 1],
-    ["not merged", true, {}, [], "UNAVAILABLE", 1, 1],
+  for (const [name, authority, extra, flags, code, exit, requests] of [
+    ["verified", "bound", {}, [], undefined, 0, 1],
+    ["not merged", "bound", {}, [], "UNAVAILABLE", 1, 1],
     [
       "with receipt",
-      true,
+      "bound",
       { receipt: "local-1" },
       ["--receipt", "local-1"],
       "INPUT_INVALID",
@@ -1508,22 +1508,40 @@ for (const surface of ["CLI", "MCP", "catalog"] as const)
     ],
     [
       "with exemption",
-      true,
+      "bound",
       { withoutReceipt: "manual" },
       ["--without-receipt", "manual"],
       "INPUT_INVALID",
       6,
       0,
     ],
-    ["unbound", false, {}, [], "INPUT_INVALID", 6, 0],
+    ["unbound", "unbound", {}, [], "INPUT_INVALID", 6, 0],
+    [
+      "half-bound with receipt",
+      "half-bound",
+      { receipt: "local-1" },
+      ["--receipt", "local-1"],
+      "INPUT_CONFLICT",
+      4,
+      0,
+    ],
+    [
+      "half-bound with exemption",
+      "half-bound",
+      { withoutReceipt: "manual" },
+      ["--without-receipt", "manual"],
+      "INPUT_CONFLICT",
+      4,
+      0,
+    ],
   ] as const)
     test(
       `${surface} verified close: ${name}`,
       () =>
         using(
           {
-            bind: bound ? {} : false,
-            creds: bound ? {} : false,
+            bind: authority === "bound" ? {} : false,
+            creds: authority === "unbound" ? false : {},
             steps: [
               () =>
                 code === "UNAVAILABLE"
@@ -1535,7 +1553,7 @@ for (const surface of ["CLI", "MCP", "catalog"] as const)
             const input = { ...VERIFIED_CLOSE, ...extra };
             const context = holding(
               r,
-              code === "INPUT_INVALID" ? {} : { leaseGeneration: 3 },
+              requests === 0 ? {} : { leaseGeneration: 3 },
             );
             const result =
               surface === "CLI"
@@ -1561,6 +1579,13 @@ for (const surface of ["CLI", "MCP", "catalog"] as const)
                 : { ok: false, status: "FAIL", error: { code } },
             );
             expect(exitCode(result)).toBe(exit);
+            if (authority === "half-bound")
+              expect(result).toMatchObject({
+                error: {
+                  message:
+                    "This project has a saved cloud credential but no .forge/cloud.json; run forge auth login again",
+                },
+              });
             expect(r.net.calls).toHaveLength(requests);
             if (requests > 0)
               expect(r.net.calls[0]!.body).toMatchObject({
