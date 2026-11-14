@@ -2,6 +2,8 @@ import manifest from "../../src/blocks/work/forge.block.json" with { type: "json
 import ControlInput from "../../src/blocks/work/schemas/lane-control.input.json" with { type: "json" };
 import ControlOutput from "../../src/blocks/work/schemas/lane-control.output.json" with { type: "json" };
 import StopInput from "../../src/blocks/work/schemas/lane-stop.input.json" with { type: "json" };
+import ResumeInput from "../../src/blocks/work/schemas/lane-resume.input.json" with { type: "json" };
+import ResumeOutput from "../../src/blocks/work/schemas/lane-resume.output.json" with { type: "json" };
 import {
   readLaneControl,
   transitionLaneControl,
@@ -18,6 +20,7 @@ import { guardLegacy } from "./issue-request-id.ts";
 import { LaneControlStore } from "./lane-control-store.ts";
 import {
   checkedApproval,
+  consumeLaneApproval,
   requestLaneApproval,
   type ApprovalRequired,
 } from "./lane-approval.ts";
@@ -55,16 +58,34 @@ function scopeOf(owner: StateOwner | undefined, scope: LaneScope): LaneScope {
   return { id: value.id as string };
 }
 
-/** Reads use a SELECT-only owner. Resume writes requests only, never control. */
+/** Reads use a SELECT-only owner. Approval consumption and control share the receipt transaction. */
 export function laneCommand(
   call: PreparedCommand,
   host: CommandRun,
-): LaneControl | ApprovalRequired {
+): LaneControl | ApprovalRequired | { resumed: string } {
   const { requestId, op, input, dryRun } = call;
   const read = op === "lane.control";
-  if (validateWithSchema(read ? ControlInput : StopInput, input).length > 0)
+  const resume = op === "lane.resume";
+  if (
+    validateWithSchema(
+      read ? ControlInput : resume ? ResumeInput : StopInput,
+      input,
+    ).length > 0
+  )
     throw fail("INPUT_INVALID", "Expected a canonical issue id or all lanes");
-  const fields = input as { id?: string; all?: true };
+  const fields = input as {
+    id?: string;
+    all?: true;
+    approval?: { request: string; quote?: string; source?: unknown };
+  };
+  if (
+    fields.approval?.quote !== undefined ||
+    fields.approval?.source !== undefined
+  )
+    throw fail(
+      "INPUT_INVALID",
+      "Cloud resume accepts only an approval request id",
+    );
   if (
     fields.id !== undefined &&
     validateWithSchema(ControlInput, { id: fields.id }).length > 0
@@ -123,6 +144,69 @@ export function laneCommand(
   });
   const { db, owner } = host.open();
   guardLegacy(db, requestId, identity.requestId);
+  if (resume && fields.approval !== undefined) {
+    const request = fields.approval.request;
+    return commandWrite(
+      db,
+      owner,
+      { identity, recheck: host.recheck, expiresAt: host.expiresAt },
+      () => scope,
+      (target) => {
+        const canonical = scopeOf(owner, target);
+        const approval = consumeLaneApproval(db, request, canonical, host);
+        const global = owner.get(NS, GLOBAL);
+        const key =
+          "id" in canonical ? `lane-control:${canonical.id}` : undefined;
+        const issue = key === undefined ? undefined : owner.get(NS, key);
+        const transition = transitionLaneControl(
+          global?.value,
+          issue?.value,
+          { action: "resume", scope: canonical },
+          {
+            project: host.project,
+            policyIdentity: approval.policyIdentity,
+            now: new Date(host.now).toISOString(),
+          },
+          {
+            status: "verified",
+            project: approval.project,
+            policyIdentity: approval.policyIdentity,
+            scope: approval.scope,
+            incarnation: approval.incarnation,
+            epoch: approval.epoch,
+            expiresAt: approval.expiresAt,
+          },
+        );
+        if (!transition.ok) throw new ForgeFailure(transition.error);
+        const { candidate } = transition.result;
+        owner.putMany(
+          NS,
+          [
+            {
+              key: GLOBAL,
+              value: candidate.global,
+              expectRevision: global!.revision,
+            },
+            ...(key === undefined
+              ? []
+              : [
+                  {
+                    key,
+                    value: candidate.issue!,
+                    expectRevision: issue?.revision ?? 0,
+                  },
+                ]),
+          ],
+          { kind: "agent", id: host.session ?? host.principal[1] },
+        );
+        return { resumed: "id" in canonical ? canonical.id : "all" };
+      },
+      (prior) => {
+        if (validateWithSchema(ResumeOutput, prior).length > 0)
+          throw fail("INTERNAL", "Lane resume result is not valid");
+      },
+    );
+  }
   if (op === "lane.resume")
     return commandWrite(
       db,

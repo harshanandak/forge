@@ -50,9 +50,10 @@
           "additionalProperties": false
         }
       },
-      "required": ["request", "quote", "source"],
+      "required": ["request"],
+      "oneOf": [{ "maxProperties": 1 }, { "required": ["quote", "source"] }],
       "additionalProperties": false,
-      "description": "The owner's reply, relayed verbatim with the request id Forge returned."
+      "description": "A cloud approval request id, or the owner's local reply relayed verbatim with its source."
     }
   },
   "oneOf": [
