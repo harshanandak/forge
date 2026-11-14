@@ -43,7 +43,6 @@ function fixture() {
     headSha: merge,
     status: "completed",
     conclusion: "success",
-    completedAt: at as string | null,
     checks: [check],
   };
   const pr = {
@@ -349,20 +348,21 @@ const rows: Row[] = [
           Object.assign(run11, {
             id: 202,
             runNumber: 11,
-            completedAt: "2026-11-13T10:20:00.000Z",
           });
           const rerun10 = structuredClone(run10);
           Object.assign(rerun10, {
             attempt: 2,
-            completedAt: "2026-11-13T10:40:00.000Z",
           });
           const outcome = subject === "workflow" ? rerun10 : rerun10.checks[0]!;
           Object.assign(
             outcome,
             conclusion === "pending"
-              ? { status: "in_progress", conclusion: null, completedAt: null }
-              : { conclusion, completedAt: "2026-11-13T10:40:00.000Z" },
+              ? { status: "in_progress", conclusion: null }
+              : { conclusion },
           );
+          if (subject === "check")
+            rerun10.checks[0]!.completedAt =
+              conclusion === "pending" ? null : "2026-11-13T10:40:00.000Z";
           f.observation.runs = [run10, run11, rerun10];
           if (reverse) f.observation.runs.reverse();
         },
@@ -435,7 +435,6 @@ const rows: Row[] = [
       Object.assign(f.observation.runs[0]!, {
         status,
         conclusion: null,
-        completedAt: null,
       }),
     "UNAVAILABLE",
   ]),
@@ -529,9 +528,10 @@ const rows: Row[] = [
     "INPUT_INVALID",
   ],
   [
-    "future completion",
+    "future check completion",
     (f) => {
-      f.observation.runs[0]!.completedAt = "2027-01-01T00:00:00.000Z";
+      f.observation.runs[0]!.checks[0]!.completedAt =
+        "2027-01-01T00:00:00.000Z";
     },
     "INPUT_INVALID",
   ],
