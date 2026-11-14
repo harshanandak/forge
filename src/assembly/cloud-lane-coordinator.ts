@@ -11,7 +11,10 @@ import {
 import type { BoundProject } from "../blocks/work/bound-lane-state.ts";
 import type { LocalState } from "./state.ts";
 import type { AssemblyProviders } from "./providers.ts";
-import { writeBoundLane } from "../blocks/work/bound-lane-state.ts";
+import {
+  validBoundHead,
+  writeBoundLane,
+} from "../blocks/work/bound-lane-state.ts";
 import { nodeDeviceIdentity } from "../adapters/fs/device-identity.ts";
 import { wireDeviceId } from "./wire-device.ts";
 import { ForgeFailure } from "../contract/failure.ts";
@@ -38,7 +41,7 @@ export async function readBoundLaneHead(
     },
     worktree,
   )(["rev-parse", "--verify", "HEAD"]);
-  if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(head))
+  if (!validBoundHead(head))
     throw new ForgeFailure({
       code: "INPUT_CONFLICT",
       message: "Cannot read the attached checkout HEAD.",
