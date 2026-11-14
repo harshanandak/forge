@@ -464,7 +464,9 @@ for (const [name, value, identity, id, code] of [
   ["local prefix differs from cloud", journal, fx.PROJECT_ID, "forge-1", "OK"],
   [
     "missing stored cloud id",
-    { ...journal, cloudId: undefined },
+    Object.fromEntries(
+      Object.entries(journal).filter(([key]) => key !== "cloudId"),
+    ),
     fx.PROJECT_ID,
     "forge-1",
     "INPUT_CONFLICT",
