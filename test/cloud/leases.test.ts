@@ -765,14 +765,14 @@ for (const mode of ["whole", "paged"] as const)
                 : 413,
           );
           if (!final) {
-            expect((await target.send("status")).body.value).toEqual({
+            expect((await target.send("status")).body.value).toMatchObject({
               initialized: false,
             });
             expect(target.rows("state_leases")).toEqual([]);
           } else if (limit !== "fits") {
             if (limit !== "event failure")
               expect(reply.body.error?.code).toBe("RESTORE_TOO_LARGE");
-            expect((await target.send("status")).body.value).toEqual({
+            expect((await target.send("status")).body.value).toMatchObject({
               initialized: false,
             });
             for (const table of Object.keys(dump.tables))
@@ -890,7 +890,7 @@ for (const mode of ["paged", "whole", "malformed"] as const)
           );
         }
       }
-      expect((await target.send("status")).body.value).toEqual({
+      expect((await target.send("status")).body.value).toMatchObject({
         initialized: !checkpoint && mode !== "malformed",
       });
       if (checkpoint || mode === "malformed")

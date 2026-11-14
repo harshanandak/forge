@@ -12,6 +12,10 @@
   // The id of an existing namespace, so a deploy never provisions or inherits another one.
   "kv_namespaces": [{ "binding": "OAUTH_KV", "id": "<kv-namespace-id>" }],
   "vars": {
+    // Initial recovery-capacity candidate; measure before pinning deployed vars.
+    // Stored columns across all six dump tables, not SQLite database file size.
+    "DUMP_MAX_ROWS": "20000",
+    "DUMP_MAX_BYTES": "33554432",
     "CLERK_ISSUER": "<clerk-frontend-api-url>",
     "CLERK_CLIENT_ID": "<clerk-client-id>",
     "CLERK_REDIRECT_URI": "<worker-origin>/callback",
