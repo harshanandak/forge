@@ -1,10 +1,33 @@
 {
-  "type": "object",
-  "required": ["resumed"],
-  "properties": {
-    "resumed": {
-      "type": "string"
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["resumed"],
+      "properties": { "resumed": { "type": "string" } },
+      "additionalProperties": false
+    },
+    { "$ref": "#/$defs/ApprovalRequired" }
+  ],
+  "$defs": {
+    "ApprovalRequired": {
+      "description": "Result of a cloud FAIL / APPROVAL_REQUIRED; never authorization to resume.",
+      "type": "object",
+      "required": ["request", "scope", "expiresAt", "url"],
+      "properties": {
+        "request": { "type": "string", "pattern": "^[a-f0-9-]{36}$" },
+        "scope": {
+          "type": "object",
+          "properties": {
+            "id": { "type": "string", "pattern": "^work-[1-9][0-9]*$" },
+            "all": { "const": true }
+          },
+          "oneOf": [{ "required": ["id"] }, { "required": ["all"] }],
+          "additionalProperties": false
+        },
+        "expiresAt": { "type": "string", "format": "date-time" },
+        "url": { "type": "string", "maxLength": 2048, "pattern": "^https://" }
+      },
+      "additionalProperties": false
     }
-  },
-  "additionalProperties": false
+  }
 }

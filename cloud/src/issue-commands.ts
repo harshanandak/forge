@@ -39,6 +39,7 @@ import { laneCommand } from "./lane-commands.ts";
 import { PROJECT_NAME } from "./project-name.ts";
 import { requireTokenSession } from "./token-session.ts";
 import { carriesToken } from "./tokens.ts";
+import { failure } from "../../src/surface/result.ts";
 import {
   guardLegacy,
   scopeRequestId,
@@ -78,6 +79,7 @@ const EXPOSED: readonly string[] = [
   "issue.stale",
   "lane.control",
   "lane.stop",
+  "lane.resume",
 ];
 const operations = manifest.operations as unknown as Readonly<
   Record<string, OperationDeclaration>
@@ -158,7 +160,7 @@ export function parseCommand(text: string, host: CommandHost): PreparedCommand {
   // A token bound to a session proves it too, so a lease holder's session is never the caller's claim.
   requireTokenSession(host.session, session?.id);
   if (
-    (op === "lane.control" || op === "lane.stop") &&
+    (op === "lane.control" || op === "lane.stop" || op === "lane.resume") &&
     host.session == null &&
     session !== undefined
   )
@@ -217,6 +219,7 @@ export interface CommandRun extends CommandHost {
   /** The server's configured id prefix, as set: readIssue checks it. */
   readonly idPrefix: unknown;
   readonly now: number;
+  readonly approvalConfig?: Readonly<Record<string, unknown>>;
   /** Throws when the token is no longer valid; a write calls it inside its transaction. */
   readonly recheck: () => void;
   /** When the token expires, in milliseconds. */
@@ -290,7 +293,7 @@ export function runCommand(text: string, host: CommandRun): Response {
                       ? releaseIssue
                       : undefined;
   let result: unknown;
-  if (op === "lane.control" || op === "lane.stop")
+  if (op === "lane.control" || op === "lane.stop" || op === "lane.resume")
     result = laneCommand(call, host);
   else if (write !== undefined) {
     // Both come before the store is opened, so a refusal never sets up or migrates it.
@@ -318,17 +321,25 @@ export function runCommand(text: string, host: CommandRun): Response {
       host.idPrefix as string,
     );
   else throw fail("INPUT_INVALID", "Commands are not yet supported in cloud");
-  const body = JSON.stringify({
-    ok: true,
-    op,
-    status: "OK",
-    result,
-    warnings: [],
-  });
+  const body = JSON.stringify(
+    op === "lane.resume"
+      ? {
+          ...failure("APPROVAL_REQUIRED", "Fresh owner approval is required"),
+          op,
+          result,
+        }
+      : {
+          ok: true,
+          op,
+          status: "OK",
+          result,
+          warnings: [],
+        },
+  );
   if (new TextEncoder().encode(body).length > MAX_SHOW_RESPONSE_BYTES)
     throw fail("UNAVAILABLE", "response too large");
   return new Response(body, {
-    status: 200,
+    status: op === "lane.resume" ? 409 : 200,
     headers: { "content-type": "application/json" },
   });
 }
