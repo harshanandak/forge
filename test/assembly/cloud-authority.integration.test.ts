@@ -464,6 +464,11 @@ const INPUTS: Record<string, object> = {
   "issue.claim": { id: "forge-1" },
   "issue.renew": { id: "forge-1" },
   "issue.release": { id: "forge-1" },
+  "receipt.admit": { id: "work-1", pr: 42 },
+  "receipt.show": {
+    id: "work-1",
+    receipt: "00000000-0000-4000-8000-000000000001",
+  },
 };
 for (const [source, op, input, declared, result] of [
   [WORK, "issue.create", CREATE, "issue.create", ISSUE],

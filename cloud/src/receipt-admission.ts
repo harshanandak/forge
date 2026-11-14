@@ -1,15 +1,21 @@
-import Input from "../../src/blocks/work/schemas/CloseInput.json" with { type: "json" };
 import type { StateOwner } from "../../src/core/state/index.ts";
 import type { StateRecord, TrackerItem } from "../../src/generated/types.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
 import { commandWrite, prepareReceipt } from "./command-write.ts";
-import { EvidenceReceiptStore } from "./evidence-receipts.ts";
-import { writeClose } from "./issue-close.ts";
+import { decodeEvidence } from "./evidence-receipts.ts";
+import { closeIssue } from "./issue-close.ts";
 import { readGithubMergeEvidence } from "./github-evidence.ts";
 import type { composeGithub } from "./github-compose.ts";
 import { listLinks } from "./issue-links.ts";
-import { configured, fail, minted, schemas, storedId } from "./issue-read.ts";
-import { replay } from "./issue-receipts.ts";
+import {
+  checkedValue,
+  configured,
+  fail,
+  minted,
+  storedId,
+  validateCloseInput,
+} from "./issue-read.ts";
+import { refused, replay } from "./issue-receipts.ts";
 import { heldLease, heldReplay } from "./issue-update.ts";
 import type { WriteCall } from "./issue-write.ts";
 import { evaluateMergeEvidence } from "./merge-evidence.ts";
@@ -61,20 +67,22 @@ export async function admitReceipt(
   const p0 = await ports.mergePolicy();
   // Prepare is synchronous; P0 is the server snapshot resolved before entering it.
   call.recheck();
-  if (
-    schemas().validate(Input.$ref, input).length ||
-    !(input as { pr?: unknown }).pr
-  )
-    throw fail("INPUT_INVALID", "input must be { id, pr }");
-  const {
-    id: given,
-    pr,
-    reason,
-  } = input as { id: string; pr: number; reason?: string };
+  if (validateCloseInput(input).length || !(input as { pr?: unknown }).pr)
+    throw refused(
+      db,
+      identity.requestId,
+      identity.fingerprint,
+      fail("INPUT_INVALID", "input must be { id, pr }"),
+      call.recheck,
+      call.expiresAt,
+    );
+  const { id: given, pr } = input as { id: string; pr: number };
   const id = storedId(given, call.prefix as string, minted(db));
-  if (!owner.get(NAMESPACE, `issue:${id}`))
-    throw fail("NOT_FOUND", "Issue was not found");
+  const issue = owner.get(NAMESPACE, `issue:${id}`);
+  if (!issue) throw fail("NOT_FOUND", "Issue was not found");
   heldLease(owner, context, id, OP);
+  if (checkedValue({ ...issue }, id).status === "closed")
+    throw fail("INPUT_CONFLICT", "Issue is already closed");
   const delivery = () =>
     (
       listLinks({ records: db, leases: db }, { id }, ports.now(), "work")
@@ -152,21 +160,24 @@ export async function admitReceipt(
           "INPUT_CONFLICT",
           "Merge policy changed during evidence verification",
         );
-      const receipt = new EvidenceReceiptStore(db, policy.project).put({
-        candidate: evaluated.candidate,
-        policy,
-        repository,
-        verifierVersion: ports.verifierVersion,
-        actor: context.actor.id,
-        device: call.device,
-      });
-      return writeClose(
-        owner,
-        { id, reason, receipt: receipt.id },
-        context.actor,
-        call.prefix as string,
-        context,
+      const receipt = decodeEvidence(
+        JSON.stringify({
+          format: "forge.cloud-evidence-receipt/1",
+          id: crypto.randomUUID(),
+          origin: "verified",
+          subjectKind: "merge-commit",
+          candidate: evaluated.candidate,
+          policy,
+          repository,
+          verifierVersion: ports.verifierVersion,
+          actor: context.actor.id,
+          device: call.device,
+        }),
       );
+      owner.put(NAMESPACE, `evidence:${id}`, receipt, context.actor, {
+        expectRevision: 0,
+      });
+      return closeIssue(db, owner, { ...call, input, context }, receipt.id);
     },
     replayed,
   );

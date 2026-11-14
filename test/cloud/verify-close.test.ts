@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
 import manifest from "../../src/blocks/work/forge.block.json" with { type: "json" };
 import CloseInput from "../../src/blocks/work/schemas/CloseInput.json" with { type: "json" };
-import { schemas } from "../../cloud/src/issue-read.ts";
+import { validateWithSchema } from "../../src/contract/schema.ts";
+import { dumpOf, dumpPage, limitsFrom } from "../../cloud/src/dump.ts";
+import { admitReceipt } from "../../cloud/src/receipt-admission.ts";
 import { decodeEvidence } from "../../cloud/src/evidence-receipts.ts";
 import {
   admissionFixture,
@@ -20,7 +22,12 @@ test("issue.close with pr dispatches verification and returns the closed issue",
     expect(body.result).toMatchObject({ id: "work-1", status: "closed" });
     const after = f.snapshot();
     expect(after.evidence).toHaveLength(1);
-    const receipt = decodeEvidence(String(after.evidence[0]!.body));
+    const receipt = decodeEvidence(
+      JSON.stringify(
+        (JSON.parse(String(after.evidence[0]!.body)) as { value: unknown })
+          .value,
+      ),
+    );
     expect(body.result).toHaveProperty("receipt", receipt.id);
     expect(after.tables.state_leases).toEqual(before.tables.state_leases);
     expect(after.tables.domain_cloud_command_receipts!.length).toBe(
@@ -57,8 +64,7 @@ const shapes: readonly [string, object, boolean][] = [
 for (const [name, input, valid] of shapes)
   test(`close input shape: ${name}`, () => {
     expect(
-      schemas().validate(CloseInput.$ref, { id: "work-1", ...input }).length ===
-        0,
+      validateWithSchema(CloseInput, { id: "work-1", ...input }).length === 0,
     ).toBe(valid);
   }, 30_000);
 
@@ -123,7 +129,7 @@ test("close without receipt preserves the existing route and skips GitHub", asyn
 }, 30_000);
 
 for (const op of ["receipt.admit", "receipt.show"])
-  test(`${op} is absent from the catalog and refused by the cloud`, async () => {
+  test(`${op} stays declared and refused by the cloud`, async () => {
     const f = await admissionFixture();
     try {
       const before = f.snapshot();
@@ -131,8 +137,71 @@ for (const op of ["receipt.admit", "receipt.show"])
         f.command({ id: "work-1", pr: 490 }, op),
       ).rejects.toHaveProperty("error.code", "UNKNOWN_COMMAND");
       expect(f.snapshot()).toEqual(before);
-      expect(Object.hasOwn(manifest.operations, op)).toBe(false);
+      expect(Object.hasOwn(manifest.operations, op)).toBe(true);
     } finally {
       f.dbSource.close();
     }
   }, 30_000);
+
+test("verified close preserves whole and paged dumps with its evidence record", async () => {
+  const f = await admissionFixture();
+  try {
+    await f.command();
+    const before = f.snapshot();
+    const limits = limitsFrom({});
+    const whole = dumpOf(f.db, limits);
+    const row = whole.tables.state_records!.find(
+      (row) => row.key === "evidence:work-1",
+    );
+    expect(row).toBeDefined();
+    expect(JSON.parse(String(row!.body))).toHaveProperty(
+      "value.origin",
+      "verified",
+    );
+    const records = [];
+    for (let cursor: string | null = "start"; cursor !== null;) {
+      const page = dumpPage(f.db, cursor, limits);
+      records.push(...page.tables.state_records!);
+      cursor = page.next;
+    }
+    expect(records).toContainEqual(row!);
+    expect(f.legacyEvidence()).toEqual([]);
+    expect(f.snapshot()).toEqual(before);
+    await expect(
+      admitReceipt(
+        f.db,
+        f.owner,
+        { ...f.write, requestId: "second-close" },
+        f.ports,
+      ),
+    ).rejects.toHaveProperty("error.code", "INPUT_CONFLICT");
+    expect(f.snapshot()).toEqual(before);
+  } finally {
+    f.dbSource.close();
+  }
+}, 30_000);
+
+test("invalid pr records its refusal and conflicts with a changed retry", async () => {
+  const f = await admissionFixture();
+  try {
+    const before = f.snapshot();
+    await expect(f.command({ id: "work-1", pr: 0 })).rejects.toHaveProperty(
+      "error.code",
+      "INPUT_INVALID",
+    );
+    const refused = f.snapshot();
+    expect(refused.tables.domain_cloud_command_receipts!.length).toBe(
+      before.tables.domain_cloud_command_receipts!.length + 1,
+    );
+    await expect(f.command()).rejects.toHaveProperty(
+      "error.code",
+      "INPUT_CONFLICT",
+    );
+    expect(f.snapshot()).toEqual(refused);
+    expect(refused.tables.state_records).toEqual(before.tables.state_records);
+    expect(refused.evidence).toEqual([]);
+    expect(f.state.calls).toEqual([]);
+  } finally {
+    f.dbSource.close();
+  }
+}, 30_000);

@@ -1,4 +1,43 @@
 {
   "type": "object",
-  "$ref": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/tracker.json#/$defs/CloseInput"
+  "required": ["id"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "reason": {
+      "type": "string",
+      "maxLength": 2000
+    },
+    "receipt": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "withoutReceipt": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000,
+      "pattern": "\\S"
+    },
+    "pr": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    }
+  },
+  "additionalProperties": false,
+  "not": {
+    "required": ["pr"],
+    "anyOf": [
+      {
+        "required": ["receipt"]
+      },
+      {
+        "required": ["withoutReceipt"]
+      }
+    ]
+  }
 }

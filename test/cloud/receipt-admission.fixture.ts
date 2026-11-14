@@ -198,9 +198,12 @@ export async function admissionFixture() {
   const snapshot = () => ({
     tables: tablesOf(source.db),
     evidence: db.all(
-      "SELECT * FROM domain_cloud_evidence_receipts ORDER BY id",
+      "SELECT key, body FROM state_records WHERE namespace=? AND key=?",
+      [namespace, "evidence:work-1"],
     ),
   });
+  const legacyEvidence = () =>
+    db.all("SELECT * FROM domain_cloud_evidence_receipts ORDER BY id");
   const command = (input: unknown = write.input, op = "issue.close") => {
     if (
       write.context.variant !== "leased" ||
@@ -258,6 +261,7 @@ export async function admissionFixture() {
     link,
     snapshot,
     command,
+    legacyEvidence,
   };
 }
 export type AdmissionFixture = Awaited<ReturnType<typeof admissionFixture>>;

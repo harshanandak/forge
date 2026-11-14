@@ -1,11 +1,7 @@
 import { expect, test } from "bun:test";
 import { admitReceipt } from "../../cloud/src/receipt-admission.ts";
 import { readGithubMergeEvidence } from "../../cloud/src/github-evidence.ts";
-import {
-  decodeEvidence,
-  EvidenceReceiptStore,
-} from "../../cloud/src/evidence-receipts.ts";
-import { evaluateMergeEvidence } from "../../cloud/src/merge-evidence.ts";
+import { decodeEvidence } from "../../cloud/src/evidence-receipts.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { ACTOR } from "../../cloud/conformance/max-source.ts";
 import {
@@ -47,7 +43,6 @@ const rows: readonly [Phase, string, string, unknown][] = [
   ["policy-await", "INPUT_CONFLICT", "policy", "missing"],
   ["policy-await", "INPUT_CONFLICT", "env.GITHUB_REPOSITORY_ID", "43"],
   ["policy-await", "INPUT_CONFLICT", "env.FORGE_CLOUD_PROJECT", "other"],
-  ["observe", "UNAVAILABLE", "cap", 8],
   ["observe", "rollback", "state.failCommit", true],
 ];
 function change(f: AdmissionFixture, field: string, value: unknown) {
@@ -92,23 +87,6 @@ function change(f: AdmissionFixture, field: string, value: unknown) {
         : value === "invalid"
           ? "{}"
           : undefined;
-  } else if (field === "cap") {
-    const result = evaluateMergeEvidence(
-      f.f.policy,
-      f.f.expected,
-      { ...f.f.observation, binding: f.f.expected },
-      new Date().toISOString(),
-    );
-    if (!result.eligible) throw new Error("Invalid evidence fixture");
-    for (let n = 0; n < Number(value); n++)
-      new EvidenceReceiptStore(f.db, "forge").put({
-        candidate: result.candidate,
-        policy: f.f.policy,
-        repository: f.ports.repository,
-        verifierVersion: "1",
-        actor: ACTOR.id,
-        device: "laptop",
-      });
   } else {
     const keys = field.split(".");
     let target = f as unknown as Record<string, unknown>;
@@ -150,7 +128,23 @@ for (const [phase, code, field, value] of rows)
         expect([f.state.calls.length, f.state.credentials]).toEqual([0, 0]);
       else expect(f.state.calls.length).toBeGreaterThan(0);
       if (phase.endsWith("await")) expect(f.state.policyReads).toBe(2);
-      expect(f.snapshot()).toEqual(before);
+      const after = f.snapshot();
+      if (field === "write.input.headSha") {
+        expect(after.tables.domain_cloud_command_receipts!.length).toBe(
+          before.tables.domain_cloud_command_receipts!.length + 1,
+        );
+        expect(
+          after.tables.domain_cloud_command_receipts!.find(
+            (row) =>
+              !before.tables.domain_cloud_command_receipts!.some(
+                (prior) => prior.request_id === row.request_id,
+              ),
+          ),
+        ).toHaveProperty("outcome", "refused");
+        after.tables.domain_cloud_command_receipts =
+          before.tables.domain_cloud_command_receipts!;
+      }
+      expect(after).toEqual(before);
     } finally {
       f.dbSource.close();
     }
@@ -166,13 +160,19 @@ test("verify and close: one evidence receipt and close, exact retry writes nothi
       calls = f.state.calls.length;
     expect(closed).toMatchObject({ id: "work-1", status: "closed" });
     expect(after.evidence).toHaveLength(1);
-    const receipt = decodeEvidence(String(after.evidence[0]!.body));
+    const receipt = decodeEvidence(
+      JSON.stringify(
+        (JSON.parse(String(after.evidence[0]!.body)) as { value: unknown })
+          .value,
+      ),
+    );
     expect(closed).toHaveProperty("receipt", receipt.id);
     expect(closed).not.toHaveProperty("withoutReceipt");
     expect(f.owner.get(namespace, subject)?.value).toMatchObject({
       status: "closed",
       receipt: receipt.id,
     });
+    expect(f.legacyEvidence()).toEqual([]);
     expect(receipt.origin).toBe("verified");
     expect(receipt.candidate.binding).toEqual(f.f.expected);
     expect([receipt.actor, receipt.device, receipt.repository]).toEqual([
@@ -186,7 +186,7 @@ test("verify and close: one evidence receipt and close, exact retry writes nothi
     for (const table of ["state_leases", "state_requests"])
       expect(after.tables[table]).toEqual(before.tables[table]);
     expect(after.tables.state_events!.length).toBe(
-      before.tables.state_events!.length + 1,
+      before.tables.state_events!.length + 2,
     );
     const changed = after.tables.state_records!.filter(
       (row) =>
@@ -194,7 +194,7 @@ test("verify and close: one evidence receipt and close, exact retry writes nothi
           (prior) => JSON.stringify(prior) === JSON.stringify(row),
         ),
     );
-    expect(changed.map((row) => row.key)).toEqual([subject]);
+    expect(changed.map((row) => row.key)).toEqual(["evidence:work-1", subject]);
     expect(after.tables.domain_cloud_command_receipts!.length).toBe(
       before.tables.domain_cloud_command_receipts!.length + 1,
     );
