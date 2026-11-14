@@ -1,8 +1,8 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, mock, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { Project } from "../../cloud/src/project.ts";
 import { createWorker } from "../../cloud/src/worker.ts";
-import { durableStore, type DurableStorage } from "../../cloud/src/store.ts";
+import { durableStore } from "../../cloud/src/store.ts";
 import { StateOwner } from "../../src/core/state/index.ts";
 import type { ResultEnvelope } from "../../src/generated/types.ts";
 import { exitCode } from "../../src/surface/result.ts";
@@ -16,6 +16,11 @@ if (!("timingSafeEqual" in crypto.subtle))
   Object.defineProperty(crypto.subtle, "timingSafeEqual", {
     value: crypto.timingSafeEqual.bind(crypto),
   });
+import { browserStorage } from "./browser-storage.fixture.ts";
+import type { DeviceBrowserOptions } from "../../cloud/src/auth/device-browser.ts";
+await mock.module("cloudflare:workers", () => ({ WorkerEntrypoint: class {} }));
+const { createConfiguredWorker } =
+  await import("../../cloud/src/adapters/workers-oauth/compose.ts");
 const now = 1_800_000_000_000;
 const actor = { kind: "agent", id: "fixture" } as const;
 const running = {
@@ -33,42 +38,40 @@ const call = (
 ) => ({ requestId, op, input, context: { actor }, ...more });
 
 // All tables use this fixture: real token admission, Worker routing and project storage.
-async function fixture(projectName = "p", session: string | null = "s1") {
+async function fixture(
+  projectName = "p",
+  session: string | null = "s1",
+  browser: DeviceBrowserOptions = {},
+) {
   const clock = spyOn(Date, "now").mockReturnValue(now);
   const db = new Database(":memory:");
-  const values = new Map<string, unknown>();
-  const storage: DurableStorage = {
-    sql: {
-      exec: (sql, ...bindings) => {
-        const rows = db
-          .query(sql)
-          .all(
-            ...bindings.map((v) =>
-              v instanceof ArrayBuffer ? new Uint8Array(v) : v,
-            ),
-          ) as Record<string, unknown>[];
-        return { toArray: () => rows };
+  let writes = 0;
+  const { storage, values } = browserStorage(db, (sql) => {
+    if (/^\s*(INSERT|UPDATE|DELETE|CREATE)\b/i.test(sql)) writes++;
+  });
+  const env = {
+    FORGE_CLOUD_PROJECT: projectName,
+    FORGE_CLOUD_ID_PREFIX: "forge",
+    DEVICE_LOGIN_HMAC_KEY: Buffer.alloc(32, 7).toString("base64url"),
+    CLERK_REDIRECT_URI: "https://w.example/callback",
+    CLERK_ISSUER: "https://identity.example",
+    CLERK_CLIENT_ID: "forge-cloud",
+    FORGE_OWNER_SUBJECT: "user_Owner1",
+    FORGE_API_RESOURCE: "https://w.example",
+    OAUTH_TIMEOUT_MS: "5000",
+  };
+  const project = new Project({ storage }, env, browser);
+  const reached: string[] = [];
+  const bindings = {
+    ...env,
+    PROJECTS: {
+      idFromName: (id: string) => id,
+      get: (id: unknown) => {
+        reached.push(String(id));
+        return project;
       },
     },
-    transactionSync: (body) => db.transaction(body)(),
-    get: (key) => Promise.resolve(values.get(key)),
-    put: (key, value) => {
-      values.set(key, value);
-      return Promise.resolve();
-    },
-    delete: (key) => Promise.resolve(values.delete(key)),
   };
-  const project = new Project(
-    { storage },
-    {
-      FORGE_CLOUD_PROJECT: projectName,
-      FORGE_CLOUD_ID_PREFIX: "forge",
-      CLERK_REDIRECT_URI: "https://w.example/callback",
-      CLERK_ISSUER: "https://identity.example",
-      CLERK_CLIENT_ID: "forge-cloud",
-      FORGE_OWNER_SUBJECT: "owner",
-    },
-  );
   const admit = async (device: string) => {
     const admitted = await project.fetch(
       new Request(`https://w.example/p/${projectName}/devices`, {
@@ -110,6 +113,34 @@ async function fixture(projectName = "p", session: string | null = "s1") {
     ]);
   return {
     db,
+    writes: () => writes,
+    env,
+    reached,
+    browser: async (
+      path: string,
+      body?: string,
+      headers: Record<string, string> = {},
+      production = false,
+    ) => {
+      const response = await (
+        production ? createConfiguredWorker() : createWorker()
+      ).fetch(
+        new Request(`https://w.example${path}`, {
+          method: body === undefined ? "GET" : "POST",
+          headers: {
+            "content-type": "application/x-www-form-urlencoded",
+            ...headers,
+          },
+          ...(body === undefined ? {} : { body }),
+        }),
+        bindings,
+      );
+      return {
+        status: response.status,
+        headers: response.headers,
+        text: await response.text(),
+      };
+    },
     owner,
     put,
     clock,
@@ -133,6 +164,7 @@ async function fixture(projectName = "p", session: string | null = "s1") {
       );
       const envelope = (await response.json()) as ResultEnvelope;
       return {
+        status: response.status,
         envelope,
         result: envelope.ok ? envelope.result : undefined,
         verdict: [
@@ -424,6 +456,7 @@ test.each([
           : {};
       const reply = await f.send(request, "p", headers);
       expect(reply.verdict).toEqual(["FAIL", "APPROVAL_REQUIRED", 1]);
+      expect(reply.status).toBe(409);
       expect(reply.envelope).toMatchObject({
         ok: false,
         status: "FAIL",
@@ -474,10 +507,11 @@ test.each(["running", "global stop", "foreign route", "device cap", "expired"])(
         await f.send(call("lane.stop", { all: true }, "stop"));
       const scope = mode === "global stop" ? { id: "work-7" } : { all: true };
       if (mode === "device cap" || mode === "expired")
-        for (let i = 0; i < 4; i++)
-          expect(
-            (await f.send(call("lane.resume", scope, `ask-${i}`))).verdict,
-          ).toEqual(["FAIL", "APPROVAL_REQUIRED", 1]);
+        for (let i = 0; i < 4; i++) {
+          const ask = await f.send(call("lane.resume", scope, `ask-${i}`));
+          expect(ask.verdict).toEqual(["FAIL", "APPROVAL_REQUIRED", 1]);
+          expect(ask.status).toBe(409);
+        }
       if (mode === "expired") f.clock.mockReturnValue(now + 600_000);
       const before = f.snapshot();
       const reply = await f.send(
@@ -497,6 +531,7 @@ test.each(["running", "global stop", "foreign route", "device cap", "expired"])(
         code,
         code === "INPUT_CONFLICT" ? 4 : 1,
       ]);
+      if (code === "APPROVAL_REQUIRED") expect(reply.status).toBe(409);
       if (mode !== "expired") expect(f.snapshot()).toBe(before);
       if (mode === "expired")
         expect(reply.envelope).toMatchObject({
@@ -549,6 +584,7 @@ test.each(["project cap", "expired", "epoch", "incarnation", "retention"])(
       await f.send(call("lane.stop", { all: true }, "stop"));
       const reply = await f.send(call("lane.resume", { all: true }, "ask"));
       expect(reply.verdict).toEqual(["FAIL", "APPROVAL_REQUIRED", 1]);
+      expect(reply.status).toBe(409);
       const rows = () =>
         (
           JSON.parse(
@@ -576,15 +612,13 @@ test.each(["project cap", "expired", "epoch", "incarnation", "retention"])(
       if (mode === "project cap") {
         for (let i = 1; i < 64; i++) {
           const token = await f.admit(`device-${Math.floor(i / 4)}`);
-          expect(
-            (
-              await f.send(
-                call("lane.resume", { all: true }, `ask-${i}`),
-                "p",
-                { authorization: `Bearer ${token}` },
-              )
-            ).verdict,
-          ).toEqual(["FAIL", "APPROVAL_REQUIRED", 1]);
+          const ask = await f.send(
+            call("lane.resume", { all: true }, `ask-${i}`),
+            "p",
+            { authorization: `Bearer ${token}` },
+          );
+          expect(ask.verdict).toEqual(["FAIL", "APPROVAL_REQUIRED", 1]);
+          expect(ask.status).toBe(409);
         }
         const token = await f.admit("overflow");
         const admitted = f.snapshot();
@@ -600,10 +634,11 @@ test.each(["project cap", "expired", "epoch", "incarnation", "retention"])(
       } else if (mode === "retention") {
         for (let i = 1; i <= 66; i++) {
           f.clock.mockReturnValue(now + i * 600_000);
-          expect(
-            (await f.send(call("lane.resume", { all: true }, `ask-${i}`)))
-              .verdict,
-          ).toEqual(["FAIL", "APPROVAL_REQUIRED", 1]);
+          const ask = await f.send(
+            call("lane.resume", { all: true }, `ask-${i}`),
+          );
+          expect(ask.verdict).toEqual(["FAIL", "APPROVAL_REQUIRED", 1]);
+          expect(ask.status).toBe(409);
         }
         expect(
           rows().filter((entry) => entry.status === "expired"),
@@ -647,6 +682,305 @@ test.each(["project cap", "expired", "epoch", "incarnation", "retention"])(
         ).toBe(mode === "expired" ? "expired" : "stale");
         expect(f.snapshot()).toBe(before);
       }
+    } finally {
+      f.close();
+    }
+  },
+  10_000,
+);
+
+const pageCookie = (page: { headers: Headers }) =>
+  (page.headers.get("set-cookie") ?? "").split(";")[0]!;
+const pageTicket = (page: { text: string }, action: string) =>
+  new RegExp(
+    `/${action}"><input type="hidden" name="ticket" value="([^"]+)"`,
+  ).exec(page.text)?.[1] ?? "";
+async function browserFixture(scope: "all" | "issue" = "all") {
+  const begun: { state: string; verifier: string }[] = [];
+  const spent = new Set<string>();
+  let duringBegin = () => {};
+  const f = await fixture("p", "s1", {
+    upstream: {
+      begin: (state, verifier) => {
+        begun.push({ state, verifier });
+        duringBegin();
+        return Promise.resolve(
+          `https://identity.example/oauth/authorize?state=${state}&redirect_uri=https%3A%2F%2Fw.example%2Fcallback`,
+        );
+      },
+      verify: () => {
+        throw new Error("This slice must not verify an owner");
+      },
+    },
+    redemption: {
+      claimOnce: (hash) => {
+        const won = !spent.has(hash);
+        spent.add(hash);
+        return Promise.resolve(won);
+      },
+    },
+  });
+  f.put("lane-control:global", running);
+  const input = scope === "all" ? { all: true } : { id: "work-7" };
+  await f.send(call("lane.stop", input, "browser-stop"));
+  const reply = await f.send(call("lane.resume", input, "browser-ask"));
+  expect(reply.verdict).toEqual(["FAIL", "APPROVAL_REQUIRED", 1]);
+  expect(reply.status).toBe(409);
+  const pending = (
+    reply.envelope as unknown as {
+      result: { request: string; expiresAt: string };
+    }
+  ).result;
+  const path = `/lane-approval/${pending.request}`;
+  const shown = await f.browser(path);
+  const cookie = pageCookie(shown);
+  const submit = (
+    action = "approve",
+    ticket = pageTicket(shown, action),
+    extra: Record<string, string> = {},
+  ) =>
+    f.browser(`${path}/${action}`, new URLSearchParams({ ticket }).toString(), {
+      Origin: "https://w.example",
+      Cookie: cookie,
+      ...extra,
+    });
+  return {
+    ...f,
+    path,
+    shown,
+    pending,
+    cookie,
+    submit,
+    begun,
+    spent,
+    duringBegin: (run: () => void) => {
+      duringBegin = run;
+    },
+  };
+}
+
+test.each(["all", "issue"] as const)(
+  "lane browser preview is read-only for %s",
+  async (scope) => {
+    const f = await browserFixture(scope);
+    try {
+      const before = f.snapshot(),
+        writes = f.writes();
+      const page = await f.browser(f.path, undefined, {
+        Host: "evil.example",
+        Origin: "https://evil.example",
+        "X-Forwarded-Host": "evil.example",
+      });
+      expect(page.status).toBe(200);
+      for (const text of [
+        "p",
+        scope === "all" ? "ALL LANES" : "work-7",
+        "Affected scope",
+        "Current stop",
+        f.pending.expiresAt,
+        "https://w.example/lane-approval/",
+      ])
+        expect(page.text).toContain(text);
+      expect(page.text).not.toContain("evil.example");
+      expect(page.headers.get("cache-control")).toBe("no-store");
+      expect(page.headers.get("content-security-policy")).toContain(
+        "frame-ancestors 'none'",
+      );
+      expect([f.snapshot(), f.writes(), f.begun.length, f.spent.size]).toEqual([
+        before,
+        writes,
+        0,
+        0,
+      ]);
+    } finally {
+      f.close();
+    }
+  },
+  10_000,
+);
+
+test.each([
+  "unknown",
+  "expired",
+  "epoch",
+  "incarnation",
+  "spent",
+  "policy",
+  "revoked",
+])(
+  "lane preview refuses %s without writes or actions",
+  async (mode) => {
+    const f = await browserFixture();
+    try {
+      if (mode === "expired") f.clock.mockReturnValue(now + 600_000);
+      if (mode === "epoch" || mode === "incarnation") {
+        const old = f.owner.get("forge/work", "lane-control:global")!;
+        f.owner.put(
+          "forge/work",
+          old.key,
+          {
+            ...(old.value as object),
+            ...(mode === "epoch" ? { epoch: 99 } : { incarnation: "new" }),
+          },
+          actor,
+          { expectRevision: old.revision },
+        );
+      }
+      if (mode === "spent")
+        f.db.run(
+          `UPDATE ${LANE_APPROVALS} SET state=json_set(state, '$.requests[0].status', 'spent')`,
+        );
+      if (mode === "policy") f.env.FORGE_OWNER_SUBJECT = "user_Other2";
+      if (mode === "revoked")
+        f.db.run("UPDATE domain_cloud_tokens SET revoked_at=?", [now]);
+      const before = f.snapshot(),
+        writes = f.writes();
+      const page = await f.browser(
+        mode === "unknown" ? "/lane-approval/unknown" : f.path,
+      );
+      expect(page.status).toBe(400);
+      expect(page.text).not.toContain("<form");
+      expect(page.headers.get("set-cookie")).toBeNull();
+      expect([f.snapshot(), f.writes()]).toEqual([before, writes]);
+    } finally {
+      f.close();
+    }
+  },
+  10_000,
+);
+
+test.each(["approve", "deny"])(
+  "lane %s starts Clerk once and leaves approval pending",
+  async (action) => {
+    const f = await browserFixture();
+    try {
+      const before = f.snapshot();
+      const replies = await Promise.all([f.submit(action), f.submit(action)]);
+      expect(replies.map((r) => r.status).sort()).toEqual([302, 400]);
+      const reply = replies.find((r) => r.status === 302)!;
+      expect(f.begun).toHaveLength(1);
+      expect(f.begun[0]!.state).toMatch(/^forge-lane\./);
+      expect(f.begun[0]!.verifier).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      for (const part of [
+        "__Host-forge_lane_",
+        "Secure",
+        "HttpOnly",
+        "SameSite=Lax",
+        "Path=/",
+      ])
+        expect(reply.headers.get("set-cookie")).toContain(part);
+      expect(reply.headers.get("set-cookie")).not.toContain("Domain=");
+      expect(
+        new URL(reply.headers.get("location")!).searchParams.get(
+          "redirect_uri",
+        ),
+      ).toBe("https://w.example/callback");
+      expect(f.snapshot()).toBe(before);
+      expect((await f.submit(action)).status).toBe(400);
+    } finally {
+      f.close();
+    }
+  },
+  10_000,
+);
+
+test.each([
+  "foreign origin",
+  "missing origin",
+  "missing ticket",
+  "device ticket",
+  "other action",
+  "other browser",
+  "device cookie",
+  "duplicate",
+  "unknown field",
+  "expired",
+  "changed during upstream",
+])(
+  "lane start refuses %s",
+  async (mode) => {
+    const f = await browserFixture();
+    try {
+      let fields = new URLSearchParams({
+        ticket: pageTicket(
+          f.shown,
+          mode === "other action" ? "deny" : "approve",
+        ),
+      }).toString();
+      const headers: Record<string, string> = {
+        Origin: "https://w.example",
+        Cookie: f.cookie,
+      };
+      if (mode === "foreign origin") headers.Origin = "https://evil.example";
+      if (mode === "missing origin") delete headers.Origin;
+      if (mode === "missing ticket") fields = "";
+      if (mode === "device ticket") fields = `ticket=${"a".repeat(43)}`;
+      if (mode === "other browser")
+        headers.Cookie = `__Host-forge_lane_preview=${"x".repeat(43)}`;
+      if (mode === "device cookie")
+        headers.Cookie = `__Host-forge_device=${"x".repeat(43)}`;
+      if (mode === "duplicate") fields += `&${fields}`;
+      if (mode === "unknown field") fields += "&owner=yes";
+      if (mode === "expired") f.clock.mockReturnValue(now + 600_000);
+      if (mode === "changed during upstream")
+        f.duringBegin(() => {
+          f.env.FORGE_OWNER_SUBJECT = "user_Other2";
+        });
+      const before = f.snapshot();
+      const reply = await f.browser(`${f.path}/approve`, fields, headers);
+      expect(reply.status).toBe(400);
+      expect(reply.headers.get("location")).toBeNull();
+      expect(f.snapshot()).toBe(before);
+      if (mode !== "changed during upstream")
+        expect([f.begun.length, f.spent.size]).toEqual([0, 0]);
+      if (
+        [
+          "foreign origin",
+          "missing origin",
+          "duplicate",
+          "unknown field",
+        ].includes(mode)
+      )
+        expect((await f.submit()).status).toBe(302);
+    } finally {
+      f.close();
+    }
+  },
+  10_000,
+);
+
+test.each(["lane", "mixed lane and device", "device", "generic"])(
+  "production callback routes %s in its own domain",
+  async (mode) => {
+    const f = await browserFixture();
+    try {
+      const states =
+        mode === "lane"
+          ? ["forge-lane.state"]
+          : mode === "mixed lane and device"
+            ? ["forge-device.state", "forge-lane.state"]
+            : [mode === "device" ? "forge-device.state" : "generic-state"];
+      const query = new URLSearchParams(
+        states.map((state): [string, string] => ["state", state]),
+      );
+      const reached = f.reached.length,
+        before = f.snapshot();
+      const reply = await f.browser(
+        `/callback?${query}`,
+        undefined,
+        {
+          Cookie:
+            "__Host-forge_device=foreign; __Host-forge_lane_wrong=foreign",
+          "CF-Connecting-IP": "203.0.113.1",
+        },
+        true,
+      );
+      expect(reply.status).toBe(mode === "generic" ? 503 : 400);
+      expect(f.reached.length - reached).toBe(mode === "generic" ? 0 : 1);
+      if (mode.includes("lane"))
+        expect(reply.text).toContain("not available yet");
+      if (mode !== "device") expect(f.snapshot()).toBe(before);
+      expect(f.begun).toEqual([]);
     } finally {
       f.close();
     }

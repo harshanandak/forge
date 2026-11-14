@@ -6,7 +6,7 @@ import type {
   ClerkUpstream,
 } from "../../../cloud/src/adapters/workers-oauth/clerk/upstream.ts";
 import { Project } from "../../../cloud/src/project.ts";
-import type { DurableStorage } from "../../../cloud/src/store.ts";
+import { browserStorage } from "../browser-storage.fixture.ts";
 import { createWorker } from "../../../cloud/src/worker.ts";
 import type { IdentityClaims } from "../../../src/ports/identity.ts";
 import { testIdentityVerifier } from "../../contract/lib/identity-verifier.ts";
@@ -79,38 +79,18 @@ function fixture(
 ) {
   let t = start;
   spyOn(Date, "now").mockImplementation(() => t);
-  const db = new Database(":memory:"),
-    values = new Map<string, unknown>();
+  const db = new Database(":memory:");
   const writes = { login: 0, limiter: 0, failAfter: Infinity };
-  const storage: DurableStorage = {
-    sql: {
-      exec: (sql, ...bindings) => {
-        if (/^\s*(INSERT|UPDATE|DELETE)\b/i.test(sql)) {
-          if (/\bdomain_cloud_login\b/.test(sql)) writes.login++;
-          if (
-            /\bdomain_cloud_browser_attempts\b/.test(sql) &&
-            ++writes.limiter > writes.failAfter
-          )
-            throw new Error("Injected counter write failure");
-        }
-        const rows = db
-          .query(sql)
-          .all(
-            ...bindings.map((value) =>
-              value instanceof ArrayBuffer ? new Uint8Array(value) : value,
-            ),
-          ) as Record<string, unknown>[];
-        return { toArray: () => rows };
-      },
-    },
-    transactionSync: (run) => db.transaction(run)(),
-    get: (key) => Promise.resolve(values.get(key)),
-    put: (key, value) => {
-      values.set(key, value);
-      return Promise.resolve();
-    },
-    delete: (key) => Promise.resolve(values.delete(key)),
-  };
+  const { storage } = browserStorage(db, (sql) => {
+    if (/^\s*(INSERT|UPDATE|DELETE)\b/i.test(sql)) {
+      if (/\bdomain_cloud_login\b/.test(sql)) writes.login++;
+      if (
+        /\bdomain_cloud_browser_attempts\b/.test(sql) &&
+        ++writes.limiter > writes.failAfter
+      )
+        throw new Error("Injected counter write failure");
+    }
+  });
   const seen = {
     begun: [] as { state: string; verifier?: string | undefined }[],
     verified: [] as { url: string; verifier?: string | undefined }[],
