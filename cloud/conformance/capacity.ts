@@ -195,6 +195,12 @@ const BODY = '"\\é€' + "\u0001".repeat(65_532);
 
 const BYTES_ROWS = 9_999;
 const SHAPES: Record<string, () => Shape | Promise<Shape>> = {
+  current: () =>
+    ceiling({
+      records: TRACKER.records,
+      runs: 3,
+      value: withPad(() => 1_050),
+    }),
   // The real tracker's row counts, with text sized so the four state tables hold about 27 MB.
   real: () =>
     ceiling({

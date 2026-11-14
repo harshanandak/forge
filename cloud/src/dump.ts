@@ -134,7 +134,7 @@ const WHOLE_DUMP_BYTES = 3 * 1024 * 1024;
 // Rows are read this many at a time, so a page never holds more than a page plus one batch.
 const BATCH = 16;
 
-/** Page and project size in bytes, and rows per table. A deploy uses the defaults; the test config lowers them. */
+/** Page bytes, total stored-column bytes and per-table rows; limitsFrom resolves the effective Worker vars. */
 export interface Limits {
   readonly pageBytes: number;
   readonly maxBytes: number;
@@ -181,8 +181,64 @@ const counts = (tables: Record<string, Row[]>): Record<string, number> =>
     Object.entries(tables).map(([table, rows]) => [table, rows.length]),
   );
 
-// The row count and stored size of the five tables, counted and summed by SQLite, so a check loads no
-// row. Validation holds a whole project in memory, so both are bounded before it runs.
+export const DUMP_USAGE_SQL = Object.entries(TABLES).map(
+  ([table, { columns }]) =>
+    `SELECT COUNT(*) AS n, COALESCE(SUM(${columns.map((column) => `LENGTH(CAST(${column} AS BLOB))`).join(" + ")}), 0) AS bytes FROM ${table}`,
+);
+
+/** The same six-table accounting for diagnostics and enforcement, without loading stored rows. */
+export function dumpUsage(db: SqlDatabase | undefined, limits: Limits) {
+  const rows: Record<string, number> = {};
+  let bytes = 0;
+  for (const [index, table] of Object.keys(TABLES).entries()) {
+    const found =
+      db === undefined ? { n: 0, bytes: 0 } : db.get(DUMP_USAGE_SQL[index]!);
+    const n = Number(found?.n),
+      size = Number(found?.bytes);
+    if (
+      !Number.isSafeInteger(n) ||
+      n < 0 ||
+      !Number.isSafeInteger(size) ||
+      size < 0
+    )
+      throw new ForgeFailure({
+        code: "UNAVAILABLE",
+        message: "Dump usage is unavailable",
+        retry: "safe",
+      });
+    rows[table] = n;
+    bytes += size;
+  }
+  const warnings: {
+    code: "DUMP_CAPACITY";
+    resource: string;
+    used: number;
+    limit: number;
+  }[] = [];
+  for (const [resource, used] of Object.entries(rows))
+    if (used >= Math.ceil(limits.maxRows * 0.7))
+      warnings.push({
+        code: "DUMP_CAPACITY",
+        resource,
+        used,
+        limit: limits.maxRows,
+      });
+  if (bytes >= Math.ceil(limits.maxBytes * 0.7))
+    warnings.push({
+      code: "DUMP_CAPACITY",
+      resource: "bytes",
+      used: bytes,
+      limit: limits.maxBytes,
+    });
+  return {
+    rows,
+    bytes,
+    limits: { maxRows: limits.maxRows, maxBytes: limits.maxBytes },
+    warnings,
+  };
+}
+
+// Both caps are checked before row validation can load a project into memory.
 function assertLimits(
   db: SqlDatabase,
   limits: Limits,
@@ -191,18 +247,14 @@ function assertLimits(
   maxBytes = limits.maxBytes,
   hint = "",
 ): void {
-  let bytes = 0;
-  for (const [table, { columns }] of Object.entries(TABLES)) {
-    const found = db.get(
-      `SELECT COUNT(*) AS n, COALESCE(SUM(${columns.map((column) => `LENGTH(CAST(${column} AS BLOB))`).join(" + ")}), 0) AS bytes FROM ${table}`,
-    )!;
-    if (Number(found.n) > limits.maxRows)
+  const { rows, bytes } = dumpUsage(db, limits);
+  for (const [table, n] of Object.entries(rows)) {
+    if (n > limits.maxRows)
       throw new ForgeFailure({
         code,
-        message: `${table} has ${Number(found.n)} rows, over the ${limits.maxRows} row limit.`,
+        message: `${table} has ${n} rows, over the ${limits.maxRows} row limit.`,
         retry: "never",
       });
-    bytes += Number(found.bytes);
   }
   if (bytes > maxBytes)
     throw new ForgeFailure({
