@@ -504,9 +504,7 @@ for (const mode of [
       if (preAborted) controller.abort();
       await refused(
         () => f.send(read(), controller.signal),
-        mode === "abort" || preAborted
-          ? "INVOCATION_CANCELLED"
-          : "UNAVAILABLE",
+        mode === "abort" || preAborted ? "INVOCATION_CANCELLED" : "UNAVAILABLE",
       );
       expect(f.calls).toHaveLength(preAborted ? 0 : 1);
       if (observe) {
