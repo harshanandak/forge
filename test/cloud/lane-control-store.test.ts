@@ -58,7 +58,9 @@ function fixture() {
     put: () => Promise.resolve(),
     delete: () => Promise.resolve(false),
   };
-  const owner = new StateOwner(durableStore(storage), { now: () => now });
+  const owner = new StateOwner(durableStore(storage), {
+    now: () => Date.parse(now),
+  });
   owner.initialize();
   const store = new LaneControlStore(owner, "project");
   const put = (key: string, value: unknown) =>
