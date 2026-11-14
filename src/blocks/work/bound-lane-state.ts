@@ -7,6 +7,12 @@ import {
 import type { StateClient } from "../../ports/state.ts";
 import type { StateRecord } from "../../generated/types.ts";
 
+export function validBoundHead(value: unknown): value is string {
+  return (
+    typeof value === "string" && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(value)
+  );
+}
+
 export interface BoundProject {
   readonly origin: string;
   readonly identity: string;

@@ -308,7 +308,7 @@ export function resolveOutside(
   executor: ProcessPort,
   name: string,
   env: Readonly<Record<string, string>>,
-  root: string,
+  root: string | readonly string[],
 ): ReturnType<ProcessPort["resolve"]> {
   const pathKey =
     Object.keys(env).find((key) => key.toUpperCase() === "PATH") ?? "PATH";
@@ -319,7 +319,8 @@ export function resolveOutside(
     if (["TEMP", "TMP", "TMPDIR"].includes(key.toUpperCase()))
       temps.push(env[key]!);
   try {
-    excluded.push(realpathSync(root));
+    for (const path of typeof root === "string" ? [root] : root)
+      excluded.push(realpathSync(path));
     for (const temp of temps) if (temp) excluded.push(realpathSync(temp));
   } catch {
     return none();
