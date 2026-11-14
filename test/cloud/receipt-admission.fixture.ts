@@ -176,14 +176,17 @@ export async function admissionFixture() {
           `{"id":401,"head_sha":"${merge}","repository":{"id":42},"app":{"id":15368}}`,
         ],
         [
-          "check-runs/301",
-          `{${outcome},"id":301,"app":{"id":15368},"check_suite":{"id":401}}`,
+          "check-suites/401/check-runs",
+          `{"total_count":1,"check_runs":[{${outcome},"id":301,"app":{"id":15368},"check_suite":{"id":401}}]}`,
         ],
         [
           "jobs",
           `{"total_count":1,"jobs":[{${outcome},"id":501,"run_id":201,"run_attempt":1,"check_run_url":"https://api.github.com/repos/acme/forge/check-runs/301"}]}`,
         ],
-        ["actions/runs", `{"total_count":1,"workflow_runs":[${run}]}`],
+        [
+          "actions/workflows/99/runs",
+          `{"total_count":1,"workflow_runs":[${run}]}`,
+        ],
         ["attempts/1", run],
       ];
       const response = responses.find(([suffix]) =>

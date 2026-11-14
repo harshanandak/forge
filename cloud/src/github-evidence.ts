@@ -213,7 +213,6 @@ export async function readGithubMergeEvidence(
 ) {
   type Code = "INPUT_INVALID" | "UNAVAILABLE";
   const failure: { code: Code } = { code: "UNAVAILABLE" };
-  let failed = false;
   const refuse = (code: Code) => ({
     ok: false as const,
     code,
@@ -223,7 +222,6 @@ export async function readGithubMergeEvidence(
         : "GitHub unavailable",
   });
   function fail(code: Code = "INPUT_INVALID"): never {
-    failed = true;
     failure.code = code;
     throw new Error("GitHub evidence refused");
   }
@@ -240,15 +238,21 @@ export async function readGithubMergeEvidence(
     const snapshot: unknown = structuredClone(input);
     budget(snapshot);
     const locator = object(object(snapshot).locator);
+    const producer = object(object(object(snapshot).policy).producer);
     const lower = (s: string) => s.replace(/[A-Z]/g, (c) => c.toLowerCase());
     const seen = new Set<number>();
     const result = await withGithubPrEvidence(
       snapshot,
       ports,
       async (session, pr) => {
-        const workflow = await readGithubWorkflowEvidence(session, pr);
+        const workflow = await readGithubWorkflowEvidence(
+          session,
+          pr,
+          producer.workflowId,
+        );
         if (!workflow.ok) return workflow;
         const runs: Evidence.MergeObservations["runs"][number][] = [];
+        const suites = new Map<number, Map<number, Record<string, unknown>>>();
         for (const { checkSuiteId, ...run } of workflow.value) {
           const jobs = await session.collect(
             [
@@ -293,17 +297,27 @@ export async function readGithubMergeEvidence(
             if (!positive(id) || String(id) !== suffix) fail("UNAVAILABLE");
             if (seen.has(id)) fail();
             seen.add(id);
-            return { job, id, suffix };
+            return { job, id };
           };
-          const readCheck = async ({
-            job,
-            id,
-            suffix,
-          }: ReturnType<typeof prepareCheck>) => {
-            if (failed) fail(failure.code);
-            const value = await session.get(["check-runs", suffix]);
-            if (failed) fail(failure.code);
-            const check = object(value);
+          const prepared = jobs.map(prepareCheck);
+          let byId = suites.get(checkSuiteId);
+          if (!byId) {
+            const listed = await session.collect(
+              ["check-suites", String(checkSuiteId), "check-runs"],
+              { filter: "all" },
+              "check_runs",
+              true,
+            );
+            byId = new Map(
+              listed.map((raw) => {
+                const check = object(raw);
+                return [check.id as number, check];
+              }),
+            );
+            suites.set(checkSuiteId, byId);
+          }
+          for (const { job, id } of prepared) {
+            const check = object(byId.get(id));
             if (
               check.id !== id ||
               object(check.check_suite).id !== checkSuiteId ||
@@ -325,7 +339,7 @@ export async function readGithubMergeEvidence(
                 : check.conclusion !== null || check.completed_at !== null)
             )
               fail();
-            return {
+            checks.push({
               id,
               appId: run.appId,
               attempt: run.attempt,
@@ -334,26 +348,14 @@ export async function readGithubMergeEvidence(
               status: check.status,
               conclusion: check.conclusion,
               completedAt: check.completed_at,
-            } as Evidence.MergeObservations["runs"][number]["checks"][number];
-          };
-          // Validate the whole batch before dispatch; Promise.all retains job order.
-          const checkConcurrency = 6;
-          for (
-            let offset = 0;
-            offset < jobs.length;
-            offset += checkConcurrency
-          ) {
-            const batch = jobs
-              .slice(offset, offset + checkConcurrency)
-              .map(prepareCheck);
-            checks.push(...(await Promise.all(batch.map(readCheck))));
+            } as Evidence.MergeObservations["runs"][number]["checks"][number]);
           }
           runs.push({ ...run, checks });
           budget([snapshot, runs]);
         }
         const latest = new Map(workflow.value.map((run) => [run.id, run]));
         const readback = await session.collect(
-          ["actions", "runs"],
+          ["actions", "workflows", String(producer.workflowId), "runs"],
           { head_sha: pr.mergeSha! },
           "workflow_runs",
           true,
