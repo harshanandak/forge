@@ -23,6 +23,8 @@ const rows: [string, string, unknown, string | null][] = [
   ["budget:abort", "", null, "UNAVAILABLE"],
   ["budget:bad-job", "", null, "INPUT_INVALID"],
   ["budget:bad-response", "", null, "INPUT_INVALID"],
+  ["producer:main", "", null, null],
+  ["producer:full", "", null, "UNAVAILABLE"],
   ..."ok squash failure cancelled queued missing-check wrong-producer not-ancestor mixed-case"
     .split(" ")
     .map((n): [string, string, unknown, null] => [n, "", null, null]),
@@ -63,7 +65,9 @@ const rows: [string, string, unknown, string | null][] = [
 ];
 for (const [name, path, value, code] of rows)
   test(`${name}:${path}:${JSON.stringify(value)}`, async () => {
-    const timed = name.startsWith("budget:");
+    const producer = name.startsWith("producer:"),
+      timed = producer || name.startsWith("budget:"),
+      count = name === "producer:full" ? 100 : producer ? 23 : 16;
     const module = (await import(
       "../../cloud/src/" + "github-evidence.ts"
     )) as { readGithubMergeEvidence?: Reader };
@@ -104,10 +108,6 @@ for (const [name, path, value, code] of rows)
       active = 0,
       peak = 0;
     const pending: (() => void)[] = [];
-    const late: (() => void)[] = [],
-      drained = Promise.withResolvers<void>();
-    let discarded = 0,
-      lateReads = 0;
     const result = await module.readGithubMergeEvidence!(input, {
       now: () => clock,
       signal: new AbortController().signal,
@@ -160,14 +160,14 @@ for (const [name, path, value, code] of rows)
           expect(u.searchParams.get("ref")).toBe(actual);
           body = {
             type: "file",
-            path: ".github/workflows/ci.yml",
+            path: parts.slice(parts.indexOf("contents") + 1).join("/"),
             encoding: "base64",
             content: "YWJj",
             size: 3,
           };
-        } else if (parts.includes("check-suites"))
+        } else if (parts.at(-2) === "check-suites")
           body = {
-            id: 20,
+            id: Number(parts.at(-1)),
             head_sha: actual,
             repository: { id: 7 },
             app: { id: name === "wrong-producer" ? 78 : 77 },
@@ -176,54 +176,50 @@ for (const [name, path, value, code] of rows)
           if (timed) {
             peak = Math.max(peak, ++active);
           }
-          const id = Number(parts.at(-1));
-          if (name === "later-check" && id === 42)
-            throw new Error("credential-sentinel upstream-sentinel");
-          body = {
-            ...fixture.check,
-            name: timed && id !== 41 ? String(id) : fixture.check!.name,
-            id:
-              name === "malformed" && path === "check.id"
-                ? fixture.check!.id
-                : id,
-            app: {
+          const collection = parts.at(-1) === "check-runs";
+          if (collection) expect(u.searchParams.get("filter")).toBe("all");
+          const ids = collection
+            ? timed
+              ? Array.from({ length: count }, (_, i) => 41 + i)
+              : [41, 42]
+            : [Number(parts.at(-1))];
+          const checks = ids.reverse().map((id) => {
+            if (name === "later-check" && id === 42)
+              throw new Error("credential-sentinel upstream-sentinel");
+            const check = {
+              ...fixture.check,
+              name: timed && id !== 41 ? String(id) : fixture.check!.name,
               id:
-                name === "wrong-producer"
-                  ? 78
-                  : (fixture.check!.app as { id: number }).id,
-            },
-          };
-          if (id === 41)
-            body = {
-              ...(body as object),
-              status: "completed",
-              conclusion: "success",
-              completed_at: time,
+                name === "malformed" && path === "check.id"
+                  ? fixture.check!.id
+                  : id,
+              app: {
+                id:
+                  name === "wrong-producer"
+                    ? 78
+                    : (fixture.check!.app as { id: number }).id,
+              },
             };
-          if (name === "budget:bad-response" && id === 41)
-            body = { ...(body as object), head_sha: "bad" };
-          else if (name === "budget:bad-response") {
-            await new Promise<void>((resolve) => late.push(resolve));
-            return new Response(
-              new ReadableStream(
-                {
-                  pull: () => {
-                    lateReads++;
-                  },
-                  cancel: () => {
-                    if (++discarded === 5) drained.resolve();
-                  },
-                },
-                { highWaterMark: 0 },
-              ),
-            );
-          }
+            if (name === "budget:bad-response" && id === 41)
+              return { ...check, head_sha: "bad" };
+            return id === 41
+              ? {
+                  ...check,
+                  status: "completed",
+                  conclusion: "success",
+                  completed_at: time,
+                }
+              : check;
+          });
+          body = collection
+            ? { total_count: checks.length, check_runs: checks }
+            : checks[0];
         } else if (parts.at(-1) === "jobs") {
           expect(u.searchParams.get("per_page")).toBe("100");
           expect(u.searchParams.has("page")).toBe(false);
           const attempt = Number(parts.at(-2)),
             jobCount = timed
-              ? 16
+              ? count
               : name === "jobs-full"
                 ? 100
                 : name === "duplicate-check"
@@ -254,15 +250,19 @@ for (const [name, path, value, code] of rows)
           const collection = parts.at(-1) === "runs",
             current = collection && ++runLists === 2;
           const attempt = Number(parts.at(-1)) || (timed ? 1 : 2);
+          const id = collection ? 10 : Number(parts.at(-3));
           const run = {
-            id: 10,
+            id,
             repository: { id: 7 },
             run_number: 3,
             run_attempt: attempt,
-            workflow_id: 9,
-            path: ".github/workflows/ci.yml",
+            workflow_id: id === 10 ? 9 : id,
+            path:
+              id === 10
+                ? ".github/workflows/ci.yml"
+                : `.github/workflows/other-${id}.yml`,
             head_sha: actual,
-            check_suite_id: 20,
+            check_suite_id: 20 + id - 10,
             status: attempt === 2 && name === "queued" ? "queued" : "completed",
             conclusion:
               attempt === 2 && name === "queued"
@@ -274,12 +274,20 @@ for (const [name, path, value, code] of rows)
           body = parts.includes("attempts")
             ? run
             : { workflow_runs: [run], total_count: 1 };
+          if (collection && producer && !parts.includes("workflows")) {
+            const others = Array.from({ length: 8 }, (_, i) => ({
+              ...run,
+              id: 11 + i,
+              workflow_id: 11 + i,
+              check_suite_id: 21 + i,
+              path: `.github/workflows/other-${11 + i}.yml`,
+            }));
+            body = { workflow_runs: [run, ...others], total_count: 9 };
+          }
           if (current) {
             expect(
               urls.filter((url) => new URL(url).pathname.endsWith("/jobs")),
             ).toHaveLength(timed ? 1 : 2);
-            if (!timed && name !== "missing-check")
-              expect(urls.at(-2)?.endsWith("/42")).toBe(true);
             if (name === "run-advanced") run.run_attempt = 3;
             if (name === "run-status") {
               run.status = "in_progress";
@@ -332,24 +340,21 @@ for (const [name, path, value, code] of rows)
       },
     });
     if (name === "budget:bad-response") {
-      expect(late).toHaveLength(5);
-      for (const release of late) release();
-      await drained.promise;
-      expect(lateReads).toBe(0);
       expect([prReads, runLists]).toEqual([1, 1]);
     }
     expect(result.ok).toBe(code === null);
     if (timed) {
-      expect(peak).toBe(name === "budget:bad-job" ? 0 : 6);
+      expect(peak).toBe(
+        ["budget:bad-job", "producer:full"].includes(name) ? 0 : 1,
+      );
+      if (producer) expect(urls.length).toBeLessThanOrEqual(12);
       if (code === null) expect(clock - Date.parse(time)).toBeLessThan(10_000);
       if (
         ["budget:abort", "budget:bad-job", "budget:bad-response"].includes(name)
       ) {
         expect(
-          urls.filter(
-            (url) => new URL(url).pathname.split("/").at(-2) === "check-runs",
-          ),
-        ).toHaveLength(name === "budget:bad-job" ? 0 : 6);
+          urls.filter((url) => new URL(url).pathname.endsWith("/check-runs")),
+        ).toHaveLength(name === "budget:bad-job" ? 0 : 1);
       }
       if (name === "budget:client") {
         const deadline = spyOn(AbortSignal, "timeout").mockReturnValue(
@@ -379,6 +384,9 @@ for (const [name, path, value, code] of rows)
       }
     }
     if (result.ok) {
+      expect(
+        urls.filter((url) => new URL(url).pathname.endsWith("/check-runs")),
+      ).toHaveLength(1);
       expect(result.value.completeness).toBe("complete");
       expect<unknown>(result.value.binding).toEqual(input.binding);
       expect(result.value.finalPr.mergeSha).toBe(actual);
@@ -388,7 +396,7 @@ for (const [name, path, value, code] of rows)
       );
       expect(result.value.runs.map((r) => r.checks.map((c) => c.id))).toEqual(
         timed
-          ? [Array.from({ length: 16 }, (_, i) => 41 + i)]
+          ? [Array.from({ length: count }, (_, i) => 41 + i)]
           : name === "missing-check"
             ? [[], []]
             : [[41], [42]],
