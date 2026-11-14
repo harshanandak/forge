@@ -199,12 +199,14 @@ export const ASSEMBLY_PROVIDES: readonly string[] = [
   "forge.device-files@1.0.0",
   "forge.cloud-login@1.0.0",
   "forge.state@1.0.0",
+  "forge.state@2.0.0",
   "forge.process@1.0.0",
   "forge.files@1.0.0",
   "forge.environment@1.0.0",
   "forge.crypto@1.0.0",
   "forge.runner-output@1.0.0",
   "forge.project-state@1.0.0",
+  "forge.project-state@2.0.0",
   "forge.receipts@1.0.0",
 ];
 export function assemblyProvides(required: string): boolean {

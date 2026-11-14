@@ -67,6 +67,21 @@ including `forge.project-state@1` project selection from a device operation.
 Project and leased operations require cloud sync; do not relabel shared records
 as device-local to bypass the refusal. Generic sync follows in forge-1345.
 
+The explicit `forge.state@2` contract returns Promises for `get`, `put`,
+`putMany`, `range`, `history`, `count` and `max`. `range` and `max` correspond
+to v1's `listRange` and `maxNumber`; v2 has no unbounded `list` or `events`.
+The author entry point exports `AsyncStateClient`, `AsyncStoreLevels`,
+`AsyncProjectStore` and `AsyncPeerLookup`. Await every v2 data call, including
+writes and aggregates. Revision and batch read-set options retain v1 semantics.
+
+`forge.project-state@2` selects this host's project and registered peers with
+async state handles. Peers stay read-only; reads never mint an identity,
+register a project or create a store. The local bridges wrap the existing
+client and levels provider, sharing their owner, grant checks and lifetime.
+The local storage work remains synchronous beneath the Promise interface.
+These capabilities prepare the local layer; bound provider selection and
+memory activation follow separately. Existing v1 consumers stay synchronous.
+
 Input fields whose names map to reserved CLI flags, such as `text`, `json`,
 `help`, `input` or `dryRun`, must be passed using `--input JSON`. For an operation
 `greet.shout` with a `text` field, use `npx forge greet shout --input '{"text":"quiet"}'`
