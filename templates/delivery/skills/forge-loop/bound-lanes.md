@@ -1,4 +1,4 @@
-﻿# Bound lane progress
+# Bound lane progress
 
 Claim the issue, prepare its checkout and brief, then attach. `lane.next {id,head}` requires a full Git head and reserves one numbered action; repeats retain its number. Its `raw` JSON identifies the generation and head. Changed heads invalidate review. Status lists device attachments; retained files do not prove ownership.
 
