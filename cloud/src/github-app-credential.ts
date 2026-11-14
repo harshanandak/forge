@@ -45,7 +45,8 @@ export function createGithubAppCredential(
       if (!match) return null;
       const start = ports.now();
       if (!Number.isFinite(start)) return null;
-      if (cached && start < cached.expiresAt - 60_000) return cached;
+      if (cached && start < cached.expiresAt - 60_000)
+        return usable(cached, start);
       cached = undefined;
       const expired = () => {
         const now = ports.now();
@@ -120,7 +121,7 @@ export function createGithubAppCredential(
         if (!parsed.ok) return null;
         const token = scopedToken(parsed.value, admitted, ports.now());
         if (token && ports.now() < token.expiresAt - 60_000) cached = token;
-        return token;
+        return usable(token, ports.now());
       };
       return await Promise.race([mint(), interrupted]);
     } catch {
@@ -144,6 +145,15 @@ const READ = Object.freeze({
   metadata: "read",
   pull_requests: "read",
 });
+// The reader sees the safe-use cutoff; the cache retains GitHub's real expiry.
+function usable(value: Credential | null, now: number): Credential | null {
+  if (!value || !Number.isFinite(now) || value.expiresAt - 60_000 <= now)
+    return null;
+  return Object.freeze({
+    token: value.token,
+    expiresAt: value.expiresAt - 60_000,
+  });
+}
 function scopedToken(
   value: unknown,
   repositoryId: number,
