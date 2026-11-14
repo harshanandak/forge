@@ -20,7 +20,7 @@ import {
 export const LANE_STATE_PREFIX = "forge-lane.";
 export const LANE_BROWSER = "domain_cloud_lane_browser";
 export const LANE_BROWSER_MIGRATION = {
-  id: "008_cloud_lane_browser",
+  id: "009_cloud_lane_browser",
   statements: [
     `CREATE TABLE ${LANE_BROWSER} (id INTEGER PRIMARY KEY CHECK (id = 1), state TEXT NOT NULL)`,
   ],

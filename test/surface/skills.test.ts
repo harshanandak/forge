@@ -290,11 +290,17 @@ async function withProject(
 
 test("skills.sync writes one linted skill per block noun, deterministically, from CLI and catalog.call", async () => {
   await withProject(async (assembly, root) => {
-    const paths = ["attempt", "decision", "issue", "lane", "memory"].flatMap(
-      (noun) =>
-        ["SKILL.md", "reference.md"].map(
-          (file) => `.agents/skills/${noun}/${file}`,
-        ),
+    const paths = [
+      "attempt",
+      "decision",
+      "issue",
+      "lane",
+      "memory",
+      "receipt",
+    ].flatMap((noun) =>
+      ["SKILL.md", "reference.md"].map(
+        (file) => `.agents/skills/${noun}/${file}`,
+      ),
     );
     const first = { dir: ".agents/skills", written: paths, unchanged: [] };
     expect(await forge(assembly, ["skills", "sync"])).toMatchObject({
@@ -372,6 +378,8 @@ test("a fresh assembly loads persisted admission only when syncing skills", asyn
             ".agents/skills/lane/reference.md",
             ".agents/skills/memory/SKILL.md",
             ".agents/skills/memory/reference.md",
+            ".agents/skills/receipt/SKILL.md",
+            ".agents/skills/receipt/reference.md",
           ],
         },
       });
@@ -450,6 +458,8 @@ test("an enabled but unadmitted block gets no skill and none of its text reaches
             ".agents/skills/issue/reference.md",
             ".agents/skills/lane/SKILL.md",
             ".agents/skills/lane/reference.md",
+            ".agents/skills/receipt/SKILL.md",
+            ".agents/skills/receipt/reference.md",
           ],
         },
       });

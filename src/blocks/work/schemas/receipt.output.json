@@ -1,0 +1,147 @@
+{
+  "type": "object",
+  "minProperties": 10,
+  "properties": {
+    "format": { "const": "forge.cloud-evidence-receipt/1" },
+    "id": { "$ref": "#/$defs/id" },
+    "origin": { "enum": ["verified", "imported"] },
+    "subjectKind": { "const": "merge-commit" },
+    "candidate": { "$ref": "#/$defs/candidate" },
+    "policy": { "$ref": "#/$defs/policy" },
+    "repository": { "$ref": "#/$defs/repository" },
+    "verifierVersion": { "$ref": "#/$defs/text" },
+    "actor": { "$ref": "#/$defs/text" },
+    "device": { "$ref": "#/$defs/text" }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$"
+    },
+    "text": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "positive": { "type": "integer", "minimum": 1 },
+    "sha": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+    "digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "repository": {
+      "type": "object",
+      "minProperties": 3,
+      "properties": {
+        "host": { "const": "github.com" },
+        "owner": { "$ref": "#/$defs/text" },
+        "repo": { "$ref": "#/$defs/text" }
+      },
+      "additionalProperties": false
+    },
+    "candidate": {
+      "type": "object",
+      "minProperties": 9,
+      "properties": {
+        "format": { "const": "forge.cloud-merge-evidence/1" },
+        "policyVersion": { "$ref": "#/$defs/text" },
+        "policyDigest": { "$ref": "#/$defs/digest" },
+        "binding": { "$ref": "#/$defs/binding" },
+        "finalPr": { "$ref": "#/$defs/pr" },
+        "targetTip": { "$ref": "#/$defs/sha" },
+        "ancestry": { "const": "ancestor" },
+        "verifiedAt": { "type": "string", "format": "date-time" },
+        "runs": { "type": "array", "items": { "$ref": "#/$defs/run" } }
+      },
+      "additionalProperties": false
+    },
+    "binding": {
+      "type": "object",
+      "minProperties": 8,
+      "properties": {
+        "project": { "$ref": "#/$defs/text" },
+        "issueId": { "type": "string", "pattern": "^work-[1-9][0-9]*$" },
+        "linkKey": { "$ref": "#/$defs/text" },
+        "linkRevision": { "$ref": "#/$defs/positive" },
+        "repositoryId": { "$ref": "#/$defs/positive" },
+        "prNumber": { "$ref": "#/$defs/positive" },
+        "prId": { "$ref": "#/$defs/text" },
+        "headSha": { "$ref": "#/$defs/sha" }
+      },
+      "additionalProperties": false
+    },
+    "pr": {
+      "type": "object",
+      "minProperties": 8,
+      "properties": {
+        "repositoryId": { "$ref": "#/$defs/positive" },
+        "number": { "$ref": "#/$defs/positive" },
+        "id": { "$ref": "#/$defs/text" },
+        "headSha": { "$ref": "#/$defs/sha" },
+        "state": { "const": "MERGED" },
+        "mergeSha": { "$ref": "#/$defs/sha" },
+        "mergedAt": { "type": "string", "format": "date-time" },
+        "baseBranch": { "$ref": "#/$defs/text" }
+      },
+      "additionalProperties": false
+    },
+    "policy": {
+      "type": "object",
+      "minProperties": 7,
+      "properties": {
+        "project": { "$ref": "#/$defs/text" },
+        "repositoryId": { "$ref": "#/$defs/positive" },
+        "baseBranch": { "$ref": "#/$defs/text" },
+        "version": { "$ref": "#/$defs/text" },
+        "digest": { "$ref": "#/$defs/digest" },
+        "producer": { "$ref": "#/$defs/producer" },
+        "requiredChecks": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/text" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "producer": {
+      "type": "object",
+      "minProperties": 5,
+      "properties": {
+        "repositoryId": { "$ref": "#/$defs/positive" },
+        "appId": { "$ref": "#/$defs/positive" },
+        "workflowId": { "$ref": "#/$defs/positive" },
+        "workflowPath": { "$ref": "#/$defs/text" },
+        "workflowDigest": { "$ref": "#/$defs/digest" }
+      },
+      "additionalProperties": false
+    },
+    "run": {
+      "type": "object",
+      "minProperties": 12,
+      "properties": {
+        "repositoryId": { "$ref": "#/$defs/positive" },
+        "appId": { "$ref": "#/$defs/positive" },
+        "workflowId": { "$ref": "#/$defs/positive" },
+        "workflowPath": { "$ref": "#/$defs/text" },
+        "workflowDigest": { "$ref": "#/$defs/digest" },
+        "headSha": { "$ref": "#/$defs/sha" },
+        "status": { "const": "completed" },
+        "conclusion": { "const": "success" },
+        "id": { "$ref": "#/$defs/positive" },
+        "runNumber": { "$ref": "#/$defs/positive" },
+        "attempt": { "$ref": "#/$defs/positive" },
+        "checks": { "type": "array", "items": { "$ref": "#/$defs/check" } }
+      },
+      "additionalProperties": false
+    },
+    "check": {
+      "type": "object",
+      "minProperties": 8,
+      "properties": {
+        "id": { "$ref": "#/$defs/positive" },
+        "appId": { "$ref": "#/$defs/positive" },
+        "attempt": { "$ref": "#/$defs/positive" },
+        "name": { "$ref": "#/$defs/text" },
+        "headSha": { "$ref": "#/$defs/sha" },
+        "status": { "enum": ["queued", "in_progress", "completed"] },
+        "conclusion": { "type": ["string", "null"] },
+        "completedAt": { "type": ["string", "null"], "format": "date-time" }
+      },
+      "additionalProperties": false
+    }
+  }
+}
