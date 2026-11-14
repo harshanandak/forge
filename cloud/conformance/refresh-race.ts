@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync, writeFileSync } from "node:fs";
-import { access, detail, issue, revoke, send, type Family } from "./oauth.ts";
+import { access, detail, issue, mask, revoke, send } from "./oauth.ts";
+import type { Family } from "./oauth.ts";
 import { duplicateCanary } from "./refresh-canary.ts";
 
 const refresh = (family: Family, headers: Record<string, string>) =>
@@ -54,6 +55,7 @@ async function main() {
   const tokens = (await responses
     .find((response) => response.ok)!
     .json()) as Omit<Family, "client">;
+  mask(tokens);
   assert.deepEqual(await responses.find((response) => !response.ok)!.json(), {
     error: "invalid_grant",
   });
@@ -102,6 +104,7 @@ async function main() {
     const corrected = await refresh(untouched, {});
     assert.equal(corrected.status, 200, "corrected request must still refresh");
     const correctedTokens = (await corrected.json()) as Omit<Family, "client">;
+    mask(correctedTokens);
     await access({ client: untouched.client, ...correctedTokens }, true);
   }
   console.log(
@@ -120,6 +123,7 @@ async function main() {
   const winner = await pending;
   assert.equal(winner.status, 200, "late winner completes");
   const lateTokens = (await winner.json()) as Omit<Family, "client">;
+  mask(lateTokens);
   await access({ client: late.client, ...lateTokens }, false);
   assert.equal(
     (await refresh({ client: late.client, ...lateTokens }, {})).status,
@@ -150,6 +154,7 @@ async function main() {
     response = await refresh(saved, {});
   assert.equal(response.status, 200, "refresh saved for restart");
   const savedTokens = (await response.json()) as Omit<Family, "client">;
+  mask(savedTokens);
   writeFileSync(
     file,
     JSON.stringify([saved, { client: saved.client, ...savedTokens }]),

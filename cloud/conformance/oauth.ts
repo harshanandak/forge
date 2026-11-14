@@ -2,6 +2,17 @@ import assert from "node:assert/strict";
 import { AssertionError } from "node:assert";
 import { readFileSync, writeFileSync } from "node:fs";
 
+export function mask<T>(secrets: T): T {
+  if (process.env.GITHUB_ACTIONS === "true")
+    for (const [key, value] of Object.entries(secrets ?? {}))
+      if (/^(access_token|refresh_token|client_secret|code)$/.test(key))
+        if (typeof value === "string" && value)
+          process.stdout.write(
+            `::add-mask::${value.replaceAll("%", "%25").replaceAll("\r", "%0D").replaceAll("\n", "%0A")}\n`,
+          );
+  return secrets;
+}
+
 export function detail(error: unknown) {
   const value = (operand: unknown) =>
     typeof operand === "number"
@@ -15,11 +26,13 @@ export function detail(error: unknown) {
       ? failure.message.split("\n")[0]
       : "fixture unavailable";
   const frames =
-    error instanceof Error &&
-    error.stack?.startsWith(`${error.name}: ${error.message}`)
-      ? error.stack.slice(error.name.length + error.message.length + 2)
+    error instanceof Error
+      ? error.stack
+          ?.match(/^ {4}at .+$/gm)
+          ?.filter((line) => !/['"`]|Bearer/i.test(line))
+          .join("\n")
       : "";
-  return `${label} (expected ${value(failure?.expected)}, observed ${value(failure?.actual)}); mode ${process.env.OAUTH_CONFORMANCE_MODE ?? "standalone"}; ${error instanceof Error ? error.name : "UnknownError"}\n${frames.match(/^ +at .+$/gm)?.join("\n") ?? ""}`;
+  return `${label} (expected ${value(failure?.expected)}, observed ${value(failure?.actual)}); mode ${process.env.OAUTH_CONFORMANCE_MODE ?? "standalone"}; ${error instanceof Error ? error.name : "UnknownError"}\n${frames ?? ""}`;
 }
 
 export const base = "http://127.0.0.1:8788";
@@ -44,7 +57,7 @@ export interface Family {
 export async function issue(scope = ""): Promise<Family> {
   const registered = await send("/fixture/register");
   assert.equal(registered.status, 200, "fixture registration must work");
-  const { client } = (await registered.json()) as { client: string };
+  const { client } = mask(await registered.json()) as { client: string };
   const cookies = new Map<string, string>();
   async function browser(path: string, body?: Record<string, string>) {
     const response = await send(path, {
@@ -73,6 +86,7 @@ export async function issue(scope = ""): Promise<Family> {
   const code = new URL(callback.headers.get("location")!).searchParams.get(
     "code",
   );
+  mask({ code });
   assert(code, "fixture code must exist");
   const response = await post("/oauth/token", {
     grant_type: "authorization_code",
@@ -88,6 +102,7 @@ export async function issue(scope = ""): Promise<Family> {
     "fixture code exchange must succeed before revoke assertions",
   );
   const tokens = (await response.json()) as Omit<Family, "client">;
+  mask(tokens);
   assert(
     tokens.access_token && tokens.refresh_token,
     "provider must issue both full tokens",

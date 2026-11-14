@@ -4,6 +4,7 @@ import {
   base,
   detail,
   issue,
+  mask,
   post,
   revoke,
   send,
@@ -30,6 +31,7 @@ async function rotate(family: Family, fields: Record<string, string> = {}) {
   assert.equal(response.status, 200, "eligible refresh must return 200");
   assert.equal(response.headers.get("cache-control"), "no-store");
   const tokens = (await response.json()) as Omit<Family, "client">;
+  mask(tokens);
   assert(
     tokens.access_token && tokens.refresh_token,
     "refresh must return a full token pair",
@@ -134,6 +136,7 @@ async function main() {
     else {
       assert.equal(response.status, 200, "refresh within fixed grant expiry");
       const tokens = (await response.json()) as Omit<Family, "client">;
+      mask(tokens);
       assert(
         tokens.expires_in >= 60 && tokens.expires_in <= 120,
         "access TTL must shorten at the fixed grant deadline",
