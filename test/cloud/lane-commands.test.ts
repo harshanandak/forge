@@ -55,7 +55,14 @@ async function fixture(projectName = "p", session: string | null = "s1") {
   };
   const project = new Project(
     { storage },
-    { FORGE_CLOUD_PROJECT: projectName, FORGE_CLOUD_ID_PREFIX: "forge" },
+    {
+      FORGE_CLOUD_PROJECT: projectName,
+      FORGE_CLOUD_ID_PREFIX: "forge",
+      CLERK_REDIRECT_URI: "https://w.example/callback",
+      CLERK_ISSUER: "https://identity.example",
+      CLERK_CLIENT_ID: "forge-cloud",
+      FORGE_OWNER_SUBJECT: "owner",
+    },
   );
   const admitted = await project.fetch(
     new Request(`https://w.example/p/${projectName}/devices`, {
@@ -96,16 +103,17 @@ async function fixture(projectName = "p", session: string | null = "s1") {
     db,
     owner,
     put,
+    clock,
     snapshot,
     close: () => {
       db.close();
       clock.mockRestore();
     },
-    send: async (body: unknown, route = projectName) => {
+    send: async (body: unknown, route = projectName, headers = {}) => {
       const response = await createWorker().fetch(
         new Request(`https://w.example/p/${route}/command`, {
           method: "POST",
-          headers: { authorization: `Bearer ${token}` },
+          headers: { authorization: `Bearer ${token}`, ...headers },
           body: JSON.stringify(body),
         }),
         {
@@ -227,7 +235,6 @@ const refusals: [string, string, object, object, string, number][] = [
     "AUTH_DEVICE_MISMATCH",
     1,
   ],
-  ["resume", "lane.resume", { all: true }, {}, "UNKNOWN_COMMAND", 3],
 ];
 test.each(refusals)(
   "%s refuses without a record, event or receipt",
@@ -349,6 +356,7 @@ test.each([
   { op: "lane.control", dryRun: false },
   { op: "lane.stop", dryRun: false },
   { op: "lane.stop", dryRun: true },
+  { op: "lane.resume", dryRun: false },
 ])(
   "a device-only token cannot claim a session for %j",
   async ({ op, dryRun }) => {
@@ -364,6 +372,120 @@ test.each([
       );
       expect(reply.verdict).toEqual(["FAIL", "AUTH_DEVICE_MISMATCH", 1]);
       expect(f.snapshot()).toBe(before);
+    } finally {
+      f.close();
+    }
+  },
+  10_000,
+);
+
+test.each(["issue", "all", "device token", "hostile headers"])(
+  "lane.resume creates one exact pending request for %s without changing control",
+  async (mode) => {
+    const f = await fixture("p", mode === "device token" ? null : "s1");
+    try {
+      const scope = mode === "all" ? { all: true } : { id: "work-7" };
+      await f.send(call("lane.stop", { all: true }, "initialize"));
+      // An issue resume cannot clear a project-wide stop.
+      if (mode !== "all") {
+        f.owner.put("forge/work", "lane-control:global", running, actor, {
+          expectRevision: 1,
+        });
+        await f.send(call("lane.stop", scope, "stop-issue"));
+      }
+      const before = [
+        f.owner.get("forge/work", "lane-control:global"),
+        f.owner.get("forge/work", "lane-control:work-7"),
+      ];
+      const request = call("lane.resume", scope, "ask");
+      const headers =
+        mode === "hostile headers"
+          ? {
+              Host: "evil.example",
+              Origin: "https://evil.example",
+              "X-Forwarded-Host": "evil.example",
+            }
+          : {};
+      const reply = await f.send(request, "p", headers);
+      expect(reply.verdict).toEqual(["FAIL", "APPROVAL_REQUIRED", 1]);
+      expect(reply.envelope).toMatchObject({
+        ok: false,
+        status: "FAIL",
+        result: {
+          scope,
+          expiresAt: new Date(now + 600_000).toISOString(),
+        },
+      });
+      const pending = (
+        reply.envelope as unknown as {
+          result: { request: string; url: string };
+        }
+      ).result;
+      expect(pending.request).toMatch(/^[a-f0-9-]+$/);
+      expect(pending.url).toBe(
+        `https://w.example/lane-approval/${pending.request}`,
+      );
+      const after = f.snapshot();
+      expect((await f.send(request)).envelope).toEqual(reply.envelope);
+      expect(f.snapshot()).toBe(after);
+      expect(
+        (
+          await f.send({
+            ...request,
+            input: mode === "all" ? { id: "work-7" } : { all: true },
+          })
+        ).verdict,
+      ).toEqual(["FAIL", "INPUT_CONFLICT", 4]);
+      expect(f.snapshot()).toBe(after);
+      expect([
+        f.owner.get("forge/work", "lane-control:global"),
+        f.owner.get("forge/work", "lane-control:work-7"),
+      ]).toEqual(before);
+    } finally {
+      f.close();
+    }
+  },
+  10_000,
+);
+
+test.each(["running", "global stop", "foreign route", "device cap", "expired"])(
+  "lane.resume refuses or expires safely for %s",
+  async (mode) => {
+    const f = await fixture();
+    try {
+      f.put("lane-control:global", running);
+      if (mode !== "running")
+        await f.send(call("lane.stop", { all: true }, "stop"));
+      const scope = mode === "global stop" ? { id: "work-7" } : { all: true };
+      if (mode === "device cap" || mode === "expired")
+        for (let i = 0; i < 4; i++)
+          expect(
+            (await f.send(call("lane.resume", scope, `ask-${i}`))).verdict,
+          ).toEqual(["FAIL", "APPROVAL_REQUIRED", 1]);
+      if (mode === "expired") f.clock.mockReturnValue(now + 600_000);
+      const before = f.snapshot();
+      const reply = await f.send(
+        call("lane.resume", scope, "ask-final"),
+        mode === "foreign route" ? "other" : "p",
+      );
+      const code =
+        mode === "device cap"
+          ? "UNAVAILABLE"
+          : mode === "foreign route"
+            ? "AUTH_FORBIDDEN"
+            : mode === "expired"
+              ? "APPROVAL_REQUIRED"
+              : "INPUT_CONFLICT";
+      expect(reply.verdict).toEqual([
+        "FAIL",
+        code,
+        code === "INPUT_CONFLICT" ? 4 : 1,
+      ]);
+      if (mode !== "expired") expect(f.snapshot()).toBe(before);
+      if (mode === "expired")
+        expect(reply.envelope).toMatchObject({
+          result: { expiresAt: new Date(now + 1_200_000).toISOString() },
+        });
     } finally {
       f.close();
     }
