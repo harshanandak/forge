@@ -2,7 +2,7 @@
 // Device tokens and their hashes are never part of a dump. The database image is never used.
 // Every value is a string or a safe integer; anything else is refused on the way out and on the way in.
 import { ForgeFailure } from "../../src/contract/failure.ts";
-import { isObject } from "../../src/core/config/pointer.ts";
+import { canonicalJson, isObject } from "../../src/core/config/pointer.ts";
 import {
   RestoreConsistencyFailure,
   verifyEventDerivedState,
@@ -16,7 +16,10 @@ import {
 import {
   validateForgeError,
   validateLeaseRecord,
+  validateStateRecord,
+  validateStateEvent,
 } from "../../src/generated/validators.ts";
+import type { StateRecord, StateEvent } from "../../src/generated/types.ts";
 import type { SqlDatabase, SqlRow } from "../../src/ports/store.ts";
 import { versioned } from "./issue-request-id.ts";
 import {
@@ -668,7 +671,7 @@ const JSON_COLUMNS: Record<string, string[]> = {
  */
 function admitJson(tables: Record<string, Row[]>): void {
   for (const [table, columns] of Object.entries(JSON_COLUMNS))
-    for (const row of tables[table]!)
+    for (const row of tables[table] ?? [])
       for (const column of columns)
         if (!withinRestoreBudget(String(row[column])))
           throw rejectedRow(
@@ -858,7 +861,7 @@ function checkCommandReceipt(row: Row): void {
     return bad();
   }
   if (
-    !/^c2:[a-f0-9]{64}$/.test(String(row.request_id)) ||
+    !/^[cs]2:[a-f0-9]{64}$/.test(String(row.request_id)) ||
     !isObject(fingerprint) ||
     !versioned(fingerprint) ||
     typeof fingerprint.input !== "string" ||
@@ -871,4 +874,21 @@ function checkCommandReceipt(row: Row): void {
     (row.outcome === "refused" && !validateForgeError(result).ok)
   )
     bad();
+}
+
+/** Admit the exact prepared durable values using the same budgets and shapes as restore. */
+export function admitStateWrite(
+  records: readonly StateRecord[],
+  events: readonly StateEvent[],
+  receipt: Row,
+): void {
+  for (const [table, values, validate] of [
+    ["state_records", records, validateStateRecord],
+    ["state_events", events, validateStateEvent],
+  ] as const)
+    for (const value of values)
+      if (!withinRestoreBudget(canonicalJson(value)) || !validate(value).ok)
+        throw rejectedRow(table, value.key);
+  admitJson({ [COMMAND_RECEIPTS]: [receipt] });
+  checkCommandReceipt(receipt);
 }

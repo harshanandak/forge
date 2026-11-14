@@ -8,12 +8,13 @@ import {
   receiptScope,
   scopeRequestId,
   type ReceiptPrincipal,
+  type ReceiptFamily,
 } from "./issue-request-id.ts";
 
 class ReceiptIdentity {
   readonly #bytes: { readonly requestId: string; readonly fingerprint: string };
   constructor(
-    family: "command" | "lease",
+    family: ReceiptFamily,
     principal: ReceiptPrincipal,
     raw: string,
     input: unknown,
@@ -37,7 +38,7 @@ class ReceiptIdentity {
 
 /** Principal and transport family come from the server, never from the request body. */
 export function prepareReceipt(
-  family: "command" | "lease",
+  family: ReceiptFamily,
   principal: ReceiptPrincipal,
   raw: string,
   input: unknown,

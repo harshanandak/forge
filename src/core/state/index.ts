@@ -71,6 +71,11 @@ export interface WriteOptions extends PutOptions {
 export interface BatchWriteOptions {
   readonly fence?: Fence;
   readonly readSet?: WriteOptions["readSet"];
+  /** Admits the prepared batch inside its transaction, before any record or event write. */
+  readonly admit?: (
+    records: readonly StateRecord[],
+    events: readonly StateEvent[],
+  ) => void;
 }
 export interface DeleteWriteOptions extends DeleteOptions {
   readonly fence?: Fence;
@@ -1481,6 +1486,25 @@ export class StateOwner {
         if (revision !== entry.expectRevision) this.#stale(entry, revision);
       }
       this.#readSetHolds(namespace, undefined, undefined, readSet);
+      if (options.admit) {
+        const records = prepared.map((entry) =>
+          this.#apply(
+            namespace,
+            entry.key,
+            entry.stored,
+            actor,
+            now,
+            undefined,
+            false,
+            undefined,
+            true,
+          ),
+        );
+        options.admit(
+          records,
+          records.map((record) => recordEvent(record)),
+        );
+      }
       return prepared.map((entry) =>
         this.#apply(namespace, entry.key, entry.stored, actor, now, undefined),
       );
@@ -1760,6 +1784,7 @@ export class StateOwner {
     requestId: string | undefined,
     fresh = false,
     last?: number,
+    preview = false,
   ): StateRecord {
     const current = this.get(namespace, key);
     // An absent row can have history. Keep its last revision so recreation never revives an old
@@ -1795,6 +1820,7 @@ export class StateOwner {
       !Number.isSafeInteger(record.revision)
     )
       invalid("Invalid record");
+    if (preview) return record;
     if (current) {
       const changed = this.#db.run(
         "UPDATE state_records SET revision=?,body=? WHERE namespace=? AND key=? AND revision=?",
