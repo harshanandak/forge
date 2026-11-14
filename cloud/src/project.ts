@@ -119,7 +119,7 @@ const LEASE_SELECT =
 
 // Registers the tables this server adds beside the state owner's own. The digest is checked for its
 // shape only; the tables hold no Forge state.
-const domain = {
+export const domain = {
   namespace: "forge/cloud",
   reviewedDigest: `sha256:${"0".repeat(64)}`,
   migrations: [
