@@ -144,6 +144,10 @@ function admitPrClose(
     !("pr" in input)
   )
     return;
+  const binding = cloudBinding(
+    deps.root,
+    deps.env.HOME ?? deps.env.USERPROFILE,
+  );
   if (
     ("receipt" in input && input.receipt !== undefined) ||
     ("withoutReceipt" in input && input.withoutReceipt !== undefined)
@@ -152,10 +156,7 @@ function admitPrClose(
       "INPUT_INVALID",
       "pr cannot be combined with receipt or withoutReceipt.",
     );
-  if (
-    cloudBinding(deps.root, deps.env.HOME ?? deps.env.USERPROFILE).kind ===
-    "unbound"
-  )
+  if (binding.kind === "unbound")
     throw fail(
       "INPUT_INVALID",
       "Closing with pr requires a cloud-bound project and its GitHub verifier.",
