@@ -1,6 +1,5 @@
-// Forge cloud as the authority for a cloud-bound project's `issue show`, `issue comments`, `issue links`, `issue list`, `issue ready`, `issue blocked`, `issue stale`, `issue create`,
-// `issue comment`, `issue update`, `issue dep`, `issue link`, `issue close`, `issue claim`, `issue renew` and `issue release`: chosen after the Runtime's own request checks and before any local project state opens. A bound project
-// writes only through the cloud, never to a local store, and no device is created.
+// Cloud-served work operations run after request checks and before local state or approval handling.
+// A bound project writes only through the cloud; no local store or device is created.
 import { nodeDeviceIdentity } from "../adapters/fs/device-identity.ts";
 import { ForgeFailure } from "../contract/failure.ts";
 import {
@@ -83,9 +82,12 @@ const CLOUD_SERVED: ReadonlySet<string> = new Set([
   "issue.claim",
   "issue.renew",
   "issue.release",
+  "lane.stop",
+  "lane.control",
+  "lane.resume",
 ]);
 
-/** On a bound project: show, comments, links, list, ready, blocked, stale, create, comment, update, dep, link, close, claim, renew and release go to the cloud, other work operations and local store recovery (store.reinit) are refused (a second writer), other blocks and core operations stay local. */
+/** Bound work uses CLOUD_SERVED; other work and store recovery refuse a second writer. Other blocks stay local. */
 export function cloudRoute(
   blockId: string,
   declared: string,
@@ -104,7 +106,19 @@ function unserved(declared: string, input: unknown): ForgeFailure | undefined {
       "INPUT_INVALID",
       `${declared} was not given its input to check before a cloud request.`,
     );
-  const { reopen, reason, receipt } = (input ?? {}) as Record<string, unknown>;
+  const { reopen, reason, receipt, approval } = (input ?? {}) as Record<
+    string,
+    unknown
+  >;
+  const local = approval as { quote?: unknown; source?: unknown } | undefined;
+  if (
+    declared === "lane.resume" &&
+    (local?.quote !== undefined || local?.source !== undefined)
+  )
+    return fail(
+      "INPUT_INVALID",
+      "Cloud resume accepts only an approval request id",
+    );
   const claim =
     declared === "issue.claim" &&
     (reopen !== undefined || reason !== undefined);
@@ -117,7 +131,7 @@ function unserved(declared: string, input: unknown): ForgeFailure | undefined {
     : undefined;
 }
 
-/** Refuses an operation a bound project does not serve, a dry run of one it does, and input it cannot serve, before any lookup for it; an unbound project is never refused. */
+/** Bound requests refuse unsupported operations, input and dry runs except stop; unbound requests stay local. */
 export function admitCloud(
   deps: Pick<CloudAuthorityDeps, "root" | "env">,
   blockId: string,
@@ -126,11 +140,10 @@ export function admitCloud(
   input: unknown,
 ): void {
   const route = cloudRoute(blockId, declared);
+  const dryRefused = dryRun === true && declared !== "lane.stop";
   const refusal =
-    route === "cloud" && dryRun !== true
-      ? unserved(declared, input)
-      : undefined;
-  if (route === "local" || (route === "cloud" && dryRun !== true && !refusal))
+    route === "cloud" && !dryRefused ? unserved(declared, input) : undefined;
+  if (route === "local" || (route === "cloud" && !dryRefused && !refusal))
     return;
   if (
     cloudBinding(deps.root, deps.env.HOME ?? deps.env.USERPROFILE).kind !==
@@ -147,13 +160,22 @@ export async function selectCloud(
   deps: CloudAuthorityDeps,
   runtime: Pick<Runtime, "preflight">,
   request: InvocationRequest,
+  declaredOp?: string,
 ): Promise<ResultEnvelope | undefined> {
   const home = deps.env.HOME ?? deps.env.USERPROFILE;
   const binding = () => cloudBinding(deps.root, home);
   let flight: ReturnType<Runtime["preflight"]>;
   let accepted: InvocationRequest | undefined;
   try {
-    flight = runtime.preflight(request, (valid) => (accepted = valid));
+    // Stop has a cloud dry-run contract; the local runtime has none. All other checks still run.
+    const dryStop =
+      request.dryRun === true &&
+      declaredOp === "lane.stop" &&
+      binding().kind === "bound";
+    flight = runtime.preflight(
+      dryStop ? { ...request, dryRun: false } : request,
+      (valid) => (accepted = valid),
+    );
   } catch (refused) {
     // An unbound project lets the runtime refuse it. A bound one never reaches the local runtime, even
     // if a later preflight there would pass, so it gets the envelope the runtime gives that refusal.
@@ -168,8 +190,8 @@ export async function selectCloud(
   if (bound.kind === "unbound") return undefined;
   deps.scope(flight.context);
   if (route !== "cloud") throw route;
-  // A routed write must never become a real cloud write by a dry run, whatever the runtime's own checks did.
-  if (request.dryRun === true)
+  // Only stop may forward a dry run, and its original flag must reach the cloud.
+  if (request.dryRun === true && declared !== "lane.stop")
     throw fail(
       "UNAVAILABLE",
       "This profile has no dry-run execution contract.",
@@ -198,10 +220,8 @@ export async function selectCloud(
     wireDeviceId(named) !== wireDeviceId(device)
   )
     throw fail("AUTH_DEVICE_MISMATCH", "This session is not on this machine.");
-  const [{ createCloudHttp }, { createCloudLeaseClient }] = await Promise.all([
-    loadHttp(),
-    loadLeaseClient(),
-  ]);
+  const [{ createCloudHttp }, { createCloudLeaseClient, CloudCommandFailure }] =
+    await Promise.all([loadHttp(), loadLeaseClient()]);
   const { fetch, now, security } = deps.cloud ?? {};
   const client = createCloudLeaseClient({
     key: { origin, identity, project },
@@ -209,17 +229,23 @@ export async function selectCloud(
     now: now ?? Date.now,
     http: createCloudHttp({ origin, project, ...(fetch ? { fetch } : {}) }),
   });
-  const result = await client.command(
-    {
-      requestId: request.requestId,
-      op: declared,
-      input: request.input,
-      context: {
-        ...request.context,
-        device: { id: device },
+  try {
+    const result = await client.command(
+      {
+        requestId: request.requestId,
+        op: declared,
+        input: request.input,
+        ...(request.dryRun === undefined ? {} : { dryRun: request.dryRun }),
+        context: {
+          ...request.context,
+          device: { id: device },
+        },
       },
-    },
-    (value) => block.validate(operation.declaration.output, value),
-  );
-  return { ok: true, op: request.op, status: "OK", result, warnings: [] };
+      (value) => block.validate(operation.declaration.output, value),
+    );
+    return { ok: true, op: request.op, status: "OK", result, warnings: [] };
+  } catch (error) {
+    if (!(error instanceof CloudCommandFailure)) throw error;
+    return { ...failureEnvelope(request, error), result: error.result };
+  }
 }

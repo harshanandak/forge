@@ -90,6 +90,7 @@ import {
 import {
   admitCloud,
   boundMissingStoreRemedy,
+  cloudRoute,
   refuseUnsyncedProjectWrite,
   selectCloud,
 } from "./cloud-authority.ts";
@@ -1797,6 +1798,38 @@ export async function createAssembly(
               current.unavailable[0]?.error.code ?? "INPUT_INVALID",
             ),
           );
+        const ownContext = (context: BoundContext) => {
+          if (
+            (context.variant === "project" || context.variant === "leased") &&
+            context.project.id !== root
+          )
+            refuse(
+              "INPUT_CONFLICT",
+              "State context belongs to another project",
+            );
+          if (context.variant === "device" && context.device.id !== deviceRoot)
+            refuse("INPUT_CONFLICT", "State context belongs to another device");
+        };
+        const fromCloud = (runtime: Pick<Runtime, "preflight">) =>
+          selectCloud(
+            {
+              root,
+              deviceRoot,
+              scope: ownContext,
+              env: options.providers?.env ?? process.env,
+              cloud: options.providers?.cloudLogin,
+            },
+            runtime,
+            request,
+            target?.declaredOp,
+          );
+        const routed =
+          target?.blockId === "forge/work" &&
+          cloudRoute(target.blockId, target.declaredOp ?? "") === "cloud";
+        if (routed) {
+          const cloud = await fromCloud(new Runtime(current.catalog, trust));
+          if (cloud) return cloud;
+        }
         // The owner's words for memory forget, restore and adopt are relayed through Forge's own
         // approval: a request for these exact arguments, then the reply and where it was said.
         const owned =
@@ -1903,18 +1936,6 @@ export async function createAssembly(
           request.input,
           processCleanupBudgetMs(options.providers?.supervision),
         );
-        const ownContext = (context: BoundContext) => {
-          if (
-            (context.variant === "project" || context.variant === "leased") &&
-            context.project.id !== root
-          )
-            refuse(
-              "INPUT_CONFLICT",
-              "State context belongs to another project",
-            );
-          if (context.variant === "device" && context.device.id !== deviceRoot)
-            refuse("INPUT_CONFLICT", "State context belongs to another device");
-        };
         const runtime = new Runtime(runtimeCatalog, trust, {
           isolation: nodeRunIsolation,
           async services(instance, context, scope) {
@@ -2163,18 +2184,10 @@ export async function createAssembly(
             }
           },
         });
-        const cloud = await selectCloud(
-          {
-            root,
-            deviceRoot,
-            scope: ownContext,
-            env: options.providers?.env ?? process.env,
-            cloud: options.providers?.cloudLogin,
-          },
-          runtime,
-          request,
-        );
-        if (cloud) return cloud;
+        if (!routed) {
+          const cloud = await fromCloud(runtime);
+          if (cloud) return cloud;
+        }
         const result = await runtime.invoke(request);
         return checkResult(
           runtimeCatalog,

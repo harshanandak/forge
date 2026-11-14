@@ -176,7 +176,13 @@ const WRITES = [
   "issue.renew",
   "issue.release",
 ];
-const SERVED = [...READS, ...WRITES];
+const SERVED = [
+  ...READS,
+  ...WRITES,
+  "lane.stop",
+  "lane.control",
+  "lane.resume",
+];
 /** Every operation the work block declares, read from its manifest. */
 const MANIFEST_OPS = Object.keys(
   (JSON.parse(readFileSync(MANIFEST, "utf8")) as { operations: object })
@@ -3540,4 +3546,321 @@ test.each(acceptance)(
     );
   },
   120_000,
+);
+
+const LANE_REQUEST = "00000000-0000-4000-8000-000000000008";
+const LANE_APPROVAL = {
+  request: LANE_REQUEST,
+  scope: { id: "work-1" },
+  expiresAt: iso(NOW + 60_000),
+  url: `${fx.ORIGIN}/lane-approval/${LANE_REQUEST}`,
+};
+const LANE_CONTROL = { incarnation: "cloud-1", epoch: 2, stopped: true };
+const laneRequired = (result: object = LANE_APPROVAL) =>
+  fx.json(
+    {
+      ok: false,
+      op: "lane.resume",
+      status: "FAIL",
+      error: {
+        code: "APPROVAL_REQUIRED",
+        message: "Fresh owner approval is required",
+        retry: "never",
+      },
+      result,
+      warnings: [],
+    },
+    409,
+  );
+const laneContext = (r: Rig) => r.request("lane.control", {}).context;
+
+for (const [name, op, input, result, dryRun] of [
+  ["stop", "lane.stop", { id: "forge-1" }, LANE_CONTROL, false],
+  ["stop all", "lane.stop", { all: true }, LANE_CONTROL, false],
+  ["control", "lane.control", {}, LANE_CONTROL, false],
+  [
+    "approved resume",
+    "lane.resume",
+    { id: "forge-1", approval: { request: LANE_REQUEST } },
+    { resumed: "work-1" },
+    false,
+  ],
+  ["dry stop", "lane.stop", { all: true }, LANE_CONTROL, true],
+] as const)
+  test(
+    `bound lane ${name} uses one cloud request without touching local state or approvals`,
+    () =>
+      using({ steps: [() => answer(result, op)] }, async (r) => {
+        const before = inventory(r.s.dir);
+        const resultEnvelope = await r.assembly.catalog.invoke(
+          r.request(op, input, { dryRun }),
+        );
+        expect(resultEnvelope).toMatchObject({
+          ok: true,
+          status: "OK",
+          result,
+        });
+        expect(exitCode(resultEnvelope)).toBe(0);
+        expect(r.net.calls).toHaveLength(1);
+        expect(r.net.calls[0]!.body).toMatchObject({
+          op,
+          input,
+          ...(dryRun ? { dryRun: true } : {}),
+        });
+        expect(r.confirm).not.toHaveBeenCalled();
+        expect(inventory(r.s.dir)).toEqual(before);
+      }),
+    30_000,
+  );
+
+for (const surface of ["CLI", "MCP catalog", "MCP direct"] as const)
+  test(
+    `bound resume keeps the cloud approval request and link through ${surface}`,
+    () =>
+      using({ steps: [() => laneRequired()] }, async (r) => {
+        const before = inventory(r.s.dir);
+        const input = { id: "forge-1" };
+        const context = laneContext(r);
+        let result: ResultEnvelope;
+        if (surface === "CLI") {
+          const cli = await runCli(
+            r.assembly.catalog,
+            ["lane", "resume", "forge-1"],
+            { caller: "agent", context },
+          );
+          expect(cli.exitCode).toBe(1);
+          expect(cli.stdout).toContain(LANE_REQUEST);
+          expect(cli.stdout).toContain(LANE_APPROVAL.url);
+          result = cli.envelope;
+        } else {
+          const mcp = createMcpHandlers(
+            r.assembly.catalog,
+            { expose: ["lane"] },
+            { context },
+          );
+          result = (await mcp.callTool(
+            surface === "MCP direct"
+              ? mcpToolName("lane.resume")!
+              : "catalog_call",
+            surface === "MCP direct" ? input : { op: "lane.resume", input },
+          ))!;
+        }
+        expect(result).toMatchObject({
+          ok: false,
+          status: "FAIL",
+          error: { code: "APPROVAL_REQUIRED" },
+          result: LANE_APPROVAL,
+        });
+        expect(exitCode(result)).toBe(1);
+        expect(r.net.calls).toHaveLength(1);
+        expect(r.confirm).not.toHaveBeenCalled();
+        expect(inventory(r.s.dir)).toEqual(before);
+      }),
+    30_000,
+  );
+
+for (const [name, op, input, dryRun, code, exit] of [
+  [
+    "local reply",
+    "lane.resume",
+    {
+      all: true,
+      approval: {
+        request: LANE_REQUEST,
+        quote: "yes",
+        source: { harness: "fixture", thread: "fixture" },
+      },
+    },
+    false,
+    "INPUT_INVALID",
+    6,
+  ],
+  [
+    "quote alone",
+    "lane.resume",
+    { all: true, approval: { request: LANE_REQUEST, quote: "yes" } },
+    false,
+    "INPUT_INVALID",
+    6,
+  ],
+  [
+    "source alone",
+    "lane.resume",
+    {
+      all: true,
+      approval: {
+        request: LANE_REQUEST,
+        source: { harness: "fixture", thread: "fixture" },
+      },
+    },
+    false,
+    "INPUT_INVALID",
+    6,
+  ],
+  ["dry resume", "lane.resume", { all: true }, true, "UNAVAILABLE", 1],
+  ["dry control", "lane.control", {}, true, "UNAVAILABLE", 1],
+  ["status", "lane.status", {}, false, "INPUT_INVALID", 6],
+] as const)
+  test(
+    `bound lane ${name} is refused before HTTP and leaves local approvals unchanged`,
+    () =>
+      using({}, async (r) => {
+        const before = inventory(r.s.dir);
+        const result = await r.assembly.catalog.invoke(
+          r.request(op, input, { dryRun }),
+        );
+        expect(failed(result, code)).toBe(exit);
+        expect(r.net.calls).toHaveLength(0);
+        expect(r.confirm).not.toHaveBeenCalled();
+        expect(inventory(r.s.dir)).toEqual(before);
+      }),
+    30_000,
+  );
+
+for (const [name, result] of [
+  [
+    "another origin",
+    {
+      ...LANE_APPROVAL,
+      url: `${fx.OTHER_ORIGIN}/lane-approval/${LANE_REQUEST}`,
+    },
+  ],
+  [
+    "http",
+    { ...LANE_APPROVAL, url: LANE_APPROVAL.url.replace("https:", "http:") },
+  ],
+  [
+    "another path",
+    { ...LANE_APPROVAL, url: `${fx.ORIGIN}/login/${LANE_REQUEST}` },
+  ],
+  [
+    "another request in path",
+    {
+      ...LANE_APPROVAL,
+      url: `${fx.ORIGIN}/lane-approval/00000000-0000-4000-8000-000000000009`,
+    },
+  ],
+  ["missing request", { ...LANE_APPROVAL, request: undefined }],
+  ["invalid expiry", { ...LANE_APPROVAL, expiresAt: "tomorrow" }],
+  ["an extra field", { ...LANE_APPROVAL, extra: true }],
+  [
+    "success with another origin",
+    {
+      ...LANE_APPROVAL,
+      url: `${fx.OTHER_ORIGIN}/lane-approval/${LANE_REQUEST}`,
+    },
+  ],
+  [
+    "success with http",
+    { ...LANE_APPROVAL, url: LANE_APPROVAL.url.replace("https:", "http:") },
+  ],
+  [
+    "success with another path",
+    { ...LANE_APPROVAL, url: `${fx.ORIGIN}/login/${LANE_REQUEST}` },
+  ],
+] as const)
+  test(
+    `bound resume refuses an invalid approval result with ${name}`,
+    () =>
+      using(
+        {
+          steps: [
+            () =>
+              name.startsWith("success")
+                ? answer(result, "lane.resume")
+                : laneRequired(result),
+          ],
+        },
+        async (r) => {
+          const before = inventory(r.s.dir);
+          expect(
+            failed(
+              await r.assembly.catalog.invoke(
+                r.request("lane.resume", { all: true }),
+              ),
+              "UNAVAILABLE",
+            ),
+          ).toBe(1);
+          expect(r.net.calls).toHaveLength(1);
+          expect(inventory(r.s.dir)).toEqual(before);
+        },
+      ),
+    30_000,
+  );
+
+for (const op of ["lane.stop", "lane.control", "lane.resume"] as const)
+  for (const bad of ["malformed", "outage"] as const)
+    test(
+      `bound ${op} fails closed on ${bad} without local fallback`,
+      () =>
+        using(
+          {
+            steps: [
+              () => {
+                if (bad === "outage") throw new Error("offline");
+                return answer({ invalid: true }, op);
+              },
+            ],
+          },
+          async (r) => {
+            const before = inventory(r.s.dir);
+            const input = op === "lane.control" ? {} : { all: true };
+            expect(
+              failed(
+                await r.assembly.catalog.invoke(r.request(op, input)),
+                "UNAVAILABLE",
+              ),
+            ).toBe(1);
+            expect(r.net.calls).toHaveLength(1);
+            expect(inventory(r.s.dir)).toEqual(before);
+          },
+        ),
+      30_000,
+    );
+
+test(
+  "unbound lane stop, control and relayed resume keep their local approval path",
+  () =>
+    using({ bind: false, creds: false, sentinel: false }, async (r) => {
+      const call = (op: string, input: Record<string, unknown>) =>
+        r.assembly.catalog.invoke(r.request(op, input));
+      expect(await call("lane.stop", { all: true })).toMatchObject({
+        ok: true,
+      });
+      expect(await call("lane.control", {})).toMatchObject({
+        ok: false,
+        error: {
+          code: "UNAVAILABLE",
+          message: "Lane control requires a cloud-bound project",
+        },
+      });
+      const required = await call("lane.resume", { all: true });
+      expect(required).toMatchObject({
+        ok: false,
+        error: { code: "APPROVAL_REQUIRED" },
+      });
+      const approval = approvalReply(required, {
+        harness: "fixture",
+        thread: "fixture",
+      });
+      expect(
+        await call("lane.resume", {
+          all: true,
+          approval: { request: approval.request },
+        }),
+      ).toMatchObject({ ok: false, error: { code: "APPROVAL_REQUIRED" } });
+      expect(await call("lane.resume", { all: true, approval })).toMatchObject({
+        ok: true,
+        result: { resumed: "all" },
+      });
+      expect(await call("lane.control", {})).toMatchObject({
+        ok: false,
+        error: {
+          code: "UNAVAILABLE",
+          message: "Lane control requires a cloud-bound project",
+        },
+      });
+      expect(r.net.calls).toHaveLength(0);
+    }),
+  30_000,
 );
