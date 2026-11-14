@@ -12,6 +12,62 @@ export interface BoundProject {
   readonly identity: string;
   readonly project: string;
 }
+export interface BoundProgress {
+  actions: number;
+  records: number;
+  review: number;
+  ci: number;
+  started: number;
+  pending: boolean;
+  head?: string;
+  verdict?: { head: string; verdict: "MERGE" | "FIX"; reviewer: string };
+  ask?: {
+    reason: string;
+    releaseTotal: string;
+    default: string;
+    answer?: string;
+  };
+}
+const shape = (value: unknown, required: string[], optional: string[] = []) =>
+  !!value &&
+  typeof value === "object" &&
+  !Array.isArray(value) &&
+  required.every((key) => Object.hasOwn(value, key)) &&
+  Object.keys(value).every((key) => [...required, ...optional].includes(key));
+const text = (value: unknown) =>
+  typeof value === "string" && value.trim().length > 0 && value.length <= 2000;
+const head = (value: unknown) =>
+  typeof value === "string" && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(value);
+export function validBoundProgress(value: unknown): value is BoundProgress {
+  if (
+    !shape(
+      value,
+      ["actions", "records", "review", "ci", "started", "pending"],
+      ["head", "verdict", "ask"],
+    )
+  )
+    return false;
+  const p = value as BoundProgress;
+  return (
+    [p.actions, p.records, p.review, p.ci, p.started].every(
+      (n) => Number.isSafeInteger(n) && n >= 0,
+    ) &&
+    typeof p.pending === "boolean" &&
+    (!p.pending || p.actions > 0) &&
+    (p.head === undefined || head(p.head)) &&
+    (p.verdict === undefined ||
+      (shape(p.verdict, ["head", "verdict", "reviewer"]) &&
+        head(p.verdict.head) &&
+        p.verdict.head === p.head &&
+        ["MERGE", "FIX"].includes(p.verdict.verdict) &&
+        text(p.verdict.reviewer))) &&
+    (p.ask === undefined ||
+      (shape(p.ask, ["reason", "releaseTotal", "default"], ["answer"]) &&
+        p.pending &&
+        [p.ask.reason, p.ask.releaseTotal, p.ask.default].every(text) &&
+        (p.ask.answer === undefined || text(p.ask.answer))))
+  );
+}
 export interface BoundLaneRecord {
   readonly version: 1;
   readonly id: string;
@@ -27,6 +83,7 @@ export interface BoundLaneRecord {
   readonly active: boolean;
   readonly releaseNeeded?: boolean;
   readonly releaseRequestId?: string;
+  readonly progress?: BoundProgress;
 }
 export const boundLaneKey = (project: BoundProject, id = "") =>
   `bound-lane:${JSON.stringify([project.origin, project.identity, project.project])}:${id}`;
@@ -48,6 +105,7 @@ export function readBoundLane(value: unknown, id: string): BoundLaneRecord {
           "active",
           "releaseNeeded",
           "releaseRequestId",
+          "progress",
         ].includes(key),
     ) ||
     record.id !== id ||
@@ -57,6 +115,7 @@ export function readBoundLane(value: unknown, id: string): BoundLaneRecord {
     record.cloudId.match(/^[a-z0-9]+(?:-[a-z0-9]+)*-(\d+)$/)?.[1] !==
       id.slice(5) ||
     typeof record.active !== "boolean" ||
+    (record.progress !== undefined && !validBoundProgress(record.progress)) ||
     (record.releaseNeeded !== undefined &&
       typeof record.releaseNeeded !== "boolean") ||
     (record.releaseRequestId !== undefined &&

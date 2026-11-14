@@ -41,7 +41,12 @@ import {
   lockHostIdentity,
 } from "../src/adapters/fs/clone-files.ts";
 import { setTimeout as delay } from "node:timers/promises";
-import { interruptLaneRuns, laneHistory, laneRun } from "./lane-run.ts";
+import {
+  interruptLaneRuns,
+  laneHistory,
+  laneRun,
+  refuseBoundRunner,
+} from "./lane-run.ts";
 import { laneTier } from "./lane-tier.ts";
 import { lockLaneRegistry } from "./lane-registry.ts";
 import { runCommand } from "./run-command.ts";
@@ -437,6 +442,7 @@ async function laneAuto(
   try {
     const detach = argv.includes("--detach"),
       args = argv.filter((arg) => arg !== "--detach");
+    refuseBoundRunner(context.configRoot);
     const [id, flag, capText = "2", ...extra] = args;
     if (
       !id ||

@@ -1433,7 +1433,7 @@ for (const [name, variants] of [
                 ok: true,
                 result: {
                   kind: "ask-owner",
-                  ask: expect.stringContaining("400 lines"),
+                  ask: expect.stringContaining("400 lines") as unknown,
                 },
               });
               if (variant === "held answer") {

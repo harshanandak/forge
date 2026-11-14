@@ -5,15 +5,21 @@ import {
   boundLaneRead,
   boundLaneStart,
   boundLaneRelease,
+  boundLaneProgress,
+  type BoundProgressInput,
   type BoundCommand,
 } from "../blocks/work/bound-lane.ts";
 import type { BoundProject } from "../blocks/work/bound-lane-state.ts";
 import type { LocalState } from "./state.ts";
 import type { AssemblyProviders } from "./providers.ts";
-import { writeBoundLane } from "../blocks/work/bound-lane-state.ts";
+import {
+  boundLaneKey,
+  writeBoundLane,
+} from "../blocks/work/bound-lane-state.ts";
 import { nodeDeviceIdentity } from "../adapters/fs/device-identity.ts";
 import { wireDeviceId } from "./wire-device.ts";
 import { ForgeFailure } from "../contract/failure.ts";
+const progressWrites = new Map<string, Promise<unknown>>();
 
 /** Device state is opened read-only, separately from the public operation's project context. */
 export async function coordinateLane(
@@ -33,7 +39,11 @@ export async function coordinateLane(
     get: (key: string) => owner.get("forge/work", key),
     list: (prefix?: string) => owner.list("forge/work", prefix),
   };
-  if (["lane.start", "lane.release"].includes(flight.operation.declaredOp)) {
+  if (
+    ["lane.start", "lane.release", "lane.next", "lane.record"].includes(
+      flight.operation.declaredOp,
+    )
+  ) {
     const local =
       options.env.FORGE_DEVICE_ID?.trim() ||
       nodeDeviceIdentity(options.deviceRoot).read();
@@ -56,6 +66,32 @@ export async function coordinateLane(
         record,
         revision,
       );
+    if (["lane.next", "lane.record"].includes(flight.operation.declaredOp)) {
+      // Serialize this device's reservations; StateOwner revisions fence other processes.
+      const key = boundLaneKey(project);
+      const pending = (progressWrites.get(key) ?? Promise.resolve())
+        .catch(() => {})
+        .then(() =>
+          boundLaneProgress(
+            flight.operation.declaredOp,
+            flight.request.input as BoundProgressInput,
+            flight.request.context,
+            wireDeviceId(local),
+            options.now,
+            project,
+            state,
+            command,
+            save,
+            flight.config,
+          ),
+        );
+      progressWrites.set(key, pending);
+      try {
+        return await pending;
+      } finally {
+        if (progressWrites.get(key) === pending) progressWrites.delete(key);
+      }
+    }
     if (flight.operation.declaredOp === "lane.release")
       return boundLaneRelease(
         flight.request.input as { id: string },

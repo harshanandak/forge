@@ -15,6 +15,14 @@ import {
 import { delimiter, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { laneTier, type LaneTier, type ReviewTier } from "./lane-tier.ts";
+import { readBinding } from "../src/assembly/cloud-profile.ts";
+
+export function refuseBoundRunner(root: string) {
+  if (readBinding(root))
+    throw new Error(
+      "Bound lane dispatch requires the fresh control boundary in PR 2b.",
+    );
+}
 
 export type RunOptions = {
   worktree: string;
@@ -497,6 +505,7 @@ export async function laneRun(
   try {
     const [id, ...flags] = argv,
       values = new Map<string, string>();
+    refuseBoundRunner(context.configRoot);
     for (let i = 0; i < flags.length; i += 2) {
       const key = flags[i]!,
         value = flags[i + 1];

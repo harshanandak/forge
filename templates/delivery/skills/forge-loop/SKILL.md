@@ -27,6 +27,11 @@ Every wake: read, route, stop. Read the chosen skill before acting.
 
 ## Read on demand
 
+- [bound-lanes.md](bound-lanes.md): Cloud-bound device progress.
+  Read before bound lane start, next or record.
+  Next reserves a local action and never grants dispatch permission.
+  Bound runner dispatch remains refused until the fresh control boundary is installed.
+  Local answers, counters and verdicts never override cloud authority.
 - [session.md](session.md): Identity.
 - [watching.md](watching.md): PR state.
 - [dispatch.md](dispatch.md): Workers.

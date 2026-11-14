@@ -110,9 +110,16 @@ export function cloudRoute(
 function unserved(declared: string, input: unknown): ForgeFailure | undefined {
   if (
     BOUND_LANES.has(declared) &&
-    (!["lane.show", "lane.status", "lane.start", "lane.release"].includes(
-      declared,
-    ) ||
+    (![
+      "lane.show",
+      "lane.status",
+      "lane.start",
+      "lane.release",
+      "lane.next",
+      "lane.record",
+    ].includes(declared) ||
+      (declared === "lane.next" && !(input as { id?: string })?.id) ||
+      (declared === "lane.record" && !(input as { id?: string })?.id) ||
       (typeof input === "object" && input !== null && "attempt" in input))
   )
     return notServed(declared);
