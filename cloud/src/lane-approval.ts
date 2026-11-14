@@ -33,7 +33,13 @@ export interface LaneApproval extends ApprovalRequired {
   readonly device: string;
   readonly session: string | null;
   readonly token: string;
-  readonly status: "pending" | "expired" | "stale" | "spent";
+  readonly status:
+    "pending" | "approved" | "denied" | "expired" | "stale" | "spent";
+  readonly decision?: {
+    readonly issuer: string;
+    readonly subject: string;
+    readonly at: string;
+  };
 }
 
 /** Pure read: an old request never becomes current again after expiry or a new stop. */
@@ -42,11 +48,11 @@ export function laneApprovalStatus(
   control: LaneControl,
   now: number,
 ): LaneApproval["status"] {
-  if (row.status !== "pending") return row.status;
+  if (row.status !== "pending" && row.status !== "approved") return row.status;
   if (!(Date.parse(row.expiresAt) > now)) return "expired";
   return row.incarnation !== control.incarnation || row.epoch !== control.epoch
     ? "stale"
-    : "pending";
+    : row.status;
 }
 
 export function checkedApproval(value: unknown): ApprovalRequired {
