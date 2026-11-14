@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { createSqliteStore } from "../src/adapters/store-sqlite/index.ts";
+import { copyPrivateFile } from "../src/adapters/store-sqlite/file-ops.ts";
 import { privateFileGuard } from "../src/adapters/store-sqlite/private-files.ts";
 import { windowsPrivateFiles } from "../src/adapters/process/windows-acl.ts";
 import { ForgeFailure } from "../src/contract/failure.ts";
@@ -70,10 +71,8 @@ async function opened(
   readOnly: boolean,
   handles: OwnedHandle<SqlDatabase>[],
 ): Promise<SqlDatabase> {
-  const result = await createSqliteStore(process.cwd()).open({
-    path,
-    readOnly,
-  });
+  const store = createSqliteStore(process.cwd());
+  const result = await store.open({ path, readOnly });
   if (!result.ok) throw new Error("Cannot open offline scratch or backup");
   handles.push(result.handle);
   const db = result.handle.value;
@@ -126,14 +125,22 @@ export async function convert(options: Options) {
     manifest = sourceManifest(options.manifest),
     limits = options.limits ?? dump.limitsFrom({});
   const handles: OwnedHandle<SqlDatabase>[] = [];
+  let retained: string | undefined;
   const clock = { now: () => Date.parse(manifest.at) };
-  const checkPin = async () => {
-    if ((await digest(backup)) !== manifest.sha256) invalid();
+  const checkPin = async (file = backup) => {
+    if ((await digest(file)) !== manifest.sha256) invalid();
   };
   try {
     isolatedBackup(backup);
     await checkPin();
-    const source = await opened(resolve(backup), true, handles);
+    fs.mkdirSync(out, { mode: 0o700 });
+    if (process.platform === "win32")
+      privateFileGuard(windowsPrivateFiles()).directory(out, true);
+    const copy = join(fs.realpathSync(out), ".source.sqlite");
+    copyPrivateFile(backup, copy);
+    retained = copy;
+    await checkPin(copy);
+    const source = await opened(copy, true, handles);
     source.exec("BEGIN");
     const integrity = source.all("PRAGMA integrity_check");
     if (integrity.length !== 1 || integrity[0]?.integrity_check !== "ok")
@@ -164,9 +171,6 @@ export async function convert(options: Options) {
     });
     const owner = new StateOwner(target, clock);
     owner.initialize([domain]);
-    fs.mkdirSync(out, { mode: 0o700 });
-    if (process.platform === "win32")
-      privateFileGuard(windowsPrivateFiles()).directory(out, true);
     const pages: { name: string; sha256: string; bytes: number }[] = [];
     for (const page of state.pagesOf(scratch, limits)) {
       const name = `page-${String(page.page).padStart(4, "0")}.json`,
@@ -224,6 +228,7 @@ export async function convert(options: Options) {
     return bundle;
   } finally {
     await Promise.all(handles.reverse().map(async (handle) => handle.close()));
+    if (retained) fs.unlinkSync(retained);
   }
 }
 export async function run(options: Options) {
