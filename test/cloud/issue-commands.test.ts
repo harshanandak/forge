@@ -96,6 +96,7 @@ const vars = {
 const needsId = "input must be { id } with a valid issue id";
 interface Envelope {
   ok: boolean;
+  status?: string;
   op?: string;
   result?: unknown;
   error?: { code: string; message: string };
@@ -642,6 +643,7 @@ for (const mode of [
   "final revoke",
   "epoch expiry",
   "config changed",
+  "transaction expiry",
 ] as const)
   test(`state commit final authority table: ${mode}`, async () => {
     const namespaces = ["forge/memory"];
@@ -692,16 +694,22 @@ for (const mode of [
       }
       let before = f.stable();
       const successes = f.successes();
-      if (mode === "final revoke" || mode === "config changed") {
+      if (
+        mode === "final revoke" ||
+        mode === "config changed" ||
+        mode === "transaction expiry"
+      ) {
         const transaction = f.storage.transactionSync.bind(f.storage);
         spyOn(f.storage, "transactionSync").mockImplementation((run) => {
           if (mode === "final revoke") revoke(f, f.token);
-          else namespaces.push("other/state");
+          else if (mode === "config changed") namespaces.push("other/state");
+          else f.advance(1000);
           before = f.stable();
           return transaction(run);
         });
       }
       const got = await f.commit(input);
+      if (mode === "transaction expiry") expect(f.now()).toBe(start + 1000);
       const code =
         mode === "valid"
           ? undefined
@@ -726,6 +734,7 @@ for (const mode of [
             ],
       );
       if (mode !== "valid") {
+        expect(got.json.status).toBe("FAIL");
         expect(f.stable()).toBe(before);
         expect(f.successes()).toBe(successes);
       }

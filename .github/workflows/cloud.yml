@@ -66,6 +66,7 @@ jobs:
               ("namespace denial", "cloud/src/state-access.ts", 'namespace === "forge/work" ||', "false ||", "state commit conflict table: namespace"),
               ("final token", "cloud/src/command-write.ts", "    // No await separates this token check from the work and receipt commit.\n    recheck();", "", "state commit final authority table: final revoke"),
               ("replay fence", "cloud/src/state-commit.ts", "    () => checkFence(),\n  );", "    undefined,\n  );", "state commit final authority table: replay expired"),
+              ("final fence forwarding", "cloud/src/state-commit.ts", "        ...(fence === undefined ? {} : { fence }),", "", "state commit final authority table: transaction expiry"),
               ("read version", "cloud/src/state-commit.ts", "expected.epoch !== epoch || expected.revision !== revision", "false", "state commit conflict table: phantom"),
           ]
           for name, file, before, after, test in rows:
