@@ -119,7 +119,10 @@ export function createCloudLeaseClient(
         : undefined;
     throw new ForgeFailure({
       code: bad.code,
-      message: held ?? `The Forge cloud refused the request (${bad.code}).`,
+      message:
+        held ??
+        bad.message ??
+        `The Forge cloud refused the request (${bad.code}).`,
       retry: bad.code.startsWith("LEASE_") ? "reconcile_first" : "never",
       ...(bad.lease === undefined ? {} : { lease: bad.lease }),
       ...(bad.observed === undefined ? {} : { observed: bad.observed }),

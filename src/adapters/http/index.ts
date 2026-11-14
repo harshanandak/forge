@@ -1,6 +1,6 @@
 // Outbound HTTPS to one Forge cloud origin and project: the device login routes and the lease routes.
 // It follows no redirect, sends a bearer token only on a lease request and only in the Authorization
-// header, bounds every request by a deadline and a size, and never repeats server text or the token.
+// header, bounds every request by a deadline and a size, and keeps only checked refusal details, never the token.
 import { request } from "node:https";
 import { Readable } from "node:stream";
 import { ForgeFailure } from "../../contract/failure.ts";
@@ -387,12 +387,12 @@ function decodeCommand(
     return { kind: "ok", result };
   }
   const code = object(body.error)?.code as CommandRefusalCode;
+  const linked =
+    code === "APPROVAL_REQUIRED" &&
+    keys === "error,ok,op,result,status,warnings";
   if (
     body.ok !== false ||
-    keys !==
-      (code === "APPROVAL_REQUIRED"
-        ? "error,ok,op,result,status,warnings"
-        : "error,ok,status,warnings") ||
+    (keys !== "error,ok,status,warnings" && !linked) ||
     body.status !== "FAIL" ||
     !Array.isArray(body.warnings) ||
     typeof code !== "string" ||
@@ -400,7 +400,7 @@ function decodeCommand(
     COMMAND_STATUS[code] !== status
   )
     throw bad();
-  if (code === "APPROVAL_REQUIRED") {
+  if (linked) {
     if (op !== "lane.resume" || body.op !== op || result === undefined)
       throw bad();
     return { kind: "approval_required", result };

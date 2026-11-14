@@ -3613,49 +3613,97 @@ for (const [name, op, input, result, dryRun] of [
     30_000,
   );
 
-for (const surface of ["CLI", "MCP catalog", "MCP direct"] as const)
+for (const [surface, plain] of [
+  ["CLI", false],
+  ["MCP catalog", false],
+  ["MCP direct", false],
+  ["CLI", true],
+  ["MCP catalog", true],
+  ["MCP direct", true],
+] as const)
   test(
-    `bound resume keeps the cloud approval request and link through ${surface}`,
+    `bound resume keeps the cloud approval ${plain ? "pending, denied or expired refusal without a link" : "request and link"} through ${surface}`,
     () =>
-      using({ steps: [() => laneRequired()] }, async (r) => {
-        const before = inventory(r.s.dir);
-        const input = { id: "forge-1" };
-        const context = laneContext(r);
-        let result: ResultEnvelope;
-        if (surface === "CLI") {
-          const cli = await runCli(
-            r.assembly.catalog,
-            ["lane", "resume", "forge-1"],
-            { caller: "agent", context },
-          );
-          expect(cli.exitCode).toBe(1);
-          expect(cli.stdout).toContain(LANE_REQUEST);
-          expect(cli.stdout).toContain(LANE_APPROVAL.url);
-          result = cli.envelope;
-        } else {
-          const mcp = createMcpHandlers(
-            r.assembly.catalog,
-            { expose: ["lane"] },
-            { context },
-          );
-          result = (await mcp.callTool(
-            surface === "MCP direct"
-              ? mcpToolName("lane.resume")!
-              : "catalog_call",
-            surface === "MCP direct" ? input : { op: "lane.resume", input },
-          ))!;
-        }
-        expect(result).toMatchObject({
-          ok: false,
-          status: "FAIL",
-          error: { code: "APPROVAL_REQUIRED" },
-          result: LANE_APPROVAL,
-        });
-        expect(exitCode(result)).toBe(1);
-        expect(r.net.calls).toHaveLength(1);
-        expect(r.confirm).not.toHaveBeenCalled();
-        expect(inventory(r.s.dir)).toEqual(before);
-      }),
+      using(
+        {
+          steps: [
+            () =>
+              plain
+                ? fx.json(
+                    {
+                      ok: false,
+                      status: "FAIL",
+                      warnings: [],
+                      error: {
+                        code: "APPROVAL_REQUIRED",
+                        message:
+                          "Fresh approved owner authorization is required",
+                        retry: "never",
+                      },
+                    },
+                    409,
+                  )
+                : laneRequired(),
+          ],
+        },
+        async (r) => {
+          const before = inventory(r.s.dir);
+          const input = {
+            id: "forge-1",
+            ...(plain ? { approval: { request: LANE_REQUEST } } : {}),
+          };
+          const context = laneContext(r);
+          let result: ResultEnvelope;
+          if (surface === "CLI") {
+            const cli = await runCli(
+              r.assembly.catalog,
+              plain
+                ? ["lane", "resume", "--input", JSON.stringify(input)]
+                : ["lane", "resume", "forge-1"],
+              { caller: "agent", context },
+            );
+            expect(cli.exitCode).toBe(1);
+            if (!plain) {
+              expect(cli.stdout).toContain(LANE_REQUEST);
+              expect(cli.stdout).toContain(LANE_APPROVAL.url);
+            }
+            result = cli.envelope;
+          } else {
+            const mcp = createMcpHandlers(
+              r.assembly.catalog,
+              { expose: ["lane"] },
+              { context },
+            );
+            result = (await mcp.callTool(
+              surface === "MCP direct"
+                ? mcpToolName("lane.resume")!
+                : "catalog_call",
+              surface === "MCP direct" ? input : { op: "lane.resume", input },
+            ))!;
+          }
+          expect(result).toMatchObject({
+            ok: false,
+            status: "FAIL",
+            error: { code: "APPROVAL_REQUIRED" },
+            ...(plain
+              ? {
+                  error: {
+                    code: "APPROVAL_REQUIRED",
+                    message: "Fresh approved owner authorization is required",
+                  },
+                }
+              : { result: LANE_APPROVAL }),
+          });
+          if (plain) {
+            expect(result).not.toHaveProperty("result");
+            expect(JSON.stringify(result)).not.toContain("https://");
+          }
+          expect(exitCode(result)).toBe(1);
+          expect(r.net.calls).toHaveLength(1);
+          expect(r.confirm).not.toHaveBeenCalled();
+          expect(inventory(r.s.dir)).toEqual(before);
+        },
+      ),
     30_000,
   );
 
