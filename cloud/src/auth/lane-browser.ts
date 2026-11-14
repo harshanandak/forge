@@ -193,15 +193,15 @@ export async function laneRoute(
     },
   );
   // Signed, cookie-bound tickets keep preview read-only; redemption happens only on POST.
-  const ticketFor = async (action: string) => {
+  const ticketFor = async (action: string, nonce = token()) => {
     const mac = await crypto.subtle.sign(
       "HMAC",
       key,
       new TextEncoder().encode(
-        JSON.stringify([`lane.${action}`, row, browser]),
+        JSON.stringify([`lane.${action}`, row, browser, nonce]),
       ),
     );
-    return encode(new Uint8Array(mac));
+    return `${nonce}.${encode(new Uint8Array(mac))}`;
   };
   if (request.method === "GET") {
     const tickets = await Promise.all([
@@ -221,6 +221,7 @@ export async function laneRoute(
   }
   const action = path[2];
   const form = new URLSearchParams(body);
+  const ticket = (form.get("ticket") ?? "").split(".");
   if (
     (action !== "approve" && action !== "deny") ||
     request.headers.get("Origin") !== origin ||
@@ -229,10 +230,11 @@ export async function laneRoute(
     jar === undefined ||
     [...form.keys()].length !== 1 ||
     form.getAll("ticket").length !== 1 ||
-    !SECRET.test(form.get("ticket") ?? "")
+    ticket.length !== 2 ||
+    !ticket.every((part) => SECRET.test(part))
   )
     return refused();
-  const expected = await ticketFor(action);
+  const expected = await ticketFor(action, ticket[0]);
   if (!same(expected, form.get("ticket")!) || !fresh()) return refused();
   const { upstream, redemption } = options;
   if (upstream === undefined || redemption === undefined) throw unavailable();

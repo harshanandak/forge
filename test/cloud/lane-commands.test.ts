@@ -1060,3 +1060,29 @@ test.each(["approve", "deny"])(
   },
   10_000,
 );
+
+test.each(["approve", "deny"])(
+  "reloading the same browser permits a new %s start without replaying the old ticket",
+  async (action) => {
+    const f = await browserFixture();
+    try {
+      const oldTicket = pageTicket(f.shown, action);
+      expect((await f.submit(action)).status).toBe(302);
+      const before = f.snapshot(),
+        writes = f.writes();
+      const reloaded = await f.browser(f.path, undefined, { Cookie: f.cookie });
+      expect(reloaded.status).toBe(200);
+      expect(pageCookie(reloaded)).toBe(f.cookie);
+      expect([f.snapshot(), f.writes()]).toEqual([before, writes]);
+      const newTicket = pageTicket(reloaded, action);
+      expect(newTicket).toMatch(/^[A-Za-z0-9_-]{43}\.[A-Za-z0-9_-]{43}$/);
+      expect(newTicket).not.toBe(oldTicket);
+      expect((await f.submit(action, newTicket)).status).toBe(302);
+      expect((await f.submit(action, oldTicket)).status).toBe(400);
+      expect(f.begun).toHaveLength(2);
+    } finally {
+      f.close();
+    }
+  },
+  10_000,
+);
