@@ -1,7 +1,15 @@
-import { expect, setDefaultTimeout, test } from "bun:test";
-import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { expect, setDefaultTimeout, spyOn, test } from "bun:test";
+import {
+  cpSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { createSqliteStore } from "../../src/adapters/store-sqlite/index.ts";
 import * as levelsModule from "../../src/assembly/levels.ts";
 import {
@@ -10,9 +18,16 @@ import {
 } from "../../src/assembly/providers.ts";
 import { createStateClient } from "../../src/assembly/state-client.ts";
 import { LocalState } from "../../src/assembly/state.ts";
+import { createAssembly, localContext } from "../../src/assembly/index.ts";
+import * as asyncModule from "../../src/assembly/async-state-client.ts";
+import type {
+  AsyncStateClient,
+  BlockManifest,
+} from "../../src/contract/author.ts";
 import { failureEnvelope } from "../../src/core/runtime/index.ts";
 import { exitCode } from "../../src/surface/result.ts";
 import { loadEntry, memoryState } from "../blocks/memory/lib.ts";
+import { relay } from "../fixtures/owner-approval.ts";
 
 setDefaultTimeout(30_000);
 const actor = { kind: "human" as const, id: "async-state" };
@@ -252,6 +267,117 @@ const cases: readonly [string, (f: Fixture) => void | Promise<void>][] = [
         services: { state: legacy, levels: legacy },
       });
       expect(added).toMatchObject({ id: "device/note-1" });
+    },
+  ],
+  [
+    "Assembled v2 consumer",
+    async (f) => {
+      const block = join(f.root, "probe");
+      cpSync(
+        resolve(import.meta.dirname, "../../examples/hello-block"),
+        block,
+        { recursive: true },
+      );
+      const manifest = JSON.parse(
+        readFileSync(join(block, "forge.block.json"), "utf8"),
+      ) as BlockManifest;
+      writeFileSync(
+        join(block, "forge.block.json"),
+        JSON.stringify({
+          ...manifest,
+          id: "test/async",
+          requires: [
+            { slot: "records", interface: "forge.state@2" },
+            { slot: "levels", interface: "forge.project-state@2" },
+          ],
+          operations: {
+            "probe.run": {
+              ...manifest.operations["hello.say"],
+              context: "device",
+              effects: ["probe:write"],
+              timeoutMs: 10000,
+            },
+          },
+        }),
+      );
+      for (const file of ["input.schema.json", "output.schema.json"])
+        writeFileSync(join(block, file), "{}");
+      writeFileSync(
+        join(block, "docs.json"),
+        JSON.stringify({
+          operations: {
+            "probe.run": { title: "Probe", summary: "Probe async state." },
+          },
+        }),
+      );
+      writeFileSync(
+        join(block, "index.cjs"),
+        `module.exports={"probe.run":async({services:{records,levels}})=>{
+        const check=value=>{if(!value||typeof value.then!=="function")throw Error("v2 Promise required");return value;};
+        const max=await check(records.max("probe/"));
+        await check(records.put("probe/1","device",{expectRevision:0}));
+        const project=await check(levels.project());
+        await check(project.state.put("probe/1","project",{expectRevision:0}));
+        const peer=await check(levels.peer(project.identity.id));
+        return {max,device:(await check(records.range({limit:1})))[0].value,
+          project:(await check(project.state.range({limit:1})))[0].value,
+          peer:(await check(peer.state.range({limit:1})))[0].value};
+      }};`,
+      );
+      const assembly = await createAssembly({
+        root: f.root,
+        deviceRoot: join(f.root, "device"),
+      });
+      let sequence = 0;
+      const call = (op: string, input: unknown) =>
+        assembly.catalog.invoke({
+          schemaVersion: "forge.invocation/1",
+          requestId: `dispatch-${++sequence}`,
+          op,
+          input,
+          caller: "human",
+          context: localContext(assembly, actor, "async-dispatch"),
+        });
+      try {
+        const added = await call("block.add", { path: "./probe" });
+        expect(added.ok).toBe(true);
+        if (!added.ok) throw Error(JSON.stringify(added));
+        const { digest } = added.result as { digest: string };
+        expect((await relay(call, "block.admit", { digest })).ok).toBe(true);
+        expect(
+          (
+            await relay(call, "config.grant", {
+              digest,
+              effects: ["probe:write"],
+            })
+          ).ok,
+        ).toBe(true);
+        expect(await call("probe.run", {})).toMatchObject({
+          ok: true,
+          status: "OK",
+          result: {
+            max: 0,
+            device: "device",
+            project: "project",
+            peer: "project",
+          },
+        });
+        // Counterfactual: real dispatch returns the v1 client instead of its Promise bridge.
+        const fallback = spyOn(
+          asyncModule,
+          "createLocalAsyncStateClient",
+        ).mockImplementation((client) => client as unknown as AsyncStateClient);
+        try {
+          expect(await call("probe.run", {})).toMatchObject({
+            ok: false,
+            error: { code: "BLOCK_EXECUTION_FAILED" },
+          });
+        } finally {
+          fallback.mockRestore();
+        }
+      } finally {
+        await assembly.close();
+      }
     },
   ],
   [
