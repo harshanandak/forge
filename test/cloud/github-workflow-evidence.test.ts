@@ -126,7 +126,10 @@ for (const [name, path, replacement, code] of cases)
                         id: i + 1,
                       }))
                     : name === "workflows"
-                      ? [fixture.latest, { ...fixture.latest, id: 11 }]
+                      ? [
+                          fixture.latest,
+                          { ...fixture.latest, id: 11, run_number: 4 },
+                        ]
                       : [fixture.latest];
             body = {
               workflow_runs: rows,
@@ -158,7 +161,7 @@ for (const [name, path, replacement, code] of cases)
                     conclusion: "success",
                   };
             if (name === "workflows" && p.split("/").at(-3) === "11")
-              body = { ...(body as object), id: 11 };
+              body = { ...(body as object), id: 11, run_number: 4 };
           } else if (p.split("/").at(-2) === "check-suites")
             body = name === "missing suite" ? null : fixture.suite;
           else if (p.endsWith("/probe")) body = {};
@@ -197,7 +200,7 @@ for (const [name, path, replacement, code] of cases)
       for (const [i, run] of result.value.entries()) {
         expect<unknown>(run).toEqual({
           ...(JSON.parse(
-            `{"repositoryId":7,"appId":77,"workflowId":9,"workflowPath":".github/workflows/ci.yml","workflowDigest":"${digest}","id":${i < 2 ? 10 : 11},"runNumber":3,"headSha":"${merge}","checkSuiteId":20}`,
+            `{"repositoryId":7,"appId":77,"workflowId":9,"workflowPath":".github/workflows/ci.yml","workflowDigest":"${digest}","id":${i < 2 ? 10 : 11},"runNumber":${i < 2 ? 3 : 4},"headSha":"${merge}","checkSuiteId":20}`,
           ) as Record<string, unknown>),
           attempt: (i % 2) + 1,
           status: i === 0 ? "completed" : base.status,

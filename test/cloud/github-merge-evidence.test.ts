@@ -353,7 +353,9 @@ for (const [name, path, value, code] of rows)
         ["budget:abort", "budget:bad-job", "budget:bad-response"].includes(name)
       ) {
         expect(
-          urls.filter((url) => new URL(url).pathname.endsWith("/check-runs")),
+          urls.filter(
+            (url) => new URL(url).pathname.split("/").at(-1) === "check-runs",
+          ),
         ).toHaveLength(name === "budget:bad-job" ? 0 : 1);
       }
       if (name === "budget:client") {
@@ -385,7 +387,9 @@ for (const [name, path, value, code] of rows)
     }
     if (result.ok) {
       expect(
-        urls.filter((url) => new URL(url).pathname.endsWith("/check-runs")),
+        urls.filter(
+          (url) => new URL(url).pathname.split("/").at(-1) === "check-runs",
+        ),
       ).toHaveLength(1);
       expect(result.value.completeness).toBe("complete");
       expect<unknown>(result.value.binding).toEqual(input.binding);
