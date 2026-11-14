@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "required": ["incarnation", "epoch", "stopped"],
+  "properties": {
+    "incarnation": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "epoch": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+    "stopped": { "type": "boolean" },
+    "scope": { "enum": ["all", "issue"] },
+    "since": { "type": "string", "format": "date-time" }
+  },
+  "additionalProperties": false
+}
