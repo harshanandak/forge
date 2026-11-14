@@ -18,6 +18,7 @@ import type {
 import type { SqlDatabase, SqlRow } from "../../src/ports/store.ts";
 import { validateLeaseHolder } from "../../src/generated/validators.ts";
 import {
+  assertRestoreCompatible,
   clearStaged,
   DUMP_FORMAT,
   DUMP_MIGRATION,
@@ -423,6 +424,9 @@ export class Project {
         });
       }
       if (request.method === "POST" && route === "restore") {
+        // Compatibility refusal precedes both restore writes and the refusal cleanup.
+        if (!(await this.#isProvisioned()))
+          assertRestoreCompatible(this.#storage);
         try {
           return await this.#restore(request);
         } catch (error) {

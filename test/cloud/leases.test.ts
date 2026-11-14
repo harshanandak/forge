@@ -812,3 +812,87 @@ for (const mode of ["whole", "paged"] as const)
         }
       }, 30_000);
     }
+
+for (const mode of ["paged", "whole", "malformed"] as const)
+  for (const checkpoint of mode === "malformed" ? [false] : [true, false])
+    test(`staged ${mode} restore with checkpoint=${checkpoint}`, async () => {
+      using source = fixture();
+      const empty = (await source.send("dump")).body.value as Dump;
+      expect((await source.send("restore", empty)).status).toBe(200);
+      const baseline = (await source.send("dump")).body.value as Dump;
+      expect((await source.write("claim", {}, "owner")).status).toBe(200);
+      const dump = (await source.send("dump")).body.value as Dump;
+      const tables = empty.tables;
+      using target = fixture();
+      const first = {
+        format: PAGE_FORMAT,
+        page: 0,
+        last: false,
+        next: "next",
+        tables: dump.tables,
+      };
+      expect((await target.send("restore", first)).status).toBe(200);
+      const marker = await target.storage.get("restore:next");
+      expect(marker).toEqual({ next: 1, format: PAGE_FORMAT });
+      for (const table of ["state_records", "state_events", "state_leases"])
+        expect(target.rows(table).length).toBeGreaterThan(0);
+      if (checkpoint)
+        target.db.run(
+          "INSERT INTO state_checkpoint_header VALUES (1, 1, 'lineage', 1, 20, 1, 20)",
+        );
+      target.reopen();
+      const before = target.snapshot();
+      const changes = target.db.query("SELECT total_changes() AS n");
+      const revision = () =>
+        target.rows("domain_cloud_export")[0]!.revision as number;
+      const savedChanges = changes.get(),
+        savedRevision = revision();
+      const reply = await target.send(
+        "restore",
+        mode === "whole"
+          ? empty
+          : {
+              ...first,
+              page: 1,
+              last: true,
+              next: null,
+              tables: mode === "malformed" ? {} : tables,
+            },
+      );
+      expect(reply.status).toBe(checkpoint || mode === "malformed" ? 400 : 200);
+      if (checkpoint) {
+        expect(reply.body.error).toEqual({
+          code: "INPUT_INVALID",
+          message: "Checkpoint data requires a newer Forge",
+          retry: "never",
+        });
+        expect(target.snapshot()).toBe(before);
+        expect(changes.get()).toEqual(savedChanges);
+      } else {
+        expect(await target.storage.get("restore:next")).toBeUndefined();
+        if (mode === "malformed") {
+          expect(reply.body.error?.code).toBe("INPUT_INVALID");
+          for (const table of Object.keys(dump.tables))
+            expect(target.rows(table)).toEqual([]);
+          expect(revision()).toBeGreaterThan(savedRevision);
+        } else {
+          expect(reply.body.value).toMatchObject({
+            restored: Object.fromEntries(
+              Object.keys(tables).map((t) => [t, 0]),
+            ),
+            ...(mode === "paged" ? { page: 1, done: true } : {}),
+          });
+          const restored = (await target.send("dump")).body.value as Dump;
+          expect(restored.tables).toEqual(
+            mode === "whole"
+              ? baseline.tables
+              : releasedTables(dump.tables, new Date(now).toISOString()),
+          );
+        }
+      }
+      expect((await target.send("status")).body.value).toEqual({
+        initialized: !checkpoint && mode !== "malformed",
+      });
+      if (checkpoint || mode === "malformed")
+        expect(await target.lookup()).toBeNull();
+    }, 30_000);

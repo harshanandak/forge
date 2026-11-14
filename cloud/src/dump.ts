@@ -19,7 +19,11 @@ import {
 } from "../../src/generated/validators.ts";
 import type { SqlDatabase, SqlRow } from "../../src/ports/store.ts";
 import { versioned } from "./issue-request-id.ts";
-import { assertNoCheckpoint } from "../../src/core/state/checkpoint.ts";
+import {
+  assertNoCheckpoint,
+  checkpointTables,
+} from "../../src/core/state/checkpoint.ts";
+import { readOnlyStore, type DurableStorage } from "./store.ts";
 import { assertNoEvidence } from "./evidence-receipts.ts";
 
 export const DUMP_FORMAT = "forge-cloud-dump/2";
@@ -705,6 +709,24 @@ function settleFloor(
   assertLimits(db, limits, "RESTORE_TOO_LARGE", "The restored project");
   db.run(`UPDATE ${COMMAND_RECEIPTS} SET imported=1`);
   freshEpoch(db);
+}
+
+// Check through a read-only view: opening the owner can migrate an incompatible target.
+export function assertRestoreCompatible(storage: DurableStorage): void {
+  const tables = Object.keys(checkpointTables);
+  const statements = [
+    "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+    ...tables.map((table) => `SELECT 1 FROM ${table} LIMIT 1`),
+  ];
+  // A target may predate some checkpoint tables. Any existing one provides the view;
+  // the owner's guard still checks every table and keeps its original refusal.
+  for (const table of tables) {
+    const db = readOnlyStore(storage, table, statements);
+    if (db !== undefined) {
+      assertNoCheckpoint(db);
+      return;
+    }
+  }
 }
 
 /** Writes a dump into an empty project and reads it back in the same transaction; any difference rolls it back. */
