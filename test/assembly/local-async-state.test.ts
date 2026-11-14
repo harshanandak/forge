@@ -165,7 +165,6 @@ const cases: readonly [string, (f: Fixture) => void | Promise<void>][] = [
       const peerRoot = join(f.root, "peer");
       const peerState = new LocalState(
         join(peerRoot, ".forge", "state.sqlite"),
-        f.store,
       );
       f.peers.push(peerState);
       const peer = f.open(peerRoot, true, peerState);
