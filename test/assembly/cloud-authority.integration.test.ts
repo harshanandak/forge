@@ -56,11 +56,7 @@ import * as fx from "./cloud-fixture.ts";
 import * as launch from "../../src/adapters/process/run.ts";
 import * as authority from "../../src/assembly/cloud-binding.ts";
 import { relay } from "../fixtures/owner-approval.ts";
-import {
-  boundLaneKey,
-  readBoundLane,
-  writeBoundLane,
-} from "../../src/blocks/work/bound-lane-state.ts";
+import { boundLaneKey } from "../../src/blocks/work/bound-lane-state.ts";
 import { approvalReply } from "../fixtures/owner-approval.mjs";
 
 setDefaultTimeout(30_000);
@@ -423,47 +419,6 @@ const journal = {
   grant: heldBy(),
   active: true,
 };
-for (const [name, change, revision, code] of [
-  ["new record", {}, 0, "OK"],
-  ["matching revision", {}, 1, "OK"],
-  ["stale revision", {}, 0, "REVISION_CONFLICT"],
-  [
-    "invalid generation",
-    { grant: { ...heldBy(), generation: 0 } },
-    1,
-    "INPUT_CONFLICT",
-  ],
-  ["extra record field", { borrowed: true }, 1, "INPUT_CONFLICT"],
-] as const)
-  test(`device journal writer: ${name}`, async () => {
-    const s = fx.sandbox();
-    const state = new LocalState(join(s.deviceRoot, "records.sqlite"));
-    try {
-      const owner = (await state.open(true))!;
-      const client = owner.client("forge/work", { kind: "agent", id: "a1" });
-      const project = fx.bindingFor();
-      if (name !== "new record") writeBoundLane(client, project, journal, 0);
-      const before = client.events();
-      let result = "OK";
-      try {
-        writeBoundLane(client, project, { ...journal, ...change }, revision);
-      } catch (error) {
-        if (!(error instanceof ForgeFailure)) throw error;
-        result = error.error.code;
-      }
-      expect(result).toBe(code);
-      expect(
-        readBoundLane(
-          client.get(boundLaneKey(project, "work-1"))!.value,
-          "work-1",
-        ).grant,
-      ).toEqual(heldBy());
-      if (code !== "OK") expect(client.events()).toEqual(before);
-    } finally {
-      await state.close();
-      s.close();
-    }
-  });
 for (const change of [
   { identity: fx.OTHER_PROJECT_ID },
   { origin: fx.OTHER_ORIGIN },
@@ -505,6 +460,35 @@ const bytes = (s: fx.Sandbox) =>
 for (const [name, value, identity, id, code] of [
   ["missing journal", undefined, fx.PROJECT_ID, "forge-1", "NOT_FOUND"],
   ["current journal", journal, fx.PROJECT_ID, "forge-1", "OK"],
+  ...(
+    [
+      [
+        "different actor kind",
+        { actor: { ...CLOUD_HOLDER.actor, kind: "human" } },
+      ],
+      ["different actor id", { actor: { ...CLOUD_HOLDER.actor, id: "other" } }],
+      [
+        "different session",
+        { session: { ...CLOUD_HOLDER.session, id: "other" } },
+      ],
+      [
+        "different device",
+        { session: { ...CLOUD_HOLDER.session, device: "other" } },
+      ],
+    ] as const
+  ).map(
+    ([name, holder]) =>
+      [
+        name,
+        {
+          ...journal,
+          grant: { ...heldBy(), holder: { ...CLOUD_HOLDER, ...holder } },
+        },
+        fx.PROJECT_ID,
+        "forge-1",
+        "OK",
+      ] as const,
+  ),
   [
     "project exceeds issue scan budgets",
     journal,
@@ -593,7 +577,8 @@ for (const [name, value, identity, id, code] of [
                         step:
                           value?.active === false
                             ? "inactive"
-                            : name === "replaced grant"
+                            : name === "replaced grant" ||
+                                name.startsWith("different")
                               ? "stale"
                               : "attached",
                       },
@@ -635,13 +620,13 @@ for (const [op, input] of [
       expect(r.net.calls).toHaveLength(0);
       expect(bytes(r.s)).toEqual(before);
     }));
-test("unbound lane show keeps its local missing-issue result without cloud or device initialization", () =>
+test("unbound lane show keeps its existing clone-files refusal outside Git without cloud or device initialization", () =>
   using({ bind: false, creds: false, sentinel: false }, async (r) => {
     const before = bytes(r.s);
     const result = await r.assembly.catalog.invoke(
       r.request("lane.show", { id: "forge-1" }),
     );
-    expect(failed(result, "NOT_FOUND")).toBe(3);
+    expect(failed(result, "UNAVAILABLE")).toBe(1);
     expect(r.net.calls).toHaveLength(0);
     expect(bytes(r.s)).toEqual(before);
   }));

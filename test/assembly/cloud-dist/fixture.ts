@@ -3,14 +3,20 @@
 // server's throwaway certificate through Node's own NODE_EXTRA_CA_CERTS; no production module has a switch.
 import { expect } from "bun:test";
 import { createServer, type Server } from "node:https";
+import { spawn } from "node:child_process";
+import { createInterface } from "node:readline";
+import { pathToFileURL } from "node:url";
 import {
   readdirSync,
   readFileSync,
   statSync,
   writeFileSync,
   mkdirSync,
+  existsSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { LocalState } from "../../../src/assembly/state.ts";
+import { boundLaneKey } from "../../../src/blocks/work/bound-lane-state.ts";
 import { createProcessPort } from "../../../src/adapters/process/index.ts";
 import {
   credentialStore,
@@ -33,6 +39,22 @@ export const ISSUE = {
   revision: 3,
 };
 export const PAGE = { items: [ISSUE], truncated: false };
+export const LANE = {
+  issue: "work-1",
+  issueId: "work-1",
+  worktree: "/lane",
+  branch: "feat/one",
+  brief: "brief.md",
+};
+export const GRANT = {
+  subject: "issue:work-1",
+  holder: {
+    actor: { kind: "agent", id: "a1" },
+    session: { id: "s1", device: "dev-1" },
+  },
+  generation: 1,
+  expiresAt: "2099-01-01T00:00:00.000Z",
+};
 
 export interface ReadCase {
   readonly args: string[];
@@ -174,6 +196,10 @@ export interface CloudRig {
     stdout: string;
     stderr: string;
   }>;
+  mcp(
+    name: string,
+    input: object,
+  ): Promise<{ envelope: ResultEnvelope; stdout: string; stderr: string }>;
   /** The project holds only what the test put there, and no token is anywhere outside the credential store. */
   expectUntouched(out: { stdout: string; stderr: string }): void;
   close(): Promise<void>;
@@ -183,6 +209,7 @@ export interface CloudRig {
 export async function cloudRig(
   bin: string,
   reply: Replier = serve,
+  attachment = false,
 ): Promise<CloudRig> {
   const s = fx.sandbox();
   let server: Server | undefined;
@@ -232,13 +259,49 @@ export async function cloudRig(
       join(s.root, ".forge", "config.yaml"),
       JSON.stringify({
         schemaVersion: "forge.config/1",
-        blocks: { work: { source: { builtin: "forge/work" } } },
+        blocks: {
+          work: {
+            source: { builtin: "forge/work" },
+            config: { idPrefix: "forge" },
+          },
+        },
+        mcp: { expose: ["lane"] },
       }),
     );
     writeFileSync(s.binding, `${JSON.stringify(fx.bindingFor({ origin }))}\n`);
     await credentialStore(openCloudFiles(s.home)).save(
       fx.entry(Date.now(), { origin }),
     );
+    const preload: string[] = [];
+    const marker = join(s.dir, "project-owner-opened");
+    if (attachment) {
+      const state = new LocalState(join(s.deviceRoot, "records.sqlite"));
+      try {
+        (await state.open(true))!.put(
+          "forge/work",
+          boundLaneKey(fx.bindingFor({ origin }), "work-1"),
+          { version: 1, id: "work-1", lane: LANE, grant: GRANT, active: true },
+          { kind: "agent", id: "a1" },
+          { expectRevision: 0 },
+        );
+      } finally {
+        await state.close();
+      }
+      const guard = join(s.dir, "owner-sentinel.mjs");
+      const module = pathToFileURL(
+        resolve(dirname(bin), "../src/assembly/state.js"),
+      ).href;
+      writeFileSync(
+        guard,
+        `import {LocalState} from ${JSON.stringify(module)}; import {writeFileSync} from 'node:fs'; LocalState.prototype.acquire=function(){writeFileSync(${JSON.stringify(marker)},'opened');throw new Error('local project owner acquired');};`,
+      );
+      preload.push("--import", pathToFileURL(guard).href);
+    }
+    const deviceBytes = () =>
+      filesUnder(s.deviceRoot)
+        .sort()
+        .map((path) => [path, readFileSync(path).toString("hex")]);
+    const beforeDevice = attachment ? deviceBytes() : [];
     const env = {
       ...base,
       HOME: s.home,
@@ -254,7 +317,12 @@ export async function cloudRig(
       env,
       requests,
       async run(args) {
-        const out = await program("node", [bin, ...args], s.root, env);
+        const out = await program(
+          "node",
+          [...preload, bin, ...args],
+          s.root,
+          env,
+        );
         expect(out.timedOut).toBe(false);
         const lines = out.stdout.trim().split("\n");
         expect(lines, out.stderr).toHaveLength(1);
@@ -265,7 +333,11 @@ export async function cloudRig(
           stderr: out.stderr,
         };
       },
+      mcp: (name, input) =>
+        mcpCall([...preload, bin, "--mcp"], s.root, env, name, input),
       expectUntouched(out) {
+        expect(existsSync(marker)).toBe(false);
+        if (attachment) expect(deviceBytes()).toEqual(beforeDevice);
         // The local store is .forge/state.sqlite, its journal files and its re-init folders: none may exist.
         expect(readdirSync(join(s.root, ".forge")).sort()).toEqual([
           "cloud.json",
@@ -295,6 +367,86 @@ export async function cloudRig(
     if (server?.listening) server.close();
     s.close();
     throw error;
+  }
+}
+
+async function mcpCall(
+  args: string[],
+  cwd: string,
+  env: Record<string, string>,
+  name: string,
+  input: object,
+) {
+  const child = spawn("node", args, {
+    cwd,
+    env,
+    windowsHide: true,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  const exited = new Promise<void>((done) => child.once("close", () => done()));
+  const lines = createInterface({ input: child.stdout });
+  let sequence = 0,
+    stderr = "";
+  child.stderr.on("data", (chunk) => {
+    stderr += String(chunk);
+  });
+  async function rpc(method: string, params: object) {
+    const id = ++sequence;
+    let receive!: (line: string) => void;
+    let timer!: ReturnType<typeof setTimeout>;
+    const answer = new Promise<unknown>((resolve, reject) => {
+      receive = (line) => {
+        const message = JSON.parse(line) as {
+          id?: number;
+          result?: unknown;
+          error?: unknown;
+        };
+        if (message.id === id)
+          message.error
+            ? reject(new Error(JSON.stringify(message.error)))
+            : resolve(message.result);
+      };
+      lines.on("line", receive);
+      timer = setTimeout(
+        () => reject(new Error(`MCP ${method} timed out: ${stderr}`)),
+        20000,
+      );
+      child.stdin.write(
+        JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n",
+      );
+    });
+    try {
+      return await answer;
+    } finally {
+      clearTimeout(timer);
+      lines.off("line", receive);
+    }
+  }
+  try {
+    await rpc("initialize", {
+      protocolVersion: "2025-11-25",
+      capabilities: {},
+      clientInfo: { name: "cloud-packed", version: "1" },
+    });
+    child.stdin.write(
+      '{"jsonrpc":"2.0","method":"notifications/initialized"}\n',
+    );
+    const result = (await rpc("tools/call", { name, arguments: input })) as {
+      content: { text: string }[];
+      structuredContent: ResultEnvelope;
+    };
+    const stdout = result.content[0]!.text;
+    expect(JSON.parse(stdout)).toEqual(result.structuredContent);
+    return { envelope: result.structuredContent, stdout, stderr };
+  } finally {
+    child.stdin.end();
+    const timer = setTimeout(() => child.kill(), 3000);
+    try {
+      await exited;
+    } finally {
+      clearTimeout(timer);
+      lines.close();
+    }
   }
 }
 

@@ -1,7 +1,6 @@
 import { ForgeFailure } from "../../contract/failure.ts";
-import type { LeaseRecord, StateRecord } from "../../generated/types.ts";
+import type { LeaseRecord } from "../../generated/types.ts";
 import { validateLeaseRecord } from "../../generated/validators.ts";
-import type { StateClient } from "../../ports/state.ts";
 
 export interface BoundProject {
   readonly origin: string;
@@ -55,17 +54,4 @@ export function readBoundLane(value: unknown, id: string): BoundLaneRecord {
       retry: "never",
     });
   return record as BoundLaneRecord;
-}
-
-/** The caller supplies the revision it observed; StateOwner rejects a concurrent update. */
-export function writeBoundLane(
-  state: StateClient,
-  project: BoundProject,
-  value: BoundLaneRecord,
-  expectRevision: number,
-): StateRecord {
-  const record = readBoundLane(value, value.id);
-  return state.put(boundLaneKey(project, record.id), record, {
-    expectRevision,
-  });
 }
