@@ -95,6 +95,8 @@ import {
   selectCloud,
 } from "./cloud-authority.ts";
 import { LocalState } from "./state.ts";
+import { coordinateLane } from "./cloud-lane-coordinator.ts";
+import type { TrackerItem } from "../generated/types.ts";
 import {
   ApprovalRequired,
   agentSession,
@@ -1818,14 +1820,34 @@ export async function createAssembly(
               scope: ownContext,
               env: options.providers?.env ?? process.env,
               cloud: options.providers?.cloudLogin,
+              coordinate: (flight, project) =>
+                coordinateLane(flight, project, deviceState, async (id) => {
+                  const show = current.candidates.find(
+                    (entry) =>
+                      entry.builtin === true &&
+                      entry.blockId === "forge/work" &&
+                      entry.declaredOp === "issue.show",
+                  );
+                  if (!show)
+                    refuse("UNKNOWN_COMMAND", "Issue show is not assembled.");
+                  const answer = await catalog.invoke({
+                    ...request,
+                    op: show.op,
+                    input: { id },
+                  });
+                  if (!answer.ok) throw new ForgeFailure(answer.error);
+                  return answer.result as TrackerItem;
+                }),
             },
             runtime,
             request,
             target?.declaredOp,
           );
-        const routed =
-          target?.blockId === "forge/work" &&
-          cloudRoute(target.blockId, target.declaredOp ?? "") === "cloud";
+        const route =
+          target?.blockId === "forge/work"
+            ? cloudRoute(target.blockId, target.declaredOp ?? "")
+            : "local";
+        const routed = route === "cloud" || route === "coordinator";
         if (routed) {
           const cloud = await fromCloud(new Runtime(current.catalog, trust));
           if (cloud) return cloud;

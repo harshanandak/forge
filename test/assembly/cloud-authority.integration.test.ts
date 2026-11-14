@@ -56,6 +56,11 @@ import * as fx from "./cloud-fixture.ts";
 import * as launch from "../../src/adapters/process/run.ts";
 import * as authority from "../../src/assembly/cloud-binding.ts";
 import { relay } from "../fixtures/owner-approval.ts";
+import {
+  boundLaneKey,
+  readBoundLane,
+  writeBoundLane,
+} from "../../src/blocks/work/bound-lane-state.ts";
 import { approvalReply } from "../fixtures/owner-approval.mjs";
 
 setDefaultTimeout(30_000);
@@ -412,12 +417,63 @@ const attachment = {
   brief: "brief.md",
 };
 const journal = {
-  version: 1,
+  version: 1 as const,
   id: "work-1",
   lane: attachment,
   grant: heldBy(),
   active: true,
 };
+for (const [name, change, revision, code] of [
+  ["new record", {}, 0, "OK"],
+  ["matching revision", {}, 1, "OK"],
+  ["stale revision", {}, 0, "REVISION_CONFLICT"],
+  [
+    "invalid generation",
+    { grant: { ...heldBy(), generation: 0 } },
+    1,
+    "INPUT_CONFLICT",
+  ],
+  ["extra record field", { borrowed: true }, 1, "INPUT_CONFLICT"],
+] as const)
+  test(`device journal writer: ${name}`, async () => {
+    const s = fx.sandbox();
+    const state = new LocalState(join(s.deviceRoot, "records.sqlite"));
+    try {
+      const owner = (await state.open(true))!;
+      const client = owner.client("forge/work", { kind: "agent", id: "a1" });
+      const project = fx.bindingFor();
+      if (name !== "new record") writeBoundLane(client, project, journal, 0);
+      const before = client.events();
+      let result = "OK";
+      try {
+        writeBoundLane(client, project, { ...journal, ...change }, revision);
+      } catch (error) {
+        if (!(error instanceof ForgeFailure)) throw error;
+        result = error.error.code;
+      }
+      expect(result).toBe(code);
+      expect(
+        readBoundLane(
+          client.get(boundLaneKey(project, "work-1"))!.value,
+          "work-1",
+        ).grant,
+      ).toEqual(heldBy());
+      if (code !== "OK") expect(client.events()).toEqual(before);
+    } finally {
+      await state.close();
+      s.close();
+    }
+  });
+for (const change of [
+  { identity: fx.OTHER_PROJECT_ID },
+  { origin: fx.OTHER_ORIGIN },
+  { project: "other" },
+])
+  test(`device journal key separates ${Object.keys(change)[0]}`, () => {
+    expect(boundLaneKey(fx.bindingFor(change), "work-1")).not.toBe(
+      boundLaneKey(fx.bindingFor(), "work-1"),
+    );
+  });
 async function seedJournal(
   s: fx.Sandbox,
   value: unknown,
@@ -449,6 +505,13 @@ const bytes = (s: fx.Sandbox) =>
 for (const [name, value, identity, id, code] of [
   ["missing journal", undefined, fx.PROJECT_ID, "forge-1", "NOT_FOUND"],
   ["current journal", journal, fx.PROJECT_ID, "forge-1", "OK"],
+  [
+    "replaced grant",
+    { ...journal, grant: { ...heldBy(), generation: 3 } },
+    fx.PROJECT_ID,
+    "forge-1",
+    "OK",
+  ],
   ["changed display prefix", journal, fx.PROJECT_ID, "renamed-1", "OK"],
   ["other project", journal, fx.OTHER_PROJECT_ID, "forge-1", "NOT_FOUND"],
   [
@@ -507,7 +570,12 @@ for (const [name, value, identity, id, code] of [
                     lanes: [
                       {
                         id,
-                        step: value?.active === false ? "inactive" : "attached",
+                        step:
+                          value?.active === false
+                            ? "inactive"
+                            : name === "replaced grant"
+                              ? "stale"
+                              : "attached",
                       },
                     ],
                   },
@@ -557,6 +625,55 @@ test("unbound lane show keeps its local missing-issue result without cloud or de
     expect(r.net.calls).toHaveLength(0);
     expect(bytes(r.s)).toEqual(before);
   }));
+test("another clone of the same bound project reads the same device attachment", () =>
+  using(
+    {
+      prepare: (s) => seedJournal(s, journal),
+      steps: [() => answer({ ...ISSUE, lease: heldBy() })],
+    },
+    async (r) => {
+      const clone = join(r.s.dir, "clone");
+      cpSync(r.s.root, clone, { recursive: true });
+      const assembly = await r.open(clone);
+      try {
+        const before = bytes(r.s);
+        const result = await assembly.catalog.invoke(
+          r.request(
+            "lane.show",
+            { id: ISSUE.id },
+            { context: localContext(assembly, { kind: "agent", id: "a1" }) },
+          ),
+        );
+        expect(result).toMatchObject({
+          ok: true,
+          result: { ...attachment, issue: ISSUE.id, lease: heldBy() },
+        });
+        expect(bytes(r.s)).toEqual(before);
+      } finally {
+        await assembly.close();
+      }
+    },
+  ));
+for (const op of ["lane.show", "lane.status"])
+  test(`bound ${op} never falls back after cloud timeout`, () =>
+    using(
+      {
+        prepare: (s) => seedJournal(s, journal),
+        steps: [
+          () => {
+            throw new Error("timeout");
+          },
+        ],
+      },
+      async (r) => {
+        const before = bytes(r.s);
+        const result = await r.assembly.catalog.invoke(
+          r.request(op, op === "lane.show" ? { id: ISSUE.id } : {}),
+        );
+        expect(failed(result, "UNAVAILABLE")).toBe(1);
+        expect(bytes(r.s)).toEqual(before);
+      },
+    ));
 
 test("a bound project's issue show is answered by the cloud with the stored token, and no local state opens", () =>
   using({}, async (r) => {
@@ -3934,7 +4051,7 @@ for (const [name, op, input, dryRun, code, exit] of [
   ],
   ["dry resume", "lane.resume", { all: true }, true, "UNAVAILABLE", 1],
   ["dry control", "lane.control", {}, true, "UNAVAILABLE", 1],
-  ["status", "lane.status", {}, false, "INPUT_INVALID", 6],
+  ["dry status", "lane.status", {}, true, "UNAVAILABLE", 1],
 ] as const)
   test(
     `bound lane ${name} is refused before HTTP and leaves local approvals unchanged`,
