@@ -22,10 +22,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, relative, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { blockCapture } from "../../src/assembly/capture.ts";
 import { createAssemblyProviders } from "../../src/assembly/providers.ts";
 import { attachBoundLane } from "../../src/blocks/work/bound-lane.ts";
+import { coordinateLane } from "../../src/assembly/cloud-lane-coordinator.ts";
 import { cloudRoute, selectCloud } from "../../src/assembly/cloud-authority.ts";
 import { wireDeviceId } from "../../src/assembly/cloud-login.ts";
 import {
@@ -320,6 +321,7 @@ afterAll(() => {
 });
 
 interface Setup {
+  head?: () => string;
   bind?: Partial<CloudBinding> | string | false;
   creds?: Partial<CredentialEntry> | false;
   device?: string | false;
@@ -342,6 +344,7 @@ async function using(
     expect(r.sentinel?.mock.calls.filter(([write]) => write) ?? []).toEqual([]);
   } finally {
     await r.assembly.close();
+    r.headRead?.mockRestore();
     r.sentinel?.mockRestore();
     r.s.close();
   }
@@ -390,6 +393,22 @@ async function rig(o: Setup) {
       },
       terminal,
     });
+  const nativeRun = launch.runProcess;
+  const headRead = o.head
+    ? spyOn(launch, "runProcess").mockImplementation((...args) =>
+        args[1].join(" ") === "rev-parse --verify HEAD"
+          ? Promise.resolve({
+              exitCode: 0,
+              signal: null,
+              stdout: o.head!(),
+              stderr: "",
+              timedOut: false,
+              truncated: false,
+              durationMs: 0,
+            })
+          : nativeRun(...args),
+      )
+    : undefined;
   const assembly = await open(); // requests carry the context a real CLI or MCP call builds
   const request = (
     op: string,
@@ -404,7 +423,7 @@ async function rig(o: Setup) {
     context: localContext(assembly, { kind: "agent", id: "a1" }),
     ...change,
   });
-  return { s, net, sentinel, open, request, assembly, confirm, env };
+  return { s, net, sentinel, open, request, assembly, confirm, env, headRead };
 }
 const show = (r: Awaited<ReturnType<typeof rig>>) =>
   r.assembly.catalog.invoke(r.request("issue.show", { id: "forge-1" }));
@@ -654,8 +673,11 @@ for (const [name, value, identity, id, code] of [
       ));
 }
 for (const [op, input] of [
-  ["lane.next", { id: "forge-1" }],
-  ["lane.record", { id: "forge-1", action: 1, result: "{}" }],
+  ["lane.next", { all: true }],
+  [
+    "lane.record",
+    { reply: "A", source: { harness: "x", thread: "y", message: "z" } },
+  ],
   ["lane.release", { id: "forge-1", attempt: "attempt-1" }],
   ["lane.close", { id: "forge-1", noPr: true, dropped: "stopped" }],
   ["lane.show", { id: "forge-1", attempt: "attempt-1" }],
@@ -1179,7 +1201,7 @@ const holding = (r: Rig, own: object = {}) => ({
   ...localContext(r.assembly, { kind: "agent", id: "a1" }, "s1"),
   ...own,
 });
-const OWN_GRANT = {
+const OWN_GRANT: LeaseRecord = {
   ...heldBy(),
   holder: {
     actor: { kind: "agent", id: "a1" },
@@ -1206,6 +1228,605 @@ const attachmentBytes = (s: fx.Sandbox) =>
   ].map((path) =>
     existsSync(path) ? readFileSync(path).toString("hex") : null,
   );
+// PR 2a: reservations are device progress, never process permission.
+async function initialReservationRace(
+  r: Rig,
+  coordinate: typeof coordinateLane,
+) {
+  const s = fx.sandbox();
+  const device = new LocalState(join(s.deviceRoot, "records.sqlite"));
+  await seedJournal(s, {
+    ...journal,
+    lane: { ...attachment, worktree: s.root },
+    grant: OWN_GRANT,
+  });
+  await device.open(false);
+  const entered = Promise.withResolvers<void>(),
+    release = Promise.withResolvers<void>();
+  const open = device.open.bind(device);
+  let writes = 0;
+  const delayed = spyOn(device, "open").mockImplementation(async (write) => {
+    if (write && ++writes === 1) {
+      entered.resolve();
+      await release.promise;
+    }
+    return open(write);
+  });
+  const flight = {
+    operation: {
+      declaredOp: "lane.next",
+      declaration: { effects: ["environment:read", "external:process"] },
+    },
+    config: {},
+    request: r.request(
+      "lane.next",
+      { id: ISSUE.id, head: "a".repeat(40) },
+      { context: holding(r) },
+    ),
+  } as unknown as Parameters<typeof coordinateLane>[0];
+  const invoke = () =>
+    coordinate(
+      flight,
+      fx.bindingFor(),
+      device,
+      () => Promise.resolve({ ...ISSUE, lease: OWN_GRANT }),
+      {
+        providers: createAssemblyProviders(s.root, { env: r.env }),
+        env: r.env,
+        deviceRoot: s.deviceRoot,
+        now: () => NOW,
+      },
+    );
+  try {
+    const calls = [invoke(), invoke()];
+    await entered.promise;
+    release.resolve();
+    const replies = await Promise.allSettled(calls);
+    const saved = (await open(false))!.get("forge/work", journalKey())!;
+    return { replies, saved, writes };
+  } finally {
+    release.resolve();
+    delayed.mockRestore();
+    await device.close();
+    s.close();
+  }
+}
+for (const [name, variants] of [
+  ["Same pending next", ["repeat", "restart", "revision race", "missing head"]],
+  [
+    "Old verdict/result",
+    [
+      "verdict",
+      "result",
+      "generation",
+      "generation counterfactual",
+      "reattach result",
+      "reattach verdict",
+      "head replay",
+      "checkout result",
+      "checkout verdict",
+      "checkout ask",
+      "checkout answer",
+    ],
+  ],
+  [
+    "Budget reached",
+    [
+      "calls",
+      "reviewRounds",
+      "ciFixRounds",
+      "activeHours",
+      "disabled",
+      "pending time",
+      "regrant calls",
+      "regrant review",
+      "regrant ci",
+      "regrant time",
+      "regrant review ask",
+      "regrant review held",
+      "regrant review retry",
+      "regrant ci ask",
+      "regrant ci held",
+    ],
+  ],
+  ["Owner ask", ["ask", "held answer", "completion after hold"]],
+  [
+    "Expired or replaced grant",
+    ["expired", "generation", "holder", "inactive", "release pending"],
+  ],
+  [
+    "Malformed progress",
+    ["counter", "permit", "pending", "verdict", "ask", "missing head"],
+  ],
+] as const)
+  test(`bound progress table: ${name}`, async () => {
+    for (const variant of variants) {
+      let time = NOW;
+      let lease: LeaseRecord = OWN_GRANT;
+      let recordingGeneration = lease.generation;
+      const head = "a".repeat(40),
+        moved = "b".repeat(40);
+      let checkoutHead = head;
+      const progress = {
+        generation: OWN_GRANT.generation,
+        actions: 1,
+        records: 0,
+        review: 0,
+        ci: 0,
+        started: NOW,
+        pending: true,
+        head,
+      };
+      const malformed = {
+        counter: { ...progress, actions: -1 },
+        permit: { ...progress, permit: true },
+        pending: { ...progress, pending: "yes" },
+        "missing head": Object.fromEntries(
+          Object.entries(progress).filter(([key]) => key !== "head"),
+        ),
+        verdict: { ...progress, verdict: { head, verdict: "PASS" } },
+        ask: { ...progress, ask: { reason: "scope" } },
+      };
+      await using(
+        {
+          head: () => checkoutHead,
+          now: () => time,
+          config: yaml({
+            config: {
+              lanes: {
+                autopilot: {
+                  enabled: variant !== "disabled",
+                  budgets: {
+                    calls: ["calls", "regrant calls"].includes(variant)
+                      ? 1
+                      : 20,
+                    reviewRounds: 1,
+                    ciFixRounds: 1,
+                    activeHours: 1,
+                  },
+                },
+              },
+            },
+          }),
+          prepare: async (s) => {
+            if (
+              (name === "Old verdict/result" &&
+                !variant.startsWith("checkout ") &&
+                !["verdict", "result", "generation", "head replay"].includes(
+                  variant,
+                )) ||
+              variant.startsWith("regrant ")
+            ) {
+              expect(
+                spawnSync("git", [
+                  "init",
+                  "--quiet",
+                  "--initial-branch=feat/one",
+                  s.root,
+                ]).status,
+              ).toBe(0);
+              writeFileSync(join(s.root, "brief.md"), PREPARED_BRIEF);
+              writeFileSync(
+                join(s.root, "old-result.log"),
+                JSON.stringify({ head, done: true }),
+              );
+            }
+            await seedJournal(s, {
+              ...journal,
+              lane: { ...attachment, worktree: s.root },
+              grant: OWN_GRANT,
+              ...(name === "Malformed progress"
+                ? { progress: malformed[variant as keyof typeof malformed] }
+                : {}),
+              ...(variant === "inactive" ? { active: false } : {}),
+              ...(variant === "release pending"
+                ? { releaseNeeded: true, releaseRequestId: "release-1" }
+                : {}),
+            });
+          },
+          steps: [() => answer({ ...ISSUE, lease })],
+        },
+        async (r) => {
+          const invoke = (op: string, input: object) =>
+            r.assembly.catalog.invoke(
+              r.request(
+                op,
+                { id: ISSUE.id, ...input },
+                {
+                  context: holding(
+                    r,
+                    op === "lane.record"
+                      ? { leaseGeneration: recordingGeneration }
+                      : {},
+                  ),
+                },
+              ),
+            );
+          const next = (at = head) => invoke("lane.next", { head: at });
+          const record = (result: object, action = 1) =>
+            invoke("lane.record", { action, result: JSON.stringify(result) });
+          const saved = async () => {
+            const state = new LocalState(
+              join(r.s.deviceRoot, "records.sqlite"),
+            );
+            try {
+              return (await state.open(false))!.get(
+                "forge/work",
+                journalKey(),
+              )!;
+            } finally {
+              await state.close();
+            }
+          };
+          const original = await saved();
+          const projectFiles = () =>
+            bytes(r.s).filter(([path]) => String(path).startsWith("project"));
+          let files = projectFiles();
+          if (name === "Same pending next" && variant === "revision race") {
+            const race = await initialReservationRace(r, coordinateLane);
+            expect(race.replies[0]).toEqual(race.replies[1]);
+            expect(race.replies[0]).toMatchObject({
+              status: "fulfilled",
+              value: { n: 1 },
+            });
+            expect(race.saved.revision).toBe(2);
+            expect(race.saved.value).toHaveProperty("progress.actions", 1);
+            expect(race.writes).toBe(1);
+            // Execute the same race with the serialization predecessor removed.
+            const path = new URL(
+              "../../src/assembly/cloud-lane-coordinator.ts",
+              import.meta.url,
+            );
+            const source = readFileSync(path, "utf8");
+            const mutated = source.replace(
+              "(progressWrites.get(key) ?? Promise.resolve())",
+              "Promise.resolve()",
+            );
+            expect(mutated).not.toBe(source);
+            const absolute = mutated.replace(
+              /from "(\.[^"]+)"/g,
+              (_all, specifier: string) =>
+                `from "${new URL(specifier, pathToFileURL(fileURLToPath(path))).href}"`,
+            );
+            const javascript = new Bun.Transpiler({
+              loader: "ts",
+            }).transformSync(absolute);
+            const mutant = (await import(
+              `data:text/javascript;base64,${Buffer.from(javascript).toString("base64")}`
+            )) as typeof import("../../src/assembly/cloud-lane-coordinator.ts");
+            const unsafe = await initialReservationRace(
+              r,
+              mutant.coordinateLane,
+            );
+            expect(
+              unsafe.replies.some((reply) => reply.status === "rejected"),
+            ).toBe(true);
+            expect(unsafe.writes).toBe(2);
+          } else if (
+            name === "Same pending next" &&
+            variant === "missing head"
+          ) {
+            expect(failed(await invoke("lane.next", {}), "INPUT_INVALID")).toBe(
+              6,
+            );
+            expect(await saved()).toEqual(original);
+            expect(r.net.calls).toHaveLength(0);
+          } else if (name === "Malformed progress") {
+            expect(failed(await next(), "INPUT_CONFLICT")).toBe(4);
+            expect(await saved()).toEqual(original);
+          } else if (name === "Expired or replaced grant") {
+            if (variant === "expired") time = Date.parse(lease.expiresAt);
+            if (variant === "generation")
+              lease = { ...lease, generation: lease.generation + 1 };
+            if (variant === "holder") lease = heldBy();
+            const code =
+              variant === "expired"
+                ? "LEASE_EXPIRED"
+                : variant === "generation"
+                  ? "LEASE_STALE"
+                  : variant === "holder"
+                    ? "LEASE_NOT_HELD"
+                    : "INPUT_CONFLICT";
+            expect(failed(await next(), code)).toBe(4);
+            expect(await saved()).toEqual(original);
+          } else {
+            const first = await next();
+            expect(first).toMatchObject({
+              ok: true,
+              status: "OK",
+              result: {
+                n: variant === "disabled" ? 0 : 1,
+                kind: variant === "disabled" ? "pause" : "harness",
+              },
+            });
+            expect(exitCode(first)).toBe(0);
+            if (name === "Same pending next") {
+              const reserved = await saved();
+              if (variant === "restart") {
+                const clone = await r.open();
+                try {
+                  expect(
+                    await clone.catalog.invoke(
+                      r.request(
+                        "lane.next",
+                        { id: ISSUE.id, head },
+                        {
+                          context: {
+                            ...holding(r),
+                            project: localContext(clone, {
+                              kind: "agent",
+                              id: "a1",
+                            }).project!,
+                          },
+                        },
+                      ),
+                    ),
+                  ).toEqual(first);
+                } finally {
+                  await clone.close();
+                }
+              } else expect(await next()).toEqual(first);
+              expect(await saved()).toEqual(reserved);
+            } else if (variant.startsWith("checkout ")) {
+              const ask = {
+                reason: "Scope",
+                releaseTotal: "400 lines",
+                default: "A",
+              };
+              if (variant === "checkout answer")
+                expect((await record({ head, ask })).ok).toBe(true);
+              const before = await saved();
+              checkoutHead = moved;
+              const late =
+                variant === "checkout verdict"
+                  ? await invoke("lane.record", {
+                      mergeGate: { head, verdict: "MERGE", reviewer: "old" },
+                    })
+                  : await record({
+                      head,
+                      ...(variant === "checkout ask"
+                        ? { ask }
+                        : variant === "checkout answer"
+                          ? { answer: "hold" }
+                          : { done: true }),
+                    });
+              expect(failed(late, "INPUT_CONFLICT")).toBe(4);
+              expect(await saved()).toEqual(before);
+            } else if (
+              name === "Old verdict/result" &&
+              !["verdict", "result", "generation", "head replay"].includes(
+                variant,
+              )
+            ) {
+              // Same holder, head and action number: only the reservation generation distinguishes the late request.
+              const late = r.request(
+                "lane.record",
+                variant !== "reattach result"
+                  ? {
+                      id: ISSUE.id,
+                      mergeGate: { head, verdict: "MERGE", reviewer: "old" },
+                    }
+                  : {
+                      id: ISSUE.id,
+                      action: 1,
+                      result: readFileSync(
+                        join(r.s.root, "old-result.log"),
+                        "utf8",
+                      ),
+                    },
+                {
+                  context: holding(
+                    r,
+                    variant === "generation counterfactual"
+                      ? {}
+                      : { leaseGeneration: lease.generation },
+                  ),
+                },
+              );
+              lease = { ...lease, generation: lease.generation + 1 };
+              recordingGeneration = lease.generation;
+              expect(
+                (
+                  await invoke("lane.start", {
+                    branch: "feat/one",
+                    brief: "brief.md",
+                  })
+                ).ok,
+              ).toBe(true);
+              expect(await next()).toMatchObject({
+                ok: true,
+                result: { n: 2 },
+              });
+              const reserved = await saved();
+              files = projectFiles();
+              expect(
+                failed(await r.assembly.catalog.invoke(late), "INPUT_CONFLICT"),
+              ).toBe(4);
+              expect(await saved()).toEqual(reserved);
+              expect(
+                readFileSync(join(r.s.root, "old-result.log"), "utf8"),
+              ).toBe(JSON.stringify({ head, done: true }));
+              // Without the generation fence the otherwise identical old verdict is admitted.
+              if (variant === "reattach result")
+                expect((await record({ head, done: true }, 2)).ok).toBe(true);
+              else
+                expect(
+                  (
+                    await r.assembly.catalog.invoke({
+                      ...late,
+                      context: holding(r, {
+                        leaseGeneration: lease.generation,
+                      }),
+                    })
+                  ).ok,
+                ).toBe(true);
+            } else if (name === "Old verdict/result") {
+              expect(
+                (
+                  await invoke("lane.record", {
+                    mergeGate: { head, verdict: "MERGE", reviewer: "reviewer" },
+                  })
+                ).ok,
+              ).toBe(true);
+              expect((await saved()).value).toHaveProperty(
+                "progress.verdict.head",
+                head,
+              );
+              checkoutHead = moved;
+              expect((await next(moved)).ok).toBe(true);
+              let changed = await saved();
+              expect(changed.value).not.toHaveProperty("progress.verdict");
+              if (variant === "head replay") {
+                expect(
+                  (
+                    await invoke("lane.record", {
+                      mergeGate: {
+                        head: moved,
+                        verdict: "MERGE",
+                        reviewer: "new",
+                      },
+                    })
+                  ).ok,
+                ).toBe(true);
+                const reviewed = await saved();
+                expect(failed(await next(head), "INPUT_CONFLICT")).toBe(4);
+                expect(await saved()).toEqual(reviewed);
+                expect(
+                  failed(await record({ head, done: true }), "INPUT_CONFLICT"),
+                ).toBe(4);
+                expect(
+                  failed(
+                    await invoke("lane.record", {
+                      mergeGate: { head, verdict: "MERGE", reviewer: "old" },
+                    }),
+                    "INPUT_CONFLICT",
+                  ),
+                ).toBe(4);
+                expect(await saved()).toEqual(reviewed);
+                changed = reviewed;
+              }
+              if (variant === "generation")
+                lease = { ...lease, generation: lease.generation + 1 };
+              const old =
+                variant === "verdict"
+                  ? await invoke("lane.record", {
+                      mergeGate: { head, verdict: "MERGE", reviewer: "old" },
+                    })
+                  : await record({ head, done: true });
+              expect(
+                failed(
+                  old,
+                  variant === "generation" ? "LEASE_STALE" : "INPUT_CONFLICT",
+                ),
+              ).toBe(4);
+              expect(await saved()).toEqual(changed);
+            } else if (name === "Budget reached") {
+              const ask = {
+                reason: "Scope",
+                releaseTotal: "400 lines",
+                default: "A",
+              };
+              if (variant.endsWith("held")) {
+                expect((await record({ head, ask })).ok).toBe(true);
+                expect((await record({ head, answer: "hold" })).ok).toBe(true);
+              }
+              if (variant !== "disabled" && variant !== "pending time") {
+                expect(
+                  (
+                    await record({
+                      head,
+                      done: true,
+                      ...(variant.includes("review") ? { review: true } : {}),
+                      ...(variant.includes("ci") ? { ci: true } : {}),
+                      ...(variant.endsWith("ask") || variant.endsWith("retry")
+                        ? { ask }
+                        : {}),
+                    })
+                  ).ok,
+                ).toBe(true);
+                if (variant.endsWith("retry")) {
+                  expect((await record({ head, review: true, ask })).ok).toBe(
+                    true,
+                  );
+                  expect((await saved()).value).toHaveProperty(
+                    "progress.review",
+                    1,
+                  );
+                }
+                if (["activeHours", "regrant time"].includes(variant)) {
+                  time += 3_600_000;
+                  lease = { ...lease, expiresAt: iso(time + 60_000) };
+                }
+              }
+              if (variant === "pending time") {
+                // The authority renewed this generation while its reservation stayed pending.
+                time += 3_600_000;
+                lease = { ...lease, expiresAt: iso(time + 60_000) };
+              }
+              if (variant.startsWith("regrant ")) {
+                lease = { ...lease, generation: lease.generation + 1 };
+                expect(
+                  (
+                    await invoke("lane.start", {
+                      branch: "feat/one",
+                      brief: "brief.md",
+                    })
+                  ).ok,
+                ).toBe(true);
+                expect((await saved()).value).toHaveProperty(
+                  "progress.actions",
+                  1,
+                );
+                files = projectFiles();
+              }
+              const before = await saved();
+              const paused = await next();
+              expect(paused).toMatchObject({
+                ok: true,
+                status: "OK",
+                result: { kind: "pause" },
+              });
+              expect(exitCode(paused)).toBe(0);
+              expect(await saved()).toEqual(before);
+            } else {
+              const ask = {
+                reason: "Choose scope",
+                releaseTotal: "400 lines",
+                default: "A: smallest slice",
+              };
+              expect((await record({ head, ask })).ok).toBe(true);
+              expect(await next()).toMatchObject({
+                ok: true,
+                result: {
+                  kind: "ask-owner",
+                  ask: expect.stringContaining("400 lines") as unknown,
+                },
+              });
+              if (variant !== "ask") {
+                expect((await record({ head, answer: "hold" })).ok).toBe(true);
+                if (variant === "completion after hold")
+                  expect((await record({ head, done: true })).ok).toBe(true);
+                expect(await next()).toMatchObject({
+                  ok: true,
+                  result: { kind: "pause" },
+                });
+                expect((await saved()).value).toHaveProperty(
+                  "progress.ask.answer",
+                  "hold",
+                );
+              }
+            }
+          }
+          expect(projectFiles()).toEqual(files);
+          expect(
+            r.net.calls.every(
+              ({ body }) => (body as { op: string }).op === "issue.show",
+            ),
+          ).toBe(true);
+        },
+      );
+    }
+  });
 for (const [name, expected] of [
   ["ordinary attachment", "OK"],
   ["project git precedes trusted git", "OK"],
@@ -1635,7 +2256,7 @@ for (const [name, variants] of [
     ],
   ],
   ["Release with no attachment", ["no journal", "unknown issue"]],
-  ["Still refused", ["lane.next", "lane.record", "lane.close"]],
+  ["Still refused", ["lane.close"]],
 ] as const)
   test(`bound release table: ${name}`, async () => {
     for (const variant of variants) {
@@ -1847,11 +2468,9 @@ for (const [name, variants] of [
                       ? "UNAVAILABLE"
                       : "OK";
           const input =
-            variant === "lane.record"
-              ? { id: ISSUE.id, action: 1, result: "{}" }
-              : variant === "lane.close"
-                ? { id: ISSUE.id, noPr: true, dropped: "stopped" }
-                : { id: ISSUE.id };
+            variant === "lane.close"
+              ? { id: ISSUE.id, noPr: true, dropped: "stopped" }
+              : { id: ISSUE.id };
           const result = await r.assembly.catalog.invoke(
             r.request(
               name === "Still refused" ? variant : "lane.release",

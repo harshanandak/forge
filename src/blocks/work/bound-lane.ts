@@ -19,6 +19,8 @@ import type { StateClient } from "../../ports/state.ts";
 import {
   boundLaneKey,
   readBoundLane,
+  validBoundProgress,
+  type BoundProgress,
   type BoundProject,
   type BoundLaneRecord,
 } from "./bound-lane-state.ts";
@@ -103,6 +105,12 @@ function refuse(code: string, message: string): never {
   throw new ForgeFailure({ code, message, retry: "reconcile_first" });
 }
 const helpers = entry as unknown as {
+  limitsOf(
+    config: unknown,
+  ): { enabled: boolean } & Record<
+    "calls" | "reviewRounds" | "ciFixRounds" | "activeHours",
+    number
+  >;
   briefProblems(text: string): string[];
   briefPath(files: FilesService, path: string, windows: boolean): string;
   laneRegistry(
@@ -161,7 +169,8 @@ export async function boundLaneStart(
   const fresh = (await command("issue.show", { id: input.id })) as TrackerItem;
   const id = `work-${fresh.id.replace(/^.*-/, "")}`;
   const found = state?.get(boundLaneKey(project, id));
-  if (found && readBoundLane(found.value, id).releaseRequestId)
+  const previous = found ? readBoundLane(found.value, id) : undefined;
+  if (previous?.releaseRequestId)
     refuse("INPUT_CONFLICT", "Reconcile the pending release before attaching.");
   const own = (issue: TrackerItem, generation?: number) => {
     if (issue.status !== "open")
@@ -169,6 +178,11 @@ export async function boundLaneStart(
     return ownBoundGrant(issue.lease, context, device, generation, now);
   };
   const grant = own(fresh, context.leaseGeneration);
+  let progress = previous?.progress;
+  if (progress && progress.generation !== grant.generation) {
+    const { ask: _ask, verdict: _verdict, ...usage } = progress;
+    progress = { ...usage, generation: grant.generation, pending: false };
+  }
   let record: BoundLaneRecord = {
     version: 1,
     id,
@@ -176,6 +190,7 @@ export async function boundLaneStart(
     grant,
     active: false,
     releaseNeeded: true,
+    ...(progress ? { progress } : {}),
     lane: {
       issue: id,
       issueId: id,
@@ -194,6 +209,149 @@ export async function boundLaneStart(
   record = { ...record, lane, active: true };
   await save(record, revision);
   return { ...lane, issue: fresh.id, lease: grant };
+}
+
+export type BoundProgressInput = {
+  id: string;
+  head?: string;
+  action?: number;
+  result?: string;
+  mergeGate?: BoundProgress["verdict"];
+};
+export async function boundLaneProgress(
+  op: string,
+  input: BoundProgressInput,
+  context: AmbientContext,
+  device: string,
+  now: () => number,
+  project: BoundProject,
+  state: Pick<StateClient, "get"> | undefined,
+  command: BoundCommand,
+  save: (record: BoundLaneRecord, revision: number) => Promise<StateRecord>,
+  config: unknown,
+  readHead: (worktree: string) => Promise<string>,
+): Promise<unknown> {
+  const fresh = (await command("issue.show", { id: input.id })) as TrackerItem;
+  const id = `work-${fresh.id.replace(/^.*-/, "")}`;
+  const found = state?.get(boundLaneKey(project, id));
+  if (!found) refuse("NOT_FOUND", `No device lane for ${fresh.id}`);
+  const record = readBoundLane(found.value, id);
+  if (
+    op === "lane.record" &&
+    context.leaseGeneration !== record.progress?.generation
+  )
+    refuse("INPUT_CONFLICT", "Record must match the reservation generation.");
+  ownBoundGrant(record.grant, context, device);
+  ownBoundGrant(fresh.lease, context, device, record.grant.generation, now);
+  if (!record.active || record.releaseRequestId || fresh.status !== "open")
+    refuse("INPUT_CONFLICT", "The lane is inactive, releasing or closed.");
+  const actualHead = await readHead(record.lane.worktree);
+  const effectiveHead =
+    op === "lane.next" ? input.head?.toLowerCase() : record.progress?.head;
+  if (effectiveHead !== actualHead)
+    refuse("INPUT_CONFLICT", "Progress head differs from the checkout.");
+  const p: BoundProgress = structuredClone(
+    record.progress ?? {
+      generation: record.grant.generation,
+      actions: 0,
+      records: 0,
+      review: 0,
+      ci: 0,
+      started: now(),
+      pending: false,
+    },
+  );
+  const write = async () => {
+    if (!validBoundProgress(p))
+      refuse("INPUT_INVALID", "Invalid device progress result.");
+    if (JSON.stringify(p) !== JSON.stringify(record.progress))
+      await save({ ...record, progress: p }, found.revision);
+  };
+  if (op === "lane.record") {
+    if (input.mergeGate) {
+      if (input.mergeGate.head.toLowerCase() !== p.head)
+        refuse("INPUT_CONFLICT", "Review must name the current reserved head.");
+      p.verdict = { ...input.mergeGate, head: p.head };
+    } else {
+      if (!p.pending || input.action !== p.actions)
+        refuse("INPUT_CONFLICT", "Only the pending action can be recorded.");
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(input.result!);
+      } catch {
+        return refuse("INPUT_INVALID", "Result must be a JSON object.");
+      }
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+        refuse("INPUT_INVALID", "Result must be a JSON object.");
+      const result = parsed as Record<string, unknown>;
+      if (result.head !== p.head)
+        refuse("INPUT_CONFLICT", "Result must name the current reserved head.");
+      const counted = (p.counted ??= {
+        action: p.actions,
+        review: false,
+        ci: false,
+      });
+      for (const fact of ["review", "ci"] as const)
+        if (result[fact] === true && !counted[fact]) {
+          p[fact]++;
+          counted[fact] = true;
+        }
+      if (result.ask !== undefined)
+        p.ask = result.ask as NonNullable<BoundProgress["ask"]>;
+      else if (result.answer !== undefined) {
+        if (!p.ask) refuse("INPUT_CONFLICT", "There is no pending owner ask.");
+        p.ask.answer = result.answer as string;
+      } else if (!p.ask) p.pending = false;
+      p.records++;
+    }
+    await write();
+    return {
+      lane: fresh.id,
+      step: input.mergeGate ? "merge" : "guard",
+      n: p.actions,
+      recorded: true,
+    };
+  }
+  if (input.head && input.head.toLowerCase() !== p.head) {
+    p.head = input.head.toLowerCase();
+    delete p.verdict;
+  }
+  const limits = helpers.limitsOf(config);
+  const exhausted =
+    p.actions >= limits.calls ||
+    p.review >= limits.reviewRounds ||
+    p.ci >= limits.ciFixRounds;
+  let kind = "harness",
+    why = "Reserved local action; this is not dispatch permission.";
+  if (p.ask) {
+    kind = p.ask.answer ? "pause" : "ask-owner";
+    why = JSON.stringify(p.ask);
+  } else if (
+    !limits.enabled ||
+    now() - p.started >= limits.activeHours * 3_600_000 ||
+    (!p.pending && exhausted)
+  ) {
+    kind = "pause";
+    why = "Configured device budget or autopilot switch requires a pause.";
+  } else if (!p.pending) {
+    p.actions++;
+    delete p.counted;
+    p.pending = true;
+  }
+  // A pure budget pause must not initialize or reset bookkeeping.
+  if (kind !== "pause" || record.progress) await write();
+  return {
+    lane: fresh.id,
+    step: "guard",
+    n: p.actions,
+    kind,
+    why,
+    expect:
+      "Record the local action; bound runner dispatch remains unavailable until PR 2b.",
+    budget: { actions: p.actions, records: p.records },
+    raw: JSON.stringify({ generation: p.generation, head: p.head }),
+    ...(p.ask && !p.ask.answer ? { ask: why } : {}),
+  };
 }
 
 export async function boundLaneRelease(
@@ -286,6 +444,7 @@ export function boundLaneGit(
     projectManifestRoot(process.cwd),
     cwd,
   ]);
+
   if (git.kind !== "resolved") refuse("UNAVAILABLE", "Git is unavailable.");
   const readGit = async (args: string[]) => {
     const result = await process.run(git, args, {
