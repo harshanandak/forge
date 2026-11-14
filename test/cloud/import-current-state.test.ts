@@ -37,7 +37,7 @@ test.each(rows)(
     const cf = _name.startsWith("CF");
     const variants =
       kind === "scope"
-        ? ["namespace", "journal", "approval", "migration"]
+        ? ["namespace", "journal", "approval", "migration", "history"]
         : kind === "caps"
           ? ["rows", "bytes"]
           : [kind];
@@ -57,7 +57,7 @@ test.each(rows)(
             if (kind === "scope") {
               if (variant === "migration")
                 db.run("INSERT INTO state_migrations VALUES ('999_unknown')");
-              else
+              else {
                 state.put(
                   variant === "namespace" ? "forge/cloud" : f.ns,
                   variant === "namespace" ? "request:old" : `${variant}:work-1`,
@@ -65,6 +65,11 @@ test.each(rows)(
                   f.actor,
                   { expectRevision: 0 },
                 );
+                if (variant === "history")
+                  state.delete(f.ns, "history:work-1", f.actor, {
+                    expectRevision: 1,
+                  });
+              }
             }
           },
         );
@@ -118,17 +123,19 @@ test.each(rows)(
           const target = f.database(),
             targetOwner = f.owner(target);
           targetOwner.initialize([domain]);
+          const targetBefore = f.snapshot(target);
           const restore = await f.replay(mutant && kind === "revision");
           const restored = f.result(() => {
             for (const page of impl.pagesOf(scratch, limits))
               restore.restorePage(target, targetOwner, page, limits);
           });
-          if (kind === "revision")
+          if (kind === "revision") {
             eq(
               status(restored),
               mutant ? ["OK", 0, null] : [expectedStatus, exit, code],
             );
-          else {
+            if (!mutant) eq(f.snapshot(target), targetBefore);
+          } else {
             eq(status(restored), ["OK", 0, null]);
             const held = await f.fencedOwner(target, mutant),
               saved = f.snapshot(target);
@@ -201,6 +208,18 @@ test.each(rows)(
                 );
               for (const record of impl.workRecords(scratch))
                 eq(targetOwner.get(f.ns, record.key)?.value, record.value);
+              if (historical)
+                for (const [prefix, number] of [
+                  ["issue:work-", 12001],
+                  ["comment:work-1:", 9001],
+                  ["link:work-1:", 9001],
+                ] as const)
+                  eq(
+                    targetOwner.putNext(f.ns, prefix, f.actor, (key) => ({
+                      value: { key },
+                    })).key,
+                    `${prefix}${number}`,
+                  );
             }
           } else if (!mutant) eq(f.snapshot(scratch), scratchBefore);
         }

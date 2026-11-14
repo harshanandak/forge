@@ -1,6 +1,9 @@
 import { ForgeFailure } from "../src/contract/failure.ts";
 import { canonicalJson } from "../src/core/config/pointer.ts";
-import { assertNoCheckpoint } from "../src/core/state/checkpoint.ts";
+import {
+  assertNoCheckpoint,
+  checkpointTables,
+} from "../src/core/state/checkpoint.ts";
 import {
   StateOwner,
   verifyEventDerivedState,
@@ -130,6 +133,7 @@ export function currentState(
       "state_leases",
       "state_requests",
       "state_domains",
+      ...Object.keys(checkpointTables),
     ].some((table) => scratch.get(`SELECT 1 FROM ${table} LIMIT 1`));
     if (nonempty) invalid();
     const found = verifySource(source, manifest, scratch);
