@@ -1656,6 +1656,7 @@ for (const [name, variants] of [
                   "progress.actions",
                   1,
                 );
+                files = projectFiles();
               }
               const before = await saved();
               const paused = await next();
