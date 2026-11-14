@@ -41,7 +41,7 @@ const rows: [string, string, unknown, string | null][] = [
     v,
     "UNAVAILABLE",
   ]),
-  ..."jobs-count jobs-count-missing runs-count-missing jobs-full duplicate-check later-check pr-changed normalized server-budget run-advanced run-status"
+  ..."jobs-count jobs-count-missing runs-count-missing jobs-full duplicate-check later-check pr-changed normalized server-budget run-advanced run-status run-added"
     .split(" ")
     .map((n): [string, string, unknown, string] => [
       n,
@@ -88,6 +88,7 @@ for (const [name, path, value, code] of rows)
     const before = structuredClone({ input, fixture }),
       urls: string[] = [];
     let prReads = 0,
+      runLists = 0,
       credentials = 0;
     const result = await module.readGithubMergeEvidence!(input, {
       now: () => Date.parse(time),
@@ -201,7 +202,8 @@ for (const [name, path, value, code] of rows)
           if (name === "jobs-count-missing")
             delete (body as Record<string, unknown>).total_count;
         } else if (parts.includes("actions")) {
-          const current = parts.at(-2) === "runs";
+          const collection = parts.at(-1) === "runs",
+            current = collection && ++runLists === 2;
           const attempt = parts.includes("attempts") ? Number(parts.at(-1)) : 2;
           const run = {
             id: 10,
@@ -220,21 +222,38 @@ for (const [name, path, value, code] of rows)
                   ? name
                   : "success",
           };
-          body =
-            current || parts.includes("attempts")
-              ? run
-              : { workflow_runs: [run], total_count: 1 };
+          body = parts.includes("attempts")
+            ? run
+            : { workflow_runs: [run], total_count: 1 };
           if (current) {
             expect(
               urls.filter((url) => new URL(url).pathname.endsWith("/jobs")),
             ).toHaveLength(2);
-            expect(u.searchParams.size).toBe(0);
+            if (name !== "missing-check")
+              expect(urls.at(-2)?.endsWith("/42")).toBe(true);
             if (name === "run-advanced") run.run_attempt = 3;
             if (name === "run-status") {
               run.status = "in_progress";
               run.conclusion = null;
             }
-          } else if (!parts.includes("attempts")) {
+            if (name === "run-added")
+              body = {
+                workflow_runs: [
+                  run,
+                  {
+                    ...run,
+                    id: 11,
+                    run_number: 4,
+                    run_attempt: 1,
+                    check_suite_id: 21,
+                    status: "in_progress",
+                    conclusion: null,
+                  },
+                ],
+                total_count: 2,
+              };
+          }
+          if (collection) {
             expect([...u.searchParams]).toEqual([
               ["head_sha", actual],
               ["per_page", "100"],
@@ -289,6 +308,7 @@ for (const [name, path, value, code] of rows)
         `https://api.github.com/repos/${name === "mixed-case" ? "AcMe/FoRgE" : "acme/forge"}/pulls/9`,
       );
       expect(prReads).toBe(2);
+      expect(runLists).toBe(2);
     } else {
       expect(code).toBe(result.code);
       expect(Object.keys(result).sort()).toEqual(["code", "ok", "reason"]);

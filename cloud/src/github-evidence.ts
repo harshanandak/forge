@@ -321,12 +321,18 @@ export async function readGithubMergeEvidence(
           budget([snapshot, runs]);
         }
         const latest = new Map(workflow.value.map((run) => [run.id, run]));
-        for (const run of latest.values()) {
-          const current = object(
-            await session.get(["actions", "runs", String(run.id)]),
-            "UNAVAILABLE",
-          );
+        const readback = await session.collect(
+          ["actions", "runs"],
+          { head_sha: pr.mergeSha! },
+          "workflow_runs",
+          true,
+        );
+        if (readback.length !== latest.size) fail("UNAVAILABLE");
+        for (const value of readback) {
+          const current = object(value, "UNAVAILABLE"),
+            run = latest.get(current.id as number);
           if (
+            !run ||
             object(current.repository, "UNAVAILABLE").id !== run.repositoryId ||
             Object.entries({
               id: run.id,
