@@ -10,6 +10,8 @@ import type { SqlDatabase, SqlRow } from "../../src/ports/store.ts";
 import { success } from "../../src/surface/dispatch.ts";
 import { failure, respond } from "../../src/surface/result.ts";
 import * as projection from "../../tools/import-current-state.ts";
+import { durableStore } from "../../cloud/src/store.ts";
+import { browserStorage } from "./browser-storage.fixture.ts";
 export const ns = "forge/work",
   at = 1_800_000_000_000;
 export const actor = { kind: "agent", id: "synthetic-import" } as const;
@@ -40,6 +42,11 @@ export function database(path = ":memory:", readOnly = false): SqlDatabase {
 }
 export function owner(db: SqlDatabase) {
   return new StateOwner(db, { now: () => at });
+}
+export function cloudDatabase(): SqlDatabase {
+  const db = new Database(":memory:");
+  resources.push(() => db.close());
+  return durableStore(browserStorage(db).storage);
 }
 export function snapshot(db: SqlDatabase) {
   return db

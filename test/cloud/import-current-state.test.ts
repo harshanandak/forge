@@ -120,7 +120,7 @@ test.each(rows)(
               "UPDATE state_events SET body=json_set(body,'$.revision',7) WHERE key='issue:work-1'",
             );
           }
-          const target = f.database(),
+          const target = f.cloudDatabase(),
             targetOwner = f.owner(target);
           targetOwner.initialize([domain]);
           const targetBefore = f.snapshot(target);
@@ -202,7 +202,7 @@ test.each(rows)(
                 );
             } else ne(scratch.all("SELECT * FROM state_leases"), []);
             if (!mutant) {
-              const target = f.database(),
+              const target = f.cloudDatabase(),
                 targetOwner = f.owner(target);
               targetOwner.initialize([domain]);
               for (const page of impl.pagesOf(scratch, limits))

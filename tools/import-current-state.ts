@@ -12,6 +12,7 @@ import { parseRestoreJson } from "../src/core/state/restore-json.ts";
 import type { StateRecord } from "../src/generated/types.ts";
 import type { SqlDatabase } from "../src/ports/store.ts";
 import { domain } from "../cloud/src/project.ts";
+import { durableStore } from "../cloud/src/store.ts";
 import {
   dumpPage,
   dumpUsage,
@@ -137,7 +138,24 @@ export function currentState(
     ].some((table) => scratch.get(`SELECT 1 FROM ${table} LIMIT 1`));
     if (nonempty) invalid();
     const found = verifySource(source, manifest, scratch);
-    const owner = new StateOwner(scratch, {
+    const cloud = durableStore({
+      sql: {
+        exec: (sql, ...bindings) => {
+          const rows = scratch.all(
+            sql,
+            bindings.map((value) =>
+              value instanceof ArrayBuffer ? new Uint8Array(value) : value,
+            ),
+          );
+          return { toArray: () => rows.map((row) => ({ ...row })) };
+        },
+      },
+      transactionSync: (body) => scratch.transaction(body),
+      get: invalid,
+      put: invalid,
+      delete: invalid,
+    });
+    const owner = new StateOwner(cloud, {
       now: () => Date.parse(manifest.at),
     });
     owner.initialize([domain]);
