@@ -123,6 +123,30 @@ async function refused(run: () => Promise<unknown>, code = "UNAVAILABLE") {
 }
 
 const ceiling = 1_048_576;
+const ordinary = envelope(resultFor(read(), { kind: "get", record }));
+const duplicateMembers = [
+  ["warnings", "warnings"],
+  ["escaped warnings", "\\u0077arnings"],
+  ["project", "project"],
+  ["escaped project", "\\u0070roject"],
+].map(([name, label]) => ({
+  name,
+  text: JSON.stringify(ordinary).replace(
+    name!.includes("warnings") ? '"warnings":[]' : '"project":"proj"',
+    name!.includes("warnings")
+      ? `"${label}":[${JSON.stringify(token)}],"warnings":[]`
+      : `"${label}":"other","project":"proj"`,
+  ),
+}));
+for (const { name, text } of duplicateMembers)
+  test(`state raw duplicate member: ${name}`, async () => {
+    const lastWins: unknown = JSON.parse(text);
+    expect(lastWins).toEqual(ordinary);
+    const f = fixture(() => new Response(text));
+    await refused(() => f.send(read()));
+    expect(f.calls).toHaveLength(1);
+  });
+
 function responseBytes(bytes: number) {
   const body = (value: string) =>
     envelope(resultFor(read(), { kind: "get", record: { ...record, value } }));
