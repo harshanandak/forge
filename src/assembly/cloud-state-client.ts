@@ -121,8 +121,9 @@ export function createCloudLeaseClient(
       code: bad.code,
       message:
         held ??
-        bad.message ??
-        `The Forge cloud refused the request (${bad.code}).`,
+        (bad.code === "APPROVAL_REQUIRED"
+          ? "Owner approval is still required: the approval request is pending, denied or expired. Run lane resume without an approval to get a new request."
+          : `The Forge cloud refused the request (${bad.code}).`),
       retry: bad.code.startsWith("LEASE_") ? "reconcile_first" : "never",
       ...(bad.lease === undefined ? {} : { lease: bad.lease }),
       ...(bad.observed === undefined ? {} : { observed: bad.observed }),

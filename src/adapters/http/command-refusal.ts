@@ -1,5 +1,5 @@
-// Checked command refusals retain a lease, blockers, a repair template or an approval message.
-// Details are closed and checked as a whole; other server text and fields are dropped.
+// The checked details of a refused typed command. Only a lease, a blocker list or one repair template
+// is kept, each closed and checked as a whole; the server's words and every other field are dropped.
 import {
   validateItemId,
   validateLeaseHolder,
@@ -13,7 +13,6 @@ export interface Blocker {
   readonly holderUnverified?: true;
 }
 export interface RefusalDetails {
-  readonly message?: string;
   readonly lease?: LeaseConflict;
   readonly observed?: { readonly blockers: readonly Blocker[] };
   readonly repair?: string;
@@ -121,7 +120,6 @@ export function refusalDetails(
       error.retry !== "never"
     )
       return undefined;
-    details = { message: error.message };
   } else if (code.startsWith("LEASE_")) {
     if (suffix === undefined) return undefined;
     const lease = conflictOf(

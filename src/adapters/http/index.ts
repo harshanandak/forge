@@ -1,6 +1,6 @@
 // Outbound HTTPS to one Forge cloud origin and project: the device login routes and the lease routes.
 // It follows no redirect, sends a bearer token only on a lease request and only in the Authorization
-// header, bounds every request by a deadline and a size, and keeps only checked refusal details, never the token.
+// header, bounds every request by a deadline and a size, and never repeats server text or the token.
 import { request } from "node:https";
 import { Readable } from "node:stream";
 import { ForgeFailure } from "../../contract/failure.ts";

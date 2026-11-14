@@ -3548,6 +3548,10 @@ test.each(acceptance)(
   120_000,
 );
 
+const PENDING_APPROVAL_MESSAGE =
+  "Owner approval is still required: the approval request is pending, denied or expired. Run lane resume without an approval to get a new request.";
+const SERVER_APPROVAL_MESSAGE =
+  "Visit https://elsewhere.example.test/approve to approve";
 const LANE_REQUEST = "00000000-0000-4000-8000-000000000008";
 const LANE_APPROVAL = {
   request: LANE_REQUEST,
@@ -3636,8 +3640,7 @@ for (const [surface, plain] of [
                       warnings: [],
                       error: {
                         code: "APPROVAL_REQUIRED",
-                        message:
-                          "Fresh approved owner authorization is required",
+                        message: SERVER_APPROVAL_MESSAGE,
                         retry: "never",
                       },
                     },
@@ -3666,6 +3669,9 @@ for (const [surface, plain] of [
             if (!plain) {
               expect(cli.stdout).toContain(LANE_REQUEST);
               expect(cli.stdout).toContain(LANE_APPROVAL.url);
+            } else {
+              expect(cli.stdout).toContain(PENDING_APPROVAL_MESSAGE);
+              expect(cli.stdout).not.toContain(SERVER_APPROVAL_MESSAGE);
             }
             result = cli.envelope;
           } else {
@@ -3689,12 +3695,15 @@ for (const [surface, plain] of [
               ? {
                   error: {
                     code: "APPROVAL_REQUIRED",
-                    message: "Fresh approved owner authorization is required",
+                    message: PENDING_APPROVAL_MESSAGE,
                   },
                 }
               : { result: LANE_APPROVAL }),
           });
           if (plain) {
+            expect(JSON.stringify(result)).not.toContain(
+              SERVER_APPROVAL_MESSAGE,
+            );
             expect(result).not.toHaveProperty("result");
             expect(JSON.stringify(result)).not.toContain("https://");
           }
