@@ -1846,6 +1846,7 @@ export async function createAssembly(
             runtime,
             request,
             target?.declaredOp,
+            target?.blockId,
           );
         const route =
           target?.blockId === "forge/work"

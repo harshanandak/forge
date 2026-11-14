@@ -145,6 +145,38 @@ function unserved(declared: string, input: unknown): ForgeFailure | undefined {
     : undefined;
 }
 
+/** PR proof belongs to the cloud verifier; reject local or mixed proof before lease lookup. */
+function admitPrClose(
+  deps: Pick<CloudAuthorityDeps, "root" | "env">,
+  declared: string | undefined,
+  input: unknown,
+): void {
+  if (
+    declared !== "issue.close" ||
+    typeof input !== "object" ||
+    input === null ||
+    !("pr" in input)
+  )
+    return;
+  const binding = cloudBinding(
+    deps.root,
+    deps.env.HOME ?? deps.env.USERPROFILE,
+  );
+  if (
+    ("receipt" in input && input.receipt !== undefined) ||
+    ("withoutReceipt" in input && input.withoutReceipt !== undefined)
+  )
+    throw fail(
+      "INPUT_INVALID",
+      "pr cannot be combined with receipt or withoutReceipt.",
+    );
+  if (binding.kind === "unbound")
+    throw fail(
+      "INPUT_INVALID",
+      "Closing with pr requires a cloud-bound project and its GitHub verifier.",
+    );
+}
+
 /** Bound requests refuse unsupported operations, input and dry runs except stop; unbound requests stay local. */
 export function admitCloud(
   deps: Pick<CloudAuthorityDeps, "root" | "env">,
@@ -153,6 +185,7 @@ export function admitCloud(
   dryRun: boolean | undefined,
   input: unknown,
 ): void {
+  if (blockId === "forge/work") admitPrClose(deps, declared, input);
   const route = cloudRoute(blockId, declared);
   const dryRefused = dryRun === true && declared !== "lane.stop";
   const remote = route === "cloud" || route === "coordinator";
@@ -174,7 +207,9 @@ export async function selectCloud(
   runtime: Pick<Runtime, "preflight">,
   request: InvocationRequest,
   declaredOp?: string,
+  blockId?: string,
 ): Promise<ResultEnvelope | undefined> {
+  if (blockId === "forge/work") admitPrClose(deps, declaredOp, request.input);
   const home = deps.env.HOME ?? deps.env.USERPROFILE;
   const binding = () => cloudBinding(deps.root, home);
   let flight: ReturnType<Runtime["preflight"]>;
