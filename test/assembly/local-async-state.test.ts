@@ -4,12 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSqliteStore } from "../../src/adapters/store-sqlite/index.ts";
 import * as levelsModule from "../../src/assembly/levels.ts";
-import type {
-  PeerLookup,
-  ProjectStore,
-  StoreLevels,
-} from "../../src/assembly/levels.ts";
-import type { ExtendedStateClient } from "../../src/ports/state.ts";
 import {
   ASSEMBLY_PROVIDES,
   assemblyProvides,
@@ -18,34 +12,11 @@ import { createStateClient } from "../../src/assembly/state-client.ts";
 import { LocalState } from "../../src/assembly/state.ts";
 import { failureEnvelope } from "../../src/core/runtime/index.ts";
 import { exitCode } from "../../src/surface/result.ts";
+import { loadEntry, memoryState } from "../blocks/memory/lib.ts";
 
 setDefaultTimeout(30_000);
 const actor = { kind: "human" as const, id: "async-state" };
 const namespace = "forge/test";
-
-// Describe the consumer contract locally so the pre-implementation table compiles on v1.
-type Lift<C> = {
-  [K in keyof C]: C[K] extends (...args: infer A) => infer R
-    ? (...args: A) => Promise<R>
-    : never;
-};
-type AsyncState = Lift<
-  Pick<ExtendedStateClient, "get" | "put" | "putMany" | "history" | "count">
-> & {
-  range: Lift<ExtendedStateClient>["listRange"];
-  max: Lift<ExtendedStateClient>["maxNumber"];
-};
-type AsyncLevels = Omit<StoreLevels, "project" | "peer"> & {
-  project(): Promise<
-    (Omit<ProjectStore, "state"> & { state: AsyncState }) | undefined
-  >;
-  peer(ref: string): Promise<
-    | Exclude<PeerLookup, { status: "found" }>
-    | (Omit<Extract<PeerLookup, { status: "found" }>, "state"> & {
-        state: AsyncState;
-      })
-  >;
-};
 
 async function promised<T>(value: Promise<T>): Promise<T> {
   expect(value).toBeInstanceOf(Promise);
@@ -66,13 +37,8 @@ async function fixture() {
   // This assertion is the intentional red on the unmodified catalog, before any new module loads.
   expect(assemblyProvides("forge.state@2")).toBe(true);
   expect(assemblyProvides("forge.project-state@2")).toBe(true);
-  const path = new URL(
-    "../../src/assembly/async-state-client.ts",
-    import.meta.url,
-  );
-  const { createLocalAsyncStateClient } = (await import(path.href)) as {
-    createLocalAsyncStateClient(client: ExtendedStateClient): AsyncState;
-  };
+  const { createLocalAsyncStateClient } =
+    await import("../../src/assembly/async-state-client.ts");
   const root = realpathSync.native(
     mkdtempSync(join(tmpdir(), "forge-async-state-")),
   );
@@ -105,11 +71,7 @@ async function fixture() {
     opened.push(result);
     return {
       sync: result.levels,
-      async: (
-        Reflect.get(levelsModule, "createAsyncLevels") as (
-          levels: StoreLevels,
-        ) => AsyncLevels
-      )(result.levels),
+      async: levelsModule.createAsyncLevels(result.levels),
     };
   };
   return {
@@ -259,7 +221,7 @@ const cases: readonly [string, (f: Fixture) => void | Promise<void>][] = [
   ],
   [
     "v1 consumer",
-    (f) => {
+    async (f) => {
       expect(
         ASSEMBLY_PROVIDES.filter((id) =>
           /forge\.(state|project-state)@1\./.test(id),
@@ -282,6 +244,15 @@ const cases: readonly [string, (f: Fixture) => void | Promise<void>][] = [
         expect(result).not.toBeInstanceOf(Promise);
       expect(f.sync.get("note/1")).toEqual(value);
       expect(assemblyProvides("forge.state@3")).toBe(false);
+      const legacy = memoryState(undefined, {
+        caller: "human",
+        inProject: false,
+      });
+      const added = await loadEntry("memory")["memory.add"]!({
+        input: { text: "existing synchronous consumer", level: "device" },
+        services: { state: legacy, levels: legacy },
+      });
+      expect(added).toMatchObject({ id: "device/note-1" });
     },
   ],
   [

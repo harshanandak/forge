@@ -10,9 +10,11 @@ import type {
   Warning,
 } from "../generated/types.ts";
 import type { ExtendedStateClient } from "../ports/state.ts";
+import type { AsyncStoreLevels } from "../ports/state.ts";
 import type { OwnedHandle } from "../ports/lifetime.ts";
 import { refuse } from "../core/trust/index.ts";
 import { createStateClient } from "./state-client.ts";
+import { createLocalAsyncStateClient } from "./async-state-client.ts";
 import { LocalState } from "./state.ts";
 import { nodeConfigFiles } from "../adapters/fs/index.ts";
 import { PROJECT_ID_PATTERN, readProjectManifest } from "./project-manifest.ts";
@@ -82,6 +84,38 @@ export interface StoreLevels {
   project(): Promise<ProjectStore | undefined>;
   /** Another project on this device, read-only. */
   peer(ref: string): Promise<PeerLookup>;
+}
+
+export const ASYNC_PROJECT_STATE = "forge.project-state@2.0.0";
+
+/** Keep identity/registry policy and store acquisition in the original levels implementation. */
+export function createAsyncLevels(levels: StoreLevels): AsyncStoreLevels {
+  return Object.freeze({
+    caller: levels.caller,
+    inProject: levels.inProject,
+    get defaultScope() {
+      return levels.defaultScope;
+    },
+    ...(levels.warnings === undefined ? {} : { warnings: levels.warnings }),
+    async project() {
+      const project = await levels.project();
+      return project === undefined
+        ? undefined
+        : {
+            ...project,
+            state: createLocalAsyncStateClient(project.state),
+          };
+    },
+    async peer(ref: string) {
+      const peer = await levels.peer(ref);
+      return peer.status === "found"
+        ? {
+            ...peer,
+            state: createLocalAsyncStateClient(peer.state),
+          }
+        : peer;
+    },
+  });
 }
 
 function conflict(error: unknown): boolean {

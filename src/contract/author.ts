@@ -15,6 +15,10 @@ export type {
   ResolvedExecutable,
 } from "../ports/process.ts";
 export type {
+  AsyncPeerLookup,
+  AsyncProjectStore,
+  AsyncStateClient,
+  AsyncStoreLevels,
   BatchEntry,
   BatchOptions,
   DeleteOptions,
