@@ -74,12 +74,9 @@ export async function readGithubWorkflowEvidence(
       { head_sha: pr.mergeSha },
       "workflow_runs",
     );
-    const runs: WorkflowAttempt[] = [],
-      numbers = new Set<number>();
+    const runs: WorkflowAttempt[] = [];
     for (const row of rows) {
       const latest = run(row);
-      if (numbers.has(latest.runNumber)) fail();
-      numbers.add(latest.runNumber);
       const content = object(
         await session.get(["contents", ...latest.workflowPath.split("/")], {
           ref: pr.mergeSha,

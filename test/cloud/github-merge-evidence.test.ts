@@ -16,7 +16,7 @@ const head = "a".repeat(40),
 const digest =
   "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
 const rows: [string, string, unknown, string | null][] = [
-  ..."ok squash failure cancelled queued missing-check wrong-producer"
+  ..."ok squash failure cancelled queued missing-check wrong-producer not-ancestor"
     .split(" ")
     .map((n): [string, string, unknown, null] => [n, "", null, null]),
   ...Object.entries(
@@ -77,6 +77,11 @@ for (const [name, path, value, code] of rows)
         { length: 256 },
         (_, i) => `${i}${"😀".repeat(name === "server-budget" ? 126 : 125)}`,
       );
+    const inputBytes = new TextEncoder().encode(JSON.stringify(input)).length;
+    if (name === "server-budget")
+      expect(inputBytes).toBeGreaterThan(128 * 1024);
+    if (name === "normalized")
+      expect(inputBytes).toBeLessThanOrEqual(128 * 1024);
     const before = structuredClone({ input, fixture }),
       urls: string[] = [];
     let prReads = 0,
@@ -109,15 +114,20 @@ for (const [name, path, value, code] of rows)
         } else if (parts.includes("git"))
           body = {
             ref: "refs/heads/main",
-            object: { type: "commit", sha: actual },
+            object: {
+              type: "commit",
+              sha: name === "not-ancestor" ? merge : actual,
+            },
           };
         else if (parts.includes("compare"))
           body = {
             base_commit: { sha: actual },
-            merge_base_commit: { sha: actual },
-            status: "identical",
+            merge_base_commit: {
+              sha: name === "not-ancestor" ? merge : actual,
+            },
+            status: name === "not-ancestor" ? "behind" : "identical",
             ahead_by: 0,
-            behind_by: 0,
+            behind_by: name === "not-ancestor" ? 1 : 0,
           };
         else if (parts.includes("contents")) {
           expect(u.searchParams.get("ref")).toBe(actual);
@@ -247,7 +257,11 @@ for (const [name, path, value, code] of rows)
       expect(eligible.eligible).toBe(["ok", "squash"].includes(name));
       if (!eligible.eligible)
         expect(eligible.code).toBe(
-          name === "queued" ? "UNAVAILABLE" : "RECEIPT_INVALID",
+          name === "queued"
+            ? "UNAVAILABLE"
+            : name === "not-ancestor"
+              ? "PR_NOT_MERGED"
+              : "RECEIPT_INVALID",
         );
       expect(urls.at(-1)).toBe(
         "https://api.github.com/repos/acme/forge/pulls/9",
@@ -258,6 +272,7 @@ for (const [name, path, value, code] of rows)
       expect(Object.keys(result).sort()).toEqual(["code", "ok", "reason"]);
     }
     if (name === "server-budget") expect(credentials).toBe(0);
+    if (name === "normalized") expect(credentials).toBe(1);
     expect(JSON.stringify(result)).not.toMatch(
       /credential-sentinel|upstream-sentinel/,
     );

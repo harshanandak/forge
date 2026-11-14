@@ -1,4 +1,5 @@
 import { withGithubHttp } from "./github-http.ts";
+import { readGithubWorkflowEvidence } from "./github-workflow-evidence.ts";
 import { isPlainJson } from "./plain-json.ts";
 import type * as Evidence from "./merge-evidence.ts";
 type Pr = Evidence.MergeObservations["initialPr"];
@@ -194,6 +195,136 @@ export async function withGithubPrEvidence<T>(
     return result.ok
       ? result
       : refuse(failure.code === "INPUT_INVALID" ? failure.code : result.code);
+  } catch {
+    return refuse(failure.code);
+  }
+}
+
+export async function readGithubMergeEvidence(
+  input: unknown,
+  ports: Parameters<typeof withGithubHttp>[1],
+) {
+  type Code = "INPUT_INVALID" | "UNAVAILABLE";
+  const failure: { code: Code } = { code: "UNAVAILABLE" };
+  const refuse = (code: Code) => ({
+    ok: false as const,
+    code,
+    reason:
+      code === "INPUT_INVALID"
+        ? "Invalid GitHub evidence"
+        : "GitHub unavailable",
+  });
+  function fail(code: Code = "INPUT_INVALID"): never {
+    failure.code = code;
+    throw new Error("GitHub evidence refused");
+  }
+  function object(v: unknown) {
+    if (!v || typeof v !== "object" || Array.isArray(v)) fail();
+    return v as Record<string, unknown>;
+  }
+  function budget(value: unknown) {
+    if (new TextEncoder().encode(JSON.stringify(value)).length > 128 * 1024)
+      fail();
+  }
+  try {
+    if (!isPlainJson(input)) fail();
+    const snapshot: unknown = structuredClone(input);
+    budget(snapshot);
+    const locator = object(object(snapshot).locator);
+    const checkRoot = `https://api.github.com/repos/${encodeURIComponent(String(locator.owner))}/${encodeURIComponent(String(locator.repo))}/check-runs/`;
+    const seen = new Set<number>();
+    const result = await withGithubPrEvidence(
+      snapshot,
+      ports,
+      async (session, pr) => {
+        const workflow = await readGithubWorkflowEvidence(session, pr);
+        if (!workflow.ok) return workflow;
+        const runs: Evidence.MergeObservations["runs"][number][] = [];
+        for (const { checkSuiteId, ...run } of workflow.value) {
+          const jobs = await session.collect(
+            [
+              "actions",
+              "runs",
+              String(run.id),
+              "attempts",
+              String(run.attempt),
+              "jobs",
+            ],
+            {},
+            "jobs",
+          );
+          const checks: Evidence.MergeObservations["runs"][number]["checks"][number][] =
+            [];
+          for (const raw of jobs) {
+            const job = object(raw);
+            if (
+              job.run_id !== run.id ||
+              job.run_attempt !== run.attempt ||
+              job.head_sha !== run.headSha
+            )
+              fail();
+            if (
+              typeof job.check_run_url !== "string" ||
+              !job.check_run_url.startsWith(checkRoot)
+            )
+              fail("UNAVAILABLE");
+            const suffix = job.check_run_url.slice(checkRoot.length),
+              id = Number(suffix);
+            if (!positive(id) || String(id) !== suffix) fail("UNAVAILABLE");
+            if (seen.has(id)) fail();
+            seen.add(id);
+            const check = object(await session.get(["check-runs", suffix]));
+            if (
+              check.id !== id ||
+              object(check.check_suite).id !== checkSuiteId ||
+              object(check.app).id !== run.appId ||
+              check.head_sha !== run.headSha ||
+              !text(check.name) ||
+              ["name", "status", "conclusion", "completed_at"].some(
+                (key) => job[key] !== check[key],
+              ) ||
+              !matches(check.status, /^(queued|in_progress|completed)$/) ||
+              (check.conclusion !== null &&
+                !matches(
+                  check.conclusion,
+                  /^(success|failure|neutral|cancelled|skipped|timed_out|action_required|stale|startup_failure)$/,
+                )) ||
+              (check.status === "completed"
+                ? check.conclusion === null ||
+                  !stamp(check.completed_at, ports.now())
+                : check.conclusion !== null || check.completed_at !== null)
+            )
+              fail();
+            checks.push({
+              id,
+              appId: run.appId,
+              attempt: run.attempt,
+              name: check.name,
+              headSha: run.headSha,
+              status: check.status,
+              conclusion: check.conclusion,
+              completedAt: check.completed_at,
+            } as Evidence.MergeObservations["runs"][number]["checks"][number]);
+          }
+          runs.push({ ...run, checks });
+          budget([snapshot, runs]);
+        }
+        return { ok: true as const, value: runs };
+      },
+    );
+    if (!result.ok)
+      return refuse(
+        failure.code === "INPUT_INVALID" ? failure.code : result.code,
+      );
+    const { evidence, ...facts } = result.value;
+    if (!evidence.ok) return evidence;
+    const observation: Evidence.MergeObservations = {
+      ...facts,
+      runs: evidence.value,
+      completeness: "complete",
+    };
+    budget([snapshot, observation, new Date(ports.now()).toJSON()]);
+    return { ok: true as const, value: observation };
   } catch {
     return refuse(failure.code);
   }
