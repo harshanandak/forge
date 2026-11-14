@@ -110,7 +110,17 @@ export function refusalDetails(
   const id = record(call.input)?.id;
   const suffix = typeof id === "string" ? QUALIFIED.exec(id)?.[2] : undefined;
   let details: RefusalDetails = {};
-  if (code.startsWith("LEASE_")) {
+  if (code === "APPROVAL_REQUIRED") {
+    if (
+      call.op !== "lane.resume" ||
+      Object.keys(error).sort().join() !== "code,message,retry" ||
+      typeof error.message !== "string" ||
+      error.message.length === 0 ||
+      error.message.length > 2000 ||
+      error.retry !== "never"
+    )
+      return undefined;
+  } else if (code.startsWith("LEASE_")) {
     if (suffix === undefined) return undefined;
     const lease = conflictOf(
       error.lease,

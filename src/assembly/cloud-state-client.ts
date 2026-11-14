@@ -55,6 +55,19 @@ const MISMATCH =
   "This session's device is not the device the stored credential belongs to.";
 const UNAVAILABLE = "The Forge cloud gave no usable answer.";
 
+/** A checked command failure with a result the CLI and MCP must carry. */
+export class CloudCommandFailure extends ForgeFailure {
+  readonly result: Record<string, unknown>;
+  constructor(result: Record<string, unknown>) {
+    super({
+      code: "APPROVAL_REQUIRED",
+      message: "Fresh owner approval is required",
+      retry: "never",
+    });
+    this.result = result;
+  }
+}
+
 export function createCloudLeaseClient(
   options: CloudLeaseOptions,
 ): CloudLeaseClient {
@@ -79,7 +92,7 @@ export function createCloudLeaseClient(
   /** One request. Whatever the transport throws is rebuilt: only a cancellation keeps its code, never its text. */
   async function exchange<T extends { kind: string }>(
     send: () => Promise<T>,
-  ): Promise<Extract<T, { kind: "ok" }>> {
+  ): Promise<Extract<T, { kind: "ok" | "approval_required" }>> {
     let result: T;
     try {
       result = await send();
@@ -91,7 +104,8 @@ export function createCloudLeaseClient(
         throw failure("INVOCATION_CANCELLED", "The request was cancelled.");
       throw failure("UNAVAILABLE", UNAVAILABLE);
     }
-    if (result.kind === "ok") return result as Extract<T, { kind: "ok" }>;
+    if (result.kind === "ok" || result.kind === "approval_required")
+      return result as Extract<T, { kind: "ok" | "approval_required" }>;
     const bad = result as unknown as {
       code: string;
     } & RefusalDetails;
@@ -105,7 +119,11 @@ export function createCloudLeaseClient(
         : undefined;
     throw new ForgeFailure({
       code: bad.code,
-      message: held ?? `The Forge cloud refused the request (${bad.code}).`,
+      message:
+        held ??
+        (bad.code === "APPROVAL_REQUIRED"
+          ? "Owner approval is still required: the approval request is pending, denied or expired. Run lane resume without an approval to get a new request."
+          : `The Forge cloud refused the request (${bad.code}).`),
       retry: bad.code.startsWith("LEASE_") ? "reconcile_first" : "never",
       ...(bad.lease === undefined ? {} : { lease: bad.lease }),
       ...(bad.observed === undefined ? {} : { observed: bad.observed }),
@@ -159,14 +177,25 @@ export function createCloudLeaseClient(
         context: contextFor(call.context, device),
         ...(call.dryRun === undefined ? {} : { dryRun: call.dryRun }),
       };
-      const { result } = await exchange(() =>
-        http.command(token, wire, signal),
-      );
+      const answer = await exchange(() => http.command(token, wire, signal));
+      const { result } = answer;
       const valid = await Promise.resolve()
         .then(() => validate(result))
         .catch(() => false);
-      if (!valid || carriesToken(result, token))
+      // A pending approval is never a successful resume, even with a valid schema and link.
+      const approval =
+        answer.kind === "approval_required" ||
+        (call.op === "lane.resume" && "request" in result);
+      const linked =
+        !approval ||
+        (typeof result.request === "string" &&
+          /^[a-f0-9-]{36}$/.test(result.request) &&
+          result.url === `${key.origin}/lane-approval/${result.request}`);
+      const pendingSuccess = answer.kind === "ok" && approval;
+      if (!valid || !linked || pendingSuccess || carriesToken(result, token))
         throw failure("UNAVAILABLE", UNAVAILABLE);
+      if (answer.kind === "approval_required")
+        throw new CloudCommandFailure(result);
       return result;
     },
     claim: (input) => write("claim", input),

@@ -565,12 +565,15 @@ for (const [name, run] of ops)
   }, 10_000);
 
 /** The real adapter over a scripted body, so the wire text is decoded the way a response is. */
-function wired(text: string) {
+function wired(text: string, status = 200) {
   const bodies: string[] = [];
   const fetch: CloudFetch = () => {
     bodies.push(text);
     return Promise.resolve(
-      new Response(text, { headers: { "content-type": "application/json" } }),
+      new Response(text, {
+        status,
+        headers: { "content-type": "application/json" },
+      }),
     );
   };
   const http = createCloudHttp({ origin: ORIGIN, project: PROJECT, fetch });
@@ -632,5 +635,91 @@ for (const [what, text, run] of ESCAPED_ROWS)
       message: NOT_USABLE,
     });
     expect(exit(failed)).toBe(1);
+    expect(bodies).toHaveLength(1);
+  }, 10_000);
+
+const APPROVAL_REQUEST = "00000000-0000-4000-8000-000000000008";
+const APPROVAL_RESULT = {
+  request: APPROVAL_REQUEST,
+  scope: { all: true },
+  expiresAt: "2026-11-11T12:00:00.000Z",
+  url: `${ORIGIN}/lane-approval/${APPROVAL_REQUEST}`,
+};
+const RESUME_CALL = { ...cmd, op: "lane.resume", input: { all: true } };
+const approvalBody = (result: unknown) =>
+  JSON.stringify({
+    ok: false,
+    op: "lane.resume",
+    status: "FAIL",
+    error: {
+      code: "APPROVAL_REQUIRED",
+      message: "Fresh owner approval is required",
+      retry: "never",
+    },
+    result,
+    warnings: [],
+  });
+
+test("the cloud command client carries a checked approval failure with its request and link", async () => {
+  const { client, bodies } = wired(approvalBody(APPROVAL_RESULT), 409);
+  const checked: unknown[] = [];
+  const failed = await failureOf(() =>
+    client.command(RESUME_CALL, (value) => {
+      checked.push(value);
+      return true;
+    }),
+  );
+  expect(failed.error.code).toBe("APPROVAL_REQUIRED");
+  expect((failed as ForgeFailure & { result?: unknown }).result).toEqual(
+    APPROVAL_RESULT,
+  );
+  expect(checked).toEqual([APPROVAL_RESULT]);
+  expect(exit(failed)).toBe(1);
+  expect(bodies).toHaveLength(1);
+}, 10_000);
+
+for (const [name, result, validate] of [
+  ["schema refusal", APPROVAL_RESULT, () => false],
+  [
+    "throwing validator",
+    APPROVAL_RESULT,
+    () => {
+      throw new Error("invalid result");
+    },
+  ],
+  [
+    "foreign origin",
+    {
+      ...APPROVAL_RESULT,
+      url: `${OTHER_ORIGIN}/lane-approval/${APPROVAL_REQUEST}`,
+    },
+    () => true,
+  ],
+  [
+    "insecure link",
+    { ...APPROVAL_RESULT, url: APPROVAL_RESULT.url.replace("https:", "http:") },
+    () => true,
+  ],
+  [
+    "wrong path",
+    { ...APPROVAL_RESULT, url: `${ORIGIN}/login/${APPROVAL_REQUEST}` },
+    () => true,
+  ],
+  [
+    "token echo",
+    { ...APPROVAL_RESULT, url: `${APPROVAL_RESULT.url}?value=${TOKEN}` },
+    () => true,
+  ],
+] as const)
+  test(`the cloud command client refuses approval metadata on ${name}`, async () => {
+    const { client, bodies } = wired(approvalBody(result), 409);
+    const failed = await failureOf(() => client.command(RESUME_CALL, validate));
+    expect(failed.error).toMatchObject({
+      code: "UNAVAILABLE",
+      message: NOT_USABLE,
+    });
+    expect(
+      (failed as ForgeFailure & { result?: unknown }).result,
+    ).toBeUndefined();
     expect(bodies).toHaveLength(1);
   }, 10_000);

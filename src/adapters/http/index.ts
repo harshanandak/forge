@@ -99,6 +99,10 @@ export interface CommandWire {
 export type CommandRefusalCode = keyof typeof COMMAND_STATUS;
 export type CommandResult =
   | { readonly kind: "ok"; readonly result: Record<string, unknown> }
+  | {
+      readonly kind: "approval_required";
+      readonly result: Record<string, unknown>;
+    }
   | ({
       readonly kind: "refused";
       readonly code: CommandRefusalCode;
@@ -151,6 +155,7 @@ const REFUSAL_STATUS = {
 } as const;
 // The refusals the command route sends, each with the one status the Worker gives it.
 const COMMAND_STATUS = {
+  APPROVAL_REQUIRED: 409,
   INPUT_INVALID: 400,
   CONTEXT_MISSING: 400,
   UNKNOWN_COMMAND: 404,
@@ -382,9 +387,12 @@ function decodeCommand(
     return { kind: "ok", result };
   }
   const code = object(body.error)?.code as CommandRefusalCode;
+  const linked =
+    code === "APPROVAL_REQUIRED" &&
+    keys === "error,ok,op,result,status,warnings";
   if (
     body.ok !== false ||
-    keys !== "error,ok,status,warnings" ||
+    (keys !== "error,ok,status,warnings" && !linked) ||
     body.status !== "FAIL" ||
     !Array.isArray(body.warnings) ||
     typeof code !== "string" ||
@@ -392,6 +400,11 @@ function decodeCommand(
     COMMAND_STATUS[code] !== status
   )
     throw bad();
+  if (linked) {
+    if (op !== "lane.resume" || body.op !== op || result === undefined)
+      throw bad();
+    return { kind: "approval_required", result };
+  }
   const details = refusalDetails(code, call, object(body.error) ?? {}, token);
   if (details === undefined) throw bad();
   return { kind: "refused", code, ...details };
