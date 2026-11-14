@@ -93,6 +93,11 @@
       ],
       "description": "Give id, action and result for the open action number (a receipt id, a rebuild exit code, an unwatch confirmation or an owner decision {done:true}). Or mergeGate {head, verdict MERGE or FIX, reviewer} for one head. Or reply and source {harness, thread, message} for the owner's reply, verbatim: it must name the message number (#<n> in the reply or source.message), labels like 1A 2B map to that message's asks, ok takes every default, anything else keeps every lane paused. Or id, request and scope ({id} or {all:true}, the lane resume input) to attach a pending approval request to its ask: Forge checks the request is pending and bound to that exact step, and it is never replaced once recorded. Or ownerChannel {harness, thread}: never implicit, and like lane resume it needs the owner's reply relayed as an approval."
     },
+    "lane.control": {
+      "title": "Read lane control",
+      "summary": "Read project control, or control for one canonical issue. A cloud stop records control and does not acknowledge another machine's cancellation.",
+      "examples": [{ "input": {} }, { "input": { "id": "work-7" } }]
+    },
     "lane.stop": {
       "title": "Stop lanes",
       "summary": "Set the stop flag for one lane or all lanes. After it, lane next returns only pause. Stopping needs no approval.",
