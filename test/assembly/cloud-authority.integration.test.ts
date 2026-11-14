@@ -1303,6 +1303,10 @@ for (const [name, variants] of [
       "reattach result",
       "reattach verdict",
       "head replay",
+      "checkout result",
+      "checkout verdict",
+      "checkout ask",
+      "checkout answer",
     ],
   ],
   [
@@ -1380,6 +1384,7 @@ for (const [name, variants] of [
           prepare: async (s) => {
             if (
               (name === "Old verdict/result" &&
+                !variant.startsWith("checkout ") &&
                 !["verdict", "result", "generation", "head replay"].includes(
                   variant,
                 )) ||
@@ -1555,6 +1560,31 @@ for (const [name, variants] of [
                 }
               } else expect(await next()).toEqual(first);
               expect(await saved()).toEqual(reserved);
+            } else if (variant.startsWith("checkout ")) {
+              const ask = {
+                reason: "Scope",
+                releaseTotal: "400 lines",
+                default: "A",
+              };
+              if (variant === "checkout answer")
+                expect((await record({ head, ask })).ok).toBe(true);
+              const before = await saved();
+              checkoutHead = moved;
+              const late =
+                variant === "checkout verdict"
+                  ? await invoke("lane.record", {
+                      mergeGate: { head, verdict: "MERGE", reviewer: "old" },
+                    })
+                  : await record({
+                      head,
+                      ...(variant === "checkout ask"
+                        ? { ask }
+                        : variant === "checkout answer"
+                          ? { answer: "hold" }
+                          : { done: true }),
+                    });
+              expect(failed(late, "INPUT_CONFLICT")).toBe(4);
+              expect(await saved()).toEqual(before);
             } else if (
               name === "Old verdict/result" &&
               !["verdict", "result", "generation", "head replay"].includes(
