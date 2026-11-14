@@ -77,7 +77,8 @@ export function laneCommand(
     input !== null &&
     !Array.isArray(input) &&
     "id" in input &&
-    typeof input.id === "string"
+    typeof input.id === "string" &&
+    !/^work-[1-9][0-9]*$/.test(input.id)
   ) {
     configured(host.idPrefix);
     input = {
