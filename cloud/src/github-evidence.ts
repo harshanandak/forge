@@ -231,7 +231,7 @@ export async function readGithubMergeEvidence(
     const snapshot: unknown = structuredClone(input);
     budget(snapshot);
     const locator = object(object(snapshot).locator);
-    const checkRoot = `https://api.github.com/repos/${encodeURIComponent(String(locator.owner))}/${encodeURIComponent(String(locator.repo))}/check-runs/`;
+    const lower = (s: string) => s.replace(/[A-Z]/g, (c) => c.toLowerCase());
     const seen = new Set<number>();
     const result = await withGithubPrEvidence(
       snapshot,
@@ -263,12 +263,22 @@ export async function readGithubMergeEvidence(
               job.head_sha !== run.headSha
             )
               fail();
+            const path =
+              typeof job.check_run_url === "string"
+                ? job.check_run_url.split("/")
+                : [];
             if (
-              typeof job.check_run_url !== "string" ||
-              !job.check_run_url.startsWith(checkRoot)
+              path.length !== 8 ||
+              path[0] !== "https:" ||
+              path[1] !== "" ||
+              path[2] !== "api.github.com" ||
+              path[3] !== "repos" ||
+              path[6] !== "check-runs" ||
+              lower(path[4]!) !== lower(String(locator.owner)) ||
+              lower(path[5]!) !== lower(String(locator.repo))
             )
               fail("UNAVAILABLE");
-            const suffix = job.check_run_url.slice(checkRoot.length),
+            const suffix = path[7]!,
               id = Number(suffix);
             if (!positive(id) || String(id) !== suffix) fail("UNAVAILABLE");
             if (seen.has(id)) fail();

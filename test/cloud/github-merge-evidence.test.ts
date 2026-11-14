@@ -16,7 +16,7 @@ const head = "a".repeat(40),
 const digest =
   "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
 const rows: [string, string, unknown, string | null][] = [
-  ..."ok squash failure cancelled queued missing-check wrong-producer not-ancestor"
+  ..."ok squash failure cancelled queued missing-check wrong-producer not-ancestor mixed-case"
     .split(" ")
     .map((n): [string, string, unknown, null] => [n, "", null, null]),
   ...Object.entries(
@@ -32,6 +32,7 @@ const rows: [string, string, unknown, string | null][] = [
   ...[
     "https://evil.test/42",
     "https://api.github.com/repos/other/repo/check-runs/42",
+    "https://api.github.com/repos/acme/forged/check-runs/42",
     "https://api.github.com/repos/acme/forge/check-runs/42?token=secret",
     null,
   ].map((v): [string, string, unknown, string] => [
@@ -63,6 +64,8 @@ for (const [name, path, value, code] of rows)
     const input = JSON.parse(
       `{"locator":{"owner":"acme","repo":"forge","repositoryId":7,"branch":"main","prNumber":9},"policy":{"project":"forge","repositoryId":7,"baseBranch":"main","version":"1","digest":"${"d".repeat(64)}","producer":{"repositoryId":7,"appId":77,"workflowId":9,"workflowPath":".github/workflows/ci.yml","workflowDigest":"${digest}"},"requiredChecks":["ci"]},"binding":{"project":"forge","issueId":"work-1","linkKey":"link:work-1:1","linkRevision":1,"repositoryId":7,"prNumber":9,"prId":"PR_node","headSha":"${head}"}}`,
     ) as Record<string, unknown>;
+    if (name === "mixed-case")
+      Object.assign(input.locator as object, { owner: "AcMe", repo: "FoRgE" });
     const fixture = JSON.parse(
       `{"pr":{"number":9,"node_id":"PR_node","head":{"sha":"${head}"},"base":{"repo":{"id":7},"ref":"main"},"state":"closed","merged":true,"merged_at":"${time}","merge_commit_sha":"${actual}"},"job":{"id":50,"run_id":10,"run_attempt":2,"head_sha":"${actual}","check_run_url":"https://api.github.com/repos/acme/forge/check-runs/42","name":"ci","status":"completed","conclusion":"success","completed_at":"${time}"},"check":{"id":42,"app":{"id":77},"check_suite":{"id":20},"head_sha":"${actual}","name":"ci","status":"completed","conclusion":"success","completed_at":"${time}"}}`,
     ) as Record<string, Record<string, unknown>>;
@@ -254,7 +257,9 @@ for (const [name, path, value, code] of rows)
         result.value,
         time,
       );
-      expect(eligible.eligible).toBe(["ok", "squash"].includes(name));
+      expect(eligible.eligible).toBe(
+        ["ok", "squash", "mixed-case"].includes(name),
+      );
       if (!eligible.eligible)
         expect(eligible.code).toBe(
           name === "queued"
@@ -264,7 +269,7 @@ for (const [name, path, value, code] of rows)
               : "RECEIPT_INVALID",
         );
       expect(urls.at(-1)).toBe(
-        "https://api.github.com/repos/acme/forge/pulls/9",
+        `https://api.github.com/repos/${name === "mixed-case" ? "AcMe/FoRgE" : "acme/forge"}/pulls/9`,
       );
       expect(prReads).toBe(2);
     } else {
