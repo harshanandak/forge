@@ -10,6 +10,8 @@ import {
 import { LaneControlStore } from "../lane-control-store.ts";
 import { readOnlyStore, type DurableStorage } from "../store.ts";
 import { same, sha256, TOKEN_LOOKUP } from "../tokens.ts";
+import { isVerifiedIdentity } from "../../../src/ports/identity.ts";
+import { ownerPolicy } from "./compose.ts";
 import type { DeviceBrowserOptions } from "./device-browser.ts";
 import {
   importLoginKey,
@@ -114,8 +116,6 @@ export async function laneRoute(
   options: DeviceBrowserOptions,
   body: string,
 ): Promise<Response> {
-  if (isLaneCallback(request))
-    return page(400, "<h1>Lane approval callback is not available yet</h1>");
   let origin: string, clerkOrigin: string;
   try {
     const callback = new URL(String(env.CLERK_REDIRECT_URI));
@@ -140,16 +140,17 @@ export async function laneRoute(
     SELECT,
     GET,
     TOKEN_LOOKUP,
+    `SELECT state FROM ${LANE_BROWSER} WHERE id=1`,
   ]);
-  if (path === null || db === undefined) return refused();
-  const current = () => {
+  if (db === undefined) return refused();
+  const current = (id = path?.[1]) => {
     const held = db.get(SELECT);
     const rows =
       held === undefined
         ? []
         : (JSON.parse(String(held.state)) as { requests: LaneApproval[] })
             .requests;
-    const row = rows.find((entry) => entry.request === path[1]);
+    const row = rows.find((entry) => entry.request === id);
     if (
       row === undefined ||
       row.project !== env.FORGE_CLOUD_PROJECT ||
@@ -178,6 +179,136 @@ export async function laneRoute(
       return;
     return { row, control: control.result };
   };
+  if (isLaneCallback(request)) {
+    const url = new URL(request.url),
+      states = url.searchParams.getAll("state"),
+      codes = url.searchParams.getAll("code");
+    if (
+      request.method !== "GET" ||
+      url.origin !== origin ||
+      url.hash ||
+      states.length !== 1 ||
+      !new RegExp(
+        `^${LANE_STATE_PREFIX.replace(".", "\\.")}[A-Za-z0-9_-]{43}$`,
+      ).test(states[0]!) ||
+      codes.length !== 1 ||
+      !codes[0] ||
+      codes[0].length > 16_384 ||
+      url.searchParams.has("error")
+    )
+      return refused();
+    const { upstream, redemption } = options;
+    if (upstream === undefined || redemption === undefined) throw unavailable();
+    const stateHash = await sha256(states[0]!);
+    const readStates = (source: SqlDatabase) => {
+      const held = source.get(`SELECT state FROM ${LANE_BROWSER} WHERE id=1`);
+      return held === undefined
+        ? []
+        : (JSON.parse(String(held.state)) as Pending[]);
+    };
+    const pending = readStates(db).find((entry) =>
+      same(entry.stateHash, stateHash),
+    );
+    const row =
+      pending === undefined ? undefined : current(pending.request)?.row;
+    if (
+      pending === undefined ||
+      row === undefined ||
+      !(Date.now() < pending.expiresAt)
+    )
+      return refused();
+    const fresh = () => {
+      const live = current(row.request);
+      return (
+        live !== undefined &&
+        Date.now() < pending.expiresAt &&
+        digestValue(live.row) === digestValue(row)
+      );
+    };
+    const name = `__Host-forge_lane_${stateHash.slice(0, 24)}`;
+    const cookies = (request.headers.get("Cookie") ?? "")
+      .split(";")
+      .map((part) => part.trim())
+      .filter((part) => part.startsWith(`${name}=`));
+    const bind = cookies.length === 1 ? cookies[0]!.slice(name.length + 1) : "";
+    if (!SECRET.test(bind)) return refused();
+    const bindHash = await sha256(bind);
+    if (!fresh() || !same(bindHash, pending.bindHash)) return refused();
+    const writable = open().db;
+    // Consume only this browser's state before any exchange. Concurrent callbacks cannot both take it.
+    const taken = writable.transaction(() => {
+      const live = readStates(writable);
+      const index = live.findIndex(
+        (entry) => digestValue(entry) === digestValue(pending),
+      );
+      if (index < 0 || !fresh()) return false;
+      live.splice(index, 1);
+      writable.run(`UPDATE ${LANE_BROWSER} SET state=? WHERE id=1`, [
+        JSON.stringify(live),
+      ]);
+      return true;
+    });
+    if (!taken) return refused();
+    const codeHash = await sha256(`lane-upstream:${codes[0]}`);
+    if (!fresh()) return refused();
+    const claimed = await redemption
+      .claimOnce(codeHash, pending.expiresAt)
+      .catch(() => false);
+    if (!fresh() || !claimed) return refused();
+    const proof = await upstream
+      .verify(request, Date.now(), pending.verifier)
+      .catch(() => undefined);
+    if (!fresh() || proof?.ok !== true || !isVerifiedIdentity(proof.identity))
+      return refused();
+    // Same StateOwner-backed database and synchronous transaction as request creation. No await after this recheck.
+    const recorded = writable.transaction(() => {
+      const at = Date.now();
+      if (
+        !fresh() ||
+        proof.identity.audience !== env.CLERK_CLIENT_ID ||
+        !(at < proof.identity.expiresAt) ||
+        at < proof.identity.authenticatedAt ||
+        !ownerPolicy(
+          String(env.CLERK_ISSUER),
+          String(env.FORGE_OWNER_SUBJECT),
+        ).authorize({
+          principal: { kind: "person", identity: proof.identity },
+          project: row.project,
+          action: `lane.${pending.action}`,
+          authority: "single-owner",
+        }).allowed
+      )
+        return false;
+      const held = writable.get(SELECT)!;
+      const state = JSON.parse(String(held.state)) as {
+        requests: LaneApproval[];
+      };
+      state.requests = state.requests.map((entry) =>
+        entry.request === row.request
+          ? {
+              ...entry,
+              status: pending.action === "approve" ? "approved" : "denied",
+              decision: {
+                issuer: proof.identity.issuer,
+                subject: proof.identity.subject,
+                at: new Date(at).toISOString(),
+              },
+            }
+          : entry,
+      );
+      writable.run(`UPDATE ${LANE_APPROVALS} SET state=? WHERE id=1`, [
+        JSON.stringify(state),
+      ]);
+      return true;
+    });
+    return recorded
+      ? page(
+          200,
+          `<h1>Lane approval</h1><p>${pending.action === "approve" ? "approved" : "denied"}</p>`,
+        )
+      : refused();
+  }
+  if (path === null) return refused();
   const shown = current();
   if (shown === undefined) return refused();
   const { row, control } = shown;
