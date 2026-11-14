@@ -447,9 +447,8 @@ async function stateFixture(namespaces = stateNamespaces) {
       ...snapshot,
       sql: snapshot.sql.filter(
         ([name]) =>
-          !["domain_cloud_command_receipts", "domain_cloud_export"].includes(
-            name,
-          ),
+          name !== "domain_cloud_command_receipts" &&
+          name !== "domain_cloud_export",
       ),
     });
   };
@@ -512,6 +511,18 @@ for (const keys of [
         const refused = await f.commit({ ...request, ...changed });
         expect(stateOutcome(refused)).toEqual([409, "INPUT_CONFLICT", 4]);
         expect(f.snapshot()).toBe(saved);
+      }
+      const tables = (await f.admin("dump")).json.value!.tables;
+      for (const trip of ["whole", "paged"] as const) {
+        const { t, got: restored } = await restoreInto(trip, tables, {
+          per: 1,
+        });
+        try {
+          expect(restored.status).toBe(200);
+          expectFloor(t, tables, [issueFloor(0)]);
+        } finally {
+          t.db.close();
+        }
       }
     } finally {
       f.db.close();
@@ -749,13 +760,22 @@ for (const fault of [
   "version result",
   "receipt",
   "full budget",
+  "restore budget",
   "prune",
   "dropped reply",
 ] as const)
   test(`state commit transaction fault table: ${fault}`, async () => {
     const f = await stateFixture();
     try {
-      const input = await f.plan(stateEntries("one", "two"));
+      const entries =
+        fault === "restore budget"
+          ? Array.from({ length: 256 }, (_, i) => ({
+              key: String(i),
+              value: Array(11).fill(0),
+              expectRevision: 0,
+            }))
+          : stateEntries("one", "two");
+      const input = await f.plan(entries);
       if (fault === "full budget" || fault === "prune") {
         const insert = f.db.query(
           "INSERT INTO domain_cloud_command_receipts(request_id,fingerprint,outcome,result,created_at,expires_at) VALUES (?,?, 'ok','{}',?,?)",
@@ -816,13 +836,9 @@ for (const fault of [
         fault === "dropped reply" ? { via: dropped } : {},
       );
       injected.mockRestore();
-      if (
-        ["second record", "version result", "receipt", "full budget"].includes(
-          fault,
-        )
-      ) {
+      if (fault !== "prune" && fault !== "dropped reply") {
         expect(stateOutcome(got)).toEqual(
-          fault === "full budget"
+          fault === "full budget" || fault === "restore budget"
             ? [503, "UNAVAILABLE", 1]
             : [500, "INTERNAL", 1],
         );
