@@ -1,8 +1,6 @@
 ﻿# Bound lane progress
 
-Read before bound start, next or record. Claim, prepare the checkout and brief, then attach. Status lists this device's attachments; retained files are not ownership.
-
-`lane.next {id,head}` requires the full Git head and reserves one numbered action. Repeats retain its number. Its `raw` JSON gives the reservation's generation and head. A changed head invalidates review.
+Claim the issue, prepare its checkout and brief, then attach. `lane.next {id,head}` requires a full Git head and reserves one numbered action; repeats retain its number. Its `raw` JSON identifies the generation and head. Changed heads invalidate review. Status lists device attachments; retained files do not prove ownership.
 
 For `lane.record`, set `context.leaseGeneration` to that reserved generation and `result.head` to that head. Results and merge-gate verdicts require the original generation. Keep rejected old output as a diagnostic; never relabel it for the current grant.
 

@@ -12,7 +12,6 @@ import type {
   EnvironmentService,
 } from "../../assembly/providers.ts";
 import entry from "./entry.cts";
-import type { Limits } from "./entry.cts";
 import type { StateClient } from "../../ports/state.ts";
 import {
   boundLaneKey,
@@ -103,7 +102,12 @@ function refuse(code: string, message: string): never {
   throw new ForgeFailure({ code, message, retry: "reconcile_first" });
 }
 const helpers = entry as unknown as {
-  limitsOf(config: unknown): Limits;
+  limitsOf(
+    config: unknown,
+  ): { enabled: boolean } & Record<
+    "calls" | "reviewRounds" | "ciFixRounds" | "activeHours",
+    number
+  >;
   briefProblems(text: string): string[];
   briefPath(files: FilesService, path: string, windows: boolean): string;
   laneRegistry(
