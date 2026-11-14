@@ -41,7 +41,7 @@ beforeAll(async () => {
 const cases = [
   "mint",
   "composition",
-  "cache",
+  "cache cutoff",
   "no repositories",
   "fewer permissions",
   "wrong repository",
@@ -71,6 +71,8 @@ const cases = [
     "content",
     "oversize",
     "expired",
+    "inside margin",
+    "at margin",
     "expiry",
     "empty",
     "whitespace",
@@ -240,6 +242,10 @@ for (const name of cases) {
         }
         if (name === "bad:expired")
           value.expires_at = new Date(now).toISOString();
+        if (name === "bad:inside margin")
+          value.expires_at = new Date(now + 30_000).toISOString();
+        if (name === "bad:at margin")
+          value.expires_at = new Date(now + 60_000).toISOString();
         if (name === "bad:expiry") value.expires_at = "invalid";
         if (name === "bad:empty") value.token = "";
         if (name === "bad:whitespace") value.token = " \n";
@@ -281,12 +287,12 @@ for (const name of cases) {
       const success = [
         "mint",
         "composition",
-        "cache",
+        "cache cutoff",
         "no repositories",
         "fewer permissions",
       ].includes(name);
       expect(result).toEqual(
-        success ? { token: "fixture-token", expiresAt: 2_000_000 } : null,
+        success ? { token: "fixture-token", expiresAt: 1_940_000 } : null,
       );
       expect(calls).toBe(
         success ||
@@ -295,12 +301,12 @@ for (const name of cases) {
           ? 1
           : 0,
       );
-      if (name === "cache") {
+      if (name === "cache cutoff") {
         expect(await credential(7, caller.signal)).toEqual(result);
         expect(calls).toBe(1);
         expect(await credential(8, caller.signal)).toBeNull();
         now = 1_940_000;
-        expect(await credential(7, caller.signal)).toEqual(result);
+        expect(await credential(7, caller.signal)).toBeNull();
         expect(calls).toBe(2);
       }
       if (late) {
@@ -309,7 +315,7 @@ for (const name of cases) {
         await Promise.resolve();
         expect(await credential(7, new AbortController().signal)).toEqual({
           token: "fixture-token",
-          expiresAt: 2_000_000,
+          expiresAt: 1_940_000,
         });
         expect(calls).toBe(2);
       }
