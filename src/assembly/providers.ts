@@ -304,7 +304,7 @@ function within(base: string, target: string): boolean {
  * The first PATH entry holding `name` whose canonical executable is outside the project, the
  * temp directories and node_modules/.bin. A path that cannot be canonicalized is refused.
  */
-function resolveOutside(
+export function resolveOutside(
   executor: ProcessPort,
   name: string,
   env: Readonly<Record<string, string>>,

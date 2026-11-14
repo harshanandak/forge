@@ -1841,6 +1841,12 @@ export async function createAssembly(
                     if (!answer.ok) throw new ForgeFailure(answer.error);
                     return answer.result;
                   },
+                  {
+                    providers,
+                    env,
+                    deviceRoot,
+                    now: options.providers?.cloudLogin?.now ?? Date.now,
+                  },
                 ),
             },
             runtime,

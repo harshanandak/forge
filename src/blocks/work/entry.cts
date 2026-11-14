@@ -1198,7 +1198,10 @@ function laneFiles(services: unknown): FilesService {
   if (!files) fail("UNAVAILABLE", "Lane operations require the files service");
   return files;
 }
-function laneRegistry(files: FilesService): {
+function laneRegistry(
+  files: FilesService,
+  refuse: typeof fail = fail,
+): {
   text: string | null;
   lanes: Lane[];
 } {
@@ -1207,7 +1210,7 @@ function laneRegistry(files: FilesService): {
   try {
     value = text === null ? [] : JSON.parse(text);
   } catch {
-    fail("INPUT_INVALID", "Repair the invalid lane registry before retrying");
+    refuse("INPUT_INVALID", "Repair the invalid lane registry before retrying");
   }
   if (
     !Array.isArray(value) ||
@@ -1227,7 +1230,7 @@ function laneRegistry(files: FilesService): {
           (typeof row.issueId === "string" && /^work-\d+$/.test(row.issueId))),
     )
   )
-    fail("INPUT_INVALID", "Repair the invalid lane registry before retrying");
+    refuse("INPUT_INVALID", "Repair the invalid lane registry before retrying");
   return { text, lanes: value as Lane[] };
 }
 /**
@@ -6667,4 +6670,9 @@ const operations: Operations<WorkOperations> = {
     return { problems };
   },
 };
+Object.defineProperties(operations, {
+  briefProblems: { value: briefProblems },
+  laneRegistry: { value: laneRegistry },
+  briefPath: { value: briefPath },
+});
 module.exports = operations;
