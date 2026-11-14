@@ -58,7 +58,7 @@ jobs:
           from pathlib import Path
           import subprocess
           suite = ["bun", "test", "--timeout", "30000", "test/cloud/issue-commands.test.ts", "--test-name-pattern"]
-          baseline = subprocess.run(suite + ["^state (commit|read:)"], capture_output=True, text=True)
+          baseline = subprocess.run(suite + ["^state (commit|read:|receipt restore)"], capture_output=True, text=True)
           if baseline.returncode: print(baseline.stdout + baseline.stderr)
           assert baseline.returncode == 0, "unmodified state journeys must pass before mutation"
           rows = [
@@ -68,6 +68,7 @@ jobs:
               ("replay fence", "cloud/src/state-commit.ts", "    () => checkFence(),\n  );", "    undefined,\n  );", "state commit final authority table: replay expired"),
               ("final fence forwarding", "cloud/src/state-commit.ts", "        ...(fence === undefined ? {} : { fence }),", "", "state commit final authority table: transaction expiry"),
               ("read version", "cloud/src/state-commit.ts", "expected.epoch !== epoch || expected.revision !== revision", "false", "state commit conflict table: phantom"),
+              ("state receipt restore", "cloud/src/dump.ts", "!/^[cs]2:[a-f0-9]{64}$/", "!/^c2:[a-f0-9]{64}$/", "state receipt restore table: whole/s2:"),
           ]
           for name, file, before, after, test in rows:
               path = Path(file)

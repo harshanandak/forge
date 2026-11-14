@@ -806,7 +806,7 @@ function checkCommandReceipt(row: Row): void {
     return bad();
   }
   if (
-    !/^c2:[a-f0-9]{64}$/.test(String(row.request_id)) ||
+    !/^[cs]2:[a-f0-9]{64}$/.test(String(row.request_id)) ||
     !isObject(fingerprint) ||
     !versioned(fingerprint) ||
     typeof fingerprint.input !== "string" ||
