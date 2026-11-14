@@ -169,6 +169,8 @@ export async function boundLaneStart(
     );
   });
   record = { ...record, lane, active: true };
+  if (Date.parse(grant.expiresAt) <= now())
+    refuse("LEASE_EXPIRED", "The cloud grant expired.");
   await save(record, revision);
   return { ...lane, issue: fresh.id, lease: grant };
 }
@@ -181,6 +183,7 @@ export async function attachBoundLane(
     environment: EnvironmentService;
     signal: AbortSignal;
     deadline: number;
+    now: () => number;
   },
   fence: () => Promise<void>,
 ): Promise<BoundLaneRecord["lane"]> {
@@ -267,6 +270,8 @@ export async function attachBoundLane(
       );
     await fence();
     await identity();
+    if (Date.parse(record.grant.expiresAt) <= services.now())
+      refuse("LEASE_EXPIRED", "The cloud grant expired.");
     if (!existing.length)
       files.write(
         "forge-lanes.json",

@@ -79,6 +79,7 @@ export async function coordinateLane(
               files: files.value,
               process: options.providers.process(scope),
               environment: options.providers.environment(scope),
+              now: options.now,
               ...scope,
             },
             fence,

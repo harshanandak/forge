@@ -323,6 +323,7 @@ interface Setup {
   device?: string | false;
   steps?: fx.Step[];
   config?: string;
+  now?: () => number;
   prepare?: (s: fx.Sandbox) => void | Promise<void>;
   /** False runs the real local store, for the unbound project. */
   sentinel?: boolean;
@@ -381,7 +382,10 @@ async function rig(o: Setup) {
     createAssembly({
       root,
       deviceRoot: s.deviceRoot,
-      providers: { env, cloudLogin: { fetch: net.fetch, now: () => NOW } },
+      providers: {
+        env,
+        cloudLogin: { fetch: net.fetch, now: o.now ?? (() => NOW) },
+      },
       terminal,
     });
   const assembly = await open(); // requests carry the context a real CLI or MCP call builds
@@ -1208,6 +1212,7 @@ for (const [name, expected] of [
   ["holder changes during fence", "LEASE_NOT_HELD"],
   ["generation changes during fence", "LEASE_STALE"],
   ["grant expires during fence", "LEASE_EXPIRED"],
+  ["grant expires during final identity", "LEASE_EXPIRED"],
   ["invalid brief", "INPUT_INVALID"],
   ["closed issue", "INPUT_CONFLICT"],
   ["absent issue", "NOT_FOUND"],
@@ -1216,10 +1221,12 @@ for (const [name, expected] of [
 ] as const)
   test(`bound attachment table: ${name}`, () => {
     let reads = 0;
+    let time = NOW;
     let sandbox: fx.Sandbox;
     return using(
       {
         config: yaml({ config: { idPrefix: "forge" } }),
+        now: () => time,
         prepare: async (s) => {
           sandbox = s;
           const git = spawnSync(
@@ -1331,6 +1338,18 @@ for (const [name, expected] of [
           name === "nested directory"
             ? await r.open(join(r.s.root, "src"))
             : r.assembly;
+        const runProcess = launch.runProcess;
+        const expiry =
+          name === "grant expires during final identity"
+            ? spyOn(launch, "runProcess").mockImplementation(
+                async (...args) => {
+                  const result = await runProcess(...args);
+                  if (reads === 2 && args[1][0] === "symbolic-ref")
+                    time = Date.parse(OWN_GRANT.expiresAt);
+                  return result;
+                },
+              )
+            : undefined;
         try {
           const context = {
             ...holding(r, { leaseGeneration: OWN_GRANT.generation }),
@@ -1411,6 +1430,8 @@ for (const [name, expected] of [
             false,
           );
           if (expected !== "OK") {
+            if (name === "grant expires during final identity")
+              expect(time).toBe(Date.parse(OWN_GRANT.expiresAt));
             expect(attachmentBytes(r.s)).toEqual(before);
             expect(
               r.net.calls.some(
@@ -1478,6 +1499,7 @@ for (const [name, expected] of [
             });
           }
         } finally {
+          expiry?.mockRestore();
           if (assembly !== r.assembly) await assembly.close();
         }
       },
