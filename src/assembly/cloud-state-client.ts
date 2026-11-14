@@ -262,6 +262,8 @@ export function createCloudRecordClient(
     async commit(call) {
       const { token, device } = stored();
       const body = { ...call, context: contextFor(call.context, device) };
+      if (signal?.aborted === true)
+        throw failure("INVOCATION_CANCELLED", "The request was cancelled.");
       try {
         const { result } = await exchange(() =>
           http.stateCommit(token, body, signal),
@@ -269,7 +271,11 @@ export function createCloudRecordClient(
         if (carriesToken(result, token)) throw unknownCommit();
         return result;
       } catch (error) {
-        if (error instanceof ForgeFailure && error.error.code === "UNAVAILABLE")
+        if (
+          error instanceof ForgeFailure &&
+          (error.error.code === "UNAVAILABLE" ||
+            error.error.code === "INVOCATION_CANCELLED")
+        )
           throw unknownCommit();
         throw error;
       }

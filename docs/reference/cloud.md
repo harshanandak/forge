@@ -375,5 +375,6 @@ No operation logs in, rotates credentials, writes a local fallback or resends.
 An unusable or lost commit reply is `UNAVAILABLE`, with reconciliation required:
 retain the exact commit input and request ID until acceptance is established.
 An explicit replay uses that same request; do not rerun the domain command to
-recover an uncertain write. Cancellation keeps its sanitized cancellation code.
+recover an uncertain write. An already-aborted commit keeps its cancellation code;
+cancellation during a commit attempt requires reconciliation, as a lost reply does.
 The async state provider and memory/decision routing are separate integrations.

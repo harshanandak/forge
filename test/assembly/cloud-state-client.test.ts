@@ -730,17 +730,20 @@ for (const [name, result, validate] of [
     expect(bodies).toHaveLength(1);
   }, 10_000);
 
-const READ: StateReadRequest = {
-  version: 1,
-  kind: "read",
+const CAPABILITY = {
+  version: 1 as const,
   namespace: "forge/memory",
+  context: { ...cmd.context, project: { id: PROJECT_ID, root: "/repo" } },
+};
+const READ: StateReadRequest = {
+  ...CAPABILITY,
+  kind: "read",
   operation: "memory.show",
   policyRevision: "discover",
   query: { kind: "get", key: "proof" },
-  context: { ...cmd.context, project: { id: PROJECT_ID, root: "/repo" } },
 };
 const COMMIT: StateCommitRequest = {
-  ...READ,
+  ...CAPABILITY,
   kind: "commit",
   operation: "memory.add",
   policyRevision: "policy-1",
@@ -803,19 +806,18 @@ function recordRig(
       expect(init.headers.authorization).toBe(`Bearer ${TOKEN}`);
       const body = parseStateInput(init.body!);
       calls.push({ url, body });
-      options.abortAfterSend?.abort();
       if (options.lost) throw new Error(`lost reply ${TOKEN}`);
-      return Promise.resolve(
-        new Response(
-          JSON.stringify(
-            options.response ?? recordAnswer(body.kind === "commit"),
-          ),
-          {
-            status: options.status ?? 200,
-            headers: { "content-type": "application/json" },
-          },
+      const response = new Response(
+        JSON.stringify(
+          options.response ?? recordAnswer(body.kind === "commit"),
         ),
+        {
+          status: options.status ?? 200,
+          headers: { "content-type": "application/json" },
+        },
       );
+      options.abortAfterSend?.abort();
+      return Promise.resolve(response);
     },
   });
   const client = createCloudRecordClient({
@@ -859,11 +861,7 @@ for (const op of recordOps) {
       },
       "AUTH_REQUIRED",
     ],
-    [
-      "identity",
-      { key: { ...KEY, identity: OTHER_PROJECT_ID } },
-      "AUTH_REQUIRED",
-    ],
+    ["identity", keyed({ identity: OTHER_PROJECT_ID }), "AUTH_REQUIRED"],
     [
       "credential project",
       { key: { ...KEY, project: "other" }, bound: { project: "other" } },
