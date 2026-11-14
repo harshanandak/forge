@@ -1,16 +1,5 @@
 import { createHash } from "node:crypto";
-import {
-  createReadStream,
-  existsSync,
-  lstatSync,
-  mkdirSync,
-  openSync,
-  readSync,
-  closeSync,
-  readFileSync,
-  writeFileSync,
-  unlinkSync,
-} from "node:fs";
+import * as fs from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
@@ -25,12 +14,9 @@ import { success } from "../src/surface/dispatch.ts";
 import { failure, respond } from "../src/surface/result.ts";
 import * as dump from "../cloud/src/dump.ts";
 import { domain } from "../cloud/src/project.ts";
+import { durableStore } from "../cloud/src/store.ts";
 import * as image from "../cloud/conformance/digest.ts";
-import {
-  currentState,
-  pagesOf,
-  type SourceManifest,
-} from "./import-current-state.ts";
+import * as projection from "./import-current-state.ts";
 
 const invalid = (): never => {
   throw new ForgeFailure({
@@ -41,13 +27,15 @@ const invalid = (): never => {
 };
 export async function digest(path: string): Promise<string> {
   const hash = createHash("sha256");
-  for await (const chunk of createReadStream(path))
+  for await (const chunk of fs.createReadStream(path))
     hash.update(chunk as Uint8Array);
   return hash.digest("hex");
 }
-function sourceManifest(path: string): SourceManifest {
+function sourceManifest(path: string): projection.SourceManifest {
   try {
-    const value = JSON.parse(readFileSync(path, "utf8")) as SourceManifest;
+    const value = JSON.parse(
+      fs.readFileSync(path, "utf8"),
+    ) as projection.SourceManifest;
     if (
       !value ||
       Object.keys(value).sort().join() !==
@@ -60,21 +48,21 @@ function sourceManifest(path: string): SourceManifest {
   }
 }
 function isolatedBackup(path: string): void {
-  const stat = lstatSync(path),
+  const stat = fs.lstatSync(path),
     header = Buffer.alloc(20);
   if (
     !stat.isFile() ||
     stat.isSymbolicLink() ||
     stat.nlink !== 1 ||
-    ["-wal", "-shm", "-journal"].some((suffix) => existsSync(path + suffix))
+    ["-wal", "-shm", "-journal"].some((suffix) => fs.existsSync(path + suffix))
   )
     invalid();
-  const fd = openSync(path, "r");
+  const fd = fs.openSync(path, "r");
   try {
-    if (readSync(fd, header) !== 20 || header[18] !== 1 || header[19] !== 1)
+    if (fs.readSync(fd, header) !== 20 || header[18] !== 1 || header[19] !== 1)
       invalid();
   } finally {
-    closeSync(fd);
+    fs.closeSync(fd);
   }
 }
 async function opened(
@@ -105,16 +93,15 @@ async function opened(
     },
   };
 }
-/** Bounded keyset scans use exactly the dump's column and key order, including empty tables. */
+/** Bounded scans use exactly the dump's column and key order, including empty tables. */
 export function imageDigests(db: SqlDatabase) {
   const t = image.tally();
   for (const table of image.TABLES) {
-    let after: (string | number)[] | undefined;
-    for (;;) {
+    for (let offset = 0; ; offset += 128) {
       const keys = image.KEYS[table].join(",");
       const rows = db.all(
-        `SELECT ${image.COLUMNS[table].join(",")} FROM ${table}${after ? ` WHERE (${keys}) > (${after.map(() => "?").join(",")})` : ""} ORDER BY ${keys} LIMIT 128`,
-        after,
+        `SELECT ${image.COLUMNS[table].join(",")} FROM ${table} ORDER BY ${keys} LIMIT 128 OFFSET ?`,
+        [offset],
       );
       for (const row of rows) {
         const normal = { ...row };
@@ -124,12 +111,6 @@ export function imageDigests(db: SqlDatabase) {
         image.fold(t, table, normal);
       }
       if (rows.length < 128) break;
-      after = image.KEYS[table].map((key) => {
-        const value = rows.at(-1)![key];
-        return typeof value === "bigint"
-          ? Number(value)
-          : (value as string | number);
-      });
     }
   }
   return image.digests(t);
@@ -145,6 +126,7 @@ export async function convert(options: Options) {
     manifest = sourceManifest(options.manifest),
     limits = options.limits ?? dump.limitsFrom({});
   const handles: OwnedHandle<SqlDatabase>[] = [];
+  const clock = { now: () => Date.parse(manifest.at) };
   const checkPin = async () => {
     if ((await digest(backup)) !== manifest.sha256) invalid();
   };
@@ -153,21 +135,41 @@ export async function convert(options: Options) {
     await checkPin();
     const source = await opened(resolve(backup), true, handles);
     source.exec("BEGIN");
-    if (
-      JSON.stringify(source.all("PRAGMA integrity_check")) !==
-      '[{"integrity_check":"ok"}]'
-    )
+    const integrity = source.all("PRAGMA integrity_check");
+    if (integrity.length !== 1 || integrity[0]?.integrity_check !== "ok")
       invalid();
     const scratch = await opened(":memory:", false, handles);
-    new StateOwner(scratch, {
-      now: () => Date.parse(manifest.at),
-    }).initialize();
-    const projected = currentState(source, scratch, manifest, limits);
+    new StateOwner(scratch, clock).initialize();
+    const projected = projection.currentState(
+      source,
+      scratch,
+      manifest,
+      limits,
+    );
     const expected = imageDigests(scratch);
-    const target = await opened(":memory:", false, handles),
-      owner = new StateOwner(target, { now: () => Date.parse(manifest.at) });
+    const readback = await opened(":memory:", false, handles);
+    const target = durableStore({
+      sql: {
+        exec: (sql, ...params) => ({
+          toArray: () =>
+            readback
+              .all(
+                sql,
+                params.map((p) =>
+                  p instanceof ArrayBuffer ? new Uint8Array(p) : p,
+                ),
+              )
+              .map((row) => ({ ...row })),
+        }),
+      },
+      transactionSync: (body) => readback.transaction(body),
+      get: invalid,
+      put: invalid,
+      delete: invalid,
+    });
+    const owner = new StateOwner(target, clock);
     owner.initialize([domain]);
-    mkdirSync(out, { mode: 0o700 });
+    fs.mkdirSync(out, { mode: 0o700 });
     if (process.platform === "win32")
       await hardenPrivatePaths(
         [out],
@@ -179,12 +181,12 @@ export async function convert(options: Options) {
         ),
       );
     const pages: { name: string; sha256: string; bytes: number }[] = [];
-    for (const page of pagesOf(scratch, limits)) {
+    for (const page of projection.pagesOf(scratch, limits)) {
       const name = `page-${String(page.page).padStart(4, "0")}.json`,
         file = join(out, name);
       const bytes = JSON.stringify(page);
-      writeFileSync(file, bytes, { flag: "wx", mode: 0o600 });
-      const readback = readFileSync(file);
+      fs.writeFileSync(file, bytes, { flag: "wx", mode: 0o600 });
+      const readback = fs.readFileSync(file);
       const sha256 = createHash("sha256").update(readback).digest("hex");
       dump.restorePage(
         target,
@@ -217,12 +219,12 @@ export async function convert(options: Options) {
     };
     const file = join(out, "manifest.json"),
       bytes = JSON.stringify(bundle);
-    writeFileSync(file, bytes, { flag: "wx", mode: 0o600 });
+    fs.writeFileSync(file, bytes, { flag: "wx", mode: 0o600 });
     try {
-      if (JSON.stringify(JSON.parse(readFileSync(file, "utf8"))) !== bytes)
+      if (JSON.stringify(JSON.parse(fs.readFileSync(file, "utf8"))) !== bytes)
         invalid();
     } catch (error) {
-      unlinkSync(file);
+      fs.unlinkSync(file);
       throw error;
     }
     return bundle;
@@ -247,16 +249,18 @@ if (
   import.meta.url === pathToFileURL(resolve(process.argv[1])).href
 ) {
   try {
+    const paths = ["backup", "manifest", "out"];
+    const resources = {
+      "max-rows": "DUMP_MAX_ROWS",
+      "max-bytes": "DUMP_MAX_BYTES",
+      "page-bytes": "DUMP_PAGE_BYTES",
+    };
     const { values: flags } = parseArgs({
       options: Object.fromEntries(
-        [
-          "backup",
-          "manifest",
-          "out",
-          "max-rows",
-          "max-bytes",
-          "page-bytes",
-        ].map((name) => [name, { type: "string", multiple: true }]),
+        [...paths, ...Object.keys(resources)].map((name) => [
+          name,
+          { type: "string", multiple: true },
+        ]),
       ),
     });
     if (
@@ -266,18 +270,14 @@ if (
     )
       invalid();
     const one = (name: string) => flags[name]?.[0];
-    if (!["backup", "manifest", "out"].every(one)) invalid();
+    if (!paths.every(one)) invalid();
     const vars: Record<string, string> = {};
-    for (const [flag, key] of [
-      ["max-rows", "DUMP_MAX_ROWS"],
-      ["max-bytes", "DUMP_MAX_BYTES"],
-      ["page-bytes", "DUMP_PAGE_BYTES"],
-    ]) {
-      const value = one(flag!);
+    for (const [flag, key] of Object.entries(resources)) {
+      const value = one(flag);
       if (value === undefined) continue;
       if (!/^[1-9][0-9]*$/.test(value) || !Number.isSafeInteger(Number(value)))
         invalid();
-      vars[key!] = value;
+      vars[key] = value;
     }
     const reply = await run({
       backup: one("backup")!,

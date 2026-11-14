@@ -93,14 +93,14 @@ test.each(rows)(
           if (kind === "pin" && variant === "changed")
             edits.push([
               "const expected = imageDigests(scratch);",
-              "const expected = imageDigests(scratch); writeFileSync(backup, Buffer.concat([readFileSync(backup), Buffer.from([0])]));",
+              "const expected = imageDigests(scratch); fs.writeFileSync(backup, Buffer.concat([fs.readFileSync(backup), Buffer.from([0])]));",
             ]);
           if (kind === "pin" && mutant) edits.push([pinGuard, "false"]);
           if (kind === "readback") {
             if (variant === "drop")
               edits.push([
-                "for (const page of pagesOf(scratch, limits)) {",
-                "const removed = Number(scratch.get(\"SELECT sequence FROM state_events WHERE key='issue:work-1'\").sequence); for (const page of pagesOf(scratch, limits)) {",
+                "for (const page of projection.pagesOf(scratch, limits)) {",
+                "const removed = Number(scratch.get(\"SELECT sequence FROM state_events WHERE key='issue:work-1'\").sequence); for (const page of projection.pagesOf(scratch, limits)) {",
               ]);
             const alter =
               variant === "drop"
@@ -141,8 +141,8 @@ test.each(rows)(
                   ? "new StateOwner(scratch, {now: () => Date.parse(manifest.at)}).put('forge/work','issue:work-1',{title:'receipt'}, {kind:'agent',id:'synthetic'},{expectRevision:1,requestId:'old-request'});"
                   : "scratch.run(\"INSERT INTO domain_cloud_requests VALUES (?,?,?,?)\", ['legacy', JSON.stringify({route:'claim',subject:'issue:work-1'}), 'INPUT_INVALID', JSON.stringify({code:'INPUT_INVALID',message:'synthetic',retry:'never'})]);";
             edits.push([
-              "for (const page of pagesOf(scratch, limits)) {",
-              `${inject}\n    for (const page of pagesOf(scratch, limits)) {`,
+              "for (const page of projection.pagesOf(scratch, limits)) {",
+              `${inject}\n    for (const page of projection.pagesOf(scratch, limits)) {`,
             ]);
             if (mutant) edits.push([compareGuard, "false"]);
           }
@@ -153,7 +153,7 @@ test.each(rows)(
             } else
               edits.push([
                 "const bytes = JSON.stringify(page);",
-                "writeFileSync(file, JSON.stringify(page).slice(0, 12), { flag: 'wx', mode: 0o600 }); throw new Error('interrupted synthetic write');",
+                "fs.writeFileSync(file, JSON.stringify(page).slice(0, 12), { flag: 'wx', mode: 0o600 }); throw new Error('interrupted synthetic write');",
               ]);
           }
           const impl = edits.length
