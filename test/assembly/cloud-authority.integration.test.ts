@@ -1322,6 +1322,10 @@ for (const [name, variants] of [
       "regrant review",
       "regrant ci",
       "regrant time",
+      "regrant review ask",
+      "regrant review held",
+      "regrant ci ask",
+      "regrant ci held",
     ],
   ],
   ["Owner ask", ["ask", "held answer", "completion after hold"]],
@@ -1716,18 +1720,24 @@ for (const [name, variants] of [
               ).toBe(4);
               expect(await saved()).toEqual(changed);
             } else if (name === "Budget reached") {
+              const ask = {
+                reason: "Scope",
+                releaseTotal: "400 lines",
+                default: "A",
+              };
+              if (variant.endsWith("held")) {
+                expect((await record({ head, ask })).ok).toBe(true);
+                expect((await record({ head, answer: "hold" })).ok).toBe(true);
+              }
               if (variant !== "disabled" && variant !== "pending time") {
                 expect(
                   (
                     await record({
                       head,
                       done: true,
-                      ...(["reviewRounds", "regrant review"].includes(variant)
-                        ? { review: true }
-                        : {}),
-                      ...(["ciFixRounds", "regrant ci"].includes(variant)
-                        ? { ci: true }
-                        : {}),
+                      ...(variant.includes("review") ? { review: true } : {}),
+                      ...(variant.includes("ci") ? { ci: true } : {}),
+                      ...(variant.endsWith("ask") ? { ask } : {}),
                     })
                   ).ok,
                 ).toBe(true);
