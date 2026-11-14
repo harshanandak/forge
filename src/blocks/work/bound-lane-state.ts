@@ -1,6 +1,9 @@
 import { ForgeFailure } from "../../contract/failure.ts";
 import type { LeaseRecord } from "../../generated/types.ts";
-import { validateLeaseRecord } from "../../generated/validators.ts";
+import {
+  validateLeaseRecord,
+  validateRequestId,
+} from "../../generated/validators.ts";
 import type { StateClient } from "../../ports/state.ts";
 import type { StateRecord } from "../../generated/types.ts";
 
@@ -23,6 +26,7 @@ export interface BoundLaneRecord {
   readonly grant: LeaseRecord;
   readonly active: boolean;
   readonly releaseNeeded?: boolean;
+  readonly releaseRequestId?: string;
 }
 export const boundLaneKey = (project: BoundProject, id = "") =>
   `bound-lane:${JSON.stringify([project.origin, project.identity, project.project])}:${id}`;
@@ -43,6 +47,7 @@ export function readBoundLane(value: unknown, id: string): BoundLaneRecord {
           "grant",
           "active",
           "releaseNeeded",
+          "releaseRequestId",
         ].includes(key),
     ) ||
     record.id !== id ||
@@ -54,6 +59,9 @@ export function readBoundLane(value: unknown, id: string): BoundLaneRecord {
     typeof record.active !== "boolean" ||
     (record.releaseNeeded !== undefined &&
       typeof record.releaseNeeded !== "boolean") ||
+    (record.releaseRequestId !== undefined &&
+      (!validateRequestId(record.releaseRequestId).ok ||
+        record.releaseNeeded !== true)) ||
     !lane ||
     Object.keys(lane).some(
       (key) =>
