@@ -93,7 +93,7 @@ export function claimIssue(
         ttlMs: (ttlSeconds ?? DEFAULT_TTL_SECONDS) * 1000,
       };
     },
-    ({ id, given, ttlMs }, _actor, prefix, context) => {
+    ({ id, given, ttlMs }, _actor, prefix, context, requestId) => {
       const holder = holderOf(context);
       const now = Date.now();
       const key = `issue:${id}`;
@@ -169,14 +169,9 @@ export function claimIssue(
           expectRevision: found?.revision ?? 0,
         })),
       ];
-      const lease = owner.acquire(
-        NAMESPACE,
-        key,
-        holder,
-        ttlMs,
-        call.requestId,
-        { readSet },
-      );
+      const lease = owner.acquire(NAMESPACE, key, holder, ttlMs, requestId, {
+        readSet,
+      });
       const grant = {
         id: shownId(id, prefix),
         generation: lease.generation,

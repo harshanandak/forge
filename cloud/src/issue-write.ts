@@ -1,15 +1,14 @@
 // Issue-specific configuration, input and lease guards around the shared receipt transaction.
-import { canonicalJson, digestValue } from "../../src/core/config/pointer.ts";
 import type { StateOwner } from "../../src/core/state/index.ts";
 import type { Actor, BoundContext } from "../../src/generated/types.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
-import { commandWrite } from "./command-write.ts";
+import { commandWrite, prepareReceipt } from "./command-write.ts";
 import { configured, fail } from "./issue-read.ts";
 import { carriesToken } from "./tokens.ts";
-import type { ReceiptScope } from "./issue-request-id.ts";
+import type { ReceiptPrincipal } from "./issue-request-id.ts";
 
 export interface WriteCall {
-  readonly scope: ReceiptScope;
+  readonly principal: ReceiptPrincipal;
   readonly requestId: string;
   readonly input: unknown;
   readonly context: BoundContext;
@@ -41,6 +40,7 @@ export function receipted<Fields, Result>(
     actor: Actor,
     prefix: string,
     context: BoundContext,
+    requestId: string,
   ) => Result,
   replayed?: (prior: Result, context: BoundContext) => void,
 ): Result {
@@ -54,16 +54,18 @@ export function receipted<Fields, Result>(
   if (context.variant !== variant)
     throw fail("INTERNAL", `${op} needs a ${variant} context`);
   const { actor } = context;
-  const fingerprint = canonicalJson({
-    scope: call.scope,
-    input: digestValue({ op, input, context, device }),
+  const identity = prepareReceipt("command", call.principal, requestId, {
+    op,
+    input,
+    context,
+    device,
   });
   return commandWrite(
     db,
     owner,
-    { requestId, fingerprint, recheck, expiresAt: call.expiresAt },
+    { identity, recheck, expiresAt: call.expiresAt },
     () => check(input, prefix),
-    (fields) => write(fields, actor, prefix, context),
+    (fields) => write(fields, actor, prefix, context, identity.requestId),
     replayed === undefined ? undefined : (prior) => replayed(prior, context),
   );
 }

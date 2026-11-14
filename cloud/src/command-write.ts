@@ -1,19 +1,55 @@
 // Shared replay and receipt transaction for synchronous writes at the project authority.
 import { ForgeFailure } from "../../src/contract/failure.ts";
+import { canonicalJson, digestValue } from "../../src/core/config/pointer.ts";
 import type { StateOwner } from "../../src/core/state/index.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
 import { admit, record, refused, replay } from "./issue-receipts.ts";
+import { receiptScope, type ReceiptPrincipal } from "./issue-request-id.ts";
+
+class ReceiptIdentity {
+  readonly #bytes: { readonly requestId: string; readonly fingerprint: string };
+  constructor(
+    family: "command" | "state",
+    principal: ReceiptPrincipal,
+    raw: string,
+    input: unknown,
+  ) {
+    this.#bytes = {
+      requestId: "c2:" + digestValue([2, family, principal, raw]).slice(7),
+      fingerprint: canonicalJson({
+        scope: receiptScope(principal),
+        input: digestValue(input),
+      }),
+    };
+    Object.freeze(this);
+  }
+  get requestId(): string {
+    return this.#bytes.requestId;
+  }
+  get fingerprint(): string {
+    return this.#bytes.fingerprint;
+  }
+}
+
+/** Principal and transport family come from the server, never from the request body. */
+export function prepareReceipt(
+  family: "command" | "state",
+  principal: ReceiptPrincipal,
+  raw: string,
+  input: unknown,
+): ReceiptIdentity {
+  return new ReceiptIdentity(family, principal, raw, input);
+}
 
 export interface CommandWriteCall {
-  readonly requestId: string;
-  readonly fingerprint: string;
+  readonly identity: ReceiptIdentity;
   readonly recheck: () => void;
   readonly expiresAt: number | undefined;
 }
 
 /**
- * Replays before checking input. Typed input refusals are recorded separately; successful work
- * and its receipt share one transaction, after the token recheck and receipt admission.
+ * Authenticates before replay, then checks fresh input. Typed input refusals are recorded separately;
+ * successful work and its receipt share one transaction, after token recheck and receipt admission.
  * The caller supplies any domain guard that must run before returning a replayed result.
  */
 export function commandWrite<Fields, Result>(
@@ -24,7 +60,12 @@ export function commandWrite<Fields, Result>(
   write: (fields: Fields) => Result,
   replayed?: (prior: Result) => void,
 ): Result {
-  const { requestId, fingerprint, recheck, expiresAt } = call;
+  const {
+    identity: { requestId, fingerprint },
+    recheck,
+    expiresAt,
+  } = call;
+  recheck();
   const prior = replay(db, owner, requestId, fingerprint);
   if (prior !== undefined) {
     replayed?.(prior as Result);

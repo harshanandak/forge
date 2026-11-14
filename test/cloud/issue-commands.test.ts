@@ -18,10 +18,14 @@ import {
 import { TOKEN_LOOKUP, TOKENS } from "../../cloud/src/tokens.ts";
 import { prepareCommand, runCommand } from "../../cloud/src/issue-commands.ts";
 import { OLD_SCHEMA } from "./old-schema.ts";
-import { receiptScope } from "../../cloud/src/issue-request-id.ts";
+import {
+  receiptScope,
+  scopeRequestId,
+} from "../../cloud/src/issue-request-id.ts";
 import { MAX_RECEIPTS } from "../../cloud/src/issue-receipts.ts";
-import { commandWrite } from "../../cloud/src/command-write.ts";
+import { commandWrite, prepareReceipt } from "../../cloud/src/command-write.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
+import { canonicalJson, digestValue } from "../../src/core/config/pointer.ts";
 import { listIssues } from "../../cloud/src/issue-list.ts";
 import { commentIssue } from "../../cloud/src/issue-comment.ts";
 import { createIssue } from "../../cloud/src/issue-create.ts";
@@ -348,7 +352,7 @@ function fixture(
   };
 }
 const actor = { kind: "agent", id: "tester" } as const;
-const receiptIdentity = receiptScope(["token", "fixture", "laptop"]);
+const receiptPrincipal = ["token", "fixture", "laptop"] as const;
 const iso = (ms: number) => new Date(ms).toISOString();
 const stored = (over: object = {}) => ({
   id: "work-1",
@@ -3187,11 +3191,12 @@ for (const refused of [false, true])
           db,
           owner,
           {
-            requestId: "direct-auth",
-            fingerprint: JSON.stringify({
-              scope: receiptIdentity,
-              input: "direct",
-            }),
+            identity: prepareReceipt(
+              "command",
+              receiptPrincipal,
+              "direct-auth",
+              {},
+            ),
             recheck: () => {
               if (denied) throw failure;
             },
@@ -3219,6 +3224,99 @@ for (const refused of [false, true])
         lookup.mockRestore();
       }
     }, 30_000);
+
+for (const boundary of ["token", "transport"] as const)
+  test(`commandWrite isolates receipts by ${boundary}`, async () => {
+    const f = fixture();
+    await f.device();
+    const db = sqlOf(f.db),
+      owner = owned(f);
+    const other =
+      boundary === "token"
+        ? (["token", "another", "laptop"] as const)
+        : receiptPrincipal;
+    const identities = [
+      prepareReceipt("command", receiptPrincipal, "shared-id", {}),
+      prepareReceipt(
+        boundary === "transport" ? "state" : "command",
+        other,
+        "shared-id",
+        {},
+      ),
+    ];
+    expect(identities[0]!.requestId).not.toBe(identities[1]!.requestId);
+    let number = 0;
+    const check = mock(() => 1),
+      write = mock(() => ({ number: ++number }));
+    const run = (index: number) =>
+      commandWrite(
+        db,
+        owner,
+        {
+          identity: identities[index]!,
+          recheck: () => {},
+          expiresAt: start + day,
+        },
+        check,
+        write,
+      );
+    for (const index of [0, 1])
+      expect(run(index)).toEqual({ number: index + 1 });
+    const before = f.snapshot();
+    check.mockClear();
+    write.mockClear();
+    for (const index of [0, 1])
+      expect(run(index)).toEqual({ number: index + 1 });
+    expect(check).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+    expect(commandRows(f.db)).toHaveLength(2);
+    expect(f.snapshot()).toBe(before);
+  }, 30_000);
+
+test("issue command receipt key and fingerprint keep their pre-extraction bytes", async () => {
+  const f = fixture(),
+    token = await f.device();
+  const body = make("issue-bytes");
+  const binding = {
+    ...prepareCommand(JSON.stringify(body), { device: "laptop", project: "p" }),
+    device: "laptop",
+  };
+  const principal = ["token", token.slice(4, 20), "laptop"] as const;
+  const identity = prepareReceipt(
+    "command",
+    principal,
+    body.requestId,
+    binding,
+  );
+  const expected = {
+    request_id: scopeRequestId("command", principal, body.requestId),
+    fingerprint: canonicalJson({
+      scope: receiptScope(principal),
+      input: digestValue(binding),
+    }),
+  };
+  expect({
+    requestId: identity.requestId,
+    fingerprint: identity.fingerprint,
+  }).toEqual({
+    requestId: expected.request_id,
+    fingerprint: expected.fingerprint,
+  });
+  const got = await f.send(body, { token });
+  expect([got.status, got.exit]).toEqual([200, 0]);
+  expect(
+    f.db.query("SELECT * FROM domain_cloud_command_receipts").all(),
+  ).toEqual([
+    {
+      ...expected,
+      outcome: "ok",
+      result: canonicalJson(got.json.result),
+      created_at: start,
+      expires_at: start + day,
+      imported: 0,
+    },
+  ]);
+}, 30_000);
 
 const floorMissing =
   "This project has issue history but no saved issue number, so creating issues is not available for it yet";
@@ -3501,7 +3599,7 @@ function createAfterDelete(create: typeof createIssue) {
     context: { variant: "project", actor, project: { id: "p" } },
     device: "laptop",
     prefix: "forge",
-    scope: receiptIdentity,
+    principal: receiptPrincipal,
     recheck: () => {},
     expiresAt: start + day,
   });
@@ -4983,7 +5081,7 @@ test("the shared write path takes a project context for create and comment and a
         context,
         device: "laptop",
         prefix: "forge",
-        scope: receiptIdentity,
+        principal: receiptPrincipal,
         recheck: () => {},
         expiresAt: start + day,
       }),
@@ -4997,7 +5095,7 @@ test("the shared write path takes a project context for create and comment and a
       context: lease,
       device: "laptop",
       prefix: "forge",
-      scope: receiptIdentity,
+      principal: receiptPrincipal,
       recheck: () => {},
       expiresAt: start + day,
     }),
@@ -5014,7 +5112,7 @@ test("the shared write path takes a project context for create and comment and a
         context: { ...lease, leaseMode: "acquire" } as never,
         device: "laptop",
         prefix: "forge",
-        scope: receiptIdentity,
+        principal: receiptPrincipal,
         recheck: () => {},
         expiresAt: start + day,
       }),
@@ -6333,7 +6431,7 @@ test("a link record that fails the declared output schema, even when its readbac
       context,
       device: "laptop",
       prefix: "forge",
-      scope: receiptIdentity,
+      principal: receiptPrincipal,
       recheck: () => {},
       expiresAt: start + day,
     });
