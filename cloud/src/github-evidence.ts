@@ -199,9 +199,9 @@ export async function withGithubPrEvidence<T>(
         evidence,
       };
     });
-    return result.ok
-      ? result
-      : refuse(failure.code === "INPUT_INVALID" ? failure.code : result.code);
+    return !result.ok && failure.code === "INPUT_INVALID"
+      ? refuse(failure.code)
+      : result;
   } catch {
     return refuse(failure.code);
   }
@@ -263,7 +263,7 @@ export async function readGithubMergeEvidence(
           );
           const checks: Evidence.MergeObservations["runs"][number]["checks"][number][] =
             [];
-          for (const raw of jobs) {
+          const readCheck = async (raw: unknown) => {
             const job = object(raw);
             if (
               job.run_id !== run.id ||
@@ -313,7 +313,7 @@ export async function readGithubMergeEvidence(
                 : check.conclusion !== null || check.completed_at !== null)
             )
               fail();
-            checks.push({
+            return {
               id,
               appId: run.appId,
               attempt: run.attempt,
@@ -322,8 +322,16 @@ export async function readGithubMergeEvidence(
               status: check.status,
               conclusion: check.conclusion,
               completedAt: check.completed_at,
-            } as Evidence.MergeObservations["runs"][number]["checks"][number]);
-          }
+            } as Evidence.MergeObservations["runs"][number]["checks"][number];
+          };
+          // Bound fan-out, retaining job order and stopping before the next batch on failure.
+          const checkConcurrency = 6;
+          for (let offset = 0; offset < jobs.length; offset += checkConcurrency)
+            checks.push(
+              ...(await Promise.all(
+                jobs.slice(offset, offset + checkConcurrency).map(readCheck),
+              )),
+            );
           runs.push({ ...run, checks });
           budget([snapshot, runs]);
         }
@@ -359,9 +367,7 @@ export async function readGithubMergeEvidence(
       },
     );
     if (!result.ok)
-      return refuse(
-        failure.code === "INPUT_INVALID" ? failure.code : result.code,
-      );
+      return failure.code === "INPUT_INVALID" ? refuse(failure.code) : result;
     const { evidence, ...facts } = result.value;
     if (!evidence.ok) return evidence;
     const observation: Evidence.MergeObservations = {

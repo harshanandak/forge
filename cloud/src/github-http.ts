@@ -36,6 +36,7 @@ export async function withGithubHttp<T>(
   const controller = new AbortController(),
     budget = createGithubJsonBudget();
   let refusal: Refusal["code"] | undefined,
+    reason = "GitHub unavailable",
     clear = () => {},
     requests = 0,
     active = 0;
@@ -105,8 +106,11 @@ export async function withGithubHttp<T>(
         active++;
         try {
           check();
-          if (++requests > REQUESTS || credential.expiresAt <= ports.now())
+          if (++requests > REQUESTS) {
+            reason = `GitHub request cap (${REQUESTS}) exceeded`;
             fail();
+          }
+          if (credential.expiresAt <= ports.now()) fail();
           if (
             !isPlainJson([path, query]) ||
             !path.length ||
@@ -221,10 +225,7 @@ export async function withGithubHttp<T>(
     return {
       ok: false,
       code: refusal ?? "UNAVAILABLE",
-      reason:
-        refusal === "INPUT_INVALID"
-          ? "Invalid GitHub request"
-          : "GitHub unavailable",
+      reason: refusal === "INPUT_INVALID" ? "Invalid GitHub request" : reason,
     };
   } finally {
     ports.signal.removeEventListener("abort", abort);
