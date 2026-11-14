@@ -1523,6 +1523,7 @@ for (const surface of ["CLI", "MCP", "catalog"] as const)
         using(
           {
             bind: bound ? {} : false,
+            creds: bound ? {} : false,
             steps: [
               () =>
                 code === "UNAVAILABLE"
