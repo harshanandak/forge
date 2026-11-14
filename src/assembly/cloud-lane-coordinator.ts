@@ -7,6 +7,7 @@ import {
   boundLaneRelease,
   boundLaneProgress,
   type BoundProgressInput,
+  boundLaneGit,
   type BoundCommand,
 } from "../blocks/work/bound-lane.ts";
 import type { BoundProject } from "../blocks/work/bound-lane-state.ts";
@@ -14,12 +15,44 @@ import type { LocalState } from "./state.ts";
 import type { AssemblyProviders } from "./providers.ts";
 import {
   boundLaneKey,
+  validBoundHead,
   writeBoundLane,
 } from "../blocks/work/bound-lane-state.ts";
 import { nodeDeviceIdentity } from "../adapters/fs/device-identity.ts";
 import { wireDeviceId } from "./wire-device.ts";
 import { ForgeFailure } from "../contract/failure.ts";
 const progressWrites = new Map<string, Promise<unknown>>();
+
+/** A fresh, read-only lookup in the attachment, independent of the caller's checkout. */
+export async function readBoundLaneHead(
+  flight: Preflight,
+  providers: AssemblyProviders,
+  worktree: string,
+): Promise<string> {
+  const timeoutMs = flight.operation.declaration.timeoutMs ?? 60000;
+  const scope = {
+    op: flight.request.op,
+    effects: flight.operation.declaration.effects,
+    signal: AbortSignal.timeout(timeoutMs),
+    deadline: Date.now() + timeoutMs,
+    processContainment: "supervised" as const,
+  };
+  const head = await boundLaneGit(
+    {
+      process: providers.process(scope),
+      environment: providers.environment(scope),
+      ...scope,
+    },
+    worktree,
+  )(["rev-parse", "--verify", "HEAD"]);
+  if (!validBoundHead(head))
+    throw new ForgeFailure({
+      code: "INPUT_CONFLICT",
+      message: "Cannot read the attached checkout HEAD.",
+      retry: "reconcile_first",
+    });
+  return head;
+}
 
 /** Device state is opened read-only, separately from the public operation's project context. */
 export async function coordinateLane(

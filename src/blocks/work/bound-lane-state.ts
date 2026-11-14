@@ -7,6 +7,12 @@ import {
 import type { StateClient } from "../../ports/state.ts";
 import type { StateRecord } from "../../generated/types.ts";
 
+export function validBoundHead(value: unknown): value is string {
+  return (
+    typeof value === "string" && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(value)
+  );
+}
+
 export interface BoundProject {
   readonly origin: string;
   readonly identity: string;
@@ -37,8 +43,6 @@ const shape = (value: unknown, required: string[], optional: string[] = []) =>
   Object.keys(value).every((key) => [...required, ...optional].includes(key));
 const text = (value: unknown) =>
   typeof value === "string" && value.trim().length > 0 && value.length <= 2000;
-const head = (value: unknown) =>
-  typeof value === "string" && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(value);
 export function validBoundProgress(value: unknown): value is BoundProgress {
   if (
     !shape(
@@ -57,10 +61,10 @@ export function validBoundProgress(value: unknown): value is BoundProgress {
     ) &&
     typeof p.pending === "boolean" &&
     (!p.pending || p.actions > 0) &&
-    (p.head === undefined || head(p.head)) &&
+    (p.head === undefined || validBoundHead(p.head)) &&
     (p.verdict === undefined ||
       (shape(p.verdict, ["head", "verdict", "reviewer"]) &&
-        head(p.verdict.head) &&
+        validBoundHead(p.verdict.head) &&
         p.verdict.head === p.head &&
         ["MERGE", "FIX"].includes(p.verdict.verdict) &&
         text(p.verdict.reviewer))) &&

@@ -458,6 +458,7 @@ async function laneAuto(
       );
     if (!lane)
       return blocked("refused", `no active lane for ${id}; use start first`);
+    refuseBoundRunner(lane.worktree);
     unlock = context.lock(id);
     if (detach) {
       const config = Bun.YAML.parse(

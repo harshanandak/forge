@@ -7,6 +7,16 @@ subject. The code is in `cloud/`.
 
 Every route is `/p/<projectId>/<route>` and needs `Authorization: Bearer <token>`, except `loginstart` and `loginpoll`.
 
+The HTTP adapter's typed `stateRead` and `stateCommit` share the existing HTTPS exchange.
+It sends once with the bearer in Authorization, refuses redirects, and never retries a lost reply.
+Headers/body share a deadline and caller cancellation; state responses have a hard 1 MiB ceiling
+plus JSON depth/node budgets. Invalid UTF-8, token echoes and unknown statuses/refusals are UNAVAILABLE.
+The decoder checks project, namespace, policy, protocol/read versions and every record/event wrapper.
+Reads must match the query kind, keys, range bounds and cursor; commits match the request ID,
+ordered entries, values and writing actor. Refusals retain only a code and checked fence conflict.
+These transport facts do not infer eligibility or acceptance after an unusable reply, update a
+local overlay, or access credentials. Credentialed record-client assembly is separate work.
+
 `POST /p/<projectId>/state/read` and `/state/commit` admit only device tokens on `FORGE_CLOUD_PROJECT`, with a closed invocation `context` and matching route/kind. `FORGE_STATE_NAMESPACES` is an explicit array of exact namespace IDs (initially `["forge/memory"]`); missing/malformed config returns UNAVAILABLE, and `[]` grants nothing. Config cannot grant `forge/work`, `forge/cloud` or any `forge/core-*` namespace. `policyRevision` is the digest of the sorted, deduplicated config; `discover` is accepted only on an unpinned read. Reads return bounded get/range/count/max/history results with the config revision and a namespace event watermark plus private restore epoch. Pages pin both revisions; stale pins return REVISION_CONFLICT. Responses are capped at 1 MiB with stored byte sizes checked before loading bodies. Missing epochs return UNAVAILABLE with an admin device-token provisioning remedy; reads initialize nothing. Admin provisioning initializes the private epoch, and completed restore replaces it before visibility. Ascending range cursors use last key + NUL (up to 501 characters), descending cursors use the exclusive last key, and history next is the last returned event sequence, and before resumes exclusively below that sequence (event revisions may repeat). Commits apply one CAS batch and its namespace-scoped receipt in the same transaction. They fingerprint the full request and return authoritative records/version with result null; exact retries return the stored answer, while changed input conflicts. Token/config admission repeats before replay and inside the write transaction; fenced retries also require the current lease grant. Commit responses are capped at 1 MiB before acceptance. Reads create no receipts.
 
 | Route                                        | Method    | Token  | What it does                                                                                                                                                                                                                            |

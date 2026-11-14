@@ -565,6 +565,7 @@ export async function laneRun(
       (item) => !("attempt" in item) && item.issue === id,
     );
     if (!lane) throw new Error(`no active lane for ${id}; use start first`);
+    refuseBoundRunner(lane.worktree);
     const classification = laneTier(lane.worktree);
     tier = classification.tier;
     unlock = context.lock(id);
