@@ -6,6 +6,7 @@ type Collect = (
   path: readonly string[],
   query?: Query,
   key?: string,
+  countRequired?: boolean,
 ) => Promise<unknown[]>;
 type Ports = {
   fetch(url: string, init: RequestInit): Promise<Response>;
@@ -156,7 +157,12 @@ export async function withGithubHttp<T>(
           active--;
         }
       };
-      const collect: Collect = async (path, query = {}, key) => {
+      const collect: Collect = async (
+        path,
+        query = {},
+        key,
+        countRequired = false,
+      ) => {
         active++;
         try {
           check();
@@ -179,7 +185,7 @@ export async function withGithubHttp<T>(
             rows = envelope[key];
             if (
               envelope.incomplete_results === true ||
-              (Object.hasOwn(envelope, "total_count") &&
+              ((countRequired || Object.hasOwn(envelope, "total_count")) &&
                 (!Array.isArray(rows) || envelope.total_count !== rows.length))
             )
               fail();
