@@ -4,6 +4,7 @@ import { digestValue, isObject } from "../../src/core/config/pointer.ts";
 import type { SqlDatabase, SqlRow } from "../../src/ports/store.ts";
 
 export type ReceiptPrincipal = readonly ["token" | "owner", string, string];
+export type ReceiptFamily = "command" | "lease" | readonly ["state", string];
 export interface ReceiptScope {
   readonly version: 2;
   readonly principal: string;
@@ -13,12 +14,14 @@ export const receiptScope = (principal: ReceiptPrincipal): ReceiptScope => ({
   principal: digestValue(principal),
 });
 export function scopeRequestId(
-  family: "command" | "lease",
+  family: ReceiptFamily,
   principal: ReceiptPrincipal,
   raw: string,
 ): string {
   const hash = digestValue([2, family, principal, raw]).slice(7);
-  return (family === "command" ? "c2:" : "l2:") + hash;
+  return (
+    (family === "command" ? "c2:" : family === "lease" ? "l2:" : "s2:") + hash
+  );
 }
 export const versioned = (value: unknown): boolean =>
   isObject(value) &&

@@ -82,6 +82,7 @@ import { requireTokenSession } from "./token-session.ts";
 import { admitState, isStatePath, stateRoute } from "./state-access.ts";
 import { parseStateInput } from "./state-input.ts";
 import { readState, STATE_EPOCH } from "./state-read.ts";
+import { commitState } from "./state-commit.ts";
 import {
   authorize,
   authorizeToken,
@@ -603,7 +604,20 @@ export class Project {
           epoch,
         );
       }
-      throw fail("UNAVAILABLE", "State commits are not available yet");
+      const epoch = await this.#storage.get(STATE_EPOCH);
+      return commitState(input, {
+        ...token,
+        project: route.project,
+        principal: ["token", token.id, token.device],
+        epoch,
+        config: () =>
+          (this.#env as { FORGE_STATE_NAMESPACES?: unknown })
+            .FORGE_STATE_NAMESPACES,
+        recheck: () => {
+          authorizeToken(db, parts, Date.now());
+        },
+        open: () => this.#open(),
+      });
     } catch (error) {
       if (!(error instanceof ForgeFailure)) throw error;
       await discard(request);

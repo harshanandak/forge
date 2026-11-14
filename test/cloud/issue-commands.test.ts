@@ -128,7 +128,6 @@ function fixture(
   settings: Record<string, unknown> = vars,
   name = "p",
   registry = new Map<string, () => Project>(),
-  ProjectType: typeof Project = Project,
 ) {
   const env = { ...settings, FORGE_CLOUD_PROJECT: name };
   let t = start;
@@ -184,7 +183,7 @@ function fixture(
       return Promise.resolve(values.delete(key));
     },
   };
-  let project = new ProjectType({ storage }, env);
+  let project = new Project({ storage }, env);
   registry.set(name, () => project);
   const reached: string[] = [];
   const bindings = {
@@ -358,7 +357,7 @@ function fixture(
       );
     },
     reopen: () => {
-      project = new ProjectType({ storage }, env);
+      project = new Project({ storage }, env);
     },
     advance: (ms: number) => {
       t += ms;
@@ -368,16 +367,15 @@ function fixture(
 }
 const stateNamespaces = ["forge/memory"];
 const statePolicy = digestValue(stateNamespaces);
-async function stateFixture(
-  namespaces = stateNamespaces,
-  ProjectType: typeof Project = Project,
-) {
-  const f = fixture(
-    { ...vars, FORGE_STATE_NAMESPACES: namespaces },
-    "p",
-    new Map(),
-    ProjectType,
-  );
+const stateEntries = (...keys: string[]) =>
+  keys.map((key) => ({ key, value: { key }, expectRevision: 0 }));
+const stateOutcome = (got: Awaited<ReturnType<F["send"]>>) => [
+  got.status,
+  got.code,
+  got.exit,
+];
+async function stateFixture(namespaces = stateNamespaces) {
+  const f = fixture({ ...vars, FORGE_STATE_NAMESPACES: namespaces });
   const token = await f.device(day, "laptop", "s1");
   const owner = new StateOwner(durableStore(f.storage), { now: f.now });
   const put = (key: string, value: unknown = key, namespace = "forge/memory") =>
@@ -428,12 +426,7 @@ async function stateFixture(
       ...stateCommit,
       version: 1,
       kind: "commit",
-      context: {
-        actor,
-        project: { id: "p" },
-        device: { id: "laptop" },
-        session: { id: "s1", device: "laptop" },
-      },
+      context: { actor, session: { id: "s1", device: "laptop" } },
       namespace,
       requestId,
       policyRevision: version.policyRevision,
@@ -479,9 +472,7 @@ for (const keys of [
     try {
       f.put("foreign", "keep", "other/state");
       const foreign = rowsOf(f.db, "other/state");
-      const input = await f.plan(
-        keys.map((key) => ({ key, value: { key }, expectRevision: 0 })),
-      );
+      const input = await f.plan(stateEntries(...keys));
       const request = {
         ...input,
         readSet: [
@@ -518,11 +509,7 @@ for (const keys of [
         },
       ]) {
         const refused = await f.commit({ ...request, ...changed });
-        expect([refused.status, refused.code, refused.exit]).toEqual([
-          409,
-          "INPUT_CONFLICT",
-          4,
-        ]);
+        expect(stateOutcome(refused)).toEqual([409, "INPUT_CONFLICT", 4]);
         expect(f.snapshot()).toBe(saved);
       }
     } finally {
@@ -538,15 +525,13 @@ for (const mode of [
   "epoch",
   "config",
   "cross namespace",
+  "credential",
 ] as const)
   test(`state commit conflict table: ${mode}`, async () => {
     const f = await stateFixture();
     try {
       f.put("existing");
-      let input = await f.plan([
-        { key: "one", value: 1, expectRevision: 0 },
-        { key: "two", value: 2, expectRevision: 0 },
-      ]);
+      let input = await f.plan(stateEntries("one", "two"));
       if (mode === "entry")
         input = {
           ...input,
@@ -571,11 +556,12 @@ for (const mode of [
       if (mode === "phantom") f.put("phantom");
       if (mode === "epoch") await f.storage.put("state:epoch", "new-epoch");
       if (mode === "config") input = { ...input, policyRevision: "old-policy" };
+      if (mode === "credential") input = { ...input, requestId: fakeToken };
       const before = f.stable(),
         successes = f.successes();
       const got = await f.commit(input);
-      expect([got.status, got.code, got.exit]).toEqual(
-        mode === "cross namespace"
+      expect(stateOutcome(got)).toEqual(
+        mode === "cross namespace" || mode === "credential"
           ? [400, "INPUT_INVALID", 6]
           : [409, "REVISION_CONFLICT", 4],
       );
@@ -596,11 +582,7 @@ test("state receipt keys isolate namespace, principal and typed command families
   try {
     const answers: [StateCommitRequest, string][] = [];
     for (const namespace of ["forge/memory", "other/state"]) {
-      const input = await f.plan(
-        [{ key: "one", value: namespace, expectRevision: 0 }],
-        namespace,
-        "shared-1",
-      );
+      const input = await f.plan(stateEntries("one"), namespace, "shared-1");
       const got = await f.commit(input);
       expect(got.status).toBe(200);
       answers.push([input, got.text]);
@@ -616,11 +598,7 @@ test("state receipt keys isolate namespace, principal and typed command families
     );
     expect(typed.status).toBe(200);
     const otherToken = await f.device(day, "laptop", "s1");
-    const input = await f.plan(
-      [{ key: "two", value: 2, expectRevision: 0 }],
-      "forge/memory",
-      "shared-1",
-    );
+    const input = await f.plan(stateEntries("two"), "forge/memory", "shared-1");
     expect((await f.commit(input, { token: otherToken })).status).toBe(200);
     const saved = f.snapshot();
     for (const [request, text] of answers)
@@ -673,7 +651,7 @@ for (const mode of [
         holder,
         generation: lease.generation,
       };
-      const plan = await f.plan([{ key: "one", value: 1, expectRevision: 0 }]);
+      const plan = await f.plan(stateEntries("one"));
       const input = {
         ...plan,
         fence: { subject: "subject", generation: lease.generation },
@@ -727,7 +705,7 @@ for (const mode of [
                   : mode === "config changed"
                     ? "REVISION_CONFLICT"
                     : "LEASE_EXPIRED";
-      expect([got.status, got.code, got.exit]).toEqual(
+      expect(stateOutcome(got)).toEqual(
         code === undefined
           ? [200, undefined, 0]
           : [
@@ -757,10 +735,7 @@ for (const fault of [
   test(`state commit transaction fault table: ${fault}`, async () => {
     const f = await stateFixture();
     try {
-      const input = await f.plan([
-        { key: "one", value: 1, expectRevision: 0 },
-        { key: "two", value: 2, expectRevision: 0 },
-      ]);
+      const input = await f.plan(stateEntries("one", "two"));
       if (fault === "full budget" || fault === "prune") {
         const insert = f.db.query(
           "INSERT INTO domain_cloud_command_receipts(request_id,fingerprint,outcome,result,created_at,expires_at) VALUES (?,?, 'ok','{}',?,?)",
@@ -826,7 +801,7 @@ for (const fault of [
           fault,
         )
       ) {
-        expect([got.status, got.code, got.exit]).toEqual(
+        expect(stateOutcome(got)).toEqual(
           fault === "full budget"
             ? [503, "UNAVAILABLE", 1]
             : [500, "INTERNAL", 1],
@@ -835,7 +810,7 @@ for (const fault of [
         expect(f.stable()).toBe(domain);
         expect(f.successes()).toBe(successes);
       } else {
-        expect([got.status, got.code, got.exit]).toEqual(
+        expect(stateOutcome(got)).toEqual(
           fault === "dropped reply"
             ? [503, "UNAVAILABLE", 1]
             : [200, undefined, 0],
