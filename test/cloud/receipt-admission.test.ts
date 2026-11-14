@@ -1,7 +1,10 @@
 import { expect, test } from "bun:test";
 import { admitReceipt } from "../../cloud/src/receipt-admission.ts";
 import { readGithubMergeEvidence } from "../../cloud/src/github-evidence.ts";
-import { EvidenceReceiptStore } from "../../cloud/src/evidence-receipts.ts";
+import {
+  decodeEvidence,
+  EvidenceReceiptStore,
+} from "../../cloud/src/evidence-receipts.ts";
 import { evaluateMergeEvidence } from "../../cloud/src/merge-evidence.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { ACTOR } from "../../cloud/conformance/max-source.ts";
@@ -27,6 +30,8 @@ const rows: readonly [Phase, string, string, unknown][] = [
   ["observe", "UNAVAILABLE", "state.unavailable", true],
   ["observe", "RECEIPT_INVALID", "state.failingCheck", true],
   ["observe", "INPUT_INVALID", "state.changedPr", true],
+  ["observe", "UNAVAILABLE", "state.prState", "open"],
+  ["observe", "UNAVAILABLE", "state.prState", "closed"],
   ["github-await", "AUTH_REVOKED", "state.auth", "AUTH_REVOKED"],
   ["github-await", "AUTH_EXPIRED", "state.auth", "AUTH_EXPIRED"],
   ["github-await", "LEASE_STALE", "lease", "takeover"],
@@ -151,14 +156,23 @@ for (const [phase, code, field, value] of rows)
     }
   }, 30_000);
 
-test("receipt admission: verified result and exact retry", async () => {
+test("verify and close: one evidence receipt and close, exact retry writes nothing", async () => {
   const f = await admissionFixture();
   try {
     const run = () => admitReceipt(f.db, f.owner, f.write, f.ports),
       before = f.snapshot();
-    const receipt = await run(),
+    const closed = await run(),
       after = f.snapshot(),
       calls = f.state.calls.length;
+    expect(closed).toMatchObject({ id: "work-1", status: "closed" });
+    expect(after.evidence).toHaveLength(1);
+    const receipt = decodeEvidence(String(after.evidence[0]!.body));
+    expect(closed).toHaveProperty("receipt", receipt.id);
+    expect(closed).not.toHaveProperty("withoutReceipt");
+    expect(f.owner.get(namespace, subject)?.value).toMatchObject({
+      status: "closed",
+      receipt: receipt.id,
+    });
     expect(receipt.origin).toBe("verified");
     expect(receipt.candidate.binding).toEqual(f.f.expected);
     expect([receipt.actor, receipt.device, receipt.repository]).toEqual([
@@ -169,18 +183,22 @@ test("receipt admission: verified result and exact retry", async () => {
     expect([f.state.policyReads, f.state.prReads, f.state.credentials]).toEqual(
       [2, 2, 1],
     );
-    for (const table of [
-      "state_records",
-      "state_events",
-      "state_leases",
-      "state_requests",
-    ])
+    for (const table of ["state_leases", "state_requests"])
       expect(after.tables[table]).toEqual(before.tables[table]);
-    expect(after.evidence).toHaveLength(1);
+    expect(after.tables.state_events!.length).toBe(
+      before.tables.state_events!.length + 1,
+    );
+    const changed = after.tables.state_records!.filter(
+      (row) =>
+        !before.tables.state_records!.some(
+          (prior) => JSON.stringify(prior) === JSON.stringify(row),
+        ),
+    );
+    expect(changed.map((row) => row.key)).toEqual([subject]);
     expect(after.tables.domain_cloud_command_receipts!.length).toBe(
       before.tables.domain_cloud_command_receipts!.length + 1,
     );
-    expect(await run()).toEqual(receipt);
+    expect(await run()).toEqual(closed);
     expect(f.snapshot()).toEqual(after);
     expect(f.state.calls).toHaveLength(calls);
     f.write = { ...f.write, input: { id: "work-1", pr: 491 } };

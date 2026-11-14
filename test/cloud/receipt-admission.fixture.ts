@@ -4,6 +4,7 @@ import {
   tablesOf,
 } from "../../cloud/conformance/max-source.ts";
 import type { WriteCall } from "../../cloud/src/issue-write.ts";
+import { runCommand } from "../../cloud/src/issue-commands.ts";
 import {
   mergePolicyBinding,
   readMergePolicy,
@@ -32,6 +33,7 @@ export async function admissionFixture() {
     changedPr: false,
     unavailable: false,
     failingCheck: false,
+    prState: "merged",
   };
   const db: SqlDatabase = {
     exec: (sql) => {
@@ -143,7 +145,19 @@ export async function admissionFixture() {
       const responses: [string, string][] = [
         [
           "pulls/490",
-          `{"number":490,"node_id":"${state.changedPr && state.prReads === 2 ? "PR_changed" : "PR_example"}","head":{"sha":"${head}"},"base":{"repo":{"id":42},"ref":"main"},"state":"closed","merged":true,"merged_at":"${at}","merge_commit_sha":"${merge}"}`,
+          JSON.stringify({
+            number: 490,
+            node_id:
+              state.changedPr && state.prReads === 2
+                ? "PR_changed"
+                : "PR_example",
+            head: { sha: head },
+            base: { repo: { id: 42 }, ref: "main" },
+            state: state.prState === "open" ? "open" : "closed",
+            merged: state.prState === "merged",
+            merged_at: state.prState === "merged" ? at : null,
+            merge_commit_sha: state.prState === "merged" ? merge : null,
+          }),
         ],
         [
           "git/ref/heads/main",
@@ -187,6 +201,48 @@ export async function admissionFixture() {
       "SELECT * FROM domain_cloud_evidence_receipts ORDER BY id",
     ),
   });
+  const command = (input: unknown = write.input, op = "issue.close") => {
+    if (
+      write.context.variant !== "leased" ||
+      write.context.leaseMode !== "held"
+    )
+      throw new Error("Expected held fixture context");
+    const { actor, session, project, leaseGeneration } = write.context;
+    const host = {
+      device: write.device,
+      project: "forge",
+      session: "admission",
+      principal: write.principal,
+      storage: {
+        sql: {
+          exec: (sql: string, ...args: unknown[]) => ({
+            toArray: () => [...db.all(sql, args as never[])],
+          }),
+        },
+        transactionSync: <T>(body: () => T) => db.transaction(body),
+        get: () => Promise.resolve(undefined),
+        put: () => Promise.resolve(),
+        delete: () => Promise.resolve(false),
+      },
+      idPrefix: write.prefix,
+      now: ports.now(),
+      recheck: write.recheck,
+      expiresAt: write.expiresAt,
+      open: () => ({ db, owner }),
+      github: ports,
+    };
+    return Promise.resolve().then(() =>
+      runCommand(
+        JSON.stringify({
+          requestId: write.requestId,
+          op,
+          input,
+          context: { actor, session, project, leaseGeneration },
+        }),
+        host,
+      ),
+    );
+  };
   return {
     ...source,
     dbSource: source.db,
@@ -201,6 +257,7 @@ export async function admissionFixture() {
     f,
     link,
     snapshot,
+    command,
   };
 }
 export type AdmissionFixture = Awaited<ReturnType<typeof admissionFixture>>;
