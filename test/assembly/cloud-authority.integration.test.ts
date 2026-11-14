@@ -3743,6 +3743,7 @@ for (const [name, result] of [
   ["missing request", { ...LANE_APPROVAL, request: undefined }],
   ["invalid expiry", { ...LANE_APPROVAL, expiresAt: "tomorrow" }],
   ["an extra field", { ...LANE_APPROVAL, extra: true }],
+  ["success with a valid same-origin pending approval", LANE_APPROVAL],
   [
     "success with another origin",
     {

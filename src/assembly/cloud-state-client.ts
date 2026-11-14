@@ -178,7 +178,7 @@ export function createCloudLeaseClient(
       const valid = await Promise.resolve()
         .then(() => validate(result))
         .catch(() => false);
-      // Check approval links on success envelopes too; the result schema alone accepts any HTTPS URL.
+      // A pending approval is never a successful resume, even with a valid schema and link.
       const approval =
         answer.kind === "approval_required" ||
         (call.op === "lane.resume" && "request" in result);
@@ -187,7 +187,8 @@ export function createCloudLeaseClient(
         (typeof result.request === "string" &&
           /^[a-f0-9-]{36}$/.test(result.request) &&
           result.url === `${key.origin}/lane-approval/${result.request}`);
-      if (!valid || !linked || carriesToken(result, token))
+      const pendingSuccess = answer.kind === "ok" && approval;
+      if (!valid || !linked || pendingSuccess || carriesToken(result, token))
         throw failure("UNAVAILABLE", UNAVAILABLE);
       if (answer.kind === "approval_required")
         throw new CloudCommandFailure(result);

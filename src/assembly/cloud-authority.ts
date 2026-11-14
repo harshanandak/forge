@@ -235,7 +235,7 @@ export async function selectCloud(
         requestId: request.requestId,
         op: declared,
         input: request.input,
-        ...(request.dryRun === undefined ? {} : { dryRun: request.dryRun }),
+        ...(request.dryRun === true ? { dryRun: true } : {}),
         context: {
           ...request.context,
           device: { id: device },
