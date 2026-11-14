@@ -27,6 +27,7 @@ export interface BoundProgress {
   started: number;
   pending: boolean;
   head?: string;
+  counted?: { action: number; review: boolean; ci: boolean };
   verdict?: { head: string; verdict: "MERGE" | "FIX"; reviewer: string };
   ask?: {
     reason: string;
@@ -48,7 +49,7 @@ export function validBoundProgress(value: unknown): value is BoundProgress {
     !shape(
       value,
       ["actions", "records", "review", "ci", "started", "pending"],
-      ["head", "verdict", "ask", "generation"],
+      ["head", "verdict", "ask", "generation", "counted"],
     )
   )
     return false;
@@ -62,6 +63,11 @@ export function validBoundProgress(value: unknown): value is BoundProgress {
     typeof p.pending === "boolean" &&
     (!p.pending || (p.actions > 0 && validBoundHead(p.head))) &&
     (p.head === undefined || validBoundHead(p.head)) &&
+    (p.counted === undefined ||
+      (shape(p.counted, ["action", "review", "ci"]) &&
+        p.counted.action === p.actions &&
+        typeof p.counted.review === "boolean" &&
+        typeof p.counted.ci === "boolean")) &&
     (p.verdict === undefined ||
       (shape(p.verdict, ["head", "verdict", "reviewer"]) &&
         validBoundHead(p.verdict.head) &&

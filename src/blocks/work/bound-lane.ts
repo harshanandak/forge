@@ -249,10 +249,7 @@ export async function boundLaneProgress(
   const effectiveHead =
     op === "lane.next" ? input.head?.toLowerCase() : record.progress?.head;
   if (effectiveHead !== actualHead)
-    refuse(
-      "INPUT_CONFLICT",
-      "Supplied head differs from the attached checkout.",
-    );
+    refuse("INPUT_CONFLICT", "Progress head differs from the checkout.");
   const p: BoundProgress = structuredClone(
     record.progress ?? {
       generation: record.grant.generation,
@@ -289,16 +286,22 @@ export async function boundLaneProgress(
       const result = parsed as Record<string, unknown>;
       if (result.head !== p.head)
         refuse("INPUT_CONFLICT", "Result must name the current reserved head.");
-      p.review += result.review === true ? 1 : 0;
-      p.ci += result.ci === true ? 1 : 0;
+      const counted = (p.counted ??= {
+        action: p.actions,
+        review: false,
+        ci: false,
+      });
+      for (const fact of ["review", "ci"] as const)
+        if (result[fact] === true && !counted[fact]) {
+          p[fact]++;
+          counted[fact] = true;
+        }
       if (result.ask !== undefined)
         p.ask = result.ask as NonNullable<BoundProgress["ask"]>;
       else if (result.answer !== undefined) {
         if (!p.ask) refuse("INPUT_CONFLICT", "There is no pending owner ask.");
         p.ask.answer = result.answer as string;
-      } else if (!p.ask) {
-        p.pending = false;
-      }
+      } else if (!p.ask) p.pending = false;
       p.records++;
     }
     await write();
@@ -332,6 +335,7 @@ export async function boundLaneProgress(
     why = "Configured device budget or autopilot switch requires a pause.";
   } else if (!p.pending) {
     p.actions++;
+    delete p.counted;
     p.pending = true;
   }
   // A pure budget pause must not initialize or reset bookkeeping.
