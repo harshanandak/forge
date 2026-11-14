@@ -26,31 +26,11 @@ const cases: Row[] = [
   ..."ok squash behind diverged identical partial extension accessor clock"
     .split(" ")
     .map((v) => [v, "", null] as Row),
-  ...Object.entries({
-    policy: null,
-    binding: [],
-    "policy.project": "bad/project",
-    "policy.repositoryId": 8,
-    "policy.baseBranch": "other",
-    "policy.version": "",
-    "policy.digest": "bad",
-    "policy.producer.appId": 0,
-    "policy.producer.workflowId": 1.5,
-    "policy.producer.repositoryId": 8,
-    "policy.producer.workflowPath": "../ci.yml",
-    "policy.producer.workflowDigest": "bad",
-    "policy.requiredChecks": [],
-    "binding.project": "other",
-    "binding.repositoryId": 8,
-    "binding.prNumber": 10,
-    "binding.prId": "",
-    "binding.headSha": "A".repeat(40),
-    "binding.issueId": "forge-1",
-    "binding.linkKey": "link:work-2:1",
-    "binding.linkRevision": -1,
-    "policy.extra": "unknown",
-    "locator.host": "evil.test",
-  }).map(([p, v]) => ["input", `input.${p}`, v] as Row),
+  ...Object.entries(
+    JSON.parse(
+      '{"policy":null,"binding":[],"policy.project":"bad/project","policy.repositoryId":8,"policy.baseBranch":"other","policy.version":"","policy.digest":"bad","policy.producer.appId":0,"policy.producer.workflowId":1.5,"policy.producer.repositoryId":8,"policy.producer.workflowPath":"../ci.yml","policy.producer.workflowDigest":"bad","policy.requiredChecks":[],"binding.project":"other","binding.repositoryId":8,"binding.prNumber":10,"binding.prId":"","binding.headSha":"bad","binding.issueId":"forge-1","binding.linkKey":"link:work-2:1","binding.linkRevision":-1,"policy.extra":"unknown","locator.host":"evil.test"}',
+    ) as Record<string, unknown>,
+  ).map(([p, v]) => ["input", `input.${p}`, v] as Row),
   ["input", "input.policy.requiredChecks", ["ci", "ci"]],
   ["input", "input.policy.requiredChecks", [7]],
   ...Object.entries({
@@ -95,7 +75,7 @@ for (const [name, path, replacement] of cases)
         `{"ref":"refs/heads/feature/a","object":{"type":"commit","sha":"${target}"}}`,
       ) as unknown,
       comparison: JSON.parse(
-        `{"base_commit":{"sha":"${actual}"},"merge_base_commit":{"sha":"${["behind", "diverged"].includes(name) ? "d".repeat(40) : actual}"},"status":"${["behind", "diverged", "identical"].includes(name) ? name : "ahead"}","ahead_by":${["identical", "behind"].includes(name) ? 0 : 1},"behind_by":${["behind", "diverged"].includes(name) ? 1 : 0}}`,
+        `{"base_commit":{"sha":"${actual}"},"merge_base_commit":{"sha":"${name === "behind" ? target : name === "diverged" ? "d".repeat(40) : actual}"},"status":"${["behind", "diverged", "identical"].includes(name) ? name : "ahead"}","ahead_by":${["identical", "behind"].includes(name) ? 0 : 1},"behind_by":${["behind", "diverged"].includes(name) ? 1 : 0}}`,
       ) as unknown,
     };
     if (path) {
