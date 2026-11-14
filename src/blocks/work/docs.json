@@ -1,7 +1,5 @@
 {
   "operations": {
-    "receipt.admit": { "title": "admit", "summary": "Admission unavailable." },
-    "receipt.show": { "title": "show", "summary": "Read unavailable." },
     "lane.release": {
       "title": "Release lane",
       "summary": "Release a hand-closed lane; with attempt, release an attempt without a live lease, including a missing worktree. Refuse dirty or ignored work and pending closes. Keep the branch. Normal lanes require a closed issue without a receipt or live lease.",
@@ -233,13 +231,13 @@
     },
     "issue.close": {
       "title": "Close",
-      "summary": "Held lease; verified PASS receipt bound to delivered PR, or written withoutReceipt reason.",
-      "description": "PR_UNLINKED: link a merged PR with forge issue link <id> --relation delivers --url <pr-url>. PR_NOT_FOUND: gh cannot resolve the delivered PR; retry never. Both errors name the link command and forge issue close <id> --without-receipt \"<reason>\". Other gh failures remain UNAVAILABLE.",
+      "summary": "Held lease; cloud verifies pr, local verifies receipt, or written withoutReceipt reason.",
+      "description": "On a cloud-bound project, use --pr <number> to verify and close in one command. pr excludes receipt and withoutReceipt, and is INPUT_INVALID on an unbound project. Local receipt close retains PR_UNLINKED and PR_NOT_FOUND repair instructions; cloud refuses local receipt IDs.",
       "examples": [
         {
           "input": {
             "id": "demo-1",
-            "receipt": "<id>"
+            "pr": 42
           }
         }
       ]
