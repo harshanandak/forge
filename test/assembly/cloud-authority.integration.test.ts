@@ -1637,7 +1637,7 @@ for (const [name, variants] of [
               );
               checkoutHead = moved;
               expect((await next(moved)).ok).toBe(true);
-              const changed = await saved();
+              let changed = await saved();
               expect(changed.value).not.toHaveProperty("progress.verdict");
               if (variant === "head replay") {
                 expect(
@@ -1666,8 +1666,7 @@ for (const [name, variants] of [
                   ),
                 ).toBe(4);
                 expect(await saved()).toEqual(reviewed);
-                expect(projectFiles()).toEqual(files);
-                return;
+                changed = reviewed;
               }
               if (variant === "generation")
                 lease = { ...lease, generation: lease.generation + 1 };

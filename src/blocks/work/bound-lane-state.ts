@@ -60,7 +60,7 @@ export function validBoundProgress(value: unknown): value is BoundProgress {
       (n) => Number.isSafeInteger(n) && n >= 0,
     ) &&
     typeof p.pending === "boolean" &&
-    (!p.pending || p.actions > 0) &&
+    (!p.pending || (p.actions > 0 && validBoundHead(p.head))) &&
     (p.head === undefined || validBoundHead(p.head)) &&
     (p.verdict === undefined ||
       (shape(p.verdict, ["head", "verdict", "reviewer"]) &&

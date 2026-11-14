@@ -116,6 +116,8 @@ export async function coordinateLane(
             command,
             save,
             flight.config,
+            (worktree) =>
+              readBoundLaneHead(flight, options.providers, worktree),
           ),
         );
       progressWrites.set(key, pending);

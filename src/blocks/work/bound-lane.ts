@@ -229,6 +229,7 @@ export async function boundLaneProgress(
   command: BoundCommand,
   save: (record: BoundLaneRecord, revision: number) => Promise<StateRecord>,
   config: unknown,
+  readHead: (worktree: string) => Promise<string>,
 ): Promise<unknown> {
   const fresh = (await command("issue.show", { id: input.id })) as TrackerItem;
   const id = `work-${fresh.id.replace(/^.*-/, "")}`;
@@ -244,6 +245,14 @@ export async function boundLaneProgress(
   ownBoundGrant(fresh.lease, context, device, record.grant.generation, now);
   if (!record.active || record.releaseRequestId || fresh.status !== "open")
     refuse("INPUT_CONFLICT", "The lane is inactive, releasing or closed.");
+  if (
+    input.head &&
+    input.head.toLowerCase() !== (await readHead(record.lane.worktree))
+  )
+    refuse(
+      "INPUT_CONFLICT",
+      "Supplied head differs from the attached checkout.",
+    );
   const p: BoundProgress = structuredClone(
     record.progress ?? {
       generation: record.grant.generation,
@@ -285,8 +294,7 @@ export async function boundLaneProgress(
       else if (result.answer !== undefined) {
         if (!p.ask) refuse("INPUT_CONFLICT", "There is no pending owner ask.");
         p.ask.answer = result.answer as string;
-      } else {
-        delete p.ask;
+      } else if (!p.ask) {
         p.pending = false;
         p.review += result.review === true ? 1 : 0;
         p.ci += result.ci === true ? 1 : 0;
