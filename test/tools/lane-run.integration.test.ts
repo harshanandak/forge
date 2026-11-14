@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 
 import { laneRun, runClaude, runCodex } from "../../tools/lane-run.ts";
+import { bindingFor } from "../assembly/cloud-fixture.ts";
 import { scriptFixture } from "../script-fixture.ts";
 import { spawnBudget } from "../spawn-budget.ts";
 import { cliTopologyFixture } from "./cli-topology-fixture.ts";
@@ -1216,6 +1217,48 @@ ${["builder", "fixer", "tester", "reviewer"]
   const prompt = () => f.attempts().at(-1)!.prompt;
   return { ...f, runs, seed, runRole, prompt };
 }
+
+test("bound runner refuses run, resume and detached auto before any provider spawn", async () => {
+  const { acquireLaneLock } = await import("../../tools/lane.ts");
+  for (const site of ["target", "caller"] as const) {
+    const f = roleFixture();
+    const root =
+      site === "caller" ? f.caller : join(f.main, ".worktrees", "one");
+    writeFileSync(
+      join(root, ".forge", "project.json"),
+      JSON.stringify({ schema: 1, id: bindingFor().identity }),
+    );
+    writeFileSync(
+      join(root, ".forge", "cloud.json"),
+      JSON.stringify(bindingFor()),
+    );
+    for (const extra of [[], ["--resume", "fixture-session"]]) {
+      const result = await f.runRole("builder", extra);
+      expect(result.code, site).toBe(1);
+      expect(JSON.stringify(result.output)).toContain("Bound lane dispatch");
+      expect(f.attempts()).toHaveLength(0);
+      expect(existsSync(f.runs)).toBe(false);
+    }
+    for (const flags of [[], ["--detach"]]) {
+      const common = join(f.main, ".git");
+      const lock = join(common, "forge-lane-one.lock");
+      const owner = `owner-${process.pid}-${randomUUID()}`;
+      const unlock = acquireLaneLock(common, "one", owner);
+      const prior = readFileSync(join(lock, owner), "utf8");
+      try {
+        const result = f.run(["auto", "one", ...flags]);
+        expect(result.code, site).toBe(1);
+        expect(JSON.stringify(result.output)).toContain("Bound lane dispatch");
+        expect(f.attempts()).toHaveLength(0);
+        expect(existsSync(f.runs)).toBe(false);
+        expect(readdirSync(lock)).toEqual([owner]);
+        expect(readFileSync(join(lock, owner), "utf8")).toBe(prior);
+      } finally {
+        unlock();
+      }
+    }
+  }
+});
 
 function change(
   f: ReturnType<typeof fixture>,
@@ -3029,7 +3072,7 @@ for (const operation of ["reclaim", "rename"])
   });
 
 // Registration is synchronous even when Bun selects a focused subset to execute.
-expect(caseNames).toHaveLength(129);
+expect(caseNames).toHaveLength(130);
 expect(
   createHash("sha256").update(JSON.stringify(caseNames)).digest("hex"),
-).toBe("4154d0a0cc4a5a5c63b9f43320210cd81c98cf7fe24bb414842e00f24615edb0");
+).toBe("dd92c1c35eaecbce0b8b786d2a5c0cfe058e4e1a868da27999920b57ad11619e");

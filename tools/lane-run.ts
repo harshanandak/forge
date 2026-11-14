@@ -15,6 +15,18 @@ import {
 import { delimiter, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { laneTier, type LaneTier, type ReviewTier } from "./lane-tier.ts";
+import { cloudBinding } from "../src/assembly/cloud-binding.ts";
+
+export function refuseBoundRunner(root: string) {
+  const binding = cloudBinding(
+    root,
+    process.env.HOME ?? process.env.USERPROFILE,
+  );
+  if (binding.kind === "bound")
+    throw new Error(
+      "Bound lane dispatch requires the fresh control boundary in PR 2b.",
+    );
+}
 
 export type RunOptions = {
   worktree: string;
@@ -497,6 +509,7 @@ export async function laneRun(
   try {
     const [id, ...flags] = argv,
       values = new Map<string, string>();
+    refuseBoundRunner(context.configRoot);
     for (let i = 0; i < flags.length; i += 2) {
       const key = flags[i]!,
         value = flags[i + 1];
@@ -552,6 +565,7 @@ export async function laneRun(
       (item) => !("attempt" in item) && item.issue === id,
     );
     if (!lane) throw new Error(`no active lane for ${id}; use start first`);
+    refuseBoundRunner(lane.worktree);
     const classification = laneTier(lane.worktree);
     tier = classification.tier;
     unlock = context.lock(id);
