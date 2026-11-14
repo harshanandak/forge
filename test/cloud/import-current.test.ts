@@ -99,8 +99,8 @@ test.each(rows)(
           if (kind === "readback") {
             if (variant === "drop")
               edits.push([
-                "for (const page of projection.pagesOf(scratch, limits)) {",
-                "const removed = Number(scratch.get(\"SELECT sequence FROM state_events WHERE key='issue:work-1'\").sequence); for (const page of projection.pagesOf(scratch, limits)) {",
+                "for (const page of state.pagesOf(scratch, limits)) {",
+                "const removed = Number(scratch.get(\"SELECT sequence FROM state_events WHERE key='issue:work-1'\").sequence); for (const page of state.pagesOf(scratch, limits)) {",
               ]);
             const alter =
               variant === "drop"
@@ -141,8 +141,8 @@ test.each(rows)(
                   ? "new StateOwner(scratch, {now: () => Date.parse(manifest.at)}).put('forge/work','issue:work-1',{title:'receipt'}, {kind:'agent',id:'synthetic'},{expectRevision:1,requestId:'old-request'});"
                   : "scratch.run(\"INSERT INTO domain_cloud_requests VALUES (?,?,?,?)\", ['legacy', JSON.stringify({route:'claim',subject:'issue:work-1'}), 'INPUT_INVALID', JSON.stringify({code:'INPUT_INVALID',message:'synthetic',retry:'never'})]);";
             edits.push([
-              "for (const page of projection.pagesOf(scratch, limits)) {",
-              `${inject}\n    for (const page of projection.pagesOf(scratch, limits)) {`,
+              "for (const page of state.pagesOf(scratch, limits)) {",
+              `${inject}\n    for (const page of state.pagesOf(scratch, limits)) {`,
             ]);
             if (mutant) edits.push([compareGuard, "false"]);
           }
@@ -222,6 +222,23 @@ test.each(rows)(
               "UNAVAILABLE",
             ]);
             eq(existsSync(join(rawOut, "manifest.json")), false);
+            // SqlStorage.exec must run even when initialization ignores the returned cursor.
+            const lazy = (await import(
+              await moduleUrl("../../tools/import-current.ts", [
+                ["const rows = readback", "const rows = () => readback"],
+                [
+                  "return { toArray: () => rows };",
+                  "return { toArray: rows };",
+                ],
+              ])
+            )) as typeof converter;
+            const lazyOut = out + "-lazy";
+            eq(status(await lazy.run({ ...options, out: lazyOut })), [
+              "FAIL",
+              1,
+              "UNAVAILABLE",
+            ]);
+            eq(existsSync(join(lazyOut, "manifest.json")), false);
           }
           eq(f.snapshot(s.db), before);
           if (!(kind === "pin" && variant === "changed")) eq(s.bytes(), hash);

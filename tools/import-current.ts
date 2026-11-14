@@ -16,7 +16,7 @@ import * as dump from "../cloud/src/dump.ts";
 import { domain } from "../cloud/src/project.ts";
 import { durableStore } from "../cloud/src/store.ts";
 import * as image from "../cloud/conformance/digest.ts";
-import * as projection from "./import-current-state.ts";
+import * as state from "./import-current-state.ts";
 
 const invalid = (): never => {
   throw new ForgeFailure({
@@ -31,11 +31,11 @@ export async function digest(path: string): Promise<string> {
     hash.update(chunk as Uint8Array);
   return hash.digest("hex");
 }
-function sourceManifest(path: string): projection.SourceManifest {
+function sourceManifest(path: string): state.SourceManifest {
   try {
     const value = JSON.parse(
       fs.readFileSync(path, "utf8"),
-    ) as projection.SourceManifest;
+    ) as state.SourceManifest;
     if (
       !value ||
       Object.keys(value).sort().join() !==
@@ -140,27 +140,22 @@ export async function convert(options: Options) {
       invalid();
     const scratch = await opened(":memory:", false, handles);
     new StateOwner(scratch, clock).initialize();
-    const projected = projection.currentState(
-      source,
-      scratch,
-      manifest,
-      limits,
-    );
+    const projected = state.currentState(source, scratch, manifest, limits);
     const expected = imageDigests(scratch);
     const readback = await opened(":memory:", false, handles);
     const target = durableStore({
       sql: {
-        exec: (sql, ...params) => ({
-          toArray: () =>
-            readback
-              .all(
-                sql,
-                params.map((p) =>
-                  p instanceof ArrayBuffer ? new Uint8Array(p) : p,
-                ),
-              )
-              .map((row) => ({ ...row })),
-        }),
+        exec: (sql, ...params) => {
+          const rows = readback
+            .all(
+              sql,
+              params.map((p) =>
+                p instanceof ArrayBuffer ? new Uint8Array(p) : p,
+              ),
+            )
+            .map((row) => ({ ...row }));
+          return { toArray: () => rows };
+        },
       },
       transactionSync: (body) => readback.transaction(body),
       get: invalid,
@@ -181,7 +176,7 @@ export async function convert(options: Options) {
         ),
       );
     const pages: { name: string; sha256: string; bytes: number }[] = [];
-    for (const page of projection.pagesOf(scratch, limits)) {
+    for (const page of state.pagesOf(scratch, limits)) {
       const name = `page-${String(page.page).padStart(4, "0")}.json`,
         file = join(out, name);
       const bytes = JSON.stringify(page);
