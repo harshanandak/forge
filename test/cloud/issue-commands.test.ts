@@ -10459,7 +10459,7 @@ for (const trip of TRIPS)
         expect([got.status, got.json.error?.code]).toEqual(
           prefix === "s2:" ? [200, undefined] : [400, "RESTORE_INVALID_ROW"],
         );
-        if (prefix === "s2:") expect(tablesOf(target.db)).toEqual(tables);
+        if (prefix === "s2:") expectFloor(target, tables, [issueFloor(0)]);
         else expect(Object.values(tablesOf(target.db)).flat()).toEqual([]);
       } finally {
         f.db.close();
