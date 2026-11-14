@@ -182,8 +182,14 @@ function coherentOutcome(o: Outcome, now: number): boolean {
   );
 }
 
-// Callers must bound total input bytes/keys before entry (forge-1362):
-// Object.keys/Reflect.ownKeys enumerate width before these guards reject it.
+// Precondition: callers bound input bytes and keys before evaluator entry.
+// parseGithubJson caps responses at 256 KiB and the shared read at 1 MiB;
+// its pre-parse scan charges at most 16,384 keys/array elements per read,
+// including unknown keys and duplicate key occurrences before JSON.parse.
+// Its post-parse isPlainJson guard caps objects/arrays at 256 entries, depth 16.
+// readGithubMergeEvidence also caps normalized inputs plus observations at 128 KiB.
+// Direct callers must supply equivalent budgets; these guards cannot impose them:
+// Object.keys/Reflect.ownKeys collect full object width before rejecting it.
 export function evaluateMergeEvidence(
   policy: unknown,
   expected: unknown,

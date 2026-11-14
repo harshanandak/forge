@@ -1,5 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 import { exitCode, failure } from "../../src/surface/result.ts";
+import { evaluateMergeEvidence } from "../../cloud/src/merge-evidence.ts";
+import { fixture, now } from "./merge-evidence.fixture.ts";
 type Code = "INPUT_INVALID" | "UNAVAILABLE";
 type Result =
   { ok: true; value: unknown } | { ok: false; code: Code; reason: string };
@@ -50,6 +52,9 @@ const rows: Row[] = [
   ["keys", 16385, "INPUT_INVALID"],
   ["aggregate keys", 16384, null],
   ["aggregate keys", 16385, "INPUT_INVALID"],
+  ["document keys", 16384, null],
+  ["document keys", 16385, "INPUT_INVALID"],
+  ["merge page", 99, null],
   ["tiny chunks", 0, null],
   ["empty chunk", 0, "UNAVAILABLE"],
   ...[256, 257].flatMap((n): Row[] => [
@@ -87,6 +92,31 @@ for (const [kind, value, code] of rows) {
     if (kind === "bytes")
       bodies[0] = sized(262144) + (value === 262145 ? " " : "");
     if (kind === "keys") bodies[0] = keys(Number(value));
+    if (kind === "document keys")
+      bodies[0] = `[${Array.from({ length: 64 }, (_, i) =>
+        JSON.stringify(
+          Object.fromEntries(
+            Array.from(
+              { length: 255 + (i === 63 && value === 16385 ? 1 : 0) },
+              (_, k) => [k, 0],
+            ),
+          ),
+        ),
+      ).join(",")}]`;
+    const mergeFixture = fixture();
+    if (kind === "merge page") {
+      const checks = mergeFixture.observation.runs[0]!.checks;
+      checks.splice(
+        0,
+        1,
+        ...Array.from({ length: Number(value) }, (_, i) => ({
+          ...checks[0]!,
+          id: i + 1,
+          name: i ? `extra-${i}` : "CI Gate",
+        })),
+      );
+      bodies[0] = JSON.stringify(mergeFixture.observation);
+    }
     if (kind === "aggregate keys")
       bodies.splice(0, 1, keys(8192), keys(Number(value) - 8192));
     if (kind === "width")
@@ -167,6 +197,15 @@ for (const [kind, value, code] of rows) {
       if (result.ok) expect(result.value).toEqual(JSON.parse(body));
     }
     expect(result?.ok).toBe(code === null);
+    if (kind === "merge page" && result?.ok)
+      expect(
+        evaluateMergeEvidence(
+          mergeFixture.policy,
+          mergeFixture.expected,
+          result.value,
+          now,
+        ).eligible,
+      ).toBe(true);
     if (result && !result.ok) {
       expect(result.code === code).toBe(true);
       expect(Object.keys(result).sort()).toEqual(["code", "ok", "reason"]);
