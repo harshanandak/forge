@@ -638,6 +638,7 @@ for (const [name, value, identity, id, code] of [
 for (const [op, input] of [
   ["lane.next", { id: "forge-1" }],
   ["lane.record", { id: "forge-1", action: 1, result: "{}" }],
+  ["lane.release", { id: "forge-1" }],
   ["lane.close", { id: "forge-1", noPr: true, dropped: "stopped" }],
   ["lane.show", { id: "forge-1", attempt: "attempt-1" }],
 ] as const)
@@ -1181,7 +1182,7 @@ const PREPARED_BRIEF = [
   )
   .join("\n\n");
 for (const [name, expected] of [
-  ["attach and release while stopped", "OK"],
+  ["ordinary attachment", "OK"],
   ["wrong actor", "LEASE_NOT_HELD"],
   ["wrong session", "LEASE_NOT_HELD"],
   ["wrong device", "AUTH_DEVICE_MISMATCH"],
@@ -1239,10 +1240,6 @@ for (const [name, expected] of [
                 },
                 call.op,
               );
-            }
-            if (call.op === "issue.release") {
-              expect(call.context.leaseGeneration).toBe(OWN_GRANT.generation);
-              return answer({ id: ISSUE.id }, call.op);
             }
             expect(call.op).toBe("issue.show");
             return name === "absent issue"
@@ -1336,29 +1333,6 @@ for (const [name, expected] of [
         expect(result).toMatchObject({
           result: { branch: "feat/one", worktree: r.s.root, lease: OWN_GRANT },
         });
-        const released = await r.assembly.catalog.invoke(
-          r.request(
-            "lane.release",
-            { id: ISSUE.id },
-            { context, requestId: "release-one" },
-          ),
-        );
-        expect(released).toMatchObject({
-          ok: true,
-          result: { issue: ISSUE.id, removed: false, keptBranch: "feat/one" },
-        });
-        const local = new LocalState(join(r.s.deviceRoot, "records.sqlite"));
-        try {
-          expect(
-            (await local.open(false))!.get("forge/work", journalKey())!.value,
-          ).toMatchObject({
-            active: false,
-            releaseNeeded: false,
-            cloudId: ISSUE.id,
-          });
-        } finally {
-          await local.close();
-        }
       },
     ));
 const edit = (
