@@ -20,6 +20,7 @@ const cases: [string, string, unknown, string | null][] = [
     (s): [string, string, unknown, null] => [s, "", null, null],
   ),
   ["empty", "", null, null],
+  ["workflows", "", null, null],
   ["absent merge", "", null, "UNAVAILABLE"],
   ...Object.entries(
     JSON.parse(
@@ -120,7 +121,12 @@ for (const [name, path, replacement, code] of cases)
                         ...fixture.latest,
                         id: i + 1,
                       }))
-                    : [fixture.latest];
+                    : name === "workflows"
+                      ? [
+                          fixture.latest,
+                          { ...fixture.latest, id: 11, workflow_id: 10 },
+                        ]
+                      : [fixture.latest];
             body = {
               workflow_runs: rows,
               total_count: rows.length + (name === "count drift" ? 1 : 0),
@@ -145,6 +151,8 @@ for (const [name, path, replacement, code] of cases)
                     status: "completed",
                     conclusion: "success",
                   };
+            if (name === "workflows" && p.split("/").at(-3) === "11")
+              Object.assign(body as object, { id: 11, workflow_id: 10 });
           } else if (p.split("/").at(-2) === "check-suites")
             body = name === "missing suite" ? null : fixture.suite;
           else if (p.endsWith("/probe")) body = {};
@@ -168,13 +176,15 @@ for (const [name, path, replacement, code] of cases)
     const result = outer.ok ? outer.value : outer;
     expect(result.ok).toBe(code === null);
     if (result.ok) {
-      expect(result.value).toHaveLength(name === "empty" ? 0 : 2);
+      expect(result.value).toHaveLength(
+        name === "empty" ? 0 : name === "workflows" ? 4 : 2,
+      );
       for (const [i, run] of result.value.entries()) {
         expect<unknown>(run).toEqual({
           ...(JSON.parse(
-            `{"repositoryId":7,"appId":77,"workflowId":9,"workflowPath":".github/workflows/ci.yml","workflowDigest":"${digest}","id":10,"runNumber":3,"headSha":"${merge}","checkSuiteId":20}`,
+            `{"repositoryId":7,"appId":77,"workflowId":${i < 2 ? 9 : 10},"workflowPath":".github/workflows/ci.yml","workflowDigest":"${digest}","id":${i < 2 ? 10 : 11},"runNumber":3,"headSha":"${merge}","checkSuiteId":20}`,
           ) as Record<string, unknown>),
-          attempt: i + 1,
+          attempt: (i % 2) + 1,
           status: i === 0 ? "completed" : base.status,
           conclusion: i === 0 ? "success" : base.conclusion,
         });
