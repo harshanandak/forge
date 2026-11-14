@@ -472,6 +472,13 @@ const bytes = (s: fx.Sandbox) =>
 for (const [name, value, identity, id, code] of [
   ["missing journal", undefined, fx.PROJECT_ID, "forge-1", "NOT_FOUND"],
   ["current journal", journal, fx.PROJECT_ID, "forge-1", "OK"],
+  [
+    "malformed pending release id",
+    { ...journal, releaseNeeded: true, releaseRequestId: "invalid id" },
+    fx.PROJECT_ID,
+    "forge-1",
+    "INPUT_CONFLICT",
+  ],
   ["local prefix differs from cloud", journal, fx.PROJECT_ID, "forge-1", "OK"],
   [
     "missing stored cloud id",
@@ -1607,7 +1614,14 @@ for (const [name, variants] of [
   ["Release of another generation", ["cloud generation", "caller generation"]],
   [
     "Release by another holder",
-    ["actor", "session", "device", "journal holder"],
+    [
+      "actor",
+      "session",
+      "device",
+      "journal holder",
+      "pending actor",
+      "pending session",
+    ],
   ],
   [
     "Lost release answer",
@@ -1657,11 +1671,32 @@ for (const [name, variants] of [
                     },
                   }
                 : grant;
+      if (variant.startsWith("pending ")) current = undefined;
+      const pendingId = variant.startsWith("pending ")
+        ? "release-original"
+        : undefined;
       let releases = 0,
         reads = 0,
         stopped = false;
       let sandbox: fx.Sandbox, before: ReturnType<typeof attachmentBytes>;
       const releaseIds: string[] = [];
+      const principals: LeaseRecord["holder"][] = [];
+      const attached = {
+        ...journal,
+        grant: variant === "journal holder" ? heldBy() : grant,
+        releaseNeeded: true,
+      };
+      const inspect = async () => {
+        const local = new LocalState(
+          join(sandbox.deviceRoot, "records.sqlite"),
+        );
+        try {
+          return (await local.open(false))?.get("forge/work", journalKey())
+            ?.value as Record<string, unknown> | undefined;
+        } finally {
+          await local.close();
+        }
+      };
       let effects = 0;
       const issue = { ...ISSUE, body: "retained cloud body" };
       await using(
@@ -1674,28 +1709,44 @@ for (const [name, variants] of [
               { encoding: "utf8", windowsHide: true },
             );
             expect(git.status, git.stderr).toBe(0);
+            attached.lane = {
+              ...attachment,
+              worktree: realpathSync.native(s.root),
+              brief: `${realpathSync.native(s.root).replace(/\\/g, "/")}/brief.md`,
+            };
             writeFileSync(join(s.root, "brief.md"), PREPARED_BRIEF);
             writeFileSync(join(s.root, "action.log"), "retained output");
             writeFileSync(
               join(s.root, ".git", "forge-lanes.json"),
-              JSON.stringify([attachment]),
+              JSON.stringify([attached.lane]),
             );
             if (name !== "Release with no attachment")
               await seedJournal(s, {
-                ...journal,
-                grant: variant === "journal holder" ? heldBy() : grant,
-                releaseNeeded: true,
+                ...attached,
+                ...(pendingId ? { releaseRequestId: pendingId } : {}),
               });
           },
           steps: [
-            ({ body }) => {
+            async ({ body }) => {
               const call = body as {
                 op: string;
                 requestId: string;
                 input: { id?: string };
-                context: { leaseGeneration?: number };
+                context: {
+                  leaseGeneration?: number;
+                  actor: LeaseRecord["holder"]["actor"];
+                  session: LeaseRecord["holder"]["session"];
+                };
               };
-              expect(attachmentBytes(sandbox)).toEqual(before);
+              const value = await inspect();
+              if (call.op === "issue.release" || value?.releaseRequestId) {
+                const { releaseRequestId, ...unchanged } = value ?? {};
+                expect(unchanged).toEqual(attached);
+                expect(releaseRequestId).toBe(
+                  releaseIds[0] ?? pendingId ?? call.requestId,
+                );
+                expect(attachmentBytes(sandbox)[1]).toBe(before[1]);
+              } else expect(attachmentBytes(sandbox)).toEqual(before);
               if (call.op === "lane.stop") {
                 stopped = true;
                 return answer(
@@ -1708,6 +1759,10 @@ for (const [name, variants] of [
                 expect(call.context.leaseGeneration).toBe(grant.generation);
                 releases++;
                 releaseIds.push(call.requestId);
+                principals.push({
+                  actor: call.context.actor,
+                  session: call.context.session,
+                });
                 if (variant === "delayed original request" && releases === 2)
                   return call.requestId === releaseIds[0]
                     ? answer({ id: ISSUE.id }, call.op)
@@ -1762,6 +1817,9 @@ for (const [name, variants] of [
                 ? { leaseGeneration: grant.generation }
                 : {},
           );
+          if (variant === "pending actor")
+            context.actor = { kind: "agent", id: "other" };
+          if (variant === "pending session") context.session = { id: "other" };
           if (variant === "stopped")
             expect(
               (
@@ -1798,7 +1856,7 @@ for (const [name, variants] of [
             r.request(
               name === "Still refused" ? variant : "lane.release",
               input,
-              { context },
+              { context, requestId: "release-original" },
             ),
           );
           expect(result.ok ? "OK" : result.error.code).toBe(expected);
@@ -1819,7 +1877,30 @@ for (const [name, variants] of [
           );
           expect(issue).toEqual({ ...ISSUE, body: "retained cloud body" });
           expect(stopped).toBe(variant === "stopped");
-          if (expected !== "OK") expect(attachmentBytes(r.s)).toEqual(before);
+          if (expected !== "OK") {
+            if (!releases) expect(attachmentBytes(r.s)).toEqual(before);
+            else
+              expect(await inspect()).toEqual({
+                ...attached,
+                releaseRequestId: releaseIds[0],
+              });
+          }
+          if (variant === "still held") {
+            const pending = attachmentBytes(r.s);
+            const restart = await r.assembly.catalog.invoke(
+              r.request(
+                "lane.start",
+                {
+                  id: ISSUE.id,
+                  branch: "feat/one",
+                  brief: "brief.md",
+                },
+                { context },
+              ),
+            );
+            expect(failed(restart, "INPUT_CONFLICT")).toBe(4);
+            expect(attachmentBytes(r.s)).toEqual(pending);
+          }
           if (name !== "Lost release answer" && expected !== "OK")
             expect(releases).toBe(0);
           if (name === "Still refused") expect(r.net.calls).toHaveLength(0);
@@ -1835,7 +1916,16 @@ for (const [name, variants] of [
                     r.request(
                       "lane.release",
                       { id: ISSUE.id },
-                      { context, requestId: "release-retry" },
+                      {
+                        context:
+                          variant === "delayed original request"
+                            ? {
+                                ...context,
+                                session: { id: "s1", harness: "changed" },
+                              }
+                            : context,
+                        requestId: "release-retry",
+                      },
                     ),
                   )
                 ).ok,
@@ -1849,10 +1939,10 @@ for (const [name, variants] of [
                 "forge/work",
                 journalKey(),
               )!;
-              expect(saved.revision).toBe(2);
+              expect(saved.revision).toBe(3);
+              expect(saved.value).not.toHaveProperty("releaseRequestId");
               expect(saved.value).toMatchObject({
-                ...journal,
-                grant,
+                ...attached,
                 active: false,
                 releaseNeeded: false,
               });
@@ -1864,6 +1954,7 @@ for (const [name, variants] of [
             );
             if (variant === "delayed original request") {
               expect(releaseIds).toEqual([releaseIds[0]!, releaseIds[0]!]);
+              expect(principals).toEqual([grant.holder, grant.holder]);
               expect(effects).toBe(1);
             }
             if (name === "Lost release answer")

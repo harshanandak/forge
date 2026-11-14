@@ -114,6 +114,7 @@ export type BoundCommand = (
   op: string,
   input: object,
   generation?: number,
+  release?: { requestId: string; holder: LeaseRecord["holder"] },
 ) => Promise<unknown>;
 
 function ownBoundGrant(
@@ -157,7 +158,8 @@ export async function boundLaneStart(
   const fresh = (await command("issue.show", { id: input.id })) as TrackerItem;
   const id = `work-${fresh.id.replace(/^.*-/, "")}`;
   const found = state?.get(boundLaneKey(project, id));
-  if (found) readBoundLane(found.value, id);
+  if (found && readBoundLane(found.value, id).releaseRequestId)
+    refuse("INPUT_CONFLICT", "Reconcile the pending release before attaching.");
   const own = (issue: TrackerItem, generation?: number) => {
     if (issue.status !== "open")
       refuse("INPUT_CONFLICT", "Closed issues cannot attach.");
@@ -200,12 +202,14 @@ export async function boundLaneRelease(
   state: Pick<StateClient, "get"> | undefined,
   command: BoundCommand,
   save: (record: BoundLaneRecord, revision: number) => Promise<StateRecord>,
+  requestId: string,
 ): Promise<unknown> {
   const fresh = (await command("issue.show", { id: input.id })) as TrackerItem;
   const id = `work-${fresh.id.replace(/^.*-/, "")}`;
   const found = state?.get(boundLaneKey(project, id));
   if (!found) refuse("NOT_FOUND", `No device lane for ${fresh.id}`);
-  const record = readBoundLane(found.value, id);
+  let record = readBoundLane(found.value, id),
+    revision = found.revision;
   ownBoundGrant(record.grant, context, device);
   const current = (issue: TrackerItem) => {
     if (`work-${issue.id.replace(/^.*-/, "")}` !== record.id)
@@ -218,11 +222,18 @@ export async function boundLaneRelease(
     return issue.lease;
   };
   if (current(fresh)) {
+    const releaseRequestId = record.releaseRequestId ?? requestId;
+    // The grant stays immutable while this request is pending; every retry uses its holder.
+    if (!record.releaseRequestId) {
+      record = { ...record, releaseNeeded: true, releaseRequestId };
+      revision = (await save(record, revision)).revision;
+    }
     try {
       const released = (await command(
         "issue.release",
         { id: record.cloudId },
         record.grant.generation,
+        { requestId: releaseRequestId, holder: record.grant.holder },
       )) as { id: string };
       if (`work-${released.id.replace(/^.*-/, "")}` !== record.id)
         refuse(
@@ -232,7 +243,7 @@ export async function boundLaneRelease(
     } catch (error) {
       if (
         !(error instanceof ForgeFailure) ||
-        error.error.code !== "UNAVAILABLE"
+        !["UNAVAILABLE", "LEASE_NOT_HELD"].includes(error.error.code)
       )
         throw error;
       // An uncertain write grants no local conclusion: read authority, never retry it blindly.
@@ -244,11 +255,9 @@ export async function boundLaneRelease(
         throw error;
     }
   }
-  if (record.active || record.releaseNeeded !== false)
-    await save(
-      { ...record, active: false, releaseNeeded: false },
-      found.revision,
-    );
+  const { releaseRequestId: _pending, ...released } = record;
+  if (record.active || record.releaseNeeded !== false || _pending)
+    await save({ ...released, active: false, releaseNeeded: false }, revision);
   return { issue: fresh.id, removed: false, keptBranch: record.lane.branch };
 }
 

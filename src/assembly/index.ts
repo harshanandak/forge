@@ -1824,7 +1824,7 @@ export async function createAssembly(
                   flight,
                   project,
                   deviceState,
-                  async (op, input, generation) => {
+                  async (op, input, generation, release) => {
                     const nested = current.candidates.find(
                       (entry) =>
                         entry.builtin === true &&
@@ -1835,10 +1835,12 @@ export async function createAssembly(
                       refuse("UNKNOWN_COMMAND", "Issue read is not assembled.");
                     const answer = await catalog.invoke({
                       ...request,
+                      requestId: release?.requestId ?? request.requestId,
                       op: nested.op,
                       input,
                       context: {
                         ...request.context,
+                        ...(release?.holder ?? {}),
                         ...(generation === undefined
                           ? {}
                           : { leaseGeneration: generation }),

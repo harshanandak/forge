@@ -66,6 +66,7 @@ export async function coordinateLane(
         state,
         command,
         save,
+        flight.request.requestId,
       );
     return boundLaneStart(
       flight.request.input as { id: string; branch: string; brief: string },
