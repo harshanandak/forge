@@ -39,7 +39,7 @@ import { parseRestoreJson } from "./restore-json.ts";
 import {
   checkpointTables,
   assertNoCheckpoint,
-  readCheckpointSeed,
+  readReplayStart,
 } from "./checkpoint.ts";
 
 /** Optional storage capability supplied by trusted assembly; the locked SQL port stays unchanged. */
@@ -563,13 +563,17 @@ function* restoredRows(
   keys: readonly string[],
   pageSize: number,
   startAfter?: readonly SqlValue[],
+  firstPage?: readonly SqlRow[],
 ): Generator<SqlRow> {
   let after = startAfter;
   for (;;) {
-    const rows = db.all(
-      `SELECT ${columns} FROM ${table}${after === undefined ? "" : ` WHERE (${keys.join(",")}) > (${keys.map(() => "?").join(",")})`} ORDER BY ${keys.join(",")} LIMIT ?`,
-      [...(after ?? []), pageSize],
-    );
+    const rows =
+      firstPage ??
+      db.all(
+        `SELECT ${columns} FROM ${table}${after === undefined ? "" : ` WHERE (${keys.join(",")}) > (${keys.map(() => "?").join(",")})`} ORDER BY ${keys.join(",")} LIMIT ?`,
+        [...(after ?? []), pageSize],
+      );
+    firstPage = undefined;
     for (const row of rows) yield row;
     if (rows.length < pageSize) return;
     after = keys.map((column) => rows.at(-1)![column]!);
@@ -597,8 +601,18 @@ export function verifyEventDerivedState(
     columns: string,
     keys: readonly string[],
     startAfter?: readonly SqlValue[],
-  ) => restoredRows(candidate, table, columns, keys, pageSize, startAfter);
-  const checkpoint = readCheckpointSeed(candidate, pageSize);
+    firstPage?: readonly SqlRow[],
+  ) =>
+    restoredRows(
+      candidate,
+      table,
+      columns,
+      keys,
+      pageSize,
+      startAfter,
+      firstPage,
+    );
+  const { checkpoint, receipts } = readReplayStart(candidate, pageSize);
   const records = new Map<string, { revision: number; digest: string }>();
   const recordRevisions = new Map<string, number>();
   const leases = new Map<string, LeaseRecord>();
@@ -637,6 +651,8 @@ export function verifyEventDerivedState(
     "state_requests",
     "namespace,request_id,fingerprint,result",
     ["namespace", "request_id"],
+    undefined,
+    receipts,
   )) {
     if (typeof row.namespace !== "string" || typeof row.request_id !== "string")
       continue;
@@ -963,6 +979,7 @@ export function verifyEventDerivedState(
         !validateStateRecord(record).ok ||
         !records.has(id) ||
         digest(record) !== records.get(id)?.digest ||
+        record.revision !== records.get(id)?.revision ||
         record.revision !== Number(row.revision)
       )
         reject("state_records", id);
