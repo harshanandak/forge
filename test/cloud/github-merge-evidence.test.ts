@@ -1,4 +1,5 @@
-import { expect, setDefaultTimeout, test } from "bun:test";
+import { expect, setDefaultTimeout, spyOn, test } from "bun:test";
+import { createCloudHttp } from "../../src/adapters/http/index.ts";
 import { evaluateMergeEvidence } from "../../cloud/src/merge-evidence.ts";
 import type { MergeObservations } from "../../cloud/src/merge-evidence.ts";
 import type { withGithubHttp } from "../../cloud/src/github-http.ts";
@@ -16,6 +17,12 @@ const head = "a".repeat(40),
 const digest =
   "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
 const rows: [string, string, unknown, string | null][] = [
+  ["budget:delayed", "", null, null],
+  ["budget:concurrency", "", null, null],
+  ["budget:client", "", null, null],
+  ["budget:abort", "", null, "UNAVAILABLE"],
+  ["budget:bad-job", "", null, "INPUT_INVALID"],
+  ["budget:bad-response", "", null, "INPUT_INVALID"],
   ..."ok squash failure cancelled queued missing-check wrong-producer not-ancestor mixed-case"
     .split(" ")
     .map((n): [string, string, unknown, null] => [n, "", null, null]),
@@ -56,6 +63,7 @@ const rows: [string, string, unknown, string | null][] = [
 ];
 for (const [name, path, value, code] of rows)
   test(`${name}:${path}:${JSON.stringify(value)}`, async () => {
+    const timed = name.startsWith("budget:");
     const module = (await import(
       "../../cloud/src/" + "github-evidence.ts"
     )) as { readGithubMergeEvidence?: Reader };
@@ -90,18 +98,33 @@ for (const [name, path, value, code] of rows)
     let prReads = 0,
       runLists = 0,
       credentials = 0;
+    let clock = Date.parse(time),
+      until = Infinity,
+      expire = () => {},
+      active = 0,
+      peak = 0;
+    const pending: (() => void)[] = [];
+    const late: (() => void)[] = [],
+      drained = Promise.withResolvers<void>();
+    let discarded = 0,
+      lateReads = 0;
     const result = await module.readGithubMergeEvidence!(input, {
-      now: () => Date.parse(time),
+      now: () => clock,
       signal: new AbortController().signal,
-      deadline: () => () => {},
+      deadline: (callback, ms) => {
+        expire = callback;
+        until = clock + ms;
+        return () => {};
+      },
       credential: () => {
         credentials++;
         return Promise.resolve({
           token: "credential-sentinel",
-          expiresAt: Date.parse(time) + 1000,
+          expiresAt: Date.parse(time) + (timed ? 60_000 : 1000),
         });
       },
-      fetch: (url, init) => {
+      fetch: async (url, init) => {
+        expect(init.signal!.aborted).toBe(false);
         urls.push(url);
         const u = new URL(url),
           parts = u.pathname.split("/");
@@ -150,11 +173,15 @@ for (const [name, path, value, code] of rows)
             app: { id: name === "wrong-producer" ? 78 : 77 },
           };
         else if (parts.includes("check-runs")) {
+          if (timed) {
+            peak = Math.max(peak, ++active);
+          }
           const id = Number(parts.at(-1));
           if (name === "later-check" && id === 42)
             throw new Error("credential-sentinel upstream-sentinel");
           body = {
             ...fixture.check,
+            name: timed && id !== 41 ? String(id) : fixture.check!.name,
             id:
               name === "malformed" && path === "check.id"
                 ? fixture.check!.id
@@ -173,28 +200,50 @@ for (const [name, path, value, code] of rows)
               conclusion: "success",
               completed_at: time,
             };
+          if (name === "budget:bad-response" && id === 41)
+            body = { ...(body as object), head_sha: "bad" };
+          else if (name === "budget:bad-response") {
+            await new Promise<void>((resolve) => late.push(resolve));
+            return new Response(
+              new ReadableStream(
+                {
+                  pull: () => {
+                    lateReads++;
+                  },
+                  cancel: () => {
+                    if (++discarded === 5) drained.resolve();
+                  },
+                },
+                { highWaterMark: 0 },
+              ),
+            );
+          }
         } else if (parts.at(-1) === "jobs") {
           expect(u.searchParams.get("per_page")).toBe("100");
           expect(u.searchParams.has("page")).toBe(false);
           const attempt = Number(parts.at(-2)),
-            count =
-              name === "jobs-full"
+            jobCount = timed
+              ? 16
+              : name === "jobs-full"
                 ? 100
                 : name === "duplicate-check"
                   ? 2
                   : name === "missing-check"
                     ? 0
                     : 1;
-          const jobs = Array.from({ length: count }, (_, i) => ({
+          const jobs = Array.from({ length: jobCount }, (_, i) => ({
             ...fixture.job,
+            name: timed && i ? String(41 + i) : fixture.job!.name,
             id: 50 + i,
             run_attempt:
               name === "malformed" && path === "job.run_attempt" ? 1 : attempt,
             check_run_url:
               path === "job.check_run_url"
                 ? value
-                : `https://api.github.com/repos/acme/forge/check-runs/${name === "duplicate-check" ? 42 : attempt === 1 ? 41 : 42}`,
+                : `https://api.github.com/repos/acme/forge/check-runs/${timed ? 41 + i : name === "duplicate-check" ? 42 : attempt === 1 ? 41 : 42}`,
           }));
+          if (name === "budget:bad-job")
+            Object.assign(jobs[0]!, { run_id: 99 });
           body = {
             jobs,
             total_count: jobs.length + (name === "jobs-count" ? 1 : 0),
@@ -204,7 +253,7 @@ for (const [name, path, value, code] of rows)
         } else if (parts.includes("actions")) {
           const collection = parts.at(-1) === "runs",
             current = collection && ++runLists === 2;
-          const attempt = parts.includes("attempts") ? Number(parts.at(-1)) : 2;
+          const attempt = Number(parts.at(-1)) || (timed ? 1 : 2);
           const run = {
             id: 10,
             repository: { id: 7 },
@@ -228,8 +277,8 @@ for (const [name, path, value, code] of rows)
           if (current) {
             expect(
               urls.filter((url) => new URL(url).pathname.endsWith("/jobs")),
-            ).toHaveLength(2);
-            if (name !== "missing-check")
+            ).toHaveLength(timed ? 1 : 2);
+            if (!timed && name !== "missing-check")
               expect(urls.at(-2)?.endsWith("/42")).toBe(true);
             if (name === "run-advanced") run.run_attempt = 3;
             if (name === "run-status") {
@@ -262,22 +311,87 @@ for (const [name, path, value, code] of rows)
               delete (body as Record<string, unknown>).total_count;
           }
         } else throw new Error("Unexpected endpoint");
-        return Promise.resolve(
-          new Response(JSON.stringify(body), {
-            headers: { "Content-Type": "application/json" },
-          }),
-        );
+        if (timed) {
+          const end = clock + 400;
+          await new Promise<void>((resolve) => {
+            pending.push(resolve);
+            queueMicrotask(() => {
+              for (const done of pending.splice(0).reverse()) done();
+            });
+          });
+          clock = Math.max(clock, end);
+          if (parts.includes("check-runs")) {
+            active--;
+            if (name === "budget:abort") clock = until;
+          }
+          if (clock >= until) expire();
+        }
+        return new Response(JSON.stringify(body), {
+          headers: { "Content-Type": "application/json" },
+        });
       },
     });
+    if (name === "budget:bad-response") {
+      expect(late).toHaveLength(5);
+      for (const release of late) release();
+      await drained.promise;
+      expect(lateReads).toBe(0);
+      expect([prReads, runLists]).toEqual([1, 1]);
+    }
     expect(result.ok).toBe(code === null);
+    if (timed) {
+      expect(peak).toBe(name === "budget:bad-job" ? 0 : 6);
+      if (code === null) expect(clock - Date.parse(time)).toBeLessThan(10_000);
+      if (
+        ["budget:abort", "budget:bad-job", "budget:bad-response"].includes(name)
+      ) {
+        expect(
+          urls.filter(
+            (url) => new URL(url).pathname.split("/").at(-2) === "check-runs",
+          ),
+        ).toHaveLength(name === "budget:bad-job" ? 0 : 6);
+      }
+      if (name === "budget:client") {
+        const deadline = spyOn(AbortSignal, "timeout").mockReturnValue(
+          new AbortController().signal,
+        );
+        try {
+          const client = createCloudHttp({
+            origin: "https://forge.example.test",
+            project: "forge",
+            fetch: () => Promise.resolve(new Response("{}")),
+          });
+          const token = `fct_0123456789abcdef.${"T".repeat(43)}`;
+          await client
+            .command(token, {
+              requestId: "r",
+              op: "issue.close",
+              input: {},
+              context: {},
+            })
+            .catch(() => {});
+          expect(deadline.mock.calls[0]![0]).toBeGreaterThan(
+            2 * (until - Date.parse(time)),
+          );
+        } finally {
+          deadline.mockRestore();
+        }
+      }
+    }
     if (result.ok) {
       expect(result.value.completeness).toBe("complete");
       expect<unknown>(result.value.binding).toEqual(input.binding);
       expect(result.value.finalPr.mergeSha).toBe(actual);
       expect(result.value.finalPr.headSha).toBe(head);
-      expect(result.value.runs.map((r) => r.attempt)).toEqual([1, 2]);
+      expect(result.value.runs.map((r) => r.attempt)).toEqual(
+        timed ? [1] : [1, 2],
+      );
       expect(result.value.runs.map((r) => r.checks.map((c) => c.id))).toEqual(
-        name === "missing-check" ? [[], []] : [[41], [42]],
+        timed
+          ? [Array.from({ length: 16 }, (_, i) => 41 + i)]
+          : name === "missing-check"
+            ? [[], []]
+            : [[41], [42]],
       );
       expect(
         result.value.runs.every(
@@ -294,7 +408,7 @@ for (const [name, path, value, code] of rows)
         time,
       );
       expect(eligible.eligible).toBe(
-        ["ok", "squash", "mixed-case"].includes(name),
+        timed || ["ok", "squash", "mixed-case"].includes(name),
       );
       if (!eligible.eligible)
         expect(eligible.code).toBe(

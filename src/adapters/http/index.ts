@@ -63,7 +63,7 @@ export interface CloudHttpOptions {
   readonly origin: string;
   readonly project: string;
   readonly fetch?: CloudFetch;
-  /** Deadline for one request, headers and body together. */
+  /** Explicit deadline for every route, headers and body together. */
   readonly timeoutMs?: number;
   /** Largest response body accepted. */
   readonly maxBytes?: number;
@@ -426,7 +426,10 @@ export function createCloudHttp(options: CloudHttpOptions): CloudHttp {
     caller: AbortSignal | undefined,
     limit = maxBytes,
   ): Promise<Answer> {
-    const deadline = AbortSignal.timeout(timeoutMs);
+    // Commands include the server's GitHub read plus policy, commit and transport work.
+    const deadline = AbortSignal.timeout(
+      path === "command" ? (options.timeoutMs ?? 30_000) : timeoutMs,
+    );
     const signal =
       caller === undefined ? deadline : AbortSignal.any([caller, deadline]);
     try {

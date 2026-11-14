@@ -137,7 +137,11 @@ for (const c of cases) {
       expect(result).toEqual({
         ok: false,
         code: invalid ? "INPUT_INVALID" : "UNAVAILABLE",
-        reason: invalid ? "Invalid GitHub request" : "GitHub unavailable",
+        reason: invalid
+          ? "Invalid GitHub request"
+          : c.before === 32
+            ? "GitHub request cap (32) exceeded"
+            : "GitHub unavailable",
       });
     }
     expect(calls).toBe(reserved || c.before === 32 ? 0 : 1);

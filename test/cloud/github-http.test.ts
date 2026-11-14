@@ -194,7 +194,9 @@ for (const name of cases) {
         reason:
           code === "INPUT_INVALID"
             ? "Invalid GitHub request"
-            : "GitHub unavailable",
+            : name === "requests:33"
+              ? "GitHub request cap (32) exceeded"
+              : "GitHub unavailable",
       });
       if (!result.ok)
         expect(exitCode(failure(result.code, result.reason))).toBe(
