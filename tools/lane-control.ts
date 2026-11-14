@@ -34,7 +34,7 @@ export function boundDispatch(
   timing = clock,
 ) {
   let pending: Promise<void> | undefined,
-    failure: unknown,
+    failure: Error | undefined,
     closed = false,
     expiry = 0;
   let cancel = () => {};
@@ -55,7 +55,10 @@ export function boundDispatch(
         if (!closed)
           cancel = timing.schedule(renew, Math.max(1, remaining / 3));
       } catch (error) {
-        failure = error ?? new Error("Renewal outcome unknown.");
+        failure =
+          error instanceof Error
+            ? error
+            : new Error("Renewal outcome unknown.", { cause: error });
       } finally {
         pending = undefined;
       }
@@ -63,7 +66,7 @@ export function boundDispatch(
     return pending;
   };
   return {
-    async beforeSpawn() {
+    async beforeSpawn(this: void) {
       await renew();
       if (closed) throw new Error("Dispatch closed.");
       if (failure) throw failure;
@@ -101,7 +104,7 @@ async function connectRunner(root: string) {
         ? {}
         : { context: { ...options.context, leaseGeneration: generation } }),
     });
-    if (!result.ok) throw new ForgeFailure(result.error!);
+    if (!result.ok) throw new ForgeFailure(result.error);
     return result.result;
   };
   return {
@@ -169,6 +172,7 @@ export async function openBoundRunner(
     await connection.close();
     throw new Error(
       `Bound lane dispatch refused: ${error instanceof Error ? error.message : "unknown coordinator result"}`,
+      { cause: error },
     );
   }
 }

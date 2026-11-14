@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 
 import { laneRun, runClaude, runCodex } from "../../tools/lane-run.ts";
+import { boundDispatch } from "../../tools/lane-control.ts";
 import { bindingFor } from "../assembly/cloud-fixture.ts";
 import { scriptFixture } from "../script-fixture.ts";
 import { spawnBudget } from "../spawn-budget.ts";
@@ -467,6 +468,7 @@ const {main}=await import(${JSON.stringify(script)});process.exitCode=await main
     resume?: string,
     harness = "codex",
     beforeSpawn?: () => Promise<void>,
+    started?: (pid: number) => void,
   ): Promise<
     Pick<
       Verdict,
@@ -486,6 +488,7 @@ const {main}=await import(${JSON.stringify(script)});process.exitCode=await main
           prompt: "Direct fixture prompt",
           ...(resume ? { resume } : {}),
           ...(beforeSpawn ? { beforeSpawn } : {}),
+          ...(started ? { started } : {}),
         },
         { replyGraceMs: 100, pollMs: 10, retryDelayMs: 1 },
       ),
@@ -1282,6 +1285,60 @@ test("bound runner refuses run, resume and detached auto before any provider spa
     ),
   ).rejects.toThrow("control stopped");
   expect(f.attempts()).toHaveLength(0);
+  const active = fixture(),
+    target = active.start();
+  let lost = false,
+    reads = 0;
+  let timer: () => Promise<void> = () => Promise.resolve();
+  let renewal = Promise.resolve();
+  const boundary = boundDispatch(
+    (op) => {
+      if (op === "lane.control") {
+        reads++;
+        return Promise.resolve({
+          incarnation: "one",
+          epoch: 1,
+          stopped: false,
+        });
+      }
+      return lost
+        ? Promise.reject(new Error("renewal timeout"))
+        : Promise.resolve({
+            generation: 7,
+            expiresAt: new Date(9000).toISOString(),
+          });
+    },
+    "work-1",
+    7,
+    {
+      now: () => 0,
+      schedule: (run) => {
+        timer = run;
+        return () => {};
+      },
+    },
+  );
+  try {
+    const result = await active.direct(
+      target,
+      "ok",
+      undefined,
+      "codex",
+      boundary.beforeSpawn,
+      () => {
+        lost = true;
+        renewal = timer();
+      },
+    );
+    await renewal;
+    expect(result.exit).toBe(0);
+    expect(readFileSync(result.reply!, "utf8")).toBe("Fixture final reply.");
+    await expect(boundary.beforeSpawn()).rejects.toThrow("renewal timeout");
+    expect(active.attempts()).toHaveLength(1);
+    expect(reads).toBe(1);
+  } finally {
+    await boundary.close();
+  }
 });
 
 function change(
