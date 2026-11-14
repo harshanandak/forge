@@ -19,6 +19,8 @@
     "OAUTH_TIMEOUT_MS": "5000",
     "FORGE_OWNER_SUBJECT": "<owner-subject>",
     "FORGE_CLOUD_PROJECT": "<project-name>",
+    // Exact namespace IDs only. Missing/malformed config refuses state access; [] admits none.
+    "FORGE_STATE_NAMESPACES": ["forge/memory"],
     // Issue reads (command issue.show) need FORGE_CLOUD_ID_PREFIX, the issue id prefix as in <prefix>-<n>:
     // lowercase letters, digits and hyphens, at most 32 characters. Without it issue.show answers 503.
     "FORGE_CLOUD_ID_PREFIX": "<id-prefix>",

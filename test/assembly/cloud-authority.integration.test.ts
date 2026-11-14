@@ -56,6 +56,7 @@ import * as fx from "./cloud-fixture.ts";
 import * as launch from "../../src/adapters/process/run.ts";
 import * as authority from "../../src/assembly/cloud-binding.ts";
 import { relay } from "../fixtures/owner-approval.ts";
+import { boundLaneKey } from "../../src/blocks/work/bound-lane-state.ts";
 import { approvalReply } from "../fixtures/owner-approval.mjs";
 
 setDefaultTimeout(30_000);
@@ -188,7 +189,18 @@ const MANIFEST_OPS = Object.keys(
   (JSON.parse(readFileSync(MANIFEST, "utf8")) as { operations: object })
     .operations,
 );
-const DECLARED = MANIFEST_OPS.filter((op) => !SERVED.includes(op));
+const COORDINATED = [
+  "start",
+  "show",
+  "status",
+  "next",
+  "record",
+  "close",
+  "release",
+].map((verb) => `lane.${verb}`);
+const DECLARED = MANIFEST_OPS.filter(
+  (op) => !SERVED.includes(op) && !COORDINATED.includes(op),
+);
 const notServed = (op: string) =>
   `${op} is not served by the cloud authority of a cloud-bound project yet.`;
 const yaml = (extra: object = {}) =>
@@ -391,6 +403,318 @@ const failed = (result: Awaited<ReturnType<typeof show>>, code: string) => {
   return exitCode(result);
 };
 
+const journalKey = (identity = fx.PROJECT_ID) =>
+  `bound-lane:${JSON.stringify([fx.ORIGIN, identity, fx.PROJECT])}:work-1`;
+const attachment = {
+  issue: "work-1",
+  issueId: "work-1",
+  worktree: "/lane",
+  branch: "feat/one",
+  brief: "brief.md",
+};
+const journal = {
+  version: 1 as const,
+  id: "work-1",
+  cloudId: "forge-1",
+  lane: attachment,
+  grant: heldBy(),
+  active: true,
+};
+for (const change of [
+  { identity: fx.OTHER_PROJECT_ID },
+  { origin: fx.OTHER_ORIGIN },
+  { project: "other" },
+])
+  test(`device journal key separates ${Object.keys(change)[0]}`, () => {
+    expect(boundLaneKey(fx.bindingFor(change), "work-1")).not.toBe(
+      boundLaneKey(fx.bindingFor(), "work-1"),
+    );
+  });
+async function seedJournal(
+  s: fx.Sandbox,
+  value: unknown,
+  identity = fx.PROJECT_ID,
+) {
+  const state = new LocalState(join(s.deviceRoot, "records.sqlite"));
+  try {
+    (await state.open(true))!.put(
+      "forge/work",
+      journalKey(identity),
+      value,
+      { kind: "agent", id: "a1" },
+      { expectRevision: 0 },
+    );
+  } finally {
+    await state.close();
+  }
+}
+const bytes = (s: fx.Sandbox) =>
+  readdirSync(s.dir, { recursive: true, withFileTypes: true })
+    .map((entry) => ({
+      path: join(entry.parentPath, entry.name),
+      file: entry.isFile(),
+    }))
+    .map(({ path, file }) => [
+      relative(s.dir, path),
+      file ? readFileSync(path).toString("hex") : null,
+    ]);
+for (const [name, value, identity, id, code] of [
+  ["missing journal", undefined, fx.PROJECT_ID, "forge-1", "NOT_FOUND"],
+  ["current journal", journal, fx.PROJECT_ID, "forge-1", "OK"],
+  ["local prefix differs from cloud", journal, fx.PROJECT_ID, "forge-1", "OK"],
+  [
+    "missing stored cloud id",
+    Object.fromEntries(
+      Object.entries(journal).filter(([key]) => key !== "cloudId"),
+    ),
+    fx.PROJECT_ID,
+    "forge-1",
+    "INPUT_CONFLICT",
+  ],
+  [
+    "wrong stored cloud id",
+    { ...journal, cloudId: "forge-2" },
+    fx.PROJECT_ID,
+    "forge-1",
+    "INPUT_CONFLICT",
+  ],
+  ...(
+    [
+      [
+        "different actor kind",
+        { actor: { ...CLOUD_HOLDER.actor, kind: "human" } },
+      ],
+      ["different actor id", { actor: { ...CLOUD_HOLDER.actor, id: "other" } }],
+      [
+        "different session",
+        { session: { ...CLOUD_HOLDER.session, id: "other" } },
+      ],
+      [
+        "different device",
+        { session: { ...CLOUD_HOLDER.session, device: "other" } },
+      ],
+    ] as const
+  ).map(
+    ([name, holder]) =>
+      [
+        name,
+        {
+          ...journal,
+          grant: { ...heldBy(), holder: { ...CLOUD_HOLDER, ...holder } },
+        },
+        fx.PROJECT_ID,
+        "forge-1",
+        "OK",
+      ] as const,
+  ),
+  [
+    "project exceeds issue scan budgets",
+    journal,
+    fx.PROJECT_ID,
+    "forge-1",
+    "OK",
+  ],
+  [
+    "replaced grant",
+    { ...journal, grant: { ...heldBy(), generation: 3 } },
+    fx.PROJECT_ID,
+    "forge-1",
+    "OK",
+  ],
+  ["changed display prefix", journal, fx.PROJECT_ID, "renamed-1", "OK"],
+  ["other project", journal, fx.OTHER_PROJECT_ID, "forge-1", "NOT_FOUND"],
+  [
+    "malformed record",
+    { ...journal, grant: null },
+    fx.PROJECT_ID,
+    "forge-1",
+    "INPUT_CONFLICT",
+  ],
+  [
+    "wrong canonical identity",
+    { ...journal, id: "work-2" },
+    fx.PROJECT_ID,
+    "forge-1",
+    "INPUT_CONFLICT",
+  ],
+  [
+    "inactive journal",
+    { ...journal, active: false },
+    fx.PROJECT_ID,
+    "forge-1",
+    "OK",
+  ],
+] as const) {
+  for (const op of ["lane.show", "lane.status"])
+    test(`bound ${op}: ${name} is diagnostic and changes no bytes`, () =>
+      using(
+        {
+          config: yaml({
+            config: {
+              idPrefix:
+                name === "local prefix differs from cloud"
+                  ? "my-repo"
+                  : id.replace(/-\d+$/, ""),
+            },
+          }),
+          prepare: (s) =>
+            value === undefined ? undefined : seedJournal(s, value, identity),
+          steps: [
+            ({ body }) => {
+              const call = body as { op: string; input: object };
+              if (call.op === "issue.list") {
+                throw new Error(
+                  "Project exceeds 10,000 issues or 8 MiB scan budget",
+                );
+              }
+              expect(call.op).toBe("issue.show");
+              expect([id, journal.cloudId]).toContain(
+                (call.input as { id: string }).id,
+              );
+              return answer({ ...ISSUE, id, lease: heldBy() });
+            },
+          ],
+        },
+        async (r) => {
+          const before = bytes(r.s);
+          const invoke = () =>
+            r.assembly.catalog.invoke(
+              r.request(op, op === "lane.show" ? { id } : {}),
+            );
+          for (let restart = 0; restart < 2; restart++) {
+            const result = await invoke();
+            const expected =
+              op === "lane.status" && code === "NOT_FOUND" ? "OK" : code;
+            expect(result.ok ? "OK" : result.error.code).toBe(expected);
+            expect(exitCode(result)).toBe(
+              expected === "OK" ? 0 : expected === "NOT_FOUND" ? 3 : 4,
+            );
+            if (code === "OK") {
+              if (op === "lane.show")
+                expect(result).toMatchObject({
+                  result: { ...attachment, issue: id, lease: heldBy() },
+                });
+              else
+                expect(result).toMatchObject({
+                  result: {
+                    enabled: false,
+                    lanes: [
+                      {
+                        id,
+                        step:
+                          value?.active === false
+                            ? "inactive"
+                            : name === "replaced grant" ||
+                                name.startsWith("different")
+                              ? "stale"
+                              : "attached",
+                      },
+                    ],
+                  },
+                });
+            }
+            if (restart === 0) {
+              await r.assembly.close();
+              r.assembly = await r.open();
+            }
+          }
+          expect(bytes(r.s)).toEqual(before);
+          if (code === "OK")
+            expect(
+              r.net.calls.some(
+                (call) =>
+                  (call.body as { input: { id: string } }).input.id ===
+                  journal.cloudId,
+              ),
+            ).toBe(true);
+          expect(
+            r.net.calls.every(
+              (call) => (call.body as { op: string }).op === "issue.show",
+            ),
+          ).toBe(true);
+        },
+      ));
+}
+for (const [op, input] of [
+  ["lane.start", { id: "forge-1", branch: "feat/one", brief: "brief.md" }],
+  ["lane.next", { id: "forge-1" }],
+  ["lane.record", { id: "forge-1", action: 1, result: "{}" }],
+  ["lane.close", { id: "forge-1", noPr: true, dropped: "stopped" }],
+  ["lane.release", { id: "forge-1" }],
+  ["lane.show", { id: "forge-1", attempt: "attempt-1" }],
+] as const)
+  test(`bound ${op} refuses unsupported variants before effects`, () =>
+    using({ device: false, creds: false }, async (r) => {
+      const before = bytes(r.s);
+      const result = await r.assembly.catalog.invoke(
+        r.request(op, input, {
+          context: { ...holding(r), leaseGeneration: 4 },
+        }),
+      );
+      expect(failed(result, "INPUT_INVALID")).toBe(6);
+      expect(r.net.calls).toHaveLength(0);
+      expect(bytes(r.s)).toEqual(before);
+    }));
+test("unbound lane show keeps its existing clone-files refusal outside Git without cloud or device initialization", () =>
+  using({ bind: false, creds: false, sentinel: false }, async (r) => {
+    const before = bytes(r.s);
+    const result = await r.assembly.catalog.invoke(
+      r.request("lane.show", { id: "forge-1" }),
+    );
+    expect(failed(result, "UNAVAILABLE")).toBe(1);
+    expect(r.net.calls).toHaveLength(0);
+    expect(bytes(r.s)).toEqual(before);
+  }));
+test("another clone of the same bound project reads the same device attachment", () =>
+  using(
+    {
+      prepare: (s) => seedJournal(s, journal),
+      steps: [() => answer({ ...ISSUE, lease: heldBy() })],
+    },
+    async (r) => {
+      const clone = join(r.s.dir, "clone");
+      cpSync(r.s.root, clone, { recursive: true });
+      const assembly = await r.open(clone);
+      try {
+        const before = bytes(r.s);
+        const result = await assembly.catalog.invoke(
+          r.request(
+            "lane.show",
+            { id: ISSUE.id },
+            { context: localContext(assembly, { kind: "agent", id: "a1" }) },
+          ),
+        );
+        expect(result).toMatchObject({
+          ok: true,
+          result: { ...attachment, issue: ISSUE.id, lease: heldBy() },
+        });
+        expect(bytes(r.s)).toEqual(before);
+      } finally {
+        await assembly.close();
+      }
+    },
+  ));
+for (const op of ["lane.show", "lane.status"])
+  test(`bound ${op} never falls back after cloud timeout`, () =>
+    using(
+      {
+        prepare: (s) => seedJournal(s, journal),
+        steps: [
+          () => {
+            throw new Error("timeout");
+          },
+        ],
+      },
+      async (r) => {
+        const before = bytes(r.s);
+        const result = await r.assembly.catalog.invoke(
+          r.request(op, op === "lane.show" ? { id: ISSUE.id } : {}),
+        );
+        expect(failed(result, "UNAVAILABLE")).toBe(1);
+        expect(bytes(r.s)).toEqual(before);
+      },
+    ));
+
 test("a bound project's issue show is answered by the cloud with the stored token, and no local state opens", () =>
   using({}, async (r) => {
     expect(await show(r)).toMatchObject({ ok: true, result: ISSUE });
@@ -412,7 +736,11 @@ test("a bound project's issue show is answered by the cloud with the stored toke
 test("the routing decision serves show, list, ready, blocked, stale, comments, links, create, comment, update, dep, link, close, claim, renew and release, refuses every other operation of the work block by name, and leaves other blocks local", () => {
   // The refused set is exactly the manifest minus the served list: a served name the manifest does not declare would hide here.
   for (const op of SERVED) expect(MANIFEST_OPS).toContain(op);
-  expect(DECLARED).toHaveLength(MANIFEST_OPS.length - SERVED.length);
+  expect(DECLARED).toHaveLength(
+    MANIFEST_OPS.length - SERVED.length - COORDINATED.length,
+  );
+  for (const op of COORDINATED)
+    expect(String(cloudRoute("forge/work", op))).toBe("coordinator");
   for (const op of ["issue.blocked", "issue.stale"])
     expect(cloudRoute("forge/work", op)).toBe("cloud");
   for (const op of ["issue.board", "issue.events", "issue.tree", "issue.lint"])
@@ -3904,7 +4232,7 @@ for (const [name, op, input, dryRun, code, exit] of [
   ],
   ["dry resume", "lane.resume", { all: true }, true, "UNAVAILABLE", 1],
   ["dry control", "lane.control", {}, true, "UNAVAILABLE", 1],
-  ["status", "lane.status", {}, false, "INPUT_INVALID", 6],
+  ["dry status", "lane.status", {}, true, "UNAVAILABLE", 1],
 ] as const)
   test(
     `bound lane ${name} is refused before HTTP and leaves local approvals unchanged`,

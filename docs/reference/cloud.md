@@ -7,6 +7,8 @@ subject. The code is in `cloud/`.
 
 Every route is `/p/<projectId>/<route>` and needs `Authorization: Bearer <token>`, except `loginstart` and `loginpoll`.
 
+`POST /p/<projectId>/state/read` and `/state/commit` admit only device tokens on `FORGE_CLOUD_PROJECT`, with a closed invocation `context` and matching route/kind. `FORGE_STATE_NAMESPACES` is an explicit array of exact namespace IDs (initially `["forge/memory"]`); missing/malformed config returns UNAVAILABLE, and `[]` grants nothing. Config cannot grant `forge/work`, `forge/cloud` or any `forge/core-*` namespace. `policyRevision` is the digest of the sorted, deduplicated config; `discover` is accepted only on an unpinned read. Admitted requests currently return FAIL / UNAVAILABLE (503, exit 1) until read/commit execution lands; admission never initializes an owner or records a receipt.
+
 | Route                                        | Method    | Token  | What it does                                                                                                                                                                                                                            |
 | -------------------------------------------- | --------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `claim`, `renew`, `release`                  | POST      | device | Change a lease. Each carries a `requestId`; a retry returns the right result. A session-bound token can act only as its own session: a body naming another is `AUTH_DEVICE_MISMATCH` (403) and records nothing.                         |

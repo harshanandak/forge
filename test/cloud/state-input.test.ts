@@ -44,6 +44,40 @@ const rows: readonly [string, unknown, boolean][] = [
   ],
   ["commit", commit, true],
   ["empty read set", { ...commit, readSet: [] }, true],
+  ["discovery", { ...read, policyRevision: "discover" }, true],
+  ["missing context", { ...read, context: undefined }, false],
+  [
+    "extra context",
+    { ...read, context: { ...read.context, owner: true } },
+    false,
+  ],
+  [
+    "invalid actor",
+    { ...commit, context: { actor: { kind: "owner", id: "x" } } },
+    false,
+  ],
+  [
+    "extra nested context",
+    {
+      ...read,
+      context: { actor: { ...read.context.actor, privileged: true } },
+    },
+    false,
+  ],
+  [
+    "pinned discovery",
+    { ...read, policyRevision: "discover", readVersion },
+    false,
+  ],
+  ["commit discovery", { ...commit, policyRevision: "discover" }, false],
+  [
+    "cross namespace dependency",
+    {
+      ...commit,
+      readSet: [{ ...commit.readSet[0], namespace: "other/state" }],
+    },
+    false,
+  ],
   ["invalid UTF-8", new Uint8Array([0xff]), false],
   [
     "key at limit",
@@ -114,7 +148,8 @@ const rows: readonly [string, unknown, boolean][] = [
     true,
   ],
   ["exact bytes", padded(bodyLimit), true],
-  ["exact values", { ...commit, input: Array(4975).fill(null) }, true],
+  ["exact values", { ...commit, input: Array(4964).fill(null) }, true],
+  ["one over values", { ...commit, input: Array(4965).fill(null) }, false],
   [
     "exact depth",
     {

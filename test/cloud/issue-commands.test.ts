@@ -19,6 +19,10 @@ import { TOKEN_LOOKUP, TOKENS } from "../../cloud/src/tokens.ts";
 import { prepareCommand, runCommand } from "../../cloud/src/issue-commands.ts";
 import { OLD_SCHEMA } from "./old-schema.ts";
 import {
+  commit as stateCommit,
+  read as stateRead,
+} from "./state-input.fixture.ts";
+import {
   receiptScope,
   scopeRequestId,
 } from "../../cloud/src/issue-request-id.ts";
@@ -206,7 +210,9 @@ function fixture(
           ? {}
           : {
               body:
-                typeof body === "string" || body instanceof ReadableStream
+                typeof body === "string" ||
+                body instanceof ReadableStream ||
+                body instanceof Uint8Array
                   ? body
                   : JSON.stringify(body),
               duplex: "half",
@@ -351,6 +357,375 @@ function fixture(
     now: () => t,
   };
 }
+const stateNamespaces = ["forge/memory"];
+const statePolicy = digestValue(stateNamespaces);
+for (const kind of ["read", "commit"] as const)
+  test(`state ${kind}: device admission and refusal table`, async () => {
+    const input = {
+      ...(kind === "read" ? stateRead : stateCommit),
+      namespace: "forge/memory",
+      policyRevision: statePolicy,
+      ...(kind === "read" ? {} : { readSet: [] }),
+    };
+    type Row = [
+      string,
+      unknown,
+      Record<string, unknown>,
+      Options,
+      number,
+      string,
+    ];
+    const invalidUtf8 = new TextEncoder()
+      .encode(
+        JSON.stringify({
+          ...input,
+          ...(kind === "read"
+            ? { query: { kind: "get", key: "bad\u007futf8" } }
+            : { input: "bad\u007futf8" }),
+        }),
+      )
+      .map((byte) => (byte === 0x7f ? 0xff : byte));
+    const rows: Row[] = [
+      ["admitted", input, {}, {}, 503, "UNAVAILABLE"],
+      ["invalid UTF-8 in string", invalidUtf8, {}, {}, 400, "INPUT_INVALID"],
+      [
+        "canonical config",
+        { ...input, policyRevision: digestValue(["a/state", "forge/memory"]) },
+        { FORGE_STATE_NAMESPACES: ["forge/memory", "a/state", "forge/memory"] },
+        {},
+        503,
+        "UNAVAILABLE",
+      ],
+      [
+        "discovery",
+        { ...input, policyRevision: "discover" },
+        {},
+        {},
+        kind === "read" ? 503 : 400,
+        kind === "read" ? "UNAVAILABLE" : "INPUT_INVALID",
+      ],
+      [
+        "config missing",
+        input,
+        { FORGE_STATE_NAMESPACES: undefined },
+        {},
+        503,
+        "UNAVAILABLE",
+      ],
+      [
+        "config malformed",
+        input,
+        { FORGE_STATE_NAMESPACES: "[" },
+        {},
+        503,
+        "UNAVAILABLE",
+      ],
+      [
+        "config wrong shape",
+        input,
+        { FORGE_STATE_NAMESPACES: {} },
+        {},
+        503,
+        "UNAVAILABLE",
+      ],
+      [
+        "config invalid entry",
+        input,
+        { FORGE_STATE_NAMESPACES: [1] },
+        {},
+        503,
+        "UNAVAILABLE",
+      ],
+      [
+        "config wildcard",
+        input,
+        { FORGE_STATE_NAMESPACES: ["forge/*"] },
+        {},
+        503,
+        "UNAVAILABLE",
+      ],
+      [
+        "config empty",
+        input,
+        { FORGE_STATE_NAMESPACES: [] },
+        {},
+        403,
+        "AUTH_FORBIDDEN",
+      ],
+      [
+        "not listed",
+        input,
+        { FORGE_STATE_NAMESPACES: ["other/state"] },
+        {},
+        403,
+        "AUTH_FORBIDDEN",
+      ],
+      ...[
+        "forge/work",
+        "forge/cloud",
+        "forge/core-project",
+        "forge/core-trust",
+      ].map((namespace): Row => [
+        "fixed deny",
+        { ...input, namespace },
+        { FORGE_STATE_NAMESPACES: [namespace] },
+        {},
+        403,
+        "AUTH_FORBIDDEN",
+      ]),
+      [
+        "old config revision",
+        { ...input, policyRevision: "old" },
+        {},
+        {},
+        409,
+        "REVISION_CONFLICT",
+      ],
+      ["wrong project", input, {}, { name: "other" }, 403, "AUTH_FORBIDDEN"],
+      [
+        "owner header",
+        input,
+        {},
+        { headers: { "X-Forge-Owner": "owner" } },
+        403,
+        "AUTH_FORBIDDEN",
+      ],
+      [
+        "owner expiry",
+        input,
+        {},
+        { headers: { "X-Forge-Owner-Expires": "9999999999999" } },
+        403,
+        "AUTH_FORBIDDEN",
+      ],
+      ["admin", input, {}, { token: vars.ADMIN_TOKEN }, 403, "AUTH_FORBIDDEN"],
+      ["OAuth", input, {}, { token: oauthToken }, 403, "AUTH_FORBIDDEN"],
+      ["missing token", input, {}, { token: "" }, 401, "AUTH_REQUIRED"],
+      ["invalid token", input, {}, { token: fakeToken }, 401, "AUTH_INVALID"],
+      ["wrong method", input, {}, { method: "GET" }, 404, "UNKNOWN_COMMAND"],
+      [
+        "suffix",
+        input,
+        {},
+        { path: `state/${kind}/extra` },
+        404,
+        "UNKNOWN_COMMAND",
+      ],
+      ["bare state", input, {}, { path: "state" }, 404, "UNKNOWN_COMMAND"],
+      ...[vars.ADMIN_TOKEN, oauthToken].flatMap((token) =>
+        [
+          { method: "GET" },
+          { method: "PUT" },
+          { path: `state/${kind}/extra` },
+          { path: "state" },
+        ].map((options): Row => [
+          "non-device bearer on malformed state route",
+          input,
+          {},
+          { ...options, token },
+          404,
+          "UNKNOWN_COMMAND",
+        ]),
+      ),
+      [
+        "wrong kind",
+        {
+          ...(kind === "read" ? stateCommit : stateRead),
+          namespace: "forge/memory",
+          policyRevision: statePolicy,
+          readSet: undefined,
+          ...(kind === "read" ? { readSet: [] } : {}),
+        },
+        {},
+        {},
+        400,
+        "INPUT_INVALID",
+      ],
+      [
+        "extra field",
+        { ...input, owner: "owner" },
+        {},
+        {},
+        400,
+        "INPUT_INVALID",
+      ],
+      [
+        "unknown version",
+        { ...input, version: 2 },
+        {},
+        {},
+        400,
+        "INPUT_INVALID",
+      ],
+      [
+        "duplicate key",
+        JSON.stringify(input).replace('"version":1', '"version":1,"version":1'),
+        {},
+        {},
+        400,
+        "INPUT_INVALID",
+      ],
+      ...(
+        [
+          ["project mismatch", { project: { id: "other" } }, "INPUT_INVALID"],
+          ["root", { project: { id: "p", root: "/tmp" } }, "INPUT_INVALID"],
+          [
+            "device mismatch",
+            { device: { id: "other" } },
+            "AUTH_DEVICE_MISMATCH",
+          ],
+          [
+            "session device",
+            { session: { id: "s1", device: "other" } },
+            "AUTH_DEVICE_MISMATCH",
+          ],
+          [
+            "session mismatch",
+            { session: { id: "other" } },
+            "AUTH_DEVICE_MISMATCH",
+          ],
+          ["missing actor", { actor: undefined }, "CONTEXT_MISSING"],
+        ] as const
+      ).map(([name, context, code]): Row => [
+        name,
+        { ...input, context: { ...input.context, ...context } },
+        {},
+        {},
+        code === "AUTH_DEVICE_MISMATCH" ? 403 : 400,
+        code,
+      ]),
+    ];
+    for (const via of ["direct", createWorker(), configured()] as const)
+      for (const [name, body, settings, options, status, code] of rows) {
+        const f = fixture({
+          ...vars,
+          FORGE_STATE_NAMESPACES: stateNamespaces,
+          ...settings,
+        });
+        try {
+          const token = await f.device(day, "laptop", "s1");
+          const before = f.snapshot();
+          const got = await f.send(body, {
+            token,
+            path: `state/${kind}`,
+            ...options,
+            via,
+          });
+          expect([got.status, got.code], name).toEqual([status, code]);
+          expect((got.json as { status?: string }).status, name).toBe("FAIL");
+          expect(got.exit, name).toBe(
+            code === "UNKNOWN_COMMAND"
+              ? 3
+              : code === "INPUT_INVALID" || code === "CONTEXT_MISSING"
+                ? 6
+                : code === "REVISION_CONFLICT"
+                  ? 4
+                  : 1,
+          );
+          expect(f.snapshot(), name).toBe(before);
+          expect(strayCalls(got.touched), name).toEqual([]);
+          if (
+            via !== "direct" &&
+            (options.name ||
+              options.headers ||
+              options.method ||
+              options.path ||
+              ["admin", "OAuth", "missing token"].includes(name))
+          )
+            expect(f.reached, name).toEqual([]);
+        } finally {
+          f.db.close();
+          mock.restore();
+        }
+      }
+  }, 30_000);
+
+for (const kind of ["read", "commit"] as const)
+  test(`state ${kind}: cold, expired, revoked and sessionless admission table`, async () => {
+    for (const mode of [
+      "cold",
+      "expired",
+      "revoked",
+      "expire during read",
+      "revoke during read",
+      "sessionless",
+      "sessionless fence",
+    ] as const) {
+      if (mode === "sessionless fence" && kind === "read") continue;
+      const f = fixture({ ...vars, FORGE_STATE_NAMESPACES: stateNamespaces });
+      try {
+        const body = {
+          ...(kind === "read" ? stateRead : stateCommit),
+          namespace: "forge/memory",
+          policyRevision: statePolicy,
+          ...(kind === "commit"
+            ? {
+                readSet: [],
+                ...(mode === "sessionless fence"
+                  ? { fence: { subject: "record:1", generation: 1 } }
+                  : {}),
+              }
+            : {}),
+        };
+        const token =
+          mode === "cold"
+            ? fakeToken
+            : await f.device(
+                day,
+                "laptop",
+                mode.startsWith("sessionless") ? undefined : "s1",
+              );
+        const change = () =>
+          mode.startsWith("expire") ? f.advance(2 * day) : revoke(f, token);
+        if (mode === "expired" || mode === "revoked") change();
+        let before = f.snapshot();
+        const text = JSON.stringify(body);
+        const input = !mode.endsWith("during read")
+          ? body
+          : new ReadableStream(
+              {
+                start: (c) =>
+                  c.enqueue(new TextEncoder().encode(text.slice(0, 9))),
+                pull(c) {
+                  change();
+                  before = f.snapshot();
+                  c.enqueue(new TextEncoder().encode(text.slice(9)));
+                  c.close();
+                },
+              },
+              { highWaterMark: 0 },
+            );
+        const got = await f.send(input, { token, path: `state/${kind}` });
+        const code =
+          mode === "cold"
+            ? "AUTH_INVALID"
+            : mode.startsWith("expire")
+              ? "AUTH_EXPIRED"
+              : mode.startsWith("revoke")
+                ? "AUTH_REVOKED"
+                : mode === "sessionless fence"
+                  ? "AUTH_DEVICE_MISMATCH"
+                  : "UNAVAILABLE";
+        expect([got.status, got.code, got.exit], mode).toEqual([
+          code === "UNAVAILABLE"
+            ? 503
+            : code === "AUTH_DEVICE_MISMATCH"
+              ? 403
+              : 401,
+          code,
+          1,
+        ]);
+        expect(f.snapshot(), mode).toBe(before);
+        expect(strayCalls(got.touched), mode).toEqual([]);
+        if (mode === "cold")
+          expect(got.touched, mode).toEqual(["get provisioned"]);
+      } finally {
+        f.db.close();
+        mock.restore();
+      }
+    }
+  }, 30_000);
+
 const actor = { kind: "agent", id: "tester" } as const;
 const receiptPrincipal = ["token", "fixture", "laptop"] as const;
 const iso = (ms: number) => new Date(ms).toISOString();
@@ -722,12 +1097,16 @@ test("an op that is excluded, undeclared or prototype-like is unknown, even as a
   expect(f.snapshot()).toBe(before);
 }, 30_000);
 
-for (const path of ["state/read", "state/commit"])
-  test(`${path} stays an unknown route through the Worker and the object`, async () => {
+for (const [path, status, code, exit] of [
+  ["state/read", 400, "INPUT_INVALID", 6],
+  ["state/commit", 400, "INPUT_INVALID", 6],
+  ["command/extra", 404, "UNKNOWN_COMMAND", 3],
+] as const)
+  test(`${path} refuses an empty envelope through the Worker and the object`, async () => {
     const { f, token, before } = await begin();
     for (const via of [createWorker(), "direct"] as const) {
       const got = await f.send({}, { token, path, via });
-      refusal(path, got, [404, "UNKNOWN_COMMAND", 3]);
+      refusal(path, got, [status, code, exit]);
       expect(f.snapshot()).toBe(before);
     }
   }, 30_000);
