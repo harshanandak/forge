@@ -16,6 +16,11 @@ const keys = (count: number) =>
 const sized = (bytes: number) => JSON.stringify("é".repeat((bytes - 2) / 2));
 type Row = [string, string | number, Code | null];
 const rows: Row[] = [
+  ["body", '""', null],
+  ["body", '"end\\\\"', null],
+  ["body", '"escaped\\"quote"', null],
+  ["body", '"trailing\\', "UNAVAILABLE"],
+  ["body", '"unfinished', "UNAVAILABLE"],
   [
     "body",
     JSON.stringify({
