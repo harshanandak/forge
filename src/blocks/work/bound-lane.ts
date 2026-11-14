@@ -1,5 +1,12 @@
 import { ForgeFailure } from "../../contract/failure.ts";
 import type { TrackerItem } from "../../generated/types.ts";
+import type { AmbientContext, StateRecord } from "../../generated/types.ts";
+import type {
+  FilesService,
+  ProcessService,
+  EnvironmentService,
+} from "../../assembly/providers.ts";
+import entry from "./entry.cts";
 import type { StateClient } from "../../ports/state.ts";
 import {
   boundLaneKey,
@@ -82,4 +89,177 @@ export async function boundLaneRead(
     hold: "Device-local attachments only; dispatch is not enabled.",
     lanes,
   };
+}
+
+function refuse(code: string, message: string): never {
+  throw new ForgeFailure({ code, message, retry: "reconcile_first" });
+}
+const helpers = entry as unknown as import("./entry.cts").LaneHelpers;
+export type BoundCommand = (op: string, input: object) => Promise<unknown>;
+
+export async function boundLaneStart(
+  input: { id: string; branch: string; brief: string },
+  context: AmbientContext,
+  device: string,
+  now: () => number,
+  project: BoundProject,
+  state: Pick<StateClient, "get"> | undefined,
+  command: BoundCommand,
+  save: (record: BoundLaneRecord, revision: number) => Promise<StateRecord>,
+  attach: (
+    record: BoundLaneRecord,
+    fence: () => Promise<void>,
+  ) => Promise<BoundLaneRecord["lane"]>,
+): Promise<unknown> {
+  const fresh = (await command("issue.show", { id: input.id })) as TrackerItem;
+  const id = `work-${fresh.id.replace(/^.*-/, "")}`;
+  const found = state?.get(boundLaneKey(project, id));
+  if (found) readBoundLane(found.value, id);
+  const own = (issue: TrackerItem, generation?: number) => {
+    if (issue.status !== "open")
+      refuse("INPUT_CONFLICT", "Closed issues cannot attach.");
+    const grant = issue.lease,
+      holder = grant?.holder;
+    if (
+      !grant ||
+      !holder ||
+      holder?.actor.kind !== context.actor?.kind ||
+      holder.actor.id !== context.actor?.id ||
+      holder.session.id !== context.session?.id ||
+      holder.session.device !== device
+    )
+      refuse("LEASE_NOT_HELD", "This caller does not hold the cloud grant.");
+    if (generation !== undefined && grant.generation !== generation)
+      refuse("LEASE_STALE", "The cloud grant generation changed.");
+    if (Date.parse(grant.expiresAt) <= now())
+      refuse("LEASE_EXPIRED", "The cloud grant expired.");
+    return grant;
+  };
+  const grant = own(fresh, context.leaseGeneration);
+  let record: BoundLaneRecord = {
+    version: 1,
+    id,
+    cloudId: fresh.id,
+    grant,
+    active: false,
+    releaseNeeded: true,
+    lane: {
+      issue: id,
+      issueId: id,
+      branch: input.branch,
+      brief: input.brief,
+      worktree: context.project!.root ?? context.project!.id,
+    },
+  };
+  const revision = (await save(record, found?.revision ?? 0)).revision;
+  const lane = await attach(record, async () => {
+    own(
+      (await command("issue.show", { id: record.cloudId })) as TrackerItem,
+      grant.generation,
+    );
+  });
+  record = { ...record, lane, active: true };
+  await save(record, revision);
+  return { ...lane, issue: fresh.id, lease: grant };
+}
+
+export async function attachBoundLane(
+  record: BoundLaneRecord,
+  services: {
+    files: FilesService;
+    process: ProcessService;
+    environment: EnvironmentService;
+    signal: AbortSignal;
+    deadline: number;
+  },
+  fence: () => Promise<void>,
+): Promise<BoundLaneRecord["lane"]> {
+  const { files, process, environment, signal, deadline } = services;
+  const path = (value: string) => {
+    const slash = value.replace(/\\/g, "/").replace(/\/$/, "");
+    return environment.platform === "win32" ? slash.toLowerCase() : slash;
+  };
+  const brief = helpers.briefPath(
+    files,
+    record.lane.brief,
+    environment.platform === "win32",
+  );
+  const problems = helpers.briefProblems(files.read(brief, 262144) ?? "");
+  if (problems.length) refuse("INPUT_INVALID", problems.join("; "));
+  const env = environment.select([
+    "PATH",
+    "PATHEXT",
+    "SystemRoot",
+    "windir",
+    "HOME",
+    "USERPROFILE",
+    "TEMP",
+    "TMP",
+  ]);
+  const git = process.resolve("git", env);
+  if (git.kind !== "resolved") refuse("UNAVAILABLE", "Git is unavailable.");
+  const branch = await process.run(
+    git,
+    ["symbolic-ref", "--quiet", "--short", "HEAD"],
+    {
+      cwd: files.root,
+      env,
+      signal,
+      timeoutMs: Math.max(1, deadline - Date.now()),
+      maxOutputBytes: 16384,
+    },
+  );
+  if (
+    branch.exitCode !== 0 ||
+    branch.timedOut ||
+    branch.truncated ||
+    branch.stdout.trim() !== record.lane.branch
+  )
+    refuse(
+      "INPUT_CONFLICT",
+      "Prepared checkout branch differs from the requested lane.",
+    );
+  const lock = files.lock(["forge-lanes-registry.lock"], {
+    recoverDeadOwner: true,
+  });
+  try {
+    const saved = helpers.laneRegistry(files, refuse);
+    const lane = {
+      ...record.lane,
+      worktree: files.root,
+      brief: `${files.root.replace(/\\/g, "/")}/${brief}`,
+    };
+    const existing = saved.lanes.filter(
+      (row) =>
+        row.attempt === undefined &&
+        (row.issueId ?? row.issue.replace(/^.*-/, "work-")) === record.id,
+    );
+    if (
+      existing.length > 1 ||
+      saved.lanes.some(
+        (row) =>
+          path(row.worktree) === path(lane.worktree) && !existing.includes(row),
+      ) ||
+      existing.some(
+        (row) =>
+          path(row.worktree) !== path(lane.worktree) ||
+          row.branch !== lane.branch ||
+          path(row.brief) !== path(lane.brief),
+      )
+    )
+      refuse(
+        "INPUT_CONFLICT",
+        "Registry identity differs from the prepared attachment.",
+      );
+    await fence();
+    if (!existing.length)
+      files.write(
+        "forge-lanes.json",
+        JSON.stringify([...saved.lanes, lane]) + "\n",
+        { area: "common", expected: saved.text },
+      );
+    return lane;
+  } finally {
+    lock.release();
+  }
 }
