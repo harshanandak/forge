@@ -36,7 +36,11 @@ import {
 } from "./migrations.ts";
 import { registerTables, exportTables, type DomainData } from "./domains.ts";
 import { parseRestoreJson } from "./restore-json.ts";
-import { checkpointTables, assertNoCheckpoint } from "./checkpoint.ts";
+import {
+  checkpointTables,
+  assertNoCheckpoint,
+  readCheckpointSeed,
+} from "./checkpoint.ts";
 
 /** Optional storage capability supplied by trusted assembly; the locked SQL port stays unchanged. */
 export interface StateImageStore extends SqlDatabase {
@@ -558,8 +562,9 @@ function* restoredRows(
   columns: string,
   keys: readonly string[],
   pageSize: number,
+  startAfter?: readonly SqlValue[],
 ): Generator<SqlRow> {
-  let after: readonly SqlValue[] | undefined;
+  let after = startAfter;
   for (;;) {
     const rows = db.all(
       `SELECT ${columns} FROM ${table}${after === undefined ? "" : ` WHERE (${keys.join(",")}) > (${keys.map(() => "?").join(",")})`} ORDER BY ${keys.join(",")} LIMIT ?`,
@@ -587,8 +592,13 @@ export function verifyEventDerivedState(
     pageSize > restorePageMax
   )
     throw new RestoreConsistencyFailure("state_events", "high-water mark");
-  const rows = (table: string, columns: string, keys: readonly string[]) =>
-    restoredRows(candidate, table, columns, keys, pageSize);
+  const rows = (
+    table: string,
+    columns: string,
+    keys: readonly string[],
+    startAfter?: readonly SqlValue[],
+  ) => restoredRows(candidate, table, columns, keys, pageSize, startAfter);
+  const checkpoint = readCheckpointSeed(candidate, pageSize);
   const records = new Map<string, { revision: number; digest: string }>();
   const recordRevisions = new Map<string, number>();
   const leases = new Map<string, LeaseRecord>();
@@ -596,6 +606,13 @@ export function verifyEventDerivedState(
   const plans = new Map<string, ReceiptPlan | boolean>();
   const key = (namespace: string, name: string): string =>
     json([namespace, name]);
+  for (const [namespace, name, , revision, digest] of checkpoint?.live ?? []) {
+    const id = key(namespace, name);
+    records.set(id, { revision, digest: digest.slice("sha256:".length) });
+    recordRevisions.set(id, revision);
+  }
+  for (const [namespace, name, , revision] of checkpoint?.deleted ?? [])
+    recordRevisions.set(key(namespace, name), revision);
   const reject = (table: string, name: string): never => {
     throw new RestoreConsistencyFailure(table, name);
   };
@@ -629,6 +646,20 @@ export function verifyEventDerivedState(
     } catch {
       plans.set(id, false);
     }
+  }
+  for (const [namespace, name, , fingerprint, result] of checkpoint?.receipts ??
+    []) {
+    const id = key(namespace, name);
+    const plan = plans.get(id);
+    if (
+      !plan ||
+      typeof plan === "boolean" ||
+      `sha256:${plan.fingerprint}` !== fingerprint ||
+      `sha256:${plan.result}` !== result
+    )
+      reject("state_requests", id);
+    requests.add(id);
+    plans.set(id, true);
   }
   // Two numbers per observed prefix, folded from rows as they are verified: never the events or the keys themselves.
   const tally = new Map<string, { highest: number; earlier: number }>();
@@ -667,10 +698,13 @@ export function verifyEventDerivedState(
         // A value that is not a floor reserves nothing.
       }
   };
-  let sequence = 0;
-  for (const row of rows("state_events", "sequence,namespace,key,body", [
-    "sequence",
-  ])) {
+  let sequence = checkpoint?.coveredSequence ?? 0;
+  for (const row of rows(
+    "state_events",
+    "sequence,namespace,key,body",
+    ["sequence"],
+    checkpoint === undefined ? undefined : [checkpoint.coveredSequence],
+  )) {
     const id = rowKey("state_events", row, "key");
     sequence++;
     if (row.sequence !== sequence && row.sequence !== BigInt(sequence))
