@@ -86,12 +86,11 @@ test.each(rows)(
   "%s",
   async (name, kind, expectedStatus, exit, code) => {
     for (const mutant of name.startsWith("CF") ? [false, true] : [false]) {
-      const s = f.source(9, false, kind === "release");
+      const s = f.source(30, false, kind === "release");
       const before = [f.snapshot(s.db), s.bytes()];
-      const scratch = f.database();
-      f.owner(scratch).initialize();
+      const scratch = kind === "release" ? f.cloudDatabase() : f.database();
+      f.owner(scratch).initialize(kind === "release" ? [domain] : []);
       if (kind === "release") {
-        f.owner(scratch).initialize([domain]);
         // Existing-format replay includes its live lease and original request history.
         for (const table of TABLES.slice(0, 4)) {
           for (const row of s.db.all(`SELECT * FROM ${table}`))
@@ -116,7 +115,11 @@ test.each(rows)(
         await (async () => {
           if (kind === "target") {
             await p.send("devices", { device: "synthetic", ttlMs: 60000 });
-            const snapshot = () => [f.snapshot(target), [...p.values]];
+            const snapshot = () => [
+              f.snapshot(target),
+              [...p.values],
+              p.db.query("SELECT * FROM sqlite_master ORDER BY name").all(),
+            ];
             const saved = snapshot();
             const r = await p.send("restore", pages[0]);
             check(r.projected);
