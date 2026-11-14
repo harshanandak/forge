@@ -215,6 +215,7 @@ async function bounded(
   request: Request,
   max = MAX_BODY,
   code = "INPUT_INVALID",
+  strictUtf8 = false,
 ): Promise<string> {
   const tooBig = (): ForgeFailure => fail(code, `body is over ${max} bytes`);
   if (Number(request.headers.get("content-length")) > max) throw tooBig();
@@ -236,7 +237,12 @@ async function bounded(
     }
     chunks.push(value);
   }
-  return new TextDecoder().decode(await new Blob(chunks).arrayBuffer());
+  const bytes = await new Blob(chunks).arrayBuffer();
+  try {
+    return new TextDecoder("utf-8", { fatal: strictUtf8 }).decode(bytes);
+  } catch {
+    throw fail("INPUT_INVALID", "body must be valid UTF-8");
+  }
 }
 
 // A refusal before the body is read drops the body, so nothing reads the stream after the response.
@@ -565,7 +571,12 @@ export class Project {
       const db = readOnlyStore(this.#storage, TOKENS, [TOKEN_LOOKUP]);
       if (db === undefined) throw fail("AUTH_INVALID", "Token is not valid");
       authorizeToken(db, parts, Date.now());
-      const body = await bounded(request, MAX_COMMAND_BODY);
+      const body = await bounded(
+        request,
+        MAX_COMMAND_BODY,
+        "INPUT_INVALID",
+        true,
+      );
       // Recheck after the stream; no writable owner is opened by admission.
       const token = authorizeToken(db, parts, Date.now());
       const input = parseStateInput(body);

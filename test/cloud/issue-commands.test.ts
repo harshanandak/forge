@@ -210,7 +210,9 @@ function fixture(
           ? {}
           : {
               body:
-                typeof body === "string" || body instanceof ReadableStream
+                typeof body === "string" ||
+                body instanceof ReadableStream ||
+                body instanceof Uint8Array
                   ? body
                   : JSON.stringify(body),
               duplex: "half",
@@ -373,8 +375,19 @@ for (const kind of ["read", "commit"] as const)
       number,
       string,
     ];
+    const invalidUtf8 = new TextEncoder()
+      .encode(
+        JSON.stringify({
+          ...input,
+          ...(kind === "read"
+            ? { query: { kind: "get", key: "bad\u007futf8" } }
+            : { input: "bad\u007futf8" }),
+        }),
+      )
+      .map((byte) => (byte === 0x7f ? 0xff : byte));
     const rows: Row[] = [
       ["admitted", input, {}, {}, 503, "UNAVAILABLE"],
+      ["invalid UTF-8 in string", invalidUtf8, {}, {}, 400, "INPUT_INVALID"],
       [
         "canonical config",
         { ...input, policyRevision: digestValue(["a/state", "forge/memory"]) },
@@ -1084,12 +1097,16 @@ test("an op that is excluded, undeclared or prototype-like is unknown, even as a
   expect(f.snapshot()).toBe(before);
 }, 30_000);
 
-for (const path of ["state/read", "state/commit"])
-  test(`${path} stays an unknown route through the Worker and the object`, async () => {
+for (const [path, status, code, exit] of [
+  ["state/read", 400, "INPUT_INVALID", 6],
+  ["state/commit", 400, "INPUT_INVALID", 6],
+  ["command/extra", 404, "UNKNOWN_COMMAND", 3],
+] as const)
+  test(`${path} refuses an empty envelope through the Worker and the object`, async () => {
     const { f, token, before } = await begin();
     for (const via of [createWorker(), "direct"] as const) {
       const got = await f.send({}, { token, path, via });
-      refusal(path, got, [404, "UNKNOWN_COMMAND", 3]);
+      refusal(path, got, [status, code, exit]);
       expect(f.snapshot()).toBe(before);
     }
   }, 30_000);
