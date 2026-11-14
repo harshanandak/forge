@@ -11,6 +11,15 @@ type PolicyResult =
   | Readonly<{ ok: true; policy: MergePolicy }>
   | Readonly<{ ok: false; code: "UNAVAILABLE"; reason: string }>;
 
+/** Raw server values used by the parser, captured without an asynchronous boundary. */
+export function mergePolicyBinding(env: MergePolicyBindings) {
+  return [
+    env.GITHUB_MERGE_POLICY,
+    env.GITHUB_REPOSITORY_ID,
+    env.FORGE_CLOUD_PROJECT,
+  ] as const;
+}
+
 /** Only Worker configuration supplies expectations; no request data or I/O. */
 export async function readMergePolicy(
   env: MergePolicyBindings,
@@ -21,8 +30,7 @@ export async function readMergePolicy(
     reason: "Server merge policy is missing or invalid",
   } as const;
   try {
-    const raw = env.GITHUB_MERGE_POLICY,
-      repository = env.GITHUB_REPOSITORY_ID;
+    const [raw, repository, project] = mergePolicyBinding(env);
     if (
       typeof raw !== "string" ||
       raw.length > 16_384 ||
@@ -45,7 +53,7 @@ export async function readMergePolicy(
     const policy = { ...value, digest: "0".repeat(64) };
     if (
       !policyGuard(policy) ||
-      policy.project !== env.FORGE_CLOUD_PROJECT ||
+      policy.project !== project ||
       policy.repositoryId !== Number(repository) ||
       policy.producer.repositoryId !== Number(repository) ||
       !policy.requiredChecks.length ||

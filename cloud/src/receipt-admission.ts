@@ -61,6 +61,7 @@ export async function admitReceipt(
     replayed(receipt);
     return receipt;
   }
+  const binding = ports.mergePolicyBinding();
   const p0 = await ports.mergePolicy();
   // Prepare is synchronous; P0 is the server snapshot resolved before entering it.
   call.recheck();
@@ -137,7 +138,12 @@ export async function admitReceipt(
           "Delivery changed during evidence verification",
         );
       if (!p1.ok) throw fail(p1.code, p1.reason);
-      if (p1.policy.digest !== policy.digest)
+      if (
+        p1.policy.digest !== policy.digest ||
+        ports
+          .mergePolicyBinding()
+          .some((value, index) => value !== binding[index])
+      )
         throw fail(
           "INPUT_CONFLICT",
           "Merge policy changed during evidence verification",

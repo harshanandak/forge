@@ -38,6 +38,10 @@ const rows: readonly [Phase, string, string, unknown][] = [
   ["policy-await", "AUTH_REVOKED", "state.auth", "AUTH_REVOKED"],
   ["policy-await", "INPUT_CONFLICT", "link", "revision"],
   ["policy-await", "LEASE_STALE", "lease", "released"],
+  ["policy-await", "INPUT_CONFLICT", "policy", "changed"],
+  ["policy-await", "INPUT_CONFLICT", "policy", "missing"],
+  ["policy-await", "INPUT_CONFLICT", "env.GITHUB_REPOSITORY_ID", "43"],
+  ["policy-await", "INPUT_CONFLICT", "env.FORGE_CLOUD_PROJECT", "other"],
   ["observe", "UNAVAILABLE", "cap", 8],
   ["observe", "rollback", "state.failCommit", true],
 ];

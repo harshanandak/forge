@@ -4,7 +4,11 @@ import {
   type GithubCredentialPorts,
 } from "./github-app-credential.ts";
 
-import { readMergePolicy, type MergePolicyBindings } from "./merge-policy.ts";
+import {
+  mergePolicyBinding,
+  readMergePolicy,
+  type MergePolicyBindings,
+} from "./merge-policy.ts";
 
 /** Ports reserved for server-owned evidence reads; construction performs no I/O. */
 export function composeGithub(
@@ -26,5 +30,6 @@ export function composeGithub(
     ...ports,
     credential: createGithubAppCredential(bindings, ports),
     mergePolicy: () => readMergePolicy(bindings),
+    mergePolicyBinding: () => mergePolicyBinding(bindings),
   };
 }

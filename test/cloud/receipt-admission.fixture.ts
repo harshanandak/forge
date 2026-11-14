@@ -4,7 +4,10 @@ import {
   tablesOf,
 } from "../../cloud/conformance/max-source.ts";
 import type { WriteCall } from "../../cloud/src/issue-write.ts";
-import { readMergePolicy } from "../../cloud/src/merge-policy.ts";
+import {
+  mergePolicyBinding,
+  readMergePolicy,
+} from "../../cloud/src/merge-policy.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { StateOwner } from "../../src/core/state/index.ts";
 import type { SqlDatabase, SqlRow } from "../../src/ports/store.ts";
@@ -112,10 +115,11 @@ export async function admissionFixture() {
   const ports: AdmissionPorts = {
     repository: { host: "github.com", owner: "acme", repo: "forge" },
     verifierVersion: "1",
+    mergePolicyBinding: () => mergePolicyBinding(env),
     mergePolicy: async () => {
-      const value = await readMergePolicy(env);
+      const pending = readMergePolicy(env);
       if (++state.policyReads === 2) await state.onPolicy();
-      return value;
+      return pending;
     },
     now: () => Date.now(),
     signal: new AbortController().signal,
