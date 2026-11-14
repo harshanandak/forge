@@ -54,6 +54,9 @@ export async function withGithubPrEvidence<T>(
   try {
     if (!isPlainJson(input)) fail();
     const root = fields(structuredClone(input), "locator policy binding");
+    const supplied = object(root.binding);
+    const derive =
+      !Object.hasOwn(supplied, "prId") && !Object.hasOwn(supplied, "headSha");
     const l = object(root.locator),
       p = fields(
         root.policy,
@@ -61,7 +64,8 @@ export async function withGithubPrEvidence<T>(
       ),
       b = fields(
         root.binding,
-        "project issueId linkKey linkRevision repositoryId prNumber prId headSha",
+        "project issueId linkKey linkRevision repositoryId prNumber" +
+          (derive ? "" : " prId headSha"),
       );
     const producer = fields(
       p.producer,
@@ -90,8 +94,7 @@ export async function withGithubPrEvidence<T>(
       !text(b.linkKey) ||
       !new RegExp(`^link:${b.issueId}:\\d+$`).test(b.linkKey) ||
       ![b.linkRevision, b.prNumber].every(positive) ||
-      !text(b.prId) ||
-      !matches(b.headSha, sha) ||
+      (!derive && (!text(b.prId) || !matches(b.headSha, sha))) ||
       p.project !== b.project ||
       p.repositoryId !== b.repositoryId ||
       producer.repositoryId !== p.repositoryId ||
@@ -102,11 +105,15 @@ export async function withGithubPrEvidence<T>(
       fail();
     const policy = p as Evidence.MergePolicy,
       binding = b as Evidence.DeliveryBinding;
-    function pr(value: unknown): Pr {
+    function pr(value: unknown, initial = false): Pr {
       const v = object(value),
         base = object(v.base),
         repo = object(base.repo),
         head = object(v.head);
+      if (derive && initial) {
+        if (!text(v.node_id) || !matches(head.sha, sha)) fail();
+        Object.assign(b, { prId: v.node_id, headSha: head.sha });
+      }
       if (
         repo.id !== binding.repositoryId ||
         v.number !== binding.prNumber ||
@@ -135,7 +142,7 @@ export async function withGithubPrEvidence<T>(
     }
     const result = await withGithubHttp(l, ports, async (session) => {
       const path = ["pulls", String(binding.prNumber)],
-        initialPr = pr(await session.get(path));
+        initialPr = pr(await session.get(path), true);
       if (initialPr.mergeSha === null) fail("UNAVAILABLE");
       const branch = object(
           await session.get(["git", "ref", "heads", policy.baseBranch]),
