@@ -56,7 +56,12 @@ function query(value: unknown): boolean {
       return (
         closed(value, ["kind", "limit"], ["from", "to", "descending"]) &&
         rows(value.limit) &&
-        optional(value, "from", key) &&
+        optional(
+          value,
+          "from",
+          (v) =>
+            key(v) || (text(v, 501) && v.length === 501 && v.endsWith("\0")),
+        ) &&
         optional(value, "to", key) &&
         optional(value, "descending", (v) => typeof v === "boolean")
       );

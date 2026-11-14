@@ -546,6 +546,7 @@ for (const mode of [
   "old epoch",
   "reprovision",
   "cursor boundary",
+  "expiry at epoch",
 ] as const)
   test(`state read metadata table: ${mode}`, async () => {
     const f = await stateFixture();
@@ -564,6 +565,14 @@ for (const mode of [
         expect(await f.storage.get("state:epoch")).toBe(epoch);
       }
       if (mode === "cursor boundary") f.put("z".repeat(500));
+      if (mode === "expiry at epoch") {
+        const get = f.storage.get.bind(f.storage);
+        spyOn(f.storage, "get").mockImplementation(async (key) => {
+          const value = await get(key);
+          if (key === "state:epoch") f.advance(2 * day);
+          return value;
+        });
+      }
       const version =
         mode === "old epoch"
           ? { epoch: "previous-epoch", revision: 0 }
@@ -579,7 +588,9 @@ for (const mode of [
           ? [503, "UNAVAILABLE", 1]
           : mode === "old epoch"
             ? [409, "REVISION_CONFLICT", 4]
-            : [200, undefined, 0],
+            : mode === "expiry at epoch"
+              ? [401, "AUTH_EXPIRED", 1]
+              : [200, undefined, 0],
       );
       if (mode === "missing epoch")
         expect(got.json.error?.message).toMatch(/provision|device.*token/i);
@@ -619,7 +630,10 @@ for (const mode of [
 for (const bad of [
   "huge record",
   "huge page",
+  "huge event",
   "bad wrapper",
+  "duplicate wrapper",
+  "nonfinite value",
   "wrong namespace",
   "wrong key",
   "wrong revision",
@@ -629,7 +643,16 @@ for (const bad of [
     const f = await stateFixture();
     try {
       const record = f.put("note:1");
+      if (bad === "nonfinite value")
+        f.db.run("UPDATE state_records SET body=? WHERE namespace=?", [
+          JSON.stringify({ ...record, value: "NONFINITE" }).replace(
+            '"NONFINITE"',
+            "1e400",
+          ),
+          "forge/memory",
+        ]);
       if (bad === "huge record") f.put("note:1", "x".repeat(1_048_576));
+      if (bad === "huge event") f.put("note:1", "x".repeat(1_048_576));
       if (bad === "huge page") {
         f.put("note:1", "x".repeat(600_000));
         f.put("note:2", "x".repeat(600_000));
@@ -640,6 +663,14 @@ for (const bad of [
         ]);
       if (bad === "bad wrapper")
         f.db.run("UPDATE state_records SET body='{}' WHERE namespace=?", [
+          "forge/memory",
+        ]);
+      if (bad === "duplicate wrapper")
+        f.db.run("UPDATE state_records SET body=? WHERE namespace=?", [
+          JSON.stringify(record).replace(
+            '"revision":1',
+            '"revision":1,"revision":1',
+          ),
           "forge/memory",
         ]);
       for (const [mode, changed] of [
@@ -654,7 +685,7 @@ for (const bad of [
           ]);
       f.meter.on = true;
       const got = await f.read(
-        bad === "bad event"
+        bad === "bad event" || bad === "huge event"
           ? { kind: "history", key: "note:1", limit: 1 }
           : bad === "huge page"
             ? { kind: "range", limit: 2 }
@@ -664,7 +695,15 @@ for (const bad of [
         bad.startsWith("huge") ? [503, "UNAVAILABLE", 1] : [500, "INTERNAL", 1],
       );
       expect(got.json.result).toBeUndefined();
-      if (bad.startsWith("huge")) expect(f.meter.cells).toEqual([]);
+      if (bad.startsWith("huge")) {
+        expect(f.meter.cells).toEqual([]);
+        expect(
+          got.touched.some(
+            (sql) =>
+              sql.startsWith("SELECT key,") && sql.includes(", body FROM"),
+          ),
+        ).toBe(false);
+      }
     } finally {
       f.db.close();
       mock.restore();
@@ -985,6 +1024,8 @@ for (const kind of ["read", "commit"] as const)
         });
         try {
           const token = await f.device(day, "laptop", "s1");
+          // Keep the admission matrix at the provisioning gate; read results have their own tables.
+          await f.storage.delete("state:epoch");
           const before = f.snapshot();
           const got = await f.send(body, {
             token,
@@ -1004,7 +1045,12 @@ for (const kind of ["read", "commit"] as const)
                   : 1,
           );
           expect(f.snapshot(), name).toBe(before);
-          expect(strayCalls(got.touched), name).toEqual([]);
+          expect(
+            strayCalls(got.touched).filter(
+              (call) => call !== "get state:epoch",
+            ),
+            name,
+          ).toEqual([]);
           if (
             via !== "direct" &&
             (options.name ||
@@ -1059,6 +1105,7 @@ for (const kind of ["read", "commit"] as const)
         const change = () =>
           mode.startsWith("expire") ? f.advance(2 * day) : revoke(f, token);
         if (mode === "expired" || mode === "revoked") change();
+        await f.storage.delete("state:epoch");
         let before = f.snapshot();
         const text = JSON.stringify(body);
         const input = !mode.endsWith("during read")
@@ -1097,7 +1144,10 @@ for (const kind of ["read", "commit"] as const)
           1,
         ]);
         expect(f.snapshot(), mode).toBe(before);
-        expect(strayCalls(got.touched), mode).toEqual([]);
+        expect(
+          strayCalls(got.touched).filter((call) => call !== "get state:epoch"),
+          mode,
+        ).toEqual([]);
         if (mode === "cold")
           expect(got.touched, mode).toEqual(["get provisioned"]);
       } finally {
