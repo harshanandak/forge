@@ -526,9 +526,12 @@ for (const mode of [
   "config",
   "cross namespace",
   "credential",
+  "namespace",
 ] as const)
   test(`state commit conflict table: ${mode}`, async () => {
-    const f = await stateFixture();
+    const f = await stateFixture(
+      mode === "namespace" ? ["forge/memory", "forge/work"] : stateNamespaces,
+    );
     try {
       f.put("existing");
       let input = await f.plan(stateEntries("one", "two"));
@@ -557,13 +560,21 @@ for (const mode of [
       if (mode === "epoch") await f.storage.put("state:epoch", "new-epoch");
       if (mode === "config") input = { ...input, policyRevision: "old-policy" };
       if (mode === "credential") input = { ...input, requestId: fakeToken };
+      if (mode === "namespace")
+        input = {
+          ...input,
+          namespace: "forge/work",
+          readVersion: { ...input.readVersion, revision: 0 },
+        };
       const before = f.stable(),
         successes = f.successes();
       const got = await f.commit(input);
       expect(stateOutcome(got)).toEqual(
-        mode === "cross namespace" || mode === "credential"
-          ? [400, "INPUT_INVALID", 6]
-          : [409, "REVISION_CONFLICT", 4],
+        mode === "namespace"
+          ? [403, "AUTH_FORBIDDEN", 1]
+          : mode === "cross namespace" || mode === "credential"
+            ? [400, "INPUT_INVALID", 6]
+            : [409, "REVISION_CONFLICT", 4],
       );
       expect(f.stable()).toBe(before);
       expect(f.successes()).toBe(successes);
