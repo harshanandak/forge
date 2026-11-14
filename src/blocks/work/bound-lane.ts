@@ -407,6 +407,41 @@ export async function boundLaneRelease(
   return { issue: fresh.id, removed: false, keptBranch: record.lane.branch };
 }
 
+export function boundLaneGit(
+  services: Pick<
+    Parameters<typeof attachBoundLane>[1],
+    "process" | "environment" | "signal" | "deadline"
+  >,
+  cwd: string,
+): (args: string[]) => Promise<string> {
+  const { process, environment, signal, deadline } = services;
+  const env = environment.select([
+    "PATH",
+    "PATHEXT",
+    "SystemRoot",
+    "windir",
+    "HOME",
+    "USERPROFILE",
+    "TEMP",
+    "TMP",
+  ]);
+  const git = resolveOutside(process, "git", env, cwd);
+  if (git.kind !== "resolved") refuse("UNAVAILABLE", "Git is unavailable.");
+  const readGit = async (args: string[]) => {
+    const result = await process.run(git, args, {
+      cwd: cwd,
+      env,
+      signal,
+      timeoutMs: Math.max(1, deadline - Date.now()),
+      maxOutputBytes: 16384,
+    });
+    if (result.exitCode !== 0 || result.timedOut || result.truncated)
+      refuse("INPUT_CONFLICT", "Cannot read prepared checkout identity.");
+    return result.stdout.trim();
+  };
+  return readGit;
+}
+
 export async function attachBoundLane(
   record: BoundLaneRecord,
   services: {
@@ -419,7 +454,7 @@ export async function attachBoundLane(
   },
   fence: () => Promise<void>,
 ): Promise<BoundLaneRecord["lane"]> {
-  const { files, process, environment, signal, deadline } = services;
+  const { files, environment } = services;
   const path = (value: string) => {
     const slash = value.replace(/\\/g, "/").replace(/\/$/, "");
     return environment.platform === "win32" ? slash.toLowerCase() : slash;
@@ -431,30 +466,7 @@ export async function attachBoundLane(
   );
   const problems = helpers.briefProblems(files.read(brief, 262144) ?? "");
   if (problems.length) refuse("INPUT_INVALID", problems.join("; "));
-  const env = environment.select([
-    "PATH",
-    "PATHEXT",
-    "SystemRoot",
-    "windir",
-    "HOME",
-    "USERPROFILE",
-    "TEMP",
-    "TMP",
-  ]);
-  const git = resolveOutside(process, "git", env, files.root);
-  if (git.kind !== "resolved") refuse("UNAVAILABLE", "Git is unavailable.");
-  const readGit = async (args: string[]) => {
-    const result = await process.run(git, args, {
-      cwd: files.root,
-      env,
-      signal,
-      timeoutMs: Math.max(1, deadline - Date.now()),
-      maxOutputBytes: 16384,
-    });
-    if (result.exitCode !== 0 || result.timedOut || result.truncated)
-      refuse("INPUT_CONFLICT", "Cannot read prepared checkout identity.");
-    return result.stdout.trim();
-  };
+  const readGit = boundLaneGit(services, files.root);
   const identity = async () => {
     if (
       path(await readGit(["rev-parse", "--show-toplevel"])) !==
