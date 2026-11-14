@@ -95,7 +95,7 @@ export async function parseGithubJson(
       const stack: string[] = [];
       let previous = "";
       for (const match of body.matchAll(
-        /"(?:[^"\\]|\\[\s\S])*"|[{}[\],:]|[^\s{}[\],:]+/g,
+        /"[^"\\]*(?:\\[\s\S][^"\\]*)*"|[{}[\],:]|[^\s{}[\],:]+/g,
       )) {
         const token = match[0];
         if (
