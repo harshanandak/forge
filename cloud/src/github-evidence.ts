@@ -199,9 +199,9 @@ export async function withGithubPrEvidence<T>(
         evidence,
       };
     });
-    return result.ok
-      ? result
-      : refuse(failure.code === "INPUT_INVALID" ? failure.code : result.code);
+    return !result.ok && failure.code === "INPUT_INVALID"
+      ? refuse(failure.code)
+      : result;
   } catch {
     return refuse(failure.code);
   }
@@ -213,6 +213,7 @@ export async function readGithubMergeEvidence(
 ) {
   type Code = "INPUT_INVALID" | "UNAVAILABLE";
   const failure: { code: Code } = { code: "UNAVAILABLE" };
+  let failed = false;
   const refuse = (code: Code) => ({
     ok: false as const,
     code,
@@ -222,6 +223,7 @@ export async function readGithubMergeEvidence(
         : "GitHub unavailable",
   });
   function fail(code: Code = "INPUT_INVALID"): never {
+    failed = true;
     failure.code = code;
     throw new Error("GitHub evidence refused");
   }
@@ -263,7 +265,7 @@ export async function readGithubMergeEvidence(
           );
           const checks: Evidence.MergeObservations["runs"][number]["checks"][number][] =
             [];
-          for (const raw of jobs) {
+          const prepareCheck = (raw: unknown) => {
             const job = object(raw);
             if (
               job.run_id !== run.id ||
@@ -291,7 +293,17 @@ export async function readGithubMergeEvidence(
             if (!positive(id) || String(id) !== suffix) fail("UNAVAILABLE");
             if (seen.has(id)) fail();
             seen.add(id);
-            const check = object(await session.get(["check-runs", suffix]));
+            return { job, id, suffix };
+          };
+          const readCheck = async ({
+            job,
+            id,
+            suffix,
+          }: ReturnType<typeof prepareCheck>) => {
+            if (failed) fail(failure.code);
+            const value = await session.get(["check-runs", suffix]);
+            if (failed) fail(failure.code);
+            const check = object(value);
             if (
               check.id !== id ||
               object(check.check_suite).id !== checkSuiteId ||
@@ -313,7 +325,7 @@ export async function readGithubMergeEvidence(
                 : check.conclusion !== null || check.completed_at !== null)
             )
               fail();
-            checks.push({
+            return {
               id,
               appId: run.appId,
               attempt: run.attempt,
@@ -322,7 +334,19 @@ export async function readGithubMergeEvidence(
               status: check.status,
               conclusion: check.conclusion,
               completedAt: check.completed_at,
-            } as Evidence.MergeObservations["runs"][number]["checks"][number]);
+            } as Evidence.MergeObservations["runs"][number]["checks"][number];
+          };
+          // Validate the whole batch before dispatch; Promise.all retains job order.
+          const checkConcurrency = 6;
+          for (
+            let offset = 0;
+            offset < jobs.length;
+            offset += checkConcurrency
+          ) {
+            const batch = jobs
+              .slice(offset, offset + checkConcurrency)
+              .map(prepareCheck);
+            checks.push(...(await Promise.all(batch.map(readCheck))));
           }
           runs.push({ ...run, checks });
           budget([snapshot, runs]);
@@ -359,9 +383,7 @@ export async function readGithubMergeEvidence(
       },
     );
     if (!result.ok)
-      return refuse(
-        failure.code === "INPUT_INVALID" ? failure.code : result.code,
-      );
+      return failure.code === "INPUT_INVALID" ? refuse(failure.code) : result;
     const { evidence, ...facts } = result.value;
     if (!evidence.ok) return evidence;
     const observation: Evidence.MergeObservations = {
