@@ -4,6 +4,7 @@ import {
   attachBoundLane,
   boundLaneRead,
   boundLaneStart,
+  boundLaneRelease,
   type BoundCommand,
 } from "../blocks/work/bound-lane.ts";
 import type { BoundProject } from "../blocks/work/bound-lane-state.ts";
@@ -32,7 +33,7 @@ export async function coordinateLane(
     get: (key: string) => owner.get("forge/work", key),
     list: (prefix?: string) => owner.list("forge/work", prefix),
   };
-  if (flight.operation.declaredOp === "lane.start") {
+  if (["lane.start", "lane.release"].includes(flight.operation.declaredOp)) {
     const local =
       options.env.FORGE_DEVICE_ID?.trim() ||
       nodeDeviceIdentity(options.deviceRoot).read();
@@ -42,6 +43,30 @@ export async function coordinateLane(
         message: "A bound lane needs this device and session.",
         retry: "never",
       });
+    const save = async (
+      record: import("../blocks/work/bound-lane-state.ts").BoundLaneRecord,
+      revision: number,
+    ) =>
+      writeBoundLane(
+        (await device.open(true))!.client(
+          "forge/work",
+          flight.request.context.actor!,
+        ),
+        project,
+        record,
+        revision,
+      );
+    if (flight.operation.declaredOp === "lane.release")
+      return boundLaneRelease(
+        flight.request.input as { id: string },
+        flight.request.context,
+        wireDeviceId(local),
+        options.now,
+        project,
+        state,
+        command,
+        save,
+      );
     return boundLaneStart(
       flight.request.input as { id: string; branch: string; brief: string },
       flight.request.context,
@@ -50,16 +75,7 @@ export async function coordinateLane(
       project,
       state,
       command,
-      async (record, revision) =>
-        writeBoundLane(
-          (await device.open(true))!.client(
-            "forge/work",
-            flight.request.context.actor!,
-          ),
-          project,
-          record,
-          revision,
-        ),
+      save,
       async (record, fence) => {
         const scope = {
           op: flight.request.op,

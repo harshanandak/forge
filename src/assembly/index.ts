@@ -1824,7 +1824,7 @@ export async function createAssembly(
                   flight,
                   project,
                   deviceState,
-                  async (op, input) => {
+                  async (op, input, generation) => {
                     const nested = current.candidates.find(
                       (entry) =>
                         entry.builtin === true &&
@@ -1837,6 +1837,12 @@ export async function createAssembly(
                       ...request,
                       op: nested.op,
                       input,
+                      context: {
+                        ...request.context,
+                        ...(generation === undefined
+                          ? {}
+                          : { leaseGeneration: generation }),
+                      },
                     });
                     if (!answer.ok) throw new ForgeFailure(answer.error);
                     return answer.result;

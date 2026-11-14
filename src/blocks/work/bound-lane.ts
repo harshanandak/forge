@@ -1,7 +1,11 @@
 import { ForgeFailure } from "../../contract/failure.ts";
 import { resolveOutside } from "../../assembly/providers.ts";
 import type { TrackerItem } from "../../generated/types.ts";
-import type { AmbientContext, StateRecord } from "../../generated/types.ts";
+import type {
+  AmbientContext,
+  StateRecord,
+  LeaseRecord,
+} from "../../generated/types.ts";
 import type {
   FilesService,
   ProcessService,
@@ -106,7 +110,35 @@ const helpers = entry as unknown as {
     lanes: (BoundLaneRecord["lane"] & { attempt?: string })[];
   };
 };
-export type BoundCommand = (op: string, input: object) => Promise<unknown>;
+export type BoundCommand = (
+  op: string,
+  input: object,
+  generation?: number,
+) => Promise<unknown>;
+
+function ownBoundGrant(
+  grant: LeaseRecord | undefined,
+  context: AmbientContext,
+  device: string,
+  generation = context.leaseGeneration,
+  now?: () => number,
+): LeaseRecord {
+  const holder = grant?.holder;
+  if (
+    !grant ||
+    !holder ||
+    holder.actor.kind !== context.actor?.kind ||
+    holder.actor.id !== context.actor?.id ||
+    holder.session.id !== context.session?.id ||
+    holder.session.device !== device
+  )
+    refuse("LEASE_NOT_HELD", "This caller does not hold the cloud grant.");
+  if (generation !== undefined && grant.generation !== generation)
+    refuse("LEASE_STALE", "The cloud grant generation changed.");
+  if (now && Date.parse(grant.expiresAt) <= now())
+    refuse("LEASE_EXPIRED", "The cloud grant expired.");
+  return grant;
+}
 
 export async function boundLaneStart(
   input: { id: string; branch: string; brief: string },
@@ -129,22 +161,7 @@ export async function boundLaneStart(
   const own = (issue: TrackerItem, generation?: number) => {
     if (issue.status !== "open")
       refuse("INPUT_CONFLICT", "Closed issues cannot attach.");
-    const grant = issue.lease,
-      holder = grant?.holder;
-    if (
-      !grant ||
-      !holder ||
-      holder?.actor.kind !== context.actor?.kind ||
-      holder.actor.id !== context.actor?.id ||
-      holder.session.id !== context.session?.id ||
-      holder.session.device !== device
-    )
-      refuse("LEASE_NOT_HELD", "This caller does not hold the cloud grant.");
-    if (generation !== undefined && grant.generation !== generation)
-      refuse("LEASE_STALE", "The cloud grant generation changed.");
-    if (Date.parse(grant.expiresAt) <= now())
-      refuse("LEASE_EXPIRED", "The cloud grant expired.");
-    return grant;
+    return ownBoundGrant(issue.lease, context, device, generation, now);
   };
   const grant = own(fresh, context.leaseGeneration);
   let record: BoundLaneRecord = {
@@ -172,6 +189,67 @@ export async function boundLaneStart(
   record = { ...record, lane, active: true };
   await save(record, revision);
   return { ...lane, issue: fresh.id, lease: grant };
+}
+
+export async function boundLaneRelease(
+  input: { id: string },
+  context: AmbientContext,
+  device: string,
+  now: () => number,
+  project: BoundProject,
+  state: Pick<StateClient, "get"> | undefined,
+  command: BoundCommand,
+  save: (record: BoundLaneRecord, revision: number) => Promise<StateRecord>,
+): Promise<unknown> {
+  const fresh = (await command("issue.show", { id: input.id })) as TrackerItem;
+  const id = `work-${fresh.id.replace(/^.*-/, "")}`;
+  const found = state?.get(boundLaneKey(project, id));
+  if (!found) refuse("NOT_FOUND", `No device lane for ${fresh.id}`);
+  const record = readBoundLane(found.value, id);
+  ownBoundGrant(record.grant, context, device);
+  const current = (issue: TrackerItem) => {
+    if (`work-${issue.id.replace(/^.*-/, "")}` !== record.id)
+      refuse(
+        "INPUT_CONFLICT",
+        "Cloud issue does not match the device attachment.",
+      );
+    if (issue.lease)
+      ownBoundGrant(issue.lease, context, device, record.grant.generation, now);
+    return issue.lease;
+  };
+  if (current(fresh)) {
+    try {
+      const released = (await command(
+        "issue.release",
+        { id: record.cloudId },
+        record.grant.generation,
+      )) as { id: string };
+      if (`work-${released.id.replace(/^.*-/, "")}` !== record.id)
+        refuse(
+          "INPUT_CONFLICT",
+          "Cloud release does not match the device attachment.",
+        );
+    } catch (error) {
+      if (
+        !(error instanceof ForgeFailure) ||
+        error.error.code !== "UNAVAILABLE"
+      )
+        throw error;
+      // An uncertain write grants no local conclusion: read authority, never retry it blindly.
+      if (
+        current(
+          (await command("issue.show", { id: record.cloudId })) as TrackerItem,
+        )
+      )
+        throw error;
+    }
+  }
+  if (record.active || record.releaseNeeded !== false)
+    await save(
+      { ...record, active: false, releaseNeeded: false },
+      found.revision,
+    );
+  return { issue: fresh.id, removed: false, keptBranch: record.lane.branch };
 }
 
 export async function attachBoundLane(
