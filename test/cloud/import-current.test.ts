@@ -189,6 +189,22 @@ test.each(rows)(
             }
             eq(readdirSync(out).length, bundle.pages.length + 1);
             eq(status(await impl.run(options)), ["FAIL", 1, "UNAVAILABLE"]);
+            // Without the joining view, nested projection/restore transactions refuse a valid bundle.
+            const raw = (await import(
+              await moduleUrl("../../tools/import-current.ts", [
+                [
+                  "const db = result.handle.value;",
+                  "return result.handle.value; const db = result.handle.value;",
+                ],
+              ])
+            )) as typeof converter;
+            const rawOut = out + "-raw";
+            eq(status(await raw.run({ ...options, out: rawOut })), [
+              "FAIL",
+              1,
+              "UNAVAILABLE",
+            ]);
+            eq(existsSync(join(rawOut, "manifest.json")), false);
           }
           eq(f.snapshot(s.db), before);
           if (!(kind === "pin" && variant === "changed")) eq(s.bytes(), hash);

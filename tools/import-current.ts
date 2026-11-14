@@ -23,22 +23,9 @@ import type { SqlDatabase } from "../src/ports/store.ts";
 import type { OwnedHandle } from "../src/ports/lifetime.ts";
 import { success } from "../src/surface/dispatch.ts";
 import { failure, respond } from "../src/surface/result.ts";
-import {
-  limitsFrom,
-  parseDump,
-  restorePage,
-  type Limits,
-  type Page,
-} from "../cloud/src/dump.ts";
+import * as dump from "../cloud/src/dump.ts";
 import { domain } from "../cloud/src/project.ts";
-import {
-  COLUMNS,
-  KEYS,
-  TABLES,
-  digests,
-  fold,
-  tally,
-} from "../cloud/conformance/digest.ts";
+import * as image from "../cloud/conformance/digest.ts";
 import {
   currentState,
   pagesOf,
@@ -94,35 +81,50 @@ async function opened(
   path: string,
   readOnly: boolean,
   handles: OwnedHandle<SqlDatabase>[],
-) {
+): Promise<SqlDatabase> {
   const result = await createSqliteStore(dirname(resolve(path))).open({
     path,
     readOnly,
   });
   if (!result.ok) throw new Error("Cannot open offline scratch or backup");
   handles.push(result.handle);
-  return result.handle.value;
+  const db = result.handle.value;
+  let active = false;
+  return {
+    ...db,
+    transaction: (body) => {
+      if (active) return body();
+      return db.transaction(() => {
+        active = true;
+        try {
+          return body();
+        } finally {
+          active = false;
+        }
+      });
+    },
+  };
 }
 /** Bounded keyset scans use exactly the dump's column and key order, including empty tables. */
 export function imageDigests(db: SqlDatabase) {
-  const t = tally();
-  for (const table of TABLES) {
+  const t = image.tally();
+  for (const table of image.TABLES) {
     let after: (string | number)[] | undefined;
     for (;;) {
-      const keys = KEYS[table].join(",");
+      const keys = image.KEYS[table].join(",");
       const rows = db.all(
-        `SELECT ${COLUMNS[table].join(",")} FROM ${table}${after ? ` WHERE (${keys}) > (${after.map(() => "?").join(",")})` : ""} ORDER BY ${keys} LIMIT 128`,
+        `SELECT ${image.COLUMNS[table].join(",")} FROM ${table}${after ? ` WHERE (${keys}) > (${after.map(() => "?").join(",")})` : ""} ORDER BY ${keys} LIMIT 128`,
         after,
       );
       for (const row of rows) {
         const normal = { ...row };
-        for (const column of COLUMNS[table])
+        for (const column of image.COLUMNS[table])
           if (typeof normal[column] === "bigint")
             normal[column] = Number(normal[column]);
-        fold(t, table, normal);
+        image.fold(t, table, normal);
       }
       if (rows.length < 128) break;
-      after = KEYS[table].map((key) => {
+      after = image.KEYS[table].map((key) => {
         const value = rows.at(-1)![key];
         return typeof value === "bigint"
           ? Number(value)
@@ -130,18 +132,18 @@ export function imageDigests(db: SqlDatabase) {
       });
     }
   }
-  return digests(t);
+  return image.digests(t);
 }
 export interface Options {
   backup: string;
   manifest: string;
   out: string;
-  limits?: Limits;
+  limits?: dump.Limits;
 }
 export async function convert(options: Options) {
   const { backup, out } = options,
     manifest = sourceManifest(options.manifest),
-    limits = options.limits ?? limitsFrom({});
+    limits = options.limits ?? dump.limitsFrom({});
   const handles: OwnedHandle<SqlDatabase>[] = [];
   const checkPin = async () => {
     if ((await digest(backup)) !== manifest.sha256) invalid();
@@ -184,10 +186,10 @@ export async function convert(options: Options) {
       writeFileSync(file, bytes, { flag: "wx", mode: 0o600 });
       const readback = readFileSync(file);
       const sha256 = createHash("sha256").update(readback).digest("hex");
-      restorePage(
+      dump.restorePage(
         target,
         owner,
-        parseDump(readback.toString("utf8")) as Page,
+        dump.parseDump(readback.toString("utf8")) as dump.Page,
         limits,
       );
       pages.push({ name, sha256, bytes: readback.byteLength });
@@ -225,7 +227,7 @@ export async function convert(options: Options) {
     }
     return bundle;
   } finally {
-    await Promise.all(handles.reverse().map((handle) => handle.close()));
+    await Promise.all(handles.reverse().map(async (handle) => handle.close()));
   }
 }
 export async function run(options: Options) {
@@ -281,7 +283,7 @@ if (
       backup: one("backup")!,
       manifest: one("manifest")!,
       out: one("out")!,
-      limits: limitsFrom(vars),
+      limits: dump.limitsFrom(vars),
     });
     process.stdout.write(JSON.stringify(reply.envelope) + "\n");
     process.exitCode = reply.exitCode;
