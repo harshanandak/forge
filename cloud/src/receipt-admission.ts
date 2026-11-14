@@ -1,3 +1,4 @@
+import { ForgeFailure } from "../../src/contract/failure.ts";
 import type { StateOwner } from "../../src/core/state/index.ts";
 import type { StateRecord, TrackerItem } from "../../src/generated/types.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
@@ -67,17 +68,28 @@ export async function admitReceipt(
   const p0 = await ports.mergePolicy();
   // Prepare is synchronous; P0 is the server snapshot resolved before entering it.
   call.recheck();
-  if (validateCloseInput(input).length || !(input as { pr?: unknown }).pr)
+  let id: string, pr: number;
+  try {
+    if (validateCloseInput(input).length || !(input as { pr?: unknown }).pr)
+      throw fail("INPUT_INVALID", "input must be { id, pr }");
+    const fields = input as { id: string; pr: number };
+    pr = fields.pr;
+    id = storedId(fields.id, call.prefix as string, minted(db));
+  } catch (error) {
+    if (
+      !(error instanceof ForgeFailure) ||
+      error.error.code !== "INPUT_INVALID"
+    )
+      throw error;
     throw refused(
       db,
       identity.requestId,
       identity.fingerprint,
-      fail("INPUT_INVALID", "input must be { id, pr }"),
+      error,
       call.recheck,
       call.expiresAt,
     );
-  const { id: given, pr } = input as { id: string; pr: number };
-  const id = storedId(given, call.prefix as string, minted(db));
+  }
   const issue = owner.get(NAMESPACE, `issue:${id}`);
   if (!issue) throw fail("NOT_FOUND", "Issue was not found");
   heldLease(owner, context, id, OP);

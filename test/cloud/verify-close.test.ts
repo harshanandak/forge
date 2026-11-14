@@ -181,27 +181,31 @@ test("verified close preserves whole and paged dumps with its evidence record", 
   }
 }, 30_000);
 
-test("invalid pr records its refusal and conflicts with a changed retry", async () => {
-  const f = await admissionFixture();
-  try {
-    const before = f.snapshot();
-    await expect(f.command({ id: "work-1", pr: 0 })).rejects.toHaveProperty(
-      "error.code",
-      "INPUT_INVALID",
-    );
-    const refused = f.snapshot();
-    expect(refused.tables.domain_cloud_command_receipts!.length).toBe(
-      before.tables.domain_cloud_command_receipts!.length + 1,
-    );
-    await expect(f.command()).rejects.toHaveProperty(
-      "error.code",
-      "INPUT_CONFLICT",
-    );
-    expect(f.snapshot()).toEqual(refused);
-    expect(refused.tables.state_records).toEqual(before.tables.state_records);
-    expect(refused.evidence).toEqual([]);
-    expect(f.state.calls).toEqual([]);
-  } finally {
-    f.dbSource.close();
-  }
-}, 30_000);
+for (const [name, input] of [
+  ["invalid pr", { id: "work-1", pr: 0 }],
+  ["invalid id", { id: "bad", pr: 490 }],
+] as const)
+  test(`${name} records its refusal and conflicts with a changed retry`, async () => {
+    const f = await admissionFixture();
+    try {
+      const before = f.snapshot();
+      await expect(f.command(input)).rejects.toHaveProperty(
+        "error.code",
+        "INPUT_INVALID",
+      );
+      const refused = f.snapshot();
+      expect(refused.tables.domain_cloud_command_receipts!.length).toBe(
+        before.tables.domain_cloud_command_receipts!.length + 1,
+      );
+      await expect(f.command()).rejects.toHaveProperty(
+        "error.code",
+        "INPUT_CONFLICT",
+      );
+      expect(f.snapshot()).toEqual(refused);
+      expect(refused.tables.state_records).toEqual(before.tables.state_records);
+      expect(refused.evidence).toEqual([]);
+      expect(f.state.calls).toEqual([]);
+    } finally {
+      f.dbSource.close();
+    }
+  }, 30_000);
