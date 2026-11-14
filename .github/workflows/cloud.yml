@@ -244,9 +244,9 @@ jobs:
           from pathlib import Path
           p = Path("src/issue-request-id.ts")
           text = p.read_text()
-          line = 'return (family === "command" ? "c2:" : "l2:") + hash;'
+          line = '(family === "command" ? "c2:" : family === "lease" ? "l2:" : "s2:") + hash'
           assert text.count(line) == 1, "scope counterfactual must edit exactly once"
-          p.write_text(text.replace(line, "return raw;"))
+          p.write_text(text.replace(line, "raw"))
           PY_SCOPE
             [ "$(git diff -U0 -- "$file" | grep -c '^-[^-]')" = 1 ]
             persist="$RUNNER_TEMP/wrangler-request-scope"
