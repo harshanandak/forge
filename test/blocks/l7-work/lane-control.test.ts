@@ -124,6 +124,7 @@ for (const alias of ["forge-1367", "WORK-1367", "not/an/issue"]) {
         f[field].scope.id = alias;
       else if (field === "observation") f.observation!.id = alias;
       else f[field].id = alias;
+      const code = field === "issue" ? "UNAVAILABLE" : "INPUT_INVALID";
       const result = unchanged(f, () =>
         field === "observation" || field === "expected"
           ? checkLaneObservation(f.observation, f.expected, f.observedNow)
@@ -136,14 +137,16 @@ for (const alias of ["forge-1367", "WORK-1367", "not/an/issue"]) {
             ),
       );
       expect(result.status).toBe("FAIL");
-      if (!result.ok) expect(result.error.code).toBe("INPUT_INVALID");
+      if (!result.ok) expect(result.error.code).toBe(code);
+      expect(exitCode(result)).toBe(field === "issue" ? 1 : 6);
       expect(result).not.toHaveProperty("result.candidate");
       if (field === "command" || field === "issue") {
         const read = unchanged(f, () =>
           readLaneControl(f.global, f.issue, f.command.scope),
         );
         expect(read.status).toBe("FAIL");
-        if (!read.ok) expect(read.error.code).toBe("INPUT_INVALID");
+        if (!read.ok) expect(read.error.code).toBe(code);
+        expect(exitCode(read)).toBe(field === "issue" ? 1 : 6);
         expect(read).not.toHaveProperty("result.candidate");
       }
     }, 1000);

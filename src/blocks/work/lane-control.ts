@@ -132,13 +132,13 @@ function globalOf(value: unknown): LaneControlGlobal | undefined {
 function issueOf(
   value: unknown,
   global: LaneControlGlobal,
-): LaneControlIssue | FailureEnvelope | undefined {
+): LaneControlIssue | undefined {
   const i = data(value, ["version", "incarnation", "id", "epoch", "stoppedAt"]);
-  if (i && !issueId(i.id)) return invalid();
   if (
     !i ||
     i.version !== 1 ||
     i.incarnation !== global.incarnation ||
+    !issueId(i.id) ||
     !epoch(i.epoch) ||
     i.epoch === 0 ||
     i.epoch > global.epoch ||
@@ -155,7 +155,6 @@ function stateOf(
   const g = globalOf(global);
   if (!g) return;
   const i = issue == null ? undefined : issueOf(issue, g);
-  if (i && "ok" in i) return i;
   if (issue != null && (!i || ("id" in scope && i.id !== scope.id))) return;
   return { global: g, issue: i };
 }
@@ -180,7 +179,6 @@ export function readLaneControl(
   if (!target) return invalid();
   const state = stateOf(global, issue, target);
   if (!state) return unavailable();
-  if ("ok" in state) return state;
   return ok(effective(state.global, "id" in target ? state.issue : undefined));
 }
 
@@ -207,9 +205,8 @@ export function transitionLaneControl(
   )
     return invalid();
   const state = stateOf(global, issue, target);
-  if (!state) return unavailable();
-  if ("ok" in state) return state;
-  if (state.global.epoch === Number.MAX_SAFE_INTEGER) return unavailable();
+  if (!state || state.global.epoch === Number.MAX_SAFE_INTEGER)
+    return unavailable();
   const g = state.global;
   if (c.action === "resume") {
     if ("id" in target && g.stopAll !== null) return conflict();
