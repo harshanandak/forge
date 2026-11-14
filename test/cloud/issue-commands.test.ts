@@ -20,6 +20,8 @@ import { prepareCommand, runCommand } from "../../cloud/src/issue-commands.ts";
 import { OLD_SCHEMA } from "./old-schema.ts";
 import { receiptScope } from "../../cloud/src/issue-request-id.ts";
 import { MAX_RECEIPTS } from "../../cloud/src/issue-receipts.ts";
+import { commandWrite } from "../../cloud/src/command-write.ts";
+import { ForgeFailure } from "../../src/contract/failure.ts";
 import { listIssues } from "../../cloud/src/issue-list.ts";
 import { commentIssue } from "../../cloud/src/issue-comment.ts";
 import { createIssue } from "../../cloud/src/issue-create.ts";
@@ -3159,6 +3161,65 @@ const floorEvents = (f: F) =>
     e.includes('"key":"allocation:issue:work-"'),
   );
 const owned = (f: F) => new StateOwner(sqlOf(f.db), { now: f.now });
+
+for (const refused of [false, true])
+  for (const code of ["AUTH_EXPIRED", "AUTH_REVOKED"])
+    test(`commandWrite authenticates a cached ${refused ? "refusal" : "success"} under ${code}`, async () => {
+      const f = fixture();
+      await f.device();
+      const db = sqlOf(f.db),
+        owner = owned(f);
+      let denied = false;
+      const failure = new ForgeFailure({ code, message: code, retry: "never" });
+      const invalid = new ForgeFailure({
+        code: "INPUT_INVALID",
+        message: "invalid",
+        retry: "never",
+      });
+      const check = mock(() => {
+        if (refused) throw invalid;
+        return 1;
+      });
+      const write = mock((number: number) => ({ number }));
+      const replayed = mock(() => {});
+      const run = () =>
+        commandWrite(
+          db,
+          owner,
+          {
+            requestId: "direct-auth",
+            fingerprint: JSON.stringify({
+              scope: receiptIdentity,
+              input: "direct",
+            }),
+            recheck: () => {
+              if (denied) throw failure;
+            },
+            expiresAt: start + day,
+          },
+          check,
+          write,
+          replayed,
+        );
+      if (refused) expect(run).toThrow(invalid);
+      else expect(run()).toEqual({ number: 1 });
+      const before = f.snapshot();
+      denied = true;
+      check.mockClear();
+      write.mockClear();
+      const lookup = spyOn(db, "get");
+      try {
+        expect(run).toThrow(failure);
+        expect(lookup).not.toHaveBeenCalled();
+        expect(check).not.toHaveBeenCalled();
+        expect(write).not.toHaveBeenCalled();
+        expect(replayed).not.toHaveBeenCalled();
+        expect(f.snapshot()).toBe(before);
+      } finally {
+        lookup.mockRestore();
+      }
+    }, 30_000);
+
 const floorMissing =
   "This project has issue history but no saved issue number, so creating issues is not available for it yet";
 const make = (id: string, input: object = { title: "New" }, more = {}) => ({
