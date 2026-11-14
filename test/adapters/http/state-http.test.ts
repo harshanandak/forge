@@ -127,19 +127,20 @@ function responseBytes(bytes: number) {
   const body = (value: string) =>
     envelope(resultFor(read(), { kind: "get", record: { ...record, value } }));
   const overhead = Buffer.byteLength(JSON.stringify(body("")));
-  const text = JSON.stringify(body("x".repeat(bytes - overhead)));
+  const answer = body("x".repeat(bytes - overhead));
+  const text = JSON.stringify(answer);
   expect(Buffer.byteLength(text)).toBe(bytes);
-  return text;
+  return { text, result: answer.result };
 }
 async function byteBoundary(create = createCloudHttp) {
   for (const delta of [-1, 0, 1]) {
-    const text = responseBytes(ceiling + delta);
+    const { text, result } = responseBytes(ceiling + delta);
     const f = fixture(() => new Response(text), 1_000, create);
     if (delta > 0) await refused(() => f.send(read()));
     else {
       expect<unknown>(await f.send(read())).toEqual({
         kind: "ok",
-        result: JSON.parse(text).result,
+        result,
       });
     }
     expect(f.calls).toHaveLength(1);
@@ -171,7 +172,7 @@ test("state byte boundary counterfactual fails with a raised ceiling", async () 
       pathToFileURL(file).href
     )) as typeof import("../../../src/adapters/http/index.ts");
     const f = fixture(
-      () => new Response(responseBytes(ceiling + 1)),
+      () => new Response(responseBytes(ceiling + 1).text),
       1_000,
       loaded.createCloudHttp,
     );
@@ -463,7 +464,8 @@ for (const mode of [
         return json({ ...good, error: { code: "UNAVAILABLE" } });
       if (mode === "warnings") return json({ ...good, warnings: ["unsafe"] });
       if (mode === "token key") return json({ ...good, [token]: true });
-      if (mode === "oversize") return new Response(responseBytes(ceiling + 1));
+      if (mode === "oversize")
+        return new Response(responseBytes(ceiling + 1).text);
       if (mode === "depth" || mode === "nodes") {
         const value: unknown =
           mode === "nodes"
