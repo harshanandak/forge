@@ -1,12 +1,15 @@
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { decideLease } from "../../src/contract/lease.ts";
+import { canonicalJson } from "../../src/core/config/pointer.ts";
 import type { StateOwner } from "../../src/core/state/index.ts";
+import type { StateRecord } from "../../src/generated/types.ts";
 import type {
   StateCommitRequest,
   StateCommitResult,
 } from "../../src/ports/state-protocol.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
 import { commandWrite, prepareReceipt } from "./command-write.ts";
+import { admitStateWrite } from "./dump.ts";
 import type { CommandHost } from "./issue-commands.ts";
 import type { ReceiptPrincipal } from "./issue-request-id.ts";
 import { MAX_SHOW_RESPONSE_BYTES } from "./issue-read.ts";
@@ -86,16 +89,30 @@ export function commitState(
       if (expected.epoch !== epoch || expected.revision !== revision)
         fail("REVISION_CONFLICT", "State read version changed");
   };
+  const identity = prepareReceipt(
+    ["state", input.namespace],
+    host.principal,
+    input.requestId,
+    input,
+  );
+  const resultFor = (
+    records: readonly StateRecord[],
+    revision: number,
+  ): StateCommitResult => ({
+    version: 1,
+    project: host.project,
+    namespace: input.namespace,
+    policyRevision: admission.policyRevision,
+    requestId: input.requestId,
+    records,
+    readVersion: { epoch, revision },
+    result: null,
+  });
   const result = commandWrite(
     db,
     owner,
     {
-      identity: prepareReceipt(
-        ["state", input.namespace],
-        host.principal,
-        input.requestId,
-        input,
-      ),
+      identity,
       recheck,
       expiresAt: host.expiresAt,
     },
@@ -109,27 +126,45 @@ export function commitState(
           expectRevision,
         })),
         ...(fence === undefined ? {} : { fence }),
-      });
-      const value: StateCommitResult = {
-        version: 1,
-        project: host.project,
-        namespace: input.namespace,
-        policyRevision: admission.policyRevision,
-        requestId: input.requestId,
-        records,
-        readVersion: {
-          epoch,
-          revision: owner.namespaceRevision(input.namespace),
+        admit: (records, events) => {
+          // SQLite assigns each inserted event the next global sequence, within this transaction.
+          const revision =
+            Number(
+              db.get(
+                "SELECT COALESCE(MAX(sequence),0) AS revision FROM state_events",
+              )!.revision,
+            ) + records.length;
+          if (!Number.isSafeInteger(revision))
+            fail(
+              "UNAVAILABLE",
+              "State event sequence exceeds restore admission",
+            );
+          const value = resultFor(records, revision);
+          try {
+            admitStateWrite(records, events, {
+              request_id: identity.requestId,
+              fingerprint: identity.fingerprint,
+              outcome: "ok",
+              result: canonicalJson(value),
+              created_at: Date.now(),
+              expires_at: host.expiresAt,
+            });
+          } catch (error) {
+            if (
+              error instanceof ForgeFailure &&
+              error.error.code === "RESTORE_INVALID_ROW"
+            )
+              fail("UNAVAILABLE", "State commit exceeds restore admission");
+            throw error;
+          }
+          if (
+            new TextEncoder().encode(JSON.stringify(envelope(value))).length >
+            MAX_SHOW_RESPONSE_BYTES
+          )
+            fail("UNAVAILABLE", "State response exceeds the byte budget");
         },
-        result: null,
-      };
-      // Construction and the whole-response budget are transactional too.
-      if (
-        new TextEncoder().encode(JSON.stringify(envelope(value))).length >
-        MAX_SHOW_RESPONSE_BYTES
-      )
-        fail("UNAVAILABLE", "State response exceeds the byte budget");
-      return value;
+      });
+      return resultFor(records, owner.namespaceRevision(input.namespace));
     },
     () => checkFence(),
   );

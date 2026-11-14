@@ -69,7 +69,7 @@ jobs:
               ("final fence forwarding", "cloud/src/state-commit.ts", "        ...(fence === undefined ? {} : { fence }),", "", "state commit final authority table: transaction expiry"),
               ("read version", "cloud/src/state-commit.ts", "expected.epoch !== epoch || expected.revision !== revision", "false", "state commit conflict table: phantom"),
               ("state receipt restore", "cloud/src/dump.ts", "!/^[cs]2:[a-f0-9]{64}$/", "!/^c2:[a-f0-9]{64}$/", "state receipt restore table: whole/s2:"),
-              ("state restore admission", "cloud/src/state-commit.ts", "          admitStateWrite(records, events, {", "          ((..._args: Parameters<typeof admitStateWrite>) => {})(records, events, {", "state commit transaction fault table: restore budget"),
+              ("state restore admission", "cloud/src/state-commit.ts", "            admitStateWrite(records, events, {", "            ((..._args: Parameters<typeof admitStateWrite>) => {})(records, events, {", "state commit transaction fault table: restore budget"),
           ]
           for name, file, before, after, test in rows:
               path = Path(file)

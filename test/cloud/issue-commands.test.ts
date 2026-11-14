@@ -436,8 +436,34 @@ async function stateFixture(namespaces = stateNamespaces) {
       entries,
     };
   };
-  const commit = (input: unknown, options: Options = {}) =>
-    f.send(input, { token, path: "state/commit", ...options });
+  const commit = async (input: unknown, options: Options = {}) => {
+    const got = await f.send(input, {
+      token,
+      path: "state/commit",
+      ...options,
+    });
+    if (got.json.ok) {
+      const tables = (await f.admin("dump")).json.value!.tables;
+      const floors = tables.state_records!.some(
+        (row) => row.namespace === WORK && row.key === FLOOR,
+      )
+        ? []
+        : [issueFloor(0)];
+      for (const trip of ["whole", "paged"] as const) {
+        const { t, got: restored } = await restoreInto(trip, tables, {
+          per: 1,
+        });
+        try {
+          expect(restored.status).toBe(200);
+          expectFloor(t, tables, floors);
+        } finally {
+          t.db.close();
+          spyOn(Date, "now").mockImplementation(f.now);
+        }
+      }
+    }
+    return got;
+  };
   const stable = () => {
     const snapshot = JSON.parse(f.snapshot()) as {
       sql: [string, unknown][];
@@ -511,18 +537,6 @@ for (const keys of [
         const refused = await f.commit({ ...request, ...changed });
         expect(stateOutcome(refused)).toEqual([409, "INPUT_CONFLICT", 4]);
         expect(f.snapshot()).toBe(saved);
-      }
-      const tables = (await f.admin("dump")).json.value!.tables;
-      for (const trip of ["whole", "paged"] as const) {
-        const { t, got: restored } = await restoreInto(trip, tables, {
-          per: 1,
-        });
-        try {
-          expect(restored.status).toBe(200);
-          expectFloor(t, tables, [issueFloor(0)]);
-        } finally {
-          t.db.close();
-        }
       }
     } finally {
       f.db.close();
@@ -845,6 +859,14 @@ for (const fault of [
         expect(f.snapshot()).toBe(before);
         expect(f.stable()).toBe(domain);
         expect(f.successes()).toBe(successes);
+        if (fault === "restore budget")
+          expect(
+            got.touched.filter((sql) =>
+              /^(INSERT|UPDATE).* (state_records|state_events|domain_cloud_command_receipts)/.test(
+                sql,
+              ),
+            ),
+          ).toEqual([]);
       } else {
         expect(stateOutcome(got)).toEqual(
           fault === "dropped reply"
