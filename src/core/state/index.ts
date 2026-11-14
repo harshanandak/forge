@@ -587,6 +587,8 @@ export function verifyEventDerivedState(
   highWaterMark: number,
   pageSize: number = restorePageSize,
   numbered?: NumberedRequest,
+  // Trusted callers verifying older images supply the capability from their validated ledger.
+  checkpointCapable = true,
 ): NumberedSummary | undefined {
   if (!Number.isSafeInteger(highWaterMark) || highWaterMark < 0)
     throw new RestoreConsistencyFailure("state_events", "high-water mark");
@@ -612,7 +614,11 @@ export function verifyEventDerivedState(
       startAfter,
       firstPage,
     );
-  const { checkpoint, receipts } = readReplayStart(candidate, pageSize);
+  const { checkpoint, receipts } = readReplayStart(
+    candidate,
+    pageSize,
+    checkpointCapable,
+  );
   const records = new Map<string, { revision: number; digest: string }>();
   const recordRevisions = new Map<string, number>();
   const leases = new Map<string, LeaseRecord>();
@@ -2034,7 +2040,13 @@ export class StateOwner {
       assertRegistered(candidate);
       if (migrated && signature(candidate) !== expected)
         invalid("Snapshot schema or reviewed table registration differs");
-      verifyEventDerivedState(candidate, eventHighWaterMark, pageSize);
+      verifyEventDerivedState(
+        candidate,
+        eventHighWaterMark,
+        pageSize,
+        undefined,
+        applied.some((row) => row.id === "004_state_checkpoint"),
+      );
     };
     imageStore.restoreImage(
       image,

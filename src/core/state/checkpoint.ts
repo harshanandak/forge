@@ -229,6 +229,7 @@ export interface CheckpointSeed {
 export function readReplayStart(
   db: SqlDatabase,
   pageSize: number,
+  checkpointCapable: boolean,
 ): {
   readonly checkpoint: CheckpointSeed | undefined;
   readonly receipts: readonly SqlRow[];
@@ -237,30 +238,16 @@ export function readReplayStart(
     invalid("Invalid checkpoint page size");
   const receiptPage =
     "SELECT namespace,request_id,fingerprint,result FROM state_requests ORDER BY namespace,request_id LIMIT ?";
-  let firstPage: readonly SqlRow[];
-  try {
-    firstPage = db.all(
-      `SELECT receipts.*,header.*,(${Object.keys(checkpointTables)
-        .map((table) => `EXISTS(SELECT 1 FROM ${table})`)
-        .join(
-          " OR ",
-        )}) AS checkpoint_entries FROM (SELECT 1) LEFT JOIN (SELECT namespace,request_id,fingerprint,result,1 AS checkpoint_request FROM state_requests ORDER BY namespace,request_id LIMIT ?) AS receipts ON 1 LEFT JOIN state_checkpoint_header AS header ON header.id=1 ORDER BY namespace,request_id LIMIT ?`,
-      [pageSize, pageSize],
-    );
-  } catch (error) {
-    if (
-      !(error instanceof Error) ||
-      !/no such table: (?:main\.)?state_checkpoint_/.test(error.message)
-    )
-      throw error;
-    if (
-      db.get(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name GLOB 'state_checkpoint_*' LIMIT 1",
-      )
-    )
-      invalid("Incomplete checkpoint tables");
+  if (!checkpointCapable)
     return { checkpoint: undefined, receipts: db.all(receiptPage, [pageSize]) };
-  }
+  const firstPage = db.all(
+    `SELECT receipts.*,header.*,(${Object.keys(checkpointTables)
+      .map((table) => `EXISTS(SELECT 1 FROM ${table})`)
+      .join(
+        " OR ",
+      )}) AS checkpoint_entries FROM (SELECT 1) LEFT JOIN (SELECT namespace,request_id,fingerprint,result,1 AS checkpoint_request FROM state_requests ORDER BY namespace,request_id LIMIT ?) AS receipts ON 1 LEFT JOIN state_checkpoint_header AS header ON header.id=1 ORDER BY namespace,request_id LIMIT ?`,
+    [pageSize, pageSize],
+  );
   const first = firstPage[0];
   if (!first) invalid("Invalid checkpoint inspection");
   const receipts = first.checkpoint_request === null ? [] : firstPage;

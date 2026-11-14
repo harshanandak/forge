@@ -18,6 +18,7 @@ import {
   stateMigrations,
   NewerStoreError,
 } from "../../../src/core/state/migrations.ts";
+import { instrument, reads } from "./numbered-fixture.ts";
 
 const hash = `sha256:${"a".repeat(64)}`;
 const lease = JSON.stringify({
@@ -292,7 +293,7 @@ const rows: Record<string, readonly (string | number)[]> = {
   state_checkpoint_receipts: value().receipts[0]!,
   state_checkpoint_denied: value().denied[0]!,
 };
-async function open() {
+async function open(beforeCheckpoint = false) {
   const result = await createSqliteStore(tmpdir()).open({
     path: ":memory:",
     readOnly: false,
@@ -300,7 +301,12 @@ async function open() {
   if (!result.ok) throw new Error(result.unavailable.reason);
   const db = result.handle.value;
   const owner = new StateOwner(db, { now: () => 1000 });
-  owner.initialize();
+  if (beforeCheckpoint)
+    migrate(
+      db,
+      stateMigrations.filter((entry) => entry.id !== "004_state_checkpoint"),
+    );
+  else owner.initialize();
   return { db, owner, close: () => result.handle.close() };
 }
 for (const table of ["empty", ...Object.keys(rows)])
@@ -662,5 +668,46 @@ for (const prune of [false, true])
       expect(store.owner.export()).toEqual(before);
     } finally {
       await store.close();
+    }
+  }, 30000);
+
+for (const [count, pageSize, bound] of [
+  [0, 1, 5],
+  [40, 1, 165],
+  [40, 2, 85],
+  [40, 16, 13],
+] as const)
+  test(`pre-004 replay query count: ${count} records, page ${pageSize}`, async () => {
+    const store = await open(true),
+      target = await open();
+    try {
+      for (let index = 0; index < count; index++)
+        write(store, `key-${index}`, 0, `put-${index}`);
+      const applied = store.db.all("SELECT id FROM state_migrations");
+      const checkpointCapable = applied.some(
+        (entry) => entry.id === "004_state_checkpoint",
+      );
+      expect(checkpointCapable).toBe(false);
+      const snapshot = store.owner.export();
+      const probe = instrument(store.db);
+      expect(
+        verifyEventDerivedState(
+          probe.db,
+          count,
+          pageSize,
+          undefined,
+          checkpointCapable,
+        ),
+      ).toBeUndefined();
+      expect(reads(probe.log).length).toBeLessThanOrEqual(bound);
+      expect(probe.log[0]?.sql).toBe(
+        "SELECT namespace,request_id,fingerprint,result FROM state_requests ORDER BY namespace,request_id LIMIT ?",
+      );
+      target.owner.restore(snapshot, undefined, pageSize);
+      expect(target.owner.list(ns)).toHaveLength(count);
+      expect(store.owner.export()).toEqual(snapshot);
+    } finally {
+      await store.close();
+      await target.close();
     }
   }, 30000);
