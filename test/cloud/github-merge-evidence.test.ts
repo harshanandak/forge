@@ -2,6 +2,7 @@ import { expect, setDefaultTimeout, test } from "bun:test";
 import { evaluateMergeEvidence } from "../../cloud/src/merge-evidence.ts";
 import type { MergeObservations } from "../../cloud/src/merge-evidence.ts";
 import type { withGithubHttp } from "../../cloud/src/github-http.ts";
+import { exitCode, failure } from "../../src/surface/result.ts";
 setDefaultTimeout(1500);
 type Reader = (
   input: unknown,
@@ -16,6 +17,11 @@ const head = "a".repeat(40),
 const digest =
   "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
 const rows: [string, string, unknown, string | null][] = [
+  ["budget:instant", "", null, null],
+  ["budget:delayed", "", null, null],
+  ["budget:bad-check", "", null, "INPUT_INVALID"],
+  ["budget:abort", "", null, "UNAVAILABLE"],
+  ["budget:cap", "", null, "UNAVAILABLE"],
   ..."ok squash failure cancelled queued missing-check wrong-producer not-ancestor mixed-case"
     .split(" ")
     .map((n): [string, string, unknown, null] => [n, "", null, null]),
@@ -56,6 +62,8 @@ const rows: [string, string, unknown, string | null][] = [
 ];
 for (const [name, path, value, code] of rows)
   test(`${name}:${path}:${JSON.stringify(value)}`, async () => {
+    const timed = name.startsWith("budget:"),
+      count = name === "budget:cap" ? 33 : 16;
     const module = (await import(
       "../../cloud/src/" + "github-evidence.ts"
     )) as { readGithubMergeEvidence?: Reader };
@@ -90,18 +98,29 @@ for (const [name, path, value, code] of rows)
     let prReads = 0,
       runLists = 0,
       credentials = 0;
+    let clock = Date.parse(time),
+      until = Infinity,
+      expire = () => {},
+      active = 0,
+      peak = 0;
+    const signals: AbortSignal[] = [];
     const result = await module.readGithubMergeEvidence!(input, {
-      now: () => Date.parse(time),
+      now: () => clock,
       signal: new AbortController().signal,
-      deadline: () => () => {},
+      deadline: (callback, ms) => {
+        expire = callback;
+        until = clock + ms;
+        return () => {};
+      },
       credential: () => {
         credentials++;
         return Promise.resolve({
           token: "credential-sentinel",
-          expiresAt: Date.parse(time) + 1000,
+          expiresAt: Date.parse(time) + (timed ? 60_000 : 1000),
         });
       },
-      fetch: (url, init) => {
+      fetch: async (url, init) => {
+        expect(init.signal!.aborted).toBe(false);
         urls.push(url);
         const u = new URL(url),
           parts = u.pathname.split("/");
@@ -150,6 +169,11 @@ for (const [name, path, value, code] of rows)
             app: { id: name === "wrong-producer" ? 78 : 77 },
           };
         else if (parts.includes("check-runs")) {
+          if (timed) {
+            active++;
+            peak = Math.max(peak, active);
+            signals.push(init.signal!);
+          }
           const id = Number(parts.at(-1));
           if (name === "later-check" && id === 42)
             throw new Error("credential-sentinel upstream-sentinel");
@@ -173,19 +197,22 @@ for (const [name, path, value, code] of rows)
               conclusion: "success",
               completed_at: time,
             };
+          if (name === "budget:bad-check" && id === 42)
+            body = { ...(body as object), head_sha: "bad" };
         } else if (parts.at(-1) === "jobs") {
           expect(u.searchParams.get("per_page")).toBe("100");
           expect(u.searchParams.has("page")).toBe(false);
           const attempt = Number(parts.at(-2)),
-            count =
-              name === "jobs-full"
+            jobCount = timed
+              ? count
+              : name === "jobs-full"
                 ? 100
                 : name === "duplicate-check"
                   ? 2
                   : name === "missing-check"
                     ? 0
                     : 1;
-          const jobs = Array.from({ length: count }, (_, i) => ({
+          const jobs = Array.from({ length: jobCount }, (_, i) => ({
             ...fixture.job,
             id: 50 + i,
             run_attempt:
@@ -193,7 +220,7 @@ for (const [name, path, value, code] of rows)
             check_run_url:
               path === "job.check_run_url"
                 ? value
-                : `https://api.github.com/repos/acme/forge/check-runs/${name === "duplicate-check" ? 42 : attempt === 1 ? 41 : 42}`,
+                : `https://api.github.com/repos/acme/forge/check-runs/${timed ? 41 + i : name === "duplicate-check" ? 42 : attempt === 1 ? 41 : 42}`,
           }));
           body = {
             jobs,
@@ -204,7 +231,11 @@ for (const [name, path, value, code] of rows)
         } else if (parts.includes("actions")) {
           const collection = parts.at(-1) === "runs",
             current = collection && ++runLists === 2;
-          const attempt = parts.includes("attempts") ? Number(parts.at(-1)) : 2;
+          const attempt = parts.includes("attempts")
+            ? Number(parts.at(-1))
+            : timed
+              ? 1
+              : 2;
           const run = {
             id: 10,
             repository: { id: 7 },
@@ -228,8 +259,8 @@ for (const [name, path, value, code] of rows)
           if (current) {
             expect(
               urls.filter((url) => new URL(url).pathname.endsWith("/jobs")),
-            ).toHaveLength(2);
-            if (name !== "missing-check")
+            ).toHaveLength(timed ? 1 : 2);
+            if (!timed && name !== "missing-check")
               expect(urls.at(-2)?.endsWith("/42")).toBe(true);
             if (name === "run-advanced") run.run_attempt = 3;
             if (name === "run-status") {
@@ -262,22 +293,62 @@ for (const [name, path, value, code] of rows)
               delete (body as Record<string, unknown>).total_count;
           }
         } else throw new Error("Unexpected endpoint");
-        return Promise.resolve(
-          new Response(JSON.stringify(body), {
-            headers: { "Content-Type": "application/json" },
-          }),
-        );
+        if (timed) {
+          const end = clock + (name === "budget:instant" ? 0 : 400);
+          await Promise.resolve();
+          clock = Math.max(clock, end);
+          if (parts.includes("check-runs")) {
+            active--;
+            if (name === "budget:abort") clock = until;
+          }
+          if (clock >= until) expire();
+        }
+        return new Response(JSON.stringify(body), {
+          headers: { "Content-Type": "application/json" },
+        });
       },
     });
     expect(result.ok).toBe(code === null);
+    if (timed) {
+      const projected = result.ok
+        ? {
+            ok: true as const,
+            op: "issue.close",
+            status: "OK" as const,
+            result: {},
+            warnings: [],
+          }
+        : failure(result.code, result.reason);
+      expect(projected.status).toBe(result.ok ? "OK" : "FAIL");
+      expect(exitCode(projected)).toBe(
+        code === null ? 0 : code === "INPUT_INVALID" ? 6 : 1,
+      );
+      expect(peak).toBeLessThanOrEqual(6);
+      expect(peak).toBeGreaterThan(1);
+      if (code === null) expect(clock - Date.parse(time)).toBeLessThan(10_000);
+      if (name === "budget:abort") {
+        expect(signals.every((s) => s.aborted)).toBe(true);
+        expect(urls.filter((url) => url.includes("/check-runs/"))).toHaveLength(
+          6,
+        );
+      }
+      if (name === "budget:cap" && !result.ok)
+        expect(result.reason).toContain("32");
+    }
     if (result.ok) {
       expect(result.value.completeness).toBe("complete");
       expect<unknown>(result.value.binding).toEqual(input.binding);
       expect(result.value.finalPr.mergeSha).toBe(actual);
       expect(result.value.finalPr.headSha).toBe(head);
-      expect(result.value.runs.map((r) => r.attempt)).toEqual([1, 2]);
+      expect(result.value.runs.map((r) => r.attempt)).toEqual(
+        timed ? [1] : [1, 2],
+      );
       expect(result.value.runs.map((r) => r.checks.map((c) => c.id))).toEqual(
-        name === "missing-check" ? [[], []] : [[41], [42]],
+        timed
+          ? [Array.from({ length: count }, (_, i) => 41 + i)]
+          : name === "missing-check"
+            ? [[], []]
+            : [[41], [42]],
       );
       expect(
         result.value.runs.every(
@@ -294,7 +365,7 @@ for (const [name, path, value, code] of rows)
         time,
       );
       expect(eligible.eligible).toBe(
-        ["ok", "squash", "mixed-case"].includes(name),
+        timed || ["ok", "squash", "mixed-case"].includes(name),
       );
       if (!eligible.eligible)
         expect(eligible.code).toBe(

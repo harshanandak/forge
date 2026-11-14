@@ -1,4 +1,5 @@
-import { expect, setDefaultTimeout, test } from "bun:test";
+import { expect, setDefaultTimeout, spyOn, test } from "bun:test";
+import { withGithubHttp } from "../../../cloud/src/github-http.ts";
 import {
   createCloudHttp,
   validateOrigin,
@@ -12,6 +13,56 @@ import {
 import { ForgeFailure } from "../../../src/contract/failure.ts";
 
 setDefaultTimeout(30_000);
+
+for (const route of ["command", "leaseHolder", "loginStart"] as const)
+  test(`default ${route} deadline respects the server work budget`, async () => {
+    let serverBudget = 0;
+    await withGithubHttp(
+      {
+        owner: "acme",
+        repo: "forge",
+        repositoryId: 7,
+        branch: "main",
+        prNumber: 9,
+      },
+      {
+        now: () => 0,
+        signal: new AbortController().signal,
+        deadline: (_expire, ms) => {
+          serverBudget = ms;
+          return () => {};
+        },
+        credential: async () => null,
+        fetch: async () => new Response("{}"),
+      },
+      async () => null,
+    );
+    const deadline = spyOn(AbortSignal, "timeout").mockReturnValue(
+      new AbortController().signal,
+    );
+    try {
+      const client = http(async () => new Response("{}"));
+      await (
+        route === "command"
+          ? client.command(TOKEN, {
+              requestId: "r",
+              op: "issue.close",
+              input: {},
+              context: {},
+            })
+          : route === "leaseHolder"
+            ? client.leaseHolder(TOKEN, "work-1")
+            : client.loginStart("dev-1")
+      ).catch(() => {});
+      const ms = deadline.mock.calls[0]![0];
+      expect(serverBudget).toBe(10_000);
+      // Leave another GitHub budget for policy reads, commit and transport.
+      if (route === "command") expect(ms).toBeGreaterThan(serverBudget * 2);
+      else expect(ms).toBe(10_000);
+    } finally {
+      deadline.mockRestore();
+    }
+  });
 
 const ORIGIN = "https://forge.example.test";
 const DEVICE_CODE = "k".repeat(43);
