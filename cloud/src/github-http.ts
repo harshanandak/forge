@@ -1,5 +1,6 @@
 import { createGithubJsonBudget, parseGithubJson } from "./github-json.ts";
 import { isPlainJson } from "./plain-json.ts";
+import { GITHUB_HEADERS } from "./github-headers.ts";
 type Query = Readonly<Record<string, string>>;
 type Get = (path: readonly string[], query?: Query) => Promise<unknown>;
 type Collect = (
@@ -128,8 +129,8 @@ export async function withGithubHttp<T>(
             redirect: "manual",
             signal: controller.signal,
             headers: {
+              ...GITHUB_HEADERS,
               Authorization: `Bearer ${credential.token}`,
-              Accept: "application/vnd.github+json",
             },
           });
           if (

@@ -22,9 +22,13 @@
     // Issue reads (command issue.show) need FORGE_CLOUD_ID_PREFIX, the issue id prefix as in <prefix>-<n>:
     // lowercase letters, digits and hyphens, at most 32 characters. Without it issue.show answers 503.
     "FORGE_CLOUD_ID_PREFIX": "<id-prefix>",
+    // Server-owned GitHub scope for the one admitted project. Never omit repository_ids when minting.
+    "GITHUB_APP_ID": "<github-app-id>",
+    "GITHUB_APP_INSTALLATION_ID": "<github-installation-id>",
+    "GITHUB_REPOSITORY_ID": "<admitted-repository-id>",
     // Optional FORGE_OAUTH_REDIRECTS: comma-separated https redirect URLs that may register besides loopback.
   },
-  // Secrets, set with `wrangler secret put` and never written here: DEVICE_LOGIN_HMAC_KEY, ADMIN_TOKEN.
+  // Secrets, set with `wrangler secret put` and never written here: DEVICE_LOGIN_HMAC_KEY, ADMIN_TOKEN, GITHUB_APP_PRIVATE_KEY (PKCS#8 PEM).
   "durable_objects": {
     "bindings": [
       { "name": "PROJECTS", "class_name": "Project" },
