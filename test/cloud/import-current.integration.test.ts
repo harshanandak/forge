@@ -397,9 +397,11 @@ test.each(["unlisted", "altered"])(
     writeFileSync(manifest, JSON.stringify(s.manifest));
     const bundle = await converter.convert({ backup, manifest, out, limits });
     const page = bundle.pages.at(-1)!;
+    const bytes = readFileSync(join(out, page.name));
+    bytes[0] = 91;
     writeFileSync(
       join(out, kind === "unlisted" ? "page-9999.json" : page.name),
-      "corrupt",
+      bytes,
     );
     const r = spawnSync(
       "node",
