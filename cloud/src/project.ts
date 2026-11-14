@@ -83,6 +83,7 @@ import {
 import { requireTokenSession } from "./token-session.ts";
 import { admitState, isStatePath, stateRoute } from "./state-access.ts";
 import { parseStateInput } from "./state-input.ts";
+import { readState, STATE_EPOCH } from "./state-read.ts";
 import {
   authorize,
   authorizeToken,
@@ -368,6 +369,9 @@ export class Project {
         // Issuing a token provisions the project, so staged rows are cleared first: they were never checked.
         if ((await this.#storage.get(STAGED)) !== undefined)
           await this.#abandon();
+        const epoch = await this.#storage.get(STATE_EPOCH);
+        if (typeof epoch !== "string" || epoch.length === 0)
+          await this.#storage.put(STATE_EPOCH, crypto.randomUUID());
         await this.#storage.put(PROVISIONED, true);
         this.#provisioned = true;
         const value = await issueToken(
@@ -595,13 +599,24 @@ export class Project {
       const input = parseStateInput(body);
       if (input.kind !== route.kind)
         throw fail("INPUT_INVALID", "State route and kind must agree");
-      admitState(
+      const admission = admitState(
         input,
         { ...token, project: route.project },
         (this.#env as { FORGE_STATE_NAMESPACES?: unknown })
           .FORGE_STATE_NAMESPACES,
       );
-      throw fail("UNAVAILABLE", "State read and commit are not available yet");
+      if (input.kind === "read") {
+        const epoch = await this.#storage.get(STATE_EPOCH);
+        authorizeToken(db, parts, Date.now());
+        return readState(
+          this.#storage,
+          input,
+          route.project,
+          admission.policyRevision,
+          epoch,
+        );
+      }
+      throw fail("UNAVAILABLE", "State commits are not available yet");
     } catch (error) {
       if (!(error instanceof ForgeFailure)) throw error;
       await discard(request);
@@ -718,6 +733,7 @@ export class Project {
       }
       await this.#storage.delete(STAGED);
     }
+    await this.#storage.put(STATE_EPOCH, crypto.randomUUID());
     await this.#storage.put(PROVISIONED, true);
     this.#provisioned = true;
     return Response.json({ ok: true, value });

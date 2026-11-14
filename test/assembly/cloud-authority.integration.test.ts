@@ -15,14 +15,17 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative, resolve } from "node:path";
+import { delimiter, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { blockCapture } from "../../src/assembly/capture.ts";
+import { createAssemblyProviders } from "../../src/assembly/providers.ts";
+import { attachBoundLane } from "../../src/blocks/work/bound-lane.ts";
 import { cloudRoute, selectCloud } from "../../src/assembly/cloud-authority.ts";
 import { wireDeviceId } from "../../src/assembly/cloud-login.ts";
 import {
@@ -56,7 +59,11 @@ import * as fx from "./cloud-fixture.ts";
 import * as launch from "../../src/adapters/process/run.ts";
 import * as authority from "../../src/assembly/cloud-binding.ts";
 import { relay } from "../fixtures/owner-approval.ts";
-import { boundLaneKey } from "../../src/blocks/work/bound-lane-state.ts";
+import {
+  boundLaneKey,
+  readBoundLane,
+  writeBoundLane,
+} from "../../src/blocks/work/bound-lane-state.ts";
 import { approvalReply } from "../fixtures/owner-approval.mjs";
 
 setDefaultTimeout(30_000);
@@ -318,6 +325,7 @@ interface Setup {
   device?: string | false;
   steps?: fx.Step[];
   config?: string;
+  now?: () => number;
   prepare?: (s: fx.Sandbox) => void | Promise<void>;
   /** False runs the real local store, for the unbound project. */
   sentinel?: boolean;
@@ -376,7 +384,10 @@ async function rig(o: Setup) {
     createAssembly({
       root,
       deviceRoot: s.deviceRoot,
-      providers: { env, cloudLogin: { fetch: net.fetch, now: () => NOW } },
+      providers: {
+        env,
+        cloudLogin: { fetch: net.fetch, now: o.now ?? (() => NOW) },
+      },
       terminal,
     });
   const assembly = await open(); // requests carry the context a real CLI or MCP call builds
@@ -393,7 +404,7 @@ async function rig(o: Setup) {
     context: localContext(assembly, { kind: "agent", id: "a1" }),
     ...change,
   });
-  return { s, net, sentinel, open, request, assembly, confirm };
+  return { s, net, sentinel, open, request, assembly, confirm, env };
 }
 const show = (r: Awaited<ReturnType<typeof rig>>) =>
   r.assembly.catalog.invoke(r.request("issue.show", { id: "forge-1" }));
@@ -636,11 +647,10 @@ for (const [name, value, identity, id, code] of [
       ));
 }
 for (const [op, input] of [
-  ["lane.start", { id: "forge-1", branch: "feat/one", brief: "brief.md" }],
   ["lane.next", { id: "forge-1" }],
   ["lane.record", { id: "forge-1", action: 1, result: "{}" }],
-  ["lane.close", { id: "forge-1", noPr: true, dropped: "stopped" }],
   ["lane.release", { id: "forge-1" }],
+  ["lane.close", { id: "forge-1", noPr: true, dropped: "stopped" }],
   ["lane.show", { id: "forge-1", attempt: "attempt-1" }],
 ] as const)
   test(`bound ${op} refuses unsupported variants before effects`, () =>
@@ -1162,6 +1172,436 @@ const holding = (r: Rig, own: object = {}) => ({
   ...localContext(r.assembly, { kind: "agent", id: "a1" }, "s1"),
   ...own,
 });
+const OWN_GRANT = {
+  ...heldBy(),
+  holder: {
+    actor: { kind: "agent", id: "a1" },
+    session: { id: "s1", device: "dev-1" },
+  },
+};
+const PREPARED_BRIEF = [
+  "Goal",
+  "Acceptance test",
+  "Files",
+  "Forbidden actions",
+  "Stop point",
+  "Prior art",
+]
+  .map(
+    (section) =>
+      `## ${section}\n${section === "Acceptance test" ? "| Case | Input | Status | Exit | Eligibility | Unchanged |\n| --- | --- | --- | --- | --- | --- |\n| attach | own | OK | 0 | attached | files |" : "Prepared by the agent."}`,
+  )
+  .join("\n\n");
+const attachmentBytes = (s: fx.Sandbox) =>
+  [
+    join(s.deviceRoot, "records.sqlite"),
+    join(s.root, ".git", "forge-lanes.json"),
+  ].map((path) =>
+    existsSync(path) ? readFileSync(path).toString("hex") : null,
+  );
+for (const [name, expected] of [
+  ["ordinary attachment", "OK"],
+  ["project git precedes trusted git", "OK"],
+  ["failed restart preserves attachment", "OK"],
+  ["wrong actor", "LEASE_NOT_HELD"],
+  ["wrong session", "LEASE_NOT_HELD"],
+  ["wrong device", "AUTH_DEVICE_MISMATCH"],
+  ["grant belongs to another device", "LEASE_NOT_HELD"],
+  ["wrong generation", "LEASE_STALE"],
+  ["wrong registry path", "INPUT_CONFLICT"],
+  ["wrong Git branch", "INPUT_CONFLICT"],
+  ["nested directory", "INPUT_CONFLICT"],
+  ["branch changes during fence", "INPUT_CONFLICT"],
+  ["holder changes during fence", "LEASE_NOT_HELD"],
+  ["generation changes during fence", "LEASE_STALE"],
+  ["grant expires during fence", "LEASE_EXPIRED"],
+  ["grant expires during final identity", "LEASE_EXPIRED"],
+  ["invalid brief", "INPUT_INVALID"],
+  ["closed issue", "INPUT_CONFLICT"],
+  ["absent issue", "NOT_FOUND"],
+  ["ambiguous claim", "UNAVAILABLE"],
+  ["losing claim", "LEASE_NOT_HELD"],
+] as const)
+  test(`bound attachment table: ${name}`, () => {
+    let reads = 0;
+    let time = NOW;
+    let sandbox: fx.Sandbox;
+    return using(
+      {
+        config: yaml({ config: { idPrefix: "forge" } }),
+        now: () => time,
+        prepare: async (s) => {
+          sandbox = s;
+          const git = spawnSync(
+            "git",
+            ["init", "--quiet", "--initial-branch=feat/one", s.root],
+            { encoding: "utf8", windowsHide: true },
+          );
+          expect(git.status, git.stderr).toBe(0);
+          if (name === "project git precedes trusted git") {
+            const bin = join(s.root, "node_modules", ".bin");
+            mkdirSync(bin, { recursive: true });
+            writeFileSync(
+              join(bin, process.platform === "win32" ? "git.cmd" : "git"),
+              process.platform === "win32"
+                ? "@echo off\r\necho ran>project-git-ran\r\nexit /b 99\r\n"
+                : "#!/bin/sh\nprintf ran > project-git-ran\nexit 99\n",
+              { mode: 0o755 },
+            );
+          }
+          writeFileSync(
+            join(s.root, "brief.md"),
+            name === "invalid brief" ? "incomplete" : PREPARED_BRIEF,
+          );
+          if (name === "nested directory") {
+            mkdirSync(join(s.root, "src", ".forge"), { recursive: true });
+            cpSync(
+              join(s.root, ".forge", "config.yaml"),
+              join(s.root, "src", ".forge", "config.yaml"),
+            );
+            cpSync(join(s.root, "brief.md"), join(s.root, "src", "brief.md"));
+          }
+          if (name === "wrong registry path")
+            writeFileSync(
+              join(s.root, ".git", "forge-lanes.json"),
+              JSON.stringify([
+                {
+                  ...attachment,
+                  worktree: "/foreign",
+                  brief: join(s.root, "brief.md"),
+                },
+              ]),
+            );
+          if (
+            expected !== "OK" &&
+            !["ambiguous claim", "losing claim"].includes(name)
+          )
+            await seedJournal(s, {
+              ...journal,
+              grant: OWN_GRANT,
+              active: false,
+              releaseNeeded: true,
+              lane: { ...attachment, worktree: s.root },
+            });
+        },
+        steps: [
+          ({ body }) => {
+            const call = body as { op: string };
+            if (call.op === "issue.claim") {
+              if (name === "ambiguous claim")
+                throw new Error("accepted then timed out");
+              if (name === "losing claim") return refusing("LEASE_HELD");
+              return answer(
+                {
+                  id: ISSUE.id,
+                  generation: OWN_GRANT.generation,
+                  expiresAt: OWN_GRANT.expiresAt,
+                },
+                call.op,
+              );
+            }
+            expect(call.op).toBe("issue.show");
+            reads++;
+            if (reads === 2 && name === "branch changes during fence") {
+              const changed = spawnSync(
+                "git",
+                [
+                  "-C",
+                  sandbox.root,
+                  "symbolic-ref",
+                  "HEAD",
+                  "refs/heads/feat/other",
+                ],
+                { encoding: "utf8", windowsHide: true },
+              );
+              expect(changed.status, changed.stderr).toBe(0);
+            }
+            const lease =
+              name === "losing claim"
+                ? heldBy()
+                : name === "grant belongs to another device"
+                  ? {
+                      ...OWN_GRANT,
+                      holder: {
+                        ...OWN_GRANT.holder,
+                        session: {
+                          ...OWN_GRANT.holder.session,
+                          device: "other",
+                        },
+                      },
+                    }
+                  : reads === 2 && name === "holder changes during fence"
+                    ? heldBy()
+                    : reads === 2 && name === "generation changes during fence"
+                      ? { ...OWN_GRANT, generation: OWN_GRANT.generation + 1 }
+                      : reads === 2 && name === "grant expires during fence"
+                        ? { ...OWN_GRANT, expiresAt: iso(NOW - 1) }
+                        : OWN_GRANT;
+            return name === "absent issue"
+              ? refusing("NOT_FOUND")
+              : answer({
+                  ...ISSUE,
+                  status: name === "closed issue" ? "closed" : "open",
+                  lease,
+                });
+          },
+        ],
+      },
+      async (r) => {
+        const assembly =
+          name === "nested directory"
+            ? await r.open(join(r.s.root, "src"))
+            : r.assembly;
+        const runProcess = launch.runProcess;
+        const projectGit =
+          name === "project git precedes trusted git"
+            ? spyOn(launch, "runProcess")
+            : undefined;
+        const expiry =
+          name === "grant expires during final identity"
+            ? spyOn(launch, "runProcess").mockImplementation(
+                async (...args) => {
+                  const result = await runProcess(...args);
+                  if (reads === 2 && args[1][0] === "symbolic-ref")
+                    time = Date.parse(OWN_GRANT.expiresAt);
+                  return result;
+                },
+              )
+            : undefined;
+        try {
+          if (projectGit) {
+            const providers = createAssemblyProviders(r.s.root, {
+              env: {
+                ...r.env,
+                PATH: `${join(r.s.root, "node_modules", ".bin")}${delimiter}${r.env.PATH}`,
+              },
+            });
+            const scope = {
+              op: "lane.start",
+              effects: [
+                "files:read",
+                "files:write",
+                "environment:read",
+                "external:process",
+              ],
+              signal: AbortSignal.timeout(30000),
+              deadline: Date.now() + 30000,
+              processContainment: "supervised" as const,
+            };
+            const files = await providers.openFiles(scope);
+            try {
+              const lane = await attachBoundLane(
+                readBoundLane({ ...journal, grant: OWN_GRANT }, "work-1"),
+                {
+                  files: files.value,
+                  process: providers.process(scope),
+                  environment: providers.environment(scope),
+                  now: () => NOW,
+                  ...scope,
+                },
+                async () => {},
+              );
+              expect(lane.branch).toBe("feat/one");
+              expect(existsSync(join(r.s.root, "project-git-ran"))).toBe(false);
+              expect([
+                ...new Set(
+                  projectGit.mock.calls.map(([executable]) => executable),
+                ),
+              ]).toEqual([realpathSync.native(Bun.which("git")!)]);
+            } finally {
+              await files.close();
+            }
+            return;
+          }
+          const context = {
+            ...holding(r, { leaseGeneration: OWN_GRANT.generation }),
+            project: localContext(assembly, { kind: "agent", id: "a1" })
+              .project!,
+          };
+          const before = attachmentBytes(r.s);
+          const beforeFiles = readFileSync(join(r.s.root, "brief.md"), "utf8");
+          const claimed = await assembly.catalog.invoke(
+            r.request("issue.claim", { id: ISSUE.id }, { context }),
+          );
+          if (name === "ambiguous claim" || name === "losing claim") {
+            expect(
+              failed(
+                claimed,
+                name === "losing claim" ? "LEASE_HELD" : expected,
+              ),
+            ).toBe(name === "losing claim" ? 4 : 1);
+            expect(attachmentBytes(r.s)).toEqual(before);
+            if (name === "ambiguous claim") return;
+          } else expect(claimed.ok).toBe(true);
+          if (name === "ordinary attachment") {
+            const rejected = await assembly.catalog.invoke(
+              r.request(
+                "lane.start",
+                {
+                  id: ISSUE.id,
+                  branch: "feat/other",
+                  brief: "brief.md",
+                },
+                { context },
+              ),
+            );
+            expect(failed(rejected, "INPUT_CONFLICT")).toBe(4);
+            const local = new LocalState(
+              join(r.s.deviceRoot, "records.sqlite"),
+            );
+            try {
+              expect(
+                (await local.open(false))!.get("forge/work", journalKey())!
+                  .value,
+              ).toMatchObject({
+                active: false,
+                releaseNeeded: true,
+                grant: OWN_GRANT,
+              });
+            } finally {
+              await local.close();
+            }
+            expect(attachmentBytes(r.s)[1]).toBe(before[1]);
+          }
+          const altered =
+            name === "wrong actor"
+              ? { ...context, actor: { kind: "agent" as const, id: "other" } }
+              : name === "wrong session"
+                ? { ...context, session: { id: "other" } }
+                : name === "wrong device"
+                  ? { ...context, device: { id: "other" } }
+                  : name === "wrong generation"
+                    ? { ...context, leaseGeneration: 99 }
+                    : context;
+          const result = await assembly.catalog.invoke(
+            r.request(
+              "lane.start",
+              {
+                id: ISSUE.id,
+                branch: name === "wrong Git branch" ? "feat/other" : "feat/one",
+                brief: "brief.md",
+              },
+              { context: altered },
+            ),
+          );
+          expect(result.ok ? "OK" : result.error.code).toBe(expected);
+          expect(readFileSync(join(r.s.root, "brief.md"), "utf8")).toBe(
+            beforeFiles,
+          );
+          expect(existsSync(join(r.s.root, ".forge", "state.sqlite"))).toBe(
+            false,
+          );
+          if (expected !== "OK") {
+            if (name === "grant expires during final identity")
+              expect(time).toBe(Date.parse(OWN_GRANT.expiresAt));
+            expect(attachmentBytes(r.s)).toEqual(before);
+            expect(
+              r.net.calls.some(
+                (call) => (call.body as { op: string }).op === "issue.release",
+              ),
+            ).toBe(false);
+            return;
+          }
+          expect(result).toMatchObject({
+            result: {
+              branch: "feat/one",
+              worktree: realpathSync.native(r.s.root),
+              lease: OWN_GRANT,
+            },
+          });
+          expect(
+            JSON.parse(
+              readFileSync(join(r.s.root, ".git", "forge-lanes.json"), "utf8"),
+            ),
+          ).toEqual([
+            {
+              ...attachment,
+              worktree: realpathSync.native(r.s.root),
+              brief: `${realpathSync.native(r.s.root).replace(/\\/g, "/")}/brief.md`,
+            },
+          ]);
+          const local = new LocalState(join(r.s.deviceRoot, "records.sqlite"));
+          try {
+            expect(
+              (await local.open(false))!.get("forge/work", journalKey())!.value,
+            ).toMatchObject({
+              active: true,
+              releaseNeeded: true,
+              cloudId: ISSUE.id,
+              grant: OWN_GRANT,
+              lane: {
+                worktree: realpathSync.native(r.s.root),
+                branch: "feat/one",
+              },
+            });
+          } finally {
+            await local.close();
+          }
+          if (name === "failed restart preserves attachment") {
+            const before = bytes(r.s);
+            const rejected = await assembly.catalog.invoke(
+              r.request(
+                "lane.start",
+                { id: ISSUE.id, branch: "feat/other", brief: "brief.md" },
+                { context },
+              ),
+            );
+            expect(failed(rejected, "INPUT_CONFLICT")).toBe(4);
+            expect(bytes(r.s)).toEqual(before);
+            expect(
+              await assembly.catalog.invoke(
+                r.request("lane.show", { id: ISSUE.id }),
+              ),
+            ).toMatchObject({ ok: true, result: { branch: "feat/one" } });
+            expect(
+              await assembly.catalog.invoke(r.request("lane.status", {})),
+            ).toMatchObject({
+              ok: true,
+              result: { lanes: [{ id: ISSUE.id, step: "attached" }] },
+            });
+          }
+        } finally {
+          expiry?.mockRestore();
+          projectGit?.mockRestore();
+          if (assembly !== r.assembly) await assembly.close();
+        }
+      },
+    );
+  });
+for (const [name, code] of [
+  ["malformed record", "INPUT_CONFLICT"],
+  ["revision conflict", "REVISION_CONFLICT"],
+] as const)
+  test(`bound journal writer table: ${name}`, async () => {
+    const s = fx.sandbox();
+    const local = new LocalState(join(s.deviceRoot, "records.sqlite"));
+    try {
+      const client = (await local.open(true))!.client("forge/work", {
+        kind: "agent",
+        id: "a1",
+      });
+      const record = readBoundLane(journal, "work-1");
+      writeBoundLane(client, fx.bindingFor(), record, 0);
+      const before = attachmentBytes(s),
+        events = client.events();
+      expect(() =>
+        writeBoundLane(
+          client,
+          fx.bindingFor(),
+          name === "malformed record"
+            ? { ...record, grant: { ...record.grant, generation: 0 } }
+            : record,
+          name === "revision conflict" ? 0 : 1,
+        ),
+      ).toThrow(code);
+      expect(attachmentBytes(s)).toEqual(before);
+      expect(client.events()).toEqual(events);
+    } finally {
+      await local.close();
+      s.close();
+    }
+  });
+
 const edit = (
   r: Rig,
   op: string,

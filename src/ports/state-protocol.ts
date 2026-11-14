@@ -14,7 +14,11 @@ export type StateQuery =
   | { readonly kind: "get"; readonly key: string }
   | ({ readonly kind: "range" } & RangeOptions)
   | { readonly kind: "count" | "max"; readonly prefix: string }
-  | ({ readonly kind: "history" } & HistoryOptions);
+  | ({
+      readonly kind: "history";
+      /** Exclusive event sequence cursor from the preceding page, not a record revision. */
+      readonly before?: number;
+    } & Omit<HistoryOptions, "before">);
 
 interface StateCapability {
   readonly version: 1;
