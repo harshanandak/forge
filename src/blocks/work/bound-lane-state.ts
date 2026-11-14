@@ -10,6 +10,7 @@ export interface BoundProject {
 export interface BoundLaneRecord {
   readonly version: 1;
   readonly id: string;
+  readonly cloudId: string;
   readonly lane: {
     readonly issue: string;
     readonly issueId?: string;
@@ -30,10 +31,15 @@ export function readBoundLane(value: unknown, id: string): BoundLaneRecord {
   if (
     record?.version !== 1 ||
     Object.keys(record).some(
-      (key) => !["version", "id", "lane", "grant", "active"].includes(key),
+      (key) =>
+        !["version", "id", "cloudId", "lane", "grant", "active"].includes(key),
     ) ||
     record.id !== id ||
     !/^work-\d+$/.test(id) ||
+    typeof record.cloudId !== "string" ||
+    record.cloudId.length > 200 ||
+    record.cloudId.match(/^[a-z0-9]+(?:-[a-z0-9]+)*-(\d+)$/)?.[1] !==
+      id.slice(5) ||
     typeof record.active !== "boolean" ||
     !lane ||
     Object.keys(lane).some(

@@ -415,6 +415,7 @@ const attachment = {
 const journal = {
   version: 1 as const,
   id: "work-1",
+  cloudId: "forge-1",
   lane: attachment,
   grant: heldBy(),
   active: true,
@@ -460,6 +461,21 @@ const bytes = (s: fx.Sandbox) =>
 for (const [name, value, identity, id, code] of [
   ["missing journal", undefined, fx.PROJECT_ID, "forge-1", "NOT_FOUND"],
   ["current journal", journal, fx.PROJECT_ID, "forge-1", "OK"],
+  ["local prefix differs from cloud", journal, fx.PROJECT_ID, "forge-1", "OK"],
+  [
+    "missing stored cloud id",
+    { ...journal, cloudId: undefined },
+    fx.PROJECT_ID,
+    "forge-1",
+    "INPUT_CONFLICT",
+  ],
+  [
+    "wrong stored cloud id",
+    { ...journal, cloudId: "forge-2" },
+    fx.PROJECT_ID,
+    "forge-1",
+    "INPUT_CONFLICT",
+  ],
   ...(
     [
       [
@@ -531,7 +547,14 @@ for (const [name, value, identity, id, code] of [
     test(`bound ${op}: ${name} is diagnostic and changes no bytes`, () =>
       using(
         {
-          config: yaml({ config: { idPrefix: id.replace(/-\d+$/, "") } }),
+          config: yaml({
+            config: {
+              idPrefix:
+                name === "local prefix differs from cloud"
+                  ? "my-repo"
+                  : id.replace(/-\d+$/, ""),
+            },
+          }),
           prepare: (s) =>
             value === undefined ? undefined : seedJournal(s, value, identity),
           steps: [
@@ -543,7 +566,9 @@ for (const [name, value, identity, id, code] of [
                 );
               }
               expect(call.op).toBe("issue.show");
-              expect(call.input).toEqual({ id });
+              expect([id, journal.cloudId]).toContain(
+                (call.input as { id: string }).id,
+              );
               return answer({ ...ISSUE, id, lease: heldBy() });
             },
           ],
@@ -592,6 +617,14 @@ for (const [name, value, identity, id, code] of [
             }
           }
           expect(bytes(r.s)).toEqual(before);
+          if (code === "OK")
+            expect(
+              r.net.calls.some(
+                (call) =>
+                  (call.body as { input: { id: string } }).input.id ===
+                  journal.cloudId,
+              ),
+            ).toBe(true);
           expect(
             r.net.calls.every(
               (call) => (call.body as { op: string }).op === "issue.show",

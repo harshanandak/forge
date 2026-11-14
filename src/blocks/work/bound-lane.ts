@@ -5,6 +5,7 @@ import {
   boundLaneKey,
   readBoundLane,
   type BoundProject,
+  type BoundLaneRecord,
 } from "./bound-lane-state.ts";
 
 export const BOUND_LANES: ReadonlySet<string> = new Set(
@@ -12,7 +13,7 @@ export const BOUND_LANES: ReadonlySet<string> = new Set(
     (verb) => `lane.${verb}`,
   ),
 );
-type ReadIssue = (id: string, canonical?: true) => Promise<TrackerItem>;
+type ReadIssue = (id: string) => Promise<TrackerItem>;
 
 export async function boundLaneRead(
   op: string,
@@ -22,6 +23,16 @@ export async function boundLaneRead(
   issue: ReadIssue,
 ): Promise<unknown> {
   const prefix = boundLaneKey(project);
+  const observed = async (record: BoundLaneRecord, known?: TrackerItem) => {
+    const fresh = known ?? (await issue(record.cloudId));
+    if (`work-${fresh.id.replace(/^.*-/, "")}` !== record.id)
+      throw new ForgeFailure({
+        code: "INPUT_CONFLICT",
+        message: "Cloud issue does not match the device attachment.",
+        retry: "never",
+      });
+    return fresh;
+  };
   if (op === "lane.show") {
     // Resolve with authority before interpreting a display prefix as a stored identity.
     const fresh = await issue(input.id!);
@@ -34,16 +45,20 @@ export async function boundLaneRead(
         retry: "never",
       });
     const record = readBoundLane(found.value, id);
+    const current = await observed(
+      record,
+      input.id === record.cloudId ? fresh : undefined,
+    );
     return {
       ...record.lane,
-      issue: fresh.id,
-      ...(fresh.lease ? { lease: fresh.lease } : {}),
+      issue: current.id,
+      ...(current.lease ? { lease: current.lease } : {}),
     };
   }
   const lanes = [];
   for (const found of state?.list(prefix) ?? []) {
     const record = readBoundLane(found.value, found.key.slice(prefix.length));
-    const fresh = await issue(record.id, true);
+    const fresh = await observed(record);
     const current = fresh.lease;
     const held =
       current?.generation === record.grant.generation &&

@@ -280,7 +280,14 @@ export async function cloudRig(
         (await state.open(true))!.put(
           "forge/work",
           boundLaneKey(fx.bindingFor({ origin }), "work-1"),
-          { version: 1, id: "work-1", lane: LANE, grant: GRANT, active: true },
+          {
+            version: 1,
+            id: "work-1",
+            cloudId: ISSUE.id,
+            lane: LANE,
+            grant: GRANT,
+            active: true,
+          },
           { kind: "agent", id: "a1" },
           { expectRevision: 0 },
         );
