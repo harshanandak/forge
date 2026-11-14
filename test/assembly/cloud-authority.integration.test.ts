@@ -1212,7 +1212,17 @@ const attachmentBytes = (s: fx.Sandbox) =>
 // PR 2a: reservations are device progress, never process permission.
 for (const [name, variants] of [
   ["Same pending next", ["repeat", "restart", "revision race"]],
-  ["Old verdict/result", ["verdict", "result", "generation"]],
+  [
+    "Old verdict/result",
+    [
+      "verdict",
+      "result",
+      "generation",
+      "reattach result",
+      "reattach verdict",
+      "generation counterfactual",
+    ],
+  ],
   [
     "Budget reached",
     ["calls", "reviewRounds", "ciFixRounds", "activeHours", "disabled"],
@@ -1264,8 +1274,26 @@ for (const [name, variants] of [
               },
             },
           }),
-          prepare: (s) =>
-            seedJournal(s, {
+          prepare: async (s) => {
+            if (
+              name === "Old verdict/result" &&
+              !["verdict", "result", "generation"].includes(variant)
+            ) {
+              expect(
+                spawnSync("git", [
+                  "init",
+                  "--quiet",
+                  "--initial-branch=feat/one",
+                  s.root,
+                ]).status,
+              ).toBe(0);
+              writeFileSync(join(s.root, "brief.md"), PREPARED_BRIEF);
+              writeFileSync(
+                join(s.root, "old-result.log"),
+                JSON.stringify({ head, done: true }),
+              );
+            }
+            await seedJournal(s, {
               ...journal,
               grant: OWN_GRANT,
               ...(name === "Malformed progress"
@@ -1275,7 +1303,8 @@ for (const [name, variants] of [
               ...(variant === "release pending"
                 ? { releaseNeeded: true, releaseRequestId: "release-1" }
                 : {}),
-            }),
+            });
+          },
           steps: [() => answer({ ...ISSUE, lease })],
         },
         async (r) => {
@@ -1306,7 +1335,7 @@ for (const [name, variants] of [
           const original = await saved();
           const projectFiles = () =>
             bytes(r.s).filter(([path]) => String(path).startsWith("project"));
-          const files = projectFiles();
+          let files = projectFiles();
           if (name === "Malformed progress") {
             expect(failed(await next(), "INPUT_CONFLICT")).toBe(4);
             expect(await saved()).toEqual(original);
@@ -1366,6 +1395,66 @@ for (const [name, variants] of [
                 for (const reply of replies) expect(reply).toEqual(first);
               } else expect(await next()).toEqual(first);
               expect(await saved()).toEqual(reserved);
+            } else if (
+              name === "Old verdict/result" &&
+              !["verdict", "result", "generation"].includes(variant)
+            ) {
+              // Same holder, head and action number: only the reservation generation distinguishes the late request.
+              const late = r.request(
+                "lane.record",
+                variant === "reattach verdict"
+                  ? {
+                      id: ISSUE.id,
+                      mergeGate: { head, verdict: "MERGE", reviewer: "old" },
+                    }
+                  : {
+                      id: ISSUE.id,
+                      action: 1,
+                      result: readFileSync(
+                        join(r.s.root, "old-result.log"),
+                        "utf8",
+                      ),
+                    },
+                {
+                  context: holding(
+                    r,
+                    variant === "generation counterfactual"
+                      ? {}
+                      : { leaseGeneration: lease.generation },
+                  ),
+                },
+              );
+              lease = { ...lease, generation: lease.generation + 1 };
+              expect(
+                (
+                  await invoke("lane.start", {
+                    branch: "feat/one",
+                    brief: "brief.md",
+                  })
+                ).ok,
+              ).toBe(true);
+              expect(await next()).toMatchObject({
+                ok: true,
+                result: { n: 1 },
+              });
+              const reserved = await saved();
+              files = projectFiles();
+              expect(
+                failed(await r.assembly.catalog.invoke(late), "INPUT_CONFLICT"),
+              ).toBe(4);
+              expect(await saved()).toEqual(reserved);
+              expect(
+                readFileSync(join(r.s.root, "old-result.log"), "utf8"),
+              ).toBe(JSON.stringify({ head, done: true }));
+              // Counterfactual: adding only the current reservation's generation admits the same result.
+              expect(
+                (
+                  await r.assembly.catalog.invoke({
+                    ...late,
+                    context: holding(r, { leaseGeneration: lease.generation }),
+                  })
+                ).ok,
+              ).toBe(true);
             } else if (name === "Old verdict/result") {
               expect(
                 (
