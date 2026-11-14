@@ -1,5 +1,5 @@
 import { ForgeFailure } from "../../contract/failure.ts";
-import type { LeaseRecord } from "../../generated/types.ts";
+import type { LeaseRecord, StateRecord } from "../../generated/types.ts";
 import { validateLeaseRecord } from "../../generated/validators.ts";
 import type { StateClient } from "../../ports/state.ts";
 
@@ -63,7 +63,7 @@ export function writeBoundLane(
   project: BoundProject,
   value: BoundLaneRecord,
   expectRevision: number,
-) {
+): StateRecord {
   const record = readBoundLane(value, value.id);
   return state.put(boundLaneKey(project, record.id), record, {
     expectRevision,
