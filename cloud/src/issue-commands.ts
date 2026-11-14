@@ -42,7 +42,6 @@ import { requireTokenSession } from "./token-session.ts";
 import { carriesToken } from "./tokens.ts";
 import {
   guardLegacy,
-  receiptScope,
   scopeRequestId,
   type ReceiptPrincipal,
 } from "./issue-request-id.ts";
@@ -288,8 +287,8 @@ export function runCommand(text: string, host: CommandRun): Response {
     const { db, owner } = host.open();
     guardLegacy(db, requestId, scoped);
     result = write(db, owner, {
-      requestId: scoped,
-      scope: receiptScope(host.principal),
+      requestId,
+      principal: host.principal,
       input,
       context,
       device: host.device,

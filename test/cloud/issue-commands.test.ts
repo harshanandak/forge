@@ -18,8 +18,14 @@ import {
 import { TOKEN_LOOKUP, TOKENS } from "../../cloud/src/tokens.ts";
 import { prepareCommand, runCommand } from "../../cloud/src/issue-commands.ts";
 import { OLD_SCHEMA } from "./old-schema.ts";
-import { receiptScope } from "../../cloud/src/issue-request-id.ts";
+import {
+  receiptScope,
+  scopeRequestId,
+} from "../../cloud/src/issue-request-id.ts";
 import { MAX_RECEIPTS } from "../../cloud/src/issue-receipts.ts";
+import { commandWrite, prepareReceipt } from "../../cloud/src/command-write.ts";
+import { ForgeFailure } from "../../src/contract/failure.ts";
+import { canonicalJson, digestValue } from "../../src/core/config/pointer.ts";
 import { listIssues } from "../../cloud/src/issue-list.ts";
 import { commentIssue } from "../../cloud/src/issue-comment.ts";
 import { createIssue } from "../../cloud/src/issue-create.ts";
@@ -346,7 +352,7 @@ function fixture(
   };
 }
 const actor = { kind: "agent", id: "tester" } as const;
-const receiptIdentity = receiptScope(["token", "fixture", "laptop"]);
+const receiptPrincipal = ["token", "fixture", "laptop"] as const;
 const iso = (ms: number) => new Date(ms).toISOString();
 const stored = (over: object = {}) => ({
   id: "work-1",
@@ -715,6 +721,16 @@ test("an op that is excluded, undeclared or prototype-like is unknown, even as a
       ]);
   expect(f.snapshot()).toBe(before);
 }, 30_000);
+
+for (const path of ["state/read", "state/commit"])
+  test(`${path} stays an unknown route through the Worker and the object`, async () => {
+    const { f, token, before } = await begin();
+    for (const via of [createWorker(), "direct"] as const) {
+      const got = await f.send({}, { token, path, via });
+      refusal(path, got, [404, "UNKNOWN_COMMAND", 3]);
+      expect(f.snapshot()).toBe(before);
+    }
+  }, 30_000);
 
 test("a device the token does not name is refused without repeating it", async () => {
   const { f, token, before } = await begin();
@@ -3149,6 +3165,205 @@ const floorEvents = (f: F) =>
     e.includes('"key":"allocation:issue:work-"'),
   );
 const owned = (f: F) => new StateOwner(sqlOf(f.db), { now: f.now });
+
+for (const refused of [false, true])
+  for (const code of ["AUTH_EXPIRED", "AUTH_REVOKED"])
+    test(`commandWrite authenticates a cached ${refused ? "refusal" : "success"} under ${code}`, async () => {
+      const f = fixture();
+      await f.device();
+      const db = sqlOf(f.db),
+        owner = owned(f);
+      let denied = false;
+      const failure = new ForgeFailure({ code, message: code, retry: "never" });
+      const invalid = new ForgeFailure({
+        code: "INPUT_INVALID",
+        message: "invalid",
+        retry: "never",
+      });
+      const check = mock(() => {
+        if (refused) throw invalid;
+        return 1;
+      });
+      const write = mock((number: number) => ({ number }));
+      const replayed = mock(() => {});
+      const run = () =>
+        commandWrite(
+          db,
+          owner,
+          {
+            identity: prepareReceipt(
+              "command",
+              receiptPrincipal,
+              "direct-auth",
+              {},
+            ),
+            recheck: () => {
+              if (denied) throw failure;
+            },
+            expiresAt: start + day,
+          },
+          check,
+          write,
+          replayed,
+        );
+      if (refused) expect(run).toThrow(invalid);
+      else expect(run()).toEqual({ number: 1 });
+      const before = f.snapshot();
+      denied = true;
+      check.mockClear();
+      write.mockClear();
+      const lookup = spyOn(db, "get");
+      try {
+        expect(run).toThrow(failure);
+        expect(lookup).not.toHaveBeenCalled();
+        expect(check).not.toHaveBeenCalled();
+        expect(write).not.toHaveBeenCalled();
+        expect(replayed).not.toHaveBeenCalled();
+        expect(f.snapshot()).toBe(before);
+      } finally {
+        lookup.mockRestore();
+      }
+    }, 30_000);
+
+for (const boundary of ["token", "transport"] as const)
+  test(`commandWrite isolates receipts by ${boundary}`, async () => {
+    const f = fixture();
+    await f.device();
+    const db = sqlOf(f.db),
+      owner = owned(f);
+    const other =
+      boundary === "token"
+        ? (["token", "another", "laptop"] as const)
+        : receiptPrincipal;
+    const identities = [
+      prepareReceipt("command", receiptPrincipal, "shared-id", {}),
+      prepareReceipt(
+        boundary === "transport" ? "lease" : "command",
+        other,
+        "shared-id",
+        {},
+      ),
+    ];
+    expect(identities[0]!.requestId).not.toBe(identities[1]!.requestId);
+    let number = 0;
+    const check = mock(() => 1),
+      write = mock(() => ({ number: ++number }));
+    const run = (index: number) =>
+      commandWrite(
+        db,
+        owner,
+        {
+          identity: identities[index]!,
+          recheck: () => {},
+          expiresAt: start + day,
+        },
+        check,
+        write,
+      );
+    for (const index of [0, 1])
+      expect(run(index)).toEqual({ number: index + 1 });
+    const before = f.snapshot();
+    check.mockClear();
+    write.mockClear();
+    for (const index of [0, 1])
+      expect(run(index)).toEqual({ number: index + 1 });
+    expect(check).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+    expect(commandRows(f.db)).toHaveLength(2);
+    expect(f.snapshot()).toBe(before);
+  }, 30_000);
+
+test("fresh receipt modules reproduce fixed main-branch identity bytes", async () => {
+  const expected = {
+    requestId:
+      "c2:ba6c8d40eb8a38a7456ba5b6e9cb0bbcb823330084c97552eda09c4ab67ffc77",
+    fingerprint:
+      '{"input":"sha256:f89b1aa36ba3e0de474c783ef3485fe62e233357fc9c806a794399f1464e6675","scope":{"principal":"sha256:2bb55aa0a9bb36abe4e259ea3f1ef4903ca9942c1fcfb441fb853f95fd7b255c","version":2}}',
+  };
+  for (const instance of ["left", "right"]) {
+    const source = (await import(
+      new URL(
+        `../../cloud/src/command-write.ts?identity=${instance}`,
+        import.meta.url,
+      ).href
+    )) as typeof import("../../cloud/src/command-write.ts");
+    const principal = ["token", "fixture", "laptop"] as const;
+    const binding = {
+      op: "issue.create",
+      input: { title: "New" },
+      device: "laptop",
+      context: {
+        variant: "project",
+        actor: { kind: "agent", id: "tester" },
+        project: { id: "p" },
+      },
+    };
+    // The pre-extraction issue route key and issue-write fingerprint expressions.
+    expect({
+      requestId: scopeRequestId("command", principal, "stable"),
+      fingerprint: canonicalJson({
+        scope: receiptScope(principal),
+        input: digestValue(binding),
+      }),
+    }).toEqual(expected);
+    const identity = source.prepareReceipt(
+      "command",
+      principal,
+      "stable",
+      binding,
+    );
+    expect({
+      requestId: identity.requestId,
+      fingerprint: identity.fingerprint,
+    }).toEqual(expected);
+  }
+}, 30_000);
+
+test("issue command receipt key and fingerprint keep their pre-extraction bytes", async () => {
+  const f = fixture(),
+    token = await f.device();
+  const body = make("issue-bytes");
+  const binding = {
+    ...prepareCommand(JSON.stringify(body), { device: "laptop", project: "p" }),
+    device: "laptop",
+  };
+  const principal = ["token", token.slice(4, 20), "laptop"] as const;
+  const identity = prepareReceipt(
+    "command",
+    principal,
+    body.requestId,
+    binding,
+  );
+  const expected = {
+    request_id: scopeRequestId("command", principal, body.requestId),
+    fingerprint: canonicalJson({
+      scope: receiptScope(principal),
+      input: digestValue(binding),
+    }),
+  };
+  expect({
+    requestId: identity.requestId,
+    fingerprint: identity.fingerprint,
+  }).toEqual({
+    requestId: expected.request_id,
+    fingerprint: expected.fingerprint,
+  });
+  const got = await f.send(body, { token });
+  expect([got.status, got.exit]).toEqual([200, 0]);
+  expect(
+    f.db.query("SELECT * FROM domain_cloud_command_receipts").all(),
+  ).toEqual([
+    {
+      ...expected,
+      outcome: "ok",
+      result: canonicalJson(got.json.result),
+      created_at: start,
+      expires_at: start + day,
+      imported: 0,
+    },
+  ]);
+}, 30_000);
+
 const floorMissing =
   "This project has issue history but no saved issue number, so creating issues is not available for it yet";
 const make = (id: string, input: object = { title: "New" }, more = {}) => ({
@@ -3430,7 +3645,7 @@ function createAfterDelete(create: typeof createIssue) {
     context: { variant: "project", actor, project: { id: "p" } },
     device: "laptop",
     prefix: "forge",
-    scope: receiptIdentity,
+    principal: receiptPrincipal,
     recheck: () => {},
     expiresAt: start + day,
   });
@@ -4912,7 +5127,7 @@ test("the shared write path takes a project context for create and comment and a
         context,
         device: "laptop",
         prefix: "forge",
-        scope: receiptIdentity,
+        principal: receiptPrincipal,
         recheck: () => {},
         expiresAt: start + day,
       }),
@@ -4926,7 +5141,7 @@ test("the shared write path takes a project context for create and comment and a
       context: lease,
       device: "laptop",
       prefix: "forge",
-      scope: receiptIdentity,
+      principal: receiptPrincipal,
       recheck: () => {},
       expiresAt: start + day,
     }),
@@ -4943,7 +5158,7 @@ test("the shared write path takes a project context for create and comment and a
         context: { ...lease, leaseMode: "acquire" } as never,
         device: "laptop",
         prefix: "forge",
-        scope: receiptIdentity,
+        principal: receiptPrincipal,
         recheck: () => {},
         expiresAt: start + day,
       }),
@@ -6262,7 +6477,7 @@ test("a link record that fails the declared output schema, even when its readbac
       context,
       device: "laptop",
       prefix: "forge",
-      scope: receiptIdentity,
+      principal: receiptPrincipal,
       recheck: () => {},
       expiresAt: start + day,
     });
@@ -7572,7 +7787,7 @@ for (const w of WRITES) {
   test(`a token that expires between the route's check and the transaction writes and records nothing, for a ${w.name} and for a refusal`, async () => {
     for (const input of [undefined, w.bad]) {
       const { f, token } = await w.rows();
-      const before = writes(f);
+      const before = f.snapshot();
       const real = f.storage.sql.exec.bind(f.storage.sql);
       let tripped = false;
       // The first statement after the route's checks is the receipt lookup: the clock passes expiry there.
@@ -7597,7 +7812,7 @@ for (const w of WRITES) {
         "AUTH_EXPIRED",
         1,
       ]);
-      expect(writes(f)).toBe(before);
+      expect(f.snapshot()).toBe(before);
     }
   }, 30_000);
 
@@ -7633,7 +7848,7 @@ for (const w of WRITES) {
 
   test(`a failed receipt write rolls the whole ${w.name} back, and the retry applies it once`, async () => {
     const { f, token } = await w.rows();
-    const before = writes(f);
+    const before = f.snapshot();
     f.db.run(
       "CREATE TRIGGER no_receipt BEFORE INSERT ON domain_cloud_command_receipts BEGIN SELECT RAISE(ABORT, 'boom'); END",
     );
@@ -7644,7 +7859,7 @@ for (const w of WRITES) {
     } finally {
       quiet.mockRestore();
     }
-    expect(writes(f)).toBe(before);
+    expect(f.snapshot()).toBe(before);
     f.db.run("DROP TRIGGER no_receipt");
     w.result(f, await f.send(w.send("t-1"), { token }));
   }, 30_000);
