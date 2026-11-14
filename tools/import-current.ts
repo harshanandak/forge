@@ -4,8 +4,8 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { createSqliteStore } from "../src/adapters/store-sqlite/index.ts";
-import { hardenPrivatePaths } from "../src/adapters/store-sqlite/private-acl.ts";
-import { createProcessPort } from "../src/adapters/process/index.ts";
+import { privateFileGuard } from "../src/adapters/store-sqlite/private-files.ts";
+import { windowsPrivateFiles } from "../src/adapters/process/windows-acl.ts";
 import { ForgeFailure } from "../src/contract/failure.ts";
 import { StateOwner } from "../src/core/state/index.ts";
 import type { SqlDatabase } from "../src/ports/store.ts";
@@ -166,22 +166,7 @@ export async function convert(options: Options) {
     owner.initialize([domain]);
     fs.mkdirSync(out, { mode: 0o700 });
     if (process.platform === "win32")
-      await hardenPrivatePaths(
-        [out],
-        createProcessPort({
-          supervision: {
-            cleanupTimeoutMs: 5000,
-            pollIntervalMs: 25,
-            drainTimeoutMs: 250,
-            maxConcurrent: 1,
-          },
-        }),
-        Object.fromEntries(
-          Object.entries(process.env).filter(
-            (entry): entry is [string, string] => entry[1] !== undefined,
-          ),
-        ),
-      );
+      privateFileGuard(windowsPrivateFiles()).directory(out, true);
     const pages: { name: string; sha256: string; bytes: number }[] = [];
     for (const page of state.pagesOf(scratch, limits)) {
       const name = `page-${String(page.page).padStart(4, "0")}.json`,
@@ -221,12 +206,19 @@ export async function convert(options: Options) {
     };
     const file = join(out, "manifest.json"),
       bytes = JSON.stringify(bundle);
-    fs.writeFileSync(file, bytes, { flag: "wx", mode: 0o600 });
+    let owned = false;
     try {
+      const fd = fs.openSync(file, "wx", 0o600);
+      owned = true;
+      try {
+        fs.writeFileSync(fd, bytes);
+      } finally {
+        fs.closeSync(fd);
+      }
       if (JSON.stringify(JSON.parse(fs.readFileSync(file, "utf8"))) !== bytes)
         invalid();
     } catch (error) {
-      fs.unlinkSync(file);
+      if (owned) fs.unlinkSync(file);
       throw error;
     }
     return bundle;

@@ -1,3 +1,4 @@
+// [integration] Synthetic SQLite bundles and real platform directory protection.
 import { deepStrictEqual as eq } from "node:assert/strict";
 import {
   existsSync,
@@ -63,7 +64,7 @@ test.each(rows)(
           : kind === "authority"
             ? ["lease", "request", "legacy"]
             : kind === "write"
-              ? ["exists", "interrupted"]
+              ? ["exists", "interrupted", "manifest", "manifest-exists"]
               : [kind];
     for (const variant of variants)
       for (const mutant of name.startsWith("CF") ? [false, true] : [false]) {
@@ -150,6 +151,16 @@ test.each(rows)(
             if (variant === "exists") {
               mkdirSync(out);
               writeFileSync(join(out, "keep"), "untouched");
+            } else if (variant === "manifest") {
+              edits.push([
+                "fs.writeFileSync(fd, bytes);",
+                "fs.writeFileSync(fd, bytes.slice(0, 12)); throw new Error('partial synthetic manifest');",
+              ]);
+            } else if (variant === "manifest-exists") {
+              edits.push([
+                "let owned = false;",
+                "fs.writeFileSync(file, 'keep', {flag:'wx'}); let owned = false;",
+              ]);
             } else
               edits.push([
                 "const bytes = JSON.stringify(page);",
@@ -185,7 +196,14 @@ test.each(rows)(
           if (mutant) eq(status(r), ["OK", 0, null], context);
           else eq(status(r), want, context);
           if (!r.envelope.ok) {
-            eq(existsSync(join(out, "manifest.json")), false);
+            if (variant === "manifest-exists")
+              eq(readFileSync(join(out, "manifest.json"), "utf8"), "keep");
+            else eq(existsSync(join(out, "manifest.json")), false);
+            if (variant === "manifest")
+              eq(
+                readdirSync(out).some((name) => name.startsWith("page-")),
+                true,
+              );
             if (kind === "write" && variant === "interrupted")
               eq(readFileSync(join(out, "page-0000.json")).byteLength, 12);
             if (kind === "write" && variant === "exists")
