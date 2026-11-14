@@ -86,6 +86,8 @@ const text = (value: unknown): value is string =>
   value.length <= 256 &&
   value.trim() === value &&
   !/[\p{Cc}]/u.test(value);
+const issueId = (value: unknown): value is string =>
+  text(value) && /^work-\d+$/.test(value);
 const epoch = (value: unknown): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 const time = (value: unknown): value is string =>
@@ -102,7 +104,7 @@ function scopeOf(
   if (!scope) return;
   if (Object.keys(scope).length === 0) return read ? {} : undefined;
   if (Object.keys(scope).length !== 1) return;
-  if (text(scope.id)) return { id: scope.id };
+  if (issueId(scope.id)) return { id: scope.id };
   if (scope.all === true) return { all: true };
   return;
 }
@@ -130,13 +132,13 @@ function globalOf(value: unknown): LaneControlGlobal | undefined {
 function issueOf(
   value: unknown,
   global: LaneControlGlobal,
-): LaneControlIssue | undefined {
+): LaneControlIssue | FailureEnvelope | undefined {
   const i = data(value, ["version", "incarnation", "id", "epoch", "stoppedAt"]);
+  if (i && !issueId(i.id)) return invalid();
   if (
     !i ||
     i.version !== 1 ||
     i.incarnation !== global.incarnation ||
-    !text(i.id) ||
     !epoch(i.epoch) ||
     i.epoch === 0 ||
     i.epoch > global.epoch ||
@@ -153,6 +155,7 @@ function stateOf(
   const g = globalOf(global);
   if (!g) return;
   const i = issue == null ? undefined : issueOf(issue, g);
+  if (i && "ok" in i) return i;
   if (issue != null && (!i || ("id" in scope && i.id !== scope.id))) return;
   return { global: g, issue: i };
 }
@@ -177,6 +180,7 @@ export function readLaneControl(
   if (!target) return invalid();
   const state = stateOf(global, issue, target);
   if (!state) return unavailable();
+  if ("ok" in state) return state;
   return ok(effective(state.global, "id" in target ? state.issue : undefined));
 }
 
@@ -203,8 +207,9 @@ export function transitionLaneControl(
   )
     return invalid();
   const state = stateOf(global, issue, target);
-  if (!state || state.global.epoch === Number.MAX_SAFE_INTEGER)
-    return unavailable();
+  if (!state) return unavailable();
+  if ("ok" in state) return state;
+  if (state.global.epoch === Number.MAX_SAFE_INTEGER) return unavailable();
   const g = state.global;
   if (c.action === "resume") {
     if ("id" in target && g.stopAll !== null) return conflict();
@@ -228,8 +233,8 @@ export function transitionLaneControl(
         "Fresh verified owner authorization is required",
       );
     const authorizedScope = scopeOf(a.scope);
+    if (!authorizedScope) return invalid();
     if (
-      !authorizedScope ||
       a.project !== ctx.project ||
       a.policyIdentity !== ctx.policyIdentity ||
       a.incarnation !== g.incarnation ||
@@ -284,7 +289,10 @@ function controlOf(value: unknown): LaneControl | undefined {
   return c as unknown as LaneControl;
 }
 const monotonic = (value: unknown): value is number =>
-  typeof value === "number" && Number.isFinite(value) && value >= 0;
+  typeof value === "number" &&
+  Number.isFinite(value) &&
+  value >= 0 &&
+  value <= Number.MAX_SAFE_INTEGER;
 export function checkLaneObservation(
   observation: unknown,
   expected: unknown,
@@ -293,11 +301,11 @@ export function checkLaneObservation(
   const o = data(observation, ["id", "requestedAt", "control"]);
   const e = data(expected, ["id", "incarnation", "epoch"]);
   const control = controlOf(o?.control);
+  if ((o && !issueId(o.id)) || (e && !issueId(e.id))) return invalid();
   if (
     !o ||
     !e ||
     !control ||
-    !text(e.id) ||
     o.id !== e.id ||
     control.incarnation !== e.incarnation ||
     control.epoch !== e.epoch ||

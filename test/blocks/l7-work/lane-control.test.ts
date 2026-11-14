@@ -44,7 +44,13 @@ function fixture() {
     } as {
       id: string;
       requestedAt: number;
-      control: { incarnation: string; epoch: number; stopped: boolean };
+      control: {
+        incarnation: string;
+        epoch: number;
+        stopped: boolean;
+        scope?: string;
+        since?: string;
+      };
     } | null,
     expected: { id: "work-1367", incarnation: "history-1", epoch: 4 },
     observedNow: 101,
@@ -104,6 +110,103 @@ for (const field of [
   }, 1000);
 }
 type Row = readonly [string, (f: Fixture) => void, string | null];
+for (const alias of ["forge-1367", "WORK-1367", "not/an/issue"]) {
+  for (const field of [
+    "command",
+    "authorization",
+    "issue",
+    "observation",
+    "expected",
+  ] as const) {
+    test(`non-canonical ${field} identity ${alias}`, () => {
+      const f = fixture();
+      if (field === "command" || field === "authorization")
+        f[field].scope.id = alias;
+      else if (field === "observation") f.observation!.id = alias;
+      else f[field].id = alias;
+      const result = unchanged(f, () =>
+        field === "observation" || field === "expected"
+          ? checkLaneObservation(f.observation, f.expected, f.observedNow)
+          : transitionLaneControl(
+              f.global,
+              f.issue,
+              f.command,
+              f.context,
+              f.authorization,
+            ),
+      );
+      expect(result.status).toBe("FAIL");
+      if (!result.ok) expect(result.error.code).toBe("INPUT_INVALID");
+      expect(result).not.toHaveProperty("result.candidate");
+      if (field === "command" || field === "issue") {
+        const read = unchanged(f, () =>
+          readLaneControl(f.global, f.issue, f.command.scope),
+        );
+        expect(read.status).toBe("FAIL");
+        if (!read.ok) expect(read.error.code).toBe("INPUT_INVALID");
+        expect(read).not.toHaveProperty("result.candidate");
+      }
+    }, 1000);
+  }
+}
+
+for (const kind of ["prototype", "extra key"] as const) {
+  for (const [field, code] of [
+    ["global", "UNAVAILABLE"],
+    ["issue", "UNAVAILABLE"],
+    ["command", "INPUT_INVALID"],
+    ["context", "INPUT_INVALID"],
+    ["authorization", "APPROVAL_REQUIRED"],
+    ["command scope", "INPUT_INVALID"],
+    ["authorization scope", "INPUT_INVALID"],
+    ["observation", "UNAVAILABLE"],
+    ["expected", "UNAVAILABLE"],
+    ["control", "UNAVAILABLE"],
+  ] as const) {
+    test(`${kind} on otherwise-valid ${field}`, () => {
+      const f = fixture();
+      const target =
+        field === "command scope"
+          ? f.command.scope
+          : field === "authorization scope"
+            ? f.authorization.scope
+            : field === "control"
+              ? f.observation!.control
+              : f[field];
+      if (kind === "prototype") Object.setPrototypeOf(target, { custom: true });
+      else
+        Object.defineProperty(target, "extra", {
+          value: true,
+          enumerable: true,
+        });
+      const prototype: unknown = Object.getPrototypeOf(target);
+      const result = unchanged(f, () =>
+        ["observation", "expected", "control"].includes(field)
+          ? checkLaneObservation(f.observation, f.expected, f.observedNow)
+          : transitionLaneControl(
+              f.global,
+              f.issue,
+              f.command,
+              f.context,
+              f.authorization,
+            ),
+      );
+      expect(result.status).toBe("FAIL");
+      if (!result.ok) expect(result.error.code).toBe(code);
+      expect(result).not.toHaveProperty("result.candidate");
+      expect(Object.getPrototypeOf(target)).toBe(prototype);
+      if (field === "global" || field === "issue") {
+        const read = unchanged(f, () =>
+          readLaneControl(f.global, f.issue, f.command.scope),
+        );
+        expect(read.status).toBe("FAIL");
+        if (!read.ok) expect(read.error.code).toBe(code);
+        expect(read).not.toHaveProperty("result.candidate");
+      }
+    }, 1000);
+  }
+}
+
 const transitions: Row[] = [
   ["single resume", () => {}, null],
   [
@@ -461,6 +564,7 @@ for (const [name, stopAll, row, watermark, scope] of [
   ["individual", null, true, 0, "issue"],
   ["global precedence", at, true, 0, "all"],
   ["old stop cleared", null, true, 3, undefined],
+  ["resume watermark equals epoch", null, true, 4, undefined],
   ["stop after watermark", null, true, 2, "issue"],
 ] as const) {
   test(
@@ -504,6 +608,9 @@ test("resume all clears multiple rows without scanning, then a later stop wins",
   );
   expect(result.ok).toBe(true);
   if (!result.ok) return;
+  expect(result.result.candidate.global.resumeAllEpoch).toBe(
+    result.result.candidate.global.epoch,
+  );
   for (const id of ["work-1367", "work-2"]) {
     const inputs = {
       global: { ...result.result.candidate.global },
@@ -513,13 +620,27 @@ test("resume all clears multiple rows without scanning, then a later stop wins",
     const read = unchanged(inputs, () =>
       readLaneControl(inputs.global, inputs.issue, inputs.scope),
     );
-    expect(read.ok && read.result.stopped).toBe(false);
+    expect(read.ok).toBe(true);
+    if (!read.ok) return;
+    expect(read.result).toEqual({
+      incarnation: "history-1",
+      epoch: 5,
+      stopped: false,
+    });
     inputs.issue.epoch = 6;
     inputs.global.epoch = 6;
     const later = unchanged(inputs, () =>
       readLaneControl(inputs.global, inputs.issue, inputs.scope),
     );
-    expect(later.ok && later.result.stopped).toBe(true);
+    expect(later.ok).toBe(true);
+    if (!later.ok) return;
+    expect(later.result).toEqual({
+      incarnation: "history-1",
+      epoch: 6,
+      stopped: true,
+      scope: "issue",
+      since: at,
+    });
   }
 }, 1000);
 
@@ -620,6 +741,94 @@ const observations: Row[] = [
     },
     "UNAVAILABLE",
   ],
+  [
+    "huge finite clocks",
+    (f) => {
+      f.observedNow = f.observation!.requestedAt = 1e300;
+    },
+    "UNAVAILABLE",
+  ],
+  [
+    "infinite clock",
+    (f) => {
+      f.observedNow = Infinity;
+    },
+    "UNAVAILABLE",
+  ],
+  [
+    "huge request start",
+    (f) => {
+      f.observation!.requestedAt = 1e300;
+    },
+    "UNAVAILABLE",
+  ],
+  [
+    "infinite request start",
+    (f) => {
+      f.observation!.requestedAt = Infinity;
+    },
+    "UNAVAILABLE",
+  ],
+  [
+    "NaN request start",
+    (f) => {
+      f.observation!.requestedAt = NaN;
+    },
+    "UNAVAILABLE",
+  ],
+  [
+    "fractional clocks",
+    (f) => {
+      f.observedNow = 101.5;
+      f.observation!.requestedAt = 100.25;
+    },
+    null,
+  ],
+  [
+    "safe clock ceiling",
+    (f) => {
+      f.observedNow = f.observation!.requestedAt = Number.MAX_SAFE_INTEGER;
+    },
+    null,
+  ],
+  [
+    "stopped control missing scope",
+    (f) => {
+      f.observation!.control = {
+        incarnation: "history-1",
+        epoch: 4,
+        stopped: true,
+        since: at,
+      };
+    },
+    "UNAVAILABLE",
+  ],
+  [
+    "stopped control missing since",
+    (f) => {
+      f.observation!.control = {
+        incarnation: "history-1",
+        epoch: 4,
+        stopped: true,
+        scope: "issue",
+      };
+    },
+    "UNAVAILABLE",
+  ],
+  [
+    "running control carries scope",
+    (f) => {
+      f.observation!.control = { ...f.observation!.control, scope: "all" };
+    },
+    "UNAVAILABLE",
+  ],
+  [
+    "running control carries since",
+    (f) => {
+      f.observation!.control = { ...f.observation!.control, since: at };
+    },
+    "UNAVAILABLE",
+  ],
 ];
 for (const [name, change, code] of observations) {
   test(
@@ -631,8 +840,11 @@ for (const [name, change, code] of observations) {
         checkLaneObservation(f.observation, f.expected, f.observedNow),
       );
       expect(result.ok).toBe(code === null);
-      if (!result.ok) expect(result.error.code).toBe(code!);
-      else expect(result.result).not.toBe(f.observation?.control);
+      if (!result.ok) {
+        expect(result.status).toBe("FAIL");
+        expect(result.error.code).toBe(code!);
+        expect(result).not.toHaveProperty("result.candidate");
+      } else expect(result.result).not.toBe(f.observation?.control);
     },
     1000,
   );
