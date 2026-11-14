@@ -19,6 +19,10 @@ import { TOKEN_LOOKUP, TOKENS } from "../../cloud/src/tokens.ts";
 import { prepareCommand, runCommand } from "../../cloud/src/issue-commands.ts";
 import { OLD_SCHEMA } from "./old-schema.ts";
 import {
+  commit as stateCommit,
+  read as stateRead,
+} from "./state-input.fixture.ts";
+import {
   receiptScope,
   scopeRequestId,
 } from "../../cloud/src/issue-request-id.ts";
@@ -351,6 +355,239 @@ function fixture(
     now: () => t,
   };
 }
+const stateNamespaces = ["forge/memory"];
+const statePolicy = digestValue(stateNamespaces);
+for (const kind of ["read", "commit"] as const)
+  test(`state ${kind}: device admission and refusal table`, async () => {
+    const input = {
+      ...(kind === "read" ? stateRead : stateCommit),
+      namespace: "forge/memory",
+      policyRevision: statePolicy,
+      ...(kind === "read" ? {} : { readSet: [] }),
+    };
+    type Row = [
+      string,
+      unknown,
+      Record<string, unknown>,
+      Options,
+      number,
+      string,
+    ];
+    const rows: Row[] = [
+      ["admitted", input, {}, {}, 503, "UNAVAILABLE"],
+      [
+        "discovery",
+        { ...input, policyRevision: "discover" },
+        {},
+        {},
+        kind === "read" ? 503 : 400,
+        kind === "read" ? "UNAVAILABLE" : "INPUT_INVALID",
+      ],
+      [
+        "config missing",
+        input,
+        { FORGE_STATE_NAMESPACES: undefined },
+        {},
+        503,
+        "UNAVAILABLE",
+      ],
+      [
+        "config malformed",
+        input,
+        { FORGE_STATE_NAMESPACES: "[" },
+        {},
+        503,
+        "UNAVAILABLE",
+      ],
+      [
+        "config wrong shape",
+        input,
+        { FORGE_STATE_NAMESPACES: {} },
+        {},
+        503,
+        "UNAVAILABLE",
+      ],
+      [
+        "config wildcard",
+        input,
+        { FORGE_STATE_NAMESPACES: ["forge/*"] },
+        {},
+        503,
+        "UNAVAILABLE",
+      ],
+      [
+        "config empty",
+        input,
+        { FORGE_STATE_NAMESPACES: [] },
+        {},
+        403,
+        "AUTH_FORBIDDEN",
+      ],
+      [
+        "not listed",
+        input,
+        { FORGE_STATE_NAMESPACES: ["other/state"] },
+        {},
+        403,
+        "AUTH_FORBIDDEN",
+      ],
+      ...[
+        "forge/work",
+        "forge/cloud",
+        "forge/core-project",
+        "forge/core-trust",
+      ].map((namespace): Row => [
+        "fixed deny",
+        { ...input, namespace },
+        { FORGE_STATE_NAMESPACES: [namespace] },
+        {},
+        403,
+        "AUTH_FORBIDDEN",
+      ]),
+      [
+        "old config revision",
+        { ...input, policyRevision: "old" },
+        {},
+        {},
+        409,
+        "REVISION_CONFLICT",
+      ],
+      ["wrong project", input, {}, { name: "other" }, 403, "AUTH_FORBIDDEN"],
+      [
+        "owner header",
+        input,
+        {},
+        { headers: { "X-Forge-Owner": "owner" } },
+        403,
+        "AUTH_FORBIDDEN",
+      ],
+      [
+        "owner expiry",
+        input,
+        {},
+        { headers: { "X-Forge-Owner-Expires": "9999999999999" } },
+        403,
+        "AUTH_FORBIDDEN",
+      ],
+      ["admin", input, {}, { token: vars.ADMIN_TOKEN }, 403, "AUTH_FORBIDDEN"],
+      ["OAuth", input, {}, { token: oauthToken }, 403, "AUTH_FORBIDDEN"],
+      ["missing token", input, {}, { token: "" }, 401, "AUTH_REQUIRED"],
+      ["invalid token", input, {}, { token: fakeToken }, 401, "AUTH_INVALID"],
+      ["wrong method", input, {}, { method: "GET" }, 404, "UNKNOWN_COMMAND"],
+      [
+        "suffix",
+        input,
+        {},
+        { path: `state/${kind}/extra` },
+        404,
+        "UNKNOWN_COMMAND",
+      ],
+      ["bare state", input, {}, { path: "state" }, 404, "UNKNOWN_COMMAND"],
+      [
+        "wrong kind",
+        { ...input, kind: kind === "read" ? "commit" : "read" },
+        {},
+        {},
+        400,
+        "INPUT_INVALID",
+      ],
+      [
+        "extra field",
+        { ...input, owner: "owner" },
+        {},
+        {},
+        400,
+        "INPUT_INVALID",
+      ],
+      [
+        "unknown version",
+        { ...input, version: 2 },
+        {},
+        {},
+        400,
+        "INPUT_INVALID",
+      ],
+      [
+        "duplicate key",
+        JSON.stringify(input).replace('"version":1', '"version":1,"version":1'),
+        {},
+        {},
+        400,
+        "INPUT_INVALID",
+      ],
+      ...[
+        ["project mismatch", { project: { id: "other" } }, "INPUT_INVALID"],
+        ["root", { project: { id: "p", root: "/tmp" } }, "INPUT_INVALID"],
+        [
+          "device mismatch",
+          { device: { id: "other" } },
+          "AUTH_DEVICE_MISMATCH",
+        ],
+        [
+          "session device",
+          { session: { id: "s1", device: "other" } },
+          "AUTH_DEVICE_MISMATCH",
+        ],
+        [
+          "session mismatch",
+          { session: { id: "other" } },
+          "AUTH_DEVICE_MISMATCH",
+        ],
+        ["missing actor", { actor: undefined }, "CONTEXT_MISSING"],
+      ].map(([name, context, code]): Row => [
+        String(name),
+        { ...input, context: { ...input.context, ...(context as object) } },
+        {},
+        {},
+        code === "AUTH_DEVICE_MISMATCH" ? 403 : 400,
+        String(code),
+      ]),
+    ];
+    for (const via of ["direct", createWorker(), configured()] as const)
+      for (const [name, body, settings, options, status, code] of rows) {
+        const f = fixture({
+          ...vars,
+          FORGE_STATE_NAMESPACES: stateNamespaces,
+          ...settings,
+        });
+        try {
+          const token = await f.device(day, "laptop", "s1");
+          const before = f.snapshot();
+          const got = await f.send(body, {
+            token,
+            path: `state/${kind}`,
+            ...options,
+            via,
+          });
+          expect([got.status, got.code], name).toEqual([status, code]);
+          expect((got.json as { status?: string }).status, name).toBe("FAIL");
+          expect(got.exit, name).toBe(
+            code === "UNKNOWN_COMMAND"
+              ? 3
+              : code === "INPUT_INVALID" || code === "CONTEXT_MISSING"
+                ? 6
+                : code === "REVISION_CONFLICT"
+                  ? 4
+                  : 1,
+          );
+          expect(f.snapshot(), name).toBe(before);
+          expect(strayCalls(got.touched), name).toEqual([]);
+          if (
+            via !== "direct" &&
+            (options.name ||
+              options.headers ||
+              options.method ||
+              options.path ||
+              ["admin", "OAuth", "missing token"].includes(name))
+          )
+            expect(f.reached, name).toEqual([]);
+        } finally {
+          f.db.close();
+          mock.restore();
+        }
+      }
+  }, 30_000);
+
 const actor = { kind: "agent", id: "tester" } as const;
 const receiptPrincipal = ["token", "fixture", "laptop"] as const;
 const iso = (ms: number) => new Date(ms).toISOString();
