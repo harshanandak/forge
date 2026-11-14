@@ -52,6 +52,18 @@ const cases: Row[] = [
   }).map(([p, v]) => ["bad", `first.${p}`, v] as Row),
   ["bad", "first.merged_at", "2030-01-01T00:00:00Z"],
   ["bad", "branch.object.sha", "bad"],
+  [
+    "branch-guard",
+    "branch",
+    [
+      {
+        ref: "refs/heads/feature/a-extra",
+        object: { type: "commit", sha: tip },
+      },
+    ],
+  ],
+  ["branch-guard", "branch.ref", "refs/heads/feature/a-extra"],
+  ["branch-guard", "branch.object.type", "tag"],
   ["bad", "comparison.base_commit.sha", merge],
   ["bad", "comparison.status", "behind"],
   ["bad", "comparison.ahead_by", -1],
@@ -187,6 +199,7 @@ for (const [name, path, replacement] of cases)
         );
         expect(Object.keys(result).sort()).toEqual(["code", "ok", "reason"]);
       }
+      if (name === "branch-guard") expect(extension).toBe(0);
       if (["input", "accessor", "clock"].includes(name)) {
         expect(credentials).toBe(0);
         expect(calls).toEqual([]);
