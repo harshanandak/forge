@@ -1219,6 +1219,7 @@ ${["builder", "fixer", "tester", "reviewer"]
 }
 
 test("bound runner refuses run, resume and detached auto before any provider spawn", async () => {
+  const { acquireLaneLock } = await import("../../tools/lane.ts");
   for (const site of ["target", "caller"] as const) {
     const f = roleFixture();
     const root =
@@ -1239,14 +1240,22 @@ test("bound runner refuses run, resume and detached auto before any provider spa
       expect(existsSync(f.runs)).toBe(false);
     }
     for (const flags of [[], ["--detach"]]) {
-      const result = f.run(["auto", "one", ...flags]);
-      expect(result.code, site).toBe(1);
-      expect(JSON.stringify(result.output)).toContain("Bound lane dispatch");
-      expect(f.attempts()).toHaveLength(0);
-      expect(existsSync(f.runs)).toBe(false);
-      expect(existsSync(join(f.main, ".git", "forge-lane-one.lock"))).toBe(
-        false,
-      );
+      const common = join(f.main, ".git");
+      const lock = join(common, "forge-lane-one.lock");
+      const owner = `owner-${process.pid}-${randomUUID()}`;
+      const unlock = acquireLaneLock(common, "one", owner);
+      const prior = readFileSync(join(lock, owner), "utf8");
+      try {
+        const result = f.run(["auto", "one", ...flags]);
+        expect(result.code, site).toBe(1);
+        expect(JSON.stringify(result.output)).toContain("Bound lane dispatch");
+        expect(f.attempts()).toHaveLength(0);
+        expect(existsSync(f.runs)).toBe(false);
+        expect(readdirSync(lock)).toEqual([owner]);
+        expect(readFileSync(join(lock, owner), "utf8")).toBe(prior);
+      } finally {
+        unlock();
+      }
     }
   }
 });

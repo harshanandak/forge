@@ -11,6 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import * as coordinator from "../../src/assembly/cloud-lane-coordinator.ts";
+import * as laneState from "../../src/blocks/work/bound-lane-state.ts";
 import {
   createAssemblyProviders,
   createProcessService,
@@ -40,8 +41,24 @@ const trusted = realpathSync.native(git);
 const H1 = "a".repeat(40),
   H2 = "b".repeat(40);
 
+test("attached head shares the journal's full-head validator", () => {
+  const validate = (
+    laneState as unknown as { validBoundHead: (head: unknown) => boolean }
+  ).validBoundHead;
+  expect(typeof validate).toBe("function");
+  for (const [head, valid] of [
+    [H1, true],
+    ["a".repeat(64), true],
+    ["A".repeat(40), false],
+    ["a".repeat(39), false],
+    [undefined, false],
+  ] as const)
+    expect(validate(head)).toBe(valid);
+}, 30000);
+
 for (const variant of [
   "trusted lookup",
+  "nested caller",
   "fresh read",
   "sha256",
   "no trusted git",
@@ -64,9 +81,21 @@ for (const variant of [
         { mode: 0o755 },
       );
     }
+    const nested = variant === "nested caller";
+    const processRoot = nested ? join(caller, "src") : caller;
+    const callerBin = nested ? join(caller, "bin") : caller;
+    if (nested) {
+      for (const path of [processRoot, callerBin, join(caller, ".git")])
+        mkdirSync(path);
+      writeFileSync(
+        join(callerBin, process.platform === "win32" ? "git.exe" : "git"),
+        "sibling-controlled executable",
+        { mode: 0o755 },
+      );
+    }
     const env = {
       PATH: [
-        caller,
+        callerBin,
         target,
         ...(variant === "no trusted git" ? [] : [dirname(trusted)]),
       ].join(delimiter),
@@ -74,7 +103,7 @@ for (const variant of [
       SystemRoot: process.env.SystemRoot ?? "",
       GIT_DIR: "must-not-reach-git",
     };
-    const native = createAssemblyProviders(caller, { env });
+    const native = createAssemblyProviders(processRoot, { env });
     let attempts = 0;
     const runs = mock<ProcessPort["run"]>((_executable, _args, _options) => {
       attempts++;
@@ -110,7 +139,7 @@ for (const variant of [
             run: runs,
           },
           scope,
-          caller,
+          processRoot,
         );
       },
     };
