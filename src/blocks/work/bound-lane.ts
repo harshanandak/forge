@@ -1,4 +1,5 @@
 import { ForgeFailure } from "../../contract/failure.ts";
+import { resolveOutside } from "../../assembly/providers.ts";
 import type { TrackerItem } from "../../generated/types.ts";
 import type { AmbientContext, StateRecord } from "../../generated/types.ts";
 import type {
@@ -207,7 +208,7 @@ export async function attachBoundLane(
     "TEMP",
     "TMP",
   ]);
-  const git = process.resolve("git", env);
+  const git = resolveOutside(process, "git", env, files.root);
   if (git.kind !== "resolved") refuse("UNAVAILABLE", "Git is unavailable.");
   const readGit = async (args: string[]) => {
     const result = await process.run(git, args, {

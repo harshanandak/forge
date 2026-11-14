@@ -21,9 +21,11 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative, resolve } from "node:path";
+import { delimiter, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { blockCapture } from "../../src/assembly/capture.ts";
+import { createAssemblyProviders } from "../../src/assembly/providers.ts";
+import { attachBoundLane } from "../../src/blocks/work/bound-lane.ts";
 import { cloudRoute, selectCloud } from "../../src/assembly/cloud-authority.ts";
 import { wireDeviceId } from "../../src/assembly/cloud-login.ts";
 import {
@@ -402,7 +404,7 @@ async function rig(o: Setup) {
     context: localContext(assembly, { kind: "agent", id: "a1" }),
     ...change,
   });
-  return { s, net, sentinel, open, request, assembly, confirm };
+  return { s, net, sentinel, open, request, assembly, confirm, env };
 }
 const show = (r: Awaited<ReturnType<typeof rig>>) =>
   r.assembly.catalog.invoke(r.request("issue.show", { id: "forge-1" }));
@@ -1199,6 +1201,7 @@ const attachmentBytes = (s: fx.Sandbox) =>
   );
 for (const [name, expected] of [
   ["ordinary attachment", "OK"],
+  ["project git precedes trusted git", "OK"],
   ["failed restart preserves attachment", "OK"],
   ["wrong actor", "LEASE_NOT_HELD"],
   ["wrong session", "LEASE_NOT_HELD"],
@@ -1235,6 +1238,17 @@ for (const [name, expected] of [
             { encoding: "utf8", windowsHide: true },
           );
           expect(git.status, git.stderr).toBe(0);
+          if (name === "project git precedes trusted git") {
+            const bin = join(s.root, "node_modules", ".bin");
+            mkdirSync(bin, { recursive: true });
+            writeFileSync(
+              join(bin, process.platform === "win32" ? "git.cmd" : "git"),
+              process.platform === "win32"
+                ? "@echo off\r\necho ran>project-git-ran\r\nexit /b 99\r\n"
+                : "#!/bin/sh\nprintf ran > project-git-ran\nexit 99\n",
+              { mode: 0o755 },
+            );
+          }
           writeFileSync(
             join(s.root, "brief.md"),
             name === "invalid brief" ? "incomplete" : PREPARED_BRIEF,
@@ -1339,6 +1353,10 @@ for (const [name, expected] of [
             ? await r.open(join(r.s.root, "src"))
             : r.assembly;
         const runProcess = launch.runProcess;
+        const projectGit =
+          name === "project git precedes trusted git"
+            ? spyOn(launch, "runProcess")
+            : undefined;
         const expiry =
           name === "grant expires during final identity"
             ? spyOn(launch, "runProcess").mockImplementation(
@@ -1351,6 +1369,50 @@ for (const [name, expected] of [
               )
             : undefined;
         try {
+          if (projectGit) {
+            const providers = createAssemblyProviders(r.s.root, {
+              env: {
+                ...r.env,
+                PATH: `${join(r.s.root, "node_modules", ".bin")}${delimiter}${r.env.PATH}`,
+              },
+            });
+            const scope = {
+              op: "lane.start",
+              effects: [
+                "files:read",
+                "files:write",
+                "environment:read",
+                "external:process",
+              ],
+              signal: AbortSignal.timeout(30000),
+              deadline: Date.now() + 30000,
+              processContainment: "supervised" as const,
+            };
+            const files = await providers.openFiles(scope);
+            try {
+              const lane = await attachBoundLane(
+                readBoundLane({ ...journal, grant: OWN_GRANT }, "work-1"),
+                {
+                  files: files.value,
+                  process: providers.process(scope),
+                  environment: providers.environment(scope),
+                  now: () => NOW,
+                  ...scope,
+                },
+                async () => {},
+              );
+              expect(lane.branch).toBe("feat/one");
+              expect(existsSync(join(r.s.root, "project-git-ran"))).toBe(false);
+              expect([
+                ...new Set(
+                  projectGit.mock.calls.map(([executable]) => executable),
+                ),
+              ]).toEqual([realpathSync.native(Bun.which("git")!)]);
+            } finally {
+              await files.close();
+            }
+            return;
+          }
           const context = {
             ...holding(r, { leaseGeneration: OWN_GRANT.generation }),
             project: localContext(assembly, { kind: "agent", id: "a1" })
@@ -1500,6 +1562,7 @@ for (const [name, expected] of [
           }
         } finally {
           expiry?.mockRestore();
+          projectGit?.mockRestore();
           if (assembly !== r.assembly) await assembly.close();
         }
       },
