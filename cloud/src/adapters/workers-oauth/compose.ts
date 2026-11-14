@@ -28,6 +28,7 @@ import {
 import { clerkUpstream, productionOptions } from "./production.ts";
 import { bearer, sha256, wellFormed } from "../../tokens.ts";
 import { durableRedemption, type RedemptionNamespace } from "./redemption.ts";
+import { isLaneCallback } from "../../auth/lane-browser.ts";
 import { isLoginRoute } from "../../auth/project-login.ts";
 import { commandProject } from "../../issue-commands.ts";
 import { boundedOAuthRequest } from "./body.ts";
@@ -172,6 +173,7 @@ export function createConfiguredWorker(
     ) {
       const path = new URL(request.url).pathname;
       const token = bearer(request);
+      if (isLaneCallback(request)) return worker.fetch(request, env);
       if (
         isDeviceRoute(request) ||
         isDeviceCallback(request) ||

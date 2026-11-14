@@ -7,6 +7,7 @@ import { bearer, same, sha256, wellFormed } from "./tokens.ts";
 import type { Access, AuthComposition } from "./auth/compose.ts";
 import { configUnavailable, isOAuthRoute } from "./auth/compose.ts";
 import { isDeviceCallback, isDeviceRoute } from "./auth/device-browser.ts";
+import { isLaneCallback, isLaneRoute } from "./auth/lane-browser.ts";
 import { commandProject } from "./issue-commands.ts";
 import { PROJECT_NAME } from "./project-name.ts";
 import {
@@ -98,7 +99,12 @@ const legacyWorker = {
       request = new Request(request, { headers });
     }
     // The owner's device pages and their Clerk return reach the one admitted project, before OAuth routing.
-    if (isDeviceRoute(request) || isDeviceCallback(request)) {
+    if (
+      isLaneRoute(request) ||
+      isLaneCallback(request) ||
+      isDeviceRoute(request) ||
+      isDeviceCallback(request)
+    ) {
       const project = env.FORGE_CLOUD_PROJECT;
       const gap =
         typeof project === "string" && project !== ""
