@@ -28,6 +28,8 @@ import { claimIssue } from "./issue-claim.ts";
 import { commentIssue } from "./issue-comment.ts";
 import { createIssue } from "./issue-create.ts";
 import { closeIssue } from "./issue-close.ts";
+import { admitReceipt } from "./receipt-admission.ts";
+import { composeGithub } from "./github-compose.ts";
 import { depIssue } from "./issue-dep.ts";
 import { linkIssue } from "./issue-link.ts";
 import { releaseIssue, renewIssue } from "./issue-lease.ts";
@@ -220,6 +222,7 @@ export interface CommandRun extends CommandHost {
   readonly idPrefix: unknown;
   readonly now: number;
   readonly approvalConfig?: Readonly<Record<string, unknown>>;
+  readonly github?: Parameters<typeof admitReceipt>[3];
   /** Throws when the token is no longer valid; a write calls it inside its transaction. */
   readonly recheck: () => void;
   /** When the token expires, in milliseconds. */
@@ -251,9 +254,12 @@ function lazyViews(storage: DurableStorage): IssueViews {
 
 /**
  * Runs an exposed command and measures the serialized response in UTF-8 bytes.
- * Throws ForgeFailure when refused and runs no await, so the caller's token check stays current.
+ * Synchronous except for PR verification, whose coordinator rechecks authority after its awaits.
  */
-export function runCommand(text: string, host: CommandRun): Response {
+export function runCommand(
+  text: string,
+  host: CommandRun,
+): Response | Promise<Response> {
   const call = parseCommand(text, host);
   const { requestId, op, input, context } = call;
   const read =
@@ -303,7 +309,7 @@ export function runCommand(text: string, host: CommandRun): Response {
     const scoped = scopeRequestId("command", host.principal, requestId);
     const { db, owner } = host.open();
     guardLegacy(db, requestId, scoped);
-    result = write(db, owner, {
+    const writeCall = {
       requestId,
       principal: host.principal,
       input,
@@ -312,7 +318,24 @@ export function runCommand(text: string, host: CommandRun): Response {
       prefix: host.idPrefix,
       recheck: host.recheck,
       expiresAt: host.expiresAt,
-    });
+    };
+    if (
+      op === "issue.close" &&
+      typeof input === "object" &&
+      input !== null &&
+      "pr" in input
+    )
+      return admitReceipt(
+        db,
+        owner,
+        writeCall,
+        host.github ?? {
+          ...composeGithub(host.approvalConfig),
+          signal: new AbortController().signal,
+          verifierVersion: "1",
+        },
+      ).then((closed) => commandResponse(op, closed));
+    result = write(db, owner, writeCall);
   } else if (read !== undefined)
     result = read(
       lazyViews(host.storage),
@@ -321,6 +344,10 @@ export function runCommand(text: string, host: CommandRun): Response {
       host.idPrefix as string,
     );
   else throw fail("INPUT_INVALID", "Commands are not yet supported in cloud");
+  return commandResponse(op, result);
+}
+
+function commandResponse(op: string, result: unknown): Response {
   const approvalRequired =
     op === "lane.resume" &&
     typeof result === "object" &&

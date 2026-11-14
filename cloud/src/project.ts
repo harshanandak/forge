@@ -170,6 +170,9 @@ const STATUS: Record<string, number> = {
   AUTH_FORBIDDEN: 403,
   AUTH_CONFIG_UNAVAILABLE: 503,
   RECEIPT_REQUIRED: 400,
+  RECEIPT_INVALID: 400,
+  RECEIPT_HEAD_MISMATCH: 409,
+  PR_NOT_MERGED: 409,
   CLAIM_BLOCKED: 409,
   LEASE_HELD: 409,
   LEASE_STALE: 409,
@@ -568,9 +571,9 @@ export class Project {
       if (db === undefined) throw fail("AUTH_INVALID", "Token is not valid");
       authorize(db, parts, Date.now());
       const body = await bounded(request, MAX_COMMAND_BODY);
-      // No await from here to the response: the second check below stays current while it is built.
+      // Synchronous commands stay current; PR verification rechecks inside its commit transaction.
       const token = authorizeToken(db, parts, Date.now());
-      return runCommand(body, {
+      return await runCommand(body, {
         ...token,
         approvalConfig: this.#env,
         principal: ["token", token.id, token.device],
