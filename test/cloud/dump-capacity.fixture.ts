@@ -30,8 +30,11 @@ import { browserStorage } from "./browser-storage.fixture.ts";
 export const caps = { DUMP_MAX_ROWS: "20000", DUMP_MAX_BYTES: "33554432" };
 const databases: Database[] = [];
 afterEach(() => databases.splice(0).forEach((db) => db.close()));
+type Module = { Project: typeof Project; createWorker: typeof createWorker };
+const load = (url: string) => import(url) as Promise<Module>;
 export type Mutation = "row" | "byte" | "export" | "restore" | "busy" | "admin";
-const mutations: Record<Mutation, [string, string]> = {
+type Change = [string, string];
+const mutations: Record<Mutation, Change> = {
   row: ["used >= Math.ceil(limits.maxRows * 0.7)", "false"],
   byte: ["bytes >= Math.ceil(limits.maxBytes * 0.7)", "false"],
   export: ['assertLimits(db, limits, "DUMP_TOO_LARGE", "The project");', ""],
@@ -43,11 +46,7 @@ const mutations: Record<Mutation, [string, string]> = {
   admin: ["ADMIN_ROUTES.has(match![2]!) &&", "false &&"],
 };
 // Transpile actual source, replacing exactly one guard; dependencies retain their normal identities.
-async function moduleUrl(
-  file: string,
-  change?: [string, string],
-  dump?: string,
-) {
+async function moduleUrl(file: string, change?: Change, dump?: string) {
   const url = new URL(`../../cloud/src/${file}.ts`, import.meta.url);
   let source = await Bun.file(url).text();
   if (change) {
@@ -61,11 +60,8 @@ async function moduleUrl(
   );
   return `data:text/javascript;base64,${Buffer.from(new Bun.Transpiler({ loader: "ts" }).transformSync(source)).toString("base64")}`;
 }
-export async function fixture(
-  mutation?: Mutation,
-  initialized = true,
-  env: Record<string, string> = caps,
-) {
+export async function fixture(mutation?: Mutation, init = true, small = false) {
+  const env = { ...caps, DUMP_PAGE_BYTES: small ? "1024" : "4194304" };
   const db = new Database(":memory:");
   databases.push(db);
   let unreadable = false;
@@ -77,12 +73,8 @@ export async function fixture(
     mutation && mutation !== "admin"
       ? await moduleUrl("dump", mutations[mutation])
       : undefined;
-  const Impl: typeof Project = dump
-    ? (
-        (await import(await moduleUrl("project", undefined, dump))) as {
-          Project: typeof Project;
-        }
-      ).Project
+  const Impl = dump
+    ? (await load(await moduleUrl("project", undefined, dump))).Project
     : Project;
   let project = new Impl({ storage }, env);
   const request = (route: string, body?: unknown, token = "admin-fixture") =>
@@ -93,31 +85,26 @@ export async function fixture(
     });
   const send = async (route: string, body?: unknown) =>
     project.fetch(request(route, body)).then((r) => r.json() as Promise<Reply>);
-  if (initialized) {
+  if (init) {
     const issued = await send("devices", { device: "phone", ttlMs: 172800000 });
     assert.equal(issued.ok, true);
     project = new Impl({ storage }, env);
   }
-  const worker: typeof createWorker =
+  const worker =
     mutation === "admin"
-      ? (
-          (await import(await moduleUrl("worker", mutations.admin))) as {
-            createWorker: typeof createWorker;
-          }
-        ).createWorker
+      ? (await load(await moduleUrl("worker", mutations.admin))).createWorker
       : createWorker;
   const seed = (table: Table, n: number) => {
-    const id = "printf('%06d', i)";
-    const fields: Record<Table, string> = {
-      state_records: `'fixture',${id},1,'{}'`,
-      state_events: `i,'fixture',${id},'{}'`,
-      state_leases: `'fixture',${id},1,'{}'`,
-      state_requests: `'fixture',${id},'{}','{}'`,
-      domain_cloud_requests: `${id},'{}','INPUT_INVALID','{}'`,
-      domain_cloud_command_receipts: `${id},'{}','INPUT_INVALID','{}',0,1`,
-    };
+    const numeric = /^(sequence|revision|generation|created_at|expires_at)$/;
+    const fields = COLUMNS[table].map((c) =>
+      numeric.test(c)
+        ? "i"
+        : /^(key|subject|request_id)$/.test(c)
+          ? "printf('%06d',i)"
+          : "'{}'",
+    );
     db.run(
-      `WITH RECURSIVE rows(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM rows WHERE i<${n}) INSERT INTO ${table} (${COLUMNS[table].join(",")}) SELECT ${fields[table]} FROM rows`,
+      `WITH RECURSIVE rows(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM rows WHERE i<${n}) INSERT INTO ${table} (${COLUMNS[table].join(",")}) SELECT ${fields.join(",")} FROM rows`,
     );
   };
   const usage = () => {
@@ -136,18 +123,11 @@ export async function fixture(
   };
   const pad = (bytes: number) => {
     seed("state_records", 32);
-    db.run(`UPDATE state_records SET body='{"pad":"é"}'`);
-    let left = bytes - usage().bytes;
-    for (const { key } of db
-      .query("SELECT key FROM state_records ORDER BY key")
-      .all() as { key: string }[]) {
-      const n = Math.min(left, 1_048_576);
-      left -= n;
-      db.query(
-        "UPDATE state_records SET body=json_object('pad','é'||substr(hex(zeroblob(?)),1,?)) WHERE key=?",
-      ).run(n, n, key);
-    }
-    assert.equal(left, 0);
+    db.run("UPDATE state_records SET body=json_object('pad',char(233))");
+    const padding = bytes - usage().bytes;
+    db.query(
+      "UPDATE state_records SET body=json_object('pad',char(233)||substr(hex(zeroblob(1048576)),1,max(0,min(1048576,?-(CAST(key AS INTEGER)-1)*1048576))))",
+    ).run(padding);
     assert.equal(usage().bytes, bytes);
   };
   const snapshot = () => [
@@ -185,16 +165,16 @@ export async function fixture(
 }
 export type Fixture = Awaited<ReturnType<typeof fixture>>;
 export function projection(reply: Pick<Reply, "ok" | "error">) {
-  const envelope = reply.ok
+  const result = reply.ok
     ? success("issue.show", null)
     : failure(reply.error.code, reply.error.message);
-  const code = reply.ok ? null : reply.error.code;
-  return [envelope.status, exitCode(envelope), code];
+  return [result.status, exitCode(result), reply.ok ? null : reply.error.code];
 }
 export async function pages(
   f: Fixture,
   visit: (page: unknown) => Promise<void> = async () => {},
 ) {
+  const before = f.snapshot();
   let cursor: string | null = "start";
   do {
     const reply = await f.send(`dump?cursor=${encodeURIComponent(cursor)}`);
@@ -202,4 +182,5 @@ export async function pages(
     await visit({ ...reply.value, last: false, next: "more" });
     cursor = reply.value.next;
   } while (cursor !== null);
+  assert.deepEqual(f.snapshot(), before);
 }
