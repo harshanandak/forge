@@ -104,7 +104,6 @@ const outcomeFields = {
       /^(success|failure|neutral|cancelled|skipped|timed_out|action_required|stale|startup_failure)$/,
     ),
   ),
-  completedAt: nullable(timestamp),
 };
 const checkGuard = shape({
   id: positive,
@@ -112,6 +111,7 @@ const checkGuard = shape({
   attempt: positive,
   name: text,
   ...outcomeFields,
+  completedAt: nullable(timestamp),
 });
 const runGuard = shape({
   ...producerFields,
@@ -169,13 +169,17 @@ function same<T>(a: T, b: T, keys: readonly (keyof T)[]): boolean {
 }
 const linked = (b: DeliveryBinding) =>
   new RegExp(`^link:${b.issueId}:\\d+$`).test(b.linkKey);
-type Outcome = Shape<typeof outcomeFields>;
+type Outcome = Shape<typeof outcomeFields> & {
+  readonly completedAt?: string | null;
+};
 function coherentOutcome(o: Outcome, now: number): boolean {
-  return o.status === "completed"
-    ? o.conclusion !== null &&
-        o.completedAt !== null &&
-        Date.parse(o.completedAt) <= now
-    : o.conclusion === null && o.completedAt === null;
+  return (
+    (o.status === "completed") === (o.conclusion !== null) &&
+    (!Object.hasOwn(o, "completedAt") ||
+      (o.status === "completed"
+        ? o.completedAt != null && Date.parse(o.completedAt) <= now
+        : o.completedAt === null))
+  );
 }
 
 // Callers must bound total input bytes/keys before entry (forge-1362):

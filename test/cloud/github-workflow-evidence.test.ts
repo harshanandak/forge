@@ -145,7 +145,7 @@ for (const [name, path, replacement, code] of cases)
                     status: "completed",
                     conclusion: "success",
                   };
-          } else if (p.endsWith("/check-suites/20"))
+          } else if (p.split("/").at(-2) === "check-suites")
             body = name === "missing suite" ? null : fixture.suite;
           else if (p.endsWith("/probe")) body = {};
           else throw new Error("Unexpected endpoint");
