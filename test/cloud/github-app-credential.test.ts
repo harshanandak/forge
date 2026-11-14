@@ -356,9 +356,12 @@ const policyRows: [string, unknown, unknown?, unknown?][] = [
   ["valid", JSON.stringify(configuredPolicy)],
   [
     "reordered",
-    JSON.stringify(
-      Object.fromEntries(Object.entries(configuredPolicy).reverse()),
-    ),
+    JSON.stringify({
+      ...Object.fromEntries(Object.entries(configuredPolicy).reverse()),
+      producer: Object.fromEntries(
+        Object.entries(configuredPolicy.producer).reverse(),
+      ),
+    }),
   ],
   ["missing", undefined],
   ["not string", configuredPolicy],

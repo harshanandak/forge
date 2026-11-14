@@ -167,6 +167,8 @@ The owner runs these steps. Replace angle-bracket placeholders; `<worker-origin>
    | `FORGE_CLOUD_PROJECT`   | `<project-name>`                            | The one provisioned project that login and `/command` serve                                                   | Not secret     |
    | `FORGE_CLOUD_ID_PREFIX` | `<id-prefix>`                               | The work block's `idPrefix` rule: lowercase letters, digits and single hyphens, 1–32 characters               | Not secret     |
 
+   For future merge receipt admission, set non-secret `GITHUB_MERGE_POLICY` to the JSON string in the example: pin the admitted `FORGE_CLOUD_PROJECT`, numeric repository and producer identities, workflow path and SHA-256, base branch, version and nonempty unique required checks; omit `digest` (the server computes it), keep the JSON within 16 KiB, and match both repository ids to `GITHUB_REPOSITORY_ID`; invalid configuration returns `UNAVAILABLE`.
+
    The preflight runs the Worker's own rules for these vars, at the origin of `CLERK_REDIRECT_URI`. It cannot know the deployed origin, so the smoke checks below verify the real one.
 
    Every HTTPS value above rejects credentials, query strings, fragments, whitespace and backslashes. Registration accepts only loopback redirects (`http` on `127.0.0.1`, `[::1]` or `localhost`) and exact matches of `FORGE_OAUTH_REDIRECTS`; anything else is refused with `REGISTRATION_INVALID` before the rate limiter counts it. Metadata uses the callback origin, not the Host header. No Clerk secret key is needed or used; never put one in `vars`.

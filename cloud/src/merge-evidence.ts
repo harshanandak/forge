@@ -67,7 +67,7 @@ const pins = [
   "workflowPath",
   "workflowDigest",
 ] as const;
-const policyGuard = shape({
+export const policyGuard = shape({
   project,
   repositoryId: positive,
   baseBranch: text,
