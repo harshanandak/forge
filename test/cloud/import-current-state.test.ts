@@ -40,7 +40,9 @@ test.each(rows)(
         ? ["namespace", "journal", "approval", "migration", "history"]
         : kind === "caps"
           ? ["rows", "bytes"]
-          : [kind];
+          : kind === "consistency"
+            ? ["body", "floor"]
+            : [kind];
     for (const variant of variants)
       for (const mutant of cf ? [false, true] : [false]) {
         const historical = ["missing", "historical"].includes(kind);
@@ -50,9 +52,17 @@ test.each(rows)(
           historical,
           authority,
           (db, state) => {
-            if (kind === "consistency")
+            if (kind === "consistency" && variant === "body")
               db.run(
                 "UPDATE state_records SET body=json_set(body,'$.value.title','changed') WHERE key='issue:work-1'",
+              );
+            if (kind === "consistency" && variant === "floor")
+              state.put(
+                f.ns,
+                "allocation:issue:work-",
+                { prefix: "issue:work-", number: 0 },
+                f.actor,
+                { expectRevision: 1 },
               );
             if (kind === "scope") {
               if (variant === "migration")
@@ -110,6 +120,11 @@ test.each(rows)(
           if (kind === "revision" || kind === "fence") return null;
           return projected;
         });
+        if (!mutant && !reply.envelope.ok && code === "INPUT_INVALID")
+          eq(
+            reply.envelope.error.message,
+            "Unsupported or inconsistent current-state source",
+          );
         if (kind === "revision" || kind === "fence") {
           eq(status(reply), ["OK", 0, null]);
           if (kind === "revision") {

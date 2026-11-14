@@ -127,82 +127,88 @@ export function currentState(
   manifest: SourceManifest,
   limits: Limits,
 ) {
-  return scratch.transaction(() => {
-    const nonempty = [
-      "state_records",
-      "state_events",
-      "state_leases",
-      "state_requests",
-      "state_domains",
-      ...Object.keys(checkpointTables),
-    ].some((table) => scratch.get(`SELECT 1 FROM ${table} LIMIT 1`));
-    if (nonempty) invalid();
-    const found = verifySource(source, manifest, scratch);
-    const cloud = durableStore({
-      sql: {
-        exec: (sql, ...bindings) => {
-          const rows = scratch.all(
-            sql,
-            bindings.map((value) =>
-              value instanceof ArrayBuffer ? new Uint8Array(value) : value,
-            ),
-          );
-          return { toArray: () => rows.map((row) => ({ ...row })) };
+  try {
+    return scratch.transaction(() => {
+      const nonempty = [
+        "state_records",
+        "state_events",
+        "state_leases",
+        "state_requests",
+        "state_domains",
+        ...Object.keys(checkpointTables),
+      ].some((table) => scratch.get(`SELECT 1 FROM ${table} LIMIT 1`));
+      if (nonempty) invalid();
+      const found = verifySource(source, manifest, scratch);
+      const cloud = durableStore({
+        sql: {
+          exec: (sql, ...bindings) => {
+            const rows = scratch.all(
+              sql,
+              bindings.map((value) =>
+                value instanceof ArrayBuffer ? new Uint8Array(value) : value,
+              ),
+            );
+            return { toArray: () => rows.map((row) => ({ ...row })) };
+          },
         },
-      },
-      transactionSync: (body) => scratch.transaction(body),
-      get: invalid,
-      put: invalid,
-      delete: invalid,
-    });
-    const owner = new StateOwner(cloud, {
-      now: () => Date.parse(manifest.at),
-    });
-    owner.initialize([domain]);
-    let records = 0,
-      floors = 0;
-    for (const record of workRecords(source)) {
-      owner.put(namespace, record.key, record.value, actor, {
-        expectRevision: 0,
+        transactionSync: (body) => scratch.transaction(body),
+        get: invalid,
+        put: invalid,
+        delete: invalid,
       });
-      records++;
-    }
-    for (const [prefix, summary] of [
-      [numbered.prefix, found] as const,
-      ...(found.groups ?? []),
-    ]) {
-      const needed = Math.max(summary.highest, summary.earlier);
-      if (
-        owner.seedNumberFloor(
-          namespace,
-          prefix,
-          { highest: needed, earlier: 0, floorRevision: 0 },
-          actor,
-          records + floors,
+      const owner = new StateOwner(cloud, {
+        now: () => Date.parse(manifest.at),
+      });
+      owner.initialize([domain]);
+      let records = 0,
+        floors = 0;
+      for (const record of workRecords(source)) {
+        owner.put(namespace, record.key, record.value, actor, {
+          expectRevision: 0,
+        });
+        records++;
+      }
+      for (const [prefix, summary] of [
+        [numbered.prefix, found] as const,
+        ...(found.groups ?? []),
+      ]) {
+        const needed = Math.max(summary.highest, summary.earlier);
+        if (
+          owner.seedNumberFloor(
+            namespace,
+            prefix,
+            { highest: needed, earlier: 0, floorRevision: 0 },
+            actor,
+            records + floors,
+          )
         )
-      )
-        floors++;
-    }
-    const events = records + floors;
-    verifyEventDerivedState(scratch, events);
-    for (const record of workRecords(source))
+          floors++;
+      }
+      const events = records + floors;
+      verifyEventDerivedState(scratch, events);
+      for (const record of workRecords(source))
+        if (
+          canonicalJson(owner.get(namespace, record.key)?.value) !==
+          canonicalJson(record.value)
+        )
+          invalid();
+      const usage = dumpUsage(scratch, limits);
       if (
-        canonicalJson(owner.get(namespace, record.key)?.value) !==
-        canonicalJson(record.value)
+        usage.bytes > limits.maxBytes ||
+        Object.values(usage.rows).some((n) => n > limits.maxRows)
       )
-        invalid();
-    const usage = dumpUsage(scratch, limits);
-    if (
-      usage.bytes > limits.maxBytes ||
-      Object.values(usage.rows).some((n) => n > limits.maxRows)
-    )
-      throw new ForgeFailure({
-        code: "RESTORE_TOO_LARGE",
-        message: "Current-state projection exceeds configured caps",
-        retry: "never",
-      });
-    return { records, floors, events, usage };
-  });
+        throw new ForgeFailure({
+          code: "RESTORE_TOO_LARGE",
+          message: "Current-state projection exceeds configured caps",
+          retry: "never",
+        });
+      return { records, floors, events, usage };
+    });
+  } catch (error) {
+    if (error instanceof ForgeFailure && error.error.code === "INPUT_INVALID")
+      invalid();
+    throw error;
+  }
 }
 
 /** Produce real v2 pages without retaining the image. Rehearsal and bundle files belong to the operator. */
@@ -210,10 +216,26 @@ export function* pagesOf(
   scratch: SqlDatabase,
   limits: Limits,
 ): Generator<Page> {
+  const read: SqlDatabase = {
+    ...scratch,
+    all: (sql, params) =>
+      scratch
+        .all(sql, params)
+        .map((row) =>
+          Object.fromEntries(
+            Object.entries(row).map(([key, value]) => [
+              key,
+              typeof value === "bigint" && Number.isSafeInteger(Number(value))
+                ? Number(value)
+                : value,
+            ]),
+          ),
+        ),
+  };
   let cursor = "start";
   for (;;) {
     const page = parseDump(
-      JSON.stringify(dumpPage(scratch, cursor, limits)),
+      JSON.stringify(dumpPage(read, cursor, limits)),
     ) as Page;
     yield page;
     if (page.next === null) return;

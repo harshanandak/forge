@@ -135,9 +135,10 @@ export function result(body: () => unknown) {
   try {
     return respond(success("import-current", body()));
   } catch (error) {
-    const code = (error as { error?: { code: string } }).error?.code;
-    if (!code) throw error;
-    return respond(failure(code, "Synthetic refusal"));
+    const refusal = (error as { error?: { code: string; message: string } })
+      .error;
+    if (!refusal) throw error;
+    return respond(failure(refusal.code, refusal.message));
   }
 }
 type Change = readonly [string, string];
