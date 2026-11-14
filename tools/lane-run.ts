@@ -16,15 +16,15 @@ import { delimiter, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { laneTier, type LaneTier, type ReviewTier } from "./lane-tier.ts";
 import { cloudBinding } from "../src/assembly/cloud-binding.ts";
+import { openBoundRunner } from "./lane-control.ts";
 
 export function refuseBoundRunner(root: string) {
-  const binding = cloudBinding(
-    root,
-    process.env.HOME ?? process.env.USERPROFILE,
-  );
-  if (binding.kind === "bound")
+  if (
+    cloudBinding(root, process.env.HOME ?? process.env.USERPROFILE).kind ===
+    "bound"
+  )
     throw new Error(
-      "Bound lane dispatch requires the fresh control boundary in PR 2b.",
+      "Bound lane dispatch for auto/detach remains unavailable until PR 2b-2.",
     );
 }
 
@@ -37,6 +37,7 @@ export type RunOptions = {
   resume?: string;
   readOnly?: boolean;
   started?: (pid: number) => void;
+  beforeSpawn?: () => Promise<void>;
 };
 const defaultTiming = {
   replyGraceMs: 90_000,
@@ -181,6 +182,7 @@ async function runHarness(
           writeFileSync(reply, value.result);
       };
       try {
+        await options.beforeSpawn?.();
         exit = await new Promise<number | null>((done, fail) => {
           const child = spawn(command, args, {
             cwd: worktree,
@@ -253,6 +255,10 @@ async function runHarness(
         retries >= 3
       )
         break;
+      if (options.beforeSpawn)
+        throw new Error(
+          "Bound lane dispatch capacity retry remains unavailable until PR 2b-2.",
+        );
       retries++;
       await delay(timing.retryDelayMs * retries, undefined, {
         signal: controller.signal,
@@ -475,6 +481,7 @@ export async function laneRun(
     folder: string | null = null;
   let unlock: ((pid?: number) => void) | undefined;
   let record: RunRecord | undefined;
+  let bound: Awaited<ReturnType<typeof openBoundRunner>>;
   const save = () => {
     if (!record || !folder) return;
     const file = join(folder, "run.json"),
@@ -509,7 +516,6 @@ export async function laneRun(
   try {
     const [id, ...flags] = argv,
       values = new Map<string, string>();
-    refuseBoundRunner(context.configRoot);
     for (let i = 0; i < flags.length; i += 2) {
       const key = flags[i]!,
         value = flags[i + 1];
@@ -565,7 +571,6 @@ export async function laneRun(
       (item) => !("attempt" in item) && item.issue === id,
     );
     if (!lane) throw new Error(`no active lane for ${id}; use start first`);
-    refuseBoundRunner(lane.worktree);
     const classification = laneTier(lane.worktree);
     tier = classification.tier;
     unlock = context.lock(id);
@@ -634,6 +639,16 @@ export async function laneRun(
           "\nLane contract (takes precedence):\n",
           readFileSync(lane.brief, "utf8"),
         ].join("\n");
+    bound = await openBoundRunner(
+      lane.worktree,
+      id,
+      git(lane.worktree, ["rev-parse", "HEAD"]),
+    );
+    if (!bound) refuseBoundRunner(context.configRoot);
+    if (bound && resume)
+      throw new Error(
+        "Bound lane dispatch resume remains unavailable until PR 2b-2.",
+      );
     folder = join(context.common, "forge-lane-runs", id, randomUUID());
     mkdirSync(folder, { recursive: true });
     record = {
@@ -659,6 +674,7 @@ export async function laneRun(
       prompt,
       started: unlock,
       readOnly: role === "reviewer",
+      ...(bound ? { beforeSpawn: bound.beforeSpawn } : {}),
       ...(resume ? { resume } : {}),
     });
     let hasReply = false;
@@ -679,6 +695,11 @@ export async function laneRun(
       session: result.session,
     });
     save();
+    if (bound) {
+      const finished = bound;
+      bound = undefined;
+      await finished.finish(success);
+    }
     report({
       ...result,
       verdict: success ? "completed" : "failed",
@@ -701,6 +722,10 @@ export async function laneRun(
     });
     return 1;
   } finally {
-    unlock?.();
+    try {
+      await bound?.finish(false);
+    } finally {
+      unlock?.();
+    }
   }
 }

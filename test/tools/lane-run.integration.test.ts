@@ -466,6 +466,7 @@ const {main}=await import(${JSON.stringify(script)});process.exitCode=await main
     mode: string,
     resume?: string,
     harness = "codex",
+    beforeSpawn?: () => Promise<void>,
   ): Promise<
     Pick<
       Verdict,
@@ -484,6 +485,7 @@ const {main}=await import(${JSON.stringify(script)});process.exitCode=await main
           effort: "high",
           prompt: "Direct fixture prompt",
           ...(resume ? { resume } : {}),
+          ...(beforeSpawn ? { beforeSpawn } : {}),
         },
         { replyGraceMs: 100, pollMs: 10, retryDelayMs: 1 },
       ),
@@ -1258,6 +1260,28 @@ test("bound runner refuses run, resume and detached auto before any provider spa
       }
     }
   }
+  // PR 2b-1: the direct attempt uses the boundary, but capacity replacement stays refused.
+  for (const harness of ["codex", "claude"]) {
+    const f = fixture(),
+      worktree = f.start();
+    let reads = 0;
+    await expect(
+      f.direct(worktree, "capacity", undefined, harness, () => {
+        reads++;
+        return Promise.resolve();
+      }),
+    ).rejects.toThrow("capacity retry remains unavailable");
+    expect(reads).toBe(1);
+    expect(f.attempts()).toHaveLength(1);
+  }
+  const f = fixture(),
+    worktree = f.start();
+  await expect(
+    f.direct(worktree, "ok", undefined, "codex", () =>
+      Promise.reject(new Error("control stopped")),
+    ),
+  ).rejects.toThrow("control stopped");
+  expect(f.attempts()).toHaveLength(0);
 });
 
 function change(
