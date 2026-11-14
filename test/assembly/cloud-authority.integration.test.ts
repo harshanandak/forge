@@ -3743,23 +3743,48 @@ for (const [name, result] of [
   ["missing request", { ...LANE_APPROVAL, request: undefined }],
   ["invalid expiry", { ...LANE_APPROVAL, expiresAt: "tomorrow" }],
   ["an extra field", { ...LANE_APPROVAL, extra: true }],
+  [
+    "success with another origin",
+    {
+      ...LANE_APPROVAL,
+      url: `${fx.OTHER_ORIGIN}/lane-approval/${LANE_REQUEST}`,
+    },
+  ],
+  [
+    "success with http",
+    { ...LANE_APPROVAL, url: LANE_APPROVAL.url.replace("https:", "http:") },
+  ],
+  [
+    "success with another path",
+    { ...LANE_APPROVAL, url: `${fx.ORIGIN}/login/${LANE_REQUEST}` },
+  ],
 ] as const)
   test(
     `bound resume refuses an invalid approval result with ${name}`,
     () =>
-      using({ steps: [() => laneRequired(result)] }, async (r) => {
-        const before = inventory(r.s.dir);
-        expect(
-          failed(
-            await r.assembly.catalog.invoke(
-              r.request("lane.resume", { all: true }),
+      using(
+        {
+          steps: [
+            () =>
+              name.startsWith("success")
+                ? answer(result, "lane.resume")
+                : laneRequired(result),
+          ],
+        },
+        async (r) => {
+          const before = inventory(r.s.dir);
+          expect(
+            failed(
+              await r.assembly.catalog.invoke(
+                r.request("lane.resume", { all: true }),
+              ),
+              "UNAVAILABLE",
             ),
-            "UNAVAILABLE",
-          ),
-        ).toBe(1);
-        expect(r.net.calls).toHaveLength(1);
-        expect(inventory(r.s.dir)).toEqual(before);
-      }),
+          ).toBe(1);
+          expect(r.net.calls).toHaveLength(1);
+          expect(inventory(r.s.dir)).toEqual(before);
+        },
+      ),
     30_000,
   );
 
