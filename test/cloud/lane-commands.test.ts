@@ -34,16 +34,16 @@ async function fixture(projectName = "p") {
   const values = new Map<string, unknown>();
   const storage: DurableStorage = {
     sql: {
-      exec: (sql, ...bindings) => ({
-        toArray: () =>
-          db
-            .query(sql)
-            .all(
-              ...bindings.map((v) =>
-                v instanceof ArrayBuffer ? new Uint8Array(v) : v,
-              ),
-            ) as Record<string, unknown>[],
-      }),
+      exec: (sql, ...bindings) => {
+        const rows = db
+          .query(sql)
+          .all(
+            ...bindings.map((v) =>
+              v instanceof ArrayBuffer ? new Uint8Array(v) : v,
+            ),
+          ) as Record<string, unknown>[];
+        return { toArray: () => rows };
+      },
     },
     transactionSync: (body) => db.transaction(body)(),
     get: (key) => Promise.resolve(values.get(key)),
