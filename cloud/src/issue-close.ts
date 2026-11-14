@@ -5,7 +5,6 @@
 // lease is checked (an empty write fenced on the lease), then a missing reason, then the fenced write.
 // Those refusals roll back and are not recorded. The lease stays held after the close, as locally.
 import manifest from "../../src/blocks/work/forge.block.json" with { type: "json" };
-import CloseInput from "../../src/blocks/work/schemas/CloseInput.json" with { type: "json" };
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import type { StateOwner } from "../../src/core/state/index.ts";
 import type { TrackerItem } from "../../src/generated/types.ts";
@@ -14,7 +13,7 @@ import {
   checkedValue,
   fail,
   minted,
-  schemas,
+  validateCloseInput,
   shownId,
   storedId,
 } from "./issue-read.ts";
@@ -32,6 +31,7 @@ interface Fields {
   id: string;
   reason?: string | undefined;
   withoutReceipt?: string | undefined;
+  receipt?: string | undefined;
 }
 
 /** Closes one issue with a withoutReceipt reason, or returns the recorded answer while the caller still holds its lease. */
@@ -39,8 +39,23 @@ export function closeIssue(
   db: SqlDatabase,
   owner: StateOwner,
   call: WriteCall,
+  verifiedReceipt?: string,
 ): TrackerItem {
-  return receipted(
+  const commit: typeof receipted =
+    verifiedReceipt === undefined
+      ? receipted
+      : (_db, _owner, _op, call, check, write) => {
+          if (call.context.variant !== "leased")
+            throw fail("INTERNAL", "issue.close needs a leased context");
+          return write(
+            check(call.input, call.prefix as string),
+            call.context.actor,
+            call.prefix as string,
+            call.context,
+            call.requestId,
+          );
+        };
+  return commit(
     db,
     owner,
     "issue.close",
@@ -52,7 +67,7 @@ export function closeIssue(
           "INPUT_INVALID",
           "issue.close with a receipt is not supported in cloud yet",
         );
-      if (schemas().validate(CloseInput.$ref, input).length > 0)
+      if (validateCloseInput(input).length > 0)
         throw fail(
           "INPUT_INVALID",
           "input must be { id, reason?, withoutReceipt? } with a valid issue id",
@@ -61,9 +76,13 @@ export function closeIssue(
       const id = storedId(given, prefix, minted(db));
       if (owner.get(NAMESPACE, `issue:${id}`) === undefined)
         throw fail("NOT_FOUND", `Issue ${given} was not found`);
-      return { id, ...rest };
+      return {
+        id,
+        ...rest,
+        ...(verifiedReceipt === undefined ? {} : { receipt: verifiedReceipt }),
+      };
     },
-    ({ id, reason, withoutReceipt }, actor, prefix, context) => {
+    ({ id, reason, withoutReceipt, receipt }, actor, prefix, context) => {
       const held = fence(context, id, "issue.close");
       const record = owner.get(NAMESPACE, held.subject)!;
       const {
@@ -71,6 +90,8 @@ export function closeIssue(
         withoutReceipt: _exemption,
         ...previous
       } = checkedValue({ ...record }, id);
+      if (receipt !== undefined && previous.status === "closed")
+        throw fail("INPUT_CONFLICT", "Issue is already closed");
       // The local read set: the competition rows, so the event records the same basis.
       const reads = ["slots", "selection"].map((name) => ({
         key: `${name}:${id}`,
@@ -87,7 +108,7 @@ export function closeIssue(
           repair: `forge attempt select ${shown} --attempt <attempt-id> --reason "<why>"; or forge attempt select ${shown} --none --reason "<why>"`,
         });
       }
-      if (withoutReceipt === undefined)
+      if (receipt === undefined && withoutReceipt === undefined)
         throw fail(
           "RECEIPT_REQUIRED",
           "Supply a PASS receipt or an explicit withoutReceipt reason",
@@ -98,7 +119,7 @@ export function closeIssue(
         {
           ...previous,
           status: "closed",
-          withoutReceipt,
+          ...(receipt === undefined ? { withoutReceipt } : { receipt }),
           ...(reason === undefined ? {} : { closeReason: reason }),
         },
         actor,

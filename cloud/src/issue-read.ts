@@ -3,6 +3,7 @@
 // checked against the key the server derived). Caller text only becomes a bound SQL value, and
 // only after it matches `<prefix>-<digits>`.
 import manifest from "../../src/blocks/work/forge.block.json" with { type: "json" };
+import CloseInput from "../../src/blocks/work/schemas/CloseInput.json" with { type: "json" };
 import config from "../../src/blocks/work/schemas/config.json" with { type: "json" };
 import ItemRef from "../../src/blocks/work/schemas/ItemRef.json" with { type: "json" };
 import ListItemsInput from "../../src/blocks/work/schemas/ListItemsInput.json" with { type: "json" };
@@ -83,6 +84,8 @@ let registry: SchemaRegistry | undefined;
 /** The declared schemas, built once: the shared documents and the list input. */
 export const schemas = (): SchemaRegistry =>
   (registry ??= new SchemaRegistry([...SCHEMA_DOCUMENTS, ListItemsInput]));
+export const validateCloseInput = (input: unknown) =>
+  validateWithSchema(CloseInput, input);
 export const fail = (code: string, message: string): ForgeFailure =>
   new ForgeFailure({ code, message, retry: "never" });
 export const invalid = () => fail("INTERNAL", "Stored issue is not valid");
