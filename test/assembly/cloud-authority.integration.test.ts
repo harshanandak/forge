@@ -654,8 +654,11 @@ for (const [name, value, identity, id, code] of [
       ));
 }
 for (const [op, input] of [
-  ["lane.next", { id: "forge-1" }],
-  ["lane.record", { id: "forge-1", action: 1, result: "{}" }],
+  ["lane.next", { all: true }],
+  [
+    "lane.record",
+    { reply: "A", source: { harness: "x", thread: "y", message: "z" } },
+  ],
   ["lane.release", { id: "forge-1", attempt: "attempt-1" }],
   ["lane.close", { id: "forge-1", noPr: true, dropped: "stopped" }],
   ["lane.show", { id: "forge-1", attempt: "attempt-1" }],
@@ -1206,6 +1209,256 @@ const attachmentBytes = (s: fx.Sandbox) =>
   ].map((path) =>
     existsSync(path) ? readFileSync(path).toString("hex") : null,
   );
+// PR 2a: reservations are device progress, never process permission.
+for (const [name, variants] of [
+  ["Same pending next", ["repeat", "restart", "revision race"]],
+  ["Old verdict/result", ["verdict", "result", "generation"]],
+  [
+    "Budget reached",
+    ["calls", "reviewRounds", "ciFixRounds", "activeHours", "disabled"],
+  ],
+  ["Owner ask", ["ask", "held answer"]],
+  [
+    "Expired or replaced grant",
+    ["expired", "generation", "holder", "inactive", "release pending"],
+  ],
+  ["Malformed progress", ["counter", "permit", "pending", "verdict", "ask"]],
+] as const)
+  test(`bound progress table: ${name}`, async () => {
+    for (const variant of variants) {
+      let time = NOW;
+      let lease: LeaseRecord = OWN_GRANT;
+      const head = "a".repeat(40),
+        moved = "b".repeat(40);
+      const progress = {
+        actions: 1,
+        records: 0,
+        review: 0,
+        ci: 0,
+        started: NOW,
+        pending: true,
+        head,
+      };
+      const malformed = {
+        counter: { ...progress, actions: -1 },
+        permit: { ...progress, permit: true },
+        pending: { ...progress, pending: "yes" },
+        verdict: { ...progress, verdict: { head, verdict: "PASS" } },
+        ask: { ...progress, ask: { reason: "scope" } },
+      };
+      await using(
+        {
+          now: () => time,
+          config: yaml({
+            config: {
+              lanes: {
+                autopilot: {
+                  enabled: variant !== "disabled",
+                  budgets: {
+                    calls: variant === "calls" ? 1 : 20,
+                    reviewRounds: 1,
+                    ciFixRounds: 1,
+                    activeHours: 1,
+                  },
+                },
+              },
+            },
+          }),
+          prepare: (s) =>
+            seedJournal(s, {
+              ...journal,
+              grant: OWN_GRANT,
+              ...(name === "Malformed progress"
+                ? { progress: malformed[variant as keyof typeof malformed] }
+                : {}),
+              ...(variant === "inactive" ? { active: false } : {}),
+              ...(variant === "release pending"
+                ? { releaseNeeded: true, releaseRequestId: "release-1" }
+                : {}),
+            }),
+          steps: [() => answer({ ...ISSUE, lease })],
+        },
+        async (r) => {
+          const invoke = (op: string, input: object) =>
+            r.assembly.catalog.invoke(
+              r.request(
+                op,
+                { id: ISSUE.id, ...input },
+                { context: holding(r) },
+              ),
+            );
+          const next = (at = head) => invoke("lane.next", { head: at });
+          const record = (result: object, action = 1) =>
+            invoke("lane.record", { action, result: JSON.stringify(result) });
+          const saved = async () => {
+            const state = new LocalState(
+              join(r.s.deviceRoot, "records.sqlite"),
+            );
+            try {
+              return (await state.open(false))!.get(
+                "forge/work",
+                journalKey(),
+              )!;
+            } finally {
+              await state.close();
+            }
+          };
+          const original = await saved();
+          const projectFiles = () =>
+            bytes(r.s).filter(([path]) => String(path).startsWith("project"));
+          const files = projectFiles();
+          if (name === "Malformed progress") {
+            expect(failed(await next(), "INPUT_CONFLICT")).toBe(4);
+            expect(await saved()).toEqual(original);
+          } else if (name === "Expired or replaced grant") {
+            if (variant === "expired") time = Date.parse(lease.expiresAt);
+            if (variant === "generation")
+              lease = { ...lease, generation: lease.generation + 1 };
+            if (variant === "holder") lease = heldBy();
+            const code =
+              variant === "expired"
+                ? "LEASE_EXPIRED"
+                : variant === "generation"
+                  ? "LEASE_STALE"
+                  : variant === "holder"
+                    ? "LEASE_NOT_HELD"
+                    : "INPUT_CONFLICT";
+            expect(failed(await next(), code)).toBe(4);
+            expect(await saved()).toEqual(original);
+          } else {
+            const first = await next();
+            expect(first).toMatchObject({
+              ok: true,
+              status: "OK",
+              result: {
+                n: variant === "disabled" ? 0 : 1,
+                kind: variant === "disabled" ? "pause" : "harness",
+              },
+            });
+            expect(exitCode(first)).toBe(0);
+            if (name === "Same pending next") {
+              const reserved = await saved();
+              if (variant === "restart") {
+                const clone = await r.open();
+                try {
+                  expect(
+                    await clone.catalog.invoke(
+                      r.request(
+                        "lane.next",
+                        { id: ISSUE.id, head },
+                        {
+                          context: {
+                            ...holding(r),
+                            project: localContext(clone, {
+                              kind: "agent",
+                              id: "a1",
+                            }).project,
+                          },
+                        },
+                      ),
+                    ),
+                  ).toEqual(first);
+                } finally {
+                  await clone.close();
+                }
+              } else if (variant === "revision race") {
+                const replies = await Promise.all([next(), next()]);
+                for (const reply of replies) expect(reply).toEqual(first);
+              } else expect(await next()).toEqual(first);
+              expect(await saved()).toEqual(reserved);
+            } else if (name === "Old verdict/result") {
+              expect(
+                (
+                  await invoke("lane.record", {
+                    mergeGate: { head, verdict: "MERGE", reviewer: "reviewer" },
+                  })
+                ).ok,
+              ).toBe(true);
+              expect((await saved()).value).toHaveProperty(
+                "progress.verdict.head",
+                head,
+              );
+              expect((await next(moved)).ok).toBe(true);
+              const changed = await saved();
+              expect(changed.value).not.toHaveProperty("progress.verdict");
+              if (variant === "generation")
+                lease = { ...lease, generation: lease.generation + 1 };
+              const old =
+                variant === "verdict"
+                  ? await invoke("lane.record", {
+                      mergeGate: { head, verdict: "MERGE", reviewer: "old" },
+                    })
+                  : await record({ head, done: true });
+              expect(
+                failed(
+                  old,
+                  variant === "generation" ? "LEASE_STALE" : "INPUT_CONFLICT",
+                ),
+              ).toBe(4);
+              expect(await saved()).toEqual(changed);
+            } else if (name === "Budget reached") {
+              if (variant !== "disabled") {
+                expect(
+                  (
+                    await record({
+                      head,
+                      done: true,
+                      ...(variant === "reviewRounds" ? { review: true } : {}),
+                      ...(variant === "ciFixRounds" ? { ci: true } : {}),
+                    })
+                  ).ok,
+                ).toBe(true);
+                if (variant === "activeHours") {
+                  time += 3_600_000;
+                  lease = { ...lease, expiresAt: iso(time + 60_000) };
+                }
+              }
+              const before = await saved();
+              const paused = await next();
+              expect(paused).toMatchObject({
+                ok: true,
+                status: "OK",
+                result: { kind: "pause" },
+              });
+              expect(exitCode(paused)).toBe(0);
+              expect(await saved()).toEqual(before);
+            } else {
+              const ask = {
+                reason: "Choose scope",
+                releaseTotal: "400 lines",
+                default: "A: smallest slice",
+              };
+              expect((await record({ head, ask })).ok).toBe(true);
+              expect(await next()).toMatchObject({
+                ok: true,
+                result: {
+                  kind: "ask-owner",
+                  ask: expect.stringContaining("400 lines"),
+                },
+              });
+              if (variant === "held answer") {
+                expect((await record({ head, answer: "hold" })).ok).toBe(true);
+                expect(await next()).toMatchObject({
+                  ok: true,
+                  result: { kind: "pause" },
+                });
+                expect((await saved()).value).toHaveProperty(
+                  "progress.ask.answer",
+                  "hold",
+                );
+              }
+            }
+          }
+          expect(projectFiles()).toEqual(files);
+          expect(
+            r.net.calls.every(
+              ({ body }) => (body as { op: string }).op === "issue.show",
+            ),
+          ).toBe(true);
+        },
+      );
+    }
+  });
 for (const [name, expected] of [
   ["ordinary attachment", "OK"],
   ["project git precedes trusted git", "OK"],
@@ -1635,7 +1888,7 @@ for (const [name, variants] of [
     ],
   ],
   ["Release with no attachment", ["no journal", "unknown issue"]],
-  ["Still refused", ["lane.next", "lane.record", "lane.close"]],
+  ["Still refused", ["lane.close"]],
 ] as const)
   test(`bound release table: ${name}`, async () => {
     for (const variant of variants) {

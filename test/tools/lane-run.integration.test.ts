@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 
 import { laneRun, runClaude, runCodex } from "../../tools/lane-run.ts";
+import { bindingFor } from "../assembly/cloud-fixture.ts";
 import { scriptFixture } from "../script-fixture.ts";
 import { spawnBudget } from "../spawn-budget.ts";
 import { cliTopologyFixture } from "./cli-topology-fixture.ts";
@@ -1216,6 +1217,26 @@ ${["builder", "fixer", "tester", "reviewer"]
   const prompt = () => f.attempts().at(-1)!.prompt;
   return { ...f, runs, seed, runRole, prompt };
 }
+
+test("bound runner refuses run, resume and detached auto before any provider spawn", async () => {
+  const f = roleFixture();
+  writeFileSync(
+    join(f.caller, ".forge", "cloud.json"),
+    JSON.stringify(bindingFor()),
+  );
+  for (const extra of [[], ["--resume", "fixture-session"]]) {
+    const result = await f.runRole("builder", extra);
+    expect(result.code).toBe(1);
+    expect(JSON.stringify(result.output)).toContain("Bound lane dispatch");
+    expect(f.attempts()).toHaveLength(0);
+  }
+  for (const flags of [[], ["--detach"]]) {
+    const result = f.run(["auto", "one", ...flags]);
+    expect(result.code).toBe(1);
+    expect(JSON.stringify(result.output)).toContain("Bound lane dispatch");
+    expect(f.attempts()).toHaveLength(0);
+  }
+});
 
 function change(
   f: ReturnType<typeof fixture>,
