@@ -348,8 +348,13 @@ export function runCommand(
 }
 
 function commandResponse(op: string, result: unknown): Response {
+  const approvalRequired =
+    op === "lane.resume" &&
+    typeof result === "object" &&
+    result !== null &&
+    "request" in result;
   const body = JSON.stringify(
-    op === "lane.resume"
+    approvalRequired
       ? {
           ...failure("APPROVAL_REQUIRED", "Fresh owner approval is required"),
           op,
@@ -366,7 +371,7 @@ function commandResponse(op: string, result: unknown): Response {
   if (new TextEncoder().encode(body).length > MAX_SHOW_RESPONSE_BYTES)
     throw fail("UNAVAILABLE", "response too large");
   return new Response(body, {
-    status: op === "lane.resume" ? 409 : 200,
+    status: approvalRequired ? 409 : 200,
     headers: { "content-type": "application/json" },
   });
 }

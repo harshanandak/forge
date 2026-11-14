@@ -61,6 +61,50 @@ export function checkedApproval(value: unknown): ApprovalRequired {
   return value as ApprovalRequired;
 }
 
+/** Called only within commandWrite: consumption rolls back with control and its receipt. */
+export function consumeLaneApproval(
+  db: SqlDatabase,
+  request: string,
+  scope: LaneScope,
+  host: CommandRun,
+): LaneApproval {
+  const held = db.get(`SELECT state FROM ${LANE_APPROVALS} WHERE id=1`);
+  const state =
+    held === undefined
+      ? { requests: [] }
+      : (JSON.parse(String(held.state)) as { requests: LaneApproval[] });
+  const row = state.requests.find((entry) => entry.request === request);
+  if (
+    row === undefined ||
+    row.status !== "approved" ||
+    !(Date.parse(row.expiresAt) > host.now)
+  )
+    throw fail(
+      "APPROVAL_REQUIRED",
+      "Fresh approved owner authorization is required",
+    );
+  const config = host.approvalConfig ?? {};
+  if (
+    row.project !== host.project ||
+    digestValue(row.scope) !== digestValue(scope) ||
+    row.policyIdentity !==
+      digestValue([
+        config.CLERK_ISSUER,
+        config.FORGE_OWNER_SUBJECT,
+        config.CLERK_CLIENT_ID,
+      ])
+  )
+    throw fail("INPUT_CONFLICT", "Lane approval binding changed");
+  db.run(`UPDATE ${LANE_APPROVALS} SET state=? WHERE id=1`, [
+    JSON.stringify({
+      requests: state.requests.map((entry) =>
+        entry.request === request ? { ...entry, status: "spent" } : entry,
+      ),
+    }),
+  ]);
+  return row;
+}
+
 /** Runs only inside commandWrite's synchronous transaction, together with its receipt. */
 export function requestLaneApproval(
   db: SqlDatabase,
