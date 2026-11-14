@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { AssertionError } from "node:assert";
 import {
   access,
   base,
+  detail,
   issue,
   post,
   revoke,
@@ -150,9 +150,6 @@ async function main() {
   );
 }
 await main().catch((error: unknown) => {
-  console.error(
-    `FAIL OAuth refresh: ${error instanceof AssertionError ? `${error.message} (expected ${JSON.stringify(error.expected)}, observed ${JSON.stringify(error.actual)})` : "fixture unavailable"}`,
-  );
-  console.error(error);
+  console.error(`FAIL OAuth refresh: ${detail(error)}`);
   process.exitCode = 1;
 });

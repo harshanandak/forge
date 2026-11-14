@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
-import { AssertionError } from "node:assert";
 import { readFileSync, writeFileSync } from "node:fs";
-import { access, issue, revoke, send, type Family } from "./oauth.ts";
+import { access, detail, issue, revoke, send, type Family } from "./oauth.ts";
 import { duplicateCanary } from "./refresh-canary.ts";
 
 const refresh = (family: Family, headers: Record<string, string>) =>
@@ -158,9 +157,6 @@ async function main() {
   );
 }
 await main().catch((error: unknown) => {
-  console.error(
-    `FAIL OAuth refresh race: ${error instanceof AssertionError ? `${error.message} (expected ${JSON.stringify(error.expected)}, observed ${JSON.stringify(error.actual)})` : "fixture unavailable"}`,
-  );
-  console.error(error);
+  console.error(`FAIL OAuth refresh race: ${detail(error)}`);
   process.exitCode = 1;
 });

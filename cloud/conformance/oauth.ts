@@ -2,6 +2,26 @@ import assert from "node:assert/strict";
 import { AssertionError } from "node:assert";
 import { readFileSync, writeFileSync } from "node:fs";
 
+export function detail(error: unknown) {
+  const value = (operand: unknown) =>
+    typeof operand === "number"
+      ? operand
+      : typeof operand === "string"
+        ? `string mismatch length ${operand.length}`
+        : "redacted";
+  const failure = error instanceof AssertionError ? error : undefined;
+  const label =
+    failure && !failure.generatedMessage
+      ? failure.message.split("\n")[0]
+      : "fixture unavailable";
+  const frames =
+    error instanceof Error &&
+    error.stack?.startsWith(`${error.name}: ${error.message}`)
+      ? error.stack.slice(error.name.length + error.message.length + 2)
+      : "";
+  return `${label} (expected ${value(failure?.expected)}, observed ${value(failure?.actual)}); mode ${process.env.OAUTH_CONFORMANCE_MODE ?? "standalone"}; ${error instanceof Error ? error.name : "UnknownError"}\n${frames.match(/^ +at .+$/gm)?.join("\n") ?? ""}`;
+}
+
 export const base = "http://127.0.0.1:8788";
 const state = process.env.OAUTH_CONFORMANCE_STATE;
 assert(state, "OAUTH_CONFORMANCE_STATE is required");
@@ -228,9 +248,6 @@ async function main() {
 }
 if (process.argv[1]?.replaceAll("\\", "/").endsWith("/oauth.ts"))
   await main().catch((error: unknown) => {
-    console.error(
-      `FAIL OAuth holder revocation: ${error instanceof AssertionError ? `${error.message} (expected ${JSON.stringify(error.expected)}, observed ${JSON.stringify(error.actual)})` : "fixture unavailable"}`,
-    );
-    console.error(error);
+    console.error(`FAIL OAuth holder revocation: ${detail(error)}`);
     process.exitCode = 1;
   });
