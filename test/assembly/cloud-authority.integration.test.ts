@@ -636,11 +636,9 @@ for (const [name, value, identity, id, code] of [
       ));
 }
 for (const [op, input] of [
-  ["lane.start", { id: "forge-1", branch: "feat/one", brief: "brief.md" }],
   ["lane.next", { id: "forge-1" }],
   ["lane.record", { id: "forge-1", action: 1, result: "{}" }],
   ["lane.close", { id: "forge-1", noPr: true, dropped: "stopped" }],
-  ["lane.release", { id: "forge-1" }],
   ["lane.show", { id: "forge-1", attempt: "attempt-1" }],
 ] as const)
   test(`bound ${op} refuses unsupported variants before effects`, () =>
@@ -1162,6 +1160,207 @@ const holding = (r: Rig, own: object = {}) => ({
   ...localContext(r.assembly, { kind: "agent", id: "a1" }, "s1"),
   ...own,
 });
+const OWN_GRANT = {
+  ...heldBy(),
+  holder: {
+    actor: { kind: "agent", id: "a1" },
+    session: { id: "s1", device: "dev-1" },
+  },
+};
+const PREPARED_BRIEF = [
+  "Goal",
+  "Acceptance test",
+  "Files",
+  "Forbidden actions",
+  "Stop point",
+  "Prior art",
+]
+  .map(
+    (section) =>
+      `## ${section}\n${section === "Acceptance test" ? "| Case | Input | Status | Exit | Eligibility | Unchanged |\n| --- | --- | --- | --- | --- | --- |\n| attach | own | OK | 0 | attached | files |" : "Prepared by the agent."}`,
+  )
+  .join("\n\n");
+for (const [name, expected] of [
+  ["attach and release while stopped", "OK"],
+  ["wrong actor", "LEASE_NOT_HELD"],
+  ["wrong session", "LEASE_NOT_HELD"],
+  ["wrong device", "AUTH_DEVICE_MISMATCH"],
+  ["wrong generation", "LEASE_STALE"],
+  ["wrong registry path", "INPUT_CONFLICT"],
+  ["wrong Git branch", "INPUT_CONFLICT"],
+  ["invalid brief", "INPUT_INVALID"],
+  ["closed issue", "INPUT_CONFLICT"],
+  ["absent issue", "NOT_FOUND"],
+  ["ambiguous claim", "UNAVAILABLE"],
+  ["losing claim", "LEASE_HELD"],
+] as const)
+  test(`bound attachment table: ${name}`, () =>
+    using(
+      {
+        config: yaml({ config: { idPrefix: "forge" } }),
+        prepare: (s) => {
+          const git = spawnSync(
+            "git",
+            ["init", "--quiet", "--initial-branch=feat/one", s.root],
+            { encoding: "utf8", windowsHide: true },
+          );
+          expect(git.status, git.stderr).toBe(0);
+          writeFileSync(
+            join(s.root, "brief.md"),
+            name === "invalid brief" ? "incomplete" : PREPARED_BRIEF,
+          );
+          if (name === "wrong registry path")
+            writeFileSync(
+              join(s.root, ".git", "forge-lanes.json"),
+              JSON.stringify([
+                {
+                  ...attachment,
+                  worktree: "/foreign",
+                  brief: join(s.root, "brief.md"),
+                },
+              ]),
+            );
+        },
+        steps: [
+          ({ body }) => {
+            const call = body as {
+              op: string;
+              context: { leaseGeneration?: number };
+            };
+            if (call.op === "issue.claim") {
+              if (name === "ambiguous claim")
+                throw new Error("accepted then timed out");
+              if (name === "losing claim") return refusing("LEASE_HELD");
+              return answer(
+                {
+                  id: ISSUE.id,
+                  generation: OWN_GRANT.generation,
+                  expiresAt: OWN_GRANT.expiresAt,
+                },
+                call.op,
+              );
+            }
+            if (call.op === "issue.release") {
+              expect(call.context.leaseGeneration).toBe(OWN_GRANT.generation);
+              return answer({ id: ISSUE.id }, call.op);
+            }
+            expect(call.op).toBe("issue.show");
+            return name === "absent issue"
+              ? refusing("NOT_FOUND")
+              : answer({
+                  ...ISSUE,
+                  status: name === "closed issue" ? "closed" : "open",
+                  lease: OWN_GRANT,
+                });
+          },
+        ],
+      },
+      async (r) => {
+        const context = holding(r, { leaseGeneration: OWN_GRANT.generation });
+        const beforeFiles = readFileSync(join(r.s.root, "brief.md"), "utf8");
+        const claimed = await r.assembly.catalog.invoke(
+          r.request("issue.claim", { id: ISSUE.id }, { context }),
+        );
+        if (name === "ambiguous claim" || name === "losing claim") {
+          expect(failed(claimed, expected)).toBe(
+            expected === "LEASE_HELD" ? 4 : 1,
+          );
+          expect(existsSync(join(r.s.deviceRoot, "records.sqlite"))).toBe(
+            false,
+          );
+          expect(existsSync(join(r.s.root, ".git", "forge-lanes.json"))).toBe(
+            false,
+          );
+          return;
+        }
+        expect(claimed.ok).toBe(true);
+        const altered =
+          name === "wrong actor"
+            ? { ...context, actor: { kind: "agent" as const, id: "other" } }
+            : name === "wrong session"
+              ? { ...context, session: { id: "other" } }
+              : name === "wrong device"
+                ? { ...context, device: { id: "other" } }
+                : name === "wrong generation"
+                  ? { ...context, leaseGeneration: 99 }
+                  : context;
+        const result = await r.assembly.catalog.invoke(
+          r.request(
+            "lane.start",
+            {
+              id: ISSUE.id,
+              branch: name === "wrong Git branch" ? "feat/other" : "feat/one",
+              brief: "brief.md",
+            },
+            { context: altered },
+          ),
+        );
+        expect(result.ok ? "OK" : result.error.code).toBe(expected);
+        expect(readFileSync(join(r.s.root, "brief.md"), "utf8")).toBe(
+          beforeFiles,
+        );
+        expect(existsSync(join(r.s.root, ".forge", "state.sqlite"))).toBe(
+          false,
+        );
+        if (expected !== "OK") {
+          expect(
+            r.net.calls.some(
+              (call) => (call.body as { op: string }).op === "issue.release",
+            ),
+          ).toBe(false);
+          if (
+            [
+              "wrong registry path",
+              "wrong Git branch",
+              "invalid brief",
+            ].includes(name)
+          ) {
+            const local = new LocalState(
+              join(r.s.deviceRoot, "records.sqlite"),
+            );
+            try {
+              expect(
+                (await local.open(false))!.get("forge/work", journalKey())!
+                  .value,
+              ).toMatchObject({
+                active: false,
+                releaseNeeded: true,
+                grant: OWN_GRANT,
+              });
+            } finally {
+              await local.close();
+            }
+          }
+          return;
+        }
+        expect(result).toMatchObject({
+          result: { branch: "feat/one", worktree: r.s.root, lease: OWN_GRANT },
+        });
+        const released = await r.assembly.catalog.invoke(
+          r.request(
+            "lane.release",
+            { id: ISSUE.id },
+            { context, requestId: "release-one" },
+          ),
+        );
+        expect(released).toMatchObject({
+          ok: true,
+          result: { issue: ISSUE.id, removed: false, keptBranch: "feat/one" },
+        });
+        const local = new LocalState(join(r.s.deviceRoot, "records.sqlite"));
+        try {
+          expect(
+            (await local.open(false))!.get("forge/work", journalKey())!.value,
+          ).toMatchObject({
+            active: false,
+            releaseNeeded: false,
+            cloudId: ISSUE.id,
+          });
+        } finally {
+          await local.close();
+        }
+      },
+    ));
 const edit = (
   r: Rig,
   op: string,
