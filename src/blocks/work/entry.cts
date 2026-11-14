@@ -6670,9 +6670,9 @@ const operations: Operations<WorkOperations> = {
     return { problems };
   },
 };
-export type LaneHelpers = {
-  briefProblems: typeof briefProblems;
-  laneRegistry: typeof laneRegistry;
-  briefPath: typeof briefPath;
-};
-module.exports = { ...operations, briefProblems, laneRegistry, briefPath };
+Object.defineProperties(operations, {
+  briefProblems: { value: briefProblems },
+  laneRegistry: { value: laneRegistry },
+  briefPath: { value: briefPath },
+});
+module.exports = operations;

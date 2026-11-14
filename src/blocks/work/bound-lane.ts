@@ -94,7 +94,17 @@ export async function boundLaneRead(
 function refuse(code: string, message: string): never {
   throw new ForgeFailure({ code, message, retry: "reconcile_first" });
 }
-const helpers = entry as unknown as import("./entry.cts").LaneHelpers;
+const helpers = entry as unknown as {
+  briefProblems(text: string): string[];
+  briefPath(files: FilesService, path: string, windows: boolean): string;
+  laneRegistry(
+    files: FilesService,
+    fail: typeof refuse,
+  ): {
+    text: string | null;
+    lanes: (BoundLaneRecord["lane"] & { attempt?: string })[];
+  };
+};
 export type BoundCommand = (op: string, input: object) => Promise<unknown>;
 
 export async function boundLaneStart(
@@ -151,7 +161,7 @@ export async function boundLaneStart(
       worktree: context.project!.root ?? context.project!.id,
     },
   };
-  const revision = (await save(record, found?.revision ?? 0)).revision;
+  const revision = found?.revision ?? (await save(record, 0)).revision;
   const lane = await attach(record, async () => {
     own(
       (await command("issue.show", { id: record.cloudId })) as TrackerItem,
@@ -198,27 +208,31 @@ export async function attachBoundLane(
   ]);
   const git = process.resolve("git", env);
   if (git.kind !== "resolved") refuse("UNAVAILABLE", "Git is unavailable.");
-  const branch = await process.run(
-    git,
-    ["symbolic-ref", "--quiet", "--short", "HEAD"],
-    {
+  const readGit = async (args: string[]) => {
+    const result = await process.run(git, args, {
       cwd: files.root,
       env,
       signal,
       timeoutMs: Math.max(1, deadline - Date.now()),
       maxOutputBytes: 16384,
-    },
-  );
-  if (
-    branch.exitCode !== 0 ||
-    branch.timedOut ||
-    branch.truncated ||
-    branch.stdout.trim() !== record.lane.branch
-  )
-    refuse(
-      "INPUT_CONFLICT",
-      "Prepared checkout branch differs from the requested lane.",
-    );
+    });
+    if (result.exitCode !== 0 || result.timedOut || result.truncated)
+      refuse("INPUT_CONFLICT", "Cannot read prepared checkout identity.");
+    return result.stdout.trim();
+  };
+  const identity = async () => {
+    if (
+      path(await readGit(["rev-parse", "--show-toplevel"])) !==
+        path(files.root) ||
+      (await readGit(["symbolic-ref", "--quiet", "--short", "HEAD"])) !==
+        record.lane.branch
+    )
+      refuse(
+        "INPUT_CONFLICT",
+        "Prepared checkout identity differs from the lane.",
+      );
+  };
+  await identity();
   const lock = files.lock(["forge-lanes-registry.lock"], {
     recoverDeadOwner: true,
   });
@@ -252,6 +266,7 @@ export async function attachBoundLane(
         "Registry identity differs from the prepared attachment.",
       );
     await fence();
+    await identity();
     if (!existing.length)
       files.write(
         "forge-lanes.json",
