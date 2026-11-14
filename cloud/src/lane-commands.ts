@@ -15,7 +15,14 @@ import { validateWithSchema } from "../../src/contract/schema.ts";
 import { StateOwner } from "../../src/core/state/index.ts";
 import { commandWrite, prepareReceipt } from "./command-write.ts";
 import type { CommandRun, PreparedCommand } from "./issue-commands.ts";
-import { checkedValue, fail } from "./issue-read.ts";
+import {
+  checkedValue,
+  configured,
+  fail,
+  minted,
+  RECORD_READS,
+  storedId,
+} from "./issue-read.ts";
 import { guardLegacy } from "./issue-request-id.ts";
 import { LaneControlStore } from "./lane-control-store.ts";
 import {
@@ -63,7 +70,25 @@ export function laneCommand(
   call: PreparedCommand,
   host: CommandRun,
 ): LaneControl | ApprovalRequired | { resumed: string } {
-  const { requestId, op, input, dryRun } = call;
+  const { requestId, op, dryRun } = call;
+  let input = call.input;
+  if (
+    typeof input === "object" &&
+    input !== null &&
+    !Array.isArray(input) &&
+    "id" in input &&
+    typeof input.id === "string"
+  ) {
+    configured(host.idPrefix);
+    input = {
+      ...input,
+      id: storedId(input.id, host.idPrefix as string, (given) =>
+        minted(readOnlyStore(host.storage, "state_records", RECORD_READS))(
+          given,
+        ),
+      ),
+    };
+  }
   const read = op === "lane.control";
   const resume = op === "lane.resume";
   if (
@@ -137,7 +162,7 @@ export function laneCommand(
   host.recheck();
   const identity = prepareReceipt("command", host.principal, requestId, {
     op,
-    input,
+    input: call.input,
     context: call.context,
     device: host.device,
     session: host.session ?? null,

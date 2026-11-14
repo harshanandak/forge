@@ -223,7 +223,7 @@ test.each([undefined, "work-7"])(
 
 const refusals: [string, string, object, object, string, number][] = [
   ["unknown issue", "lane.stop", { id: "work-99" }, {}, "NOT_FOUND", 3],
-  ...["WORK-7", "7", "forge-7", "work-07"].map(
+  ...["other-7", "7", "work-07"].map(
     (id): [string, string, object, object, string, number] => [
       `noncanonical ${id}`,
       "lane.stop",
@@ -251,7 +251,22 @@ const refusals: [string, string, object, object, string, number][] = [
   ],
   ["missing scope", "lane.stop", {}, {}, "INPUT_INVALID", 6],
   ["read extra key", "lane.control", { key: "other" }, {}, "INPUT_INVALID", 6],
-  ["read alias", "lane.control", { id: "forge-7" }, {}, "INPUT_INVALID", 6],
+  [
+    "read foreign prefix",
+    "lane.control",
+    { id: "other-7" },
+    {},
+    "INPUT_INVALID",
+    6,
+  ],
+  [
+    "resume foreign prefix",
+    "lane.resume",
+    { id: "other-7" },
+    {},
+    "INPUT_INVALID",
+    6,
+  ],
   [
     "project context",
     "lane.stop",
@@ -706,6 +721,7 @@ async function browserFixture(
   scope: "all" | "issue" = "all",
   issuer = "https://identity.example",
   verify?: NonNullable<DeviceBrowserOptions["upstream"]>["verify"],
+  id = "work-7",
 ) {
   const begun: { state: string; verifier: string }[] = [];
   const spent = new Set<string>();
@@ -739,7 +755,7 @@ async function browserFixture(
   });
   f.env.CLERK_ISSUER = issuer;
   f.put("lane-control:global", running);
-  const input = scope === "all" ? { all: true } : { id: "work-7" };
+  const input = scope === "all" ? { all: true } : { id };
   await f.send(call("lane.stop", input, "browser-stop"));
   const reply = await f.send(call("lane.resume", input, "browser-ask"));
   expect(reply.verdict).toEqual(["FAIL", "APPROVAL_REQUIRED", 1]);
@@ -1037,8 +1053,13 @@ const ownerProof = (changes: Partial<IdentityClaims> = {}) => {
   );
 };
 
-async function resumeFixture(scope: "all" | "issue" = "all") {
-  const f = await browserFixture(scope, undefined, async () => ownerProof());
+async function resumeFixture(scope: "all" | "issue" = "all", id = "work-7") {
+  const f = await browserFixture(
+    scope,
+    undefined,
+    async () => ownerProof(),
+    id,
+  );
   for (const id of scope === "all" ? ["work-7", "work-8"] : ["work-8"])
     f.put(`lane-control:${id}`, {
       version: 1,
@@ -1053,7 +1074,7 @@ async function resumeFixture(scope: "all" | "issue" = "all") {
       .status,
   ).toBe(200);
   const input = {
-    ...(scope === "all" ? { all: true } : { id: "work-7" }),
+    ...(scope === "all" ? { all: true } : { id }),
     approval: { request: f.pending.request },
   };
   return { ...f, input, resume: call("lane.resume", input, "consume") };
@@ -1064,6 +1085,41 @@ const replaceApproval = (f: Fixture, changes: Partial<LaneApproval>) =>
       requests: approvalRows(f).map((row) => ({ ...row, ...changes })),
     }),
   ]);
+
+test.each(["forge-7", "work-7", "WORK-7", "FORGE-7"])(
+  "stop, control and approved resume resolve %s with the project's displayed prefix",
+  async (id) => {
+    const f = await resumeFixture("issue", id);
+    try {
+      expect(f.env.FORGE_CLOUD_ID_PREFIX).toBe("forge");
+      expect((await control(f, id)).result).toMatchObject({ stopped: true });
+      expect(approvalRows(f)[0]).toMatchObject({
+        scope: { id: "work-7" },
+        status: "approved",
+      });
+      const issue = f.owner.get("forge/work", "issue:work-7");
+      const unrelated = f.owner.get("forge/work", "lane-control:work-8");
+      const reply = await f.send(f.resume);
+      expect(reply.verdict).toEqual(["OK", "OK", 0]);
+      expect(reply.result).toEqual({ resumed: "work-7" });
+      expect((await control(f, id)).result).toMatchObject({ stopped: false });
+      expect(
+        f.owner.get("forge/work", "lane-control:work-7")!.value,
+      ).toMatchObject({ id: "work-7", stoppedAt: null });
+      expect(f.owner.get("forge/work", "issue:work-7")).toEqual(issue);
+      expect(f.owner.get("forge/work", "lane-control:work-8")).toEqual(
+        unrelated,
+      );
+      for (const alias of ["forge-7", "WORK-7", "FORGE-7"])
+        expect(
+          f.owner.get("forge/work", `lane-control:${alias}`),
+        ).toBeUndefined();
+    } finally {
+      f.close();
+    }
+  },
+  10_000,
+);
 
 test.each(["all", "issue"] as const)(
   "approved resume %s commits once and replays historically after a later stop",
