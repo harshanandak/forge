@@ -157,10 +157,10 @@ const changes: Record<string, Change> = {
   empty: ["if (nonempty)", "if (false)"],
   authority: [
     "verifyEventDerivedState(scratch, events);",
-    `for (const table of ["state_events", "state_leases", "state_requests"]) {
-    scratch.run("DELETE FROM " + table);
+    `for (const table of ["state_leases", "state_requests"]) {
     for (const row of source.all("SELECT * FROM " + table)) scratch.run("INSERT INTO " + table + " VALUES (" + Object.keys(row).map(() => "?").join(",") + ")", Object.values(row));
-  }`,
+  }
+  verifyEventDerivedState(scratch, events);`,
   ],
   revision: ["event.revision !== (recordRevisions.get(id) ?? 0) + 1", "false"],
   fence: [

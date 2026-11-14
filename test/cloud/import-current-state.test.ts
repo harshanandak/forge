@@ -173,7 +173,7 @@ test.each(rows)(
           }
         } else if (
           mutant &&
-          ["consistency", "scope", "count", "empty"].includes(kind)
+          ["consistency", "scope", "count", "empty", "authority"].includes(kind)
         ) {
           ne(status(reply), [expectedStatus, exit, code]);
         } else {
