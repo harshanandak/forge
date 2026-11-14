@@ -6671,6 +6671,7 @@ const operations: Operations<WorkOperations> = {
   },
 };
 Object.defineProperties(operations, {
+  limitsOf: { value: limitsOf },
   briefProblems: { value: briefProblems },
   laneRegistry: { value: laneRegistry },
   briefPath: { value: briefPath },
