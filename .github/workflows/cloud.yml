@@ -52,6 +52,38 @@ jobs:
       - run: bun run gen
       - run: bun install --frozen-lockfile
         working-directory: cloud
+      - name: State commit guard counterfactuals
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          suite = ["bun", "test", "--timeout", "30000", "test/cloud/issue-commands.test.ts", "--test-name-pattern"]
+          baseline = subprocess.run(suite + ["^state (commit|read:|receipt restore)"], capture_output=True, text=True)
+          if baseline.returncode: print(baseline.stdout + baseline.stderr)
+          assert baseline.returncode == 0, "unmodified state journeys must pass before mutation"
+          rows = [
+              ("outer transaction", "cloud/src/command-write.ts", "return db.transaction(() => {", "return ((run: () => Result) => run())(() => {", "state commit transaction fault table: receipt"),
+              ("namespace denial", "cloud/src/state-access.ts", 'namespace === "forge/work" ||', "false ||", "state commit conflict table: namespace"),
+              ("final token", "cloud/src/command-write.ts", "    // No await separates this token check from the work and receipt commit.\n    recheck();", "", "state commit final authority table: final revoke"),
+              ("replay fence", "cloud/src/state-commit.ts", "    () => checkFence(),\n  );", "    undefined,\n  );", "state commit final authority table: replay expired"),
+              ("final fence forwarding", "cloud/src/state-commit.ts", "        ...(fence === undefined ? {} : { fence }),", "", "state commit final authority table: transaction expiry"),
+              ("read version", "cloud/src/state-commit.ts", "expected.epoch !== epoch || expected.revision !== revision", "false", "state commit conflict table: phantom"),
+              ("state receipt restore", "cloud/src/dump.ts", "!/^[cs]2:[a-f0-9]{64}$/", "!/^c2:[a-f0-9]{64}$/", "state receipt restore table: whole/s2:"),
+              ("state restore admission", "cloud/src/state-commit.ts", "            admitStateWrite(records, events, {", "            ((..._args: Parameters<typeof admitStateWrite>) => {})(records, events, {", "state commit transaction fault table: restore budget"),
+          ]
+          for name, file, before, after, test in rows:
+              path = Path(file)
+              original = path.read_text()
+              assert original.count(before) == 1, f"{name}: expected exactly one guard edit"
+              try:
+                  path.write_text(original.replace(before, after))
+                  result = subprocess.run(suite + ["^" + test + "$"], capture_output=True, text=True)
+                  log = result.stdout + result.stderr
+                  print(f"Counterfactual {name}: exit {result.returncode}\n{log[-4000:]}")
+                  assert result.returncode != 0 and "(fail) " + test in log, f"{name}: motivating journey must fail"
+              finally:
+                  path.write_text(original)
+          PY
       - name: OAuth holder revocation and persisted restart
         working-directory: cloud
         env:
@@ -215,9 +247,9 @@ jobs:
           from pathlib import Path
           p = Path("src/issue-request-id.ts")
           text = p.read_text()
-          line = 'return (family === "command" ? "c2:" : "l2:") + hash;'
+          line = '(family === "command" ? "c2:" : family === "lease" ? "l2:" : "s2:") + hash'
           assert text.count(line) == 1, "scope counterfactual must edit exactly once"
-          p.write_text(text.replace(line, "return raw;"))
+          p.write_text(text.replace(line, "raw"))
           PY_SCOPE
             [ "$(git diff -U0 -- "$file" | grep -c '^-[^-]')" = 1 ]
             persist="$RUNNER_TEMP/wrangler-request-scope"

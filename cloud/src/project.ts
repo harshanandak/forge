@@ -84,6 +84,7 @@ import { requireTokenSession } from "./token-session.ts";
 import { admitState, isStatePath, stateRoute } from "./state-access.ts";
 import { parseStateInput } from "./state-input.ts";
 import { readState, STATE_EPOCH } from "./state-read.ts";
+import { commitState } from "./state-commit.ts";
 import {
   authorize,
   authorizeToken,
@@ -118,7 +119,7 @@ const LEASE_SELECT =
 
 // Registers the tables this server adds beside the state owner's own. The digest is checked for its
 // shape only; the tables hold no Forge state.
-const domain = {
+export const domain = {
   namespace: "forge/cloud",
   reviewedDigest: `sha256:${"0".repeat(64)}`,
   migrations: [
@@ -616,7 +617,20 @@ export class Project {
           epoch,
         );
       }
-      throw fail("UNAVAILABLE", "State commits are not available yet");
+      const epoch = await this.#storage.get(STATE_EPOCH);
+      return commitState(input, {
+        ...token,
+        project: route.project,
+        principal: ["token", token.id, token.device],
+        epoch,
+        config: () =>
+          (this.#env as { FORGE_STATE_NAMESPACES?: unknown })
+            .FORGE_STATE_NAMESPACES,
+        recheck: () => {
+          authorizeToken(db, parts, Date.now());
+        },
+        open: () => this.#open(),
+      });
     } catch (error) {
       if (!(error instanceof ForgeFailure)) throw error;
       await discard(request);
