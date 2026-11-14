@@ -71,7 +71,14 @@ test.each(rows)(
           : kind === "authority"
             ? ["lease", "request", "legacy"]
             : kind === "write"
-              ? ["exists", "interrupted", "manifest", "manifest-exists"]
+              ? [
+                  "exists",
+                  "interrupted",
+                  "manifest",
+                  "manifest-exists",
+                  "retained-permission",
+                  "retained-io",
+                ]
               : [kind];
     for (const variant of variants)
       for (const mutant of name.startsWith("CF") ? [false, true] : [false]) {
@@ -158,6 +165,12 @@ test.each(rows)(
             if (variant === "exists") {
               mkdirSync(out);
               writeFileSync(join(out, "keep"), "untouched");
+            } else if (variant.startsWith("retained-")) {
+              const code = variant === "retained-permission" ? "EPERM" : "EIO";
+              edits.push([
+                "if (retained) fs.unlinkSync(retained);",
+                `if (retained) throw Object.assign(new Error('synthetic retained-copy deletion failure'), { code: '${code}' });`,
+              ]);
             } else if (variant === "manifest") {
               edits.push([
                 "fs.writeFileSync(fd, bytes);",
@@ -206,6 +219,13 @@ test.each(rows)(
             if (variant === "manifest-exists")
               eq(readFileSync(join(out, "manifest.json"), "utf8"), "keep");
             else eq(existsSync(join(out, "manifest.json")), false);
+            if (variant.startsWith("retained-")) {
+              eq(existsSync(join(out, ".source.sqlite")), true);
+              eq(
+                readdirSync(out).some((name) => name.startsWith("page-")),
+                true,
+              );
+            }
             if (variant === "manifest")
               eq(
                 readdirSync(out).some((name) => name.startsWith("page-")),
