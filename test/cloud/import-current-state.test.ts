@@ -195,7 +195,11 @@ test.each(rows)(
               ])
                 eq(scratch.all(`SELECT * FROM ${table}`), []);
               for (const row of scratch.all("SELECT body FROM state_events"))
-                eq(JSON.parse(String(row.body)).requestId, undefined);
+                eq(
+                  (JSON.parse(String(row.body)) as { requestId?: unknown })
+                    .requestId,
+                  undefined,
+                );
             } else ne(scratch.all("SELECT * FROM state_leases"), []);
             if (!mutant) {
               const target = f.database(),

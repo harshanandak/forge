@@ -66,7 +66,7 @@ export function* workRecords(source: SqlDatabase): Generator<StateRecord> {
   }
 }
 
-/** Only the exact supported standalone kernel schema is admitted; never migrate the source. */
+/** Only the exact supported standalone authority schema is admitted; never migrate the source. */
 export function verifySource(
   source: SqlDatabase,
   manifest: SourceManifest,
@@ -119,7 +119,7 @@ export function verifySource(
   }
 }
 
-/** Project into a disposable, initialized kernel store. The source is borrowed and read-only. */
+/** Project into a disposable, initialized authority store. The source is borrowed and read-only. */
 export function currentState(
   source: SqlDatabase,
   scratch: SqlDatabase,

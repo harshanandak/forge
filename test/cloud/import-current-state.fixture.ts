@@ -172,7 +172,7 @@ async function moduleUrl(
     text = text.replace(...change);
   }
   text = text.replace(
-    /from "(\.\.?\/[^\"]+)"/g,
+    /from "(\.\.?\/[^"]+)"/g,
     (_all, spec: string) =>
       `from "${dependency?.[0] === spec ? dependency[1] : new URL(spec, url).href}"`,
   );
