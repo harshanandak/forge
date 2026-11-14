@@ -32,7 +32,7 @@ const record = {
   updatedBy: actor,
 };
 const event = {
-  type: "state.put",
+  type: "forge/state:record.updated@1",
   namespace: common.namespace,
   key: "a",
   revision: 2,
@@ -205,6 +205,7 @@ for (const [code, status, exit] of refusals)
         code,
         message: "server words",
         retry: "never",
+        ...(code === "CONTEXT_MISSING" ? { missing: ["actor"] } : {}),
         ...(lease ? { lease } : {}),
       },
       warnings: [],
