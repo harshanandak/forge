@@ -1,4 +1,5 @@
 import { expect, setDefaultTimeout, test } from "bun:test";
+import { parseStateInput } from "../../cloud/src/state-input.ts";
 import {
   createCloudHttp,
   type CloudFetch,
@@ -8,6 +9,7 @@ import {
 } from "../../src/adapters/http/index.ts";
 import {
   createCloudLeaseClient,
+  createCloudRecordClient,
   type CloudLeaseClient,
 } from "../../src/assembly/cloud-state-client.ts";
 import { wireDeviceId } from "../../src/assembly/cloud-login.ts";
@@ -21,7 +23,11 @@ import { ForgeFailure } from "../../src/contract/failure.ts";
 import { decideLease } from "../../src/contract/lease.ts";
 import type { LeaseRecord } from "../../src/generated/types.ts";
 import type { DeviceFiles } from "../../src/ports/device-files.ts";
-import { exitCode } from "../../src/surface/result.ts";
+import type {
+  StateReadRequest,
+  StateCommitRequest,
+} from "../../src/ports/state-protocol.ts";
+import { exitCode, failure as failEnvelope } from "../../src/surface/result.ts";
 import {
   entry,
   ORIGIN,
@@ -723,3 +729,249 @@ for (const [name, result, validate] of [
     ).toBeUndefined();
     expect(bodies).toHaveLength(1);
   }, 10_000);
+
+const CAPABILITY = {
+  version: 1 as const,
+  namespace: "forge/memory",
+  context: { ...cmd.context, project: { id: PROJECT_ID, root: "/repo" } },
+};
+const READ: StateReadRequest = {
+  ...CAPABILITY,
+  kind: "read",
+  operation: "memory.show",
+  policyRevision: "discover",
+  query: { kind: "get", key: "proof" },
+};
+const COMMIT: StateCommitRequest = {
+  ...CAPABILITY,
+  kind: "commit",
+  operation: "memory.add",
+  policyRevision: "policy-1",
+  requestId: "record-request",
+  input: { proof: true },
+  readVersion: { epoch: "epoch-1", revision: 0 },
+  readSet: [],
+  entries: [{ key: "proof", value: { proof: true }, expectRevision: 0 }],
+};
+const facts = {
+  version: 1 as const,
+  project: PROJECT,
+  namespace: READ.namespace,
+  policyRevision: "policy-1",
+  readVersion: { epoch: "epoch-1", revision: 0 },
+};
+const recordAnswer = (commit: boolean) => ({
+  ok: true,
+  status: "OK",
+  warnings: [],
+  result: commit
+    ? {
+        ...facts,
+        readVersion: { epoch: "epoch-1", revision: 1 },
+        requestId: COMMIT.requestId,
+        result: null,
+        records: [
+          {
+            namespace: READ.namespace,
+            key: "proof",
+            revision: 1,
+            value: { proof: true },
+            updatedAt: new Date(NOW).toISOString(),
+            updatedBy: base.holder.actor,
+          },
+        ],
+      }
+    : { ...facts, result: { kind: "get" as const, record: null } },
+});
+/** One injected transport; the real adapter checks every answer, with a read-only credential store. */
+function recordRig(
+  options: {
+    key?: CredentialKey;
+    bound?: Partial<CredentialKey>;
+    entries?: CredentialEntry[];
+    response?: unknown;
+    status?: number;
+    lost?: boolean;
+    abortAfterSend?: AbortController;
+    signal?: AbortSignal;
+  } = {},
+) {
+  const calls: { url: string; body: unknown }[] = [];
+  const files = filesWith(options.entries ?? [entry(NOW)]);
+  const before = files.read(CREDENTIAL_FILE);
+  const http = createCloudHttp({
+    origin: options.bound?.origin ?? ORIGIN,
+    project: options.bound?.project ?? PROJECT,
+    fetch: (url, init) => {
+      expect(init.headers.authorization).toBe(`Bearer ${TOKEN}`);
+      const body = parseStateInput(init.body!);
+      calls.push({ url, body });
+      if (options.lost) throw new Error(`lost reply ${TOKEN}`);
+      const response = new Response(
+        JSON.stringify(
+          options.response ?? recordAnswer(body.kind === "commit"),
+        ),
+        {
+          status: options.status ?? 200,
+          headers: { "content-type": "application/json" },
+        },
+      );
+      options.abortAfterSend?.abort();
+      return Promise.resolve(response);
+    },
+  });
+  const client = createCloudRecordClient({
+    key: options.key ?? KEY,
+    credentials: credentialStore(files),
+    now: () => NOW,
+    http,
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+  });
+  return {
+    client,
+    calls,
+    unchanged: () => expect(files.read(CREDENTIAL_FILE)).toBe(before),
+  };
+}
+const recordOps = ["read", "commit"] as const;
+for (const op of recordOps) {
+  const call = op === "read" ? READ : COMMIT;
+  const run = (r: ReturnType<typeof recordRig>, context = call.context) =>
+    op === "read"
+      ? r.client.read({ ...READ, context })
+      : r.client.commit({ ...COMMIT, context });
+  test(`record ${op}: matching binding returns only checked server facts (OK/0)`, async () => {
+    const r = recordRig();
+    expect(await run(r)).toEqual(recordAnswer(op === "commit").result);
+    expect(r.calls[0]?.url).toBe(`${ORIGIN}/p/${PROJECT}/state/${op}`);
+    expect((r.calls[0]?.body as StateReadRequest).context).toEqual({
+      ...call.context,
+      project: { id: PROJECT },
+    });
+    r.unchanged();
+  });
+  const mismatches: [string, Parameters<typeof recordRig>[0], string][] = [
+    ["origin", { bound: { origin: OTHER_ORIGIN } }, "INPUT_INVALID"],
+    ["project", { bound: { project: "other" } }, "INPUT_INVALID"],
+    [
+      "credential origin",
+      {
+        key: { ...KEY, origin: OTHER_ORIGIN },
+        bound: { origin: OTHER_ORIGIN },
+      },
+      "AUTH_REQUIRED",
+    ],
+    ["identity", keyed({ identity: OTHER_PROJECT_ID }), "AUTH_REQUIRED"],
+    [
+      "credential project",
+      { key: { ...KEY, project: "other" }, bound: { project: "other" } },
+      "AUTH_REQUIRED",
+    ],
+    ["missing credential", { entries: [] }, "AUTH_REQUIRED"],
+    ["expired credential", { entries: [aged] }, "AUTH_REQUIRED"],
+  ];
+  for (const [name, options, code] of mismatches)
+    test(`record ${op}: ${name} mismatch is FAIL before send`, async () => {
+      const r = recordRig(options);
+      const failed = await failureOf(() => run(r));
+      expect([failed.error.code, exit(failed)]).toEqual([
+        code,
+        code === "INPUT_INVALID" ? 6 : 1,
+      ]);
+      expect(r.calls).toHaveLength(0);
+      r.unchanged();
+    });
+  for (const context of [
+    { ...call.context, device: { id: "other-device" } },
+    { ...call.context, session: { id: "s1", device: "other-device" } },
+  ])
+    test(`record ${op}: wrong named device ${JSON.stringify(context.device)} is FAIL/1 before send`, async () => {
+      const r = recordRig();
+      const failed = await failureOf(() => run(r, context));
+      expect([failed.error.code, exit(failed)]).toEqual([
+        "AUTH_DEVICE_MISMATCH",
+        1,
+      ]);
+      expect(r.calls).toHaveLength(0);
+      r.unchanged();
+    });
+  test(`record ${op}: local device maps to wire device without adding absent devices`, async () => {
+    const local = "me@host",
+      device = wireDeviceId(local);
+    const r = recordRig({
+      entries: [entry(NOW, { localDevice: local, device })],
+    });
+    await run(r, {
+      actor: base.holder.actor,
+      device: { id: local },
+      session: { id: "s1", device: local },
+    });
+    expect((r.calls[0]?.body as StateReadRequest).context).toEqual({
+      actor: base.holder.actor,
+      device: { id: device },
+      session: { id: "s1", device },
+      project: { id: PROJECT },
+    });
+    r.unchanged();
+  });
+  const refusal = (status: number, code: string) => ({
+    status,
+    response: failEnvelope(code, "server diagnostic"),
+  });
+  const late = new AbortController();
+  const badReplies: [
+    string,
+    Parameters<typeof recordRig>[0],
+    string,
+    number,
+  ][] = [
+    ["revoked", refusal(401, "AUTH_REVOKED"), "AUTH_REVOKED", 1],
+    ["conflict", refusal(409, "REVISION_CONFLICT"), "REVISION_CONFLICT", 4],
+    ["unknown refusal", refusal(418, "UNKNOWN"), "UNAVAILABLE", 1],
+    ["lost reply", { lost: true }, "UNAVAILABLE", 1],
+    [
+      "post-send abort",
+      { signal: late.signal, abortAfterSend: late },
+      op === "commit" ? "UNAVAILABLE" : "INVOCATION_CANCELLED",
+      1,
+    ],
+    [
+      "token echo",
+      { response: { ...recordAnswer(op === "commit"), leaked: TOKEN } },
+      "UNAVAILABLE",
+      1,
+    ],
+  ];
+  for (const [name, options, code, wantExit] of badReplies)
+    test(`record ${op}: ${name} returns FAIL without raw text or another send`, async () => {
+      const r = recordRig(options);
+      const failed = await failureOf(() => run(r));
+      expect([failed.error.code, exit(failed)]).toEqual([code, wantExit]);
+      expect(JSON.stringify(failed)).not.toMatch(
+        /server diagnostic|lost reply|fct_/,
+      );
+      if (op === "commit" && code === "UNAVAILABLE") {
+        expect(failed.error.retry).toBe("reconcile_first");
+        expect(failed.error.message).toMatch(/reconciliation required/i);
+      }
+      expect(r.calls).toHaveLength(1);
+      r.unchanged();
+    });
+  test(`record ${op}: cancellation before send preserves its safe code`, async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const r = recordRig({ signal: controller.signal });
+    const failed = await failureOf(() => run(r));
+    expect(failed.error.code).toBe("INVOCATION_CANCELLED");
+    expect(r.calls).toHaveLength(0);
+    r.unchanged();
+  });
+}
+
+test("record fixture refuses a commit carrying a read query", async () => {
+  const r = recordRig();
+  const bad = { ...COMMIT, query: READ.query };
+  const failed = await failureOf(() => r.client.commit(bad));
+  expect(failed.error.code).toBe("UNAVAILABLE");
+  expect(r.calls).toHaveLength(0);
+});
