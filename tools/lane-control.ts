@@ -65,16 +65,18 @@ export function boundDispatch(
     })();
     return pending;
   };
+  const requireGrant = () => {
+    if (failure) throw failure;
+    if (closed || expiry <= timing.now())
+      throw new Error("Dispatch grant is no longer valid.");
+  };
   return {
     async beforeSpawn(this: void) {
       await renew();
-      if (closed) throw new Error("Dispatch closed.");
-      if (failure) throw failure;
+      requireGrant();
       // The only control read: after preparation/renewal, immediately before each spawn.
       const control = await readLaneControl(command, id);
-      if (failure) throw failure;
-      if (closed || expiry <= timing.now())
-        throw new Error("Dispatch grant is no longer valid.");
+      requireGrant();
       if (control !== "running")
         throw new Error(`Bound lane dispatch refused: control ${control}.`);
     },
