@@ -3,7 +3,7 @@ import assert, {
   notDeepStrictEqual as ne,
 } from "node:assert/strict";
 import { Database } from "bun:sqlite";
-import { test } from "bun:test";
+import { afterEach, beforeEach, setSystemTime, test } from "bun:test";
 import { domain } from "../../cloud/src/project.ts";
 import { durableStore } from "../../cloud/src/store.ts";
 import {
@@ -21,6 +21,8 @@ import * as f from "./import-current-state.fixture.ts";
 import * as converter from "../../tools/import-current.ts";
 import { currentState, pagesOf } from "../../tools/import-current-state.ts";
 
+beforeEach(() => setSystemTime(f.at));
+afterEach(() => setSystemTime());
 const rows = [
   ["Intermediate restore page", "intermediate", "OK", 0, null],
   ["CF page order", "order", "FAIL", 6, "INPUT_INVALID"],
