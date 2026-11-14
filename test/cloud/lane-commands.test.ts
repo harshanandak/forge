@@ -706,10 +706,10 @@ async function browserFixture(
     upstream: {
       begin: (state, verifier) => {
         begun.push({ state, verifier });
-        duringBegin();
-        return Promise.resolve(
-          `${new URL("/oauth/authorize", issuer).href}?state=${state}&redirect_uri=https%3A%2F%2Fw.example%2Fcallback`,
-        );
+        return Promise.resolve().then(() => {
+          duringBegin();
+          return `${new URL("/oauth/authorize", issuer).href}?state=${state}&redirect_uri=https%3A%2F%2Fw.example%2Fcallback`;
+        });
       },
       verify: () => {
         throw new Error("This slice must not verify an owner");
@@ -1061,13 +1061,24 @@ test.each(["approve", "deny"])(
   10_000,
 );
 
-test.each(["approve", "deny"])(
-  "reloading the same browser permits a new %s start without replaying the old ticket",
-  async (action) => {
+test.each(
+  ["approve", "deny"].flatMap((action) =>
+    ["cancelled", "failed upstream"].map((mode) => [action, mode] as const),
+  ),
+)(
+  "reloading the same browser permits a new %s start after %s",
+  async (action, mode) => {
     const f = await browserFixture();
     try {
       const oldTicket = pageTicket(f.shown, action);
-      expect((await f.submit(action)).status).toBe(302);
+      if (mode === "failed upstream")
+        f.duringBegin(() => {
+          throw new Error("Injected upstream start failure");
+        });
+      expect((await f.submit(action)).status).toBe(
+        mode === "failed upstream" ? 503 : 302,
+      );
+      f.duringBegin(() => {});
       const before = f.snapshot(),
         writes = f.writes();
       const reloaded = await f.browser(f.path, undefined, { Cookie: f.cookie });
