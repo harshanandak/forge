@@ -18,6 +18,11 @@ if (!("timingSafeEqual" in crypto.subtle))
   });
 import { browserStorage } from "./browser-storage.fixture.ts";
 import type { DeviceBrowserOptions } from "../../cloud/src/auth/device-browser.ts";
+import type {
+  IdentityClaims,
+  IdentityResult,
+} from "../../src/ports/identity.ts";
+import { testIdentityVerifier } from "../contract/lib/identity-verifier.ts";
 await mock.module("cloudflare:workers", () => ({ WorkerEntrypoint: class {} }));
 const { createConfiguredWorker } =
   await import("../../cloud/src/adapters/workers-oauth/compose.ts");
@@ -698,10 +703,12 @@ const pageTicket = (page: { text: string }, action: string) =>
 async function browserFixture(
   scope: "all" | "issue" = "all",
   issuer = "https://identity.example",
+  verify?: NonNullable<DeviceBrowserOptions["upstream"]>["verify"],
 ) {
   const begun: { state: string; verifier: string }[] = [];
   const spent = new Set<string>();
   let duringBegin = () => {};
+  let duringClaim = () => {};
   const f = await fixture("p", "s1", {
     upstream: {
       begin: (state, verifier) => {
@@ -711,15 +718,20 @@ async function browserFixture(
           return `${new URL("/oauth/authorize", issuer).href}?state=${state}&redirect_uri=https%3A%2F%2Fw.example%2Fcallback`;
         });
       },
-      verify: () => {
-        throw new Error("This slice must not verify an owner");
-      },
+      verify:
+        verify ??
+        (() => {
+          throw new Error("This slice must not verify an owner");
+        }),
     },
     redemption: {
       claimOnce: (hash) => {
         const won = !spent.has(hash);
         spent.add(hash);
-        return Promise.resolve(won);
+        return Promise.resolve().then(() => {
+          duringClaim();
+          return won;
+        });
       },
     },
   });
@@ -759,6 +771,9 @@ async function browserFixture(
     spent,
     duringBegin: (run: () => void) => {
       duringBegin = run;
+    },
+    duringClaim: (run: () => void) => {
+      duringClaim = run;
     },
   };
 }
@@ -982,9 +997,331 @@ test.each(["lane", "mixed lane and device", "device", "generic"])(
       expect(reply.status).toBe(mode === "generic" ? 503 : 400);
       expect(f.reached.length - reached).toBe(mode === "generic" ? 0 : 1);
       if (mode.includes("lane"))
-        expect(reply.text).toContain("not available yet");
+        expect(reply.text).toContain("This request cannot be used.");
       if (mode !== "device") expect(f.snapshot()).toBe(before);
       expect(f.begun).toEqual([]);
+    } finally {
+      f.close();
+    }
+  },
+  10_000,
+);
+
+const approvalRows = (f: Fixture) =>
+  (
+    JSON.parse(
+      String(
+        (
+          f.db
+            .query(`SELECT state FROM ${LANE_APPROVALS} WHERE id=1`)
+            .get() as { state: string }
+        ).state,
+      ),
+    ) as { requests: LaneApproval[] }
+  ).requests;
+const ownerClaims: IdentityClaims = {
+  issuer: "https://identity.example",
+  subject: "user_Owner1",
+  audience: "forge-cloud",
+  authenticatedAt: now - 1_000,
+  expiresAt: now + 3_600_000,
+};
+const ownerProof = (changes: Partial<IdentityClaims> = {}) => {
+  const claims = { ...ownerClaims, ...changes };
+  return testIdentityVerifier(new Map([["owner", claims]])).verify(
+    "owner",
+    claims.audience,
+    now,
+  );
+};
+type BrowserFixture = Awaited<ReturnType<typeof browserFixture>>;
+async function laneReturn(
+  f: BrowserFixture,
+  action = "approve",
+  code = "owner",
+) {
+  const start = await f.submit(action);
+  expect(start.status).toBe(302);
+  return {
+    path: `/callback?state=${f.begun.at(-1)!.state}&code=${code}`,
+    cookie: pageCookie(start),
+  };
+}
+
+test.each([
+  "approve all",
+  "deny all",
+  "approve issue",
+  "deny issue",
+  "hostile headers",
+])(
+  "lane callback records only the owner decision: %s",
+  async (mode) => {
+    const verified: string[] = [];
+    const f = await browserFixture(
+      mode.endsWith("issue") ? "issue" : "all",
+      undefined,
+      async (_request, _at, verifier) => {
+        verified.push(verifier);
+        return ownerProof();
+      },
+    );
+    try {
+      const action = mode.startsWith("deny") ? "deny" : "approve";
+      const back = await laneReturn(f, action);
+      const before = [
+        f.owner.get("forge/work", "lane-control:global"),
+        f.owner.get("forge/work", "lane-control:work-7"),
+      ];
+      const reply = await f.browser(
+        back.path,
+        undefined,
+        {
+          Cookie: back.cookie,
+          Host: "evil.example",
+          Origin: "https://evil.example",
+          "X-Forwarded-Host": "evil.example",
+        },
+        true,
+      );
+      expect(reply.status).toBe(200);
+      expect(reply.text).toContain(
+        action === "approve" ? "approved" : "denied",
+      );
+      expect(reply.text).not.toContain("evil.example");
+      expect(reply.headers.get("location")).toBeNull();
+      expect(reply.headers.get("cache-control")).toBe("no-store");
+      expect(approvalRows(f)[0]).toMatchObject({
+        status: action === "approve" ? "approved" : "denied",
+        expiresAt: f.pending.expiresAt,
+        decision: {
+          issuer: ownerClaims.issuer,
+          subject: ownerClaims.subject,
+          at: new Date(now).toISOString(),
+        },
+      });
+      expect([
+        f.owner.get("forge/work", "lane-control:global"),
+        f.owner.get("forge/work", "lane-control:work-7"),
+      ]).toEqual(before);
+      expect(verified).toEqual([f.begun[0]!.verifier]);
+      const decided = f.snapshot();
+      expect(
+        (await f.browser(back.path, undefined, { Cookie: back.cookie }, true))
+          .status,
+      ).toBe(400);
+      expect(f.snapshot()).toBe(decided);
+      expect(verified).toHaveLength(1);
+    } finally {
+      f.close();
+    }
+  },
+  10_000,
+);
+
+test.each([
+  "subject",
+  "issuer",
+  "audience",
+  "expired identity",
+  "future identity",
+  "unbranded",
+  "exchange failure",
+  "invalid proof",
+  "missing cookie",
+  "foreign cookie",
+  "device cookie",
+  "duplicate cookie",
+  "duplicate state",
+  "device state",
+  "expired state",
+  "post",
+])(
+  "lane callback refuses %s without recording a decision",
+  async (mode) => {
+    let calls = 0;
+    const f = await browserFixture("all", undefined, async () => {
+      calls++;
+      if (mode === "exchange failure")
+        throw new Error("Injected exchange failure");
+      if (mode === "invalid proof")
+        return { ok: false, reason: "invalid_proof" };
+      if (mode === "unbranded")
+        return { ok: true, identity: ownerClaims } as IdentityResult;
+      return ownerProof({
+        ...(mode === "subject" ? { subject: "user_Other2" } : {}),
+        ...(mode === "issuer" ? { issuer: "https://other.example" } : {}),
+        ...(mode === "audience" ? { audience: "other" } : {}),
+        ...(mode === "expired identity" ? { expiresAt: now } : {}),
+        ...(mode === "future identity" ? { authenticatedAt: now + 1 } : {}),
+      });
+    });
+    try {
+      const back = await laneReturn(f);
+      let cookie = back.cookie,
+        path = back.path;
+      if (mode === "missing cookie") cookie = "";
+      if (mode === "foreign cookie")
+        cookie = back.cookie.split("=")[0] + "=" + "x".repeat(43);
+      if (mode === "device cookie")
+        cookie = back.cookie.replace("forge_lane_", "forge_device_");
+      if (mode === "duplicate cookie") cookie += `; ${cookie}`;
+      if (mode === "duplicate state") path += `&state=${f.begun[0]!.state}`;
+      if (mode === "device state")
+        path = path.replace("forge-lane.", "forge-device.");
+      if (mode === "expired state") f.clock.mockReturnValue(now + 600_000);
+      const before = f.snapshot();
+      const reply = await f.browser(
+        path,
+        mode === "post" ? "" : undefined,
+        { Cookie: cookie, "CF-Connecting-IP": "203.0.113.1" },
+        true,
+      );
+      expect(reply.status).toBe(400);
+      expect(f.snapshot()).toBe(before);
+      expect(approvalRows(f)[0]!.status).toBe("pending");
+      if (
+        mode.includes("cookie") ||
+        ["duplicate state", "device state", "expired state", "post"].includes(
+          mode,
+        )
+      )
+        expect(calls).toBe(0);
+    } finally {
+      f.close();
+    }
+  },
+  10_000,
+);
+
+test.each(
+  ["claim", "exchange"].flatMap((phase) =>
+    [
+      "expiry",
+      "epoch",
+      "incarnation",
+      "owner",
+      "issuer",
+      "audience",
+      "revoke",
+      "token expiry",
+      "device",
+      "session",
+    ].map((change) => [phase, change] as const),
+  ),
+)(
+  "lane callback rechecks after %s await: %s",
+  async (phase, change) => {
+    let mutate = () => {},
+      calls = 0;
+    const f = await browserFixture("all", undefined, async () => {
+      calls++;
+      const proof = await ownerProof();
+      if (phase === "exchange") mutate();
+      return proof;
+    });
+    try {
+      const back = await laneReturn(f);
+      let expected = "";
+      mutate = () => {
+        if (change === "expiry") f.clock.mockReturnValue(now + 600_000);
+        if (change === "epoch" || change === "incarnation") {
+          const old = f.owner.get("forge/work", "lane-control:global")!;
+          f.owner.put(
+            "forge/work",
+            old.key,
+            {
+              ...(old.value as object),
+              ...(change === "epoch"
+                ? { epoch: 99 }
+                : { incarnation: "replacement" }),
+            },
+            actor,
+            { expectRevision: old.revision },
+          );
+        }
+        if (change === "owner") f.env.FORGE_OWNER_SUBJECT = "user_Other2";
+        if (change === "issuer") f.env.CLERK_ISSUER = "https://other.example";
+        if (change === "audience") f.env.CLERK_CLIENT_ID = "other";
+        if (change === "revoke")
+          f.db.run("UPDATE domain_cloud_tokens SET revoked_at=?", [now]);
+        if (change === "token expiry")
+          f.db.run("UPDATE domain_cloud_tokens SET expires_at=?", [now]);
+        if (change === "device")
+          f.db.run("UPDATE domain_cloud_tokens SET device='other'");
+        if (change === "session")
+          f.db.run("UPDATE domain_cloud_tokens SET session='other'");
+        expected = f.snapshot();
+      };
+      if (phase === "claim") f.duringClaim(mutate);
+      expect(
+        (await f.browser(back.path, undefined, { Cookie: back.cookie }, true))
+          .status,
+      ).toBe(400);
+      expect(f.snapshot()).toBe(expected);
+      expect(approvalRows(f)[0]!.status).toBe("pending");
+      expect(calls).toBe(phase === "claim" ? 0 : 1);
+    } finally {
+      f.close();
+    }
+  },
+  10_000,
+);
+
+test.each([
+  "same state",
+  "opposite actions",
+  "same code after failure",
+  "write failure",
+])(
+  "lane callback atomicity: %s",
+  async (mode) => {
+    let calls = 0;
+    const f = await browserFixture("all", undefined, async () => {
+      calls++;
+      const proof = await ownerProof();
+      return mode === "same code after failure"
+        ? { ok: false, reason: "invalid_proof" }
+        : proof;
+    });
+    try {
+      const first = await laneReturn(f),
+        before = f.snapshot();
+      const second =
+        mode === "same state" || mode === "write failure"
+          ? first
+          : await laneReturn(
+              f,
+              "deny",
+              mode === "same code after failure" ? "owner" : "other-code",
+            );
+      if (mode === "write failure")
+        f.db.run(
+          `CREATE TRIGGER refuse_decision BEFORE UPDATE ON ${LANE_APPROVALS} BEGIN SELECT RAISE(ABORT, 'injected decision failure'); END`,
+        );
+      const returns = [first, second].map(
+        (back) => () =>
+          f.browser(back.path, undefined, { Cookie: back.cookie }, true),
+      );
+      const replies =
+        mode === "same code after failure"
+          ? [await returns[0]!(), await returns[1]!()]
+          : await Promise.all(returns.map((run) => run()));
+      if (mode === "write failure") {
+        expect(replies.every((reply) => reply.status >= 400)).toBe(true);
+        expect(f.snapshot()).toBe(before);
+      } else if (mode === "same code after failure") {
+        expect(replies.map((reply) => reply.status)).toEqual([400, 400]);
+        expect(calls).toBe(1);
+        expect(f.snapshot()).toBe(before);
+      } else {
+        expect(replies.map((reply) => reply.status).sort()).toEqual([200, 400]);
+        expect(
+          approvalRows(f).filter((row) =>
+            ["approved", "denied"].includes(row.status),
+          ),
+        ).toHaveLength(1);
+      }
     } finally {
       f.close();
     }
