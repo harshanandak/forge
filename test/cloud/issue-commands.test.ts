@@ -376,6 +376,14 @@ for (const kind of ["read", "commit"] as const)
     const rows: Row[] = [
       ["admitted", input, {}, {}, 503, "UNAVAILABLE"],
       [
+        "canonical config",
+        { ...input, policyRevision: digestValue(["a/state", "forge/memory"]) },
+        { FORGE_STATE_NAMESPACES: ["forge/memory", "a/state", "forge/memory"] },
+        {},
+        503,
+        "UNAVAILABLE",
+      ],
+      [
         "discovery",
         { ...input, policyRevision: "discover" },
         {},
@@ -403,6 +411,14 @@ for (const kind of ["read", "commit"] as const)
         "config wrong shape",
         input,
         { FORGE_STATE_NAMESPACES: {} },
+        {},
+        503,
+        "UNAVAILABLE",
+      ],
+      [
+        "config invalid entry",
+        input,
+        { FORGE_STATE_NAMESPACES: [1] },
         {},
         503,
         "UNAVAILABLE",
@@ -485,7 +501,13 @@ for (const kind of ["read", "commit"] as const)
       ["bare state", input, {}, { path: "state" }, 404, "UNKNOWN_COMMAND"],
       [
         "wrong kind",
-        { ...input, kind: kind === "read" ? "commit" : "read" },
+        {
+          ...(kind === "read" ? stateCommit : stateRead),
+          namespace: "forge/memory",
+          policyRevision: statePolicy,
+          readSet: undefined,
+          ...(kind === "read" ? { readSet: [] } : {}),
+        },
         {},
         {},
         400,
@@ -515,32 +537,34 @@ for (const kind of ["read", "commit"] as const)
         400,
         "INPUT_INVALID",
       ],
-      ...[
-        ["project mismatch", { project: { id: "other" } }, "INPUT_INVALID"],
-        ["root", { project: { id: "p", root: "/tmp" } }, "INPUT_INVALID"],
+      ...(
         [
-          "device mismatch",
-          { device: { id: "other" } },
-          "AUTH_DEVICE_MISMATCH",
-        ],
-        [
-          "session device",
-          { session: { id: "s1", device: "other" } },
-          "AUTH_DEVICE_MISMATCH",
-        ],
-        [
-          "session mismatch",
-          { session: { id: "other" } },
-          "AUTH_DEVICE_MISMATCH",
-        ],
-        ["missing actor", { actor: undefined }, "CONTEXT_MISSING"],
-      ].map(([name, context, code]): Row => [
-        String(name),
-        { ...input, context: { ...input.context, ...(context as object) } },
+          ["project mismatch", { project: { id: "other" } }, "INPUT_INVALID"],
+          ["root", { project: { id: "p", root: "/tmp" } }, "INPUT_INVALID"],
+          [
+            "device mismatch",
+            { device: { id: "other" } },
+            "AUTH_DEVICE_MISMATCH",
+          ],
+          [
+            "session device",
+            { session: { id: "s1", device: "other" } },
+            "AUTH_DEVICE_MISMATCH",
+          ],
+          [
+            "session mismatch",
+            { session: { id: "other" } },
+            "AUTH_DEVICE_MISMATCH",
+          ],
+          ["missing actor", { actor: undefined }, "CONTEXT_MISSING"],
+        ] as const
+      ).map(([name, context, code]): Row => [
+        name,
+        { ...input, context: { ...input.context, ...context } },
         {},
         {},
         code === "AUTH_DEVICE_MISMATCH" ? 403 : 400,
-        String(code),
+        code,
       ]),
     ];
     for (const via of ["direct", createWorker(), configured()] as const)
@@ -586,6 +610,92 @@ for (const kind of ["read", "commit"] as const)
           mock.restore();
         }
       }
+  }, 30_000);
+
+for (const kind of ["read", "commit"] as const)
+  test(`state ${kind}: cold, expired, revoked and sessionless admission table`, async () => {
+    for (const mode of [
+      "cold",
+      "expired",
+      "revoked",
+      "expire during read",
+      "revoke during read",
+      "sessionless",
+      "sessionless fence",
+    ] as const) {
+      if (mode === "sessionless fence" && kind === "read") continue;
+      const f = fixture({ ...vars, FORGE_STATE_NAMESPACES: stateNamespaces });
+      try {
+        const body = {
+          ...(kind === "read" ? stateRead : stateCommit),
+          namespace: "forge/memory",
+          policyRevision: statePolicy,
+          ...(kind === "commit"
+            ? {
+                readSet: [],
+                ...(mode === "sessionless fence"
+                  ? { fence: { subject: "record:1", generation: 1 } }
+                  : {}),
+              }
+            : {}),
+        };
+        const token =
+          mode === "cold"
+            ? fakeToken
+            : await f.device(
+                day,
+                "laptop",
+                mode.startsWith("sessionless") ? undefined : "s1",
+              );
+        const change = () =>
+          mode.startsWith("expire") ? f.advance(2 * day) : revoke(f, token);
+        if (mode === "expired" || mode === "revoked") change();
+        let before = f.snapshot();
+        const text = JSON.stringify(body);
+        const input = !mode.endsWith("during read")
+          ? body
+          : new ReadableStream(
+              {
+                start: (c) =>
+                  c.enqueue(new TextEncoder().encode(text.slice(0, 9))),
+                pull(c) {
+                  change();
+                  before = f.snapshot();
+                  c.enqueue(new TextEncoder().encode(text.slice(9)));
+                  c.close();
+                },
+              },
+              { highWaterMark: 0 },
+            );
+        const got = await f.send(input, { token, path: `state/${kind}` });
+        const code =
+          mode === "cold"
+            ? "AUTH_INVALID"
+            : mode.startsWith("expire")
+              ? "AUTH_EXPIRED"
+              : mode.startsWith("revoke")
+                ? "AUTH_REVOKED"
+                : mode === "sessionless fence"
+                  ? "AUTH_DEVICE_MISMATCH"
+                  : "UNAVAILABLE";
+        expect([got.status, got.code, got.exit], mode).toEqual([
+          code === "UNAVAILABLE"
+            ? 503
+            : code === "AUTH_DEVICE_MISMATCH"
+              ? 403
+              : 401,
+          code,
+          1,
+        ]);
+        expect(f.snapshot(), mode).toBe(before);
+        expect(strayCalls(got.touched), mode).toEqual([]);
+        if (mode === "cold")
+          expect(got.touched, mode).toEqual(["get provisioned"]);
+      } finally {
+        f.db.close();
+        mock.restore();
+      }
+    }
   }, 30_000);
 
 const actor = { kind: "agent", id: "tester" } as const;

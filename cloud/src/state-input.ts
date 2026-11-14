@@ -3,6 +3,7 @@ import { parseUntrustedJson } from "../../src/contract/untrusted.ts";
 import { parseRestoreJson } from "../../src/core/state/restore-json.ts";
 import {
   validateBlockId,
+  validateAmbientContext,
   validateOperationName,
   validateRequestId,
 } from "../../src/generated/validators.ts";
@@ -134,7 +135,7 @@ function inspectValue(value: unknown): void {
     invalid();
 }
 
-/** Pure byte boundary. Policy validates operation data and authority before any state access. */
+/** Pure byte boundary. Device identity and namespace config are checked before state access. */
 export function parseStateInput(
   body: string | Uint8Array,
 ): StateReadRequest | StateCommitRequest {
@@ -155,6 +156,7 @@ export function parseStateInput(
     value.version !== 1 ||
     !validateBlockId(value.namespace).ok ||
     !validateOperationName(value.operation).ok ||
+    !validateAmbientContext(value.context).ok ||
     !text(value.policyRevision, 128)
   )
     return invalid();
@@ -164,12 +166,15 @@ export function parseStateInput(
     "namespace",
     "operation",
     "policyRevision",
+    "context",
   ];
   if (
     value.kind === "read" &&
     closed(value, [...common, "query"], ["readVersion"]) &&
     query(value.query) &&
-    optional(value, "readVersion", version)
+    optional(value, "readVersion", version) &&
+    (value.policyRevision !== "discover" ||
+      !Object.hasOwn(value, "readVersion"))
   )
     return value as unknown as StateReadRequest;
   if (
@@ -180,8 +185,12 @@ export function parseStateInput(
       ["fence"],
     ) &&
     validateRequestId(value.requestId).ok &&
+    value.policyRevision !== "discover" &&
     version(value.readVersion) &&
     readSet(value.readSet) &&
+    (value.readSet as ObjectValue[]).every(
+      (entry) => entry.namespace === value.namespace,
+    ) &&
     entries(value.entries) &&
     optional(value, "fence", fence)
   )
