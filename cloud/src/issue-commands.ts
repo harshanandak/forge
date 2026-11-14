@@ -1,7 +1,5 @@
-// POST /p/<project>/command: typed issue commands at the project authority.
-// This slice checks the envelope and the context, runs issue.show, issue.comments, issue.links, issue.list, issue.ready, issue.blocked and issue.stale as reads,
-// runs issue.create, issue.comment, issue.update, issue.dep, issue.link, issue.close, issue.claim, issue.renew and issue.release as writes and refuses every other command as not yet supported. Everything the caller sends is
-// untrusted. The envelope and context are closed shapes, the device comes from the token and the
+// POST /p/<project>/command: typed project commands admitted by the exposure policy below.
+// The envelope and context are closed shapes, the device comes from the token and the
 // project from the server, and no caller value becomes an SQL identifier, a namespace or a key.
 import manifest from "../../src/blocks/work/forge.block.json" with { type: "json" };
 import { bindContext } from "../../src/contract/context.ts";
@@ -37,6 +35,7 @@ import { listComments } from "./issue-comments.ts";
 import { listLinks } from "./issue-links.ts";
 import { listIssues } from "./issue-list.ts";
 import { updateIssue } from "./issue-update.ts";
+import { laneCommand } from "./lane-commands.ts";
 import { PROJECT_NAME } from "./project-name.ts";
 import { requireTokenSession } from "./token-session.ts";
 import { carriesToken } from "./tokens.ts";
@@ -77,6 +76,8 @@ const EXPOSED: readonly string[] = [
   "issue.ready",
   "issue.blocked",
   "issue.stale",
+  "lane.control",
+  "lane.stop",
 ];
 const operations = manifest.operations as unknown as Readonly<
   Record<string, OperationDeclaration>
@@ -109,6 +110,7 @@ export interface PreparedCommand {
   readonly op: string;
   readonly input: unknown;
   readonly context: BoundContext;
+  readonly dryRun?: true;
 }
 
 /**
@@ -163,7 +165,7 @@ export function parseCommand(text: string, host: CommandHost): PreparedCommand {
       "INPUT_INVALID",
       "context.project must be the admitted project, with no root",
     );
-  if (call.dryRun === true)
+  if (call.dryRun === true && op !== "lane.stop")
     throw fail("UNAVAILABLE", "this profile has no dry-run execution contract");
   const bound = bindContext(operations[op]!, {
     ...rest,
@@ -178,6 +180,7 @@ export function parseCommand(text: string, host: CommandHost): PreparedCommand {
     op,
     input: call.input,
     context: bound.context,
+    ...(call.dryRun === true ? { dryRun: true as const } : {}),
   };
 }
 
@@ -235,12 +238,12 @@ function lazyViews(storage: DurableStorage): IssueViews {
 }
 
 /**
- * Prepares a command and runs it. Only issue.create, issue.comment, issue.update, issue.dep, issue.link, issue.close, issue.claim, issue.renew, issue.release, issue.show, issue.comments, issue.links, issue.list, issue.ready, issue.blocked and issue.stale run: each returns
- * the response, serialized once and measured in UTF-8 bytes. Every other operation is refused. Throws ForgeFailure when refused,
- * and runs no await, so the caller's token check stays current until the response is built.
+ * Runs an exposed command and measures the serialized response in UTF-8 bytes.
+ * Throws ForgeFailure when refused and runs no await, so the caller's token check stays current.
  */
 export function runCommand(text: string, host: CommandRun): Response {
-  const { requestId, op, input, context } = parseCommand(text, host);
+  const call = parseCommand(text, host);
+  const { requestId, op, input, context } = call;
   const read =
     op === "issue.show"
       ? readIssue
@@ -278,7 +281,9 @@ export function runCommand(text: string, host: CommandRun): Response {
                       ? releaseIssue
                       : undefined;
   let result: unknown;
-  if (write !== undefined) {
+  if (op === "lane.control" || op === "lane.stop")
+    result = laneCommand(call, host);
+  else if (write !== undefined) {
     // Both come before the store is opened, so a refusal never sets up or migrates it.
     if (carriesToken(requestId))
       throw fail("INPUT_INVALID", "requestId must not carry a credential");

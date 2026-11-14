@@ -28,7 +28,7 @@ const call = (
 ) => ({ requestId, op, input, context: { actor }, ...more });
 
 // All tables use this fixture: real token admission, Worker routing and project storage.
-async function fixture(projectName = "p") {
+async function fixture(projectName = "p", session: string | null = "s1") {
   const clock = spyOn(Date, "now").mockReturnValue(now);
   const db = new Database(":memory:");
   const values = new Map<string, unknown>();
@@ -62,7 +62,7 @@ async function fixture(projectName = "p") {
       method: "POST",
       body: JSON.stringify({
         device: "laptop",
-        session: "s1",
+        ...(session === null ? {} : { session }),
         ttlMs: 86_400_000,
       }),
     }),
@@ -248,10 +248,17 @@ test.each(refusals)(
   10_000,
 );
 
-test.each(["one", "all", "dry one", "dry all", "foreign route"])(
+test.each([
+  "one",
+  "all",
+  "dry one",
+  "dry all",
+  "foreign route",
+  "device token",
+])(
   "lane.stop %s through the authenticated command route",
   async (mode) => {
-    const f = await fixture();
+    const f = await fixture("p", mode === "device token" ? null : "s1");
     const other = mode === "foreign route" ? await fixture("other") : undefined;
     try {
       const all = mode.endsWith("all");
@@ -260,11 +267,17 @@ test.each(["one", "all", "dry one", "dry all", "foreign route"])(
       const before = f.snapshot();
       const otherBefore = other?.snapshot() ?? "";
       const unchanged = f.owner.get("forge/work", "issue:work-8");
+      const otherControl = f.owner.get("forge/work", "lane-control:work-8");
       const request = call(
         "lane.stop",
         all ? { all: true } : { id: "work-7" },
         "stop",
-        { dryRun },
+        {
+          dryRun,
+          ...(mode === "device token"
+            ? { context: { actor, session: { id: "untrusted-session" } } }
+            : {}),
+        },
       );
       const reply = await f.send(request, other === undefined ? "p" : "other");
       if (other !== undefined) {
@@ -280,6 +293,9 @@ test.each(["one", "all", "dry one", "dry all", "foreign route"])(
         scope: all ? "all" : "issue",
       });
       expect(f.owner.get("forge/work", "issue:work-8")).toEqual(unchanged);
+      expect(f.owner.get("forge/work", "lane-control:work-8")).toEqual(
+        otherControl,
+      );
       if (dryRun) {
         expect(f.snapshot()).toBe(before);
         return;
@@ -305,9 +321,17 @@ test.each(["one", "all", "dry one", "dry all", "foreign route"])(
         )
         .all() as { body: string }[];
       expect(audits).toHaveLength(2);
+      const auditSession =
+        mode === "device token"
+          ? (
+              f.db.query("SELECT id FROM domain_cloud_tokens").get() as {
+                id: string;
+              }
+            ).id
+          : "s1";
       for (const audit of audits)
         expect(JSON.parse(audit.body)).toMatchObject({
-          value: { device: "laptop", session: "s1" },
+          value: { device: "laptop", session: auditSession },
         });
       expect((await control(f)).result).toMatchObject({ stopped: all });
       expect((await control(f, "work-7")).result).toMatchObject({
@@ -320,6 +344,30 @@ test.each(["one", "all", "dry one", "dry all", "foreign route"])(
       if (!all) expect(reply.result).toEqual(stopped(5, "issue"));
     } finally {
       other?.close();
+      f.close();
+    }
+  },
+  10_000,
+);
+
+test.each(["audit", "receipt"])(
+  "a failed %s rolls back control, events and receipt together",
+  async (where) => {
+    const f = await fixture();
+    try {
+      f.put("lane-control:global", running);
+      const before = f.snapshot();
+      const target =
+        where === "audit"
+          ? "state_records WHEN NEW.key LIKE 'lane-control:audit:%'"
+          : "domain_cloud_command_receipts";
+      f.db.run(
+        `CREATE TRIGGER refuse_write BEFORE INSERT ON ${target} BEGIN SELECT RAISE(ABORT, 'injected write failure'); END`,
+      );
+      const reply = await f.send(call("lane.stop", { id: "work-7" }));
+      expect(reply.envelope.ok).toBe(false);
+      expect(f.snapshot()).toBe(before);
+    } finally {
       f.close();
     }
   },
