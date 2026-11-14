@@ -601,6 +601,20 @@ test.each(["project cap", "expired", "epoch", "incarnation", "retention"])(
         expect(
           rows().filter((entry) => entry.status === "pending"),
         ).toHaveLength(1);
+        // Trimming current state must also bound request data retained in event snapshots.
+        const history = f.db
+          .query(
+            "SELECT body FROM state_events WHERE namespace='forge/work' AND key='lane-approval:requests'",
+          )
+          .all() as { body: string }[];
+        const persisted = history.flatMap(
+          ({ body }) =>
+            (JSON.parse(body) as { data?: { requests?: LaneApproval[] } }).data
+              ?.requests ?? [],
+        );
+        expect(
+          new Set([...rows(), ...persisted].map((entry) => entry.request)).size,
+        ).toBeLessThanOrEqual(65);
       } else {
         if (mode === "epoch")
           await f.send(call("lane.stop", { all: true }, "new-stop"));
