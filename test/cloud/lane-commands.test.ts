@@ -272,12 +272,7 @@ test.each([
         "lane.stop",
         all ? { all: true } : { id: "work-7" },
         "stop",
-        {
-          dryRun,
-          ...(mode === "device token"
-            ? { context: { actor, session: { id: "untrusted-session" } } }
-            : {}),
-        },
+        { dryRun },
       );
       const reply = await f.send(request, other === undefined ? "p" : "other");
       if (other !== undefined) {
@@ -344,6 +339,32 @@ test.each([
       if (!all) expect(reply.result).toEqual(stopped(5, "issue"));
     } finally {
       other?.close();
+      f.close();
+    }
+  },
+  10_000,
+);
+
+test.each([
+  { op: "lane.control", dryRun: false },
+  { op: "lane.stop", dryRun: false },
+  { op: "lane.stop", dryRun: true },
+])(
+  "a device-only token cannot claim a session for %j",
+  async ({ op, dryRun }) => {
+    const f = await fixture("p", null);
+    try {
+      f.put("lane-control:global", running);
+      const before = f.snapshot();
+      const reply = await f.send(
+        call(op, { id: "work-7" }, "claimed-session", {
+          dryRun,
+          context: { actor, session: { id: "untrusted-session" } },
+        }),
+      );
+      expect(reply.verdict).toEqual(["FAIL", "AUTH_DEVICE_MISMATCH", 1]);
+      expect(f.snapshot()).toBe(before);
+    } finally {
       f.close();
     }
   },

@@ -158,6 +158,15 @@ export function parseCommand(text: string, host: CommandHost): PreparedCommand {
   // A token bound to a session proves it too, so a lease holder's session is never the caller's claim.
   requireTokenSession(host.session, session?.id);
   if (
+    (op === "lane.control" || op === "lane.stop") &&
+    host.session == null &&
+    session !== undefined
+  )
+    throw fail(
+      "AUTH_DEVICE_MISMATCH",
+      "The token does not bind the claimed session",
+    );
+  if (
     (project?.id ?? host.project) !== host.project ||
     project?.root !== undefined
   )
