@@ -1,7 +1,11 @@
 import { expect, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { LaneControlStore } from "../../cloud/src/lane-control-store.ts";
-import { durableStore, type DurableStorage } from "../../cloud/src/store.ts";
+import {
+  durableStore,
+  PRAGMA_TABLE,
+  type DurableStorage,
+} from "../../cloud/src/store.ts";
 import { StateOwner } from "../../src/core/state/index.ts";
 import { exitCode } from "../../src/surface/result.ts";
 
@@ -62,7 +66,14 @@ function fixture() {
   const owner = new StateOwner(durableStore(storage), {
     now: () => Date.parse(now),
   });
-  owner.initialize();
+  owner.initialize([
+    {
+      namespace: "forge/cloud",
+      reviewedDigest: `sha256:${"0".repeat(64)}`,
+      migrations: [],
+      tables: [PRAGMA_TABLE],
+    },
+  ]);
   const store = new LaneControlStore(owner, "project");
   const put = (key: string, value: unknown) =>
     owner.put(NS, key, value, actor, {
