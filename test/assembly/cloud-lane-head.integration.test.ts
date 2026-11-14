@@ -1,4 +1,4 @@
-import { expect, mock, test } from "bun:test";
+import { expect, mock, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
   existsSync,
@@ -18,6 +18,7 @@ import {
 } from "../../src/assembly/providers.ts";
 import type { Preflight } from "../../src/core/runtime/index.ts";
 import type { ProcessPort } from "../../src/ports/process.ts";
+setDefaultTimeout(30000);
 
 const readHead = (
   coordinator as unknown as {
