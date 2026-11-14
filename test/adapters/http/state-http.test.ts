@@ -124,16 +124,18 @@ async function refused(run: () => Promise<unknown>, code = "UNAVAILABLE") {
 
 const ceiling = 1_048_576;
 const ordinary = envelope(resultFor(read(), { kind: "get", record }));
-const duplicateMembers = [
-  ["warnings", "warnings"],
-  ["escaped warnings", "\\u0077arnings"],
-  ["project", "project"],
-  ["escaped project", "\\u0070roject"],
-].map(([name, label]) => ({
+const duplicateMembers = (
+  [
+    ["warnings", "warnings"],
+    ["escaped warnings", "\\u0077arnings"],
+    ["project", "project"],
+    ["escaped project", "\\u0070roject"],
+  ] as const
+).map(([name, label]) => ({
   name,
   text: JSON.stringify(ordinary).replace(
-    name!.includes("warnings") ? '"warnings":[]' : '"project":"proj"',
-    name!.includes("warnings")
+    name.includes("warnings") ? '"warnings":[]' : '"project":"proj"',
+    name.includes("warnings")
       ? `"${label}":[${JSON.stringify(token)}],"warnings":[]`
       : `"${label}":"other","project":"proj"`,
   ),
@@ -173,41 +175,72 @@ async function byteBoundary(create = createCloudHttp) {
 test("state byte boundary accepts valid responses through the ceiling only", async () => {
   await byteBoundary();
 });
-test("state byte boundary counterfactual fails with a raised ceiling", async () => {
+async function withMutant(
+  target: string,
+  replacement: string,
+  run: (create: typeof createCloudHttp) => Promise<void>,
+) {
   const original = new URL(
     "../../../src/adapters/http/index.ts",
     import.meta.url,
   );
   const source = await readFile(original, "utf8");
-  const target = "Math.min(commandMax, 1_048_576)";
   expect(source.split(target)).toHaveLength(2);
-  // Load a disposable module: production files stay untouched; only its effective cap changes.
+  // Load a disposable module: production files stay untouched; only the named check changes.
   const mutant = source
-    .replace(target, "2_097_152")
+    .replace(target, replacement)
     .replace(
       /from "(\.[^"]+)"/g,
       (_, path: string) => `from "${new URL(path, original).href}"`,
     );
-  const dir = await mkdtemp(join(tmpdir(), "forge-state-byte-ceiling-"));
+  const dir = await mkdtemp(join(tmpdir(), "forge-state-http-mutant-"));
   try {
     const file = join(dir, "http-mutant.ts");
     await writeFile(file, mutant);
     const loaded = (await import(
       pathToFileURL(file).href
     )) as typeof import("../../../src/adapters/http/index.ts");
-    const f = fixture(
-      () => new Response(responseBytes(ceiling + 1).text),
-      1_000,
-      loaded.createCloudHttp,
-    );
-    const accepted = await f.send(read());
-    expect(accepted.kind).toBe("ok");
-    await expect(refused(() => Promise.resolve(accepted))).rejects.toThrow();
-    expect(f.calls).toHaveLength(1);
+    await run(loaded.createCloudHttp);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+}
+test("state byte boundary counterfactual fails with a raised ceiling", async () => {
+  await withMutant(
+    "Math.min(commandMax, 1_048_576)",
+    "2_097_152",
+    async (create) => {
+      const f = fixture(
+        () => new Response(responseBytes(ceiling + 1).text),
+        1_000,
+        create,
+      );
+      const accepted = await f.send(read());
+      expect(accepted.kind).toBe("ok");
+      await expect(refused(() => Promise.resolve(accepted))).rejects.toThrow();
+      expect(f.calls).toHaveLength(1);
+    },
+  );
 });
+for (const { name, text } of duplicateMembers)
+  test(`state raw duplicate counterfactual: ${name}`, async () => {
+    await withMutant(
+      "parsed = parseRestoreJson(text);",
+      "parsed = checked.value;",
+      async (create) => {
+        const f = fixture(() => new Response(text), 1_000, create);
+        const accepted = await f.send(read());
+        expect<unknown>(accepted).toEqual({
+          kind: "ok",
+          result: ordinary.result,
+        });
+        await expect(
+          refused(() => Promise.resolve(accepted)),
+        ).rejects.toThrow();
+        expect(f.calls).toHaveLength(1);
+      },
+    );
+  });
 
 const valid: [string, StateReadRequest | StateCommitRequest, unknown][] = [
   ["get", read(), { kind: "get", record }],

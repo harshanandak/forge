@@ -5,6 +5,7 @@ import { request } from "node:https";
 import { Readable } from "node:stream";
 import { ForgeFailure } from "../../contract/failure.ts";
 import { parseUntrustedJson } from "../../contract/untrusted.ts";
+import { parseRestoreJson } from "../../core/state/restore-json.ts";
 import type * as State from "../../ports/state-protocol.ts";
 import { decodeState, type StateAnswer } from "./state-response.ts";
 import { validateLeaseRecord } from "../../generated/validators.ts";
@@ -493,7 +494,7 @@ export function createCloudHttp(options: CloudHttpOptions): CloudHttp {
             },
           );
           if (!checked.ok) throw unavailable("the answer exceeds JSON limits");
-          parsed = checked.value;
+          parsed = parseRestoreJson(text);
         } else parsed = JSON.parse(text);
       } catch (error) {
         if (error instanceof ForgeFailure) throw error;
