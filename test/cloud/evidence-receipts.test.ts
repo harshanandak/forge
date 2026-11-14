@@ -114,6 +114,22 @@ type Fixture = Awaited<ReturnType<typeof setup>>;
 type Row = readonly [string, (f: Fixture) => void | Promise<void>];
 const rows: Row[] = [
   [
+    "stored policy width refuses in decoder",
+    (f) => {
+      const receipt = f.store.put(f.input);
+      Object.assign(receipt.policy, {
+        requiredChecks: Array.from({ length: 257 }, (_, i) => `${i}`),
+      });
+      f.db.run(`UPDATE ${TABLE} SET body=? WHERE id=?`, [
+        JSON.stringify(receipt),
+        receipt.id,
+      ]);
+      const read = () => f.store.get("forge", "work-1248", receipt.id);
+      code(read, "RECEIPT_INVALID");
+      expect(read).toThrow("RECEIPT_INVALID");
+    },
+  ],
+  [
     "immutable round trip and detached copies",
     (f) => {
       const receipt = f.store.put(f.input);
