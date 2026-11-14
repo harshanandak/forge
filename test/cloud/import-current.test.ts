@@ -10,7 +10,9 @@ import { dirname, join } from "node:path";
 import { test } from "bun:test";
 import { limitsFrom } from "../../cloud/src/dump.ts";
 import { TABLES } from "../../cloud/conformance/digest.ts";
-import { respond } from "../../src/surface/result.ts";
+import { failure, respond } from "../../src/surface/result.ts";
+import { success } from "../../src/surface/dispatch.ts";
+import { ForgeFailure } from "../../src/contract/failure.ts";
 import * as f from "./import-current-state.fixture.ts";
 import * as converter from "../../tools/import-current.ts";
 
@@ -159,7 +161,22 @@ test.each(rows)(
                 await moduleUrl("../../tools/import-current.ts", edits)
               )) as typeof converter)
             : converter;
-          const r = await impl.run(options);
+          // Synthetic fixtures may surface unexpected exceptions; the operator boundary stays sanitized.
+          const r =
+            kind === "write"
+              ? await impl.run(options)
+              : await (async () => {
+                  try {
+                    return respond(
+                      success("import-current", await impl.convert(options)),
+                    );
+                  } catch (error) {
+                    if (!(error instanceof ForgeFailure)) throw error;
+                    return respond(
+                      failure(error.error.code, error.error.message),
+                    );
+                  }
+                })();
           const want =
             kind === "readback" && variant === "invalid"
               ? ["FAIL", 1, "RESTORE_INVALID_ROW"]
