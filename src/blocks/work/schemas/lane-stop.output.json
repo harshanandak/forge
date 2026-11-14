@@ -1,13 +1,14 @@
 {
-  "type": "object",
-  "required": ["stopped", "at"],
-  "properties": {
-    "stopped": {
-      "type": "string"
+  "anyOf": [
+    {
+      "type": "object",
+      "required": ["stopped", "at"],
+      "properties": {
+        "stopped": { "type": "string" },
+        "at": { "type": "string" }
+      },
+      "additionalProperties": false
     },
-    "at": {
-      "type": "string"
-    }
-  },
-  "additionalProperties": false
+    { "$ref": "lane-control.output.json" }
+  ]
 }

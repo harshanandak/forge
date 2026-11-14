@@ -99,11 +99,11 @@ test("issue show loads none of the modules it never calls", () => {
   }
 }, 60_000);
 
-// The output of main before the lazy command graph, as digests: help, the full help
-// contract and the MCP tool listing must stay byte for byte the same.
+// The public catalog after adding lane.control: help, its full contract and the MCP
+// tool listing must stay byte for byte the same until an intentional catalog change.
 const catalog = {
-  help: "3bd22f481e711b265c08a3f23dc69d7ea3a038e5aca8606ee5bd1c1ed9f3a8bd",
-  helpJson: "a3b412835b0bc597c75f2ff4421514030d90a219666990e44278adf688109623",
+  help: "fc6b8fad9c4e7ef0c465ddd35ec2d2bef6cb1029ec43d40793b739f91d2cd8a5",
+  helpJson: "5359e69a325d226c32c159cc4f704ae79e1abe2de3837f7de6c9ff17a7ebdb71",
   mcpTools: "20940d83078f63696241e5f9c58074e05e833047865f72b33787bb9ba3c7a19a",
 };
 
@@ -178,3 +178,33 @@ test("help, the help contract and the MCP tool listing are unchanged", async () 
     removeQuietly(root);
   }
 }, 60_000);
+
+test.each([{}, { id: "work-7" }])(
+  "unbound local lane.control reports unavailable for %j",
+  (input) => {
+    const { root, env } = project();
+    try {
+      const result = spawnSync(
+        node,
+        [bin, "lane", "control", "--input", JSON.stringify(input)],
+        {
+          cwd: root,
+          env,
+          encoding: "utf8",
+          timeout: 20_000,
+          windowsHide: true,
+        },
+      );
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr + result.stdout).toBe(1);
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        ok: false,
+        status: "FAIL",
+        error: { code: "UNAVAILABLE" },
+      });
+    } finally {
+      removeQuietly(root);
+    }
+  },
+  30_000,
+);

@@ -413,6 +413,17 @@
       "stability": "experimental",
       "args": ["id"]
     },
+    "lane.control": {
+      "input": "schemas/lane-control.input.json",
+      "output": "schemas/lane-control.output.json",
+      "context": "project",
+      "timeoutMs": 5000,
+      "effects": [],
+      "idempotent": true,
+      "callers": ["agent", "human"],
+      "stability": "experimental",
+      "args": ["id"]
+    },
     "lane.stop": {
       "input": "schemas/lane-stop.input.json",
       "output": "schemas/lane-stop.output.json",

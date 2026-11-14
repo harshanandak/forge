@@ -223,6 +223,7 @@ type TailAction = {
   approval?: { request: string; quote: string; source: ReplySource };
 };
 type WorkOperations = TrackerOperations<"issue"> & {
+  readonly "lane.control": readonly [{ id?: string }, never];
   readonly "attempt.slots": readonly [ItemRef & { count: number }, unknown];
   readonly "attempt.reserve": readonly [
     ItemRef & { label?: string; ttlSeconds?: number },
@@ -4261,6 +4262,8 @@ function laneRecord(call: HandlerCall<TailRecordInput>):
   return { lane: ids.shown(id), step: open.step, n: open.n, recorded: true };
 }
 const operations: Operations<WorkOperations> = {
+  "lane.control": () =>
+    fail("UNAVAILABLE", "Lane control requires a cloud-bound project"),
   "lane.next": (call) => laneNext(call),
   "lane.stop": (call) => laneStop(call),
   "lane.resume": (call) => laneResume(call),

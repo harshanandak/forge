@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^work-[1-9][0-9]*$",
+      "maxLength": 200
+    }
+  },
+  "additionalProperties": false
+}
