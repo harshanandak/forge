@@ -321,6 +321,7 @@ afterAll(() => {
 });
 
 interface Setup {
+  head?: () => string;
   bind?: Partial<CloudBinding> | string | false;
   creds?: Partial<CredentialEntry> | false;
   device?: string | false;
@@ -343,6 +344,7 @@ async function using(
     expect(r.sentinel?.mock.calls.filter(([write]) => write) ?? []).toEqual([]);
   } finally {
     await r.assembly.close();
+    r.headRead?.mockRestore();
     r.sentinel?.mockRestore();
     r.s.close();
   }
@@ -391,6 +393,22 @@ async function rig(o: Setup) {
       },
       terminal,
     });
+  const nativeRun = launch.runProcess;
+  const headRead = o.head
+    ? spyOn(launch, "runProcess").mockImplementation((...args) =>
+        args[1].join(" ") === "rev-parse --verify HEAD"
+          ? Promise.resolve({
+              exitCode: 0,
+              signal: null,
+              stdout: o.head!(),
+              stderr: "",
+              timedOut: false,
+              truncated: false,
+              durationMs: 0,
+            })
+          : nativeRun(...args),
+      )
+    : undefined;
   const assembly = await open(); // requests carry the context a real CLI or MCP call builds
   const request = (
     op: string,
@@ -405,7 +423,7 @@ async function rig(o: Setup) {
     context: localContext(assembly, { kind: "agent", id: "a1" }),
     ...change,
   });
-  return { s, net, sentinel, open, request, assembly, confirm, env };
+  return { s, net, sentinel, open, request, assembly, confirm, env, headRead };
 }
 const show = (r: Awaited<ReturnType<typeof rig>>) =>
   r.assembly.catalog.invoke(r.request("issue.show", { id: "forge-1" }));
@@ -1217,7 +1235,11 @@ async function initialReservationRace(
 ) {
   const s = fx.sandbox();
   const device = new LocalState(join(s.deviceRoot, "records.sqlite"));
-  await seedJournal(s, { ...journal, grant: OWN_GRANT });
+  await seedJournal(s, {
+    ...journal,
+    lane: { ...attachment, worktree: s.root },
+    grant: OWN_GRANT,
+  });
   await device.open(false);
   const entered = Promise.withResolvers<void>(),
     release = Promise.withResolvers<void>();
@@ -1231,7 +1253,10 @@ async function initialReservationRace(
     return open(write);
   });
   const flight = {
-    operation: { declaredOp: "lane.next" },
+    operation: {
+      declaredOp: "lane.next",
+      declaration: { effects: ["environment:read", "external:process"] },
+    },
     config: {},
     request: r.request(
       "lane.next",
@@ -1246,7 +1271,7 @@ async function initialReservationRace(
       device,
       () => Promise.resolve({ ...ISSUE, lease: OWN_GRANT }),
       {
-        providers: {} as Parameters<typeof coordinateLane>[4]["providers"],
+        providers: createAssemblyProviders(s.root, { env: r.env }),
         env: r.env,
         deviceRoot: s.deviceRoot,
         now: () => NOW,
@@ -1277,6 +1302,7 @@ for (const [name, variants] of [
       "generation counterfactual",
       "reattach result",
       "reattach verdict",
+      "head replay",
     ],
   ],
   [
@@ -1294,12 +1320,15 @@ for (const [name, variants] of [
       "regrant time",
     ],
   ],
-  ["Owner ask", ["ask", "held answer"]],
+  ["Owner ask", ["ask", "held answer", "completion after hold"]],
   [
     "Expired or replaced grant",
     ["expired", "generation", "holder", "inactive", "release pending"],
   ],
-  ["Malformed progress", ["counter", "permit", "pending", "verdict", "ask"]],
+  [
+    "Malformed progress",
+    ["counter", "permit", "pending", "verdict", "ask", "missing head"],
+  ],
 ] as const)
   test(`bound progress table: ${name}`, async () => {
     for (const variant of variants) {
@@ -1308,6 +1337,7 @@ for (const [name, variants] of [
       let recordingGeneration = lease.generation;
       const head = "a".repeat(40),
         moved = "b".repeat(40);
+      let checkoutHead = head;
       const progress = {
         generation: OWN_GRANT.generation,
         actions: 1,
@@ -1322,11 +1352,13 @@ for (const [name, variants] of [
         counter: { ...progress, actions: -1 },
         permit: { ...progress, permit: true },
         pending: { ...progress, pending: "yes" },
+        "missing head": { ...progress, head: undefined },
         verdict: { ...progress, verdict: { head, verdict: "PASS" } },
         ask: { ...progress, ask: { reason: "scope" } },
       };
       await using(
         {
+          head: () => checkoutHead,
           now: () => time,
           config: yaml({
             config: {
@@ -1348,7 +1380,9 @@ for (const [name, variants] of [
           prepare: async (s) => {
             if (
               (name === "Old verdict/result" &&
-                !["verdict", "result", "generation"].includes(variant)) ||
+                !["verdict", "result", "generation", "head replay"].includes(
+                  variant,
+                )) ||
               variant.startsWith("regrant ")
             ) {
               expect(
@@ -1367,6 +1401,7 @@ for (const [name, variants] of [
             }
             await seedJournal(s, {
               ...journal,
+              lane: { ...attachment, worktree: s.root },
               grant: OWN_GRANT,
               ...(name === "Malformed progress"
                 ? { progress: malformed[variant as keyof typeof malformed] }
@@ -1522,7 +1557,9 @@ for (const [name, variants] of [
               expect(await saved()).toEqual(reserved);
             } else if (
               name === "Old verdict/result" &&
-              !["verdict", "result", "generation"].includes(variant)
+              !["verdict", "result", "generation", "head replay"].includes(
+                variant,
+              )
             ) {
               // Same holder, head and action number: only the reservation generation distinguishes the late request.
               const late = r.request(
@@ -1598,9 +1635,40 @@ for (const [name, variants] of [
                 "progress.verdict.head",
                 head,
               );
+              checkoutHead = moved;
               expect((await next(moved)).ok).toBe(true);
               const changed = await saved();
               expect(changed.value).not.toHaveProperty("progress.verdict");
+              if (variant === "head replay") {
+                expect(
+                  (
+                    await invoke("lane.record", {
+                      mergeGate: {
+                        head: moved,
+                        verdict: "MERGE",
+                        reviewer: "new",
+                      },
+                    })
+                  ).ok,
+                ).toBe(true);
+                const reviewed = await saved();
+                expect(failed(await next(head), "INPUT_CONFLICT")).toBe(4);
+                expect(await saved()).toEqual(reviewed);
+                expect(
+                  failed(await record({ head, done: true }), "INPUT_CONFLICT"),
+                ).toBe(4);
+                expect(
+                  failed(
+                    await invoke("lane.record", {
+                      mergeGate: { head, verdict: "MERGE", reviewer: "old" },
+                    }),
+                    "INPUT_CONFLICT",
+                  ),
+                ).toBe(4);
+                expect(await saved()).toEqual(reviewed);
+                expect(projectFiles()).toEqual(files);
+                return;
+              }
               if (variant === "generation")
                 lease = { ...lease, generation: lease.generation + 1 };
               const old =
@@ -1681,8 +1749,10 @@ for (const [name, variants] of [
                   ask: expect.stringContaining("400 lines") as unknown,
                 },
               });
-              if (variant === "held answer") {
+              if (variant !== "ask") {
                 expect((await record({ head, answer: "hold" })).ok).toBe(true);
+                if (variant === "completion after hold")
+                  expect((await record({ head, done: true })).ok).toBe(true);
                 expect(await next()).toMatchObject({
                   ok: true,
                   result: { kind: "pause" },
