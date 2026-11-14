@@ -4,7 +4,7 @@ import {
   validateBlockId,
   validateLeaseRecord,
 } from "../../generated/validators.ts";
-import type { SqlDatabase } from "../../ports/store.ts";
+import type { SqlDatabase, SqlRow, SqlValue } from "../../ports/store.ts";
 import { parseRestoreJson } from "./restore-json.ts";
 
 /** Owner metadata, deliberately separate from the cloud v2 wire tables. */
@@ -217,6 +217,123 @@ export function encodeCheckpoint(value: Checkpoint): string {
 export function checkpointDigest(value: Checkpoint): string {
   return `sha256:${createHash("sha256").update(encodeCheckpoint(value)).digest("hex")}`;
 }
+
+export interface CheckpointSeed {
+  readonly coveredSequence: number;
+  readonly live: Checkpoint["live"];
+  readonly deleted: Checkpoint["deleted"];
+  readonly receipts: Checkpoint["receipts"];
+}
+
+/** Inspect once alongside the first receipt page, adding no empty-store probes. */
+export function readReplayStart(
+  db: SqlDatabase,
+  pageSize: number,
+  checkpointCapable: boolean,
+): {
+  readonly checkpoint: CheckpointSeed | undefined;
+  readonly receipts: readonly SqlRow[];
+} {
+  if (!Number.isSafeInteger(pageSize) || pageSize < 1)
+    invalid("Invalid checkpoint page size");
+  const receiptPage =
+    "SELECT namespace,request_id,fingerprint,result FROM state_requests ORDER BY namespace,request_id LIMIT ?";
+  if (!checkpointCapable)
+    return { checkpoint: undefined, receipts: db.all(receiptPage, [pageSize]) };
+  const firstPage = db.all(
+    `SELECT receipts.*,header.*,(${Object.keys(checkpointTables)
+      .map((table) => `EXISTS(SELECT 1 FROM ${table})`)
+      .join(
+        " OR ",
+      )}) AS checkpoint_entries FROM (SELECT 1) LEFT JOIN (SELECT namespace,request_id,fingerprint,result,1 AS checkpoint_request FROM state_requests ORDER BY namespace,request_id LIMIT ?) AS receipts ON 1 LEFT JOIN state_checkpoint_header AS header ON header.id=1 ORDER BY namespace,request_id LIMIT ?`,
+    [pageSize, pageSize],
+  );
+  const first = firstPage[0];
+  if (!first) invalid("Invalid checkpoint inspection");
+  const receipts = first.checkpoint_request === null ? [] : firstPage;
+  const header = first.id === null ? undefined : first;
+  if (!header) {
+    if (Number(first.checkpoint_entries) !== 0)
+      invalid("Checkpoint entries require a header");
+    return { checkpoint: undefined, receipts };
+  }
+  for (const kind of ["leases", "floors", "reservations", "denied"])
+    if (db.get(`SELECT 1 FROM state_checkpoint_${kind} LIMIT 1`))
+      invalid(`Unsupported checkpoint ${kind} entries; newer Forge required`);
+  const read = (
+    kind: string,
+    columns: readonly string[],
+    keys: readonly string[],
+  ): SqlValue[][] => {
+    const result: SqlValue[][] = [];
+    let after: readonly SqlValue[] | undefined;
+    for (;;) {
+      const rows = db.all(
+        `SELECT ${columns.join(",")} FROM state_checkpoint_${kind}${after === undefined ? "" : ` WHERE (${keys.join(",")}) > (${keys.map(() => "?").join(",")})`} ORDER BY ${keys.join(",")} LIMIT ?`,
+        [...(after ?? []), pageSize],
+      );
+      for (const row of rows)
+        result.push(
+          columns.map((column) => {
+            const cell = row[column]!;
+            return typeof cell === "bigint" ? Number(cell) : cell;
+          }),
+        );
+      if (rows.length < pageSize) return result;
+      after = keys.map((column) => rows.at(-1)![column]!);
+    }
+  };
+  const checkpoint = decodeCheckpoint(
+    JSON.stringify({
+      header: [
+        "format_version",
+        "lineage",
+        "generation",
+        "covered_sequence",
+        "retention_policy_version",
+        "archive_through",
+      ].map((column) => {
+        const cell = header[column];
+        return typeof cell === "bigint" ? Number(cell) : cell;
+      }),
+      live: read(
+        "live",
+        ["namespace", "key", "sequence", "revision", "digest"],
+        ["namespace", "key"],
+      ),
+      deleted: read(
+        "deleted",
+        ["namespace", "key", "sequence", "revision"],
+        ["namespace", "key"],
+      ),
+      receipts: read(
+        "receipts",
+        [
+          "namespace",
+          "request_id",
+          "sequence",
+          "fingerprint_digest",
+          "result_digest",
+        ],
+        ["namespace", "request_id"],
+      ),
+      leases: [],
+      floors: [],
+      reservations: [],
+      denied: [],
+    }),
+  );
+  return {
+    checkpoint: {
+      coveredSequence: checkpoint.header[3],
+      live: checkpoint.live,
+      deleted: checkpoint.deleted,
+      receipts: checkpoint.receipts,
+    },
+    receipts,
+  };
+}
+
 /** Trusted owner-side inspection; older images may predate these tables. */
 export function assertNoCheckpoint(db: SqlDatabase): void {
   for (const table of Object.keys(checkpointTables))
