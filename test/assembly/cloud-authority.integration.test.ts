@@ -1735,7 +1735,11 @@ for (const [name, variants] of [
           const files = projectBytes();
           const context = holding(
             r,
-            variant === "caller generation" ? { leaseGeneration: 99 } : {},
+            variant === "caller generation"
+              ? { leaseGeneration: 99 }
+              : name === "Still refused"
+                ? { leaseGeneration: grant.generation }
+                : {},
           );
           if (variant === "stopped")
             expect(
