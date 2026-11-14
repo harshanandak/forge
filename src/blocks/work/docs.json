@@ -1,7 +1,5 @@
 {
   "operations": {
-    "receipt.admit": { "title": "admit", "summary": "Admission unavailable." },
-    "receipt.show": { "title": "show", "summary": "Read unavailable." },
     "lane.release": {
       "title": "Release lane",
       "summary": "Release a hand-closed lane; with attempt, release an attempt without a live lease, including a missing worktree. Refuse dirty or ignored work and pending closes. Keep the branch. Normal lanes require a closed issue without a receipt or live lease.",

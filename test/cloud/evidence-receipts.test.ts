@@ -256,19 +256,13 @@ const rows: Row[] = [
     },
   ]),
   ...["receipt.admit", "receipt.show"].map((op): Row => [
-    `${op} is declared with schemas but not routed`,
+    `${op} is removed and not routed`,
     async (f) => {
       const declarations = manifest.operations as Record<
         string,
         { input: string; output: string }
       >;
-      expect(declarations[op]).toBeDefined();
-      for (const schema of [declarations[op]!.input, declarations[op]!.output])
-        expect(
-          await Bun.file(
-            new URL(`../../src/blocks/work/${schema}`, import.meta.url),
-          ).json(),
-        ).toHaveProperty("type", "object");
+      expect(declarations[op]).toBeUndefined();
       const response = await f.send(
         call("receipt-unrouted", op, { id: "forge-1" }),
       );

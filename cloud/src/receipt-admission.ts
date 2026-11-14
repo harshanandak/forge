@@ -1,20 +1,16 @@
-import Input from "../../src/blocks/work/schemas/receipt-admit.input.json" with { type: "json" };
-import { validateWithSchema } from "../../src/contract/schema.ts";
+import Input from "../../src/blocks/work/schemas/CloseInput.json" with { type: "json" };
 import type { StateOwner } from "../../src/core/state/index.ts";
-import type { StateRecord } from "../../src/generated/types.ts";
+import type { StateRecord, TrackerItem } from "../../src/generated/types.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
 import { commandWrite, prepareReceipt } from "./command-write.ts";
-import {
-  decodeEvidence,
-  EvidenceReceiptStore,
-  type EvidenceReceipt,
-} from "./evidence-receipts.ts";
+import { EvidenceReceiptStore } from "./evidence-receipts.ts";
+import { writeClose } from "./issue-close.ts";
 import { readGithubMergeEvidence } from "./github-evidence.ts";
 import type { composeGithub } from "./github-compose.ts";
 import { listLinks } from "./issue-links.ts";
-import { fail } from "./issue-read.ts";
+import { configured, fail, minted, schemas, storedId } from "./issue-read.ts";
 import { replay } from "./issue-receipts.ts";
-import { heldLease } from "./issue-update.ts";
+import { heldLease, heldReplay } from "./issue-update.ts";
 import type { WriteCall } from "./issue-write.ts";
 import { evaluateMergeEvidence } from "./merge-evidence.ts";
 import { carriesToken } from "./tokens.ts";
@@ -28,7 +24,7 @@ type Ports = ReturnType<typeof composeGithub> & {
   };
   readonly verifierVersion: string;
 };
-const OP = "receipt.admit",
+const OP = "issue.close",
   NAMESPACE = "forge/work";
 
 /** Server-only coordinator: observe outside the transaction, recheck and commit without an await. */
@@ -37,7 +33,7 @@ export async function admitReceipt(
   owner: StateOwner,
   call: WriteCall,
   ports: Ports,
-): Promise<EvidenceReceipt> {
+): Promise<TrackerItem> {
   const { input, context } = structuredClone({
     input: call.input,
     context: call.context,
@@ -52,22 +48,30 @@ export async function admitReceipt(
     context,
     device: call.device,
   });
-  const replayed = (receipt: EvidenceReceipt) =>
-    heldLease(owner, context, receipt.candidate.binding.issueId, OP);
+  configured(call.prefix);
+  const replayed = (issue: TrackerItem) =>
+    heldReplay(owner, OP)(issue, context);
   call.recheck();
   const prior = replay(db, owner, identity.requestId, identity.fingerprint);
   if (prior !== undefined) {
-    const receipt = decodeEvidence(JSON.stringify(prior));
-    replayed(receipt);
-    return receipt;
+    replayed(prior as TrackerItem);
+    return prior as TrackerItem;
   }
   const binding = ports.mergePolicyBinding();
   const p0 = await ports.mergePolicy();
   // Prepare is synchronous; P0 is the server snapshot resolved before entering it.
   call.recheck();
-  if (validateWithSchema(Input, input).length)
+  if (
+    schemas().validate(Input.$ref, input).length ||
+    !(input as { pr?: unknown }).pr
+  )
     throw fail("INPUT_INVALID", "input must be { id, pr }");
-  const { id, pr } = input as { id: string; pr: number };
+  const {
+    id: given,
+    pr,
+    reason,
+  } = input as { id: string; pr: number; reason?: string };
+  const id = storedId(given, call.prefix as string, minted(db));
   if (!owner.get(NAMESPACE, `issue:${id}`))
     throw fail("NOT_FOUND", "Issue was not found");
   heldLease(owner, context, id, OP);
@@ -148,7 +152,7 @@ export async function admitReceipt(
           "INPUT_CONFLICT",
           "Merge policy changed during evidence verification",
         );
-      return new EvidenceReceiptStore(db, policy.project).put({
+      const receipt = new EvidenceReceiptStore(db, policy.project).put({
         candidate: evaluated.candidate,
         policy,
         repository,
@@ -156,6 +160,13 @@ export async function admitReceipt(
         actor: context.actor.id,
         device: call.device,
       });
+      return writeClose(
+        owner,
+        { id, reason, receipt: receipt.id },
+        context.actor,
+        call.prefix as string,
+        context,
+      );
     },
     replayed,
   );

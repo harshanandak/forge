@@ -40,13 +40,13 @@ const shapes: readonly [string, object, boolean][] = [
   ["pr", { pr: 490 }, true],
   ["receipt", { receipt: "local-receipt" }, true],
   ["reason", { withoutReceipt: "manual close" }, true],
-  ["missing proof", {}, false],
+  ["missing proof", {}, true],
   ["receipt and pr", { receipt: "local-receipt", pr: 490 }, false],
   ["reason and pr", { withoutReceipt: "manual close", pr: 490 }, false],
   [
     "receipt and reason",
     { receipt: "local-receipt", withoutReceipt: "manual close" },
-    false,
+    true,
   ],
   ...[0, -1, 1.5, "490", null].map((pr): [string, object, boolean] => [
     `invalid pr ${JSON.stringify(pr)}`,

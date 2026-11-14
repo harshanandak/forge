@@ -283,6 +283,7 @@
         "id": { "$ref": "#/$defs/ItemId" },
         "reason": { "type": "string", "maxLength": 2000 },
         "receipt": { "$ref": "#/$defs/ItemId" },
+        "pr": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
         "withoutReceipt": {
           "type": "string",
           "minLength": 1,
@@ -290,7 +291,14 @@
           "pattern": "\\S"
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "not": {
+        "required": ["pr"],
+        "anyOf": [
+          { "required": ["receipt"] },
+          { "required": ["withoutReceipt"] }
+        ]
+      }
     }
   }
 }
