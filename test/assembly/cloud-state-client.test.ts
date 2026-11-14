@@ -1,4 +1,5 @@
 import { expect, setDefaultTimeout, test } from "bun:test";
+import { parseStateInput } from "../../cloud/src/state-input.ts";
 import {
   createCloudHttp,
   type CloudFetch,
@@ -26,7 +27,7 @@ import type {
   StateReadRequest,
   StateCommitRequest,
 } from "../../src/ports/state-protocol.ts";
-import { exitCode } from "../../src/surface/result.ts";
+import { exitCode, failure as failEnvelope } from "../../src/surface/result.ts";
 import {
   entry,
   ORIGIN,
@@ -788,6 +789,7 @@ function recordRig(
     response?: unknown;
     status?: number;
     lost?: boolean;
+    abortAfterSend?: AbortController;
     signal?: AbortSignal;
   } = {},
 ) {
@@ -799,9 +801,9 @@ function recordRig(
     project: options.bound?.project ?? PROJECT,
     fetch: (url, init) => {
       expect(init.headers.authorization).toBe(`Bearer ${TOKEN}`);
-      const body = JSON.parse(init.body!) as
-        StateReadRequest | StateCommitRequest;
+      const body = parseStateInput(init.body!);
       calls.push({ url, body });
+      options.abortAfterSend?.abort();
       if (options.lost) throw new Error(`lost reply ${TOKEN}`);
       return Promise.resolve(
         new Response(
@@ -916,13 +918,9 @@ for (const op of recordOps) {
   });
   const refusal = (status: number, code: string) => ({
     status,
-    response: {
-      ok: false,
-      status: "FAIL",
-      warnings: [],
-      error: { code, message: "server diagnostic", retry: "never" },
-    },
+    response: failEnvelope(code, "server diagnostic"),
   });
+  const late = new AbortController();
   const badReplies: [
     string,
     Parameters<typeof recordRig>[0],
@@ -933,6 +931,12 @@ for (const op of recordOps) {
     ["conflict", refusal(409, "REVISION_CONFLICT"), "REVISION_CONFLICT", 4],
     ["unknown refusal", refusal(418, "UNKNOWN"), "UNAVAILABLE", 1],
     ["lost reply", { lost: true }, "UNAVAILABLE", 1],
+    [
+      "post-send abort",
+      { signal: late.signal, abortAfterSend: late },
+      op === "commit" ? "UNAVAILABLE" : "INVOCATION_CANCELLED",
+      1,
+    ],
     [
       "token echo",
       { response: { ...recordAnswer(op === "commit"), leaked: TOKEN } },
@@ -965,3 +969,11 @@ for (const op of recordOps) {
     r.unchanged();
   });
 }
+
+test("record fixture refuses a commit carrying a read query", async () => {
+  const r = recordRig();
+  const bad = { ...COMMIT, query: READ.query };
+  const failed = await failureOf(() => r.client.commit(bad));
+  expect(failed.error.code).toBe("UNAVAILABLE");
+  expect(r.calls).toHaveLength(0);
+});
