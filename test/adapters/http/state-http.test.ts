@@ -1,4 +1,8 @@
 import { expect, setDefaultTimeout, test } from "bun:test";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   createCloudHttp,
   type CloudFetch,
@@ -82,9 +86,10 @@ const json = (value: unknown, status = 200) =>
 function fixture(
   reply: (init: Parameters<CloudFetch>[1]) => Response | Promise<Response>,
   timeoutMs = 50,
+  create = createCloudHttp,
 ) {
   const calls: { url: string; init: Parameters<CloudFetch>[1] }[] = [];
-  const http = createCloudHttp({
+  const http = create({
     origin: "https://forge.example.test",
     project: "proj",
     timeoutMs,
@@ -116,6 +121,68 @@ async function refused(run: () => Promise<unknown>, code = "UNAVAILABLE") {
   const projected = failure(error.code, error.message);
   expect([projected.status, exitCode(projected)]).toEqual(["FAIL", 1]);
 }
+
+const ceiling = 1_048_576;
+function responseBytes(bytes: number) {
+  const body = (value: string) =>
+    envelope(resultFor(read(), { kind: "get", record: { ...record, value } }));
+  const overhead = Buffer.byteLength(JSON.stringify(body("")));
+  const text = JSON.stringify(body("x".repeat(bytes - overhead)));
+  expect(Buffer.byteLength(text)).toBe(bytes);
+  return text;
+}
+async function byteBoundary(create = createCloudHttp) {
+  for (const delta of [-1, 0, 1]) {
+    const text = responseBytes(ceiling + delta);
+    const f = fixture(() => new Response(text), 1_000, create);
+    if (delta > 0) await refused(() => f.send(read()));
+    else {
+      expect<unknown>(await f.send(read())).toEqual({
+        kind: "ok",
+        result: JSON.parse(text).result,
+      });
+    }
+    expect(f.calls).toHaveLength(1);
+  }
+}
+test("state byte boundary accepts valid responses through the ceiling only", async () => {
+  await byteBoundary();
+});
+test("state byte boundary counterfactual fails with a raised ceiling", async () => {
+  const original = new URL(
+    "../../../src/adapters/http/index.ts",
+    import.meta.url,
+  );
+  const source = await readFile(original, "utf8");
+  const target = "Math.min(commandMax, 1_048_576)";
+  expect(source.split(target)).toHaveLength(2);
+  // Load a disposable module: production files stay untouched; only its effective cap changes.
+  const mutant = source
+    .replace(target, "2_097_152")
+    .replace(
+      /from "(\.[^"]+)"/g,
+      (_, path: string) => `from "${new URL(path, original).href}"`,
+    );
+  const dir = await mkdtemp(join(tmpdir(), "forge-state-byte-ceiling-"));
+  try {
+    const file = join(dir, "http-mutant.ts");
+    await writeFile(file, mutant);
+    const loaded = (await import(
+      pathToFileURL(file).href
+    )) as typeof import("../../../src/adapters/http/index.ts");
+    const f = fixture(
+      () => new Response(responseBytes(ceiling + 1)),
+      1_000,
+      loaded.createCloudHttp,
+    );
+    const accepted = await f.send(read());
+    expect(accepted.kind).toBe("ok");
+    await expect(refused(() => Promise.resolve(accepted))).rejects.toThrow();
+    expect(f.calls).toHaveLength(1);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 const valid: [string, StateReadRequest | StateCommitRequest, unknown][] = [
   ["get", read(), { kind: "get", record }],
@@ -395,7 +462,7 @@ for (const mode of [
         return json({ ...good, error: { code: "UNAVAILABLE" } });
       if (mode === "warnings") return json({ ...good, warnings: ["unsafe"] });
       if (mode === "token key") return json({ ...good, [token]: true });
-      if (mode === "oversize") return new Response(" ".repeat(1_048_577));
+      if (mode === "oversize") return new Response(responseBytes(ceiling + 1));
       if (mode === "depth" || mode === "nodes") {
         const value: unknown =
           mode === "nodes"
