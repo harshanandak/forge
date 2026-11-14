@@ -27,6 +27,8 @@ import {
   EXPORT_STATE,
   dumpOf,
   dumpPage,
+  dumpUsage,
+  DUMP_USAGE_SQL,
   limitsFrom,
   parseDump,
   restoreDump,
@@ -262,7 +264,7 @@ export class Project {
   readonly #env: LoginEnv;
   readonly #browser: DeviceBrowserOptions;
 
-  // `env` carries the page and project limits (DUMP_PAGE_BYTES, DUMP_MAX_BYTES); a deploy sets none.
+  // The existing parser resolves DUMP_PAGE_BYTES, DUMP_MAX_ROWS and DUMP_MAX_BYTES once.
   constructor(
     ctx: DurableState,
     env?: unknown,
@@ -457,11 +459,22 @@ export class Project {
           throw error;
         }
       }
-      if (request.method === "GET" && route === "status")
-        return Response.json({
-          ok: true,
-          value: { initialized: await this.#isProvisioned() },
-        });
+      if (request.method === "GET" && route === "status") {
+        try {
+          const initialized = await this.#isProvisioned();
+          const db = initialized
+            ? readOnlyStore(this.#storage, "state_records", DUMP_USAGE_SQL)
+            : undefined;
+          if (initialized && db === undefined)
+            throw new Error("Missing dump tables");
+          return Response.json({
+            ok: true,
+            value: { initialized, dump: dumpUsage(db, this.#limits) },
+          });
+        } catch {
+          throw fail("UNAVAILABLE", "Dump usage is unavailable");
+        }
+      }
       const reads = request.method === "GET" && route === "holder";
       const writes =
         request.method === "POST" &&
