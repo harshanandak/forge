@@ -74,7 +74,7 @@ test.each(rows)(
           state = f.owner(scratch);
         state.initialize();
         if (kind === "empty")
-          state.put(f.ns, "issue:work-100", { keep: true }, f.actor, {
+          state.put(f.ns, "issue:work-1", { keep: true }, f.actor, {
             expectRevision: 0,
           });
         const scratchBefore = f.snapshot(scratch);

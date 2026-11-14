@@ -14,9 +14,8 @@ export const ns = "forge/work",
   at = 1_800_000_000_000;
 export const actor = { kind: "agent", id: "synthetic-import" } as const;
 export const holder = {
-  principal: "synthetic",
-  device: "fixture",
-  session: "one",
+  actor,
+  session: { id: "one", device: "fixture" },
 };
 const resources: (() => void)[] = [];
 afterEach(() =>
@@ -104,7 +103,7 @@ export function source(
     }
     if (authority) {
       state.put(ns, "issue:work-1", { id: "work-1", title: "receipt" }, actor, {
-        expectRevision: 0,
+        expectRevision: 1,
         requestId: "old-put",
       });
       state.acquire(ns, "issue:work-1", holder, 60_000, "old-claim");
@@ -136,9 +135,9 @@ export function result(body: () => unknown) {
 }
 type Change = readonly [string, string];
 const changes: Record<string, Change> = {
-  historical: ["Math.max(found.highest, found.earlier)", "0"],
+  historical: ["Math.max(summary.highest, summary.earlier)", "0"],
   consistency: [
-    "verifyEventDerivedState(source, manifest.eventHighWaterMark, undefined, numbered)",
+    "verifyEventDerivedState(\n      source,\n      manifest.eventHighWaterMark,\n      undefined,\n      numbered,\n    )",
     "({ highest: 0, earlier: 0, floorRevision: 0 })",
   ],
   scope: [
@@ -150,10 +149,7 @@ const changes: Record<string, Change> = {
     "false",
   ],
   count: ["records !== manifest.records", "false"],
-  empty: [
-    'if (scratch.get("SELECT 1 FROM state_records LIMIT 1"))',
-    "if (false)",
-  ],
+  empty: ["if (nonempty)", "if (false)"],
   authority: [
     "verifyEventDerivedState(scratch, events);",
     `for (const table of ["state_events", "state_leases", "state_requests"]) {
@@ -162,7 +158,10 @@ const changes: Record<string, Change> = {
   }`,
   ],
   revision: ["event.revision !== (recordRevisions.get(id) ?? 0) + 1", "false"],
-  fence: ["if (options.fence) this.#held(namespace, options.fence, now);", ""],
+  fence: [
+    "if (options.fence) this.#held(namespace, options.fence, now);\n      return this.#request(\n        namespace,\n        options.requestId,\n        {\n          kind: \"put\",",
+    "return this.#request(\n        namespace,\n        options.requestId,\n        {\n          kind: \"put\",",
+  ],
 };
 async function moduleUrl(
   path: string,
