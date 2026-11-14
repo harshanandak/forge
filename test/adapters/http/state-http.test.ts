@@ -434,6 +434,7 @@ for (const mode of [
   "body stall",
   "abort",
   "pre-abort",
+  "pre-abort without unhandled rejection",
   "transport token",
 ] as const)
   test(`state unsafe/deadline table: ${mode}`, async () => {
@@ -492,12 +493,27 @@ for (const mode of [
         retry: "never",
       });
     });
-    if (mode === "pre-abort") controller.abort();
-    await refused(
-      () => f.send(read(), controller.signal),
-      mode === "abort" || mode === "pre-abort"
-        ? "INVOCATION_CANCELLED"
-        : "UNAVAILABLE",
-    );
-    expect(f.calls).toHaveLength(mode === "pre-abort" ? 0 : 1);
+    const preAborted = mode.startsWith("pre-abort");
+    const observe = mode === "pre-abort without unhandled rejection";
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => {
+      unhandled.push(reason);
+    };
+    if (observe) process.on("unhandledRejection", onUnhandled);
+    try {
+      if (preAborted) controller.abort();
+      await refused(
+        () => f.send(read(), controller.signal),
+        mode === "abort" || preAborted
+          ? "INVOCATION_CANCELLED"
+          : "UNAVAILABLE",
+      );
+      expect(f.calls).toHaveLength(preAborted ? 0 : 1);
+      if (observe) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(unhandled).toEqual([]);
+      }
+    } finally {
+      if (observe) process.off("unhandledRejection", onUnhandled);
+    }
   });
