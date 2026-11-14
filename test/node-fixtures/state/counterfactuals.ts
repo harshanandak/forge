@@ -24,7 +24,7 @@ const mutations = [
     "receipt",
   ].map((mutation) => ({
     file: "core/state/index.js",
-    from: "verifyEventDerivedState(candidate, eventHighWaterMark, pageSize);",
+    from: 'verifyEventDerivedState(candidate, eventHighWaterMark, pageSize, undefined, applied.some((row) => row.id === "004_state_checkpoint"));',
     to: "void 0;",
     journey: `derivedstate:${mutation}`,
     evidence: "Missing expected exception",
