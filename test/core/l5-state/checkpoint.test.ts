@@ -465,6 +465,20 @@ const cases: readonly (readonly [
     /state_records/,
   ],
   [
+    "checkpoint digest matches a body with the wrong key",
+    false,
+    (s) => {
+      const record = { ...s.owner.get(ns, "a")!, key: "b" };
+      s.db.run("UPDATE state_records SET body=? WHERE key='a'", [
+        JSON.stringify(record),
+      ]);
+      s.db.run("UPDATE state_checkpoint_live SET digest=? WHERE key='a'", [
+        canonicalDigest(record),
+      ]);
+    },
+    /state_records/,
+  ],
+  [
     "extra live row",
     false,
     (s) => {

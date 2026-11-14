@@ -984,6 +984,8 @@ export function verifyEventDerivedState(
       if (
         !validateStateRecord(record).ok ||
         !records.has(id) ||
+        record.namespace !== row.namespace ||
+        record.key !== row.key ||
         digest(record) !== records.get(id)?.digest ||
         record.revision !== records.get(id)?.revision ||
         record.revision !== Number(row.revision)
