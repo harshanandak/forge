@@ -1611,7 +1611,14 @@ for (const [name, variants] of [
   ],
   [
     "Lost release answer",
-    ["accepted", "still held", "read unavailable", "replacement", "retry"],
+    [
+      "accepted",
+      "still held",
+      "read unavailable",
+      "replacement",
+      "retry",
+      "delayed original request",
+    ],
   ],
   ["Release with no attachment", ["no journal", "unknown issue"]],
   ["Still refused", ["lane.next", "lane.record", "lane.close"]],
@@ -1654,6 +1661,8 @@ for (const [name, variants] of [
         reads = 0,
         stopped = false;
       let sandbox: fx.Sandbox, before: ReturnType<typeof attachmentBytes>;
+      const releaseIds: string[] = [];
+      let effects = 0;
       const issue = { ...ISSUE, body: "retained cloud body" };
       await using(
         {
@@ -1682,6 +1691,7 @@ for (const [name, variants] of [
             ({ body }) => {
               const call = body as {
                 op: string;
+                requestId: string;
                 input: { id?: string };
                 context: { leaseGeneration?: number };
               };
@@ -1697,13 +1707,19 @@ for (const [name, variants] of [
                 expect(call.input.id).toBe(journal.cloudId);
                 expect(call.context.leaseGeneration).toBe(grant.generation);
                 releases++;
+                releaseIds.push(call.requestId);
+                if (variant === "delayed original request" && releases === 2)
+                  return call.requestId === releaseIds[0]
+                    ? answer({ id: ISSUE.id }, call.op)
+                    : refusing("LEASE_NOT_HELD");
                 if (name === "Lost release answer") {
-                  current =
-                    variant === "still held"
-                      ? grant
-                      : variant === "replacement"
-                        ? { ...grant, generation: grant.generation + 1 }
-                        : undefined;
+                  current = ["still held", "delayed original request"].includes(
+                    variant,
+                  )
+                    ? grant
+                    : variant === "replacement"
+                      ? { ...grant, generation: grant.generation + 1 }
+                      : undefined;
                   throw new Error("release reply lost");
                 }
                 current = undefined;
@@ -1718,10 +1734,15 @@ for (const [name, variants] of [
                 reads === 2
               )
                 throw new Error("authority unavailable");
-              return answer({
+              const response = answer({
                 ...issue,
                 ...(current ? { lease: current } : {}),
               });
+              if (variant === "delayed original request" && reads === 3) {
+                current = undefined;
+                effects++;
+              }
+              return response;
             },
           ],
         },
@@ -1759,9 +1780,12 @@ for (const [name, variants] of [
                   ? "LEASE_STALE"
                   : name === "Release by another holder"
                     ? "LEASE_NOT_HELD"
-                    : ["still held", "read unavailable", "retry"].includes(
-                          variant,
-                        )
+                    : [
+                          "still held",
+                          "read unavailable",
+                          "retry",
+                          "delayed original request",
+                        ].includes(variant)
                       ? "UNAVAILABLE"
                       : "OK";
           const input =
@@ -1799,8 +1823,11 @@ for (const [name, variants] of [
           if (name !== "Lost release answer" && expected !== "OK")
             expect(releases).toBe(0);
           if (name === "Still refused") expect(r.net.calls).toHaveLength(0);
-          if (expected === "OK" || variant === "retry") {
-            if (variant === "retry") {
+          if (
+            expected === "OK" ||
+            ["retry", "delayed original request"].includes(variant)
+          ) {
+            if (["retry", "delayed original request"].includes(variant)) {
               expect(releases).toBe(1);
               expect(
                 (
@@ -1832,7 +1859,13 @@ for (const [name, variants] of [
             } finally {
               await local.close();
             }
-            expect(releases).toBe(1);
+            expect(releases).toBe(
+              variant === "delayed original request" ? 2 : 1,
+            );
+            if (variant === "delayed original request") {
+              expect(releaseIds).toEqual([releaseIds[0]!, releaseIds[0]!]);
+              expect(effects).toBe(1);
+            }
             if (name === "Lost release answer")
               expect(reads).toBeGreaterThanOrEqual(2);
             if (variant === "accepted") {
