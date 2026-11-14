@@ -6,6 +6,11 @@ import { durableStore, type DurableStorage } from "../../cloud/src/store.ts";
 import { StateOwner } from "../../src/core/state/index.ts";
 import type { ResultEnvelope } from "../../src/generated/types.ts";
 import { exitCode } from "../../src/surface/result.ts";
+import {
+  LANE_APPROVALS,
+  laneApprovalStatus,
+  type LaneApproval,
+} from "../../cloud/src/lane-approval.ts";
 
 if (!("timingSafeEqual" in crypto.subtle))
   Object.defineProperty(crypto.subtle, "timingSafeEqual", {
@@ -55,20 +60,30 @@ async function fixture(projectName = "p", session: string | null = "s1") {
   };
   const project = new Project(
     { storage },
-    { FORGE_CLOUD_PROJECT: projectName, FORGE_CLOUD_ID_PREFIX: "forge" },
+    {
+      FORGE_CLOUD_PROJECT: projectName,
+      FORGE_CLOUD_ID_PREFIX: "forge",
+      CLERK_REDIRECT_URI: "https://w.example/callback",
+      CLERK_ISSUER: "https://identity.example",
+      CLERK_CLIENT_ID: "forge-cloud",
+      FORGE_OWNER_SUBJECT: "owner",
+    },
   );
-  const admitted = await project.fetch(
-    new Request(`https://w.example/p/${projectName}/devices`, {
-      method: "POST",
-      body: JSON.stringify({
-        device: "laptop",
-        ...(session === null ? {} : { session }),
-        ttlMs: 86_400_000,
+  const admit = async (device: string) => {
+    const admitted = await project.fetch(
+      new Request(`https://w.example/p/${projectName}/devices`, {
+        method: "POST",
+        body: JSON.stringify({
+          device,
+          ...(session === null ? {} : { session }),
+          ttlMs: 86_400_000,
+        }),
       }),
-    }),
-  );
-  const token = ((await admitted.json()) as { value: { token: string } }).value
-    .token;
+    );
+    return ((await admitted.json()) as { value: { token: string } }).value
+      .token;
+  };
+  const token = await admit("laptop");
   const owner = new StateOwner(durableStore(storage), { now: () => now });
   const put = (key: string, value: unknown) =>
     owner.put("forge/work", key, value, actor, { expectRevision: 0 });
@@ -89,6 +104,7 @@ async function fixture(projectName = "p", session: string | null = "s1") {
         "state_leases",
         "state_requests",
         "domain_cloud_command_receipts",
+        LANE_APPROVALS,
       ].map((name) => db.query(`SELECT * FROM ${name}`).all()),
       [...values],
     ]);
@@ -96,16 +112,18 @@ async function fixture(projectName = "p", session: string | null = "s1") {
     db,
     owner,
     put,
+    clock,
+    admit,
     snapshot,
     close: () => {
       db.close();
       clock.mockRestore();
     },
-    send: async (body: unknown, route = projectName) => {
+    send: async (body: unknown, route = projectName, headers = {}) => {
       const response = await createWorker().fetch(
         new Request(`https://w.example/p/${route}/command`, {
           method: "POST",
-          headers: { authorization: `Bearer ${token}` },
+          headers: { authorization: `Bearer ${token}`, ...headers },
           body: JSON.stringify(body),
         }),
         {
@@ -227,7 +245,6 @@ const refusals: [string, string, object, object, string, number][] = [
     "AUTH_DEVICE_MISMATCH",
     1,
   ],
-  ["resume", "lane.resume", { all: true }, {}, "UNKNOWN_COMMAND", 3],
 ];
 test.each(refusals)(
   "%s refuses without a record, event or receipt",
@@ -349,6 +366,7 @@ test.each([
   { op: "lane.control", dryRun: false },
   { op: "lane.stop", dryRun: false },
   { op: "lane.stop", dryRun: true },
+  { op: "lane.resume", dryRun: false },
 ])(
   "a device-only token cannot claim a session for %j",
   async ({ op, dryRun }) => {
@@ -371,23 +389,264 @@ test.each([
   10_000,
 );
 
-test.each(["audit", "receipt"])(
+test.each([
+  "issue",
+  "all",
+  "all issue stops",
+  "device token",
+  "hostile headers",
+])(
+  "lane.resume creates one exact pending request for %s without changing control",
+  async (mode) => {
+    const f = await fixture("p", mode === "device token" ? null : "s1");
+    try {
+      const scope = mode.startsWith("all") ? { all: true } : { id: "work-7" };
+      await f.send(call("lane.stop", { all: true }, "initialize"));
+      // An issue resume cannot clear a project-wide stop.
+      if (mode !== "all") {
+        f.owner.put("forge/work", "lane-control:global", running, actor, {
+          expectRevision: 1,
+        });
+        await f.send(call("lane.stop", { id: "work-7" }, "stop-issue"));
+      }
+      const before = [
+        f.owner.get("forge/work", "lane-control:global"),
+        f.owner.get("forge/work", "lane-control:work-7"),
+      ];
+      const request = call("lane.resume", scope, "ask");
+      const headers =
+        mode === "hostile headers"
+          ? {
+              Host: "evil.example",
+              Origin: "https://evil.example",
+              "X-Forwarded-Host": "evil.example",
+            }
+          : {};
+      const reply = await f.send(request, "p", headers);
+      expect(reply.verdict).toEqual(["FAIL", "APPROVAL_REQUIRED", 1]);
+      expect(reply.envelope).toMatchObject({
+        ok: false,
+        status: "FAIL",
+        result: {
+          scope,
+          expiresAt: new Date(now + 600_000).toISOString(),
+        },
+      });
+      const pending = (
+        reply.envelope as unknown as {
+          result: { request: string; url: string };
+        }
+      ).result;
+      expect(pending.request).toMatch(/^[a-f0-9-]+$/);
+      expect(pending.url).toBe(
+        `https://w.example/lane-approval/${pending.request}`,
+      );
+      const after = f.snapshot();
+      expect((await f.send(request)).envelope).toEqual(reply.envelope);
+      expect(f.snapshot()).toBe(after);
+      expect(
+        (
+          await f.send({
+            ...request,
+            input: mode.startsWith("all") ? { id: "work-7" } : { all: true },
+          })
+        ).verdict,
+      ).toEqual(["FAIL", "INPUT_CONFLICT", 4]);
+      expect(f.snapshot()).toBe(after);
+      expect([
+        f.owner.get("forge/work", "lane-control:global"),
+        f.owner.get("forge/work", "lane-control:work-7"),
+      ]).toEqual(before);
+    } finally {
+      f.close();
+    }
+  },
+  10_000,
+);
+
+test.each(["running", "global stop", "foreign route", "device cap", "expired"])(
+  "lane.resume refuses or expires safely for %s",
+  async (mode) => {
+    const f = await fixture();
+    try {
+      f.put("lane-control:global", running);
+      if (mode !== "running")
+        await f.send(call("lane.stop", { all: true }, "stop"));
+      const scope = mode === "global stop" ? { id: "work-7" } : { all: true };
+      if (mode === "device cap" || mode === "expired")
+        for (let i = 0; i < 4; i++)
+          expect(
+            (await f.send(call("lane.resume", scope, `ask-${i}`))).verdict,
+          ).toEqual(["FAIL", "APPROVAL_REQUIRED", 1]);
+      if (mode === "expired") f.clock.mockReturnValue(now + 600_000);
+      const before = f.snapshot();
+      const reply = await f.send(
+        call("lane.resume", scope, "ask-final"),
+        mode === "foreign route" ? "other" : "p",
+      );
+      const code =
+        mode === "device cap"
+          ? "UNAVAILABLE"
+          : mode === "foreign route"
+            ? "AUTH_FORBIDDEN"
+            : mode === "expired"
+              ? "APPROVAL_REQUIRED"
+              : "INPUT_CONFLICT";
+      expect(reply.verdict).toEqual([
+        "FAIL",
+        code,
+        code === "INPUT_CONFLICT" ? 4 : 1,
+      ]);
+      if (mode !== "expired") expect(f.snapshot()).toBe(before);
+      if (mode === "expired")
+        expect(reply.envelope).toMatchObject({
+          result: { expiresAt: new Date(now + 1_200_000).toISOString() },
+        });
+    } finally {
+      f.close();
+    }
+  },
+  10_000,
+);
+
+test.each(["audit", "receipt", "approval", "approval receipt"])(
   "a failed %s rolls back control, events and receipt together",
   async (where) => {
     const f = await fixture();
     try {
       f.put("lane-control:global", running);
+      if (where.startsWith("approval"))
+        await f.send(call("lane.stop", { all: true }, "stop"));
       const before = f.snapshot();
       const target =
         where === "audit"
           ? "state_records WHEN NEW.key LIKE 'lane-control:audit:%'"
-          : "domain_cloud_command_receipts";
+          : where === "approval"
+            ? LANE_APPROVALS
+            : "domain_cloud_command_receipts";
       f.db.run(
         `CREATE TRIGGER refuse_write BEFORE INSERT ON ${target} BEGIN SELECT RAISE(ABORT, 'injected write failure'); END`,
       );
-      const reply = await f.send(call("lane.stop", { id: "work-7" }));
+      const reply = await f.send(
+        where.startsWith("approval")
+          ? call("lane.resume", { all: true })
+          : call("lane.stop", { id: "work-7" }),
+      );
       expect(reply.envelope.ok).toBe(false);
       expect(f.snapshot()).toBe(before);
+    } finally {
+      f.close();
+    }
+  },
+  10_000,
+);
+
+test.each(["project cap", "expired", "epoch", "incarnation", "retention"])(
+  "pending approval lifecycle: %s",
+  async (mode) => {
+    const f = await fixture();
+    try {
+      await f.send(call("lane.stop", { all: true }, "stop"));
+      const reply = await f.send(call("lane.resume", { all: true }, "ask"));
+      expect(reply.verdict).toEqual(["FAIL", "APPROVAL_REQUIRED", 1]);
+      const rows = () =>
+        (
+          JSON.parse(
+            String(
+              (
+                f.db
+                  .query(`SELECT state FROM ${LANE_APPROVALS} WHERE id=1`)
+                  .get() as { state: string }
+              ).state,
+            ),
+          ) as {
+            requests: LaneApproval[];
+          }
+        ).requests;
+      const row = rows()[0]!;
+      expect(row).toMatchObject({
+        project: "p",
+        scope: { all: true },
+        device: "laptop",
+        session: "s1",
+        epoch: 1,
+      });
+      expect(typeof row.policyIdentity).toBe("string");
+      expect(typeof row.token).toBe("string");
+      if (mode === "project cap") {
+        for (let i = 1; i < 64; i++) {
+          const token = await f.admit(`device-${Math.floor(i / 4)}`);
+          expect(
+            (
+              await f.send(
+                call("lane.resume", { all: true }, `ask-${i}`),
+                "p",
+                { authorization: `Bearer ${token}` },
+              )
+            ).verdict,
+          ).toEqual(["FAIL", "APPROVAL_REQUIRED", 1]);
+        }
+        const token = await f.admit("overflow");
+        const admitted = f.snapshot();
+        expect(
+          (
+            await f.send(call("lane.resume", { all: true }, "overflow"), "p", {
+              authorization: `Bearer ${token}`,
+            })
+          ).verdict,
+        ).toEqual(["FAIL", "UNAVAILABLE", 1]);
+        expect(f.snapshot()).toBe(admitted);
+        expect(rows()).toHaveLength(64);
+      } else if (mode === "retention") {
+        for (let i = 1; i <= 66; i++) {
+          f.clock.mockReturnValue(now + i * 600_000);
+          expect(
+            (await f.send(call("lane.resume", { all: true }, `ask-${i}`)))
+              .verdict,
+          ).toEqual(["FAIL", "APPROVAL_REQUIRED", 1]);
+        }
+        expect(
+          rows().filter((entry) => entry.status === "expired"),
+        ).toHaveLength(64);
+        expect(
+          rows().filter((entry) => entry.status === "pending"),
+        ).toHaveLength(1);
+        // Trimming current state must also bound request data retained in event snapshots.
+        const history = f.db
+          .query(
+            "SELECT body FROM state_events WHERE namespace='forge/work' AND key='lane-approval:requests'",
+          )
+          .all() as { body: string }[];
+        const persisted = history.flatMap(
+          ({ body }) =>
+            (JSON.parse(body) as { data?: { requests?: LaneApproval[] } }).data
+              ?.requests ?? [],
+        );
+        expect(
+          new Set([...rows(), ...persisted].map((entry) => entry.request)).size,
+        ).toBeLessThanOrEqual(65);
+      } else {
+        if (mode === "epoch")
+          await f.send(call("lane.stop", { all: true }, "new-stop"));
+        const current = (await control(f)).result as {
+          incarnation: string;
+          epoch: number;
+          stopped: boolean;
+        };
+        const before = f.snapshot();
+        const observed =
+          mode === "incarnation"
+            ? { ...current, incarnation: "replacement" }
+            : current;
+        expect(
+          laneApprovalStatus(
+            row,
+            observed,
+            mode === "expired" ? now + 600_000 : now,
+          ),
+        ).toBe(mode === "expired" ? "expired" : "stale");
+        expect(f.snapshot()).toBe(before);
+      }
     } finally {
       f.close();
     }

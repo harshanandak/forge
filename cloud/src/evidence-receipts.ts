@@ -9,7 +9,7 @@ import { isPlainJson } from "./plain-json.ts";
 export const EVIDENCE_RECEIPTS = "domain_cloud_evidence_receipts";
 const T = EVIDENCE_RECEIPTS;
 export const EVIDENCE_MIGRATION = {
-  id: "007_cloud_evidence_receipts",
+  id: "008_cloud_evidence_receipts",
   statements: [
     `CREATE TABLE ${T} (id TEXT PRIMARY KEY, issue_id TEXT NOT NULL, body TEXT NOT NULL)`,
     `CREATE INDEX evidence_receipts_issue ON ${T}(issue_id)`,

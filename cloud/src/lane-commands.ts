@@ -16,6 +16,11 @@ import type { CommandRun, PreparedCommand } from "./issue-commands.ts";
 import { checkedValue, fail } from "./issue-read.ts";
 import { guardLegacy } from "./issue-request-id.ts";
 import { LaneControlStore } from "./lane-control-store.ts";
+import {
+  checkedApproval,
+  requestLaneApproval,
+  type ApprovalRequired,
+} from "./lane-approval.ts";
 import { readOnlyStore } from "./store.ts";
 import { carriesToken } from "./tokens.ts";
 
@@ -50,11 +55,11 @@ function scopeOf(owner: StateOwner | undefined, scope: LaneScope): LaneScope {
   return { id: value.id as string };
 }
 
-/** Reads use a SELECT-only owner. Only a real stop opens the writable project store. */
+/** Reads use a SELECT-only owner. Resume writes requests only, never control. */
 export function laneCommand(
   call: PreparedCommand,
   host: CommandRun,
-): LaneControl {
+): LaneControl | ApprovalRequired {
   const { requestId, op, input, dryRun } = call;
   const read = op === "lane.control";
   if (validateWithSchema(read ? ControlInput : StopInput, input).length > 0)
@@ -118,6 +123,15 @@ export function laneCommand(
   });
   const { db, owner } = host.open();
   guardLegacy(db, requestId, identity.requestId);
+  if (op === "lane.resume")
+    return commandWrite(
+      db,
+      owner,
+      { identity, recheck: host.recheck, expiresAt: host.expiresAt },
+      () => scope,
+      (target) => requestLaneApproval(db, owner, scopeOf(owner, target), host),
+      checkedApproval,
+    );
   return commandWrite(
     db,
     owner,

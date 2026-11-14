@@ -69,6 +69,7 @@ import {
 } from "./issue-request-id.ts";
 import { checkTtl } from "./lease-ttl.ts";
 import { EVIDENCE_MIGRATION, EVIDENCE_RECEIPTS } from "./evidence-receipts.ts";
+import { LANE_APPROVALS, LANE_APPROVAL_MIGRATION } from "./lane-approval.ts";
 import { requireTokenSession } from "./token-session.ts";
 import {
   authorize,
@@ -119,6 +120,7 @@ const domain = {
     LIMITS_MIGRATION,
     DUMP_MIGRATION,
     IMPORT_MIGRATION,
+    LANE_APPROVAL_MIGRATION,
     EVIDENCE_MIGRATION,
   ],
   tables: [
@@ -129,6 +131,7 @@ const domain = {
     LIMITS,
     COMMAND_RECEIPTS,
     EXPORT_STATE,
+    LANE_APPROVALS,
     EVIDENCE_RECEIPTS,
   ],
 };
@@ -541,6 +544,7 @@ export class Project {
       const token = authorizeToken(db, parts, Date.now());
       return runCommand(body, {
         ...token,
+        approvalConfig: this.#env,
         principal: ["token", token.id, token.device],
         project: commandProject(request)!,
         storage: this.#storage,
