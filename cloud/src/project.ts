@@ -70,6 +70,13 @@ import {
 import { checkTtl } from "./lease-ttl.ts";
 import { EVIDENCE_MIGRATION, EVIDENCE_RECEIPTS } from "./evidence-receipts.ts";
 import { LANE_APPROVALS, LANE_APPROVAL_MIGRATION } from "./lane-approval.ts";
+import {
+  isLaneCallback,
+  isLaneRoute,
+  laneRoute,
+  LANE_BROWSER,
+  LANE_BROWSER_MIGRATION,
+} from "./auth/lane-browser.ts";
 import { requireTokenSession } from "./token-session.ts";
 import {
   authorize,
@@ -122,6 +129,7 @@ const domain = {
     IMPORT_MIGRATION,
     LANE_APPROVAL_MIGRATION,
     EVIDENCE_MIGRATION,
+    LANE_BROWSER_MIGRATION,
   ],
   tables: [
     PRAGMA_TABLE,
@@ -133,6 +141,7 @@ const domain = {
     EXPORT_STATE,
     LANE_APPROVALS,
     EVIDENCE_RECEIPTS,
+    LANE_BROWSER,
   ],
 };
 
@@ -301,6 +310,21 @@ export class Project {
           object(await bounded(request)),
           request.headers.get("CF-Connecting-IP"),
           url.pathname.split("/")[2] ?? "",
+        );
+      }
+      if (isLaneRoute(request) || isLaneCallback(request)) {
+        if (!(await this.#isProvisioned()))
+          throw fail(
+            "AUTH_FORBIDDEN",
+            "Lane approval is not available for this project",
+          );
+        return await laneRoute(
+          this.#storage,
+          () => this.#open(),
+          this.#env,
+          request,
+          this.#browser,
+          request.method === "POST" ? await bounded(request, 2048) : "",
         );
       }
       // The owner's browser pages: public, and every decision still needs the Clerk proof of the exact owner.
