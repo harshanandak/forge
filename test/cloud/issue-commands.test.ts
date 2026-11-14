@@ -405,6 +405,17 @@ test("state read query and cursor table returns facts without writes", async () 
     f.put("note:1", { n: 1 });
     f.put("note:2", { n: 2 });
     f.put("note:1", { n: 3 });
+    const holder = { actor, session: { id: "s1", device: "laptop" } };
+    const lease = f.owner.acquire(
+      "forge/memory",
+      "lease:1",
+      holder,
+      1000,
+      "history-lease",
+    );
+    const fence = { subject: "lease:1", holder, generation: lease.generation };
+    f.owner.renew("forge/memory", fence, 2000);
+    f.owner.release("forge/memory", fence);
     const rows: [StateQuery, unknown][] = [
       [
         { kind: "get", key: "note:1" },
@@ -459,15 +470,22 @@ test("state read query and cursor table returns facts without writes", async () 
       ),
       [
         { kind: "history", key: "note:1", limit: 1 },
-        { events: [{ revision: 2 }], next: 2 },
+        { events: [{ revision: 2 }], next: 3 },
       ],
       [
-        { kind: "history", key: "note:1", limit: 1, before: 2 },
+        { kind: "history", key: "note:1", limit: 1, before: 3 },
         { events: [{ revision: 1 }], next: 1 },
       ],
       [
         { kind: "history", key: "note:1", limit: 1, before: 1 },
         { events: [], next: null },
+      ],
+      [
+        { kind: "history", key: "lease:1", limit: 1 },
+        {
+          events: [{ revision: 1, type: "forge/memory:lease.released@1" }],
+          next: 6,
+        },
       ],
     ];
     for (const [query, want] of rows) {
@@ -478,9 +496,38 @@ test("state read query and cursor table returns facts without writes", async () 
         project: "p",
         namespace: "forge/memory",
         policyRevision: statePolicy,
-        readVersion: { revision: 3 },
+        readVersion: { revision: 6 },
       });
       expect(got.value.result).toMatchObject(want as object);
+      if (query.kind === "history" && query.key === "lease:1") {
+        let page = got;
+        for (const [sequence, type] of [
+          [6, "released"],
+          [5, "renewed"],
+          [4, "acquired"],
+        ] as const) {
+          const result = page.value.result;
+          expect(result.kind).toBe("history");
+          if (result.kind !== "history")
+            throw new Error("Expected history page");
+          expect(result.events).toHaveLength(1);
+          expect([
+            result.events[0]?.type,
+            result.events[0]?.revision,
+            result.next,
+          ]).toEqual([`forge/memory:lease.${type}@1`, 1, sequence]);
+          page = await f.read(
+            { kind: "history", key: query.key, limit: 1, before: result.next! },
+            got.value.readVersion,
+          );
+          expect(page.status).toBe(200);
+        }
+        expect(page.value.result).toEqual({
+          kind: "history",
+          events: [],
+          next: null,
+        });
+      }
     }
   } finally {
     f.db.close();
@@ -507,6 +554,10 @@ for (const mutation of [
           : { kind: "range", limit: 1 };
       const first = await f.read(query);
       expect(first.status).toBe(200);
+      const nextQuery =
+        query.kind === "range" && first.value.result.kind === "range"
+          ? { ...query, from: first.value.result.next! }
+          : query;
       if (mutation === "insert") f.put("note:0");
       if (mutation === "update") f.put("note:1", "updated");
       if (mutation === "delete")
@@ -525,7 +576,7 @@ for (const mutation of [
         );
       if (mutation === "other namespace")
         f.put("note:0", "foreign", "other/state");
-      const got = await f.read(query, first.value.readVersion);
+      const got = await f.read(nextQuery, first.value.readVersion);
       expect([got.status, got.code, got.exit]).toEqual(
         mutation === "other namespace"
           ? [200, undefined, 0]
@@ -638,11 +689,25 @@ for (const bad of [
   "wrong key",
   "wrong revision",
   "bad event",
+  "duplicate event",
 ] as const)
   test(`state stored-data bounds table: ${bad}`, async () => {
     const f = await stateFixture();
     try {
       const record = f.put("note:1");
+      if (bad === "duplicate event") {
+        const event = f.owner.history("forge/memory", {
+          key: "note:1",
+          limit: 1,
+        })[0]!;
+        f.db.run("UPDATE state_events SET body=? WHERE namespace=?", [
+          JSON.stringify(event).replace(
+            '"revision":1',
+            '"revision":99,"revision":1',
+          ),
+          "forge/memory",
+        ]);
+      }
       if (bad === "nonfinite value")
         f.db.run("UPDATE state_records SET body=? WHERE namespace=?", [
           JSON.stringify({ ...record, value: "NONFINITE" }).replace(
@@ -685,8 +750,13 @@ for (const bad of [
           ]);
       f.meter.on = true;
       const got = await f.read(
-        bad === "bad event" || bad === "huge event"
-          ? { kind: "history", key: "note:1", limit: 1 }
+        bad === "bad event" || bad === "huge event" || bad === "duplicate event"
+          ? {
+              kind: "history",
+              key: "note:1",
+              limit: 1,
+              ...(bad === "duplicate event" ? { before: 2 } : {}),
+            }
           : bad === "huge page"
             ? { kind: "range", limit: 2 }
             : { kind: "get", key: "note:1" },

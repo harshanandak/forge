@@ -104,9 +104,7 @@ export function readState(
       }
     }
     if (query.kind === "history" && query.before !== undefined) {
-      const storedRevision =
-        "CASE WHEN json_valid(body) THEN CASE WHEN json_type(body,'$.revision')='integer' THEN json_extract(body,'$.revision') END END";
-      where += ` AND (${storedRevision} IS NULL OR ${storedRevision}<?)`;
+      where += " AND sequence<?";
       params.push(query.before);
     }
     const limit = query.kind === "get" ? 1 : query.limit;
@@ -138,6 +136,7 @@ export function readState(
       if (bytes > MAX) tooLarge();
     }
     const items: (StateRecord | StateEvent)[] = [];
+    let lastSequence: number | null = null;
     for (const row of db?.all(rows, params) ?? []) {
       if (typeof row.body !== "string") invalid();
       const parsed = parseUntrustedJson(
@@ -169,6 +168,16 @@ export function readState(
         (!history && item.revision !== row.revision)
       )
         invalid();
+      if (history) {
+        const sequence = Number(row.sequence);
+        if (
+          !Number.isSafeInteger(sequence) ||
+          sequence < 1 ||
+          (lastSequence !== null && sequence >= lastSequence)
+        )
+          invalid();
+        lastSequence = sequence;
+      }
       items.push(item);
     }
     const last = items.at(-1);
@@ -181,7 +190,7 @@ export function readState(
       result = {
         kind: "history",
         events: items as StateEvent[],
-        next: items.length === limit && last ? last.revision : null,
+        next: items.length === limit ? lastSequence : null,
       };
     else
       result = {
