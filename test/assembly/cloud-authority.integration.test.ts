@@ -542,7 +542,20 @@ for (const [name, value, identity, id, code] of [
         {
           prepare: (s) =>
             value === undefined ? undefined : seedJournal(s, value, identity),
-          steps: [() => answer({ ...ISSUE, id, lease: heldBy() })],
+          steps: [
+            ({ body }) => {
+              const call = body as { op: string; input: object };
+              if (call.op === "issue.list") {
+                expect(call.input).toEqual({ limit: 1 });
+                return answer(
+                  { items: [{ ...ISSUE, id }], truncated: false },
+                  "issue.list",
+                );
+              }
+              expect(call.input).toEqual({ id });
+              return answer({ ...ISSUE, id, lease: heldBy() });
+            },
+          ],
         },
         async (r) => {
           const before = bytes(r.s);
@@ -588,8 +601,10 @@ for (const [name, value, identity, id, code] of [
           }
           expect(bytes(r.s)).toEqual(before);
           expect(
-            r.net.calls.every(
-              (call) => (call.body as { op: string }).op === "issue.show",
+            r.net.calls.every((call) =>
+              ["issue.show", "issue.list"].includes(
+                (call.body as { op: string }).op,
+              ),
             ),
           ).toBe(true);
         },

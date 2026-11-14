@@ -96,7 +96,6 @@ import {
 } from "./cloud-authority.ts";
 import { LocalState } from "./state.ts";
 import { coordinateLane } from "./cloud-lane-coordinator.ts";
-import type { TrackerItem } from "../generated/types.ts";
 import {
   ApprovalRequired,
   agentSession,
@@ -1821,23 +1820,28 @@ export async function createAssembly(
               env: options.providers?.env ?? process.env,
               cloud: options.providers?.cloudLogin,
               coordinate: (flight, project) =>
-                coordinateLane(flight, project, deviceState, async (id) => {
-                  const show = current.candidates.find(
-                    (entry) =>
-                      entry.builtin === true &&
-                      entry.blockId === "forge/work" &&
-                      entry.declaredOp === "issue.show",
-                  );
-                  if (!show)
-                    refuse("UNKNOWN_COMMAND", "Issue show is not assembled.");
-                  const answer = await catalog.invoke({
-                    ...request,
-                    op: show.op,
-                    input: { id },
-                  });
-                  if (!answer.ok) throw new ForgeFailure(answer.error);
-                  return answer.result as TrackerItem;
-                }),
+                coordinateLane(
+                  flight,
+                  project,
+                  deviceState,
+                  async (op, input) => {
+                    const nested = current.candidates.find(
+                      (entry) =>
+                        entry.builtin === true &&
+                        entry.blockId === "forge/work" &&
+                        entry.declaredOp === op,
+                    );
+                    if (!nested)
+                      refuse("UNKNOWN_COMMAND", "Issue read is not assembled.");
+                    const answer = await catalog.invoke({
+                      ...request,
+                      op: nested.op,
+                      input,
+                    });
+                    if (!answer.ok) throw new ForgeFailure(answer.error);
+                    return answer.result;
+                  },
+                ),
             },
             runtime,
             request,

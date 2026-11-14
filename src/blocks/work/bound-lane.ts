@@ -12,7 +12,7 @@ export const BOUND_LANES: ReadonlySet<string> = new Set(
     (verb) => `lane.${verb}`,
   ),
 );
-type ReadIssue = (id: string) => Promise<TrackerItem>;
+type ReadIssue = (id: string, canonical?: true) => Promise<TrackerItem>;
 
 export async function boundLaneRead(
   op: string,
@@ -43,7 +43,7 @@ export async function boundLaneRead(
   const lanes = [];
   for (const found of state?.list(prefix) ?? []) {
     const record = readBoundLane(found.value, found.key.slice(prefix.length));
-    const fresh = await issue(record.id);
+    const fresh = await issue(record.id, true);
     const current = fresh.lease;
     const held =
       current?.generation === record.grant.generation &&
