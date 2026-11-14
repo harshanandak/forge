@@ -43,6 +43,61 @@ const rows: readonly [string, unknown, boolean][] = [
     true,
   ],
   ["commit", commit, true],
+  ["empty read set", { ...commit, readSet: [] }, true],
+  ["invalid UTF-8", new Uint8Array([0xff]), false],
+  [
+    "key at limit",
+    { ...read, query: { kind: "get", key: "a".repeat(500) } },
+    true,
+  ],
+  ["request id at limit", { ...commit, requestId: "a".repeat(128) }, true],
+  [
+    "duplicate entries",
+    { ...commit, entries: [commit.entries[0], commit.entries[0]] },
+    false,
+  ],
+  [
+    "duplicate dependencies",
+    { ...commit, readSet: [commit.readSet[0], commit.readSet[0]] },
+    false,
+  ],
+  [
+    "bad dependency revision",
+    { ...commit, readSet: [{ ...commit.readSet[0], expectRevision: -1 }] },
+    false,
+  ],
+  [
+    "bad dependency namespace",
+    { ...commit, readSet: [{ ...commit.readSet[0], namespace: "" }] },
+    false,
+  ],
+  [
+    "bad dependency key",
+    { ...commit, readSet: [{ ...commit.readSet[0], key: 1 }] },
+    false,
+  ],
+  [
+    "bad read version",
+    { ...commit, readVersion: { epoch: "epoch-1", revision: 0.5 } },
+    false,
+  ],
+  [
+    "bad read epoch",
+    { ...read, readVersion: { epoch: "", revision: 0 } },
+    false,
+  ],
+  [
+    "bad fence generation",
+    { ...commit, fence: { subject: "key", generation: 0 } },
+    false,
+  ],
+  [
+    "bad fence subject",
+    { ...commit, fence: { subject: "", generation: 1 } },
+    false,
+  ],
+  ["bad policy revision", { ...read, policyRevision: "" }, false],
+  ["bad operation", { ...read, operation: "" }, false],
   [
     "fenced commit",
     { ...commit, fence: { subject: "record:1", generation: 1 } },
@@ -214,7 +269,9 @@ for (const [name, input, accepted] of rows) {
   test(`state input: ${name}`, () => {
     const text = typeof input === "string" ? input : encode(input);
     const original = encode(input);
-    for (const body of [text, new TextEncoder().encode(text)]) {
+    for (const body of input instanceof Uint8Array
+      ? [input]
+      : [text, new TextEncoder().encode(text)]) {
       const before = typeof body === "string" ? body : body.slice();
       let value: ReturnType<typeof parseStateInput> | undefined;
       let status = "OK",
@@ -230,7 +287,7 @@ for (const [name, input, accepted] of rows) {
       }
       expect(status).toBe(accepted ? "OK" : "FAIL");
       expect(exit).toBe(accepted ? 0 : 6);
-      expect(value).toEqual(
+      expect(value as unknown).toEqual(
         accepted ? (JSON.parse(text) as unknown) : undefined,
       );
       expect(body).toEqual(before);
