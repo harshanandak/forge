@@ -638,22 +638,18 @@ for (const kind of ["leases", "floors", "reservations", "denied"] as const)
     }
   }, 30000);
 
-for (const [name, revision, refused, deletedOnly] of [
-  ["matching revision", 1, false, false],
-  ["wrong checkpoint revision with matching digest", 2, true, false],
-  ["deleted numbered key retains highest 30", 2, false, true],
+for (const [name, revision, refused] of [
+  ["matching revision", 1, false],
+  ["wrong checkpoint revision with matching digest", 2, true],
 ] as const)
   test(`checkpoint replay: ${name}, C=2 and empty tail`, async () => {
     const store = await open();
     try {
-      const record = deletedOnly ? undefined : write(store, "a");
+      const record = write(store, "a");
       publishFixture(store, {
         header: [1, "lineage", 1, 2, 1, 2],
-        live:
-          record === undefined
-            ? []
-            : [[ns, "a", 2, revision, canonicalDigest(record)]],
-        deleted: deletedOnly ? [[ns, "n-30", 2, revision]] : [],
+        live: [[ns, "a", 2, revision, canonicalDigest(record)]],
+        deleted: [],
         receipts: [],
         leases: [],
         floors: [],
@@ -662,18 +658,56 @@ for (const [name, revision, refused, deletedOnly] of [
       });
       store.db.run("DELETE FROM state_events");
       const before = store.owner.export();
-      const verify = () =>
+      const verify = () => verifyEventDerivedState(store.db, 2, 1);
+      if (refused) expect(verify).toThrow(/state_records/);
+      else expect(verify()).toBeUndefined();
+      expect(store.owner.export()).toEqual(before);
+    } finally {
+      await store.close();
+    }
+  }, 30000);
+
+for (const kind of ["deleted n-30", "floor 30 deleted in tail"] as const)
+  test(`checkpoint numbered summary refuses ${kind}`, async () => {
+    const store = await open();
+    try {
+      let checkpoint: Checkpoint = {
+        header: [1, "lineage", 1, 2, 1, 2],
+        live: [],
+        deleted: [[ns, "n-30", 2, 2]],
+        receipts: [],
+        leases: [],
+        floors: [],
+        reservations: [],
+        denied: [],
+      };
+      if (kind === "floor 30 deleted in tail") {
+        const record = store.owner.put(
+          ns,
+          "allocation:n-",
+          { prefix: "n-", number: 30 },
+          actor,
+          { expectRevision: 0 },
+        );
+        store.owner.delete(ns, "allocation:n-", actor, { expectRevision: 1 });
+        checkpoint = {
+          ...checkpoint,
+          header: [1, "lineage", 1, 1, 1, 1],
+          live: [[ns, "allocation:n-", 1, 1, canonicalDigest(record)]],
+          deleted: [],
+        };
+      }
+      publishFixture(store, checkpoint);
+      store.db.run("DELETE FROM state_events WHERE sequence<=?", [
+        checkpoint.header[3],
+      ]);
+      const before = store.owner.export();
+      expect(() =>
         verifyEventDerivedState(store.db, 2, 1, {
           namespace: ns,
           prefix: "n-",
-        });
-      if (refused) expect(verify).toThrow(/state_records/);
-      else
-        expect(verify()).toEqual({
-          highest: deletedOnly ? 30 : 0,
-          earlier: 0,
-          floorRevision: 0,
-        });
+        }),
+      ).toThrow(/numbered summary from a checkpoint is not supported yet/);
       expect(store.owner.export()).toEqual(before);
     } finally {
       await store.close();

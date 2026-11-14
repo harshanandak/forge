@@ -619,6 +619,11 @@ export function verifyEventDerivedState(
     pageSize,
     checkpointCapable,
   );
+  if (numbered !== undefined && checkpoint !== undefined)
+    throw new RestoreConsistencyFailure(
+      "state_checkpoint_header",
+      "numbered summary from a checkpoint is not supported yet",
+    );
   const records = new Map<string, { revision: number; digest: string }>();
   const recordRevisions = new Map<string, number>();
   const leases = new Map<string, LeaseRecord>();
@@ -631,6 +636,8 @@ export function verifyEventDerivedState(
     records.set(id, { revision, digest: digest.slice("sha256:".length) });
     recordRevisions.set(id, revision);
   }
+  for (const [namespace, name, , revision] of checkpoint?.deleted ?? [])
+    recordRevisions.set(key(namespace, name), revision);
   const reject = (table: string, name: string): never => {
     throw new RestoreConsistencyFailure(table, name);
   };
@@ -706,10 +713,6 @@ export function verifyEventDerivedState(
         suffixNumber(name, prefix) ?? 0,
       );
   };
-  for (const [namespace, name, , revision] of checkpoint?.deleted ?? []) {
-    recordRevisions.set(key(namespace, name), revision);
-    number(namespace, name);
-  }
   const reserved = (event: StateEvent): void => {
     const prefix = groupOf(event.namespace, event.key, true);
     if (prefix !== undefined)
