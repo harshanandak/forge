@@ -169,8 +169,6 @@ export async function boundLaneStart(
     );
   });
   record = { ...record, lane, active: true };
-  if (Date.parse(grant.expiresAt) <= now())
-    refuse("LEASE_EXPIRED", "The cloud grant expired.");
   await save(record, revision);
   return { ...lane, issue: fresh.id, lease: grant };
 }
