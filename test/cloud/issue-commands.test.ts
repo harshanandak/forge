@@ -716,6 +716,16 @@ test("an op that is excluded, undeclared or prototype-like is unknown, even as a
   expect(f.snapshot()).toBe(before);
 }, 30_000);
 
+for (const path of ["state/read", "state/commit"])
+  test(`${path} stays an unknown route through the Worker and the object`, async () => {
+    const { f, token, before } = await begin();
+    for (const via of [createWorker(), "direct"] as const) {
+      const got = await f.send({}, { token, path, via });
+      refusal(path, got, [404, "UNKNOWN_COMMAND", 3]);
+      expect(f.snapshot()).toBe(before);
+    }
+  }, 30_000);
+
 test("a device the token does not name is refused without repeating it", async () => {
   const { f, token, before } = await begin();
   for (const context of [
@@ -7572,7 +7582,7 @@ for (const w of WRITES) {
   test(`a token that expires between the route's check and the transaction writes and records nothing, for a ${w.name} and for a refusal`, async () => {
     for (const input of [undefined, w.bad]) {
       const { f, token } = await w.rows();
-      const before = writes(f);
+      const before = f.snapshot();
       const real = f.storage.sql.exec.bind(f.storage.sql);
       let tripped = false;
       // The first statement after the route's checks is the receipt lookup: the clock passes expiry there.
@@ -7597,7 +7607,7 @@ for (const w of WRITES) {
         "AUTH_EXPIRED",
         1,
       ]);
-      expect(writes(f)).toBe(before);
+      expect(f.snapshot()).toBe(before);
     }
   }, 30_000);
 
@@ -7633,7 +7643,7 @@ for (const w of WRITES) {
 
   test(`a failed receipt write rolls the whole ${w.name} back, and the retry applies it once`, async () => {
     const { f, token } = await w.rows();
-    const before = writes(f);
+    const before = f.snapshot();
     f.db.run(
       "CREATE TRIGGER no_receipt BEFORE INSERT ON domain_cloud_command_receipts BEGIN SELECT RAISE(ABORT, 'boom'); END",
     );
@@ -7644,7 +7654,7 @@ for (const w of WRITES) {
     } finally {
       quiet.mockRestore();
     }
-    expect(writes(f)).toBe(before);
+    expect(f.snapshot()).toBe(before);
     f.db.run("DROP TRIGGER no_receipt");
     w.result(f, await f.send(w.send("t-1"), { token }));
   }, 30_000);
