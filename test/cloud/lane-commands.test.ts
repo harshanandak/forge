@@ -723,6 +723,7 @@ async function browserFixture(
   issuer = "https://identity.example",
   verify?: NonNullable<DeviceBrowserOptions["upstream"]>["verify"],
   id = "work-7",
+  prefix?: string,
 ) {
   const begun: { state: string; verifier: string }[] = [];
   const spent = new Set<string>();
@@ -754,6 +755,17 @@ async function browserFixture(
       },
     },
   });
+  if (prefix !== undefined)
+    for (const key of ["issue:work-7", "issue:work-8"]) {
+      const issue = f.owner.get("forge/work", key)!;
+      f.owner.put(
+        "forge/work",
+        key,
+        { ...(issue.value as object), prefix },
+        actor,
+        { expectRevision: issue.revision },
+      );
+    }
   f.env.CLERK_ISSUER = issuer;
   f.put("lane-control:global", running);
   const input = scope === "all" ? { all: true } : { id };
@@ -1054,12 +1066,17 @@ const ownerProof = (changes: Partial<IdentityClaims> = {}) => {
   );
 };
 
-async function resumeFixture(scope: "all" | "issue" = "all", id = "work-7") {
+async function resumeFixture(
+  scope: "all" | "issue" = "all",
+  id = "work-7",
+  prefix?: string,
+) {
   const f = await browserFixture(
     scope,
     undefined,
     async () => ownerProof(),
     id,
+    prefix,
   );
   for (const id of scope === "all" ? ["work-7", "work-8"] : ["work-8"])
     f.put(`lane-control:${id}`, {
@@ -1087,10 +1104,16 @@ const replaceApproval = (f: Fixture, changes: Partial<LaneApproval>) =>
     }),
   ]);
 
-test.each(["forge-7", "work-7", "WORK-7", "FORGE-7"])(
-  "stop, control and approved resume resolve %s with the project's displayed prefix",
-  async (id) => {
-    const f = await resumeFixture("issue", id);
+test.each([
+  ["forge-7", undefined],
+  ["work-7", undefined],
+  ["WORK-7", undefined],
+  ["FORGE-7", undefined],
+  ["work-7", "forge"],
+] as const)(
+  "stop, control and approved resume resolve %s with stored issue prefix %s",
+  async (id, prefix) => {
+    const f = await resumeFixture("issue", id, prefix);
     try {
       expect(f.env.FORGE_CLOUD_ID_PREFIX).toBe("forge");
       expect((await control(f, id)).result).toMatchObject({ stopped: true });
@@ -1099,6 +1122,7 @@ test.each(["forge-7", "work-7", "WORK-7", "FORGE-7"])(
         status: "approved",
       });
       const issue = f.owner.get("forge/work", "issue:work-7");
+      if (prefix !== undefined) expect(issue!.value).toMatchObject({ prefix });
       const unrelated = f.owner.get("forge/work", "lane-control:work-8");
       const reply = await f.send(f.resume);
       expect(reply.verdict).toEqual(["OK", "OK", 0]);
