@@ -13,7 +13,7 @@ export async function coordinateLane(
   command: (op: string, input: object) => Promise<unknown>,
 ): Promise<unknown> {
   const owner = await device.open(false);
-  let prefix: string | undefined;
+  const prefix = (flight.config as { idPrefix?: string }).idPrefix;
   return boundLaneRead(
     flight.operation.declaredOp,
     flight.request.input as { id?: string },
@@ -24,19 +24,13 @@ export async function coordinateLane(
     },
     async (id, canonical) => {
       if (canonical) {
-        if (prefix === undefined) {
-          const page = (await command("issue.list", { limit: 1 })) as {
-            items: TrackerItem[];
-          };
-          const first = page.items[0];
-          if (!first)
-            throw new ForgeFailure({
-              code: "NOT_FOUND",
-              message: "No cloud issues for the device attachment.",
-              retry: "never",
-            });
-          prefix = first.id.replace(/-\d+$/, "");
-        }
+        if (prefix === undefined)
+          throw new ForgeFailure({
+            code: "CONTEXT_MISSING",
+            message:
+              "Configure the bound project's work idPrefix before reading device lane status.",
+            retry: "never",
+          });
         id = `${prefix}-${id.slice(5)}`;
       }
       return (await command("issue.show", { id })) as TrackerItem;
