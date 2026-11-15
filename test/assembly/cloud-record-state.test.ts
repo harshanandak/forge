@@ -131,15 +131,16 @@ function fixture() {
         result: { kind: q.kind, record: records.get(q.key) ?? null },
       });
     if (q.kind === "history") {
-      const events = (q.before === undefined ? [4, 3] : [2, 1]).map((rev) =>
-        event(q.key, rev),
-      );
+      const events = (
+        q.before === undefined ? [4, 3] : q.before === 3 ? [2, 1] : []
+      ).map((rev) => event(q.key, rev));
       return ok({
         ...facts(),
         result: {
           kind: q.kind,
           events,
-          next: q.before === undefined ? 3 : null,
+          next:
+            events.length === q.limit ? (q.before === undefined ? 3 : 1) : null,
         },
       });
     }
@@ -412,4 +413,11 @@ test("read plans serialize access and map history revision bounds to sequence cu
     { kind: "history", key: "note/1", limit: 2 },
     { kind: "history", key: "note/1", limit: 2, before: 3 },
   ]);
+  expect(await f.state.history({ key: "note/1", limit: 2, before: 1 })).toEqual(
+    [],
+  );
+  expect(f.calls.at(-1)).toMatchObject({
+    kind: "read",
+    query: { kind: "history", key: "note/1", limit: 2, before: 1 },
+  });
 });
