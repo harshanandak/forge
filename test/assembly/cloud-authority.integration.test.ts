@@ -123,7 +123,14 @@ for (const [name, row, guard, replacement, marker] of [
       replacement,
     );
     expect(mutant.mutationLoaded).toBe(true);
-    const result = await fx.exerciseGitScope(row, mutant);
+    const selectionOnly = name === "Allow-relative-PATH";
+    if (selectionOnly)
+      expect(await fx.exerciseGitScope(row, scopedGit, true)).toMatchObject({
+        relativeRan: false,
+        externalRan: true,
+        unchanged: true,
+      });
+    const result = await fx.exerciseGitScope(row, mutant, selectionOnly);
     expect(result.unchanged).toBe(true);
     expect(result[marker]).toBe(name !== "Ban-all-repositories");
     expect(result.kind).toBe(

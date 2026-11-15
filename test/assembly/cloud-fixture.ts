@@ -16,26 +16,16 @@ import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, relative } from "node:path";
 import { createProcessPort } from "../../src/adapters/process/index.ts";
-import type { ProcessPort } from "../../src/ports/process.ts";
 import type { CloudFetch } from "../../src/adapters/http/index.ts";
 import type {
   CredentialEntry,
   CloudBinding,
 } from "../../src/assembly/cloud-profile.ts";
 
-export interface GitScope {
-  readonly project: { readonly lexical: string; readonly real: string };
-  readonly lane: { readonly lexical: string; readonly real: string };
-}
-export interface ScopedGitApi {
-  gitCapability(
-    port: ProcessPort,
-    env: Readonly<Record<string, string>>,
-    scope: GitScope,
-  ): {
-    executable(target?: GitScope): ReturnType<ProcessPort["resolve"]>;
-  };
-}
+export type ScopedGitApi = Pick<
+  typeof import("../../src/assembly/providers.ts"),
+  "gitCapability" | "resolveOutside"
+>;
 export const gitScopeRows = [
   "unrelated repository",
   "plain checkout",
@@ -49,7 +39,11 @@ export const gitScopeRows = [
 ] as const;
 export type GitScopeRow = (typeof gitScopeRows)[number];
 /** Synthetic state and marker executables only; never opens the device's tracker or credentials. */
-export async function exerciseGitScope(row: GitScopeRow, api: ScopedGitApi) {
+export async function exerciseGitScope(
+  row: GitScopeRow,
+  api: ScopedGitApi,
+  selectionOnly = false,
+) {
   const dir = mkdtempSync(join(import.meta.dirname, ".forge-git-scope-"));
   const project = join(dir, "project"),
     external = join(dir, "unrelated-install"),
@@ -150,7 +144,15 @@ export async function exerciseGitScope(row: GitScopeRow, api: ScopedGitApi) {
       api.gitCapability(port, env, target).executable().kind !== "unavailable"
     )
       throw new Error("Direct project-B alias selection must be refused");
-    const executable = pin.executable(target);
+    // Selection and pin revalidation independently reject relative paths.
+    const executable = selectionOnly
+      ? api.resolveOutside(port, "git", env, [
+          scope.project.lexical,
+          scope.project.real,
+          scope.lane.lexical,
+          scope.lane.real,
+        ])
+      : pin.executable(target);
     let launched = false;
     if (executable.kind === "resolved") {
       const result = await port.run(executable, [], {
