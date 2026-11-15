@@ -9,7 +9,7 @@ import { request as httpsRequest } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { imageSequence, releasedTables } from "./restored.ts";
-import * as recovery from "./restored.ts";
+import * as proof from "./restored.ts";
 import { parseDump } from "../src/dump.ts";
 import type { Tables } from "./max-source.ts";
 import { canonicalJson } from "../../src/core/config/pointer.ts";
@@ -234,10 +234,10 @@ async function dumpOf(project: string): Promise<Dump> {
   return reply.body.value as Dump;
 }
 const image = (dump: Dump) => [parseDump(JSON.stringify(dump))];
-type Image = Parameters<typeof recovery.expectedImage>[0];
+type Image = Parameters<typeof proof.expectedImage>[0];
 async function checkImage(source: Image, actual: Image, project: string) {
-  for await (const _page of recovery.expectedImage(actual, Date.now, (_, db) =>
-    recovery.restoreStopped(source, db, project, windows.get(project)!),
+  for await (const _page of proof.expectedImage(actual, Date.now, (_, db) =>
+    proof.restoreStopped(source, db, project, windows.get(project)!),
   ))
     void _page;
 }
@@ -272,19 +272,18 @@ async function withImage(project: string, check: Check) {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
-async function stoppedSeed(project: string, source: Dump): Promise<Tables> {
-  okValue(await sendPage(project, source), "seed");
-  const actual = joined(await pagesOf(project));
-  await withoutStop(source, actual);
-  return actual.tables as Tables;
+async function stoppedSeed(name: string, text: string): Promise<Tables> {
+  const source = parseDump(text);
+  okValue(await sendPage(name, source), "seed");
+  await withImage(name, (got) => checkImage([source], got, name));
+  return joined(await pagesOf(name)).tables as Tables;
 }
 async function stoppedTables(tables: Tables): Promise<Tables> {
   const found: Tables = {};
-  for await (const page of recovery.expectedImage(
-    image({ format: "forge-cloud-dump/2", tables }),
+  for await (const page of proof.expectedImage(
+    [{ format: "forge-cloud-dump/2", tables }],
     Date.now,
-    (owner) =>
-      recovery.stopDelta(owner, "fixture", new Date(Date.now()).toISOString()),
+    (owner) => proof.stopDelta(owner, "p", new Date(Date.now()).toISOString()),
   ))
     for (const [table, rows] of Object.entries(page.tables))
       (found[table] ??= []).push(...rows);
@@ -4884,7 +4883,7 @@ if (phase === "budget") {
     async () => {
       const [source, target] = [`${run}-exact-src`, `${run}-exact-dst`];
       const fixture = await tinySource("T");
-      fixture.tables = await stoppedSeed(source, fixture.doc);
+      fixture.tables = await stoppedSeed(source, JSON.stringify(fixture.doc));
       assert.equal(
         oracle.utf8(oracle.finalPage(fixture.tables)),
         budget,
@@ -4912,7 +4911,7 @@ if (phase === "budget") {
       // One more character in the title: the rows alone still fit the budget, but the page with its envelope does not.
       const [source, target] = [`${run}-env-src`, `${run}-env-dst`];
       const fixture = await tinySource("TT");
-      fixture.tables = await stoppedSeed(source, fixture.doc);
+      fixture.tables = await stoppedSeed(source, JSON.stringify(fixture.doc));
       const empty = Object.fromEntries(
         Object.keys(fixture.tables).map((table) => [table, []]),
       );
@@ -4953,7 +4952,7 @@ if (phase === "budget-cursor") {
       assert.equal(subject.length, 500);
       const fixture = await leaseSource(subject);
       const [source, target] = [`${run}-cursor-src`, `${run}-cursor-dst`];
-      fixture.tables = await stoppedSeed(source, fixture.doc);
+      fixture.tables = await stoppedSeed(source, JSON.stringify(fixture.doc));
       const first = oracle.pageThrough(
         fixture.tables,
         oracle.leaseBoundary(fixture.tables),
@@ -5074,17 +5073,16 @@ if (phase === "budget-body") {
         };
       };
       const fixtureResult = await fixture();
-      let { text } = fixtureResult;
+      let text = "";
       const { size, stored, rows } = fixtureResult;
       fixtureResult.text = "";
       const [source, target] = [`${run}-body-src`, `${run}-body-dst`];
-      const tables = await stoppedSeed(
-        source,
-        JSON.parse(fixtureResult.input) as Dump,
-      );
+      const tables = await stoppedSeed(source, fixtureResult.input);
+      fixtureResult.input = "";
       text = JSON.stringify(oracle.finalPage(tables));
       const expected = oracle.digestOf(tables);
       assert.equal(Buffer.byteLength(text), size);
+      for (const table of Object.keys(tables)) delete tables[table];
       const trip = await roundTrip(
         source,
         target,
