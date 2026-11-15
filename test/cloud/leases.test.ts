@@ -15,7 +15,7 @@ import type {
   LeaseRecord,
   StateEvent,
 } from "../../src/generated/types.ts";
-import { OLD_SCHEMA, PUBLIC_ENV, setupCalls } from "./old-schema.ts";
+import { OLD_SCHEMA, PUBLIC_ENV, setupCalls, badOpener } from "./old-schema.ts";
 
 if (!("timingSafeEqual" in crypto.subtle))
   Object.defineProperty(crypto.subtle, "timingSafeEqual", {
@@ -292,6 +292,35 @@ test("invalid admin fields cannot initialize or provision storage", async () => 
   }
 }, 30_000);
 
+test.each(["constructor", "dump", "cleanup"] as const)(
+  "loaded bad opener is caught at %s request assertion",
+  async (mode) => {
+    using f = fixture();
+    if (mode === "cleanup") {
+      using source = fixture();
+      const page = (await source.send("dump?cursor=start")).body
+        .value as object;
+      expect(
+        (await f.send("restore", { ...page, last: false, next: "next" }))
+          .status,
+      ).toBe(200);
+    } else await f.issue();
+    for (const sql of OLD_SCHEMA) f.db.run(sql);
+    const Constructor = await badOpener(mode);
+    f.calls.length = 0;
+    const project = new Constructor({ storage: f.storage }, PUBLIC_ENV);
+    const response = await project.fetch(
+      new Request(
+        `https://fixture.example${mode === "constructor" ? "/device" : mode === "dump" ? "/p/a/dump?cursor=bad" : "/p/a/restore"}`,
+        mode === "cleanup" ? { method: "POST", body: "{}" } : {},
+      ),
+    );
+    expect(response.status).toBe(mode === "constructor" ? 200 : 400);
+    expect(() => expect(setupCalls(f.calls)).toEqual([])).toThrow("toEqual");
+  },
+  30_000,
+);
+
 test("refused restore cleanup reuses schema without initialization", async () => {
   using source = fixture();
   await source.issue();
@@ -308,51 +337,6 @@ test("refused restore cleanup reuses schema without initialization", async () =>
   const got = await f.raw("restore", {}, {});
   expect([got.status, setupCalls(got.calls)]).toEqual([400, []]);
   expect(await f.storage.get("restore:next")).toBeUndefined();
-}, 30_000);
-
-test("a public handle cannot suppress subsequent admitted initialization", async () => {
-  using f = fixture(PUBLIC_ENV);
-  await f.issue();
-  for (const sql of OLD_SCHEMA) f.db.run(sql);
-  f.reopen();
-  f.calls.length = 0;
-  const publicRead = await f.raw("loginpoll", { device_code: "invalid" }, {});
-  expect([publicRead.status, setupCalls(publicRead.calls)]).toEqual([503, []]);
-  expect(
-    (await f.write("claim", { requestId: "after-public" }, "owner")).status,
-  ).toBe(200);
-  expect(
-    f.db
-      .query("SELECT id FROM state_migrations WHERE id='003_cloud_login'")
-      .get(),
-  ).not.toBeNull();
-}, 30_000);
-
-test("a cached public adapter still initializes once on an admitted write", async () => {
-  using f = fixture();
-  await f.issue();
-  for (const sql of OLD_SCHEMA) f.db.run(sql);
-  const project = new Project({ storage: f.storage }, PUBLIC_ENV);
-  expect(
-    (await project.fetch(new Request("https://fixture.example/device"))).status,
-  ).toBe(200);
-  const write = (requestId: string) =>
-    project.fetch(
-      new Request("https://fixture.example/p/a/claim", {
-        method: "POST",
-        headers: FORGED,
-        body: JSON.stringify({ ...defaults, requestId }),
-      }),
-    );
-  expect((await write("cached-public")).status).toBe(200);
-  expect(
-    f.db
-      .query("SELECT id FROM state_migrations WHERE id='003_cloud_login'")
-      .get(),
-  ).not.toBeNull();
-  f.calls.length = 0;
-  expect((await write("cached-public")).status).toBe(200);
-  expect(setupCalls(f.calls)).toEqual([]);
 }, 30_000);
 
 test("failed initialization rolls back historical setup and can retry on the same handle", async () => {

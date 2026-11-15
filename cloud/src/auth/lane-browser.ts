@@ -372,6 +372,7 @@ export async function laneRoute(
   if (!same(expected, form.get("ticket")!) || !fresh()) return refused();
   const { upstream, redemption } = options;
   if (upstream === undefined || redemption === undefined) throw unavailable();
+  const writable = open().db;
   const expiresAt = Date.parse(row.expiresAt);
   const ticketHash = await sha256(`lane-ticket:${action}:${expected}`);
   if (!fresh()) return refused();
@@ -392,7 +393,6 @@ export async function laneRoute(
     throw unavailable();
   });
   if (!fresh()) return refused();
-  const writable = open().db;
   const saved = writable.transaction(() => {
     if (!fresh()) return false;
     const before = writable.get(`SELECT state FROM ${LANE_BROWSER} WHERE id=1`);
