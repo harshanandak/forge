@@ -183,6 +183,7 @@ async function runHarness(
       };
       try {
         await options.beforeSpawn?.();
+        controller.signal.throwIfAborted();
         exit = await new Promise<number | null>((done, fail) => {
           const child = spawn(command, args, {
             cwd: worktree,
@@ -698,7 +699,7 @@ export async function laneRun(
     if (bound) {
       const finished = bound;
       bound = undefined;
-      await finished.finish(success);
+      await finished.finish(success, role);
     }
     report({
       ...result,

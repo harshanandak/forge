@@ -2,13 +2,14 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { createAssembly, localCall } from "../src/assembly/index.ts";
 import { cloudBinding } from "../src/assembly/cloud-binding.ts";
-import type { BoundCommand } from "../src/blocks/work/bound-lane.ts";
+import * as bound from "../src/blocks/work/bound-lane.ts";
 import { ForgeFailure } from "../src/contract/failure.ts";
 import { validateWithSchema } from "../src/contract/schema.ts";
 import { dispatch } from "../src/surface/dispatch.ts";
+import { createAssemblyProviders } from "../src/assembly/providers.ts";
 import schema from "../src/blocks/work/schemas/lane-control.output.json" with { type: "json" };
 
-export async function readLaneControl(command: BoundCommand, id: string) {
+export async function readLaneControl(command: bound.BoundCommand, id: string) {
   try {
     if (!/^work-[1-9]\d*$/.test(id)) return "unknown";
     const result = await command("lane.control", { id });
@@ -28,7 +29,7 @@ const clock = {
   },
 };
 export function boundDispatch(
-  command: BoundCommand,
+  command: bound.BoundCommand,
   id: string,
   generation: number,
   timing = clock,
@@ -89,17 +90,17 @@ export function boundDispatch(
 }
 
 async function connectRunner(root: string) {
-  const binding = cloudBinding(
-    root,
-    process.env.HOME ?? process.env.USERPROFILE,
-  );
-  if (binding.kind !== "bound") return undefined;
+  if (
+    cloudBinding(root, process.env.HOME ?? process.env.USERPROFILE).kind !==
+    "bound"
+  )
+    return undefined;
   const assembly = await createAssembly({
     root,
     deviceRoot: process.env.FORGE_DEVICE_ROOT ?? join(homedir(), ".forge"),
   });
   const options = localCall(assembly);
-  const command: BoundCommand = async (op, input, generation) => {
+  const command: bound.BoundCommand = async (op, input, generation) => {
     const result = await dispatch(assembly.catalog, op, input, {
       ...options,
       ...(generation === undefined
@@ -111,6 +112,24 @@ async function connectRunner(root: string) {
   };
   return {
     command,
+    readHead: () => {
+      const scope = {
+        op: "lane.record",
+        effects: ["environment:read", "external:process"],
+        signal: AbortSignal.timeout(60000),
+        deadline: Date.now() + 60000,
+        processContainment: "supervised" as const,
+      };
+      const providers = createAssemblyProviders(root);
+      return bound.boundLaneGit(
+        {
+          ...scope,
+          process: providers.process(scope),
+          environment: providers.environment(scope),
+        },
+        root,
+      )(["rev-parse", "--verify", "HEAD"]);
+    },
     close: () => assembly.close(),
   };
 }
@@ -137,34 +156,48 @@ export async function openBoundRunner(
     };
     if (next.kind !== "harness")
       throw new Error(`Bound lane dispatch paused: ${next.why}`);
-    const reservation = JSON.parse(next.raw) as {
+    const { generation, head: reserved } = JSON.parse(next.raw) as {
       generation: number;
       head: string;
     };
-    const { generation } = reservation;
     if (
       !Number.isSafeInteger(generation) ||
       generation < 1 ||
-      reservation.head !== head
+      reserved !== head
     )
       throw new Error("Invalid dispatch reservation.");
     const canonical = `work-${next.lane.replace(/^.*-/, "")}`;
     const boundary = boundDispatch(command, canonical, generation, timing);
     return {
       beforeSpawn: boundary.beforeSpawn,
-      async finish(done: boolean) {
+      async finish(done: boolean, role?: string) {
         await boundary.close();
         try {
-          if (done)
+          if (done) {
+            const actual = await connection.readHead();
+            if (actual !== head) {
+              const rebound = (await command(
+                "lane.next",
+                { id, head: actual },
+                generation,
+              )) as { n: number };
+              if (rebound.n !== next.n)
+                throw new Error("The pending dispatch action changed.");
+            }
             await command(
               "lane.record",
               {
                 id,
                 action: next.n,
-                result: JSON.stringify({ head, done: true }),
+                result: JSON.stringify({
+                  head: actual,
+                  done: true,
+                  ...(role === "reviewer" ? { review: true } : {}),
+                }),
               },
               generation,
             );
+          }
         } finally {
           await connection.close();
         }
