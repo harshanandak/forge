@@ -107,9 +107,8 @@ for (const variant of [
       );
     }
     const linked = variant.startsWith("linked");
-    const cloneLookup = ["linked clone files", "linked startup"].includes(
-      variant,
-    );
+    const cloneLookup =
+      ancestor || ["linked clone files", "linked startup"].includes(variant);
     const main = ancestor ? root : join(root, "main"),
       common = join(main, ".git"),
       gitdir =
@@ -227,7 +226,7 @@ for (const variant of [
         } finally {
           startup.mockRestore();
         }
-      } else if (variant === "linked clone files") {
+      } else if (ancestor || variant === "linked clone files") {
         const handle = await createAssemblyProviders(
           processRoot,
           { env },
@@ -273,7 +272,7 @@ for (const variant of [
       if (linked) {
         const mutant = await withoutGuard<typeof providerModule>(
           new URL("../../src/assembly/providers.ts", import.meta.url),
-          'excluded.push(basename(common) === ".git" ? dirname(common) : common);',
+          /if \(existsSync\(join\(ancestor, "\.git"\)\)\)\s+excluded.push\(ancestor\);|excluded.push\(basename\(common\)[^\n]+/g,
         );
         expect(mutant.mutationLoaded).toBe(true);
         expect(mutant.resolveOutside).not.toBe(providerModule.resolveOutside);

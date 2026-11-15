@@ -17,7 +17,7 @@ import type {
 
 export async function withoutGuard<T>(
   url: URL,
-  guard: string,
+  guard: string | RegExp,
   replacement = "",
 ) {
   const source = readFileSync(url, "utf8");
