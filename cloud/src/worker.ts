@@ -3,6 +3,7 @@
 // Every request needs a bearer token. The admin routes (devices, revoke, status, dump, restore) are checked here against the
 // ADMIN_TOKEN secret, before the project's object is touched; the others are checked by the object.
 export { Project } from "./project.ts";
+import { validateUpgrade } from "./project.ts";
 import { bearer, same, sha256, wellFormed } from "./tokens.ts";
 import type { Access, AuthComposition } from "./auth/compose.ts";
 import { configUnavailable, isOAuthRoute } from "./auth/compose.ts";
@@ -32,6 +33,7 @@ const ADMIN_ROUTES = new Set([
   "status",
   "dump",
   "restore",
+  "upgrade",
 ]);
 
 // A refusal drops the request body unread, so nothing reads the stream after the response is sent.
@@ -202,6 +204,20 @@ const legacyWorker = {
         "AUTH_INVALID",
         "An admin token is required",
       );
+    if (match![2] === "upgrade") {
+      try {
+        await validateUpgrade(request);
+        if (request.method === "POST")
+          request = new Request(request, { body: "{}" });
+      } catch {
+        return unauthorized(
+          request,
+          "INPUT_INVALID",
+          "Invalid upgrade request",
+          400,
+        );
+      }
+    }
     const legacy = ADMIN_ROUTES.has(match![2]!) || wellFormed(presented);
     if (!legacy && auth === undefined)
       return unauthorized(request, "AUTH_INVALID", "Token is not valid");

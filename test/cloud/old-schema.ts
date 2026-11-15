@@ -77,3 +77,29 @@ export const PRE_WATERMARK = [
   `DELETE FROM state_migrations WHERE id='${WATERMARK_MIGRATION}'`,
 ];
 export const WATERMARK_SCHEMA = `SELECT name FROM sqlite_master WHERE type='index' AND name='${WATERMARK_INDEX}'`;
+
+export async function withoutWatermarkMigration() {
+  const url = new URL("../../src/core/state/index.ts", import.meta.url);
+  const source = await Bun.file(url).text();
+  const before =
+    "[...stateMigrations, ...domains.flatMap((domain) => domain.migrations)]";
+  if (source.split(before).length !== 2)
+    throw new Error("Missing initializer mutation site");
+  const changed = source
+    .replace(
+      before,
+      before.replace(
+        "...stateMigrations,",
+        `...stateMigrations.filter(m => m.id !== "${WATERMARK_MIGRATION}"),`,
+      ),
+    )
+    .replace(
+      /from "(\.\.?\/[^"]+)"/g,
+      (_all, spec: string) => `from "${new URL(spec, url).href}"`,
+    );
+  return (
+    (await import(
+      `data:text/javascript;base64,${Buffer.from(new Bun.Transpiler({ loader: "ts" }).transformSync(changed)).toString("base64")}`
+    )) as typeof import("../../src/core/state/index.ts")
+  ).StateOwner;
+}

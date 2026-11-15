@@ -1,6 +1,10 @@
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { PRE_WATERMARK, WATERMARK_SCHEMA } from "../../cloud/old-schema.ts";
+import {
+  PRE_WATERMARK,
+  WATERMARK_SCHEMA,
+  withoutWatermarkMigration,
+} from "../../cloud/old-schema.ts";
 import { tmpdir } from "node:os";
 import { createSqliteStore } from "../../../src/adapters/store-sqlite/index.ts";
 import { StateOwner } from "../../../src/core/state/index.ts";
@@ -149,7 +153,8 @@ test("watermark endpoint work is independent of history, keys and other namespac
             "namespace=? AND examined(sequence)",
           );
         }
-        return raw.query(sql).get(...params) as SqlRow | undefined;
+        return (raw.query(sql).get(...params) ?? undefined) as
+          SqlRow | undefined;
       },
       transaction: (body) => raw.transaction(body)(),
     };
@@ -212,6 +217,8 @@ test("old read-only watermark stays exact; migration removal is detected; delete
     const check = () => expect(real.get(WATERMARK_SCHEMA)).toBeDefined();
     check();
     for (const sql of PRE_WATERMARK) real.exec(sql);
+    const Mutant = await withoutWatermarkMigration();
+    new Mutant(real, { now: () => 1000 }).initialize();
     expect(check).toThrow();
     const before = real.all("SELECT * FROM state_migrations");
     const readOnly = {

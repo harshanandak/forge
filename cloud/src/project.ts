@@ -9,7 +9,10 @@
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { decideLease } from "../../src/contract/lease.ts";
 import { canonicalJson } from "../../src/core/config/pointer.ts";
-import { StateOwner } from "../../src/core/state/index.ts";
+import {
+  StateOwner,
+  WATERMARK_INDEX_PROBE,
+} from "../../src/core/state/index.ts";
 import type {
   ForgeError,
   LeaseHolder,
@@ -100,6 +103,8 @@ import {
   bearer,
   wellFormed,
 } from "./tokens.ts";
+
+import { stateMigrations } from "../../src/core/state/migrations.ts";
 
 const NAMESPACE = "forge/work";
 const REQUESTS = "domain_cloud_requests";
@@ -259,6 +264,30 @@ async function discard(request: Request): Promise<void> {
     await body.cancel().catch(() => undefined);
 }
 
+export interface UpgradeReadiness {
+  readonly ready: boolean;
+  readonly index: boolean;
+  readonly pending: readonly string[];
+}
+
+/** Validate before the Worker resolves a Project; repeat at the private object boundary. */
+export async function validateUpgrade(request: Request): Promise<void> {
+  if (
+    new URL(request.url).search !== "" ||
+    !["GET", "POST"].includes(request.method)
+  )
+    throw fail(
+      "INPUT_INVALID",
+      "Upgrade requires GET or POST without query parameters",
+    );
+  if (
+    request.method === "POST" &&
+    Object.keys(object(await bounded(request, 64, "INPUT_INVALID", true)))
+      .length !== 0
+  )
+    throw fail("INPUT_INVALID", "Upgrade body must be an empty JSON object");
+}
+
 export class Project {
   readonly #storage: DurableStorage;
   #opened: { db: SqlDatabase; owner: StateOwner } | undefined;
@@ -321,6 +350,32 @@ export class Project {
     return this.#provisioned;
   }
 
+  #readiness(): UpgradeReadiness {
+    const ledger = "SELECT id FROM state_migrations ORDER BY id";
+    const version = `SELECT value FROM ${PRAGMA_TABLE} WHERE name='user_version'`;
+    const db = readOnlyStore(this.#storage, "state_migrations", [
+      ledger,
+      version,
+      WATERMARK_INDEX_PROBE,
+    ]);
+    if (
+      !db ||
+      !readOnlyStore(this.#storage, PRAGMA_TABLE, []) ||
+      db.get(version)?.value !== 0
+    )
+      throw fail("INPUT_CONFLICT", "Project schema is not compatible");
+    const known = [...stateMigrations, ...domain.migrations].map((m) => m.id);
+    const applied = new Set(db.all(ledger).map((row) => String(row.id)));
+    const index = db.get(WATERMARK_INDEX_PROBE) !== undefined;
+    if (
+      [...applied].some((id) => !known.includes(id)) ||
+      (applied.has("005_state_events_namespace_index") && !index)
+    )
+      throw fail("INPUT_CONFLICT", "Project schema is not compatible");
+    const pending = known.filter((id) => !applied.has(id));
+    return { ready: index && pending.length === 0, index, pending };
+  }
+
   // The stored lease as is, read through a view of the lease table: a read never sets up storage, and no table is no lease.
   async #holder(subject: string): Promise<LeaseRecord | undefined> {
     if (!(await this.#isProvisioned())) return undefined;
@@ -335,6 +390,26 @@ export class Project {
       const url = new URL(request.url);
       const route = url.pathname.split("/")[3] ?? "";
       if (isStatePath(request)) return await this.#state(request);
+      if (route === "upgrade") {
+        await validateUpgrade(request);
+        if (!(await this.#isProvisioned()))
+          throw fail(
+            "INPUT_CONFLICT",
+            "Upgrade requires a provisioned project",
+          );
+        const before = this.#readiness();
+        if (request.method === "GET")
+          return Response.json({ ok: true, value: before });
+        if (!before.ready) this.#openWrite();
+        const readiness = this.#readiness();
+        return Response.json({
+          ok: true,
+          value: {
+            ...readiness,
+            outcome: before.ready ? "already ready" : "upgraded",
+          },
+        });
+      }
       // Login is public: the capability is the device code, and nothing here approves or mints for a caller.
       if (isLoginRoute(request)) {
         if (!(await this.#isProvisioned()))

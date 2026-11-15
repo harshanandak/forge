@@ -1080,6 +1080,12 @@ test("admin preparation upgrades current and historical stores without changing 
     if (historical) f.cold();
     f.reopen();
     const data = (await f.send("dump")).body.value;
+    const preserved = () =>
+      JSON.stringify([
+        f.rows("domain_cloud_tokens"),
+        f.rows("domain_cloud_export"),
+      ]);
+    const kept = preserved();
     const auth = { authorization: "Bearer fixture-admin" };
     const was = f.snapshot();
     const pending = await f.raw("upgrade", undefined, auth, "worker");
@@ -1099,6 +1105,7 @@ test("admin preparation upgrades current and historical stores without changing 
         expect(setupCalls(got.calls)).toEqual([]);
     }
     expect((await f.send("dump")).body.value).toEqual(data);
+    expect(preserved()).toBe(kept);
     expect(f.db.query(WATERMARK_SCHEMA).get()).not.toBeNull();
     const ready = f.snapshot();
     expect(
@@ -1217,4 +1224,30 @@ test("whole and paged restore initialize the watermark index before visibility",
       index: true,
     });
   }
+}, 30_000);
+
+test("historical upgrade retains the imported-receipt provenance transform", async () => {
+  using f = fixture();
+  await f.issue();
+  for (const sql of [
+    ...PRE_WATERMARK,
+    "DELETE FROM state_migrations WHERE id='006_cloud_imported_receipts'",
+    "DROP INDEX command_receipts_live",
+  ])
+    f.db.run(sql);
+  f.db.run(
+    "INSERT INTO domain_cloud_command_receipts VALUES ('historical', 'fingerprint', 'ok', '{}', 1, 2, 0)",
+  );
+  f.reopen();
+  expect(
+    (
+      await f.raw(
+        "upgrade",
+        {},
+        { authorization: "Bearer fixture-admin" },
+        "worker",
+      )
+    ).status,
+  ).toBe(200);
+  expect(f.rows("domain_cloud_command_receipts")[0]?.imported).toBe(1);
 }, 30_000);
