@@ -3,6 +3,13 @@ import { spyOn, test } from "bun:test";
 import { canonicalJson } from "../../src/core/config/pointer.ts";
 import { roundTrip } from "../../cloud/conformance/conformance.ts";
 import { SHAPE, type Tables } from "../../cloud/conformance/max-source.ts";
+import { stopPlan } from "../../cloud/conformance/restored.ts";
+import {
+  tally,
+  fold,
+  digests,
+  type Table,
+} from "../../cloud/conformance/digest.ts";
 
 const at = "2027-01-15T08:00:00.000Z";
 const actor = { kind: "agent", id: "cloud-restore" };
@@ -122,7 +129,13 @@ type Comparison = {
 };
 // Main ignores the extra parameter: red is a comparison assertion, not an import failure.
 const compare = roundTrip as (
-  ...args: [...Parameters<typeof roundTrip>, Comparison]
+  source: string,
+  target: string,
+  label: string,
+  budget: number,
+  each: undefined,
+  expected: undefined,
+  comparison: Comparison,
 ) => ReturnType<typeof roundTrip>;
 const cases = [
   "correct",
@@ -241,6 +254,21 @@ test.each(cases)(
       } finally {
         transport.mockRestore();
       }
+      const scan = () => {
+        const got = tally(undefined, stopPlan(source, deltas[1])),
+          want = tally();
+        for (const [table, rows] of Object.entries(target))
+          for (const row of rows) fold(got, table as Table, row);
+        for (const [table, rows] of Object.entries(source))
+          for (const row of rows) fold(want, table as Table, row);
+        assert.deepEqual(
+          digests(got),
+          digests(want),
+          "capacity six-table image",
+        );
+      };
+      if (kind === "correct") assert.doesNotThrow(scan);
+      else assert.throws(scan, /stop|capacity|state_records|state_events/i);
     }
   },
   5000,

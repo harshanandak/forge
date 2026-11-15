@@ -29,7 +29,7 @@ import type { SqlDatabase } from "../../src/ports/store.ts";
 import { Project } from "../src/project.ts";
 import { pageOrder } from "./page-order.ts";
 import { storageOf } from "./storage.ts";
-import { expectedImage } from "./restored.ts";
+import { expectedImage, type StopPlan } from "./restored.ts";
 import { pagesOf } from "../../tools/import-current-state.ts";
 import { limitsFrom } from "../src/dump.ts";
 import {
@@ -337,9 +337,11 @@ function expectOf(db: DatabaseSync): Expected {
 async function differences(
   db: DatabaseSync,
   expected: Expected,
+  stop?: StopPlan,
 ): Promise<string[]> {
-  const raw = tally(expected);
+  const raw = tally(expected, stop);
   scan(db, raw);
+  if (stop) return compare(raw, expected);
   const t = tally(expected);
   for await (const page of expectedImage(
     pagesOf(sqlOf(db), {
@@ -378,6 +380,7 @@ async function exported(project: Project): Promise<string[]> {
 }
 
 interface Meta {
+  stop?: StopPlan;
   at?: number;
   // Taken from the source tables before the export runs; every restored target is checked against it.
   expect: Expected;
@@ -430,12 +433,13 @@ interface Done {
 /** The worker: restore the pages `runs` times into fresh targets. The first run is cold, the rest warm. A target that took
  * all its pages is compared with the source expectations before it is closed. */
 async function restoreAll(): Promise<Done> {
-  const { dir, runs, limits, expect, refuse } = workerData as {
+  const { dir, runs, limits, expect, refuse, stop } = workerData as {
     dir: string;
     runs: number;
     limits: Record<string, string>;
     expect: Expected;
     refuse: boolean;
+    stop?: StopPlan;
   };
   const files = readdirSync(dir)
     .filter((f) => f.startsWith("page-"))
@@ -495,7 +499,7 @@ async function restoreAll(): Promise<Done> {
       }
     }
     assert.equal(refuse, false, "release-only overflow must be refused");
-    const wrong = await differences(db, expect);
+    const wrong = await differences(db, expect, stop);
     if (wrong.length > 0) mismatches.push(`run ${run}: ${wrong.join("; ")}`);
     db.close();
   }
@@ -544,6 +548,7 @@ async function measure(
     at: meta.at,
     limits,
     expect: meta.expect,
+    ...(meta.stop ? { stop: meta.stop } : {}),
   });
   const problems: string[] = [];
   const samples = done.samples ?? [];

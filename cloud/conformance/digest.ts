@@ -5,7 +5,7 @@ import { createHash, type Hash } from "node:crypto";
 import assert from "node:assert/strict";
 import { canonicalJson } from "../../src/core/config/pointer.ts";
 import type { LeaseRecord, StateEvent } from "../../src/generated/types.ts";
-import { releaseEvent } from "./restored.ts";
+import { releaseEvent, stopProof, type StopPlan } from "./restored.ts";
 
 export const TABLES = [
   "state_records",
@@ -49,6 +49,7 @@ export interface Expected {
   tables: Record<Table, { rows: number; digest: string }>;
 }
 export interface Tally {
+  stop: ReturnType<typeof stopProof> | undefined;
   rows: Record<Table, number>;
   hashes: Record<Table, Hash>;
   generated: { records: number; events: number; releases: number };
@@ -59,10 +60,11 @@ export interface Tally {
 }
 type Row = Record<string, unknown>;
 
-export function tally(skip?: Tally["skip"]): Tally {
+export function tally(skip?: Tally["skip"], stop?: StopPlan): Tally {
   const each = <T>(make: () => T): Record<Table, T> =>
     Object.fromEntries(TABLES.map((t) => [t, make()])) as Record<Table, T>;
   return {
+    stop: stop && stopProof(stop),
     rows: each(() => 0),
     hashes: each(() => createHash("sha256")),
     generated: { records: 0, events: 0, releases: 0 },
@@ -87,6 +89,11 @@ function originalLease(value: unknown): LeaseRecord {
 
 /** Preserve source digests while checking generated floor rows and exact lease releases separately. */
 export function fold(t: Tally, table: Table, row: Row): void {
+  if (t.stop) {
+    const original = t.stop.row(table, row);
+    if (!original) return;
+    row = original;
+  }
   if (t.skip !== undefined) {
     if (
       table === "state_records" &&
@@ -131,6 +138,7 @@ export function fold(t: Tally, table: Table, row: Row): void {
 }
 
 export function digests(t: Tally): Expected["tables"] {
+  t.stop?.done();
   return Object.fromEntries(
     TABLES.map((table) => [
       table,
