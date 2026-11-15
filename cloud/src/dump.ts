@@ -27,7 +27,7 @@ import {
   checkpointTables,
 } from "../../src/core/state/checkpoint.ts";
 import { readOnlyStore, type DurableStorage } from "./store.ts";
-import { assertNoEvidence } from "./evidence-receipts.ts";
+import { assertNoEvidence, EVIDENCE_RECEIPTS } from "./evidence-receipts.ts";
 
 export const DUMP_FORMAT = "forge-cloud-dump/2";
 export const COMMAND_RECEIPTS = "domain_cloud_command_receipts";
@@ -188,6 +188,33 @@ export const DUMP_USAGE_SQL = Object.entries(TABLES).map(
   ([table, { columns }]) =>
     `SELECT COUNT(*) AS n, COALESCE(SUM(${columns.map((column) => `LENGTH(CAST(${column} AS BLOB))`).join(" + ")}), 0) AS bytes FROM ${table}`,
 );
+
+/** Dumping is a read even when the object has just awakened. */
+export function dumpStore(storage: DurableStorage): SqlDatabase {
+  const statements = [
+    ...DUMP_USAGE_SQL,
+    "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+    ...[...Object.keys(checkpointTables), EVIDENCE_RECEIPTS].map(
+      (table) => `SELECT 1 FROM ${table} LIMIT 1`,
+    ),
+    `SELECT epoch, revision FROM ${EXPORT_STATE} WHERE id=1`,
+    ...Object.entries(TABLES).flatMap(([table, { columns, keys }]) =>
+      [false, true].map(
+        (after) =>
+          `SELECT ${columns.join(", ")} FROM ${table}${after ? ` WHERE (${keys.join(", ")}) > (${keys.map(() => "?").join(", ")})` : ""} ORDER BY ${keys.join(", ")} LIMIT ${BATCH}`,
+      ),
+    ),
+  ];
+  const db = readOnlyStore(storage, "state_records", statements);
+  if (db === undefined)
+    throw new ForgeFailure({
+      code: "UNAVAILABLE",
+      message: "Project maintenance is required",
+      retry: "never",
+    });
+  return db;
+}
 
 /** The same six-table accounting for diagnostics and enforcement, without loading stored rows. */
 export function dumpUsage(db: SqlDatabase | undefined, limits: Limits) {

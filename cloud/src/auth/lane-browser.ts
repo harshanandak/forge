@@ -142,7 +142,8 @@ export async function laneRoute(
     TOKEN_LOOKUP,
     `SELECT state FROM ${LANE_BROWSER} WHERE id=1`,
   ]);
-  if (db === undefined) return refused();
+  if (db === undefined)
+    throw fail("UNAVAILABLE", "Project maintenance is required");
   const current = (id = path?.[1]) => {
     const held = db.get(SELECT);
     const rows =
@@ -201,6 +202,8 @@ export async function laneRoute(
     if (upstream === undefined || redemption === undefined) throw unavailable();
     const stateHash = await sha256(states[0]!);
     const readStates = (source: SqlDatabase) => {
+      if (readOnlyStore(storage, LANE_BROWSER, []) === undefined)
+        throw fail("UNAVAILABLE", "Project maintenance is required");
       const held = source.get(`SELECT state FROM ${LANE_BROWSER} WHERE id=1`);
       return held === undefined
         ? []

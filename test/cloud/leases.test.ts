@@ -200,7 +200,7 @@ function fixture(env?: unknown) {
     snapshot,
     // A new Project over the same storage: nothing it has not read is set up.
     reopen: () => {
-      project = new Project({ storage });
+      project = new Project({ storage }, env);
     },
     // The object as an older deploy left it.
     cold: () => {
@@ -300,7 +300,9 @@ test("refused restore cleanup reuses schema without initialization", async () =>
     unknown
   >;
   using f = fixture();
-  expect((await f.send("restore", { ...page, last: false })).status).toBe(200);
+  expect(
+    (await f.send("restore", { ...page, last: false, next: "next" })).status,
+  ).toBe(200);
   for (const sql of OLD_SCHEMA) f.db.run(sql);
   f.reopen();
   const got = await f.raw("restore", {}, {});
@@ -312,6 +314,7 @@ test("a public handle cannot suppress subsequent admitted initialization", async
   using f = fixture(PUBLIC_ENV);
   await f.issue();
   for (const sql of OLD_SCHEMA) f.db.run(sql);
+  f.reopen();
   f.calls.length = 0;
   const publicRead = await f.raw("loginpoll", { device_code: "invalid" }, {});
   expect([publicRead.status, setupCalls(publicRead.calls)]).toEqual([503, []]);
@@ -323,6 +326,81 @@ test("a public handle cannot suppress subsequent admitted initialization", async
       .query("SELECT id FROM state_migrations WHERE id='003_cloud_login'")
       .get(),
   ).not.toBeNull();
+}, 30_000);
+
+test("a cached public adapter still initializes once on an admitted write", async () => {
+  using f = fixture();
+  await f.issue();
+  for (const sql of OLD_SCHEMA) f.db.run(sql);
+  const project = new Project({ storage: f.storage }, PUBLIC_ENV);
+  expect(
+    (await project.fetch(new Request("https://fixture.example/device"))).status,
+  ).toBe(200);
+  const write = (requestId: string) =>
+    project.fetch(
+      new Request("https://fixture.example/p/a/claim", {
+        method: "POST",
+        headers: FORGED,
+        body: JSON.stringify({ ...defaults, requestId }),
+      }),
+    );
+  expect((await write("cached-public")).status).toBe(200);
+  expect(
+    f.db
+      .query("SELECT id FROM state_migrations WHERE id='003_cloud_login'")
+      .get(),
+  ).not.toBeNull();
+  f.calls.length = 0;
+  expect((await write("cached-public")).status).toBe(200);
+  expect(setupCalls(f.calls)).toEqual([]);
+}, 30_000);
+
+test("failed initialization rolls back historical setup and can retry on the same handle", async () => {
+  using f = fixture();
+  await f.issue();
+  for (const sql of OLD_SCHEMA) f.db.run(sql);
+  const was = f.snapshot();
+  let fail = true;
+  const storage: DurableStorage = {
+    ...f.storage,
+    sql: {
+      exec: (sql, ...bindings) => {
+        if (
+          fail &&
+          sql.startsWith(
+            "CREATE TABLE IF NOT EXISTS domain_cloud_browser_attempts",
+          )
+        )
+          throw new Error("injected migration failure");
+        return f.storage.sql.exec(sql, ...bindings);
+      },
+    },
+  };
+  const project = new Project({ storage });
+  const write = () =>
+    project.fetch(
+      new Request("https://fixture.example/p/a/claim", {
+        method: "POST",
+        headers: FORGED,
+        body: JSON.stringify({ ...defaults, requestId: "retry-migration" }),
+      }),
+    );
+  const logged = spyOn(console, "error").mockImplementation(() => undefined);
+  try {
+    expect((await write()).status).toBe(500);
+    expect(f.snapshot()).toBe(was);
+    fail = false;
+    expect((await write()).status).toBe(200);
+    expect(
+      f.db
+        .query(
+          "SELECT id FROM state_migrations WHERE id='004_cloud_browser_attempts'",
+        )
+        .get(),
+    ).not.toBeNull();
+  } finally {
+    logged.mockRestore();
+  }
 }, 30_000);
 
 for (const route of ["claim", "renew"])

@@ -28,6 +28,7 @@ import {
   dumpOf,
   dumpPage,
   dumpUsage,
+  dumpStore,
   DUMP_USAGE_SQL,
   limitsFrom,
   parseDump,
@@ -37,7 +38,8 @@ import {
   type Page,
 } from "./dump.ts";
 import {
-  durableStore,
+  initializePragma,
+  writableStore,
   PRAGMA_TABLE,
   readOnlyStore,
   type DurableState,
@@ -91,6 +93,7 @@ import {
   issueToken,
   revokeToken,
   TOKEN_LOOKUP,
+  MAX_TTL_MS,
   TOKEN_MIGRATION,
   TOKENS,
   tokenParts,
@@ -259,6 +262,7 @@ async function discard(request: Request): Promise<void> {
 export class Project {
   readonly #storage: DurableStorage;
   #opened: { db: SqlDatabase; owner: StateOwner } | undefined;
+  #initialized = false;
   #provisioned = false;
   readonly #limits: Limits;
   readonly #env: LoginEnv;
@@ -282,15 +286,33 @@ export class Project {
     await this.#storage.delete(STAGED);
   }
 
-  // Creates the schema on first use. Only provisioned projects get here.
+  // A cached public handle must not suppress later admitted initialization.
   #open(): { db: SqlDatabase; owner: StateOwner } {
     if (this.#opened === undefined) {
-      const db = durableStore(this.#storage);
+      const db = writableStore(this.#storage);
       const owner = new StateOwner(db, { now: () => Date.now() });
-      owner.initialize([domain]);
       this.#opened = { db, owner };
     }
     return this.#opened;
+  }
+
+  #openWrite(): { db: SqlDatabase; owner: StateOwner } {
+    const opened = this.#open();
+    if (!this.#initialized) {
+      opened.db.transaction(() => {
+        initializePragma(this.#storage);
+        opened.owner.initialize([domain]);
+      });
+      this.#initialized = true;
+    }
+    return opened;
+  }
+
+  #public(...tables: string[]): { db: SqlDatabase; owner: StateOwner } {
+    for (const table of tables)
+      if (readOnlyStore(this.#storage, table, []) === undefined)
+        throw fail("UNAVAILABLE", "Project maintenance is required");
+    return this.#open();
   }
 
   async #isProvisioned(): Promise<boolean> {
@@ -320,11 +342,12 @@ export class Project {
             "AUTH_FORBIDDEN",
             "Login is not available for this project",
           );
+        const input = object(await bounded(request));
         return await loginRoute(
-          this.#open().db,
+          this.#public(LOGIN).db,
           this.#env,
           route as "loginstart" | "loginpoll",
-          object(await bounded(request)),
+          input,
           request.headers.get("CF-Connecting-IP"),
           url.pathname.split("/")[2] ?? "",
         );
@@ -337,7 +360,7 @@ export class Project {
           );
         return await laneRoute(
           this.#storage,
-          () => this.#open(),
+          () => this.#public(LANE_BROWSER, LANE_APPROVALS),
           this.#env,
           request,
           this.#browser,
@@ -352,7 +375,10 @@ export class Project {
             "Login is not available for this project",
           );
         return await deviceRoute(
-          this.#open().db,
+          (request.method === "GET" && url.pathname === "/device"
+            ? this.#open()
+            : this.#public(LOGIN, LIMITS)
+          ).db,
           this.#env,
           request,
           typeof this.#env.FORGE_CLOUD_PROJECT === "string"
@@ -367,33 +393,33 @@ export class Project {
       // The Worker has already checked the admin token before it forwards these two routes.
       if (request.method === "POST" && route === "devices") {
         const input = object(await bounded(request));
+        const deviceInput = {
+          device: text(input, "device"),
+          session: optional(input, "session"),
+          agent: optional(input, "agent"),
+          harness: optional(input, "harness"),
+          ttlMs: integer(input, "ttlMs"),
+        };
+        if (deviceInput.ttlMs > MAX_TTL_MS)
+          throw fail("INPUT_INVALID", "ttlMs is over 90 days");
         // Issuing a token provisions the project, so staged rows are cleared first: they were never checked.
         if ((await this.#storage.get(STAGED)) !== undefined)
           await this.#abandon();
+        const db = this.#openWrite().db;
         const epoch = await this.#storage.get(STATE_EPOCH);
         if (typeof epoch !== "string" || epoch.length === 0)
           await this.#storage.put(STATE_EPOCH, crypto.randomUUID());
         await this.#storage.put(PROVISIONED, true);
         this.#provisioned = true;
-        const value = await issueToken(
-          this.#open().db,
-          {
-            device: text(input, "device"),
-            session: optional(input, "session"),
-            agent: optional(input, "agent"),
-            harness: optional(input, "harness"),
-            ttlMs: integer(input, "ttlMs"),
-          },
-          Date.now(),
-        );
+        const value = await issueToken(db, deviceInput, Date.now());
         return Response.json({ ok: true, value });
       }
       if (request.method === "POST" && route === "revoke") {
         const input = object(await bounded(request));
         if (!(await this.#isProvisioned()))
           throw fail("INPUT_INVALID", "No such device token");
-        const { db, owner } = this.#open(),
-          id = text(input, "id"),
+        const id = text(input, "id");
+        const { db, owner } = this.#openWrite(),
           now = Date.now();
         const value = db.transaction(() => {
           const token = db.get(TOKEN_LOOKUP, [id]);
@@ -432,7 +458,9 @@ export class Project {
         return Response.json({ ok: true, value });
       }
       if (request.method === "GET" && route === "dump") {
-        const db = (await this.#isProvisioned()) ? this.#open().db : undefined;
+        const db = (await this.#isProvisioned())
+          ? dumpStore(this.#storage)
+          : undefined;
         const cursor = url.searchParams.get("cursor");
         return Response.json({
           ok: true,
@@ -629,7 +657,7 @@ export class Project {
         recheck: () => {
           authorizeToken(db, parts, Date.now());
         },
-        open: () => this.#open(),
+        open: () => this.#openWrite(),
       });
     } catch (error) {
       if (!(error instanceof ForgeFailure)) throw error;
@@ -688,7 +716,7 @@ export class Project {
         recheck: () => {
           authorize(db, parts, Date.now());
         },
-        open: () => this.#open(),
+        open: () => this.#openWrite(),
       });
     } catch (error) {
       if (!(error instanceof ForgeFailure)) throw error;
@@ -715,7 +743,7 @@ export class Project {
     let value: Record<string, unknown>;
     if (dump.format === DUMP_FORMAT) {
       if (staged !== undefined) await this.#abandon();
-      const { db, owner } = this.#open();
+      const { db, owner } = this.#openWrite();
       value = { restored: restoreDump(db, owner, dump, this.#limits) };
     } else {
       const page = dump as Page;
@@ -732,7 +760,7 @@ export class Project {
               ? "Restore page version changed; send page 0 to start again"
               : `Expected page ${staged.next}, or page 0 to start again`,
         );
-      const { db, owner } = this.#open();
+      const { db, owner } = this.#openWrite();
       value = {
         restored: restorePage(db, owner, page, this.#limits),
         page: page.page,
@@ -810,6 +838,7 @@ export class Project {
     // - A recorded refusal is returned again, never re-run.
     // - A recorded success never returns its old lease: the answer is read from the current lease.
     const requestId = scopeRequestId("lease", principal, rawId);
+    this.#openWrite();
     guardLegacy(this.#open().db, rawId, requestId);
     const fingerprint = canonicalJson({
       scope: receiptScope(principal),
