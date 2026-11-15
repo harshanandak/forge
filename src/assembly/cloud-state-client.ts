@@ -95,6 +95,7 @@ function cloudExchange(
   /** One request. Whatever the transport throws is rebuilt: only a cancellation keeps its code, never its text. */
   async function exchange<T extends { kind: string }>(
     send: () => Promise<T>,
+    Refusal: typeof ForgeFailure = ForgeFailure,
   ): Promise<Extract<T, { kind: "ok" | "approval_required" }>> {
     let result: T;
     try {
@@ -120,7 +121,7 @@ function cloudExchange(
             bad.lease.expiresAt ?? "",
           )
         : undefined;
-    throw new ForgeFailure({
+    throw new Refusal({
       code: bad.code,
       message:
         held ??
@@ -232,8 +233,15 @@ export interface CloudRecordOptions extends Omit<CloudLeaseOptions, "http"> {
 }
 export interface CloudRecordClient {
   read(call: State.StateReadRequest): Promise<State.StateReadResult>;
-  commit(call: State.StateCommitRequest): Promise<State.StateCommitResult>;
+  /** Observe only the token id from the same lookup, immediately before transport entry. */
+  commit(
+    call: State.StateCommitRequest,
+    principal?: (id: string) => void,
+  ): Promise<State.StateCommitResult>;
 }
+
+/** A decoded refusal for this attempt, not proof that an earlier attempt did not commit. */
+export class CloudRecordRefusal extends ForgeFailure {}
 
 /** One bound project's checked record transport, with no local state or automatic resend. */
 export function createCloudRecordClient(
@@ -252,27 +260,30 @@ export function createCloudRecordClient(
     async read(call) {
       const { token, device } = stored();
       const body = { ...call, context: contextFor(call.context, device) };
-      const { result } = await exchange(() =>
-        http.stateRead(token, body, signal),
+      const { result } = await exchange(
+        () => http.stateRead(token, body, signal),
+        CloudRecordRefusal,
       );
       if (carriesToken(result, token))
         throw failure("UNAVAILABLE", UNAVAILABLE);
       return result;
     },
-    async commit(call) {
-      const { token, device } = stored();
+    async commit(call, principal) {
+      const { token, device, id } = stored();
       const body = { ...call, context: contextFor(call.context, device) };
       if (signal?.aborted === true)
         throw failure("INVOCATION_CANCELLED", "The request was cancelled.");
       try {
-        const { result } = await exchange(() =>
-          http.stateCommit(token, body, signal),
-        );
+        const { result } = await exchange(() => {
+          principal?.(id);
+          return http.stateCommit(token, body, signal);
+        }, CloudRecordRefusal);
         if (carriesToken(result, token)) throw unknownCommit();
         return result;
       } catch (error) {
         if (
           error instanceof ForgeFailure &&
+          !(error instanceof CloudRecordRefusal) &&
           (error.error.code === "UNAVAILABLE" ||
             error.error.code === "INVOCATION_CANCELLED")
         )

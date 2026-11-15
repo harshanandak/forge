@@ -82,6 +82,33 @@ The local storage work remains synchronous beneath the Promise interface.
 These capabilities prepare the local layer; bound provider selection and
 memory activation follow separately. Existing v1 consumers stay synchronous.
 
+The remote record provider is implemented but **not selected by assembly yet**;
+it adds no advertised capability or dispatch path in this stage. Memory remains v1.
+Its reads pin one namespace version across point absence, pages and aggregates.
+Each accepted commit consumes its read dependencies; per-item commits use distinct IDs.
+An unknown outcome blocks new plans and keeps the exact request bytes and ID for replay.
+Replay also pins the credential's token ID; a changed or missing principal cannot settle it.
+A replay is settled only by acceptance. A fresh attempt clears pending only when dispatch
+never started or its first send received an audited definite refusal. The allowlist covers
+input/context/auth admission, unknown routes and revision/input conflicts; unfenced lease
+answers, INTERNAL, UNAVAILABLE and unusable answers remain ambiguous. Retry hints do not
+prove rollback. Once any send is ambiguous, every later failure preserves the frozen request.
+Credential lookup and context/signal preflight precede the principal guard; that guard and
+dispatch tracking run immediately before transport entry, using the same credential lookup.
+Local read-set conflicts discard the plan. Other proven pre-dispatch failures preserve it;
+missing credentials clear a fresh pending request and leave an unknown replay pending.
+After dispatch, transport failure, timeout, cancellation and malformed responses cannot
+prove rollback. Ambiguous outcomes preserve the decoded error code with `reconcile_first`.
+Reconciliation may remain blocked if the original credential or namespace admission
+cannot be restored; a fresh request ID is not a repair for an unresolved write.
+Only a known conflict permits a logical retry with a fresh plan; replayed acceptance
+requires fresh subsequent reads because the receipt may describe an older snapshot.
+Cached methods enforce invocation abort/deadline, propagated to the checked record client.
+The next slice selects both state and project-level slots before local project acquisition,
+adds bound-peer fencing and uses the validated manifest UUID's first 16 dashless hex
+characters as the stable note prefix. Historical note-prefix mapping remains a separate
+lead-tracked follow-up; this provider never translates local note IDs.
+
 Input fields whose names map to reserved CLI flags, such as `text`, `json`,
 `help`, `input` or `dryRun`, must be passed using `--input JSON`. For an operation
 `greet.shout` with a `text` field, use `npx forge greet shout --input '{"text":"quiet"}'`

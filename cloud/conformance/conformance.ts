@@ -7,7 +7,7 @@ import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { releasedTables } from "./restored.ts";
+import { imageSequence, releasedTables } from "./restored.ts";
 import type { Tables } from "./max-source.ts";
 import { canonicalJson } from "../../src/core/config/pointer.ts";
 import type { StateEvent } from "../../src/generated/types.ts";
@@ -46,12 +46,15 @@ const base = process.env.CLOUD_BASE ?? "http://127.0.0.1:8787";
 const stateFile =
   process.env.CONFORMANCE_STATE ??
   join(tmpdir(), "forge-cloud-conformance.json");
-const phase = process.argv[2] ?? "main";
+const phase = import.meta.main ? (process.argv[2] ?? "main") : "";
 const run = `c${Date.now()}`;
 // The admin token comes from a file for live runs, so it never appears on a command line.
-const adminToken = process.env.CLOUD_ADMIN_TOKEN_FILE
-  ? readFileSync(process.env.CLOUD_ADMIN_TOKEN_FILE, "utf8").trim()
-  : (process.env.CLOUD_ADMIN_TOKEN ?? "");
+const adminToken =
+  import.meta.main && process.env.CLOUD_ADMIN_TOKEN_FILE
+    ? readFileSync(process.env.CLOUD_ADMIN_TOKEN_FILE, "utf8").trim()
+    : import.meta.main
+      ? (process.env.CLOUD_ADMIN_TOKEN ?? "")
+      : "";
 // Live runs hit the deployed Worker, which has no fault switch.
 const live = process.env.CLOUD_LIVE === "1";
 
@@ -583,12 +586,13 @@ async function walk(
 }
 // Every real page of `source` goes unchanged and in order into the empty `target`, which is then read back page by
 // page. Digests of every column of every row stand in for copies, so one page is held at a time.
-async function roundTrip(
+export async function roundTrip(
   source: string,
   target: string,
   label: string,
   budget: number,
   each: (page: DumpPage, text: string) => void = () => undefined,
+  expected: string | Iterable<DumpPage> | AsyncIterable<DumpPage> = source,
 ) {
   const { digester } = await import("./budget.ts");
   const sent = digester();
@@ -629,12 +633,29 @@ async function roundTrip(
       back.add(table, rows);
   });
   const digests = sent.done();
+  const image = digester();
+  if (typeof expected === "string") {
+    if (expected !== source)
+      await walk(expected, `${label} expected image`, budget, (page) => {
+        for (const [table, rows] of Object.entries(page.tables))
+          image.add(table, rows);
+      });
+  } else {
+    const sequence = imageSequence();
+    for await (const page of expected) {
+      sequence(page);
+      for (const [table, rows] of Object.entries(page.tables))
+        image.add(table, rows);
+    }
+    sequence();
+  }
   assert.deepEqual(
     back.done(),
-    digests,
-    `${label}: target differs from source`,
+    expected === source ? digests : image.done(),
+    `${label}: target differs from expected image`,
   );
-  assert.deepEqual(read.bytes, trip.bytes, `${label}: target pages differ`);
+  if (expected === source)
+    assert.deepEqual(read.bytes, trip.bytes, `${label}: target pages differ`);
   return { ...trip, digests };
 }
 
