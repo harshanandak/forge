@@ -10,6 +10,7 @@ import {
 import {
   createCloudLeaseClient,
   createCloudRecordClient,
+  CloudRecordRefusal,
   type CloudLeaseClient,
 } from "../../src/assembly/cloud-state-client.ts";
 import { wireDeviceId } from "../../src/assembly/cloud-login.ts";
@@ -947,6 +948,9 @@ for (const op of recordOps) {
       const r = recordRig(options);
       const failed = await failureOf(() => run(r));
       expect([failed.error.code, exit(failed)]).toEqual([code, wantExit]);
+      expect(failed instanceof CloudRecordRefusal).toBe(
+        name === "revoked" || name === "conflict",
+      );
       expect(JSON.stringify(failed)).not.toMatch(
         /server diagnostic|lost reply|fct_/,
       );

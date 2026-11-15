@@ -208,6 +208,9 @@ function fixture() {
     noCredential() {
       credential = false;
     },
+    restoreCredential() {
+      credential = true;
+    },
     deny(code: string) {
       deny = code;
     },
@@ -234,6 +237,32 @@ async function refused(pending: Promise<unknown>, code: string) {
 }
 
 const rows: readonly [string, (f: Fixture) => Promise<void>][] = [
+  [
+    "Pending replay survives credential loss",
+    async (f) => {
+      await f.state.put("note/1", "one", { expectRevision: 0 });
+      f.lose("note/2");
+      const replay = () => f.state.put("note/2", "two", { expectRevision: 0 });
+      await refused(replay(), "UNAVAILABLE");
+      const before = f.calls.length;
+      const original = f.bytes.at(-1);
+      f.noCredential();
+      await refused(replay(), "AUTH_REQUIRED");
+      // Counterfactual: clearing on retry:never reaches credentials here and returns AUTH_REQUIRED.
+      await refused(f.state.get("missing"), "UNAVAILABLE");
+      await refused(
+        f.state.put("replacement", "no", { expectRevision: 0 }),
+        "UNAVAILABLE",
+      );
+      expect(f.calls).toHaveLength(before);
+      f.restoreCredential();
+      await replay();
+      expect(f.bytes.at(-1)).toBe(original);
+      expect(f.commits().at(-1)!.requestId).toBe(f.commits().at(-2)!.requestId);
+      expect((await f.state.get("note/2"))?.value).toBe("two");
+      expect(f.records.size).toBe(2);
+    },
+  ],
   [
     "Invalid JSON parity",
     async (f) => {
