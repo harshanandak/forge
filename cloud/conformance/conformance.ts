@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { imageSequence, releasedTables } from "./restored.ts";
 import * as proof from "./restored.ts";
-import { parseDump } from "../src/dump.ts";
+import { PAGE_FORMAT, parseDump } from "../src/dump.ts";
 import type { Tables } from "./max-source.ts";
 import { canonicalJson } from "../../src/core/config/pointer.ts";
 import type { StateEvent } from "../../src/generated/types.ts";
@@ -274,14 +274,14 @@ async function withImage(project: string, check: Check) {
 }
 async function stoppedSeed(name: string, text: string): Promise<Tables> {
   const source = parseDump(text);
-  okValue(await sendPage(name, source), "seed");
+  okValue(await adminCall(name, "POST", "restore", text), "seed");
   await withImage(name, (got) => checkImage([source], got, name));
   return joined(await pagesOf(name)).tables as Tables;
 }
 async function stoppedTables(tables: Tables): Promise<Tables> {
   const found: Tables = {};
   for await (const page of proof.expectedImage(
-    [{ format: "forge-cloud-dump/2", tables }],
+    [{ format: PAGE_FORMAT, page: 0, last: true, next: null, tables }],
     Date.now,
     (owner) => proof.stopDelta(owner, "p", new Date(Date.now()).toISOString()),
   ))
@@ -5077,12 +5077,12 @@ if (phase === "budget-body") {
       const { size, stored, rows } = fixtureResult;
       fixtureResult.text = "";
       const [source, target] = [`${run}-body-src`, `${run}-body-dst`];
-      const tables = await stoppedSeed(source, fixtureResult.input);
+      const readback = stoppedSeed(source, fixtureResult.input);
       fixtureResult.input = "";
-      text = JSON.stringify(oracle.finalPage(tables));
-      const expected = oracle.digestOf(tables);
+      text = JSON.stringify(oracle.finalPage(await readback));
+      const expected = oracle.digestOf(await readback);
       assert.equal(Buffer.byteLength(text), size);
-      for (const table of Object.keys(tables)) delete tables[table];
+      for (const rows of Object.values(await readback)) rows.length = 0;
       const trip = await roundTrip(
         source,
         target,
