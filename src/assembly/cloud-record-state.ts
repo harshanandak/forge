@@ -11,6 +11,7 @@ import type {
 } from "../ports/state-protocol.ts";
 import {
   createCloudRecordClient,
+  CloudRecordRefusal,
   type CloudRecordOptions,
 } from "./cloud-state-client.ts";
 
@@ -62,10 +63,9 @@ export function createCloudRecordState(
   }
   function conflict(error: unknown): never {
     if (
-      error instanceof ForgeFailure &&
+      error instanceof CloudRecordRefusal &&
       ["REVISION_CONFLICT", "INPUT_CONFLICT"].includes(error.error.code)
     ) {
-      pending = undefined;
       reset();
     }
     throw error;
@@ -144,11 +144,7 @@ export function createCloudRecordState(
       else pin(answer);
       return answer.records;
     } catch (error) {
-      if (
-        error instanceof ForgeFailure &&
-        error.error.retry !== "reconcile_first"
-      )
-        pending = undefined;
+      if (error instanceof CloudRecordRefusal) pending = undefined;
       return conflict(error);
     }
   }
