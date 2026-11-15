@@ -1528,7 +1528,12 @@ test("bound runner refuses run, resume and detached auto before any provider spa
     ...row,
     value: {
       ...journal,
-      lane: { ...journal.lane, worktree: attached, brief: display.brief },
+      lane: {
+        ...journal.lane,
+        worktree: attached,
+        brief: display.brief,
+        gitScope: createGitScope(display.main, attached),
+      },
     },
   };
   const reset = () => {
