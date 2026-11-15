@@ -99,7 +99,7 @@ function fixture(write = true) {
       );
     }
     if (call.kind === "commit") {
-      const receipt = `${/^Bearer fct_([a-f0-9]{16})\./.exec(init.headers.authorization)?.[1]}:${call.requestId}`;
+      const receipt = `${/^Bearer fct_([a-f0-9]{16})\./.exec(init.headers.authorization ?? "")?.[1]}:${call.requestId}`;
       const previous = accepted.get(receipt);
       if (previous)
         return previous.bytes === init.body
@@ -250,6 +250,7 @@ async function refused(pending: Promise<unknown>, code: string) {
   );
   expect(error).toBeInstanceOf(ForgeFailure);
   expect((error as ForgeFailure).error.code).toBe(code);
+  return error as ForgeFailure;
 }
 
 const rows: readonly [string, (f: Fixture) => Promise<void>][] = [
@@ -262,7 +263,9 @@ const rows: readonly [string, (f: Fixture) => Promise<void>][] = [
       const original = f.bytes.at(-1),
         sent = f.calls.length;
       f.usePrincipal("bbbbbbbbbbbbbbbb");
-      await refused(replay(), "UNAVAILABLE");
+      expect((await refused(replay(), "UNAVAILABLE")).error.retry).toBe(
+        "reconcile_first",
+      );
       await refused(f.state.get("missing"), "UNAVAILABLE");
       expect(f.calls).toHaveLength(sent);
       f.usePrincipal("aaaaaaaaaaaaaaaa");
