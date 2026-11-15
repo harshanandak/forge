@@ -17,7 +17,7 @@ export const TOKEN_LOOKUP = `SELECT * FROM ${TOKENS} WHERE id=?`;
 
 const TOKEN = /^fct_([0-9a-f]{16})\.([A-Za-z0-9_-]{43})$/;
 const NO_ROW_HASH = "0".repeat(64);
-const MAX_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+export const MAX_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 
 const denied = (code: string, message: string): ForgeFailure =>
   new ForgeFailure({ code, message, retry: "never" });

@@ -142,7 +142,8 @@ export async function laneRoute(
     TOKEN_LOOKUP,
     `SELECT state FROM ${LANE_BROWSER} WHERE id=1`,
   ]);
-  if (db === undefined) return refused();
+  if (db === undefined)
+    throw fail("UNAVAILABLE", "Project maintenance is required");
   const current = (id = path?.[1]) => {
     const held = db.get(SELECT);
     const rows =
@@ -201,6 +202,8 @@ export async function laneRoute(
     if (upstream === undefined || redemption === undefined) throw unavailable();
     const stateHash = await sha256(states[0]!);
     const readStates = (source: SqlDatabase) => {
+      if (readOnlyStore(storage, LANE_BROWSER, []) === undefined)
+        throw fail("UNAVAILABLE", "Project maintenance is required");
       const held = source.get(`SELECT state FROM ${LANE_BROWSER} WHERE id=1`);
       return held === undefined
         ? []
@@ -369,6 +372,7 @@ export async function laneRoute(
   if (!same(expected, form.get("ticket")!) || !fresh()) return refused();
   const { upstream, redemption } = options;
   if (upstream === undefined || redemption === undefined) throw unavailable();
+  const writable = open().db;
   const expiresAt = Date.parse(row.expiresAt);
   const ticketHash = await sha256(`lane-ticket:${action}:${expected}`);
   if (!fresh()) return refused();
@@ -389,7 +393,6 @@ export async function laneRoute(
     throw unavailable();
   });
   if (!fresh()) return refused();
-  const writable = open().db;
   const saved = writable.transaction(() => {
     if (!fresh()) return false;
     const before = writable.get(`SELECT state FROM ${LANE_BROWSER} WHERE id=1`);

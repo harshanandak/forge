@@ -18,7 +18,7 @@ import {
 } from "../../cloud/src/store.ts";
 import { TOKEN_LOOKUP, TOKENS } from "../../cloud/src/tokens.ts";
 import { prepareCommand, runCommand } from "../../cloud/src/issue-commands.ts";
-import { OLD_SCHEMA } from "./old-schema.ts";
+import { OLD_SCHEMA, setupCalls } from "./old-schema.ts";
 import {
   commit as stateCommit,
   read as stateRead,
@@ -367,6 +367,62 @@ function fixture(
   };
 }
 const stateNamespaces = ["forge/memory"];
+test("old-schema command and state writes apply historical setup after read-only admission", async () => {
+  for (const state of [false, true]) {
+    const f = fixture({ ...vars, FORGE_STATE_NAMESPACES: ["forge/memory"] });
+    const token = await f.device(day, "laptop", "s1");
+    for (const sql of OLD_SCHEMA) f.db.run(sql);
+    f.reopen();
+    const was = f.snapshot();
+    const read = await f.send(
+      state
+        ? {
+            ...stateRead,
+            namespace: "forge/memory",
+            policyRevision: statePolicy,
+            query: { kind: "get", key: "x" },
+          }
+        : {
+            ...call,
+            context: { actor, session: { id: "s1", device: "laptop" } },
+            op: "issue.list",
+            input: {},
+          },
+      { token, ...(state ? { path: "state/read" } : {}) },
+    );
+    expect([
+      read.status,
+      setupCalls(read.touched),
+      f.snapshot() === was,
+    ]).toEqual([200, [], true]);
+    const write = await f.send(
+      state
+        ? {
+            ...stateCommit,
+            namespace: "forge/memory",
+            policyRevision: statePolicy,
+            readVersion: (read.json.result as StateReadResult).readVersion,
+            readSet: [],
+            entries: [{ key: "x", value: 1, expectRevision: 0 }],
+          }
+        : {
+            ...call,
+            context: { actor, session: { id: "s1", device: "laptop" } },
+            op: "issue.create",
+            input: { title: "Migration admission" },
+            requestId: "opener-write",
+          },
+      { token, ...(state ? { path: "state/commit" } : {}) },
+    );
+    expect(write.status).toBe(200);
+    expect(setupCalls(write.touched).length).toBeGreaterThan(0);
+    expect(
+      f.db
+        .query("SELECT id FROM state_migrations WHERE id='003_cloud_login'")
+        .get(),
+    ).not.toBeNull();
+  }
+}, 30_000);
 const statePolicy = digestValue(stateNamespaces);
 const stateEntries = (...keys: string[]) =>
   keys.map((key) => ({ key, value: { key }, expectRevision: 0 }));

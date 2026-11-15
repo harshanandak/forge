@@ -1,6 +1,12 @@
 import { expect, mock, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { Project } from "../../cloud/src/project.ts";
+import {
+  OLD_SCHEMA,
+  OLD_LANE_SCHEMA,
+  badOpener,
+  setupCalls,
+} from "./old-schema.ts";
 import { createWorker } from "../../cloud/src/worker.ts";
 import { durableStore } from "../../cloud/src/store.ts";
 import { StateOwner } from "../../src/core/state/index.ts";
@@ -53,7 +59,9 @@ async function fixture(
   const clock = spyOn(Date, "now").mockReturnValue(now);
   const db = new Database(":memory:");
   let writes = 0;
+  const calls: string[] = [];
   const { storage, values } = browserStorage(db, (sql) => {
+    calls.push(sql);
     if (/^\s*(INSERT|UPDATE|DELETE|CREATE)\b/i.test(sql)) writes++;
   });
   const env = {
@@ -67,7 +75,7 @@ async function fixture(
     FORGE_API_RESOURCE: "https://w.example",
     OAUTH_TIMEOUT_MS: "5000",
   };
-  const project = new Project({ storage }, env, browser);
+  let project = new Project({ storage }, env, browser);
   const reached: string[] = [];
   const bindings = {
     ...env,
@@ -120,6 +128,20 @@ async function fixture(
     ]);
   return {
     db,
+    calls,
+    reopen: (Constructor = Project) => {
+      calls.length = 0;
+      project = new Constructor({ storage }, env, browser);
+    },
+    schema: () =>
+      JSON.stringify(
+        [
+          "sqlite_schema",
+          "state_migrations",
+          "state_domains",
+          "domain_cloud_pragma",
+        ].map((table) => db.query(`SELECT * FROM ${table}`).all()),
+      ),
     writes: () => writes,
     env,
     reached,
@@ -1394,6 +1416,59 @@ test.each(["cloud", "local", "partial local"])(
   10_000,
 );
 type BrowserFixture = Awaited<ReturnType<typeof browserFixture>>;
+test.each(["missing", "POST", "callback", "bad POST", "bad callback"])(
+  "reopened lane opener authority: %s",
+  async (mode) => {
+    let verified = 0;
+    const f = await browserFixture("all", undefined, async () => {
+      verified++;
+      return ownerProof();
+    });
+    try {
+      const callback = mode.endsWith("callback");
+      const back = callback ? await laneReturn(f) : undefined;
+      for (const sql of mode === "missing" ? OLD_LANE_SCHEMA : OLD_SCHEMA)
+        f.db.run(sql);
+      const schema = f.schema(),
+        was = f.snapshot(),
+        spent = [...f.spent];
+      f.reopen(mode.startsWith("bad") ? await badOpener("public") : Project);
+      const reply = back
+        ? await f.browser(back.path, undefined, { Cookie: back.cookie })
+        : await f.submit();
+      expect(reply.status).toBe(
+        mode === "missing" ? 503 : callback ? 200 : 302,
+      );
+      if (mode === "missing") {
+        expect(JSON.parse(reply.text)).toMatchObject({
+          error: { code: "UNAVAILABLE" },
+        });
+        expect(f.snapshot()).toBe(was);
+        expect([...f.spent]).toEqual(spent);
+        expect([f.begun.length, verified]).toEqual([0, 0]);
+      }
+      const assertAuthority = () => {
+        expect(setupCalls(f.calls)).toEqual([]);
+        expect(f.schema()).toBe(schema);
+      };
+      if (mode.startsWith("bad")) expect(assertAuthority).toThrow("toEqual");
+      else {
+        assertAuthority();
+        const write = () =>
+          f.send(call("lane.stop", { all: true }, "after-public"));
+        f.calls.length = 0;
+        expect((await write()).status).toBe(200);
+        expect(setupCalls(f.calls).length).toBeGreaterThan(0);
+        f.calls.length = 0;
+        expect((await write()).status).toBe(200);
+        expect(setupCalls(f.calls)).toEqual([]);
+      }
+    } finally {
+      f.close();
+    }
+  },
+  30_000,
+);
 async function laneReturn(
   f: BrowserFixture,
   action = "approve",
