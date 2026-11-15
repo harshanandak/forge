@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, setSystemTime, spyOn, test } from "bun:test";
+import type { SqlDatabase } from "../../src/ports/store.ts";
 import type { SQLQueryBindings } from "bun:sqlite";
 import { domain } from "../../cloud/src/project.ts";
 import { durableStore } from "../../cloud/src/store.ts";
@@ -9,6 +10,7 @@ import {
   restorePage,
   dumpOf,
   type Page,
+  type Dump,
 } from "../../cloud/src/dump.ts";
 import { imageProblems, TABLES } from "../../cloud/conformance/digest.ts";
 import { replayImage } from "../../cloud/conformance/restored.ts";
@@ -597,6 +599,84 @@ test.each(rows)(
         p.close();
       }
     }
+  },
+  120_000,
+);
+
+const oracle = async (source: Iterable<Dump | Page>, target: SqlDatabase) => {
+  const helper =
+    (await import("../../cloud/conformance/restored.ts")) as unknown as {
+      restoreStopped: (
+        source: Iterable<Dump | Page>,
+        actual: SqlDatabase,
+        project: string,
+      ) => Promise<void>;
+    };
+  eq(
+    typeof helper.restoreStopped,
+    "function",
+    "restoreStopped oracle is available",
+  );
+  await helper.restoreStopped(source, target, "a");
+};
+test.each(["Oracle rejects main's restore", "Oracle accepts a stopped image"])(
+  "%s",
+  async (name) => {
+    const accepts = name.includes("accepts");
+    const changes = {
+      stop: [
+        'new LaneControlStore(owner(db), "a").stop(',
+        "({ stop: () => ({ ok: true }) }).stop(",
+      ],
+      approvals: ["db.run(`DELETE FROM ${LANE_APPROVALS}`);", ""],
+      browser: ["db.run(`DELETE FROM ${LANE_BROWSER}`);", ""],
+    } as const;
+    for (const mode of accepts ? ["absent", "running", "stopped"] : ["running"])
+      for (const paged of [false, true])
+        for (const mutation of accepts
+          ? ["intact", ...Object.keys(changes)]
+          : ["intact"]) {
+          const source = f.activationImage(mode, true),
+            before = f.snapshot(source),
+            p = await f.activation();
+          const image = paged ? [...pagesOf(source, limits)] : [dumpOf(source)];
+          for (const part of image)
+            eq((await p.send("restore", part)).projected.exitCode, 0);
+          if (accepts) {
+            const key = mutation as keyof typeof changes;
+            const fixture =
+              mutation === "intact"
+                ? f
+                : ((await import(
+                    await f.moduleUrl(
+                      "./import-current-state.fixture.ts",
+                      changes[key],
+                    )
+                  )) as typeof f);
+            fixture.settleActivation(p.db);
+          }
+          if (!accepts)
+            await assert.rejects(
+              () => oracle(image, p.db),
+              (error: unknown) => {
+                assert.ok(error instanceof assert.AssertionError);
+                for (const problem of [
+                  "missing global stop",
+                  "domain_cloud_lane_approvals",
+                  "domain_cloud_browser_challenges",
+                ])
+                  assert.ok(error.message.includes(problem), problem);
+                return true;
+              },
+            );
+          else if (mutation === "intact")
+            await assert.doesNotReject(() => oracle(image, p.db));
+          else
+            await assert.rejects(() => oracle(image, p.db), {
+              code: "ERR_ASSERTION",
+            });
+          eq(f.snapshot(source), before);
+        }
   },
   120_000,
 );
