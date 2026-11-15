@@ -274,7 +274,7 @@ async function withImage(project: string, check: Check) {
 }
 async function stoppedSeed(project: string, source: Dump): Promise<Tables> {
   okValue(await sendPage(project, source), "seed");
-  const actual = await dumpOf(project);
+  const actual = joined(await pagesOf(project));
   await withoutStop(source, actual);
   return actual.tables as Tables;
 }
