@@ -28,6 +28,8 @@ export function refuseBoundRunner(root: string) {
       "Bound lane dispatch requires the fresh control boundary in PR 2b.",
     );
 }
+const canonicalIssue = (id: unknown) =>
+  typeof id === "string" ? id.replace(/^.*-(\d+)$/, "work-$1") : null;
 
 export type RunOptions = {
   worktree: string;
@@ -579,7 +581,10 @@ export async function laneRun(
       (item) => !("attempt" in item) && item.issue === id,
     );
     if (!lane) throw new Error(`no active lane for ${id}; use start first`);
-    const classification = laneTier(lane.worktree);
+    const classification = laneTier(lane.worktree),
+      attached =
+        cloudBinding(lane.worktree, process.env.HOME ?? process.env.USERPROFILE)
+          .kind === "bound";
     tier = classification.tier;
     unlock = context.lock(id);
     interruptLaneRuns(context.common, id);
@@ -623,7 +628,9 @@ export async function laneRun(
       (!object(issue) ||
         issue.ok !== true ||
         !object(issue.result) ||
-        issue.result.id !== id)
+        (attached
+          ? canonicalIssue(issue.result.id) !== canonicalIssue(id)
+          : issue.result.id !== id))
     )
       throw new Error(
         "forge issue show did not return the requested issue successfully",
@@ -647,10 +654,7 @@ export async function laneRun(
           "\nLane contract (takes precedence):\n",
           readFileSync(lane.brief, "utf8"),
         ].join("\n");
-    if (
-      cloudBinding(lane.worktree, process.env.HOME ?? process.env.USERPROFILE)
-        .kind === "bound"
-    )
+    if (attached)
       bound = await (
         await import("./lane-control.ts")
       ).openBoundRunner(
