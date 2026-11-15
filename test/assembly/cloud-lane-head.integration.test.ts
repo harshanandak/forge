@@ -12,6 +12,12 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import * as coordinator from "../../src/assembly/cloud-lane-coordinator.ts";
 import * as laneState from "../../src/blocks/work/bound-lane-state.ts";
+import * as scopedGit from "../../src/assembly/providers.ts";
+import {
+  exerciseGitScope,
+  gitScopeRows,
+  type ScopedGitApi,
+} from "./cloud-fixture.ts";
 import {
   createAssemblyProviders,
   createProcessService,
@@ -20,6 +26,26 @@ import {
 import type { Preflight } from "../../src/core/runtime/index.ts";
 import type { ProcessPort } from "../../src/ports/process.ts";
 setDefaultTimeout(30000);
+
+for (const row of gitScopeRows)
+  test(`scoped git capability: ${row}`, async () => {
+    const api = scopedGit as unknown as ScopedGitApi;
+    expect(typeof api.gitCapability).toBe("function");
+    const result = await exerciseGitScope(row, api);
+    const accepted = [
+      "unrelated repository",
+      "plain checkout",
+      "relative and empty",
+    ].includes(row);
+    expect(result).toEqual({
+      kind: accepted ? "resolved" : "unavailable",
+      launched: accepted,
+      projectRan: false,
+      externalRan: accepted,
+      relativeRan: false,
+      unchanged: true,
+    });
+  }, 30000);
 
 const readHead = (
   coordinator as unknown as {

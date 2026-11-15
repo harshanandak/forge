@@ -1,14 +1,155 @@
 // Shared fixtures for the cloud login tests: a project checkout, a home folder, a fixture clock and a
 // scripted network. Nothing here reaches a real network.
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readlinkSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join, relative } from "node:path";
+import { createProcessPort } from "../../src/adapters/process/index.ts";
+import type { ProcessPort } from "../../src/ports/process.ts";
 import type { CloudFetch } from "../../src/adapters/http/index.ts";
 import type {
   CredentialEntry,
   CloudBinding,
 } from "../../src/assembly/cloud-profile.ts";
+
+export interface GitScope {
+  readonly project: { readonly lexical: string; readonly real: string };
+  readonly lane: { readonly lexical: string; readonly real: string };
+}
+export interface ScopedGitApi {
+  gitCapability(
+    port: ProcessPort,
+    env: Readonly<Record<string, string>>,
+    scope: GitScope,
+  ): {
+    executable(target?: GitScope): ReturnType<ProcessPort["resolve"]>;
+  };
+}
+export const gitScopeRows = [
+  "unrelated repository",
+  "plain checkout",
+  "relative and empty",
+  "only unsafe",
+  "no git",
+  "project alias",
+  "install alias",
+  "cross-project",
+] as const;
+export type GitScopeRow = (typeof gitScopeRows)[number];
+/** Synthetic state and marker executables only; never opens the device's tracker or credentials. */
+export async function exerciseGitScope(row: GitScopeRow, api: ScopedGitApi) {
+  const dir = mkdtempSync(join(import.meta.dirname, ".forge-git-scope-"));
+  const project = join(dir, "project"),
+    external = join(dir, "unrelated-install"),
+    relativeInstall = join(dir, "relative-install");
+  const marker = (root: string) => join(root, "launched");
+  const pair = (lexical: string) => ({
+    lexical,
+    real: realpathSync.native(lexical),
+  });
+  const snapshot = (root = dir): unknown =>
+    readdirSync(root)
+      .sort()
+      .filter((name) => name !== "launched")
+      .map((name): unknown => {
+        const path = join(root, name),
+          info = lstatSync(path);
+        return [
+          name,
+          info.isSymbolicLink()
+            ? readlinkSync(path)
+            : info.isDirectory()
+              ? snapshot(path)
+              : readFileSync(path, "utf8"),
+        ];
+      });
+  try {
+    for (const root of [project, external, relativeInstall]) {
+      mkdirSync(root);
+      mkdirSync(join(root, ".git"));
+      writeFileSync(
+        join(root, process.platform === "win32" ? "git.cmd" : "git"),
+        process.platform === "win32"
+          ? '@echo off\r\necho launched>"%~dp0launched"\r\necho fixture\r\n'
+          : '#!/bin/sh\nprintf launched > "${0%/*}/launched"\nprintf fixture\n',
+        { mode: 0o755 },
+      );
+    }
+    for (const name of [
+      "attachment",
+      "registry",
+      "lease",
+      "progress",
+      "refs",
+      "worktree",
+    ])
+      writeFileSync(join(project, name), `unchanged ${name}`);
+    const scope = { project: pair(project), lane: pair(project) };
+    const alias = join(row === "project alias" ? project : dir, "alias");
+    if (["project alias", "install alias"].includes(row))
+      symlinkSync(
+        row === "project alias" ? external : project,
+        alias,
+        process.platform === "win32" ? "junction" : "dir",
+      );
+    const paths =
+      row === "no git"
+        ? []
+        : row === "project alias" || row === "install alias"
+          ? [alias]
+          : row === "only unsafe"
+            ? [project]
+            : row === "relative and empty"
+              ? [relative(process.cwd(), relativeInstall), "", ".", external]
+              : [project, external];
+    const env = {
+      PATH: paths.join(delimiter),
+      PATHEXT: ".CMD",
+      SystemRoot: process.env.SystemRoot ?? "",
+    };
+    const before = JSON.stringify(snapshot());
+    const port = createProcessPort();
+    const pin = api.gitCapability(port, env, scope);
+    const target =
+      row === "cross-project"
+        ? { project: pair(external), lane: pair(external) }
+        : scope;
+    const executable = pin.executable(target);
+    let launched = false;
+    if (executable.kind === "resolved") {
+      const result = await port.run(executable, [], {
+        cwd: project,
+        env,
+        timeoutMs: 5000,
+        maxOutputBytes: 1024,
+      });
+      if (result.exitCode !== 0 || result.timedOut || result.truncated)
+        throw new Error(`Fixture launch failed: ${result.stderr}`);
+      launched = true;
+    }
+    return {
+      kind: executable.kind,
+      launched,
+      projectRan: existsSync(marker(project)),
+      externalRan: existsSync(marker(external)),
+      relativeRan: existsSync(marker(relativeInstall)),
+      unchanged: before === JSON.stringify(snapshot()),
+    };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
 
 export async function withoutGuard<T>(
   url: URL,
