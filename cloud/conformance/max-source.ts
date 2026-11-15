@@ -175,6 +175,7 @@ export async function maxSource(name: string, prefix = "forge", at?: number) {
   return { ...h, sent, tables, doc: { format: DUMP, tables } };
 }
 
+/** One accepted create with a short title, at the fixed clock: a few small rows that are identical in every process. */
 export async function tinySource(title: string) {
   const h = await harness("tiny", "forge", FROZEN);
   const owner = new StateOwner(sqlOf(h.db), { now: () => FROZEN });

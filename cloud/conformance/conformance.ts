@@ -4867,8 +4867,9 @@ if (phase === "budget-plan") {
     console.log(`PLAN ${size}`);
   } else {
     const { tables } = await fixtures.leaseSource(oracle.longSubject());
+    const stopped = await stoppedTables(tables);
     console.log(
-      `PLAN ${oracle.utf8(oracle.pageThrough(await stoppedTables(tables), oracle.leaseBoundary(tables)))}`,
+      `PLAN ${oracle.utf8(oracle.pageThrough(stopped, oracle.leaseBoundary(stopped)))}`,
     );
   }
 }
