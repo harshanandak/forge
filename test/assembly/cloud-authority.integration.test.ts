@@ -1859,6 +1859,64 @@ for (const [name, variants] of [
       );
     }
   });
+test("bound attachment: concurrent clones reserve before registry publication", async () => {
+  for (const guarded of [true, false]) {
+    const s = fx.sandbox();
+    const local = new LocalState(join(s.deviceRoot, "records.sqlite"));
+    try {
+      const owner = (await local.open(true))!;
+      const client = owner.client("forge/work", OWN_GRANT.holder.actor);
+      const barrier = Promise.withResolvers<void>();
+      const project = fx.bindingFor(),
+        registry = "forge-lanes.json";
+      let entered = 0;
+      const registries = [join(s.dir, "clone-a"), join(s.dir, "clone-b")];
+      for (const root of registries) mkdirSync(root);
+      const mutant = guarded
+        ? undefined
+        : await fx.withoutGuard<typeof boundLane>(
+            new URL("../../src/blocks/work/bound-lane.ts", import.meta.url),
+            "revision = (await save(record, revision)).revision;",
+          );
+      if (mutant) expect(mutant.mutationLoaded).toBe(true);
+      const start = mutant?.boundLaneStart ?? boundLane.boundLaneStart;
+      const replies = await Promise.allSettled(
+        registries.map((root) =>
+          start(
+            { id: ISSUE.id, branch: "feat/one", brief: "brief.md" },
+            { ...OWN_GRANT.holder, project: { id: "fixture", root } },
+            "dev-1",
+            () => NOW,
+            project,
+            client,
+            () => Promise.resolve({ ...ISSUE, lease: OWN_GRANT }),
+            (r, v) => Promise.resolve(writeBoundLane(client, project, r, v)),
+            async (record, fence) => {
+              if (++entered === 2) barrier.resolve();
+              await barrier.promise;
+              await fence.publish();
+              writeFileSync(
+                join(root, registry),
+                JSON.stringify([record.lane]),
+              );
+              return record.lane;
+            },
+          ),
+        ),
+      );
+      expect(replies.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+      const loser = replies.findIndex((r) => r.status === "rejected");
+      expect(existsSync(join(registries[loser]!, registry))).toBe(!guarded);
+      const winner = 1 - loser;
+      expect(
+        readBoundLane(client.get(journalKey())!.value, "work-1"),
+      ).toMatchObject({ active: true, lane: { worktree: registries[winner] } });
+    } finally {
+      await local.close();
+      s.close();
+    }
+  }
+});
 for (const [name, expected] of [
   ["ordinary attachment", "OK"],
   ["project git precedes trusted git", "OK"],
@@ -2102,7 +2160,7 @@ for (const [name, expected] of [
                   now: () => NOW,
                   ...scope,
                 },
-                async () => {},
+                { check: async () => {}, publish: async () => {} },
               );
               expect(lane.branch).toBe("feat/one");
               expect(existsSync(join(r.s.root, "project-git-ran"))).toBe(false);
@@ -2213,7 +2271,7 @@ for (const [name, expected] of [
                 new URL("../../src/blocks/work/bound-lane.ts", import.meta.url),
                 live
                   ? "previous &&"
-                  : "// Git awaits may outlive a released grant; cached expiry is not authority.\n    await fence();",
+                  : "// Git awaits may outlive a released grant; cached expiry is not authority.\n    await fence.publish();",
                 live ? "false &&" : "",
               );
               expect(mutant.mutationLoaded).toBe(true);

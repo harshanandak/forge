@@ -152,6 +152,11 @@ function ownBoundGrant(
   return grant;
 }
 
+export interface BoundAttachFence {
+  check(): Promise<void>;
+  publish(): Promise<void>;
+}
+
 export async function boundLaneStart(
   input: { id: string; branch: string; brief: string },
   context: AmbientContext,
@@ -163,7 +168,7 @@ export async function boundLaneStart(
   save: (record: BoundLaneRecord, revision: number) => Promise<StateRecord>,
   attach: (
     record: BoundLaneRecord,
-    fence: () => Promise<void>,
+    fence: BoundAttachFence,
     previous?: BoundLaneRecord["lane"],
   ) => Promise<BoundLaneRecord["lane"]>,
 ): Promise<unknown> {
@@ -200,18 +205,29 @@ export async function boundLaneStart(
       worktree: context.project!.root ?? context.project!.id,
     },
   };
-  const lane = await attach(
-    record,
-    async () => {
+  let revision = found?.revision ?? 0;
+  const fence: BoundAttachFence = {
+    async check() {
       own(
         (await command("issue.show", { id: record.cloudId })) as TrackerItem,
         grant.generation,
       );
     },
-    previous?.active ? previous.lane : undefined,
+    async publish() {
+      await fence.check();
+      // Reserve this revision before the caller can publish a clone registry.
+      revision = (await save(record, revision)).revision;
+    },
+  };
+  const lane = await attach(
+    record,
+    fence,
+    previous && (previous.active || previous.releaseNeeded)
+      ? previous.lane
+      : undefined,
   );
   record = { ...record, lane, active: true };
-  await save(record, found?.revision ?? 0);
+  await save(record, revision);
   return { ...lane, issue: fresh.id, lease: grant };
 }
 
@@ -475,7 +491,7 @@ export async function attachBoundLane(
     deadline: number;
     now: () => number;
   },
-  fence: () => Promise<void>,
+  fence: BoundAttachFence,
   previous?: BoundLaneRecord["lane"],
 ): Promise<BoundLaneRecord["lane"]> {
   const { files, environment } = services;
@@ -549,10 +565,10 @@ export async function attachBoundLane(
         "INPUT_CONFLICT",
         "Registry identity differs from the prepared attachment.",
       );
-    await fence();
+    await fence.check();
     await identity();
     // Git awaits may outlive a released grant; cached expiry is not authority.
-    await fence();
+    await fence.publish();
     if (Date.parse(record.grant.expiresAt) <= services.now())
       refuse("LEASE_EXPIRED", "The cloud grant expired.");
     if (!existing.length)

@@ -143,26 +143,25 @@ for (const variant of [
       attempts++;
       if (linked && _executable.path !== trusted)
         writeFileSync(probe, "untrusted Git was launched");
-      return Promise.resolve({
+      const result = {
         exitCode: variant === "exit" ? 1 : 0,
         signal: null,
         stderr: "",
         stdout:
-          variant === "linked startup"
-            ? `${processRoot}\n${gitdir}\n${common}\n`
-            : variant === "linked clone files"
-              ? `${gitdir}\n${common}\n`
-              : variant === "invalid head"
-                ? "not-a-head"
-                : variant === "sha256"
-                  ? "a".repeat(64)
-                  : variant === "fresh read" && attempts > 1
-                    ? H2
-                    : H1,
+          variant === "invalid head"
+            ? "not-a-head"
+            : variant === "sha256"
+              ? "a".repeat(64)
+              : variant === "fresh read" && attempts > 1
+                ? H2
+                : H1,
         timedOut: variant === "timeout",
         truncated: variant === "truncated",
         durationMs: 0,
-      });
+      };
+      if (cloneLookup)
+        result.stdout = `${variant === "linked startup" ? processRoot + "\n" : ""}${gitdir}\n${common}\n`;
+      return Promise.resolve(result);
     });
     const files = mock(() => {
       throw new Error("Head inspection must not open clone files");
