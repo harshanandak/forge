@@ -104,11 +104,8 @@ export const maxCalls = (id: string, body = BODY) => ({
   badComment: call("max-bad-comment", "issue.comment", { id, body: TOO_LONG }),
 });
 
-/**
- * An empty project `name` with its issue prefix, driven through the real Project and read with plain SQL. With `at`,
- * every request sees that fixed clock, so the same commands give the same rows in any process.
- */
-async function harness(name: string, prefix: string, at?: number) {
+/** Disposable Durable Object storage shared by Project targets and expected-image replay. */
+export function scratchStorage() {
   const db = new Database(":memory:");
   const values = new Map<string, unknown>();
   const storage: DurableStorage = {
@@ -132,6 +129,15 @@ async function harness(name: string, prefix: string, at?: number) {
     },
     delete: (key) => Promise.resolve(values.delete(key)),
   };
+  return { db, storage, values };
+}
+
+/**
+ * An empty project `name` with its issue prefix, driven through the real Project and read with plain SQL. With `at`,
+ * every request sees that fixed clock, so the same commands give the same rows in any process.
+ */
+async function harness(name: string, prefix: string, at?: number) {
+  const { db, storage } = scratchStorage();
   const project = new Project(
     { storage },
     { FORGE_CLOUD_PROJECT: name, FORGE_CLOUD_ID_PREFIX: prefix },

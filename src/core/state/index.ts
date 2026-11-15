@@ -124,7 +124,7 @@ export interface ReviewedDomain {
 function invalid(message: string): never {
   throw new ForgeFailure({ code: "INPUT_INVALID", message, retry: "never" });
 }
-function json(value: unknown): string {
+export function json(value: unknown): string {
   const seen = new Set<object>();
   const walk = (input: unknown): unknown => {
     if (
