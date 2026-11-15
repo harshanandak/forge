@@ -5,6 +5,7 @@ import type { Tables } from "./max-source.ts";
 import { StateOwner } from "../../src/core/state/index.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
 import { sqliteStore } from "../../src/adapters/store-sqlite/index.ts";
+import { initializeCloudVersion } from "../src/store.ts";
 import { pagesOf } from "../../tools/import-current-state.ts";
 import { domain } from "../src/project.ts";
 import {
@@ -50,6 +51,7 @@ export function replayImage(
   image: Iterable<Dump | Page>,
   at: number | (() => number),
 ): StateOwner {
+  initializeCloudVersion((sql) => db.exec(sql));
   const owner = new StateOwner(db, {
     now: typeof at === "number" ? () => at : at,
   });

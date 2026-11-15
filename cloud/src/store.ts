@@ -23,6 +23,14 @@ export interface DurableStorage {
 /** The only table that records the schema version: Durable Object SQLite has no PRAGMA user_version. */
 export const PRAGMA_TABLE = "domain_cloud_pragma";
 
+/** Bootstrap the version table before registering the Project domain. */
+export function initializeCloudVersion(exec: SqlDatabase["exec"]): void {
+  exec(
+    `CREATE TABLE IF NOT EXISTS ${PRAGMA_TABLE} (name TEXT PRIMARY KEY, value INTEGER NOT NULL)`,
+  );
+  exec(`INSERT OR IGNORE INTO ${PRAGMA_TABLE} VALUES ('user_version', 0)`);
+}
+
 function bind(value: SqlValue): Binding {
   if (typeof value === "bigint") {
     // Integers past 2^53 would be read back as a different number, so they are never written.
@@ -80,10 +88,7 @@ export function durableStore(storage: DurableStorage): SqlDatabase {
   const { sql } = storage;
   let active = false;
   let innerFailed = false;
-  sql.exec(
-    `CREATE TABLE IF NOT EXISTS ${PRAGMA_TABLE} (name TEXT PRIMARY KEY, value INTEGER NOT NULL)`,
-  );
-  sql.exec(`INSERT OR IGNORE INTO ${PRAGMA_TABLE} VALUES ('user_version', 0)`);
+  initializeCloudVersion((statement) => sql.exec(statement));
 
   const rows = (
     statement: string,
