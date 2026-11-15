@@ -1,6 +1,7 @@
 // Conformance checks for the claim server, run against `wrangler dev` (see .github/workflows/cloud.yml).
 // Phase "main" runs every check and saves what must survive a restart; phase "restart" reads it back.
 import assert from "node:assert/strict";
+import * as fs from "node:fs";
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
@@ -256,8 +257,24 @@ async function withoutStop(source: Dump, actual: Dump): Promise<Dump> {
   tables.state_events = actual.tables.state_events!.slice(0, -2);
   return { ...actual, tables };
 }
-const imageOf = async (project: string) =>
-  (await pagesOf(project)).map((page) => parseDump(JSON.stringify(page)));
+type Check = (image: Image) => Promise<void>;
+async function withImage(project: string, check: Check) {
+  const dir = fs.mkdtempSync(join(tmpdir(), "forge-image-"));
+  try {
+    const files: string[] = [];
+    await eachPage(project, (page) => {
+      const file = join(dir, `${files.length}.json`);
+      files.push(file);
+      writeFileSync(file, JSON.stringify(page));
+    });
+    const read = function* () {
+      for (const file of files) yield parseDump(readFileSync(file, "utf8"));
+    };
+    await check(read());
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
 async function stoppedSeed(project: string, source: Dump): Promise<Tables> {
   okValue(
     await adminCall(project, "POST", "restore", JSON.stringify(source)),
@@ -656,8 +673,6 @@ export async function roundTrip(
 ) {
   const { digester, eachCutPage, pageBytes } = await import("./budget.ts");
   const sent = digester();
-  const incoming: ReturnType<typeof parseDump>[] = [];
-  const actual: ReturnType<typeof parseDump>[] = [];
   assert.equal(await initialized(target), false, `${label}: target is empty`);
   const trip = await walk(source, label, budget, async (page, text) => {
     each(page, text);
@@ -688,21 +703,20 @@ export async function roundTrip(
     );
     for (const [table, rows] of Object.entries(page.tables))
       sent.add(table, rows);
-    incoming.push(parseDump(text));
   });
   const back = digester();
   const tables: Tables = {};
-  const read = await walk(target, `${label} readback`, budget, (raw, text) => {
-    const page = parseDump(text || JSON.stringify(raw));
-    actual.push(page);
+  const read = await walk(target, `${label} readback`, budget, (page) => {
     for (const [table, rows] of Object.entries(page.tables)) {
       back.add(table, rows);
-      (tables[table] ??= []).push(...rows);
+      (tables[table] ??= []).push(...(rows as Tables[string]));
     }
   });
   const digests = sent.done();
   if (expected === source) {
-    await checkImage(incoming, actual, target);
+    await withImage(source, (input) =>
+      withImage(target, (actual) => checkImage(input, actual, target)),
+    );
     assert.deepEqual(
       read.bytes,
       Array.from(eachCutPage(tables, budget), pageBytes),
@@ -5138,7 +5152,9 @@ if (phase === "capacity-wire") {
           for (const [table, rows] of Object.entries(page.tables))
             for (const row of rows) fold(incoming, table as Table, row);
         const wrong = imageProblems(digests(incoming), expect.tables);
-        await checkImage(input(), await imageOf(target), target);
+        await withImage(target, (actual) =>
+          checkImage(input(), actual, target),
+        );
         assert.deepEqual(
           wrong,
           [],
