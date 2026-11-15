@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, setSystemTime, spyOn, test } from "bun:test";
+import type { SqlDatabase } from "../../src/ports/store.ts";
 import type { SQLQueryBindings } from "bun:sqlite";
 import { domain } from "../../cloud/src/project.ts";
 import { durableStore } from "../../cloud/src/store.ts";
@@ -9,13 +10,21 @@ import {
   restorePage,
   dumpOf,
   type Page,
+  type Dump,
 } from "../../cloud/src/dump.ts";
 import { imageProblems, TABLES } from "../../cloud/conformance/digest.ts";
-import { replayImage } from "../../cloud/conformance/restored.ts";
+import {
+  replayImage,
+  restoreStopped,
+} from "../../cloud/conformance/restored.ts";
 import { pagesOf as cut } from "../../cloud/conformance/max-source.ts";
 import { pageOrder } from "../../cloud/conformance/page-order.ts";
 import { respond } from "../../src/surface/result.ts";
-import { consumeLaneApproval } from "../../cloud/src/lane-approval.ts";
+import { LANE_BROWSER } from "../../cloud/src/auth/lane-browser.ts";
+import {
+  LANE_APPROVALS,
+  consumeLaneApproval,
+} from "../../cloud/src/lane-approval.ts";
 import { browserStorage } from "./browser-storage.fixture.ts";
 import * as f from "./import-current-state.fixture.ts";
 import * as converter from "../../tools/import-current.ts";
@@ -597,6 +606,89 @@ test.each(rows)(
         p.close();
       }
     }
+  },
+  120_000,
+);
+
+const oracle = (
+  source: Iterable<Dump | Page>,
+  target: SqlDatabase,
+  started: number,
+) => restoreStopped(source, target, "a", [started, Date.now()]);
+test.each(["Oracle rejects main's restore", "Oracle accepts a stopped image"])(
+  "%s",
+  async (name) => {
+    const accepts = name.includes("accepts");
+    const changes = {
+      stop: [
+        'new LaneControlStore(owner(db), "a").stop(',
+        "({ stop: () => ({ ok: true }) }).stop(",
+      ],
+      approvals: ["db.run(`DELETE FROM ${LANE_APPROVALS}`);", ""],
+      browser: ["db.run(`DELETE FROM ${LANE_BROWSER}`);", ""],
+      stale: [
+        'export function settleActivation(db: SqlDatabase) {\n  const result = new LaneControlStore(owner(db), "a").stop(',
+        'export function settleActivation(db: SqlDatabase) {\n  const at = Date.now() - 60_000;\n  const result = new LaneControlStore(new StateOwner(db, { now: () => at }), "a").stop(',
+      ],
+      content: [
+        '  const result = new LaneControlStore(owner(db), "a").stop(',
+        '  owner(db).put(ns, "issue:work-1", { title: "corrupted" }, actor, { expectRevision: 1 });\n  const result = new LaneControlStore(owner(db), "a").stop(',
+      ],
+    } as const;
+    for (const mode of accepts ? ["absent", "running", "stopped"] : ["running"])
+      for (const paged of [false, true])
+        for (const mutation of accepts
+          ? ["intact", ...Object.keys(changes)]
+          : ["intact"]) {
+          const source = f.activationImage(mode, true),
+            before = f.snapshot(source),
+            p = await f.activation();
+          const image = paged ? [...pagesOf(source, limits)] : [dumpOf(source)];
+          let started = Date.now();
+          for (const part of image) {
+            started = Date.now();
+            eq((await p.send("restore", part)).projected.exitCode, 0);
+          }
+          if (accepts) {
+            const key = mutation as keyof typeof changes;
+            const fixture =
+              mutation === "intact"
+                ? f
+                : ((await import(
+                    await f.moduleUrl(
+                      "./import-current-state.fixture.ts",
+                      changes[key],
+                    )
+                  )) as typeof f);
+            fixture.settleActivation(p.db);
+          }
+          if (!accepts)
+            await assert.rejects(
+              () => oracle(image, p.db, started),
+              (error: unknown) => {
+                assert.ok(error instanceof assert.AssertionError);
+                for (const problem of [
+                  "missing global stop",
+                  LANE_APPROVALS,
+                  LANE_BROWSER,
+                ])
+                  assert.ok(error.message.includes(problem), problem);
+                return true;
+              },
+            );
+          else if (mutation === "intact")
+            await assert.doesNotReject(() => oracle(image, p.db, started));
+          else if (mutation === "stale")
+            await assert.rejects(
+              () => oracle(image, p.db, started),
+              /restore stop time window/,
+            );
+          else
+            await assert.rejects(() => oracle(image, p.db, started), {
+              code: "ERR_ASSERTION",
+            });
+          eq(f.snapshot(source), before);
+        }
   },
   120_000,
 );
