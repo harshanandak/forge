@@ -15,7 +15,7 @@ import type {
   LeaseRecord,
   StateEvent,
 } from "../../src/generated/types.ts";
-import { OLD_SCHEMA } from "./old-schema.ts";
+import { OLD_SCHEMA, PUBLIC_ENV, setupCalls } from "./old-schema.ts";
 
 if (!("timingSafeEqual" in crypto.subtle))
   Object.defineProperty(crypto.subtle, "timingSafeEqual", {
@@ -228,6 +228,102 @@ function fixture(env?: unknown) {
     },
   };
 }
+
+test("public and admin reads never initialize a reopened Project", async () => {
+  for (const old of [false, true]) {
+    using f = fixture();
+    await f.issue();
+    if (old) f.cold();
+    for (const [path, body, status] of [
+      ["/p/a/loginpoll", "{", 400],
+      ["/p/a/loginpoll", '{"device_code":"invalid"}', old ? 503 : 400],
+      ["/device", undefined, 200],
+      ["/lane-approval/unknown", undefined, 400],
+      ["/p/a/dump?cursor=bad", undefined, 400],
+      ["/p/a/status", undefined, 200],
+      ["/p/a/dump", undefined, 200],
+    ] as const) {
+      const was = f.snapshot();
+      f.calls.length = 0;
+      const project = new Project({ storage: f.storage }, PUBLIC_ENV);
+      const response = await project.fetch(
+        new Request(`https://fixture.example${path}`, {
+          method: body === undefined ? "GET" : "POST",
+          ...(body === undefined ? {} : { body }),
+        }),
+      );
+      expect([
+        old,
+        path,
+        response.status,
+        setupCalls(f.calls),
+        f.snapshot() === was,
+      ]).toEqual([old, path, status, [], true]);
+      if (response.status === 503)
+        expect(await response.json()).toMatchObject({
+          error: { code: "UNAVAILABLE" },
+        });
+    }
+  }
+}, 30_000);
+
+test("invalid admin fields cannot initialize or provision storage", async () => {
+  for (const old of [false, true]) {
+    using f = fixture();
+    if (old) {
+      await f.issue();
+      f.cold();
+    }
+    for (const [route, input] of [
+      ["devices", { device: "phone", ttlMs: 90 * day + 1 }],
+      ["devices", { device: "phone", ttlMs: day, agent: 5 }],
+      ["revoke", { id: "" }],
+    ] as const) {
+      f.reopen();
+      const was = f.snapshot();
+      const got = await f.raw(route, input, {});
+      expect([
+        got.status,
+        got.body.error?.code,
+        setupCalls(got.calls),
+        f.snapshot() === was,
+      ]).toEqual([400, "INPUT_INVALID", [], true]);
+    }
+  }
+}, 30_000);
+
+test("refused restore cleanup reuses schema without initialization", async () => {
+  using source = fixture();
+  await source.issue();
+  const page = (await source.send("dump?cursor=start")).body.value as Record<
+    string,
+    unknown
+  >;
+  using f = fixture();
+  expect((await f.send("restore", { ...page, last: false })).status).toBe(200);
+  for (const sql of OLD_SCHEMA) f.db.run(sql);
+  f.reopen();
+  const got = await f.raw("restore", {}, {});
+  expect([got.status, setupCalls(got.calls)]).toEqual([400, []]);
+  expect(await f.storage.get("restore:next")).toBeUndefined();
+}, 30_000);
+
+test("a public handle cannot suppress subsequent admitted initialization", async () => {
+  using f = fixture(PUBLIC_ENV);
+  await f.issue();
+  for (const sql of OLD_SCHEMA) f.db.run(sql);
+  f.calls.length = 0;
+  const publicRead = await f.raw("loginpoll", { device_code: "invalid" }, {});
+  expect([publicRead.status, setupCalls(publicRead.calls)]).toEqual([503, []]);
+  expect(
+    (await f.write("claim", { requestId: "after-public" }, "owner")).status,
+  ).toBe(200);
+  expect(
+    f.db
+      .query("SELECT id FROM state_migrations WHERE id='003_cloud_login'")
+      .get(),
+  ).not.toBeNull();
+}, 30_000);
 
 for (const route of ["claim", "renew"])
   for (const auth of ["device", "owner"]) {

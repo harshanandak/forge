@@ -9,3 +9,20 @@ export const OLD_SCHEMA = [
   "DELETE FROM state_migrations WHERE id='004_cloud_browser_attempts'",
   "DELETE FROM state_domains WHERE table_name='domain_cloud_browser_attempts'",
 ] as const;
+
+// Call evidence catches idempotent setup that a before/after data snapshot cannot.
+export const setupCalls = (calls: readonly string[]) =>
+  calls.filter((sql) =>
+    /^(CREATE|ALTER|PRAGMA)|^(INSERT|UPDATE|DELETE).*\b(state_migrations|state_domains|domain_cloud_pragma)\b/i.test(
+      sql,
+    ),
+  );
+
+export const PUBLIC_ENV = {
+  FORGE_CLOUD_PROJECT: "a",
+  DEVICE_LOGIN_HMAC_KEY: "A".repeat(43),
+  CLERK_ISSUER: "https://clerk.example",
+  FORGE_OWNER_SUBJECT: "owner",
+  CLERK_CLIENT_ID: "client",
+  CLERK_REDIRECT_URI: "https://fixture.example/callback",
+};
