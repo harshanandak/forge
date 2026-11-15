@@ -19,8 +19,6 @@ import { readOnlyStore, type DurableStorage } from "./store.ts";
 export const STATE_EPOCH = "state:epoch";
 /** One sentinel beyond this budget distinguishes exact results from refused reads. */
 export const MAX_AGGREGATE_KEYS = 1000;
-const WATERMARK_INDEX =
-  "SELECT name FROM sqlite_schema WHERE type='index' AND name='state_events_by_namespace'";
 const fail = (code: string, message: string): never => {
   throw new ForgeFailure({ code, message, retry: "never" });
 };
@@ -54,15 +52,7 @@ export function readState(
     );
   const namespace = input.namespace,
     query = input.query;
-  const events = readOnlyStore(storage, "state_events", [
-    NAMESPACE_WATERMARK,
-    WATERMARK_INDEX,
-  ]);
-  if (events && !events.get(WATERMARK_INDEX))
-    fail(
-      "UNAVAILABLE",
-      "Upgrade state storage by issuing an admin device token for this project",
-    );
+  const events = readOnlyStore(storage, "state_events", [NAMESPACE_WATERMARK]);
   let revision = 0;
   try {
     if (events)

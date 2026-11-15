@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import {
   DUMP_MIGRATION,
   IMPORT_MIGRATION,
+  dumpUsage,
   limitsFrom,
 } from "../../cloud/src/dump.ts";
 import { Project } from "../../cloud/src/project.ts";
@@ -1016,6 +1017,98 @@ test("first state read upgrades a provisioned store once and uses a namespace en
     expect(
       plan.some((p) => /SCAN state_events|TEMP B-TREE/.test(p.detail)),
     ).toBe(false);
+  } finally {
+    f.db.close();
+    mock.restore();
+  }
+}, 30_000);
+
+test("startup index blocking measurement at the restore caps", async () => {
+  const f = await stateFixture(),
+    limits = limitsFrom(vars);
+  try {
+    const namespace = `forge/${"a".repeat(126)}`,
+      key = "k".repeat(500);
+    f.put(key, "", namespace);
+    const seed = f.owner.events(namespace)[0]!;
+    f.db.transaction(() => {
+      const insert = f.db.query("INSERT INTO state_events VALUES (?,?,?,?)");
+      for (let i = 2; i <= limits.maxRows; i++)
+        insert.run(i, namespace, key, JSON.stringify({ ...seed, revision: i }));
+    })();
+    f.db.run(
+      "UPDATE state_records SET revision=?, body=json_set(body,'$.revision',?)",
+      [limits.maxRows, limits.maxRows],
+    );
+    const usage = () => dumpUsage(sqlOf(f.db), limits);
+    const pad = "x".repeat(
+      Math.floor((limits.maxBytes - usage().bytes) / (limits.maxRows + 1)),
+    );
+    f.db.run("UPDATE state_events SET body=json_set(body,'$.data',?)", [pad]);
+    f.db.run("UPDATE state_records SET body=json_set(body,'$.value',?)", [pad]);
+    const last =
+      pad + "x".repeat(Math.floor((limits.maxBytes - usage().bytes) / 2));
+    f.db.run(
+      "UPDATE state_events SET body=json_set(body,'$.data',?) WHERE sequence=?",
+      [last, limits.maxRows],
+    );
+    f.db.run("UPDATE state_records SET body=json_set(body,'$.value',?)", [
+      last,
+    ]);
+    const full = usage();
+    expect(full.rows.state_events).toBe(limits.maxRows);
+    expect(full.bytes).toBeLessThanOrEqual(limits.maxBytes);
+    expect(full.bytes).toBeGreaterThanOrEqual(limits.maxBytes - 1);
+    f.db.run("DROP INDEX state_events_by_namespace");
+    f.db.run(
+      "DELETE FROM state_migrations WHERE id='005_state_events_namespace_index'",
+    );
+    f.reopen();
+    let indexBuildMs = 0,
+      indexBuilds = 0;
+    const executeSql = f.storage.sql.exec.bind(f.storage.sql);
+    const meter = spyOn(f.storage.sql, "exec").mockImplementation(
+      (sql, ...bindings) => {
+        const at = performance.now(),
+          result = executeSql(sql, ...bindings);
+        if (
+          sql.startsWith("CREATE INDEX IF NOT EXISTS state_events_by_namespace")
+        ) {
+          indexBuildMs += performance.now() - at;
+          indexBuilds++;
+        }
+        return result;
+      },
+    );
+    const input = {
+      ...stateRead,
+      namespace: "forge/memory",
+      policyRevision: "discover",
+      query: { kind: "get", key: "absent" },
+    };
+    const at = performance.now();
+    const first = await f.send(input, { token: f.token, path: "state/read" });
+    const firstReadMs = performance.now() - at;
+    expect(stateOutcome(first)).toEqual([200, undefined, 0]);
+    const second = await f.send(input, { token: f.token, path: "state/read" });
+    meter.mockRestore();
+    expect(second.text).toBe(first.text);
+    expect(indexBuilds).toBe(1);
+    expect(second.probes).not.toContain("state_migrations");
+    expect(usage().bytes).toBe(full.bytes);
+    console.log(
+      "State startup cap measurement",
+      JSON.stringify({
+        backend: "bun:sqlite synthetic DurableStorage",
+        rows: limits.maxRows,
+        storedBytes: full.bytes,
+        maxBytes: limits.maxBytes,
+        namespaceBytes: namespace.length,
+        indexBuildMs,
+        firstReadMs,
+        indexBuilds,
+      }),
+    );
   } finally {
     f.db.close();
     mock.restore();

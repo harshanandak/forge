@@ -1248,7 +1248,7 @@ export class StateOwner {
     );
     if (maxKeys !== undefined && Number(row?.examined ?? 0) > maxKeys)
       throw new ForgeFailure({
-        code: "UNAVAILABLE",
+        code: "INPUT_INVALID",
         message: `State aggregate exceeds the ${maxKeys} key budget; narrow the prefix`,
         retry: "never",
       });
