@@ -934,6 +934,79 @@ for (const fault of [
       mock.restore();
     }
   }, 30_000);
+// Aggregate bodies must never be loaded by count/max.
+function seedReadKeys(
+  f: Awaited<ReturnType<typeof stateFixture>>,
+  count: number,
+  prefix: string,
+) {
+  f.db.transaction(() => {
+    const insert = f.db.query(
+      "INSERT INTO state_records VALUES ('forge/memory',?,1,'{}')",
+    );
+    for (let i = 1; i <= count; i++) insert.run(`${prefix}${i}`);
+  })();
+}
+
+for (const kind of ["count", "max"] as const)
+  for (const count of [0, 999, 1000, 1001, 2001])
+    for (const prefix of ["", "note:", "\u{10ffff}"])
+      test(`state aggregate work budget: ${kind}/${count}/${prefix}`, async () => {
+        const f = await stateFixture();
+        try {
+          seedReadKeys(f, count, prefix);
+          let examined = 0;
+          f.db.function("examined", (_key: string) => {
+            examined++;
+            return 1;
+          });
+          const executeSql = f.storage.sql.exec.bind(f.storage.sql);
+          const plans: string[] = [];
+          const meter = spyOn(f.storage.sql, "exec").mockImplementation(
+            (sql, ...bindings) => {
+              if (
+                sql.includes("FROM state_records") &&
+                sql.includes(" AS total")
+              ) {
+                plans.push(
+                  ...f.db
+                    .query(`EXPLAIN QUERY PLAN ${sql}`)
+                    .all(
+                      ...bindings.map((v) =>
+                        v instanceof ArrayBuffer ? new Uint8Array(v) : v,
+                      ),
+                    )
+                    .map((row) => String((row as { detail: string }).detail)),
+                );
+                sql = sql.replace("key>=?", "key>=? AND examined(key)");
+              }
+              return executeSql(sql, ...bindings);
+            },
+          );
+          const got = await f.read({ kind, prefix });
+          meter.mockRestore();
+          expect(examined).toBe(Math.min(count, 1001));
+          expect(
+            plans.some((p) =>
+              /SEARCH state_records USING COVERING INDEX/.test(p),
+            ),
+          ).toBe(true);
+          if (count > 1000) {
+            expect(stateOutcome(got)).toEqual([400, "INPUT_INVALID", 6]);
+            expect(got.json.result).toBeUndefined();
+            expect(got.json.error?.message).toContain("1000");
+            expect(got.json.error?.message).toContain("narrow the prefix");
+            expect(got.json.error).toMatchObject({ retry: "never" });
+          } else {
+            expect(stateOutcome(got)).toEqual([200, undefined, 0]);
+            expect(got.value.result).toEqual({ kind, value: count });
+          }
+        } finally {
+          f.db.close();
+          mock.restore();
+        }
+      }, 30_000);
+
 test("state read query and cursor table returns facts without writes", async () => {
   const f = await stateFixture();
   try {
