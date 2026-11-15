@@ -966,7 +966,7 @@ test("state watermark uses a namespace endpoint after idempotent provisioned-sto
   try {
     f.put("old");
     for (let i = 0; i < 100; i++) {
-      f.put("old");
+      f.put(`historical:${i}`);
       f.put(`foreign:${i}`, i, "other/state");
     }
     const expected = f.owner.namespaceRevision("forge/memory");
