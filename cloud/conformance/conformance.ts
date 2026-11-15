@@ -243,17 +243,15 @@ async function checkImage(source: Image, actual: Image, project: string) {
 }
 async function withoutStop(source: Dump, actual: Dump): Promise<Dump> {
   await checkImage(image(source), image(actual), origins.get(actual)!);
-  const audit = actual.tables.state_events!.at(-1)!.key;
+  const ns = "forge/work",
+    audit = actual.tables.state_events!.at(-1)!.key;
   const global = (row: Record<string, unknown>) =>
-    row.namespace === "forge/work" && row.key === "lane-control:global";
+    row.namespace === ns && row.key === "lane-control:global";
   const tables = { ...actual.tables };
-  tables.state_records = actual.tables.state_records!.flatMap((row) =>
-    global(row)
-      ? source.tables.state_records!.filter(global)
-      : row.namespace === "forge/work" && row.key === audit
-        ? []
-        : [row],
-  );
+  tables.state_records = actual.tables.state_records!.flatMap((row) => {
+    if (global(row)) return source.tables.state_records!.filter(global);
+    return row.namespace === ns && row.key === audit ? [] : [row];
+  });
   tables.state_events = actual.tables.state_events!.slice(0, -2);
   return { ...actual, tables };
 }
@@ -275,10 +273,7 @@ async function withImage(project: string, check: Check) {
   }
 }
 async function stoppedSeed(project: string, source: Dump): Promise<Tables> {
-  okValue(
-    await adminCall(project, "POST", "restore", JSON.stringify(source)),
-    "seed",
-  );
+  okValue(await sendPage(project, source), "seed");
   const actual = await dumpOf(project);
   await withoutStop(source, actual);
   return actual.tables as Tables;
@@ -4359,7 +4354,7 @@ const same = (label: string, got: unknown, want: unknown): void => {
   const [g, w] = [JSON.stringify(got), JSON.stringify(want)];
   assert.ok(
     g === w,
-    `Full exact comparison failed for ${label}: received ${g}, expected ${w}`,
+    `${label}: got ${g?.slice(0, 500)}, want ${w?.slice(0, 500)}`,
   );
 };
 // The floor records of one project as { key: [prefix, number, revision] }, in key order.
@@ -4795,7 +4790,9 @@ if (phase === "numbers") {
         async () =>
           same("paged", nameOf(await secondRead(joinedTarget)), nameOf(whole)),
       );
-      writeFileSync(numbersState, JSON.stringify({ tables: whole.tables }));
+      const snapshot = await dumpOf(second);
+      await withoutStop(whole, snapshot);
+      writeFileSync(numbersState, JSON.stringify({ ...whole, snapshot }));
       if (problems.length > 0)
         throw new Error(problems.join(" | ").slice(0, 3000));
     },
@@ -4812,6 +4809,7 @@ if (phase === "numbers-restart") {
     async () => {
       const saved = JSON.parse(readFileSync(numbersState, "utf8")) as {
         tables: Dump["tables"];
+        snapshot: Dump;
       };
       const kept = nameOf({
         format: "forge-cloud-dump/2",
@@ -4821,7 +4819,7 @@ if (phase === "numbers-restart") {
       same(
         "project b after the restart",
         nameOf(await dumpOf(typedProject)),
-        kept,
+        nameOf(saved.snapshot),
       );
       same("settled floors", floorsOf(await dumpOf(typedProject)), AFTER_ADDS);
       const a = await callerFor("numbers-restart", false);
