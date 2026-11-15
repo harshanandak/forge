@@ -1,7 +1,36 @@
-// Independent expected tables after restore; no production release path is used as the oracle.
+// Expected-image replay and independent lease-release expectations for conformance.
 import { canonicalJson } from "../../src/core/config/pointer.ts";
 import type { LeaseRecord } from "../../src/generated/types.ts";
 import type { Tables } from "./max-source.ts";
+import { StateOwner } from "../../src/core/state/index.ts";
+import type { SqlDatabase } from "../../src/ports/store.ts";
+import { domain } from "../src/project.ts";
+import {
+  limitsFrom,
+  restoreDump,
+  restorePage,
+  type Dump,
+  type Page,
+} from "../src/dump.ts";
+
+/** The caller owns an empty scratch store and may prepare a different expected image after replay. */
+export function replayImage(
+  db: SqlDatabase,
+  image: Iterable<Dump | Page>,
+  at: number,
+): StateOwner {
+  const owner = new StateOwner(db, { now: () => at });
+  owner.initialize([domain]);
+  const limits = {
+    ...limitsFrom({}),
+    maxRows: Number.MAX_SAFE_INTEGER,
+    maxBytes: Number.MAX_SAFE_INTEGER,
+  };
+  for (const part of image)
+    if ("page" in part) restorePage(db, owner, part, limits);
+    else restoreDump(db, owner, part, limits);
+  return owner;
+}
 
 export const releaseEvent = (
   namespace: string,

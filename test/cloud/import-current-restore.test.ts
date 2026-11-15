@@ -7,9 +7,11 @@ import {
   limitsFrom,
   parseDump,
   restorePage,
+  dumpOf,
   type Page,
 } from "../../cloud/src/dump.ts";
-import { TABLES } from "../../cloud/conformance/digest.ts";
+import { imageProblems, TABLES } from "../../cloud/conformance/digest.ts";
+import { replayImage } from "../../cloud/conformance/restored.ts";
 import { pageOrder } from "../../cloud/conformance/page-order.ts";
 import { success } from "../../src/surface/dispatch.ts";
 import { failure, respond } from "../../src/surface/result.ts";
@@ -44,6 +46,43 @@ const status = (r: ReturnType<typeof respond>) => [
   r.envelope.ok ? null : r.envelope.error.code,
 ];
 const limits = { ...limitsFrom({}), pageBytes: 4096 };
+
+test("comparison plumbing replays source unchanged and compares a distinct expected image", () => {
+  const source = f.cloudDatabase(),
+    owner = f.owner(source);
+  owner.initialize([domain]);
+  owner.put(f.ns, "issue:work-1", { title: "source" }, f.actor, {
+    expectRevision: 0,
+  });
+  owner.put(
+    f.ns,
+    "allocation:issue:work-",
+    { prefix: "issue:work-", number: 1 },
+    f.actor,
+    { expectRevision: 0 },
+  );
+  const before = f.snapshot(source),
+    original = converter.imageDigests(source);
+  for (const paged of [false, true]) {
+    const scratch = f.cloudDatabase();
+    const expected = replayImage(
+      scratch,
+      paged ? pagesOf(source, limits) : [dumpOf(source)],
+      f.at,
+    );
+    eq(converter.imageDigests(scratch), original);
+    eq(imageProblems(original, converter.imageDigests(scratch)), []);
+    expected.put(f.ns, "issue:work-1", { title: "expected" }, f.actor, {
+      expectRevision: 1,
+    });
+    eq(imageProblems(original, converter.imageDigests(scratch)), [
+      "state_records holds the right row count but different content",
+      "state_events has 2 rows besides the generated floor, the expected image had 3",
+    ]);
+    eq(f.snapshot(source), before);
+  }
+}, 5_000);
+
 async function project(mutant?: string) {
   const edits: Record<string, readonly [string, string]> = {
     order: ["page.page !== staged?.next", "false"],

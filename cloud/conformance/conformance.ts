@@ -589,6 +589,7 @@ async function roundTrip(
   label: string,
   budget: number,
   each: (page: DumpPage, text: string) => void = () => undefined,
+  expected: string | Iterable<DumpPage> | AsyncIterable<DumpPage> = source,
 ) {
   const { digester } = await import("./budget.ts");
   const sent = digester();
@@ -629,12 +630,25 @@ async function roundTrip(
       back.add(table, rows);
   });
   const digests = sent.done();
+  const image = digester();
+  if (typeof expected === "string") {
+    if (expected !== source)
+      await walk(expected, `${label} expected image`, budget, (page) => {
+        for (const [table, rows] of Object.entries(page.tables))
+          image.add(table, rows);
+      });
+  } else {
+    for await (const page of expected)
+      for (const [table, rows] of Object.entries(page.tables))
+        image.add(table, rows);
+  }
   assert.deepEqual(
     back.done(),
-    digests,
-    `${label}: target differs from source`,
+    expected === source ? digests : image.done(),
+    `${label}: target differs from expected image`,
   );
-  assert.deepEqual(read.bytes, trip.bytes, `${label}: target pages differ`);
+  if (expected === source)
+    assert.deepEqual(read.bytes, trip.bytes, `${label}: target pages differ`);
   return { ...trip, digests };
 }
 

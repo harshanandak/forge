@@ -154,12 +154,21 @@ export function problems(t: Tally, expected: Expected): string[] {
     t.releaseHash.digest("hex") !== t.leaseHash.digest("hex")
   )
     found.push("release events differ from imported live leases");
-  const got = digests(t);
+  return found.concat(imageProblems(digests(t), expected.tables, "source"));
+}
+
+/** Compare all six tables independently of how the expected image was produced. */
+export function imageProblems(
+  got: Expected["tables"],
+  expected: Expected["tables"],
+  reference = "expected image",
+): string[] {
+  const found: string[] = [];
   for (const table of TABLES) {
-    const want = expected.tables[table];
+    const want = expected[table];
     if (got[table].rows !== want.rows)
       found.push(
-        `${table} has ${got[table].rows} rows besides the generated floor, the source had ${want.rows}`,
+        `${table} has ${got[table].rows} rows besides the generated floor, the ${reference} had ${want.rows}`,
       );
     else if (got[table].digest !== want.digest)
       found.push(`${table} holds the right row count but different content`);
