@@ -37,7 +37,8 @@ export function createCloudRecordState(
     policyRevision: "discover",
   };
   const dependencies = new Map<string, number>();
-  let pending: { bytes: string; intent: string } | undefined;
+  let pending:
+    { bytes: string; intent: string; principal?: string } | undefined;
   let sequence = 0,
     tail: Promise<unknown> = Promise.resolve();
   const fail = (code: string) =>
@@ -136,6 +137,11 @@ export function createCloudRecordState(
       active();
       const answer = await client.commit(
         JSON.parse(pending.bytes) as StateCommitRequest,
+        (id) => {
+          if (pending!.principal && pending!.principal !== id)
+            throw fail("UNAVAILABLE");
+          if (id) pending!.principal = id;
+        },
       );
       pending = undefined;
       dependencies.clear();

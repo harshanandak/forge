@@ -233,7 +233,11 @@ export interface CloudRecordOptions extends Omit<CloudLeaseOptions, "http"> {
 }
 export interface CloudRecordClient {
   read(call: State.StateReadRequest): Promise<State.StateReadResult>;
-  commit(call: State.StateCommitRequest): Promise<State.StateCommitResult>;
+  /** Observe only the token id from the same lookup that supplies this send. */
+  commit(
+    call: State.StateCommitRequest,
+    principal?: (id?: string) => void,
+  ): Promise<State.StateCommitResult>;
 }
 
 /** A decoded server refusal for this record request; never a pre-response failure. */
@@ -264,8 +268,16 @@ export function createCloudRecordClient(
         throw failure("UNAVAILABLE", UNAVAILABLE);
       return result;
     },
-    async commit(call) {
-      const { token, device } = stored();
+    async commit(call, principal) {
+      let credential: ReturnType<typeof stored>;
+      try {
+        credential = stored();
+      } catch (error) {
+        principal?.();
+        throw error;
+      }
+      const { token, device, id } = credential;
+      principal?.(id);
       const body = { ...call, context: contextFor(call.context, device) };
       if (signal?.aborted === true)
         throw failure("INVOCATION_CANCELLED", "The request was cancelled.");
