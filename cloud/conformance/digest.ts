@@ -101,6 +101,7 @@ export function fold(t: Tally, table: Table, row: Row): void {
       row.namespace === FLOOR.namespace &&
       row.key === FLOOR.key
     ) {
+      t.stop?.floor(table, row);
       t.generated.records += 1;
       return;
     }
@@ -124,7 +125,10 @@ export function fold(t: Tally, table: Table, row: Row): void {
             body: canonicalJson(event.data),
           }),
         );
-      } else t.generated.events += 1;
+      } else {
+        t.stop?.floor(table, row);
+        t.generated.events += 1;
+      }
       return;
     }
   }

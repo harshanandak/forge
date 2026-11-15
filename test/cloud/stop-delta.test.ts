@@ -348,8 +348,8 @@ test("stop delta: swapped suffix across page boundaries is refused", () => {
   for (const [table, rows] of Object.entries(target))
     if (table !== "state_events") sum.add(table, rows);
   sum.add("state_events", target.state_events!.slice(0, -2));
-  sum.add("state_events", [target.state_events!.at(-1)!]);
   assert.throws(() => {
+    sum.add("state_events", [target.state_events!.at(-1)!]);
     sum.add("state_events", [target.state_events!.at(-2)!]);
     sum.done();
   }, /event.*order|suffix/i);
@@ -390,7 +390,7 @@ test.each(["correct", "floor record", "floor event"] as const)(
       state_records: [floor, ...source.state_records!],
       state_events: [...source.state_events!, floorEvent],
     };
-    const plan = stopPlan(planned, deltas[0]),
+    const plan = stopPlan(planned, deltas[0], [floor, floorEvent]),
       actual = inject(planned, 1, false);
     if (kind === "floor record")
       actual.state_records = actual.state_records!.map((row) =>

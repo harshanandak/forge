@@ -38,6 +38,7 @@ export interface StopPlan {
   prior: Tables[string][number] | undefined;
   records: Tables[string];
   events: Tables[string];
+  floor: readonly [Tables[string][number], Tables[string][number]] | undefined;
 }
 const stopGlobal = (row: Record<string, unknown>) =>
   row.namespace === "forge/work" && row.key === "lane-control:global";
@@ -46,6 +47,7 @@ const stopGlobal = (row: Record<string, unknown>) =>
 export function stopPlan(
   before: Tables,
   delta?: StopDelta,
+  floor?: StopPlan["floor"],
 ): StopPlan | undefined {
   if (!delta) return;
   const { at, incarnation, auditId, window } = delta;
@@ -136,7 +138,7 @@ export function stopPlan(
       data: values[i],
     }),
   }));
-  return { prior: priorRow, records, events };
+  return { prior: priorRow, records, events, floor };
 }
 
 /** References to existing payloads plus two small pairs; the none case returns the original image. */
@@ -161,11 +163,28 @@ export function stopOverlay(before: Tables, plan?: StopPlan): Tables {
 /** Remove only the independently rendered identities, restoring the original global at its exact key. */
 export function stopProof(plan: StopPlan) {
   const seen = [0, 0, 0, 0];
+  let sequence = 0;
   return {
+    floor(table: string, row: Record<string, unknown>) {
+      assert.deepEqual(
+        { ...row },
+        plan.floor?.[table === "state_records" ? 0 : 1],
+        "generated floor",
+      );
+    },
     row(
       table: string,
       row: Record<string, unknown>,
     ): Record<string, unknown> | undefined {
+      if (table === "state_events") {
+        assert.ok(
+          Number.isSafeInteger(row.sequence) &&
+            Number(row.sequence) > sequence &&
+            !seen[3],
+          "stop event order/suffix",
+        );
+        sequence = Number(row.sequence);
+      }
       const list =
         table === "state_records"
           ? plan.records
@@ -178,6 +197,8 @@ export function stopProof(plan: StopPlan) {
           : row.sequence === want.sequence,
       );
       if (i < 0) return row;
+      if (table === "state_events")
+        assert.equal(i, seen[2]! + seen[3]!, "stop suffix positions");
       const index = i + (table === "state_events" ? 2 : 0);
       assert.deepEqual(
         { ...row },
