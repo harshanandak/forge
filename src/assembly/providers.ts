@@ -389,13 +389,16 @@ function hostEnv(options: ProviderOptions): Readonly<Record<string, string>> {
 
 // Discovery calls share the host's single supervisor; each lookup is launched once in order.
 let gitDiscovery = Promise.resolve();
-function gitOptions(options: ProviderOptions) {
+function gitOptions(root: string, options: ProviderOptions) {
   const port = createProcessPort({
     supervision: options.supervision ?? CLEANUP,
   });
   return {
     process: {
       ...port,
+      resolve(name: string, env: Readonly<Record<string, string>>) {
+        return resolveOutside(port, name, env, root);
+      },
       async run(...args: Parameters<ProcessPort["run"]>) {
         const pending = gitDiscovery.then(() => port.run(...args));
         gitDiscovery = pending.then(
@@ -430,7 +433,7 @@ export function projectStateRoot(
   root: string,
   options: ProviderOptions = {},
 ): Promise<string> {
-  return mainCheckoutPath(root, gitOptions(options));
+  return mainCheckoutPath(root, gitOptions(root, options));
 }
 
 /**
@@ -446,7 +449,7 @@ export function checkoutScopeRoot(
   root: string,
   options: ProviderOptions = {},
 ): Promise<string | undefined> {
-  return gitCheckoutScopeRoot(root, gitOptions(options));
+  return gitCheckoutScopeRoot(root, gitOptions(root, options));
 }
 
 /** A name as an issue id prefix: lowercase letters, digits and single hyphens; undefined when none remain. */
@@ -470,7 +473,10 @@ export async function idPrefixObservation(
   stateRoot: string,
   options: ProviderOptions = {},
 ): Promise<readonly DetectionObservation[]> {
-  const repository = await originRepositoryName(root, gitOptions(options));
+  const repository = await originRepositoryName(
+    root,
+    gitOptions(root, options),
+  );
   const value = idPrefix(repository ?? basename(stateRoot));
   return value === undefined
     ? []

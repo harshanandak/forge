@@ -1,4 +1,4 @@
-import { expect, mock, setDefaultTimeout, test } from "bun:test";
+import { expect, mock, setDefaultTimeout, spyOn, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
   existsSync,
@@ -21,6 +21,7 @@ import type { Preflight } from "../../src/core/runtime/index.ts";
 import type { ProcessPort } from "../../src/ports/process.ts";
 import * as providerModule from "../../src/assembly/providers.ts";
 import { withoutGuard } from "./cloud-fixture.ts";
+import * as launch from "../../src/adapters/process/run.ts";
 setDefaultTimeout(30000);
 
 const readHead = (
@@ -64,6 +65,7 @@ for (const variant of [
   "linked caller",
   "linked target",
   "linked clone files",
+  "linked startup",
   "fresh read",
   "sha256",
   "no trusted git",
@@ -143,15 +145,17 @@ for (const variant of [
         signal: null,
         stderr: "",
         stdout:
-          variant === "linked clone files"
-            ? `${gitdir}\n${common}\n`
-            : variant === "invalid head"
-              ? "not-a-head"
-              : variant === "sha256"
-                ? "a".repeat(64)
-                : variant === "fresh read" && attempts > 1
-                  ? H2
-                  : H1,
+          variant === "linked startup"
+            ? `${processRoot}\n${gitdir}\n${common}\n`
+            : variant === "linked clone files"
+              ? `${gitdir}\n${common}\n`
+              : variant === "invalid head"
+                ? "not-a-head"
+                : variant === "sha256"
+                  ? "a".repeat(64)
+                  : variant === "fresh read" && attempts > 1
+                    ? H2
+                    : H1,
         timedOut: variant === "timeout",
         truncated: variant === "truncated",
         durationMs: 0,
@@ -192,7 +196,24 @@ for (const variant of [
             : ["exit", "timeout", "truncated", "invalid head"].includes(variant)
               ? "INPUT_CONFLICT"
               : undefined;
-      if (variant === "linked clone files") {
+      if (variant === "linked startup") {
+        const startup = spyOn(launch, "runProcess").mockImplementation(
+          (executable, args) =>
+            runs({ kind: "resolved", path: executable }, args, {
+              cwd: processRoot,
+              env,
+              timeoutMs: 10000,
+              maxOutputBytes: 16384,
+            }),
+        );
+        try {
+          expect(
+            await providerModule.projectStateRoot(processRoot, { env }),
+          ).toBe(main);
+        } finally {
+          startup.mockRestore();
+        }
+      } else if (variant === "linked clone files") {
         const handle = await createAssemblyProviders(
           processRoot,
           { env },
@@ -216,7 +237,7 @@ for (const variant of [
       }
       for (const [executable, args, options] of runs.mock.calls) {
         expect(executable.path).toBe(trusted);
-        if (variant !== "linked clone files") {
+        if (variant !== "linked clone files" && variant !== "linked startup") {
           expect(args).toEqual(["rev-parse", "--verify", "HEAD"]);
           expect(options.cwd).toBe(target);
         }
