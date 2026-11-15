@@ -11,6 +11,7 @@ import {
   problems,
   type Table,
 } from "../../cloud/conformance/digest.ts";
+import type { StopDelta } from "../../cloud/conformance/restored.ts";
 import { digester } from "../../cloud/conformance/budget.ts";
 
 const at = "2027-01-15T08:00:00.000Z";
@@ -126,8 +127,8 @@ const page = (tables: Tables) => ({
 });
 type Comparison = {
   fixture: Tables;
-  seed: (typeof deltas)[number];
-  target: (typeof deltas)[number];
+  seed: StopDelta | (() => StopDelta) | false;
+  target: StopDelta | (() => StopDelta);
 };
 // Main ignores the extra parameter: red is a comparison assertion, not an import failure.
 const compare = roundTrip as (
@@ -176,6 +177,8 @@ test("stop delta: a deleted global keeps historical revisions", () => {
 }, 1000);
 const cases = [
   "correct",
+  "live callbacks",
+  "observed source",
   "duplicate event",
   "swapped events",
   "missing event",
@@ -242,7 +245,8 @@ test.each(cases)(
           row.sequence === 9 ? { ...row, body: "sourcf" } : row,
         );
       let restored = false;
-      let sourceExports = 0;
+      let sourceExports = 0,
+        seedRead = false;
       const drifted = {
         ...source,
         state_records: source.state_records!.map((row) =>
@@ -276,6 +280,7 @@ test.each(cases)(
                 },
               });
             }
+            if (url.pathname.includes("/source/")) seedRead = true;
             return Response.json({
               ok: true,
               value: page(
@@ -299,9 +304,32 @@ test.each(cases)(
             16384,
             undefined,
             undefined,
-            { fixture: original, seed: deltas[0]!, target: deltas[1]! },
+            {
+              fixture: kind === "observed source" ? source : original,
+              seed:
+                kind === "observed source"
+                  ? false
+                  : kind === "live callbacks"
+                    ? () => {
+                        assert.ok(seedRead, "metadata follows seed read");
+                        return deltas[0]!;
+                      }
+                    : deltas[0]!,
+              target:
+                kind === "live callbacks" || kind === "observed source"
+                  ? () => {
+                      assert.ok(restored, "metadata follows target restore");
+                      return deltas[1]!;
+                    }
+                  : deltas[1]!,
+            },
           );
-        if (kind === "correct") await assert.doesNotReject(run);
+        if (
+          kind === "correct" ||
+          kind === "live callbacks" ||
+          kind === "observed source"
+        )
+          await assert.doesNotReject(run);
         else {
           await assert.rejects(
             run,
@@ -334,7 +362,12 @@ test.each(cases)(
           "capacity six-table image",
         );
       };
-      if (kind === "correct") assert.doesNotThrow(scan);
+      if (
+        kind === "correct" ||
+        kind === "live callbacks" ||
+        kind === "observed source"
+      )
+        assert.doesNotThrow(scan);
       else assert.throws(scan, /stop|capacity|state_records|state_events/i);
     }
   },
