@@ -292,7 +292,7 @@ export async function project(
   const edits: Record<string, readonly [string, string]> = {
     order: ["page.page !== staged?.next", "false"],
     stop: [
-      "new LaneControlStore(owner, project).stop(",
+      "control.stop(",
       '({ stop: () => ({ ok: true, result: { stopped: true, scope: "all" } }) }).stop(',
     ],
     approval: ["db.run(`DELETE FROM ${LANE_APPROVALS}`);", ""],

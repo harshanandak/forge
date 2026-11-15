@@ -12259,7 +12259,7 @@ for (const trip of TRIPS)
     });
     const { t, got } = await restoreInto(trip, tables, { parts });
     expect(got.status).toBe(200);
-    expect(tablesOf(t.db)).toEqual(tables);
+    expect(await restoredTables(t.db, tables)).toEqual(tables);
     expect(tablesOf(t.db).domain_cloud_command_receipts).toEqual([]);
   }, 30_000);
 
@@ -12370,7 +12370,7 @@ for (const trip of TRIPS)
     const parts = await exported(f, trip);
     const { t, got } = await restoreInto(trip, tables, { parts });
     expect(got.status).toBe(200);
-    expect(tablesOf(t.db)).toEqual(tables);
+    expect(await restoredTables(t.db, tables)).toEqual(tables);
     t.advance(1000);
     const replacement = await t.device();
     const before = tablesOf(t.db);
@@ -12430,7 +12430,7 @@ for (const [first, last, status] of [
       expect((await t.admin("status")).json.value!.initialized).toBe(false);
       expect(Object.values(tablesOf(t.db)).flat()).toEqual([]);
       expect((await t.admin("dump")).json).toEqual(before);
-    } else expect(tablesOf(t.db)).toEqual(tables);
+    } else expect(await restoredTables(t.db, tables)).toEqual(tables);
   }, 30_000);
 
 for (const [trip, upgrade] of [
@@ -12454,7 +12454,7 @@ for (const [trip, upgrade] of [
     );
     const { t, got } = await restoreInto(trip, tables, { per: 1000 });
     expect(got.status).toBe(200);
-    expect(tablesOf(t.db)).toEqual(tables);
+    expect(await restoredTables(t.db, tables)).toEqual(tables);
     if (upgrade) {
       t.db.run("DROP INDEX command_receipts_live");
       t.db.run(

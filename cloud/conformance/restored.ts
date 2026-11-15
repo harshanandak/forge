@@ -79,7 +79,7 @@ export function replayImage(
 
 /** Own the scratch lifetime while streaming a replay plus a caller-supplied delta. */
 export async function* expectedImage(
-  source: Iterable<Dump | Page> | AsyncIterable<Dump | Page>,
+  source: Iterable<Dump | Page>,
   at: number | ((db: SqlDatabase) => number),
   delta: (owner: StateOwner, db: SqlDatabase) => void | Promise<void>,
 ): AsyncGenerator<Page> {
@@ -92,23 +92,17 @@ export async function* expectedImage(
   >(Driver);
   try {
     const db = durableStore(scratch.storage);
-    const owner = new StateOwner(db, {
-      now: typeof at === "number" ? () => at : () => at(db),
-    });
-    owner.initialize([domain]);
+    const owner = replayImage(
+      db,
+      source,
+      typeof at === "number" ? at : () => at(db),
+    );
+    await delta(owner, db);
     const limits = {
       ...limitsFrom({}),
       maxBytes: Number.MAX_SAFE_INTEGER,
       maxRows: Number.MAX_SAFE_INTEGER,
     };
-    const sequence = imageSequence(true);
-    for await (const part of source) {
-      sequence(part);
-      if ("page" in part) restorePage(db, owner, part, limits);
-      else restoreDump(db, owner, part, limits);
-    }
-    sequence();
-    await delta(owner, db);
     yield* pagesOf(db, limits);
   } finally {
     scratch.db.close();
@@ -155,7 +149,7 @@ export function stopDelta(owner: StateOwner, name: string, at: string) {
 }
 /** The caller captures restoreWindow around the final request, independently of the target image. */
 export async function restoreStopped(
-  source: Iterable<Dump | Page> | AsyncIterable<Dump | Page>,
+  source: Iterable<Dump | Page>,
   actual: SqlDatabase,
   project: string,
   restoreWindow: readonly [number, number],

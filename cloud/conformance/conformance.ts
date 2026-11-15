@@ -256,17 +256,8 @@ async function withoutStop(source: Dump, actual: Dump): Promise<Dump> {
   tables.state_events = actual.tables.state_events!.slice(0, -2);
   return { ...actual, tables };
 }
-async function* imageOf(project: string) {
-  let cursor = "start";
-  for (;;) {
-    const route = `dump?cursor=${encodeURIComponent(cursor)}`;
-    const reply = await adminCall(project, "GET", route);
-    const page = okValue<DumpPage>(reply, "oracle readback");
-    yield parseDump(JSON.stringify(page));
-    if (page.next === null) return;
-    cursor = page.next;
-  }
-}
+const imageOf = async (project: string) =>
+  (await pagesOf(project)).map((page) => parseDump(JSON.stringify(page)));
 async function stoppedSeed(project: string, source: Dump): Promise<Tables> {
   okValue(
     await adminCall(project, "POST", "restore", JSON.stringify(source)),
@@ -696,8 +687,8 @@ export async function roundTrip(
     for (const [table, rows] of Object.entries(page.tables))
       sent.add(table, rows);
   });
-  const back = digester(),
-    tables: Tables = {};
+  const back = digester();
+  const tables: Tables = {};
   const read = await walk(target, `${label} readback`, budget, (page) => {
     for (const [table, rows] of Object.entries(page.tables)) {
       back.add(table, rows);
@@ -706,7 +697,7 @@ export async function roundTrip(
   });
   const digests = sent.done();
   if (expected === source) {
-    await checkImage(imageOf(source), imageOf(target), target);
+    await checkImage(await imageOf(source), await imageOf(target), target);
     assert.deepEqual(
       read.bytes,
       Array.from(eachCutPage(tables, budget), pageBytes),
@@ -2927,7 +2918,8 @@ if (phase === "main") {
           JSON.stringify(dump),
         );
         assert.equal(clean.status, 200, JSON.stringify(clean.body));
-        assert.deepEqual(await dumpOf(target), dump, `whole ${name}: retry`);
+        const wholeBack = await withoutStop(dump, await dumpOf(target));
+        assert.deepEqual(wholeBack, dump, `whole ${name}: retry`);
 
         // Paged: every page before the last is staged, the last refuses, and nothing stays staged.
         const copy = JSON.parse(JSON.stringify(pages)) as DumpPage[];
@@ -2955,7 +2947,8 @@ if (phase === "main") {
         );
         for (const page of pages)
           assert.equal((await sendPage(paged, page)).status, 200);
-        assert.deepEqual(await dumpOf(paged), dump, `paged ${name}: retry`);
+        const pagedBack = await withoutStop(dump, await dumpOf(paged));
+        assert.deepEqual(pagedBack, dump, `paged ${name}: retry`);
       }
     },
   );
@@ -4209,14 +4202,11 @@ if (phase === "large") {
       const caller = await who();
       // Copy the oracle-verified stop delta before independently growing the source fixture.
       for (const table of ["state_records", "state_events"])
-        for (const row of want[table]!) {
-          if (!String(row.key).startsWith("lane-control:")) continue;
-          const cols = Object.keys(row).join(","),
-            values = Object.values(row);
-          const args = values.map(() => "?").join(",");
-          const sql = `INSERT INTO ${table} (${cols}) VALUES (${args})`;
-          source.db.query(sql).run(...(values as never[]));
-        }
+        for (const row of want[table]!)
+          if (String(row.key).startsWith("lane-control:"))
+            source.db
+              .query(`INSERT INTO ${table} VALUES (?,?,?,?)`)
+              .run(...(Object.values(row) as never[]));
       // Match the authenticated caller and operation order, preserving exact scoped receipt and page comparisons.
       await source.useToken(caller.device.token);
       const wide = (n: number) =>
@@ -4767,11 +4757,13 @@ if (phase === "numbers") {
         JSON.stringify({ format: whole.format, tables: whole.tables }),
       );
       ok(sent);
+      const secondRead = async (project: string) =>
+        withoutStop(whole, await dumpOf(project));
       await step(
         "a second restore reads back every row and floor unchanged",
         async () => {
-          same("whole", nameOf(await dumpOf(second)), nameOf(whole));
-          same("floors", floorsOf(await dumpOf(second)), floorsOf(whole));
+          same("whole", nameOf(await secondRead(second)), nameOf(whole));
+          same("floors", floorsOf(await secondRead(second)), floorsOf(whole));
         },
       );
       for (const part of await pagesOf(typedProject)) {
@@ -4780,7 +4772,7 @@ if (phase === "numbers") {
       await step(
         "a paged second restore reads back every row and floor unchanged",
         async () =>
-          same("paged", nameOf(await dumpOf(joinedTarget)), nameOf(whole)),
+          same("paged", nameOf(await secondRead(joinedTarget)), nameOf(whole)),
       );
       writeFileSync(numbersState, JSON.stringify({ tables: whole.tables }));
       if (problems.length > 0)
@@ -5141,7 +5133,7 @@ if (phase === "capacity-wire") {
           for (const [table, rows] of Object.entries(page.tables))
             for (const row of rows) fold(incoming, table as Table, row);
         const wrong = imageProblems(digests(incoming), expect.tables);
-        await checkImage(input(), imageOf(target), target);
+        await checkImage(input(), await imageOf(target), target);
         assert.deepEqual(
           wrong,
           [],

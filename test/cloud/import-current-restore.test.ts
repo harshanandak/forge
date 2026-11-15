@@ -951,7 +951,7 @@ test.each(activationRows)(
 );
 
 async function restoredDispatch(p: Awaited<ReturnType<typeof f.activation>>) {
-  await reply(p.command("issue.claim", { id: "forge-1" }));
+  await reply(p.command("issue.claim", { id: "forge-1", ttlSeconds: 60 }));
   const grant = f.owner(p.db).lease(f.ns, "issue:work-1")!;
   eq(grant.holder, f.holder);
   assert.ok(Date.parse(grant.expiresAt) > f.at);

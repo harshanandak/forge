@@ -804,14 +804,11 @@ export class Project {
   }
 
   #restoreStop(db: SqlDatabase, owner: StateOwner, project: string): void {
-    const at = Date.now();
-    owner = new StateOwner(db, { now: () => at });
-    const reply = new LaneControlStore(owner, project).stop(
-      { all: true },
-      "cloud-restore",
-      "cloud-restore",
-      new Date(at).toISOString(),
-    );
+    const at = new Date(Date.now()).toISOString();
+    owner = new StateOwner(db, { now: () => Date.parse(at) });
+    const control = new LaneControlStore(owner, project),
+      label = "cloud-restore";
+    const reply = control.stop({ all: true }, label, label, at);
     if (!reply.ok) throw new ForgeFailure(reply.error);
     if (reply.result.stopped !== true || reply.result.scope !== "all")
       throw fail("UNAVAILABLE", "Restore did not establish the global stop");
