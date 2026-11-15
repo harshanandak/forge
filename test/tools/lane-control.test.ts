@@ -207,3 +207,33 @@ test("renewal remains serialized when timer and dispatch arrive together", async
   expect(f.calls.filter((c) => c.op === "lane.control")).toHaveLength(2);
   await lane.close();
 });
+
+test("changed action number during completion rebind refuses without a record", async () => {
+  const f = fixture();
+  let reservations = 0;
+  const command: BoundCommand = (op, input, ...rest) =>
+    op === "lane.next"
+      ? Promise.resolve({
+          lane: "forge-1394",
+          kind: "harness",
+          n: ++reservations,
+          raw: JSON.stringify({ generation: 7, head }),
+        })
+      : f.command(op, input, ...rest);
+  const runner = (await openBoundRunner(
+    "E:/fixture",
+    "forge-1394",
+    head,
+    () =>
+      Promise.resolve({
+        command,
+        readHead: () => Promise.resolve("b".repeat(40)),
+        close: () => Promise.resolve(),
+      }),
+    f.clock,
+  ))!;
+  await expect(runner.finish(true)).rejects.toThrow(
+    "pending dispatch action changed",
+  );
+  expect(f.calls.filter((c) => c.op === "lane.record")).toHaveLength(0);
+});

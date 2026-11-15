@@ -1417,7 +1417,7 @@ test("bound runner refuses run, resume and detached auto before any provider spa
         row = { ...row, value, revision: revision + 1 };
         return Promise.resolve(row);
       },
-      {},
+      { lanes: { autopilot: { budgets: { reviewRounds: 1 } } } },
       readHead,
     );
   };
@@ -1455,6 +1455,52 @@ test("bound runner refuses run, resume and detached auto before any provider spa
     });
   } finally {
     await runner.finish(false);
+  }
+  const afterBuild = structuredClone(row),
+    actual = await readHead();
+  const connect = () =>
+    Promise.resolve({ command, readHead, close: () => Promise.resolve() });
+  // Counterfactual: completing without the role leaves the review budget available.
+  const doneOnly = (await openBoundRunner(
+    checkout,
+    "forge-1",
+    actual,
+    connect,
+  ))!;
+  await doneOnly.finish(true);
+  expect(
+    await command("lane.next", { id: "forge-1", head: actual }, 7),
+  ).toMatchObject({ kind: "harness" });
+  row = afterBuild;
+  renameSync(
+    join(builder.root, "direct-output"),
+    join(builder.root, "build-output"),
+  );
+  const reviewer = (await openBoundRunner(
+    checkout,
+    "forge-1",
+    actual,
+    connect,
+  ))!;
+  try {
+    expect(
+      (
+        await builder.direct(
+          checkout,
+          "ok",
+          undefined,
+          "codex",
+          reviewer.beforeSpawn,
+        )
+      ).exit,
+    ).toBe(0);
+    await reviewer.finish(true, "reviewer");
+    expect((row.value as BoundLaneRecord).progress?.review).toBe(1);
+    expect(
+      await command("lane.next", { id: "forge-1", head: actual }, 7),
+    ).toMatchObject({ kind: "pause" });
+  } finally {
+    await reviewer.finish(false);
   }
 });
 
