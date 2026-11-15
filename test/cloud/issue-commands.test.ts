@@ -905,66 +905,74 @@ function seedReadKeys(
   })();
 }
 
-for (const kind of ["count", "max"] as const)
-  for (const count of [0, 999, 1000, 1001, 2001])
-    for (const prefix of ["", "note:", "\u{10ffff}"])
-      test(`state aggregate work budget: ${kind}/${count}/${prefix}`, async () => {
-        const f = await stateFixture();
-        try {
-          seedReadKeys(f, count, prefix);
-          let examined = 0;
-          f.db.function("examined", (_key: string) => {
-            examined++;
-            return 1;
-          });
-          const executeSql = f.storage.sql.exec.bind(f.storage.sql);
-          const plans: string[] = [];
-          const meter = spyOn(f.storage.sql, "exec").mockImplementation(
-            (sql, ...bindings) => {
-              if (
-                sql.includes("FROM state_records") &&
-                sql.includes(" AS total")
-              ) {
-                plans.push(
-                  ...f.db
-                    .query(`EXPLAIN QUERY PLAN ${sql}`)
-                    .all(
-                      ...bindings.map((v) =>
-                        v instanceof ArrayBuffer ? new Uint8Array(v) : v,
-                      ),
-                    )
-                    .map((row) => String((row as { detail: string }).detail)),
-                );
-                sql = sql.replace("key>=?", "key>=? AND examined(key)");
-              }
-              return executeSql(sql, ...bindings);
-            },
-          );
-          const got = await f.read({ kind, prefix });
-          meter.mockRestore();
-          expect(examined).toBe(Math.min(count, 1001));
-          expect(
-            plans.some((p) =>
-              /SEARCH state_records USING COVERING INDEX/.test(p),
-            ),
-          ).toBe(true);
-          if (count > 1000) {
-            expect(stateOutcome(got)).toEqual([400, "INPUT_INVALID", 6]);
-            expect(got.json.result).toBeUndefined();
-            expect(got.json.error?.message).toContain("1000");
-            expect(got.json.error?.message).toContain("narrow the prefix");
-            expect(got.json.error).toMatchObject({ retry: "never" });
-          } else {
-            expect(stateOutcome(got)).toEqual([200, undefined, 0]);
-            expect(got.value.result).toEqual({ kind, value: count });
+for (const indexed of [false, true])
+  for (const kind of ["count", "max"] as const)
+    for (const count of [0, 999, 1000, 1001, 2001])
+      for (const prefix of ["", "note:", "\u{10ffff}"])
+        test(`state aggregate work budget: ${indexed}/${kind}/${count}/${prefix}`, async () => {
+          const f = await stateFixture();
+          try {
+            seedReadKeys(f, count, prefix);
+            if (!indexed) {
+              f.db.run("DROP INDEX state_events_by_namespace");
+              f.db.run(
+                "DELETE FROM state_migrations WHERE id='005_state_events_namespace_index'",
+              );
+              f.reopen();
+            }
+            let examined = 0;
+            f.db.function("examined", (_key: string) => {
+              examined++;
+              return 1;
+            });
+            const executeSql = f.storage.sql.exec.bind(f.storage.sql);
+            const plans: string[] = [];
+            const meter = spyOn(f.storage.sql, "exec").mockImplementation(
+              (sql, ...bindings) => {
+                if (
+                  sql.includes("FROM state_records") &&
+                  sql.includes(" AS total")
+                ) {
+                  plans.push(
+                    ...f.db
+                      .query(`EXPLAIN QUERY PLAN ${sql}`)
+                      .all(
+                        ...bindings.map((v) =>
+                          v instanceof ArrayBuffer ? new Uint8Array(v) : v,
+                        ),
+                      )
+                      .map((row) => String((row as { detail: string }).detail)),
+                  );
+                  sql = sql.replace("key>=?", "key>=? AND examined(key)");
+                }
+                return executeSql(sql, ...bindings);
+              },
+            );
+            const got = await f.read({ kind, prefix });
+            meter.mockRestore();
+            expect(examined).toBe(Math.min(count, 1001));
+            expect(
+              plans.some((p) =>
+                /SEARCH state_records USING COVERING INDEX/.test(p),
+              ),
+            ).toBe(true);
+            if (count > 1000) {
+              expect(stateOutcome(got)).toEqual([400, "INPUT_INVALID", 6]);
+              expect(got.json.result).toBeUndefined();
+              expect(got.json.error?.message).toContain("1000");
+              expect(got.json.error?.message).toContain("narrow the prefix");
+              expect(got.json.error).toMatchObject({ retry: "never" });
+            } else {
+              expect(stateOutcome(got)).toEqual([200, undefined, 0]);
+              expect(got.value.result).toEqual({ kind, value: count });
+            }
+          } finally {
+            f.db.close();
+            mock.restore();
           }
-        } finally {
-          f.db.close();
-          mock.restore();
-        }
-      }, 30_000);
+        }, 30_000);
 
-test("first state read upgrades a provisioned store once and uses a namespace endpoint", async () => {
+test("unmigrated reads preserve results and schema until an admitted provisioning write", async () => {
   const f = await stateFixture();
   try {
     f.put("old");
@@ -972,41 +980,27 @@ test("first state read upgrades a provisioned store once and uses a namespace en
       f.put(`historical:${i}`);
       f.put(`foreign:${i}`, i, "other/state");
     }
-    const expected = f.owner.namespaceRevision("forge/memory");
+    const query = { kind: "get", key: "absent" } as const;
+    const baseline = await f.read(query);
     const before = tablesOf(f.db);
-    f.db.run("DROP INDEX IF EXISTS state_events_by_namespace");
+    f.db.run("DROP INDEX state_events_by_namespace");
     f.db.run(
       "DELETE FROM state_migrations WHERE id='005_state_events_namespace_index'",
     );
     f.reopen();
-    const query = { kind: "get", key: "absent" } as const;
-    const first = await f.send(
-      {
-        ...stateRead,
-        namespace: "forge/memory",
-        policyRevision: "discover",
-        query,
-      },
-      { token: f.token, path: "state/read" },
-    );
-    expect(stateOutcome(first)).toEqual([200, undefined, 0]);
+    const old = await f.read(query);
+    expect(old.text).toBe(baseline.text);
     expect(
       f.db
         .query(
           "SELECT name FROM sqlite_schema WHERE name='state_events_by_namespace'",
         )
         .get(),
-    ).toBeTruthy();
-    expect(tablesOf(f.db)).toEqual(before);
+    ).toBeNull();
+    await f.device();
     const got = await f.read(query);
-    expect(stateOutcome(got)).toEqual([200, undefined, 0]);
-    expect(got.text).toBe(first.text);
-    expect(got.probes).not.toContain("state_migrations");
-    expect(
-      got.touched.some((sql) => /state_migrations|CREATE INDEX/.test(sql)),
-    ).toBe(false);
-    expect(got.value.result).toEqual({ kind: "get", record: null });
-    expect(got.value.readVersion.revision).toBe(expected);
+    expect(got.text).toBe(baseline.text);
+    expect(tablesOf(f.db)).toEqual(before);
     const watermark = got.touched.find((sql) => sql.includes("MAX(sequence)"))!;
     const plan = f.db
       .query(`EXPLAIN QUERY PLAN ${watermark}`)
@@ -1023,7 +1017,7 @@ test("first state read upgrades a provisioned store once and uses a namespace en
   }
 }, 30_000);
 
-test("startup index blocking measurement at the restore caps", async () => {
+test("provisioning index blocking measurement at the restore caps", async () => {
   const f = await stateFixture(),
     limits = limitsFrom(vars);
   try {
@@ -1086,18 +1080,19 @@ test("startup index blocking measurement at the restore caps", async () => {
       policyRevision: "discover",
       query: { kind: "get", key: "absent" },
     };
-    const at = performance.now();
     const first = await f.send(input, { token: f.token, path: "state/read" });
-    const firstReadMs = performance.now() - at;
     expect(stateOutcome(first)).toEqual([200, undefined, 0]);
+    expect(indexBuilds).toBe(0);
+    const at = performance.now();
+    await f.device();
+    const provisioningMs = performance.now() - at;
     const second = await f.send(input, { token: f.token, path: "state/read" });
     meter.mockRestore();
     expect(second.text).toBe(first.text);
     expect(indexBuilds).toBe(1);
-    expect(second.probes).not.toContain("state_migrations");
     expect(usage().bytes).toBe(full.bytes);
     console.log(
-      "State startup cap measurement",
+      "State index cap measurement",
       JSON.stringify({
         backend: "bun:sqlite synthetic DurableStorage",
         rows: limits.maxRows,
@@ -1105,7 +1100,7 @@ test("startup index blocking measurement at the restore caps", async () => {
         maxBytes: limits.maxBytes,
         namespaceBytes: namespace.length,
         indexBuildMs,
-        firstReadMs,
+        provisioningMs,
         indexBuilds,
       }),
     );
