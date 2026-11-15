@@ -168,7 +168,7 @@ const changes: Record<string, Change> = {
     'return this.#request(\n        namespace,\n        options.requestId,\n        {\n          kind: "put",',
   ],
 };
-async function moduleUrl(
+export async function moduleUrl(
   path: string,
   change?: Change,
   dependency?: readonly [string, string],

@@ -1,6 +1,8 @@
 // Reviewed source inventory: direct launches, shell/npm entry points and local helpers.
 // Conservative guard-fixture entries retain coverage without interpreting embedded programs.
 export const nodeSensitive: Readonly<Record<string, string>> = {
+  "test/cloud/import-current.integration.test.ts":
+    "Launches selected Node to verify offline bundle admission before capacity measurement.",
   "test/adapters/l5-state/durability-pragmas.integration.test.ts":
     "Launches selected Node for durability pragmas coverage.",
   "test/adapters/l5-state/filesystem-warning.integration.test.ts":

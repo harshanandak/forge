@@ -8,12 +8,14 @@ import { timingSafeEqual } from "node:crypto";
 import {
   mkdirSync,
   mkdtempSync,
+  lstatSync,
   readdirSync,
   readFileSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { resolve, join } from "node:path";
+import { digest, type convert } from "../../tools/import-current.ts";
 import { DatabaseSync } from "node:sqlite";
 import { getHeapStatistics } from "node:v8";
 import {
@@ -25,6 +27,7 @@ import {
 import { StateOwner } from "../../src/core/state/index.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
 import { Project } from "../src/project.ts";
+import { pageOrder } from "./page-order.ts";
 import type { DurableStorage } from "../src/store.ts";
 import {
   COLUMNS,
@@ -463,7 +466,7 @@ async function restoreAll(): Promise<Done> {
   };
   const files = readdirSync(dir)
     .filter((f) => f.startsWith("page-"))
-    .sort();
+    .sort(pageOrder);
   const samples: Sample[] = [];
   const mismatches: string[] = [];
   for (let run = 0; run < runs; run += 1) {
@@ -548,6 +551,7 @@ async function measure(
   dir: string,
   name: string,
   meta: Meta,
+  sourceDir = join(dir, name),
 ): Promise<boolean> {
   const limits = Object.fromEntries(
     ["DUMP_MAX_ROWS", "DUMP_MAX_BYTES", "DUMP_PAGE_BYTES"]
@@ -561,7 +565,7 @@ async function measure(
       20_000 + Number(refuse),
     );
   const done = await inWorker({
-    dir: join(dir, name),
+    dir: sourceDir,
     refuse,
     runs: meta.runs,
     at: meta.at,
@@ -678,7 +682,86 @@ if (!isMainThread) {
   parentPort!.postMessage(await atClock(data.at, restoreAll));
 } else {
   const [command = "measure", ...rest] = process.argv.slice(2);
-  if (command === "pages") {
+  if (command === "measure-current") {
+    assert.equal(
+      rest.length,
+      1,
+      "measure-current requires one bundle directory",
+    );
+    const dir = resolve(rest[0]!);
+    const bundle = JSON.parse(
+      readFileSync(join(dir, "manifest.json"), "utf8"),
+    ) as Awaited<ReturnType<typeof convert>>;
+    assert.equal(bundle.format, "forge-current-bundle/1");
+    assert.equal(bundle.activation, "requires-step-8-stop");
+    const natural = (n: number) => Number.isSafeInteger(n) && n >= 0;
+    const hash = (value: string) => /^[a-f0-9]{64}$/.test(value);
+    assert.ok(hash(bundle.source.sha256));
+    assert.ok(natural(bundle.source.eventHighWaterMark));
+    assert.equal(new Date(bundle.source.at).toISOString(), bundle.source.at);
+    for (const n of [
+      bundle.N,
+      bundle.F,
+      bundle.events,
+      bundle.stored,
+      bundle.source.records,
+      bundle.relinquishedLeases,
+      bundle.droppedRequests,
+    ])
+      assert.ok(natural(n));
+    assert.equal(bundle.N, bundle.source.records);
+    assert.equal(bundle.events, bundle.N + bundle.F);
+    assert.deepEqual(Object.keys(bundle.rows).sort(), [...TABLES].sort());
+    assert.deepEqual(Object.keys(bundle.tables).sort(), [...TABLES].sort());
+    for (const table of TABLES) {
+      assert.ok(natural(bundle.rows[table]!));
+      assert.equal(bundle.tables[table].rows, bundle.rows[table]);
+      assert.ok(hash(bundle.tables[table].digest));
+      assert.equal(
+        bundle.rows[table],
+        TABLES.indexOf(table) < 2 ? bundle.events : 0,
+      );
+    }
+    for (const n of [
+      bundle.limits.maxRows,
+      bundle.limits.maxBytes,
+      bundle.limits.pageBytes,
+    ])
+      assert.ok(natural(n) && n > 0);
+    assert.ok(Array.isArray(bundle.pages) && bundle.pages.length > 0);
+    assert.deepEqual(
+      readdirSync(dir)
+        .filter((name) => name.startsWith("page-"))
+        .sort(pageOrder),
+      bundle.pages.map((p) => p.name),
+    );
+    for (const [i, page] of bundle.pages.entries()) {
+      assert.equal(page.name, `page-${String(i).padStart(4, "0")}.json`);
+      assert.ok(natural(page.bytes) && page.bytes > 0 && hash(page.sha256));
+      const file = join(dir, page.name);
+      assert.ok(lstatSync(file).isFile(), "bundle pages must be regular files");
+      assert.equal(
+        readFileSync(file).byteLength,
+        page.bytes,
+        "bundle page length",
+      );
+      assert.equal(await digest(file), page.sha256, "bundle page hash");
+    }
+    const expect = {
+      floorSupplied: true,
+      lastSequence: bundle.events,
+      tables: bundle.tables,
+    };
+    const meta = {
+      expect,
+      rows: bundle.rows,
+      stored: bundle.stored,
+      pages: bundle.pages.map((p) => p.bytes),
+      runs: 3,
+      at: Date.parse(bundle.source.at),
+    };
+    process.exitCode = (await measure(dir, "current", meta, dir)) ? 0 : 1;
+  } else if (command === "pages") {
     const [dir, ...names] = rest;
     for (const name of names.length > 0 ? names : Object.keys(SHAPES)) {
       const meta = await write(dir!, name);
