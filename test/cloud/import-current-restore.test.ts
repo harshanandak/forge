@@ -5,6 +5,7 @@ import { domain } from "../../cloud/src/project.ts";
 import { durableStore } from "../../cloud/src/store.ts";
 import {
   limitsFrom,
+  dumpOf,
   parseDump,
   restorePage,
   type Page,
@@ -14,6 +15,7 @@ import { pageOrder } from "../../cloud/conformance/page-order.ts";
 import { success } from "../../src/surface/dispatch.ts";
 import { failure, respond } from "../../src/surface/result.ts";
 import { consumeLaneApproval } from "../../cloud/src/lane-approval.ts";
+import { LaneControlStore } from "../../cloud/src/lane-control-store.ts";
 import { browserStorage } from "./browser-storage.fixture.ts";
 import * as f from "./import-current-state.fixture.ts";
 import * as converter from "../../tools/import-current.ts";
@@ -89,6 +91,56 @@ async function project(mutant?: string) {
   };
   return { db, storage, values, send };
 }
+
+test.each(["absent", "running", "stopped"])(
+  "Whole and paged success: %s global ends stopped",
+  async (mode) => {
+    for (const paged of [false, true]) {
+      const source = f.cloudDatabase(),
+        state = f.owner(source);
+      state.initialize([domain]);
+      if (mode !== "absent")
+        state.put(
+          f.ns,
+          "lane-control:global",
+          {
+            version: 1,
+            incarnation: "synthetic-history",
+            epoch: 4,
+            resumeAllEpoch: 0,
+            stopAll:
+              mode === "stopped" ? new Date(f.at - 1000).toISOString() : null,
+          },
+          f.actor,
+          { expectRevision: 0 },
+        );
+      const before = f.snapshot(source),
+        p = await project();
+      try {
+        for (const image of paged ? pagesOf(source, limits) : [dumpOf(source)])
+          eq(status((await p.send("restore", image)).projected), [
+            "OK",
+            0,
+            null,
+          ]);
+        const read = new LaneControlStore(
+          f.owner(durableStore(p.storage)),
+          "a",
+        );
+        for (const id of [undefined, "work-1"]) {
+          const reply = read.read(id);
+          assert.ok(reply.ok);
+          eq([reply.result.stopped, reply.result.scope], [true, "all"]);
+          eq(reply.result.epoch, mode === "absent" ? 1 : 5);
+        }
+        eq(p.values.get("provisioned"), true);
+        eq(f.snapshot(source), before);
+      } finally {
+        p.db.close();
+      }
+    }
+  },
+);
 
 test.each(rows)(
   "%s",
