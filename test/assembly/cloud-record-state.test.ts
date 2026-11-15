@@ -95,7 +95,13 @@ function fixture(write = true) {
       deny = undefined;
       return refusal(
         code,
-        code === "AUTH_FORBIDDEN" ? 403 : code === "UNAVAILABLE" ? 503 : 409,
+        code === "AUTH_FORBIDDEN"
+          ? 403
+          : code === "AUTH_REVOKED"
+            ? 401
+            : code === "UNAVAILABLE"
+              ? 503
+              : 409,
       );
     }
     if (call.kind === "commit") {
@@ -255,6 +261,25 @@ async function refused(pending: Promise<unknown>, code: string) {
 
 const rows: readonly [string, (f: Fixture) => Promise<void>][] = [
   [
+    "Replay refusal keeps the original outcome unknown",
+    async (f) => {
+      f.lose("note/1");
+      const replay = () => f.state.put("note/1", "one", { expectRevision: 0 });
+      await refused(replay(), "UNAVAILABLE");
+      const original = f.bytes.at(-1);
+      f.deny("AUTH_REVOKED");
+      expect(await refused(replay(), "AUTH_REVOKED")).toBeInstanceOf(
+        CloudRecordRefusal,
+      );
+      const sent = f.calls.length;
+      await refused(f.state.get("missing"), "UNAVAILABLE");
+      expect(f.calls).toHaveLength(sent);
+      await replay();
+      expect(f.bytes.at(-1)).toBe(original);
+      expect((await f.state.get("note/1"))?.value).toBe("one");
+    },
+  ],
+  [
     "Pending replay is scoped to its original principal",
     async (f) => {
       f.lose("note/1");
@@ -275,7 +300,7 @@ const rows: readonly [string, (f: Fixture) => Promise<void>][] = [
     },
   ],
   [
-    "Decoded server 503 settles pending",
+    "First-send decoded server 503 settles pending",
     async (f) => {
       await f.state.get("missing");
       f.deny("UNAVAILABLE");
@@ -309,7 +334,7 @@ const rows: readonly [string, (f: Fixture) => Promise<void>][] = [
       const before = f.calls.length;
       const original = f.bytes.at(-1);
       f.noCredential();
-      await refused(replay(), "UNAVAILABLE");
+      await refused(replay(), "AUTH_REQUIRED");
       await refused(f.state.get("missing"), "UNAVAILABLE");
       await refused(
         f.state.put("replacement", "no", { expectRevision: 0 }),
