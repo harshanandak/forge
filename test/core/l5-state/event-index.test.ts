@@ -153,8 +153,7 @@ test("watermark endpoint work is independent of history, keys and other namespac
             "namespace=? AND examined(sequence)",
           );
         }
-        return (raw.query(sql).get(...params) ?? undefined) as
-          SqlRow | undefined;
+        return raw.query(sql).all(...params)[0] as SqlRow | undefined;
       },
       transaction: (body) => raw.transaction(body)(),
     };
@@ -172,7 +171,7 @@ test("watermark endpoint work is independent of history, keys and other namespac
           .query<{ n: number }, [string]>(
             "SELECT coalesce(MAX(sequence),0) AS n FROM state_events WHERE namespace=?",
           )
-          .get(namespace)?.n ?? 0,
+          .all(namespace)[0]?.n ?? 0,
       );
       expect(owner.namespaceRevision(namespace)).toBe(expected);
       expect(examined).toBe(expected === 0 ? 0 : 1);
