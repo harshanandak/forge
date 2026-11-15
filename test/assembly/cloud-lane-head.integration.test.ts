@@ -59,6 +59,9 @@ test("attached head shares the journal's full-head validator", () => {
 for (const variant of [
   "trusted lookup",
   "nested caller",
+  "linked caller",
+  "linked target",
+  "linked clone files",
   "fresh read",
   "sha256",
   "no trusted git",
@@ -93,8 +96,27 @@ for (const variant of [
         { mode: 0o755 },
       );
     }
+    const linked = variant.startsWith("linked");
+    const main = join(root, "main"),
+      common = join(main, ".git"),
+      gitdir = join(common, "worktrees", "lane");
+    const linkedRoot = variant === "linked target" ? target : processRoot;
+    const mainBin = join(main, "bin"),
+      probe = join(root, "project-git-ran");
+    if (linked) {
+      mkdirSync(gitdir, { recursive: true });
+      mkdirSync(mainBin);
+      writeFileSync(join(linkedRoot, ".git"), `gitdir: ${gitdir}\n`);
+      writeFileSync(join(gitdir, "commondir"), "../..\n");
+      writeFileSync(
+        join(mainBin, process.platform === "win32" ? "git.exe" : "git"),
+        "project-controlled executable",
+        { mode: 0o755 },
+      );
+    }
     const env = {
       PATH: [
+        ...(linked ? [mainBin] : []),
         callerBin,
         target,
         ...(variant === "no trusted git" ? [] : [dirname(trusted)]),
@@ -107,18 +129,22 @@ for (const variant of [
     let attempts = 0;
     const runs = mock<ProcessPort["run"]>((_executable, _args, _options) => {
       attempts++;
+      if (linked && _executable.path !== trusted)
+        writeFileSync(probe, "untrusted Git was launched");
       return Promise.resolve({
         exitCode: variant === "exit" ? 1 : 0,
         signal: null,
         stderr: "",
         stdout:
-          variant === "invalid head"
-            ? "not-a-head"
-            : variant === "sha256"
-              ? "a".repeat(64)
-              : variant === "fresh read" && attempts > 1
-                ? H2
-                : H1,
+          variant === "linked clone files"
+            ? `${gitdir}\n${common}\n`
+            : variant === "invalid head"
+              ? "not-a-head"
+              : variant === "sha256"
+                ? "a".repeat(64)
+                : variant === "fresh read" && attempts > 1
+                  ? H2
+                  : H1,
         timedOut: variant === "timeout",
         truncated: variant === "truncated",
         durationMs: 0,
@@ -159,7 +185,25 @@ for (const variant of [
             : ["exit", "timeout", "truncated", "invalid head"].includes(variant)
               ? "INPUT_CONFLICT"
               : undefined;
-      if (expected)
+      if (variant === "linked clone files") {
+        const scope = {
+          op: "lane.start",
+          effects: ["files:read", "external:process"],
+          signal: AbortSignal.timeout(30000),
+          deadline: Date.now() + 30000,
+          processContainment: "supervised" as const,
+        };
+        const handle = await createAssemblyProviders(
+          processRoot,
+          { env },
+          {
+            capability: "forge.process/v1",
+            resolve: (name, env) => native.process(scope).resolve(name, env),
+            run: runs,
+          },
+        ).openFiles(scope);
+        await handle.close();
+      } else if (expected)
         await expect(
           readHead(flight(effects), providers, target),
         ).rejects.toMatchObject({ error: { code: expected } });
@@ -172,8 +216,10 @@ for (const variant of [
       }
       for (const [executable, args, options] of runs.mock.calls) {
         expect(executable.path).toBe(trusted);
-        expect(args).toEqual(["rev-parse", "--verify", "HEAD"]);
-        expect(options.cwd).toBe(target);
+        if (variant !== "linked clone files") {
+          expect(args).toEqual(["rev-parse", "--verify", "HEAD"]);
+          expect(options.cwd).toBe(target);
+        }
         expect(options.env).not.toHaveProperty("GIT_DIR");
         expect(options.timeoutMs).toBeGreaterThan(0);
         expect(options.timeoutMs).toBeLessThanOrEqual(60000);
@@ -188,6 +234,7 @@ for (const variant of [
             : 1,
       );
       expect(files).not.toHaveBeenCalled();
+      expect(existsSync(probe)).toBe(false);
       expect(existsSync(join(caller, ".forge", "state.sqlite"))).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });

@@ -1862,6 +1862,10 @@ for (const [name, expected] of [
   ["ordinary attachment", "OK"],
   ["project git precedes trusted git", "OK"],
   ["failed restart preserves attachment", "OK"],
+  ["live attachment different checkout", "INPUT_CONFLICT"],
+  ["live attachment different branch", "INPUT_CONFLICT"],
+  ["live attachment different brief", "INPUT_CONFLICT"],
+  ["live attachment same identity", "OK"],
   ["wrong actor", "LEASE_NOT_HELD"],
   ["wrong session", "LEASE_NOT_HELD"],
   ["wrong device", "AUTH_DEVICE_MISMATCH"],
@@ -1875,6 +1879,8 @@ for (const [name, expected] of [
   ["generation changes during fence", "LEASE_STALE"],
   ["grant expires during fence", "LEASE_EXPIRED"],
   ["grant expires during final identity", "LEASE_EXPIRED"],
+  ["released and reclaimed during final identity", "LEASE_NOT_HELD"],
+  ["unknown grant during final identity", "UNAVAILABLE"],
   ["invalid brief", "INPUT_INVALID"],
   ["closed issue", "INPUT_CONFLICT"],
   ["absent issue", "NOT_FOUND"],
@@ -1884,6 +1890,7 @@ for (const [name, expected] of [
   test(`bound attachment table: ${name}`, () => {
     let reads = 0;
     let time = NOW;
+    let finalIdentity = false;
     let sandbox: fx.Sandbox;
     return using(
       {
@@ -1931,7 +1938,35 @@ for (const [name, expected] of [
                 },
               ]),
             );
-          if (
+          if (name.startsWith("live attachment")) {
+            const lane = {
+              ...attachment,
+              worktree: name.endsWith("checkout")
+                ? join(s.dir, "clone-a")
+                : s.root,
+              branch: name.endsWith("branch") ? "feat/original" : "feat/one",
+              brief: join(
+                s.root,
+                name.endsWith("brief") ? "original.md" : "brief.md",
+              ),
+            };
+            await seedJournal(s, {
+              ...journal,
+              grant: OWN_GRANT,
+              releaseNeeded: true,
+              lane,
+              progress: {
+                generation: 4,
+                actions: 1,
+                records: 0,
+                review: 0,
+                ci: 0,
+                started: NOW,
+                pending: true,
+                head: "a".repeat(40),
+              },
+            });
+          } else if (
             expected !== "OK" &&
             !["ambiguous claim", "losing claim"].includes(name)
           )
@@ -1961,6 +1996,8 @@ for (const [name, expected] of [
             }
             expect(call.op).toBe("issue.show");
             reads++;
+            if (finalIdentity && name === "unknown grant during final identity")
+              throw new Error("fresh grant read timed out");
             if (reads === 2 && name === "branch changes during fence") {
               const changed = spawnSync(
                 "git",
@@ -1995,7 +2032,11 @@ for (const [name, expected] of [
                       ? { ...OWN_GRANT, generation: OWN_GRANT.generation + 1 }
                       : reads === 2 && name === "grant expires during fence"
                         ? { ...OWN_GRANT, expiresAt: iso(NOW - 1) }
-                        : OWN_GRANT;
+                        : finalIdentity &&
+                            name ===
+                              "released and reclaimed during final identity"
+                          ? { ...heldBy(), generation: 5 }
+                          : OWN_GRANT;
             return name === "absent issue"
               ? refusing("NOT_FOUND")
               : answer({
@@ -2016,17 +2057,17 @@ for (const [name, expected] of [
           name === "project git precedes trusted git"
             ? spyOn(launch, "runProcess")
             : undefined;
-        const expiry =
-          name === "grant expires during final identity"
-            ? spyOn(launch, "runProcess").mockImplementation(
-                async (...args) => {
-                  const result = await runProcess(...args);
-                  if (reads === 2 && args[1][0] === "symbolic-ref")
-                    time = Date.parse(OWN_GRANT.expiresAt);
-                  return result;
-                },
-              )
-            : undefined;
+        const expiry = name.includes("during final identity")
+          ? spyOn(launch, "runProcess").mockImplementation(async (...args) => {
+              const result = await runProcess(...args);
+              if (reads === 2 && args[1][0] === "symbolic-ref") {
+                finalIdentity = true;
+                if (name === "grant expires during final identity")
+                  time = Date.parse(OWN_GRANT.expiresAt);
+              }
+              return result;
+            })
+          : undefined;
         try {
           if (projectGit) {
             const providers = createAssemblyProviders(r.s.root, {
@@ -2143,6 +2184,8 @@ for (const [name, expected] of [
               { context: altered },
             ),
           );
+          if (name.includes("during final identity"))
+            expect(finalIdentity).toBe(true);
           expect(result.ok ? "OK" : result.error.code).toBe(expected);
           expect(readFileSync(join(r.s.root, "brief.md"), "utf8")).toBe(
             beforeFiles,
@@ -2151,6 +2194,11 @@ for (const [name, expected] of [
             false,
           );
           if (expected !== "OK") {
+            if (
+              name.startsWith("live attachment") ||
+              name.includes("during final identity")
+            )
+              expect(exitCode(result)).toBe(expected === "UNAVAILABLE" ? 1 : 4);
             if (name === "grant expires during final identity")
               expect(time).toBe(Date.parse(OWN_GRANT.expiresAt));
             expect(attachmentBytes(r.s)).toEqual(before);
@@ -2193,6 +2241,14 @@ for (const [name, expected] of [
                 branch: "feat/one",
               },
             });
+            if (name === "live attachment same identity")
+              expect(
+                (await local.open(false))!.get("forge/work", journalKey())!
+                  .value,
+              ).toMatchObject({
+                releaseNeeded: true,
+                progress: { actions: 1, pending: true },
+              });
           } finally {
             await local.close();
           }
