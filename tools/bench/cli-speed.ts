@@ -4,15 +4,18 @@
 import { spawnSync } from "node:child_process";
 import {
   appendFileSync,
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   GATED_PAIRS,
@@ -123,6 +126,31 @@ const env: Record<string, string> = {
 for (const name of ["PATH", "Path", "PATHEXT", "SystemRoot", "TEMP", "TMP"])
   if (process.env[name] !== undefined) env[name] = process.env[name];
 
+const packages = new Map<string, string>();
+const activePackage = join(folder, "active");
+function stage(program: string): string {
+  let cached = packages.get(program);
+  if (cached === undefined) {
+    const dist = dirname(dirname(program));
+    const root = dirname(dist);
+    cached = join(folder, `package-${packages.size}`);
+    mkdirSync(cached);
+    cpSync(dist, join(cached, "dist"), { recursive: true });
+    cpSync(join(root, "package.json"), join(cached, "package.json"));
+    if (existsSync(join(root, "node_modules")))
+      symlinkSync(
+        join(root, "node_modules"),
+        join(cached, "node_modules"),
+        "junction",
+      );
+    packages.set(program, cached);
+  }
+  // Both builds must load the same URLs, not root/dist versus root/base/dist. Keep each build's
+  // own dependencies and metadata; copying and swapping are outside the measured process time.
+  renameSync(cached, activePackage);
+  return cached;
+}
+
 function run(
   args: readonly string[],
   program: string = bin,
@@ -133,10 +161,16 @@ function run(
 } {
   runCounter += 1;
   const peakFile = join(folder, `peak-${runCounter}.txt`);
+  const cached = stage(program);
   const started = performance.now();
   const result = spawnSync(
     process.execPath,
-    ["--import", pathToFileURL(preload).href, program, ...args],
+    [
+      "--import",
+      pathToFileURL(preload).href,
+      join(activePackage, "dist/bin/forge.js"),
+      ...args,
+    ],
     {
       cwd: project,
       env: { ...env, FORGE_BENCH_PEAK: peakFile },
@@ -146,6 +180,7 @@ function run(
     },
   );
   const ms = performance.now() - started;
+  renameSync(activePackage, cached);
   if (result.error || result.status !== 0)
     throw new Error(
       `forge ${args.join(" ")} failed (${result.status}): ${result.error?.message ?? result.stderr}\n${result.stdout}`,

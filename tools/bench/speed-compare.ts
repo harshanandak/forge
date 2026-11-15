@@ -8,19 +8,16 @@ export const MAX_RATIO_TO_BASE = 1.05;
 export const GATED_PAIRS = 15;
 
 /**
- * This build's peak memory may exceed the base build's by this much (MB), as the median of the
- * pairs' differences. Identical builds differ by under 1 MB in one job; the absolute peak moves
- * 2 MB between jobs, so only the paired difference can hold a tight limit.
+ * Maximum peak growth (MB), as the median of paired differences. Pairing controls runner drift,
+ * but identical builds still have process-to-process RSS variation.
  */
 export const MAX_PEAK_DELTA_MB = 1.5;
 
 /**
- * A pull request that takes the median peak over the absolute cap, from a base build at or under
- * it, fails when its paired difference is over this much (MB). It is about 1.7 standard deviations
- * of the 15-pair median, so a noise-only pull request near the cap rarely trips it; a smaller
- * crossing step is caught by the push to main, where the cap fails.
+ * Cap crossings use the same paired noise margin (owner decision F4). Main still enforces the
+ * absolute cap, including smaller increases.
  */
-export const MIN_CROSSING_DELTA_MB = 0.5;
+export const MIN_CROSSING_DELTA_MB = MAX_PEAK_DELTA_MB;
 
 export type Side = "current" | "base";
 
