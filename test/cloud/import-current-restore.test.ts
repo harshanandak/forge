@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, setSystemTime, spyOn, test } from "bun:test";
 import { domain } from "../../cloud/src/project.ts";
 import { durableStore } from "../../cloud/src/store.ts";
@@ -12,12 +11,14 @@ import {
 } from "../../cloud/src/dump.ts";
 import { imageProblems, TABLES } from "../../cloud/conformance/digest.ts";
 import { replayImage } from "../../cloud/conformance/restored.ts";
-import { pagesOf as cut } from "../../cloud/conformance/max-source.ts";
+import {
+  pagesOf as cut,
+  scratchStorage,
+} from "../../cloud/conformance/max-source.ts";
 import { pageOrder } from "../../cloud/conformance/page-order.ts";
 import { success } from "../../src/surface/dispatch.ts";
 import { failure, respond } from "../../src/surface/result.ts";
 import { consumeLaneApproval } from "../../cloud/src/lane-approval.ts";
-import { browserStorage } from "./browser-storage.fixture.ts";
 import * as f from "./import-current-state.fixture.ts";
 import * as converter from "../../tools/import-current.ts";
 import { currentState, pagesOf } from "../../tools/import-current-state.ts";
@@ -219,6 +220,75 @@ test.each(["distinct", "corrupt", "truncated"])(
   30_000,
 );
 
+test.each(["distinct", "corrupt"])(
+  "constructed expected image through roundTrip: %s",
+  async (kind) => {
+    for (const mutant of [false, true]) {
+      const source = comparisonSource(),
+        document = dumpOf(source),
+        before = f.snapshot(source);
+      const src = await project(),
+        dst = await project();
+      eq(status((await src.send("restore", document)).projected), [
+        "OK",
+        0,
+        null,
+      ]);
+      const construction = (await import(
+        await f.moduleUrl(
+          "../../cloud/conformance/restored.ts",
+          mutant && kind === "distinct"
+            ? ["    await delta(owner);", ""]
+            : undefined,
+        )
+      )) as typeof import("../../cloud/conformance/restored.ts");
+      const comparison = (await import(
+        await f.moduleUrl(
+          "../../cloud/conformance/conformance.ts",
+          mutant && kind === "corrupt" ? [comparisonGuard, ""] : undefined,
+        )
+      )) as typeof import("../../cloud/conformance/conformance.ts");
+      const transport = spyOn(globalThis, "fetch").mockImplementation(
+        f.expectedTransport(src.p, dst.p, () =>
+          f.controlDelta(
+            f.owner(durableStore(dst.storage)),
+            kind === "distinct" ? "expect" : "sourcf",
+          ),
+        ),
+      );
+      try {
+        const expected = construction.expectedImage(
+          kind === "distinct" ? [document] : cut(document.tables, 3),
+          f.at,
+          (owner) =>
+            f.controlDelta(owner, kind === "distinct" ? "expect" : "source"),
+        );
+        const run = () =>
+          comparison.roundTrip(
+            "source",
+            "target",
+            "constructed",
+            4096,
+            undefined,
+            expected,
+          );
+        const check = () =>
+          kind === "distinct"
+            ? assert.doesNotReject(run)
+            : assert.rejects(run, { code: "ERR_ASSERTION" });
+        if (mutant) await assert.rejects(check);
+        else await check();
+        eq(f.snapshot(source), before);
+      } finally {
+        transport.mockRestore();
+        src.db.close();
+        dst.db.close();
+      }
+    }
+  },
+  30_000,
+);
+
 async function project(mutant?: string) {
   const edits: Record<string, readonly [string, string]> = {
     order: ["page.page !== staged?.next", "false"],
@@ -238,8 +308,7 @@ async function project(mutant?: string) {
       dump ? ["./dump.ts", dump] : undefined,
     )
   )) as typeof import("../../cloud/src/project.ts");
-  const db = new Database(":memory:");
-  const { storage, values } = browserStorage(db);
+  const { db, storage, values } = scratchStorage();
   const p = new Impl({ storage }, { DUMP_PAGE_BYTES: "4096" });
   const send = async (route: string, body?: unknown) => {
     const response = await p.fetch(

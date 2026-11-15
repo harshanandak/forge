@@ -12,6 +12,53 @@ import { failure, respond } from "../../src/surface/result.ts";
 import * as projection from "../../tools/import-current-state.ts";
 import { durableStore } from "../../cloud/src/store.ts";
 import { browserStorage } from "./browser-storage.fixture.ts";
+import type { Project } from "../../cloud/src/project.ts";
+
+export function controlDelta(state: StateOwner, title: string): void {
+  state.put(
+    "forge/work",
+    "lane-control:global",
+    {
+      version: 1,
+      incarnation: "expected-fixture",
+      epoch: 0,
+      resumeAllEpoch: 0,
+      stopAll: null,
+    },
+    actor,
+    { expectRevision: 0 },
+  );
+  state.put("forge/work", "issue:work-1", { title }, actor, {
+    expectRevision: 1,
+  });
+}
+/** Real Project routes, with the target's final response followed by an injected fixture delta. */
+export function expectedTransport(
+  source: Pick<Project, "fetch">,
+  target: Pick<Project, "fetch">,
+  delta: () => void,
+): typeof fetch {
+  return Object.assign(
+    async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      assert.ok(typeof input === "string");
+      const request = new Request(input, init),
+        url = new URL(request.url);
+      const name = url.pathname.split("/")[2];
+      assert.ok(name === "source" || name === "target");
+      const response = await (name === "source" ? source : target).fetch(
+        request,
+      );
+      if (name === "target" && request.method === "POST" && response.ok) {
+        const reply = (await response.clone().json()) as {
+          value: { done?: boolean };
+        };
+        if (reply.value.done !== false) delta();
+      }
+      return response;
+    },
+    { preconnect: () => {} },
+  );
+}
 export const ns = "forge/work",
   at = 1_800_000_000_000;
 export const actor = { kind: "agent", id: "synthetic-import" } as const;

@@ -4,6 +4,8 @@ import type { LeaseRecord } from "../../src/generated/types.ts";
 import type { Tables } from "./max-source.ts";
 import { StateOwner } from "../../src/core/state/index.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
+import { durableStore } from "../src/store.ts";
+import { pagesOf } from "../../tools/import-current-state.ts";
 import { domain } from "../src/project.ts";
 import {
   limitsFrom,
@@ -18,6 +20,7 @@ import {
 export class IncompleteImageError extends Error {
   readonly code = "INCOMPLETE_IMAGE";
 }
+
 export function imageSequence(whole = false) {
   let next = 0,
     complete = false;
@@ -46,9 +49,11 @@ export function imageSequence(whole = false) {
 export function replayImage(
   db: SqlDatabase,
   image: Iterable<Dump | Page>,
-  at: number,
+  at: number | (() => number),
 ): StateOwner {
-  const owner = new StateOwner(db, { now: () => at });
+  const owner = new StateOwner(db, {
+    now: typeof at === "number" ? () => at : at,
+  });
   owner.initialize([domain]);
   const limits = {
     ...limitsFrom({}),
@@ -63,6 +68,30 @@ export function replayImage(
   }
   sequence();
   return owner;
+}
+
+/** Own the scratch lifetime while streaming a replay plus a caller-supplied delta. */
+export async function* expectedImage(
+  source: Iterable<Dump | Page>,
+  at: number | (() => number),
+  delta: (owner: StateOwner) => void | Promise<void>,
+): AsyncGenerator<Page> {
+  // Load the Bun fixture only when constructing an image; Node digest readers share this module.
+  const { scratchStorage } = await import("./max-source.ts");
+  const scratch = scratchStorage();
+  try {
+    const db = durableStore(scratch.storage);
+    const owner = replayImage(db, source, at);
+    await delta(owner);
+    const limits = {
+      ...limitsFrom({}),
+      maxBytes: Number.MAX_SAFE_INTEGER,
+      maxRows: Number.MAX_SAFE_INTEGER,
+    };
+    yield* pagesOf(db, limits);
+  } finally {
+    scratch.db.close();
+  }
 }
 
 export const releaseEvent = (
