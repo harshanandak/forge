@@ -61,6 +61,8 @@ import { done, stageBlock } from "../blocks/memory/lib.ts";
 import * as fx from "./cloud-fixture.ts";
 import * as scopedGit from "../../src/assembly/providers.ts";
 import * as launch from "../../src/adapters/process/run.ts";
+import * as startupScope from "../../src/assembly/git-scope.ts";
+import * as vcsDiscovery from "../../src/adapters/vcs-git/index.ts";
 
 for (const [name, row, guard, replacement, marker] of [
   [
@@ -556,12 +558,48 @@ async function seedJournal(
     await state.close();
   }
 }
-for (const row of ["reopen", "legacy", "retargeted"] as const)
+for (const row of [
+  "reopen",
+  "legacy",
+  "retargeted",
+  "Bare-startup-resolve",
+  "Accept-legacy-record",
+] as const)
   test(`startup reads matching private attachment first: ${row}`, async () => {
     const f = fx.persistedRootsFixture();
     const deviceRoot = join(f.project, "device");
     let assembly;
+    const spies: { mockRestore(): void }[] = [];
     try {
+      if (row === "Bare-startup-resolve") {
+        const mutant = await fx.withoutGuard<typeof vcsDiscovery>(
+          new URL("../../src/adapters/vcs-git/index.ts", import.meta.url),
+          "options.git?.(dir, env)",
+          'options.process.resolve("git", env)',
+        );
+        expect(mutant.mutationLoaded).toBe(true);
+        spies.push(
+          spyOn(vcsDiscovery, "mainCheckoutPath").mockImplementation(
+            mutant.mainCheckoutPath,
+          ),
+          spyOn(vcsDiscovery, "checkoutScopeRoot").mockImplementation(
+            mutant.checkoutScopeRoot,
+          ),
+        );
+      }
+      if (row === "Accept-legacy-record") {
+        const mutant = await fx.withoutGuard<typeof startupScope>(
+          new URL("../../src/assembly/git-scope.ts", import.meta.url),
+          "lane.gitScope ?? null",
+          "lane.gitScope ?? {project:{lexical:root,real:root},lane:{lexical:root,real:root}}",
+        );
+        expect(mutant.mutationLoaded).toBe(true);
+        spies.push(
+          spyOn(startupScope, "deviceGitScope").mockImplementation(
+            mutant.deviceGitScope,
+          ),
+        );
+      }
       const config = join(f.target, ".forge");
       mkdirSync(config);
       writeFileSync(join(config, "config.yaml"), WORK);
@@ -583,7 +621,9 @@ for (const row of ["reopen", "legacy", "retargeted"] as const)
             lane: {
               ...attachment,
               worktree: f.target,
-              ...(row === "legacy" ? {} : { gitScope: f.scope }),
+              ...(["legacy", "Accept-legacy-record"].includes(row)
+                ? {}
+                : { gitScope: f.scope }),
             },
           },
           { kind: "agent", id: "a1" },
@@ -609,13 +649,16 @@ for (const row of ["reopen", "legacy", "retargeted"] as const)
         deviceRoot,
         providers: { env: f.env },
       });
-      expect(existsSync(f.marker)).toBe(false);
+      expect(existsSync(f.marker)).toBe(
+        ["Bare-startup-resolve", "Accept-legacy-record"].includes(row),
+      );
       expect([
         readFileSync(join(deviceRoot, "records.sqlite")).toString("hex"),
         ...f.snapshot(),
       ]).toEqual(before);
     } finally {
       await assembly?.close();
+      for (const spy of spies) spy.mockRestore();
       f.close();
     }
   });
@@ -1378,7 +1421,11 @@ async function initialReservationRace(
   const device = new LocalState(join(s.deviceRoot, "records.sqlite"));
   await seedJournal(s, {
     ...journal,
-    lane: { ...attachment, worktree: s.root },
+    lane: {
+      ...attachment,
+      worktree: s.root,
+      gitScope: scopedGit.createGitScope(s.root),
+    },
     grant: OWN_GRANT,
   });
   await device.open(false);
@@ -1561,7 +1608,11 @@ for (const [name, variants] of [
             }
             await seedJournal(s, {
               ...journal,
-              lane: { ...attachment, worktree: realpathSync.native(s.root) },
+              lane: {
+                ...attachment,
+                worktree: realpathSync.native(s.root),
+                gitScope: scopedGit.createGitScope(s.root),
+              },
               grant: OWN_GRANT,
               ...(name === "Malformed progress"
                 ? { progress: malformed[variant as keyof typeof malformed] }
@@ -2061,6 +2112,8 @@ test("bound attachment: concurrent clones reserve before registry publication", 
 });
 for (const [name, expected] of [
   ["ordinary attachment", "OK"],
+  ["symlink attachment", "OK"],
+  ["Drop-lexical-on-save", "OK"],
   ["project git precedes trusted git", "OK"],
   ["failed restart preserves attachment", "OK"],
   ["live attachment different checkout", "INPUT_CONFLICT"],
@@ -2094,6 +2147,10 @@ for (const [name, expected] of [
   ["losing claim", "LEASE_NOT_HELD"],
 ] as const)
   test(`bound attachment table: ${name}`, () => {
+    const lexicalAttachment = [
+      "symlink attachment",
+      "Drop-lexical-on-save",
+    ].includes(name);
     const live = name.startsWith("live attachment");
     const registryFailure = name.startsWith("registry ");
     const cleanupFailure = name.startsWith("registry cleanup");
@@ -2110,6 +2167,12 @@ for (const [name, expected] of [
         now: () => time,
         prepare: async (s) => {
           sandbox = s;
+          if (lexicalAttachment)
+            symlinkSync(
+              s.root,
+              join(s.dir, "lexical"),
+              process.platform === "win32" ? "junction" : "dir",
+            );
           const git = spawnSync(
             "git",
             ["init", "--quiet", "--initial-branch=feat/one", s.root],
@@ -2270,10 +2333,25 @@ for (const [name, expected] of [
         ],
       },
       async (r) => {
-        const assembly =
-          name === "nested directory"
+        const assembly = lexicalAttachment
+          ? await r.open(join(r.s.dir, "lexical"))
+          : name === "nested directory"
             ? await r.open(join(r.s.root, "src"))
             : r.assembly;
+        const dropLexical =
+          name === "Drop-lexical-on-save"
+            ? await fx.withoutGuard<typeof boundLane>(
+                new URL("../../src/blocks/work/bound-lane.ts", import.meta.url),
+                "      gitScope,\n      brief:",
+                "      gitScope: {project:{...gitScope.project,lexical:gitScope.project.real},lane:{...gitScope.lane,lexical:gitScope.lane.real}},\n      brief:",
+              )
+            : undefined;
+        if (dropLexical) expect(dropLexical.mutationLoaded).toBe(true);
+        const dropSpy = dropLexical
+          ? spyOn(boundLane, "attachBoundLane").mockImplementation(
+              dropLexical.attachBoundLane,
+            )
+          : undefined;
         const runProcess = launch.runProcess;
         const exclusive = durable.publishExclusive;
         const cleanupSpy = cleanupFailure
@@ -2553,7 +2631,13 @@ for (const [name, expected] of [
               lease: OWN_GRANT,
             },
           });
-          const roots = scopedGit.createGitScope(r.s.root);
+          const suppliedRoots = scopedGit.createGitScope(
+            lexicalAttachment ? join(r.s.dir, "lexical") : r.s.root,
+          );
+          const roots = dropLexical
+            ? scopedGit.createGitScope(realpathSync.native(r.s.root))
+            : suppliedRoots;
+          if (dropLexical) expect(roots).not.toEqual(suppliedRoots);
           expect(
             JSON.parse(
               readFileSync(join(r.s.root, ".git", "forge-lanes.json"), "utf8"),
@@ -2649,6 +2733,7 @@ for (const [name, expected] of [
             await unfenced.close();
           }
         } finally {
+          dropSpy?.mockRestore();
           cleanupSpy?.mockRestore();
           rollbackSpy?.mockRestore();
           promotion?.mockRestore();

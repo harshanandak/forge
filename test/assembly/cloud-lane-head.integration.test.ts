@@ -15,12 +15,14 @@ import { delimiter, dirname, join } from "node:path";
 import * as coordinator from "../../src/assembly/cloud-lane-coordinator.ts";
 import * as laneState from "../../src/blocks/work/bound-lane-state.ts";
 import * as scopedGit from "../../src/assembly/providers.ts";
+import workBlock from "../../src/blocks/work/entry.cts";
 import { createProcessPort } from "../../src/adapters/process/index.ts";
 import {
   exerciseGitScope,
   gitScopeRows,
   type ScopedGitApi,
   persistedRootsFixture,
+  withoutGuard,
 } from "./cloud-fixture.ts";
 import * as vcs from "../../src/adapters/vcs-git/index.ts";
 import {
@@ -32,19 +34,126 @@ import type { Preflight } from "../../src/core/runtime/index.ts";
 import type { ProcessPort } from "../../src/ports/process.ts";
 setDefaultTimeout(30000);
 
+for (const removed of [false, true])
+  test(`Skip-reopen-equality, loaded counterfactual=${removed}`, async () => {
+    const f = persistedRootsFixture();
+    let files: Awaited<ReturnType<AssemblyProviders["openFiles"]>> | undefined;
+    try {
+      mkdirSync(join(f.project, "lane"));
+      rmSync(f.alias, { recursive: true });
+      symlinkSync(
+        f.project,
+        f.alias,
+        process.platform === "win32" ? "junction" : "dir",
+      );
+      const api = removed
+        ? await withoutGuard<typeof scopedGit>(
+            new URL("../../src/assembly/providers.ts", import.meta.url),
+            /relative\(realpathSync.native\(pair.lexical\), pair.real\) === ""/g,
+            "true",
+          )
+        : scopedGit;
+      if (removed) expect(Reflect.get(api, "mutationLoaded")).toBe(true);
+      const before = f.snapshot();
+      const open = api
+        .createAssemblyProviders(f.target, { env: f.env, gitScope: f.scope })
+        .openFiles({
+          op: "saved.read",
+          effects: ["files:read"],
+          signal: AbortSignal.timeout(15000),
+          deadline: Date.now() + 15000,
+          processContainment: "supervised",
+        });
+      if (removed) {
+        files = await open;
+        expect(files.value.root).toBe(realpathSync.native(f.target));
+      } else
+        await expect(open).rejects.toMatchObject({
+          error: { code: "INPUT_CONFLICT" },
+        });
+      expect(existsSync(f.marker)).toBe(false);
+      expect(f.snapshot()).toEqual(before);
+    } finally {
+      await files?.close();
+      f.close();
+    }
+  });
+
+for (const invalid of [
+  null,
+  {},
+  { project: { lexical: "/project", real: "/project" } },
+])
+  test(`strict clone registry refuses malformed saved roots: ${JSON.stringify(invalid)}`, async () => {
+    const f = persistedRootsFixture();
+    let files: Awaited<ReturnType<AssemblyProviders["openFiles"]>> | undefined;
+    try {
+      const registry = join(f.project, ".git", "forge-lanes.json");
+      writeFileSync(
+        registry,
+        JSON.stringify([
+          {
+            issue: "work-1",
+            worktree: f.target,
+            branch: "feat/one",
+            brief: "brief.md",
+            gitScope: invalid,
+          },
+        ]),
+      );
+      const before = [readFileSync(registry).toString("hex"), ...f.snapshot()];
+      files = await createAssemblyProviders(f.target, {
+        env: f.env,
+        gitScope: f.scope,
+      }).openFiles({
+        op: "registry.read",
+        effects: ["files:read"],
+        signal: AbortSignal.timeout(15000),
+        deadline: Date.now() + 15000,
+        processContainment: "supervised",
+      });
+      const read = Reflect.get(workBlock, "laneRegistry") as (
+        files: unknown,
+        fail: (code: string) => never,
+      ) => unknown;
+      expect(() =>
+        read(files!.value, (code) => {
+          throw new Error(code);
+        }),
+      ).toThrow("INPUT_INVALID");
+      expect([readFileSync(registry).toString("hex"), ...f.snapshot()]).toEqual(
+        before,
+      );
+      expect(existsSync(f.marker)).toBe(false);
+    } finally {
+      await files?.close();
+      f.close();
+    }
+  });
+
 for (const consumer of [
   "startup checkout",
   "startup origin",
   "clone",
   "head",
 ] as const)
-  for (const row of ["reopen", "retargeted", "legacy"] as const)
+  for (const row of [
+    "reopen",
+    "retargeted",
+    "legacy",
+    "first linked without provenance",
+  ] as const)
     test(`persisted roots: ${consumer}, ${row}`, async () => {
       const f = persistedRootsFixture();
       let files:
         Awaited<ReturnType<AssemblyProviders["openFiles"]>> | undefined;
       try {
-        const gitScope = row === "legacy" ? undefined : f.scope;
+        const gitScope =
+          row === "legacy"
+            ? null
+            : row === "first linked without provenance"
+              ? undefined
+              : f.scope;
         if (row === "retargeted") {
           rmSync(f.alias, { recursive: true });
           symlinkSync(
@@ -55,6 +164,14 @@ for (const consumer of [
         }
         const before = f.snapshot();
         const options = {
+          git: () =>
+            scopedGit
+              .gitCapability(
+                createProcessPort(),
+                f.env,
+                scopedGit.reopenGitScope(f.target, gitScope),
+              )
+              .executable(),
           process: createProcessPort(),
           env: f.env,
           timeoutMs: 10000,

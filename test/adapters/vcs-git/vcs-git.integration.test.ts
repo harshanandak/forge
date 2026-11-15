@@ -13,6 +13,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createProcessPort } from "../../../src/adapters/process/index.ts";
 import { createVcsPort } from "../../../src/adapters/vcs-git/index.ts";
+import {
+  gitCapability,
+  createGitScope,
+} from "../../../src/assembly/providers.ts";
 import { childStep } from "../../child-step.ts";
 
 const processPort = createProcessPort({
@@ -64,6 +68,8 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
 function repoPort(env: Record<string, string> = baseEnv) {
   return createVcsPort({
     process: processPort,
+    git: (cwd, selected) =>
+      gitCapability(processPort, selected, createGitScope(cwd)).executable(),
     env,
     timeoutMs: 30_000,
     maxOutputBytes: 1_000_000,
@@ -199,6 +205,8 @@ test("a status larger than the output limit fails instead of reporting a partial
   }
   const tight = createVcsPort({
     process: processPort,
+    git: (cwd, selected) =>
+      gitCapability(processPort, selected, createGitScope(cwd)).executable(),
     env: baseEnv,
     timeoutMs: 30_000,
     maxOutputBytes: 50,

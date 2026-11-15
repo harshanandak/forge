@@ -30,7 +30,7 @@ export type ScopedGitApi = Pick<
 export function persistedRootsFixture() {
   const dir = mkdtempSync(join(import.meta.dirname, ".forge-saved-roots-"));
   const project = join(dir, "project"),
-    outside = join(dir, "outside");
+    outside = mkdtempSync(join(tmpdir(), "forge-saved-lane-"));
   const trusted = realpathSync.native(Bun.which("git")!);
   const git = (args: string[]) => {
     const result = spawnSync(trusted, args, {
@@ -40,7 +40,7 @@ export function persistedRootsFixture() {
     if (result.status !== 0) throw new Error(result.stderr);
   };
   mkdirSync(project);
-  mkdirSync(outside);
+
   git(["init", "-q", "-b", "main", project]);
   git([
     "-C",
@@ -97,7 +97,10 @@ export function persistedRootsFixture() {
       PATHEXT: process.platform === "win32" ? ".CMD;.EXE" : "",
       SystemRoot: process.env.SystemRoot ?? "",
     },
-    close: () => rmSync(dir, { recursive: true, force: true }),
+    close: () => {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    },
   };
 }
 export const gitScopeRows = [

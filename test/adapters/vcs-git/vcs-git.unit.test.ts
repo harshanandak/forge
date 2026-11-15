@@ -1,9 +1,16 @@
 import { expect, test } from "bun:test";
 import {
-  createVcsPort,
+  createVcsPort as adapterVcsPort,
+  type VcsAdapterOptions,
   GitCommandError,
 } from "../../../src/adapters/vcs-git/index.ts";
 import { fakeProcess } from "../process/fake-process.ts";
+
+const createVcsPort = (options: VcsAdapterOptions) =>
+  adapterVcsPort({
+    ...options,
+    git: (_cwd, env) => options.process.resolve("git", env),
+  });
 
 const base = { env: { PATH: "/bin" }, timeoutMs: 1000, maxOutputBytes: 1000 };
 

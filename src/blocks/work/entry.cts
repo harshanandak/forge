@@ -123,6 +123,10 @@ type Lane = {
   branch: string;
   brief: string;
   base?: string;
+  gitScope?: {
+    project: { lexical: string; real: string };
+    lane: { lexical: string; real: string };
+  };
 };
 type LaneInput = ItemRef & { branch: string; brief: string; attempt?: string };
 type LaneOutput = Lane & { lease?: TrackerItem["lease"] };
@@ -1218,6 +1222,24 @@ function laneRegistry(
       (row: unknown) =>
         row !== null &&
         typeof row === "object" &&
+        (!("gitScope" in row) ||
+          (() => {
+            const scope = row.gitScope as Lane["gitScope"];
+            return (
+              !!scope &&
+              Object.keys(scope).sort().join() === "lane,project" &&
+              [scope.project, scope.lane].every(
+                (pair) =>
+                  !!pair &&
+                  Object.keys(pair).sort().join() === "lexical,real" &&
+                  [pair.lexical, pair.real].every(
+                    (root) =>
+                      typeof root === "string" &&
+                      /^(?:\/|[a-z]:[\\/]|\\\\)/i.test(root),
+                  ),
+              )
+            );
+          })()) &&
         ["issue", "worktree", "branch", "brief"].every(
           (field) =>
             typeof (row as Record<string, unknown>)[field] === "string",

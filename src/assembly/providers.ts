@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, realpathSync } from "node:fs";
+import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import {
   basename,
   delimiter,
@@ -156,8 +156,10 @@ export interface ProviderOptions {
   readonly supervision?: SupervisionOptions;
   readonly maxFileBytes?: number;
   readonly env?: Readonly<Record<string, string>>;
+  readonly gitScope?: GitScope | null | undefined;
 }
 export interface AssemblyProviders {
+  readonly gitScope?: GitScope | null | undefined;
   deviceFiles?(scope: ServiceScope): DeviceFiles;
   cloudLogin?(scope: ServiceScope): CloudLogin;
   process(scope: ServiceScope): ProcessService;
@@ -313,6 +315,70 @@ export interface GitScope {
   readonly project: { readonly lexical: string; readonly real: string };
   readonly lane: { readonly lexical: string; readonly real: string };
 }
+export function validGitScope(value: unknown): value is GitScope {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Object.keys(value).sort().join() !== "lane,project"
+  )
+    return false;
+  return ["project", "lane"].every((key) => {
+    const pair = Reflect.get(value, key) as GitScope["project"] | undefined;
+    return (
+      !!pair &&
+      Object.keys(pair).sort().join() === "lexical,real" &&
+      [pair.lexical, pair.real].every(
+        (path) => typeof path === "string" && fullyAbsolute(path),
+      )
+    );
+  });
+}
+/** Persisted ancestry is authority; filesystem discovery cannot replace missing provenance. */
+export function reopenGitScope(
+  root: string,
+  saved?: GitScope | null,
+): GitScope {
+  if (saved === null)
+    refuse(
+      "INPUT_CONFLICT",
+      "Reattach this lane with explicit project and lane roots before using Git.",
+    );
+  if (saved) {
+    try {
+      if (
+        validGitScope(saved) &&
+        [saved.project, saved.lane].every(
+          (pair) =>
+            relative(realpathSync.native(pair.lexical), pair.real) === "",
+        ) &&
+        within(saved.lane.real, realpathSync.native(root))
+      )
+        return saved;
+    } catch {
+      /* Missing roots and changed aliases have the same refusal. */
+    }
+    refuse(
+      "INPUT_CONFLICT",
+      "Saved Git roots changed or are unavailable; reattach before using Git.",
+    );
+  }
+  let project = projectManifestRoot(root);
+  if (statSync(`${project}/.git`, { throwIfNoEntry: false })?.isFile()) {
+    const enclosing = (path: string): string | undefined => {
+      for (let at = dirname(path); dirname(at) !== at; at = dirname(at))
+        if (statSync(`${at}/.git`, { throwIfNoEntry: false })?.isDirectory())
+          return at;
+      return undefined;
+    };
+    project =
+      enclosing(project) ??
+      refuse(
+        "INPUT_CONFLICT",
+        "A linked lane needs explicit project and lane roots before using Git.",
+      );
+  }
+  return createGitScope(project, root);
+}
 /** The caller supplies the project and lane spellings before canonicalization. */
 export function createGitScope(
   project: string,
@@ -465,7 +531,7 @@ function hostEnv(options: ProviderOptions): Readonly<Record<string, string>> {
 
 // Discovery calls share the host's single supervisor; each lookup is launched once in order.
 let gitDiscovery = Promise.resolve();
-function gitOptions(options: ProviderOptions) {
+function gitOptions(root: string, options: ProviderOptions) {
   const port = createProcessPort({
     supervision: options.supervision ?? CLEANUP,
   });
@@ -496,6 +562,12 @@ function gitOptions(options: ProviderOptions) {
       },
     },
     env: hostEnv(options),
+    git: (_cwd: string, env: Readonly<Record<string, string>>) =>
+      gitCapability(
+        port,
+        env,
+        reopenGitScope(root, options.gitScope),
+      ).executable(),
     timeoutMs: 10000,
     maxOutputBytes: 16384,
   };
@@ -506,7 +578,7 @@ export function projectStateRoot(
   root: string,
   options: ProviderOptions = {},
 ): Promise<string> {
-  return mainCheckoutPath(root, gitOptions(options));
+  return mainCheckoutPath(root, gitOptions(root, options));
 }
 
 /**
@@ -522,7 +594,7 @@ export function checkoutScopeRoot(
   root: string,
   options: ProviderOptions = {},
 ): Promise<string | undefined> {
-  return gitCheckoutScopeRoot(root, gitOptions(options));
+  return gitCheckoutScopeRoot(root, gitOptions(root, options));
 }
 
 /** A name as an issue id prefix: lowercase letters, digits and single hyphens; undefined when none remain. */
@@ -546,7 +618,11 @@ export async function idPrefixObservation(
   stateRoot: string,
   options: ProviderOptions = {},
 ): Promise<readonly DetectionObservation[]> {
-  const repository = await originRepositoryName(root, gitOptions(options));
+  if (options.gitScope === null) return [];
+  const repository = await originRepositoryName(
+    root,
+    gitOptions(root, options),
+  );
   const value = idPrefix(repository ?? basename(stateRoot));
   return value === undefined
     ? []
@@ -624,6 +700,7 @@ export function createAssemblyProviders(
       supervision: options.supervision ?? CLEANUP,
     });
   const providers: InternalProviders = {
+    gitScope: options.gitScope,
     deviceFiles(scope) {
       const home = env.HOME ?? env.USERPROFILE;
       if (!home)
@@ -955,7 +1032,12 @@ export function createAssemblyProviders(
       const pin = gitCapability(
         executor,
         scrubbed,
-        createGitScope(projectManifestRoot(root), root),
+        reopenGitScope(
+          root,
+          scope.op === "lane.start" && options.gitScope === null
+            ? undefined
+            : options.gitScope,
+        ),
       );
       const git = pin.executable();
       if (git.kind !== "resolved")
