@@ -27,6 +27,7 @@ Every wake: read, route, stop. Read the chosen skill before acting.
 
 ## Read on demand
 
+- [bound-lanes.md](bound-lanes.md): Bound lanes.
 - [session.md](session.md): Identity.
 - [watching.md](watching.md): PR state.
 - [dispatch.md](dispatch.md): Workers.
