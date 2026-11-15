@@ -201,13 +201,8 @@ for (const variant of [
               : undefined;
       if (variant === "linked startup") {
         const startup = spyOn(launch, "runProcess").mockImplementation(
-          (executable, args) =>
-            runs({ kind: "resolved", path: executable }, args, {
-              cwd: processRoot,
-              env,
-              timeoutMs: 10000,
-              maxOutputBytes: 16384,
-            }),
+          (executable, args, options) =>
+            runs({ kind: "resolved", path: executable }, args, options),
         );
         try {
           expect(
