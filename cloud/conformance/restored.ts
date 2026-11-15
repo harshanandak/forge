@@ -6,7 +6,11 @@ import { LANE_BROWSER } from "../src/auth/lane-browser.ts";
 import type { LaneControlGlobal } from "../../src/blocks/work/lane-control.ts";
 import { digests, fold, tally, type Table } from "./digest.ts";
 import { canonicalJson } from "../../src/core/config/pointer.ts";
-import type { LeaseRecord, StateEvent } from "../../src/generated/types.ts";
+import type {
+  LeaseRecord,
+  StateEvent,
+  StateRecord,
+} from "../../src/generated/types.ts";
 import type { Tables } from "./max-source.ts";
 import { StateOwner } from "../../src/core/state/index.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
@@ -23,6 +27,192 @@ import {
   type Dump,
   type Page,
 } from "../src/dump.ts";
+
+export interface StopDelta {
+  at: string;
+  incarnation: string;
+  auditId: string;
+  window: readonly [number, number];
+}
+export interface StopPlan {
+  prior: Tables[string][number] | undefined;
+  records: Tables[string];
+  events: Tables[string];
+  floor: readonly [Tables[string][number], Tables[string][number]] | undefined;
+}
+const stopGlobal = (row: Record<string, unknown>) =>
+  row.namespace === "forge/work" && row.key === "lane-control:global";
+
+/** Render only the two generated pairs; clocks and UUIDs are explicit, independently checked inputs. */
+export function stopPlan(
+  before: Tables,
+  delta?: StopDelta,
+  floor?: StopPlan["floor"],
+): StopPlan | undefined {
+  if (!delta) return;
+  const { at, incarnation, auditId, window } = delta;
+  const uuid = /^[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/i;
+  assert.match(incarnation, uuid);
+  assert.match(auditId, uuid);
+  assert.equal(new Date(at).toISOString(), at, "stop ISO clock");
+  assert.ok(
+    window[0] <= Date.parse(at) && Date.parse(at) <= window[1],
+    "stop request window",
+  );
+  const namespace = "forge/work",
+    key = `lane-control:audit:${auditId}`;
+  assert.ok(
+    ![before.state_records!, before.state_events!].some((rows) =>
+      rows.some((row) => row.namespace === namespace && row.key === key),
+    ),
+    "stop audit key is fresh",
+  );
+  const priorRow = before.state_records!.find(stopGlobal);
+  const prior = priorRow
+    ? ((JSON.parse(String(priorRow.body)) as StateRecord)
+        .value as LaneControlGlobal)
+    : undefined;
+  if (prior) assert.equal(incarnation, prior.incarnation, "stop incarnation");
+  const revision =
+    Number(
+      priorRow?.revision ??
+        before.state_events!.reduce((n, row) => {
+          if (!stopGlobal(row)) return n;
+          const event = JSON.parse(String(row.body)) as StateEvent;
+          return event.type === "forge/work:record.updated@1" ||
+            event.type === "forge/work:record.deleted@1"
+            ? Math.max(n, event.revision)
+            : n;
+        }, 0),
+    ) + 1;
+  const epoch = (prior?.epoch ?? 0) + 1;
+  assert.ok(
+    Number.isSafeInteger(epoch) && Number.isSafeInteger(revision),
+    "stop epoch/revision",
+  );
+  const actor = { kind: "agent", id: "cloud-restore" } as const;
+  const values = [
+    {
+      ...(prior ?? { version: 1, incarnation, resumeAllEpoch: 0 }),
+      epoch,
+      stopAll: at,
+    },
+    {
+      version: 1,
+      action: "stop",
+      scope: { all: true },
+      device: "cloud-restore",
+      session: "cloud-restore",
+      at,
+      incarnation,
+      epoch,
+    },
+  ];
+  const keys = ["lane-control:global", key];
+  const records = values.map((value, i) => ({
+    namespace,
+    key: keys[i]!,
+    revision: i ? 1 : revision,
+    body: canonicalJson({
+      namespace,
+      key: keys[i],
+      revision: i ? 1 : revision,
+      value,
+      updatedAt: at,
+      updatedBy: actor,
+    }),
+  }));
+  const high = Number(before.state_events!.at(-1)?.sequence ?? 0);
+  assert.ok(Number.isSafeInteger(high + 2), "stop event sequence");
+  const events = records.map((row, i) => ({
+    sequence: high + i + 1,
+    namespace,
+    key: row.key,
+    body: canonicalJson({
+      type: `${namespace}:record.updated@1`,
+      namespace,
+      key: row.key,
+      revision: row.revision,
+      at,
+      actor,
+      data: values[i],
+    }),
+  }));
+  return { prior: priorRow, records, events, floor };
+}
+
+/** References to existing payloads plus two small pairs; the none case returns the original image. */
+export function stopOverlay(before: Tables, plan?: StopPlan): Tables {
+  if (!plan) return before;
+  const records = before.state_records!.filter((row) => !stopGlobal(row));
+  for (const row of plan.records) {
+    const at = records.findIndex((other) =>
+      other.namespace === row.namespace
+        ? String(other.key) > row.key!
+        : String(other.namespace) > row.namespace!,
+    );
+    records.splice(at < 0 ? records.length : at, 0, row);
+  }
+  return {
+    ...before,
+    state_records: records,
+    state_events: [...before.state_events!, ...plan.events],
+  };
+}
+
+/** Remove only the independently rendered identities, restoring the original global at its exact key. */
+export function stopProof(plan: StopPlan) {
+  const seen = [0, 0, 0, 0];
+  let sequence = 0;
+  return {
+    floor(table: string, row: Record<string, unknown>) {
+      assert.deepEqual(
+        { ...row },
+        plan.floor?.[table === "state_records" ? 0 : 1],
+        "generated floor",
+      );
+    },
+    row(
+      table: string,
+      row: Record<string, unknown>,
+    ): Record<string, unknown> | undefined {
+      if (table === "state_events") {
+        assert.ok(
+          Number.isSafeInteger(row.sequence) &&
+            Number(row.sequence) > sequence &&
+            !seen[3],
+          "stop event order/suffix",
+        );
+        sequence = Number(row.sequence);
+      }
+      const list =
+        table === "state_records"
+          ? plan.records
+          : table === "state_events"
+            ? plan.events
+            : [];
+      const i = list.findIndex((want) =>
+        table === "state_records"
+          ? row.namespace === want.namespace && row.key === want.key
+          : row.sequence === want.sequence,
+      );
+      if (i < 0) return row;
+      if (table === "state_events")
+        assert.equal(i, seen[2]! + seen[3]!, "stop suffix positions");
+      const index = i + (table === "state_events" ? 2 : 0);
+      assert.deepEqual(
+        { ...row },
+        list[i],
+        `stop ${table} ${i}: exact generated row`,
+      );
+      seen[index]!++;
+      return table === "state_records" && i === 0 ? plan.prior : undefined;
+    },
+    done() {
+      assert.deepEqual(seen, [1, 1, 1, 1], "stop pair counts");
+    },
+  };
+}
 
 export class IncompleteImageError extends Error {
   readonly code = "INCOMPLETE_IMAGE";
