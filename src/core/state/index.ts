@@ -547,7 +547,7 @@ export interface NumberedSummary {
   readonly groups?: ReadonlyMap<string, NumberedSummary>;
 }
 /** The number after `prefix` when it is a positive decimal (the rule #highest applies in SQL); an unsafe one is refused. */
-function suffixNumber(key: string, prefix: string): number | undefined {
+export function suffixNumber(key: string, prefix: string): number | undefined {
   if (!key.startsWith(prefix)) return undefined;
   const text = key.slice(prefix.length);
   if (!/^[1-9][0-9]*$/.test(text)) return undefined;

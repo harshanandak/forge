@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { canonicalJson } from "../../src/core/config/pointer.ts";
+import { suffixNumber } from "../../src/core/state/index.ts";
 import type { Tables } from "./max-source.ts";
 import { FLOOR, type Expected } from "./digest.ts";
 import { stopPlan } from "./restored.ts";
@@ -28,8 +29,6 @@ export function capacityStop(
         );
         if (table === "state_records" && isGlobal(row)) global = row;
         if (row.namespace === FLOOR.namespace) {
-          const match = /^issue:work-(\d+)$/.exec(String(row.key));
-          if (match) number = Math.max(number, Number(match[1]));
           if (table === "state_events") {
             const event = JSON.parse(String(row.body)) as {
               type: string;
@@ -37,16 +36,21 @@ export function capacityStop(
               data: { number?: number };
             };
             if (
-              event.type.endsWith(":record.updated@1") ||
-              event.type.endsWith(":record.deleted@1")
-            ) {
-              if (isGlobal(row)) history = row;
-              if (row.key === FLOOR.key) {
-                revision = event.revision;
-                number = Math.max(number, event.data?.number ?? 0);
-              }
+              !event.type.endsWith(":record.updated@1") &&
+              !event.type.endsWith(":record.deleted@1")
+            )
+              continue;
+            if (isGlobal(row)) history = row;
+            if (row.key === FLOOR.key) {
+              revision = event.revision;
+              number = Math.max(number, event.data?.number ?? 0);
             }
+            if (!event.type.endsWith(":record.deleted@1")) continue;
           }
+          number = Math.max(
+            number,
+            suffixNumber(String(row.key), "issue:work-") ?? 0,
+          );
         }
       }
     last = tables.state_events!.at(-1) ?? last;
