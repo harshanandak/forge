@@ -41,8 +41,15 @@ function fixture(write = true) {
     post: string | undefined;
   let concurrent = 0,
     maxConcurrent = 0;
-  const refusal = (code: string, status: number) =>
-    fx.json(failure(code, "refused"), status);
+  const refusal = (code: string, status: number) => {
+    const reply = failure(code, "refused");
+    return fx.json(
+      code === "CONTEXT_MISSING"
+        ? { ...reply, error: { ...reply.error, missing: ["actor"] } }
+        : reply,
+      status,
+    );
+  };
   const status = (code: string) =>
     code.startsWith("AUTH_")
       ? ["AUTH_FORBIDDEN", "AUTH_DEVICE_MISMATCH"].includes(code)
@@ -302,18 +309,10 @@ const matrix = [
   ...uncertain.flatMap((fault) =>
     ["U", "R"].map((family) => ({ family, fault })),
   ),
-  ...["auth", "device", "abort", "deadline", "prepare", "conflict"].map(
-    (fault) => ({ family: "P", fault }),
-  ),
-  ...[
-    "auth",
-    "device",
-    "principal",
-    "abort",
-    "deadline",
-    "prepare",
-    "intent",
-  ].map((fault) => ({ family: "PR", fault })),
+  ...Object.keys(localCodes).map((fault) => ({ family: "P", fault })),
+  ..."auth device principal abort deadline prepare intent"
+    .split(" ")
+    .map((fault) => ({ family: "PR", fault })),
 ];
 for (const { family, fault } of matrix)
   test(`settlement ${family}(${fault})`, async () => {
