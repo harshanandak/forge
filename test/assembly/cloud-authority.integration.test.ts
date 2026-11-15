@@ -1412,8 +1412,8 @@ const attachmentBytes = (s: fx.Sandbox) =>
   ].map((path) =>
     existsSync(path) ? readFileSync(path).toString("hex") : null,
   );
-for (const stored of ["journal", "registry", "combined"] as const)
-  test(`legacy linked reattachment refuses before Git: ${stored}`, async () => {
+for (const stored of ["journal", "registry", "combined", "explicit"] as const)
+  test(`legacy linked reattachment ${stored === "explicit" ? "accepts supplied roots" : "refuses before Git"}: ${stored}`, async () => {
     const f = fx.persistedRootsFixture();
     const deviceRoot = join(f.project, "device");
     const state = new LocalState(join(deviceRoot, "records.sqlite"));
@@ -1461,23 +1461,30 @@ for (const stored of ["journal", "registry", "combined"] as const)
         ),
       ];
       const before = snapshot();
-      await expect(
-        attachBoundLane(
-          record,
-          {
-            files: files.value,
-            process: providers.process(scope),
-            environment: providers.environment(scope),
-            now: () => NOW,
-            ...scope,
-          },
-          {
-            check: async () => {},
-            publish: (_lane, write) => Promise.resolve(write()),
-          },
-          legacy,
-        ),
-      ).rejects.toMatchObject({ error: { code: "INPUT_CONFLICT" } });
+      const attempt = attachBoundLane(
+        record,
+        {
+          files: files.value,
+          process: providers.process(scope),
+          environment: providers.environment(scope),
+          now: () => NOW,
+          ...(stored === "explicit" ? { gitScope: f.scope } : {}),
+          ...scope,
+        },
+        {
+          check: async () => {},
+          publish: (_lane, write) => Promise.resolve(write()),
+        },
+        legacy,
+      );
+      if (stored === "explicit") {
+        expect((await attempt).gitScope).toEqual(f.scope);
+        expect(existsSync(f.marker)).toBe(false);
+        return;
+      }
+      await expect(attempt).rejects.toMatchObject({
+        error: { code: "INPUT_CONFLICT" },
+      });
       expect([
         existsSync(f.marker),
         lock.mock.calls.length,
@@ -2335,6 +2342,7 @@ for (const [name, expected] of [
           if (live) {
             const lane = {
               ...attachment,
+              gitScope: scopedGit.createGitScope(s.root),
               worktree: name.endsWith("checkout")
                 ? join(s.dir, "clone-a")
                 : realpathSync.native(s.root),
@@ -2367,7 +2375,11 @@ for (const [name, expected] of [
               grant: OWN_GRANT,
               active: false,
               releaseNeeded: !registryFailure,
-              lane: { ...attachment, worktree: realpathSync.native(s.root) },
+              lane: {
+                ...attachment,
+                worktree: realpathSync.native(s.root),
+                gitScope: scopedGit.createGitScope(s.root),
+              },
             };
             if (malformedRegistry || retargetedProject) {
               const fresh = scopedGit.createGitScope(s.root);

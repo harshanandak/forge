@@ -565,12 +565,21 @@ export async function attachBoundLane(
         (row.issueId ?? row.issue.replace(/^.*-/, "work-")) === record.id,
     );
   const registered = matching(boundLaneRegistry(files).lanes);
+  const savedScope =
+    previous?.gitScope ??
+    registered.find((row) => row.gitScope !== undefined)?.gitScope;
+  if (
+    ((previous && previous.gitScope === undefined) ||
+      registered.some((row) => row.gitScope === undefined)) &&
+    !validGitScope(services.gitScope)
+  )
+    refuse(
+      "INPUT_CONFLICT",
+      "Legacy attachments need explicit project and lane roots before reattachment.",
+    );
   const gitScope = reopenGitScope(
     files.root,
-    previous?.gitScope ??
-      registered.find((row) => row.gitScope !== undefined)?.gitScope ??
-      services.gitScope ??
-      reopenGitScope(services.process.cwd),
+    savedScope ?? services.gitScope ?? reopenGitScope(services.process.cwd),
   );
   const scopeKey = (scope: GitScope) =>
     JSON.stringify(scope, ["project", "lane", "lexical", "real"]);
