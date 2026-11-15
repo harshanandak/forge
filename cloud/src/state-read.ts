@@ -1,6 +1,11 @@
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { parseUntrustedJson } from "../../src/contract/untrusted.ts";
-import { NAMESPACE_WATERMARK, StateOwner } from "../../src/core/state/index.ts";
+import {
+  INDEXED_NAMESPACE_WATERMARK,
+  NAMESPACE_INDEX_PROBE,
+  NAMESPACE_WATERMARK,
+  StateOwner,
+} from "../../src/core/state/index.ts";
 import { parseRestoreJson } from "../../src/core/state/restore-json.ts";
 import {
   validateStateEvent,
@@ -52,7 +57,11 @@ export function readState(
     );
   const namespace = input.namespace,
     query = input.query;
-  const events = readOnlyStore(storage, "state_events", [NAMESPACE_WATERMARK]);
+  const events = readOnlyStore(storage, "state_events", [
+    NAMESPACE_WATERMARK,
+    INDEXED_NAMESPACE_WATERMARK,
+    NAMESPACE_INDEX_PROBE,
+  ]);
   let revision = 0;
   try {
     if (events)

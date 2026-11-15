@@ -10,7 +10,6 @@ import { ForgeFailure } from "../../src/contract/failure.ts";
 import { decideLease } from "../../src/contract/lease.ts";
 import { canonicalJson } from "../../src/core/config/pointer.ts";
 import { StateOwner } from "../../src/core/state/index.ts";
-import { stateMigrations } from "../../src/core/state/migrations.ts";
 import type {
   ForgeError,
   LeaseHolder,
@@ -259,7 +258,6 @@ async function discard(request: Request): Promise<void> {
 
 export class Project {
   readonly #storage: DurableStorage;
-  #started = false;
   #opened: { db: SqlDatabase; owner: StateOwner } | undefined;
   #provisioned = false;
   readonly #limits: Limits;
@@ -312,23 +310,6 @@ export class Project {
 
   async fetch(request: Request): Promise<Response> {
     try {
-      // Synchronous startup precedes every route: no request can interleave with migration.
-      if (!this.#started) {
-        const sql = "SELECT id FROM state_migrations";
-        const ledger = readOnlyStore(this.#storage, "state_migrations", [sql]);
-        if (ledger) {
-          const known = new Set(
-            [...stateMigrations, ...domain.migrations].map((m) => m.id),
-          );
-          const applied = new Set(ledger.all(sql).map((row) => String(row.id)));
-          if (
-            known.size !== applied.size ||
-            [...known].some((id) => !applied.has(id))
-          )
-            this.#open();
-        }
-        this.#started = true;
-      }
       const url = new URL(request.url);
       const route = url.pathname.split("/")[3] ?? "";
       if (isStatePath(request)) return await this.#state(request);
