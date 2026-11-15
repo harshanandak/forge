@@ -1,7 +1,10 @@
-import { expect, setDefaultTimeout, test } from "bun:test";
+import { expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import { createCloudHttp } from "../../src/adapters/http/index.ts";
 import { createCloudRecordState } from "../../src/assembly/cloud-record-state.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
+import { LocalState } from "../../src/assembly/state.ts";
+import * as ownerState from "../../src/core/state/index.ts";
+import { canonicalJson } from "../../src/core/config/pointer.ts";
 import type { StateRecord } from "../../src/generated/types.ts";
 import type {
   StateReadRequest,
@@ -231,6 +234,46 @@ async function refused(pending: Promise<unknown>, code: string) {
 }
 
 const rows: readonly [string, (f: Fixture) => Promise<void>][] = [
+  [
+    "Invalid JSON parity",
+    async (f) => {
+      const local = new LocalState(":memory:");
+      try {
+        const owner = (await local.open(true))!;
+        for (const value of [NaN, Infinity, { score: undefined }]) {
+          let rejected: unknown;
+          try {
+            owner.put(namespace, "bad", value, actor, { expectRevision: 0 });
+          } catch (error) {
+            rejected = error;
+          }
+          expect(rejected).toBeInstanceOf(ForgeFailure);
+          await refused(
+            f.state.put("bad", value, { expectRevision: 0 }),
+            (rejected as ForgeFailure).error.code,
+          );
+          expect(f.calls).toHaveLength(0);
+        }
+        const bypass = spyOn(ownerState, "json").mockImplementation(
+          canonicalJson,
+        );
+        try {
+          const mutant = fixture();
+          await expect(
+            refused(
+              mutant.state.put("bad", NaN, { expectRevision: 0 }),
+              "INPUT_INVALID",
+            ),
+          ).rejects.toThrow();
+          expect(mutant.records.get("bad")?.value).toBeNull();
+        } finally {
+          bypass.mockRestore();
+        }
+      } finally {
+        await local.close();
+      }
+    },
+  ],
   [
     "Read plan",
     async (f) => {
