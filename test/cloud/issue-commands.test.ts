@@ -912,7 +912,7 @@ for (const kind of ["count", "max"] as const)
         try {
           seedReadKeys(f, count, prefix);
           let examined = 0;
-          f.db.function("examined", () => {
+          f.db.function("examined", (_key: string) => {
             examined++;
             return 1;
           });
