@@ -123,10 +123,6 @@ type Lane = {
   branch: string;
   brief: string;
   base?: string;
-  gitScope?: {
-    project: { lexical: string; real: string };
-    lane: { lexical: string; real: string };
-  };
 };
 type LaneInput = ItemRef & { branch: string; brief: string; attempt?: string };
 type LaneOutput = Lane & { lease?: TrackerItem["lease"] };
@@ -1209,10 +1205,6 @@ function laneRegistry(
   text: string | null;
   lanes: Lane[];
 } {
-  // The files adapter supplies a native absolute root; blocks have no ambient platform.
-  const absolute = /^(?:[a-z]:[\\/]|[\\/]{2})/i.test(files.root)
-    ? /^(?:[a-z]:[\\/]|[\\/]{2}[^\\/]+[\\/][^\\/]+)/i
-    : /^\//;
   const text = files.read(registryPath, 1_048_576, "common") ?? null;
   let value: unknown;
   try {
@@ -1226,22 +1218,6 @@ function laneRegistry(
       (row: unknown) =>
         row !== null &&
         typeof row === "object" &&
-        (!("gitScope" in row) ||
-          (() => {
-            const scope = row.gitScope as Lane["gitScope"];
-            return (
-              !!scope &&
-              Object.keys(scope).sort().join() === "lane,project" &&
-              [scope.project, scope.lane].every(
-                (pair) =>
-                  !!pair &&
-                  Object.keys(pair).sort().join() === "lexical,real" &&
-                  [pair.lexical, pair.real].every(
-                    (root) => typeof root === "string" && absolute.test(root),
-                  ),
-              )
-            );
-          })()) &&
         ["issue", "worktree", "branch", "brief"].every(
           (field) =>
             typeof (row as Record<string, unknown>)[field] === "string",

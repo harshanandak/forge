@@ -6,11 +6,9 @@ import {
   boundLaneKey,
   readBoundLane,
 } from "../blocks/work/bound-lane-state.ts";
-import {
-  projectManifestRoot,
-  reopenGitScope,
-  type GitScope,
-} from "./providers.ts";
+import { projectManifestRoot, type GitScope } from "./providers.ts";
+
+import { reopenGitScope } from "./saved-git-scope.ts";
 
 /** Only a matching private attachment may recover ancestry before the first Git discovery. */
 export async function deviceGitScope(

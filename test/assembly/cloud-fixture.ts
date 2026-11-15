@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join, relative } from "node:path";
 import { createProcessPort } from "../../src/adapters/process/index.ts";
 import { spawnSync } from "node:child_process";
+import { reopenGitScope } from "../../src/assembly/saved-git-scope.ts";
 import type { CloudFetch } from "../../src/adapters/http/index.ts";
 import type {
   CredentialEntry,
@@ -106,13 +107,11 @@ export function persistedRootsFixture() {
 export async function launchSavedGit(
   fixture: ReturnType<typeof persistedRootsFixture>,
   saved: import("../../src/assembly/providers.ts").GitScope | null,
-  api: Pick<
-    typeof import("../../src/assembly/providers.ts"),
-    "reopenGitScope" | "gitCapability"
-  >,
+  api: Pick<typeof import("../../src/assembly/providers.ts"), "gitCapability">,
   root = fixture.target,
+  reopen = reopenGitScope,
 ) {
-  const scope = api.reopenGitScope(root, saved);
+  const scope = reopen(root, saved);
   const port = createProcessPort({
     supervision: {
       cleanupTimeoutMs: 1000,

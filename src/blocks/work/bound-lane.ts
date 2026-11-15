@@ -3,9 +3,12 @@ import {
   gitCapability,
   createGitScope,
   projectManifestRoot,
-  reopenGitScope,
   type GitScope,
 } from "../../assembly/providers.ts";
+import {
+  reopenGitScope,
+  validGitScope,
+} from "../../assembly/saved-git-scope.ts";
 import type { TrackerItem } from "../../generated/types.ts";
 import type {
   AmbientContext,
@@ -28,11 +31,7 @@ import {
   type BoundLaneRecord,
 } from "./bound-lane-state.ts";
 
-export const BOUND_LANES: ReadonlySet<string> = new Set(
-  ["start", "show", "status", "next", "record", "close", "release"].map(
-    (verb) => `lane.${verb}`,
-  ),
-);
+export { BOUND_LANES } from "./bound-lane-ops.ts";
 type ReadIssue = (id: string) => Promise<TrackerItem>;
 
 export async function boundLaneRead(
@@ -125,6 +124,20 @@ const helpers = entry as unknown as {
     lanes: (BoundLaneRecord["lane"] & { attempt?: string })[];
   };
 };
+/** Bound attachments require the complete native root shape; diagnostics may retain legacy rows. */
+export function boundLaneRegistry(
+  files: FilesService,
+  reject: typeof refuse = refuse,
+) {
+  const saved = helpers.laneRegistry(files, reject);
+  if (
+    saved.lanes.some(
+      (lane) => lane.gitScope !== undefined && !validGitScope(lane.gitScope),
+    )
+  )
+    reject("INPUT_INVALID", "Repair the invalid lane registry before retrying");
+  return saved;
+}
 export type BoundCommand = (
   op: string,
   input: object,
@@ -564,7 +577,7 @@ export async function attachBoundLane(
     recoverDeadOwner: true,
   });
   try {
-    const saved = helpers.laneRegistry(files, refuse);
+    const saved = boundLaneRegistry(files);
     const lane = {
       ...record.lane,
       worktree: files.root,

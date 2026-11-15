@@ -6,7 +6,8 @@ import {
 } from "../../generated/validators.ts";
 import type { StateClient } from "../../ports/state.ts";
 import type { StateRecord } from "../../generated/types.ts";
-import { validGitScope, type GitScope } from "../../assembly/providers.ts";
+import type { GitScope } from "../../assembly/providers.ts";
+import { validGitScope } from "../../assembly/saved-git-scope.ts";
 
 export function validBoundHead(value: unknown): value is string {
   return (

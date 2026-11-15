@@ -15,7 +15,8 @@ import { delimiter, dirname, join } from "node:path";
 import * as coordinator from "../../src/assembly/cloud-lane-coordinator.ts";
 import * as laneState from "../../src/blocks/work/bound-lane-state.ts";
 import * as scopedGit from "../../src/assembly/providers.ts";
-import workBlock from "../../src/blocks/work/entry.cts";
+import { boundLaneRegistry } from "../../src/blocks/work/bound-lane.ts";
+import * as savedGit from "../../src/assembly/saved-git-scope.ts";
 import { createProcessPort } from "../../src/adapters/process/index.ts";
 import {
   exerciseGitScope,
@@ -38,11 +39,20 @@ for (const removed of [false, true])
   test(`Skip-reopen-equality, loaded counterfactual=${removed}`, async () => {
     const f = persistedRootsFixture();
     try {
-      mkdirSync(join(f.project, "lane"));
-      rmSync(f.alias, { recursive: true });
+      const projectAlias = join(f.project, "project-alias");
       symlinkSync(
         f.project,
-        f.alias,
+        projectAlias,
+        process.platform === "win32" ? "junction" : "dir",
+      );
+      const scope = {
+        ...f.scope,
+        project: scopedGit.createGitScope(projectAlias).project,
+      };
+      rmSync(projectAlias, { recursive: true });
+      symlinkSync(
+        f.target,
+        projectAlias,
         process.platform === "win32" ? "junction" : "dir",
       );
       const api = removed
@@ -53,8 +63,22 @@ for (const removed of [false, true])
           )
         : scopedGit;
       if (removed) expect(Reflect.get(api, "mutationLoaded")).toBe(true);
+      const savedApi = removed
+        ? await withoutGuard<typeof savedGit>(
+            new URL("../../src/assembly/saved-git-scope.ts", import.meta.url),
+            /relative\(createGitScope\(pair.lexical\).project.real, pair.real\) === ""/g,
+            "true",
+          )
+        : savedGit;
+      if (removed) expect(Reflect.get(savedApi, "mutationLoaded")).toBe(true);
       const before = f.snapshot();
-      const launch = launchSavedGit(f, f.scope, api);
+      const launch = launchSavedGit(
+        f,
+        scope,
+        api,
+        f.lexical,
+        savedApi.reopenGitScope,
+      );
       if (removed) expect((await launch).exitCode).toBe(0);
       else
         await expect(launch).rejects.toMatchObject({
@@ -81,7 +105,7 @@ for (const invalid of [
     : []),
 ])
   test(`strict clone registry refuses malformed saved roots: ${JSON.stringify(invalid)}`, async () => {
-    expect(scopedGit.validGitScope(invalid)).toBe(false);
+    expect(savedGit.validGitScope(invalid)).toBe(false);
     const f = persistedRootsFixture();
     let files: Awaited<ReturnType<AssemblyProviders["openFiles"]>> | undefined;
     try {
@@ -108,12 +132,8 @@ for (const invalid of [
         deadline: Date.now() + 15000,
         processContainment: "supervised",
       });
-      const read = Reflect.get(workBlock, "laneRegistry") as (
-        files: unknown,
-        fail: (code: string) => never,
-      ) => unknown;
       expect(() =>
-        read(files!.value, (code) => {
+        boundLaneRegistry(files!.value, (code) => {
           throw new Error(code);
         }),
       ).toThrow("INPUT_INVALID");
