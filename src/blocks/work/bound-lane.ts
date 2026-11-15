@@ -1,4 +1,5 @@
 import { ForgeFailure } from "../../contract/failure.ts";
+import { relative } from "node:path";
 import {
   gitCapability,
   createGitScope,
@@ -496,6 +497,7 @@ export function boundLaneGit(
   >,
   cwd: string,
   saved?: GitScope | null,
+  ...additional: GitScope[]
 ): (args: string[]) => Promise<string> {
   const { process, environment, signal, deadline } = services;
   const env = environment.select([
@@ -508,15 +510,22 @@ export function boundLaneGit(
     "TEMP",
     "TMP",
   ]);
-  const pin = gitCapability(
-    process,
-    env,
+  const scope =
     saved === undefined
       ? createGitScope(projectManifestRoot(process.cwd), cwd)
-      : reopenGitScope(cwd, saved),
-  );
+      : reopenGitScope(cwd, saved);
+  const extra = additional.map((value) => reopenGitScope(process.cwd, value));
+  if (
+    extra.some(
+      (value) => relative(scope.project.real, value.project.real) !== "",
+    )
+  )
+    refuse("INPUT_CONFLICT", "Saved and supplied project roots disagree.");
+  const pin = gitCapability(process, env, scope);
   const readGit = async (args: string[]) => {
-    const git = pin.executable();
+    let git = pin.executable();
+    for (const roots of extra)
+      if (git.kind === "resolved") git = pin.executable(roots);
     if (git.kind !== "resolved") refuse("UNAVAILABLE", git.reason);
     const result = await process.run(git, args, {
       cwd: cwd,
@@ -593,7 +602,12 @@ export async function attachBoundLane(
         refuse("INPUT_CONFLICT", "Saved attachment Git roots disagree.");
   };
   checkSavedRoots(registered);
-  const readGit = boundLaneGit(services, files.root, gitScope);
+  const readGit = boundLaneGit(
+    services,
+    files.root,
+    gitScope,
+    ...(services.gitScope === undefined ? [] : [services.gitScope]),
+  );
   const identity = async () => {
     if (
       path(await readGit(["rev-parse", "--show-toplevel"])) !==

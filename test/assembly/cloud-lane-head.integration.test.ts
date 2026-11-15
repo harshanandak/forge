@@ -35,21 +35,36 @@ import type { Preflight } from "../../src/core/runtime/index.ts";
 import type { ProcessPort } from "../../src/ports/process.ts";
 setDefaultTimeout(30000);
 
-for (const consumer of ["checkout", "origin"] as const)
+for (const consumer of ["checkout", "origin", "clone", "head"] as const)
   test(`startup refuses a retargeted saved lexical lane: ${consumer}`, async () => {
     const f = persistedRootsFixture();
+    let files: Awaited<ReturnType<AssemblyProviders["openFiles"]>> | undefined;
     try {
       f.retarget();
       const before = f.snapshot();
       const options = { env: f.env, gitScope: f.scope };
-      const result = await (
-        consumer === "checkout"
-          ? scopedGit.projectStateRoot(f.lexical, options)
-          : scopedGit.idPrefixObservation(f.lexical, f.project, options)
-      ).catch((error: unknown) => error);
+      const run = async () => {
+        if (consumer === "checkout")
+          return scopedGit.projectStateRoot(f.lexical, options);
+        if (consumer === "origin")
+          return scopedGit.idPrefixObservation(f.lexical, f.project, options);
+        const providers = createAssemblyProviders(f.lexical, options);
+        if (consumer === "head")
+          return readHead(flight(), providers, f.lexical);
+        files = await providers.openFiles({
+          op: "saved.read",
+          effects: ["files:read"],
+          signal: AbortSignal.timeout(30000),
+          deadline: Date.now() + 30000,
+          processContainment: "supervised",
+        });
+        return files.value.root;
+      };
+      const result = await run().catch((error: unknown) => error);
       expect([existsSync(f.marker), f.snapshot()]).toEqual([false, before]);
       expect(result).toMatchObject({ error: { code: "INPUT_CONFLICT" } });
     } finally {
+      await files?.close();
       f.close();
     }
   });
