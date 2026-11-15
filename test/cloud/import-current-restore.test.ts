@@ -11,7 +11,7 @@ import {
   type Page,
 } from "../../cloud/src/dump.ts";
 import { imageProblems, TABLES } from "../../cloud/conformance/digest.ts";
-import { replayImage } from "../../cloud/conformance/restored.ts";
+import { dumpReadView, replayImage } from "../../cloud/conformance/restored.ts";
 import { pagesOf as cut } from "../../cloud/conformance/max-source.ts";
 import { pageOrder } from "../../cloud/conformance/page-order.ts";
 import { success } from "../../src/surface/dispatch.ts";
@@ -115,6 +115,23 @@ test("expected replay refuses empty, unordered and non-final streams", async () 
       { code: "INCOMPLETE_IMAGE" },
     ),
   );
+}, 5_000);
+
+test("scratch reads normalize safe integers and retain unsafe integers for dump refusal", () => {
+  const raw = f.database(),
+    db = dumpReadView(raw);
+  replayImage(db, [dumpOf(comparisonSource())], f.at);
+  const select = "SELECT revision FROM state_records WHERE key='issue:work-1'";
+  eq(typeof raw.get(select)!.revision, "bigint");
+  eq(db.get(select)!.revision, 1);
+  eq(db.all(select)[0]!.revision, 1);
+  const unsafe = 9_007_199_254_740_993n;
+  raw.run("UPDATE state_records SET revision=? WHERE key='issue:work-1'", [
+    unsafe,
+  ]);
+  eq(db.get(select)!.revision, unsafe);
+  eq(db.all(select)[0]!.revision, unsafe);
+  eq(status(f.result(() => dumpOf(db))), ["FAIL", 1, "DUMP_UNSAFE_VALUE"]);
 }, 5_000);
 
 const comparisonGuard = `  assert.deepEqual(

@@ -3,7 +3,7 @@ import { canonicalJson } from "../../src/core/config/pointer.ts";
 import type { LeaseRecord } from "../../src/generated/types.ts";
 import type { Tables } from "./max-source.ts";
 import { StateOwner } from "../../src/core/state/index.ts";
-import type { SqlDatabase } from "../../src/ports/store.ts";
+import type { SqlDatabase, SqlRow } from "../../src/ports/store.ts";
 import { sqliteStore } from "../../src/adapters/store-sqlite/index.ts";
 import { initializeCloudVersion } from "../src/store.ts";
 import { pagesOf } from "../../tools/import-current-state.ts";
@@ -20,6 +20,27 @@ import {
 
 export class IncompleteImageError extends Error {
   readonly code = "INCOMPLETE_IMAGE";
+}
+
+/** Native SQLite returns bigint; the Cloud dump path receives safe integer numbers. */
+export function dumpReadView(db: SqlDatabase): SqlDatabase {
+  const row = (given: SqlRow): SqlRow =>
+    Object.fromEntries(
+      Object.entries(given).map(([key, value]) => [
+        key,
+        typeof value === "bigint" && Number.isSafeInteger(Number(value))
+          ? Number(value)
+          : value,
+      ]),
+    );
+  return {
+    ...db,
+    all: (sql, params) => db.all(sql, params).map(row),
+    get: (sql, params) => {
+      const given = db.get(sql, params);
+      return given === undefined ? undefined : row(given);
+    },
+  };
 }
 export function imageSequence(whole = false) {
   let next = 0,
@@ -81,14 +102,15 @@ export async function* expectedImage(
   if (!opened.ok) throw new Error("Expected-image scratch storage unavailable");
   const { handle } = opened;
   try {
-    const owner = replayImage(handle.value, source, at);
+    const db = dumpReadView(handle.value);
+    const owner = replayImage(db, source, at);
     await delta(owner);
     const limits = {
       ...limitsFrom({}),
       maxBytes: Number.MAX_SAFE_INTEGER,
       maxRows: Number.MAX_SAFE_INTEGER,
     };
-    yield* pagesOf(handle.value, limits);
+    yield* pagesOf(db, limits);
   } finally {
     await handle.close();
   }
