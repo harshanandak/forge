@@ -154,7 +154,11 @@ function ownBoundGrant(
 
 export interface BoundAttachFence {
   check(): Promise<void>;
-  publish(lane: BoundLaneRecord["lane"], write: () => void): Promise<void>;
+  publish(
+    lane: BoundLaneRecord["lane"],
+    write: () => void,
+    unpublished: () => boolean,
+  ): Promise<void>;
 }
 export interface BoundAttachStore {
   save(record: BoundLaneRecord, revision: number): StateRecord;
@@ -217,17 +221,18 @@ export async function boundLaneStart(
         grant.generation,
       );
     },
-    async publish(lane, write) {
+    async publish(lane, write, unpublished) {
       const store = await prepare(id);
       await fence.check();
       // Cloud authority is not atomic with the following synchronous CAS, registry write and activation.
+      // Dispatch is fenced by issue.renew at this generation before every bound spawn (tools/lane-control.ts).
       record = { ...record, lane };
       revision = store.save(record, revision).revision;
       try {
         write();
       } catch (error) {
         try {
-          store.restore(previous, revision);
+          if (unpublished()) store.restore(previous, revision);
         } catch (rollback) {
           if (
             !(rollback instanceof ForgeFailure) ||
@@ -484,7 +489,7 @@ export function boundLaneGit(
     cwd,
   ]);
 
-  if (git.kind !== "resolved") refuse("UNAVAILABLE", "Git is unavailable.");
+  if (git.kind !== "resolved") refuse("UNAVAILABLE", git.reason);
   const readGit = async (args: string[]) => {
     const result = await process.run(git, args, {
       cwd: cwd,
@@ -586,16 +591,26 @@ export async function attachBoundLane(
       );
     await fence.check();
     await identity();
-    await fence.publish(lane, () => {
-      if (Date.parse(record.grant.expiresAt) <= services.now())
-        refuse("LEASE_EXPIRED", "The cloud grant expired.");
-      if (!existing.length)
-        files.write(
-          "forge-lanes.json",
-          JSON.stringify([...saved.lanes, lane]) + "\n",
-          { area: "common", expected: saved.text },
-        );
-    });
+    await fence.publish(
+      lane,
+      () => {
+        if (Date.parse(record.grant.expiresAt) <= services.now())
+          refuse("LEASE_EXPIRED", "The cloud grant expired.");
+        if (!existing.length)
+          files.write(
+            "forge-lanes.json",
+            JSON.stringify([...saved.lanes, lane]) + "\n",
+            { area: "common", expected: saved.text },
+          );
+      },
+      () => {
+        try {
+          return helpers.laneRegistry(files, refuse).text === saved.text;
+        } catch {
+          return false;
+        }
+      },
+    );
     return lane;
   } finally {
     lock.release();

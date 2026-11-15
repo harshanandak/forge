@@ -1,12 +1,7 @@
 // Shared fixtures for the cloud login tests: a project checkout, a home folder, a fixture clock and a
 // scripted network. Nothing here reaches a real network.
-import {
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CloudFetch } from "../../src/adapters/http/index.ts";

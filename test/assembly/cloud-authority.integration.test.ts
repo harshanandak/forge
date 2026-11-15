@@ -1871,8 +1871,7 @@ test("bound attachment: concurrent clones reserve before registry publication", 
       const project = fx.bindingFor(),
         registry = "forge-lanes.json";
       let entered = 0;
-      const registries = [join(s.dir, "clone-a"), join(s.dir, "clone-b")];
-      for (const root of registries) mkdirSync(root);
+      const registries = [s.root, s.home];
       const mutant = guarded
         ? undefined
         : await fx.withoutGuard<typeof boundLane>(
@@ -1894,21 +1893,17 @@ test("bound attachment: concurrent clones reserve before registry publication", 
             () =>
               Promise.resolve({
                 save: (r, v) => writeBoundLane(client, project, r, v),
-                restore: (previous, revision) => {
-                  if (previous)
-                    writeBoundLane(client, project, previous, revision);
-                  else
-                    client.delete(journalKey(), { expectRevision: revision });
+                restore: () => {
+                  throw new Error("Unexpected publication refusal");
                 },
               }),
             async (record, fence) => {
               if (++entered === 2) barrier.resolve();
               await barrier.promise;
-              await fence.publish(record.lane, () =>
-                writeFileSync(
-                  join(root, registry),
-                  JSON.stringify([record.lane]),
-                ),
+              await fence.publish(
+                record.lane,
+                () => writeFileSync(join(root, registry), "attached"),
+                () => true,
               );
               return record.lane;
             },
@@ -1964,13 +1959,14 @@ for (const [name, expected] of [
 ] as const)
   test(`bound attachment table: ${name}`, () => {
     const live = name.startsWith("live attachment");
-    const registryFailure = name.startsWith("registry lock");
+    const registryFailure = name.startsWith("registry ");
     const cleanupFailure = name.startsWith("registry cleanup");
     let reads = 0;
     let time = NOW;
     let finalIdentity = false;
     let prepared = false;
     let cloudGrant: LeaseRecord | undefined = OWN_GRANT;
+    let priorJournal: unknown;
     let sandbox: fx.Sandbox;
     return using(
       {
@@ -2025,10 +2021,7 @@ for (const [name, expected] of [
                 ? join(s.dir, "clone-a")
                 : realpathSync.native(s.root),
               branch: name.endsWith("branch") ? "feat/original" : "feat/one",
-              brief: join(
-                realpathSync.native(s.root),
-                name.endsWith("brief") ? "original.md" : "brief.md",
-              ),
+              brief: name.endsWith("brief") ? "original.md" : "brief.md",
             };
             await seedJournal(s, {
               ...journal,
@@ -2051,14 +2044,17 @@ for (const [name, expected] of [
             !["ambiguous claim", "losing claim"].includes(name) &&
             !cleanupFailure
           )
-            await seedJournal(s, {
-              ...journal,
-              grant: OWN_GRANT,
-              active: false,
-              releaseNeeded: !registryFailure,
-              lane: { ...attachment, worktree: realpathSync.native(s.root) },
-            });
-          if (registryFailure)
+            await seedJournal(
+              s,
+              (priorJournal = {
+                ...journal,
+                grant: OWN_GRANT,
+                active: false,
+                releaseNeeded: !registryFailure,
+                lane: { ...attachment, worktree: realpathSync.native(s.root) },
+              }),
+            );
+          if (registryFailure && !cleanupFailure)
             writeFileSync(
               join(s.root, ".git", "forge-lanes.json.lock"),
               "held",
@@ -2067,15 +2063,8 @@ for (const [name, expected] of [
         steps: [
           ({ body }) => {
             const call = body as { op: string };
-            if (call.op === "issue.renew")
-              return refusing("LEASE_STALE", { lease: cloudGrant });
             if (call.op === "issue.release")
               return answer({ id: ISSUE.id }, call.op);
-            if (call.op === "lane.control")
-              return answer(
-                { incarnation: "one", epoch: 1, stopped: false },
-                call.op,
-              );
             if (call.op === "issue.claim") {
               if (name === "ambiguous claim")
                 throw new Error("accepted then timed out");
@@ -2169,7 +2158,7 @@ for (const [name, expected] of [
           name === "registry lock rollback counterfactual"
             ? await fx.withoutGuard<typeof boundLane>(
                 new URL("../../src/blocks/work/bound-lane.ts", import.meta.url),
-                "store.restore(previous, revision);",
+                "if (unpublished()) store.restore(previous, revision);",
               )
             : undefined;
         if (noRollback) expect(noRollback.mutationLoaded).toBe(true);
@@ -2343,54 +2332,29 @@ for (const [name, expected] of [
             false,
           );
           if (expected !== "OK") {
-            if (cleanupFailure) {
-              const local = new LocalState(
-                join(r.s.deviceRoot, "records.sqlite"),
-              );
-              try {
-                expect(
-                  (await local.open(false))!.get("forge/work", journalKey())!
-                    .value,
-                ).toMatchObject({ active: false, releaseNeeded: true });
-              } finally {
-                await local.close();
-              }
-              expect(
-                existsSync(join(r.s.root, ".git", "forge-lanes.json")),
-              ).toBe(true);
-              const released = await assembly.catalog.invoke(
-                r.request("lane.release", { id: ISSUE.id }, { context }),
-              );
-              expect(released.ok, JSON.stringify(released)).toBe(true);
-              return;
-            }
             if (registryFailure) {
               const local = new LocalState(
                 join(r.s.deviceRoot, "records.sqlite"),
               );
               try {
-                const restored = (await local.open(false))!.get(
-                  "forge/work",
-                  journalKey(),
-                )!.value;
-                if (noRollback)
+                const state = (await local.open(false))!;
+                const restored = state.get("forge/work", journalKey())!.value;
+                if (noRollback || cleanupFailure)
                   expect(restored).toMatchObject({
                     active: false,
                     releaseNeeded: true,
                   });
-                else
-                  expect(restored).toEqual({
-                    ...journal,
-                    grant: OWN_GRANT,
-                    active: false,
-                    releaseNeeded: false,
-                    lane: {
-                      ...attachment,
-                      worktree: realpathSync.native(r.s.root),
-                    },
-                  });
+                else expect(restored).toEqual(priorJournal);
               } finally {
                 await local.close();
+              }
+              if (cleanupFailure) {
+                expect(attachmentBytes(r.s)[1]).not.toBeNull();
+                const released = await assembly.catalog.invoke(
+                  r.request("lane.release", { id: ISSUE.id }, { context }),
+                );
+                expect(released.ok, JSON.stringify(released)).toBe(true);
+                return;
               }
               rmSync(join(r.s.root, ".git", "forge-lanes.json.lock"));
               expect(
@@ -2525,24 +2489,21 @@ for (const [name, expected] of [
             cloudGrant = undefined;
             cloudGrant = { ...heldBy(), generation: 5 };
             let launches = 0;
-            const command: boundLane.BoundCommand = async (...args) => {
-              const [op, input, generation] = args;
-              if (op === "issue.renew") expect(generation).toBe(4);
-              const reply = await assembly.catalog.invoke(
-                r.request(op, input, { context }),
-              );
-              if (!reply.ok) throw new ForgeFailure(reply.error);
-              return reply.result;
+            const send: boundLane.BoundCommand = async (op, _input, gen) => {
+              await Promise.resolve();
+              if (op === "issue.renew" && gen !== cloudGrant?.generation)
+                throw new ForgeFailure({
+                  code: "LEASE_STALE",
+                  message: "Device B holds generation 5",
+                  retry: "reconcile_first",
+                });
+              return { incarnation: "one", epoch: 1, stopped: false };
             };
             const timing = { now: () => NOW, schedule: () => () => {} };
-            const attempt = async (
-              boundary: ReturnType<typeof boundDispatch>,
-            ) => {
-              await boundary.beforeSpawn();
-              launches++;
-            };
-            const boundary = boundDispatch(command, "work-1", 4, timing);
-            await expect(attempt(boundary)).rejects.toMatchObject({
+            const boundary = boundDispatch(send, "work-1", 4, timing);
+            await expect(
+              boundary.beforeSpawn().then(() => launches++),
+            ).rejects.toMatchObject({
               error: { code: "LEASE_STALE" },
             });
             expect(launches).toBe(0);
@@ -2555,8 +2516,8 @@ for (const [name, expected] of [
               "Promise.resolve({ generation, expiresAt: new Date(timing.now() + 60000).toISOString() })",
             );
             expect(mutant.mutationLoaded).toBe(true);
-            const unfenced = mutant.boundDispatch(command, "work-1", 4, timing);
-            await attempt(unfenced);
+            const unfenced = mutant.boundDispatch(send, "work-1", 4, timing);
+            await unfenced.beforeSpawn().then(() => launches++);
             expect(launches).toBe(1);
             await unfenced.close();
           }

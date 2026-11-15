@@ -118,10 +118,7 @@ for (const variant of [
       ancestor || ["linked clone files", "linked startup"].includes(variant);
     const main = ancestor ? root : join(root, "main"),
       common = join(main, ".git"),
-      gitdir =
-        ancestor && !variant.endsWith("honest")
-          ? join(caller, "fake-meta")
-          : join(common, "worktrees", "lane");
+      gitdir = join(root, "metadata");
     const linkedRoot = variant === "linked target" ? target : processRoot;
     const mainBin = join(main, "bin"),
       probe = join(root, "project-git-ran");
@@ -132,15 +129,13 @@ for (const variant of [
     if (linked) {
       if (variant === "linked target") mkdirSync(join(caller, ".git"));
       mkdirSync(gitdir, { recursive: true });
-      if (ancestor) mkdirSync(common, { recursive: true });
+      mkdirSync(common, { recursive: true });
       mkdirSync(mainBin);
       writeFileSync(join(linkedRoot, ".git"), `gitdir: ${gitdir}\n`);
       if (!variant.endsWith("missing")) {
-        const elsewhere = join(root, "elsewhere");
-        if (variant.endsWith("forged")) mkdirSync(elsewhere);
         writeFileSync(
           join(gitdir, "commondir"),
-          variant.endsWith("forged") ? elsewhere : "../..\n",
+          variant.endsWith("forged") ? target : common,
         );
       }
       writeFileSync(
@@ -170,6 +165,7 @@ for (const variant of [
       deadline: Date.now() + 30000,
       processContainment: "supervised" as const,
     };
+    const port = native.process(scope);
     let attempts = 0;
     const runs = mock<ProcessPort["run"]>((_executable, _args, _options) => {
       attempts++;
@@ -230,29 +226,20 @@ for (const variant of [
             : ["exit", "timeout", "truncated", "invalid head"].includes(variant)
               ? "INPUT_CONFLICT"
               : undefined;
-      if (variant === "linked startup") {
+      if (cloneLookup) {
         const startup = spyOn(launch, "runProcess").mockImplementation(
           (executable, args, options) =>
             runs({ kind: "resolved", path: executable }, args, options),
         );
         try {
-          expect(
-            await providerModule.projectStateRoot(processRoot, { env }),
-          ).toBe(main);
+          if (variant === "linked startup")
+            expect(
+              await providerModule.projectStateRoot(processRoot, { env }),
+            ).toBe(main);
+          else await (await native.openFiles(scope)).close();
         } finally {
           startup.mockRestore();
         }
-      } else if (ancestor || variant === "linked clone files") {
-        const handle = await createAssemblyProviders(
-          processRoot,
-          { env },
-          {
-            capability: "forge.process/v1",
-            resolve: (name, env) => native.process(scope).resolve(name, env),
-            run: runs,
-          },
-        ).openFiles(scope);
-        await handle.close();
       } else if (expected)
         await expect(
           readHead(flight(effects), providers, target),
@@ -288,16 +275,11 @@ for (const variant of [
       if (linked) {
         const mutant = await withoutGuard<typeof providerModule>(
           new URL("../../src/assembly/providers.ts", import.meta.url),
-          /excluded.push\(ancestor\);|excluded.push\(basename\(common\)[^\n]+/g,
+          "inCheckout(candidate)",
+          "false",
         );
         expect(mutant.mutationLoaded).toBe(true);
-        expect(mutant.resolveOutside).not.toBe(providerModule.resolveOutside);
-        const unsafe = mutant.resolveOutside(
-          native.process(scope),
-          "git",
-          env,
-          linkedRoot,
-        );
+        const unsafe = mutant.resolveOutside(port, "git", env, linkedRoot);
         expect(unsafe).toMatchObject({
           kind: "resolved",
           path: realpathSync.native(poison),

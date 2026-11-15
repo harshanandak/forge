@@ -1,11 +1,4 @@
-import {
-  existsSync,
-  lstatSync,
-  readdirSync,
-  readFileSync,
-  realpathSync,
-  statSync,
-} from "node:fs";
+import { lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import {
   basename,
   delimiter,
@@ -323,47 +316,32 @@ export function resolveOutside(
 ): ReturnType<ProcessPort["resolve"]> {
   const pathKey =
     Object.keys(env).find((key) => key.toUpperCase() === "PATH") ?? "PATH";
-  const none = () => executor.resolve(name, { ...env, [pathKey]: "" });
+  let rejected: string | undefined;
+  const none = (): ReturnType<ProcessPort["resolve"]> =>
+    rejected
+      ? {
+          kind: "unavailable",
+          reason: `No trusted ${name}; rejected path: ${rejected}`,
+          remedy: "Use an executable installed outside a checkout.",
+        }
+      : executor.resolve(name, { ...env, [pathKey]: "" });
+  const inCheckout = (candidate: string): boolean => {
+    for (let ancestor = dirname(candidate); ;) {
+      if (lstatSync(join(ancestor, ".git"), { throwIfNoEntry: false }))
+        return true;
+      const parent = dirname(ancestor);
+      if (parent === ancestor) return false;
+      ancestor = parent;
+    }
+  };
   const excluded: string[] = [];
   const temps = [tmpdir()];
   for (const key of Object.keys(env))
     if (["TEMP", "TMP", "TMPDIR"].includes(key.toUpperCase()))
       temps.push(env[key]!);
   try {
-    for (const path of typeof root === "string" ? [root] : root) {
-      const canonical = realpathSync(path);
-      excluded.push(canonical);
-      // A checkout's .git pointer cannot vouch for its enclosing checkouts.
-      for (let ancestor = canonical; ;) {
-        try {
-          lstatSync(join(ancestor, ".git"));
-          excluded.push(ancestor);
-        } catch (error) {
-          const code = (error as NodeJS.ErrnoException).code;
-          if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
-        }
-        const parent = dirname(ancestor);
-        if (parent === ancestor) break;
-        ancestor = parent;
-      }
-      const checkout = nearestCheckoutRoot(canonical);
-      if (!checkout) continue;
-      excluded.push(checkout);
-      const marker = join(checkout, ".git");
-      if (!statSync(marker).isFile()) continue;
-      const pointer = /^gitdir: ([^\r\n]+)\r?\n?$/.exec(
-        readFileSync(marker, "utf8"),
-      );
-      if (!pointer) return none();
-      const gitdir = realpathSync(resolve(checkout, pointer[1]!));
-      const commonFile = join(gitdir, "commondir");
-      if (!existsSync(commonFile)) continue; // A submodule has no linked common directory.
-      const common = realpathSync(
-        resolve(gitdir, readFileSync(commonFile, "utf8").trim()),
-      );
-      // Resolve exclusions without launching the executable being vetted.
-      excluded.push(basename(common) === ".git" ? dirname(common) : common);
-    }
+    for (const path of typeof root === "string" ? [root] : root)
+      excluded.push(realpathSync(path));
     for (const temp of temps) if (temp) excluded.push(realpathSync(temp));
   } catch {
     return none();
@@ -373,19 +351,26 @@ export function resolveOutside(
     if (!directory || !isAbsolute(directory)) continue;
     const found = executor.resolve(name, { ...env, [pathKey]: directory });
     if (found.kind !== "resolved") continue;
-    let canonical: string;
     try {
-      canonical = realpathSync(found.path);
+      const canonical = realpathSync(found.path);
+      // A junction can hide the caller's checkout, so inspect both candidate paths.
+      if (
+        [resolve(found.path), canonical].some(
+          (candidate) =>
+            excluded.some((base) => within(base, candidate)) ||
+            /[\\/]node_modules[\\/]\.bin[\\/]/i.test(candidate) ||
+            inCheckout(candidate),
+        )
+      ) {
+        rejected = found.path;
+        continue;
+      }
+      // Launch the path that was checked, not the PATH entry.
+      return { kind: "resolved", path: canonical };
     } catch {
+      rejected = found.path;
       continue;
     }
-    if (
-      excluded.some((base) => within(base, canonical)) ||
-      /[\\/]node_modules[\\/]\.bin[\\/]/i.test(canonical)
-    )
-      continue;
-    // Launch the path that was checked, not the PATH entry.
-    return { kind: "resolved", path: canonical };
   }
   return none();
 }
@@ -897,8 +882,7 @@ export function createAssemblyProviders(
         ),
       );
       const git = resolveOutside(executor, "git", scrubbed, root);
-      if (git.kind !== "resolved")
-        refuse("UNAVAILABLE", "Clone files require Git on PATH");
+      if (git.kind !== "resolved") refuse("UNAVAILABLE", git.reason);
       const discoveryKey =
         Object.keys(scrubbed).find((key) => key.toUpperCase() === "PATH") ??
         "PATH";
