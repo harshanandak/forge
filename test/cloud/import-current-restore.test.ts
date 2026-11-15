@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, setSystemTime, spyOn, test } from "bun:test";
 import { domain } from "../../cloud/src/project.ts";
 import { durableStore } from "../../cloud/src/store.ts";
@@ -11,13 +10,15 @@ import {
   type Page,
 } from "../../cloud/src/dump.ts";
 import { imageProblems, TABLES } from "../../cloud/conformance/digest.ts";
-import { dumpReadView, replayImage } from "../../cloud/conformance/restored.ts";
-import { pagesOf as cut } from "../../cloud/conformance/max-source.ts";
+import { replayImage } from "../../cloud/conformance/restored.ts";
+import {
+  pagesOf as cut,
+  scratchStorage,
+} from "../../cloud/conformance/max-source.ts";
 import { pageOrder } from "../../cloud/conformance/page-order.ts";
 import { success } from "../../src/surface/dispatch.ts";
 import { failure, respond } from "../../src/surface/result.ts";
 import { consumeLaneApproval } from "../../cloud/src/lane-approval.ts";
-import { browserStorage } from "./browser-storage.fixture.ts";
 import * as f from "./import-current-state.fixture.ts";
 import * as converter from "../../tools/import-current.ts";
 import { currentState, pagesOf } from "../../tools/import-current-state.ts";
@@ -115,23 +116,6 @@ test("expected replay refuses empty, unordered and non-final streams", async () 
       { code: "INCOMPLETE_IMAGE" },
     ),
   );
-}, 5_000);
-
-test("scratch reads normalize safe integers and retain unsafe integers for dump refusal", () => {
-  const raw = f.database(),
-    db = dumpReadView(raw);
-  replayImage(db, [dumpOf(comparisonSource())], f.at);
-  const select = "SELECT revision FROM state_records WHERE key='issue:work-1'";
-  eq(typeof raw.get(select)!.revision, "bigint");
-  eq(db.get(select)!.revision, 1);
-  eq(db.all(select)[0]!.revision, 1);
-  const unsafe = 9_007_199_254_740_993n;
-  raw.run("UPDATE state_records SET revision=? WHERE key='issue:work-1'", [
-    unsafe,
-  ]);
-  eq(db.get(select)!.revision, unsafe);
-  eq(db.all(select)[0]!.revision, unsafe);
-  eq(status(f.result(() => dumpOf(db))), ["FAIL", 1, "DUMP_UNSAFE_VALUE"]);
 }, 5_000);
 
 const comparisonGuard = `  assert.deepEqual(
@@ -273,8 +257,11 @@ test.each(["distinct", "corrupt"])(
         ),
       );
       try {
-        const expected = construction.expectedImage([document], f.at, (owner) =>
-          f.controlDelta(owner, kind === "distinct" ? "expect" : "source"),
+        const expected = construction.expectedImage(
+          kind === "distinct" ? [document] : cut(document.tables, 3),
+          f.at,
+          (owner) =>
+            f.controlDelta(owner, kind === "distinct" ? "expect" : "source"),
         );
         const run = () =>
           comparison.roundTrip(
@@ -321,8 +308,7 @@ async function project(mutant?: string) {
       dump ? ["./dump.ts", dump] : undefined,
     )
   )) as typeof import("../../cloud/src/project.ts");
-  const db = new Database(":memory:");
-  const { storage, values } = browserStorage(db);
+  const { db, storage, values } = scratchStorage();
   const p = new Impl({ storage }, { DUMP_PAGE_BYTES: "4096" });
   const send = async (route: string, body?: unknown) => {
     const response = await p.fetch(

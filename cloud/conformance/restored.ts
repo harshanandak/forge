@@ -3,9 +3,8 @@ import { canonicalJson } from "../../src/core/config/pointer.ts";
 import type { LeaseRecord } from "../../src/generated/types.ts";
 import type { Tables } from "./max-source.ts";
 import { StateOwner } from "../../src/core/state/index.ts";
-import type { SqlDatabase, SqlRow } from "../../src/ports/store.ts";
-import { sqliteStore } from "../../src/adapters/store-sqlite/index.ts";
-import { initializeCloudVersion } from "../src/store.ts";
+import type { SqlDatabase } from "../../src/ports/store.ts";
+import { durableStore } from "../src/store.ts";
 import { pagesOf } from "../../tools/import-current-state.ts";
 import { domain } from "../src/project.ts";
 import {
@@ -22,26 +21,6 @@ export class IncompleteImageError extends Error {
   readonly code = "INCOMPLETE_IMAGE";
 }
 
-/** Native SQLite returns bigint; the Cloud dump path receives safe integer numbers. */
-export function dumpReadView(db: SqlDatabase): SqlDatabase {
-  const row = (given: SqlRow): SqlRow =>
-    Object.fromEntries(
-      Object.entries(given).map(([key, value]) => [
-        key,
-        typeof value === "bigint" && Number.isSafeInteger(Number(value))
-          ? Number(value)
-          : value,
-      ]),
-    );
-  return {
-    ...db,
-    all: (sql, params) => db.all(sql, params).map(row),
-    get: (sql, params) => {
-      const given = db.get(sql, params);
-      return given === undefined ? undefined : row(given);
-    },
-  };
-}
 export function imageSequence(whole = false) {
   let next = 0,
     complete = false;
@@ -72,7 +51,6 @@ export function replayImage(
   image: Iterable<Dump | Page>,
   at: number | (() => number),
 ): StateOwner {
-  initializeCloudVersion((sql) => db.exec(sql));
   const owner = new StateOwner(db, {
     now: typeof at === "number" ? () => at : at,
   });
@@ -98,11 +76,11 @@ export async function* expectedImage(
   at: number | (() => number),
   delta: (owner: StateOwner) => void | Promise<void>,
 ): AsyncGenerator<Page> {
-  const opened = await sqliteStore.open({ path: ":memory:", readOnly: false });
-  if (!opened.ok) throw new Error("Expected-image scratch storage unavailable");
-  const { handle } = opened;
+  // Load the Bun fixture only when constructing an image; Node digest readers share this module.
+  const { scratchStorage } = await import("./max-source.ts");
+  const scratch = scratchStorage();
   try {
-    const db = dumpReadView(handle.value);
+    const db = durableStore(scratch.storage);
     const owner = replayImage(db, source, at);
     await delta(owner);
     const limits = {
@@ -112,7 +90,7 @@ export async function* expectedImage(
     };
     yield* pagesOf(db, limits);
   } finally {
-    await handle.close();
+    scratch.db.close();
   }
 }
 
