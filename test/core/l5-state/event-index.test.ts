@@ -139,12 +139,20 @@ test("watermark endpoint work is independent of history, keys and other namespac
       examined++;
       return 1;
     });
+    const all = (sql: string, params: readonly SqlValue[] = []): SqlRow[] => {
+      const query = raw.prepare(sql);
+      try {
+        return query.all(...params) as SqlRow[];
+      } finally {
+        query.finalize();
+      }
+    };
     const db: SqlDatabase = {
       exec: (sql) => {
         raw.exec(sql);
       },
       run: (sql, params = []) => raw.query(sql).run(...params),
-      all: (sql, params = []) => raw.query(sql).all(...params) as SqlRow[],
+      all,
       get: (sql, params = []) => {
         if (sql.includes("FROM state_events") && sql.includes("namespace=?")) {
           statements.push(sql);
@@ -153,7 +161,7 @@ test("watermark endpoint work is independent of history, keys and other namespac
             "namespace=? AND examined(sequence)",
           );
         }
-        return raw.query(sql).all(...params)[0] as SqlRow | undefined;
+        return all(sql, params)[0];
       },
       transaction: (body) => raw.transaction(body)(),
     };
@@ -167,18 +175,15 @@ test("watermark endpoint work is independent of history, keys and other namespac
       examined = 0;
       statements.length = 0;
       const expected = Number(
-        raw
-          .query<{ n: number }, [string]>(
-            "SELECT coalesce(MAX(sequence),0) AS n FROM state_events WHERE namespace=?",
-          )
-          .all(namespace)[0]?.n ?? 0,
+        all(
+          "SELECT coalesce(MAX(sequence),0) AS n FROM state_events WHERE namespace=?",
+          [namespace],
+        )[0]?.n ?? 0,
       );
       expect(owner.namespaceRevision(namespace)).toBe(expected);
       expect(examined).toBe(expected === 0 ? 0 : 1);
       const sql = statements.at(-1)!;
-      const used = raw.query(`EXPLAIN QUERY PLAN ${sql}`).all(namespace) as {
-        detail: string;
-      }[];
+      const used = all(`EXPLAIN QUERY PLAN ${sql}`, [namespace]);
       expect(used.map((r) => r.detail).join(" ")).toContain(
         "COVERING INDEX state_events_by_namespace (namespace=?)",
       );
@@ -189,11 +194,10 @@ test("watermark endpoint work is independent of history, keys and other namespac
     if (count >= 1000) {
       for (const sql of PRE_WATERMARK) raw.run(sql);
       examined = 0;
-      const old = raw
-        .query<{ revision: number }, [string]>(
-          "SELECT coalesce(MAX(sequence),0) AS revision FROM state_events INDEXED BY state_events_by_key WHERE namespace=? AND examined(sequence)",
-        )
-        .get(ns);
+      const old = all(
+        "SELECT coalesce(MAX(sequence),0) AS revision FROM state_events INDEXED BY state_events_by_key WHERE namespace=? AND examined(sequence)",
+        [ns],
+      )[0];
       expect(old?.revision).toBe(count - 1);
       expect(examined).toBe(count / 2);
       expect(() => expect(examined).toBeLessThanOrEqual(1)).toThrow();
