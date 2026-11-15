@@ -18,6 +18,7 @@ import { LaneControlStore } from "../../cloud/src/lane-control-store.ts";
 import { LANE_APPROVALS } from "../../cloud/src/lane-approval.ts";
 import { LANE_BROWSER } from "../../cloud/src/auth/lane-browser.ts";
 import { issueToken, sha256 } from "../../cloud/src/tokens.ts";
+import { ForgeFailure } from "../../src/contract/failure.ts";
 import { digestValue } from "../../src/core/config/pointer.ts";
 import { testIdentityVerifier } from "../contract/lib/identity-verifier.ts";
 
@@ -287,6 +288,12 @@ export async function project(
 ) {
   const edits: Record<string, readonly [string, string]> = {
     order: ["page.page !== staged?.next", "false"],
+    stop: [
+      "new LaneControlStore(owner, project).stop(",
+      '({ stop: () => ({ ok: true, result: { stopped: true, scope: "all" } }) }).stop(',
+    ],
+    approval: ["db.run(`DELETE FROM ${LANE_APPROVALS}`);", ""],
+    browser: ["db.run(`DELETE FROM ${LANE_BROWSER}`);", ""],
     target: ["if (await this.#isProvisioned())", "if (false)"],
   };
   const dump =
@@ -295,7 +302,12 @@ export async function project(
           "owner.releaseRestoredLeases();",
           "",
         ])
-      : undefined;
+      : mutant === "cap"
+        ? await moduleUrl("../../cloud/src/dump.ts", [
+            '  finalize?.();\n  assertLimits(db, limits, "RESTORE_TOO_LARGE", "The restored project");',
+            "  finalize?.();",
+          ])
+        : undefined;
   const { Project: Impl } = (await import(
     await moduleUrl(
       "../../cloud/src/project.ts",
@@ -314,23 +326,29 @@ export async function project(
   resources.push(close);
   const { storage, values } = browserStorage(db, before);
   const p = new Impl({ storage }, { DUMP_PAGE_BYTES: "4096", ...env }, browser);
-  const send = async (route: string, body?: unknown) => {
+  const send = async (
+    route: string,
+    body?: unknown,
+    headers: Record<string, string> = {},
+  ) => {
     const response = await p.fetch(
       new Request(`https://synthetic.example/p/a/${route}`, {
         method: body === undefined ? "GET" : "POST",
+        headers,
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       }),
     );
     const r = (await response.json()) as {
       ok: boolean;
       value: Record<string, unknown>;
+      result: unknown;
       error: { code: string; message: string };
     };
     return {
       r,
       projected: respond(
         r.ok
-          ? success("restore", r.value)
+          ? success("restore", r.value ?? r.result)
           : failure(r.error.code, r.error.message),
       ),
     };
@@ -390,6 +408,7 @@ export function settleActivation(db: SqlDatabase) {
 export async function activation(
   extra: Record<string, string> = {},
   retained = true,
+  mutation?: string,
 ) {
   const env = {
     FORGE_CLOUD_PROJECT: "a",
@@ -415,19 +434,38 @@ export async function activation(
       ],
     ]),
   );
-  let exchanges = 0;
-  const fixture = await project(undefined, env, undefined, {
-    upstream: {
-      begin: () => Promise.reject(new Error("Callback-only fixture")),
-      verify: () => {
-        exchanges++;
-        return verifier.verify("owner", "synthetic", at);
-      },
+  let exchanges = 0,
+    fault = "",
+    transactions = 0;
+  const fixture = await project(
+    mutation,
+    env,
+    (sql) => {
+      if (fault && sql === `DELETE FROM ${fault}`)
+        throw new ForgeFailure({
+          code: "UNAVAILABLE",
+          message: "synthetic deletion fault",
+          retry: "never",
+        });
     },
-    redemption: { claimOnce: () => Promise.resolve(true) },
-  });
+    {
+      upstream: {
+        begin: () => Promise.reject(new Error("Callback-only fixture")),
+        verify: () => {
+          exchanges++;
+          return verifier.verify("owner", "synthetic", at);
+        },
+      },
+      redemption: { claimOnce: () => Promise.resolve(true) },
+    },
+  );
   const db = durableStore(fixture.storage);
   owner(db).initialize([domain]);
+  if (mutation === "atomic")
+    fixture.storage.transactionSync = (body) => {
+      transactions++;
+      return body();
+    };
   const deviceInput = {
     device: "fixture",
     session: "one",
@@ -488,8 +526,35 @@ export async function activation(
         { headers: { Cookie: cookie } },
       ),
     );
+  let request = 0;
+  const command = async (
+    op: string,
+    input: object = {},
+    generation?: number,
+  ) => {
+    credential ??= (await fixture.send("devices", deviceInput)).r.value;
+    return fixture.send(
+      "command",
+      {
+        requestId: `fresh-${++request}`,
+        op,
+        input,
+        context: {
+          actor,
+          session: holder.session,
+          ...(generation === undefined ? {} : { leaseGeneration: generation }),
+        },
+      },
+      { authorization: `Bearer ${String(credential.token)}` },
+    );
+  };
   return {
     ...fixture,
+    command,
+    transactions: () => transactions,
+    fault: (value: string) => {
+      fault = value;
+    },
     raw: fixture.db,
     db,
     credential,
