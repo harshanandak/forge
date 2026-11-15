@@ -8,6 +8,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -29,6 +30,11 @@ test.each([false, true])(
         mkdirSync(pkg, { recursive: true });
         cpSync(join(root, "package.json"), join(pkg, "package.json"));
         cpSync(join(root, "dist"), join(pkg, "dist"), { recursive: true });
+        symlinkSync(
+          join(root, "node_modules"),
+          join(pkg, "node_modules"),
+          "junction",
+        );
         // Both sides get identical tracing. Record only the command the gate compares.
         appendFileSync(
           join(pkg, "dist/bin/forge.js"),
