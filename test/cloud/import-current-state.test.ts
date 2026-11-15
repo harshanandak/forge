@@ -227,6 +227,21 @@ test.each(rows)(
                   parseDump(JSON.stringify(page)) as Page,
                   limits,
                 );
+              eq(
+                target.get(
+                  "SELECT name FROM sqlite_master WHERE name='state_events_by_namespace'",
+                ),
+                { name: "state_events_by_namespace" },
+              );
+              eq(
+                targetOwner.namespaceRevision(f.ns),
+                Number(
+                  target.get(
+                    "SELECT MAX(sequence) AS n FROM state_events WHERE namespace=?",
+                    [f.ns],
+                  )?.n,
+                ),
+              );
               for (const record of impl.workRecords(scratch))
                 eq(targetOwner.get(f.ns, record.key)?.value, record.value);
               if (historical)

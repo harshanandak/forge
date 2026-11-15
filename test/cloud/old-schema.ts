@@ -1,5 +1,9 @@
 // Turns a current project database into one older than the login migrations: the token table and the
 // provisioned key stay, while the login and browser-attempt tables go with their ledger and registration rows.
+import {
+  LEGACY_NAMESPACE_WATERMARK,
+  NAMESPACE_WATERMARK,
+} from "../../src/core/state/index.ts";
 import type { Project } from "../../cloud/src/project.ts";
 
 export const OLD_SCHEMA = [
@@ -68,4 +72,41 @@ export async function badOpener(
       `data:text/javascript;base64,${Buffer.from(code).toString("base64")}`
     )) as { Project: typeof Project }
   ).Project;
+}
+
+export const WATERMARK_INDEX = "state_events_by_namespace";
+export const WATERMARK_MIGRATION = "005_state_events_namespace_index";
+export const PRE_WATERMARK = [
+  `DROP INDEX IF EXISTS ${WATERMARK_INDEX}`,
+  `DELETE FROM state_migrations WHERE id='${WATERMARK_MIGRATION}'`,
+];
+export const WATERMARK_SCHEMA = `SELECT name FROM sqlite_master WHERE type='index' AND name='${WATERMARK_INDEX}'`;
+
+export async function watermarkMutation(kind: "migration" | "scan") {
+  const url = new URL("../../src/core/state/index.ts", import.meta.url);
+  const source = await Bun.file(url).text();
+  const before =
+    kind === "migration"
+      ? "[...stateMigrations, ...domains.flatMap((domain) => domain.migrations)]"
+      : NAMESPACE_WATERMARK;
+  const after =
+    kind === "migration"
+      ? before.replace(
+          "...stateMigrations,",
+          `...stateMigrations.filter(m => m.id !== "${WATERMARK_MIGRATION}"),`,
+        )
+      : LEGACY_NAMESPACE_WATERMARK;
+  if (source.split(before).length !== 2)
+    throw new Error(`Missing ${kind} mutation site`);
+  const changed = source
+    .replace(before, after)
+    .replace(
+      /from "(\.\.?\/[^"]+)"/g,
+      (_all, spec: string) => `from "${new URL(spec, url).href}"`,
+    );
+  return (
+    (await import(
+      `data:text/javascript;base64,${Buffer.from(new Bun.Transpiler({ loader: "ts" }).transformSync(changed)).toString("base64")}`
+    )) as typeof import("../../src/core/state/index.ts")
+  ).StateOwner;
 }

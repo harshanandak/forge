@@ -6,7 +6,11 @@ import {
 } from "../../auth/compose.ts";
 import type { AuthorizationPort } from "../../../../src/ports/authorization.ts";
 import { createOAuthAdapter, type OAuthOptions } from "./index.ts";
-import { createWorker, type ProjectForward } from "../../worker.ts";
+import {
+  createWorker,
+  isAdminRoute,
+  type ProjectForward,
+} from "../../worker.ts";
 import { Project as BaseProject } from "../../project.ts";
 import {
   isDeviceCallback,
@@ -184,7 +188,7 @@ export function createConfiguredWorker(
           (isLoginRoute(request) ||
             !token ||
             wellFormed(token) ||
-            /\/(devices|revoke|status|dump|restore)$/.test(path)))
+            isAdminRoute(path.split("/").at(-1) ?? "")))
       )
         return worker.fetch(request, env);
       let config;

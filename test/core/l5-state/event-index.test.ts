@@ -1,9 +1,22 @@
 import { expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
+import {
+  PRE_WATERMARK,
+  WATERMARK_SCHEMA,
+  watermarkMutation,
+} from "../../cloud/old-schema.ts";
 import { tmpdir } from "node:os";
 import { createSqliteStore } from "../../../src/adapters/store-sqlite/index.ts";
-import { StateOwner } from "../../../src/core/state/index.ts";
+import {
+  LEGACY_NAMESPACE_WATERMARK,
+  StateOwner,
+} from "../../../src/core/state/index.ts";
 import { baseline, migrate } from "../../../src/core/state/migrations.ts";
-import type { SqlDatabase, SqlValue } from "../../../src/ports/store.ts";
+import type {
+  SqlDatabase,
+  SqlRow,
+  SqlValue,
+} from "../../../src/ports/store.ts";
 
 const ns = "forge/test";
 const actor = { kind: "agent" as const, id: "index" };
@@ -99,6 +112,7 @@ test("an existing store gains the index when it is next opened for writing", asy
       "002_state_events_key_index",
       "003_device_session_identity",
       "004_state_checkpoint",
+      "005_state_events_namespace_index",
     ]);
     // Opening again changes nothing, and history still reads.
     owner.initialize();
@@ -114,6 +128,126 @@ test("history refuses a limit outside 1 to 1000", async () => {
   try {
     for (const limit of [0, 1001, 2.5])
       expect(() => owner.history(ns, { key: "a", limit })).toThrow();
+  } finally {
+    await close();
+  }
+}, 30_000);
+
+test("watermark endpoint work is independent of history, keys and other namespaces", async () => {
+  const OldOwner = await watermarkMutation("scan");
+  for (const count of [0, 1, 1000, 100000]) {
+    using raw = new Database(":memory:");
+    let examined = 0;
+    const statements: string[] = [];
+    raw.function("examined", (_sequence: number) => {
+      examined++;
+      return 1;
+    });
+    const all = (sql: string, params: readonly SqlValue[] = []): SqlRow[] => {
+      const query = raw.prepare(sql);
+      try {
+        return query.all(...params) as SqlRow[];
+      } finally {
+        query.finalize();
+      }
+    };
+    const db: SqlDatabase = {
+      exec: (sql) => {
+        raw.exec(sql);
+      },
+      run: (sql, params = []) => raw.query(sql).run(...params),
+      all,
+      get: (sql, params = []) => {
+        if (sql.includes("FROM state_events") && sql.includes("namespace=?")) {
+          statements.push(sql);
+          // Reproduce main's available access path without changing the production MAX query.
+          if (sql === LEGACY_NAMESPACE_WATERMARK)
+            sql = sql.replace("WHERE", "INDEXED BY state_events_by_key WHERE");
+          sql = sql.replace(
+            "namespace=?",
+            "namespace=? AND examined(sequence)",
+          );
+        }
+        return all(sql, params)[0];
+      },
+      transaction: (body) => raw.transaction(body)(),
+    };
+    const owner = new StateOwner(db, { now: () => 1000 });
+    owner.initialize();
+    raw.run(
+      "WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<?) INSERT INTO state_events SELECT i, CASE WHEN i%2=0 THEN 'forge/other' ELSE 'forge/test' END, 'key/'||i, '{}' FROM n WHERE i<=?",
+      [count, count],
+    );
+    const accept = (reader: StateOwner, namespace: string) => {
+      examined = 0;
+      statements.length = 0;
+      const expected = Number(
+        all(
+          "SELECT coalesce(MAX(sequence),0) AS n FROM state_events WHERE namespace=?",
+          [namespace],
+        )[0]?.n ?? 0,
+      );
+      expect(reader.namespaceRevision(namespace)).toBe(expected);
+      if (examined > 1) throw new Error("Unbounded watermark event work");
+      expect(examined).toBe(expected === 0 ? 0 : 1);
+    };
+    for (const namespace of [ns, "forge/other", "forge/absent"]) {
+      accept(owner, namespace);
+      const sql = statements.at(-1)!;
+      const used = all(`EXPLAIN QUERY PLAN ${sql}`, [namespace]);
+      expect(used.map((r) => r.detail).join(" ")).toContain(
+        "COVERING INDEX state_events_by_namespace (namespace=?)",
+      );
+      expect(used.map((r) => r.detail).join(" ")).not.toContain("TEMP B-TREE");
+      expect(sql).toContain("INDEXED BY state_events_by_namespace");
+    }
+    if (count >= 1000) {
+      const old = new OldOwner(db, { now: () => 1000 });
+      expect(() => accept(old, ns)).toThrow("Unbounded watermark event work");
+      expect(statements.at(-1)).toBe(LEGACY_NAMESPACE_WATERMARK);
+      expect(examined).toBe(count / 2);
+    }
+  }
+}, 30_000);
+
+test("old read-only watermark stays exact; migration removal is detected; deletes and other namespaces preserve the pin", async () => {
+  const { owner, real, close } = await open();
+  try {
+    owner.put(ns, "gone", 1, actor, { expectRevision: 0 });
+    owner.delete(ns, "gone", actor, { expectRevision: 1 });
+    const expected = Number(
+      real.get(
+        "SELECT MAX(sequence) AS n FROM state_events WHERE namespace=?",
+        [ns],
+      )?.n,
+    );
+    owner.put("forge/other", "other", 1, actor, { expectRevision: 0 });
+    const check = () => expect(real.get(WATERMARK_SCHEMA)).toBeDefined();
+    check();
+    for (const sql of PRE_WATERMARK) real.exec(sql);
+    const Mutant = await watermarkMutation("migration");
+    new Mutant(real, { now: () => 1000 }).initialize();
+    expect(check).toThrow();
+    const before = real.all("SELECT * FROM state_migrations");
+    const readOnly = {
+      ...real,
+      exec: () => {
+        throw new Error("read wrote");
+      },
+      run: () => {
+        throw new Error("read wrote");
+      },
+      transaction: () => {
+        throw new Error("read wrote");
+      },
+    };
+    const reader = new StateOwner(readOnly, { now: () => 1000 });
+    expect(reader.namespaceRevision(ns)).toBe(expected);
+    expect(reader.namespaceRevision("forge/absent")).toBe(0);
+    expect(real.all("SELECT * FROM state_migrations")).toEqual(before);
+    owner.initialize();
+    check();
+    expect(owner.namespaceRevision(ns)).toBe(expected);
   } finally {
     await close();
   }
