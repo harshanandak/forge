@@ -1,5 +1,6 @@
 import { ForgeFailure } from "../contract/failure.ts";
-import { canonicalJson, digestValue } from "../core/config/pointer.ts";
+import { digestValue } from "../core/config/pointer.ts";
+import { json } from "../core/state/index.ts";
 import type { AmbientContext, StateEvent } from "../generated/types.ts";
 import type { AsyncStateClient } from "../ports/state.ts";
 import type {
@@ -152,7 +153,7 @@ export function createCloudRecordState(
     }
   }
   const putMany: AsyncStateClient["putMany"] = async (entries, batch) => {
-    const intent = canonicalJson({ entries, readSet: batch?.readSet ?? [] });
+    const intent = json({ entries, readSet: batch?.readSet ?? [] });
     return serial(() => commit(intent));
   };
   return Object.freeze({
