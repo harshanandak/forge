@@ -1221,8 +1221,11 @@ test("upgrade failures roll index, ledger and historical setup back, then retry 
     let reached: unknown;
     f.failMigration((id) => {
       if (id !== boundary) return;
+      const index = f.db.prepare(WATERMARK_SCHEMA);
+      const exists = index.get() !== null;
+      index.finalize();
       reached = [
-        f.db.query(WATERMARK_SCHEMA).get() !== null,
+        exists,
         f
           .rows("state_migrations")
           .some((row) => row.id === WATERMARK_MIGRATION),

@@ -36,6 +36,10 @@ const ADMIN_ROUTES = new Set([
   "upgrade",
 ]);
 
+export function isAdminRoute(route: string): boolean {
+  return ADMIN_ROUTES.has(route);
+}
+
 // A refusal drops the request body unread, so nothing reads the stream after the response is sent.
 const unauthorized = (
   request: Request,
@@ -196,7 +200,7 @@ const legacyWorker = {
         "A bearer token is required",
       );
     if (
-      ADMIN_ROUTES.has(match![2]!) &&
+      isAdminRoute(match![2]!) &&
       !(await isAdmin(presented, env.ADMIN_TOKEN))
     )
       return unauthorized(
@@ -218,7 +222,7 @@ const legacyWorker = {
         );
       }
     }
-    const legacy = ADMIN_ROUTES.has(match![2]!) || wellFormed(presented);
+    const legacy = isAdminRoute(match![2]!) || wellFormed(presented);
     if (!legacy && auth === undefined)
       return unauthorized(request, "AUTH_INVALID", "Token is not valid");
     try {

@@ -188,7 +188,8 @@ test("watermark endpoint work is independent of history, keys and other namespac
         )[0]?.n ?? 0,
       );
       expect(reader.namespaceRevision(namespace)).toBe(expected);
-      expect(examined).toBeLessThanOrEqual(1);
+      if (examined > 1) throw new Error("Unbounded watermark event work");
+      expect(examined).toBe(expected === 0 ? 0 : 1);
     };
     for (const namespace of [ns, "forge/other", "forge/absent"]) {
       accept(owner, namespace);
@@ -202,7 +203,7 @@ test("watermark endpoint work is independent of history, keys and other namespac
     }
     if (count >= 1000) {
       const old = new OldOwner(db, { now: () => 1000 });
-      expect(() => accept(old, ns)).toThrow("toBeLessThanOrEqual");
+      expect(() => accept(old, ns)).toThrow("Unbounded watermark event work");
       expect(statements.at(-1)).toBe(LEGACY_NAMESPACE_WATERMARK);
       expect(examined).toBe(count / 2);
     }
