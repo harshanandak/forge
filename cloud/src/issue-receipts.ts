@@ -13,6 +13,9 @@ const PREFIX = "request:";
 /** Below the paged restore row cap (20,000); legacy receipts do not consume admission. */
 export const MAX_RECEIPTS = 3000;
 export const PRUNE_RECEIPTS = 8;
+const RETENTION_MS = 24 * 60 * 60 * 1000;
+// Imported audit bytes retain their original expiry; old live rows use the new deadline too.
+const DEADLINE = `CASE WHEN imported=0 THEN min(expires_at, created_at+${RETENTION_MS}) ELSE expires_at END`;
 interface Receipt {
   readonly fingerprint: string;
   readonly outcome: "ok" | "refused";
@@ -22,16 +25,16 @@ interface Receipt {
 const full = (db: SqlDatabase, now: number): boolean =>
   Number(
     db.get(
-      `SELECT COUNT(*) AS n FROM ${COMMAND_RECEIPTS} WHERE imported=0 AND expires_at>?`,
+      `SELECT COUNT(*) AS n FROM ${COMMAND_RECEIPTS} WHERE imported=0 AND ${DEADLINE}>?`,
       [now],
     )!.n,
   ) >= MAX_RECEIPTS;
 
 function prune(db: SqlDatabase, now: number): void {
-  // Authentication precedes lookup and token identities cannot renew: expired rows have no caller.
+  // Age-expired outcomes are no longer replayable, even while their credentials remain valid.
   // Imported audit rows keep their bytes until expiry, or until the stored cap needs space.
   db.run(
-    `DELETE FROM ${COMMAND_RECEIPTS} WHERE request_id IN (SELECT request_id FROM ${COMMAND_RECEIPTS} WHERE expires_at<=? OR (imported=1 AND (SELECT COUNT(*) FROM ${COMMAND_RECEIPTS})>=?) ORDER BY expires_at, request_id LIMIT ?)`,
+    `DELETE FROM ${COMMAND_RECEIPTS} WHERE request_id IN (SELECT request_id FROM ${COMMAND_RECEIPTS} WHERE ${DEADLINE}<=? OR (imported=1 AND (SELECT COUNT(*) FROM ${COMMAND_RECEIPTS})>=?) ORDER BY ${DEADLINE}, request_id LIMIT ?)`,
     [now, MAX_RECEIPTS, PRUNE_RECEIPTS],
   );
 }
@@ -47,9 +50,15 @@ export function replay(
   fingerprint: string,
 ): unknown {
   const row = db.get(
-    `SELECT fingerprint, outcome, result FROM ${COMMAND_RECEIPTS} WHERE request_id=? AND imported=0`,
+    `SELECT fingerprint, outcome, result, created_at, ${DEADLINE} AS deadline FROM ${COMMAND_RECEIPTS} WHERE request_id=? AND imported=0`,
     [requestId],
   );
+  const now = Date.now();
+  if (
+    row !== undefined &&
+    (now < Number(row.created_at) || now >= Number(row.deadline))
+  )
+    return undefined;
   const prior =
     row === undefined
       ? (owner.get(NAMESPACE, PREFIX + requestId)?.value as Receipt | undefined)
@@ -103,17 +112,24 @@ export function record(
       message: "Token expired before recording the command",
       retry: "never",
     });
-  db.run(
-    `INSERT INTO ${COMMAND_RECEIPTS} (request_id, fingerprint, outcome, result, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)`,
+  // A retried id may sit behind the bounded prune batch. Replace only its expired live row.
+  const stored = db.run(
+    `INSERT INTO ${COMMAND_RECEIPTS} (request_id, fingerprint, outcome, result, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(request_id) DO UPDATE SET fingerprint=excluded.fingerprint, outcome=excluded.outcome, result=excluded.result, created_at=excluded.created_at, expires_at=excluded.expires_at WHERE imported=0 AND ${DEADLINE}<=excluded.created_at`,
     [
       requestId,
       receipt.fingerprint,
       receipt.outcome,
       canonicalJson(receipt.result),
       now,
-      expiresAt,
+      Math.min(expiresAt, now + RETENTION_MS),
     ],
   );
+  if (stored.changes !== 1)
+    throw new ForgeFailure({
+      code: "INTERNAL",
+      message: "Command receipt was not recorded",
+      retry: "never",
+    });
   return JSON.parse(
     String(
       db.get(`SELECT result FROM ${COMMAND_RECEIPTS} WHERE request_id=?`, [
