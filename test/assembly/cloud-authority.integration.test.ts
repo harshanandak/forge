@@ -1894,7 +1894,7 @@ test("bound attachment: concurrent clones reserve before registry publication", 
             async (record, fence) => {
               if (++entered === 2) barrier.resolve();
               await barrier.promise;
-              await fence.publish();
+              await fence.publish(record.lane);
               writeFileSync(
                 join(root, registry),
                 JSON.stringify([record.lane]),
@@ -2036,7 +2036,7 @@ for (const [name, expected] of [
               grant: OWN_GRANT,
               active: false,
               releaseNeeded: true,
-              lane: { ...attachment, worktree: s.root },
+              lane: { ...attachment, worktree: realpathSync.native(s.root) },
             });
         },
         steps: [
@@ -2270,9 +2270,9 @@ for (const [name, expected] of [
               const mutant = await fx.withoutGuard<typeof boundLane>(
                 new URL("../../src/blocks/work/bound-lane.ts", import.meta.url),
                 live
-                  ? "previous &&"
-                  : "// Git awaits may outlive a released grant; cached expiry is not authority.\n    await fence.publish();",
-                live ? "false &&" : "",
+                  ? "if (\n      previous &&"
+                  : "// Git awaits may outlive a released grant; cached expiry is not authority.\n    await fence.publish(lane);",
+                live ? "if (\n      false &&" : "",
               );
               expect(mutant.mutationLoaded).toBe(true);
               expect(mutant.attachBoundLane).not.toBe(attachBoundLane);
@@ -2283,7 +2283,8 @@ for (const [name, expected] of [
               reads = 0;
               finalIdentity = false;
               try {
-                expect((await start()).ok).toBe(true);
+                const unsafe = await start();
+                expect(unsafe.ok, JSON.stringify(unsafe)).toBe(true);
               } finally {
                 removed.mockRestore();
               }

@@ -154,7 +154,7 @@ function ownBoundGrant(
 
 export interface BoundAttachFence {
   check(): Promise<void>;
-  publish(): Promise<void>;
+  publish(lane: BoundLaneRecord["lane"]): Promise<void>;
 }
 
 export async function boundLaneStart(
@@ -213,9 +213,10 @@ export async function boundLaneStart(
         grant.generation,
       );
     },
-    async publish() {
+    async publish(lane) {
       await fence.check();
       // Reserve this revision before the caller can publish a clone registry.
+      record = { ...record, lane };
       revision = (await save(record, revision)).revision;
     },
   };
@@ -568,7 +569,7 @@ export async function attachBoundLane(
     await fence.check();
     await identity();
     // Git awaits may outlive a released grant; cached expiry is not authority.
-    await fence.publish();
+    await fence.publish(lane);
     if (Date.parse(record.grant.expiresAt) <= services.now())
       refuse("LEASE_EXPIRED", "The cloud grant expired.");
     if (!existing.length)
