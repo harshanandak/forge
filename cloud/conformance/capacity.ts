@@ -28,7 +28,10 @@ import { StateOwner } from "../../src/core/state/index.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
 import { Project } from "../src/project.ts";
 import { pageOrder } from "./page-order.ts";
-import type { DurableStorage } from "../src/store.ts";
+import { storageOf } from "./storage.ts";
+import { expectedImage } from "./restored.ts";
+import { pagesOf } from "../../tools/import-current-state.ts";
+import { limitsFrom } from "../src/dump.ts";
 import {
   COLUMNS,
   digests,
@@ -89,51 +92,6 @@ const env = (extra: Record<string, string> = {}): Record<string, string> => ({
   ...extra,
 });
 
-type Bindings =
-  Parameters<DurableStorage["sql"]["exec"]> extends [string, ...infer B]
-    ? B
-    : never;
-/** Durable Object style storage over node:sqlite, counting the statements it runs. */
-function storageOf(db: DatabaseSync, count = { n: 0 }): DurableStorage {
-  const values = new Map<string, unknown>();
-  let depth = 0;
-  return {
-    sql: {
-      exec: (statement, ...bindings: Bindings) => {
-        count.n += 1;
-        const rows = db
-          .prepare(statement)
-          .all(
-            ...(bindings.map((b) =>
-              b instanceof ArrayBuffer ? new Uint8Array(b) : b,
-            ) as never[]),
-          ) as Record<string, unknown>[];
-        return { toArray: () => rows };
-      },
-    },
-    transactionSync: (body) => {
-      const outer = depth === 0;
-      if (outer) db.exec("BEGIN");
-      depth += 1;
-      try {
-        const result = body();
-        depth -= 1;
-        if (outer) db.exec("COMMIT");
-        return result;
-      } catch (error) {
-        depth -= 1;
-        if (outer) db.exec("ROLLBACK");
-        throw error;
-      }
-    },
-    get: (key) => Promise.resolve(values.get(key)),
-    put: (key, value) => {
-      values.set(key, value);
-      return Promise.resolve();
-    },
-    delete: (key) => Promise.resolve(values.delete(key)),
-  };
-}
 const sqlOf = (db: DatabaseSync): SqlDatabase => ({
   exec: (sql) => {
     db.exec(sql);
@@ -304,7 +262,7 @@ function build(owner: StateOwner, s: Shape): void {
 async function source(shape: Shape) {
   const db = new DatabaseSync(":memory:");
   const project = new Project(
-    { storage: storageOf(db) },
+    { storage: storageOf(db).storage },
     env({ DUMP_MAX_ROWS: "100000", DUMP_MAX_BYTES: String(64 * MIB) }),
   );
   const issued = await project.fetch(
@@ -376,10 +334,25 @@ function expectOf(db: DatabaseSync): Expected {
   };
 }
 /** How a restored target differs from the source expectations; its generated floor rows are counted, not digested. */
-function differences(db: DatabaseSync, expected: Expected): string[] {
+async function differences(
+  db: DatabaseSync,
+  expected: Expected,
+): Promise<string[]> {
+  const raw = tally(expected);
+  scan(db, raw);
   const t = tally(expected);
-  scan(db, t);
-  return compare(t, expected);
+  for await (const page of expectedImage(
+    pagesOf(sqlOf(db), {
+      ...limitsFrom({}),
+      maxRows: Number.MAX_SAFE_INTEGER,
+      maxBytes: Number.MAX_SAFE_INTEGER,
+    }),
+    Date.now,
+    () => {},
+  ))
+    for (const [table, rows] of Object.entries(page.tables))
+      for (const row of rows) fold(t, table as (typeof TABLES)[number], row);
+  return compare(raw, expected).concat(compare(t, expected));
 }
 
 /** Every page of the real export, as the exact document a restore request carries. */
@@ -472,7 +445,7 @@ async function restoreAll(): Promise<Done> {
   for (let run = 0; run < runs; run += 1) {
     const db = new DatabaseSync(":memory:");
     const count = { n: 0 };
-    const storage = storageOf(db, count);
+    const { storage } = storageOf(db, count);
     const project = new Project({ storage }, env(limits));
     for (const [page, file] of files.entries()) {
       const body = readFileSync(join(dir, file), "utf8");
@@ -522,7 +495,7 @@ async function restoreAll(): Promise<Done> {
       }
     }
     assert.equal(refuse, false, "release-only overflow must be refused");
-    const wrong = differences(db, expect);
+    const wrong = await differences(db, expect);
     if (wrong.length > 0) mismatches.push(`run ${run}: ${wrong.join("; ")}`);
     db.close();
   }
