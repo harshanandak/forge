@@ -200,7 +200,6 @@ export async function boundLaneStart(
       worktree: context.project!.root ?? context.project!.id,
     },
   };
-  const revision = found?.revision ?? (await save(record, 0)).revision;
   const lane = await attach(
     record,
     async () => {
@@ -212,7 +211,7 @@ export async function boundLaneStart(
     previous?.active ? previous.lane : undefined,
   );
   record = { ...record, lane, active: true };
-  await save(record, revision);
+  await save(record, found?.revision ?? 0);
   return { ...lane, issue: fresh.id, lease: grant };
 }
 
@@ -519,7 +518,13 @@ export async function attachBoundLane(
       previous &&
       (path(previous.worktree) !== path(lane.worktree) ||
         previous.branch !== lane.branch ||
-        path(previous.brief) !== path(lane.brief))
+        path(
+          helpers.briefPath(
+            files,
+            previous.brief,
+            environment.platform === "win32",
+          ),
+        ) !== path(brief))
     )
       refuse("INPUT_CONFLICT", "A live attachment has a different identity.");
     const existing = saved.lanes.filter(

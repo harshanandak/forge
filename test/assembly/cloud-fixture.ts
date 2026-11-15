@@ -15,7 +15,6 @@ import type {
   CloudBinding,
 } from "../../src/assembly/cloud-profile.ts";
 
-/** Load a guard-removed module with absolute imports and an executed marker. */
 export async function withoutGuard<T>(
   url: URL,
   guard: string,

@@ -101,6 +101,9 @@ for (const variant of [
       );
     }
     const linked = variant.startsWith("linked");
+    const cloneLookup = ["linked clone files", "linked startup"].includes(
+      variant,
+    );
     const main = join(root, "main"),
       common = join(main, ".git"),
       gitdir = join(common, "worktrees", "lane");
@@ -120,7 +123,7 @@ for (const variant of [
       PATH: [
         ...(linked ? [mainBin] : []),
         callerBin,
-        target,
+        ...(cloneLookup ? [] : [target]),
         ...(variant === "no trusted git" ? [] : [dirname(trusted)]),
       ].join(delimiter),
       PATHEXT: process.env.PATHEXT ?? ".EXE;.CMD",
@@ -237,7 +240,7 @@ for (const variant of [
       }
       for (const [executable, args, options] of runs.mock.calls) {
         expect(executable.path).toBe(trusted);
-        if (variant !== "linked clone files" && variant !== "linked startup") {
+        if (!cloneLookup) {
           expect(args).toEqual(["rev-parse", "--verify", "HEAD"]);
           expect(options.cwd).toBe(target);
         }

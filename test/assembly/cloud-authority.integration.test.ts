@@ -1422,7 +1422,7 @@ for (const [name, variants] of [
             }
             await seedJournal(s, {
               ...journal,
-              lane: { ...attachment, worktree: s.root },
+              lane: { ...attachment, worktree: realpathSync.native(s.root) },
               grant: OWN_GRANT,
               ...(name === "Malformed progress"
                 ? { progress: malformed[variant as keyof typeof malformed] }
@@ -1970,7 +1970,8 @@ for (const [name, expected] of [
             });
           } else if (
             expected !== "OK" &&
-            !["ambiguous claim", "losing claim"].includes(name)
+            !["ambiguous claim", "losing claim"].includes(name) &&
+            !name.startsWith("unknown grant")
           )
             await seedJournal(s, {
               ...journal,
@@ -2160,14 +2161,7 @@ for (const [name, expected] of [
               join(r.s.deviceRoot, "records.sqlite"),
             );
             try {
-              expect(
-                (await local.open(false))!.get("forge/work", journalKey())!
-                  .value,
-              ).toMatchObject({
-                active: false,
-                releaseNeeded: true,
-                grant: OWN_GRANT,
-              });
+              expect(await local.open(false)).toBeUndefined();
             } finally {
               await local.close();
             }
