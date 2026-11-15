@@ -1394,11 +1394,7 @@ test("bound runner refuses run, resume and detached auto before any provider spa
     Promise.resolve(builder.git(["rev-parse", "--verify", "HEAD"], checkout));
   const cloud: BoundCommand = () =>
     Promise.resolve({ id: "forge-1", status: "open", lease: grant });
-  let calls = 20;
-  const outcomes: string[] = [];
   const command: BoundCommand = (op, input, generation) => {
-    if (op === "lane.record")
-      outcomes.push((input as BoundProgressInput).result!);
     if (op === "lane.show") return Promise.resolve(journal.lane);
     if (op === "issue.renew")
       return Promise.resolve({
@@ -1422,7 +1418,7 @@ test("bound runner refuses run, resume and detached auto before any provider spa
         row = { ...row, value, revision: revision + 1 };
         return Promise.resolve(row);
       },
-      { lanes: { autopilot: { budgets: { reviewRounds: 1, calls } } } },
+      { lanes: { autopilot: { budgets: { reviewRounds: 1, calls: 20 } } } },
       readHead,
     );
   };
@@ -1507,63 +1503,8 @@ test("bound runner refuses run, resume and detached auto before any provider spa
   } finally {
     await reviewer.finish(false);
   }
-  calls = 2;
-  row = { ...row, value: journal };
-  for (const mode of ["fail", "no-reply"]) {
-    renameSync(
-      join(builder.root, "direct-output"),
-      join(builder.root, `prior-${mode}`),
-    );
-    const attempt = (await openBoundRunner(
-      checkout,
-      "forge-1",
-      actual,
-      connect,
-    ))!;
-    try {
-      const result = await builder.direct(
-        checkout,
-        mode,
-        undefined,
-        "codex",
-        attempt.beforeSpawn,
-      );
-      expect(
-        mode === "fail" ? result.exit !== 0 : !existsSync(result.reply!),
-      ).toBe(true);
-      await attempt.finish(true, false, "builder");
-    } finally {
-      await attempt.finish(false);
-    }
-  }
-  expect((row.value as BoundLaneRecord).progress).toMatchObject({
-    actions: 2,
-    records: 2,
-    pending: false,
-  });
-  expect(outcomes.slice(-2).map((text) => JSON.parse(text) as object)).toEqual([
-    { head: actual, failed: true },
-    { head: actual, failed: true },
-  ]);
-  expect(
-    await command("lane.next", { id: "forge-1", head: actual }, 7),
-  ).toMatchObject({ kind: "pause" });
-  // Counterfactual: omitting settlement leaves the original action pending and budget available.
-  row = { ...row, value: journal };
-  for (let i = 0; i < 2; i++) {
-    const omitted = (await openBoundRunner(
-      checkout,
-      "forge-1",
-      actual,
-      connect,
-    ))!;
-    await omitted.finish(false);
-  }
-  expect(
-    await command("lane.next", { id: "forge-1", head: actual }, 7),
-  ).toMatchObject({ kind: "harness" });
-  const display = fixture(),
-    attached = display.start();
+  const display = roleFixture(),
+    attached = join(display.main, ".worktrees/one");
   writeFileSync(
     join(attached, ".forge/project.json"),
     JSON.stringify({ schema: 1, id: bindingFor().identity }),
@@ -1578,16 +1519,41 @@ test("bound runner refuses run, resume and detached auto before any provider spa
     readFileSync(registry, "utf8").replace('"issue":"one"', '"issue":"work-1"'),
   );
   const control = resolve(import.meta.dirname, "../../tools/lane-control.ts"),
-    entry = join(display.root, "bound-prefix.ts");
+    entry = join(display.root, "bound-prefix.ts"),
+    state = join(display.root, "state.json"),
+    records = join(display.root, "records.json");
+  const initial = {
+    ...row,
+    value: {
+      ...journal,
+      lane: { ...journal.lane, worktree: attached, brief: display.brief },
+    },
+  };
+  const reset = () => {
+    writeFileSync(state, JSON.stringify(initial));
+    writeFileSync(records, "[]");
+  };
+  reset();
   writeFileSync(
     entry,
     `import {mock} from 'bun:test';
 import {openBoundRunner} from ${JSON.stringify(control)};
-import {writeFileSync} from 'node:fs';import {join} from 'node:path';
+import {boundLaneProgress} from ${JSON.stringify(resolve(import.meta.dirname, "../../src/blocks/work/bound-lane.ts"))};
+import {readFileSync,writeFileSync} from 'node:fs';import {join} from 'node:path';import {spawnSync} from 'node:child_process';
 const original=openBoundRunner;
-mock.module(${JSON.stringify(control)},()=>({openBoundRunner:(root,id,head)=>original(root,id,head,()=>Promise.resolve({
-command:(op,input)=>Promise.resolve(op==='lane.show'?{worktree:root}:op==='lane.next'?{lane:'forge-1',kind:'harness',n:1,raw:JSON.stringify({generation:7,head})}:op==='issue.renew'?{generation:7,expiresAt:new Date(Date.now()+3600000).toISOString()}:op==='lane.control'?{incarnation:'one',epoch:1,stopped:false}:(writeFileSync(join(root,'recorded.json'),JSON.stringify(input)),{recorded:true})),
-readHead:()=>Promise.resolve(head),close:()=>Promise.resolve()}))}));
+let row=JSON.parse(readFileSync(${JSON.stringify(state)},'utf8'));
+const grant=row.value.grant,root=row.value.lane.worktree;
+const readHead=()=>Promise.resolve(spawnSync('git',['rev-parse','--verify','HEAD'],{cwd:root,encoding:'utf8',windowsHide:true}).stdout.trim());
+const command=(op,input,generation)=>{
+ if(op==='lane.show')return Promise.resolve(row.value.lane);
+ if(op==='issue.renew')return Promise.resolve({generation:grant.generation,expiresAt:grant.expiresAt});
+ if(op==='lane.control')return Promise.resolve({incarnation:'one',epoch:1,stopped:readFileSync(join(process.env.LANE_FIXTURE,'mode'),'utf8')==='refused'});
+ if(op==='lane.record')writeFileSync(${JSON.stringify(records)},JSON.stringify([...JSON.parse(readFileSync(${JSON.stringify(records)},'utf8')),JSON.parse(input.result)]));
+ return boundLaneProgress(op,input,{...grant.holder,leaseGeneration:generation??grant.generation},'dev-1',Date.now,${JSON.stringify(bindingFor())},{get:()=>row},
+ ()=>Promise.resolve({id:'forge-1',status:'open',lease:grant}), (value,revision)=>{if(revision!==row.revision)throw Error('revision');row={...row,value,revision:revision+1};writeFileSync(${JSON.stringify(state)},JSON.stringify(row));return Promise.resolve(row);},
+ {lanes:{autopilot:{budgets:{calls:2,reviewRounds:1}}}},readHead);
+};
+mock.module(${JSON.stringify(control)},()=>({openBoundRunner:(root,id,head)=>original(root,id,head,()=>Promise.resolve({command,readHead,close:()=>Promise.resolve()}),{now:Date.now,schedule:()=>()=>{}})}));
 const {main}=await import(${JSON.stringify(script)});process.exitCode=await main();`,
   );
   const issueStub = join(display.root, "fake-forge.mjs"),
@@ -1602,9 +1568,57 @@ const {main}=await import(${JSON.stringify(script)});process.exitCode=await main
     expect(result.code).toBe(shown === "forge-1" ? 0 : 1);
     expect(display.attempts()).toHaveLength(1);
   }
-  expect(
-    JSON.parse(readFileSync(join(attached, "recorded.json"), "utf8")) as object,
-  ).toMatchObject({ id: "work-1", action: 1 });
+  const outcomes = () => JSON.parse(readFileSync(records, "utf8")) as object[];
+  writeFileSync(issueStub, stub.replace("id:input.id", "id:'forge-1'"));
+  for (const [mode, role] of [
+    ["fail", "reviewer"],
+    ["no-reply", "builder"],
+    ["limit", "reviewer"],
+    ["refused", "builder"],
+  ]) {
+    reset();
+    writeFileSync(join(display.root, "mode"), mode!);
+    const before = display.attempts().length;
+    const result = display.run(
+      ["run", "work-1", "--role", role!],
+      display.caller,
+      entry,
+    );
+    expect(result.code).toBe(1);
+    expect(display.attempts()).toHaveLength(
+      before + Number(mode !== "refused"),
+    );
+    expect(outcomes()).toEqual(
+      mode === "refused"
+        ? []
+        : [
+            {
+              head: display.git(["rev-parse", "HEAD"], attached),
+              failed: true,
+              ...(role === "reviewer" ? { review: true } : {}),
+            },
+          ],
+    );
+    expect(JSON.parse(readFileSync(state, "utf8")) as object).toMatchObject({
+      value: {
+        progress: {
+          records: Number(mode !== "refused"),
+          review: Number(role === "reviewer"),
+        },
+      },
+    });
+  }
+  reset();
+  writeFileSync(join(display.root, "mode"), "fail");
+  const before = display.attempts().length;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    expect(
+      display.run(["run", "work-1", "--role", "builder"], display.caller, entry)
+        .code,
+    ).toBe(1);
+    expect(outcomes()).toHaveLength(Math.min(attempt, 2));
+    expect(display.attempts()).toHaveLength(before + Math.min(attempt, 2));
+  }
 });
 
 function change(
