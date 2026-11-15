@@ -269,11 +269,11 @@ test.each([
 );
 
 test("a pull request that crosses the cap by a real step fails", () => {
-  const { failures, warnings } = decide(84.5, 1, { current: 85.5 });
+  const { failures, warnings } = decide(84.5, 2, { current: 86.5 });
   expect(warnings).toEqual([]);
-  expect(failures).toHaveLength(1);
-  expect(failures[0]).toContain("85 MB");
-  expect(failures[0]).toContain("84.5");
+  expect(failures).toHaveLength(2);
+  expect(failures[1]).toContain("85 MB");
+  expect(failures[1]).toContain("84.5");
 }, 1000);
 
 test("a noise-only pull request near the cap warns and passes", () => {
@@ -283,6 +283,9 @@ test("a noise-only pull request near the cap warns and passes", () => {
   expect(failures).toEqual([]);
   expect(warnings).toHaveLength(1);
   expect(warnings[0]).toContain("85 MB");
+  const smallStep = decide(84.5, 1, { current: 85.5 });
+  expect(smallStep.failures).toEqual([]);
+  expect(smallStep.warnings).toHaveLength(1);
 }, 1000);
 
 test("the crossing step must be over the limit, not at it", () => {
@@ -290,7 +293,8 @@ test("the crossing step must be over the limit, not at it", () => {
   expect(at.failures).toEqual([]);
   expect(at.warnings).toHaveLength(1);
   const over = decide(84.5, MIN_CROSSING_DELTA_MB + 0.125, { current: 85.125 });
-  expect(over.failures).toHaveLength(1);
+  expect(over.failures).toHaveLength(2);
+  expect(over.failures[1]).toContain(`more than ${MIN_CROSSING_DELTA_MB} MB`);
 }, 1000);
 
 test("when the base build is already over the cap, a pull request only warns", () => {
@@ -304,12 +308,15 @@ test("when the base build is already over the cap, a pull request only warns", (
 
 test("the crossing rule applies on Windows with its own cap", () => {
   const options = { limit: WINDOWS, platform: "win32" };
-  const crossed = decide(69.5, 1, { ...options, current: 70.5 });
-  expect(crossed.failures).toHaveLength(1);
-  expect(crossed.failures[0]).toContain("70 MB");
+  const crossed = decide(69.5, 2, { ...options, current: 71.5 });
+  expect(crossed.failures).toHaveLength(2);
+  expect(crossed.failures[1]).toContain("70 MB");
   const noise = decide(69.75, NOISE_DELTA_MB, { ...options, current: 70.25 });
   expect(noise.failures).toEqual([]);
   expect(noise.warnings).toHaveLength(1);
+  const smallStep = decide(69.5, 1, { ...options, current: 70.5 });
+  expect(smallStep.failures).toEqual([]);
+  expect(smallStep.warnings).toHaveLength(1);
 }, 1000);
 
 test("on a push to main, any peak over the cap fails", () => {
@@ -320,4 +327,34 @@ test("on a push to main, any peak over the cap fails", () => {
   expect(warnings).toEqual([]);
   expect(failures).toHaveLength(1);
   expect(failures[0]).toContain("85 MB");
+}, 1000);
+
+test("the recorded identical-build cap crossing warns without a peak failure", () => {
+  // Hosted job 132732994703: the 1.32 MB paired gap tripped the former 0.5 MB crossing margin.
+  const current = peakRow(
+    [
+      85.55859375, 86.1640625, 85.13671875, 86.140625, 87.4609375, 83.5234375,
+      83.2734375, 82.39453125, 84.84765625, 86.33984375, 86.80078125,
+      85.66015625, 87.05859375, 87.4921875, 86.98046875,
+    ],
+    86.140625,
+  );
+  const base = peakRow(
+    [
+      83.99609375, 84.1953125, 82.546875, 84.08203125, 83.0546875, 83.40625,
+      82.30078125, 83.28125, 86.546875, 86.70703125, 88.0625, 84, 86.85546875,
+      85.5234375, 85.66015625,
+    ],
+    84.08203125,
+  );
+  expect(MIN_CROSSING_DELTA_MB).toBe(MAX_PEAK_DELTA_MB);
+  expect(medianPairedDelta(current.peaksMb, base.peaksMb)).toBe(1.3203125);
+  const { failures, warnings } = gateDecision(LINUX, current, base, {
+    ...WHERE,
+    platform: "linux",
+    pullRequest: true,
+  });
+  expect(failures).toEqual([]);
+  expect(warnings).toHaveLength(1);
+  expect(warnings[0]).toContain("85 MB");
 }, 1000);
