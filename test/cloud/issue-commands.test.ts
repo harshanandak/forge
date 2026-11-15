@@ -7,7 +7,6 @@ import { pathToFileURL } from "node:url";
 import {
   DUMP_MIGRATION,
   IMPORT_MIGRATION,
-  dumpUsage,
   limitsFrom,
 } from "../../cloud/src/dump.ts";
 import { Project } from "../../cloud/src/project.ts";
@@ -905,210 +904,64 @@ function seedReadKeys(
   })();
 }
 
-for (const indexed of [false, true])
-  for (const kind of ["count", "max"] as const)
-    for (const count of [0, 999, 1000, 1001, 2001])
-      for (const prefix of ["", "note:", "\u{10ffff}"])
-        test(`state aggregate work budget: ${indexed}/${kind}/${count}/${prefix}`, async () => {
-          const f = await stateFixture();
-          try {
-            seedReadKeys(f, count, prefix);
-            if (!indexed) {
-              f.db.run("DROP INDEX state_events_by_namespace");
-              f.db.run(
-                "DELETE FROM state_migrations WHERE id='005_state_events_namespace_index'",
-              );
-              f.reopen();
-            }
-            let examined = 0;
-            f.db.function("examined", (_key: string) => {
-              examined++;
-              return 1;
-            });
-            const executeSql = f.storage.sql.exec.bind(f.storage.sql);
-            const plans: string[] = [];
-            const meter = spyOn(f.storage.sql, "exec").mockImplementation(
-              (sql, ...bindings) => {
-                if (
-                  sql.includes("FROM state_records") &&
-                  sql.includes(" AS total")
-                ) {
-                  plans.push(
-                    ...f.db
-                      .query(`EXPLAIN QUERY PLAN ${sql}`)
-                      .all(
-                        ...bindings.map((v) =>
-                          v instanceof ArrayBuffer ? new Uint8Array(v) : v,
-                        ),
-                      )
-                      .map((row) => String((row as { detail: string }).detail)),
-                  );
-                  sql = sql.replace("key>=?", "key>=? AND examined(key)");
-                }
-                return executeSql(sql, ...bindings);
-              },
-            );
-            const got = await f.read({ kind, prefix });
-            meter.mockRestore();
-            expect(examined).toBe(Math.min(count, 1001));
-            expect(
-              plans.some((p) =>
-                /SEARCH state_records USING COVERING INDEX/.test(p),
-              ),
-            ).toBe(true);
-            if (count > 1000) {
-              expect(stateOutcome(got)).toEqual([400, "INPUT_INVALID", 6]);
-              expect(got.json.result).toBeUndefined();
-              expect(got.json.error?.message).toContain("1000");
-              expect(got.json.error?.message).toContain("narrow the prefix");
-              expect(got.json.error).toMatchObject({ retry: "never" });
-            } else {
-              expect(stateOutcome(got)).toEqual([200, undefined, 0]);
-              expect(got.value.result).toEqual({ kind, value: count });
-            }
-          } finally {
-            f.db.close();
-            mock.restore();
+for (const kind of ["count", "max"] as const)
+  for (const count of [0, 999, 1000, 1001, 2001])
+    for (const prefix of ["", "note:", "\u{10ffff}"])
+      test(`state aggregate work budget: ${kind}/${count}/${prefix}`, async () => {
+        const f = await stateFixture();
+        try {
+          seedReadKeys(f, count, prefix);
+          let examined = 0;
+          f.db.function("examined", (_key: string) => {
+            examined++;
+            return 1;
+          });
+          const executeSql = f.storage.sql.exec.bind(f.storage.sql);
+          const plans: string[] = [];
+          const meter = spyOn(f.storage.sql, "exec").mockImplementation(
+            (sql, ...bindings) => {
+              if (
+                sql.includes("FROM state_records") &&
+                sql.includes(" AS total")
+              ) {
+                plans.push(
+                  ...f.db
+                    .query(`EXPLAIN QUERY PLAN ${sql}`)
+                    .all(
+                      ...bindings.map((v) =>
+                        v instanceof ArrayBuffer ? new Uint8Array(v) : v,
+                      ),
+                    )
+                    .map((row) => String((row as { detail: string }).detail)),
+                );
+                sql = sql.replace("key>=?", "key>=? AND examined(key)");
+              }
+              return executeSql(sql, ...bindings);
+            },
+          );
+          const got = await f.read({ kind, prefix });
+          meter.mockRestore();
+          expect(examined).toBe(Math.min(count, 1001));
+          expect(
+            plans.some((p) =>
+              /SEARCH state_records USING COVERING INDEX/.test(p),
+            ),
+          ).toBe(true);
+          if (count > 1000) {
+            expect(stateOutcome(got)).toEqual([400, "INPUT_INVALID", 6]);
+            expect(got.json.result).toBeUndefined();
+            expect(got.json.error?.message).toContain("1000");
+            expect(got.json.error?.message).toContain("narrow the prefix");
+            expect(got.json.error).toMatchObject({ retry: "never" });
+          } else {
+            expect(stateOutcome(got)).toEqual([200, undefined, 0]);
+            expect(got.value.result).toEqual({ kind, value: count });
           }
-        }, 30_000);
-
-test("unmigrated reads preserve results and schema until an admitted provisioning write", async () => {
-  const f = await stateFixture();
-  try {
-    f.put("old");
-    for (let i = 0; i < 100; i++) {
-      f.put(`historical:${i}`);
-      f.put(`foreign:${i}`, i, "other/state");
-    }
-    const query = { kind: "get", key: "absent" } as const;
-    const baseline = await f.read(query);
-    const before = tablesOf(f.db);
-    f.db.run("DROP INDEX state_events_by_namespace");
-    f.db.run(
-      "DELETE FROM state_migrations WHERE id='005_state_events_namespace_index'",
-    );
-    f.reopen();
-    const old = await f.read(query);
-    expect(old.text).toBe(baseline.text);
-    expect(
-      f.db
-        .query(
-          "SELECT name FROM sqlite_schema WHERE name='state_events_by_namespace'",
-        )
-        .get(),
-    ).toBeNull();
-    await f.device();
-    const got = await f.read(query);
-    expect(got.text).toBe(baseline.text);
-    expect(tablesOf(f.db)).toEqual(before);
-    const watermark = got.touched.find((sql) => sql.includes("MAX(sequence)"))!;
-    const plan = f.db
-      .query(`EXPLAIN QUERY PLAN ${watermark}`)
-      .all("forge/memory") as { detail: string }[];
-    expect(plan.map((p) => p.detail).join(" ")).toContain(
-      "SEARCH state_events USING COVERING INDEX state_events_by_namespace (namespace=?)",
-    );
-    expect(
-      plan.some((p) => /SCAN state_events|TEMP B-TREE/.test(p.detail)),
-    ).toBe(false);
-  } finally {
-    f.db.close();
-    mock.restore();
-  }
-}, 30_000);
-
-test("provisioning index blocking measurement at the restore caps", async () => {
-  const f = await stateFixture(),
-    limits = limitsFrom(vars);
-  try {
-    const namespace = `forge/${"a".repeat(126)}`,
-      key = "k".repeat(500);
-    f.put(key, "", namespace);
-    const seed = f.owner.events(namespace)[0]!;
-    f.db.transaction(() => {
-      const insert = f.db.query("INSERT INTO state_events VALUES (?,?,?,?)");
-      for (let i = 2; i <= limits.maxRows; i++)
-        insert.run(i, namespace, key, JSON.stringify({ ...seed, revision: i }));
-    })();
-    f.db.run(
-      "UPDATE state_records SET revision=?, body=json_set(body,'$.revision',?)",
-      [limits.maxRows, limits.maxRows],
-    );
-    const usage = () => dumpUsage(sqlOf(f.db), limits);
-    const pad = "x".repeat(
-      Math.floor((limits.maxBytes - usage().bytes) / (limits.maxRows + 1)),
-    );
-    f.db.run("UPDATE state_events SET body=json_set(body,'$.data',?)", [pad]);
-    f.db.run("UPDATE state_records SET body=json_set(body,'$.value',?)", [pad]);
-    const last =
-      pad + "x".repeat(Math.floor((limits.maxBytes - usage().bytes) / 2));
-    f.db.run(
-      "UPDATE state_events SET body=json_set(body,'$.data',?) WHERE sequence=?",
-      [last, limits.maxRows],
-    );
-    f.db.run("UPDATE state_records SET body=json_set(body,'$.value',?)", [
-      last,
-    ]);
-    const full = usage();
-    expect(full.rows.state_events).toBe(limits.maxRows);
-    expect(full.bytes).toBeLessThanOrEqual(limits.maxBytes);
-    expect(full.bytes).toBeGreaterThanOrEqual(limits.maxBytes - 1);
-    f.db.run("DROP INDEX state_events_by_namespace");
-    f.db.run(
-      "DELETE FROM state_migrations WHERE id='005_state_events_namespace_index'",
-    );
-    f.reopen();
-    let indexBuildMs = 0,
-      indexBuilds = 0;
-    const executeSql = f.storage.sql.exec.bind(f.storage.sql);
-    const meter = spyOn(f.storage.sql, "exec").mockImplementation(
-      (sql, ...bindings) => {
-        const at = performance.now(),
-          result = executeSql(sql, ...bindings);
-        if (
-          sql.startsWith("CREATE INDEX IF NOT EXISTS state_events_by_namespace")
-        ) {
-          indexBuildMs += performance.now() - at;
-          indexBuilds++;
+        } finally {
+          f.db.close();
+          mock.restore();
         }
-        return result;
-      },
-    );
-    const input = {
-      ...stateRead,
-      namespace: "forge/memory",
-      policyRevision: "discover",
-      query: { kind: "get", key: "absent" },
-    };
-    const first = await f.send(input, { token: f.token, path: "state/read" });
-    expect(stateOutcome(first)).toEqual([200, undefined, 0]);
-    expect(indexBuilds).toBe(0);
-    const at = performance.now();
-    await f.device();
-    const provisioningMs = performance.now() - at;
-    const second = await f.send(input, { token: f.token, path: "state/read" });
-    meter.mockRestore();
-    expect(second.text).toBe(first.text);
-    expect(indexBuilds).toBe(1);
-    expect(usage().bytes).toBe(full.bytes);
-    console.log(
-      "State index cap measurement",
-      JSON.stringify({
-        backend: "bun:sqlite synthetic DurableStorage",
-        rows: limits.maxRows,
-        storedBytes: full.bytes,
-        maxBytes: limits.maxBytes,
-        namespaceBytes: namespace.length,
-        indexBuildMs,
-        provisioningMs,
-        indexBuilds,
-      }),
-    );
-  } finally {
-    f.db.close();
-    mock.restore();
-  }
-}, 30_000);
+      }, 30_000);
 
 test("state read query and cursor table returns facts without writes", async () => {
   const f = await stateFixture();

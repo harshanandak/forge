@@ -1099,10 +1099,6 @@ function assertRegistered(db: SqlDatabase): void {
 
 export const NAMESPACE_WATERMARK =
   "SELECT coalesce(MAX(sequence),0) AS revision FROM state_events WHERE namespace=?";
-export const INDEXED_NAMESPACE_WATERMARK =
-  "SELECT coalesce(MAX(sequence),0) AS revision FROM state_events INDEXED BY state_events_by_namespace WHERE namespace=?";
-export const NAMESPACE_INDEX_PROBE =
-  "SELECT name FROM sqlite_schema WHERE type='index' AND name='state_events_by_namespace'";
 
 export class StateOwner {
   readonly #db: SqlDatabase;
@@ -1184,12 +1180,7 @@ export class StateOwner {
   namespaceRevision(namespace: string): number {
     namespaceValid(namespace);
     const revision = Number(
-      this.#db.get(
-        this.#db.get(NAMESPACE_INDEX_PROBE)
-          ? INDEXED_NAMESPACE_WATERMARK
-          : NAMESPACE_WATERMARK,
-        [namespace],
-      )?.revision ?? 0,
+      this.#db.get(NAMESPACE_WATERMARK, [namespace])?.revision ?? 0,
     );
     if (!Number.isSafeInteger(revision) || revision < 0)
       invalid("Invalid namespace revision");

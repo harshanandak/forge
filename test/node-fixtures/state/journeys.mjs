@@ -918,10 +918,7 @@ const cases = {
           () => owner.initialize(),
           (error) => {
             assert.equal(error.name, "NewerStoreError");
-            assert.equal(
-              error.newestKnownVersion,
-              "005_state_events_namespace_index",
-            );
+            assert.equal(error.newestKnownVersion, "004_state_checkpoint");
             assert.equal(
               error.foundVersion,
               future === "schema" ? "schema:999" : future,
