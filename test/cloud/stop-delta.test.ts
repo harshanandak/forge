@@ -8,8 +8,10 @@ import {
   tally,
   fold,
   digests,
+  problems,
   type Table,
 } from "../../cloud/conformance/digest.ts";
+import { digester } from "../../cloud/conformance/budget.ts";
 
 const at = "2027-01-15T08:00:00.000Z";
 const actor = { kind: "agent", id: "cloud-restore" };
@@ -175,6 +177,7 @@ test("stop delta: a deleted global keeps historical revisions", () => {
 const cases = [
   "correct",
   "duplicate event",
+  "swapped events",
   "missing event",
   "wrong epoch",
   "missing audit",
@@ -194,6 +197,11 @@ test.each(cases)(
       const events = target.state_events!,
         records = target.state_records!;
       if (kind === "duplicate event") events.push(events.at(-1)!);
+      if (kind === "swapped events")
+        [events[events.length - 2], events[events.length - 1]] = [
+          events.at(-1)!,
+          events.at(-2)!,
+        ];
       if (kind === "missing event") events.pop();
       if (kind === "wrong epoch") {
         const row = records.find((row) => row.key === "lane-control:global")!;
@@ -331,4 +339,90 @@ test.each(cases)(
     }
   },
   5000,
+);
+
+test("stop delta: swapped suffix across page boundaries is refused", () => {
+  const source = fixture(false),
+    target = inject(source, 1, false);
+  const sum = digester(false, stopPlan(source, deltas[0]));
+  for (const [table, rows] of Object.entries(target))
+    if (table !== "state_events") sum.add(table, rows);
+  sum.add("state_events", target.state_events!.slice(0, -2));
+  sum.add("state_events", [target.state_events!.at(-1)!]);
+  assert.throws(() => {
+    sum.add("state_events", [target.state_events!.at(-2)!]);
+    sum.done();
+  }, /event.*order|suffix/i);
+}, 1000);
+
+test.each(["correct", "floor record", "floor event"] as const)(
+  "stop delta: capacity planned %s",
+  (kind) => {
+    const source = fixture(false),
+      sum = tally();
+    for (const [table, rows] of Object.entries(source))
+      for (const row of rows) fold(sum, table as Table, row);
+    const expected = {
+      floorSupplied: false,
+      lastSequence: 9,
+      tables: digests(sum),
+    };
+    const floor = record("allocation:issue:work-", {
+      prefix: "issue:work-",
+      number: 1,
+    });
+    const floorEvent = {
+      sequence: 10,
+      namespace,
+      key: floor.key,
+      body: canonicalJson({
+        type: "forge/work:record.updated@1",
+        namespace,
+        key: floor.key,
+        revision: 1,
+        at,
+        actor,
+        data: { prefix: "issue:work-", number: 1 },
+      }),
+    };
+    const planned = {
+      ...source,
+      state_records: [floor, ...source.state_records!],
+      state_events: [...source.state_events!, floorEvent],
+    };
+    const plan = stopPlan(planned, deltas[0]),
+      actual = inject(planned, 1, false);
+    if (kind === "floor record")
+      actual.state_records = actual.state_records!.map((row) =>
+        row.key === floor.key ? { ...row, body: "{}" } : row,
+      );
+    if (kind === "floor event")
+      actual.state_events = actual.state_events!.map((row) =>
+        row.sequence === 10
+          ? {
+              ...row,
+              body: canonicalJson({
+                ...(JSON.parse(String(floorEvent.body)) as Record<
+                  string,
+                  unknown
+                >),
+                data: {},
+              }),
+            }
+          : row,
+      );
+    const check = () => {
+      const got = tally(expected, plan);
+      for (const [table, rows] of Object.entries(actual))
+        for (const row of rows) fold(got, table as Table, row);
+      assert.deepEqual(
+        problems(got, expected),
+        [],
+        "capacity floor comparison",
+      );
+    };
+    if (kind === "correct") assert.doesNotThrow(check);
+    else assert.throws(check, /floor|generated/i);
+  },
+  1000,
 );
