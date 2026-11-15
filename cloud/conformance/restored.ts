@@ -72,12 +72,16 @@ export function stopPlan(
     : undefined;
   if (prior) assert.equal(incarnation, prior.incarnation, "stop incarnation");
   const revision =
-    before.state_events!.reduce(
-      (n, row) =>
-        stopGlobal(row)
-          ? Math.max(n, (JSON.parse(String(row.body)) as StateEvent).revision)
-          : n,
-      Number(priorRow?.revision ?? 0),
+    Number(
+      priorRow?.revision ??
+        before.state_events!.reduce((n, row) => {
+          if (!stopGlobal(row)) return n;
+          const event = JSON.parse(String(row.body)) as StateEvent;
+          return event.type === "forge/work:record.updated@1" ||
+            event.type === "forge/work:record.deleted@1"
+            ? Math.max(n, event.revision)
+            : n;
+        }, 0),
     ) + 1;
   const epoch = (prior?.epoch ?? 0) + 1;
   assert.ok(

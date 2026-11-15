@@ -157,13 +157,19 @@ test("stop delta: a deleted global keeps historical revisions", () => {
     sequence: 10,
     namespace,
     key: "lane-control:global",
-    body: canonicalJson({ revision: 4 }),
+    body: canonicalJson({ type: "forge/work:record.deleted@1", revision: 4 }),
+  });
+  source.state_events!.push({
+    sequence: 11,
+    namespace,
+    key: "lane-control:global",
+    body: canonicalJson({ type: "forge/work:lease.acquired@1", revision: 99 }),
   });
   const plan = stopPlan(source, deltas[0])!;
   assert.equal(plan.records[0]!.revision, 5);
   assert.deepEqual(
     plan.events.map((row) => row.sequence),
-    [11, 12],
+    [12, 13],
   );
 }, 1000);
 const cases = [
