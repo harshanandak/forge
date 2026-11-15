@@ -357,8 +357,8 @@ const rows: readonly [string, (f: Fixture) => Promise<void>][] = [
   [
     "Lifetime",
     async (f) => {
-      const cachedGet = f.state.get,
-        cachedPut = f.state.put;
+      const cachedGet = f.state.get.bind(f.state),
+        cachedPut = f.state.put.bind(f.state);
       await cachedGet("missing");
       f.clock.advance(60_000);
       const sent = f.calls.length;
