@@ -94,8 +94,8 @@ for (const [name, row, guard, replacement, marker] of [
   [
     "Empty-result-fallback",
     "only unsafe",
-    /const none = [\s\S]*?;\n {2}const excluded/,
-    'const none = () => executor.resolve(name, { ...env, [pathKey]: typeof root === "string" ? root : root[0]! });\n  const excluded',
+    'if (pin.kind !== "resolved") return pin;',
+    'if (pin.kind !== "resolved") return executor.resolve("git", { ...env, PATH: scope.project.lexical });',
     "projectRan",
   ],
   [
@@ -103,6 +103,13 @@ for (const [name, row, guard, replacement, marker] of [
     "unrelated repository",
     "excluded.some((base) => within(base, candidate))",
     'excluded.some((base) => within(base, candidate)) || (() => { for (let at = dirname(candidate); ; at = dirname(at)) { if (readdirSync(at).includes(".git")) return true; if (dirname(at) === at) return false; } })()',
+    "externalRan",
+  ],
+  [
+    "Canonical-only-pin-reuse",
+    "cross-project alias",
+    "resolveOutside(executor, lexical, env",
+    "resolveOutside(executor, pin.path, env",
     "externalRan",
   ],
 ] as const)

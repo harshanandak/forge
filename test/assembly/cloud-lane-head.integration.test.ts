@@ -44,6 +44,7 @@ for (const row of gitScopeRows)
       externalRan: accepted,
       relativeRan: false,
       unchanged: true,
+      diagnostic: !accepted,
     });
   }, 30000);
 
@@ -66,6 +67,37 @@ if (!git) throw new Error("Git required for the trusted head fixture");
 const trusted = realpathSync.native(git);
 const H1 = "a".repeat(40),
   H2 = "b".repeat(40);
+
+test("platform temp checkout uses the system Git, including macOS var aliases", async () => {
+  const root = mkdtempSync(join(tmpdir(), "forge-system-git-"));
+  let files;
+  try {
+    const initialized = spawnSync(trusted, ["init", "--quiet", root], {
+      encoding: "utf8",
+      windowsHide: true,
+    });
+    expect(initialized.status, initialized.stderr).toBe(0);
+    writeFileSync(join(root, "input"), "unchanged");
+    files = await createAssemblyProviders(root, {
+      env: {
+        PATH: dirname(trusted),
+        PATHEXT: process.env.PATHEXT ?? ".EXE",
+        SystemRoot: process.env.SystemRoot ?? "",
+      },
+    }).openFiles({
+      op: "temp-checkout.read",
+      effects: ["files:read"],
+      signal: AbortSignal.timeout(10000),
+      deadline: Date.now() + 10000,
+      processContainment: "supervised",
+    });
+    expect(files.value.root).toBe(realpathSync.native(root));
+    expect(files.value.read("input", 32)).toBe("unchanged");
+  } finally {
+    await files?.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 30000);
 
 test("attached head shares the journal's full-head validator", () => {
   const validate = (

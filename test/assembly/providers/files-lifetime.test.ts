@@ -19,14 +19,16 @@ import {
 import type { ProcessPort, ProcessResult } from "../../../src/ports/process.ts";
 import type { ServiceScope } from "../../../src/core/runtime/index.ts";
 import { fixture } from "../../core/async-handlers/fixture.ts";
+import { gitResolutionFixture } from "../../fixtures/git-resolution.ts";
 
 test("a snapshot refusal reaches the handler immediately, before its operation deadline", async () => {
+  using eligibleGit = gitResolutionFixture();
   const root = mkdtempSync(join(tmpdir(), "snapshot-refusal-"));
   const git = join(root, ".git");
   mkdirSync(git);
   const port: ProcessPort = {
     capability: "forge.process/v1",
-    resolve: () => ({ kind: "resolved", path: "git" }),
+    resolve: eligibleGit.resolve,
     run: () => Promise.resolve(result(`${git}\n${git}\n`)),
   };
   const f = fixture(
@@ -41,7 +43,7 @@ test("a snapshot refusal reaches the handler immediately, before its operation d
         services: async (_instance, _context, scope) => {
           const lease = await createAssemblyProviders(
             root,
-            { env: {} },
+            { env: eligibleGit.env },
             port,
           ).openFiles(scope);
           return { ...lease, value: { files: lease.value } };
@@ -73,12 +75,13 @@ const result = (stdout: string): ProcessResult => ({
 
 for (const processFails of [false, true]) {
   test(`file close preserves pending marker classification and process failures, processFails=${processFails}`, async () => {
+    using eligibleGit = gitResolutionFixture();
     const root = mkdtempSync(join(tmpdir(), "files-cleanup-"));
     const git = join(root, ".git");
     mkdirSync(git);
     const port: ProcessPort = {
       capability: "forge.process/v1",
-      resolve: () => ({ kind: "resolved", path: "git" }),
+      resolve: eligibleGit.resolve,
       run: (_program, args) =>
         args.includes("--absolute-git-dir")
           ? Promise.resolve(result(`${git}\n${git}\n`))
@@ -108,7 +111,7 @@ for (const processFails of [false, true]) {
             const lease = await createAssemblyProviders(
               root,
               {
-                env: {},
+                env: eligibleGit.env,
                 supervision: {
                   cleanupTimeoutMs: 100,
                   pollIntervalMs: 25,
@@ -171,12 +174,13 @@ for (const processFails of [false, true]) {
 }
 
 test("missing-path snapshots preserve typed input failures well under 1 s", async () => {
+  using eligibleGit = gitResolutionFixture();
   const root = mkdtempSync(join(tmpdir(), "snapshot-missing-"));
   const git = join(root, ".git");
   mkdirSync(git);
   const port: ProcessPort = {
     capability: "forge.process/v1",
-    resolve: () => ({ kind: "resolved", path: "git" }),
+    resolve: eligibleGit.resolve,
     run: (_program, args) =>
       Promise.resolve(
         result(
@@ -188,7 +192,7 @@ test("missing-path snapshots preserve typed input failures well under 1 s", asyn
   };
   const lease = await createAssemblyProviders(
     root,
-    { env: {} },
+    { env: eligibleGit.env },
     port,
   ).openFiles({
     op: "provider.snapshot",
@@ -244,6 +248,7 @@ test("strict clone-file discovery refuses before launching on an unavailable hos
 }, 5000);
 
 test("clone-file methods follow the current handler deadline and drain an unawaited snapshot", async () => {
+  using eligibleGit = gitResolutionFixture();
   const root = mkdtempSync(join(tmpdir(), "provider-lifetime-"));
   const git = join(root, ".git");
   mkdirSync(git);
@@ -252,7 +257,7 @@ test("clone-file methods follow the current handler deadline and drain an unawai
   let stopped = false;
   const port: ProcessPort = {
     capability: "forge.process/v1",
-    resolve: () => ({ kind: "resolved", path: "git" }),
+    resolve: eligibleGit.resolve,
     run(_program, args, options) {
       expect(options.containment).toBe("supervised");
       if (args.includes("--absolute-git-dir"))
@@ -280,7 +285,7 @@ test("clone-file methods follow the current handler deadline and drain an unawai
     const lease = await createAssemblyProviders(
       root,
       {
-        env: {},
+        env: eligibleGit.env,
         supervision: {
           cleanupTimeoutMs: 100,
           pollIntervalMs: 25,
@@ -317,6 +322,7 @@ test("clone-file methods follow the current handler deadline and drain an unawai
 }, 5000);
 
 test("snapshots cap long caller budgets and reject a late final HEAD", async () => {
+  using eligibleGit = gitResolutionFixture();
   const root = mkdtempSync(join(tmpdir(), "snapshot-budget-"));
   const git = join(root, ".git");
   mkdirSync(git);
@@ -327,7 +333,7 @@ test("snapshots cap long caller budgets and reject a late final HEAD", async () 
   let slow = false;
   const port: ProcessPort = {
     capability: "forge.process/v1",
-    resolve: () => ({ kind: "resolved", path: "git" }),
+    resolve: eligibleGit.resolve,
     run(_program, args, options) {
       if (args.includes("--absolute-git-dir"))
         return Promise.resolve(result(`${git}\n${git}\n`));
@@ -346,7 +352,11 @@ test("snapshots cap long caller budgets and reject a late final HEAD", async () 
   };
   let lease;
   try {
-    lease = await createAssemblyProviders(root, { env: {} }, port).openFiles({
+    lease = await createAssemblyProviders(
+      root,
+      { env: eligibleGit.env },
+      port,
+    ).openFiles({
       op: "sample.read",
       effects: ["files:read"],
       signal: new AbortController().signal,

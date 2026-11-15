@@ -45,6 +45,7 @@ export const gitScopeRows = [
   "project alias",
   "install alias",
   "cross-project",
+  "cross-project alias",
 ] as const;
 export type GitScopeRow = (typeof gitScopeRows)[number];
 /** Synthetic state and marker executables only; never opens the device's tracker or credentials. */
@@ -96,17 +97,26 @@ export async function exerciseGitScope(row: GitScopeRow, api: ScopedGitApi) {
     ])
       writeFileSync(join(project, name), `unchanged ${name}`);
     const scope = { project: pair(project), lane: pair(project) };
-    const alias = join(row === "project alias" ? project : dir, "alias");
-    if (["project alias", "install alias"].includes(row))
+    const alias = join(
+      row === "project alias"
+        ? project
+        : row === "cross-project alias"
+          ? relativeInstall
+          : dir,
+      "alias",
+    );
+    if (["project alias", "install alias", "cross-project alias"].includes(row))
       symlinkSync(
-        row === "project alias" ? external : project,
+        row === "install alias" ? project : external,
         alias,
         process.platform === "win32" ? "junction" : "dir",
       );
     const paths =
       row === "no git"
         ? []
-        : row === "project alias" || row === "install alias"
+        : row === "project alias" ||
+            row === "install alias" ||
+            row === "cross-project alias"
           ? [alias]
           : row === "only unsafe"
             ? [project]
@@ -119,13 +129,27 @@ export async function exerciseGitScope(row: GitScopeRow, api: ScopedGitApi) {
       SystemRoot: process.env.SystemRoot ?? "",
     };
     const before = JSON.stringify(snapshot());
-    const port = createProcessPort();
+    const port = createProcessPort({
+      supervision: {
+        cleanupTimeoutMs: 1000,
+        pollIntervalMs: 25,
+        drainTimeoutMs: 100,
+        maxConcurrent: 1,
+      },
+    });
     const pin = api.gitCapability(port, env, scope);
     if (row === "plain checkout") env.PATH = "";
     const target =
       row === "cross-project"
         ? { project: pair(external), lane: pair(external) }
-        : scope;
+        : row === "cross-project alias"
+          ? { project: pair(relativeInstall), lane: pair(relativeInstall) }
+          : scope;
+    if (
+      row === "cross-project alias" &&
+      api.gitCapability(port, env, target).executable().kind !== "unavailable"
+    )
+      throw new Error("Direct project-B alias selection must be refused");
     const executable = pin.executable(target);
     let launched = false;
     if (executable.kind === "resolved") {
@@ -146,6 +170,15 @@ export async function exerciseGitScope(row: GitScopeRow, api: ScopedGitApi) {
       externalRan: existsSync(marker(external)),
       relativeRan: existsSync(marker(relativeInstall)),
       unchanged: before === JSON.stringify(snapshot()),
+      diagnostic:
+        executable.kind === "unavailable" &&
+        executable.reason.includes(
+          row === "no git"
+            ? "absolute PATH"
+            : row === "cross-project"
+              ? external
+              : paths[0]!,
+        ),
     };
   } finally {
     rmSync(dir, { recursive: true, force: true });
