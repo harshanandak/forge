@@ -14,11 +14,17 @@ import { delimiter, dirname, join } from "node:path";
 import * as coordinator from "../../src/assembly/cloud-lane-coordinator.ts";
 import * as laneState from "../../src/blocks/work/bound-lane-state.ts";
 import * as scopedGit from "../../src/assembly/providers.ts";
+import * as savedGit from "../../src/assembly/saved-git-scope.ts";
 import { createProcessPort } from "../../src/adapters/process/index.ts";
 import {
   exerciseGitScope,
+  gitFixtureTemp,
+  directoryLink,
   gitScopeRows,
   type ScopedGitApi,
+  persistedRootsFixture,
+  withoutGuard,
+  launchSavedGit,
 } from "./cloud-fixture.ts";
 import {
   createAssemblyProviders,
@@ -28,6 +34,54 @@ import {
 import type { Preflight } from "../../src/core/runtime/index.ts";
 import type { ProcessPort } from "../../src/ports/process.ts";
 setDefaultTimeout(30000);
+
+for (const removed of [false, true])
+  test(`Skip-reopen-equality, loaded counterfactual=${removed}`, async () => {
+    const f = persistedRootsFixture();
+    try {
+      const projectAlias = join(f.project, "project-alias");
+      directoryLink(f.project, projectAlias);
+      const scope = {
+        ...f.scope,
+        project: scopedGit.createGitScope(projectAlias).project,
+      };
+      rmSync(projectAlias, { recursive: true });
+      directoryLink(f.target, projectAlias);
+      const api = removed
+        ? await withoutGuard<typeof scopedGit>(
+            new URL("../../src/assembly/providers.ts", import.meta.url),
+            /relative\(realpathSync.native\(pair.lexical\), pair.real\) === ""/g,
+            "true",
+          )
+        : scopedGit;
+      if (removed) expect(Reflect.get(api, "mutationLoaded")).toBe(true);
+      const savedApi = removed
+        ? await withoutGuard<typeof savedGit>(
+            new URL("../../src/assembly/saved-git-scope.ts", import.meta.url),
+            /relative\(createGitScope\(pair.lexical\).project.real, pair.real\) ===\s*""/g,
+            "true",
+          )
+        : savedGit;
+      if (removed) expect(Reflect.get(savedApi, "mutationLoaded")).toBe(true);
+      const before = f.snapshot();
+      const launch = launchSavedGit(
+        f,
+        scope,
+        api,
+        f.lexical,
+        savedApi.reopenGitScope,
+      );
+      if (removed) expect((await launch).exitCode).toBe(0);
+      else
+        await expect(launch).rejects.toMatchObject({
+          error: { code: "INPUT_CONFLICT" },
+        });
+      expect(existsSync(f.marker)).toBe(false);
+      expect(f.snapshot()).toEqual(before);
+    } finally {
+      f.close();
+    }
+  });
 
 for (const row of gitScopeRows)
   test(`scoped git capability: ${row}`, async () => {
@@ -171,7 +225,7 @@ for (const variant of [
   "environment effect",
 ] as const)
   test(`attached head table: ${variant}`, async () => {
-    const root = mkdtempSync(join(import.meta.dirname, ".forge-bound-head-"));
+    const root = gitFixtureTemp("forge-bound-head-");
     const caller = join(root, "caller"),
       target = join(root, "target");
     for (const path of [caller, target]) {

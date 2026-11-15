@@ -4,6 +4,7 @@ import { afterAll, afterEach, expect, setDefaultTimeout } from "bun:test";
 import { test as runTest } from "bun:test";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import { createGitScope } from "../../src/assembly/providers.ts";
 import {
   chmodSync,
   existsSync,
@@ -1380,6 +1381,7 @@ test("bound runner refuses run, resume and detached auto before any provider spa
       worktree: checkout,
       branch: "lane/one",
       brief: builder.brief,
+      gitScope: createGitScope(builder.main, checkout),
     },
   };
   let row: StateRecord = {
@@ -1526,7 +1528,12 @@ test("bound runner refuses run, resume and detached auto before any provider spa
     ...row,
     value: {
       ...journal,
-      lane: { ...journal.lane, worktree: attached, brief: display.brief },
+      lane: {
+        ...journal.lane,
+        worktree: attached,
+        brief: display.brief,
+        gitScope: createGitScope(display.main, attached),
+      },
     },
   };
   const reset = () => {

@@ -14,6 +14,8 @@ import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, relative } from "node:path";
 import { createProcessPort } from "../../src/adapters/process/index.ts";
+import { spawnSync } from "node:child_process";
+import { reopenGitScope } from "../../src/assembly/saved-git-scope.ts";
 import type { CloudFetch } from "../../src/adapters/http/index.ts";
 import type {
   CredentialEntry,
@@ -24,6 +26,115 @@ export type ScopedGitApi = Pick<
   typeof import("../../src/assembly/providers.ts"),
   "gitCapability" | "resolveOutside"
 >;
+
+/** Temporary siblings of runner scratch stay outside checkout and OS-temp exclusions. */
+export function gitFixtureTemp(prefix: string): string {
+  const root = process.env.RUNNER_TEMP;
+  if (!root) throw new Error("Git security fixtures require RUNNER_TEMP");
+  return mkdtempSync(join(root, "..", prefix));
+}
+export function directoryLink(target: string, link: string): void {
+  symlinkSync(target, link, process.platform === "win32" ? "junction" : "dir");
+}
+/** A saved lexical project outside the lane's canonical ancestry, with real executable markers. */
+export function persistedRootsFixture() {
+  const dir = gitFixtureTemp("forge-saved-roots-");
+  const project = join(dir, "project"),
+    outside = mkdtempSync(join(tmpdir(), "forge-saved-lane-"));
+  const trusted = realpathSync.native(Bun.which("git")!);
+  const git = (args: string[]) => {
+    const result = spawnSync(trusted, args, {
+      encoding: "utf8",
+      windowsHide: true,
+    });
+    if (result.status !== 0) throw new Error(result.stderr);
+  };
+  mkdirSync(project);
+
+  git(["init", "-q", "-b", "main", project]);
+  git([
+    "-C",
+    project,
+    "-c",
+    "user.name=Fixture",
+    "-c",
+    "user.email=fixture@example.test",
+    "commit",
+    "-qm",
+    "fixture",
+    "--allow-empty",
+  ]);
+  const target = join(outside, "lane");
+  git(["-C", project, "worktree", "add", "-q", "-b", "feat/one", target]);
+  const alias = join(project, ".worktrees");
+  directoryLink(outside, alias);
+  const lexical = join(alias, "lane");
+  const bin = join(project, "bin"),
+    marker = join(bin, "launched");
+  mkdirSync(bin);
+  writeFileSync(
+    join(bin, process.platform === "win32" ? "git.cmd" : "git"),
+    process.platform === "win32"
+      ? '@echo off\r\necho launched>"%~dp0launched"\r\nexit /b 99\r\n'
+      : '#!/bin/sh\nprintf launched > "${0%/*}/launched"\nexit 99\n',
+    { mode: 0o755 },
+  );
+  const pair = (lexical: string) => ({
+    lexical,
+    real: realpathSync.native(lexical),
+  });
+  const scope = { project: pair(project), lane: pair(lexical) };
+  const snapshot = () =>
+    [
+      join(project, ".git", "HEAD"),
+      join(project, ".git", "refs", "heads", "feat", "one"),
+      join(target, ".git"),
+    ].map((path) => readFileSync(path).toString("hex"));
+  return {
+    project,
+    target,
+    lexical,
+    alias,
+    scope,
+    marker,
+    snapshot,
+    env: {
+      PATH: [bin, trusted.replace(/[\\/][^\\/]*$/, "")].join(delimiter),
+      PATHEXT: process.platform === "win32" ? ".CMD;.EXE" : "",
+      SystemRoot: process.env.SystemRoot ?? "",
+    },
+    close: () => {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    },
+  };
+}
+export async function launchSavedGit(
+  fixture: ReturnType<typeof persistedRootsFixture>,
+  saved: import("../../src/assembly/providers.ts").GitScope | null,
+  api: Pick<typeof import("../../src/assembly/providers.ts"), "gitCapability">,
+  root = fixture.target,
+  reopen = reopenGitScope,
+) {
+  const scope = reopen(root, saved);
+  const port = createProcessPort({
+    supervision: {
+      cleanupTimeoutMs: 1000,
+      pollIntervalMs: 25,
+      drainTimeoutMs: 100,
+      maxConcurrent: 1,
+    },
+  });
+  const executable = api.gitCapability(port, fixture.env, scope).executable();
+  if (executable.kind !== "resolved") throw new Error(executable.reason);
+  return port.run(executable, ["--version"], {
+    cwd: root,
+    env: fixture.env,
+    timeoutMs: 10000,
+    maxOutputBytes: 16384,
+  });
+}
+
 export const gitScopeRows = [
   "unrelated repository",
   "plain checkout",
@@ -42,7 +153,7 @@ export async function exerciseGitScope(
   api: ScopedGitApi,
   selectionOnly = false,
 ) {
-  const dir = mkdtempSync(join(import.meta.dirname, ".forge-git-scope-"));
+  const dir = gitFixtureTemp("forge-git-scope-");
   const project = join(dir, "project"),
     external = join(dir, "unrelated-install"),
     relativeInstall = join(dir, "relative-install");

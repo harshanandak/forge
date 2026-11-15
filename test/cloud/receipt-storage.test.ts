@@ -7,6 +7,7 @@ import {
   parseDump,
 } from "../../cloud/src/dump.ts";
 import type { SqlDatabase, SqlRow } from "../../src/ports/store.ts";
+import { admit, record } from "../../cloud/src/issue-receipts.ts";
 
 const TABLE = "domain_cloud_command_receipts";
 const limits = { ...limitsFrom({}), pageBytes: 1600 };
@@ -66,6 +67,51 @@ for (const [name, mutate] of [
       expect(() =>
         dumpPage(db, before.next!, { ...limits, pageBytes: 2_000_000 }),
       ).not.toThrow();
+      if (name === "insert") {
+        db.run(`UPDATE ${TABLE} SET expires_at=? WHERE request_id='c2:old'`, [
+          Date.now() + 30 * 86_400_000,
+        ]);
+        for (const fault of ["prune", "record", "write"]) {
+          const page = dumpPage(db, "start", {
+            ...limits,
+            pageBytes: 2_000_000,
+          });
+          const rows = db.all(`SELECT * FROM ${TABLE} ORDER BY request_id`);
+          const failing: SqlDatabase = {
+            ...db,
+            run: (sql, args) => {
+              const result = db.run(sql, args);
+              if (
+                (fault === "prune" && sql.startsWith("DELETE")) ||
+                (fault === "record" && sql.startsWith("INSERT"))
+              )
+                throw new Error(fault);
+              return result;
+            },
+          };
+          expect(() =>
+            db.transaction(() => {
+              admit(failing);
+              expect(
+                db.get(`SELECT * FROM ${TABLE} WHERE request_id='c2:old'`),
+              ).toBeUndefined();
+              record(
+                failing,
+                "c2:rollback",
+                { fingerprint: "{}", outcome: "ok", result: {} },
+                Date.now() + 30 * 86_400_000,
+              );
+              throw new Error("write");
+            }),
+          ).toThrow(fault);
+          expect(db.all(`SELECT * FROM ${TABLE} ORDER BY request_id`)).toEqual(
+            rows,
+          );
+          expect(() =>
+            dumpPage(db, page.next!, { ...limits, pageBytes: 2_000_000 }),
+          ).not.toThrow();
+        }
+      }
     } finally {
       source.db.close();
     }
