@@ -16,15 +16,16 @@ import { delimiter, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { laneTier, type LaneTier, type ReviewTier } from "./lane-tier.ts";
 import { cloudBinding } from "../src/assembly/cloud-binding.ts";
-import { openBoundRunner } from "./lane-control.ts";
+import type { openBoundRunner } from "./lane-control.ts";
 
 export function refuseBoundRunner(root: string) {
-  if (
-    cloudBinding(root, process.env.HOME ?? process.env.USERPROFILE).kind ===
-    "bound"
-  )
+  const binding = cloudBinding(
+    root,
+    process.env.HOME ?? process.env.USERPROFILE,
+  );
+  if (binding.kind === "bound")
     throw new Error(
-      "Bound lane dispatch for auto/detach remains unavailable until PR 2b-2.",
+      "Bound lane dispatch requires the fresh control boundary in PR 2b.",
     );
 }
 
@@ -482,7 +483,13 @@ export async function laneRun(
     folder: string | null = null;
   let unlock: ((pid?: number) => void) | undefined;
   let record: RunRecord | undefined;
+  let spawned = false;
   let bound: Awaited<ReturnType<typeof openBoundRunner>>;
+  const settle = (success: boolean) => {
+    const current = bound;
+    bound = undefined;
+    return current?.finish(spawned, success, role ?? undefined);
+  };
   const save = () => {
     if (!record || !folder) return;
     const file = join(folder, "run.json"),
@@ -640,11 +647,17 @@ export async function laneRun(
           "\nLane contract (takes precedence):\n",
           readFileSync(lane.brief, "utf8"),
         ].join("\n");
-    bound = await openBoundRunner(
-      lane.worktree,
-      id,
-      git(lane.worktree, ["rev-parse", "HEAD"]),
-    );
+    if (
+      cloudBinding(lane.worktree, process.env.HOME ?? process.env.USERPROFILE)
+        .kind === "bound"
+    )
+      bound = await (
+        await import("./lane-control.ts")
+      ).openBoundRunner(
+        lane.worktree,
+        id,
+        git(lane.worktree, ["rev-parse", "HEAD"]),
+      );
     if (!bound) refuseBoundRunner(context.configRoot);
     if (bound && resume)
       throw new Error(
@@ -673,7 +686,10 @@ export async function laneRun(
       model,
       effort,
       prompt,
-      started: unlock,
+      started: (pid) => {
+        spawned = true;
+        unlock?.(pid);
+      },
       readOnly: role === "reviewer",
       ...(bound ? { beforeSpawn: bound.beforeSpawn } : {}),
       ...(resume ? { resume } : {}),
@@ -696,11 +712,7 @@ export async function laneRun(
       session: result.session,
     });
     save();
-    if (bound) {
-      const finished = bound;
-      bound = undefined;
-      await finished.finish(success, role);
-    }
+    await settle(success);
     report({
       ...result,
       verdict: success ? "completed" : "failed",
@@ -711,6 +723,11 @@ export async function laneRun(
     });
     return success ? 0 : 1;
   } catch (error) {
+    try {
+      await settle(false);
+    } catch (recordError) {
+      error = recordError;
+    }
     if (record) {
       record.end = new Date().toISOString();
       record.verdict = "failed";
@@ -723,10 +740,6 @@ export async function laneRun(
     });
     return 1;
   } finally {
-    try {
-      await bound?.finish(false);
-    } finally {
-      unlock?.();
-    }
+    unlock?.();
   }
 }

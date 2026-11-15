@@ -170,10 +170,10 @@ export async function openBoundRunner(
     const boundary = boundDispatch(command, canonical, generation, timing);
     return {
       beforeSpawn: boundary.beforeSpawn,
-      async finish(done: boolean, role?: string) {
+      async finish(spawned: boolean, success = false, role?: string) {
         await boundary.close();
         try {
-          if (done) {
+          if (spawned) {
             const actual = await connection.readHead();
             if (actual !== head) {
               const rebound = (await command(
@@ -191,7 +191,7 @@ export async function openBoundRunner(
                 action: next.n,
                 result: JSON.stringify({
                   head: actual,
-                  done: true,
+                  ...(success ? { done: true } : { failed: true }),
                   ...(role === "reviewer" ? { review: true } : {}),
                 }),
               },
