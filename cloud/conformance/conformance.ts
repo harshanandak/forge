@@ -656,6 +656,8 @@ export async function roundTrip(
 ) {
   const { digester, eachCutPage, pageBytes } = await import("./budget.ts");
   const sent = digester();
+  const incoming: ReturnType<typeof parseDump>[] = [];
+  const actual: ReturnType<typeof parseDump>[] = [];
   assert.equal(await initialized(target), false, `${label}: target is empty`);
   const trip = await walk(source, label, budget, async (page, text) => {
     each(page, text);
@@ -686,18 +688,21 @@ export async function roundTrip(
     );
     for (const [table, rows] of Object.entries(page.tables))
       sent.add(table, rows);
+    incoming.push(parseDump(text));
   });
   const back = digester();
   const tables: Tables = {};
-  const read = await walk(target, `${label} readback`, budget, (page) => {
+  const read = await walk(target, `${label} readback`, budget, (raw, text) => {
+    const page = parseDump(text || JSON.stringify(raw));
+    actual.push(page);
     for (const [table, rows] of Object.entries(page.tables)) {
       back.add(table, rows);
-      (tables[table] ??= []).push(...(rows as Tables[string]));
+      (tables[table] ??= []).push(...rows);
     }
   });
   const digests = sent.done();
   if (expected === source) {
-    await checkImage(await imageOf(source), await imageOf(target), target);
+    await checkImage(incoming, actual, target);
     assert.deepEqual(
       read.bytes,
       Array.from(eachCutPage(tables, budget), pageBytes),

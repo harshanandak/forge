@@ -474,7 +474,7 @@ export async function activation(
     session: "one",
     agent: null,
     harness: null,
-    ttlMs: 600_000,
+    ttlMs: 3_600_000,
   };
   const challenge = async (request: string, state: string, bind: string) => {
     const stateHash = await sha256(state);
