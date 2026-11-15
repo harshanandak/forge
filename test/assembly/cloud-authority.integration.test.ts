@@ -62,6 +62,7 @@ import * as fx from "./cloud-fixture.ts";
 import * as scopedGit from "../../src/assembly/providers.ts";
 import * as launch from "../../src/adapters/process/run.ts";
 import * as startupScope from "../../src/assembly/git-scope.ts";
+import { validGitScope } from "../../src/assembly/saved-git-scope.ts";
 import { cloudBinding } from "../../src/assembly/cloud-binding.ts";
 
 for (const [name, row, guard, replacement, marker] of [
@@ -541,7 +542,7 @@ for (const change of [
     );
   });
 async function seedJournal(
-  s: fx.Sandbox,
+  s: Pick<fx.Sandbox, "deviceRoot">,
   value: unknown,
   identity = fx.PROJECT_ID,
 ) {
@@ -609,25 +610,10 @@ for (const row of [
         delete lane.gitScope;
       if (row === "missing worktree") delete lane.worktree;
       if (row === "non-string worktree") lane.worktree = 7;
-      const state = new LocalState(join(deviceRoot, "records.sqlite"));
-      try {
-        (await state.open(true))!.put(
-          "forge/work",
-          journalKey(),
-          { ...journal, lane },
-          { kind: "agent", id: "a1" },
-          { expectRevision: 0 },
-        );
-      } finally {
-        await state.close();
-      }
+      await seedJournal({ deviceRoot }, { ...journal, lane });
       if (row === "retargeted") {
         rmSync(f.alias, { recursive: true });
-        symlinkSync(
-          f.project,
-          f.alias,
-          process.platform === "win32" ? "junction" : "dir",
-        );
+        fx.directoryLink(f.project, f.alias);
       }
       const before = [
         readFileSync(join(deviceRoot, "records.sqlite")).toString("hex"),
@@ -2128,9 +2114,30 @@ test("bound attachment: concurrent clones reserve before registry publication", 
     }
   }
 });
+const malformedRegistryScopes = [
+  null,
+  {},
+  { project: { lexical: "/project", real: "/project" } },
+  ...(process.platform === "win32"
+    ? ["/project", "\\project", "\\\\server", "\\\\server\\", "//server/"].map(
+        (path) => ({
+          project: { lexical: path, real: path },
+          lane: { lexical: path, real: path },
+        }),
+      )
+    : []),
+];
 for (const [name, expected] of [
   ["ordinary attachment", "OK"],
-  ["malformed registry saved roots", "INPUT_INVALID"],
+  ...malformedRegistryScopes.map(
+    (scope) =>
+      [
+        `malformed registry saved roots: ${JSON.stringify(scope)}`,
+        "INPUT_INVALID",
+      ] as const,
+  ),
+  ["retargeted saved project journal", "INPUT_CONFLICT"],
+  ["retargeted saved project registry", "INPUT_CONFLICT"],
   ["symlink attachment", "OK"],
   ["Drop-lexical-on-save", "OK"],
   ["project git precedes trusted git", "OK"],
@@ -2170,7 +2177,13 @@ for (const [name, expected] of [
       "symlink attachment",
       "Drop-lexical-on-save",
     ].includes(name);
-    const malformedRegistry = name === "malformed registry saved roots";
+    const malformedRegistry = name.startsWith(
+      "malformed registry saved roots:",
+    );
+    const retargetedProject = name.startsWith("retargeted saved project");
+    const malformedScope: unknown = malformedRegistry
+      ? JSON.parse(name.slice(name.indexOf(":") + 1))
+      : null;
     const live = name.startsWith("live attachment");
     const registryFailure = name.startsWith("registry ");
     const cleanupFailure = name.startsWith("registry cleanup");
@@ -2191,15 +2204,10 @@ for (const [name, expected] of [
           if (lexicalAttachment) {
             lexicalFixture = fx.persistedRootsFixture();
             rmSync(lexicalFixture.alias, { recursive: true });
-            symlinkSync(
-              s.dir,
-              lexicalFixture.alias,
-              process.platform === "win32" ? "junction" : "dir",
-            );
-            symlinkSync(
+            fx.directoryLink(s.dir, lexicalFixture.alias);
+            fx.directoryLink(
               join(lexicalFixture.project, "bin"),
               join(s.root, "bin"),
-              process.platform === "win32" ? "junction" : "dir",
             );
             lexicalFixture.env.PATH = lexicalFixture.env.PATH.replace(
               join(lexicalFixture.project, "bin"),
@@ -2283,22 +2291,40 @@ for (const [name, expected] of [
               releaseNeeded: !registryFailure,
               lane: { ...attachment, worktree: realpathSync.native(s.root) },
             };
-            if (malformedRegistry)
-              priorJournal = {
-                ...journal,
-                grant: OWN_GRANT,
-                lane: {
-                  ...attachment,
-                  worktree: realpathSync.native(s.root),
-                  gitScope: scopedGit.createGitScope(s.root),
-                },
+            if (malformedRegistry || retargetedProject) {
+              const fresh = scopedGit.createGitScope(s.root);
+              const lane = {
+                ...attachment,
+                worktree: fresh.lane.real,
+                brief: join(fresh.lane.real, "brief.md"),
+                gitScope: fresh,
               };
+              if (retargetedProject) {
+                const alias = join(s.dir, "saved-project"),
+                  replacement = join(s.dir, "replacement");
+                fx.directoryLink(s.root, alias);
+                const scope = scopedGit.createGitScope(alias, s.root);
+                if (name.endsWith("journal")) lane.gitScope = scope;
+                const registered = {
+                  ...lane,
+                  gitScope: name.endsWith("registry") ? scope : fresh,
+                };
+                writeFileSync(
+                  join(s.root, ".git", "forge-lanes.json"),
+                  JSON.stringify([registered]),
+                );
+                mkdirSync(replacement);
+                rmSync(alias, { recursive: true });
+                fx.directoryLink(replacement, alias);
+              }
+              priorJournal = { ...journal, grant: OWN_GRANT, lane };
+            }
             await seedJournal(s, priorJournal);
           }
           if (malformedRegistry)
             writeFileSync(
               join(s.root, ".git", "forge-lanes.json"),
-              JSON.stringify([{ ...attachment, gitScope: null }]),
+              JSON.stringify([{ ...attachment, gitScope: malformedScope }]),
             );
           if (registryFailure && !cleanupFailure)
             writeFileSync(
@@ -2457,6 +2483,30 @@ for (const [name, expected] of [
               return result;
             })
           : undefined;
+        let effects = () => [-1, -1];
+        let beforeRepeat: ReturnType<typeof bytes> = [];
+        const marker = join(r.s.root, "identity-launched");
+        const nativeAttach = boundLane.attachBoundLane;
+        const repeatProbe = retargetedProject
+          ? spyOn(boundLane, "attachBoundLane").mockImplementation(
+              (...args) => {
+                const services = args[1];
+                beforeRepeat = bytes(r.s);
+                const lock = spyOn(services.files, "lock"),
+                  write = spyOn(services.files, "write");
+                effects = () => [
+                  lock.mock.calls.length,
+                  write.mock.calls.length,
+                ];
+                const run = services.process.run.bind(services.process);
+                spyOn(services.process, "run").mockImplementation((...args) => {
+                  writeFileSync(marker, "launched");
+                  return run(...args);
+                });
+                return nativeAttach(...args);
+              },
+            )
+          : undefined;
         try {
           if (projectGit) {
             const providers = createAssemblyProviders(r.s.root, {
@@ -2479,7 +2529,8 @@ for (const [name, expected] of [
             };
             const files = await providers.openFiles(scope);
             try {
-              const marker = join(r.s.root, "identity-launched");
+              if (malformedRegistry)
+                expect(validGitScope(malformedScope)).toBe(false);
               const lock = spyOn(files.value, "lock"),
                 write = spyOn(files.value, "write");
               if (malformedRegistry)
@@ -2605,6 +2656,13 @@ for (const [name, expected] of [
           if (name.includes("during final identity"))
             expect(finalIdentity).toBe(true);
           expect(result.ok ? "OK" : result.error.code).toBe(expected);
+          if (retargetedProject)
+            expect([existsSync(marker), ...effects(), bytes(r.s)]).toEqual([
+              false,
+              0,
+              0,
+              beforeRepeat,
+            ]);
           expect(readFileSync(join(r.s.root, "brief.md"), "utf8")).toBe(
             beforeFiles,
           );
@@ -2830,6 +2888,7 @@ for (const [name, expected] of [
             await unfenced.close();
           }
         } finally {
+          repeatProbe?.mockRestore();
           dropSpy?.mockRestore();
           cleanupSpy?.mockRestore();
           rollbackSpy?.mockRestore();

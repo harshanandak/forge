@@ -7,7 +7,6 @@ import {
   realpathSync,
   readFileSync,
   rmSync,
-  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,11 +14,12 @@ import { delimiter, dirname, join } from "node:path";
 import * as coordinator from "../../src/assembly/cloud-lane-coordinator.ts";
 import * as laneState from "../../src/blocks/work/bound-lane-state.ts";
 import * as scopedGit from "../../src/assembly/providers.ts";
-import { boundLaneRegistry } from "../../src/blocks/work/bound-lane.ts";
 import * as savedGit from "../../src/assembly/saved-git-scope.ts";
 import { createProcessPort } from "../../src/adapters/process/index.ts";
 import {
   exerciseGitScope,
+  gitFixtureTemp,
+  directoryLink,
   gitScopeRows,
   type ScopedGitApi,
   persistedRootsFixture,
@@ -40,21 +40,13 @@ for (const removed of [false, true])
     const f = persistedRootsFixture();
     try {
       const projectAlias = join(f.project, "project-alias");
-      symlinkSync(
-        f.project,
-        projectAlias,
-        process.platform === "win32" ? "junction" : "dir",
-      );
+      directoryLink(f.project, projectAlias);
       const scope = {
         ...f.scope,
         project: scopedGit.createGitScope(projectAlias).project,
       };
       rmSync(projectAlias, { recursive: true });
-      symlinkSync(
-        f.target,
-        projectAlias,
-        process.platform === "win32" ? "junction" : "dir",
-      );
+      directoryLink(f.target, projectAlias);
       const api = removed
         ? await withoutGuard<typeof scopedGit>(
             new URL("../../src/assembly/providers.ts", import.meta.url),
@@ -87,62 +79,6 @@ for (const removed of [false, true])
       expect(existsSync(f.marker)).toBe(false);
       expect(f.snapshot()).toEqual(before);
     } finally {
-      f.close();
-    }
-  });
-
-for (const invalid of [
-  null,
-  {},
-  { project: { lexical: "/project", real: "/project" } },
-  ...(process.platform === "win32"
-    ? ["/project", "\\project", "\\\\server", "\\\\server\\", "//server/"].map(
-        (path) => ({
-          project: { lexical: path, real: path },
-          lane: { lexical: path, real: path },
-        }),
-      )
-    : []),
-])
-  test(`strict clone registry refuses malformed saved roots: ${JSON.stringify(invalid)}`, async () => {
-    expect(savedGit.validGitScope(invalid)).toBe(false);
-    const f = persistedRootsFixture();
-    let files: Awaited<ReturnType<AssemblyProviders["openFiles"]>> | undefined;
-    try {
-      const registry = join(f.project, ".git", "forge-lanes.json");
-      writeFileSync(
-        registry,
-        JSON.stringify([
-          {
-            issue: "work-1",
-            worktree: f.target,
-            branch: "feat/one",
-            brief: "brief.md",
-            gitScope: invalid,
-          },
-        ]),
-      );
-      const before = [readFileSync(registry).toString("hex"), ...f.snapshot()];
-      files = await createAssemblyProviders(f.project, {
-        env: f.env,
-      }).openFiles({
-        op: "registry.read",
-        effects: ["files:read"],
-        signal: AbortSignal.timeout(15000),
-        deadline: Date.now() + 15000,
-        processContainment: "supervised",
-      });
-      expect(() =>
-        boundLaneRegistry(files!.value, (code) => {
-          throw new Error(code);
-        }),
-      ).toThrow("INPUT_INVALID");
-      expect([readFileSync(registry).toString("hex"), ...f.snapshot()]).toEqual(
-        before,
-      );
-      expect(existsSync(f.marker)).toBe(false);
-    } finally {
-      await files?.close();
       f.close();
     }
   });
@@ -289,7 +225,7 @@ for (const variant of [
   "environment effect",
 ] as const)
   test(`attached head table: ${variant}`, async () => {
-    const root = mkdtempSync(join(import.meta.dirname, ".forge-bound-head-"));
+    const root = gitFixtureTemp("forge-bound-head-");
     const caller = join(root, "caller"),
       target = join(root, "target");
     for (const path of [caller, target]) {

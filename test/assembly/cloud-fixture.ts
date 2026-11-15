@@ -27,9 +27,18 @@ export type ScopedGitApi = Pick<
   "gitCapability" | "resolveOutside"
 >;
 
+/** Runner scratch is outside both the checkout and the resolver's ordinary temp exclusion. */
+export function gitFixtureTemp(prefix: string): string {
+  const root = process.env.RUNNER_TEMP;
+  if (!root) throw new Error("Git security fixtures require RUNNER_TEMP");
+  return mkdtempSync(join(root, prefix));
+}
+export function directoryLink(target: string, link: string): void {
+  symlinkSync(target, link, process.platform === "win32" ? "junction" : "dir");
+}
 /** A saved lexical project outside the lane's canonical ancestry, with real executable markers. */
 export function persistedRootsFixture() {
-  const dir = mkdtempSync(join(import.meta.dirname, ".forge-saved-roots-"));
+  const dir = gitFixtureTemp("forge-saved-roots-");
   const project = join(dir, "project"),
     outside = mkdtempSync(join(tmpdir(), "forge-saved-lane-"));
   const trusted = realpathSync.native(Bun.which("git")!);
@@ -58,11 +67,7 @@ export function persistedRootsFixture() {
   const target = join(outside, "lane");
   git(["-C", project, "worktree", "add", "-q", "-b", "feat/one", target]);
   const alias = join(project, ".worktrees");
-  symlinkSync(
-    outside,
-    alias,
-    process.platform === "win32" ? "junction" : "dir",
-  );
+  directoryLink(outside, alias);
   const lexical = join(alias, "lane");
   const bin = join(project, "bin"),
     marker = join(bin, "launched");
@@ -148,7 +153,7 @@ export async function exerciseGitScope(
   api: ScopedGitApi,
   selectionOnly = false,
 ) {
-  const dir = mkdtempSync(join(import.meta.dirname, ".forge-git-scope-"));
+  const dir = gitFixtureTemp("forge-git-scope-");
   const project = join(dir, "project"),
     external = join(dir, "unrelated-install"),
     relativeInstall = join(dir, "relative-install");
