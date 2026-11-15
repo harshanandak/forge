@@ -82,6 +82,19 @@ The local storage work remains synchronous beneath the Promise interface.
 These capabilities prepare the local layer; bound provider selection and
 memory activation follow separately. Existing v1 consumers stay synchronous.
 
+The remote record provider is implemented but **not selected by assembly yet**;
+it adds no advertised capability or dispatch path in this stage. Memory remains v1.
+Its reads pin one namespace version across point absence, pages and aggregates.
+Each accepted commit consumes its read dependencies; per-item commits use distinct IDs.
+An unknown outcome blocks new plans and keeps the exact request bytes and ID for replay.
+Only a known conflict permits a logical retry with a fresh plan; replayed acceptance
+requires fresh subsequent reads because the receipt may describe an older snapshot.
+Cached methods enforce invocation abort/deadline, propagated to the checked record client.
+The next slice selects both state and project-level slots before local project acquisition,
+adds bound-peer fencing and uses the validated manifest UUID's first 16 dashless hex
+characters as the stable note prefix. Historical note-prefix mapping remains a separate
+lead-tracked follow-up; this provider never translates local note IDs.
+
 Input fields whose names map to reserved CLI flags, such as `text`, `json`,
 `help`, `input` or `dryRun`, must be passed using `--input JSON`. For an operation
 `greet.shout` with a `text` field, use `npx forge greet shout --input '{"text":"quiet"}'`
