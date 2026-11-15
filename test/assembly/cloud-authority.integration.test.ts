@@ -2130,6 +2130,7 @@ test("bound attachment: concurrent clones reserve before registry publication", 
 });
 for (const [name, expected] of [
   ["ordinary attachment", "OK"],
+  ["malformed registry saved roots", "INPUT_INVALID"],
   ["symlink attachment", "OK"],
   ["Drop-lexical-on-save", "OK"],
   ["project git precedes trusted git", "OK"],
@@ -2169,6 +2170,7 @@ for (const [name, expected] of [
       "symlink attachment",
       "Drop-lexical-on-save",
     ].includes(name);
+    const malformedRegistry = name === "malformed registry saved roots";
     const live = name.startsWith("live attachment");
     const registryFailure = name.startsWith("registry ");
     const cleanupFailure = name.startsWith("registry cleanup");
@@ -2281,8 +2283,23 @@ for (const [name, expected] of [
               releaseNeeded: !registryFailure,
               lane: { ...attachment, worktree: realpathSync.native(s.root) },
             };
+            if (malformedRegistry)
+              priorJournal = {
+                ...journal,
+                grant: OWN_GRANT,
+                lane: {
+                  ...attachment,
+                  worktree: realpathSync.native(s.root),
+                  gitScope: scopedGit.createGitScope(s.root),
+                },
+              };
             await seedJournal(s, priorJournal);
           }
+          if (malformedRegistry)
+            writeFileSync(
+              join(s.root, ".git", "forge-lanes.json"),
+              JSON.stringify([{ ...attachment, gitScope: null }]),
+            );
           if (registryFailure && !cleanupFailure)
             writeFileSync(
               join(s.root, ".git", "forge-lanes.json.lock"),
@@ -2426,7 +2443,7 @@ for (const [name, expected] of [
               )
             : undefined;
         const projectGit =
-          name === "project git precedes trusted git"
+          name === "project git precedes trusted git" || malformedRegistry
             ? spyOn(launch, "runProcess")
             : undefined;
         const expiry = name.includes("during final identity")
@@ -2462,8 +2479,20 @@ for (const [name, expected] of [
             };
             const files = await providers.openFiles(scope);
             try {
-              const lane = await attachBoundLane(
-                readBoundLane({ ...journal, grant: OWN_GRANT }, "work-1"),
+              const marker = join(r.s.root, "identity-launched");
+              const lock = spyOn(files.value, "lock"),
+                write = spyOn(files.value, "write");
+              if (malformedRegistry)
+                projectGit.mockImplementation(async (...args) => {
+                  writeFileSync(marker, "launched");
+                  return runProcess(...args);
+                });
+              const before = bytes(r.s);
+              const attempt = attachBoundLane(
+                readBoundLane(
+                  priorJournal ?? { ...journal, grant: OWN_GRANT },
+                  "work-1",
+                ),
                 {
                   files: files.value,
                   process: providers.process(scope),
@@ -2476,6 +2505,19 @@ for (const [name, expected] of [
                   publish: (_lane, write) => Promise.resolve(write()),
                 },
               );
+              if (malformedRegistry) {
+                await expect(attempt).rejects.toMatchObject({
+                  error: { code: "INPUT_INVALID" },
+                });
+                expect([
+                  existsSync(marker),
+                  lock.mock.calls.length,
+                  write.mock.calls.length,
+                  bytes(r.s),
+                ]).toEqual([false, 0, 0, before]);
+                return;
+              }
+              const lane = await attempt;
               expect(lane.branch).toBe("feat/one");
               expect(existsSync(join(r.s.root, "project-git-ran"))).toBe(false);
               expect([
