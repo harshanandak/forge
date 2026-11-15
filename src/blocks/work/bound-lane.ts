@@ -558,6 +558,7 @@ export async function attachBoundLane(
   );
   const problems = helpers.briefProblems(files.read(brief, 262144) ?? "");
   if (problems.length) refuse("INPUT_INVALID", problems.join("; "));
+  boundLaneRegistry(files);
   const gitScope = reopenGitScope(
     files.root,
     services.gitScope ?? reopenGitScope(services.process.cwd),
