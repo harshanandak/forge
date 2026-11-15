@@ -1,7 +1,8 @@
 import { ForgeFailure } from "../../contract/failure.ts";
 import {
   projectManifestRoot,
-  resolveOutside,
+  createGitScope,
+  gitCapability,
 } from "../../assembly/providers.ts";
 import type { TrackerItem } from "../../generated/types.ts";
 import type {
@@ -484,13 +485,14 @@ export function boundLaneGit(
     "TEMP",
     "TMP",
   ]);
-  const git = resolveOutside(process, "git", env, [
-    projectManifestRoot(process.cwd),
-    cwd,
-  ]);
-
-  if (git.kind !== "resolved") refuse("UNAVAILABLE", "Git is unavailable.");
+  const pin = gitCapability(
+    process,
+    env,
+    createGitScope(projectManifestRoot(process.cwd), cwd),
+  );
   const readGit = async (args: string[]) => {
+    const git = pin.executable();
+    if (git.kind !== "resolved") refuse("UNAVAILABLE", "Git is unavailable.");
     const result = await process.run(git, args, {
       cwd: cwd,
       env,

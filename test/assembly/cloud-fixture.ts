@@ -121,6 +121,7 @@ export async function exerciseGitScope(row: GitScopeRow, api: ScopedGitApi) {
     const before = JSON.stringify(snapshot());
     const port = createProcessPort();
     const pin = api.gitCapability(port, env, scope);
+    if (row === "plain checkout") env.PATH = "";
     const target =
       row === "cross-project"
         ? { project: pair(external), lane: pair(external) }
