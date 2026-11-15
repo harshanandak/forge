@@ -128,7 +128,10 @@ const helpers = entry as unknown as {
 export function boundLaneRegistry(
   files: FilesService,
   reject: typeof refuse = refuse,
-) {
+): {
+  text: string | null;
+  lanes: (BoundLaneRecord["lane"] & { attempt?: string })[];
+} {
   const saved = helpers.laneRegistry(files, reject);
   if (
     saved.lanes.some(
