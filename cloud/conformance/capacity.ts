@@ -29,7 +29,10 @@ import type { SqlDatabase } from "../../src/ports/store.ts";
 import { Project } from "../src/project.ts";
 import { pageOrder } from "./page-order.ts";
 import { storageOf } from "./storage.ts";
-import { expectedImage, type StopPlan } from "./restored.ts";
+import { expectsStop, stopObservation } from "./stop-live.ts";
+import { capacityStop } from "./stop-capacity.ts";
+import { stopPlan, expectedImage, type StopPlan } from "./restored.ts";
+import type { Tables } from "./max-source.ts";
 import { pagesOf } from "../../tools/import-current-state.ts";
 import { limitsFrom } from "../src/dump.ts";
 import {
@@ -175,10 +178,12 @@ const SHAPES: Record<string, () => Shape | Promise<Shape>> = {
     }),
   // A restore adds an issue number floor (one record and one event) when the dump has none, then measures the project
   // again. So 19,999 rows in, 20,000 out: both tables sit exactly on the candidate row cap after the floor.
-  "rows-records": () => ceiling({ records: 19_999 }),
+  "rows-records": () => ceiling({ records: expectsStop() ? 19_997 : 19_999 }),
   // 9,999 acquisitions + 9,999 releases + one record event + the derived floor = 20,000 events.
-  "rows-leases": () => ceiling({ records: 1, leases: 9_999 }),
-  "rows-leases-over": () => ceiling({ records: 2, leases: 9_999, runs: 1 }),
+  "rows-leases": () =>
+    ceiling({ records: 1, leases: expectsStop() ? 9_998 : 9_999 }),
+  "rows-leases-over": () =>
+    ceiling({ records: 2, leases: expectsStop() ? 9_998 : 9_999, runs: 1 }),
   "leases-after-deadline": () =>
     ceiling({ leases: 1, at: Date.UTC(2027, 0, 16), runs: 1 }),
   // Stored bytes at the candidate cap, to within one byte, with the supplied floor making 10,000 records and events, the old row cap.
@@ -189,7 +194,21 @@ const SHAPES: Record<string, () => Shape | Promise<Shape>> = {
       value: withPad(() => 0),
     });
     const zero = await source(base);
-    const empty = storedBytes(zero.db);
+    let empty = storedBytes(zero.db);
+    if (expectsStop()) {
+      const plan = stopPlan(
+        { state_records: [], state_events: [{ sequence: BYTES_ROWS + 1 }] },
+        {
+          at: new Date().toISOString(),
+          incarnation: "00000000-0000-4000-8000-000000000000",
+          auditId: "00000000-0000-4000-8000-000000000001",
+          window: [0, Number.MAX_SAFE_INTEGER],
+        },
+      )!;
+      for (const row of [...plan.records, ...plan.events])
+        for (const value of Object.values(row))
+          empty += Buffer.byteLength(String(value));
+    }
     zero.db.close();
     const each = Math.floor((CANDIDATE_BYTES - empty) / (2 * BYTES_ROWS));
     const rest = Math.floor(
@@ -451,17 +470,20 @@ async function restoreAll(): Promise<Done> {
     const count = { n: 0 };
     const { storage } = storageOf(db, count);
     const project = new Project({ storage }, env(limits));
+    let window: readonly [number, number] = [0, 0];
     for (const [page, file] of files.entries()) {
       const body = readFileSync(join(dir, file), "utf8");
       const queries = count.n;
       const cpu = process.threadCpuUsage();
       const started = performance.now();
+      const start = Date.now();
       const reply = await project.fetch(
         new Request(`https://cap.example/p/${NAME}/restore`, {
           method: "POST",
           body,
         }),
       );
+      window = [start, Date.now()];
       const answer = await reply.text();
       const wallMs = performance.now() - started;
       const used = process.threadCpuUsage(cpu);
@@ -499,7 +521,31 @@ async function restoreAll(): Promise<Done> {
       }
     }
     assert.equal(refuse, false, "release-only overflow must be refused");
-    const wrong = await differences(db, expect, stop);
+    let plan = stop;
+    if (expectsStop()) {
+      const observation = stopObservation(window);
+      observation.add({
+        state_records: db
+          .prepare(
+            "SELECT namespace,key,revision,body FROM state_records WHERE namespace='forge/work' AND key IN ('lane-control:global','allocation:issue:work-')",
+          )
+          .all() as Tables[string],
+        state_events: db
+          .prepare(
+            "SELECT sequence,namespace,key,body FROM state_events ORDER BY sequence DESC LIMIT 1",
+          )
+          .all() as Tables[string],
+      });
+      plan = capacityStop(
+        (function* () {
+          for (const file of files)
+            yield JSON.parse(readFileSync(join(dir, file), "utf8"));
+        })(),
+        expect,
+        observation,
+      );
+    }
+    const wrong = await differences(db, expect, plan);
     if (wrong.length > 0) mismatches.push(`run ${run}: ${wrong.join("; ")}`);
     db.close();
   }
@@ -538,7 +584,9 @@ async function measure(
   const refuse = name === "rows-leases-over";
   if (name === "rows-leases" || refuse)
     assert.equal(
-      meta.rows.state_events! + meta.rows.state_leases! + 1,
+      meta.rows.state_events! +
+        meta.rows.state_leases! +
+        (expectsStop() ? 3 : 1),
       20_000 + Number(refuse),
     );
   const done = await inWorker({
