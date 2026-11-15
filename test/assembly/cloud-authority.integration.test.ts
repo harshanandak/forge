@@ -26,6 +26,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { blockCapture } from "../../src/assembly/capture.ts";
 import { createAssemblyProviders } from "../../src/assembly/providers.ts";
 import { attachBoundLane } from "../../src/blocks/work/bound-lane.ts";
+import * as boundLane from "../../src/blocks/work/bound-lane.ts";
 import { boundDispatch } from "../../tools/lane-control.ts";
 import { coordinateLane } from "../../src/assembly/cloud-lane-coordinator.ts";
 import { cloudRoute, selectCloud } from "../../src/assembly/cloud-authority.ts";
@@ -59,6 +60,7 @@ import { exitCode, respond } from "../../src/surface/result.ts";
 import { done, stageBlock } from "../blocks/memory/lib.ts";
 import * as fx from "./cloud-fixture.ts";
 import * as launch from "../../src/adapters/process/run.ts";
+import * as durable from "../../src/adapters/fs/durable-io.ts";
 import * as authority from "../../src/assembly/cloud-binding.ts";
 import { relay } from "../fixtures/owner-approval.ts";
 import {
@@ -1421,7 +1423,7 @@ for (const [name, variants] of [
             }
             await seedJournal(s, {
               ...journal,
-              lane: { ...attachment, worktree: s.root },
+              lane: { ...attachment, worktree: realpathSync.native(s.root) },
               grant: OWN_GRANT,
               ...(name === "Malformed progress"
                 ? { progress: malformed[variant as keyof typeof malformed] }
@@ -1858,10 +1860,76 @@ for (const [name, variants] of [
       );
     }
   });
+test("bound attachment: concurrent clones reserve before registry publication", async () => {
+  for (const guarded of [true, false]) {
+    const s = fx.sandbox();
+    const local = new LocalState(join(s.deviceRoot, "records.sqlite"));
+    try {
+      const owner = (await local.open(true))!;
+      const client = owner.client("forge/work", OWN_GRANT.holder.actor);
+      const barrier = Promise.withResolvers<void>();
+      const project = fx.bindingFor(),
+        registry = "forge-lanes.json";
+      let entered = 0;
+      const registries = [s.root, s.home];
+      const mutant = guarded
+        ? undefined
+        : await fx.withoutGuard<typeof boundLane>(
+            new URL("../../src/blocks/work/bound-lane.ts", import.meta.url),
+            "revision = store.save(record, revision).revision;",
+          );
+      if (mutant) expect(mutant.mutationLoaded).toBe(true);
+      const start = mutant?.boundLaneStart ?? boundLane.boundLaneStart;
+      const replies = await Promise.allSettled(
+        registries.map((root) =>
+          start(
+            { id: ISSUE.id, branch: "feat/one", brief: "brief.md" },
+            { ...OWN_GRANT.holder, project: { id: "fixture", root } },
+            "dev-1",
+            () => NOW,
+            project,
+            client,
+            () => Promise.resolve({ ...ISSUE, lease: OWN_GRANT }),
+            () =>
+              Promise.resolve({
+                save: (r, v) => writeBoundLane(client, project, r, v),
+                restore: () => expect.unreachable("Unexpected rollback"),
+              }),
+            async (record, fence) => {
+              if (++entered === 2) barrier.resolve();
+              await barrier.promise;
+              await fence.publish(
+                record.lane,
+                () => writeFileSync(join(root, registry), "attached"),
+                () => true,
+              );
+              return record.lane;
+            },
+          ),
+        ),
+      );
+      expect(replies.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+      const loser = replies.findIndex((r) => r.status === "rejected");
+      expect(existsSync(join(registries[loser]!, registry))).toBe(!guarded);
+      const winner = 1 - loser;
+      expect(
+        readBoundLane(client.get(journalKey())!.value, "work-1"),
+      ).toMatchObject({ active: true, lane: { worktree: registries[winner] } });
+    } finally {
+      await local.close();
+      s.close();
+    }
+  }
+});
 for (const [name, expected] of [
   ["ordinary attachment", "OK"],
   ["project git precedes trusted git", "OK"],
   ["failed restart preserves attachment", "OK"],
+  ["live attachment different checkout", "INPUT_CONFLICT"],
+  ["live attachment different branch", "INPUT_CONFLICT"],
+  ["live attachment different brief", "INPUT_CONFLICT"],
+  ["live attachment same identity", "OK"],
+  ["stale attachment dispatch", "OK"],
   ["wrong actor", "LEASE_NOT_HELD"],
   ["wrong session", "LEASE_NOT_HELD"],
   ["wrong device", "AUTH_DEVICE_MISMATCH"],
@@ -1875,6 +1943,12 @@ for (const [name, expected] of [
   ["generation changes during fence", "LEASE_STALE"],
   ["grant expires during fence", "LEASE_EXPIRED"],
   ["grant expires during final identity", "LEASE_EXPIRED"],
+  ["released and reclaimed during final identity", "LEASE_NOT_HELD"],
+  ["unknown grant during final identity", "UNAVAILABLE"],
+  ["grant changes during writable prepare", "LEASE_NOT_HELD"],
+  ["registry lock rolls back reservation", "INPUT_CONFLICT"],
+  ["registry lock rollback counterfactual", "INPUT_CONFLICT"],
+  ["registry cleanup leaves pending reservation", "INPUT_CONFLICT"],
   ["invalid brief", "INPUT_INVALID"],
   ["closed issue", "INPUT_CONFLICT"],
   ["absent issue", "NOT_FOUND"],
@@ -1882,8 +1956,15 @@ for (const [name, expected] of [
   ["losing claim", "LEASE_NOT_HELD"],
 ] as const)
   test(`bound attachment table: ${name}`, () => {
+    const live = name.startsWith("live attachment");
+    const registryFailure = name.startsWith("registry ");
+    const cleanupFailure = name.startsWith("registry cleanup");
     let reads = 0;
     let time = NOW;
+    let finalIdentity = false;
+    let prepared = false;
+    let cloudGrant: LeaseRecord | undefined = OWN_GRANT;
+    let priorJournal: unknown;
     let sandbox: fx.Sandbox;
     return using(
       {
@@ -1931,21 +2012,56 @@ for (const [name, expected] of [
                 },
               ]),
             );
-          if (
-            expected !== "OK" &&
-            !["ambiguous claim", "losing claim"].includes(name)
-          )
+          if (live) {
+            const lane = {
+              ...attachment,
+              worktree: name.endsWith("checkout")
+                ? join(s.dir, "clone-a")
+                : realpathSync.native(s.root),
+              branch: name.endsWith("branch") ? "feat/original" : "feat/one",
+              brief: name.endsWith("brief") ? "original.md" : "brief.md",
+            };
             await seedJournal(s, {
               ...journal,
               grant: OWN_GRANT,
-              active: false,
               releaseNeeded: true,
-              lane: { ...attachment, worktree: s.root },
+              lane,
+              progress: {
+                generation: 4,
+                actions: 1,
+                records: 0,
+                review: 0,
+                ci: 0,
+                started: NOW,
+                pending: true,
+                head: "a".repeat(40),
+              },
             });
+          } else if (
+            expected !== "OK" &&
+            !["ambiguous claim", "losing claim"].includes(name) &&
+            !cleanupFailure
+          ) {
+            priorJournal = {
+              ...journal,
+              grant: OWN_GRANT,
+              active: false,
+              releaseNeeded: !registryFailure,
+              lane: { ...attachment, worktree: realpathSync.native(s.root) },
+            };
+            await seedJournal(s, priorJournal);
+          }
+          if (registryFailure && !cleanupFailure)
+            writeFileSync(
+              join(s.root, ".git", "forge-lanes.json.lock"),
+              "held",
+            );
         },
         steps: [
           ({ body }) => {
             const call = body as { op: string };
+            if (call.op === "issue.release")
+              return answer({ id: ISSUE.id }, call.op);
             if (call.op === "issue.claim") {
               if (name === "ambiguous claim")
                 throw new Error("accepted then timed out");
@@ -1961,6 +2077,8 @@ for (const [name, expected] of [
             }
             expect(call.op).toBe("issue.show");
             reads++;
+            if (finalIdentity && name === "unknown grant during final identity")
+              throw new Error("fresh grant read timed out");
             if (reads === 2 && name === "branch changes during fence") {
               const changed = spawnSync(
                 "git",
@@ -1995,7 +2113,14 @@ for (const [name, expected] of [
                       ? { ...OWN_GRANT, generation: OWN_GRANT.generation + 1 }
                       : reads === 2 && name === "grant expires during fence"
                         ? { ...OWN_GRANT, expiresAt: iso(NOW - 1) }
-                        : OWN_GRANT;
+                        : prepared &&
+                            name === "grant changes during writable prepare"
+                          ? { ...heldBy(), generation: 5 }
+                          : finalIdentity &&
+                              name ===
+                                "released and reclaimed during final identity"
+                            ? { ...heldBy(), generation: 5 }
+                            : OWN_GRANT;
             return name === "absent issue"
               ? refusing("NOT_FOUND")
               : answer({
@@ -2012,21 +2137,62 @@ for (const [name, expected] of [
             ? await r.open(join(r.s.root, "src"))
             : r.assembly;
         const runProcess = launch.runProcess;
-        const projectGit =
-          name === "project git precedes trusted git"
-            ? spyOn(launch, "runProcess")
+        const exclusive = durable.publishExclusive;
+        const cleanupSpy = cleanupFailure
+          ? spyOn(durable, "publishExclusive").mockImplementation(
+              (from, to) => {
+                exclusive(from, to);
+                if (to.endsWith("forge-lanes.json"))
+                  throw new ForgeFailure({
+                    code: "INPUT_CONFLICT",
+                    message: "post-publication cleanup failed",
+                    retry: "reconcile_first",
+                  });
+              },
+            )
+          : undefined;
+        const noRollback =
+          name === "registry lock rollback counterfactual"
+            ? await fx.withoutGuard<typeof boundLane>(
+                new URL("../../src/blocks/work/bound-lane.ts", import.meta.url),
+                "if (unpublished()) store.restore(previous, revision);",
+              )
             : undefined;
-        const expiry =
-          name === "grant expires during final identity"
-            ? spyOn(launch, "runProcess").mockImplementation(
-                async (...args) => {
-                  const result = await runProcess(...args);
-                  if (reads === 2 && args[1][0] === "symbolic-ref")
-                    time = Date.parse(OWN_GRANT.expiresAt);
+        if (noRollback) expect(noRollback.mutationLoaded).toBe(true);
+        const rollbackSpy = noRollback
+          ? spyOn(boundLane, "boundLaneStart").mockImplementation(
+              noRollback.boundLaneStart,
+            )
+          : undefined;
+        const openStore = Reflect.get(LocalState.prototype, "open");
+        const promotion =
+          name === "grant changes during writable prepare"
+            ? spyOn(LocalState.prototype, "open").mockImplementation(
+                async function (this: LocalState, write) {
+                  const result = await openStore.call(this, write);
+                  if (write && !prepared) {
+                    await Promise.resolve();
+                    prepared = true;
+                  }
                   return result;
                 },
               )
             : undefined;
+        const projectGit =
+          name === "project git precedes trusted git"
+            ? spyOn(launch, "runProcess")
+            : undefined;
+        const expiry = name.includes("during final identity")
+          ? spyOn(launch, "runProcess").mockImplementation(async (...args) => {
+              const result = await runProcess(...args);
+              if (reads === 2 && args[1][0] === "symbolic-ref") {
+                finalIdentity = true;
+                if (name === "grant expires during final identity")
+                  time = Date.parse(OWN_GRANT.expiresAt);
+              }
+              return result;
+            })
+          : undefined;
         try {
           if (projectGit) {
             const providers = createAssemblyProviders(r.s.root, {
@@ -2058,7 +2224,10 @@ for (const [name, expected] of [
                   now: () => NOW,
                   ...scope,
                 },
-                async () => {},
+                {
+                  check: async () => {},
+                  publish: (_lane, write) => Promise.resolve(write()),
+                },
               );
               expect(lane.branch).toBe("feat/one");
               expect(existsSync(join(r.s.root, "project-git-ran"))).toBe(false);
@@ -2078,6 +2247,14 @@ for (const [name, expected] of [
               .project!,
           };
           const before = attachmentBytes(r.s);
+          const start = () =>
+            assembly.catalog.invoke(
+              r.request(
+                "lane.start",
+                { id: ISSUE.id, branch: "feat/one", brief: "brief.md" },
+                { context },
+              ),
+            );
           const beforeFiles = readFileSync(join(r.s.root, "brief.md"), "utf8");
           const claimed = await assembly.catalog.invoke(
             r.request("issue.claim", { id: ISSUE.id }, { context }),
@@ -2109,14 +2286,7 @@ for (const [name, expected] of [
               join(r.s.deviceRoot, "records.sqlite"),
             );
             try {
-              expect(
-                (await local.open(false))!.get("forge/work", journalKey())!
-                  .value,
-              ).toMatchObject({
-                active: false,
-                releaseNeeded: true,
-                grant: OWN_GRANT,
-              });
+              expect(await local.open(false)).toBeUndefined();
             } finally {
               await local.close();
             }
@@ -2143,6 +2313,8 @@ for (const [name, expected] of [
               { context: altered },
             ),
           );
+          if (name.includes("during final identity"))
+            expect(finalIdentity).toBe(true);
           expect(result.ok ? "OK" : result.error.code).toBe(expected);
           expect(readFileSync(join(r.s.root, "brief.md"), "utf8")).toBe(
             beforeFiles,
@@ -2151,6 +2323,50 @@ for (const [name, expected] of [
             false,
           );
           if (expected !== "OK") {
+            if (registryFailure) {
+              const local = new LocalState(
+                join(r.s.deviceRoot, "records.sqlite"),
+              );
+              try {
+                const state = (await local.open(false))!;
+                const restored = state.get("forge/work", journalKey())!.value;
+                if (noRollback || cleanupFailure)
+                  expect(restored).toMatchObject({
+                    active: false,
+                    releaseNeeded: true,
+                  });
+                else expect(restored).toEqual(priorJournal);
+              } finally {
+                await local.close();
+              }
+              if (cleanupFailure) {
+                expect(attachmentBytes(r.s)[1]).not.toBeNull();
+                const released = await assembly.catalog.invoke(
+                  r.request("lane.release", { id: ISSUE.id }, { context }),
+                );
+                expect(released.ok, JSON.stringify(released)).toBe(true);
+                return;
+              }
+              rmSync(join(r.s.root, ".git", "forge-lanes.json.lock"));
+              expect(
+                spawnSync(
+                  "git",
+                  ["-C", r.s.root, "checkout", "-b", "feat/other"],
+                  { windowsHide: true },
+                ).status,
+              ).toBe(0);
+              const retry = await assembly.catalog.invoke(
+                r.request(
+                  "lane.start",
+                  { id: ISSUE.id, branch: "feat/other", brief: "brief.md" },
+                  { context },
+                ),
+              );
+              expect(retry.ok, JSON.stringify(retry)).toBe(!noRollback);
+              return;
+            }
+            if (live || finalIdentity)
+              expect(exitCode(result)).toBe(expected === "UNAVAILABLE" ? 1 : 4);
             if (name === "grant expires during final identity")
               expect(time).toBe(Date.parse(OWN_GRANT.expiresAt));
             expect(attachmentBytes(r.s)).toEqual(before);
@@ -2159,6 +2375,37 @@ for (const [name, expected] of [
                 (call) => (call.body as { op: string }).op === "issue.release",
               ),
             ).toBe(false);
+            if (
+              (live ||
+                finalIdentity ||
+                name === "grant changes during writable prepare") &&
+              expected !== "LEASE_EXPIRED"
+            ) {
+              const mutant = await fx.withoutGuard<typeof boundLane>(
+                new URL("../../src/blocks/work/bound-lane.ts", import.meta.url),
+                live
+                  ? "if (\n      previous &&"
+                  : "const store = await prepare(id);\n      await fence.check();",
+                live
+                  ? "if (\n      false &&"
+                  : name === "grant changes during writable prepare"
+                    ? "await fence.check();\n      const store = await prepare(id);"
+                    : "const store = await prepare(id);",
+              );
+              expect(mutant.mutationLoaded).toBe(true);
+              expect(mutant.attachBoundLane).not.toBe(attachBoundLane);
+              const key = live ? "attachBoundLane" : "boundLaneStart";
+              const spy = spyOn(boundLane, key).mockImplementation(mutant[key]);
+              reads = 0;
+              finalIdentity = false;
+              prepared = false;
+              try {
+                const unsafe = await start();
+                expect(unsafe.ok, JSON.stringify(unsafe)).toBe(true);
+              } finally {
+                spy.mockRestore();
+              }
+            }
             return;
           }
           expect(result).toMatchObject({
@@ -2193,6 +2440,11 @@ for (const [name, expected] of [
                 branch: "feat/one",
               },
             });
+            if (name === "live attachment same identity")
+              expect(
+                (await local.open(false))!.get("forge/work", journalKey())!
+                  .value,
+              ).toHaveProperty("progress.pending", true);
           } finally {
             await local.close();
           }
@@ -2219,7 +2471,46 @@ for (const [name, expected] of [
               result: { lanes: [{ id: ISSUE.id, step: "attached" }] },
             });
           }
+          if (name === "stale attachment dispatch") {
+            cloudGrant = undefined;
+            cloudGrant = { ...heldBy(), generation: 5 };
+            let launches = 0;
+            const send: boundLane.BoundCommand = async (op, _input, gen) => {
+              await Promise.resolve();
+              if (op === "issue.renew" && gen !== cloudGrant?.generation)
+                throw new ForgeFailure({
+                  code: "LEASE_STALE",
+                  message: "Device B holds generation 5",
+                  retry: "reconcile_first",
+                });
+              return { incarnation: "one", epoch: 1, stopped: false };
+            };
+            const timing = { now: () => NOW, schedule: () => () => {} };
+            const boundary = boundDispatch(send, "work-1", 4, timing);
+            await expect(
+              boundary.beforeSpawn().then(() => launches++),
+            ).rejects.toMatchObject({
+              error: { code: "LEASE_STALE" },
+            });
+            expect(launches).toBe(0);
+            await boundary.close();
+            const mutant = await fx.withoutGuard<
+              typeof import("../../tools/lane-control.ts")
+            >(
+              new URL("../../tools/lane-control.ts", import.meta.url),
+              'command("issue.renew", { id }, generation)',
+              "Promise.resolve({ generation, expiresAt: new Date(timing.now() + 60000).toISOString() })",
+            );
+            expect(mutant.mutationLoaded).toBe(true);
+            const unfenced = mutant.boundDispatch(send, "work-1", 4, timing);
+            await unfenced.beforeSpawn().then(() => launches++);
+            expect(launches).toBe(1);
+            await unfenced.close();
+          }
         } finally {
+          cleanupSpy?.mockRestore();
+          rollbackSpy?.mockRestore();
+          promotion?.mockRestore();
           expiry?.mockRestore();
           projectGit?.mockRestore();
           if (assembly !== r.assembly) await assembly.close();
