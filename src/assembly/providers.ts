@@ -1,5 +1,6 @@
 import {
   existsSync,
+  lstatSync,
   readdirSync,
   readFileSync,
   realpathSync,
@@ -332,6 +333,19 @@ export function resolveOutside(
     for (const path of typeof root === "string" ? [root] : root) {
       const canonical = realpathSync(path);
       excluded.push(canonical);
+      // A checkout's .git pointer cannot vouch for its enclosing checkouts.
+      for (let ancestor = canonical; ;) {
+        try {
+          lstatSync(join(ancestor, ".git"));
+          excluded.push(ancestor);
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
+        }
+        const parent = dirname(ancestor);
+        if (parent === ancestor) break;
+        ancestor = parent;
+      }
       const checkout = nearestCheckoutRoot(canonical);
       if (!checkout) continue;
       excluded.push(checkout);

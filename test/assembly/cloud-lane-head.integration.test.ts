@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, delimiter, dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import * as coordinator from "../../src/assembly/cloud-lane-coordinator.ts";
 import * as laneState from "../../src/blocks/work/bound-lane-state.ts";
 import {
@@ -118,7 +118,10 @@ for (const variant of [
     const linkedRoot = variant === "linked target" ? target : processRoot;
     const mainBin = join(main, "bin"),
       probe = join(root, "project-git-ran");
-    const poison = join(mainBin, basename(trusted));
+    const poison = join(
+      mainBin,
+      process.platform === "win32" ? "git.cmd" : "git",
+    );
     if (linked) {
       if (variant === "linked target") mkdirSync(join(caller, ".git"));
       mkdirSync(gitdir, { recursive: true });
@@ -133,7 +136,13 @@ for (const variant of [
           variant.endsWith("forged") ? elsewhere : "../..\n",
         );
       }
-      writeFileSync(poison, "project-controlled executable", { mode: 0o755 });
+      writeFileSync(
+        poison,
+        process.platform === "win32"
+          ? `@echo off\r\necho ran>"${probe}"\r\nexit /b 99\r\n`
+          : `#!/bin/sh\nprintf ran > '${probe.replace(/'/g, "'\\''")}'\nexit 99\n`,
+        { mode: 0o755 },
+      );
     }
     const env = {
       PATH: [
@@ -272,7 +281,7 @@ for (const variant of [
       if (linked) {
         const mutant = await withoutGuard<typeof providerModule>(
           new URL("../../src/assembly/providers.ts", import.meta.url),
-          /if \(existsSync\(join\(ancestor, "\.git"\)\)\)\s+excluded.push\(ancestor\);|excluded.push\(basename\(common\)[^\n]+/g,
+          /excluded.push\(ancestor\);|excluded.push\(basename\(common\)[^\n]+/g,
         );
         expect(mutant.mutationLoaded).toBe(true);
         expect(mutant.resolveOutside).not.toBe(providerModule.resolveOutside);

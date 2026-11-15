@@ -154,7 +154,11 @@ function ownBoundGrant(
 
 export interface BoundAttachFence {
   check(): Promise<void>;
-  publish(lane: BoundLaneRecord["lane"]): Promise<void>;
+  publish(lane: BoundLaneRecord["lane"], write: () => void): Promise<void>;
+}
+export interface BoundAttachStore {
+  save(record: BoundLaneRecord, revision: number): StateRecord;
+  restore(previous: BoundLaneRecord | undefined, revision: number): void;
 }
 
 export async function boundLaneStart(
@@ -165,7 +169,7 @@ export async function boundLaneStart(
   project: BoundProject,
   state: Pick<StateClient, "get"> | undefined,
   command: BoundCommand,
-  save: (record: BoundLaneRecord, revision: number) => Promise<StateRecord>,
+  prepare: (id: string) => Promise<BoundAttachStore>,
   attach: (
     record: BoundLaneRecord,
     fence: BoundAttachFence,
@@ -213,11 +217,27 @@ export async function boundLaneStart(
         grant.generation,
       );
     },
-    async publish(lane) {
+    async publish(lane, write) {
+      const store = await prepare(id);
       await fence.check();
-      // Reserve this revision before the caller can publish a clone registry.
+      // Cloud authority is not atomic with the following synchronous CAS, registry write and activation.
       record = { ...record, lane };
-      revision = (await save(record, revision)).revision;
+      revision = store.save(record, revision).revision;
+      try {
+        write();
+      } catch (error) {
+        try {
+          store.restore(previous, revision);
+        } catch (rollback) {
+          if (
+            !(rollback instanceof ForgeFailure) ||
+            rollback.error.code !== "REVISION_CONFLICT"
+          )
+            throw rollback;
+        }
+        throw error;
+      }
+      store.save({ ...record, active: true }, revision);
     },
   };
   const lane = await attach(
@@ -227,8 +247,6 @@ export async function boundLaneStart(
       ? previous.lane
       : undefined,
   );
-  record = { ...record, lane, active: true };
-  await save(record, revision);
   return { ...lane, issue: fresh.id, lease: grant };
 }
 
@@ -568,16 +586,16 @@ export async function attachBoundLane(
       );
     await fence.check();
     await identity();
-    // Git awaits may outlive a released grant; cached expiry is not authority.
-    await fence.publish(lane);
-    if (Date.parse(record.grant.expiresAt) <= services.now())
-      refuse("LEASE_EXPIRED", "The cloud grant expired.");
-    if (!existing.length)
-      files.write(
-        "forge-lanes.json",
-        JSON.stringify([...saved.lanes, lane]) + "\n",
-        { area: "common", expected: saved.text },
-      );
+    await fence.publish(lane, () => {
+      if (Date.parse(record.grant.expiresAt) <= services.now())
+        refuse("LEASE_EXPIRED", "The cloud grant expired.");
+      if (!existing.length)
+        files.write(
+          "forge-lanes.json",
+          JSON.stringify([...saved.lanes, lane]) + "\n",
+          { area: "common", expected: saved.text },
+        );
+    });
     return lane;
   } finally {
     lock.release();

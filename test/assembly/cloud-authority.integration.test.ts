@@ -1876,7 +1876,7 @@ test("bound attachment: concurrent clones reserve before registry publication", 
         ? undefined
         : await fx.withoutGuard<typeof boundLane>(
             new URL("../../src/blocks/work/bound-lane.ts", import.meta.url),
-            "revision = (await save(record, revision)).revision;",
+            "revision = store.save(record, revision).revision;",
           );
       if (mutant) expect(mutant.mutationLoaded).toBe(true);
       const start = mutant?.boundLaneStart ?? boundLane.boundLaneStart;
@@ -1890,14 +1890,24 @@ test("bound attachment: concurrent clones reserve before registry publication", 
             project,
             client,
             () => Promise.resolve({ ...ISSUE, lease: OWN_GRANT }),
-            (r, v) => Promise.resolve(writeBoundLane(client, project, r, v)),
+            () =>
+              Promise.resolve({
+                save: (r, v) => writeBoundLane(client, project, r, v),
+                restore: (previous, revision) => {
+                  if (previous)
+                    writeBoundLane(client, project, previous, revision);
+                  else
+                    client.delete(journalKey(), { expectRevision: revision });
+                },
+              }),
             async (record, fence) => {
               if (++entered === 2) barrier.resolve();
               await barrier.promise;
-              await fence.publish(record.lane);
-              writeFileSync(
-                join(root, registry),
-                JSON.stringify([record.lane]),
+              await fence.publish(record.lane, () =>
+                writeFileSync(
+                  join(root, registry),
+                  JSON.stringify([record.lane]),
+                ),
               );
               return record.lane;
             },
@@ -1942,6 +1952,7 @@ for (const [name, expected] of [
   ["unknown grant during final identity", "UNAVAILABLE"],
   ["grant changes during writable prepare", "LEASE_NOT_HELD"],
   ["registry lock rolls back reservation", "INPUT_CONFLICT"],
+  ["registry lock rollback counterfactual", "INPUT_CONFLICT"],
   ["invalid brief", "INPUT_INVALID"],
   ["closed issue", "INPUT_CONFLICT"],
   ["absent issue", "NOT_FOUND"],
@@ -1950,6 +1961,7 @@ for (const [name, expected] of [
 ] as const)
   test(`bound attachment table: ${name}`, () => {
     const live = name.startsWith("live attachment");
+    const registryFailure = name.startsWith("registry lock");
     let reads = 0;
     let time = NOW;
     let finalIdentity = false;
@@ -2031,17 +2043,16 @@ for (const [name, expected] of [
             });
           } else if (
             expected !== "OK" &&
-            !["ambiguous claim", "losing claim"].includes(name) &&
-            !name.startsWith("unknown grant")
+            !["ambiguous claim", "losing claim"].includes(name)
           )
             await seedJournal(s, {
               ...journal,
               grant: OWN_GRANT,
               active: false,
-              releaseNeeded: name !== "registry lock rolls back reservation",
+              releaseNeeded: !registryFailure,
               lane: { ...attachment, worktree: realpathSync.native(s.root) },
             });
-          if (name === "registry lock rolls back reservation")
+          if (registryFailure)
             writeFileSync(
               join(s.root, ".git", "forge-lanes.json.lock"),
               "held",
@@ -2125,6 +2136,19 @@ for (const [name, expected] of [
             ? await r.open(join(r.s.root, "src"))
             : r.assembly;
         const runProcess = launch.runProcess;
+        const noRollback =
+          name === "registry lock rollback counterfactual"
+            ? await fx.withoutGuard<typeof boundLane>(
+                new URL("../../src/blocks/work/bound-lane.ts", import.meta.url),
+                "store.restore(previous, revision);",
+              )
+            : undefined;
+        if (noRollback) expect(noRollback.mutationLoaded).toBe(true);
+        const rollbackSpy = noRollback
+          ? spyOn(boundLane, "boundLaneStart").mockImplementation(
+              noRollback.boundLaneStart,
+            )
+          : undefined;
         const openStore = Object.getOwnPropertyDescriptor(
           LocalState.prototype,
           "open",
@@ -2188,7 +2212,13 @@ for (const [name, expected] of [
                   now: () => NOW,
                   ...scope,
                 },
-                { check: async () => {}, publish: async () => {} },
+                {
+                  check: async () => {},
+                  publish: (_lane, write) => {
+                    write();
+                    return Promise.resolve();
+                  },
+                },
               );
               expect(lane.branch).toBe("feat/one");
               expect(existsSync(join(r.s.root, "project-git-ran"))).toBe(false);
@@ -2284,15 +2314,31 @@ for (const [name, expected] of [
             false,
           );
           if (expected !== "OK") {
-            if (name === "registry lock rolls back reservation") {
+            if (registryFailure) {
               const local = new LocalState(
                 join(r.s.deviceRoot, "records.sqlite"),
               );
               try {
-                expect(
-                  (await local.open(false))!.get("forge/work", journalKey())!
-                    .value,
-                ).toMatchObject({ active: false, releaseNeeded: false });
+                const restored = (await local.open(false))!.get(
+                  "forge/work",
+                  journalKey(),
+                )!.value;
+                if (noRollback)
+                  expect(restored).toMatchObject({
+                    active: false,
+                    releaseNeeded: true,
+                  });
+                else
+                  expect(restored).toEqual({
+                    ...journal,
+                    grant: OWN_GRANT,
+                    active: false,
+                    releaseNeeded: false,
+                    lane: {
+                      ...attachment,
+                      worktree: realpathSync.native(r.s.root),
+                    },
+                  });
               } finally {
                 await local.close();
               }
@@ -2300,13 +2346,7 @@ for (const [name, expected] of [
               expect(
                 spawnSync(
                   "git",
-                  [
-                    "-C",
-                    r.s.root,
-                    "symbolic-ref",
-                    "HEAD",
-                    "refs/heads/feat/other",
-                  ],
+                  ["-C", r.s.root, "checkout", "-b", "feat/other"],
                   { windowsHide: true },
                 ).status,
               ).toBe(0);
@@ -2317,7 +2357,7 @@ for (const [name, expected] of [
                   { context },
                 ),
               );
-              expect(retry.ok, JSON.stringify(retry)).toBe(true);
+              expect(retry.ok, JSON.stringify(retry)).toBe(!noRollback);
               return;
             }
             if (live || finalIdentity)
@@ -2330,22 +2370,35 @@ for (const [name, expected] of [
                 (call) => (call.body as { op: string }).op === "issue.release",
               ),
             ).toBe(false);
-            if ((live || finalIdentity) && expected !== "LEASE_EXPIRED") {
+            if (
+              (live ||
+                finalIdentity ||
+                name === "grant changes during writable prepare") &&
+              expected !== "LEASE_EXPIRED"
+            ) {
               const mutant = await fx.withoutGuard<typeof boundLane>(
                 new URL("../../src/blocks/work/bound-lane.ts", import.meta.url),
                 live
                   ? "if (\n      previous &&"
-                  : "// Git awaits may outlive a released grant; cached expiry is not authority.\n    await fence.publish(lane);",
-                live ? "if (\n      false &&" : "",
+                  : "const store = await prepare(id);\n      await fence.check();",
+                live
+                  ? "if (\n      false &&"
+                  : name === "grant changes during writable prepare"
+                    ? "await fence.check();\n      const store = await prepare(id);"
+                    : "const store = await prepare(id);",
               );
               expect(mutant.mutationLoaded).toBe(true);
               expect(mutant.attachBoundLane).not.toBe(attachBoundLane);
-              const removed = spyOn(
-                boundLane,
-                "attachBoundLane",
-              ).mockImplementation(mutant.attachBoundLane);
+              const removed = live
+                ? spyOn(boundLane, "attachBoundLane").mockImplementation(
+                    mutant.attachBoundLane,
+                  )
+                : spyOn(boundLane, "boundLaneStart").mockImplementation(
+                    mutant.boundLaneStart,
+                  );
               reads = 0;
               finalIdentity = false;
+              prepared = false;
               try {
                 const unsafe = await start();
                 expect(unsafe.ok, JSON.stringify(unsafe)).toBe(true);
@@ -2419,6 +2472,7 @@ for (const [name, expected] of [
             });
           }
         } finally {
+          rollbackSpy?.mockRestore();
           promotion?.mockRestore();
           expiry?.mockRestore();
           projectGit?.mockRestore();
