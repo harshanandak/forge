@@ -176,7 +176,7 @@ for (const losesGrant of [false, true])
       f.advance();
       await f.timers.shift()!();
     }
-    const outcome = runner.finish(true);
+    const outcome = runner.finish(true, true);
     if (losesGrant)
       await expect(outcome).rejects.toMatchObject({
         error: { code: "LEASE_EXPIRED" },
@@ -232,7 +232,7 @@ test("changed action number during completion rebind refuses without a record", 
       }),
     f.clock,
   ))!;
-  await expect(runner.finish(true)).rejects.toThrow(
+  await expect(runner.finish(true, true)).rejects.toThrow(
     "pending dispatch action changed",
   );
   expect(f.calls.filter((c) => c.op === "lane.record")).toHaveLength(0);

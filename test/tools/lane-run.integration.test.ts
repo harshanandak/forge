@@ -1394,7 +1394,11 @@ test("bound runner refuses run, resume and detached auto before any provider spa
     Promise.resolve(builder.git(["rev-parse", "--verify", "HEAD"], checkout));
   const cloud: BoundCommand = () =>
     Promise.resolve({ id: "forge-1", status: "open", lease: grant });
+  let calls = 20;
+  const outcomes: string[] = [];
   const command: BoundCommand = (op, input, generation) => {
+    if (op === "lane.record")
+      outcomes.push((input as BoundProgressInput).result!);
     if (op === "lane.show") return Promise.resolve(journal.lane);
     if (op === "issue.renew")
       return Promise.resolve({
@@ -1418,7 +1422,7 @@ test("bound runner refuses run, resume and detached auto before any provider spa
         row = { ...row, value, revision: revision + 1 };
         return Promise.resolve(row);
       },
-      { lanes: { autopilot: { budgets: { reviewRounds: 1 } } } },
+      { lanes: { autopilot: { budgets: { reviewRounds: 1, calls } } } },
       readHead,
     );
   };
@@ -1447,7 +1451,7 @@ test("bound runner refuses run, resume and detached auto before any provider spa
         7,
       ),
     ).rejects.toMatchObject({ error: { code: "INPUT_CONFLICT" } });
-    await runner.finish(true);
+    await runner.finish(true, true);
     expect((row.value as BoundLaneRecord).progress).toMatchObject({
       pending: false,
       actions: 1,
@@ -1468,7 +1472,7 @@ test("bound runner refuses run, resume and detached auto before any provider spa
     actual,
     connect,
   ))!;
-  await doneOnly.finish(true);
+  await doneOnly.finish(true, true);
   expect(
     await command("lane.next", { id: "forge-1", head: actual }, 7),
   ).toMatchObject({ kind: "harness" });
@@ -1495,7 +1499,7 @@ test("bound runner refuses run, resume and detached auto before any provider spa
         )
       ).exit,
     ).toBe(0);
-    await reviewer.finish(true, "reviewer");
+    await reviewer.finish(true, true, "reviewer");
     expect((row.value as BoundLaneRecord).progress?.review).toBe(1);
     expect(
       await command("lane.next", { id: "forge-1", head: actual }, 7),
@@ -1503,6 +1507,61 @@ test("bound runner refuses run, resume and detached auto before any provider spa
   } finally {
     await reviewer.finish(false);
   }
+  calls = 2;
+  row = { ...row, value: journal };
+  for (const mode of ["fail", "no-reply"]) {
+    renameSync(
+      join(builder.root, "direct-output"),
+      join(builder.root, `prior-${mode}`),
+    );
+    const attempt = (await openBoundRunner(
+      checkout,
+      "forge-1",
+      actual,
+      connect,
+    ))!;
+    try {
+      const result = await builder.direct(
+        checkout,
+        mode,
+        undefined,
+        "codex",
+        attempt.beforeSpawn,
+      );
+      expect(
+        mode === "fail" ? result.exit !== 0 : !existsSync(result.reply!),
+      ).toBe(true);
+      await attempt.finish(true, false, "builder");
+    } finally {
+      await attempt.finish(false);
+    }
+  }
+  expect((row.value as BoundLaneRecord).progress).toMatchObject({
+    actions: 2,
+    records: 2,
+    pending: false,
+  });
+  expect(outcomes.slice(-2).map((text) => JSON.parse(text) as object)).toEqual([
+    { head: actual, failed: true },
+    { head: actual, failed: true },
+  ]);
+  expect(
+    await command("lane.next", { id: "forge-1", head: actual }, 7),
+  ).toMatchObject({ kind: "pause" });
+  // Counterfactual: omitting settlement leaves the original action pending and budget available.
+  row = { ...row, value: journal };
+  for (let i = 0; i < 2; i++) {
+    const omitted = (await openBoundRunner(
+      checkout,
+      "forge-1",
+      actual,
+      connect,
+    ))!;
+    await omitted.finish(false);
+  }
+  expect(
+    await command("lane.next", { id: "forge-1", head: actual }, 7),
+  ).toMatchObject({ kind: "harness" });
 });
 
 function change(
