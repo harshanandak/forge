@@ -2,7 +2,7 @@
 // A bound project writes only through the cloud; no local store or device is created.
 import { nodeDeviceIdentity } from "../adapters/fs/device-identity.ts";
 import { ForgeFailure } from "../contract/failure.ts";
-import { BOUND_LANES } from "../blocks/work/bound-lane.ts";
+import { BOUND_LANES } from "../blocks/work/bound-lane-ops.ts";
 import type { BoundProject } from "../blocks/work/bound-lane-state.ts";
 import {
   failureEnvelope,
