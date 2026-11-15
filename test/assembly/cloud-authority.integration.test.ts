@@ -62,6 +62,7 @@ import * as fx from "./cloud-fixture.ts";
 import * as scopedGit from "../../src/assembly/providers.ts";
 import * as launch from "../../src/adapters/process/run.ts";
 import * as startupScope from "../../src/assembly/git-scope.ts";
+import { cloudBinding } from "../../src/assembly/cloud-binding.ts";
 
 for (const [name, row, guard, replacement, marker] of [
   [
@@ -585,6 +586,8 @@ for (const row of [
         );
       }
       for (const root of [f.target, join(f.project, "lane")]) {
+        if (root !== f.target)
+          mkdirSync(join(root, ".git"), { recursive: true });
         const config = join(root, ".forge");
         mkdirSync(config, { recursive: true });
         writeFileSync(join(config, "config.yaml"), WORK);
@@ -639,6 +642,10 @@ for (const row of [
         readFileSync(join(deviceRoot, "records.sqlite")).toString("hex"),
         ...f.snapshot(),
       ];
+      expect(cloudBinding(f.lexical, undefined)).toMatchObject({
+        kind: "bound",
+        identity: fx.PROJECT_ID,
+      });
       const gitScope = await startupScope.deviceGitScope(
         f.lexical,
         deviceRoot,
