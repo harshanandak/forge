@@ -4226,6 +4226,7 @@ if (phase === "large") {
             source.db
               .query(`INSERT INTO ${table} VALUES (?,?,?,?)`)
               .run(...(Object.values(row) as never[]));
+      want = source.tables = source.doc.tables = {};
       // Match the authenticated caller and operation order, preserving exact scoped receipt and page comparisons.
       await source.useToken(caller.device.token);
       const wide = (n: number) =>
@@ -4256,6 +4257,7 @@ if (phase === "large") {
           await typedCall(caller, { ...wide(n), context: asProject(caller) }),
         );
       const grown = tablesOf(source.db);
+      source.db.close();
       const expected = Array.from(
         oracle.eachCutPage(grown, budget),
         oracle.pageBytes,
