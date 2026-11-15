@@ -1209,26 +1209,50 @@ export class StateOwner {
       .map((row) => body<StateRecord>(row)!)
       .filter((record) => record.key.startsWith(prefix));
   }
-  count(namespace: string, prefix: string): number {
-    return this.#aggregate(namespace, prefix, "COUNT(*)");
+  count(namespace: string, prefix: string, maxKeys?: number): number {
+    return this.#aggregate(namespace, prefix, "COUNT(*)", maxKeys);
   }
-  maxNumber(namespace: string, prefix: string): number {
+  maxNumber(namespace: string, prefix: string, maxKeys?: number): number {
     return this.#aggregate(
       namespace,
       prefix,
       "MAX(CASE WHEN key GLOB '*[0-9]' THEN CAST(substr(key, length(rtrim(key, '0123456789')) + 1) AS INTEGER) END)",
+      maxKeys,
     );
   }
-  #aggregate(namespace: string, prefix: string, expression: string): number {
+  #aggregate(
+    namespace: string,
+    prefix: string,
+    expression: string,
+    maxKeys?: number,
+  ): number {
     namespaceValid(namespace);
     wellFormedText(prefix, "Aggregate prefix");
     const upper = upperBound(prefix);
-    return Number(
-      this.#db.get(
-        `SELECT ${expression} AS total FROM state_records WHERE namespace=? AND key>=?${upper === undefined ? "" : " AND key<?"}`,
-        upper === undefined ? [namespace, prefix] : [namespace, prefix, upper],
-      )?.total ?? 0,
+    if (
+      maxKeys !== undefined &&
+      (!Number.isSafeInteger(maxKeys) ||
+        maxKeys < 1 ||
+        maxKeys >= Number.MAX_SAFE_INTEGER)
+    )
+      invalid("Aggregate budget must be a positive safe integer");
+    const source = `FROM state_records WHERE namespace=? AND key>=?${upper === undefined ? "" : " AND key<?"}`;
+    const params: SqlValue[] =
+      upper === undefined ? [namespace, prefix] : [namespace, prefix, upper];
+    if (maxKeys !== undefined) params.push(maxKeys + 1);
+    const row = this.#db.get(
+      maxKeys === undefined
+        ? `SELECT ${expression} AS total ${source}`
+        : `SELECT ${expression} AS total, COUNT(*) AS examined FROM (SELECT key ${source} LIMIT ?)`,
+      params,
     );
+    if (maxKeys !== undefined && Number(row?.examined ?? 0) > maxKeys)
+      throw new ForgeFailure({
+        code: "INPUT_INVALID",
+        message: `State aggregate exceeds the ${maxKeys} key budget; narrow the prefix`,
+        retry: "never",
+      });
+    return Number(row?.total ?? 0);
   }
   /** One bounded page of records from a key range, in key order or reverse. */
   listRange(namespace: string, options: RangeOptions): readonly StateRecord[] {
