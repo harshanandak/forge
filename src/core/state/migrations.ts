@@ -42,6 +42,12 @@ export const stateMigrations: readonly Migration[] = [
       ([table, columns]) => `CREATE TABLE IF NOT EXISTS ${table} (${columns})`,
     ),
   },
+  {
+    id: "005_state_events_namespace_index",
+    statements: [
+      "CREATE INDEX IF NOT EXISTS state_events_by_namespace ON state_events (namespace, sequence)",
+    ],
+  },
 ];
 
 export function identifier(value: string): string {

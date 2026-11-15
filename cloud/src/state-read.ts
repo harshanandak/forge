@@ -17,6 +17,10 @@ import { MAX_SHOW_RESPONSE_BYTES as MAX } from "./issue-read.ts";
 import { readOnlyStore, type DurableStorage } from "./store.ts";
 
 export const STATE_EPOCH = "state:epoch";
+/** One sentinel beyond this budget distinguishes exact results from refused reads. */
+export const MAX_AGGREGATE_KEYS = 1000;
+const WATERMARK_INDEX =
+  "SELECT name FROM sqlite_schema WHERE type='index' AND name='state_events_by_namespace'";
 const fail = (code: string, message: string): never => {
   throw new ForgeFailure({ code, message, retry: "never" });
 };
@@ -31,7 +35,7 @@ const aggregates = [
 ].flatMap((expression) =>
   ["", " AND key<?"].map(
     (upper) =>
-      `SELECT ${expression} AS total FROM state_records WHERE namespace=? AND key>=?${upper}`,
+      `SELECT ${expression} AS total, COUNT(*) AS examined FROM (SELECT key FROM state_records WHERE namespace=? AND key>=?${upper} LIMIT ?)`,
   ),
 );
 
@@ -50,7 +54,15 @@ export function readState(
     );
   const namespace = input.namespace,
     query = input.query;
-  const events = readOnlyStore(storage, "state_events", [NAMESPACE_WATERMARK]);
+  const events = readOnlyStore(storage, "state_events", [
+    NAMESPACE_WATERMARK,
+    WATERMARK_INDEX,
+  ]);
+  if (events && !events.get(WATERMARK_INDEX))
+    fail(
+      "UNAVAILABLE",
+      "Upgrade state storage by issuing an admin device token for this project",
+    );
   let revision = 0;
   try {
     if (events)
@@ -73,8 +85,8 @@ export function readState(
     const owner = db && new StateOwner(db, { now: () => Date.now() });
     const value = owner
       ? query.kind === "count"
-        ? owner.count(namespace, query.prefix)
-        : owner.maxNumber(namespace, query.prefix)
+        ? owner.count(namespace, query.prefix, MAX_AGGREGATE_KEYS)
+        : owner.maxNumber(namespace, query.prefix, MAX_AGGREGATE_KEYS)
       : 0;
     if (!Number.isSafeInteger(value) || value < 0) invalid();
     result = { kind: query.kind, value };
