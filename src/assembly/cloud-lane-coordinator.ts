@@ -17,6 +17,7 @@ import {
   boundLaneKey,
   validBoundHead,
   writeBoundLane,
+  readBoundLane,
 } from "../blocks/work/bound-lane-state.ts";
 import { nodeDeviceIdentity } from "../adapters/fs/device-identity.ts";
 import { wireDeviceId } from "./wire-device.ts";
@@ -188,6 +189,14 @@ export async function coordinateLane(
             },
             fence,
             previous,
+            async () => {
+              const current = await device.open(false);
+              const prefix = boundLaneKey(project);
+              return (current?.list("forge/work", prefix) ?? []).map(
+                (row) =>
+                  readBoundLane(row.value, row.key.slice(prefix.length)).lane,
+              );
+            },
           );
         } finally {
           await files.close();

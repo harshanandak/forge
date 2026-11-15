@@ -192,13 +192,14 @@ export async function boundLaneStart(
   device: string,
   now: () => number,
   project: BoundProject,
-  state: Pick<StateClient, "get"> | undefined,
+  state: Pick<StateClient, "get" | "list"> | undefined,
   command: BoundCommand,
   prepare: (id: string) => Promise<BoundAttachStore>,
   attach: (
     record: BoundLaneRecord,
     fence: BoundAttachFence,
     previous?: BoundLaneRecord["lane"],
+    prior?: () => readonly BoundLaneRecord["lane"][],
   ) => Promise<BoundLaneRecord["lane"]>,
 ): Promise<unknown> {
   const fresh = (await command("issue.show", { id: input.id })) as TrackerItem;
@@ -273,6 +274,12 @@ export async function boundLaneStart(
     previous && (previous.active || previous.releaseNeeded)
       ? previous.lane
       : undefined,
+    () => {
+      const prefix = boundLaneKey(project);
+      return (state?.list(prefix) ?? []).map(
+        (row) => readBoundLane(row.value, row.key.slice(prefix.length)).lane,
+      );
+    },
   );
   const { gitScope: _scope, ...visible } = lane;
   return { ...visible, issue: fresh.id, lease: grant };
@@ -554,6 +561,9 @@ export async function attachBoundLane(
   },
   fence: BoundAttachFence,
   previous?: BoundLaneRecord["lane"],
+  prior: () =>
+    | readonly BoundLaneRecord["lane"][]
+    | Promise<readonly BoundLaneRecord["lane"][]> = () => [],
 ): Promise<BoundLaneRecord["lane"]> {
   const { files, environment } = services;
   const path = (value: string) => {
@@ -573,41 +583,50 @@ export async function attachBoundLane(
         row.attempt === undefined &&
         (row.issueId ?? row.issue.replace(/^.*-/, "work-")) === record.id,
     );
-  const registered = matching(boundLaneRegistry(files).lanes);
-  const savedScope =
-    previous?.gitScope ??
-    registered.find((row) => row.gitScope !== undefined)?.gitScope;
-  if (
-    ((previous && previous.gitScope === undefined) ||
-      registered.some((row) => row.gitScope === undefined)) &&
-    !validGitScope(services.gitScope)
-  )
-    refuse(
-      "INPUT_CONFLICT",
-      "Legacy attachments need explicit project and lane roots before reattachment.",
-    );
-  const gitScope = reopenGitScope(
-    files.root,
-    savedScope ?? services.gitScope ?? reopenGitScope(services.process.cwd),
-  );
+  const sameWorktree = (worktree: string) => {
+    if (path(worktree) === path(files.root)) return true;
+    try {
+      return path(createGitScope(worktree).lane.real) === path(files.root);
+    } catch {
+      return false;
+    }
+  };
   const scopeKey = (scope: GitScope) =>
     JSON.stringify(scope, ["project", "lane", "lexical", "real"]);
-  const checkSavedRoots = (rows: typeof registered) => {
-    for (const row of rows)
-      if (
-        row.gitScope !== undefined &&
-        scopeKey(reopenGitScope(files.root, row.gitScope)) !==
-          scopeKey(gitScope)
-      )
-        refuse("INPUT_CONFLICT", "Saved attachment Git roots disagree.");
+  const preflight = async (
+    rows: ReturnType<typeof boundLaneRegistry>["lanes"],
+  ) => {
+    const relevant = [
+      ...(await prior()),
+      ...(previous ? [previous] : []),
+      ...rows,
+    ].filter(
+      (row) =>
+        (row.issueId ?? row.issue.replace(/^.*-/, "work-")) === record.id ||
+        sameWorktree(row.worktree),
+    );
+    let selected =
+      services.gitScope === undefined
+        ? undefined
+        : reopenGitScope(files.root, services.gitScope);
+    for (const row of relevant) {
+      if (!validGitScope(row.gitScope))
+        refuse(
+          "INPUT_CONFLICT",
+          "This lane's state predates saved scopes. Forge will not reuse it. No supported reset exists yet (forge-1447).",
+        );
+      const roots = reopenGitScope(files.root, row.gitScope);
+      if (selected && scopeKey(selected) !== scopeKey(roots))
+        refuse(
+          "INPUT_CONFLICT",
+          "This lane's saved roots conflict with the supplied or other saved roots. Forge will not reuse this state. No supported reset exists yet (forge-1447).",
+        );
+      selected = roots;
+    }
+    return selected ?? reopenGitScope(services.process.cwd);
   };
-  checkSavedRoots(registered);
-  const readGit = boundLaneGit(
-    services,
-    files.root,
-    gitScope,
-    ...(services.gitScope === undefined ? [] : [services.gitScope]),
-  );
+  const gitScope = await preflight(boundLaneRegistry(files).lanes);
+  const readGit = boundLaneGit(services, files.root, gitScope);
   const identity = async () => {
     if (
       path(await readGit(["rev-parse", "--show-toplevel"])) !==
@@ -626,6 +645,8 @@ export async function attachBoundLane(
   });
   try {
     const saved = boundLaneRegistry(files);
+    if (scopeKey(await preflight(saved.lanes)) !== scopeKey(gitScope))
+      refuse("INPUT_CONFLICT", "Saved lane roots changed during attachment.");
     const lane = {
       ...record.lane,
       worktree: files.root,
@@ -646,7 +667,6 @@ export async function attachBoundLane(
     )
       refuse("INPUT_CONFLICT", "A live attachment has a different identity.");
     const existing = matching(saved.lanes);
-    checkSavedRoots(existing);
     if (
       existing.length > 1 ||
       saved.lanes.some(
