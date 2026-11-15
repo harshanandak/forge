@@ -1,5 +1,6 @@
 ﻿import assert from "node:assert/strict";
 import { spyOn, test } from "bun:test";
+import { existsSync } from "node:fs";
 import { canonicalJson } from "../../src/core/config/pointer.ts";
 import { roundTrip } from "../../cloud/conformance/conformance.ts";
 import { SHAPE, type Tables } from "../../cloud/conformance/max-source.ts";
@@ -10,7 +11,9 @@ import {
   digests,
   problems,
   type Table,
+  type Expected,
 } from "../../cloud/conformance/digest.ts";
+import { stopObservation } from "../../cloud/conformance/stop-live.ts";
 import type { StopDelta } from "../../cloud/conformance/restored.ts";
 import { digester } from "../../cloud/conformance/budget.ts";
 
@@ -388,11 +391,31 @@ test("stop delta: swapped suffix across page boundaries is refused", () => {
   }, /event.*order|suffix/i);
 }, 1000);
 
+async function capacityPlanner() {
+  const path = new URL(
+    "../../cloud/conformance/stop-capacity.ts",
+    import.meta.url,
+  );
+  assert.ok(existsSync(path), "capacity stop planner is present");
+  const module = (await import(path.href)) as {
+    capacityStop: (
+      pages: Iterable<{ tables: Tables }>,
+      expected: Expected,
+      observed: ReturnType<typeof stopObservation>,
+    ) => NonNullable<ReturnType<typeof stopPlan>>;
+  };
+  return module.capacityStop;
+}
 test.each(["correct", "floor record", "floor event"] as const)(
   "stop delta: capacity planned %s",
-  (kind) => {
+  async (kind) => {
     const source = fixture(false),
       sum = tally();
+    source.state_events![0]!.body = canonicalJson({
+      type: "forge/work:record.updated@1",
+      revision: 1,
+      data: {},
+    });
     for (const [table, rows] of Object.entries(source))
       for (const row of rows) fold(sum, table as Table, row);
     const expected = {
@@ -423,8 +446,15 @@ test.each(["correct", "floor record", "floor event"] as const)(
       state_records: [floor, ...source.state_records!],
       state_events: [...source.state_events!, floorEvent],
     };
-    const plan = stopPlan(planned, deltas[0], [floor, floorEvent]),
-      actual = inject(planned, 1, false);
+    const actual = inject(planned, 1, false);
+    const observed = stopObservation(deltas[0]!.window);
+    for (const table of Object.keys(actual))
+      observed.add({
+        state_records: [],
+        state_events: [],
+        [table]: actual[table]!,
+      });
+    const plan = (await capacityPlanner())([page(source)], expected, observed);
     if (kind === "floor record")
       actual.state_records = actual.state_records!.map((row) =>
         row.key === floor.key ? { ...row, body: "{}" } : row,
