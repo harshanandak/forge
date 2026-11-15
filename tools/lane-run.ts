@@ -726,7 +726,8 @@ export async function laneRun(
         : "inspect the log and retry with --resume when a session is available",
     });
     return success ? 0 : 1;
-  } catch (error) {
+  } catch (caught) {
+    let error = caught;
     try {
       await settle(false);
     } catch (recordError) {
