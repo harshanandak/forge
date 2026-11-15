@@ -20,7 +20,11 @@ import {
 import { pagesOf as cut } from "../../cloud/conformance/max-source.ts";
 import { pageOrder } from "../../cloud/conformance/page-order.ts";
 import { respond } from "../../src/surface/result.ts";
-import { consumeLaneApproval } from "../../cloud/src/lane-approval.ts";
+import { LANE_BROWSER } from "../../cloud/src/auth/lane-browser.ts";
+import {
+  LANE_APPROVALS,
+  consumeLaneApproval,
+} from "../../cloud/src/lane-approval.ts";
 import { browserStorage } from "./browser-storage.fixture.ts";
 import * as f from "./import-current-state.fixture.ts";
 import * as converter from "../../tools/import-current.ts";
@@ -655,8 +659,8 @@ test.each(["Oracle rejects main's restore", "Oracle accepts a stopped image"])(
                 assert.ok(error instanceof assert.AssertionError);
                 for (const problem of [
                   "missing global stop",
-                  "domain_cloud_lane_approvals",
-                  "domain_cloud_browser_challenges",
+                  LANE_APPROVALS,
+                  LANE_BROWSER,
                 ])
                   assert.ok(error.message.includes(problem), problem);
                 return true;
