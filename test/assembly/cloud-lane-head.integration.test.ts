@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join } from "node:path";
+import { basename, delimiter, dirname, join } from "node:path";
 import * as coordinator from "../../src/assembly/cloud-lane-coordinator.ts";
 import * as laneState from "../../src/blocks/work/bound-lane-state.ts";
 import {
@@ -62,6 +62,7 @@ test("attached head shares the journal's full-head validator", () => {
 
 for (const variant of [
   "trusted lookup",
+  "unrelated repository",
   "nested caller",
   "linked caller",
   "linked target",
@@ -84,15 +85,22 @@ for (const variant of [
   test(`attached head table: ${variant}`, async () => {
     const root = mkdtempSync(join(import.meta.dirname, ".forge-bound-head-"));
     const junction = variant === "linked junction";
-    const outside = junction
-      ? mkdtempSync(join(tmpdir(), "forge-linked-outside-"))
-      : undefined;
-    if (outside) symlinkSync(outside, join(root, ".worktrees"), "junction");
+    const unrelated = variant === "unrelated repository";
+    const outside =
+      junction || unrelated
+        ? mkdtempSync(join(tmpdir(), "forge-linked-outside-"))
+        : undefined;
+    if (junction) symlinkSync(outside!, join(root, ".worktrees"), "junction");
     const ancestor = junction || variant.startsWith("linked ancestor");
     const caller = ancestor
         ? join(root, ".worktrees", "lane")
-        : join(root, "caller"),
-      target = join(root, "target");
+        : join(unrelated ? outside! : root, "caller"),
+      target = join(unrelated ? outside! : root, "target");
+    const installed = unrelated ? join(root, basename(trusted)) : trusted;
+    if (unrelated) {
+      mkdirSync(join(root, ".git"));
+      writeFileSync(installed, "trusted repository Git", { mode: 0o755 });
+    }
     for (const path of [caller, target]) {
       mkdirSync(path, { recursive: true });
       writeFileSync(
@@ -116,11 +124,10 @@ for (const variant of [
     const linked = variant.startsWith("linked");
     const cloneLookup =
       ancestor || ["linked clone files", "linked startup"].includes(variant);
-    const main = ancestor ? root : join(root, "main"),
-      common = join(main, ".git"),
+    const common = join(root, ".git"),
       gitdir = join(root, "metadata");
     const linkedRoot = variant === "linked target" ? target : processRoot;
-    const mainBin = join(main, "bin"),
+    const mainBin = join(root, "bin"),
       probe = join(root, "project-git-ran");
     const poison = join(
       mainBin,
@@ -128,16 +135,14 @@ for (const variant of [
     );
     if (linked) {
       if (variant === "linked target") mkdirSync(join(caller, ".git"));
-      mkdirSync(gitdir, { recursive: true });
-      mkdirSync(common, { recursive: true });
-      mkdirSync(mainBin);
+      for (const dir of [gitdir, common, mainBin])
+        mkdirSync(dir, { recursive: true });
       writeFileSync(join(linkedRoot, ".git"), `gitdir: ${gitdir}\n`);
-      if (!variant.endsWith("missing")) {
+      if (!variant.endsWith("missing"))
         writeFileSync(
           join(gitdir, "commondir"),
           variant.endsWith("forged") ? target : common,
         );
-      }
       writeFileSync(
         poison,
         process.platform === "win32"
@@ -151,7 +156,7 @@ for (const variant of [
         ...(linked ? [mainBin] : []),
         callerBin,
         ...(cloneLookup ? [] : [target]),
-        ...(variant === "no trusted git" ? [] : [dirname(trusted)]),
+        ...(variant === "no trusted git" ? [] : [dirname(installed)]),
       ].join(delimiter),
       PATHEXT: process.env.PATHEXT ?? ".EXE;.CMD",
       SystemRoot: process.env.SystemRoot ?? "",
@@ -235,7 +240,7 @@ for (const variant of [
           if (variant === "linked startup")
             expect(
               await providerModule.projectStateRoot(processRoot, { env }),
-            ).toBe(main);
+            ).toBe(root);
           else await (await native.openFiles(scope)).close();
         } finally {
           startup.mockRestore();
@@ -252,7 +257,7 @@ for (const variant of [
           expect(await readHead(flight(), providers, target)).toBe(H2);
       }
       for (const [executable, args, options] of runs.mock.calls) {
-        expect(executable.path).toBe(trusted);
+        expect(executable.path).toBe(realpathSync.native(installed));
         if (!cloneLookup) {
           expect(args).toEqual(["rev-parse", "--verify", "HEAD"]);
           expect(options.cwd).toBe(target);
@@ -272,21 +277,27 @@ for (const variant of [
       );
       expect(files).not.toHaveBeenCalled();
       expect(existsSync(probe)).toBe(false);
-      if (linked) {
+      if (linked || unrelated) {
         const mutant = await withoutGuard<typeof providerModule>(
           new URL("../../src/assembly/providers.ts", import.meta.url),
-          "inCheckout(candidate)",
-          "false",
+          unrelated
+            ? "lanes.some((lane) => within(ancestor, lane))"
+            : "inCheckout(candidate)",
+          String(unrelated),
         );
         expect(mutant.mutationLoaded).toBe(true);
         const unsafe = mutant.resolveOutside(port, "git", env, linkedRoot);
-        expect(unsafe).toMatchObject({
-          kind: "resolved",
-          path: realpathSync.native(poison),
-        });
+        expect(unsafe).toMatchObject(
+          unrelated
+            ? { kind: "unavailable" }
+            : {
+                kind: "resolved",
+                path: realpathSync.native(poison),
+              },
+        );
         if (unsafe.kind === "resolved")
           await runs(unsafe, [], runs.mock.calls[0]![2]);
-        expect(existsSync(probe)).toBe(true);
+        expect(existsSync(probe)).toBe(!unrelated);
       }
       expect(existsSync(join(caller, ".forge", "state.sqlite"))).toBe(false);
     } finally {

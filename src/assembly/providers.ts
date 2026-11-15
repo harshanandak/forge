@@ -322,12 +322,15 @@ export function resolveOutside(
       ? {
           kind: "unavailable",
           reason: `No trusted ${name}; rejected path: ${rejected}`,
-          remedy: "Use an executable installed outside a checkout.",
+          remedy: "Use an executable installed outside the lane's checkout.",
         }
       : executor.resolve(name, { ...env, [pathKey]: "" });
   const inCheckout = (candidate: string): boolean => {
     for (let ancestor = dirname(candidate); ;) {
-      if (lstatSync(join(ancestor, ".git"), { throwIfNoEntry: false }))
+      if (
+        lanes.some((lane) => within(ancestor, lane)) &&
+        lstatSync(join(ancestor, ".git"), { throwIfNoEntry: false })
+      )
         return true;
       const parent = dirname(ancestor);
       if (parent === ancestor) return false;
@@ -335,13 +338,16 @@ export function resolveOutside(
     }
   };
   const excluded: string[] = [];
+  const lanes: string[] = [];
   const temps = [tmpdir()];
   for (const key of Object.keys(env))
     if (["TEMP", "TMP", "TMPDIR"].includes(key.toUpperCase()))
       temps.push(env[key]!);
   try {
-    for (const path of typeof root === "string" ? [root] : root)
+    for (const path of typeof root === "string" ? [root] : root) {
       excluded.push(realpathSync(path));
+      lanes.push(resolve(path), excluded.at(-1)!);
+    }
     for (const temp of temps) if (temp) excluded.push(realpathSync(temp));
   } catch {
     return none();

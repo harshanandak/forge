@@ -2043,17 +2043,16 @@ for (const [name, expected] of [
             expected !== "OK" &&
             !["ambiguous claim", "losing claim"].includes(name) &&
             !cleanupFailure
-          )
-            await seedJournal(
-              s,
-              (priorJournal = {
-                ...journal,
-                grant: OWN_GRANT,
-                active: false,
-                releaseNeeded: !registryFailure,
-                lane: { ...attachment, worktree: realpathSync.native(s.root) },
-              }),
-            );
+          ) {
+            priorJournal = {
+              ...journal,
+              grant: OWN_GRANT,
+              active: false,
+              releaseNeeded: !registryFailure,
+              lane: { ...attachment, worktree: realpathSync.native(s.root) },
+            };
+            await seedJournal(s, priorJournal);
+          }
           if (registryFailure && !cleanupFailure)
             writeFileSync(
               join(s.root, ".git", "forge-lanes.json.lock"),
