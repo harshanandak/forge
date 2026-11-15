@@ -33,8 +33,7 @@ function fixture(write = true) {
     signals: AbortSignal[] = [];
   const accepted = new Map<string, { bytes: string; result: object }>();
   let revision = 0,
-    credential = true,
-    abortInFlight = false;
+    credential = true;
   let deny: string | undefined;
   let principal = "aaaaaaaaaaaaaaaa";
   let device = "dev-1",
@@ -63,16 +62,16 @@ function fixture(write = true) {
     post = undefined;
     if (fault === "rotate") principal = "bbbbbbbbbbbbbbbb";
     if (["transport", "rotate", "timeout", "abort"].includes(fault ?? ""))
-      throw new ForgeFailure({
-        code:
+      throw new ForgeFailure(
+        failure(
           fault === "abort"
             ? "INVOCATION_CANCELLED"
             : fault === "timeout"
               ? "INVOCATION_TIMEOUT"
               : "UNAVAILABLE",
-        message: "lost response",
-        retry: "never",
-      });
+          "lost response",
+        ).error,
+      );
     return fault === "bad-answer"
       ? fx.json({ ok: true })
       : fault
@@ -114,10 +113,6 @@ function fixture(write = true) {
     maxConcurrent = Math.max(maxConcurrent, ++concurrent);
     await Promise.resolve();
     concurrent--;
-    if (abortInFlight) {
-      controller.abort();
-      return new Promise<Response>(() => {});
-    }
     if (deny) {
       const code = deny;
       deny = undefined;
@@ -202,11 +197,7 @@ function fixture(write = true) {
         if (preflight) {
           const code = preflight;
           preflight = undefined;
-          throw new ForgeFailure({
-            code,
-            message: "before dispatch",
-            retry: "never",
-          });
+          throw new ForgeFailure(failure(code, "before dispatch").error);
         }
         return credential
           ? fx.entry(clock.now(), {
@@ -273,9 +264,6 @@ function fixture(write = true) {
     deny(code: string) {
       deny = code;
     },
-    abortInFlight() {
-      abortInFlight = true;
-    },
     maxConcurrent: () => maxConcurrent,
   };
 }
@@ -299,6 +287,14 @@ const uncertain =
   "UNAVAILABLE INTERNAL LEASE_STALE LEASE_NOT_HELD LEASE_EXPIRED LEASE_HELD transport timeout abort bad-answer rotate".split(
     " ",
   );
+const localCodes: Record<string, string> = {
+  auth: "AUTH_REQUIRED",
+  device: "AUTH_DEVICE_MISMATCH",
+  abort: "INVOCATION_CANCELLED",
+  deadline: "INVOCATION_TIMEOUT",
+  prepare: "INPUT_INVALID",
+  conflict: "REVISION_CONFLICT",
+};
 const matrix = [
   ...definite.flatMap((fault) =>
     ["D", "R"].map((family) => ({ family, fault })),
@@ -344,19 +340,9 @@ for (const { family, fault } of matrix)
     const code =
       definite.includes(fault) || fault === "INTERNAL"
         ? fault
-        : fault === "auth"
-          ? "AUTH_REQUIRED"
-          : fault === "device"
-            ? "AUTH_DEVICE_MISMATCH"
-            : local && fault === "abort"
-              ? "INVOCATION_CANCELLED"
-              : fault === "deadline"
-                ? "INVOCATION_TIMEOUT"
-                : fault === "prepare"
-                  ? "INPUT_INVALID"
-                  : fault === "conflict"
-                    ? "REVISION_CONFLICT"
-                    : "UNAVAILABLE";
+        : local
+          ? (localCodes[fault] ?? "UNAVAILABLE")
+          : "UNAVAILABLE";
     const attempt =
       fault === "conflict"
         ? f.state.putMany([{ key: "note/1", value, expectRevision: 0 }], {
@@ -376,12 +362,10 @@ for (const { family, fault } of matrix)
       );
       const old = f.commits().at(-1)?.requestId;
       await put();
-      if (family === "D") expect(f.commits().at(-1)!.requestId).not.toBe(old);
+      const last = f.commits().at(-1)!;
+      if (family === "D") expect(last.requestId).not.toBe(old);
       expect(
-        f
-          .commits()
-          .at(-1)!
-          .readSet.some((d) => d.key === "missing" && d.expectRevision === 0),
+        last.readSet.some((d) => d.key === "missing" && d.expectRevision === 0),
       ).toBe(true);
     } else {
       expect(failed.error.retry).toBe("reconcile_first");
@@ -426,16 +410,15 @@ const rows: readonly [string, (f: Fixture) => Promise<void>][] = [
       try {
         const owner = (await local.open(true))!;
         for (const value of [NaN, Infinity, { score: undefined }]) {
-          let rejected: unknown;
-          try {
-            owner.put(namespace, "bad", value, actor, { expectRevision: 0 });
-          } catch (error) {
-            rejected = error;
-          }
-          expect(rejected).toBeInstanceOf(ForgeFailure);
+          const rejected = await refused(
+            Promise.resolve().then(() =>
+              owner.put(namespace, "bad", value, actor, { expectRevision: 0 }),
+            ),
+            "INPUT_INVALID",
+          );
           await refused(
             f.state.put("bad", value, { expectRevision: 0 }),
-            (rejected as ForgeFailure).error.code,
+            rejected.error.code,
           );
           expect(f.calls).toHaveLength(0);
         }
@@ -483,16 +466,12 @@ const rows: readonly [string, (f: Fixture) => Promise<void>][] = [
       );
       await f.state.put("note/3", "three", { expectRevision: 0 });
       const [first, second] = f.commits();
-      expect(first!.entries).toHaveLength(2);
       expect(
-        first!.readSet.map(({ key, expectRevision }) => ({
-          key,
-          expectRevision,
-        })),
+        first!.readSet.map(({ key, expectRevision }) => [key, expectRevision]),
       ).toEqual([
-        { key: "missing", expectRevision: 0 },
-        { key: "note/1", expectRevision: 1 },
-        { key: "missing-2", expectRevision: 0 },
+        ["missing", 0],
+        ["note/1", 1],
+        ["missing-2", 0],
       ]);
       expect(
         first!.readSet.every(

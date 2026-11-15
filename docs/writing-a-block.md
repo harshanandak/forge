@@ -88,7 +88,19 @@ Its reads pin one namespace version across point absence, pages and aggregates.
 Each accepted commit consumes its read dependencies; per-item commits use distinct IDs.
 An unknown outcome blocks new plans and keeps the exact request bytes and ID for replay.
 Replay also pins the credential's token ID; a changed or missing principal cannot settle it.
-A replay is settled only by acceptance; a first-send decoded refusal settles that attempt.
+A replay is settled only by acceptance. A fresh attempt clears pending only when dispatch
+never started or its first send received an audited definite refusal. The allowlist covers
+input/context/auth admission, unknown routes and revision/input conflicts; unfenced lease
+answers, INTERNAL, UNAVAILABLE and unusable answers remain ambiguous. Retry hints do not
+prove rollback. Once any send is ambiguous, every later failure preserves the frozen request.
+Credential lookup and context/signal preflight precede the principal guard; that guard and
+dispatch tracking run immediately before transport entry, using the same credential lookup.
+Local read-set conflicts discard the plan. Other proven pre-dispatch failures preserve it;
+missing credentials clear a fresh pending request and leave an unknown replay pending.
+After dispatch, transport failure, timeout, cancellation and malformed responses cannot
+prove rollback. Ambiguous outcomes preserve the decoded error code with `reconcile_first`.
+Reconciliation may remain blocked if the original credential or namespace admission
+cannot be restored; a fresh request ID is not a repair for an unresolved write.
 Only a known conflict permits a logical retry with a fresh plan; replayed acceptance
 requires fresh subsequent reads because the receipt may describe an older snapshot.
 Cached methods enforce invocation abort/deadline, propagated to the checked record client.

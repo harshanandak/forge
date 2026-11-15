@@ -233,14 +233,14 @@ export interface CloudRecordOptions extends Omit<CloudLeaseOptions, "http"> {
 }
 export interface CloudRecordClient {
   read(call: State.StateReadRequest): Promise<State.StateReadResult>;
-  /** Observe only the token id from the same lookup that supplies this send. */
+  /** Observe only the token id from the same lookup, immediately before transport entry. */
   commit(
     call: State.StateCommitRequest,
     principal?: (id: string) => void,
   ): Promise<State.StateCommitResult>;
 }
 
-/** A decoded server refusal for this record request; never a pre-response failure. */
+/** A decoded refusal for this attempt, not proof that an earlier attempt did not commit. */
 export class CloudRecordRefusal extends ForgeFailure {}
 
 /** One bound project's checked record transport, with no local state or automatic resend. */
@@ -270,15 +270,14 @@ export function createCloudRecordClient(
     },
     async commit(call, principal) {
       const { token, device, id } = stored();
-      principal?.(id);
       const body = { ...call, context: contextFor(call.context, device) };
       if (signal?.aborted === true)
         throw failure("INVOCATION_CANCELLED", "The request was cancelled.");
       try {
-        const { result } = await exchange(
-          () => http.stateCommit(token, body, signal),
-          CloudRecordRefusal,
-        );
+        const { result } = await exchange(() => {
+          principal?.(id);
+          return http.stateCommit(token, body, signal);
+        }, CloudRecordRefusal);
         if (carriesToken(result, token)) throw unknownCommit();
         return result;
       } catch (error) {

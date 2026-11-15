@@ -15,6 +15,12 @@ import {
   type CloudRecordOptions,
 } from "./cloud-state-client.ts";
 
+const DEFINITE_REFUSALS = new Set(
+  "INPUT_INVALID CONTEXT_MISSING AUTH_REQUIRED AUTH_INVALID AUTH_REVOKED AUTH_EXPIRED AUTH_FORBIDDEN AUTH_DEVICE_MISMATCH UNKNOWN_COMMAND REVISION_CONFLICT INPUT_CONFLICT".split(
+    " ",
+  ),
+);
+
 /** Serialized plans over the checked record client. Assembly does not select this provider yet. */
 export function createCloudRecordState(
   options: CloudRecordOptions & {
@@ -99,6 +105,7 @@ export function createCloudRecordState(
   async function commit(intent: string) {
     if (!options.write) throw fail("GRANT_REQUIRED");
     const replay = pending !== undefined;
+    let dispatched = false;
     if (pending && pending.intent !== intent) throw fail("UNAVAILABLE");
     if (!pending) {
       const { entries, readSet: explicit } = JSON.parse(intent) as Pick<
@@ -108,8 +115,10 @@ export function createCloudRecordState(
       if (!plan.readVersion) await read({ kind: "count", prefix: "" });
       const reads = new Map(dependencies);
       for (const { key, expectRevision } of explicit) {
-        if (reads.has(key) && reads.get(key) !== expectRevision)
-          return conflict(fail("REVISION_CONFLICT"));
+        if (reads.has(key) && reads.get(key) !== expectRevision) {
+          reset();
+          throw fail("REVISION_CONFLICT");
+        }
         reads.set(key, expectRevision);
       }
       const readSet = [...reads]
@@ -141,6 +150,7 @@ export function createCloudRecordState(
           if (pending!.principal && pending!.principal !== id)
             throw fail("UNAVAILABLE");
           pending!.principal = id;
+          dispatched = true;
         },
       );
       pending = undefined;
@@ -150,11 +160,16 @@ export function createCloudRecordState(
       else pin(answer);
       return answer.records;
     } catch (error) {
-      if (!replay && error instanceof CloudRecordRefusal) {
+      const definite =
+        error instanceof CloudRecordRefusal &&
+        DEFINITE_REFUSALS.has(error.error.code);
+      if (!replay && (!dispatched || definite)) {
         pending = undefined;
         return conflict(error);
       }
-      throw error;
+      if (error instanceof ForgeFailure)
+        throw new ForgeFailure({ ...error.error, retry: "reconcile_first" });
+      throw fail("UNAVAILABLE");
     }
   }
   const putMany: AsyncStateClient["putMany"] = async (entries, batch) => {
