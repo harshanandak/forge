@@ -600,34 +600,21 @@ for (const row of [
           JSON.stringify(fx.bindingFor()),
         );
       }
+      const lane: Record<string, unknown> = {
+        ...attachment,
+        worktree: realpathSync.native(f.target),
+        gitScope: f.scope,
+      };
+      if (row.startsWith("legacy") || row === "Accept-legacy-record")
+        delete lane.gitScope;
+      if (row === "missing worktree") delete lane.worktree;
+      if (row === "non-string worktree") lane.worktree = 7;
       const state = new LocalState(join(deviceRoot, "records.sqlite"));
       try {
         (await state.open(true))!.put(
           "forge/work",
           journalKey(),
-          {
-            ...journal,
-            lane: {
-              issue: attachment.issue,
-              branch: attachment.branch,
-              brief: attachment.brief,
-              ...(row === "missing worktree"
-                ? {}
-                : {
-                    worktree:
-                      row === "non-string worktree"
-                        ? 7
-                        : realpathSync.native(f.target),
-                  }),
-              ...([
-                "legacy",
-                "legacy with explicit input",
-                "Accept-legacy-record",
-              ].includes(row)
-                ? {}
-                : { gitScope: f.scope }),
-            },
-          },
+          { ...journal, lane },
           { kind: "agent", id: "a1" },
           { expectRevision: 0 },
         );
@@ -2206,6 +2193,15 @@ for (const [name, expected] of [
               s.dir,
               lexicalFixture.alias,
               process.platform === "win32" ? "junction" : "dir",
+            );
+            symlinkSync(
+              join(lexicalFixture.project, "bin"),
+              join(s.root, "bin"),
+              process.platform === "win32" ? "junction" : "dir",
+            );
+            lexicalFixture.env.PATH = lexicalFixture.env.PATH.replace(
+              join(lexicalFixture.project, "bin"),
+              join(lexicalFixture.alias, "project", "bin"),
             );
           }
           const git = spawnSync(
