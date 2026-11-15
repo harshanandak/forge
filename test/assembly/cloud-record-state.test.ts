@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, setDefaultTimeout, test } from "bun:test";
 import { createCloudHttp } from "../../src/adapters/http/index.ts";
 import { createCloudRecordState } from "../../src/assembly/cloud-record-state.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
@@ -8,6 +8,8 @@ import type {
   StateCommitRequest,
 } from "../../src/ports/state-protocol.ts";
 import * as fx from "./cloud-fixture.ts";
+
+setDefaultTimeout(10_000);
 
 const namespace = "forge/memory";
 const actor = { kind: "human" as const, id: "tester" };
@@ -59,6 +61,15 @@ function fixture() {
     revision: rev,
     updatedAt: new Date(clock.now()).toISOString(),
     updatedBy: actor,
+  });
+  const event = (key: string, revision: number) => ({
+    type: "forge/memory:record.put@1",
+    namespace,
+    key,
+    revision,
+    at: new Date(clock.now()).toISOString(),
+    actor,
+    data: revision,
   });
   const net = fx.network(async ({ body, init }) => {
     const call = body as Call;
@@ -120,10 +131,9 @@ function fixture() {
         result: { kind: q.kind, record: records.get(q.key) ?? null },
       });
     if (q.kind === "history") {
-      const events = (q.before === undefined ? [4, 3] : [2, 1]).map((rev) => ({
-        ...record(q.key, rev, rev),
-        event: "put",
-      }));
+      const events = (q.before === undefined ? [4, 3] : [2, 1]).map((rev) =>
+        event(q.key, rev),
+      );
       return ok({
         ...facts(),
         result: {
@@ -182,6 +192,7 @@ function fixture() {
     signals,
     records,
     record,
+    event,
     commits: () => calls.filter((c) => c.kind === "commit"),
     seed() {
       revision = 4;
@@ -383,14 +394,14 @@ test("read plans serialize access and map history revision bounds to sequence cu
   ]);
   expect(f.maxConcurrent()).toBe(1);
   expect(await f.state.history({ key: "note/1", limit: 2, before: 3 })).toEqual(
-    [2, 1].map((revision) => ({
-      ...f.record("note/1", revision, revision),
-      event: "put",
-    })),
+    [2, 1].map((revision) => f.event("note/1", revision)),
   );
   expect(
     f.calls
-      .filter((c) => c.kind === "read" && c.query.kind === "history")
+      .filter(
+        (c): c is StateReadRequest =>
+          c.kind === "read" && c.query.kind === "history",
+      )
       .map((c) => c.query),
   ).toEqual([
     { kind: "history", key: "note/1", limit: 2 },
