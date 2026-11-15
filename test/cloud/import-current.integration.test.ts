@@ -13,7 +13,8 @@ import {
 import { basename, dirname, join } from "node:path";
 import { test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { limitsFrom } from "../../cloud/src/dump.ts";
+import { dumpOf, limitsFrom } from "../../cloud/src/dump.ts";
+import { domain } from "../../cloud/src/project.ts";
 import { TABLES } from "../../cloud/conformance/digest.ts";
 import { failure, respond } from "../../src/surface/result.ts";
 import { success } from "../../src/surface/dispatch.ts";
@@ -60,6 +61,33 @@ const pinGuard = /\(await digest\((?:backup|file)\)\) !== manifest.sha256/.exec(
   ).text(),
 )![0];
 const limits = { ...limitsFrom({}), pageBytes: 4096 };
+
+test("expectedImage constructs its scratch store under Node", () => {
+  const source = f.cloudDatabase();
+  f.owner(source).initialize([domain]);
+  const module = new URL(
+    "../../cloud/conformance/restored.ts",
+    import.meta.url,
+  );
+  const result = spawnSync(
+    "node",
+    [
+      "--input-type=module",
+      "--eval",
+      `
+    import assert from "node:assert/strict";
+    import { expectedImage } from ${JSON.stringify(module.href)};
+    assert.equal(typeof Bun, "undefined");
+    let complete = false;
+    for await (const page of expectedImage([${JSON.stringify(dumpOf(source))}], ${f.at}, () => {}))
+      complete = page.last;
+    assert.equal(complete, true);
+  `,
+    ],
+    { encoding: "utf8", timeout: 30_000 },
+  );
+  eq(result.status, 0, result.stderr);
+}, 35_000);
 // Each CF runs the original guard and its removal against the same synthetic bad input.
 test.each(rows)(
   "%s",

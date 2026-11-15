@@ -6,7 +6,7 @@ import { StateOwner } from "../../src/core/state/index.ts";
 import type { SqlDatabase, SqlRow } from "../../src/ports/store.ts";
 import { Project } from "../src/project.ts";
 import { tokenParts } from "../src/tokens.ts";
-import type { DurableStorage } from "../src/store.ts";
+import { scratchStorage as openScratch } from "./storage.ts";
 
 if (!("timingSafeEqual" in crypto.subtle))
   Object.defineProperty(crypto.subtle, "timingSafeEqual", {
@@ -105,32 +105,7 @@ export const maxCalls = (id: string, body = BODY) => ({
 });
 
 /** Disposable Durable Object storage shared by Project targets and expected-image replay. */
-export function scratchStorage() {
-  const db = new Database(":memory:");
-  const values = new Map<string, unknown>();
-  const storage: DurableStorage = {
-    sql: {
-      exec: (sql, ...bindings) => {
-        const rows = db
-          .query(sql)
-          .all(
-            ...bindings.map((value) =>
-              value instanceof ArrayBuffer ? new Uint8Array(value) : value,
-            ),
-          ) as Record<string, unknown>[];
-        return { toArray: () => rows };
-      },
-    },
-    transactionSync: (body) => db.transaction(body)(),
-    get: (key) => Promise.resolve(values.get(key)),
-    put: (key, value) => {
-      values.set(key, value);
-      return Promise.resolve();
-    },
-    delete: (key) => Promise.resolve(values.delete(key)),
-  };
-  return { db, storage, values };
-}
+export const scratchStorage = () => openScratch(Database);
 
 /**
  * An empty project `name` with its issue prefix, driven through the real Project and read with plain SQL. With `at`,
