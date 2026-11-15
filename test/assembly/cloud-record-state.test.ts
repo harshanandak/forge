@@ -181,7 +181,7 @@ function fixture() {
     requestId: "invocation-1",
     write: true,
     signal: controller.signal,
-    deadline: clock.now() + 1000,
+    deadline: clock.now() + 60_000,
   });
   return {
     state,
@@ -245,7 +245,12 @@ const rows: readonly [string, (f: Fixture) => Promise<void>][] = [
           { key: "note/1", value: "new", expectRevision: 1 },
           { key: "note/2", value: "two", expectRevision: 0 },
         ],
-        { readSet: [{ key: "missing-2", expectRevision: 0 }] },
+        {
+          readSet: [
+            { key: "missing-2", expectRevision: 0 },
+            { key: "note/1", expectRevision: 1 },
+          ],
+        },
       );
       await f.state.put("note/3", "three", { expectRevision: 0 });
       const [first, second] = f.commits();
@@ -354,7 +359,7 @@ const rows: readonly [string, (f: Fixture) => Promise<void>][] = [
       const cachedGet = f.state.get,
         cachedPut = f.state.put;
       await cachedGet("missing");
-      f.clock.advance(1000);
+      f.clock.advance(60_000);
       const sent = f.calls.length;
       await refused(cachedGet("missing"), "INVOCATION_TIMEOUT");
       await refused(
