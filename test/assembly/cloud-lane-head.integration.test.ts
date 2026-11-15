@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -69,6 +70,7 @@ for (const variant of [
   "linked ancestor honest",
   "linked ancestor missing",
   "linked ancestor forged",
+  "linked junction",
   "fresh read",
   "sha256",
   "no trusted git",
@@ -81,7 +83,12 @@ for (const variant of [
 ] as const)
   test(`attached head table: ${variant}`, async () => {
     const root = mkdtempSync(join(import.meta.dirname, ".forge-bound-head-"));
-    const ancestor = variant.startsWith("linked ancestor");
+    const junction = variant === "linked junction";
+    const outside = junction
+      ? mkdtempSync(join(tmpdir(), "forge-linked-outside-"))
+      : undefined;
+    if (outside) symlinkSync(outside, join(root, ".worktrees"), "junction");
+    const ancestor = junction || variant.startsWith("linked ancestor");
     const caller = ancestor
         ? join(root, ".worktrees", "lane")
         : join(root, "caller"),
@@ -302,6 +309,7 @@ for (const variant of [
       expect(existsSync(join(caller, ".forge", "state.sqlite"))).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
+      if (outside) rmSync(outside, { recursive: true, force: true });
     }
   });
 

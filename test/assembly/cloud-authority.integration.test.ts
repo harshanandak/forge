@@ -1935,6 +1935,7 @@ for (const [name, expected] of [
   ["live attachment different branch", "INPUT_CONFLICT"],
   ["live attachment different brief", "INPUT_CONFLICT"],
   ["live attachment same identity", "OK"],
+  ["stale attachment dispatch", "OK"],
   ["wrong actor", "LEASE_NOT_HELD"],
   ["wrong session", "LEASE_NOT_HELD"],
   ["wrong device", "AUTH_DEVICE_MISMATCH"],
@@ -1966,6 +1967,7 @@ for (const [name, expected] of [
     let time = NOW;
     let finalIdentity = false;
     let prepared = false;
+    let cloudGrant: LeaseRecord | undefined = OWN_GRANT;
     let sandbox: fx.Sandbox;
     return using(
       {
@@ -2061,6 +2063,13 @@ for (const [name, expected] of [
         steps: [
           ({ body }) => {
             const call = body as { op: string };
+            if (call.op === "issue.renew")
+              return refusing("LEASE_STALE", { lease: cloudGrant });
+            if (call.op === "lane.control")
+              return answer(
+                { incarnation: "one", epoch: 1, stopped: false },
+                call.op,
+              );
             if (call.op === "issue.claim") {
               if (name === "ambiguous claim")
                 throw new Error("accepted then timed out");
@@ -2470,6 +2479,61 @@ for (const [name, expected] of [
               ok: true,
               result: { lanes: [{ id: ISSUE.id, step: "attached" }] },
             });
+          }
+          if (name === "stale attachment dispatch") {
+            cloudGrant = undefined;
+            cloudGrant = { ...heldBy(), generation: 5 };
+            let launches = 0;
+            const command: boundLane.BoundCommand = async (
+              op,
+              input,
+              generation,
+            ) => {
+              if (op === "issue.renew") expect(generation).toBe(4);
+              const reply = await assembly.catalog.invoke(
+                r.request(op, input, {
+                  context: {
+                    ...context,
+                    ...(generation === undefined
+                      ? {}
+                      : { leaseGeneration: generation }),
+                  },
+                }),
+              );
+              if (!reply.ok) throw new ForgeFailure(reply.error);
+              return reply.result;
+            };
+            const timing = { now: () => NOW, schedule: () => () => {} };
+            const attempt = async (
+              boundary: ReturnType<typeof boundDispatch>,
+            ) => {
+              await boundary.beforeSpawn();
+              launches++;
+            };
+            const boundary = boundDispatch(command, "work-1", 4, timing);
+            try {
+              await expect(attempt(boundary)).rejects.toMatchObject({
+                error: { code: "LEASE_STALE" },
+              });
+              expect(launches).toBe(0);
+            } finally {
+              await boundary.close();
+            }
+            const mutant = await fx.withoutGuard<
+              typeof import("../../tools/lane-control.ts")
+            >(
+              new URL("../../tools/lane-control.ts", import.meta.url),
+              'command("issue.renew", { id }, generation)',
+              "Promise.resolve({ generation, expiresAt: new Date(timing.now() + 60000).toISOString() })",
+            );
+            expect(mutant.mutationLoaded).toBe(true);
+            const unfenced = mutant.boundDispatch(command, "work-1", 4, timing);
+            try {
+              await attempt(unfenced);
+              expect(launches).toBe(1);
+            } finally {
+              await unfenced.close();
+            }
           }
         } finally {
           rollbackSpy?.mockRestore();
