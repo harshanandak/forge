@@ -7,6 +7,7 @@ import {
   realpathSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -19,7 +20,9 @@ import {
   exerciseGitScope,
   gitScopeRows,
   type ScopedGitApi,
+  persistedRootsFixture,
 } from "./cloud-fixture.ts";
+import * as vcs from "../../src/adapters/vcs-git/index.ts";
 import {
   createAssemblyProviders,
   createProcessService,
@@ -28,6 +31,69 @@ import {
 import type { Preflight } from "../../src/core/runtime/index.ts";
 import type { ProcessPort } from "../../src/ports/process.ts";
 setDefaultTimeout(30000);
+
+for (const consumer of [
+  "startup checkout",
+  "startup origin",
+  "clone",
+  "head",
+] as const)
+  for (const row of ["reopen", "retargeted", "legacy"] as const)
+    test(`persisted roots: ${consumer}, ${row}`, async () => {
+      const f = persistedRootsFixture();
+      let files:
+        Awaited<ReturnType<AssemblyProviders["openFiles"]>> | undefined;
+      try {
+        const gitScope = row === "legacy" ? undefined : f.scope;
+        if (row === "retargeted") {
+          rmSync(f.alias);
+          symlinkSync(
+            f.project,
+            f.alias,
+            process.platform === "win32" ? "junction" : "dir",
+          );
+        }
+        const before = f.snapshot();
+        const options = {
+          process: createProcessPort(),
+          env: f.env,
+          timeoutMs: 10000,
+          maxOutputBytes: 16384,
+          gitScope,
+        };
+        const run = async () => {
+          if (consumer === "startup checkout")
+            return vcs.mainCheckoutPath(f.target, options);
+          if (consumer === "startup origin")
+            return vcs.originRepositoryName(f.target, options);
+          const providers = createAssemblyProviders(f.target, options);
+          if (consumer === "head")
+            return (
+              coordinator.readBoundLaneHead as (
+                ...args: unknown[]
+              ) => Promise<string>
+            )(flight(), providers, f.target, gitScope);
+          files = await providers.openFiles({
+            op: "saved.read",
+            effects: ["files:read"],
+            signal: AbortSignal.timeout(15000),
+            deadline: Date.now() + 15000,
+            processContainment: "supervised",
+          });
+          return files.value.root;
+        };
+        if (row === "reopen") await run();
+        else
+          await expect(run()).rejects.toMatchObject({
+            error: { code: "INPUT_CONFLICT" },
+          });
+        expect(existsSync(f.marker)).toBe(false);
+        expect(f.snapshot()).toEqual(before);
+      } finally {
+        await files?.close();
+        f.close();
+      }
+    });
 
 for (const row of gitScopeRows)
   test(`scoped git capability: ${row}`, async () => {

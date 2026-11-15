@@ -2490,6 +2490,7 @@ for (const [name, expected] of [
               lease: OWN_GRANT,
             },
           });
+          const roots = scopedGit.createGitScope(r.s.root);
           expect(
             JSON.parse(
               readFileSync(join(r.s.root, ".git", "forge-lanes.json"), "utf8"),
@@ -2497,6 +2498,7 @@ for (const [name, expected] of [
           ).toEqual([
             {
               ...attachment,
+              gitScope: roots,
               worktree: realpathSync.native(r.s.root),
               brief: `${realpathSync.native(r.s.root).replace(/\\/g, "/")}/brief.md`,
             },
@@ -2511,6 +2513,7 @@ for (const [name, expected] of [
               cloudId: ISSUE.id,
               grant: OWN_GRANT,
               lane: {
+                gitScope: roots,
                 worktree: realpathSync.native(r.s.root),
                 branch: "feat/one",
               },
