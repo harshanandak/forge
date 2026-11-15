@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, setSystemTime, spyOn, test } from "bun:test";
+import type { SQLQueryBindings } from "bun:sqlite";
 import { domain } from "../../cloud/src/project.ts";
 import { durableStore } from "../../cloud/src/store.ts";
 import {
@@ -122,33 +123,80 @@ test("shared storage resets nesting after a commit failure", async () => {
   }
 }, 5_000);
 
-test("Project setup failure closes both databases through registered cleanup", async () => {
-  for (const mutant of [false, true]) {
+test("Project setup failure closes both databases with no outstanding statements", async () => {
+  for (const mutant of ["intact", "registration", "finalize"]) {
+    const storage =
+      mutant === "finalize"
+        ? await f.moduleUrl("../../cloud/conformance/storage.ts", [
+            '          if ("finalize" in query) query.finalize();',
+            "",
+          ])
+        : undefined;
+    const browser = storage
+      ? await f.moduleUrl("./browser-storage.fixture.ts", undefined, [
+          "../../cloud/conformance/storage.ts",
+          storage,
+        ])
+      : undefined;
     const fixture = (await import(
       await f.moduleUrl(
         "./import-current-state.fixture.ts",
-        mutant ? ["  resources.push(close);", ""] : undefined,
+        mutant === "registration"
+          ? ["  resources.push(close);", ""]
+          : undefined,
+        browser ? ["./browser-storage.fixture.ts", browser] : undefined,
       )
     )) as typeof f;
     const src = await fixture.project(),
       dst = await fixture.project();
     const closes = [src, dst].map(({ db }) => spyOn(db, "close"));
+    const statements: { readonly isFinalized: boolean; finalize(): void }[] =
+      [];
+    const prepares = [src, dst].map(({ db }) => {
+      const prepare = db.prepare.bind(db);
+      return spyOn(db, "prepare").mockImplementation(function <
+        Result,
+        Params extends SQLQueryBindings | SQLQueryBindings[],
+      >(sql: string, params?: Params) {
+        const query = prepare<Result, Params>(sql, params);
+        statements.push(query);
+        return query;
+      });
+    });
     try {
       await assert.rejects(async () => {
         try {
+          for (const project of [src, dst]) {
+            const db = durableStore(project.storage);
+            db.exec("CREATE TABLE synthetic_finalize (n INTEGER NOT NULL)");
+            assert.throws(
+              () => db.run("INSERT INTO synthetic_finalize VALUES (NULL)"),
+              /NOT NULL/,
+            );
+          }
+          assert.ok(prepares.every((prepare) => prepare.mock.calls.length > 0));
           await Promise.resolve();
           assert.fail("synthetic setup failure");
         } finally {
           fixture.cleanup();
         }
       }, /synthetic setup failure/);
-      const check = () =>
+      const check = () => {
         closes.forEach((close) => eq(close.mock.calls.length, 1));
-      if (mutant) assert.throws(check, { code: "ERR_ASSERTION" });
+        assert.ok(statements.length > 0);
+        assert.ok(statements.every((query) => query.isFinalized));
+      };
+      if (mutant === "finalize") {
+        closes.forEach((close) => eq(close.mock.calls.length, 1));
+        assert.ok(statements.some((query) => !query.isFinalized));
+      }
+      if (mutant !== "intact") assert.throws(check, { code: "ERR_ASSERTION" });
       else check();
     } finally {
+      statements.forEach((query) => query.finalize());
       src.close();
       dst.close();
+      prepares.forEach((prepare) => prepare.mockRestore());
       closes.forEach((close) => close.mockRestore());
     }
   }

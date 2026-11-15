@@ -24,14 +24,17 @@ export function storageOf(
       exec: (statement, ...bindings) => {
         count.n += 1;
         before(statement);
-        const rows = db
-          .prepare(statement)
-          .all(
+        const query = db.prepare(statement);
+        try {
+          const rows = query.all(
             ...(bindings.map((b) =>
               b instanceof ArrayBuffer ? new Uint8Array(b) : b,
             ) as never[]),
           ) as Record<string, unknown>[];
-        return { toArray: () => rows };
+          return { toArray: () => rows };
+        } finally {
+          if ("finalize" in query) query.finalize();
+        }
       },
     },
     transactionSync: (body) => {
