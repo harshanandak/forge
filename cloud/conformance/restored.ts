@@ -48,6 +48,7 @@ export function stopPlan(
   before: Tables,
   delta?: StopDelta,
   floor?: StopPlan["floor"],
+  generated = 0,
 ): StopPlan | undefined {
   if (!delta) return;
   const { at, incarnation, auditId, window } = delta;
@@ -122,7 +123,7 @@ export function stopPlan(
       updatedBy: actor,
     }),
   }));
-  const high = Number(before.state_events!.at(-1)?.sequence ?? 0);
+  const high = Number(before.state_events!.at(-1)?.sequence ?? 0) + generated;
   assert.ok(Number.isSafeInteger(high + 2), "stop event sequence");
   const events = records.map((row, i) => ({
     sequence: high + i + 1,
@@ -271,7 +272,7 @@ export function replayImage(
 export async function* expectedImage(
   source: Iterable<Dump | Page>,
   at: number | ((db: SqlDatabase) => number),
-  delta: (owner: StateOwner) => void | Promise<void>,
+  delta: (owner: StateOwner, db: SqlDatabase) => void | Promise<void>,
 ): AsyncGenerator<Page> {
   const Driver =
     typeof Bun === "undefined"
@@ -287,7 +288,7 @@ export async function* expectedImage(
       source,
       typeof at === "number" ? at : () => at(db),
     );
-    await delta(owner);
+    await delta(owner, db);
     const limits = {
       ...limitsFrom({}),
       maxBytes: Number.MAX_SAFE_INTEGER,

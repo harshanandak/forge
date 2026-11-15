@@ -400,7 +400,7 @@ test.each(["distinct", "corrupt"])(
         await f.moduleUrl(
           "../../cloud/conformance/restored.ts",
           mutant && kind === "distinct"
-            ? ["    await delta(owner);", ""]
+            ? ["    await delta(owner, db);", ""]
             : undefined,
         )
       )) as typeof import("../../cloud/conformance/restored.ts");
