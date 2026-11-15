@@ -3,6 +3,7 @@
 // helpers: expected pages come from accepted rows read with SQL. Test code only: the Worker never imports it.
 import { createHash } from "node:crypto";
 import { PAGE, SHAPE, type Tables } from "./max-source.ts";
+import { stopOverlay, stopProof, type StopPlan } from "./restored.ts";
 
 const part = (at: 0 | 1): Record<string, string[]> =>
   Object.fromEntries(
@@ -146,7 +147,8 @@ const TIME = /\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z/g;
  * A running digest of every column of every row, per table, in the order the rows arrive; empty tables count too.
  * With `stamped`, each clock time is replaced by a fixed word first, for rows written at different times.
  */
-export function digester(stamped = false) {
+export function digester(stamped = false, stop?: StopPlan) {
+  const proof = stop && stopProof(stop);
   const state = Object.fromEntries(
     Object.keys(SHAPE).map((table) => [
       table,
@@ -156,7 +158,9 @@ export function digester(stamped = false) {
   return {
     add(table: string, rows: readonly Record<string, unknown>[]): void {
       const entry = state[table]!;
-      for (const row of rows) {
+      for (const original of rows) {
+        const row = proof ? proof.row(table, original) : original;
+        if (!row) continue;
         const text = JSON.stringify(row, (key: string, value: unknown) =>
           stamped && (key === "created_at" || key === "expires_at")
             ? "<time>"
@@ -167,15 +171,20 @@ export function digester(stamped = false) {
         entry.rows += 1;
       }
     },
-    done: (): Record<string, string> =>
-      Object.fromEntries(
+    done: (): Record<string, string> => {
+      proof?.done();
+      return Object.fromEntries(
         Object.entries(state).map(([table, { hash, rows }]) => [
           table,
           `${rows} rows ${hash.digest("hex")}`,
         ]),
-      ),
+      );
+    },
   };
 }
+
+export const expectedCuts = (tables: Tables, budget: number, stop?: StopPlan) =>
+  Array.from(eachCutPage(stopOverlay(tables, stop), budget), pageBytes);
 export function digestOf(tables: Tables, stamped = false) {
   const digest = digester(stamped);
   for (const [table, rows] of Object.entries(tables)) digest.add(table, rows);

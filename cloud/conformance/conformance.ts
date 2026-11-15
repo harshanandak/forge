@@ -7,7 +7,14 @@ import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { imageSequence, releasedTables } from "./restored.ts";
+import {
+  imageSequence,
+  releasedTables,
+  stopOverlay,
+  stopPlan,
+  type StopDelta,
+  type StopPlan,
+} from "./restored.ts";
 import type { Tables } from "./max-source.ts";
 import { canonicalJson } from "../../src/core/config/pointer.ts";
 import type { StateEvent } from "../../src/generated/types.ts";
@@ -593,8 +600,27 @@ export async function roundTrip(
   budget: number,
   each: (page: DumpPage, text: string) => void = () => undefined,
   expected: string | Iterable<DumpPage> | AsyncIterable<DumpPage> = source,
+  comparison?: { fixture: Tables; seed?: StopDelta; target?: StopDelta },
 ) {
-  const { digester } = await import("./budget.ts");
+  const { digester, digestOf, expectedCuts } = await import("./budget.ts");
+  let targetStop: StopPlan | undefined;
+  let sourceRows: Tables | undefined;
+  if (comparison) {
+    assert.equal(expected, source, "stop comparison uses the original fixture");
+    const seed = stopPlan(comparison.fixture, comparison.seed);
+    const proof = digester(false, seed);
+    await walk(source, `${label} seed`, budget, (page) => {
+      for (const [table, rows] of Object.entries(page.tables))
+        proof.add(table, rows);
+    });
+    assert.deepEqual(
+      proof.done(),
+      digestOf(comparison.fixture),
+      `${label}: seed differs from original fixture`,
+    );
+    sourceRows = stopOverlay(comparison.fixture, seed);
+    targetStop = stopPlan(sourceRows, comparison.target);
+  }
   const sent = digester();
   assert.equal(await initialized(target), false, `${label}: target is empty`);
   const trip = await walk(source, label, budget, async (page, text) => {
@@ -627,12 +653,35 @@ export async function roundTrip(
     for (const [table, rows] of Object.entries(page.tables))
       sent.add(table, rows);
   });
-  const back = digester();
+  const back = digester(false, targetStop);
   const read = await walk(target, `${label} readback`, budget, (page) => {
     for (const [table, rows] of Object.entries(page.tables))
       back.add(table, rows);
   });
   const digests = sent.done();
+  if (sourceRows) {
+    assert.deepEqual(
+      digests,
+      digestOf(sourceRows),
+      `${label}: restore export differs from expected source`,
+    );
+    assert.deepEqual(
+      back.done(),
+      digests,
+      `${label}: target differs from expected image`,
+    );
+    assert.deepEqual(
+      trip.bytes,
+      expectedCuts(sourceRows, budget),
+      `${label}: source expected cuts`,
+    );
+    assert.deepEqual(
+      read.bytes,
+      expectedCuts(sourceRows, budget, targetStop),
+      `${label}: target expected cuts`,
+    );
+    return { ...trip, digests };
+  }
   const image = digester();
   if (typeof expected === "string") {
     if (expected !== source)
