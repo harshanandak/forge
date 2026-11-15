@@ -147,8 +147,24 @@ export async function coordinateLane(
       project,
       state,
       command,
-      save,
-      async (record, fence) => {
+      async (id) => {
+        const client = (await device.open(true))!.client(
+          "forge/work",
+          flight.request.context.actor!,
+        );
+        return {
+          save: (record, revision) =>
+            writeBoundLane(client, project, record, revision),
+          restore(previous, revision) {
+            if (previous) writeBoundLane(client, project, previous, revision);
+            else
+              client.delete(boundLaneKey(project, id), {
+                expectRevision: revision,
+              });
+          },
+        };
+      },
+      async (record, fence, previous) => {
         const scope = {
           op: flight.request.op,
           effects: flight.operation.declaration.effects,
@@ -171,6 +187,7 @@ export async function coordinateLane(
               ...scope,
             },
             fence,
+            previous,
           );
         } finally {
           await files.close();

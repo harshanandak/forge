@@ -152,6 +152,19 @@ function ownBoundGrant(
   return grant;
 }
 
+export interface BoundAttachFence {
+  check(): Promise<void>;
+  publish(
+    lane: BoundLaneRecord["lane"],
+    write: () => void,
+    unpublished: () => boolean,
+  ): Promise<void>;
+}
+export interface BoundAttachStore {
+  save(record: BoundLaneRecord, revision: number): StateRecord;
+  restore(previous: BoundLaneRecord | undefined, revision: number): void;
+}
+
 export async function boundLaneStart(
   input: { id: string; branch: string; brief: string },
   context: AmbientContext,
@@ -160,10 +173,11 @@ export async function boundLaneStart(
   project: BoundProject,
   state: Pick<StateClient, "get"> | undefined,
   command: BoundCommand,
-  save: (record: BoundLaneRecord, revision: number) => Promise<StateRecord>,
+  prepare: (id: string) => Promise<BoundAttachStore>,
   attach: (
     record: BoundLaneRecord,
-    fence: () => Promise<void>,
+    fence: BoundAttachFence,
+    previous?: BoundLaneRecord["lane"],
   ) => Promise<BoundLaneRecord["lane"]>,
 ): Promise<unknown> {
   const fresh = (await command("issue.show", { id: input.id })) as TrackerItem;
@@ -199,15 +213,45 @@ export async function boundLaneStart(
       worktree: context.project!.root ?? context.project!.id,
     },
   };
-  const revision = found?.revision ?? (await save(record, 0)).revision;
-  const lane = await attach(record, async () => {
-    own(
-      (await command("issue.show", { id: record.cloudId })) as TrackerItem,
-      grant.generation,
-    );
-  });
-  record = { ...record, lane, active: true };
-  await save(record, revision);
+  let revision = found?.revision ?? 0;
+  const fence: BoundAttachFence = {
+    async check() {
+      own(
+        (await command("issue.show", { id: record.cloudId })) as TrackerItem,
+        grant.generation,
+      );
+    },
+    async publish(lane, write, unpublished) {
+      const store = await prepare(id);
+      await fence.check();
+      // Cloud authority is not atomic with the following synchronous CAS, registry write and activation.
+      // Dispatch is fenced by issue.renew at this generation before every bound spawn (tools/lane-control.ts).
+      record = { ...record, lane };
+      revision = store.save(record, revision).revision;
+      try {
+        write();
+      } catch (error) {
+        try {
+          if (unpublished()) store.restore(previous, revision);
+        } catch (rollback) {
+          if (
+            !(rollback instanceof ForgeFailure) ||
+            rollback.error.code !== "REVISION_CONFLICT"
+          )
+            throw rollback;
+        }
+        throw error;
+      }
+      store.save({ ...record, active: true }, revision);
+    },
+  };
+  const lane = await attach(
+    record,
+    fence,
+    previous && (previous.active || previous.releaseNeeded)
+      ? previous.lane
+      : undefined,
+  );
   return { ...lane, issue: fresh.id, lease: grant };
 }
 
@@ -471,7 +515,8 @@ export async function attachBoundLane(
     deadline: number;
     now: () => number;
   },
-  fence: () => Promise<void>,
+  fence: BoundAttachFence,
+  previous?: BoundLaneRecord["lane"],
 ): Promise<BoundLaneRecord["lane"]> {
   const { files, environment } = services;
   const path = (value: string) => {
@@ -509,6 +554,19 @@ export async function attachBoundLane(
       worktree: files.root,
       brief: `${files.root.replace(/\\/g, "/")}/${brief}`,
     };
+    if (
+      previous &&
+      (path(previous.worktree) !== path(lane.worktree) ||
+        previous.branch !== lane.branch ||
+        path(
+          helpers.briefPath(
+            files,
+            previous.brief,
+            environment.platform === "win32",
+          ),
+        ) !== path(brief))
+    )
+      refuse("INPUT_CONFLICT", "A live attachment has a different identity.");
     const existing = saved.lanes.filter(
       (row) =>
         row.attempt === undefined &&
@@ -531,16 +589,28 @@ export async function attachBoundLane(
         "INPUT_CONFLICT",
         "Registry identity differs from the prepared attachment.",
       );
-    await fence();
+    await fence.check();
     await identity();
-    if (Date.parse(record.grant.expiresAt) <= services.now())
-      refuse("LEASE_EXPIRED", "The cloud grant expired.");
-    if (!existing.length)
-      files.write(
-        "forge-lanes.json",
-        JSON.stringify([...saved.lanes, lane]) + "\n",
-        { area: "common", expected: saved.text },
-      );
+    await fence.publish(
+      lane,
+      () => {
+        if (Date.parse(record.grant.expiresAt) <= services.now())
+          refuse("LEASE_EXPIRED", "The cloud grant expired.");
+        if (!existing.length)
+          files.write(
+            "forge-lanes.json",
+            JSON.stringify([...saved.lanes, lane]) + "\n",
+            { area: "common", expected: saved.text },
+          );
+      },
+      () => {
+        try {
+          return helpers.laneRegistry(files, refuse).text === saved.text;
+        } catch {
+          return false;
+        }
+      },
+    );
     return lane;
   } finally {
     lock.release();
