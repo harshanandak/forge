@@ -60,6 +60,7 @@ import { exitCode, respond } from "../../src/surface/result.ts";
 import { done, stageBlock } from "../blocks/memory/lib.ts";
 import * as fx from "./cloud-fixture.ts";
 import * as launch from "../../src/adapters/process/run.ts";
+import * as durable from "../../src/adapters/fs/durable-io.ts";
 import * as authority from "../../src/assembly/cloud-binding.ts";
 import { relay } from "../fixtures/owner-approval.ts";
 import {
@@ -1954,6 +1955,7 @@ for (const [name, expected] of [
   ["grant changes during writable prepare", "LEASE_NOT_HELD"],
   ["registry lock rolls back reservation", "INPUT_CONFLICT"],
   ["registry lock rollback counterfactual", "INPUT_CONFLICT"],
+  ["registry cleanup leaves pending reservation", "INPUT_CONFLICT"],
   ["invalid brief", "INPUT_INVALID"],
   ["closed issue", "INPUT_CONFLICT"],
   ["absent issue", "NOT_FOUND"],
@@ -1963,6 +1965,7 @@ for (const [name, expected] of [
   test(`bound attachment table: ${name}`, () => {
     const live = name.startsWith("live attachment");
     const registryFailure = name.startsWith("registry lock");
+    const cleanupFailure = name.startsWith("registry cleanup");
     let reads = 0;
     let time = NOW;
     let finalIdentity = false;
@@ -2045,7 +2048,8 @@ for (const [name, expected] of [
             });
           } else if (
             expected !== "OK" &&
-            !["ambiguous claim", "losing claim"].includes(name)
+            !["ambiguous claim", "losing claim"].includes(name) &&
+            !cleanupFailure
           )
             await seedJournal(s, {
               ...journal,
@@ -2065,6 +2069,8 @@ for (const [name, expected] of [
             const call = body as { op: string };
             if (call.op === "issue.renew")
               return refusing("LEASE_STALE", { lease: cloudGrant });
+            if (call.op === "issue.release")
+              return answer({ id: ISSUE.id }, call.op);
             if (call.op === "lane.control")
               return answer(
                 { incarnation: "one", epoch: 1, stopped: false },
@@ -2145,6 +2151,20 @@ for (const [name, expected] of [
             ? await r.open(join(r.s.root, "src"))
             : r.assembly;
         const runProcess = launch.runProcess;
+        const exclusive = durable.publishExclusive;
+        const cleanupSpy = cleanupFailure
+          ? spyOn(durable, "publishExclusive").mockImplementation(
+              (from, to) => {
+                exclusive(from, to);
+                if (to.endsWith("forge-lanes.json"))
+                  throw new ForgeFailure({
+                    code: "INPUT_CONFLICT",
+                    message: "post-publication cleanup failed",
+                    retry: "reconcile_first",
+                  });
+              },
+            )
+          : undefined;
         const noRollback =
           name === "registry lock rollback counterfactual"
             ? await fx.withoutGuard<typeof boundLane>(
@@ -2323,6 +2343,27 @@ for (const [name, expected] of [
             false,
           );
           if (expected !== "OK") {
+            if (cleanupFailure) {
+              const local = new LocalState(
+                join(r.s.deviceRoot, "records.sqlite"),
+              );
+              try {
+                expect(
+                  (await local.open(false))!.get("forge/work", journalKey())!
+                    .value,
+                ).toMatchObject({ active: false, releaseNeeded: true });
+              } finally {
+                await local.close();
+              }
+              expect(
+                existsSync(join(r.s.root, ".git", "forge-lanes.json")),
+              ).toBe(true);
+              const released = await assembly.catalog.invoke(
+                r.request("lane.release", { id: ISSUE.id }, { context }),
+              );
+              expect(released.ok, JSON.stringify(released)).toBe(true);
+              return;
+            }
             if (registryFailure) {
               const local = new LocalState(
                 join(r.s.deviceRoot, "records.sqlite"),
@@ -2484,21 +2525,11 @@ for (const [name, expected] of [
             cloudGrant = undefined;
             cloudGrant = { ...heldBy(), generation: 5 };
             let launches = 0;
-            const command: boundLane.BoundCommand = async (
-              op,
-              input,
-              generation,
-            ) => {
+            const command: boundLane.BoundCommand = async (...args) => {
+              const [op, input, generation] = args;
               if (op === "issue.renew") expect(generation).toBe(4);
               const reply = await assembly.catalog.invoke(
-                r.request(op, input, {
-                  context: {
-                    ...context,
-                    ...(generation === undefined
-                      ? {}
-                      : { leaseGeneration: generation }),
-                  },
-                }),
+                r.request(op, input, { context }),
               );
               if (!reply.ok) throw new ForgeFailure(reply.error);
               return reply.result;
@@ -2511,14 +2542,11 @@ for (const [name, expected] of [
               launches++;
             };
             const boundary = boundDispatch(command, "work-1", 4, timing);
-            try {
-              await expect(attempt(boundary)).rejects.toMatchObject({
-                error: { code: "LEASE_STALE" },
-              });
-              expect(launches).toBe(0);
-            } finally {
-              await boundary.close();
-            }
+            await expect(attempt(boundary)).rejects.toMatchObject({
+              error: { code: "LEASE_STALE" },
+            });
+            expect(launches).toBe(0);
+            await boundary.close();
             const mutant = await fx.withoutGuard<
               typeof import("../../tools/lane-control.ts")
             >(
@@ -2528,14 +2556,12 @@ for (const [name, expected] of [
             );
             expect(mutant.mutationLoaded).toBe(true);
             const unfenced = mutant.boundDispatch(command, "work-1", 4, timing);
-            try {
-              await attempt(unfenced);
-              expect(launches).toBe(1);
-            } finally {
-              await unfenced.close();
-            }
+            await attempt(unfenced);
+            expect(launches).toBe(1);
+            await unfenced.close();
           }
         } finally {
+          cleanupSpy?.mockRestore();
           rollbackSpy?.mockRestore();
           promotion?.mockRestore();
           expiry?.mockRestore();
