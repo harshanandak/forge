@@ -159,7 +159,7 @@ test.each(rows)(
               if (variant === "invalid") {
                 const dump = await moduleUrl("../../cloud/src/dump.ts", [
                   [
-                    "if (page.last) settleFloor(db, owner, limits, verifyRestored(db));",
+                    "if (page.last) settleFloor(db, owner, limits, verifyRestored(db), finalize);",
                     "",
                   ],
                 ]);

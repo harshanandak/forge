@@ -66,6 +66,7 @@ import type {
   StateReadResult,
   StateReadVersion,
 } from "../../src/ports/state-protocol.ts";
+import { restoredTables, stoppedTables } from "./restore-expect.fixture.ts";
 import { releasedTables } from "../../cloud/conformance/restored.ts";
 import { refuse } from "../../src/core/trust/index.ts";
 import { stateMigrations } from "../../src/core/state/migrations.ts";
@@ -518,7 +519,7 @@ async function stateFixture(namespaces = stateNamespaces) {
         });
         try {
           expect(restored.status).toBe(200);
-          expectFloor(t, tables, floors);
+          await expectFloor(t, tables, floors);
         } finally {
           t.db.close();
           spyOn(Date, "now").mockImplementation(f.now);
@@ -9698,7 +9699,7 @@ for (const mode of ["whole", "paged"] as const)
       // Unprovisioned until the whole project is in.
       expect((await t.admin("status")).json.value!.initialized).toBe(last);
     }
-    const restored = tablesOf(t.db);
+    const restored = await restoredTables(t.db, tables, "target");
     expect(differing(restored, tables)).toEqual([]);
     expect(ids(restored, "state_events").sort()).toEqual(named());
     expect(
@@ -10678,7 +10679,8 @@ for (const trip of TRIPS)
         expect([got.status, got.json.error?.code]).toEqual(
           prefix === "s2:" ? [200, undefined] : [400, "RESTORE_INVALID_ROW"],
         );
-        if (prefix === "s2:") expectFloor(target, tables, [issueFloor(0)]);
+        if (prefix === "s2:")
+          await expectFloor(target, tables, [issueFloor(0)]);
         else expect(Object.values(tablesOf(target.db)).flat()).toEqual([]);
       } finally {
         f.db.close();
@@ -10720,10 +10722,10 @@ const childFloors = (want: Record<string, number>, revision = 1): Added[] =>
  * Imported history is retained, live leases are released, and the restore adds exactly `floors`,
  * each as one record and event before the release events.
  */
-function expectFloor(t: F, tables: Tables, floors: readonly Added[]) {
+async function expectFloor(t: F, tables: Tables, floors: readonly Added[]) {
+  const after = await restoredTables(t.db, tables);
   const importedEvents = tables.state_events!.length;
   tables = releasedTables(tables, iso(start), floors.length);
-  const after = tablesOf(t.db);
   const fresh = (table: string) => {
     const had = new Set(tables[table]!.map(asText));
     return after[table]!.filter((row) => !had.has(asText(row)));
@@ -10819,7 +10821,7 @@ for (const trip of TRIPS)
     if (trip === "paged") expect(parts.length).toBeGreaterThan(1);
     const { t, got } = await restoreInto(trip, tables, { parts });
     expect(got.status).toBe(200);
-    expect(differing(tablesOf(t.db), tables)).toEqual([]);
+    expect(differing(await restoredTables(t.db, tables), tables)).toEqual([]);
     await createsNext(t, [13]);
     historyKept(t, tables);
     expect(rowsOf(t.db, WORK).map((row) => row.key)).not.toContain(issueKey(2));
@@ -10830,7 +10832,7 @@ for (const trip of TRIPS)
     const { tables } = await projectWith(legacy);
     const { t, got } = await restoreInto(trip, tables);
     expect(got.status).toBe(200);
-    expectFloor(t, tables, [issueFloor(2)]);
+    await expectFloor(t, tables, [issueFloor(2)]);
     // The counts describe the imported rows, never the generated pair.
     if (trip === "whole")
       expect(
@@ -10858,7 +10860,7 @@ for (const trip of TRIPS)
     // The update and the delete are on separate pages.
     expect(parts.length).toBe(trip === "paged" ? 2 : 1);
     expect(got.status).toBe(200);
-    expectFloor(t, tables, [issueFloor(10)]);
+    await expectFloor(t, tables, [issueFloor(10)]);
     await createsNext(t, [11]);
   }, 60_000);
 
@@ -10882,7 +10884,7 @@ for (const [name, build] of [
       const { tables } = await projectWith(build);
       const { t, got } = await restoreInto(trip, tables);
       expect(got.status).toBe(200);
-      expectFloor(t, tables, [issueFloor(0)]);
+      await expectFloor(t, tables, [issueFloor(0)]);
       await createsNext(t, [1]);
       historyKept(t, tables);
     }, 60_000);
@@ -10962,7 +10964,7 @@ for (const trip of TRIPS) {
     const { t, got } = await restoreInto(trip, tables);
     expect(got.status).toBe(200);
     // The live comment:work-99:1 is an observed comment group, so the restore also settles its floor (forge-1306).
-    expectFloor(t, tables, [
+    await expectFloor(t, tables, [
       issueFloor(10),
       {
         key: "allocation:comment:work-99:",
@@ -10988,7 +10990,7 @@ for (const trip of TRIPS) {
     });
     const { t, got } = await restoreInto(trip, tables);
     expect(got.status).toBe(200);
-    expectFloor(t, tables, [issueFloor(12, 3)]);
+    await expectFloor(t, tables, [issueFloor(12, 3)]);
     await createsNext(t, [13]);
   }, 60_000);
 
@@ -11045,14 +11047,16 @@ for (const trip of TRIPS) {
     const { t, got } = await restoreInto(trip, tables, { per: 1 });
     expect(got.status).toBe(200);
     // The floor update was revision 1 and its deletion 2, so the restored floor is revision 3.
-    expectFloor(t, tables, [issueFloor(12, 3)]);
+    await expectFloor(t, tables, [issueFloor(12, 3)]);
     // The restored history must itself replay: dump the target and restore that dump into a new project.
     const copied = tablesOf(t.db);
     const again = await restoreInto(trip, copied, {
       parts: await exported(t, trip),
     });
     expect(again.got.status).toBe(200);
-    expect(differing(tablesOf(again.t.db), copied)).toEqual([]);
+    expect(differing(await restoredTables(again.t.db, copied), copied)).toEqual(
+      [],
+    );
     await createsNext(again.t, [13]);
   }, 60_000);
 
@@ -11066,7 +11070,7 @@ for (const trip of TRIPS) {
     const { t, got, parts } = await restoreInto(trip, tables, { per: 1 });
     if (trip === "paged") expect(parts.length).toBeGreaterThan(3);
     expect(got.status).toBe(200);
-    expect(differing(tablesOf(t.db), tables)).toEqual([]);
+    expect(differing(await restoredTables(t.db, tables), tables)).toEqual([]);
   }, 60_000);
 }
 
@@ -11100,7 +11104,7 @@ for (const trip of TRIPS)
       legacy(w, owner);
       owner.put(WORK, FLOOR, floorAt(2), RESTORER, { expectRevision: 0 });
     });
-    const at = storedBytes(whole);
+    const at = storedBytes(await stoppedTables(whole, start));
     expect(storedBytes(tables)).toBeLessThan(at);
     await refuses(trip, tables, "RESTORE_TOO_LARGE", 413, {
       settings: { ...vars, DUMP_MAX_BYTES: String(at - 1) },
@@ -11109,7 +11113,7 @@ for (const trip of TRIPS)
       settings: { ...vars, DUMP_MAX_BYTES: String(at) },
     });
     expect(got.status).toBe(200);
-    expectFloor(t, tables, [issueFloor(2)]);
+    await expectFloor(t, tables, [issueFloor(2)]);
   }, 60_000);
 
 for (const trip of TRIPS)
@@ -11137,7 +11141,7 @@ for (const trip of TRIPS)
         target: failed.t,
       });
       expect(got.status).toBe(200);
-      expectFloor(t, tables, [issueFloor(2)]);
+      await expectFloor(t, tables, [issueFloor(2)]);
       await createsNext(t, [3]);
     }, 60_000);
 
@@ -11299,7 +11303,7 @@ for (const [name, build, want] of GROUPS)
       );
       if (trip === "paged") expect(parts.length).toBeGreaterThan(1);
       expect(got.status).toBe(200);
-      expectFloor(t, tables, childFloors(want));
+      await expectFloor(t, tables, childFloors(want));
       const token = await t.device();
       expect(await readyIds(t, token)).toEqual(
         await readyIds(f, await f.device()),
@@ -11321,7 +11325,7 @@ test("whole restore derives both deleted child floors before any append", async 
       numFloor(kind, 10),
     ]);
   const want = { [numKey("comment")]: 10, [numKey("link")]: 10 };
-  expectFloor(t, tables, childFloors(want));
+  await expectFloor(t, tables, childFloors(want));
   await appendsAbove(t, await t.device(), want);
 }, 60_000);
 
@@ -11342,7 +11346,7 @@ for (const trip of TRIPS) {
     const { t, got } = await restoreInto(trip, tables, { parts });
     expect(got.status).toBe(200);
     // No pair is generated: every table is exactly what was sent.
-    expect(differing(tablesOf(t.db), tables)).toEqual([]);
+    expect(differing(await restoredTables(t.db, tables), tables)).toEqual([]);
     await appendsAbove(t, await t.device(), FLOORS_20);
   }, 60_000);
 
@@ -11358,13 +11362,15 @@ for (const trip of TRIPS) {
     });
     const { t, got } = await restoreInto(trip, tables, { per: 1 });
     expect(got.status).toBe(200);
-    expectFloor(t, tables, childFloors(FLOORS_20, 3));
+    await expectFloor(t, tables, childFloors(FLOORS_20, 3));
     const copied = tablesOf(t.db);
     const again = await restoreInto(trip, copied, {
       parts: await exported(t, trip),
     });
     expect(again.got.status).toBe(200);
-    expect(differing(tablesOf(again.t.db), copied)).toEqual([]);
+    expect(differing(await restoredTables(again.t.db, copied), copied)).toEqual(
+      [],
+    );
     await appendsAbove(again.t, await again.t.device(), FLOORS_20);
   }, 60_000);
 
@@ -11435,11 +11441,20 @@ for (const trip of TRIPS) {
     await refuses(trip, tables, "RESTORE_TOO_LARGE", 413, {
       settings: { ...vars, DUMP_MAX_ROWS: "5" },
     });
-    const { t, got } = await restoreInto(trip, tables, {
+    await refuses(trip, tables, "RESTORE_TOO_LARGE", 413, {
       settings: { ...vars, DUMP_MAX_ROWS: "6" },
     });
+    const rows = Math.max(
+      ...Object.values(await stoppedTables(tables, start)).map((r) => r.length),
+    );
+    await refuses(trip, tables, "RESTORE_TOO_LARGE", 413, {
+      settings: { ...vars, DUMP_MAX_ROWS: String(rows - 1) },
+    });
+    const { t, got } = await restoreInto(trip, tables, {
+      settings: { ...vars, DUMP_MAX_ROWS: String(rows) },
+    });
     expect(got.status).toBe(200);
-    expectFloor(t, tables, childFloors(FLOORS_1));
+    await expectFloor(t, tables, childFloors(FLOORS_1));
   }, 60_000);
 
   test(`a ${trip} restore whose generated comment and link floors pass the byte limit is RESTORE_TOO_LARGE, and one exactly at it is restored`, async () => {
@@ -11452,7 +11467,7 @@ for (const trip of TRIPS) {
           expectRevision: 0,
         });
     });
-    const at = storedBytes(whole);
+    const at = storedBytes(await stoppedTables(whole, start));
     expect(storedBytes(tables)).toBeLessThan(at);
     await refuses(trip, tables, "RESTORE_TOO_LARGE", 413, {
       settings: { ...vars, DUMP_MAX_BYTES: String(at - 1) },
@@ -11461,7 +11476,7 @@ for (const trip of TRIPS) {
       settings: { ...vars, DUMP_MAX_BYTES: String(at) },
     });
     expect(got.status).toBe(200);
-    expectFloor(t, tables, childFloors(FLOORS_1));
+    await expectFloor(t, tables, childFloors(FLOORS_1));
   }, 60_000);
 
   for (const [what, table, key] of [
@@ -11496,7 +11511,7 @@ for (const trip of TRIPS) {
       expect(await failed.t.storage.get("restore:next")).toBeUndefined();
       const { t, got } = await restoreInto(trip, tables, { target: failed.t });
       expect(got.status).toBe(200);
-      expectFloor(t, tables, childFloors(FLOORS_1));
+      await expectFloor(t, tables, childFloors(FLOORS_1));
       await appendsAbove(t, await t.device(), FLOORS_1);
     }, 60_000);
 }
@@ -11512,7 +11527,7 @@ for (const trip of TRIPS)
     expect(tables.state_events!.length).toBe(21);
     const { t, got, calls } = await restoreInto(trip, tables, { per: 15 });
     expect(got.status).toBe(200);
-    expectFloor(t, tables, [issueFloor(20)]);
+    await expectFloor(t, tables, [issueFloor(20)]);
     const lists = calls.filter(
       ({ sql }) => /ORDER BY/.test(sql) && /FROM state_/.test(sql),
     );
@@ -11690,7 +11705,7 @@ for (const trip of TRIPS)
     const tables = await labelledTables();
     const { t, got } = await restoreInto(trip, tables, { per: 1 });
     expect(got.status).toBe(200);
-    expectFloor(t, tables, [issueFloor(2)]);
+    await expectFloor(t, tables, [issueFloor(2)]);
   }, 60_000);
 
 for (const trip of TRIPS)
@@ -11722,7 +11737,7 @@ for (const trip of TRIPS)
     edit("state_records", issueKey(1), spaced);
     const { t, got } = await restoreInto(trip, tables, { per: 1 });
     expect(got.status).toBe(200);
-    expectFloor(t, tables, [issueFloor(1)]);
+    await expectFloor(t, tables, [issueFloor(1)]);
   }, 60_000);
 
 // The route test the duplicate-labels counterfactual runs: one whole restore, one repeated event label.
@@ -12053,7 +12068,7 @@ test("a paged restore of a project of about 10 MB stored restores under the defa
     settings: vars,
   });
   expect(got.status).toBe(200);
-  expectFloor(t, tables, []);
+  await expectFloor(t, tables, []);
 }, 120_000);
 
 test("a paged restore of raw rows past 32 MiB stored is RESTORE_TOO_LARGE under the defaults", async () => {
@@ -12083,7 +12098,9 @@ for (const trip of TRIPS)
       });
       const settings = {
         ...vars,
-        DUMP_MAX_BYTES: String(storedBytes(tables) + delta),
+        DUMP_MAX_BYTES: String(
+          storedBytes(await stoppedTables(tables, start)) + delta,
+        ),
       };
       if (delta !== 0) {
         await refuses(trip, tables, "RESTORE_TOO_LARGE", 413, {
@@ -12094,7 +12111,7 @@ for (const trip of TRIPS)
       }
       const { t, got } = await restoreInto(trip, tables, { per: 2, settings });
       expect(got.status).toBe(200);
-      expectFloor(t, tables, []);
+      await expectFloor(t, tables, []);
     }, 60_000);
 
 // The inner budget. The oracle counts a parsed body: depth is open containers, a value is any object, array or
@@ -12160,7 +12177,7 @@ for (const [name, make, bad] of INNER)
       const { t, got } = await restoreInto(trip, tables, { per });
       if (!bad) {
         expect(got.status).toBe(200);
-        expectFloor(t, tables, []);
+        await expectFloor(t, tables, []);
         return;
       }
       expect([

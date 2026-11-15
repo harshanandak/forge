@@ -27,11 +27,10 @@ import {
 import { StateOwner } from "../../src/core/state/index.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
 import { durableStore } from "../src/store.ts";
-import { LaneControlStore } from "../src/lane-control-store.ts";
 import { Project } from "../src/project.ts";
 import { pageOrder } from "./page-order.ts";
 import { storageOf } from "./storage.ts";
-import { restoreStopped } from "./restored.ts";
+import { restoreStopped, stopDelta } from "./restored.ts";
 import { parseDump } from "../src/dump.ts";
 import {
   COLUMNS,
@@ -192,17 +191,8 @@ const SHAPES: Record<string, () => Shape | Promise<Shape>> = {
     });
     const zero = await source(base);
     const before = storedBytes(zero.db);
-    assert.ok(
-      new LaneControlStore(
-        new StateOwner(sqlOf(zero.db), { now: Date.now }),
-        NAME,
-      ).stop(
-        { all: true },
-        "cloud-restore",
-        "cloud-restore",
-        new Date().toISOString(),
-      ).ok,
-    );
+    const owner = new StateOwner(sqlOf(zero.db), { now: Date.now });
+    stopDelta(owner, NAME, new Date(Date.now()).toISOString());
     const empty = storedBytes(zero.db);
     assert.ok(empty > before);
     zero.db.close();

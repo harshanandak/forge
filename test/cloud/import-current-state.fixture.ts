@@ -535,7 +535,15 @@ export async function activation(
     input: object = {},
     generation?: number,
   ) => {
-    credential ??= (await fixture.send("devices", deviceInput)).r.value;
+    if (!credential) {
+      const issued = await fixture.send("devices", {
+        device: deviceInput.device,
+        session: deviceInput.session,
+        ttlMs: deviceInput.ttlMs,
+      });
+      assert.equal(issued.r.ok, true);
+      credential = issued.r.value!;
+    }
     return fixture.send(
       "command",
       {

@@ -148,6 +148,11 @@ export function releasedTables(source: Tables, at: string, floors = 0): Tables {
   }
   return tables;
 }
+export function stopDelta(owner: StateOwner, name: string, at: string) {
+  const control = new LaneControlStore(owner, name),
+    label = "cloud-restore";
+  assert.ok(control.stop({ all: true }, label, label, at).ok);
+}
 /** The caller captures restoreWindow around the final request, independently of the target image. */
 export async function restoreStopped(
   source: Iterable<Dump | Page> | AsyncIterable<Dump | Page>,
@@ -247,14 +252,7 @@ export async function restoreStopped(
       try {
         // Only generated UUIDs and observed clock inputs are aligned; all six tables remain in the comparison.
         crypto.randomUUID = () => ids.shift()! as ReturnType<typeof original>;
-        assert.ok(
-          new LaneControlStore(owner, project).stop(
-            { all: true },
-            "cloud-restore",
-            "cloud-restore",
-            global.updatedAt,
-          ).ok,
-        );
+        stopDelta(owner, project, global.updatedAt);
       } finally {
         crypto.randomUUID = original;
       }

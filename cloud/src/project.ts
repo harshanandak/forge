@@ -804,12 +804,13 @@ export class Project {
   }
 
   #restoreStop(db: SqlDatabase, owner: StateOwner, project: string): void {
-    const at = new Date().toISOString();
+    const at = Date.now();
+    owner = new StateOwner(db, { now: () => at });
     const reply = new LaneControlStore(owner, project).stop(
       { all: true },
       "cloud-restore",
       "cloud-restore",
-      at,
+      new Date(at).toISOString(),
     );
     if (!reply.ok) throw new ForgeFailure(reply.error);
     if (reply.result.stopped !== true || reply.result.scope !== "all")

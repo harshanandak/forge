@@ -838,7 +838,8 @@ test.each(activationRows)(
             for (const part of uploads) {
               const body = structuredClone(part);
               if (kind === "bad" && variant === "invalid")
-                body.tables.state_records![0]!.body = "{";
+                if (body.tables.state_records?.[0])
+                  body.tables.state_records[0].body = "{";
               last = await p.send("restore", body);
               if (!last.r.ok) break;
             }
