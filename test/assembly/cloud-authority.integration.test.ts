@@ -608,13 +608,17 @@ for (const row of [
           {
             ...journal,
             lane: {
-              ...attachment,
-              worktree:
-                row === "missing worktree"
-                  ? undefined
-                  : row === "non-string worktree"
-                    ? 7
-                    : realpathSync.native(f.target),
+              issue: attachment.issue,
+              branch: attachment.branch,
+              brief: attachment.brief,
+              ...(row === "missing worktree"
+                ? {}
+                : {
+                    worktree:
+                      row === "non-string worktree"
+                        ? 7
+                        : realpathSync.native(f.target),
+                  }),
               ...([
                 "legacy",
                 "legacy with explicit input",
@@ -2188,18 +2192,22 @@ for (const [name, expected] of [
     let cloudGrant: LeaseRecord | undefined = OWN_GRANT;
     let priorJournal: unknown;
     let sandbox: fx.Sandbox;
+    let lexicalFixture: ReturnType<typeof fx.persistedRootsFixture> | undefined;
     return using(
       {
         config: yaml({ config: { idPrefix: "forge" } }),
         now: () => time,
         prepare: async (s) => {
           sandbox = s;
-          if (lexicalAttachment)
+          if (lexicalAttachment) {
+            lexicalFixture = fx.persistedRootsFixture();
+            rmSync(lexicalFixture.alias, { recursive: true });
             symlinkSync(
-              s.root,
-              join(s.dir, "lexical"),
+              s.dir,
+              lexicalFixture.alias,
               process.platform === "win32" ? "junction" : "dir",
             );
+          }
           const git = spawnSync(
             "git",
             ["init", "--quiet", "--initial-branch=feat/one", s.root],
@@ -2361,7 +2369,7 @@ for (const [name, expected] of [
       },
       async (r) => {
         const assembly = lexicalAttachment
-          ? await r.open(join(r.s.dir, "lexical"))
+          ? await r.open(join(lexicalFixture!.alias, "project"))
           : name === "nested directory"
             ? await r.open(join(r.s.root, "src"))
             : r.assembly;
@@ -2658,13 +2666,13 @@ for (const [name, expected] of [
               lease: OWN_GRANT,
             },
           });
-          const suppliedRoots = scopedGit.createGitScope(
-            lexicalAttachment ? join(r.s.dir, "lexical") : r.s.root,
+          const roots = scopedGit.createGitScope(
+            dropLexical
+              ? realpathSync.native(r.s.root)
+              : lexicalAttachment
+                ? join(lexicalFixture!.alias, "project")
+                : r.s.root,
           );
-          const roots = dropLexical
-            ? scopedGit.createGitScope(realpathSync.native(r.s.root))
-            : suppliedRoots;
-          if (dropLexical) expect(roots).not.toEqual(suppliedRoots);
           expect(
             JSON.parse(
               readFileSync(join(r.s.root, ".git", "forge-lanes.json"), "utf8"),
@@ -2699,6 +2707,30 @@ for (const [name, expected] of [
               ).toHaveProperty("progress.pending", true);
           } finally {
             await local.close();
+          }
+          if (lexicalFixture) {
+            const registry = JSON.parse(
+              readFileSync(join(r.s.root, ".git", "forge-lanes.json"), "utf8"),
+            ) as { gitScope: scopedGit.GitScope }[];
+            const root = join(lexicalFixture.alias, "project");
+            const before = [attachmentBytes(r.s), ...lexicalFixture.snapshot()];
+            for (const saved of [
+              registry[0]!.gitScope,
+              await startupScope.deviceGitScope(root, r.s.deviceRoot, r.s.home),
+            ]) {
+              const result = await fx.launchSavedGit(
+                lexicalFixture,
+                saved ?? null,
+                scopedGit,
+                root,
+              );
+              expect(result.exitCode).toBe(dropLexical ? 99 : 0);
+            }
+            expect(existsSync(lexicalFixture.marker)).toBe(!!dropLexical);
+            expect([
+              attachmentBytes(r.s),
+              ...lexicalFixture.snapshot(),
+            ]).toEqual(before);
           }
           if (name === "failed restart preserves attachment") {
             const before = bytes(r.s);
@@ -2769,7 +2801,7 @@ for (const [name, expected] of [
           if (assembly !== r.assembly) await assembly.close();
         }
       },
-    );
+    ).finally(() => lexicalFixture?.close());
   });
 for (const [name, code] of [
   ["malformed record", "INPUT_CONFLICT"],

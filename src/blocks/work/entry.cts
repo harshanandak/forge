@@ -1209,6 +1209,10 @@ function laneRegistry(
   text: string | null;
   lanes: Lane[];
 } {
+  // The files adapter supplies a native absolute root; blocks have no ambient platform.
+  const absolute = /^(?:[a-z]:[\\/]|[\\/]{2})/i.test(files.root)
+    ? /^(?:[a-z]:[\\/]|[\\/]{2}[^\\/]+[\\/][^\\/]+)/i
+    : /^\//;
   const text = files.read(registryPath, 1_048_576, "common") ?? null;
   let value: unknown;
   try {
@@ -1233,9 +1237,7 @@ function laneRegistry(
                   !!pair &&
                   Object.keys(pair).sort().join() === "lexical,real" &&
                   [pair.lexical, pair.real].every(
-                    (root) =>
-                      typeof root === "string" &&
-                      /^(?:\/|[a-z]:[\\/]|\\\\)/i.test(root),
+                    (root) => typeof root === "string" && absolute.test(root),
                   ),
               )
             );

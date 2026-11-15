@@ -1,5 +1,5 @@
 import { nodeConfigFiles, resolveIn } from "../adapters/fs/index.ts";
-import { relative, join } from "node:path";
+import { relative, join, sep, isAbsolute } from "node:path";
 import { cloudBinding } from "./cloud-binding.ts";
 import { LocalState } from "./state.ts";
 import {
@@ -30,17 +30,16 @@ export async function deviceGitScope(
     const prefix = boundLaneKey(binding);
     let saved: GitScope | undefined;
     for (const row of owner?.list("forge/work", prefix) ?? []) {
-      const lane = (row.value as { lane?: { worktree?: unknown } })?.lane;
-      if (
-        typeof lane?.worktree !== "string" ||
-        relative(lane.worktree, target) !== ""
-      )
-        continue;
-      const scope = reopenGitScope(
-        root,
-        readBoundLane(row.value, row.key.slice(prefix.length)).lane.gitScope ??
-          null,
-      );
+      const record = readBoundLane(row.value, row.key.slice(prefix.length));
+      const lane = record.lane;
+      const from = lane.gitScope && relative(lane.gitScope.lane.lexical, root);
+      const lexical =
+        from !== undefined &&
+        !isAbsolute(from) &&
+        from !== ".." &&
+        !from.startsWith(".." + sep);
+      if (!lexical && relative(lane.worktree, target) !== "") continue;
+      const scope = reopenGitScope(root, record.lane.gitScope ?? null);
       if (saved && JSON.stringify(scope) !== JSON.stringify(saved)) return null;
       saved = scope;
     }
