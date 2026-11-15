@@ -1412,8 +1412,17 @@ const attachmentBytes = (s: fx.Sandbox) =>
   ].map((path) =>
     existsSync(path) ? readFileSync(path).toString("hex") : null,
   );
-for (const stored of ["journal", "registry", "combined", "explicit"] as const)
-  test(`legacy linked reattachment ${stored === "explicit" ? "accepts supplied roots" : "refuses before Git"}: ${stored}`, async () => {
+for (const stored of [
+  "journal",
+  "registry",
+  "combined",
+  "explicit",
+  "inactive journal",
+  "attempt registry",
+  "explicit registry conflict",
+  "locked legacy arrival",
+] as const)
+  test(`legacy linked reattachment refuses before Git: ${stored}`, async () => {
     const f = fx.persistedRootsFixture();
     const deviceRoot = join(f.project, "device");
     const state = new LocalState(join(deviceRoot, "records.sqlite"));
@@ -1424,11 +1433,41 @@ for (const stored of ["journal", "registry", "combined", "explicit"] as const)
         worktree: f.scope.lane.real,
         brief: join(f.scope.lane.real, "brief.md"),
       };
-      const record = { ...journal, lane, grant: OWN_GRANT };
+      const record = {
+        ...journal,
+        lane,
+        grant: OWN_GRANT,
+        ...(stored === "inactive journal"
+          ? { active: false, releaseNeeded: false }
+          : {}),
+      };
+      const registryOnly = [
+        "registry",
+        "attempt registry",
+        "explicit registry conflict",
+        "locked legacy arrival",
+      ].includes(stored);
       writeFileSync(lane.brief, PREPARED_BRIEF);
-      if (stored !== "registry") await seedJournal({ deviceRoot }, record);
+      if (!registryOnly) await seedJournal({ deviceRoot }, record);
       const registry = join(f.project, ".git", "forge-lanes.json");
-      if (stored !== "journal") writeFileSync(registry, JSON.stringify([lane]));
+      if (stored !== "journal" && stored !== "inactive journal")
+        writeFileSync(
+          registry,
+          JSON.stringify([
+            {
+              ...lane,
+              ...(stored === "attempt registry"
+                ? { attempt: "attempt-1" }
+                : {}),
+              ...(stored === "explicit registry conflict"
+                ? { gitScope: scopedGit.createGitScope(f.target) }
+                : {}),
+              ...(stored === "locked legacy arrival"
+                ? { gitScope: f.scope }
+                : {}),
+            },
+          ]),
+        );
       const scope = {
         op: "lane.start",
         effects: [
@@ -1444,13 +1483,12 @@ for (const stored of ["journal", "registry", "combined", "explicit"] as const)
       files = await createAssemblyProviders(f.target, {
         env: { ...f.env, PATH: f.env.PATH.split(delimiter).at(-1)! },
       }).openFiles(scope);
-      const legacy =
-        stored === "registry"
-          ? undefined
-          : readBoundLane(
-              (await state.open(false))!.get("forge/work", journalKey())!.value,
-              "work-1",
-            ).lane;
+      const legacy = registryOnly
+        ? undefined
+        : readBoundLane(
+            (await state.open(false))!.get("forge/work", journalKey())!.value,
+            "work-1",
+          ).lane;
       const lock = spyOn(files.value, "lock"),
         write = spyOn(files.value, "write");
       const providers = createAssemblyProviders(f.target, { env: f.env });
@@ -1460,37 +1498,79 @@ for (const stored of ["journal", "registry", "combined", "explicit"] as const)
           existsSync(path) ? readFileSync(path).toString("hex") : null,
         ),
       ];
-      const before = snapshot();
-      const attempt = attachBoundLane(
-        record,
-        {
-          files: files.value,
-          process: providers.process(scope),
-          environment: providers.environment(scope),
-          now: () => NOW,
-          ...(stored === "explicit" ? { gitScope: f.scope } : {}),
-          ...scope,
-        },
-        {
-          check: async () => {},
-          publish: (_lane, write) => Promise.resolve(write()),
-        },
-        legacy,
-      );
-      if (stored === "explicit") {
-        expect((await attempt).gitScope).toEqual(f.scope);
-        expect(existsSync(f.marker)).toBe(false);
-        return;
-      }
+      const process = providers.process(scope);
+      const probes = spyOn(process, "run");
+      const services = {
+        files: files.value,
+        process,
+        environment: providers.environment(scope),
+        now: () => NOW,
+        ...(stored.startsWith("explicit") ? { gitScope: f.scope } : {}),
+        ...scope,
+      };
+      let baseline = [0, 0, 0];
+      let before = snapshot();
+      const read = files.value.read.bind(files.value);
+      let reads = 0;
+      if (stored === "locked legacy arrival")
+        spyOn(files.value, "read").mockImplementation((...args) => {
+          if (args[0] === "forge-lanes.json" && ++reads === 2) {
+            writeFileSync(registry, JSON.stringify([lane]));
+            baseline = [
+              probes.mock.calls.length,
+              lock.mock.calls.length,
+              write.mock.calls.length,
+            ];
+            before = snapshot();
+          }
+          return read(...args);
+        });
+      const fence = {
+        check: async () => {},
+        publish: (_lane: unknown, write: () => void) =>
+          Promise.resolve(write()),
+      };
+      const attempt =
+        stored === "inactive journal"
+          ? boundLane.boundLaneStart(
+              { id: ISSUE.id, branch: lane.branch, brief: lane.brief },
+              {
+                ...OWN_GRANT.holder,
+                project: { id: fx.PROJECT_ID, root: f.target },
+              },
+              "dev-1",
+              () => NOW,
+              fx.bindingFor(),
+              (await state.open(false))!.client(
+                "forge/work",
+                OWN_GRANT.holder.actor,
+              ),
+              () => Promise.resolve({ ...ISSUE, lease: OWN_GRANT }),
+              () =>
+                Promise.reject(
+                  new Error("Refusal must precede publication preparation"),
+                ),
+              (...args) =>
+                Reflect.apply(attachBoundLane, undefined, [
+                  args[0],
+                  services,
+                  args[1],
+                  ...args.slice(2),
+                ]) as ReturnType<typeof attachBoundLane>,
+            )
+          : attachBoundLane(record, services, fence, legacy);
       await expect(attempt).rejects.toMatchObject({
         error: { code: "INPUT_CONFLICT" },
       });
       expect([
         existsSync(f.marker),
-        lock.mock.calls.length,
-        write.mock.calls.length,
+        probes.mock.calls.length - baseline[0]!,
+        lock.mock.calls.length - baseline[1]!,
+        write.mock.calls.length - baseline[2]!,
         snapshot(),
-      ]).toEqual([false, 0, 0, before]);
+      ]).toEqual([false, 0, 0, 0, before]);
+      if (stored === "locked legacy arrival")
+        expect(baseline).toEqual([2, 1, 0]);
     } finally {
       await files?.close();
       await state.close();
