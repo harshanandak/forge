@@ -97,11 +97,11 @@ test
         expect(result.stderr).toContain("issue show peak is");
         expect(result.stderr).toContain("more than the 1.5 MB limit");
       } else {
-        // A loaded integration runner can fail wall time independently of the memory decision.
+        // Wall time and absolute-cap crossings are separate from this paired-delta assertion.
         expect(result.status === 0 || result.status === 1).toBe(true);
         expect(result.signal).toBeNull();
         expect(delta).toBeLessThanOrEqual(MAX_PEAK_DELTA_MB);
-        expect(result.stderr).not.toContain("::error::issue show peak");
+        expect(result.stderr).not.toContain("::error::issue show peak is ");
       }
     } finally {
       rmSync(folder, { recursive: true, force: true });
