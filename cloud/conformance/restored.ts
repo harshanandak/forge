@@ -4,6 +4,8 @@ import type { LeaseRecord } from "../../src/generated/types.ts";
 import type { Tables } from "./max-source.ts";
 import { StateOwner } from "../../src/core/state/index.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
+import { sqliteStore } from "../../src/adapters/store-sqlite/index.ts";
+import { pagesOf } from "../../tools/import-current-state.ts";
 import { domain } from "../src/project.ts";
 import {
   limitsFrom,
@@ -46,9 +48,11 @@ export function imageSequence(whole = false) {
 export function replayImage(
   db: SqlDatabase,
   image: Iterable<Dump | Page>,
-  at: number,
+  at: number | (() => number),
 ): StateOwner {
-  const owner = new StateOwner(db, { now: () => at });
+  const owner = new StateOwner(db, {
+    now: typeof at === "number" ? () => at : at,
+  });
   owner.initialize([domain]);
   const limits = {
     ...limitsFrom({}),
@@ -63,6 +67,29 @@ export function replayImage(
   }
   sequence();
   return owner;
+}
+
+/** Own the scratch lifetime while streaming a replay plus a caller-supplied delta. */
+export async function* expectedImage(
+  source: Iterable<Dump | Page>,
+  at: number | (() => number),
+  delta: (owner: StateOwner) => void | Promise<void>,
+): AsyncGenerator<Page> {
+  const opened = await sqliteStore.open({ path: ":memory:", readOnly: false });
+  if (!opened.ok) throw new Error("Expected-image scratch storage unavailable");
+  const { handle } = opened;
+  try {
+    const owner = replayImage(handle.value, source, at);
+    await delta(owner);
+    const limits = {
+      ...limitsFrom({}),
+      maxBytes: Number.MAX_SAFE_INTEGER,
+      maxRows: Number.MAX_SAFE_INTEGER,
+    };
+    yield* pagesOf(handle.value, limits);
+  } finally {
+    await handle.close();
+  }
 }
 
 export const releaseEvent = (

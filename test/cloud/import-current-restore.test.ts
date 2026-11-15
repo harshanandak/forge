@@ -219,6 +219,72 @@ test.each(["distinct", "corrupt", "truncated"])(
   30_000,
 );
 
+test.each(["distinct", "corrupt"])(
+  "constructed expected image through roundTrip: %s",
+  async (kind) => {
+    for (const mutant of [false, true]) {
+      const source = comparisonSource(),
+        document = dumpOf(source),
+        before = f.snapshot(source);
+      const src = await project(),
+        dst = await project();
+      eq(status((await src.send("restore", document)).projected), [
+        "OK",
+        0,
+        null,
+      ]);
+      const construction = (await import(
+        await f.moduleUrl(
+          "../../cloud/conformance/restored.ts",
+          mutant && kind === "distinct"
+            ? ["    await delta(owner);", ""]
+            : undefined,
+        )
+      )) as typeof import("../../cloud/conformance/restored.ts");
+      const comparison = (await import(
+        await f.moduleUrl(
+          "../../cloud/conformance/conformance.ts",
+          mutant && kind === "corrupt" ? [comparisonGuard, ""] : undefined,
+        )
+      )) as typeof import("../../cloud/conformance/conformance.ts");
+      const transport = spyOn(globalThis, "fetch").mockImplementation(
+        f.expectedTransport(src.p, dst.p, () =>
+          f.controlDelta(
+            f.owner(durableStore(dst.storage)),
+            kind === "distinct" ? "expect" : "sourcf",
+          ),
+        ),
+      );
+      try {
+        const expected = construction.expectedImage([document], f.at, (owner) =>
+          f.controlDelta(owner, kind === "distinct" ? "expect" : "source"),
+        );
+        const run = () =>
+          comparison.roundTrip(
+            "source",
+            "target",
+            "constructed",
+            4096,
+            undefined,
+            expected,
+          );
+        const check = () =>
+          kind === "distinct"
+            ? assert.doesNotReject(run)
+            : assert.rejects(run, { code: "ERR_ASSERTION" });
+        if (mutant) await assert.rejects(check);
+        else await check();
+        eq(f.snapshot(source), before);
+      } finally {
+        transport.mockRestore();
+        src.db.close();
+        dst.db.close();
+      }
+    }
+  },
+  30_000,
+);
+
 async function project(mutant?: string) {
   const edits: Record<string, readonly [string, string]> = {
     order: ["page.page !== staged?.next", "false"],
