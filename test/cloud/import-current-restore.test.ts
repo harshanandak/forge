@@ -18,6 +18,7 @@ import { imageProblems, TABLES } from "../../cloud/conformance/digest.ts";
 import {
   replayImage,
   restoreStopped,
+  expectedImage,
 } from "../../cloud/conformance/restored.ts";
 import { pagesOf as cut } from "../../cloud/conformance/max-source.ts";
 import { pageOrder } from "../../cloud/conformance/page-order.ts";
@@ -295,13 +296,28 @@ const comparisonGuard = `  assert.deepEqual(
     expected === source ? digests : image.done(),
     \`\${label}: target differs from expected image\`,
   );`;
+function repeatUUIDs() {
+  let n = 0;
+  const ids = [1, 2, 3].map(
+    (i) => `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`,
+  );
+  const spy = spyOn(crypto, "randomUUID").mockImplementation(
+    () => ids[n++ % 3]! as ReturnType<typeof crypto.randomUUID>,
+  );
+  return {
+    reset: () => {
+      n = 0;
+    },
+    close: () => spy.mockRestore(),
+  };
+}
 test.each(["distinct", "corrupt", "truncated"])(
   "roundTrip %s catches its guard removal",
   async (kind) => {
     for (const mutant of [false, true]) {
       const source = comparisonSource(),
-        document = dumpOf(source),
         before = f.snapshot(source);
+      let document = dumpOf(source);
       const src = await f.project(),
         dst = await f.project();
       eq(status((await src.send("restore", document)).projected), [
@@ -309,16 +325,26 @@ test.each(["distinct", "corrupt", "truncated"])(
         0,
         null,
       ]);
+      document = dumpOf(durableStore(src.storage));
+      const uuids = repeatUUIDs(),
+        expectedStore = f.cloudDatabase();
+      const built = [];
+      for await (const page of expectedImage([document], f.at, (_, db) =>
+        f.settleActivation(db),
+      ))
+        built.push(page);
+      replayImage(expectedStore, built, f.at);
+      uuids.reset();
       const expected = cut(
         JSON.parse(
-          JSON.stringify(document.tables).replaceAll(
+          JSON.stringify(dumpOf(expectedStore).tables).replaceAll(
             "source",
             kind === "distinct" ? "expect" : "source",
           ),
         ) as typeof document.tables,
         3,
       );
-      eq(expected.length, 2);
+      assert.ok(expected.length > 1);
       const stream = kind === "truncated" ? expected.slice(0, 1) : expected;
       const changes: Record<string, readonly [string, string]> = {
         distinct: ["expected === source ? digests : image.done()", "digests"],
@@ -384,6 +410,7 @@ test.each(["distinct", "corrupt", "truncated"])(
         eq(f.snapshot(source), before);
       } finally {
         transport.mockRestore();
+        uuids.close();
         src.close();
         dst.close();
       }
@@ -397,8 +424,8 @@ test.each(["distinct", "corrupt"])(
   async (kind) => {
     for (const mutant of [false, true]) {
       const source = comparisonSource(),
-        document = dumpOf(source),
         before = f.snapshot(source);
+      let document = dumpOf(source);
       const src = await f.project(),
         dst = await f.project();
       eq(status((await src.send("restore", document)).projected), [
@@ -406,11 +433,13 @@ test.each(["distinct", "corrupt"])(
         0,
         null,
       ]);
+      document = dumpOf(durableStore(src.storage));
+      const uuids = repeatUUIDs();
       const construction = (await import(
         await f.moduleUrl(
           "../../cloud/conformance/restored.ts",
           mutant && kind === "distinct"
-            ? ["    await delta(owner);", ""]
+            ? ["    await delta(owner, db);", ""]
             : undefined,
         )
       )) as typeof import("../../cloud/conformance/restored.ts");
@@ -432,8 +461,10 @@ test.each(["distinct", "corrupt"])(
         const expected = construction.expectedImage(
           kind === "distinct" ? [document] : cut(document.tables, 3),
           f.at,
-          (owner) =>
-            f.controlDelta(owner, kind === "distinct" ? "expect" : "source"),
+          (owner, db) => {
+            f.settleActivation(db);
+            f.controlDelta(owner, kind === "distinct" ? "expect" : "source");
+          },
         );
         const run = () =>
           comparison.roundTrip(
@@ -453,6 +484,7 @@ test.each(["distinct", "corrupt"])(
         eq(f.snapshot(source), before);
       } finally {
         transport.mockRestore();
+        uuids.close();
         src.close();
         dst.close();
       }
@@ -580,7 +612,7 @@ test.each(rows)(
             );
             return;
           }
-          const expected = converter.imageDigests(scratch);
+
           for (const table of [
             ...TABLES.slice(2),
             "domain_cloud_lane_approvals",
@@ -609,7 +641,10 @@ test.each(rows)(
             if (page.next === null) break;
             cursor = page.next;
           }
-          eq(converter.imageDigests(readback), expected);
+          await restoreStopped(pagesOf(scratch, limits), readback, "a", [
+            f.at,
+            f.at,
+          ]);
         })();
         eq([f.snapshot(s.db), s.bytes()], before);
       } finally {
@@ -634,8 +669,11 @@ test.each(["Oracle accepts serving restore", "Oracle accepts a stopped image"])(
         'new LaneControlStore(owner(db), "a").stop(',
         "({ stop: () => ({ ok: true }) }).stop(",
       ],
-      approvals: ["db.run(`DELETE FROM ${LANE_APPROVALS}`);", ""],
-      browser: ["db.run(`DELETE FROM ${LANE_BROWSER}`);", ""],
+      approvals: [
+        "  db.run(`DELETE FROM ${LANE_APPROVALS}`);\n  db.run(`DELETE FROM ${LANE_BROWSER}`);",
+        "  db.run(`DELETE FROM ${LANE_BROWSER}`);",
+      ],
+      browser: ["  db.run(`DELETE FROM ${LANE_BROWSER}`);\n}", "}"],
       stale: [
         'export function settleActivation(db: SqlDatabase) {\n  const result = new LaneControlStore(owner(db), "a").stop(',
         'export function settleActivation(db: SqlDatabase) {\n  const at = Date.now() - 60_000;\n  const result = new LaneControlStore(new StateOwner(db, { now: () => at }), "a").stop(',
@@ -972,10 +1010,21 @@ async function restoredDispatch(p: Awaited<ReturnType<typeof f.activation>>) {
   let launches = 0;
   const saved = f.owner(p.db).get(f.ns, "issue:work-1");
   try {
-    await assert.rejects(async () => {
-      await runner.beforeSpawn();
-      launches++;
-    }, /control stopped/);
+    await assert.rejects(
+      async () => {
+        await runner.beforeSpawn();
+        launches++;
+      },
+      (error: unknown) => {
+        assert.ok(error instanceof ForgeFailure);
+        verdict(
+          respond(failure(error.error.code, error.error.message)),
+          "UNAVAILABLE",
+        );
+        assert.match(error.error.message, /control stopped/);
+        return true;
+      },
+    );
   } finally {
     await runner.close();
   }

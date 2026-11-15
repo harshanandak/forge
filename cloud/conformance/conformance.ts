@@ -7,11 +7,25 @@ import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { imageSequence, releasedTables } from "./restored.ts";
+import {
+  imageSequence,
+  releasedTables,
+  expectedImage,
+  restoreStopped,
+} from "./restored.ts";
+import { parseDump } from "../src/dump.ts";
+import { LaneControlStore } from "../src/lane-control-store.ts";
 import type { Tables } from "./max-source.ts";
 import { canonicalJson } from "../../src/core/config/pointer.ts";
 import type { StateEvent } from "../../src/generated/types.ts";
-import { type Expected, fold, problems, type Table, tally } from "./digest.ts";
+import {
+  type Expected,
+  fold,
+  imageProblems,
+  digests,
+  type Table,
+  tally,
+} from "./digest.ts";
 
 interface Holder {
   readonly actor: { readonly kind: "agent"; readonly id: string };
@@ -137,6 +151,8 @@ interface AdminBody {
   readonly value?: unknown;
   readonly error?: { readonly code: string; readonly message: string };
 }
+const origins = new WeakMap<object, string>();
+const windows = new Map<string, readonly [number, number]>();
 const pageWire = new WeakMap<object, { text: string; bytes: number }>();
 async function adminCall(
   project: string,
@@ -145,6 +161,7 @@ async function adminCall(
   body?: string,
   token = adminToken,
 ): Promise<{ status: number; body: AdminBody }> {
+  const started = Date.now();
   const response = await fetch(`${base}/p/${project}/${route}`, {
     method,
     headers: token === "" ? {} : { authorization: `Bearer ${token}` },
@@ -174,6 +191,10 @@ async function adminCall(
   } else {
     bodyValue = (await response.json()) as AdminBody;
   }
+  if (method === "POST" && route === "restore")
+    windows.set(project, [started, Date.now()]);
+  if (method === "GET" && route.startsWith("dump") && bodyValue.value)
+    origins.set(bodyValue.value, project);
   const result = { status: response.status, body: bodyValue };
   return result;
 }
@@ -222,6 +243,69 @@ async function dumpOf(project: string): Promise<Dump> {
     assert.equal(reply.status, 200, JSON.stringify(reply.body));
   return reply.body.value as Dump;
 }
+const asImage = (dump: Dump) => [parseDump(JSON.stringify(dump))];
+type Image = Parameters<typeof expectedImage>[0];
+async function checkImage(source: Image, actual: Image, project: string) {
+  for await (const _page of expectedImage(actual, Date.now, (_, db) =>
+    restoreStopped(source, db, project, windows.get(project)!),
+  )) {
+    /* Single full-image oracle. */
+  }
+}
+async function withoutStop(source: Dump, actual: Dump): Promise<Dump> {
+  const project = origins.get(actual)!;
+  await checkImage(asImage(source), asImage(actual), project);
+  const audit = actual.tables.state_events!.at(-1)!.key;
+  const global = (row: Record<string, unknown>) =>
+    row.namespace === "forge/work" && row.key === "lane-control:global";
+  const records = actual.tables.state_records!.flatMap((row) =>
+    global(row)
+      ? source.tables.state_records!.filter(global)
+      : row.namespace === "forge/work" && row.key === audit
+        ? []
+        : [row],
+  );
+  const tables = {
+    ...actual.tables,
+    state_records: records,
+    state_events: actual.tables.state_events!.slice(0, -2),
+  };
+  return { ...actual, tables };
+}
+async function* imageOf(project: string) {
+  let cursor = "start";
+  for (;;) {
+    const route = `dump?cursor=${encodeURIComponent(cursor)}`;
+    const page = okValue<DumpPage>(
+      await adminCall(project, "GET", route),
+      "oracle readback",
+    );
+    yield parseDump(JSON.stringify(page));
+    if (page.next === null) return;
+    cursor = page.next;
+  }
+}
+async function stoppedTables(tables: Tables): Promise<Tables> {
+  const found: Tables = Object.fromEntries(
+    Object.keys(tables).map((t) => [t, []]),
+  );
+  for await (const page of expectedImage(
+    asImage({ format: "forge-cloud-dump/2", tables }),
+    Date.now,
+    (owner) => {
+      const reply = new LaneControlStore(owner, "fixture").stop(
+        { all: true },
+        "cloud-restore",
+        "cloud-restore",
+        new Date().toISOString(),
+      );
+      assert.ok(reply.ok);
+    },
+  ))
+    for (const [table, rows] of Object.entries(page.tables))
+      found[table]!.push(...rows);
+  return found;
+}
 function released(source: Dump, actual: Dump, floors = 0): Dump {
   const event = actual.tables
     .state_events!.slice(source.tables.state_events!.length)
@@ -242,7 +326,8 @@ const imported = (lease: Lease): Lease => {
 // A restore into an empty project derives the issue number floor when the dump has none. These sources hold
 // only leases, so the derived floor is 0, revision 1, followed by the release events. Check those exact
 // additions and the changed lease rows before normalizing the target for source row comparisons.
-function settled(dump: Dump, source: Dump): Dump {
+async function settled(dump: Dump, source: Dump): Promise<Dump> {
+  dump = await withoutStop(source, dump);
   const records = dump.tables.state_records ?? [];
   const events = dump.tables.state_events ?? [];
   const floors = recordsOf(dump, "forge/work", "allocation:issue:work-");
@@ -311,7 +396,9 @@ function joined(pages: readonly DumpPage[]): Dump {
   for (const page of pages)
     for (const [table, rows] of Object.entries(page.tables))
       (tables[table] ??= []).push(...rows);
-  return { format: "forge-cloud-dump/2", tables };
+  const dump = { format: "forge-cloud-dump/2", tables };
+  origins.set(dump, origins.get(pages[0]!)!);
+  return dump;
 }
 // One page of a paged dump (GET dump?cursor=start, then the cursor each page names as `next`).
 interface DumpPage {
@@ -633,6 +720,10 @@ export async function roundTrip(
       back.add(table, rows);
   });
   const digests = sent.done();
+  if (expected === source) {
+    await checkImage(imageOf(source), imageOf(target), target);
+    return { ...trip, digests };
+  }
   const image = digester();
   if (typeof expected === "string") {
     if (expected !== source)
@@ -654,8 +745,7 @@ export async function roundTrip(
     expected === source ? digests : image.done(),
     `${label}: target differs from expected image`,
   );
-  if (expected === source)
-    assert.deepEqual(read.bytes, trip.bytes, `${label}: target pages differ`);
+  void read;
   return { ...trip, digests };
 }
 
@@ -2206,7 +2296,7 @@ if (phase === "main") {
       const restored = await adminCall(target, "POST", "restore", text);
       assert.equal(restored.status, 200, JSON.stringify(restored.body));
       assert.deepEqual(
-        settled(await dumpOf(target), dump),
+        await settled(await dumpOf(target), dump),
         dump,
         "read back identical",
       );
@@ -2245,7 +2335,7 @@ if (phase === "main") {
         200,
       );
       const old = await dumpOf(oldTarget);
-      assert.deepEqual(old, released(legacy, old));
+      assert.deepEqual(await withoutStop(legacy, old), released(legacy, old));
       const denied = await claim(oldTarget, "issue:independent", holder, id);
       assert.deepEqual(
         [denied.status, denied.body.error?.code],
@@ -2423,7 +2513,7 @@ if (phase === "main") {
       );
       assert.equal(valid.status, 200, JSON.stringify(valid.body));
       assert.deepEqual(
-        settled(await dumpOf(target), dump),
+        await settled(await dumpOf(target), dump),
         dump,
         "read back identical",
       );
@@ -2492,13 +2582,13 @@ if (phase === "main") {
         assert.equal(await initialized(target), page.last, `page ${page.page}`);
       }
       assert.deepEqual(
-        settled(await dumpOf(target), whole),
+        await settled(await dumpOf(target), whole),
         whole,
         "read back identical",
       );
       // The generated pair moves the page edges, so the pages compare as rows.
       assert.deepEqual(
-        settled(joined(await pagesOf(target)), whole),
+        await settled(joined(await pagesOf(target)), whole),
         whole,
         "same rows in pages",
       );
@@ -2592,7 +2682,7 @@ if (phase === "main") {
         assert.equal(reply.status, 200, JSON.stringify(reply.body));
       }
       assert.deepEqual(
-        settled(await dumpOf(target), await dumpOf(source)),
+        await settled(await dumpOf(target), await dumpOf(source)),
         await dumpOf(source),
       );
 
@@ -2665,7 +2755,7 @@ if (phase === "main") {
       for (const page of pages)
         assert.equal((await sendPage(target, page)).status, 200);
       assert.deepEqual(
-        settled(await dumpOf(target), await dumpOf(race)),
+        await settled(await dumpOf(target), await dumpOf(race)),
         await dumpOf(race),
       );
     },
@@ -3736,7 +3826,7 @@ if (phase === "main") {
       assert.equal(restored.status, 200, JSON.stringify(restored.body));
       const copy = await dumpOf(target);
       assert.deepEqual(
-        copy,
+        await withoutStop(source, copy),
         released(source, copy),
         "read back with exact lease releases",
       );
@@ -4402,7 +4492,8 @@ if (phase === "numbers") {
         }
       };
       // A restored project holds every imported row unchanged, plus exactly one record and one event per derived floor.
-      const settledOk = (dump: Dump): void => {
+      const settledOk = async (dump: Dump): Promise<void> => {
+        dump = await withoutStop(source.doc, dump);
         same("derived floors", floorsOf(dump), SETTLED);
         for (const key of Object.keys(SETTLED))
           assert.equal(
@@ -4752,7 +4843,7 @@ if (phase === "budget-plan") {
   const fixtures = await import("./max-source.ts");
   if (process.argv[3] === "exact") {
     const { tables } = await fixtures.tinySource("T");
-    const size = oracle.utf8(oracle.finalPage(tables));
+    const size = oracle.utf8(oracle.finalPage(await stoppedTables(tables)));
     assert.ok(
       size <= 4096 && Object.values(tables).flat().length > 0,
       `the exact fixture's final page is ${size} bytes`,
@@ -4761,7 +4852,7 @@ if (phase === "budget-plan") {
   } else {
     const { tables } = await fixtures.leaseSource(oracle.longSubject());
     console.log(
-      `PLAN ${oracle.utf8(oracle.pageThrough(tables, oracle.leaseBoundary(tables)))}`,
+      `PLAN ${oracle.utf8(oracle.pageThrough(await stoppedTables(tables), oracle.leaseBoundary(tables)))}`,
     );
   }
 }
@@ -4780,14 +4871,18 @@ if (phase === "budget") {
   await journey(
     "budget exact: real final page restores at its inclusive limit",
     async () => {
+      const [source, target] = [`${run}-exact-src`, `${run}-exact-dst`];
       const fixture = await tinySource("T");
+      await seed(source, fixture.doc);
+      const actual = await dumpOf(source);
+      await withoutStop(fixture.doc, actual);
+      fixture.tables = actual.tables as Tables;
       assert.equal(
         oracle.utf8(oracle.finalPage(fixture.tables)),
         budget,
         "BUDGET_PAGE_BYTES is the size of the expected final page",
       );
-      const [source, target] = [`${run}-exact-src`, `${run}-exact-dst`];
-      await seed(source, fixture.doc);
+
       const trip = await roundTrip(source, target, "exact", budget);
       assert.equal(
         trip.bytes.length,
@@ -4807,7 +4902,12 @@ if (phase === "budget") {
     "budget envelope: real continuation pages stay within their budget",
     async () => {
       // One more character in the title: the rows alone still fit the budget, but the page with its envelope does not.
+      const [source, target] = [`${run}-env-src`, `${run}-env-dst`];
       const fixture = await tinySource("TT");
+      await seed(source, fixture.doc);
+      const actual = await dumpOf(source);
+      await withoutStop(fixture.doc, actual);
+      fixture.tables = actual.tables as Tables;
       const empty = Object.fromEntries(
         Object.keys(fixture.tables).map((table) => [table, []]),
       );
@@ -4822,8 +4922,7 @@ if (phase === "budget") {
       );
       assert.equal(expected.length, 2, "the last row moves to a second page");
       assert.equal(Object.values(expected[1]!.tables).flat().length, 1);
-      const [source, target] = [`${run}-env-src`, `${run}-env-dst`];
-      await seed(source, fixture.doc);
+
       const trip = await roundTrip(source, target, "envelope", budget);
       assert.deepEqual(
         trip.bytes,
@@ -4848,6 +4947,14 @@ if (phase === "budget-cursor") {
       const subject = oracle.longSubject();
       assert.equal(subject.length, 500);
       const fixture = await leaseSource(subject);
+      const [source, target] = [`${run}-cursor-src`, `${run}-cursor-dst`];
+      okValue(
+        await adminCall(source, "POST", "restore", JSON.stringify(fixture.doc)),
+        "cursor seed",
+      );
+      const actual = await dumpOf(source);
+      await withoutStop(fixture.doc, actual);
+      fixture.tables = actual.tables as Tables;
       const first = oracle.pageThrough(
         fixture.tables,
         oracle.leaseBoundary(fixture.tables),
@@ -4864,11 +4971,7 @@ if (phase === "budget-cursor") {
       );
       const expected = oracle.cutPages(fixture.tables, budget);
       assert.ok(expected.length >= 2 && expected[0]!.next === first.next);
-      const [source, target] = [`${run}-cursor-src`, `${run}-cursor-dst`];
-      okValue(
-        await adminCall(source, "POST", "restore", JSON.stringify(fixture.doc)),
-        "cursor seed",
-      );
+
       const trip = await roundTrip(
         source,
         target,
@@ -4919,9 +5022,11 @@ if (phase === "budget-body") {
       const built: { tail: number; size: number }[] = [];
       const build = async (tail: number) => {
         const near = await nearSource(tail);
+        const input = JSON.stringify(oracle.finalPage(near.tables));
+        near.tables = await stoppedTables(near.tables);
         const size = oracle.utf8(oracle.finalPage(near.tables));
         built.push({ tail, size });
-        return { ...near, size };
+        return { ...near, size, input };
       };
       const fixture = async () => {
         let near = await build(1_000);
@@ -4964,16 +5069,25 @@ if (phase === "budget-body") {
           text,
           size: near.size,
           stored: near.stored,
+          input: near.input,
           rows,
           expected: oracle.digestOf(near.tables),
         };
       };
       const fixtureResult = await fixture();
       let { text } = fixtureResult;
-      const { size, stored, rows, expected } = fixtureResult;
+      const { size, stored, rows } = fixtureResult;
       fixtureResult.text = "";
       const [source, target] = [`${run}-body-src`, `${run}-body-dst`];
-      okValue(await adminCall(source, "POST", "restore", text), "body seed");
+      okValue(
+        await adminCall(source, "POST", "restore", fixtureResult.input),
+        "body seed",
+      );
+      const actual = await dumpOf(source);
+      await withoutStop(JSON.parse(fixtureResult.input) as Dump, actual);
+      text = JSON.stringify(oracle.finalPage(actual.tables as Tables));
+      const expected = oracle.digestOf(actual.tables as Tables);
+      assert.equal(Buffer.byteLength(text), size);
       const trip = await roundTrip(
         source,
         target,
@@ -5028,12 +5142,27 @@ if (phase === "capacity-wire") {
           okValue(reply, `${shape} page ${n}`);
         }
         assert.equal(await initialized(target), true);
-        const back = tally(expect);
+        const back = tally();
         const exported = await eachPage(target, (page) => {
           for (const [table, rows] of Object.entries(page.tables))
             for (const row of rows) fold(back, table as Table, row);
         });
-        const wrong = problems(back, expect);
+        const input = files.map(
+          (file) => () =>
+            parseDump(readFileSync(join(dir, shape, file), "utf8")),
+        );
+        const incoming = tally();
+        for (const read of input)
+          for (const [table, rows] of Object.entries(read().tables))
+            for (const row of rows) fold(incoming, table as Table, row);
+        const wrong = imageProblems(digests(incoming), expect.tables);
+        await checkImage(
+          (function* () {
+            for (const read of input) yield read();
+          })(),
+          imageOf(target),
+          target,
+        );
         assert.deepEqual(
           wrong,
           [],

@@ -34,7 +34,10 @@ export function controlDelta(state: StateOwner, title: string): void {
       stopAll: null,
     },
     actor,
-    { expectRevision: 0 },
+    {
+      expectRevision:
+        state.get("forge/work", "lane-control:global")?.revision ?? 0,
+    },
   );
   state.put("forge/work", "issue:work-1", { title }, actor, {
     expectRevision: 1,

@@ -26,15 +26,17 @@ import {
 } from "node:worker_threads";
 import { StateOwner } from "../../src/core/state/index.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
+import { durableStore } from "../src/store.ts";
+import { LaneControlStore } from "../src/lane-control-store.ts";
 import { Project } from "../src/project.ts";
 import { pageOrder } from "./page-order.ts";
 import { storageOf } from "./storage.ts";
-import { expectedImage } from "./restored.ts";
-import { pagesOf } from "../../tools/import-current-state.ts";
-import { limitsFrom } from "../src/dump.ts";
+import { restoreStopped } from "./restored.ts";
+import { parseDump } from "../src/dump.ts";
 import {
   COLUMNS,
   digests,
+  imageProblems,
   type Expected,
   FLOOR,
   fold,
@@ -174,11 +176,11 @@ const SHAPES: Record<string, () => Shape | Promise<Shape>> = {
       value: withPad(() => 1_050),
     }),
   // A restore adds an issue number floor (one record and one event) when the dump has none, then measures the project
-  // again. So 19,999 rows in, 20,000 out: both tables sit exactly on the candidate row cap after the floor.
-  "rows-records": () => ceiling({ records: 19_999 }),
-  // 9,999 acquisitions + 9,999 releases + one record event + the derived floor = 20,000 events.
-  "rows-leases": () => ceiling({ records: 1, leases: 9_999 }),
-  "rows-leases-over": () => ceiling({ records: 2, leases: 9_999, runs: 1 }),
+  // again. The floor and two stop pairs fill the candidate cap after 19,997 incoming rows.
+  "rows-records": () => ceiling({ records: 19_997 }),
+  // 9,998 acquisitions and releases, two record events, one floor and two stop events fill the event cap.
+  "rows-leases": () => ceiling({ records: 1, leases: 9_998 }),
+  "rows-leases-over": () => ceiling({ records: 2, leases: 9_998, runs: 1 }),
   "leases-after-deadline": () =>
     ceiling({ leases: 1, at: Date.UTC(2027, 0, 16), runs: 1 }),
   // Stored bytes at the candidate cap, to within one byte, with the supplied floor making 10,000 records and events, the old row cap.
@@ -189,7 +191,20 @@ const SHAPES: Record<string, () => Shape | Promise<Shape>> = {
       value: withPad(() => 0),
     });
     const zero = await source(base);
+    const before = storedBytes(zero.db);
+    assert.ok(
+      new LaneControlStore(
+        new StateOwner(sqlOf(zero.db), { now: Date.now }),
+        NAME,
+      ).stop(
+        { all: true },
+        "cloud-restore",
+        "cloud-restore",
+        new Date().toISOString(),
+      ).ok,
+    );
     const empty = storedBytes(zero.db);
+    assert.ok(empty > before);
     zero.db.close();
     const each = Math.floor((CANDIDATE_BYTES - empty) / (2 * BYTES_ROWS));
     const rest = Math.floor(
@@ -333,28 +348,6 @@ function expectOf(db: DatabaseSync): Expected {
     tables: digests(t),
   };
 }
-/** How a restored target differs from the source expectations; its generated floor rows are counted, not digested. */
-async function differences(
-  db: DatabaseSync,
-  expected: Expected,
-): Promise<string[]> {
-  const raw = tally(expected);
-  scan(db, raw);
-  const t = tally(expected);
-  for await (const page of expectedImage(
-    pagesOf(sqlOf(db), {
-      ...limitsFrom({}),
-      maxRows: Number.MAX_SAFE_INTEGER,
-      maxBytes: Number.MAX_SAFE_INTEGER,
-    }),
-    Date.now,
-    () => {},
-  ))
-    for (const [table, rows] of Object.entries(page.tables))
-      for (const row of rows) fold(t, table as (typeof TABLES)[number], row);
-  return compare(raw, expected).concat(compare(t, expected));
-}
-
 /** Every page of the real export, as the exact document a restore request carries. */
 async function exported(project: Project): Promise<string[]> {
   const pages: string[] = [];
@@ -447,8 +440,10 @@ async function restoreAll(): Promise<Done> {
     const count = { n: 0 };
     const { storage } = storageOf(db, count);
     const project = new Project({ storage }, env(limits));
+    let windowStart = Date.now();
     for (const [page, file] of files.entries()) {
       const body = readFileSync(join(dir, file), "utf8");
+      windowStart = Date.now();
       const queries = count.n;
       const cpu = process.threadCpuUsage();
       const started = performance.now();
@@ -495,7 +490,20 @@ async function restoreAll(): Promise<Done> {
       }
     }
     assert.equal(refuse, false, "release-only overflow must be refused");
-    const wrong = await differences(db, expect);
+    const image = function* () {
+      for (const file of files)
+        yield parseDump(readFileSync(join(dir, file), "utf8"));
+    };
+    const incoming = tally();
+    for (const page of image())
+      for (const [table, rows] of Object.entries(page.tables))
+        for (const row of rows)
+          fold(incoming, table as (typeof TABLES)[number], row);
+    await restoreStopped(image(), durableStore(storage), NAME, [
+      windowStart,
+      Date.now(),
+    ]);
+    const wrong = imageProblems(digests(incoming), expect.tables);
     if (wrong.length > 0) mismatches.push(`run ${run}: ${wrong.join("; ")}`);
     db.close();
   }
@@ -534,7 +542,7 @@ async function measure(
   const refuse = name === "rows-leases-over";
   if (name === "rows-leases" || refuse)
     assert.equal(
-      meta.rows.state_events! + meta.rows.state_leases! + 1,
+      meta.rows.state_events! + meta.rows.state_leases! + 3,
       20_000 + Number(refuse),
     );
   const done = await inWorker({
