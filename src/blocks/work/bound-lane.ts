@@ -558,11 +558,32 @@ export async function attachBoundLane(
   );
   const problems = helpers.briefProblems(files.read(brief, 262144) ?? "");
   if (problems.length) refuse("INPUT_INVALID", problems.join("; "));
-  boundLaneRegistry(files);
+  const matching = (lanes: ReturnType<typeof boundLaneRegistry>["lanes"]) =>
+    lanes.filter(
+      (row) =>
+        row.attempt === undefined &&
+        (row.issueId ?? row.issue.replace(/^.*-/, "work-")) === record.id,
+    );
+  const registered = matching(boundLaneRegistry(files).lanes);
   const gitScope = reopenGitScope(
     files.root,
-    services.gitScope ?? reopenGitScope(services.process.cwd),
+    previous?.gitScope ??
+      registered.find((row) => row.gitScope !== undefined)?.gitScope ??
+      services.gitScope ??
+      reopenGitScope(services.process.cwd),
   );
+  const scopeKey = (scope: GitScope) =>
+    JSON.stringify(scope, ["project", "lane", "lexical", "real"]);
+  const checkSavedRoots = (rows: typeof registered) => {
+    for (const row of rows)
+      if (
+        row.gitScope !== undefined &&
+        scopeKey(reopenGitScope(files.root, row.gitScope)) !==
+          scopeKey(gitScope)
+      )
+        refuse("INPUT_CONFLICT", "Saved attachment Git roots disagree.");
+  };
+  checkSavedRoots(registered);
   const readGit = boundLaneGit(services, files.root, gitScope);
   const identity = async () => {
     if (
@@ -601,11 +622,8 @@ export async function attachBoundLane(
         ) !== path(brief))
     )
       refuse("INPUT_CONFLICT", "A live attachment has a different identity.");
-    const existing = saved.lanes.filter(
-      (row) =>
-        row.attempt === undefined &&
-        (row.issueId ?? row.issue.replace(/^.*-/, "work-")) === record.id,
-    );
+    const existing = matching(saved.lanes);
+    checkSavedRoots(existing);
     if (
       existing.length > 1 ||
       saved.lanes.some(

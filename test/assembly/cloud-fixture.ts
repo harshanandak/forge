@@ -27,11 +27,11 @@ export type ScopedGitApi = Pick<
   "gitCapability" | "resolveOutside"
 >;
 
-/** Runner scratch is outside both the checkout and the resolver's ordinary temp exclusion. */
+/** Temporary siblings of runner scratch stay outside checkout and OS-temp exclusions. */
 export function gitFixtureTemp(prefix: string): string {
   const root = process.env.RUNNER_TEMP;
   if (!root) throw new Error("Git security fixtures require RUNNER_TEMP");
-  return mkdtempSync(join(root, prefix));
+  return mkdtempSync(join(root, "..", prefix));
 }
 export function directoryLink(target: string, link: string): void {
   symlinkSync(target, link, process.platform === "win32" ? "junction" : "dir");
