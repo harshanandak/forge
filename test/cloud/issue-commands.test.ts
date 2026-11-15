@@ -9,7 +9,7 @@ import {
   IMPORT_MIGRATION,
   limitsFrom,
 } from "../../cloud/src/dump.ts";
-import { Project, domain } from "../../cloud/src/project.ts";
+import { Project } from "../../cloud/src/project.ts";
 import {
   readOnlyStore,
   durableStore,
@@ -948,9 +948,11 @@ for (const kind of ["count", "max"] as const)
             ),
           ).toBe(true);
           if (count > 1000) {
-            expect(stateOutcome(got)).toEqual([503, "UNAVAILABLE", 1]);
+            expect(stateOutcome(got)).toEqual([400, "INPUT_INVALID", 6]);
             expect(got.json.result).toBeUndefined();
             expect(got.json.error?.message).toContain("1000");
+            expect(got.json.error?.message).toContain("narrow the prefix");
+            expect(got.json.error).toMatchObject({ retry: "never" });
           } else {
             expect(stateOutcome(got)).toEqual([200, undefined, 0]);
             expect(got.value.result).toEqual({ kind, value: count });
@@ -961,7 +963,7 @@ for (const kind of ["count", "max"] as const)
         }
       }, 30_000);
 
-test("state watermark uses a namespace endpoint after idempotent provisioned-store migration", async () => {
+test("first state read upgrades a provisioned store once and uses a namespace endpoint", async () => {
   const f = await stateFixture();
   try {
     f.put("old");
@@ -975,14 +977,33 @@ test("state watermark uses a namespace endpoint after idempotent provisioned-sto
     f.db.run(
       "DELETE FROM state_migrations WHERE id='005_state_events_namespace_index'",
     );
-    const refused = await f.read({ kind: "get", key: "absent" });
-    expect(stateOutcome(refused)).toEqual([503, "UNAVAILABLE", 1]);
-    expect(refused.json.error?.message).toContain("admin device token");
-    f.owner.initialize([domain]);
-    f.owner.initialize([domain]);
+    f.reopen();
+    const query = { kind: "get", key: "absent" } as const;
+    const first = await f.send(
+      {
+        ...stateRead,
+        namespace: "forge/memory",
+        policyRevision: "discover",
+        query,
+      },
+      { token: f.token, path: "state/read" },
+    );
+    expect(stateOutcome(first)).toEqual([200, undefined, 0]);
+    expect(
+      f.db
+        .query(
+          "SELECT name FROM sqlite_schema WHERE name='state_events_by_namespace'",
+        )
+        .get(),
+    ).toBeTruthy();
     expect(tablesOf(f.db)).toEqual(before);
-    const got = await f.read({ kind: "get", key: "absent" });
+    const got = await f.read(query);
     expect(stateOutcome(got)).toEqual([200, undefined, 0]);
+    expect(got.text).toBe(first.text);
+    expect(got.probes).not.toContain("state_migrations");
+    expect(
+      got.touched.some((sql) => /state_migrations|CREATE INDEX/.test(sql)),
+    ).toBe(false);
     expect(got.value.result).toEqual({ kind: "get", record: null });
     expect(got.value.readVersion.revision).toBe(expected);
     const watermark = got.touched.find((sql) => sql.includes("MAX(sequence)"))!;
