@@ -175,7 +175,11 @@ export function stopProof(plan: StopPlan) {
       );
       if (i < 0) return row;
       const index = i + (table === "state_events" ? 2 : 0);
-      assert.deepEqual(row, list[i], `stop ${table} ${i}: exact generated row`);
+      assert.deepEqual(
+        { ...row },
+        list[i],
+        `stop ${table} ${i}: exact generated row`,
+      );
       seen[index]!++;
       return table === "state_records" && i === 0 ? plan.prior : undefined;
     },

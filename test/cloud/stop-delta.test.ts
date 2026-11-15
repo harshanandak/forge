@@ -287,7 +287,11 @@ test.each(cases)(
         const got = tally(undefined, stopPlan(source, deltas[1])),
           want = tally();
         for (const [table, rows] of Object.entries(target))
-          for (const row of rows) fold(got, table as Table, row);
+          for (const row of rows) {
+            const cells = { ...row };
+            Object.setPrototypeOf(cells, null);
+            fold(got, table as Table, cells);
+          }
         for (const [table, rows] of Object.entries(source))
           for (const row of rows) fold(want, table as Table, row);
         assert.deepEqual(
