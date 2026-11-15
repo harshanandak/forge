@@ -66,6 +66,9 @@ for (const variant of [
   "linked target",
   "linked clone files",
   "linked startup",
+  "linked ancestor honest",
+  "linked ancestor missing",
+  "linked ancestor forged",
   "fresh read",
   "sha256",
   "no trusted git",
@@ -78,10 +81,13 @@ for (const variant of [
 ] as const)
   test(`attached head table: ${variant}`, async () => {
     const root = mkdtempSync(join(import.meta.dirname, ".forge-bound-head-"));
-    const caller = join(root, "caller"),
+    const ancestor = variant.startsWith("linked ancestor");
+    const caller = ancestor
+        ? join(root, ".worktrees", "lane")
+        : join(root, "caller"),
       target = join(root, "target");
     for (const path of [caller, target]) {
-      mkdirSync(path);
+      mkdirSync(path, { recursive: true });
       writeFileSync(
         join(path, process.platform === "win32" ? "git.exe" : "git"),
         "project-controlled executable",
@@ -104,9 +110,12 @@ for (const variant of [
     const cloneLookup = ["linked clone files", "linked startup"].includes(
       variant,
     );
-    const main = join(root, "main"),
+    const main = ancestor ? root : join(root, "main"),
       common = join(main, ".git"),
-      gitdir = join(common, "worktrees", "lane");
+      gitdir =
+        ancestor && !variant.endsWith("honest")
+          ? join(caller, "fake-meta")
+          : join(common, "worktrees", "lane");
     const linkedRoot = variant === "linked target" ? target : processRoot;
     const mainBin = join(main, "bin"),
       probe = join(root, "project-git-ran");
@@ -114,9 +123,17 @@ for (const variant of [
     if (linked) {
       if (variant === "linked target") mkdirSync(join(caller, ".git"));
       mkdirSync(gitdir, { recursive: true });
+      if (ancestor) mkdirSync(common, { recursive: true });
       mkdirSync(mainBin);
       writeFileSync(join(linkedRoot, ".git"), `gitdir: ${gitdir}\n`);
-      writeFileSync(join(gitdir, "commondir"), "../..\n");
+      if (!variant.endsWith("missing")) {
+        const elsewhere = join(root, "elsewhere");
+        if (variant.endsWith("forged")) mkdirSync(elsewhere);
+        writeFileSync(
+          join(gitdir, "commondir"),
+          variant.endsWith("forged") ? elsewhere : "../..\n",
+        );
+      }
       writeFileSync(poison, "project-controlled executable", { mode: 0o755 });
     }
     const env = {

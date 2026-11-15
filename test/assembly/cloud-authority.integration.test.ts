@@ -1940,6 +1940,8 @@ for (const [name, expected] of [
   ["grant expires during final identity", "LEASE_EXPIRED"],
   ["released and reclaimed during final identity", "LEASE_NOT_HELD"],
   ["unknown grant during final identity", "UNAVAILABLE"],
+  ["grant changes during writable prepare", "LEASE_NOT_HELD"],
+  ["registry lock rolls back reservation", "INPUT_CONFLICT"],
   ["invalid brief", "INPUT_INVALID"],
   ["closed issue", "INPUT_CONFLICT"],
   ["absent issue", "NOT_FOUND"],
@@ -1951,6 +1953,7 @@ for (const [name, expected] of [
     let reads = 0;
     let time = NOW;
     let finalIdentity = false;
+    let prepared = false;
     let sandbox: fx.Sandbox;
     return using(
       {
@@ -2035,9 +2038,14 @@ for (const [name, expected] of [
               ...journal,
               grant: OWN_GRANT,
               active: false,
-              releaseNeeded: true,
+              releaseNeeded: name !== "registry lock rolls back reservation",
               lane: { ...attachment, worktree: realpathSync.native(s.root) },
             });
+          if (name === "registry lock rolls back reservation")
+            writeFileSync(
+              join(s.root, ".git", "forge-lanes.json.lock"),
+              "held",
+            );
         },
         steps: [
           ({ body }) => {
@@ -2093,11 +2101,14 @@ for (const [name, expected] of [
                       ? { ...OWN_GRANT, generation: OWN_GRANT.generation + 1 }
                       : reads === 2 && name === "grant expires during fence"
                         ? { ...OWN_GRANT, expiresAt: iso(NOW - 1) }
-                        : finalIdentity &&
-                            name ===
-                              "released and reclaimed during final identity"
+                        : prepared &&
+                            name === "grant changes during writable prepare"
                           ? { ...heldBy(), generation: 5 }
-                          : OWN_GRANT;
+                          : finalIdentity &&
+                              name ===
+                                "released and reclaimed during final identity"
+                            ? { ...heldBy(), generation: 5 }
+                            : OWN_GRANT;
             return name === "absent issue"
               ? refusing("NOT_FOUND")
               : answer({
@@ -2114,6 +2125,23 @@ for (const [name, expected] of [
             ? await r.open(join(r.s.root, "src"))
             : r.assembly;
         const runProcess = launch.runProcess;
+        const openStore = Object.getOwnPropertyDescriptor(
+          LocalState.prototype,
+          "open",
+        )!.value as LocalState["open"];
+        const promotion =
+          name === "grant changes during writable prepare"
+            ? spyOn(LocalState.prototype, "open").mockImplementation(
+                async function (this: LocalState, write) {
+                  const result = await openStore.call(this, write);
+                  if (write && !prepared) {
+                    await Promise.resolve();
+                    prepared = true;
+                  }
+                  return result;
+                },
+              )
+            : undefined;
         const projectGit =
           name === "project git precedes trusted git"
             ? spyOn(launch, "runProcess")
@@ -2256,6 +2284,42 @@ for (const [name, expected] of [
             false,
           );
           if (expected !== "OK") {
+            if (name === "registry lock rolls back reservation") {
+              const local = new LocalState(
+                join(r.s.deviceRoot, "records.sqlite"),
+              );
+              try {
+                expect(
+                  (await local.open(false))!.get("forge/work", journalKey())!
+                    .value,
+                ).toMatchObject({ active: false, releaseNeeded: false });
+              } finally {
+                await local.close();
+              }
+              rmSync(join(r.s.root, ".git", "forge-lanes.json.lock"));
+              expect(
+                spawnSync(
+                  "git",
+                  [
+                    "-C",
+                    r.s.root,
+                    "symbolic-ref",
+                    "HEAD",
+                    "refs/heads/feat/other",
+                  ],
+                  { windowsHide: true },
+                ).status,
+              ).toBe(0);
+              const retry = await assembly.catalog.invoke(
+                r.request(
+                  "lane.start",
+                  { id: ISSUE.id, branch: "feat/other", brief: "brief.md" },
+                  { context },
+                ),
+              );
+              expect(retry.ok, JSON.stringify(retry)).toBe(true);
+              return;
+            }
             if (live || finalIdentity)
               expect(exitCode(result)).toBe(expected === "UNAVAILABLE" ? 1 : 4);
             if (name === "grant expires during final identity")
@@ -2355,6 +2419,7 @@ for (const [name, expected] of [
             });
           }
         } finally {
+          promotion?.mockRestore();
           expiry?.mockRestore();
           projectGit?.mockRestore();
           if (assembly !== r.assembly) await assembly.close();
