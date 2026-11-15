@@ -231,7 +231,11 @@ export async function moduleUrl(
     (_all, prefix: string, spec: string) =>
       `${prefix}"${dependency?.[0] === spec ? dependency[1] : new URL(spec, url).href}"`,
   );
-  return `data:text/javascript;base64,${Buffer.from(new Bun.Transpiler({ loader: "ts" }).transformSync(text)).toString("base64")}`;
+  const transpiler = new Bun.Transpiler({
+    loader: "ts",
+    define: { "import.meta.url": JSON.stringify(url.href) },
+  });
+  return `data:text/javascript;base64,${Buffer.from(transpiler.transformSync(text)).toString("base64")}`;
 }
 export async function implementation(
   mutation?: string,
