@@ -125,7 +125,14 @@ import {
 import { lazy } from "./lazy.ts";
 import type { TemplateFile } from "./skills.ts";
 import { shippedTemplates, TEMPLATE_FILE } from "./templates.ts";
-import { openLevels, PROJECT_STATE, requireRegisteredStore } from "./levels.ts";
+import {
+  ASYNC_PROJECT_STATE,
+  createAsyncLevels,
+  openLevels,
+  PROJECT_STATE,
+  requireRegisteredStore,
+} from "./levels.ts";
+import { createLocalAsyncStateClient } from "./async-state-client.ts";
 import {
   PROJECT_MANIFEST,
   initProjectManifest,
@@ -707,7 +714,9 @@ export async function createAssembly(
       );
     for (const required of block.manifest.requires ?? []) {
       const provider = instance.bind?.[required.slot];
-      const state = interfaceSatisfies("forge.state@1.0.0", required.interface);
+      const state = ["forge.state@1.0.0", "forge.state@2.0.0"].some(
+        (provided) => interfaceSatisfies(provided, required.interface),
+      );
       if (
         !assemblyProvides(required.interface) ||
         (provider !== undefined && provider !== "core")
@@ -2113,10 +2122,13 @@ export async function createAssembly(
                 const namespace = current.blocks.get(instance)!.manifest.id;
                 // This host's project and, read-only, other projects: a declared capability,
                 // bound to the host's project and never to a project named in the request.
-                const projectLevels = interfaceSatisfies(
-                  PROJECT_STATE,
+                const asyncLevels = interfaceSatisfies(
+                  ASYNC_PROJECT_STATE,
                   binding.interface,
                 );
+                const projectLevels =
+                  asyncLevels ||
+                  interfaceSatisfies(PROJECT_STATE, binding.interface);
                 const projectWrite =
                   context.variant !== "device" &&
                   scope.effects.includes(
@@ -2153,7 +2165,9 @@ export async function createAssembly(
                     close: () => opened.close(),
                   });
                   if (projectLevels) {
-                    clients[binding.slot] = opened.levels;
+                    clients[binding.slot] = asyncLevels
+                      ? createAsyncLevels(opened.levels)
+                      : opened.levels;
                     continue;
                   }
                   // Register ordinary project writes too, retaining their original lease context.
@@ -2169,13 +2183,19 @@ export async function createAssembly(
                 );
                 leases.push(lease);
                 const owner = lease.value;
-                clients[binding.slot] = createStateClient({
+                const client = createStateClient({
                   owner,
                   namespace,
                   context,
                   write: scope.effects.includes(`${noun}:write`),
                   requestId: request.requestId,
                 });
+                clients[binding.slot] = interfaceSatisfies(
+                  "forge.state@2.0.0",
+                  binding.interface,
+                )
+                  ? createLocalAsyncStateClient(client)
+                  : client;
                 if (
                   namespace === "forge/work" &&
                   current.catalog.resolve(scope.op).operation.declaredOp ===

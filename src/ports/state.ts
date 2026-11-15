@@ -1,6 +1,7 @@
 // forge.state@1: the outside-block door to the single state owner. A block gets records in its own
 // namespace, with revisions and events; never SQL and never another block's namespace.
 import type { StateEvent, StateRecord } from "../generated/types.ts";
+import type { Caller, Warning } from "../generated/types.ts";
 
 export interface PutOptions {
   /** The revision the caller last read; 0 means the key must not exist yet. */
@@ -82,4 +83,50 @@ export interface DeletableStateClient extends ExtendedStateClient {
    * that sequence. A missing record is refused, never a successful repeated deletion.
    */
   delete(key: string, options: DeleteOptions): StateEvent;
+}
+
+/** forge.state@2: bounded Promise operations over the same namespace and owner as v1. */
+export interface AsyncStateClient {
+  get(key: string): Promise<StateRecord | undefined>;
+  put(key: string, value: unknown, options: PutOptions): Promise<StateRecord>;
+  putMany(
+    entries: readonly BatchEntry[],
+    options?: BatchOptions,
+  ): Promise<readonly StateRecord[]>;
+  range(options: RangeOptions): Promise<readonly StateRecord[]>;
+  history(options: HistoryOptions): Promise<readonly StateEvent[]>;
+  count(prefix: string): Promise<number>;
+  max(prefix: string): Promise<number>;
+}
+
+export interface AsyncProjectStore {
+  readonly identity: { readonly id: string; readonly name: string };
+  readonly projectId: string;
+  readonly state: AsyncStateClient;
+}
+export type AsyncPeerLookup =
+  | {
+      readonly status: "found";
+      readonly identity: AsyncProjectStore["identity"];
+      readonly state: AsyncStateClient;
+    }
+  | { readonly status: "not_found"; readonly ref: string }
+  | {
+      readonly status: "unavailable";
+      readonly identity: AsyncProjectStore["identity"];
+    }
+  | {
+      readonly status: "ambiguous";
+      readonly ref: string;
+      readonly candidates: readonly AsyncProjectStore["identity"][];
+    };
+
+/** forge.project-state@2: lazy project selection and registered, read-only peers. */
+export interface AsyncStoreLevels {
+  readonly caller: Caller;
+  readonly inProject: boolean;
+  readonly defaultScope?: string | undefined;
+  readonly warnings?: readonly Warning[];
+  project(): Promise<AsyncProjectStore | undefined>;
+  peer(ref: string): Promise<AsyncPeerLookup>;
 }

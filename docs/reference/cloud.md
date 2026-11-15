@@ -138,6 +138,25 @@ Staged rows are never served: a project is not provisioned until the last page, 
 
 To abandon a half restore, stop. To retry, send page 0 again: it clears the staged rows. Any refused restore request (an out-of-order page, a page over a limit, a bad document or a body that is too large) also clears them, so the next try starts at page 0. A whole `POST restore` clears them too.
 
+## Offline current-state import (step 7)
+
+Use only an owner-pinned standalone SQLite backup produced with SQLite backup/VACUUM INTO, without WAL, SHM or journal companions. Never point this tool at a running tracker. The source manifest has exactly `sha256` (lowercase SHA-256 of the complete file), `eventHighWaterMark` (last event sequence), `records` (exact current row count) and `at` (canonical ISO UTC projection time). Unsupported schema, namespaces, evidence or allocation history refuse conversion; the source is opened read-only, held in one read transaction and hashed before and after.
+
+```sh
+node tools/import-current.ts --backup synthetic-backup.sqlite --manifest source.json --out new-bundle
+node cloud/conformance/capacity.ts measure-current new-bundle
+```
+
+Optional `--max-rows`, `--max-bytes` and `--page-bytes` must be positive safe integers; defaults use the existing dump limits. There are no upload, URL or token flags. The output must not exist: it is created privately, every page is exclusively created, read back, hashed, parsed and restored into a second scratch store, and all six table counts/digests must match. `manifest.json` is written and read back last. A partial directory is unusable; retries require another new directory. `measure-current` checks the completed manifest, exact page membership, lengths and SHA-256 hashes before starting any measurement. Keep the bundle private and immutable throughout measurement and rehearsal. Treat bundles and source backups as confidential and retain them under the owner's local backup/retention policy until readback and rollback obligations are satisfied; do not commit or upload them as CI artifacts.
+
+The manifest records N current rows, F generated historical number floors, N+F revision-1 record/event pairs, six table digests, stored bytes, limits, ordered page hashes/lengths, relinquished source leases and dropped requests. New-project lease reset discards source lease generations, request receipts and prior approvals; old fences cannot authorize writes. Values and number floors survive, not execution authority. Record/event bodies and page membership are deterministic for the same source, projection time and limits; random export cursor epochs mean independent page hashes can differ.
+
+Rehearse only in a fresh disposable project, restoring pages in manifest order before issuing any device tokens. Re-fetch all six target tables through paged dump and compare every count and content digest. A refused page abandons staging. After a lost intermediate response, restart at page 0 while still unprovisioned. After a lost final response, check initialized status: if initialized, verify the completed target or use another disposable project; do not repost page 0.
+
+**Step 8 boundary:** current final restore provisions without establishing the global stop. `activation: requires-step-8-stop` is a warning and eligibility boundary, not a stop implementation. Step 7 permits offline conversion and disposable readback only. Step 8 must stop lanes and invalidate retained approvals/challenges before provisioning; fresh owner approval through the shared resume route is required before execution. Its extra stop/audit record-event pairs must be included in capacity accounting. Security review is required before merging the import boundary.
+
+For an owner-approved future cutover, stop local writers, retain the immutable backup and prior routing configuration, convert and measure, restore a fresh project before issuing tokens, and verify all six tables. Activate only after step 8 and fresh owner approval. Reverse by stopping the replacement, restoring the prior routing and reopening the retained local authority; do not run two writable authorities. Reconcile replacement-only writes before reversing. This procedure authorizes no real-data cutover or deployment.
+
 ## The issue number floor on restore
 
 Create reads a floor record (`allocation:issue:work-` in `forge/work`) so a deleted issue number is never reused. A dump from before floors has none, so create refuses until one exists. Restore settles it as its last step, in the same transaction as the restored rows (the last page for a paged restore, never earlier). The checks that already replay every event also keep the highest issue number seen in live keys and in update and deletion events, and the highest earlier floor value. Nothing else counts for the issue floor: another namespace or prefix, a non-numeric or zero-padded suffix, and a lease on its own do not. An unsafe number refuses the restore instead of being rounded.
