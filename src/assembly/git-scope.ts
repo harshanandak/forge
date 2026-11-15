@@ -39,7 +39,6 @@ export async function deviceGitScope(
       const scope = reopenGitScope(
         root,
         readBoundLane(row.value, row.key.slice(prefix.length)).lane.gitScope ??
-          explicit ??
           null,
       );
       if (saved && JSON.stringify(scope) !== JSON.stringify(saved)) return null;

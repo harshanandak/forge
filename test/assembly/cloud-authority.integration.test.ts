@@ -560,6 +560,7 @@ async function seedJournal(
 for (const row of [
   "reopen",
   "legacy",
+  "legacy with explicit input",
   "retargeted",
   "Accept-legacy-record",
 ] as const)
@@ -571,8 +572,8 @@ for (const row of [
       if (row === "Accept-legacy-record") {
         const mutant = await fx.withoutGuard<typeof startupScope>(
           new URL("../../src/assembly/git-scope.ts", import.meta.url),
-          /\.lane\.gitScope \?\?\s+explicit \?\?\s+null/,
-          ".lane.gitScope ?? explicit ?? reopenGitScope(root)",
+          /\.lane\.gitScope \?\?\s+null/,
+          ".lane.gitScope ?? reopenGitScope(root)",
         );
         expect(mutant.mutationLoaded).toBe(true);
         spies.push(
@@ -602,7 +603,11 @@ for (const row of [
             lane: {
               ...attachment,
               worktree: realpathSync.native(f.target),
-              ...(["legacy", "Accept-legacy-record"].includes(row)
+              ...([
+                "legacy",
+                "legacy with explicit input",
+                "Accept-legacy-record",
+              ].includes(row)
                 ? {}
                 : { gitScope: f.scope }),
             },
@@ -625,7 +630,12 @@ for (const row of [
         readFileSync(join(deviceRoot, "records.sqlite")).toString("hex"),
         ...f.snapshot(),
       ];
-      const gitScope = await startupScope.deviceGitScope(f.target, deviceRoot);
+      const gitScope = await startupScope.deviceGitScope(
+        f.target,
+        deviceRoot,
+        undefined,
+        row === "legacy with explicit input" ? f.scope : undefined,
+      );
       const launch = fx.launchSavedGit(f, gitScope, scopedGit);
       if (row === "reopen") expect((await launch).exitCode).toBe(0);
       else if (row === "Accept-legacy-record")
