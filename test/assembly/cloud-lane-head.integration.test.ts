@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   realpathSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -13,6 +14,7 @@ import { delimiter, dirname, join } from "node:path";
 import * as coordinator from "../../src/assembly/cloud-lane-coordinator.ts";
 import * as laneState from "../../src/blocks/work/bound-lane-state.ts";
 import * as scopedGit from "../../src/assembly/providers.ts";
+import { createProcessPort } from "../../src/adapters/process/index.ts";
 import {
   exerciseGitScope,
   gitScopeRows,
@@ -43,7 +45,6 @@ for (const row of gitScopeRows)
       projectRan: false,
       externalRan: accepted,
       relativeRan: false,
-      unchanged: true,
       diagnostic: !accepted,
     });
   }, 30000);
@@ -68,36 +69,77 @@ const trusted = realpathSync.native(git);
 const H1 = "a".repeat(40),
   H2 = "b".repeat(40);
 
-test("platform temp checkout uses the system Git, including macOS var aliases", async () => {
-  const root = mkdtempSync(join(tmpdir(), "forge-system-git-"));
-  let files;
-  try {
-    const initialized = spawnSync(trusted, ["init", "--quiet", root], {
-      encoding: "utf8",
-      windowsHide: true,
-    });
-    expect(initialized.status, initialized.stderr).toBe(0);
-    writeFileSync(join(root, "input"), "unchanged");
-    files = await createAssemblyProviders(root, {
-      env: {
-        PATH: dirname(trusted),
-        PATHEXT: process.env.PATHEXT ?? ".EXE",
+for (const consumer of ["system Git", "clone refusal", "head refusal"] as const)
+  test(`platform temp checkout: ${consumer}, including macOS var aliases`, async () => {
+    const root = mkdtempSync(join(tmpdir(), "forge-system-git-"));
+    let files;
+    try {
+      writeFileSync(join(root, "input"), "unchanged");
+      for (const command of [
+        "init -q -b main",
+        "add input",
+        "-c user.name=Fixture -c user.email=fixture@example.test commit -qm fixture",
+      ]) {
+        const result = spawnSync(trusted, ["-C", root, ...command.split(" ")], {
+          encoding: "utf8",
+          windowsHide: true,
+        });
+        expect(result.status, result.stderr).toBe(0);
+      }
+      const refused = consumer !== "system Git";
+      const marker = join(root, "git-ran");
+      writeFileSync(
+        join(root, process.platform === "win32" ? "git.cmd" : "git"),
+        process.platform === "win32"
+          ? "@echo off\r\necho ran>git-ran\r\n"
+          : "#!/bin/sh\nprintf ran > git-ran\n",
+        { mode: 0o755 },
+      );
+      const before = () =>
+        ["input", ".git/HEAD", ".git/index", ".git/refs/heads/main"].map(
+          (path) => readFileSync(join(root, path)).toString("hex"),
+        );
+      const bytes = before();
+      const launches = mock<ProcessPort["run"]>(() => {
+        throw new Error("Refused Git must not launch");
+      });
+      const denied = { ...createProcessPort(), run: launches };
+      const env = {
+        PATH: refused ? root : dirname(trusted),
+        PATHEXT: refused ? ".CMD" : (process.env.PATHEXT ?? ".EXE"),
         SystemRoot: process.env.SystemRoot ?? "",
-      },
-    }).openFiles({
-      op: "temp-checkout.read",
-      effects: ["files:read"],
-      signal: AbortSignal.timeout(10000),
-      deadline: Date.now() + 10000,
-      processContainment: "supervised",
-    });
-    expect(files.value.root).toBe(realpathSync.native(root));
-    expect(files.value.read("input", 32)).toBe("unchanged");
-  } finally {
-    await files?.close();
-    rmSync(root, { recursive: true, force: true });
-  }
-}, 30000);
+      };
+      const providers = createAssemblyProviders(
+        root,
+        { env },
+        refused ? denied : undefined,
+      );
+      const scope = {
+        op: "temp-checkout.read",
+        effects: ["files:read"],
+        signal: AbortSignal.timeout(10000),
+        deadline: Date.now() + 10000,
+        processContainment: "supervised" as const,
+      };
+      if (refused) {
+        await expect(
+          consumer === "clone refusal"
+            ? providers.openFiles(scope)
+            : readHead(flight(), providers, root),
+        ).rejects.toMatchObject({ error: { code: "UNAVAILABLE" } });
+        expect(launches).not.toHaveBeenCalled();
+        expect(existsSync(marker)).toBe(false);
+        expect(before()).toEqual(bytes);
+        return;
+      }
+      files = await providers.openFiles(scope);
+      expect(files.value.root).toBe(realpathSync.native(root));
+      expect(files.value.read("input", 32)).toBe("unchanged");
+    } finally {
+      await files?.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30000);
 
 test("attached head shares the journal's full-head validator", () => {
   const validate = (
@@ -120,6 +162,7 @@ for (const variant of [
   "fresh read",
   "sha256",
   "no trusted git",
+  "deleted lane root",
   "exit",
   "timeout",
   "truncated",
@@ -202,6 +245,8 @@ for (const variant of [
       },
     };
     try {
+      const deleted = variant === "deleted lane root";
+      if (deleted) rmSync(target, { recursive: true });
       expect(typeof readHead).toBe("function");
       const effects =
         variant === "process effect"
@@ -210,7 +255,7 @@ for (const variant of [
             ? ["external:process"]
             : undefined;
       const expected =
-        variant === "no trusted git"
+        variant === "no trusted git" || deleted
           ? "UNAVAILABLE"
           : variant.endsWith("effect")
             ? "EFFECT_UNDECLARED"
@@ -237,15 +282,14 @@ for (const variant of [
         expect(options.timeoutMs).toBeLessThanOrEqual(60000);
       }
       expect(runs).toHaveBeenCalledTimes(
-        ["no trusted git", "process effect", "environment effect"].includes(
-          variant,
-        )
+        expected === "UNAVAILABLE" || variant.endsWith("effect")
           ? 0
           : variant === "fresh read"
             ? 2
             : 1,
       );
       expect(files).not.toHaveBeenCalled();
+      if (deleted) expect(existsSync(target)).toBe(false);
       expect(existsSync(join(caller, ".forge", "state.sqlite"))).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });

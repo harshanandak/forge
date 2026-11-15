@@ -318,8 +318,18 @@ export function createGitScope(
   project: string,
   lane: string = project,
 ): GitScope {
-  const pair = (lexical: string) =>
-    Object.freeze({ lexical, real: realpathSync.native(lexical) });
+  const pair = (lexical: string) => {
+    let real: string;
+    try {
+      real = realpathSync.native(lexical);
+    } catch {
+      refuse(
+        "UNAVAILABLE",
+        `Cannot canonicalize Git scope root ${lexical}. Restore access before retrying.`,
+      );
+    }
+    return Object.freeze({ lexical, real });
+  };
   return Object.freeze({ project: pair(project), lane: pair(lane) });
 }
 /** Invocation-local pin: an added target can broaden exclusions, never narrow the original scope. */

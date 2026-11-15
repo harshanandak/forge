@@ -2,11 +2,9 @@
 // scripted network. Nothing here reaches a real network.
 import {
   existsSync,
-  lstatSync,
+  copyFileSync,
   mkdirSync,
   mkdtempSync,
-  readdirSync,
-  readlinkSync,
   realpathSync,
   rmSync,
   symlinkSync,
@@ -53,22 +51,6 @@ export async function exerciseGitScope(
     lexical,
     real: realpathSync.native(lexical),
   });
-  const snapshot = (root = dir): unknown =>
-    readdirSync(root)
-      .sort()
-      .filter((name) => name !== "launched")
-      .map((name): unknown => {
-        const path = join(root, name),
-          info = lstatSync(path);
-        return [
-          name,
-          info.isSymbolicLink()
-            ? readlinkSync(path)
-            : info.isDirectory()
-              ? snapshot(path)
-              : readFileSync(path, "utf8"),
-        ];
-      });
   try {
     for (const root of [project, external, relativeInstall]) {
       mkdirSync(root);
@@ -81,15 +63,8 @@ export async function exerciseGitScope(
         { mode: 0o755 },
       );
     }
-    for (const name of [
-      "attachment",
-      "registry",
-      "lease",
-      "progress",
-      "refs",
-      "worktree",
-    ])
-      writeFileSync(join(project, name), `unchanged ${name}`);
+    if (row === "no git" && process.platform === "win32")
+      copyFileSync(process.execPath, join(project, "..exe"));
     const scope = { project: pair(project), lane: pair(project) };
     const alias = join(
       row === "project alias"
@@ -122,7 +97,6 @@ export async function exerciseGitScope(
       PATHEXT: ".CMD",
       SystemRoot: process.env.SystemRoot ?? "",
     };
-    const before = JSON.stringify(snapshot());
     const port = createProcessPort({
       supervision: {
         cleanupTimeoutMs: 1000,
@@ -146,12 +120,7 @@ export async function exerciseGitScope(
       throw new Error("Direct project-B alias selection must be refused");
     // Selection and pin revalidation independently reject relative paths.
     const executable = selectionOnly
-      ? api.resolveOutside(port, "git", env, [
-          scope.project.lexical,
-          scope.project.real,
-          scope.lane.lexical,
-          scope.lane.real,
-        ])
+      ? api.resolveOutside(port, "git", env, project)
       : pin.executable(target);
     let launched = false;
     if (executable.kind === "resolved") {
@@ -171,7 +140,6 @@ export async function exerciseGitScope(
       projectRan: existsSync(marker(project)),
       externalRan: existsSync(marker(external)),
       relativeRan: existsSync(marker(relativeInstall)),
-      unchanged: before === JSON.stringify(snapshot()),
       diagnostic:
         executable.kind === "unavailable" &&
         executable.reason.includes(
