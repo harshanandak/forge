@@ -161,6 +161,7 @@ for (const losesGrant of [false, true])
       () =>
         Promise.resolve({
           command: f.command,
+          readHead: () => Promise.resolve(head),
           close: () => {
             closed = true;
             return Promise.resolve();

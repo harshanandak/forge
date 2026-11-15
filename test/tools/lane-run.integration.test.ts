@@ -19,7 +19,14 @@ import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 
 import { laneRun, runClaude, runCodex } from "../../tools/lane-run.ts";
-import { boundDispatch } from "../../tools/lane-control.ts";
+import { boundDispatch, openBoundRunner } from "../../tools/lane-control.ts";
+import {
+  boundLaneProgress,
+  type BoundCommand,
+  type BoundProgressInput,
+} from "../../src/blocks/work/bound-lane.ts";
+import type { BoundLaneRecord } from "../../src/blocks/work/bound-lane-state.ts";
+import type { StateRecord } from "../../src/generated/types.ts";
 import { bindingFor } from "../assembly/cloud-fixture.ts";
 import { scriptFixture } from "../script-fixture.ts";
 import { spawnBudget } from "../spawn-budget.ts";
@@ -1338,6 +1345,116 @@ test("bound runner refuses run, resume and detached auto before any provider spa
     expect(reads).toBe(1);
   } finally {
     await boundary.close();
+  }
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    const abort = fixture(),
+      checkout = abort.start();
+    await expect(
+      abort.direct(checkout, "ok", undefined, "codex", async () => {
+        await Promise.resolve();
+        process.emit(signal);
+      }),
+    ).rejects.toThrow();
+    expect(abort.attempts()).toHaveLength(0);
+  }
+  const builder = fixture(),
+    checkout = builder.start(),
+    startingHead = builder.git(["rev-parse", "HEAD"], checkout);
+  const actor = { kind: "agent" as const, id: "builder" },
+    session = { id: "s1", device: "dev-1" };
+  const grant = {
+    subject: "issue:work-1",
+    generation: 7,
+    holder: { actor, session },
+    expiresAt: new Date(Date.now() + 3600000).toISOString(),
+  };
+  const journal: BoundLaneRecord = {
+    version: 1,
+    id: "work-1",
+    cloudId: "forge-1",
+    active: true,
+    grant,
+    lane: {
+      issue: "work-1",
+      worktree: checkout,
+      branch: "lane/one",
+      brief: builder.brief,
+    },
+  };
+  let row: StateRecord = {
+    namespace: "forge/work",
+    key: "lane",
+    revision: 1,
+    value: journal,
+    updatedAt: new Date().toISOString(),
+    updatedBy: actor,
+  };
+  const readHead = () =>
+    Promise.resolve(builder.git(["rev-parse", "--verify", "HEAD"], checkout));
+  const cloud: BoundCommand = () =>
+    Promise.resolve({ id: "forge-1", status: "open", lease: grant });
+  const command: BoundCommand = (op, input, generation) => {
+    if (op === "lane.show") return Promise.resolve(journal.lane);
+    if (op === "issue.renew")
+      return Promise.resolve({
+        id: "forge-1",
+        generation: 7,
+        expiresAt: grant.expiresAt,
+      });
+    if (op === "lane.control")
+      return Promise.resolve({ incarnation: "one", epoch: 1, stopped: false });
+    return boundLaneProgress(
+      op,
+      input as BoundProgressInput,
+      { actor, session, leaseGeneration: generation ?? 7 },
+      "dev-1",
+      Date.now,
+      bindingFor(),
+      { get: () => row },
+      cloud,
+      (value, revision) => {
+        expect(revision).toBe(row.revision);
+        row = { ...row, value, revision: revision + 1 };
+        return Promise.resolve(row);
+      },
+      {},
+      readHead,
+    );
+  };
+  const runner = (await openBoundRunner(checkout, "forge-1", startingHead, () =>
+    Promise.resolve({ command, readHead, close: () => Promise.resolve() }),
+  ))!;
+  try {
+    const result = await builder.direct(
+      checkout,
+      "auto-move-always-gpt-6.1-sol",
+      undefined,
+      "codex",
+      runner.beforeSpawn,
+    );
+    expect(result.exit).toBe(0);
+    const actual = await readHead();
+    expect(actual).not.toBe(startingHead);
+    await expect(
+      command(
+        "lane.record",
+        {
+          id: "forge-1",
+          action: 1,
+          result: JSON.stringify({ head: startingHead, done: true }),
+        },
+        7,
+      ),
+    ).rejects.toMatchObject({ error: { code: "INPUT_CONFLICT" } });
+    await runner.finish(true);
+    expect((row.value as BoundLaneRecord).progress).toMatchObject({
+      pending: false,
+      actions: 1,
+      records: 1,
+      head: actual,
+    });
+  } finally {
+    await runner.finish(false);
   }
 });
 
