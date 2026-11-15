@@ -302,6 +302,94 @@ function within(base: string, target: string): boolean {
   );
 }
 
+function fullyAbsolute(path: string): boolean {
+  return (
+    isAbsolute(path) &&
+    (process.platform !== "win32" ||
+      /^(?:[a-z]:[\\/]|[\\/]{2}[^\\/]+[\\/][^\\/]+)/i.test(path))
+  );
+}
+export interface GitScope {
+  readonly project: { readonly lexical: string; readonly real: string };
+  readonly lane: { readonly lexical: string; readonly real: string };
+}
+/** The caller supplies the project and lane spellings before canonicalization. */
+export function createGitScope(
+  project: string,
+  lane: string = project,
+): GitScope {
+  const pair = (lexical: string) => {
+    let real: string;
+    try {
+      real = realpathSync.native(lexical);
+    } catch {
+      refuse(
+        "UNAVAILABLE",
+        `Cannot canonicalize Git scope root ${lexical}. Restore access before retrying.`,
+      );
+    }
+    return Object.freeze({ lexical, real });
+  };
+  return Object.freeze({ project: pair(project), lane: pair(lane) });
+}
+/** Invocation-local pin: an added target can broaden exclusions, never narrow the original scope. */
+export function gitCapability(
+  executor: ProcessPort,
+  environment: Readonly<Record<string, string>>,
+  input: GitScope,
+): { executable(target?: GitScope): ReturnType<ProcessPort["resolve"]> } {
+  const scope = Object.freeze({
+    project: Object.freeze({ ...input.project }),
+    lane: Object.freeze({ ...input.lane }),
+  });
+  const env = Object.freeze({ ...environment });
+  const roots = (value: GitScope) => [
+    value.project.lexical,
+    value.project.real,
+    value.lane.lexical,
+    value.lane.real,
+  ];
+  const valid = (value: GitScope) =>
+    [value.project, value.lane].every(
+      (pair) =>
+        fullyAbsolute(pair.lexical) &&
+        fullyAbsolute(pair.real) &&
+        relative(realpathSync.native(pair.lexical), pair.real) === "",
+    );
+  const unavailable = (): ReturnType<ProcessPort["resolve"]> => ({
+    kind: "unavailable",
+    reason: "Scoped Git is unavailable",
+    remedy: "Use an absolute PATH entry outside the project and lane.",
+  });
+  let pin: ReturnType<ProcessPort["resolve"]>;
+  let lexical = "";
+  try {
+    pin = valid(scope)
+      ? resolveOutside(executor, "git", env, roots(scope), (path) => {
+          lexical = path;
+        })
+      : unavailable();
+  } catch {
+    pin = unavailable();
+  }
+  return Object.freeze({
+    executable(target = scope): ReturnType<ProcessPort["resolve"]> {
+      try {
+        if (!valid(scope) || !valid(target)) return unavailable();
+        if (pin.kind !== "resolved") return pin;
+        const checked = resolveOutside(executor, lexical, env, [
+          ...roots(scope),
+          ...roots(target),
+        ]);
+        if (checked.kind !== "resolved") return checked;
+        return checked.path === pin.path ? pin : unavailable();
+      } catch {
+        return unavailable();
+      }
+    },
+  });
+}
+
 /**
  * The first PATH entry holding `name` whose canonical executable is outside the project, the
  * temp directories and node_modules/.bin. A path that cannot be canonicalized is refused.
@@ -311,10 +399,16 @@ export function resolveOutside(
   name: string,
   env: Readonly<Record<string, string>>,
   root: string | readonly string[],
+  selected?: (lexical: string) => void,
 ): ReturnType<ProcessPort["resolve"]> {
   const pathKey =
     Object.keys(env).find((key) => key.toUpperCase() === "PATH") ?? "PATH";
-  const none = () => executor.resolve(name, { ...env, [pathKey]: "" });
+  let reason = "No eligible absolute PATH entry for Git";
+  const none = (): ReturnType<ProcessPort["resolve"]> => ({
+    kind: "unavailable",
+    reason,
+    remedy: "Install Git outside the project and lane roots.",
+  });
   const excluded: string[] = [];
   const temps = [tmpdir()];
   for (const key of Object.keys(env))
@@ -322,28 +416,37 @@ export function resolveOutside(
       temps.push(env[key]!);
   try {
     for (const path of typeof root === "string" ? [root] : root)
-      excluded.push(realpathSync(path));
-    for (const temp of temps) if (temp) excluded.push(realpathSync(temp));
+      excluded.push(path, realpathSync.native(path));
+    for (const temp of temps)
+      if (temp) excluded.push(temp, realpathSync.native(temp));
   } catch {
+    reason = "Cannot canonicalize a scoped root or temporary directory";
     return none();
   }
   for (const entry of (env[pathKey] ?? "").split(delimiter)) {
     const directory = entry.trim().replace(/^"(.*)"$/, "$1");
-    if (!directory || !isAbsolute(directory)) continue;
+    if (!directory || !fullyAbsolute(directory)) continue;
     const found = executor.resolve(name, { ...env, [pathKey]: directory });
     if (found.kind !== "resolved") continue;
     let canonical: string;
     try {
       canonical = realpathSync(found.path);
     } catch {
+      reason = `Cannot canonicalize Git candidate ${found.path}`;
       continue;
     }
     if (
-      excluded.some((base) => within(base, canonical)) ||
-      /[\\/]node_modules[\\/]\.bin[\\/]/i.test(canonical)
-    )
+      [found.path, canonical].some(
+        (candidate) =>
+          excluded.some((base) => within(base, candidate)) ||
+          /[\\/]node_modules[\\/]\.bin[\\/]/i.test(candidate),
+      )
+    ) {
+      reason = `Rejected Git candidate ${found.path} (canonical ${canonical}): inside a scoped root, temporary directory or node_modules/.bin`;
       continue;
+    }
     // Launch the path that was checked, not the PATH entry.
+    selected?.(found.path);
     return { kind: "resolved", path: canonical };
   }
   return none();
@@ -849,9 +952,14 @@ export function createAssemblyProviders(
           DISCOVERY_ENV.has(key.toUpperCase()),
         ),
       );
-      const git = resolveOutside(executor, "git", scrubbed, root);
+      const pin = gitCapability(
+        executor,
+        scrubbed,
+        createGitScope(projectManifestRoot(root), root),
+      );
+      const git = pin.executable();
       if (git.kind !== "resolved")
-        refuse("UNAVAILABLE", "Clone files require Git on PATH");
+        refuse("UNAVAILABLE", `Clone files require Git on PATH: ${git.reason}`);
       const discoveryKey =
         Object.keys(scrubbed).find((key) => key.toUpperCase() === "PATH") ??
         "PATH";
@@ -944,7 +1052,10 @@ export function createAssemblyProviders(
                 "INVOCATION_TIMEOUT",
                 "Snapshot has no time left for Git and cleanup",
               );
-            const result = await executor.run(git, ["-C", root, ...args], {
+            const checked = pin.executable();
+            if (checked.kind !== "resolved")
+              refuse("UNAVAILABLE", checked.reason);
+            const result = await executor.run(checked, ["-C", root, ...args], {
               cwd: root,
               env: discoveryEnv,
               signal: scope.signal,

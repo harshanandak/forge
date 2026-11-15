@@ -4,8 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAssemblyProviders } from "../../../src/assembly/providers.ts";
 import type { ProcessPort } from "../../../src/ports/process.ts";
+import { gitResolutionFixture } from "../../fixtures/git-resolution.ts";
 
 test("tracked snapshots retain exact dirty paths and refuse truncated Git output", async () => {
+  using eligibleGit = gitResolutionFixture();
   const root = mkdtempSync(join(tmpdir(), "tracked-snapshot-"));
   const git = join(root, ".git");
   mkdirSync(git);
@@ -17,7 +19,7 @@ test("tracked snapshots retain exact dirty paths and refuse truncated Git output
   let fault: "truncated" | "failed" | "timedOut" = "truncated";
   const process: ProcessPort = {
     capability: "forge.process/v1",
-    resolve: () => ({ kind: "resolved", path: "git" }),
+    resolve: eligibleGit.resolve,
     run(_program, args) {
       const diff = args.includes("diff");
       if (diff) expect(args).toContain(head);
@@ -43,7 +45,7 @@ test("tracked snapshots retain exact dirty paths and refuse truncated Git output
   const lease = await createAssemblyProviders(
     root,
     {
-      env: {},
+      env: eligibleGit.env,
       supervision: {
         cleanupTimeoutMs: 100,
         pollIntervalMs: 25,
