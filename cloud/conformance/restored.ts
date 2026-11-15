@@ -5,6 +5,7 @@ import type { Tables } from "./max-source.ts";
 import { StateOwner } from "../../src/core/state/index.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
 import { durableStore } from "../src/store.ts";
+import { scratchStorage } from "./storage.ts";
 import { pagesOf } from "../../tools/import-current-state.ts";
 import { domain } from "../src/project.ts";
 import {
@@ -76,9 +77,13 @@ export async function* expectedImage(
   at: number | (() => number),
   delta: (owner: StateOwner) => void | Promise<void>,
 ): AsyncGenerator<Page> {
-  // Load the Bun fixture only when constructing an image; Node digest readers share this module.
-  const { scratchStorage } = await import("./max-source.ts");
-  const scratch = scratchStorage();
+  const Driver =
+    typeof Bun === "undefined"
+      ? (await import("node:sqlite")).DatabaseSync
+      : (await import("bun:sqlite")).Database;
+  const scratch = scratchStorage<
+    import("bun:sqlite").Database | import("node:sqlite").DatabaseSync
+  >(Driver);
   try {
     const db = durableStore(scratch.storage);
     const owner = replayImage(db, source, at);

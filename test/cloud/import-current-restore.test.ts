@@ -11,13 +11,9 @@ import {
 } from "../../cloud/src/dump.ts";
 import { imageProblems, TABLES } from "../../cloud/conformance/digest.ts";
 import { replayImage } from "../../cloud/conformance/restored.ts";
-import {
-  pagesOf as cut,
-  scratchStorage,
-} from "../../cloud/conformance/max-source.ts";
+import { pagesOf as cut } from "../../cloud/conformance/max-source.ts";
 import { pageOrder } from "../../cloud/conformance/page-order.ts";
-import { success } from "../../src/surface/dispatch.ts";
-import { failure, respond } from "../../src/surface/result.ts";
+import { respond } from "../../src/surface/result.ts";
 import { consumeLaneApproval } from "../../cloud/src/lane-approval.ts";
 import * as f from "./import-current-state.fixture.ts";
 import * as converter from "../../tools/import-current.ts";
@@ -48,6 +44,82 @@ const status = (r: ReturnType<typeof respond>) => [
   r.envelope.ok ? null : r.envelope.error.code,
 ];
 const limits = { ...limitsFrom({}), pageBytes: 4096 };
+
+test("shared storage detects a driver that cannot roll back joined writes", async () => {
+  for (const mutant of [false, true]) {
+    const p = await f.project();
+    const execute = p.db.exec.bind(p.db);
+    let bypassed = 0;
+    const driver = spyOn(p.db, "exec").mockImplementation((sql) => {
+      if (mutant && /^(BEGIN|COMMIT|ROLLBACK)$/.test(sql)) {
+        bypassed++;
+        return { changes: 0, lastInsertRowid: 0 };
+      }
+      return execute(sql);
+    });
+    try {
+      const { browserStorage } = await import("./browser-storage.fixture.ts");
+      const db = durableStore(browserStorage(p.db).storage);
+      db.exec("CREATE TABLE synthetic_nested (n INTEGER)");
+      const check = () => {
+        assert.throws(
+          () =>
+            db.transaction(() => {
+              db.run("INSERT INTO synthetic_nested VALUES (1)");
+              assert.throws(
+                () =>
+                  db.transaction(() => {
+                    db.run("INSERT INTO synthetic_nested VALUES (2)");
+                    throw new Error("inner write failed");
+                  }),
+                /inner write failed/,
+              );
+            }),
+          /inner transaction failed/,
+        );
+        eq(db.all("SELECT * FROM synthetic_nested"), []);
+      };
+      if (mutant) {
+        assert.throws(check, { code: "ERR_ASSERTION" });
+        assert.ok(bypassed > 0);
+      } else check();
+    } finally {
+      driver.mockRestore();
+    }
+  }
+}, 5_000);
+
+test("Project setup failure closes both databases through registered cleanup", async () => {
+  for (const mutant of [false, true]) {
+    const fixture = (await import(
+      await f.moduleUrl(
+        "./import-current-state.fixture.ts",
+        mutant ? ["  resources.push(close);", ""] : undefined,
+      )
+    )) as typeof f;
+    const src = await fixture.project(),
+      dst = await fixture.project();
+    const closes = [src, dst].map(({ db }) => spyOn(db, "close"));
+    try {
+      await assert.rejects(async () => {
+        try {
+          await Promise.resolve();
+          assert.fail("synthetic setup failure");
+        } finally {
+          fixture.cleanup();
+        }
+      }, /synthetic setup failure/);
+      const check = () =>
+        closes.forEach((close) => eq(close.mock.calls.length, 1));
+      if (mutant) assert.throws(check, { code: "ERR_ASSERTION" });
+      else check();
+    } finally {
+      src.close();
+      dst.close();
+      closes.forEach((close) => close.mockRestore());
+    }
+  }
+}, 5_000);
 
 function comparisonSource() {
   const source = f.cloudDatabase(),
@@ -130,8 +202,8 @@ test.each(["distinct", "corrupt", "truncated"])(
       const source = comparisonSource(),
         document = dumpOf(source),
         before = f.snapshot(source);
-      const src = await project(),
-        dst = await project();
+      const src = await f.project(),
+        dst = await f.project();
       eq(status((await src.send("restore", document)).projected), [
         "OK",
         0,
@@ -212,8 +284,8 @@ test.each(["distinct", "corrupt", "truncated"])(
         eq(f.snapshot(source), before);
       } finally {
         transport.mockRestore();
-        src.db.close();
-        dst.db.close();
+        src.close();
+        dst.close();
       }
     }
   },
@@ -227,8 +299,8 @@ test.each(["distinct", "corrupt"])(
       const source = comparisonSource(),
         document = dumpOf(source),
         before = f.snapshot(source);
-      const src = await project(),
-        dst = await project();
+      const src = await f.project(),
+        dst = await f.project();
       eq(status((await src.send("restore", document)).projected), [
         "OK",
         0,
@@ -281,58 +353,13 @@ test.each(["distinct", "corrupt"])(
         eq(f.snapshot(source), before);
       } finally {
         transport.mockRestore();
-        src.db.close();
-        dst.db.close();
+        src.close();
+        dst.close();
       }
     }
   },
   30_000,
 );
-
-async function project(mutant?: string) {
-  const edits: Record<string, readonly [string, string]> = {
-    order: ["page.page !== staged?.next", "false"],
-    target: ["if (await this.#isProvisioned())", "if (false)"],
-  };
-  const dump =
-    mutant === "release"
-      ? await f.moduleUrl("../../cloud/src/dump.ts", [
-          "owner.releaseRestoredLeases();",
-          "",
-        ])
-      : undefined;
-  const { Project: Impl } = (await import(
-    await f.moduleUrl(
-      "../../cloud/src/project.ts",
-      edits[mutant ?? ""],
-      dump ? ["./dump.ts", dump] : undefined,
-    )
-  )) as typeof import("../../cloud/src/project.ts");
-  const { db, storage, values } = scratchStorage();
-  const p = new Impl({ storage }, { DUMP_PAGE_BYTES: "4096" });
-  const send = async (route: string, body?: unknown) => {
-    const response = await p.fetch(
-      new Request(`https://synthetic.example/p/a/${route}`, {
-        method: body === undefined ? "GET" : "POST",
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      }),
-    );
-    const r = (await response.json()) as {
-      ok: boolean;
-      value: Record<string, unknown>;
-      error: { code: string; message: string };
-    };
-    return {
-      r,
-      projected: respond(
-        r.ok
-          ? success("restore", r.value)
-          : failure(r.error.code, r.error.message),
-      ),
-    };
-  };
-  return { db, storage, values, send, p };
-}
 
 test.each(rows)(
   "%s",
@@ -356,7 +383,7 @@ test.each(rows)(
       } else currentState(s.db, scratch, s.manifest, limits);
       const pages = [...pagesOf(scratch, limits)];
       assert.ok(pages.length > 2);
-      const p = await project(mutant ? kind : undefined);
+      const p = await f.project(mutant ? kind : undefined);
       const target = durableStore(p.storage);
       const count = (table: string) =>
         Number(target.get(`SELECT COUNT(*) AS n FROM ${table}`)!.n);
@@ -486,7 +513,7 @@ test.each(rows)(
         })();
         eq([f.snapshot(s.db), s.bytes()], before);
       } finally {
-        p.db.close();
+        p.close();
       }
     }
   },
