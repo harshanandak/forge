@@ -916,7 +916,7 @@ for (const kind of ["count", "max"] as const)
             examined++;
             return 1;
           });
-          const exec = f.storage.sql.exec.bind(f.storage.sql);
+          const executeSql = f.storage.sql.exec.bind(f.storage.sql);
           const plans: string[] = [];
           const meter = spyOn(f.storage.sql, "exec").mockImplementation(
             (sql, ...bindings) => {
@@ -936,7 +936,7 @@ for (const kind of ["count", "max"] as const)
                 );
                 sql = sql.replace("key>=?", "key>=? AND examined(key)");
               }
-              return exec(sql, ...bindings);
+              return executeSql(sql, ...bindings);
             },
           );
           const got = await f.read({ kind, prefix });
@@ -970,7 +970,7 @@ test("state watermark uses a namespace endpoint after idempotent provisioned-sto
       f.put(`foreign:${i}`, i, "other/state");
     }
     const expected = f.owner.namespaceRevision("forge/memory");
-    const before = f.snapshot();
+    const before = tablesOf(f.db);
     f.db.run("DROP INDEX IF EXISTS state_events_by_namespace");
     f.db.run(
       "DELETE FROM state_migrations WHERE id='005_state_events_namespace_index'",
@@ -980,7 +980,7 @@ test("state watermark uses a namespace endpoint after idempotent provisioned-sto
     expect(refused.json.error?.message).toContain("admin device token");
     f.owner.initialize([domain]);
     f.owner.initialize([domain]);
-    expect(f.snapshot()).toBe(before);
+    expect(tablesOf(f.db)).toEqual(before);
     const got = await f.read({ kind: "get", key: "absent" });
     expect(stateOutcome(got)).toEqual([200, undefined, 0]);
     expect(got.value.result).toEqual({ kind: "get", record: null });
