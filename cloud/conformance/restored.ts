@@ -142,12 +142,12 @@ export function releasedTables(source: Tables, at: string, floors = 0): Tables {
   }
   return tables;
 }
-
-/** Check activation independently, then compare a complete replay with the source plus the stop transition. */
+/** The caller captures restoreWindow around the final request, independently of the target image. */
 export async function restoreStopped(
   source: Iterable<Dump | Page>,
   actual: SqlDatabase,
   project: string,
+  restoreWindow: readonly [number, number],
 ): Promise<void> {
   const namespace = "forge/work",
     key = "lane-control:global";
@@ -163,16 +163,14 @@ export async function restoreStopped(
   assert.equal(problems.length, 0, problems.join("; "));
   assert.ok(control.ok);
   const global = target.get(namespace, key)!;
-  const audit = JSON.parse(
-    String(
-      actual.get(
-        "SELECT body FROM state_events ORDER BY sequence DESC LIMIT 1",
-      )!.body,
-    ),
-  ) as StateEvent;
+  const last = actual.get(
+    "SELECT body FROM state_events ORDER BY sequence DESC LIMIT 1",
+  )!;
+  const audit = JSON.parse(String(last.body)) as StateEvent;
   const uuid = /^[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/i;
   assert.match(audit.key, /^lane-control:audit:/);
-  assert.match(audit.key.slice("lane-control:audit:".length), uuid);
+  const auditId = audit.key.slice("lane-control:audit:".length);
+  assert.match(auditId, uuid);
   assert.deepEqual(audit.data, {
     version: 1,
     action: "stop",
@@ -184,7 +182,20 @@ export async function restoreStopped(
     epoch: control.result.epoch,
   });
   assert.equal(new Date(global.updatedAt).toISOString(), global.updatedAt);
-  assert.ok(Date.parse(global.updatedAt) <= Date.now());
+  const time = (stamp: string) => {
+    const at = Date.parse(stamp);
+    assert.ok(
+      restoreWindow[0] <= at && at <= restoreWindow[1],
+      "restore stop time window",
+    );
+    return at;
+  };
+  [
+    global.updatedAt,
+    target.get(namespace, audit.key)!.updatedAt,
+    audit.at,
+    (global.value as LaneControlGlobal).stopAll!,
+  ].forEach(time);
   const limits = {
     ...limitsFrom({}),
     maxRows: Number.MAX_SAFE_INTEGER,
@@ -194,7 +205,7 @@ export async function restoreStopped(
     const sum = tally();
     for await (const page of image)
       for (const [table, rows] of Object.entries(page.tables))
-        for (const row of rows) fold(sum, table as Table, row);
+        rows.forEach((row) => fold(sum, table as Table, row));
     return digests(sum);
   };
   const got = await hash(pagesOf(actual, limits));
@@ -206,15 +217,14 @@ export async function restoreStopped(
   const expected = expectedImage(
     source,
     (db) => {
-      const sequence =
-        Number(
-          db.get("SELECT COALESCE(MAX(sequence),0) AS n FROM state_events")!.n,
-        ) + 1;
+      const n = Number(
+        db.get("SELECT MAX(sequence) AS n FROM state_events")!.n,
+      );
       const next = actual.get(
         "SELECT json_extract(body,'$.at') AS at FROM state_events WHERE sequence=?",
-        [sequence],
+        [n + 1],
       );
-      return Date.parse(String(next?.at ?? global.updatedAt));
+      return time(String(next?.at ?? global.updatedAt));
     },
     (owner) => {
       const prior = owner.get(namespace, key)?.value as
@@ -227,10 +237,7 @@ export async function restoreStopped(
       if (prior) assert.equal(control.result.incarnation, prior.incarnation);
       else assert.match(control.result.incarnation, uuid);
       const original = crypto.randomUUID.bind(crypto);
-      const ids = [
-        control.result.incarnation,
-        audit.key.slice("lane-control:audit:".length),
-      ];
+      const ids = [control.result.incarnation, auditId];
       try {
         // Only generated UUIDs and observed clock inputs are aligned; all six tables remain in the comparison.
         crypto.randomUUID = () => ids.shift()! as ReturnType<typeof original>;

@@ -610,8 +610,11 @@ test.each(rows)(
   120_000,
 );
 
-const oracle = (source: Iterable<Dump | Page>, target: SqlDatabase) =>
-  restoreStopped(source, target, "a");
+const oracle = (
+  source: Iterable<Dump | Page>,
+  target: SqlDatabase,
+  started: number,
+) => restoreStopped(source, target, "a", [started, Date.now()]);
 test.each(["Oracle rejects main's restore", "Oracle accepts a stopped image"])(
   "%s",
   async (name) => {
@@ -623,6 +626,10 @@ test.each(["Oracle rejects main's restore", "Oracle accepts a stopped image"])(
       ],
       approvals: ["db.run(`DELETE FROM ${LANE_APPROVALS}`);", ""],
       browser: ["db.run(`DELETE FROM ${LANE_BROWSER}`);", ""],
+      stale: [
+        'export function settleActivation(db: SqlDatabase) {\n  const result = new LaneControlStore(owner(db), "a").stop(',
+        'export function settleActivation(db: SqlDatabase) {\n  const at = Date.now() - 60_000;\n  const result = new LaneControlStore(new StateOwner(db, { now: () => at }), "a").stop(',
+      ],
       content: [
         '  const result = new LaneControlStore(owner(db), "a").stop(',
         '  owner(db).put(ns, "issue:work-1", { title: "corrupted" }, actor, { expectRevision: 1 });\n  const result = new LaneControlStore(owner(db), "a").stop(',
@@ -637,8 +644,11 @@ test.each(["Oracle rejects main's restore", "Oracle accepts a stopped image"])(
             before = f.snapshot(source),
             p = await f.activation();
           const image = paged ? [...pagesOf(source, limits)] : [dumpOf(source)];
-          for (const part of image)
+          let started = Date.now();
+          for (const part of image) {
+            started = Date.now();
             eq((await p.send("restore", part)).projected.exitCode, 0);
+          }
           if (accepts) {
             const key = mutation as keyof typeof changes;
             const fixture =
@@ -654,7 +664,7 @@ test.each(["Oracle rejects main's restore", "Oracle accepts a stopped image"])(
           }
           if (!accepts)
             await assert.rejects(
-              () => oracle(image, p.db),
+              () => oracle(image, p.db, started),
               (error: unknown) => {
                 assert.ok(error instanceof assert.AssertionError);
                 for (const problem of [
@@ -667,9 +677,14 @@ test.each(["Oracle rejects main's restore", "Oracle accepts a stopped image"])(
               },
             );
           else if (mutation === "intact")
-            await assert.doesNotReject(() => oracle(image, p.db));
+            await assert.doesNotReject(() => oracle(image, p.db, started));
+          else if (mutation === "stale")
+            await assert.rejects(
+              () => oracle(image, p.db, started),
+              /restore stop time window/,
+            );
           else
-            await assert.rejects(() => oracle(image, p.db), {
+            await assert.rejects(() => oracle(image, p.db, started), {
               code: "ERR_ASSERTION",
             });
           eq(f.snapshot(source), before);
