@@ -67,12 +67,12 @@ export const holder = {
   session: { id: "one", device: "fixture" },
 };
 const resources: (() => void)[] = [];
-afterEach(() =>
+export const cleanup = () =>
   resources
     .splice(0)
     .reverse()
-    .forEach((close) => close()),
-);
+    .forEach((close) => close());
+afterEach(cleanup);
 export function database(path = ":memory:", readOnly = false): SqlDatabase {
   const db = new Database(path, { readonly: readOnly, safeIntegers: true });
   resources.push(() => db.close());
@@ -231,7 +231,11 @@ export async function moduleUrl(
     (_all, prefix: string, spec: string) =>
       `${prefix}"${dependency?.[0] === spec ? dependency[1] : new URL(spec, url).href}"`,
   );
-  return `data:text/javascript;base64,${Buffer.from(new Bun.Transpiler({ loader: "ts" }).transformSync(text)).toString("base64")}`;
+  const transpiler = new Bun.Transpiler({
+    loader: "ts",
+    define: { "import.meta.url": JSON.stringify(url.href) },
+  });
+  return `data:text/javascript;base64,${Buffer.from(transpiler.transformSync(text)).toString("base64")}`;
 }
 export async function implementation(
   mutation?: string,
@@ -266,4 +270,58 @@ export async function fencedOwner(db: SqlDatabase, mutation: boolean) {
       ).StateOwner
     : StateOwner;
   return new Impl(db, { now: () => at });
+}
+
+export async function project(mutant?: string) {
+  const edits: Record<string, readonly [string, string]> = {
+    order: ["page.page !== staged?.next", "false"],
+    target: ["if (await this.#isProvisioned())", "if (false)"],
+  };
+  const dump =
+    mutant === "release"
+      ? await moduleUrl("../../cloud/src/dump.ts", [
+          "owner.releaseRestoredLeases();",
+          "",
+        ])
+      : undefined;
+  const { Project: Impl } = (await import(
+    await moduleUrl(
+      "../../cloud/src/project.ts",
+      edits[mutant ?? ""],
+      dump ? ["./dump.ts", dump] : undefined,
+    )
+  )) as typeof import("../../cloud/src/project.ts");
+  const db = new Database(":memory:");
+  let closed = false;
+  const close = () => {
+    if (!closed) {
+      db.close();
+      closed = true;
+    }
+  };
+  resources.push(close);
+  const { storage, values } = browserStorage(db);
+  const p = new Impl({ storage }, { DUMP_PAGE_BYTES: "4096" });
+  const send = async (route: string, body?: unknown) => {
+    const response = await p.fetch(
+      new Request(`https://synthetic.example/p/a/${route}`, {
+        method: body === undefined ? "GET" : "POST",
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      }),
+    );
+    const r = (await response.json()) as {
+      ok: boolean;
+      value: Record<string, unknown>;
+      error: { code: string; message: string };
+    };
+    return {
+      r,
+      projected: respond(
+        r.ok
+          ? success("restore", r.value)
+          : failure(r.error.code, r.error.message),
+      ),
+    };
+  };
+  return { db, storage, values, send, p, close };
 }

@@ -77,13 +77,22 @@ export function readOnlyStore(
 }
 
 export function durableStore(storage: DurableStorage): SqlDatabase {
-  const { sql } = storage;
-  let active = false;
-  let innerFailed = false;
+  initializePragma(storage);
+  return writableStore(storage);
+}
+
+export function initializePragma({ sql }: DurableStorage): void {
   sql.exec(
     `CREATE TABLE IF NOT EXISTS ${PRAGMA_TABLE} (name TEXT PRIMARY KEY, value INTEGER NOT NULL)`,
   );
   sql.exec(`INSERT OR IGNORE INTO ${PRAGMA_TABLE} VALUES ('user_version', 0)`);
+}
+
+/** Construction alone grants no schema or migration authority. */
+export function writableStore(storage: DurableStorage): SqlDatabase {
+  const { sql } = storage;
+  let active = false;
+  let innerFailed = false;
 
   const rows = (
     statement: string,
