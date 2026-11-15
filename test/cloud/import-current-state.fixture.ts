@@ -168,7 +168,7 @@ const changes: Record<string, Change> = {
     'return this.#request(\n        namespace,\n        options.requestId,\n        {\n          kind: "put",',
   ],
 };
-async function moduleUrl(
+export async function moduleUrl(
   path: string,
   change?: Change,
   dependency?: readonly [string, string],
@@ -180,9 +180,9 @@ async function moduleUrl(
     text = text.replace(...change);
   }
   text = text.replace(
-    /from "(\.\.?\/[^"]+)"/g,
-    (_all, spec: string) =>
-      `from "${dependency?.[0] === spec ? dependency[1] : new URL(spec, url).href}"`,
+    /(from |import\()"(\.\.?\/[^"]+)"/g,
+    (_all, prefix: string, spec: string) =>
+      `${prefix}"${dependency?.[0] === spec ? dependency[1] : new URL(spec, url).href}"`,
   );
   return `data:text/javascript;base64,${Buffer.from(new Bun.Transpiler({ loader: "ts" }).transformSync(text)).toString("base64")}`;
 }

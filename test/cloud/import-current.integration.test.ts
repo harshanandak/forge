@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { limitsFrom } from "../../cloud/src/dump.ts";
 import { TABLES } from "../../cloud/conformance/digest.ts";
 import { failure, respond } from "../../src/surface/result.ts";
@@ -380,6 +381,40 @@ test.each([false, true])(
       if (process.platform === "win32") rmdirSync(link);
       else unlinkSync(link);
     }
+  },
+  120_000,
+);
+
+// [integration] Reject every corrupt or unlisted page before a capacity worker starts.
+test.each(["unlisted", "altered"])(
+  "measure-current refuses %s page before measuring",
+  async (kind) => {
+    const s = f.source(9);
+    const backup = String(s.db.all("PRAGMA database_list")[0]!.file);
+    const root = dirname(backup),
+      manifest = join(root, "source.json"),
+      out = join(root, "bundle");
+    writeFileSync(manifest, JSON.stringify(s.manifest));
+    const bundle = await converter.convert({ backup, manifest, out, limits });
+    const run = () =>
+      spawnSync(
+        "node",
+        ["cloud/conformance/capacity.ts", "measure-current", out],
+        { encoding: "utf8", timeout: 30000 },
+      );
+    eq(run().status, 0);
+    const page = bundle.pages.at(-1)!;
+    const bytes = readFileSync(join(out, page.name));
+    bytes[0] = 91;
+    writeFileSync(
+      join(out, kind === "unlisted" ? "page-9999.json" : page.name),
+      bytes,
+    );
+    const r = run();
+    eq(r.status === 0, false);
+    eq(r.stdout, "");
+    eq(r.stderr.includes("AssertionError"), true);
+    eq(s.bytes(), s.manifest.sha256);
   },
   120_000,
 );

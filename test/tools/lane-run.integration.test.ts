@@ -11,6 +11,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  renameSync,
   realpathSync,
   rmSync,
   writeFileSync,
@@ -19,6 +20,14 @@ import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 
 import { laneRun, runClaude, runCodex } from "../../tools/lane-run.ts";
+import { boundDispatch, openBoundRunner } from "../../tools/lane-control.ts";
+import {
+  boundLaneProgress,
+  type BoundCommand,
+  type BoundProgressInput,
+} from "../../src/blocks/work/bound-lane.ts";
+import type { BoundLaneRecord } from "../../src/blocks/work/bound-lane-state.ts";
+import type { StateRecord } from "../../src/generated/types.ts";
 import { bindingFor } from "../assembly/cloud-fixture.ts";
 import { scriptFixture } from "../script-fixture.ts";
 import { spawnBudget } from "../spawn-budget.ts";
@@ -466,6 +475,8 @@ const {main}=await import(${JSON.stringify(script)});process.exitCode=await main
     mode: string,
     resume?: string,
     harness = "codex",
+    beforeSpawn?: () => Promise<void>,
+    started?: (pid: number) => void,
   ): Promise<
     Pick<
       Verdict,
@@ -484,6 +495,8 @@ const {main}=await import(${JSON.stringify(script)});process.exitCode=await main
           effort: "high",
           prompt: "Direct fixture prompt",
           ...(resume ? { resume } : {}),
+          ...(beforeSpawn ? { beforeSpawn } : {}),
+          ...(started ? { started } : {}),
         },
         { replyGraceMs: 100, pollMs: 10, retryDelayMs: 1 },
       ),
@@ -1257,6 +1270,354 @@ test("bound runner refuses run, resume and detached auto before any provider spa
         unlock();
       }
     }
+  }
+  // PR 2b-1: the direct attempt uses the boundary, but capacity replacement stays refused.
+  for (const harness of ["codex", "claude"]) {
+    const f = fixture(),
+      worktree = f.start();
+    let reads = 0;
+    await expect(
+      f.direct(worktree, "capacity", undefined, harness, () => {
+        reads++;
+        return Promise.resolve();
+      }),
+    ).rejects.toThrow("capacity retry remains unavailable");
+    expect(reads).toBe(1);
+    expect(f.attempts()).toHaveLength(1);
+  }
+  const f = fixture(),
+    worktree = f.start();
+  await expect(
+    f.direct(worktree, "ok", undefined, "codex", () =>
+      Promise.reject(new Error("control stopped")),
+    ),
+  ).rejects.toThrow("control stopped");
+  expect(f.attempts()).toHaveLength(0);
+  const active = fixture(),
+    target = active.start();
+  let lost = false,
+    reads = 0;
+  let timer: () => Promise<void> = () => Promise.resolve();
+  let renewal = Promise.resolve();
+  const boundary = boundDispatch(
+    (op) => {
+      if (op === "lane.control") {
+        reads++;
+        return Promise.resolve({
+          incarnation: "one",
+          epoch: 1,
+          stopped: false,
+        });
+      }
+      return lost
+        ? Promise.reject(new Error("renewal timeout"))
+        : Promise.resolve({
+            generation: 7,
+            expiresAt: new Date(9000).toISOString(),
+          });
+    },
+    "work-1",
+    7,
+    {
+      now: () => 0,
+      schedule: (run) => {
+        timer = run;
+        return () => {};
+      },
+    },
+  );
+  try {
+    const result = await active.direct(
+      target,
+      "ok",
+      undefined,
+      "codex",
+      boundary.beforeSpawn,
+      () => {
+        lost = true;
+        renewal = timer();
+      },
+    );
+    await renewal;
+    expect(result.exit).toBe(0);
+    expect(readFileSync(result.reply!, "utf8")).toBe("Fixture final reply.");
+    await expect(boundary.beforeSpawn()).rejects.toThrow("renewal timeout");
+    expect(active.attempts()).toHaveLength(1);
+    expect(reads).toBe(1);
+  } finally {
+    await boundary.close();
+  }
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    const abort = fixture(),
+      checkout = abort.start();
+    await expect(
+      abort.direct(checkout, "ok", undefined, "codex", async () => {
+        await Promise.resolve();
+        process.emit(signal);
+      }),
+    ).rejects.toThrow();
+    expect(abort.attempts()).toHaveLength(0);
+  }
+  const builder = fixture(),
+    checkout = builder.start(),
+    startingHead = builder.git(["rev-parse", "HEAD"], checkout);
+  const actor = { kind: "agent" as const, id: "builder" },
+    session = { id: "s1", device: "dev-1" };
+  const grant = {
+    subject: "issue:work-1",
+    generation: 7,
+    holder: { actor, session },
+    expiresAt: new Date(Date.now() + 3600000).toISOString(),
+  };
+  const journal: BoundLaneRecord = {
+    version: 1,
+    id: "work-1",
+    cloudId: "forge-1",
+    active: true,
+    grant,
+    lane: {
+      issue: "work-1",
+      worktree: checkout,
+      branch: "lane/one",
+      brief: builder.brief,
+    },
+  };
+  let row: StateRecord = {
+    namespace: "forge/work",
+    key: "lane",
+    revision: 1,
+    value: journal,
+    updatedAt: new Date().toISOString(),
+    updatedBy: actor,
+  };
+  const readHead = () =>
+    Promise.resolve(builder.git(["rev-parse", "--verify", "HEAD"], checkout));
+  const cloud: BoundCommand = () =>
+    Promise.resolve({ id: "forge-1", status: "open", lease: grant });
+  const command: BoundCommand = (op, input, generation) => {
+    if (op === "lane.show") return Promise.resolve(journal.lane);
+    if (op === "issue.renew")
+      return Promise.resolve({
+        id: "forge-1",
+        generation: 7,
+        expiresAt: grant.expiresAt,
+      });
+    if (op === "lane.control")
+      return Promise.resolve({ incarnation: "one", epoch: 1, stopped: false });
+    return boundLaneProgress(
+      op,
+      input as BoundProgressInput,
+      { actor, session, leaseGeneration: generation ?? 7 },
+      "dev-1",
+      Date.now,
+      bindingFor(),
+      { get: () => row },
+      cloud,
+      (value, revision) => {
+        expect(revision).toBe(row.revision);
+        row = { ...row, value, revision: revision + 1 };
+        return Promise.resolve(row);
+      },
+      { lanes: { autopilot: { budgets: { reviewRounds: 1, calls: 20 } } } },
+      readHead,
+    );
+  };
+  const runner = (await openBoundRunner(checkout, "forge-1", startingHead, () =>
+    Promise.resolve({ command, readHead, close: () => Promise.resolve() }),
+  ))!;
+  try {
+    const result = await builder.direct(
+      checkout,
+      "auto-move-always-gpt-6.1-sol",
+      undefined,
+      "codex",
+      runner.beforeSpawn,
+    );
+    expect(result.exit).toBe(0);
+    const actual = await readHead();
+    expect(actual).not.toBe(startingHead);
+    await expect(
+      command(
+        "lane.record",
+        {
+          id: "forge-1",
+          action: 1,
+          result: JSON.stringify({ head: startingHead, done: true }),
+        },
+        7,
+      ),
+    ).rejects.toMatchObject({ error: { code: "INPUT_CONFLICT" } });
+    await runner.finish(true, true);
+    expect((row.value as BoundLaneRecord).progress).toMatchObject({
+      pending: false,
+      actions: 1,
+      records: 1,
+      head: actual,
+    });
+  } finally {
+    await runner.finish(false);
+  }
+  const afterBuild = structuredClone(row),
+    actual = await readHead();
+  const connect = () =>
+    Promise.resolve({ command, readHead, close: () => Promise.resolve() });
+  // Counterfactual: completing without the role leaves the review budget available.
+  const doneOnly = (await openBoundRunner(
+    checkout,
+    "forge-1",
+    actual,
+    connect,
+  ))!;
+  await doneOnly.finish(true, true);
+  expect(
+    await command("lane.next", { id: "forge-1", head: actual }, 7),
+  ).toMatchObject({ kind: "harness" });
+  row = afterBuild;
+  renameSync(
+    join(builder.root, "direct-output"),
+    join(builder.root, "build-output"),
+  );
+  const reviewer = (await openBoundRunner(
+    checkout,
+    "forge-1",
+    actual,
+    connect,
+  ))!;
+  try {
+    expect(
+      (
+        await builder.direct(
+          checkout,
+          "ok",
+          undefined,
+          "codex",
+          reviewer.beforeSpawn,
+        )
+      ).exit,
+    ).toBe(0);
+    await reviewer.finish(true, true, "reviewer");
+    expect((row.value as BoundLaneRecord).progress?.review).toBe(1);
+    expect(
+      await command("lane.next", { id: "forge-1", head: actual }, 7),
+    ).toMatchObject({ kind: "pause" });
+  } finally {
+    await reviewer.finish(false);
+  }
+  const display = roleFixture(),
+    attached = join(display.main, ".worktrees/one");
+  writeFileSync(
+    join(attached, ".forge/project.json"),
+    JSON.stringify({ schema: 1, id: bindingFor().identity }),
+  );
+  writeFileSync(
+    join(attached, ".forge/cloud.json"),
+    JSON.stringify(bindingFor()),
+  );
+  const registry = join(display.main, ".git/forge-lanes.json");
+  writeFileSync(
+    registry,
+    readFileSync(registry, "utf8").replace('"issue":"one"', '"issue":"work-1"'),
+  );
+  const control = resolve(import.meta.dirname, "../../tools/lane-control.ts"),
+    entry = join(display.root, "bound-prefix.ts"),
+    state = join(display.root, "state.json"),
+    records = join(display.root, "records.json");
+  const initial = {
+    ...row,
+    value: {
+      ...journal,
+      lane: { ...journal.lane, worktree: attached, brief: display.brief },
+    },
+  };
+  const reset = () => {
+    writeFileSync(state, JSON.stringify(initial));
+    writeFileSync(records, "[]");
+  };
+  reset();
+  writeFileSync(
+    entry,
+    `import {mock} from 'bun:test';
+import {openBoundRunner} from ${JSON.stringify(control)};
+import {boundLaneProgress} from ${JSON.stringify(resolve(import.meta.dirname, "../../src/blocks/work/bound-lane.ts"))};
+import {readFileSync,writeFileSync} from 'node:fs';import {join} from 'node:path';import {spawnSync} from 'node:child_process';
+const original=openBoundRunner;
+let row=JSON.parse(readFileSync(${JSON.stringify(state)},'utf8'));
+const grant=row.value.grant,root=row.value.lane.worktree;
+const readHead=()=>Promise.resolve(spawnSync('git',['rev-parse','--verify','HEAD'],{cwd:root,encoding:'utf8',windowsHide:true}).stdout.trim());
+const command=(op,input,generation)=>{
+ if(op==='lane.show')return Promise.resolve(row.value.lane);
+ if(op==='issue.renew')return Promise.resolve({generation:grant.generation,expiresAt:grant.expiresAt});
+ if(op==='lane.control')return Promise.resolve({incarnation:'one',epoch:1,stopped:readFileSync(join(process.env.LANE_FIXTURE,'mode'),'utf8')==='refused'});
+ if(op==='lane.record')writeFileSync(${JSON.stringify(records)},JSON.stringify([...JSON.parse(readFileSync(${JSON.stringify(records)},'utf8')),JSON.parse(input.result)]));
+ return boundLaneProgress(op,input,{...grant.holder,leaseGeneration:generation??grant.generation},'dev-1',Date.now,${JSON.stringify(bindingFor())},{get:()=>row},
+ ()=>Promise.resolve({id:'forge-1',status:'open',lease:grant}), (value,revision)=>{if(revision!==row.revision)throw Error('revision');row={...row,value,revision:revision+1};writeFileSync(${JSON.stringify(state)},JSON.stringify(row));return Promise.resolve(row);},
+ {lanes:{autopilot:{budgets:{calls:2,reviewRounds:1}}}},readHead);
+};
+mock.module(${JSON.stringify(control)},()=>({openBoundRunner:(root,id,head)=>original(root,id,head,()=>Promise.resolve({command,readHead,close:()=>Promise.resolve()}),{now:Date.now,schedule:()=>()=>{}})}));
+const {main}=await import(${JSON.stringify(script)});process.exitCode=await main();`,
+  );
+  const issueStub = join(display.root, "fake-forge.mjs"),
+    stub = readFileSync(issueStub, "utf8");
+  for (const shown of ["forge-1", "forge-2"]) {
+    writeFileSync(issueStub, stub.replace("id:input.id", `id:'${shown}'`));
+    const result = display.run(
+      ["run", "work-1", "--role", "builder"],
+      display.caller,
+      entry,
+    );
+    expect(result.code).toBe(shown === "forge-1" ? 0 : 1);
+    expect(display.attempts()).toHaveLength(1);
+  }
+  const outcomes = () => JSON.parse(readFileSync(records, "utf8")) as object[];
+  writeFileSync(issueStub, stub.replace("id:input.id", "id:'forge-1'"));
+  for (const [mode, role] of [
+    ["fail", "reviewer"],
+    ["no-reply", "builder"],
+    ["limit", "reviewer"],
+    ["refused", "builder"],
+  ]) {
+    reset();
+    writeFileSync(join(display.root, "mode"), mode!);
+    const before = display.attempts().length;
+    const result = display.run(
+      ["run", "work-1", "--role", role!],
+      display.caller,
+      entry,
+    );
+    expect(result.code).toBe(1);
+    expect(display.attempts()).toHaveLength(
+      before + Number(mode !== "refused"),
+    );
+    expect(outcomes()).toEqual(
+      mode === "refused"
+        ? []
+        : [
+            {
+              head: display.git(["rev-parse", "HEAD"], attached),
+              failed: true,
+              ...(role === "reviewer" ? { review: true } : {}),
+            },
+          ],
+    );
+    expect(JSON.parse(readFileSync(state, "utf8")) as object).toMatchObject({
+      value: {
+        progress: {
+          records: Number(mode !== "refused"),
+          review: Number(role === "reviewer"),
+        },
+      },
+    });
+  }
+  reset();
+  writeFileSync(join(display.root, "mode"), "fail");
+  const before = display.attempts().length;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    expect(
+      display.run(["run", "work-1", "--role", "builder"], display.caller, entry)
+        .code,
+    ).toBe(1);
+    expect(outcomes()).toHaveLength(Math.min(attempt, 2));
+    expect(display.attempts()).toHaveLength(before + Math.min(attempt, 2));
   }
 });
 
