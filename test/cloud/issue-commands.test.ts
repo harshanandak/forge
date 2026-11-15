@@ -948,7 +948,7 @@ for (const kind of ["count", "max"] as const)
             ),
           ).toBe(true);
           if (count > 1000) {
-            expect(stateOutcome(got)).toEqual([400, "INPUT_INVALID", 1]);
+            expect(stateOutcome(got)).toEqual([503, "UNAVAILABLE", 1]);
             expect(got.json.result).toBeUndefined();
             expect(got.json.error?.message).toContain("1000");
           } else {

@@ -1247,9 +1247,11 @@ export class StateOwner {
       params,
     );
     if (maxKeys !== undefined && Number(row?.examined ?? 0) > maxKeys)
-      invalid(
-        `State aggregate exceeds the ${maxKeys} key budget; narrow the prefix`,
-      );
+      throw new ForgeFailure({
+        code: "UNAVAILABLE",
+        message: `State aggregate exceeds the ${maxKeys} key budget; narrow the prefix`,
+        retry: "never",
+      });
     return Number(row?.total ?? 0);
   }
   /** One bounded page of records from a key range, in key order or reverse. */
