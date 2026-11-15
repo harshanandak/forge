@@ -1574,7 +1574,13 @@ for (const stored of [
         return;
       }
       await expect(attempt).rejects.toMatchObject({
-        error: { code: "INPUT_CONFLICT" },
+        error: {
+          code: "INPUT_CONFLICT",
+          message:
+            stored === "explicit registry conflict"
+              ? "This lane's saved roots conflict with the supplied or other saved roots. Forge will not reuse this state. No supported reset exists yet (forge-1447)."
+              : "This lane's state predates saved scopes. Forge will not reuse it. No supported reset exists yet (forge-1447).",
+        },
       });
       expect([
         existsSync(f.marker),

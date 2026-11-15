@@ -604,13 +604,13 @@ export async function attachBoundLane(
       if (!validGitScope(row.gitScope))
         refuse(
           "INPUT_CONFLICT",
-          "Saved lane roots are incomplete; release and start the lane again.",
+          "This lane's state predates saved scopes. Forge will not reuse it. No supported reset exists yet (forge-1447).",
         );
       const roots = reopenGitScope(files.root, row.gitScope);
       if (selected && scopeKey(selected) !== scopeKey(roots))
         refuse(
           "INPUT_CONFLICT",
-          "Saved and supplied lane roots disagree; release and start the lane again.",
+          "This lane's saved roots conflict with the supplied or other saved roots. Forge will not reuse this state. No supported reset exists yet (forge-1447).",
         );
       selected = roots;
     }
