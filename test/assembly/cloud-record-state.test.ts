@@ -6,6 +6,7 @@ import { ForgeFailure } from "../../src/contract/failure.ts";
 import { LocalState } from "../../src/assembly/state.ts";
 import * as ownerState from "../../src/core/state/index.ts";
 import { canonicalJson } from "../../src/core/config/pointer.ts";
+import { failure } from "../../src/surface/result.ts";
 import type { StateRecord } from "../../src/generated/types.ts";
 import type {
   StateReadRequest,
@@ -41,15 +42,7 @@ function fixture(write = true) {
   let concurrent = 0,
     maxConcurrent = 0;
   const refusal = (code: string, status: number) =>
-    fx.json(
-      {
-        ok: false,
-        status: "FAIL",
-        error: { code, message: "refused", retry: "never" },
-        warnings: [],
-      },
-      status,
-    );
+    fx.json(failure(code, "refused"), status);
   const facts = () => ({
     version: 1,
     project: fx.PROJECT,
@@ -213,7 +206,6 @@ function fixture(write = true) {
     bytes,
     signals,
     records,
-    record,
     event,
     commits: () => calls.filter((c) => c.kind === "commit"),
     seed() {
