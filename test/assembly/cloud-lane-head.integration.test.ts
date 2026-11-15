@@ -23,6 +23,7 @@ import {
   type ScopedGitApi,
   persistedRootsFixture,
   withoutGuard,
+  launchSavedGit,
 } from "./cloud-fixture.ts";
 import {
   createAssemblyProviders,
@@ -36,7 +37,6 @@ setDefaultTimeout(30000);
 for (const removed of [false, true])
   test(`Skip-reopen-equality, loaded counterfactual=${removed}`, async () => {
     const f = persistedRootsFixture();
-    let files: Awaited<ReturnType<AssemblyProviders["openFiles"]>> | undefined;
     try {
       mkdirSync(join(f.project, "lane"));
       rmSync(f.alias, { recursive: true });
@@ -54,26 +54,15 @@ for (const removed of [false, true])
         : scopedGit;
       if (removed) expect(Reflect.get(api, "mutationLoaded")).toBe(true);
       const before = f.snapshot();
-      const open = api
-        .createAssemblyProviders(f.target, { env: f.env, gitScope: f.scope })
-        .openFiles({
-          op: "saved.read",
-          effects: ["files:read"],
-          signal: AbortSignal.timeout(15000),
-          deadline: Date.now() + 15000,
-          processContainment: "supervised",
-        });
-      if (removed) {
-        files = await open;
-        expect(files.value.root).toBe(realpathSync.native(f.target));
-      } else
-        await expect(open).rejects.toMatchObject({
+      const launch = launchSavedGit(f, f.scope, api);
+      if (removed) expect((await launch).exitCode).toBe(0);
+      else
+        await expect(launch).rejects.toMatchObject({
           error: { code: "INPUT_CONFLICT" },
         });
       expect(existsSync(f.marker)).toBe(false);
       expect(f.snapshot()).toEqual(before);
     } finally {
-      await files?.close();
       f.close();
     }
   });
@@ -101,9 +90,8 @@ for (const invalid of [
         ]),
       );
       const before = [readFileSync(registry).toString("hex"), ...f.snapshot()];
-      files = await createAssemblyProviders(f.target, {
+      files = await createAssemblyProviders(f.project, {
         env: f.env,
-        gitScope: f.scope,
       }).openFiles({
         op: "registry.read",
         effects: ["files:read"],
@@ -124,43 +112,6 @@ for (const invalid of [
         before,
       );
       expect(existsSync(f.marker)).toBe(false);
-    } finally {
-      await files?.close();
-      f.close();
-    }
-  });
-
-for (const row of ["reopen", "retargeted", "legacy"] as const)
-  test(`persisted roots clone reopen: ${row}`, async () => {
-    const f = persistedRootsFixture();
-    let files: Awaited<ReturnType<AssemblyProviders["openFiles"]>> | undefined;
-    try {
-      if (row === "retargeted") {
-        rmSync(f.alias, { recursive: true });
-        symlinkSync(
-          f.project,
-          f.alias,
-          process.platform === "win32" ? "junction" : "dir",
-        );
-      }
-      const before = f.snapshot();
-      const open = createAssemblyProviders(f.target, {
-        env: f.env,
-        gitScope: row === "legacy" ? null : f.scope,
-      }).openFiles({
-        op: "saved.read",
-        effects: ["files:read"],
-        signal: AbortSignal.timeout(15000),
-        deadline: Date.now() + 15000,
-        processContainment: "supervised",
-      });
-      if (row === "reopen") files = await open;
-      else
-        await expect(open).rejects.toMatchObject({
-          error: { code: "INPUT_CONFLICT" },
-        });
-      expect(existsSync(f.marker)).toBe(false);
-      expect(f.snapshot()).toEqual(before);
     } finally {
       await files?.close();
       f.close();

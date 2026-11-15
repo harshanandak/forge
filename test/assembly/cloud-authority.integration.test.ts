@@ -563,14 +563,9 @@ for (const row of [
   "retargeted",
   "Accept-legacy-record",
 ] as const)
-  test(`private attachment scope before clone reopen: ${row}`, async () => {
+  test(`private attachment saved roots: ${row}`, async () => {
     const f = fx.persistedRootsFixture();
     const deviceRoot = join(f.project, "device");
-    let files:
-      | Awaited<
-          ReturnType<ReturnType<typeof createAssemblyProviders>["openFiles"]>
-        >
-      | undefined;
     const spies: { mockRestore(): void }[] = [];
     try {
       if (row === "Accept-legacy-record") {
@@ -631,23 +626,13 @@ for (const row of [
         ...f.snapshot(),
       ];
       const gitScope = await startupScope.deviceGitScope(f.target, deviceRoot);
-      const open = createAssemblyProviders(f.target, {
-        env: f.env,
-        gitScope,
-      }).openFiles({
-        op: "private.read",
-        effects: ["files:read"],
-        signal: AbortSignal.timeout(15000),
-        deadline: Date.now() + 15000,
-        processContainment: "supervised",
-      });
-      if (row === "reopen") files = await open;
+      const launch = fx.launchSavedGit(f, gitScope, scopedGit);
+      if (row === "reopen") expect((await launch).exitCode).toBe(0);
+      else if (row === "Accept-legacy-record")
+        expect((await launch).exitCode).toBe(99);
       else
-        await expect(open).rejects.toMatchObject({
-          error: {
-            code:
-              row === "Accept-legacy-record" ? "UNAVAILABLE" : "INPUT_CONFLICT",
-          },
+        await expect(launch).rejects.toMatchObject({
+          error: { code: "INPUT_CONFLICT" },
         });
       expect(existsSync(f.marker)).toBe(row === "Accept-legacy-record");
       expect([
@@ -655,7 +640,6 @@ for (const row of [
         ...f.snapshot(),
       ]).toEqual(before);
     } finally {
-      await files?.close();
       for (const spy of spies) spy.mockRestore();
       f.close();
     }

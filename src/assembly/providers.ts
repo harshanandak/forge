@@ -156,7 +156,6 @@ export interface ProviderOptions {
   readonly supervision?: SupervisionOptions;
   readonly maxFileBytes?: number;
   readonly env?: Readonly<Record<string, string>>;
-  readonly gitScope?: GitScope | null | undefined;
 }
 export interface AssemblyProviders {
   deviceFiles?(scope: ServiceScope): DeviceFiles;
@@ -1002,12 +1001,7 @@ export function createAssemblyProviders(
       const pin = gitCapability(
         executor,
         scrubbed,
-        reopenGitScope(
-          root,
-          scope.op === "lane.start" && options.gitScope === null
-            ? undefined
-            : options.gitScope,
-        ),
+        createGitScope(projectManifestRoot(root), root),
       );
       const git = pin.executable();
       if (git.kind !== "resolved")

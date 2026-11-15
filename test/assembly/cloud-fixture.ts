@@ -103,6 +103,33 @@ export function persistedRootsFixture() {
     },
   };
 }
+export async function launchSavedGit(
+  fixture: ReturnType<typeof persistedRootsFixture>,
+  saved: import("../../src/assembly/providers.ts").GitScope | null,
+  api: Pick<
+    typeof import("../../src/assembly/providers.ts"),
+    "reopenGitScope" | "gitCapability"
+  >,
+) {
+  const scope = api.reopenGitScope(fixture.target, saved);
+  const port = createProcessPort({
+    supervision: {
+      cleanupTimeoutMs: 1000,
+      pollIntervalMs: 25,
+      drainTimeoutMs: 100,
+      maxConcurrent: 1,
+    },
+  });
+  const executable = api.gitCapability(port, fixture.env, scope).executable();
+  if (executable.kind !== "resolved") throw new Error(executable.reason);
+  return port.run(executable, ["--version"], {
+    cwd: fixture.target,
+    env: fixture.env,
+    timeoutMs: 10000,
+    maxOutputBytes: 16384,
+  });
+}
+
 export const gitScopeRows = [
   "unrelated repository",
   "plain checkout",
