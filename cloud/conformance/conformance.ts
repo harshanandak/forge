@@ -263,9 +263,8 @@ async function withImage(project: string, check: Check) {
   try {
     const files: string[] = [];
     await eachPage(project, (page) => {
-      const file = join(dir, `${files.length}.json`);
-      files.push(file);
-      writeFileSync(file, JSON.stringify(page));
+      files.push(join(dir, `${files.length}.json`));
+      writeFileSync(files.at(-1)!, JSON.stringify(page));
     });
     const read = function* () {
       for (const file of files) yield parseDump(readFileSync(file, "utf8"));
@@ -4360,7 +4359,7 @@ const same = (label: string, got: unknown, want: unknown): void => {
   const [g, w] = [JSON.stringify(got), JSON.stringify(want)];
   assert.ok(
     g === w,
-    `${label}: got ${g?.slice(0, 500)}, want ${w?.slice(0, 500)}`,
+    `Full exact comparison failed for ${label}: received ${g}, expected ${w}`,
   );
 };
 // The floor records of one project as { key: [prefix, number, revision] }, in key order.
@@ -5155,9 +5154,8 @@ if (phase === "capacity-wire") {
           for (const [table, rows] of Object.entries(page.tables))
             for (const row of rows) fold(incoming, table as Table, row);
         const wrong = imageProblems(digests(incoming), expect.tables);
-        await withImage(target, (actual) =>
-          checkImage(input(), actual, target),
-        );
+        const compare: Check = (actual) => checkImage(input(), actual, target);
+        await withImage(target, compare);
         assert.deepEqual(
           wrong,
           [],
