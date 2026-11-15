@@ -928,6 +928,7 @@ for (const op of recordOps) {
   ][] = [
     ["revoked", refusal(401, "AUTH_REVOKED"), "AUTH_REVOKED", 1],
     ["conflict", refusal(409, "REVISION_CONFLICT"), "REVISION_CONFLICT", 4],
+    ["server unavailable", refusal(503, "UNAVAILABLE"), "UNAVAILABLE", 1],
     ["unknown refusal", refusal(418, "UNKNOWN"), "UNAVAILABLE", 1],
     ["lost reply", { lost: true }, "UNAVAILABLE", 1],
     [
@@ -949,12 +950,18 @@ for (const op of recordOps) {
       const failed = await failureOf(() => run(r));
       expect([failed.error.code, exit(failed)]).toEqual([code, wantExit]);
       expect(failed instanceof CloudRecordRefusal).toBe(
-        name === "revoked" || name === "conflict",
+        name === "revoked" ||
+          name === "conflict" ||
+          name === "server unavailable",
       );
       expect(JSON.stringify(failed)).not.toMatch(
         /server diagnostic|lost reply|fct_/,
       );
-      if (op === "commit" && code === "UNAVAILABLE") {
+      if (
+        op === "commit" &&
+        code === "UNAVAILABLE" &&
+        name !== "server unavailable"
+      ) {
         expect(failed.error.retry).toBe("reconcile_first");
         expect(failed.error.message).toMatch(/reconciliation required/i);
       }

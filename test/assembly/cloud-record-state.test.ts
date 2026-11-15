@@ -1,6 +1,7 @@
 import { expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import { createCloudHttp } from "../../src/adapters/http/index.ts";
 import { createCloudRecordState } from "../../src/assembly/cloud-record-state.ts";
+import { CloudRecordRefusal } from "../../src/assembly/cloud-state-client.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { LocalState } from "../../src/assembly/state.ts";
 import * as ownerState from "../../src/core/state/index.ts";
@@ -23,7 +24,7 @@ const context = {
 };
 type Call = StateReadRequest | StateCommitRequest;
 /** Real credentialed client and decoder over injected transport, clock and abort seams. */
-function fixture() {
+function fixture(write = true) {
   const clock = fx.clock(),
     controller = new AbortController();
   const records = new Map<string, StateRecord>();
@@ -36,6 +37,7 @@ function fixture() {
     offline = false,
     abortInFlight = false;
   let deny: string | undefined, loss: string | undefined;
+  let principal = "aaaaaaaaaaaaaaaa";
   let concurrent = 0,
     maxConcurrent = 0;
   const refusal = (code: string, status: number) =>
@@ -91,10 +93,14 @@ function fixture() {
     if (deny) {
       const code = deny;
       deny = undefined;
-      return refusal(code, code === "AUTH_FORBIDDEN" ? 403 : 409);
+      return refusal(
+        code,
+        code === "AUTH_FORBIDDEN" ? 403 : code === "UNAVAILABLE" ? 503 : 409,
+      );
     }
     if (call.kind === "commit") {
-      const previous = accepted.get(call.requestId);
+      const receipt = `${/^Bearer fct_([a-f0-9]{16})\./.exec(init.headers.authorization)?.[1]}:${call.requestId}`;
+      const previous = accepted.get(receipt);
       if (previous)
         return previous.bytes === init.body
           ? ok(previous.result)
@@ -118,7 +124,7 @@ function fixture() {
         records: written,
         result: null,
       };
-      accepted.set(call.requestId, { bytes: init.body!, result });
+      accepted.set(receipt, { bytes: init.body!, result });
       if (loss === call.entries[0]?.key) {
         loss = undefined;
         throw Error("accepted but response lost");
@@ -171,7 +177,13 @@ function fixture() {
   const state = createCloudRecordState({
     key: fx.bindingFor(),
     credentials: {
-      lookup: () => (credential ? fx.entry(clock.now()) : undefined),
+      lookup: () =>
+        credential
+          ? fx.entry(clock.now(), {
+              id: principal,
+              token: fx.tokenFor(principal, "O".repeat(43)),
+            })
+          : undefined,
     },
     now: clock.now,
     http: createCloudHttp({
@@ -183,7 +195,7 @@ function fixture() {
     context,
     operation: "memory.add",
     requestId: "invocation-1",
-    write: true,
+    write,
     signal: controller.signal,
     deadline: clock.now() + 60_000,
   });
@@ -210,6 +222,10 @@ function fixture() {
     },
     restoreCredential() {
       credential = true;
+    },
+    usePrincipal(id: string) {
+      credential = true;
+      principal = id;
     },
     deny(code: string) {
       deny = code;
@@ -238,6 +254,49 @@ async function refused(pending: Promise<unknown>, code: string) {
 
 const rows: readonly [string, (f: Fixture) => Promise<void>][] = [
   [
+    "Pending replay is scoped to its original principal",
+    async (f) => {
+      f.lose("note/1");
+      const replay = () => f.state.put("note/1", "one", { expectRevision: 0 });
+      await refused(replay(), "UNAVAILABLE");
+      const original = f.bytes.at(-1),
+        sent = f.calls.length;
+      f.usePrincipal("bbbbbbbbbbbbbbbb");
+      await refused(replay(), "UNAVAILABLE");
+      await refused(f.state.get("missing"), "UNAVAILABLE");
+      expect(f.calls).toHaveLength(sent);
+      f.usePrincipal("aaaaaaaaaaaaaaaa");
+      await replay();
+      expect(f.bytes.at(-1)).toBe(original);
+      expect((await f.state.get("note/1"))?.value).toBe("one");
+    },
+  ],
+  [
+    "Decoded server 503 settles pending",
+    async (f) => {
+      await f.state.get("missing");
+      f.deny("UNAVAILABLE");
+      const error = await f.state
+        .put("note/1", "one", { expectRevision: 0 })
+        .catch((error: unknown) => error);
+      expect(error).toBeInstanceOf(CloudRecordRefusal);
+      await f.state.get("missing");
+      await f.state.put("note/1", "one", { expectRevision: 0 });
+      expect(f.commits()).toHaveLength(2);
+    },
+  ],
+  [
+    "Read-only provider",
+    async () => {
+      const f = fixture(false);
+      await refused(
+        f.state.put("denied", "no", { expectRevision: 0 }),
+        "GRANT_REQUIRED",
+      );
+      expect(f.calls).toHaveLength(0);
+    },
+  ],
+  [
     "Pending replay survives credential loss",
     async (f) => {
       await f.state.put("note/1", "one", { expectRevision: 0 });
@@ -247,8 +306,7 @@ const rows: readonly [string, (f: Fixture) => Promise<void>][] = [
       const before = f.calls.length;
       const original = f.bytes.at(-1);
       f.noCredential();
-      await refused(replay(), "AUTH_REQUIRED");
-      // Counterfactual: clearing on retry:never reaches credentials here and returns AUTH_REQUIRED.
+      await refused(replay(), "UNAVAILABLE");
       await refused(f.state.get("missing"), "UNAVAILABLE");
       await refused(
         f.state.put("replacement", "no", { expectRevision: 0 }),
