@@ -8,6 +8,7 @@ import {
   parseDump,
   restorePage,
   dumpOf,
+  dumpUsage,
   type Page,
 } from "../../cloud/src/dump.ts";
 import { imageProblems, TABLES } from "../../cloud/conformance/digest.ts";
@@ -16,7 +17,19 @@ import { pagesOf as cut } from "../../cloud/conformance/max-source.ts";
 import { pageOrder } from "../../cloud/conformance/page-order.ts";
 import { success } from "../../src/surface/dispatch.ts";
 import { failure, respond } from "../../src/surface/result.ts";
-import { consumeLaneApproval } from "../../cloud/src/lane-approval.ts";
+import { LANE_BROWSER } from "../../cloud/src/auth/lane-browser.ts";
+import { LaneControlStore } from "../../cloud/src/lane-control-store.ts";
+import { boundDispatch } from "../../tools/lane-control.ts";
+import {
+  boundLaneStart,
+  type BoundCommand,
+} from "../../src/blocks/work/bound-lane.ts";
+import { writeBoundLane } from "../../src/blocks/work/bound-lane-state.ts";
+import { ForgeFailure } from "../../src/contract/failure.ts";
+import {
+  LANE_APPROVALS,
+  consumeLaneApproval,
+} from "../../cloud/src/lane-approval.ts";
 import { browserStorage } from "./browser-storage.fixture.ts";
 import * as f from "./import-current-state.fixture.ts";
 import * as converter from "../../tools/import-current.ts";
@@ -423,3 +436,282 @@ test.each(rows)(
   },
   120_000,
 );
+
+const activationRows = [
+  ["Whole and paged success", "success"],
+  ["Intermediate page", "intermediate"],
+  ["Lanes stopped after restore", "dispatch"],
+  ["CF stop write, step 7 line 203", "stop"],
+  ["CF retained approval invalidation", "approval"],
+  ["CF retained browser invalidation", "browser"],
+  ["Stop, audit or deletion fault", "fault"],
+  ["CF atomic settlement", "atomic"],
+  ["CF post-stop cap", "cap"],
+  ["Provisioned target and CF empty guard", "target"],
+  ["Bad image/order", "bad"],
+  ["CF lease release", "release"],
+  ["Old approval versus fresh resume", "resume"],
+] as const;
+const verdict = (r: ReturnType<typeof respond>, code = "", exit = 1) =>
+  eq(status(r), [code ? "FAIL" : "OK", code ? exit : 0, code || null]);
+async function reply<T extends { projected: ReturnType<typeof respond> }>(
+  r: Promise<T>,
+  code = "",
+  exit = 1,
+) {
+  const found = await r;
+  verdict(found.projected, code, exit);
+  return found;
+}
+const approval = (request: string) => ({ all: true, approval: { request } });
+test.each(activationRows)(
+  "activation: %s",
+  async (_name, kind) => {
+    const variants = (
+      {
+        success: ["absent", "running", "stopped"],
+        fault: ["exhausted", "audit", LANE_APPROVALS, LANE_BROWSER],
+        cap: ["rows", "bytes"],
+        bad: ["invalid", "order"],
+      } as Record<string, string[]>
+    )[kind] ?? ["running"];
+    const counterfactual = "stop approval browser atomic cap target release"
+      .split(" ")
+      .includes(kind);
+    for (const variant of variants)
+      for (const paged of kind === "target" ? [true] : [false, true])
+        for (const mutant of counterfactual ? [false, true] : [false]) {
+          const source = f.activationImage(variant, kind === "release"),
+            image = dumpOf(source),
+            pages = cut(image.tables, 2),
+            before = f.snapshot(source);
+          const used = dumpUsage(source, limits),
+            extra: Record<string, string> = {};
+          if (kind === "cap")
+            extra[variant === "rows" ? "DUMP_MAX_ROWS" : "DUMP_MAX_BYTES"] =
+              String(
+                variant === "rows"
+                  ? Math.max(...Object.values(used.rows))
+                  : used.bytes,
+              );
+          const retained = "approval browser atomic fault resume target"
+            .split(" ")
+            .includes(kind);
+          const p = await f.activation(
+            mutant ? kind : undefined,
+            extra,
+            retained,
+          );
+          const privateRows = () =>
+              [LANE_APPROVALS, LANE_BROWSER].map((t) =>
+                p.db.all(`SELECT * FROM ${t}`),
+              ),
+            privateBefore = privateRows();
+          const check = async () => {
+            if (kind === "target") {
+              await p.send("devices", { device: "fixture", ttlMs: 600_000 });
+              f.owner(p.db).put(
+                f.ns,
+                "issue:work-99",
+                { title: "retained" },
+                f.actor,
+                { expectRevision: 0 },
+              );
+              const saved = [f.snapshot(p.db), [...p.values]];
+              await reply(
+                p.send("restore", pages[0]),
+                "RESTORE_TARGET_NOT_EMPTY",
+              );
+              eq([f.snapshot(p.db), [...p.values]], saved);
+              return;
+            }
+            if (kind === "fault" || kind === "atomic") {
+              p.fault(kind === "atomic" ? LANE_BROWSER : variant);
+              if (variant === "audit")
+                p.db.exec(
+                  "CREATE TRIGGER synthetic_audit BEFORE INSERT ON state_records WHEN NEW.key LIKE 'lane-control:audit:%' AND json_extract(NEW.body,'$.value.device')='cloud-restore' BEGIN SELECT RAISE(ABORT,'synthetic'); END",
+                );
+            }
+            let last: Awaited<ReturnType<typeof p.send>> | undefined;
+            const uploads =
+              kind === "intermediate" || (kind === "bad" && variant === "order")
+                ? pages.slice(0, 1)
+                : paged
+                  ? pages
+                  : [image];
+            for (const part of uploads) {
+              const body = structuredClone(part);
+              if (kind === "bad" && variant === "invalid")
+                body.tables.state_records![0]!.body = "{";
+              last = await p.send("restore", body);
+              if (!last.r.ok) break;
+            }
+            if (kind === "bad" && variant === "order")
+              last = await p.send("restore", pages[2]);
+            if ("fault atomic cap bad".split(" ").includes(kind)) {
+              const code =
+                kind === "cap"
+                  ? "RESTORE_TOO_LARGE"
+                  : kind === "bad"
+                    ? variant === "order"
+                      ? "INPUT_INVALID"
+                      : "RESTORE_INVALID_ROW"
+                    : "UNAVAILABLE";
+              verdict(last!.projected, code, code === "INPUT_INVALID" ? 6 : 1);
+              for (const key of ["provisioned", "state:epoch", "restore:next"])
+                eq(p.values.has(key), false);
+              for (const t of TABLES)
+                eq(p.db.get(`SELECT COUNT(*) AS n FROM ${t}`)!.n, 0);
+              eq(privateRows(), privateBefore);
+              return;
+            }
+            verdict(last!.projected);
+            if (kind === "intermediate") {
+              eq(p.values.has("provisioned"), false);
+              eq(f.owner(p.db).get(f.ns, "lane-control:global"), undefined);
+              for (const t of [
+                "domain_cloud_tokens",
+                LANE_APPROVALS,
+                LANE_BROWSER,
+              ])
+                eq(p.db.get(`SELECT COUNT(*) AS n FROM ${t}`)!.n, 0);
+              return;
+            }
+            eq(p.values.get("provisioned"), true);
+            if (kind === "approval" || kind === "resume") {
+              const saved = f.snapshot(p.db);
+              await reply(
+                p.command("lane.resume", approval("old-approved")),
+                "APPROVAL_REQUIRED",
+              );
+              eq(f.snapshot(p.db), saved);
+            }
+            if (kind === "browser") {
+              const saved = f.snapshot(p.db),
+                callback = await p.oldCallback();
+              verdict(
+                respond(
+                  failure(
+                    callback.status === 400 ? "INPUT_INVALID" : "INTERNAL",
+                    "browser projection",
+                  ),
+                ),
+                "INPUT_INVALID",
+                6,
+              );
+              eq(f.snapshot(p.db), saved);
+              eq(p.exchanges(), 0);
+            }
+            await f.stoppedImage(source, p.db);
+            if (kind === "release") {
+              const state = f.owner(p.db),
+                lease = state.lease(f.ns, "issue:work-1")!;
+              eq(lease.generation, 1);
+              const fence = {
+                subject: "issue:work-1",
+                holder: f.holder,
+                generation: 1,
+              };
+              verdict(
+                f.result(() =>
+                  state.put(f.ns, "issue:work-1", { stale: true }, f.actor, {
+                    expectRevision: 1,
+                    fence,
+                  }),
+                ),
+                "LEASE_NOT_HELD",
+                4,
+              );
+            }
+            if (kind === "dispatch") await restoredDispatch(p);
+            if (kind === "resume") {
+              await reply(
+                p.command("lane.resume", { id: "work-1" }),
+                "INPUT_CONFLICT",
+                4,
+              );
+              const ask = (
+                await reply(
+                  p.command("lane.resume", { all: true }),
+                  "APPROVAL_REQUIRED",
+                )
+              ).r.result as { request: string };
+              await p.approve(ask.request);
+              await reply(p.command("lane.resume", approval(ask.request)));
+              const control = new LaneControlStore(f.owner(p.db), "a").read();
+              assert.ok(control.ok);
+              eq(control.result.stopped, false);
+            }
+          };
+          if (mutant) {
+            await assert.rejects(check);
+            if (kind === "atomic") assert.ok(p.transactions() > 0);
+          } else await check();
+          eq(f.snapshot(source), before);
+        }
+  },
+  120_000,
+);
+
+async function restoredDispatch(p: Awaited<ReturnType<typeof f.activation>>) {
+  await reply(p.command("issue.claim", { id: "forge-1" }));
+  const grant = f.owner(p.db).lease(f.ns, "issue:work-1")!;
+  eq(grant.holder, f.holder);
+  assert.ok(Date.parse(grant.expiresAt) > f.at);
+  const local = f.owner(f.database());
+  local.initialize();
+  const state = local.client(f.ns, f.actor),
+    binding = {
+      identity: "synthetic",
+      origin: "https://synthetic.example",
+      project: "a",
+    },
+    root = "E:/tmp/restore-lane";
+  const context = {
+    actor: f.actor,
+    session: f.holder.session,
+    project: { id: "synthetic", root },
+    leaseGeneration: grant.generation,
+  };
+  const save: Parameters<typeof boundLaneStart>[7] = (value, rev) =>
+    Promise.resolve(writeBoundLane(state, binding, value, rev));
+  const remote: BoundCommand = async (op, input, generation) => {
+    const r = await p.command(op, input, generation);
+    if (op === "lane.control") {
+      verdict(r.projected);
+      eq((r.r.result as { scope: string }).scope, "all");
+    }
+    if (!r.r.ok) throw new ForgeFailure({ ...r.r.error, retry: "never" });
+    return r.r.result;
+  };
+  await boundLaneStart(
+    { id: "forge-1", branch: "feat/synthetic", brief: "brief.md" },
+    context,
+    "fixture",
+    () => f.at,
+    binding,
+    state,
+    remote,
+    save,
+    async (record, fence) => {
+      await fence();
+      return record.lane;
+    },
+  );
+  const runner = boundDispatch(remote, "work-1", grant.generation, {
+    now: () => f.at,
+    schedule: () => () => {},
+  });
+  let launches = 0;
+  const saved = f.owner(p.db).get(f.ns, "issue:work-1");
+  try {
+    await assert.rejects(async () => {
+      await runner.beforeSpawn();
+      launches++;
+    }, /control stopped/);
+  } finally {
+    await runner.close();
+  }
+  eq(launches, 0);
+  eq(f.owner(p.db).get(f.ns, "issue:work-1"), saved);
+}

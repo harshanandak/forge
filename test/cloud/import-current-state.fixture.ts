@@ -5,6 +5,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { afterEach } from "bun:test";
+import { domain } from "../../cloud/src/project.ts";
+import { dumpOf, type Dump } from "../../cloud/src/dump.ts";
+import { LANE_APPROVALS } from "../../cloud/src/lane-approval.ts";
+import { LANE_BROWSER } from "../../cloud/src/auth/lane-browser.ts";
+import { issueToken, sha256 } from "../../cloud/src/tokens.ts";
+import { ForgeFailure } from "../../src/contract/failure.ts";
+import { digestValue } from "../../src/core/config/pointer.ts";
+import { imageDigests } from "../../tools/import-current.ts";
+import { testIdentityVerifier } from "../contract/lib/identity-verifier.ts";
 import { StateOwner } from "../../src/core/state/index.ts";
 import type { SqlDatabase, SqlRow } from "../../src/ports/store.ts";
 import { success } from "../../src/surface/dispatch.ts";
@@ -219,4 +228,273 @@ export async function fencedOwner(db: SqlDatabase, mutation: boolean) {
       ).StateOwner
     : StateOwner;
   return new Impl(db, { now: () => at });
+}
+
+export function activationImage(mode = "running", lease = false) {
+  const db = cloudDatabase(),
+    state = owner(db),
+    iso = new Date(at).toISOString();
+  state.initialize([domain]);
+  state.put(
+    ns,
+    "issue:work-1",
+    {
+      id: "work-1",
+      prefix: "forge",
+      title: "source",
+      status: "open",
+      labels: [],
+      dependsOn: [],
+      createdAt: iso,
+    },
+    actor,
+    { expectRevision: 0, requestId: "original" },
+  );
+  const put = (key: string, value: unknown) =>
+    state.put(ns, key, value, actor, { expectRevision: 0 });
+  put("allocation:issue:work-", { prefix: "issue:work-", number: 1 });
+  if (mode !== "absent")
+    put("lane-control:global", {
+      version: 1,
+      incarnation: "history",
+      epoch: mode === "exhausted" ? Number.MAX_SAFE_INTEGER : 4,
+      resumeAllEpoch: 0,
+      stopAll: mode === "stopped" ? iso : null,
+    });
+  if (lease) state.acquire(ns, "issue:work-1", holder, 60_000, "old-claim");
+  return db;
+}
+export async function stoppedImage(source: SqlDatabase, target: SqlDatabase) {
+  const expected = cloudDatabase();
+  const helper =
+    (await import("../../cloud/conformance/restored.ts")) as unknown as {
+      restoreStopped: (
+        db: SqlDatabase,
+        image: Iterable<Dump>,
+        actual: SqlDatabase,
+      ) => void;
+    };
+  helper.restoreStopped(expected, [dumpOf(source)], target);
+  assert.deepEqual(imageDigests(target), imageDigests(expected));
+}
+export async function activation(
+  mutation?: string,
+  extra: Record<string, string> = {},
+  retained = false,
+) {
+  const projectPath = "../../cloud/src/project.ts",
+    original = (
+      await Bun.file(new URL(projectPath, import.meta.url)).text()
+    ).replaceAll("\r\n", "\n");
+  const stop = original.match(
+    /new LaneControlStore\([\s\S]*?\.stop\([\s\S]*?\);/,
+  )?.[0];
+  const changes: Record<string, Change> = {
+    stop: [
+      stop ?? "missing Project stop",
+      '({ ok: true, result: { stopped: true, scope: "all" } });',
+    ],
+    approval: ["db.run(`DELETE FROM ${LANE_APPROVALS}`);", ""],
+    browser: ["db.run(`DELETE FROM ${LANE_BROWSER}`);", ""],
+    target: ["if (await this.#isProvisioned())", "if (false)"],
+  };
+  const dumpChange: Change | undefined =
+    mutation === "release"
+      ? ["owner.releaseRestoredLeases();", ""]
+      : mutation === "cap"
+        ? [
+            '  finalize?.();\n  assertLimits(db, limits, "RESTORE_TOO_LARGE", "The restored project");',
+            "  finalize?.();",
+          ]
+        : undefined;
+  const dump = dumpChange
+    ? await moduleUrl("../../cloud/src/dump.ts", dumpChange)
+    : undefined;
+  const { Project } = (await import(
+    await moduleUrl(
+      projectPath,
+      changes[mutation ?? ""],
+      dump ? ["./dump.ts", dump] : undefined,
+    )
+  )) as typeof import("../../cloud/src/project.ts");
+  const raw = new Database(":memory:");
+  resources.push(() => raw.close());
+  let fault = "",
+    transactions = 0;
+  const { storage, values } = browserStorage(raw, (sql) => {
+    if (fault && sql === `DELETE FROM ${fault}`)
+      throw new ForgeFailure({
+        code: "UNAVAILABLE",
+        message: "synthetic deletion fault",
+        retry: "never",
+      });
+  });
+  const db = durableStore(storage);
+  owner(db).initialize([domain]);
+  if (mutation === "atomic")
+    storage.transactionSync = (body) => {
+      transactions++;
+      return body();
+    };
+  const env = {
+    FORGE_CLOUD_PROJECT: "a",
+    FORGE_CLOUD_ID_PREFIX: "forge",
+    DUMP_PAGE_BYTES: "4096",
+    CLERK_ISSUER: "https://identity.example",
+    CLERK_CLIENT_ID: "synthetic",
+    FORGE_OWNER_SUBJECT: "owner",
+    CLERK_REDIRECT_URI: "https://synthetic.example/callback",
+    DEVICE_LOGIN_HMAC_KEY: Buffer.alloc(32, 7).toString("base64url"),
+    ...extra,
+  };
+  let exchanges = 0;
+  const claims = {
+    issuer: env.CLERK_ISSUER,
+    subject: "owner",
+    audience: "synthetic",
+    authenticatedAt: at - 1000,
+    expiresAt: at + 600_000,
+  };
+  const verifier = testIdentityVerifier(new Map([["owner", claims]]));
+  const p = new Project({ storage }, env, {
+    upstream: {
+      begin: () => Promise.reject(new Error("Callback-only fixture")),
+      verify: () => {
+        exchanges++;
+        return verifier.verify("owner", "synthetic", at);
+      },
+    },
+    redemption: { claimOnce: () => Promise.resolve(true) },
+  });
+  const deviceInput = {
+    device: "fixture",
+    session: "one",
+    agent: null,
+    harness: null,
+    ttlMs: 600_000,
+  };
+  let credential: Record<string, unknown> | undefined,
+    n = 0;
+  const send = async (
+    route: string,
+    body?: unknown,
+    headers: Record<string, string> = {},
+  ) => {
+    const response = await p.fetch(
+      new Request(`https://synthetic.example/p/a/${route}`, {
+        method: body === undefined ? "GET" : "POST",
+        headers,
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      }),
+    );
+    const r = (await response.json()) as {
+      ok: boolean;
+      result: unknown;
+      value: Record<string, unknown>;
+      error: { code: string; message: string };
+    };
+    return {
+      r,
+      projected: respond(
+        r.ok
+          ? success(route, r.value ?? r.result)
+          : failure(r.error.code, r.error.message),
+      ),
+    };
+  };
+  const command = async (
+    op: string,
+    input: object = {},
+    generation?: number,
+  ) => {
+    credential ??= (await send("devices", deviceInput)).r.value;
+    return send(
+      "command",
+      {
+        requestId: `fresh-${++n}`,
+        op,
+        input,
+        context: {
+          actor,
+          session: holder.session,
+          ...(generation === undefined ? {} : { leaseGeneration: generation }),
+        },
+      },
+      { authorization: `Bearer ${String(credential.token)}` },
+    );
+  };
+  const challenge = async (request: string, state: string, bind: string) => {
+    const stateHash = await sha256(state);
+    const entry = {
+      request,
+      action: "approve",
+      stateHash,
+      bindHash: await sha256(bind),
+      verifier: "synthetic",
+      expiresAt: at + 600_000,
+    };
+    db.run(`INSERT OR REPLACE INTO ${LANE_BROWSER} VALUES (1, ?)`, [
+      JSON.stringify([entry]),
+    ]);
+    return `__Host-forge_lane_${stateHash.slice(0, 24)}=${bind}`;
+  };
+  const oldState = "forge-lane." + "s".repeat(43),
+    bind = "b".repeat(43);
+  let oldCookie = "";
+  if (retained) {
+    credential = await issueToken(db, deviceInput, at);
+    const row = {
+      request: "old-approved",
+      scope: { all: true },
+      project: "a",
+      incarnation: "history",
+      epoch: 5,
+      policyIdentity: digestValue([
+        env.CLERK_ISSUER,
+        env.FORGE_OWNER_SUBJECT,
+        env.CLERK_CLIENT_ID,
+      ]),
+      device: "fixture",
+      session: "one",
+      token: credential.id,
+      status: "approved",
+      expiresAt: new Date(at + 600_000).toISOString(),
+      url: "https://synthetic.example/lane-approval/old-approved",
+    };
+    db.run(`INSERT INTO ${LANE_APPROVALS} VALUES (1, ?)`, [
+      JSON.stringify({
+        requests: [row, { ...row, request: "old-browser", status: "pending" }],
+      }),
+    ]);
+    oldCookie = await challenge("old-browser", oldState, bind);
+  }
+
+  const browser = (path: string, cookie: string) =>
+    p.fetch(
+      new Request(`https://synthetic.example${path}`, {
+        headers: { Cookie: cookie },
+      }),
+    );
+  return {
+    db,
+    values,
+    send,
+    command,
+    exchanges: () => exchanges,
+    transactions: () => transactions,
+    fault: (value: string) => {
+      fault = value;
+    },
+    oldCallback: () =>
+      browser(`/callback?state=${oldState}&code=old`, oldCookie),
+    approve: async (request: string) => {
+      const state = "forge-lane." + "f".repeat(43);
+      const cookie = await challenge(request, state, "c".repeat(43));
+      const approved = await browser(
+        `/callback?state=${state}&code=owner`,
+        cookie,
+      );
+      assert.equal(approved.status, 200);
+    },
+  };
 }
