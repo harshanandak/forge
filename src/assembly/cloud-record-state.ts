@@ -140,7 +140,7 @@ export function createCloudRecordState(
         (id) => {
           if (pending!.principal && pending!.principal !== id)
             throw fail("UNAVAILABLE");
-          if (id) pending!.principal = id;
+          pending!.principal = id;
         },
       );
       pending = undefined;
@@ -150,8 +150,11 @@ export function createCloudRecordState(
       else pin(answer);
       return answer.records;
     } catch (error) {
-      if (error instanceof CloudRecordRefusal) pending = undefined;
-      return conflict(error);
+      if (!replay && error instanceof CloudRecordRefusal) {
+        pending = undefined;
+        return conflict(error);
+      }
+      throw error;
     }
   }
   const putMany: AsyncStateClient["putMany"] = async (entries, batch) => {

@@ -88,6 +88,7 @@ Its reads pin one namespace version across point absence, pages and aggregates.
 Each accepted commit consumes its read dependencies; per-item commits use distinct IDs.
 An unknown outcome blocks new plans and keeps the exact request bytes and ID for replay.
 Replay also pins the credential's token ID; a changed or missing principal cannot settle it.
+A replay is settled only by acceptance; a first-send decoded refusal settles that attempt.
 Only a known conflict permits a logical retry with a fresh plan; replayed acceptance
 requires fresh subsequent reads because the receipt may describe an older snapshot.
 Cached methods enforce invocation abort/deadline, propagated to the checked record client.

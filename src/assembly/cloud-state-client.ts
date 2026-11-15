@@ -236,7 +236,7 @@ export interface CloudRecordClient {
   /** Observe only the token id from the same lookup that supplies this send. */
   commit(
     call: State.StateCommitRequest,
-    principal?: (id?: string) => void,
+    principal?: (id: string) => void,
   ): Promise<State.StateCommitResult>;
 }
 
@@ -269,14 +269,7 @@ export function createCloudRecordClient(
       return result;
     },
     async commit(call, principal) {
-      let credential: ReturnType<typeof stored>;
-      try {
-        credential = stored();
-      } catch (error) {
-        principal?.();
-        throw error;
-      }
-      const { token, device, id } = credential;
+      const { token, device, id } = stored();
       principal?.(id);
       const body = { ...call, context: contextFor(call.context, device) };
       if (signal?.aborted === true)
