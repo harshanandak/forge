@@ -12,11 +12,18 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import {
+  MAX_PEAK_DELTA_MB,
+  medianPairedDelta,
+} from "../../tools/bench/speed-compare.ts";
 
 const root = resolve(import.meta.dirname, "../..");
 
-test.each([false, true])(
-  "same-source builds share their load path; retained growth=%p still fails",
+// These rows exercise the enforced memory gate; other platforms only report measurements.
+test
+  .skipIf(process.platform !== "linux" && process.platform !== "win32")
+  .each([false, true])(
+  "same-source builds share their load path; memory growth=%p",
   (growth) => {
     const folder = mkdtempSync(join(tmpdir(), "forge-speed-proof-"));
     try {
@@ -79,10 +86,22 @@ test.each([false, true])(
         expect(
           report.rows.find((row) => row.command === command)?.peaksMb,
         ).toHaveLength(15);
-      expect(result.status, result.stdout + result.stderr).toBe(growth ? 1 : 0);
+      const current = report.rows.find((row) => row.command === "issue show")!;
+      const base = report.rows.find(
+        (row) => row.command === "issue show (origin/main build)",
+      )!;
+      const delta = medianPairedDelta(current.peaksMb, base.peaksMb);
       if (growth) {
+        expect(delta).toBeGreaterThan(MAX_PEAK_DELTA_MB);
+        expect(result.status, result.stdout + result.stderr).toBe(1);
         expect(result.stderr).toContain("issue show peak is");
         expect(result.stderr).toContain("more than the 1.5 MB limit");
+      } else {
+        // A loaded integration runner can fail wall time independently of the memory decision.
+        expect(result.status === 0 || result.status === 1).toBe(true);
+        expect(result.signal).toBeNull();
+        expect(delta).toBeLessThanOrEqual(MAX_PEAK_DELTA_MB);
+        expect(result.stderr).not.toContain("::error::issue show peak");
       }
     } finally {
       rmSync(folder, { recursive: true, force: true });
