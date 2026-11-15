@@ -3,11 +3,14 @@ import { Database } from "bun:sqlite";
 import {
   PRE_WATERMARK,
   WATERMARK_SCHEMA,
-  withoutWatermarkMigration,
+  watermarkMutation,
 } from "../../cloud/old-schema.ts";
 import { tmpdir } from "node:os";
 import { createSqliteStore } from "../../../src/adapters/store-sqlite/index.ts";
-import { StateOwner } from "../../../src/core/state/index.ts";
+import {
+  LEGACY_NAMESPACE_WATERMARK,
+  StateOwner,
+} from "../../../src/core/state/index.ts";
 import { baseline, migrate } from "../../../src/core/state/migrations.ts";
 import type {
   SqlDatabase,
@@ -130,7 +133,8 @@ test("history refuses a limit outside 1 to 1000", async () => {
   }
 }, 30_000);
 
-test("watermark endpoint work is independent of history, keys and other namespaces", () => {
+test("watermark endpoint work is independent of history, keys and other namespaces", async () => {
+  const OldOwner = await watermarkMutation("scan");
   for (const count of [0, 1, 1000, 100000]) {
     using raw = new Database(":memory:");
     let examined = 0;
@@ -156,6 +160,9 @@ test("watermark endpoint work is independent of history, keys and other namespac
       get: (sql, params = []) => {
         if (sql.includes("FROM state_events") && sql.includes("namespace=?")) {
           statements.push(sql);
+          // Reproduce main's available access path without changing the production MAX query.
+          if (sql === LEGACY_NAMESPACE_WATERMARK)
+            sql = sql.replace("WHERE", "INDEXED BY state_events_by_key WHERE");
           sql = sql.replace(
             "namespace=?",
             "namespace=? AND examined(sequence)",
@@ -171,7 +178,7 @@ test("watermark endpoint work is independent of history, keys and other namespac
       "WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<?) INSERT INTO state_events SELECT i, CASE WHEN i%2=0 THEN 'forge/other' ELSE 'forge/test' END, 'key/'||i, '{}' FROM n WHERE i<=?",
       [count, count],
     );
-    for (const namespace of [ns, "forge/other", "forge/absent"]) {
+    const accept = (reader: StateOwner, namespace: string) => {
       examined = 0;
       statements.length = 0;
       const expected = Number(
@@ -180,8 +187,11 @@ test("watermark endpoint work is independent of history, keys and other namespac
           [namespace],
         )[0]?.n ?? 0,
       );
-      expect(owner.namespaceRevision(namespace)).toBe(expected);
-      expect(examined).toBe(expected === 0 ? 0 : 1);
+      expect(reader.namespaceRevision(namespace)).toBe(expected);
+      expect(examined).toBeLessThanOrEqual(1);
+    };
+    for (const namespace of [ns, "forge/other", "forge/absent"]) {
+      accept(owner, namespace);
       const sql = statements.at(-1)!;
       const used = all(`EXPLAIN QUERY PLAN ${sql}`, [namespace]);
       expect(used.map((r) => r.detail).join(" ")).toContain(
@@ -190,17 +200,11 @@ test("watermark endpoint work is independent of history, keys and other namespac
       expect(used.map((r) => r.detail).join(" ")).not.toContain("TEMP B-TREE");
       expect(sql).toContain("INDEXED BY state_events_by_namespace");
     }
-    // The old access path on main's schema must fail this work assertion even when values match.
     if (count >= 1000) {
-      for (const sql of PRE_WATERMARK) raw.run(sql);
-      examined = 0;
-      const old = all(
-        "SELECT coalesce(MAX(sequence),0) AS revision FROM state_events INDEXED BY state_events_by_key WHERE namespace=? AND examined(sequence)",
-        [ns],
-      )[0];
-      expect(old?.revision).toBe(count - 1);
+      const old = new OldOwner(db, { now: () => 1000 });
+      expect(() => accept(old, ns)).toThrow("toBeLessThanOrEqual");
+      expect(statements.at(-1)).toBe(LEGACY_NAMESPACE_WATERMARK);
       expect(examined).toBe(count / 2);
-      expect(() => expect(examined).toBeLessThanOrEqual(1)).toThrow();
     }
   }
 }, 30_000);
@@ -220,7 +224,7 @@ test("old read-only watermark stays exact; migration removal is detected; delete
     const check = () => expect(real.get(WATERMARK_SCHEMA)).toBeDefined();
     check();
     for (const sql of PRE_WATERMARK) real.exec(sql);
-    const Mutant = await withoutWatermarkMigration();
+    const Mutant = await watermarkMutation("migration");
     new Mutant(real, { now: () => 1000 }).initialize();
     expect(check).toThrow();
     const before = real.all("SELECT * FROM state_migrations");

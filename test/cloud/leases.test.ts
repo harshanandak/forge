@@ -54,15 +54,18 @@ function fixture(env?: unknown) {
     // Every statement, transaction and key-value call, so setup or a stray read shows even when no row changes.
     calls: string[] = [];
   let failRelease = false;
-  let failMigration = false;
+  let failMigration: ((id: string) => void) | undefined;
   let failRestoredRelease = false;
   let claimNumber = 0;
   const storage: DurableStorage = {
     sql: {
       exec: (sql, ...bindings) => {
         calls.push(sql);
-        if (failMigration && sql.startsWith("CREATE INDEX"))
-          throw new Error("injected migration failure");
+        if (
+          sql === "INSERT INTO state_migrations(id) VALUES (?)" &&
+          typeof bindings[0] === "string"
+        )
+          failMigration?.(bindings[0]);
         if (
           (failRelease ||
             (failRestoredRelease &&
@@ -228,8 +231,8 @@ function fixture(env?: unknown) {
     row,
     rows,
     revoke: (device: Device) => send("revoke", { id: device.id }),
-    failMigration: () => {
-      failMigration = true;
+    failMigration: (inject?: (id: string) => void) => {
+      failMigration = inject;
     },
     failRestore: () => {
       failRestoredRelease = true;
@@ -1071,7 +1074,7 @@ for (const mode of ["paged", "whole", "malformed"] as const)
         expect(await target.lookup()).toBeNull();
     }, 30_000);
 
-test("admin preparation upgrades current and historical stores without changing project data", async () => {
+test("configured admin preparation works without OAuth configuration", async () => {
   for (const historical of [false, true]) {
     using f = fixture();
     const device = await f.issue();
@@ -1088,7 +1091,7 @@ test("admin preparation upgrades current and historical stores without changing 
     const kept = preserved();
     const auth = { authorization: "Bearer fixture-admin" };
     const was = f.snapshot();
-    const pending = await f.raw("upgrade", undefined, auth, "worker");
+    const pending = await f.raw("upgrade", undefined, auth, "configured");
     expect([
       pending.status,
       setupCalls(pending.calls),
@@ -1096,7 +1099,7 @@ test("admin preparation upgrades current and historical stores without changing 
     ]).toEqual([200, [], true]);
     expect(pending.body.value).toMatchObject({ ready: false, index: false });
     for (const outcome of ["upgraded", "already ready"]) {
-      const got = await f.raw("upgrade", {}, auth, "worker");
+      const got = await f.raw("upgrade", {}, auth, "configured");
       expect([got.status, got.body.value]).toEqual([
         200,
         { ready: true, index: true, pending: [], outcome },
@@ -1109,7 +1112,7 @@ test("admin preparation upgrades current and historical stores without changing 
     expect(f.db.query(WATERMARK_SCHEMA).get()).not.toBeNull();
     const ready = f.snapshot();
     expect(
-      (await f.raw("upgrade", undefined, auth, "worker")).body.value,
+      (await f.raw("upgrade", undefined, auth, "configured")).body.value,
     ).toEqual({ ready: true, index: true, pending: [] });
     expect(f.snapshot()).toBe(ready);
     expect(
@@ -1125,6 +1128,7 @@ test("upgrade refuses before setup and never provisions a cold target", async ()
     "pragma",
     "missing admin",
     "wrong admin",
+    "wrong admin read",
     "shape",
     "method",
     "query",
@@ -1142,25 +1146,34 @@ test("upgrade refuses before setup and never provisions a cold target", async ()
     f.reopen();
     const was = f.snapshot();
     let reached = 0;
-    const response = await createWorker().fetch(
+    const response = await createConfiguredWorker().fetch(
       new Request(
         `https://fixture.example/p/a/upgrade${mode === "query" ? "?x=1" : ""}`,
         {
-          method: mode === "method" ? "DELETE" : "POST",
+          method:
+            mode === "wrong admin read" || mode === "query"
+              ? "GET"
+              : mode === "method"
+                ? "DELETE"
+                : "POST",
           headers:
             mode === "missing admin"
               ? {}
               : {
-                  authorization: `Bearer ${mode === "wrong admin" ? "wrong" : "fixture-admin"}`,
+                  authorization: `Bearer ${mode.startsWith("wrong admin") ? "wrong" : "fixture-admin"}`,
                 },
-          body:
-            mode === "shape"
-              ? '{"extra":1}'
-              : mode === "large"
-                ? " ".repeat(10000)
-                : mode === "json"
-                  ? "{"
-                  : "{}",
+          ...(mode === "wrong admin read" || mode === "query"
+            ? {}
+            : {
+                body:
+                  mode === "shape"
+                    ? '{"extra":1}'
+                    : mode === "large"
+                      ? " ".repeat(10000)
+                      : mode === "json"
+                        ? "{"
+                        : "{}",
+              }),
         },
       ),
       {
@@ -1174,11 +1187,12 @@ test("upgrade refuses before setup and never provisions a cold target", async ()
         },
       },
     );
-    const expected = ["missing admin", "wrong admin"].includes(mode)
-      ? 401
-      : ["cold", "unknown ledger", "pragma"].includes(mode)
-        ? 409
-        : 400;
+    const expected =
+      mode === "missing admin" || mode.startsWith("wrong admin")
+        ? 401
+        : ["cold", "unknown ledger", "pragma"].includes(mode)
+          ? 409
+          : 400;
     expect([mode, response.status, f.snapshot() === was]).toEqual([
       mode,
       expected,
@@ -1189,24 +1203,49 @@ test("upgrade refuses before setup and never provisions a cold target", async ()
   }
 }, 30_000);
 
-test("upgrade migration failure rolls schema and ledger back", async () => {
-  using f = fixture();
-  await f.issue();
-  for (const sql of PRE_WATERMARK) f.db.run(sql);
-  f.cold();
-  const was = f.snapshot();
-  f.failMigration();
-  expect(
-    (
-      await f.raw(
-        "upgrade",
-        {},
-        { authorization: "Bearer fixture-admin" },
-        "worker",
-      )
-    ).status,
-  ).toBe(500);
-  expect(f.snapshot()).toBe(was);
+test("upgrade failures roll index, ledger and historical setup back, then retry on the same instance", async () => {
+  for (const boundary of [WATERMARK_MIGRATION, "006_cloud_imported_receipts"]) {
+    using f = fixture();
+    await f.issue();
+    for (const sql of [
+      ...PRE_WATERMARK,
+      "DELETE FROM state_migrations WHERE id='006_cloud_imported_receipts'",
+      "DROP INDEX command_receipts_live",
+    ])
+      f.db.run(sql);
+    f.db.run(
+      "INSERT INTO domain_cloud_command_receipts VALUES ('historical', 'fingerprint', 'ok', '{}', 1, 2, 0)",
+    );
+    f.cold();
+    const was = f.snapshot();
+    let reached: unknown;
+    f.failMigration((id) => {
+      if (id !== boundary) return;
+      reached = [
+        f.db.query(WATERMARK_SCHEMA).get() !== null,
+        f
+          .rows("state_migrations")
+          .some((row) => row.id === WATERMARK_MIGRATION),
+        f.rows("domain_cloud_command_receipts")[0]?.imported,
+      ];
+      throw new Error("injected ledger failure");
+    });
+    const auth = { authorization: "Bearer fixture-admin" };
+    expect((await f.raw("upgrade", {}, auth, "worker")).status).toBe(500);
+    expect(reached).toEqual([
+      true,
+      boundary !== WATERMARK_MIGRATION,
+      boundary === WATERMARK_MIGRATION ? 0 : 1,
+    ]);
+    expect(f.snapshot()).toBe(was);
+    f.failMigration();
+    const retry = await f.raw("upgrade", {}, auth, "worker");
+    expect(f.rows("domain_cloud_command_receipts")[0]?.imported).toBe(1);
+    expect([retry.status, retry.body.value]).toEqual([
+      200,
+      { ready: true, index: true, pending: [], outcome: "upgraded" },
+    ]);
+  }
 }, 30_000);
 
 test("whole and paged restore initialize the watermark index before visibility", async () => {
@@ -1224,30 +1263,4 @@ test("whole and paged restore initialize the watermark index before visibility",
       index: true,
     });
   }
-}, 30_000);
-
-test("historical upgrade retains the imported-receipt provenance transform", async () => {
-  using f = fixture();
-  await f.issue();
-  for (const sql of [
-    ...PRE_WATERMARK,
-    "DELETE FROM state_migrations WHERE id='006_cloud_imported_receipts'",
-    "DROP INDEX command_receipts_live",
-  ])
-    f.db.run(sql);
-  f.db.run(
-    "INSERT INTO domain_cloud_command_receipts VALUES ('historical', 'fingerprint', 'ok', '{}', 1, 2, 0)",
-  );
-  f.reopen();
-  expect(
-    (
-      await f.raw(
-        "upgrade",
-        {},
-        { authorization: "Bearer fixture-admin" },
-        "worker",
-      )
-    ).status,
-  ).toBe(200);
-  expect(f.rows("domain_cloud_command_receipts")[0]?.imported).toBe(1);
 }, 30_000);
