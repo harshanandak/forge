@@ -1412,6 +1412,84 @@ const attachmentBytes = (s: fx.Sandbox) =>
   ].map((path) =>
     existsSync(path) ? readFileSync(path).toString("hex") : null,
   );
+for (const stored of ["journal", "registry", "combined"] as const)
+  test(`legacy linked reattachment refuses before Git: ${stored}`, async () => {
+    const f = fx.persistedRootsFixture();
+    const deviceRoot = join(f.project, "device");
+    const state = new LocalState(join(deviceRoot, "records.sqlite"));
+    let files;
+    try {
+      const lane = {
+        ...attachment,
+        worktree: f.scope.lane.real,
+        brief: join(f.scope.lane.real, "brief.md"),
+      };
+      const record = { ...journal, lane, grant: OWN_GRANT };
+      writeFileSync(lane.brief, PREPARED_BRIEF);
+      if (stored !== "registry") await seedJournal({ deviceRoot }, record);
+      const registry = join(f.project, ".git", "forge-lanes.json");
+      if (stored !== "journal") writeFileSync(registry, JSON.stringify([lane]));
+      const scope = {
+        op: "lane.start",
+        effects: [
+          "files:read",
+          "files:write",
+          "environment:read",
+          "external:process",
+        ],
+        signal: AbortSignal.timeout(30000),
+        deadline: Date.now() + 30000,
+        processContainment: "supervised" as const,
+      };
+      files = await createAssemblyProviders(f.target, {
+        env: { ...f.env, PATH: f.env.PATH.split(delimiter).at(-1)! },
+      }).openFiles(scope);
+      const legacy =
+        stored === "registry"
+          ? undefined
+          : readBoundLane(
+              (await state.open(false))!.get("forge/work", journalKey())!.value,
+              "work-1",
+            ).lane;
+      const lock = spyOn(files.value, "lock"),
+        write = spyOn(files.value, "write");
+      const providers = createAssemblyProviders(f.target, { env: f.env });
+      const snapshot = () => [
+        ...f.snapshot(),
+        ...[registry, join(deviceRoot, "records.sqlite")].map((path) =>
+          existsSync(path) ? readFileSync(path).toString("hex") : null,
+        ),
+      ];
+      const before = snapshot();
+      await expect(
+        attachBoundLane(
+          record,
+          {
+            files: files.value,
+            process: providers.process(scope),
+            environment: providers.environment(scope),
+            now: () => NOW,
+            ...scope,
+          },
+          {
+            check: async () => {},
+            publish: (_lane, write) => Promise.resolve(write()),
+          },
+          legacy,
+        ),
+      ).rejects.toMatchObject({ error: { code: "INPUT_CONFLICT" } });
+      expect([
+        existsSync(f.marker),
+        lock.mock.calls.length,
+        write.mock.calls.length,
+        snapshot(),
+      ]).toEqual([false, 0, 0, before]);
+    } finally {
+      await files?.close();
+      await state.close();
+      f.close();
+    }
+  });
 // PR 2a: reservations are device progress, never process permission.
 async function initialReservationRace(
   r: Rig,
