@@ -1,132 +1,102 @@
-import { expect, setDefaultTimeout, spyOn, test } from "bun:test";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { createAssembly } from "../../src/assembly/index.ts";
-import { LocalState } from "../../src/assembly/state.ts";
-import {
-  credentialStore,
-  openCloudFiles,
-} from "../../src/assembly/cloud-profile.ts";
+import { expect, test } from "bun:test";
+import { createCloudHttp } from "../../src/adapters/http/index.ts";
+import { createCloudRecordState } from "../../src/assembly/cloud-record-state.ts";
+import { ForgeFailure } from "../../src/contract/failure.ts";
+import type { StateRecord } from "../../src/generated/types.ts";
 import type {
-  StateCommitRequest,
   StateReadRequest,
+  StateCommitRequest,
 } from "../../src/ports/state-protocol.ts";
-import type { StateRecord, ResultEnvelope } from "../../src/generated/types.ts";
-import { exitCode } from "../../src/surface/result.ts";
-import { relay } from "../fixtures/owner-approval.ts";
 import * as fx from "./cloud-fixture.ts";
 
-setDefaultTimeout(30_000);
-const NOW = Date.UTC(2026, 10, 11);
-const namespace = "test/remote";
+const namespace = "forge/memory";
 const actor = { kind: "human" as const, id: "tester" };
-const prefix = fx.PROJECT_ID.replaceAll("-", "").slice(0, 16);
-const body = `module.exports={"probe.run":async({services:{records,levels},input})=>{
- const s=input.device?records:(await levels.project()).state;
- if(input.mode==="identity")return (await levels.project()).identity;
- if(input.mode==="peer")return {status:(await levels.peer(input.ref)).status};
- if(input.mode==="read")return {record:await s.get("missing")};
- if(input.mode==="history")return {events:await s.history({key:"note/1",limit:2,before:3})};
- if(input.mode==="plan"){
-  await s.get("missing");await s.range({from:"note/",limit:1});await s.count("note/");await s.max("note/");
-  await s.put("note/1","one",{expectRevision:0});
-  await s.put("note/2","two",{expectRevision:0});return {ok:true};
- }
- if(input.mode==="conflict"){
-  await s.get("missing");try{await s.put("note/1","one",{expectRevision:0});}catch(e){}
-  await s.get("missing");await s.put("note/1","one",{expectRevision:0});return {ok:true};
- }
- if(input.mode==="replay"){
-  await s.put("note/1","one",{expectRevision:0});
-  const value={text:"two"};try{await s.put("note/2",value,{expectRevision:0});}catch(e){}
-  value.text="mutated";
-  let refused=false;try{await s.get("missing");}catch(e){refused=true;}
-  if(!refused)throw Error("pending commit allowed a new read plan");
-  try{await s.put("note/3","wrong",{expectRevision:0});throw Error("pending commit replaced");}catch(e){if(e.message==="pending commit replaced")throw e;}
-  await s.put("note/2",{text:"two"},{expectRevision:0});
-  await s.get("missing");await s.put("note/3","three",{expectRevision:0});return {ok:true};
- }
- return {record:await s.put("note/1","one",{expectRevision:0})};
-}};`;
-
-/** One packed block through real assembly, with a scripted, credentialed HTTP transport. */
-async function fixture(
-  options: {
-    credential?: boolean;
-    v1?: boolean;
-    effect?: boolean;
-    context?: "project" | "device";
-  } = {},
-) {
-  const s = fx.sandbox();
-  const clock = fx.clock(NOW);
+const context = {
+  actor,
+  project: { id: fx.PROJECT_ID },
+  device: { id: "dev-1" },
+};
+type Call = StateReadRequest | StateCommitRequest;
+/** Real credentialed client and decoder over injected transport, clock and abort seams. */
+function fixture() {
+  const clock = fx.clock(),
+    controller = new AbortController();
   const records = new Map<string, StateRecord>();
-  const calls: (StateReadRequest | StateCommitRequest)[] = [];
-  const bytes: string[] = [];
-  const accepted = new Map<string, object>();
-  let revision = 0;
-  let lose = false;
-  let deny: string | undefined;
-  let conflict = false;
-  let aborted = false;
-  const net = fx.network(({ body, init }) => {
-    const call = body as StateReadRequest | StateCommitRequest;
+  const calls: Call[] = [],
+    bytes: string[] = [],
+    signals: AbortSignal[] = [];
+  const accepted = new Map<string, { bytes: string; result: object }>();
+  let revision = 0,
+    credential = true,
+    offline = false,
+    abortInFlight = false;
+  let deny: string | undefined, loss: string | undefined;
+  let concurrent = 0,
+    maxConcurrent = 0;
+  const refusal = (code: string, status: number) =>
+    fx.json(
+      {
+        ok: false,
+        status: "FAIL",
+        error: { code, message: "refused", retry: "never" },
+        warnings: [],
+      },
+      status,
+    );
+  const facts = () => ({
+    version: 1,
+    project: fx.PROJECT,
+    namespace,
+    policyRevision: "policy-1",
+    readVersion: { epoch: "epoch-1", revision },
+  });
+  const ok = (result: unknown) =>
+    fx.json({ ok: true, status: "OK", warnings: [], result });
+  const record = (key: string, value: unknown, rev = 1): StateRecord => ({
+    namespace,
+    key,
+    value,
+    revision: rev,
+    updatedAt: new Date(clock.now()).toISOString(),
+    updatedBy: actor,
+  });
+  const net = fx.network(async ({ body, init }) => {
+    const call = body as Call;
     calls.push(call);
     bytes.push(init.body!);
-    expect(init.signal).toBeDefined();
-    aborted = init.signal?.aborted ?? false;
-    if (deny)
-      return fx.json(
-        {
-          ok: false,
-          status: "FAIL",
-          error: { code: deny, message: "refused", retry: "never" },
-          warnings: [],
-        },
-        deny === "AUTH_FORBIDDEN" ? 403 : 409,
-      );
-    const facts = () => ({
-      version: 1,
-      project: fx.PROJECT,
-      namespace,
-      policyRevision: "policy-1",
-      readVersion: { epoch: "epoch-1", revision },
-    });
-    const ok = (result: unknown) =>
-      fx.json({ ok: true, status: "OK", warnings: [], result });
+    signals.push(init.signal);
+    expect(call.context.project).toEqual({ id: fx.PROJECT });
+    maxConcurrent = Math.max(maxConcurrent, ++concurrent);
+    await Promise.resolve();
+    concurrent--;
+    if (abortInFlight) {
+      controller.abort();
+      return new Promise<Response>(() => {});
+    }
+    if (offline) throw Error("offline");
+    if (deny) {
+      const code = deny;
+      deny = undefined;
+      return refusal(code, code === "AUTH_FORBIDDEN" ? 403 : 409);
+    }
     if (call.kind === "commit") {
       const previous = accepted.get(call.requestId);
-      if (previous) return ok(previous);
-      if (conflict) {
-        conflict = false;
-        revision++;
-        return fx.json(
-          {
-            ok: false,
-            status: "FAIL",
-            error: {
-              code: "REVISION_CONFLICT",
-              message: "changed",
-              retry: "never",
-            },
-            warnings: [],
-          },
-          409,
-        );
-      }
-      expect(call.readVersion.revision).toBe(revision);
+      if (previous)
+        return previous.bytes === init.body
+          ? ok(previous.result)
+          : refusal("INPUT_CONFLICT", 409);
+      if (
+        call.readVersion.revision !== revision ||
+        [...call.entries, ...call.readSet].some(
+          (e) => (records.get(e.key)?.revision ?? 0) !== e.expectRevision,
+        )
+      )
+        return refusal("REVISION_CONFLICT", 409);
       const written = call.entries.map((entry) => {
         revision++;
-        const record = {
-          namespace,
-          key: entry.key,
-          value: entry.value,
-          revision: (records.get(entry.key)?.revision ?? 0) + 1,
-          updatedAt: new Date(NOW).toISOString(),
-          updatedBy: actor,
-        };
-        records.set(entry.key, record);
-        return record;
+        const value = record(entry.key, entry.value, entry.expectRevision + 1);
+        records.set(entry.key, value);
+        return value;
       });
       const result = {
         ...facts(),
@@ -134,309 +104,296 @@ async function fixture(
         records: written,
         result: null,
       };
-      accepted.set(call.requestId, result);
-      if (lose && written[0]?.key === "note/2") {
-        lose = false;
-        throw Error("lost response");
+      accepted.set(call.requestId, { bytes: init.body!, result });
+      if (loss === call.entries[0]?.key) {
+        loss = undefined;
+        throw Error("accepted but response lost");
       }
       return ok(result);
     }
-    if (call.readVersion) expect(call.readVersion.revision).toBe(revision);
+    if (call.readVersion && call.readVersion.revision !== revision)
+      return refusal("REVISION_CONFLICT", 409);
     const q = call.query;
-    const result =
-      q.kind === "get"
-        ? { kind: q.kind, record: records.get(q.key) ?? null }
-        : q.kind === "range"
-          ? { kind: q.kind, records: [], next: null }
-          : q.kind === "history"
-            ? { kind: q.kind, events: [], next: null }
-            : { kind: q.kind, value: records.size };
-    return ok({ ...facts(), result });
-  });
-  const block = join(s.root, "probe");
-  mkdirSync(block);
-  const version = options.v1 ? 1 : 2;
-  writeFileSync(
-    join(block, "forge.block.json"),
-    JSON.stringify({
-      schemaVersion: "forge.block/1",
-      id: namespace,
-      version: "1.0.0",
-      authorAbi: "forge.author/v2",
-      profile: "trusted-action/v2",
-      entry: "index.cjs",
-      docs: "docs.json",
-      requires: [
-        { slot: "records", interface: `forge.state@${version}` },
-        { slot: "levels", interface: `forge.project-state@${version}` },
-      ],
-      operations: {
-        "probe.run": {
-          input: "value.json",
-          output: "value.json",
-          context: options.context ?? "device",
-          effects: options.effect === false ? [] : ["probe:write"],
-          timeoutMs: 10000,
-          idempotent: false,
-          callers: ["human"],
-          stability: "experimental",
+    if (q.kind === "get")
+      return ok({
+        ...facts(),
+        result: { kind: q.kind, record: records.get(q.key) ?? null },
+      });
+    if (q.kind === "history") {
+      const events = (q.before === undefined ? [4, 3] : [2, 1]).map((rev) => ({
+        ...record(q.key, rev, rev),
+        event: "put",
+      }));
+      return ok({
+        ...facts(),
+        result: {
+          kind: q.kind,
+          events,
+          next: q.before === undefined ? 3 : null,
         },
-      },
+      });
+    }
+    if (q.kind === "range") {
+      const page = [...records.values()].filter(
+        (r) =>
+          (q.from === undefined || r.key >= q.from) &&
+          (q.to === undefined || r.key < q.to),
+      );
+      const selected = page.slice(0, q.limit);
+      return ok({
+        ...facts(),
+        result: {
+          kind: q.kind,
+          records: selected,
+          next:
+            selected.length === q.limit
+              ? selected.at(-1)!.key + (q.descending ? "" : "\0")
+              : null,
+        },
+      });
+    }
+    return ok({ ...facts(), result: { kind: q.kind, value: records.size } });
+  });
+  const state = createCloudRecordState({
+    key: fx.bindingFor(),
+    credentials: {
+      lookup: () => (credential ? fx.entry(clock.now()) : undefined),
+    },
+    now: clock.now,
+    http: createCloudHttp({
+      origin: fx.ORIGIN,
+      project: fx.PROJECT,
+      fetch: net.fetch,
     }),
-  );
-  writeFileSync(join(block, "value.json"), "{}");
-  writeFileSync(
-    join(block, "docs.json"),
-    '{"operations":{"probe.run":{"title":"Probe","summary":"Bound async state probe."}}}',
-  );
-  writeFileSync(join(block, "index.cjs"), body);
-  const env = { HOME: s.home, FORGE_DEVICE_ID: "dev-1" };
-  const open = (root = s.root) =>
-    createAssembly({
-      root,
-      deviceRoot: s.deviceRoot,
-      providers: { env, cloudLogin: { fetch: net.fetch, now: clock.now } },
-    });
-  let assembly = await open();
-  let sequence = 0;
-  const call = (op: string, input: unknown) =>
-    assembly.catalog.invoke({
-      schemaVersion: "forge.invocation/1",
-      requestId: `bound-${++sequence}`,
-      op,
-      input,
-      caller: "human",
-      context: {
-        actor,
-        device: { id: s.deviceRoot },
-        project: { id: assembly.root, root: assembly.root },
-      },
-    });
-  const added = await call("block.add", { path: "./probe" });
-  if (!added.ok) throw Error(JSON.stringify(added));
-  const { digest } = added.result as { digest: string };
-  expect((await relay(call, "block.admit", { digest })).ok).toBe(true);
-  expect(
-    (
-      await relay(call, "config.grant", {
-        digest,
-        effects: options.effect === false ? [] : ["probe:write"],
-      })
-    ).ok,
-  ).toBe(true);
-  if (options.credential !== false)
-    await credentialStore(openCloudFiles(s.home)).save(fx.entry(NOW));
-  writeFileSync(s.binding, JSON.stringify(fx.bindingFor()));
+    namespace,
+    context,
+    operation: "memory.add",
+    requestId: "invocation-1",
+    write: true,
+    signal: controller.signal,
+    deadline: clock.now() + 1000,
+  });
   return {
-    s,
+    state,
+    clock,
+    controller,
     calls,
     bytes,
+    signals,
     records,
-    clock,
-    open,
-    call,
-    probe: (input: object = {}) => call("probe.run", input),
-    lose: () => {
-      lose = true;
+    record,
+    commits: () => calls.filter((c) => c.kind === "commit"),
+    seed() {
+      revision = 4;
+      records.set("note/1", record("note/1", "existing"));
     },
-    deny: (code: string) => {
+    change() {
+      revision++;
+    },
+    noCredential() {
+      credential = false;
+    },
+    deny(code: string) {
       deny = code;
     },
-    conflict: () => {
-      conflict = true;
+    lose(key: string) {
+      loss = key;
     },
-    aborted: () => aborted,
-    async replace(root: string) {
-      await assembly.close();
-      assembly = await open(root);
+    offline() {
+      offline = true;
     },
-    async close() {
-      await assembly.close();
-      s.close();
+    abortInFlight() {
+      abortInFlight = true;
     },
+    maxConcurrent: () => maxConcurrent,
   };
 }
-type Fixture = Awaited<ReturnType<typeof fixture>>;
-const success = (result: ResultEnvelope) => {
-  expect(result).toMatchObject({ ok: true, status: "OK" });
-  expect(exitCode(result)).toBe(0);
-  if (!result.ok) throw Error(JSON.stringify(result));
-  return result.result;
-};
-const failure = (result: ResultEnvelope, code: string, exit = 1) => {
-  expect(result).toMatchObject({ ok: false, error: { code } });
-  expect(exitCode(result)).toBe(exit);
-};
+type Fixture = ReturnType<typeof fixture>;
+async function refused(pending: Promise<unknown>, code: string) {
+  const error = await pending.then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  expect(error).toBeInstanceOf(ForgeFailure);
+  expect((error as ForgeFailure).error.code).toBe(code);
+}
 
 const rows: readonly [string, (f: Fixture) => Promise<void>][] = [
   [
-    "Own project",
-    async (f) => {
-      const acquire = spyOn(LocalState.prototype, "acquire").mockImplementation(
-        () => {
-          throw Error("local acquisition before bound selection");
-        },
-      );
-      try {
-        expect(success(await f.probe({ mode: "identity" }))).toMatchObject({
-          id: prefix,
-        });
-        success(await f.probe());
-        expect(f.records.get("note/1")?.value).toBe("one");
-        expect(acquire).not.toHaveBeenCalled();
-      } finally {
-        acquire.mockRestore();
-      }
-      expect(existsSync(join(f.s.root, ".forge", "state.sqlite"))).toBe(false);
-      // A different checkout with the same committed manifest and config has the same prefix.
-      const clone = join(f.s.dir, "clone");
-      const { cpSync } = await import("node:fs");
-      cpSync(f.s.root, clone, { recursive: true });
-      await f.replace(clone);
-      expect(success(await f.probe({ mode: "identity" }))).toMatchObject({
-        id: prefix,
-      });
-      expect(existsSync(join(clone, ".forge", "state.sqlite"))).toBe(false);
-    },
-  ],
-  [
-    "Explicit device",
-    async (f) => {
-      success(await f.probe({ device: true }));
-      expect(f.calls).toHaveLength(0);
-      expect(existsSync(join(f.s.root, ".forge", "state.sqlite"))).toBe(false);
-    },
-  ],
-  [
     "Read plan",
     async (f) => {
-      success(await f.probe({ mode: "plan" }));
-      const commits = f.calls.filter((c) => c.kind === "commit");
-      expect(commits).toHaveLength(2);
-      expect(commits[0]!.readSet).toContainEqual({
-        namespace,
-        key: "missing",
-        expectRevision: 0,
-        readVersion: { epoch: "epoch-1", revision: 0 },
-      });
-      expect(commits[1]!.readSet).toEqual([]);
-      expect(
-        f.calls.filter((c) => c.kind === "read").map((c) => c.query.kind),
-      ).toEqual(["get", "range", "count", "max", "count"]);
-      expect(commits[1]!.readVersion.revision).toBe(1);
-      f.conflict();
-      success(await f.probe({ mode: "conflict" }));
-      const reads = f.calls.filter(
-        (c) => c.kind === "read" && c.query.kind === "get",
+      f.seed();
+      expect(await f.state.get("missing")).toBeUndefined();
+      expect(await f.state.get("note/1")).toEqual(f.records.get("note/1"));
+      expect(await f.state.range({ from: "note/", limit: 1 })).toHaveLength(1);
+      expect(await f.state.range({ from: "note/1\0", limit: 1 })).toEqual([]);
+      expect(await f.state.count("note/")).toBe(1);
+      expect(await f.state.max("note/")).toBe(1);
+      await f.state.putMany(
+        [
+          { key: "note/1", value: "new", expectRevision: 1 },
+          { key: "note/2", value: "two", expectRevision: 0 },
+        ],
+        { readSet: [{ key: "missing-2", expectRevision: 0 }] },
       );
-      expect(reads.at(-1)!.readVersion).toBeUndefined();
+      await f.state.put("note/3", "three", { expectRevision: 0 });
+      const [first, second] = f.commits();
+      expect(first!.entries).toHaveLength(2);
+      expect(
+        first!.readSet.map(({ key, expectRevision }) => ({
+          key,
+          expectRevision,
+        })),
+      ).toEqual([
+        { key: "missing", expectRevision: 0 },
+        { key: "note/1", expectRevision: 1 },
+        { key: "missing-2", expectRevision: 0 },
+      ]);
+      expect(
+        first!.readSet.every(
+          (d) => d.readVersion.revision === 4 && d.namespace === namespace,
+        ),
+      ).toBe(true);
+      expect(second!.readSet).toEqual([]);
+      expect(second!.readVersion.revision).toBe(6);
+      expect(
+        f.calls
+          .filter((c) => c.kind === "read")
+          .slice(1)
+          .every((c) => c.readVersion?.revision === 4),
+      ).toBe(true);
+      f.change();
+      await refused(f.state.get("missing"), "REVISION_CONFLICT");
+      await f.state.get("missing");
+      expect(f.calls.at(-1)!.readVersion).toBeUndefined();
+      f.change();
+      await refused(
+        f.state.put("note/4", "four", { expectRevision: 0 }),
+        "REVISION_CONFLICT",
+      );
+      await f.state.put("note/4", "four", { expectRevision: 0 });
+      expect(f.commits().at(-1)!.requestId).not.toBe(
+        f.commits().at(-2)!.requestId,
+      );
     },
   ],
   [
     "Sub-requests",
     async (f) => {
-      f.lose();
-      success(await f.probe({ mode: "replay" }));
-      const commits = f.calls.flatMap((c, i) =>
-        c.kind === "commit" ? [{ c, bytes: f.bytes[i] }] : [],
+      await f.state.put("note/1", "one", { expectRevision: 0 });
+      f.lose("note/2");
+      const value = { text: "two" };
+      await refused(
+        f.state.put("note/2", value, { expectRevision: 0 }),
+        "UNAVAILABLE",
       );
-      expect(commits).toHaveLength(4);
-      expect(new Set(commits.map(({ c }) => c.requestId)).size).toBe(3);
-      expect(commits[1]!.bytes).toBe(commits[2]!.bytes);
-      expect(commits[1]!.c.entries[0]!.value).toEqual({ text: "two" });
+      value.text = "mutated";
+      const before = f.calls.length;
+      await refused(f.state.get("missing"), "UNAVAILABLE");
+      await refused(
+        f.state.put("note/3", "wrong", { expectRevision: 0 }),
+        "UNAVAILABLE",
+      );
+      expect(f.calls).toHaveLength(before);
+      f.change();
+      await f.state.put("note/2", { text: "two" }, { expectRevision: 0 });
+      const commits = f.commits();
+      expect(commits[0]!.requestId).not.toBe(commits[1]!.requestId);
+      expect(commits[1]).toEqual(commits[2]);
+      const wires = f.calls.flatMap((c, i) =>
+        c.kind === "commit" ? [f.bytes[i]] : [],
+      );
+      expect(wires[1]).toBe(wires[2]);
+      expect(commits[2]!.entries[0]!.value).toEqual({ text: "two" });
+      await f.state.get("note/2");
+      expect(f.calls.at(-1)!.readVersion).toBeUndefined();
+      await f.state.put("note/3", "three", { expectRevision: 0 });
       expect(f.records.size).toBe(3);
-      const afterReplay = f.calls[f.calls.indexOf(commits[2]!.c) + 1]!;
-      expect(afterReplay.kind).toBe("read");
-      expect(afterReplay.readVersion).toBeUndefined();
     },
   ],
   [
     "Outage/denied namespace",
     async (f) => {
-      f.deny("AUTH_FORBIDDEN");
-      failure(await f.probe(), "AUTH_FORBIDDEN");
-      expect(f.records.size).toBe(0);
-      expect(existsSync(join(f.s.root, ".forge", "state.sqlite"))).toBe(false);
+      f.noCredential();
+      await refused(f.state.get("none"), "AUTH_REQUIRED");
+      await refused(
+        f.state.put("none", "no", { expectRevision: 0 }),
+        "AUTH_REQUIRED",
+      );
+      expect(f.calls).toHaveLength(0);
+      for (const fault of ["AUTH_FORBIDDEN", "offline"] as const) {
+        const r = fixture();
+        await r.state.get("missing");
+        if (fault === "offline") r.offline();
+        else r.deny(fault);
+        await refused(
+          r.state.put("none", "no", { expectRevision: 0 }),
+          fault === "offline" ? "UNAVAILABLE" : fault,
+        );
+        expect(r.records.size).toBe(0);
+        const sent = r.calls.length;
+        await Promise.resolve();
+        expect(r.calls).toHaveLength(sent);
+      }
     },
   ],
   [
-    "Peer binding",
+    "Lifetime",
     async (f) => {
-      const peer = join(f.s.dir, "peer");
-      mkdirSync(join(peer, ".forge"), { recursive: true });
-      writeFileSync(
-        join(peer, ".forge", "project.json"),
-        JSON.stringify({ schema: 1, id: fx.PROJECT_ID }),
+      const cachedGet = f.state.get,
+        cachedPut = f.state.put;
+      await cachedGet("missing");
+      f.clock.advance(1000);
+      const sent = f.calls.length;
+      await refused(cachedGet("missing"), "INVOCATION_TIMEOUT");
+      await refused(
+        cachedPut("late", "no", { expectRevision: 0 }),
+        "INVOCATION_TIMEOUT",
       );
-      writeFileSync(
-        join(peer, ".forge", "cloud.json"),
-        JSON.stringify(fx.bindingFor()),
+      expect(f.calls).toHaveLength(sent);
+      const r = fixture();
+      await r.state.get("missing");
+      r.controller.abort();
+      expect(r.signals[0]!.aborted).toBe(true);
+      await refused(r.state.get("missing"), "INVOCATION_CANCELLED");
+      await refused(
+        r.state.put("late", "no", { expectRevision: 0 }),
+        "INVOCATION_CANCELLED",
       );
-      // The registry points at historical state, deliberately invalid SQLite: opening it must fail.
-      writeFileSync(
-        join(peer, ".forge", "state.sqlite"),
-        "historical, must not open",
+      const inFlight = fixture();
+      await inFlight.state.get("missing");
+      inFlight.abortInFlight();
+      await refused(
+        inFlight.state.put("uncertain", "no", { expectRevision: 0 }),
+        "UNAVAILABLE",
       );
-      const device = new LocalState(join(f.s.deviceRoot, "records.sqlite"));
-      const owner = (await device.open(true))!;
-      owner.put(
-        "forge/core-projects",
-        `project/${prefix}`,
-        { name: "peer", root: peer },
-        actor,
-        { expectRevision: 0 },
-      );
-      await device.close();
-      expect(success(await f.probe({ mode: "peer", ref: "peer" }))).toEqual({
-        status: "unavailable",
-      });
-      expect(f.calls).toHaveLength(0);
-    },
-  ],
-  [
-    "Lifetime/effect",
-    async (f) => {
-      failure(await f.probe(), "GRANT_REQUIRED", 2);
-      expect(f.calls).toHaveLength(0);
-      expect(f.aborted()).toBe(false);
+      expect(inFlight.signals.at(-1)!.aborted).toBe(true);
     },
   ],
 ];
-for (const [name, run] of rows)
-  test(name, async () => {
-    const f = await fixture(
-      name === "Explicit device"
-        ? { credential: false }
-        : name === "Lifetime/effect"
-          ? { effect: false }
-          : {},
-    );
-    try {
-      await run(f);
-    } finally {
-      await f.close();
-    }
-  });
+for (const [name, run] of rows) test(name, () => run(fixture()));
 
-for (const context of ["project", "device"] as const)
-  test(`real ${context} state binding selects before local registration`, async () => {
-    const f = await fixture({ context });
-    try {
-      success(await f.probe({ device: context === "project" }));
-      expect(f.calls.some((c) => c.kind === "commit")).toBe(true);
-      expect(existsSync(join(f.s.root, ".forge", "state.sqlite"))).toBe(false);
-    } finally {
-      await f.close();
-    }
-  });
-
-test("a v1 writer remains refused without opening project state", async () => {
-  const f = await fixture({ v1: true, context: "project" });
-  try {
-    failure(await f.probe(), "UNAVAILABLE");
-    expect(f.calls).toHaveLength(0);
-    expect(existsSync(join(f.s.root, ".forge", "state.sqlite"))).toBe(false);
-  } finally {
-    await f.close();
-  }
+test("read plans serialize access and map history revision bounds to sequence cursors", async () => {
+  const f = fixture();
+  f.seed();
+  await Promise.all([
+    f.state.get("missing"),
+    f.state.count("note/"),
+    f.state.max("note/"),
+  ]);
+  expect(f.maxConcurrent()).toBe(1);
+  expect(await f.state.history({ key: "note/1", limit: 2, before: 3 })).toEqual(
+    [2, 1].map((revision) => ({
+      ...f.record("note/1", revision, revision),
+      event: "put",
+    })),
+  );
+  expect(
+    f.calls
+      .filter((c) => c.kind === "read" && c.query.kind === "history")
+      .map((c) => c.query),
+  ).toEqual([
+    { kind: "history", key: "note/1", limit: 2 },
+    { kind: "history", key: "note/1", limit: 2, before: 3 },
+  ]);
 });
