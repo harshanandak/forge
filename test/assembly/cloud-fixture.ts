@@ -98,6 +98,12 @@ export function persistedRootsFixture() {
     scope,
     marker,
     snapshot,
+    retarget: () => {
+      const next = join(outside, "replacement");
+      git(["-C", project, "worktree", "add", "--detach", join(next, "lane")]);
+      rmSync(alias, { recursive: true });
+      directoryLink(next, alias);
+    },
     env: {
       PATH: [bin, trusted.replace(/[\\/][^\\/]*$/, "")].join(delimiter),
       PATHEXT: process.platform === "win32" ? ".CMD;.EXE" : "",

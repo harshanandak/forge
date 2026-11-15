@@ -35,6 +35,25 @@ import type { Preflight } from "../../src/core/runtime/index.ts";
 import type { ProcessPort } from "../../src/ports/process.ts";
 setDefaultTimeout(30000);
 
+for (const consumer of ["checkout", "origin"] as const)
+  test(`startup refuses a retargeted saved lexical lane: ${consumer}`, async () => {
+    const f = persistedRootsFixture();
+    try {
+      f.retarget();
+      const before = f.snapshot();
+      const options = { env: f.env, gitScope: f.scope };
+      const result = await (
+        consumer === "checkout"
+          ? scopedGit.projectStateRoot(f.lexical, options)
+          : scopedGit.idPrefixObservation(f.lexical, f.project, options)
+      ).catch((error: unknown) => error);
+      expect([existsSync(f.marker), f.snapshot()]).toEqual([false, before]);
+      expect(result).toMatchObject({ error: { code: "INPUT_CONFLICT" } });
+    } finally {
+      f.close();
+    }
+  });
+
 for (const removed of [false, true])
   test(`Skip-reopen-equality, loaded counterfactual=${removed}`, async () => {
     const f = persistedRootsFixture();

@@ -1412,7 +1412,13 @@ const attachmentBytes = (s: fx.Sandbox) =>
   ].map((path) =>
     existsSync(path) ? readFileSync(path).toString("hex") : null,
   );
-for (const stored of ["journal", "registry", "combined", "explicit"] as const)
+for (const stored of [
+  "journal",
+  "registry",
+  "combined",
+  "explicit",
+  "explicit registry conflict",
+] as const)
   test(`legacy linked reattachment ${stored === "explicit" ? "accepts supplied roots" : "refuses before Git"}: ${stored}`, async () => {
     const f = fx.persistedRootsFixture();
     const deviceRoot = join(f.project, "device");
@@ -1428,7 +1434,18 @@ for (const stored of ["journal", "registry", "combined", "explicit"] as const)
       writeFileSync(lane.brief, PREPARED_BRIEF);
       if (stored !== "registry") await seedJournal({ deviceRoot }, record);
       const registry = join(f.project, ".git", "forge-lanes.json");
-      if (stored !== "journal") writeFileSync(registry, JSON.stringify([lane]));
+      if (stored !== "journal")
+        writeFileSync(
+          registry,
+          JSON.stringify([
+            {
+              ...lane,
+              ...(stored === "explicit registry conflict"
+                ? { gitScope: scopedGit.createGitScope(f.target) }
+                : {}),
+            },
+          ]),
+        );
       const scope = {
         op: "lane.start",
         effects: [
@@ -1468,7 +1485,7 @@ for (const stored of ["journal", "registry", "combined", "explicit"] as const)
           process: providers.process(scope),
           environment: providers.environment(scope),
           now: () => NOW,
-          ...(stored === "explicit" ? { gitScope: f.scope } : {}),
+          ...(stored.startsWith("explicit") ? { gitScope: f.scope } : {}),
           ...scope,
         },
         {
