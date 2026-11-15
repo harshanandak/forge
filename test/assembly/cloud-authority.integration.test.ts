@@ -59,7 +59,82 @@ import { createMcpHandlers } from "../../src/surface/mcp.ts";
 import { exitCode, respond } from "../../src/surface/result.ts";
 import { done, stageBlock } from "../blocks/memory/lib.ts";
 import * as fx from "./cloud-fixture.ts";
+import * as scopedGit from "../../src/assembly/providers.ts";
 import * as launch from "../../src/adapters/process/run.ts";
+
+for (const [name, row, guard, replacement, marker] of [
+  [
+    "Remove-project-exclusion",
+    "plain checkout",
+    "excluded.some((base) => within(base, candidate))",
+    "false",
+    "projectRan",
+  ],
+  [
+    "Real-only-candidate-check",
+    "project alias",
+    "[found.path, canonical]",
+    "[canonical]",
+    "externalRan",
+  ],
+  [
+    "Reuse-pin-across-projects",
+    "cross-project",
+    "...roots(target)",
+    "...roots(scope)",
+    "externalRan",
+  ],
+  [
+    "Allow-relative-PATH",
+    "relative and empty",
+    "!fullyAbsolute(directory)",
+    "false",
+    "relativeRan",
+  ],
+  [
+    "Empty-result-fallback",
+    "only unsafe",
+    'if (pin.kind !== "resolved") return pin;',
+    'if (pin.kind !== "resolved") return executor.resolve("git", { ...env, PATH: scope.project.lexical });',
+    "projectRan",
+  ],
+  [
+    "Ban-all-repositories",
+    "unrelated repository",
+    "excluded.some((base) => within(base, candidate))",
+    'excluded.some((base) => within(base, candidate)) || (() => { for (let at = dirname(candidate); ; at = dirname(at)) { if (readdirSync(at).includes(".git")) return true; if (dirname(at) === at) return false; } })()',
+    "externalRan",
+  ],
+  [
+    "Canonical-only-pin-reuse",
+    "cross-project alias",
+    "resolveOutside(executor, lexical, env",
+    "resolveOutside(executor, pin.path, env",
+    "externalRan",
+  ],
+] as const)
+  test(`scoped git loaded counterfactual: ${name}`, async () => {
+    expect(typeof (scopedGit as unknown as fx.ScopedGitApi).gitCapability).toBe(
+      "function",
+    );
+    const mutant = await fx.withoutGuard<fx.ScopedGitApi>(
+      new URL("../../src/assembly/providers.ts", import.meta.url),
+      guard,
+      replacement,
+    );
+    expect(mutant.mutationLoaded).toBe(true);
+    const selectionOnly = name === "Allow-relative-PATH";
+    if (selectionOnly)
+      expect(await fx.exerciseGitScope(row, scopedGit, true)).toMatchObject({
+        relativeRan: false,
+        externalRan: true,
+      });
+    const result = await fx.exerciseGitScope(row, mutant, selectionOnly);
+    expect(result[marker]).toBe(name !== "Ban-all-repositories");
+    expect(result.kind).toBe(
+      name === "Ban-all-repositories" ? "unavailable" : "resolved",
+    );
+  }, 30000);
 import * as durable from "../../src/adapters/fs/durable-io.ts";
 import * as authority from "../../src/assembly/cloud-binding.ts";
 import { relay } from "../fixtures/owner-approval.ts";
