@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join } from "node:path";
+import { basename, delimiter, dirname, join } from "node:path";
 import * as coordinator from "../../src/assembly/cloud-lane-coordinator.ts";
 import * as laneState from "../../src/blocks/work/bound-lane-state.ts";
 import {
@@ -19,6 +19,8 @@ import {
 } from "../../src/assembly/providers.ts";
 import type { Preflight } from "../../src/core/runtime/index.ts";
 import type { ProcessPort } from "../../src/ports/process.ts";
+import * as providerModule from "../../src/assembly/providers.ts";
+import { withoutGuard } from "./cloud-fixture.ts";
 setDefaultTimeout(30000);
 
 const readHead = (
@@ -103,16 +105,14 @@ for (const variant of [
     const linkedRoot = variant === "linked target" ? target : processRoot;
     const mainBin = join(main, "bin"),
       probe = join(root, "project-git-ran");
+    const poison = join(mainBin, basename(trusted));
     if (linked) {
+      if (variant === "linked target") mkdirSync(join(caller, ".git"));
       mkdirSync(gitdir, { recursive: true });
       mkdirSync(mainBin);
       writeFileSync(join(linkedRoot, ".git"), `gitdir: ${gitdir}\n`);
       writeFileSync(join(gitdir, "commondir"), "../..\n");
-      writeFileSync(
-        join(mainBin, process.platform === "win32" ? "git.exe" : "git"),
-        "project-controlled executable",
-        { mode: 0o755 },
-      );
+      writeFileSync(poison, "project-controlled executable", { mode: 0o755 });
     }
     const env = {
       PATH: [
@@ -126,6 +126,13 @@ for (const variant of [
       GIT_DIR: "must-not-reach-git",
     };
     const native = createAssemblyProviders(processRoot, { env });
+    const scope = {
+      op: "lane.start",
+      effects: ["files:read", "external:process"],
+      signal: AbortSignal.timeout(30000),
+      deadline: Date.now() + 30000,
+      processContainment: "supervised" as const,
+    };
     let attempts = 0;
     const runs = mock<ProcessPort["run"]>((_executable, _args, _options) => {
       attempts++;
@@ -186,13 +193,6 @@ for (const variant of [
               ? "INPUT_CONFLICT"
               : undefined;
       if (variant === "linked clone files") {
-        const scope = {
-          op: "lane.start",
-          effects: ["files:read", "external:process"],
-          signal: AbortSignal.timeout(30000),
-          deadline: Date.now() + 30000,
-          processContainment: "supervised" as const,
-        };
         const handle = await createAssemblyProviders(
           processRoot,
           { env },
@@ -235,6 +235,27 @@ for (const variant of [
       );
       expect(files).not.toHaveBeenCalled();
       expect(existsSync(probe)).toBe(false);
+      if (linked) {
+        const mutant = await withoutGuard<typeof providerModule>(
+          new URL("../../src/assembly/providers.ts", import.meta.url),
+          'excluded.push(basename(common) === ".git" ? dirname(common) : common);',
+        );
+        expect(mutant.mutationLoaded).toBe(true);
+        expect(mutant.resolveOutside).not.toBe(providerModule.resolveOutside);
+        const unsafe = mutant.resolveOutside(
+          native.process(scope),
+          "git",
+          env,
+          linkedRoot,
+        );
+        expect(unsafe).toMatchObject({
+          kind: "resolved",
+          path: realpathSync.native(poison),
+        });
+        if (unsafe.kind === "resolved")
+          await runs(unsafe, [], runs.mock.calls[0]![2]);
+        expect(existsSync(probe)).toBe(true);
+      }
       expect(existsSync(join(caller, ".forge", "state.sqlite"))).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });

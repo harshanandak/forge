@@ -164,6 +164,7 @@ export async function boundLaneStart(
   attach: (
     record: BoundLaneRecord,
     fence: () => Promise<void>,
+    previous?: BoundLaneRecord["lane"],
   ) => Promise<BoundLaneRecord["lane"]>,
 ): Promise<unknown> {
   const fresh = (await command("issue.show", { id: input.id })) as TrackerItem;
@@ -200,12 +201,16 @@ export async function boundLaneStart(
     },
   };
   const revision = found?.revision ?? (await save(record, 0)).revision;
-  const lane = await attach(record, async () => {
-    own(
-      (await command("issue.show", { id: record.cloudId })) as TrackerItem,
-      grant.generation,
-    );
-  });
+  const lane = await attach(
+    record,
+    async () => {
+      own(
+        (await command("issue.show", { id: record.cloudId })) as TrackerItem,
+        grant.generation,
+      );
+    },
+    previous?.active ? previous.lane : undefined,
+  );
   record = { ...record, lane, active: true };
   await save(record, revision);
   return { ...lane, issue: fresh.id, lease: grant };
@@ -472,6 +477,7 @@ export async function attachBoundLane(
     now: () => number;
   },
   fence: () => Promise<void>,
+  previous?: BoundLaneRecord["lane"],
 ): Promise<BoundLaneRecord["lane"]> {
   const { files, environment } = services;
   const path = (value: string) => {
@@ -509,6 +515,13 @@ export async function attachBoundLane(
       worktree: files.root,
       brief: `${files.root.replace(/\\/g, "/")}/${brief}`,
     };
+    if (
+      previous &&
+      (path(previous.worktree) !== path(lane.worktree) ||
+        previous.branch !== lane.branch ||
+        path(previous.brief) !== path(lane.brief))
+    )
+      refuse("INPUT_CONFLICT", "A live attachment has a different identity.");
     const existing = saved.lanes.filter(
       (row) =>
         row.attempt === undefined &&
@@ -533,6 +546,8 @@ export async function attachBoundLane(
       );
     await fence();
     await identity();
+    // Git awaits may outlive a released grant; cached expiry is not authority.
+    await fence();
     if (Date.parse(record.grant.expiresAt) <= services.now())
       refuse("LEASE_EXPIRED", "The cloud grant expired.");
     if (!existing.length)

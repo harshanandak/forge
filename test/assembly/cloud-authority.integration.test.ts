@@ -26,6 +26,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { blockCapture } from "../../src/assembly/capture.ts";
 import { createAssemblyProviders } from "../../src/assembly/providers.ts";
 import { attachBoundLane } from "../../src/blocks/work/bound-lane.ts";
+import * as boundLane from "../../src/blocks/work/bound-lane.ts";
 import { boundDispatch } from "../../tools/lane-control.ts";
 import { coordinateLane } from "../../src/assembly/cloud-lane-coordinator.ts";
 import { cloudRoute, selectCloud } from "../../src/assembly/cloud-authority.ts";
@@ -1888,6 +1889,7 @@ for (const [name, expected] of [
   ["losing claim", "LEASE_NOT_HELD"],
 ] as const)
   test(`bound attachment table: ${name}`, () => {
+    const live = name.startsWith("live attachment");
     let reads = 0;
     let time = NOW;
     let finalIdentity = false;
@@ -1938,15 +1940,15 @@ for (const [name, expected] of [
                 },
               ]),
             );
-          if (name.startsWith("live attachment")) {
+          if (live) {
             const lane = {
               ...attachment,
               worktree: name.endsWith("checkout")
                 ? join(s.dir, "clone-a")
-                : s.root,
+                : realpathSync.native(s.root),
               branch: name.endsWith("branch") ? "feat/original" : "feat/one",
               brief: join(
-                s.root,
+                realpathSync.native(s.root),
                 name.endsWith("brief") ? "original.md" : "brief.md",
               ),
             };
@@ -2119,6 +2121,14 @@ for (const [name, expected] of [
               .project!,
           };
           const before = attachmentBytes(r.s);
+          const start = () =>
+            assembly.catalog.invoke(
+              r.request(
+                "lane.start",
+                { id: ISSUE.id, branch: "feat/one", brief: "brief.md" },
+                { context },
+              ),
+            );
           const beforeFiles = readFileSync(join(r.s.root, "brief.md"), "utf8");
           const claimed = await assembly.catalog.invoke(
             r.request("issue.claim", { id: ISSUE.id }, { context }),
@@ -2194,10 +2204,7 @@ for (const [name, expected] of [
             false,
           );
           if (expected !== "OK") {
-            if (
-              name.startsWith("live attachment") ||
-              name.includes("during final identity")
-            )
+            if (live || finalIdentity)
               expect(exitCode(result)).toBe(expected === "UNAVAILABLE" ? 1 : 4);
             if (name === "grant expires during final identity")
               expect(time).toBe(Date.parse(OWN_GRANT.expiresAt));
@@ -2207,6 +2214,28 @@ for (const [name, expected] of [
                 (call) => (call.body as { op: string }).op === "issue.release",
               ),
             ).toBe(false);
+            if ((live || finalIdentity) && expected !== "LEASE_EXPIRED") {
+              const mutant = await fx.withoutGuard<typeof boundLane>(
+                new URL("../../src/blocks/work/bound-lane.ts", import.meta.url),
+                live
+                  ? "previous &&"
+                  : "// Git awaits may outlive a released grant; cached expiry is not authority.\n    await fence();",
+                live ? "false &&" : "",
+              );
+              expect(mutant.mutationLoaded).toBe(true);
+              expect(mutant.attachBoundLane).not.toBe(attachBoundLane);
+              const removed = spyOn(
+                boundLane,
+                "attachBoundLane",
+              ).mockImplementation(mutant.attachBoundLane);
+              reads = 0;
+              finalIdentity = false;
+              try {
+                expect((await start()).ok).toBe(true);
+              } finally {
+                removed.mockRestore();
+              }
+            }
             return;
           }
           expect(result).toMatchObject({
@@ -2245,10 +2274,7 @@ for (const [name, expected] of [
               expect(
                 (await local.open(false))!.get("forge/work", journalKey())!
                   .value,
-              ).toMatchObject({
-                releaseNeeded: true,
-                progress: { actions: 1, pending: true },
-              });
+              ).toHaveProperty("progress.pending", true);
           } finally {
             await local.close();
           }

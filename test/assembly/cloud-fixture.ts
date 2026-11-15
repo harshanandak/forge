@@ -1,6 +1,12 @@
 // Shared fixtures for the cloud login tests: a project checkout, a home folder, a fixture clock and a
 // scripted network. Nothing here reaches a real network.
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CloudFetch } from "../../src/adapters/http/index.ts";
@@ -8,6 +14,26 @@ import type {
   CredentialEntry,
   CloudBinding,
 } from "../../src/assembly/cloud-profile.ts";
+
+/** Load a guard-removed module with absolute imports and an executed marker. */
+export async function withoutGuard<T>(
+  url: URL,
+  guard: string,
+  replacement = "",
+) {
+  const source = readFileSync(url, "utf8");
+  const changed = source.replace(guard, replacement);
+  if (changed === source) throw new Error(`Mutation was not applied: ${guard}`);
+  const absolute = changed.replace(
+    /from "(\.[^"]+)"/g,
+    (_all, path: string) => `from "${new URL(path, url).href}"`,
+  );
+  const transpiler = new Bun.Transpiler({ loader: "ts" });
+  const javascript = transpiler.transformSync(absolute);
+  return (await import(
+    `data:text/javascript;base64,${Buffer.from(javascript + "\nexport const mutationLoaded = true;").toString("base64")}`
+  )) as T & { mutationLoaded: boolean };
+}
 
 export const PROJECT_ID = "11111111-1111-4111-8111-111111111111";
 export const OTHER_PROJECT_ID = "22222222-2222-4222-8222-222222222222";

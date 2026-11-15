@@ -148,7 +148,7 @@ export async function coordinateLane(
       state,
       command,
       save,
-      async (record, fence) => {
+      async (record, fence, previous) => {
         const scope = {
           op: flight.request.op,
           effects: flight.operation.declaration.effects,
@@ -171,6 +171,7 @@ export async function coordinateLane(
               ...scope,
             },
             fence,
+            previous,
           );
         } finally {
           await files.close();

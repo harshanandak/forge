@@ -1,10 +1,18 @@
-import { readdirSync, readFileSync, realpathSync } from "node:fs";
+import {
+  existsSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+} from "node:fs";
 import {
   basename,
   delimiter,
   dirname,
   isAbsolute,
+  join,
   relative,
+  resolve,
   sep,
 } from "node:path";
 import { cpus, freemem, tmpdir } from "node:os";
@@ -321,8 +329,27 @@ export function resolveOutside(
     if (["TEMP", "TMP", "TMPDIR"].includes(key.toUpperCase()))
       temps.push(env[key]!);
   try {
-    for (const path of typeof root === "string" ? [root] : root)
-      excluded.push(realpathSync(path));
+    for (const path of typeof root === "string" ? [root] : root) {
+      const canonical = realpathSync(path);
+      excluded.push(canonical);
+      const checkout = nearestCheckoutRoot(canonical);
+      if (!checkout) continue;
+      excluded.push(checkout);
+      const marker = join(checkout, ".git");
+      if (!statSync(marker).isFile()) continue;
+      const pointer = /^gitdir: ([^\r\n]+)\r?\n?$/.exec(
+        readFileSync(marker, "utf8"),
+      );
+      if (!pointer) return none();
+      const gitdir = realpathSync(resolve(checkout, pointer[1]!));
+      const commonFile = join(gitdir, "commondir");
+      if (!existsSync(commonFile)) continue; // A submodule has no linked common directory.
+      const common = realpathSync(
+        resolve(gitdir, readFileSync(commonFile, "utf8").trim()),
+      );
+      // Resolve exclusions without launching the executable being vetted.
+      excluded.push(basename(common) === ".git" ? dirname(common) : common);
+    }
     for (const temp of temps) if (temp) excluded.push(realpathSync(temp));
   } catch {
     return none();
