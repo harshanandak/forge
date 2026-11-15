@@ -562,6 +562,8 @@ for (const row of [
   "legacy",
   "legacy with explicit input",
   "retargeted",
+  "missing worktree",
+  "non-string worktree",
   "Accept-legacy-record",
 ] as const)
   test(`private attachment saved roots: ${row}`, async () => {
@@ -582,17 +584,19 @@ for (const row of [
           ),
         );
       }
-      const config = join(f.target, ".forge");
-      mkdirSync(config);
-      writeFileSync(join(config, "config.yaml"), WORK);
-      writeFileSync(
-        join(config, "project.json"),
-        JSON.stringify({ schema: 1, id: fx.PROJECT_ID }),
-      );
-      writeFileSync(
-        join(config, "cloud.json"),
-        JSON.stringify(fx.bindingFor()),
-      );
+      for (const root of [f.target, join(f.project, "lane")]) {
+        const config = join(root, ".forge");
+        mkdirSync(config, { recursive: true });
+        writeFileSync(join(config, "config.yaml"), WORK);
+        writeFileSync(
+          join(config, "project.json"),
+          JSON.stringify({ schema: 1, id: fx.PROJECT_ID }),
+        );
+        writeFileSync(
+          join(config, "cloud.json"),
+          JSON.stringify(fx.bindingFor()),
+        );
+      }
       const state = new LocalState(join(deviceRoot, "records.sqlite"));
       try {
         (await state.open(true))!.put(
@@ -602,7 +606,12 @@ for (const row of [
             ...journal,
             lane: {
               ...attachment,
-              worktree: realpathSync.native(f.target),
+              worktree:
+                row === "missing worktree"
+                  ? undefined
+                  : row === "non-string worktree"
+                    ? 7
+                    : realpathSync.native(f.target),
               ...([
                 "legacy",
                 "legacy with explicit input",
@@ -631,12 +640,12 @@ for (const row of [
         ...f.snapshot(),
       ];
       const gitScope = await startupScope.deviceGitScope(
-        f.target,
+        f.lexical,
         deviceRoot,
         undefined,
         row === "legacy with explicit input" ? f.scope : undefined,
       );
-      const launch = fx.launchSavedGit(f, gitScope, scopedGit);
+      const launch = fx.launchSavedGit(f, gitScope, scopedGit, f.lexical);
       if (row === "reopen") expect((await launch).exitCode).toBe(0);
       else if (row === "Accept-legacy-record")
         expect((await launch).exitCode).toBe(99);

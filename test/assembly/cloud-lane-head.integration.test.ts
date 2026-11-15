@@ -71,8 +71,17 @@ for (const invalid of [
   null,
   {},
   { project: { lexical: "/project", real: "/project" } },
+  ...(process.platform === "win32"
+    ? ["/project", "\\project", "\\\\server", "\\\\server\\", "//server/"].map(
+        (path) => ({
+          project: { lexical: path, real: path },
+          lane: { lexical: path, real: path },
+        }),
+      )
+    : []),
 ])
   test(`strict clone registry refuses malformed saved roots: ${JSON.stringify(invalid)}`, async () => {
+    expect(scopedGit.validGitScope(invalid)).toBe(false);
     const f = persistedRootsFixture();
     let files: Awaited<ReturnType<AssemblyProviders["openFiles"]>> | undefined;
     try {

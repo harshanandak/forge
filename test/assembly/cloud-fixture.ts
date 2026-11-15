@@ -110,8 +110,9 @@ export async function launchSavedGit(
     typeof import("../../src/assembly/providers.ts"),
     "reopenGitScope" | "gitCapability"
   >,
+  root = fixture.target,
 ) {
-  const scope = api.reopenGitScope(fixture.target, saved);
+  const scope = api.reopenGitScope(root, saved);
   const port = createProcessPort({
     supervision: {
       cleanupTimeoutMs: 1000,
@@ -123,7 +124,7 @@ export async function launchSavedGit(
   const executable = api.gitCapability(port, fixture.env, scope).executable();
   if (executable.kind !== "resolved") throw new Error(executable.reason);
   return port.run(executable, ["--version"], {
-    cwd: fixture.target,
+    cwd: root,
     env: fixture.env,
     timeoutMs: 10000,
     maxOutputBytes: 16384,
