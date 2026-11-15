@@ -66,6 +66,9 @@ test.each([false, true])(
         { cwd: folder, encoding: "utf8", timeout: 110_000, windowsHide: true },
       );
       expect(result.error).toBeUndefined();
+      console.log(
+        `Speed acceptance: retained growth=${growth}\n${result.stdout}`,
+      );
       const loads = readFileSync(trace, "utf8").trim().split("\n");
       expect(loads).toHaveLength(32); // one warm-up and 15 runs per side
       expect(new Set(loads).size).toBe(1);
