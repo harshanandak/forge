@@ -661,6 +661,11 @@ export async function roundTrip(
   const digests = sent.done();
   if (sourceRows) {
     assert.deepEqual(
+      digests,
+      digestOf(sourceRows),
+      `${label}: restore export differs from expected source`,
+    );
+    assert.deepEqual(
       back.done(),
       digests,
       `${label}: target differs from expected image`,

@@ -181,6 +181,7 @@ const cases = [
   "imported lane",
   "dropped row",
   "changed byte",
+  "source drift",
   "bad seed",
 ] as const;
 test.each(cases)(
@@ -205,7 +206,11 @@ test.each(cases)(
         target.state_records = records.filter(
           (row) => row.key !== `lane-control:audit:${deltas[1]!.auditId}`,
         );
-      if (kind === "imported lane" || kind === "changed byte") {
+      if (
+        kind === "imported lane" ||
+        kind === "changed byte" ||
+        kind === "source drift"
+      ) {
         const key =
           kind === "imported lane" ? "lane-control:work-1" : "issue:work-1";
         target.state_records = records.map((row) =>
@@ -229,6 +234,15 @@ test.each(cases)(
           row.sequence === 9 ? { ...row, body: "sourcf" } : row,
         );
       let restored = false;
+      let sourceExports = 0;
+      const drifted = {
+        ...source,
+        state_records: source.state_records!.map((row) =>
+          row.key === "issue:work-1"
+            ? { ...row, body: String(row.body).replace("source", "sourcf") }
+            : row,
+        ),
+      };
       const transport = spyOn(globalThis, "fetch").mockImplementation(
         Object.assign(
           async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
@@ -256,7 +270,13 @@ test.each(cases)(
             }
             return Response.json({
               ok: true,
-              value: page(url.pathname.includes("/target/") ? target : source),
+              value: page(
+                url.pathname.includes("/target/")
+                  ? target
+                  : kind === "source drift" && sourceExports++ > 0
+                    ? drifted
+                    : source,
+              ),
             });
           },
           { preconnect: () => {} },

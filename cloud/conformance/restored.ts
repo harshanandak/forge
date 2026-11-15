@@ -123,9 +123,9 @@ export function stopPlan(
   const high = Number(before.state_events!.at(-1)?.sequence ?? 0);
   assert.ok(Number.isSafeInteger(high + 2), "stop event sequence");
   const events = records.map((row, i) => ({
+    sequence: high + i + 1,
     namespace,
     key: row.key,
-    sequence: high + i + 1,
     body: canonicalJson({
       type: `${namespace}:record.updated@1`,
       namespace,
