@@ -1,15 +1,18 @@
 import assert from "node:assert/strict";
 import { Database } from "bun:sqlite";
-import { afterEach, beforeEach, setSystemTime, test } from "bun:test";
+import { afterEach, beforeEach, setSystemTime, spyOn, test } from "bun:test";
 import { domain } from "../../cloud/src/project.ts";
 import { durableStore } from "../../cloud/src/store.ts";
 import {
   limitsFrom,
   parseDump,
   restorePage,
+  dumpOf,
   type Page,
 } from "../../cloud/src/dump.ts";
-import { TABLES } from "../../cloud/conformance/digest.ts";
+import { imageProblems, TABLES } from "../../cloud/conformance/digest.ts";
+import { replayImage } from "../../cloud/conformance/restored.ts";
+import { pagesOf as cut } from "../../cloud/conformance/max-source.ts";
 import { pageOrder } from "../../cloud/conformance/page-order.ts";
 import { success } from "../../src/surface/dispatch.ts";
 import { failure, respond } from "../../src/surface/result.ts";
@@ -44,6 +47,178 @@ const status = (r: ReturnType<typeof respond>) => [
   r.envelope.ok ? null : r.envelope.error.code,
 ];
 const limits = { ...limitsFrom({}), pageBytes: 4096 };
+
+function comparisonSource() {
+  const source = f.cloudDatabase(),
+    owner = f.owner(source);
+  owner.initialize([domain]);
+  owner.put(f.ns, "issue:work-1", { title: "source" }, f.actor, {
+    expectRevision: 0,
+  });
+  owner.put(
+    f.ns,
+    "allocation:issue:work-",
+    { prefix: "issue:work-", number: 1 },
+    f.actor,
+    { expectRevision: 0 },
+  );
+  return source;
+}
+
+test("comparison plumbing replays source unchanged and compares a distinct expected image", () => {
+  const source = comparisonSource();
+  const before = f.snapshot(source),
+    original = converter.imageDigests(source);
+  for (const paged of [false, true]) {
+    const scratch = f.cloudDatabase();
+    const expected = replayImage(
+      scratch,
+      paged ? pagesOf(source, limits) : [dumpOf(source)],
+      f.at,
+    );
+    eq(converter.imageDigests(scratch), original);
+    eq(imageProblems(original, converter.imageDigests(scratch)), []);
+    expected.put(f.ns, "issue:work-1", { title: "expected" }, f.actor, {
+      expectRevision: 1,
+    });
+    eq(imageProblems(original, converter.imageDigests(scratch)), [
+      "state_records holds the right row count but different content",
+      "state_events has 2 rows besides the generated floor, the expected image had 3",
+    ]);
+    eq(f.snapshot(source), before);
+  }
+}, 5_000);
+
+test("expected replay refuses empty, unordered and non-final streams", async () => {
+  const source = comparisonSource(),
+    split = cut(dumpOf(source).tables, 3);
+  eq(split.length, 2);
+  for (const image of [
+    [],
+    split.slice(0, 1),
+    [split[1]!, split[0]!],
+    [...split, split[1]!],
+    [{ ...split[0]!, last: true }],
+  ])
+    assert.throws(() => replayImage(f.cloudDatabase(), image, f.at), {
+      code: "INCOMPLETE_IMAGE",
+    });
+  const mutant = (await import(
+    await f.moduleUrl("../../cloud/conformance/restored.ts", [
+      "if (!complete)",
+      "if (false)",
+    ])
+  )) as typeof import("../../cloud/conformance/restored.ts");
+  assert.throws(() =>
+    assert.throws(
+      () => mutant.replayImage(f.cloudDatabase(), split.slice(0, 1), f.at),
+      { code: "INCOMPLETE_IMAGE" },
+    ),
+  );
+}, 5_000);
+
+const comparisonGuard = `  assert.deepEqual(
+    back.done(),
+    expected === source ? digests : image.done(),
+    \`\${label}: target differs from expected image\`,
+  );`;
+test.each(["distinct", "corrupt", "truncated"])(
+  "roundTrip %s catches its guard removal",
+  async (kind) => {
+    for (const mutant of [false, true]) {
+      const source = comparisonSource(),
+        document = dumpOf(source),
+        before = f.snapshot(source);
+      const src = await project(),
+        dst = await project();
+      eq(status((await src.send("restore", document)).projected), [
+        "OK",
+        0,
+        null,
+      ]);
+      const expected = cut(
+        JSON.parse(
+          JSON.stringify(document.tables).replaceAll(
+            "source",
+            kind === "distinct" ? "expect" : "source",
+          ),
+        ) as typeof document.tables,
+        3,
+      );
+      eq(expected.length, 2);
+      const stream = kind === "truncated" ? expected.slice(0, 1) : expected;
+      const changes: Record<string, readonly [string, string]> = {
+        distinct: ["expected === source ? digests : image.done()", "digests"],
+        corrupt: [comparisonGuard, ""],
+        truncated: ["    sequence();", ""],
+      };
+      const impl = (await import(
+        await f.moduleUrl(
+          "../../cloud/conformance/conformance.ts",
+          mutant ? changes[kind] : undefined,
+        )
+      )) as typeof import("../../cloud/conformance/conformance.ts");
+      const transport = spyOn(globalThis, "fetch").mockImplementation(
+        Object.assign(
+          async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+            assert.ok(typeof input === "string");
+            const request = new Request(input, init),
+              url = new URL(request.url),
+              name = url.pathname.split("/")[2];
+            assert.ok(name === "source" || name === "target");
+            if (name === "source") return src.p.fetch(request);
+            if (kind === "truncated" && url.pathname.endsWith("/dump"))
+              return Response.json({
+                ok: true,
+                value: { ...expected[0]!, last: true, next: null },
+              });
+            if (kind !== "truncated" && request.method === "POST") {
+              const body = await request.text();
+              eq(body.split("source").length, 3);
+              return dst.p.fetch(
+                new Request(request, {
+                  body: body.replaceAll(
+                    "source",
+                    kind === "distinct" ? "expect" : "sourcf",
+                  ),
+                }),
+              );
+            }
+            return dst.p.fetch(request);
+          },
+          { preconnect: () => {} },
+        ),
+      );
+      try {
+        const run = () =>
+          impl.roundTrip(
+            "source",
+            "target",
+            "comparison",
+            4096,
+            undefined,
+            stream,
+          );
+        const check = () =>
+          kind === "distinct"
+            ? assert.doesNotReject(run)
+            : assert.rejects(run, {
+                code:
+                  kind === "truncated" ? "INCOMPLETE_IMAGE" : "ERR_ASSERTION",
+              });
+        if (mutant) await assert.rejects(check);
+        else await check();
+        eq(f.snapshot(source), before);
+      } finally {
+        transport.mockRestore();
+        src.db.close();
+        dst.db.close();
+      }
+    }
+  },
+  30_000,
+);
+
 async function project(mutant?: string) {
   const edits: Record<string, readonly [string, string]> = {
     order: ["page.page !== staged?.next", "false"],
@@ -87,7 +262,7 @@ async function project(mutant?: string) {
       ),
     };
   };
-  return { db, storage, values, send };
+  return { db, storage, values, send, p };
 }
 
 test.each(rows)(
