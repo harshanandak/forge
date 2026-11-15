@@ -43,7 +43,7 @@ const mutations: Record<Mutation, Change> = {
     "",
   ],
   busy: ["from.p !== 0 && from.w !== now", "false"],
-  admin: ["ADMIN_ROUTES.has(match![2]!) &&", "false &&"],
+  admin: ["isAdminRoute(match![2]!) &&", "false &&"],
 };
 // Transpile actual source, replacing exactly one guard; dependencies retain their normal identities.
 async function moduleUrl(file: string, change?: Change, dump?: string) {
