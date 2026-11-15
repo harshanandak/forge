@@ -1421,8 +1421,9 @@ for (const stored of [
   "attempt registry",
   "explicit registry conflict",
   "locked legacy arrival",
+  "explicit new lane",
 ] as const)
-  test(`legacy linked reattachment refuses before Git: ${stored}`, async () => {
+  test(`legacy linked reattachment ${stored === "explicit new lane" ? "accepts a new lane" : "refuses before Git"}: ${stored}`, async () => {
     const f = fx.persistedRootsFixture();
     const deviceRoot = join(f.project, "device");
     const state = new LocalState(join(deviceRoot, "records.sqlite"));
@@ -1446,11 +1447,14 @@ for (const stored of [
         "attempt registry",
         "explicit registry conflict",
         "locked legacy arrival",
+        "explicit new lane",
       ].includes(stored);
       writeFileSync(lane.brief, PREPARED_BRIEF);
       if (!registryOnly) await seedJournal({ deviceRoot }, record);
       const registry = join(f.project, ".git", "forge-lanes.json");
-      if (stored !== "journal" && stored !== "inactive journal")
+      if (
+        !["journal", "inactive journal", "explicit new lane"].includes(stored)
+      )
         writeFileSync(
           registry,
           JSON.stringify([
@@ -1559,6 +1563,16 @@ for (const stored of [
                 ]) as ReturnType<typeof attachBoundLane>,
             )
           : attachBoundLane(record, services, fence, legacy);
+      if (stored === "explicit new lane") {
+        expect(await attempt).toMatchObject({ gitScope: f.scope });
+        expect([
+          existsSync(f.marker),
+          probes.mock.calls.length,
+          lock.mock.calls.length,
+          write.mock.calls.length,
+        ]).toEqual([false, 4, 1, 1]);
+        return;
+      }
       await expect(attempt).rejects.toMatchObject({
         error: { code: "INPUT_CONFLICT" },
       });
