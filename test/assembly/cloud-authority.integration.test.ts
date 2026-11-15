@@ -556,6 +556,69 @@ async function seedJournal(
     await state.close();
   }
 }
+for (const row of ["reopen", "legacy", "retargeted"] as const)
+  test(`startup reads matching private attachment first: ${row}`, async () => {
+    const f = fx.persistedRootsFixture();
+    const deviceRoot = join(f.project, "device");
+    let assembly;
+    try {
+      const config = join(f.target, ".forge");
+      mkdirSync(config);
+      writeFileSync(join(config, "config.yaml"), WORK);
+      writeFileSync(
+        join(config, "project.json"),
+        JSON.stringify({ schema: 1, id: fx.PROJECT_ID }),
+      );
+      writeFileSync(
+        join(config, "cloud.json"),
+        JSON.stringify(fx.bindingFor()),
+      );
+      const state = new LocalState(join(deviceRoot, "records.sqlite"));
+      try {
+        (await state.open(true))!.put(
+          "forge/work",
+          journalKey(),
+          {
+            ...journal,
+            lane: {
+              ...attachment,
+              worktree: f.target,
+              ...(row === "legacy" ? {} : { gitScope: f.scope }),
+            },
+          },
+          { kind: "agent", id: "a1" },
+          { expectRevision: 0 },
+        );
+      } finally {
+        await state.close();
+      }
+      if (row === "retargeted") {
+        rmSync(f.alias, { recursive: true });
+        symlinkSync(
+          f.project,
+          f.alias,
+          process.platform === "win32" ? "junction" : "dir",
+        );
+      }
+      const before = [
+        readFileSync(join(deviceRoot, "records.sqlite")).toString("hex"),
+        ...f.snapshot(),
+      ];
+      assembly = await createAssembly({
+        root: f.target,
+        deviceRoot,
+        providers: { env: f.env },
+      });
+      expect(existsSync(f.marker)).toBe(false);
+      expect([
+        readFileSync(join(deviceRoot, "records.sqlite")).toString("hex"),
+        ...f.snapshot(),
+      ]).toEqual(before);
+    } finally {
+      await assembly?.close();
+      f.close();
+    }
+  });
 const bytes = (s: fx.Sandbox) =>
   readdirSync(s.dir, { recursive: true, withFileTypes: true })
     .map((entry) => ({

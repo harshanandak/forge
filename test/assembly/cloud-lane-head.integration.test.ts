@@ -46,7 +46,7 @@ for (const consumer of [
       try {
         const gitScope = row === "legacy" ? undefined : f.scope;
         if (row === "retargeted") {
-          rmSync(f.alias);
+          rmSync(f.alias, { recursive: true });
           symlinkSync(
             f.project,
             f.alias,
