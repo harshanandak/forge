@@ -815,7 +815,6 @@ export class Project {
     db.run(`DELETE FROM ${LANE_APPROVALS}`);
     db.run(`DELETE FROM ${LANE_BROWSER}`);
   }
-
   // One restore request: a whole dump, or one page of a paged restore.
   async #restore(request: Request): Promise<Response> {
     const project = new URL(request.url).pathname.split("/")[2]!;

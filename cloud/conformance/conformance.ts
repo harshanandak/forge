@@ -714,13 +714,14 @@ export async function roundTrip(
   });
   const digests = sent.done();
   if (expected === source) {
-    await withImage(source, (input) =>
-      withImage(target, (actual) => checkImage(input, actual, target)),
-    );
     assert.deepEqual(
       read.bytes,
       Array.from(eachCutPage(tables, budget), pageBytes),
       `${label}: target pages differ`,
+    );
+    for (const table of Object.keys(tables)) delete tables[table];
+    await withImage(source, (input) =>
+      withImage(target, (actual) => checkImage(input, actual, target)),
     );
     return { ...trip, digests };
   }
