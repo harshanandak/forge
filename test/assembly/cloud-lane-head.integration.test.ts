@@ -66,7 +66,7 @@ for (const removed of [false, true])
       const savedApi = removed
         ? await withoutGuard<typeof savedGit>(
             new URL("../../src/assembly/saved-git-scope.ts", import.meta.url),
-            /relative\(createGitScope\(pair.lexical\).project.real, pair.real\) === ""/g,
+            /relative\(createGitScope\(pair.lexical\).project.real, pair.real\) ===\s*""/g,
             "true",
           )
         : savedGit;
