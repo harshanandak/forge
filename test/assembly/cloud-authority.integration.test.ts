@@ -26,6 +26,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { blockCapture } from "../../src/assembly/capture.ts";
 import { createAssemblyProviders } from "../../src/assembly/providers.ts";
 import { attachBoundLane } from "../../src/blocks/work/bound-lane.ts";
+import { boundDispatch } from "../../tools/lane-control.ts";
 import { coordinateLane } from "../../src/assembly/cloud-lane-coordinator.ts";
 import { cloudRoute, selectCloud } from "../../src/assembly/cloud-authority.ts";
 import { wireDeviceId } from "../../src/assembly/cloud-login.ts";
@@ -1332,7 +1333,14 @@ for (const [name, variants] of [
   ["Owner ask", ["ask", "held answer", "completion after hold"]],
   [
     "Expired or replaced grant",
-    ["expired", "generation", "holder", "inactive", "release pending"],
+    [
+      "expired",
+      "renewal failure",
+      "generation",
+      "holder",
+      "inactive",
+      "release pending",
+    ],
   ],
   [
     "Malformed progress",
@@ -1515,6 +1523,29 @@ for (const [name, variants] of [
             expect(failed(await next(), "INPUT_CONFLICT")).toBe(4);
             expect(await saved()).toEqual(original);
           } else if (name === "Expired or replaced grant") {
+            if (variant === "renewal failure") {
+              expect(await next()).toMatchObject({
+                ok: true,
+                result: { kind: "harness" },
+              });
+              const reserved = await saved();
+              const boundary = boundDispatch(
+                () => Promise.reject(new Error("renewal timeout")),
+                "work-1",
+                lease.generation,
+              );
+              await expect(boundary.beforeSpawn()).rejects.toThrow(
+                "renewal timeout",
+              );
+              await expect(boundary.beforeSpawn()).rejects.toThrow(
+                "renewal timeout",
+              );
+              time = Date.parse(lease.expiresAt);
+              expect(failed(await next(), "LEASE_EXPIRED")).toBe(4);
+              expect(await saved()).toEqual(reserved);
+              await boundary.close();
+              return;
+            }
             if (variant === "expired") time = Date.parse(lease.expiresAt);
             if (variant === "generation")
               lease = { ...lease, generation: lease.generation + 1 };
