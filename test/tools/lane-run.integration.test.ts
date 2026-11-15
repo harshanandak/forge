@@ -1562,6 +1562,49 @@ test("bound runner refuses run, resume and detached auto before any provider spa
   expect(
     await command("lane.next", { id: "forge-1", head: actual }, 7),
   ).toMatchObject({ kind: "harness" });
+  const display = fixture(),
+    attached = display.start();
+  writeFileSync(
+    join(attached, ".forge/project.json"),
+    JSON.stringify({ schema: 1, id: bindingFor().identity }),
+  );
+  writeFileSync(
+    join(attached, ".forge/cloud.json"),
+    JSON.stringify(bindingFor()),
+  );
+  const registry = join(display.main, ".git/forge-lanes.json");
+  writeFileSync(
+    registry,
+    readFileSync(registry, "utf8").replace('"issue":"one"', '"issue":"work-1"'),
+  );
+  const control = resolve(import.meta.dirname, "../../tools/lane-control.ts"),
+    entry = join(display.root, "bound-prefix.ts");
+  writeFileSync(
+    entry,
+    `import {mock} from 'bun:test';
+import {openBoundRunner} from ${JSON.stringify(control)};
+import {writeFileSync} from 'node:fs';import {join} from 'node:path';
+const original=openBoundRunner;
+mock.module(${JSON.stringify(control)},()=>({openBoundRunner:(root,id,head)=>original(root,id,head,()=>Promise.resolve({
+command:(op,input)=>Promise.resolve(op==='lane.show'?{worktree:root}:op==='lane.next'?{lane:'forge-1',kind:'harness',n:1,raw:JSON.stringify({generation:7,head})}:op==='issue.renew'?{generation:7,expiresAt:new Date(Date.now()+3600000).toISOString()}:op==='lane.control'?{incarnation:'one',epoch:1,stopped:false}:(writeFileSync(join(root,'recorded.json'),JSON.stringify(input)),{recorded:true})),
+readHead:()=>Promise.resolve(head),close:()=>Promise.resolve()}))}));
+const {main}=await import(${JSON.stringify(script)});process.exitCode=await main();`,
+  );
+  const issueStub = join(display.root, "fake-forge.mjs"),
+    stub = readFileSync(issueStub, "utf8");
+  for (const shown of ["forge-1", "forge-2"]) {
+    writeFileSync(issueStub, stub.replace("id:input.id", `id:'${shown}'`));
+    const result = display.run(
+      ["run", "work-1", "--role", "builder"],
+      display.caller,
+      entry,
+    );
+    expect(result.code).toBe(shown === "forge-1" ? 0 : 1);
+    expect(display.attempts()).toHaveLength(1);
+  }
+  expect(
+    JSON.parse(readFileSync(join(attached, "recorded.json"), "utf8")) as object,
+  ).toMatchObject({ id: "work-1", action: 1 });
 });
 
 function change(
