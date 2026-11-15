@@ -1,21 +1,24 @@
 // Conformance checks for the claim server, run against `wrangler dev` (see .github/workflows/cloud.yml).
 // Phase "main" runs every check and saves what must survive a restart; phase "restart" reads it back.
 import assert from "node:assert/strict";
-import * as fs from "node:fs";
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { imageSequence, releasedTables } from "./restored.ts";
-import * as proof from "./restored.ts";
-import { PAGE_FORMAT, parseDump } from "../src/dump.ts";
+import {
+  imageSequence,
+  releasedTables,
+  stopOverlay,
+  stopPlan,
+  type StopDelta,
+  type StopPlan,
+} from "./restored.ts";
 import type { Tables } from "./max-source.ts";
 import { canonicalJson } from "../../src/core/config/pointer.ts";
 import type { StateEvent } from "../../src/generated/types.ts";
-import { type Expected, fold, type Table, tally } from "./digest.ts";
-import { imageProblems, digests } from "./digest.ts";
+import { type Expected, fold, problems, type Table, tally } from "./digest.ts";
 
 interface Holder {
   readonly actor: { readonly kind: "agent"; readonly id: string };
@@ -141,8 +144,6 @@ interface AdminBody {
   readonly value?: unknown;
   readonly error?: { readonly code: string; readonly message: string };
 }
-const origins = new WeakMap<object, string>();
-const windows = new Map<string, readonly [number, number]>();
 const pageWire = new WeakMap<object, { text: string; bytes: number }>();
 async function adminCall(
   project: string,
@@ -151,7 +152,6 @@ async function adminCall(
   body?: string,
   token = adminToken,
 ): Promise<{ status: number; body: AdminBody }> {
-  const started = Date.now();
   const response = await fetch(`${base}/p/${project}/${route}`, {
     method,
     headers: token === "" ? {} : { authorization: `Bearer ${token}` },
@@ -181,10 +181,6 @@ async function adminCall(
   } else {
     bodyValue = (await response.json()) as AdminBody;
   }
-  if (method === "POST" && route === "restore")
-    windows.set(project, [started, Date.now()]);
-  if (method === "GET" && route.startsWith("dump") && bodyValue.value)
-    origins.set(bodyValue.value, project);
   const result = { status: response.status, body: bodyValue };
   return result;
 }
@@ -233,62 +229,6 @@ async function dumpOf(project: string): Promise<Dump> {
     assert.equal(reply.status, 200, JSON.stringify(reply.body));
   return reply.body.value as Dump;
 }
-const image = (dump: Dump) => [parseDump(JSON.stringify(dump))];
-type Image = Parameters<typeof proof.expectedImage>[0];
-async function checkImage(source: Image, actual: Image, project: string) {
-  for await (const _page of proof.expectedImage(actual, Date.now, (_, db) =>
-    proof.restoreStopped(source, db, project, windows.get(project)!),
-  ))
-    void _page;
-}
-async function withoutStop(source: Dump, actual: Dump): Promise<Dump> {
-  await checkImage(image(source), image(actual), origins.get(actual)!);
-  const ns = "forge/work",
-    audit = actual.tables.state_events!.at(-1)!.key;
-  const global = (row: Record<string, unknown>) =>
-    row.namespace === ns && row.key === "lane-control:global";
-  const tables = { ...actual.tables };
-  tables.state_records = actual.tables.state_records!.flatMap((row) => {
-    if (global(row)) return source.tables.state_records!.filter(global);
-    return row.namespace === ns && row.key === audit ? [] : [row];
-  });
-  tables.state_events = actual.tables.state_events!.slice(0, -2);
-  return { ...actual, tables };
-}
-type Check = (image: Image) => Promise<void>;
-async function withImage(project: string, check: Check) {
-  const dir = fs.mkdtempSync(join(tmpdir(), "forge-image-"));
-  try {
-    const files: string[] = [];
-    await eachPage(project, (page) => {
-      files.push(join(dir, `${files.length}.json`));
-      writeFileSync(files.at(-1)!, JSON.stringify(page));
-    });
-    const read = function* () {
-      for (const file of files) yield parseDump(readFileSync(file, "utf8"));
-    };
-    await check(read());
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-}
-async function stoppedSeed(name: string, text: string): Promise<Tables> {
-  const source = parseDump(text);
-  okValue(await adminCall(name, "POST", "restore", text), "seed");
-  await withImage(name, (got) => checkImage([source], got, name));
-  return joined(await pagesOf(name)).tables as Tables;
-}
-async function stoppedTables(tables: Tables): Promise<Tables> {
-  const found: Tables = {};
-  for await (const page of proof.expectedImage(
-    [{ format: PAGE_FORMAT, page: 0, last: true, next: null, tables }],
-    Date.now,
-    (owner) => proof.stopDelta(owner, "p", new Date(Date.now()).toISOString()),
-  ))
-    for (const [table, rows] of Object.entries(page.tables))
-      (found[table] ??= []).push(...rows);
-  return found;
-}
 function released(source: Dump, actual: Dump, floors = 0): Dump {
   const event = actual.tables
     .state_events!.slice(source.tables.state_events!.length)
@@ -309,8 +249,7 @@ const imported = (lease: Lease): Lease => {
 // A restore into an empty project derives the issue number floor when the dump has none. These sources hold
 // only leases, so the derived floor is 0, revision 1, followed by the release events. Check those exact
 // additions and the changed lease rows before normalizing the target for source row comparisons.
-async function settled(dump: Dump, source: Dump): Promise<Dump> {
-  dump = await withoutStop(source, dump);
+function settled(dump: Dump, source: Dump): Dump {
   const records = dump.tables.state_records ?? [];
   const events = dump.tables.state_events ?? [];
   const floors = recordsOf(dump, "forge/work", "allocation:issue:work-");
@@ -379,9 +318,7 @@ function joined(pages: readonly DumpPage[]): Dump {
   for (const page of pages)
     for (const [table, rows] of Object.entries(page.tables))
       (tables[table] ??= []).push(...rows);
-  const dump = { format: "forge-cloud-dump/2", tables };
-  origins.set(dump, origins.get(pages[0]!)!);
-  return dump;
+  return { format: "forge-cloud-dump/2", tables };
 }
 // One page of a paged dump (GET dump?cursor=start, then the cursor each page names as `next`).
 interface DumpPage {
@@ -663,8 +600,27 @@ export async function roundTrip(
   budget: number,
   each: (page: DumpPage, text: string) => void = () => undefined,
   expected: string | Iterable<DumpPage> | AsyncIterable<DumpPage> = source,
+  comparison?: { fixture: Tables; seed?: StopDelta; target?: StopDelta },
 ) {
-  const { digester, eachCutPage, pageBytes } = await import("./budget.ts");
+  const { digester, digestOf, expectedCuts } = await import("./budget.ts");
+  let targetStop: StopPlan | undefined;
+  let sourceRows: Tables | undefined;
+  if (comparison) {
+    assert.equal(expected, source, "stop comparison uses the original fixture");
+    const seed = stopPlan(comparison.fixture, comparison.seed);
+    const proof = digester(false, seed);
+    await walk(source, `${label} seed`, budget, (page) => {
+      for (const [table, rows] of Object.entries(page.tables))
+        proof.add(table, rows);
+    });
+    assert.deepEqual(
+      proof.done(),
+      digestOf(comparison.fixture),
+      `${label}: seed differs from original fixture`,
+    );
+    sourceRows = stopOverlay(comparison.fixture, seed);
+    targetStop = stopPlan(sourceRows, comparison.target);
+  }
   const sent = digester();
   assert.equal(await initialized(target), false, `${label}: target is empty`);
   const trip = await walk(source, label, budget, async (page, text) => {
@@ -697,24 +653,32 @@ export async function roundTrip(
     for (const [table, rows] of Object.entries(page.tables))
       sent.add(table, rows);
   });
-  const back = digester();
-  const tables: Tables = {};
+  const back = digester(false, targetStop);
   const read = await walk(target, `${label} readback`, budget, (page) => {
-    for (const [table, rows] of Object.entries(page.tables)) {
+    for (const [table, rows] of Object.entries(page.tables))
       back.add(table, rows);
-      (tables[table] ??= []).push(...(rows as Tables[string]));
-    }
   });
   const digests = sent.done();
-  if (expected === source) {
+  if (sourceRows) {
+    assert.deepEqual(
+      digests,
+      digestOf(sourceRows),
+      `${label}: restore export differs from expected source`,
+    );
+    assert.deepEqual(
+      back.done(),
+      digests,
+      `${label}: target differs from expected image`,
+    );
+    assert.deepEqual(
+      trip.bytes,
+      expectedCuts(sourceRows, budget),
+      `${label}: source expected cuts`,
+    );
     assert.deepEqual(
       read.bytes,
-      Array.from(eachCutPage(tables, budget), pageBytes),
-      `${label}: target pages differ`,
-    );
-    for (const table of Object.keys(tables)) delete tables[table];
-    await withImage(source, (input) =>
-      withImage(target, (actual) => checkImage(input, actual, target)),
+      expectedCuts(sourceRows, budget, targetStop),
+      `${label}: target expected cuts`,
     );
     return { ...trip, digests };
   }
@@ -739,6 +703,8 @@ export async function roundTrip(
     expected === source ? digests : image.done(),
     `${label}: target differs from expected image`,
   );
+  if (expected === source)
+    assert.deepEqual(read.bytes, trip.bytes, `${label}: target pages differ`);
   return { ...trip, digests };
 }
 
@@ -2289,7 +2255,7 @@ if (phase === "main") {
       const restored = await adminCall(target, "POST", "restore", text);
       assert.equal(restored.status, 200, JSON.stringify(restored.body));
       assert.deepEqual(
-        await settled(await dumpOf(target), dump),
+        settled(await dumpOf(target), dump),
         dump,
         "read back identical",
       );
@@ -2328,7 +2294,7 @@ if (phase === "main") {
         200,
       );
       const old = await dumpOf(oldTarget);
-      assert.deepEqual(await withoutStop(legacy, old), released(legacy, old));
+      assert.deepEqual(old, released(legacy, old));
       const denied = await claim(oldTarget, "issue:independent", holder, id);
       assert.deepEqual(
         [denied.status, denied.body.error?.code],
@@ -2506,7 +2472,7 @@ if (phase === "main") {
       );
       assert.equal(valid.status, 200, JSON.stringify(valid.body));
       assert.deepEqual(
-        await settled(await dumpOf(target), dump),
+        settled(await dumpOf(target), dump),
         dump,
         "read back identical",
       );
@@ -2575,13 +2541,13 @@ if (phase === "main") {
         assert.equal(await initialized(target), page.last, `page ${page.page}`);
       }
       assert.deepEqual(
-        await settled(await dumpOf(target), whole),
+        settled(await dumpOf(target), whole),
         whole,
         "read back identical",
       );
       // The generated pair moves the page edges, so the pages compare as rows.
       assert.deepEqual(
-        await settled(joined(await pagesOf(target)), whole),
+        settled(joined(await pagesOf(target)), whole),
         whole,
         "same rows in pages",
       );
@@ -2675,7 +2641,7 @@ if (phase === "main") {
         assert.equal(reply.status, 200, JSON.stringify(reply.body));
       }
       assert.deepEqual(
-        await settled(await dumpOf(target), await dumpOf(source)),
+        settled(await dumpOf(target), await dumpOf(source)),
         await dumpOf(source),
       );
 
@@ -2748,7 +2714,7 @@ if (phase === "main") {
       for (const page of pages)
         assert.equal((await sendPage(target, page)).status, 200);
       assert.deepEqual(
-        await settled(await dumpOf(target), await dumpOf(race)),
+        settled(await dumpOf(target), await dumpOf(race)),
         await dumpOf(race),
       );
     },
@@ -2931,8 +2897,7 @@ if (phase === "main") {
           JSON.stringify(dump),
         );
         assert.equal(clean.status, 200, JSON.stringify(clean.body));
-        const wholeBack = await withoutStop(dump, await dumpOf(target));
-        assert.deepEqual(wholeBack, dump, `whole ${name}: retry`);
+        assert.deepEqual(await dumpOf(target), dump, `whole ${name}: retry`);
 
         // Paged: every page before the last is staged, the last refuses, and nothing stays staged.
         const copy = JSON.parse(JSON.stringify(pages)) as DumpPage[];
@@ -2960,8 +2925,7 @@ if (phase === "main") {
         );
         for (const page of pages)
           assert.equal((await sendPage(paged, page)).status, 200);
-        const pagedBack = await withoutStop(dump, await dumpOf(paged));
-        assert.deepEqual(pagedBack, dump, `paged ${name}: retry`);
+        assert.deepEqual(await dumpOf(paged), dump, `paged ${name}: retry`);
       }
     },
   );
@@ -3821,7 +3785,7 @@ if (phase === "main") {
       assert.equal(restored.status, 200, JSON.stringify(restored.body));
       const copy = await dumpOf(target);
       assert.deepEqual(
-        await withoutStop(source, copy),
+        copy,
         released(source, copy),
         "read back with exact lease releases",
       );
@@ -4023,7 +3987,7 @@ if (phase === "large") {
   const prefix = process.env.FORGE_CLOUD_ID_PREFIX ?? "ci";
   const id = `${prefix}-1`;
   const source = await maxSource(typedProject, prefix);
-  let want = source.tables;
+  const want = source.tables;
   const differing = (got: Dump["tables"]): string[] =>
     Object.keys(want).filter(
       (table) => JSON.stringify(got[table]) !== JSON.stringify(want[table]),
@@ -4047,11 +4011,7 @@ if (phase === "large") {
         JSON.stringify(source.doc),
       );
       assert.equal(reply.status, 200, shortly(reply.body));
-      const restored = await withoutStop(
-        source.doc,
-        await dumpOf(typedProject),
-      );
-      assert.deepEqual(differing(restored.tables), []);
+      assert.deepEqual(differing((await dumpOf(typedProject)).tables), []);
     },
   );
   await check(
@@ -4070,11 +4030,9 @@ if (phase === "large") {
         assert.equal((reply.body.value as { done: boolean }).done, last);
         assert.equal(await initialized(pagedTarget), last);
       }
-      const restored = await withoutStop(source.doc, await dumpOf(pagedTarget));
-      assert.deepEqual(differing(restored.tables), []);
+      assert.deepEqual(differing((await dumpOf(pagedTarget)).tables), []);
     },
   );
-  want = (await dumpOf(typedProject)).tables as Tables;
   await check(
     "large restored target: show and comments return the originals in full",
     async () => {
@@ -4213,14 +4171,6 @@ if (phase === "large") {
     async () => {
       const budget = 4 * 1024 * 1024;
       const caller = await who();
-      // Copy the oracle-verified stop delta before independently growing the source fixture.
-      for (const table of ["state_records", "state_events"])
-        for (const row of want[table]!)
-          if (String(row.key).startsWith("lane-control:"))
-            source.db
-              .query(`INSERT INTO ${table} VALUES (?,?,?,?)`)
-              .run(...(Object.values(row) as never[]));
-      want = source.tables = source.doc.tables = {};
       // Match the authenticated caller and operation order, preserving exact scoped receipt and page comparisons.
       await source.useToken(caller.device.token);
       const wide = (n: number) =>
@@ -4251,7 +4201,6 @@ if (phase === "large") {
           await typedCall(caller, { ...wide(n), context: asProject(caller) }),
         );
       const grown = tablesOf(source.db);
-      source.db.close();
       const expected = Array.from(
         oracle.eachCutPage(grown, budget),
         oracle.pageBytes,
@@ -4502,8 +4451,7 @@ if (phase === "numbers") {
         }
       };
       // A restored project holds every imported row unchanged, plus exactly one record and one event per derived floor.
-      const settledOk = async (dump: Dump): Promise<void> => {
-        dump = await withoutStop(source.doc, dump);
+      const settledOk = (dump: Dump): void => {
         same("derived floors", floorsOf(dump), SETTLED);
         for (const key of Object.keys(SETTLED))
           assert.equal(
@@ -4772,13 +4720,11 @@ if (phase === "numbers") {
         JSON.stringify({ format: whole.format, tables: whole.tables }),
       );
       ok(sent);
-      const secondRead = async (project: string) =>
-        withoutStop(whole, await dumpOf(project));
       await step(
         "a second restore reads back every row and floor unchanged",
         async () => {
-          same("whole", nameOf(await secondRead(second)), nameOf(whole));
-          same("floors", floorsOf(await secondRead(second)), floorsOf(whole));
+          same("whole", nameOf(await dumpOf(second)), nameOf(whole));
+          same("floors", floorsOf(await dumpOf(second)), floorsOf(whole));
         },
       );
       for (const part of await pagesOf(typedProject)) {
@@ -4787,11 +4733,9 @@ if (phase === "numbers") {
       await step(
         "a paged second restore reads back every row and floor unchanged",
         async () =>
-          same("paged", nameOf(await secondRead(joinedTarget)), nameOf(whole)),
+          same("paged", nameOf(await dumpOf(joinedTarget)), nameOf(whole)),
       );
-      const snapshot = await dumpOf(second);
-      await withoutStop(whole, snapshot);
-      writeFileSync(numbersState, JSON.stringify({ ...whole, snapshot }));
+      writeFileSync(numbersState, JSON.stringify({ tables: whole.tables }));
       if (problems.length > 0)
         throw new Error(problems.join(" | ").slice(0, 3000));
     },
@@ -4808,7 +4752,6 @@ if (phase === "numbers-restart") {
     async () => {
       const saved = JSON.parse(readFileSync(numbersState, "utf8")) as {
         tables: Dump["tables"];
-        snapshot: Dump;
       };
       const kept = nameOf({
         format: "forge-cloud-dump/2",
@@ -4818,7 +4761,7 @@ if (phase === "numbers-restart") {
       same(
         "project b after the restart",
         nameOf(await dumpOf(typedProject)),
-        nameOf(saved.snapshot),
+        kept,
       );
       same("settled floors", floorsOf(await dumpOf(typedProject)), AFTER_ADDS);
       const a = await callerFor("numbers-restart", false);
@@ -4858,7 +4801,7 @@ if (phase === "budget-plan") {
   const fixtures = await import("./max-source.ts");
   if (process.argv[3] === "exact") {
     const { tables } = await fixtures.tinySource("T");
-    const size = oracle.utf8(oracle.finalPage(await stoppedTables(tables)));
+    const size = oracle.utf8(oracle.finalPage(tables));
     assert.ok(
       size <= 4096 && Object.values(tables).flat().length > 0,
       `the exact fixture's final page is ${size} bytes`,
@@ -4866,9 +4809,8 @@ if (phase === "budget-plan") {
     console.log(`PLAN ${size}`);
   } else {
     const { tables } = await fixtures.leaseSource(oracle.longSubject());
-    const stopped = await stoppedTables(tables);
     console.log(
-      `PLAN ${oracle.utf8(oracle.pageThrough(stopped, oracle.leaseBoundary(stopped)))}`,
+      `PLAN ${oracle.utf8(oracle.pageThrough(tables, oracle.leaseBoundary(tables)))}`,
     );
   }
 }
@@ -4878,18 +4820,23 @@ if (phase === "budget") {
   const budget = Number(process.env.BUDGET_PAGE_BYTES);
   const oracle = await import("./budget.ts");
   const { tinySource } = await import("./max-source.ts");
+  const seed = async (name: string, doc: object): Promise<void> => {
+    okValue(
+      await adminCall(name, "POST", "restore", JSON.stringify(doc)),
+      `${name} seed`,
+    );
+  };
   await journey(
     "budget exact: real final page restores at its inclusive limit",
     async () => {
-      const [source, target] = [`${run}-exact-src`, `${run}-exact-dst`];
       const fixture = await tinySource("T");
-      fixture.tables = await stoppedSeed(source, JSON.stringify(fixture.doc));
       assert.equal(
         oracle.utf8(oracle.finalPage(fixture.tables)),
         budget,
         "BUDGET_PAGE_BYTES is the size of the expected final page",
       );
-
+      const [source, target] = [`${run}-exact-src`, `${run}-exact-dst`];
+      await seed(source, fixture.doc);
       const trip = await roundTrip(source, target, "exact", budget);
       assert.equal(
         trip.bytes.length,
@@ -4909,9 +4856,7 @@ if (phase === "budget") {
     "budget envelope: real continuation pages stay within their budget",
     async () => {
       // One more character in the title: the rows alone still fit the budget, but the page with its envelope does not.
-      const [source, target] = [`${run}-env-src`, `${run}-env-dst`];
       const fixture = await tinySource("TT");
-      fixture.tables = await stoppedSeed(source, JSON.stringify(fixture.doc));
       const empty = Object.fromEntries(
         Object.keys(fixture.tables).map((table) => [table, []]),
       );
@@ -4926,7 +4871,8 @@ if (phase === "budget") {
       );
       assert.equal(expected.length, 2, "the last row moves to a second page");
       assert.equal(Object.values(expected[1]!.tables).flat().length, 1);
-
+      const [source, target] = [`${run}-env-src`, `${run}-env-dst`];
+      await seed(source, fixture.doc);
       const trip = await roundTrip(source, target, "envelope", budget);
       assert.deepEqual(
         trip.bytes,
@@ -4951,8 +4897,6 @@ if (phase === "budget-cursor") {
       const subject = oracle.longSubject();
       assert.equal(subject.length, 500);
       const fixture = await leaseSource(subject);
-      const [source, target] = [`${run}-cursor-src`, `${run}-cursor-dst`];
-      fixture.tables = await stoppedSeed(source, JSON.stringify(fixture.doc));
       const first = oracle.pageThrough(
         fixture.tables,
         oracle.leaseBoundary(fixture.tables),
@@ -4969,7 +4913,11 @@ if (phase === "budget-cursor") {
       );
       const expected = oracle.cutPages(fixture.tables, budget);
       assert.ok(expected.length >= 2 && expected[0]!.next === first.next);
-
+      const [source, target] = [`${run}-cursor-src`, `${run}-cursor-dst`];
+      okValue(
+        await adminCall(source, "POST", "restore", JSON.stringify(fixture.doc)),
+        "cursor seed",
+      );
       const trip = await roundTrip(
         source,
         target,
@@ -5020,11 +4968,9 @@ if (phase === "budget-body") {
       const built: { tail: number; size: number }[] = [];
       const build = async (tail: number) => {
         const near = await nearSource(tail);
-        const input = JSON.stringify(oracle.finalPage(near.tables));
-        near.tables = await stoppedTables(near.tables);
         const size = oracle.utf8(oracle.finalPage(near.tables));
         built.push({ tail, size });
-        return { ...near, size, input };
+        return { ...near, size };
       };
       const fixture = async () => {
         let near = await build(1_000);
@@ -5067,22 +5013,16 @@ if (phase === "budget-body") {
           text,
           size: near.size,
           stored: near.stored,
-          input: near.input,
           rows,
           expected: oracle.digestOf(near.tables),
         };
       };
       const fixtureResult = await fixture();
-      let text = "";
-      const { size, stored, rows } = fixtureResult;
+      let { text } = fixtureResult;
+      const { size, stored, rows, expected } = fixtureResult;
       fixtureResult.text = "";
       const [source, target] = [`${run}-body-src`, `${run}-body-dst`];
-      const readback = stoppedSeed(source, fixtureResult.input);
-      fixtureResult.input = "";
-      text = JSON.stringify(oracle.finalPage(await readback));
-      const expected = oracle.digestOf(await readback);
-      assert.equal(Buffer.byteLength(text), size);
-      for (const rows of Object.values(await readback)) rows.length = 0;
+      okValue(await adminCall(source, "POST", "restore", text), "body seed");
       const trip = await roundTrip(
         source,
         target,
@@ -5137,22 +5077,12 @@ if (phase === "capacity-wire") {
           okValue(reply, `${shape} page ${n}`);
         }
         assert.equal(await initialized(target), true);
-        const back = tally();
+        const back = tally(expect);
         const exported = await eachPage(target, (page) => {
           for (const [table, rows] of Object.entries(page.tables))
             for (const row of rows) fold(back, table as Table, row);
         });
-        const input = function* () {
-          for (const file of files)
-            yield parseDump(readFileSync(join(dir, shape, file), "utf8"));
-        };
-        const incoming = tally();
-        for (const page of input())
-          for (const [table, rows] of Object.entries(page.tables))
-            for (const row of rows) fold(incoming, table as Table, row);
-        const wrong = imageProblems(digests(incoming), expect.tables);
-        const compare: Check = (actual) => checkImage(input(), actual, target);
-        await withImage(target, compare);
+        const wrong = problems(back, expect);
         assert.deepEqual(
           wrong,
           [],
