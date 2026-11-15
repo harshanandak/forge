@@ -13,7 +13,10 @@ import {
   type Dump,
 } from "../../cloud/src/dump.ts";
 import { imageProblems, TABLES } from "../../cloud/conformance/digest.ts";
-import { replayImage } from "../../cloud/conformance/restored.ts";
+import {
+  replayImage,
+  restoreStopped,
+} from "../../cloud/conformance/restored.ts";
 import { pagesOf as cut } from "../../cloud/conformance/max-source.ts";
 import { pageOrder } from "../../cloud/conformance/page-order.ts";
 import { respond } from "../../src/surface/result.ts";
@@ -603,22 +606,8 @@ test.each(rows)(
   120_000,
 );
 
-const oracle = async (source: Iterable<Dump | Page>, target: SqlDatabase) => {
-  const helper =
-    (await import("../../cloud/conformance/restored.ts")) as unknown as {
-      restoreStopped: (
-        source: Iterable<Dump | Page>,
-        actual: SqlDatabase,
-        project: string,
-      ) => Promise<void>;
-    };
-  eq(
-    typeof helper.restoreStopped,
-    "function",
-    "restoreStopped oracle is available",
-  );
-  await helper.restoreStopped(source, target, "a");
-};
+const oracle = (source: Iterable<Dump | Page>, target: SqlDatabase) =>
+  restoreStopped(source, target, "a");
 test.each(["Oracle rejects main's restore", "Oracle accepts a stopped image"])(
   "%s",
   async (name) => {
@@ -630,6 +619,10 @@ test.each(["Oracle rejects main's restore", "Oracle accepts a stopped image"])(
       ],
       approvals: ["db.run(`DELETE FROM ${LANE_APPROVALS}`);", ""],
       browser: ["db.run(`DELETE FROM ${LANE_BROWSER}`);", ""],
+      content: [
+        '  const result = new LaneControlStore(owner(db), "a").stop(',
+        '  owner(db).put(ns, "issue:work-1", { title: "corrupted" }, actor, { expectRevision: 1 });\n  const result = new LaneControlStore(owner(db), "a").stop(',
+      ],
     } as const;
     for (const mode of accepts ? ["absent", "running", "stopped"] : ["running"])
       for (const paged of [false, true])
