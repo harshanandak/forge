@@ -921,7 +921,8 @@ for (const fault of [
               sql.startsWith("INSERT INTO state_records") &&
               bindings[1] === "two") ||
             (fault === "version result" &&
-              sql.includes("MAX(sequence)") &&
+              (sql.includes("MAX(sequence)") ||
+                sql.includes("SELECT sequence AS revision")) &&
               bindings[0] === input.namespace &&
               ++versions === 2) ||
             (fault === "receipt" &&

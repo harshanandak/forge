@@ -1103,11 +1103,11 @@ export const LEGACY_NAMESPACE_WATERMARK =
   "SELECT coalesce(MAX(sequence),0) AS revision FROM state_events WHERE namespace=?";
 export const NAMESPACE_WATERMARK =
   "SELECT sequence AS revision FROM state_events INDEXED BY state_events_by_namespace WHERE namespace=? ORDER BY sequence DESC LIMIT 1";
-export const WATERMARK_READ_SQL = [
+export const WATERMARK_READ_SQL: readonly string[] = [
   WATERMARK_INDEX_PROBE,
   LEGACY_NAMESPACE_WATERMARK,
   NAMESPACE_WATERMARK,
-] as const;
+];
 
 export class StateOwner {
   readonly #db: SqlDatabase;
