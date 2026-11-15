@@ -175,10 +175,10 @@ export async function maxSource(name: string, prefix = "forge", at?: number) {
   return { ...h, sent, tables, doc: { format: DUMP, tables } };
 }
 
-/** One accepted create with a short title, at the fixed clock: a few small rows that are identical in every process. */
 export async function tinySource(title: string) {
   const h = await harness("tiny", "forge", FROZEN);
-  await accepted(h, call("tiny-create", "issue.create", { title }));
+  const owner = new StateOwner(sqlOf(h.db), { now: () => FROZEN });
+  owner.put("forge/work", "note", { title }, ACTOR, { expectRevision: 0 });
   const tables = tablesOf(h.db);
   h.db.close();
   return { tables, doc: { format: DUMP, tables } };

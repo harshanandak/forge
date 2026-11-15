@@ -833,11 +833,8 @@ export class Project {
     if (dump.format === DUMP_FORMAT) {
       if (staged !== undefined) await this.#abandon();
       const { db, owner } = this.#openWrite();
-      value = {
-        restored: restoreDump(db, owner, dump, this.#limits, () =>
-          this.#restoreStop(db, owner, project),
-        ),
-      };
+      const finish = () => this.#restoreStop(db, owner, project);
+      value = { restored: restoreDump(db, owner, dump, this.#limits, finish) };
     } else {
       const page = dump as Page;
       // Page 0 starts again; any other page must be the one the last accepted page named.
@@ -854,10 +851,9 @@ export class Project {
               : `Expected page ${staged.next}, or page 0 to start again`,
         );
       const { db, owner } = this.#openWrite();
+      const finish = () => this.#restoreStop(db, owner, project);
       value = {
-        restored: restorePage(db, owner, page, this.#limits, () =>
-          this.#restoreStop(db, owner, project),
-        ),
+        restored: restorePage(db, owner, page, this.#limits, finish),
         page: page.page,
         done: page.last,
       };
