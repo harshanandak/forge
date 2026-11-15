@@ -489,6 +489,50 @@ async function stateFixture(namespaces = stateNamespaces) {
   return { ...f, token, owner, put, read, plan, commit, stable, successes };
 }
 
+test("state commit survives a DO reply lost inside the real Worker forwarding boundary", async () => {
+  const f = await stateFixture();
+  try {
+    const input = await f.plan(stateEntries("worker-lost"));
+    let acceptedText = "";
+    const dropped: Fetcher = {
+      fetch: (request, env) => {
+        const bindings = env as Parameters<
+          ReturnType<typeof createWorker>["fetch"]
+        >[1];
+        return createWorker().fetch(request, {
+          ...bindings,
+          PROJECTS: {
+            ...bindings.PROJECTS,
+            get: (id) => ({
+              fetch: async (forwarded) => {
+                const accepted =
+                  await bindings.PROJECTS.get(id).fetch(forwarded);
+                expect(accepted.status).toBe(200);
+                acceptedText = await accepted.text();
+                throw new Error("DO accepted; forwarding response lost");
+              },
+            }),
+          },
+        });
+      },
+    };
+    expect(stateOutcome(await f.commit(input, { via: dropped }))).toEqual([
+      503,
+      "UNAVAILABLE",
+      1,
+    ]);
+    expect(f.owner.get("forge/memory", "worker-lost")?.revision).toBe(1);
+    const records = f.stable(),
+      receipts = f.successes();
+    expect(JSON.parse(receipts)).toHaveLength(1);
+    const replay = await f.commit(input);
+    expect([replay.status, replay.text]).toEqual([200, acceptedText]);
+    expect([f.stable(), f.successes()]).toEqual([records, receipts]);
+  } finally {
+    f.db.close();
+  }
+}, 30_000);
+
 for (const keys of [
   ["note:1", "counter"],
   ["decision:1", "index", "counter"],

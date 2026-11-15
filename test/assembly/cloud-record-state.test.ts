@@ -1,7 +1,6 @@
 import { expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import { createCloudHttp } from "../../src/adapters/http/index.ts";
 import { createCloudRecordState } from "../../src/assembly/cloud-record-state.ts";
-import { CloudRecordRefusal } from "../../src/assembly/cloud-state-client.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { LocalState } from "../../src/assembly/state.ts";
 import * as ownerState from "../../src/core/state/index.ts";
@@ -35,14 +34,51 @@ function fixture(write = true) {
   const accepted = new Map<string, { bytes: string; result: object }>();
   let revision = 0,
     credential = true,
-    offline = false,
     abortInFlight = false;
-  let deny: string | undefined, loss: string | undefined;
+  let deny: string | undefined;
   let principal = "aaaaaaaaaaaaaaaa";
+  let device = "dev-1",
+    preflight: string | undefined,
+    post: string | undefined;
   let concurrent = 0,
     maxConcurrent = 0;
   const refusal = (code: string, status: number) =>
     fx.json(failure(code, "refused"), status);
+  const status = (code: string) =>
+    code.startsWith("AUTH_")
+      ? ["AUTH_FORBIDDEN", "AUTH_DEVICE_MISMATCH"].includes(code)
+        ? 403
+        : 401
+      : code === "UNAVAILABLE"
+        ? 503
+        : code === "INTERNAL"
+          ? 500
+          : code === "UNKNOWN_COMMAND"
+            ? 404
+            : ["INPUT_INVALID", "CONTEXT_MISSING"].includes(code)
+              ? 400
+              : 409;
+  const after = (result: object) => {
+    const fault = post;
+    post = undefined;
+    if (fault === "rotate") principal = "bbbbbbbbbbbbbbbb";
+    if (["transport", "rotate", "timeout", "abort"].includes(fault ?? ""))
+      throw new ForgeFailure({
+        code:
+          fault === "abort"
+            ? "INVOCATION_CANCELLED"
+            : fault === "timeout"
+              ? "INVOCATION_TIMEOUT"
+              : "UNAVAILABLE",
+        message: "lost response",
+        retry: "never",
+      });
+    return fault === "bad-answer"
+      ? fx.json({ ok: true })
+      : fault
+        ? refusal(fault, status(fault))
+        : ok(result);
+  };
   const facts = () => ({
     version: 1,
     project: fx.PROJECT,
@@ -82,27 +118,17 @@ function fixture(write = true) {
       controller.abort();
       return new Promise<Response>(() => {});
     }
-    if (offline) throw Error("offline");
     if (deny) {
       const code = deny;
       deny = undefined;
-      return refusal(
-        code,
-        code === "AUTH_FORBIDDEN"
-          ? 403
-          : code === "AUTH_REVOKED"
-            ? 401
-            : code === "UNAVAILABLE"
-              ? 503
-              : 409,
-      );
+      return refusal(code, status(code));
     }
     if (call.kind === "commit") {
       const receipt = `${/^Bearer fct_([a-f0-9]{16})\./.exec(init.headers.authorization ?? "")?.[1]}:${call.requestId}`;
       const previous = accepted.get(receipt);
       if (previous)
         return previous.bytes === init.body
-          ? ok(previous.result)
+          ? after(previous.result)
           : refusal("INPUT_CONFLICT", 409);
       if (
         call.readVersion.revision !== revision ||
@@ -124,11 +150,7 @@ function fixture(write = true) {
         result: null,
       };
       accepted.set(receipt, { bytes: init.body!, result });
-      if (loss === call.entries[0]?.key) {
-        loss = undefined;
-        throw Error("accepted but response lost");
-      }
-      return ok(result);
+      return after(result);
     }
     if (call.readVersion && call.readVersion.revision !== revision)
       return refusal("REVISION_CONFLICT", 409);
@@ -176,13 +198,24 @@ function fixture(write = true) {
   const state = createCloudRecordState({
     key: fx.bindingFor(),
     credentials: {
-      lookup: () =>
-        credential
+      lookup: () => {
+        if (preflight) {
+          const code = preflight;
+          preflight = undefined;
+          throw new ForgeFailure({
+            code,
+            message: "before dispatch",
+            retry: "never",
+          });
+        }
+        return credential
           ? fx.entry(clock.now(), {
               id: principal,
               token: fx.tokenFor(principal, "O".repeat(43)),
+              device,
             })
-          : undefined,
+          : undefined;
+      },
     },
     now: clock.now,
     http: createCloudHttp({
@@ -215,24 +248,30 @@ function fixture(write = true) {
     change() {
       revision++;
     },
-    noCredential() {
-      credential = false;
+    fault(value: string) {
+      if (value === "auth") credential = false;
+      else if (value === "principal") principal = "bbbbbbbbbbbbbbbb";
+      else if (value === "device") device = "dev-2";
+      else
+        preflight =
+          value === "abort"
+            ? "INVOCATION_CANCELLED"
+            : value === "deadline"
+              ? "INVOCATION_TIMEOUT"
+              : "INPUT_INVALID";
     },
-    restoreCredential() {
+    restore() {
       credential = true;
+      principal = "aaaaaaaaaaaaaaaa";
+      device = "dev-1";
+      preflight = undefined;
     },
-    usePrincipal(id: string) {
-      credential = true;
-      principal = id;
+    post(value: string) {
+      post = value;
     },
+    receipts: () => accepted.size,
     deny(code: string) {
       deny = code;
-    },
-    lose(key: string) {
-      loss = key;
-    },
-    offline() {
-      offline = true;
     },
     abortInFlight() {
       abortInFlight = true;
@@ -251,60 +290,124 @@ async function refused(pending: Promise<unknown>, code: string) {
   return error as ForgeFailure;
 }
 
-const rows: readonly [string, (f: Fixture) => Promise<void>][] = [
-  [
-    "Replay refusal keeps the original outcome unknown",
-    async (f) => {
-      f.lose("note/1");
-      const replay = () => f.state.put("note/1", "one", { expectRevision: 0 });
-      await refused(replay(), "UNAVAILABLE");
-      const original = f.bytes.at(-1);
-      f.deny("AUTH_REVOKED");
-      expect(await refused(replay(), "AUTH_REVOKED")).toBeInstanceOf(
-        CloudRecordRefusal,
+// One settlement table: codes share family mechanics, never settlement heuristics.
+const definite =
+  "INPUT_INVALID CONTEXT_MISSING AUTH_REQUIRED AUTH_INVALID AUTH_REVOKED AUTH_EXPIRED AUTH_FORBIDDEN AUTH_DEVICE_MISMATCH UNKNOWN_COMMAND REVISION_CONFLICT INPUT_CONFLICT".split(
+    " ",
+  );
+const uncertain =
+  "UNAVAILABLE INTERNAL LEASE_STALE LEASE_NOT_HELD LEASE_EXPIRED LEASE_HELD transport timeout abort bad-answer rotate".split(
+    " ",
+  );
+const matrix = [
+  ...definite.flatMap((fault) =>
+    ["D", "R"].map((family) => ({ family, fault })),
+  ),
+  ...uncertain.flatMap((fault) =>
+    ["U", "R"].map((family) => ({ family, fault })),
+  ),
+  ...["auth", "device", "abort", "deadline", "prepare", "conflict"].map(
+    (fault) => ({ family: "P", fault }),
+  ),
+  ...[
+    "auth",
+    "device",
+    "principal",
+    "abort",
+    "deadline",
+    "prepare",
+    "intent",
+  ].map((fault) => ({ family: "PR", fault })),
+];
+for (const { family, fault } of matrix)
+  test(`settlement ${family}(${fault})`, async () => {
+    const f = fixture(),
+      replay = family === "R" || family === "PR",
+      local = family === "P" || family === "PR";
+    const unknown = replay || family === "U";
+    const value = { text: "one" };
+    const put = (value: unknown = { text: "one" }) =>
+      f.state.put("note/1", value, { expectRevision: 0 });
+    if (unknown)
+      await f.state.put("prior", "earlier item", { expectRevision: 0 });
+    await f.state.get("missing");
+    if (replay) {
+      f.post("transport");
+      await refused(put(value), "UNAVAILABLE");
+    }
+    let original = replay ? f.bytes.at(-1) : undefined;
+    const before = f.calls.length;
+    if (local && !["conflict", "intent"].includes(fault)) f.fault(fault);
+    else if (family === "D" || (family === "R" && definite.includes(fault)))
+      f.deny(fault);
+    else if (!local) f.post(fault);
+    const code =
+      definite.includes(fault) || fault === "INTERNAL"
+        ? fault
+        : fault === "auth"
+          ? "AUTH_REQUIRED"
+          : fault === "device"
+            ? "AUTH_DEVICE_MISMATCH"
+            : local && fault === "abort"
+              ? "INVOCATION_CANCELLED"
+              : fault === "deadline"
+                ? "INVOCATION_TIMEOUT"
+                : fault === "prepare"
+                  ? "INPUT_INVALID"
+                  : fault === "conflict"
+                    ? "REVISION_CONFLICT"
+                    : "UNAVAILABLE";
+    const attempt =
+      fault === "conflict"
+        ? f.state.putMany([{ key: "note/1", value, expectRevision: 0 }], {
+            readSet: [{ key: "missing", expectRevision: 1 }],
+          })
+        : fault === "intent"
+          ? f.state.put("replacement", "no", { expectRevision: 0 })
+          : put(value);
+    const failed = await refused(attempt, code);
+    if (local) expect(f.calls).toHaveLength(before);
+    original ??= f.bytes.at(-1);
+    if (!unknown) {
+      f.restore();
+      await f.state.get("missing");
+      expect(f.calls.at(-1)!.readVersion === undefined).toBe(
+        fault.endsWith("CONFLICT") || fault === "conflict",
       );
+      const old = f.commits().at(-1)?.requestId;
+      await put();
+      if (family === "D") expect(f.commits().at(-1)!.requestId).not.toBe(old);
+      expect(
+        f
+          .commits()
+          .at(-1)!
+          .readSet.some((d) => d.key === "missing" && d.expectRevision === 0),
+      ).toBe(true);
+    } else {
+      expect(failed.error.retry).toBe("reconcile_first");
       const sent = f.calls.length;
+      if (fault === "rotate") await refused(put(), "UNAVAILABLE");
+      f.restore();
       await refused(f.state.get("missing"), "UNAVAILABLE");
-      expect(f.calls).toHaveLength(sent);
-      await replay();
-      expect(f.bytes.at(-1)).toBe(original);
-      expect((await f.state.get("note/1"))?.value).toBe("one");
-    },
-  ],
-  [
-    "Pending replay is scoped to its original principal",
-    async (f) => {
-      f.lose("note/1");
-      const replay = () => f.state.put("note/1", "one", { expectRevision: 0 });
-      await refused(replay(), "UNAVAILABLE");
-      const original = f.bytes.at(-1),
-        sent = f.calls.length;
-      f.usePrincipal("bbbbbbbbbbbbbbbb");
-      expect((await refused(replay(), "UNAVAILABLE")).error.retry).toBe(
-        "reconcile_first",
+      await refused(
+        f.state.put("replacement", "no", { expectRevision: 0 }),
+        "UNAVAILABLE",
       );
-      await refused(f.state.get("missing"), "UNAVAILABLE");
+      value.text = "mutated";
+      await refused(put(value), "UNAVAILABLE");
+      await Promise.resolve();
       expect(f.calls).toHaveLength(sent);
-      f.usePrincipal("aaaaaaaaaaaaaaaa");
-      await replay();
+      f.change();
+      await put();
       expect(f.bytes.at(-1)).toBe(original);
-      expect((await f.state.get("note/1"))?.value).toBe("one");
-    },
-  ],
-  [
-    "First-send decoded server 503 settles pending",
-    async (f) => {
+      expect(f.records.get("note/1")!.value).toEqual({ text: "one" });
+      expect([f.records.size, f.receipts()]).toEqual([2, 2]);
       await f.state.get("missing");
-      f.deny("UNAVAILABLE");
-      const error = await f.state
-        .put("note/1", "one", { expectRevision: 0 })
-        .catch((error: unknown) => error);
-      expect(error).toBeInstanceOf(CloudRecordRefusal);
-      await f.state.get("missing");
-      await f.state.put("note/1", "one", { expectRevision: 0 });
-      expect(f.commits()).toHaveLength(2);
-    },
-  ],
+      expect(f.calls.at(-1)!.readVersion).toBeUndefined();
+    }
+  });
+
+const rows: readonly [string, (f: Fixture) => Promise<void>][] = [
   [
     "Read-only provider",
     async () => {
@@ -314,31 +417,6 @@ const rows: readonly [string, (f: Fixture) => Promise<void>][] = [
         "GRANT_REQUIRED",
       );
       expect(f.calls).toHaveLength(0);
-    },
-  ],
-  [
-    "Pending replay survives credential loss",
-    async (f) => {
-      await f.state.put("note/1", "one", { expectRevision: 0 });
-      f.lose("note/2");
-      const replay = () => f.state.put("note/2", "two", { expectRevision: 0 });
-      await refused(replay(), "UNAVAILABLE");
-      const before = f.calls.length;
-      const original = f.bytes.at(-1);
-      f.noCredential();
-      await refused(replay(), "AUTH_REQUIRED");
-      await refused(f.state.get("missing"), "UNAVAILABLE");
-      await refused(
-        f.state.put("replacement", "no", { expectRevision: 0 }),
-        "UNAVAILABLE",
-      );
-      expect(f.calls).toHaveLength(before);
-      f.restoreCredential();
-      await replay();
-      expect(f.bytes.at(-1)).toBe(original);
-      expect(f.commits().at(-1)!.requestId).toBe(f.commits().at(-2)!.requestId);
-      expect((await f.state.get("note/2"))?.value).toBe("two");
-      expect(f.records.size).toBe(2);
     },
   ],
   [
@@ -433,75 +511,6 @@ const rows: readonly [string, (f: Fixture) => Promise<void>][] = [
       await refused(f.state.get("missing"), "REVISION_CONFLICT");
       await f.state.get("missing");
       expect(f.calls.at(-1)!.readVersion).toBeUndefined();
-      f.change();
-      await refused(
-        f.state.put("note/4", "four", { expectRevision: 0 }),
-        "REVISION_CONFLICT",
-      );
-      await f.state.put("note/4", "four", { expectRevision: 0 });
-      expect(f.commits().at(-1)!.requestId).not.toBe(
-        f.commits().at(-2)!.requestId,
-      );
-    },
-  ],
-  [
-    "Sub-requests",
-    async (f) => {
-      await f.state.put("note/1", "one", { expectRevision: 0 });
-      f.lose("note/2");
-      const value = { text: "two" };
-      await refused(
-        f.state.put("note/2", value, { expectRevision: 0 }),
-        "UNAVAILABLE",
-      );
-      value.text = "mutated";
-      const before = f.calls.length;
-      await refused(f.state.get("missing"), "UNAVAILABLE");
-      await refused(
-        f.state.put("note/3", "wrong", { expectRevision: 0 }),
-        "UNAVAILABLE",
-      );
-      expect(f.calls).toHaveLength(before);
-      f.change();
-      await f.state.put("note/2", { text: "two" }, { expectRevision: 0 });
-      const commits = f.commits();
-      expect(commits[0]!.requestId).not.toBe(commits[1]!.requestId);
-      expect(commits[1]).toEqual(commits[2]);
-      const wires = f.calls.flatMap((c, i) =>
-        c.kind === "commit" ? [f.bytes[i]] : [],
-      );
-      expect(wires[1]).toBe(wires[2]);
-      expect(commits[2]!.entries[0]!.value).toEqual({ text: "two" });
-      await f.state.get("note/2");
-      expect(f.calls.at(-1)!.readVersion).toBeUndefined();
-      await f.state.put("note/3", "three", { expectRevision: 0 });
-      expect(f.records.size).toBe(3);
-    },
-  ],
-  [
-    "Outage/denied namespace",
-    async (f) => {
-      f.noCredential();
-      await refused(f.state.get("none"), "AUTH_REQUIRED");
-      await refused(
-        f.state.put("none", "no", { expectRevision: 0 }),
-        "AUTH_REQUIRED",
-      );
-      expect(f.calls).toHaveLength(0);
-      for (const fault of ["AUTH_FORBIDDEN", "offline"] as const) {
-        const r = fixture();
-        await r.state.get("missing");
-        if (fault === "offline") r.offline();
-        else r.deny(fault);
-        await refused(
-          r.state.put("none", "no", { expectRevision: 0 }),
-          fault === "offline" ? "UNAVAILABLE" : fault,
-        );
-        expect(r.records.size).toBe(0);
-        const sent = r.calls.length;
-        await Promise.resolve();
-        expect(r.calls).toHaveLength(sent);
-      }
     },
   ],
   [
@@ -527,14 +536,6 @@ const rows: readonly [string, (f: Fixture) => Promise<void>][] = [
         r.state.put("late", "no", { expectRevision: 0 }),
         "INVOCATION_CANCELLED",
       );
-      const inFlight = fixture();
-      await inFlight.state.get("missing");
-      inFlight.abortInFlight();
-      await refused(
-        inFlight.state.put("uncertain", "no", { expectRevision: 0 }),
-        "UNAVAILABLE",
-      );
-      expect(inFlight.signals.at(-1)!.aborted).toBe(true);
     },
   ],
 ];

@@ -799,6 +799,8 @@ function recordRig(
 ) {
   const calls: { url: string; body: unknown }[] = [];
   const files = filesWith(options.entries ?? [entry(NOW)]);
+  let lookups = 0;
+  const credentials = credentialStore(files);
   const before = files.read(CREDENTIAL_FILE);
   const http = createCloudHttp({
     origin: options.bound?.origin ?? ORIGIN,
@@ -823,7 +825,12 @@ function recordRig(
   });
   const client = createCloudRecordClient({
     key: options.key ?? KEY,
-    credentials: credentialStore(files),
+    credentials: {
+      lookup: (key, now) => {
+        lookups++;
+        return credentials.lookup(key, now);
+      },
+    },
     now: () => NOW,
     http,
     ...(options.signal === undefined ? {} : { signal: options.signal }),
@@ -831,10 +838,37 @@ function recordRig(
   return {
     client,
     calls,
+    lookups: () => lookups,
     unchanged: () => expect(files.read(CREDENTIAL_FILE)).toBe(before),
   };
 }
 const recordOps = ["read", "commit"] as const;
+for (const phase of ["send", "missing", "context", "abort"] as const)
+  test(`record dispatch principal callback: ${phase}`, async () => {
+    const controller = new AbortController();
+    if (phase === "abort") controller.abort();
+    const r = recordRig({
+      signal: controller.signal,
+      ...(phase === "missing" ? { entries: [] } : {}),
+    });
+    const observed: string[] = [];
+    const call =
+      phase === "context"
+        ? {
+            ...COMMIT,
+            context: { ...COMMIT.context, device: { id: "other-device" } },
+          }
+        : COMMIT;
+    const result = r.client.commit(call, (id) => {
+      expect(r.calls).toHaveLength(0);
+      observed.push(id);
+    });
+    if (phase === "send") await result;
+    else await failureOf(() => result);
+    expect(observed).toEqual(phase === "send" ? [entry(NOW).id] : []);
+    expect(r.calls).toHaveLength(phase === "send" ? 1 : 0);
+    expect(r.lookups()).toBe(1);
+  });
 for (const op of recordOps) {
   const call = op === "read" ? READ : COMMIT;
   const run = (r: ReturnType<typeof recordRig>, context = call.context) =>
