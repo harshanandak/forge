@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, realpathSync } from "node:fs";
 import {
   basename,
   delimiter,
@@ -159,7 +159,6 @@ export interface ProviderOptions {
   readonly gitScope?: GitScope | null | undefined;
 }
 export interface AssemblyProviders {
-  readonly gitScope?: GitScope | null | undefined;
   deviceFiles?(scope: ServiceScope): DeviceFiles;
   cloudLogin?(scope: ServiceScope): CloudLogin;
   process(scope: ServiceScope): ProcessService;
@@ -338,14 +337,10 @@ export function reopenGitScope(
   root: string,
   saved?: GitScope | null,
 ): GitScope {
-  if (saved === null)
-    refuse(
-      "INPUT_CONFLICT",
-      "Reattach this lane with explicit project and lane roots before using Git.",
-    );
-  if (saved) {
+  if (saved !== undefined) {
     try {
       if (
+        saved &&
         validGitScope(saved) &&
         [saved.project, saved.lane].every(
           (pair) =>
@@ -359,24 +354,10 @@ export function reopenGitScope(
     }
     refuse(
       "INPUT_CONFLICT",
-      "Saved Git roots changed or are unavailable; reattach before using Git.",
+      "Saved Git roots are missing, changed or unavailable; reattach before using Git.",
     );
   }
-  let project = projectManifestRoot(root);
-  if (statSync(`${project}/.git`, { throwIfNoEntry: false })?.isFile()) {
-    const enclosing = (path: string): string | undefined => {
-      for (let at = dirname(path); dirname(at) !== at; at = dirname(at))
-        if (statSync(`${at}/.git`, { throwIfNoEntry: false })?.isDirectory())
-          return at;
-      return undefined;
-    };
-    project =
-      enclosing(project) ??
-      refuse(
-        "INPUT_CONFLICT",
-        "A linked lane needs explicit project and lane roots before using Git.",
-      );
-  }
+  const project = projectManifestRoot(root);
   return createGitScope(project, root);
 }
 /** The caller supplies the project and lane spellings before canonicalization. */
@@ -531,7 +512,7 @@ function hostEnv(options: ProviderOptions): Readonly<Record<string, string>> {
 
 // Discovery calls share the host's single supervisor; each lookup is launched once in order.
 let gitDiscovery = Promise.resolve();
-function gitOptions(root: string, options: ProviderOptions) {
+function gitOptions(options: ProviderOptions) {
   const port = createProcessPort({
     supervision: options.supervision ?? CLEANUP,
   });
@@ -562,12 +543,6 @@ function gitOptions(root: string, options: ProviderOptions) {
       },
     },
     env: hostEnv(options),
-    git: (_cwd: string, env: Readonly<Record<string, string>>) =>
-      gitCapability(
-        port,
-        env,
-        reopenGitScope(root, options.gitScope),
-      ).executable(),
     timeoutMs: 10000,
     maxOutputBytes: 16384,
   };
@@ -578,7 +553,7 @@ export function projectStateRoot(
   root: string,
   options: ProviderOptions = {},
 ): Promise<string> {
-  return mainCheckoutPath(root, gitOptions(root, options));
+  return mainCheckoutPath(root, gitOptions(options));
 }
 
 /**
@@ -594,7 +569,7 @@ export function checkoutScopeRoot(
   root: string,
   options: ProviderOptions = {},
 ): Promise<string | undefined> {
-  return gitCheckoutScopeRoot(root, gitOptions(root, options));
+  return gitCheckoutScopeRoot(root, gitOptions(options));
 }
 
 /** A name as an issue id prefix: lowercase letters, digits and single hyphens; undefined when none remain. */
@@ -618,11 +593,7 @@ export async function idPrefixObservation(
   stateRoot: string,
   options: ProviderOptions = {},
 ): Promise<readonly DetectionObservation[]> {
-  if (options.gitScope === null) return [];
-  const repository = await originRepositoryName(
-    root,
-    gitOptions(root, options),
-  );
+  const repository = await originRepositoryName(root, gitOptions(options));
   const value = idPrefix(repository ?? basename(stateRoot));
   return value === undefined
     ? []
@@ -700,7 +671,6 @@ export function createAssemblyProviders(
       supervision: options.supervision ?? CLEANUP,
     });
   const providers: InternalProviders = {
-    gitScope: options.gitScope,
     deviceFiles(scope) {
       const home = env.HOME ?? env.USERPROFILE;
       if (!home)

@@ -1,4 +1,4 @@
-import { realpathSync } from "node:fs";
+import { nodeConfigFiles, resolveIn } from "../adapters/fs/index.ts";
 import { relative, join } from "node:path";
 import { cloudBinding } from "./cloud-binding.ts";
 import { LocalState } from "./state.ts";
@@ -18,32 +18,34 @@ export async function deviceGitScope(
   deviceRoot: string,
   home?: string,
   explicit?: GitScope,
-): Promise<GitScope | null | undefined> {
+): Promise<GitScope | null> {
   const device = new LocalState(join(deviceRoot, "records.sqlite"));
   try {
     const binding = cloudBinding(root, home);
     if (binding.kind !== "bound") return reopenGitScope(root, explicit);
+    if (!nodeConfigFiles(deviceRoot).list(".").includes("records.sqlite"))
+      return reopenGitScope(root, explicit);
     const owner = await device.open(false);
-    const target = realpathSync.native(projectManifestRoot(root));
+    const target = resolveIn(projectManifestRoot(root), ".", "follow");
     const prefix = boundLaneKey(binding);
-    const matches =
-      owner?.list("forge/work", prefix).filter((row) => {
-        const lane = (row.value as { lane?: { worktree?: unknown } })?.lane;
-        return (
-          typeof lane?.worktree === "string" &&
-          relative(lane.worktree, target) === ""
-        );
-      }) ?? [];
-    if (!matches.length) return reopenGitScope(root, explicit);
-    const scopes = matches.map((row) => {
-      const lane = readBoundLane(row.value, row.key.slice(prefix.length)).lane;
-      return reopenGitScope(root, lane.gitScope ?? null);
-    });
-    return scopes.every(
-      (scope) => JSON.stringify(scope) === JSON.stringify(scopes[0]),
-    )
-      ? scopes[0]
-      : null;
+    let saved: GitScope | undefined;
+    for (const row of owner?.list("forge/work", prefix) ?? []) {
+      const lane = (row.value as { lane?: { worktree?: unknown } })?.lane;
+      if (
+        typeof lane?.worktree !== "string" ||
+        relative(lane.worktree, target) !== ""
+      )
+        continue;
+      const scope = reopenGitScope(
+        root,
+        readBoundLane(row.value, row.key.slice(prefix.length)).lane.gitScope ??
+          explicit ??
+          null,
+      );
+      if (saved && JSON.stringify(scope) !== JSON.stringify(saved)) return null;
+      saved = scope;
+    }
+    return saved ?? reopenGitScope(root, explicit);
   } catch {
     // Diagnostics and release remain available; Git consumers refuse this explicit missing scope.
     return null;

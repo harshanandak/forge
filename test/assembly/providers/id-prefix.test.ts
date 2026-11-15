@@ -2,20 +2,11 @@ import { afterAll, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  originRepositoryName as adapterRead,
-  type VcsAdapterOptions,
-} from "../../../src/adapters/vcs-git/index.ts";
+import { originRepositoryName } from "../../../src/adapters/vcs-git/index.ts";
 import { idPrefix } from "../../../src/assembly/providers.ts";
 import { fakeProcess } from "../../adapters/process/fake-process.ts";
 
 setDefaultTimeout(30_000);
-
-const originRepositoryName = (dir: string, options: VcsAdapterOptions) =>
-  adapterRead(dir, {
-    ...options,
-    git: (_cwd, env) => options.process.resolve("git", env),
-  });
 
 const root = mkdtempSync(join(tmpdir(), "forge-origin-prefix-"));
 mkdirSync(join(root, ".git"));

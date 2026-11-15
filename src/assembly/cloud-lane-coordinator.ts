@@ -12,11 +12,7 @@ import {
 } from "../blocks/work/bound-lane.ts";
 import type { BoundProject } from "../blocks/work/bound-lane-state.ts";
 import type { LocalState } from "./state.ts";
-import {
-  reopenGitScope,
-  type AssemblyProviders,
-  type GitScope,
-} from "./providers.ts";
+import type { AssemblyProviders } from "./providers.ts";
 import {
   boundLaneKey,
   validBoundHead,
@@ -32,7 +28,6 @@ export async function readBoundLaneHead(
   flight: Preflight,
   providers: AssemblyProviders,
   worktree: string,
-  gitScope?: GitScope,
 ): Promise<string> {
   const timeoutMs = flight.operation.declaration.timeoutMs ?? 60000;
   const scope = {
@@ -49,7 +44,6 @@ export async function readBoundLaneHead(
       ...scope,
     },
     worktree,
-    gitScope ?? providers.gitScope,
   )(["rev-parse", "--verify", "HEAD"]);
   if (!validBoundHead(head))
     throw new ForgeFailure({
@@ -122,8 +116,8 @@ export async function coordinateLane(
             command,
             save,
             flight.config,
-            (worktree, gitScope) =>
-              readBoundLaneHead(flight, options.providers, worktree, gitScope),
+            (worktree) =>
+              readBoundLaneHead(flight, options.providers, worktree),
           ),
         );
       progressWrites.set(key, pending);
@@ -190,10 +184,6 @@ export async function coordinateLane(
               process: options.providers.process(scope),
               environment: options.providers.environment(scope),
               now: options.now,
-              gitScope: reopenGitScope(
-                files.value.root,
-                options.providers.gitScope ?? undefined,
-              ),
               ...scope,
             },
             fence,

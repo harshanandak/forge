@@ -1,6 +1,8 @@
 import { ForgeFailure } from "../../contract/failure.ts";
 import {
   gitCapability,
+  createGitScope,
+  projectManifestRoot,
   reopenGitScope,
   type GitScope,
 } from "../../assembly/providers.ts";
@@ -277,7 +279,7 @@ export async function boundLaneProgress(
   command: BoundCommand,
   save: (record: BoundLaneRecord, revision: number) => Promise<StateRecord>,
   config: unknown,
-  readHead: (worktree: string, scope: GitScope) => Promise<string>,
+  readHead: (worktree: string) => Promise<string>,
 ): Promise<unknown> {
   const fresh = (await command("issue.show", { id: input.id })) as TrackerItem;
   const id = `work-${fresh.id.replace(/^.*-/, "")}`;
@@ -293,10 +295,8 @@ export async function boundLaneProgress(
   ownBoundGrant(fresh.lease, context, device, record.grant.generation, now);
   if (!record.active || record.releaseRequestId || fresh.status !== "open")
     refuse("INPUT_CONFLICT", "The lane is inactive, releasing or closed.");
-  const actualHead = await readHead(
-    record.lane.worktree,
-    reopenGitScope(record.lane.worktree, record.lane.gitScope ?? null),
-  );
+  reopenGitScope(record.lane.worktree, record.lane.gitScope ?? null);
+  const actualHead = await readHead(record.lane.worktree);
   const effectiveHead =
     op === "lane.next" ? input.head?.toLowerCase() : record.progress?.head;
   if (effectiveHead !== actualHead)
@@ -492,7 +492,13 @@ export function boundLaneGit(
     "TEMP",
     "TMP",
   ]);
-  const pin = gitCapability(process, env, reopenGitScope(cwd, saved));
+  const pin = gitCapability(
+    process,
+    env,
+    saved === undefined
+      ? createGitScope(projectManifestRoot(process.cwd), cwd)
+      : reopenGitScope(cwd, saved),
+  );
   const readGit = async (args: string[]) => {
     const git = pin.executable();
     if (git.kind !== "resolved") refuse("UNAVAILABLE", git.reason);

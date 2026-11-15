@@ -15,7 +15,6 @@ import {
   writePrivateTextAtomic,
 } from "../adapters/fs/durable-io.ts";
 import { GitCommandError } from "../adapters/vcs-git/index.ts";
-import { deviceGitScope } from "./git-scope.ts";
 import { yamlConfigCodec } from "../adapters/config-yaml/index.ts";
 import { compatibleConfig } from "../core/config/compatible.ts";
 import { describeConfigFormat } from "./config-format.ts";
@@ -299,31 +298,18 @@ export async function createAssembly(
 ): Promise<Assembly> {
   const root = resolve(options.root);
   const deviceRoot = resolve(options.deviceRoot);
-  const env = options.providers?.env ?? process.env;
-  const home = env.HOME ?? env.USERPROFILE;
-  const gitScope = await deviceGitScope(
-    root,
-    deviceRoot,
-    home,
-    options.providers?.gitScope ?? undefined,
-  );
-  const providerOptions = {
+  const providers = createAssemblyProviders(root, {
     ...options.providers,
     deviceRoot,
-    gitScope:
-      gitScope ?? (gitScope === null ? null : options.providers?.gitScope),
-  };
-  const providers = createAssemblyProviders(root, providerOptions);
+  });
   const trustState = new LocalState(join(deviceRoot, "trust.sqlite"));
   // Every git worktree of one repository shares one store; config and files stay at `root`.
-  const stateRoot =
-    gitScope === null ? root : await projectStateRoot(root, providerOptions);
-  const scopeRoot =
-    gitScope === null
-      ? undefined
-      : await checkoutScopeRoot(root, providerOptions);
+  const stateRoot = await projectStateRoot(root, options.providers);
+  const scopeRoot = await checkoutScopeRoot(root, options.providers);
   const manifestRoot = projectManifestRoot(root);
   const deviceState = new LocalState(join(deviceRoot, "records.sqlite"));
+  const env = options.providers?.env ?? process.env;
+  const home = env.HOME ?? env.USERPROFILE;
   const projectState = new LocalState(
     join(stateRoot, ".forge", "state.sqlite"),
     undefined,
@@ -1227,7 +1213,7 @@ export async function createAssembly(
             ),
           );
         const prefix = () =>
-          idPrefixObservation(root, stateRoot, providerOptions).catch(
+          idPrefixObservation(root, stateRoot, options.providers).catch(
             (error: unknown) => {
               if (core) {
                 if (!(error instanceof GitCommandError)) throw error;

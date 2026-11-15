@@ -62,7 +62,6 @@ import * as fx from "./cloud-fixture.ts";
 import * as scopedGit from "../../src/assembly/providers.ts";
 import * as launch from "../../src/adapters/process/run.ts";
 import * as startupScope from "../../src/assembly/git-scope.ts";
-import * as vcsDiscovery from "../../src/adapters/vcs-git/index.ts";
 
 for (const [name, row, guard, replacement, marker] of [
   [
@@ -562,36 +561,23 @@ for (const row of [
   "reopen",
   "legacy",
   "retargeted",
-  "Bare-startup-resolve",
   "Accept-legacy-record",
 ] as const)
-  test(`startup reads matching private attachment first: ${row}`, async () => {
+  test(`private attachment scope before clone reopen: ${row}`, async () => {
     const f = fx.persistedRootsFixture();
     const deviceRoot = join(f.project, "device");
-    let assembly;
+    let files:
+      | Awaited<
+          ReturnType<ReturnType<typeof createAssemblyProviders>["openFiles"]>
+        >
+      | undefined;
     const spies: { mockRestore(): void }[] = [];
     try {
-      if (row === "Bare-startup-resolve") {
-        const mutant = await fx.withoutGuard<typeof vcsDiscovery>(
-          new URL("../../src/adapters/vcs-git/index.ts", import.meta.url),
-          "options.git?.(dir, env)",
-          'options.process.resolve("git", env)',
-        );
-        expect(mutant.mutationLoaded).toBe(true);
-        spies.push(
-          spyOn(vcsDiscovery, "mainCheckoutPath").mockImplementation(
-            mutant.mainCheckoutPath,
-          ),
-          spyOn(vcsDiscovery, "checkoutScopeRoot").mockImplementation(
-            mutant.checkoutScopeRoot,
-          ),
-        );
-      }
       if (row === "Accept-legacy-record") {
         const mutant = await fx.withoutGuard<typeof startupScope>(
           new URL("../../src/assembly/git-scope.ts", import.meta.url),
-          "lane.gitScope ?? null",
-          "lane.gitScope ?? {project:{lexical:root,real:root},lane:{lexical:root,real:root}}",
+          /\.lane\.gitScope \?\?\s+explicit \?\?\s+null/,
+          ".lane.gitScope ?? explicit ?? reopenGitScope(root)",
         );
         expect(mutant.mutationLoaded).toBe(true);
         spies.push(
@@ -620,7 +606,7 @@ for (const row of [
             ...journal,
             lane: {
               ...attachment,
-              worktree: f.target,
+              worktree: realpathSync.native(f.target),
               ...(["legacy", "Accept-legacy-record"].includes(row)
                 ? {}
                 : { gitScope: f.scope }),
@@ -644,24 +630,51 @@ for (const row of [
         readFileSync(join(deviceRoot, "records.sqlite")).toString("hex"),
         ...f.snapshot(),
       ];
-      assembly = await createAssembly({
-        root: f.target,
-        deviceRoot,
-        providers: { env: f.env },
+      const gitScope = await startupScope.deviceGitScope(f.target, deviceRoot);
+      const open = createAssemblyProviders(f.target, {
+        env: f.env,
+        gitScope,
+      }).openFiles({
+        op: "private.read",
+        effects: ["files:read"],
+        signal: AbortSignal.timeout(15000),
+        deadline: Date.now() + 15000,
+        processContainment: "supervised",
       });
-      expect(existsSync(f.marker)).toBe(
-        ["Bare-startup-resolve", "Accept-legacy-record"].includes(row),
-      );
+      if (row === "reopen") files = await open;
+      else
+        await expect(open).rejects.toMatchObject({
+          error: {
+            code:
+              row === "Accept-legacy-record" ? "UNAVAILABLE" : "INPUT_CONFLICT",
+          },
+        });
+      expect(existsSync(f.marker)).toBe(row === "Accept-legacy-record");
       expect([
         readFileSync(join(deviceRoot, "records.sqlite")).toString("hex"),
         ...f.snapshot(),
       ]).toEqual(before);
     } finally {
-      await assembly?.close();
+      await files?.close();
       for (const spy of spies) spy.mockRestore();
       f.close();
     }
   });
+test("private scope lookup does not open a missing private state file", () =>
+  using({}, async (r) => {
+    const open = spyOn(LocalState.prototype, "open");
+    try {
+      const scope = await startupScope.deviceGitScope(
+        r.s.root,
+        r.s.deviceRoot,
+        r.s.home,
+      );
+      expect(scope).toEqual(scopedGit.createGitScope(r.s.root));
+      expect(open).not.toHaveBeenCalled();
+    } finally {
+      open.mockRestore();
+    }
+  }));
 const bytes = (s: fx.Sandbox) =>
   readdirSync(s.dir, { recursive: true, withFileTypes: true })
     .map((entry) => ({
@@ -2087,12 +2100,16 @@ test("bound attachment: concurrent clones reserve before registry publication", 
             async (record, fence) => {
               if (++entered === 2) barrier.resolve();
               await barrier.promise;
+              const lane = {
+                ...record.lane,
+                gitScope: scopedGit.createGitScope(root),
+              };
               await fence.publish(
-                record.lane,
+                lane,
                 () => writeFileSync(join(root, registry), "attached"),
                 () => true,
               );
-              return record.lane;
+              return lane;
             },
           ),
         ),
