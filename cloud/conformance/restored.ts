@@ -7,11 +7,40 @@ import type { SqlDatabase } from "../../src/ports/store.ts";
 import { domain } from "../src/project.ts";
 import {
   limitsFrom,
+  DUMP_FORMAT,
+  PAGE_FORMAT,
   restoreDump,
   restorePage,
   type Dump,
   type Page,
 } from "../src/dump.ts";
+
+export class IncompleteImageError extends Error {
+  readonly code = "INCOMPLETE_IMAGE";
+}
+export function imageSequence(whole = false) {
+  let next = 0,
+    complete = false;
+  return (part?: Pick<Partial<Page>, "format" | "page" | "last" | "next">) => {
+    if (part === undefined) {
+      if (!complete)
+        throw new IncompleteImageError("Expected image did not finish");
+      return;
+    }
+    const dump = whole && part.format === DUMP_FORMAT;
+    if (
+      complete ||
+      (dump
+        ? next++ !== 0
+        : part.format !== PAGE_FORMAT ||
+          part.page !== next++ ||
+          (part.next !== null && typeof part.next !== "string") ||
+          part.last !== (part.next === null))
+    )
+      throw new IncompleteImageError("Expected image pages are out of order");
+    complete = dump || part.last === true;
+  };
+}
 
 /** The caller owns an empty scratch store and may prepare a different expected image after replay. */
 export function replayImage(
@@ -26,9 +55,13 @@ export function replayImage(
     maxRows: Number.MAX_SAFE_INTEGER,
     maxBytes: Number.MAX_SAFE_INTEGER,
   };
-  for (const part of image)
+  const sequence = imageSequence(true);
+  for (const part of image) {
+    sequence(part);
     if ("page" in part) restorePage(db, owner, part, limits);
     else restoreDump(db, owner, part, limits);
+  }
+  sequence();
   return owner;
 }
 
