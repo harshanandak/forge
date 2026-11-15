@@ -150,8 +150,12 @@ for (const result of [
     ).toBe("unknown");
   });
 
-for (const losesGrant of [false, true])
-  test(`attached action records its normal result after renewal failure: lost=${losesGrant}`, async () => {
+for (const [losesGrant, success, role] of [
+  [false, true, undefined],
+  [true, true, undefined],
+  [false, false, "reviewer"],
+] as const)
+  test(`attached action records its result after renewal failure: lost=${losesGrant}, success=${success}, role=${role}`, async () => {
     const f = fixture();
     let closed = false;
     const runner = (await openBoundRunner(
@@ -176,7 +180,7 @@ for (const losesGrant of [false, true])
       f.advance();
       await f.timers.shift()!();
     }
-    const outcome = runner.finish(true, true);
+    const outcome = runner.finish(true, success, role);
     if (losesGrant)
       await expect(outcome).rejects.toMatchObject({
         error: { code: "LEASE_EXPIRED" },
@@ -189,7 +193,11 @@ for (const losesGrant of [false, true])
         input: {
           id: "forge-1394",
           action: 1,
-          result: JSON.stringify({ head, done: true }),
+          result: JSON.stringify({
+            head,
+            ...(success ? { done: true } : { failed: true }),
+            ...(role === "reviewer" ? { review: true } : {}),
+          }),
         },
       },
     ]);
