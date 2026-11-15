@@ -354,10 +354,10 @@ for (const table of ["empty", ...Object.keys(rows)])
       await target.close();
     }
   }, 30000);
-test("the previous initializer rejects migration 004 without writes", async () => {
+test("the previous initializer rejects migration 005 without writes", async () => {
   const source = await open();
   try {
-    expect(stateMigrations.at(-1)?.id).toBe("004_state_checkpoint");
+    expect(stateMigrations.at(-1)?.id).toBe("005_state_events_namespace_index");
     const before = source.db.get("SELECT total_changes() AS n");
     expect(() => migrate(source.db, stateMigrations.slice(0, -1))).toThrow(
       NewerStoreError,

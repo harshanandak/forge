@@ -19,7 +19,42 @@ local overlay, or access credentials. Credentialed record-client assembly is sep
 
 `POST /p/<projectId>/state/read` and `/state/commit` admit only device tokens on `FORGE_CLOUD_PROJECT`, with a closed invocation `context` and matching route/kind. `FORGE_STATE_NAMESPACES` is an explicit array of exact namespace IDs (initially `["forge/memory"]`); missing/malformed config returns UNAVAILABLE, and `[]` grants nothing. Config cannot grant `forge/work`, `forge/cloud` or any `forge/core-*` namespace. `policyRevision` is the digest of the sorted, deduplicated config; `discover` is accepted only on an unpinned read. Reads return bounded get/range/count/max/history results with the config revision and a namespace event watermark plus private restore epoch. Pages pin both revisions; stale pins return REVISION_CONFLICT. Responses are capped at 1 MiB with stored byte sizes checked before loading bodies. Missing epochs return UNAVAILABLE with an admin device-token provisioning remedy; reads initialize nothing. Admin provisioning initializes the private epoch, and completed restore replaces it before visibility. Ascending range cursors use last key + NUL (up to 501 characters), descending cursors use the exclusive last key, and history next is the last returned event sequence, and before resumes exclusively below that sequence (event revisions may repeat). Commits apply one CAS batch and its namespace-scoped receipt in the same transaction. They fingerprint the full request and return authoritative records/version with result null; exact retries return the stored answer, while changed input conflicts. Token/config admission repeats before replay and inside the write transaction; fenced retries also require the current lease grant. Commit responses are capped at 1 MiB before acceptance. Reads create no receipts. Cloud count/max examine at most `MAX_AGGREGATE_KEYS + 1` (1001) matching keys through an indexed, key-only LIMIT subquery. More than 1000 matching keys returns `INPUT_INVALID` (HTTP 400, exit 6, retry never), asking the caller to narrow the prefix; under-budget results remain exact. Local aggregate callers retain their existing behavior unless they supply the optional budget.
 
-Point-get watermark cost is tracked in forge-1423.
+### Namespace watermark preparation (forge-1423)
+
+This preparation release adds `005_state_events_namespace_index` and the covering
+`(namespace, sequence)` index. Admitted writes, provisioning, restore and import targets
+run the complete historical initializer. Reads never initialize or repair a store.
+Upgraded reads require the named index and read its reverse sequence endpoint; an older
+store retains the exact legacy MAX query. That temporary bridge still examines history
+and is not completion of the bounded-watermark fix or eligibility for strict cutover.
+
+The lead runs this rollout after deploying the preparation release:
+
+1. Establish a complete inventory of every Project name this Worker can address,
+   including legacy admin/lease names beyond `FORGE_CLOUD_PROJECT`. Before deployment,
+   obtain names from the operator's provisioning/deployment records and reconcile them
+   with restore/import manifests and administrative creation records. This PR performs
+   no live calls and establishes no complete enumeration mechanism. If those records
+   cannot prove completeness, stop: a list of configured projects alone is insufficient.
+2. Account for concurrent provisioning and unfinished paged restores; capture new names
+   until the inventory is stable. Do not treat a staging restore as provisioned.
+3. For every provisioned entry, use an admin bearer with `GET /p/<name>/upgrade` to read
+   `{ready,index,pending}` without migration. POST the same route with exactly `{}`
+   (JSON, at most 64 bytes, no query parameters) to apply all pending migrations.
+   POST returns the same readiness plus `outcome: "upgraded"` or `"already ready"`.
+   Missing/wrong admin is 401, invalid method/body/query is 400, and cold/incompatible
+   targets are 409; no refusal provisions or migrates the target.
+4. Independently GET readiness again for **every** inventory entry and require
+   `ready: true`, `index: true`, `pending: []`. Retain names/readiness only, never auth
+   or state contents. Measure index construction on the largest supported store before
+   choosing rollout timeouts: it visits existing events and can block that object's work.
+5. On incomplete inventory, any failed upgrade or failed read-back, stop cutover and
+   retain this preparation release. Strict missing-index refusal belongs to a later
+   release, after the operator has verified the complete stable inventory.
+
+Once a store records migration 005, the rollback target is **this preparation release**,
+not older main: older code rejects the unknown ledger entry. Keep the additive index and
+ledger with compatible code; a schema downgrade requires a separate authorized plan.
 
 | Route                                        | Method    | Token  | What it does                                                                                                                                                                                                                            |
 | -------------------------------------------- | --------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

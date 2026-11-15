@@ -7,7 +7,14 @@ import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { imageSequence, releasedTables } from "./restored.ts";
+import {
+  imageSequence,
+  releasedTables,
+  stopOverlay,
+  stopPlan,
+  type StopDelta,
+} from "./restored.ts";
+import { expectsStop, liveStops } from "./stop-live.ts";
 import type { Tables } from "./max-source.ts";
 import { canonicalJson } from "../../src/core/config/pointer.ts";
 import type { StateEvent } from "../../src/generated/types.ts";
@@ -138,6 +145,8 @@ interface AdminBody {
   readonly error?: { readonly code: string; readonly message: string };
 }
 const pageWire = new WeakMap<object, { text: string; bytes: number }>();
+const origins = new WeakMap<object, string>();
+const restoreStops = liveStops();
 async function adminCall(
   project: string,
   method: "GET" | "POST",
@@ -145,6 +154,7 @@ async function adminCall(
   body?: string,
   token = adminToken,
 ): Promise<{ status: number; body: AdminBody }> {
+  const started = Date.now();
   const response = await fetch(`${base}/p/${project}/${route}`, {
     method,
     headers: token === "" ? {} : { authorization: `Bearer ${token}` },
@@ -175,6 +185,18 @@ async function adminCall(
     bodyValue = (await response.json()) as AdminBody;
   }
   const result = { status: response.status, body: bodyValue };
+  if (expectsStop() && response.status === 200 && route === "restore") {
+    restoreStops.restored(project, [started, Date.now()]);
+  }
+  if (
+    expectsStop() &&
+    response.status === 200 &&
+    method === "GET" &&
+    route.startsWith("dump")
+  ) {
+    origins.set(bodyValue.value as object, project);
+    restoreStops.page(project, (bodyValue.value as Dump).tables as Tables);
+  }
   return result;
 }
 // An admin restore that declares `length` bytes in Content-Length and sends none of them. The reply is
@@ -311,7 +333,9 @@ function joined(pages: readonly DumpPage[]): Dump {
   for (const page of pages)
     for (const [table, rows] of Object.entries(page.tables))
       (tables[table] ??= []).push(...rows);
-  return { format: "forge-cloud-dump/2", tables };
+  const dump = { format: "forge-cloud-dump/2", tables };
+  origins.set(dump, origins.get(pages[0]!)!);
+  return dump;
 }
 // One page of a paged dump (GET dump?cursor=start, then the cursor each page names as `next`).
 interface DumpPage {
@@ -593,8 +617,34 @@ export async function roundTrip(
   budget: number,
   each: (page: DumpPage, text: string) => void = () => undefined,
   expected: string | Iterable<DumpPage> | AsyncIterable<DumpPage> = source,
+  comparison?: {
+    fixture: Tables;
+    seed?: StopDelta | (() => StopDelta | undefined) | false;
+    target?: StopDelta | (() => StopDelta | undefined);
+  },
 ) {
-  const { digester } = await import("./budget.ts");
+  const { digester, digestOf, expectedCuts } = await import("./budget.ts");
+  let sourceRows: Tables | undefined;
+  if (comparison && comparison.seed !== false) {
+    assert.equal(expected, source, "stop comparison uses the original fixture");
+    const proof = digester();
+    await walk(source, `${label} seed`, budget, (page) => {
+      for (const [table, rows] of Object.entries(page.tables))
+        proof.add(table, rows);
+    });
+    const seed = stopPlan(
+      comparison.fixture,
+      typeof comparison.seed === "function"
+        ? comparison.seed()
+        : comparison.seed,
+    );
+    sourceRows = stopOverlay(comparison.fixture, seed);
+    assert.deepEqual(
+      proof.done(),
+      digestOf(sourceRows),
+      `${label}: seed differs from original fixture`,
+    );
+  }
   const sent = digester();
   assert.equal(await initialized(target), false, `${label}: target is empty`);
   const trip = await walk(source, label, budget, async (page, text) => {
@@ -627,12 +677,70 @@ export async function roundTrip(
     for (const [table, rows] of Object.entries(page.tables))
       sent.add(table, rows);
   });
-  const back = digester();
+  // The grown journey already proved its seed; its independently timed fixture supplies cuts and stop identity.
+  let targetStop;
+  if (comparison?.seed === false) {
+    await walk(target, `${label} metadata`, budget, () => {});
+    targetStop = stopPlan(
+      comparison.fixture,
+      typeof comparison.target === "function"
+        ? comparison.target()
+        : comparison.target,
+    );
+  }
+  const back = digester(false, targetStop);
   const read = await walk(target, `${label} readback`, budget, (page) => {
     for (const [table, rows] of Object.entries(page.tables))
       back.add(table, rows);
   });
   const digests = sent.done();
+  if (comparison?.seed === false) {
+    assert.deepEqual(
+      back.done(),
+      digests,
+      `${label}: target differs from expected image`,
+    );
+    assert.deepEqual(
+      trip.bytes,
+      expectedCuts(comparison.fixture, budget),
+      `${label}: source expected cuts`,
+    );
+    assert.deepEqual(
+      read.bytes,
+      expectedCuts(comparison.fixture, budget, targetStop),
+      `${label}: target expected cuts`,
+    );
+    return { ...trip, digests };
+  }
+  if (sourceRows) {
+    const targetStop = stopPlan(
+      sourceRows,
+      typeof comparison!.target === "function"
+        ? comparison!.target()
+        : comparison!.target,
+    );
+    assert.deepEqual(
+      digests,
+      digestOf(sourceRows),
+      `${label}: restore export differs from expected source`,
+    );
+    assert.deepEqual(
+      back.done(),
+      digestOf(stopOverlay(sourceRows, targetStop)),
+      `${label}: target differs from expected image`,
+    );
+    assert.deepEqual(
+      trip.bytes,
+      expectedCuts(sourceRows, budget),
+      `${label}: source expected cuts`,
+    );
+    assert.deepEqual(
+      read.bytes,
+      expectedCuts(sourceRows, budget, targetStop),
+      `${label}: target expected cuts`,
+    );
+    return { ...trip, digests };
+  }
   const image = digester();
   if (typeof expected === "string") {
     if (expected !== source)

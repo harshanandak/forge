@@ -1,9 +1,14 @@
 import { ForgeFailure } from "../../contract/failure.ts";
 import {
-  projectManifestRoot,
-  createGitScope,
   gitCapability,
+  createGitScope,
+  projectManifestRoot,
+  type GitScope,
 } from "../../assembly/providers.ts";
+import {
+  reopenGitScope,
+  validGitScope,
+} from "../../assembly/saved-git-scope.ts";
 import type { TrackerItem } from "../../generated/types.ts";
 import type {
   AmbientContext,
@@ -26,11 +31,7 @@ import {
   type BoundLaneRecord,
 } from "./bound-lane-state.ts";
 
-export const BOUND_LANES: ReadonlySet<string> = new Set(
-  ["start", "show", "status", "next", "record", "close", "release"].map(
-    (verb) => `lane.${verb}`,
-  ),
-);
+export { BOUND_LANES } from "./bound-lane-ops.ts";
 type ReadIssue = (id: string) => Promise<TrackerItem>;
 
 export async function boundLaneRead(
@@ -67,8 +68,9 @@ export async function boundLaneRead(
       record,
       input.id === record.cloudId ? fresh : undefined,
     );
+    const { gitScope: _scope, ...lane } = record.lane;
     return {
-      ...record.lane,
+      ...lane,
       issue: current.id,
       ...(current.lease ? { lease: current.lease } : {}),
     };
@@ -122,6 +124,23 @@ const helpers = entry as unknown as {
     lanes: (BoundLaneRecord["lane"] & { attempt?: string })[];
   };
 };
+/** Bound attachments require the complete native root shape; diagnostics may retain legacy rows. */
+export function boundLaneRegistry(
+  files: FilesService,
+  reject: typeof refuse = refuse,
+): {
+  text: string | null;
+  lanes: (BoundLaneRecord["lane"] & { attempt?: string })[];
+} {
+  const saved = helpers.laneRegistry(files, reject);
+  if (
+    saved.lanes.some(
+      (lane) => lane.gitScope !== undefined && !validGitScope(lane.gitScope),
+    )
+  )
+    reject("INPUT_INVALID", "Repair the invalid lane registry before retrying");
+  return saved;
+}
 export type BoundCommand = (
   op: string,
   input: object,
@@ -225,6 +244,7 @@ export async function boundLaneStart(
     async publish(lane, write, unpublished) {
       const store = await prepare(id);
       await fence.check();
+      reopenGitScope(lane.worktree, lane.gitScope ?? null);
       // Cloud authority is not atomic with the following synchronous CAS, registry write and activation.
       // Dispatch is fenced by issue.renew at this generation before every bound spawn (tools/lane-control.ts).
       record = { ...record, lane };
@@ -253,7 +273,8 @@ export async function boundLaneStart(
       ? previous.lane
       : undefined,
   );
-  return { ...lane, issue: fresh.id, lease: grant };
+  const { gitScope: _scope, ...visible } = lane;
+  return { ...visible, issue: fresh.id, lease: grant };
 }
 
 export type BoundProgressInput = {
@@ -290,6 +311,7 @@ export async function boundLaneProgress(
   ownBoundGrant(fresh.lease, context, device, record.grant.generation, now);
   if (!record.active || record.releaseRequestId || fresh.status !== "open")
     refuse("INPUT_CONFLICT", "The lane is inactive, releasing or closed.");
+  reopenGitScope(record.lane.worktree, record.lane.gitScope ?? null);
   const actualHead = await readHead(record.lane.worktree);
   const effectiveHead =
     op === "lane.next" ? input.head?.toLowerCase() : record.progress?.head;
@@ -473,6 +495,7 @@ export function boundLaneGit(
     "process" | "environment" | "signal" | "deadline"
   >,
   cwd: string,
+  saved?: GitScope | null,
 ): (args: string[]) => Promise<string> {
   const { process, environment, signal, deadline } = services;
   const env = environment.select([
@@ -488,7 +511,9 @@ export function boundLaneGit(
   const pin = gitCapability(
     process,
     env,
-    createGitScope(projectManifestRoot(process.cwd), cwd),
+    saved === undefined
+      ? createGitScope(projectManifestRoot(process.cwd), cwd)
+      : reopenGitScope(cwd, saved),
   );
   const readGit = async (args: string[]) => {
     const git = pin.executable();
@@ -516,6 +541,7 @@ export async function attachBoundLane(
     signal: AbortSignal;
     deadline: number;
     now: () => number;
+    gitScope?: GitScope;
   },
   fence: BoundAttachFence,
   previous?: BoundLaneRecord["lane"],
@@ -532,7 +558,33 @@ export async function attachBoundLane(
   );
   const problems = helpers.briefProblems(files.read(brief, 262144) ?? "");
   if (problems.length) refuse("INPUT_INVALID", problems.join("; "));
-  const readGit = boundLaneGit(services, files.root);
+  const matching = (lanes: ReturnType<typeof boundLaneRegistry>["lanes"]) =>
+    lanes.filter(
+      (row) =>
+        row.attempt === undefined &&
+        (row.issueId ?? row.issue.replace(/^.*-/, "work-")) === record.id,
+    );
+  const registered = matching(boundLaneRegistry(files).lanes);
+  const gitScope = reopenGitScope(
+    files.root,
+    previous?.gitScope ??
+      registered.find((row) => row.gitScope !== undefined)?.gitScope ??
+      services.gitScope ??
+      reopenGitScope(services.process.cwd),
+  );
+  const scopeKey = (scope: GitScope) =>
+    JSON.stringify(scope, ["project", "lane", "lexical", "real"]);
+  const checkSavedRoots = (rows: typeof registered) => {
+    for (const row of rows)
+      if (
+        row.gitScope !== undefined &&
+        scopeKey(reopenGitScope(files.root, row.gitScope)) !==
+          scopeKey(gitScope)
+      )
+        refuse("INPUT_CONFLICT", "Saved attachment Git roots disagree.");
+  };
+  checkSavedRoots(registered);
+  const readGit = boundLaneGit(services, files.root, gitScope);
   const identity = async () => {
     if (
       path(await readGit(["rev-parse", "--show-toplevel"])) !==
@@ -550,10 +602,11 @@ export async function attachBoundLane(
     recoverDeadOwner: true,
   });
   try {
-    const saved = helpers.laneRegistry(files, refuse);
+    const saved = boundLaneRegistry(files);
     const lane = {
       ...record.lane,
       worktree: files.root,
+      gitScope,
       brief: `${files.root.replace(/\\/g, "/")}/${brief}`,
     };
     if (
@@ -569,11 +622,8 @@ export async function attachBoundLane(
         ) !== path(brief))
     )
       refuse("INPUT_CONFLICT", "A live attachment has a different identity.");
-    const existing = saved.lanes.filter(
-      (row) =>
-        row.attempt === undefined &&
-        (row.issueId ?? row.issue.replace(/^.*-/, "work-")) === record.id,
-    );
+    const existing = matching(saved.lanes);
+    checkSavedRoots(existing);
     if (
       existing.length > 1 ||
       saved.lanes.some(
@@ -598,10 +648,16 @@ export async function attachBoundLane(
       () => {
         if (Date.parse(record.grant.expiresAt) <= services.now())
           refuse("LEASE_EXPIRED", "The cloud grant expired.");
-        if (!existing.length)
+        if (
+          !existing.length ||
+          JSON.stringify(existing[0]?.gitScope) !== JSON.stringify(gitScope)
+        )
           files.write(
             "forge-lanes.json",
-            JSON.stringify([...saved.lanes, lane]) + "\n",
+            JSON.stringify([
+              ...saved.lanes.filter((row) => !existing.includes(row)),
+              lane,
+            ]) + "\n",
             { area: "common", expected: saved.text },
           );
       },

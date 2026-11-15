@@ -95,7 +95,6 @@ import {
   selectCloud,
 } from "./cloud-authority.ts";
 import { LocalState } from "./state.ts";
-import { coordinateLane } from "./cloud-lane-coordinator.ts";
 import {
   ApprovalRequired,
   agentSession,
@@ -154,6 +153,7 @@ import {
 } from "./providers.ts";
 
 // Only skills.sync writes skill files, so no other command loads the writer.
+const loadLaneCoordinator = lazy(() => import("./cloud-lane-coordinator.ts"));
 const loadSkills = lazy(() => import("./skills.ts"));
 
 const TRUST_NAMESPACE = "forge/core-trust";
@@ -1828,8 +1828,8 @@ export async function createAssembly(
               scope: ownContext,
               env: options.providers?.env ?? process.env,
               cloud: options.providers?.cloudLogin,
-              coordinate: (flight, project) =>
-                coordinateLane(
+              coordinate: async (flight, project) =>
+                (await loadLaneCoordinator()).coordinateLane(
                   flight,
                   project,
                   deviceState,
