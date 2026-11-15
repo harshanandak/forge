@@ -40,13 +40,13 @@ export function storageOf(
       depth += 1;
       try {
         const result = body();
-        depth -= 1;
         if (outer) db.exec("COMMIT");
         return result;
       } catch (error) {
-        depth -= 1;
         if (outer) db.exec("ROLLBACK");
         throw error;
+      } finally {
+        depth -= 1;
       }
     },
     get: (key) => Promise.resolve(values.get(key)),

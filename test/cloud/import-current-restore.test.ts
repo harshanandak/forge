@@ -15,6 +15,7 @@ import { pagesOf as cut } from "../../cloud/conformance/max-source.ts";
 import { pageOrder } from "../../cloud/conformance/page-order.ts";
 import { respond } from "../../src/surface/result.ts";
 import { consumeLaneApproval } from "../../cloud/src/lane-approval.ts";
+import { browserStorage } from "./browser-storage.fixture.ts";
 import * as f from "./import-current-state.fixture.ts";
 import * as converter from "../../tools/import-current.ts";
 import { currentState, pagesOf } from "../../tools/import-current-state.ts";
@@ -58,7 +59,6 @@ test("shared storage detects a driver that cannot roll back joined writes", asyn
       return execute(sql);
     });
     try {
-      const { browserStorage } = await import("./browser-storage.fixture.ts");
       const db = durableStore(browserStorage(p.db).storage);
       db.exec("CREATE TABLE synthetic_nested (n INTEGER)");
       const check = () => {
@@ -86,6 +86,39 @@ test("shared storage detects a driver that cannot roll back joined writes", asyn
     } finally {
       driver.mockRestore();
     }
+  }
+}, 5_000);
+
+test("shared storage resets nesting after a commit failure", async () => {
+  const p = await f.project(),
+    db = durableStore(browserStorage(p.db).storage);
+  db.exec("CREATE TABLE synthetic_commit (n INTEGER)");
+  const execute = p.db.exec.bind(p.db);
+  let failCommit = true;
+  const driver = spyOn(p.db, "exec").mockImplementation((sql) => {
+    if (sql === "COMMIT" && failCommit) {
+      failCommit = false;
+      throw new Error("synthetic commit failure");
+    }
+    return execute(sql);
+  });
+  try {
+    assert.throws(
+      () =>
+        db.transaction(() => db.run("INSERT INTO synthetic_commit VALUES (1)")),
+      /synthetic commit failure/,
+    );
+    assert.throws(
+      () =>
+        db.transaction(() => {
+          db.run("INSERT INTO synthetic_commit VALUES (2)");
+          throw new Error("later body failure");
+        }),
+      /later body failure/,
+    );
+    eq(db.all("SELECT * FROM synthetic_commit"), []);
+  } finally {
+    driver.mockRestore();
   }
 }, 5_000);
 
