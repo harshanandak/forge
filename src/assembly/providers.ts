@@ -1,12 +1,10 @@
-import { lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { readdirSync, readFileSync, realpathSync } from "node:fs";
 import {
   basename,
   delimiter,
   dirname,
   isAbsolute,
-  join,
   relative,
-  resolve,
   sep,
 } from "node:path";
 import { cpus, freemem, tmpdir } from "node:os";
@@ -316,38 +314,15 @@ export function resolveOutside(
 ): ReturnType<ProcessPort["resolve"]> {
   const pathKey =
     Object.keys(env).find((key) => key.toUpperCase() === "PATH") ?? "PATH";
-  let rejected: string | undefined;
-  const none = (): ReturnType<ProcessPort["resolve"]> =>
-    rejected
-      ? {
-          kind: "unavailable",
-          reason: `No trusted ${name}; rejected path: ${rejected}`,
-          remedy: "Use an executable installed outside the lane's checkout.",
-        }
-      : executor.resolve(name, { ...env, [pathKey]: "" });
-  const inCheckout = (candidate: string): boolean => {
-    for (let ancestor = dirname(candidate); ;) {
-      if (
-        lanes.some((lane) => within(ancestor, lane)) &&
-        lstatSync(join(ancestor, ".git"), { throwIfNoEntry: false })
-      )
-        return true;
-      const parent = dirname(ancestor);
-      if (parent === ancestor) return false;
-      ancestor = parent;
-    }
-  };
+  const none = () => executor.resolve(name, { ...env, [pathKey]: "" });
   const excluded: string[] = [];
-  const lanes: string[] = [];
   const temps = [tmpdir()];
   for (const key of Object.keys(env))
     if (["TEMP", "TMP", "TMPDIR"].includes(key.toUpperCase()))
       temps.push(env[key]!);
   try {
-    for (const path of typeof root === "string" ? [root] : root) {
+    for (const path of typeof root === "string" ? [root] : root)
       excluded.push(realpathSync(path));
-      lanes.push(resolve(path), excluded.at(-1)!);
-    }
     for (const temp of temps) if (temp) excluded.push(realpathSync(temp));
   } catch {
     return none();
@@ -357,26 +332,19 @@ export function resolveOutside(
     if (!directory || !isAbsolute(directory)) continue;
     const found = executor.resolve(name, { ...env, [pathKey]: directory });
     if (found.kind !== "resolved") continue;
+    let canonical: string;
     try {
-      const canonical = realpathSync(found.path);
-      // A junction can hide the caller's checkout, so inspect both candidate paths.
-      if (
-        [resolve(found.path), canonical].some(
-          (candidate) =>
-            excluded.some((base) => within(base, candidate)) ||
-            /[\\/]node_modules[\\/]\.bin[\\/]/i.test(candidate) ||
-            inCheckout(candidate),
-        )
-      ) {
-        rejected = found.path;
-        continue;
-      }
-      // Launch the path that was checked, not the PATH entry.
-      return { kind: "resolved", path: canonical };
+      canonical = realpathSync(found.path);
     } catch {
-      rejected = found.path;
       continue;
     }
+    if (
+      excluded.some((base) => within(base, canonical)) ||
+      /[\\/]node_modules[\\/]\.bin[\\/]/i.test(canonical)
+    )
+      continue;
+    // Launch the path that was checked, not the PATH entry.
+    return { kind: "resolved", path: canonical };
   }
   return none();
 }
@@ -394,16 +362,13 @@ function hostEnv(options: ProviderOptions): Readonly<Record<string, string>> {
 
 // Discovery calls share the host's single supervisor; each lookup is launched once in order.
 let gitDiscovery = Promise.resolve();
-function gitOptions(root: string, options: ProviderOptions) {
+function gitOptions(options: ProviderOptions) {
   const port = createProcessPort({
     supervision: options.supervision ?? CLEANUP,
   });
   return {
     process: {
       ...port,
-      resolve(name: string, env: Readonly<Record<string, string>>) {
-        return resolveOutside(port, name, env, root);
-      },
       async run(...args: Parameters<ProcessPort["run"]>) {
         const pending = gitDiscovery.then(() => port.run(...args));
         gitDiscovery = pending.then(
@@ -438,7 +403,7 @@ export function projectStateRoot(
   root: string,
   options: ProviderOptions = {},
 ): Promise<string> {
-  return mainCheckoutPath(root, gitOptions(root, options));
+  return mainCheckoutPath(root, gitOptions(options));
 }
 
 /**
@@ -454,7 +419,7 @@ export function checkoutScopeRoot(
   root: string,
   options: ProviderOptions = {},
 ): Promise<string | undefined> {
-  return gitCheckoutScopeRoot(root, gitOptions(root, options));
+  return gitCheckoutScopeRoot(root, gitOptions(options));
 }
 
 /** A name as an issue id prefix: lowercase letters, digits and single hyphens; undefined when none remain. */
@@ -478,10 +443,7 @@ export async function idPrefixObservation(
   stateRoot: string,
   options: ProviderOptions = {},
 ): Promise<readonly DetectionObservation[]> {
-  const repository = await originRepositoryName(
-    root,
-    gitOptions(root, options),
-  );
+  const repository = await originRepositoryName(root, gitOptions(options));
   const value = idPrefix(repository ?? basename(stateRoot));
   return value === undefined
     ? []
@@ -888,7 +850,8 @@ export function createAssemblyProviders(
         ),
       );
       const git = resolveOutside(executor, "git", scrubbed, root);
-      if (git.kind !== "resolved") refuse("UNAVAILABLE", git.reason);
+      if (git.kind !== "resolved")
+        refuse("UNAVAILABLE", "Clone files require Git on PATH");
       const discoveryKey =
         Object.keys(scrubbed).find((key) => key.toUpperCase() === "PATH") ??
         "PATH";

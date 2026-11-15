@@ -489,7 +489,7 @@ export function boundLaneGit(
     cwd,
   ]);
 
-  if (git.kind !== "resolved") refuse("UNAVAILABLE", git.reason);
+  if (git.kind !== "resolved") refuse("UNAVAILABLE", "Git is unavailable.");
   const readGit = async (args: string[]) => {
     const result = await process.run(git, args, {
       cwd: cwd,

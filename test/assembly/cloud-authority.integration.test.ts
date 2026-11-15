@@ -1893,9 +1893,7 @@ test("bound attachment: concurrent clones reserve before registry publication", 
             () =>
               Promise.resolve({
                 save: (r, v) => writeBoundLane(client, project, r, v),
-                restore: () => {
-                  throw new Error("Unexpected publication refusal");
-                },
+                restore: () => expect.unreachable("Unexpected rollback"),
               }),
             async (record, fence) => {
               if (++entered === 2) barrier.resolve();
@@ -2166,10 +2164,7 @@ for (const [name, expected] of [
               noRollback.boundLaneStart,
             )
           : undefined;
-        const openStore = Object.getOwnPropertyDescriptor(
-          LocalState.prototype,
-          "open",
-        )!.value as LocalState["open"];
+        const openStore = Reflect.get(LocalState.prototype, "open");
         const promotion =
           name === "grant changes during writable prepare"
             ? spyOn(LocalState.prototype, "open").mockImplementation(
@@ -2231,10 +2226,7 @@ for (const [name, expected] of [
                 },
                 {
                   check: async () => {},
-                  publish: (_lane, write) => {
-                    write();
-                    return Promise.resolve();
-                  },
+                  publish: (_lane, write) => Promise.resolve(write()),
                 },
               );
               expect(lane.branch).toBe("feat/one");
@@ -2402,13 +2394,8 @@ for (const [name, expected] of [
               );
               expect(mutant.mutationLoaded).toBe(true);
               expect(mutant.attachBoundLane).not.toBe(attachBoundLane);
-              const removed = live
-                ? spyOn(boundLane, "attachBoundLane").mockImplementation(
-                    mutant.attachBoundLane,
-                  )
-                : spyOn(boundLane, "boundLaneStart").mockImplementation(
-                    mutant.boundLaneStart,
-                  );
+              const key = live ? "attachBoundLane" : "boundLaneStart";
+              const spy = spyOn(boundLane, key).mockImplementation(mutant[key]);
               reads = 0;
               finalIdentity = false;
               prepared = false;
@@ -2416,7 +2403,7 @@ for (const [name, expected] of [
                 const unsafe = await start();
                 expect(unsafe.ok, JSON.stringify(unsafe)).toBe(true);
               } finally {
-                removed.mockRestore();
+                spy.mockRestore();
               }
             }
             return;

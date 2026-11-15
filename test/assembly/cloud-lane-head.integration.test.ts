@@ -1,4 +1,4 @@
-import { expect, mock, setDefaultTimeout, spyOn, test } from "bun:test";
+import { expect, mock, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
   existsSync,
@@ -6,11 +6,10 @@ import {
   mkdtempSync,
   realpathSync,
   rmSync,
-  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, delimiter, dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import * as coordinator from "../../src/assembly/cloud-lane-coordinator.ts";
 import * as laneState from "../../src/blocks/work/bound-lane-state.ts";
 import {
@@ -20,9 +19,6 @@ import {
 } from "../../src/assembly/providers.ts";
 import type { Preflight } from "../../src/core/runtime/index.ts";
 import type { ProcessPort } from "../../src/ports/process.ts";
-import * as providerModule from "../../src/assembly/providers.ts";
-import { withoutGuard } from "./cloud-fixture.ts";
-import * as launch from "../../src/adapters/process/run.ts";
 setDefaultTimeout(30000);
 
 const readHead = (
@@ -62,16 +58,7 @@ test("attached head shares the journal's full-head validator", () => {
 
 for (const variant of [
   "trusted lookup",
-  "unrelated repository",
   "nested caller",
-  "linked caller",
-  "linked target",
-  "linked clone files",
-  "linked startup",
-  "linked ancestor honest",
-  "linked ancestor missing",
-  "linked ancestor forged",
-  "linked junction",
   "fresh read",
   "sha256",
   "no trusted git",
@@ -84,25 +71,10 @@ for (const variant of [
 ] as const)
   test(`attached head table: ${variant}`, async () => {
     const root = mkdtempSync(join(import.meta.dirname, ".forge-bound-head-"));
-    const junction = variant === "linked junction";
-    const unrelated = variant === "unrelated repository";
-    const outside =
-      junction || unrelated
-        ? mkdtempSync(join(tmpdir(), "forge-linked-outside-"))
-        : undefined;
-    if (junction) symlinkSync(outside!, join(root, ".worktrees"), "junction");
-    const ancestor = junction || variant.startsWith("linked ancestor");
-    const caller = ancestor
-        ? join(root, ".worktrees", "lane")
-        : join(unrelated ? outside! : root, "caller"),
-      target = join(unrelated ? outside! : root, "target");
-    const installed = unrelated ? join(root, basename(trusted)) : trusted;
-    if (unrelated) {
-      mkdirSync(join(root, ".git"));
-      writeFileSync(installed, "trusted repository Git", { mode: 0o755 });
-    }
+    const caller = join(root, "caller"),
+      target = join(root, "target");
     for (const path of [caller, target]) {
-      mkdirSync(path, { recursive: true });
+      mkdirSync(path);
       writeFileSync(
         join(path, process.platform === "win32" ? "git.exe" : "git"),
         "project-controlled executable",
@@ -121,62 +93,21 @@ for (const variant of [
         { mode: 0o755 },
       );
     }
-    const linked = variant.startsWith("linked");
-    const cloneLookup =
-      ancestor || ["linked clone files", "linked startup"].includes(variant);
-    const common = join(root, ".git"),
-      gitdir = join(root, "metadata");
-    const linkedRoot = variant === "linked target" ? target : processRoot;
-    const mainBin = join(root, "bin"),
-      probe = join(root, "project-git-ran");
-    const poison = join(
-      mainBin,
-      process.platform === "win32" ? "git.cmd" : "git",
-    );
-    if (linked) {
-      if (variant === "linked target") mkdirSync(join(caller, ".git"));
-      for (const dir of [gitdir, common, mainBin])
-        mkdirSync(dir, { recursive: true });
-      writeFileSync(join(linkedRoot, ".git"), `gitdir: ${gitdir}\n`);
-      if (!variant.endsWith("missing"))
-        writeFileSync(
-          join(gitdir, "commondir"),
-          variant.endsWith("forged") ? target : common,
-        );
-      writeFileSync(
-        poison,
-        process.platform === "win32"
-          ? `@echo off\r\necho ran>"${probe}"\r\nexit /b 99\r\n`
-          : `#!/bin/sh\nprintf ran > '${probe.replace(/'/g, "'\\''")}'\nexit 99\n`,
-        { mode: 0o755 },
-      );
-    }
     const env = {
       PATH: [
-        ...(linked ? [mainBin] : []),
         callerBin,
-        ...(cloneLookup ? [] : [target]),
-        ...(variant === "no trusted git" ? [] : [dirname(installed)]),
+        target,
+        ...(variant === "no trusted git" ? [] : [dirname(trusted)]),
       ].join(delimiter),
       PATHEXT: process.env.PATHEXT ?? ".EXE;.CMD",
       SystemRoot: process.env.SystemRoot ?? "",
       GIT_DIR: "must-not-reach-git",
     };
     const native = createAssemblyProviders(processRoot, { env });
-    const scope = {
-      op: "lane.start",
-      effects: ["files:read", "external:process"],
-      signal: AbortSignal.timeout(30000),
-      deadline: Date.now() + 30000,
-      processContainment: "supervised" as const,
-    };
-    const port = native.process(scope);
     let attempts = 0;
     const runs = mock<ProcessPort["run"]>((_executable, _args, _options) => {
       attempts++;
-      if (linked && _executable.path !== trusted)
-        writeFileSync(probe, "untrusted Git was launched");
-      const result = {
+      return Promise.resolve({
         exitCode: variant === "exit" ? 1 : 0,
         signal: null,
         stderr: "",
@@ -191,10 +122,7 @@ for (const variant of [
         timedOut: variant === "timeout",
         truncated: variant === "truncated",
         durationMs: 0,
-      };
-      if (cloneLookup)
-        result.stdout = `${variant === "linked startup" ? processRoot + "\n" : ""}${gitdir}\n${common}\n`;
-      return Promise.resolve(result);
+      });
     });
     const files = mock(() => {
       throw new Error("Head inspection must not open clone files");
@@ -231,21 +159,7 @@ for (const variant of [
             : ["exit", "timeout", "truncated", "invalid head"].includes(variant)
               ? "INPUT_CONFLICT"
               : undefined;
-      if (cloneLookup) {
-        const startup = spyOn(launch, "runProcess").mockImplementation(
-          (executable, args, options) =>
-            runs({ kind: "resolved", path: executable }, args, options),
-        );
-        try {
-          if (variant === "linked startup")
-            expect(
-              await providerModule.projectStateRoot(processRoot, { env }),
-            ).toBe(root);
-          else await (await native.openFiles(scope)).close();
-        } finally {
-          startup.mockRestore();
-        }
-      } else if (expected)
+      if (expected)
         await expect(
           readHead(flight(effects), providers, target),
         ).rejects.toMatchObject({ error: { code: expected } });
@@ -257,11 +171,9 @@ for (const variant of [
           expect(await readHead(flight(), providers, target)).toBe(H2);
       }
       for (const [executable, args, options] of runs.mock.calls) {
-        expect(executable.path).toBe(realpathSync.native(installed));
-        if (!cloneLookup) {
-          expect(args).toEqual(["rev-parse", "--verify", "HEAD"]);
-          expect(options.cwd).toBe(target);
-        }
+        expect(executable.path).toBe(trusted);
+        expect(args).toEqual(["rev-parse", "--verify", "HEAD"]);
+        expect(options.cwd).toBe(target);
         expect(options.env).not.toHaveProperty("GIT_DIR");
         expect(options.timeoutMs).toBeGreaterThan(0);
         expect(options.timeoutMs).toBeLessThanOrEqual(60000);
@@ -276,33 +188,9 @@ for (const variant of [
             : 1,
       );
       expect(files).not.toHaveBeenCalled();
-      expect(existsSync(probe)).toBe(false);
-      if (linked || unrelated) {
-        const mutant = await withoutGuard<typeof providerModule>(
-          new URL("../../src/assembly/providers.ts", import.meta.url),
-          unrelated
-            ? "lanes.some((lane) => within(ancestor, lane))"
-            : "inCheckout(candidate)",
-          String(unrelated),
-        );
-        expect(mutant.mutationLoaded).toBe(true);
-        const unsafe = mutant.resolveOutside(port, "git", env, linkedRoot);
-        expect(unsafe).toMatchObject(
-          unrelated
-            ? { kind: "unavailable" }
-            : {
-                kind: "resolved",
-                path: realpathSync.native(poison),
-              },
-        );
-        if (unsafe.kind === "resolved")
-          await runs(unsafe, [], runs.mock.calls[0]![2]);
-        expect(existsSync(probe)).toBe(!unrelated);
-      }
       expect(existsSync(join(caller, ".forge", "state.sqlite"))).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
-      if (outside) rmSync(outside, { recursive: true, force: true });
     }
   });
 

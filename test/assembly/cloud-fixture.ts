@@ -15,17 +15,17 @@ export async function withoutGuard<T>(
   guard: string | RegExp,
   replacement = "",
 ) {
-  const source = readFileSync(url, "utf8");
+  const source =
+    readFileSync(url, "utf8") + "\nexport const mutationLoaded=true;";
   const changed = source.replace(guard, replacement);
   if (changed === source) throw new Error(`Mutation was not applied: ${guard}`);
   const absolute = changed.replace(
     /from "(\.[^"]+)"/g,
     (_all, path: string) => `from "${new URL(path, url).href}"`,
   );
-  const transpiler = new Bun.Transpiler({ loader: "ts" });
-  const javascript = transpiler.transformSync(absolute);
+  const js = new Bun.Transpiler({ loader: "ts" }).transformSync(absolute);
   return (await import(
-    `data:text/javascript;base64,${Buffer.from(javascript + "\nexport const mutationLoaded = true;").toString("base64")}`
+    `data:text/javascript;base64,${Buffer.from(js).toString("base64")}`
   )) as T & { mutationLoaded: boolean };
 }
 
