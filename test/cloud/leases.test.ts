@@ -15,7 +15,7 @@ import type {
   LeaseRecord,
   StateEvent,
 } from "../../src/generated/types.ts";
-import { OLD_SCHEMA } from "./old-schema.ts";
+import { OLD_SCHEMA, PUBLIC_ENV, setupCalls, badOpener } from "./old-schema.ts";
 
 if (!("timingSafeEqual" in crypto.subtle))
   Object.defineProperty(crypto.subtle, "timingSafeEqual", {
@@ -200,7 +200,7 @@ function fixture(env?: unknown) {
     snapshot,
     // A new Project over the same storage: nothing it has not read is set up.
     reopen: () => {
-      project = new Project({ storage });
+      project = new Project({ storage }, env);
     },
     // The object as an older deploy left it.
     cold: () => {
@@ -228,6 +228,164 @@ function fixture(env?: unknown) {
     },
   };
 }
+
+test("public and admin reads never initialize a reopened Project", async () => {
+  for (const old of [false, true]) {
+    using f = fixture();
+    await f.issue();
+    if (old) f.cold();
+    for (const [path, body, status] of [
+      ["/p/a/loginpoll", "{", 400],
+      ["/p/a/loginpoll", '{"device_code":"invalid"}', old ? 503 : 400],
+      ["/device", undefined, 200],
+      ["/lane-approval/unknown", undefined, 400],
+      ["/p/a/dump?cursor=bad", undefined, 400],
+      ["/p/a/status", undefined, 200],
+      ["/p/a/dump", undefined, 200],
+    ] as const) {
+      const was = f.snapshot();
+      f.calls.length = 0;
+      const project = new Project({ storage: f.storage }, PUBLIC_ENV);
+      const response = await project.fetch(
+        new Request(`https://fixture.example${path}`, {
+          method: body === undefined ? "GET" : "POST",
+          ...(body === undefined ? {} : { body }),
+        }),
+      );
+      expect([
+        old,
+        path,
+        response.status,
+        setupCalls(f.calls),
+        f.snapshot() === was,
+      ]).toEqual([old, path, status, [], true]);
+      if (response.status === 503)
+        expect(await response.json()).toMatchObject({
+          error: { code: "UNAVAILABLE" },
+        });
+    }
+  }
+}, 30_000);
+
+test("invalid admin fields cannot initialize or provision storage", async () => {
+  for (const old of [false, true]) {
+    using f = fixture();
+    if (old) {
+      await f.issue();
+      f.cold();
+    }
+    for (const [route, input] of [
+      ["devices", { device: "phone", ttlMs: 90 * day + 1 }],
+      ["devices", { device: "phone", ttlMs: day, agent: 5 }],
+      ["revoke", { id: "" }],
+    ] as const) {
+      f.reopen();
+      const was = f.snapshot();
+      const got = await f.raw(route, input, {});
+      expect([
+        got.status,
+        got.body.error?.code,
+        setupCalls(got.calls),
+        f.snapshot() === was,
+      ]).toEqual([400, "INPUT_INVALID", [], true]);
+    }
+  }
+}, 30_000);
+
+test.each(["constructor", "dump", "cleanup"] as const)(
+  "loaded bad opener is caught at %s request assertion",
+  async (mode) => {
+    using f = fixture();
+    if (mode === "cleanup") {
+      using source = fixture();
+      const page = (await source.send("dump?cursor=start")).body
+        .value as object;
+      expect(
+        (await f.send("restore", { ...page, last: false, next: "next" }))
+          .status,
+      ).toBe(200);
+    } else await f.issue();
+    for (const sql of OLD_SCHEMA) f.db.run(sql);
+    const Constructor = await badOpener(mode);
+    f.calls.length = 0;
+    const project = new Constructor({ storage: f.storage }, PUBLIC_ENV);
+    const response = await project.fetch(
+      new Request(
+        `https://fixture.example${mode === "constructor" ? "/device" : mode === "dump" ? "/p/a/dump?cursor=bad" : "/p/a/restore"}`,
+        mode === "cleanup" ? { method: "POST", body: "{}" } : {},
+      ),
+    );
+    expect(response.status).toBe(mode === "constructor" ? 200 : 400);
+    expect(() => expect(setupCalls(f.calls)).toEqual([])).toThrow("toEqual");
+  },
+  30_000,
+);
+
+test("refused restore cleanup reuses schema without initialization", async () => {
+  using source = fixture();
+  await source.issue();
+  const page = (await source.send("dump?cursor=start")).body.value as Record<
+    string,
+    unknown
+  >;
+  using f = fixture();
+  expect(
+    (await f.send("restore", { ...page, last: false, next: "next" })).status,
+  ).toBe(200);
+  for (const sql of OLD_SCHEMA) f.db.run(sql);
+  f.reopen();
+  const got = await f.raw("restore", {}, {});
+  expect([got.status, setupCalls(got.calls)]).toEqual([400, []]);
+  expect(await f.storage.get("restore:next")).toBeUndefined();
+}, 30_000);
+
+test("failed initialization rolls back historical setup and can retry on the same handle", async () => {
+  using f = fixture();
+  await f.issue();
+  for (const sql of OLD_SCHEMA) f.db.run(sql);
+  const was = f.snapshot();
+  let fail = true;
+  const storage: DurableStorage = {
+    ...f.storage,
+    sql: {
+      exec: (sql, ...bindings) => {
+        if (
+          fail &&
+          sql.startsWith(
+            "CREATE TABLE IF NOT EXISTS domain_cloud_browser_attempts",
+          )
+        )
+          throw new Error("injected migration failure");
+        return f.storage.sql.exec(sql, ...bindings);
+      },
+    },
+  };
+  const project = new Project({ storage });
+  const write = () =>
+    project.fetch(
+      new Request("https://fixture.example/p/a/claim", {
+        method: "POST",
+        headers: FORGED,
+        body: JSON.stringify({ ...defaults, requestId: "retry-migration" }),
+      }),
+    );
+  const logged = spyOn(console, "error").mockImplementation(() => undefined);
+  try {
+    expect((await write()).status).toBe(500);
+    expect(f.snapshot()).toBe(was);
+    fail = false;
+    expect((await write()).status).toBe(200);
+    expect(
+      f.db
+        .query(
+          "SELECT id FROM state_migrations WHERE id='004_cloud_browser_attempts'",
+        )
+        .get(),
+    ).not.toBeNull();
+  } finally {
+    logged.mockRestore();
+  }
+}, 30_000);
 
 for (const route of ["claim", "renew"])
   for (const auth of ["device", "owner"]) {
