@@ -117,6 +117,7 @@ export function stopPlan(
     }),
   }));
   const high = Number(before.state_events!.at(-1)?.sequence ?? 0);
+  assert.ok(Number.isSafeInteger(high + 2), "stop event sequence");
   const events = records.map((row, i) => ({
     namespace,
     key: row.key,
@@ -137,22 +138,18 @@ export function stopPlan(
 /** References to existing payloads plus two small pairs; the none case returns the original image. */
 export function stopOverlay(before: Tables, plan?: StopPlan): Tables {
   if (!plan) return before;
+  const records = before.state_records!.filter((row) => !stopGlobal(row));
+  for (const row of plan.records) {
+    const at = records.findIndex((other) =>
+      other.namespace === row.namespace
+        ? String(other.key) > row.key!
+        : String(other.namespace) > row.namespace!,
+    );
+    records.splice(at < 0 ? records.length : at, 0, row);
+  }
   return {
     ...before,
-    state_records: [
-      ...before.state_records!.filter((row) => !stopGlobal(row)),
-      ...plan.records,
-    ].sort((a, b) =>
-      String(a.namespace) < String(b.namespace)
-        ? -1
-        : a.namespace !== b.namespace
-          ? 1
-          : String(a.key) < String(b.key)
-            ? -1
-            : a.key === b.key
-              ? 0
-              : 1,
-    ),
+    state_records: records,
     state_events: [...before.state_events!, ...plan.events],
   };
 }

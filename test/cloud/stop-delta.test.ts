@@ -3,7 +3,7 @@ import { spyOn, test } from "bun:test";
 import { canonicalJson } from "../../src/core/config/pointer.ts";
 import { roundTrip } from "../../cloud/conformance/conformance.ts";
 import { SHAPE, type Tables } from "../../cloud/conformance/max-source.ts";
-import { stopPlan } from "../../cloud/conformance/restored.ts";
+import { stopPlan, stopOverlay } from "../../cloud/conformance/restored.ts";
 import {
   tally,
   fold,
@@ -137,6 +137,35 @@ const compare = roundTrip as (
   expected: undefined,
   comparison: Comparison,
 ) => ReturnType<typeof roundTrip>;
+
+test("stop delta: none preserves references and sparse merge preserves SQL order", () => {
+  const source = fixture(false);
+  const bmp = record("\ue000", {}),
+    astral = record("\u{10000}", {});
+  source.state_records!.push(bmp, astral);
+  assert.equal(stopPlan(source), undefined);
+  assert.equal(stopOverlay(source), source);
+  const after = stopOverlay(source, stopPlan(source, deltas[0]));
+  assert.equal(after.state_records!.at(-2), bmp);
+  assert.equal(after.state_records!.at(-1), astral);
+  assert.equal(after.state_events![0], source.state_events![0]);
+}, 1000);
+
+test("stop delta: a deleted global keeps historical revisions", () => {
+  const source = fixture(false);
+  source.state_events!.push({
+    sequence: 10,
+    namespace,
+    key: "lane-control:global",
+    body: canonicalJson({ revision: 4 }),
+  });
+  const plan = stopPlan(source, deltas[0])!;
+  assert.equal(plan.records[0]!.revision, 5);
+  assert.deepEqual(
+    plan.events.map((row) => row.sequence),
+    [11, 12],
+  );
+}, 1000);
 const cases = [
   "correct",
   "duplicate event",
