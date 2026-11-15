@@ -15,7 +15,15 @@ import type {
   LeaseRecord,
   StateEvent,
 } from "../../src/generated/types.ts";
-import { OLD_SCHEMA, PUBLIC_ENV, setupCalls, badOpener } from "./old-schema.ts";
+import {
+  PRE_WATERMARK,
+  WATERMARK_SCHEMA,
+  WATERMARK_MIGRATION,
+  OLD_SCHEMA,
+  PUBLIC_ENV,
+  setupCalls,
+  badOpener,
+} from "./old-schema.ts";
 
 if (!("timingSafeEqual" in crypto.subtle))
   Object.defineProperty(crypto.subtle, "timingSafeEqual", {
@@ -46,12 +54,15 @@ function fixture(env?: unknown) {
     // Every statement, transaction and key-value call, so setup or a stray read shows even when no row changes.
     calls: string[] = [];
   let failRelease = false;
+  let failMigration = false;
   let failRestoredRelease = false;
   let claimNumber = 0;
   const storage: DurableStorage = {
     sql: {
       exec: (sql, ...bindings) => {
         calls.push(sql);
+        if (failMigration && sql.startsWith("CREATE INDEX"))
+          throw new Error("injected migration failure");
         if (
           (failRelease ||
             (failRestoredRelease &&
@@ -91,6 +102,7 @@ function fixture(env?: unknown) {
   };
   let project = new Project({ storage }, env);
   const bindings = {
+    ADMIN_TOKEN: "fixture-admin",
     PROJECTS: { idFromName: (name: string) => name, get: () => project },
   };
   async function send(
@@ -216,6 +228,9 @@ function fixture(env?: unknown) {
     row,
     rows,
     revoke: (device: Device) => send("revoke", { id: device.id }),
+    failMigration: () => {
+      failMigration = true;
+    },
     failRestore: () => {
       failRestoredRelease = true;
     },
@@ -833,6 +848,7 @@ test("a cold object migrates once its token is accepted, then serves the lease j
     sent.push(await f.raw(route, body, bearer(device.token), "worker"));
   }
   expect(sent.map((got) => got.status)).toEqual([200, 200, 200, 200]);
+  expect(f.db.query(WATERMARK_SCHEMA).get()).not.toBeNull();
   expect(sent[0]?.body.value).toMatchObject({ generation: 1 });
   expect(sent[3]?.body).toEqual(sent[2]?.body);
   expect(f.snapshot()).toContain("domain_cloud_login");
@@ -1054,3 +1070,151 @@ for (const mode of ["paged", "whole", "malformed"] as const)
       if (checkpoint || mode === "malformed")
         expect(await target.lookup()).toBeNull();
     }, 30_000);
+
+test("admin preparation upgrades current and historical stores without changing project data", async () => {
+  for (const historical of [false, true]) {
+    using f = fixture();
+    const device = await f.issue();
+    await f.claim("kept", device);
+    for (const sql of PRE_WATERMARK) f.db.run(sql);
+    if (historical) f.cold();
+    f.reopen();
+    const data = (await f.send("dump")).body.value;
+    const auth = { authorization: "Bearer fixture-admin" };
+    const was = f.snapshot();
+    const pending = await f.raw("upgrade", undefined, auth, "worker");
+    expect([
+      pending.status,
+      setupCalls(pending.calls),
+      f.snapshot() === was,
+    ]).toEqual([200, [], true]);
+    expect(pending.body.value).toMatchObject({ ready: false, index: false });
+    for (const outcome of ["upgraded", "already ready"]) {
+      const got = await f.raw("upgrade", {}, auth, "worker");
+      expect([got.status, got.body.value]).toEqual([
+        200,
+        { ready: true, index: true, pending: [], outcome },
+      ]);
+      if (outcome === "already ready")
+        expect(setupCalls(got.calls)).toEqual([]);
+    }
+    expect((await f.send("dump")).body.value).toEqual(data);
+    expect(f.db.query(WATERMARK_SCHEMA).get()).not.toBeNull();
+    const ready = f.snapshot();
+    expect(
+      (await f.raw("upgrade", undefined, auth, "worker")).body.value,
+    ).toEqual({ ready: true, index: true, pending: [] });
+    expect(f.snapshot()).toBe(ready);
+    expect(
+      f.rows("state_migrations").some((r) => r.id === WATERMARK_MIGRATION),
+    ).toBe(true);
+  }
+}, 30_000);
+
+test("upgrade refuses before setup and never provisions a cold target", async () => {
+  for (const mode of [
+    "cold",
+    "unknown ledger",
+    "pragma",
+    "missing admin",
+    "wrong admin",
+    "shape",
+    "method",
+    "query",
+    "large",
+    "json",
+  ]) {
+    using f = fixture();
+    if (mode !== "cold") {
+      await f.issue();
+      for (const sql of PRE_WATERMARK) f.db.run(sql);
+    }
+    if (mode === "unknown ledger")
+      f.db.run("INSERT INTO state_migrations VALUES ('999_unknown')");
+    if (mode === "pragma") f.db.run("UPDATE domain_cloud_pragma SET value=1");
+    f.reopen();
+    const was = f.snapshot();
+    let reached = 0;
+    const response = await createWorker().fetch(
+      new Request(
+        `https://fixture.example/p/a/upgrade${mode === "query" ? "?x=1" : ""}`,
+        {
+          method: mode === "method" ? "DELETE" : "POST",
+          headers:
+            mode === "missing admin"
+              ? {}
+              : {
+                  authorization: `Bearer ${mode === "wrong admin" ? "wrong" : "fixture-admin"}`,
+                },
+          body:
+            mode === "shape"
+              ? '{"extra":1}'
+              : mode === "large"
+                ? " ".repeat(10000)
+                : mode === "json"
+                  ? "{"
+                  : "{}",
+        },
+      ),
+      {
+        ADMIN_TOKEN: "fixture-admin",
+        PROJECTS: {
+          idFromName: (n) => n,
+          get: () => {
+            reached++;
+            return new Project({ storage: f.storage });
+          },
+        },
+      },
+    );
+    const expected = ["missing admin", "wrong admin"].includes(mode)
+      ? 401
+      : ["cold", "unknown ledger", "pragma"].includes(mode)
+        ? 409
+        : 400;
+    expect([mode, response.status, f.snapshot() === was]).toEqual([
+      mode,
+      expected,
+      true,
+    ]);
+    if (!["cold", "unknown ledger", "pragma"].includes(mode))
+      expect(reached).toBe(0);
+  }
+}, 30_000);
+
+test("upgrade migration failure rolls schema and ledger back", async () => {
+  using f = fixture();
+  await f.issue();
+  for (const sql of PRE_WATERMARK) f.db.run(sql);
+  f.cold();
+  const was = f.snapshot();
+  f.failMigration();
+  expect(
+    (
+      await f.raw(
+        "upgrade",
+        {},
+        { authorization: "Bearer fixture-admin" },
+        "worker",
+      )
+    ).status,
+  ).toBe(500);
+  expect(f.snapshot()).toBe(was);
+}, 30_000);
+
+test("whole and paged restore initialize the watermark index before visibility", async () => {
+  for (const paged of [false, true]) {
+    using source = fixture();
+    using target = fixture();
+    const device = await source.issue();
+    await source.claim("restored", device);
+    const dump = (await source.send(paged ? "dump?cursor=start" : "dump")).body
+      .value;
+    expect((await target.send("restore", dump)).status).toBe(200);
+    expect(target.db.query(WATERMARK_SCHEMA).get()).not.toBeNull();
+    expect((await target.send("upgrade")).body.value).toMatchObject({
+      ready: true,
+      index: true,
+    });
+  }
+}, 30_000);

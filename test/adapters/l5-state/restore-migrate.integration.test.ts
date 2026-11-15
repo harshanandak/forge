@@ -84,6 +84,14 @@ for (const file of [false, true]) {
           "SELECT name FROM sqlite_master WHERE name='state_events_by_key'",
         ),
       ).toEqual({ name: "state_events_by_key" });
+      expect(
+        target.db.get(
+          "SELECT name FROM sqlite_master WHERE name='state_events_by_namespace'",
+        ),
+      ).toBeDefined();
+      expect(target.owner.namespaceRevision(ns)).toBe(
+        source.owner.namespaceRevision(ns),
+      );
       expect(source.owner.export()).toEqual(snapshot);
     } finally {
       await source.close();

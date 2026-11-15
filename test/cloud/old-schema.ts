@@ -69,3 +69,11 @@ export async function badOpener(
     )) as { Project: typeof Project }
   ).Project;
 }
+
+export const WATERMARK_INDEX = "state_events_by_namespace";
+export const WATERMARK_MIGRATION = "005_state_events_namespace_index";
+export const PRE_WATERMARK = [
+  `DROP INDEX IF EXISTS ${WATERMARK_INDEX}`,
+  `DELETE FROM state_migrations WHERE id='${WATERMARK_MIGRATION}'`,
+];
+export const WATERMARK_SCHEMA = `SELECT name FROM sqlite_master WHERE type='index' AND name='${WATERMARK_INDEX}'`;

@@ -18,7 +18,12 @@ import {
 } from "../../cloud/src/store.ts";
 import { TOKEN_LOOKUP, TOKENS } from "../../cloud/src/tokens.ts";
 import { prepareCommand, runCommand } from "../../cloud/src/issue-commands.ts";
-import { OLD_SCHEMA, setupCalls } from "./old-schema.ts";
+import {
+  PRE_WATERMARK,
+  WATERMARK_SCHEMA,
+  OLD_SCHEMA,
+  setupCalls,
+} from "./old-schema.ts";
 import {
   commit as stateCommit,
   read as stateRead,
@@ -371,7 +376,7 @@ test("old-schema command and state writes apply historical setup after read-only
   for (const state of [false, true]) {
     const f = fixture({ ...vars, FORGE_STATE_NAMESPACES: ["forge/memory"] });
     const token = await f.device(day, "laptop", "s1");
-    for (const sql of OLD_SCHEMA) f.db.run(sql);
+    for (const sql of [...OLD_SCHEMA, ...PRE_WATERMARK]) f.db.run(sql);
     f.reopen();
     const was = f.snapshot();
     const read = await f.send(
@@ -395,6 +400,7 @@ test("old-schema command and state writes apply historical setup after read-only
       setupCalls(read.touched),
       f.snapshot() === was,
     ]).toEqual([200, [], true]);
+    expect(f.db.query(WATERMARK_SCHEMA).get()).toBeNull();
     const write = await f.send(
       state
         ? {
@@ -421,6 +427,7 @@ test("old-schema command and state writes apply historical setup after read-only
         .query("SELECT id FROM state_migrations WHERE id='003_cloud_login'")
         .get(),
     ).not.toBeNull();
+    expect(f.db.query(WATERMARK_SCHEMA).get()).not.toBeNull();
   }
 }, 30_000);
 const statePolicy = digestValue(stateNamespaces);
