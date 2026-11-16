@@ -68,6 +68,21 @@ for (const [name, source, kind, line] of [
   ["JSX expression", "const x = <p>{1 /* why */}</p>;", "block comment", 1],
   ["test file", "test('works', () => {}); // why", "line comment", 1],
   ["bare CR", "const x = 1;\r// why", "line comment", 1],
+  ["BOM", "\uFEFFconst x = 1; // why", "line comment", 1],
+  ["UTF-16 offset", 'const x = "😀"; // why', "line comment", 1],
+  [
+    "nested template expression",
+    "const t = `outer // ${`inner /* ${1 /* actual */}`} */`;",
+    "block comment",
+    1,
+  ],
+  ["JSX child comment", "const x = <p>{/* actual */}</p>;", "block comment", 1],
+  [
+    "JSX attribute comment",
+    'const x = <p /* actual */ title="/*" />;',
+    "block comment",
+    1,
+  ],
   [
     "Unicode separator",
     `const x = "${String.fromCharCode(0x2028)}"; // why`,

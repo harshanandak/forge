@@ -1,5 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { resolve } from "node:path";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { helpListsBuiltin } from "../bun-builtin.ts";
@@ -27,6 +29,7 @@ function record(value: unknown): value is Record<string, unknown> {
 export function checkComments(
   options: CommentCheckOptions,
 ): CommentCheckResult {
+  let directory: string | undefined;
   try {
     const snapshot = commentDiff(options.root, options.base, options.roots);
     const executable =
@@ -45,18 +48,23 @@ export function checkComments(
     const plugin = fileURLToPath(
       new URL(`../lint/no-comments.${extension}`, import.meta.url),
     );
+    directory = mkdtempSync(join(tmpdir(), "forge-comment-lint-"));
+    const config = join(directory, "bunfig.toml");
+    writeFileSync(
+      config,
+      `[lint]\nplugins = [${JSON.stringify(plugin)}]\n[lint.rules]\n"forge/no-comments" = "error"\n`,
+    );
     const result = spawnSync(
       executable,
       [
+        `--config=${config}`,
         "lint",
         "--no-script",
-        "--no-config-lookup",
         "--no-inline-config",
+        "--no-type-aware",
         "--no-ignore",
         "--format",
         "json",
-        "--plugin",
-        plugin,
         "--rule",
         `forge/no-comments: ["error", ${JSON.stringify({ base: options.base, ...(options.roots ? { roots: options.roots } : {}) })}]`,
         "--",
@@ -76,9 +84,13 @@ export function checkComments(
       );
     const output: unknown = JSON.parse(result.stdout);
     if (!Array.isArray(output)) throw new Error("Incomplete lint output");
+    const pathKey = (path: string): string =>
+      process.platform === "win32"
+        ? resolve(path).toLowerCase()
+        : resolve(path);
     const expected = new Map(
       [...snapshot.files.keys()].map((file) => [
-        resolve(options.root, file).toLowerCase(),
+        pathKey(resolve(options.root, file)),
         file,
       ]),
     );
@@ -90,7 +102,7 @@ export function checkComments(
         !Array.isArray(item.messages)
       )
         throw new Error("Invalid lint file result");
-      const key = resolve(item.filePath).toLowerCase(),
+      const key = pathKey(item.filePath),
         file = expected.get(key);
       if (!file) throw new Error("Unexpected or repeated lint file result");
       expected.delete(key);
@@ -100,6 +112,11 @@ export function checkComments(
         if (!record(message) || typeof message.message !== "string")
           throw new Error("Invalid lint diagnostic");
         if (message.fatal === true) throw new Error(`Parsing failed: ${file}`);
+        if (
+          message.ruleId === null &&
+          /ignored|no matching configuration/i.test(message.message)
+        )
+          throw new Error(`Lint skipped source: ${file}`);
         if (message.ruleId !== "forge/no-comments") continue;
         if (message.message.startsWith("INCOMPLETE:"))
           throw new Error(message.message);
@@ -121,6 +138,8 @@ export function checkComments(
       violations: [],
       reason: error instanceof Error ? error.message : String(error),
     };
+  } finally {
+    if (directory) rmSync(directory, { recursive: true, force: true });
   }
 }
 export function main(args: string[] = process.argv.slice(2)): void {
