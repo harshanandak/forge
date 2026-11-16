@@ -26,6 +26,61 @@ test("legacy store exports without migrating before backup", async () => {
     await close();
   }
 }, 30_000);
+
+test.each(["legacy", "missing floor"])(
+  "allocation retention: %s",
+  async (kind) => {
+    const { db, owner, close } = await fixture();
+    try {
+      if (kind === "legacy") {
+        migrate(
+          db,
+          stateMigrations.filter((m) => m.id !== "006_state_retention"),
+        );
+        for (const [sequence, type, revision] of [
+          [1, "updated", 1],
+          [2, "deleted", 2],
+        ] as const) {
+          db.run("INSERT INTO state_events VALUES (?,?,?,?)", [
+            sequence,
+            ns,
+            "item:1",
+            JSON.stringify({
+              type: `${ns}:record.${type}@1`,
+              namespace: ns,
+              key: "item:1",
+              revision,
+              at: new Date(1000).toISOString(),
+              actor,
+              ...(type === "updated" ? { data: {} } : {}),
+            }),
+          ]);
+        }
+        owner.initialize();
+      } else {
+        owner.initialize();
+        owner.putNext(ns, "item:", () => ({ value: {} }), actor);
+        owner.delete(ns, "item:1", actor, { expectRevision: 1 });
+        owner.delete(ns, "allocation:item:", actor, { expectRevision: 1 });
+      }
+      db.run("DELETE FROM state_events");
+      const before = db.all("SELECT * FROM state_usage ORDER BY table_name");
+      const next = () =>
+        owner.putNext(ns, "item:", () => ({ value: {} }), actor);
+      if (kind === "legacy") expect(next().key).toBe("item:2");
+      else {
+        expect(next).toThrow(/allocation.*repair/i);
+        expect(db.all("SELECT * FROM state_usage ORDER BY table_name")).toEqual(
+          before,
+        );
+        expect(owner.events(ns)).toEqual([]);
+      }
+    } finally {
+      await close();
+    }
+  },
+  30_000,
+);
 test.each(["fresh", "upgrade", "prefix", "all", "rollback", "drift"])(
   "retention: %s",
   async (kind) => {
@@ -74,6 +129,13 @@ test.each(["fresh", "upgrade", "prefix", "all", "rollback", "drift"])(
         ).toBe(3);
       } else if (kind === "rollback") {
         const before = db.all("SELECT * FROM state_usage ORDER BY table_name");
+        const boundary = db.get(
+          "SELECT sequence FROM state_retention WHERE id=1",
+        );
+        const records = db.all(
+          "SELECT * FROM state_records ORDER BY namespace,key",
+        );
+        const events = db.all("SELECT * FROM state_events ORDER BY sequence");
         const failingOwner = new StateOwner(
           {
             ...db,
@@ -93,6 +155,15 @@ test.each(["fresh", "upgrade", "prefix", "all", "rollback", "drift"])(
           before,
         );
         expect(owner.namespaceRevision(ns)).toBe(1);
+        expect(
+          db.get("SELECT sequence FROM state_retention WHERE id=1"),
+        ).toEqual(boundary);
+        expect(
+          db.all("SELECT * FROM state_records ORDER BY namespace,key"),
+        ).toEqual(records);
+        expect(db.all("SELECT * FROM state_events ORDER BY sequence")).toEqual(
+          events,
+        );
         expect(owner.get(ns, "rolled")).toBeUndefined();
         expect(
           db.get("SELECT 1 FROM state_events WHERE key='rolled'"),
