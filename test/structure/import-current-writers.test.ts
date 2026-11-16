@@ -9,11 +9,12 @@ const root = resolve(import.meta.dirname, "../../src");
 const paths = readdirSync(root, { recursive: true, encoding: "utf8" }).map(
   (p) => join(root, p).replaceAll("\\", "/"),
 );
-const blocks = paths.filter(
-  (p) =>
-    p.endsWith("forge.block.json") &&
-    (JSON.parse(readFileSync(p, "utf8")) as { id: string }).id === "forge/work",
-);
+const blocks = paths
+  .filter((p) => p.endsWith("forge.block.json"))
+  .map((p) => ({
+    directory: dirname(p) + "/",
+    namespace: (JSON.parse(readFileSync(p, "utf8")) as { id: string }).id,
+  }));
 const program = ts.createProgram(
   paths.filter((p) => /\.[cm]?ts$/.test(p)),
   {},
@@ -51,27 +52,6 @@ function missingFamilies(fixture?: Fixture) {
     returned,
     examples,
   } = writerSyntax(bound, files);
-  eq(blocks.length, 1);
-  const workDir = dirname(blocks[0]!) + "/";
-  const owned = new Set(paths.filter((p) => p.startsWith(workDir)));
-  for (let before = -1; before !== owned.size;) {
-    before = owned.size;
-    for (const call of calls) {
-      if (!owned.has(call.getSourceFile().fileName)) continue;
-      const fn = declaration(call.expression);
-      if (
-        fn &&
-        ts.isMethodDeclaration(fn) &&
-        fn.parameters[0]?.name.getText() === "namespace"
-      )
-        continue;
-      const target = fn?.getSourceFile();
-      if (target && paths.includes(target.fileName)) owned.add(target.fileName);
-    }
-  }
-  const inBlock = (node: ts.Node) =>
-    owned.has(node.getSourceFile().fileName) ||
-    node.getSourceFile().fileName.startsWith(workDir);
   const namespaceValue = (
     input: ts.Expression,
     seen = new Set<ts.Node>(),
@@ -91,6 +71,48 @@ function missingFamilies(fixture?: Fixture) {
     );
     return namespaceValue(decl.initializer, new Set(seen).add(node));
   };
+  eq(blocks.filter((b) => b.namespace === "forge/work").length, 1);
+  const contexts = new Map(
+    files.map((file) => [
+      file,
+      new Set(
+        blocks
+          .filter((b) => file.startsWith(b.directory))
+          .map((b) => b.namespace),
+      ),
+    ]),
+  );
+  for (const call of calls) {
+    if (
+      !ts.isPropertyAccessExpression(call.expression) ||
+      call.expression.name.text !== "client"
+    )
+      continue;
+    const namespace = call.arguments[0];
+    ok(namespace, `unresolved client namespace ${where(call)}`);
+    contexts.get(call.getSourceFile().fileName)!.add(namespaceValue(namespace));
+  }
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const call of calls) {
+      const fn = declaration(call.expression);
+      if (
+        fn &&
+        ts.isMethodDeclaration(fn) &&
+        fn.parameters[0]?.name.getText() === "namespace"
+      )
+        continue;
+      const target = fn && contexts.get(fn.getSourceFile().fileName);
+      if (!target) continue;
+      for (const namespace of contexts.get(call.getSourceFile().fileName) ?? [])
+        if (!target.has(namespace)) {
+          target.add(namespace);
+          changed = true;
+        }
+    }
+  }
+  const inBlock = (node: ts.Node) =>
+    contexts.get(node.getSourceFile().fileName)?.has("forge/work");
   const stableContainer = (name: ts.Identifier) => {
     const target = symbol(name);
     return !nodes.some(
@@ -117,8 +139,6 @@ function missingFamilies(fixture?: Fixture) {
     seen = new Set<ts.Node>(),
   ): string[] | undefined => {
     const node = unwrap(input);
-    if (ts.isIdentifier(node) && fields.length)
-      ok(stableContainer(node), `unresolved client provenance ${where(node)}`);
     if (seen.has(node)) return undefined;
     const next = new Set(seen).add(node);
     const read = (value: ts.Expression, path = fields) =>
@@ -153,7 +173,8 @@ function missingFamilies(fixture?: Fixture) {
         if (found?.length)
           ok(
             ts.isVariableDeclarationList(decl.parent) &&
-              !!(decl.parent.flags & ts.NodeFlags.Const),
+              !!(decl.parent.flags & ts.NodeFlags.Const) &&
+              (!fields.length || stableContainer(node)),
             `unresolved client provenance ${where(node)}`,
           );
         return found;
@@ -502,11 +523,14 @@ function missingFamilies(fixture?: Fixture) {
       const values = clientNamespaces(call.expression.expression);
       if (values?.length) {
         if (!values.includes("forge/work")) continue;
-      } else
+      } else {
+        const namespaces = contexts.get(call.getSourceFile().fileName);
         ok(
-          inBlock(call),
+          namespaces?.size,
           `unresolved client namespace ${where(call.expression.expression)}`,
         );
+        if (!namespaces.has("forge/work")) continue;
+      }
     }
     if (method === "putMany") batch(key);
     else add(key);
@@ -610,6 +634,15 @@ test.each([
     "namespace-bound client",
     "assembly",
     owner,
+    'const state = owner.client("forge/work", actor); state.put(`future-family:${id}`, value, { expectRevision: 0 });',
+    "family",
+  ],
+  [
+    "work client inside a foreign block",
+    "blocks/check",
+    owner
+      .replace('"../core/', '"../../core/')
+      .replace('"../generated/', '"../../generated/'),
     'const state = owner.client("forge/work", actor); state.put(`future-family:${id}`, value, { expectRevision: 0 });',
     "family",
   ],
