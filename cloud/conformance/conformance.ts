@@ -15,6 +15,7 @@ import {
   type StopDelta,
 } from "./restored.ts";
 import { expectsStop, liveStops } from "./stop-live.ts";
+import { capacityStop } from "./stop-capacity.ts";
 import type { Tables } from "./max-source.ts";
 import { canonicalJson } from "../../src/core/config/pointer.ts";
 import type { StateEvent } from "../../src/generated/types.ts";
@@ -147,6 +148,19 @@ interface AdminBody {
 const pageWire = new WeakMap<object, { text: string; bytes: number }>();
 const origins = new WeakMap<object, string>();
 const restoreStops = liveStops();
+const stoppedFixture = (tables: Tables, count = 1): Tables => {
+  for (let i = 0; expectsStop() && i < count; i++)
+    tables = stopOverlay(
+      tables,
+      stopPlan(tables, {
+        at: "2027-01-15T08:00:00.000Z",
+        incarnation: "00000000-0000-4000-8000-000000000000",
+        auditId: `00000000-0000-4000-8000-${String(i + 1).padStart(12, "0")}`,
+        window: [0, Number.MAX_SAFE_INTEGER],
+      }),
+    );
+  return tables;
+};
 async function adminCall(
   project: string,
   method: "GET" | "POST",
@@ -4860,7 +4874,7 @@ if (phase === "budget-plan") {
   const fixtures = await import("./max-source.ts");
   if (process.argv[3] === "exact") {
     const { tables } = await fixtures.tinySource("T");
-    const size = oracle.utf8(oracle.finalPage(tables));
+    const size = oracle.utf8(oracle.finalPage(stoppedFixture(tables)));
     assert.ok(
       size <= 4096 && Object.values(tables).flat().length > 0,
       `the exact fixture's final page is ${size} bytes`,
@@ -4869,7 +4883,7 @@ if (phase === "budget-plan") {
   } else {
     const { tables } = await fixtures.leaseSource(oracle.longSubject());
     console.log(
-      `PLAN ${oracle.utf8(oracle.pageThrough(tables, oracle.leaseBoundary(tables)))}`,
+      `PLAN ${oracle.utf8(oracle.pageThrough(stoppedFixture(tables), oracle.leaseBoundary(stoppedFixture(tables))))}`,
     );
   }
 }
@@ -5136,7 +5150,22 @@ if (phase === "capacity-wire") {
           okValue(reply, `${shape} page ${n}`);
         }
         assert.equal(await initialized(target), true);
-        const back = tally(expect);
+        let stop;
+        if (expectsStop()) {
+          await eachPage(target, () => {});
+          const observed = restoreStops.observation(target);
+          stop = capacityStop(
+            (function* () {
+              for (const file of files)
+                yield JSON.parse(
+                  readFileSync(join(dir, shape, file), "utf8"),
+                ) as { tables: Tables };
+            })(),
+            expect,
+            observed,
+          );
+        }
+        const back = tally(expect, stop);
         const exported = await eachPage(target, (page) => {
           for (const [table, rows] of Object.entries(page.tables))
             for (const row of rows) fold(back, table as Table, row);

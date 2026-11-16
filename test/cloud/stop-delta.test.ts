@@ -1,21 +1,38 @@
 ﻿import assert from "node:assert/strict";
 import { spyOn, test } from "bun:test";
+import { existsSync } from "node:fs";
 import { canonicalJson } from "../../src/core/config/pointer.ts";
 import { roundTrip } from "../../cloud/conformance/conformance.ts";
-import { SHAPE, type Tables } from "../../cloud/conformance/max-source.ts";
-import { stopPlan, stopOverlay } from "../../cloud/conformance/restored.ts";
+import {
+  SHAPE,
+  scratchStorage,
+  tablesOf,
+  type Tables,
+} from "../../cloud/conformance/max-source.ts";
+import {
+  stopPlan,
+  stopOverlay,
+  replayImage,
+} from "../../cloud/conformance/restored.ts";
+import { StateOwner } from "../../src/core/state/index.ts";
+import { durableStore } from "../../cloud/src/store.ts";
+import { domain } from "../../cloud/src/project.ts";
+import { LaneControlStore } from "../../cloud/src/lane-control-store.ts";
 import {
   tally,
   fold,
   digests,
   problems,
   type Table,
+  type Expected,
+  FLOOR,
 } from "../../cloud/conformance/digest.ts";
+import { stopObservation } from "../../cloud/conformance/stop-live.ts";
 import type { StopDelta } from "../../cloud/conformance/restored.ts";
 import { digester } from "../../cloud/conformance/budget.ts";
 
 const at = "2027-01-15T08:00:00.000Z";
-const actor = { kind: "agent", id: "cloud-restore" };
+const actor = { kind: "agent", id: "cloud-restore" } as const;
 const namespace = "forge/work";
 const incarnation = "11111111-1111-4111-8111-111111111111";
 const deltas = [1, 2].map((n) => ({
@@ -388,11 +405,150 @@ test("stop delta: swapped suffix across page boundaries is refused", () => {
   }, /event.*order|suffix/i);
 }, 1000);
 
+async function capacityPlanner() {
+  const path = new URL(
+    "../../cloud/conformance/stop-capacity.ts",
+    import.meta.url,
+  );
+  assert.ok(existsSync(path), "capacity stop planner is present");
+  const module = (await import(path.href)) as {
+    capacityStop: (
+      pages: Iterable<{ tables: Tables }>,
+      expected: Expected,
+      observed: ReturnType<typeof stopObservation>,
+    ) => NonNullable<ReturnType<typeof stopPlan>>;
+  };
+  return module.capacityStop;
+}
+async function capacityFloorCase(
+  key: string | undefined,
+  number: number,
+  history: readonly unknown[] = [],
+) {
+  const sourceStore = scratchStorage(),
+    targetStore = scratchStorage();
+  const now = Date.now(),
+    stamp = new Date(now).toISOString();
+  try {
+    const owner = new StateOwner(durableStore(sourceStore.storage), {
+      now: () => now,
+    });
+    owner.initialize([domain]);
+    for (const [revision, value] of history.entries())
+      owner.put(namespace, FLOOR.key, value, actor, {
+        expectRevision: revision,
+      });
+    if (history.length)
+      owner.delete(namespace, FLOOR.key, actor, {
+        expectRevision: history.length,
+      });
+    if (key)
+      owner.put(namespace, key, { title: "record" }, actor, {
+        expectRevision: 0,
+      });
+    owner.acquire(
+      namespace,
+      "issue:work-7",
+      { actor, session: { id: "floor-lease" } },
+      60_000,
+      "acquire-floor-lease",
+    );
+    const source = tablesOf(sourceStore.db),
+      sum = tally();
+    assert.equal(source.state_leases!.length, 1);
+    assert.equal(source.state_requests!.length, 1);
+    for (const [table, rows] of Object.entries(source))
+      for (const row of rows) fold(sum, table as Table, row);
+    const expected = {
+      floorSupplied: false,
+      lastSequence: Number(source.state_events!.at(-1)!.sequence),
+      tables: digests(sum),
+    };
+    const restored = replayImage(
+      durableStore(targetStore.storage),
+      [{ format: "forge-cloud-dump/2", tables: source }],
+      now,
+    );
+    assert.ok(
+      new LaneControlStore(restored, "cap").stop(
+        { all: true },
+        "cloud-restore",
+        "cloud-restore",
+        stamp,
+      ).ok,
+    );
+    const actual = tablesOf(targetStore.db);
+    const floor = actual.state_records!.find(
+      (row) => row.namespace === FLOOR.namespace && row.key === FLOOR.key,
+    )!;
+    assert.equal(
+      (JSON.parse(String(floor.body)) as { value: { number: number } }).value
+        .number,
+      number,
+    );
+    assert.equal(
+      Number(floor.revision),
+      history.length ? history.length + 2 : 1,
+    );
+    const observed = stopObservation([now, now]);
+    observed.add(actual);
+    const plan = (await capacityPlanner())([page(source)], expected, observed);
+    const got = tally(expected, plan);
+    for (const [table, rows] of Object.entries(actual))
+      for (const row of rows) fold(got, table as Table, row);
+    assert.deepEqual(
+      problems(got, expected),
+      [],
+      "lease subjects do not advance the issue floor",
+    );
+  } finally {
+    sourceStore.db.close();
+    targetStore.db.close();
+  }
+}
+test.each([
+  ["lease only", undefined, 0],
+  ["record plus lease", "issue:work-2", 2],
+  ["noncanonical record plus lease", "issue:work-09", 0],
+] as const)(
+  "stop delta: capacity issue floor ignores lease subjects: %s",
+  async (_label, key, number) => {
+    await capacityFloorCase(key, number);
+  },
+  5000,
+);
+const prefix = "issue:work-";
+test.each([
+  ["wrong prefix", [{ prefix: "other-", number: 99 }], 0],
+  ["extra property", [{ prefix, number: 99, extra: true }], 0],
+  ["unsafe number", [{ prefix, number: 2 ** 53 }], 0],
+  ["negative number", [{ prefix, number: -1 }], 0],
+  [
+    "valid then malformed",
+    [
+      { prefix, number: 4 },
+      { prefix: "other-", number: 99 },
+    ],
+    4,
+  ],
+  ["valid reservation", [{ prefix, number: 4 }], 4],
+] as const)(
+  "stop delta: capacity deleted floor history: %s",
+  async (_label, history, number) => {
+    await capacityFloorCase(undefined, number, history);
+  },
+  5000,
+);
 test.each(["correct", "floor record", "floor event"] as const)(
   "stop delta: capacity planned %s",
-  (kind) => {
+  async (kind) => {
     const source = fixture(false),
       sum = tally();
+    source.state_events![0]!.body = canonicalJson({
+      type: "forge/work:record.updated@1",
+      revision: 1,
+      data: {},
+    });
     for (const [table, rows] of Object.entries(source))
       for (const row of rows) fold(sum, table as Table, row);
     const expected = {
@@ -423,8 +579,15 @@ test.each(["correct", "floor record", "floor event"] as const)(
       state_records: [floor, ...source.state_records!],
       state_events: [...source.state_events!, floorEvent],
     };
-    const plan = stopPlan(planned, deltas[0], [floor, floorEvent]),
-      actual = inject(planned, 1, false);
+    const actual = inject(planned, 1, false);
+    const observed = stopObservation(deltas[0]!.window);
+    for (const table of Object.keys(actual))
+      observed.add({
+        state_records: [],
+        state_events: [],
+        [table]: actual[table]!,
+      });
+    const plan = (await capacityPlanner())([page(source)], expected, observed);
     if (kind === "floor record")
       actual.state_records = actual.state_records!.map((row) =>
         row.key === floor.key ? { ...row, body: "{}" } : row,
