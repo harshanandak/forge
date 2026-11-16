@@ -203,37 +203,30 @@ test("Windows Git ignores drive-relative, root-relative and batch-only entries",
   ).toEqual({ kind: "resolved", path: "C:\\safe\\git.exe" });
 }, 30_000);
 
-test.each(
-  "device|home git|config|identity|nested repo|canonical error|config error|identity error".split(
-    "|",
-  ),
-)(
+test.each([
+  ["device", "", ""],
+  ["home git", ".git", ""],
+  ["config", ".forge/config.yaml", ""],
+  ["identity", ".forge/project.json", ""],
+  ["nested repo", "repo/.git", ""],
+  ["canonical error", "", "canonical"],
+  ["config error", "", ".forge/config.yaml"],
+  ["identity error", "", ".forge/project.json"],
+])(
   "canonical-home admission: %s",
-  (row) => {
+  (row, marker, fault) => {
     const directory =
-      row === "nested repo" ? "/home/repo/bin" : "/home/.local/bin";
+      marker === "repo/.git" ? "/home/repo/bin" : "/home/.local/bin";
     const probe: FileProbe = {
       ...probeOf([`${directory}/git`]),
       realpath: (path) => {
-        if (path === homedir()) {
-          if (row === "canonical error") throw new Error("EACCES");
-          return "/home";
-        }
-        return path;
+        if (path !== homedir()) return path;
+        if (fault === "canonical") throw new Error("EACCES");
+        return "/home";
       },
       hasEntry: (path) => {
-        if (
-          (row === "config error" && path === "/home/.forge/config.yaml") ||
-          (row === "identity error" && path === "/home/.forge/project.json")
-        )
-          throw new Error("EACCES");
-        return (
-          path === "/home/.forge" ||
-          (row === "home git" && path === "/home/.git") ||
-          (row === "config" && path === "/home/.forge/config.yaml") ||
-          (row === "identity" && path === "/home/.forge/project.json") ||
-          (row === "nested repo" && path === "/home/repo/.git")
-        );
+        if (path === `/home/${fault}`) throw new Error("EACCES");
+        return path === "/home/.forge" || path === `/home/${marker}`;
       },
     };
     const found = resolveExecutable("git", { PATH: directory }, "linux", probe);

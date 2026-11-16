@@ -6,13 +6,12 @@ import type { SourceFile } from "./lib/repo.ts";
 // function declarations and relative imports to resolver/forwarder shapes, with no caller list.
 // Computed aliases are outside this matcher. Blank comment-only lines preserve file:line.
 const LAUNCH = new RegExp(
-  String.raw`\b(spawn(?:Sync)?|exec(?:File)?(?:Sync)?|run(?:Command)?|launch(?:er)?|command)\s*\(\s*(?:\[\s*|\{\s*cmd\s*:\s*\[\s*)?(["'\`])git(?:\.(?:exe|com|cmd|bat))?(?:\2(?=\s*[,)\]])|[ \t]+[^"'\`\r\n]*\2)`,
+  String.raw`\b(spawn(?:Sync)?|exec(?:File)?(?:Sync)?|run(?:Command)?|launch(?:er)?|command)\s*\(\s*(?:\[\s*|\{[^{}]*?\bcmd\s*:\s*\[\s*)?(["'\`])git(?:\.(?:exe|com|cmd|bat))?(?:\2(?=\s*[,)\]])|[ \t]+[^"'\`\r\n]*\2)`,
   "gi",
 );
 const root = join(import.meta.dirname, "../..");
-const DIRECT = String.raw`\b(?:spawn(?:Sync)?|exec(?:File)?(?:Sync)?)\(\s*`;
-const GIT_RETURN =
-  /if\s*\([^)]*===\s*["']git["']\)\s*return\s+spawnSync\(gitExecutable\(/;
+const DIRECT = String.raw`(?:\b(?:spawn(?:Sync)?|exec(?:File)?(?:Sync)?)\(|\.run\()\s*(?:\[\s*|\{[^{}]*?\bcmd\s*:\s*\[\s*)?`;
+const GIT_RETURN = String.raw`if\s*\(\s*PARAM\s*===\s*["']git["']\)\s*return\s+spawnSync\(gitExecutable\(`;
 function resolves(name: string, file: SourceFile, seen: Set<string>): boolean {
   const key = `${file.path}:${name}`;
   if (seen.has(key)) return false;
@@ -25,34 +24,36 @@ function resolves(name: string, file: SourceFile, seen: Set<string>): boolean {
       `import\\s*\\{[^}]*\\b${name}\\b[^}]*\\}\\s*from\\s*["'](\\.[^"']+)`,
     ).exec(file.text)?.[1];
     const target = source && normalize(join(dirname(file.path), source));
-    return (
-      !!target &&
-      resolves(
-        name,
-        { path: target, text: readFileSync(join(root, target), "utf8") },
-        seen,
-      )
-    );
+    if (!target) return false;
+    const text = readFileSync(join(root, target), "utf8");
+    return resolves(name, { path: target, text }, seen);
   }
   const [body, parameter] = [definition[0], definition[1]!];
-  if (GIT_RETURN.test(body)) return true;
+  if (new RegExp(GIT_RETURN.replace("PARAM", parameter)).test(body))
+    return true;
   if (new RegExp(`${DIRECT}${parameter}\\b`).test(body)) return false;
-  if (/\bgitExecutable\(|\.resolve\(\s*\w+\[0\]/.test(body)) return true;
+  const pin =
+    /(\w+)\s*=\s*(?:\w+\s*===\s*["']git["']\s*\?\s*)?(?:gitExecutable\(|\w+\.resolve\(\s*\w+\[0\])/.exec(
+      body,
+    )?.[1] ?? "(?!)";
+  if (new RegExp(`${DIRECT}(?:gitExecutable\\(|${pin}\\b)`).test(body))
+    return true;
   return [
-    ...body.matchAll(new RegExp(`\\b(\\w+)\\(\\s*${parameter}\\s*,`, "g")),
+    ...body.matchAll(
+      new RegExp(
+        `\\b(\\w+)\\(\\s*(?:${parameter}(?:\\s*===\\s*["'](?!git)[^"']+["']\\s*\\?\\s*${parameter}\\s*:\\s*${pin})?|${pin})\\s*,`,
+        "g",
+      ),
+    ),
   ].some((call) => resolves(call[1]!, file, seen));
 }
 function violations(file: string, text: string): string[] {
   if (file === "src/adapters/process/resolve.ts") return [];
   const code = text.replace(/^[ \t]*(?:\/\/|\/\*|\*)[^\n]*/gm, "");
+  const source = { path: file, text: code };
   return [...code.matchAll(LAUNCH)]
-    .filter(
-      (match) => !resolves(match[1]!, { path: file, text: code }, new Set()),
-    )
-    .map(
-      (match) =>
-        `${file}:${code.slice(0, match.index).split("\n").length}: resolve Git before launch`,
-    );
+    .filter((match) => !resolves(match[1]!, source, new Set()))
+    .map((m) => `${file}:${code.slice(0, m.index).split("\n").length}: Git`);
 }
 function scan(directory: string, relative: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -90,14 +91,14 @@ test("Git launch guard catches direct APIs and program-taking helpers with file:
     "run(['git.bat', ...args])",
   ])
     expect(violations("templates/hook.cjs", `// sample\n${call}`)).toEqual([
-      "templates/hook.cjs:2: resolve Git before launch",
+      "templates/hook.cjs:2: Git",
     ]);
   for (const file of ["src/a.cts", "tools/a.ts", "templates/a.mjs"])
     expect(violations(file, 'run("git", [])')).toHaveLength(1);
   expect(
     violations(
       "tools/a.ts",
-      'import {runCommand} from "./run-command.ts"; run(gitExecutable(), []); resolveExecutable("git", env, platform, probe); command("git", []); function command(program) {\n return runCommand(program, [], {});\n}',
+      'import {runCommand} from "./run-command.ts"; run(gitExecutable(), []); resolveExecutable("git", env, platform, probe); command("git", []); function command(program) {\n return runCommand(program, [], {});\n} launcher("git"); function launcher(program) {\n const selected = gitExecutable(); return Bun.spawn([selected]);\n} launch("git"); function launch(program) {\n const selected = gitExecutable(); return Bun.spawn({cmd:[selected]});\n}',
     ),
   ).toEqual([]);
   expect(violations("tools/a.ts", '// run("git", [])')).toEqual([]);
