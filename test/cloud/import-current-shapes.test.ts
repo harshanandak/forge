@@ -64,6 +64,13 @@ test("all seven writer families survive projection and paged readback", () => {
   const source = f.source(6, false, false, (_db, state) => {
     for (const [key, value] of workShapes)
       state.put(f.ns, key, value, f.actor, { expectRevision: 0 });
+    state.acquire(
+      f.ns,
+      "issue:attempt:work-1:attempt-1",
+      f.holder,
+      60000,
+      "attempt-lease",
+    );
   });
   const scratch = f.database();
   f.owner(scratch).initialize();
@@ -121,6 +128,97 @@ test("all seven writer families survive projection and paged readback", () => {
     if (previous === undefined) delete globals.fail;
     else globals.fail = previous;
   }
+});
+
+const malformed = workShapes.flatMap(([key, value]) => [
+  ...Object.keys(value).flatMap((field) => [
+    [key, { ...value, [field]: null }],
+    [
+      key,
+      Object.fromEntries(
+        Object.entries(value).filter(([name]) => name !== field),
+      ),
+    ],
+  ]),
+  [key, { ...value, unrecognized: true }],
+  ...["\n", "\r", "\t", "\u0000", "\u2028", "\u200b"].map((suffix) => [
+    key + suffix,
+    value,
+  ]),
+]) as [string, unknown][];
+malformed.push(
+  ["cleanup:work-1", { expiresAt: f.at + 60000 }],
+  ["landing:work-2:42", workShapes[0][1]],
+  ["landing:work-1:43", workShapes[0][1]],
+  ["attempt:work-1:attempt-2", workShapes[2][1]],
+  ["evidence:attempt:work-1:attempt-2:1", workShapes[3][1]],
+  ["slots:work-1", { count: 17, next: 1 }],
+  ["slots:work-1", { count: 1, next: -1 }],
+  ["selection:work-1", { ...workShapes[5][1], chosen: [] }],
+  [
+    "attempt:work-1:attempt-1",
+    {
+      ...workShapes[2][1],
+      superseded: { supersededBy: "other", reason: "no" },
+    },
+  ],
+  [
+    "evidence:attempt:work-1:attempt-1:1",
+    { ...workShapes[3][1], metrics: { invalid: [] } },
+  ],
+);
+test.each(malformed)(
+  "malformed work value or full key refuses: %s",
+  (key, value) => {
+    for (const historical of [false, true]) {
+      const source = f.source(6, false, false, (_db, state) => {
+        state.put(f.ns, key, value, f.actor, { expectRevision: 0 });
+        if (historical) state.delete(f.ns, key, f.actor, { expectRevision: 1 });
+      });
+      const scratch = f.database();
+      f.owner(scratch).initialize();
+      const before = f.snapshot(source.db),
+        scratchBefore = f.snapshot(scratch);
+      const reply = f.result(() =>
+        impl.currentState(source.db, scratch, source.manifest, limitsFrom({})),
+      );
+      eq(reply.envelope.ok, false);
+      if (!reply.envelope.ok) eq(reply.envelope.error.code, "INPUT_INVALID");
+      eq(f.snapshot(source.db), before);
+      eq(source.bytes(), source.manifest.sha256);
+      eq(f.snapshot(scratch), scratchBefore);
+    }
+  },
+);
+
+test.each([
+  ["2027-01-15T10:01:00+02:00", 90000, 0],
+  ["2027-01-15T06:01:00-02:00", 30000, 1],
+  ["2027-01-15T08:01:00Z", 60000, 0],
+  ["2027-01-15T08:01:00.0000Z", 59999, 1],
+] as const)("live leases compare instants: %s", (expiry, delta, expected) => {
+  const source = f.source(6, false, true, (db) => {
+    const canonical = new Date(f.at + 60000).toISOString();
+    for (const [table, column] of [
+      ["state_leases", "body"],
+      ["state_events", "body"],
+      ["state_requests", "result"],
+    ])
+      db.run(`UPDATE ${table} SET ${column}=replace(${column},?,?)`, [
+        canonical,
+        expiry,
+      ]);
+  });
+  const scratch = f.database();
+  f.owner(scratch).initialize();
+  const projected = impl.currentState(
+    source.db,
+    scratch,
+    { ...source.manifest, at: new Date(f.at + delta).toISOString() },
+    limitsFrom({}),
+  );
+  eq(projected.leftBehind.report.liveLeases, expected);
+  eq(projected.usage.rows.state_leases, 0);
 });
 
 test.each([
