@@ -45,24 +45,33 @@ test("release proof rejects repacked bytes with preserved identity and a recalcu
     );
     expect(repack()).not.toBe(trusted);
     expect(packInput(archive)).toBe(archive);
-    const refused = Bun.spawnSync(
-      [
-        "node",
-        resolve(import.meta.dirname, "../../../tools/pack-smoke/run.ts"),
-      ],
-      {
-        env: {
-          ...process.env,
-          FORGE_RELEASE_PROOF: "1",
-          FORGE_PACK_INPUT: archive,
-          FORGE_PACK_EXPECTED_SHA256: trusted,
-        },
-        timeout: 10_000,
-      },
-    );
-    expect(refused.exitCode).not.toBe(0);
-    expect(refused.stderr.toString()).toContain("reviewed CI artifact");
-    expect(refused.stdout.toString()).not.toContain("npm");
+    for (const [input, pin, mode, error] of [
+      [archive, trusted, "1", "reviewed CI artifact"],
+      [archive, undefined, "1", "reviewed CI artifact"],
+      [undefined, trusted, "1", "reviewed CI artifact"],
+      [undefined, undefined, "1", "reviewed CI artifact"],
+      [archive, trusted, "0", "invalid release-proof mode"],
+    ] as const) {
+      const env: NodeJS.ProcessEnv = {
+        ...process.env,
+        FORGE_RELEASE_PROOF: mode,
+        FORGE_PACK_INPUT: input,
+        FORGE_PACK_EXPECTED_SHA256: pin,
+      };
+      if (input === undefined) delete env.FORGE_PACK_INPUT;
+      if (pin === undefined) delete env.FORGE_PACK_EXPECTED_SHA256;
+      const refused = Bun.spawnSync(
+        [
+          "node",
+          resolve(import.meta.dirname, "../../../tools/pack-smoke/run.ts"),
+        ],
+        { env, timeout: 10_000 },
+      );
+      expect(refused.exitCode).not.toBe(0);
+      expect(refused.stderr.toString()).toContain(error);
+      expect(refused.stdout.toString()).not.toContain("npm");
+      expect(refused.stdout.toString()).not.toContain("run build");
+    }
     expect(() => packInput(archive, trusted, "1")).toThrow(
       "reviewed CI artifact",
     );
