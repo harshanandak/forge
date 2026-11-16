@@ -1738,8 +1738,8 @@ export class StateOwner {
     prefix: string,
   ): number | undefined {
     const row = this.#db.get(
-      "SELECT revision,body FROM state_records WHERE namespace=? AND key=?",
-      [namespace, floorKey],
+      "SELECT revision,body,(SELECT highest FROM state_checkpoint_floors WHERE namespace=state_records.namespace AND prefix=?) AS checkpoint FROM state_records WHERE namespace=? AND key=?",
+      [prefix, namespace, floorKey],
     );
     if (row === undefined) return undefined;
     const text = String(row.body);
@@ -1758,12 +1758,7 @@ export class StateOwner {
     )
       invalid("Invalid allocation record");
     const number = floorNumber(stored.value, prefix);
-    const checkpoint = Number(
-      this.#db.get(
-        "SELECT highest FROM state_checkpoint_floors WHERE namespace=? AND prefix=?",
-        [namespace, prefix],
-      )?.highest ?? 0,
-    );
+    const checkpoint = Number(row.checkpoint ?? 0);
     if (number < checkpoint)
       invalid("Allocation floor is below its checkpoint; repair required");
     return number;
