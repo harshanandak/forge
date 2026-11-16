@@ -7,6 +7,7 @@ import {
 } from "../../generated/validators.ts";
 import type { SqlDatabase, SqlRow, SqlValue } from "../../ports/store.ts";
 import { parseRestoreJson } from "./restore-json.ts";
+import { allocationFloorNumber } from "./allocation-floor.ts";
 
 /** Owner metadata, deliberately separate from the cloud v2 wire tables. */
 export const checkpointTables = {
@@ -280,9 +281,15 @@ export function readReplayStart(
   ): SqlValue[][] => {
     const result: SqlValue[][] = [];
     let after: readonly SqlValue[] | undefined;
+    const extra =
+      recordFormat && kind === "live"
+        ? ",body"
+        : recordFormat && kind === "floors"
+          ? ",(SELECT body FROM state_records WHERE namespace=state_checkpoint_floors.namespace AND key='allocation:'||state_checkpoint_floors.prefix) AS body"
+          : "";
     for (;;) {
       const rows = db.all(
-        `SELECT ${columns.join(",")}${recordFormat && kind === "live" ? ",body" : ""} FROM state_checkpoint_${kind}${after === undefined ? "" : ` WHERE (${keys.join(",")}) > (${keys.map(() => "?").join(",")})`} ORDER BY ${keys.join(",")} LIMIT ?`,
+        `SELECT ${columns.join(",")}${extra} FROM state_checkpoint_${kind}${after === undefined ? "" : ` WHERE (${keys.join(",")}) > (${keys.map(() => "?").join(",")})`} ORDER BY ${keys.join(",")} LIMIT ?`,
         [...(after ?? []), pageSize],
       );
       for (const row of rows) {
@@ -300,6 +307,19 @@ export function readReplayStart(
             recordDigest(record) !== row.digest
           )
             invalid("Invalid checkpoint live body");
+        }
+        if (recordFormat && kind === "floors" && row.body !== null) {
+          const record = parseRestoreJson(String(row.body)) as {
+            value: unknown;
+          };
+          if (!validateStateRecord(record).ok)
+            invalid("Invalid checkpoint floor body");
+          const number = allocationFloorNumber(
+            record.value,
+            String(row.prefix),
+          );
+          if (number !== undefined && number < Number(row.highest))
+            invalid("Checkpoint allocator authority requires repair");
         }
         result.push(
           columns.map((column) => {
@@ -420,7 +440,7 @@ export function readReplayStart(
         "SELECT 1 FROM state_checkpoint_reservations c WHERE NOT EXISTS (SELECT 1 FROM state_allocation_keys a WHERE a.namespace=c.namespace AND a.key=c.prefix||c.number) LIMIT 1",
       ) ||
       db.get(
-        "SELECT 1 FROM state_checkpoint_floors c LEFT JOIN state_records r ON r.namespace=c.namespace AND r.key='allocation:'||c.prefix WHERE NOT EXISTS (SELECT 1 FROM state_allocation_keys a WHERE a.namespace=c.namespace AND a.key='allocation:'||c.prefix) OR json_extract(r.body,'$.value.number')<c.highest LIMIT 1",
+        "SELECT 1 FROM state_checkpoint_floors c WHERE NOT EXISTS (SELECT 1 FROM state_allocation_keys a WHERE a.namespace=c.namespace AND a.key='allocation:'||c.prefix) LIMIT 1",
       ))
   )
     invalid("Checkpoint allocator authority requires repair");
