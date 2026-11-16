@@ -863,8 +863,14 @@ export function restoreDump(
 export function clearStaged(db: SqlDatabase): void {
   db.transaction(() => {
     for (const table of Object.keys(TABLES)) db.run(`DELETE FROM ${table}`);
-    db.run("UPDATE state_retention SET sequence=0 WHERE id=1");
-    db.run("DELETE FROM state_namespace_watermarks");
+    if (
+      db.get(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='state_retention'",
+      )
+    ) {
+      db.run("UPDATE state_retention SET sequence=0 WHERE id=1");
+      db.run("DELETE FROM state_namespace_watermarks");
+    }
   });
 }
 

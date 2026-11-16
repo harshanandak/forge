@@ -6,7 +6,31 @@ import {
   usage,
 } from "../core/l5-state/retention.fixture.ts";
 import { domain } from "../../cloud/src/project.ts";
-import { dumpOf, DUMP_USAGE_SQL } from "../../cloud/src/dump.ts";
+import { clearStaged, dumpOf, DUMP_USAGE_SQL } from "../../cloud/src/dump.ts";
+import { migrate, stateMigrations } from "../../src/core/state/migrations.ts";
+
+test("legacy staged restore can be abandoned before write initialization", async () => {
+  const { db, close } = await fixture();
+  try {
+    migrate(db, [
+      ...stateMigrations.filter((m) => m.id !== "006_state_retention"),
+      ...domain.migrations.filter((m) => m.id !== "010_cloud_retention"),
+    ]);
+    db.run("INSERT INTO state_events VALUES (7,?,?,?)", [ns, "old", "{}"]);
+    const before = db.all(
+      "SELECT type,name,sql FROM sqlite_master ORDER BY name",
+    );
+    clearStaged(db);
+    expect(
+      Object.values(dumpOf(db).tables).every((rows) => rows.length === 0),
+    ).toBe(true);
+    expect(
+      db.all("SELECT type,name,sql FROM sqlite_master ORDER BY name"),
+    ).toEqual(before);
+  } finally {
+    await close();
+  }
+}, 30_000);
 
 test("cloud capacity metadata upgrades once without changing dump rows", async () => {
   const { db, owner, close } = await fixture();

@@ -4,6 +4,27 @@ import {
   migrate,
   stateMigrations,
 } from "../../../src/core/state/migrations.ts";
+
+test("legacy store exports without migrating before backup", async () => {
+  const { db, owner, close } = await fixture();
+  try {
+    migrate(
+      db,
+      stateMigrations.filter((m) => m.id !== "006_state_retention"),
+    );
+    db.run("INSERT INTO state_events VALUES (7,?,?,?)", [ns, "old", "{}"]);
+    const before = db.all(
+      "SELECT type,name,sql FROM sqlite_master ORDER BY name",
+    );
+    expect(owner.export().eventHighWaterMark).toBe(7);
+    expect(owner.namespaceRevision(ns)).toBe(7);
+    expect(
+      db.all("SELECT type,name,sql FROM sqlite_master ORDER BY name"),
+    ).toEqual(before);
+  } finally {
+    await close();
+  }
+}, 30_000);
 test.each(["fresh", "upgrade", "prefix", "all", "rollback", "drift"])(
   "retention: %s",
   async (kind) => {

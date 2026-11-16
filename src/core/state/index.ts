@@ -2064,7 +2064,11 @@ export class StateOwner {
         // INTEGER PRIMARY KEY has no sqlite_sequence; retain the export boundary
         // separately so losing the final operation cannot shorten history silently.
         eventHighWaterMark: Number(
-          db.get("SELECT sequence FROM state_retention WHERE id=1")?.sequence,
+          db.get(
+            db.get(RETENTION_PROBE)
+              ? "SELECT sequence FROM state_retention WHERE id=1"
+              : "SELECT COALESCE(MAX(sequence),0) AS sequence FROM state_events",
+          )?.sequence,
         ),
         domains: exportTables(db),
         format: "forge.state/1",
