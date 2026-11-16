@@ -33,7 +33,7 @@ export const deviceSessionIdentity: Migration = {
   statements: ["SELECT 1"],
 };
 
-export const retentionTables = [
+export const retentionTables: readonly string[] = [
   "state_retention",
   "state_namespace_watermarks",
   "state_usage",
@@ -77,7 +77,10 @@ export function requestAgeStatements(table: string): string[] {
 }
 
 /** Validate on admitted setup, never repair a persisted disagreement implicitly. */
-export function assertRetention(db: SqlDatabase, tables = stateColumns): void {
+export function assertRetention(
+  db: SqlDatabase,
+  tables: Record<string, readonly string[]> = stateColumns,
+): void {
   const refuse = (): never => {
     throw new ForgeFailure({
       code: "INPUT_INVALID",
@@ -105,6 +108,13 @@ export function assertRetention(db: SqlDatabase, tables = stateColumns): void {
   if (
     db.get(
       "SELECT 1 FROM state_events e LEFT JOIN state_namespace_watermarks w ON e.namespace=w.namespace WHERE w.sequence IS NULL OR e.sequence>w.sequence LIMIT 1",
+    )
+  )
+    refuse();
+  if (
+    db.get(
+      "SELECT 1 FROM state_namespace_watermarks WHERE sequence>? LIMIT 1",
+      [row!.sequence!],
     )
   )
     refuse();

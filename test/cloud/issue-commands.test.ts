@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import {
   DUMP_MIGRATION,
   IMPORT_MIGRATION,
+  DUMP_USAGE_SQL,
   limitsFrom,
 } from "../../cloud/src/dump.ts";
 import { Project } from "../../cloud/src/project.ts";
@@ -529,17 +530,37 @@ async function stateFixture(namespaces = stateNamespaces) {
     return got;
   };
   const stable = () => {
+    for (const sql of DUMP_USAGE_SQL) {
+      const table = sql.split(" FROM ")[1]!;
+      expect(
+        f.db
+          .query("SELECT rows AS n,bytes FROM state_usage WHERE table_name=?")
+          .get(table),
+      ).toEqual(f.db.query(sql).get());
+    }
     const snapshot = JSON.parse(f.snapshot()) as {
       sql: [string, unknown][];
       kv: unknown;
     };
     return JSON.stringify({
       ...snapshot,
-      sql: snapshot.sql.filter(
-        ([name]) =>
-          name !== "domain_cloud_command_receipts" &&
-          name !== "domain_cloud_export",
-      ),
+      sql: snapshot.sql
+        .map(
+          ([name, rows]) =>
+            [
+              name,
+              name === "state_usage"
+                ? (rows as { table_name: string }[]).filter(
+                    (row) => row.table_name !== "domain_cloud_command_receipts",
+                  )
+                : rows,
+            ] as [string, unknown],
+        )
+        .filter(
+          ([name]) =>
+            name !== "domain_cloud_command_receipts" &&
+            name !== "domain_cloud_export",
+        ),
     });
   };
   const successes = () =>
