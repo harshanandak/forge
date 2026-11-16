@@ -16,7 +16,7 @@
     "forge": "dist/bin/forge.js"
   },
   "exports": {
-    "./checks/no-comments": "./dist/tools/checks/no-comments.js",
+    "./checks/no-comments": "./dist/bin/no-comments.js",
     ".": {
       "types": "./dist/src/index.d.ts",
       "default": "./dist/src/index.js"

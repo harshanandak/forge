@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { parseArgs } from "node:util";
 import { sourceComments } from "../../src/adapters/source-comments/index.ts";
+import { gitExecutable } from "../git-executable.ts";
 
 export interface CommentViolation {
   readonly file: string;
@@ -24,7 +25,8 @@ export function addedComments(
 ): readonly CommentViolation[] {
   const violations: CommentViolation[] = [];
   for (const comment of sourceComments.comments(file, text)) {
-    if (directive(comment.text.trim())) continue;
+    if (directive(comment.text.trim(), comment.kind === "line comment"))
+      continue;
     for (let line = comment.startLine; line <= comment.endLine; line++) {
       if (!added.has(line)) continue;
       violations.push({ file, line, kind: comment.kind });
@@ -33,7 +35,7 @@ export function addedComments(
   }
   return violations;
 }
-function directive(text: string): boolean {
+function directive(text: string, line: boolean): boolean {
   return (
     /^eslint-(?:disable(?:-next-line|-line)?|enable)(?:\s+[\w@/-]+(?:\s*,\s*[\w@/-]+)*)?(?:\s+--[^\r\n]+)?$/.test(
       text,
@@ -42,17 +44,19 @@ function directive(text: string): boolean {
     /^biome-ignore[ \t]+[\w/-]+(?:\([^()\r\n]*\))?(?:[ \t]+[\w/-]+(?:\([^()\r\n]*\))?)*[ \t]*:[ \t]+[^\r\n]+$/.test(
       text,
     ) ||
-    /^\/[ \t]*<reference(?:[ \t]+(?:path|types|lib|no-default-lib|resolution-mode|preserve)=(?:"[^"\r\n]*"|'[^'\r\n]*'))+[ \t]*\/>$/.test(
-      text,
-    )
+    (line &&
+      /^\/[ \t]*<reference(?:[ \t]+(?:path|types|lib|no-default-lib|resolution-mode|preserve)=(?:"[^"\r\n]*"|'[^'\r\n]*'))+[ \t]*\/>$/.test(
+        text,
+      ))
   );
 }
 export function checkComments(
   options: CommentCheckOptions,
 ): CommentCheckResult {
   try {
+    const executable = gitExecutable();
     const git = (...args: string[]): string =>
-      execFileSync("git", ["--literal-pathspecs", ...args], {
+      execFileSync(executable, ["--literal-pathspecs", ...args], {
         cwd: options.root,
         encoding: "utf8",
         timeout: 15_000,

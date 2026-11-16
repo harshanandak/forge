@@ -3,8 +3,6 @@
 export const nodeSensitive: Readonly<Record<string, string>> = {
   "test/structure/no-comments.integration.test.ts":
     "Checks committed Git diffs through the Node-compatible comment checker.",
-  "test/node-fixtures/comments/packed.integration.test.ts":
-    "Runs the installed comment checker with Node and its runtime parser.",
   "test/adapters/process/git-location.integration.test.ts":
     "Launches selected Node to verify Git PATH rejection and process-local caching.",
   "test/cloud/import-current.integration.test.ts":

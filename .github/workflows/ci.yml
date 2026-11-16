@@ -319,7 +319,7 @@ jobs:
         run: ${{ matrix.shard && format('bun tools/ci/test-shards.ts test:unit {0} {1}', matrix.shard, matrix.node == '26' && '--node26' || '') || 'bun run test:unit' }} 2>&1 | tee -a "$RUNNER_TEMP/ci-tests.log"
       - name: Admit comment guard on Windows
         if: runner.os == 'Windows' && matrix.node == '24' && matrix.shard == '1/3'
-        run: bun tools/check-admit.ts no-comments-regression test/structure/fixtures/no-comments-break.patch --guard tools/checks --guard src/adapters/source-comments --guard src/ports/source-comments.ts --guard test/structure/no-comments.integration.test.ts --guard package.json --guard bun.lock --guard .forge/config.yaml 2>&1 | tee -a "$RUNNER_TEMP/ci-tests.log"
+        run: bun tools/check-admit.ts no-comments-regression test/structure/fixtures/no-comments-break.patch --guard tools/checks --guard tools/git-executable.ts --guard src/adapters/source-comments --guard src/ports/source-comments.ts --guard test/structure/no-comments.integration.test.ts --guard package.json --guard bun.lock --guard .forge/config.yaml 2>&1 | tee -a "$RUNNER_TEMP/ci-tests.log"
       - name: Integration tests
         if: matrix.suite != 'pack'
         run: ${{ matrix.shard && format('bun tools/ci/test-shards.ts test:integration {0} {1}', matrix.shard, matrix.node == '26' && '--node26' || '') || 'bun run test:integration' }} 2>&1 | tee -a "$RUNNER_TEMP/ci-tests.log"

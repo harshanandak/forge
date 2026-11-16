@@ -86,6 +86,7 @@ for (const source of [
   "/* eslint-disable\n ordinary prose\n */\nconst x = 1;",
   "// eslint-disable-next-line-not-a-directive\nconst x = 1;",
   '/// <reference types="node" /> prose\nconst x = 1;',
+  '/*/ <reference types="node" />*/\nconst x = 1;',
 ]) {
   test(`directive lookalikes and prose are refused: ${JSON.stringify(source)}`, () => {
     expect(addedComments("src/x.ts", source, lines)).toHaveLength(1);

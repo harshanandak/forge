@@ -11,6 +11,6 @@
     "isolatedDeclarations": true,
     "types": ["node"]
   },
-  "include": ["bin", "src", "tools/checks"],
+  "include": ["bin", "src"],
   "exclude": ["**/*.test.ts", "src/**/test/**"]
 }
