@@ -53,7 +53,13 @@ export async function trackerRig(bin: string) {
       ids.push(credential.id);
       clients.push(
         await cloudRig(bin, forward, false, {
-          credential: { ...credential, localDevice: device },
+          credential: {
+            id: credential.id,
+            token: credential.token,
+            device: credential.device,
+            expiresAt: credential.expiresAt,
+            localDevice: device,
+          },
           session,
         }),
       );
