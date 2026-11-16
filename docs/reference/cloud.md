@@ -3,6 +3,8 @@
 A Cloudflare Worker with one SQLite Durable Object per project. It decides who holds a lease on a
 subject. The code is in `cloud/`.
 
+Release acceptance follows [the release runbook](../release.md): owner publishes an unused candidate to `next`, verifies the exact registry-installed version/build commit, integrity, signatures and expected release-workflow provenance, and requires the complete installed tracker journey before promotion to `beta`. Retain native CI and two-machine acceptance output; phase names are not completion evidence. Main stays at temporary prerelease `0.1.0-beta.9` (V001) until the owner decides the final number before stable.
+
 ## Routes
 
 Every route is `/p/<projectId>/<route>` and needs `Authorization: Bearer <token>`, except `loginstart` and `loginpoll`.
@@ -109,7 +111,7 @@ A project bound to the cloud serves `issue.show`, `issue.comments`, `issue.links
 
 `forge store reinit` is refused on a bound project (`INPUT_INVALID`, exit 6, "store.reinit is not served by the cloud authority of a cloud-bound project yet."), with or without `--dry-run`, whether or not a local store exists. The refusal comes before any local state opens, any approval is asked or any request is sent, so it needs no login and creates no local store. A malformed or mismatched binding keeps its own refusal. Recovery on an unbound project is unchanged. Only a human can invoke it; MCP still does not expose it.
 
-Forge 0.0.1 also refuses local project-state writes without a cloud implementation (`UNAVAILABLE`, exit 1), including check receipts, decisions, project memory and custom blocks. The sixteen issue routes above remain available. Device-only notes use `memory.add` with `level=device`; block authors declare `context=device` and use core device state. Selecting project state from a device operation still refuses. Generic project-state sync is deferred to forge-1345.
+Forge also refuses local project-state writes without a cloud implementation (`UNAVAILABLE`, exit 1), including check receipts, decisions, project memory and custom blocks. The sixteen issue routes above remain available. Device-only notes use `memory.add` with `level=device`; block authors declare `context=device` and use core device state. Selecting project state from a device operation still refuses. Generic project-state sync is deferred to forge-1345.
 
 Local reads remain historical local data, without a claim of cloud freshness. If device registration proves that a bound project's local store is missing, restore a backup to inspect those records or use cloud-served issue commands for shared issue state. `store reinit` remains disabled; removing the binding does not sync or recover records. Unbound projects retain their existing local behavior.
 

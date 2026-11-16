@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { counterfactuals } from "./counterfactuals.ts";
 import { packedConsumer } from "../../integration/packed-consumer.ts";
 
+let ecosystems: string[] = [];
 const root = resolve(import.meta.dirname, "../../..");
 function run(
   executable: string,
@@ -106,6 +107,16 @@ test("packed Node check journeys and sharded remove-the-fix proofs", () => {
       "timeout",
       "receipt",
     ]);
+    ecosystems = report.ecosystem.passed;
+    if (process.env.FORGE_RELEASE_ACCEPTANCE === "1") {
+      expect(report.ecosystem.skipped).toEqual([]);
+      expect(report.ecosystem.passed).toEqual([
+        "npm+vitest",
+        "pnpm+jest",
+        "python+pytest",
+        "make",
+      ]);
+    }
     for (const reason of report.ecosystem.skipped)
       console.log(`SKIP ${reason}`);
     console.log(
@@ -162,3 +173,11 @@ test("packed Node check journeys and sharded remove-the-fix proofs", () => {
     rmSync(work, { recursive: true, force: true });
   }
 }, 900000);
+
+if (process.env.FORGE_RELEASE_ACCEPTANCE === "1")
+  for (const name of ["npm+vitest", "pnpm+jest", "python+pytest", "make"])
+    test(
+      `installed ecosystem: ${name}`,
+      () => expect(ecosystems).toContain(name),
+      1000,
+    );
