@@ -120,6 +120,7 @@ jobs:
     timeout-minutes: 20
     outputs:
       sha256: ${{ steps.pack.outputs.sha256 }}
+      version: ${{ steps.pack.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -135,6 +136,7 @@ jobs:
         id: pack
         run: |
           bun run build
+          node -p '"version=" + require("./package.json").version' >> "$GITHUB_OUTPUT"
           tarball=$(npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP")
           mv "$RUNNER_TEMP/$tarball" "$RUNNER_TEMP/forge-workflow.tgz"
           cd "$RUNNER_TEMP"
@@ -325,6 +327,7 @@ jobs:
           STATE_NODE_LEG: ${{ matrix.node }}
           FORGE_PACK_INPUT: ${{ runner.temp }}/packed/forge-workflow.tgz
           FORGE_PACK_EXPECTED_SHA256: ${{ needs.pack.outputs.sha256 }}
+          FORGE_PACK_EXPECTED_VERSION: ${{ needs.pack.outputs.version }}
         run: bun run test:pack 2>&1 | tee -a "$RUNNER_TEMP/ci-tests.log"
       - *write-record
       - *upload-record

@@ -1,7 +1,16 @@
 // [integration] Fault the real installed CLI's identity output; run the unmodified smoke runner.
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { hash } from "node:crypto";
+import {
+  copyFileSync,
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -13,9 +22,23 @@ for (const [field, value] of [
   ["dirty", true],
 ] as const) {
   test(`installed identity rejects a substituted ${field}`, () => {
-    packedConsumer();
+    const consumer = packedConsumer();
     const work = mkdtempSync(join(tmpdir(), "forge-installed-identity-"));
     try {
+      const packed = process.env.FORGE_PACKED_TARBALL;
+      if (!packed) throw new Error("packed smoke must provide its archive");
+      const archive = join(work, "candidate.tgz");
+      copyFileSync(packed, archive);
+      const digest =
+        process.env.FORGE_PACK_EXPECTED_SHA256 ??
+        hash("sha256", readFileSync(archive));
+      writeFileSync(`${archive}.sha256`, `${digest}  candidate.tgz\n`);
+      const build = JSON.parse(
+        readFileSync(
+          join(consumer, "node_modules/forge-workflow/dist/build.json"),
+          "utf8",
+        ),
+      ) as { version: string; commit: string };
       const root = resolve(import.meta.dirname, "../../../..");
       const author = join(work, "author");
       mkdirSync(join(author, "tools"), { recursive: true });
@@ -56,6 +79,10 @@ for (const [field, value] of [
           cwd: author,
           env: {
             ...process.env,
+            FORGE_PACK_INPUT: archive,
+            FORGE_PACK_EXPECTED_SHA256: digest,
+            FORGE_PACK_EXPECTED_VERSION: build.version,
+            CI_HEAD: build.commit,
             NODE_OPTIONS:
               `${process.env.NODE_OPTIONS ?? ""} --import=${pathToFileURL(preload).href}`.trim(),
           },

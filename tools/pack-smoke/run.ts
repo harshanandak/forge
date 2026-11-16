@@ -71,11 +71,13 @@ async function main(): Promise<void> {
   let tarball = packInput(process.env.FORGE_PACK_INPUT, trustedSha256);
   const bun = resolveBun();
   if (tarball === undefined) ok(run(bun, ["run", "build"], root, process.env));
-  const expected = (
-    JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as {
-      version?: unknown;
-    }
-  ).version;
+  const expected =
+    process.env.FORGE_PACK_EXPECTED_VERSION ??
+    (
+      JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as {
+        version?: unknown;
+      }
+    ).version;
   if (typeof expected !== "string") fail("package.json has no version");
   if (
     tarball === undefined &&
@@ -278,6 +280,7 @@ async function main(): Promise<void> {
           env: {
             ...env,
             FORGE_PACKED_CONSUMER: consumer,
+            FORGE_PACKED_TARBALL: tarball,
             FORGE_AUTHOR_NPM_ROOT: dirname(process.execPath),
           },
         },
