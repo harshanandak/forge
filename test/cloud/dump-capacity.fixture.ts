@@ -135,6 +135,10 @@ export async function fixture(mutation?: Mutation, init = true, small = false) {
     JSON.stringify([...values]),
   ];
   return {
+    storage,
+    restart: () => {
+      project = new Impl({ storage }, env);
+    },
     db,
     values,
     seed,

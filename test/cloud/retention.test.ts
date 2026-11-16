@@ -10,9 +10,63 @@ import {
   usage,
 } from "../core/l5-state/retention.fixture.ts";
 import { domain } from "../../cloud/src/project.ts";
-import { clearStaged, dumpOf, DUMP_USAGE_SQL } from "../../cloud/src/dump.ts";
+import {
+  clearStaged,
+  dumpOf,
+  DUMP_USAGE_SQL,
+  PAGE_FORMAT,
+} from "../../cloud/src/dump.ts";
+import { fixture as projectFixture } from "./dump-capacity.fixture.ts";
 import { migrate, stateMigrations } from "../../src/core/state/migrations.ts";
 
+test.each([false, true])(
+  "paged restore resumes after restart: gap=%s",
+  async (gap) => {
+    const source = await projectFixture();
+    const target = await projectFixture(undefined, false);
+    const db = durableStore(target.storage),
+      sourceDb = durableStore(source.storage);
+    const writer = new StateOwner(sourceDb, { now: () => 1000 });
+    writer.put(ns, "item:1", {}, actor, { expectRevision: 0 });
+    const tables = dumpOf(sourceDb).tables;
+    const empty = Object.fromEntries(
+      Object.keys(tables).map((table) => [table, []]),
+    );
+    const send = (page: number, rows: typeof tables, last = false) => {
+      target.restart();
+      return target.send("restore", {
+        format: PAGE_FORMAT,
+        page,
+        last,
+        next: last ? null : "next",
+        tables: rows,
+      });
+    };
+    expect(
+      (await send(0, { ...empty, state_records: tables.state_records! })).ok,
+    ).toBe(true);
+    expect(db.all("SELECT * FROM state_allocation_keys")).toEqual([]);
+    expect((await send(1, { ...tables, state_records: [] })).ok).toBe(true);
+    if (gap)
+      db.run(
+        "DELETE FROM state_allocation_keys WHERE namespace=? AND key='item:1'",
+        [ns],
+      );
+    const final = await send(2, empty, true);
+    if (gap) {
+      expect(final.ok).toBe(false);
+      expect(final.error.code).toBe("INPUT_INVALID");
+      expect(final.error.message).toMatch(/repair/i);
+      expect(target.values.has("provisioned")).toBe(false);
+    } else {
+      expect(final.ok).toBe(true);
+      expect(target.values.get("provisioned")).toBe(true);
+      const published = new StateOwner(db, { now: () => 1000 });
+      expect(() => published.initialize([domain])).not.toThrow();
+    }
+  },
+  30_000,
+);
 test("legacy staged restore can be abandoned before write initialization", async () => {
   const { db, close } = await fixture();
   try {
