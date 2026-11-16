@@ -2,6 +2,7 @@
 // installed package, then run every packed journey (`packed.integration.test.ts`) with `bun test`
 // against that one install. Run it with Node (`bun run test:pack` builds first and does this): the
 // point is that a user with only Node and npm can install and run what we publish.
+import assert from "node:assert/strict";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import {
   copyFileSync,
@@ -204,6 +205,21 @@ async function main(): Promise<void> {
     console.log(
       `- forge ${expected} runs through npm exec, its bin and import`,
     );
+    const build: unknown = JSON.parse(
+      ok(node([join(installedDir, binTarget), "--version", "--json"])),
+    );
+    assert.deepEqual(
+      build,
+      {
+        version: expected,
+        commit:
+          process.env.CI_HEAD ??
+          ok(run("git", ["rev-parse", "HEAD"], root, process.env)).trim(),
+        dirty: false,
+      },
+      "installed build identity must match the reviewed clean build",
+    );
+    console.log(`- installed build identity ${JSON.stringify(build)}`);
 
     const api = join(consumer, "api.mjs");
     copyFileSync(join(root, "tools/pack-smoke/api.mjs"), api);
