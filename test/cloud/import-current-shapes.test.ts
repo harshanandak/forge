@@ -141,6 +141,10 @@ const malformed = workShapes.flatMap(([key, value]) => [
     ],
   ]),
   [key, { ...value, unrecognized: true }],
+  ...["WORK-1", "other-1", "work-x", "work-１"].map((id) => [
+    key.replace("work-1", id),
+    value,
+  ]),
   ...["\n", "\r", "\t", "\u0000", "\u2028", "\u200b"].map((suffix) => [
     key + suffix,
     value,
@@ -247,4 +251,9 @@ test.each([
 ])("unsupported work shape still refuses: %s", (key) => {
   eq(impl.ordinaryKey(f.ns, key), false);
   eq(impl.ordinaryKey("forge/cloud", "issue:work-1"), false);
+});
+
+test("metadata keys preserve the writer's historical leading zeroes", () => {
+  for (const [key] of workShapes)
+    eq(impl.ordinaryKey(f.ns, key.replace("work-1", "work-007")), true);
 });
