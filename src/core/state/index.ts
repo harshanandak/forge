@@ -1632,6 +1632,7 @@ export class StateOwner {
         actor,
         now,
         undefined,
+        true,
       );
       return record;
     });

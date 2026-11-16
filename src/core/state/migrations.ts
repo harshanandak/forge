@@ -169,7 +169,7 @@ export const stateMigrations: readonly Migration[] = [
       "CREATE TABLE state_allocation_keys (namespace TEXT NOT NULL, key TEXT NOT NULL, PRIMARY KEY(namespace,key))",
       "INSERT OR IGNORE INTO state_allocation_keys SELECT namespace,key FROM state_records",
       "INSERT OR IGNORE INTO state_allocation_keys SELECT namespace,key FROM state_events WHERE json_extract(body,'$.type') IN (namespace||':record.updated@1',namespace||':record.deleted@1')",
-      "CREATE TRIGGER retention_allocation AFTER INSERT ON state_events WHEN json_extract(NEW.body,'$.type') IN (NEW.namespace||':record.updated@1',NEW.namespace||':record.deleted@1') BEGIN INSERT OR IGNORE INTO state_allocation_keys VALUES (NEW.namespace,NEW.key); END",
+      "CREATE TRIGGER retention_allocation AFTER INSERT ON state_events WHEN CASE WHEN json_valid(NEW.body) THEN json_extract(NEW.body,'$.type') IN (NEW.namespace||':record.updated@1',NEW.namespace||':record.deleted@1') ELSE 0 END BEGIN INSERT OR IGNORE INTO state_allocation_keys VALUES (NEW.namespace,NEW.key); END",
       "CREATE TABLE state_usage (table_name TEXT PRIMARY KEY NOT NULL, rows INTEGER NOT NULL CHECK(rows>=0), bytes INTEGER NOT NULL CHECK(bytes>=0))",
       ...requestAgeStatements("state_requests"),
       ...usageStatements(stateColumns),
