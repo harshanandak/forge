@@ -15,6 +15,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, relative } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const windows = process.platform === "win32";
 const node = Bun.which("node")!;
@@ -192,3 +193,29 @@ test.each(rows)(
   },
   45_000,
 );
+
+test("lane tier preserves Git refusal diagnostics", () => {
+  const root = mkdtempSync(join(tmpdir(), "forge-tier-refusal-"));
+  try {
+    mkdirSync(join(root, ".git"));
+    const module = pathToFileURL(
+      join(import.meta.dirname, "../../../tools/lane-tier.ts"),
+    ).href;
+    const result = spawnSync(
+      process.execPath,
+      [
+        "-e",
+        `import {laneTier} from ${JSON.stringify(module)};try{laneTier(${JSON.stringify(root)})}catch(error){console.log(error.message)}`,
+      ],
+      {
+        encoding: "utf8",
+        env: { ...process.env, PATH: root, Path: root },
+      },
+    );
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("1 skipped PATH entries");
+    expect(result.stdout).toContain("Install Git outside any repository");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 30_000);

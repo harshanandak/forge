@@ -206,6 +206,32 @@ test("Windows Git ignores drive-relative, root-relative and batch-only entries",
   ).toEqual({ kind: "resolved", path: "C:\\safe\\git.exe" });
 }, 30_000);
 
+test.each([".git", ".forge", "probe error"])(
+  "cached Git is readmitted after ancestor changes: %s",
+  (marker) => {
+    let changed = false;
+    const probe: FileProbe = {
+      ...probeOf(["/first/bin/git", "/system/git"]),
+      hasEntry: (path) => {
+        if (changed && marker === "probe error" && path === "/first/.git")
+          throw new Error("EACCES");
+        return changed && path === `/first/${marker}`;
+      },
+    };
+    const env = { PATH: "/first/bin:/system" };
+    expect(resolveExecutable("git", env, "linux", probe)).toEqual({
+      kind: "resolved",
+      path: "/first/bin/git",
+    });
+    changed = true;
+    expect(resolveExecutable("git", env, "linux", probe)).toEqual({
+      kind: "resolved",
+      path: "/system/git",
+    });
+  },
+  30_000,
+);
+
 test.each([
   "device",
   "home git",
