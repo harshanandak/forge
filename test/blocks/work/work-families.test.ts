@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { createSqliteStore } from "../../../src/adapters/store-sqlite/index.ts";
 import { StateOwner } from "../../../src/core/state/index.ts";
 import type { NamespaceFamilyPolicy } from "../../../src/core/state/families.ts";
-import * as work from "../../../src/blocks/work/validation.ts";
+import * as work from "../../../src/blocks/work/state-families.ts";
 
 setDefaultTimeout(30_000);
 const stamp = "2026-11-16T00:00:00.000Z";
@@ -177,13 +177,26 @@ test("every declared work family has a concrete valid persisted-value fixture", 
 test.each(cases)(
   "declared work family %s admits its writer value",
   (_name, key, value) => {
-    eq(work.validateWorkRecord(key, value), undefined);
+    eq(work.validateDeclaredWorkRecord(key, value), undefined);
   },
 );
 test.each(cases)(
   "declared work family %s refuses a non-record value",
   (_name, key) => {
-    eq(work.validateWorkRecord(key, null), "WORK_VALUE_SHAPE");
+    eq(work.validateDeclaredWorkRecord(key, null), "WORK_VALUE_SHAPE");
+  },
+);
+
+test.each(cases)(
+  "declared work family %s refuses undeclared fields",
+  (_name, key, value) => {
+    eq(
+      work.validateDeclaredWorkRecord(key, {
+        ...(value as Record<string, unknown>),
+        undeclared: true,
+      }),
+      "WORK_VALUE_SHAPE",
+    );
   },
 );
 
