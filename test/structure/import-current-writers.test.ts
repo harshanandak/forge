@@ -79,6 +79,13 @@ const owner =
   'import type { StateOwner } from "../core/state/index.ts"; import type { Actor } from "../generated/types.ts"; declare const owner: StateOwner; declare const actor: Actor; declare const id: string; declare const value: unknown;';
 test.each([
   [
+    "state client destructuring",
+    "blocks/work",
+    work,
+    'const {get} = state; get("issue:work-1");',
+    "literal-only",
+  ],
+  [
     "reassigned client",
     "assembly",
     owner,

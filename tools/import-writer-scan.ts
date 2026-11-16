@@ -47,20 +47,9 @@ export function scanWriters(program: ts.Program, root: string): WriterSite[] {
         checker.getTypeAtLocation(node).getProperty(name),
       )
     ) {
-      for (const binding of node.elements) {
-        const name = binding.propertyName ?? binding.name;
-        if (
-          binding.dotDotDotToken ||
-          ts.isComputedPropertyName(name) ||
-          ["put", "putNext", "putMany", "delete"].includes(
-            ts.isStringLiteral(name) ? name.text : name.getText(),
-          )
-        ) {
-          const row = siteOf(binding);
-          refuse(row);
-          result.push(row);
-        }
-      }
+      const row = siteOf(node);
+      refuse(row);
+      result.push(row);
     }
     if (
       !ts.isPropertyAccessExpression(node) &&
