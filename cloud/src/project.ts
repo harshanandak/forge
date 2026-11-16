@@ -77,6 +77,7 @@ import {
 } from "./issue-request-id.ts";
 import { checkTtl } from "./lease-ttl.ts";
 import { EVIDENCE_MIGRATION, EVIDENCE_RECEIPTS } from "./evidence-receipts.ts";
+import { LaneControlStore } from "./lane-control-store.ts";
 import { LANE_APPROVALS, LANE_APPROVAL_MIGRATION } from "./lane-approval.ts";
 import {
   isLaneCallback,
@@ -802,8 +803,21 @@ export class Project {
     }
   }
 
+  #restoreStop(db: SqlDatabase, owner: StateOwner, project: string): void {
+    const at = new Date(Date.now()).toISOString();
+    owner = new StateOwner(db, { now: () => Date.parse(at) });
+    const control = new LaneControlStore(owner, project),
+      label = "cloud-restore";
+    const reply = control.stop({ all: true }, label, label, at);
+    if (!reply.ok) throw new ForgeFailure(reply.error);
+    if (reply.result.stopped !== true || reply.result.scope !== "all")
+      throw fail("UNAVAILABLE", "Restore did not establish the global stop");
+    db.run(`DELETE FROM ${LANE_APPROVALS}`);
+    db.run(`DELETE FROM ${LANE_BROWSER}`);
+  }
   // One restore request: a whole dump, or one page of a paged restore.
   async #restore(request: Request): Promise<Response> {
+    const project = new URL(request.url).pathname.split("/")[2]!;
     const dump = parseDump(
       await bounded(request, MAX_RESTORE_BODY, "RESTORE_TOO_LARGE"),
     );
@@ -819,7 +833,8 @@ export class Project {
     if (dump.format === DUMP_FORMAT) {
       if (staged !== undefined) await this.#abandon();
       const { db, owner } = this.#openWrite();
-      value = { restored: restoreDump(db, owner, dump, this.#limits) };
+      const finish = () => this.#restoreStop(db, owner, project);
+      value = { restored: restoreDump(db, owner, dump, this.#limits, finish) };
     } else {
       const page = dump as Page;
       // Page 0 starts again; any other page must be the one the last accepted page named.
@@ -836,8 +851,9 @@ export class Project {
               : `Expected page ${staged.next}, or page 0 to start again`,
         );
       const { db, owner } = this.#openWrite();
+      const finish = () => this.#restoreStop(db, owner, project);
       value = {
-        restored: restorePage(db, owner, page, this.#limits),
+        restored: restorePage(db, owner, page, this.#limits, finish),
         page: page.page,
         done: page.last,
       };
