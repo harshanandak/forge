@@ -3,6 +3,11 @@ import { verifyEventDerivedState } from "../../../src/core/state/index.ts";
 import { readReplayStart } from "../../../src/core/state/checkpoint.ts";
 import { withinRestoreBudget } from "../../../src/core/state/restore-json.ts";
 import {
+  migrate,
+  stateMigrations,
+  NewerStoreError,
+} from "../../../src/core/state/migrations.ts";
+import {
   actor,
   ns,
   fixture,
@@ -14,6 +19,24 @@ import {
 } from "./record-checkpoint.fixture.ts";
 
 setDefaultTimeout(30_000);
+
+test("pre-reader writers refuse checkpoint authority before any write", async () => {
+  const s = await fixture();
+  try {
+    prefix(s);
+    capture(s);
+    const before = s.db.get("SELECT total_changes() AS n");
+    expect(() =>
+      migrate(
+        s.db,
+        stateMigrations.filter((m) => m.id < "008_record_checkpoint_reader"),
+      ),
+    ).toThrow(NewerStoreError);
+    expect(s.db.get("SELECT total_changes() AS n")).toEqual(before);
+  } finally {
+    await s.close();
+  }
+});
 
 test.each([
   "namespace watermark",
