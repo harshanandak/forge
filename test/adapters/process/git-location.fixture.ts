@@ -4,7 +4,14 @@ import { createProcessPort } from "../../../src/adapters/process/index.ts";
 
 const [cwd, marker, path] = process.argv.slice(2) as [string, string, string];
 const env = { PATH: path, PATHEXT: ".CMD;.BAT;.EXE;.COM" };
-const port = createProcessPort();
+const port = createProcessPort({
+  supervision: {
+    cleanupTimeoutMs: 1000,
+    pollIntervalMs: 25,
+    drainTimeoutMs: 100,
+    maxConcurrent: 1,
+  },
+});
 const found = port.resolve("git", env);
 let version = "";
 if (found.kind === "resolved") {
