@@ -11,6 +11,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
@@ -83,7 +84,7 @@ async function main(): Promise<void> {
   )
     fail("dist/ is missing; run `bun run build` first");
 
-  const work = mkdtempSync(join(tmpdir(), "forge-pack-smoke-"));
+  const work = realpathSync(mkdtempSync(join(tmpdir(), "forge-pack-smoke-")));
   try {
     const env = environmentWithoutBun(process.execPath);
     const consumerNode = bunFreeNodeExecutable(process.execPath);

@@ -3,6 +3,7 @@ import { expect, test } from "bun:test";
 import {
   mkdirSync,
   mkdtempSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -15,7 +16,7 @@ import {
 } from "../../../tools/pack-smoke/identity.ts";
 
 test("installed identity accepts only the reviewed clean artifact and accounts for every scope-A phase", () => {
-  const root = mkdtempSync(join(tmpdir(), "forge-identity-"));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "forge-identity-")));
   const installed = join(root, "node_modules", "forge-workflow");
   const bin = join(installed, "dist", "bin", "forge.js");
   const expected = { version: "0.0.1", commit: "a".repeat(40) };
