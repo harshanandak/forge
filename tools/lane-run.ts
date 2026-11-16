@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
+import { gitExecutable } from "./git-executable.ts";
 import { randomUUID } from "node:crypto";
 import {
   closeSync,
@@ -383,7 +384,8 @@ function completed(record: RunRecord, auto: boolean) {
   );
 }
 function git(worktree: string, args: string[]) {
-  const result = spawnSync("git", args, {
+  const result = spawnSync(gitExecutable(), args, {
+    shell: false,
     cwd: worktree,
     encoding: "utf8",
     timeout: 30_000,

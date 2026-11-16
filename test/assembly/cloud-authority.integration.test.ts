@@ -8,6 +8,7 @@ import {
   test,
 } from "bun:test";
 import { spawnSync } from "node:child_process";
+import { gitExecutable } from "../../tools/git-executable.ts";
 import {
   cpSync,
   existsSync,
@@ -116,7 +117,7 @@ for (const [name, row, guard, replacement, marker] of [
     "externalRan",
   ],
 ] as const)
-  test(`scoped git loaded counterfactual: ${name}`, async () => {
+  test(`git resolver rejects repository executables despite scope mutation: ${name}`, async () => {
     expect(typeof (scopedGit as unknown as fx.ScopedGitApi).gitCapability).toBe(
       "function",
     );
@@ -130,13 +131,11 @@ for (const [name, row, guard, replacement, marker] of [
     if (selectionOnly)
       expect(await fx.exerciseGitScope(row, scopedGit, true)).toMatchObject({
         relativeRan: false,
-        externalRan: true,
+        externalRan: false,
       });
     const result = await fx.exerciseGitScope(row, mutant, selectionOnly);
-    expect(result[marker]).toBe(name !== "Ban-all-repositories");
-    expect(result.kind).toBe(
-      name === "Ban-all-repositories" ? "unavailable" : "resolved",
-    );
+    expect(result[marker]).toBe(false);
+    expect(result.kind).toBe("unavailable");
   }, 30000);
 import * as durable from "../../src/adapters/fs/durable-io.ts";
 import * as authority from "../../src/assembly/cloud-binding.ts";
@@ -632,12 +631,12 @@ for (const row of [
       const launch = fx.launchSavedGit(f, gitScope, scopedGit, f.lexical);
       if (row === "reopen") expect((await launch).exitCode).toBe(0);
       else if (row === "Accept-legacy-record")
-        expect((await launch).exitCode).toBe(99);
+        expect((await launch).exitCode).toBe(0);
       else
         await expect(launch).rejects.toMatchObject({
           error: { code: "INPUT_CONFLICT" },
         });
-      expect(existsSync(f.marker)).toBe(row === "Accept-legacy-record");
+      expect(existsSync(f.marker)).toBe(false);
       expect([
         readFileSync(join(deviceRoot, "records.sqlite")).toString("hex"),
         ...f.snapshot(),
@@ -2575,7 +2574,7 @@ for (const [name, expected] of [
                 ...new Set(
                   projectGit.mock.calls.map(([executable]) => executable),
                 ),
-              ]).toEqual([realpathSync.native(Bun.which("git")!)]);
+              ]).toEqual([gitExecutable()]);
             } finally {
               await files.close();
             }
@@ -2820,9 +2819,9 @@ for (const [name, expected] of [
                 scopedGit,
                 root,
               );
-              expect(result.exitCode).toBe(dropLexical ? 99 : 0);
+              expect(result.exitCode).toBe(0);
             }
-            expect(existsSync(lexicalFixture.marker)).toBe(!!dropLexical);
+            expect(existsSync(lexicalFixture.marker)).toBe(false);
             expect([
               attachmentBytes(r.s),
               ...lexicalFixture.snapshot(),

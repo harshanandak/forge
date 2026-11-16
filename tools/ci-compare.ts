@@ -1,4 +1,5 @@
 import { runCommand } from "./run-command.ts";
+import { gitExecutable } from "./git-executable.ts";
 
 type Job = {
   databaseId: number;
@@ -18,7 +19,7 @@ let host = "";
 const redact = (text: string) =>
   token ? text.replaceAll(token, "[redacted]") : text;
 function command(program: string, args: string[], auth = false): string {
-  const executable = Bun.which(program);
+  const executable = program === "git" ? gitExecutable() : Bun.which(program);
   if (!executable) throw new Error(`${program} is unavailable on PATH`);
   const env: NodeJS.ProcessEnv = { ...process.env, GH_HOST: host };
   delete env.GH_TOKEN;

@@ -4,12 +4,18 @@ import {
 } from "node:child_process";
 import { existsSync } from "node:fs";
 import { delimiter, join } from "node:path";
+import { gitExecutable } from "./git-executable.ts";
 
 export function runCommand(
   command: string,
   args: string[],
   options: SpawnSyncOptionsWithStringEncoding,
 ) {
+  if (command === "git")
+    return spawnSync(gitExecutable(options.env), args, {
+      ...options,
+      shell: false,
+    });
   // sh preserves JSON arguments in extensionless shims on Windows.
   if (["forge", "gh"].includes(command) && process.platform === "win32") {
     const path =

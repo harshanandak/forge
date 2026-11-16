@@ -2,6 +2,10 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  realFileProbe,
+  resolveExecutable,
+} from "../../../../dist/src/adapters/process/resolve.js";
 
 // The renderer uses this package copy, whose CLI stays alongside it across projects.
 const bin = fileURLToPath(
@@ -14,6 +18,7 @@ function run(executable, args, cwd) {
     windowsHide: true,
     timeout: 15_000,
     maxBuffer: 1024 * 1024,
+    shell: false,
   });
 }
 function check() {
@@ -42,7 +47,16 @@ function check() {
     /^\s*(?:[-*+]\s+)?\*{0,2}unverified\*{0,2}:\*{0,2}/im.test(prose)
   )
     return;
-  const root = run("git", ["rev-parse", "--show-toplevel"], input.cwd);
+  const git = resolveExecutable(
+    "git",
+    Object.fromEntries(
+      Object.entries(process.env).filter(([, value]) => value !== undefined),
+    ),
+    process.platform,
+    realFileProbe,
+  );
+  if (git.kind !== "resolved") return;
+  const root = run(git.path, ["rev-parse", "--show-toplevel"], input.cwd);
   if (root.status !== 0) return;
   const top = realpathSync.native(root.stdout.trim());
   let project = realpathSync.native(input.cwd);
@@ -50,7 +64,7 @@ function check() {
     if (project === top || dirname(project) === project) return;
     project = dirname(project);
   }
-  const head = run("git", ["rev-parse", "HEAD"], input.cwd);
+  const head = run(git.path, ["rev-parse", "HEAD"], input.cwd);
   if (
     head.status === 0 &&
     /^\s*(?:[-*+]\s+)?\*{0,2}not covered\*{0,2}\s*[:\u2013\u2014-]\*{0,2}\s*\S.*$/im.test(

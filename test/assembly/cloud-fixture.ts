@@ -14,7 +14,10 @@ import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, relative } from "node:path";
 import { createProcessPort } from "../../src/adapters/process/index.ts";
+import { realFileProbe } from "../../src/adapters/process/resolve.ts";
 import { spawnSync } from "node:child_process";
+import { gitExecutable } from "../../tools/git-executable.ts";
+import { gitFixtureDirectory } from "../fixtures/git-resolution.ts";
 import { reopenGitScope } from "../../src/assembly/saved-git-scope.ts";
 import type { CloudFetch } from "../../src/adapters/http/index.ts";
 import type {
@@ -27,11 +30,9 @@ export type ScopedGitApi = Pick<
   "gitCapability" | "resolveOutside"
 >;
 
-/** Temporary siblings of runner scratch stay outside checkout and OS-temp exclusions. */
+/** Git fixtures must stay outside checkout and OS-temp exclusions. */
 export function gitFixtureTemp(prefix: string): string {
-  const root = process.env.RUNNER_TEMP;
-  if (!root) throw new Error("Git security fixtures require RUNNER_TEMP");
-  return mkdtempSync(join(root, "..", prefix));
+  return gitFixtureDirectory(prefix);
 }
 export function directoryLink(target: string, link: string): void {
   symlinkSync(target, link, process.platform === "win32" ? "junction" : "dir");
@@ -41,7 +42,7 @@ export function persistedRootsFixture() {
   const dir = gitFixtureTemp("forge-saved-roots-");
   const project = join(dir, "project"),
     outside = mkdtempSync(join(tmpdir(), "forge-saved-lane-"));
-  const trusted = realpathSync.native(Bun.which("git")!);
+  const trusted = gitExecutable();
   const git = (args: string[]) => {
     const result = spawnSync(trusted, args, {
       encoding: "utf8",
@@ -209,6 +210,7 @@ export async function exerciseGitScope(
       SystemRoot: process.env.SystemRoot ?? "",
     };
     const port = createProcessPort({
+      probe: { ...realFileProbe },
       supervision: {
         cleanupTimeoutMs: 1000,
         pollIntervalMs: 25,
@@ -253,13 +255,16 @@ export async function exerciseGitScope(
       relativeRan: existsSync(marker(relativeInstall)),
       diagnostic:
         executable.kind === "unavailable" &&
-        executable.reason.includes(
-          row === "no git"
-            ? "absolute PATH"
-            : row === "cross-project"
-              ? external
-              : paths[0]!,
-        ),
+        (executable.reason.includes("absolute PATH") ||
+          (executable.reason.includes("skipped PATH entries") &&
+            executable.remedy.includes("outside any repository")) ||
+          executable.reason.includes(
+            row === "no git"
+              ? "absolute PATH"
+              : row === "cross-project"
+                ? external
+                : paths[0]!,
+          )),
     };
   } finally {
     rmSync(dir, { recursive: true, force: true });

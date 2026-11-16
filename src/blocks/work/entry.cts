@@ -4381,7 +4381,7 @@ const operations: Operations<WorkOperations> = {
     ]);
     const git = executor.resolve("git", env);
     if (git.kind !== "resolved")
-      fail("UNAVAILABLE", "Install Git and put it on PATH to start a lane");
+      fail("UNAVAILABLE", `${git.reason} ${git.remedy}`);
     const clock = laneClock(services);
     const run = async (args: string[], optional = false): Promise<string> => {
       const remaining = deadline - clock();
@@ -4600,7 +4600,7 @@ const operations: Operations<WorkOperations> = {
     )
       fail("UNAVAILABLE", "Lane release needs the process cleanup budget");
     if (git.kind !== "resolved")
-      fail("UNAVAILABLE", "Install Git and put it on PATH");
+      fail("UNAVAILABLE", `${git.reason} ${git.remedy}`);
     const lock = files.lock([registryLock], { recoverDeadOwner: true });
     let runLock: ReturnType<FilesService["lock"]> | undefined;
     let reservation: StateRecord | undefined;
@@ -4951,8 +4951,10 @@ const operations: Operations<WorkOperations> = {
       ]);
     const git = executor.resolve("git", env),
       gh = executor.resolve("gh", env);
-    if (git.kind !== "resolved" || (!input.noPr && gh.kind !== "resolved"))
-      fail("UNAVAILABLE", "Install Git and gh and put them on PATH");
+    if (git.kind !== "resolved")
+      fail("UNAVAILABLE", `${git.reason} ${git.remedy}`);
+    if (!input.noPr && gh.kind !== "resolved")
+      fail("UNAVAILABLE", "Install gh and put it on PATH");
     let next: string[][] = [];
     const refuse = (code: string, message: string): never => {
       try {
