@@ -248,6 +248,7 @@
     "test/tools/ci-windows-time/first-slice.integration.test.ts": 811,
     "test/tools/ci-windows-time/shards.test.ts": 60,
     "test/tools/cleanup-attribution.integration.test.ts": 1757,
+    "test/tools/cli-speed.integration.test.ts": 199306,
     "test/tools/counterfactual-result.test.ts": 42,
     "test/tools/digest.integration.test.ts": 24445,
     "test/tools/gen-write-race.test.ts": 1449,
