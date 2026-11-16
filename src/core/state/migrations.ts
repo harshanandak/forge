@@ -205,6 +205,8 @@ export const stateMigrations: readonly Migration[] = [
       "ALTER TABLE state_checkpoint_live ADD COLUMN body TEXT NOT NULL DEFAULT ''",
     ],
   },
+  // Older writers cannot preserve checkpoint deletion revisions after prefix restoration.
+  { id: "008_record_checkpoint_reader", statements: ["SELECT 1"] },
 ];
 
 export function identifier(value: string): string {

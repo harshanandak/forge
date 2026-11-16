@@ -23,6 +23,7 @@ import type {
 } from "../ports/state.ts";
 import { refuse } from "../core/trust/index.ts";
 import { jsonEqual } from "../contract/schema.ts";
+import { formatComment } from "../blocks/work/comment.ts";
 
 type ClientPutOptions = PutOptions &
   Pick<WriteOptions, "readSet"> & { readonly subject?: string };
@@ -48,6 +49,7 @@ export interface LeaseStateClient extends DeletableStateClient {
   ): ReturnType<DeletableStateClient["delete"]>;
   holder(): LeaseHolder;
   now(): number;
+  formatComment(base: string, entries: readonly string[]): string;
   lease(subject: string): LeaseRecord | undefined;
   acquire(
     subject: string,
@@ -120,6 +122,7 @@ export function createStateClient(options: {
       });
     },
     now: () => Date.now(),
+    formatComment,
     get: (key: string) => owner?.get(namespace, key),
     list: (prefix?: string) => owner?.list(namespace, prefix) ?? [],
     count: (prefix: string) => owner?.count(namespace, prefix) ?? 0,

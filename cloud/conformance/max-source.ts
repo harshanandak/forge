@@ -40,7 +40,7 @@ export const SHAPE: Record<string, [string, string]> = {
     "namespace, request_id",
   ],
   domain_cloud_requests: [
-    "request_id, fingerprint, outcome, result",
+    "request_id, fingerprint, outcome, result, created_at",
     "request_id",
   ],
   domain_cloud_command_receipts: [

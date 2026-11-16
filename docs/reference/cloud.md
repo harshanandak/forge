@@ -3,6 +3,8 @@
 A Cloudflare Worker with one SQLite Durable Object per project. It decides who holds a lease on a
 subject. The code is in `cloud/`.
 
+Release acceptance follows [the release runbook](../release.md): owner publishes an unused candidate to `next`, verifies the exact registry-installed version/build commit, integrity, signatures and expected release-workflow provenance, and requires the complete installed tracker journey before promotion to `beta`. Retain native CI and two-machine acceptance output; phase names are not completion evidence. Main stays at temporary prerelease `0.1.0-beta.9` (V001) until the owner decides the final number before stable.
+
 ## Routes
 
 Every route is `/p/<projectId>/<route>` and needs `Authorization: Bearer <token>`, except `loginstart` and `loginpoll`.
@@ -109,13 +111,15 @@ A project bound to the cloud serves `issue.show`, `issue.comments`, `issue.links
 
 `forge store reinit` is refused on a bound project (`INPUT_INVALID`, exit 6, "store.reinit is not served by the cloud authority of a cloud-bound project yet."), with or without `--dry-run`, whether or not a local store exists. The refusal comes before any local state opens, any approval is asked or any request is sent, so it needs no login and creates no local store. A malformed or mismatched binding keeps its own refusal. Recovery on an unbound project is unchanged. Only a human can invoke it; MCP still does not expose it.
 
-Forge 0.0.1 also refuses local project-state writes without a cloud implementation (`UNAVAILABLE`, exit 1), including check receipts, decisions, project memory and custom blocks. The sixteen issue routes above remain available. Device-only notes use `memory.add` with `level=device`; block authors declare `context=device` and use core device state. Selecting project state from a device operation still refuses. Generic project-state sync is deferred to forge-1345.
+Forge also refuses local project-state writes without a cloud implementation (`UNAVAILABLE`, exit 1), including check receipts, decisions, project memory and custom blocks. The sixteen issue routes above remain available. Device-only notes use `memory.add` with `level=device`; block authors declare `context=device` and use core device state. Selecting project state from a device operation still refuses. Generic project-state sync is deferred to forge-1345.
 
 Local reads remain historical local data, without a claim of cloud freshness. If device registration proves that a bound project's local store is missing, restore a backup to inspect those records or use cloud-served issue commands for shared issue state. `store reinit` remains disabled; removing the binding does not sync or recover records. Unbound projects retain their existing local behavior.
 
 A refused cloud command keeps only checked details, never the server's words. `LEASE_HELD` keeps the full lease (holder, generation, expiry) and prints the local engine's message; the other three lease codes keep a subject alone or the same full tuple. `CLAIM_BLOCKED` on `issue.claim` keeps its blocker edges in server order, each `{ id }` or `{ id, holder, holderUnverified: true }`, with no open or missing state, and no `--reason` repair, because the cloud claim refuses `reason`. A competing `issue.close` keeps its one repair, rebuilt locally; other repairs are dropped. A lease subject must be `issue:work-<digits>` for the requested id's digits. A missing, partial or extra-key detail, a bad generation, a token or control character in a kept string, or a body over 1 MiB is `UNAVAILABLE` with fixed text and no partial detail.
 
 A whole dump (`GET dump`) is one response for a small project: up to 3 MiB stored, 10,000 rows per table and 262,144 characters per value, except `state_records.body`, `state_events.body` and `state_requests.fingerprint` and `result`, which take up to 8,388,608 characters because a stored issue, its event and its receipt each hold a 65,536 character body whose characters can each escape to six (a legal maximum is about 393,000 stored). A larger project is refused as `DUMP_TOO_LARGE` (413), and so is a whole dump over the 8 MiB restore body once escaped (a control character is one stored byte and six sent); a project with more than 10,000 rows in a table cannot be dumped whole (use the paged dump below).
+
+Whole and paged dumps carry `domain_cloud_requests.created_at` as a nonnegative safe integer and restore it exactly, including zero. Restore admits ages at most 60 seconds ahead of its clock, inclusive, to allow small clock skew; later ages are refused rather than clamped. Shipped version 1 and earlier version 2 backups omit this field. Their missing age becomes the fixed epoch value `0`, meaning unknown historical age; it is never replaced with restore time. Raw witnesses currently have no age deadline. If age-based expiry is added later, an unknown age must use a restore-time retention floor, never zero as its expiry anchor. Present invalid ages are refused, and all other row fields remain strict. The request-age dump migration refreshes installed byte counters and triggers to count the newly transported field.
 
 ## Device login
 
@@ -176,6 +180,17 @@ Staged rows are never served: a project is not provisioned until the last page, 
 To abandon a half restore, stop. To retry, send page 0 again: it clears the staged rows. Any refused restore request (an out-of-order page, a page over a limit, a bad document or a body that is too large) also clears them, so the next try starts at page 0. A whole `POST restore` clears them too.
 
 ## Offline current-state import (step 7)
+
+The strict work-value engine requires close evidence for every closed issue. The approved
+PR 592 integration policy adds one named converter repair, `legacy-close-evidence`, before
+validation: for a closed current value or historical update with neither `receipt` nor
+`withoutReceipt`, set `withoutReceipt` to exactly
+`Imported: closed before Forge required close evidence`. Report separate counts of repaired
+current values and historical updates, then require every repaired value to pass the strict
+engine. Existing evidence is never overwritten. This policy belongs to the converter integration;
+the engine has no legacy exemption, and the repair must ship before using this preparation on
+legacy trackers. The fresh owner-tracker audit found 154 current values and 154 historical updates
+requiring this repair; those counts are a measurement, not a fixed admission allowance.
 
 Use only an owner-pinned standalone SQLite backup produced with SQLite backup/VACUUM INTO, without WAL, SHM or journal companions. Never point this tool at a running tracker. The source manifest has exactly `sha256` (lowercase SHA-256 of the complete file), `eventHighWaterMark` (last event sequence), `records` (exact current row count) and `at` (canonical ISO UTC projection time). Unsupported schema, work keys or allocation history refuse conversion; the source is opened read-only, held in one read transaction and hashed before and after. Supported work keys include landing, reopen, attempt, attempt evidence, cleanup, selection and slots, preserving their values without transferring leases.
 

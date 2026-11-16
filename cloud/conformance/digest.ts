@@ -22,7 +22,13 @@ export const COLUMNS: Record<Table, string[]> = {
   state_events: ["sequence", "namespace", "key", "body"],
   state_leases: ["namespace", "subject", "generation", "body"],
   state_requests: ["namespace", "request_id", "fingerprint", "result"],
-  domain_cloud_requests: ["request_id", "fingerprint", "outcome", "result"],
+  domain_cloud_requests: [
+    "request_id",
+    "fingerprint",
+    "outcome",
+    "result",
+    "created_at",
+  ],
   domain_cloud_command_receipts: [
     "request_id",
     "fingerprint",

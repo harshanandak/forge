@@ -5383,13 +5383,13 @@ const operations: Operations<WorkOperations> = {
         !/^close-(?:[1-9]\d*|no-pr-[0-9a-f-]{36})\.json$/i.test(archive)
       )
         return refuse("INPUT_INVALID", "Invalid close archive name in journal");
-      const note =
+      const note = state.formatComment(
         (dropped
           ? `${noPr ? `Lane dropped without a PR\nArchive: ${archive}` : `PR #${input.pr} dropped: ${pull.url}`}\nReason: ${dropped}`
           : `PR #${input.pr} landed: ${pull.url}\nMerge commit: ${mergeCommit}\nReceipt: ${receipt}`) +
-        (ahead
-          ? `\nBranch retained: ${branch}\nCommits preserved:\n${ahead}`
-          : "");
+          (ahead ? `\nBranch retained: ${branch}\nCommits preserved:\n` : ""),
+        ahead ? ahead.split("\n") : [],
+      );
       const matching = appended(state, `comment:${id}:`).find((record) => {
         const body = (record.value as { body?: string }).body;
         return (
@@ -5536,7 +5536,7 @@ const operations: Operations<WorkOperations> = {
     const state = client(services);
     const ids = idsFor(state, config);
     checkKind(input.kind);
-    const dependsOn = (input.dependsOn ?? []).map(ids.stored);
+    const dependsOn = [...new Set((input.dependsOn ?? []).map(ids.stored))];
     const parent =
       input.parent === undefined ? undefined : ids.stored(input.parent);
     // The owner picks the number and advances its floor in the write's own transaction.
@@ -5688,7 +5688,7 @@ const operations: Operations<WorkOperations> = {
         id: ids.stored(input.id),
         ...(input.dependsOn === undefined
           ? {}
-          : { dependsOn: input.dependsOn.map(ids.stored) }),
+          : { dependsOn: [...new Set(input.dependsOn.map(ids.stored))] }),
       },
       ids,
       input.id,

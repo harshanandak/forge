@@ -3,9 +3,12 @@ import { ForgeFailure } from "../../contract/failure.ts";
 import {
   validateBlockId,
   validateLeaseRecord,
+  validateStateRecord,
 } from "../../generated/validators.ts";
 import type { SqlDatabase, SqlRow, SqlValue } from "../../ports/store.ts";
+import type { StateRecord } from "../../generated/types.ts";
 import { parseRestoreJson } from "./restore-json.ts";
+import { allocationFloorNumber } from "./allocation-floor.ts";
 
 /** Owner metadata, deliberately separate from the cloud v2 wire tables. */
 export const checkpointTables = {
@@ -30,7 +33,7 @@ export const checkpointTables = {
 /** Tuples use table column order, excluding the singleton header's SQL id. */
 export interface Checkpoint {
   readonly header: readonly [
-    formatVersion: 1,
+    formatVersion: 1 | 2,
     lineage: string,
     generation: number,
     coveredSequence: number,
@@ -98,8 +101,10 @@ function invalid(message = "Invalid checkpoint"): never {
   throw new ForgeFailure({ code: "INPUT_INVALID", message, retry: "never" });
 }
 function canonical(value: unknown): string {
-  const walk = (v: unknown): unknown =>
-    Array.isArray(v)
+  const walk = (v: unknown): unknown => {
+    if (typeof v === "number" && !Number.isFinite(v))
+      invalid("Invalid checkpoint number");
+    return Array.isArray(v)
       ? v.map(walk)
       : v !== null && typeof v === "object"
         ? Object.fromEntries(
@@ -108,6 +113,7 @@ function canonical(value: unknown): string {
               .map(([k, entry]) => [k, walk(entry)]),
           )
         : v;
+  };
   return JSON.stringify(walk(value));
 }
 function rowValid(
@@ -147,7 +153,10 @@ export function decodeCheckpoint(text: string): Checkpoint {
   const value = parsed as Record<string, unknown>;
   if (Object.keys(value).sort().join() !== Object.keys(shapes).sort().join())
     invalid();
-  if (Array.isArray(value.header) && value.header[0] !== 1)
+  if (
+    Array.isArray(value.header) &&
+    ![1, 2].includes(value.header[0] as number)
+  )
     invalid("Checkpoint format unsupported; newer Forge required");
   rowValid(value.header, shapes.header);
   const covered = value.header[3] as number;
@@ -225,6 +234,7 @@ export interface CheckpointSeed {
   readonly coveredSequence: number;
   readonly live: Checkpoint["live"];
   readonly deleted: Checkpoint["deleted"];
+  readonly floors: Checkpoint["floors"];
   readonly receipts: Checkpoint["receipts"];
 }
 
@@ -260,9 +270,13 @@ export function readReplayStart(
       invalid("Checkpoint entries require a header");
     return { checkpoint: undefined, receipts };
   }
-  for (const kind of ["leases", "floors", "reservations", "denied"])
+  const recordFormat = Number(header.format_version) === 2;
+  for (const kind of recordFormat
+    ? ["leases", "receipts", "denied"]
+    : ["leases", "floors", "reservations", "denied"])
     if (db.get(`SELECT 1 FROM state_checkpoint_${kind} LIMIT 1`))
       invalid(`Unsupported checkpoint ${kind} entries; newer Forge required`);
+  const liveFloors: Checkpoint["floors"][number][] = [];
   const read = (
     kind: string,
     columns: readonly string[],
@@ -270,67 +284,164 @@ export function readReplayStart(
   ): SqlValue[][] => {
     const result: SqlValue[][] = [];
     let after: readonly SqlValue[] | undefined;
+    const extra = recordFormat && kind === "live" ? ",body" : "";
     for (;;) {
       const rows = db.all(
-        `SELECT ${columns.join(",")} FROM state_checkpoint_${kind}${after === undefined ? "" : ` WHERE (${keys.join(",")}) > (${keys.map(() => "?").join(",")})`} ORDER BY ${keys.join(",")} LIMIT ?`,
+        `SELECT ${columns.join(",")}${extra} FROM state_checkpoint_${kind}${after === undefined ? "" : ` WHERE (${keys.join(",")}) > (${keys.map(() => "?").join(",")})`} ORDER BY ${keys.join(",")} LIMIT ?`,
         [...(after ?? []), pageSize],
       );
-      for (const row of rows)
+      for (const row of rows) {
+        if (recordFormat && kind === "live") {
+          const record = parseRestoreJson(String(row.body)) as StateRecord;
+          if (
+            !validateStateRecord(record).ok ||
+            record.namespace !== row.namespace ||
+            record.key !== row.key ||
+            record.revision !== Number(row.revision) ||
+            recordDigest(record) !== row.digest
+          )
+            invalid("Invalid checkpoint live body");
+          if (record.key.startsWith("allocation:")) {
+            const prefix = record.key.slice("allocation:".length);
+            const number = allocationFloorNumber(record.value, prefix);
+            if (number !== undefined)
+              liveFloors.push([
+                record.namespace,
+                prefix,
+                Number(row.sequence),
+                number,
+              ]);
+          }
+        }
         result.push(
           columns.map((column) => {
             const cell = row[column]!;
             return typeof cell === "bigint" ? Number(cell) : cell;
           }),
         );
+      }
       if (rows.length < pageSize) return result;
       after = keys.map((column) => rows.at(-1)![column]!);
     }
   };
-  const checkpoint = decodeCheckpoint(
-    JSON.stringify({
-      header: [
-        "format_version",
-        "lineage",
-        "generation",
-        "covered_sequence",
-        "retention_policy_version",
-        "archive_through",
-      ].map((column) => {
-        const cell = header[column];
-        return typeof cell === "bigint" ? Number(cell) : cell;
-      }),
-      live: read(
-        "live",
-        ["namespace", "key", "sequence", "revision", "digest"],
-        ["namespace", "key"],
-      ),
-      deleted: read(
-        "deleted",
-        ["namespace", "key", "sequence", "revision"],
-        ["namespace", "key"],
-      ),
-      receipts: read(
-        "receipts",
-        [
-          "namespace",
-          "request_id",
-          "sequence",
-          "fingerprint_digest",
-          "result_digest",
-        ],
-        ["namespace", "request_id"],
-      ),
-      leases: [],
-      floors: [],
-      reservations: [],
-      denied: [],
+  const checkpoint = {
+    header: [
+      "format_version",
+      "lineage",
+      "generation",
+      "covered_sequence",
+      "retention_policy_version",
+      "archive_through",
+    ].map((column) => {
+      const cell = header[column];
+      return typeof cell === "bigint" ? Number(cell) : cell;
     }),
-  );
+    live: read(
+      "live",
+      ["namespace", "key", "sequence", "revision", "digest"],
+      ["namespace", "key"],
+    ),
+    deleted: read(
+      "deleted",
+      ["namespace", "key", "sequence", "revision"],
+      ["namespace", "key"],
+    ),
+    receipts: read(
+      "receipts",
+      [
+        "namespace",
+        "request_id",
+        "sequence",
+        "fingerprint_digest",
+        "result_digest",
+      ],
+      ["namespace", "request_id"],
+    ),
+    leases: [],
+    floors: recordFormat
+      ? read(
+          "floors",
+          ["namespace", "prefix", "sequence", "highest"],
+          ["namespace", "prefix"],
+        )
+      : [],
+    reservations: recordFormat
+      ? read(
+          "reservations",
+          ["namespace", "prefix", "sequence", "number"],
+          ["namespace", "prefix", "number"],
+        )
+      : [],
+    denied: [],
+  } as unknown as Checkpoint;
+  const empty = {
+    ...checkpoint,
+    live: [],
+    deleted: [],
+    receipts: [],
+    floors: [],
+    reservations: [],
+  };
+  decodeCheckpoint(JSON.stringify(empty));
+  for (const kind of [
+    "live",
+    "deleted",
+    "receipts",
+    "floors",
+    "reservations",
+  ] as const)
+    for (const row of checkpoint[kind])
+      decodeCheckpoint(JSON.stringify({ ...empty, [kind]: [row] }));
+  if (
+    db.get(
+      "SELECT 1 FROM state_checkpoint_live l JOIN state_checkpoint_deleted d USING(namespace,key) LIMIT 1",
+    )
+  )
+    invalid();
+  if (
+    recordFormat &&
+    db.get(
+      "SELECT 1 FROM (SELECT namespace,key,sequence FROM state_checkpoint_live UNION ALL SELECT namespace,key,sequence FROM state_checkpoint_deleted) c LEFT JOIN state_namespace_watermarks w USING(namespace) WHERE w.sequence IS NULL OR w.sequence<c.sequence OR NOT EXISTS (SELECT 1 FROM state_allocation_keys a WHERE a.namespace=c.namespace AND a.key=c.key) LIMIT 1",
+    )
+  )
+    invalid("Checkpoint retention authority requires repair");
+  if (
+    recordFormat &&
+    db.get(
+      "SELECT 1 FROM state_namespace_watermarks w WHERE w.sequence<>MAX(COALESCE((SELECT MAX(sequence) FROM state_checkpoint_live WHERE namespace=w.namespace),0),COALESCE((SELECT MAX(sequence) FROM state_checkpoint_deleted WHERE namespace=w.namespace),0),COALESCE((SELECT MAX(sequence) FROM state_events WHERE namespace=w.namespace AND sequence>?),0)) LIMIT 1",
+      [checkpoint.header[3]],
+    )
+  )
+    invalid("Checkpoint namespace watermark requires repair");
+  if (
+    recordFormat &&
+    db.get(
+      "SELECT 1 FROM state_allocation_keys a WHERE NOT EXISTS (SELECT 1 FROM state_checkpoint_live c WHERE c.namespace=a.namespace AND c.key=a.key) AND NOT EXISTS (SELECT 1 FROM state_checkpoint_deleted c WHERE c.namespace=a.namespace AND c.key=a.key) AND NOT EXISTS (SELECT 1 FROM state_events e WHERE e.namespace=a.namespace AND e.key=a.key AND e.sequence>? AND json_extract(e.body,'$.type') IN (e.namespace||':record.updated@1',e.namespace||':record.deleted@1')) LIMIT 1",
+      [checkpoint.header[3]],
+    )
+  )
+    invalid("Checkpoint deletion floor coverage requires repair");
+  if (
+    recordFormat &&
+    (Number(header.retention_policy_version) !==
+      Number(
+        db.get("SELECT policy_version FROM state_retention WHERE id=1")
+          ?.policy_version,
+      ) ||
+      db.get(
+        "SELECT 1 FROM state_checkpoint_reservations c WHERE NOT EXISTS (SELECT 1 FROM state_allocation_keys a WHERE a.namespace=c.namespace AND a.key=c.prefix||c.number) LIMIT 1",
+      ) ||
+      db.get(
+        "SELECT 1 FROM state_checkpoint_floors c WHERE NOT EXISTS (SELECT 1 FROM state_allocation_keys a WHERE a.namespace=c.namespace AND a.key='allocation:'||c.prefix) LIMIT 1",
+      ))
+  )
+    invalid("Checkpoint allocator authority requires repair");
   return {
     checkpoint: {
       coveredSequence: checkpoint.header[3],
       live: checkpoint.live,
       deleted: checkpoint.deleted,
+      floors: [...checkpoint.floors, ...liveFloors],
       receipts: checkpoint.receipts,
     },
     receipts,

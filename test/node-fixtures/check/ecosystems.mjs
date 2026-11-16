@@ -201,5 +201,18 @@ export async function ecosystems({
     undefined,
     ["make"],
   );
+  if (process.env.FORGE_RELEASE_ACCEPTANCE === "1") {
+    assert.deepEqual(
+      skipped,
+      [],
+      "release requires every ecosystem; no missing fixture tools",
+    );
+    assert.deepEqual(passed, [
+      "npm+vitest",
+      "pnpm+jest",
+      "python+pytest",
+      "make",
+    ]);
+  }
   return { passed, skipped };
 }

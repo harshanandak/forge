@@ -57,7 +57,7 @@ const TABLES: Record<string, { columns: string[]; keys: string[] }> = {
     keys: ["namespace", "request_id"],
   },
   domain_cloud_requests: {
-    columns: ["request_id", "fingerprint", "outcome", "result"],
+    columns: ["request_id", "fingerprint", "outcome", "result", "created_at"],
     keys: ["request_id"],
   },
   [COMMAND_RECEIPTS]: {
@@ -113,7 +113,26 @@ export const RETENTION_MIGRATION = {
   id: "010_cloud_retention",
   statements: [
     ...requestAgeStatements("domain_cloud_requests"),
-    ...usageStatements(CLOUD_USAGE_COLUMNS),
+    ...usageStatements({
+      ...CLOUD_USAGE_COLUMNS,
+      domain_cloud_requests: TABLES.domain_cloud_requests!.columns.filter(
+        (column) => column !== "created_at",
+      ),
+    }),
+  ],
+};
+
+// Refresh installed byte counters and triggers when request age joins the dump columns.
+export const REQUEST_AGE_DUMP_MIGRATION = {
+  id: "011_cloud_request_age_dump",
+  statements: [
+    ...["insert", "update", "delete"].map(
+      (action) => `DROP TRIGGER usage_domain_cloud_requests_${action}`,
+    ),
+    "DELETE FROM state_usage WHERE table_name='domain_cloud_requests'",
+    ...usageStatements({
+      domain_cloud_requests: TABLES.domain_cloud_requests!.columns,
+    }),
   ],
 };
 
@@ -206,21 +225,41 @@ export const DUMP_USAGE_SQL = Object.entries(TABLES).map(
   ([table, { columns }]) =>
     `SELECT COUNT(*) AS n, COALESCE(SUM(${columns.map((column) => `LENGTH(CAST(${column} AS BLOB))`).join(" + ")}), 0) AS bytes FROM ${table}`,
 );
+const AGE_COLUMN =
+  "SELECT 1 FROM pragma_table_info('domain_cloud_requests') WHERE name='created_at'";
+const REQUEST_USAGE = Object.keys(TABLES).indexOf("domain_cloud_requests");
+const LEGACY_REQUEST_USAGE = DUMP_USAGE_SQL[REQUEST_USAGE]!.replace(
+  "LENGTH(CAST(created_at AS BLOB))",
+  "1",
+);
+export const DUMP_USAGE_READS = [
+  ...DUMP_USAGE_SQL,
+  AGE_COLUMN,
+  LEGACY_REQUEST_USAGE,
+];
+const selectedColumns = (table: string): string =>
+  table === "domain_cloud_requests" ? "*" : TABLES[table]!.columns.join(", ");
+const REQUEST_CLOCK_SKEW_MS = 60_000;
+const validRequestAge = (age: unknown, now: number): boolean =>
+  typeof age === "number" &&
+  Number.isSafeInteger(age) &&
+  age >= 0 &&
+  age - now <= REQUEST_CLOCK_SKEW_MS;
 
 /** Dumping is a read even when the object has just awakened. */
 export function dumpStore(storage: DurableStorage): SqlDatabase {
   const statements = [
-    ...DUMP_USAGE_SQL,
+    ...DUMP_USAGE_READS,
     "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
     "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
     ...[...Object.keys(checkpointTables), EVIDENCE_RECEIPTS].map(
       (table) => `SELECT 1 FROM ${table} LIMIT 1`,
     ),
     `SELECT epoch, revision FROM ${EXPORT_STATE} WHERE id=1`,
-    ...Object.entries(TABLES).flatMap(([table, { columns, keys }]) =>
+    ...Object.entries(TABLES).flatMap(([table, { keys }]) =>
       [false, true].map(
         (after) =>
-          `SELECT ${columns.join(", ")} FROM ${table}${after ? ` WHERE (${keys.join(", ")}) > (${keys.map(() => "?").join(", ")})` : ""} ORDER BY ${keys.join(", ")} LIMIT ${BATCH}`,
+          `SELECT ${selectedColumns(table)} FROM ${table}${after ? ` WHERE (${keys.join(", ")}) > (${keys.map(() => "?").join(", ")})` : ""} ORDER BY ${keys.join(", ")} LIMIT ${BATCH}`,
       ),
     ),
   ];
@@ -240,7 +279,13 @@ export function dumpUsage(db: SqlDatabase | undefined, limits: Limits) {
   let bytes = 0;
   for (const [index, table] of Object.keys(TABLES).entries()) {
     const found =
-      db === undefined ? { n: 0, bytes: 0 } : db.get(DUMP_USAGE_SQL[index]!);
+      db === undefined
+        ? { n: 0, bytes: 0 }
+        : db.get(
+            index === REQUEST_USAGE && !db.get(AGE_COLUMN)
+              ? LEGACY_REQUEST_USAGE
+              : DUMP_USAGE_SQL[index]!,
+          );
     const n = Number(found?.n),
       size = Number(found?.bytes);
     if (
@@ -315,7 +360,15 @@ function assertLimits(
 function rowOf(table: string, row: SqlRow): Row {
   return Object.fromEntries(
     TABLES[table]!.columns.map((column) => {
-      const value = row[column];
+      let value = row[column];
+      if (table === "domain_cloud_requests" && column === "created_at") {
+        if (!(column in row)) value = 0;
+        else if (
+          typeof value === "bigint" &&
+          Number.isSafeInteger(Number(value))
+        )
+          value = Number(value);
+      }
       if (
         (typeof value === "string" &&
           value.length <= valueLimit(table, column)) ||
@@ -345,7 +398,7 @@ function* rowsFrom(
     const { keys } = TABLES[table]!;
     for (;;) {
       const found = db.all(
-        `SELECT ${TABLES[table]!.columns.join(", ")} FROM ${table}${key === null ? "" : ` WHERE (${keys.join(", ")}) > (${keys.map(() => "?").join(", ")})`} ORDER BY ${keys.join(", ")} LIMIT ${BATCH}`,
+        `SELECT ${selectedColumns(table)} FROM ${table}${key === null ? "" : ` WHERE (${keys.join(", ")}) > (${keys.map(() => "?").join(", ")})`} ORDER BY ${keys.join(", ")} LIMIT ${BATCH}`,
         key ?? [],
       );
       for (const stored of found) {
@@ -554,6 +607,7 @@ function checkDepth(text: string): void {
 
 /** Checks a dump or a dump page strictly and returns it with every row in column order. */
 export function parseDump(text: string): Dump | Page {
+  const restoreNow = Date.now();
   // Bounded by bytes before anything is built: UTF-8 is at most three bytes per UTF-16 unit.
   if (
     text.length > MAX_TEXT_BYTES ||
@@ -620,6 +674,13 @@ export function parseDump(text: string): Dump | Page {
     if (!paged && rows.length > MAX_ROWS_PER_TABLE)
       throw invalid(`${table} has more than ${MAX_ROWS_PER_TABLE} rows`);
     tables[table] = (rows as Record<string, unknown>[]).map((row) => {
+      // Shipped v1/v2 backups lack this age. Unknown means epoch, never restore time.
+      if (
+        table === "domain_cloud_requests" &&
+        isObject(row) &&
+        !("created_at" in row)
+      )
+        row = { ...row, created_at: 0 };
       if (
         row === null ||
         typeof row !== "object" ||
@@ -629,6 +690,14 @@ export function parseDump(text: string): Dump | Page {
       return Object.fromEntries(
         columns.map((column) => {
           const value = row[column];
+          if (
+            table === "domain_cloud_requests" &&
+            column === "created_at" &&
+            !validRequestAge(value, restoreNow)
+          )
+            throw invalid(
+              "domain_cloud_requests.created_at must be a nonnegative safe integer at most 60 seconds ahead of restore time",
+            );
           if (
             (typeof value === "string" &&
               value.length <= valueLimit(table, column)) ||
@@ -662,7 +731,7 @@ const rejectedRow = (table: string, key: string): ForgeFailure =>
   });
 
 // The server's own receipts: what Project#replay reads back. The state owner checks its own tables.
-function checkServerReceipt(row: Row): void {
+function checkServerReceipt(row: Row, now: number): void {
   const key = String(row.request_id);
   const bad = (): never => {
     throw rejectedRow("domain_cloud_requests", key);
@@ -682,6 +751,7 @@ function checkServerReceipt(row: Row): void {
     typeof input !== "object" ||
     !["claim", "renew", "release"].includes(String(input.route)) ||
     typeof input.subject !== "string" ||
+    !validRequestAge(row.created_at, now) ||
     ("scope" in input && !versioned(input))
   )
     bad();
@@ -731,6 +801,10 @@ function admitJson(tables: Record<string, Row[]>): void {
 }
 
 function insertRows(db: SqlDatabase, tables: Record<string, Row[]>): void {
+  const restoreNow = Date.now();
+  for (const row of tables.domain_cloud_requests!)
+    if (!validRequestAge(row.created_at, restoreNow))
+      throw rejectedRow("domain_cloud_requests", String(row.request_id));
   for (const [table, { columns }] of Object.entries(TABLES))
     for (const row of tables[table]!)
       try {
@@ -738,6 +812,11 @@ function insertRows(db: SqlDatabase, tables: Record<string, Row[]>): void {
           `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
           columns.map((column) => row[column]!),
         );
+        // The installed age trigger stamps zero. Restore the admitted audit value exactly.
+        if (table === "domain_cloud_requests" && row.created_at === 0)
+          db.run(`UPDATE ${table} SET created_at=0 WHERE request_id=?`, [
+            row.request_id!,
+          ]);
       } catch {
         throw invalid(`A ${table} row conflicts with another row`);
       }
@@ -765,8 +844,9 @@ function verifyRestored(db: SqlDatabase): {
   events: number;
 } {
   const receipts = Object.keys(TABLES).indexOf("domain_cloud_requests");
+  const restoreNow = Date.now();
   for (const { table, row } of rowsFrom(db, receipts, null))
-    if (table === receipts) checkServerReceipt(row);
+    if (table === receipts) checkServerReceipt(row, restoreNow);
     else checkCommandReceipt(row);
   const events = Number(db.get("SELECT COUNT(*) AS n FROM state_events")!.n);
   try {
