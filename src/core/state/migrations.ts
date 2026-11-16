@@ -199,6 +199,12 @@ export const stateMigrations: readonly Migration[] = [
       "CREATE TRIGGER retention_event AFTER INSERT ON state_events BEGIN UPDATE state_retention SET sequence=MAX(sequence,NEW.sequence) WHERE id=1; INSERT INTO state_namespace_watermarks VALUES (NEW.namespace,NEW.sequence) ON CONFLICT(namespace) DO UPDATE SET sequence=MAX(sequence,excluded.sequence); END",
     ],
   },
+  {
+    id: "007_record_checkpoint",
+    statements: [
+      "ALTER TABLE state_checkpoint_live ADD COLUMN body TEXT NOT NULL DEFAULT ''",
+    ],
+  },
 ];
 
 export function identifier(value: string): string {

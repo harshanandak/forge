@@ -40,6 +40,8 @@ import {
 } from "./migrations.ts";
 import { registerTables, exportTables, type DomainData } from "./domains.ts";
 import { parseRestoreJson } from "./restore-json.ts";
+import { allocationFloorNumber } from "./allocation-floor.ts";
+import { writeRecordCheckpoint } from "./record-checkpoint.ts";
 import {
   checkpointTables,
   assertNoCheckpoint,
@@ -180,18 +182,8 @@ function wellFormedText(value: string, position: string): void {
 const FLOOR_TEXT_MAX = 4096;
 /** The stored floor's number; any value that is not the exact floor shape is refused, never read as zero. */
 export function floorNumber(value: unknown, prefix: string): number {
-  const floor = value as { prefix?: unknown; number?: unknown } | null;
-  if (
-    typeof floor !== "object" ||
-    floor === null ||
-    Object.keys(floor).length !== 2 ||
-    floor.prefix !== prefix ||
-    typeof floor.number !== "number" ||
-    !Number.isSafeInteger(floor.number) ||
-    floor.number < 0
-  )
-    return invalid("Invalid allocation record");
-  return floor.number;
+  const number = allocationFloorNumber(value, prefix);
+  return number === undefined ? invalid("Invalid allocation record") : number;
 }
 function copyReadSet(value: unknown): WriteOptions["readSet"] {
   if (value === undefined) return undefined;
@@ -1181,6 +1173,19 @@ export class StateOwner {
     this.#domains = domains;
   }
 
+  /** Record-only prefixes; the retained log remains the verification source. */
+  checkpoint(batch = 256): number {
+    this.#db.transaction(() => {
+      assertRetentionAuthority(this.#db);
+      const end = Number(
+        this.#db.get("SELECT sequence FROM state_retention WHERE id=1")
+          ?.sequence,
+      );
+      verifyEventDerivedState(this.#db, end, undefined, undefined, false);
+    });
+    return writeRecordCheckpoint(this.#db, batch);
+  }
+
   client(namespace: string, actor: Actor): DeletableStateClient {
     namespaceValid(namespace);
     if (!validateActor(actor).ok) invalid("Invalid actor");
@@ -1724,8 +1729,8 @@ export class StateOwner {
     prefix: string,
   ): number | undefined {
     const row = this.#db.get(
-      "SELECT revision,body FROM state_records WHERE namespace=? AND key=?",
-      [namespace, floorKey],
+      "SELECT revision,body,(SELECT highest FROM state_checkpoint_floors WHERE namespace=state_records.namespace AND prefix=?) AS checkpoint FROM state_records WHERE namespace=? AND key=?",
+      [prefix, namespace, floorKey],
     );
     if (row === undefined) return undefined;
     const text = String(row.body);
@@ -1743,7 +1748,11 @@ export class StateOwner {
       stored.revision !== Number(row.revision)
     )
       invalid("Invalid allocation record");
-    return floorNumber(stored.value, prefix);
+    const number = floorNumber(stored.value, prefix);
+    const checkpoint = Number(row.checkpoint ?? 0);
+    if (number < checkpoint)
+      invalid("Allocation floor is below its checkpoint; repair required");
+    return number;
   }
 
   /** Retained key reservations survive event pruning; an established floor is never reconstructed here. */
