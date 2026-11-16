@@ -169,6 +169,8 @@ export const nodeSensitive: Readonly<Record<string, string>> = {
     "Launches selected Node for bounded coverage.",
   "test/tools/pack-smoke/environment.integration.test.ts":
     "Launches selected Node for environment coverage.",
+  "test/tools/pack-smoke/pinned-artifact.integration.test.ts":
+    "Launches selected Node to verify the release-proof digest guard precedes npm installation.",
   "test/tools/pack-smoke/signals.integration.test.ts":
     "Launches selected Node for signals coverage.",
   "test/tools/source-selection.test.ts":

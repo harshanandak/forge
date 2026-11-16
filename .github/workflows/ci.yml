@@ -118,6 +118,8 @@ jobs:
     if: needs.changes.outputs.scope == 'full'
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    outputs:
+      sha256: ${{ steps.pack.outputs.sha256 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -130,12 +132,15 @@ jobs:
           bun-version: ${{ env.BUN_VERSION }}
       - run: bun install --frozen-lockfile
       - name: Pack and hash once
+        id: pack
         run: |
           bun run build
           tarball=$(npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP")
           mv "$RUNNER_TEMP/$tarball" "$RUNNER_TEMP/forge-workflow.tgz"
           cd "$RUNNER_TEMP"
-          sha256sum forge-workflow.tgz | tee forge-workflow.tgz.sha256
+          digest=$(sha256sum forge-workflow.tgz | cut -d' ' -f1)
+          printf '%s  forge-workflow.tgz\n' "$digest" | tee forge-workflow.tgz.sha256
+          echo "sha256=$digest" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: packed-package
@@ -319,6 +324,8 @@ jobs:
           # Node legs split counterfactuals; Bun keeps the full set on Node 24 only.
           STATE_NODE_LEG: ${{ matrix.node }}
           FORGE_PACK_INPUT: ${{ runner.temp }}/packed/forge-workflow.tgz
+          FORGE_RELEASE_PROOF: "1"
+          FORGE_PACK_EXPECTED_SHA256: ${{ needs.pack.outputs.sha256 }}
         run: bun run test:pack 2>&1 | tee -a "$RUNNER_TEMP/ci-tests.log"
       - *write-record
       - *upload-record

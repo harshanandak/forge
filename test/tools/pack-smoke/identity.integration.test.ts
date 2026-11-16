@@ -69,6 +69,8 @@ test("installed identity accepts only the reviewed clean artifact and accounts f
       { evidence: "" },
       { evidence: " \n " },
       { evidence: null },
+      { evidence: [] },
+      { evidence: 0 },
       { outcome: "SKIPPED" },
       { outcome: "FAIL" },
       { outcome: "INCOMPLETE" },
@@ -96,6 +98,17 @@ test("installed identity accepts only the reviewed clean artifact and accounts f
       expect(
         installedProof(installed, bin, expected, identity, records),
       ).toMatchObject({ status: "INCOMPLETE", exitCode: 2 });
+    }
+    for (const digest of ["", "unknown", "A".repeat(64)]) {
+      expect(
+        installedProof(
+          installed,
+          bin,
+          { ...expected, digest },
+          identity,
+          phases.map((record) => ({ ...record, candidateDigest: digest })),
+        ),
+      ).toMatchObject({ status: "FAIL", exitCode: 6, code: "INPUT_INVALID" });
     }
     const other = join(root, "old-global-forge.js");
     writeFileSync(other, "old global artifact");

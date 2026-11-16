@@ -69,7 +69,13 @@ function ok(result: SpawnSyncReturns<string>): string {
 
 async function main(): Promise<void> {
   if (process.versions.bun !== undefined) fail("run this with Node, not Bun");
-  let tarball = packInput(process.env.FORGE_PACK_INPUT);
+  const trustedSha256 = process.env.FORGE_PACK_EXPECTED_SHA256;
+  const releaseProof = process.env.FORGE_RELEASE_PROOF;
+  let tarball = packInput(
+    process.env.FORGE_PACK_INPUT,
+    trustedSha256,
+    releaseProof,
+  );
   const bun = resolveBun();
   if (tarball === undefined) ok(run(bun, ["run", "build"], root, process.env));
   const expected = (
@@ -119,6 +125,11 @@ async function main(): Promise<void> {
       if (entry?.filename === undefined || entry.files === undefined)
         fail("npm pack gave no tarball");
       tarball = join(packDir, entry.filename);
+    } else {
+      const staged = join(packDir, "reviewed-candidate.tgz");
+      copyFileSync(tarball, staged);
+      copyFileSync(`${tarball}.sha256`, `${staged}.sha256`);
+      tarball = packInput(staged, trustedSha256, releaseProof)!;
     }
     if (process.env.FORGE_PACK_TARBALL !== undefined)
       copyFileSync(tarball, process.env.FORGE_PACK_TARBALL);
@@ -207,7 +218,11 @@ async function main(): Promise<void> {
     const proof = installedProof(
       installedDir,
       join(installedDir, binTarget),
-      { version: expected, commit },
+      {
+        version: expected,
+        commit,
+        digest: trustedSha256 ?? hash("sha256", readFileSync(tarball)),
+      },
       JSON.parse(
         ok(node([join(installedDir, binTarget), "--version", "--json"])),
       ),
@@ -216,6 +231,7 @@ async function main(): Promise<void> {
     console.log(
       `- installed release evidence ${JSON.stringify({
         ...proof,
+        releaseProof: releaseProof === "1",
         integrity: `sha512-${hash("sha512", readFileSync(tarball), "base64")}`,
         node: process.version,
         ciRun: process.env.GITHUB_RUN_ID ?? null,
