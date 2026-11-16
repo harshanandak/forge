@@ -1,6 +1,7 @@
 import { expect, mock, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import type { Dump } from "../../cloud/src/dump.ts";
+import { restoredTables } from "./restore-expect.fixture.ts";
 import { releasedTables } from "../../cloud/conformance/restored.ts";
 import { PAGE_FORMAT } from "../../cloud/src/dump.ts";
 import { Project } from "../../cloud/src/project.ts";
@@ -958,7 +959,14 @@ for (const mode of ["whole", "paged"] as const)
         }
         if (limit !== "fits") return;
         const restored = (await target.send("dump")).body.value as Dump;
-        expect(restored.tables).toEqual(
+        expect(
+          await restoredTables(
+            target.db,
+            dump.tables,
+            "p",
+            state === "expired" ? now + minute : now,
+          ),
+        ).toEqual(
           releasedTables(
             dump.tables,
             new Date(state === "expired" ? now + minute : now).toISOString(),
@@ -996,7 +1004,7 @@ for (const mode of ["paged", "whole", "malformed"] as const)
       using source = fixture();
       const empty = (await source.send("dump")).body.value as Dump;
       expect((await source.send("restore", empty)).status).toBe(200);
-      const baseline = (await source.send("dump")).body.value as Dump;
+      const baseline = await restoredTables(source.db, empty.tables, "p", now);
       expect((await source.write("claim", {}, "owner")).status).toBe(200);
       const dump = (await source.send("dump")).body.value as Dump;
       const tables = empty.tables;
@@ -1059,10 +1067,12 @@ for (const mode of ["paged", "whole", "malformed"] as const)
             ),
             ...(mode === "paged" ? { page: 1, done: true } : {}),
           });
-          const restored = (await target.send("dump")).body.value as Dump;
-          expect(restored.tables).toEqual(
+          const sourceTables = mode === "whole" ? empty.tables : dump.tables;
+          expect(
+            await restoredTables(target.db, sourceTables, "p", now),
+          ).toEqual(
             mode === "whole"
-              ? baseline.tables
+              ? baseline
               : releasedTables(dump.tables, new Date(now).toISOString()),
           );
         }

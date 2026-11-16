@@ -771,6 +771,7 @@ function settleFloor(
   owner: StateOwner,
   limits: Limits,
   restored: { found: NumberedSummary; events: number },
+  finalize?: () => void,
 ): void {
   try {
     let events = restored.events;
@@ -788,6 +789,7 @@ function settleFloor(
     throw error;
   }
   owner.releaseRestoredLeases();
+  finalize?.();
   assertLimits(db, limits, "RESTORE_TOO_LARGE", "The restored project");
   db.run(`UPDATE ${COMMAND_RECEIPTS} SET imported=1`);
   freshEpoch(db);
@@ -817,6 +819,7 @@ export function restoreDump(
   owner: StateOwner,
   dump: Dump,
   limits: Limits,
+  finalize?: () => void,
 ): Record<string, number> {
   return db.transaction(() => {
     const before = dumpOf(db);
@@ -834,7 +837,7 @@ export function restoreDump(
       throw invalid(
         "The dump rows must be in dump order and read back identical",
       );
-    settleFloor(db, owner, limits, restored);
+    settleFloor(db, owner, limits, restored, finalize);
     return counts(dump.tables);
   });
 }
@@ -857,6 +860,7 @@ export function restorePage(
   owner: StateOwner,
   page: Page,
   limits: Limits,
+  finalize?: () => void,
 ): Record<string, number> {
   return db.transaction(() => {
     assertNoCheckpoint(db);
@@ -865,7 +869,7 @@ export function restorePage(
     assertLimits(db, limits, "RESTORE_TOO_LARGE", "The staged restore");
     admitJson(page.tables);
     // Only the last page looks at the whole staged set, so nothing is derived or written before it.
-    if (page.last) settleFloor(db, owner, limits, verifyRestored(db));
+    if (page.last) settleFloor(db, owner, limits, verifyRestored(db), finalize);
     return counts(page.tables);
   });
 }

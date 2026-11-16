@@ -79,7 +79,11 @@ export function boundDispatch(
       const control = await readLaneControl(command, id);
       requireGrant();
       if (control !== "running")
-        throw new Error(`Bound lane dispatch refused: control ${control}.`);
+        throw new ForgeFailure({
+          code: "UNAVAILABLE",
+          message: `Bound lane dispatch refused: control ${control}.`,
+          retry: "never",
+        });
     },
     async close() {
       closed = true;
