@@ -384,12 +384,12 @@ const attempts = (state: LeaseStateClient, id: string) =>
     );
 function attemptView(state: LeaseStateClient, record: StateRecord) {
   const lease = state.lease(key(record.key));
-  if (!lease) fail("INTERNAL", "Attempt record has no lease");
   return {
     ...(record.value as Attempt),
     live: !!live(state, record.key),
-    generation: lease.generation,
-    expiresAt: lease.expiresAt,
+    ...(lease
+      ? { generation: lease.generation, expiresAt: lease.expiresAt }
+      : {}),
     evidence: state.count(`evidence:${record.key}:`),
   };
 }
