@@ -20,6 +20,34 @@ import {
 
 setDefaultTimeout(30_000);
 
+test("a malformed live floor reserves nothing during checkpoint admission", async () => {
+  const s = await fixture(),
+    target = await fixture();
+  try {
+    prefix(s);
+    target.owner.initialize();
+    const malformed = { prefix: "item:", number: 0, extra: true };
+    put(s, "allocation:item:", malformed, 1);
+    expect(
+      verifyEventDerivedState(s.db, high(s), undefined, {
+        namespace: ns,
+        prefix: "item:",
+      })?.earlier,
+    ).toBe(1);
+    capture(s);
+    s.owner.initialize();
+    target.owner.restore(s.owner.export());
+    expect(target.owner.get(ns, "allocation:item:")?.value).toEqual(malformed);
+    put(target, "allocation:item:", { prefix: "item:", number: 1 }, 2);
+    expect(
+      target.owner.putNext(ns, "item:", () => ({ value: {} }), actor).key,
+    ).toBe("item:2");
+  } finally {
+    await s.close();
+    await target.close();
+  }
+});
+
 test("pre-reader writers refuse checkpoint authority before any write", async () => {
   const s = await fixture();
   try {
