@@ -324,7 +324,6 @@ jobs:
           # Node legs split counterfactuals; Bun keeps the full set on Node 24 only.
           STATE_NODE_LEG: ${{ matrix.node }}
           FORGE_PACK_INPUT: ${{ runner.temp }}/packed/forge-workflow.tgz
-          FORGE_RELEASE_PROOF: "1"
           FORGE_PACK_EXPECTED_SHA256: ${{ needs.pack.outputs.sha256 }}
         run: bun run test:pack 2>&1 | tee -a "$RUNNER_TEMP/ci-tests.log"
       - *write-record

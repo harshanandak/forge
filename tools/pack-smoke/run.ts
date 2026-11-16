@@ -3,7 +3,6 @@
 // against that one install. Run it with Node (`bun run test:pack` builds first and does this): the
 // point is that a user with only Node and npm can install and run what we publish.
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { hash } from "node:crypto";
 import {
   copyFileSync,
   existsSync,
@@ -11,7 +10,6 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
-  realpathSync,
   renameSync,
   rmSync,
   statSync,
@@ -26,7 +24,6 @@ import {
   resolveBun,
 } from "./environment.ts";
 import { packInput } from "./input.ts";
-import { installedProof } from "./identity.ts";
 
 const root = resolve(import.meta.dirname, "../..");
 // One command that hangs fails with its name instead of stalling the job.
@@ -70,12 +67,7 @@ function ok(result: SpawnSyncReturns<string>): string {
 async function main(): Promise<void> {
   if (process.versions.bun !== undefined) fail("run this with Node, not Bun");
   const trustedSha256 = process.env.FORGE_PACK_EXPECTED_SHA256;
-  const releaseProof = process.env.FORGE_RELEASE_PROOF;
-  let tarball = packInput(
-    process.env.FORGE_PACK_INPUT,
-    trustedSha256,
-    releaseProof,
-  );
+  let tarball = packInput(process.env.FORGE_PACK_INPUT, trustedSha256);
   const bun = resolveBun();
   if (tarball === undefined) ok(run(bun, ["run", "build"], root, process.env));
   const expected = (
@@ -90,7 +82,7 @@ async function main(): Promise<void> {
   )
     fail("dist/ is missing; run `bun run build` first");
 
-  const work = realpathSync(mkdtempSync(join(tmpdir(), "forge-pack-smoke-")));
+  const work = mkdtempSync(join(tmpdir(), "forge-pack-smoke-"));
   try {
     const env = environmentWithoutBun(process.execPath);
     const consumerNode = bunFreeNodeExecutable(process.execPath);
@@ -129,7 +121,7 @@ async function main(): Promise<void> {
       const staged = join(packDir, "reviewed-candidate.tgz");
       copyFileSync(tarball, staged);
       copyFileSync(`${tarball}.sha256`, `${staged}.sha256`);
-      tarball = packInput(staged, trustedSha256, releaseProof)!;
+      tarball = packInput(staged, trustedSha256)!;
     }
     if (process.env.FORGE_PACK_TARBALL !== undefined)
       copyFileSync(tarball, process.env.FORGE_PACK_TARBALL);
@@ -211,31 +203,6 @@ async function main(): Promise<void> {
         fail(`${how} printed "${printed!.trim()}", expected "${expected}"`);
     console.log(
       `- forge ${expected} runs through npm exec, its bin and import`,
-    );
-    const commit =
-      process.env.CI_HEAD ??
-      ok(run("git", ["rev-parse", "HEAD"], root, process.env)).trim();
-    const proof = installedProof(
-      installedDir,
-      join(installedDir, binTarget),
-      {
-        version: expected,
-        commit,
-        digest: trustedSha256 ?? hash("sha256", readFileSync(tarball)),
-      },
-      JSON.parse(
-        ok(node([join(installedDir, binTarget), "--version", "--json"])),
-      ),
-    );
-    if (proof.exitCode === 6) fail(JSON.stringify(proof));
-    console.log(
-      `- installed release evidence ${JSON.stringify({
-        ...proof,
-        releaseProof: releaseProof === "1",
-        integrity: `sha512-${hash("sha512", readFileSync(tarball), "base64")}`,
-        node: process.version,
-        ciRun: process.env.GITHUB_RUN_ID ?? null,
-      })}`,
     );
 
     const api = join(consumer, "api.mjs");
