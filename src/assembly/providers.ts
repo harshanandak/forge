@@ -427,6 +427,24 @@ export function resolveOutside(
   for (const entry of (env[pathKey] ?? "").split(delimiter)) {
     const directory = entry.trim().replace(/^"(.*)"$/, "$1");
     if (!directory || !fullyAbsolute(directory)) continue;
+    // Apply existing scope exclusions before the resolver can pin a successful candidate.
+    let realDirectory: string;
+    try {
+      realDirectory = realpathSync(directory);
+    } catch {
+      reason = `Cannot canonicalize Git PATH entry ${directory}`;
+      continue;
+    }
+    if (
+      [directory, realDirectory].some(
+        (candidate) =>
+          excluded.some((base) => within(base, candidate)) ||
+          /[\\/]node_modules[\\/]\.bin(?:[\\/]|$)/i.test(candidate),
+      )
+    ) {
+      reason = `Rejected Git PATH entry ${directory}: inside a scoped root, temporary directory or node_modules/.bin`;
+      continue;
+    }
     const found = executor.resolve(name, { ...env, [pathKey]: directory });
     if (found.kind !== "resolved") {
       reason = found.reason;

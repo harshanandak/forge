@@ -706,26 +706,31 @@ test("installed accounts: one approval catches wrong authors and binds every clo
       "origin",
       "https://github.com/alice/no-gh.git",
     );
-    const gitOnly = join(home, "git-only");
-    mkdirSync(gitOnly);
-    const gitPath =
-      process.platform === "win32" ? Bun.which("git") : "/usr/bin/git";
-    if (!gitPath) throw new Error("Git required");
-    if (process.platform !== "win32")
-      symlinkSync(gitPath, join(gitOnly, "git"));
-    const gitOnlyPath =
-      process.platform === "win32" ? dirname(gitPath) : gitOnly;
-    expect(
-      cli(
-        noGh,
-        "decline",
-        { approval: declineApproval },
-        { PATH: gitOnlyPath },
-      ),
-    ).toMatchObject({
-      ok: true,
-      result: { declined: true },
-    });
+    const gitOnly = mkdtempSync(
+      join(process.env.RUNNER_TEMP ?? tmpdir(), "..", "forge-git-only-"),
+    );
+    try {
+      const gitPath =
+        process.platform === "win32" ? Bun.which("git") : "/usr/bin/git";
+      if (!gitPath) throw new Error("Git required");
+      if (process.platform !== "win32")
+        symlinkSync(gitPath, join(gitOnly, "git"));
+      const gitOnlyPath =
+        process.platform === "win32" ? dirname(gitPath) : gitOnly;
+      expect(
+        cli(
+          noGh,
+          "decline",
+          { approval: declineApproval },
+          { PATH: gitOnlyPath },
+        ),
+      ).toMatchObject({
+        ok: true,
+        result: { declined: true },
+      });
+    } finally {
+      rmSync(gitOnly, { recursive: true, force: true });
+    }
     writeFileSync(
       join(repo, ".git/forge/accounts.gitconfig"),
       "[user]\nemail=changed@example.test\n",

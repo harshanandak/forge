@@ -630,12 +630,12 @@ for (const row of [
       const launch = fx.launchSavedGit(f, gitScope, scopedGit, f.lexical);
       if (row === "reopen") expect((await launch).exitCode).toBe(0);
       else if (row === "Accept-legacy-record")
-        expect((await launch).exitCode).toBe(99);
+        expect((await launch).exitCode).toBe(0);
       else
         await expect(launch).rejects.toMatchObject({
           error: { code: "INPUT_CONFLICT" },
         });
-      expect(existsSync(f.marker)).toBe(row === "Accept-legacy-record");
+      expect(existsSync(f.marker)).toBe(false);
       expect([
         readFileSync(join(deviceRoot, "records.sqlite")).toString("hex"),
         ...f.snapshot(),
@@ -2818,9 +2818,9 @@ for (const [name, expected] of [
                 scopedGit,
                 root,
               );
-              expect(result.exitCode).toBe(dropLexical ? 99 : 0);
+              expect(result.exitCode).toBe(0);
             }
-            expect(existsSync(lexicalFixture.marker)).toBe(!!dropLexical);
+            expect(existsSync(lexicalFixture.marker)).toBe(false);
             expect([
               attachmentBytes(r.s),
               ...lexicalFixture.snapshot(),
