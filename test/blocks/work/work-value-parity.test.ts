@@ -428,6 +428,13 @@ for (const [index, row] of cases.entries()) {
               ).dependsOn,
               ["work-1"],
             );
+            owner.acquire(
+              "forge/work",
+              "issue:work-2",
+              holder,
+              60000,
+              `alias-${index}`,
+            );
             await invoke("issue.update", {
               id: "work-2",
               expectRevision: owner.get("forge/work", "issue:work-2")!.revision,
