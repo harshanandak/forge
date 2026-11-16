@@ -80,8 +80,9 @@ test("promotion requires the installed registry journey and exact identity/prove
   const job = workflow().jobs.readback!;
   const runs = job.steps.map((step) => step.run ?? "").join("\n");
   expect(runs).toContain("--include-attestations");
-  expect(runs).toContain("tools/release/readback.ts");
-  expect(runs).toContain("--version --json");
+  expect(runs).toContain("tools/release/readback.mjs");
+  const proof = new URL("../../tools/release/readback.mjs", import.meta.url);
+  expect(readFileSync(proof, "utf8")).toContain('"--version", "--json"');
   expect(runs).toContain("packed.integration.test");
   expect(runs).toContain("environmentWithoutBun");
   expect(runs).toContain("FORGE_PACKED_CONSUMER");
