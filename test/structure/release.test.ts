@@ -116,6 +116,8 @@ test("promotion requires the installed registry journey and exact identity/prove
 
 for (const change of [
   "omitted",
+  "commented journey",
+  "swallowed journey",
   "if false",
   "ignored step failure",
   "ignored job failure",
@@ -131,6 +133,13 @@ for (const change of [
         "npm audit signatures",
         "echo signatures omitted",
       );
+    if (change === "commented journey")
+      cold.run = cold.run!.replace(
+        "node tools/release/journeys.mjs",
+        "# node tools/release/journeys.mjs",
+      );
+    if (change === "swallowed journey")
+      cold.run = cold.run!.replace('"$TARBALL"', '"$TARBALL" || true');
     if (change === "if false") cold.if = false;
     if (change === "ignored step failure") cold["continue-on-error"] = true;
     if (change === "ignored job failure")

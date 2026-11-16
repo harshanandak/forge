@@ -46,7 +46,7 @@ for (const strict of [false, true])
   }, 15_000);
 
 for (const mode of ["pass", "failed", "skipped", "omitted"]) {
-  test(`release journey runner rejects ${mode} unless every selected test passes`, () => {
+  test(`release journey runner rejects ${mode} with missing required inventory`, () => {
     const dir = mkdtempSync(join(tmpdir(), "forge-release-journey-"));
     try {
       const node = Bun.which("node");
@@ -72,7 +72,7 @@ for (const mode of ["pass", "failed", "skipped", "omitted"]) {
         },
       );
       expect(out.error).toBeUndefined();
-      expect(out.status === 0, out.stderr).toBe(mode === "pass");
+      expect(out.status === 0, out.stderr).toBe(false);
       if (mode === "skipped")
         expect(out.stderr).toContain("release journey skipped");
     } finally {
