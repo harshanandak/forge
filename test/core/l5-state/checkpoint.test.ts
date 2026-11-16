@@ -306,7 +306,11 @@ async function open(beforeCheckpoint = false) {
       db,
       stateMigrations.filter(
         (entry) =>
-          !["004_state_checkpoint", "007_record_checkpoint"].includes(entry.id),
+          ![
+            "004_state_checkpoint",
+            "007_record_checkpoint",
+            "008_record_checkpoint_reader",
+          ].includes(entry.id),
       ),
     );
   else owner.initialize();
@@ -360,7 +364,7 @@ for (const table of ["empty", ...Object.keys(rows)])
 test("the previous initializer rejects migration 005 without writes", async () => {
   const source = await open();
   try {
-    expect(stateMigrations.at(-1)?.id).toBe("007_record_checkpoint");
+    expect(stateMigrations.at(-1)?.id).toBe("008_record_checkpoint_reader");
     const before = source.db.get("SELECT total_changes() AS n");
     expect(() => migrate(source.db, stateMigrations.slice(0, -1))).toThrow(
       NewerStoreError,
