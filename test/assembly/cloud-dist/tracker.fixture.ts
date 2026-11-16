@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
+import { timingSafeEqual } from "node:crypto";
 import { project } from "../../cloud/import-current-state.fixture.ts";
 import { cloudRig, refuse, type CloudRig, type Seen } from "./fixture.ts";
+
+if (!("timingSafeEqual" in crypto.subtle))
+  Object.defineProperty(crypto.subtle, "timingSafeEqual", {
+    value: timingSafeEqual,
+  });
 
 /** Only the HTTPS boundary is adapted; Project.fetch owns tokens, receipts and leases. */
 export async function trackerRig(bin: string) {
