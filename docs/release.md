@@ -8,7 +8,11 @@ Owner setup:
 [npm requirements](https://docs.npmjs.com/trusted-publishers/): hosted runners, npm >=11.5.1, Node >=22.14. OIDC dist-tags need npm >=11.21.0 (11.x) or >=12.2.0 (12.x) and separate permission. We pin npm 11.21.0 on Node 24; the owner must fix missing permission before promotion.
 Public repo/package OIDC generates provenance; we request it, require registry attestations and audit signatures.
 
-Run: merge the intended version, await successful main CI, dispatch Release on main with its numeric `run_id` at that same commit. Review verify's version/hash, approve publish to `next`, inspect all three readbacks, then approve promotion.
+Release readback installs its pinned ecosystem fixture tools and requires every installed journey, including Vitest, Jest, pytest and Make. Missing tools, skipped tests, failed tests or an absent native test report block promotion. Developer pack smoke may still report optional ecosystem skips; release acceptance cannot.
+
+Run: keep the temporary prerelease `0.1.0-beta.9` (V001); the owner decides the final number before stable. Require an unused version, successful main CI, and dispatch Release with its numeric `run_id` at that same commit. Review verify's version/hash, then approve publish to `next`.
+
+Before promotion, require all three OS readbacks: exact registry version and `next` tag, approved archive integrity, native installed version/clean build commit, npm-verified signatures and provenance from this repository's main release workflow, and the full registry-installed journey. Retain the run logs. The owner runs the two-machine tracker and restore acceptance with that exact version, retains sanitized native outputs, then gives the second approval to promote to `beta`. Never promote from version/help output alone or substitute phase names for acceptance. The automated journey uses isolated fixtures; it does not prove live restore or tracker cutover.
 
 Prereleases publish to `next`, and promotion moves `beta`; stable versions move `latest`. Moving `beta` switches anyone installing `forge-workflow@beta` from old to new Forge.
 
