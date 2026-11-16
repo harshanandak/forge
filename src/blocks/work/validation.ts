@@ -7,6 +7,7 @@ import { SchemaRegistry, type SchemaObject } from "../../contract/schema.ts";
 import { SCHEMA_DOCUMENTS } from "../../generated/schemas.ts";
 import { isObject } from "../../core/config/pointer.ts";
 import { ForgeFailure } from "../../contract/failure.ts";
+import { suffixNumber } from "../../core/state/index.ts";
 
 type Rule = (value: Record<string, unknown>, key: string) => string | undefined;
 interface Family {
@@ -46,6 +47,18 @@ const identity: Rule = (value, key) =>
   isId(value.id) && value.id === key.split(":")[1]
     ? undefined
     : "WORK_VALUE_ID";
+const numbered: Rule = (_value, key) => {
+  try {
+    return suffixNumber(key, key.slice(0, key.lastIndexOf(":") + 1)) ===
+      undefined
+      ? "WORK_VALUE_KEY"
+      : undefined;
+  } catch (error) {
+    if (error instanceof ForgeFailure && error.error.code === "INPUT_INVALID")
+      return "WORK_VALUE_KEY";
+    throw error;
+  }
+};
 const comment = tracker.$defs.CommentInput;
 const variant = (name: string, schema: SchemaObject) => ({
   ...comment,
@@ -66,6 +79,12 @@ const families: Readonly<Record<string, Family>> = {
     ),
     rules: [
       identity,
+      (value) =>
+        value.status === "closed" &&
+        value.receipt === undefined &&
+        value.withoutReceipt === undefined
+          ? "WORK_VALUE_CLOSE_EVIDENCE"
+          : undefined,
       (value) => {
         const references = [
           ...(value.parent === undefined ? [] : [value.parent]),
@@ -88,6 +107,7 @@ const families: Readonly<Record<string, Family>> = {
     },
     rules: [
       identity,
+      numbered,
       (value) =>
         Object.hasOwn(value, "call") && Object.hasOwn(value, "checkpoint")
           ? "WORK_VALUE_COMMENT_KIND"
@@ -99,6 +119,7 @@ const families: Readonly<Record<string, Family>> = {
     schema: link,
     rules: [
       identity,
+      numbered,
       (value) =>
         typeof value.url === "string" &&
         !/^https?:\/\/[^\s/]+(?:\/[^\s]*)?$/.test(value.url)

@@ -179,6 +179,17 @@ To abandon a half restore, stop. To retry, send page 0 again: it clears the stag
 
 ## Offline current-state import (step 7)
 
+The strict work-value engine requires close evidence for every closed issue. The approved
+PR 592 integration policy adds one named converter repair, `legacy-close-evidence`, before
+validation: for a closed current value or historical update with neither `receipt` nor
+`withoutReceipt`, set `withoutReceipt` to exactly
+`Imported: closed before Forge required close evidence`. Report separate counts of repaired
+current values and historical updates, then require every repaired value to pass the strict
+engine. Existing evidence is never overwritten. This policy belongs to the converter integration;
+the engine has no legacy exemption, and the repair must ship before using this preparation on
+legacy trackers. The fresh owner-tracker audit found 154 current values and 154 historical updates
+requiring this repair; those counts are a measurement, not a fixed admission allowance.
+
 Use only an owner-pinned standalone SQLite backup produced with SQLite backup/VACUUM INTO, without WAL, SHM or journal companions. Never point this tool at a running tracker. The source manifest has exactly `sha256` (lowercase SHA-256 of the complete file), `eventHighWaterMark` (last event sequence), `records` (exact current row count) and `at` (canonical ISO UTC projection time). Unsupported schema, work keys or allocation history refuse conversion; the source is opened read-only, held in one read transaction and hashed before and after. Supported work keys include landing, reopen, attempt, attempt evidence, cleanup, selection and slots, preserving their values without transferring leases.
 
 ```sh

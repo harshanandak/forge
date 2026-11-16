@@ -5536,7 +5536,7 @@ const operations: Operations<WorkOperations> = {
     const state = client(services);
     const ids = idsFor(state, config);
     checkKind(input.kind);
-    const dependsOn = (input.dependsOn ?? []).map(ids.stored);
+    const dependsOn = [...new Set((input.dependsOn ?? []).map(ids.stored))];
     const parent =
       input.parent === undefined ? undefined : ids.stored(input.parent);
     // The owner picks the number and advances its floor in the write's own transaction.
@@ -5688,7 +5688,7 @@ const operations: Operations<WorkOperations> = {
         id: ids.stored(input.id),
         ...(input.dependsOn === undefined
           ? {}
-          : { dependsOn: input.dependsOn.map(ids.stored) }),
+          : { dependsOn: [...new Set(input.dependsOn.map(ids.stored))] }),
       },
       ids,
       input.id,
