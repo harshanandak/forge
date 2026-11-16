@@ -59,15 +59,17 @@ const snapshot = (db: SqlDatabase) =>
   );
 
 test.each([
-  ["future:one", "old", "STATE_FAMILY_UNDECLARED"],
-  ["note:one", false, "NOTE_VALUE"],
+  ["future:one", "old", "STATE_FAMILY_UNDECLARED", ["note:valid"]],
+  ["note:one", false, "NOTE_VALUE", ["note:valid"]],
+  ["note:zzz", false, "NOTE_VALUE", ["note:aaa", "note:bbb"]],
 ] as const)(
   "restore refuses inadmissible record %s without replacing the target",
-  async (key, value, reason) => {
+  async (key, value, reason, validKeys) => {
     const source = await open(),
       target = await open();
     try {
-      source.owner.put(ns, "note:valid", "valid", actor, { expectRevision: 0 });
+      for (const validKey of validKeys)
+        source.owner.put(ns, validKey, "valid", actor, { expectRevision: 0 });
       source.owner.put(ns, key, value, actor, { expectRevision: 0 });
       const image = source.owner.export(),
         before = snapshot(target.db);
@@ -101,6 +103,29 @@ test("restore retains the rollback path for a declared checkpointed snapshot", a
     eq(owner.list("example/beta"), source.owner.list("example/beta"));
     eq(owner.events(ns), source.owner.events(ns));
     eq(owner.events("example/beta"), source.owner.events("example/beta"));
+  } finally {
+    await source.close();
+    await target.close();
+  }
+});
+
+test("restoring a snapshot keeps history written under earlier rules for deleted keys and replaced values while admitting live records", async () => {
+  const source = await open(),
+    target = await open();
+  try {
+    source.owner.put(ns, "future:one", "old", actor, { expectRevision: 0 });
+    source.owner.delete(ns, "future:one", actor, { expectRevision: 1 });
+    source.owner.put(ns, "note:one", false, actor, { expectRevision: 0 });
+    source.owner.put(ns, "note:one", "admitted", actor, { expectRevision: 1 });
+    const image = source.owner.export(),
+      history = source.owner.events(ns),
+      owner = enrolled(target.db);
+    eq(history.length, 4);
+    owner.restore(image, undefined, 1);
+    eq(owner.events(ns), history);
+    eq(owner.list(ns), source.owner.list(ns));
+    eq(owner.get(ns, "future:one"), undefined);
+    eq(owner.get(ns, "note:one")?.value, "admitted");
   } finally {
     await source.close();
     await target.close();
@@ -347,8 +372,8 @@ test.each([false, true])(
   },
 );
 
-test.each(["g", "y"])(
-  "stateful key flag %s is refused at enrollment",
+test.each(["g", "y", "m"])(
+  "stateful or multiline key flag %s is refused at enrollment",
   async (flag) => {
     const f = await open();
     try {
