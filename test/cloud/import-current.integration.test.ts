@@ -446,3 +446,85 @@ test.each(["unlisted", "altered"])(
   },
   120_000,
 );
+
+// [integration] An explicit digest binds the operator to every omitted namespace and live lease.
+test.each(["missing", "wrong", "matching"])(
+  "left-behind acknowledgement: %s",
+  async (kind) => {
+    const s = f.source(6, false, true, (_db, state) => {
+      for (const [namespace, key] of [
+        ["forge/check", "runs/synthetic"],
+        ["forge/memory", "note/synthetic"],
+        ["forge/memory", "transfer/synthetic"],
+        ["forge/memory", "meta/synthetic"],
+        ["forge/core-project", "identity"],
+      ])
+        state.put(
+          namespace!,
+          key!,
+          { confidential: "never-in-manifest" },
+          f.actor,
+          { expectRevision: 0 },
+        );
+    });
+    const backup = String(s.db.all("PRAGMA database_list")[0]!.file),
+      root = dirname(backup);
+    const manifest = join(root, "source.json"),
+      out = join(root, "preview");
+    writeFileSync(manifest, JSON.stringify(s.manifest));
+    const before = f.snapshot(s.db);
+    eq(status(await converter.run({ backup, manifest, out, limits })), [
+      "FAIL",
+      6,
+      "INPUT_INVALID",
+    ]);
+    eq(existsSync(join(out, "manifest.json")), false);
+    eq(readdirSync(out), ["left-behind.json"]);
+    const text = readFileSync(join(out, "left-behind.json"), "utf8");
+    eq(text.includes("never-in-manifest"), false);
+    const left = JSON.parse(text) as {
+      liveLeases: number;
+      records: { namespace: string; shape: string; count: number }[];
+    };
+    eq(left.liveLeases, 1);
+    eq(left.records, [
+      { namespace: "forge/check", shape: "runs/*", count: 1 },
+      { namespace: "forge/core-project", shape: "identity", count: 1 },
+      { namespace: "forge/memory", shape: "meta/*", count: 1 },
+      { namespace: "forge/memory", shape: "note/*", count: 1 },
+      { namespace: "forge/memory", shape: "transfer/*", count: 1 },
+    ]);
+    const acknowledge =
+      kind === "matching"
+        ? await converter.digest(join(out, "left-behind.json"))
+        : kind === "wrong"
+          ? "0".repeat(64)
+          : undefined;
+    const next = join(root, "acknowledged");
+    const reply = await converter.run({
+      backup,
+      manifest,
+      out: next,
+      limits,
+      ...{ acknowledgeLeftBehind: acknowledge },
+    });
+    eq(
+      status(reply),
+      kind === "matching" ? ["OK", 0, null] : ["FAIL", 6, "INPUT_INVALID"],
+    );
+    if (kind === "matching" && reply.envelope.ok) {
+      const bundle = reply.envelope.result as {
+        N: number;
+        rows: Record<string, number>;
+        leftBehind: { sha256: string };
+      };
+      eq(bundle.N, 6);
+      eq(bundle.rows.state_leases, 0);
+      eq(bundle.leftBehind.sha256, acknowledge);
+      eq(readFileSync(join(next, "left-behind.json"), "utf8"), text);
+    }
+    eq(f.snapshot(s.db), before);
+    eq(s.bytes(), s.manifest.sha256);
+  },
+  120_000,
+);
