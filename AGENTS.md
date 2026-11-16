@@ -1,11 +1,13 @@
 # Forge
 
-Forge (npm package `forge-workflow`, command `forge`) is an open building-block platform for AI coding agents. Blocks declare their operations once; the CLI and MCP tools are generated from that catalog. Core knows no workflow: stages, TDD and pull requests live in blocks and templates. Bun builds Forge; the published package runs on Node 24.15 or later 24.x, or Node 26 and later (Node 25 is not supported) with npm and assumes nothing about a user's toolchain.
+Forge (`forge-workflow`, command `forge`) builds CLI and MCP tools from block operations. Core knows no workflow; stages, TDD and pull requests belong in blocks/templates. Bun builds Forge; consumers need npm and Node 24.15+ in 24.x or Node 26+. Node 25 is unsupported.
 
 Commands: `package.json`. Guards: `test/structure`.
 Agents: use `forge <noun> <verb> --help --json` or `forge catalog describe <noun.verb>` for the full JSON contract.
 
 ## Gotchas
+
+- `no-comments` refuses new source/test comments. Put reasons in a test named for the constraint, a named constant or the issue.
 
 - `bun lint` needs canary; `bun fmt` is stable in 1.4.4. The `lint` and `fmt` scripts use `tools/bun-builtin.ts`, which exits 1 with an upgrade hint on a Bun without the built-in. `bun check` needs Bun 1.4.3 or newer.
 - Owner rule (2026-11-03): CI is the test gate; no local test suites. Local checks: lint, format check, typecheck and build. Prove red then green in CI. No local git hooks; fix failing checks, never bypass them.

@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { parse } from "yaml";
+import type { CheckConfig } from "../../../src/blocks/check/types.ts";
 import { runInNewContext } from "node:vm";
 import {
   createCheck,
@@ -904,3 +906,44 @@ test("cancellation during a process prevents subsequent commands and accepted re
   expect(launches).toBe(1);
   expect(records.size).toBe(0);
 }, 1000);
+
+test("the declared comment check preserves incomplete in its Forge receipt", async () => {
+  const document = parse(
+    readFileSync(
+      new URL("../../../.forge/config.yaml", import.meta.url),
+      "utf8",
+    ),
+  ) as { blocks: { check: { config: CheckConfig } } };
+  const command = document.blocks.check.config.commands["no-comments"]!;
+  const { check } = fixture({
+    stdout: JSON.stringify({
+      status: "INCOMPLETE",
+      violations: [],
+      reason: "history missing",
+    }),
+    exitCode: 2,
+  });
+  const receipt = await check.run(
+    {},
+    { ...config, commands: { "no-comments": command } },
+  );
+  expect(receipt.status).toBe("INCOMPLETE");
+  expect(receipt.runs[0]?.status).toBe("INCOMPLETE");
+  expect(check.show(receipt.id)).toEqual(receipt);
+}, 1000);
+
+for (const [stdout, childExit, expected] of [
+  ['{"status":"PASS"}', 0, "PASS"],
+  ['{"status":"PASS"}', 2, "FAIL"],
+  ['{"status":"FAIL"}', 0, "FAIL"],
+  ['{"status":"INCOMPLETE"}', 0, "INCOMPLETE"],
+  ['{"status":"unknown"}', 0, "INCOMPLETE"],
+  ['{"status":"PASS"', 0, "INCOMPLETE"],
+] as const) {
+  test(`structured check status ${stdout} with exit ${childExit} yields ${expected}`, async () => {
+    const { check } = fixture({ stdout, exitCode: childExit });
+    const receipt = await check.run({}, { ...config, report: "status-json" });
+    expect(receipt.status).toBe(expected);
+    expect(receipt.runs[0]?.testCount).toBeNull();
+  }, 1000);
+}

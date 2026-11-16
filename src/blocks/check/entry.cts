@@ -642,7 +642,8 @@ function createCheck(
             incompleteOutput ||
             result.signal !== null ||
             result.exitCode === null ||
-            parsed.kind === "malformed"
+            parsed.kind === "malformed" ||
+            ("status" in parsed && parsed.status === "INCOMPLETE")
               ? "INCOMPLETE"
               : parsed.testCount === 0 ||
                   (parsed.failed ?? 0) > 0 ||
