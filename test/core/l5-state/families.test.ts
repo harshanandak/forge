@@ -46,9 +46,15 @@ async function open() {
 }
 const snapshot = (db: SqlDatabase) =>
   JSON.stringify(
-    ["state_records", "state_events", "state_requests", "state_retention"].map(
-      (table) => db.all(`SELECT * FROM ${table}`),
-    ),
+    [
+      "state_records",
+      "state_events",
+      "state_requests",
+      "state_retention",
+      "state_leases",
+    ].map((table) => db.all(`SELECT * FROM ${table}`)),
+    (_key, value: unknown) =>
+      typeof value === "bigint" ? { bigint: value.toString() } : value,
   );
 
 test.each([
@@ -323,3 +329,49 @@ test("unknown keys refuse before attempting to serialize their values", async ()
     await f.close();
   }
 });
+
+test.each([
+  ["future:one", "valid", "STATE_FAMILY_UNDECLARED"],
+  ["note:one", false, "NOTE_VALUE"],
+] as const)(
+  "acquisition replay rechecks the declaration for %s",
+  async (key, value, reason) => {
+    const f = await open();
+    try {
+      const holder = {
+        actor,
+        session: {
+          id: "family-session",
+          device: "family-device",
+          agent: "test",
+          harness: "test",
+        },
+      };
+      const options = { entries: [{ key, value, expectRevision: 0 }] };
+      f.owner.acquire(
+        ns,
+        "subject",
+        holder,
+        60_000,
+        "accepted-before-enrollment",
+        options,
+      );
+      const before = snapshot(f.db);
+      throws(
+        () =>
+          enrolled(f.db).acquire(
+            ns,
+            "subject",
+            holder,
+            60_000,
+            "accepted-before-enrollment",
+            options,
+          ),
+        new RegExp(reason),
+      );
+      eq(snapshot(f.db), before);
+    } finally {
+      await f.close();
+    }
+  },
+);

@@ -44,7 +44,7 @@ import { allocationFloorNumber } from "./allocation-floor.ts";
 import { writeRecordCheckpoint } from "./record-checkpoint.ts";
 import {
   RecordFamilyRegistry,
-  type NamespaceFamilyPolicy,
+  type NamespaceFamilyPolicies,
 } from "./families.ts";
 import {
   checkpointTables,
@@ -1164,7 +1164,7 @@ export class StateOwner {
   constructor(
     db: SqlDatabase,
     clock: ClockPort,
-    families: readonly NamespaceFamilyPolicy[] | RecordFamilyRegistry = [],
+    families: NamespaceFamilyPolicies | RecordFamilyRegistry = [],
   ) {
     this.#db = db;
     this.#clock = clock;
@@ -2016,10 +2016,14 @@ export class StateOwner {
   ): LeaseRecord {
     namespaceValid(namespace);
     keyValid(subject);
+    for (const entry of options?.entries ?? [])
+      this.#families.assertKey(namespace, entry.key);
     const accepted =
       options === undefined
         ? undefined
         : (JSON.parse(json(options)) as AcquireOptions);
+    for (const entry of accepted?.entries ?? [])
+      this.#families.assertValue(namespace, entry.key, entry.value);
     const readSet = copyReadSet(accepted?.readSet) ?? [];
     return this.#db.transaction(() => {
       const now = this.#now();

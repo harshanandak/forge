@@ -9,6 +9,9 @@ export interface NamespaceFamilyPolicy {
   readonly namespace: string;
   readonly families: Readonly<Record<string, RecordFamilyPolicy>>;
 }
+export type NamespaceFamilyPolicies = readonly NamespaceFamilyPolicy[];
+const exact = (pattern: RegExp, value: string) =>
+  pattern.exec(value)?.[0] === value;
 const refuse = (reason: string): never => {
   throw new ForgeFailure({
     code: "INPUT_INVALID",
@@ -19,7 +22,7 @@ const refuse = (reason: string): never => {
 
 export class RecordFamilyRegistry {
   readonly #namespaces = new Map<string, readonly RecordFamilyPolicy[]>();
-  constructor(declarations: readonly NamespaceFamilyPolicy[] = []) {
+  constructor(declarations: NamespaceFamilyPolicies = []) {
     for (const declaration of declarations) {
       if (
         !validateBlockId(declaration.namespace).ok ||
@@ -29,7 +32,7 @@ export class RecordFamilyRegistry {
       const families = Object.entries(declaration.families).map(
         ([name, family]) => {
           if (
-            !/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(name) ||
+            !exact(/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/, name) ||
             !(family.key instanceof RegExp) ||
             /[gy]/.test(family.key.flags) ||
             typeof family.admit !== "function"
@@ -47,9 +50,7 @@ export class RecordFamilyRegistry {
   #match(namespace: string, key: string): RecordFamilyPolicy | undefined {
     const families = this.#namespaces.get(namespace);
     if (!families) return;
-    const matched = families.filter(
-      (family) => family.key.exec(key)?.[0] === key,
-    );
+    const matched = families.filter((family) => exact(family.key, key));
     if (!matched.length) refuse("STATE_FAMILY_UNDECLARED");
     if (matched.length !== 1) refuse("STATE_FAMILY_AMBIGUOUS");
     return matched[0]!;
@@ -61,7 +62,7 @@ export class RecordFamilyRegistry {
     const reason = this.#match(namespace, key)?.admit(key, value);
     if (reason !== undefined)
       refuse(
-        typeof reason === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(reason)
+        typeof reason === "string" && exact(/^[A-Z][A-Z0-9_]{0,63}$/, reason)
           ? reason
           : "STATE_FAMILY_VALUE",
       );
