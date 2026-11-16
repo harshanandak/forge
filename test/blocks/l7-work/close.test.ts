@@ -10,6 +10,7 @@ import type { ProcessResult } from "../../../src/ports/process.ts";
 import { ForgeFailure } from "../../../src/contract/failure.ts";
 import { refuse } from "../../../src/core/trust/index.ts";
 import { fakeNext } from "./fake-numbered.ts";
+import { formatComment } from "../../../src/blocks/work/comment.ts";
 
 setDefaultTimeout(30_000);
 
@@ -72,6 +73,7 @@ test("lane close retries an injected landing-comment write failure exactly once"
   const flags = { fail: true, present: true, branch: true };
   const services = {
     state: {
+      formatComment,
       acquire() {},
       putMany() {},
       lease: () => ({ generation: 1 }),

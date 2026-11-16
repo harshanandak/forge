@@ -468,3 +468,46 @@ test(
     }),
   30_000,
 );
+
+test(
+  "a symlink replaced by regular source refuses its added comment",
+  () =>
+    repository((root, git, put) => {
+      put("src/type.ts", "target.ts");
+      const blob = git("hash-object", "-w", "src/type.ts");
+      git("update-index", "--add", "--cacheinfo", `120000,${blob},src/type.ts`);
+      git("commit", "-qm", "symlink baseline");
+      git("branch", "type-base");
+      put("src/type.ts", "export {}; // new\n");
+      git("add", ".");
+      git("commit", "-qm", "regular source");
+      expect(git("diff", "--name-status", "type-base", "HEAD")).toContain(
+        "T\tsrc/type.ts",
+      );
+      expect(checkComments({ root, base: "type-base" }).violations).toEqual([
+        { file: "src/type.ts", line: 1, kind: "line comment" },
+      ]);
+    }),
+  30_000,
+);
+
+test(
+  "configured inter-hunk context never adds an unchanged comment",
+  () =>
+    repository((root, git, put) => {
+      put("src/x.ts", "const a = 1;\n// existing\nconst b = 1;\n");
+      git("add", ".");
+      git("commit", "-qm", "context baseline");
+      git("branch", "context-base");
+      git("config", "diff.interHunkContext", "1");
+      git("config", "color.ui", "always");
+      put("src/x.ts", "const a = 2;\n// existing\nconst b = 2;\n");
+      git("add", ".");
+      git("commit", "-qm", "two edits");
+      expect(checkComments({ root, base: "context-base" })).toEqual({
+        status: "PASS",
+        violations: [],
+      });
+    }),
+  30_000,
+);
