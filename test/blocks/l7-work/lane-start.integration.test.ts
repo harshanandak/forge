@@ -51,17 +51,21 @@ function git(args: string[], cwd = repo) {
   return result.stdout.trim();
 }
 function cli(args: string[], cwd = repo, session = "lane-acceptance") {
-  const result = spawnSync("node", [bin, ...args], {
-    cwd,
-    env: {
-      ...process.env,
-      FORGE_DEVICE_ROOT: join(root, "device"),
-      FORGE_SESSION: session,
+  const result = spawnSync(
+    "node",
+    [bin, ...(cwd === repo ? [] : ["--project-root", repo]), ...args],
+    {
+      cwd,
+      env: {
+        ...process.env,
+        FORGE_DEVICE_ROOT: join(root, "device"),
+        FORGE_SESSION: session,
+      },
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 20000,
     },
-    encoding: "utf8",
-    windowsHide: true,
-    timeout: 20000,
-  });
+  );
   expect(result.error).toBeUndefined();
   return Object.assign(JSON.parse(result.stdout), { exit: result.status }) as {
     exit: number;

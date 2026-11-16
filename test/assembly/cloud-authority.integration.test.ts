@@ -1522,7 +1522,7 @@ for (const route of [
         const lane = {
           ...attachment,
           worktree: f.scope.lane.real,
-          brief: join(f.target, "brief.md"),
+          brief: join(f.scope.lane.real, "brief.md"),
         };
         writeFileSync(lane.brief, PREPARED_BRIEF);
         if (stored === "journal" || stored === "combined")

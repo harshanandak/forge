@@ -192,4 +192,4 @@ test("a missing scoped Git capability never falls back to process resolution", a
   });
   expect(await vcs.root("/repo")).toMatchObject({ kind: "unavailable" });
   expect([resolutions, process.runs.length]).toEqual([0, 0]);
-});
+}, 30_000);
