@@ -9,9 +9,44 @@ import {
   put,
 } from "./record-checkpoint.fixture.ts";
 import type { SqlDatabase } from "../../../src/ports/store.ts";
-import { StateOwner } from "../../../src/core/state/index.ts";
+import {
+  StateOwner,
+  verifyEventDerivedState,
+} from "../../../src/core/state/index.ts";
 
 setDefaultTimeout(30_000);
+
+test.each([1, 2, 256])(
+  "malformed historical floors reserve nothing after correction: batch %s",
+  async (batch) => {
+    const s = await fixture();
+    try {
+      s.owner.initialize();
+      put(s, "allocation:n-", { prefix: "n-", number: 20 });
+      put(s, "allocation:n-", { prefix: "n-", number: 99, extra: true }, 1);
+      put(s, "allocation:n-", { prefix: "n-", number: 20 }, 2);
+      const replay = verifyEventDerivedState(s.db, high(s), undefined, {
+        namespace: ns,
+        prefix: "n-",
+      });
+      expect(replay?.earlier).toBe(20);
+      capture(s, batch);
+      expect(
+        Number(
+          s.db.get(
+            "SELECT highest FROM state_checkpoint_floors WHERE namespace=? AND prefix=?",
+            [ns, "n-"],
+          )?.highest,
+        ),
+      ).toBe(20);
+      expect(s.owner.putNext(ns, "n-", () => ({ value: {} }), actor).key).toBe(
+        "n-21",
+      );
+    } finally {
+      await s.close();
+    }
+  },
+);
 
 test("checkpoint writes bodies, deletion floors and allocator high-water without resurrection", async () => {
   const s = await fixture();
