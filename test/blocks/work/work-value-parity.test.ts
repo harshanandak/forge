@@ -18,7 +18,7 @@ import {
   assertWorkRecord,
 } from "../../../src/blocks/work/validation.ts";
 import { domain } from "../../../cloud/src/project.ts";
-import { initializePragma } from "../../../cloud/src/store.ts";
+import { durableStore } from "../../../cloud/src/store.ts";
 import { createIssue } from "../../../cloud/src/issue-create.ts";
 import { updateIssue } from "../../../cloud/src/issue-update.ts";
 import { closeIssue } from "../../../cloud/src/issue-close.ts";
@@ -257,22 +257,32 @@ for (const [index, row] of cases.entries()) {
         readOnly: false,
       });
       if (!opened.ok) throw new Error("Fixture store refused");
-      const db = opened.handle.value,
+      const local = opened.handle.value;
+      const db =
+          backend === "cloud"
+            ? durableStore({
+                sql: {
+                  exec: (sql, ...bindings) => {
+                    const rows = local.all(
+                      sql,
+                      bindings.map((value) =>
+                        value instanceof ArrayBuffer
+                          ? new Uint8Array(value)
+                          : value,
+                      ),
+                    );
+                    return { toArray: () => rows.map((row) => ({ ...row })) };
+                  },
+                },
+                transactionSync: (body) => local.transaction(body),
+                get: () => Promise.resolve(undefined),
+                put: () => Promise.resolve(),
+                delete: () => Promise.resolve(undefined),
+              })
+            : local,
         owner = new StateOwner(db, { now: () => stamp });
       try {
-        initializePragma({
-          sql: {
-            exec: (sql) => {
-              db.exec(sql);
-              return { toArray: () => [] };
-            },
-          },
-          transactionSync: (body) => db.transaction(body),
-          get: () => Promise.resolve(undefined),
-          put: () => Promise.resolve(),
-          delete: () => Promise.resolve(undefined),
-        });
-        owner.initialize([domain]);
+        owner.initialize(backend === "cloud" ? [domain] : []);
         owner.put("forge/work", "issue:work-1", issue, actor, {
           expectRevision: 0,
         });
