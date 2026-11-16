@@ -3,7 +3,6 @@ import { ForgeFailure } from "../../contract/failure.ts";
 import {
   validateBlockId,
   validateLeaseRecord,
-  validateStateRecord,
 } from "../../generated/validators.ts";
 import type { SqlDatabase, SqlRow, SqlValue } from "../../ports/store.ts";
 import { parseRestoreJson } from "./restore-json.ts";
@@ -31,7 +30,7 @@ export const checkpointTables = {
 /** Tuples use table column order, excluding the singleton header's SQL id. */
 export interface Checkpoint {
   readonly header: readonly [
-    formatVersion: 1 | 2,
+    formatVersion: 1,
     lineage: string,
     generation: number,
     coveredSequence: number,
@@ -148,10 +147,7 @@ export function decodeCheckpoint(text: string): Checkpoint {
   const value = parsed as Record<string, unknown>;
   if (Object.keys(value).sort().join() !== Object.keys(shapes).sort().join())
     invalid();
-  if (
-    Array.isArray(value.header) &&
-    ![1, 2].includes(value.header[0] as number)
-  )
+  if (Array.isArray(value.header) && value.header[0] !== 1)
     invalid("Checkpoint format unsupported; newer Forge required");
   rowValid(value.header, shapes.header);
   const covered = value.header[3] as number;
@@ -264,10 +260,7 @@ export function readReplayStart(
       invalid("Checkpoint entries require a header");
     return { checkpoint: undefined, receipts };
   }
-  const recordFormat = Number(header.format_version) === 2;
-  for (const kind of recordFormat
-    ? ["leases", "receipts", "denied"]
-    : ["leases", "floors", "reservations", "denied"])
+  for (const kind of ["leases", "floors", "reservations", "denied"])
     if (db.get(`SELECT 1 FROM state_checkpoint_${kind} LIMIT 1`))
       invalid(`Unsupported checkpoint ${kind} entries; newer Forge required`);
   const read = (
@@ -279,140 +272,60 @@ export function readReplayStart(
     let after: readonly SqlValue[] | undefined;
     for (;;) {
       const rows = db.all(
-        `SELECT ${columns.join(",")}${recordFormat && kind === "live" ? ",body" : ""} FROM state_checkpoint_${kind}${after === undefined ? "" : ` WHERE (${keys.join(",")}) > (${keys.map(() => "?").join(",")})`} ORDER BY ${keys.join(",")} LIMIT ?`,
+        `SELECT ${columns.join(",")} FROM state_checkpoint_${kind}${after === undefined ? "" : ` WHERE (${keys.join(",")}) > (${keys.map(() => "?").join(",")})`} ORDER BY ${keys.join(",")} LIMIT ?`,
         [...(after ?? []), pageSize],
       );
-      for (const row of rows) {
-        if (recordFormat && kind === "live") {
-          const record = parseRestoreJson(String(row.body)) as {
-            namespace: string;
-            key: string;
-            revision: number;
-          };
-          if (
-            !validateStateRecord(record).ok ||
-            record.namespace !== row.namespace ||
-            record.key !== row.key ||
-            record.revision !== Number(row.revision) ||
-            recordDigest(record) !== row.digest
-          )
-            invalid("Invalid checkpoint live body");
-        }
+      for (const row of rows)
         result.push(
           columns.map((column) => {
             const cell = row[column]!;
             return typeof cell === "bigint" ? Number(cell) : cell;
           }),
         );
-      }
       if (rows.length < pageSize) return result;
       after = keys.map((column) => rows.at(-1)![column]!);
     }
   };
-  const checkpoint = {
-    header: [
-      "format_version",
-      "lineage",
-      "generation",
-      "covered_sequence",
-      "retention_policy_version",
-      "archive_through",
-    ].map((column) => {
-      const cell = header[column];
-      return typeof cell === "bigint" ? Number(cell) : cell;
+  const checkpoint = decodeCheckpoint(
+    JSON.stringify({
+      header: [
+        "format_version",
+        "lineage",
+        "generation",
+        "covered_sequence",
+        "retention_policy_version",
+        "archive_through",
+      ].map((column) => {
+        const cell = header[column];
+        return typeof cell === "bigint" ? Number(cell) : cell;
+      }),
+      live: read(
+        "live",
+        ["namespace", "key", "sequence", "revision", "digest"],
+        ["namespace", "key"],
+      ),
+      deleted: read(
+        "deleted",
+        ["namespace", "key", "sequence", "revision"],
+        ["namespace", "key"],
+      ),
+      receipts: read(
+        "receipts",
+        [
+          "namespace",
+          "request_id",
+          "sequence",
+          "fingerprint_digest",
+          "result_digest",
+        ],
+        ["namespace", "request_id"],
+      ),
+      leases: [],
+      floors: [],
+      reservations: [],
+      denied: [],
     }),
-    live: read(
-      "live",
-      ["namespace", "key", "sequence", "revision", "digest"],
-      ["namespace", "key"],
-    ),
-    deleted: read(
-      "deleted",
-      ["namespace", "key", "sequence", "revision"],
-      ["namespace", "key"],
-    ),
-    receipts: read(
-      "receipts",
-      [
-        "namespace",
-        "request_id",
-        "sequence",
-        "fingerprint_digest",
-        "result_digest",
-      ],
-      ["namespace", "request_id"],
-    ),
-    leases: [],
-    floors: recordFormat
-      ? read(
-          "floors",
-          ["namespace", "prefix", "sequence", "highest"],
-          ["namespace", "prefix"],
-        )
-      : [],
-    reservations: recordFormat
-      ? read(
-          "reservations",
-          ["namespace", "prefix", "sequence", "number"],
-          ["namespace", "prefix", "number"],
-        )
-      : [],
-    denied: [],
-  } as unknown as Checkpoint;
-  const empty = {
-    ...checkpoint,
-    live: [],
-    deleted: [],
-    receipts: [],
-    floors: [],
-    reservations: [],
-  };
-  decodeCheckpoint(JSON.stringify(empty));
-  for (const kind of [
-    "live",
-    "deleted",
-    "receipts",
-    "floors",
-    "reservations",
-  ] as const)
-    for (const row of checkpoint[kind])
-      decodeCheckpoint(JSON.stringify({ ...empty, [kind]: [row] }));
-  if (
-    db.get(
-      "SELECT 1 FROM state_checkpoint_live l JOIN state_checkpoint_deleted d USING(namespace,key) LIMIT 1",
-    )
-  )
-    invalid();
-  if (
-    recordFormat &&
-    db.get(
-      "SELECT 1 FROM (SELECT namespace,key,sequence FROM state_checkpoint_live UNION ALL SELECT namespace,key,sequence FROM state_checkpoint_deleted) c LEFT JOIN state_namespace_watermarks w USING(namespace) WHERE w.sequence IS NULL OR w.sequence<c.sequence OR NOT EXISTS (SELECT 1 FROM state_allocation_keys a WHERE a.namespace=c.namespace AND a.key=c.key) LIMIT 1",
-    )
-  )
-    invalid("Checkpoint retention authority requires repair");
-  if (
-    recordFormat &&
-    db.get(
-      "SELECT 1 FROM state_allocation_keys a WHERE NOT EXISTS (SELECT 1 FROM state_checkpoint_live c WHERE c.namespace=a.namespace AND c.key=a.key) AND NOT EXISTS (SELECT 1 FROM state_checkpoint_deleted c WHERE c.namespace=a.namespace AND c.key=a.key) AND NOT EXISTS (SELECT 1 FROM state_events e WHERE e.namespace=a.namespace AND e.key=a.key AND e.sequence>? AND json_extract(e.body,'$.type') IN (e.namespace||':record.updated@1',e.namespace||':record.deleted@1')) LIMIT 1",
-      [checkpoint.header[3]],
-    )
-  )
-    invalid("Checkpoint deletion floor coverage requires repair");
-  if (
-    recordFormat &&
-    (Number(header.retention_policy_version) !==
-      Number(
-        db.get("SELECT policy_version FROM state_retention WHERE id=1")
-          ?.policy_version,
-      ) ||
-      db.get(
-        "SELECT 1 FROM state_checkpoint_reservations c WHERE NOT EXISTS (SELECT 1 FROM state_allocation_keys a WHERE a.namespace=c.namespace AND a.key=c.prefix||c.number) LIMIT 1",
-      ) ||
-      db.get(
-        "SELECT 1 FROM state_checkpoint_floors c LEFT JOIN state_records r ON r.namespace=c.namespace AND r.key='allocation:'||c.prefix WHERE NOT EXISTS (SELECT 1 FROM state_allocation_keys a WHERE a.namespace=c.namespace AND a.key='allocation:'||c.prefix) OR json_extract(r.body,'$.value.number')<c.highest LIMIT 1",
-      ))
-  )
-    invalid("Checkpoint allocator authority requires repair");
+  );
   return {
     checkpoint: {
       coveredSequence: checkpoint.header[3],

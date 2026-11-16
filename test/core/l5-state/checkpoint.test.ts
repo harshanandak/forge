@@ -137,7 +137,7 @@ const malformed: [string, (input: Mutable) => void][] = [
   [
     "newer version",
     (v) => {
-      (v.header as unknown[])[0] = 3;
+      (v.header as unknown[])[0] = 2;
     },
   ],
   [
