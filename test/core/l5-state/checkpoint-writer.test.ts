@@ -18,27 +18,33 @@ test("checkpoint writes bodies, deletion floors and allocator high-water without
   try {
     prefix(s);
     const before = s.owner.export();
+    const value = (sql: string, field: string) =>
+      Number(s.db.get(sql)?.[field]);
     capture(s);
     expect(
-      s.db.get(
+      value(
         "SELECT highest FROM state_checkpoint_floors WHERE prefix='item:'",
+        "highest",
       ),
-    ).toEqual({ highest: 1 });
+    ).toBe(1);
     expect(
-      s.db.get(
+      value(
         "SELECT revision FROM state_checkpoint_deleted WHERE key='gone'",
+        "revision",
       ),
-    ).toEqual({ revision: 2 });
+    ).toBe(2);
     expect(
-      s.db.get(
+      value(
         "SELECT revision FROM state_checkpoint_deleted WHERE key='item:1'",
+        "revision",
       ),
-    ).toEqual({ revision: 2 });
+    ).toBe(2);
     expect(
-      s.db.get(
+      value(
         "SELECT number FROM state_checkpoint_reservations WHERE prefix='item:'",
+        "number",
       ),
-    ).toEqual({ number: 1 });
+    ).toBe(1);
     expect(
       s.db.get("SELECT body FROM state_checkpoint_live WHERE key='gone'"),
     ).toBeUndefined();
@@ -56,16 +62,22 @@ test("checkpoint writes bodies, deletion floors and allocator high-water without
     expect(s.owner.export().records).toEqual(before.records);
     expect(s.owner.export().events).toEqual(before.events);
     expect(
-      s.db.get("SELECT covered_sequence FROM state_checkpoint_header"),
-    ).toEqual({ covered_sequence: high(s) });
+      value(
+        "SELECT covered_sequence FROM state_checkpoint_header",
+        "covered_sequence",
+      ),
+    ).toBe(high(s));
     expect(s.owner.putNext(ns, "item:", () => ({ value: {} }), actor).key).toBe(
       "item:2",
     );
     expect(put(s, "gone").revision).toBe(3);
     capture(s);
     expect(
-      s.db.get("SELECT revision FROM state_checkpoint_live WHERE key='gone'"),
-    ).toEqual({ revision: 3 });
+      value(
+        "SELECT revision FROM state_checkpoint_live WHERE key='gone'",
+        "revision",
+      ),
+    ).toBe(3);
     expect(
       s.db.get(
         "SELECT revision FROM state_checkpoint_deleted WHERE key='gone'",
