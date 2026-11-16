@@ -1,4 +1,4 @@
-﻿import assert from "node:assert/strict";
+import assert from "node:assert/strict";
 import { afterEach, beforeEach, setSystemTime, spyOn, test } from "bun:test";
 import type { SqlDatabase } from "../../src/ports/store.ts";
 import type { SQLQueryBindings } from "bun:sqlite";
@@ -43,6 +43,29 @@ import { currentState, pagesOf } from "../../tools/import-current-state.ts";
 
 const eq: typeof assert.deepStrictEqual = assert.deepStrictEqual;
 const ne: typeof assert.notDeepStrictEqual = assert.notDeepStrictEqual;
+test("restore comparison without a stop plan rejects product stop writes", async () => {
+  const { roundTrip } = await import("../../cloud/conformance/conformance.ts");
+  const source = comparisonSource(),
+    src = await f.project(),
+    dst = await f.project();
+  eq(status((await src.send("restore", dumpOf(source))).projected), [
+    "OK",
+    0,
+    null,
+  ]);
+  const transport = spyOn(globalThis, "fetch").mockImplementation(
+    f.expectedTransport(src.p, dst.p, () => {}),
+  );
+  try {
+    await assert.rejects(
+      () => roundTrip("source", "target", "no stop plan", 4096),
+      /no stop plan: target differs from expected image/,
+    );
+    eq(await dst.storage.get("provisioned"), true);
+  } finally {
+    transport.mockRestore();
+  }
+}, 5000);
 test("numeric page order crosses four digits", () => {
   eq(["page-10000.json", "page-9999.json"].sort(pageOrder), [
     "page-9999.json",
@@ -458,14 +481,17 @@ test.each(["distinct", "corrupt"])(
         ),
       );
       try {
-        const expected = construction.expectedImage(
+        const expected: Page[] = [];
+        for await (const page of construction.expectedImage(
           kind === "distinct" ? [document] : cut(document.tables, 3),
           f.at,
           (owner, db) => {
             f.settleActivation(db);
             f.controlDelta(owner, kind === "distinct" ? "expect" : "source");
           },
-        );
+        ))
+          expected.push(page);
+        uuids.reset();
         const run = () =>
           comparison.roundTrip(
             "source",
@@ -886,16 +912,7 @@ test.each(activationRows)(
             if (kind === "browser") {
               const saved = f.snapshot(p.db),
                 callback = await p.oldCallback();
-              verdict(
-                respond(
-                  failure(
-                    callback.status === 400 ? "INPUT_INVALID" : "INTERNAL",
-                    "browser projection",
-                  ),
-                ),
-                "INPUT_INVALID",
-                6,
-              );
+              eq(callback.status, 400);
               eq(f.snapshot(p.db), saved);
               eq(p.exchanges(), 0);
             }

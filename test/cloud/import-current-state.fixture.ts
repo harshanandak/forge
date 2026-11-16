@@ -291,12 +291,12 @@ export async function project(
 ) {
   const edits: Record<string, readonly [string, string]> = {
     order: ["page.page !== staged?.next", "false"],
-    stop: [
+    "cap-stop": [
       "control.stop(",
       '({ stop: () => ({ ok: true, result: { stopped: true, scope: "all" } }) }).stop(',
     ],
-    approval: ["db.run(`DELETE FROM ${LANE_APPROVALS}`);", ""],
-    browser: ["db.run(`DELETE FROM ${LANE_BROWSER}`);", ""],
+    "cap-approval": ["db.run(`DELETE FROM ${LANE_APPROVALS}`);", ""],
+    "cap-browser": ["db.run(`DELETE FROM ${LANE_BROWSER}`);", ""],
     target: ["if (await this.#isProvisioned())", "if (false)"],
   };
   const dump =
@@ -441,7 +441,9 @@ export async function activation(
     fault = "",
     transactions = 0;
   const fixture = await project(
-    mutation,
+    mutation && ["stop", "approval", "browser"].includes(mutation)
+      ? `cap-${mutation}`
+      : mutation,
     env,
     (sql) => {
       if (fault && sql === `DELETE FROM ${fault}`)
