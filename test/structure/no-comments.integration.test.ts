@@ -42,14 +42,15 @@ function sourceRow(
 beforeAll(
   () =>
     repository((root, git, put) => {
-      for (const item of samples)
-        put(
-          item.file,
-          item.text
-            .split("\n")
-            .filter((_, index) => !item.added.has(index + 1))
-            .join("\n"),
-        );
+      for (const item of samples) {
+        let baseline = item.text
+          .split("\n")
+          .filter((_, index) => !item.added.has(index + 1))
+          .join("\n");
+        if (baseline && !baseline.endsWith("\n") && item.text.includes("\n"))
+          baseline += "\n";
+        put(item.file, baseline);
+      }
       git("add", ".");
       git("commit", "-qm", "row baselines");
       git("branch", "rows-base");
