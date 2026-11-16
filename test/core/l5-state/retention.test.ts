@@ -6,6 +6,59 @@ import {
   stateMigrations,
 } from "../../../src/core/state/migrations.ts";
 
+test.each(["history", "live", "retired"])(
+  "restore and initialize preserve retention authority: %s",
+  async (kind) => {
+    const source = await fixture();
+    const target = await fixture();
+    try {
+      source.owner.initialize();
+      target.owner.initialize();
+      if (kind === "retired") {
+        target.owner.putNext(ns, "item:", () => ({ value: {} }), actor);
+        target.owner.delete(ns, "item:1", actor, { expectRevision: 1 });
+        target.owner.delete(ns, "allocation:item:", actor, {
+          expectRevision: 1,
+        });
+        target.db.run("DELETE FROM state_events");
+        expect(() => target.owner.restore(source.owner.export())).toThrow(
+          "Restore target must be empty",
+        );
+        expect(
+          Number(
+            target.db.get("SELECT sequence FROM state_retention")?.sequence,
+          ),
+        ).toBe(4);
+        expect(
+          target.db.all("SELECT * FROM state_allocation_keys"),
+        ).toHaveLength(2);
+      } else {
+        source.owner.put(ns, "item:1", {}, actor, { expectRevision: 0 });
+        if (kind !== "live")
+          source.owner.delete(ns, "item:1", actor, { expectRevision: 1 });
+        source.db.run("DELETE FROM state_allocation_keys");
+        const snapshot = source.owner.export();
+        for (const admit of [
+          () => target.owner.restore(snapshot),
+          () => source.owner.initialize(),
+        ]) {
+          expect(admit).toThrow(/repair/i);
+          try {
+            admit();
+          } catch (error) {
+            expect(error).toMatchObject({ error: { code: "INPUT_INVALID" } });
+          }
+        }
+        expect(target.owner.events(ns)).toEqual([]);
+      }
+    } finally {
+      await source.close();
+      await target.close();
+    }
+  },
+  30_000,
+);
+
 test("legacy store exports without migrating before backup", async () => {
   const { db, owner, close } = await fixture();
   try {
