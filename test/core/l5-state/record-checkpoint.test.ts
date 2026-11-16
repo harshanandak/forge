@@ -56,7 +56,14 @@ test.each([false, true])(
   },
 );
 
-test.each(["deleted allocation", "valid historical floor", "new prefix"])(
+test.each([
+  "deleted allocation",
+  "raw live number",
+  "raw deleted number",
+  "valid historical floor",
+  "malformed historical floor",
+  "new prefix",
+])(
   "checkpoint admission retains tail allocator authority: %s",
   async (kind) => {
     const s = await fixture(),
@@ -66,8 +73,21 @@ test.each(["deleted allocation", "valid historical floor", "new prefix"])(
       capture(s);
       target.owner.initialize();
       const name = kind === "new prefix" ? "new:" : "item:";
-      if (kind === "valid historical floor")
-        put(s, `allocation:${name}`, { prefix: name, number: 9 }, 1);
+      if (kind.startsWith("raw")) {
+        put(s, "item:8");
+        if (kind === "raw deleted number")
+          s.owner.delete(ns, "item:8", actor, { expectRevision: 1 });
+      } else if (kind.includes("historical floor"))
+        put(
+          s,
+          `allocation:${name}`,
+          {
+            prefix: name,
+            number: 9,
+            ...(kind.startsWith("malformed") ? { extra: true } : {}),
+          },
+          1,
+        );
       else {
         const allocated = s.owner.putNext(
           ns,
@@ -81,13 +101,21 @@ test.each(["deleted allocation", "valid historical floor", "new prefix"])(
         s,
         `allocation:${name}`,
         { prefix: name, number: kind === "new prefix" ? 0 : 1 },
-        kind === "new prefix" ? 1 : 2,
+        kind === "new prefix" || kind.startsWith("raw") ? 1 : 2,
       );
-      expect(() => s.owner.initialize()).toThrow(/allocator|repair/i);
-      expect(() => target.owner.restore(s.owner.export())).toThrow(
-        /allocator|repair/i,
-      );
-      expect(target.owner.export().records).toEqual([]);
+      if (kind === "malformed historical floor") {
+        s.owner.initialize();
+        target.owner.restore(s.owner.export());
+        expect(
+          target.owner.putNext(ns, name, () => ({ value: {} }), actor).key,
+        ).toBe("item:2");
+      } else {
+        expect(() => s.owner.initialize()).toThrow(/allocator|repair/i);
+        expect(() => target.owner.restore(s.owner.export())).toThrow(
+          /allocator|repair/i,
+        );
+        expect(target.owner.export().records).toEqual([]);
+      }
     } finally {
       await s.close();
       await target.close();
