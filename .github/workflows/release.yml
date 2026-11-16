@@ -154,8 +154,12 @@ jobs:
           node "$GITHUB_WORKSPACE/tools/release/readback.mjs" node_modules/forge-workflow/dist/bin/forge.js "$RUNNER_TEMP/npm-smoke/audit.json" "$RUNNER_TEMP/npm-smoke/package-lock.json"
           bun run forge --version
           bun run forge help
-          cd "$GITHUB_WORKSPACE"
-          node tools/release/journeys.mjs "$GITHUB_WORKSPACE" "$RUNNER_TEMP/npm-smoke" "$TARBALL"
+      - name: Required registry journeys
+        env:
+          FORGE_DEVICE_ROOT: ${{ runner.temp }}/release-forge
+          CHECK_ECOSYSTEM_TOOLS: ${{ runner.temp }}/fixture-tools
+          CHECK_PYTHON_PACKAGES: ${{ runner.temp }}/fixture-python
+        run: node tools/release/journeys.mjs "$GITHUB_WORKSPACE" "$RUNNER_TEMP/npm-smoke" "$TARBALL"
   promote:
     needs: [verify, readback]
     environment: release

@@ -175,6 +175,8 @@ export const nodeSensitive: Readonly<Record<string, string>> = {
     "Launches the real smoke runner to prove both digest refusals precede npm install.",
   "test/tools/pack-smoke/signals.integration.test.ts":
     "Launches selected Node for signals coverage.",
+  "test/structure/release.test.ts":
+    "Pins the exact Node release gate command so shell comments or swallowed failures are refused.",
   "test/tools/release/journeys.integration.test.ts":
     "Launches selected Node and real Bun tests to refuse missing, failed and skipped release journeys.",
   "test/tools/source-selection.test.ts":

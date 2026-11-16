@@ -13,6 +13,7 @@ interface Job {
   steps: {
     if?: unknown;
     "continue-on-error"?: unknown;
+    name?: string;
     uses?: string;
     run?: string;
     env?: Record<string, string>;
@@ -38,12 +39,18 @@ function requiredReadback(w: ReturnType<typeof workflow>) {
       assert.equal(step["continue-on-error"], undefined);
     }
   }
+  const journey = w.jobs.readback!.steps.find(
+    (s) => s.name === "Required registry journeys",
+  );
+  assert.equal(
+    journey?.run,
+    'node tools/release/journeys.mjs "$GITHUB_WORKSPACE" "$RUNNER_TEMP/npm-smoke" "$TARBALL"',
+  );
   const runs = w.jobs.readback!.steps.map((s) => s.run ?? "").join("\n");
   for (const command of [
     "npm install --ignore-scripts",
     "npm audit signatures",
     "tools/release/readback.mjs",
-    "tools/release/journeys.mjs",
   ])
     assert.ok(runs.includes(command), `required readback command: ${command}`);
 }
@@ -133,13 +140,15 @@ for (const change of [
         "npm audit signatures",
         "echo signatures omitted",
       );
+    const journey = w.jobs.readback!.steps.find(
+      (s) => s.name === "Required registry journeys",
+    )!;
     if (change === "commented journey")
-      cold.run = cold.run!.replace(
+      journey.run = journey.run!.replace(
         "node tools/release/journeys.mjs",
         "# node tools/release/journeys.mjs",
       );
-    if (change === "swallowed journey")
-      cold.run = cold.run!.replace('"$TARBALL"', '"$TARBALL" || true');
+    if (change === "swallowed journey") journey.run += " || true";
     if (change === "if false") cold.if = false;
     if (change === "ignored step failure") cold["continue-on-error"] = true;
     if (change === "ignored job failure")

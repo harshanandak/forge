@@ -5,6 +5,9 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+const { requiredJourneys } = (await import(
+  new URL("../../../tools/release/journeys.mjs", import.meta.url).href
+)) as { requiredJourneys: string[] };
 
 for (const strict of [false, true])
   test(`missing ecosystem tools ${strict ? "refuse release" : "remain named developer skips"}`, () => {
@@ -45,7 +48,14 @@ for (const strict of [false, true])
     }
   }, 15_000);
 
-for (const mode of ["pass", "failed", "skipped", "omitted"]) {
+for (const mode of [
+  "complete",
+  "missing ecosystem suite",
+  "pass",
+  "failed",
+  "skipped",
+  "omitted",
+]) {
   test(`release journey runner rejects ${mode} with missing required inventory`, () => {
     const dir = mkdtempSync(join(tmpdir(), "forge-release-journey-"));
     try {
@@ -57,6 +67,26 @@ for (const mode of ["pass", "failed", "skipped", "omitted"]) {
           join(dir, "test/packed.integration.test.ts"),
           `import {test,expect} from 'bun:test'; test${mode === "skipped" ? ".skip" : ""}('installed journey',()=>expect(${mode !== "failed"}).toBe(true),1000);`,
         );
+      if (mode === "complete" || mode === "missing ecosystem suite") {
+        const files = new Map<string, string[]>();
+        for (const entry of requiredJourneys) {
+          const [file, name] = entry.split("::");
+          if (
+            mode === "missing ecosystem suite" &&
+            file === "test/node-fixtures/check/packed.integration.test.ts"
+          )
+            continue;
+          files.set(file!, [...(files.get(file!) ?? []), name!]);
+        }
+        for (const [file, names] of files) {
+          const path = join(dir, file);
+          mkdirSync(resolve(path, ".."), { recursive: true });
+          writeFileSync(
+            path,
+            `import {test} from 'bun:test';\n${names.map((name) => `test(${JSON.stringify(name)},()=>{});`).join("\n")}`,
+          );
+        }
+      }
       const out = spawnSync(
         node,
         [
@@ -72,7 +102,7 @@ for (const mode of ["pass", "failed", "skipped", "omitted"]) {
         },
       );
       expect(out.error).toBeUndefined();
-      expect(out.status === 0, out.stderr).toBe(false);
+      expect(out.status === 0, out.stderr).toBe(mode === "complete");
       if (mode === "skipped")
         expect(out.stderr).toContain("release journey skipped");
     } finally {
