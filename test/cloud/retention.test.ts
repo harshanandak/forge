@@ -111,12 +111,21 @@ test("cloud capacity metadata upgrades once without changing dump rows", () => {
   db.run(
     "INSERT INTO domain_cloud_requests(request_id,fingerprint,outcome,result) VALUES ('old','{}','ok','{}')",
   );
-  const columns = "request_id,fingerprint,outcome,result";
-  const before = db.all(`SELECT ${columns} FROM domain_cloud_requests`);
+  // The pre-retention schema has no request age yet; compare every other column in all six tables.
+  const snapshot = () =>
+    Object.fromEntries(
+      Object.keys(dumpOf(undefined).tables).map((table) => [
+        table,
+        db.all(`SELECT * FROM ${table}`).map((row) => {
+          if (table !== "domain_cloud_requests") return row;
+          const { created_at: _age, ...original } = row;
+          return original;
+        }),
+      ]),
+    );
+  const before = snapshot();
   owner.initialize([domain]);
-  expect(db.all(`SELECT ${columns} FROM domain_cloud_requests`)).toEqual(
-    before,
-  );
+  expect(snapshot()).toEqual(before);
   for (const sql of DUMP_USAGE_SQL) {
     const table = sql.split(" FROM ")[1]!;
     const actual = db.get(sql)!;
