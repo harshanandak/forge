@@ -931,6 +931,10 @@ export function restoreDump(
     insertRows(db, dump.tables);
     assertLimits(db, limits, "RESTORE_TOO_LARGE", "The restored project");
     admitJson(dump.tables);
+    for (const row of dump.tables.state_records!)
+      owner.assertRecordFamily(
+        parseRestoreJson(String(row.body)) as StateRecord,
+      );
     const restored = verifyRestored(db);
     if (JSON.stringify(dumpOf(db)) !== JSON.stringify(dump))
       throw invalid(
@@ -976,6 +980,10 @@ export function restorePage(
     insertRows(db, page.tables);
     assertLimits(db, limits, "RESTORE_TOO_LARGE", "The staged restore");
     admitJson(page.tables);
+    for (const row of page.tables.state_records!)
+      owner.assertRecordFamily(
+        parseRestoreJson(String(row.body)) as StateRecord,
+      );
     // Only the last page looks at the whole staged set, so nothing is derived or written before it.
     if (page.last) settleFloor(db, owner, limits, verifyRestored(db), finalize);
     return counts(page.tables);

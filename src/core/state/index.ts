@@ -2200,6 +2200,10 @@ export class StateOwner {
     });
     return { ...snapshot!, image: Buffer.from(image).toString("base64") };
   }
+  assertRecordFamily(record: StateRecord): void {
+    if (!validateStateRecord(record).ok) invalid("Invalid imported record");
+    this.#families.assertValue(record.namespace, record.key, record.value);
+  }
   /** Validate without mutating the candidate; only the adapter can replace database storage. */
   restore(
     snapshot: Snapshot,
@@ -2273,6 +2277,16 @@ export class StateOwner {
         undefined,
         applied.some((row) => row.id === "004_state_checkpoint"),
       );
+      for (const row of restoredRows(
+        candidate,
+        "state_records",
+        "body,namespace,key",
+        ["namespace", "key"],
+        pageSize,
+      ))
+        this.assertRecordFamily(
+          parseRestoreJson(String(row.body)) as StateRecord,
+        );
       assertRetentionAuthority(candidate);
     };
     imageStore.restoreImage(
