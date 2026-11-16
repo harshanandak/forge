@@ -304,7 +304,10 @@ async function open(beforeCheckpoint = false) {
   if (beforeCheckpoint)
     migrate(
       db,
-      stateMigrations.filter((entry) => entry.id !== "004_state_checkpoint"),
+      stateMigrations.filter(
+        (entry) =>
+          !["004_state_checkpoint", "007_record_checkpoint"].includes(entry.id),
+      ),
     );
   else owner.initialize();
   return { db, owner, close: () => result.handle.close() };
@@ -325,7 +328,7 @@ for (const table of ["empty", ...Object.keys(rows)])
       if (table !== "empty") {
         const row = rows[table]!;
         source.db.run(
-          `INSERT INTO ${table} VALUES (${row.map(() => "?").join(",")})`,
+          `INSERT INTO ${table}${table === "state_checkpoint_live" ? "(namespace,key,sequence,revision,digest)" : ""} VALUES (${row.map(() => "?").join(",")})`,
           row,
         );
       }
@@ -357,7 +360,7 @@ for (const table of ["empty", ...Object.keys(rows)])
 test("the previous initializer rejects migration 005 without writes", async () => {
   const source = await open();
   try {
-    expect(stateMigrations.at(-1)?.id).toBe("006_state_retention");
+    expect(stateMigrations.at(-1)?.id).toBe("007_record_checkpoint");
     const before = source.db.get("SELECT total_changes() AS n");
     expect(() => migrate(source.db, stateMigrations.slice(0, -1))).toThrow(
       NewerStoreError,
@@ -399,7 +402,7 @@ function publishFixture(store: Store, checkpoint: Checkpoint): void {
     const tuples = kind === "header" ? [[1, ...checked.header]] : checked[kind];
     for (const tuple of tuples)
       store.db.run(
-        `INSERT INTO ${table} VALUES (${tuple.map(() => "?").join(",")})`,
+        `INSERT INTO ${table}${kind === "live" ? "(namespace,key,sequence,revision,digest)" : ""} VALUES (${tuple.map(() => "?").join(",")})`,
         tuple,
       );
   }

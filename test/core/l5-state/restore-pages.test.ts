@@ -919,11 +919,7 @@ test("seeding reads a malformed floor with the same loader a numbered write uses
 }, 30_000);
 
 for (const [name, statement, expected] of [
-  [
-    "the floor read",
-    "SELECT revision,body FROM state_records",
-    "injected storage fault",
-  ],
+  ["the floor read", "SELECT revision,body,", "injected storage fault"],
   [
     "the readback of the written event",
     "SELECT body, (SELECT MAX(sequence)",
