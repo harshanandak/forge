@@ -168,9 +168,11 @@ export async function admit(
   }
   // Cleanup must survive the supervised child being interrupted by the same console signal.
   const gitExecutable = processes.resolve("git", hostEnv);
-  if (gitExecutable.kind !== "resolved") throw new Error("git is unavailable");
+  if (gitExecutable.kind !== "resolved")
+    throw new Error(`${gitExecutable.reason} ${gitExecutable.remedy}`);
   const nativeGit = (args: string[]) =>
     execFileSync(gitExecutable.path, args, {
+      shell: false,
       cwd: root,
       env: hostEnv,
       encoding: "utf8",

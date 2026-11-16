@@ -113,11 +113,17 @@ test("asset builds outside a source repository record unknown identity and remai
     for (const file of [
       "package.json",
       "tools/build-assets.ts",
+      "tools/git-executable.ts",
       "tools/gen/write.ts",
       "dist/src/version.js",
       "dist/bin/forge.js",
     ])
       cpSync(join(repo, file), join(archive, file));
+    cpSync(
+      join(repo, "src/adapters/process"),
+      join(archive, "src/adapters/process"),
+      { recursive: true },
+    );
     for (const mode of ["no git", "parent repository", "git unavailable"]) {
       if (mode === "parent repository") {
         budget.run("git init", "git", ["init", "--quiet", root], {}, 0);

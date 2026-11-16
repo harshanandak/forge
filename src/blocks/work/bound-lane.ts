@@ -517,7 +517,8 @@ export function boundLaneGit(
   );
   const readGit = async (args: string[]) => {
     const git = pin.executable();
-    if (git.kind !== "resolved") refuse("UNAVAILABLE", git.reason);
+    if (git.kind !== "resolved")
+      refuse("UNAVAILABLE", `${git.reason} ${git.remedy}`);
     const result = await process.run(git, args, {
       cwd: cwd,
       env,
