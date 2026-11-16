@@ -10,7 +10,10 @@ if (!("timingSafeEqual" in crypto.subtle))
 
 /** Only the HTTPS boundary is adapted; Project.fetch owns tokens, receipts and leases. */
 export async function trackerRig(bin: string) {
-  const authority = await project(undefined, { FORGE_CLOUD_PROJECT: "proj" });
+  const authority = await project(undefined, {
+    FORGE_CLOUD_PROJECT: "proj",
+    FORGE_CLOUD_ID_PREFIX: "forge",
+  });
   const clients: CloudRig[] = [];
   const ids: string[] = [];
   let unavailable = false;
