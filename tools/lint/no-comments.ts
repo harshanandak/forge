@@ -1,4 +1,5 @@
 import { relative } from "node:path";
+import { requireLintRuntime } from "../bun-builtin.ts";
 import { commentDiff, type CommentSnapshot } from "../checks/comment-diff.ts";
 
 interface Comment {
@@ -73,6 +74,7 @@ const plugin: {
               const key = JSON.stringify([context.cwd, options]);
               let snapshot = snapshots.get(key);
               if (!snapshot) {
+                requireLintRuntime(process.execPath);
                 snapshot = commentDiff(
                   context.cwd,
                   options.base ?? "origin/main",

@@ -16,14 +16,18 @@ export function commentDiff(
 ): CommentSnapshot {
   const executable = gitExecutable();
   const git = (...args: string[]): string =>
-    execFileSync(executable, ["--literal-pathspecs", ...args], {
-      cwd: root,
-      encoding: "utf8",
-      timeout: 15_000,
-      maxBuffer: 16 * 1024 * 1024,
-      windowsHide: true,
-      stdio: "pipe",
-    });
+    execFileSync(
+      executable,
+      ["--literal-pathspecs", "-c", "diff.interHunkContext=0", ...args],
+      {
+        cwd: root,
+        encoding: "utf8",
+        timeout: 15_000,
+        maxBuffer: 16 * 1024 * 1024,
+        windowsHide: true,
+        stdio: "pipe",
+      },
+    );
   const currentHead = (): string =>
     git("rev-parse", "--verify", "HEAD^{commit}").trim();
   const head = currentHead();
@@ -43,10 +47,15 @@ export function commentDiff(
     "diff",
     "--no-ext-diff",
     "--no-textconv",
+    "--no-relative",
+    "--ignore-submodules=none",
     "--name-status",
     "-z",
-    "-M",
-    "--diff-filter=ACMR",
+    "--no-color",
+    "--no-renames",
+    "--find-renames=50%",
+    "-l0",
+    "--diff-filter=ACMRTUXB",
     mergeBase,
     head,
   ).split("\0");
@@ -56,11 +65,13 @@ export function commentDiff(
     const previous = names.shift();
     const file = /^[RC]/.test(status) ? names.shift() : previous;
     if (!file || !previous) throw new Error("Incomplete changed-file list");
+    if (!/^(?:[AMT]|[RC]\d+)$/.test(status))
+      throw new Error(`Unsupported Git change: ${status}`);
     if (!covered(file)) continue;
     const text = git("show", "--no-textconv", `${head}:${file}`);
     const added = new Set<number>();
     if (
-      /^[AC]/.test(status) ||
+      /^[ACT]/.test(status) ||
       (status.startsWith("R") && !covered(previous))
     ) {
       for (let line = 1; line <= text.split("\n").length; line++)
@@ -72,17 +83,24 @@ export function commentDiff(
         "--no-textconv",
         "--no-color",
         "--text",
-        "-M",
+        "--word-diff=none",
+        "--output-indicator-new=+",
+        "--output-indicator-old=-",
+        "--output-indicator-context= ",
+        "--no-renames",
+        "--diff-algorithm=myers",
+        "--no-indent-heuristic",
+        "--inter-hunk-context=0",
         "-U0",
         `${mergeBase}:${previous}`,
         `${head}:${file}`,
       );
-      for (const hunk of diff.matchAll(
-        /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/gm,
-      )) {
-        const start = Number(hunk[1]),
-          count = Number(hunk[2] ?? 1);
-        for (let line = start; line < start + count; line++) added.add(line);
+      let line: number | undefined;
+      for (const part of diff.split("\n")) {
+        const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(part);
+        if (hunk) line = Number(hunk[1]);
+        else if (line !== undefined && part.startsWith("+")) added.add(line++);
+        else if (line !== undefined && part.startsWith(" ")) line++;
       }
     }
     files.set(file, { text, added });

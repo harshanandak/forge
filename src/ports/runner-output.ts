@@ -6,8 +6,9 @@ export interface OutputReport {
   readonly testCount: number | null;
   readonly failed: number | null;
   readonly detail: string;
+  readonly status?: "PASS" | "FAIL" | "INCOMPLETE";
 }
-export type ReportFormat = "auto" | "json" | "exit-code";
+export type ReportFormat = "auto" | "json" | "status-json" | "exit-code";
 /** Recognizes a report while output streams, keeping only what recognition needs. */
 export interface OutputRecognizer extends OutputObserver {
   /** Bytes seen per stream, so a caller can confirm it saw the whole output. */

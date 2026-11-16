@@ -25,12 +25,26 @@ const LINE_LIMIT = 65_536;
 const REPORT_LIMIT = 8_388_608;
 const count = (value: unknown): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-function jsonReport(text: string): OutputReport {
+function jsonReport(text: string, statusOnly = false): OutputReport {
   let value: unknown;
   try {
     value = JSON.parse(text);
   } catch {
     return malformed;
+  }
+  if (statusOnly) {
+    if (typeof value !== "object" || value === null || !("status" in value))
+      return malformed;
+    const status = value.status;
+    if (status !== "PASS" && status !== "FAIL" && status !== "INCOMPLETE")
+      return malformed;
+    return {
+      kind: "recognized",
+      testCount: null,
+      failed: status === "FAIL" ? 1 : 0,
+      status,
+      detail: "Structured check status",
+    };
   }
   return objectReport(value);
 }
@@ -424,9 +438,10 @@ class SummaryLines {
 function mainRecognizer(format: ReportFormat): OutputRecognizer {
   const stdout = new SummaryLines(),
     stderr = new SummaryLines();
-  let structured: Buffer[] | undefined = format === "json" ? [] : undefined;
+  let structured: Buffer[] | undefined =
+    format === "json" || format === "status-json" ? [] : undefined;
   let structuredBytes = 0,
-    decided = format === "json",
+    decided = format === "json" || format === "status-json",
     overflow = false;
   function keep(chunk: Uint8Array): void {
     let part = chunk;
@@ -459,6 +474,8 @@ function mainRecognizer(format: ReportFormat): OutputRecognizer {
       stdout.end();
       stderr.end();
       const text = structured ? Buffer.concat(structured).toString("utf8") : "";
+      if (format === "status-json")
+        return overflow ? malformed : jsonReport(text.trim(), true);
       const reports: OutputReport[] = [];
       if (stderr.structured || (stdout.structured && !structured))
         reports.push(malformed);

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { helpListsBuiltin } from "../bun-builtin.ts";
+import { requireLintRuntime } from "../bun-builtin.ts";
 import { commentDiff } from "./comment-diff.ts";
 
 export interface CommentViolation {
@@ -35,15 +35,7 @@ export function checkComments(
     const snapshot = commentDiff(root, options.base, options.roots);
     const executable =
       options.lintExecutable ?? process.env.FORGE_LINT_BUN ?? "bun";
-    const help = spawnSync(executable, ["--help"], {
-      encoding: "utf8",
-      timeout: 15_000,
-      windowsHide: true,
-    });
-    if (help.status !== 0 || !helpListsBuiltin(help.stdout, "lint"))
-      throw new Error(
-        "Bun lint unavailable; select a canary build with --bun or FORGE_LINT_BUN",
-      );
+    requireLintRuntime(executable);
     if (!snapshot.files.size) return { status: "PASS", violations: [] };
     const extension = import.meta.url.endsWith(".ts") ? "ts" : "js";
     const plugin = fileURLToPath(

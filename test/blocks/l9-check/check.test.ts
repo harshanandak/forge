@@ -931,3 +931,19 @@ test("the declared comment check preserves incomplete in its Forge receipt", asy
   expect(receipt.runs[0]?.status).toBe("INCOMPLETE");
   expect(check.show(receipt.id)).toEqual(receipt);
 }, 1000);
+
+for (const [stdout, childExit, expected] of [
+  ['{"status":"PASS"}', 0, "PASS"],
+  ['{"status":"PASS"}', 2, "FAIL"],
+  ['{"status":"FAIL"}', 0, "FAIL"],
+  ['{"status":"INCOMPLETE"}', 0, "INCOMPLETE"],
+  ['{"status":"unknown"}', 0, "INCOMPLETE"],
+  ['{"status":"PASS"', 0, "INCOMPLETE"],
+] as const) {
+  test(`structured check status ${stdout} with exit ${childExit} yields ${expected}`, async () => {
+    const { check } = fixture({ stdout, exitCode: childExit });
+    const receipt = await check.run({}, { ...config, report: "status-json" });
+    expect(receipt.status).toBe(expected);
+    expect(receipt.runs[0]?.testCount).toBeNull();
+  }, 1000);
+}
