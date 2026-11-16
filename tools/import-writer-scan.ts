@@ -123,7 +123,59 @@ export function writerSyntax(program: ts.Program, paths: readonly string[]) {
     throw new Error(`unresolved writer key ${where(node)}: ${node.getText()}`);
   }
 
+  const bodyOf = (node: ts.Node) =>
+    ts.isArrowFunction(node) ||
+    ts.isFunctionDeclaration(node) ||
+    ts.isFunctionExpression(node) ||
+    ts.isMethodDeclaration(node)
+      ? node.body
+      : undefined;
+  const rootSymbol = (input: ts.Expression) => {
+    let node = unwrap(input);
+    while (
+      ts.isPropertyAccessExpression(node) ||
+      ts.isElementAccessExpression(node)
+    )
+      node = node.expression;
+    return symbol(node);
+  };
+  const constantString = Symbol("string argument");
+  const stringCondition = (
+    input: ts.Expression,
+    parameter: ts.Symbol,
+  ): unknown => {
+    const node = unwrap(input);
+    if (symbol(node) === parameter) return constantString;
+    if (ts.isStringLiteralLike(node)) return node.text;
+    if (node.kind === ts.SyntaxKind.NullKeyword) return null;
+    if (ts.isTypeOfExpression(node) && symbol(node.expression) === parameter)
+      return "string";
+    if (!ts.isBinaryExpression(node)) return undefined;
+    const a = stringCondition(node.left, parameter),
+      b = stringCondition(node.right, parameter),
+      op = node.operatorToken.kind;
+    if (op === ts.SyntaxKind.BarBarToken)
+      return a === true || b === true
+        ? true
+        : a === false && b === false
+          ? false
+          : undefined;
+    if (op === ts.SyntaxKind.AmpersandAmpersandToken)
+      return a === false || b === false
+        ? false
+        : a === true && b === true
+          ? true
+          : undefined;
+    if (a === undefined || b === undefined) return undefined;
+    if (a === constantString || b === constantString) return undefined;
+    if (op === ts.SyntaxKind.EqualsEqualsEqualsToken) return a === b;
+    if (op === ts.SyntaxKind.ExclamationEqualsEqualsToken) return a !== b;
+    return undefined;
+  };
   return {
+    rootSymbol,
+    bodyOf,
+    stringCondition,
     checker,
     nodes,
     calls,
