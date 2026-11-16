@@ -74,11 +74,8 @@ export function commentDiff(
         "--text",
         "-M",
         "-U0",
-        mergeBase,
-        head,
-        "--",
-        previous,
-        file,
+        `${mergeBase}:${previous}`,
+        `${head}:${file}`,
       );
       for (const hunk of diff.matchAll(
         /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/gm,

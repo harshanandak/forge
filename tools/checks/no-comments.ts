@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -31,7 +31,8 @@ export function checkComments(
 ): CommentCheckResult {
   let directory: string | undefined;
   try {
-    const snapshot = commentDiff(options.root, options.base, options.roots);
+    const root = realpathSync(options.root);
+    const snapshot = commentDiff(root, options.base, options.roots);
     const executable =
       options.lintExecutable ?? process.env.FORGE_LINT_BUN ?? "bun";
     const help = spawnSync(executable, ["--help"], {
@@ -71,7 +72,7 @@ export function checkComments(
         ...snapshot.files.keys(),
       ],
       {
-        cwd: options.root,
+        cwd: root,
         encoding: "utf8",
         timeout: 60_000,
         maxBuffer: 16 * 1024 * 1024,
@@ -90,7 +91,7 @@ export function checkComments(
         : resolve(path);
     const expected = new Map(
       [...snapshot.files.keys()].map((file) => [
-        pathKey(resolve(options.root, file)),
+        pathKey(resolve(root, file)),
         file,
       ]),
     );
@@ -104,7 +105,10 @@ export function checkComments(
         throw new Error("Invalid lint file result");
       const key = pathKey(item.filePath),
         file = expected.get(key);
-      if (!file) throw new Error("Unexpected or repeated lint file result");
+      if (!file)
+        throw new Error(
+          `Unexpected or repeated lint file result: ${item.filePath}`,
+        );
       expected.delete(key);
       if (typeof item.fatalErrorCount === "number" && item.fatalErrorCount > 0)
         throw new Error(`Parsing failed: ${file}`);
