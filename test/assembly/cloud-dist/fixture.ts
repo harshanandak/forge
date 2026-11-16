@@ -3,7 +3,8 @@
 // server's throwaway certificate through Node's own NODE_EXTRA_CA_CERTS; no production module has a switch.
 import { expect } from "bun:test";
 import { createServer, type Server } from "node:https";
-import { spawn } from "node:child_process";
+import { spawn, execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
 import {
@@ -21,6 +22,7 @@ import { createProcessPort } from "../../../src/adapters/process/index.ts";
 import {
   credentialStore,
   openCloudFiles,
+  type CredentialEntry,
 } from "../../../src/assembly/cloud-profile.ts";
 import type { ResultEnvelope } from "../../../src/generated/types.ts";
 import * as fx from "../cloud-fixture.ts";
@@ -90,7 +92,7 @@ export interface Reply {
   readonly status: number;
   readonly body: unknown;
 }
-type Replier = (seen: Seen) => Reply;
+type Replier = (seen: Seen) => Reply | Promise<Reply>;
 const results: Record<string, object> = {
   "issue.show": ISSUE,
   "issue.list": PAGE,
@@ -210,8 +212,13 @@ export async function cloudRig(
   bin: string,
   reply: Replier = serve,
   attachment = false,
+  identity?: { credential: Partial<CredentialEntry>; session: string },
 ): Promise<CloudRig> {
   const s = fx.sandbox();
+  const canaries = [
+    ...CANARIES,
+    ...(identity?.credential.token ? [identity.credential.token] : []),
+  ];
   let server: Server | undefined;
   try {
     const base = Object.fromEntries(
@@ -240,9 +247,14 @@ export async function cloudRig(
             body,
           };
           requests.push(seen);
-          const answer = reply(seen);
-          res.writeHead(answer.status, { "content-type": "application/json" });
-          res.end(JSON.stringify(answer.body));
+          void Promise.resolve(reply(seen))
+            .then((answer) => {
+              res.writeHead(answer.status, {
+                "content-type": "application/json",
+              });
+              res.end(JSON.stringify(answer.body));
+            })
+            .catch((error: Error) => res.destroy(error));
         });
       },
     );
@@ -270,7 +282,7 @@ export async function cloudRig(
     );
     writeFileSync(s.binding, `${JSON.stringify(fx.bindingFor({ origin }))}\n`);
     await credentialStore(openCloudFiles(s.home)).save(
-      fx.entry(Date.now(), { origin }),
+      fx.entry(Date.now(), { origin, ...identity?.credential }),
     );
     const preload: string[] = [];
     const marker = join(s.dir, "project-owner-opened");
@@ -314,8 +326,8 @@ export async function cloudRig(
       HOME: s.home,
       USERPROFILE: s.home,
       FORGE_DEVICE_ROOT: s.deviceRoot,
-      FORGE_DEVICE_ID: "dev-1",
-      FORGE_SESSION: "cloud-dist-test",
+      FORGE_DEVICE_ID: identity?.credential.localDevice ?? "dev-1",
+      FORGE_SESSION: identity?.session ?? "cloud-dist-test",
       NODE_EXTRA_CA_CERTS: tls.file,
     };
     const stop = () =>
@@ -324,13 +336,33 @@ export async function cloudRig(
       env,
       requests,
       async run(args) {
-        const out = await program(
+        // Native asynchronous children permit a real three-session arrival race.
+        const out = await promisify(execFile)(
           "node",
           [...preload, bin, ...args],
-          s.root,
-          env,
+          {
+            cwd: s.root,
+            env,
+            timeout: 40_000,
+            maxBuffer: 1_000_000,
+            windowsHide: true,
+          },
+        ).then(
+          (out) => ({ ...out, exitCode: 0 }),
+          (error: {
+            code?: unknown;
+            killed?: boolean;
+            stdout: string;
+            stderr: string;
+          }) => {
+            if (error.killed || typeof error.code !== "number") throw error;
+            return {
+              stdout: error.stdout,
+              stderr: error.stderr,
+              exitCode: error.code,
+            };
+          },
         );
-        expect(out.timedOut).toBe(false);
         const lines = out.stdout.trim().split("\n");
         expect(lines, out.stderr).toHaveLength(1);
         return {
@@ -351,12 +383,12 @@ export async function cloudRig(
           "config.yaml",
           "project.json",
         ]);
-        for (const canary of CANARIES)
+        for (const canary of canaries)
           expect(out.stdout + out.stderr).not.toContain(canary);
         const leaked = filesUnder(s.dir).filter(
           (path) =>
             path !== s.credentials &&
-            CANARIES.some((canary) =>
+            canaries.some((canary) =>
               readFileSync(path, "utf8").includes(canary),
             ),
         );
