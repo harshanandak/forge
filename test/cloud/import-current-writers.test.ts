@@ -62,27 +62,8 @@ function examples(input: ts.Expression, seen = new Set<ts.Node>()): string[] {
   if (ts.isTemplateExpression(node)) {
     let keys = [node.head.text];
     for (const span of node.templateSpans) {
-      let values: string[];
-      try {
-        values = read(span.expression);
-      } catch {
-        // Only a statically established family may have a dynamic suffix.
-        ok(
-          keys.every((key) => /^[a-z][a-z-]*:/.test(key)),
-          where(node),
-        );
-        const text = span.expression.getText();
-        values = [
-          /JSON\.stringify/.test(text)
-            ? JSON.stringify(["https://fixture.invalid", "fixture", "fixture"])
-            : /(?:length|count|sequence|\.pr)/i.test(text)
-              ? "1"
-              : /attempt/i.test(text)
-                ? "attempt-1"
-                : "work-1",
-        ];
-      }
-      if (!values.length) values = ["attempt:work-1:attempt-1"];
+      if (keys.every((key) => key.includes(":"))) return keys;
+      const values = read(span.expression);
       keys = keys.flatMap((key) =>
         values.map((value) => key + value + span.literal.text),
       );
@@ -94,17 +75,8 @@ function examples(input: ts.Expression, seen = new Set<ts.Node>()): string[] {
     node.operatorToken.kind === ts.SyntaxKind.PlusToken
   ) {
     const left = read(node.left);
-    let right: string[];
-    try {
-      right = read(node.right);
-    } catch {
-      ok(
-        left.every((key) => /^[a-z][a-z-]*:/.test(key)) &&
-          /count|length/.test(node.right.getText()),
-        where(node),
-      );
-      right = ["1"];
-    }
+    if (left.every((key) => key.includes(":"))) return left;
+    const right = read(node.right);
     return left.flatMap((a) => right.map((b) => a + b));
   }
   if (ts.isPropertyAccessExpression(node) && node.name.text === "key")
@@ -154,9 +126,9 @@ function missingFamilies(extra: ts.CallExpression[] = []) {
     owned.has(node.getSourceFile().fileName) ||
     node.getSourceFile().fileName.startsWith(dirname(blocks[0]!) + "/");
   const sources = new Map<string, string>();
-  const add = (expression: ts.Expression, append = false) => {
+  const add = (expression: ts.Expression) => {
     for (const key of examples(expression))
-      sources.set(key + (append ? "1" : ""), where(expression));
+      sources.set(key.split(":")[0]!, where(expression));
   };
   const batch = (input: ts.Expression, seen = new Set<ts.Node>()): void => {
     const node = unwrap(input);
@@ -242,13 +214,12 @@ function missingFamilies(extra: ts.CallExpression[] = []) {
     }
     const decl = declaration(key);
     if (decl && ts.isBindingElement(decl)) continue; // Rest-tuple forwarding retains other writers' exact keys.
-    add(key, method === "putNext");
+    add(key);
     if (method === "putNext")
       for (const floor of floors) {
         const expression = floor.initializer;
         ok(expression && ts.isTemplateExpression(expression));
-        for (const prefix of examples(key))
-          sources.set(expression.head.text + prefix, where(expression));
+        add(expression);
       }
   }
   for (const node of nodes)
@@ -258,17 +229,8 @@ function missingFamilies(extra: ts.CallExpression[] = []) {
       node.name.getText() === "entries"
     )
       batch(node.initializer);
-  const leftBehind = (
-    converter as unknown as {
-      leftBehindKey?: (ns: string, key: string) => boolean;
-    }
-  ).leftBehindKey;
   ok(sources.size, "writer discovery must not be empty");
-  return [...sources].filter(
-    ([key]) =>
-      !converter.ordinaryKey("forge/work", key) &&
-      !leftBehind?.("forge/work", key),
-  );
+  return [...sources].filter(([family]) => !converter.classifiedFamily(family));
 }
 test("every source work writer family has an explicit import disposition", () => {
   eq(missingFamilies(), []);
@@ -288,7 +250,7 @@ test("new work families and opaque batches fail the source guard", () => {
   };
   ok(
     missingFamilies([call("state.put(`future-family:${id}`, {}, {});")]).some(
-      ([key]) => key.startsWith("future-family:"),
+      ([family]) => family === "future-family",
     ),
   );
   throws(

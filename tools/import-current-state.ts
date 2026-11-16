@@ -47,15 +47,35 @@ const invalid = (): never => {
   });
 };
 
-export function ordinaryKey(ns: string, key: string): boolean {
+const importedKeys: Record<string, RegExp> = {
+  issue: /^issue:[^:]+$/,
+  comment: /^comment:[^:]+:[1-9][0-9]*$/,
+  link: /^link:[^:]+:[1-9][0-9]*$/,
+  landing: /^landing:work-[0-9]+:[1-9][0-9]*$/,
+  reopen: /^reopen:work-[0-9]+:[1-9][0-9]*$/,
+  attempt: /^attempt:work-[0-9]+:attempt-[1-9][0-9]*$/,
+  evidence: /^evidence:attempt:work-[0-9]+:attempt-[1-9][0-9]*:[1-9][0-9]*$/,
+  cleanup: /^cleanup:work-[0-9]+$/,
+  selection: /^selection:work-[0-9]+$/,
+  slots: /^slots:work-[0-9]+$/,
+  allocation: /^allocation:(?:issue:work-|(?:comment|link):[^:]+:)$/,
+};
+function matchesKey(
+  patterns: Record<string, RegExp>,
+  ns: string,
+  key: string,
+): boolean {
   return (
     ns === namespace &&
     !/[\s\p{Cc}\p{Cf}]/u.test(key) &&
-    /^(?:issue:[^:]+|(?:comment|link):[^:]+:[1-9][0-9]*|(?:landing|reopen):work-[0-9]+:[1-9][0-9]*|attempt:work-[0-9]+:attempt-[1-9][0-9]*|evidence:attempt:work-[0-9]+:attempt-[1-9][0-9]*:[1-9][0-9]*|(?:cleanup|selection|slots):work-[0-9]+|allocation:(?:issue:work-|(?:comment|link):[^:]+:))$/.test(
-      key,
-    )
+    Object.hasOwn(patterns, key.split(":")[0]!) &&
+    patterns[key.split(":")[0]!]?.test(key) === true
   );
 }
+export const ordinaryKey = (ns: string, key: string): boolean =>
+  matchesKey(importedKeys, ns, key);
+
+export const classifiedFamily = (family: string): boolean => Object.hasOwn(importedKeys, family);
 
 type Check = (value: unknown) => boolean;
 const text: Check = (v) => typeof v === "string";
