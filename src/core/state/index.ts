@@ -33,6 +33,9 @@ import {
   stateMigrations,
   migrate,
   type Migration,
+  retentionTables,
+  assertRetention,
+  stateColumns,
 } from "./migrations.ts";
 import { registerTables, exportTables, type DomainData } from "./domains.ts";
 import { parseRestoreJson } from "./restore-json.ts";
@@ -119,6 +122,7 @@ export interface ReviewedDomain {
   readonly reviewedDigest: string;
   readonly migrations: readonly Migration[];
   readonly tables: readonly string[];
+  readonly usage?: Record<string, readonly string[]>;
 }
 
 function invalid(message: string): never {
@@ -1071,7 +1075,11 @@ export function verifyEventDerivedState(
 }
 
 // Only these ledgers contain setup metadata that restore may replace in a nonempty store.
-const metadataTables = new Set(["state_migrations", "state_domains"]);
+const metadataTables = new Set([
+  "state_migrations",
+  "state_domains",
+  ...retentionTables,
+]);
 const stateDataTables = new Set([
   ...Object.keys(checkpointTables),
   "state_records",
@@ -1102,8 +1110,14 @@ export const WATERMARK_INDEX_PROBE =
 export const LEGACY_NAMESPACE_WATERMARK =
   "SELECT coalesce(MAX(sequence),0) AS revision FROM state_events WHERE namespace=?";
 export const NAMESPACE_WATERMARK =
+  "SELECT sequence AS revision FROM state_namespace_watermarks WHERE namespace=?";
+const RETENTION_PROBE =
+  "SELECT name FROM sqlite_master WHERE type='table' AND name='state_retention'";
+const INDEXED_WATERMARK =
   "SELECT sequence AS revision FROM state_events INDEXED BY state_events_by_namespace WHERE namespace=? ORDER BY sequence DESC LIMIT 1";
 export const WATERMARK_READ_SQL: readonly string[] = [
+  RETENTION_PROBE,
+  INDEXED_WATERMARK,
   WATERMARK_INDEX_PROBE,
   LEGACY_NAMESPACE_WATERMARK,
   NAMESPACE_WATERMARK,
@@ -1144,6 +1158,13 @@ export class StateOwner {
           ),
         );
         assertRegistered(this.#db);
+        assertRetention(
+          this.#db,
+          Object.fromEntries([
+            ...Object.entries(stateColumns),
+            ...domains.flatMap((domain) => Object.entries(domain.usage ?? {})),
+          ]),
+        );
       },
     );
     this.#knownMigrations = new Set([
@@ -1190,9 +1211,11 @@ export class StateOwner {
     namespaceValid(namespace);
     const revision = Number(
       this.#db.get(
-        this.#db.get(WATERMARK_INDEX_PROBE)
+        this.#db.get(RETENTION_PROBE)
           ? NAMESPACE_WATERMARK
-          : LEGACY_NAMESPACE_WATERMARK,
+          : this.#db.get(WATERMARK_INDEX_PROBE)
+            ? INDEXED_WATERMARK
+            : LEGACY_NAMESPACE_WATERMARK,
         [namespace],
       )?.revision ?? 0,
     );
@@ -1340,9 +1363,16 @@ export class StateOwner {
   }
   #event(event: StateEvent): void {
     if (!validateStateEvent(event).ok) invalid("Invalid state event");
+    const sequence =
+      Number(
+        this.#db.get("SELECT sequence FROM state_retention WHERE id=1")
+          ?.sequence,
+      ) + 1;
+    if (!Number.isSafeInteger(sequence) || sequence < 1)
+      invalid("State retention sequence requires repair");
     this.#db.run(
-      "INSERT INTO state_events(namespace,key,body) VALUES (?,?,?)",
-      [event.namespace, event.key, json(event)],
+      "INSERT INTO state_events(namespace,key,body,sequence) VALUES (?,?,?,?)",
+      [event.namespace, event.key, json(event), sequence],
     );
   }
   #held(namespace: string, fence: Fence, now: number): LeaseRecord {
@@ -1382,8 +1412,8 @@ export class StateOwner {
     }
     const result = work();
     this.#db.run(
-      "INSERT INTO state_requests(namespace,request_id,fingerprint,result) VALUES (?,?,?,?)",
-      [namespace, requestId, fingerprint, json(result)],
+      "INSERT INTO state_requests(namespace,request_id,fingerprint,result,created_at) VALUES (?,?,?,?,?)",
+      [namespace, requestId, fingerprint, json(result), this.#now()],
     );
     return result;
   }
@@ -2034,9 +2064,7 @@ export class StateOwner {
         // INTEGER PRIMARY KEY has no sqlite_sequence; retain the export boundary
         // separately so losing the final operation cannot shorten history silently.
         eventHighWaterMark: Number(
-          db.get(
-            "SELECT COALESCE(MAX(sequence),0) AS sequence FROM state_events",
-          )?.sequence,
+          db.get("SELECT sequence FROM state_retention WHERE id=1")?.sequence,
         ),
         domains: exportTables(db),
         format: "forge.state/1",
@@ -2189,10 +2217,7 @@ export class StateOwner {
           "UPDATE state_leases SET body=? WHERE namespace=? AND subject=?",
           [json(released), row.namespace!, row.subject!],
         );
-        this.#db.run(
-          "INSERT INTO state_events(namespace,key,body) VALUES (?,?,?)",
-          [row.namespace!, row.subject!, json(event)],
-        );
+        this.#event(event);
         releasedCount++;
       }
       return releasedCount;

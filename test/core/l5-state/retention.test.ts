@@ -18,7 +18,7 @@ test.each(["fresh", "upgrade", "prefix", "all", "rollback", "drift"])(
       if (kind === "upgrade")
         db.run("INSERT INTO state_events VALUES (7,?,?,?)", [ns, "old", "{}"]);
       else
-        owner.put(ns, "one", "ÃƒÂ©Ã°Å¸Ëœâ‚¬", actor, {
+        owner.put(ns, "one", "\u00e9\u{1f600}", actor, {
           expectRevision: 0,
           requestId: "first",
         });

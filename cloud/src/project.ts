@@ -26,6 +26,8 @@ import {
   DUMP_FORMAT,
   DUMP_MIGRATION,
   IMPORT_MIGRATION,
+  RETENTION_MIGRATION,
+  CLOUD_USAGE_COLUMNS,
   COMMAND_RECEIPTS,
   EXPORT_STATE,
   dumpOf,
@@ -131,6 +133,7 @@ const LEASE_SELECT =
 export const domain = {
   namespace: "forge/cloud",
   reviewedDigest: `sha256:${"0".repeat(64)}`,
+  usage: CLOUD_USAGE_COLUMNS,
   migrations: [
     {
       id: "001_cloud_requests",
@@ -146,6 +149,7 @@ export const domain = {
     LANE_APPROVAL_MIGRATION,
     EVIDENCE_MIGRATION,
     LANE_BROWSER_MIGRATION,
+    RETENTION_MIGRATION,
   ],
   tables: [
     PRAGMA_TABLE,

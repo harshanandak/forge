@@ -113,6 +113,7 @@ test("an existing store gains the index when it is next opened for writing", asy
       "003_device_session_identity",
       "004_state_checkpoint",
       "005_state_events_namespace_index",
+      "006_state_retention",
     ]);
     // Opening again changes nothing, and history still reads.
     owner.initialize();
@@ -158,15 +159,24 @@ test("watermark endpoint work is independent of history, keys and other namespac
       run: (sql, params = []) => raw.query(sql).run(...params),
       all,
       get: (sql, params = []) => {
-        if (sql.includes("FROM state_events") && sql.includes("namespace=?")) {
+        if (
+          (sql.includes("FROM state_events") ||
+            sql.includes("FROM state_namespace_watermarks")) &&
+          sql.includes("namespace=?")
+        ) {
           statements.push(sql);
           // Reproduce main's available access path without changing the production MAX query.
           if (sql === LEGACY_NAMESPACE_WATERMARK)
-            sql = sql.replace("WHERE", "INDEXED BY state_events_by_key WHERE");
-          sql = sql.replace(
-            "namespace=?",
-            "namespace=? AND examined(sequence)",
-          );
+            if (sql.includes("FROM state_events"))
+              sql = sql.replace(
+                "WHERE",
+                "INDEXED BY state_events_by_key WHERE",
+              );
+          if (sql.includes("FROM state_events"))
+            sql = sql.replace(
+              "namespace=?",
+              "namespace=? AND examined(sequence)",
+            );
         }
         return all(sql, params)[0];
       },
@@ -189,17 +199,17 @@ test("watermark endpoint work is independent of history, keys and other namespac
       );
       expect(reader.namespaceRevision(namespace)).toBe(expected);
       if (examined > 1) throw new Error("Unbounded watermark event work");
-      expect(examined).toBe(expected === 0 ? 0 : 1);
+      expect(examined).toBe(0);
     };
     for (const namespace of [ns, "forge/other", "forge/absent"]) {
       accept(owner, namespace);
       const sql = statements.at(-1)!;
       const used = all(`EXPLAIN QUERY PLAN ${sql}`, [namespace]);
       expect(used.map((r) => r.detail).join(" ")).toContain(
-        "COVERING INDEX state_events_by_namespace (namespace=?)",
+        "sqlite_autoindex_state_namespace_watermarks_1 (namespace=?)",
       );
       expect(used.map((r) => r.detail).join(" ")).not.toContain("TEMP B-TREE");
-      expect(sql).toContain("INDEXED BY state_events_by_namespace");
+      expect(sql).toContain("FROM state_namespace_watermarks");
     }
     if (count >= 1000) {
       const old = new OldOwner(db, { now: () => 1000 });
