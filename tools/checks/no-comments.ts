@@ -1,7 +1,9 @@
-import { execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { sourceComments } from "../../src/adapters/source-comments/index.ts";
-import { gitExecutable } from "../git-executable.ts";
+import { helpListsBuiltin } from "../bun-builtin.ts";
+import { commentDiff } from "./comment-diff.ts";
 
 export interface CommentViolation {
   readonly file: string;
@@ -17,120 +19,100 @@ export interface CommentCheckOptions {
   readonly root: string;
   readonly base: string;
   readonly roots?: readonly string[];
+  readonly lintExecutable?: string;
 }
-export function addedComments(
-  file: string,
-  text: string,
-  added: ReadonlySet<number>,
-): readonly CommentViolation[] {
-  const violations: CommentViolation[] = [];
-  for (const comment of sourceComments.comments(file, text)) {
-    if (directive(comment.text.trim(), comment.kind === "line comment"))
-      continue;
-    for (let line = comment.startLine; line <= comment.endLine; line++) {
-      if (!added.has(line)) continue;
-      violations.push({ file, line, kind: comment.kind });
-      break;
-    }
-  }
-  return violations;
-}
-function directive(text: string, line: boolean): boolean {
-  return (
-    /^eslint-(?:disable(?:-next-line|-line)?|enable)(?:\s+[\w@/-]+(?:\s*,\s*[\w@/-]+)*)?(?:\s+--[^\r\n]+)?$/.test(
-      text,
-    ) ||
-    /^@ts-expect-error(?:[ \t:][^\r\n]*)?$/.test(text) ||
-    /^biome-ignore[ \t]+[\w/-]+(?:\([^()\r\n]*\))?(?:[ \t]+[\w/-]+(?:\([^()\r\n]*\))?)*[ \t]*:[ \t]+[^\r\n]+$/.test(
-      text,
-    ) ||
-    (line &&
-      /^\/[ \t]*<reference(?:[ \t]+(?:path|types|lib|no-default-lib|resolution-mode|preserve)=(?:"[^"\r\n]*"|'[^'\r\n]*'))+[ \t]*\/>$/.test(
-        text,
-      ))
-  );
+function record(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 export function checkComments(
   options: CommentCheckOptions,
 ): CommentCheckResult {
   try {
-    const executable = gitExecutable();
-    const git = (...args: string[]): string =>
-      execFileSync(executable, ["--literal-pathspecs", ...args], {
+    const snapshot = commentDiff(options.root, options.base, options.roots);
+    const executable =
+      options.lintExecutable ?? process.env.FORGE_LINT_BUN ?? "bun";
+    const help = spawnSync(executable, ["--help"], {
+      encoding: "utf8",
+      timeout: 15_000,
+      windowsHide: true,
+    });
+    if (help.status !== 0 || !helpListsBuiltin(help.stdout, "lint"))
+      throw new Error(
+        "Bun lint unavailable; select a canary build with --bun or FORGE_LINT_BUN",
+      );
+    if (!snapshot.files.size) return { status: "PASS", violations: [] };
+    const extension = import.meta.url.endsWith(".ts") ? "ts" : "js";
+    const plugin = fileURLToPath(
+      new URL(`../lint/no-comments.${extension}`, import.meta.url),
+    );
+    const result = spawnSync(
+      executable,
+      [
+        "lint",
+        "--no-script",
+        "--no-config-lookup",
+        "--no-inline-config",
+        "--no-ignore",
+        "--format",
+        "json",
+        "--plugin",
+        plugin,
+        "--rule",
+        `forge/no-comments: ["error", ${JSON.stringify({ base: options.base, ...(options.roots ? { roots: options.roots } : {}) })}]`,
+        "--",
+        ...snapshot.files.keys(),
+      ],
+      {
         cwd: options.root,
         encoding: "utf8",
-        timeout: 15_000,
+        timeout: 60_000,
         maxBuffer: 16 * 1024 * 1024,
         windowsHide: true,
-        stdio: "pipe",
-      });
-    const head = git("rev-parse", "--verify", "HEAD^{commit}").trim();
-    const base = git(
-      "rev-parse",
-      "--verify",
-      "--end-of-options",
-      `${options.base}^{commit}`,
-    ).trim();
-    const mergeBase = git("merge-base", base, head).trim();
-    const roots = options.roots ?? ["."];
-    const covered = (file: string): boolean =>
-      /\.(?:[cm]?[jt]s|[jt]sx)$/i.test(file) &&
-      roots.some(
-        (root) =>
-          root === "." || file.startsWith(`${root.replace(/\/$/, "")}/`),
+      },
+    );
+    if (result.error || result.status === null || result.status > 1)
+      throw new Error(
+        result.error?.message ?? result.stderr ?? "Bun lint failed",
       );
-    const names = git(
-      "diff",
-      "--no-ext-diff",
-      "--no-textconv",
-      "--name-status",
-      "-z",
-      "-M",
-      "--diff-filter=ACMR",
-      mergeBase,
-      head,
-    ).split("\0");
+    const output: unknown = JSON.parse(result.stdout);
+    if (!Array.isArray(output)) throw new Error("Incomplete lint output");
+    const expected = new Map(
+      [...snapshot.files.keys()].map((file) => [
+        resolve(options.root, file).toLowerCase(),
+        file,
+      ]),
+    );
     const violations: CommentViolation[] = [];
-    while (names[0]) {
-      const status = names.shift()!;
-      const previous = names.shift();
-      const file = /^[RC]/.test(status) ? names.shift() : previous;
-      if (!file || !previous) throw new Error("Incomplete changed-file list");
-      if (!covered(file)) continue;
-      const text = git("show", "--no-textconv", `${head}:${file}`);
-      const added = new Set<number>();
+    for (const item of output) {
       if (
-        /^[AC]/.test(status) ||
-        (status.startsWith("R") && !covered(previous))
-      ) {
-        for (let line = 1; line <= text.split("\n").length; line++)
-          added.add(line);
-      } else {
-        const diff = git(
-          "diff",
-          "--no-ext-diff",
-          "--no-textconv",
-          "--no-color",
-          "--text",
-          "-M",
-          "-U0",
-          mergeBase,
-          head,
-          "--",
-          previous,
-          file,
-        );
-        for (const hunk of diff.matchAll(
-          /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/gm,
-        )) {
-          const start = Number(hunk[1]);
-          const count = Number(hunk[2] ?? 1);
-          for (let line = start; line < start + count; line++) added.add(line);
-        }
+        !record(item) ||
+        typeof item.filePath !== "string" ||
+        !Array.isArray(item.messages)
+      )
+        throw new Error("Invalid lint file result");
+      const key = resolve(item.filePath).toLowerCase(),
+        file = expected.get(key);
+      if (!file) throw new Error("Unexpected or repeated lint file result");
+      expected.delete(key);
+      if (typeof item.fatalErrorCount === "number" && item.fatalErrorCount > 0)
+        throw new Error(`Parsing failed: ${file}`);
+      for (const message of item.messages) {
+        if (!record(message) || typeof message.message !== "string")
+          throw new Error("Invalid lint diagnostic");
+        if (message.fatal === true) throw new Error(`Parsing failed: ${file}`);
+        if (message.ruleId !== "forge/no-comments") continue;
+        if (message.message.startsWith("INCOMPLETE:"))
+          throw new Error(message.message);
+        const found =
+          /^new (line comment|block comment|JSDoc) \(Git line (\d+)\)$/.exec(
+            message.message,
+          );
+        if (!found) throw new Error("Invalid comment diagnostic");
+        violations.push({ file, line: Number(found[2]), kind: found[1]! });
       }
-      violations.push(...addedComments(file, text, added));
     }
-    if (git("rev-parse", "HEAD").trim() !== head)
+    if (expected.size) throw new Error("Lint skipped a changed source file");
+    if (snapshot.currentHead() !== snapshot.head)
       throw new Error("HEAD changed during comment check");
     return { status: violations.length ? "FAIL" : "PASS", violations };
   } catch (error) {
@@ -149,12 +131,14 @@ export function main(args: string[] = process.argv.slice(2)): void {
       options: {
         base: { type: "string", default: "origin/main" },
         root: { type: "string", multiple: true },
+        bun: { type: "string" },
       },
     });
     result = checkComments({
       root: process.cwd(),
       base: values.base,
       ...(values.root ? { roots: values.root } : {}),
+      ...(values.bun ? { lintExecutable: values.bun } : {}),
     });
   } catch (error) {
     result = { status: "INCOMPLETE", violations: [], reason: String(error) };

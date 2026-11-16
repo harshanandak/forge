@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import {
   mkdtempSync,
@@ -11,11 +11,55 @@ import {
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import {
-  addedComments,
   checkComments,
+  type CommentCheckResult,
 } from "../../tools/checks/no-comments.ts";
 
 const lines = new Set([1, 2, 3, 4, 5]);
+const samples: { file: string; text: string; added: ReadonlySet<number> }[] =
+  [];
+let observed: CommentCheckResult;
+function sourceRow(
+  name: string,
+  file: string,
+  text: string,
+  added: ReadonlySet<number>,
+  expected: readonly { line: number; kind: string }[],
+): void {
+  const path = `rows/${samples.length}/${file}`;
+  samples.push({ file: path, text, added });
+  test(
+    name,
+    () => {
+      expect(observed.status, observed.reason).toBe("FAIL");
+      expect(observed.violations.filter((item) => item.file === path)).toEqual(
+        expected.map((item) => ({ ...item, file: path })),
+      );
+    },
+    30_000,
+  );
+}
+beforeAll(
+  () =>
+    repository((root, git, put) => {
+      for (const item of samples)
+        put(
+          item.file,
+          item.text
+            .split("\n")
+            .filter((_, index) => !item.added.has(index + 1))
+            .join("\n"),
+        );
+      git("add", ".");
+      git("commit", "-qm", "row baselines");
+      git("branch", "rows-base");
+      for (const item of samples) put(item.file, item.text);
+      git("add", ".");
+      git("commit", "-qm", "comment rows");
+      observed = checkComments({ root, base: "rows-base" });
+    }),
+  120_000,
+);
 for (const [name, source, kind, line] of [
   ["line", "const x = 1; // why\n", "line comment", 1],
   ["block", "const x = 1; /* why */\n", "block comment", 1],
@@ -31,10 +75,13 @@ for (const [name, source, kind, line] of [
     1,
   ],
 ] as const) {
-  test(`new ${name} comment is refused with file and line`, () => {
-    const file = name === "test file" ? "test/x.test.ts" : "src/x.tsx";
-    expect(addedComments(file, source, lines)).toEqual([{ file, line, kind }]);
-  }, 30_000);
+  sourceRow(
+    `new ${name} comment is refused with file and line`,
+    name === "test file" ? "test/x.test.ts" : "src/x.tsx",
+    source,
+    lines,
+    [{ line, kind }],
+  );
 }
 
 for (const [name, source] of [
@@ -66,9 +113,7 @@ for (const [name, source] of [
     '/// <reference no-default-lib="true" />\nconst x = 1;',
   ],
 ] as const) {
-  test(`${name} passes the comment check`, () => {
-    expect(addedComments("src/x.tsx", source, lines)).toEqual([]);
-  }, 30_000);
+  sourceRow(`${name} passes the comment check`, "src/x.tsx", source, lines, []);
 }
 
 for (const source of [
@@ -88,9 +133,18 @@ for (const source of [
   '/// <reference types="node" /> prose\nconst x = 1;',
   '/*/ <reference types="node" />*/\nconst x = 1;',
 ]) {
-  test(`directive lookalikes and prose are refused: ${JSON.stringify(source)}`, () => {
-    expect(addedComments("src/x.ts", source, lines)).toHaveLength(1);
-  }, 30_000);
+  sourceRow(
+    `directive lookalikes and prose are refused: ${JSON.stringify(source)}`,
+    "src/x.ts",
+    source,
+    lines,
+    [
+      {
+        line: 1,
+        kind: source.startsWith("/*") ? "block comment" : "line comment",
+      },
+    ],
+  );
 }
 
 for (const [name, source] of [
@@ -109,22 +163,15 @@ for (const [name, source] of [
   ["relational expression beside division", "const n = a < b / c;"],
   ["TSX generic arrow beside JSX", "const f = <T,>(x: T) => <p>{x}</p>;"],
 ] as const) {
-  test(`${name} passes and its actual trailing comment is refused`, () => {
-    expect(addedComments("src/x.tsx", source, lines)).toEqual([]);
-    expect(
-      addedComments(
-        "src/x.tsx",
-        source + "\n// actual",
-        new Set([source.split("\n").length + 1]),
-      ),
-    ).toEqual([
-      {
-        file: "src/x.tsx",
-        line: source.split("\n").length + 1,
-        kind: "line comment",
-      },
-    ]);
-  }, 30_000);
+  sourceRow(`${name} passes`, "src/x.tsx", source, lines, []);
+  const line = source.split("\n").length + 1;
+  sourceRow(
+    `${name} actual trailing comment is refused`,
+    "src/x.tsx",
+    source + "\n// actual",
+    new Set([...lines, line]),
+    [{ line, kind: "line comment" }],
+  );
 }
 test("the comment check adds zero runtime dependencies", () => {
   const current = JSON.parse(
@@ -142,16 +189,20 @@ test("the repository enables forge/no-comments in Bun config", () => {
   expect(readFileSync(config, "utf8")).toContain('"forge/no-comments"');
 }, 30_000);
 
-test("an existing comment outside added lines passes", () => {
-  expect(
-    addedComments("src/x.ts", "// existing\nconst x = 2;", new Set([2])),
-  ).toEqual([]);
-}, 30_000);
-test("an added interior line of an existing block is refused", () => {
-  expect(
-    addedComments("src/x.ts", "/* existing\n changed\n */", new Set([2])),
-  ).toEqual([{ file: "src/x.ts", line: 2, kind: "block comment" }]);
-}, 30_000);
+sourceRow(
+  "an existing comment outside added lines passes",
+  "src/x.ts",
+  "// existing\nconst x = 2;",
+  new Set([2]),
+  [],
+);
+sourceRow(
+  "an added interior line of an existing block is refused",
+  "src/x.ts",
+  "/* existing\n changed\n */",
+  new Set([2]),
+  [{ line: 2, kind: "block comment" }],
+);
 
 function repository(
   run: (
@@ -299,10 +350,70 @@ for (const extension of [
   "tsx",
   "jsx",
 ]) {
-  test(`${extension} source comments are recognized`, () => {
-    const file = `src/x.${extension}`;
-    expect(addedComments(file, "const x = 1; // why", new Set([1]))).toEqual([
-      { file, line: 1, kind: "line comment" },
-    ]);
-  }, 30_000);
+  sourceRow(
+    `${extension} source comments are recognized`,
+    `src/x.${extension}`,
+    "const x = 1; // why",
+    new Set([1]),
+    [{ line: 1, kind: "line comment" }],
+  );
 }
+test(
+  "an unavailable lint executable is incomplete",
+  () =>
+    repository((root) => {
+      expect(
+        checkComments({
+          root,
+          base: "baseline",
+          lintExecutable: join(root, "missing-bun"),
+        }).status,
+      ).toBe("INCOMPLETE");
+    }),
+  30_000,
+);
+test(
+  "stable Bun without lint is incomplete",
+  () =>
+    repository((root) => {
+      expect(
+        checkComments({
+          root,
+          base: "baseline",
+          lintExecutable: process.execPath,
+        }).status,
+      ).toBe("INCOMPLETE");
+    }),
+  30_000,
+);
+test(
+  "inline disables cannot suppress the enforcing run",
+  () =>
+    repository((root, git, put) => {
+      put(
+        "src/x.ts",
+        "/* eslint-disable forge/no-comments */\nexport const x = 1; // actual\n",
+      );
+      git("add", ".");
+      git("commit", "-qm", "attempt disable");
+      expect(checkComments({ root, base: "baseline" }).violations).toEqual([
+        { file: "src/x.ts", line: 1, kind: "block comment" },
+        { file: "src/x.ts", line: 2, kind: "line comment" },
+      ]);
+    }),
+  30_000,
+);
+test(
+  "uncommitted source cannot be mistaken for the checked head",
+  () =>
+    repository((root, git, put) => {
+      put("src/x.ts", "export const x = 2;\n");
+      git("add", ".");
+      git("commit", "-qm", "checked head");
+      put("src/x.ts", "export const x = 3; // uncommitted\n");
+      expect(checkComments({ root, base: "baseline" }).status).toBe(
+        "INCOMPLETE",
+      );
+    }),
+  30_000,
+);

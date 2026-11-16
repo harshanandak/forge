@@ -4,12 +4,12 @@ import {
   spawnSync,
   type SpawnSyncReturns,
 } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { packedConsumer } from "../../integration/packed-consumer.ts";
 
-test("the installed Node checker includes its parser and refuses a new comment", () => {
+test("the installed check adds no parser dependency and runs the selected lint runtime", () => {
   const root = mkdtempSync(join(tmpdir(), "forge-packed-comments-"));
   const git = (...args: string[]): string =>
     execFileSync("git", args, {
@@ -26,13 +26,26 @@ test("the installed Node checker includes its parser and refuses a new comment",
     git("add", ".");
     git("commit", "-qm", "base");
     git("branch", "baseline");
-    const run = (): SpawnSyncReturns<string> =>
+    const lint = process.env.FORGE_LINT_BUN;
+    if (!lint) throw new Error("FORGE_LINT_BUN must select the CI canary");
+    const pkg = JSON.parse(
+      readFileSync(
+        join(packedConsumer(), "node_modules/forge-workflow/package.json"),
+        "utf8",
+      ),
+    ) as { dependencies: Record<string, string> };
+    expect(Object.keys(pkg.dependencies).sort()).toEqual([
+      "@modelcontextprotocol/server",
+      "koffi",
+      "yaml",
+    ]);
+    const run = (runtime = lint): SpawnSyncReturns<string> =>
       spawnSync(
         "node",
         [
           "--input-type=module",
           "--eval",
-          `import { main } from 'forge-workflow/checks/no-comments'; process.chdir(${JSON.stringify(root)}); main(['--base', 'baseline']);`,
+          `import plugin, { main } from 'forge-workflow/checks/no-comments'; if (!plugin.rules['no-comments']) throw new Error('Missing rule'); process.chdir(${JSON.stringify(root)}); main(['--base', 'baseline', '--bun', ${JSON.stringify(runtime)}]);`,
         ],
         {
           cwd: packedConsumer(),
@@ -41,6 +54,11 @@ test("the installed Node checker includes its parser and refuses a new comment",
           timeout: 30_000,
         },
       );
+    const unavailable = run(join(root, "missing-bun"));
+    expect(unavailable.status).toBe(2);
+    expect(JSON.parse(unavailable.stdout)).toMatchObject({
+      status: "INCOMPLETE",
+    });
     const clean = run();
     expect(clean.status).toBe(0);
     expect(JSON.parse(clean.stdout)).toMatchObject({

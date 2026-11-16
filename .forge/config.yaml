@@ -79,6 +79,22 @@ blocks:
         typecheck: bun run check
         test: bun run test:unit
         structure: bun run test:structure
+      environment:
+        [
+          PATH,
+          PATHEXT,
+          SystemRoot,
+          windir,
+          ComSpec,
+          TEMP,
+          TMP,
+          TMPDIR,
+          HOME,
+          USERPROFILE,
+          APPDATA,
+          LOCALAPPDATA,
+          FORGE_LINT_BUN,
+        ]
 owners:
   /blocks/work/config/labelOrder:
     from: harsha/delivery@0.1.0
