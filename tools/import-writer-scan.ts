@@ -9,7 +9,11 @@ export interface WriterSite {
   refusal?: string;
 }
 
-/** Inventory syntax only. Unknown namespaces are work; opaque keys require review. */
+/**
+ * This guard catches accidental unclassified writer families in reviewed code;
+ * it does not defend against deliberate obfuscation inside this repository,
+ * because every change is reviewed and the converter refuses unknown families at run time.
+ */
 export function scanWriters(program: ts.Program, root: string): WriterSite[] {
   const checker = program.getTypeChecker(),
     result: WriterSite[] = [];
@@ -99,15 +103,16 @@ export function scanWriters(program: ts.Program, root: string): WriterSite[] {
         ?.getDeclaration()
         ?.parameters[0]?.name.getText() === "namespace";
     let namespace = namespaced ? call.arguments[0] : undefined;
-    let receiver: ts.Node | undefined = node.expression;
-    if (ts.isIdentifier(receiver)) {
-      const declaration =
-        checker.getSymbolAtLocation(receiver)?.valueDeclaration;
-      receiver =
-        declaration && ts.isVariableDeclaration(declaration)
-          ? declaration.initializer
-          : undefined;
-    }
+    const declaration = ts.isIdentifier(node.expression)
+      ? checker.getSymbolAtLocation(node.expression)?.valueDeclaration
+      : undefined;
+    const receiver =
+      declaration &&
+      ts.isVariableDeclaration(declaration) &&
+      ts.isVariableDeclarationList(declaration.parent) &&
+      declaration.parent.flags & ts.NodeFlags.Const
+        ? declaration.initializer
+        : undefined;
     if (
       !namespace &&
       receiver &&

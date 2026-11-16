@@ -79,6 +79,20 @@ const owner =
   'import type { StateOwner } from "../core/state/index.ts"; import type { Actor } from "../generated/types.ts"; declare const owner: StateOwner; declare const actor: Actor; declare const id: string; declare const value: unknown;';
 test.each([
   [
+    "reassigned client",
+    "assembly",
+    owner,
+    'let state = owner.client("forge/memory", actor); state = owner.client("forge/work", actor); state.put("future-family:work-1", value, {expectRevision: 0});',
+    "family",
+  ],
+  [
+    "mutable foreign client",
+    "assembly",
+    owner,
+    'let state = owner.client("forge/memory", actor); state.put("future-family:work-1", value, {expectRevision: 0});',
+    "family",
+  ],
+  [
     "writer parameter extraction",
     "blocks/work",
     work,
