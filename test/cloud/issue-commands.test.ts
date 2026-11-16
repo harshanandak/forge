@@ -8381,7 +8381,7 @@ for (const kind of NUMBERED)
   }, 60_000);
 
 for (const kind of NUMBERED)
-  test(`a ${kind} floor is derived once from history, inside the write, and later adds read no history`, async () => {
+  test(`a ${kind} first floor uses durable reservations and all adds read no history`, async () => {
     const { f, token } = await accepted([1], [2], false);
     const seen = spyOn(f.storage.sql, "exec");
     const history = () =>
@@ -8390,7 +8390,12 @@ for (const kind of NUMBERED)
           /FROM state_events/.test(sql) && bindings[0] === "forge/work",
       );
     await add(kind, f, token, "d-1", 3);
-    expect(history().length).toBeGreaterThan(0);
+    expect(history()).toEqual([]);
+    expect(
+      seen.mock.calls.some(([sql]) =>
+        /^SELECT .* FROM state_allocation_keys/.test(sql),
+      ),
+    ).toBe(true);
     seen.mockClear();
     await add(kind, f, token, "d-2", 4);
     expect(history()).toEqual([]);
