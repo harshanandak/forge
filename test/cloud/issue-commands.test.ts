@@ -347,7 +347,7 @@ function fixture(
       over: object = {},
       key = "issue:work-1",
       ns = "forge/work",
-    ) =>
+    ) => {
       db.run(
         "INSERT INTO state_records(namespace,key,revision,body) VALUES (?,?,3,?)",
         [
@@ -363,7 +363,18 @@ function fixture(
             ...over,
           }),
         ],
-      ),
+      );
+      if (
+        db
+          .query(
+            "SELECT 1 FROM sqlite_master WHERE name='state_allocation_keys'",
+          )
+          .get()
+      )
+        db.query(
+          "INSERT OR IGNORE INTO state_allocation_keys VALUES (?,?)",
+        ).run(ns, key);
+    },
     lease: (over: object = {}, subject = "issue:work-1") => {
       const body = grant({ subject, ...over });
       db.run("DELETE FROM state_leases WHERE subject=?", [subject]);
