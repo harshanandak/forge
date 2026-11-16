@@ -2,20 +2,10 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
 import { packedConsumer } from "../../../integration/packed-consumer.ts";
-import * as fixture from "../fixture.ts";
-import type { CloudRig } from "../fixture.ts";
-
-interface TrackerRig {
-  clients: CloudRig[];
-  outage(value: boolean): void;
-  revoke(index: number): Promise<void>;
-  close(): Promise<void>;
-}
+import { trackerRig } from "../tracker.fixture.ts";
 
 test("installed tracker persists writes, fences sessions and refuses unavailable or revoked authority", async () => {
-  const make: unknown = Reflect.get(fixture, "trackerRig");
-  expect(typeof make).toBe("function");
-  const rig = await (make as (bin: string) => Promise<TrackerRig>)(
+  const rig = await trackerRig(
     join(packedConsumer(), "node_modules/forge-workflow/dist/bin/forge.js"),
   );
   const clients = rig.clients;
@@ -25,13 +15,16 @@ test("installed tracker persists writes, fences sessions and refuses unavailable
     input: object = {},
     replay?: string,
   ) => {
-    const out = await clients[index]!.run([
-      "issue",
-      verb,
-      "--input",
-      JSON.stringify(input),
-      ...(replay ? ["--request-id", replay] : []),
-    ]);
+    const out = await clients[index]!.run(
+      replay
+        ? [
+            "catalog",
+            "call",
+            "--input",
+            JSON.stringify({ op: `issue.${verb}`, input, requestId: replay }),
+          ]
+        : ["issue", verb, "--input", JSON.stringify(input)],
+    );
     clients[index]!.expectUntouched(out);
     return out;
   };
@@ -121,7 +114,10 @@ test("installed tracker persists writes, fences sessions and refuses unavailable
       body: "must not persist",
     });
     expect(unavailable.status).not.toBe(0);
-    expect(unavailable.envelope.ok).toBe(false);
+    expect(unavailable.envelope).toMatchObject({
+      ok: false,
+      error: { code: "UNAVAILABLE" },
+    });
     rig.outage(false);
     expect((await pass(1, "comments", { id })).records).toHaveLength(1);
     await rig.revoke(0);

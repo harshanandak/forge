@@ -4,6 +4,7 @@ import { hash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import {
   mkdirSync,
+  existsSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -98,7 +99,7 @@ test("the independent CI pin rejects repacked bytes even when identity and sidec
       expect(out.stderr, mode).toContain(
         "reviewed CI artifact sha256 mismatch",
       );
-      expect(Bun.file(installMarker).size, mode).toBe(0);
+      expect(existsSync(installMarker), mode).toBe(false);
       if (staged)
         expect(readFileSync(corruptionMarker, "utf8")).toBe("corrupted");
     }
