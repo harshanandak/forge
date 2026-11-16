@@ -6,6 +6,7 @@ import {
   validateStateRecord,
 } from "../../generated/validators.ts";
 import type { SqlDatabase, SqlRow, SqlValue } from "../../ports/store.ts";
+import type { StateRecord } from "../../generated/types.ts";
 import { parseRestoreJson } from "./restore-json.ts";
 import { allocationFloorNumber } from "./allocation-floor.ts";
 
@@ -233,6 +234,7 @@ export interface CheckpointSeed {
   readonly coveredSequence: number;
   readonly live: Checkpoint["live"];
   readonly deleted: Checkpoint["deleted"];
+  readonly floors: Checkpoint["floors"];
   readonly receipts: Checkpoint["receipts"];
 }
 
@@ -274,6 +276,7 @@ export function readReplayStart(
     : ["leases", "floors", "reservations", "denied"])
     if (db.get(`SELECT 1 FROM state_checkpoint_${kind} LIMIT 1`))
       invalid(`Unsupported checkpoint ${kind} entries; newer Forge required`);
+  const liveFloors: Checkpoint["floors"][number][] = [];
   const read = (
     kind: string,
     columns: readonly string[],
@@ -281,12 +284,7 @@ export function readReplayStart(
   ): SqlValue[][] => {
     const result: SqlValue[][] = [];
     let after: readonly SqlValue[] | undefined;
-    const extra =
-      recordFormat && kind === "live"
-        ? ",body"
-        : recordFormat && kind === "floors"
-          ? ",(SELECT body FROM state_records WHERE namespace=state_checkpoint_floors.namespace AND key='allocation:'||state_checkpoint_floors.prefix) AS body"
-          : "";
+    const extra = recordFormat && kind === "live" ? ",body" : "";
     for (;;) {
       const rows = db.all(
         `SELECT ${columns.join(",")}${extra} FROM state_checkpoint_${kind}${after === undefined ? "" : ` WHERE (${keys.join(",")}) > (${keys.map(() => "?").join(",")})`} ORDER BY ${keys.join(",")} LIMIT ?`,
@@ -294,11 +292,7 @@ export function readReplayStart(
       );
       for (const row of rows) {
         if (recordFormat && kind === "live") {
-          const record = parseRestoreJson(String(row.body)) as {
-            namespace: string;
-            key: string;
-            revision: number;
-          };
+          const record = parseRestoreJson(String(row.body)) as StateRecord;
           if (
             !validateStateRecord(record).ok ||
             record.namespace !== row.namespace ||
@@ -307,19 +301,17 @@ export function readReplayStart(
             recordDigest(record) !== row.digest
           )
             invalid("Invalid checkpoint live body");
-        }
-        if (recordFormat && kind === "floors" && row.body !== null) {
-          const record = parseRestoreJson(String(row.body)) as {
-            value: unknown;
-          };
-          if (!validateStateRecord(record).ok)
-            invalid("Invalid checkpoint floor body");
-          const number = allocationFloorNumber(
-            record.value,
-            String(row.prefix),
-          );
-          if (number !== undefined && number < Number(row.highest))
-            invalid("Checkpoint allocator authority requires repair");
+          if (record.key.startsWith("allocation:")) {
+            const prefix = record.key.slice("allocation:".length);
+            const number = allocationFloorNumber(record.value, prefix);
+            if (number !== undefined)
+              liveFloors.push([
+                record.namespace,
+                prefix,
+                Number(row.sequence),
+                number,
+              ]);
+          }
         }
         result.push(
           columns.map((column) => {
@@ -449,6 +441,7 @@ export function readReplayStart(
       coveredSequence: checkpoint.header[3],
       live: checkpoint.live,
       deleted: checkpoint.deleted,
+      floors: [...checkpoint.floors, ...liveFloors],
       receipts: checkpoint.receipts,
     },
     receipts,

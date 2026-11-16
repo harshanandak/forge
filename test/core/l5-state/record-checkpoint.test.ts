@@ -62,6 +62,7 @@ test.each([
   "raw deleted number",
   "valid historical floor",
   "malformed historical floor",
+  "checkpoint floor body",
   "new prefix",
 ])(
   "checkpoint admission retains tail allocator authority: %s",
@@ -70,10 +71,14 @@ test.each([
       target = await fixture();
     try {
       prefix(s);
+      if (kind === "checkpoint floor body")
+        put(s, "allocation:item:", { prefix: "item:", number: 9 }, 1);
       capture(s);
       target.owner.initialize();
       const name = kind === "new prefix" ? "new:" : "item:";
-      if (kind.startsWith("raw")) {
+      if (kind === "checkpoint floor body")
+        s.db.run("UPDATE state_checkpoint_floors SET highest=1");
+      else if (kind.startsWith("raw")) {
         put(s, "item:8");
         if (kind === "raw deleted number")
           s.owner.delete(ns, "item:8", actor, { expectRevision: 1 });

@@ -633,6 +633,11 @@ export function verifyEventDerivedState(
   const plans = new Map<string, ReceiptPlan | boolean>();
   const key = (namespace: string, name: string): string =>
     json([namespace, name]);
+  const allocator = new Map<string, number>();
+  for (const [namespace, prefix, , highest] of checkpoint?.floors ?? []) {
+    const id = key(namespace, prefix);
+    allocator.set(id, Math.max(allocator.get(id) ?? 0, highest));
+  }
   for (const [namespace, name, , revision, digest] of checkpoint?.live ?? []) {
     const id = key(namespace, name);
     records.set(id, { revision, digest: digest.slice("sha256:".length) });
@@ -716,6 +721,13 @@ export function verifyEventDerivedState(
       );
   };
   const reserved = (event: StateEvent): void => {
+    if (checkpoint && event.key.startsWith("allocation:")) {
+      const prefix = event.key.slice("allocation:".length);
+      const number = allocationFloorNumber(event.data, prefix);
+      const id = key(event.namespace, prefix);
+      if (number !== undefined)
+        allocator.set(id, Math.max(allocator.get(id) ?? 0, number));
+    }
     const prefix = groupOf(event.namespace, event.key, true);
     if (prefix !== undefined)
       try {
@@ -953,6 +965,16 @@ export function verifyEventDerivedState(
     });
   }
   if (sequence !== highWaterMark) reject("state_events", "high-water mark");
+  for (const [id, highest] of allocator) {
+    const [namespace, prefix] = JSON.parse(id) as [string, string];
+    let required = highest;
+    for (const record of recordRevisions.keys()) {
+      const [ns, name] = JSON.parse(record) as [string, string];
+      if (ns === namespace)
+        required = Math.max(required, suffixNumber(name, prefix) ?? 0);
+    }
+    allocator.set(id, required);
+  }
   const verifyRows = (
     table: string,
     columns: string,
@@ -998,6 +1020,15 @@ export function verifyEventDerivedState(
         record.revision !== Number(row.revision)
       )
         reject("state_records", id);
+      if (checkpoint && record.key.startsWith("allocation:")) {
+        const prefix = record.key.slice("allocation:".length);
+        const number = allocationFloorNumber(record.value, prefix);
+        if (
+          number !== undefined &&
+          number < (allocator.get(key(record.namespace, prefix)) ?? 0)
+        )
+          invalid("Checkpoint allocator authority requires repair");
+      }
       records.delete(id);
       number(row.namespace as string, row.key as string);
     });
@@ -1869,14 +1900,13 @@ export class StateOwner {
       this.#checkpointReady = !!this.#db.get(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='state_checkpoint_deleted'",
       );
-    return this.#checkpointReady
-      ? Number(
-          this.#db.get(
-            "SELECT revision FROM state_checkpoint_deleted WHERE namespace=? AND key=?",
-            [namespace, key],
-          )?.revision ?? 0,
+    const row = this.#checkpointReady
+      ? this.#db.get(
+          "SELECT revision FROM state_checkpoint_deleted WHERE namespace=? AND key=?",
+          [namespace, key],
         )
-      : 0;
+      : undefined;
+    return Number(row?.revision ?? 0);
   }
 
   /** Write one record and its event; the caller has already checked every guard. */
@@ -1897,21 +1927,24 @@ export class StateOwner {
     // already holds the verified last revision (0 for a new key) passes it and skips the lookup.
     const revision =
       current?.revision ??
-      last ??
-      body<StateEvent>(
-        fresh
-          ? undefined
-          : this.#db.get(
-              "SELECT body FROM state_events WHERE namespace=? AND key=? AND json_extract(body,'$.type') IN (?,?) ORDER BY sequence DESC LIMIT 1",
-              [
-                namespace,
-                key,
-                `${namespace}:record.updated@1`,
-                `${namespace}:record.deleted@1`,
-              ],
-            ),
-      )?.revision ??
-      (fresh ? 0 : this.#deletedRevision(namespace, key));
+      (fresh
+        ? 0
+        : Math.max(
+            this.#deletedRevision(namespace, key),
+            last ??
+              body<StateEvent>(
+                this.#db.get(
+                  "SELECT body FROM state_events WHERE namespace=? AND key=? AND json_extract(body,'$.type') IN (?,?) ORDER BY sequence DESC LIMIT 1",
+                  [
+                    namespace,
+                    key,
+                    `${namespace}:record.updated@1`,
+                    `${namespace}:record.deleted@1`,
+                  ],
+                ),
+              )?.revision ??
+              0,
+          ));
     const record: StateRecord = {
       namespace,
       key,
