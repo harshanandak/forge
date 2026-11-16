@@ -57,7 +57,7 @@ const TABLES: Record<string, { columns: string[]; keys: string[] }> = {
     keys: ["namespace", "request_id"],
   },
   domain_cloud_requests: {
-    columns: ["request_id", "fingerprint", "outcome", "result"],
+    columns: ["request_id", "fingerprint", "outcome", "result", "created_at"],
     keys: ["request_id"],
   },
   [COMMAND_RECEIPTS]: {
@@ -113,7 +113,26 @@ export const RETENTION_MIGRATION = {
   id: "010_cloud_retention",
   statements: [
     ...requestAgeStatements("domain_cloud_requests"),
-    ...usageStatements(CLOUD_USAGE_COLUMNS),
+    ...usageStatements({
+      ...CLOUD_USAGE_COLUMNS,
+      domain_cloud_requests: TABLES.domain_cloud_requests!.columns.filter(
+        (column) => column !== "created_at",
+      ),
+    }),
+  ],
+};
+
+// Refresh installed byte counters and triggers when request age joins the dump columns.
+export const REQUEST_AGE_DUMP_MIGRATION = {
+  id: "011_cloud_request_age_dump",
+  statements: [
+    ...["insert", "update", "delete"].map(
+      (action) => `DROP TRIGGER usage_domain_cloud_requests_${action}`,
+    ),
+    "DELETE FROM state_usage WHERE table_name='domain_cloud_requests'",
+    ...usageStatements({
+      domain_cloud_requests: TABLES.domain_cloud_requests!.columns,
+    }),
   ],
 };
 
@@ -620,6 +639,13 @@ export function parseDump(text: string): Dump | Page {
     if (!paged && rows.length > MAX_ROWS_PER_TABLE)
       throw invalid(`${table} has more than ${MAX_ROWS_PER_TABLE} rows`);
     tables[table] = (rows as Record<string, unknown>[]).map((row) => {
+      // Shipped v1/v2 backups lack this age. Unknown means epoch, never restore time.
+      if (
+        table === "domain_cloud_requests" &&
+        isObject(row) &&
+        !("created_at" in row)
+      )
+        row = { ...row, created_at: 0 };
       if (
         row === null ||
         typeof row !== "object" ||
@@ -629,6 +655,14 @@ export function parseDump(text: string): Dump | Page {
       return Object.fromEntries(
         columns.map((column) => {
           const value = row[column];
+          if (
+            table === "domain_cloud_requests" &&
+            column === "created_at" &&
+            (typeof value !== "number" || value < 0)
+          )
+            throw invalid(
+              "domain_cloud_requests.created_at must be a nonnegative safe integer",
+            );
           if (
             (typeof value === "string" &&
               value.length <= valueLimit(table, column)) ||
@@ -682,6 +716,8 @@ function checkServerReceipt(row: Row): void {
     typeof input !== "object" ||
     !["claim", "renew", "release"].includes(String(input.route)) ||
     typeof input.subject !== "string" ||
+    !Number.isSafeInteger(row.created_at) ||
+    Number(row.created_at) < 0 ||
     ("scope" in input && !versioned(input))
   )
     bad();
@@ -738,6 +774,11 @@ function insertRows(db: SqlDatabase, tables: Record<string, Row[]>): void {
           `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
           columns.map((column) => row[column]!),
         );
+        // The installed age trigger stamps zero. Restore the admitted audit value exactly.
+        if (table === "domain_cloud_requests" && row.created_at === 0)
+          db.run(`UPDATE ${table} SET created_at=0 WHERE request_id=?`, [
+            row.request_id!,
+          ]);
       } catch {
         throw invalid(`A ${table} row conflicts with another row`);
       }

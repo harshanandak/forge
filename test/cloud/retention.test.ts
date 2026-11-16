@@ -72,7 +72,10 @@ test("legacy staged restore can be abandoned before write initialization", async
   try {
     migrate(db, [
       ...stateMigrations.filter((m) => m.id !== "006_state_retention"),
-      ...domain.migrations.filter((m) => m.id !== "010_cloud_retention"),
+      ...domain.migrations.filter(
+        (m) =>
+          !["010_cloud_retention", "011_cloud_request_age_dump"].includes(m.id),
+      ),
     ]);
     db.run("INSERT INTO state_events VALUES (7,?,?,?)", [ns, "old", "{}"]);
     const before = db.all(
@@ -99,7 +102,8 @@ test("cloud capacity metadata upgrades once without changing dump rows", () => {
       ...domain,
       usage: {},
       migrations: domain.migrations.filter(
-        (m) => m.id !== "010_cloud_retention",
+        (m) =>
+          !["010_cloud_retention", "011_cloud_request_age_dump"].includes(m.id),
       ),
     },
   ]);
@@ -107,9 +111,12 @@ test("cloud capacity metadata upgrades once without changing dump rows", () => {
   db.run(
     "INSERT INTO domain_cloud_requests(request_id,fingerprint,outcome,result) VALUES ('old','{}','ok','{}')",
   );
-  const before = dumpOf(db);
+  const columns = "request_id,fingerprint,outcome,result";
+  const before = db.all(`SELECT ${columns} FROM domain_cloud_requests`);
   owner.initialize([domain]);
-  expect(dumpOf(db)).toEqual(before);
+  expect(db.all(`SELECT ${columns} FROM domain_cloud_requests`)).toEqual(
+    before,
+  );
   for (const sql of DUMP_USAGE_SQL) {
     const table = sql.split(" FROM ")[1]!;
     const actual = db.get(sql)!;
@@ -127,6 +134,7 @@ test("cloud capacity metadata upgrades once without changing dump rows", () => {
     "fingerprint",
     "outcome",
     "result",
+    "created_at",
   ]);
   expect(
     Number(db.get("SELECT created_at FROM domain_cloud_requests")?.created_at),
@@ -136,4 +144,42 @@ test("cloud capacity metadata upgrades once without changing dump rows", () => {
     "UPDATE state_usage SET bytes=bytes+1 WHERE table_name='domain_cloud_requests'",
   );
   expect(() => owner.initialize([domain])).toThrow(/retention.*repair/i);
+}, 30_000);
+
+test("installed request-age dump accounting upgrades without changing witness rows", () => {
+  using raw = new Database(":memory:");
+  const db = durableStore(browserStorage(raw).storage);
+  const owner = new StateOwner(db, { now: () => 1000 });
+  owner.initialize([
+    {
+      ...domain,
+      usage: {
+        ...domain.usage,
+        domain_cloud_requests: domain.usage.domain_cloud_requests!.filter(
+          (column) => column !== "created_at",
+        ),
+      },
+      migrations: domain.migrations.filter(
+        (m) => m.id !== "011_cloud_request_age_dump",
+      ),
+    },
+  ]);
+  db.run(
+    "INSERT INTO domain_cloud_requests(request_id,fingerprint,outcome,result) VALUES ('old','{}','ok','{}')",
+  );
+  db.run("UPDATE domain_cloud_requests SET created_at=1234");
+  const before = db.all("SELECT * FROM domain_cloud_requests");
+  owner.initialize([domain]);
+  expect(db.all("SELECT * FROM domain_cloud_requests")).toEqual(before);
+  for (const age of [0, 12345]) {
+    db.run("UPDATE domain_cloud_requests SET created_at=?", [age]);
+    usage(db, "domain_cloud_requests", [
+      "request_id",
+      "fingerprint",
+      "outcome",
+      "result",
+      "created_at",
+    ]);
+    expect(() => owner.initialize([domain])).not.toThrow();
+  }
 }, 30_000);

@@ -9856,6 +9856,7 @@ const forged =
   (request_id: string, route: string, subject: string) => (t: Tables) =>
     t.domain_cloud_requests!.push({
       request_id,
+      created_at: 0,
       fingerprint: JSON.stringify({ route, subject: "issue:a" }),
       outcome: "ok",
       result: lease(subject),
@@ -9936,6 +9937,7 @@ for (const [name, change] of [
         (t: Tables) => {
           t.domain_cloud_requests!.push({
             request_id: "bad-scope",
+            created_at: 0,
             outcome: "ok",
             result: lease("issue:a"),
             fingerprint: JSON.stringify({
@@ -11618,6 +11620,7 @@ async function labelledTables() {
   for (const id of ["dup-1", "dup-2"])
     tables.domain_cloud_requests!.push({
       request_id: id,
+      created_at: 0,
       fingerprint: JSON.stringify({ route: "claim", subject: "issue:a" }),
       outcome: "ok",
       result: lease("issue:a"),
@@ -12071,6 +12074,7 @@ const RAW: Record<string, (i: number) => Tables[string][number]> = {
   }),
   domain_cloud_requests: (i) => ({
     request_id: `r${six(i)}`,
+    created_at: 0,
     fingerprint: "{}",
     outcome: "ok",
     result: "{}",

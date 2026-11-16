@@ -36,7 +36,13 @@ const ROW: Record<string, [Row, string]> = {
     ", PRIMARY KEY (namespace, request_id)",
   ],
   domain_cloud_requests: [
-    { request_id: "r", fingerprint: "{}", outcome: "ok", result: "{}" },
+    {
+      request_id: "r",
+      fingerprint: "{}",
+      outcome: "ok",
+      result: "{}",
+      created_at: 1,
+    },
     "",
   ],
   domain_cloud_command_receipts: [
@@ -115,11 +121,12 @@ const dumpText = (table: string, over: Row) =>
   });
 for (const version of [1, 2])
   for (const paged of [false, true])
-    test(`v${version} ${paged ? "page" : "dump"} without request age uses the expired epoch sentinel`, () => {
+    test(`v${version} ${paged ? "page" : "dump"} without request age uses the unknown-age epoch sentinel`, () => {
       const tables: Record<string, Row[]> = {
         ...empty(),
         domain_cloud_requests: [row("domain_cloud_requests")[1]],
       };
+      delete tables.domain_cloud_requests![0]!.created_at;
       if (version === 1) delete tables.domain_cloud_command_receipts;
       const restored = parseDump(
         JSON.stringify({
@@ -131,7 +138,26 @@ for (const version of [1, 2])
       expect(restored.tables.domain_cloud_requests).toEqual([
         { ...ROW.domain_cloud_requests![0], created_at: 0 },
       ]);
-    });
+    }, 30_000);
+
+for (const created_at of [-1, 1.5, "1", null, Number.MAX_SAFE_INTEGER + 1])
+  test(`a supplied invalid request age ${JSON.stringify(created_at)} is refused`, () => {
+    expect(
+      codeOf(() =>
+        parseDump(
+          JSON.stringify({
+            format: "forge-cloud-dump/2",
+            tables: {
+              ...empty(),
+              domain_cloud_requests: [
+                { ...ROW.domain_cloud_requests![0], created_at },
+              ],
+            },
+          }),
+        ),
+      ),
+    ).toBe("INPUT_INVALID");
+  }, 30_000);
 
 const checkpointRows = {
   state_checkpoint_header: [1, 1, "lineage", 1, 20, 1, 20],
