@@ -8,9 +8,12 @@ format 2 checkpoints, committing at most 256 events per transaction. Each header
 one complete prefix; interrupted writes resume from the last committed header. Live bodies,
 deletion revisions, numeric key reservations and maximum allocation floors survive updates
 and deletes. The maximum live/deleted sequence in each namespace is its covered watermark.
-The writer verifies the full retained log and refuses coordination events and request witnesses.
-It deletes no events. The version 1 tuple codec, local image restore and cloud v2 wire format
-remain unchanged; restore and cloud v2 export refuse these checkpoints until reader support lands.
+The reader validates checkpoint headers, tuples and live bodies individually, so checkpoint size
+does not consume one JSON value budget. Initialization and image restore verify checkpoint plus
+tail against the current records and retained allocation authority; deleted revisions remain floors.
+The writer refuses coordination events and request witnesses and deletes no events. The version 1
+tuple codec remains supported. Cloud v2 export still refuses nonempty checkpoints; its wire format
+is unchanged.
 
 `StateOwner` accepts the locked `SqlDatabase` and `ClockPort` ports. `initialize()` is an explicit write; construction and reads do not initialize anything. `client(namespace, actor)` returns a `DeletableStateClient`, with namespace and actor captured. It never exposes a connection.
 
