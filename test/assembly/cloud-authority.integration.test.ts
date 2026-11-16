@@ -2573,7 +2573,13 @@ for (const [name, expected] of [
                 ...new Set(
                   projectGit.mock.calls.map(([executable]) => executable),
                 ),
-              ]).toEqual([realpathSync.native(Bun.which("git")!)]);
+              ]).toEqual([
+                realpathSync.native(
+                  process.platform === "win32"
+                    ? Bun.which("git")!
+                    : "/usr/bin/git",
+                ),
+              ]);
             } finally {
               await files.close();
             }
