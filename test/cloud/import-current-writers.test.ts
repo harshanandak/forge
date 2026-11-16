@@ -86,9 +86,8 @@ function examples(input: ts.Expression, seen = new Set<ts.Node>()): string[] {
     ok(
       fields.some(
         (field) =>
-          ts.isTypeLiteralNode(field.parent) &&
-          ts.isTypeAliasDeclaration(field.parent.parent) &&
-          field.parent.parent.name.text === "StateRecord" &&
+          ts.isInterfaceDeclaration(field.parent) &&
+          field.parent.name.text === "StateRecord" &&
           field.getSourceFile().fileName.endsWith("/src/generated/types.ts"),
       ),
       `opaque work key ${where(node)}`,
