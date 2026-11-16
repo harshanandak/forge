@@ -89,6 +89,24 @@ function examples(input: ts.Expression, seen = new Set<ts.Node>()): string[] {
     }
     return keys;
   }
+  if (
+    ts.isBinaryExpression(node) &&
+    node.operatorToken.kind === ts.SyntaxKind.PlusToken
+  ) {
+    const left = read(node.left);
+    let right: string[];
+    try {
+      right = read(node.right);
+    } catch {
+      ok(
+        left.every((key) => /^[a-z][a-z-]*:/.test(key)) &&
+          /count|length/.test(node.right.getText()),
+        where(node),
+      );
+      right = ["1"];
+    }
+    return left.flatMap((a) => right.map((b) => a + b));
+  }
   if (ts.isPropertyAccessExpression(node) && node.name.text === "key")
     return []; // Existing-record rewrite.
   if (ts.isIdentifier(node)) {
@@ -121,7 +139,19 @@ function examples(input: ts.Expression, seen = new Set<ts.Node>()): string[] {
 }
 function missingFamilies(extra: ts.CallExpression[] = []) {
   eq(blocks.length, 1);
+  const owned = new Set(
+    paths.filter((p) => p.startsWith(dirname(blocks[0]!) + "/")),
+  );
+  for (let before = -1; before !== owned.size;) {
+    before = owned.size;
+    for (const call of calls) {
+      if (!owned.has(call.getSourceFile().fileName)) continue;
+      const target = declaration(call.expression)?.getSourceFile();
+      if (target && paths.includes(target.fileName)) owned.add(target.fileName);
+    }
+  }
   const inBlock = (node: ts.Node) =>
+    owned.has(node.getSourceFile().fileName) ||
     node.getSourceFile().fileName.startsWith(dirname(blocks[0]!) + "/");
   const sources = new Map<string, string>();
   const add = (expression: ts.Expression, append = false) => {

@@ -61,8 +61,10 @@ Each one gets an entry here and an adapter in the same pull request.
 ### typescript-parser
 
 - **Saves:** a TypeScript parser and symbol resolver for the source-derived import writer guard; Bun exposes no equivalent AST API and TypeScript 7 does not expose the compiler API.
-- **Maintenance / licence:** Microsoft's TypeScript 6 compiler API, Apache-2.0; pinned to 6.0.2 separately from the native build compiler.
-- **Transitive packages / fit:** zero; development-only test import, excluded from the published runtime. Hosted CI checks the source guard on supported platforms.
+- **Maintenance:** Microsoft's TypeScript 6 compiler API, pinned to 6.0.2 separately from the native build compiler.
+- **Transitive packages:** zero.
+- **Fit:** development-only test import, excluded from the published runtime. Hosted CI checks the source guard on supported platforms.
+- **Licence:** Apache-2.0.
 - **Trust:** official `typescript` npm package under an explicit alias, exact version and integrity pinned in `bun.lock`.
 - **Swap proof:** another parser must preserve writer discovery and make a newly unclassified writer fail the guard; it must not change import admission or the native build compiler.
 
