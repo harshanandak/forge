@@ -54,7 +54,9 @@ export function reopenGitScope(
     }
     refuse(
       "INPUT_CONFLICT",
-      "Saved Git roots are missing, changed or unavailable; reattach before using Git.",
+      saved === null
+        ? "This lane's state predates saved scopes. Nobody can restart this issue's lane or reuse this checkout while that state remains, even after release or with explicit roots. No supported reset exists yet (forge-1447). Start the work under a new issue in a different prepared checkout."
+        : "Saved Git roots are missing, changed or unavailable; reattach before using Git.",
     );
   }
   const project = projectManifestRoot(root);

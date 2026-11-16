@@ -616,7 +616,7 @@ export async function attachBoundLane(
       if (!validGitScope(row.gitScope))
         refuse(
           "INPUT_CONFLICT",
-          "This lane's state predates saved scopes. Forge will not reuse it. No supported reset exists yet (forge-1447).",
+          "This lane's state predates saved scopes. Nobody can restart this issue's lane or reuse this checkout while that state remains, even after release or with explicit roots. No supported reset exists yet (forge-1447). Start the work under a new issue in a different prepared checkout.",
         );
       const roots = reopenGitScope(files.root, row.gitScope);
       if (selected && scopeKey(selected) !== scopeKey(roots))

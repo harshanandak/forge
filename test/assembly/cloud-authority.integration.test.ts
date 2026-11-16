@@ -716,7 +716,15 @@ for (const row of [
         expect((await launch).exitCode).toBe(99);
       else
         await expect(launch).rejects.toMatchObject({
-          error: { code: "INPUT_CONFLICT" },
+          error: {
+            code: "INPUT_CONFLICT",
+            ...(row.startsWith("legacy")
+              ? {
+                  message:
+                    "This lane's state predates saved scopes. Nobody can restart this issue's lane or reuse this checkout while that state remains, even after release or with explicit roots. No supported reset exists yet (forge-1447). Start the work under a new issue in a different prepared checkout.",
+                }
+              : {}),
+          },
         });
       expect(existsSync(f.marker)).toBe(row === "Accept-legacy-record");
       expect([
@@ -1790,7 +1798,7 @@ for (const stored of [
           message:
             stored === "explicit registry conflict"
               ? "This lane's saved roots conflict with the supplied or other saved roots. Forge will not reuse this state. No supported reset exists yet (forge-1447)."
-              : "This lane's state predates saved scopes. Forge will not reuse it. No supported reset exists yet (forge-1447).",
+              : "This lane's state predates saved scopes. Nobody can restart this issue's lane or reuse this checkout while that state remains, even after release or with explicit roots. No supported reset exists yet (forge-1447). Start the work under a new issue in a different prepared checkout.",
         },
       });
       expect([
