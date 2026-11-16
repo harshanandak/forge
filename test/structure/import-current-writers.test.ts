@@ -79,6 +79,20 @@ const owner =
   'import type { StateOwner } from "../core/state/index.ts"; import type { Actor } from "../generated/types.ts"; declare const owner: StateOwner; declare const actor: Actor; declare const id: string; declare const value: unknown;';
 test.each([
   [
+    "writer parameter extraction",
+    "blocks/work",
+    work,
+    'function write({put}: LeaseStateClient) { put("issue:work-1", value, {expectRevision: 0}); } write(state);',
+    "literal-only",
+  ],
+  [
+    "computed writer extraction",
+    "blocks/work",
+    work,
+    'const {["put"]: put} = state; put("issue:work-1", value, {expectRevision: 0});',
+    "literal-only",
+  ],
+  [
     "literal batch",
     "blocks/work",
     work,

@@ -38,22 +38,25 @@ export function scanWriters(program: ts.Program, root: string): WriterSite[] {
   const visit = (node: ts.Node): void => {
     ts.forEachChild(node, visit);
     if (
-      ts.isVariableDeclaration(node) &&
-      ts.isObjectBindingPattern(node.name) &&
-      node.initializer &&
-      checker.getTypeAtLocation(node.initializer).getProperty("put")
+      ts.isObjectBindingPattern(node) &&
+      ["put", "putNext", "putMany", "delete"].some((name) =>
+        checker.getTypeAtLocation(node).getProperty(name),
+      )
     ) {
-      for (const binding of node.name.elements)
+      for (const binding of node.elements) {
+        const name = binding.propertyName ?? binding.name;
         if (
           binding.dotDotDotToken ||
+          ts.isComputedPropertyName(name) ||
           ["put", "putNext", "putMany", "delete"].includes(
-            (binding.propertyName ?? binding.name).getText(),
+            ts.isStringLiteral(name) ? name.text : name.getText(),
           )
         ) {
           const row = siteOf(binding);
           refuse(row);
           result.push(row);
         }
+      }
     }
     if (
       !ts.isPropertyAccessExpression(node) &&
