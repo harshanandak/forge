@@ -45,7 +45,7 @@ test("record checkpoint plus tail equals full replay, including restore", async 
   }
 });
 
-test.each(["allocator", "deleted", "reservation"])(
+test.each(["allocator", "deleted", "reservation", "deletion floor"])(
   "checkpoint initialize and restore: %s",
   async (kind) => {
     const s = await fixture(),
@@ -57,8 +57,12 @@ test.each(["allocator", "deleted", "reservation"])(
       // Fault injection models the future compacted prefix, without adding compaction to production.
       s.db.run("DELETE FROM state_events");
       const watermark = high(s);
-      if (kind === "reservation") {
-        s.db.run("DELETE FROM state_allocation_keys WHERE key='kept'");
+      if (kind === "reservation" || kind === "deletion floor") {
+        s.db.run(
+          kind === "reservation"
+            ? "DELETE FROM state_allocation_keys WHERE key='kept'"
+            : "DELETE FROM state_checkpoint_deleted WHERE key='gone'",
+        );
         expect(() => target.owner.restore(s.owner.export())).toThrow(
           /retention|repair/i,
         );

@@ -392,6 +392,14 @@ export function readReplayStart(
     invalid("Checkpoint retention authority requires repair");
   if (
     recordFormat &&
+    db.get(
+      "SELECT 1 FROM state_allocation_keys a WHERE NOT EXISTS (SELECT 1 FROM state_checkpoint_live c WHERE c.namespace=a.namespace AND c.key=a.key) AND NOT EXISTS (SELECT 1 FROM state_checkpoint_deleted c WHERE c.namespace=a.namespace AND c.key=a.key) AND NOT EXISTS (SELECT 1 FROM state_events e WHERE e.namespace=a.namespace AND e.key=a.key AND e.sequence>? AND json_extract(e.body,'$.type') IN (e.namespace||':record.updated@1',e.namespace||':record.deleted@1')) LIMIT 1",
+      [checkpoint.header[3]],
+    )
+  )
+    invalid("Checkpoint deletion floor coverage requires repair");
+  if (
+    recordFormat &&
     (Number(header.retention_policy_version) !==
       Number(
         db.get("SELECT policy_version FROM state_retention WHERE id=1")
