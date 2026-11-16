@@ -33,6 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
+      CLOUD_RESTORE_STOP: "1"
       CLOUD_BASE: http://127.0.0.1:8787
       # A throwaway admin token for this job only; no deployed Worker uses it.
       CLOUD_ADMIN_TOKEN: ci-conformance-admin-token
@@ -426,11 +427,11 @@ jobs:
           # Without deleted keys, a project whose only issue was deleted gets a floor below the number it used.
           restore_cf undeleted src/core/state/index.ts 's/        number\(event\.namespace, event\.key\);/        void 0;/' "whole restore of only deleted history" 'JSON.parse(String(record?.body))'
           # A floor written on every page, not only the last, shows up in the staged rows.
-          restore_cf early cloud/src/dump.ts 's/(    if \(page\.last\) settleFloor\(db, owner, limits, verifyRestored\(db\)\);)/$1\n    else settleFloor(db, owner, limits, { found: { highest: 0, earlier: 0 }, events: Number(db.get("SELECT COUNT(*) AS n FROM state_events")!.n) });/' "paged restore of a legacy project with no floor" 'differing(tablesOf(t.db), staged)'
+          restore_cf early cloud/src/dump.ts 's/(    if \(page\.last\) settleFloor\(db, owner, limits, verifyRestored\(db\), finalize\);)/$1\n    else settleFloor(db, owner, limits, { found: { highest: 0, earlier: 0 }, events: Number(db.get("SELECT COUNT(*) AS n FROM state_events")!.n) });/' "paged restore of a legacy project with no floor" 'differing(tablesOf(t.db), staged)'
           # Without the final limit check, the generated pair can cross a cap the imported rows fit under.
           restore_cf unmeasured cloud/src/dump.ts 's/^  assertLimits\(db, limits, "RESTORE_TOO_LARGE", "The restored project"\);/  void 0;/m' "whole restore whose generated event crosses" '[got.status, got.json.error?.code]'
           # A floor written after the restore transaction commits leaves the imported rows behind when it fails.
-          restore_cf outside cloud/src/dump.ts 's/(export function restoreDump\([^{]*\{\n  )return db\.transaction\(/$1const counted = db.transaction(/; s/    settleFloor\(db, owner, limits, restored\);\n    return counts\(dump\.tables\);\n  \}\);/    globalThis.restoredFor = restored;\n    return counts(dump.tables);\n  });\n  settleFloor(db, owner, limits, globalThis.restoredFor);\n  return counted;/' "whole restore whose floor record fails" 'tablesOf(failed.t.db)'
+          restore_cf outside cloud/src/dump.ts 's/(export function restoreDump\([^{]*\{\n  )return db\.transaction\(/$1const counted = db.transaction(/; s/    settleFloor\(db, owner, limits, restored, finalize\);\n    return counts\(dump\.tables\);\n  \}\);/    globalThis.restoredFor = restored;\n    return counts(dump.tables);\n  });\n  settleFloor(db, owner, limits, globalThis.restoredFor, finalize);\n  return counted;/' "whole restore whose floor record fails" 'tablesOf(failed.t.db)'
           # Counterfactuals for comment and link numbers after a delete (forge-1306). Numbering from the live count instead
           # of the floor must return the reused suffix at the explicit key comparison of each route test, after a valid 200.
           restore_cf reused src/core/state/index.ts 's/const number = last \+ 1;/const number = this.count(namespace, prefix) + 1;/' "cloud comment after deleted highest allocates above it" 'FAMILY[kind].key(got.json.result)).toBe(key)'
@@ -452,6 +453,8 @@ jobs:
     name: Cloud restore capacity (heap cap, CPU)
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    env:
+      CLOUD_RESTORE_STOP: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -482,18 +485,18 @@ jobs:
           cat "$RUNNER_TEMP/old.out"
           grep -Eq '^FAIL capacity real: page [0-9]+: 413 RESTORE_TOO_LARGE$' "$RUNNER_TEMP/old.out" || { echo "::error::the old caps did not refuse at admission"; exit 1; }
           [ "$(grep -c '^FAIL ' "$RUNNER_TEMP/old.out")" = 1 ] || { echo "::error::a row other than the real-size import failed"; exit 1; }
-      # Every restore is also compared with the source tables. With the last record of the 19,999 record shape (and its event)
+      # Every restore is also compared with the source tables. With the last record of the 19,997 record shape (and its event)
       # left out of the export, all pages still restore with 200, so only that comparison can fail the gate.
       - name: A short export fails the gate
         working-directory: cloud
         run: |
-          sed -i 's/^        yield { table: t, row };$/        if (row.key !== "k-19998") yield { table: t, row };/' src/dump.ts
-          grep -q 'row.key !== "k-19998"' src/dump.ts || { echo "::error::the counterfactual edit did not apply"; exit 1; }
+          sed -i 's/^        yield { table: t, row };$/        if (row.key !== "k-19996") yield { table: t, row };/' src/dump.ts
+          grep -q 'row.key !== "k-19996"' src/dump.ts || { echo "::error::the counterfactual edit did not apply"; exit 1; }
           if node conformance/capacity.ts measure rows-records > "$RUNNER_TEMP/short.out" 2>&1; then
             echo "::error::an export that drops a record passed the gate"; exit 1
           fi
           cat "$RUNNER_TEMP/short.out"
-          grep -Eq '^FAIL capacity rows-records: restored run 0: .*state_records has 19998 rows besides the generated floor, the source had 19999' "$RUNNER_TEMP/short.out" || { echo "::error::the gate did not report the dropped record"; exit 1; }
+          grep -Eq '^FAIL capacity rows-records: restored run 0: .*state_records has 19996 rows besides the generated floor, the source had 19997' "$RUNNER_TEMP/short.out" || { echo "::error::the gate did not report the dropped record"; exit 1; }
           [ "$(grep -c '^FAIL ' "$RUNNER_TEMP/short.out")" = 1 ] || { echo "::error::a row other than the short export failed"; exit 1; }
 
   bundle:
