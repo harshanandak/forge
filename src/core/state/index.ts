@@ -633,6 +633,11 @@ export function verifyEventDerivedState(
   const plans = new Map<string, ReceiptPlan | boolean>();
   const key = (namespace: string, name: string): string =>
     json([namespace, name]);
+  const allocator = new Map<string, number>();
+  for (const [namespace, prefix, , highest] of checkpoint?.floors ?? []) {
+    const id = key(namespace, prefix);
+    allocator.set(id, Math.max(allocator.get(id) ?? 0, highest));
+  }
   for (const [namespace, name, , revision, digest] of checkpoint?.live ?? []) {
     const id = key(namespace, name);
     records.set(id, { revision, digest: digest.slice("sha256:".length) });
@@ -716,6 +721,13 @@ export function verifyEventDerivedState(
       );
   };
   const reserved = (event: StateEvent): void => {
+    if (checkpoint && event.key.startsWith("allocation:")) {
+      const prefix = event.key.slice("allocation:".length);
+      const number = allocationFloorNumber(event.data, prefix);
+      const id = key(event.namespace, prefix);
+      if (number !== undefined)
+        allocator.set(id, Math.max(allocator.get(id) ?? 0, number));
+    }
     const prefix = groupOf(event.namespace, event.key, true);
     if (prefix !== undefined)
       try {
@@ -953,6 +965,16 @@ export function verifyEventDerivedState(
     });
   }
   if (sequence !== highWaterMark) reject("state_events", "high-water mark");
+  for (const [id, highest] of allocator) {
+    const [namespace, prefix] = JSON.parse(id) as [string, string];
+    let required = highest;
+    for (const record of recordRevisions.keys()) {
+      const [ns, name] = JSON.parse(record) as [string, string];
+      if (ns === namespace)
+        required = Math.max(required, suffixNumber(name, prefix) ?? 0);
+    }
+    allocator.set(id, required);
+  }
   const verifyRows = (
     table: string,
     columns: string,
@@ -986,6 +1008,7 @@ export function verifyEventDerivedState(
   };
   const verifyRecord = (row: SqlRow): void => {
     const id = rowKey("state_records", row, "key");
+    let allocatorRefused = false;
     inspect("state_records", id, () => {
       const record = parseRestoreJson(String(row.body)) as StateRecord;
       if (
@@ -998,9 +1021,20 @@ export function verifyEventDerivedState(
         record.revision !== Number(row.revision)
       )
         reject("state_records", id);
+      if (checkpoint && record.key.startsWith("allocation:")) {
+        const prefix = record.key.slice("allocation:".length);
+        const number = allocationFloorNumber(record.value, prefix);
+        if (
+          number !== undefined &&
+          number < (allocator.get(key(record.namespace, prefix)) ?? 0)
+        )
+          allocatorRefused = true;
+      }
       records.delete(id);
       number(row.namespace as string, row.key as string);
     });
+    if (allocatorRefused)
+      invalid("Checkpoint allocator authority requires repair");
   };
   verifyRows(
     "state_records",
@@ -1121,6 +1155,7 @@ export class StateOwner {
   readonly #clock: ClockPort;
   #knownMigrations = new Set(stateMigrations.map((migration) => migration.id));
   #domains: readonly ReviewedDomain[] = [];
+  #checkpointReady = false;
   constructor(db: SqlDatabase, clock: ClockPort) {
     this.#db = db;
     this.#clock = clock;
@@ -1162,6 +1197,22 @@ export class StateOwner {
           ]),
           stagedRestore,
         );
+        if (
+          !stagedRestore &&
+          this.#db.get(
+            "SELECT 1 WHERE " +
+              Object.keys(checkpointTables)
+                .map((table) => `EXISTS(SELECT 1 FROM ${table})`)
+                .join(" OR "),
+          )
+        )
+          verifyEventDerivedState(
+            this.#db,
+            Number(
+              this.#db.get("SELECT sequence FROM state_retention WHERE id=1")
+                ?.sequence,
+            ),
+          );
       },
     );
     this.#knownMigrations = new Set([
@@ -1171,17 +1222,19 @@ export class StateOwner {
       ),
     ]);
     this.#domains = domains;
+    this.#checkpointReady = true;
   }
 
-  /** Record-only prefixes; the retained log remains the verification source. */
   checkpoint(batch = 256): number {
     this.#db.transaction(() => {
       assertRetentionAuthority(this.#db);
-      const end = Number(
-        this.#db.get("SELECT sequence FROM state_retention WHERE id=1")
-          ?.sequence,
+      verifyEventDerivedState(
+        this.#db,
+        Number(
+          this.#db.get("SELECT sequence FROM state_retention WHERE id=1")
+            ?.sequence,
+        ),
       );
-      verifyEventDerivedState(this.#db, end, undefined, undefined, false);
     });
     return writeRecordCheckpoint(this.#db, batch);
   }
@@ -1845,6 +1898,20 @@ export class StateOwner {
     }
   }
 
+  #deletedRevision(namespace: string, key: string): number {
+    if (!this.#checkpointReady)
+      this.#checkpointReady = !!this.#db.get(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='state_checkpoint_deleted'",
+      );
+    const row = this.#checkpointReady
+      ? this.#db.get(
+          "SELECT revision FROM state_checkpoint_deleted WHERE namespace=? AND key=?",
+          [namespace, key],
+        )
+      : undefined;
+    return Number(row?.revision ?? 0);
+  }
+
   /** Write one record and its event; the caller has already checked every guard. */
   #apply(
     namespace: string,
@@ -1863,21 +1930,24 @@ export class StateOwner {
     // already holds the verified last revision (0 for a new key) passes it and skips the lookup.
     const revision =
       current?.revision ??
-      last ??
-      body<StateEvent>(
-        fresh
-          ? undefined
-          : this.#db.get(
-              "SELECT body FROM state_events WHERE namespace=? AND key=? AND json_extract(body,'$.type') IN (?,?) ORDER BY sequence DESC LIMIT 1",
-              [
-                namespace,
-                key,
-                `${namespace}:record.updated@1`,
-                `${namespace}:record.deleted@1`,
-              ],
-            ),
-      )?.revision ??
-      0;
+      (fresh
+        ? 0
+        : Math.max(
+            this.#deletedRevision(namespace, key),
+            last ??
+              body<StateEvent>(
+                this.#db.get(
+                  "SELECT body FROM state_events WHERE namespace=? AND key=? AND json_extract(body,'$.type') IN (?,?) ORDER BY sequence DESC LIMIT 1",
+                  [
+                    namespace,
+                    key,
+                    `${namespace}:record.updated@1`,
+                    `${namespace}:record.deleted@1`,
+                  ],
+                ),
+              )?.revision ??
+              0,
+          ));
     const record: StateRecord = {
       namespace,
       key,
@@ -2157,7 +2227,15 @@ export class StateOwner {
           invalid(`Snapshot version ${String(row.id)}; newest known ${newest}`);
       if (!applied.some((row) => row.id === baseline.id))
         invalid("Missing baseline");
-      assertNoCheckpoint(candidate);
+      if (
+        !applied.some((row) => row.id === "007_record_checkpoint") ||
+        Number(
+          candidate.get(
+            "SELECT format_version FROM state_checkpoint_header WHERE id=1",
+          )?.format_version,
+        ) !== 2
+      )
+        assertNoCheckpoint(candidate);
       assertRegistered(candidate);
       if (migrated && signature(candidate) !== expected)
         invalid("Snapshot schema or reviewed table registration differs");
