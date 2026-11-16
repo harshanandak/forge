@@ -108,18 +108,26 @@ test("installed tracker persists writes, fences sessions and refuses unavailable
     ).toBeGreaterThan(generation);
     await pass(loser, "release", { id });
 
+    const beforeComments = (await pass(1, "comments", { id })).records;
+    const beforeOutage = rig.responses.length;
     rig.outage(true);
     const unavailable = await call(0, "comment", {
       id,
       body: "must not persist",
     });
+    const outageResponses = rig.responses.slice(beforeOutage);
+    expect(outageResponses).toHaveLength(1);
+    expect(outageResponses[0]).toMatchObject({
+      status: 500,
+      body: { ok: false, error: { code: "INTERNAL" } },
+    });
     expect(unavailable.status).not.toBe(0);
     expect(unavailable.envelope).toMatchObject({
       ok: false,
-      error: { code: "UNAVAILABLE" },
+      error: { code: "INTERNAL" },
     });
     rig.outage(false);
-    expect((await pass(1, "comments", { id })).records).toHaveLength(1);
+    expect((await pass(1, "comments", { id })).records).toEqual(beforeComments);
     await rig.revoke(0);
     const revoked = await call(0, "comment", { id, body: "revoked write" });
     expect(revoked.status).not.toBe(0);

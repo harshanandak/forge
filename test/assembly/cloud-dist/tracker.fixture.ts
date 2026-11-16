@@ -15,6 +15,7 @@ export async function trackerRig(bin: string) {
     FORGE_CLOUD_ID_PREFIX: "forge",
   });
   const clients: CloudRig[] = [];
+  const responses: { status: number; body: unknown }[] = [];
   const ids: string[] = [];
   let unavailable = false;
   const forward = async (seen: Seen) => {
@@ -29,7 +30,9 @@ export async function trackerRig(bin: string) {
         ...(seen.body === undefined ? {} : { body: JSON.stringify(seen.body) }),
       }),
     );
-    return { status: response.status, body: await response.json() };
+    const answer = { status: response.status, body: await response.json() };
+    responses.push(answer);
+    return answer;
   };
   const close = async () => {
     try {
@@ -76,6 +79,7 @@ export async function trackerRig(bin: string) {
     }
     return {
       clients,
+      responses,
       outage(value: boolean) {
         unavailable = value;
       },
