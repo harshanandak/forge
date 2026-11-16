@@ -33,6 +33,10 @@ import {
   stateMigrations,
   migrate,
   type Migration,
+  retentionTables,
+  assertRetention,
+  assertRetentionAuthority,
+  stateColumns,
 } from "./migrations.ts";
 import { registerTables, exportTables, type DomainData } from "./domains.ts";
 import { parseRestoreJson } from "./restore-json.ts";
@@ -119,6 +123,7 @@ export interface ReviewedDomain {
   readonly reviewedDigest: string;
   readonly migrations: readonly Migration[];
   readonly tables: readonly string[];
+  readonly usage?: Record<string, readonly string[]>;
 }
 
 function invalid(message: string): never {
@@ -1071,7 +1076,11 @@ export function verifyEventDerivedState(
 }
 
 // Only these ledgers contain setup metadata that restore may replace in a nonempty store.
-const metadataTables = new Set(["state_migrations", "state_domains"]);
+const metadataTables = new Set([
+  "state_migrations",
+  "state_domains",
+  ...retentionTables,
+]);
 const stateDataTables = new Set([
   ...Object.keys(checkpointTables),
   "state_records",
@@ -1102,8 +1111,14 @@ export const WATERMARK_INDEX_PROBE =
 export const LEGACY_NAMESPACE_WATERMARK =
   "SELECT coalesce(MAX(sequence),0) AS revision FROM state_events WHERE namespace=?";
 export const NAMESPACE_WATERMARK =
+  "SELECT sequence AS revision FROM state_namespace_watermarks WHERE namespace=?";
+const RETENTION_PROBE =
+  "SELECT name FROM sqlite_master WHERE type='table' AND name='state_retention'";
+const INDEXED_WATERMARK =
   "SELECT sequence AS revision FROM state_events INDEXED BY state_events_by_namespace WHERE namespace=? ORDER BY sequence DESC LIMIT 1";
 export const WATERMARK_READ_SQL: readonly string[] = [
+  RETENTION_PROBE,
+  INDEXED_WATERMARK,
   WATERMARK_INDEX_PROBE,
   LEGACY_NAMESPACE_WATERMARK,
   NAMESPACE_WATERMARK,
@@ -1119,8 +1134,11 @@ export class StateOwner {
     this.#clock = clock;
   }
 
-  /** Explicit write setup; constructing an owner or reading never initializes a store. */
-  initialize(domains: readonly ReviewedDomain[] = []): void {
+  /** Explicit write setup; stagedRestore is only for unpublished restore pages. */
+  initialize(
+    domains: readonly ReviewedDomain[] = [],
+    stagedRestore = false,
+  ): void {
     for (const domain of domains) {
       namespaceValid(domain.namespace);
       if (
@@ -1144,6 +1162,14 @@ export class StateOwner {
           ),
         );
         assertRegistered(this.#db);
+        assertRetention(
+          this.#db,
+          Object.fromEntries([
+            ...Object.entries(stateColumns),
+            ...domains.flatMap((domain) => Object.entries(domain.usage ?? {})),
+          ]),
+          stagedRestore,
+        );
       },
     );
     this.#knownMigrations = new Set([
@@ -1190,9 +1216,11 @@ export class StateOwner {
     namespaceValid(namespace);
     const revision = Number(
       this.#db.get(
-        this.#db.get(WATERMARK_INDEX_PROBE)
+        this.#db.get(RETENTION_PROBE)
           ? NAMESPACE_WATERMARK
-          : LEGACY_NAMESPACE_WATERMARK,
+          : this.#db.get(WATERMARK_INDEX_PROBE)
+            ? INDEXED_WATERMARK
+            : LEGACY_NAMESPACE_WATERMARK,
         [namespace],
       )?.revision ?? 0,
     );
@@ -1340,10 +1368,12 @@ export class StateOwner {
   }
   #event(event: StateEvent): void {
     if (!validateStateEvent(event).ok) invalid("Invalid state event");
-    this.#db.run(
-      "INSERT INTO state_events(namespace,key,body) VALUES (?,?,?)",
+    const written = this.#db.run(
+      "INSERT INTO state_events(namespace,key,body,sequence) SELECT ?,?,?,sequence+1 FROM state_retention WHERE id=1 AND sequence>=0 AND sequence<9007199254740991",
       [event.namespace, event.key, json(event)],
     );
+    if (written.changes !== 1)
+      invalid("State retention sequence requires repair");
   }
   #held(namespace: string, fence: Fence, now: number): LeaseRecord {
     const current = this.lease(namespace, fence.subject);
@@ -1382,8 +1412,8 @@ export class StateOwner {
     }
     const result = work();
     this.#db.run(
-      "INSERT INTO state_requests(namespace,request_id,fingerprint,result) VALUES (?,?,?,?)",
-      [namespace, requestId, fingerprint, json(result)],
+      "INSERT INTO state_requests(namespace,request_id,fingerprint,result,created_at) VALUES (?,?,?,?,?)",
+      [namespace, requestId, fingerprint, json(result), this.#now()],
     );
     return result;
   }
@@ -1552,8 +1582,8 @@ export class StateOwner {
   /**
    * Write the next unused number under `prefix`. A floor record at `allocation:<prefix>` holds the
    * highest number ever allocated; the owner reads it, builds the record at floor + 1, and advances
-   * the floor in one transaction, so a deleted number is never reused. A missing floor is first
-   * computed from live keys and all matching history, inside this same lock.
+   * the floor in one transaction, so a deleted number is never reused. A first floor is computed
+   * from live keys and durable reservations, inside this same lock. A lost established floor refuses.
    */
   putNext(
     namespace: string,
@@ -1607,6 +1637,7 @@ export class StateOwner {
         actor,
         now,
         undefined,
+        true,
       );
       return record;
     });
@@ -1715,7 +1746,7 @@ export class StateOwner {
     return floorNumber(stored.value, prefix);
   }
 
-  /** The highest number under a prefix among live keys, all matching history and a deleted floor. */
+  /** Retained key reservations survive event pruning; an established floor is never reconstructed here. */
   #highest(
     namespace: string,
     prefix: string,
@@ -1726,23 +1757,24 @@ export class StateOwner {
     const span = `namespace=? AND key>=?${upper === undefined ? "" : " AND key<?"}`;
     const bounds =
       upper === undefined ? [namespace, prefix] : [namespace, prefix, upper];
-    const types = [
-      `${namespace}:record.updated@1`,
-      `${namespace}:record.deleted@1`,
-    ];
-    const typed = " AND json_extract(body,'$.type') IN (?,?)";
+    if (
+      this.#db.get(
+        "SELECT 1 FROM state_allocation_keys WHERE namespace=? AND key=?",
+        [namespace, floorKey],
+      )
+    )
+      invalid(
+        "Missing allocation floor; restore a verified backup or repair the store",
+      );
     if (refuse !== undefined) {
-      // Two probes say whether any old state exists. LIMIT 1 bounds the rows returned, not the rows
-      // examined, and this runs only while no floor exists, so it is a one-time cost bounded by the
-      // project's existing event count.
       const old =
         this.#db.get(
           `SELECT 1 AS n FROM state_records WHERE ${span} LIMIT 1`,
           bounds,
         ) ??
         this.#db.get(
-          `SELECT 1 AS n FROM state_events WHERE ${span}${typed} LIMIT 1`,
-          [...bounds, ...types],
+          `SELECT 1 AS n FROM state_allocation_keys WHERE ${span} LIMIT 1`,
+          bounds,
         );
       if (old)
         throw new ForgeFailure({
@@ -1753,21 +1785,13 @@ export class StateOwner {
       return 0;
     }
     // Only the numeric suffix leaves SQLite; the longest, then largest, decimal string is the maximum.
-    const top = (table: string, filter: string, extra: string[]) =>
+    const top = (table: string) =>
       this.#db.get(
-        `SELECT n FROM (SELECT substr(key,?) AS n FROM ${table} WHERE ${span}${filter}) WHERE n GLOB '[1-9]*' AND n NOT GLOB '*[^0-9]*' ORDER BY length(n) DESC, n DESC LIMIT 1`,
-        [Array.from(prefix).length + 1, ...bounds, ...extra],
+        `SELECT n FROM (SELECT substr(key,?) AS n FROM ${table} WHERE ${span}) WHERE n GLOB '[1-9]*' AND n NOT GLOB '*[^0-9]*' ORDER BY length(n) DESC, n DESC LIMIT 1`,
+        [Array.from(prefix).length + 1, ...bounds],
       )?.n;
-    const earlier = this.#db.get(
-      "SELECT MAX(json_extract(body,'$.data.number')) AS n FROM state_events WHERE namespace=? AND key=? AND json_extract(body,'$.type')=?",
-      [namespace, floorKey, types[0]!],
-    )?.n;
     return Math.max(
-      ...[
-        top("state_records", "", []),
-        top("state_events", typed, types),
-        earlier,
-      ].map((value) => {
+      ...[top("state_records"), top("state_allocation_keys")].map((value) => {
         const number = Number(value ?? 0);
         if (!Number.isSafeInteger(number))
           invalid("Allocation history holds an unsafe number");
@@ -2035,7 +2059,9 @@ export class StateOwner {
         // separately so losing the final operation cannot shorten history silently.
         eventHighWaterMark: Number(
           db.get(
-            "SELECT COALESCE(MAX(sequence),0) AS sequence FROM state_events",
+            db.get(RETENTION_PROBE)
+              ? "SELECT sequence FROM state_retention WHERE id=1"
+              : "SELECT COALESCE(MAX(sequence),0) AS sequence FROM state_events",
           )?.sequence,
         ),
         domains: exportTables(db),
@@ -2100,6 +2126,7 @@ export class StateOwner {
     const expectedLedger = this.#db.get(ledger)?.sql;
     let migrated = false;
     const empty = (): void => {
+      assertRetentionAuthority(this.#db, true);
       for (const table of dataTables(this.#db))
         if (
           this.#db.get(`SELECT 1 FROM "${table.replaceAll('"', '""')}" LIMIT 1`)
@@ -2132,6 +2159,7 @@ export class StateOwner {
         undefined,
         applied.some((row) => row.id === "004_state_checkpoint"),
       );
+      assertRetentionAuthority(candidate);
     };
     imageStore.restoreImage(
       image,
@@ -2189,10 +2217,7 @@ export class StateOwner {
           "UPDATE state_leases SET body=? WHERE namespace=? AND subject=?",
           [json(released), row.namespace!, row.subject!],
         );
-        this.#db.run(
-          "INSERT INTO state_events(namespace,key,body) VALUES (?,?,?)",
-          [row.namespace!, row.subject!, json(event)],
-        );
+        this.#event(event);
         releasedCount++;
       }
       return releasedCount;

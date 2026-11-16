@@ -470,7 +470,7 @@ test(
 );
 
 test(
-  "a missing floor is backfilled once, inside the lock, and later creates read no history",
+  "a first floor uses durable reservations inside the lock, and all creates read no history",
   run((f) => {
     f.seed([issue(1), issue(2)]);
     const second = { expectRevision: 1 };
@@ -478,7 +478,10 @@ test(
     remove(f, 2, 2);
     f.log.length = 0;
     expect(create(f, "Three")).toBe("work-3");
-    const first = historyReads(f.log);
+    const first = reads(f.log).filter((access) =>
+      access.sql.includes("state_allocation_keys"),
+    );
+    expect(historyReads(f.log)).toEqual([]);
     expect(first.length).toBeGreaterThan(0);
     expect(first.every((access) => access.locked)).toBe(true);
     f.log.length = 0;

@@ -7,9 +7,10 @@ import { pathToFileURL } from "node:url";
 import {
   DUMP_MIGRATION,
   IMPORT_MIGRATION,
+  DUMP_USAGE_SQL,
   limitsFrom,
 } from "../../cloud/src/dump.ts";
-import { Project } from "../../cloud/src/project.ts";
+import { Project, domain } from "../../cloud/src/project.ts";
 import {
   readOnlyStore,
   durableStore,
@@ -69,7 +70,7 @@ import type {
 import { restoredTables, stoppedTables } from "./restore-expect.fixture.ts";
 import { releasedTables } from "../../cloud/conformance/restored.ts";
 import { refuse } from "../../src/core/trust/index.ts";
-import { stateMigrations } from "../../src/core/state/migrations.ts";
+import { migrate, stateMigrations } from "../../src/core/state/migrations.ts";
 import type { SqlDatabase, SqlRow, SqlValue } from "../../src/ports/store.ts";
 import { exitCode } from "../../src/surface/result.ts";
 import {
@@ -325,15 +326,28 @@ function fixture(
     calls,
     // The work tables, from the state owner's own migrations, and rows the way the owner stores them.
     tables: () => {
-      for (const { statements } of stateMigrations)
-        for (const sql of statements) db.run(sql);
+      const applied = new Set(
+        db
+          .query("SELECT name FROM sqlite_master WHERE name='state_migrations'")
+          .get()
+          ? (
+              db.query("SELECT id FROM state_migrations").all() as {
+                id: string;
+              }[]
+            ).map((row) => row.id)
+          : [],
+      );
+      migrate(durableStore(storage), [
+        ...stateMigrations,
+        ...domain.migrations.filter((m) => applied.has(m.id)),
+      ]);
     },
     put: (
       value: unknown,
       over: object = {},
       key = "issue:work-1",
       ns = "forge/work",
-    ) =>
+    ) => {
       db.run(
         "INSERT INTO state_records(namespace,key,revision,body) VALUES (?,?,3,?)",
         [
@@ -349,7 +363,18 @@ function fixture(
             ...over,
           }),
         ],
-      ),
+      );
+      if (
+        db
+          .query(
+            "SELECT 1 FROM sqlite_master WHERE name='state_allocation_keys'",
+          )
+          .get()
+      )
+        db.query(
+          "INSERT OR IGNORE INTO state_allocation_keys VALUES (?,?)",
+        ).run(ns, key);
+    },
     lease: (over: object = {}, subject = "issue:work-1") => {
       const body = grant({ subject, ...over });
       db.run("DELETE FROM state_leases WHERE subject=?", [subject]);
@@ -529,17 +554,37 @@ async function stateFixture(namespaces = stateNamespaces) {
     return got;
   };
   const stable = () => {
+    for (const sql of DUMP_USAGE_SQL) {
+      const table = sql.split(" FROM ")[1]!;
+      expect(
+        f.db
+          .query("SELECT rows AS n,bytes FROM state_usage WHERE table_name=?")
+          .get(table),
+      ).toEqual(f.db.query(sql).get());
+    }
     const snapshot = JSON.parse(f.snapshot()) as {
       sql: [string, unknown][];
       kv: unknown;
     };
     return JSON.stringify({
       ...snapshot,
-      sql: snapshot.sql.filter(
-        ([name]) =>
-          name !== "domain_cloud_command_receipts" &&
-          name !== "domain_cloud_export",
-      ),
+      sql: snapshot.sql
+        .map(
+          ([name, rows]) =>
+            [
+              name,
+              name === "state_usage"
+                ? (rows as { table_name: string }[]).filter(
+                    (row) => row.table_name !== "domain_cloud_command_receipts",
+                  )
+                : rows,
+            ] as [string, unknown],
+        )
+        .filter(
+          ([name]) =>
+            name !== "domain_cloud_command_receipts" &&
+            name !== "domain_cloud_export",
+        ),
     });
   };
   const successes = () =>
@@ -8347,7 +8392,7 @@ for (const kind of NUMBERED)
   }, 60_000);
 
 for (const kind of NUMBERED)
-  test(`a ${kind} floor is derived once from history, inside the write, and later adds read no history`, async () => {
+  test(`a ${kind} first floor uses durable reservations and all adds read no history`, async () => {
     const { f, token } = await accepted([1], [2], false);
     const seen = spyOn(f.storage.sql, "exec");
     const history = () =>
@@ -8356,7 +8401,12 @@ for (const kind of NUMBERED)
           /FROM state_events/.test(sql) && bindings[0] === "forge/work",
       );
     await add(kind, f, token, "d-1", 3);
-    expect(history().length).toBeGreaterThan(0);
+    expect(history()).toEqual([]);
+    expect(
+      seen.mock.calls.some(([sql]) =>
+        /^SELECT .* FROM state_allocation_keys/.test(sql),
+      ),
+    ).toBe(true);
     seen.mockClear();
     await add(kind, f, token, "d-2", 4);
     expect(history()).toEqual([]);
@@ -11119,7 +11169,7 @@ for (const trip of TRIPS)
 for (const trip of TRIPS)
   for (const [what, table] of [
     ["record", /^INSERT INTO state_records/],
-    ["event", /^INSERT INTO state_events\(namespace,key,body\)/],
+    ["event", /^INSERT INTO state_events\(namespace,key,body(?:,sequence)?\)/],
     ["readback", /^SELECT body, \(SELECT MAX\(sequence\)/],
   ] as const)
     test(`a ${trip} restore whose floor ${what} fails rolls everything back, and a retry saves the same floor`, async () => {
@@ -11484,12 +11534,12 @@ for (const trip of TRIPS) {
     ["link floor record", /^INSERT INTO state_records/, numKey("link")],
     [
       "comment floor event",
-      /^INSERT INTO state_events\(namespace,key,body\)/,
+      /^INSERT INTO state_events\(namespace,key,body(?:,sequence)?\)/,
       numKey("comment"),
     ],
     [
       "link floor event",
-      /^INSERT INTO state_events\(namespace,key,body\)/,
+      /^INSERT INTO state_events\(namespace,key,body(?:,sequence)?\)/,
       numKey("link"),
     ],
     ["floor readback", /^SELECT body, \(SELECT MAX\(sequence\)/, undefined],

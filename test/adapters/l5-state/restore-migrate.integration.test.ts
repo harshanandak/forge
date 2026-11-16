@@ -42,24 +42,55 @@ async function open(file = false, hooks: RestoreHooks = {}) {
   };
 }
 
+/** Build valid rows with today's owner, then copy only the baseline columns into the old image. */
+async function seedBaseline<T>(
+  source: Awaited<ReturnType<typeof open>>,
+  build: (owner: StateOwner) => T,
+): Promise<T> {
+  const current = await open();
+  try {
+    current.owner.initialize();
+    const result = build(current.owner);
+    source.db.transaction(() => {
+      for (const table of [
+        "state_records",
+        "state_events",
+        "state_leases",
+        "state_requests",
+      ]) {
+        const columns = source.db
+          .all(`PRAGMA table_info(${table})`)
+          .map((row) => String(row.name));
+        for (const row of current.db.all(
+          `SELECT ${columns.join(",")} FROM ${table}`,
+        ))
+          source.db.run(
+            `INSERT INTO ${table} (${columns.join(",")}) VALUES (${columns.map(() => "?").join(",")})`,
+            columns.map((column) => row[column]!),
+          );
+      }
+    });
+    return result;
+  } finally {
+    await current.close();
+  }
+}
+
 for (const file of [false, true]) {
   test(`restore migrates a baseline snapshot and retains records, events, leases and receipts (${file ? "file" : "memory"})`, async () => {
     const source = await open();
     const target = await open(file);
     try {
       const options = { expectRevision: 0, requestId: "write" };
-      const record = source.owner.put(
-        ns,
-        "key",
-        { saved: true },
-        actor,
-        options,
-      );
-      const lease = source.owner.acquire(ns, "subject", holder, 100, "claim");
-      source.owner.release(ns, {
-        subject: "subject",
-        holder,
-        generation: lease.generation,
+      const record = await seedBaseline(source, (owner) => {
+        const record = owner.put(ns, "key", { saved: true }, actor, options);
+        const lease = owner.acquire(ns, "subject", holder, 100, "claim");
+        owner.release(ns, {
+          subject: "subject",
+          holder,
+          generation: lease.generation,
+        });
+        return record;
       });
       const snapshot = source.owner.export();
       expect(source.db.all("SELECT id FROM state_migrations")).toEqual([
@@ -283,7 +314,9 @@ test("restore rejects history damaged by a migration before fencing or renaming"
   const steps: string[] = [];
   const target = await open(true, { step: (step) => steps.push(step) });
   try {
-    source.owner.put(ns, "key", true, actor, { expectRevision: 0 });
+    await seedBaseline(source, (owner) =>
+      owner.put(ns, "key", true, actor, { expectRevision: 0 }),
+    );
     target.owner.initialize([
       {
         namespace: ns,
@@ -402,7 +435,9 @@ test("restoring a baseline snapshot releases an unreleased lease and preserves r
   const source = await open();
   const target = await open();
   try {
-    source.owner.acquire(ns, "subject", holder, 100, "claim");
+    await seedBaseline(source, (owner) =>
+      owner.acquire(ns, "subject", holder, 100, "claim"),
+    );
     const snapshot = source.owner.export();
     target.owner.initialize();
     target.owner.restore(snapshot);
@@ -426,7 +461,9 @@ test("restore verifies baseline history before running a staged migration", asyn
   const target = await open();
   try {
     target.owner.initialize();
-    source.owner.put(ns, "key", true, actor, { expectRevision: 0 });
+    await seedBaseline(source, (owner) =>
+      owner.put(ns, "key", true, actor, { expectRevision: 0 }),
+    );
     source.db.exec("DELETE FROM state_records");
     const before = target.owner.export();
     let prepared = false;
