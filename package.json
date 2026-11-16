@@ -91,6 +91,7 @@
   "devDependencies": {
     "@types/bun": "1.4.4",
     "@types/node": "24.19.2",
-    "typescript": "7.0.2"
+    "typescript": "7.0.2",
+    "typescript-parser": "npm:typescript@6.0.2"
   }
 }

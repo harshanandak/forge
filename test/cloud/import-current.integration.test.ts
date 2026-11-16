@@ -462,6 +462,9 @@ test.each(["missing", "wrong", "matching"])(
         ["forge/memory", "transfer/synthetic"],
         ["forge/memory", "meta/synthetic"],
         ["forge/core-project", "identity"],
+        ["forge/work", "autopilot-ask:work-1"],
+        ["forge/work", "autopilot-clock:work-1"],
+        ["forge/work", "autopilot-event:work-1:1"],
       ])
         state.put(
           namespace!,
@@ -497,6 +500,9 @@ test.each(["missing", "wrong", "matching"])(
       { namespace: "forge/memory", shape: "meta/*", count: 1 },
       { namespace: "forge/memory", shape: "note/*", count: 1 },
       { namespace: "forge/memory", shape: "transfer/*", count: 1 },
+      { namespace: "forge/work", shape: "autopilot-ask:*", count: 1 },
+      { namespace: "forge/work", shape: "autopilot-clock:*", count: 1 },
+      { namespace: "forge/work", shape: "autopilot-event:*", count: 1 },
     ]);
     const acknowledge =
       kind === "matching"
