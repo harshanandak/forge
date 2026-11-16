@@ -39,13 +39,16 @@ export class RecordFamilyRegistry {
           )
             refuse("STATE_FAMILY_DECLARATION");
           return Object.freeze({
-            key: new RegExp(family.key.source, family.key.flags),
+            key: new RegExp(`^(?:${family.key.source})$`, family.key.flags),
             admit: family.admit,
           });
         },
       );
       this.#namespaces.set(declaration.namespace, Object.freeze(families));
     }
+  }
+  enrolled(namespace: string): boolean {
+    return this.#namespaces.has(namespace);
   }
   #match(namespace: string, key: string): RecordFamilyPolicy | undefined {
     const families = this.#namespaces.get(namespace);

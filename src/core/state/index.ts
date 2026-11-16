@@ -2200,6 +2200,9 @@ export class StateOwner {
     });
     return { ...snapshot!, image: Buffer.from(image).toString("base64") };
   }
+  hasRecordFamilies(namespace: string): boolean {
+    return this.#families.enrolled(namespace);
+  }
   assertRecordFamily(record: StateRecord): void {
     if (!validateStateRecord(record).ok) invalid("Invalid imported record");
     this.#families.assertValue(record.namespace, record.key, record.value);
