@@ -16,6 +16,8 @@ import {
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { packedConsumer } from "../../integration/packed-consumer.ts";
+import { gitExecutable } from "../../../tools/git-executable.ts";
+import { gitFixtureDirectory } from "../../fixtures/git-resolution.ts";
 
 type Reply = {
   ok: boolean;
@@ -706,13 +708,9 @@ test("installed accounts: one approval catches wrong authors and binds every clo
       "origin",
       "https://github.com/alice/no-gh.git",
     );
-    const gitOnly = mkdtempSync(
-      join(process.env.RUNNER_TEMP ?? tmpdir(), "..", "forge-git-only-"),
-    );
+    const gitOnly = gitFixtureDirectory("forge-git-only-");
     try {
-      const gitPath =
-        process.platform === "win32" ? Bun.which("git") : "/usr/bin/git";
-      if (!gitPath) throw new Error("Git required");
+      const gitPath = gitExecutable();
       if (process.platform !== "win32")
         symlinkSync(gitPath, join(gitOnly, "git"));
       const gitOnlyPath =

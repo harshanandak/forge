@@ -16,10 +16,12 @@ import {
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
+import { gitExecutable } from "../../../tools/git-executable.ts";
+import { gitFixtureDirectory } from "../../fixtures/git-resolution.ts";
 
 const windows = process.platform === "win32";
 const node = Bun.which("node")!;
-const git = realpathSync.native(windows ? Bun.which("git")! : "/usr/bin/git");
+const git = gitExecutable();
 const fixture = join(import.meta.dirname, "git-location.fixture.ts");
 const rows: readonly (readonly [string, string, string, boolean])[] = [
   ["project bin", "bin", ".git", false],
@@ -52,12 +54,9 @@ test.each(rows)(
     const homeRow =
       name.startsWith("home ") || name === "repository under home";
     const root = realpathSync.native(
-      mkdtempSync(
-        join(
-          homeRow ? join(process.env.RUNNER_TEMP ?? tmpdir(), "..") : tmpdir(),
-          "forge-git-location-",
-        ),
-      ),
+      homeRow
+        ? gitFixtureDirectory("forge-git-location-")
+        : mkdtempSync(join(tmpdir(), "forge-git-location-")),
     );
     try {
       const project = join(root, "project");

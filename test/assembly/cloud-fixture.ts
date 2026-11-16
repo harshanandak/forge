@@ -16,6 +16,8 @@ import { delimiter, join, relative } from "node:path";
 import { createProcessPort } from "../../src/adapters/process/index.ts";
 import { realFileProbe } from "../../src/adapters/process/resolve.ts";
 import { spawnSync } from "node:child_process";
+import { gitExecutable } from "../../tools/git-executable.ts";
+import { gitFixtureDirectory } from "../fixtures/git-resolution.ts";
 import { reopenGitScope } from "../../src/assembly/saved-git-scope.ts";
 import type { CloudFetch } from "../../src/adapters/http/index.ts";
 import type {
@@ -28,11 +30,9 @@ export type ScopedGitApi = Pick<
   "gitCapability" | "resolveOutside"
 >;
 
-/** Temporary siblings of runner scratch stay outside checkout and OS-temp exclusions. */
+/** Git fixtures must stay outside checkout and OS-temp exclusions. */
 export function gitFixtureTemp(prefix: string): string {
-  const root = process.env.RUNNER_TEMP;
-  if (!root) throw new Error("Git security fixtures require RUNNER_TEMP");
-  return mkdtempSync(join(root, "..", prefix));
+  return gitFixtureDirectory(prefix);
 }
 export function directoryLink(target: string, link: string): void {
   symlinkSync(target, link, process.platform === "win32" ? "junction" : "dir");
@@ -42,9 +42,7 @@ export function persistedRootsFixture() {
   const dir = gitFixtureTemp("forge-saved-roots-");
   const project = join(dir, "project"),
     outside = mkdtempSync(join(tmpdir(), "forge-saved-lane-"));
-  const trusted = realpathSync.native(
-    process.platform === "win32" ? Bun.which("git")! : "/usr/bin/git",
-  );
+  const trusted = gitExecutable();
   const git = (args: string[]) => {
     const result = spawnSync(trusted, args, {
       encoding: "utf8",

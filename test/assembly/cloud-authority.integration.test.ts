@@ -8,6 +8,7 @@ import {
   test,
 } from "bun:test";
 import { spawnSync } from "node:child_process";
+import { gitExecutable } from "../../tools/git-executable.ts";
 import {
   cpSync,
   existsSync,
@@ -2573,13 +2574,7 @@ for (const [name, expected] of [
                 ...new Set(
                   projectGit.mock.calls.map(([executable]) => executable),
                 ),
-              ]).toEqual([
-                realpathSync.native(
-                  process.platform === "win32"
-                    ? Bun.which("git")!
-                    : "/usr/bin/git",
-                ),
-              ]);
+              ]).toEqual([gitExecutable()]);
             } finally {
               await files.close();
             }

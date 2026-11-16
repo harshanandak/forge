@@ -47,9 +47,10 @@ export function laneTier(worktree: string): LaneTier {
     config = Bun.YAML.parse(
       git(worktree, ["show", `${origin}:.forge/config.yaml`]),
     );
-  } catch {
+  } catch (error) {
     throw new Error(
-      "cannot read trusted tier policy from origin/main:.forge/config.yaml",
+      `cannot read trusted tier policy from origin/main:.forge/config.yaml: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
     );
   }
   const tiers: unknown =
