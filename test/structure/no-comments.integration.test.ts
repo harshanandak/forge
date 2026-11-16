@@ -16,6 +16,13 @@ for (const [name, source, kind, line] of [
   ["template expression", "const x = `${1 /* why */}`;", "block comment", 1],
   ["JSX expression", "const x = <p>{1 /* why */}</p>;", "block comment", 1],
   ["test file", "test('works', () => {}); // why", "line comment", 1],
+  ["bare CR", "const x = 1;\r// why", "line comment", 1],
+  [
+    "Unicode separator",
+    `const x = "${String.fromCharCode(0x2028)}"; // why`,
+    "line comment",
+    1,
+  ],
 ] as const) {
   test(`new ${name} comment is refused with file and line`, () => {
     const file = name === "test file" ? "test/x.test.ts" : "src/x.tsx";
@@ -211,3 +218,41 @@ test("a failed git read is incomplete", () => {
     "INCOMPLETE",
   );
 }, 30_000);
+
+for (const attribute of ["", "*.ts binary\n"]) {
+  test(
+    `edited code must drop its inline comment with attributes ${JSON.stringify(attribute)}`,
+    () =>
+      repository((root, git, put) => {
+        put("src/x.ts", "export const x = 1; // existing\n");
+        put(".gitattributes", attribute);
+        git("add", ".");
+        git("commit", "-qm", "inline baseline");
+        git("branch", "inline");
+        put("src/x.ts", "export const x = 2; // existing\n");
+        git("add", ".");
+        git("commit", "-qm", "edited code");
+        expect(checkComments({ root, base: "inline" }).violations).toEqual([
+          { file: "src/x.ts", line: 1, kind: "line comment" },
+        ]);
+      }),
+    30_000,
+  );
+}
+for (const extension of [
+  "ts",
+  "cts",
+  "mts",
+  "js",
+  "cjs",
+  "mjs",
+  "tsx",
+  "jsx",
+]) {
+  test(`${extension} source comments are recognized`, () => {
+    const file = `src/x.${extension}`;
+    expect(addedComments(file, "const x = 1; // why", new Set([1]))).toEqual([
+      { file, line: 1, kind: "line comment" },
+    ]);
+  }, 30_000);
+}

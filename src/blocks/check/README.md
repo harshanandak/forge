@@ -1,5 +1,16 @@
 # Declared-command execution
 
+The optional `forge-workflow/checks/no-comments` export checks committed JS/TS/JSX
+comments against added merge-base diff lines. Declare a command with argv
+`["node", "--input-type=module", "--eval", "import {main} from 'forge-workflow/checks/no-comments'; main()"]`.
+Pass `main(["--base", "origin/main", "--root", "src", "--root", "test"])` to choose
+the base and roots; defaults are `origin/main` and every tracked code file.
+Run `forge check run --input '{"checks":["no-comments"]}'` before pushing and run
+the same command in CI with head checked out and base history fetched.
+Changed and moved comment lines fail; unchanged comments and pure same-scope renames pass.
+Only explicit tool directives pass; license prose fails. Missing Git/base/parser evidence
+is INCOMPLETE (exit 2), findings FAIL (exit 1), and a complete clean comparison PASS (exit 0).
+
 `forge pr merge <n>` runs the private gate, then `gh pr merge <n> --squash --match-head-commit <head>` pinned to its head.
 Its 121.5-second budget gives the gate 65 seconds (standalone: 60), reserving 56.5 for merge, readback, process cleanup and finalization.
 Gate timeouts report `INVOCATION_TIMEOUT`. Only readback showing MERGED at the pin with a valid merge commit proves success, even after a write timeout.

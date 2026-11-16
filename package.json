@@ -16,6 +16,7 @@
     "forge": "dist/bin/forge.js"
   },
   "exports": {
+    "./checks/no-comments": "./dist/tools/checks/no-comments.js",
     ".": {
       "types": "./dist/src/index.d.ts",
       "default": "./dist/src/index.js"
@@ -84,6 +85,7 @@
     "postbuild": "bun tools/build-assets.ts && bun tools/bundle-yaml.ts"
   },
   "dependencies": {
+    "@babel/parser": "8.1.2",
     "@modelcontextprotocol/server": "2.3.1",
     "koffi": "3.3.3",
     "yaml": "2.9.1"

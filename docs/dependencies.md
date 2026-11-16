@@ -46,6 +46,17 @@ Each one gets an entry here and an adapter in the same pull request.
 - **Swap proof:** only src/adapters/process/ loads Koffi, behind ProcessPort. The Windows native integration and packed detached-descendant journey exercise lifetime, typed refusal and confirmed cleanup. Another Job Object binding changes only this adapter.
 - **Adapter:** src/adapters/process/ implements src/ports/process.ts. Linux and macOS end process groups with Node built-ins and load no FFI library.
 
+### @babel/parser
+
+- **Saves:** context-aware JS/TS/JSX comment ranges without writing a lexer or mistaking literal punctuation for comments.
+- **Maintenance:** Babel team; pinned 8.1.2. [Parser API](https://babeljs.io/docs/babel-parser).
+- **Transitive packages:** @babel/types 8.1.2, @babel/helper-string-parser 8.1.2, @babel/helper-validator-identifier 8.0.6; lockfile pins all three.
+- **Fit:** runtime dependency of the published Node checker; supports the package's Node versions. Installed file bytes including those dependencies: 1,981,595 (1.89 MiB), excluding filesystem allocation overhead.
+- **Licence:** MIT for all four packages.
+- **Trust:** official Babel packages; exact parser version and lockfile integrity hashes; no install scripts added.
+- **Swap proof:** the SourceCommentsPort contract rows cover comment ranges, literals, JSX and TS; replacing the parser changes only its adapter.
+- **Adapter:** `src/adapters/source-comments/` implements `src/ports/source-comments.ts`.
+
 ## Development dependencies
 
 ### typescript
