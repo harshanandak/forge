@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
-import { readdirSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { join, resolve, relative } from "node:path";
 import * as ts from "typescript/unstable/ast";
 import {
@@ -84,11 +86,7 @@ export function scanWriters(
       ts.isObjectBindingPattern(node) ||
       ts.isArrayBindingPattern(node) ||
       assignmentPattern(node);
-    const type = pattern
-      ? assignmentPattern(node)
-        ? checker.getTypeAtLocation(node)
-        : checker.getTypeAtLocation(node)
-      : undefined;
+    const type = pattern ? checker.getTypeAtLocation(node) : undefined;
     if (
       pattern &&
       (!type ||
@@ -215,6 +213,18 @@ export function scanProjectWriters(
   root: string,
   fixture?: { file: string; text: string },
 ): WriterSite[] {
+  if (process.versions.bun) {
+    const reply = spawnSync("node", [fileURLToPath(import.meta.url), root], {
+      input: JSON.stringify(fixture ?? null),
+      encoding: "utf8",
+      timeout: 30_000,
+      maxBuffer: 8 * 1024 * 1024,
+    });
+    if (reply.error) throw reply.error;
+    if (reply.status !== 0)
+      throw new Error(reply.stderr || "Writer scan refused");
+    return JSON.parse(reply.stdout) as WriterSite[];
+  }
   const normalized = (file: string) => resolve(file).replaceAll("\\", "/");
   const source = join(root, "src"),
     config = normalized(join(root, ".writer-scan.tsconfig.json"));
@@ -258,3 +268,19 @@ export function scanProjectWriters(
     api.close();
   }
 }
+
+if (
+  process.argv[1] &&
+  resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+)
+  process.stdout.write(
+    JSON.stringify(
+      scanProjectWriters(
+        process.argv[2]!,
+        (JSON.parse(readFileSync(0, "utf8")) as {
+          file: string;
+          text: string;
+        } | null) ?? undefined,
+      ),
+    ),
+  );
