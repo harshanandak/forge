@@ -4,6 +4,11 @@ import { limitsFrom, restorePage } from "../../cloud/src/dump.ts";
 import { domain } from "../../cloud/src/project.ts";
 import * as impl from "../../tools/import-current-state.ts";
 import * as f from "./import-current-state.fixture.ts";
+import { createStateClient } from "../../src/assembly/state-client.ts";
+import { refuse } from "../../src/core/trust/index.ts";
+import { validateAttempt } from "../../src/generated/validators.ts";
+import type { HandlerCall } from "../../src/contract/author.ts";
+import type { Attempt } from "../../src/generated/types.ts";
 
 setDefaultTimeout(30_000);
 
@@ -78,6 +83,44 @@ test("all seven writer families survive projection and paged readback", () => {
   for (const [key, value] of workShapes) eq(owner.get(f.ns, key)?.value, value);
   eq(target.all("SELECT * FROM state_leases"), []);
   console.log("forge-1453 synthetic projection", JSON.stringify(projected));
+  const handlers = require("../../src/blocks/work/entry.cts") as Record<
+    string,
+    (call: Partial<HandlerCall<Record<string, unknown>>>) => {
+      attempts: Attempt[];
+    }
+  >;
+  const globals = globalThis as Record<string, unknown>,
+    previous = globals.fail;
+  globals.fail = refuse;
+  try {
+    const before = f.snapshot(target);
+    const shown = handlers["issue.show"]!({
+      input: { id: "work-1" },
+      config: { idPrefix: "work" },
+      services: {
+        state: createStateClient({
+          owner,
+          namespace: f.ns,
+          write: false,
+          requestId: "restored-show",
+          context: {
+            variant: "project",
+            actor: f.actor,
+            project: { id: "fixture" },
+          },
+        }),
+      },
+    });
+    const attempt = shown.attempts[0]!;
+    eq([attempt.id, attempt.live, attempt.evidence], ["attempt-1", false, 1]);
+    eq([attempt.generation, attempt.expiresAt], [undefined, undefined]);
+    eq(validateAttempt(attempt).ok, true);
+    eq(validateAttempt({ ...attempt, live: true }).ok, false);
+    eq(f.snapshot(target), before);
+  } finally {
+    if (previous === undefined) delete globals.fail;
+    else globals.fail = previous;
+  }
 });
 
 test.each([

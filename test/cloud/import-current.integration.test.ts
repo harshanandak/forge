@@ -522,6 +522,32 @@ test.each(["missing", "wrong", "matching"])(
       eq(bundle.rows.state_leases, 0);
       eq(bundle.leftBehind.sha256, acknowledge);
       eq(readFileSync(join(next, "left-behind.json"), "utf8"), text);
+      const measure = () =>
+        spawnSync(
+          "node",
+          ["cloud/conformance/capacity.ts", "measure-current", next],
+          { encoding: "utf8", timeout: 30000 },
+        );
+      const measured = measure();
+      eq(measured.status, 0, measured.stderr);
+      eq(measured.stdout.includes("PASS capacity current"), true);
+      const completed = JSON.parse(
+        readFileSync(join(next, "manifest.json"), "utf8"),
+      ) as Awaited<ReturnType<typeof converter.convert>>;
+      for (const corrupt of ["count", "digest", "file"] as const) {
+        const changed = structuredClone(completed);
+        if (corrupt === "count")
+          changed.source = {
+            ...changed.source,
+            records: changed.source.records + 1,
+          };
+        if (corrupt === "digest") changed.leftBehind.sha256 = "0".repeat(64);
+        if (corrupt === "file")
+          writeFileSync(join(next, "left-behind.json"), text + " ");
+        writeFileSync(join(next, "manifest.json"), JSON.stringify(changed));
+        eq(measure().status === 0, false, corrupt);
+        writeFileSync(join(next, "left-behind.json"), text);
+      }
     }
     eq(f.snapshot(s.db), before);
     eq(s.bytes(), s.manifest.sha256);
