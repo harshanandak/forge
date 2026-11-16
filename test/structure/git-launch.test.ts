@@ -12,6 +12,8 @@ const LAUNCH = new RegExp(
 const root = join(import.meta.dirname, "../..");
 const DIRECT = String.raw`(?:\b(?:spawn(?:Sync)?|exec(?:File)?(?:Sync)?)\(|\.run\()\s*(?:\[\s*|\{[^{}]*?\bcmd\s*:\s*\[\s*)?`;
 const GIT_RETURN = String.raw`if\s*\(\s*PARAM\s*===\s*["']git["']\)\s*return\s+spawnSync\(gitExecutable\(`;
+const PIN =
+  /(\w+)\s*=\s*(?:\w+\s*===\s*["']git["']\s*\?\s*)?(?:gitExecutable\(|\w+\.resolve\(\s*\w+\[0\])/;
 function resolves(name: string, file: SourceFile, seen: Set<string>): boolean {
   const key = `${file.path}:${name}`;
   if (seen.has(key)) return false;
@@ -32,10 +34,7 @@ function resolves(name: string, file: SourceFile, seen: Set<string>): boolean {
   if (new RegExp(GIT_RETURN.replace("PARAM", parameter)).test(body))
     return true;
   if (new RegExp(`${DIRECT}${parameter}\\b`).test(body)) return false;
-  const pin =
-    /(\w+)\s*=\s*(?:\w+\s*===\s*["']git["']\s*\?\s*)?(?:gitExecutable\(|\w+\.resolve\(\s*\w+\[0\])/.exec(
-      body,
-    )?.[1] ?? "(?!)";
+  const pin = PIN.exec(body)?.[1] ?? "(?!)";
   if (new RegExp(`${DIRECT}(?:gitExecutable\\(|${pin}\\b)`).test(body))
     return true;
   return [
