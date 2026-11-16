@@ -97,7 +97,7 @@ test(
 );
 
 test(
-  "a missing floor is backfilled once under the lock from live keys and all matching history",
+  "a first floor uses durable reservations under the lock without reading event history",
   run((f) => {
     for (const n of [1, 9, 10, 2, 40]) f.put(`item:x-${n}`);
     f.owner.put(ns, "item:x-2", { v: 2 }, actor, { expectRevision: 1 });
@@ -116,7 +116,12 @@ test(
     f.log.length = 0;
     expect(f.next().key).toBe("item:x-41");
     const first = [...f.log];
-    expect(historyReads(first).length).toBeGreaterThan(0);
+    expect(historyReads(first)).toEqual([]);
+    expect(
+      reads(first).some((access) =>
+        access.sql.includes("state_allocation_keys"),
+      ),
+    ).toBe(true);
     expect(reads(first).every((access) => access.locked)).toBe(true);
     expect(f.floor()?.value).toEqual({ prefix, number: 41 });
     f.log.length = 0;

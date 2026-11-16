@@ -357,7 +357,7 @@ for (const table of ["empty", ...Object.keys(rows)])
 test("the previous initializer rejects migration 005 without writes", async () => {
   const source = await open();
   try {
-    expect(stateMigrations.at(-1)?.id).toBe("005_state_events_namespace_index");
+    expect(stateMigrations.at(-1)?.id).toBe("006_state_retention");
     const before = source.db.get("SELECT total_changes() AS n");
     expect(() => migrate(source.db, stateMigrations.slice(0, -1))).toThrow(
       NewerStoreError,
@@ -567,7 +567,7 @@ const cases: readonly (readonly [
     false,
     (s) => {
       s.db.run(
-        "INSERT INTO state_requests SELECT namespace,'extra-request',fingerprint,result FROM state_requests",
+        "INSERT INTO state_requests(namespace,request_id,fingerprint,result) SELECT namespace,'extra-request',fingerprint,result FROM state_requests",
       );
     },
     /state_requests/,

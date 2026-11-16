@@ -28,6 +28,11 @@ import {
 } from "../../src/core/state/checkpoint.ts";
 import { readOnlyStore, type DurableStorage } from "./store.ts";
 import { assertNoEvidence, EVIDENCE_RECEIPTS } from "./evidence-receipts.ts";
+import {
+  usageStatements,
+  requestAgeStatements,
+  assertRetentionAuthority,
+} from "../../src/core/state/migrations.ts";
 
 export const DUMP_FORMAT = "forge-cloud-dump/2";
 export const COMMAND_RECEIPTS = "domain_cloud_command_receipts";
@@ -96,6 +101,19 @@ export const IMPORT_MIGRATION = {
     // The shipped 005 schema writes this table only through restore; typed writes still use legacy records.
     `UPDATE ${COMMAND_RECEIPTS} SET imported=1`,
     `CREATE INDEX command_receipts_live ON ${COMMAND_RECEIPTS} (imported, expires_at)`,
+  ],
+};
+
+export const CLOUD_USAGE_COLUMNS = Object.fromEntries(
+  Object.entries(TABLES)
+    .filter(([table]) => table.startsWith("domain_"))
+    .map(([table, value]) => [table, value.columns]),
+);
+export const RETENTION_MIGRATION = {
+  id: "010_cloud_retention",
+  statements: [
+    ...requestAgeStatements("domain_cloud_requests"),
+    ...usageStatements(CLOUD_USAGE_COLUMNS),
   ],
 };
 
@@ -790,6 +808,7 @@ function settleFloor(
   }
   owner.releaseRestoredLeases();
   finalize?.();
+  assertRetentionAuthority(db);
   assertLimits(db, limits, "RESTORE_TOO_LARGE", "The restored project");
   db.run(`UPDATE ${COMMAND_RECEIPTS} SET imported=1`);
   freshEpoch(db);
@@ -846,6 +865,15 @@ export function restoreDump(
 export function clearStaged(db: SqlDatabase): void {
   db.transaction(() => {
     for (const table of Object.keys(TABLES)) db.run(`DELETE FROM ${table}`);
+    if (
+      db.get(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='state_retention'",
+      )
+    ) {
+      db.run("UPDATE state_retention SET sequence=0 WHERE id=1");
+      db.run("DELETE FROM state_namespace_watermarks");
+      db.run("DELETE FROM state_allocation_keys");
+    }
   });
 }
 
