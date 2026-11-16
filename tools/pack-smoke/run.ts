@@ -2,6 +2,7 @@
 // installed package, then run every packed journey (`packed.integration.test.ts`) with `bun test`
 // against that one install. Run it with Node (`bun run test:pack` builds first and does this): the
 // point is that a user with only Node and npm can install and run what we publish.
+import assert from "node:assert/strict";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import {
   copyFileSync,
@@ -66,14 +67,17 @@ function ok(result: SpawnSyncReturns<string>): string {
 
 async function main(): Promise<void> {
   if (process.versions.bun !== undefined) fail("run this with Node, not Bun");
-  let tarball = packInput(process.env.FORGE_PACK_INPUT);
+  const trustedSha256 = process.env.FORGE_PACK_EXPECTED_SHA256;
+  let tarball = packInput(process.env.FORGE_PACK_INPUT, trustedSha256);
   const bun = resolveBun();
   if (tarball === undefined) ok(run(bun, ["run", "build"], root, process.env));
-  const expected = (
-    JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as {
-      version?: unknown;
-    }
-  ).version;
+  const expected =
+    process.env.FORGE_PACK_EXPECTED_VERSION ??
+    (
+      JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as {
+        version?: unknown;
+      }
+    ).version;
   if (typeof expected !== "string") fail("package.json has no version");
   if (
     tarball === undefined &&
@@ -116,6 +120,11 @@ async function main(): Promise<void> {
       if (entry?.filename === undefined || entry.files === undefined)
         fail("npm pack gave no tarball");
       tarball = join(packDir, entry.filename);
+    } else {
+      const staged = join(packDir, "reviewed-candidate.tgz");
+      copyFileSync(tarball, staged);
+      copyFileSync(`${tarball}.sha256`, `${staged}.sha256`);
+      tarball = packInput(staged, trustedSha256)!;
     }
     if (process.env.FORGE_PACK_TARBALL !== undefined)
       copyFileSync(tarball, process.env.FORGE_PACK_TARBALL);
@@ -198,6 +207,21 @@ async function main(): Promise<void> {
     console.log(
       `- forge ${expected} runs through npm exec, its bin and import`,
     );
+    const build: unknown = JSON.parse(
+      ok(node([join(installedDir, binTarget), "--version", "--json"])),
+    );
+    assert.deepEqual(
+      build,
+      {
+        version: expected,
+        commit:
+          process.env.CI_HEAD ??
+          ok(run("git", ["rev-parse", "HEAD"], root, process.env)).trim(),
+        dirty: false,
+      },
+      "installed build identity must match the reviewed clean build",
+    );
+    console.log(`- installed build identity ${JSON.stringify(build)}`);
 
     const api = join(consumer, "api.mjs");
     copyFileSync(join(root, "tools/pack-smoke/api.mjs"), api);
@@ -256,6 +280,7 @@ async function main(): Promise<void> {
           env: {
             ...env,
             FORGE_PACKED_CONSUMER: consumer,
+            FORGE_PACKED_TARBALL: tarball,
             FORGE_AUTHOR_NPM_ROOT: dirname(process.execPath),
           },
         },
