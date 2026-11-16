@@ -71,6 +71,7 @@ for (const paged of [false, true])
         target = database([], true);
       migrate(source);
       migrate(target);
+      for (const sql of IMPORT_MIGRATION.statements) target.exec(sql);
       new StateOwner(source, { now: () => 1000 }).put(
         "example/alpha",
         key,
