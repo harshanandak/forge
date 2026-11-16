@@ -360,8 +360,8 @@ const runtimeFamilies: Record<string, Family> = {
       head: commit,
       verdict: { enum: ["MERGE", "FIX"] },
       reviewer: {
-        ...text,
-        pattern: "^[A-Za-z0-9][A-Za-z0-9-]*(?:\\[bot\\])?$",
+        ...record.properties.mergeGate.properties.reviewer,
+        pattern: nonempty.pattern,
       },
       at: time,
     }),

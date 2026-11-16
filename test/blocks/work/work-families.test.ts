@@ -211,6 +211,34 @@ test("the lane journal retains its stored issue identity", () => {
   );
 });
 
+test.each(["Codex review", "reviewer@example.com", "x".repeat(200)])(
+  "merge verdict retains accepted reviewer %s",
+  (reviewer) => {
+    const verdict = cases.find(([name]) => name === "autopilot-merge")!;
+    eq(
+      work.validateDeclaredWorkRecord(verdict[1], {
+        ...(verdict[2] as Record<string, unknown>),
+        reviewer,
+      }),
+      undefined,
+    );
+  },
+);
+
+test.each([" ", "x".repeat(201)])(
+  "merge verdict refuses invalid reviewer %s",
+  (reviewer) => {
+    const verdict = cases.find(([name]) => name === "autopilot-merge")!;
+    eq(
+      work.validateDeclaredWorkRecord(verdict[1], {
+        ...(verdict[2] as Record<string, unknown>),
+        reviewer,
+      }),
+      "WORK_VALUE_SHAPE",
+    );
+  },
+);
+
 test("the work policy binds the same family definitions to the generic owner", async () => {
   const declaration = policy();
   ok(declaration, "work family policy is missing");
