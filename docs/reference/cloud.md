@@ -3,6 +3,12 @@
 A Cloudflare Worker with one SQLite Durable Object per project. It decides who holds a lease on a
 subject. The code is in `cloud/`.
 
+## Scope-A installed release evidence
+
+Use the same exact-head CI tarball on Windows and boxes.dev, installed into fresh prefixes. Retain its SHA-256, SHA-512 integrity, CI run, Node version, absolute installed bin and `--version --json`; require the reviewed commit, matching package version and `dirty:false`. Pack smoke proves installed wiring only. The final published proof requires public version `0.0.1` and matching identity on both machines.
+
+Retain separate evidence for each required phase: `windows` (A1/A2, same device, distinct sessions), `boxes` (B1, separately approved device), `browser` (owner approvals), `tracker` (shared reads/writes, replay, races, stale fences, ready/reacquire, fresh-checkout handoff, outage, revocation, dependencies, delivery link, verified close and prepared-checkout lane finish), `restore` (separate restore-acceptance PR), and `publication` (owner publication followed by exact-version installed repeat). Keep verified-close evidence outside the snapshot project. Missing any phase means `INCOMPLETE`/2, never release completion; dispatch assertions remain after 0.0.1.
+
 ## Routes
 
 Every route is `/p/<projectId>/<route>` and needs `Authorization: Bearer <token>`, except `loginstart` and `loginpoll`.

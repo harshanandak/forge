@@ -57,6 +57,8 @@ test("installed identity accepts only the reviewed clean artifact and accounts f
     for (const [candidate, actual] of [
       [other, identity],
       [join(root, "missing-forge.js"), identity],
+      [bin, null],
+      [bin, {}],
       [bin, { ...identity, version: "0.0.0" }],
       [bin, { ...identity, commit: "b".repeat(40) }],
       [bin, { ...identity, commit: "unknown" }],
@@ -65,7 +67,7 @@ test("installed identity accepts only the reviewed clean artifact and accounts f
     ] as const) {
       expect(
         installedProof(installed, candidate, expected, actual, scopeAPhases),
-      ).toMatchObject({ status: "FAIL", exitCode: 6 });
+      ).toMatchObject({ status: "FAIL", exitCode: 6, code: "INPUT_INVALID" });
     }
     expect(
       installedProof(

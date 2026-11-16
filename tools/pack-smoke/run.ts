@@ -3,6 +3,7 @@
 // against that one install. Run it with Node (`bun run test:pack` builds first and does this): the
 // point is that a user with only Node and npm can install and run what we publish.
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
+import { hash } from "node:crypto";
 import {
   copyFileSync,
   existsSync,
@@ -24,6 +25,7 @@ import {
   resolveBun,
 } from "./environment.ts";
 import { packInput } from "./input.ts";
+import { installedProof } from "./identity.ts";
 
 const root = resolve(import.meta.dirname, "../..");
 // One command that hangs fails with its name instead of stalling the job.
@@ -197,6 +199,26 @@ async function main(): Promise<void> {
         fail(`${how} printed "${printed!.trim()}", expected "${expected}"`);
     console.log(
       `- forge ${expected} runs through npm exec, its bin and import`,
+    );
+    const commit =
+      process.env.CI_HEAD ??
+      ok(run("git", ["rev-parse", "HEAD"], root, process.env)).trim();
+    const proof = installedProof(
+      installedDir,
+      join(installedDir, binTarget),
+      { version: expected, commit },
+      JSON.parse(
+        ok(node([join(installedDir, binTarget), "--version", "--json"])),
+      ),
+    );
+    if (proof.exitCode === 6) fail(JSON.stringify(proof));
+    console.log(
+      `- installed release evidence ${JSON.stringify({
+        ...proof,
+        integrity: `sha512-${hash("sha512", readFileSync(tarball), "base64")}`,
+        node: process.version,
+        ciRun: process.env.GITHUB_RUN_ID ?? null,
+      })}`,
     );
 
     const api = join(consumer, "api.mjs");
