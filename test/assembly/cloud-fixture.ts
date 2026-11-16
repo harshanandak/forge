@@ -42,7 +42,9 @@ export function persistedRootsFixture() {
   const dir = gitFixtureTemp("forge-saved-roots-");
   const project = join(dir, "project"),
     outside = mkdtempSync(join(tmpdir(), "forge-saved-lane-"));
-  const trusted = realpathSync.native(Bun.which("git")!);
+  const trusted = realpathSync.native(
+    process.platform === "win32" ? Bun.which("git")! : "/usr/bin/git",
+  );
   const git = (args: string[]) => {
     const result = spawnSync(trusted, args, {
       encoding: "utf8",

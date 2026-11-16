@@ -113,7 +113,7 @@ const flight = (effects = ["environment:read", "external:process"]) =>
     request: { op: "lane.next" },
     operation: { declaration: { effects, timeoutMs: 60000 } },
   }) as unknown as Preflight;
-const git = Bun.which("git");
+const git = process.platform === "win32" ? Bun.which("git") : "/usr/bin/git";
 if (!git) throw new Error("Git required for the trusted head fixture");
 const trusted = realpathSync.native(git);
 const H1 = "a".repeat(40),

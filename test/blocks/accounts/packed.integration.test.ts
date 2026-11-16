@@ -708,7 +708,8 @@ test("installed accounts: one approval catches wrong authors and binds every clo
     );
     const gitOnly = join(home, "git-only");
     mkdirSync(gitOnly);
-    const gitPath = Bun.which("git");
+    const gitPath =
+      process.platform === "win32" ? Bun.which("git") : "/usr/bin/git";
     if (!gitPath) throw new Error("Git required");
     if (process.platform !== "win32")
       symlinkSync(gitPath, join(gitOnly, "git"));
