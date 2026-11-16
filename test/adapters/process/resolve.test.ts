@@ -215,10 +215,9 @@ test.each([
 ])(
   "canonical-home admission: %s",
   (row, marker, fault) => {
-    const directory =
-      marker === "repo/.git" ? "/home/repo/bin" : "/home/.local/bin";
+    const dir = marker === "repo/.git" ? "/home/repo/bin" : "/home/.local/bin";
     const probe: FileProbe = {
-      ...probeOf([`${directory}/git`]),
+      ...probeOf([`${dir}/git`]),
       realpath: (path) => {
         if (path !== homedir()) return path;
         if (fault === "canonical") throw new Error("EACCES");
@@ -229,7 +228,7 @@ test.each([
         return path === "/home/.forge" || path === `/home/${marker}`;
       },
     };
-    const found = resolveExecutable("git", { PATH: directory }, "linux", probe);
+    const found = resolveExecutable("git", { PATH: dir }, "linux", probe);
     expect(found.kind).toBe(row === "device" ? "resolved" : "unavailable");
   },
   30_000,
