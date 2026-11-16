@@ -15,6 +15,10 @@ import { fileURLToPath } from "node:url";
 import { createAssembly, localCall } from "../../../src/assembly/index.ts";
 import { blockCapture } from "../../../src/assembly/capture.ts";
 import { firstPartyBlocks } from "../../../src/assembly/first-party.ts";
+import {
+  createGitScope,
+  projectManifestRoot,
+} from "../../../src/assembly/providers.ts";
 import { runCli } from "../../../src/surface/cli.ts";
 import { done, stageBlock } from "../../blocks/memory/lib.ts";
 
@@ -90,7 +94,10 @@ test("device memory resolves checkout aliases through missing and invalid projec
         const assembly = await createAssembly({
           root: cwd,
           deviceRoot,
-          providers: { env },
+          providers: {
+            env,
+            gitScope: createGitScope(root, projectManifestRoot(cwd)),
+          },
         });
         const call = async (args: string[]) => {
           const result = (

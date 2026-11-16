@@ -98,6 +98,7 @@ export function renderHelp(
   lines.push(
     "Flags:",
     "  -h, --help     Show help",
+    "  --project-root <path>  Supply project provenance before the command",
     "  --input JSON   Pass operation arguments as JSON",
     "  --text         Render operation results as text (default: JSON)",
     "  --mcp          Start the MCP stdio server",

@@ -303,7 +303,7 @@ export async function boundLaneProgress(
   command: BoundCommand,
   save: (record: BoundLaneRecord, revision: number) => Promise<StateRecord>,
   config: unknown,
-  readHead: (worktree: string) => Promise<string>,
+  readHead: (worktree: string, scope: GitScope) => Promise<string>,
 ): Promise<unknown> {
   const fresh = (await command("issue.show", { id: input.id })) as TrackerItem;
   const id = `work-${fresh.id.replace(/^.*-/, "")}`;
@@ -319,8 +319,11 @@ export async function boundLaneProgress(
   ownBoundGrant(fresh.lease, context, device, record.grant.generation, now);
   if (!record.active || record.releaseRequestId || fresh.status !== "open")
     refuse("INPUT_CONFLICT", "The lane is inactive, releasing or closed.");
-  reopenGitScope(record.lane.worktree, record.lane.gitScope ?? null);
-  const actualHead = await readHead(record.lane.worktree);
+  const roots = reopenGitScope(
+    record.lane.worktree,
+    record.lane.gitScope ?? null,
+  );
+  const actualHead = await readHead(record.lane.worktree, roots);
   const effectiveHead =
     op === "lane.next" ? input.head?.toLowerCase() : record.progress?.head;
   if (effectiveHead !== actualHead)
@@ -558,6 +561,7 @@ export async function attachBoundLane(
     deadline: number;
     now: () => number;
     gitScope?: GitScope;
+    contextGitScope?: GitScope;
   },
   fence: BoundAttachFence,
   previous?: BoundLaneRecord["lane"],
@@ -605,10 +609,9 @@ export async function attachBoundLane(
         (row.issueId ?? row.issue.replace(/^.*-/, "work-")) === record.id ||
         sameWorktree(row.worktree),
     );
+    const supplied = services.gitScope ?? services.contextGitScope;
     let selected =
-      services.gitScope === undefined
-        ? undefined
-        : reopenGitScope(files.root, services.gitScope);
+      supplied === undefined ? undefined : reopenGitScope(files.root, supplied);
     for (const row of relevant) {
       if (!validGitScope(row.gitScope))
         refuse(

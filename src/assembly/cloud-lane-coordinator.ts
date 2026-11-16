@@ -12,7 +12,11 @@ import {
 } from "../blocks/work/bound-lane.ts";
 import type { BoundProject } from "../blocks/work/bound-lane-state.ts";
 import type { LocalState } from "./state.ts";
-import type { AssemblyProviders } from "./providers.ts";
+import {
+  createGitScope,
+  type GitScope,
+  type AssemblyProviders,
+} from "./providers.ts";
 import {
   boundLaneKey,
   validBoundHead,
@@ -29,6 +33,7 @@ export async function readBoundLaneHead(
   flight: Preflight,
   providers: AssemblyProviders,
   worktree: string,
+  gitScope?: GitScope,
 ): Promise<string> {
   const timeoutMs = flight.operation.declaration.timeoutMs ?? 60000;
   const scope = {
@@ -38,6 +43,7 @@ export async function readBoundLaneHead(
     deadline: Date.now() + timeoutMs,
     processContainment: "supervised" as const,
   };
+  const caller = await providers.startupGitScope?.();
   const head = await boundLaneGit(
     {
       process: providers.process(scope),
@@ -45,6 +51,10 @@ export async function readBoundLaneHead(
       ...scope,
     },
     worktree,
+    gitScope ??
+      (caller ? createGitScope(caller.project.lexical, worktree) : undefined),
+    ...(caller === undefined ? [] : [caller]),
+    ...(providers.gitScope === undefined ? [] : [providers.gitScope]),
   )(["rev-parse", "--verify", "HEAD"]);
   if (!validBoundHead(head))
     throw new ForgeFailure({
@@ -117,8 +127,8 @@ export async function coordinateLane(
             command,
             save,
             flight.config,
-            (worktree) =>
-              readBoundLaneHead(flight, options.providers, worktree),
+            (worktree, roots) =>
+              readBoundLaneHead(flight, options.providers, worktree, roots),
           ),
         );
       progressWrites.set(key, pending);
@@ -176,6 +186,7 @@ export async function coordinateLane(
             Date.now() + (flight.operation.declaration.timeoutMs ?? 120000),
           processContainment: "supervised" as const,
         };
+        const contextGitScope = await options.providers.startupGitScope?.();
         const files = await options.providers.openFiles(scope);
         try {
           return await attachBoundLane(
@@ -185,6 +196,10 @@ export async function coordinateLane(
               process: options.providers.process(scope),
               environment: options.providers.environment(scope),
               now: options.now,
+              ...(options.providers.gitScope === undefined
+                ? {}
+                : { gitScope: options.providers.gitScope }),
+              ...(contextGitScope === undefined ? {} : { contextGitScope }),
               ...scope,
             },
             fence,

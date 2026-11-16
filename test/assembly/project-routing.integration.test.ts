@@ -77,11 +77,16 @@ function fixture() {
       bin: { forge: string };
     };
     const bin = join(install, manifest.bin.forge);
-    function call(cwd: string, args: string[], status = 0): ResultEnvelope {
+    function call(
+      cwd: string,
+      args: string[],
+      status = 0,
+      projectRoot?: string,
+    ): ResultEnvelope {
       const reply = budget.run(
         "forge " + args.join(" "),
         "node",
-        [bin, ...args],
+        [bin, ...(projectRoot ? ["--project-root", projectRoot] : []), ...args],
         {
           cwd,
           env: { ...env, FORGE_CWD: a },
@@ -90,9 +95,10 @@ function fixture() {
       );
       return JSON.parse(reply.stdout) as ResultEnvelope;
     }
-    const create = (cwd: string, title: string) =>
-      call(cwd, ["issue", "create", "--title", title]);
-    const list = (cwd: string) => call(cwd, ["issue", "list"]);
+    const create = (cwd: string, title: string, projectRoot?: string) =>
+      call(cwd, ["issue", "create", "--title", title], 0, projectRoot);
+    const list = (cwd: string, projectRoot?: string) =>
+      call(cwd, ["issue", "list"], 0, projectRoot);
     return { sandbox, a, b, install, git, project, call, create, list };
   } catch (error) {
     removeQuietly(sandbox);
@@ -161,11 +167,11 @@ test("a linked checkout shares A's store while B keeps its own store", () => {
     );
     const linked = join(f.sandbox, "linked-a");
     f.git(f.a, "worktree", "add", "--detach", linked, "HEAD");
-    expect(f.list(linked)).toMatchObject({
+    expect(f.list(linked, f.a)).toMatchObject({
       ok: true,
       result: { items: [{ id: "acme-1", title: "Only A" }] },
     });
-    expect(f.create(linked, "From linked checkout")).toMatchObject({
+    expect(f.create(linked, "From linked checkout", f.a)).toMatchObject({
       ok: true,
       result: { id: "acme-2" },
     });
@@ -228,3 +234,43 @@ for (const fault of ["config", "store"] as const) {
     }
   }, 30_000);
 }
+
+test("first linked CLI use refuses without --project-root and accepts its known root", () => {
+  const f = fixture();
+  try {
+    seed(f);
+    f.git(f.a, "add", ".forge/config.yaml");
+    f.git(
+      f.a,
+      "-c",
+      "user.name=Fixture",
+      "-c",
+      "user.email=fixture@example.test",
+      "commit",
+      "-qm",
+      "configuration",
+    );
+    const linked = join(f.sandbox, "explicit-lane");
+    f.git(f.a, "worktree", "add", "--detach", linked, "HEAD");
+    const before = snapshot(f);
+    expect(f.call(linked, ["issue", "list"], 4)).toMatchObject({
+      ok: false,
+      error: { code: "INPUT_CONFLICT" },
+    });
+    expect(f.list(linked, f.a)).toMatchObject({
+      ok: true,
+      result: { items: [{ id: "acme-1" }] },
+    });
+    expect(snapshot(f)).toEqual(before);
+    expect(f.call(f.a, ["--project-root"], 6)).toMatchObject({
+      ok: false,
+      error: { code: "INPUT_INVALID" },
+    });
+    expect(f.call(f.a, ["--project-root", "--help"], 6)).toMatchObject({
+      ok: false,
+      error: { code: "INPUT_INVALID" },
+    });
+  } finally {
+    removeQuietly(f.sandbox);
+  }
+}, 30_000);

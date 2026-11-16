@@ -1,9 +1,17 @@
 import { expect, test } from "bun:test";
 import {
-  createVcsPort,
+  createVcsPort as adapterVcsPort,
+  type VcsAdapterOptions,
   GitCommandError,
 } from "../../../src/adapters/vcs-git/index.ts";
 import { fakeProcess } from "../process/fake-process.ts";
+
+function createVcsPort(options: VcsAdapterOptions) {
+  return adapterVcsPort({
+    ...options,
+    git: (_cwd, env) => options.process.resolve("git", env),
+  });
+}
 
 const base = { env: { PATH: "/bin" }, timeoutMs: 1000, maxOutputBytes: 1000 };
 
@@ -168,3 +176,20 @@ test("output over the limit is a typed limit error, never parsed as if complete"
     expect((failure as GitCommandError).code, name).toBe("GIT_OUTPUT_LIMIT");
   }
 }, 30_000);
+
+test("a missing scoped Git capability never falls back to process resolution", async () => {
+  const process = fakeProcess(["git"]);
+  let resolutions = 0;
+  const vcs = adapterVcsPort({
+    ...base,
+    process: {
+      ...process,
+      resolve: (...args) => {
+        resolutions++;
+        return process.resolve(...args);
+      },
+    },
+  });
+  expect(await vcs.root("/repo")).toMatchObject({ kind: "unavailable" });
+  expect([resolutions, process.runs.length]).toEqual([0, 0]);
+});

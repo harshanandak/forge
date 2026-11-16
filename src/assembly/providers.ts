@@ -52,6 +52,7 @@ import type { DeviceFiles } from "../ports/device-files.ts";
 import type { CloudLogin } from "../ports/cloud-login.ts";
 import type { CloudLoginDeps } from "./cloud-login.ts";
 import { lazy } from "./lazy.ts";
+import { entryKind } from "../adapters/fs/index.ts";
 import { windowsPrivateFiles } from "../adapters/process/windows-acl.ts";
 import { privateFileGuard } from "../adapters/store-sqlite/private-files.ts";
 
@@ -147,6 +148,8 @@ export interface ProcessService extends ProcessPort {
   readonly cleanupBudgetMs?: number;
 }
 export interface ProviderOptions {
+  /** Explicit launcher input; discovery must not manufacture this authority. */
+  readonly gitScope?: GitScope;
   /** Where the device id lives; the host sets it, and cloud login needs it. */
   readonly deviceRoot?: string;
   /** Network, clock and wait seams for cloud login; tests supply them, the host leaves them out. */
@@ -158,6 +161,8 @@ export interface ProviderOptions {
   readonly env?: Readonly<Record<string, string>>;
 }
 export interface AssemblyProviders {
+  readonly gitScope?: GitScope;
+  startupGitScope?(): Promise<GitScope>;
   deviceFiles?(scope: ServiceScope): DeviceFiles;
   cloudLogin?(scope: ServiceScope): CloudLogin;
   process(scope: ServiceScope): ProcessService;
@@ -465,11 +470,58 @@ function hostEnv(options: ProviderOptions): Readonly<Record<string, string>> {
 
 // Discovery calls share the host's single supervisor; each lookup is launched once in order.
 let gitDiscovery = Promise.resolve();
-function gitOptions(options: ProviderOptions) {
+export async function startupGitScope(
+  root: string,
+  options: ProviderOptions = {},
+): Promise<GitScope> {
+  const fresh = () => {
+    if (options.gitScope !== undefined) return options.gitScope;
+    const kind = entryKind(projectManifestRoot(root), ".git");
+    if (kind !== "directory" && kind !== "missing")
+      refuse(
+        "INPUT_CONFLICT",
+        "A first linked lane needs --project-root before Git discovery.",
+      );
+    return createGitScope(projectManifestRoot(root), root);
+  };
+  const env = hostEnv(options),
+    home = env.HOME ?? env.USERPROFILE;
+  const bound =
+    options.deviceRoot !== undefined &&
+    entryKind(projectManifestRoot(root), ".forge/cloud.json") !== "missing" &&
+    (await import("./cloud-binding.ts")).cloudBinding(root, home).kind ===
+      "bound";
+  if (!bound && options.gitScope === undefined) return fresh();
+  const { reopenGitScope } = await import("./saved-git-scope.ts");
+  const scope = reopenGitScope(
+    root,
+    bound
+      ? await (
+          await import("./git-scope.ts")
+        ).deviceGitScope(root, options.deviceRoot, home, options.gitScope, {
+          fresh,
+        })
+      : fresh(),
+  );
+  if (
+    options.gitScope &&
+    relative(
+      scope.project.real,
+      reopenGitScope(root, options.gitScope).project.real,
+    ) !== ""
+  )
+    refuse("INPUT_CONFLICT", "Saved and supplied project roots disagree.");
+  return scope;
+}
+function gitOptions(root: string, options: ProviderOptions) {
   const port = createProcessPort({
     supervision: options.supervision ?? CLEANUP,
   });
   return {
+    git: async (_cwd: string, selected: Readonly<Record<string, string>>) => {
+      const roots = await startupGitScope(root, options);
+      return gitCapability(port, selected, roots).executable(options.gitScope);
+    },
     process: {
       ...port,
       async run(...args: Parameters<ProcessPort["run"]>) {
@@ -506,7 +558,7 @@ export function projectStateRoot(
   root: string,
   options: ProviderOptions = {},
 ): Promise<string> {
-  return mainCheckoutPath(root, gitOptions(options));
+  return mainCheckoutPath(root, gitOptions(root, options));
 }
 
 /**
@@ -522,7 +574,7 @@ export function checkoutScopeRoot(
   root: string,
   options: ProviderOptions = {},
 ): Promise<string | undefined> {
-  return gitCheckoutScopeRoot(root, gitOptions(options));
+  return gitCheckoutScopeRoot(root, gitOptions(root, options));
 }
 
 /** A name as an issue id prefix: lowercase letters, digits and single hyphens; undefined when none remain. */
@@ -546,7 +598,10 @@ export async function idPrefixObservation(
   stateRoot: string,
   options: ProviderOptions = {},
 ): Promise<readonly DetectionObservation[]> {
-  const repository = await originRepositoryName(root, gitOptions(options));
+  const repository = await originRepositoryName(
+    root,
+    gitOptions(root, options),
+  );
   const value = idPrefix(repository ?? basename(stateRoot));
   return value === undefined
     ? []
@@ -624,6 +679,8 @@ export function createAssemblyProviders(
       supervision: options.supervision ?? CLEANUP,
     });
   const providers: InternalProviders = {
+    ...(options.gitScope === undefined ? {} : { gitScope: options.gitScope }),
+    startupGitScope: () => startupGitScope(root, options),
     deviceFiles(scope) {
       const home = env.HOME ?? env.USERPROFILE;
       if (!home)
@@ -946,7 +1003,7 @@ export function createAssemblyProviders(
       executor: ProcessPort,
     ): Promise<OwnedHandle<FilesService>> {
       active(scope);
-      // Git, not caller input or a .git text file, resolves linked-worktree roots.
+      // Supplied/saved roots constrain Git; Git still resolves worktree metadata.
       const scrubbed: Record<string, string> = Object.fromEntries(
         Object.entries(env).filter(([key]) =>
           DISCOVERY_ENV.has(key.toUpperCase()),
@@ -955,9 +1012,9 @@ export function createAssemblyProviders(
       const pin = gitCapability(
         executor,
         scrubbed,
-        createGitScope(projectManifestRoot(root), root),
+        await startupGitScope(root, options),
       );
-      const git = pin.executable();
+      const git = pin.executable(options.gitScope);
       if (git.kind !== "resolved")
         refuse("UNAVAILABLE", `Clone files require Git on PATH: ${git.reason}`);
       const discoveryKey =

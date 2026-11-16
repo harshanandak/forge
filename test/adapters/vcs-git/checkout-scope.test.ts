@@ -8,8 +8,18 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkoutScopeRoot } from "../../../src/adapters/vcs-git/index.ts";
+import {
+  checkoutScopeRoot as adapterRead,
+  type VcsAdapterOptions,
+} from "../../../src/adapters/vcs-git/index.ts";
 import { fakeProcess } from "../process/fake-process.ts";
+
+function checkoutScopeRoot(root: string, options: VcsAdapterOptions) {
+  return adapterRead(root, {
+    ...options,
+    git: (_cwd, env) => options.process.resolve("git", env),
+  });
+}
 
 const roots: string[] = [];
 const base = { env: {}, timeoutMs: 1000, maxOutputBytes: 1000 };

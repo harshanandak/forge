@@ -10,9 +10,20 @@ export async function runLocalCommand(
   argv: readonly string[],
 ): Promise<number> {
   try {
+    const projectRoot = argv[0] === "--project-root" ? argv[1] : undefined;
+    if (argv[0] === "--project-root") {
+      if (!projectRoot || projectRoot.startsWith("--"))
+        throw new ForgeFailure({
+          code: "INPUT_INVALID",
+          message: "--project-root needs an explicit project directory.",
+          retry: "never",
+        });
+      argv = argv.slice(2);
+    }
     // Only a served connection stays up across calls; every other command exits after one.
     const assembly = await createLocalAssembly({
       oneShot: argv[0] !== "--mcp",
+      ...(projectRoot === undefined ? {} : { projectRoot }),
     });
     try {
       return await runCommand(argv, {

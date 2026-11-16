@@ -14,6 +14,7 @@ import { openLevels } from "../../src/assembly/levels.ts";
 import {
   projectManifestRoot,
   projectStateRoot,
+  createGitScope,
 } from "../../src/assembly/providers.ts";
 import { LocalState } from "../../src/assembly/state.ts";
 
@@ -248,7 +249,9 @@ test("a git worktree reports the manifest id of the repository it belongs to", a
     git(main.root, "commit", "-m", "fixture");
     const tree = join(f.sandbox, "tree");
     git(main.root, "worktree", "add", "--detach", tree);
-    const stateRoot = await projectStateRoot(tree);
+    const stateRoot = await projectStateRoot(tree, {
+      gitScope: createGitScope(main.root, tree),
+    });
     // The worktree opens the main checkout's store but reads its own checked-out manifest.
     const shared = { root: tree, state: main.state };
     const fromTree = await f.projectOf(shared, { stateRoot });

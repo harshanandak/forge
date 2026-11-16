@@ -66,17 +66,21 @@ function fixture(kind: "outside" | "internal" | "plain" | "missing") {
       device,
       target,
       call: withCliOwnerApproval((args: string[]): ResultEnvelope => {
-        const result = spawnSync("node", [bin, ...args], {
-          cwd: checkout,
-          env: {
-            ...process.env,
-            FORGE_DEVICE_ROOT: device,
-            FORGE_SESSION: "state-root-test",
+        const result = spawnSync(
+          "node",
+          [bin, "--project-root", root, ...args],
+          {
+            cwd: checkout,
+            env: {
+              ...process.env,
+              FORGE_DEVICE_ROOT: device,
+              FORGE_SESSION: "state-root-test",
+            },
+            encoding: "utf8",
+            windowsHide: true,
+            timeout: 10_000,
           },
-          encoding: "utf8",
-          windowsHide: true,
-          timeout: 10_000,
-        });
+        );
         expect(result.error).toBeUndefined();
         expect(result.status).not.toBeNull();
         const envelope = JSON.parse(result.stdout) as ResultEnvelope;

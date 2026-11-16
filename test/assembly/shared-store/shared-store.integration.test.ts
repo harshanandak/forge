@@ -28,7 +28,10 @@ import { createProcessPort } from "../../../src/adapters/process/index.ts";
 import { createAssembly, type Assembly } from "../../../src/assembly/index.ts";
 import { blockCapture } from "../../../src/assembly/capture.ts";
 import { firstPartyBlocks } from "../../../src/assembly/first-party.ts";
-import { idPrefixObservation } from "../../../src/assembly/providers.ts";
+import {
+  createGitScope,
+  idPrefixObservation,
+} from "../../../src/assembly/providers.ts";
 import type { ResultEnvelope } from "../../../src/generated/types.ts";
 import { stageBlock } from "../../blocks/memory/lib.ts";
 import { childStep } from "../../child-step.ts";
@@ -67,11 +70,18 @@ async function git(cwd: string, ...args: string[]): Promise<void> {
 let work: string;
 let seq = 0;
 const opened: Assembly[] = [];
-async function open(root: string, childEnv?: Readonly<Record<string, string>>) {
+async function open(
+  root: string,
+  childEnv?: Readonly<Record<string, string>>,
+  projectRoot?: string,
+) {
   const assembly = await createAssembly({
     root,
     deviceRoot: join(work, "device"),
-    ...(childEnv ? { providers: { env: childEnv } } : {}),
+    providers: {
+      ...(childEnv ? { env: childEnv } : {}),
+      ...(projectRoot ? { gitScope: createGitScope(projectRoot, root) } : {}),
+    },
   });
   opened.push(assembly);
   return async (
@@ -105,7 +115,7 @@ function done(result: ResultEnvelope): Record<string, unknown> {
   return result.result as Record<string, unknown>;
 }
 /** Enable the work block in `root`: staged bytes, bound to project state, admitted and granted. */
-async function enableWork(root: string): Promise<void> {
+async function enableWork(root: string, projectRoot?: string): Promise<void> {
   const target = join(root, "blocks/work");
   cpSync(source, target, {
     recursive: true,
@@ -116,7 +126,7 @@ async function enableWork(root: string): Promise<void> {
     join(target, "entry.cjs"),
     transpiler.transformSync(readFileSync(join(source, "entry.cts"), "utf8")),
   );
-  const call = await open(root);
+  const call = await open(root, undefined, projectRoot);
   const { revision } = done(await call("config.show", {}, "human"));
   const value = { source: { path: "./blocks/work" }, bind: { state: "core" } };
   done(
@@ -185,7 +195,7 @@ afterAll(async () => {
 
 test("an issue made in the main checkout is visible and claimable from a linked worktree", async () => {
   const fromMain = await open(main);
-  const fromLinked = await open(linked);
+  const fromLinked = await open(linked, undefined, main);
   const created = done(await fromMain("issue.create", { title: "Shared" }));
   expect(done(await fromLinked("issue.show", { id: created.id })).title).toBe(
     "Shared",
@@ -201,7 +211,7 @@ test("an issue made in the main checkout is visible and claimable from a linked 
 
 test("the shared project's name stays stable when opened from differently named worktrees", async () => {
   const fromMain = await open(main);
-  const fromLinked = await open(linked);
+  const fromLinked = await open(linked, undefined, main);
   const observer = await open(work);
   for (const call of [fromMain, fromLinked]) {
     const { revision } = done(await call("config.show", {}, "human"));
@@ -268,7 +278,7 @@ test("linked worktree memory pointer scope uses the normalized shared checkout n
   await git(shared, "commit", "--quiet", "-m", "project");
   await git(shared, "worktree", "add", "--quiet", lane);
   const fromMain = await open(shared);
-  const fromLane = await open(lane);
+  const fromLane = await open(lane, undefined, shared);
   const added = done(
     await fromLane("memory.add", {
       text: "Keep the registered project name",
@@ -338,7 +348,7 @@ test("an agent cannot use land's old close reason to bypass the receipt requirem
 
 test("both checkouts can write at once and each sees the other's issues", async () => {
   const fromMain = await open(main);
-  const fromLinked = await open(linked);
+  const fromLinked = await open(linked, undefined, main);
   const made = await Promise.all([
     ...[1, 2, 3].map((n) => fromMain("issue.create", { title: `main ${n}` })),
     ...[1, 2, 3].map((n) =>
@@ -353,7 +363,7 @@ test("both checkouts can write at once and each sees the other's issues", async 
 }, 60_000);
 
 test("config is still read from the worktree itself", async () => {
-  const fromLinked = await open(linked);
+  const fromLinked = await open(linked, undefined, main);
   const { revision } = done(await fromLinked("config.show", {}, "human"));
   const patch = [{ op: "set", path: "/mcp", value: { expose: ["issue"] } }];
   done(
@@ -393,15 +403,15 @@ test("a git submodule keeps its store in its own folder", async () => {
     "sub",
   );
   const submodule = join(superproject, "sub");
-  await enableWork(submodule);
-  const call = await open(submodule);
+  await enableWork(submodule, submodule);
+  const call = await open(submodule, undefined, submodule);
   done(await call("issue.create", { title: "In the submodule" }));
   expect(existsSync(join(submodule, ".forge/state.sqlite"))).toBe(true);
 }, 60_000);
 
 test("issue ids carry the repository's name in every worktree, and earlier names keep resolving", async () => {
   // No remote yet: the main checkout's folder names the project, even from the linked worktree.
-  const fromLinked = await open(linked);
+  const fromLinked = await open(linked, undefined, main);
   const before = done(await fromLinked("issue.create", { title: "Named" }));
   expect(before.id).toMatch(/^repo-\d+$/);
   const number = String(before.id).slice("repo-".length);
@@ -657,7 +667,7 @@ test("assembled close verifies stored receipts and exposes no write capability",
 }, 120_000);
 
 test("a linked worktree reports the missing shared store's canonical path", async () => {
-  const fromLinked = await open(linked);
+  const fromLinked = await open(linked, undefined, main);
   const fromMain = await open(main);
   done(await fromMain("issue.create", { title: "Before store loss" }));
   const path = join(realpathSync.native(main), ".forge/state.sqlite");

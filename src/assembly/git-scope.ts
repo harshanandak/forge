@@ -16,13 +16,15 @@ export async function deviceGitScope(
   deviceRoot: string,
   home?: string,
   explicit?: GitScope,
+  startup: { fresh?: () => GitScope } = {},
 ): Promise<GitScope | null> {
   const device = new LocalState(join(deviceRoot, "records.sqlite"));
+  const fresh = startup.fresh ?? (() => reopenGitScope(root, explicit));
   try {
     const binding = cloudBinding(root, home);
-    if (binding.kind !== "bound") return reopenGitScope(root, explicit);
+    if (binding.kind !== "bound") return fresh();
     if (!nodeConfigFiles(deviceRoot).list(".").includes("records.sqlite"))
-      return reopenGitScope(root, explicit);
+      return fresh();
     const owner = await device.open(false);
     const target = resolveIn(projectManifestRoot(root), ".", "follow");
     const prefix = boundLaneKey(binding);
@@ -41,7 +43,7 @@ export async function deviceGitScope(
       if (saved && JSON.stringify(scope) !== JSON.stringify(saved)) return null;
       saved = scope;
     }
-    return saved ?? reopenGitScope(root, explicit);
+    return saved ?? fresh();
   } catch {
     // Diagnostics and release remain available; Git consumers refuse this explicit missing scope.
     return null;

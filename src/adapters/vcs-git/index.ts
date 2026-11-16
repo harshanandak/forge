@@ -32,6 +32,26 @@ export interface VcsAdapterOptions {
   readonly env: Readonly<Record<string, string>>;
   readonly timeoutMs: number;
   readonly maxOutputBytes: number;
+  readonly git?: (
+    cwd: string,
+    env: Readonly<Record<string, string>>,
+  ) =>
+    | ReturnType<ProcessPort["resolve"]>
+    | Promise<ReturnType<ProcessPort["resolve"]>>;
+}
+
+async function scopedGit(
+  cwd: string,
+  options: VcsAdapterOptions,
+  env: Readonly<Record<string, string>>,
+) {
+  return (
+    options.git?.(cwd, env) ??
+    unavailable(
+      "Scoped Git capability is missing",
+      "Supply project provenance before discovery.",
+    )
+  );
 }
 
 /**
@@ -136,7 +156,7 @@ export async function mainCheckoutPath(
   const own = resolvePath(dir);
   if (nearestGitEntry(own)?.kind !== "file") return own;
   const env = gitEnvironment(options.env);
-  const found = options.process.resolve("git", env);
+  const found = await scopedGit(own, options, env);
   if (found.kind === "unavailable") return own;
   try {
     const result = await options.process.run(
@@ -192,7 +212,7 @@ export async function originRepositoryName(
 ): Promise<string | undefined> {
   if (nearestGitEntry(dir) === undefined) return undefined;
   const env = gitEnvironment(options.env);
-  const found = options.process.resolve("git", env);
+  const found = await scopedGit(dir, options, env);
   if (found.kind === "unavailable") return undefined;
   try {
     const result = await options.process.run(
@@ -237,7 +257,7 @@ export function createVcsPort(options: VcsAdapterOptions): VcsPort {
     | { readonly ok: false; readonly unavailable: Unavailable };
 
   async function git(cwd: string, args: readonly string[]): Promise<Outcome> {
-    const found = options.process.resolve("git", env);
+    const found = await scopedGit(cwd, options, env);
     if (found.kind === "unavailable") return { ok: false, unavailable: found };
     try {
       const result = await options.process.run(found, args, {

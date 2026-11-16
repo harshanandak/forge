@@ -142,6 +142,7 @@ import {
   ASSEMBLY_PROVIDES,
   assemblyProvides,
   createAssemblyProviders,
+  createGitScope,
   createReceiptsService,
   processCleanupBudgetMs,
   idPrefixObservation,
@@ -298,29 +299,32 @@ export async function createAssembly(
 ): Promise<Assembly> {
   const root = resolve(options.root);
   const deviceRoot = resolve(options.deviceRoot);
-  const providers = createAssemblyProviders(root, {
-    ...options.providers,
-    deviceRoot,
-  });
+  const providerOptions = { ...options.providers, deviceRoot };
+  const providers = createAssemblyProviders(root, providerOptions);
   const trustState = new LocalState(join(deviceRoot, "trust.sqlite"));
-  // Every git worktree of one repository shares one store; config and files stay at `root`.
-  const stateRoot = await projectStateRoot(root, options.providers);
-  const scopeRoot = await checkoutScopeRoot(root, options.providers);
   const manifestRoot = projectManifestRoot(root);
   const deviceState = new LocalState(join(deviceRoot, "records.sqlite"));
   const env = options.providers?.env ?? process.env;
   const home = env.HOME ?? env.USERPROFILE;
-  const projectState = new LocalState(
-    join(stateRoot, ".forge", "state.sqlite"),
-    undefined,
-    undefined,
-    () =>
-      requireRegisteredStore(deviceState, stateRoot, (path) =>
-        boundMissingStoreRemedy(root, home, path),
-      ),
-    stateRoot,
-    () => refuseUnsyncedProjectWrite(root, home),
-  );
+  const cloudBound = existsSync(join(manifestRoot, ".forge/cloud.json"));
+  let openedProjectState: LocalState | undefined;
+  const loadRoots = lazy(async () => {
+    const stateRoot = await projectStateRoot(root, providerOptions);
+    const scopeRoot = await checkoutScopeRoot(root, providerOptions);
+    const projectState = new LocalState(
+      join(stateRoot, ".forge", "state.sqlite"),
+      undefined,
+      undefined,
+      () =>
+        requireRegisteredStore(deviceState, stateRoot, (path) =>
+          boundMissingStoreRemedy(root, home, path),
+        ),
+      stateRoot,
+      () => refuseUnsyncedProjectWrite(root, home),
+    );
+    openedProjectState = projectState;
+    return { stateRoot, scopeRoot, projectState };
+  });
   let trustActor: Actor | undefined;
   const trust = new TrustStore(
     {
@@ -1213,34 +1217,37 @@ export async function createAssembly(
             ),
           );
         const prefix = () =>
-          idPrefixObservation(root, stateRoot, options.providers).catch(
-            (error: unknown) => {
-              if (core) {
-                if (!(error instanceof GitCommandError)) throw error;
-                call.warnings.push({
-                  code: "ID_PREFIX_UNAVAILABLE",
-                  message: `The id prefix could not be derived from the git origin: ${error.message.replace(/\p{Cc}/gu, "").trim()}`,
-                });
-                return [];
-              }
-              const { show, catalog } = snapshot(call, deviceMemory);
-              if (
-                catalog.resolve(request.op).operation.instance !== "work" ||
-                show.values.some(
-                  ({ pointer, layer }) =>
-                    pointer === "/blocks/work/config/idPrefix" &&
-                    layer === "project",
-                )
+          (cloudBound
+            ? Promise.resolve([])
+            : loadRoots().then(({ stateRoot }) =>
+                idPrefixObservation(root, stateRoot, providerOptions),
               )
-                return [];
+          ).catch((error: unknown) => {
+            if (core) {
               if (!(error instanceof GitCommandError)) throw error;
-              throw new ForgeFailure({
-                code: "UNAVAILABLE",
-                message: error.message.replace(/\p{Cc}/gu, "").trim(),
-                retry: error.exitCode === null ? "safe" : "never",
+              call.warnings.push({
+                code: "ID_PREFIX_UNAVAILABLE",
+                message: `The id prefix could not be derived from the git origin: ${error.message.replace(/\p{Cc}/gu, "").trim()}`,
               });
-            },
-          );
+              return [];
+            }
+            const { show, catalog } = snapshot(call, deviceMemory);
+            if (
+              catalog.resolve(request.op).operation.instance !== "work" ||
+              show.values.some(
+                ({ pointer, layer }) =>
+                  pointer === "/blocks/work/config/idPrefix" &&
+                  layer === "project",
+              )
+            )
+              return [];
+            if (!(error instanceof GitCommandError)) throw error;
+            throw new ForgeFailure({
+              code: "UNAVAILABLE",
+              message: error.message.replace(/\p{Cc}/gu, "").trim(),
+              retry: error.exitCode === null ? "safe" : "never",
+            });
+          });
         const core =
           configOperationNames.has(request.op) ||
           [grantCandidate, ...discoveryOperations].some(
@@ -1380,6 +1387,7 @@ export async function createAssembly(
             refuse("UNAVAILABLE", "This operation has no dry-run contract");
           const input = request.input as Record<string, unknown>;
           if (request.op === "store.reinit") {
+            const { stateRoot } = await loadRoots();
             if (bound.context.variant !== "project")
               refuse("CONTEXT_MISSING", "Store recovery requires a project");
             const actor = bound.context.actor;
@@ -2065,6 +2073,7 @@ export async function createAssembly(
                   const configured = [...current.blocks.values()].some(
                     (block) => block.manifest.id === "forge/check",
                   );
+                  const { projectState } = await loadRoots();
                   const lease = await projectState.acquire(false);
                   leases.push(lease);
                   clients[binding.slot] = createReceiptsService(scope, {
@@ -2140,6 +2149,8 @@ export async function createAssembly(
                       "CONTEXT_MISSING",
                       "Project state needs an actor in the operation's context",
                     );
+                  const { stateRoot, scopeRoot, projectState } =
+                    await loadRoots();
                   const opened = openLevels({
                     root,
                     manifestRoot,
@@ -2174,7 +2185,9 @@ export async function createAssembly(
                   await opened.levels.project();
                 }
                 const storage =
-                  context.variant === "device" ? deviceState : projectState;
+                  context.variant === "device"
+                    ? deviceState
+                    : (await loadRoots()).projectState;
                 const noun = current.catalog
                   .resolve(scope.op)
                   .operation.declaredOp.split(".")[0]!;
@@ -2283,7 +2296,7 @@ export async function createAssembly(
       }
     },
   };
-  return {
+  return Promise.resolve({
     catalog,
     root,
     deviceRoot,
@@ -2295,7 +2308,7 @@ export async function createAssembly(
     },
     async close() {
       try {
-        await projectState.close();
+        await openedProjectState?.close();
       } finally {
         try {
           await deviceState.close();
@@ -2304,7 +2317,7 @@ export async function createAssembly(
         }
       }
     },
-  };
+  });
 }
 export function localContext(
   assembly: Assembly,
@@ -2403,13 +2416,23 @@ function localHarness(): string {
   return harnessIdentity(process.env);
 }
 export async function createLocalAssembly(
-  options: { readonly oneShot?: boolean } = {},
+  options: { readonly oneShot?: boolean; readonly projectRoot?: string } = {},
 ): Promise<Assembly> {
   const root = process.cwd();
   return createAssembly({
     root,
     deviceRoot: process.env.FORGE_DEVICE_ROOT ?? join(homedir(), ".forge"),
     ...(options.oneShot === undefined ? {} : { oneShot: options.oneShot }),
+    ...(options.projectRoot === undefined
+      ? {}
+      : {
+          providers: {
+            gitScope: createGitScope(
+              resolve(options.projectRoot),
+              projectManifestRoot(root),
+            ),
+          },
+        }),
   });
 }
 

@@ -62,6 +62,7 @@ function help(catalog: SurfaceCatalog, options: CallOptions, op?: string) {
   return {
     usage: "forge <noun> <verb> [arguments] [--input JSON] [--text]",
     options: [
+      "--project-root <path> (before the command; explicit linked-lane provenance)",
       "--help",
       "--json (full help contract; default for operation results)",
       "--text",

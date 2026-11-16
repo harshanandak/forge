@@ -469,6 +469,17 @@ async function rig(o: Setup) {
       root,
       deviceRoot: s.deviceRoot,
       providers: {
+        ...(relative(
+          realpathSync.native(s.root),
+          realpathSync.native(scopedGit.projectManifestRoot(root)),
+        ) === ""
+          ? {}
+          : {
+              gitScope: scopedGit.createGitScope(
+                s.root,
+                scopedGit.projectManifestRoot(root),
+              ),
+            }),
         env,
         cloudLogin: { fetch: net.fetch, now: o.now ?? (() => NOW) },
       },
@@ -595,6 +606,7 @@ for (const row of [
   "startup checkout",
   "startup origin",
   "startup retargeted",
+  "startup Bare-startup-resolve",
 ] as const)
   test(`private attachment saved roots: ${row}`, async () => {
     const f = fx.persistedRootsFixture();
@@ -643,7 +655,10 @@ for (const row of [
         rmSync(f.alias, { recursive: true });
         fx.directoryLink(f.project, f.alias);
       }
-      if (row === "startup retargeted") {
+      if (
+        row === "startup retargeted" ||
+        row === "startup Bare-startup-resolve"
+      ) {
         f.retarget();
         mkdirSync(join(f.lexical, ".forge"));
         for (const [name, value] of [
@@ -657,18 +672,28 @@ for (const row of [
         ...f.snapshot(),
       ];
       if (row.startsWith("startup")) {
+        const bare = row === "startup Bare-startup-resolve";
+        const api = bare
+          ? await fx.withoutGuard<typeof scopedGit>(
+              new URL("../../src/assembly/providers.ts", import.meta.url),
+              /const roots = await startupGitScope\(root, options\);\s*return gitCapability\(port, selected, roots\).executable\(options.gitScope\);/,
+              'return port.resolve("git", selected);',
+            )
+          : scopedGit;
+        if (bare) expect(Reflect.get(api, "mutationLoaded")).toBe(true);
         const options = { env: f.env, deviceRoot };
         const result = await (
           row === "startup checkout"
-            ? scopedGit.projectStateRoot(f.lexical, options)
-            : scopedGit.idPrefixObservation(f.lexical, f.project, options)
+            ? api.projectStateRoot(f.lexical, options)
+            : api.idPrefixObservation(f.lexical, f.project, options)
         ).catch((error: unknown) => error);
-        if (row === "startup retargeted")
+        if (bare) expect(result).toMatchObject({ name: "GitCommandError" });
+        else if (row === "startup retargeted")
           expect(result).toMatchObject({ error: { code: "INPUT_CONFLICT" } });
         else if (row === "startup checkout")
           expect(result).toBe(realpathSync.native(f.project));
         else expect(result).toHaveLength(1);
-        expect(existsSync(f.marker)).toBe(false);
+        expect(existsSync(f.marker)).toBe(bare);
         expect([
           readFileSync(join(deviceRoot, "records.sqlite")).toString("hex"),
           ...f.snapshot(),
@@ -1468,14 +1493,14 @@ const attachmentBytes = (s: fx.Sandbox) =>
   ].map((path) =>
     existsSync(path) ? readFileSync(path).toString("hex") : null,
   );
-for (const route of ["coordinator", "startup discovery"] as const)
-  for (const stored of [
-    "registry",
-    "journal",
-    "combined",
-    "new",
-    "new explicit",
-  ] as const)
+for (const route of [
+  "coordinator",
+  "startup discovery",
+  "Bare-coordinator-provenance",
+] as const)
+  for (const stored of route === "Bare-coordinator-provenance"
+    ? ["registry"]
+    : ["registry", "journal", "combined", "new", "new explicit"])
     test(`forge-1447 ${route} validates provenance before opening Git: ${stored}`, async () => {
       const f = fx.persistedRootsFixture();
       const deviceRoot = join(f.project, "device");
@@ -1523,7 +1548,16 @@ for (const route of ["coordinator", "startup discovery"] as const)
         };
         // Install before provider/service opening: clone discovery is part of the boundary.
         launches = spyOn(launch, "runProcess");
-        const providers = createAssemblyProviders(f.target, options);
+        const bare = route === "Bare-coordinator-provenance";
+        const api = bare
+          ? await fx.withoutGuard<typeof scopedGit>(
+              new URL("../../src/assembly/providers.ts", import.meta.url),
+              /startupGitScope\(root, options\)/g,
+              "Promise.resolve(createGitScope(projectManifestRoot(root), root))",
+            )
+          : scopedGit;
+        if (bare) expect(Reflect.get(api, "mutationLoaded")).toBe(true);
+        const providers = api.createAssemblyProviders(f.target, options);
         const result = await (
           route === "startup discovery"
             ? scopedGit.projectStateRoot(f.target, options)
@@ -1565,8 +1599,12 @@ for (const route of ["coordinator", "startup discovery"] as const)
                 },
               )
         ).catch((error: unknown) => error);
-        expect(existsSync(f.marker)).toBe(false);
-        if (explicit) {
+        expect(existsSync(f.marker)).toBe(bare);
+        if (bare) {
+          expect(result).toMatchObject({ error: { code: "UNAVAILABLE" } });
+          expect(launches.mock.calls.length).toBe(1);
+          expect(snapshot()).toEqual(before);
+        } else if (explicit) {
           expect(launches.mock.calls.length).toBeGreaterThan(0);
           if (route === "startup discovery")
             expect(result).toBe(realpathSync.native(f.project));
@@ -1657,6 +1695,7 @@ for (const stored of [
         processContainment: "supervised" as const,
       };
       files = await createAssemblyProviders(f.target, {
+        gitScope: f.scope,
         env: { ...f.env, PATH: f.env.PATH.split(delimiter).at(-1)! },
       }).openFiles(scope);
       const legacy = registryOnly
@@ -2845,7 +2884,7 @@ for (const [name, expected] of [
               return result;
             })
           : undefined;
-        let effects = () => [-1, -1];
+        let effects = () => [0, 0];
         let beforeRepeat: ReturnType<typeof bytes> = [];
         const marker = join(r.s.root, "identity-launched");
         const nativeAttach = boundLane.attachBoundLane;
@@ -2853,7 +2892,6 @@ for (const [name, expected] of [
           ? spyOn(boundLane, "attachBoundLane").mockImplementation(
               (...args) => {
                 const services = args[1];
-                beforeRepeat = bytes(r.s);
                 const lock = spyOn(services.files, "lock"),
                   write = spyOn(services.files, "write");
                 effects = () => [
@@ -3004,6 +3042,7 @@ for (const [name, expected] of [
                   : name === "wrong generation"
                     ? { ...context, leaseGeneration: 99 }
                     : context;
+          if (retargetedProject) beforeRepeat = bytes(r.s);
           const result = await assembly.catalog.invoke(
             r.request(
               "lane.start",
