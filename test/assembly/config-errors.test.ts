@@ -388,7 +388,7 @@ const cases = [
     { report: "sometimes" },
     "blocks.check.config.report",
     '"sometimes"',
-    '["auto","json","exit-code"]',
+    '["auto","json","status-json","exit-code"]',
   ],
   [
     "replacement tokens",
