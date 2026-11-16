@@ -1008,6 +1008,7 @@ export function verifyEventDerivedState(
   };
   const verifyRecord = (row: SqlRow): void => {
     const id = rowKey("state_records", row, "key");
+    let allocatorRefused = false;
     inspect("state_records", id, () => {
       const record = parseRestoreJson(String(row.body)) as StateRecord;
       if (
@@ -1027,11 +1028,13 @@ export function verifyEventDerivedState(
           number !== undefined &&
           number < (allocator.get(key(record.namespace, prefix)) ?? 0)
         )
-          invalid("Checkpoint allocator authority requires repair");
+          allocatorRefused = true;
       }
       records.delete(id);
       number(row.namespace as string, row.key as string);
     });
+    if (allocatorRefused)
+      invalid("Checkpoint allocator authority requires repair");
   };
   verifyRows(
     "state_records",

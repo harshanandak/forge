@@ -108,6 +108,10 @@ test.each([
         { prefix: name, number: kind === "new prefix" ? 0 : 1 },
         kind === "new prefix" || kind.startsWith("raw") ? 1 : 2,
       );
+      // Control: the same records and full event history pass ordinary consistency checks.
+      expect(() =>
+        verifyEventDerivedState(s.db, high(s), undefined, undefined, false),
+      ).not.toThrow();
       if (kind === "malformed historical floor") {
         s.owner.initialize();
         target.owner.restore(s.owner.export());
