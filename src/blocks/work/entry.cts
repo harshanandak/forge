@@ -5383,13 +5383,13 @@ const operations: Operations<WorkOperations> = {
         !/^close-(?:[1-9]\d*|no-pr-[0-9a-f-]{36})\.json$/i.test(archive)
       )
         return refuse("INPUT_INVALID", "Invalid close archive name in journal");
-      const note =
+      const note = state.formatComment(
         (dropped
           ? `${noPr ? `Lane dropped without a PR\nArchive: ${archive}` : `PR #${input.pr} dropped: ${pull.url}`}\nReason: ${dropped}`
           : `PR #${input.pr} landed: ${pull.url}\nMerge commit: ${mergeCommit}\nReceipt: ${receipt}`) +
-        (ahead
-          ? `\nBranch retained: ${branch}\nCommits preserved:\n${ahead}`
-          : "");
+          (ahead ? `\nBranch retained: ${branch}\nCommits preserved:\n` : ""),
+        ahead ? ahead.split("\n") : [],
+      );
       const matching = appended(state, `comment:${id}:`).find((record) => {
         const body = (record.value as { body?: string }).body;
         return (
