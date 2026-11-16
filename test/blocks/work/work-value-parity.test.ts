@@ -1,18 +1,11 @@
-import { test, setDefaultTimeout, beforeAll, afterAll, spyOn } from "bun:test";
+import { test, setDefaultTimeout, afterAll, spyOn } from "bun:test";
 import { deepStrictEqual as eq, throws } from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createSqliteStore } from "../../../src/adapters/store-sqlite/index.ts";
 import { createStateClient } from "../../../src/assembly/state-client.ts";
 import { StateOwner } from "../../../src/core/state/index.ts";
-import {
-  SchemaRegistry,
-  type SchemaObject,
-} from "../../../src/contract/schema.ts";
-import { SCHEMA_DOCUMENTS } from "../../../src/generated/schemas.ts";
 import type { BoundContext } from "../../../src/generated/types.ts";
 import { ForgeFailure } from "../../../src/contract/failure.ts";
-import { refuse } from "../../../src/core/trust/index.ts";
-import manifest from "../../../src/blocks/work/forge.block.json" with { type: "json" };
 import {
   validateWorkRecord,
   assertWorkRecord,
@@ -25,6 +18,11 @@ import { closeIssue } from "../../../cloud/src/issue-close.ts";
 import { commentIssue } from "../../../cloud/src/issue-comment.ts";
 import { linkIssue } from "../../../cloud/src/issue-link.ts";
 import type { WriteCall } from "../../../cloud/src/issue-write.ts";
+
+import { Catalog, captureBlock } from "../../../src/core/catalog/index.ts";
+import { Runtime } from "../../../src/core/runtime/index.ts";
+import { nodeRunIsolation } from "../../../src/adapters/node-runtime/isolation.ts";
+import { TrustStore, admit, grant } from "../../fixtures/owner-approval.ts";
 
 setDefaultTimeout(30_000);
 const at = "2026-11-16T00:00:00.000Z",
@@ -174,6 +172,32 @@ const table: readonly Row[] = [
   ],
   ["issue:work-0", { ...issue, id: "work-0" }],
   ["issue:work-01", { ...issue, id: "work-01" }],
+  [
+    "issue:work-1",
+    { ...issue, status: "closed" },
+    "WORK_VALUE_CLOSE_EVIDENCE",
+    "issue.close",
+    { id: "work-1" },
+  ],
+  ["issue:work-1", { ...issue, status: "closed", receipt: "check-1" }],
+  ["issue:work-1", { ...issue, status: "closed", withoutReceipt: "fixture" }],
+  ...Object.entries({ comment, link }).flatMap(([family, value]) =>
+    [Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER + 1].map<Row>(
+      (suffix) => [
+        family + ":work-1:" + suffix,
+        value,
+        suffix === Number.MAX_SAFE_INTEGER ? undefined : "WORK_VALUE_KEY",
+      ],
+    ),
+  ),
+  [
+    "issue:work-2",
+    { ...issue, id: "work-2", dependsOn: ["work-1"] },
+    undefined,
+    "issue.create",
+    { title: "aliases", dependsOn: ["work-1", "forge-1"] },
+    true,
+  ],
 ];
 const cases = table.map(([key, value, reason, op, input, localOnly]) => ({
   key,
@@ -183,52 +207,56 @@ const cases = table.map(([key, value, reason, op, input, localOnly]) => ({
   input,
   localOnly,
 }));
-const globals = globalThis as Record<string, unknown>,
-  previousFail = globals.fail;
 const clock = spyOn(Date, "now").mockReturnValue(stamp);
-type Handler = (call: {
-  input: unknown;
-  services: unknown;
-  config: unknown;
-}) => unknown;
-const handlers = require("../../../src/blocks/work/entry.cts") as Record<
-  string,
-  Handler
->;
-beforeAll(() => {
-  globals.fail = refuse;
+afterAll(() => clock.mockRestore());
+const block = captureBlock("work", {
+  open: () => ({
+    ownership: "borrowed",
+    value: {
+      read(name) {
+        const file =
+          name === "block.json"
+            ? "forge.block.json"
+            : name === "entry.cjs"
+              ? "entry.cts"
+              : name;
+        const bytes = readFileSync(
+          new URL("../../../src/blocks/work/" + file, import.meta.url),
+        );
+        return name === "entry.cjs"
+          ? new TextEncoder().encode(
+              new Bun.Transpiler({ loader: "ts" }).transformSync(
+                bytes.toString("utf8"),
+              ),
+            )
+          : bytes;
+      },
+    },
+  }),
 });
-afterAll(() => {
-  clock.mockRestore();
-  if (previousFail === undefined) delete globals.fail;
-  else globals.fail = previousFail;
-});
-const operations = manifest.operations as Record<string, { input: string }>;
-const needed = new Set([
-  ...cases.flatMap((row) => (row.op ? [row.op] : [])),
-  "issue.update",
-  "issue.close",
-]);
-const inputs = Object.fromEntries(
-  Object.entries(operations)
-    .filter(([op]) => needed.has(op))
-    .map(([op, row]) => {
-      const schema = JSON.parse(
-        readFileSync(
-          new URL("../../../src/blocks/work/" + row.input, import.meta.url),
-          "utf8",
-        ),
-      ) as SchemaObject;
-      const id = "https://fixture.test/" + op;
-      return [
-        op,
-        new SchemaRegistry([
-          ...SCHEMA_DOCUMENTS,
-          { ...schema, $id: id },
-        ]).validator(id),
-      ];
-    }),
+const catalog = new Catalog(
+  {
+    schemaVersion: "forge.config/1",
+    blocks: {
+      work: {
+        source: { path: "./work" },
+        bind: { state: "core" },
+        config: { idPrefix: "forge" },
+      },
+    },
+  },
+  new Map([["work", block]]),
+  undefined,
+  ["forge.state@1.0.0"],
 );
+const trust = new TrustStore();
+admit(trust, block.digest);
+grant(trust, block.digest, [
+  "issue:write",
+  "external:process",
+  "external:network",
+  "environment:read",
+]);
 const cloud = {
   "issue.create": createIssue,
   "issue.update": updateIssue,
@@ -301,6 +329,23 @@ for (const [index, row] of cases.entries()) {
           `lease-${index}`,
         );
         let request = 0;
+        const runtime = new Runtime(catalog, trust, {
+          clock: { now: () => stamp },
+          isolation: nodeRunIsolation,
+          services: (_instance, context) =>
+            Promise.resolve({
+              ownership: "borrowed",
+              value: {
+                state: createStateClient({
+                  owner,
+                  namespace: "forge/work",
+                  context,
+                  write: true,
+                  requestId: `service-${request}`,
+                }),
+              },
+            }),
+        });
         const invoke = (op: string, input: unknown) => {
           const context: BoundContext = [
             "issue.update",
@@ -316,23 +361,24 @@ for (const [index, row] of cases.entries()) {
                 leaseGeneration: lease.generation,
               }
             : { variant: "project", actor, project: { id: "fixture" } };
-          if (backend === "local") {
-            if (!inputs[op]!(input).ok)
-              refuse("INPUT_INVALID", "Fixture invoked declared input refusal");
-            return handlers[op]!({
-              input,
-              services: {
-                state: createStateClient({
-                  owner,
-                  namespace: "forge/work",
-                  context,
-                  write: true,
-                  requestId: `local-${request++}`,
-                }),
-              },
-              config: { idPrefix: "work" },
-            });
-          }
+          if (backend === "local")
+            return runtime
+              .invoke({
+                schemaVersion: "forge.invocation/1",
+                requestId: `local-${request++}`,
+                op,
+                input,
+                caller: "agent",
+                context: {
+                  ...holder,
+                  project: { id: "fixture" },
+                  leaseGeneration: lease.generation,
+                },
+              })
+              .then((result) => {
+                if (!result.ok) throw new ForgeFailure(result.error);
+                return result.result;
+              });
           const write = cloud[op as keyof typeof cloud];
           const call: WriteCall = {
             input,
@@ -342,7 +388,7 @@ for (const [index, row] of cases.entries()) {
             device: "fixture",
             prefix: "work",
             recheck: () => {},
-            expiresAt: undefined,
+            expiresAt: stamp + 3_600_000,
           };
           return write(db, owner, call);
         };
@@ -355,20 +401,47 @@ for (const [index, row] of cases.entries()) {
         if (row.reason) {
           eq(
             refusal instanceof ForgeFailure && refusal.error.code,
-            "INPUT_INVALID",
+            row.reason === "WORK_VALUE_CLOSE_EVIDENCE"
+              ? "RECEIPT_REQUIRED"
+              : "INPUT_INVALID",
           );
         } else {
           if (refusal)
             throw new Error("Writer refused valid fixture", { cause: refusal });
-          await invoke("issue.update", {
-            id: "work-1",
-            expectRevision: owner.get("forge/work", "issue:work-1")!.revision,
-            title: "updated",
-          });
-          await invoke("issue.close", {
-            id: "work-1",
-            withoutReceipt: "fixture",
-          });
+          if (index === 0) {
+            await invoke("issue.update", {
+              id: "work-1",
+              expectRevision: owner.get("forge/work", "issue:work-1")!.revision,
+              title: "updated",
+            });
+            await invoke("issue.close", {
+              id: "work-1",
+              withoutReceipt: "fixture",
+            });
+          }
+          if (row.localOnly && row.op === "issue.create") {
+            eq(
+              (
+                owner.get("forge/work", "issue:work-2")!.value as {
+                  dependsOn: string[];
+                }
+              ).dependsOn,
+              ["work-1"],
+            );
+            await invoke("issue.update", {
+              id: "work-2",
+              expectRevision: owner.get("forge/work", "issue:work-2")!.revision,
+              dependsOn: ["work-1", "forge-1"],
+            });
+            eq(
+              (
+                owner.get("forge/work", "issue:work-2")!.value as {
+                  dependsOn: string[];
+                }
+              ).dependsOn,
+              ["work-1"],
+            );
+          }
         }
         for (const record of owner.list("forge/work"))
           if (["issue", "comment", "link"].includes(record.key.split(":")[0]!))
