@@ -1,5 +1,6 @@
 import type { SqlDatabase } from "../../ports/store.ts";
 import { checkpointTables } from "./checkpoint.ts";
+import { ForgeFailure } from "../../contract/failure.ts";
 
 export interface Migration {
   readonly id: string;
@@ -32,6 +33,139 @@ export const deviceSessionIdentity: Migration = {
   statements: ["SELECT 1"],
 };
 
+export const retentionTables: readonly string[] = [
+  "state_retention",
+  "state_namespace_watermarks",
+  "state_usage",
+  "state_allocation_keys",
+];
+export const stateColumns: Record<string, readonly string[]> = {
+  state_records: ["namespace", "key", "revision", "body"],
+  state_events: ["sequence", "namespace", "key", "body"],
+  state_leases: ["namespace", "subject", "generation", "body"],
+  state_requests: ["namespace", "request_id", "fingerprint", "result"],
+};
+const bytes = (columns: readonly string[], prefix = "") =>
+  columns
+    .map((column) => `LENGTH(CAST(${prefix}${column} AS BLOB))`)
+    .join(" + ");
+
+/** Column bytes, including integer text, match cloud dump accounting exactly. */
+export function usageStatements(
+  tables: Record<string, readonly string[]>,
+): string[] {
+  return Object.entries(tables).flatMap(([table, columns]) => [
+    `INSERT INTO state_usage SELECT '${table}', COUNT(*), COALESCE(SUM(${bytes(columns)}),0) FROM ${table}`,
+    ...["INSERT", "UPDATE", "DELETE"].map((action) => {
+      const delta = action === "INSERT" ? 1 : action === "DELETE" ? -1 : 0;
+      const size = [
+        action !== "DELETE" ? `(${bytes(columns, "NEW.")})` : "0",
+        action !== "INSERT" ? `(${bytes(columns, "OLD.")})` : "0",
+      ].join(" - ");
+      return `CREATE TRIGGER usage_${table}_${action.toLowerCase()} AFTER ${action} ON ${table} BEGIN UPDATE state_usage SET rows=rows+(${delta}), bytes=bytes+(${size}) WHERE table_name='${table}'; END`;
+    }),
+  ]);
+}
+
+// Unknown historical ages start at upgrade time, never guessed old enough to expire.
+export function requestAgeStatements(table: string): string[] {
+  const now = "CAST(strftime('%s','now') AS INTEGER)*1000";
+  return [
+    `ALTER TABLE ${table} ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0 CHECK(created_at>=0)`,
+    `UPDATE ${table} SET created_at=${now}`,
+    `CREATE TRIGGER age_${table} AFTER INSERT ON ${table} WHEN NEW.created_at=0 BEGIN UPDATE ${table} SET created_at=${now} WHERE rowid=NEW.rowid; END`,
+  ];
+}
+
+function refuse(
+  message = "State retention metadata mismatch; restore a verified backup or repair the store before retrying",
+): never {
+  throw new ForgeFailure({ code: "INPUT_INVALID", message, retry: "never" });
+}
+
+/** Retained authority is data; coverage is required, but extra reservations survive pruning. */
+export function assertRetentionAuthority(db: SqlDatabase, empty = false): void {
+  if (
+    !db.get(
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='state_retention'",
+    )
+  )
+    return;
+  if (
+    empty &&
+    db.get(
+      "SELECT 1 FROM state_retention WHERE sequence<>0 UNION ALL SELECT 1 FROM state_namespace_watermarks UNION ALL SELECT 1 FROM state_allocation_keys LIMIT 1",
+    )
+  )
+    refuse("Restore target must be empty");
+  if (
+    db.get(
+      "SELECT 1 FROM (SELECT namespace,key FROM state_records UNION ALL SELECT namespace,key FROM state_events WHERE CASE WHEN json_valid(body) THEN json_extract(body,'$.type') IN (namespace||':record.updated@1',namespace||':record.deleted@1') ELSE 0 END) needed WHERE NOT EXISTS (SELECT 1 FROM state_allocation_keys r WHERE r.namespace=needed.namespace AND r.key=needed.key) LIMIT 1",
+    )
+  )
+    refuse();
+}
+
+/** Validate on admitted setup, never repair a persisted disagreement implicitly. */
+export function assertRetention(
+  db: SqlDatabase,
+  tables: Record<string, readonly string[]> = stateColumns,
+  stagedRestore = false,
+): void {
+  if (!stagedRestore) assertRetentionAuthority(db);
+  const row = db.get(
+    "SELECT sequence,policy_version FROM state_retention WHERE id=1",
+  );
+  if (
+    !row ||
+    !Number.isSafeInteger(Number(row.sequence)) ||
+    Number(row.sequence) < 0 ||
+    Number(row.policy_version) !== 1
+  )
+    refuse();
+  if (
+    Number(
+      db.get("SELECT COALESCE(MAX(sequence),0) AS n FROM state_events")?.n,
+    ) > Number(row.sequence)
+  )
+    refuse();
+  if (
+    db.get(
+      "SELECT 1 FROM state_events e LEFT JOIN state_namespace_watermarks w ON e.namespace=w.namespace WHERE w.sequence IS NULL OR e.sequence>w.sequence LIMIT 1",
+    )
+  )
+    refuse();
+  if (
+    db.get(
+      "SELECT 1 FROM state_namespace_watermarks WHERE sequence>? LIMIT 1",
+      [row.sequence!],
+    )
+  )
+    refuse();
+  for (const usage of db.all("SELECT table_name,rows,bytes FROM state_usage")) {
+    const table = String(usage.table_name);
+    identifier(table);
+    const columns = tables[table];
+    if (!columns) refuse();
+    const actual = db.get(
+      `SELECT COUNT(*) AS rows, COALESCE(SUM(${bytes(columns)}),0) AS bytes FROM ${identifier(table)}`,
+    );
+    if (
+      !actual ||
+      ["rows", "bytes"].some(
+        (k) =>
+          !Number.isSafeInteger(Number(usage[k])) ||
+          Number(usage[k]) < 0 ||
+          Number(actual[k]) !== Number(usage[k]),
+      )
+    )
+      refuse();
+  }
+  for (const table of Object.keys(tables))
+    if (!db.get("SELECT 1 FROM state_usage WHERE table_name=?", [table]))
+      refuse();
+}
+
 export const stateMigrations: readonly Migration[] = [
   baseline,
   eventKeyIndex,
@@ -46,6 +180,23 @@ export const stateMigrations: readonly Migration[] = [
     id: "005_state_events_namespace_index",
     statements: [
       "CREATE INDEX IF NOT EXISTS state_events_by_namespace ON state_events (namespace, sequence)",
+    ],
+  },
+  {
+    id: "006_state_retention",
+    statements: [
+      "CREATE TABLE state_retention (id INTEGER PRIMARY KEY CHECK(id=1), sequence INTEGER NOT NULL CHECK(sequence>=0), policy_version INTEGER NOT NULL CHECK(policy_version>0))",
+      "INSERT INTO state_retention SELECT 1, COALESCE(MAX(sequence),0), 1 FROM state_events",
+      "CREATE TABLE state_namespace_watermarks (namespace TEXT PRIMARY KEY NOT NULL, sequence INTEGER NOT NULL CHECK(sequence>=0))",
+      "INSERT INTO state_namespace_watermarks SELECT namespace, MAX(sequence) FROM state_events GROUP BY namespace",
+      "CREATE TABLE state_allocation_keys (namespace TEXT NOT NULL, key TEXT NOT NULL, PRIMARY KEY(namespace,key))",
+      "INSERT OR IGNORE INTO state_allocation_keys SELECT namespace,key FROM state_records",
+      "INSERT OR IGNORE INTO state_allocation_keys SELECT namespace,key FROM state_events WHERE json_extract(body,'$.type') IN (namespace||':record.updated@1',namespace||':record.deleted@1')",
+      "CREATE TRIGGER retention_allocation AFTER INSERT ON state_events WHEN CASE WHEN json_valid(NEW.body) THEN json_extract(NEW.body,'$.type') IN (NEW.namespace||':record.updated@1',NEW.namespace||':record.deleted@1') ELSE 0 END BEGIN INSERT OR IGNORE INTO state_allocation_keys VALUES (NEW.namespace,NEW.key); END",
+      "CREATE TABLE state_usage (table_name TEXT PRIMARY KEY NOT NULL, rows INTEGER NOT NULL CHECK(rows>=0), bytes INTEGER NOT NULL CHECK(bytes>=0))",
+      ...requestAgeStatements("state_requests"),
+      ...usageStatements(stateColumns),
+      "CREATE TRIGGER retention_event AFTER INSERT ON state_events BEGIN UPDATE state_retention SET sequence=MAX(sequence,NEW.sequence) WHERE id=1; INSERT INTO state_namespace_watermarks VALUES (NEW.namespace,NEW.sequence) ON CONFLICT(namespace) DO UPDATE SET sequence=MAX(sequence,excluded.sequence); END",
     ],
   },
 ];

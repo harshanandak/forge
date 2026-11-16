@@ -26,6 +26,8 @@ import {
   DUMP_FORMAT,
   DUMP_MIGRATION,
   IMPORT_MIGRATION,
+  RETENTION_MIGRATION,
+  CLOUD_USAGE_COLUMNS,
   COMMAND_RECEIPTS,
   EXPORT_STATE,
   dumpOf,
@@ -131,6 +133,7 @@ const LEASE_SELECT =
 export const domain = {
   namespace: "forge/cloud",
   reviewedDigest: `sha256:${"0".repeat(64)}`,
+  usage: CLOUD_USAGE_COLUMNS,
   migrations: [
     {
       id: "001_cloud_requests",
@@ -146,6 +149,7 @@ export const domain = {
     LANE_APPROVAL_MIGRATION,
     EVIDENCE_MIGRATION,
     LANE_BROWSER_MIGRATION,
+    RETENTION_MIGRATION,
   ],
   tables: [
     PRAGMA_TABLE,
@@ -326,12 +330,12 @@ export class Project {
     return this.#opened;
   }
 
-  #openWrite(): { db: SqlDatabase; owner: StateOwner } {
+  #openWrite(stagedRestore = false): { db: SqlDatabase; owner: StateOwner } {
     const opened = this.#open();
     if (!this.#initialized) {
       opened.db.transaction(() => {
         initializePragma(this.#storage);
-        opened.owner.initialize([domain]);
+        opened.owner.initialize([domain], stagedRestore);
       });
       this.#initialized = true;
     }
@@ -850,7 +854,7 @@ export class Project {
               ? "Restore page version changed; send page 0 to start again"
               : `Expected page ${staged.next}, or page 0 to start again`,
         );
-      const { db, owner } = this.#openWrite();
+      const { db, owner } = this.#openWrite(staged !== undefined);
       const finish = () => this.#restoreStop(db, owner, project);
       value = {
         restored: restorePage(db, owner, page, this.#limits, finish),

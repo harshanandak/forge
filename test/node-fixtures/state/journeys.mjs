@@ -25,9 +25,8 @@ const { sqliteStore, createSqliteStore } = await import(
 const { StateOwner, withState } = await import(
   pathToFileURL(consumer.resolve("forge-workflow/state")).href
 );
-const { baseline, migrate, execMigrationStatement } = await load(
-  "core/state/migrations.js",
-);
+const { baseline, migrate, stateMigrations, execMigrationStatement } =
+  await load("core/state/migrations.js");
 const { trimTrailingSeparators, assertFilesystem, classifyFilesystem } =
   await load("core/state/fs-class.js");
 const { inspectRecoveryFile, withRecoveryFence } = await load(
@@ -918,10 +917,7 @@ const cases = {
           () => owner.initialize(),
           (error) => {
             assert.equal(error.name, "NewerStoreError");
-            assert.equal(
-              error.newestKnownVersion,
-              "005_state_events_namespace_index",
-            );
+            assert.equal(error.newestKnownVersion, "006_state_retention");
             assert.equal(
               error.foundVersion,
               future === "schema" ? "schema:999" : future,
@@ -965,6 +961,7 @@ const cases = {
         b.value.all("PRAGMA table_info(state_records)"),
       );
       for (const db of [a.value, b.value]) {
+        migrate(db, [...stateMigrations, later]);
         const owner = new StateOwner(db, { now: () => 1000 });
         owner
           .client(ns, holder.actor)

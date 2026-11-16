@@ -307,8 +307,8 @@ export async function project(
         ])
       : mutant === "cap"
         ? await moduleUrl("../../cloud/src/dump.ts", [
-            '  finalize?.();\n  assertLimits(db, limits, "RESTORE_TOO_LARGE", "The restored project");',
-            "  finalize?.();",
+            '  finalize?.();\n  assertRetentionAuthority(db);\n  assertLimits(db, limits, "RESTORE_TOO_LARGE", "The restored project");',
+            "  finalize?.();\n  assertRetentionAuthority(db);",
           ])
         : undefined;
   const { Project: Impl } = (await import(
