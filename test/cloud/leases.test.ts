@@ -681,6 +681,35 @@ test("whole and paged restores preserve a refusal while a replacement token reco
   }
 }, 30_000);
 
+for (const route of ["dump", "dump?cursor=start"])
+  for (const delta of [0, 1])
+    test(`request age at restore clock plus 60 seconds plus ${delta} ms: ${route}`, async () => {
+      using source = fixture();
+      const phone = await source.issue();
+      expect(
+        (await source.write("claim", { ttlMs: day + 1 }, phone.token)).status,
+      ).toBe(400);
+      const restoreAt = now + minute;
+      source.db.run("UPDATE domain_cloud_requests SET created_at=?", [
+        restoreAt + minute + delta,
+      ]);
+      const dumped = await source.send(route);
+      expect(dumped.status).toBe(200);
+      using target = fixture();
+      target.clock.mockReturnValue(restoreAt);
+      const before = target.snapshot();
+      const restored = await target.send("restore", dumped.body.value);
+      expect(restored.status).toBe(delta === 0 ? 200 : 400);
+      if (delta === 0)
+        expect(target.rows("domain_cloud_requests")).toEqual(
+          source.rows("domain_cloud_requests"),
+        );
+      else {
+        expect(restored.body.error?.code).toBe("INPUT_INVALID");
+        expect(target.snapshot()).toBe(before);
+      }
+    }, 30_000);
+
 test("a legacy page restores a missing request age as epoch zero after the clock advances", async () => {
   using source = fixture();
   const phone = await source.issue();

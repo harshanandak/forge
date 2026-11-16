@@ -239,6 +239,12 @@ export const DUMP_USAGE_READS = [
 ];
 const selectedColumns = (table: string): string =>
   table === "domain_cloud_requests" ? "*" : TABLES[table]!.columns.join(", ");
+const REQUEST_CLOCK_SKEW_MS = 60_000;
+const validRequestAge = (age: unknown, now: number): boolean =>
+  typeof age === "number" &&
+  Number.isSafeInteger(age) &&
+  age >= 0 &&
+  age - now <= REQUEST_CLOCK_SKEW_MS;
 
 /** Dumping is a read even when the object has just awakened. */
 export function dumpStore(storage: DurableStorage): SqlDatabase {
@@ -601,6 +607,7 @@ function checkDepth(text: string): void {
 
 /** Checks a dump or a dump page strictly and returns it with every row in column order. */
 export function parseDump(text: string): Dump | Page {
+  const restoreNow = Date.now();
   // Bounded by bytes before anything is built: UTF-8 is at most three bytes per UTF-16 unit.
   if (
     text.length > MAX_TEXT_BYTES ||
@@ -686,10 +693,10 @@ export function parseDump(text: string): Dump | Page {
           if (
             table === "domain_cloud_requests" &&
             column === "created_at" &&
-            (typeof value !== "number" || value < 0)
+            !validRequestAge(value, restoreNow)
           )
             throw invalid(
-              "domain_cloud_requests.created_at must be a nonnegative safe integer",
+              "domain_cloud_requests.created_at must be a nonnegative safe integer at most 60 seconds ahead of restore time",
             );
           if (
             (typeof value === "string" &&
@@ -724,7 +731,7 @@ const rejectedRow = (table: string, key: string): ForgeFailure =>
   });
 
 // The server's own receipts: what Project#replay reads back. The state owner checks its own tables.
-function checkServerReceipt(row: Row): void {
+function checkServerReceipt(row: Row, now: number): void {
   const key = String(row.request_id);
   const bad = (): never => {
     throw rejectedRow("domain_cloud_requests", key);
@@ -744,8 +751,7 @@ function checkServerReceipt(row: Row): void {
     typeof input !== "object" ||
     !["claim", "renew", "release"].includes(String(input.route)) ||
     typeof input.subject !== "string" ||
-    !Number.isSafeInteger(row.created_at) ||
-    Number(row.created_at) < 0 ||
+    !validRequestAge(row.created_at, now) ||
     ("scope" in input && !versioned(input))
   )
     bad();
@@ -795,6 +801,10 @@ function admitJson(tables: Record<string, Row[]>): void {
 }
 
 function insertRows(db: SqlDatabase, tables: Record<string, Row[]>): void {
+  const restoreNow = Date.now();
+  for (const row of tables.domain_cloud_requests!)
+    if (!validRequestAge(row.created_at, restoreNow))
+      throw rejectedRow("domain_cloud_requests", String(row.request_id));
   for (const [table, { columns }] of Object.entries(TABLES))
     for (const row of tables[table]!)
       try {
@@ -834,8 +844,9 @@ function verifyRestored(db: SqlDatabase): {
   events: number;
 } {
   const receipts = Object.keys(TABLES).indexOf("domain_cloud_requests");
+  const restoreNow = Date.now();
   for (const { table, row } of rowsFrom(db, receipts, null))
-    if (table === receipts) checkServerReceipt(row);
+    if (table === receipts) checkServerReceipt(row, restoreNow);
     else checkCommandReceipt(row);
   const events = Number(db.get("SELECT COUNT(*) AS n FROM state_events")!.n);
   try {

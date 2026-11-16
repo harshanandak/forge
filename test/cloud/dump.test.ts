@@ -140,7 +140,14 @@ for (const version of [1, 2])
       ]);
     }, 30_000);
 
-for (const created_at of [-1, 1.5, "1", null, Number.MAX_SAFE_INTEGER + 1])
+for (const created_at of [
+  -1,
+  1.5,
+  "1",
+  null,
+  Number.MAX_SAFE_INTEGER,
+  Number.MAX_SAFE_INTEGER + 1,
+])
   test(`a supplied invalid request age ${JSON.stringify(created_at)} is refused`, () => {
     expect(
       codeOf(() =>

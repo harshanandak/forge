@@ -110,11 +110,15 @@ test("pre-retention dump and status reads preserve the schema and every stored b
   const before = raw.serialize();
   calls.length = 0;
   const project = new Project({ storage });
+  const schemaChecks = () =>
+    calls.filter((sql) => sql.includes("pragma_table_info")).length;
   for (const route of ["dump", "dump?cursor=start", "status"]) {
+    const checksBefore = schemaChecks();
     const response = await project.fetch(
       new Request(`https://fixture.example/p/a/${route}`),
     );
     expect(response.status).toBe(200);
+    expect(schemaChecks()).toBe(checksBefore + 1);
     const reply = (await response.json()) as {
       value: {
         tables?: Record<string, Record<string, string | number>[]>;
