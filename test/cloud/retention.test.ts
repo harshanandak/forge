@@ -9,7 +9,7 @@ import {
   ns,
   usage,
 } from "../core/l5-state/retention.fixture.ts";
-import { domain } from "../../cloud/src/project.ts";
+import { domain, Project } from "../../cloud/src/project.ts";
 import {
   clearStaged,
   dumpOf,
@@ -72,7 +72,10 @@ test("legacy staged restore can be abandoned before write initialization", async
   try {
     migrate(db, [
       ...stateMigrations.filter((m) => m.id !== "006_state_retention"),
-      ...domain.migrations.filter((m) => m.id !== "010_cloud_retention"),
+      ...domain.migrations.filter(
+        (m) =>
+          !["010_cloud_retention", "011_cloud_request_age_dump"].includes(m.id),
+      ),
     ]);
     db.run("INSERT INTO state_events VALUES (7,?,?,?)", [ns, "old", "{}"]);
     const before = db.all(
@@ -90,6 +93,55 @@ test("legacy staged restore can be abandoned before write initialization", async
   }
 }, 30_000);
 
+test("pre-retention dump and status reads preserve the schema and every stored byte", async () => {
+  using raw = new Database(":memory:");
+  const calls: string[] = [];
+  const { storage } = browserStorage(raw, (sql) => calls.push(sql));
+  const db = durableStore(storage);
+  migrate(db, [
+    ...stateMigrations.filter((m) => m.id !== "006_state_retention"),
+    ...domain.migrations.filter(
+      (m) =>
+        !["010_cloud_retention", "011_cloud_request_age_dump"].includes(m.id),
+    ),
+  ]);
+  db.run("INSERT INTO domain_cloud_requests VALUES ('old','{}','ok','{}')");
+  await storage.put("provisioned", true);
+  const before = raw.serialize();
+  calls.length = 0;
+  const project = new Project({ storage });
+  const schemaChecks = () =>
+    calls.filter((sql) => sql.includes("pragma_table_info")).length;
+  for (const route of ["dump", "dump?cursor=start", "status"]) {
+    const checksBefore = schemaChecks();
+    const response = await project.fetch(
+      new Request(`https://fixture.example/p/a/${route}`),
+    );
+    expect(response.status).toBe(200);
+    expect(schemaChecks()).toBe(checksBefore + 1);
+    const reply = (await response.json()) as {
+      value: {
+        tables?: Record<string, Record<string, string | number>[]>;
+        dump?: { rows: Record<string, number> };
+      };
+    };
+    if (route === "status")
+      expect(reply.value.dump?.rows.domain_cloud_requests).toBe(1);
+    else
+      expect(reply.value.tables?.domain_cloud_requests).toEqual([
+        {
+          request_id: "old",
+          fingerprint: "{}",
+          outcome: "ok",
+          result: "{}",
+          created_at: 0,
+        },
+      ]);
+  }
+  expect(calls.every((sql) => /^SELECT\b/.test(sql))).toBe(true);
+  expect(raw.serialize()).toEqual(before);
+}, 30_000);
+
 test("cloud capacity metadata upgrades once without changing dump rows", () => {
   using raw = new Database(":memory:");
   const db = durableStore(browserStorage(raw).storage);
@@ -99,7 +151,8 @@ test("cloud capacity metadata upgrades once without changing dump rows", () => {
       ...domain,
       usage: {},
       migrations: domain.migrations.filter(
-        (m) => m.id !== "010_cloud_retention",
+        (m) =>
+          !["010_cloud_retention", "011_cloud_request_age_dump"].includes(m.id),
       ),
     },
   ]);
@@ -107,9 +160,21 @@ test("cloud capacity metadata upgrades once without changing dump rows", () => {
   db.run(
     "INSERT INTO domain_cloud_requests(request_id,fingerprint,outcome,result) VALUES ('old','{}','ok','{}')",
   );
-  const before = dumpOf(db);
+  // The pre-retention schema has no request age yet; compare every other column in all six tables.
+  const snapshot = () =>
+    Object.fromEntries(
+      Object.keys(dumpOf(undefined).tables).map((table) => [
+        table,
+        db.all(`SELECT * FROM ${table}`).map((row) => {
+          if (table !== "domain_cloud_requests") return row;
+          const { created_at: _age, ...original } = row;
+          return original;
+        }),
+      ]),
+    );
+  const before = snapshot();
   owner.initialize([domain]);
-  expect(dumpOf(db)).toEqual(before);
+  expect(snapshot()).toEqual(before);
   for (const sql of DUMP_USAGE_SQL) {
     const table = sql.split(" FROM ")[1]!;
     const actual = db.get(sql)!;
@@ -127,6 +192,7 @@ test("cloud capacity metadata upgrades once without changing dump rows", () => {
     "fingerprint",
     "outcome",
     "result",
+    "created_at",
   ]);
   expect(
     Number(db.get("SELECT created_at FROM domain_cloud_requests")?.created_at),
@@ -136,4 +202,42 @@ test("cloud capacity metadata upgrades once without changing dump rows", () => {
     "UPDATE state_usage SET bytes=bytes+1 WHERE table_name='domain_cloud_requests'",
   );
   expect(() => owner.initialize([domain])).toThrow(/retention.*repair/i);
+}, 30_000);
+
+test("installed request-age dump accounting upgrades without changing witness rows", () => {
+  using raw = new Database(":memory:");
+  const db = durableStore(browserStorage(raw).storage);
+  const owner = new StateOwner(db, { now: () => 1000 });
+  owner.initialize([
+    {
+      ...domain,
+      usage: {
+        ...domain.usage,
+        domain_cloud_requests: domain.usage.domain_cloud_requests!.filter(
+          (column) => column !== "created_at",
+        ),
+      },
+      migrations: domain.migrations.filter(
+        (m) => m.id !== "011_cloud_request_age_dump",
+      ),
+    },
+  ]);
+  db.run(
+    "INSERT INTO domain_cloud_requests(request_id,fingerprint,outcome,result) VALUES ('old','{}','ok','{}')",
+  );
+  db.run("UPDATE domain_cloud_requests SET created_at=1234");
+  const before = db.all("SELECT * FROM domain_cloud_requests");
+  owner.initialize([domain]);
+  expect(db.all("SELECT * FROM domain_cloud_requests")).toEqual(before);
+  for (const age of [0, 12345]) {
+    db.run("UPDATE domain_cloud_requests SET created_at=?", [age]);
+    usage(db, "domain_cloud_requests", [
+      "request_id",
+      "fingerprint",
+      "outcome",
+      "result",
+      "created_at",
+    ]);
+    expect(() => owner.initialize([domain])).not.toThrow();
+  }
 }, 30_000);

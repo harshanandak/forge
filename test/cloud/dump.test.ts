@@ -36,7 +36,13 @@ const ROW: Record<string, [Row, string]> = {
     ", PRIMARY KEY (namespace, request_id)",
   ],
   domain_cloud_requests: [
-    { request_id: "r", fingerprint: "{}", outcome: "ok", result: "{}" },
+    {
+      request_id: "r",
+      fingerprint: "{}",
+      outcome: "ok",
+      result: "{}",
+      created_at: 1,
+    },
     "",
   ],
   domain_cloud_command_receipts: [
@@ -113,6 +119,72 @@ const dumpText = (table: string, over: Row) =>
     format: "forge-cloud-dump/2",
     tables: { ...empty(), [table]: [row(table, over)[1]] },
   });
+for (const version of [1, 2])
+  for (const paged of [false, true])
+    test(`v${version} ${paged ? "page" : "dump"} without request age uses the unknown-age epoch sentinel`, () => {
+      const tables: Record<string, Row[]> = {
+        ...empty(),
+        domain_cloud_requests: [row("domain_cloud_requests")[1]],
+      };
+      delete tables.domain_cloud_requests![0]!.created_at;
+      if (version === 1) delete tables.domain_cloud_command_receipts;
+      const restored = parseDump(
+        JSON.stringify({
+          format: `forge-cloud-dump${paged ? "-page" : ""}/${version}`,
+          ...(paged ? { page: 0, last: true, next: null } : {}),
+          tables,
+        }),
+      );
+      expect(restored.tables.domain_cloud_requests).toEqual([
+        { ...ROW.domain_cloud_requests![0], created_at: 0 },
+      ]);
+    }, 30_000);
+
+for (const created_at of [
+  -1,
+  1.5,
+  "1",
+  null,
+  Number.MAX_SAFE_INTEGER,
+  Number.MAX_SAFE_INTEGER + 1,
+])
+  test(`a supplied invalid request age ${JSON.stringify(created_at)} is refused`, () => {
+    expect(
+      codeOf(() =>
+        parseDump(
+          JSON.stringify({
+            format: "forge-cloud-dump/2",
+            tables: {
+              ...empty(),
+              domain_cloud_requests: [
+                { ...ROW.domain_cloud_requests![0], created_at },
+              ],
+            },
+          }),
+        ),
+      ),
+    ).toBe("INPUT_INVALID");
+  }, 30_000);
+
+for (const age of [1234n, 9007199254740992n])
+  test(`request ages from an integer-preserving driver are checked before encoding: ${age}`, () => {
+    const db = database([row("domain_cloud_requests")]);
+    const read: SqlDatabase = {
+      ...db,
+      all: (sql, params) =>
+        db
+          .all(sql, params)
+          .map((row) =>
+            "created_at" in row ? { ...row, created_at: age } : row,
+          ),
+    };
+    if (age === 1234n)
+      expect(dumpOf(read).tables.domain_cloud_requests![0]!.created_at).toBe(
+        1234,
+      );
+    else expect(codeOf(() => dumpOf(read))).toBe("DUMP_UNSAFE_VALUE");
+  }, 30_000);
+
 const checkpointRows = {
   state_checkpoint_header: [1, 1, "lineage", 1, 20, 1, 20],
   state_checkpoint_live: ["forge/test", "a", 1, 1, "digest", ""],

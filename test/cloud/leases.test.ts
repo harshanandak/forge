@@ -647,16 +647,24 @@ for (const route of ["acquire", "renew"]) {
 }
 
 test("whole and paged restores preserve a refusal while a replacement token records its own refusal", async () => {
-  for (const route of ["dump", "dump?cursor=start"]) {
+  for (const [route, createdAt] of [
+    ["dump", now - minute + 123],
+    ["dump?cursor=start", now - minute + 123],
+    ["dump", 0],
+    ["dump?cursor=start", 0],
+  ] as const) {
     using source = fixture();
     const phone = await source.issue();
     const input = { ttlMs: day + 1, requestId: "oversized" };
     const refused = await source.write("claim", input, phone.token);
     expect(refused.status).toBe(400);
     expect(refused.body.error?.code).toBe("INPUT_INVALID");
+    // SQLite's trigger has its own clock; pin the stored witness independently.
+    source.db.run("UPDATE domain_cloud_requests SET created_at=?", [createdAt]);
     const dump = await source.send(route);
     expect(dump.status).toBe(200);
     using target = fixture();
+    target.clock.mockReturnValue(now + minute);
     const restored = await target.send("restore", dump.body.value);
     expect(restored.status).toBe(200);
     expect(target.rows("domain_cloud_requests")).toEqual(
@@ -671,6 +679,57 @@ test("whole and paged restores preserve a refusal while a replacement token reco
     expect(await target.write("claim", input, token)).toEqual(refused);
     expect(target.rows("domain_cloud_requests")).toEqual(after);
   }
+}, 30_000);
+
+for (const route of ["dump", "dump?cursor=start"])
+  for (const delta of [0, 1])
+    test(`request age at restore clock plus 60 seconds plus ${delta} ms: ${route}`, async () => {
+      using source = fixture();
+      const phone = await source.issue();
+      expect(
+        (await source.write("claim", { ttlMs: day + 1 }, phone.token)).status,
+      ).toBe(400);
+      const restoreAt = now + minute;
+      source.db.run("UPDATE domain_cloud_requests SET created_at=?", [
+        restoreAt + minute + delta,
+      ]);
+      const dumped = await source.send(route);
+      expect(dumped.status).toBe(200);
+      using target = fixture();
+      target.clock.mockReturnValue(restoreAt);
+      const before = target.snapshot();
+      const restored = await target.send("restore", dumped.body.value);
+      expect(restored.status).toBe(delta === 0 ? 200 : 400);
+      if (delta === 0)
+        expect(target.rows("domain_cloud_requests")).toEqual(
+          source.rows("domain_cloud_requests"),
+        );
+      else {
+        expect(restored.body.error?.code).toBe("INPUT_INVALID");
+        expect(target.snapshot()).toBe(before);
+      }
+    }, 30_000);
+
+test("a legacy page restores a missing request age as epoch zero after the clock advances", async () => {
+  using source = fixture();
+  const phone = await source.issue();
+  expect(
+    (await source.write("claim", { ttlMs: day + 1 }, phone.token)).status,
+  ).toBe(400);
+  const reply = await source.send("dump?cursor=start");
+  expect(reply.status).toBe(200);
+  const page = reply.body.value as Dump;
+  page.format = "forge-cloud-dump-page/1";
+  delete page.tables.domain_cloud_command_receipts;
+  for (const row of page.tables.domain_cloud_requests!) delete row.created_at;
+  using target = fixture();
+  target.clock.mockReturnValue(now + minute);
+  expect((await target.send("restore", page)).status).toBe(200);
+  expect(target.rows("domain_cloud_requests")).toEqual(
+    source
+      .rows("domain_cloud_requests")
+      .map((row) => ({ ...row, created_at: 0 })),
+  );
 }, 30_000);
 
 // A cold object is an older deploy's database, opened afresh. A refused credential or a holder read must
