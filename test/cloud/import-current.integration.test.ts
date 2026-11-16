@@ -465,6 +465,7 @@ test.each(["missing", "wrong", "matching"])(
         ["forge/work", "autopilot-ask:work-1"],
         ["forge/work", "autopilot-clock:work-1"],
         ["forge/work", "autopilot-event:work-1:1"],
+        ["forge/work", "participant:work-1:1"],
       ])
         state.put(
           namespace!,
@@ -473,6 +474,20 @@ test.each(["missing", "wrong", "matching"])(
           f.actor,
           { expectRevision: 0 },
         );
+      const subject = "issue:participant:work-1:1";
+      const lease = state.acquire(
+        f.ns,
+        subject,
+        f.holder,
+        60000,
+        "participant-1",
+      );
+      state.release(f.ns, {
+        subject,
+        generation: lease.generation,
+        holder: f.holder,
+      });
+      state.acquire(f.ns, subject, f.holder, 60000, "participant-2");
     });
     const backup = String(s.db.all("PRAGMA database_list")[0]!.file),
       root = dirname(backup);
@@ -493,7 +508,7 @@ test.each(["missing", "wrong", "matching"])(
       liveLeases: number;
       records: { namespace: string; shape: string; count: number }[];
     };
-    eq(left.liveLeases, 1);
+    eq(left.liveLeases, 2);
     eq(left.records, [
       { namespace: "forge/check", shape: "runs/*", count: 1 },
       { namespace: "forge/core-project", shape: "identity", count: 1 },
@@ -503,6 +518,7 @@ test.each(["missing", "wrong", "matching"])(
       { namespace: "forge/work", shape: "autopilot-ask:*", count: 1 },
       { namespace: "forge/work", shape: "autopilot-clock:*", count: 1 },
       { namespace: "forge/work", shape: "autopilot-event:*", count: 1 },
+      { namespace: "forge/work", shape: "participant:*", count: 1 },
     ]);
     const acknowledge =
       kind === "matching"

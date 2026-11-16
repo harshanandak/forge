@@ -271,8 +271,14 @@ export function verifySource(
       for (const row of events) {
         if (row.namespace !== namespace) continue;
         const event = parseRestoreJson(String(row.body)) as StateEvent;
-        if (leftBehindKey(namespace, event.key)) continue;
         const lease = event.type.startsWith(`${namespace}:lease.`);
+        if (
+          leftBehindKey(namespace, event.key) ||
+          (lease &&
+            event.key.startsWith("issue:") &&
+            leftBehindKey(namespace, event.key.slice(6)))
+        )
+          continue;
         if (
           !ordinaryKey(namespace, event.key) &&
           !(
