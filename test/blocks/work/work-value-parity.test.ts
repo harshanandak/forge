@@ -18,6 +18,7 @@ import {
   assertWorkRecord,
 } from "../../../src/blocks/work/validation.ts";
 import { domain } from "../../../cloud/src/project.ts";
+import { initializePragma } from "../../../cloud/src/store.ts";
 import { createIssue } from "../../../cloud/src/issue-create.ts";
 import { updateIssue } from "../../../cloud/src/issue-update.ts";
 import { closeIssue } from "../../../cloud/src/issue-close.ts";
@@ -259,6 +260,18 @@ for (const [index, row] of cases.entries()) {
       const db = opened.handle.value,
         owner = new StateOwner(db, { now: () => stamp });
       try {
+        initializePragma({
+          sql: {
+            exec: (sql) => {
+              db.exec(sql);
+              return { toArray: () => [] };
+            },
+          },
+          transactionSync: (body) => db.transaction(body),
+          get: () => Promise.resolve(undefined),
+          put: () => Promise.resolve(),
+          delete: () => Promise.resolve(undefined),
+        });
         owner.initialize([domain]);
         owner.put("forge/work", "issue:work-1", issue, actor, {
           expectRevision: 0,
