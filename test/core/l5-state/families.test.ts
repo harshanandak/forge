@@ -321,6 +321,32 @@ test("matching requires the entire key and refuses overlapping families", async 
   }
 });
 
+test.each([false, true])(
+  "whole-key alternation backtracks before checking overlap=%s",
+  async (overlap) => {
+    const f = await open();
+    try {
+      const declarations = policies();
+      declarations[0]!.families.note!.key = /note:a|note:ab/;
+      if (overlap) declarations[0]!.families.entry!.key = /^note:ab$/;
+      const owner = enrolled(f.db),
+        before = snapshot(f.db);
+      const declared = enrolled(f.db, declarations);
+      const write = () =>
+        declared.put(ns, "note:ab", "valid", actor, { expectRevision: 0 });
+      if (overlap) {
+        throws(write, /STATE_FAMILY_AMBIGUOUS/);
+        eq(snapshot(f.db), before);
+      } else {
+        eq(write().value, "valid");
+        eq(owner.get(ns, "note:ab")?.value, "valid");
+      }
+    } finally {
+      await f.close();
+    }
+  },
+);
+
 test.each(["g", "y"])(
   "stateful key flag %s is refused at enrollment",
   async (flag) => {
