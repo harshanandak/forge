@@ -80,7 +80,7 @@ const cases: readonly (readonly [string, string, unknown])[] = [
     "autopilot",
     "autopilot:work-1",
     {
-      id: "forge-1",
+      id: "work-1",
       pr: 1,
       url: "https://example.com/pull/1",
       head: "a".repeat(40),
@@ -199,6 +199,17 @@ test.each(cases)(
     );
   },
 );
+
+test("the lane journal retains its stored issue identity", () => {
+  const journal = cases.find(([name]) => name === "autopilot")!;
+  eq(
+    work.validateDeclaredWorkRecord(journal[1], {
+      ...(journal[2] as Record<string, unknown>),
+      id: "work-2",
+    }),
+    "WORK_VALUE_ID",
+  );
+});
 
 test("the work policy binds the same family definitions to the generic owner", async () => {
   const declaration = policy();

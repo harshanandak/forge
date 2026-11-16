@@ -259,7 +259,7 @@ const runtimeFamilies: Record<string, Family> = {
     key: /^autopilot:work-[0-9]+$/,
     schema: object(
       {
-        id: nonempty,
+        id,
         pr: positive,
         url: text,
         head: commit,
@@ -298,6 +298,7 @@ const runtimeFamilies: Record<string, Family> = {
         "counters",
       ],
     ),
+    rules: [identity],
   },
   "autopilot-global": {
     key: /^autopilot:global$/,
