@@ -35,7 +35,7 @@ import { expectsStop, stopObservation } from "./stop-live.ts";
 import { capacityStop } from "./stop-capacity.ts";
 import { stopPlan, expectedImage, type StopPlan } from "./restored.ts";
 import type { Tables } from "./max-source.ts";
-import { pagesOf } from "../../tools/import-current-state.ts";
+import { pagesOf, leftBehindShapes } from "../../tools/import-current-state.ts";
 import { limitsFrom } from "../src/dump.ts";
 import {
   COLUMNS,
@@ -750,7 +750,9 @@ if (!isMainThread) {
       const groups = new Set<string>();
       for (const row of report.records) {
         assert.ok(
-          validateBlockId(row.namespace).ok && row.namespace !== "forge/work",
+          validateBlockId(row.namespace).ok &&
+            (row.namespace !== "forge/work" ||
+              leftBehindShapes.includes(row.shape)),
         );
         assert.ok(typeof row.shape === "string" && row.shape.length > 0);
         assert.ok(natural(row.count) && row.count > 0);

@@ -296,8 +296,11 @@ test.each([
   "slots:work-1:extra",
   "journal:work-1",
   "lane-control:global",
+  "autopilot-ask:work-1:extra",
+  "autopilot-event:work-1:0",
 ])("unsupported work shape still refuses: %s", (key) => {
   eq(impl.ordinaryKey(f.ns, key), false);
+  eq(impl.leftBehindKey(f.ns, key), false);
   eq(impl.ordinaryKey("forge/cloud", "issue:work-1"), false);
 });
 

@@ -75,8 +75,25 @@ function matchesKey(
 export const ordinaryKey = (ns: string, key: string): boolean =>
   matchesKey(importedKeys, ns, key);
 
+const localKeys: Record<string, RegExp> = {
+  autopilot: /^autopilot:(?:global|work-[0-9]+)$/,
+  "autopilot-ask": /^autopilot-ask:work-[0-9]+$/,
+  "autopilot-clock": /^autopilot-clock:work-[0-9]+$/,
+  "autopilot-event": /^autopilot-event:work-[0-9]+:[1-9][0-9]*$/,
+  "autopilot-merge": /^autopilot-merge:work-[0-9]+$/,
+  participant: /^participant:work-[0-9]+:[1-9][0-9]*$/,
+  note: /^note:attempt:work-[0-9]+:attempt-[1-9][0-9]*:[1-9][0-9]*$/,
+  "bound-lane":
+    /^bound-lane:\["(?:[^"\\]|\\.)*","(?:[^"\\]|\\.)*","(?:[^"\\]|\\.)*"\]:work-[0-9]+$/,
+};
+export const leftBehindShapes = Object.keys(localKeys).map(
+  (family) => `${family}:*`,
+);
+export function leftBehindKey(ns: string, key: string): boolean {
+  return matchesKey(localKeys, ns, key);
+}
 export const classifiedFamily = (family: string): boolean =>
-  Object.hasOwn(importedKeys, family);
+  Object.hasOwn(importedKeys, family) !== Object.hasOwn(localKeys, family);
 
 type Check = (value: unknown) => boolean;
 const text: Check = (v) => typeof v === "string";
@@ -186,7 +203,10 @@ function workValue(key: string, v: unknown): boolean {
   }
 }
 /** Bounded keyset reads retain only one page; admission happens before yielding each record. */
-export function* workRecords(source: SqlDatabase): Generator<StateRecord> {
+export function* workRecords(
+  source: SqlDatabase,
+  includeLocal = false,
+): Generator<StateRecord> {
   let after: readonly string[] | undefined;
   for (;;) {
     const rows = source.all(
@@ -195,6 +215,11 @@ export function* workRecords(source: SqlDatabase): Generator<StateRecord> {
     );
     for (const row of rows) {
       if (row.namespace !== namespace) continue;
+      if (leftBehindKey(namespace, String(row.key))) {
+        if (includeLocal)
+          yield parseRestoreJson(String(row.body)) as StateRecord;
+        continue;
+      }
       if (!ordinaryKey(String(row.namespace), String(row.key))) invalid();
       const record = parseRestoreJson(String(row.body)) as StateRecord;
       if (!workValue(record.key, record.value)) invalid();
@@ -246,6 +271,7 @@ export function verifySource(
       for (const row of events) {
         if (row.namespace !== namespace) continue;
         const event = parseRestoreJson(String(row.body)) as StateEvent;
+        if (leftBehindKey(namespace, event.key)) continue;
         const lease = event.type.startsWith(`${namespace}:lease.`);
         if (
           !ordinaryKey(namespace, event.key) &&
@@ -270,7 +296,7 @@ export function verifySource(
         namespace,
       ])!.n,
     );
-    for (const _record of workRecords(source)) records++;
+    for (const _record of workRecords(source, true)) records++;
     if (records !== manifest.records) invalid();
     return found;
   } catch {
@@ -297,6 +323,24 @@ function leftBehind(source: SqlDatabase, manifest: SourceManifest) {
       shape: String(row.shape),
       count: Number(row.count),
     }));
+  let after = "";
+  for (;;) {
+    const keys = source.all(
+      "SELECT key FROM state_records WHERE namespace=? AND key>? ORDER BY key LIMIT 128",
+      [namespace, after],
+    );
+    for (const row of keys) {
+      if (!leftBehindKey(namespace, String(row.key))) continue;
+      const shape = `${String(row.key).split(":")[0]}:*`;
+      const group = records.find(
+        (record) => record.namespace === namespace && record.shape === shape,
+      );
+      if (group) group.count++;
+      else records.push({ namespace, shape, count: 1 });
+    }
+    if (keys.length < 128) break;
+    after = String(keys.at(-1)!.key);
+  }
   const report = {
     format: "forge-current-left-behind/1",
     source: manifest,
