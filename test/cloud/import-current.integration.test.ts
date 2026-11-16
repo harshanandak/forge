@@ -530,7 +530,11 @@ test.each(["missing", "wrong", "matching"])(
         spawnSync(
           "node",
           ["cloud/conformance/capacity.ts", "measure-current", next],
-          { encoding: "utf8", timeout: 30000 },
+          {
+            encoding: "utf8",
+            timeout: 30000,
+            env: { ...process.env, CLOUD_RESTORE_STOP: "1" },
+          },
         );
       const measured = measure();
       eq(measured.status, 0, measured.stderr);
