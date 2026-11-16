@@ -117,9 +117,10 @@ test.each(rows)(
         entry = join(root, "alias");
         symlinkSync(planted, entry, windows ? "junction" : "dir");
       }
-      const path = onlyPlanted
-        ? entry
-        : [entry, "", dirname(git)].join(delimiter);
+      const path =
+        onlyPlanted || homeRow
+          ? entry
+          : [entry, "", dirname(git)].join(delimiter);
       const hook = name.startsWith("completion hook");
       const preload = join(root, "git-marker.cjs");
       writeFileSync(
@@ -145,6 +146,9 @@ test.each(rows)(
           env: {
             PATH: hook ? path : process.env.PATH,
             SystemRoot: process.env.SystemRoot,
+            TMPDIR: tmpdir(),
+            TEMP: tmpdir(),
+            TMP: tmpdir(),
             ...(hook
               ? { NODE_OPTIONS: `--require=${JSON.stringify(preload)}` }
               : {}),
