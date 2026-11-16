@@ -647,16 +647,24 @@ for (const route of ["acquire", "renew"]) {
 }
 
 test("whole and paged restores preserve a refusal while a replacement token records its own refusal", async () => {
-  for (const route of ["dump", "dump?cursor=start"]) {
+  for (const [route, createdAt] of [
+    ["dump", now - minute + 123],
+    ["dump?cursor=start", now - minute + 123],
+    ["dump", 0],
+    ["dump?cursor=start", 0],
+  ] as const) {
     using source = fixture();
     const phone = await source.issue();
     const input = { ttlMs: day + 1, requestId: "oversized" };
     const refused = await source.write("claim", input, phone.token);
     expect(refused.status).toBe(400);
     expect(refused.body.error?.code).toBe("INPUT_INVALID");
+    // SQLite's trigger has its own clock; pin the stored witness independently.
+    source.db.run("UPDATE domain_cloud_requests SET created_at=?", [createdAt]);
     const dump = await source.send(route);
     expect(dump.status).toBe(200);
     using target = fixture();
+    target.clock.mockReturnValue(now + minute);
     const restored = await target.send("restore", dump.body.value);
     expect(restored.status).toBe(200);
     expect(target.rows("domain_cloud_requests")).toEqual(

@@ -113,6 +113,26 @@ const dumpText = (table: string, over: Row) =>
     format: "forge-cloud-dump/2",
     tables: { ...empty(), [table]: [row(table, over)[1]] },
   });
+for (const version of [1, 2])
+  for (const paged of [false, true])
+    test(`v${version} ${paged ? "page" : "dump"} without request age uses the expired epoch sentinel`, () => {
+      const tables: Record<string, Row[]> = {
+        ...empty(),
+        domain_cloud_requests: [row("domain_cloud_requests")[1]],
+      };
+      if (version === 1) delete tables.domain_cloud_command_receipts;
+      const restored = parseDump(
+        JSON.stringify({
+          format: `forge-cloud-dump${paged ? "-page" : ""}/${version}`,
+          ...(paged ? { page: 0, last: true, next: null } : {}),
+          tables,
+        }),
+      );
+      expect(restored.tables.domain_cloud_requests).toEqual([
+        { ...ROW.domain_cloud_requests![0], created_at: 0 },
+      ]);
+    });
+
 const checkpointRows = {
   state_checkpoint_header: [1, 1, "lineage", 1, 20, 1, 20],
   state_checkpoint_live: ["forge/test", "a", 1, 1, "digest", ""],
