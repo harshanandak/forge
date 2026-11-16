@@ -24,15 +24,18 @@ test("release proof rejects repacked bytes with preserved identity and a recalcu
   mkdirSync(dist, { recursive: true });
   writeFileSync(join(dist, "build.json"), identity);
   const tar = (args: string[]) => {
-    const out = Bun.spawnSync(["tar", ...args]);
-    expect(out.exitCode).toBe(0);
+    const out = Bun.spawnSync(["tar", ...args], { cwd: root });
+    if (out.exitCode !== 0)
+      throw new Error(`tar failed: ${out.stderr.toString()}`);
     return out.stdout.toString();
   };
   const repack = () => {
-    tar(["-czf", archive, "-C", root, "package"]);
+    tar(["-czf", "candidate.tgz", "package"]);
     const digest = hash("sha256", readFileSync(archive));
     writeFileSync(`${archive}.sha256`, `${digest}  candidate.tgz\n`);
-    expect(tar(["-xOf", archive, "package/dist/build.json"])).toBe(identity);
+    expect(tar(["-xOf", "candidate.tgz", "package/dist/build.json"])).toBe(
+      identity,
+    );
     return digest;
   };
   try {
