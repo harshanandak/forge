@@ -124,7 +124,7 @@ test("installed tracker persists writes, fences sessions and refuses unavailable
     expect(unavailable.status).not.toBe(0);
     expect(unavailable.envelope).toMatchObject({
       ok: false,
-      error: { code: "INTERNAL" },
+      error: { code: "UNAVAILABLE" },
     });
     rig.outage(false);
     expect((await pass(1, "comments", { id })).records).toEqual(beforeComments);
