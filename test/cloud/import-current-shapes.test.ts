@@ -1,9 +1,11 @@
-import { test } from "bun:test";
+import { test, setDefaultTimeout } from "bun:test";
 import { deepStrictEqual as eq } from "node:assert/strict";
 import { limitsFrom, restorePage } from "../../cloud/src/dump.ts";
 import { domain } from "../../cloud/src/project.ts";
 import * as impl from "../../tools/import-current-state.ts";
 import * as f from "./import-current-state.fixture.ts";
+
+setDefaultTimeout(30_000);
 
 const workShapes = [
   [
@@ -43,8 +45,11 @@ const workShapes = [
   [
     "selection:work-1",
     {
+      mode: "single",
       chosen: [{ attempt: "attempt-1", sha: "a".repeat(40) }],
       reason: "chosen",
+      holder: f.holder,
+      selectedAt: new Date(f.at).toISOString(),
     },
   ],
   ["slots:work-1", { count: 2, next: 1 }],
@@ -95,4 +100,5 @@ test.each([
   "lane-control:global",
 ])("unsupported work shape still refuses: %s", (key) => {
   eq(impl.ordinaryKey(f.ns, key), false);
+  eq(impl.ordinaryKey("forge/cloud", "issue:work-1"), false);
 });

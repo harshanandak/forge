@@ -1,4 +1,5 @@
 import { ForgeFailure } from "../src/contract/failure.ts";
+import { createHash } from "node:crypto";
 import { canonicalJson } from "../src/core/config/pointer.ts";
 import {
   assertNoCheckpoint,
@@ -44,7 +45,7 @@ const invalid = (): never => {
 export function ordinaryKey(ns: string, key: string): boolean {
   return (
     ns === namespace &&
-    /^(?:issue:[^:]+|(?:comment|link):[^:]+:[1-9][0-9]*|allocation:(?:issue:work-|(?:comment|link):[^:]+:))$/.test(
+    /^(?:issue:[^:]+|(?:comment|link|landing|reopen):[^:]+:[1-9][0-9]*|attempt:[^:]+:attempt-[1-9][0-9]*|evidence:attempt:[^:]+:attempt-[1-9][0-9]*:[1-9][0-9]*|(?:cleanup|selection|slots):[^:]+|allocation:(?:issue:work-|(?:comment|link):[^:]+:))$/.test(
       key,
     )
   );
@@ -59,6 +60,7 @@ export function* workRecords(source: SqlDatabase): Generator<StateRecord> {
       after,
     );
     for (const row of rows) {
+      if (row.namespace !== namespace) continue;
       if (!ordinaryKey(String(row.namespace), String(row.key))) invalid();
       yield parseRestoreJson(String(row.body)) as StateRecord;
     }
@@ -106,11 +108,19 @@ export function verifySource(
         [sequence],
       );
       for (const row of events)
-        if (!ordinaryKey(String(row.namespace), String(row.key))) invalid();
+        if (
+          row.namespace === namespace &&
+          !ordinaryKey(String(row.namespace), String(row.key))
+        )
+          invalid();
       if (events.length < 128) break;
       sequence = Number(events.at(-1)!.sequence);
     }
-    let records = 0;
+    let records = Number(
+      source.get("SELECT COUNT(*) AS n FROM state_records WHERE namespace<>?", [
+        namespace,
+      ])!.n,
+    );
     for (const _record of workRecords(source)) records++;
     if (records !== manifest.records) invalid();
     return found;
@@ -118,6 +128,66 @@ export function verifySource(
     // Source bodies and keys may contain credentials; only the refusal category crosses this boundary.
     return invalid();
   }
+}
+
+/** Counts only: no source values or identifier suffixes cross into the omission report. */
+function leftBehind(source: SqlDatabase, manifest: SourceManifest) {
+  const groups = new Map<
+    string,
+    { namespace: string; shape: string; count: number }
+  >();
+  let after: readonly string[] | undefined;
+  for (;;) {
+    const rows = source.all(
+      `SELECT namespace,key FROM state_records WHERE namespace<>?${after ? " AND (namespace,key) > (?,?)" : ""} ORDER BY namespace,key LIMIT 128`,
+      [namespace, ...(after ?? [])],
+    );
+    for (const row of rows) {
+      const ns = String(row.namespace),
+        key = String(row.key);
+      const shape =
+        ns === "forge/check" && key.startsWith("runs/")
+          ? "runs/*"
+          : ns === "forge/memory" && /^(note|transfer|meta)\//.test(key)
+            ? key.split("/")[0] + "/*"
+            : ns === "forge/core-project" && key === "identity"
+              ? "identity"
+              : "other";
+      const id = canonicalJson([ns, shape]);
+      const group = groups.get(id) ?? { namespace: ns, shape, count: 0 };
+      group.count++;
+      groups.set(id, group);
+    }
+    if (rows.length < 128) break;
+    after = [String(rows.at(-1)!.namespace), String(rows.at(-1)!.key)];
+  }
+  const report = {
+    format: "forge-current-left-behind/1",
+    source: manifest,
+    records: [...groups.values()].sort((a, b) =>
+      a.namespace < b.namespace
+        ? -1
+        : a.namespace > b.namespace
+          ? 1
+          : a.shape < b.shape
+            ? -1
+            : a.shape > b.shape
+              ? 1
+              : 0,
+    ),
+    liveLeases: Number(
+      source.get(
+        "SELECT COUNT(*) AS n FROM state_leases WHERE json_extract(body,'$.releasedAt') IS NULL AND json_extract(body,'$.expiresAt')>?",
+        [manifest.at],
+      )!.n,
+    ),
+  };
+  const bytes = canonicalJson(report);
+  return {
+    report,
+    bytes,
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+  };
 }
 
 /** Project into a disposable, initialized authority store. The source is borrowed and read-only. */
@@ -202,7 +272,13 @@ export function currentState(
           message: "Current-state projection exceeds configured caps",
           retry: "never",
         });
-      return { records, floors, events, usage };
+      return {
+        records,
+        floors,
+        events,
+        usage,
+        leftBehind: leftBehind(source, manifest),
+      };
     });
   } catch (error) {
     if (error instanceof ForgeFailure && error.error.code === "INPUT_INVALID")

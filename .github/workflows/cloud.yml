@@ -11,6 +11,8 @@ on:
       - "src/**"
       - "schemas/**"
       - "tools/gen/**"
+      - "tools/import-current*.ts"
+      - "test/cloud/import-current*"
       - "package.json"
       - "bun.lock"
       - "tsconfig*.json"
