@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { timingSafeEqual } from "node:crypto";
 import { project } from "../../cloud/import-current-state.fixture.ts";
-import { cloudRig, refuse, type CloudRig, type Seen } from "./fixture.ts";
+import { cloudRig, type CloudRig, type Seen } from "./fixture.ts";
 
 if (!("timingSafeEqual" in crypto.subtle))
   Object.defineProperty(crypto.subtle, "timingSafeEqual", {
@@ -10,16 +10,18 @@ if (!("timingSafeEqual" in crypto.subtle))
 
 /** Only the HTTPS boundary is adapted; Project.fetch owns tokens, receipts and leases. */
 export async function trackerRig(bin: string) {
-  const authority = await project(undefined, {
-    FORGE_CLOUD_PROJECT: "proj",
-    FORGE_CLOUD_ID_PREFIX: "forge",
-  });
+  let unavailable = false;
+  const authority = await project(
+    undefined,
+    { FORGE_CLOUD_PROJECT: "proj", FORGE_CLOUD_ID_PREFIX: "forge" },
+    () => {
+      if (unavailable) throw new Error("synthetic storage outage");
+    },
+  );
   const clients: CloudRig[] = [];
   const responses: { status: number; body: unknown }[] = [];
   const ids: string[] = [];
-  let unavailable = false;
   const forward = async (seen: Seen) => {
-    if (unavailable) return refuse("UNAVAILABLE", 503, "synthetic outage");
     const response = await authority.p.fetch(
       new Request(`https://fixture.example${seen.url}`, {
         method: seen.method ?? "POST",
@@ -42,12 +44,8 @@ export async function trackerRig(bin: string) {
     }
   };
   try {
-    for (const [index, device] of [
-      "laptop",
-      "desktop",
-      "third",
-      "fresh-checkout",
-    ].entries()) {
+    const devices = ["laptop", "desktop", "third", "fresh-checkout"];
+    for (const [index, device] of devices.entries()) {
       const session = `installed-${index}`;
       // Administrative setup goes through the real Project routes as well.
       const issued = await authority.send("devices", {
