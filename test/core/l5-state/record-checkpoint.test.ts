@@ -20,6 +20,81 @@ import {
 
 setDefaultTimeout(30_000);
 
+test.each([false, true])(
+  "checkpoint deletion floor survives a retained older create; tail delete=%p",
+  async (tailDelete) => {
+    const s = await fixture(),
+      target = await fixture();
+    try {
+      s.owner.initialize();
+      target.owner.initialize();
+      put(s, "x");
+      s.owner.delete(ns, "x", actor, { expectRevision: 1 });
+      capture(s);
+      s.db.run("DELETE FROM state_events WHERE sequence=2");
+      if (tailDelete) {
+        // Model a valid tail independent of the writer's revision-selection bug.
+        s.db.run("DELETE FROM state_events WHERE sequence=1");
+        expect(put(s, "x").revision).toBe(3);
+        s.owner.delete(ns, "x", actor, { expectRevision: 3 });
+      }
+      s.owner.initialize();
+      target.owner.restore(s.owner.export());
+      const revision = tailDelete ? 5 : 3;
+      expect(put(s, "x").revision).toBe(revision);
+      const records = target.owner.putMany(
+        ns,
+        [{ key: "x", value: {}, expectRevision: 0 }],
+        actor,
+        { admit: (preview) => expect(preview[0]?.revision).toBe(revision) },
+      );
+      expect(records[0]?.revision).toBe(revision);
+    } finally {
+      await s.close();
+      await target.close();
+    }
+  },
+);
+
+test.each(["deleted allocation", "valid historical floor", "new prefix"])(
+  "checkpoint admission retains tail allocator authority: %s",
+  async (kind) => {
+    const s = await fixture(),
+      target = await fixture();
+    try {
+      prefix(s);
+      capture(s);
+      target.owner.initialize();
+      const name = kind === "new prefix" ? "new:" : "item:";
+      if (kind === "valid historical floor")
+        put(s, `allocation:${name}`, { prefix: name, number: 9 }, 1);
+      else {
+        const allocated = s.owner.putNext(
+          ns,
+          name,
+          () => ({ value: {} }),
+          actor,
+        );
+        s.owner.delete(ns, allocated.key, actor, { expectRevision: 1 });
+      }
+      put(
+        s,
+        `allocation:${name}`,
+        { prefix: name, number: kind === "new prefix" ? 0 : 1 },
+        kind === "new prefix" ? 1 : 2,
+      );
+      expect(() => s.owner.initialize()).toThrow(/allocator|repair/i);
+      expect(() => target.owner.restore(s.owner.export())).toThrow(
+        /allocator|repair/i,
+      );
+      expect(target.owner.export().records).toEqual([]);
+    } finally {
+      await s.close();
+      await target.close();
+    }
+  },
+);
+
 test("a malformed live floor reserves nothing during checkpoint admission", async () => {
   const s = await fixture(),
     target = await fixture();
