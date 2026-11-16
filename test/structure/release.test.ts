@@ -1,13 +1,18 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { parse } from "yaml";
+import assert from "node:assert/strict";
 
 interface Job {
+  if?: unknown;
+  "continue-on-error"?: unknown;
   env?: Record<string, string>;
   environment?: string;
   permissions?: Record<string, string>;
   needs?: string[];
   steps: {
+    if?: unknown;
+    "continue-on-error"?: unknown;
     uses?: string;
     run?: string;
     env?: Record<string, string>;
@@ -21,6 +26,26 @@ function workflow() {
       "utf8",
     ),
   ) as { on: Record<string, unknown>; jobs: Record<string, Job> };
+}
+
+function requiredReadback(w: ReturnType<typeof workflow>) {
+  for (const name of ["publish", "readback", "promote"]) {
+    const job = w.jobs[name]!;
+    assert.equal(job.if, undefined, `${name} cannot be conditional`);
+    assert.equal(job["continue-on-error"], undefined);
+    for (const step of job.steps) {
+      assert.equal(step.if, undefined, `${name} steps cannot be conditional`);
+      assert.equal(step["continue-on-error"], undefined);
+    }
+  }
+  const runs = w.jobs.readback!.steps.map((s) => s.run ?? "").join("\n");
+  for (const command of [
+    "npm install --ignore-scripts",
+    "npm audit signatures",
+    "tools/release/readback.mjs",
+    "tools/release/journeys.mjs",
+  ])
+    assert.ok(runs.includes(command), `required readback command: ${command}`);
 }
 test("release approvals, dependency chain and OIDC cannot be bypassed", () => {
   const w = workflow();
@@ -77,6 +102,7 @@ test("promotion derives beta for prereleases and latest for stable versions", ()
 }, 1000);
 
 test("promotion requires the installed registry journey and exact identity/provenance policy", () => {
+  requiredReadback(workflow());
   const job = workflow().jobs.readback!;
   const runs = job.steps.map((step) => step.run ?? "").join("\n");
   expect(runs).toContain("--include-attestations");
@@ -88,3 +114,29 @@ test("promotion requires the installed registry journey and exact identity/prove
   expect(runs).toContain("FORGE_PACKED_CONSUMER");
   expect(workflow().jobs.promote?.needs).toContain("readback");
 }, 1000);
+
+for (const change of [
+  "omitted",
+  "if false",
+  "ignored step failure",
+  "ignored job failure",
+  "conditional promotion",
+]) {
+  test(`release guard refuses ${change}`, () => {
+    const w = workflow();
+    const cold = w.jobs.readback!.steps.find((s) =>
+      s.run?.includes("npx --yes"),
+    )!;
+    if (change === "omitted")
+      cold.run = cold.run!.replaceAll(
+        "npm audit signatures",
+        "echo signatures omitted",
+      );
+    if (change === "if false") cold.if = false;
+    if (change === "ignored step failure") cold["continue-on-error"] = true;
+    if (change === "ignored job failure")
+      w.jobs.readback!["continue-on-error"] = true;
+    if (change === "conditional promotion") w.jobs.promote!.if = "always()";
+    expect(() => requiredReadback(w)).toThrow();
+  }, 1000);
+}
