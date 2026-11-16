@@ -40,6 +40,7 @@ import {
 } from "./migrations.ts";
 import { registerTables, exportTables, type DomainData } from "./domains.ts";
 import { parseRestoreJson } from "./restore-json.ts";
+import { allocationFloorNumber } from "./allocation-floor.ts";
 import { writeRecordCheckpoint } from "./record-checkpoint.ts";
 import {
   checkpointTables,
@@ -181,18 +182,8 @@ function wellFormedText(value: string, position: string): void {
 const FLOOR_TEXT_MAX = 4096;
 /** The stored floor's number; any value that is not the exact floor shape is refused, never read as zero. */
 export function floorNumber(value: unknown, prefix: string): number {
-  const floor = value as { prefix?: unknown; number?: unknown } | null;
-  if (
-    typeof floor !== "object" ||
-    floor === null ||
-    Object.keys(floor).length !== 2 ||
-    floor.prefix !== prefix ||
-    typeof floor.number !== "number" ||
-    !Number.isSafeInteger(floor.number) ||
-    floor.number < 0
-  )
-    return invalid("Invalid allocation record");
-  return floor.number;
+  const number = allocationFloorNumber(value, prefix);
+  return number === undefined ? invalid("Invalid allocation record") : number;
 }
 function copyReadSet(value: unknown): WriteOptions["readSet"] {
   if (value === undefined) return undefined;

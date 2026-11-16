@@ -4,6 +4,7 @@ import type { StateEvent } from "../../generated/types.ts";
 import type { SqlDatabase } from "../../ports/store.ts";
 import { recordDigest } from "./checkpoint.ts";
 import { parseRestoreJson } from "./restore-json.ts";
+import { allocationFloorNumber } from "./allocation-floor.ts";
 
 function refuse(): never {
   throw new ForgeFailure({
@@ -65,21 +66,14 @@ export function writeRecordCheckpoint(db: SqlDatabase, batch: number): number {
             "DELETE FROM state_checkpoint_deleted WHERE namespace=? AND key=?",
             [namespace, key],
           );
-          const floor = event.data as {
-            prefix?: unknown;
-            number?: unknown;
-          } | null;
-          if (
-            floor &&
-            typeof floor.prefix === "string" &&
-            key === `allocation:${floor.prefix}` &&
-            typeof floor.number === "number" &&
-            Number.isSafeInteger(floor.number) &&
-            floor.number >= 0
-          )
+          const prefix = key.slice("allocation:".length);
+          const number = key.startsWith("allocation:")
+            ? allocationFloorNumber(event.data, prefix)
+            : undefined;
+          if (number !== undefined)
             db.run(
               "INSERT INTO state_checkpoint_floors VALUES (?,?,?,?) ON CONFLICT(namespace,prefix) DO UPDATE SET sequence=excluded.sequence,highest=MAX(highest,excluded.highest)",
-              [namespace, floor.prefix, sequence, floor.number],
+              [namespace, prefix, sequence, number],
             );
         } else if (event.type === `${namespace}:record.deleted@1`) {
           db.run(
