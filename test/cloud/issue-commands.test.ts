@@ -11153,7 +11153,7 @@ for (const trip of TRIPS)
 for (const trip of TRIPS)
   for (const [what, table] of [
     ["record", /^INSERT INTO state_records/],
-    ["event", /^INSERT INTO state_events\(namespace,key,body\)/],
+    ["event", /^INSERT INTO state_events\(namespace,key,body(?:,sequence)?\)/],
     ["readback", /^SELECT body, \(SELECT MAX\(sequence\)/],
   ] as const)
     test(`a ${trip} restore whose floor ${what} fails rolls everything back, and a retry saves the same floor`, async () => {
@@ -11518,12 +11518,12 @@ for (const trip of TRIPS) {
     ["link floor record", /^INSERT INTO state_records/, numKey("link")],
     [
       "comment floor event",
-      /^INSERT INTO state_events\(namespace,key,body\)/,
+      /^INSERT INTO state_events\(namespace,key,body(?:,sequence)?\)/,
       numKey("comment"),
     ],
     [
       "link floor event",
-      /^INSERT INTO state_events\(namespace,key,body\)/,
+      /^INSERT INTO state_events\(namespace,key,body(?:,sequence)?\)/,
       numKey("link"),
     ],
     ["floor readback", /^SELECT body, \(SELECT MAX\(sequence\)/, undefined],
