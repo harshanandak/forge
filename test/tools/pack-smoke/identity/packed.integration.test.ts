@@ -41,10 +41,9 @@ for (const [field, value] of [
       ) as { version: string; commit: string };
       const root = resolve(import.meta.dirname, "../../../..");
       const author = join(work, "author");
-      mkdirSync(join(author, "tools"), { recursive: true });
-      cpSync(join(root, "tools/pack-smoke"), join(author, "tools/pack-smoke"), {
-        recursive: true,
-      });
+      mkdirSync(author);
+      for (const path of ["tools", "src"])
+        cpSync(join(root, path), join(author, path), { recursive: true });
       cpSync(join(root, "package.json"), join(author, "package.json"));
       // A real, bounded fixture suite avoids recursively dispatching this acceptance file.
       mkdirSync(join(author, "test/marker"), { recursive: true });

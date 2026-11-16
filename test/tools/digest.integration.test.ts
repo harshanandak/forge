@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   copyFileSync,
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -50,10 +51,15 @@ function fixture(
   mkdirSync(join(root, "tools"));
   mkdirSync(join(root, "bin"));
   writeFileSync(join(root, "package.json"), '{"private":true,"type":"module"}');
-  for (const name of ["digest.ts", "run-command.ts"]) {
+  for (const name of ["digest.ts", "run-command.ts", "git-executable.ts"]) {
     const file = resolve(import.meta.dirname, "../../tools", name);
     if (existsSync(file)) copyFileSync(file, join(root, "tools", name));
   }
+  cpSync(
+    resolve(import.meta.dirname, "../../src/adapters/process"),
+    join(root, "src/adapters/process"),
+    { recursive: true },
+  );
   const budget = spawnBudget(30_000);
   const git = (...args: string[]) =>
     budget

@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { gitExecutable } from "./git-executable.ts";
 
 export type ReviewTier = "light" | "code" | "security";
 export type LaneTier = { tier: ReviewTier; because: string; reviews: string[] };
@@ -28,7 +29,8 @@ function validGlob(pattern: string) {
   return !bracket && braces === 0 && !pattern.includes("[]");
 }
 function git(worktree: string, args: string[]) {
-  const result = spawnSync("git", args, {
+  const result = spawnSync(gitExecutable(), args, {
+    shell: false,
     cwd: worktree,
     encoding: "utf8",
     timeout: 30_000,
@@ -45,9 +47,10 @@ export function laneTier(worktree: string): LaneTier {
     config = Bun.YAML.parse(
       git(worktree, ["show", `${origin}:.forge/config.yaml`]),
     );
-  } catch {
+  } catch (error) {
     throw new Error(
-      "cannot read trusted tier policy from origin/main:.forge/config.yaml",
+      `cannot read trusted tier policy from origin/main:.forge/config.yaml: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
     );
   }
   const tiers: unknown =

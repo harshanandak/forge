@@ -1,5 +1,13 @@
-import { accessSync, constants, readFileSync, statSync } from "node:fs";
+import {
+  accessSync,
+  constants,
+  lstatSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+} from "node:fs";
 import { spawnSync } from "node:child_process";
+import { homedir, tmpdir } from "node:os";
 import { windowsProcessStartTime } from "./windows-job.ts";
 import type { Unavailable } from "../../generated/types.ts";
 import type { ResolvedExecutable } from "../../ports/process.ts";
@@ -10,9 +18,21 @@ import { pathFor, type Platform } from "./platform.ts";
 export interface FileProbe {
   isFile(path: string): boolean;
   isExecutable(path: string): boolean;
+  realpath(path: string): string;
+  hasEntry(path: string): boolean;
 }
 
 export const realFileProbe: FileProbe = {
+  realpath: (path) => realpathSync.native(path),
+  hasEntry(path) {
+    try {
+      lstatSync(path);
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw error;
+    }
+  },
   isFile(path) {
     try {
       return statSync(path).isFile();
@@ -118,7 +138,7 @@ function searchDirectories(
  * Find an executable by walking PATH (and on Windows PATHEXT) ourselves, never through `where` or
  * `which`. The current directory is never searched. A name with a directory part must be absolute.
  */
-export function resolveExecutable(
+function searchExecutable(
   executable: string,
   env: Readonly<Record<string, string>>,
   platform: Platform,
@@ -177,5 +197,108 @@ export function resolveExecutable(
     hasDirectory
       ? "Check the path, or on POSIX that the file has its execute permission."
       : `Install ${executable} or add the folder that holds it to PATH.`,
+  );
+}
+
+const gitPaths = new WeakMap<FileProbe, Map<Platform, ResolvedExecutable>>();
+
+/** Filesystem-only admission, including lexical ancestors of links pointing outside a checkout. */
+function outsideRepository(
+  directory: string,
+  platform: Platform,
+  probe: FileProbe,
+  env: Readonly<Record<string, string>>,
+): boolean {
+  const path = pathFor(platform);
+  const temporary = [
+    tmpdir(),
+    ...["TEMP", "TMP", "TMPDIR"].map((name) => envValue(env, name, platform)),
+  ]
+    .filter((value): value is string => !!value)
+    .flatMap((value) => [path.resolve(value), probe.realpath(value)]);
+  for (let at = directory; ; at = path.dirname(at)) {
+    if (
+      temporary.some((value) => path.relative(value, at) === "") ||
+      /[\\/]node_modules[\\/]\.bin(?:[\\/]|$)/i.test(at)
+    )
+      return false;
+    if (probe.hasEntry(path.join(at, ".git"))) return false;
+    if (
+      probe.hasEntry(path.join(at, ".forge")) &&
+      (path.relative(probe.realpath(homedir()), probe.realpath(at)) !== "" ||
+        ["config.yaml", "project.json"].some((marker) =>
+          probe.hasEntry(path.join(at, ".forge", marker)),
+        ))
+    )
+      return false;
+    if (path.dirname(at) === at) return true;
+  }
+}
+
+/** Git is pinned once per process; injected filesystem probes have independent caches. */
+export function resolveExecutable(
+  executable: string,
+  env: Readonly<Record<string, string>>,
+  platform: Platform,
+  probe: FileProbe,
+): ResolvedExecutable | Unavailable {
+  const path = pathFor(platform);
+  const windows = platform === "win32";
+  const name = path.basename(executable);
+  if (!(windows ? /^git(?:\.(?:exe|com|cmd|bat))?$/i : /^git$/).test(name))
+    return searchExecutable(executable, env, platform, probe);
+  const cached = gitPaths.get(probe)?.get(platform);
+  if (cached) return cached;
+  const explicit = executable !== name;
+  const entries = explicit
+    ? [path.dirname(executable)]
+    : (envValue(env, "PATH", platform) ?? "").split(windows ? ";" : ":");
+  let skipped = 0;
+  for (const entry of entries) {
+    const directory = entry.trim().replace(/^"(.*)"$/, "$1");
+    try {
+      if (
+        !path.isAbsolute(directory) ||
+        (windows &&
+          !/^(?:[a-z]:[\\/]|[\\/]{2}[^\\/]+[\\/][^\\/]+)/i.test(directory))
+      )
+        throw new Error("relative PATH");
+      const canonical = probe.realpath(directory);
+      if (
+        ![path.resolve(directory), canonical].every((dir) =>
+          outsideRepository(dir, platform, probe, env),
+        )
+      )
+        throw new Error("repository PATH");
+      // Git for Windows ships a native executable. Never route Git through a batch interpreter.
+      const found = searchExecutable(
+        executable,
+        { PATH: canonical, PATHEXT: ".EXE;.COM" },
+        platform,
+        probe,
+      );
+      if (found.kind !== "resolved") continue;
+      const resolved = probe.realpath(found.path);
+      if (
+        !outsideRepository(path.dirname(resolved), platform, probe, env) ||
+        (windows && !/\.(?:exe|com)$/i.test(resolved))
+      )
+        throw new Error("repository or batch Git");
+      const result: ResolvedExecutable = Object.freeze({
+        kind: "resolved",
+        path: resolved,
+      });
+      const cache =
+        gitPaths.get(probe) ?? new Map<Platform, ResolvedExecutable>();
+      cache.set(platform, result);
+      gitPaths.set(probe, cache);
+      return result;
+    } catch {
+      skipped++;
+    }
+  }
+  return unavailable(
+    `Git is unavailable (${skipped} skipped PATH entries).`,
+    "Install Git outside any repository, temporary directory and node_modules/.bin, and add its absolute directory to PATH.",
   );
 }

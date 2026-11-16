@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { gitExecutable } from "../git-executable.ts";
 
 export type Scope = "docs" | "full";
 
@@ -21,15 +22,18 @@ export function changedPaths(
   head: string,
   cwd: string,
 ): string[] {
-  const mergeBase = execFileSync("git", ["merge-base", base, head], {
+  const git = gitExecutable();
+  const mergeBase = execFileSync(git, ["merge-base", base, head], {
+    shell: false,
     cwd,
     encoding: "utf8",
     timeout: 30_000,
   }).trim();
   return execFileSync(
-    "git",
+    git,
     ["diff", "--no-renames", "--name-only", "-z", mergeBase, head],
     {
+      shell: false,
       cwd,
       encoding: "utf8",
       timeout: 30_000,

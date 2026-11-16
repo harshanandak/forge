@@ -14,8 +14,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { packedConsumer } from "../../integration/packed-consumer.ts";
+import { gitExecutable } from "../../../tools/git-executable.ts";
+import { gitFixtureDirectory } from "../../fixtures/git-resolution.ts";
 
 type Reply = {
   ok: boolean;
@@ -706,31 +708,27 @@ test("installed accounts: one approval catches wrong authors and binds every clo
       "origin",
       "https://github.com/alice/no-gh.git",
     );
-    const gitOnly = join(home, "git-only");
-    mkdirSync(gitOnly);
-    const gitPath = Bun.which("git");
-    if (!gitPath) throw new Error("Git required");
-    const gitWrapper = join(
-      gitOnly,
-      process.platform === "win32" ? "git.cmd" : "git",
-    );
-    writeFileSync(
-      gitWrapper,
-      process.platform === "win32"
-        ? ["@echo off", `"${gitPath}" %*`, ""].join("\r\n")
-        : [
-            "#!/bin/sh",
-            `exec '${gitPath.replaceAll("'", "'\\''")}' "$@"`,
-            "",
-          ].join("\n"),
-    );
-    chmodSync(gitWrapper, 0o700);
-    expect(
-      cli(noGh, "decline", { approval: declineApproval }, { PATH: gitOnly }),
-    ).toMatchObject({
-      ok: true,
-      result: { declined: true },
-    });
+    const gitOnly = gitFixtureDirectory("forge-git-only-");
+    try {
+      const gitPath = gitExecutable();
+      if (process.platform !== "win32")
+        symlinkSync(gitPath, join(gitOnly, "git"));
+      const gitOnlyPath =
+        process.platform === "win32" ? dirname(gitPath) : gitOnly;
+      expect(
+        cli(
+          noGh,
+          "decline",
+          { approval: declineApproval },
+          { PATH: gitOnlyPath },
+        ),
+      ).toMatchObject({
+        ok: true,
+        result: { declined: true },
+      });
+    } finally {
+      rmSync(gitOnly, { recursive: true, force: true });
+    }
     writeFileSync(
       join(repo, ".git/forge/accounts.gitconfig"),
       "[user]\nemail=changed@example.test\n",

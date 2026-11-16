@@ -1,5 +1,6 @@
 import { expect, mock, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
+import { gitExecutable } from "../../tools/git-executable.ts";
 import {
   existsSync,
   mkdirSync,
@@ -16,6 +17,7 @@ import * as laneState from "../../src/blocks/work/bound-lane-state.ts";
 import * as scopedGit from "../../src/assembly/providers.ts";
 import * as savedGit from "../../src/assembly/saved-git-scope.ts";
 import { createProcessPort } from "../../src/adapters/process/index.ts";
+import { realFileProbe } from "../../src/adapters/process/resolve.ts";
 import {
   exerciseGitScope,
   gitFixtureTemp,
@@ -88,18 +90,13 @@ for (const row of gitScopeRows)
     const api = scopedGit as unknown as ScopedGitApi;
     expect(typeof api.gitCapability).toBe("function");
     const result = await exerciseGitScope(row, api);
-    const accepted = [
-      "unrelated repository",
-      "plain checkout",
-      "relative and empty",
-    ].includes(row);
     expect(result).toEqual({
-      kind: accepted ? "resolved" : "unavailable",
-      launched: accepted,
+      kind: "unavailable",
+      launched: false,
       projectRan: false,
-      externalRan: accepted,
+      externalRan: false,
       relativeRan: false,
-      diagnostic: !accepted,
+      diagnostic: true,
     });
   }, 30000);
 
@@ -117,9 +114,7 @@ const flight = (effects = ["environment:read", "external:process"]) =>
     request: { op: "lane.next" },
     operation: { declaration: { effects, timeoutMs: 60000 } },
   }) as unknown as Preflight;
-const git = Bun.which("git");
-if (!git) throw new Error("Git required for the trusted head fixture");
-const trusted = realpathSync.native(git);
+const trusted = gitExecutable();
 const H1 = "a".repeat(40),
   H2 = "b".repeat(40);
 
@@ -157,7 +152,10 @@ for (const consumer of ["system Git", "clone refusal", "head refusal"] as const)
       const launches = mock<ProcessPort["run"]>(() => {
         throw new Error("Refused Git must not launch");
       });
-      const denied = { ...createProcessPort(), run: launches };
+      const denied = {
+        ...createProcessPort({ probe: { ...realFileProbe } }),
+        run: launches,
+      };
       const env = {
         PATH: refused ? root : dirname(trusted),
         PATHEXT: refused ? ".CMD" : (process.env.PATHEXT ?? ".EXE"),
@@ -230,6 +228,7 @@ for (const variant of [
       target = join(root, "target");
     for (const path of [caller, target]) {
       mkdirSync(path);
+      mkdirSync(join(path, ".git"));
       writeFileSync(
         join(path, process.platform === "win32" ? "git.exe" : "git"),
         "project-controlled executable",
@@ -240,8 +239,7 @@ for (const variant of [
     const processRoot = nested ? join(caller, "src") : caller;
     const callerBin = nested ? join(caller, "bin") : caller;
     if (nested) {
-      for (const path of [processRoot, callerBin, join(caller, ".git")])
-        mkdirSync(path);
+      for (const path of [processRoot, callerBin]) mkdirSync(path);
       writeFileSync(
         join(callerBin, process.platform === "win32" ? "git.exe" : "git"),
         "sibling-controlled executable",
@@ -258,7 +256,11 @@ for (const variant of [
       SystemRoot: process.env.SystemRoot ?? "",
       GIT_DIR: "must-not-reach-git",
     };
-    const native = createAssemblyProviders(processRoot, { env });
+    const native = createAssemblyProviders(
+      processRoot,
+      { env },
+      createProcessPort({ probe: { ...realFileProbe } }),
+    );
     let attempts = 0;
     const runs = mock<ProcessPort["run"]>((_executable, _args, _options) => {
       attempts++;
