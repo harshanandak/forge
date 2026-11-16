@@ -1,6 +1,8 @@
 // Reviewed source inventory: direct launches, shell/npm entry points and local helpers.
 // Conservative guard-fixture entries retain coverage without interpreting embedded programs.
 export const nodeSensitive: Readonly<Record<string, string>> = {
+  "test/structure/no-comments.integration.test.ts":
+    "Checks committed Git diffs through the Node-compatible comment checker.",
   "test/adapters/process/git-location.integration.test.ts":
     "Launches selected Node to verify Git PATH rejection and process-local caching.",
   "test/cloud/import-current.integration.test.ts":

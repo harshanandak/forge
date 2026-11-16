@@ -4,7 +4,10 @@ import type {
 } from "../../ports/process.ts";
 import type { ClockPort } from "../../ports/clock.ts";
 import type { StateClient } from "../../ports/state.ts";
-import type { RunnerOutputPort } from "../../ports/runner-output.ts";
+import type {
+  RunnerOutputPort,
+  ReportFormat,
+} from "../../ports/runner-output.ts";
 export type {
   RunnerOutputPort,
   OutputReport,
@@ -13,7 +16,7 @@ export type {
 export type CheckStatus = "PASS" | "FAIL" | "INCOMPLETE" | "NOT_EXECUTED";
 export interface CommandDeclaration {
   readonly argv: readonly string[];
-  readonly report?: "auto" | "json" | "exit-code";
+  readonly report?: ReportFormat;
 }
 export interface CheckConfig {
   readonly commands: Readonly<Record<string, string | CommandDeclaration>>;
@@ -23,7 +26,7 @@ export interface CheckConfig {
   readonly outputTailBytes: number;
   readonly maxMetadataBytes: number;
   readonly maxReceiptBytes: number;
-  readonly report: "auto" | "json" | "exit-code";
+  readonly report: ReportFormat;
   readonly stopOnFailure: boolean;
   readonly inputs: readonly string[];
   readonly maxInputBytes: number;

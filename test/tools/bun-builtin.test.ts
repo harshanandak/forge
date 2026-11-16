@@ -5,6 +5,7 @@ import {
   helpListsBuiltin,
   main,
   missingMessage,
+  requireLintRuntime,
   type Runner,
 } from "../../tools/bun-builtin.ts";
 
@@ -85,4 +86,13 @@ test("the real detector answers from `bun --help` without hanging", () => {
   const started = performance.now();
   expect(typeof bunRunner.has("lint")).toBe("boolean");
   expect(performance.now() - started).toBeLessThan(10_000);
+}, 30_000);
+
+test("the lint runtime rejects a revision other than the shared pin as incomplete", () => {
+  expect(() => requireLintRuntime(process.execPath)).toThrow(
+    "INCOMPLETE: Bun lint requires",
+  );
+  const lint = process.env.FORGE_LINT_BUN;
+  if (!lint) throw new Error("FORGE_LINT_BUN must select the pinned CI canary");
+  expect(() => requireLintRuntime(lint)).not.toThrow();
 }, 30_000);

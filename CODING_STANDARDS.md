@@ -1,10 +1,12 @@
 # Coding standards
 
-Read at review time; turn-shaping rules stay in [AGENTS.md](AGENTS.md). **Guard** marks rules enforced by `test/structure/**` in CI; review checks the rest. Add a guard when review finds an enforceable rule.
+Read at review time; behavior lives in [AGENTS.md](AGENTS.md). **Guard** names CI enforcement under `test/structure/**`; review checks the rest. Guard enforceable findings.
 
-These govern this repository and Forge's shipped behaviour. They are not imposed on user projects.
+These govern this repo and Forge's shipped behaviour, not user projects.
 
 ## Language
+
+- No new source/test comments; put reasons in a test named for the constraint, a named constant or the issue. **Guard:** `no-comments`.
 
 - TypeScript with `strict`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, `verbatimModuleSyntax`, `rewriteRelativeImportExtensions` and `module: nodenext`. ESM only. **Guard:** `package-shape`.
 - Erasable syntax only, so Node can run the sources: no enums, namespaces, parameter properties or decorators. **Guard:** `package-shape`.
@@ -61,7 +63,7 @@ These govern this repository and Forge's shipped behaviour. They are not imposed
 - Document byte caps live in `test/structure/budget.json`; prune before growing. **Guard:** `budget`.
 - One decision record namespace (`ADR-NNN`) with a title; refer to a decision by name. Records hold durable choices only.
 - Reports lead with the answer in plain language, then evidence and what would change it.
-- PR size: about 200 changed non-test lines, limit about 300 (10% leeway; tests not counted but lean). Measure with `git diff --numstat origin/main...HEAD` by test and non-test paths; over 100 lines, propose slices first.
+- PR size: aim for 200 non-test lines; stop at 330. Measure additions plus deletions with `git diff --numstat origin/main...HEAD`, split test/non-test. Propose slices above 100 non-test lines.
 - Tests run in hosted CI; after a red caused only by a test's own setup, run that one file locally once.
 - Review ends with no P0/P1 and own regressions fixed; file adjacent findings. At most 2 review rounds per mechanism, then write a 3-line threat model (asset, threat, mitigation) and choose ship, simplify or park. Never waive P0/P1.
 - The pull request title is a conventional commit title; it becomes the changelog line. Do not edit the changelog by hand.
