@@ -196,18 +196,23 @@ test.each([
   ["2027-01-15T06:01:00-02:00", 30000, 1],
   ["2027-01-15T08:01:00Z", 60000, 0],
   ["2027-01-15T08:01:00.0000Z", 59999, 1],
+  ["2027-01-15T08:01:00.5000Z", 60499, 1],
 ] as const)("live leases compare instants: %s", (expiry, delta, expected) => {
-  const source = f.source(6, false, true, (db) => {
+  const source = f.source(6, false, true, (db, state) => {
+    state.renew(
+      f.ns,
+      { subject: "issue:work-1", holder: f.holder, generation: 1 },
+      60000,
+    );
     const canonical = new Date(f.at + 60000).toISOString();
-    for (const [table, column] of [
-      ["state_leases", "body"],
-      ["state_events", "body"],
-      ["state_requests", "result"],
-    ])
-      db.run(`UPDATE ${table} SET ${column}=replace(${column},?,?)`, [
-        canonical,
-        expiry,
-      ]);
+    db.run("UPDATE state_leases SET body=replace(body,?,?)", [
+      canonical,
+      expiry,
+    ]);
+    db.run(
+      "UPDATE state_events SET body=replace(body,?,?) WHERE json_extract(body,'$.type')=?",
+      [canonical, expiry, `${f.ns}:lease.renewed@1`],
+    );
   });
   const scratch = f.database();
   f.owner(scratch).initialize();
