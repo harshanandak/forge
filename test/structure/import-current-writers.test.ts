@@ -38,6 +38,16 @@ const symbol = (node: ts.Node) => {
     : found;
 };
 const declaration = (node: ts.Node) => symbol(node)?.valueDeclaration;
+const forwarding = (key: ts.Expression) => {
+  const p = declaration(key);
+  if (!p || !ts.isParameter(p)) return;
+  const fn = p.parent;
+  return ts.isMethodDeclaration(fn)
+    ? fn.name.getText()
+    : ts.isArrowFunction(fn) && ts.isPropertyAssignment(fn.parent)
+      ? fn.parent.name.getText()
+      : undefined;
+};
 const unwrap = (node: ts.Expression): ts.Expression =>
   ts.isParenthesizedExpression(node) ||
   ts.isAsExpression(node) ||
@@ -124,9 +134,8 @@ function examples(input: ts.Expression, seen = new Set<ts.Node>()): string[] {
 }
 function missingFamilies(extra: ts.CallExpression[] = []) {
   eq(blocks.length, 1);
-  const owned = new Set(
-    paths.filter((p) => p.startsWith(dirname(blocks[0]!) + "/")),
-  );
+  const workDir = dirname(blocks[0]!) + "/";
+  const owned = new Set(paths.filter((p) => p.startsWith(workDir)));
   for (let before = -1; before !== owned.size;) {
     before = owned.size;
     for (const call of calls) {
@@ -144,7 +153,7 @@ function missingFamilies(extra: ts.CallExpression[] = []) {
   }
   const inBlock = (node: ts.Node) =>
     owned.has(node.getSourceFile().fileName) ||
-    node.getSourceFile().fileName.startsWith(dirname(blocks[0]!) + "/");
+    node.getSourceFile().fileName.startsWith(workDir);
   const sources = new Map<string, string>();
   const add = (expression: ts.Expression) => {
     for (const key of examples(expression))
@@ -197,18 +206,33 @@ function missingFamilies(extra: ts.CallExpression[] = []) {
       n.getSourceFile().fileName.endsWith("/src/core/state/index.ts"),
   );
   ok(floors.length, "generated allocation builders must be discovered");
+  for (const floor of floors) {
+    ok(floor.initializer);
+    add(floor.initializer);
+  }
   for (const call of calls.concat(extra)) {
     if (!ts.isPropertyAccessExpression(call.expression)) continue;
     const method = call.expression.name.text;
     if (!["put", "putNext", "putMany"].includes(method)) continue;
     let key = call.arguments[0];
     ok(key, where(call));
-    if (!inBlock(call)) {
+    const signature = checker.getResolvedSignature(call)?.getDeclaration();
+    if (
+      signature?.parameters[0]?.name.getText() === "namespace" ||
+      !inBlock(call)
+    ) {
       if (call.arguments.length < (method === "putMany" ? 2 : 4)) continue;
       let namespaces: string[];
       try {
         namespaces = examples(key);
       } catch {
+        if (inBlock(call) && method !== "putMany") {
+          const value = call.arguments[1];
+          if (value && forwarding(value) === method) continue;
+          ok(value);
+          add(value);
+          continue;
+        }
         ok(
           !call.getSourceFile().text.includes('"forge/work"'),
           `unresolved work namespace ${where(call)}`,
@@ -219,15 +243,7 @@ function missingFamilies(extra: ts.CallExpression[] = []) {
       key = call.arguments[1];
       ok(key);
     }
-    const parameter = declaration(key);
-    if (
-      parameter &&
-      ts.isParameter(parameter) &&
-      ts.isArrowFunction(parameter.parent) &&
-      ts.isPropertyAssignment(parameter.parent.parent) &&
-      parameter.parent.parent.name.getText() === method
-    )
-      continue; // Generic state-client forwarding preserves the supplied key/namespace.
+    if (forwarding(key) === method) continue;
     if (method === "putMany") {
       batch(key);
       continue;
@@ -235,12 +251,6 @@ function missingFamilies(extra: ts.CallExpression[] = []) {
     const decl = declaration(key);
     if (decl && ts.isBindingElement(decl)) continue; // Rest-tuple forwarding retains other writers' exact keys.
     add(key);
-    if (method === "putNext")
-      for (const floor of floors) {
-        const expression = floor.initializer;
-        ok(expression && ts.isTemplateExpression(expression));
-        add(expression);
-      }
   }
   for (const node of nodes)
     if (
@@ -273,12 +283,9 @@ test("new work families and opaque batches fail the source guard", () => {
       ([family]) => family === "future-family",
     ),
   );
-  throws(
-    () => missingFamilies([call("state.putMany(input.entries, {});")]),
-    /opaque work batch/,
-  );
-  throws(
-    () => missingFamilies([call("state.put(input.key, {}, {});")]),
-    /opaque work key/,
-  );
+  for (const text of [
+    "state.putMany(input.entries, {});",
+    "state.put(input.key, {}, {});",
+  ])
+    throws(() => missingFamilies([call(text)]), /opaque work/);
 }, 30_000);
