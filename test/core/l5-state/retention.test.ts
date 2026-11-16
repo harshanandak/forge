@@ -46,8 +46,12 @@ test.each(["fresh", "upgrade", "prefix", "all", "rollback", "drift"])(
       owner.initialize();
       const high = kind === "upgrade" ? 7 : 1;
       expect(
-        db.get(
-          "SELECT sequence,policy_version FROM state_retention WHERE id=1",
+        Object.fromEntries(
+          Object.entries(
+            db.get(
+              "SELECT sequence,policy_version FROM state_retention WHERE id=1",
+            )!,
+          ).map(([key, value]) => [key, Number(value)]),
         ),
       ).toEqual({ sequence: high, policy_version: 1 });
       expect(owner.namespaceRevision(ns)).toBe(high);
@@ -62,8 +66,10 @@ test.each(["fresh", "upgrade", "prefix", "all", "rollback", "drift"])(
         expect(owner.namespaceRevision(ns)).toBe(1);
         owner.put(ns, "three", 3, actor, { expectRevision: 0 });
         expect(
-          db.get("SELECT sequence FROM state_events WHERE key='three'")
-            ?.sequence,
+          Number(
+            db.get("SELECT sequence FROM state_events WHERE key='three'")
+              ?.sequence,
+          ),
         ).toBe(3);
       } else if (kind === "rollback") {
         const before = db.all("SELECT * FROM state_usage ORDER BY table_name");
@@ -97,7 +103,7 @@ test.each(["fresh", "upgrade", "prefix", "all", "rollback", "drift"])(
       }
       if (kind === "fresh")
         expect(
-          db.get("SELECT created_at FROM state_requests")?.created_at,
+          Number(db.get("SELECT created_at FROM state_requests")?.created_at),
         ).toBe(1000);
     } finally {
       await close();

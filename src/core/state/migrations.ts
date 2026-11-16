@@ -96,7 +96,7 @@ export function assertRetention(
     !row ||
     !Number.isSafeInteger(Number(row.sequence)) ||
     Number(row.sequence) < 0 ||
-    row.policy_version !== 1
+    Number(row.policy_version) !== 1
   )
     refuse();
   if (
