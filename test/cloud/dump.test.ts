@@ -9,6 +9,7 @@ import {
   limitsFrom,
   PAGE_FORMAT,
   parseDump,
+  restoreDump,
   restorePage,
 } from "../../cloud/src/dump.ts";
 import type { SqlDatabase, SqlRow } from "../../src/ports/store.ts";
@@ -59,6 +60,66 @@ const ROW: Record<string, [Row, string]> = {
 };
 const empty = (): Record<string, Row[]> =>
   Object.fromEntries(Object.keys(ROW).map((table) => [table, []]));
+
+for (const paged of [false, true])
+  for (const [key, value, reason] of [
+    ["future:one", "old", "STATE_FAMILY_UNDECLARED"],
+    ["note:one", false, "NOTE_VALUE"],
+  ] as const)
+    test(`bulk restore page=${paged} refuses ${key} under the owner's family policy`, () => {
+      const source = database([], true),
+        target = database([], true);
+      migrate(source);
+      migrate(target);
+      new StateOwner(source, { now: () => 1000 }).put(
+        "example/alpha",
+        key,
+        value,
+        { kind: "agent", id: "families" },
+        { expectRevision: 0 },
+      );
+      const owner = new StateOwner(target, { now: () => 1000 }, [
+        {
+          namespace: "example/alpha",
+          families: {
+            note: {
+              key: /^note:[a-z]+$/,
+              admit: (_key, value) =>
+                typeof value === "string" ? undefined : "NOTE_VALUE",
+            },
+          },
+        },
+      ]);
+      const snapshot = () =>
+        target
+          .all(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+          )
+          .map(({ name }) => [
+            name,
+            target.all(`SELECT * FROM ${String(name)}`),
+          ]);
+      const before = snapshot(),
+        dump = dumpOf(source);
+      expect(() =>
+        paged
+          ? restorePage(
+              target,
+              owner,
+              {
+                ...dump,
+                format: PAGE_FORMAT,
+                page: 0,
+                last: false,
+                next: "next",
+              },
+              limits,
+            )
+          : restoreDump(target, owner, dump, limits),
+      ).toThrow(`INPUT_INVALID: ${reason}`);
+      expect(snapshot()).toEqual(before);
+    }, 30_000);
+
 const row = (table: string, over: Row = {}): [string, Row] => [
   table,
   { ...ROW[table]![0], ...over },
