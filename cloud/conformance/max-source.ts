@@ -1,6 +1,7 @@
 // A project built by real typed commands at the largest legal sizes, shared by the route tests and the
 // large conformance phase. Its rows are read back with plain SQL, never through dump export, so a restore
 // case reaches the parser even while export is broken. Test code only: the Worker never imports it.
+import { expectsStop } from "./stop-live.ts";
 import { Database } from "bun:sqlite";
 import { StateOwner } from "../../src/core/state/index.ts";
 import type { SqlDatabase, SqlRow } from "../../src/ports/store.ts";
@@ -178,7 +179,19 @@ export async function maxSource(name: string, prefix = "forge", at?: number) {
 /** One accepted create with a short title, at the fixed clock: a few small rows that are identical in every process. */
 export async function tinySource(title: string) {
   const h = await harness("tiny", "forge", FROZEN);
-  await accepted(h, call("tiny-create", "issue.create", { title }));
+  if (expectsStop()) {
+    const owner = new StateOwner(sqlOf(h.db), { now: () => FROZEN });
+    owner.put(
+      "forge/work",
+      "allocation:issue:work-",
+      { prefix: "issue:work-", number: 0 },
+      ACTOR,
+      { expectRevision: 0 },
+    );
+    owner.put("forge/work", "note:tiny", { title }, ACTOR, {
+      expectRevision: 0,
+    });
+  } else await accepted(h, call("tiny-create", "issue.create", { title }));
   const tables = tablesOf(h.db);
   h.db.close();
   return { tables, doc: { format: DUMP, tables } };

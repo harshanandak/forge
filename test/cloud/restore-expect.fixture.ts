@@ -2,10 +2,11 @@ import type { Database } from "bun:sqlite";
 import {
   expectedImage,
   restoreStopped,
-  stopDelta,
 } from "../../cloud/conformance/restored.ts";
 import { tablesOf, type Tables } from "../../cloud/conformance/max-source.ts";
 import type { SqlDatabase, SqlRow } from "../../src/ports/store.ts";
+import { LaneControlStore } from "../../cloud/src/lane-control-store.ts";
+import assert from "node:assert/strict";
 
 const sqlOf = (db: Database): SqlDatabase => ({
   exec: (sql) => {
@@ -53,7 +54,14 @@ export async function stoppedTables(
     Object.keys(source).map((t) => [t, []]),
   );
   for await (const page of expectedImage(image(source), at, (owner) =>
-    stopDelta(owner, "p", new Date(at).toISOString()),
+    assert.ok(
+      new LaneControlStore(owner, "p").stop(
+        { all: true },
+        "cloud-restore",
+        "cloud-restore",
+        new Date(at).toISOString(),
+      ).ok,
+    ),
   ))
     for (const [table, rows] of Object.entries(page.tables))
       tables[table]!.push(...rows);

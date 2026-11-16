@@ -6,6 +6,8 @@ import {
 } from "../../generated/validators.ts";
 import type { StateClient } from "../../ports/state.ts";
 import type { StateRecord } from "../../generated/types.ts";
+import type { GitScope } from "../../assembly/providers.ts";
+import { validGitScope } from "../../assembly/saved-git-scope.ts";
 
 export function validBoundHead(value: unknown): value is string {
   return (
@@ -91,6 +93,7 @@ export interface BoundLaneRecord {
     readonly worktree: string;
     readonly branch: string;
     readonly brief: string;
+    readonly gitScope?: GitScope;
   };
   readonly grant: LeaseRecord;
   readonly active: boolean;
@@ -139,8 +142,16 @@ export function readBoundLane(value: unknown, id: string): BoundLaneRecord {
     !lane ||
     Object.keys(lane).some(
       (key) =>
-        !["issue", "issueId", "worktree", "branch", "brief"].includes(key),
+        ![
+          "issue",
+          "issueId",
+          "worktree",
+          "branch",
+          "brief",
+          "gitScope",
+        ].includes(key),
     ) ||
+    (lane.gitScope !== undefined && !validGitScope(lane.gitScope)) ||
     lane.issue !== id ||
     (lane.issueId !== undefined && lane.issueId !== id) ||
     ![lane.worktree, lane.branch, lane.brief].every(

@@ -302,7 +302,7 @@ function within(base: string, target: string): boolean {
   );
 }
 
-function fullyAbsolute(path: string): boolean {
+export function fullyAbsolute(path: string): boolean {
   return (
     isAbsolute(path) &&
     (process.platform !== "win32" ||

@@ -12297,10 +12297,15 @@ for (const [name, expiry, count] of [
     expect(eventsOf(f.db, "forge/cloud")).toEqual([]);
   }, 30_000);
 
-for (const refused of [false, true])
-  test(`typed receipt retention: ${refused ? "refusal" : "success"} expires with its token and replays byte-identically`, async () => {
+for (const [refused, ttl] of [
+  [false, 1000],
+  [true, 1000],
+  [false, 30 * day],
+  [true, 30 * day],
+] as const)
+  test(`typed receipt retention: ${refused ? "refusal" : "success"} with ttl ${ttl} uses the earlier deadline and replays byte-identically`, async () => {
     const f = fixture();
-    const token = await f.device(1000);
+    const token = await f.device(ttl);
     const input = refused ? {} : { title: "Expiry" };
     const first = await f.send(make("expiry", input), { token });
     expect(first.status).toBe(refused ? 400 : 200);
@@ -12312,7 +12317,7 @@ for (const refused of [false, true])
       rows[0]!.created_at,
       rows[0]!.expires_at,
       rows[0]!.outcome,
-    ]).toEqual([start, start + 1000, refused ? "refused" : "ok"]);
+    ]).toEqual([start, start + Math.min(ttl, day), refused ? "refused" : "ok"]);
     const before = f.snapshot();
     expect((await f.send(make("expiry", input), { token })).text).toBe(
       first.text,
@@ -12321,7 +12326,7 @@ for (const refused of [false, true])
       (await f.send(make("expiry", { title: "Different" }), { token })).code,
     ).toBe("INPUT_CONFLICT");
     expect(f.snapshot()).toBe(before);
-    f.advance(1000);
+    f.advance(ttl);
     const expired = await f.send(make("expiry", input), { token });
     expect([expired.status, expired.code]).toEqual([401, "AUTH_EXPIRED"]);
     expect(f.snapshot()).toBe(before);
@@ -12334,6 +12339,93 @@ for (const refused of [false, true])
         .query("SELECT COUNT(*) AS n FROM domain_cloud_command_receipts")
         .get(),
     ).toEqual({ n: 1 });
+  }, 30_000);
+
+for (const [offset, backlog] of [
+  [-1, false],
+  [0, false],
+  [1, false],
+  [0, true],
+] as const)
+  test(`typed receipt age boundary: offset ${offset}, backlog ${backlog}`, async () => {
+    const f = fixture();
+    const token = await f.device(30 * day);
+    const first = await f.send(make("age"), { token });
+    const key = f.receiptKey("age").slice("request:".length);
+    // Model a pre-upgrade row whose credential has 30 days left.
+    f.db.run("UPDATE domain_cloud_command_receipts SET expires_at=?", [
+      start + 30 * day,
+    ]);
+    if (backlog)
+      f.db.run(
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < 9) INSERT INTO domain_cloud_command_receipts(request_id,fingerprint,outcome,result,created_at,expires_at) SELECT 'older-' || i, '{}', 'ok', '{}', ?, ? FROM n",
+        [start - day, start + 29 * day],
+      );
+    f.advance(day + offset);
+    const before = f.snapshot();
+    const retry = await f.send(make("age"), { token });
+    expect([retry.status, retry.exit]).toEqual([200, 0]);
+    if (offset < 0) {
+      expect(retry.text).toBe(first.text);
+      expect(f.snapshot()).toBe(before);
+      expect(
+        (await f.send(make("age", { title: "Other" }), { token })).code,
+      ).toBe("INPUT_CONFLICT");
+    } else {
+      expect(retry.text).not.toBe(first.text);
+      expect(
+        f.db
+          .query(
+            "SELECT created_at, expires_at FROM domain_cloud_command_receipts WHERE request_id=?",
+          )
+          .get(key),
+      ).toEqual({ created_at: f.now(), expires_at: f.now() + day });
+      if (backlog)
+        expect(
+          f.db
+            .query("SELECT COUNT(*) AS n FROM domain_cloud_command_receipts")
+            .get(),
+        ).toEqual({ n: 2 });
+    }
+  }, 30_000);
+
+for (const [age, invalid] of [
+  [day - 1, false],
+  [day, false],
+  [day + 1, false],
+  [day, true],
+] as const)
+  test(`typed receipt upgrade: age ${age}, invalid ${invalid}`, async () => {
+    const f = fixture();
+    const token = await f.device(30 * day);
+    const other = await f.device(30 * day, "other");
+    const first = await f.send(make("protected"), { token });
+    f.db.run("UPDATE domain_cloud_command_receipts SET expires_at=?", [
+      start + 30 * day,
+    ]);
+    f.db.run(
+      "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < ?) INSERT INTO domain_cloud_command_receipts(request_id,fingerprint,outcome,result,created_at,expires_at) SELECT 'old-' || i, '{}', 'ok', '{}', ?, ? FROM n",
+      [MAX_RECEIPTS - 2, start - age, start + 30 * day],
+    );
+    // 2,999 live rows admit the other principal's 3,000th receipt.
+    expect((await f.send(make("last"), { token: other })).status).toBe(200);
+    const before = f.snapshot();
+    const got = await f.send(make("next", invalid ? {} : { title: "Next" }), {
+      token: other,
+    });
+    expect([got.status, got.exit]).toEqual(
+      invalid ? [400, 6] : age < day ? [503, 1] : [200, 0],
+    );
+    if (age < day) expect(f.snapshot()).toBe(before);
+    else
+      expect(
+        f.db
+          .query(
+            "SELECT COUNT(*) AS n FROM domain_cloud_command_receipts WHERE request_id LIKE 'old-%'",
+          )
+          .get(),
+      ).toEqual({ n: MAX_RECEIPTS - 18 });
+    expect((await f.send(make("protected"), { token })).text).toBe(first.text);
   }, 30_000);
 
 for (const trip of TRIPS)
