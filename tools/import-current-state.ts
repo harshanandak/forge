@@ -75,7 +75,8 @@ function matchesKey(
 export const ordinaryKey = (ns: string, key: string): boolean =>
   matchesKey(importedKeys, ns, key);
 
-export const classifiedFamily = (family: string): boolean => Object.hasOwn(importedKeys, family);
+export const classifiedFamily = (family: string): boolean =>
+  Object.hasOwn(importedKeys, family);
 
 type Check = (value: unknown) => boolean;
 const text: Check = (v) => typeof v === "string";

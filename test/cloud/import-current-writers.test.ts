@@ -79,8 +79,22 @@ function examples(input: ts.Expression, seen = new Set<ts.Node>()): string[] {
     const right = read(node.right);
     return left.flatMap((a) => right.map((b) => a + b));
   }
-  if (ts.isPropertyAccessExpression(node) && node.name.text === "key")
-    return []; // Existing-record rewrite.
+  if (ts.isPropertyAccessExpression(node) && node.name.text === "key") {
+    const fields =
+      checker.getTypeAtLocation(node.expression).getProperty("key")
+        ?.declarations ?? [];
+    ok(
+      fields.some(
+        (field) =>
+          ts.isTypeLiteralNode(field.parent) &&
+          ts.isTypeAliasDeclaration(field.parent.parent) &&
+          field.parent.parent.name.text === "StateRecord" &&
+          field.getSourceFile().fileName.endsWith("/src/generated/types.ts"),
+      ),
+      `opaque work key ${where(node)}`,
+    );
+    return [];
+  }
   if (ts.isIdentifier(node)) {
     const decl = declaration(node);
     if (decl && ts.isVariableDeclaration(decl) && decl.initializer)
@@ -118,7 +132,14 @@ function missingFamilies(extra: ts.CallExpression[] = []) {
     before = owned.size;
     for (const call of calls) {
       if (!owned.has(call.getSourceFile().fileName)) continue;
-      const target = declaration(call.expression)?.getSourceFile();
+      const fn = declaration(call.expression);
+      if (
+        fn &&
+        ts.isMethodDeclaration(fn) &&
+        fn.parameters[0]?.name.getText() === "namespace"
+      )
+        continue;
+      const target = fn?.getSourceFile();
       if (target && paths.includes(target.fileName)) owned.add(target.fileName);
     }
   }
@@ -256,5 +277,9 @@ test("new work families and opaque batches fail the source guard", () => {
   throws(
     () => missingFamilies([call("state.putMany(input.entries, {});")]),
     /opaque work batch/,
+  );
+  throws(
+    () => missingFamilies([call("state.put(input.key, {}, {});")]),
+    /opaque work key/,
   );
 }, 30_000);
