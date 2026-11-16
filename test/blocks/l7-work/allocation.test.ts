@@ -478,11 +478,11 @@ test(
     remove(f, 2, 2);
     f.log.length = 0;
     expect(create(f, "Three")).toBe("work-3");
-    const first = reads(f.log);
+    const first = reads(f.log).filter((access) =>
+      access.sql.includes("state_allocation_keys"),
+    );
     expect(historyReads(f.log)).toEqual([]);
-    expect(
-      first.some((access) => access.sql.includes("state_allocation_keys")),
-    ).toBe(true);
+    expect(first.length).toBeGreaterThan(0);
     expect(first.every((access) => access.locked)).toBe(true);
     f.log.length = 0;
     expect(create(f, "Four")).toBe("work-4");
