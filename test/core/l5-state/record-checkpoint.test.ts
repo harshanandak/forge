@@ -14,47 +14,51 @@ import {
 
 setDefaultTimeout(30_000);
 
-test.each(["namespace watermark", "nonfinite body"])(
-  "checkpoint refuses forged %s on initialize and restore",
-  async (kind) => {
-    const s = await fixture(),
-      target = await fixture();
-    try {
-      s.owner.initialize();
-      target.owner.initialize();
-      put(s, "kept", null);
-      if (kind === "namespace watermark")
-        s.owner.put("forge/other", "other", {}, actor, { expectRevision: 0 });
-      capture(s);
-      if (kind === "namespace watermark") {
-        expect(s.owner.namespaceRevision(ns)).toBe(1);
-        s.db.run(
-          "UPDATE state_namespace_watermarks SET sequence=? WHERE namespace=?",
-          [high(s), ns],
-        );
-      } else {
-        const body = String(
-          s.db.get("SELECT body FROM state_checkpoint_live WHERE key='kept'")
-            ?.body,
-        ).replace('"value":null', '"value":1e999');
-        expect(body).toContain("1e999");
-        s.db.run("UPDATE state_checkpoint_live SET body=? WHERE key='kept'", [
-          body,
-        ]);
-      }
-      expect(() => s.owner.initialize()).toThrow(
-        /checkpoint|retention|repair/i,
+test.each([
+  "namespace watermark",
+  "nonfinite body",
+  "unknown version",
+  "missing header",
+])("checkpoint refuses forged %s on initialize and restore", async (kind) => {
+  const s = await fixture(),
+    target = await fixture();
+  try {
+    s.owner.initialize();
+    target.owner.initialize();
+    put(s, "kept", null);
+    if (kind === "namespace watermark")
+      s.owner.put("forge/other", "other", {}, actor, { expectRevision: 0 });
+    capture(s);
+    if (kind === "namespace watermark") {
+      expect(s.owner.namespaceRevision(ns)).toBe(1);
+      s.db.run(
+        "UPDATE state_namespace_watermarks SET sequence=? WHERE namespace=?",
+        [high(s), ns],
       );
-      expect(() => target.owner.restore(s.owner.export())).toThrow(
-        /checkpoint|retention|repair/i,
-      );
-      expect(target.owner.export().records).toEqual([]);
-    } finally {
-      await s.close();
-      await target.close();
+    } else if (kind === "unknown version") {
+      s.db.run("UPDATE state_checkpoint_header SET format_version=99");
+    } else if (kind === "missing header") {
+      s.db.run("DELETE FROM state_checkpoint_header");
+    } else {
+      const body = String(
+        s.db.get("SELECT body FROM state_checkpoint_live WHERE key='kept'")
+          ?.body,
+      ).replace('"value":null', '"value":1e999');
+      expect(body).toContain("1e999");
+      s.db.run("UPDATE state_checkpoint_live SET body=? WHERE key='kept'", [
+        body,
+      ]);
     }
-  },
-);
+    expect(() => s.owner.initialize()).toThrow(/checkpoint|retention|repair/i);
+    expect(() => target.owner.restore(s.owner.export())).toThrow(
+      /checkpoint|retention|repair/i,
+    );
+    expect(target.owner.export().records).toEqual([]);
+  } finally {
+    await s.close();
+    await target.close();
+  }
+});
 
 test("record checkpoint plus tail equals full replay, including restore", async () => {
   const full = await fixture(),
