@@ -5,6 +5,8 @@ import { createSqliteStore } from "../../../src/adapters/store-sqlite/index.ts";
 import { createStateClient } from "../../../src/assembly/state-client.ts";
 import { StateOwner } from "../../../src/core/state/index.ts";
 import type { BoundContext } from "../../../src/generated/types.ts";
+import tracker from "../../../schemas/tracker.json" with { type: "json" };
+import { validateWorkRecord } from "../../../src/blocks/work/validation.ts";
 
 setDefaultTimeout(30_000);
 type Handler = (call: {
@@ -101,6 +103,7 @@ async function fixture(seedLink = true) {
     checkout: "",
     prBranch: "",
     localHead: "",
+    retained: "",
     ancestor: true,
     prBase: "main",
     mergeBase: "match",
@@ -180,6 +183,7 @@ async function fixture(seedLink = true) {
             mergeCommit: { oid: merge },
             url,
           });
+        else if (args[0] === "log") stdout = flags.retained;
         else if (args[0] === "worktree" && args[1] === "list")
           stdout = "worktree /project\0branch refs/heads/main\0\0";
         else if (
@@ -444,6 +448,34 @@ test("two no-PR drops with the same reason append two distinct landing notes", a
     expect(
       [...f.files.keys()].filter((path) => path.includes("close-no-pr-")),
     ).toHaveLength(2);
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("lane.close bounds a retained-commit note and reports omitted commits", async () => {
+  const f = await fixture();
+  const limit = tracker.$defs.CommentInput.properties.body.maxLength;
+  try {
+    f.flags.localHead = "c".repeat(40);
+    f.flags.retained = [
+      `${"c".repeat(40)} short`,
+      `${"d".repeat(40)} ${"x".repeat(limit)}`,
+      `${"e".repeat(40)} later`,
+    ].join("\n");
+    await f.close({
+      pr: undefined,
+      receipt: undefined,
+      noPr: true,
+      dropped: "Fixture finished",
+    });
+    const [comment] = f.comments();
+    expect(comment).toBeDefined();
+    const body = (comment!.value as { body: string }).body;
+    expect(Array.from(body).length).toBeLessThanOrEqual(limit);
+    expect(body).toContain(`${"c".repeat(40)} short`);
+    expect(body).toEndWith("[Note shortened; 2 retained commits omitted]");
+    expect(validateWorkRecord(comment!.key, comment!.value)).toBeUndefined();
   } finally {
     await f.dispose();
   }
