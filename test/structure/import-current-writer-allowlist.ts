@@ -130,6 +130,11 @@ export const allowances: {
         "appendNext callers append comments and links and advance floors.",
       ],
       [
+        700,
+        [],
+        "Read-only missing-dependency destructuring has an unknown parser type.",
+      ],
+      [
         5907,
         ["selection", "attempt"],
         "Batch selects a result and updates existing attempts.",

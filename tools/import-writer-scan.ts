@@ -15,6 +15,9 @@ export interface WriterSite {
  * because every change is reviewed and the converter refuses unknown families at run time.
  */
 export function scanWriters(program: ts.Program, root: string): WriterSite[] {
+  const writers = ["put", "putNext", "putMany", "delete"];
+  const local = (file: string) =>
+    relative(root, file).replaceAll("\\", "/").startsWith("src/");
   const checker = program.getTypeChecker(),
     result: WriterSite[] = [];
   const family = (key: ts.Node | undefined): string | undefined => {
@@ -39,13 +42,37 @@ export function scanWriters(program: ts.Program, root: string): WriterSite[] {
   const refuse = (row: WriterSite) => {
     row.refusal = "literal-only writer required at " + row.site;
   };
+  const assignmentPattern = (node: ts.Node): node is ts.AssignmentPattern =>
+    (ts.isObjectLiteralExpression(node) || ts.isArrayLiteralExpression(node)) &&
+    !!ts.findAncestor(node, (part) =>
+      (ts.isBinaryExpression(part.parent) &&
+        part.parent.left === part &&
+        part.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken) ||
+      (ts.isForOfStatement(part.parent) && part.parent.initializer === part)
+        ? true
+        : ts.isObjectLiteralExpression(part) ||
+            ts.isArrayLiteralExpression(part) ||
+            ts.isPropertyAssignment(part) ||
+            ts.isSpreadAssignment(part) ||
+            ts.isSpreadElement(part)
+          ? false
+          : "quit",
+    );
   const visit = (node: ts.Node): void => {
     ts.forEachChild(node, visit);
+    const pattern =
+      ts.isObjectBindingPattern(node) ||
+      ts.isArrayBindingPattern(node) ||
+      assignmentPattern(node);
+    const type = pattern
+      ? assignmentPattern(node)
+        ? checker.getTypeOfAssignmentPattern(node)
+        : checker.getTypeAtLocation(node)
+      : undefined;
     if (
-      ts.isObjectBindingPattern(node) &&
-      ["put", "putNext", "putMany", "delete"].some((name) =>
-        checker.getTypeAtLocation(node).getProperty(name),
-      )
+      type &&
+      (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown) ||
+        writers.some((name) => type.getProperty(name)))
     ) {
       const row = siteOf(node);
       refuse(row);
@@ -64,20 +91,13 @@ export function scanWriters(program: ts.Program, root: string): WriterSite[] {
     const state = ["put", "putNext", "putMany"].some((name) =>
       checker.getTypeAtLocation(node.expression).getProperty(name),
     );
+    const memberFile = checker
+      .getSymbolAtLocation(node)
+      ?.valueDeclaration?.getSourceFile().fileName;
     if (
       method
-        ? !["put", "putNext", "putMany", "delete"].includes(method) ||
-          (method === "delete" &&
-            !state &&
-            !checker
-              .getSymbolAtLocation(
-                ts.isPropertyAccessExpression(node)
-                  ? node.name
-                  : node.argumentExpression,
-              )
-              ?.valueDeclaration?.getSourceFile()
-              .fileName.replaceAll("\\", "/")
-              .startsWith(root.replaceAll("\\", "/") + "/src/"))
+        ? !writers.includes(method) ||
+          (method === "delete" && !state && !(memberFile && local(memberFile)))
         : !state
     )
       return;
@@ -155,9 +175,6 @@ export function scanWriters(program: ts.Program, root: string): WriterSite[] {
     result.push(row);
   };
   for (const source of program.getSourceFiles())
-    if (
-      relative(root, source.fileName).replaceAll("\\", "/").startsWith("src/")
-    )
-      visit(source);
+    if (local(source.fileName)) visit(source);
   return result;
 }

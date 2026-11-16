@@ -79,6 +79,27 @@ const owner =
   'import type { StateOwner } from "../core/state/index.ts"; import type { Actor } from "../generated/types.ts"; declare const owner: StateOwner; declare const actor: Actor; declare const id: string; declare const value: unknown;';
 test.each([
   [
+    "assignment writer extraction",
+    "blocks/work",
+    work,
+    'let put: LeaseStateClient["put"]; ({ put } = state); put("future-family:work-1", value, {expectRevision: 0});',
+    "literal-only",
+  ],
+  [
+    "for-of writer extraction",
+    "blocks/work",
+    work,
+    'let put: LeaseStateClient["put"]; for ({put} of [state]) put("future-family:work-1", value, {expectRevision: 0});',
+    "literal-only",
+  ],
+  [
+    "catch writer extraction",
+    "blocks/work",
+    work,
+    'try { throw state; } catch ({put}) { put("future-family:work-1", value, {expectRevision: 0}); }',
+    "literal-only",
+  ],
+  [
     "state client destructuring",
     "blocks/work",
     work,
