@@ -1,6 +1,13 @@
 import { expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  rmSync,
+  readFileSync,
+  existsSync,
+} from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -39,17 +46,6 @@ for (const [name, source] of [
   ["nested template text", "const x = `${`// ${1} /* */`}`;"],
   ["JSX text", "const x = <p>// /* */</p>;"],
   ["JSX attribute", 'const x = <p title="// /* */" />;'],
-  ["eslint-disable", "/* eslint-disable */\nconst x = 1;"],
-  ["eslint-disable-line", "const x = 1; // eslint-disable-line no-unused-vars"],
-  [
-    "eslint-disable-next-line",
-    "// eslint-disable-next-line no-unused-vars -- reason\nconst x = 1;",
-  ],
-  ["eslint-enable", "/* eslint-enable no-unused-vars */\nconst x = 1;"],
-  [
-    "multiline eslint directive",
-    "/* eslint-disable\n no-unused-vars,\n no-console\n */\nconst x = 1;",
-  ],
   [
     "ts-expect-error",
     "// @ts-expect-error: intentional test\nconst x: number = '';",
@@ -57,10 +53,6 @@ for (const [name, source] of [
   [
     "block ts-expect-error",
     "/* @ts-expect-error intentional test */\nconst x: number = '';",
-  ],
-  [
-    "biome-ignore",
-    "// biome-ignore lint/suspicious/noExplicitAny: required\nconst x = 1;",
   ],
   ["shebang", "#!/usr/bin/env node\nconst x = 1;"],
   ["reference path", '/// <reference path="./x.ts" />\nconst x = 1;'],
@@ -82,6 +74,14 @@ for (const [name, source] of [
 for (const source of [
   "// licence copyright\nconst x = 1;",
   "// @ts-ignore\nconst x = 1;",
+  "/* eslint-disable */\nconst x = 1;",
+  "const x = 1; // eslint-disable-line no-unused-vars",
+  "// eslint-disable-next-line no-unused-vars -- reason\nconst x = 1;",
+  "/* eslint-enable no-unused-vars */\nconst x = 1;",
+  "/* eslint-disable\n no-unused-vars,\n no-console\n */\nconst x = 1;",
+  "// biome-ignore lint/suspicious/noExplicitAny: required\nconst x = 1;",
+  "/* oxlint-disable */\nconst x = 1;",
+  "// bun-disable forge/no-comments\nconst x = 1;",
   "/* explanation\n eslint-disable\n */\nconst x = 1;",
   "/* eslint-disable\n ordinary prose\n */\nconst x = 1;",
   "// eslint-disable-next-line-not-a-directive\nconst x = 1;",
@@ -92,6 +92,55 @@ for (const source of [
     expect(addedComments("src/x.ts", source, lines)).toHaveLength(1);
   }, 30_000);
 }
+
+for (const [name, source] of [
+  ["regex after control parenthesis", "if (ok) /[/*]/.test(s);"],
+  ["division after call", "f(ok) / a / b;"],
+  ["regex after statement block", "{ work(); } /[/*]/.test(s);"],
+  ["division after object expression", "const n = ({x: 1}) / a / b;"],
+  ["regex after function declaration", "function f() {} /[/*]/.test(s);"],
+  ["division after function expression", "const f = function() {} / a / b;"],
+  ["division then regex operand", "const n = a / /[/*]/.exec(s)[0].length;"],
+  ["division assignment", "let n = 4; n /= 2;"],
+  ["division after postfix", "let n = 4; n++ / a / b;"],
+  ["regex after return", "function f() { return /[/*]/; }"],
+  ["regex after return newline", "function f() { return\n/[/*]/.test(s); }"],
+  ["regex after throw", "function f() { throw /[/*]/; }"],
+  ["relational expression beside division", "const n = a < b / c;"],
+  ["TSX generic arrow beside JSX", "const f = <T,>(x: T) => <p>{x}</p>;"],
+] as const) {
+  test(`${name} passes and its actual trailing comment is refused`, () => {
+    expect(addedComments("src/x.tsx", source, lines)).toEqual([]);
+    expect(
+      addedComments(
+        "src/x.tsx",
+        source + "\n// actual",
+        new Set([source.split("\n").length + 1]),
+      ),
+    ).toEqual([
+      {
+        file: "src/x.tsx",
+        line: source.split("\n").length + 1,
+        kind: "line comment",
+      },
+    ]);
+  }, 30_000);
+}
+test("the comment check adds zero runtime dependencies", () => {
+  const current = JSON.parse(
+    readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
+  ) as { dependencies: Record<string, string> };
+  expect(Object.keys(current.dependencies).sort()).toEqual([
+    "@modelcontextprotocol/server",
+    "koffi",
+    "yaml",
+  ]);
+}, 30_000);
+test("the repository enables forge/no-comments in Bun config", () => {
+  const config = new URL("../../bunfig.toml", import.meta.url);
+  expect(existsSync(config)).toBe(true);
+  expect(readFileSync(config, "utf8")).toContain('"forge/no-comments"');
+}, 30_000);
 
 test("an existing comment outside added lines passes", () => {
   expect(
