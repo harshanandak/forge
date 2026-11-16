@@ -1,5 +1,6 @@
 // [integration] Installed-path proof uses real files, including symlink substitution.
 import { expect, test } from "bun:test";
+import { hash } from "node:crypto";
 import {
   mkdirSync,
   mkdtempSync,
@@ -19,13 +20,24 @@ test("installed identity accepts only the reviewed clean artifact and accounts f
   const root = realpathSync(mkdtempSync(join(tmpdir(), "forge-identity-")));
   const installed = join(root, "node_modules", "forge-workflow");
   const bin = join(installed, "dist", "bin", "forge.js");
-  const expected = { version: "0.0.1", commit: "a".repeat(40) };
+  const expected = {
+    version: "0.0.1",
+    commit: "a".repeat(40),
+    digest: hash("sha256", "candidate archive"),
+  };
   const identity = { ...expected, dirty: false };
+  const phases = scopeAPhases.map((phase) => ({
+    phase,
+    outcome: "PASS",
+    completed: true,
+    evidence: `ci://reviewed-run/${phase}`,
+    candidateDigest: expected.digest,
+  }));
   mkdirSync(join(installed, "dist", "bin"), { recursive: true });
   writeFileSync(bin, "installed artifact");
   try {
     expect(
-      installedProof(installed, bin, expected, identity, scopeAPhases),
+      installedProof(installed, bin, expected, identity, phases),
     ).toMatchObject({
       status: "OK",
       exitCode: 0,
@@ -45,13 +57,45 @@ test("installed identity accepts only the reviewed clean artifact and accounts f
           bin,
           expected,
           identity,
-          scopeAPhases.filter((p) => p !== phase),
+          phases.filter((p) => p.phase !== phase),
         ),
       ).toMatchObject({
         status: "INCOMPLETE",
         exitCode: 2,
         missing: [phase],
       });
+    }
+    for (const bad of [
+      { evidence: "" },
+      { evidence: " \n " },
+      { evidence: null },
+      { outcome: "SKIPPED" },
+      { outcome: "FAIL" },
+      { outcome: "INCOMPLETE" },
+      { completed: false },
+      { completed: undefined },
+      { candidateDigest: hash("sha256", "another candidate") },
+      { candidateDigest: undefined },
+    ]) {
+      expect(
+        installedProof(installed, bin, expected, identity, [
+          { ...phases[0], ...bad },
+          ...phases.slice(1),
+        ]),
+      ).toMatchObject({
+        status: "INCOMPLETE",
+        exitCode: 2,
+        missing: [scopeAPhases[0]],
+      });
+    }
+    for (const records of [
+      scopeAPhases,
+      [...phases, phases[0]],
+      [null, ...phases.slice(1)],
+    ]) {
+      expect(
+        installedProof(installed, bin, expected, identity, records),
+      ).toMatchObject({ status: "INCOMPLETE", exitCode: 2 });
     }
     const other = join(root, "old-global-forge.js");
     writeFileSync(other, "old global artifact");
@@ -67,7 +111,7 @@ test("installed identity accepts only the reviewed clean artifact and accounts f
       [bin, { ...identity, dirty: true }],
     ] as const) {
       expect(
-        installedProof(installed, candidate, expected, actual, scopeAPhases),
+        installedProof(installed, candidate, expected, actual, phases),
       ).toMatchObject({ status: "FAIL", exitCode: 6, code: "INPUT_INVALID" });
     }
     expect(
@@ -76,7 +120,7 @@ test("installed identity accepts only the reviewed clean artifact and accounts f
         bin,
         { ...expected, commit: "unknown" },
         { ...identity, commit: "unknown" },
-        scopeAPhases,
+        phases,
       ),
     ).toMatchObject({ status: "FAIL", exitCode: 6 });
     // A bin inside the prefix must not resolve through an escaped directory.
@@ -86,7 +130,7 @@ test("installed identity accepts only the reviewed clean artifact and accounts f
     writeFileSync(join(outside, "bin", "forge.js"), "substitute");
     symlinkSync(outside, join(installed, "dist"), "junction");
     expect(
-      installedProof(installed, bin, expected, identity, scopeAPhases),
+      installedProof(installed, bin, expected, identity, phases),
     ).toMatchObject({ status: "FAIL", exitCode: 6 });
   } finally {
     rmSync(root, { recursive: true, force: true });

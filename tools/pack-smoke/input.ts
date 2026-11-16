@@ -2,7 +2,11 @@ import { hash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-export function packInput(input: string | undefined): string | undefined {
+export function packInput(
+  input: string | undefined,
+  _trustedSha256?: string,
+  _releaseProof?: string,
+): string | undefined {
   if (input === undefined) return undefined;
   const tarball = resolve(input);
   const expected = readFileSync(`${tarball}.sha256`, "utf8").split(/\s+/)[0];

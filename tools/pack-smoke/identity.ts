@@ -10,7 +10,7 @@ export function installedProof(
   bin: string,
   expected: { version: string; commit: string },
   identity: unknown,
-  phases: readonly string[] = [],
+  phases: readonly unknown[] = [],
 ) {
   const actual = identity as Partial<BuildIdentity> | null;
   const missing = scopeAPhases.filter((phase) => !phases.includes(phase));
