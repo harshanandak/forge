@@ -330,12 +330,12 @@ export class Project {
     return this.#opened;
   }
 
-  #openWrite(): { db: SqlDatabase; owner: StateOwner } {
+  #openWrite(stagedRestore = false): { db: SqlDatabase; owner: StateOwner } {
     const opened = this.#open();
     if (!this.#initialized) {
       opened.db.transaction(() => {
         initializePragma(this.#storage);
-        opened.owner.initialize([domain]);
+        opened.owner.initialize([domain], stagedRestore);
       });
       this.#initialized = true;
     }
@@ -854,7 +854,7 @@ export class Project {
               ? "Restore page version changed; send page 0 to start again"
               : `Expected page ${staged.next}, or page 0 to start again`,
         );
-      const { db, owner } = this.#openWrite();
+      const { db, owner } = this.#openWrite(staged !== undefined);
       const finish = () => this.#restoreStop(db, owner, project);
       value = {
         restored: restorePage(db, owner, page, this.#limits, finish),

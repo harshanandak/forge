@@ -110,8 +110,9 @@ export function assertRetentionAuthority(db: SqlDatabase, empty = false): void {
 export function assertRetention(
   db: SqlDatabase,
   tables: Record<string, readonly string[]> = stateColumns,
+  stagedRestore = false,
 ): void {
-  assertRetentionAuthority(db);
+  if (!stagedRestore) assertRetentionAuthority(db);
   const row = db.get(
     "SELECT sequence,policy_version FROM state_retention WHERE id=1",
   );

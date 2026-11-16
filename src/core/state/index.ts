@@ -1134,8 +1134,11 @@ export class StateOwner {
     this.#clock = clock;
   }
 
-  /** Explicit write setup; constructing an owner or reading never initializes a store. */
-  initialize(domains: readonly ReviewedDomain[] = []): void {
+  /** Explicit write setup; stagedRestore is only for unpublished restore pages. */
+  initialize(
+    domains: readonly ReviewedDomain[] = [],
+    stagedRestore = false,
+  ): void {
     for (const domain of domains) {
       namespaceValid(domain.namespace);
       if (
@@ -1165,6 +1168,7 @@ export class StateOwner {
             ...Object.entries(stateColumns),
             ...domains.flatMap((domain) => Object.entries(domain.usage ?? {})),
           ]),
+          stagedRestore,
         );
       },
     );

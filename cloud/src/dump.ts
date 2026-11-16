@@ -31,6 +31,7 @@ import { assertNoEvidence, EVIDENCE_RECEIPTS } from "./evidence-receipts.ts";
 import {
   usageStatements,
   requestAgeStatements,
+  assertRetentionAuthority,
 } from "../../src/core/state/migrations.ts";
 
 export const DUMP_FORMAT = "forge-cloud-dump/2";
@@ -807,6 +808,7 @@ function settleFloor(
   }
   owner.releaseRestoredLeases();
   finalize?.();
+  assertRetentionAuthority(db);
   assertLimits(db, limits, "RESTORE_TOO_LARGE", "The restored project");
   db.run(`UPDATE ${COMMAND_RECEIPTS} SET imported=1`);
   freshEpoch(db);
