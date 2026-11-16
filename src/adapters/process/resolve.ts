@@ -7,6 +7,7 @@ import {
   statSync,
 } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { homedir, tmpdir } from "node:os";
 import { windowsProcessStartTime } from "./windows-job.ts";
 import type { Unavailable } from "../../generated/types.ts";
 import type { ResolvedExecutable } from "../../ports/process.ts";
@@ -28,12 +29,7 @@ export const realFileProbe: FileProbe = {
       lstatSync(path);
       return true;
     } catch (error) {
-      if (
-        ["ENOENT", "ENOTDIR"].includes(
-          (error as NodeJS.ErrnoException).code ?? "",
-        )
-      )
-        return false;
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
       throw error;
     }
   },
@@ -211,12 +207,28 @@ function outsideRepository(
   directory: string,
   platform: Platform,
   probe: FileProbe,
+  env: Readonly<Record<string, string>>,
 ): boolean {
   const path = pathFor(platform);
+  const temporary = [
+    tmpdir(),
+    ...["TEMP", "TMP", "TMPDIR"].map((name) => envValue(env, name, platform)),
+  ]
+    .filter((value): value is string => !!value)
+    .flatMap((value) => [path.resolve(value), probe.realpath(value)]);
   for (let at = directory; ; at = path.dirname(at)) {
     if (
-      probe.hasEntry(path.join(at, ".git")) ||
-      probe.hasEntry(path.join(at, ".forge"))
+      temporary.some((value) => path.relative(value, at) === "") ||
+      /[\\/]node_modules[\\/]\.bin(?:[\\/]|$)/i.test(at)
+    )
+      return false;
+    if (probe.hasEntry(path.join(at, ".git"))) return false;
+    if (
+      probe.hasEntry(path.join(at, ".forge")) &&
+      (path.relative(probe.realpath(homedir()), probe.realpath(at)) !== "" ||
+        ["config.yaml", "project.json"].some((marker) =>
+          probe.hasEntry(path.join(at, ".forge", marker)),
+        ))
     )
       return false;
     if (path.dirname(at) === at) return true;
@@ -254,7 +266,7 @@ export function resolveExecutable(
       const canonical = probe.realpath(directory);
       if (
         ![path.resolve(directory), canonical].every((dir) =>
-          outsideRepository(dir, platform, probe),
+          outsideRepository(dir, platform, probe, env),
         )
       )
         throw new Error("repository PATH");
@@ -268,7 +280,7 @@ export function resolveExecutable(
       if (found.kind !== "resolved") continue;
       const resolved = probe.realpath(found.path);
       if (
-        !outsideRepository(path.dirname(resolved), platform, probe) ||
+        !outsideRepository(path.dirname(resolved), platform, probe, env) ||
         (windows && !/\.(?:exe|com)$/i.test(resolved))
       )
         throw new Error("repository or batch Git");
@@ -287,6 +299,6 @@ export function resolveExecutable(
   }
   return unavailable(
     `Git is unavailable (${skipped} skipped PATH entries).`,
-    "Install Git outside any repository and add its absolute directory to PATH.",
+    "Install Git outside any repository, temporary directory and node_modules/.bin, and add its absolute directory to PATH.",
   );
 }

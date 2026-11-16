@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { homedir } from "node:os";
 import {
   type FileProbe,
   resolveExecutable,
@@ -204,3 +205,47 @@ test("Windows Git ignores drive-relative, root-relative and batch-only entries",
     ),
   ).toEqual({ kind: "resolved", path: "C:\\safe\\git.exe" });
 }, 30_000);
+
+test.each([
+  "device",
+  "home git",
+  "config",
+  "identity",
+  "nested repo",
+  "canonical error",
+  "config error",
+  "identity error",
+])(
+  "canonical-home admission: %s",
+  (row) => {
+    const directory =
+      row === "nested repo" ? "/home/repo/bin" : "/home/.local/bin";
+    const probe: FileProbe = {
+      ...probeOf([`${directory}/git`]),
+      realpath: (path) => {
+        if (path === homedir()) {
+          if (row === "canonical error") throw new Error("EACCES");
+          return "/home";
+        }
+        return path;
+      },
+      hasEntry: (path) => {
+        if (
+          (row === "config error" && path === "/home/.forge/config.yaml") ||
+          (row === "identity error" && path === "/home/.forge/project.json")
+        )
+          throw new Error("EACCES");
+        return (
+          path === "/home/.forge" ||
+          (row === "home git" && path === "/home/.git") ||
+          (row === "config" && path === "/home/.forge/config.yaml") ||
+          (row === "identity" && path === "/home/.forge/project.json") ||
+          (row === "nested repo" && path === "/home/repo/.git")
+        );
+      },
+    };
+    const found = resolveExecutable("git", { PATH: directory }, "linux", probe);
+    expect(found.kind).toBe(row === "device" ? "resolved" : "unavailable");
+  },
+  30_000,
+);
