@@ -1,80 +1,64 @@
 import { test } from "bun:test";
-import { deepStrictEqual as eq, ok } from "node:assert/strict";
+import { deepStrictEqual as eq, ok, throws } from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import * as ts from "typescript-parser";
 import * as converter from "../../tools/import-current-state.ts";
-
-const root = resolve(import.meta.dirname, "../..");
-const files = (path: string): string[] =>
-  readdirSync(path, { withFileTypes: true }).flatMap((entry) =>
-    entry.isDirectory()
-      ? files(join(path, entry.name))
-      : /\.(?:[cm]?ts|json)$/.test(entry.name)
-        ? [join(path, entry.name).replaceAll("\\", "/")]
-        : [],
-  );
-const paths = files(join(root, "src"));
+const root = resolve(import.meta.dirname, "../../src");
+const paths = readdirSync(root, { recursive: true, encoding: "utf8" }).map(
+  (p) => join(root, p).replaceAll("\\", "/"),
+);
 const blocks = paths.filter(
-  (path) =>
-    path.endsWith("forge.block.json") &&
-    (JSON.parse(readFileSync(path, "utf8")) as { id: string }).id ===
-      "forge/work",
+  (p) =>
+    p.endsWith("forge.block.json") &&
+    (JSON.parse(readFileSync(p, "utf8")) as { id: string }).id === "forge/work",
 );
 const program = ts.createProgram(
-  paths.filter((path) => /\.[cm]?ts$/.test(path)),
-  { target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.NodeNext },
+  paths.filter((p) => /\.[cm]?ts$/.test(p)),
+  {},
 );
 const checker = program.getTypeChecker();
-const nodes: ts.Node[] = [];
-for (const source of program.getSourceFiles())
-  if (paths.includes(source.fileName)) {
-    const visit = (node: ts.Node) => {
-      nodes.push(node);
-      ts.forEachChild(node, visit);
-    };
-    visit(source);
-  }
-const calls = nodes.filter(ts.isCallExpression);
-const symbols = (node: ts.Node) => {
-  const symbol = checker.getSymbolAtLocation(node);
-  return symbol && symbol.flags & ts.SymbolFlags.Alias
-    ? checker.getAliasedSymbol(symbol)
-    : symbol;
-};
-const where = (node: ts.Node) => {
-  const source = node.getSourceFile();
-  return `${relative(root, source.fileName)}:${source.getLineAndCharacterOfPosition(node.getStart()).line + 1}`;
-};
-const returns = (node: ts.FunctionLikeDeclaration): ts.Expression[] => {
-  if (!node.body) return [];
-  if (!ts.isBlock(node.body)) return [node.body];
-  const found: ts.Expression[] = [];
-  const visit = (child: ts.Node) => {
-    if (ts.isReturnStatement(child) && child.expression)
-      found.push(child.expression);
-    else if (!ts.isFunctionLike(child)) ts.forEachChild(child, visit);
-  };
-  ts.forEachChild(node.body, visit);
+const walk = (node: ts.Node): ts.Node[] => {
+  const found = [node];
+  ts.forEachChild(node, (child) => {
+    found.push(...walk(child));
+  });
   return found;
 };
-type Bindings = Map<ts.Symbol, ts.Expression>;
-function examples(
-  node: ts.Expression,
-  bound: Bindings = new Map(),
-  seen = new Set<ts.Node>(),
-): string[] {
-  ok(!seen.has(node), `recursive key builder at ${where(node)}`);
+const nodes = program
+  .getSourceFiles()
+  .filter((s) => paths.includes(s.fileName))
+  .flatMap(walk);
+const calls = nodes.filter(ts.isCallExpression);
+const where = (node: ts.Node) => `${node.getSourceFile().fileName}:${node.pos}`;
+const symbol = (node: ts.Node) => {
+  const found = checker.getSymbolAtLocation(node);
+  return found && found.flags & ts.SymbolFlags.Alias
+    ? checker.getAliasedSymbol(found)
+    : found;
+};
+const declaration = (node: ts.Node) => symbol(node)?.valueDeclaration;
+const unwrap = (node: ts.Expression): ts.Expression =>
+  ts.isParenthesizedExpression(node) ||
+  ts.isAsExpression(node) ||
+  ts.isNonNullExpression(node)
+    ? unwrap(node.expression)
+    : node;
+const returned = (fn: ts.FunctionLikeDeclaration): ts.Expression[] => {
+  ok(fn.body, where(fn));
+  return ts.isBlock(fn.body)
+    ? walk(fn.body)
+        .filter(ts.isReturnStatement)
+        .flatMap((n) => (n.expression ? [n.expression] : []))
+    : [fn.body];
+};
+function examples(input: ts.Expression, seen = new Set<ts.Node>()): string[] {
+  const node = unwrap(input);
+  ok(!seen.has(node), `recursive key builder ${where(node)}`);
   const next = new Set(seen).add(node);
-  const read = (value: ts.Expression) => examples(value, bound, next);
+  const read = (value: ts.Expression) => examples(value, next);
   if (ts.isStringLiteralLike(node) || ts.isNumericLiteral(node))
     return [node.text];
-  if (
-    ts.isParenthesizedExpression(node) ||
-    ts.isAsExpression(node) ||
-    ts.isNonNullExpression(node)
-  )
-    return read(node.expression);
   if (ts.isTemplateExpression(node)) {
     let keys = [node.head.text];
     for (const span of node.templateSpans) {
@@ -82,7 +66,7 @@ function examples(
       try {
         values = read(span.expression);
       } catch {
-        // A dynamic suffix cannot introduce a new family; the literal head must name it.
+        // Only a statically established family may have a dynamic suffix.
         ok(
           keys.every((key) => /^[a-z][a-z-]*:/.test(key)),
           where(node),
@@ -105,175 +89,180 @@ function examples(
     }
     return keys;
   }
-  if (ts.isConditionalExpression(node))
-    return [...read(node.whenTrue), ...read(node.whenFalse)];
-  if (
-    ts.isBinaryExpression(node) &&
-    node.operatorToken.kind === ts.SyntaxKind.PlusToken
-  )
-    return read(node.left).flatMap((left) =>
-      read(node.right).map((right) => left + right),
-    );
   if (ts.isPropertyAccessExpression(node) && node.name.text === "key")
-    return []; // Rewriting an existing record's key creates no new family.
+    return []; // Existing-record rewrite.
   if (ts.isIdentifier(node)) {
-    const symbol = symbols(node);
-    const argument = symbol && bound.get(symbol);
-    if (argument) return read(argument);
-    const declaration = symbol?.valueDeclaration;
-    if (declaration && ts.isVariableDeclaration(declaration)) {
-      ok(declaration.initializer, where(node));
-      return read(declaration.initializer);
-    }
-    if (declaration && ts.isParameter(declaration)) {
-      const fn = declaration.parent;
-      const index = fn.parameters.indexOf(declaration);
-      const name = fn.name;
-      ok(name, `unnamed writer forwarding at ${where(node)}`);
+    const decl = declaration(node);
+    if (decl && ts.isVariableDeclaration(decl) && decl.initializer)
+      return read(decl.initializer);
+    if (decl && ts.isParameter(decl)) {
+      const fn = decl.parent,
+        index = fn.parameters.indexOf(decl);
+      ok(fn.name, where(node));
       const incoming = calls.filter(
-        (call) => symbols(call.expression) === symbols(name),
+        (call) => symbol(call.expression) === symbol(fn.name!),
       );
-      ok(incoming.length, `unresolved writer parameter at ${where(node)}`);
+      ok(incoming.length, `unresolved writer parameter ${where(node)}`);
       return incoming.flatMap((call) => {
         const value = call.arguments[index];
-        ok(value, where(call));
+        ok(value);
         return read(value);
       });
     }
   }
   if (ts.isCallExpression(node)) {
-    const declaration = symbols(node.expression)?.valueDeclaration;
-    const fn =
-      declaration && ts.isVariableDeclaration(declaration)
-        ? declaration.initializer
-        : declaration;
+    const decl = declaration(node.expression);
+    const fn = decl && ts.isVariableDeclaration(decl) ? decl.initializer : decl;
     if (fn && (ts.isArrowFunction(fn) || ts.isFunctionDeclaration(fn))) {
-      const bindings = new Map(bound);
-      fn.parameters.forEach((parameter, index) => {
-        const symbol = symbols(parameter.name),
-          value = node.arguments[index];
-        if (symbol && value) bindings.set(symbol, value);
-      });
-      return returns(fn).flatMap((value) => examples(value, bindings, next));
+      return returned(fn).flatMap(read);
     }
   }
-  throw new Error(`unresolved writer key at ${where(node)}: ${node.getText()}`);
+  throw new Error(`unresolved writer key ${where(node)}: ${node.getText()}`);
 }
-
 function missingFamilies(extra: ts.CallExpression[] = []) {
   eq(blocks.length, 1);
+  const inBlock = (node: ts.Node) =>
+    node.getSourceFile().fileName.startsWith(dirname(blocks[0]!) + "/");
   const sources = new Map<string, string>();
-  const add = (
-    expression: ts.Expression,
-    append = false,
-    bindings?: Bindings,
-  ) => {
-    for (let key of examples(expression, bindings)) {
-      if (append) key += "1";
-      sources.set(key, where(expression));
+  const add = (expression: ts.Expression, append = false) => {
+    for (const key of examples(expression))
+      sources.set(key + (append ? "1" : ""), where(expression));
+  };
+  const batch = (input: ts.Expression, seen = new Set<ts.Node>()): void => {
+    const node = unwrap(input);
+    ok(!seen.has(node), `recursive batch ${where(node)}`);
+    const next = new Set(seen).add(node),
+      read = (value: ts.Expression) => batch(value, next);
+    const decl = declaration(node);
+    if (
+      ts.isIdentifier(node) &&
+      decl &&
+      ts.isVariableDeclaration(decl) &&
+      decl.initializer
+    )
+      return read(decl.initializer);
+    if (ts.isArrayLiteralExpression(node)) {
+      for (const entry of node.elements)
+        read(ts.isSpreadElement(entry) ? entry.expression : entry);
+      return;
     }
+    if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      node.expression.name.text === "map"
+    ) {
+      const fn = node.arguments[0];
+      ok(fn && ts.isArrowFunction(fn), `opaque batch map ${where(node)}`);
+      for (const value of returned(fn)) read(value);
+      return;
+    }
+    if (ts.isObjectLiteralExpression(node)) {
+      const properties = node.properties.filter(ts.isPropertyAssignment);
+      const key = properties.find((p) => p.name.getText() === "key");
+      ok(
+        key && properties.some((p) => p.name.getText() === "value"),
+        `opaque batch entry ${where(node)}`,
+      );
+      add(key.initializer);
+      return;
+    }
+    throw new Error(`opaque work batch ${where(node)}`);
   };
   const floors = nodes.filter(
-    (node): node is ts.VariableDeclaration =>
-      ts.isVariableDeclaration(node) &&
-      node.name.getText() === "floorKey" &&
-      node.getSourceFile().fileName.endsWith("/src/core/state/index.ts"),
+    (n): n is ts.VariableDeclaration =>
+      ts.isVariableDeclaration(n) &&
+      n.name.getText() === "floorKey" &&
+      n.getSourceFile().fileName.endsWith("/src/core/state/index.ts"),
   );
-  ok(
-    floors.length,
-    "state owner's generated floor builders must be discovered",
-  );
+  ok(floors.length, "generated allocation builders must be discovered");
   for (const call of calls.concat(extra)) {
-    const source = call.getSourceFile();
-    const inBlock = blocks.some((path) =>
-      source.fileName.startsWith(dirname(path) + "/"),
-    );
     if (!ts.isPropertyAccessExpression(call.expression)) continue;
     const method = call.expression.name.text;
-    if (!["put", "putNext"].includes(method)) continue;
+    if (!["put", "putNext", "putMany"].includes(method)) continue;
     let key = call.arguments[0];
     ok(key, where(call));
-    if (!inBlock) {
-      if (call.arguments.length < 4) continue;
+    if (!inBlock(call)) {
+      if (call.arguments.length < (method === "putMany" ? 2 : 4)) continue;
       let namespaces: string[];
       try {
         namespaces = examples(key);
       } catch {
         ok(
-          !source.text.includes('"forge/work"'),
-          `unresolved work namespace at ${where(call)}`,
+          !call.getSourceFile().text.includes('"forge/work"'),
+          `unresolved work namespace ${where(call)}`,
         );
         continue;
       }
       if (!namespaces.includes("forge/work")) continue;
       key = call.arguments[1];
-      ok(key, where(call));
+      ok(key);
     }
-    // The rest-tuple adapter forwards the exact key supplied by other scanned writers.
-    const declaration = ts.isIdentifier(key)
-      ? symbols(key)?.valueDeclaration
-      : undefined;
-    if (declaration && ts.isBindingElement(declaration)) continue;
+    const parameter = declaration(key);
+    if (
+      parameter &&
+      ts.isParameter(parameter) &&
+      ts.isArrowFunction(parameter.parent) &&
+      ts.isPropertyAssignment(parameter.parent.parent) &&
+      parameter.parent.parent.name.getText() === method
+    )
+      continue; // Generic state-client forwarding preserves the supplied key/namespace.
+    if (method === "putMany") {
+      batch(key);
+      continue;
+    }
+    const decl = declaration(key);
+    if (decl && ts.isBindingElement(decl)) continue; // Rest-tuple forwarding retains other writers' exact keys.
     add(key, method === "putNext");
     if (method === "putNext")
       for (const floor of floors) {
         const expression = floor.initializer;
         ok(expression && ts.isTemplateExpression(expression));
-        const prefix = expression.templateSpans[0]?.expression;
-        const symbol = prefix && symbols(prefix);
-        ok(symbol, "floor builder prefix must resolve");
-        add(expression, false, new Map([[symbol, key]]));
+        for (const prefix of examples(key))
+          sources.set(expression.head.text + prefix, where(expression));
       }
   }
   for (const node of nodes)
     if (
-      blocks.some((path) =>
-        node.getSourceFile().fileName.startsWith(dirname(path) + "/"),
-      ) &&
+      inBlock(node) &&
       ts.isPropertyAssignment(node) &&
-      node.name.getText() === "key" &&
-      ts.isObjectLiteralExpression(node.parent) &&
-      node.parent.properties.some(
-        (property) => property.name?.getText() === "value",
-      )
+      node.name.getText() === "entries"
     )
-      add(node.initializer);
+      batch(node.initializer);
   const leftBehind = (
     converter as unknown as {
-      leftBehindKey?: (namespace: string, key: string) => boolean;
+      leftBehindKey?: (ns: string, key: string) => boolean;
     }
   ).leftBehindKey;
-  const missing = [...sources].filter(
+  ok(sources.size, "writer discovery must not be empty");
+  return [...sources].filter(
     ([key]) =>
       !converter.ordinaryKey("forge/work", key) &&
       !leftBehind?.("forge/work", key),
   );
-  ok(sources.size, "source writer discovery must not be empty");
-  return missing;
 }
-
 test("every source work writer family has an explicit import disposition", () => {
-  const missing = missingFamilies();
-  eq(
-    missing,
-    [],
-    `unclassified forge/work families: ${JSON.stringify(missing)}`,
-  );
+  eq(missingFamilies(), []);
 }, 30_000);
-
-test("a newly introduced work writer fails the classification guard", () => {
-  const source = ts.createSourceFile(
-    join(dirname(blocks[0]!), "future.cts").replaceAll("\\", "/"),
-    "state.put(`future-family:${id}`, {}, { expectRevision: 0 });",
-    ts.ScriptTarget.ESNext,
-    true,
-  );
-  const expression = (source.statements[0] as ts.ExpressionStatement)
-    .expression;
-  ok(ts.isCallExpression(expression));
+test("new work families and opaque batches fail the source guard", () => {
+  const call = (text: string) => {
+    const source = ts.createSourceFile(
+      join(dirname(blocks[0]!), "future.cts").replaceAll("\\", "/"),
+      text,
+      ts.ScriptTarget.ESNext,
+      true,
+    );
+    const expression = (source.statements[0] as ts.ExpressionStatement)
+      .expression;
+    ok(ts.isCallExpression(expression));
+    return expression;
+  };
   ok(
-    missingFamilies([expression]).some(([key]) =>
-      key.startsWith("future-family:"),
+    missingFamilies([call("state.put(`future-family:${id}`, {}, {});")]).some(
+      ([key]) => key.startsWith("future-family:"),
     ),
+  );
+  throws(
+    () => missingFamilies([call("state.putMany(input.entries, {});")]),
+    /opaque work batch/,
   );
 }, 30_000);
