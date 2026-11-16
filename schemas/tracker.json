@@ -13,15 +13,9 @@
     },
     "Attempt": {
       "type": "object",
-      "required": [
-        "id",
-        "holder",
-        "baseRevision",
-        "createdAt",
-        "live",
-        "generation",
-        "expiresAt"
-      ],
+      "required": ["id", "holder", "baseRevision", "createdAt", "live"],
+      "if": { "properties": { "live": { "const": true } } },
+      "then": { "required": ["generation", "expiresAt"] },
       "properties": {
         "id": {
           "type": "string",

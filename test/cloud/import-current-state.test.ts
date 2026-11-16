@@ -37,7 +37,7 @@ test.each(rows)(
     const cf = _name.startsWith("CF");
     const variants =
       kind === "scope"
-        ? ["namespace", "journal", "approval", "migration", "history"]
+        ? ["nested", "journal", "approval", "migration", "history"]
         : kind === "caps"
           ? ["rows", "bytes"]
           : kind === "consistency"
@@ -69,8 +69,8 @@ test.each(rows)(
                 db.run("INSERT INTO state_migrations VALUES ('999_unknown')");
               else {
                 state.put(
-                  variant === "namespace" ? "forge/cloud" : f.ns,
-                  variant === "namespace" ? "request:old" : `${variant}:work-1`,
+                  f.ns,
+                  `${variant}:work-1`,
                   { unknown: true },
                   f.actor,
                   { expectRevision: 0 },
