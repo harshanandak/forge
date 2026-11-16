@@ -67,8 +67,8 @@ const attemptId: Check = (v) =>
   /^attempt-[1-9][0-9]*$/.test(v) &&
   !/[\s\p{Cc}\p{Cf}]/u.test(v) &&
   positive(Number(v.slice(8)));
-const sha: Check = (v) =>
-  typeof v === "string" && /^[a-f0-9]{40}$/.test(v) && v.length === 40;
+const hex = (v: unknown, length = 40): v is string =>
+  typeof v === "string" && v.length === length && !/[^a-f0-9]/i.test(v);
 const timestamp: Check = (v) => validateTimestamp(v).ok;
 const named = (names: string, check: Check) =>
   Object.fromEntries(names.split(" ").map((name) => [name, check]));
@@ -81,7 +81,8 @@ const checks: Record<string, Check> = {
   holder: (v) => validateLeaseHolder(v).ok,
   receipt: (v) => validateItemId(v).ok,
   ...named("pr generation baseRevision", positive),
-  ...named("head mergeCommit sha", sha),
+  ...named("head mergeCommit", (v) => hex(v) || hex(v, 64)),
+  sha: (v) => hex(v) && v === v.toLowerCase(),
   attempt: attemptId,
   ...named("createdAt recordedAt selectedAt expiresAt", timestamp),
   count: (n) => positive(n) && Number(n) <= 16,

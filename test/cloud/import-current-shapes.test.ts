@@ -169,6 +169,31 @@ const malformed = workShapes.flatMap(([key, value]) => [
   ]),
 ]) as [string, unknown][];
 malformed.push(
+  ...["head", "mergeCommit"].flatMap((field) =>
+    [39, 41, 63, 65].map(
+      (length) =>
+        [
+          "landing:work-1:42",
+          { ...workShapes[0][1], [field]: "a".repeat(length) },
+        ] as [string, unknown],
+    ),
+  ),
+  ["landing:work-1:42", { ...workShapes[0][1], head: "g".repeat(64) }],
+  ["landing:work-1:42", { ...workShapes[0][1], head: ["a".repeat(64)] }],
+  [
+    "landing:work-1:42",
+    { ...workShapes[0][1], mergeCommit: "a".repeat(63) + "\n" },
+  ],
+  ...["A".repeat(40), "a".repeat(64)].flatMap(
+    (sha) =>
+      [
+        [workShapes[3][0], { ...workShapes[3][1], sha }],
+        [
+          workShapes[5][0],
+          { ...workShapes[5][1], chosen: [{ attempt: "attempt-1", sha }] },
+        ],
+      ] as [string, unknown][],
+  ),
   ["cleanup:work-1", { expiresAt: f.at + 60000 }],
   ["landing:work-2:42", workShapes[0][1]],
   ["landing:work-1:43", workShapes[0][1]],
@@ -280,6 +305,39 @@ test("metadata keys preserve the writer's historical leading zeroes", () => {
   for (const [key] of workShapes)
     eq(impl.ordinaryKey(f.ns, key.replace("work-1", "work-007")), true);
 });
+
+test.each(["a".repeat(64), "B".repeat(64)])(
+  "writer-permitted landing object id survives: %s",
+  (hash) => {
+    for (const historical of [false, true]) {
+      const value = { ...workShapes[0][1], head: hash, mergeCommit: hash };
+      const source = f.source(6, false, false, (_db, state) => {
+        state.put(f.ns, workShapes[0][0], value, f.actor, {
+          expectRevision: 0,
+        });
+        if (historical)
+          state.delete(f.ns, workShapes[0][0], f.actor, { expectRevision: 1 });
+      });
+      const scratch = f.database(),
+        owner = f.owner(scratch);
+      owner.initialize();
+      const before = f.snapshot(source.db);
+      const projected = impl.currentState(
+        source.db,
+        scratch,
+        source.manifest,
+        limitsFrom({}),
+      );
+      eq(projected.records, source.manifest.records);
+      eq(
+        owner.get(f.ns, workShapes[0][0])?.value,
+        historical ? undefined : value,
+      );
+      eq(f.snapshot(source.db), before);
+      eq(source.bytes(), source.manifest.sha256);
+    }
+  },
+);
 
 test.each(["", " \t\n", "closed"])(
   "writer-permitted closeReason survives: %j",
