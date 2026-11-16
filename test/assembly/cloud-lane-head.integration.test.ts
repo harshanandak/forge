@@ -69,6 +69,26 @@ for (const consumer of ["checkout", "origin", "clone", "head"] as const)
     }
   });
 
+for (const explicit of [false, true])
+  test(`first external linked checkout requires project provenance: explicit=${explicit}`, async () => {
+    const f = persistedRootsFixture();
+    try {
+      const before = f.snapshot();
+      const options = {
+        env: f.env,
+        ...(explicit ? { gitScope: f.scope } : {}),
+      };
+      const result = await scopedGit
+        .projectStateRoot(f.lexical, options)
+        .catch((error: unknown) => error);
+      if (explicit) expect(result).toBe(realpathSync.native(f.project));
+      else expect(result).toMatchObject({ error: { code: "INPUT_CONFLICT" } });
+      expect([existsSync(f.marker), f.snapshot()]).toEqual([false, before]);
+    } finally {
+      f.close();
+    }
+  });
+
 for (const removed of [false, true])
   test(`Skip-reopen-equality, loaded counterfactual=${removed}`, async () => {
     const f = persistedRootsFixture();
@@ -137,15 +157,7 @@ for (const row of gitScopeRows)
     });
   }, 30000);
 
-const readHead = (
-  coordinator as unknown as {
-    readBoundLaneHead: (
-      flight: Preflight,
-      providers: AssemblyProviders,
-      worktree: string,
-    ) => Promise<string>;
-  }
-).readBoundLaneHead;
+const readHead = coordinator.readBoundLaneHead;
 const flight = (effects = ["environment:read", "external:process"]) =>
   ({
     request: { op: "lane.next" },

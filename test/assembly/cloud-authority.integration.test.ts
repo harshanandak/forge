@@ -559,6 +559,31 @@ async function seedJournal(
     await state.close();
   }
 }
+test("assembly preparation defers Git discovery and private state opens", async () => {
+  const f = fx.persistedRootsFixture();
+  const launches = spyOn(launch, "runProcess"),
+    opens = spyOn(LocalState.prototype, "open");
+  let assembly: Awaited<ReturnType<typeof createAssembly>> | undefined;
+  try {
+    const before = f.snapshot();
+    assembly = await createAssembly({
+      root: f.lexical,
+      deviceRoot: join(f.project, "device"),
+      providers: { env: f.env },
+    });
+    expect([
+      launches.mock.calls.length,
+      opens.mock.calls.length,
+      existsSync(f.marker),
+      f.snapshot(),
+    ]).toEqual([0, 0, false, before]);
+  } finally {
+    await assembly?.close();
+    launches.mockRestore();
+    opens.mockRestore();
+    f.close();
+  }
+});
 for (const row of [
   "reopen",
   "legacy",
@@ -567,6 +592,9 @@ for (const row of [
   "missing worktree",
   "non-string worktree",
   "Accept-legacy-record",
+  "startup checkout",
+  "startup origin",
+  "startup retargeted",
 ] as const)
   test(`private attachment saved roots: ${row}`, async () => {
     const f = fx.persistedRootsFixture();
@@ -615,10 +643,38 @@ for (const row of [
         rmSync(f.alias, { recursive: true });
         fx.directoryLink(f.project, f.alias);
       }
+      if (row === "startup retargeted") {
+        f.retarget();
+        mkdirSync(join(f.lexical, ".forge"));
+        for (const [name, value] of [
+          ["project.json", { schema: 1, id: fx.PROJECT_ID }],
+          ["cloud.json", fx.bindingFor()],
+        ] as const)
+          writeFileSync(join(f.lexical, ".forge", name), JSON.stringify(value));
+      }
       const before = [
         readFileSync(join(deviceRoot, "records.sqlite")).toString("hex"),
         ...f.snapshot(),
       ];
+      if (row.startsWith("startup")) {
+        const options = { env: f.env, deviceRoot };
+        const result = await (
+          row === "startup checkout"
+            ? scopedGit.projectStateRoot(f.lexical, options)
+            : scopedGit.idPrefixObservation(f.lexical, f.project, options)
+        ).catch((error: unknown) => error);
+        if (row === "startup retargeted")
+          expect(result).toMatchObject({ error: { code: "INPUT_CONFLICT" } });
+        else if (row === "startup checkout")
+          expect(result).toBe(realpathSync.native(f.project));
+        else expect(result).toHaveLength(1);
+        expect(existsSync(f.marker)).toBe(false);
+        expect([
+          readFileSync(join(deviceRoot, "records.sqlite")).toString("hex"),
+          ...f.snapshot(),
+        ]).toEqual(before);
+        return;
+      }
       expect(cloudBinding(f.lexical, undefined)).toMatchObject({
         kind: "bound",
         identity: fx.PROJECT_ID,
@@ -1412,6 +1468,122 @@ const attachmentBytes = (s: fx.Sandbox) =>
   ].map((path) =>
     existsSync(path) ? readFileSync(path).toString("hex") : null,
   );
+for (const route of ["coordinator", "startup discovery"] as const)
+  for (const stored of [
+    "registry",
+    "journal",
+    "combined",
+    "new",
+    "new explicit",
+  ] as const)
+    test(`forge-1447 ${route} validates provenance before opening Git: ${stored}`, async () => {
+      const f = fx.persistedRootsFixture();
+      const deviceRoot = join(f.project, "device");
+      const device = new LocalState(join(deviceRoot, "records.sqlite"));
+      let launches:
+        ReturnType<typeof spyOn<typeof launch, "runProcess">> | undefined;
+      try {
+        for (const root of [f.project, f.target]) {
+          mkdirSync(join(root, ".forge"));
+          writeFileSync(
+            join(root, ".forge/project.json"),
+            JSON.stringify({ schema: 1, id: fx.PROJECT_ID }),
+          );
+          writeFileSync(
+            join(root, ".forge/cloud.json"),
+            JSON.stringify(fx.bindingFor()),
+          );
+        }
+        const lane = {
+          ...attachment,
+          worktree: f.scope.lane.real,
+          brief: join(f.target, "brief.md"),
+        };
+        writeFileSync(lane.brief, PREPARED_BRIEF);
+        if (stored === "journal" || stored === "combined")
+          await seedJournal(
+            { deviceRoot },
+            { ...journal, lane, grant: OWN_GRANT },
+          );
+        const registry = join(f.project, ".git/forge-lanes.json");
+        if (stored === "registry" || stored === "combined")
+          writeFileSync(registry, JSON.stringify([lane]));
+        const snapshot = () => [
+          ...f.snapshot(),
+          ...[registry, join(deviceRoot, "records.sqlite")].map((path) =>
+            existsSync(path) ? readFileSync(path).toString("hex") : null,
+          ),
+        ];
+        const before = snapshot();
+        const explicit = stored === "new explicit";
+        const options = {
+          env: f.env,
+          deviceRoot,
+          ...(explicit ? { gitScope: f.scope } : {}),
+        };
+        // Install before provider/service opening: clone discovery is part of the boundary.
+        launches = spyOn(launch, "runProcess");
+        const providers = createAssemblyProviders(f.target, options);
+        const result = await (
+          route === "startup discovery"
+            ? scopedGit.projectStateRoot(f.target, options)
+            : coordinateLane(
+                {
+                  request: {
+                    op: "lane.start",
+                    input: {
+                      id: ISSUE.id,
+                      branch: lane.branch,
+                      brief: lane.brief,
+                    },
+                    context: {
+                      ...OWN_GRANT.holder,
+                      project: { id: fx.PROJECT_ID, root: f.target },
+                    },
+                  },
+                  operation: {
+                    declaredOp: "lane.start",
+                    declaration: {
+                      effects: [
+                        "files:read",
+                        "files:write",
+                        "environment:read",
+                        "external:process",
+                      ],
+                      timeoutMs: 30000,
+                    },
+                  },
+                } as unknown as Parameters<typeof coordinateLane>[0],
+                fx.bindingFor(),
+                device,
+                () => Promise.resolve({ ...ISSUE, lease: OWN_GRANT }),
+                {
+                  providers,
+                  env: { ...f.env, FORGE_DEVICE_ID: "dev-1" },
+                  deviceRoot,
+                  now: () => NOW,
+                },
+              )
+        ).catch((error: unknown) => error);
+        expect(existsSync(f.marker)).toBe(false);
+        if (explicit) {
+          expect(launches.mock.calls.length).toBeGreaterThan(0);
+          if (route === "startup discovery")
+            expect(result).toBe(realpathSync.native(f.project));
+          else
+            expect(result).toMatchObject({ issue: ISSUE.id, lease: OWN_GRANT });
+        } else {
+          expect(result).toMatchObject({ error: { code: "INPUT_CONFLICT" } });
+          expect(launches.mock.calls.length).toBe(0);
+          expect(snapshot()).toEqual(before);
+        }
+      } finally {
+        launches?.mockRestore();
+        await device.close();
+        f.close();
+      }
+    });
+
 for (const stored of [
   "journal",
   "registry",
