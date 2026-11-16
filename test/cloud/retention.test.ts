@@ -9,7 +9,7 @@ import {
   ns,
   usage,
 } from "../core/l5-state/retention.fixture.ts";
-import { domain } from "../../cloud/src/project.ts";
+import { domain, Project } from "../../cloud/src/project.ts";
 import {
   clearStaged,
   dumpOf,
@@ -91,6 +91,51 @@ test("legacy staged restore can be abandoned before write initialization", async
   } finally {
     await close();
   }
+}, 30_000);
+
+test("pre-retention dump and status reads preserve the schema and every stored byte", async () => {
+  using raw = new Database(":memory:");
+  const calls: string[] = [];
+  const { storage } = browserStorage(raw, (sql) => calls.push(sql));
+  const db = durableStore(storage);
+  migrate(db, [
+    ...stateMigrations.filter((m) => m.id !== "006_state_retention"),
+    ...domain.migrations.filter(
+      (m) =>
+        !["010_cloud_retention", "011_cloud_request_age_dump"].includes(m.id),
+    ),
+  ]);
+  db.run("INSERT INTO domain_cloud_requests VALUES ('old','{}','ok','{}')");
+  await storage.put("provisioned", true);
+  const before = raw.serialize();
+  calls.length = 0;
+  const project = new Project({ storage });
+  for (const route of ["dump", "dump?cursor=start", "status"]) {
+    const response = await project.fetch(
+      new Request(`https://fixture.example/p/a/${route}`),
+    );
+    expect(response.status).toBe(200);
+    const reply = (await response.json()) as {
+      value: {
+        tables?: Record<string, Record<string, string | number>[]>;
+        dump?: { rows: Record<string, number> };
+      };
+    };
+    if (route === "status")
+      expect(reply.value.dump?.rows.domain_cloud_requests).toBe(1);
+    else
+      expect(reply.value.tables?.domain_cloud_requests).toEqual([
+        {
+          request_id: "old",
+          fingerprint: "{}",
+          outcome: "ok",
+          result: "{}",
+          created_at: 0,
+        },
+      ]);
+  }
+  expect(calls.every((sql) => /^SELECT\b/.test(sql))).toBe(true);
+  expect(raw.serialize()).toEqual(before);
 }, 30_000);
 
 test("cloud capacity metadata upgrades once without changing dump rows", () => {

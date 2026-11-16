@@ -35,7 +35,7 @@ import {
   dumpPage,
   dumpUsage,
   dumpStore,
-  DUMP_USAGE_SQL,
+  DUMP_USAGE_READS,
   limitsFrom,
   parseDump,
   restoreDump,
@@ -573,7 +573,7 @@ export class Project {
         try {
           const initialized = await this.#isProvisioned();
           const db = initialized
-            ? readOnlyStore(this.#storage, "state_records", DUMP_USAGE_SQL)
+            ? readOnlyStore(this.#storage, "state_records", DUMP_USAGE_READS)
             : undefined;
           if (initialized && db === undefined)
             throw new Error("Missing dump tables");

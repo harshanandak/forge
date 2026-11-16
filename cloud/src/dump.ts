@@ -225,21 +225,35 @@ export const DUMP_USAGE_SQL = Object.entries(TABLES).map(
   ([table, { columns }]) =>
     `SELECT COUNT(*) AS n, COALESCE(SUM(${columns.map((column) => `LENGTH(CAST(${column} AS BLOB))`).join(" + ")}), 0) AS bytes FROM ${table}`,
 );
+const AGE_COLUMN =
+  "SELECT 1 FROM pragma_table_info('domain_cloud_requests') WHERE name='created_at'";
+const REQUEST_USAGE = Object.keys(TABLES).indexOf("domain_cloud_requests");
+const LEGACY_REQUEST_USAGE = DUMP_USAGE_SQL[REQUEST_USAGE]!.replace(
+  "LENGTH(CAST(created_at AS BLOB))",
+  "1",
+);
+export const DUMP_USAGE_READS = [
+  ...DUMP_USAGE_SQL,
+  AGE_COLUMN,
+  LEGACY_REQUEST_USAGE,
+];
+const selectedColumns = (table: string): string =>
+  table === "domain_cloud_requests" ? "*" : TABLES[table]!.columns.join(", ");
 
 /** Dumping is a read even when the object has just awakened. */
 export function dumpStore(storage: DurableStorage): SqlDatabase {
   const statements = [
-    ...DUMP_USAGE_SQL,
+    ...DUMP_USAGE_READS,
     "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
     "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
     ...[...Object.keys(checkpointTables), EVIDENCE_RECEIPTS].map(
       (table) => `SELECT 1 FROM ${table} LIMIT 1`,
     ),
     `SELECT epoch, revision FROM ${EXPORT_STATE} WHERE id=1`,
-    ...Object.entries(TABLES).flatMap(([table, { columns, keys }]) =>
+    ...Object.entries(TABLES).flatMap(([table, { keys }]) =>
       [false, true].map(
         (after) =>
-          `SELECT ${columns.join(", ")} FROM ${table}${after ? ` WHERE (${keys.join(", ")}) > (${keys.map(() => "?").join(", ")})` : ""} ORDER BY ${keys.join(", ")} LIMIT ${BATCH}`,
+          `SELECT ${selectedColumns(table)} FROM ${table}${after ? ` WHERE (${keys.join(", ")}) > (${keys.map(() => "?").join(", ")})` : ""} ORDER BY ${keys.join(", ")} LIMIT ${BATCH}`,
       ),
     ),
   ];
@@ -259,7 +273,13 @@ export function dumpUsage(db: SqlDatabase | undefined, limits: Limits) {
   let bytes = 0;
   for (const [index, table] of Object.keys(TABLES).entries()) {
     const found =
-      db === undefined ? { n: 0, bytes: 0 } : db.get(DUMP_USAGE_SQL[index]!);
+      db === undefined
+        ? { n: 0, bytes: 0 }
+        : db.get(
+            index === REQUEST_USAGE && !db.get(AGE_COLUMN)
+              ? LEGACY_REQUEST_USAGE
+              : DUMP_USAGE_SQL[index]!,
+          );
     const n = Number(found?.n),
       size = Number(found?.bytes);
     if (
@@ -334,7 +354,15 @@ function assertLimits(
 function rowOf(table: string, row: SqlRow): Row {
   return Object.fromEntries(
     TABLES[table]!.columns.map((column) => {
-      const value = row[column];
+      let value = row[column];
+      if (table === "domain_cloud_requests" && column === "created_at") {
+        if (!(column in row)) value = 0;
+        else if (
+          typeof value === "bigint" &&
+          Number.isSafeInteger(Number(value))
+        )
+          value = Number(value);
+      }
       if (
         (typeof value === "string" &&
           value.length <= valueLimit(table, column)) ||
@@ -364,7 +392,7 @@ function* rowsFrom(
     const { keys } = TABLES[table]!;
     for (;;) {
       const found = db.all(
-        `SELECT ${TABLES[table]!.columns.join(", ")} FROM ${table}${key === null ? "" : ` WHERE (${keys.join(", ")}) > (${keys.map(() => "?").join(", ")})`} ORDER BY ${keys.join(", ")} LIMIT ${BATCH}`,
+        `SELECT ${selectedColumns(table)} FROM ${table}${key === null ? "" : ` WHERE (${keys.join(", ")}) > (${keys.map(() => "?").join(", ")})`} ORDER BY ${keys.join(", ")} LIMIT ${BATCH}`,
         key ?? [],
       );
       for (const stored of found) {

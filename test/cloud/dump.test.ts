@@ -159,6 +159,25 @@ for (const created_at of [-1, 1.5, "1", null, Number.MAX_SAFE_INTEGER + 1])
     ).toBe("INPUT_INVALID");
   }, 30_000);
 
+for (const age of [1234n, 9007199254740992n])
+  test(`request ages from an integer-preserving driver are checked before encoding: ${age}`, () => {
+    const db = database([row("domain_cloud_requests")]);
+    const read: SqlDatabase = {
+      ...db,
+      all: (sql, params) =>
+        db
+          .all(sql, params)
+          .map((row) =>
+            "created_at" in row ? { ...row, created_at: age } : row,
+          ),
+    };
+    if (age === 1234n)
+      expect(dumpOf(read).tables.domain_cloud_requests![0]!.created_at).toBe(
+        1234,
+      );
+    else expect(codeOf(() => dumpOf(read))).toBe("DUMP_UNSAFE_VALUE");
+  }, 30_000);
+
 const checkpointRows = {
   state_checkpoint_header: [1, 1, "lineage", 1, 20, 1, 20],
   state_checkpoint_live: ["forge/test", "a", 1, 1, "digest", ""],

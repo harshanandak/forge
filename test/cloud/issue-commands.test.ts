@@ -9856,10 +9856,10 @@ const forged =
   (request_id: string, route: string, subject: string) => (t: Tables) =>
     t.domain_cloud_requests!.push({
       request_id,
-      created_at: 0,
       fingerprint: JSON.stringify({ route, subject: "issue:a" }),
       outcome: "ok",
       result: lease(subject),
+      created_at: 0,
     });
 for (const [name, change] of [
   [
@@ -9937,7 +9937,6 @@ for (const [name, change] of [
         (t: Tables) => {
           t.domain_cloud_requests!.push({
             request_id: "bad-scope",
-            created_at: 0,
             outcome: "ok",
             result: lease("issue:a"),
             fingerprint: JSON.stringify({
@@ -9945,6 +9944,7 @@ for (const [name, change] of [
               subject: "issue:a",
               scope,
             }),
+            created_at: 0,
           });
         },
       ] as const,
@@ -11620,10 +11620,10 @@ async function labelledTables() {
   for (const id of ["dup-1", "dup-2"])
     tables.domain_cloud_requests!.push({
       request_id: id,
-      created_at: 0,
       fingerprint: JSON.stringify({ route: "claim", subject: "issue:a" }),
       outcome: "ok",
       result: lease("issue:a"),
+      created_at: 0,
     });
   return tables;
 }
@@ -12074,10 +12074,10 @@ const RAW: Record<string, (i: number) => Tables[string][number]> = {
   }),
   domain_cloud_requests: (i) => ({
     request_id: `r${six(i)}`,
-    created_at: 0,
     fingerprint: "{}",
     outcome: "ok",
     result: "{}",
+    created_at: 0,
   }),
 };
 // Each table's row edge, alone, by its own COUNT: one over is refused at admission, and the limit itself is not.
