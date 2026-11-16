@@ -1121,6 +1121,7 @@ export class StateOwner {
   readonly #clock: ClockPort;
   #knownMigrations = new Set(stateMigrations.map((migration) => migration.id));
   #domains: readonly ReviewedDomain[] = [];
+  #checkpointReady = false;
   constructor(db: SqlDatabase, clock: ClockPort) {
     this.#db = db;
     this.#clock = clock;
@@ -1165,9 +1166,10 @@ export class StateOwner {
         if (
           !stagedRestore &&
           this.#db.get(
-            Object.keys(checkpointTables)
-              .map((table) => `SELECT 1 FROM ${table}`)
-              .join(" UNION ALL ") + " LIMIT 1",
+            "SELECT 1 WHERE " +
+              Object.keys(checkpointTables)
+                .map((table) => `EXISTS(SELECT 1 FROM ${table})`)
+                .join(" OR "),
           )
         )
           verifyEventDerivedState(
@@ -1186,6 +1188,7 @@ export class StateOwner {
       ),
     ]);
     this.#domains = domains;
+    this.#checkpointReady = true;
   }
 
   checkpoint(batch = 256): number {
@@ -1861,6 +1864,21 @@ export class StateOwner {
     }
   }
 
+  #deletedRevision(namespace: string, key: string): number {
+    if (!this.#checkpointReady)
+      this.#checkpointReady = !!this.#db.get(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='state_checkpoint_deleted'",
+      );
+    return this.#checkpointReady
+      ? Number(
+          this.#db.get(
+            "SELECT revision FROM state_checkpoint_deleted WHERE namespace=? AND key=?",
+            [namespace, key],
+          )?.revision ?? 0,
+        )
+      : 0;
+  }
+
   /** Write one record and its event; the caller has already checked every guard. */
   #apply(
     namespace: string,
@@ -1893,12 +1911,7 @@ export class StateOwner {
               ],
             ),
       )?.revision ??
-      Number(
-        this.#db.get(
-          "SELECT revision FROM state_checkpoint_deleted WHERE namespace=? AND key=?",
-          [namespace, key],
-        )?.revision ?? 0,
-      );
+      (fresh ? 0 : this.#deletedRevision(namespace, key));
     const record: StateRecord = {
       namespace,
       key,
