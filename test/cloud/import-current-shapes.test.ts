@@ -18,10 +18,32 @@ test.each([
   ['bound-lane:["local","identity","Owner Project"]:work-1', true],
   ['bound-lane:["local","identity","Owner Project"]:work-1\n', false],
   ['bound-lane:["local","identity","Owner\u200bProject"]:work-1', false],
+  ['bound-lane:["local","identity","Owner\\qProject"]:work-1', false],
+  ['bound-lane:["local","identity","Owner\\u0020Project"]:work-1', false],
+  ['bound-lane: ["local","identity","Owner Project"]:work-1', false],
+  ['bound-lane:["local","identity",null]:work-1', false],
   ["autopilot:work-1 ", false],
 ] as const)("retained key whitespace: %j", (key, accepted) => {
   eq(impl.leftBehindKey(f.ns, key), accepted);
   eq(impl.ordinaryKey(f.ns, key), false);
+});
+
+// Admission must refuse malformed primary values before copying any row.
+test.each(
+  ["issue:work-1", "comment:work-1:1", "link:work-1:1"].flatMap((key) =>
+    [null, {}, []].map((value) => [key, value] as const),
+  ),
+)("primary value admission refuses: %s %j", (key, value) => {
+  const source = f.source(0, false, false, (_db, state) => {
+    state.putNext(f.ns, key.slice(0, -1), () => ({ value }), f.actor);
+  });
+  const scratch = f.database();
+  f.owner(scratch).initialize();
+  const reply = f.result(() =>
+    impl.currentState(source.db, scratch, source.manifest, limitsFrom({})),
+  );
+  eq(reply.envelope.ok, false);
+  if (!reply.envelope.ok) eq(reply.envelope.error.code, "INPUT_INVALID");
 });
 
 const workShapes = [
