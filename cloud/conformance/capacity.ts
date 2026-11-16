@@ -4,7 +4,9 @@
 // This is a stand-in for one Durable Object isolate, not the isolate: nothing here measures the deployed service.
 // `node capacity.ts pages <dir> [shape...]` only writes the pages, for the workerd phase of conformance.ts.
 import assert from "node:assert/strict";
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
+import { canonicalJson } from "../../src/core/config/pointer.ts";
+import { validateBlockId } from "../../src/generated/validators.ts";
 import {
   mkdirSync,
   mkdtempSync,
@@ -735,7 +737,38 @@ if (!isMainThread) {
       bundle.droppedRequests,
     ])
       assert.ok(natural(n));
-    assert.equal(bundle.N, bundle.source.records);
+    let omitted = 0;
+    if (bundle.leftBehind !== undefined) {
+      const { sha256, ...report } = bundle.leftBehind;
+      assert.equal(report.format, "forge-current-left-behind/1");
+      assert.deepEqual(report.source, bundle.source);
+      assert.ok(
+        natural(report.liveLeases) &&
+          report.liveLeases <= bundle.relinquishedLeases,
+      );
+      assert.ok(Array.isArray(report.records));
+      const groups = new Set<string>();
+      for (const row of report.records) {
+        assert.ok(
+          validateBlockId(row.namespace).ok && row.namespace !== "forge/work",
+        );
+        assert.ok(typeof row.shape === "string" && row.shape.length > 0);
+        assert.ok(natural(row.count) && row.count > 0);
+        const group = canonicalJson([row.namespace, row.shape]);
+        assert.ok(!groups.has(group));
+        groups.add(group);
+        omitted += row.count;
+        assert.ok(natural(omitted));
+      }
+      const bytes = canonicalJson(report);
+      assert.equal(createHash("sha256").update(bytes).digest("hex"), sha256);
+      if (omitted > 0) {
+        const file = join(dir, "left-behind.json");
+        assert.ok(lstatSync(file).isFile());
+        assert.equal(readFileSync(file, "utf8"), bytes);
+      }
+    }
+    assert.equal(bundle.N + omitted, bundle.source.records);
     assert.equal(bundle.events, bundle.N + bundle.F);
     assert.deepEqual(Object.keys(bundle.rows).sort(), [...TABLES].sort());
     assert.deepEqual(Object.keys(bundle.tables).sort(), [...TABLES].sort());
