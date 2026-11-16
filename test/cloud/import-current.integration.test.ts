@@ -159,7 +159,7 @@ test.each(rows)(
               if (variant === "invalid") {
                 const dump = await moduleUrl("../../cloud/src/dump.ts", [
                   [
-                    "if (page.last) settleFloor(db, owner, limits, verifyRestored(db));",
+                    "if (page.last) settleFloor(db, owner, limits, verifyRestored(db), finalize);",
                     "",
                   ],
                 ]);
@@ -428,7 +428,11 @@ test.each(["unlisted", "altered"])(
       spawnSync(
         "node",
         ["cloud/conformance/capacity.ts", "measure-current", out],
-        { encoding: "utf8", timeout: 30000 },
+        {
+          encoding: "utf8",
+          timeout: 30000,
+          env: { ...process.env, CLOUD_RESTORE_STOP: "1" },
+        },
       );
     eq(run().status, 0);
     const page = bundle.pages.at(-1)!;
@@ -442,6 +446,118 @@ test.each(["unlisted", "altered"])(
     eq(r.status === 0, false);
     eq(r.stdout, "");
     eq(r.stderr.includes("AssertionError"), true);
+    eq(s.bytes(), s.manifest.sha256);
+  },
+  120_000,
+);
+
+// [integration] An explicit digest binds the operator to every omitted namespace and live lease.
+test.each(["missing", "wrong", "matching"])(
+  "left-behind acknowledgement: %s",
+  async (kind) => {
+    const s = f.source(6, false, true, (_db, state) => {
+      for (const [namespace, key] of [
+        ["forge/check", "runs/synthetic"],
+        ["forge/memory", "note/synthetic"],
+        ["forge/memory", "transfer/synthetic"],
+        ["forge/memory", "meta/synthetic"],
+        ["forge/core-project", "identity"],
+      ])
+        state.put(
+          namespace!,
+          key!,
+          { confidential: "never-in-manifest" },
+          f.actor,
+          { expectRevision: 0 },
+        );
+    });
+    const backup = String(s.db.all("PRAGMA database_list")[0]!.file),
+      root = dirname(backup);
+    const manifest = join(root, "source.json"),
+      out = join(root, "preview");
+    writeFileSync(manifest, JSON.stringify(s.manifest));
+    const before = f.snapshot(s.db);
+    eq(status(await converter.run({ backup, manifest, out, limits })), [
+      "FAIL",
+      6,
+      "INPUT_INVALID",
+    ]);
+    eq(existsSync(join(out, "manifest.json")), false);
+    eq(readdirSync(out), ["left-behind.json"]);
+    const text = readFileSync(join(out, "left-behind.json"), "utf8");
+    eq(text.includes("never-in-manifest"), false);
+    const left = JSON.parse(text) as {
+      liveLeases: number;
+      records: { namespace: string; shape: string; count: number }[];
+    };
+    eq(left.liveLeases, 1);
+    eq(left.records, [
+      { namespace: "forge/check", shape: "runs/*", count: 1 },
+      { namespace: "forge/core-project", shape: "identity", count: 1 },
+      { namespace: "forge/memory", shape: "meta/*", count: 1 },
+      { namespace: "forge/memory", shape: "note/*", count: 1 },
+      { namespace: "forge/memory", shape: "transfer/*", count: 1 },
+    ]);
+    const acknowledge =
+      kind === "matching"
+        ? await converter.digest(join(out, "left-behind.json"))
+        : kind === "wrong"
+          ? "0".repeat(64)
+          : undefined;
+    const next = join(root, "acknowledged");
+    const reply = await converter.run({
+      backup,
+      manifest,
+      out: next,
+      limits,
+      ...{ acknowledgeLeftBehind: acknowledge },
+    });
+    eq(
+      status(reply),
+      kind === "matching" ? ["OK", 0, null] : ["FAIL", 6, "INPUT_INVALID"],
+    );
+    if (kind === "matching" && reply.envelope.ok) {
+      const bundle = reply.envelope.result as {
+        N: number;
+        rows: Record<string, number>;
+        leftBehind: { sha256: string };
+      };
+      eq(bundle.N, 6);
+      eq(bundle.rows.state_leases, 0);
+      eq(bundle.leftBehind.sha256, acknowledge);
+      eq(readFileSync(join(next, "left-behind.json"), "utf8"), text);
+      const measure = () =>
+        spawnSync(
+          "node",
+          ["cloud/conformance/capacity.ts", "measure-current", next],
+          {
+            encoding: "utf8",
+            timeout: 30000,
+            env: { ...process.env, CLOUD_RESTORE_STOP: "1" },
+          },
+        );
+      const measured = measure();
+      eq(measured.status, 0, measured.stderr);
+      eq(measured.stdout.includes("PASS capacity current"), true);
+      const completed = JSON.parse(
+        readFileSync(join(next, "manifest.json"), "utf8"),
+      ) as Awaited<ReturnType<typeof converter.convert>>;
+      for (const corrupt of ["count", "digest", "file"] as const) {
+        const changed = structuredClone(completed);
+        if (corrupt === "count")
+          changed.source = {
+            ...changed.source,
+            records: changed.source.records + 1,
+          };
+        if (corrupt === "digest") changed.leftBehind.sha256 = "0".repeat(64);
+        if (corrupt === "file")
+          writeFileSync(join(next, "left-behind.json"), text + " ");
+        writeFileSync(join(next, "manifest.json"), JSON.stringify(changed));
+        eq(measure().status === 0, false, corrupt);
+        writeFileSync(join(next, "left-behind.json"), text);
+      }
+    }
+    eq(f.snapshot(s.db), before);
     eq(s.bytes(), s.manifest.sha256);
   },
   120_000,

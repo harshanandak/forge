@@ -119,6 +119,7 @@ export interface Options {
   manifest: string;
   out: string;
   limits?: dump.Limits;
+  acknowledgeLeftBehind?: string | undefined;
 }
 export async function convert(options: Options) {
   const { backup, out } = options,
@@ -148,6 +149,23 @@ export async function convert(options: Options) {
     const scratch = await opened(":memory:", false, handles);
     new StateOwner(scratch, clock).initialize();
     const projected = state.currentState(source, scratch, manifest, limits);
+    const leftBehind = projected.leftBehind;
+    if (leftBehind.report.records.length > 0) {
+      fs.writeFileSync(join(out, "left-behind.json"), leftBehind.bytes, {
+        flag: "wx",
+        mode: 0o600,
+      });
+      if (
+        fs.readFileSync(join(out, "left-behind.json"), "utf8") !==
+          leftBehind.bytes ||
+        options.acknowledgeLeftBehind !== leftBehind.sha256
+      )
+        invalid();
+    } else if (
+      options.acknowledgeLeftBehind !== undefined &&
+      options.acknowledgeLeftBehind !== leftBehind.sha256
+    )
+      invalid();
     const expected = imageDigests(scratch);
     const readback = await opened(":memory:", false, handles);
     const target = durableStore({
@@ -204,6 +222,7 @@ export async function convert(options: Options) {
       stored: projected.usage.bytes,
       limits,
       pages,
+      leftBehind: { ...leftBehind.report, sha256: leftBehind.sha256 },
       relinquishedLeases: count("state_leases"),
       droppedRequests: count("state_requests"),
       activation: "requires-step-8-stop",
@@ -256,10 +275,9 @@ if (
     };
     const { values: flags } = parseArgs({
       options: Object.fromEntries(
-        [...paths, ...Object.keys(resources)].map((name) => [
-          name,
-          { type: "string", multiple: true },
-        ]),
+        [...paths, ...Object.keys(resources), "acknowledge-left-behind"].map(
+          (name) => [name, { type: "string", multiple: true }],
+        ),
       ),
     });
     if (
@@ -283,6 +301,7 @@ if (
       manifest: one("manifest")!,
       out: one("out")!,
       limits: dump.limitsFrom(vars),
+      acknowledgeLeftBehind: one("acknowledge-left-behind"),
     });
     process.stdout.write(JSON.stringify(reply.envelope) + "\n");
     process.exitCode = reply.exitCode;
@@ -290,7 +309,7 @@ if (
     const reply = respond(
       failure(
         "INPUT_INVALID",
-        "Expected --backup, --manifest, --out and optional positive --max-rows, --max-bytes, --page-bytes",
+        "Expected --backup, --manifest, --out, optional --acknowledge-left-behind SHA256 and positive --max-rows, --max-bytes, --page-bytes",
       ),
     );
     process.stdout.write(JSON.stringify(reply.envelope) + "\n");

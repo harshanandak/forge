@@ -1,5 +1,11 @@
 import { ForgeFailure } from "../src/contract/failure.ts";
-import { canonicalJson } from "../src/core/config/pointer.ts";
+import { createHash } from "node:crypto";
+import { canonicalJson, isObject } from "../src/core/config/pointer.ts";
+import {
+  validateLeaseHolder,
+  validateItemId,
+  validateTimestamp,
+} from "../src/generated/validators.ts";
 import {
   assertNoCheckpoint,
   checkpointTables,
@@ -9,7 +15,7 @@ import {
   verifyEventDerivedState,
 } from "../src/core/state/index.ts";
 import { parseRestoreJson } from "../src/core/state/restore-json.ts";
-import type { StateRecord } from "../src/generated/types.ts";
+import type { StateRecord, StateEvent } from "../src/generated/types.ts";
 import type { SqlDatabase } from "../src/ports/store.ts";
 import { domain } from "../cloud/src/project.ts";
 import { durableStore } from "../cloud/src/store.ts";
@@ -44,12 +50,120 @@ const invalid = (): never => {
 export function ordinaryKey(ns: string, key: string): boolean {
   return (
     ns === namespace &&
-    /^(?:issue:[^:]+|(?:comment|link):[^:]+:[1-9][0-9]*|allocation:(?:issue:work-|(?:comment|link):[^:]+:))$/.test(
+    !/[\s\p{Cc}\p{Cf}]/u.test(key) &&
+    /^(?:issue:[^:]+|(?:comment|link):[^:]+:[1-9][0-9]*|(?:landing|reopen):work-[0-9]+:[1-9][0-9]*|attempt:work-[0-9]+:attempt-[1-9][0-9]*|evidence:attempt:work-[0-9]+:attempt-[1-9][0-9]*:[1-9][0-9]*|(?:cleanup|selection|slots):work-[0-9]+|allocation:(?:issue:work-|(?:comment|link):[^:]+:))$/.test(
       key,
     )
   );
 }
 
+type Check = (value: unknown) => boolean;
+const text: Check = (v) => typeof v === "string";
+const positive: Check = (v) => Number.isSafeInteger(v) && Number(v) > 0;
+const reason: Check = (v) =>
+  typeof v === "string" && !!v.trim() && Array.from(v).length <= 65536;
+const attemptId: Check = (v) =>
+  typeof v === "string" &&
+  /^attempt-[1-9][0-9]*$/.test(v) &&
+  !/[\s\p{Cc}\p{Cf}]/u.test(v) &&
+  positive(Number(v.slice(8)));
+const hex = (v: unknown, length = 40): v is string =>
+  typeof v === "string" && v.length === length && !/[^a-f0-9]/i.test(v);
+const timestamp: Check = (v) => validateTimestamp(v).ok;
+const named = (names: string, check: Check) =>
+  Object.fromEntries(names.split(" ").map((name) => [name, check]));
+const checks: Record<string, Check> = {
+  ...named("id label review mode", text),
+  ...named("branch worktree note", (v) => text(v) && v !== ""),
+  ...named("reason claimReason", reason),
+  closeReason: (v) => typeof v === "string" && Array.from(v).length <= 2000,
+  withoutReceipt: (v) => reason(v) && checks.closeReason!(v),
+  holder: (v) => validateLeaseHolder(v).ok,
+  receipt: (v) => validateItemId(v).ok,
+  ...named("pr generation baseRevision", positive),
+  ...named("head mergeCommit", (v) => hex(v) || hex(v, 64)),
+  sha: (v) => hex(v) && v === v.toLowerCase(),
+  attempt: attemptId,
+  ...named("createdAt recordedAt selectedAt expiresAt", timestamp),
+  count: (n) => positive(n) && Number(n) <= 16,
+  next: (v) => positive(v) || v === 0,
+  supersededBy: (v) => v === "selection",
+  superseded: (v) => fields(v, "supersededBy reason"),
+  chosen: (v) =>
+    Array.isArray(v) &&
+    v.every((c) => fields(c, "attempt sha")) &&
+    new Set(v.map((c) => c.attempt)).size === v.length,
+  metrics: (v) =>
+    isObject(v) &&
+    Object.keys(v).length <= 32 &&
+    Object.values(v).every(
+      (x) =>
+        typeof x === "string" || (typeof x === "number" && Number.isFinite(x)),
+    ),
+};
+type Value = Record<string, unknown>;
+function fields(v: unknown, need: string, extra = ""): v is Value {
+  const allowed = (need + " " + extra).split(" ");
+  return (
+    isObject(v) &&
+    need.split(" ").every((k) => Object.hasOwn(v, k)) &&
+    Object.keys(v).every(
+      (k) => allowed.includes(k) && checks[k]?.(v[k]) === true,
+    )
+  );
+}
+/** Persisted writer shapes; public attempt views additionally contain lease metadata. */
+function workValue(key: string, v: unknown): boolean {
+  const [kind, id, number, attempt] = key.split(":");
+  if (
+    ["landing", "reopen", "evidence"].includes(kind!) &&
+    !positive(Number(key.split(":").at(-1)))
+  )
+    return false;
+  switch (kind) {
+    case "landing":
+      return (
+        fields(
+          v,
+          "id receipt branch worktree note pr generation head mergeCommit",
+        ) &&
+        v.id === id &&
+        String(v.pr) === number
+      );
+    case "reopen":
+      return fields(
+        v,
+        "reason holder",
+        "receipt withoutReceipt closeReason claimReason",
+      );
+    case "attempt":
+      return (
+        fields(v, "id holder baseRevision createdAt", "label superseded") &&
+        attemptId(v.id) &&
+        v.id === number
+      );
+    case "evidence":
+      return (
+        fields(v, "attempt sha holder recordedAt", "receipt review metrics") &&
+        v.attempt === attempt
+      );
+    case "cleanup":
+      return fields(v, "expiresAt");
+    case "slots":
+      return fields(v, "count next");
+    case "selection":
+      return (
+        fields(v, "mode chosen reason holder selectedAt") &&
+        (v.mode === "none"
+          ? (v.chosen as unknown[]).length === 0
+          : v.mode === "single"
+            ? (v.chosen as unknown[]).length === 1
+            : v.mode === "combine" && (v.chosen as unknown[]).length > 0)
+      );
+    default:
+      return true;
+  }
+}
 /** Bounded keyset reads retain only one page; admission happens before yielding each record. */
 export function* workRecords(source: SqlDatabase): Generator<StateRecord> {
   let after: readonly string[] | undefined;
@@ -59,8 +173,11 @@ export function* workRecords(source: SqlDatabase): Generator<StateRecord> {
       after,
     );
     for (const row of rows) {
+      if (row.namespace !== namespace) continue;
       if (!ordinaryKey(String(row.namespace), String(row.key))) invalid();
-      yield parseRestoreJson(String(row.body)) as StateRecord;
+      const record = parseRestoreJson(String(row.body)) as StateRecord;
+      if (!workValue(record.key, record.value)) invalid();
+      yield record;
     }
     if (rows.length < 128) return;
     after = [String(rows.at(-1)!.namespace), String(rows.at(-1)!.key)];
@@ -102,15 +219,36 @@ export function verifySource(
     let sequence = 0;
     for (;;) {
       const events = source.all(
-        "SELECT sequence,namespace,key FROM state_events WHERE sequence>? ORDER BY sequence LIMIT 128",
+        "SELECT sequence,namespace,key,body FROM state_events WHERE sequence>? ORDER BY sequence LIMIT 128",
         [sequence],
       );
-      for (const row of events)
-        if (!ordinaryKey(String(row.namespace), String(row.key))) invalid();
+      for (const row of events) {
+        if (row.namespace !== namespace) continue;
+        const event = parseRestoreJson(String(row.body)) as StateEvent;
+        const lease = event.type.startsWith(`${namespace}:lease.`);
+        if (
+          !ordinaryKey(namespace, event.key) &&
+          !(
+            lease &&
+            event.key.startsWith("issue:") &&
+            ordinaryKey(namespace, event.key.slice(6))
+          )
+        )
+          invalid();
+        if (
+          event.type === `${namespace}:record.updated@1` &&
+          !workValue(event.key, event.data)
+        )
+          invalid();
+      }
       if (events.length < 128) break;
       sequence = Number(events.at(-1)!.sequence);
     }
-    let records = 0;
+    let records = Number(
+      source.get("SELECT COUNT(*) AS n FROM state_records WHERE namespace<>?", [
+        namespace,
+      ])!.n,
+    );
     for (const _record of workRecords(source)) records++;
     if (records !== manifest.records) invalid();
     return found;
@@ -118,6 +256,50 @@ export function verifySource(
     // Source bodies and keys may contain credentials; only the refusal category crosses this boundary.
     return invalid();
   }
+}
+
+function leftBehind(source: SqlDatabase, manifest: SourceManifest) {
+  const records = source
+    .all(
+      `SELECT namespace, CASE
+      WHEN namespace='forge/check' AND key LIKE 'runs/%' THEN 'runs/*'
+      WHEN namespace='forge/memory' AND key LIKE 'note/%' THEN 'note/*'
+      WHEN namespace='forge/memory' AND key LIKE 'transfer/%' THEN 'transfer/*'
+      WHEN namespace='forge/memory' AND key LIKE 'meta/%' THEN 'meta/*'
+      WHEN namespace='forge/core-project' AND key='identity' THEN 'identity'
+      ELSE 'other' END AS shape, COUNT(*) AS count
+    FROM state_records WHERE namespace<>? GROUP BY namespace,shape ORDER BY namespace,shape`,
+      [namespace],
+    )
+    .map((row) => ({
+      namespace: String(row.namespace),
+      shape: String(row.shape),
+      count: Number(row.count),
+    }));
+  const report = {
+    format: "forge-current-left-behind/1",
+    source: manifest,
+    records,
+    liveLeases: source.all("SELECT body FROM state_leases").reduce((n, row) => {
+      const lease = parseRestoreJson(String(row.body)) as {
+        releasedAt?: string;
+        expiresAt: string;
+      };
+      return (
+        n +
+        Number(
+          lease.releasedAt === undefined &&
+            Date.parse(lease.expiresAt) > Date.parse(manifest.at),
+        )
+      );
+    }, 0),
+  };
+  const bytes = canonicalJson(report);
+  return {
+    report,
+    bytes,
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+  };
 }
 
 /** Project into a disposable, initialized authority store. The source is borrowed and read-only. */
@@ -202,7 +384,13 @@ export function currentState(
           message: "Current-state projection exceeds configured caps",
           retry: "never",
         });
-      return { records, floors, events, usage };
+      return {
+        records,
+        floors,
+        events,
+        usage,
+        leftBehind: leftBehind(source, manifest),
+      };
     });
   } catch (error) {
     if (error instanceof ForgeFailure && error.error.code === "INPUT_INVALID")
