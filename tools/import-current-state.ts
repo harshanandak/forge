@@ -107,7 +107,9 @@ export function leftBehindKey(ns: string, key: string): boolean {
     return (
       Array.isArray(tuple) &&
       tuple.length === 3 &&
-      tuple.every((part) => typeof part === "string") &&
+      tuple.every(
+        (part) => typeof part === "string" && !/[\p{Cc}\p{Cf}]/u.test(part),
+      ) &&
       JSON.stringify(tuple) === spelling
     );
   } catch {

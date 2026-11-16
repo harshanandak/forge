@@ -79,6 +79,41 @@ const owner =
   'import type { StateOwner } from "../core/state/index.ts"; import type { Actor } from "../generated/types.ts"; declare const owner: StateOwner; declare const actor: Actor; declare const id: string; declare const value: unknown;';
 test.each([
   [
+    "opaque computed foreign hint",
+    "assembly",
+    owner,
+    'declare const method: string; const state: any = owner.client("forge/memory", actor); state[method]("future-family:work-1", value, {});',
+    "literal-only",
+  ],
+  [
+    "computed any receiver",
+    "blocks/work",
+    work,
+    'declare const method: string; (state as any)[method]("future-family:work-1", value, {});',
+    "literal-only",
+  ],
+  [
+    "computed unknown receiver",
+    "blocks/work",
+    work,
+    'declare const method: string; (state as unknown)[method]("future-family:work-1", value, {});',
+    "literal-only",
+  ],
+  [
+    "computed any delete",
+    "blocks/work",
+    work,
+    '(state as any)["delete"]("future-family:work-1", {});',
+    "literal-only",
+  ],
+  [
+    "computed any extraction",
+    "blocks/work",
+    work,
+    'declare const method: string; const put = (state as any)[method]; put("future-family:work-1", value, {});',
+    "literal-only",
+  ],
+  [
     "assignment writer extraction",
     "blocks/work",
     work,

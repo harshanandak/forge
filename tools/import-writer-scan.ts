@@ -16,6 +16,7 @@ export interface WriterSite {
  */
 export function scanWriters(program: ts.Program, root: string): WriterSite[] {
   const writers = ["put", "putNext", "putMany", "delete"];
+  const opaqueFlags = ts.TypeFlags.Any | ts.TypeFlags.Unknown;
   const local = (file: string) =>
     relative(root, file).replaceAll("\\", "/").startsWith("src/");
   const checker = program.getTypeChecker(),
@@ -71,7 +72,7 @@ export function scanWriters(program: ts.Program, root: string): WriterSite[] {
       : undefined;
     if (
       type &&
-      (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown) ||
+      (type.flags & opaqueFlags ||
         writers.some((name) => type.getProperty(name)))
     ) {
       const row = siteOf(node);
@@ -88,8 +89,10 @@ export function scanWriters(program: ts.Program, root: string): WriterSite[] {
       : node.argumentExpression && ts.isStringLiteral(node.argumentExpression)
         ? node.argumentExpression.text
         : undefined;
+    const receiverType = checker.getTypeAtLocation(node.expression);
+    const opaque = !!(receiverType.flags & opaqueFlags);
     const state = ["put", "putNext", "putMany"].some((name) =>
-      checker.getTypeAtLocation(node.expression).getProperty(name),
+      receiverType.getProperty(name),
     );
     const memberFile = checker
       .getSymbolAtLocation(node)
@@ -97,8 +100,11 @@ export function scanWriters(program: ts.Program, root: string): WriterSite[] {
     if (
       method
         ? !writers.includes(method) ||
-          (method === "delete" && !state && !(memberFile && local(memberFile)))
-        : !state
+          (method === "delete" &&
+            !state &&
+            !opaque &&
+            !(memberFile && local(memberFile)))
+        : !state && !opaque
     )
       return;
     const call =
@@ -131,6 +137,7 @@ export function scanWriters(program: ts.Program, root: string): WriterSite[] {
     )
       namespace = receiver.arguments[0];
     if (
+      !(opaque && ts.isElementAccessExpression(node)) &&
       namespace &&
       ts.isStringLiteral(namespace) &&
       namespace.text !== "forge/work"

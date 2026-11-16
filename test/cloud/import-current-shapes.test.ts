@@ -15,6 +15,40 @@ import type { Attempt } from "../../src/generated/types.ts";
 
 setDefaultTimeout(30_000);
 test.each([
+  ...[
+    "\\b",
+    "\\f",
+    "\\n",
+    "\\r",
+    "\\t",
+    "\\u0000",
+    "\\u000b",
+    "\\u001f",
+    "\\u007f",
+    "\\u0085",
+    "\\u009f",
+    "\\u00ad",
+    "\\u061c",
+    "\\u200d",
+    "\\u2060",
+    "\\ufeff",
+    "\\udb40\\udc01",
+  ].map(
+    (escape) =>
+      [
+        `bound-lane:["local","identity","Owner${escape}Project"]:work-1`,
+        false,
+      ] as const,
+  ),
+  ...["Owner\\nProject", 'Owner"Project'].map(
+    (project) =>
+      [
+        "bound-lane:" +
+          JSON.stringify(["local", "identity", project]) +
+          ":work-1",
+        true,
+      ] as const,
+  ),
   ['bound-lane:["local","identity","Owner Project"]:work-1', true],
   ['bound-lane:["local","identity","Owner Project"]:work-1\n', false],
   ['bound-lane:["local","identity","Owner\u200bProject"]:work-1', false],
