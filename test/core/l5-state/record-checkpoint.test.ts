@@ -1,6 +1,7 @@
 import { expect, setDefaultTimeout, test } from "bun:test";
 import { verifyEventDerivedState } from "../../../src/core/state/index.ts";
 import { readReplayStart } from "../../../src/core/state/checkpoint.ts";
+import { withinRestoreBudget } from "../../../src/core/state/restore-json.ts";
 import {
   actor,
   ns,
@@ -162,9 +163,19 @@ test("checkpoint beyond 5,000 JSON values is decoded row by row", async () => {
           2,
         ]);
     });
-    const seed = readReplayStart(s.db, 16, true).checkpoint;
-    expect(seed?.deleted).toHaveLength(1200);
-    expect(seed?.coveredSequence).toBe(1200);
+    const parse = JSON.parse;
+    try {
+      JSON.parse = (...args: Parameters<typeof JSON.parse>) => {
+        if (!withinRestoreBudget(args[0]))
+          throw new Error("synthetic 5,000-value parser cap");
+        return parse(...args) as unknown;
+      };
+      const seed = readReplayStart(s.db, 16, true).checkpoint;
+      expect(seed?.deleted).toHaveLength(1200);
+      expect(seed?.coveredSequence).toBe(1200);
+    } finally {
+      JSON.parse = parse;
+    }
   } finally {
     await s.close();
   }
