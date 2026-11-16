@@ -344,7 +344,7 @@ jobs:
           # page of the small journey; cutting by UTF-16 units instead of UTF-8 bytes overfills a maximum page, whose fixture
           # holds three-byte text so the unit count falls short; turning the page fit check from > into >= cuts the exact page.
           vars="--var DUMP_PAGE_BYTES:$exact" BUDGET_PAGE_BYTES="$exact" budget_counterfactual envelope 's/byteLength(pageOf(from.p, bare, after.done ? null : here)) +/0 +/' "budget envelope: real continuation pages stay within their budget" "page [0-9]+ is [0-9]+ bytes, over the [0-9]+ byte budget" budget "budget envelope"
-          vars="--var DUMP_PAGE_BYTES:$exact" BUDGET_PAGE_BYTES="$exact" budget_counterfactual inclusive 's/^        added >$/        added >=/' "budget exact: real final page restores at its inclusive limit" "the export was cut into [0-9]+ pages" budget "budget exact"
+          vars="--var DUMP_PAGE_BYTES:$exact" BUDGET_PAGE_BYTES="$exact" budget_counterfactual inclusive 's/^        added >$/        added >=/' "budget exact: real final page restores at its inclusive limit" "exact: source expected cuts" budget "budget exact"
           FORGE_CLOUD_PROJECT=ci-large config=wrangler.large.jsonc budget_counterfactual units 's/encoder.encode(JSON.stringify(value)).length;/JSON.stringify(value).length;/' "budget maximum: real grown pages restore exactly" "page [0-9]+ is [0-9]+ bytes, over the 4194304 byte budget" large "budget maximum"
           # Capacity (forge-1040): the generated real-tracker pages through the Worker under the default limits (no DUMP_
           # variable set; the generated config removes the small-cap ones). Fresh persistence. Client and workerd peak RSS keep their budgets;

@@ -36,6 +36,7 @@ import {
 } from "../../src/blocks/work/bound-lane.ts";
 import { writeBoundLane } from "../../src/blocks/work/bound-lane-state.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
+import { createGitScope } from "../../src/assembly/providers.ts";
 import { browserStorage } from "./browser-storage.fixture.ts";
 import * as f from "./import-current-state.fixture.ts";
 import * as converter from "../../tools/import-current.ts";
@@ -980,7 +981,7 @@ async function restoredDispatch(p: Awaited<ReturnType<typeof f.activation>>) {
       origin: "https://synthetic.example",
       project: "a",
     },
-    root = "E:/tmp/restore-lane";
+    root = process.cwd();
   const context = {
     actor: f.actor,
     session: f.holder.session,
@@ -1013,12 +1014,13 @@ async function restoredDispatch(p: Awaited<ReturnType<typeof f.activation>>) {
     remote,
     prepare,
     async (record, fence) => {
+      const lane = { ...record.lane, gitScope: createGitScope(root) };
       await fence.publish(
-        record.lane,
+        lane,
         () => {},
         () => false,
       );
-      return record.lane;
+      return lane;
     },
   );
   const runner = boundDispatch(remote, "work-1", grant.generation, {

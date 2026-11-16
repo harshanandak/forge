@@ -428,7 +428,11 @@ test.each(["unlisted", "altered"])(
       spawnSync(
         "node",
         ["cloud/conformance/capacity.ts", "measure-current", out],
-        { encoding: "utf8", timeout: 30000 },
+        {
+          encoding: "utf8",
+          timeout: 30000,
+          env: { ...process.env, CLOUD_RESTORE_STOP: "1" },
+        },
       );
     eq(run().status, 0);
     const page = bundle.pages.at(-1)!;
