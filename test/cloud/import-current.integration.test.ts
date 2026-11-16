@@ -475,19 +475,13 @@ test.each(["missing", "wrong", "matching"])(
           { expectRevision: 0 },
         );
       const subject = "issue:participant:work-1:1";
-      const lease = state.acquire(
-        f.ns,
-        subject,
-        f.holder,
-        60000,
-        "participant-1",
-      );
+      const lease = state.acquire(f.ns, subject, f.holder, 60000, "local-1");
       state.release(f.ns, {
         subject,
         generation: lease.generation,
         holder: f.holder,
       });
-      state.acquire(f.ns, subject, f.holder, 60000, "participant-2");
+      state.acquire(f.ns, subject, f.holder, 60000, "local-2");
     });
     const backup = String(s.db.all("PRAGMA database_list")[0]!.file),
       root = dirname(backup);
