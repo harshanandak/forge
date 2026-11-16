@@ -9859,6 +9859,7 @@ const forged =
       fingerprint: JSON.stringify({ route, subject: "issue:a" }),
       outcome: "ok",
       result: lease(subject),
+      created_at: 0,
     });
 for (const [name, change] of [
   [
@@ -9943,6 +9944,7 @@ for (const [name, change] of [
               subject: "issue:a",
               scope,
             }),
+            created_at: 0,
           });
         },
       ] as const,
@@ -11621,6 +11623,7 @@ async function labelledTables() {
       fingerprint: JSON.stringify({ route: "claim", subject: "issue:a" }),
       outcome: "ok",
       result: lease("issue:a"),
+      created_at: 0,
     });
   return tables;
 }
@@ -12074,6 +12077,7 @@ const RAW: Record<string, (i: number) => Tables[string][number]> = {
     fingerprint: "{}",
     outcome: "ok",
     result: "{}",
+    created_at: 0,
   }),
 };
 // Each table's row edge, alone, by its own COUNT: one over is refused at admission, and the limit itself is not.

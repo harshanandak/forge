@@ -27,6 +27,7 @@ import {
   DUMP_MIGRATION,
   IMPORT_MIGRATION,
   RETENTION_MIGRATION,
+  REQUEST_AGE_DUMP_MIGRATION,
   CLOUD_USAGE_COLUMNS,
   COMMAND_RECEIPTS,
   EXPORT_STATE,
@@ -34,7 +35,7 @@ import {
   dumpPage,
   dumpUsage,
   dumpStore,
-  DUMP_USAGE_SQL,
+  DUMP_USAGE_READS,
   limitsFrom,
   parseDump,
   restoreDump,
@@ -150,6 +151,7 @@ export const domain = {
     EVIDENCE_MIGRATION,
     LANE_BROWSER_MIGRATION,
     RETENTION_MIGRATION,
+    REQUEST_AGE_DUMP_MIGRATION,
   ],
   tables: [
     PRAGMA_TABLE,
@@ -571,7 +573,7 @@ export class Project {
         try {
           const initialized = await this.#isProvisioned();
           const db = initialized
-            ? readOnlyStore(this.#storage, "state_records", DUMP_USAGE_SQL)
+            ? readOnlyStore(this.#storage, "state_records", DUMP_USAGE_READS)
             : undefined;
           if (initialized && db === undefined)
             throw new Error("Missing dump tables");
