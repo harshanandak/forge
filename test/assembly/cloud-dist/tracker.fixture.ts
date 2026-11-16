@@ -50,7 +50,8 @@ export async function trackerRig(bin: string) {
       const issued = await authority.send("devices", {
         device,
         session,
-        ttlMs: 3_600_000,
+        // A default one-hour claim must end before the credential expires.
+        ttlMs: 86_400_000,
       });
       assert.equal(issued.r.ok, true);
       const credential = issued.r.value as {
