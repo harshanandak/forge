@@ -75,3 +75,15 @@ test("promotion derives beta for prereleases and latest for stable versions", ()
   expect(run).toContain('npm view forge-workflow "dist-tags.$TAG"');
   expect(run).not.toMatch(/npm dist-tag add[^\n]*\blatest\b/);
 }, 1000);
+
+test("promotion requires the installed registry journey and exact identity/provenance policy", () => {
+  const job = workflow().jobs.readback!;
+  const runs = job.steps.map((step) => step.run ?? "").join("\n");
+  expect(runs).toContain("--include-attestations");
+  expect(runs).toContain("tools/release/readback.ts");
+  expect(runs).toContain("--version --json");
+  expect(runs).toContain("packed.integration.test");
+  expect(runs).toContain("environmentWithoutBun");
+  expect(runs).toContain("FORGE_PACKED_CONSUMER");
+  expect(workflow().jobs.promote?.needs).toContain("readback");
+}, 1000);
