@@ -174,7 +174,7 @@ function wellFormedText(value: string, position: string): void {
 /** The longest stored floor text accepted: the wrapper of a two-field value is well under this. */
 const FLOOR_TEXT_MAX = 4096;
 /** The stored floor's number; any value that is not the exact floor shape is refused, never read as zero. */
-function floorNumber(value: unknown, prefix: string): number {
+export function floorNumber(value: unknown, prefix: string): number {
   const floor = value as { prefix?: unknown; number?: unknown } | null;
   if (
     typeof floor !== "object" ||

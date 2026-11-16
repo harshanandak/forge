@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { canonicalJson } from "../../src/core/config/pointer.ts";
-import { suffixNumber } from "../../src/core/state/index.ts";
+import { floorNumber, suffixNumber } from "../../src/core/state/index.ts";
 import type { Tables } from "./max-source.ts";
 import { FLOOR, type Expected } from "./digest.ts";
 import { stopPlan } from "./restored.ts";
@@ -33,7 +33,7 @@ export function capacityStop(
             const event = JSON.parse(String(row.body)) as {
               type: string;
               revision: number;
-              data: { number?: number };
+              data: unknown;
             };
             if (
               !event.type.endsWith(":record.updated@1") &&
@@ -43,7 +43,15 @@ export function capacityStop(
             if (isGlobal(row)) history = row;
             if (row.key === FLOOR.key) {
               revision = event.revision;
-              number = Math.max(number, event.data?.number ?? 0);
+              if (event.type.endsWith(":record.updated@1"))
+                try {
+                  number = Math.max(
+                    number,
+                    floorNumber(event.data, "issue:work-"),
+                  );
+                } catch {
+                  // Malformed historical values reserve nothing; their revisions still count.
+                }
             }
             if (!event.type.endsWith(":record.deleted@1")) continue;
           }
