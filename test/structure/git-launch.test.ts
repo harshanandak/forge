@@ -2,7 +2,6 @@ import { expect, test } from "bun:test";
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join, normalize } from "node:path";
 import type { SourceFile } from "./lib/repo.ts";
-
 // Lexical guard: literal Git programs in launch calls, arrays and Bun cmd arrays. Follow named
 // function declarations and relative imports to resolver/forwarder shapes, with no caller list.
 // Computed aliases are outside this matcher. Blank comment-only lines preserve file:line.
@@ -71,20 +70,22 @@ test("Git launch programs in src, tools and templates use the shared resolver", 
     ["src", "tools", "templates"].flatMap((dir) => scan(join(root, dir), dir)),
   ).toEqual([]);
 }, 30_000);
-
 test("Git launch guard catches direct APIs and program-taking helpers with file:line", () => {
   for (const call of [
-    'spawn("git", [])',
-    'spawnSync("git", [])',
-    'execFile("git", [])',
-    'execFileSync("git", [])',
+    ..."spawn spawnSync execFile execFileSync command"
+      .split(" ")
+      .map((name) => `${name}("git", [])`),
     'exec("git status")',
     'execSync("git status")',
     'Bun.spawn(["git", "status"])',
     'Bun.spawnSync({cmd:["git", "status"]})',
-    'run("git", []); function run(program) {\n const unused = gitExecutable(); return spawnSync(program, []);\n}',
+    ..."spawnSync(program, [])|Bun.spawn([program])|Bun.spawnSync([program])|Bun.spawn({cmd:[program]})|Bun.spawnSync({cmd:[program]})"
+      .split("|")
+      .map(
+        (launch) =>
+          `run("git", []); function run(program) {\n const unused = gitExecutable(); return ${launch};\n}`,
+      ),
     'launcher("git.exe", [])',
-    'command("git", [])',
     'runner.launch("git.cmd", [])',
     "run(['git.bat', ...args])",
   ])
