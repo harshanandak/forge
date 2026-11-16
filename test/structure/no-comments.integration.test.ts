@@ -323,14 +323,16 @@ test(
   30_000,
 );
 test(
-  "a reused rename source cannot contribute hunks to the renamed file",
+  "a copy with its source path reused still adds its comment",
   () =>
     repository((root, git, put) => {
       git("mv", "src/x.ts", "src/renamed.ts");
       put("src/x.ts", "export const y = 2;\nexport const z = 3;\n");
       git("add", ".");
       git("commit", "-qm", "rename and reuse source");
-      expect(checkComments({ root, base: "baseline" }).status).toBe("PASS");
+      expect(checkComments({ root, base: "baseline" }).violations).toEqual([
+        { file: "src/renamed.ts", line: 1, kind: "line comment" },
+      ]);
     }),
   30_000,
 );
