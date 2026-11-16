@@ -77,7 +77,7 @@ test
         `Speed acceptance: retained growth=${growth}\n${result.stdout}`,
       );
       const loads = readFileSync(trace, "utf8").trim().split("\n");
-      expect(loads).toHaveLength(32); // one warm-up and 15 runs per side
+      expect(loads).toHaveLength(96); // one warm-up and 47 runs per side
       expect(new Set(loads).size).toBe(1);
       const report = JSON.parse(readFileSync(output, "utf8")) as {
         rows: { command: string; peaksMb: number[] }[];
@@ -85,7 +85,12 @@ test
       for (const command of ["issue show", "issue show (origin/main build)"])
         expect(
           report.rows.find((row) => row.command === command)?.peaksMb,
-        ).toHaveLength(15);
+        ).toHaveLength(47);
+      // Reallocate the report-only runs; do not add processes to the acceptance time budget.
+      expect(report.rows).toHaveLength(10);
+      expect(
+        report.rows.reduce((sum, row) => sum + row.peaksMb.length, 0),
+      ).toBe(102);
       const current = report.rows.find((row) => row.command === "issue show")!;
       const base = report.rows.find(
         (row) => row.command === "issue show (origin/main build)",
