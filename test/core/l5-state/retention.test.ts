@@ -132,6 +132,9 @@ test.each(["fresh", "upgrade", "prefix", "all", "rollback", "drift"])(
         const boundary = db.get(
           "SELECT sequence FROM state_retention WHERE id=1",
         );
+        const watermarks = db.all(
+          "SELECT * FROM state_namespace_watermarks ORDER BY namespace",
+        );
         const records = db.all(
           "SELECT * FROM state_records ORDER BY namespace,key",
         );
@@ -155,6 +158,9 @@ test.each(["fresh", "upgrade", "prefix", "all", "rollback", "drift"])(
           before,
         );
         expect(owner.namespaceRevision(ns)).toBe(1);
+        expect(
+          db.all("SELECT * FROM state_namespace_watermarks ORDER BY namespace"),
+        ).toEqual(watermarks);
         expect(
           db.get("SELECT sequence FROM state_retention WHERE id=1"),
         ).toEqual(boundary);

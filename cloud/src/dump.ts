@@ -870,6 +870,7 @@ export function clearStaged(db: SqlDatabase): void {
     ) {
       db.run("UPDATE state_retention SET sequence=0 WHERE id=1");
       db.run("DELETE FROM state_namespace_watermarks");
+      db.run("DELETE FROM state_allocation_keys");
     }
   });
 }

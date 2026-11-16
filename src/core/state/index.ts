@@ -1577,8 +1577,8 @@ export class StateOwner {
   /**
    * Write the next unused number under `prefix`. A floor record at `allocation:<prefix>` holds the
    * highest number ever allocated; the owner reads it, builds the record at floor + 1, and advances
-   * the floor in one transaction, so a deleted number is never reused. A missing floor is first
-   * computed from live keys and all matching history, inside this same lock.
+   * the floor in one transaction, so a deleted number is never reused. A first floor is computed
+   * from live keys and durable reservations, inside this same lock. A lost established floor refuses.
    */
   putNext(
     namespace: string,
@@ -1740,7 +1740,7 @@ export class StateOwner {
     return floorNumber(stored.value, prefix);
   }
 
-  /** The highest number under a prefix among live keys, all matching history and a deleted floor. */
+  /** Retained key reservations survive event pruning; an established floor is never reconstructed here. */
   #highest(
     namespace: string,
     prefix: string,
@@ -1751,23 +1751,24 @@ export class StateOwner {
     const span = `namespace=? AND key>=?${upper === undefined ? "" : " AND key<?"}`;
     const bounds =
       upper === undefined ? [namespace, prefix] : [namespace, prefix, upper];
-    const types = [
-      `${namespace}:record.updated@1`,
-      `${namespace}:record.deleted@1`,
-    ];
-    const typed = " AND json_extract(body,'$.type') IN (?,?)";
+    if (
+      this.#db.get(
+        "SELECT 1 FROM state_allocation_keys WHERE namespace=? AND key=?",
+        [namespace, floorKey],
+      )
+    )
+      invalid(
+        "Missing allocation floor; restore a verified backup or repair the store",
+      );
     if (refuse !== undefined) {
-      // Two probes say whether any old state exists. LIMIT 1 bounds the rows returned, not the rows
-      // examined, and this runs only while no floor exists, so it is a one-time cost bounded by the
-      // project's existing event count.
       const old =
         this.#db.get(
           `SELECT 1 AS n FROM state_records WHERE ${span} LIMIT 1`,
           bounds,
         ) ??
         this.#db.get(
-          `SELECT 1 AS n FROM state_events WHERE ${span}${typed} LIMIT 1`,
-          [...bounds, ...types],
+          `SELECT 1 AS n FROM state_allocation_keys WHERE ${span} LIMIT 1`,
+          bounds,
         );
       if (old)
         throw new ForgeFailure({
@@ -1778,21 +1779,13 @@ export class StateOwner {
       return 0;
     }
     // Only the numeric suffix leaves SQLite; the longest, then largest, decimal string is the maximum.
-    const top = (table: string, filter: string, extra: string[]) =>
+    const top = (table: string) =>
       this.#db.get(
-        `SELECT n FROM (SELECT substr(key,?) AS n FROM ${table} WHERE ${span}${filter}) WHERE n GLOB '[1-9]*' AND n NOT GLOB '*[^0-9]*' ORDER BY length(n) DESC, n DESC LIMIT 1`,
-        [Array.from(prefix).length + 1, ...bounds, ...extra],
+        `SELECT n FROM (SELECT substr(key,?) AS n FROM ${table} WHERE ${span}) WHERE n GLOB '[1-9]*' AND n NOT GLOB '*[^0-9]*' ORDER BY length(n) DESC, n DESC LIMIT 1`,
+        [Array.from(prefix).length + 1, ...bounds],
       )?.n;
-    const earlier = this.#db.get(
-      "SELECT MAX(json_extract(body,'$.data.number')) AS n FROM state_events WHERE namespace=? AND key=? AND json_extract(body,'$.type')=?",
-      [namespace, floorKey, types[0]!],
-    )?.n;
     return Math.max(
-      ...[
-        top("state_records", "", []),
-        top("state_events", typed, types),
-        earlier,
-      ].map((value) => {
+      ...[top("state_records"), top("state_allocation_keys")].map((value) => {
         const number = Number(value ?? 0);
         if (!Number.isSafeInteger(number))
           invalid("Allocation history holds an unsafe number");

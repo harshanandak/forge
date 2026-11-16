@@ -37,6 +37,7 @@ export const retentionTables: readonly string[] = [
   "state_retention",
   "state_namespace_watermarks",
   "state_usage",
+  "state_allocation_keys",
 ];
 export const stateColumns: Record<string, readonly string[]> = {
   state_records: ["namespace", "key", "revision", "body"],
@@ -165,6 +166,10 @@ export const stateMigrations: readonly Migration[] = [
       "INSERT INTO state_retention SELECT 1, COALESCE(MAX(sequence),0), 1 FROM state_events",
       "CREATE TABLE state_namespace_watermarks (namespace TEXT PRIMARY KEY NOT NULL, sequence INTEGER NOT NULL CHECK(sequence>=0))",
       "INSERT INTO state_namespace_watermarks SELECT namespace, MAX(sequence) FROM state_events GROUP BY namespace",
+      "CREATE TABLE state_allocation_keys (namespace TEXT NOT NULL, key TEXT NOT NULL, PRIMARY KEY(namespace,key))",
+      "INSERT OR IGNORE INTO state_allocation_keys SELECT namespace,key FROM state_records",
+      "INSERT OR IGNORE INTO state_allocation_keys SELECT namespace,key FROM state_events WHERE json_extract(body,'$.type') IN (namespace||':record.updated@1',namespace||':record.deleted@1')",
+      "CREATE TRIGGER retention_allocation AFTER INSERT ON state_events WHEN json_extract(NEW.body,'$.type') IN (NEW.namespace||':record.updated@1',NEW.namespace||':record.deleted@1') BEGIN INSERT OR IGNORE INTO state_allocation_keys VALUES (NEW.namespace,NEW.key); END",
       "CREATE TABLE state_usage (table_name TEXT PRIMARY KEY NOT NULL, rows INTEGER NOT NULL CHECK(rows>=0), bytes INTEGER NOT NULL CHECK(bytes>=0))",
       ...requestAgeStatements("state_requests"),
       ...usageStatements(stateColumns),
