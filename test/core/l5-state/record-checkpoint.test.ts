@@ -45,49 +45,60 @@ test("record checkpoint plus tail equals full replay, including restore", async 
   }
 });
 
-test.each(["allocator", "deleted", "reservation", "deletion floor"])(
-  "checkpoint initialize and restore: %s",
-  async (kind) => {
-    const s = await fixture(),
-      target = await fixture();
-    try {
-      prefix(s);
-      target.owner.initialize();
-      capture(s);
-      // Fault injection models the future compacted prefix, without adding compaction to production.
-      s.db.run("DELETE FROM state_events");
-      const watermark = high(s);
-      if (kind === "reservation" || kind === "deletion floor") {
+test.each([
+  "allocator",
+  "deleted",
+  "reservation",
+  "deletion floor",
+  "ghost floor",
+])("checkpoint initialize and restore: %s", async (kind) => {
+  const s = await fixture(),
+    target = await fixture();
+  try {
+    prefix(s);
+    target.owner.initialize();
+    capture(s);
+    // Fault injection models the future compacted prefix, without adding compaction to production.
+    s.db.run("DELETE FROM state_events");
+    const watermark = high(s);
+    if (["reservation", "deletion floor", "ghost floor"].includes(kind)) {
+      if (kind === "ghost floor")
+        s.db.run("INSERT INTO state_checkpoint_floors VALUES (?,?,?,?)", [
+          ns,
+          "ghost:",
+          1,
+          99,
+        ]);
+      else
         s.db.run(
           kind === "reservation"
             ? "DELETE FROM state_allocation_keys WHERE key='kept'"
             : "DELETE FROM state_checkpoint_deleted WHERE key='gone'",
         );
-        expect(() => target.owner.restore(s.owner.export())).toThrow(
-          /retention|repair/i,
-        );
-        expect(() => s.owner.initialize()).toThrow(/retention|repair/i);
-        expect(target.owner.export().records).toEqual([]);
+      expect(() => target.owner.restore(s.owner.export())).toThrow(
+        /retention|repair/i,
+      );
+      expect(() => s.owner.initialize()).toThrow(/retention|repair/i);
+      expect(target.owner.export().records).toEqual([]);
+    } else {
+      s.owner.initialize();
+      target.owner.restore(s.owner.export());
+      expect(target.owner.get(ns, "gone")).toBeUndefined();
+      if (kind === "allocator") {
+        expect(
+          target.owner.putNext(ns, "item:", () => ({ value: {} }), actor).key,
+        ).toBe("item:2");
+        expect(high(target)).toBe(watermark + 2);
       } else {
-        s.owner.initialize();
-        target.owner.restore(s.owner.export());
-        expect(target.owner.get(ns, "gone")).toBeUndefined();
-        if (kind === "allocator") {
-          expect(
-            target.owner.putNext(ns, "item:", () => ({ value: {} }), actor).key,
-          ).toBe("item:2");
-          expect(high(target)).toBe(watermark + 2);
-        } else {
-          expect(put(target, "gone").revision).toBe(3);
-          expect(high(target)).toBe(watermark + 1);
-        }
+        expect(put(target, "gone").revision).toBe(3);
+        expect(high(target)).toBe(watermark + 1);
       }
-    } finally {
-      await s.close();
-      await target.close();
     }
-  },
-);
+  } finally {
+    await s.close();
+    await target.close();
+  }
+});
 
 test("checkpoint beyond 5,000 JSON values is decoded row by row", async () => {
   const s = await fixture();

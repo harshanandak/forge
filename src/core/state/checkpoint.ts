@@ -409,7 +409,7 @@ export function readReplayStart(
         "SELECT 1 FROM state_checkpoint_reservations c WHERE NOT EXISTS (SELECT 1 FROM state_allocation_keys a WHERE a.namespace=c.namespace AND a.key=c.prefix||c.number) LIMIT 1",
       ) ||
       db.get(
-        "SELECT 1 FROM state_checkpoint_floors c JOIN state_records r ON r.namespace=c.namespace AND r.key='allocation:'||c.prefix WHERE json_extract(r.body,'$.value.number')<c.highest LIMIT 1",
+        "SELECT 1 FROM state_checkpoint_floors c LEFT JOIN state_records r ON r.namespace=c.namespace AND r.key='allocation:'||c.prefix WHERE NOT EXISTS (SELECT 1 FROM state_allocation_keys a WHERE a.namespace=c.namespace AND a.key='allocation:'||c.prefix) OR json_extract(r.body,'$.value.number')<c.highest LIMIT 1",
       ))
   )
     invalid("Checkpoint allocator authority requires repair");
