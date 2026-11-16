@@ -114,6 +114,7 @@ test("an existing store gains the index when it is next opened for writing", asy
       "004_state_checkpoint",
       "005_state_events_namespace_index",
       "006_state_retention",
+      "007_record_checkpoint",
     ]);
     // Opening again changes nothing, and history still reads.
     owner.initialize();
