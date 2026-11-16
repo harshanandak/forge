@@ -84,7 +84,7 @@
     },
     "report": {
       "default": "auto",
-      "enum": ["auto", "json", "exit-code"]
+      "enum": ["auto", "json", "status-json", "exit-code"]
     },
     "stopOnFailure": {
       "default": true,
@@ -130,7 +130,7 @@
                 }
               },
               "report": {
-                "enum": ["auto", "json", "exit-code"]
+                "enum": ["auto", "json", "status-json", "exit-code"]
               }
             }
           }

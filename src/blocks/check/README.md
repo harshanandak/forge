@@ -1,5 +1,20 @@
 # Declared-command execution
 
+The optional `forge-workflow/lint/no-comments` export is a Bun lint plugin named `forge`.
+Register it in `bunfig.toml` under `[lint] plugins = ["forge-workflow/lint/no-comments"]`
+and enable `[lint.rules] "forge/no-comments" = "error"`. It needs the exact canary revision in `tools/bun-lint-version.json`,
+with no parser package. The Node `forge-workflow/checks/no-comments` export supplies
+`main()`: declare `["node", "--input-type=module", "--eval", "import {main} from 'forge-workflow/checks/no-comments'; main()"]`
+as `no-comments` with `report: status-json`, then run `forge check run --input '{"checks":["no-comments"]}'` before push and in CI.
+`main(["--base", "origin/main", "--root", "src", "--root", "test", "--bun", "/path/to/canary/bun"])`
+chooses the base, roots and lint runtime; defaults are `origin/main`, every tracked code file,
+and `FORGE_LINT_BUN` or `bun`. Forward that variable in the check's configured environment.
+The enforcing run ignores inline config and checks committed source against added merge-base lines.
+Edited/moved comments fail; untouched comments and pure same-scope renames pass. Only
+`@ts-expect-error`, shebangs and triple-slash references pass. Missing lint/history/Git,
+dirty checked source, skipped files and parsing failures are INCOMPLETE (exit 2), findings
+FAIL (exit 1), and a complete clean comparison PASS (exit 0).
+
 `forge pr merge <n>` runs the private gate, then `gh pr merge <n> --squash --match-head-commit <head>` pinned to its head.
 Its 121.5-second budget gives the gate 65 seconds (standalone: 60), reserving 56.5 for merge, readback, process cleanup and finalization.
 Gate timeouts report `INVOCATION_TIMEOUT`. Only readback showing MERGED at the pin with a valid merge commit proves success, even after a write timeout.
@@ -153,7 +168,9 @@ Every other key has a `default` in `schemas/config.json`, and `forge config expl
 shows which value is in effect and where it came from. The keys: `commands`, `timeoutMs`, `maxOutputBytes`,
 `outputHeadBytes`, `outputTailBytes`, `maxMetadataBytes`, `maxReceiptBytes`,
 `report`, `stopOnFailure`, `inputs`, `maxInputBytes`, and `environment`. A command can
-select its own `report`; otherwise it uses the declared block report. `exit-code` disables
+select its own `report`; otherwise it uses the declared block report.
+`status-json` reads a JSON `status` of PASS, FAIL or INCOMPLETE; invalid output is incomplete,
+and a PASS report cannot override a nonzero exit. `exit-code` disables
 report interpretation, `json` requires a structured report, and `auto` delegates recognition
 to the replaceable output adapter. No particular command, parser mode or stop policy is
 selected by the engine. For the built-in `check.run`, assembly uses the existing instance

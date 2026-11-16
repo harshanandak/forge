@@ -1,0 +1,10 @@
+diff --git a/tools/lint/no-comments.ts b/tools/lint/no-comments.ts
+--- a/tools/lint/no-comments.ts
++++ b/tools/lint/no-comments.ts
+@@ -107,5 +107,5 @@ const plugin: {
+                 const endLine =
+                   line + text.slice(start, end).split("\n").length - 1;
+-                if (!directive(comment)) {
++                if (!directive(comment) && comment.type === "never") {
+                   const kind =
+                     comment.type === "Line"

@@ -2,7 +2,11 @@
 exact = true
 
 [lint]
+plugins = ["./tools/lint/no-comments.ts"]
 typeAware = true
+
+[lint.rules]
+"forge/no-comments" = "error"
 
 [test]
 preload = ["./tools/gen/preload.ts"]

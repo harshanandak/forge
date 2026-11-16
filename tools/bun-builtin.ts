@@ -4,6 +4,17 @@
 // script of the same name and loops forever. Detection reads `bun --help`, which never resolves a
 // package script, so the detector cannot recurse.
 import { spawnSync } from "node:child_process";
+import lintVersion from "./bun-lint-version.json" with { type: "json" };
+
+export function requireLintRuntime(executable: string): void {
+  const result = spawnSync(executable, ["--revision"], {
+    encoding: "utf8",
+    timeout: 15_000,
+    windowsHide: true,
+  });
+  if (result.status !== 0 || result.stdout.trim() !== lintVersion.revision)
+    throw new Error(`INCOMPLETE: Bun lint requires ${lintVersion.revision}`);
+}
 
 const BUILTINS = {
   lint: "linter",
@@ -63,4 +74,12 @@ export function main(
   return runner.run(name, args);
 }
 
-if (import.meta.main) process.exit(main(process.argv.slice(2)));
+if (import.meta.main) {
+  try {
+    if (process.argv[2] === "lint") requireLintRuntime(process.execPath);
+    process.exit(main(process.argv.slice(2)));
+  } catch (error) {
+    console.error(String(error));
+    process.exit(2);
+  }
+}

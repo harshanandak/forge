@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { createSqliteStore } from "../../../src/adapters/store-sqlite/index.ts";
 import { StateOwner } from "../../../src/core/state/index.ts";
 import type { SqlDatabase } from "../../../src/ports/store.ts";
+import { ForgeFailure } from "../../../src/contract/failure.ts";
 
 setDefaultTimeout(30_000);
 const actor = { kind: "agent", id: "families" } as const;
@@ -56,6 +57,55 @@ const snapshot = (db: SqlDatabase) =>
     (_key, value: unknown) =>
       typeof value === "bigint" ? { bigint: value.toString() } : value,
   );
+
+test.each([
+  ["future:one", "old", "STATE_FAMILY_UNDECLARED"],
+  ["note:one", false, "NOTE_VALUE"],
+] as const)(
+  "restore refuses inadmissible record %s without replacing the target",
+  async (key, value, reason) => {
+    const source = await open(),
+      target = await open();
+    try {
+      source.owner.put(ns, "note:valid", "valid", actor, { expectRevision: 0 });
+      source.owner.put(ns, key, value, actor, { expectRevision: 0 });
+      const image = source.owner.export(),
+        before = snapshot(target.db);
+      throws(
+        () => enrolled(target.db).restore(image, undefined, 1),
+        (error: unknown) =>
+          error instanceof ForgeFailure &&
+          error.error.code === "INPUT_INVALID" &&
+          error.error.message === reason,
+      );
+      eq(snapshot(target.db), before);
+      eq(target.owner.get(ns, key), undefined);
+    } finally {
+      await source.close();
+      await target.close();
+    }
+  },
+);
+
+test("restore retains the rollback path for a declared checkpointed snapshot", async () => {
+  const source = await open(),
+    target = await open();
+  try {
+    source.owner.put(ns, "note:one", "valid", actor, { expectRevision: 0 });
+    source.owner.put("example/beta", "job:1", 1, actor, { expectRevision: 0 });
+    source.owner.checkpoint(1);
+    const image = source.owner.export(),
+      owner = enrolled(target.db);
+    owner.restore(image, undefined, 1);
+    eq(owner.list(ns), source.owner.list(ns));
+    eq(owner.list("example/beta"), source.owner.list("example/beta"));
+    eq(owner.events(ns), source.owner.events(ns));
+    eq(owner.events("example/beta"), source.owner.events("example/beta"));
+  } finally {
+    await source.close();
+    await target.close();
+  }
+});
 
 test.each([
   [ns, "note:one", "text"],
@@ -270,6 +320,32 @@ test("matching requires the entire key and refuses overlapping families", async 
     await f.close();
   }
 });
+
+test.each([false, true])(
+  "whole-key alternation backtracks before checking overlap=%s",
+  async (overlap) => {
+    const f = await open();
+    try {
+      const declarations = policies();
+      declarations[0]!.families.note!.key = /note:a|note:ab/;
+      if (overlap) declarations[0]!.families.entry!.key = /^note:ab$/;
+      const owner = enrolled(f.db),
+        before = snapshot(f.db);
+      const declared = enrolled(f.db, declarations);
+      const write = () =>
+        declared.put(ns, "note:ab", "valid", actor, { expectRevision: 0 });
+      if (overlap) {
+        throws(write, /STATE_FAMILY_AMBIGUOUS/);
+        eq(snapshot(f.db), before);
+      } else {
+        eq(write().value, "valid");
+        eq(owner.get(ns, "note:ab")?.value, "valid");
+      }
+    } finally {
+      await f.close();
+    }
+  },
+);
 
 test.each(["g", "y"])(
   "stateful key flag %s is refused at enrollment",
