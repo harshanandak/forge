@@ -107,6 +107,7 @@ export function scanWriters(
       : node.argumentExpression && ts.isStringLiteral(node.argumentExpression)
         ? node.argumentExpression.text
         : undefined;
+    if (method && !writers.includes(method)) return;
     const receiverType = checker.getTypeAtLocation(node.expression);
     const opaque = !!(!receiverType || receiverType.flags & opaqueFlags);
     const state = ["put", "putNext", "putMany"].some((name) =>

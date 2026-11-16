@@ -31,6 +31,9 @@ export const ordinaryKey = (ns: string, key: string): boolean =>
 
 const localKeys: Record<string, RegExp> = {
   autopilot: /^autopilot:(?:global|work-[0-9]+)$/,
+  "autopilot-ask": /^autopilot-ask:work-[0-9]+$/,
+  "autopilot-clock": /^autopilot-clock:work-[0-9]+$/,
+  "autopilot-event": /^autopilot-event:work-[0-9]+:[1-9][0-9]*$/,
   "autopilot-merge": /^autopilot-merge:work-[0-9]+$/,
   participant: /^participant:work-[0-9]+:[1-9][0-9]*$/,
   note: /^note:attempt:work-[0-9]+:attempt-[1-9][0-9]*:[1-9][0-9]*$/,
