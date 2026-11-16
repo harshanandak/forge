@@ -106,6 +106,15 @@ test("packed Node check journeys and sharded remove-the-fix proofs", () => {
       "timeout",
       "receipt",
     ]);
+    if (process.env.FORGE_RELEASE_ACCEPTANCE === "1") {
+      expect(report.ecosystem.skipped).toEqual([]);
+      expect(report.ecosystem.passed).toEqual([
+        "npm+vitest",
+        "pnpm+jest",
+        "python+pytest",
+        "make",
+      ]);
+    }
     for (const reason of report.ecosystem.skipped)
       console.log(`SKIP ${reason}`);
     console.log(

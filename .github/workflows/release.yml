@@ -102,6 +102,15 @@ jobs:
           }
       - run: npm install --global npm@11.21.0
       - run: bun install --frozen-lockfile
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with: { python-version: "3.12" }
+      - name: Install required release fixture tools
+        run: |
+          npm install --prefix "$RUNNER_TEMP/fixture-tools" --ignore-scripts --no-audit --no-fund vitest@4.0.18 jest@30.2.0 pnpm@10.28.2
+          python -m pip install --target "$RUNNER_TEMP/fixture-python" pytest==9.0.2
+          echo "$RUNNER_TEMP/fixture-tools/node_modules/.bin" >> "$GITHUB_PATH"
+          if [[ "$RUNNER_OS" == Windows ]]; then choco install make --version=4.4.1 --yes --no-progress; fi
+          make --version
       - name: Bounded registry readback of integrity, next and provenance
         run: |
           node --input-type=module <<'JS'
@@ -128,6 +137,8 @@ jobs:
           npm_config_cache: ${{ runner.temp }}/release-npm-cache
           BUN_INSTALL_CACHE_DIR: ${{ runner.temp }}/release-bun-cache
           FORGE_DEVICE_ROOT: ${{ runner.temp }}/release-forge
+          CHECK_ECOSYSTEM_TOOLS: ${{ runner.temp }}/fixture-tools
+          CHECK_PYTHON_PACKAGES: ${{ runner.temp }}/fixture-python
         run: |
           mkdir -p "$RUNNER_TEMP/npm-smoke" "$RUNNER_TEMP/bun-smoke"
           cd "$RUNNER_TEMP/npm-smoke"
@@ -144,12 +155,7 @@ jobs:
           bun run forge --version
           bun run forge help
           cd "$GITHUB_WORKSPACE"
-          node --input-type=module <<'JS'
-          import {dirname} from 'node:path';
-          import {runWithin} from './tools/pack-smoke/bounded.ts';
-          import {environmentWithoutBun, resolveBun} from './tools/pack-smoke/environment.ts';
-          await runWithin('registry installed journeys', resolveBun(), ['test', '--parallel=2', '--timeout', '30000', 'packed.integration.test'], {cwd: process.cwd(), env: {...environmentWithoutBun(process.execPath), FORGE_PACKED_CONSUMER: `${process.env.RUNNER_TEMP}/npm-smoke`, FORGE_PACKED_TARBALL: process.env.TARBALL, FORGE_AUTHOR_NPM_ROOT: dirname(process.execPath)}}, 480000);
-          JS
+          node tools/release/journeys.mjs "$GITHUB_WORKSPACE" "$RUNNER_TEMP/npm-smoke" "$TARBALL"
   promote:
     needs: [verify, readback]
     environment: release

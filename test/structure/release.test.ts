@@ -85,6 +85,8 @@ test("cold installs use runner-scoped caches and an isolated Forge store in step
     npm_config_cache: "${{ runner.temp }}/release-npm-cache",
     BUN_INSTALL_CACHE_DIR: "${{ runner.temp }}/release-bun-cache",
     FORGE_DEVICE_ROOT: "${{ runner.temp }}/release-forge",
+    CHECK_ECOSYSTEM_TOOLS: "${{ runner.temp }}/fixture-tools",
+    CHECK_PYTHON_PACKAGES: "${{ runner.temp }}/fixture-python",
   });
 }, 1000);
 
@@ -109,9 +111,19 @@ test("promotion requires the installed registry journey and exact identity/prove
   expect(runs).toContain("tools/release/readback.mjs");
   const proof = new URL("../../tools/release/readback.mjs", import.meta.url);
   expect(readFileSync(proof, "utf8")).toContain('"--version", "--json"');
-  expect(runs).toContain("packed.integration.test");
-  expect(runs).toContain("environmentWithoutBun");
-  expect(runs).toContain("FORGE_PACKED_CONSUMER");
+  const runner = readFileSync(
+    new URL("../../tools/release/journeys.mjs", import.meta.url),
+    "utf8",
+  );
+  expect(runs).toContain("tools/release/journeys.mjs");
+  for (const required of [
+    "packed.integration.test",
+    "environmentWithoutBun",
+    "FORGE_PACKED_CONSUMER",
+    "FORGE_RELEASE_ACCEPTANCE",
+    "--reporter=junit",
+  ])
+    expect(runner).toContain(required);
   expect(workflow().jobs.promote?.needs).toContain("readback");
 }, 1000);
 
