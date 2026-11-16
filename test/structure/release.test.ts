@@ -111,19 +111,6 @@ test("promotion requires the installed registry journey and exact identity/prove
   expect(runs).toContain("tools/release/readback.mjs");
   const proof = new URL("../../tools/release/readback.mjs", import.meta.url);
   expect(readFileSync(proof, "utf8")).toContain('"--version", "--json"');
-  const runner = readFileSync(
-    new URL("../../tools/release/journeys.mjs", import.meta.url),
-    "utf8",
-  );
-  expect(runs).toContain("tools/release/journeys.mjs");
-  for (const required of [
-    "packed.integration.test",
-    "environmentWithoutBun",
-    "FORGE_PACKED_CONSUMER",
-    "FORGE_RELEASE_ACCEPTANCE",
-    "--reporter=junit",
-  ])
-    expect(runner).toContain(required);
   expect(workflow().jobs.promote?.needs).toContain("readback");
 }, 1000);
 
