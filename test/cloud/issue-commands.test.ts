@@ -10,7 +10,7 @@ import {
   DUMP_USAGE_SQL,
   limitsFrom,
 } from "../../cloud/src/dump.ts";
-import { Project } from "../../cloud/src/project.ts";
+import { Project, domain } from "../../cloud/src/project.ts";
 import {
   readOnlyStore,
   durableStore,
@@ -70,7 +70,7 @@ import type {
 import { restoredTables, stoppedTables } from "./restore-expect.fixture.ts";
 import { releasedTables } from "../../cloud/conformance/restored.ts";
 import { refuse } from "../../src/core/trust/index.ts";
-import { stateMigrations } from "../../src/core/state/migrations.ts";
+import { migrate, stateMigrations } from "../../src/core/state/migrations.ts";
 import type { SqlDatabase, SqlRow, SqlValue } from "../../src/ports/store.ts";
 import { exitCode } from "../../src/surface/result.ts";
 import {
@@ -326,8 +326,21 @@ function fixture(
     calls,
     // The work tables, from the state owner's own migrations, and rows the way the owner stores them.
     tables: () => {
-      for (const { statements } of stateMigrations)
-        for (const sql of statements) db.run(sql);
+      const applied = new Set(
+        db
+          .query("SELECT name FROM sqlite_master WHERE name='state_migrations'")
+          .get()
+          ? (
+              db.query("SELECT id FROM state_migrations").all() as {
+                id: string;
+              }[]
+            ).map((row) => row.id)
+          : [],
+      );
+      migrate(durableStore(storage), [
+        ...stateMigrations,
+        ...domain.migrations.filter((m) => applied.has(m.id)),
+      ]);
     },
     put: (
       value: unknown,

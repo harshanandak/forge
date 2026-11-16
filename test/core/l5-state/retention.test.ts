@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { actor, ns, fixture, usage } from "./retention.fixture.ts";
+import { StateOwner } from "../../../src/core/state/index.ts";
 import {
   migrate,
   stateMigrations,
@@ -73,16 +74,29 @@ test.each(["fresh", "upgrade", "prefix", "all", "rollback", "drift"])(
         ).toBe(3);
       } else if (kind === "rollback") {
         const before = db.all("SELECT * FROM state_usage ORDER BY table_name");
+        const failingOwner = new StateOwner(
+          {
+            ...db,
+            run(sql, params) {
+              const result = db.run(sql, params);
+              if (sql.startsWith("INSERT INTO state_events"))
+                throw new Error("rollback");
+              return result;
+            },
+          },
+          { now: () => 1000 },
+        );
         expect(() =>
-          db.transaction(() => {
-            owner.put(ns, "rolled", 2, actor, { expectRevision: 0 });
-            throw new Error("rollback");
-          }),
+          failingOwner.put(ns, "rolled", 2, actor, { expectRevision: 0 }),
         ).toThrow("rollback");
         expect(db.all("SELECT * FROM state_usage ORDER BY table_name")).toEqual(
           before,
         );
         expect(owner.namespaceRevision(ns)).toBe(1);
+        expect(owner.get(ns, "rolled")).toBeUndefined();
+        expect(
+          db.get("SELECT 1 FROM state_events WHERE key='rolled'"),
+        ).toBeUndefined();
       } else if (kind === "drift") {
         db.run(
           "UPDATE state_usage SET rows=rows+1 WHERE table_name='state_records'",

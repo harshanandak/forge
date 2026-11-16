@@ -1363,17 +1363,12 @@ export class StateOwner {
   }
   #event(event: StateEvent): void {
     if (!validateStateEvent(event).ok) invalid("Invalid state event");
-    const sequence =
-      Number(
-        this.#db.get("SELECT sequence FROM state_retention WHERE id=1")
-          ?.sequence,
-      ) + 1;
-    if (!Number.isSafeInteger(sequence) || sequence < 1)
-      invalid("State retention sequence requires repair");
-    this.#db.run(
-      "INSERT INTO state_events(namespace,key,body,sequence) VALUES (?,?,?,?)",
-      [event.namespace, event.key, json(event), sequence],
+    const written = this.#db.run(
+      "INSERT INTO state_events(namespace,key,body,sequence) SELECT ?,?,?,sequence+1 FROM state_retention WHERE id=1 AND sequence>=0 AND sequence<9007199254740991",
+      [event.namespace, event.key, json(event)],
     );
+    if (written.changes !== 1)
+      invalid("State retention sequence requires repair");
   }
   #held(namespace: string, fence: Fence, now: number): LeaseRecord {
     const current = this.lease(namespace, fence.subject);
