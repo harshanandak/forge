@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { packInput } from "../../../tools/pack-smoke/input.ts";
 
 test("release proof rejects repacked bytes with preserved identity and a recalculated sidecar", () => {
@@ -39,6 +39,34 @@ test("release proof rejects repacked bytes with preserved identity and a recalcu
     writeFileSync(join(dist, "forge.js"), "reviewed code");
     const trusted = repack();
     expect(packInput(archive, trusted, "1")).toBe(archive);
+    writeFileSync(
+      join(dist, "forge.js"),
+      "modified code with identical build identity",
+    );
+    expect(repack()).not.toBe(trusted);
+    expect(packInput(archive)).toBe(archive);
+    const refused = Bun.spawnSync(
+      [
+        "node",
+        resolve(import.meta.dirname, "../../../tools/pack-smoke/run.ts"),
+      ],
+      {
+        env: {
+          ...process.env,
+          FORGE_RELEASE_PROOF: "1",
+          FORGE_PACK_INPUT: archive,
+          FORGE_PACK_EXPECTED_SHA256: trusted,
+        },
+        timeout: 10_000,
+      },
+    );
+    expect(refused.exitCode).not.toBe(0);
+    expect(refused.stderr.toString()).toContain("reviewed CI artifact");
+    expect(refused.stdout.toString()).not.toContain("npm");
+    expect(() => packInput(archive, trusted, "1")).toThrow(
+      "reviewed CI artifact",
+    );
+    expect(() => packInput(archive, trusted)).toThrow("reviewed CI artifact");
     for (const pin of [undefined, "", "not-a-digest", "f".repeat(64)])
       expect(() => packInput(archive, pin, "1")).toThrow();
     for (const mode of ["", "0", "false", "invalid"])
@@ -46,16 +74,6 @@ test("release proof rejects repacked bytes with preserved identity and a recalcu
     expect(() => packInput(undefined, trusted, "1")).toThrow();
     expect(() => packInput(undefined, undefined, "1")).toThrow();
     expect(() => packInput(undefined, trusted)).toThrow();
-    writeFileSync(
-      join(dist, "forge.js"),
-      "modified code with identical build identity",
-    );
-    expect(repack()).not.toBe(trusted);
-    expect(packInput(archive)).toBe(archive);
-    expect(() => packInput(archive, trusted, "1")).toThrow(
-      "reviewed CI artifact",
-    );
-    expect(() => packInput(archive, trusted)).toThrow("reviewed CI artifact");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
