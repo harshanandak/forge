@@ -7,6 +7,8 @@ import {
   rmSync,
   readFileSync,
   existsSync,
+  symlinkSync,
+  unlinkSync,
 } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
@@ -321,6 +323,18 @@ test(
   30_000,
 );
 test(
+  "a reused rename source cannot contribute hunks to the renamed file",
+  () =>
+    repository((root, git, put) => {
+      git("mv", "src/x.ts", "src/renamed.ts");
+      put("src/x.ts", "export const y = 2;\nexport const z = 3;\n");
+      git("add", ".");
+      git("commit", "-qm", "rename and reuse source");
+      expect(checkComments({ root, base: "baseline" }).status).toBe("PASS");
+    }),
+  30_000,
+);
+test(
   "a missing base is incomplete",
   () =>
     repository((root) => {
@@ -335,6 +349,25 @@ test("a failed git read is incomplete", () => {
     "INCOMPLETE",
   );
 }, 30_000);
+test(
+  "a repository reached through a directory alias still reports its comment",
+  () =>
+    repository((root, git, put) => {
+      put("src/x.ts", "export const x = 2; // actual\n");
+      git("add", ".");
+      git("commit", "-qm", "aliased head");
+      const alias = join(root, "alias");
+      symlinkSync(root, alias, "junction");
+      try {
+        expect(
+          checkComments({ root: alias, base: "baseline" }).violations,
+        ).toEqual([{ file: "src/x.ts", line: 1, kind: "line comment" }]);
+      } finally {
+        unlinkSync(alias);
+      }
+    }),
+  30_000,
+);
 
 for (const attribute of ["", "*.ts binary\n"]) {
   test(
