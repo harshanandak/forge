@@ -1,23 +1,57 @@
 import { expect, test } from "bun:test";
 import { readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, normalize } from "node:path";
+import type { SourceFile } from "./lib/repo.ts";
 
-// Lexical guard: launch names containing spawn/exec/run/launch/command, with Git as the first
-// string/array program (or Bun's {cmd:[...]}). Includes static shell-command prefixes and native
-// extensions. No alias/data-flow analysis; variables must be resolved before launch. Only the
-// shared resolver itself is exempt. Comment-only lines are blanked to preserve file:line output.
+// Lexical guard: literal Git programs in launch calls, arrays and Bun cmd arrays. Follow named
+// function declarations and relative imports to resolver/forwarder shapes, with no caller list.
+// Computed aliases are outside this matcher. Blank comment-only lines preserve file:line.
 const LAUNCH =
-  /\b[\w$]*(?:spawn|exec|run|launch|command)[\w$]*\s*\(\s*(?:\[\s*|\{\s*cmd\s*:\s*\[\s*)?(["'`])git(?:\.(?:exe|com|cmd|bat))?(?:\1(?=\s*[,)\]])|[ \t]+[^"'`\r\n]*\1)/gi;
+  /\b(spawn(?:Sync)?|exec(?:File)?(?:Sync)?|run(?:Command)?|launch(?:er)?|command)\s*\(\s*(?:\[\s*|\{\s*cmd\s*:\s*\[\s*)?(["'`])git(?:\.(?:exe|com|cmd|bat))?(?:\2(?=\s*[,)\]])|[ \t]+[^"'`\r\n]*\2)/gi;
+const root = join(import.meta.dirname, "../..");
+const DIRECT = /\b(?:spawn(?:Sync)?|exec(?:File)?(?:Sync)?)\(\s*/.source;
+const GIT_RETURN =
+  /if\s*\([^)]*===\s*["']git["']\)\s*return\s+spawnSync\(gitExecutable\(/;
+function resolves(name: string, file: SourceFile, seen: Set<string>): boolean {
+  const key = `${file.path}:${name}`;
+  if (seen.has(key)) return false;
+  seen.add(key);
+  const definition = new RegExp(
+    `\\bfunction ${name}\\s*\\(\\s*(\\w+)[\\s\\S]*?\\n {0,2}\\}`,
+  ).exec(file.text);
+  if (!definition) {
+    const source = new RegExp(
+      `import\\s*\\{[^}]*\\b${name}\\b[^}]*\\}\\s*from\\s*["'](\\.[^"']+)`,
+    ).exec(file.text)?.[1];
+    const target = source && normalize(join(dirname(file.path), source));
+    return (
+      !!target &&
+      resolves(
+        name,
+        { path: target, text: readFileSync(join(root, target), "utf8") },
+        seen,
+      )
+    );
+  }
+  const [body, parameter] = [definition[0], definition[1]!];
+  if (GIT_RETURN.test(body)) return true;
+  if (new RegExp(`${DIRECT}${parameter}\\b`).test(body)) return false;
+  if (/\bgitExecutable\(|\.resolve\(\s*\w+\[0\]/.test(body)) return true;
+  return [
+    ...body.matchAll(new RegExp(`\\b(\\w+)\\(\\s*${parameter}\\s*,`, "g")),
+  ].some((call) => resolves(call[1]!, file, seen));
+}
 function violations(file: string, text: string): string[] {
   if (file === "src/adapters/process/resolve.ts") return [];
-  const code = text
-    .split("\n")
-    .map((line) => (/^\s*(?:\/\/|\/\*|\*)/.test(line) ? "" : line))
-    .join("\n");
-  return [...code.matchAll(LAUNCH)].map(
-    (match) =>
-      `${file}:${code.slice(0, match.index).split("\n").length}: resolve Git before launch`,
-  );
+  const code = text.replace(/^[ \t]*(?:\/\/|\/\*|\*)[^\n]*/gm, "");
+  return [...code.matchAll(LAUNCH)]
+    .filter(
+      (match) => !resolves(match[1]!, { path: file, text: code }, new Set()),
+    )
+    .map(
+      (match) =>
+        `${file}:${code.slice(0, match.index).split("\n").length}: resolve Git before launch`,
+    );
 }
 function scan(directory: string, relative: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -31,7 +65,6 @@ function scan(directory: string, relative: string): string[] {
   });
 }
 test("Git launch programs in src, tools and templates use the shared resolver", () => {
-  const root = join(import.meta.dirname, "../..");
   expect(
     ["src", "tools", "templates"].flatMap((dir) => scan(join(root, dir), dir)),
   ).toEqual([]);
@@ -47,7 +80,7 @@ test("Git launch guard catches direct APIs and program-taking helpers with file:
     'execSync("git status")',
     'Bun.spawn(["git", "status"])',
     'Bun.spawnSync({cmd:["git", "status"]})',
-    'run("git", [])',
+    'run("git", []); function run(program) {\n const unused = gitExecutable(); return spawnSync(program, []);\n}',
     'launcher("git.exe", [])',
     'command("git", [])',
     'runner.launch("git.cmd", [])',
@@ -61,7 +94,7 @@ test("Git launch guard catches direct APIs and program-taking helpers with file:
   expect(
     violations(
       "tools/a.ts",
-      'run(gitExecutable(), []); resolveExecutable("git", env, platform, probe)',
+      'import {runCommand} from "./run-command.ts"; run(gitExecutable(), []); resolveExecutable("git", env, platform, probe); command("git", []); function command(program) {\n return runCommand(program, [], {});\n}',
     ),
   ).toEqual([]);
   expect(violations("tools/a.ts", '// run("git", [])')).toEqual([]);

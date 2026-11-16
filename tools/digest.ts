@@ -2,7 +2,6 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { runCommand } from "./run-command.ts";
-import { gitExecutable as gitPath } from "./git-executable.ts";
 
 type Pull = {
   number: number;
@@ -73,7 +72,7 @@ try {
   invalidThreshold =
     !flags["stall-hours"]?.trim() || !Number.isFinite(hours) || hours < 0;
   if (invalidThreshold) throw new Error("Invalid threshold");
-  const common = resolve(command(gitPath(), ["rev-parse", "--git-common-dir"]));
+  const common = resolve(command("git", ["rev-parse", "--git-common-dir"]));
   const marker = join(common, "forge-digest.json");
   const saved =
     !flags.since && existsSync(marker) ? readFileSync(marker, "utf8") : "{}";

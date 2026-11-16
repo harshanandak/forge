@@ -50,7 +50,6 @@ import {
 import { laneTier } from "./lane-tier.ts";
 import { lockLaneRegistry } from "./lane-registry.ts";
 import { runCommand } from "./run-command.ts";
-import { gitExecutable as git } from "./git-executable.ts";
 
 type Lane = { issue: string; worktree: string; branch: string; brief: string };
 type Options = { issue: string; branch: string; brief: string; max: number };
@@ -226,7 +225,7 @@ function options(argv: string[]): Options | "list" | "run" | "auto" | "tier" {
   )
     throw new Error("branch, brief, and a positive integer max are required");
   try {
-    run(git(), ["check-ref-format", "--branch", branch]);
+    run("git", ["check-ref-format", "--branch", branch]);
   } catch {
     throw new Error("invalid branch name");
   }
@@ -256,7 +255,7 @@ function active(file: string, root: string): Lane[] {
     return process.platform === "win32" ? native.toLowerCase() : native;
   };
   const registered = new Set(
-    run(git(), ["worktree", "list", "--porcelain", "-z"], root)
+    run("git", ["worktree", "list", "--porcelain", "-z"], root)
       .split("\0")
       .filter((part) => part.startsWith("worktree "))
       .map((part) => pathKey(part.slice(9))),
@@ -555,7 +554,7 @@ async function laneAuto(
         retry = pending?.verdict === "interrupted";
       const records = runs.filter((record) => record.verdict !== "interrupted");
       const last = records.at(-1),
-        head = run(git(), ["rev-parse", "HEAD"], lane.worktree);
+        head = run("git", ["rev-parse", "HEAD"], lane.worktree);
       if (last && !retry && last.verdict !== "completed") {
         step = last.role;
         return blocked(
@@ -574,7 +573,7 @@ async function laneAuto(
         reviewer?.role === "reviewer" &&
         stepVerdict(reviewer) === "ACT";
       const changed = run(
-        git(),
+        "git",
         ["rev-list", "--count", "origin/main..HEAD"],
         lane.worktree,
       );
@@ -621,7 +620,7 @@ async function laneAuto(
             "security-review",
             "run the security review, then push",
           );
-        if (run(git(), ["status", "--porcelain"], lane.worktree))
+        if (run("git", ["status", "--porcelain"], lane.worktree))
           return blocked(
             "dirty-worktree",
             "commit or remove the worktree changes, then retry",
@@ -757,10 +756,10 @@ export async function main(): Promise<number> {
   try {
     const context = () => {
       const common = resolve(
-        run(git(), ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
+        run("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
       );
       const root = resolve(
-        run(git(), [
+        run("git", [
           "--git-dir",
           common,
           "worktree",
@@ -796,7 +795,7 @@ export async function main(): Promise<number> {
       const execute = parsed === "auto" ? laneAuto : laneRun;
       return await execute(process.argv.slice(3), {
         common,
-        configRoot: resolve(run(git(), ["rev-parse", "--show-toplevel"])),
+        configRoot: resolve(run("git", ["rev-parse", "--show-toplevel"])),
         lanes: active(registry, root),
         issue: (id) =>
           run("forge", ["issue", "show", "--input", JSON.stringify({ id })]),
@@ -901,7 +900,7 @@ export async function main(): Promise<number> {
         Atomics.wait(pause, 0, 0, 50);
       }
     }
-    run(git(), ["fetch", "origin", "main"], root);
+    run("git", ["fetch", "origin", "main"], root);
     unlockRegistry = lockLaneRegistry(root, common);
     const lanes = active(registry, root);
     if (lanes.length >= parsed.max)
@@ -912,7 +911,7 @@ export async function main(): Promise<number> {
       );
     mkdirSync(join(root, ".worktrees"), { recursive: true });
     run(
-      git(),
+      "git",
       ["worktree", "add", "-b", parsed.branch, worktree, "origin/main"],
       root,
     );
@@ -930,8 +929,8 @@ export async function main(): Promise<number> {
       renameSync(temp, registry);
     } catch (error) {
       rmSync(temp, { force: true });
-      run(git(), ["worktree", "remove", worktree], root);
-      run(git(), ["branch", "-d", parsed.branch], root);
+      run("git", ["worktree", "remove", worktree], root);
+      run("git", ["branch", "-d", parsed.branch], root);
       throw error;
     }
     console.log(

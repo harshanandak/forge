@@ -151,12 +151,9 @@ test("empty, NUL and wildcard names are refused", () => {
   ).toBe("unavailable");
 }, 30_000);
 
-test.each([
-  "entry link",
-  "executable link",
-  "unreadable ancestor",
-  "marker file",
-])(
+test.each(
+  "entry link|executable link|unreadable ancestor|marker file".split("|"),
+)(
   "git admission fails closed for %s and still considers the next entry",
   (row) => {
     const probe: FileProbe = {
@@ -206,16 +203,11 @@ test("Windows Git ignores drive-relative, root-relative and batch-only entries",
   ).toEqual({ kind: "resolved", path: "C:\\safe\\git.exe" });
 }, 30_000);
 
-test.each([
-  "device",
-  "home git",
-  "config",
-  "identity",
-  "nested repo",
-  "canonical error",
-  "config error",
-  "identity error",
-])(
+test.each(
+  "device|home git|config|identity|nested repo|canonical error|config error|identity error".split(
+    "|",
+  ),
+)(
   "canonical-home admission: %s",
   (row) => {
     const directory =

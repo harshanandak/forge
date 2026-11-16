@@ -23,6 +23,10 @@ const windows = process.platform === "win32";
 const node = Bun.which("node")!;
 const git = gitExecutable();
 const fixture = join(import.meta.dirname, "git-location.fixture.ts");
+const hookFile = join(
+  import.meta.dirname,
+  "../../../templates/delivery/skills/forge-build/done-claim.mjs",
+);
 const rows: readonly (readonly [string, string, string, boolean])[] = [
   ["project bin", "bin", ".git", false],
   ["node_modules bin", "node_modules/.bin", ".git", false],
@@ -129,14 +133,7 @@ test.each(rows)(
       );
       const run = spawnSync(
         node,
-        hook
-          ? [
-              join(
-                import.meta.dirname,
-                "../../../templates/delivery/skills/forge-build/done-claim.mjs",
-              ),
-            ]
-          : [fixture, cwd, marker, path, name],
+        hook ? [hookFile] : [fixture, cwd, marker, path, name],
         {
           cwd,
           encoding: "utf8",
@@ -165,12 +162,7 @@ test.each(rows)(
       const result = JSON.parse(
         readFileSync(join(cwd, "result.json"), "utf8"),
       ) as {
-        found: {
-          kind: string;
-          path?: string;
-          reason?: string;
-          remedy?: string;
-        };
+        found: Record<string, string>;
         cached: unknown;
         version: string;
         marker: boolean;
