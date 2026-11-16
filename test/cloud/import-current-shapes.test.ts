@@ -159,6 +159,11 @@ malformed.push(
   ["slots:work-1", { count: 17, next: 1 }],
   ["slots:work-1", { count: 1, next: -1 }],
   ["selection:work-1", { ...workShapes[5][1], chosen: [] }],
+  ["reopen:work-1:1", { ...workShapes[1][1], closeReason: "x".repeat(2001) }],
+  [
+    "reopen:work-1:1",
+    { ...workShapes[1][1], withoutReceipt: "x".repeat(2001) },
+  ],
   [
     "attempt:work-1:attempt-1",
     {
@@ -257,3 +262,36 @@ test("metadata keys preserve the writer's historical leading zeroes", () => {
   for (const [key] of workShapes)
     eq(impl.ordinaryKey(f.ns, key.replace("work-1", "work-007")), true);
 });
+
+test.each(["", " \t\n", "closed"])(
+  "writer-permitted closeReason survives: %j",
+  (closeReason) => {
+    for (const historical of [false, true]) {
+      const value = { ...workShapes[1][1], closeReason };
+      const source = f.source(6, false, false, (_db, state) => {
+        state.put(f.ns, "reopen:work-1:1", value, f.actor, {
+          expectRevision: 0,
+        });
+        if (historical)
+          state.delete(f.ns, "reopen:work-1:1", f.actor, { expectRevision: 1 });
+      });
+      const scratch = f.database(),
+        owner = f.owner(scratch);
+      owner.initialize();
+      const before = f.snapshot(source.db);
+      const projected = impl.currentState(
+        source.db,
+        scratch,
+        source.manifest,
+        limitsFrom({}),
+      );
+      eq(projected.records, source.manifest.records);
+      eq(
+        owner.get(f.ns, "reopen:work-1:1")?.value,
+        historical ? undefined : value,
+      );
+      eq(f.snapshot(source.db), before);
+      eq(source.bytes(), source.manifest.sha256);
+    }
+  },
+);
