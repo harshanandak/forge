@@ -38,8 +38,10 @@ if (found.kind === "resolved") {
   );
   version = (await port.run(found, ["--version"], options)).stdout;
 }
-const cached = createProcessPort().resolve("git", { PATH: cwd });
-// A second adapter must reuse the first decision, even if PATH changes.
+const cached = createProcessPort().resolve("git", {
+  PATH: found.kind === "resolved" ? cwd : path,
+});
+// Approved paths survive PATH changes; failed lookups are retried with identical input.
 writeFileSync(
   join(cwd, "result.json"),
   JSON.stringify({ found, cached, version, marker: existsSync(marker) }),
