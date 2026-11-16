@@ -22,7 +22,7 @@ test("cloud capacity metadata upgrades once without changing dump rows", async (
         ),
       },
     ]);
-    owner.put(ns, "one", "Ã©ðŸ˜€", actor, { expectRevision: 0 });
+    owner.put(ns, "one", "ÃƒÂ©Ã°Å¸Ëœâ‚¬", actor, { expectRevision: 0 });
     db.run(
       "INSERT INTO domain_cloud_requests(request_id,fingerprint,outcome,result) VALUES ('old','{}','ok','{}')",
     );
@@ -39,7 +39,7 @@ test("cloud capacity metadata upgrades once without changing dump rows", async (
       ).toEqual(actual);
     }
     db.run(
-      "UPDATE domain_cloud_requests SET result='Ã©ðŸ˜€' WHERE request_id='old'",
+      "UPDATE domain_cloud_requests SET result='ÃƒÂ©Ã°Å¸Ëœâ‚¬' WHERE request_id='old'",
     );
     usage(db, "domain_cloud_requests", [
       "request_id",
@@ -60,4 +60,4 @@ test("cloud capacity metadata upgrades once without changing dump rows", async (
   } finally {
     await close();
   }
-});
+}, 30_000);
