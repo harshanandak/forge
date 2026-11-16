@@ -6,7 +6,10 @@ import * as impl from "../../tools/import-current-state.ts";
 import * as f from "./import-current-state.fixture.ts";
 import { createStateClient } from "../../src/assembly/state-client.ts";
 import { refuse } from "../../src/core/trust/index.ts";
-import { validateAttempt } from "../../src/generated/validators.ts";
+import {
+  validateAttempt,
+  validateTrackerItem,
+} from "../../src/generated/validators.ts";
 import type { HandlerCall } from "../../src/contract/author.ts";
 import type { Attempt } from "../../src/generated/types.ts";
 
@@ -62,6 +65,20 @@ const workShapes = [
 
 test("all seven writer families survive projection and paged readback", () => {
   const source = f.source(6, false, false, (_db, state) => {
+    state.put(
+      f.ns,
+      "issue:work-1",
+      {
+        id: "work-1",
+        title: "Synthetic 1",
+        status: "open",
+        labels: [],
+        dependsOn: [],
+        createdAt: new Date(f.at).toISOString(),
+      },
+      f.actor,
+      { expectRevision: 1 },
+    );
     for (const [key, value] of workShapes)
       state.put(f.ns, key, value, f.actor, { expectRevision: 0 });
     state.acquire(
@@ -119,6 +136,7 @@ test("all seven writer families survive projection and paged readback", () => {
       },
     });
     const attempt = shown.attempts[0]!;
+    eq(validateTrackerItem(shown).ok, true);
     eq([attempt.id, attempt.live, attempt.evidence], ["attempt-1", false, 1]);
     eq([attempt.generation, attempt.expiresAt], [undefined, undefined]);
     eq(validateAttempt(attempt).ok, true);
