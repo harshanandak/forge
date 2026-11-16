@@ -28,7 +28,6 @@ test.each([
   eq(impl.ordinaryKey(f.ns, key), false);
 });
 
-// Admission must refuse malformed primary values before copying any row.
 test.each(
   ["issue:work-1", "comment:work-1:1", "link:work-1:1"].flatMap((key) =>
     [null, {}, []].map((value) => [key, value] as const),
@@ -92,9 +91,25 @@ const workShapes = [
     },
   ],
   ["slots:work-1", { count: 2, next: 1 }],
+  [
+    "issue:work-1",
+    {
+      id: "work-1",
+      title: "Valid",
+      status: "open",
+      labels: [],
+      dependsOn: [],
+      createdAt: new Date(f.at).toISOString(),
+    },
+  ],
+  ["comment:work-1:1", { id: "work-1", body: "Valid comment" }],
+  [
+    "link:work-1:1",
+    { id: "work-1", relation: "delivers", url: "https://example.com/pull/1" },
+  ],
 ] as const;
 
-test("all seven writer families survive projection and paged readback", () => {
+test("all imported writer families survive projection and paged readback", () => {
   const source = f.source(6, false, false, (_db, state) => {
     state.put(
       f.ns,
@@ -110,8 +125,14 @@ test("all seven writer families survive projection and paged readback", () => {
       f.actor,
       { expectRevision: 1 },
     );
-    for (const [key, value] of workShapes)
-      state.put(f.ns, key, value, f.actor, { expectRevision: 0 });
+    for (const [key, value] of workShapes) {
+      if (key.startsWith("comment:") || key.startsWith("link:"))
+        state.putNext(f.ns, key.slice(0, -1), () => ({ value }), f.actor);
+      else
+        state.put(f.ns, key, value, f.actor, {
+          expectRevision: state.get(f.ns, key)?.revision ?? 0,
+        });
+    }
     state.acquire(
       f.ns,
       "issue:attempt:work-1:attempt-1",
@@ -128,8 +149,8 @@ test("all seven writer families survive projection and paged readback", () => {
     source.manifest,
     limitsFrom({}),
   );
-  eq(projected.records, 13);
-  eq(projected.events, 13);
+  eq(projected.records, 15);
+  eq(projected.events, 15);
   const target = f.cloudDatabase(),
     owner = f.owner(target);
   owner.initialize([domain]);
@@ -179,6 +200,33 @@ test("all seven writer families survive projection and paged readback", () => {
   }
 });
 
+test.each([
+  ["issue:work-1", { ...workShapes[7][1], prefix: "work", closeReason: "" }],
+  ["comment:work-1:1", { id: "work-1", body: "call", call: 1 }],
+  [
+    "comment:work-1:1",
+    {
+      id: "work-1",
+      body: "checkpoint",
+      checkpoint: {
+        step: "green",
+        branch: "fix/test",
+        worktree: "/fixture",
+        next: "review",
+      },
+    },
+  ],
+] as const)("persisted primary metadata imports: %s", (key, value) => {
+  const source = f.source(0, false, false, (_db, state) => {
+    state.putNext(f.ns, key.slice(0, -1), () => ({ value }), f.actor);
+  });
+  const scratch = f.database();
+  const owner = f.owner(scratch);
+  owner.initialize();
+  impl.currentState(source.db, scratch, source.manifest, limitsFrom({}));
+  eq(owner.get(f.ns, key)?.value, value);
+});
+
 const malformed = workShapes.flatMap(([key, value]) => [
   ...Object.keys(value).flatMap((field) => [
     [key, { ...value, [field]: null }],
@@ -200,6 +248,7 @@ const malformed = workShapes.flatMap(([key, value]) => [
   ]),
 ]) as [string, unknown][];
 malformed.push(
+  ["issue:work-1", { ...workShapes[7][1], revision: 1 }],
   ...["head", "mergeCommit"].flatMap((field) =>
     [39, 41, 63, 65].map(
       (length) =>
@@ -255,8 +304,21 @@ test.each(malformed)(
   (key, value) => {
     for (const historical of [false, true]) {
       const source = f.source(6, false, false, (_db, state) => {
-        state.put(f.ns, key, value, f.actor, { expectRevision: 0 });
-        if (historical) state.delete(f.ns, key, f.actor, { expectRevision: 1 });
+        for (const prefix of ["comment:work-1:", "link:work-1:"])
+          state.put(
+            f.ns,
+            `allocation:${prefix}`,
+            { prefix, number: 1 },
+            f.actor,
+            { expectRevision: 1 },
+          );
+        const written = state.put(f.ns, key, value, f.actor, {
+          expectRevision: state.get(f.ns, key)?.revision ?? 0,
+        });
+        if (historical)
+          state.delete(f.ns, key, f.actor, {
+            expectRevision: written.revision,
+          });
       });
       const scratch = f.database();
       f.owner(scratch).initialize();

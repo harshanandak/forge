@@ -1,3 +1,11 @@
+import tracker from "../schemas/tracker.json" with { type: "json" };
+import config from "../src/blocks/work/schemas/config.json" with { type: "json" };
+import call from "../src/blocks/work/schemas/call.output.json" with { type: "json" };
+import checkpoint from "../src/blocks/work/schemas/checkpoint.input.json" with { type: "json" };
+import link from "../src/blocks/work/schemas/link.json" with { type: "json" };
+import { SchemaRegistry, type SchemaObject } from "../src/contract/schema.ts";
+import { SCHEMA_DOCUMENTS } from "../src/generated/schemas.ts";
+import { allocationFloorNumber } from "../src/core/state/allocation-floor.ts";
 import { ForgeFailure } from "../src/contract/failure.ts";
 import { createHash } from "node:crypto";
 import { canonicalJson, isObject } from "../src/core/config/pointer.ts";
@@ -85,17 +93,79 @@ const localKeys: Record<string, RegExp> = {
   "autopilot-merge": /^autopilot-merge:work-[0-9]+$/,
   participant: /^participant:work-[0-9]+:[1-9][0-9]*$/,
   note: /^note:attempt:work-[0-9]+:attempt-[1-9][0-9]*:[1-9][0-9]*$/,
-  "bound-lane":
-    /^bound-lane:\["(?:[^"\\]|\\.)*","(?:[^"\\]|\\.)*","(?:[^"\\]|\\.)*"\]:work-[0-9]+$/,
+  "bound-lane": /^bound-lane:\[.*\]:work-[0-9]+$/,
 };
 export const leftBehindShapes = Object.keys(localKeys).map(
   (family) => `${family}:*`,
 );
 export function leftBehindKey(ns: string, key: string): boolean {
-  return matchesKey(localKeys, ns, key);
+  if (!matchesKey(localKeys, ns, key)) return false;
+  if (!key.startsWith("bound-lane:")) return true;
+  try {
+    const spelling = key.slice(11, key.lastIndexOf(":")),
+      tuple: unknown = JSON.parse(spelling);
+    return (
+      Array.isArray(tuple) &&
+      tuple.length === 3 &&
+      tuple.every((part) => typeof part === "string") &&
+      JSON.stringify(tuple) === spelling
+    );
+  } catch {
+    return false;
+  }
 }
 export const classifiedFamily = (family: string): boolean =>
   Object.hasOwn(importedKeys, family) !== Object.hasOwn(localKeys, family);
+
+function persisted(
+  schema: SchemaObject,
+  remove: string,
+  extra: SchemaObject = {},
+) {
+  const omitted = new Set(remove.split(" "));
+  const properties = schema.properties as SchemaObject;
+  return {
+    ...schema,
+    required: (schema.required as readonly string[]).filter(
+      (name) => !omitted.has(name),
+    ),
+    properties: {
+      ...Object.fromEntries(
+        Object.entries(properties).filter(([name]) => !omitted.has(name)),
+      ),
+      ...extra,
+    },
+  };
+}
+const valueSchema = tracker.$id.replace("tracker.json", "import-current.json");
+const values = new SchemaRegistry([
+  ...SCHEMA_DOCUMENTS,
+  {
+    $id: valueSchema,
+    $defs: {
+      ...tracker.$defs,
+      issue: persisted(
+        tracker.$defs.TrackerItem,
+        "lease revision updatedAt mode slots attempts selection participants",
+        {
+          prefix: config.properties.idPrefix,
+          closeReason: tracker.$defs.CloseInput.properties.reason,
+        },
+      ),
+      comment: persisted(tracker.$defs.CommentInput, "", {
+        call: call.properties.call,
+        checkpoint: persisted(checkpoint, "id"),
+      }),
+      link,
+    },
+  },
+]);
+const primaryValues = Object.fromEntries(
+  ["issue", "comment", "link"].map((name) => [
+    name,
+    values.validator(valueSchema + "#/$defs/" + name),
+  ]),
+);
 
 type Check = (value: unknown) => boolean;
 const text: Check = (v) => typeof v === "string";
@@ -161,6 +231,12 @@ function workValue(key: string, v: unknown): boolean {
   )
     return false;
   switch (kind) {
+    case "issue":
+    case "comment":
+    case "link":
+      return isObject(v) && v.id === id && primaryValues[kind]!(v).ok;
+    case "allocation":
+      return allocationFloorNumber(v, key.slice(11)) !== undefined;
     case "landing":
       return (
         fields(
@@ -201,7 +277,7 @@ function workValue(key: string, v: unknown): boolean {
             : v.mode === "combine" && (v.chosen as unknown[]).length > 0)
       );
     default:
-      return true;
+      return false;
   }
 }
 /** Bounded keyset reads retain only one page; admission happens before yielding each record. */

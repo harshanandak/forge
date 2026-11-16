@@ -116,6 +116,16 @@ export function snapshot(db: SqlDatabase) {
       ),
     ]);
 }
+const issueValue = (n: number) => ({
+  id: `work-${n}`,
+  title: `Synthetic ${n}`,
+  body: 'exact\nλ\\"',
+  status: "open",
+  labels: [],
+  parent: "work-1",
+  dependsOn: ["work-2"],
+  createdAt: new Date(at).toISOString(),
+});
 export function source(
   count = 3,
   history = false,
@@ -130,19 +140,9 @@ export function source(
   state.initialize();
   db.transaction(() => {
     for (let n = 1; n <= count - 3; n++)
-      state.put(
-        ns,
-        `issue:work-${n}`,
-        {
-          id: `work-${n}`,
-          title: `Synthetic ${n}`,
-          text: 'exact\nλ\\"',
-          parent: "work-1",
-          dependencies: ["work-2"],
-        },
-        actor,
-        { expectRevision: 0 },
-      );
+      state.put(ns, `issue:work-${n}`, issueValue(n), actor, {
+        expectRevision: 0,
+      });
     if (history) {
       for (const key of [
         "issue:work-9000",
@@ -152,7 +152,15 @@ export function source(
       ]) {
         const value = key.startsWith("allocation:")
           ? { prefix: "issue:work-", number: 12000 }
-          : { deleted: true };
+          : key.startsWith("issue:")
+            ? issueValue(9000)
+            : key.startsWith("comment:")
+              ? { id: "work-1", body: "deleted" }
+              : {
+                  id: "work-1",
+                  relation: "references",
+                  url: "https://example.com/deleted",
+                };
         state.put(ns, key, value, actor, { expectRevision: 0 });
         state.delete(ns, key, actor, { expectRevision: 1 });
       }
@@ -167,10 +175,16 @@ export function source(
         });
     }
     if (authority) {
-      state.put(ns, "issue:work-1", { id: "work-1", title: "receipt" }, actor, {
-        expectRevision: 1,
-        requestId: "old-put",
-      });
+      state.put(
+        ns,
+        "issue:work-1",
+        { ...issueValue(1), title: "receipt" },
+        actor,
+        {
+          expectRevision: 1,
+          requestId: "old-put",
+        },
+      );
       state.acquire(ns, "issue:work-1", holder, 60_000, "old-claim");
     }
     edit?.(db, state);
