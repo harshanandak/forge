@@ -61,10 +61,12 @@ const flag = (name: string): string | undefined => {
   const at = argv.indexOf(name);
   return at === -1 ? undefined : argv[at + 1];
 };
-const runs = Number(flag("--runs") ?? 9);
+const gate = argv.includes("--gate");
+const baseDist = flag("--base");
+// Spend the gated job's sample budget on the comparison. Other commands only report.
+const runs = Number(flag("--runs") ?? (gate && baseDist !== undefined ? 1 : 9));
 if (!Number.isInteger(runs) || runs < 1)
   throw new Error("--runs must be a positive integer");
-const gate = argv.includes("--gate");
 // A pull request only warns when the absolute peak is over its cap; a push to main fails.
 const pullRequest = argv.includes("--pull-request");
 const pairs = Number(flag("--pairs") ?? GATED_PAIRS);
@@ -74,7 +76,6 @@ if (!Number.isInteger(pairs) || pairs < 1 || pairs % 2 === 0)
 
 const bin = resolve(import.meta.dirname, "../../dist/bin/forge.js");
 // `--base <dist folder>`: the base branch's build, measured against this one in the same job.
-const baseDist = flag("--base");
 const baseBin =
   baseDist === undefined ? undefined : resolve(baseDist, "bin/forge.js");
 const folder = mkdtempSync(join(tmpdir(), "forge-bench-"));
@@ -309,7 +310,7 @@ try {
 
 const platform = process.platform;
 const table = [
-  `CLI speed on ${platform}, Node ${process.versions.node}, median of ${runs} runs after one warm-up. Time is wall time of a fresh process; memory is that process's own peak.`,
+  `CLI speed on ${platform}, Node ${process.versions.node}, ${runs} reporting runs after one warm-up; paired comparison uses ${pairs} runs per build. Time is wall time of a fresh process; memory is that process's own peak.`,
   "",
   "| Command | Median ms | Min ms | Max ms | Median peak MB |",
   "| ------- | --------: | -----: | -----: | -------------: |",

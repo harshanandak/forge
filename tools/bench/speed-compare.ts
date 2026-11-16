@@ -4,8 +4,8 @@
 /** This build may take at most this multiple of the base build's time. */
 export const MAX_RATIO_TO_BASE = 1.05;
 
-/** Interleaved pairs for the gated command. More pairs shrink the noise of the statistics below. */
-export const GATED_PAIRS = 15;
+/** 47 pairs use the 64 launches saved by sampling the eight report-only commands once, not nine times. */
+export const GATED_PAIRS = 47;
 
 /**
  * Maximum peak growth (MB), as the median of paired differences. Pairing controls runner drift,
