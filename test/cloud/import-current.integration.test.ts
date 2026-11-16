@@ -330,9 +330,13 @@ test.each([false, true])(
   async (mutant) => {
     const make = (title: string) =>
       f.source(9, false, false, (_db, owner) => {
-        owner.put(f.ns, "issue:work-1", { title }, f.actor, {
-          expectRevision: 1,
-        });
+        owner.put(
+          f.ns,
+          "issue:work-1",
+          { ...(owner.get(f.ns, "issue:work-1")!.value as object), title },
+          f.actor,
+          { expectRevision: 1 },
+        );
       });
     const a = make("Pinned A"),
       b = make("Swapped B");
