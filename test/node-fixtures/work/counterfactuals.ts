@@ -121,8 +121,8 @@ export const counterfactuals: readonly {
   },
   {
     file: "core/state/index.js",
-    from: `" AND json_extract(body,'$.type') IN (?,?)"`,
-    to: '" AND 0 AND ?<>?"',
+    from: 'top("state_allocation_keys")',
+    to: "0",
     journey: "allocation",
     evidence: "backfill keeps a deleted identity",
   },
@@ -138,11 +138,11 @@ export const counterfactuals: readonly {
   {
     // The floor is committed on its own, before the issue write, instead of in the shared transaction.
     file: "core/state/index.js",
-    from: "this.#apply(namespace, floorKey, { prefix, number }, actor, now, undefined);",
+    from: "this.#apply(namespace, floorKey, { prefix, number }, actor, now, undefined, true);",
     to: "/* floor write moved */",
     also: {
       from: "const record = this.#apply(namespace, key, stored, actor, now, undefined, true);",
-      to: 'this.#apply(namespace, floorKey, { prefix, number }, actor, now, undefined); this.#db.run("COMMIT"); this.#db.run("BEGIN IMMEDIATE"); const record = this.#apply(namespace, key, stored, actor, now, undefined, true);',
+      to: 'this.#apply(namespace, floorKey, { prefix, number }, actor, now, undefined, true); this.#db.run("COMMIT"); this.#db.run("BEGIN IMMEDIATE"); const record = this.#apply(namespace, key, stored, actor, now, undefined, true);',
     },
     journey: "atomic",
     evidence: "a failed create leaves the floor unchanged",
