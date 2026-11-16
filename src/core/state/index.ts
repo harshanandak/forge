@@ -1162,6 +1162,21 @@ export class StateOwner {
           ]),
           stagedRestore,
         );
+        if (
+          !stagedRestore &&
+          this.#db.get(
+            Object.keys(checkpointTables)
+              .map((table) => `SELECT 1 FROM ${table}`)
+              .join(" UNION ALL ") + " LIMIT 1",
+          )
+        )
+          verifyEventDerivedState(
+            this.#db,
+            Number(
+              this.#db.get("SELECT sequence FROM state_retention WHERE id=1")
+                ?.sequence,
+            ),
+          );
       },
     );
     this.#knownMigrations = new Set([
@@ -1173,15 +1188,16 @@ export class StateOwner {
     this.#domains = domains;
   }
 
-  /** Record-only prefixes; the retained log remains the verification source. */
   checkpoint(batch = 256): number {
     this.#db.transaction(() => {
       assertRetentionAuthority(this.#db);
-      const end = Number(
-        this.#db.get("SELECT sequence FROM state_retention WHERE id=1")
-          ?.sequence,
+      verifyEventDerivedState(
+        this.#db,
+        Number(
+          this.#db.get("SELECT sequence FROM state_retention WHERE id=1")
+            ?.sequence,
+        ),
       );
-      verifyEventDerivedState(this.#db, end, undefined, undefined, false);
     });
     return writeRecordCheckpoint(this.#db, batch);
   }
@@ -1877,7 +1893,12 @@ export class StateOwner {
               ],
             ),
       )?.revision ??
-      0;
+      Number(
+        this.#db.get(
+          "SELECT revision FROM state_checkpoint_deleted WHERE namespace=? AND key=?",
+          [namespace, key],
+        )?.revision ?? 0,
+      );
     const record: StateRecord = {
       namespace,
       key,
@@ -2157,7 +2178,15 @@ export class StateOwner {
           invalid(`Snapshot version ${String(row.id)}; newest known ${newest}`);
       if (!applied.some((row) => row.id === baseline.id))
         invalid("Missing baseline");
-      assertNoCheckpoint(candidate);
+      if (
+        !applied.some((row) => row.id === "007_record_checkpoint") ||
+        Number(
+          candidate.get(
+            "SELECT format_version FROM state_checkpoint_header WHERE id=1",
+          )?.format_version,
+        ) !== 2
+      )
+        assertNoCheckpoint(candidate);
       assertRegistered(candidate);
       if (migrated && signature(candidate) !== expected)
         invalid("Snapshot schema or reviewed table registration differs");
