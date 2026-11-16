@@ -51,7 +51,7 @@ export function ordinaryKey(ns: string, key: string): boolean {
   return (
     ns === namespace &&
     !/[\s\p{Cc}\p{Cf}]/u.test(key) &&
-    /^(?:issue:[^:]+|(?:comment|link|landing|reopen):[^:]+:[1-9][0-9]*|attempt:[^:]+:attempt-[1-9][0-9]*|evidence:attempt:[^:]+:attempt-[1-9][0-9]*:[1-9][0-9]*|(?:cleanup|selection|slots):[^:]+|allocation:(?:issue:work-|(?:comment|link):[^:]+:))$/.test(
+    /^(?:issue:[^:]+|(?:comment|link):[^:]+:[1-9][0-9]*|(?:landing|reopen):work-[0-9]+:[1-9][0-9]*|attempt:work-[0-9]+:attempt-[1-9][0-9]*|evidence:attempt:work-[0-9]+:attempt-[1-9][0-9]*:[1-9][0-9]*|(?:cleanup|selection|slots):work-[0-9]+|allocation:(?:issue:work-|(?:comment|link):[^:]+:))$/.test(
       key,
     )
   );
@@ -75,7 +75,9 @@ const named = (names: string, check: Check) =>
 const checks: Record<string, Check> = {
   ...named("id label review mode", text),
   ...named("branch worktree note", (v) => text(v) && v !== ""),
-  ...named("reason withoutReceipt closeReason claimReason", reason),
+  ...named("reason claimReason", reason),
+  closeReason: (v) => typeof v === "string" && Array.from(v).length <= 2000,
+  withoutReceipt: (v) => reason(v) && checks.closeReason!(v),
   holder: (v) => validateLeaseHolder(v).ok,
   receipt: (v) => validateItemId(v).ok,
   ...named("pr generation baseRevision", positive),
