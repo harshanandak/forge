@@ -14,6 +14,15 @@ import type { HandlerCall } from "../../src/contract/author.ts";
 import type { Attempt } from "../../src/generated/types.ts";
 
 setDefaultTimeout(30_000);
+test.each([
+  ['bound-lane:["local","identity","Owner Project"]:work-1', true],
+  ['bound-lane:["local","identity","Owner Project"]:work-1\n', false],
+  ['bound-lane:["local","identity","Owner\u200bProject"]:work-1', false],
+  ["autopilot:work-1 ", false],
+] as const)("retained key whitespace: %j", (key, accepted) => {
+  eq(impl.leftBehindKey(f.ns, key), accepted);
+  eq(impl.ordinaryKey(f.ns, key), false);
+});
 
 const workShapes = [
   [

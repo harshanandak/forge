@@ -465,6 +465,10 @@ test.each(["missing", "wrong", "matching"])(
         ["forge/work", "autopilot-ask:work-1"],
         ["forge/work", "autopilot-clock:work-1"],
         ["forge/work", "autopilot-event:work-1:1"],
+        [
+          "forge/work",
+          'bound-lane:["local","identity","Owner Project"]:work-1',
+        ],
         ["forge/work", "participant:work-1:1"],
       ])
         state.put(
@@ -512,6 +516,7 @@ test.each(["missing", "wrong", "matching"])(
       { namespace: "forge/work", shape: "autopilot-ask:*", count: 1 },
       { namespace: "forge/work", shape: "autopilot-clock:*", count: 1 },
       { namespace: "forge/work", shape: "autopilot-event:*", count: 1 },
+      { namespace: "forge/work", shape: "bound-lane:*", count: 1 },
       { namespace: "forge/work", shape: "participant:*", count: 1 },
     ]);
     const acknowledge =

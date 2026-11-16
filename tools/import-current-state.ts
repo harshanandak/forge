@@ -65,11 +65,13 @@ function matchesKey(
   ns: string,
   key: string,
 ): boolean {
+  const shape = key.split(":")[0]!;
   return (
     ns === namespace &&
-    !/[\s\p{Cc}\p{Cf}]/u.test(key) &&
-    Object.hasOwn(patterns, key.split(":")[0]!) &&
-    patterns[key.split(":")[0]!]?.test(key) === true
+    Object.hasOwn(patterns, shape) &&
+    patterns[shape]?.test(key) === true &&
+    !/[\p{Cc}\p{Cf}]/u.test(key) &&
+    (shape === "bound-lane" || !/\s/u.test(key))
   );
 }
 export const ordinaryKey = (ns: string, key: string): boolean =>

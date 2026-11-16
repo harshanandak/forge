@@ -1,190 +1,166 @@
-import { ok } from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { relative } from "node:path";
 import * as ts from "typescript-parser";
 
-export function writerSyntax(program: ts.Program, paths: readonly string[]) {
-  const checker = program.getTypeChecker();
-  const walk = (node: ts.Node): ts.Node[] => {
-    const found = [node];
-    ts.forEachChild(node, (child) => {
-      found.push(...walk(child));
-    });
-    return found;
+export interface WriterSite {
+  site: string;
+  hash: string;
+  families: string[];
+  refusal?: string;
+}
+
+/** Inventory syntax only. Unknown namespaces are work; opaque keys require review. */
+export function scanWriters(program: ts.Program, root: string): WriterSite[] {
+  const checker = program.getTypeChecker(),
+    result: WriterSite[] = [];
+  const family = (key: ts.Node | undefined): string | undefined => {
+    if (!key) return;
+    if (ts.isStringLiteralLike(key)) return key.text.split(":")[0] || undefined;
+    if (ts.isTemplateExpression(key) && key.head.text.includes(":"))
+      return key.head.text.split(":")[0] || undefined;
+    return;
   };
-  const nodes = program
-    .getSourceFiles()
-    .filter((s) => paths.includes(s.fileName))
-    .flatMap(walk);
-  const calls = nodes.filter(ts.isCallExpression);
-  const where = (node: ts.Node) => {
-    const source = node.getSourceFile(),
-      at = source.getLineAndCharacterOfPosition(node.getStart());
-    return `${source.fileName}:${at.line + 1}:${at.character + 1}`;
+  const siteOf = (node: ts.Node): WriterSite => ({
+    site:
+      relative(root, node.getSourceFile().fileName).replaceAll("\\", "/") +
+      ":" +
+      (node.getSourceFile().getLineAndCharacterOfPosition(node.getStart())
+        .line +
+        1),
+    hash: createHash("sha256")
+      .update(node.getSourceFile().text.replaceAll("\r\n", "\n"))
+      .digest("hex"),
+    families: [],
+  });
+  const refuse = (row: WriterSite) => {
+    row.refusal = "literal-only writer required at " + row.site;
   };
-  const symbol = (node: ts.Node) => {
-    const found = checker.getSymbolAtLocation(node);
-    return found && found.flags & ts.SymbolFlags.Alias
-      ? checker.getAliasedSymbol(found)
-      : found;
-  };
-  const declaration = (node: ts.Node) => symbol(node)?.valueDeclaration;
-  const forwarding = (key: ts.Expression) => {
-    const p = declaration(key);
-    if (!p || !ts.isParameter(p)) return;
-    const fn = p.parent;
-    return ts.isMethodDeclaration(fn)
-      ? fn.name.getText()
-      : ts.isArrowFunction(fn) && ts.isPropertyAssignment(fn.parent)
-        ? fn.parent.name.getText()
-        : undefined;
-  };
-  const unwrap = (node: ts.Expression): ts.Expression =>
-    ts.isParenthesizedExpression(node) ||
-    ts.isAsExpression(node) ||
-    ts.isNonNullExpression(node)
-      ? unwrap(node.expression)
-      : node;
-  const returned = (fn: ts.FunctionLikeDeclaration): ts.Expression[] => {
-    ok(fn.body, where(fn));
-    return ts.isBlock(fn.body)
-      ? walk(fn.body)
-          .filter(ts.isReturnStatement)
-          .flatMap((n) => (n.expression ? [n.expression] : []))
-      : [fn.body];
-  };
-  function examples(input: ts.Expression, seen = new Set<ts.Node>()): string[] {
-    const node = unwrap(input);
-    ok(!seen.has(node), `recursive key builder ${where(node)}`);
-    const next = new Set(seen).add(node);
-    const read = (value: ts.Expression) => examples(value, next);
-    if (ts.isStringLiteralLike(node) || ts.isNumericLiteral(node))
-      return [node.text];
-    if (ts.isTemplateExpression(node)) {
-      let keys = [node.head.text];
-      for (const span of node.templateSpans) {
-        if (keys.every((key) => key.includes(":"))) return keys;
-        const values = read(span.expression);
-        keys = keys.flatMap((key) =>
-          values.map((value) => key + value + span.literal.text),
-        );
-      }
-      return keys;
+  const visit = (node: ts.Node): void => {
+    ts.forEachChild(node, visit);
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isObjectBindingPattern(node.name) &&
+      node.initializer &&
+      checker.getTypeAtLocation(node.initializer).getProperty("put")
+    ) {
+      for (const binding of node.name.elements)
+        if (
+          binding.dotDotDotToken ||
+          ["put", "putNext", "putMany", "delete"].includes(
+            (binding.propertyName ?? binding.name).getText(),
+          )
+        ) {
+          const row = siteOf(binding);
+          refuse(row);
+          result.push(row);
+        }
     }
     if (
-      ts.isBinaryExpression(node) &&
-      node.operatorToken.kind === ts.SyntaxKind.PlusToken
-    ) {
-      const left = read(node.left);
-      if (left.every((key) => key.includes(":"))) return left;
-      const right = read(node.right);
-      return left.flatMap((a) => right.map((b) => a + b));
-    }
-    if (ts.isPropertyAccessExpression(node) && node.name.text === "key") {
-      const fields =
-        checker.getTypeAtLocation(node.expression).getProperty("key")
-          ?.declarations ?? [];
-      ok(
-        fields.some(
-          (field) =>
-            ts.isInterfaceDeclaration(field.parent) &&
-            field.parent.name.text === "StateRecord" &&
-            field.getSourceFile().fileName.endsWith("/src/generated/types.ts"),
-        ),
-        `opaque work key ${where(node)}`,
-      );
-      return [];
-    }
-    if (ts.isIdentifier(node)) {
-      const decl = declaration(node);
-      if (decl && ts.isVariableDeclaration(decl) && decl.initializer)
-        return read(decl.initializer);
-      if (decl && ts.isParameter(decl)) {
-        const fn = decl.parent,
-          index = fn.parameters.indexOf(decl);
-        ok(fn.name, where(node));
-        const incoming = calls.filter(
-          (call) => symbol(call.expression) === symbol(fn.name!),
-        );
-        ok(incoming.length, `unresolved writer parameter ${where(node)}`);
-        return incoming.flatMap((call) => {
-          const value = call.arguments[index];
-          ok(value);
-          return read(value);
-        });
-      }
-    }
-    if (ts.isCallExpression(node)) {
-      const decl = declaration(node.expression);
-      const fn =
-        decl && ts.isVariableDeclaration(decl) ? decl.initializer : decl;
-      if (fn && (ts.isArrowFunction(fn) || ts.isFunctionDeclaration(fn))) {
-        return returned(fn).flatMap(read);
-      }
-    }
-    throw new Error(`unresolved writer key ${where(node)}: ${node.getText()}`);
-  }
-
-  const bodyOf = (node: ts.Node) =>
-    ts.isArrowFunction(node) ||
-    ts.isFunctionDeclaration(node) ||
-    ts.isFunctionExpression(node) ||
-    ts.isMethodDeclaration(node)
-      ? node.body
-      : undefined;
-  const rootSymbol = (input: ts.Expression) => {
-    let node = unwrap(input);
-    while (
-      ts.isPropertyAccessExpression(node) ||
-      ts.isElementAccessExpression(node)
+      !ts.isPropertyAccessExpression(node) &&
+      !ts.isElementAccessExpression(node)
     )
-      node = node.expression;
-    return symbol(node);
-  };
-  const constantString = Symbol("string argument");
-  const stringCondition = (
-    input: ts.Expression,
-    parameter: ts.Symbol,
-  ): unknown => {
-    const node = unwrap(input);
-    if (symbol(node) === parameter) return constantString;
-    if (ts.isStringLiteralLike(node)) return node.text;
-    if (node.kind === ts.SyntaxKind.NullKeyword) return null;
-    if (ts.isTypeOfExpression(node) && symbol(node.expression) === parameter)
-      return "string";
-    if (!ts.isBinaryExpression(node)) return undefined;
-    const a = stringCondition(node.left, parameter),
-      b = stringCondition(node.right, parameter),
-      op = node.operatorToken.kind;
-    if (op === ts.SyntaxKind.BarBarToken)
-      return a === true || b === true
-        ? true
-        : a === false && b === false
-          ? false
+      return;
+    const method = ts.isPropertyAccessExpression(node)
+      ? node.name.text
+      : node.argumentExpression && ts.isStringLiteral(node.argumentExpression)
+        ? node.argumentExpression.text
+        : undefined;
+    const state = ["put", "putNext", "putMany"].some((name) =>
+      checker.getTypeAtLocation(node.expression).getProperty(name),
+    );
+    if (
+      method
+        ? !["put", "putNext", "putMany", "delete"].includes(method) ||
+          (method === "delete" &&
+            !state &&
+            !checker
+              .getSymbolAtLocation(
+                ts.isPropertyAccessExpression(node)
+                  ? node.name
+                  : node.argumentExpression,
+              )
+              ?.valueDeclaration?.getSourceFile()
+              .fileName.replaceAll("\\", "/")
+              .startsWith(root.replaceAll("\\", "/") + "/src/"))
+        : !state
+    )
+      return;
+    const call =
+      ts.isCallExpression(node.parent) && node.parent.expression === node
+        ? node.parent
+        : undefined;
+    const namespaced =
+      call &&
+      checker
+        .getResolvedSignature(call)
+        ?.getDeclaration()
+        ?.parameters[0]?.name.getText() === "namespace";
+    let namespace = namespaced ? call.arguments[0] : undefined;
+    let receiver: ts.Node | undefined = node.expression;
+    if (ts.isIdentifier(receiver)) {
+      const declaration =
+        checker.getSymbolAtLocation(receiver)?.valueDeclaration;
+      receiver =
+        declaration && ts.isVariableDeclaration(declaration)
+          ? declaration.initializer
           : undefined;
-    if (op === ts.SyntaxKind.AmpersandAmpersandToken)
-      return a === false || b === false
-        ? false
-        : a === true && b === true
-          ? true
-          : undefined;
-    if (a === undefined || b === undefined) return undefined;
-    if (a === constantString || b === constantString) return undefined;
-    if (op === ts.SyntaxKind.EqualsEqualsEqualsToken) return a === b;
-    if (op === ts.SyntaxKind.ExclamationEqualsEqualsToken) return a !== b;
-    return undefined;
+    }
+    if (
+      !namespace &&
+      receiver &&
+      ts.isCallExpression(receiver) &&
+      ts.isPropertyAccessExpression(receiver.expression) &&
+      receiver.expression.name.text === "client"
+    )
+      namespace = receiver.arguments[0];
+    if (
+      namespace &&
+      ts.isStringLiteral(namespace) &&
+      namespace.text !== "forge/work"
+    )
+      return;
+    const row = siteOf(call ?? node);
+    if (!call || !method || ts.isElementAccessExpression(node)) refuse(row);
+    else {
+      const key = call.arguments[namespaced ? 1 : 0];
+      if (method !== "putMany") {
+        const name = family(key);
+        if (name) row.families.push(name);
+        else refuse(row);
+      } else if (key && ts.isArrayLiteralExpression(key)) {
+        for (const entry of key.elements) {
+          if (
+            !ts.isObjectLiteralExpression(entry) ||
+            entry.properties.some(
+              (p) =>
+                (!ts.isPropertyAssignment(p) &&
+                  !ts.isShorthandPropertyAssignment(p)) ||
+                ts.isComputedPropertyName(p.name),
+            )
+          ) {
+            refuse(row);
+            continue;
+          }
+          const keys = entry.properties.filter(
+            (p) =>
+              p.name?.getText().replaceAll('"', "").replaceAll("'", "") ===
+              "key",
+          );
+          const name =
+            keys.length === 1 && ts.isPropertyAssignment(keys[0]!)
+              ? family(keys[0].initializer)
+              : undefined;
+          if (name) row.families.push(name);
+          else refuse(row);
+        }
+      } else refuse(row);
+    }
+    result.push(row);
   };
-  return {
-    rootSymbol,
-    bodyOf,
-    stringCondition,
-    checker,
-    nodes,
-    calls,
-    where,
-    symbol,
-    declaration,
-    forwarding,
-    unwrap,
-    returned,
-    examples,
-  };
+  for (const source of program.getSourceFiles())
+    if (
+      relative(root, source.fileName).replaceAll("\\", "/").startsWith("src/")
+    )
+      visit(source);
+  return result;
 }
