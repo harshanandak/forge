@@ -7,6 +7,7 @@ import { packInput } from "../../../tools/pack-smoke/input.ts";
 
 test("an unset pack input selects the local build and pack fallback", () => {
   expect(packInput(undefined)).toBeUndefined();
+  expect(() => packInput(undefined, "a".repeat(64))).toThrow();
 }, 1000);
 
 test("pack input accepts only bytes matching its SHA-256 sidecar", () => {
@@ -21,6 +22,9 @@ test("pack input accepts only bytes matching its SHA-256 sidecar", () => {
     const digest = createHash("sha256").update(bytes).digest("hex");
     writeFileSync(`${tarball}.sha256`, `${digest}  forge-workflow.tgz\n`);
     expect(packInput(tarball)).toBe(tarball);
+    expect(packInput(tarball, digest)).toBe(tarball);
+    for (const pin of ["", "invalid", "A".repeat(64), "f".repeat(64)])
+      expect(() => packInput(tarball, pin)).toThrow();
     writeFileSync(tarball, "changed artifact");
     expect(() => packInput(tarball)).toThrow("sha256 mismatch");
     expect(() => packInput("")).toThrow();
