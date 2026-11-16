@@ -34,7 +34,7 @@ export class RecordFamilyRegistry {
           if (
             !exact(/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/, name) ||
             !(family.key instanceof RegExp) ||
-            /[gy]/.test(family.key.flags) ||
+            /[gmy]/.test(family.key.flags) ||
             typeof family.admit !== "function"
           )
             refuse("STATE_FAMILY_DECLARATION");
