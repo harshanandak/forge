@@ -19,7 +19,7 @@ assert.deepEqual(audit.missing, []);
 const verified = audit.verified.filter((p) => p.name === "forge-workflow");
 assert.equal(verified.length, 1);
 assert.equal(verified[0].version, version);
-assert.equal(verified[0].registry, "https://registry.npmjs.org/");
+assert.equal(new URL(verified[0].registry).href, "https://registry.npmjs.org/");
 const type = "https://slsa.dev/provenance/v1";
 const attestations = verified[0].attestationBundles;
 const bundles = attestations.filter((b) => b.predicateType === type);

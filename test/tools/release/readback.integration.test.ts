@@ -88,7 +88,7 @@ function fixture() {
       {
         name: "forge-workflow",
         version,
-        registry: "https://registry.npmjs.org/",
+        registry: "https://registry.npmjs.org",
         attestationBundles: [bundle],
       },
     ],
