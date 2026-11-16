@@ -90,6 +90,7 @@ export const requiredJourneys = [
   "test/tools/pack-smoke/identity/packed.integration.test.ts::installed identity rejects a substituted commit",
   "test/tools/pack-smoke/identity/packed.integration.test.ts::installed identity rejects a substituted dirty",
   "test/tools/pack-smoke/identity/packed.integration.test.ts::installed identity rejects a substituted version",
+  "test/tools/release/launcher/packed.integration.test.ts::plain Node release gate reaches each installed identity refusal with a Bun-free consumer PATH",
 ];
 
 export function assertJourneys(xml) {
@@ -133,12 +134,13 @@ export function assertJourneys(xml) {
 async function main() {
   const [cwd, consumer, tarball] = process.argv.slice(2);
   assert.ok(cwd && consumer && tarball);
+  const bun = resolveBun();
   const dir = mkdtempSync(join(tmpdir(), "forge-release-report-"));
   try {
     const report = join(dir, "junit.xml");
     await runWithin(
       "registry installed journeys",
-      resolveBun(),
+      bun,
       [
         "test",
         "--parallel=2",
@@ -152,6 +154,7 @@ async function main() {
         cwd,
         env: {
           ...environmentWithoutBun(process.execPath),
+          npm_execpath: bun,
           FORGE_PACKED_CONSUMER: consumer,
           FORGE_PACKED_TARBALL: tarball,
           FORGE_AUTHOR_NPM_ROOT: dirname(process.execPath),
