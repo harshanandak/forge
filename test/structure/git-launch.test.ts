@@ -6,10 +6,12 @@ import type { SourceFile } from "./lib/repo.ts";
 // Lexical guard: literal Git programs in launch calls, arrays and Bun cmd arrays. Follow named
 // function declarations and relative imports to resolver/forwarder shapes, with no caller list.
 // Computed aliases are outside this matcher. Blank comment-only lines preserve file:line.
-const LAUNCH =
-  /\b(spawn(?:Sync)?|exec(?:File)?(?:Sync)?|run(?:Command)?|launch(?:er)?|command)\s*\(\s*(?:\[\s*|\{\s*cmd\s*:\s*\[\s*)?(["'`])git(?:\.(?:exe|com|cmd|bat))?(?:\2(?=\s*[,)\]])|[ \t]+[^"'`\r\n]*\2)/gi;
+const LAUNCH = new RegExp(
+  String.raw`\b(spawn(?:Sync)?|exec(?:File)?(?:Sync)?|run(?:Command)?|launch(?:er)?|command)\s*\(\s*(?:\[\s*|\{\s*cmd\s*:\s*\[\s*)?(["'\`])git(?:\.(?:exe|com|cmd|bat))?(?:\2(?=\s*[,)\]])|[ \t]+[^"'\`\r\n]*\2)`,
+  "gi",
+);
 const root = join(import.meta.dirname, "../..");
-const DIRECT = /\b(?:spawn(?:Sync)?|exec(?:File)?(?:Sync)?)\(\s*/.source;
+const DIRECT = String.raw`\b(?:spawn(?:Sync)?|exec(?:File)?(?:Sync)?)\(\s*`;
 const GIT_RETURN =
   /if\s*\([^)]*===\s*["']git["']\)\s*return\s+spawnSync\(gitExecutable\(/;
 function resolves(name: string, file: SourceFile, seen: Set<string>): boolean {
