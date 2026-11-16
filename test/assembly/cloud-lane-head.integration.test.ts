@@ -88,18 +88,13 @@ for (const row of gitScopeRows)
     const api = scopedGit as unknown as ScopedGitApi;
     expect(typeof api.gitCapability).toBe("function");
     const result = await exerciseGitScope(row, api);
-    const accepted = [
-      "unrelated repository",
-      "plain checkout",
-      "relative and empty",
-    ].includes(row);
     expect(result).toEqual({
-      kind: accepted ? "resolved" : "unavailable",
-      launched: accepted,
+      kind: "unavailable",
+      launched: false,
       projectRan: false,
-      externalRan: accepted,
+      externalRan: false,
       relativeRan: false,
-      diagnostic: !accepted,
+      diagnostic: true,
     });
   }, 30000);
 

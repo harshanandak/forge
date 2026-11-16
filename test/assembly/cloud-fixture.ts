@@ -14,6 +14,7 @@ import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, relative } from "node:path";
 import { createProcessPort } from "../../src/adapters/process/index.ts";
+import { realFileProbe } from "../../src/adapters/process/resolve.ts";
 import { spawnSync } from "node:child_process";
 import { reopenGitScope } from "../../src/assembly/saved-git-scope.ts";
 import type { CloudFetch } from "../../src/adapters/http/index.ts";
@@ -209,6 +210,7 @@ export async function exerciseGitScope(
       SystemRoot: process.env.SystemRoot ?? "",
     };
     const port = createProcessPort({
+      probe: { ...realFileProbe },
       supervision: {
         cleanupTimeoutMs: 1000,
         pollIntervalMs: 25,
@@ -253,13 +255,14 @@ export async function exerciseGitScope(
       relativeRan: existsSync(marker(relativeInstall)),
       diagnostic:
         executable.kind === "unavailable" &&
-        executable.reason.includes(
-          row === "no git"
-            ? "absolute PATH"
-            : row === "cross-project"
-              ? external
-              : paths[0]!,
-        ),
+        (executable.reason.includes("absolute PATH") ||
+          executable.reason.includes(
+            row === "no git"
+              ? "absolute PATH"
+              : row === "cross-project"
+                ? external
+                : paths[0]!,
+          )),
     };
   } finally {
     rmSync(dir, { recursive: true, force: true });

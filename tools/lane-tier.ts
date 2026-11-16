@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { gitExecutable } from "./git-executable.ts";
 
 export type ReviewTier = "light" | "code" | "security";
 export type LaneTier = { tier: ReviewTier; because: string; reviews: string[] };
@@ -28,7 +29,8 @@ function validGlob(pattern: string) {
   return !bracket && braces === 0 && !pattern.includes("[]");
 }
 function git(worktree: string, args: string[]) {
-  const result = spawnSync("git", args, {
+  const result = spawnSync(gitExecutable(), args, {
+    shell: false,
     cwd: worktree,
     encoding: "utf8",
     timeout: 30_000,

@@ -14,7 +14,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { packedConsumer } from "../../integration/packed-consumer.ts";
 
 type Reply = {
@@ -710,23 +710,17 @@ test("installed accounts: one approval catches wrong authors and binds every clo
     mkdirSync(gitOnly);
     const gitPath = Bun.which("git");
     if (!gitPath) throw new Error("Git required");
-    const gitWrapper = join(
-      gitOnly,
-      process.platform === "win32" ? "git.cmd" : "git",
-    );
-    writeFileSync(
-      gitWrapper,
-      process.platform === "win32"
-        ? ["@echo off", `"${gitPath}" %*`, ""].join("\r\n")
-        : [
-            "#!/bin/sh",
-            `exec '${gitPath.replaceAll("'", "'\\''")}' "$@"`,
-            "",
-          ].join("\n"),
-    );
-    chmodSync(gitWrapper, 0o700);
+    if (process.platform !== "win32")
+      symlinkSync(gitPath, join(gitOnly, "git"));
+    const gitOnlyPath =
+      process.platform === "win32" ? dirname(gitPath) : gitOnly;
     expect(
-      cli(noGh, "decline", { approval: declineApproval }, { PATH: gitOnly }),
+      cli(
+        noGh,
+        "decline",
+        { approval: declineApproval },
+        { PATH: gitOnlyPath },
+      ),
     ).toMatchObject({
       ok: true,
       result: { declined: true },

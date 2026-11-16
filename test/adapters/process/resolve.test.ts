@@ -7,6 +7,8 @@ import {
 /** A probe over a fixed set of files; `executable` lists those with the POSIX execute bit. */
 function probeOf(files: string[], executable: string[] = files): FileProbe {
   return {
+    realpath: (path) => path,
+    hasEntry: () => false,
     isFile: (path) => files.includes(path),
     isExecutable: (path) => executable.includes(path),
   };
@@ -146,4 +148,59 @@ test("empty, NUL and wildcard names are refused", () => {
   expect(
     resolveExecutable("a*", { PATH: "C:\\x" }, "win32", probeOf([])).kind,
   ).toBe("unavailable");
+}, 30_000);
+
+test.each([
+  "entry link",
+  "executable link",
+  "unreadable ancestor",
+  "marker file",
+])(
+  "git admission fails closed for %s and still considers the next entry",
+  (row) => {
+    const probe: FileProbe = {
+      ...probeOf(["/first/git", "/system/git"]),
+      realpath: (path) =>
+        row === "executable link" && path === "/first/git"
+          ? "/repo/git"
+          : row === "entry link" && path === "/repo/bin"
+            ? "/first"
+            : path,
+      hasEntry: (path) => {
+        if (row === "unreadable ancestor" && path === "/first/.git")
+          throw new Error("EACCES");
+        return (
+          (row === "marker file" && path === "/first/.forge") ||
+          path === "/repo/.git"
+        );
+      },
+    };
+    const first = row === "entry link" ? "/repo/bin" : "/first";
+    expect(
+      resolveExecutable("git", { PATH: first }, "linux", probe),
+    ).toMatchObject({
+      kind: "unavailable",
+      reason: expect.stringContaining("1 skipped") as string,
+    });
+    expect(
+      resolveExecutable("git", { PATH: `${first}:/system` }, "linux", probe),
+    ).toEqual({ kind: "resolved", path: "/system/git" });
+  },
+  30_000,
+);
+
+test("Windows Git ignores drive-relative, root-relative and batch-only entries", () => {
+  const probe = probeOf([
+    "C:\\safe\\git.exe",
+    "C:\\batch\\git.cmd",
+    "C:\\batch\\git.bat",
+  ]);
+  expect(
+    resolveExecutable(
+      "git",
+      { PATH: 'C:bin;\\bin;C:\\batch;"C:\\safe"', PATHEXT: ".CMD;.BAT;.EXE" },
+      "win32",
+      probe,
+    ),
+  ).toEqual({ kind: "resolved", path: "C:\\safe\\git.exe" });
 }, 30_000);

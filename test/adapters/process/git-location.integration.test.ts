@@ -18,7 +18,7 @@ import { delimiter, dirname, join, relative } from "node:path";
 
 const windows = process.platform === "win32";
 const node = Bun.which("node")!;
-const git = realpathSync.native(Bun.which("git")!);
+const git = realpathSync.native(windows ? Bun.which("git")! : "/usr/bin/git");
 const fixture = join(import.meta.dirname, "git-location.fixture.ts");
 const rows: readonly (readonly [string, string, string, boolean])[] = [
   ["project bin", "bin", ".git", false],

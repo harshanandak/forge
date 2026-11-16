@@ -3,6 +3,7 @@ import { join, relative, resolve } from "node:path";
 import { writeGenerated } from "./gen/write.ts";
 import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
+import { gitExecutable } from "./git-executable.ts";
 
 const root = resolve(import.meta.dirname, "..");
 function copyJson(directory: string): void {
@@ -19,7 +20,8 @@ function copyJson(directory: string): void {
 copyJson(join(root, "src"));
 copyJson(join(root, "schemas"));
 const git = (args: string[]): string =>
-  execFileSync("git", args, {
+  execFileSync(gitExecutable(), args, {
+    shell: false,
     cwd: root,
     encoding: "utf8",
     timeout: 5000,
