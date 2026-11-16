@@ -15,6 +15,12 @@ no events. Version 1 remains supported; cloud v2 still refuses checkpoints witho
 
 `StateOwner` accepts the locked `SqlDatabase` and `ClockPort` ports. `initialize()` is an explicit write; construction and reads do not initialize anything. `client(namespace, actor)` returns a `DeletableStateClient`, with namespace and actor captured. It never exposes a connection.
 
+Trusted constructors may also supply a `RecordFamilyRegistry` or namespace-family policies.
+No namespace is enrolled by default. Enrolled keys must match exactly one complete family
+pattern, and stored values must pass its compiled admission function. Unknown keys refuse as
+`STATE_FAMILY_UNDECLARED`; reads and exports retain existing records. Batch failures and
+numbered-write failures roll back records, events, requests and allocation floors together.
+
 `put` atomically checks the expected revision, checks any lease fence on the owner's clock, writes the record, appends its event, and saves the idempotent result. A reused request ID with different input is refused. Acquisition takes a holder and request ID, without a generation. Renewal, release and fenced writes require the current generation. A device-qualified lease authorizes the same device and session, independently of actor, agent or harness labels. A stored legacy lease without device identity retains actor-plus-session authorization until a holder-checked rewrite records the qualified caller. Renew and release record the current caller's actor and holder labels; reading historical events preserves the identities accepted at that time. Released and expired generations are never reused. A historical acquisition replay cannot revive authority.
 
 `delete(key, { expectRevision, readSet? })` removes an existing active record and appends a `record.deleted@1` event atomically. The event returns the next revision, timestamp and actor. It requires a positive matching revision, checks the same read-set and optional lease fence as `put` inside the transaction, and has no request ID or idempotent replay receipt. A repeated deletion is refused. Bound assembly clients additionally require a declared write effect and refuse acquisition contexts; held contexts fence the named subject, defaulting to the key.

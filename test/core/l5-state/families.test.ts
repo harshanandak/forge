@@ -32,7 +32,7 @@ const policies = () => [
   },
 ];
 const enrolled = (db: SqlDatabase, declarations = policies()): StateOwner =>
-  Reflect.construct(StateOwner, [db, clock, declarations]) as StateOwner;
+  Reflect.construct(StateOwner, [db, clock, declarations]);
 async function open() {
   const result = await createSqliteStore(tmpdir()).open({
     path: ":memory:",
@@ -293,6 +293,32 @@ test("namespaces not enrolled retain their current behavior", async () => {
           .value,
         null,
       );
+  } finally {
+    await f.close();
+  }
+});
+
+test("unknown keys refuse before attempting to serialize their values", async () => {
+  const f = await open();
+  try {
+    const owner = enrolled(f.db),
+      before = snapshot(f.db);
+    const value: { self?: unknown } = {};
+    value.self = value;
+    throws(
+      () => owner.put(ns, "future:one", value, actor, { expectRevision: 0 }),
+      /STATE_FAMILY_UNDECLARED/,
+    );
+    throws(
+      () =>
+        owner.putMany(
+          ns,
+          [{ key: "future:one", value, expectRevision: 0 }],
+          actor,
+        ),
+      /STATE_FAMILY_UNDECLARED/,
+    );
+    eq(snapshot(f.db), before);
   } finally {
     await f.close();
   }
