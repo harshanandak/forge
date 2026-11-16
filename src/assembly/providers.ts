@@ -407,7 +407,8 @@ export function resolveOutside(
   const none = (): ReturnType<ProcessPort["resolve"]> => ({
     kind: "unavailable",
     reason,
-    remedy: "Install Git outside the project and lane roots.",
+    remedy:
+      "Install Git outside any repository and add its absolute directory to PATH.",
   });
   const excluded: string[] = [];
   const temps = [tmpdir()];
@@ -427,7 +428,10 @@ export function resolveOutside(
     const directory = entry.trim().replace(/^"(.*)"$/, "$1");
     if (!directory || !fullyAbsolute(directory)) continue;
     const found = executor.resolve(name, { ...env, [pathKey]: directory });
-    if (found.kind !== "resolved") continue;
+    if (found.kind !== "resolved") {
+      reason = found.reason;
+      continue;
+    }
     let canonical: string;
     try {
       canonical = realpathSync(found.path);

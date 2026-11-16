@@ -256,6 +256,8 @@ export async function exerciseGitScope(
       diagnostic:
         executable.kind === "unavailable" &&
         (executable.reason.includes("absolute PATH") ||
+          (executable.reason.includes("skipped PATH entries") &&
+            executable.remedy.includes("outside any repository")) ||
           executable.reason.includes(
             row === "no git"
               ? "absolute PATH"
