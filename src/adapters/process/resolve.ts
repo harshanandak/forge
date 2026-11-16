@@ -248,19 +248,7 @@ export function resolveExecutable(
   if (!(windows ? /^git(?:\.(?:exe|com|cmd|bat))?$/i : /^git$/).test(name))
     return searchExecutable(executable, env, platform, probe);
   const cached = gitPaths.get(probe)?.get(platform);
-  if (cached) {
-    try {
-      if (
-        [cached.path, probe.realpath(cached.path)].every((candidate) =>
-          outsideRepository(path.dirname(candidate), platform, probe, env),
-        )
-      )
-        return cached;
-    } catch {
-      // Changed or unreadable ancestors invalidate the pin; search admitted entries again.
-    }
-    gitPaths.get(probe)?.delete(platform);
-  }
+  if (cached) return cached;
   const explicit = executable !== name;
   const entries = explicit
     ? [path.dirname(executable)]
