@@ -115,7 +115,7 @@ const dumpText = (table: string, over: Row) =>
   });
 const checkpointRows = {
   state_checkpoint_header: [1, 1, "lineage", 1, 20, 1, 20],
-  state_checkpoint_live: ["forge/test", "a", 1, 1, "digest"],
+  state_checkpoint_live: ["forge/test", "a", 1, 1, "digest", ""],
   state_checkpoint_deleted: ["forge/test", "a", 1, 1],
   state_checkpoint_leases: ["forge/test", "a", 1, 1, "{}"],
   state_checkpoint_reservations: ["forge/test", "a", 1, 1],

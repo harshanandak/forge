@@ -217,6 +217,9 @@ export function encodeCheckpoint(value: Checkpoint): string {
 export function checkpointDigest(value: Checkpoint): string {
   return `sha256:${createHash("sha256").update(encodeCheckpoint(value)).digest("hex")}`;
 }
+export function recordDigest(value: unknown): string {
+  return `sha256:${createHash("sha256").update(canonical(value)).digest("hex")}`;
+}
 
 export interface CheckpointSeed {
   readonly coveredSequence: number;

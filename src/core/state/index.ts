@@ -40,6 +40,7 @@ import {
 } from "./migrations.ts";
 import { registerTables, exportTables, type DomainData } from "./domains.ts";
 import { parseRestoreJson } from "./restore-json.ts";
+import { writeRecordCheckpoint } from "./record-checkpoint.ts";
 import {
   checkpointTables,
   assertNoCheckpoint,
@@ -1181,6 +1182,19 @@ export class StateOwner {
     this.#domains = domains;
   }
 
+  /** Record-only prefixes; the retained log remains the verification source. */
+  checkpoint(batch = 256): number {
+    this.#db.transaction(() => {
+      assertRetentionAuthority(this.#db);
+      const end = Number(
+        this.#db.get("SELECT sequence FROM state_retention WHERE id=1")
+          ?.sequence,
+      );
+      verifyEventDerivedState(this.#db, end, undefined, undefined, false);
+    });
+    return writeRecordCheckpoint(this.#db, batch);
+  }
+
   client(namespace: string, actor: Actor): DeletableStateClient {
     namespaceValid(namespace);
     if (!validateActor(actor).ok) invalid("Invalid actor");
@@ -1743,7 +1757,16 @@ export class StateOwner {
       stored.revision !== Number(row.revision)
     )
       invalid("Invalid allocation record");
-    return floorNumber(stored.value, prefix);
+    const number = floorNumber(stored.value, prefix);
+    const checkpoint = Number(
+      this.#db.get(
+        "SELECT highest FROM state_checkpoint_floors WHERE namespace=? AND prefix=?",
+        [namespace, prefix],
+      )?.highest ?? 0,
+    );
+    if (number < checkpoint)
+      invalid("Allocation floor is below its checkpoint; repair required");
+    return number;
   }
 
   /** Retained key reservations survive event pruning; an established floor is never reconstructed here. */
