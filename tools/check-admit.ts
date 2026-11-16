@@ -156,7 +156,7 @@ export async function admit(
     return { ...result, passed: result.exitCode === 0 && !failed };
   }
   async function git(args: string[]) {
-    const result = await run(["git", ...args], root, false);
+    const result = await run([approvedGitPath, ...args], root, false);
     if (!result.passed || result.truncated)
       throw new Error(`git ${args[0]} failed: ${result.stderr}`);
     return result.stdout.trim();
@@ -170,6 +170,7 @@ export async function admit(
   const gitExecutable = processes.resolve("git", hostEnv);
   if (gitExecutable.kind !== "resolved")
     throw new Error(`${gitExecutable.reason} ${gitExecutable.remedy}`);
+  const approvedGitPath = gitExecutable.path;
   const nativeGit = (args: string[]) =>
     execFileSync(gitExecutable.path, args, {
       shell: false,

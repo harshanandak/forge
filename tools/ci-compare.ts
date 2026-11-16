@@ -50,7 +50,7 @@ function compare(pr: string) {
     throw new Error("FORGE_GH_USER must name the configured GitHub account");
   const origin =
     /^(?:https:\/\/|ssh:\/\/git@|git@)(github\.com)[/:]([^/]+\/[^/]+?)(?:\.git)?\/?$/.exec(
-      command("git", ["remote", "get-url", "origin"]),
+      command(gitExecutable(), ["remote", "get-url", "origin"]),
     );
   if (!origin) throw new Error("origin must be a GitHub repository URL");
   host = origin[1]!;
@@ -78,7 +78,7 @@ function compare(pr: string) {
     mainError: string | undefined;
   if (failures.length) {
     try {
-      mainHead = command("git", ["rev-parse", "origin/main"]);
+      mainHead = command(gitExecutable(), ["rev-parse", "origin/main"]);
     } catch {
       mainError = "origin/main is unavailable in this checkout";
     }

@@ -25,6 +25,7 @@ import {
   resolveBun,
 } from "./environment.ts";
 import { packInput } from "./input.ts";
+import { gitExecutable } from "../git-executable.ts";
 
 const root = resolve(import.meta.dirname, "../..");
 // One command that hangs fails with its name instead of stalling the job.
@@ -45,6 +46,7 @@ function run(
 ): SpawnSyncReturns<string> {
   const started = performance.now();
   const result = spawnSync(command, args, {
+    shell: false,
     cwd,
     env,
     encoding: "utf8",
@@ -216,7 +218,14 @@ async function main(): Promise<void> {
         version: expected,
         commit:
           process.env.CI_HEAD ??
-          ok(run("git", ["rev-parse", "HEAD"], root, process.env)).trim(),
+          ok(
+            run(
+              gitExecutable(process.env),
+              ["rev-parse", "HEAD"],
+              root,
+              process.env,
+            ),
+          ).trim(),
         dirty: false,
       },
       "installed build identity must match the reviewed clean build",
