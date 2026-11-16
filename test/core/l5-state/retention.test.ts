@@ -6,7 +6,14 @@ import {
   stateMigrations,
 } from "../../../src/core/state/migrations.ts";
 
-test.each(["history", "live", "retired"])(
+test.each([
+  "history",
+  "live",
+  "retired",
+  "global",
+  "namespace",
+  "reservations",
+])(
   "restore and initialize preserve retention authority: %s",
   async (kind) => {
     const source = await fixture();
@@ -14,34 +21,44 @@ test.each(["history", "live", "retired"])(
     try {
       source.owner.initialize();
       target.owner.initialize();
-      if (kind === "retired") {
+      if (kind !== "history" && kind !== "live") {
         target.owner.putNext(ns, "item:", () => ({ value: {} }), actor);
         target.owner.delete(ns, "item:1", actor, { expectRevision: 1 });
         target.owner.delete(ns, "allocation:item:", actor, {
           expectRevision: 1,
         });
         target.db.run("DELETE FROM state_events");
+        if (kind !== "retired") {
+          if (kind !== "global")
+            target.db.run("UPDATE state_retention SET sequence=0");
+          if (kind !== "namespace")
+            target.db.run("DELETE FROM state_namespace_watermarks");
+          if (kind !== "reservations")
+            target.db.run("DELETE FROM state_allocation_keys");
+        }
+        const authority = () =>
+          [
+            "state_retention",
+            "state_namespace_watermarks",
+            "state_allocation_keys",
+          ].map((table) => target.db.all(`SELECT * FROM ${table}`));
+        const before = authority();
         expect(() => target.owner.restore(source.owner.export())).toThrow(
           "Restore target must be empty",
         );
-        expect(
-          Number(
-            target.db.get("SELECT sequence FROM state_retention")?.sequence,
-          ),
-        ).toBe(4);
-        expect(
-          target.db.all("SELECT * FROM state_allocation_keys"),
-        ).toHaveLength(2);
+        expect(authority()).toEqual(before);
       } else {
         source.owner.put(ns, "item:1", {}, actor, { expectRevision: 0 });
         if (kind !== "live")
           source.owner.delete(ns, "item:1", actor, { expectRevision: 1 });
         source.db.run("DELETE FROM state_allocation_keys");
         const snapshot = source.owner.export();
-        for (const admit of [
-          () => target.owner.restore(snapshot),
-          () => source.owner.initialize(),
-        ]) {
+        for (const [path, admit] of [
+          ["restore", () => target.owner.restore(snapshot)],
+          ["initialize", () => source.owner.initialize()],
+        ] as const) {
+          if (path === "initialize" && kind === "live")
+            source.db.run("DELETE FROM state_events");
           expect(admit).toThrow(/repair/i);
           try {
             admit();

@@ -77,19 +77,41 @@ export function requestAgeStatements(table: string): string[] {
   ];
 }
 
+function refuse(
+  message = "State retention metadata mismatch; restore a verified backup or repair the store before retrying",
+): never {
+  throw new ForgeFailure({ code: "INPUT_INVALID", message, retry: "never" });
+}
+
+/** Retained authority is data; coverage is required, but extra reservations survive pruning. */
+export function assertRetentionAuthority(db: SqlDatabase, empty = false): void {
+  if (
+    !db.get(
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='state_retention'",
+    )
+  )
+    return;
+  if (
+    empty &&
+    db.get(
+      "SELECT 1 FROM state_retention WHERE sequence<>0 UNION ALL SELECT 1 FROM state_namespace_watermarks UNION ALL SELECT 1 FROM state_allocation_keys LIMIT 1",
+    )
+  )
+    refuse("Restore target must be empty");
+  if (
+    db.get(
+      "SELECT 1 FROM (SELECT namespace,key FROM state_records UNION ALL SELECT namespace,key FROM state_events WHERE CASE WHEN json_valid(body) THEN json_extract(body,'$.type') IN (namespace||':record.updated@1',namespace||':record.deleted@1') ELSE 0 END) needed WHERE NOT EXISTS (SELECT 1 FROM state_allocation_keys r WHERE r.namespace=needed.namespace AND r.key=needed.key) LIMIT 1",
+    )
+  )
+    refuse();
+}
+
 /** Validate on admitted setup, never repair a persisted disagreement implicitly. */
 export function assertRetention(
   db: SqlDatabase,
   tables: Record<string, readonly string[]> = stateColumns,
 ): void {
-  const refuse = (): never => {
-    throw new ForgeFailure({
-      code: "INPUT_INVALID",
-      message:
-        "State retention metadata mismatch; restore a verified backup or repair the store before retrying",
-      retry: "never",
-    });
-  };
+  assertRetentionAuthority(db);
   const row = db.get(
     "SELECT sequence,policy_version FROM state_retention WHERE id=1",
   );
@@ -103,7 +125,7 @@ export function assertRetention(
   if (
     Number(
       db.get("SELECT COALESCE(MAX(sequence),0) AS n FROM state_events")?.n,
-    ) > Number(row!.sequence)
+    ) > Number(row.sequence)
   )
     refuse();
   if (
@@ -115,7 +137,7 @@ export function assertRetention(
   if (
     db.get(
       "SELECT 1 FROM state_namespace_watermarks WHERE sequence>? LIMIT 1",
-      [row!.sequence!],
+      [row.sequence!],
     )
   )
     refuse();
@@ -125,7 +147,7 @@ export function assertRetention(
     const columns = tables[table];
     if (!columns) refuse();
     const actual = db.get(
-      `SELECT COUNT(*) AS rows, COALESCE(SUM(${bytes(columns!)}),0) AS bytes FROM ${identifier(table)}`,
+      `SELECT COUNT(*) AS rows, COALESCE(SUM(${bytes(columns)}),0) AS bytes FROM ${identifier(table)}`,
     );
     if (
       !actual ||

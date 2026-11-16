@@ -35,6 +35,7 @@ import {
   type Migration,
   retentionTables,
   assertRetention,
+  assertRetentionAuthority,
   stateColumns,
 } from "./migrations.ts";
 import { registerTables, exportTables, type DomainData } from "./domains.ts";
@@ -2121,6 +2122,7 @@ export class StateOwner {
     const expectedLedger = this.#db.get(ledger)?.sql;
     let migrated = false;
     const empty = (): void => {
+      assertRetentionAuthority(this.#db, true);
       for (const table of dataTables(this.#db))
         if (
           this.#db.get(`SELECT 1 FROM "${table.replaceAll('"', '""')}" LIMIT 1`)
@@ -2153,6 +2155,7 @@ export class StateOwner {
         undefined,
         applied.some((row) => row.id === "004_state_checkpoint"),
       );
+      assertRetentionAuthority(candidate);
     };
     imageStore.restoreImage(
       image,
