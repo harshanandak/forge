@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 interface Job {
   if?: unknown;
   "continue-on-error"?: unknown;
+  defaults?: { run: Record<string, string> };
   env?: Record<string, string>;
   environment?: string;
   permissions?: Record<string, string>;
@@ -14,6 +15,8 @@ interface Job {
     if?: unknown;
     "continue-on-error"?: unknown;
     name?: string;
+    shell?: string;
+    "working-directory"?: string;
     uses?: string;
     run?: string;
     env?: Record<string, string>;
@@ -26,10 +29,52 @@ function workflow() {
       new URL("../../.github/workflows/release.yml", import.meta.url),
       "utf8",
     ),
-  ) as { on: Record<string, unknown>; jobs: Record<string, Job> };
+  ) as {
+    on: Record<string, unknown>;
+    jobs: Record<string, Job>;
+    defaults: { run: Record<string, string> };
+    env: Record<string, string>;
+  };
 }
 
 function requiredReadback(w: ReturnType<typeof workflow>) {
+  assert.deepEqual(w.defaults, { run: { shell: "bash" } });
+  assert.deepEqual(w.env, {
+    TARBALL: "${{ github.workspace }}/packed/forge-workflow.tgz",
+    NPM_CONFIG_REGISTRY: "https://registry.npmjs.org",
+  });
+  const version = { VERSION: "${{ needs.verify.outputs.version }}" };
+  const noLoaders = (value: unknown): void => {
+    if (!value || typeof value !== "object") return;
+    for (const [key, child] of Object.entries(
+      value as Record<string, unknown>,
+    )) {
+      if (key === "env" && child && typeof child === "object")
+        for (const name of Object.keys(child))
+          assert.doesNotMatch(
+            name,
+            /^(NODE_OPTIONS|NODE_PATH|BUN_OPTIONS|BUN_PRELOAD|NPM_CONFIG_NODE_OPTIONS|NPM_CONFIG_SCRIPT_SHELL|BASH_ENV|BASH_FUNC_.+|ENV|ZDOTDIR|SHELLOPTS|BASHOPTS|LD_.+|DYLD_.+|PYTHONPATH|PYTHONHOME|PYTHONSTARTUP|PERL5OPT|PERL5LIB|RUBYOPT|RUBYLIB)$/i,
+          );
+      noLoaders(child);
+    }
+  };
+  noLoaders(w);
+  for (const [name, job] of Object.entries(w.jobs)) {
+    assert.equal(
+      job.defaults,
+      undefined,
+      "jobs inherit only the pinned Bash defaults",
+    );
+    assert.deepEqual(
+      job.env,
+      ["readback", "promote"].includes(name) ? version : undefined,
+    );
+    for (const step of job.steps) {
+      assert.equal(step.shell, undefined);
+      assert.equal(step["working-directory"], undefined);
+    }
+  }
+
   for (const name of ["publish", "readback", "promote"]) {
     const job = w.jobs[name]!;
     assert.equal(job.if, undefined, `${name} cannot be conditional`);
@@ -42,10 +87,15 @@ function requiredReadback(w: ReturnType<typeof workflow>) {
   const journey = w.jobs.readback!.steps.find(
     (s) => s.name === "Required registry journeys",
   );
-  assert.equal(
-    journey?.run,
-    'node tools/release/journeys.mjs "$GITHUB_WORKSPACE" "$RUNNER_TEMP/npm-smoke" "$TARBALL"',
-  );
+  assert.deepEqual(journey, {
+    name: "Required registry journeys",
+    env: {
+      FORGE_DEVICE_ROOT: "${{ runner.temp }}/release-forge",
+      CHECK_ECOSYSTEM_TOOLS: "${{ runner.temp }}/fixture-tools",
+      CHECK_PYTHON_PACKAGES: "${{ runner.temp }}/fixture-python",
+    },
+    run: 'node tools/release/journeys.mjs "$GITHUB_WORKSPACE" "$RUNNER_TEMP/npm-smoke" "$TARBALL"',
+  });
   const runs = w.jobs.readback!.steps.map((s) => s.run ?? "").join("\n");
   for (const command of [
     "npm install --ignore-scripts",
@@ -154,6 +204,49 @@ for (const change of [
     if (change === "ignored job failure")
       w.jobs.readback!["continue-on-error"] = true;
     if (change === "conditional promotion") w.jobs.promote!.if = "always()";
+    expect(() => requiredReadback(w)).toThrow();
+  }, 1000);
+}
+
+for (const change of [
+  "step shell",
+  "step directory",
+  "job shell",
+  "workflow shell",
+  "step NODE_OPTIONS",
+  "job NODE_OPTIONS",
+  "workflow NODE_OPTIONS",
+  "step extra env",
+  "job extra env",
+  "workflow extra env",
+  "extra step key",
+  "loader on another step",
+]) {
+  test(`release execution settings refuse ${change}`, () => {
+    const w = workflow(),
+      job = w.jobs.readback!;
+    const step = job.steps.find(
+      (s) => s.name === "Required registry journeys",
+    )!;
+    if (change === "step shell") step.shell = 'bash -c "exit 0" {0}';
+    if (change === "step directory") step["working-directory"] = "foreign";
+    if (change === "job shell")
+      job.defaults = { run: { shell: 'bash -c "exit 0" {0}' } };
+    if (change === "workflow shell")
+      w.defaults.run.shell = 'bash -c "exit 0" {0}';
+    const options = {
+      NODE_OPTIONS: "--import=data:text/javascript,process.exit(0)",
+    };
+    if (change === "step NODE_OPTIONS") Object.assign(step.env!, options);
+    if (change === "job NODE_OPTIONS") Object.assign(job.env!, options);
+    if (change === "workflow NODE_OPTIONS") Object.assign(w.env, options);
+    if (change === "step extra env") step.env!.UNREVIEWED = "yes";
+    if (change === "job extra env") job.env!.UNREVIEWED = "yes";
+    if (change === "workflow extra env") w.env.UNREVIEWED = "yes";
+    if (change === "extra step key")
+      Object.assign(step, { uses: "foreign/action@main" });
+    if (change === "loader on another step")
+      job.steps[0]!.env = { BASH_ENV: "exit-zero.sh" };
     expect(() => requiredReadback(w)).toThrow();
   }, 1000);
 }
