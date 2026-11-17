@@ -1,4 +1,4 @@
-import { expect, setDefaultTimeout, test } from "bun:test";
+﻿import { expect, setDefaultTimeout, test } from "bun:test";
 import * as importer from "../../tools/import-current.ts";
 import { currentState, pagesOf } from "../../tools/import-current-state.ts";
 import { TABLES, COLUMNS, type Table } from "../../cloud/conformance/digest.ts";
@@ -11,7 +11,7 @@ setDefaultTimeout(120_000);
 type Comparison = {
   tables: Record<
     Table,
-    { match: boolean | null; actual: { rows: number; digest: string } }
+    { match: boolean | null; actual: { rows: number; digest: string } | null }
   >;
 };
 type Refusal = {
@@ -140,8 +140,8 @@ test("incident counts, floors, inventory and 154 repairs compare with the two-ro
     f.projected.leftBehind.report.records.reduce((n, row) => n + row.count, 0),
   ).toBe(1766);
   const result = api.verifyPracticeReadback(f.before, f.actual, f.window);
-  expect(result.tables.state_records.actual.rows).toBe(8258);
-  expect(result.tables.state_events.actual.rows).toBe(8258);
+  expect(result.tables.state_records.actual!.rows).toBe(8258);
+  expect(result.tables.state_events.actual!.rows).toBe(8258);
   expect(
     Object.values(result.tables).every((table) => table.match === true),
   ).toBe(true);
@@ -161,7 +161,7 @@ test("a stop-clock refusal retains its check, table, key and all per-table actua
   expect(result.observed).toHaveProperty("stopOffsetMs", -1000);
   expect(result.observed.tables.state_records.match).toBeNull();
   for (const table of TABLES)
-    expect(result.observed.tables[table].actual.digest).toMatch(
+    expect(result.observed.tables[table].actual!.digest).toMatch(
       /^[a-f0-9]{64}$/,
     );
   expect(result.observed.tables.state_leases.match).toBe(true);
@@ -219,7 +219,9 @@ test.each(["all", "audit"] as const)(
       key: [expected],
       reason: "missing row",
     });
-    expect(result.observed.tables.state_events.actual.rows).toBe(events.length);
+    expect(result.observed.tables.state_events.actual!.rows).toBe(
+      events.length,
+    );
   },
 );
 test("a divergent global update is named before a missing audit", () => {
@@ -269,14 +271,35 @@ test("a malformed stop timestamp keeps a named check and every table digest", ()
   body.updatedAt = { toString: null };
   global.body = JSON.stringify(body);
   const result = refusal(f.before, f.actual, f.window);
-  expect(["stop ISO clock", "unexpected:TypeError"]).toContain(
-    result.observed.failure.reason,
-  );
+  expect(result.observed.failure.reason).toBe("stop ISO clock");
   for (const table of TABLES)
-    expect(result.observed.tables[table].actual.digest).toMatch(
+    expect(result.observed.tables[table].actual!.digest).toMatch(
       /^[a-f0-9]{64}$/,
     );
 });
+
+test.each(["missing", "null row"] as const)(
+  "a %s table is refused as that table with the others digested",
+  (kind) => {
+    const f = fixture();
+    if (kind === "missing") delete f.actual.state_leases;
+    else f.actual.state_leases!.push(null as never);
+    const result = refusal(f.before, f.actual, f.window);
+    expect(result.observed.failure).toEqual({
+      table: "state_leases",
+      key: [],
+      reason: "table shape",
+    });
+    expect(result.observed.tables.state_leases).toMatchObject({
+      actual: null,
+      match: false,
+    });
+    for (const table of TABLES.filter((name) => name !== "state_leases"))
+      expect(result.observed.tables[table].actual!.digest).toMatch(
+        /^[a-f0-9]{64}$/,
+      );
+  },
+);
 
 test("a generic exception inside a check becomes an unexpected refusal", () => {
   const f = fixture();
