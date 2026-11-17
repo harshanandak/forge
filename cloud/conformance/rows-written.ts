@@ -127,7 +127,14 @@ if (process.argv[2] === "restart") {
       },
     );
   }
-  for (const fault of ["quota", "quota-kv", "read-quota", "storage-full"]) {
+  for (const fault of [
+    "quota",
+    "quota-kv",
+    "read-quota",
+    "storage-full",
+    "quota-insert",
+    "full-insert",
+  ]) {
     for (const route of [
       "status",
       "dump",
@@ -135,6 +142,7 @@ if (process.argv[2] === "restart") {
       "devices",
       "restore",
     ]) {
+      if (fault.endsWith("insert") && route !== "restore") continue;
       await check(`${fault} on ${route} is named and sanitized`, async () => {
         const target =
           route === "restore"
@@ -147,7 +155,7 @@ if (process.argv[2] === "restart") {
               ? fixture.doc
               : undefined;
         const result = await call(target, route, payload, fault);
-        const storage = fault === "storage-full";
+        const storage = fault === "storage-full" || fault === "full-insert";
         assert.equal(result.response.status, 503);
         assert.deepEqual(result.body, {
           ok: false,

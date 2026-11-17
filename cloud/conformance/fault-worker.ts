@@ -48,6 +48,7 @@ interface Fault {
   readonly loginWrite: boolean;
   readonly limit: string | undefined;
   readonly kvFault: boolean;
+  readonly insert: boolean;
   sql: number;
   kv: number;
 }
@@ -181,15 +182,21 @@ export class Project extends Shipped {
 
   constructor(ctx: DurableState, env?: unknown) {
     const boot = { sql: 0, kv: 0 };
-    const inject = (kv = false) => {
+    const inject = (kv = false, statement = "") => {
       const fault = current.getStore();
-      if (fault?.limit && fault.kvFault === kv) throw new Error(fault.limit);
+      if (
+        fault?.limit &&
+        fault.kvFault === kv &&
+        (!fault.insert ||
+          /^INSERT INTO state_(?:records|events)\b/i.test(statement))
+      )
+        throw new Error(fault.limit);
     };
     const state: DurableState = {
       storage: {
         sql: {
           exec: (statement, ...bindings) => {
-            inject();
+            inject(false, statement);
             if (
               current.getStore()?.receiptInsert === true &&
               isReceiptInsert(statement, bindings)
@@ -279,14 +286,15 @@ export class Project extends Shipped {
       receiptInsert: kind === "receipt-insert",
       loginWrite: kind === "login-write",
       limit:
-        kind === "quota" || kind === "quota-kv"
+        kind === "quota" || kind === "quota-kv" || kind === "quota-insert"
           ? "Exceeded allowed rows written in Durable Objects free tier."
           : kind === "read-quota"
             ? "Exceeded allowed rows read in Durable Objects free tier."
-            : kind === "storage-full"
+            : kind === "storage-full" || kind === "full-insert"
               ? "database or disk is full: SQLITE_FULL"
               : undefined,
       kvFault: kind === "quota-kv",
+      insert: kind === "quota-insert" || kind === "full-insert",
       sql: this.#boot.sql,
       kv: this.#boot.kv,
     };
