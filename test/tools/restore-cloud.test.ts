@@ -2,7 +2,7 @@
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, setDefaultTimeout, test } from "bun:test";
+import { expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import { TABLES } from "../../cloud/conformance/digest.ts";
 import { stopOverlay, stopPlan } from "../../cloud/conformance/restored.ts";
 import type { Tables } from "../../cloud/conformance/max-source.ts";
@@ -237,10 +237,11 @@ test("a failed restore never prints the token on stdout or stderr", async () => 
   const out = join(mkdtempSync(join(tmpdir(), "restore-leak-")), "r.json");
   process.env.RESTORE_LEAK_TOKEN = "secret-token";
   const printed: string[] = [];
-  const keep = [process.stdout.write, process.stderr.write];
   const capture = (chunk: unknown) => !!printed.push(String(chunk));
-  process.stdout.write = capture as typeof process.stdout.write;
-  process.stderr.write = capture as typeof process.stderr.write;
+  const spies = [
+    spyOn(process.stdout, "write").mockImplementation(capture),
+    spyOn(process.stderr, "write").mockImplementation(capture),
+  ];
   let code: number;
   try {
     code = await cli(
@@ -259,10 +260,7 @@ test("a failed restore never prints the token on stdout or stderr", async () => 
       worker({ refuse: 1 }).fake,
     );
   } finally {
-    [process.stdout.write, process.stderr.write] = keep as [
-      typeof process.stdout.write,
-      typeof process.stderr.write,
-    ];
+    for (const spy of spies) spy.mockRestore();
   }
   expect(code).toBe(1);
   expect(printed.join("")).toContain("restore refused at page 1");
