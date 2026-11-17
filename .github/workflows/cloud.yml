@@ -57,6 +57,31 @@ jobs:
         working-directory: cloud
       - name: Storage quota merge gate regressions
         run: bun test --timeout 30000 test/cloud/storage-review.test.ts test/assembly/cloud-state-client.test.ts test/assembly/cloud-login.test.ts
+      - name: Restore admission ordering counterfactual
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          suite = ["bun", "test", "--timeout", "60000", "test/cloud/issue-commands.test.ts", "--test-name-pattern"]
+          row = "whole restore preserves committed rows without a provisioning flag"
+          baseline = subprocess.run(suite + [row + "|whole restore rollback stays atomic when floor failure also blocks cleanup"], capture_output=True, text=True)
+          print(baseline.stdout + baseline.stderr)
+          assert baseline.returncode == 0
+          path = Path("cloud/src/project.ts")
+          original = path.read_text()
+          before = "      assertRestoreEmpty(db);\n      await this.#storage.put(STAGED, {\n        next: 0,\n        format: dump.format,\n      });"
+          after = before.replace("      assertRestoreEmpty(db);\n", "") + "\n      assertRestoreEmpty(db);"
+          assert original.count(before) == 1
+          try:
+              path.write_text(original.replace(before, after))
+              result = subprocess.run(suite + [row], capture_output=True, text=True)
+              log = result.stdout + result.stderr
+              print(log)
+              assert result.returncode != 0 and "(fail) " + row in log
+              assert "tablesOf(target.db)" in log
+          finally:
+              path.write_text(original)
+          PY
       - name: Typed restore refusal counterfactual
         run: |
           python3 - <<'PY'
@@ -456,7 +481,7 @@ jobs:
           # Without the final limit check, the generated pair can cross a cap the imported rows fit under.
           restore_cf unmeasured cloud/src/dump.ts 's/^  assertLimits\(db, limits, "RESTORE_TOO_LARGE", "The restored project"\);/  void 0;/m' "whole restore whose generated event crosses" '[got.status, got.json.error?.code]'
           # A floor written after the restore transaction commits leaves the imported rows behind when it fails.
-          restore_cf outside cloud/src/dump.ts 's/(export function restoreDump\([^{]*\{\n  )return db\.transaction\(/$1const counted = db.transaction(/; s/    settleFloor\(db, owner, limits, restored, finalize\);\n    return counts\(dump\.tables\);\n  \}\);/    globalThis.restoredFor = restored;\n    return counts(dump.tables);\n  });\n  settleFloor(db, owner, limits, globalThis.restoredFor, finalize);\n  return counted;/' "whole restore whose floor record fails" 'tablesOf(failed.t.db)'
+          restore_cf outside cloud/src/dump.ts 's/(export function restoreDump\([^{]*\{\n  )return db\.transaction\(/$1const counted = db.transaction(/; s/    settleFloor\(db, owner, limits, restored, finalize\);\n    return counts\(dump\.tables\);\n  \}\);/    globalThis.restoredFor = restored;\n    return counts(dump.tables);\n  });\n  settleFloor(db, owner, limits, globalThis.restoredFor, finalize);\n  return counted;/' "whole restore rollback stays atomic when floor failure also blocks cleanup" 'tablesOf(failed.t.db)'
           # Counterfactuals for comment and link numbers after a delete (forge-1306). Numbering from the live count instead
           # of the floor must return the reused suffix at the explicit key comparison of each route test, after a valid 200.
           restore_cf reused src/core/state/index.ts 's/const number = last \+ 1;/const number = this.count(namespace, prefix) + 1;/' "cloud comment after deleted highest allocates above it" 'FAMILY[kind].key(got.json.result)).toBe(key)'

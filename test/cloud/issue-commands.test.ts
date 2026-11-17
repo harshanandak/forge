@@ -12631,3 +12631,58 @@ test("an imported receipt never proves ownership of an unowned inner acquisition
   expect([attempted.status, attempted.code]).toEqual([503, "UNAVAILABLE"]);
   expect(t.snapshot()).toBe(before);
 }, 30_000);
+
+test("whole restore preserves committed rows without a provisioning flag", async () => {
+  const { tables } = await projectWith(legacy);
+  const target = fixture();
+  const token = await target.device();
+  expect(
+    (await target.send(make("committed-before-activation"), { token })).status,
+  ).toBe(200);
+  target.lease();
+  await target.storage.delete("provisioned");
+  target.reopen();
+  const before = tablesOf(target.db);
+  for (const table of [
+    "state_leases",
+    "state_events",
+    "domain_cloud_command_receipts",
+  ])
+    expect(before[table]!.length).toBeGreaterThan(0);
+  target.calls.length = 0;
+  const { got } = await restoreInto("whole", tables, { target });
+  expect([got.status, got.json.error?.code]).toEqual([
+    409,
+    "RESTORE_TARGET_NOT_EMPTY",
+  ]);
+  expect(tablesOf(target.db)).toEqual(before);
+  expect(target.calls).not.toContain("put restore:next");
+  expect(await target.storage.get("restore:next")).toBeUndefined();
+  expect(await target.storage.get("provisioned")).not.toBe(true);
+});
+
+test("whole restore rollback stays atomic when floor failure also blocks cleanup", async () => {
+  const { tables } = await projectWith(legacy);
+  let floorFailed = false,
+    cleanupFailed = false;
+  const failed = await restoreInto("whole", tables, {
+    fail: (sql, bindings) => {
+      if (/^INSERT INTO state_records/.test(sql) && bindings.includes(FLOOR)) {
+        floorFailed = true;
+        return true;
+      }
+      if (floorFailed && /^DELETE FROM/.test(sql)) {
+        cleanupFailed = true;
+        return true;
+      }
+      return false;
+    },
+  });
+  expect([floorFailed, cleanupFailed]).toEqual([true, true]);
+  expect([failed.got.status, failed.got.json.error?.code]).toEqual([
+    500,
+    "INTERNAL",
+  ]);
+  expect(Object.values(tablesOf(failed.t.db)).flat()).toEqual([]);
+  expect(await failed.t.storage.get("restore:next")).toBeDefined();
+}, 60_000);

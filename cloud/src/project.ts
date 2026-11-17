@@ -23,6 +23,7 @@ import type { SqlDatabase, SqlRow } from "../../src/ports/store.ts";
 import { validateLeaseHolder } from "../../src/generated/validators.ts";
 import {
   assertRestoreCompatible,
+  assertRestoreEmpty,
   clearStaged,
   DUMP_FORMAT,
   DUMP_MIGRATION,
@@ -847,6 +848,7 @@ export class Project {
     if (dump.format === DUMP_FORMAT) {
       if (staged !== undefined) await this.#abandon();
       const { db, owner } = this.#openWrite();
+      assertRestoreEmpty(db);
       await this.#storage.put(STAGED, {
         next: 0,
         format: dump.format,
