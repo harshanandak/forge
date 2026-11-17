@@ -189,13 +189,14 @@ for (const records of sizes) {
       kv = 0,
       window: readonly [number, number] = [0, 0];
     for (const part of parts) {
+      const before = Date.now();
       const response = await request(target, "restore", part, true);
+      const elapsed = Date.now() - before;
       const body = response.body as {
         response: { ok: boolean; value: { done?: boolean } };
         profile: StatementProfile[];
       };
-      if (body.response.value.done !== false)
-        window = stopWindowOf(body.response.value);
+      window = stopWindowOf(body.response.value, elapsed) ?? window;
       assert.equal(body.response.ok, true);
       assert.equal(
         body.profile.reduce((n, entry) => n + entry.rows, 0),

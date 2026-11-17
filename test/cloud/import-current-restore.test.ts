@@ -733,8 +733,8 @@ test.each(["Oracle accepts serving restore", "Oracle accepts a stopped image"])(
             } else {
               const sent = await p.send("restore", part);
               eq(sent.projected.exitCode, 0);
-              if (sent.r.value.done !== false)
-                window = stopWindowOf(sent.r.value);
+              window =
+                stopWindowOf(sent.r.value, Date.now() - started) ?? window;
             }
           }
           if (manual) {
@@ -777,11 +777,12 @@ test.each([false, true])(
     const image = paged ? [...pagesOf(source, limits)] : [dumpOf(source)];
     let window: readonly [number, number] | undefined;
     for (const [n, part] of image.entries()) {
+      const started = Date.now();
       const sent = await p.send("restore", part);
       eq(sent.projected.exitCode, 0);
       const last = n === image.length - 1;
       eq("stopWindow" in sent.r.value, last);
-      if (last) window = stopWindowOf(sent.r.value);
+      window = stopWindowOf(sent.r.value, Date.now() - started) ?? window;
     }
     assert.ok(window);
     const global = f.owner(p.db).get(f.ns, "lane-control:global")!;
@@ -806,6 +807,31 @@ test.each([false, true])(
   },
   120_000,
 );
+
+test("restore stop window width is bounded by the caller round trip and ignores clock offset", () => {
+  const reply = (from: number, to: number) => ({
+    done: true,
+    stopWindow: [from, to],
+  });
+  eq(stopWindowOf(reply(5000, 5040), 40), [5000, 5040]);
+  eq(stopWindowOf(reply(1_005_000, 1_005_040), 40), [1_005_000, 1_005_040]);
+  eq(stopWindowOf(reply(-995_000, -994_960), 40), [-995_000, -994_960]);
+  assert.throws(
+    () => stopWindowOf(reply(5000, 5041), 40),
+    /restore stop window/,
+  );
+  assert.throws(
+    () => stopWindowOf(reply(5001, 5000), 40),
+    /restore stop window/,
+  );
+  eq(stopWindowOf({ done: false }, 40), undefined);
+  assert.throws(
+    () => stopWindowOf({ done: false, stopWindow: [5000, 5000] }, 40),
+    /non-final restore stop window/,
+  );
+  assert.throws(() => stopWindowOf(undefined, 40), /restore stop window/);
+  assert.throws(() => stopWindowOf({ done: true }, 40), /restore stop window/);
+});
 
 const activationRows = [
   ["Whole and paged success", "success"],

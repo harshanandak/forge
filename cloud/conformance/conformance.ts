@@ -179,6 +179,7 @@ async function adminCall(
   body?: string,
   token = adminToken,
 ): Promise<{ status: number; body: AdminBody }> {
+  const started = Date.now();
   const response = await fetch(`${base}/p/${project}/${route}`, {
     method,
     headers: token === "" ? {} : { authorization: `Bearer ${token}` },
@@ -210,9 +211,8 @@ async function adminCall(
   }
   const result = { status: response.status, body: bodyValue };
   if (expectsStop() && response.status === 200 && route === "restore") {
-    const { done } = bodyValue.value as { done?: boolean };
-    if (done !== false)
-      restoreStops.restored(project, stopWindowOf(bodyValue.value));
+    const window = stopWindowOf(bodyValue.value, Date.now() - started);
+    if (window) restoreStops.restored(project, window);
   }
   if (
     expectsStop() &&

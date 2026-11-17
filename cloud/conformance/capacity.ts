@@ -492,6 +492,7 @@ async function restoreAll(): Promise<Done> {
       const queries = count.n;
       const cpu = process.threadCpuUsage();
       const started = performance.now();
+      const sent = Date.now();
       const reply = await project.fetch(
         new Request(`https://cap.example/p/${NAME}/restore`, {
           method: "POST",
@@ -499,8 +500,12 @@ async function restoreAll(): Promise<Done> {
         }),
       );
       const answer = await reply.text();
-      if (reply.status === 200 && page === files.length - 1)
-        window = stopWindowOf((JSON.parse(answer) as { value: unknown }).value);
+      if (reply.status === 200)
+        window =
+          stopWindowOf(
+            (JSON.parse(answer) as { value: unknown }).value,
+            Date.now() - sent,
+          ) ?? window;
       const wallMs = performance.now() - started;
       const used = process.threadCpuUsage(cpu);
       const heap = getHeapStatistics();
