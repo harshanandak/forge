@@ -1020,3 +1020,60 @@ test("record fixture refuses a commit carrying a read query", async () => {
   expect(failed.error.code).toBe("UNAVAILABLE");
   expect(r.calls).toHaveLength(0);
 });
+
+for (const [code, retry, message] of [
+  [
+    "QUOTA_EXHAUSTED",
+    "safe",
+    "Durable Object daily quota exhausted; retry after 00:00 UTC",
+  ],
+  ["STORAGE_LIMIT_EXCEEDED", "never", "Project storage limit exceeded"],
+] as const) {
+  for (const route of [
+    "command",
+    "read",
+    "commit",
+    "claim",
+    "holder",
+  ] as const) {
+    test(`HTTP storage refusal ${code} survives ${route} with retry guidance`, async () => {
+      const typed =
+        route === "command" || route === "read" || route === "commit";
+      const http = createCloudHttp({
+        origin: KEY.origin,
+        project: KEY.project,
+        fetch: () =>
+          Promise.resolve(
+            Response.json(
+              {
+                ok: false,
+                ...(typed ? { status: "FAIL", warnings: [] } : {}),
+                error: { code, message: "SERVER-WORDS", retry },
+              },
+              { status: 503 },
+            ),
+          ),
+      });
+      const options = {
+        key: KEY,
+        http,
+        now: () => NOW,
+        credentials: credentialStore(filesWith([entry(NOW)])),
+      };
+      const lease = createCloudLeaseClient(options);
+      const records = createCloudRecordClient(options);
+      const failed = await failureOf(() =>
+        route === "command"
+          ? lease.command(cmd, () => true)
+          : route === "read"
+            ? records.read(READ)
+            : route === "commit"
+              ? records.commit(COMMIT)
+              : route === "claim"
+                ? lease.claim(claim)
+                : lease.holder(SUBJECT),
+      );
+      expect(failed.error).toEqual({ code, message, retry });
+    });
+  }
+}

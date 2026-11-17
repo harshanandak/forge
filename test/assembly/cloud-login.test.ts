@@ -939,3 +939,33 @@ for (const [platform, env, result, expected] of [
     }
   }, 30_000);
 }
+
+for (const [code, retry, message] of [
+  [
+    "QUOTA_EXHAUSTED",
+    "safe",
+    "Durable Object daily quota exhausted; retry after 00:00 UTC",
+  ],
+  ["STORAGE_LIMIT_EXCEEDED", "never", "Project storage limit exceeded"],
+] as const) {
+  for (const stage of ["start", "poll"] as const) {
+    test(`HTTP login ${stage} preserves ${code} with retry guidance`, async () => {
+      const r = rig();
+      try {
+        const answer = () =>
+          json(
+            { ok: false, error: { code, message: "SERVER-WORDS", retry } },
+            503,
+          );
+        const { envelope } = await login(
+          r,
+          stage === "start" ? [answer] : [() => json(startBody()), answer],
+        );
+        expect(failure(envelope)).toEqual({ code, message, retry });
+        expectNoSecrets(envelope, r.lines);
+      } finally {
+        r.sb.close();
+      }
+    });
+  }
+}
