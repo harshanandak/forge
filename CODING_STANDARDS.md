@@ -1,8 +1,6 @@
 # Coding standards
 
-Read at review time; behavior lives in [AGENTS.md](AGENTS.md). **Guard** names CI enforcement under `test/structure/**`; review checks the rest. Guard enforceable findings.
-
-These govern this repo and Forge's shipped behaviour, not user projects.
+Forge-only review rules. Behavior: [AGENTS.md](AGENTS.md). **Guard**: CI in `test/structure/**`; guard enforceable findings and review the rest.
 
 ## Language
 
@@ -63,7 +61,7 @@ These govern this repo and Forge's shipped behaviour, not user projects.
 - Document byte caps live in `test/structure/budget.json`; prune before growing. **Guard:** `budget`.
 - One decision record namespace (`ADR-NNN`) with a title; refer to a decision by name. Records hold durable choices only.
 - Reports lead with the answer in plain language, then evidence and what would change it.
-- PR size: aim for 200 non-test lines; stop at 330. Measure additions plus deletions with `git diff --numstat origin/main...HEAD`, split test/non-test. Propose slices above 100 non-test lines.
+- PR size: at most 330 non-test lines when the PR touches security, state or cloud code, record admission rules included; up to about 600 elsewhere; no cap for deletion-only PRs. Test size is a default of 2 times the changed code lines plus 100; the PR body says why each extra row guards a real case.
 - Tests run in hosted CI; after a red caused only by a test's own setup, run that one file locally once.
 - Review ends with no P0/P1 and own regressions fixed; file adjacent findings. At most 2 review rounds per mechanism, then write a 3-line threat model (asset, threat, mitigation) and choose ship, simplify or park. Never waive P0/P1.
 - The pull request title is a conventional commit title; it becomes the changelog line. Do not edit the changelog by hand.
