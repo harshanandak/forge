@@ -2,16 +2,26 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { hash, X509Certificate } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 
 const read = (path) => JSON.parse(readFileSync(path, "utf8"));
 const [bin, auditFile, lockFile] = process.argv.slice(2);
-const { VERSION: version, GITHUB_SHA: commit, TARBALL: tarball } = process.env;
+const {
+  VERSION: version,
+  GITHUB_SHA: commit,
+  TARBALL: tarball,
+  CI_RUN: runId,
+} = process.env;
 assert.match(commit ?? "", /^[a-f0-9]{40}$/);
 const digest = hash("sha512", readFileSync(tarball));
 const integrity = "sha512-" + Buffer.from(digest, "hex").toString("base64");
 const installed = read(lockFile).packages["node_modules/forge-workflow"];
 assert.equal(installed.version, version);
 assert.equal(installed.integrity, integrity);
+assert.equal(
+  installed.resolved,
+  `https://registry.npmjs.org/forge-workflow/-/forge-workflow-${version}.tgz`,
+);
 const audit = read(auditFile);
 assert.deepEqual(audit.invalid, []);
 assert.deepEqual(audit.missing, []);
@@ -47,9 +57,22 @@ const { certificate, x509CertificateChain } = bundle.verificationMaterial;
 const der = (certificate ?? x509CertificateChain.certificates[0]).rawBytes;
 const signer = new X509Certificate(Buffer.from(der, "base64")).subjectAltName;
 assert.equal(signer, `URI:${repo}/${path}@${ref}`);
+assert.deepEqual(
+  read(resolve(dirname(bin), "../build.json")),
+  { version, commit, dirty: false, runId },
+  "installed build identity record must match the reviewed CI run",
+);
 // Check the approved bytes and signer before executing the installed package.
 const args = [bin, "--version", "--json"];
 const options = { timeout: 30_000, windowsHide: true };
 const identity = JSON.parse(execFileSync(process.execPath, args, options));
 assert.deepEqual(identity, { version, commit, dirty: false });
-console.log(JSON.stringify(identity));
+console.log(
+  JSON.stringify({
+    ...identity,
+    runId,
+    integrity,
+    node: process.version,
+    bin: resolve(bin),
+  }),
+);
