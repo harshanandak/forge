@@ -9,6 +9,7 @@ import {
   usage,
 } from "../core/l5-state/retention.fixture.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
+import type { DurableStorage } from "../../cloud/src/store.ts";
 
 setDefaultTimeout(30_000);
 
@@ -22,6 +23,25 @@ const maintain = (db: SqlDatabase, now: number, batch: number) =>
       ) => number;
     }
   ).maintainReceipts?.(db, now, batch);
+
+test.each(["invalid", -1])(
+  "an invalid idle deadline refuses without scheduling a spin: %s",
+  async (deadline) => {
+    const s = await fixture();
+    try {
+      s.owner.initialize([domain]);
+      s.db.run(
+        "INSERT INTO domain_cloud_requests(request_id,fingerprint,outcome,result,created_at) VALUES ('bad',?,'LEASE_HELD','{}',1)",
+        [JSON.stringify({ retryUntil: deadline })],
+      );
+      expect(() => receipts.receiptMaintenanceDeadline(s.db)).toThrow(
+        /repair/i,
+      );
+    } finally {
+      await s.close();
+    }
+  },
+);
 
 test("idle expiry shares a bounded delete budget and retains live denial authority", async () => {
   const s = await fixture();
@@ -99,3 +119,80 @@ test.each([false, true])(
     else expect(p.snapshot()).toEqual(before);
   },
 );
+
+test("only writable commands arm maintenance and alarms continue expired batches", async () => {
+  const p = await projectFixture();
+  const issued = await p.send("devices", {
+    device: "maintenance",
+    ttlMs: 86400000,
+  });
+  const token = (issued.value as unknown as { token: string }).token;
+  const storage: DurableStorage = p.storage;
+  let next: number | null = null;
+  const armed: number[] = [];
+  storage.getAlarm = () => Promise.resolve(next);
+  storage.setAlarm = (time) => {
+    next = time;
+    armed.push(time);
+    return Promise.resolve();
+  };
+  const project = new Project(
+    { storage },
+    { FORGE_CLOUD_PROJECT: "a", FORGE_CLOUD_ID_PREFIX: "forge" },
+  );
+  const command = (op: string, input: unknown, requestId: string) =>
+    project.fetch(
+      new Request("https://fixture.example/p/a/command", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ op, input, requestId, context: { actor } }),
+      }),
+    );
+  expect((await command("issue.list", {}, "read")).status).toBe(200);
+  expect(armed).toEqual([]);
+  expect(
+    (await command("issue.create", { title: "kept" }, "write")).status,
+  ).toBe(200);
+  expect(armed).toHaveLength(1);
+  for (let i = 0; i < 257; i++)
+    p.db.run(
+      "INSERT INTO domain_cloud_command_receipts(request_id,fingerprint,outcome,result,created_at,expires_at) VALUES (?,'{}','ok','{}',1,2)",
+      [`expired-${i}`],
+    );
+  next = null;
+  await project.alarm();
+  expect(
+    p.db
+      .query(
+        "SELECT request_id FROM domain_cloud_command_receipts WHERE expires_at=2",
+      )
+      .all(),
+  ).toHaveLength(1);
+  expect(armed).toHaveLength(2);
+  next = null;
+  await project.alarm();
+  expect(
+    p.db
+      .query(
+        "SELECT request_id FROM domain_cloud_command_receipts WHERE expires_at=2",
+      )
+      .all(),
+  ).toEqual([]);
+  expect(armed).toHaveLength(3);
+});
+
+test.each([
+  [1000, 0],
+  [1000, 257],
+  [-1, 1],
+])("idle maintenance refuses invalid budgets %j", async (now, batch) => {
+  const s = await fixture();
+  try {
+    s.owner.initialize([domain]);
+    const before = s.owner.export();
+    expect(() => maintain(s.db, now, batch)).toThrow(/budget/i);
+    expect(s.owner.export()).toEqual(before);
+  } finally {
+    await s.close();
+  }
+});

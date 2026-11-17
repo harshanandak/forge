@@ -1082,7 +1082,7 @@ for (const mode of ["paged", "whole", "malformed"] as const)
         expect(target.rows(table).length).toBeGreaterThan(0);
       if (checkpoint)
         target.db.run(
-          "INSERT INTO state_checkpoint_header VALUES (1, 1, 'lineage', 1, 20, 1, 20)",
+          "INSERT INTO state_checkpoint_header(id,format_version,lineage,generation,covered_sequence,retention_policy_version,archive_through) VALUES (1, 1, 'lineage', 1, 20, 1, 20)",
         );
       target.reopen();
       const before = target.snapshot();

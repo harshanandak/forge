@@ -1,6 +1,9 @@
 import { expect, setDefaultTimeout, test } from "bun:test";
 import { StateOwner } from "../../../src/core/state/index.ts";
-import { checkpointTables } from "../../../src/core/state/checkpoint.ts";
+import {
+  checkpointTables,
+  readReplayStart,
+} from "../../../src/core/state/checkpoint.ts";
 import { actor, ns, fixture, high } from "./record-checkpoint.fixture.ts";
 import { usage } from "./retention.fixture.ts";
 import type { SqlDatabase } from "../../../src/ports/store.ts";
@@ -72,6 +75,9 @@ test.each([1, 2, 256])(
       expect(
         s.owner.putNext(ns, "item:", () => ({ value: {} }), actor).key,
       ).toBe("item:2");
+      expect(
+        s.owner.put(ns, "item:1", {}, actor, { expectRevision: 0 }).revision,
+      ).toBe(3);
       s.owner.put(ns, "answer", { original: false }, actor, {
         expectRevision: 1,
       });
@@ -147,44 +153,45 @@ test("a failed deletion rolls back the archive boundary, commitment and usage co
   }
 });
 
-test.each(["holder", "missing lease", "missing receipt", "boundary"])(
-  "compacted %s corruption refuses initialize and restore",
-  async (kind) => {
-    const s = await fixture(),
-      target = await fixture();
-    try {
-      seed(s.owner);
-      drain(s.owner, s.db, 2);
-      if (kind === "holder") {
-        for (const table of ["state_checkpoint_leases", "state_leases"])
-          s.db.run(
-            `UPDATE ${table} SET body=json_set(body,'$.holder.session.id','other')`,
-          );
-      } else if (kind === "missing lease") {
-        s.db.run("DELETE FROM state_checkpoint_leases");
-        s.db.run("DELETE FROM state_leases");
-      } else if (kind === "missing receipt") {
+test.each([
+  "holder",
+  "missing lease",
+  "missing receipt",
+  "boundary",
+  "zero boundary",
+])("compacted %s corruption refuses initialize and restore", async (kind) => {
+  const s = await fixture(),
+    target = await fixture();
+  try {
+    seed(s.owner);
+    drain(s.owner, s.db, 2);
+    if (kind === "holder") {
+      for (const table of ["state_checkpoint_leases", "state_leases"])
         s.db.run(
-          "DELETE FROM state_checkpoint_receipts WHERE request_id='first'",
+          `UPDATE ${table} SET body=json_set(body,'$.holder.session.id','other')`,
         );
-        s.db.run("DELETE FROM state_requests WHERE request_id='first'");
-      } else
-        s.db.run(
-          "UPDATE state_checkpoint_header SET archive_through=archive_through-1",
-        );
-      expect(() => s.owner.initialize()).toThrow(/checkpoint/i);
-      target.owner.initialize();
-      const before = target.owner.export();
-      expect(() => target.owner.restore(s.owner.export())).toThrow(
-        /checkpoint/i,
+    } else if (kind === "missing lease") {
+      s.db.run("DELETE FROM state_checkpoint_leases");
+      s.db.run("DELETE FROM state_leases");
+    } else if (kind === "missing receipt") {
+      s.db.run(
+        "DELETE FROM state_checkpoint_receipts WHERE request_id='first'",
       );
-      expect(target.owner.export()).toEqual(before);
-    } finally {
-      await s.close();
-      await target.close();
-    }
-  },
-);
+      s.db.run("DELETE FROM state_requests WHERE request_id='first'");
+    } else
+      s.db.run("UPDATE state_checkpoint_header SET archive_through=?", [
+        kind === "boundary" ? high(s) - 1 : 0,
+      ]);
+    expect(() => s.owner.initialize()).toThrow(/checkpoint/i);
+    target.owner.initialize();
+    const before = target.owner.export();
+    expect(() => target.owner.restore(s.owner.export())).toThrow(/checkpoint/i);
+    expect(target.owner.export()).toEqual(before);
+  } finally {
+    await s.close();
+    await target.close();
+  }
+});
 
 test.each([
   [0, 0, 0],
@@ -224,6 +231,54 @@ test("the hard byte limit rolls back a write until maintenance retires the pendi
       s.owner.put(ns, "blocked", {}, actor, { expectRevision: 0 }).revision,
     ).toBe(1);
     expect(high(s)).toBe(sequence + 1);
+  } finally {
+    await s.close();
+  }
+});
+
+test("checkpoint commitments and mutation costs scale with bounded prefixes", async () => {
+  const s = await fixture();
+  try {
+    s.owner.initialize();
+    for (let i = 1; i <= 16; i++)
+      s.owner.put(ns, `item:${i}`, i, actor, {
+        expectRevision: 0,
+        requestId: `r${i}`,
+      });
+    const writes = () => Number(s.db.get("SELECT total_changes() AS n")?.n);
+    const before = writes();
+    expect(compact(s.owner, 16)).toBe(16);
+    expect(writes() - before).toBe(5 * 16 + 3);
+    s.owner.put(ns, "item:17", 17, actor, {
+      expectRevision: 0,
+      requestId: "r17",
+    });
+    const next = writes();
+    expect(compact(s.owner, 16)).toBe(1);
+    expect(writes() - next).toBe(9);
+    expect(readReplayStart(s.db, 1, true).checkpoint?.receipts).toHaveLength(
+      17,
+    );
+  } finally {
+    await s.close();
+  }
+});
+
+test("compacted witnesses above the document value limit load in bounded pages", async () => {
+  const s = await fixture();
+  try {
+    s.owner.initialize();
+    for (let i = 0; i < 600; i++)
+      s.owner.put(ns, `item:${i}`, i, actor, {
+        expectRevision: 0,
+        requestId: `r${i}`,
+      });
+    s.owner.checkpoint(256);
+    drain(s.owner, s.db, 256);
+    const seed = readReplayStart(s.db, 16, true).checkpoint;
+    expect(seed?.receipts).toHaveLength(600);
+    expect(seed?.live).toHaveLength(600);
+    expect(() => s.owner.initialize()).not.toThrow();
   } finally {
     await s.close();
   }

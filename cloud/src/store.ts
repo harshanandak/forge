@@ -18,6 +18,8 @@ export interface DurableStorage {
   get(key: string): Promise<unknown>;
   put(key: string, value: unknown): Promise<void>;
   delete(key: string): Promise<unknown>;
+  getAlarm?(): Promise<number | null>;
+  setAlarm?(time: number): Promise<void>;
 }
 
 /** The only table that records the schema version: Durable Object SQLite has no PRAGMA user_version. */

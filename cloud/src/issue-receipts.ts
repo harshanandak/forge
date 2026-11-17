@@ -88,6 +88,59 @@ function prune(db: SqlDatabase, now: number): void {
   );
 }
 
+export function maintainReceipts(
+  db: SqlDatabase,
+  now: number,
+  batch = 256,
+): number {
+  if (
+    !Number.isSafeInteger(now) ||
+    now < 0 ||
+    !Number.isSafeInteger(batch) ||
+    batch < 1 ||
+    batch > 256
+  )
+    throw new ForgeFailure({
+      code: "INPUT_INVALID",
+      message: "Invalid receipt maintenance budget",
+      retry: "never",
+    });
+  return db.transaction(() => {
+    const removed = db.run(
+      `DELETE FROM ${COMMAND_RECEIPTS} WHERE request_id IN (SELECT request_id FROM ${COMMAND_RECEIPTS} WHERE ${RETRY_UNTIL}<=? ORDER BY ${RETRY_UNTIL},request_id LIMIT ?)`,
+      [now, batch],
+    ).changes;
+    return (
+      removed +
+      db.run(
+        "DELETE FROM domain_cloud_requests WHERE request_id IN (SELECT request_id FROM domain_cloud_requests WHERE json_extract(fingerprint,'$.retryUntil')<=? ORDER BY json_extract(fingerprint,'$.retryUntil'),request_id LIMIT ?)",
+        [now, batch - removed],
+      ).changes
+    );
+  });
+}
+
+export function receiptMaintenanceDeadline(
+  db: SqlDatabase,
+): number | undefined {
+  const value = db.get(
+    `SELECT MIN(deadline) AS deadline FROM (SELECT MIN(${RETRY_UNTIL}) AS deadline FROM ${COMMAND_RECEIPTS} UNION ALL SELECT MIN(json_extract(fingerprint,'$.retryUntil')) FROM domain_cloud_requests)`,
+  )?.deadline;
+  if (value === null || value === undefined) return undefined;
+  const time = Number(value);
+  if (
+    (typeof value !== "number" && typeof value !== "bigint") ||
+    !Number.isSafeInteger(time) ||
+    time < 0
+  )
+    throw new ForgeFailure({
+      code: "INPUT_INVALID",
+      message: "Receipt maintenance deadline requires repair",
+      retry: "never",
+    });
+  return time;
+}
+
 /**
  * The recorded answer for `requestId`, or undefined when the id is fresh. Other input under a
  * recorded id is INPUT_CONFLICT and never replaces the receipt; a recorded refusal is thrown again.
