@@ -631,6 +631,7 @@ export function verifyEventDerivedState(
       "numbered summary from a checkpoint is not supported yet",
     );
   const records = new Map<string, { revision: number; digest: string }>();
+  const historical = new Map<string, { revision: number }>();
   const recordRevisions = new Map<string, number>();
   const leases = new Map<string, LeaseRecord>();
   const leaseSequences = new Map<string, number>();
@@ -746,7 +747,7 @@ export function verifyEventDerivedState(
       }
   };
   const verifyLeaseSeeds = () => {
-    if (checkpoint && leases.size !== checkpoint.leases.length)
+    if (checkpoint?.leases && leases.size !== checkpoint.leases.length)
       reject("state_checkpoint_leases", "covered replay");
     for (const [namespace, subject, sequence, , body] of checkpoint?.leases ??
       []) {
@@ -764,7 +765,7 @@ export function verifyEventDerivedState(
     "state_events",
     "sequence,namespace,key,body",
     ["sequence"],
-    checkpoint === undefined ? undefined : [0],
+    checkpoint === undefined ? undefined : [checkpoint.leases ? 0 : covered],
   )) {
     const eventSequence = Number(row.sequence);
     if (eventSequence > covered && sequence === covered) verifyLeaseSeeds();
@@ -785,8 +786,11 @@ export function verifyEventDerivedState(
         eventSequence <= covered &&
         (event.type === `${event.namespace}:record.updated@1` ||
           event.type === `${event.namespace}:record.deleted@1`)
-      )
+      ) {
+        if (event.type.endsWith("deleted@1")) historical.delete(id);
+        else historical.set(id, { revision: event.revision });
         return;
+      }
       if (event.requestId !== undefined) {
         const request = key(event.namespace, event.requestId);
         if (requests.has(request)) reject("state_requests", request);
@@ -838,7 +842,9 @@ export function verifyEventDerivedState(
               event,
               plan,
               revision: (name: string): number =>
-                records.get(key(event.namespace, name))?.revision ?? 0,
+                (eventSequence <= covered ? historical : records).get(
+                  key(event.namespace, name),
+                )?.revision ?? 0,
               lease: (subject: string): LeaseRecord | undefined =>
                 leases.get(key(event.namespace, subject)),
             };

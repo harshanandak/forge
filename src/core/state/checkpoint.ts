@@ -236,7 +236,7 @@ export interface CheckpointSeed {
   readonly deleted: Checkpoint["deleted"];
   readonly floors: Checkpoint["floors"];
   readonly receipts: Checkpoint["receipts"];
-  readonly leases: Checkpoint["leases"];
+  readonly leases: Checkpoint["leases"] | undefined;
 }
 
 /** Inspect once alongside the first receipt page, adding no empty-store probes. */
@@ -459,7 +459,7 @@ export function readReplayStart(
       deleted: checkpoint.deleted,
       floors: [...checkpoint.floors, ...liveFloors],
       receipts: checkpoint.receipts,
-      leases: checkpoint.leases,
+      leases: recordFormat ? checkpoint.leases : undefined,
     },
     receipts,
   };

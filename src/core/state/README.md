@@ -10,20 +10,12 @@ deletion revisions, numeric key reservations and maximum allocation floors survi
 and deletes. Record, deletion and lease seeds retain each namespace's covered watermark.
 Checkpoint headers, tuples and live bodies decode row by row. Initialization and restore verify
 checkpoint plus tail, retained allocator authority and deletion floors. Migration `008_record_checkpoint_reader`
-makes older writers refuse the store. Format 2 also seeds lease holders, generation high-water and
-core request fingerprint/result witnesses. Bounded prefixes include acquisitions, renewals and
-releases; covered lease bodies and sequences must exactly equal event replay before the tail.
+makes older writers refuse the store. Format 2 seeds leases and core request witnesses; covered
+lease bodies and last sequences must equal event replay before the tail. The writer deletes no events.
 Version 1 remains supported; cloud v2 still refuses checkpoints without changing its wire format.
 
-Cloud command answers and refusals remain witnesses in the registered command-receipt domain
-table, preserved by the complete owner image. Folding the event prefix does not rewrite them.
-Answers stop at the earlier of 24 hours and credential expiry. Refused ids remain denied until
-credential expiry, including refusals at answer capacity. Lease-route receipt envelopes retain
-the credential deadline too. Both stores prune denial witnesses only after retry authority ends.
-`MAX_LIVE_DENIALS` caps both stores at 4,096 live denials. At capacity, one durable barrier
-refuses all new ids through every blocked credential's expiry; existing witnesses still replay.
-No duplicate denied checkpoint row is written. Credential revocations
-remain outside event checkpoint replay, and cloud dump v3 transport is separate work.
+Both cloud receipt stores retain denied ids through credential validity and answers for min(24h, validity).
+Live denials are capped at 4,096 plus one barrier. Credential revocations remain outside event replay.
 
 `StateOwner` accepts the locked `SqlDatabase` and `ClockPort` ports. `initialize()` is an explicit write; construction and reads do not initialize anything. `client(namespace, actor)` returns a `DeletableStateClient`, with namespace and actor captured. It never exposes a connection.
 
