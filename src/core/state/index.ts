@@ -649,6 +649,8 @@ export function verifyEventDerivedState(
   }
   for (const [namespace, name, , revision] of checkpoint?.deleted ?? [])
     recordRevisions.set(key(namespace, name), revision);
+  for (const [namespace, subject, , , body] of checkpoint?.leases ?? [])
+    leases.set(key(namespace, subject), parseRestoreJson(body) as LeaseRecord);
   const reject = (table: string, name: string): never => {
     throw new RestoreConsistencyFailure(table, name);
   };

@@ -59,6 +59,7 @@ test.each([1, 2, 256])(
       expect(
         saved.db.all("SELECT * FROM state_checkpoint_receipts"),
       ).toHaveLength(3);
+      saved.db.run("DELETE FROM state_events WHERE sequence<=?", [count]);
       tail(full);
       tail(saved);
       verifyEventDerivedState(full.db, high(full), 1);

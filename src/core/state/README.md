@@ -10,8 +10,10 @@ deletion revisions, numeric key reservations and maximum allocation floors survi
 and deletes. The maximum live/deleted sequence in each namespace is its covered watermark.
 Checkpoint headers, tuples and live bodies decode row by row. Initialization and restore verify
 checkpoint plus tail, retained allocator authority and deletion floors. Migration `008_record_checkpoint_reader`
-makes older writers refuse the store. The writer refuses coordination/request witnesses and deletes
-no events. Version 1 remains supported; cloud v2 still refuses checkpoints without changing its wire format.
+makes older writers refuse the store. Format 2 also seeds lease holders, generation high-water and
+core request fingerprint/result witnesses. Bounded prefixes include acquisitions, renewals and
+releases; initialize and restore replay only the uncovered tail. The writer deletes no events.
+Version 1 remains supported; cloud v2 still refuses checkpoints without changing its wire format.
 
 `StateOwner` accepts the locked `SqlDatabase` and `ClockPort` ports. `initialize()` is an explicit write; construction and reads do not initialize anything. `client(namespace, actor)` returns a `DeletableStateClient`, with namespace and actor captured. It never exposes a connection.
 

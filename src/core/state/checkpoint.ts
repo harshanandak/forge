@@ -236,6 +236,7 @@ export interface CheckpointSeed {
   readonly deleted: Checkpoint["deleted"];
   readonly floors: Checkpoint["floors"];
   readonly receipts: Checkpoint["receipts"];
+  readonly leases: Checkpoint["leases"];
 }
 
 /** Inspect once alongside the first receipt page, adding no empty-store probes. */
@@ -272,7 +273,7 @@ export function readReplayStart(
   }
   const recordFormat = Number(header.format_version) === 2;
   for (const kind of recordFormat
-    ? ["leases", "receipts", "denied"]
+    ? ["denied"]
     : ["leases", "floors", "reservations", "denied"])
     if (db.get(`SELECT 1 FROM state_checkpoint_${kind} LIMIT 1`))
       invalid(`Unsupported checkpoint ${kind} entries; newer Forge required`);
@@ -357,7 +358,13 @@ export function readReplayStart(
       ],
       ["namespace", "request_id"],
     ),
-    leases: [],
+    leases: recordFormat
+      ? read(
+          "leases",
+          ["namespace", "subject", "sequence", "generation", "body"],
+          ["namespace", "subject"],
+        )
+      : [],
     floors: recordFormat
       ? read(
           "floors",
@@ -381,6 +388,7 @@ export function readReplayStart(
     receipts: [],
     floors: [],
     reservations: [],
+    leases: [],
   };
   decodeCheckpoint(JSON.stringify(empty));
   for (const kind of [
@@ -389,6 +397,7 @@ export function readReplayStart(
     "receipts",
     "floors",
     "reservations",
+    "leases",
   ] as const)
     for (const row of checkpoint[kind])
       decodeCheckpoint(JSON.stringify({ ...empty, [kind]: [row] }));
@@ -408,7 +417,14 @@ export function readReplayStart(
   if (
     recordFormat &&
     db.get(
-      "SELECT 1 FROM state_namespace_watermarks w WHERE w.sequence<>MAX(COALESCE((SELECT MAX(sequence) FROM state_checkpoint_live WHERE namespace=w.namespace),0),COALESCE((SELECT MAX(sequence) FROM state_checkpoint_deleted WHERE namespace=w.namespace),0),COALESCE((SELECT MAX(sequence) FROM state_events WHERE namespace=w.namespace AND sequence>?),0)) LIMIT 1",
+      "SELECT 1 FROM state_checkpoint_leases c LEFT JOIN state_namespace_watermarks w USING(namespace) WHERE w.sequence IS NULL OR w.sequence<c.sequence LIMIT 1",
+    )
+  )
+    invalid("Checkpoint namespace watermark requires repair");
+  if (
+    recordFormat &&
+    db.get(
+      "SELECT 1 FROM state_namespace_watermarks w WHERE w.sequence<>MAX(COALESCE((SELECT MAX(sequence) FROM state_checkpoint_live WHERE namespace=w.namespace),0),COALESCE((SELECT MAX(sequence) FROM state_checkpoint_deleted WHERE namespace=w.namespace),0),COALESCE((SELECT MAX(sequence) FROM state_checkpoint_leases WHERE namespace=w.namespace),0),COALESCE((SELECT MAX(sequence) FROM state_events WHERE namespace=w.namespace AND sequence>?),0)) LIMIT 1",
       [checkpoint.header[3]],
     )
   )
@@ -443,6 +459,7 @@ export function readReplayStart(
       deleted: checkpoint.deleted,
       floors: [...checkpoint.floors, ...liveFloors],
       receipts: checkpoint.receipts,
+      leases: checkpoint.leases,
     },
     receipts,
   };
