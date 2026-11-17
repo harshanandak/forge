@@ -1,8 +1,6 @@
 # Coding standards
 
-Read at review time; behavior lives in [AGENTS.md](AGENTS.md). **Guard** names CI enforcement under `test/structure/**`; review checks the rest. Guard enforceable findings.
-
-These govern this repo and Forge's shipped behaviour, not user projects.
+Forge-only review rules. Behavior: [AGENTS.md](AGENTS.md). **Guard**: CI in `test/structure/**`; guard enforceable findings and review the rest.
 
 ## Language
 
@@ -27,7 +25,7 @@ These govern this repo and Forge's shipped behaviour, not user projects.
 
 ## Dependencies and external tools
 
-- **R1. One adapter per dependency.** Every third-party package and owned platform builtin is reached through exactly one `src/adapters/<name>/`, implementing a typed port from `src/ports/`. The adapter declares what it wraps in `adapter.json` with `package` or `builtin` and its `port`. Core, blocks and other adapters import the port type, never the package or another adapter's internals. External executables are the exception: a block runs them through the process port (`forge.process@1`, slot `process`), which owns spawning, PATH resolution and the environment. The block declares the `process` slot in `requires` and the `external:process` effect in its manifest, and its README names the programs it runs. **Guard:** `dependency-boundary`.
+- **R1. One adapter per dependency.** Access each third-party package and owned platform builtin through exactly one `src/adapters/<name>/` implementing a typed `src/ports/` port. `adapter.json` declares its `package` or `builtin` and `port`. Core, blocks and other adapters import the port type, never the package or another adapter's internals. External executables are exempt: use the process port (`forge.process@1`, slot `process`) for spawning, PATH resolution and environment. Declare the `process` slot in `requires`, the `external:process` effect in the block manifest, and the executables in its README. **Guard:** `dependency-boundary`.
 - **R2. No import of a dependency outside its adapter.** `node:child_process` is allowed only in `src/adapters/process/` and `node:sqlite` only in `src/adapters/store-sqlite/`. Build scripts under `tools/` and tests may import development dependencies. **Guard:** `dependency-boundary`.
 - **R3. Missing is a result, not a crash.** An adapter reports `Unavailable { reason, remedy }`. Only `git` and the Node runtime may be required.
 - **R4. Our toolchain is not the user's.** No package manager, test runner, linter or hook runner is named outside adapters and project detectors. User commands come from the project's own declared scripts and config. **Guard:** `toolchain-names`.
@@ -63,7 +61,7 @@ These govern this repo and Forge's shipped behaviour, not user projects.
 - Document byte caps live in `test/structure/budget.json`; prune before growing. **Guard:** `budget`.
 - One decision record namespace (`ADR-NNN`) with a title; refer to a decision by name. Records hold durable choices only.
 - Reports lead with the answer in plain language, then evidence and what would change it.
-- PR size: aim for 200 non-test lines; stop at 330. Measure additions plus deletions with `git diff --numstat origin/main...HEAD`, split test/non-test. Propose slices above 100 non-test lines.
+- PR size: at most 330 non-test lines when the PR touches security, state or cloud code, record admission rules included; up to about 600 elsewhere; no cap for deletion-only PRs. Test size is a default of 2 times the changed code lines plus 100; the PR body says why each extra row guards a real case. Measure additions plus deletions with `git diff --numstat origin/main...HEAD`, split test and non-test.
 - Tests run in hosted CI; after a red caused only by a test's own setup, run that one file locally once.
 - Review ends with no P0/P1 and own regressions fixed; file adjacent findings. At most 2 review rounds per mechanism, then write a 3-line threat model (asset, threat, mitigation) and choose ship, simplify or park. Never waive P0/P1.
 - The pull request title is a conventional commit title; it becomes the changelog line. Do not edit the changelog by hand.
