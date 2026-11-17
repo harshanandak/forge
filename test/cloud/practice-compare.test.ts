@@ -222,6 +222,30 @@ test.each(["all", "audit"] as const)(
     expect(result.observed.tables.state_events.actual.rows).toBe(events.length);
   },
 );
+test("a divergent global update is named before a missing audit", () => {
+  const sample = fixture();
+  sample.actual.state_events!.pop();
+  const update = sample.actual.state_events!.at(-1)!;
+  update.key = "issue:work-1";
+  const result = refusal(sample.before, sample.actual, sample.window);
+  expect(result.observed.failure).toEqual({
+    table: "state_events",
+    key: [String(update.sequence)],
+    reason: "stop global event key",
+  });
+});
+test("an extra event after the audit is compared as an extra event", () => {
+  const sample = fixture();
+  const audit = sample.actual.state_events!.at(-1)!;
+  const sequence = Number(audit.sequence) + 1;
+  sample.actual.state_events!.push({ ...audit, sequence, key: "issue:work-1" });
+  const result = refusal(sample.before, sample.actual, sample.window);
+  expect(result.observed.failure).toEqual({
+    table: "state_events",
+    key: [String(sequence)],
+    reason: "unexpected row",
+  });
+});
 test("foreign exceptions are not serialized as comparison details", () => {
   expect(
     api.practiceComparisonRefusal(

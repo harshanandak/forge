@@ -1,5 +1,4 @@
 import { ForgeFailure } from "../src/contract/failure.ts";
-import { AssertionError } from "node:assert";
 import {
   TABLES,
   COLUMNS,
@@ -9,17 +8,21 @@ import {
   digests,
   type Table,
 } from "../cloud/conformance/digest.ts";
-import { stopPlan, stopOverlay } from "../cloud/conformance/restored.ts";
-import { stopObservation } from "../cloud/conformance/stop-live.ts";
+import {
+  stopPlan,
+  stopOverlay,
+  type StopDelta,
+} from "../cloud/conformance/restored.ts";
+import {
+  ComparisonCheckFailure,
+  comparisonCheck,
+  comparisonRecord,
+  type ComparisonProblem as Failure,
+} from "../cloud/conformance/comparison-check.ts";
 import type { Tables } from "../cloud/conformance/max-source.ts";
 
 type Row = Tables[string][number];
 type Digest = { rows: number; digest: string };
-interface Failure {
-  table: Table;
-  key: string[];
-  reason: string;
-}
 export interface PracticeComparison {
   ok: boolean;
   phase: "stop-metadata" | "rows" | "complete";
@@ -55,7 +58,11 @@ const keyOf = (table: Table, row: Row) =>
   KEYS[table].map((column) => String(row[column]));
 const encoded = (table: Table, row: Row) =>
   JSON.stringify(COLUMNS[table].map((column) => row[column]));
-function firstMismatch(table: Table, expected: Row[], actual: Row[]): Failure {
+function firstMismatch(
+  table: Table,
+  expected: Row[],
+  actual: Row[],
+): Failure | undefined {
   for (
     let index = 0;
     index < Math.max(expected.length, actual.length);
@@ -85,7 +92,63 @@ function firstMismatch(table: Table, expected: Row[], actual: Row[]): Failure {
     }
     return { table, key: keyOf(table, left), reason: "different row content" };
   }
-  throw new Error("Digest mismatch without a divergent row");
+}
+function observeStop(
+  source: Tables,
+  actual: Tables,
+  window: readonly [number, number],
+): StopDelta {
+  const globalKey = ["forge/work", "lane-control:global"];
+  const global = actual.state_records!.find(
+    (row) => row.namespace === globalKey[0] && row.key === globalKey[1],
+  );
+  comparisonCheck(global, "state_records", globalKey, "missing row");
+  const record = comparisonRecord(global.body, "state_records", globalKey);
+  const events = source.state_events!;
+  const mismatch = firstMismatch(
+    "state_events",
+    events,
+    actual.state_events!.slice(0, events.length),
+  );
+  if (mismatch) throw new ComparisonCheckFailure(mismatch);
+  const next = Number(events.at(-1)?.sequence ?? 0) + 1;
+  const event = (index: number, sequence: number) => {
+    const row = actual.state_events![index];
+    const key = [String(sequence)];
+    comparisonCheck(row, "state_events", key, "missing row");
+    comparisonCheck(
+      row.sequence === sequence,
+      "state_events",
+      typeof row.sequence === "number" && row.sequence < sequence
+        ? keyOf("state_events", row)
+        : key,
+      typeof row.sequence === "number" && row.sequence < sequence
+        ? "unexpected row"
+        : "missing row",
+    );
+    return row;
+  };
+  const update = event(events.length, next);
+  comparisonCheck(
+    update.key === "lane-control:global",
+    "state_events",
+    [String(next)],
+    "stop global event key",
+  );
+  const audit = event(events.length + 1, next + 1);
+  comparisonCheck(
+    typeof audit.key === "string" &&
+      audit.key.startsWith("lane-control:audit:"),
+    "state_events",
+    [String(next + 1)],
+    "stop audit suffix",
+  );
+  return {
+    at: record.updatedAt as string,
+    incarnation: record.value.incarnation as string,
+    auditId: audit.key.slice("lane-control:audit:".length),
+    window,
+  };
 }
 export function verifyPracticeReadback(
   source: Tables,
@@ -116,36 +179,15 @@ export function verifyPracticeReadback(
   };
   let expected: Tables;
   try {
-    const observation = stopObservation(window);
-    observation.add(actual);
-    const delta = observation.delta();
+    const delta = observeStop(source, actual, window);
     const stopTime = Date.parse(delta.at);
     report.stopOffsetMs = Number.isFinite(stopTime)
       ? stopTime - window[0]
       : null;
     expected = stopOverlay(source, stopPlan(source, delta));
   } catch (error) {
-    const message = error instanceof Error ? error.message.split("\n")[0]! : "";
-    const reason =
-      error instanceof AssertionError && !error.generatedMessage
-        ? message
-        : error instanceof SyntaxError
-          ? "stop metadata JSON"
-          : error instanceof RangeError
-            ? "stop ISO clock"
-            : "stop expectation construction";
-    const table: Table = reason.includes("audit")
-      ? "state_events"
-      : "state_records";
-    const key =
-      table === "state_events"
-        ? [
-            String(
-              actual.state_events!.at(-1)?.sequence ?? "missing stop audit",
-            ),
-          ]
-        : ["forge/work", "lane-control:global"];
-    report.failure = { table, key, reason };
+    if (!(error instanceof ComparisonCheckFailure)) throw error;
+    report.failure = error.problem;
     throw new ComparisonFailure(report);
   }
   report.phase = "rows";
@@ -159,8 +201,17 @@ export function verifyPracticeReadback(
       actual: received[table],
       match,
     };
-    if (!match && !report.failure)
-      report.failure = firstMismatch(table, expected[table]!, actual[table]!);
+    if (!match && !report.failure) {
+      const failure = firstMismatch(table, expected[table]!, actual[table]!);
+      if (!failure)
+        throw new ForgeFailure({
+          code: "INTERNAL",
+          message: "Digest mismatch without a divergent row",
+          retry: "never",
+          observed: { table },
+        });
+      report.failure = failure;
+    }
   }
   if (report.failure) throw new ComparisonFailure(report);
   report.ok = true;
