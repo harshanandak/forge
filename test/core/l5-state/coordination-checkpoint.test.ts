@@ -61,7 +61,6 @@ test.each([1, 2, 256])(
       expect(
         saved.db.all("SELECT * FROM state_checkpoint_receipts"),
       ).toHaveLength(3);
-      saved.db.run("DELETE FROM state_events WHERE sequence<=?", [count]);
       tail(full);
       tail(saved);
       verifyEventDerivedState(full.db, high(full), 1);
@@ -171,7 +170,6 @@ test.each([
           "lease-only",
         );
       s.owner.checkpoint(1);
-      s.db.run("DELETE FROM state_events");
       target.owner.initialize();
       if (kind === "lease body")
         s.db.run("UPDATE state_checkpoint_leases SET body='{}'");
@@ -365,9 +363,14 @@ test.each([
   },
 );
 
-test.each(["initialize", "restore"])(
-  "%s refuses a holder-swapped seed despite matching generation and canonical live body",
-  async (mode) => {
+test.each([
+  ["initialize", "holder"],
+  ["restore", "holder"],
+  ["initialize", "sequence"],
+  ["restore", "sequence"],
+])(
+  "%s refuses a %s-swapped seed despite matching generation and canonical live body",
+  async (mode, changed) => {
     const source = await fixture(),
       target = await fixture();
     try {
@@ -380,7 +383,9 @@ test.each(["initialize", "restore"])(
       source.owner.checkpoint(1);
       const events = source.owner.events(ns);
       const requests = source.owner.export().requests;
-      for (const table of ["state_checkpoint_leases", "state_leases"]) {
+      for (const table of changed === "holder"
+        ? ["state_checkpoint_leases", "state_leases"]
+        : []) {
         const row = source.db.get(
           `SELECT body FROM ${table} WHERE subject='s'`,
         )!;
@@ -392,6 +397,10 @@ test.each(["initialize", "restore"])(
           canonicalJson(body),
         ]);
       }
+      if (changed === "sequence")
+        source.db.run(
+          "UPDATE state_checkpoint_leases SET sequence=2 WHERE subject='s'",
+        );
       expect(source.owner.events(ns)).toEqual(events);
       expect(source.owner.export().requests).toEqual(requests);
       target.owner.initialize();

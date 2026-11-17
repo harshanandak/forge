@@ -12,7 +12,7 @@ Checkpoint headers, tuples and live bodies decode row by row. Initialization and
 checkpoint plus tail, retained allocator authority and deletion floors. Migration `008_record_checkpoint_reader`
 makes older writers refuse the store. Format 2 also seeds lease holders, generation high-water and
 core request fingerprint/result witnesses. Bounded prefixes include acquisitions, renewals and
-releases; initialize and restore replay only the uncovered tail. The writer deletes no events.
+releases; covered lease bodies and sequences must exactly equal event replay before the tail.
 Version 1 remains supported; cloud v2 still refuses checkpoints without changing its wire format.
 
 Cloud command answers and refusals remain witnesses in the registered command-receipt domain

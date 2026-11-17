@@ -314,7 +314,6 @@ function changedLeaseEvent(
 }
 
 interface ReceiptPlan {
-  acquisition: Pick<LeaseRecord, "subject" | "generation"> | undefined;
   fingerprint: string;
   result: string;
   kind: "put" | "acquire";
@@ -353,19 +352,7 @@ function receiptPlan(row: SqlRow): ReceiptPlan {
         }))
   )
     invalid("Invalid imported request fence");
-  let acquisition: ReceiptPlan["acquisition"];
-  if (input.kind === "acquire") {
-    const lease = result as LeaseRecord;
-    if (
-      !validateLeaseRecord(lease).ok ||
-      !Number.isSafeInteger(lease.generation) ||
-      input.subject !== lease.subject
-    )
-      invalid("Invalid acquisition witness");
-    acquisition = { subject: lease.subject, generation: lease.generation };
-  }
   return {
-    acquisition,
     fingerprint: digest(input),
     result: digest(result),
     kind: input.kind,
@@ -646,6 +633,7 @@ export function verifyEventDerivedState(
   const records = new Map<string, { revision: number; digest: string }>();
   const recordRevisions = new Map<string, number>();
   const leases = new Map<string, LeaseRecord>();
+  const leaseSequences = new Map<string, number>();
   const requests = new Set<string>();
   const plans = new Map<string, ReceiptPlan | boolean>();
   const key = (namespace: string, name: string): string =>
@@ -662,8 +650,6 @@ export function verifyEventDerivedState(
   }
   for (const [namespace, name, , revision] of checkpoint?.deleted ?? [])
     recordRevisions.set(key(namespace, name), revision);
-  for (const [namespace, subject, , , body] of checkpoint?.leases ?? [])
-    leases.set(key(namespace, subject), parseRestoreJson(body) as LeaseRecord);
   const reject = (table: string, name: string): never => {
     throw new RestoreConsistencyFailure(table, name);
   };
@@ -708,12 +694,10 @@ export function verifyEventDerivedState(
       !plan ||
       typeof plan === "boolean" ||
       `sha256:${plan.fingerprint}` !== fingerprint ||
-      `sha256:${plan.result}` !== result ||
-      (plan.acquisition !== undefined &&
-        (leases.get(key(namespace, plan.acquisition.subject))?.generation ??
-          0) < plan.acquisition.generation)
+      `sha256:${plan.result}` !== result
     )
       reject("state_requests", id);
+    if (plan.kind === "acquire") continue;
     requests.add(id);
     plans.set(id, true);
   }
@@ -761,16 +745,31 @@ export function verifyEventDerivedState(
         // A value that is not a floor reserves nothing.
       }
   };
-  let sequence = checkpoint?.coveredSequence ?? 0;
+  const verifyLeaseSeeds = () => {
+    if (checkpoint && leases.size !== checkpoint.leases.length)
+      reject("state_checkpoint_leases", "covered replay");
+    for (const [namespace, subject, sequence, , body] of checkpoint?.leases ??
+      []) {
+      const id = key(namespace, subject);
+      if (
+        leaseSequences.get(id) !== sequence ||
+        json(leases.get(id)) !== json(parseRestoreJson(body))
+      )
+        reject("state_checkpoint_leases", id);
+    }
+  };
+  const covered = checkpoint?.coveredSequence ?? 0;
+  let sequence = covered;
   for (const row of rows(
     "state_events",
     "sequence,namespace,key,body",
     ["sequence"],
-    checkpoint === undefined ? undefined : [checkpoint.coveredSequence],
+    checkpoint === undefined ? undefined : [0],
   )) {
+    const eventSequence = Number(row.sequence);
+    if (eventSequence > covered && sequence === covered) verifyLeaseSeeds();
     const id = rowKey("state_events", row, "key");
-    sequence++;
-    if (row.sequence !== sequence && row.sequence !== BigInt(sequence))
+    if (eventSequence > covered && eventSequence !== ++sequence)
       reject("state_events", id);
     inspect("state_events", id, () => {
       const event = parseRestoreJson(String(row.body)) as StateEvent;
@@ -782,6 +781,12 @@ export function verifyEventDerivedState(
       )
         reject("state_events", id);
 
+      if (
+        eventSequence <= covered &&
+        (event.type === `${event.namespace}:record.updated@1` ||
+          event.type === `${event.namespace}:record.deleted@1`)
+      )
+        return;
       if (event.requestId !== undefined) {
         const request = key(event.namespace, event.requestId);
         if (requests.has(request)) reject("state_requests", request);
@@ -983,9 +988,11 @@ export function verifyEventDerivedState(
         )
           reject("state_leases", id);
         leases.set(id, lease);
+        leaseSequences.set(id, eventSequence);
       }
     });
   }
+  if (sequence === covered) verifyLeaseSeeds();
   if (sequence !== highWaterMark) reject("state_events", "high-water mark");
   for (const [id, highest] of allocator) {
     const [namespace, prefix] = JSON.parse(id) as [string, string];
