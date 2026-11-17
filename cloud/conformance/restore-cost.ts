@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { StateOwner } from "../../src/core/state/index.ts";
+import { canonicalJson } from "../../src/core/config/pointer.ts";
 import { domain } from "../src/project.ts";
 import { durableStore } from "../src/store.ts";
 import { dumpPage, limitsFrom } from "../src/dump.ts";
@@ -143,9 +144,42 @@ async function verify(
   }
   const observed = stopObservation(window);
   observed.add(back);
+  const at = observed.floorClock();
+  const actor = { kind: "agent", id: "cloud-restore" };
+  const value = { number: expected.lastSequence, prefix: "issue:work-" };
+  const record = {
+    namespace: "forge/work",
+    key: "allocation:issue:work-",
+    revision: 1,
+    value,
+    updatedAt: at,
+    updatedBy: actor,
+  };
+  const floorRows: readonly [Tables[string][number], Tables[string][number]] = [
+    {
+      namespace: record.namespace,
+      key: record.key,
+      revision: 1,
+      body: canonicalJson(record),
+    },
+    {
+      sequence: expected.lastSequence + 1,
+      namespace: record.namespace,
+      key: record.key,
+      body: canonicalJson({
+        type: "forge/work:record.updated@1",
+        namespace: record.namespace,
+        key: record.key,
+        revision: 1,
+        at,
+        actor,
+        data: value,
+      }),
+    },
+  ];
   const proof = tally(
     expected,
-    stopPlan(original, observed.delta(), undefined, 1),
+    stopPlan(original, observed.delta(), floorRows, 1),
   );
   for (const table of TABLES)
     for (const row of back[table]!) fold(proof, table, row);
