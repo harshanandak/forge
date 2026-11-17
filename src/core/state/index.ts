@@ -2203,6 +2203,9 @@ export class StateOwner {
   hasRecordFamilies(namespace: string): boolean {
     return this.#families.enrolled(namespace);
   }
+  assertRecordValue(namespace: string, key: string, value: unknown): void {
+    this.#families.assertValue(namespace, key, value);
+  }
   assertRecordFamily(record: StateRecord): void {
     if (!validateStateRecord(record).ok) invalid("Invalid imported record");
     this.#families.assertValue(record.namespace, record.key, record.value);

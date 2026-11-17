@@ -115,6 +115,7 @@ function fixture(checks = ["typecheck"]) {
     );
   };
   const state = {
+    validateRecord() {},
     count: (prefix: string) =>
       [...records.keys()].filter((key) => key.startsWith(prefix)).length,
     maxNumber: () => 0,

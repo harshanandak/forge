@@ -23,6 +23,19 @@ numbered-write failures roll back records, events, requests and allocation floor
 Restore admits every candidate record before replacement and again after candidate migration.
 Bulk row importers call `assertRecordFamily` inside their transaction before committing rows.
 
+Trusted local assembly clients validate live `get`, `list` and `listRange` results for
+an enrolled namespace. Their `validateRecord(key, value)` capability calls the owner's
+`assertRecordValue(namespace, key, value)` without writing. Candidate puts, batches,
+numbered builders and landing notes call the same admission before installation.
+Runtime drafts also validate each candidate before staging, including candidates that
+a later update would overwrite. History and export remain available without re-admission.
+
+`LocalState` takes an optional compiled registry as its seventh constructor argument.
+It shares that registry with read/write owners and privately staged recovery owners,
+so restore retains the same policy. Existing callers supply no registry and remain
+unenrolled. Work enrollment waits for repaired-copy cutover; this wiring adds no
+legacy-value exception or repair.
+
 `put` atomically checks the expected revision, checks any lease fence on the owner's clock, writes the record, appends its event, and saves the idempotent result. A reused request ID with different input is refused. Acquisition takes a holder and request ID, without a generation. Renewal, release and fenced writes require the current generation. A device-qualified lease authorizes the same device and session, independently of actor, agent or harness labels. A stored legacy lease without device identity retains actor-plus-session authorization until a holder-checked rewrite records the qualified caller. Renew and release record the current caller's actor and holder labels; reading historical events preserves the identities accepted at that time. Released and expired generations are never reused. A historical acquisition replay cannot revive authority.
 
 `delete(key, { expectRevision, readSet? })` removes an existing active record and appends a `record.deleted@1` event atomically. The event returns the next revision, timestamp and actor. It requires a positive matching revision, checks the same read-set and optional lease fence as `put` inside the transaction, and has no request ID or idempotent replay receipt. A repeated deletion is refused. Bound assembly clients additionally require a declared write effect and refuse acquisition contexts; held contexts fence the named subject, defaulting to the key.

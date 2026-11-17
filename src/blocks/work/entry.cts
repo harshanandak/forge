@@ -680,6 +680,8 @@ function atomicRuntime<Input, Output>(
         },
         put: (key, value, options) =>
           stage(() => {
+            const candidate = copyPlanned(value);
+            state.validateRecord(key, candidate);
             const prior = draft.get(key);
             if ((prior?.revision ?? 0) !== options.expectRevision)
               return fail(
@@ -689,14 +691,14 @@ function atomicRuntime<Input, Output>(
             constraints(options);
             entries.set(key, {
               key,
-              value: copyPlanned(value),
+              value: candidate,
               expectRevision:
                 entries.get(key)?.expectRevision ?? options.expectRevision,
             });
             const record: StateRecord = {
               namespace: "forge/work",
               key,
-              value: copyPlanned(value),
+              value: copyPlanned(candidate),
               revision: (prior?.revision ?? 0) + 1,
               updatedAt: new Date(state.now()).toISOString(),
               updatedBy: prior?.updatedBy ?? { kind: "agent", id: "planned" },

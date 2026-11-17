@@ -380,6 +380,7 @@ function fixture(
     { expectRevision: 0 },
   );
   const state = {
+    validateRecord() {},
     count: (prefix: string) =>
       [...records.keys()].filter((key) => key.startsWith(prefix)).length,
     maxNumber: () => 0,

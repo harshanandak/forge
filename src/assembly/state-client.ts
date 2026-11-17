@@ -49,6 +49,7 @@ export interface LeaseStateClient extends DeletableStateClient {
   ): ReturnType<DeletableStateClient["delete"]>;
   holder(): LeaseHolder;
   now(): number;
+  validateRecord(key: string, value: unknown): void;
   formatComment(base: string, entries: readonly string[]): string;
   lease(subject: string): LeaseRecord | undefined;
   acquire(
@@ -89,6 +90,12 @@ export function createStateClient(options: {
 }): LeaseStateClient {
   const { owner, namespace, context, write, requestId } = options;
   const acquired = new Map<string, LeaseRecord>();
+  const validateRecord = (key: string, value: unknown) =>
+    owner?.assertRecordValue(namespace, key, value);
+  function admitted<T extends StateRecord | undefined>(record: T): T {
+    if (record) validateRecord(record.key, record.value);
+    return record;
+  }
   function writable(): StateOwner {
     if (!write)
       refuse(
@@ -123,12 +130,14 @@ export function createStateClient(options: {
     },
     now: () => Date.now(),
     formatComment,
-    get: (key: string) => owner?.get(namespace, key),
-    list: (prefix?: string) => owner?.list(namespace, prefix) ?? [],
+    validateRecord,
+    get: (key: string) => admitted(owner?.get(namespace, key)),
+    list: (prefix?: string) =>
+      (owner?.list(namespace, prefix) ?? []).map(admitted),
     count: (prefix: string) => owner?.count(namespace, prefix) ?? 0,
     maxNumber: (prefix: string) => owner?.maxNumber(namespace, prefix) ?? 0,
     listRange: (range: RangeOptions) =>
-      owner?.listRange(namespace, range) ?? [],
+      (owner?.listRange(namespace, range) ?? []).map(admitted),
     history: (options: HistoryOptions) =>
       owner?.history(namespace, options) ?? [],
     events: (key?: string) => owner?.events(namespace, key) ?? [],
@@ -137,7 +146,7 @@ export function createStateClient(options: {
       const state = writable();
       const held = fence(`issue:${input.id}`);
       const authorityKey = `landing:${input.id}:${input.pr}`;
-      const authority = state.get(namespace, authorityKey);
+      const authority = admitted(state.get(namespace, authorityKey));
       const landing = authority?.value as
         | {
             id?: string;
@@ -147,7 +156,7 @@ export function createStateClient(options: {
             note?: string;
           }
         | undefined;
-      const issue = state.get(namespace, held.subject);
+      const issue = admitted(state.get(namespace, held.subject));
       const value = issue?.value as
         { status?: string; receipt?: string } | undefined;
       const lease = state.lease(namespace, held.subject);
@@ -171,7 +180,7 @@ export function createStateClient(options: {
           "No matching accepted landing authorizes this comment",
         );
       const prefix = `comment:${input.id}:`;
-      const comments = state.list(namespace, prefix);
+      const comments = state.list(namespace, prefix).map(admitted);
       const matching = comments.find((row) => {
         const body = (row.value as { body?: string }).body;
         return (
@@ -183,13 +192,17 @@ export function createStateClient(options: {
       const written = state.putNext(
         namespace,
         prefix,
-        () => ({
-          value: { id: input.id, body: landing.note },
-          readSet: [
-            { key: authorityKey, expectRevision: authority.revision },
-            { key: held.subject, expectRevision: issue.revision },
-          ],
-        }),
+        (key) => {
+          const value = { id: input.id, body: landing.note };
+          validateRecord(key, value);
+          return {
+            value,
+            readSet: [
+              { key: authorityKey, expectRevision: authority.revision },
+              { key: held.subject, expectRevision: issue.revision },
+            ],
+          };
+        },
         held.holder.actor,
       );
       if (!jsonEqual(state.get(namespace, written.key), written))
@@ -222,7 +235,9 @@ export function createStateClient(options: {
         refuse("CONTEXT_MISSING", "Missing actor");
       if (context.variant === "leased" && context.leaseMode !== "held")
         refuse("CONTEXT_MISSING", "Acquisition cannot mutate records");
-      return state.put(namespace, key, structuredClone(value), context.actor, {
+      const candidate = structuredClone(value);
+      validateRecord(key, candidate);
+      return state.put(namespace, key, candidate, context.actor, {
         expectRevision: put.expectRevision,
         ...(put.readSet === undefined
           ? {}
@@ -248,8 +263,11 @@ export function createStateClient(options: {
           "A numbered write under a lease names its subject",
         );
       // The builder may run in an isolate; clone what it returns, as put does for its value.
-      const cloned = (key: string, number: number) =>
-        structuredClone(build(key, number));
+      const cloned = (key: string, number: number) => {
+        const candidate = structuredClone(build(key, number));
+        validateRecord(key, candidate.value);
+        return candidate;
+      };
       return state.putNext(namespace, prefix, cloned, context.actor, {
         ...(context.variant === "leased" && next?.subject !== undefined
           ? { fence: fence(next.subject) }
@@ -269,10 +287,11 @@ export function createStateClient(options: {
         );
       return state.putMany(
         namespace,
-        entries.map((entry) => ({
-          ...entry,
-          value: structuredClone(entry.value),
-        })),
+        entries.map((entry) => {
+          const value = structuredClone(entry.value);
+          validateRecord(entry.key, value);
+          return { ...entry, value };
+        }),
         context.actor,
         {
           ...(batch?.readSet === undefined

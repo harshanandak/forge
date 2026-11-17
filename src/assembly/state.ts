@@ -1,6 +1,7 @@
 ﻿import { dirname, join } from "node:path";
 import { closeSync, existsSync } from "node:fs";
 import { StateOwner } from "../core/state/index.ts";
+import { RecordFamilyRegistry } from "../core/state/families.ts";
 import { createSqliteStore } from "../adapters/store-sqlite/index.ts";
 import { resolveIn } from "../adapters/fs/index.ts";
 import { windowsPrivateFiles } from "../adapters/process/windows-acl.ts";
@@ -65,6 +66,7 @@ export class LocalState {
   readonly #directories: DirectoryCreatePort | undefined;
   readonly #missing: ((write: boolean) => Promise<void>) | undefined;
   readonly #beforeWrite: (() => void) | undefined;
+  readonly #families: RecordFamilyRegistry;
   readonly #entries = new Map<boolean, Entry>();
   #queue: Promise<void> = Promise.resolve();
   #closed = false;
@@ -75,6 +77,7 @@ export class LocalState {
     missing?: (write: boolean) => Promise<void>,
     projectRoot?: string,
     beforeWrite?: () => void,
+    families: RecordFamilyRegistry = new RecordFamilyRegistry(),
   ) {
     this.#path = path;
     this.#projectRoot = projectRoot;
@@ -82,6 +85,7 @@ export class LocalState {
     this.#directories = directories;
     this.#missing = missing;
     this.#beforeWrite = beforeWrite;
+    this.#families = families;
   }
   #resolveProjectPath(): void {
     try {
@@ -136,7 +140,15 @@ export class LocalState {
           directory,
           path,
           files,
-          state: new LocalState(path, this.#store, this.#directories),
+          state: new LocalState(
+            path,
+            this.#store,
+            this.#directories,
+            undefined,
+            undefined,
+            undefined,
+            this.#families,
+          ),
         };
       } catch (error) {
         removeDurable(directory, { recursive: true }, files);
@@ -187,9 +199,11 @@ export class LocalState {
           : result.unavailable.reason,
       });
     try {
-      const owner = new StateOwner(result.handle.value, {
-        now: () => Date.now(),
-      });
+      const owner = new StateOwner(
+        result.handle.value,
+        { now: () => Date.now() },
+        this.#families,
+      );
       if (write) owner.initialize();
       let finish!: () => void;
       const drained = new Promise<void>((resolve) => {

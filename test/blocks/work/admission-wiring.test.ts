@@ -222,16 +222,12 @@ test.each(["get", "list", "listRange"] as const)(
 test("the trusted candidate callback refuses before a candidate can be overwritten", async () => {
   const f = await fixture();
   try {
-    const validate = Reflect.get(f.state, "validateRecord") as (
-      key: string,
-      value: unknown,
-    ) => void;
     const before = f.snapshot();
     expect(() =>
-      validate("issue:work-1", { ...issue, status: "closed" }),
+      f.state.validateRecord("issue:work-1", { ...issue, status: "closed" }),
     ).toThrow("WORK_VALUE_CLOSE_EVIDENCE");
     expect(f.snapshot()).toEqual(before);
-    validate("issue:work-1", issue);
+    f.state.validateRecord("issue:work-1", issue);
   } finally {
     await f.close();
   }
@@ -239,7 +235,7 @@ test("the trusted candidate callback refuses before a candidate can be overwritt
 
 test("one compiled policy reaches an explicitly enrolled local owner and its restore", async () => {
   const f = await fixture();
-  const local = Reflect.construct(LocalState, [
+  const local = new LocalState(
     ":memory:",
     createSqliteStore(process.cwd()),
     undefined,
@@ -247,7 +243,7 @@ test("one compiled policy reaches an explicitly enrolled local owner and its res
     undefined,
     undefined,
     policy,
-  ]) as LocalState;
+  );
   try {
     const target = (await local.open(true))!;
     expect(target.hasRecordFamilies(namespace)).toBe(true);
