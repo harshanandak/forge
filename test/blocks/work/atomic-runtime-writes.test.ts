@@ -94,6 +94,7 @@ async function fixture() {
   let batches = 0,
     singles = 0;
   let beforeCommit = () => {};
+  let duringReadPull = () => {};
   const config = {
     lanes: { autopilot: { enabled: true, receiptChecks: ["typecheck"] } },
   };
@@ -126,10 +127,19 @@ async function fixture() {
           : undefined,
     },
     environment: { select: () => ({ CLAUDE_CODE_SESSION_ID: "owner-1" }) },
+    receipts: {
+      get: () => ({
+        status: "PASS",
+        subject: "b".repeat(40),
+        checked: [{ name: "typecheck", status: "PASS" }],
+      }),
+    },
     process: {
       resolve: (path: string) => ({ kind: "resolved", path }),
-      run: () =>
-        Promise.resolve({
+      run: async () => {
+        await Promise.resolve();
+        duringReadPull();
+        return {
           stdout: JSON.stringify({
             state: "MERGED",
             headRefName: "work-1",
@@ -141,7 +151,8 @@ async function fixture() {
           exitCode: 0,
           timedOut: false,
           truncated: false,
-        }),
+        };
+      },
     },
   };
   return {
@@ -150,6 +161,9 @@ async function fixture() {
     config,
     beforeCommit: (fn: () => void) => {
       beforeCommit = fn;
+    },
+    duringReadPull: (fn: () => void) => {
+      duringReadPull = fn;
     },
     close: () => opened.handle.close(),
     reject: (fn: typeof rejects) => {
@@ -358,6 +372,50 @@ test("a late revision conflict preserves the racing write and refuses the comple
     expect(afterRace).toBeDefined();
     if (afterRace === undefined) throw new Error("Commit race was not reached");
     expect(f.snapshot()).toEqual(afterRace);
+  } finally {
+    await f.close();
+  }
+});
+
+test("resume of a tail after a journal race refuses without committing its staged action event", async () => {
+  const f = await fixture();
+  try {
+    const journal = {
+      id: "work-1",
+      pr: 7,
+      url: "https://github.com/example/repo/pull/7",
+      head: "a".repeat(40),
+      mergeCommit: "b".repeat(40),
+      branch: "work-1",
+      named: [],
+      step: "receipt",
+      receipt: "receipt-1",
+      recorded: {},
+      counters: { actions: 0, records: 0 },
+    };
+    f.seed("autopilot:global", { stopped: {}, owner: { channel } });
+    f.seed("autopilot:work-1", journal);
+    f.seed("autopilot-clock:work-1", {
+      startedAt: new Date().toISOString(),
+    });
+    let afterRace: ReturnType<typeof f.snapshot> | undefined;
+    f.duringReadPull(() => {
+      f.duringReadPull(() => {});
+      f.seed("autopilot:work-1", {
+        ...journal,
+        counters: { actions: 0, records: 1 },
+      });
+      afterRace = f.snapshot();
+    });
+    let refusal: unknown;
+    try {
+      await f.invoke("lane.next", { all: true });
+    } catch (error) {
+      refusal = error;
+    }
+    expect(afterRace).toBeDefined();
+    expect(refusal).toMatchObject({ error: { code: "REVISION_CONFLICT" } });
+    expect(f.snapshot()).toEqual(afterRace!);
   } finally {
     await f.close();
   }
