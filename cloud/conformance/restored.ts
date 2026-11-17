@@ -333,7 +333,6 @@ export function releasedTables(source: Tables, at: string, floors = 0): Tables {
   }
   return tables;
 }
-/** The caller captures restoreWindow around the final request, independently of the target image. */
 export async function restoreStopped(
   source: Iterable<Dump | Page>,
   actual: SqlDatabase,

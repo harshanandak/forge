@@ -21,7 +21,7 @@ import {
   TABLES,
   type Expected,
 } from "./digest.ts";
-import { stopObservation } from "./stop-live.ts";
+import { stopObservation, stopWindowOf } from "./stop-live.ts";
 import { stopPlan } from "./restored.ts";
 import type { StatementProfile } from "./write-profile.ts";
 import { populateCost } from "./cost-fixture.ts";
@@ -189,13 +189,13 @@ for (const records of sizes) {
       kv = 0,
       window: readonly [number, number] = [0, 0];
     for (const part of parts) {
-      const before = Date.now();
       const response = await request(target, "restore", part, true);
-      window = [before, Date.now()];
       const body = response.body as {
-        response: { ok: boolean };
+        response: { ok: boolean; value: { done?: boolean } };
         profile: StatementProfile[];
       };
+      if (body.response.value.done !== false)
+        window = stopWindowOf(body.response.value);
       assert.equal(body.response.ok, true);
       assert.equal(
         body.profile.reduce((n, entry) => n + entry.rows, 0),

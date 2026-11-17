@@ -15,7 +15,7 @@ import {
   stopProof,
   type StopDelta,
 } from "./restored.ts";
-import { expectsStop, liveStops } from "./stop-live.ts";
+import { expectsStop, liveStops, stopWindowOf } from "./stop-live.ts";
 import { capacityStop } from "./stop-capacity.ts";
 import type { Tables } from "./max-source.ts";
 import { canonicalJson } from "../../src/core/config/pointer.ts";
@@ -179,7 +179,6 @@ async function adminCall(
   body?: string,
   token = adminToken,
 ): Promise<{ status: number; body: AdminBody }> {
-  const started = Date.now();
   const response = await fetch(`${base}/p/${project}/${route}`, {
     method,
     headers: token === "" ? {} : { authorization: `Bearer ${token}` },
@@ -211,7 +210,9 @@ async function adminCall(
   }
   const result = { status: response.status, body: bodyValue };
   if (expectsStop() && response.status === 200 && route === "restore") {
-    restoreStops.restored(project, [started, Date.now()]);
+    const { done } = bodyValue.value as { done?: boolean };
+    if (done !== false)
+      restoreStops.restored(project, stopWindowOf(bodyValue.value));
   }
   if (
     expectsStop() &&

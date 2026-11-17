@@ -291,6 +291,7 @@ test.each(cases)(
                 value: {
                   page: 0,
                   done: true,
+                  stopWindow: deltas[0]!.window,
                   restored: Object.fromEntries(
                     Object.entries(source).map(([t, rows]) => [t, rows.length]),
                   ),
