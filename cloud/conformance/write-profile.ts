@@ -3,6 +3,7 @@ export interface StatementProfile {
   statement: string;
   calls: number;
   rows: number;
+  reads: number;
 }
 
 export function recordWrite(
@@ -10,10 +11,11 @@ export function recordWrite(
   sql: string,
   bindings: readonly unknown[],
   rows: number,
+  reads: number,
 ): void {
   if (!profile) return;
   const statement = sql.replace(/\s+/g, " ").trim();
-  let kind = "setup and finalization";
+  let kind = /^(SELECT|WITH)\b/i.test(statement) ? "read queries" : "other SQL";
   if (/^(CREATE|ALTER|DROP)\b/i.test(statement)) {
     kind = /CREATE (?:UNIQUE )?INDEX/i.test(statement)
       ? "schema indexes"
@@ -33,7 +35,7 @@ export function recordWrite(
       ];
     if (typeof key === "string")
       kind = key.startsWith("issue:work-")
-        ? `import ${insert[1]}`
+        ? `${insert[1]} inserts`
         : key.startsWith("allocation:")
           ? "floor settlement"
           : key.startsWith("lane-control:")
@@ -41,8 +43,15 @@ export function recordWrite(
             : "other state inserts";
   }
   const id = `${kind}\n${statement}`;
-  const entry = profile.get(id) ?? { kind, statement, calls: 0, rows: 0 };
+  const entry = profile.get(id) ?? {
+    kind,
+    statement,
+    calls: 0,
+    rows: 0,
+    reads: 0,
+  };
   entry.calls++;
   entry.rows += rows;
+  entry.reads += reads;
   profile.set(id, entry);
 }

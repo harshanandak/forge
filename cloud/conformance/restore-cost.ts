@@ -7,7 +7,6 @@ import { domain } from "../src/project.ts";
 import { durableStore } from "../src/store.ts";
 import { dumpPage, limitsFrom } from "../src/dump.ts";
 import {
-  ACTOR,
   DUMP,
   FROZEN,
   scratchStorage,
@@ -25,6 +24,7 @@ import {
 import { stopObservation } from "./stop-live.ts";
 import { stopPlan } from "./restored.ts";
 import type { StatementProfile } from "./write-profile.ts";
+import { populateCost } from "./cost-fixture.ts";
 
 const base = process.env.CLOUD_BASE!;
 assert.match(base, /^http:\/\/127\.0\.0\.1:\d+$/);
@@ -75,22 +75,7 @@ function source(records: number) {
   const db = durableStore(scratch.storage);
   const owner = new StateOwner(db, { now: () => FROZEN });
   owner.initialize([domain]);
-  for (let n = 1; n <= records; n++)
-    owner.put(
-      "forge/work",
-      `issue:work-${n}`,
-      {
-        id: `work-${n}`,
-        prefix: "work",
-        title: `Synthetic ${n}`,
-        status: "open",
-        labels: [],
-        dependsOn: [],
-        createdAt: new Date(FROZEN).toISOString(),
-      },
-      ACTOR,
-      { expectRevision: 0 },
-    );
+  populateCost(owner, records);
   const tables = tablesOf(scratch.db);
   assert.equal(tables.state_records!.length, records);
   assert.equal(tables.state_events!.length, records);
@@ -220,9 +205,15 @@ for (const records of sizes) {
       kv += response.kv;
       for (const entry of body.profile) {
         const key = `${entry.kind}\n${entry.statement}`;
-        const prior = statements.get(key) ?? { ...entry, calls: 0, rows: 0 };
+        const prior = statements.get(key) ?? {
+          ...entry,
+          calls: 0,
+          rows: 0,
+          reads: 0,
+        };
         prior.calls += entry.calls;
         prior.rows += entry.rows;
+        prior.reads += entry.reads;
         statements.set(key, prior);
       }
     }
@@ -230,7 +221,7 @@ for (const records of sizes) {
     for (const table of ["state_records", "state_events"])
       assert.equal(
         [...statements.values()]
-          .filter((entry) => entry.kind === `import ${table}`)
+          .filter((entry) => entry.kind === `${table} inserts`)
           .reduce((n, entry) => n + entry.calls, 0),
         records,
       );

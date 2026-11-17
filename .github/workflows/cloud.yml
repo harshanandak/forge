@@ -335,6 +335,17 @@ jobs:
             workerd_rss large
             stop
           )
+          for size in 1000 8000; do
+            (
+              export config=wrangler.large.jsonc FORGE_CLOUD_PROJECT="ci-command-cost-$size" FORGE_CLOUD_ID_PREFIX=work
+              persist="$RUNNER_TEMP/wrangler-command-cost-$size"
+              start "command-cost-$size"
+              measured "command-cost-$size" bun conformance/command-cost.ts "$size"
+              workerd_rss "command-cost-$size"
+              stop
+            )
+          done
+          bun conformance/command-cost.ts report
           # Number journey (forge-1306): comment and link numbers across deleted history, restore and concurrent adds. It has fresh
           # persistence and the default dump limits (the large config). The first Worker admits ci-numbers-a; the second starts on the
           # same persistence after a restart and admits ci-numbers-b, the project the first run restored into.
@@ -505,7 +516,9 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: restore-cost-${{ github.run_id }}
-          path: ${{ runner.temp }}/restore-cost.json
+          path: |
+            ${{ runner.temp }}/restore-cost.json
+            ${{ runner.temp }}/command-cost*.json
           if-no-files-found: error
       - name: wrangler log
         if: failure()
