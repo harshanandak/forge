@@ -69,6 +69,8 @@ for (const [field, value] of [
   ["version", "wrong-version"],
   ["commit", "f".repeat(40)],
   ["dirty", true],
+  ["runId", "wrong-run"],
+  ["missing", null],
 ] as const) {
   test(`installed identity rejects a substituted ${field}`, () => {
     const row = mkdtempSync(join(work, `fault-${field}-`));
@@ -77,9 +79,23 @@ for (const [field, value] of [
       writeFileSync(
         preload,
         `
+        if (${field === "runId" || field === "missing"} && process.argv[1]?.endsWith('run.ts')) {
+          const fs = await import('node:fs');
+          const {syncBuiltinESMExports} = await import('node:module');
+          const read = fs.default.readFileSync;
+          fs.default.readFileSync = function(path, ...args) {
+            const bytes = read.call(this, path, ...args);
+            if (String(path).replaceAll(String.fromCharCode(92), '/').endsWith('/dist/build.json')) {
+              if (${field === "missing"}) throw Error('installed build identity record missing');
+              return JSON.stringify({...JSON.parse(String(bytes)), runId:'wrong-run'});
+            }
+            return bytes;
+          };
+          syncBuiltinESMExports();
+        }
         const write = process.stdout.write;
         process.stdout.write = function (chunk, ...args) {
-          if (process.argv.at(-2) === '--version' && process.argv.at(-1) === '--json') {
+          if (${field !== "runId" && field !== "missing"} && process.argv.at(-2) === '--version' && process.argv.at(-1) === '--json') {
             const identity = JSON.parse(String(chunk));
             identity[${JSON.stringify(field)}] = ${JSON.stringify(value)};
             chunk = JSON.stringify(identity) + String.fromCharCode(10);
@@ -109,6 +125,41 @@ for (const [field, value] of [
       );
       expect(out.status, out.stderr).not.toBe(0);
       expect(out.stderr).toContain("installed build identity");
+      if (field === "runId" || field === "missing") {
+        const runner = join(author, "tools/pack-smoke/run.ts");
+        const source = readFileSync(runner, "utf8");
+        const removed = source.replace(
+          /    assert\.deepEqual\(\n      JSON.parse\(readFileSync\(join\(installedDir, "dist\/build.json"\), "utf8"\)\),[\s\S]*?\n    \);/,
+          "",
+        );
+        expect(removed).not.toBe(source);
+        writeFileSync(runner, removed);
+        try {
+          const unguarded = spawnSync(
+            join(nodeRoot, process.platform === "win32" ? "node.exe" : "node"),
+            [runner],
+            {
+              cwd: author,
+              env: {
+                ...process.env,
+                FORGE_PACK_INPUT: archive,
+                FORGE_PACK_EXPECTED_SHA256: digest,
+                FORGE_PACK_EXPECTED_VERSION: build.version,
+                CI_HEAD: build.commit,
+                NODE_OPTIONS:
+                  `${process.env.NODE_OPTIONS ?? ""} --import=${pathToFileURL(preload).href}`.trim(),
+              },
+              encoding: "utf8",
+              timeout: 45_000,
+              windowsHide: true,
+            },
+          );
+          expect(unguarded.status, unguarded.stderr).toBe(0);
+          expect(unguarded.stdout).toContain("pack-smoke: PASS");
+        } finally {
+          writeFileSync(runner, source);
+        }
+      }
     } finally {
       rmSync(row, { recursive: true, force: true });
     }

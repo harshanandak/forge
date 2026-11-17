@@ -525,13 +525,14 @@ test("packaged builds keep their identity and offer a package upgrade without ru
     );
     expect(result.error).toBeUndefined();
     expect(result.status, result.stdout + result.stderr).toBe(3);
+    const { version, commit, dirty } = JSON.parse(
+      readFileSync(join(installed, "dist/build.json"), "utf8"),
+    ) as { version: string; commit: string; dirty: boolean };
     expect(JSON.parse(result.stdout) as unknown).toMatchObject({
       error: {
         code: "UNKNOWN_COMMAND",
         hint: {
-          running: JSON.parse(
-            readFileSync(join(installed, "dist/build.json"), "utf8"),
-          ) as unknown,
+          running: { version, commit, dirty },
           required: expect.stringContaining("check.future") as unknown,
           cwd: null,
           command: "npm install --global forge-workflow@beta",

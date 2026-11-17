@@ -97,7 +97,13 @@ function fixture() {
   };
   const identity = { version, commit, dirty: false };
   const lock = {
-    packages: { "node_modules/forge-workflow": { version, integrity } },
+    packages: {
+      "node_modules/forge-workflow": {
+        version,
+        integrity,
+        resolved: `https://registry.npmjs.org/forge-workflow/-/forge-workflow-${version}.tgz`,
+      },
+    },
   };
   const record = { ...identity, runId: "12345" };
   return { statement, bundle, audit, identity, lock, record };
@@ -126,6 +132,13 @@ const rows: [string, (f: Fixture) => void][] = [
     (f) => Object.assign(f.identity, { commit: "c".repeat(40) }),
   ],
   ["dirty build", (f) => Object.assign(f.identity, { dirty: true })],
+  [
+    "local archive",
+    (f) => {
+      f.lock.packages["node_modules/forge-workflow"].resolved =
+        "file:candidate.tgz";
+    },
+  ],
   [
     "record wrong commit",
     (f) => {
@@ -282,7 +295,8 @@ for (const [name, change] of rows)
       expect(out.stdout.toString()).toContain('"runId":"12345"');
     if (
       name.startsWith("record ") ||
-      name === "substituted installed archive"
+      name === "substituted installed archive" ||
+      name === "local archive"
     ) {
       const source = readFileSync(
         resolve(import.meta.dirname, "../../../tools/release/readback.mjs"),
@@ -293,7 +307,12 @@ for (const [name, change] of rows)
             /assert\.deepEqual\(\s*read\(resolve\(dirname\(bin\), "\.\.\/build\.json"\)\),[\s\S]*?\);/,
             "",
           )
-        : source.replace("assert.equal(installed.integrity, integrity);", "");
+        : name === "local archive"
+          ? source.replace(
+              /assert\.equal\(\s*installed\.resolved,[\s\S]*?\);/,
+              "",
+            )
+          : source.replace("assert.equal(installed.integrity, integrity);", "");
       expect(removed).not.toBe(source);
       const mutant = join(dir, "guard-removed.mjs");
       writeFileSync(mutant, removed);
