@@ -66,6 +66,9 @@ test("idle expiry shares a bounded delete budget and retains live denial authori
         ],
       );
     }
+    s.db.run(
+      "INSERT INTO domain_cloud_command_receipts(request_id,fingerprint,outcome,result,created_at,expires_at,imported) VALUES ('audit','{}','ok','{}',1,2,1)",
+    );
     const state = s.owner.export();
     for (let i = 0; i < 5; i++) expect(maintain(s.db, now, 2)).toBe(2);
     expect(maintain(s.db, now, 2)).toBe(0);
@@ -73,10 +76,17 @@ test("idle expiry shares a bounded delete budget and retains live denial authori
       "domain_cloud_command_receipts",
       "domain_cloud_requests",
     ])
-      expect(s.db.all(`SELECT request_id FROM ${table}`)).toHaveLength(1);
+      expect(s.db.all(`SELECT request_id FROM ${table}`)).toHaveLength(
+        table === "domain_cloud_requests" ? 1 : 2,
+      );
     expect(s.owner.export().records).toEqual(state.records);
     expect(s.owner.export().requests).toEqual(state.requests);
     expect(maintain(s.db, now + 1000, 2)).toBe(2);
+    expect(
+      s.db.get(
+        "SELECT request_id FROM domain_cloud_command_receipts WHERE imported=1",
+      )?.request_id,
+    ).toBe("audit");
     usage(s.db, "domain_cloud_requests", [
       "request_id",
       "fingerprint",

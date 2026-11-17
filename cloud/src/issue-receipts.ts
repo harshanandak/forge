@@ -107,7 +107,7 @@ export function maintainReceipts(
     });
   return db.transaction(() => {
     const removed = db.run(
-      `DELETE FROM ${COMMAND_RECEIPTS} WHERE request_id IN (SELECT request_id FROM ${COMMAND_RECEIPTS} WHERE ${RETRY_UNTIL}<=? ORDER BY ${RETRY_UNTIL},request_id LIMIT ?)`,
+      `DELETE FROM ${COMMAND_RECEIPTS} WHERE request_id IN (SELECT request_id FROM ${COMMAND_RECEIPTS} WHERE imported=0 AND ${RETRY_UNTIL}<=? ORDER BY ${RETRY_UNTIL},request_id LIMIT ?)`,
       [now, batch],
     ).changes;
     return (
@@ -124,7 +124,7 @@ export function receiptMaintenanceDeadline(
   db: SqlDatabase,
 ): number | undefined {
   const value = db.get(
-    `SELECT MIN(deadline) AS deadline FROM (SELECT MIN(${RETRY_UNTIL}) AS deadline FROM ${COMMAND_RECEIPTS} UNION ALL SELECT MIN(json_extract(fingerprint,'$.retryUntil')) FROM domain_cloud_requests)`,
+    `SELECT MIN(deadline) AS deadline FROM (SELECT MIN(${RETRY_UNTIL}) AS deadline FROM ${COMMAND_RECEIPTS} WHERE imported=0 UNION ALL SELECT MIN(json_extract(fingerprint,'$.retryUntil')) FROM domain_cloud_requests)`,
   )?.deadline;
   if (value === null || value === undefined) return undefined;
   const time = Number(value);

@@ -938,9 +938,6 @@ export class Project {
     await this.#storage.put(STATE_EPOCH, crypto.randomUUID());
     await this.#storage.put(PROVISIONED, true);
     this.#provisioned = true;
-    const next = receiptMaintenanceDeadline(this.#open().db);
-    if (next !== undefined)
-      await this.#armMaintenance(Math.max(Date.now() + 1, next));
     return Response.json({ ok: true, value });
   }
 
