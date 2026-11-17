@@ -215,7 +215,10 @@ export function result(body: () => unknown) {
 }
 type Change = readonly [string, string];
 const changes: Record<string, Change> = {
-  historical: ["Math.max(summary.highest, summary.earlier)", "0"],
+  historical: [
+    "const needed = Math.max(summary.highest, summary.earlier);",
+    "const needed = 0;",
+  ],
   consistency: [
     "verifyEventDerivedState(\n      source,\n      manifest.eventHighWaterMark,\n      undefined,\n      numbered,\n    )",
     "({ highest: 0, earlier: 0, floorRevision: 0 })",
