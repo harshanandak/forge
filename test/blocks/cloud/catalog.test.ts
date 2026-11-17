@@ -244,6 +244,40 @@ test("a person's login runs through the catalog: code printed, credential saved,
   expect(text).not.toContain(SECRET);
 }, 60_000);
 
+test("cloud.logout is declared for a person only, runs through the catalog and unbinds the checkout", async () => {
+  open = await openCloud(login);
+  expect((await call(open, INPUT)).ok).toBe(true);
+  const entry = open.assembly.catalog
+    .list()
+    .find((candidate) => candidate.op === "cloud.logout");
+  expect(entry?.admitted).toBe(true);
+  expect(entry?.declaration.callers).toEqual(["human"]);
+  expect(entry?.declaration.effects).toEqual(["files:write"]);
+  const tools = createMcpHandlers(open.assembly.catalog, { budget: 100 })
+    .listTools()
+    .map((tool) => tool.name);
+  expect(tools).not.toContain("cloud_logout");
+  const invoke = (caller: "agent" | "human") =>
+    open!.assembly.catalog.invoke({
+      schemaVersion: "forge.invocation/1",
+      requestId: "cloud-2",
+      op: "cloud.logout",
+      input: {},
+      caller,
+      context: open!.ambient,
+    });
+  expect((await invoke("agent")).ok).toBe(false);
+  expect(existsSync(join(open.root, ".forge", "cloud.json"))).toBe(true);
+  const envelope = await invoke("human");
+  expect(envelope).toMatchObject({
+    ok: true,
+    op: "cloud.logout",
+    result: { status: "logged-out", project: PROJECT, tokenRevoked: false },
+  });
+  expect(existsSync(join(open.root, ".forge", "cloud.json"))).toBe(false);
+  expect(JSON.stringify(envelope)).not.toContain("fct_");
+}, 60_000);
+
 test("a login from a folder inside the checkout reads and writes the checkout root's files", async () => {
   open = await openCloud(login, { nested: true });
   expect(open.root).not.toBe(open.checkout);
