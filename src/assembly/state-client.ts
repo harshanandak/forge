@@ -24,6 +24,7 @@ import type {
 import { refuse } from "../core/trust/index.ts";
 import { jsonEqual } from "../contract/schema.ts";
 import { formatComment } from "../blocks/work/comment.ts";
+import { copyStateJson } from "./state-json.ts";
 
 type ClientPutOptions = PutOptions &
   Pick<WriteOptions, "readSet"> & { readonly subject?: string };
@@ -90,8 +91,10 @@ export function createStateClient(options: {
 }): LeaseStateClient {
   const { owner, namespace, context, write, requestId } = options;
   const acquired = new Map<string, LeaseRecord>();
-  const validateRecord = (key: string, value: unknown) =>
-    owner?.assertRecordValue(namespace, key, structuredClone(value));
+  const validateRecord = (key: string, value: unknown) => {
+    if (!owner?.hasRecordFamilies(namespace)) return;
+    owner.assertRecordValue(namespace, key, copyStateJson(value));
+  };
   function admitted<T extends StateRecord | undefined>(record: T): T {
     if (record) validateRecord(record.key, record.value);
     return record;
@@ -235,8 +238,8 @@ export function createStateClient(options: {
         refuse("CONTEXT_MISSING", "Missing actor");
       if (context.variant === "leased" && context.leaseMode !== "held")
         refuse("CONTEXT_MISSING", "Acquisition cannot mutate records");
+      validateRecord(key, value);
       const candidate = structuredClone(value);
-      validateRecord(key, candidate);
       return state.put(namespace, key, candidate, context.actor, {
         expectRevision: put.expectRevision,
         ...(put.readSet === undefined
@@ -264,9 +267,10 @@ export function createStateClient(options: {
         );
       // The builder may run in an isolate; clone what it returns, as put does for its value.
       const cloned = (key: string, number: number) => {
-        const candidate = structuredClone(build(key, number));
-        validateRecord(key, candidate.value);
-        return candidate;
+        const candidate = build(key, number);
+        if (state.hasRecordFamilies(namespace))
+          validateRecord(key, candidate.value);
+        return structuredClone(candidate);
       };
       return state.putNext(namespace, prefix, cloned, context.actor, {
         ...(context.variant === "leased" && next?.subject !== undefined
@@ -288,8 +292,9 @@ export function createStateClient(options: {
       return state.putMany(
         namespace,
         entries.map((entry) => {
-          const value = structuredClone(entry.value);
-          validateRecord(entry.key, value);
+          const candidate = entry.value;
+          validateRecord(entry.key, candidate);
+          const value = structuredClone(candidate);
           return { ...entry, value };
         }),
         context.actor,
@@ -316,7 +321,7 @@ export function createStateClient(options: {
         { actor: context.actor, session: context.session },
         durationMs,
         requestId,
-        structuredClone(options),
+        options === undefined ? undefined : copyStateJson(options),
       );
       acquired.set(subject, structuredClone(lease));
       return lease;

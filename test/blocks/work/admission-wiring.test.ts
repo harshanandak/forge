@@ -3,7 +3,10 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createSqliteStore } from "../../../src/adapters/store-sqlite/index.ts";
 import { nodeRunIsolation } from "../../../src/adapters/node-runtime/isolation.ts";
-import { StateOwner } from "../../../src/core/state/index.ts";
+import {
+  StateOwner,
+  type AcquireOptions,
+} from "../../../src/core/state/index.ts";
 import { RecordFamilyRegistry } from "../../../src/core/state/families.ts";
 import { createStateClient } from "../../../src/assembly/state-client.ts";
 import { LocalState } from "../../../src/assembly/state.ts";
@@ -109,8 +112,8 @@ async function fixture(registry = policy) {
     });
   seed("issue:work-1", issue);
   const snapshot = () =>
-    ["state_records", "state_events", "state_requests"].map((table) =>
-      db.all(`SELECT * FROM ${table}`),
+    ["state_records", "state_events", "state_leases", "state_requests"].map(
+      (table) => db.all(`SELECT * FROM ${table}`),
     );
   return {
     source,
@@ -139,6 +142,7 @@ async function invoke(
   input: Record<string, unknown>,
   queued = false,
   removed = false,
+  source = removed ? bundled.replace(needle, "void 0;") : bundled,
 ) {
   const isolation = await nodeRunIsolation.open();
   if (!isolation.ok) throw new Error("Fixture isolation refused");
@@ -146,7 +150,7 @@ async function invoke(
   const signal = new AbortController().signal;
   try {
     return await isolation.handle.value.run({
-      source: removed ? bundled.replace(needle, "void 0;") : bundled,
+      source,
       filename: "entry.cjs",
       operation: op,
       args: {
@@ -400,7 +404,7 @@ test("one compiled policy reaches an explicitly enrolled local owner and its res
   }));
 
 test("ordinary local owners remain unenrolled until repaired-copy cutover", async () => {
-  const state = local(new RecordFamilyRegistry());
+  const state = new LocalState(":memory:", createSqliteStore(process.cwd()));
   try {
     const owner = (await state.open(true))!;
     expect(owner.hasRecordFamilies(namespace)).toBe(false);
@@ -411,3 +415,139 @@ test("ordinary local owners remain unenrolled until repaired-copy cutover", asyn
     await state.close();
   }
 });
+
+test.each([false, true])(
+  "acquisition refuses custom prototypes without changing any table, nested=%s",
+  async (nested) =>
+    using(async (f) => {
+      const state = createStateClient({
+        owner: f.owner,
+        namespace,
+        context: {
+          variant: "leased",
+          leaseMode: "acquire",
+          actor,
+          session: { id: "fixture" },
+          project: { id: "fixture" },
+        },
+        write: true,
+        requestId: "inherited-acquire",
+      });
+      const candidates = {
+        entries: [
+          {
+            key: "comment:work-1:1",
+            value: nested
+              ? (Object.create({ id: "work-1", body: "companion" }) as object)
+              : { id: "work-1", body: "companion" },
+            expectRevision: 0,
+          },
+        ],
+        readSet: [{ key: "issue:work-1", expectRevision: 0 }],
+      };
+      const options: AcquireOptions = nested
+        ? candidates
+        : (Object.create(candidates) as AcquireOptions);
+      const before = f.snapshot();
+      await expect(
+        Promise.resolve().then(() =>
+          state.acquire("issue:work-1", 60_000, options),
+        ),
+      ).rejects.toMatchObject({
+        error: {
+          code: "INPUT_INVALID",
+          message: "State values must be plain JSON",
+          retry: "never",
+        },
+      });
+      expect(f.snapshot()).toEqual(before);
+    }, new RecordFamilyRegistry()),
+);
+
+test("unenrolled preflight ignores a function-valued transient candidate replaced by valid JSON", async () =>
+  using(async (f) => {
+    expect(f.owner.hasRecordFamilies(namespace)).toBe(false);
+    expect(() =>
+      f.state.validateRecord("issue:work-1", { extra: () => 1 }),
+    ).not.toThrow();
+    f.seed("autopilot:global", {
+      stopped: {},
+      owner: {
+        channel: { harness: "claude-code", thread: "claude-code:owner-1" },
+      },
+    });
+    const candidate = "const candidate = copyPlanned(value);";
+    expect(bundled.split(candidate)).toHaveLength(2);
+    const source = bundled.replace(
+      candidate,
+      `${candidate}
+      if (key.startsWith("autopilot-ask:")) {
+        if (candidate.status === "queued") candidate.extra = () => 1;
+        else delete candidate.extra;
+      }`,
+    );
+    await invoke(f, "lane.next", { all: true }, true, false, source);
+    const stored = f.owner.get(namespace, "autopilot-ask:work-1")?.value;
+    expect(stored).toMatchObject({ status: "sent" });
+    expect(stored).not.toHaveProperty("extra");
+  }, new RecordFamilyRegistry()));
+
+test("an enrolled runtime admits plain VM-realm candidates through the host boundary", async () =>
+  using(async (f) => {
+    f.seed("autopilot:global", {
+      stopped: {},
+      owner: {
+        channel: { harness: "claude-code", thread: "claude-code:owner-1" },
+      },
+    });
+    await invoke(f, "lane.next", { all: true }, true);
+    expect(f.owner.get(namespace, "autopilot-ask:work-1")?.value).toMatchObject(
+      { status: "sent" },
+    );
+  }));
+
+test.each([
+  ["custom prototype", () => Object.create({ title: "inherited" }) as object],
+  ["function", () => ({ extra: () => 1 })],
+  ["symbol value", () => ({ extra: Symbol("extra") })],
+  ["symbol key", () => ({ [Symbol("extra")]: 1 })],
+  ["date", () => ({ extra: new Date() })],
+  ["map", () => ({ extra: new Map() })],
+  [
+    "getter",
+    () =>
+      Object.defineProperty({}, "extra", {
+        enumerable: true,
+        get() {
+          throw new Error("Getter must never run");
+        },
+      }),
+  ],
+  ["nonfinite number", () => ({ extra: Infinity })],
+  ["array hole", () => ({ extra: new Array(1) })],
+  [
+    "cycle",
+    () => {
+      const value: { extra?: unknown } = {};
+      value.extra = value;
+      return value;
+    },
+  ],
+] as const)(
+  "enrolled admission refuses %s as typed non-JSON input",
+  async (_name, value) =>
+    using(async (f) => {
+      const before = f.snapshot();
+      await expect(
+        Promise.resolve().then(() =>
+          f.state.validateRecord("issue:work-1", value()),
+        ),
+      ).rejects.toMatchObject({
+        error: {
+          code: "INPUT_INVALID",
+          retry: "never",
+        },
+      });
+      expect(f.snapshot()).toEqual(before);
+    }),
+);
