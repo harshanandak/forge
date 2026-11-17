@@ -18,7 +18,7 @@ type Refusal = {
   code: string;
   message: string;
   observed: Comparison & {
-    failure: { table: Table; key: string[]; reason: string };
+    failure: { table: Table | null; key: string[] | null; reason: string };
   };
 };
 const api = importer as unknown as {
@@ -246,12 +246,54 @@ test("an extra event after the audit is compared as an extra event", () => {
     reason: "unexpected row",
   });
 });
-test("foreign exceptions are not serialized as comparison details", () => {
-  expect(
-    api.practiceComparisonRefusal(
-      new Error("fixture-private-value-must-not-leak"),
-    ),
-  ).toBeUndefined();
+test("foreign exceptions are refused without their message", () => {
+  const result = api.practiceComparisonRefusal(
+    new Error("fixture-private-value-must-not-leak"),
+  )!;
+  expect(result.observed.failure).toEqual({
+    table: null,
+    key: null,
+    reason: "unexpected:Error",
+  });
+  expect(JSON.stringify(result)).not.toContain(
+    "fixture-private-value-must-not-leak",
+  );
+});
+
+test("a malformed stop timestamp keeps a named check and every table digest", () => {
+  const f = fixture();
+  const global = f.actual.state_records!.find(
+    (row) => row.key === "lane-control:global",
+  )!;
+  const body = JSON.parse(String(global.body));
+  body.updatedAt = { toString: null };
+  global.body = JSON.stringify(body);
+  const result = refusal(f.before, f.actual, f.window);
+  expect(["stop ISO clock", "unexpected:TypeError"]).toContain(
+    result.observed.failure.reason,
+  );
+  for (const table of TABLES)
+    expect(result.observed.tables[table].actual.digest).toMatch(
+      /^[a-f0-9]{64}$/,
+    );
+});
+
+test("a generic exception inside a check becomes an unexpected refusal", () => {
+  const f = fixture();
+  Object.defineProperty(f.before.state_events!, "at", {
+    value: () => {
+      throw new RangeError("fixture-private-value-must-not-leak");
+    },
+  });
+  const result = refusal(f.before, f.actual, f.window);
+  expect(result.observed.failure).toEqual({
+    table: null,
+    key: null,
+    reason: "unexpected:RangeError",
+  });
+  expect(JSON.stringify(result)).not.toContain(
+    "fixture-private-value-must-not-leak",
+  );
 });
 
 test.each(["incarnation", "audit", "JSON"] as const)(
