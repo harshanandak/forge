@@ -107,6 +107,7 @@ function fixture(env?: unknown) {
   let project = new Project({ storage }, env);
   const bindings = {
     ADMIN_TOKEN: "fixture-admin",
+    FORGE_CLOUD_PROJECT: "a",
     PROJECTS: { idFromName: (name: string) => name, get: () => project },
   };
   async function send(
