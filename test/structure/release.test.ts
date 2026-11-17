@@ -90,6 +90,7 @@ function requiredReadback(w: ReturnType<typeof workflow>) {
   assert.deepEqual(journey, {
     name: "Required registry journeys",
     env: {
+      FORGE_PACK_EXPECTED_RUN_ID: "${{ inputs.run_id }}",
       FORGE_DEVICE_ROOT: "${{ runner.temp }}/release-forge",
       CHECK_ECOSYSTEM_TOOLS: "${{ runner.temp }}/fixture-tools",
       CHECK_PYTHON_PACKAGES: "${{ runner.temp }}/fixture-python",
@@ -139,6 +140,7 @@ test("cold installs use runner-scoped caches and an isolated Forge store in step
   expect(JSON.stringify(job?.env)).not.toContain("${{ runner.");
   const cold = job?.steps.find((step) => step.run?.includes("npx --yes"));
   expect(cold?.env).toEqual({
+    CI_RUN: "${{ inputs.run_id }}",
     npm_config_cache: "${{ runner.temp }}/release-npm-cache",
     BUN_INSTALL_CACHE_DIR: "${{ runner.temp }}/release-bun-cache",
     FORGE_DEVICE_ROOT: "${{ runner.temp }}/release-forge",

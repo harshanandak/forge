@@ -4,6 +4,18 @@ import type {
   TrackerOperations,
 } from "../../contract/author.ts";
 import type { LeaseStateClient } from "../../assembly/state-client.ts";
+const {
+  isCommit,
+  validReceipt,
+  validReason,
+  evidenceProblem,
+  ASK,
+  journalKey,
+  clockKey,
+  MERGE_KEY,
+  approvalFor,
+} =
+  require("./record-primitives.ts") as typeof import("./record-primitives.ts");
 import type {
   ReceiptsService,
   ProcessService,
@@ -1612,9 +1624,6 @@ type TailPull = {
   mergeCommit: string | null;
   url: string;
 };
-const isCommit = (value: unknown): value is string =>
-  typeof value === "string" && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(value);
-const journalKey = (id: string): string => `autopilot:${id}`;
 /** Append-only history; a repeat of the newest event is not written again. */
 function emit(
   state: LeaseStateClient,
@@ -2127,7 +2136,6 @@ async function tailNext(call: HandlerCall<TailInput>): Promise<TailAction> {
  * runs the full gate again (receipt and door paths included) and pins squash and --match-head-commit.
  * Anything it cannot read, and a head that moved while it read, pauses.
  */
-const MERGE_KEY = (id: string): string => `autopilot-merge:${id}`;
 const CODEX_REVIEWER = "chatgpt-codex-connector[bot]";
 const REVIEWER = /^[A-Za-z0-9][A-Za-z0-9-]*(?:\[bot\])?$/;
 // Code defaults: the runtime only applies top-level schema defaults, so a nested key can be absent.
@@ -2801,7 +2809,6 @@ function startDecision(
     };
   return { start: true };
 }
-const clockKey = (id: string): string => `autopilot-clock:${id}`;
 function clockOf(state: LeaseStateClient, id: string): number | undefined {
   const record = state.get(clockKey(id));
   if (!record) return undefined;
@@ -3011,7 +3018,6 @@ function activeLanes(state: LeaseStateClient, files: FilesService): string[] {
  * (a kill-switch trip goes at once). The owner's reply is recorded verbatim and mapped to a label
  * per item; anything else keeps every lane paused. Silence never applies a default.
  */
-const ASK = (id: string): string => `autopilot-ask:${id}`;
 const OWNER_WINDOW_MS = 30 * 60_000;
 type AskOption = {
   label: string;
@@ -3675,10 +3681,12 @@ function ownerReply(call: HandlerCall<TailRecordInput>): ReplyResult {
     const label = labels[index]!;
     const option = ask.options.find((entry) => entry.label === label)!;
     // A reply is an approval only for the gated step the ask carried, never a self-approval (D6).
-    const approval: Approval | undefined =
-      option.approve && ask.gated?.request !== undefined
-        ? { request: ask.gated.request, quote, source: heard }
-        : undefined;
+    const approval: Approval | undefined = approvalFor(
+      option.approve,
+      ask.gated?.request,
+      quote,
+      heard,
+    );
     saveAsk(
       state,
       {
@@ -4231,11 +4239,7 @@ function laneRecord(call: HandlerCall<TailRecordInput>):
       `Action ${action} is not the open action (${open ? `${open.n}, step ${open.step}` : "none"}); run lane next again`,
     );
   if (open.step === "receipt") {
-    if (
-      typeof result.receipt !== "string" ||
-      !result.receipt ||
-      result.receipt.length > 200
-    )
+    if (!validReceipt(result.receipt))
       return fail("INPUT_INVALID", 'receipt step needs {"receipt":"<id>"}');
     journal.receipt = result.receipt;
   } else if (open.step === "rebuild") {
@@ -5797,20 +5801,10 @@ const operations: Operations<WorkOperations> = {
     if (!record) fail("LEASE_NOT_HELD", "No such attempt on this issue");
     state = state.withOwnLease(key(record.key));
     state.putMany([], { subject: key(record.key) });
-    if (!/^[a-fA-F0-9]{40}$/.test(input.sha))
+    const problem = evidenceProblem(input);
+    if (problem === "sha")
       fail("INPUT_INVALID", "sha must be a full 40-hex commit id");
-    if (
-      input.metrics !== undefined &&
-      (input.metrics === null ||
-        typeof input.metrics !== "object" ||
-        Array.isArray(input.metrics) ||
-        Object.keys(input.metrics).length > 32 ||
-        Object.values(input.metrics).some(
-          (v) =>
-            typeof v !== "string" &&
-            (typeof v !== "number" || !Number.isFinite(v)),
-        ))
-    )
+    if (problem === "metrics")
       fail(
         "INPUT_INVALID",
         "metrics must be a flat object of at most 32 numbers or strings",
@@ -5865,7 +5859,7 @@ const operations: Operations<WorkOperations> = {
     if (!slots)
       fail("ISSUE_NOT_COMPETING", "Coordinator must set attempt slots");
     const reason = input.reason.trim();
-    if (!reason || Array.from(reason).length > 65536)
+    if (!validReason(reason))
       fail(
         "INPUT_INVALID",
         "reason must contain 1 to 65536 characters after trimming",
@@ -6051,9 +6045,10 @@ const operations: Operations<WorkOperations> = {
       const record = get(state, id, input.id);
       const reopen = input.reopen.trim(),
         reason = input.reason?.trim();
-      const invalid = (text: string) =>
-        !text || Array.from(text).length > 65536;
-      if (invalid(reopen) || (reason !== undefined && invalid(reason)))
+      if (
+        !validReason(reopen) ||
+        (reason !== undefined && !validReason(reason))
+      )
         fail(
           "INPUT_INVALID",
           "reason must contain 1 to 65536 characters after trimming",
@@ -6163,10 +6158,7 @@ const operations: Operations<WorkOperations> = {
       ...holder(state, dependency),
     }));
     const reason = input.reason?.trim();
-    if (
-      input.reason !== undefined &&
-      (!reason || Array.from(reason).length > 65536)
-    )
+    if (input.reason !== undefined && !validReason(reason))
       fail(
         "INPUT_INVALID",
         "reason must contain 1 to 65536 characters after trimming",

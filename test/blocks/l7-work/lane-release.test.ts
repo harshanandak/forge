@@ -18,6 +18,7 @@ import { createSqliteStore } from "../../../src/adapters/store-sqlite/index.ts";
 import { StateOwner } from "../../../src/core/state/index.ts";
 import { InvocationServices } from "../../../src/core/runtime/services.ts";
 import { ForgeFailure } from "../../../src/contract/failure.ts";
+import { inlineWorkPrimitives } from "../../../tools/bundle-work-primitives.ts";
 
 const namespace = "forge/work",
   head = "a".repeat(40),
@@ -50,8 +51,11 @@ async function fixture() {
   });
   writeFileSync(
     join(target, "entry.cjs"),
-    new Bun.Transpiler({ loader: "ts" }).transformSync(
-      readFileSync(join(source, "entry.cts"), "utf8"),
+    await inlineWorkPrimitives(
+      new Bun.Transpiler({ loader: "ts" }).transformSync(
+        readFileSync(join(source, "entry.cts"), "utf8"),
+      ),
+      join(source, "record-primitives.ts"),
     ),
   );
   const lane = {
