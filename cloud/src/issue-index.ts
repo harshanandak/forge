@@ -61,4 +61,4 @@ export const ISSUE_INDEX_MIGRATION = {
 };
 
 export const INDEX_PAGE = `SELECT key, ${COLUMNS.join(", ")} FROM ${ISSUE_INDEX} WHERE key>? ORDER BY key LIMIT ?`;
-export const INDEX_STATUS = `SELECT ok, status FROM ${ISSUE_INDEX} WHERE key=?`;
+export const INDEX_STATUS = `SELECT key, ok, status FROM ${ISSUE_INDEX} WHERE key=?`;

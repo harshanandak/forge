@@ -3945,7 +3945,7 @@ test("ready refuses stored issues with over 64 KiB of metadata as UNAVAILABLE be
         503,
         "UNAVAILABLE",
         1,
-        "Issue list is over its read budget",
+        "Issue forge-1 is over its read budget",
       ]);
       expect(got.probes).toEqual(WORK_PROBES.slice(0, 2));
       // The bodies are never loaded: the row-with-body query does not run.
@@ -4273,7 +4273,7 @@ test("blocked and stale refuse stored issues with over 64 KiB of metadata as UNA
           503,
           "UNAVAILABLE",
           1,
-          "Issue list is over its read budget",
+          "Issue forge-1 is over its read budget",
         ]);
         expect(got.probes).toEqual(WORK_PROBES.slice(0, 2));
         // The bodies are never loaded: the row-with-body query does not run.
