@@ -11,7 +11,13 @@ import {
   replay,
   MAX_RECEIPTS,
 } from "../../cloud/src/issue-receipts.ts";
-import { COMMAND_RECEIPTS, EXPORT_STATE } from "../../cloud/src/dump.ts";
+import {
+  COMMAND_RECEIPTS,
+  EXPORT_STATE,
+  dumpOf,
+  restoreDump,
+  limitsFrom,
+} from "../../cloud/src/dump.ts";
 import { fixture, actor, ns } from "../core/l5-state/retention.fixture.ts";
 
 setDefaultTimeout(30_000);
@@ -46,7 +52,14 @@ function cloud(s: Fixture, expiry = start + 2 * day) {
                 arg instanceof ArrayBuffer ? new Uint8Array(arg) : arg,
               ),
             )
-            .map((row) => ({ ...row })),
+            .map((row) =>
+              Object.fromEntries(
+                Object.entries(row).map(([key, value]) => [
+                  key,
+                  typeof value === "bigint" ? Number(value) : value,
+                ]),
+              ),
+            ),
       }),
     },
     transactionSync: (work) => s.db.transaction(work),
@@ -64,6 +77,8 @@ function cloud(s: Fixture, expiry = start + 2 * day) {
     { FORGE_CLOUD_PROJECT: "p", FORGE_CLOUD_ID_PREFIX: "forge" },
   );
   return {
+    db,
+    owner,
     create: (input: unknown, requestId = "r") =>
       createIssue(db, owner, {
         principal: ["token", "synthetic-principal", "synthetic"],
@@ -340,3 +355,55 @@ test("lease-route release does not return its original answer after 24h", async 
     await source.close();
   }
 });
+
+test.each(["invalid", start])(
+  "lease receipt import rejects retry deadline %s and leaves its target empty",
+  async (retryUntil) => {
+    const source = await fixture(),
+      target = await fixture();
+    const clock = spyOn(Date, "now").mockReturnValue(start);
+    try {
+      initialize(source);
+      initialize(target);
+      expect(
+        (
+          await cloud(source).lease({
+            subject: "s",
+            requestId: "r",
+            holder,
+            ttlMs: 0,
+          })
+        ).status,
+      ).toBe(400);
+      const valid = dumpOf(source.db),
+        bad = structuredClone(valid);
+      const row = bad.tables.domain_cloud_requests![0]!;
+      row.fingerprint = JSON.stringify({
+        ...(JSON.parse(String(row.fingerprint)) as Record<string, unknown>),
+        retryUntil,
+      });
+      const destination = cloud(target);
+      expect(() =>
+        restoreDump(
+          destination.db,
+          destination.owner,
+          bad,
+          limitsFrom(undefined),
+        ),
+      ).toThrow(/domain_cloud_requests.*not valid/);
+      expect(target.db.all("SELECT * FROM domain_cloud_requests")).toEqual([]);
+      expect(
+        restoreDump(
+          destination.db,
+          destination.owner,
+          valid,
+          limitsFrom(undefined),
+        ),
+      ).toMatchObject({ domain_cloud_requests: 1 });
+    } finally {
+      clock.mockRestore();
+      await source.close();
+      await target.close();
+    }
+  },
+);
