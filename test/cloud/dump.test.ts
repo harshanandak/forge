@@ -15,6 +15,7 @@ import {
 import type { SqlDatabase, SqlRow } from "../../src/ports/store.ts";
 import { baseline, migrate } from "../../src/core/state/migrations.ts";
 import { StateOwner } from "../../src/core/state/index.ts";
+import { ISSUE_INDEX } from "../../cloud/src/issue-index.ts";
 
 const MIB = 1024 * 1024;
 const SCALAR = 262_144;
@@ -299,7 +300,9 @@ for (const [table, values] of Object.entries(checkpointRows)) {
         )
         .map(({ name }) => [
           name,
-          db.all(`SELECT * FROM ${String(name)} ORDER BY rowid`),
+          db.all(
+            `SELECT * FROM ${String(name)} ORDER BY ${name === ISSUE_INDEX ? "key" : "rowid"}`,
+          ),
         ]);
     const before = snapshot(),
       changes = db.get("SELECT total_changes() AS n");

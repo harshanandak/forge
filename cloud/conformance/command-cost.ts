@@ -50,6 +50,32 @@ if (process.argv[2] === "report") {
       kvGets: fit("kvGets"),
     };
   });
+  const writes: Record<string, number> = {
+    "issue.create": 29,
+    "issue.claim": 21,
+    "issue.update": 16,
+    "issue.comment": 32,
+    "issue.release": 16,
+    "issue.close": 16,
+    "lease.acquire": 19,
+    "lease.renew": 14,
+  };
+  for (const fit of fits) {
+    if (
+      ["status", "issue.list", "issue.ready", "issue.show"].includes(
+        fit.command,
+      )
+    )
+      assert.ok(
+        Math.abs(fit.reads.perRecord) < 0.05,
+        `${fit.command} reads grow by ${fit.reads.perRecord} per record`,
+      );
+    if (fit.command in writes)
+      assert.ok(
+        fit.writes.fixed <= writes[fit.command]! + 2,
+        `${fit.command} writes ${fit.writes.fixed}, more than 2 over ${writes[fit.command]}`,
+      );
+  }
   console.log(`COMMAND_COST_FIT ${JSON.stringify(fits)}`);
   writeFileSync(
     join(directory, "command-cost.json"),

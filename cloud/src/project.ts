@@ -91,6 +91,7 @@ import {
 import { EVIDENCE_MIGRATION, EVIDENCE_RECEIPTS } from "./evidence-receipts.ts";
 import { LaneControlStore } from "./lane-control-store.ts";
 import { LANE_APPROVALS, LANE_APPROVAL_MIGRATION } from "./lane-approval.ts";
+import { ISSUE_INDEX, ISSUE_INDEX_MIGRATION } from "./issue-index.ts";
 import {
   isLaneCallback,
   isLaneRoute,
@@ -161,6 +162,7 @@ export const domain = {
     LANE_BROWSER_MIGRATION,
     RETENTION_MIGRATION,
     REQUEST_AGE_DUMP_MIGRATION,
+    ISSUE_INDEX_MIGRATION,
   ],
   tables: [
     PRAGMA_TABLE,
@@ -173,6 +175,7 @@ export const domain = {
     LANE_APPROVALS,
     EVIDENCE_RECEIPTS,
     LANE_BROWSER,
+    ISSUE_INDEX,
   ],
 };
 
@@ -621,12 +624,15 @@ export class Project {
             throw new Error("Missing dump tables");
           return Response.json({
             ok: true,
-            value: { initialized, dump: dumpUsage(db, this.#limits) },
+            value: { initialized, dump: dumpUsage(db, this.#limits, true) },
           });
         } catch (error) {
           const refusal = storageFailure(error);
           if (refusal) throw refusal;
-          throw fail("UNAVAILABLE", "Dump usage is unavailable");
+          throw fail(
+            "UNAVAILABLE",
+            "Dump usage is unavailable; upgrade the project with POST /p/<project>/upgrade",
+          );
         }
       }
       const reads = request.method === "GET" && route === "holder";

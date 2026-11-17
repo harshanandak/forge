@@ -1,27 +1,17 @@
-// Lists work issues from the state tables and writes nothing. The ready, blocked and stale modes are
-// the same scan with a different candidate rule. Reads go through the same read-only
-// views and fixed statements as show. Compact rows (every field but the body) are read first and
-// decide validity, filters, order and the page; only the returned page loads full records. One 8 MiB
-// payload budget covers the compact rows plus the page, as the SQL returns them, and is checked
-// before the rows and again before the page: a project over the row or byte budget is refused, never
-// read partly, and never silently shortened. Parity with the local list holds within these limits.
-// Every row is checked before any filter, limit or lease read; a lease is read only for an issue that
-// is still a candidate. SQLite still examines each source row for the projection, twice (preflight
-// and compact read), so CPU and source-scan cost grow with project size even when little is returned.
 import manifest from "../../src/blocks/work/forge.block.json" with { type: "json" };
 import type { TrackerItem } from "../../src/generated/types.ts";
+import type { SqlRow } from "../../src/ports/store.ts";
+import { INDEX_PAGE, INDEX_STATUS } from "./issue-index.ts";
 import {
-  COMPACT,
   configured,
   fail,
   holdsLease,
   invalid,
   issueRecord,
   leaseOf,
-  MAX_RECORD_BYTES,
-  parseBody,
-  PREFLIGHT,
+  minted,
   schemas,
+  shownId,
   shownItem,
   storedId,
   type IssueViews,
@@ -71,6 +61,46 @@ const rank = (order: readonly string[], issue: Stored): number => {
   return at === -1 ? order.length : at;
 };
 
+const MIN_BATCH = 64;
+const MAX_BATCH = 256;
+const ISSUE = "issue:";
+
+const names = (text: unknown): string[] => {
+  const parsed: unknown = typeof text === "string" ? JSON.parse(text) : null;
+  if (!Array.isArray(parsed) || !parsed.every((n) => typeof n === "string"))
+    throw invalid();
+  return parsed;
+};
+const indexed = <T>(read: () => T): T => {
+  try {
+    return read();
+  } catch (error) {
+    if (/no such table/i.test(String(error)))
+      throw fail("UNAVAILABLE", "Issue index needs POST /p/<project>/upgrade");
+    throw error;
+  }
+};
+const usable = (row: SqlRow, prefix: string): SqlRow => {
+  if (Number(row.ok) === 2)
+    throw fail(
+      "UNAVAILABLE",
+      `Issue ${shownId(String(row.key).slice(ISSUE.length), prefix)} is over its read budget`,
+    );
+  if (Number(row.ok) !== 1) throw invalid();
+  return row;
+};
+const stored = (row: SqlRow, prefix: string): Stored => {
+  usable(row, prefix);
+  return {
+    status: String(row.status),
+    ...(typeof row.kind === "string" ? { kind: row.kind } : {}),
+    ...(typeof row.parent === "string" ? { parent: row.parent } : {}),
+    labels: names(row.labels),
+    createdAt: String(row.created_at),
+    dependsOn: names(row.depends_on),
+  };
+};
+
 /** The issues in key order, `limit` at most, and whether more were stored than were returned. */
 export function listIssues(
   views: IssueViews,
@@ -84,49 +114,29 @@ export function listIssues(
   if (schemas().validate("#", input).length > 0)
     throw fail("INPUT_INVALID", "Invalid issue list input");
   const { limit = 1000, label = [], labels = [], ...by } = input as Input;
-  const range = [
-    MAX_RECORD_BYTES,
-    "forge/work",
-    "issue:",
-    "issue;",
-    MAX_SCAN_ROWS + 1,
-  ];
-  const total = views.records?.get(PREFLIGHT, range);
-  const metadata = Number(total?.bytes ?? 0);
-  if (Number(total?.count ?? 0) > MAX_SCAN_ROWS || metadata > MAX_SCAN_BYTES)
-    throw fail("UNAVAILABLE", "Issue list is over its read budget");
-  const rows = views.records?.all(COMPACT, range) ?? [];
-  if (rows.length !== Number(total?.count ?? 0)) throw invalid();
-  // Every row is parsed and checked (identity, schema) before any lease is read, even past `limit`.
-  const records = rows.map((row) => parseBody(row.body, MAX_RECORD_BYTES));
-  const ids = rows.map((row) => String(row.key).slice("issue:".length));
-  records.forEach((record, at) =>
-    shownItem(record, ids[at]!, undefined, now, prefix),
-  );
-  const value = (at: number) => records[at]!.value as Stored;
-  const statusOf = new Map(ids.map((id, at) => [id, value(at).status]));
   const parent =
     by.parent === undefined || by.parent === "none"
       ? undefined
-      : storedId(by.parent, prefix, (given) =>
-          records.some((_, at) => (value(at).prefix ?? "work") === given),
-        );
+      : storedId(by.parent, prefix, minted(views.records));
   const since = by.createdSince === undefined ? 0 : Date.parse(by.createdSince);
-  const leases = new Map<number, ReturnType<typeof leaseOf>>();
-  const lease = (at: number) => {
-    if (!leases.has(at)) leases.set(at, leaseOf(views, ids[at]!));
-    return leases.get(at);
+  const closed = (dep: string) => {
+    const row = indexed(() =>
+      views.records?.get(INDEX_STATUS, [`${ISSUE}${dep}`]),
+    );
+    return row !== undefined && usable(row, prefix).status === "closed";
+  };
+  const leases = new Map<string, ReturnType<typeof leaseOf>>();
+  const lease = (id: string) => {
+    if (!leases.has(id)) leases.set(id, leaseOf(views, id));
+    return leases.get(id);
   };
   const wanted = [...labels, ...label];
-  // A mode takes over from `ready`, as the local handler does.
   const onlyReady =
     mode === undefined && (ready !== undefined || by.ready === true);
-  const inMode = (at: number, v: Stored): boolean => {
+  const inMode = (id: string, v: Stored): boolean => {
     if (v.status !== "open") return false;
-    if (mode === "blocked")
-      return v.dependsOn.some((dep) => statusOf.get(dep) !== "closed");
-    // Checked as a whole first, like a ready candidate's lease; expiry is at or before now.
-    const held = lease(at);
+    if (mode === "blocked") return v.dependsOn.some((dep) => !closed(dep));
+    const held = lease(id);
     return (
       !holdsLease(held, now) &&
       held !== undefined &&
@@ -134,39 +144,53 @@ export function listIssues(
       Date.parse(String(held.expiresAt)) <= now
     );
   };
-  const picked = records.flatMap((_, at) => {
-    const v = value(at);
-    const ok =
-      (by.parent === undefined || v.parent === parent) &&
-      (by.kind === undefined || v.kind === by.kind) &&
-      wanted.every((name) => v.labels.includes(name)) &&
-      (by.status === undefined || v.status === by.status) &&
-      (by.createdSince === undefined || Date.parse(v.createdAt) >= since) &&
-      (mode === undefined || inMode(at, v)) &&
-      (!onlyReady ||
-        (v.status === "open" &&
-          v.dependsOn.every((dep) => statusOf.get(dep) === "closed") &&
-          !holdsLease(lease(at), now)));
-    return ok ? [at] : [];
-  });
-  // A stable sort keeps the stored order within one rank; the limit comes after it.
   const order = ready?.labelOrder ?? [];
+  const batch = Math.max(MIN_BATCH, Math.min(limit + 1, MAX_BATCH));
+  const picked: { id: string; v: Stored; size: number }[] = [];
+  let after = ISSUE,
+    full = false;
+  for (;;) {
+    const rows =
+      indexed(() => views.records?.all(INDEX_PAGE, [after, batch])) ?? [];
+    const checked = rows.map((row) => ({
+      id: String(row.key).slice(ISSUE.length),
+      v: stored(row, prefix),
+      size: Number(row.size),
+    }));
+    for (const { id, v, size } of checked) {
+      const ok =
+        (by.parent === undefined || v.parent === parent) &&
+        (by.kind === undefined || v.kind === by.kind) &&
+        wanted.every((name) => v.labels.includes(name)) &&
+        (by.status === undefined || v.status === by.status) &&
+        (by.createdSince === undefined || Date.parse(v.createdAt) >= since) &&
+        (mode === undefined || inMode(id, v)) &&
+        (!onlyReady ||
+          (v.status === "open" &&
+            v.dependsOn.every(closed) &&
+            !holdsLease(lease(id), now)));
+      if (!ok) continue;
+      picked.push({ id, v, size });
+      if (order.length === 0 && picked.length > limit) {
+        full = true;
+        break;
+      }
+    }
+    if (full || rows.length < batch) break;
+    after = String(rows.at(-1)!.key);
+  }
   const ranked =
     order.length === 0
       ? picked
-      : picked.toSorted(
-          (a, b) => rank(order, value(a)) - rank(order, value(b)),
-        );
+      : picked.toSorted((a, b) => rank(order, a.v) - rank(order, b.v));
   const page = ranked.slice(0, limit);
-  // The page's full records join the compact rows in the one budget, known from their stored sizes.
-  const pageBytes = page.reduce((sum, at) => sum + Number(rows[at]!.size), 0);
-  if (metadata + pageBytes > MAX_SCAN_BYTES)
+  if (page.reduce((sum, p) => sum + p.size, 0) > MAX_SCAN_BYTES)
     throw fail("UNAVAILABLE", "Issue list is over its read budget");
   return {
-    items: page.map((at) => {
-      const full = issueRecord(views, ids[at]!);
+    items: page.map(({ id }) => {
+      const full = issueRecord(views, id);
       if (full === undefined) throw invalid();
-      return shownItem(full, ids[at]!, lease(at), now, prefix);
+      return shownItem(full, id, lease(id), now, prefix);
     }),
     truncated: ranked.length > limit,
   };

@@ -17,8 +17,9 @@ import { parseUntrustedJson } from "../../src/contract/untrusted.ts";
 import { SCHEMA_DOCUMENTS } from "../../src/generated/schemas.ts";
 import type { TrackerItem } from "../../src/generated/types.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
+import { INDEX_PAGE, INDEX_STATUS, MAX_RECORD_BYTES } from "./issue-index.ts";
 const NAMESPACE = "forge/work";
-export const MAX_RECORD_BYTES = 2 * 1024 * 1024; // bytes; above the 1 MiB response bound so that bound can be reached
+export { MAX_RECORD_BYTES };
 export const MAX_LEASE_BYTES = 16 * 1024;
 /** The most a read response may be, in UTF-8 bytes, measured on the whole envelope. */
 export const MAX_SHOW_RESPONSE_BYTES = 1_048_576;
@@ -31,8 +32,10 @@ const RECORD = BODY("state_records", "key");
 const LEASE = BODY("state_leases", "subject");
 // MODE: a slots record (competing) or any participant record (collaborative) exists.
 // MINTED: a stored issue carries this prefix (`work` if none): in-bound, valid JSON, wrapper and value id matching its row.
-const MODE =
-  "SELECT 1 AS found FROM state_records WHERE namespace=? AND (key=? OR (key>=? AND key<?)) LIMIT 1";
+export const MODE_KEY =
+  "SELECT 1 AS found FROM state_records WHERE namespace=? AND key=? LIMIT 1";
+export const MODE_RANGE =
+  "SELECT 1 AS found FROM state_records WHERE namespace=? AND key>=? AND key<? LIMIT 1";
 const MINTED =
   "SELECT 1 AS found FROM state_records WHERE namespace=? AND key>=? AND key<? AND CASE WHEN length(CAST(body AS BLOB)) <= ? THEN CASE WHEN json_valid(body) THEN CASE WHEN json_type(body,'$.value')='object' AND json_extract(body,'$.namespace')=namespace AND json_extract(body,'$.key')=key AND json_extract(body,'$.value.id')=substr(key,7) THEN coalesce(json_extract(body,'$.value.prefix'),'work') END END END=? LIMIT 1";
 
@@ -43,30 +46,16 @@ const ISSUES =
 export const SCAN = `SELECT key, length(CAST(body AS BLOB)) AS size ${ISSUES}`;
 export const ROWS = `SELECT key, body ${ISSUES}`;
 
-// List only. COMPACT: each issue row with a text value.body of at most 65,536 characters blanked, the
-// stored text otherwise. A body of another type, a longer one or a duplicate field stays whole, so the
-// parse and schema checks decide it as they do for a full record. A body is blanked when its bytes are
-// at most 65,536 (never more characters than bytes), or when it holds no NUL byte and its SQL character
-// count is at most 65,536 (SQL counts characters only up to a NUL, so a NUL body is judged by bytes).
-// A record with a NUL byte anywhere is returned whole, never compacted: SQLite's JSON functions stop at
-// the NUL, so json_valid accepts valid JSON followed by a NUL and trailing text and json_set would drop that
-// suffix, while the parse refuses the whole record. A row over the record cap or that is not JSON returns a
-// NULL body, which the parse refuses. PREFLIGHT
-// counts those rows and their payload (key, size and body bytes) without returning any of them.
-const BODY_OF = "CAST(json_extract(body,'$.value.body') AS BLOB)";
-const BLANKED = `CASE WHEN length(CAST(body AS BLOB)) <= ? AND json_valid(body) THEN CASE WHEN json_type(body,'$.value.body')='text' AND instr(CAST(body AS BLOB), x'00') = 0 AND (length(${BODY_OF}) <= 65536 OR (instr(${BODY_OF}, x'00') = 0 AND length(json_extract(body,'$.value.body')) <= 65536)) THEN json_set(body,'$.value.body','') ELSE body END END`;
-export const COMPACT = `SELECT key, length(CAST(body AS BLOB)) AS size, ${BLANKED} AS body ${ISSUES}`;
-export const PREFLIGHT = `SELECT count(*) AS count, coalesce(sum(length(CAST(key AS BLOB)) + length(CAST(size AS BLOB)) + coalesce(length(CAST(body AS BLOB)), 0)), 0) AS bytes FROM (${COMPACT})`;
-
 /** The only statements each read-only view may run; a view refuses any other text. */
 export const RECORD_READS = [
-  MODE,
+  MODE_KEY,
+  MODE_RANGE,
   MINTED,
   RECORD,
   SCAN,
   ROWS,
-  COMPACT,
-  PREFLIGHT,
+  INDEX_PAGE,
+  INDEX_STATUS,
 ] as const;
 export const LEASE_READS = [LEASE] as const;
 
@@ -196,9 +185,9 @@ export function readIssue(
   const record = load(views.records, RECORD, MAX_RECORD_BYTES, `issue:${id}`);
   if (record === undefined) throw fail("NOT_FOUND", "Issue was not found");
   if (
-    views.records?.get(MODE, [
+    views.records?.get(MODE_KEY, [NAMESPACE, `slots:${id}`]) !== undefined ||
+    views.records?.get(MODE_RANGE, [
       NAMESPACE,
-      `slots:${id}`,
       `participant:${id}:`,
       `participant:${id};`,
     ]) !== undefined
