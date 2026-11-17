@@ -24,6 +24,15 @@ function fixture() {
   });
 }
 
+const core = (db: SqlDatabase) => ({
+  records: db.all("SELECT * FROM state_records ORDER BY namespace,key"),
+  requests: db.all(
+    "SELECT * FROM state_requests ORDER BY namespace,request_id",
+  ),
+  events: db.all("SELECT * FROM state_events ORDER BY sequence"),
+  leases: db.all("SELECT * FROM state_leases ORDER BY namespace,subject"),
+});
+
 const maintain = (db: SqlDatabase, now: number, batch: number) =>
   (
     receipts as typeof receipts & {
@@ -80,7 +89,7 @@ test("idle expiry shares a bounded delete budget and retains live denial authori
     s.db.run(
       "INSERT INTO domain_cloud_command_receipts(request_id,fingerprint,outcome,result,created_at,expires_at,imported) VALUES ('audit','{}','ok','{}',1,2,1)",
     );
-    const state = s.owner.export();
+    const state = core(s.db);
     for (let i = 0; i < 5; i++) expect(maintain(s.db, now, 2)).toBe(2);
     expect(maintain(s.db, now, 2)).toBe(0);
     for (const table of [
@@ -90,8 +99,8 @@ test("idle expiry shares a bounded delete budget and retains live denial authori
       expect(s.db.all(`SELECT request_id FROM ${table}`)).toHaveLength(
         table === "domain_cloud_requests" ? 1 : 2,
       );
-    expect(s.owner.export().records).toEqual(state.records);
-    expect(s.owner.export().requests).toEqual(state.requests);
+    expect(core(s.db).records).toEqual(state.records);
+    expect(core(s.db).requests).toEqual(state.requests);
     expect(maintain(s.db, now + 1000, 2)).toBe(2);
     expect(
       s.db.get(
@@ -230,9 +239,9 @@ test.each([
   const s = await fixture();
   try {
     s.owner.initialize([domain]);
-    const before = s.owner.export();
+    const before = core(s.db);
     expect(() => maintain(s.db, now, batch)).toThrow(/budget/i);
-    expect(s.owner.export()).toEqual(before);
+    expect(core(s.db)).toEqual(before);
   } finally {
     await s.close();
   }
