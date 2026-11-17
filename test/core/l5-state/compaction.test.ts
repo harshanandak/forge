@@ -373,15 +373,15 @@ test("archive_through is unchanged after a throw inside releaseRestoredLeases", 
   }
 });
 
-const bodyBytes = (db: SqlDatabase, key: string) =>
+const rowBytes = (db: SqlDatabase, key: string) =>
   Number(
     db.get(
-      "SELECT LENGTH(CAST(body AS BLOB)) AS n FROM state_events WHERE key=?",
+      "SELECT LENGTH(CAST(sequence AS BLOB))+LENGTH(CAST(namespace AS BLOB))+LENGTH(CAST(key AS BLOB))+LENGTH(CAST(body AS BLOB)) AS n FROM state_events WHERE key=?",
       [key],
     )?.n,
   );
 
-test("an event of exactly the compaction reserve is accepted after compaction and one byte more is refused", async () => {
+test("at the post-compaction cap the largest accepted event is inserted and one byte more is refused", async () => {
   const s = await fixture();
   try {
     s.owner.initialize();
@@ -391,10 +391,14 @@ test("an event of exactly the compaction reserve is accepted after compaction an
       });
     expect(compact(s.owner, 1, 69, 8388608)).toBe(1);
     expect(archiveThrough(s.db)).toBeGreaterThan(0);
+    const cap = 8388608 - 1048576;
     s.owner.put(ns, "k:a", "", actor, { expectRevision: 0 });
-    const pad = 1048576 - bodyBytes(s.db, "k:a");
-    s.owner.put(ns, "k:b", "x".repeat(pad), actor, { expectRevision: 0 });
-    expect(bodyBytes(s.db, "k:b")).toBe(1048576);
+    const base = rowBytes(s.db, "k:a");
+    const fill = cap - eventBytes(s.db) - base;
+    expect(fill).toBeGreaterThan(0);
+    s.owner.put(ns, "k:b", "x".repeat(fill), actor, { expectRevision: 0 });
+    expect(eventBytes(s.db)).toBe(cap);
+    const pad = 1048576 - base;
     const sequence = high(s);
     expect(() =>
       s.owner.put(ns, "k:c", "x".repeat(pad + 1), actor, {
@@ -403,6 +407,9 @@ test("an event of exactly the compaction reserve is accepted after compaction an
     ).toThrow(/INPUT_INVALID/);
     expect(high(s)).toBe(sequence);
     expect(s.owner.get(ns, "k:c")).toBeUndefined();
+    s.owner.put(ns, "k:c", "x".repeat(pad), actor, { expectRevision: 0 });
+    expect(rowBytes(s.db, "k:c")).toBe(1048576);
+    expect(eventBytes(s.db)).toBe(8388608);
   } finally {
     await s.close();
   }

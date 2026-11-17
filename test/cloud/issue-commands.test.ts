@@ -1457,9 +1457,10 @@ for (const bad of [
           key: "note:1",
           limit: 1,
         })[0]!;
-        f.db.run("UPDATE state_events SET body=? WHERE namespace=?", [
+        f.db.run("UPDATE state_events SET body=? WHERE namespace=? AND key=?", [
           JSON.stringify({ ...event, value: "x".repeat(1_048_576) }),
           "forge/memory",
+          "note:1",
         ]);
       }
       if (bad === "huge page") {
