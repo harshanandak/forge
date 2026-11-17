@@ -314,6 +314,7 @@ function changedLeaseEvent(
 }
 
 interface ReceiptPlan {
+  acquisition: Pick<LeaseRecord, "subject" | "generation"> | undefined;
   fingerprint: string;
   result: string;
   kind: "put" | "acquire";
@@ -352,7 +353,19 @@ function receiptPlan(row: SqlRow): ReceiptPlan {
         }))
   )
     invalid("Invalid imported request fence");
+  let acquisition: ReceiptPlan["acquisition"];
+  if (input.kind === "acquire") {
+    const lease = result as LeaseRecord;
+    if (
+      !validateLeaseRecord(lease).ok ||
+      !Number.isSafeInteger(lease.generation) ||
+      input.subject !== lease.subject
+    )
+      invalid("Invalid acquisition witness");
+    acquisition = { subject: lease.subject, generation: lease.generation };
+  }
   return {
+    acquisition,
     fingerprint: digest(input),
     result: digest(result),
     kind: input.kind,
@@ -699,6 +712,12 @@ export function verifyEventDerivedState(
     )
       reject("state_requests", id);
     requests.add(id);
+    if (
+      plan.acquisition &&
+      (leases.get(key(namespace, plan.acquisition.subject))?.generation ?? 0) <
+        plan.acquisition.generation
+    )
+      reject("state_leases", key(namespace, plan.acquisition.subject));
     plans.set(id, true);
   }
   // Two numbers per observed prefix, folded from rows as they are verified: never the events or the keys themselves.

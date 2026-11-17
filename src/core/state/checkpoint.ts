@@ -424,6 +424,14 @@ export function readReplayStart(
   if (
     recordFormat &&
     db.get(
+      "SELECT 1 FROM state_events e LEFT JOIN state_checkpoint_leases c ON c.namespace=e.namespace AND c.subject=e.key WHERE e.sequence<=? AND json_extract(e.body,'$.type') IN (e.namespace||':lease.acquired@1',e.namespace||':lease.reacquired@1',e.namespace||':lease.renewed@1',e.namespace||':lease.released@1') AND (c.subject IS NULL OR c.generation<json_extract(e.body,'$.revision')) LIMIT 1",
+      [checkpoint.header[3]],
+    )
+  )
+    invalid("Checkpoint lease generation authority requires repair");
+  if (
+    recordFormat &&
+    db.get(
       "SELECT 1 FROM state_namespace_watermarks w WHERE w.sequence<>MAX(COALESCE((SELECT MAX(sequence) FROM state_checkpoint_live WHERE namespace=w.namespace),0),COALESCE((SELECT MAX(sequence) FROM state_checkpoint_deleted WHERE namespace=w.namespace),0),COALESCE((SELECT MAX(sequence) FROM state_checkpoint_leases WHERE namespace=w.namespace),0),COALESCE((SELECT MAX(sequence) FROM state_events WHERE namespace=w.namespace AND sequence>?),0)) LIMIT 1",
       [checkpoint.header[3]],
     )

@@ -744,7 +744,11 @@ function checkServerReceipt(row: Row, now: number): void {
   } catch {
     return bad();
   }
-  const input = fingerprint as { route?: unknown; subject?: unknown } | null;
+  const input = fingerprint as {
+    route?: unknown;
+    subject?: unknown;
+    retryUntil?: unknown;
+  } | null;
   if (
     !REQUEST_ID.test(key) ||
     input === null ||
@@ -752,6 +756,9 @@ function checkServerReceipt(row: Row, now: number): void {
     !["claim", "renew", "release"].includes(String(input.route)) ||
     typeof input.subject !== "string" ||
     !validRequestAge(row.created_at, now) ||
+    (input.retryUntil !== undefined &&
+      (!Number.isSafeInteger(input.retryUntil) ||
+        Number(input.retryUntil) <= Number(row.created_at))) ||
     ("scope" in input && !versioned(input))
   )
     bad();

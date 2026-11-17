@@ -326,9 +326,14 @@ test("checkpoint load cannot replay an old acquisition into current authority", 
   }
 });
 
-test.each(["initialize", "restore"])(
-  "%s refuses an omitted lease seed contradicted by retained acquisitions",
-  async (mode) => {
+test.each([
+  ["initialize", false],
+  ["restore", false],
+  ["initialize", true],
+  ["restore", true],
+] as const)(
+  "%s refuses an omitted lease seed; covered events removed=%s",
+  async (mode, removed) => {
     const source = await fixture(),
       target = await fixture();
     try {
@@ -344,6 +349,7 @@ test.each(["initialize", "restore"])(
       source.db.run("DELETE FROM state_leases WHERE subject='s'");
       expect(source.owner.events(ns)).toEqual(events);
       expect(source.owner.export().requests).toEqual(requests);
+      if (removed) source.db.run("DELETE FROM state_events");
       target.owner.initialize();
       expect(() =>
         mode === "initialize"

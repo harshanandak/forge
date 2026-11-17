@@ -17,8 +17,10 @@ Version 1 remains supported; cloud v2 still refuses checkpoints without changing
 
 Cloud command answers and refusals remain witnesses in the registered command-receipt domain
 table, preserved by the complete owner image. Folding the event prefix does not rewrite them.
-Their existing replay deadline is the earlier of 24 hours and credential expiry. A refused answer
-is its denied-id witness; no duplicate denied checkpoint row is written. Credential revocations
+Answers stop at the earlier of 24 hours and credential expiry. Refused ids remain denied until
+credential expiry, including refusals at answer capacity. Lease-route receipt envelopes retain
+the credential deadline too. Both stores prune denial witnesses only after retry authority ends.
+No duplicate denied checkpoint row is written. Credential revocations
 remain outside event checkpoint replay, and cloud dump v3 transport is separate work.
 
 `StateOwner` accepts the locked `SqlDatabase` and `ClockPort` ports. `initialize()` is an explicit write; construction and reads do not initialize anything. `client(namespace, actor)` returns a `DeletableStateClient`, with namespace and actor captured. It never exposes a connection.

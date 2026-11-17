@@ -64,10 +64,10 @@ function cloud(s: Fixture, expiry = start + 2 * day) {
     { FORGE_CLOUD_PROJECT: "p", FORGE_CLOUD_ID_PREFIX: "forge" },
   );
   return {
-    create: (input: unknown) =>
+    create: (input: unknown, requestId = "r") =>
       createIssue(db, owner, {
         principal: ["token", "synthetic-principal", "synthetic"],
-        requestId: "r",
+        requestId,
         input,
         context: { variant: "project", actor, project: { id: "p" } },
         device: "synthetic",
@@ -82,9 +82,9 @@ function cloud(s: Fixture, expiry = start + 2 * day) {
             });
         },
       }),
-    lease: (input: unknown) =>
+    lease: (input: unknown, route = "claim") =>
       project.fetch(
-        new Request("https://fixture.example/p/p/claim", {
+        new Request(`https://fixture.example/p/p/${route}`, {
           method: "POST",
           headers: {
             "X-Forge-Owner": "synthetic",
@@ -184,6 +184,16 @@ for (const outcome of ["ok", "refused"] as const)
             expect(() =>
               replay(target.db, target.owner, "command", "new-input"),
             ).toThrow();
+            expect(() =>
+              record(
+                target.db,
+                "command",
+                { fingerprint: "new-input", outcome: "ok", result: {} },
+                expiry,
+              ),
+            ).toThrow(/not recorded/);
+            admit(target.db);
+            expect(receipts(target)).toHaveLength(1);
           } else expect(answer()).toBeUndefined();
         }
         clock.mockReturnValue(expiry);
@@ -247,9 +257,23 @@ test("a saturation refusal remains durable after answer capacity frees", async (
     );
     const client = cloud(source);
     expect(() => client.create({ title: null })).toThrow(/issue.create/);
+    expect(() => client.create({ title: "At capacity" }, "cap")).toThrow(
+      /receipts/,
+    );
     clock.mockReturnValue(start + 60_001);
-    expect(() => client.create({ title: "Capacity freed" })).toThrow();
+    expect(() => client.create({ title: "Capacity freed" })).toThrow(
+      /different input|refused/,
+    );
+    expect(() => client.create({ title: "At capacity" }, "cap")).toThrow();
     expect(source.owner.list("forge/work")).toEqual([]);
+    clock.mockReturnValue(start + day);
+    expect(() => admit(source.db)).not.toThrow();
+    expect(() => client.create({ title: "After capacity frees" })).toThrow(
+      /refused/,
+    );
+    expect(client.create({ title: "Fresh id" }, "fresh").title).toBe(
+      "Fresh id",
+    );
   } finally {
     clock.mockRestore();
     await source.close();
@@ -257,22 +281,60 @@ test("a saturation refusal remains durable after answer capacity frees", async (
 });
 
 test("lease-route refusal answers expire at 24h while their ids remain denied", async () => {
-  const source = await fixture();
+  const source = await fixture(),
+    target = await fixture();
   const clock = spyOn(Date, "now").mockReturnValue(start);
   try {
     initialize(source);
+    initialize(target);
     const client = cloud(source);
     const input = { subject: "s", requestId: "r", holder, ttlMs: 0 };
     const first = await client.lease(input);
     expect(first.status).toBe(400);
     source.owner.acquire(ns, "anchor", holder, 60_000, "anchor");
     source.owner.checkpoint(1);
+    target.db.run(`DELETE FROM ${EXPORT_STATE}`);
+    target.owner.restore(source.owner.export(), undefined, 1);
+    const restored = cloud(target);
     clock.mockReturnValue(start + day);
-    const replayed = await client.lease(input);
+    const replayed = await restored.lease(input);
     expect(replayed.status).toBe(409);
-    const changed = await client.lease({ ...input, ttlMs: 60_000 });
+    const changed = await restored.lease({ ...input, ttlMs: 60_000 });
     expect(changed.status).toBe(409);
-    expect(source.owner.lease("forge/work", "s")).toBeUndefined();
+    expect(target.owner.lease("forge/work", "s")).toBeUndefined();
+    clock.mockReturnValue(start + 2 * day);
+    expect((await restored.lease(input)).status).toBe(401);
+    expect(
+      (await cloud(target, start + 3 * day).lease({ ...input, ttlMs: 60_000 }))
+        .status,
+    ).toBe(200);
+  } finally {
+    clock.mockRestore();
+    await source.close();
+    await target.close();
+  }
+});
+
+test("lease-route release does not return its original answer after 24h", async () => {
+  const source = await fixture();
+  const clock = spyOn(Date, "now").mockReturnValue(start);
+  try {
+    initialize(source);
+    const client = cloud(source);
+    const claim = { subject: "s", requestId: "claim", holder, ttlMs: 60_000 };
+    expect((await client.lease(claim)).status).toBe(200);
+    const release = {
+      subject: "s",
+      requestId: "release",
+      holder,
+      generation: 1,
+    };
+    expect((await client.lease(release, "release")).status).toBe(200);
+    source.owner.checkpoint(1);
+    const before = source.owner.events("forge/work");
+    clock.mockReturnValue(start + day);
+    expect((await client.lease(release, "release")).status).toBe(409);
+    expect(source.owner.events("forge/work")).toEqual(before);
   } finally {
     clock.mockRestore();
     await source.close();

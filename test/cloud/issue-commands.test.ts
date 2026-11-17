@@ -9419,7 +9419,7 @@ for (const w of WRITES) {
     }
   }, 30_000);
 
-  test(`at the receipt limit a fresh ${w.name} is refused, a refusal records nothing more, and a replay still answers`, async () => {
+  test(`at the receipt limit a fresh ${w.name} and invalid input leave denial witnesses without business effects`, async () => {
     const { f, token } = await w.rows();
     const first = await f.send(w.send("l-0"), { token });
     expect(first.status).toBe(200);
@@ -9427,26 +9427,65 @@ for (const w of WRITES) {
       "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < ?) INSERT INTO domain_cloud_command_receipts(request_id,fingerprint,outcome,result,created_at,expires_at) SELECT 'c2:fill-' || i, '{}', 'ok', '{}', ?, ? FROM n",
       [MAX_RECEIPTS - 1, f.now(), f.now() + day],
     );
-    const full = f.snapshot();
+    const business = () =>
+      JSON.stringify(
+        [
+          "state_records",
+          "state_events",
+          "state_leases",
+          "state_requests",
+          "state_retention",
+          "state_namespace_watermarks",
+          "state_allocation_keys",
+        ].map((table) => f.db.query(`SELECT * FROM ${table}`).all()),
+      );
+    const full = business();
     const got = await f.send(w.send("l-1", w.next), { token });
     expect([got.status, got.code, got.exit]).toEqual([503, "UNAVAILABLE", 1]);
     expect(got.json.error?.message).toContain("receipts");
     expect(got.json.error?.message).toContain("expire");
-    expect(f.snapshot()).toBe(full);
+    expect(business()).toBe(full);
+    expect(
+      f.db
+        .query(
+          "SELECT COUNT(*) AS n FROM domain_cloud_command_receipts WHERE outcome='refused'",
+        )
+        .get(),
+    ).toEqual({ n: 1 });
     const refused = await f.send(w.send("l-2", w.bad), { token });
     expect([refused.status, refused.code]).toEqual([...w.badWant]);
-    expect(f.snapshot()).toBe(full);
+    expect(business()).toBe(full);
+    expect(
+      f.db
+        .query(
+          "SELECT COUNT(*) AS n FROM domain_cloud_command_receipts WHERE outcome='refused'",
+        )
+        .get(),
+    ).toEqual({ n: 2 });
     const again = await f.send(w.send("l-0"), { token });
     expect([again.status, again.text]).toEqual([200, first.text]);
-    expect(f.snapshot()).toBe(full);
+    expect(business()).toBe(full);
     f.db.run(
       "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < 8) INSERT INTO domain_cloud_command_receipts(request_id,fingerprint,outcome,result,created_at,expires_at) SELECT 'expired-' || i, '{}', 'ok', '{}', ?, ? FROM n",
       [f.now() - day, f.now() - 1],
     );
-    const mixed = f.snapshot();
     const mixedRefusal = await f.send(w.send("l-3", w.bad), { token });
     expect([mixedRefusal.status, mixedRefusal.code]).toEqual([...w.badWant]);
-    expect(f.snapshot()).toBe(mixed);
+    expect(business()).toBe(full);
+    expect(
+      f.db
+        .query(
+          "SELECT COUNT(*) AS n FROM domain_cloud_command_receipts WHERE outcome='refused'",
+        )
+        .get(),
+    ).toEqual({ n: 3 });
+    expect(
+      f.db
+        .query(
+          "SELECT COUNT(*) AS n FROM domain_cloud_command_receipts WHERE request_id LIKE 'expired-%'",
+        )
+        .get(),
+    ).toEqual({ n: 0 });
   }, 60_000);
 
   test(`a failed receipt write rolls the whole ${w.name} back, and the retry applies it once`, async () => {
@@ -12371,7 +12410,11 @@ for (const [refused, ttl] of [
       rows[0]!.created_at,
       rows[0]!.expires_at,
       rows[0]!.outcome,
-    ]).toEqual([start, start + Math.min(ttl, day), refused ? "refused" : "ok"]);
+    ]).toEqual([
+      start,
+      start + (refused ? ttl : Math.min(ttl, day)),
+      refused ? "refused" : "ok",
+    ]);
     const before = f.snapshot();
     expect((await f.send(make("expiry", input), { token })).text).toBe(
       first.text,
@@ -12470,8 +12513,16 @@ for (const [age, invalid] of [
     expect([got.status, got.exit]).toEqual(
       invalid ? [400, 6] : age < day ? [503, 1] : [200, 0],
     );
-    if (age < day) expect(f.snapshot()).toBe(before);
-    else
+    if (age < day) {
+      expect(f.snapshot()).not.toBe(before);
+      expect(
+        f.db
+          .query(
+            "SELECT COUNT(*) AS n FROM domain_cloud_command_receipts WHERE outcome='refused'",
+          )
+          .get(),
+      ).toEqual({ n: 1 });
+    } else
       expect(
         f.db
           .query(

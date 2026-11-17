@@ -84,15 +84,20 @@ export function commandWrite<Fields, Result>(
       ? refused(db, requestId, fingerprint, error, recheck, expiresAt)
       : error;
   }
-  return db.transaction(() => {
-    // No await separates this token check from the work and receipt commit.
-    recheck();
-    admit(db);
-    return record(
-      db,
-      requestId,
-      { fingerprint, outcome: "ok", result: write(fields) },
-      expiresAt,
-    ) as Result;
-  });
+  try {
+    return db.transaction(() => {
+      recheck();
+      admit(db);
+      return record(
+        db,
+        requestId,
+        { fingerprint, outcome: "ok", result: write(fields) },
+        expiresAt,
+      ) as Result;
+    });
+  } catch (error) {
+    throw error instanceof ForgeFailure && error.error.code === "UNAVAILABLE"
+      ? refused(db, requestId, fingerprint, error, recheck, expiresAt)
+      : error;
+  }
 }
