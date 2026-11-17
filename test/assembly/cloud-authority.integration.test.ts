@@ -9,6 +9,7 @@ import {
 } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { gitExecutable } from "../../tools/git-executable.ts";
+import { inlineWorkPrimitives } from "../../tools/bundle-work-primitives.ts";
 import {
   cpSync,
   existsSync,
@@ -303,13 +304,19 @@ let staging: string;
 let capture: ReturnType<typeof spyOn<typeof blockCapture, "open">>;
 const PROBE_MUTATIONS =
   "put put-many put-next delete acquire renew release".split(" ");
-beforeAll(() => {
+beforeAll(async () => {
   staging = mkdtempSync(join(tmpdir(), "forge-authority-blocks-"));
   const [memory, work, cloud] = [
     "forge/memory",
     "forge/work",
     "forge/cloud",
   ].map((id) => fileURLToPath(firstPartyBlocks[id]!));
+  const workEntry = await inlineWorkPrimitives(
+    new Bun.Transpiler({ loader: "ts" }).transformSync(
+      readFileSync(join(work!, "entry.cts"), "utf8"),
+    ),
+    join(work!, "record-primitives.ts"),
+  );
   const compiled = (source: string, name: string) => {
     const target = join(staging, name);
     cpSync(source, target, {
@@ -319,7 +326,10 @@ beforeAll(() => {
     const entry = new Bun.Transpiler({ loader: "ts" }).transformSync(
       readFileSync(join(source, "entry.cts"), "utf8"),
     );
-    writeFileSync(join(target, "entry.cjs"), entry);
+    writeFileSync(
+      join(target, "entry.cjs"),
+      name === "work" ? workEntry : entry,
+    );
     return target;
   };
   const check = fileURLToPath(firstPartyBlocks["forge/check"]!);

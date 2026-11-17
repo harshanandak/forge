@@ -1,6 +1,20 @@
 // Reviewed source inventory: direct launches, shell/npm entry points and local helpers.
 // Conservative guard-fixture entries retain coverage without interpreting embedded programs.
 export const nodeSensitive: Readonly<Record<string, string>> = {
+  "test/blocks/l7-work/lane-release.test.ts":
+    "Captures the work entry with the Node-targeted shared-check build helper.",
+  "test/assembly/id-prefix-on-demand.integration.test.ts":
+    "Captures the work entry with the Node-targeted shared-check build helper.",
+  "test/blocks/l7-work/autopilot-renewal.integration.test.ts":
+    "Captures the work entry with the Node-targeted shared-check build helper.",
+  "test/blocks/l7-work/close.test.ts":
+    "Captures the work entry with the Node-targeted shared-check build helper.",
+  "test/blocks/l9-check/check.test.ts":
+    "Captures the work entry with the Node-targeted shared-check build helper.",
+  "test/blocks/work/work-value-parity.test.ts":
+    "Captures the work entry with the Node-targeted shared-check build helper.",
+  "test/surface/held-lease.test.ts":
+    "Captures the work entry with the Node-targeted shared-check build helper.",
   "test/structure/no-comments.integration.test.ts":
     "Checks committed Git diffs through the Node-compatible comment checker.",
   "test/adapters/process/git-location.integration.test.ts":

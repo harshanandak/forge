@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { inlineWorkPrimitives } from "../../tools/bundle-work-primitives.ts";
 import {
   createAssembly,
   localCall,
@@ -53,7 +54,10 @@ beforeEach(async () => {
   const source = readFileSync(join(repo, "src/blocks/work/entry.cts"), "utf8");
   writeFileSync(
     join(block, "entry.cjs"),
-    new Bun.Transpiler({ loader: "ts" }).transformSync(source),
+    await inlineWorkPrimitives(
+      new Bun.Transpiler({ loader: "ts" }).transformSync(source),
+      join(repo, "src/blocks/work/record-primitives.ts"),
+    ),
   );
   mkdirSync(join(work, ".forge"));
   writeFileSync(
