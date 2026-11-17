@@ -1010,15 +1010,28 @@ for (const fault of [
             ? [503, "UNAVAILABLE", 1]
             : [500, "INTERNAL", 1],
         );
-        expect(f.snapshot()).toBe(before);
+        if (fault === "full budget" || fault === "restore budget") {
+          const denied = f.db
+            .query(
+              "SELECT outcome,result FROM domain_cloud_command_receipts WHERE outcome='refused'",
+            )
+            .all() as { outcome: string; result: string }[];
+          expect(denied).toHaveLength(1);
+          expect(JSON.parse(denied[0]!.result)).toHaveProperty(
+            "code",
+            "UNAVAILABLE",
+          );
+          const recorded = f.snapshot();
+          const retried = await f.commit(input);
+          expect(stateOutcome(retried)).toEqual([503, "UNAVAILABLE", 1]);
+          expect(f.snapshot()).toBe(recorded);
+        } else expect(f.snapshot()).toBe(before);
         expect(f.stable()).toBe(domain);
         expect(f.successes()).toBe(successes);
         if (fault === "restore budget")
           expect(
             got.touched.filter((sql) =>
-              /^(INSERT|UPDATE).* (state_records|state_events|domain_cloud_command_receipts)/.test(
-                sql,
-              ),
+              /^(INSERT|UPDATE).* (state_records|state_events)/.test(sql),
             ),
           ).toEqual([]);
       } else {
@@ -4747,6 +4760,50 @@ const writes = (f: F) =>
     f.db.query("SELECT * FROM state_leases ORDER BY subject").all(),
     commandRows(f.db),
   ]);
+function expectRefusalOnly(f: F, before: string, error: unknown) {
+  type Snapshot = { sql: [string, unknown[]][]; kv: unknown };
+  const prior = JSON.parse(before) as Snapshot;
+  const current = JSON.parse(f.snapshot()) as Snapshot;
+  const oldRows = prior.sql.find(
+    ([name]) => name === "domain_cloud_command_receipts",
+  )![1] as { request_id: string; outcome: string; result: string }[];
+  const newRows = current.sql.find(
+    ([name]) => name === "domain_cloud_command_receipts",
+  )![1] as { request_id: string; outcome: string; result: string }[];
+  const added = newRows.filter(
+    (row) => !oldRows.some((old) => old.request_id === row.request_id),
+  );
+  expect(added).toHaveLength(1);
+  expect(added[0]!.outcome).toBe("refused");
+  expect(JSON.parse(added[0]!.result)).toEqual(error);
+  expect(newRows.filter((row) => row !== added[0])).toEqual(oldRows);
+  for (const sql of DUMP_USAGE_SQL) {
+    const table = sql.split(" FROM ")[1]!;
+    expect(
+      f.db
+        .query("SELECT rows AS n,bytes FROM state_usage WHERE table_name=?")
+        .get(table),
+    ).toEqual(f.db.query(sql).get());
+  }
+  const normalize = (snapshot: Snapshot) => ({
+    ...snapshot,
+    sql: snapshot.sql
+      .filter(
+        ([name]) =>
+          name !== "domain_cloud_command_receipts" &&
+          name !== "domain_cloud_export",
+      )
+      .map(([name, rows]) => [
+        name,
+        name === "state_usage"
+          ? (rows as { table_name: string }[]).filter(
+              (row) => row.table_name !== "domain_cloud_command_receipts",
+            )
+          : rows,
+      ]),
+  });
+  expect(normalize(current)).toEqual(normalize(prior));
+}
 const issuesIn = (f: F) =>
   rowsOf(f.db, "forge/work").filter((r) => r.key.startsWith("issue:")).length;
 const floorAt = (number: number) => ({ prefix: "issue:work-", number });
@@ -5163,7 +5220,7 @@ for (const [name, seed] of [
     },
   ],
 ] as const)
-  test(`a cloud project with ${name} and no floor refuses create as UNAVAILABLE and changes nothing`, async () => {
+  test(`a cloud project with ${name} and no floor durably refuses create as UNAVAILABLE without business effects`, async () => {
     const f = fixture();
     const token = await f.device();
     f.tables();
@@ -5176,8 +5233,11 @@ for (const [name, seed] of [
       1,
       floorMissing,
     ]);
-    expect(f.snapshot()).toBe(before);
-    expect(receiptOf(f, "o-1")).toBeUndefined();
+    expectRefusalOnly(f, before, got.json.error);
+    expect(receiptOf(f, "o-1")).toMatchObject({
+      outcome: "refused",
+      result: got.json.error,
+    });
     // Issuing another device never writes a floor over old history.
     await f.device(day, "tablet");
     expect(floorOf(f)).toBeUndefined();
@@ -7196,7 +7256,7 @@ test("a dependency walk over 10,000 issues is answered, 10,001 is refused as UNA
     );
     f.put(stored({ id: "work-52" }), {}, "issue:work-52");
     f.lease({ holder }, "issue:work-52");
-    const before = writes(f);
+    const before = f.snapshot();
     const got = await f.send(
       depCall("w-1", depIn({ id: "forge-52", target: "forge-1000" })),
       { token },
@@ -7206,7 +7266,7 @@ test("a dependency walk over 10,000 issues is answered, 10,001 is refused as UNA
       expect(got.json.result).toMatchObject({ dependsOn: ["forge-1000"] });
     else {
       expect(got.code).toBe("UNAVAILABLE");
-      expect(writes(f)).toBe(before);
+      expectRefusalOnly(f, before, got.json.error);
     }
   }
 }, 120_000);
@@ -9419,7 +9479,7 @@ for (const w of WRITES) {
     }
   }, 30_000);
 
-  test(`at the receipt limit a fresh ${w.name} is refused, a refusal records nothing more, and a replay still answers`, async () => {
+  test(`at the receipt limit a fresh ${w.name} and invalid input leave denial witnesses without business effects`, async () => {
     const { f, token } = await w.rows();
     const first = await f.send(w.send("l-0"), { token });
     expect(first.status).toBe(200);
@@ -9427,26 +9487,65 @@ for (const w of WRITES) {
       "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < ?) INSERT INTO domain_cloud_command_receipts(request_id,fingerprint,outcome,result,created_at,expires_at) SELECT 'c2:fill-' || i, '{}', 'ok', '{}', ?, ? FROM n",
       [MAX_RECEIPTS - 1, f.now(), f.now() + day],
     );
-    const full = f.snapshot();
+    const business = () =>
+      JSON.stringify(
+        [
+          "state_records",
+          "state_events",
+          "state_leases",
+          "state_requests",
+          "state_retention",
+          "state_namespace_watermarks",
+          "state_allocation_keys",
+        ].map((table) => f.db.query(`SELECT * FROM ${table}`).all()),
+      );
+    const full = business();
     const got = await f.send(w.send("l-1", w.next), { token });
     expect([got.status, got.code, got.exit]).toEqual([503, "UNAVAILABLE", 1]);
     expect(got.json.error?.message).toContain("receipts");
     expect(got.json.error?.message).toContain("expire");
-    expect(f.snapshot()).toBe(full);
+    expect(business()).toBe(full);
+    expect(
+      f.db
+        .query(
+          "SELECT COUNT(*) AS n FROM domain_cloud_command_receipts WHERE outcome='refused'",
+        )
+        .get(),
+    ).toEqual({ n: 1 });
     const refused = await f.send(w.send("l-2", w.bad), { token });
     expect([refused.status, refused.code]).toEqual([...w.badWant]);
-    expect(f.snapshot()).toBe(full);
+    expect(business()).toBe(full);
+    expect(
+      f.db
+        .query(
+          "SELECT COUNT(*) AS n FROM domain_cloud_command_receipts WHERE outcome='refused'",
+        )
+        .get(),
+    ).toEqual({ n: 2 });
     const again = await f.send(w.send("l-0"), { token });
     expect([again.status, again.text]).toEqual([200, first.text]);
-    expect(f.snapshot()).toBe(full);
+    expect(business()).toBe(full);
     f.db.run(
       "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < 8) INSERT INTO domain_cloud_command_receipts(request_id,fingerprint,outcome,result,created_at,expires_at) SELECT 'expired-' || i, '{}', 'ok', '{}', ?, ? FROM n",
       [f.now() - day, f.now() - 1],
     );
-    const mixed = f.snapshot();
     const mixedRefusal = await f.send(w.send("l-3", w.bad), { token });
     expect([mixedRefusal.status, mixedRefusal.code]).toEqual([...w.badWant]);
-    expect(f.snapshot()).toBe(mixed);
+    expect(business()).toBe(full);
+    expect(
+      f.db
+        .query(
+          "SELECT COUNT(*) AS n FROM domain_cloud_command_receipts WHERE outcome='refused'",
+        )
+        .get(),
+    ).toEqual({ n: 3 });
+    expect(
+      f.db
+        .query(
+          "SELECT COUNT(*) AS n FROM domain_cloud_command_receipts WHERE request_id LIKE 'expired-%'",
+        )
+        .get(),
+    ).toEqual({ n: 0 });
   }, 60_000);
 
   test(`a failed receipt write rolls the whole ${w.name} back, and the retry applies it once`, async () => {
@@ -12365,7 +12464,11 @@ for (const [refused, ttl] of [
       rows[0]!.created_at,
       rows[0]!.expires_at,
       rows[0]!.outcome,
-    ]).toEqual([start, start + Math.min(ttl, day), refused ? "refused" : "ok"]);
+    ]).toEqual([
+      start,
+      start + (refused ? ttl : Math.min(ttl, day)),
+      refused ? "refused" : "ok",
+    ]);
     const before = f.snapshot();
     expect((await f.send(make("expiry", input), { token })).text).toBe(
       first.text,
@@ -12464,8 +12567,16 @@ for (const [age, invalid] of [
     expect([got.status, got.exit]).toEqual(
       invalid ? [400, 6] : age < day ? [503, 1] : [200, 0],
     );
-    if (age < day) expect(f.snapshot()).toBe(before);
-    else
+    if (age < day) {
+      expect(f.snapshot()).not.toBe(before);
+      expect(
+        f.db
+          .query(
+            "SELECT COUNT(*) AS n FROM domain_cloud_command_receipts WHERE outcome='refused'",
+          )
+          .get(),
+      ).toEqual({ n: 1 });
+    } else
       expect(
         f.db
           .query(

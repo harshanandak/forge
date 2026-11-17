@@ -80,6 +80,12 @@ import {
   type ReceiptPrincipal,
 } from "./issue-request-id.ts";
 import { checkTtl } from "./lease-ttl.ts";
+import {
+  expiredReplay,
+  RETENTION_MS,
+  PRUNE_RECEIPTS,
+  withDenialCapacity,
+} from "./issue-receipts.ts";
 import { EVIDENCE_MIGRATION, EVIDENCE_RECEIPTS } from "./evidence-receipts.ts";
 import { LaneControlStore } from "./lane-control-store.ts";
 import { LANE_APPROVALS, LANE_APPROVAL_MIGRATION } from "./lane-approval.ts";
@@ -897,7 +903,7 @@ export class Project {
   ): LeaseRecord {
     const checkExpiry = () => {
       recheck();
-      if (expiresAt !== undefined && !(expiresAt > Date.now()))
+      if (!Number.isSafeInteger(expiresAt) || !(Number(expiresAt) > Date.now()))
         throw fail("AUTH_EXPIRED", "Token expired");
     };
     checkExpiry();
@@ -937,11 +943,6 @@ export class Project {
       route === "release" ? null : ((input.ttlMs ?? null) as number);
     const generation = route === "claim" ? null : integer(input, "generation");
 
-    // The one rule for request ids. Every valid write records its id, route and input (keys sorted,
-    // as the state owner sorts its own) on first sight, with its outcome, success or refusal.
-    // - Another route or input under that id is INPUT_CONFLICT, forever.
-    // - A recorded refusal is returned again, never re-run.
-    // - A recorded success never returns its old lease: the answer is read from the current lease.
     const requestId = scopeRequestId("lease", principal, rawId);
     this.#openWrite();
     guardLegacy(this.#open().db, rawId, requestId);
@@ -954,24 +955,27 @@ export class Project {
       ttlMs,
     });
     const prior = this.#open().db.get(
-      `SELECT fingerprint, outcome, result FROM ${REQUESTS} WHERE request_id=?`,
-      [requestId],
+      `SELECT json_remove(fingerprint,'$.retryUntil') AS fingerprint, outcome, result, created_at FROM ${REQUESTS} WHERE request_id=? AND COALESCE(json_extract(fingerprint,'$.retryUntil'),9007199254740991)>?`,
+      [requestId, Date.now()],
     );
     if (prior !== undefined) {
+      checkExpiry();
+      if (Date.now() >= Number(prior.created_at) + RETENTION_MS)
+        expiredReplay(prior.outcome !== "ok");
       if (prior.fingerprint !== fingerprint)
         throw new ForgeFailure({
           code: "INPUT_CONFLICT",
           message: "Request ID belongs to a different input",
           retry: "reconcile_first",
         });
-      checkExpiry();
       return this.#replay(route, requestId, prior, subject, holder);
     }
+    const commit = <T>(work: () => T) =>
+      withDenialCapacity(this.#open().db, expiresAt, checkExpiry, work);
     try {
       // The change and its receipt commit together: if the receipt insert fails, the change rolls
       // back, so a retry after the 500 starts from the state the caller last saw.
-      return this.#open().db.transaction(() => {
-        checkExpiry();
+      return commit(() => {
         if (route !== "release") {
           checkTtl(ttlMs, expiresAt);
         }
@@ -988,7 +992,7 @@ export class Project {
             : route === "renew"
               ? this.#open().owner.renew(NAMESPACE, fence, ttlMs!)
               : this.#open().owner.release(NAMESPACE, fence);
-        this.#record(requestId, fingerprint, "ok", lease);
+        this.#record(requestId, fingerprint, "ok", lease, expiresAt);
         return lease;
       });
     } catch (error) {
@@ -998,9 +1002,14 @@ export class Project {
         (error.error.code.startsWith("LEASE_") ||
           error.error.code === "INPUT_INVALID")
       )
-        this.#open().db.transaction(() => {
-          checkExpiry();
-          this.#record(requestId, fingerprint, error.error.code, error.error);
+        commit(() => {
+          this.#record(
+            requestId,
+            fingerprint,
+            error.error.code,
+            error.error,
+            expiresAt,
+          );
         });
       throw error;
     }
@@ -1052,10 +1061,35 @@ export class Project {
     fingerprint: string,
     outcome: string,
     result: LeaseRecord | ForgeError,
+    expiresAt: number | undefined,
   ): void {
+    if (
+      typeof expiresAt !== "number" ||
+      !Number.isSafeInteger(expiresAt) ||
+      expiresAt <= Date.now()
+    )
+      throw fail(
+        "AUTH_EXPIRED",
+        "Token expired before recording the lease request",
+      );
     this.#open().db.run(
-      `INSERT INTO ${REQUESTS} (request_id, fingerprint, outcome, result) VALUES (?, ?, ?, ?)`,
-      [requestId, fingerprint, outcome, JSON.stringify(result)],
+      `DELETE FROM ${REQUESTS} WHERE request_id IN (SELECT request_id FROM ${REQUESTS} WHERE json_extract(fingerprint,'$.retryUntil')<=? ORDER BY json_extract(fingerprint,'$.retryUntil'),request_id LIMIT ?)`,
+      [Date.now(), PRUNE_RECEIPTS],
     );
+    const stored = this.#open().db.run(
+      `INSERT INTO ${REQUESTS} (request_id, fingerprint, outcome, result, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(request_id) DO UPDATE SET fingerprint=excluded.fingerprint,outcome=excluded.outcome,result=excluded.result,created_at=excluded.created_at WHERE json_extract(fingerprint,'$.retryUntil')<=excluded.created_at`,
+      [
+        requestId,
+        canonicalJson({
+          ...(JSON.parse(fingerprint) as Record<string, unknown>),
+          retryUntil: expiresAt,
+        }),
+        outcome,
+        JSON.stringify(result),
+        Date.now(),
+      ],
+    );
+    if (stored.changes !== 1)
+      throw fail("INTERNAL", "Lease request witness was not recorded");
   }
 }

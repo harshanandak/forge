@@ -7,11 +7,12 @@ adds live record bodies. `StateOwner.checkpoint(batch)` folds the retained recor
 format 2 checkpoints, committing at most 256 events per transaction. Each header publishes
 one complete prefix; interrupted writes resume from the last committed header. Live bodies,
 deletion revisions, numeric key reservations and maximum allocation floors survive updates
-and deletes. The maximum live/deleted sequence in each namespace is its covered watermark.
+and deletes. Record, deletion and lease seeds retain each namespace's covered watermark.
 Checkpoint headers, tuples and live bodies decode row by row. Initialization and restore verify
 checkpoint plus tail, retained allocator authority and deletion floors. Migration `008_record_checkpoint_reader`
-makes older writers refuse the store. The writer refuses coordination/request witnesses and deletes
-no events. Version 1 remains supported; cloud v2 still refuses checkpoints without changing its wire format.
+makes older writers refuse the store. Format 2 seeds leases and core request witnesses; covered
+lease bodies and last sequences must equal event replay before the tail. The writer deletes no events.
+Non-current checkpoint formats are refused; cloud v2 still refuses checkpoints without changing its wire format.
 
 `StateOwner` accepts the locked `SqlDatabase` and `ClockPort` ports. `initialize()` is an explicit write; construction and reads do not initialize anything. `client(namespace, actor)` returns a `DeletableStateClient`, with namespace and actor captured. It never exposes a connection.
 

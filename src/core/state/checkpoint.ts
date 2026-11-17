@@ -100,6 +100,11 @@ const shapes = {
 function invalid(message = "Invalid checkpoint"): never {
   throw new ForgeFailure({ code: "INPUT_INVALID", message, retry: "never" });
 }
+export function checkpointFormat(version: unknown): number | undefined {
+  if (version === undefined) return;
+  if (Number(version) !== 2) invalid("CHECKPOINT_FORMAT_UNSUPPORTED");
+  return 2;
+}
 function canonical(value: unknown): string {
   const walk = (v: unknown): unknown => {
     if (typeof v === "number" && !Number.isFinite(v))
@@ -153,10 +158,7 @@ export function decodeCheckpoint(text: string): Checkpoint {
   const value = parsed as Record<string, unknown>;
   if (Object.keys(value).sort().join() !== Object.keys(shapes).sort().join())
     invalid();
-  if (
-    Array.isArray(value.header) &&
-    ![1, 2].includes(value.header[0] as number)
-  )
+  if (Array.isArray(value.header) && checkpointFormat(value.header[0]) !== 2)
     invalid("Checkpoint format unsupported; newer Forge required");
   rowValid(value.header, shapes.header);
   const covered = value.header[3] as number;
@@ -236,6 +238,7 @@ export interface CheckpointSeed {
   readonly deleted: Checkpoint["deleted"];
   readonly floors: Checkpoint["floors"];
   readonly receipts: Checkpoint["receipts"];
+  readonly leases: Checkpoint["leases"] | undefined;
 }
 
 /** Inspect once alongside the first receipt page, adding no empty-store probes. */
@@ -270,9 +273,9 @@ export function readReplayStart(
       invalid("Checkpoint entries require a header");
     return { checkpoint: undefined, receipts };
   }
-  const recordFormat = Number(header.format_version) === 2;
+  const recordFormat = checkpointFormat(header.format_version) === 2;
   for (const kind of recordFormat
-    ? ["leases", "receipts", "denied"]
+    ? ["denied"]
     : ["leases", "floors", "reservations", "denied"])
     if (db.get(`SELECT 1 FROM state_checkpoint_${kind} LIMIT 1`))
       invalid(`Unsupported checkpoint ${kind} entries; newer Forge required`);
@@ -357,7 +360,13 @@ export function readReplayStart(
       ],
       ["namespace", "request_id"],
     ),
-    leases: [],
+    leases: recordFormat
+      ? read(
+          "leases",
+          ["namespace", "subject", "sequence", "generation", "body"],
+          ["namespace", "subject"],
+        )
+      : [],
     floors: recordFormat
       ? read(
           "floors",
@@ -381,6 +390,7 @@ export function readReplayStart(
     receipts: [],
     floors: [],
     reservations: [],
+    leases: [],
   };
   decodeCheckpoint(JSON.stringify(empty));
   for (const kind of [
@@ -389,6 +399,7 @@ export function readReplayStart(
     "receipts",
     "floors",
     "reservations",
+    "leases",
   ] as const)
     for (const row of checkpoint[kind])
       decodeCheckpoint(JSON.stringify({ ...empty, [kind]: [row] }));
@@ -408,7 +419,14 @@ export function readReplayStart(
   if (
     recordFormat &&
     db.get(
-      "SELECT 1 FROM state_namespace_watermarks w WHERE w.sequence<>MAX(COALESCE((SELECT MAX(sequence) FROM state_checkpoint_live WHERE namespace=w.namespace),0),COALESCE((SELECT MAX(sequence) FROM state_checkpoint_deleted WHERE namespace=w.namespace),0),COALESCE((SELECT MAX(sequence) FROM state_events WHERE namespace=w.namespace AND sequence>?),0)) LIMIT 1",
+      "SELECT 1 FROM state_checkpoint_leases c LEFT JOIN state_namespace_watermarks w USING(namespace) WHERE w.sequence IS NULL OR w.sequence<c.sequence LIMIT 1",
+    )
+  )
+    invalid("Checkpoint namespace watermark requires repair");
+  if (
+    recordFormat &&
+    db.get(
+      "SELECT 1 FROM state_namespace_watermarks w WHERE w.sequence<>MAX(COALESCE((SELECT MAX(sequence) FROM state_checkpoint_live WHERE namespace=w.namespace),0),COALESCE((SELECT MAX(sequence) FROM state_checkpoint_deleted WHERE namespace=w.namespace),0),COALESCE((SELECT MAX(sequence) FROM state_checkpoint_leases WHERE namespace=w.namespace),0),COALESCE((SELECT MAX(sequence) FROM state_events WHERE namespace=w.namespace AND sequence>?),0)) LIMIT 1",
       [checkpoint.header[3]],
     )
   )
@@ -443,6 +461,7 @@ export function readReplayStart(
       deleted: checkpoint.deleted,
       floors: [...checkpoint.floors, ...liveFloors],
       receipts: checkpoint.receipts,
+      leases: recordFormat ? checkpoint.leases : undefined,
     },
     receipts,
   };

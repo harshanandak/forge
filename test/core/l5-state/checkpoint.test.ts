@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
+import type { StateEvent } from "../../../src/generated/types.ts";
 import { createSqliteStore } from "../../../src/adapters/store-sqlite/index.ts";
 import {
   StateOwner,
@@ -31,7 +32,7 @@ const lease = JSON.stringify({
   subject: "subject",
 });
 const value = (): Checkpoint => ({
-  header: [1, "lineage", 2, 20, 1, 20],
+  header: [2, "lineage", 2, 20, 1, 20],
   live: [["forge/test", "a", 3, 2, hash]],
   deleted: [["forge/test", "deleted", 4, 3]],
   leases: [["forge/test", "subject", 6, 2, lease]],
@@ -274,7 +275,9 @@ for (const [name, change] of malformed)
     change(input);
     const encoded = JSON.stringify(input);
     expect(() => decodeCheckpoint(encoded)).toThrow(
-      name === "newer version" ? /newer Forge/i : /checkpoint/i,
+      name === "newer version"
+        ? /CHECKPOINT_FORMAT_UNSUPPORTED/
+        : /checkpoint/i,
     );
     expect(JSON.stringify(input)).toBe(encoded);
   }, 30000);
@@ -345,7 +348,11 @@ for (const table of ["empty", ...Object.keys(rows)])
         );
         expect(target.owner.events("forge/test")).toEqual(snapshot.events);
       } else {
-        expect(() => target.owner.restore(snapshot)).toThrow(/newer Forge/i);
+        expect(() => target.owner.restore(snapshot)).toThrow(
+          table === "state_checkpoint_header"
+            ? /CHECKPOINT_FORMAT_UNSUPPORTED/
+            : /checkpoint.*header/i,
+        );
         expect(target.owner.export()).toEqual(before);
       }
       expect(source.owner.export()).toEqual(snapshot);
@@ -404,11 +411,32 @@ function publishFixture(store: Store, checkpoint: Checkpoint): void {
         ? "state_checkpoint_header"
         : `state_checkpoint_${kind}`;
     const tuples = kind === "header" ? [[1, ...checked.header]] : checked[kind];
-    for (const tuple of tuples)
+    for (const tuple of tuples) {
+      let body: string[] = [];
+      if (kind === "live") {
+        const event = JSON.parse(
+          String(
+            store.db.get("SELECT body FROM state_events WHERE sequence=?", [
+              tuple[2],
+            ])!.body,
+          ),
+        ) as StateEvent;
+        body = [
+          JSON.stringify({
+            namespace: event.namespace,
+            key: event.key,
+            revision: event.revision,
+            value: event.data,
+            updatedAt: event.at,
+            updatedBy: event.actor,
+          }),
+        ];
+      }
       store.db.run(
-        `INSERT INTO ${table}${kind === "live" ? "(namespace,key,sequence,revision,digest)" : ""} VALUES (${tuple.map(() => "?").join(",")})`,
-        tuple,
+        `INSERT INTO ${table}${kind === "live" ? "(namespace,key,sequence,revision,digest,body)" : ""} VALUES (${[...tuple, ...body].map(() => "?").join(",")})`,
+        [...tuple, ...body],
       );
+    }
   }
 }
 function prefix(store: Store): Checkpoint {
@@ -420,7 +448,7 @@ function prefix(store: Store): Checkpoint {
     "SELECT fingerprint,result FROM state_requests",
   )!;
   return {
-    header: [1, "lineage", 1, 4, 1, 4],
+    header: [2, "lineage", 1, 4, 1, 0],
     live: [
       [ns, "a", 1, 1, canonicalDigest(a)],
       [ns, "retained", 4, 1, canonicalDigest(retained)],
@@ -483,7 +511,7 @@ const cases: readonly (readonly [
         canonicalDigest(record),
       ]);
     },
-    /state_records/,
+    /checkpoint live body/i,
   ],
   [
     "extra live row",
@@ -610,7 +638,6 @@ for (const [name, withTail, change, error] of cases)
         const checkpoint = prefix(store);
         if (withTail) tail(store);
         publishFixture(store, checkpoint);
-        store.db.run("DELETE FROM state_events WHERE sequence<=4");
         change(store);
         const before = store.owner.export();
         const changes = store.db.get("SELECT total_changes() AS n");
@@ -629,15 +656,23 @@ for (const [name, withTail, change, error] of cases)
     }, 30000);
 
 for (const kind of ["leases", "floors", "reservations", "denied"] as const)
-  test(`checkpoint replay refuses unsupported ${kind}`, async () => {
+  test(`checkpoint replay refuses unbacked ${kind}`, async () => {
     const store = await open();
     try {
-      const checkpoint = { ...prefix(store), [kind]: value()[kind] };
-      publishFixture(store, { ...checkpoint, header: value().header });
-      store.db.run("DELETE FROM state_events");
+      const checkpoint = {
+        ...prefix(store),
+        [kind]: value()[kind].map((row) =>
+          row.map((cell, index) => (index === 2 ? 4 : cell)),
+        ),
+      };
+      publishFixture(store, checkpoint);
       const before = store.owner.export();
-      expect(() => verifyEventDerivedState(store.db, 20)).toThrow(
-        new RegExp(kind),
+      expect(() => verifyEventDerivedState(store.db, 4)).toThrow(
+        kind === "denied"
+          ? /denied/
+          : kind === "leases"
+            ? /state_checkpoint_leases/
+            : /allocator authority/,
       );
       expect(store.owner.export()).toEqual(before);
     } finally {
@@ -649,13 +684,13 @@ for (const [name, revision, refused] of [
   ["matching revision", 1, false],
   ["wrong checkpoint revision with matching digest", 2, true],
 ] as const)
-  test(`checkpoint replay: ${name}, C=2 and empty tail`, async () => {
+  test(`checkpoint replay: ${name}, C=1 and empty tail`, async () => {
     const store = await open();
     try {
       const record = write(store, "a");
       publishFixture(store, {
-        header: [1, "lineage", 1, 2, 1, 2],
-        live: [[ns, "a", 2, revision, canonicalDigest(record)]],
+        header: [2, "lineage", 1, 1, 1, 0],
+        live: [[ns, "a", 1, revision, canonicalDigest(record)]],
         deleted: [],
         receipts: [],
         leases: [],
@@ -663,10 +698,9 @@ for (const [name, revision, refused] of [
         reservations: [],
         denied: [],
       });
-      store.db.run("DELETE FROM state_events");
       const before = store.owner.export();
-      const verify = () => verifyEventDerivedState(store.db, 2, 1);
-      if (refused) expect(verify).toThrow(/state_records/);
+      const verify = () => verifyEventDerivedState(store.db, 1, 1);
+      if (refused) expect(verify).toThrow(/checkpoint live body/i);
       else expect(verify()).toBeUndefined();
       expect(store.owner.export()).toEqual(before);
     } finally {
@@ -678,36 +712,21 @@ for (const kind of ["deleted n-30", "floor 30 deleted in tail"] as const)
   test(`checkpoint numbered summary refuses ${kind}`, async () => {
     const store = await open();
     try {
-      let checkpoint: Checkpoint = {
-        header: [1, "lineage", 1, 2, 1, 2],
-        live: [],
-        deleted: [[ns, "n-30", 2, 2]],
-        receipts: [],
-        leases: [],
-        floors: [],
-        reservations: [],
-        denied: [],
-      };
       if (kind === "floor 30 deleted in tail") {
-        const record = store.owner.put(
+        store.owner.put(
           ns,
           "allocation:n-",
           { prefix: "n-", number: 30 },
           actor,
           { expectRevision: 0 },
         );
+        store.owner.checkpoint(1);
         store.owner.delete(ns, "allocation:n-", actor, { expectRevision: 1 });
-        checkpoint = {
-          ...checkpoint,
-          header: [1, "lineage", 1, 1, 1, 1],
-          live: [[ns, "allocation:n-", 1, 1, canonicalDigest(record)]],
-          deleted: [],
-        };
+      } else {
+        write(store, "n-30");
+        store.owner.delete(ns, "n-30", actor, { expectRevision: 1 });
+        store.owner.checkpoint(1);
       }
-      publishFixture(store, checkpoint);
-      store.db.run("DELETE FROM state_events WHERE sequence<=?", [
-        checkpoint.header[3],
-      ]);
       const before = store.owner.export();
       expect(() =>
         verifyEventDerivedState(store.db, 2, 1, {
@@ -721,18 +740,20 @@ for (const kind of ["deleted n-30", "floor 30 deleted in tail"] as const)
     }
   }, 30000);
 
-for (const prune of [false, true])
-  test(`checkpoint replay ignores covered events: ${prune}`, async () => {
+for (const corrupt of [false, true])
+  test(`checkpoint replay validates covered events: ${corrupt}`, async () => {
     const store = await open();
     try {
       const checkpoint = prefix(store);
       tail(store);
-      if (prune) {
+      if (corrupt) {
         publishFixture(store, checkpoint);
         store.db.run("UPDATE state_events SET body='{}' WHERE sequence<=4");
       }
       const before = store.owner.export();
-      expect(verifyEventDerivedState(store.db, 8, 1)).toBeUndefined();
+      const verify = () => verifyEventDerivedState(store.db, 8, 1);
+      if (corrupt) expect(verify).toThrow(/state_events/);
+      else expect(verify()).toBeUndefined();
       expect(store.owner.export()).toEqual(before);
     } finally {
       await store.close();

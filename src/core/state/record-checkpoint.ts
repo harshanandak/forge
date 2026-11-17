@@ -10,7 +10,7 @@ function refuse(): never {
   throw new ForgeFailure({
     code: "INPUT_INVALID",
     message:
-      "Record checkpoint requires contiguous record events without coordination or request witnesses",
+      "Checkpoint requires contiguous validated events and request witnesses",
     retry: "never",
   });
 }
@@ -37,11 +37,24 @@ export function writeRecordCheckpoint(db: SqlDatabase, batch: number): number {
           Number(row.sequence) !== ++sequence ||
           !validateStateEvent(event).ok ||
           event.namespace !== row.namespace ||
-          event.key !== row.key ||
-          event.requestId !== undefined
+          event.key !== row.key
         )
           refuse();
         const { namespace, key, revision } = event;
+        if (event.requestId !== undefined) {
+          const receipt = db.get(
+            "SELECT fingerprint,result FROM state_requests WHERE namespace=? AND request_id=?",
+            [namespace, event.requestId],
+          );
+          if (!receipt) refuse();
+          db.run("INSERT INTO state_checkpoint_receipts VALUES (?,?,?,?,?)", [
+            namespace,
+            event.requestId,
+            sequence,
+            recordDigest(parseRestoreJson(String(receipt.fingerprint))),
+            recordDigest(parseRestoreJson(String(receipt.result))),
+          ]);
+        }
         if (event.type === `${namespace}:record.updated@1`) {
           const record = {
             namespace,
@@ -84,6 +97,19 @@ export function writeRecordCheckpoint(db: SqlDatabase, batch: number): number {
             "INSERT INTO state_checkpoint_deleted VALUES (?,?,?,?) ON CONFLICT(namespace,key) DO UPDATE SET sequence=excluded.sequence,revision=excluded.revision",
             [namespace, key, sequence, revision],
           );
+        } else if (
+          ["acquired", "reacquired", "renewed", "released"].some(
+            (kind) => event.type === `${namespace}:lease.${kind}@1`,
+          )
+        ) {
+          const lease = event.type.endsWith("acquired@1")
+            ? (event.data as { lease: unknown }).lease
+            : event.data;
+          db.run(
+            "INSERT INTO state_checkpoint_leases VALUES (?,?,?,?,?) ON CONFLICT(namespace,subject) DO UPDATE SET sequence=excluded.sequence,generation=excluded.generation,body=excluded.body WHERE generation<=excluded.generation",
+            [namespace, key, sequence, revision, JSON.stringify(lease)],
+          );
+          continue;
         } else refuse();
         const numeric = /^(.*?)([1-9][0-9]*)$/.exec(key);
         if (numeric && Number.isSafeInteger(Number(numeric[2])))

@@ -314,18 +314,11 @@ test("checkpoint beyond 5,000 JSON values is decoded row by row", async () => {
   const s = await fixture();
   try {
     s.owner.initialize();
-    s.db.run(
-      "INSERT INTO state_checkpoint_header VALUES (1,1,'synthetic',1,1200,1,0)",
-    );
-    s.db.transaction(() => {
-      for (let n = 1; n <= 1200; n++)
-        s.db.run("INSERT INTO state_checkpoint_deleted VALUES (?,?,?,?)", [
-          ns,
-          `gone:${n}`,
-          n,
-          2,
-        ]);
-    });
+    for (let n = 1; n <= 1200; n++) {
+      put(s, `gone:${n}`);
+      s.owner.delete(ns, `gone:${n}`, actor, { expectRevision: 1 });
+    }
+    capture(s);
     const parse = JSON.parse;
     try {
       JSON.parse = (...args: Parameters<typeof JSON.parse>) => {
@@ -335,7 +328,7 @@ test("checkpoint beyond 5,000 JSON values is decoded row by row", async () => {
       };
       const seed = readReplayStart(s.db, 16, true).checkpoint;
       expect(seed?.deleted).toHaveLength(1200);
-      expect(seed?.coveredSequence).toBe(1200);
+      expect(seed?.coveredSequence).toBe(2400);
     } finally {
       JSON.parse = parse;
     }

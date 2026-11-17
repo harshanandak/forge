@@ -186,19 +186,13 @@ test.each([1, 2, 256])(
   },
 );
 
-test.each(["request", "gap", "floor"])(
+test.each(["gap", "floor"])(
   "checkpoint refuses unsafe input: %s",
   async (kind) => {
     const s = await fixture();
     try {
       prefix(s);
-      if (kind === "request")
-        s.owner.put(ns, "receipt", {}, actor, {
-          expectRevision: 0,
-          requestId: "synthetic",
-        });
-      else if (kind === "gap")
-        s.db.run("DELETE FROM state_events WHERE sequence=2");
+      if (kind === "gap") s.db.run("DELETE FROM state_events WHERE sequence=2");
       else {
         capture(s);
         put(s, "allocation:item:", { prefix: "item:", number: 0 }, 1);
