@@ -36,6 +36,11 @@ so restore retains the same policy. Existing callers supply no registry and rema
 unenrolled. Work enrollment waits for repaired-copy cutover; this wiring adds no
 legacy-value exception or repair.
 
+The bound-lane coordinator applies the same value admission to device records returned
+by both of its work-reader methods, before interpreting an attachment. A malformed
+enrolled attachment therefore retains its named admission refusal. An empty registry
+keeps the existing coordinator behavior.
+
 `put` atomically checks the expected revision, checks any lease fence on the owner's clock, writes the record, appends its event, and saves the idempotent result. A reused request ID with different input is refused. Acquisition takes a holder and request ID, without a generation. Renewal, release and fenced writes require the current generation. A device-qualified lease authorizes the same device and session, independently of actor, agent or harness labels. A stored legacy lease without device identity retains actor-plus-session authorization until a holder-checked rewrite records the qualified caller. Renew and release record the current caller's actor and holder labels; reading historical events preserves the identities accepted at that time. Released and expired generations are never reused. A historical acquisition replay cannot revive authority.
 
 `delete(key, { expectRevision, readSet? })` removes an existing active record and appends a `record.deleted@1` event atomically. The event returns the next revision, timestamp and actor. It requires a positive matching revision, checks the same read-set and optional lease fence as `put` inside the transaction, and has no request ID or idempotent replay receipt. A repeated deletion is refused. Bound assembly clients additionally require a declared write effect and refuse acquisition contexts; held contexts fence the named subject, defaulting to the key.

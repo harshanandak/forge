@@ -69,8 +69,17 @@ export async function coordinateLane(
 ): Promise<unknown> {
   const owner = await device.open(false);
   const state = owner && {
-    get: (key: string) => owner.get("forge/work", key),
-    list: (prefix?: string) => owner.list("forge/work", prefix),
+    get: (key: string) => {
+      const record = owner.get("forge/work", key);
+      if (record)
+        owner.assertRecordValue("forge/work", record.key, record.value);
+      return record;
+    },
+    list: (prefix?: string) =>
+      owner.list("forge/work", prefix).map((record) => {
+        owner.assertRecordValue("forge/work", record.key, record.value);
+        return record;
+      }),
   };
   if (
     ["lane.start", "lane.release", "lane.next", "lane.record"].includes(
