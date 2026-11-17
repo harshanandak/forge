@@ -17,11 +17,15 @@
 //   x-cloud-converge: <key>:<n>  the request pauses until n requests with the same key have arrived
 // The Clerk upstream here is a test double: the code "owner" is the configured owner, anything else is refused.
 import { AsyncLocalStorage } from "node:async_hooks";
-import { Project as Shipped } from "../src/project.ts";
+import { Project as Shipped, domain } from "../src/project.ts";
 import { Project as Deployed } from "../src/adapters/workers-oauth/compose.ts";
 import type { DeviceUpstream } from "../src/auth/device-browser.ts";
 import type { DurableState } from "../src/store.ts";
 import { createOidcVerifier } from "../../src/assembly/oidc.ts";
+import { recordWrite, type StatementProfile } from "./write-profile.ts";
+import { populateCost, COST_CLOCK } from "./cost-fixture.ts";
+import { StateOwner } from "../../src/core/state/index.ts";
+import { durableStore } from "../src/store.ts";
 
 export { default } from "../src/worker.ts";
 
@@ -51,6 +55,9 @@ interface Fault {
   readonly insert: boolean;
   sql: number;
   kv: number;
+  reads: number;
+  kvGets: number;
+  readonly profile: Map<string, StatementProfile> | undefined;
 }
 const current = new AsyncLocalStorage<Fault>();
 
@@ -175,13 +182,14 @@ export function clerk(env: unknown, identityTtl = 3600): DeviceUpstream {
 }
 
 export class Project extends Shipped {
-  readonly #boot: { sql: number; kv: number };
+  readonly #boot: { sql: number; kv: number; reads: number; kvGets: number };
+  readonly #seed: (records: number) => void;
   readonly #cold: () => Shipped;
   readonly #pairs = new Map<string, Pair>();
   readonly #converging = new Map<string, { seen: number; gate: Gate }>();
 
   constructor(ctx: DurableState, env?: unknown) {
-    const boot = { sql: 0, kv: 0 };
+    const boot = { sql: 0, kv: 0, reads: 0, kvGets: 0 };
     const inject = (kv = false, statement = "") => {
       const fault = current.getStore();
       if (
@@ -210,15 +218,27 @@ export class Project extends Shipped {
             const cursor = ctx.storage.sql.exec(statement, ...bindings);
             const rows = cursor.toArray();
             const written = (cursor as { rowsWritten?: number }).rowsWritten;
+            const read = (cursor as { rowsRead?: number }).rowsRead;
             if (!Number.isSafeInteger(written) || written! < 0)
               throw new Error("Missing SQL rowsWritten measurement");
+            if (!Number.isSafeInteger(read) || read! < 0)
+              throw new Error("Missing SQL rowsRead measurement");
             (current.getStore() ?? boot).sql += written!;
+            (current.getStore() ?? boot).reads += read!;
+            recordWrite(
+              current.getStore()?.profile,
+              statement,
+              bindings,
+              written!,
+              read!,
+            );
             return { toArray: () => rows };
           },
         },
         transactionSync: (body) => ctx.storage.transactionSync(body),
         get: (key) => {
           inject(true);
+          (current.getStore() ?? boot).kvGets++;
           return ctx.storage.get(key);
         },
         put: async (key, value) => {
@@ -237,6 +257,17 @@ export class Project extends Shipped {
     super(state, env, { upstream: clerk(env), redemption });
     this.#cold = () => new Deployed(state, env);
     this.#boot = boot;
+    this.#seed = (records) => {
+      const owner = new StateOwner(durableStore(state.storage), {
+        now: () => COST_CLOCK,
+      });
+      owner.initialize([domain]);
+      if (owner.count("forge/work", "issue:") !== 0)
+        throw new Error("Command cost fixture target is not empty");
+      populateCost(owner, records, true);
+      if (owner.count("forge/work", "issue:") !== records)
+        throw new Error("Command cost fixture row count differs");
+    };
   }
 
   #pair(key: string): Pair {
@@ -297,8 +328,14 @@ export class Project extends Shipped {
       insert: kind === "quota-insert" || kind === "full-insert",
       sql: this.#boot.sql,
       kv: this.#boot.kv,
+      reads: this.#boot.reads,
+      kvGets: this.#boot.kvGets,
+      profile: request.headers.has("x-cloud-write-profile")
+        ? new Map()
+        : undefined,
     };
     this.#boot.sql = this.#boot.kv = 0;
+    this.#boot.reads = this.#boot.kvGets = 0;
     const ip = request.headers.get("x-cloud-ip");
     if (ip !== null) {
       const headers = new Headers(request.headers);
@@ -308,6 +345,16 @@ export class Project extends Shipped {
       request = new Request(request, { headers });
     }
     return current.run(fault, async () => {
+      const seed = request.headers.get("x-cloud-command-seed");
+      if (seed !== null) {
+        if (
+          !/^(1000|8000)$/.test(seed) ||
+          request.method !== "POST" ||
+          !new URL(request.url).pathname.endsWith("/devices")
+        )
+          throw new Error("Invalid command cost setup request");
+        this.#seed(Number(seed));
+      }
       const unmet =
         (await this.#rendezvous(request)) ?? (await this.#converge(request));
       const response =
@@ -318,6 +365,16 @@ export class Project extends Shipped {
       const headers = new Headers(response.headers);
       headers.set("x-cloud-sql-writes", String(fault.sql));
       headers.set("x-cloud-kv-writes", String(fault.kv));
+      headers.set("x-cloud-sql-reads", String(fault.reads));
+      headers.set("x-cloud-kv-gets", String(fault.kvGets));
+      if (fault.profile)
+        return Response.json(
+          {
+            response: await response.json(),
+            profile: [...fault.profile.values()],
+          },
+          { status: response.status, headers },
+        );
       return new Response(response.body, { status: response.status, headers });
     });
   }

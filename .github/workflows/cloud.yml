@@ -330,10 +330,22 @@ jobs:
             export FORGE_CLOUD_PROJECT=ci-large config=wrangler.large.jsonc
             persist="$RUNNER_TEMP/wrangler-large"
             start large
+            measured restore-cost bun conformance/restore-cost.ts
             measured large bun conformance/conformance.ts large
             workerd_rss large
             stop
           )
+          for size in 1000 8000; do
+            (
+              export config=wrangler.large.jsonc FORGE_CLOUD_PROJECT="ci-command-cost-$size" FORGE_CLOUD_ID_PREFIX=work
+              persist="$RUNNER_TEMP/wrangler-command-cost-$size"
+              start "command-cost-$size"
+              measured "command-cost-$size" bun conformance/command-cost.ts "$size"
+              workerd_rss "command-cost-$size"
+              stop
+            )
+          done
+          bun conformance/command-cost.ts report
           # Number journey (forge-1306): comment and link numbers across deleted history, restore and concurrent adds. It has fresh
           # persistence and the default dump limits (the large config). The first Worker admits ci-numbers-a; the second starts on the
           # same persistence after a restart and admits ci-numbers-b, the project the first run restored into.
@@ -499,6 +511,15 @@ jobs:
           restore_cf inner-budget cloud/src/dump.ts 's/^    admitJson\(page\.tables\);\n//m; s/^    admitJson\(dump\.tables\);\n//m' "a paged restore of 31 deeply nested bodies is refused before any inner JSON.parse reads them" 'expect(probed).toEqual([])'
           # Without the label scan, a repeated label reads as its last copy and the restore wrongly succeeds (forge-1313).
           restore_cf duplicate-labels src/core/state/restore-json.ts 's/^  checkLabels\(text\);$/  void 0;/m' "a whole restore with a duplicate event label is RESTORE_INVALID_ROW and leaves nothing" '[got.status, got.json.error?.code]'
+      - name: Restore write-cost evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: restore-cost-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/restore-cost.json
+            ${{ runner.temp }}/command-cost*.json
+          if-no-files-found: error
       - name: wrangler log
         if: failure()
         run: |
