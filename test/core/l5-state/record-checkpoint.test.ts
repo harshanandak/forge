@@ -314,12 +314,10 @@ test("checkpoint beyond 5,000 JSON values is decoded row by row", async () => {
   const s = await fixture();
   try {
     s.owner.initialize();
-    s.db.transaction(() => {
-      for (let n = 1; n <= 1200; n++) {
-        put(s, `gone:${n}`);
-        s.owner.delete(ns, `gone:${n}`, actor, { expectRevision: 1 });
-      }
-    });
+    for (let n = 1; n <= 1200; n++) {
+      put(s, `gone:${n}`);
+      s.owner.delete(ns, `gone:${n}`, actor, { expectRevision: 1 });
+    }
     capture(s);
     const parse = JSON.parse;
     try {
