@@ -15,12 +15,13 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { packedConsumer } from "../../../integration/packed-consumer.ts";
+import { assertInstalledBuildIdentity } from "../../../../tools/pack-smoke/identity.ts";
 
 const work = mkdtempSync(join(tmpdir(), "forge-installed-identity-"));
 const author = join(work, "author"),
   archive = join(work, "candidate.tgz");
 let digest: string,
-  build: { version: string; commit: string },
+  build: { version: string; commit: string; dirty: boolean },
   nodeRoot: string;
 beforeAll(() => {
   const packed = process.env.FORGE_PACKED_TARBALL;
@@ -70,32 +71,70 @@ for (const [field, value] of [
   ["commit", "f".repeat(40)],
   ["dirty", true],
   ["runId", "wrong-run"],
+  ["missingRunId", null],
   ["missing", null],
 ] as const) {
-  test(`installed identity rejects a substituted ${field}`, () => {
+  test(`installed identity rejects a substituted ${field}`, async () => {
     const row = mkdtempSync(join(work, `fault-${field}-`));
     try {
+      if (
+        field === "runId" ||
+        field === "missingRunId" ||
+        field === "missing"
+      ) {
+        const { version, commit, dirty } = build;
+        const identity = { version, commit, dirty };
+        const runId =
+          process.env.FORGE_PACK_EXPECTED_RUN_ID ??
+          process.env.GITHUB_RUN_ID ??
+          null;
+        const installed = join(packedConsumer(), "node_modules/forge-workflow");
+        expect(() =>
+          assertInstalledBuildIdentity(installed, identity, runId),
+        ).not.toThrow();
+        mkdirSync(join(row, "dist"));
+        if (field !== "missing")
+          writeFileSync(
+            join(row, "dist/build.json"),
+            JSON.stringify(
+              field === "missingRunId"
+                ? { version, commit, dirty: false }
+                : { ...build, runId: value },
+            ),
+          );
+        const expectedRun = field === "missingRunId" ? "12345" : runId;
+        expect(() =>
+          assertInstalledBuildIdentity(row, identity, expectedRun),
+        ).toThrow(field === "missing" ? "ENOENT" : "installed build identity");
+        const source = readFileSync(
+          resolve(
+            import.meta.dirname,
+            "../../../../tools/pack-smoke/identity.ts",
+          ),
+          "utf8",
+        );
+        const removed = source.replace(
+          / {2}assert\.deepEqual\([\s\S]*?\n {2}\);/,
+          "",
+        );
+        expect(removed).not.toBe(source);
+        const mutant = join(row, "identity.ts");
+        writeFileSync(mutant, removed);
+        const unguarded = (await import(
+          pathToFileURL(mutant).href
+        )) as typeof import("../../../../tools/pack-smoke/identity.ts");
+        expect(() =>
+          unguarded.assertInstalledBuildIdentity(row, identity, expectedRun),
+        ).not.toThrow();
+        return;
+      }
       const preload = join(row, "identity-fault.mjs");
       writeFileSync(
         preload,
         `
-        if (${field === "runId" || field === "missing"} && process.argv[1]?.endsWith('run.ts')) {
-          const fs = await import('node:fs');
-          const {syncBuiltinESMExports} = await import('node:module');
-          const read = fs.default.readFileSync;
-          fs.default.readFileSync = function(path, ...args) {
-            const bytes = read.call(this, path, ...args);
-            if (String(path).replaceAll(String.fromCharCode(92), '/').endsWith('/dist/build.json')) {
-              if (${field === "missing"}) throw Error('installed build identity record missing');
-              return JSON.stringify({...JSON.parse(String(bytes)), runId:'wrong-run'});
-            }
-            return bytes;
-          };
-          syncBuiltinESMExports();
-        }
         const write = process.stdout.write;
         process.stdout.write = function (chunk, ...args) {
-          if (${field !== "runId" && field !== "missing"} && process.argv.at(-2) === '--version' && process.argv.at(-1) === '--json') {
+          if (process.argv.at(-2) === '--version' && process.argv.at(-1) === '--json') {
             const identity = JSON.parse(String(chunk));
             identity[${JSON.stringify(field)}] = ${JSON.stringify(value)};
             chunk = JSON.stringify(identity) + String.fromCharCode(10);
@@ -125,41 +164,6 @@ for (const [field, value] of [
       );
       expect(out.status, out.stderr).not.toBe(0);
       expect(out.stderr).toContain("installed build identity");
-      if (field === "runId" || field === "missing") {
-        const runner = join(author, "tools/pack-smoke/run.ts");
-        const source = readFileSync(runner, "utf8");
-        const removed = source.replace(
-          / {4}assert\.deepEqual\(\n {6}JSON.parse\(readFileSync\(join\(installedDir, "dist\/build.json"\), "utf8"\)\),[\s\S]*?\n {4}\);/,
-          "",
-        );
-        expect(removed).not.toBe(source);
-        writeFileSync(runner, removed);
-        try {
-          const unguarded = spawnSync(
-            join(nodeRoot, process.platform === "win32" ? "node.exe" : "node"),
-            [runner],
-            {
-              cwd: author,
-              env: {
-                ...process.env,
-                FORGE_PACK_INPUT: archive,
-                FORGE_PACK_EXPECTED_SHA256: digest,
-                FORGE_PACK_EXPECTED_VERSION: build.version,
-                CI_HEAD: build.commit,
-                NODE_OPTIONS:
-                  `${process.env.NODE_OPTIONS ?? ""} --import=${pathToFileURL(preload).href}`.trim(),
-              },
-              encoding: "utf8",
-              timeout: 45_000,
-              windowsHide: true,
-            },
-          );
-          expect(unguarded.status, unguarded.stderr).toBe(0);
-          expect(unguarded.stdout).toContain("pack-smoke: PASS");
-        } finally {
-          writeFileSync(runner, source);
-        }
-      }
     } finally {
       rmSync(row, { recursive: true, force: true });
     }

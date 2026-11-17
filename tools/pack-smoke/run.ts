@@ -26,6 +26,7 @@ import {
   resolveBun,
 } from "./environment.ts";
 import { packInput } from "./input.ts";
+import { assertInstalledBuildIdentity } from "./identity.ts";
 import { gitExecutable } from "../git-executable.ts";
 
 const root = resolve(import.meta.dirname, "../..");
@@ -235,11 +236,7 @@ async function main(): Promise<void> {
       process.env.FORGE_PACK_EXPECTED_RUN_ID ??
       process.env.GITHUB_RUN_ID ??
       null;
-    assert.deepEqual(
-      JSON.parse(readFileSync(join(installedDir, "dist/build.json"), "utf8")),
-      { ...(build as object), runId },
-      "installed build identity record must match the reviewed CI run",
-    );
+    assertInstalledBuildIdentity(installedDir, build, runId);
     console.log(
       `- installed artifact ${JSON.stringify({ build, runId, sha256: hash("sha256", readFileSync(tarball)), integrity: "sha512-" + hash("sha512", readFileSync(tarball), "base64"), node: process.version, bin: join(installedDir, binTarget) })}`,
     );
