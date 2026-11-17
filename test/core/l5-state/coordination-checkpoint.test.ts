@@ -9,10 +9,116 @@ import {
 } from "../../../src/core/state/checkpoint.ts";
 import { withinRestoreBudget } from "../../../src/core/state/restore-json.ts";
 import { canonicalJson } from "../../../src/core/config/pointer.ts";
+import { decodeCheckpoint } from "../../../src/core/state/checkpoint.ts";
+import { LocalState } from "../../../src/assembly/state.ts";
 import type { SqlDatabase } from "../../../src/ports/store.ts";
 import { actor, ns, fixture, high } from "./record-checkpoint.fixture.ts";
 
 setDefaultTimeout(30_000);
+
+for (const version of [1, 3])
+  test.each(["initialize", "writable open", "replay", "restore", "codec"])(
+    `%s names the refusal for checkpoint format ${version} before accepting covered authority`,
+    async (mode) => {
+      const source = await fixture(),
+        target = await fixture();
+      let state: LocalState | undefined;
+      try {
+        source.owner.initialize();
+        const first = source.owner.acquire(ns, "s", holder, 60_000, "first");
+        source.owner.release(ns, first);
+        source.owner.acquire(ns, "s", holder, 60_000, "second");
+        source.owner.put(ns, "anchor", {}, actor, { expectRevision: 0 });
+        source.owner.checkpoint(1);
+        const events = source.owner.events(ns),
+          requests = source.owner.export().requests;
+        source.db.run("DELETE FROM state_checkpoint_leases WHERE subject='s'");
+        source.db.run("DELETE FROM state_leases WHERE subject='s'");
+        source.db.run("UPDATE state_checkpoint_header SET format_version=?", [
+          version,
+        ]);
+        expect(source.owner.events(ns)).toEqual(events);
+        expect(source.owner.export().requests).toEqual(requests);
+        target.owner.initialize();
+        const before = target.owner.export();
+        if (mode === "writable open") {
+          state = new LocalState(":memory:", {
+            open: () =>
+              Promise.resolve({
+                ok: true,
+                handle: { value: source.db, close: () => Promise.resolve() },
+              }),
+          });
+          await expect(state.open(true)).rejects.toThrow(
+            "CHECKPOINT_FORMAT_UNSUPPORTED",
+          );
+        } else {
+          expect(() => {
+            if (mode === "initialize") source.owner.initialize();
+            else if (mode === "replay")
+              verifyEventDerivedState(source.db, high(source), 1);
+            else if (mode === "restore")
+              target.owner.restore(source.owner.export(), undefined, 1);
+            else
+              decodeCheckpoint(
+                JSON.stringify({
+                  header: [version, "synthetic", 1, 0, 1, 0],
+                  live: [],
+                  deleted: [],
+                  leases: [],
+                  receipts: [],
+                  floors: [],
+                  reservations: [],
+                  denied: [],
+                }),
+              );
+          }).toThrow("CHECKPOINT_FORMAT_UNSUPPORTED");
+        }
+        expect(target.owner.export()).toEqual(before);
+      } finally {
+        await state?.close();
+        await source.close();
+        await target.close();
+      }
+    },
+  );
+
+test.each(["initialize", "replay", "restore"])(
+  "%s refuses a request witness whose sequence names another covered event",
+  async (mode) => {
+    const source = await fixture(),
+      target = await fixture();
+    try {
+      source.owner.initialize();
+      for (const id of ["r1", "r2"])
+        source.owner.put(ns, id, { id }, actor, {
+          expectRevision: 0,
+          requestId: id,
+        });
+      source.owner.checkpoint(1);
+      verifyEventDerivedState(source.db, high(source), 1);
+      const events = source.owner.events(ns),
+        requests = source.owner.export().requests;
+      source.db.run(
+        "UPDATE state_checkpoint_receipts SET sequence=2 WHERE request_id='r1'",
+      );
+      expect(source.owner.events(ns)).toEqual(events);
+      expect(source.owner.export().requests).toEqual(requests);
+      target.owner.initialize();
+      const before = target.owner.export();
+      expect(() => {
+        if (mode === "initialize") source.owner.initialize();
+        else if (mode === "replay")
+          verifyEventDerivedState(source.db, high(source), 1);
+        else target.owner.restore(source.owner.export(), undefined, 1);
+      }).toThrow(/state_requests/);
+      expect(target.owner.export()).toEqual(before);
+    } finally {
+      await source.close();
+      await target.close();
+    }
+  },
+);
 
 test("the covered boundary cannot hide an event at sequence zero", async () => {
   const s = await fixture();
