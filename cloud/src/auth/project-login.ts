@@ -2,6 +2,7 @@
 // one private row, updated inside the object's synchronous transaction; the token it mints lives in
 // the same project database. This slice has no approve route: nothing here can approve a login.
 import { ForgeFailure } from "../../../src/contract/failure.ts";
+import { storageFailure } from "../storage-failure.ts";
 import type { SqlDatabase } from "../../../src/ports/store.ts";
 import { issueToken, sha256 } from "../tokens.ts";
 import {
@@ -317,6 +318,8 @@ export async function loginRoute(
       device,
     });
   } catch (error) {
+    const storageError = storageFailure(error);
+    if (storageError) throw storageError;
     const code =
       error instanceof DeviceLoginFailure ? error.code : "unavailable";
     return reply(STATUS[code] ?? 503, refusal(code));

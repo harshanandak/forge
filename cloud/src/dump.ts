@@ -2,6 +2,7 @@
 // Device tokens and their hashes are never part of a dump. The database image is never used.
 // Every value is a string or a safe integer; anything else is refused on the way out and on the way in.
 import { ForgeFailure } from "../../src/contract/failure.ts";
+import { storageFailure } from "./storage-failure.ts";
 import { canonicalJson, isObject } from "../../src/core/config/pointer.ts";
 import {
   RestoreConsistencyFailure,
@@ -825,7 +826,9 @@ function insertRows(db: SqlDatabase, tables: Record<string, Row[]>): void {
           db.run(`UPDATE ${table} SET created_at=0 WHERE request_id=?`, [
             row.request_id!,
           ]);
-      } catch {
+      } catch (error) {
+        const refusal = storageFailure(error);
+        if (refusal) throw refusal;
         throw invalid(`A ${table} row conflicts with another row`);
       }
 }

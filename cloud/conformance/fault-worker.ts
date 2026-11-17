@@ -18,6 +18,7 @@
 // The Clerk upstream here is a test double: the code "owner" is the configured owner, anything else is refused.
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Project as Shipped } from "../src/project.ts";
+import { Project as Deployed } from "../src/adapters/workers-oauth/compose.ts";
 import type { DeviceUpstream } from "../src/auth/device-browser.ts";
 import type { DurableState } from "../src/store.ts";
 import { createOidcVerifier } from "../../src/assembly/oidc.ts";
@@ -45,6 +46,11 @@ const isReceiptInsert = (
 interface Fault {
   readonly receiptInsert: boolean;
   readonly loginWrite: boolean;
+  readonly limit: string | undefined;
+  readonly kvFault: boolean;
+  readonly insert: boolean;
+  sql: number;
+  kv: number;
 }
 const current = new AsyncLocalStorage<Fault>();
 
@@ -169,37 +175,68 @@ export function clerk(env: unknown, identityTtl = 3600): DeviceUpstream {
 }
 
 export class Project extends Shipped {
+  readonly #boot: { sql: number; kv: number };
+  readonly #cold: () => Shipped;
   readonly #pairs = new Map<string, Pair>();
   readonly #converging = new Map<string, { seen: number; gate: Gate }>();
 
   constructor(ctx: DurableState, env?: unknown) {
-    super(
-      {
-        storage: {
-          sql: {
-            exec: (statement, ...bindings) => {
-              if (
-                current.getStore()?.receiptInsert === true &&
-                isReceiptInsert(statement, bindings)
-              )
-                throw new Error("Injected receipt insert failure");
-              if (
-                current.getStore()?.loginWrite === true &&
-                LOGIN_WRITE.test(statement)
-              )
-                throw new Error("Injected login write failure");
-              return ctx.storage.sql.exec(statement, ...bindings);
-            },
+    const boot = { sql: 0, kv: 0 };
+    const inject = (kv = false, statement = "") => {
+      const fault = current.getStore();
+      if (
+        fault?.limit &&
+        fault.kvFault === kv &&
+        (!fault.insert ||
+          /^INSERT INTO state_(?:records|events)\b/i.test(statement))
+      )
+        throw new Error(fault.limit);
+    };
+    const state: DurableState = {
+      storage: {
+        sql: {
+          exec: (statement, ...bindings) => {
+            inject(false, statement);
+            if (
+              current.getStore()?.receiptInsert === true &&
+              isReceiptInsert(statement, bindings)
+            )
+              throw new Error("Injected receipt insert failure");
+            if (
+              current.getStore()?.loginWrite === true &&
+              LOGIN_WRITE.test(statement)
+            )
+              throw new Error("Injected login write failure");
+            const cursor = ctx.storage.sql.exec(statement, ...bindings);
+            const rows = cursor.toArray();
+            const written = (cursor as { rowsWritten?: number }).rowsWritten;
+            if (!Number.isSafeInteger(written) || written! < 0)
+              throw new Error("Missing SQL rowsWritten measurement");
+            (current.getStore() ?? boot).sql += written!;
+            return { toArray: () => rows };
           },
-          transactionSync: (body) => ctx.storage.transactionSync(body),
-          get: (key) => ctx.storage.get(key),
-          put: (key, value) => ctx.storage.put(key, value),
-          delete: (key) => ctx.storage.delete(key),
+        },
+        transactionSync: (body) => ctx.storage.transactionSync(body),
+        get: (key) => {
+          inject(true);
+          return ctx.storage.get(key);
+        },
+        put: async (key, value) => {
+          inject(true);
+          await ctx.storage.put(key, value);
+          (current.getStore() ?? boot).kv++;
+        },
+        delete: async (key) => {
+          inject(true);
+          const deleted = await ctx.storage.delete(key);
+          if (deleted) (current.getStore() ?? boot).kv++;
+          return deleted;
         },
       },
-      env,
-      { upstream: clerk(env), redemption },
-    );
+    };
+    super(state, env, { upstream: clerk(env), redemption });
+    this.#cold = () => new Deployed(state, env);
+    this.#boot = boot;
   }
 
   #pair(key: string): Pair {
@@ -248,7 +285,20 @@ export class Project extends Shipped {
     const fault: Fault = {
       receiptInsert: kind === "receipt-insert",
       loginWrite: kind === "login-write",
+      limit:
+        kind === "quota" || kind === "quota-kv" || kind === "quota-insert"
+          ? "Exceeded allowed rows written in Durable Objects free tier."
+          : kind === "read-quota"
+            ? "Exceeded allowed rows read in Durable Objects free tier."
+            : kind === "storage-full" || kind === "full-insert"
+              ? "database or disk is full: SQLITE_FULL"
+              : undefined,
+      kvFault: kind === "quota-kv",
+      insert: kind === "quota-insert" || kind === "full-insert",
+      sql: this.#boot.sql,
+      kv: this.#boot.kv,
     };
+    this.#boot.sql = this.#boot.kv = 0;
     const ip = request.headers.get("x-cloud-ip");
     if (ip !== null) {
       const headers = new Headers(request.headers);
@@ -260,7 +310,15 @@ export class Project extends Shipped {
     return current.run(fault, async () => {
       const unmet =
         (await this.#rendezvous(request)) ?? (await this.#converge(request));
-      return unmet ?? super.fetch(request);
+      const response =
+        unmet ??
+        (await (request.headers.has("x-cloud-cold")
+          ? this.#cold().fetch(request)
+          : super.fetch(request)));
+      const headers = new Headers(response.headers);
+      headers.set("x-cloud-sql-writes", String(fault.sql));
+      headers.set("x-cloud-kv-writes", String(fault.kv));
+      return new Response(response.body, { status: response.status, headers });
     });
   }
 }
