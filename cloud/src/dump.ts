@@ -140,10 +140,8 @@ export const REQUEST_AGE_DUMP_MIGRATION = {
 // document, tables, rows array, row. The caps keep a hostile or broken document from filling the isolate.
 const MAX_DEPTH = 4;
 const MAX_ROWS_PER_TABLE = 10_000;
-// The project limits a deploy gets when DUMP_MAX_ROWS and DUMP_MAX_BYTES are not set (measured in forge-1040).
-// The whole format keeps MAX_ROWS_PER_TABLE and its own byte ceiling below; only the paged format reaches these.
-const DEFAULT_MAX_ROWS = 20_000;
-const DEFAULT_MAX_BYTES = 32 * 1024 * 1024;
+const DEFAULT_MAX_ROWS = 30_000;
+const DEFAULT_MAX_BYTES = 64 * 1024 * 1024;
 const MAX_VALUE_LENGTH = 262_144;
 // The columns that hold open JSON (a stored record, an event, a replay request) have no schema maximum: a
 // 65,536 character body whose characters each escape to six is about 393,000 stored, and a record, its
@@ -184,7 +182,9 @@ export function limitsFrom(env: unknown): Limits {
   const vars = (env ?? {}) as Record<string, unknown>;
   const read = (name: string, fallback: number): number => {
     const value = Number(vars[name]);
-    return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+    return Number.isSafeInteger(value) && value > 0
+      ? Math.min(value, fallback)
+      : fallback;
   };
   return {
     pageBytes: read("DUMP_PAGE_BYTES", 4 * 1024 * 1024),

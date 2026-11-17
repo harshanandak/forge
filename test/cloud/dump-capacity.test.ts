@@ -41,7 +41,7 @@ test.each(rows)(
       const f = await fixture(mutation, kind !== "empty");
       if (kind === "config" || kind === "restore") {
         const over = kind === "restore";
-        eq(Object.values(limitsFrom({})), [4_194_304, 33_554_432, 20_000]);
+        eq(Object.values(limitsFrom({})), [4_194_304, 67_108_864, 30_000]);
         eq(DUMP_FORMAT, "forge-cloud-dump/2");
         for (const resource of ["rows", "bytes"]) {
           // A cap-free source supplies actual transport pages to test over-cap restore admission.
