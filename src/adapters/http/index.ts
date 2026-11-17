@@ -155,6 +155,8 @@ const MAX_CREDENTIAL = 4_096;
 const TOKEN = /^fct_[0-9a-f]{16}\.[A-Za-z0-9_-]{43}$/;
 // The refusals a lease route sends, each with the one status the Worker gives it.
 const REFUSAL_STATUS = {
+  QUOTA_EXHAUSTED: 503,
+  STORAGE_LIMIT_EXCEEDED: 503,
   LEASE_HELD: 409,
   LEASE_STALE: 409,
   LEASE_NOT_HELD: 409,
@@ -169,6 +171,8 @@ const REFUSAL_STATUS = {
 } as const;
 // The refusals the command route sends, each with the one status the Worker gives it.
 const COMMAND_STATUS = {
+  QUOTA_EXHAUSTED: 503,
+  STORAGE_LIMIT_EXCEEDED: 503,
   APPROVAL_REQUIRED: 409,
   INPUT_INVALID: 400,
   CONTEXT_MISSING: 400,
@@ -193,6 +197,8 @@ const COMMAND_STATUS = {
 } as const;
 /** Refusal names the Worker is known to send; any other name is reported as "unknown". */
 const REFUSALS = new Set([
+  "QUOTA_EXHAUSTED",
+  "STORAGE_LIMIT_EXCEEDED",
   "authorization_pending",
   "slow_down",
   "expired_token",

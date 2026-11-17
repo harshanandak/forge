@@ -10,6 +10,7 @@ import {
   type RefusalDetails,
 } from "../adapters/http/index.ts";
 import { ForgeFailure } from "../contract/failure.ts";
+import { storageRefusal } from "../adapters/http/storage-refusal.ts";
 import { leaseHeldMessage } from "../contract/lease.ts";
 import type {
   AmbientContext,
@@ -113,6 +114,8 @@ function cloudExchange(
     const bad = result as unknown as {
       code: string;
     } & RefusalDetails;
+    const storage = storageRefusal(bad.code);
+    if (storage) throw new Refusal(storage);
     const held =
       bad.code === "LEASE_HELD" && bad.lease?.holder !== undefined
         ? leaseHeldMessage(
