@@ -57,6 +57,26 @@ jobs:
         working-directory: cloud
       - name: Storage quota merge gate regressions
         run: bun test --timeout 30000 test/cloud/storage-review.test.ts test/assembly/cloud-state-client.test.ts test/assembly/cloud-login.test.ts
+      - name: Typed restore refusal counterfactual
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          path = Path("cloud/src/storage-failure.ts")
+          original = path.read_text()
+          start = original.index("  if (error instanceof ForgeFailure)")
+          end = original.index("  if (!(error instanceof Error)) return;", start)
+          assert end > start
+          try:
+              path.write_text(original[:start] + original[end:])
+              result = subprocess.run(["bun", "test", "--timeout", "30000", "test/cloud/storage-review.test.ts", "--test-name-pattern", "^typed restored receipt named SQLITE_FULL"], capture_output=True, text=True)
+              log = result.stdout + result.stderr
+              print(log)
+              assert result.returncode != 0 and "(fail) typed restored receipt named SQLITE_FULL" in log
+              assert "STORAGE_LIMIT_EXCEEDED" in log
+          finally:
+              path.write_text(original)
+          PY
       - name: State commit guard counterfactuals
         run: |
           python3 - <<'PY'

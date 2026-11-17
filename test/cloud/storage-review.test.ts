@@ -380,3 +380,42 @@ for (const [message, code] of limits) {
     });
   }
 }
+
+for (const mode of ["whole", "paged"] as const) {
+  test(`typed restored receipt named SQLITE_FULL stays invalid ${mode}`, async () => {
+    const f = fixture();
+    try {
+      const source = await tinySource("typed receipt validation synthetic");
+      source.tables.domain_cloud_requests = [
+        {
+          request_id: "SQLITE_FULL",
+          fingerprint: "{}",
+          outcome: "INPUT_INVALID",
+          result: "{}",
+          created_at: 0,
+        },
+      ];
+      const input =
+        mode === "whole" ? source.doc : pagesOf(source.tables, 100)[0]!;
+      const response = await send(
+        new Project({ storage: f.storage }, env),
+        "restore",
+        input,
+      );
+      const body = (await response.json()) as {
+        error: { code: string; retry: string };
+      };
+      expect([response.status, body.error.code, body.error.retry]).toEqual([
+        400,
+        "RESTORE_INVALID_ROW",
+        "never",
+      ]);
+      expect(f.values.get("provisioned")).not.toBe(true);
+      expect(
+        f.db.query("SELECT request_id FROM domain_cloud_requests").all(),
+      ).toEqual([]);
+    } finally {
+      f.db.close();
+    }
+  });
+}
