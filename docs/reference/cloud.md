@@ -245,6 +245,8 @@ Staged rows are never served: a project is not provisioned until the last page, 
 
 To abandon a half restore, stop. To retry, send page 0 again: it clears the staged rows. Any refused restore request (an out-of-order page, a page over a limit, a bad document or a body that is too large) also clears them, so the next try starts at page 0. A whole `POST restore` clears them too.
 
+`bun tools/restore-cloud.ts --pages <converter output> --worker <origin> --project <name> (--token-file <curl config> | --token-env <NAME>) --report <new file>` sends the converter's pages in order, then reads the project back page by page and compares all six tables with the source plus the restore's stop rows (`verifyPracticeReadback`). The token is read from the file or variable and never printed. The first refused page stops the run with `restore refused at page N: CODE`. A project that already has records is restored into only if it already matches the source, which is a no-op success; otherwise the run is refused. There are no retries, and a mismatch exits non-zero. The report holds source and readback counts and digests, `match`, and restore and readback timings.
+
 ## Offline current-state import (step 7)
 
 The strict work-value engine requires close evidence for every closed issue. The approved

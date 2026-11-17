@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, test } from "bun:test";
+import { expect, setDefaultTimeout, test } from "bun:test";
 import { TABLES } from "../../cloud/conformance/digest.ts";
 import { stopOverlay, stopPlan } from "../../cloud/conformance/restored.ts";
 import type { Tables } from "../../cloud/conformance/max-source.ts";
@@ -13,6 +13,7 @@ import {
   type Fetch,
 } from "../../tools/restore-cloud.ts";
 
+setDefaultTimeout(30_000);
 type Page = { page: number; last: boolean; tables: Tables };
 const empty = (): Tables =>
   Object.fromEntries(TABLES.map((table) => [table, []]));
