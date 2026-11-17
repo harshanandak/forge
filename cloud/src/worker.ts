@@ -28,6 +28,12 @@ interface Env extends LoginEnv {
 }
 
 const PATH = new RegExp(`^/p/(${PROJECT_NAME})/([a-z]+)$`);
+const LEASE_ROUTES = new Set(["claim", "renew", "release", "holder"]);
+const NOT_ADMITTED: [string, string, number] = [
+  "AUTH_FORBIDDEN",
+  "Commands are for a device token on the admitted project",
+  403,
+];
 const ADMIN_ROUTES = new Set([
   "devices",
   "revoke",
@@ -90,11 +96,7 @@ const legacyWorker = {
         target !== env.FORGE_CLOUD_PROJECT ||
         request.headers.has("X-Forge-Owner") ||
         request.headers.has("X-Forge-Owner-Expires")
-          ? [
-              "AUTH_FORBIDDEN",
-              "Commands are for a device token on the admitted project",
-              403,
-            ]
+          ? NOT_ADMITTED
           : token === undefined
             ? ["AUTH_REQUIRED", "A bearer token is required", 401]
             : wellFormed(token)
@@ -199,6 +201,8 @@ const legacyWorker = {
         );
       }
     }
+    if (LEASE_ROUTES.has(match![2]!) && project !== env.FORGE_CLOUD_PROJECT)
+      return unauthorized(request, ...NOT_ADMITTED);
     const presented = bearer(request);
     if (presented === undefined)
       return unauthorized(
