@@ -1,5 +1,6 @@
 import { relay } from "../../fixtures/owner-approval.ts";
 // [integration] Real git worktrees: every worktree of one repository reads and writes one project store.
+import { inlineWorkPrimitives } from "../../../tools/bundle-work-primitives.ts";
 import {
   afterAll,
   beforeAll,
@@ -114,7 +115,10 @@ async function enableWork(root: string): Promise<void> {
   const transpiler = new Bun.Transpiler({ loader: "ts" });
   writeFileSync(
     join(target, "entry.cjs"),
-    transpiler.transformSync(readFileSync(join(source, "entry.cts"), "utf8")),
+    await inlineWorkPrimitives(
+      transpiler.transformSync(readFileSync(join(source, "entry.cts"), "utf8")),
+      join(source, "record-primitives.ts"),
+    ),
   );
   const call = await open(root);
   const { revision } = done(await call("config.show", {}, "human"));

@@ -161,6 +161,20 @@ const BODY = '"\\é€' + "\u0001".repeat(65_532);
 
 const BYTES_ROWS = 9_999;
 const SHAPES: Record<string, () => Shape | Promise<Shape>> = {
+  "tracker-3x": async () => {
+    const base = ceiling({
+      records: 24_191,
+      floor: true,
+      runs: 3,
+      value: withPad(() => 0),
+    });
+    const zero = await source(base);
+    const padding = 33_554_432 + 5_752_486 - storedBytes(zero.db);
+    zero.db.close();
+    const each = Math.floor(padding / (2 * base.records));
+    const rest = Math.ceil((padding - 2 * base.records * each) / 2);
+    return { ...base, value: withPad((i) => each + (i === 0 ? rest : 0)) };
+  },
   current: () =>
     ceiling({
       records: TRACKER.records,
@@ -601,6 +615,12 @@ async function measure(
     ...(meta.stop ? { stop: meta.stop } : {}),
   });
   const problems: string[] = [];
+  if (name === "tracker-3x") {
+    assert.ok(meta.rows.state_records! >= 24_192);
+    assert.ok(meta.rows.state_events! >= 24_192);
+    assert.ok(meta.stored >= 33_554_432 + 5_752_486);
+    assert.ok(meta.pages.every((bytes) => bytes <= 4 * MIB));
+  }
   const samples = done.samples ?? [];
   if (done.error !== undefined) problems.push(`worker failed: ${done.error}`);
   const refused = samples.find((s) => s.status !== 200);

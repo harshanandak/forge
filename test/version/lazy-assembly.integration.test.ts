@@ -142,7 +142,7 @@ test("asset builds outside a source repository record unknown identity and remai
         JSON.parse(
           readFileSync(join(archive, "dist/build.json"), "utf8"),
         ) as unknown,
-      ).toEqual(expected);
+      ).toEqual({ ...expected, runId: env.GITHUB_RUN_ID ?? null });
       const identity = budget.run(
         `forge --version (${mode})`,
         node,
