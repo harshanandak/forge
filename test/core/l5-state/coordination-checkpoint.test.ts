@@ -147,14 +147,30 @@ test("checkpointed request returns its original answer after initialize and rest
   }
 });
 
-test.each(["lease body", "generation", "receipt digest", "missing receipt"])(
+test.each([
+  "lease body",
+  "generation",
+  "receipt digest",
+  "missing receipt",
+  "missing lease watermark",
+  "lower lease watermark",
+])(
   "initialize and restore refuse forged checkpoint %s without publication",
   async (kind) => {
     const s = await fixture(),
       target = await fixture();
     try {
       prefix(s);
+      if (kind.includes("watermark"))
+        s.owner.acquire(
+          "forge/leases",
+          "subject",
+          holder,
+          60_000,
+          "lease-only",
+        );
       s.owner.checkpoint(1);
+      s.db.run("DELETE FROM state_events");
       target.owner.initialize();
       if (kind === "lease body")
         s.db.run("UPDATE state_checkpoint_leases SET body='{}'");
@@ -164,6 +180,15 @@ test.each(["lease body", "generation", "receipt digest", "missing receipt"])(
         s.db.run("UPDATE state_checkpoint_receipts SET result_digest=?", [
           `sha256:${"0".repeat(64)}`,
         ]);
+      else if (kind === "missing lease watermark")
+        s.db.run("DELETE FROM state_namespace_watermarks WHERE namespace=?", [
+          "forge/leases",
+        ]);
+      else if (kind === "lower lease watermark")
+        s.db.run(
+          "UPDATE state_namespace_watermarks SET sequence=0 WHERE namespace=?",
+          ["forge/leases"],
+        );
       else s.db.run("DELETE FROM state_requests WHERE request_id='answer-1'");
       expect(() => s.owner.initialize()).toThrow();
       expect(() => target.owner.restore(s.owner.export())).toThrow();
