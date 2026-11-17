@@ -1,6 +1,7 @@
 import {
   chmodSync,
   closeSync,
+  existsSync,
   fsyncSync,
   linkSync,
   mkdirSync,
@@ -130,8 +131,17 @@ export function writePrivateFolder(
 ): void {
   const ops = security ? { ...nodeFs, security } : nodeFs;
   ensurePrivateDirectory(path, ops);
-  for (const [name, data] of Object.entries(files))
-    writePrivateFile(join(path, name), data, ops);
+  const created: string[] = [];
+  try {
+    for (const [name, data] of Object.entries(files)) {
+      const file = join(path, name);
+      if (!existsSync(file)) created.push(file);
+      writePrivateFile(file, data, ops);
+    }
+  } catch (error) {
+    for (const file of created) rmSync(file, { force: true });
+    throw error;
+  }
 }
 export function openStoreFile(
   path: string,

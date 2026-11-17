@@ -47,6 +47,8 @@ export function createStoreExport(
         eventHighWaterMark: backup.eventHighWaterMark,
         records,
         at: new Date().toISOString(),
+      };
+      const info = {
         schemaVersion: backup.schemaVersion,
         tables: backup.tables,
         elapsedMs: Math.round(performance.now() - started),
@@ -57,6 +59,7 @@ export function createStoreExport(
         {
           "backup.sqlite": backup.image,
           "source.json": Buffer.from(JSON.stringify(source)),
+          "export-info.json": Buffer.from(JSON.stringify(info)),
         },
         process.platform === "win32"
           ? privateFileGuard(windowsPrivateFiles())

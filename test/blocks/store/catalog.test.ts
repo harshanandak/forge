@@ -27,10 +27,6 @@ interface Source {
   eventHighWaterMark: number;
   records: number;
   at: string;
-  schemaVersion: string;
-  tables: Record<string, number>;
-  elapsedMs: number;
-  forgeVersion: string;
 }
 const readSource = (out: string): Source =>
   JSON.parse(readFileSync(join(out, "source.json"), "utf8")) as Source;
@@ -152,13 +148,16 @@ test("a person's export writes the backup and source.json for the project store"
   const envelope = await call(open, { out });
   expect(envelope).toMatchObject({ ok: true });
   const source = readSource(out);
+  const info = JSON.parse(
+    readFileSync(join(out, "export-info.json"), "utf8"),
+  ) as { tables: Record<string, number> };
   expect(source.sha256).toBe(
     createHash("sha256")
       .update(readFileSync(join(out, "backup.sqlite")))
       .digest("hex"),
   );
   expect(source.records).toBeGreaterThanOrEqual(1);
-  expect(source.records).toBe(source.tables.state_records as number);
+  expect(source.records).toBe(info.tables.state_records as number);
   expect(envelope.ok && envelope.result).toMatchObject({
     sha256: source.sha256,
     records: source.records,

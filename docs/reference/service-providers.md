@@ -44,7 +44,7 @@ It sends no bearer token and follows no redirect.
 
 ## Store export
 
-`forge.store-export@1.0.0` supplies `export(input)` for the `forge/store` block. It reads the project store through a read-only handle, takes one complete image with `VACUUM INTO`, and writes `backup.sqlite` and `source.json` into an empty folder. It requires the `files:write` effect and project context, never writes the store, and refuses a folder that is not empty.
+`forge.store-export@1.0.0` supplies `export(input)` for the `forge/store` block. It reads the project store through a read-only handle, takes one complete image with `VACUUM INTO`, and writes `backup.sqlite`, `source.json` and `export-info.json` into an empty folder, removing only its own files if a write fails. It requires the `files:write` effect and project context, never writes the store, and refuses a folder that is not empty.
 
 ## Process
 

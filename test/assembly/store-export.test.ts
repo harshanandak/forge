@@ -11,6 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createStoreExport } from "../../src/assembly/store-export.ts";
+import { writePrivateFolder } from "../../src/adapters/store-sqlite/file-ops.ts";
 import { createSqliteStore } from "../../src/adapters/store-sqlite/index.ts";
 import {
   StateOwner,
@@ -33,11 +34,15 @@ interface Source {
   eventHighWaterMark: number;
   records: number;
   at: string;
+}
+interface Info {
   schemaVersion: string;
   tables: Record<string, number>;
   elapsedMs: number;
   forgeVersion: string;
 }
+const readInfo = (out: string): Info =>
+  JSON.parse(readFileSync(join(out, "export-info.json"), "utf8")) as Info;
 const readSource = (out: string): Source =>
   JSON.parse(readFileSync(join(out, "source.json"), "utf8")) as Source;
 const cleanups: (() => Promise<void> | void)[] = [];
@@ -83,6 +88,7 @@ test("the backup's counts, high-water mark and digest match the backup file", as
     new StateOwner(reader.value, { now: () => 1000 }),
   ).export({ out });
   const source = readSource(out);
+  const info = readInfo(out);
   const backup = join(out, "backup.sqlite");
   expect(source.sha256).toBe(digest(backup));
   expect(result).toEqual({
@@ -93,27 +99,29 @@ test("the backup's counts, high-water mark and digest match the backup file", as
   });
   expect(Object.keys(source).sort()).toEqual([
     "at",
-    "elapsedMs",
     "eventHighWaterMark",
-    "forgeVersion",
     "records",
-    "schemaVersion",
     "sha256",
+  ]);
+  expect(Object.keys(info).sort()).toEqual([
+    "elapsedMs",
+    "forgeVersion",
+    "schemaVersion",
     "tables",
   ]);
-  expect(source.forgeVersion).toBe(version);
-  expect(source.elapsedMs).toBeGreaterThanOrEqual(0);
+  expect(info.forgeVersion).toBe(version);
+  expect(info.elapsedMs).toBeGreaterThanOrEqual(0);
   const copy = (await open(fixture.directory, backup, true)).value;
-  for (const [table, count] of Object.entries(source.tables))
+  for (const [table, count] of Object.entries(info.tables))
     expect(Number(copy.get(`SELECT COUNT(*) AS n FROM ${table}`)?.n)).toBe(
       count,
     );
-  expect(source.tables.state_records).toBe(3);
-  expect(source.tables.state_events).toBe(3);
+  expect(info.tables.state_records).toBe(3);
+  expect(info.tables.state_events).toBe(3);
   expect(
     Number(copy.get("SELECT MAX(sequence) AS n FROM state_events")?.n),
   ).toBe(source.eventHighWaterMark);
-  expect(source.schemaVersion).toBe(
+  expect(info.schemaVersion).toBe(
     String(copy.get("SELECT MAX(id) AS id FROM state_migrations")?.id),
   );
 }, 60_000);
@@ -168,7 +176,11 @@ test("a folder that is not empty is refused and left as it was", async () => {
   const empty = join(fixture.directory, "empty");
   mkdirSync(empty);
   service.export({ out: empty });
-  expect(readdirSync(empty).sort()).toEqual(["backup.sqlite", "source.json"]);
+  expect(readdirSync(empty).sort()).toEqual([
+    "backup.sqlite",
+    "export-info.json",
+    "source.json",
+  ]);
 }, 60_000);
 
 test("the store file is byte-identical after an export", async () => {
@@ -220,4 +232,21 @@ test("the converter reads the exported pair and records only its own four keys",
     records: source.records,
     sha256: source.sha256,
   });
+}, 60_000);
+
+test("a failed write removes the files it created and leaves the folder's other contents", () => {
+  const directory = mkdtempSync(join(tmpdir(), "forge-store-partial-"));
+  cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
+  writeFileSync(join(directory, "keep.txt"), "keep");
+  const data = new Uint8Array([1, 2, 3]);
+  expect(() =>
+    writePrivateFolder(directory, {
+      "first.bin": data,
+      "second.bin": data,
+      "missing/third.bin": data,
+    }),
+  ).toThrow();
+  expect(readdirSync(directory)).toEqual(["keep.txt"]);
+  writePrivateFolder(directory, { "first.bin": data });
+  expect(readdirSync(directory).sort()).toEqual(["first.bin", "keep.txt"]);
 }, 60_000);
