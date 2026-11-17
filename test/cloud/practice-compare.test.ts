@@ -265,7 +265,7 @@ test("a malformed stop timestamp keeps a named check and every table digest", ()
   const global = f.actual.state_records!.find(
     (row) => row.key === "lane-control:global",
   )!;
-  const body = JSON.parse(String(global.body));
+  const body = JSON.parse(String(global.body)) as { updatedAt: unknown };
   body.updatedAt = { toString: null };
   global.body = JSON.stringify(body);
   const result = refusal(f.before, f.actual, f.window);
