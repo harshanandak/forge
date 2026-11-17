@@ -12668,11 +12668,6 @@ test("paged invalid receipt preserves committed unprovisioned target", async () 
     target,
     parts: [page],
   });
-  expect([got.status, got.json.error?.code]).toEqual([
-    400,
-    "RESTORE_INVALID_ROW",
-  ]);
-  expect(got.json.error?.message).toContain("SQLITE_FULL");
   const cleared = calls.findIndex(({ sql }) =>
     /^DELETE FROM state_records/.test(sql),
   );
@@ -12683,7 +12678,43 @@ test("paged invalid receipt preserves committed unprovisioned target", async () 
   );
   expect(cleared).toBeGreaterThan(-1);
   expect(imported).toBeGreaterThan(cleared);
+  expect([got.status, got.json.error?.code]).toEqual([
+    400,
+    "RESTORE_INVALID_ROW",
+  ]);
+  expect(got.json.error?.message).toContain("SQLITE_FULL");
   expect(target.snapshot()).toBe(before);
   expect(target.calls).not.toContain("put restore:next");
   expect(await target.storage.get("restore:next")).toBeUndefined();
+}, 60_000);
+
+test("whole restore preserves committed rows without a provisioning flag", async () => {
+  const { tables } = await projectWith(legacy);
+  const target = fixture();
+  const token = await target.device();
+  expect(
+    (await target.send(make("committed-before-activation"), { token })).status,
+  ).toBe(200);
+  target.lease();
+  await target.storage.delete("provisioned");
+  target.reopen();
+  const before = tablesOf(target.db);
+  for (const table of [
+    "state_leases",
+    "state_events",
+    "domain_cloud_command_receipts",
+  ])
+    expect(before[table]!.length).toBeGreaterThan(0);
+  const snapshot = target.snapshot();
+  target.calls.length = 0;
+  const { got } = await restoreInto("whole", tables, { target });
+  expect([got.status, got.json.error?.code]).toEqual([
+    409,
+    "RESTORE_TARGET_NOT_EMPTY",
+  ]);
+  expect(tablesOf(target.db)).toEqual(before);
+  expect(target.snapshot()).toBe(snapshot);
+  expect(target.calls).not.toContain("put restore:next");
+  expect(await target.storage.get("restore:next")).toBeUndefined();
+  expect(await target.storage.get("provisioned")).not.toBe(true);
 }, 60_000);

@@ -62,10 +62,16 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           import subprocess
-          suite = ["bun", "test", "--timeout", "60000", "test/cloud/issue-commands.test.ts", "--test-name-pattern", "^paged invalid receipt preserves committed unprovisioned target$"]
-          baseline = subprocess.run(suite, capture_output=True, text=True)
+          row = "paged invalid receipt preserves committed unprovisioned target"
+          whole = "whole restore preserves committed rows without a provisioning flag"
+          suite = ["bun", "test", "--timeout", "60000", "test/cloud/issue-commands.test.ts", "--test-name-pattern"]
+          baseline = subprocess.run(suite + ["^(" + row + "|" + whole + ")$"], capture_output=True, text=True)
           print(baseline.stdout + baseline.stderr)
           assert baseline.returncode == 0
+          test_path = "test/cloud/issue-commands.test.ts"
+          test_source = Path(test_path).read_text()
+          snapshot_offset = test_source.index("  expect(target.snapshot()).toBe(before);", test_source.index('test("' + row + '"'))
+          snapshot_line = test_source.count("\n", 0, snapshot_offset) + 1
           path = Path("cloud/src/project.ts")
           original = path.read_text()
           before = "      const { db, owner } = this.#openWrite(staged !== undefined);\n"
@@ -73,11 +79,12 @@ jobs:
           assert original.count(before) == 1
           try:
               path.write_text(original.replace(before, before + marker))
-              result = subprocess.run(suite, capture_output=True, text=True)
+              result = subprocess.run(suite + ["^" + row + "$"], capture_output=True, text=True)
               log = result.stdout + result.stderr
               print(log)
               assert result.returncode != 0 and "(fail) paged invalid receipt preserves committed unprovisioned target" in log
-              assert "target.snapshot()" in log
+              assert "expect(target.snapshot()).toBe(before);" in log
+              assert f"{test_path}:{snapshot_line}:" in log
           finally:
               path.write_text(original)
           PY
