@@ -10,7 +10,7 @@ import { ForgeFailure } from "../../contract/failure.ts";
 import { suffixNumber } from "../../core/state/index.ts";
 
 type Rule = (value: Record<string, unknown>, key: string) => string | undefined;
-interface Family {
+export interface Family {
   readonly key: RegExp;
   readonly schema: SchemaObject;
   readonly rules?: readonly Rule[];
@@ -129,6 +129,7 @@ const families: Readonly<Record<string, Family>> = {
   },
 };
 const schemaId = tracker.$id.replace("tracker.json", "work-values.json");
+export const primaryWorkFamilies: Readonly<Record<string, Family>> = families;
 const registry = new SchemaRegistry([
   ...SCHEMA_DOCUMENTS,
   {
