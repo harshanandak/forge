@@ -4214,7 +4214,7 @@ function refuseFrozen(services: unknown): void {
   if (isMap(value) && value.frozen !== undefined)
     fail(
       "UNAVAILABLE",
-      `The local tracker store has been frozen since ${String(value.frozen)} and no longer accepts issue writes.`,
+      `The local tracker store has been frozen since ${isTime(value.frozen) ? value.frozen : "an unreadable time"} and no longer accepts issue writes.`,
       {
         repair:
           "Bind this checkout to the cloud project with forge auth login, then use the cloud-served forge issue commands. To undo the freeze, the owner runs forge issue unfreeze.",
