@@ -12632,7 +12632,7 @@ test("an imported receipt never proves ownership of an unowned inner acquisition
   expect(t.snapshot()).toBe(before);
 }, 30_000);
 
-test("paged duplicate primary key preserves committed unprovisioned target", async () => {
+test("paged invalid receipt preserves committed unprovisioned target", async () => {
   const { tables } = await projectWith(legacy);
   const target = fixture();
   const token = await target.device();
@@ -12652,15 +12652,37 @@ test("paged duplicate primary key preserves committed unprovisioned target", asy
   ])
     expect(saved[table]!.length).toBeGreaterThan(0);
   const before = target.snapshot();
-  const row = tables.state_records![0]!;
-  const page = pagesOf({ ...tables, state_records: [row, row] }, 2)[0]!;
-  expect([page.page, page.last]).toEqual([0, false]);
+  tables.domain_cloud_requests = [
+    {
+      request_id: "SQLITE_FULL",
+      fingerprint: "{}",
+      outcome: "INPUT_INVALID",
+      result: "{}",
+      created_at: 0,
+    },
+  ];
+  const page = pagesOf(tables, 100)[0]!;
+  expect([page.page, page.last]).toEqual([0, true]);
   target.calls.length = 0;
-  const { got } = await restoreInto("paged", tables, { target, parts: [page] });
+  const { got, calls } = await restoreInto("paged", tables, {
+    target,
+    parts: [page],
+  });
   expect([got.status, got.json.error?.code]).toEqual([
     400,
     "RESTORE_INVALID_ROW",
   ]);
+  expect(got.json.error?.message).toContain("SQLITE_FULL");
+  const cleared = calls.findIndex(({ sql }) =>
+    /^DELETE FROM state_records/.test(sql),
+  );
+  const imported = calls.findIndex(
+    ({ sql, bindings }) =>
+      /^INSERT INTO domain_cloud_requests/.test(sql) &&
+      bindings.includes("SQLITE_FULL"),
+  );
+  expect(cleared).toBeGreaterThan(-1);
+  expect(imported).toBeGreaterThan(cleared);
   expect(target.snapshot()).toBe(before);
   expect(target.calls).not.toContain("put restore:next");
   expect(await target.storage.get("restore:next")).toBeUndefined();

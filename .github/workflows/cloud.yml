@@ -62,7 +62,7 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           import subprocess
-          suite = ["bun", "test", "--timeout", "60000", "test/cloud/issue-commands.test.ts", "--test-name-pattern", "^paged duplicate primary key preserves committed unprovisioned target$"]
+          suite = ["bun", "test", "--timeout", "60000", "test/cloud/issue-commands.test.ts", "--test-name-pattern", "^paged invalid receipt preserves committed unprovisioned target$"]
           baseline = subprocess.run(suite, capture_output=True, text=True)
           print(baseline.stdout + baseline.stderr)
           assert baseline.returncode == 0
@@ -76,7 +76,7 @@ jobs:
               result = subprocess.run(suite, capture_output=True, text=True)
               log = result.stdout + result.stderr
               print(log)
-              assert result.returncode != 0 and "(fail) paged duplicate primary key preserves committed unprovisioned target" in log
+              assert result.returncode != 0 and "(fail) paged invalid receipt preserves committed unprovisioned target" in log
               assert "target.snapshot()" in log
           finally:
               path.write_text(original)
