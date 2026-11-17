@@ -4210,11 +4210,11 @@ function issueUnfreeze(call: HandlerCall<Record<string, never>>): FreezeState {
   return { frozen: false };
 }
 function refuseFrozen(services: unknown): void {
-  const { frozen } = readFreezable(client(services)).value;
-  if (frozen !== undefined)
+  const value = client(services).get(GLOBAL)?.value;
+  if (isMap(value) && value.frozen !== undefined)
     fail(
       "UNAVAILABLE",
-      `The local tracker store has been frozen since ${frozen} and no longer accepts issue writes.`,
+      `The local tracker store has been frozen since ${String(value.frozen)} and no longer accepts issue writes.`,
       {
         repair:
           "Bind this checkout to the cloud project with forge auth login, then use the cloud-served forge issue commands. To undo the freeze, the owner runs forge issue unfreeze.",

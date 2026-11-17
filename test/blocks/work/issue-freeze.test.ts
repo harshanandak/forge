@@ -70,6 +70,7 @@ async function fixture() {
     } as unknown as HandlerCall<Record<string, unknown>>);
   return { owner, run, close: () => opened.handle.close() };
 }
+const frozenAt = (result: unknown) => (result as { at: string }).at;
 const refusal = (work: () => unknown) => {
   try {
     work();
@@ -83,12 +84,12 @@ const refusal = (work: () => unknown) => {
 
 test("freeze is recorded in the store and refuses later issue writes", async () => {
   const { owner, run, close } = await fixture();
-  expect(run("issue.freeze")).toEqual({ frozen: true, at });
-  expect(owner.get(namespace, GLOBAL)?.value).toMatchObject({ frozen: at });
+  const since = frozenAt(run("issue.freeze"));
+  expect(owner.get(namespace, GLOBAL)?.value).toMatchObject({ frozen: since });
   const before = owner.list(namespace, "issue:").length;
   const error = refusal(() => run("issue.create", { title: "after" }));
   expect(error.code).toBe("UNAVAILABLE");
-  expect(error.message).toContain(`frozen since ${at}`);
+  expect(error.message).toContain(`frozen since ${since}`);
   expect(error.repair).toContain("forge auth login");
   expect(owner.list(namespace, "issue:").length).toBe(before);
   await close();
@@ -104,9 +105,9 @@ test("a frozen store still serves reads", async () => {
 
 test("a second freeze writes nothing", async () => {
   const { owner, run, close } = await fixture();
-  run("issue.freeze");
+  const since = frozenAt(run("issue.freeze"));
   const revision = owner.get(namespace, GLOBAL)?.revision;
-  expect(run("issue.freeze")).toEqual({ frozen: true, at });
+  expect(run("issue.freeze")).toEqual({ frozen: true, at: since });
   expect(owner.get(namespace, GLOBAL)?.revision).toBe(revision);
   await close();
 });
@@ -125,10 +126,10 @@ test("unfreeze lifts the freeze and issue writes work again", async () => {
 
 test("lane stop and resume keep the freeze", async () => {
   const { owner, run, close } = await fixture();
-  run("issue.freeze");
+  const since = frozenAt(run("issue.freeze"));
   run("lane.stop", { all: true });
   run("lane.resume", { all: true });
-  expect(owner.get(namespace, GLOBAL)?.value).toMatchObject({ frozen: at });
+  expect(owner.get(namespace, GLOBAL)?.value).toMatchObject({ frozen: since });
   await close();
 });
 
