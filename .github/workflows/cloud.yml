@@ -332,7 +332,6 @@ jobs:
           [[ "$ms" =~ ^[0-9]+$ ]] || { echo "::error::large.out needs exactly one valid budget maximum duration line"; exit 1; }
           spent $(( ms / 1000 ))
           # Budget cases (forge-1304). The exact and cursor runs get page budgets that are byte sizes the oracle computes from
-          # accepted rows before the Worker starts; the body run raises the page and stored caps to the 8 MiB restore body.
           begin=$SECONDS
           exact=$(bun conformance/conformance.ts budget-plan exact | sed -n 's/^PLAN //p')
           cursor=$(bun conformance/conformance.ts budget-plan cursor | sed -n 's/^PLAN //p')
@@ -469,11 +468,15 @@ jobs:
       - run: bun run gen
       - run: bun install --frozen-lockfile
         working-directory: cloud
-      # Every shape is restored page by page through the real Project in a worker thread with a 96 MiB heap cap, under the
-      # default limits (no DUMP_ variable set). This stands in for one isolate; it does not measure the deployed service.
-      - name: Default limits
+      - name: Synthetic tracker 3x at default limits
         working-directory: cloud
-        run: node conformance/capacity.ts measure
+        run: node conformance/capacity.ts measure tracker-3x
+      - name: Previous candidate boundary regressions
+        working-directory: cloud
+        env:
+          DUMP_MAX_ROWS: "20000"
+          DUMP_MAX_BYTES: "33554432"
+        run: node conformance/capacity.ts measure current real rows-records rows-leases rows-leases-over leases-after-deadline bytes text edge
       # With the old total caps set explicitly the real-size import must be refused at admission, and only that row fails.
       - name: Old total caps refuse the real-size import
         working-directory: cloud
@@ -491,6 +494,9 @@ jobs:
       # left out of the export, all pages still restore with 200, so only that comparison can fail the gate.
       - name: A short export fails the gate
         working-directory: cloud
+        env:
+          DUMP_MAX_ROWS: "20000"
+          DUMP_MAX_BYTES: "33554432"
         run: |
           sed -i 's/^        yield { table: t, row };$/        if (row.key !== "k-19996") yield { table: t, row };/' src/dump.ts
           grep -q 'row.key !== "k-19996"' src/dump.ts || { echo "::error::the counterfactual edit did not apply"; exit 1; }
