@@ -1,6 +1,8 @@
 // Reviewed source inventory: direct launches, shell/npm entry points and local helpers.
 // Conservative guard-fixture entries retain coverage without interpreting embedded programs.
 export const nodeSensitive: Readonly<Record<string, string>> = {
+  "test/blocks/work/admission-wiring.test.ts":
+    "Retains a fake Node rebuild command while exercising strict local admission.",
   "test/blocks/l7-work/lane-release.test.ts":
     "Captures the work entry with the Node-targeted shared-check build helper.",
   "test/assembly/id-prefix-on-demand.integration.test.ts":
