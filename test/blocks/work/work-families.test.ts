@@ -103,7 +103,7 @@ const cases: readonly (readonly [string, string, unknown])[] = [
     "autopilot-ask",
     "autopilot-ask:work-1",
     {
-      lane: "forge-1",
+      lane: "work-1",
       issue: "forge-1",
       title: "one",
       reason: "pause",
@@ -163,6 +163,97 @@ const declarations = () =>
 const policy = () =>
   (work as unknown as { workFamilyPolicy?: NamespaceFamilyPolicy })
     .workFamilyPolicy;
+
+const askValue = () =>
+  cases.find(([name]) => name === "autopilot-ask")![2] as Record<
+    string,
+    unknown
+  >;
+const source = { harness: "codex", thread: "owner" };
+const answer = {
+  label: "A",
+  quote: "#1 A",
+  source,
+  at: stamp,
+  approval: { request: "request-1", quote: "#1 A", source },
+};
+test.each([
+  ["approval without approving option or gate", { status: "answered", answer }],
+  [
+    "approval without a gated request",
+    {
+      status: "answered",
+      options: [
+        { label: "A", text: "resume", approve: true },
+        { label: "B", text: "hold", hold: true },
+      ],
+      gated: { op: "lane.resume", input: { id: "forge-1" } },
+      answer,
+    },
+  ],
+] as const)("ask refuses %s", (_name, patch) => {
+  eq(
+    work.validateDeclaredWorkRecord("autopilot-ask:work-1", {
+      ...askValue(),
+      ...patch,
+    }),
+    "WORK_VALUE_SHAPE",
+  );
+});
+
+test("an ask is stored under the lane its writer key builder names", () => {
+  eq(
+    work.validateDeclaredWorkRecord("autopilot-ask:work-1", {
+      ...askValue(),
+      lane: "work-2",
+    }),
+    "WORK_VALUE_KEY",
+  );
+});
+
+test("a corrected lane-bound ask retains its writer-generated approval", () => {
+  eq(
+    work.validateDeclaredWorkRecord("autopilot-ask:work-1", {
+      ...askValue(),
+      status: "answered",
+      options: [
+        { label: "A", text: "resume", approve: true },
+        { label: "B", text: "hold", hold: true },
+      ],
+      gated: {
+        op: "lane.resume",
+        input: { id: "forge-1" },
+        request: "request-1",
+      },
+      answer,
+    }),
+    undefined,
+  );
+});
+
+test.each(["", "x".repeat(201)])(
+  "a journal refuses a receipt outside writer bounds: %s",
+  (receipt) => {
+    const journal = cases.find(([name]) => name === "autopilot")!;
+    eq(
+      work.validateDeclaredWorkRecord(journal[1], {
+        ...(journal[2] as Record<string, unknown>),
+        receipt,
+      }),
+      "WORK_VALUE_SHAPE",
+    );
+  },
+);
+
+test.each([
+  "bound-lane:[]:work-1",
+  'bound-lane:["local","identity"]:work-1',
+  'bound-lane:["local","identity",1]:work-1',
+])("the bound-lane key pattern refuses non-builder serialization %s", (key) => {
+  const row = declarations()?.["bound-lane"];
+  ok(row);
+  eq(row.key.exec(key), null);
+});
 
 test("every declared work family has a concrete valid persisted-value fixture", () => {
   const rows = declarations();
