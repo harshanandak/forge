@@ -21,6 +21,7 @@ import {
   expectedImage,
 } from "../../cloud/conformance/restored.ts";
 import { pagesOf as cut } from "../../cloud/conformance/max-source.ts";
+import { stopWindowOf } from "../../cloud/conformance/stop-live.ts";
 import { pageOrder } from "../../cloud/conformance/page-order.ts";
 import { failure, respond } from "../../src/surface/result.ts";
 import { LANE_BROWSER } from "../../cloud/src/auth/lane-browser.ts";
@@ -685,8 +686,8 @@ test.each(rows)(
 const oracle = (
   source: Iterable<Dump | Page>,
   target: SqlDatabase,
-  started: number,
-) => restoreStopped(source, target, "a", [started, Date.now()]);
+  window: readonly [number, number],
+) => restoreStopped(source, target, "a", window);
 test.each(["Oracle accepts serving restore", "Oracle accepts a stopped image"])(
   "%s",
   async (name) => {
@@ -719,14 +720,22 @@ test.each(["Oracle accepts serving restore", "Oracle accepts a stopped image"])(
             before = f.snapshot(source),
             p = await f.activation();
           const image = paged ? [...pagesOf(source, limits)] : [dumpOf(source)];
-          let started = Date.now();
+          let window: readonly [number, number] = [0, 0],
+            started = Date.now();
+          const bounds = () =>
+            manual ? ([started, Date.now()] as const) : window;
           for (const part of image) {
             started = Date.now();
             if (manual) {
               if ("page" in part)
                 restorePage(p.db, f.owner(p.db), part as Page, limits);
               else restoreDump(p.db, f.owner(p.db), part, limits);
-            } else eq((await p.send("restore", part)).projected.exitCode, 0);
+            } else {
+              const sent = await p.send("restore", part);
+              eq(sent.projected.exitCode, 0);
+              window =
+                stopWindowOf(sent.r.value, Date.now() - started) ?? window;
+            }
           }
           if (manual) {
             const key = mutation as keyof typeof changes;
@@ -742,16 +751,16 @@ test.each(["Oracle accepts serving restore", "Oracle accepts a stopped image"])(
             fixture.settleActivation(p.db);
           }
           if (!manual)
-            await assert.doesNotReject(() => oracle(image, p.db, started));
+            await assert.doesNotReject(() => oracle(image, p.db, bounds()));
           else if (mutation === "intact")
-            await assert.doesNotReject(() => oracle(image, p.db, started));
+            await assert.doesNotReject(() => oracle(image, p.db, bounds()));
           else if (mutation === "stale")
             await assert.rejects(
-              () => oracle(image, p.db, started),
+              () => oracle(image, p.db, bounds()),
               /restore stop time window/,
             );
           else
-            await assert.rejects(() => oracle(image, p.db, started), {
+            await assert.rejects(() => oracle(image, p.db, bounds()), {
               code: "ERR_ASSERTION",
             });
           eq(f.snapshot(source), before);
@@ -759,6 +768,70 @@ test.each(["Oracle accepts serving restore", "Oracle accepts a stopped image"])(
   },
   120_000,
 );
+
+test.each([false, true])(
+  "restore stop window comes from the server clock, paged %p",
+  async (paged) => {
+    const source = f.activationImage("running"),
+      p = await f.activation();
+    const image = paged ? [...pagesOf(source, limits)] : [dumpOf(source)];
+    let window: readonly [number, number] | undefined;
+    for (const [n, part] of image.entries()) {
+      const started = Date.now();
+      const sent = await p.send("restore", part);
+      eq(sent.projected.exitCode, 0);
+      const last = n === image.length - 1;
+      eq("stopWindow" in sent.r.value, last);
+      window = stopWindowOf(sent.r.value, Date.now() - started) ?? window;
+    }
+    assert.ok(window);
+    const global = f.owner(p.db).get(f.ns, "lane-control:global")!;
+    const stop = Date.parse(global.updatedAt);
+    assert.ok(window[0] <= stop && stop <= window[1]);
+    for (const skew of [-1000, 1000]) {
+      setSystemTime(new Date(window[1] + skew));
+      try {
+        await restoreStopped(image, p.db, "a", window);
+      } finally {
+        setSystemTime(f.at);
+      }
+    }
+    await assert.rejects(
+      () => restoreStopped(image, p.db, "a", [window[1] + 1, window[1] + 2]),
+      /restore stop time window/,
+    );
+    await assert.rejects(
+      () => restoreStopped(image, p.db, "a", [window[0] - 2, window[0] - 1]),
+      /restore stop time window/,
+    );
+  },
+  120_000,
+);
+
+test("restore stop window width is bounded by the caller round trip and ignores clock offset", () => {
+  const reply = (from: number, to: number) => ({
+    done: true,
+    stopWindow: [from, to],
+  });
+  eq(stopWindowOf(reply(5000, 5040), 40), [5000, 5040]);
+  eq(stopWindowOf(reply(1_005_000, 1_005_040), 40), [1_005_000, 1_005_040]);
+  eq(stopWindowOf(reply(-995_000, -994_960), 40), [-995_000, -994_960]);
+  assert.throws(
+    () => stopWindowOf(reply(5000, 5041), 40),
+    /restore stop window/,
+  );
+  assert.throws(
+    () => stopWindowOf(reply(5001, 5000), 40),
+    /restore stop window/,
+  );
+  eq(stopWindowOf({ done: false }, 40), undefined);
+  assert.throws(
+    () => stopWindowOf({ done: false, stopWindow: [5000, 5000] }, 40),
+    /non-final restore stop window/,
+  );
+  assert.throws(() => stopWindowOf(undefined, 40), /restore stop window/);
+  assert.throws(() => stopWindowOf({ done: true }, 40), /restore stop window/);
+}, 5_000);
 
 const activationRows = [
   ["Whole and paged success", "success"],

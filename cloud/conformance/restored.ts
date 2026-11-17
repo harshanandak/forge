@@ -6,11 +6,8 @@ import { LANE_BROWSER } from "../src/auth/lane-browser.ts";
 import type { LaneControlGlobal } from "../../src/blocks/work/lane-control.ts";
 import { digests, fold, tally, type Table } from "./digest.ts";
 import { canonicalJson } from "../../src/core/config/pointer.ts";
-import type {
-  LeaseRecord,
-  StateEvent,
-  StateRecord,
-} from "../../src/generated/types.ts";
+import { comparisonCheck, comparisonRecord } from "./comparison-check.ts";
+import type { LeaseRecord, StateEvent } from "../../src/generated/types.ts";
 import type { Tables } from "./max-source.ts";
 import { StateOwner } from "../../src/core/state/index.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
@@ -52,17 +49,37 @@ export function stopPlan(
 ): StopPlan | undefined {
   if (!delta) return;
   const { at, incarnation, auditId, window } = delta;
+  const high = Number(before.state_events!.at(-1)?.sequence ?? 0) + generated;
+  const recordCheck = (condition: unknown, reason: string) =>
+    comparisonCheck(
+      condition,
+      "state_records",
+      ["forge/work", "lane-control:global"],
+      reason,
+    );
+  const auditCheck = (condition: unknown, reason: string) =>
+    comparisonCheck(condition, "state_events", [String(high + 2)], reason);
   const uuid = /^[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/i;
-  assert.match(incarnation, uuid);
-  assert.match(auditId, uuid);
-  assert.equal(new Date(at).toISOString(), at, "stop ISO clock");
-  assert.ok(
+  recordCheck(
+    typeof incarnation === "string" && uuid.test(incarnation),
+    "stop incarnation UUID",
+  );
+  auditCheck(
+    typeof auditId === "string" && uuid.test(auditId),
+    "stop audit UUID",
+  );
+  const time = typeof at === "string" ? Date.parse(at) : NaN;
+  recordCheck(
+    Number.isFinite(time) && new Date(time).toISOString() === at,
+    "stop ISO clock",
+  );
+  recordCheck(
     window[0] <= Date.parse(at) && Date.parse(at) <= window[1],
     "stop request window",
   );
   const namespace = "forge/work",
     key = `lane-control:audit:${auditId}`;
-  assert.ok(
+  auditCheck(
     ![before.state_records!, before.state_events!].some((rows) =>
       rows.some((row) => row.namespace === namespace && row.key === key),
     ),
@@ -70,10 +87,12 @@ export function stopPlan(
   );
   const priorRow = before.state_records!.find(stopGlobal);
   const prior = priorRow
-    ? ((JSON.parse(String(priorRow.body)) as StateRecord)
-        .value as LaneControlGlobal)
+    ? (comparisonRecord(priorRow.body, "state_records", [
+        "forge/work",
+        "lane-control:global",
+      ]).value as unknown as LaneControlGlobal)
     : undefined;
-  if (prior) assert.equal(incarnation, prior.incarnation, "stop incarnation");
+  if (prior) recordCheck(incarnation === prior.incarnation, "stop incarnation");
   const revision =
     Number(
       priorRow?.revision ??
@@ -87,7 +106,7 @@ export function stopPlan(
         }, 0),
     ) + 1;
   const epoch = (prior?.epoch ?? 0) + 1;
-  assert.ok(
+  recordCheck(
     Number.isSafeInteger(epoch) && Number.isSafeInteger(revision),
     "stop epoch/revision",
   );
@@ -123,8 +142,7 @@ export function stopPlan(
       updatedBy: actor,
     }),
   }));
-  const high = Number(before.state_events!.at(-1)?.sequence ?? 0) + generated;
-  assert.ok(Number.isSafeInteger(high + 2), "stop event sequence");
+  auditCheck(Number.isSafeInteger(high + 2), "stop event sequence");
   const events = records.map((row, i) => ({
     sequence: high + i + 1,
     namespace,
@@ -333,7 +351,6 @@ export function releasedTables(source: Tables, at: string, floors = 0): Tables {
   }
   return tables;
 }
-/** The caller captures restoreWindow around the final request, independently of the target image. */
 export async function restoreStopped(
   source: Iterable<Dump | Page>,
   actual: SqlDatabase,

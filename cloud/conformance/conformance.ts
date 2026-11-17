@@ -15,7 +15,7 @@ import {
   stopProof,
   type StopDelta,
 } from "./restored.ts";
-import { expectsStop, liveStops } from "./stop-live.ts";
+import { expectsStop, liveStops, stopWindowOf } from "./stop-live.ts";
 import { capacityStop } from "./stop-capacity.ts";
 import type { Tables } from "./max-source.ts";
 import { canonicalJson } from "../../src/core/config/pointer.ts";
@@ -211,7 +211,8 @@ async function adminCall(
   }
   const result = { status: response.status, body: bodyValue };
   if (expectsStop() && response.status === 200 && route === "restore") {
-    restoreStops.restored(project, [started, Date.now()]);
+    const window = stopWindowOf(bodyValue.value, Date.now() - started);
+    if (window) restoreStops.restored(project, window);
   }
   if (
     expectsStop() &&

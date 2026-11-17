@@ -8,6 +8,31 @@ export const expectsStop = () => process.env.CLOUD_RESTORE_STOP === "1";
 const isGlobal = (row: Row) =>
   row.namespace === "forge/work" && row.key === "lane-control:global";
 
+export function stopWindowOf(
+  value: unknown,
+  roundTripMs: number,
+): readonly [number, number] | undefined {
+  assert.ok(typeof value === "object" && value !== null, "restore stop window");
+  const { done, stopWindow: window } = value as {
+    done?: unknown;
+    stopWindow?: unknown;
+  };
+  if (done === false) {
+    assert.equal(window, undefined, "non-final restore stop window");
+    return undefined;
+  }
+  assert.ok(
+    Array.isArray(window) &&
+      window.length === 2 &&
+      window.every((time) => Number.isSafeInteger(time)) &&
+      (window as number[])[0]! <= (window as number[])[1]! &&
+      (window as number[])[1]! - (window as number[])[0]! <= roundTripMs,
+    "restore stop window",
+  );
+  const [from, to] = window as number[];
+  return [from!, to!];
+}
+
 /** Observe only the clock/identity inputs; expected bodies are rendered independently. */
 export function stopObservation(window: readonly [number, number]) {
   let global: Row | undefined, last: Row | undefined, floor: Row | undefined;
