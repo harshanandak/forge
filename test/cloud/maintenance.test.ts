@@ -1,6 +1,7 @@
 import { expect, setDefaultTimeout, test } from "bun:test";
 import * as receipts from "../../cloud/src/issue-receipts.ts";
-import { domain } from "../../cloud/src/project.ts";
+import { domain, Project } from "../../cloud/src/project.ts";
+import { fixture as projectFixture } from "./dump-capacity.fixture.ts";
 import {
   actor,
   fixture,
@@ -75,3 +76,26 @@ test("idle expiry shares a bounded delete budget and retains live denial authori
     await s.close();
   }
 });
+
+test.each([false, true])(
+  "idle alarm preserves unprovisioned storage and expires published witnesses: %p",
+  async (provisioned) => {
+    const p = await projectFixture(undefined, provisioned);
+    if (provisioned)
+      p.db.run(
+        "INSERT INTO domain_cloud_command_receipts(request_id,fingerprint,outcome,result,created_at,expires_at) VALUES ('expired','{}','ok','{}',1,2)",
+      );
+    const project = new Project({ storage: p.storage }) as Project & {
+      alarm?: () => Promise<void>;
+    };
+    const before = p.snapshot();
+    await project.alarm?.();
+    if (provisioned)
+      expect(
+        p.db
+          .query("SELECT request_id FROM domain_cloud_command_receipts")
+          .all(),
+      ).toEqual([]);
+    else expect(p.snapshot()).toEqual(before);
+  },
+);

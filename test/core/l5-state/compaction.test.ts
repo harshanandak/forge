@@ -203,3 +203,28 @@ test.each([
     await s.close();
   }
 });
+
+test("the hard byte limit rolls back a write until maintenance retires the pending prefix", async () => {
+  const s = await fixture();
+  try {
+    s.owner.initialize();
+    for (let i = 0; i < 85; i++)
+      s.owner.put(ns, "large", "x".repeat(100_000), actor, {
+        expectRevision: i,
+      });
+    expect(compact(s.owner, 1, 84, 8 * 1024 * 1024)).toBe(1);
+    const sequence = high(s);
+    expect(() =>
+      s.owner.put(ns, "blocked", {}, actor, { expectRevision: 0 }),
+    ).toThrow(/MAINTENANCE_REQUIRED/);
+    expect(high(s)).toBe(sequence);
+    expect(s.owner.get(ns, "blocked")).toBeUndefined();
+    drain(s.owner, s.db, 256);
+    expect(
+      s.owner.put(ns, "blocked", {}, actor, { expectRevision: 0 }).revision,
+    ).toBe(1);
+    expect(high(s)).toBe(sequence + 1);
+  } finally {
+    await s.close();
+  }
+});
