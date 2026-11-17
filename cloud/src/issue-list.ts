@@ -60,16 +60,19 @@ const rank = (order: readonly string[], issue: Stored): number => {
   return at === -1 ? order.length : at;
 };
 
-const BATCH = 256;
+const MIN_BATCH = 64;
+const MAX_BATCH = 256;
 const ISSUE = "issue:";
 
 const names = (text: unknown): string[] => {
   const parsed: unknown = typeof text === "string" ? JSON.parse(text) : null;
   if (!Array.isArray(parsed) || !parsed.every((n) => typeof n === "string"))
     throw invalid();
-  return parsed as string[];
+  return parsed;
 };
 const stored = (row: SqlRow): Stored => {
+  if (Number(row.ok) === 2)
+    throw fail("UNAVAILABLE", "Issue list is over its read budget");
   if (Number(row.ok) !== 1) throw invalid();
   return {
     status: String(row.status),
@@ -121,15 +124,18 @@ export function listIssues(
     );
   };
   const order = ready?.labelOrder ?? [];
-  const batch = Math.min(limit + 1, BATCH);
+  const batch = Math.max(MIN_BATCH, Math.min(limit + 1, MAX_BATCH));
   const picked: { id: string; v: Stored; size: number }[] = [];
   let after = ISSUE,
     full = false;
   for (;;) {
     const rows = views.records?.all(INDEX_PAGE, [after, batch]) ?? [];
-    for (const row of rows) {
-      const id = String(row.key).slice(ISSUE.length);
-      const v = stored(row);
+    const checked = rows.map((row) => ({
+      id: String(row.key).slice(ISSUE.length),
+      v: stored(row),
+      size: Number(row.size),
+    }));
+    for (const { id, v, size } of checked) {
       const ok =
         (by.parent === undefined || v.parent === parent) &&
         (by.kind === undefined || v.kind === by.kind) &&
@@ -142,7 +148,7 @@ export function listIssues(
             v.dependsOn.every(closed) &&
             !holdsLease(lease(id), now)));
       if (!ok) continue;
-      picked.push({ id, v, size: Number(row.size) });
+      picked.push({ id, v, size });
       if (order.length === 0 && picked.length > limit) {
         full = true;
         break;

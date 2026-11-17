@@ -11,11 +11,17 @@ const COLUMNS = [
   "created_at",
   "size",
 ];
-const VALID = `CASE WHEN length(CAST(body AS BLOB))<=${MAX_RECORD_BYTES} AND instr(CAST(body AS BLOB),x'00')=0 THEN CASE WHEN json_valid(body) THEN CASE WHEN json_type(body,'$.value')='object' AND json_extract(body,'$.namespace')=namespace AND json_extract(body,'$.key')=key AND json_extract(body,'$.value.id')=substr(key,7) AND json_type(body,'$.revision')='integer' AND json_type(body,'$.value.status')='text' AND json_type(body,'$.value.labels')='array' AND json_type(body,'$.value.dependsOn')='array' AND json_type(body,'$.value.createdAt')='text' AND coalesce(json_type(body,'$.value.parent'),'text')='text' THEN 1 ELSE 0 END ELSE 0 END ELSE 0 END`;
+const FIELDS = ["status", "kind", "parent", "labels", "dependsOn", "createdAt"];
+const MAX_METADATA_BYTES = 65_536;
+const METADATA_BYTES = FIELDS.map(
+  (name) =>
+    `coalesce(length(CAST(json_extract(body,'$.value.${name}') AS BLOB)),0)`,
+).join(" + ");
+const VALID = `CASE WHEN length(CAST(body AS BLOB))<=${MAX_RECORD_BYTES} AND instr(CAST(body AS BLOB),x'00')=0 THEN CASE WHEN json_valid(body) THEN CASE WHEN json_type(body,'$.value')='object' AND json_extract(body,'$.namespace')=namespace AND json_extract(body,'$.key')=key AND json_extract(body,'$.value.id')=substr(key,7) AND json_type(body,'$.revision')='integer' AND json_type(body,'$.value.status')='text' AND json_type(body,'$.value.labels')='array' AND json_type(body,'$.value.dependsOn')='array' AND json_type(body,'$.value.createdAt')='text' AND coalesce(json_type(body,'$.value.parent'),'text')='text' THEN CASE WHEN ${METADATA_BYTES} > ${MAX_METADATA_BYTES} THEN 2 ELSE 1 END ELSE 0 END ELSE 0 END ELSE 0 END`;
 const field = (path: string) =>
-  `CASE WHEN ok THEN json_extract(body,'${path}') END`;
+  `CASE WHEN ok=1 THEN json_extract(body,'${path}') END`;
 const project = (source: string) =>
-  `SELECT key, ok, ${["status", "kind", "parent", "labels", "dependsOn", "createdAt"].map((name) => field(`$.value.${name}`)).join(", ")}, length(CAST(body AS BLOB)) FROM (SELECT key, body, ${VALID} AS ok FROM ${source}) WHERE true`;
+  `SELECT key, ok, ${FIELDS.map((name) => field(`$.value.${name}`)).join(", ")}, length(CAST(body AS BLOB)) FROM (SELECT key, body, ${VALID} AS ok FROM ${source}) WHERE true`;
 const upsert = (source: string) =>
   `INSERT INTO ${ISSUE_INDEX} ${project(source)} ON CONFLICT(key) DO UPDATE SET ${COLUMNS.map((column) => `${column}=excluded.${column}`).join(", ")}`;
 const row = (side: string) =>

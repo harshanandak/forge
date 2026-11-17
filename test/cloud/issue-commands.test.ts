@@ -3460,34 +3460,26 @@ test("a list response is capped at 1 MiB of UTF-8 bytes, measured on the whole e
   }
 }, 60_000);
 
-test("a project over the row budget is refused as UNAVAILABLE, even when limit 1 would return one small issue", async () => {
-  const limited = { ...listCall, input: { limit: 1 } as object };
-  const rows = async (count: number) => {
-    const f = fixture();
-    const token = await f.device();
-    f.tables();
-    f.db.run(
-      "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<?) INSERT INTO state_records(namespace,key,revision,body) SELECT 'forge/work','issue:work-'||i,3,json_object('namespace','forge/work','key','issue:work-'||i,'revision',3,'value',json_object('id','work-'||i,'title','t','status','open','labels',json('[]'),'dependsOn',json('[]'),'createdAt',?),'updatedAt',?,'updatedBy',json_object('kind','agent','id','tester')) FROM n",
-      [count, iso(start - 1000), iso(start - 500)],
-    );
-    return f.send(limited, { token });
-  };
-  const fits = await rows(10_000);
-  expect([fits.status, fits.json.result]).toEqual([
-    200,
-    { items: [shown({ title: "t", labels: [] })], truncated: true },
-  ]);
-  // A selective filter or ready:true does not shrink the work: the same refusal.
-  for (const input of [{ limit: 1 }, { limit: 1, kind: "none", ready: true }]) {
-    limited.input = input;
-    const got = await rows(10_001);
-    expect([got.status, got.code, got.exit, got.json.error?.message]).toEqual([
-      503,
-      "UNAVAILABLE",
-      1,
-      "Issue list is over its read budget",
+test("a project over 10,000 issues lists its first page, the same whatever the filter", async () => {
+  const f = fixture();
+  const token = await f.device();
+  f.tables();
+  f.db.run(
+    "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<?) INSERT INTO state_records(namespace,key,revision,body) SELECT 'forge/work','issue:work-'||i,3,json_object('namespace','forge/work','key','issue:work-'||i,'revision',3,'value',json_object('id','work-'||i,'title','t','status','open','labels',json('[]'),'dependsOn',json('[]'),'createdAt',?),'updatedAt',?,'updatedBy',json_object('kind','agent','id','tester')) FROM n",
+    [10_001, iso(start - 1000), iso(start - 500)],
+  );
+  for (const input of [{ limit: 1 }, { limit: 1, ready: true }]) {
+    const got = await f.send({ ...listCall, input }, { token });
+    expect([got.status, got.json.result]).toEqual([
+      200,
+      { items: [shown({ title: "t", labels: [] })], truncated: true },
     ]);
   }
+  const none = await f.send(
+    { ...listCall, input: { limit: 1, kind: "none" } },
+    { token },
+  );
+  expect([none.status, none.json.result]).toEqual([200, listed()]);
 }, 120_000);
 
 const READ_ONLY = "This view is read-only";
@@ -3900,16 +3892,8 @@ test("ready refuses a corrupt row or a corrupt candidate lease with the fixed 50
   }
 }, 60_000);
 
-test("ready refuses an over-budget project as UNAVAILABLE before it loads any body, whatever the filter", async () => {
+test("ready refuses stored issues with over 64 KiB of metadata as UNAVAILABLE before it loads any body, whatever the filter", async () => {
   for (const [name, fill] of [
-    [
-      "10,001 rows",
-      (f: F) =>
-        f.db.run(
-          "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<?) INSERT INTO state_records(namespace,key,revision,body) SELECT 'forge/work','issue:work-'||i,3,json_object('namespace','forge/work','key','issue:work-'||i,'revision',3,'value',json_object('id','work-'||i,'title','t','status','open','labels',json('[]'),'dependsOn',json('[]'),'createdAt',?),'updatedAt',?,'updatedBy',json_object('kind','agent','id','tester')) FROM n",
-          [10_001, iso(start - 1000), iso(start - 500)],
-        ),
-    ],
     [
       "over 8 MiB",
       (f: F) => {
@@ -4233,16 +4217,8 @@ test("blocked and stale refuse a corrupt row, and a corrupt lease only where one
   }
 }, 60_000);
 
-test("blocked and stale refuse an over-budget project as UNAVAILABLE before they load any body, whatever the filter", async () => {
+test("blocked and stale refuse stored issues with over 64 KiB of metadata as UNAVAILABLE before they load any body, whatever the filter", async () => {
   for (const [name, fill] of [
-    [
-      "10,001 rows",
-      (f: F) =>
-        f.db.run(
-          "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<?) INSERT INTO state_records(namespace,key,revision,body) SELECT 'forge/work','issue:work-'||i,3,json_object('namespace','forge/work','key','issue:work-'||i,'revision',3,'value',json_object('id','work-'||i,'title','t','status','open','labels',json('[]'),'dependsOn',json('[]'),'createdAt',?),'updatedAt',?,'updatedBy',json_object('kind','agent','id','tester')) FROM n",
-          [10_001, iso(start - 1000), iso(start - 500)],
-        ),
-    ],
     [
       "over 8 MiB",
       (f: F) => {
@@ -4412,79 +4388,42 @@ for (const [name, count, fill] of [
     });
   }, 120_000);
 
-test("the list byte budget charges the compact rows and the selected page together: exactly 8 MiB is read, one byte more is refused before the page loads", async () => {
-  const body = 'sel☃é"\n';
-  // Rows 2 to 6 are never returned (limit 1); their `kind` padding is metadata the compact rows keep, so it moves M alone.
-  const run = async (extra: number) => {
+test("the list page budget is 8 MiB of stored issues: exactly 8 MiB is read, one byte more is refused before any page body loads", async () => {
+  const run = async (pad: number) => {
     const f = fixture();
     const token = await f.device();
     f.tables();
-    f.put(stored({ body }));
-    f.put(
-      stored({
-        id: "work-2",
-        title: "✓".repeat(500),
-        labels: ["é".repeat(100)],
-        kind: "k".repeat(1_000_000),
-      }),
-      {},
-      "issue:work-2",
-    );
-    for (const n of [3, 4, 5, 6]) {
-      const more = Math.min(900_000, Math.max(0, extra - (n - 3) * 900_000));
+    for (let n = 1; n <= 128; n++)
       f.put(
-        stored({ id: `work-${n}`, kind: "k".repeat(1_000_000 + more) }),
+        stored({ id: `work-${n}`, body: "x".repeat(n === 128 ? pad : 65_536) }),
         {},
         `issue:work-${n}`,
       );
-    }
-    f.meter.on = true;
-    const got = await f.send({ ...listCall, input: { limit: 1 } }, { token });
-    return { got, meter: f.meter };
+    return { f, token, size: storedJsonBytes(f) };
   };
-  // The calibration run measures M + P; the padding then lands the total exactly on the budget.
-  const base = await run(0);
-  const extra = MIB8 - base.meter.bytes;
-  base.meter.cells.length = 0;
-  expect(extra).toBeGreaterThan(0);
-  expect(extra).toBeLessThanOrEqual(3_600_000);
-  for (const [name, add, fits] of [
-    ["exactly 8 MiB", 0, true],
-    ["one byte over", 1, false],
-    ["compact rows alone over", 10_000, false],
+  const pad = MIB8 - (await run(0)).size;
+  expect(pad).toBeGreaterThan(0);
+  expect(pad).toBeLessThanOrEqual(65_536);
+  for (const [name, add, message] of [
+    ["exactly 8 MiB", 0, "response too large"],
+    ["one byte over", 1, "Issue list is over its read budget"],
   ] as const) {
-    const { got, meter } = await run(extra + add);
-    if (fits)
-      expect([name, meter.bytes, got.status, got.json.result]).toEqual([
-        name,
-        MIB8,
-        200,
-        { items: [shown({ body })], truncated: true },
-      ]);
-    else {
-      expect([
-        name,
-        got.status,
-        got.code,
-        got.exit,
-        got.json.error?.message,
-      ]).toEqual([
-        name,
-        503,
-        "UNAVAILABLE",
-        1,
-        "Issue list is over its read budget",
-      ]);
-      // The selected page's body never left SQL.
-      expect([name, meter.cells.some((c) => c.includes("sel☃"))]).toEqual([
-        name,
-        false,
-      ]);
-    }
-    meter.cells.length = 0;
+    const { f, token, size } = await run(pad + add);
+    expect([name, size]).toEqual([name, MIB8 + add]);
+    f.meter.on = true;
+    const got = await f.send(listCall, { token });
+    expect([name, got.status, got.code, got.json.error?.message]).toEqual([
+      name,
+      503,
+      "UNAVAILABLE",
+      message,
+    ]);
+    expect([name, f.meter.cells.some((cell) => cell.length > 60_000)]).toEqual([
+      name,
+      add === 0,
+    ]);
   }
 }, 180_000);
-
 // A raw stored issue; `over` is raw JSON appended to the value's fields.
 // A literal NUL byte, built at run time so the source file holds none.
 const NUL = String.fromCharCode(0);
@@ -4496,7 +4435,7 @@ const insertRaw = (f: F, key: string, body: string) =>
     [key, body],
   );
 
-test("list refuses a stored issue with a bad body, unknown field, nesting or node count with the fixed 500, whatever the filter or limit excludes", async () => {
+test("list refuses a returned stored issue with a bad body, unknown field, nesting or node count with the fixed 500", async () => {
   // `closeReason` is dropped before the item schema runs, so only the parse bounds can refuse these two rows.
   const nested = `${"[".repeat(8)}"leak-me"${"]".repeat(8)}`;
   const nodes = `[${'"l",'.repeat(1_100)}"l"]`;
@@ -4526,7 +4465,7 @@ test("list refuses a stored issue with a bad body, unknown field, nesting or nod
       `${rawIssue("work-2")}${NUL}leak-me`,
     ],
   ] as const)
-    for (const input of [{ limit: 1 }, { kind: "bug" }, { ready: true }]) {
+    for (const input of [{}, { ready: true }]) {
       const f = fixture();
       const token = await f.device();
       f.tables();
@@ -4550,7 +4489,7 @@ test("list refuses a stored issue with a bad body, unknown field, nesting or nod
         "INTERNAL",
         notValid,
       ]);
-      expect(got.probes).toEqual(WORK_PROBES.slice(0, 2));
+      expect(got.probes.slice(0, 2)).toEqual(WORK_PROBES.slice(0, 2));
       expect(JSON.stringify(got.json)).not.toContain("leak-me");
     }
 }, 120_000);

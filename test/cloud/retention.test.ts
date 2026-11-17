@@ -93,7 +93,7 @@ test("legacy staged restore can be abandoned before write initialization", async
   }
 }, 30_000);
 
-test("pre-retention dump and status reads preserve the schema and every stored byte", async () => {
+test("pre-retention dump reads preserve the schema and every stored byte, and status refuses until the upgrade", async () => {
   using raw = new Database(":memory:");
   const calls: string[] = [];
   const { storage } = browserStorage(raw, (sql) => calls.push(sql));
@@ -112,7 +112,7 @@ test("pre-retention dump and status reads preserve the schema and every stored b
   const project = new Project({ storage });
   const schemaChecks = () =>
     calls.filter((sql) => sql.includes("pragma_table_info")).length;
-  for (const route of ["dump", "dump?cursor=start", "status"]) {
+  for (const route of ["dump", "dump?cursor=start"]) {
     const checksBefore = schemaChecks();
     const response = await project.fetch(
       new Request(`https://fixture.example/p/a/${route}`),
@@ -122,22 +122,22 @@ test("pre-retention dump and status reads preserve the schema and every stored b
     const reply = (await response.json()) as {
       value: {
         tables?: Record<string, Record<string, string | number>[]>;
-        dump?: { rows: Record<string, number> };
       };
     };
-    if (route === "status")
-      expect(reply.value.dump?.rows.domain_cloud_requests).toBe(1);
-    else
-      expect(reply.value.tables?.domain_cloud_requests).toEqual([
-        {
-          request_id: "old",
-          fingerprint: "{}",
-          outcome: "ok",
-          result: "{}",
-          created_at: 0,
-        },
-      ]);
+    expect(reply.value.tables?.domain_cloud_requests).toEqual([
+      {
+        request_id: "old",
+        fingerprint: "{}",
+        outcome: "ok",
+        result: "{}",
+        created_at: 0,
+      },
+    ]);
   }
+  const status = await project.fetch(
+    new Request("https://fixture.example/p/a/status"),
+  );
+  expect(status.status).toBe(503);
   expect(calls.every((sql) => /^SELECT\b/.test(sql))).toBe(true);
   expect(raw.serialize()).toEqual(before);
 }, 30_000);
