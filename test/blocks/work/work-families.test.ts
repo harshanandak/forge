@@ -446,3 +446,34 @@ test("the work policy binds the same family definitions to the generic owner", a
     await result.handle.close();
   }
 });
+
+test.each([
+  ["journal closing target", "autopilot", { named: ["not-an-id"] }],
+  [
+    "gated request id",
+    "autopilot-ask",
+    {
+      gated: {
+        op: "lane.resume",
+        input: { id: "forge-1" },
+        request: "request with spaces",
+      },
+    },
+  ],
+  ["untrimmed reopen claim reason", "reopen", { claimReason: "  override  " }],
+  [
+    "resume quote UTF-16 bound",
+    "autopilot-global",
+    { resumed: { at: stamp, scope: "all", quote: "x".repeat(2001) } },
+  ],
+] as const)(
+  "the declaration refuses the reviewed %s input",
+  (_name, family, patch) => {
+    const [, key, value] = cases.find(([name]) => name === family)!;
+    eq(work.validateDeclaredWorkRecord(key, value), undefined);
+    eq(
+      work.validateDeclaredWorkRecord(key, { ...(value as object), ...patch }),
+      "WORK_VALUE_SHAPE",
+    );
+  },
+);
