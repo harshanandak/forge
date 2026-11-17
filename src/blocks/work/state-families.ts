@@ -9,12 +9,18 @@ import { isObject } from "../../core/config/pointer.ts";
 import { allocationFloorNumber } from "../../core/state/allocation-floor.ts";
 import { suffixNumber } from "../../core/state/index.ts";
 import type { NamespaceFamilyPolicy } from "../../core/state/families.ts";
-import { readBoundLane } from "./bound-lane-state.ts";
+import {
+  readBoundLane,
+  boundLanePattern,
+  readBoundLaneKey,
+} from "./bound-lane-state.ts";
+import entry, { type RecordRules } from "./entry.cts";
 import {
   primaryWorkFamilies,
   validateWorkRecord,
   type Family,
 } from "./validation.ts";
+const writer = (entry as unknown as { recordRules: RecordRules }).recordRules;
 
 const object = (
   properties: SchemaObject,
@@ -32,10 +38,7 @@ const reason = {
   ...nonempty,
   maxLength: tracker.$defs.CommentInput.properties.body.maxLength,
 };
-const commit = {
-  type: "string",
-  pattern: "^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$",
-};
+const commit = record.properties.mergeGate.properties.head;
 const step = { enum: ["receipt", "close", "issues", "rebuild", "unwatch"] };
 const omit = (properties: SchemaObject, names: readonly string[]) =>
   Object.fromEntries(
@@ -60,19 +63,19 @@ const storedAttempt = object(
   },
   tracker.$defs.Attempt.required.filter((name) => name !== "live"),
 );
-const numbered = (_value: Record<string, unknown>, key: string) =>
-  Number.isSafeInteger(Number(key.split(":").at(-1)))
-    ? undefined
-    : "WORK_VALUE_KEY";
-const safeAttempt = (value: unknown) => {
+const positiveSuffix = (value: string, prefix: string) => {
   try {
-    return (
-      typeof value === "string" && suffixNumber(value, "attempt-") !== undefined
-    );
+    return suffixNumber(value, prefix) !== undefined;
   } catch {
     return false;
   }
 };
+const numbered = (_value: Record<string, unknown>, key: string) =>
+  positiveSuffix(key, key.slice(0, key.lastIndexOf(":") + 1))
+    ? undefined
+    : "WORK_VALUE_KEY";
+const safeAttempt = (value: unknown) =>
+  typeof value === "string" && positiveSuffix(value, "attempt-");
 const identity = (value: Record<string, unknown>, key: string) =>
   value.id === key.split(":")[1] ? undefined : "WORK_VALUE_ID";
 const attemptIdentity = (value: Record<string, unknown>, key: string) =>
@@ -80,9 +83,7 @@ const attemptIdentity = (value: Record<string, unknown>, key: string) =>
     ? undefined
     : "WORK_VALUE_ID";
 const trimmed = (value: Record<string, unknown>) =>
-  typeof value.reason === "string" && value.reason.trim() === value.reason
-    ? undefined
-    : "WORK_VALUE_SHAPE";
+  writer.validReason(value.reason) ? undefined : "WORK_VALUE_SHAPE";
 const askOption = object(
   {
     label: { type: "string", pattern: "^[A-Z]$" },
@@ -197,7 +198,7 @@ const runtimeFamilies: Record<string, Family> = {
         holder,
         recordedAt: time,
         attempt,
-        sha: { ...evidence.properties.sha, pattern: "^[a-f0-9]{40}$" },
+        sha: evidence.properties.sha,
       },
       [
         ...evidence.required.filter((name) => name !== "id"),
@@ -205,7 +206,15 @@ const runtimeFamilies: Record<string, Family> = {
         "recordedAt",
       ],
     ),
-    rules: [numbered, attemptIdentity],
+    rules: [
+      numbered,
+      attemptIdentity,
+      (value) =>
+        writer.evidenceProblem(value) ||
+        writer.normalizedEvidenceSha(value.sha) !== value.sha
+          ? "WORK_VALUE_SHAPE"
+          : undefined,
+    ],
   },
   cleanup: {
     key: /^cleanup:work-[0-9]+$/,
@@ -221,7 +230,7 @@ const runtimeFamilies: Record<string, Family> = {
       mode: { enum: ["none", "single", "combine"] },
       chosen: {
         type: "array",
-        items: object({ attempt, sha: { ...text, pattern: "^[a-f0-9]{40}$" } }),
+        items: object({ attempt, sha: evidence.properties.sha }),
       },
       reason,
       holder,
@@ -229,20 +238,14 @@ const runtimeFamilies: Record<string, Family> = {
     }),
     rules: [
       trimmed,
-      (value) => {
-        const chosen = value.chosen;
-        if (!Array.isArray(chosen)) return "WORK_VALUE_SHAPE";
-        const n =
-          value.mode === "none" ? 0 : value.mode === "single" ? 1 : undefined;
-        return chosen.every(
+      (value) =>
+        writer.validSelection(value) &&
+        Array.isArray(value.chosen) &&
+        value.chosen.every(
           (item) => isObject(item) && safeAttempt(item.attempt),
-        ) &&
-          (n === undefined ? chosen.length > 0 : chosen.length === n) &&
-          new Set(chosen.map((item) => isObject(item) && item.attempt)).size ===
-            chosen.length
+        )
           ? undefined
-          : "WORK_VALUE_SHAPE";
-      },
+          : "WORK_VALUE_SHAPE",
     ],
   },
   allocation: {
@@ -298,7 +301,14 @@ const runtimeFamilies: Record<string, Family> = {
         "counters",
       ],
     ),
-    rules: [identity],
+    rules: [
+      (value, key) =>
+        typeof value.id === "string" && writer.journalKey(value.id) === key
+          ? undefined
+          : "WORK_VALUE_ID",
+      (value) =>
+        writer.journalProblem(value) ? "WORK_VALUE_SHAPE" : undefined,
+    ],
   },
   "autopilot-global": {
     key: /^autopilot:global$/,
@@ -331,23 +341,21 @@ const runtimeFamilies: Record<string, Family> = {
       },
       ["stopped"],
     ),
+    rules: [
+      (value) => (writer.globalProblem(value) ? "WORK_VALUE_SHAPE" : undefined),
+    ],
   },
   "autopilot-clock": {
     key: /^autopilot-clock:work-[0-9]+$/,
     schema: object({ startedAt: time }),
+    rules: [
+      (value) => (writer.validClock(value) ? undefined : "WORK_VALUE_SHAPE"),
+    ],
   },
   "autopilot-ask": {
     key: /^autopilot-ask:work-[0-9]+$/,
     schema: ask,
-    rules: [
-      (value) =>
-        Array.isArray(value.options) &&
-        value.options.some(
-          (option) => isObject(option) && option.label === value.default,
-        )
-          ? undefined
-          : "WORK_VALUE_SHAPE",
-    ],
+    rules: [(value, key) => writer.askProblem(key, value)],
   },
   "autopilot-event": {
     key: /^autopilot-event:work-[0-9]+:[1-9][0-9]*$/,
@@ -359,12 +367,12 @@ const runtimeFamilies: Record<string, Family> = {
     schema: object({
       head: commit,
       verdict: { enum: ["MERGE", "FIX"] },
-      reviewer: {
-        ...record.properties.mergeGate.properties.reviewer,
-        pattern: nonempty.pattern,
-      },
+      reviewer: record.properties.mergeGate.properties.reviewer,
       at: time,
     }),
+    rules: [
+      (value) => (writer.validVerdict(value) ? undefined : "WORK_VALUE_SHAPE"),
+    ],
   },
   participant: {
     key: /^participant:work-[0-9]+:[1-9][0-9]*$/,
@@ -377,24 +385,14 @@ const runtimeFamilies: Record<string, Family> = {
     rules: [numbered, attemptIdentity],
   },
   "bound-lane": {
-    key: /^bound-lane:\[.*\]:work-[0-9]+$/u,
+    key: boundLanePattern,
     schema: { type: "object" },
     rules: [
       (value, key) => {
+        const project = readBoundLaneKey(key);
+        if (!project) return "WORK_VALUE_KEY";
         try {
-          const spelling = key.slice(11, key.lastIndexOf(":")),
-            tuple: unknown = JSON.parse(spelling);
-          if (
-            !Array.isArray(tuple) ||
-            tuple.length !== 3 ||
-            !tuple.every(
-              (part) =>
-                typeof part === "string" && !/[\p{Cc}\p{Cf}]/u.test(part),
-            ) ||
-            JSON.stringify(tuple) !== spelling
-          )
-            return "WORK_VALUE_KEY";
-          readBoundLane(value, key.slice(key.lastIndexOf(":") + 1));
+          readBoundLane(value, project.id);
           return undefined;
         } catch {
           return "WORK_VALUE_SHAPE";

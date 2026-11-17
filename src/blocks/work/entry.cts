@@ -580,6 +580,18 @@ function persist(
     readonly expectRevision: number;
   }[],
 ): StateRecord {
+  const problem = recordKey.startsWith("autopilot-ask:")
+    ? askProblem(recordKey, value)
+    : recordKey === GLOBAL
+      ? globalProblem(value)
+      : recordKey.startsWith("autopilot:")
+        ? journalProblem(value)
+        : recordKey.startsWith("autopilot-merge:") && !validVerdict(value)
+          ? "Invalid merge verdict"
+          : recordKey.startsWith("autopilot-clock:") && !validClock(value)
+            ? "Invalid autopilot clock"
+            : undefined;
+  if (problem) fail("INPUT_INVALID", problem);
   const written = state.put(recordKey, value, {
     expectRevision,
     ...(subject === undefined ? {} : { subject }),
@@ -1614,6 +1626,32 @@ type TailPull = {
 };
 const isCommit = (value: unknown): value is string =>
   typeof value === "string" && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(value);
+const validReceipt = (value: unknown): value is string =>
+  typeof value === "string" && value.length > 0 && value.length <= 200;
+const validReason = (value: unknown): value is string =>
+  typeof value === "string" &&
+  value.length > 0 &&
+  value.trim() === value &&
+  Array.from(value).length <= 65536;
+const normalizedEvidenceSha = (value: unknown): string | undefined =>
+  typeof value === "string" && /^[a-fA-F0-9]{40}$/.test(value)
+    ? value.toLowerCase()
+    : undefined;
+function evidenceProblem(value: unknown): "sha" | "metrics" | undefined {
+  if (!isMap(value) || normalizedEvidenceSha(value.sha) === undefined)
+    return "sha";
+  const metrics = value.metrics;
+  return metrics !== undefined &&
+    (!isMap(metrics) ||
+      Object.keys(metrics).length > 32 ||
+      Object.values(metrics).some(
+        (v) =>
+          typeof v !== "string" &&
+          (typeof v !== "number" || !Number.isFinite(v)),
+      ))
+    ? "metrics"
+    : undefined;
+}
 const journalKey = (id: string): string => `autopilot:${id}`;
 /** Append-only history; a repeat of the newest event is not written again. */
 function emit(
@@ -2179,12 +2217,18 @@ function validVerdict(row: unknown): row is MergeVerdict {
   return (
     isMap(row) &&
     Object.keys(row).sort().join(",") === "at,head,reviewer,verdict" &&
-    isCommit(row.head) &&
-    (row.verdict === "MERGE" || row.verdict === "FIX") &&
-    typeof row.reviewer === "string" &&
-    row.reviewer.trim() !== "" &&
+    validMergeGate(row) &&
     typeof row.at === "string" &&
     Number.isFinite(Date.parse(row.at))
+  );
+}
+function validMergeGate(value: unknown): boolean {
+  return (
+    isMap(value) &&
+    isCommit(value.head) &&
+    (value.verdict === "MERGE" || value.verdict === "FIX") &&
+    nonEmpty(value.reviewer) &&
+    value.reviewer.length <= 200
   );
 }
 /** Compare security paths the way a case-insensitive checkout sees them. */
@@ -2740,25 +2784,26 @@ function readGlobal(state: LeaseStateClient): {
 } {
   const record = state.get(GLOBAL);
   if (!record) return { value: { stopped: {} }, revision: 0 };
-  const value = record.value as Record<string, unknown> | null;
-  if (!isMap(value))
-    throw new StateProblem("autopilot:global is not an object", true);
-  const { stopAll, stopped, resumed } = value;
-  if (stopAll !== undefined && !isTime(stopAll))
-    throw new StateProblem("autopilot:global stopAll is not a time", true);
-  if (!isMap(stopped) || !Object.values(stopped).every(isTime))
-    throw new StateProblem(
-      "autopilot:global stopped is missing or not a map of times",
-      true,
-    );
-  if (resumed !== undefined && !isMap(resumed))
-    throw new StateProblem("autopilot:global resumed is not an object", true);
-  if (value.owner !== undefined && !validOwner(value.owner))
-    throw new StateProblem("autopilot:global owner is malformed", true);
+  const value = record.value;
+  const problem = globalProblem(value);
+  if (problem) throw new StateProblem(problem, true);
   return {
-    value: value as unknown as GlobalState,
+    value: value as GlobalState,
     revision: record.revision,
   };
+}
+function globalProblem(value: unknown): string | undefined {
+  if (!isMap(value)) return "autopilot:global is not an object";
+  const { stopAll, stopped, resumed } = value;
+  if (stopAll !== undefined && !isTime(stopAll))
+    return "autopilot:global stopAll is not a time";
+  if (!isMap(stopped) || !Object.values(stopped).every(isTime))
+    return "autopilot:global stopped is missing or not a map of times";
+  if (resumed !== undefined && !isMap(resumed))
+    return "autopilot:global resumed is not an object";
+  if (value.owner !== undefined && !validOwner(value.owner))
+    return "autopilot:global owner is malformed";
+  return undefined;
 }
 /** A sample counts only when both numbers are finite and in range. */
 function validLoad(load: unknown): load is Load {
@@ -2805,10 +2850,52 @@ const clockKey = (id: string): string => `autopilot-clock:${id}`;
 function clockOf(state: LeaseStateClient, id: string): number | undefined {
   const record = state.get(clockKey(id));
   if (!record) return undefined;
-  const at = (record.value as { startedAt?: unknown } | null)?.startedAt;
-  if (!isTime(at))
+  if (!validClock(record.value))
     throw new StateProblem(`${clockKey(id)} has no valid startedAt`);
-  return Date.parse(at);
+  return Date.parse(record.value.startedAt);
+}
+function validClock(value: unknown): value is { startedAt: string } {
+  return isMap(value) && isTime(value.startedAt);
+}
+function journalProblem(value: unknown): string | undefined {
+  if (
+    !isMap(value) ||
+    typeof value.step !== "string" ||
+    !isCount(value.pr) ||
+    !isMap(value.counters) ||
+    !isCount(value.counters.actions) ||
+    !isCount(value.counters.records)
+  )
+    return "is missing required fields";
+  const rounds = value.rounds;
+  if (
+    rounds !== undefined &&
+    (!isMap(rounds) ||
+      (rounds.review !== undefined && !isCount(rounds.review)) ||
+      (rounds.ci !== undefined && !isCount(rounds.ci)))
+  )
+    return "rounds are not counts";
+  return value.receipt === undefined || validReceipt(value.receipt)
+    ? undefined
+    : "receipt is invalid";
+}
+function validSelection(value: unknown): boolean {
+  if (!isMap(value) || !Array.isArray(value.chosen)) return false;
+  const n = value.mode === "none" ? 0 : value.mode === "single" ? 1 : undefined;
+  return (
+    typeof value.mode === "string" &&
+    ["none", "single", "combine"].includes(value.mode) &&
+    (n === undefined ? value.chosen.length > 0 : value.chosen.length === n) &&
+    value.chosen.every(
+      (item) =>
+        isMap(item) &&
+        typeof item.attempt === "string" &&
+        typeof item.sha === "string" &&
+        normalizedEvidenceSha(item.sha) === item.sha,
+    ) &&
+    new Set(value.chosen.map((item) => (item as { attempt: string }).attempt))
+      .size === value.chosen.length
+  );
 }
 /** What a lane has used. Review and CI rounds count from the journal once a loop writes them. */
 function usageOf(
@@ -2819,24 +2906,9 @@ function usageOf(
 ) {
   const journal = state.get(journalKey(id))?.value as
     (Journal & { rounds?: { review?: unknown; ci?: unknown } }) | undefined;
-  if (
-    journal !== undefined &&
-    (!isMap(journal) ||
-      typeof journal.step !== "string" ||
-      !isCount(journal.pr) ||
-      !isMap(journal.counters) ||
-      !isCount(journal.counters.actions) ||
-      !isCount(journal.counters.records))
-  )
-    throw new StateProblem(`${journalKey(id)} is missing required fields`);
+  const problem = journal === undefined ? undefined : journalProblem(journal);
+  if (problem) throw new StateProblem(`${journalKey(id)} ${problem}`);
   const rounds = journal?.rounds;
-  if (
-    rounds !== undefined &&
-    (!isMap(rounds) ||
-      (rounds.review !== undefined && !isCount(rounds.review)) ||
-      (rounds.ci !== undefined && !isCount(rounds.ci)))
-  )
-    throw new StateProblem(`${journalKey(id)} rounds are not counts`);
   const clock = clockOf(state, id);
   const activeMs = clock === undefined ? 0 : Math.max(0, state.now() - clock);
   return {
@@ -3107,8 +3179,49 @@ function validAsk(value: unknown): value is Ask {
         isMap(gated.input) &&
         (gated.request === undefined || nonEmpty(gated.request)))) &&
     (answer === undefined || isMap(answer)) &&
+    validAskAnswer(value as Ask) &&
     (value.batch === undefined || isCount(value.batch)) &&
     (value.n === undefined || isCount(value.n))
+  );
+}
+function validReply(quote: unknown, source: unknown): source is ReplySource {
+  return (
+    nonEmpty(quote) &&
+    quote.length <= 2000 &&
+    isMap(source) &&
+    (source.message === undefined || nonEmpty(source.message)) &&
+    isChannel(source)
+  );
+}
+function approvalFor(
+  ask: Ask,
+  label: string,
+  quote: string,
+  source: ReplySource,
+): Approval | undefined {
+  return ask.options.find((option) => option.label === label)?.approve &&
+    ask.gated?.request !== undefined
+    ? { request: ask.gated.request, quote, source }
+    : undefined;
+}
+function validAskAnswer(ask: Ask): boolean {
+  const answer = ask.answer;
+  if (answer === undefined)
+    return ask.status !== "answered" && ask.status !== "held";
+  if (
+    !isMap(answer) ||
+    !isTime(answer.at) ||
+    !validReply(answer.quote, answer.source) ||
+    answer.quote !== answer.quote.trim()
+  )
+    return false;
+  const option = ask.options.find((option) => option.label === answer.label);
+  return (
+    option !== undefined &&
+    (ask.status === "done" ||
+      ask.status === (option.hold ? "held" : "answered")) &&
+    canonical(answer.approval) ===
+      canonical(approvalFor(ask, answer.label, answer.quote, answer.source))
   );
 }
 type AskRow = { value: Ask; revision: number };
@@ -3122,6 +3235,13 @@ function readAsk(state: LeaseStateClient, id: string): AskRow | undefined {
 function saveAsk(state: LeaseStateClient, ask: Ask, revision: number): AskRow {
   const written = persist(state, ASK(ask.lane), ask, revision);
   return { value: ask, revision: written.revision };
+}
+function askProblem(key: string, value: unknown): string | undefined {
+  return !validAsk(value)
+    ? "WORK_VALUE_SHAPE"
+    : ASK(value.lane) === key
+      ? undefined
+      : "WORK_VALUE_KEY";
 }
 /** Held or answered: the owner has spoken about this reason, so it is not asked again. */
 const settledAsk = (ask: Ask): boolean =>
@@ -3569,14 +3689,7 @@ function ownerReply(call: HandlerCall<TailRecordInput>): ReplyResult {
   const { input, services } = call;
   const state = client(services);
   const { reply, source } = input;
-  if (
-    !nonEmpty(reply) ||
-    reply.length > 2000 ||
-    !isMap(source) ||
-    !nonEmpty(source.harness) ||
-    !nonEmpty(source.thread) ||
-    (source.message !== undefined && !nonEmpty(source.message))
-  )
+  if (!validReply(reply, source))
     return fail(
       "INPUT_INVALID",
       "A reply needs the owner's words (at most 2000 characters) and a source with harness, thread and message",
@@ -3596,7 +3709,7 @@ function ownerReply(call: HandlerCall<TailRecordInput>): ReplyResult {
       "INPUT_CONFLICT",
       `The reply is not from the owner channel (${owner.channel.harness}, ${owner.channel.thread}); nothing was recorded`,
     );
-  const quote = reply.trim();
+  const quote = reply!.trim();
   const numbered = messageNumber(quote, source);
   if (numbered === undefined)
     return fail(
@@ -3675,10 +3788,7 @@ function ownerReply(call: HandlerCall<TailRecordInput>): ReplyResult {
     const label = labels[index]!;
     const option = ask.options.find((entry) => entry.label === label)!;
     // A reply is an approval only for the gated step the ask carried, never a self-approval (D6).
-    const approval: Approval | undefined =
-      option.approve && ask.gated?.request !== undefined
-        ? { request: ask.gated.request, quote, source: heard }
-        : undefined;
+    const approval = approvalFor(ask, label, quote, heard);
     saveAsk(
       state,
       {
@@ -4127,13 +4237,7 @@ function laneRecord(call: HandlerCall<TailRecordInput>):
         "INPUT_INVALID",
         "Give a merge-gate verdict or an action result, not both",
       );
-    if (
-      !isCommit(gate.head) ||
-      (gate.verdict !== "MERGE" && gate.verdict !== "FIX") ||
-      typeof gate.reviewer !== "string" ||
-      !gate.reviewer.trim() ||
-      gate.reviewer.length > 200
-    )
+    if (!validMergeGate(gate))
       return fail(
         "INPUT_INVALID",
         'merge-gate needs {"head":"<full sha>","verdict":"MERGE"|"FIX","reviewer":"<who>"}',
@@ -4231,11 +4335,7 @@ function laneRecord(call: HandlerCall<TailRecordInput>):
       `Action ${action} is not the open action (${open ? `${open.n}, step ${open.step}` : "none"}); run lane next again`,
     );
   if (open.step === "receipt") {
-    if (
-      typeof result.receipt !== "string" ||
-      !result.receipt ||
-      result.receipt.length > 200
-    )
+    if (!validReceipt(result.receipt))
       return fail("INPUT_INVALID", 'receipt step needs {"receipt":"<id>"}');
     journal.receipt = result.receipt;
   } else if (open.step === "rebuild") {
@@ -5797,20 +5897,10 @@ const operations: Operations<WorkOperations> = {
     if (!record) fail("LEASE_NOT_HELD", "No such attempt on this issue");
     state = state.withOwnLease(key(record.key));
     state.putMany([], { subject: key(record.key) });
-    if (!/^[a-fA-F0-9]{40}$/.test(input.sha))
+    const problem = evidenceProblem(input);
+    if (problem === "sha")
       fail("INPUT_INVALID", "sha must be a full 40-hex commit id");
-    if (
-      input.metrics !== undefined &&
-      (input.metrics === null ||
-        typeof input.metrics !== "object" ||
-        Array.isArray(input.metrics) ||
-        Object.keys(input.metrics).length > 32 ||
-        Object.values(input.metrics).some(
-          (v) =>
-            typeof v !== "string" &&
-            (typeof v !== "number" || !Number.isFinite(v)),
-        ))
-    )
+    if (problem === "metrics")
       fail(
         "INPUT_INVALID",
         "metrics must be a flat object of at most 32 numbers or strings",
@@ -5840,7 +5930,7 @@ const operations: Operations<WorkOperations> = {
       prefix + (state.count(prefix) + 1),
       {
         ...proof,
-        sha: input.sha.toLowerCase(),
+        sha: normalizedEvidenceSha(input.sha)!,
         holder: state.holder(),
         recordedAt: new Date(state.now()).toISOString(),
       },
@@ -5865,7 +5955,7 @@ const operations: Operations<WorkOperations> = {
     if (!slots)
       fail("ISSUE_NOT_COMPETING", "Coordinator must set attempt slots");
     const reason = input.reason.trim();
-    if (!reason || Array.from(reason).length > 65536)
+    if (!validReason(reason))
       fail(
         "INPUT_INVALID",
         "reason must contain 1 to 65536 characters after trimming",
@@ -5902,14 +5992,15 @@ const operations: Operations<WorkOperations> = {
         });
       return { attempt, sha: commit };
     });
-    if (new Set(chosen.map((c) => c.attempt)).size !== chosen.length)
+    const mode = input.none ? "none" : input.combine ? "combine" : "single";
+    if (!validSelection({ mode, chosen }))
       fail("INPUT_INVALID", "An attempt may be chosen only once");
     state.putMany(
       [
         {
           key: `selection:${id}`,
           value: {
-            mode: input.none ? "none" : input.combine ? "combine" : "single",
+            mode,
             chosen,
             reason,
             holder: state.holder(),
@@ -6051,9 +6142,10 @@ const operations: Operations<WorkOperations> = {
       const record = get(state, id, input.id);
       const reopen = input.reopen.trim(),
         reason = input.reason?.trim();
-      const invalid = (text: string) =>
-        !text || Array.from(text).length > 65536;
-      if (invalid(reopen) || (reason !== undefined && invalid(reason)))
+      if (
+        !validReason(reopen) ||
+        (reason !== undefined && !validReason(reason))
+      )
         fail(
           "INPUT_INVALID",
           "reason must contain 1 to 65536 characters after trimming",
@@ -6163,10 +6255,7 @@ const operations: Operations<WorkOperations> = {
       ...holder(state, dependency),
     }));
     const reason = input.reason?.trim();
-    if (
-      input.reason !== undefined &&
-      (!reason || Array.from(reason).length > 65536)
-    )
+    if (input.reason !== undefined && !validReason(reason))
       fail(
         "INPUT_INVALID",
         "reason must contain 1 to 65536 characters after trimming",
@@ -6672,7 +6761,46 @@ const operations: Operations<WorkOperations> = {
     return { problems };
   },
 };
+export interface RecordRules {
+  ASK: typeof ASK;
+  journalKey: typeof journalKey;
+  MERGE_KEY: typeof MERGE_KEY;
+  clockKey: typeof clockKey;
+  validAsk: typeof validAsk;
+  validAskAnswer: typeof validAskAnswer;
+  askProblem: typeof askProblem;
+  approvalFor: typeof approvalFor;
+  validReceipt: typeof validReceipt;
+  validReason: typeof validReason;
+  evidenceProblem: typeof evidenceProblem;
+  normalizedEvidenceSha: typeof normalizedEvidenceSha;
+  validSelection: typeof validSelection;
+  validVerdict: typeof validVerdict;
+  globalProblem: typeof globalProblem;
+  journalProblem: typeof journalProblem;
+  validClock: typeof validClock;
+}
+const recordRules: RecordRules = Object.freeze({
+  ASK,
+  journalKey,
+  MERGE_KEY,
+  clockKey,
+  validAsk,
+  validAskAnswer,
+  askProblem,
+  approvalFor,
+  validReceipt,
+  validReason,
+  evidenceProblem,
+  normalizedEvidenceSha,
+  validSelection,
+  validVerdict,
+  globalProblem,
+  journalProblem,
+  validClock,
+});
 Object.defineProperties(operations, {
+  recordRules: { value: recordRules },
   limitsOf: { value: limitsOf },
   briefProblems: { value: briefProblems },
   laneRegistry: { value: laneRegistry },

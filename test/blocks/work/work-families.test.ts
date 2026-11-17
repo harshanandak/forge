@@ -5,6 +5,10 @@ import { createSqliteStore } from "../../../src/adapters/store-sqlite/index.ts";
 import { StateOwner } from "../../../src/core/state/index.ts";
 import type { NamespaceFamilyPolicy } from "../../../src/core/state/families.ts";
 import * as work from "../../../src/blocks/work/state-families.ts";
+import {
+  boundLaneKey,
+  readBoundLaneKey,
+} from "../../../src/blocks/work/bound-lane-state.ts";
 
 setDefaultTimeout(30_000);
 const stamp = "2026-11-16T00:00:00.000Z";
@@ -169,7 +173,7 @@ const askValue = () =>
     string,
     unknown
   >;
-const source = { harness: "codex", thread: "owner" };
+const source = { harness: "codex", thread: "owner", message: "1" };
 const answer = {
   label: "A",
   quote: "#1 A",
@@ -188,6 +192,22 @@ test.each([
         { label: "B", text: "hold", hold: true },
       ],
       gated: { op: "lane.resume", input: { id: "forge-1" } },
+      answer,
+    },
+  ],
+  [
+    "approval for a different gated request",
+    {
+      status: "answered",
+      options: [
+        { label: "A", text: "resume", approve: true },
+        { label: "B", text: "hold", hold: true },
+      ],
+      gated: {
+        op: "lane.resume",
+        input: { id: "forge-1" },
+        request: "request-2",
+      },
       answer,
     },
   ],
@@ -249,11 +269,29 @@ test.each([
   "bound-lane:[]:work-1",
   'bound-lane:["local","identity"]:work-1',
   'bound-lane:["local","identity",1]:work-1',
+  'bound-lane:["local","identity","\\u0041"]:work-1',
+  'bound-lane:["local", "identity","project"]:work-1',
 ])("the bound-lane key pattern refuses non-builder serialization %s", (key) => {
   const row = declarations()?.["bound-lane"];
   ok(row);
   eq(row.key.exec(key), null);
 });
+
+test.each([
+  "Owner Project",
+  'quote"and\\slash',
+  "astral 😀",
+  "\ud800",
+  "\udc00",
+])(
+  "the bound-lane key pattern admits its builder serialization for %s",
+  (project) => {
+    const parts = { origin: "local", identity: "identity", project };
+    const key = boundLaneKey(parts, "work-1");
+    eq(declarations()!["bound-lane"]!.key.exec(key)?.[0], key);
+    eq(readBoundLaneKey(key), { ...parts, id: "work-1" });
+  },
+);
 
 test("every declared work family has a concrete valid persisted-value fixture", () => {
   const rows = declarations();

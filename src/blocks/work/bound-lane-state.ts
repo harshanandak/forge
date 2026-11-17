@@ -103,6 +103,29 @@ export interface BoundLaneRecord {
 }
 export const boundLaneKey = (project: BoundProject, id = "") =>
   `bound-lane:${JSON.stringify([project.origin, project.identity, project.project])}:${id}`;
+const serializedString = String.raw`"(?:[^"\\\u0000-\u001f\uD800-\uDFFF]|\\(?:["\\bfnrt]|u00(?:0[0-7bef]|1[0-9a-f])|ud[89ab][0-9a-f]{2}(?!\\ud[c-f][0-9a-f]{2})|ud[c-f][0-9a-f]{2}))*"`;
+export const boundLanePattern: RegExp = new RegExp(
+  `^bound-lane:\\[${serializedString},${serializedString},${serializedString}\\]:work-[0-9]+$`,
+  "u",
+);
+export function readBoundLaneKey(
+  key: string,
+): (BoundProject & { id: string }) | undefined {
+  if (boundLanePattern.exec(key)?.[0] !== key) return;
+  const id = key.slice(key.lastIndexOf(":") + 1);
+  const tuple: unknown = JSON.parse(key.slice(11, key.lastIndexOf(":")));
+  if (
+    !Array.isArray(tuple) ||
+    tuple.length !== 3 ||
+    !tuple.every(
+      (part) => typeof part === "string" && !/[\p{Cc}\p{Cf}]/u.test(part),
+    )
+  )
+    return;
+  const [origin, identity, project] = tuple as [string, string, string];
+  const value = { origin, identity, project, id };
+  return boundLaneKey(value, id) === key ? value : undefined;
+}
 
 /** Corrupt device state is diagnostic evidence, never an invitation to initialize over it. */
 export function readBoundLane(value: unknown, id: string): BoundLaneRecord {
@@ -174,9 +197,12 @@ export function writeBoundLane(
   value: BoundLaneRecord,
   expectRevision: number,
 ): StateRecord {
-  return state.put(
-    boundLaneKey(project, value.id),
-    readBoundLane(value, value.id),
-    { expectRevision },
-  );
+  const key = boundLaneKey(project, value.id);
+  if (!readBoundLaneKey(key))
+    throw new ForgeFailure({
+      code: "INPUT_INVALID",
+      message: "WORK_VALUE_KEY",
+      retry: "never",
+    });
+  return state.put(key, readBoundLane(value, value.id), { expectRevision });
 }
