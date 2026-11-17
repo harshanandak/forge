@@ -1,6 +1,10 @@
 import { expect, test } from "bun:test";
 import { createWorker } from "../../cloud/src/worker.ts";
 
+if (!("timingSafeEqual" in crypto.subtle))
+  Object.defineProperty(crypto.subtle, "timingSafeEqual", {
+    value: crypto.timingSafeEqual.bind(crypto),
+  });
 const DEVICE = `fct_0123456789abcdef.${"A".repeat(43)}`;
 const OWNER = "an-oauth-bearer";
 const ADMIN = "admin-secret";
