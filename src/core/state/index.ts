@@ -698,8 +698,8 @@ export function verifyEventDerivedState(
       `sha256:${plan.result}` !== result
     )
       reject("state_requests", id);
-    if (typeof plan === "object" && plan.kind === "acquire") continue;
     requests.add(id);
+    if (checkpoint?.leases) continue;
     plans.set(id, true);
   }
   // Two numbers per observed prefix, folded from rows as they are verified: never the events or the keys themselves.
@@ -782,22 +782,17 @@ export function verifyEventDerivedState(
       )
         reject("state_events", id);
 
-      if (
-        eventSequence <= covered &&
-        (event.type === `${event.namespace}:record.updated@1` ||
-          event.type === `${event.namespace}:record.deleted@1`)
-      ) {
-        if (event.type.endsWith("deleted@1")) historical.delete(id);
-        else historical.set(id, { revision: event.revision });
-        return;
-      }
+      const coveredEvent = eventSequence <= covered;
       if (event.requestId !== undefined) {
         const request = key(event.namespace, event.requestId);
-        if (requests.has(request)) reject("state_requests", request);
+        if (requests.has(request) !== coveredEvent)
+          reject("state_requests", request);
         requests.add(request);
         const plan = plans.get(request);
+        if (plan === true) reject("state_requests", request);
         if (plan && typeof plan !== "boolean") {
           try {
+            const priorRecords = coveredEvent ? historical : records;
             const result =
               plan.kind === "put"
                 ? {
@@ -819,7 +814,7 @@ export function verifyEventDerivedState(
                     key: event.key,
                     value: event.data,
                     actor: event.actor,
-                    revision: records.get(id)?.revision ?? 0,
+                    revision: priorRecords.get(id)?.revision ?? 0,
                     fence: plan.fence,
                     ...(plan.readSet === undefined
                       ? {}
@@ -842,9 +837,7 @@ export function verifyEventDerivedState(
               event,
               plan,
               revision: (name: string): number =>
-                (eventSequence <= covered ? historical : records).get(
-                  key(event.namespace, name),
-                )?.revision ?? 0,
+                priorRecords.get(key(event.namespace, name))?.revision ?? 0,
               lease: (subject: string): LeaseRecord | undefined =>
                 leases.get(key(event.namespace, subject)),
             };
@@ -854,6 +847,15 @@ export function verifyEventDerivedState(
             plans.set(request, false);
           }
         }
+      }
+      if (
+        coveredEvent &&
+        (event.type === `${event.namespace}:record.updated@1` ||
+          event.type === `${event.namespace}:record.deleted@1`)
+      ) {
+        if (event.type.endsWith("deleted@1")) historical.delete(id);
+        else historical.set(id, { revision: event.revision });
+        return;
       }
       if (event.type === `${event.namespace}:record.updated@1`) {
         if (event.revision !== (recordRevisions.get(id) ?? 0) + 1)

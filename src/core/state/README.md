@@ -14,9 +14,6 @@ makes older writers refuse the store. Format 2 seeds leases and core request wit
 lease bodies and last sequences must equal event replay before the tail. The writer deletes no events.
 Version 1 remains supported; cloud v2 still refuses checkpoints without changing its wire format.
 
-Both cloud receipt stores retain denied ids through credential validity and answers for min(24h, validity).
-Live denials are capped at 4,096 plus one barrier. Credential revocations remain outside event replay.
-
 `StateOwner` accepts the locked `SqlDatabase` and `ClockPort` ports. `initialize()` is an explicit write; construction and reads do not initialize anything. `client(namespace, actor)` returns a `DeletableStateClient`, with namespace and actor captured. It never exposes a connection.
 
 Trusted constructors may also supply a `RecordFamilyRegistry` or namespace-family policies.
