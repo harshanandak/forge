@@ -3,6 +3,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { hash, X509Certificate } from "node:crypto";
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -41,6 +42,7 @@ beforeAll(() => {
     else foreignCertificate = made;
   }
   writeFileSync(tarball, "reviewed archive");
+  mkdirSync(join(dir, "bin"));
 });
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -97,7 +99,8 @@ function fixture() {
   const lock = {
     packages: { "node_modules/forge-workflow": { version, integrity } },
   };
-  return { statement, bundle, audit, identity, lock };
+  const record = { ...identity, runId: "12345" };
+  return { statement, bundle, audit, identity, lock, record };
 }
 type Fixture = ReturnType<typeof fixture>;
 const workflow = (f: Fixture) =>
@@ -123,6 +126,30 @@ const rows: [string, (f: Fixture) => void][] = [
     (f) => Object.assign(f.identity, { commit: "c".repeat(40) }),
   ],
   ["dirty build", (f) => Object.assign(f.identity, { dirty: true })],
+  [
+    "record wrong commit",
+    (f) => {
+      f.record.commit = "c".repeat(40);
+    },
+  ],
+  [
+    "record wrong version",
+    (f) => {
+      f.record.version = "other";
+    },
+  ],
+  [
+    "record wrong run",
+    (f) => {
+      f.record.runId = "54321";
+    },
+  ],
+  [
+    "record missing",
+    (f) => {
+      Reflect.deleteProperty(f, "record");
+    },
+  ],
   [
     "substituted installed archive",
     (f) =>
@@ -205,11 +232,17 @@ for (const [name, change] of rows)
     rmSync(marker, { force: true });
     const f = fixture();
     change(f);
+    const recordPath = join(dir, "build.json");
+    rmSync(recordPath, { force: true });
+    if (f.record) writeFileSync(recordPath, JSON.stringify(f.record));
     f.bundle.bundle.dsseEnvelope.payload = Buffer.from(
       JSON.stringify(f.statement),
     ).toString("base64");
     const paths = [f.identity, f.audit, f.lock].map((value, index) => {
-      const path = join(dir, `${index}.${index === 0 ? "mjs" : "json"}`);
+      const path = join(
+        dir,
+        index === 0 ? "bin/identity.mjs" : `${index}.json`,
+      );
       writeFileSync(
         path,
         index === 0
@@ -231,6 +264,7 @@ for (const [name, change] of rows)
           ...process.env,
           VERSION: version,
           GITHUB_SHA: commit,
+          CI_RUN: "12345",
           TARBALL: tarball,
         },
         timeout: 10_000,
@@ -244,4 +278,36 @@ for (const [name, change] of rows)
         name.startsWith("wrong installed") ||
         name === "dirty build",
     );
+    if (name.startsWith("accepted"))
+      expect(out.stdout.toString()).toContain('"runId":"12345"');
+    if (
+      name.startsWith("record ") ||
+      name === "substituted installed archive"
+    ) {
+      const source = readFileSync(
+        resolve(import.meta.dirname, "../../../tools/release/readback.mjs"),
+        "utf8",
+      );
+      const removed = name.startsWith("record ")
+        ? source.replace(
+            /assert\.deepEqual\(\s*read\(resolve\(dirname\(bin\), "\.\.\/build\.json"\)\),[\s\S]*?\);/,
+            "",
+          )
+        : source.replace("assert.equal(installed.integrity, integrity);", "");
+      expect(removed).not.toBe(source);
+      const mutant = join(dir, "guard-removed.mjs");
+      writeFileSync(mutant, removed);
+      const unguarded = Bun.spawnSync([bun, mutant, ...paths], {
+        env: {
+          ...process.env,
+          VERSION: version,
+          GITHUB_SHA: commit,
+          CI_RUN: "12345",
+          TARBALL: tarball,
+        },
+        timeout: 10_000,
+      });
+      expect(unguarded.exitCode, unguarded.stderr.toString()).toBe(0);
+      expect(existsSync(marker)).toBe(true);
+    }
   }, 15_000);
