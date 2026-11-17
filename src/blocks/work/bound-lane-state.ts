@@ -8,6 +8,8 @@ import type { StateClient } from "../../ports/state.ts";
 import type { StateRecord } from "../../generated/types.ts";
 import type { GitScope } from "../../assembly/providers.ts";
 import { validGitScope } from "../../assembly/saved-git-scope.ts";
+import { boundLaneKey, type BoundProject } from "./record-primitives.ts";
+export { boundLaneKey, type BoundProject } from "./record-primitives.ts";
 
 export function validBoundHead(value: unknown): value is string {
   return (
@@ -15,11 +17,6 @@ export function validBoundHead(value: unknown): value is string {
   );
 }
 
-export interface BoundProject {
-  readonly origin: string;
-  readonly identity: string;
-  readonly project: string;
-}
 export interface BoundProgress {
   generation: number;
   actions: number;
@@ -101,9 +98,6 @@ export interface BoundLaneRecord {
   readonly releaseRequestId?: string;
   readonly progress?: BoundProgress;
 }
-export const boundLaneKey = (project: BoundProject, id = "") =>
-  `bound-lane:${JSON.stringify([project.origin, project.identity, project.project])}:${id}`;
-
 /** Corrupt device state is diagnostic evidence, never an invitation to initialize over it. */
 export function readBoundLane(value: unknown, id: string): BoundLaneRecord {
   const record = value as Partial<BoundLaneRecord> | null;

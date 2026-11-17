@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, expect, setDefaultTimeout, test } from "bun:test";
 import { resolve } from "node:path";
 import { readFileSync } from "node:fs";
+import { inlineWorkPrimitives } from "../../../tools/bundle-work-primitives.ts";
 import { captureBlock, Catalog } from "../../../src/core/catalog/index.ts";
 import { Runtime } from "../../../src/core/runtime/index.ts";
 import { TrustStore, admit, grant } from "../../fixtures/owner-approval.ts";
@@ -622,6 +623,15 @@ test("newest delivers link follows numeric append order beyond nine", async () =
   });
 });
 
+const capturedWork = await inlineWorkPrimitives(
+  new Bun.Transpiler({ loader: "ts" }).transformSync(
+    readFileSync(
+      resolve(import.meta.dirname, "../../../src/blocks/work/entry.cts"),
+      "utf8",
+    ),
+  ),
+  resolve(import.meta.dirname, "../../../src/blocks/work/record-primitives.ts"),
+);
 function stateOnlyRuntime() {
   const root = resolve(import.meta.dirname, "../../../src/blocks/work");
   const block = captureBlock("work", {
@@ -630,11 +640,7 @@ function stateOnlyRuntime() {
       value: {
         read(name) {
           if (name === "entry.cjs")
-            return new TextEncoder().encode(
-              new Bun.Transpiler({ loader: "ts" }).transformSync(
-                readFileSync(resolve(root, "entry.cts"), "utf8"),
-              ),
-            );
+            return new TextEncoder().encode(capturedWork);
           return readFileSync(
             resolve(root, name === "block.json" ? "forge.block.json" : name),
           );

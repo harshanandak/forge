@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import { parse } from "yaml";
 import type { CheckConfig } from "../../../src/blocks/check/types.ts";
 import { runInNewContext } from "node:vm";
+import { resolve } from "node:path";
+import { inlineWorkPrimitives } from "../../../tools/bundle-work-primitives.ts";
 import {
   createCheck,
   verifyReceipt,
@@ -614,10 +616,16 @@ test("issue close refuses a dirty-tree check receipt before writing", async () =
   const receipt = await check.run({}, config);
   const module = { exports: {} };
   runInNewContext(
-    new Bun.Transpiler({ loader: "ts" }).transformSync(
-      readFileSync(
-        new URL("../../../src/blocks/work/entry.cts", import.meta.url),
-        "utf8",
+    await inlineWorkPrimitives(
+      new Bun.Transpiler({ loader: "ts" }).transformSync(
+        readFileSync(
+          new URL("../../../src/blocks/work/entry.cts", import.meta.url),
+          "utf8",
+        ),
+      ),
+      resolve(
+        import.meta.dirname,
+        "../../../src/blocks/work/record-primitives.ts",
       ),
     ),
     {

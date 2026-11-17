@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import { createAssembly, localCall } from "../../src/assembly/index.ts";
 import { blockCapture } from "../../src/assembly/capture.ts";
 import { firstPartyBlocks } from "../../src/assembly/first-party.ts";
+import { inlineWorkPrimitives } from "../../tools/bundle-work-primitives.ts";
 import * as processAdapter from "../../src/adapters/process/index.ts";
 import type { ProcessResult } from "../../src/ports/process.ts";
 import { result as processResult } from "../adapters/process/fake-process.ts";
@@ -124,8 +125,11 @@ async function fixture(workEnabled: boolean, idPrefix?: string) {
     });
     writeFileSync(
       join(target, "entry.cjs"),
-      new Bun.Transpiler({ loader: "ts" }).transformSync(
-        readFileSync(join(source, "entry.cts"), "utf8"),
+      await inlineWorkPrimitives(
+        new Bun.Transpiler({ loader: "ts" }).transformSync(
+          readFileSync(join(source, "entry.cts"), "utf8"),
+        ),
+        join(source, "record-primitives.ts"),
       ),
     );
     stages.set(source, target);
