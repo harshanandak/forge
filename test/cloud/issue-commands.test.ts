@@ -1010,15 +1010,28 @@ for (const fault of [
             ? [503, "UNAVAILABLE", 1]
             : [500, "INTERNAL", 1],
         );
-        expect(f.snapshot()).toBe(before);
+        if (fault === "full budget" || fault === "restore budget") {
+          const denied = f.db
+            .query(
+              "SELECT outcome,result FROM domain_cloud_command_receipts WHERE outcome='refused'",
+            )
+            .all() as { outcome: string; result: string }[];
+          expect(denied).toHaveLength(1);
+          expect(JSON.parse(denied[0]!.result)).toHaveProperty(
+            "code",
+            "UNAVAILABLE",
+          );
+          const recorded = f.snapshot();
+          const retried = await f.commit(input);
+          expect(stateOutcome(retried)).toEqual([503, "UNAVAILABLE", 1]);
+          expect(f.snapshot()).toBe(recorded);
+        } else expect(f.snapshot()).toBe(before);
         expect(f.stable()).toBe(domain);
         expect(f.successes()).toBe(successes);
         if (fault === "restore budget")
           expect(
             got.touched.filter((sql) =>
-              /^(INSERT|UPDATE).* (state_records|state_events|domain_cloud_command_receipts)/.test(
-                sql,
-              ),
+              /^(INSERT|UPDATE).* (state_records|state_events)/.test(sql),
             ),
           ).toEqual([]);
       } else {
