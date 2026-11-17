@@ -43,6 +43,10 @@ import { parseRestoreJson } from "./restore-json.ts";
 import { allocationFloorNumber } from "./allocation-floor.ts";
 import { writeRecordCheckpoint } from "./record-checkpoint.ts";
 import {
+  RecordFamilyRegistry,
+  type NamespaceFamilyPolicies,
+} from "./families.ts";
+import {
   checkpointTables,
   assertNoCheckpoint,
   readReplayStart,
@@ -1153,12 +1157,21 @@ export const WATERMARK_READ_SQL: readonly string[] = [
 export class StateOwner {
   readonly #db: SqlDatabase;
   readonly #clock: ClockPort;
+  readonly #families: RecordFamilyRegistry;
   #knownMigrations = new Set(stateMigrations.map((migration) => migration.id));
   #domains: readonly ReviewedDomain[] = [];
   #checkpointReady = false;
-  constructor(db: SqlDatabase, clock: ClockPort) {
+  constructor(
+    db: SqlDatabase,
+    clock: ClockPort,
+    families: NamespaceFamilyPolicies | RecordFamilyRegistry = [],
+  ) {
     this.#db = db;
     this.#clock = clock;
+    this.#families =
+      families instanceof RecordFamilyRegistry
+        ? families
+        : new RecordFamilyRegistry(families);
   }
 
   /** Explicit write setup; stagedRestore is only for unpublished restore pages. */
@@ -1485,6 +1498,7 @@ export class StateOwner {
   ): StateRecord {
     namespaceValid(namespace);
     keyValid(key);
+    this.#families.assertKey(namespace, key);
     wellFormedText(key, "Key");
     if (
       !validateActor(actor).ok ||
@@ -1494,6 +1508,7 @@ export class StateOwner {
       invalid("Invalid actor or expected revision");
     const readSet = copyReadSet(options.readSet) ?? [];
     const stored = JSON.parse(json(value)) as unknown;
+    this.#families.assertValue(namespace, key, stored);
     return this.#db.transaction(() => {
       const now = this.#now();
       if (options.fence) this.#held(namespace, options.fence, now);
@@ -1532,6 +1547,7 @@ export class StateOwner {
   ): StateEvent {
     namespaceValid(namespace);
     keyValid(key);
+    this.#families.assertKey(namespace, key);
     if (
       !validateActor(actor).ok ||
       !Number.isSafeInteger(options.expectRevision) ||
@@ -1590,6 +1606,7 @@ export class StateOwner {
     const keys = new Set<string>();
     const prepared = entries.map((entry, index) => {
       keyValid(entry.key);
+      this.#families.assertKey(namespace, entry.key);
       wellFormedText(entry.key, `Batch entry ${index} key`);
       if (
         !Number.isSafeInteger(entry.expectRevision) ||
@@ -1598,9 +1615,11 @@ export class StateOwner {
       )
         invalid("Invalid or repeated batch entry");
       keys.add(entry.key);
+      const stored = JSON.parse(json(entry.value)) as unknown;
+      this.#families.assertValue(namespace, entry.key, stored);
       return {
         key: entry.key,
-        stored: JSON.parse(json(entry.value)) as unknown,
+        stored,
         expectRevision: entry.expectRevision,
       };
     });
@@ -1653,6 +1672,7 @@ export class StateOwner {
     namespaceValid(namespace);
     const floorKey = `allocation:${prefix}`;
     keyValid(floorKey);
+    this.#families.assertKey(namespace, floorKey);
     wellFormedText(prefix, "Prefix");
     if (!validateActor(actor).ok) invalid("Invalid actor");
     return this.#db.transaction(() => {
@@ -1664,6 +1684,7 @@ export class StateOwner {
       const number = last + 1;
       const key = `${prefix}${number}`;
       if (!Number.isSafeInteger(number)) invalid("Numbers are exhausted");
+      this.#families.assertKey(namespace, key);
       if (this.get(namespace, key))
         throw new ForgeFailure({
           code: "INPUT_CONFLICT",
@@ -1720,6 +1741,7 @@ export class StateOwner {
     wellFormedText(prefix, "Prefix");
     const floorKey = `allocation:${prefix}`;
     keyValid(floorKey);
+    this.#families.assertKey(namespace, floorKey);
     if (!validateActor(actor).ok) invalid("Invalid actor");
     return this.#db.transaction(() => {
       const refuse = () =>
@@ -1924,6 +1946,7 @@ export class StateOwner {
     last?: number,
     preview = false,
   ): StateRecord {
+    this.#families.assertValue(namespace, key, stored);
     const current = this.get(namespace, key);
     // An absent row can have history. Keep its last revision so recreation never revives an old
     // reader's compare-and-set token. The existing key index bounds this lookup to one key. A caller that
@@ -1993,10 +2016,14 @@ export class StateOwner {
   ): LeaseRecord {
     namespaceValid(namespace);
     keyValid(subject);
+    for (const entry of options?.entries ?? [])
+      this.#families.assertKey(namespace, entry.key);
     const accepted =
       options === undefined
         ? undefined
         : (JSON.parse(json(options)) as AcquireOptions);
+    for (const entry of accepted?.entries ?? [])
+      this.#families.assertValue(namespace, entry.key, entry.value);
     const readSet = copyReadSet(accepted?.readSet) ?? [];
     return this.#db.transaction(() => {
       const now = this.#now();
@@ -2173,6 +2200,13 @@ export class StateOwner {
     });
     return { ...snapshot!, image: Buffer.from(image).toString("base64") };
   }
+  hasRecordFamilies(namespace: string): boolean {
+    return this.#families.enrolled(namespace);
+  }
+  assertRecordFamily(record: StateRecord): void {
+    if (!validateStateRecord(record).ok) invalid("Invalid imported record");
+    this.#families.assertValue(record.namespace, record.key, record.value);
+  }
   /** Validate without mutating the candidate; only the adapter can replace database storage. */
   restore(
     snapshot: Snapshot,
@@ -2246,17 +2280,30 @@ export class StateOwner {
         undefined,
         applied.some((row) => row.id === "004_state_checkpoint"),
       );
+      for (const row of restoredRows(
+        candidate,
+        "state_records",
+        "body,namespace,key",
+        ["namespace", "key"],
+        pageSize,
+      ))
+        this.assertRecordFamily(
+          parseRestoreJson(String(row.body)) as StateRecord,
+        );
       assertRetentionAuthority(candidate);
     };
     imageStore.restoreImage(
       image,
       validate,
       (candidate) => {
-        new StateOwner(candidate, this.#clock).initialize(this.#domains);
+        new StateOwner(candidate, this.#clock, this.#families).initialize(
+          this.#domains,
+        );
         migrated = true;
         eventHighWaterMark += new StateOwner(
           candidate,
           this.#clock,
+          this.#families,
         ).releaseRestoredLeases(pageSize);
         validate(candidate);
       },

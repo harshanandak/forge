@@ -822,6 +822,28 @@ function insertRows(db: SqlDatabase, tables: Record<string, Row[]>): void {
       }
 }
 
+function admitFamilies(owner: StateOwner, rows: readonly Row[]): void {
+  for (const row of rows) {
+    if (!owner.hasRecordFamilies(String(row.namespace))) continue;
+    let record: StateRecord;
+    try {
+      record = parseRestoreJson(String(row.body)) as StateRecord;
+      if (
+        !validateStateRecord(record).ok ||
+        record.namespace !== row.namespace ||
+        record.key !== row.key
+      )
+        throw new Error();
+    } catch {
+      throw rejectedRow(
+        "state_records",
+        JSON.stringify([row.namespace, row.key]),
+      );
+    }
+    owner.assertRecordFamily(record);
+  }
+}
+
 // The allocator's floor: the work block numbers issues as `issue:work-<n>` in forge/work, and a floor record
 // holds the highest number ever given. Comments and links are numbered per issue the same way, so each
 // observed `comment:<id>:` and `link:<id>:` has its own floor. Only this file names them; the state owner
@@ -931,6 +953,7 @@ export function restoreDump(
     insertRows(db, dump.tables);
     assertLimits(db, limits, "RESTORE_TOO_LARGE", "The restored project");
     admitJson(dump.tables);
+    admitFamilies(owner, dump.tables.state_records!);
     const restored = verifyRestored(db);
     if (JSON.stringify(dumpOf(db)) !== JSON.stringify(dump))
       throw invalid(
@@ -976,6 +999,7 @@ export function restorePage(
     insertRows(db, page.tables);
     assertLimits(db, limits, "RESTORE_TOO_LARGE", "The staged restore");
     admitJson(page.tables);
+    admitFamilies(owner, page.tables.state_records!);
     // Only the last page looks at the whole staged set, so nothing is derived or written before it.
     if (page.last) settleFloor(db, owner, limits, verifyRestored(db), finalize);
     return counts(page.tables);
