@@ -330,6 +330,7 @@ jobs:
             export FORGE_CLOUD_PROJECT=ci-large config=wrangler.large.jsonc
             persist="$RUNNER_TEMP/wrangler-large"
             start large
+            measured restore-cost bun conformance/restore-cost.ts
             measured large bun conformance/conformance.ts large
             workerd_rss large
             stop
@@ -499,6 +500,13 @@ jobs:
           restore_cf inner-budget cloud/src/dump.ts 's/^    admitJson\(page\.tables\);\n//m; s/^    admitJson\(dump\.tables\);\n//m' "a paged restore of 31 deeply nested bodies is refused before any inner JSON.parse reads them" 'expect(probed).toEqual([])'
           # Without the label scan, a repeated label reads as its last copy and the restore wrongly succeeds (forge-1313).
           restore_cf duplicate-labels src/core/state/restore-json.ts 's/^  checkLabels\(text\);$/  void 0;/m' "a whole restore with a duplicate event label is RESTORE_INVALID_ROW and leaves nothing" '[got.status, got.json.error?.code]'
+      - name: Restore write-cost evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: restore-cost-${{ github.run_id }}
+          path: ${{ runner.temp }}/restore-cost.json
+          if-no-files-found: error
       - name: wrangler log
         if: failure()
         run: |

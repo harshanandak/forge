@@ -22,6 +22,7 @@ import { Project as Deployed } from "../src/adapters/workers-oauth/compose.ts";
 import type { DeviceUpstream } from "../src/auth/device-browser.ts";
 import type { DurableState } from "../src/store.ts";
 import { createOidcVerifier } from "../../src/assembly/oidc.ts";
+import { recordWrite, type StatementProfile } from "./write-profile.ts";
 
 export { default } from "../src/worker.ts";
 
@@ -51,6 +52,7 @@ interface Fault {
   readonly insert: boolean;
   sql: number;
   kv: number;
+  readonly profile: Map<string, StatementProfile> | undefined;
 }
 const current = new AsyncLocalStorage<Fault>();
 
@@ -213,6 +215,12 @@ export class Project extends Shipped {
             if (!Number.isSafeInteger(written) || written! < 0)
               throw new Error("Missing SQL rowsWritten measurement");
             (current.getStore() ?? boot).sql += written!;
+            recordWrite(
+              current.getStore()?.profile,
+              statement,
+              bindings,
+              written!,
+            );
             return { toArray: () => rows };
           },
         },
@@ -297,6 +305,9 @@ export class Project extends Shipped {
       insert: kind === "quota-insert" || kind === "full-insert",
       sql: this.#boot.sql,
       kv: this.#boot.kv,
+      profile: request.headers.has("x-cloud-write-profile")
+        ? new Map()
+        : undefined,
     };
     this.#boot.sql = this.#boot.kv = 0;
     const ip = request.headers.get("x-cloud-ip");
@@ -318,6 +329,14 @@ export class Project extends Shipped {
       const headers = new Headers(response.headers);
       headers.set("x-cloud-sql-writes", String(fault.sql));
       headers.set("x-cloud-kv-writes", String(fault.kv));
+      if (fault.profile)
+        return Response.json(
+          {
+            response: await response.json(),
+            profile: [...fault.profile.values()],
+          },
+          { status: response.status, headers },
+        );
       return new Response(response.body, { status: response.status, headers });
     });
   }
