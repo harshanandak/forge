@@ -3,7 +3,6 @@ import { createSqliteStore } from "../../../src/adapters/store-sqlite/index.ts";
 import { StateOwner } from "../../../src/core/state/index.ts";
 import { createStateClient } from "../../../src/assembly/state-client.ts";
 import { refuse } from "../../../src/core/trust/index.ts";
-import { ForgeFailure } from "../../../src/contract/failure.ts";
 import type { HandlerCall } from "../../../src/contract/author.ts";
 
 setDefaultTimeout(30_000);
@@ -37,6 +36,16 @@ const ask = (lane: string, status = "held") => ({
   ],
   default: "B",
   gated: { op: "lane.resume", input: { all: true }, request: "request-1" },
+  ...(status === "held"
+    ? {
+        answer: {
+          label: "B",
+          quote: "#1 1B",
+          source: { ...channel, message: "1" },
+          at,
+        },
+      }
+    : {}),
 });
 async function fixture() {
   const opened = await createSqliteStore(process.cwd()).open({
@@ -112,6 +121,23 @@ async function fixture() {
           : undefined,
     },
     environment: { select: () => ({ CLAUDE_CODE_SESSION_ID: "owner-1" }) },
+    process: {
+      resolve: (path: string) => ({ kind: "resolved", path }),
+      run: () =>
+        Promise.resolve({
+          stdout: JSON.stringify({
+            state: "MERGED",
+            headRefName: "work-1",
+            headRefOid: "a".repeat(40),
+            mergeCommit: { oid: "b".repeat(40) },
+            url: "https://github.com/example/repo/pull/7",
+          }),
+          stderr: "",
+          exitCode: 0,
+          timedOut: false,
+          truncated: false,
+        }),
+    },
   };
   return {
     owner,
@@ -125,14 +151,16 @@ async function fixture() {
       Object.fromEntries(
         ["state_records", "state_events", "state_requests"].map((table) => [
           table,
-          opened.handle.value.query(`SELECT * FROM ${table}`).all(),
+          opened.handle.value.all(`SELECT * FROM ${table}`),
         ]),
       ),
     invoke: (op: string, input: Record<string, unknown>) =>
       operations[op]!({
         input,
         services,
-        config: { lanes: { autopilot: { enabled: true } } },
+        config: {
+          lanes: { autopilot: { enabled: true, receiptChecks: ["typecheck"] } },
+        },
         signal: new AbortController().signal,
         deadline: Date.now() + 10000,
       }),
@@ -174,6 +202,8 @@ test.each([
   ["owner decision and event", "decision", "autopilot-event:work-1:1"],
   ["owner replies and global acknowledgement", "reply", "autopilot:global"],
   ["request replacement across asks", "request", "autopilot-ask:work-2"],
+  ["owner routing across asks", "route", "autopilot-ask:work-2"],
+  ["tail action, clock and journal", "tail", "autopilot:work-1"],
 ] as const)(
   "%s refuse atomically when their later write is rejected",
   async (_name, mode, rejected) => {
@@ -198,9 +228,35 @@ test.each([
             quote: "#1 1A",
             source: { ...channel, message: "1" },
             at,
+            approval: {
+              request: "request-1",
+              quote: "#1 1A",
+              source: { ...channel, message: "1" },
+            },
           },
         });
         input = { id: "work-1", action: 1, result: '{"done":true}' };
+      } else if (mode === "route") {
+        f.seed("autopilot:global", {
+          stopAll: at,
+          stopped: {},
+          owner: { channel },
+        });
+        input = { all: true };
+      } else if (mode === "tail") {
+        f.seed("autopilot:work-1", {
+          id: "work-1",
+          pr: 7,
+          url: "https://github.com/example/repo/pull/7",
+          head: "a".repeat(40),
+          mergeCommit: "b".repeat(40),
+          branch: "work-1",
+          named: [],
+          step: "receipt",
+          recorded: {},
+          counters: { actions: 0, records: 0 },
+        });
+        input = { id: "work-1", pr: 7 };
       } else {
         f.seed("autopilot:global", {
           stopped: {},
@@ -225,8 +281,15 @@ test.each([
       f.reject((key) => key === rejected);
       const before = f.snapshot();
       await expect(
-        Promise.resolve().then(() => f.invoke("lane.record", input)),
-      ).rejects.toBeInstanceOf(ForgeFailure);
+        Promise.resolve().then(() =>
+          f.invoke(
+            mode === "route" || mode === "tail" ? "lane.next" : "lane.record",
+            input,
+          ),
+        ),
+      ).rejects.toMatchObject({
+        error: { code: "INPUT_INVALID", message: "INJECTED_WRITE_REFUSAL" },
+      });
       expect(f.snapshot()).toEqual(before);
     } finally {
       await f.close();
