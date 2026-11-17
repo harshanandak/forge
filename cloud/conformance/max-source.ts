@@ -21,7 +21,7 @@ export const TOO_LONG = BODY + "\u0001";
 /** Exactly 65,536 code points of U+20AC: three UTF-8 bytes each but one UTF-16 unit, so a byte count and a unit count differ by two per character. */
 export const WIDE = "€".repeat(65_536);
 /** The fixed clock of the small fixtures, so their rows are the same in every process. */
-export const FROZEN = 1_800_000_000_000;
+export const FROZEN = 1_700_000_000_000;
 export const TITLE = 'Max "quoted" \\ é€';
 export const ACTOR = { kind: "agent", id: "max-source" } as const;
 export const DEVICE = "laptop";

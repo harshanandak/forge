@@ -129,7 +129,11 @@ for (const [phase, code, field, value] of rows)
       else expect(f.state.calls.length).toBeGreaterThan(0);
       if (phase.endsWith("await")) expect(f.state.policyReads).toBe(2);
       const after = f.snapshot();
-      if (field === "write.input.headSha" || field === "write.input.id") {
+      if (
+        field === "write.input.headSha" ||
+        field === "write.input.id" ||
+        (phase === "github-await" && field === "policy" && value === "missing")
+      ) {
         expect(after.tables.domain_cloud_command_receipts!.length).toBe(
           before.tables.domain_cloud_command_receipts!.length + 1,
         );

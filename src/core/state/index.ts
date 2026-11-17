@@ -50,6 +50,7 @@ import {
   checkpointTables,
   assertNoCheckpoint,
   readReplayStart,
+  checkpointFormat,
 } from "./checkpoint.ts";
 
 /** Optional storage capability supplied by trusted assembly; the locked SQL port stays unchanged. */
@@ -631,9 +632,11 @@ export function verifyEventDerivedState(
       "numbered summary from a checkpoint is not supported yet",
     );
   const records = new Map<string, { revision: number; digest: string }>();
+  const historical = new Map<string, { revision: number }>();
   const recordRevisions = new Map<string, number>();
   const leases = new Map<string, LeaseRecord>();
-  const requests = new Set<string>();
+  const leaseSequences = new Map<string, number>();
+  const requests = new Map<string, number>();
   const plans = new Map<string, ReceiptPlan | boolean>();
   const key = (namespace: string, name: string): string =>
     json([namespace, name]);
@@ -685,8 +688,13 @@ export function verifyEventDerivedState(
       plans.set(id, false);
     }
   }
-  for (const [namespace, name, , fingerprint, result] of checkpoint?.receipts ??
-    []) {
+  for (const [
+    namespace,
+    name,
+    sequence,
+    fingerprint,
+    result,
+  ] of checkpoint?.receipts ?? []) {
     const id = key(namespace, name);
     const plan = plans.get(id);
     if (
@@ -696,7 +704,8 @@ export function verifyEventDerivedState(
       `sha256:${plan.result}` !== result
     )
       reject("state_requests", id);
-    requests.add(id);
+    requests.set(id, sequence);
+    if (checkpoint?.leases) continue;
     plans.set(id, true);
   }
   // Two numbers per observed prefix, folded from rows as they are verified: never the events or the keys themselves.
@@ -743,16 +752,32 @@ export function verifyEventDerivedState(
         // A value that is not a floor reserves nothing.
       }
   };
-  let sequence = checkpoint?.coveredSequence ?? 0;
+  const verifyLeaseSeeds = () => {
+    if (checkpoint?.leases && leases.size !== checkpoint.leases.length)
+      reject("state_checkpoint_leases", "covered replay");
+    for (const [namespace, subject, sequence, , body] of checkpoint?.leases ??
+      []) {
+      const id = key(namespace, subject);
+      if (
+        leaseSequences.get(id) !== sequence ||
+        json(leases.get(id)) !== json(parseRestoreJson(body))
+      )
+        reject("state_checkpoint_leases", id);
+    }
+  };
+  const covered = checkpoint?.coveredSequence ?? 0;
+  let sequence = covered;
   for (const row of rows(
     "state_events",
     "sequence,namespace,key,body",
     ["sequence"],
-    checkpoint === undefined ? undefined : [checkpoint.coveredSequence],
+    checkpoint === undefined ? undefined : [checkpoint.leases ? 0 : covered],
   )) {
+    const eventSequence = Number(row.sequence);
+    if (eventSequence < 1) reject("state_events", "sequence");
+    if (eventSequence > covered && sequence === covered) verifyLeaseSeeds();
     const id = rowKey("state_events", row, "key");
-    sequence++;
-    if (row.sequence !== sequence && row.sequence !== BigInt(sequence))
+    if (eventSequence > covered && eventSequence !== ++sequence)
       reject("state_events", id);
     inspect("state_events", id, () => {
       const event = parseRestoreJson(String(row.body)) as StateEvent;
@@ -764,13 +789,18 @@ export function verifyEventDerivedState(
       )
         reject("state_events", id);
 
+      const coveredEvent = eventSequence <= covered;
       if (event.requestId !== undefined) {
         const request = key(event.namespace, event.requestId);
-        if (requests.has(request)) reject("state_requests", request);
-        requests.add(request);
+        if (
+          requests.get(request) !== (coveredEvent ? eventSequence : undefined)
+        )
+          reject("state_requests", request);
+        requests.set(request, eventSequence);
         const plan = plans.get(request);
         if (plan && typeof plan !== "boolean") {
           try {
+            const priorRecords = coveredEvent ? historical : records;
             const result =
               plan.kind === "put"
                 ? {
@@ -792,7 +822,7 @@ export function verifyEventDerivedState(
                     key: event.key,
                     value: event.data,
                     actor: event.actor,
-                    revision: records.get(id)?.revision ?? 0,
+                    revision: priorRecords.get(id)?.revision ?? 0,
                     fence: plan.fence,
                     ...(plan.readSet === undefined
                       ? {}
@@ -815,7 +845,7 @@ export function verifyEventDerivedState(
               event,
               plan,
               revision: (name: string): number =>
-                records.get(key(event.namespace, name))?.revision ?? 0,
+                priorRecords.get(key(event.namespace, name))?.revision ?? 0,
               lease: (subject: string): LeaseRecord | undefined =>
                 leases.get(key(event.namespace, subject)),
             };
@@ -825,6 +855,15 @@ export function verifyEventDerivedState(
             plans.set(request, false);
           }
         }
+      }
+      if (
+        coveredEvent &&
+        (event.type === `${event.namespace}:record.updated@1` ||
+          event.type === `${event.namespace}:record.deleted@1`)
+      ) {
+        if (event.type.endsWith("deleted@1")) historical.delete(id);
+        else historical.set(id, { revision: event.revision });
+        return;
       }
       if (event.type === `${event.namespace}:record.updated@1`) {
         if (event.revision !== (recordRevisions.get(id) ?? 0) + 1)
@@ -965,9 +1004,11 @@ export function verifyEventDerivedState(
         )
           reject("state_leases", id);
         leases.set(id, lease);
+        leaseSequences.set(id, eventSequence);
       }
     });
   }
+  if (sequence === covered) verifyLeaseSeeds();
   if (sequence !== highWaterMark) reject("state_events", "high-water mark");
   for (const [id, highest] of allocator) {
     const [namespace, prefix] = JSON.parse(id) as [string, string];
@@ -1083,7 +1124,7 @@ export function verifyEventDerivedState(
     ["namespace", "request_id"],
     verifyRequest,
   );
-  if (requests.size) reject("state_requests", requests.values().next().value!);
+  if (requests.size) reject("state_requests", requests.keys().next().value!);
   if (numbered === undefined) return undefined;
   const summary = (prefix: string): NumberedSummary => ({
     ...tally.get(prefix)!,
@@ -2261,14 +2302,13 @@ export class StateOwner {
           invalid(`Snapshot version ${String(row.id)}; newest known ${newest}`);
       if (!applied.some((row) => row.id === baseline.id))
         invalid("Missing baseline");
-      if (
-        !applied.some((row) => row.id === "007_record_checkpoint") ||
-        Number(
+      if (applied.some((row) => row.id === "004_state_checkpoint"))
+        checkpointFormat(
           candidate.get(
             "SELECT format_version FROM state_checkpoint_header WHERE id=1",
           )?.format_version,
-        ) !== 2
-      )
+        );
+      if (!applied.some((row) => row.id === "007_record_checkpoint"))
         assertNoCheckpoint(candidate);
       assertRegistered(candidate);
       if (migrated && signature(candidate) !== expected)

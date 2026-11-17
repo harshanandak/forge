@@ -65,9 +65,9 @@ jobs:
           if baseline.returncode: print(baseline.stdout + baseline.stderr)
           assert baseline.returncode == 0, "unmodified state journeys must pass before mutation"
           rows = [
-              ("outer transaction", "cloud/src/command-write.ts", "return db.transaction(() => {", "return ((run: () => Result) => run())(() => {", "state commit transaction fault table: receipt"),
+              ("outer transaction", "cloud/src/issue-receipts.ts", "const value = db.transaction(() => {", "const value = ((run: () => T | undefined) => run())(() => {", "state commit transaction fault table: receipt"),
               ("namespace denial", "cloud/src/state-access.ts", 'namespace === "forge/work" ||', "false ||", "state commit conflict table: namespace"),
-              ("final token", "cloud/src/command-write.ts", "    // No await separates this token check from the work and receipt commit.\n    recheck();", "", "state commit final authority table: final revoke"),
+              ("final token", "cloud/src/issue-receipts.ts", "    recheck();", "", "state commit final authority table: final revoke"),
               ("replay fence", "cloud/src/state-commit.ts", "    () => checkFence(),\n  );", "    undefined,\n  );", "state commit final authority table: replay expired"),
               ("final fence forwarding", "cloud/src/state-commit.ts", "        ...(fence === undefined ? {} : { fence }),", "", "state commit final authority table: transaction expiry"),
               ("read version", "cloud/src/state-commit.ts", "expected.epoch !== epoch || expected.revision !== revision", "false", "state commit conflict table: phantom"),

@@ -206,6 +206,29 @@ async function fixture(
   };
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
+function expectRefusalOnly(
+  before: string,
+  after: string,
+  reply: ResultEnvelope,
+) {
+  if (reply.ok) throw new Error("Expected a refusal");
+  const prior = JSON.parse(before) as unknown[];
+  const current = JSON.parse(after) as unknown[];
+  const oldRows = prior[4] as { request_id: string }[];
+  const newRows = current[4] as {
+    request_id: string;
+    outcome: string;
+    result: string;
+  }[];
+  const added = newRows.filter(
+    (row) => !oldRows.some((old) => old.request_id === row.request_id),
+  );
+  expect(added).toHaveLength(1);
+  expect(added[0]!.outcome).toBe("refused");
+  expect(JSON.parse(added[0]!.result)).toEqual(reply.error);
+  current[4] = newRows.filter((row) => row !== added[0]);
+  expect(JSON.stringify(current)).toBe(before);
+}
 const control = (f: Fixture, id?: string) =>
   f.send(call("lane.control", id === undefined ? {} : { id }));
 const stopped = (epoch: number, scope: string) => ({
@@ -577,7 +600,9 @@ test.each(["running", "global stop", "foreign route", "device cap", "expired"])(
         code === "INPUT_CONFLICT" ? 4 : 1,
       ]);
       if (code === "APPROVAL_REQUIRED") expect(reply.status).toBe(409);
-      if (mode !== "expired") expect(f.snapshot()).toBe(before);
+      if (mode === "device cap")
+        expectRefusalOnly(before, f.snapshot(), reply.envelope);
+      else if (mode !== "expired") expect(f.snapshot()).toBe(before);
       if (mode === "expired")
         expect(reply.envelope).toMatchObject({
           result: { expiresAt: new Date(now + 1_200_000).toISOString() },
@@ -613,7 +638,9 @@ test.each(["audit", "receipt", "approval", "approval receipt"])(
           : call("lane.stop", { id: "work-7" }),
       );
       expect(reply.envelope.ok).toBe(false);
-      expect(f.snapshot()).toBe(before);
+      if (where === "audit")
+        expectRefusalOnly(before, f.snapshot(), reply.envelope);
+      else expect(f.snapshot()).toBe(before);
     } finally {
       f.close();
     }
@@ -667,14 +694,13 @@ test.each(["project cap", "expired", "epoch", "incarnation", "retention"])(
         }
         const token = await f.admit("overflow");
         const admitted = f.snapshot();
-        expect(
-          (
-            await f.send(call("lane.resume", { all: true }, "overflow"), "p", {
-              authorization: `Bearer ${token}`,
-            })
-          ).verdict,
-        ).toEqual(["FAIL", "UNAVAILABLE", 1]);
-        expect(f.snapshot()).toBe(admitted);
+        const overflow = await f.send(
+          call("lane.resume", { all: true }, "overflow"),
+          "p",
+          { authorization: `Bearer ${token}` },
+        );
+        expect(overflow.verdict).toEqual(["FAIL", "UNAVAILABLE", 1]);
+        expectRefusalOnly(admitted, f.snapshot(), overflow.envelope);
         expect(rows()).toHaveLength(64);
       } else if (mode === "retention") {
         for (let i = 1; i <= 66; i++) {
