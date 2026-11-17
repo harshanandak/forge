@@ -203,6 +203,25 @@ test("a stop audit refusal identifies the first offending event sequence", () =>
     reason: "stop audit suffix",
   });
 });
+test.each(["all", "audit"] as const)(
+  "missing %s events identify the first expected event, never a surviving neighbor",
+  (kind) => {
+    const sample = fixture();
+    const events = sample.actual.state_events!;
+    const expected = String(
+      events[kind === "all" ? 0 : events.length - 1]!.sequence,
+    );
+    if (kind === "all") events.splice(0);
+    else events.pop();
+    const result = refusal(sample.before, sample.actual, sample.window);
+    expect(result.observed.failure).toEqual({
+      table: "state_events",
+      key: [expected],
+      reason: "missing row",
+    });
+    expect(result.observed.tables.state_events.actual.rows).toBe(events.length);
+  },
+);
 test("foreign exceptions are not serialized as comparison details", () => {
   expect(
     api.practiceComparisonRefusal(
