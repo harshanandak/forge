@@ -17,6 +17,7 @@ import type { DeviceBrowserOptions } from "../../cloud/src/auth/device-browser.t
 import { LaneControlStore } from "../../cloud/src/lane-control-store.ts";
 import { LANE_APPROVALS } from "../../cloud/src/lane-approval.ts";
 import { LANE_BROWSER } from "../../cloud/src/auth/lane-browser.ts";
+import { ISSUE_INDEX } from "../../cloud/src/issue-index.ts";
 import { issueToken, sha256 } from "../../cloud/src/tokens.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { digestValue } from "../../src/core/config/pointer.ts";
@@ -120,7 +121,7 @@ export function snapshot(db: SqlDatabase) {
     .map(({ name }) => [
       name,
       db.all(
-        `SELECT * FROM "${String(name).replaceAll('"', '""')}" ORDER BY rowid`,
+        `SELECT * FROM "${String(name).replaceAll('"', '""')}" ORDER BY ${name === ISSUE_INDEX ? "key" : "rowid"}`,
       ),
     ]);
 }

@@ -75,7 +75,7 @@ export async function fixture(
   databases.push(db);
   let unreadable = false;
   const { storage, values } = browserStorage(db, (sql) => {
-    if (unreadable && sql.includes("COUNT(*) AS n"))
+    if (unreadable && /COUNT\(\*\) AS n|rows AS n/.test(sql))
       throw new Error("injected usage read failure");
   });
   const dump =
