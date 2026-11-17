@@ -45,6 +45,8 @@ export interface CredentialStore {
   lookup(key: CredentialKey, nowMs: number): DeviceCredential | undefined;
   associations(identity: string): readonly CredentialKey[];
   save(entry: CredentialEntry): Promise<void>;
+  /** The removed entry's token id, or undefined when the key held none; other entries are kept. */
+  remove(key: CredentialKey): Promise<string | undefined>;
 }
 export interface CredentialStoreOptions {
   /** Pauses between attempts to take the file lock. */
@@ -321,10 +323,7 @@ export function credentialStore(
         .map(({ origin, project }) => ({ origin, identity, project }));
     },
     async save(entry) {
-      const held = await lock();
-      try {
-        const previous = files.read(CREDENTIAL_FILE);
-        const saved = previous === undefined ? {} : parseFile(previous);
+      await commit((saved) => {
         // The target was chosen before the wait for approval. Another login may have saved a different
         // origin or project for this identity since, so the choice is checked again under the lock; a
         // loser leaves the store with the winner's association only.
@@ -339,35 +338,61 @@ export function credentialStore(
           throw conflict(
             "Another login already saved this project's credential for a different Forge cloud origin or project",
           );
-        const merged = {
+        return {
           ...saved,
           [keyOf(entry)]: parseEntry(keyOf(entry), entry),
         };
-        const text = serialize(merged);
-        if (Buffer.byteLength(text) > FILE_LIMIT) throw integrity();
-        parseFile(text);
-        try {
-          files.write(CREDENTIAL_FILE, text);
-          if (files.read(CREDENTIAL_FILE) !== text) throw integrity();
-        } catch (error) {
-          // A write can fail after the rename, so recovery looks at what is on disk, not at whether
-          // the write reported success.
-          if (previous !== undefined) recover(previous);
-          throw error;
-        }
-      } catch (error) {
-        throw error instanceof ForgeFailure
-          ? error
-          : new ForgeFailure({
-              code: "UNAVAILABLE",
-              message: "The cloud credential could not be saved",
-              retry: "never",
-            });
-      } finally {
-        held.release();
-      }
+      });
+    },
+    async remove(key) {
+      let removed: string | undefined;
+      await commit((saved) => {
+        const found = saved[keyOf(key)];
+        if (found === undefined) return undefined;
+        removed = found.id;
+        return Object.fromEntries(
+          Object.entries(saved).filter(([name]) => name !== keyOf(key)),
+        );
+      });
+      return removed;
     },
   };
+
+  /** One locked change to the file: the same checked write and read back, with the previous bytes restored on failure. `undefined` leaves the file alone. */
+  async function commit(
+    change: (
+      saved: Record<string, CredentialEntry>,
+    ) => Record<string, CredentialEntry> | undefined,
+  ): Promise<void> {
+    const held = await lock();
+    try {
+      const previous = files.read(CREDENTIAL_FILE);
+      const next = change(previous === undefined ? {} : parseFile(previous));
+      if (next === undefined) return;
+      const text = serialize(next);
+      if (Buffer.byteLength(text) > FILE_LIMIT) throw integrity();
+      parseFile(text);
+      try {
+        files.write(CREDENTIAL_FILE, text);
+        if (files.read(CREDENTIAL_FILE) !== text) throw integrity();
+      } catch (error) {
+        // A write can fail after the rename, so recovery looks at what is on disk, not at whether
+        // the write reported success.
+        if (previous !== undefined) recover(previous);
+        throw error;
+      }
+    } catch (error) {
+      throw error instanceof ForgeFailure
+        ? error
+        : new ForgeFailure({
+            code: "UNAVAILABLE",
+            message: "The cloud credential could not be saved",
+            retry: "never",
+          });
+    } finally {
+      held.release();
+    }
+  }
 
   /**
    * Put the previous valid document back. The restore goes through the same checked write as any other
@@ -479,6 +504,15 @@ export function writeBinding(
   )
     return "unchanged";
   throw conflict(`${BINDING_PATH} already binds this project elsewhere`);
+}
+
+/** Delete the binding file; the caller has already read it. */
+export function removeBinding(root: string): void {
+  try {
+    nodeConfigFiles(root).remove(BINDING_PATH);
+  } catch {
+    throw invalidInput(`${BINDING_PATH} could not be removed safely`);
+  }
 }
 
 /** The origin and project a login targets, or a refusal when it would change an established binding. */

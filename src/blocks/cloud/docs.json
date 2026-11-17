@@ -11,6 +11,15 @@
           "command": "forge auth login"
         }
       ]
+    },
+    "cloud.logout": {
+      "title": "Log out of Forge cloud",
+      "summary": "Unbind this checkout from its Forge cloud project: removes this project's saved credential, then .forge/cloud.json, so the checkout uses the local store again. Other projects' credentials are kept. The device token is not revoked on the server. Never prints the token.",
+      "examples": [
+        {
+          "command": "forge auth logout"
+        }
+      ]
     }
   }
 }

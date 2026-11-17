@@ -40,7 +40,7 @@ assembly.
 against one Forge cloud project over HTTPS, saves the credential in the private `~/.forge/cloud` file and writes
 the project's `.forge/cloud.json` binding last. It requires the `files:write` and `external:forge-cloud`
 effects on the current operation, follows the invocation's cancellation and deadline, and never returns the token.
-It sends no bearer token and follows no redirect.
+It sends no bearer token and follows no redirect. It also supplies `logout(input)`, which needs only `files:write`.
 
 ## Process
 

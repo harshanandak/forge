@@ -695,33 +695,39 @@ export function createAssemblyProviders(
       };
     },
     cloudLogin(scope) {
-      return {
-        login(input) {
+      const open = (needs: readonly string[]) => {
+        active(scope);
+        for (const effect of needs)
+          if (!scope.effects.includes(effect))
+            refuse("EFFECT_UNDECLARED", `Cloud login requires ${effect}`);
+        if (options.deviceRoot === undefined)
+          refuse("UNAVAILABLE", "Cloud login requires a device folder");
+        // Loaded here, so only a login pays for the cloud client. The refusals above stay synchronous.
+        const deviceRoot = options.deviceRoot;
+        return loadCloudLogin().then(({ createCloudLogin }) => {
+          // The load takes time, and a cancelled or expired call must not read or write device files.
           active(scope);
-          for (const effect of ["files:write", "external:forge-cloud"])
-            if (!scope.effects.includes(effect))
-              refuse("EFFECT_UNDECLARED", `Cloud login requires ${effect}`);
-          if (options.deviceRoot === undefined)
-            refuse("UNAVAILABLE", "Cloud login requires a device folder");
-          // Loaded here, so only a login pays for the cloud client. The refusals above stay synchronous.
-          const deviceRoot = options.deviceRoot;
-          return loadCloudLogin().then(({ createCloudLogin }) => {
-            // The load takes time, and a cancelled or expired call must not read or write device files.
-            active(scope);
-            return createCloudLogin({
-              // The checkout root, so a call from a nested folder reads and writes the same files.
-              root: projectManifestRoot(root),
-              home: env.HOME ?? env.USERPROFILE,
-              deviceRoot,
-              env,
-              ...(scope.effects.includes("external:process")
-                ? { browser: createDesktopLauncher() }
-                : {}),
-              signal: scope.signal,
-              ...options.cloudLogin,
-            }).login(input);
+          return createCloudLogin({
+            // The checkout root, so a call from a nested folder reads and writes the same files.
+            root: projectManifestRoot(root),
+            home: env.HOME ?? env.USERPROFILE,
+            deviceRoot,
+            env,
+            ...(scope.effects.includes("external:process")
+              ? { browser: createDesktopLauncher() }
+              : {}),
+            signal: scope.signal,
+            ...options.cloudLogin,
           });
-        },
+        });
+      };
+      return {
+        login: (input) =>
+          open(["files:write", "external:forge-cloud"]).then((service) =>
+            service.login(input),
+          ),
+        logout: (input) =>
+          open(["files:write"]).then((service) => service.logout(input)),
       };
     },
     runnerOutput(scope: ServiceScope): RunnerOutputPort {
