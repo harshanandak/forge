@@ -298,6 +298,7 @@ for (const [message, code] of limits) {
             }
             expect(failed).toBe(1);
             expect(f.values.get("provisioned")).not.toBe(true);
+            expect(f.values.has("restore:next")).toBe(true);
             unavailable = false;
             if (cold) project = new Project({ storage }, env);
             for (const page of pages) {
