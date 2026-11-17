@@ -31,7 +31,7 @@ const count = { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER };
 const positive = { ...count, minimum: 1 };
 const time = { $ref: "common.json#/$defs/Timestamp" };
 const holder = { $ref: "state.json#/$defs/LeaseHolder" };
-const id = { type: "string", pattern: "^work-[0-9]+$" };
+const id = { type: "string", pattern: "^work-[0-9]+(?![\\s\\S])" };
 const attempt = tracker.$defs.Attempt.properties.id;
 const reason = {
   ...nonempty,
@@ -94,8 +94,9 @@ const nonblankFields = (schema: SchemaObject) => ({
   allOf: [schema, { additionalProperties: nonempty }],
 });
 const replySource = nonblankFields(record.properties.source);
+const request = record.properties.request;
 const approval = object({
-  request: record.properties.request,
+  request,
   quote: record.properties.reply,
   source: replySource,
 });
@@ -108,10 +109,10 @@ const ask = object(
     options: { type: "array", minItems: 2, items: askOption },
     default: text,
     urgent: text,
-    gated: object(
-      { op: nonempty, input: { type: "object" }, request: nonempty },
-      ["op", "input"],
-    ),
+    gated: object({ op: nonempty, input: { type: "object" }, request }, [
+      "op",
+      "input",
+    ]),
     queuedAt: time,
     status: { enum: ["queued", "sent", "answered", "held", "done"] },
     batch: count,
@@ -163,7 +164,15 @@ const runtimeFamilies: Record<string, Family> = {
       },
       ["reason", "holder"],
     ),
-    rules: [numbered, trimmed],
+    rules: [
+      numbered,
+      trimmed,
+      (value) =>
+        value.claimReason === undefined ||
+        primitives.validReason(value.claimReason)
+          ? undefined
+          : "WORK_VALUE_SHAPE",
+    ],
   },
   attempt: {
     key: /^attempt:work-[0-9]+:attempt-[1-9][0-9]*$/,
@@ -267,7 +276,7 @@ const runtimeFamilies: Record<string, Family> = {
         head: commit,
         mergeCommit: commit,
         branch: nonempty,
-        named: { type: "array", items: text },
+        named: { type: "array", items: id },
         step: { enum: [...step.enum, "done"] },
         action: object({ n: positive, step, target: text }, ["n", "step"]),
         receipt: text,
@@ -333,6 +342,15 @@ const runtimeFamilies: Record<string, Family> = {
       },
       ["stopped"],
     ),
+    rules: [
+      (value) => {
+        const quote = (value.resumed as { quote?: string } | undefined)?.quote;
+        return quote === undefined ||
+          quote.length <= record.properties.reply.maxLength
+          ? undefined
+          : "WORK_VALUE_SHAPE";
+      },
+    ],
   },
   "autopilot-clock": {
     key: /^autopilot-clock:work-[0-9]+$/,

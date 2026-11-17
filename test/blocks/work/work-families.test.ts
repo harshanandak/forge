@@ -450,6 +450,11 @@ test("the work policy binds the same family definitions to the generic owner", a
 test.each([
   ["journal closing target", "autopilot", { named: ["not-an-id"] }],
   [
+    "journal target with a trailing newline",
+    "autopilot",
+    { named: ["work-1\n"] },
+  ],
+  [
     "gated request id",
     "autopilot-ask",
     {
@@ -466,6 +471,11 @@ test.each([
     "autopilot-global",
     { resumed: { at: stamp, scope: "all", quote: "x".repeat(2001) } },
   ],
+  [
+    "resume Unicode quote UTF-16 bound",
+    "autopilot-global",
+    { resumed: { at: stamp, scope: "all", quote: "😀".repeat(1001) } },
+  ],
 ] as const)(
   "the declaration refuses the reviewed %s input",
   (_name, family, patch) => {
@@ -474,6 +484,19 @@ test.each([
     eq(
       work.validateDeclaredWorkRecord(key, { ...(value as object), ...patch }),
       "WORK_VALUE_SHAPE",
+    );
+  },
+);
+
+test.each(["x".repeat(2000), "😀".repeat(1000)])(
+  "resume quote admits the writer's exact UTF-16 boundary",
+  (quote) => {
+    eq(
+      work.validateDeclaredWorkRecord("autopilot:global", {
+        stopped: {},
+        resumed: { at: stamp, scope: "all", quote },
+      }),
+      undefined,
     );
   },
 );
