@@ -8,6 +8,8 @@ import type { StateClient } from "../../ports/state.ts";
 import type { StateRecord } from "../../generated/types.ts";
 import type { GitScope } from "../../assembly/providers.ts";
 import { validGitScope } from "../../assembly/saved-git-scope.ts";
+import { boundLaneKey, type BoundProject } from "./record-primitives.ts";
+export { boundLaneKey, type BoundProject } from "./record-primitives.ts";
 
 export function validBoundHead(value: unknown): value is string {
   return (
@@ -15,11 +17,6 @@ export function validBoundHead(value: unknown): value is string {
   );
 }
 
-export interface BoundProject {
-  readonly origin: string;
-  readonly identity: string;
-  readonly project: string;
-}
 export interface BoundProgress {
   generation: number;
   actions: number;
@@ -101,32 +98,6 @@ export interface BoundLaneRecord {
   readonly releaseRequestId?: string;
   readonly progress?: BoundProgress;
 }
-export const boundLaneKey = (project: BoundProject, id = "") =>
-  `bound-lane:${JSON.stringify([project.origin, project.identity, project.project])}:${id}`;
-const serializedString = String.raw`"(?:[^"\\\u0000-\u001f\uD800-\uDFFF]|\\(?:["\\bfnrt]|u00(?:0[0-7bef]|1[0-9a-f])|ud[89ab][0-9a-f]{2}(?!\\ud[c-f][0-9a-f]{2})|ud[c-f][0-9a-f]{2}))*"`;
-export const boundLanePattern: RegExp = new RegExp(
-  `^bound-lane:\\[${serializedString},${serializedString},${serializedString}\\]:work-[0-9]+$`,
-  "u",
-);
-export function readBoundLaneKey(
-  key: string,
-): (BoundProject & { id: string }) | undefined {
-  if (boundLanePattern.exec(key)?.[0] !== key) return;
-  const id = key.slice(key.lastIndexOf(":") + 1);
-  const tuple: unknown = JSON.parse(key.slice(11, key.lastIndexOf(":")));
-  if (
-    !Array.isArray(tuple) ||
-    tuple.length !== 3 ||
-    !tuple.every(
-      (part) => typeof part === "string" && !/[\p{Cc}\p{Cf}]/u.test(part),
-    )
-  )
-    return;
-  const [origin, identity, project] = tuple as [string, string, string];
-  const value = { origin, identity, project, id };
-  return boundLaneKey(value, id) === key ? value : undefined;
-}
-
 /** Corrupt device state is diagnostic evidence, never an invitation to initialize over it. */
 export function readBoundLane(value: unknown, id: string): BoundLaneRecord {
   const record = value as Partial<BoundLaneRecord> | null;
@@ -197,12 +168,9 @@ export function writeBoundLane(
   value: BoundLaneRecord,
   expectRevision: number,
 ): StateRecord {
-  const key = boundLaneKey(project, value.id);
-  if (!readBoundLaneKey(key))
-    throw new ForgeFailure({
-      code: "INPUT_INVALID",
-      message: "WORK_VALUE_KEY",
-      retry: "never",
-    });
-  return state.put(key, readBoundLane(value, value.id), { expectRevision });
+  return state.put(
+    boundLaneKey(project, value.id),
+    readBoundLane(value, value.id),
+    { expectRevision },
+  );
 }
