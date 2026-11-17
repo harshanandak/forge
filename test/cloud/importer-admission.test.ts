@@ -6,7 +6,9 @@ import { imageDigests } from "../../tools/import-current.ts";
 import {
   validateDeclaredWorkRecord,
   workFamilyDeclarations,
+  workFamilyPolicy,
 } from "../../src/blocks/work/state-families.ts";
+import { StateOwner } from "../../src/core/state/index.ts";
 import { limitsFrom, restorePage } from "../../cloud/src/dump.ts";
 import { domain } from "../../cloud/src/project.ts";
 import * as f from "./import-current-state.fixture.ts";
@@ -79,19 +81,23 @@ test("154 one-time close repairs retain 8066 records and all six paged readback 
         f.actor,
         { expectRevision: 1 },
       );
-    state.put(
+    state.putNext(
       f.ns,
-      "comment:work-1:1",
-      { id: "work-1", body: "valid comment" },
+      "comment:work-1:",
+      () => ({ value: { id: "work-1", body: "valid comment" } }),
       f.actor,
-      { expectRevision: 0 },
     );
-    state.put(
+    state.putNext(
       f.ns,
-      "link:work-1:1",
-      { id: "work-1", relation: "reference", url: "https://example.com/one" },
+      "link:work-1:",
+      () => ({
+        value: {
+          id: "work-1",
+          relation: "reference",
+          url: "https://example.com/one",
+        },
+      }),
       f.actor,
-      { expectRevision: 0 },
     );
     state.delete(f.ns, "issue:work-8062", f.actor, { expectRevision: 1 });
     state.delete(f.ns, "issue:work-8063", f.actor, { expectRevision: 1 });
@@ -100,13 +106,7 @@ test("154 one-time close repairs retain 8066 records and all six paged readback 
   f.owner(scratch).initialize();
   const projected = currentState(source.db, scratch, source.manifest, limits);
   expect(projected.records).toBe(8066);
-  expect(
-    (
-      projected as unknown as {
-        repaired: { records: number; historicalUpdates: number };
-      }
-    ).repaired,
-  ).toEqual({ records: 154, historicalUpdates: 154 });
+  expect(projected.repaired).toEqual({ records: 154, historicalUpdates: 154 });
   for (const record of f.owner(scratch).list(f.ns)) {
     expect(
       validateDeclaredWorkRecord(record.key, record.value),
@@ -118,7 +118,7 @@ test("154 one-time close repairs retain 8066 records and all six paged readback 
       expect(record.value).toHaveProperty("withoutReceipt", repair);
   }
   const target = f.cloudDatabase(),
-    owner = f.owner(target);
+    owner = new StateOwner(target, { now: () => f.at }, [workFamilyPolicy]);
   owner.initialize([domain]);
   for (const page of pagesOf(scratch, limits))
     restorePage(target, owner, page, limits);
@@ -128,11 +128,7 @@ test("154 one-time close repairs retain 8066 records and all six paged readback 
 });
 
 test("all declared work families have an explicit import or acknowledged local disposition", () => {
-  const dispositions = (
-    importer as unknown as {
-      importDispositions: Record<string, { convert: boolean; reason: string }>;
-    }
-  ).importDispositions;
+  const dispositions = importer.importDispositions;
   expect(dispositions).toBeDefined();
   expect(Object.keys(dispositions).sort()).toEqual(
     Object.keys(workFamilyDeclarations).sort(),
