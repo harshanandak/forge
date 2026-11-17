@@ -186,6 +186,7 @@ function wellFormedText(value: string, position: string): void {
 }
 /** The longest stored floor text accepted: the wrapper of a two-field value is well under this. */
 const FLOOR_TEXT_MAX = 4096;
+const EVENT_RESERVE_BYTES = 1048576;
 /** The stored floor's number; any value that is not the exact floor shape is refused, never read as zero. */
 export function floorNumber(value: unknown, prefix: string): number {
   const number = allocationFloorNumber(value, prefix);
@@ -1313,7 +1314,7 @@ export class StateOwner {
     )
       invalid("Invalid compaction budget");
     keepRows = Math.min(keepRows, 8191);
-    keepBytes = Math.min(keepBytes, 8388607);
+    keepBytes = Math.min(keepBytes, 8388608 - EVENT_RESERVE_BYTES);
     const usage = this.#db.get(
       "SELECT rows,bytes FROM state_usage WHERE table_name='state_events'",
     );
@@ -2463,6 +2464,14 @@ export class StateOwner {
   releaseRestoredLeases(pageSize: number = restorePageSize): number {
     const at = new Date(this.#now()).toISOString();
     return this.#db.transaction(() => {
+      const archived = Number(
+        this.#db.get(
+          "SELECT archive_through FROM state_checkpoint_header WHERE id=1",
+        )?.archive_through ?? 0,
+      );
+      this.#db.run(
+        "UPDATE state_checkpoint_header SET archive_through=0 WHERE id=1",
+      );
       let releasedCount = 0;
       // Only body changes below, never the (namespace, subject) keyset, so paging stays exact.
       for (const row of restoredRows(
@@ -2498,6 +2507,10 @@ export class StateOwner {
         this.#event(event);
         releasedCount++;
       }
+      this.#db.run(
+        "UPDATE state_checkpoint_header SET archive_through=? WHERE id=1",
+        [archived],
+      );
       return releasedCount;
     });
   }

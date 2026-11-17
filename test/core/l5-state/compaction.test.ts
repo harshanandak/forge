@@ -237,6 +237,66 @@ test("the hard byte limit rolls back a write until maintenance retires the pendi
   }
 });
 
+const nearByteLimit = (owner: StateOwner, db: SqlDatabase, target: number) => {
+  for (let i = 0; i < 84; i++)
+    owner.put(ns, "large", "x".repeat(100_000), actor, { expectRevision: i });
+  owner.acquire(ns, "held", holder, 60_000, "held");
+  expect(compact(owner, 1, 84, 8388608)).toBe(1);
+  const bytes = Number(
+    db.get("SELECT bytes FROM state_usage WHERE table_name='state_events'")
+      ?.bytes,
+  );
+  owner.put(ns, "fill", "x".repeat(target - bytes - 400), actor, {
+    expectRevision: 0,
+  });
+};
+
+test("maintenance at the byte boundary always frees room for a full event", async () => {
+  const s = await fixture();
+  try {
+    s.owner.initialize();
+    nearByteLimit(s.owner, s.db, 8_380_000);
+    const bytes = Number(
+      s.db.get("SELECT bytes FROM state_usage WHERE table_name='state_events'")
+        ?.bytes,
+    );
+    expect(bytes).toBeGreaterThan(8_368_608);
+    expect(bytes).toBeLessThanOrEqual(8_388_607);
+    const large = "x".repeat(20_000);
+    expect(() =>
+      s.owner.put(ns, "next", large, actor, { expectRevision: 0 }),
+    ).toThrow(/MAINTENANCE_REQUIRED/);
+    expect(compact(s.owner, 1, 8192, 8388608)).toBe(1);
+    expect(
+      s.owner.put(ns, "next", large, actor, { expectRevision: 0 }).revision,
+    ).toBe(1);
+  } finally {
+    await s.close();
+  }
+});
+
+test("an image exported at the byte boundary restores and releases its leases", async () => {
+  const s = await fixture(),
+    target = await fixture();
+  try {
+    s.owner.initialize();
+    nearByteLimit(s.owner, s.db, 8_380_000);
+    for (let i = 0; i < 200; i++) {
+      try {
+        s.owner.put(ns, `tiny:${i}`, 0, actor, { expectRevision: 0 });
+      } catch {
+        break;
+      }
+    }
+    target.owner.initialize();
+    target.owner.restore(s.owner.export(), undefined, 1);
+    expect(target.owner.lease(ns, "held")?.releasedAt).toBeDefined();
+    expect(compact(target.owner, 1, 8192, 8388608)).toBe(1);
+  } finally {
+    await s.close();
+    await target.close();
+  }
+});
 test("checkpoint commitments and mutation costs scale with bounded prefixes", async () => {
   const s = await fixture();
   try {
