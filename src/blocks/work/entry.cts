@@ -4,6 +4,7 @@ import type {
   TrackerOperations,
 } from "../../contract/author.ts";
 import type { LeaseStateClient } from "../../assembly/state-client.ts";
+import type { BatchEntry } from "../../ports/state.ts";
 const {
   isCommit,
   validReceipt,
@@ -580,6 +581,159 @@ function canonical(value: unknown): string {
       .map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`)
       .join(",")}}`;
   return JSON.stringify(value) ?? "undefined";
+}
+function copyPlanned<T>(value: T, seen = new Map<object, object>()): T {
+  if (value === null || typeof value !== "object") return value;
+  const old = seen.get(value);
+  if (old) return old as T;
+  if (
+    !Array.isArray(value) &&
+    Object.prototype.toString.call(value) !== "[object Object]"
+  )
+    return value;
+  const copied: object = Array.isArray(value)
+    ? new Array<unknown>(value.length)
+    : (Object.create(Object.getPrototypeOf(value) as object | null) as object);
+  seen.set(value, copied);
+  for (const key of Object.keys(value))
+    Object.defineProperty(copied, key, {
+      value: copyPlanned(Reflect.get(value, key) as unknown, seen),
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+  return copied as T;
+}
+function atomicRuntime<Input, Output>(
+  handler: (call: HandlerCall<Input>) => Output,
+): (call: HandlerCall<Input>) => Output {
+  return (call) => {
+    let planned: LeaseStateClient | undefined;
+    let finish = () => {};
+    const open = (): LeaseStateClient => {
+      if (planned) return planned;
+      const state = client(call.services);
+      const entries = new Map<string, BatchEntry>();
+      const records = new Map<string, StateRecord>();
+      const reads = new Map<string, number>();
+      let subject: string | undefined;
+      let explicitBatch = false;
+      const constraints = (
+        options: Parameters<LeaseStateClient["putMany"]>[1],
+      ) => {
+        if (options?.subject !== undefined) {
+          if (subject !== undefined && subject !== options.subject)
+            return fail(
+              "CONTEXT_MISSING",
+              "A runtime batch has one lease subject",
+            );
+          subject = options.subject;
+        }
+        for (const read of options?.readSet ?? []) {
+          const staged = entries.get(read.key);
+          if (staged && records.get(read.key)?.revision !== read.expectRevision)
+            return fail(
+              "REVISION_CONFLICT",
+              "Runtime staged read revision changed",
+            );
+          const revision = staged?.expectRevision ?? read.expectRevision;
+          if (reads.has(read.key) && reads.get(read.key) !== revision)
+            return fail(
+              "REVISION_CONFLICT",
+              "Runtime candidate read revisions differ",
+            );
+          reads.set(read.key, revision);
+        }
+      };
+      const draft: LeaseStateClient = {
+        ...state,
+        get: (key) => copyPlanned(records.get(key) ?? state.get(key)),
+        list: (prefix = "") => {
+          const found = new Map(
+            state.list(prefix).map((row) => [row.key, row]),
+          );
+          for (const [key, record] of records)
+            if (key.startsWith(prefix)) found.set(key, record);
+          return copyPlanned(
+            [...found.values()].sort((a, b) =>
+              a.key < b.key ? -1 : a.key > b.key ? 1 : 0,
+            ),
+          );
+        },
+        put: (key, value, options) => {
+          const prior = draft.get(key);
+          if ((prior?.revision ?? 0) !== options.expectRevision)
+            return fail(
+              "REVISION_CONFLICT",
+              "Runtime candidate revision changed",
+            );
+          constraints(options);
+          entries.set(key, {
+            key,
+            value: copyPlanned(value),
+            expectRevision:
+              entries.get(key)?.expectRevision ?? options.expectRevision,
+          });
+          const record: StateRecord = {
+            namespace: "forge/work",
+            key,
+            value: copyPlanned(value),
+            revision: (prior?.revision ?? 0) + 1,
+            updatedAt: new Date(state.now()).toISOString(),
+            updatedBy: prior?.updatedBy ?? { kind: "agent", id: "planned" },
+          };
+          records.set(key, record);
+          return copyPlanned(record);
+        },
+        putMany: (values, options) => {
+          constraints(options);
+          explicitBatch = true;
+          return values.map((entry) =>
+            draft.put(entry.key, entry.value, entry),
+          );
+        },
+      };
+      finish = () => {
+        if (!entries.size && !explicitBatch) return;
+        const accepted = state.putMany([...entries.values()], {
+          ...(subject === undefined ? {} : { subject }),
+          readSet: [...reads].map(([key, expectRevision]) => ({
+            key,
+            expectRevision,
+          })),
+        });
+        if (accepted.length !== entries.size)
+          fail("INTERNAL", "Runtime batch readback omitted a record");
+        for (const record of accepted) checked(state, record);
+      };
+      planned = draft;
+      return draft;
+    };
+    const original =
+      call.services !== null && typeof call.services === "object"
+        ? call.services
+        : null;
+    const services = Object.create(
+      original === null
+        ? null
+        : (Object.getPrototypeOf(original) as object | null),
+      {
+        ...Object.getOwnPropertyDescriptors(original ?? {}),
+        state: { get: open, enumerable: true },
+      },
+    ) as object;
+    const result = handler({
+      ...call,
+      services,
+    });
+    if (result instanceof Promise)
+      return result.then((value: unknown) => {
+        finish();
+        return value;
+      }) as Output;
+    finish();
+    return result;
+  };
 }
 function persist(
   state: LeaseStateClient,
@@ -4271,11 +4425,11 @@ function laneRecord(call: HandlerCall<TailRecordInput>):
 const operations: Operations<WorkOperations> = {
   "lane.control": () =>
     fail("UNAVAILABLE", "Lane control requires a cloud-bound project"),
-  "lane.next": (call) => laneNext(call),
-  "lane.stop": (call) => laneStop(call),
-  "lane.resume": (call) => laneResume(call),
+  "lane.next": atomicRuntime(laneNext),
+  "lane.stop": atomicRuntime(laneStop),
+  "lane.resume": atomicRuntime(laneResume),
   "lane.status": (call) => laneStatus(call),
-  "lane.record": (call) => laneRecord(call),
+  "lane.record": atomicRuntime(laneRecord),
   "lane.show": ({ input, services, config }) => {
     const state = client(services),
       ids = idsFor(state, config);

@@ -93,6 +93,10 @@ async function fixture() {
   });
   let batches = 0,
     singles = 0;
+  let beforeCommit = () => {};
+  const config = {
+    lanes: { autopilot: { enabled: true, receiptChecks: ["typecheck"] } },
+  };
   const services = {
     state: {
       ...state,
@@ -102,6 +106,7 @@ async function fixture() {
       },
       putMany: (...args: Parameters<typeof state.putMany>) => {
         batches++;
+        beforeCommit();
         return state.putMany(...args);
       },
     },
@@ -142,6 +147,10 @@ async function fixture() {
   return {
     owner,
     seed,
+    config,
+    beforeCommit: (fn: () => void) => {
+      beforeCommit = fn;
+    },
     close: () => opened.handle.close(),
     reject: (fn: typeof rejects) => {
       rejects = fn;
@@ -158,9 +167,7 @@ async function fixture() {
       operations[op]!({
         input,
         services,
-        config: {
-          lanes: { autopilot: { enabled: true, receiptChecks: ["typecheck"] } },
-        },
+        config,
         signal: new AbortController().signal,
         deadline: Date.now() + 10000,
       }),
@@ -316,3 +323,42 @@ test.each(["lane.stop", "lane.resume"])(
     }
   },
 );
+
+test("queued and sent updates of one ask become one accepted batch entry", async () => {
+  const f = await fixture();
+  try {
+    f.config.lanes.autopilot.enabled = false;
+    f.seed("autopilot:global", { stopped: {}, owner: { channel } });
+    await f.invoke("lane.next", { all: true });
+    expect(f.writes()).toEqual({ batches: 1, singles: 0 });
+    const rows = f.owner.list(namespace, "autopilot-ask:");
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row.value).toMatchObject({ status: "sent", batch: 1 });
+      expect(row.revision).toBe(1);
+    }
+  } finally {
+    await f.close();
+  }
+});
+
+test("a late revision conflict preserves the racing write and refuses the complete runtime batch", async () => {
+  const f = await fixture();
+  try {
+    f.seed("autopilot:global", { stopAll: at, stopped: {} });
+    f.seed("autopilot-ask:work-1", ask("work-1"));
+    let afterRace: ReturnType<typeof f.snapshot> | undefined;
+    f.beforeCommit(() => {
+      f.seed("autopilot:global", { stopAll: at, stopped: { "work-2": at } });
+      afterRace = f.snapshot();
+    });
+    await expect(
+      Promise.resolve().then(() => f.invoke("lane.resume", { all: true })),
+    ).rejects.toMatchObject({ error: { code: "REVISION_CONFLICT" } });
+    expect(afterRace).toBeDefined();
+    if (afterRace === undefined) throw new Error("Commit race was not reached");
+    expect(f.snapshot()).toEqual(afterRace);
+  } finally {
+    await f.close();
+  }
+});
