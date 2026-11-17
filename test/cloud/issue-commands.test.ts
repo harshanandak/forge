@@ -4766,7 +4766,7 @@ function expectRefusalOnly(f: F, before: string, error: unknown) {
   const current = JSON.parse(f.snapshot()) as Snapshot;
   const oldRows = prior.sql.find(
     ([name]) => name === "domain_cloud_command_receipts",
-  )![1] as { request_id: string }[];
+  )![1] as { request_id: string; outcome: string; result: string }[];
   const newRows = current.sql.find(
     ([name]) => name === "domain_cloud_command_receipts",
   )![1] as { request_id: string; outcome: string; result: string }[];

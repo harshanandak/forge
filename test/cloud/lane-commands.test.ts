@@ -206,7 +206,8 @@ async function fixture(
   };
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
-function expectRefusalOnly(before: string, after: string, error: unknown) {
+function expectRefusalOnly(before: string, after: string, reply: ResultEnvelope) {
+  if (reply.ok) throw new Error("Expected a refusal");
   const prior = JSON.parse(before) as unknown[];
   const current = JSON.parse(after) as unknown[];
   const oldRows = prior[4] as { request_id: string }[];
@@ -220,7 +221,7 @@ function expectRefusalOnly(before: string, after: string, error: unknown) {
   );
   expect(added).toHaveLength(1);
   expect(added[0]!.outcome).toBe("refused");
-  expect(JSON.parse(added[0]!.result)).toEqual(error);
+  expect(JSON.parse(added[0]!.result)).toEqual(reply.error);
   current[4] = newRows.filter((row) => row !== added[0]);
   expect(JSON.stringify(current)).toBe(before);
 }
@@ -596,7 +597,7 @@ test.each(["running", "global stop", "foreign route", "device cap", "expired"])(
       ]);
       if (code === "APPROVAL_REQUIRED") expect(reply.status).toBe(409);
       if (mode === "device cap")
-        expectRefusalOnly(before, f.snapshot(), reply.envelope.error);
+        expectRefusalOnly(before, f.snapshot(), reply.envelope);
       else if (mode !== "expired") expect(f.snapshot()).toBe(before);
       if (mode === "expired")
         expect(reply.envelope).toMatchObject({
@@ -634,7 +635,7 @@ test.each(["audit", "receipt", "approval", "approval receipt"])(
       );
       expect(reply.envelope.ok).toBe(false);
       if (where === "audit")
-        expectRefusalOnly(before, f.snapshot(), reply.envelope.error);
+        expectRefusalOnly(before, f.snapshot(), reply.envelope);
       else expect(f.snapshot()).toBe(before);
     } finally {
       f.close();
@@ -695,7 +696,7 @@ test.each(["project cap", "expired", "epoch", "incarnation", "retention"])(
           { authorization: `Bearer ${token}` },
         );
         expect(overflow.verdict).toEqual(["FAIL", "UNAVAILABLE", 1]);
-        expectRefusalOnly(admitted, f.snapshot(), overflow.envelope.error);
+        expectRefusalOnly(admitted, f.snapshot(), overflow.envelope);
         expect(rows()).toHaveLength(64);
       } else if (mode === "retention") {
         for (let i = 1; i <= 66; i++) {
