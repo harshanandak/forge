@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, expect, setDefaultTimeout, test } from "bun:test";
 import { resolve } from "node:path";
+import { fakeBatch } from "./fake-batch.ts";
 
 setDefaultTimeout(30_000);
 type Action = {
@@ -122,6 +123,7 @@ function fixture(checks = ["typecheck"]) {
     list: (prefix: string) =>
       [...records.values()].filter((row) => row.key.startsWith(prefix)),
     put,
+    putMany: fakeBatch(records, put),
     lease: () => undefined,
     acquire: () => undefined,
   };
