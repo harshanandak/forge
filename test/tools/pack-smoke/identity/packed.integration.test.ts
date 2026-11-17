@@ -129,7 +129,7 @@ for (const [field, value] of [
         const runner = join(author, "tools/pack-smoke/run.ts");
         const source = readFileSync(runner, "utf8");
         const removed = source.replace(
-          /    assert\.deepEqual\(\n      JSON.parse\(readFileSync\(join\(installedDir, "dist\/build.json"\), "utf8"\)\),[\s\S]*?\n    \);/,
+          / {4}assert\.deepEqual\(\n {6}JSON.parse\(readFileSync\(join\(installedDir, "dist\/build.json"\), "utf8"\)\),[\s\S]*?\n {4}\);/,
           "",
         );
         expect(removed).not.toBe(source);
