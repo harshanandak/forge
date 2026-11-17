@@ -91,7 +91,7 @@ export function createStateClient(options: {
   const { owner, namespace, context, write, requestId } = options;
   const acquired = new Map<string, LeaseRecord>();
   const validateRecord = (key: string, value: unknown) =>
-    owner?.assertRecordValue(namespace, key, value);
+    owner?.assertRecordValue(namespace, key, structuredClone(value));
   function admitted<T extends StateRecord | undefined>(record: T): T {
     if (record) validateRecord(record.key, record.value);
     return record;
@@ -316,7 +316,7 @@ export function createStateClient(options: {
         { actor: context.actor, session: context.session },
         durationMs,
         requestId,
-        options,
+        structuredClone(options),
       );
       acquired.set(subject, structuredClone(lease));
       return lease;

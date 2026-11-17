@@ -25,8 +25,12 @@ Bulk row importers call `assertRecordFamily` inside their transaction before com
 
 Trusted local assembly clients validate live `get`, `list` and `listRange` results for
 an enrolled namespace. Their `validateRecord(key, value)` capability calls the owner's
-`assertRecordValue(namespace, key, value)` without writing. Candidate puts, batches,
+`assertRecordValue(namespace, key, value)` without writing. The capability applies host
+`structuredClone` before admission so VM-originated JSON uses the host realm, while
+non-JSON data remains subject to the same strict schema rules. Candidate puts, batches,
 numbered builders and landing notes call the same admission before installation.
+Lease-acquisition options, including companion records, are also host-cloned before
+the owner's JSON and family admission checks.
 Runtime drafts also validate each candidate before staging, including candidates that
 a later update would overwrite. History and export remain available without re-admission.
 
