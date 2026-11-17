@@ -181,10 +181,8 @@ test("lease witnesses beyond 5,000 JSON values decode row-wise", async () => {
   const s = await fixture();
   try {
     s.owner.initialize();
-    s.db.transaction(() => {
-      for (let n = 0; n < 1000; n++)
-        s.owner.acquire(ns, `subject:${n}`, holder, 60_000, `request:${n}`);
-    });
+    for (let n = 0; n < 1000; n++)
+      s.owner.acquire(ns, `subject:${n}`, holder, 60_000, `request:${n}`);
     s.owner.checkpoint(16);
     expect(
       withinRestoreBudget(
