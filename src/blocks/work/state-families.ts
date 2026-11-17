@@ -316,6 +316,7 @@ const runtimeFamilies: Record<string, Family> = {
     schema: object(
       {
         stopAll: time,
+        frozen: time,
         stopped: { type: "object", additionalProperties: time },
         resumed: object(
           { at: time, scope: text, quote: text },

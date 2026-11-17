@@ -160,6 +160,7 @@ type NextInput = {
   readonly pr?: number;
   readonly head?: string;
 };
+type FreezeState = { readonly frozen: boolean; readonly at?: string };
 type StopInput = { readonly id?: string; readonly all?: boolean };
 type ResumeInput = StopInput & {
   readonly approval?: { readonly quote?: string };
@@ -284,6 +285,8 @@ type WorkOperations = TrackerOperations<"issue"> & {
     NextInput,
     TailAction | { actions: TailAction[] },
   ];
+  readonly "issue.freeze": readonly [Record<string, never>, FreezeState];
+  readonly "issue.unfreeze": readonly [Record<string, never>, FreezeState];
   readonly "lane.stop": readonly [StopInput, { stopped: string; at: string }];
   readonly "lane.resume": readonly [ResumeInput, { resumed: string }];
   readonly "lane.status": readonly [Record<string, never>, LaneStatus];
@@ -2865,6 +2868,7 @@ async function mergeNext(
 type Channel = { harness: string; thread: string };
 type GlobalState = {
   stopAll?: string;
+  frozen?: string;
   stopped: Record<string, string>;
   resumed?: { at: string; scope: string; quote?: string };
   owner?: {
@@ -2929,9 +2933,11 @@ function readGlobal(state: LeaseStateClient): {
   const value = record.value as Record<string, unknown> | null;
   if (!isMap(value))
     throw new StateProblem("autopilot:global is not an object", true);
-  const { stopAll, stopped, resumed } = value;
+  const { stopAll, stopped, resumed, frozen } = value;
   if (stopAll !== undefined && !isTime(stopAll))
     throw new StateProblem("autopilot:global stopAll is not a time", true);
+  if (frozen !== undefined && !isTime(frozen))
+    throw new StateProblem("autopilot:global frozen is not a time", true);
   if (!isMap(stopped) || !Object.values(stopped).every(isTime))
     throw new StateProblem(
       "autopilot:global stopped is missing or not a map of times",
@@ -4177,6 +4183,67 @@ function laneResume(call: HandlerCall<ResumeInput>): { resumed: string } {
   }
   return { resumed: scope };
 }
+function readFreezable(state: LeaseStateClient) {
+  try {
+    return readGlobal(state);
+  } catch (error) {
+    if (!(error instanceof StateProblem)) throw error;
+    return fail("INPUT_INVALID", `${error.message}; repair or remove it first`);
+  }
+}
+function issueFreeze(call: HandlerCall<Record<string, never>>): FreezeState {
+  const state = client(call.services);
+  const { value, revision } = readFreezable(state);
+  if (value.frozen === undefined) {
+    value.frozen = new Date(state.now()).toISOString();
+    persist(state, GLOBAL, value, revision);
+  }
+  return { frozen: true, at: value.frozen };
+}
+function issueUnfreeze(call: HandlerCall<Record<string, never>>): FreezeState {
+  const state = client(call.services);
+  const { value, revision } = readFreezable(state);
+  if (value.frozen !== undefined) {
+    delete value.frozen;
+    persist(state, GLOBAL, value, revision);
+  }
+  return { frozen: false };
+}
+function refuseFrozen(services: unknown): void {
+  const { frozen } = readFreezable(client(services)).value;
+  if (frozen !== undefined)
+    fail(
+      "UNAVAILABLE",
+      `The local tracker store has been frozen since ${frozen} and no longer accepts issue writes.`,
+      {
+        repair:
+          "Bind this checkout to the cloud project with forge auth login, then use the cloud-served forge issue commands. To undo the freeze, the owner runs forge issue unfreeze.",
+      },
+    );
+}
+const FROZEN_WRITES = [
+  "issue.create",
+  "issue.update",
+  "issue.comment",
+  "issue.claim",
+  "issue.renew",
+  "issue.release",
+  "issue.close",
+  "issue.call",
+  "issue.checkpoint",
+  "issue.dep",
+  "issue.link",
+  "issue.invite",
+  "issue.join",
+  "issue.leave",
+  "attempt.slots",
+  "attempt.reserve",
+  "attempt.release",
+  "attempt.evidence",
+  "attempt.select",
+  "attempt.note",
+  "lane.attempt",
+];
 async function laneStatus(
   call: HandlerCall<Record<string, never>>,
 ): Promise<LaneStatus> {
@@ -4453,6 +4520,8 @@ const operations: Operations<WorkOperations> = {
   "lane.next": atomicRuntime(laneNext),
   "lane.stop": atomicRuntime(laneStop),
   "lane.resume": atomicRuntime(laneResume),
+  "issue.freeze": issueFreeze,
+  "issue.unfreeze": issueUnfreeze,
   "lane.status": (call) => laneStatus(call),
   "lane.record": atomicRuntime(laneRecord),
   "lane.show": ({ input, services, config }) => {
@@ -6843,6 +6912,17 @@ const operations: Operations<WorkOperations> = {
     return { problems };
   },
 };
+for (const name of FROZEN_WRITES) {
+  const table = operations as unknown as Record<
+    string,
+    (call: HandlerCall<never>) => unknown
+  >;
+  const run = table[name]!;
+  table[name] = (call) => {
+    refuseFrozen(call.services);
+    return run(call);
+  };
+}
 Object.defineProperties(operations, {
   limitsOf: { value: limitsOf },
   briefProblems: { value: briefProblems },

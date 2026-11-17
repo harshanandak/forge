@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "required": ["frozen"],
+  "properties": {
+    "frozen": { "type": "boolean" },
+    "at": { "type": "string" }
+  },
+  "additionalProperties": false
+}
