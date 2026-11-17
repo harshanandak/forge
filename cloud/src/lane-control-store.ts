@@ -13,6 +13,7 @@ import type {
 } from "../../src/generated/types.ts";
 import type { BatchEntry } from "../../src/ports/state.ts";
 import { failure } from "../../src/surface/result.ts";
+import { storageFailure } from "./storage-failure.ts";
 
 type Result =
   FailureEnvelope | (SuccessEnvelope & { readonly result: LaneControl });
@@ -78,7 +79,9 @@ export class LaneControlStore {
         issue?.value,
         issueId === undefined ? {} : { id: issueId },
       );
-    } catch {
+    } catch (error) {
+      const refusal = storageFailure(error);
+      if (refusal) throw refusal;
       return unavailable();
     }
   }
@@ -140,6 +143,8 @@ export class LaneControlStore {
       this.#owner.putMany(NS, entries, { kind: "agent", id: session });
       return readLaneControl(candidate.global, candidate.issue, target);
     } catch (error) {
+      const refusal = storageFailure(error);
+      if (refusal) throw refusal;
       if (
         error instanceof ForgeFailure &&
         error.error.code === "REVISION_CONFLICT"

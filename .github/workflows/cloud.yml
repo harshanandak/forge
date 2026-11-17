@@ -55,6 +55,59 @@ jobs:
       - run: bun run gen
       - run: bun install --frozen-lockfile
         working-directory: cloud
+      - name: Storage quota merge gate regressions
+        run: bun test --timeout 30000 test/cloud/storage-review.test.ts test/assembly/cloud-state-client.test.ts test/assembly/cloud-login.test.ts
+      - name: Paged restore marker ordering counterfactual
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          row = "paged invalid receipt preserves committed unprovisioned target"
+          whole = "whole restore preserves committed rows without a provisioning flag"
+          suite = ["bun", "test", "--timeout", "60000", "test/cloud/issue-commands.test.ts", "--test-name-pattern"]
+          baseline = subprocess.run(suite + ["^(" + row + "|" + whole + ")$"], capture_output=True, text=True)
+          print(baseline.stdout + baseline.stderr)
+          assert baseline.returncode == 0
+          test_path = "test/cloud/issue-commands.test.ts"
+          test_source = Path(test_path).read_text()
+          snapshot_offset = test_source.index("  expect(target.snapshot()).toBe(before);", test_source.index('test("' + row + '"'))
+          snapshot_line = test_source.count("\n", 0, snapshot_offset) + 1
+          path = Path("cloud/src/project.ts")
+          original = path.read_text()
+          before = "      const { db, owner } = this.#openWrite(staged !== undefined);\n"
+          marker = "      await this.#storage.put(STAGED, { next: page.page, format: page.format });\n"
+          assert original.count(before) == 1
+          try:
+              path.write_text(original.replace(before, before + marker))
+              result = subprocess.run(suite + ["^" + row + "$"], capture_output=True, text=True)
+              log = result.stdout + result.stderr
+              print(log)
+              assert result.returncode != 0 and "(fail) paged invalid receipt preserves committed unprovisioned target" in log
+              assert "expect(target.snapshot()).toBe(before);" in log
+              assert f"{test_path}:{snapshot_line}:" in log
+          finally:
+              path.write_text(original)
+          PY
+      - name: Typed restore refusal counterfactual
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          path = Path("cloud/src/storage-failure.ts")
+          original = path.read_text()
+          start = original.index("  if (error instanceof ForgeFailure)")
+          end = original.index("  if (!(error instanceof Error)) return;", start)
+          assert end > start
+          try:
+              path.write_text(original[:start] + original[end:])
+              result = subprocess.run(["bun", "test", "--timeout", "30000", "test/cloud/storage-review.test.ts", "--test-name-pattern", "^typed restored receipt named SQLITE_FULL"], capture_output=True, text=True)
+              log = result.stdout + result.stderr
+              print(log)
+              assert result.returncode != 0 and "(fail) typed restored receipt named SQLITE_FULL" in log
+              assert "STORAGE_LIMIT_EXCEEDED" in log
+          finally:
+              path.write_text(original)
+          PY
       - name: State commit guard counterfactuals
         run: |
           python3 - <<'PY'
@@ -186,6 +239,7 @@ jobs:
           }
           bun conformance/store-join.ts
           start first
+          bun conformance/rows-written.ts
           # The full-strength run (forge-1318): CLOUD_LIVE is unset, so the original journeys run against the small test
           # limits. The exit status is kept through the pipe, and the six paging, size and staged-validation journeys must
           # print their exact PASS row. Nothing may be skipped.
@@ -240,6 +294,7 @@ jobs:
           echo "leak counterfactual: the guard named exactly the four skipped journeys:"; echo "$leaked"
           stop
           start second
+          bun conformance/rows-written.ts restart
           bun conformance/conformance.ts restart
           stop
           # forge-1262: only the scope helper changes; fresh persistence must expose the ownership assertion.

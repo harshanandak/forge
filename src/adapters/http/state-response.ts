@@ -20,7 +20,7 @@ for (const [status, codes] of [
     "INPUT_CONFLICT REVISION_CONFLICT LEASE_HELD LEASE_STALE LEASE_EXPIRED LEASE_NOT_HELD",
   ],
   [500, "INTERNAL"],
-  [503, "UNAVAILABLE"],
+  [503, "UNAVAILABLE QUOTA_EXHAUSTED STORAGE_LIMIT_EXCEEDED"],
 ] as const)
   for (const code of codes.split(" ")) statuses[code] = status;
 type Request = State.StateReadRequest | State.StateCommitRequest;

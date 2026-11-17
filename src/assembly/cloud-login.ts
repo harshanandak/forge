@@ -14,6 +14,7 @@ import {
   type LoginChallenge,
 } from "../adapters/http/index.ts";
 import { ForgeFailure } from "../contract/failure.ts";
+import { storageRefusal } from "../adapters/http/storage-refusal.ts";
 import { validateWithSchema } from "../contract/schema.ts";
 import type { DesktopLauncher } from "../ports/process.ts";
 import type { CloudLogin, CloudLoginResult } from "../ports/cloud-login.ts";
@@ -74,6 +75,8 @@ const cancelled = (): ForgeFailure =>
 
 /** The server's refusal as one of our fixed messages; the name is from a closed vocabulary. */
 function refusalFailure(name: string): ForgeFailure {
+  const storage = storageRefusal(name);
+  if (storage) return new ForgeFailure(storage);
   if (name === "access_denied")
     return failed("The owner denied this login.", "LOGIN_DENIED");
   if (name === "expired_token")

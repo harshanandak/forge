@@ -12742,3 +12742,90 @@ test("an imported receipt never proves ownership of an unowned inner acquisition
   expect([attempted.status, attempted.code]).toEqual([503, "UNAVAILABLE"]);
   expect(t.snapshot()).toBe(before);
 }, 30_000);
+
+test("paged invalid receipt preserves committed unprovisioned target", async () => {
+  const { tables } = await projectWith(legacy);
+  const target = fixture();
+  const token = await target.device();
+  expect(
+    (await target.send(make("committed-before-paged-refusal"), { token }))
+      .status,
+  ).toBe(200);
+  target.lease();
+  await target.storage.delete("provisioned");
+  target.reopen();
+  expect(await target.storage.get("restore:next")).toBeUndefined();
+  const saved = tablesOf(target.db);
+  for (const table of [
+    "state_leases",
+    "state_events",
+    "domain_cloud_command_receipts",
+  ])
+    expect(saved[table]!.length).toBeGreaterThan(0);
+  const before = target.snapshot();
+  tables.domain_cloud_requests = [
+    {
+      request_id: "SQLITE_FULL",
+      fingerprint: "{}",
+      outcome: "INPUT_INVALID",
+      result: "{}",
+      created_at: 0,
+    },
+  ];
+  const page = pagesOf(tables, 100)[0]!;
+  expect([page.page, page.last]).toEqual([0, true]);
+  target.calls.length = 0;
+  const { got, calls } = await restoreInto("paged", tables, {
+    target,
+    parts: [page],
+  });
+  const cleared = calls.findIndex(({ sql }) =>
+    /^DELETE FROM state_records/.test(sql),
+  );
+  const imported = calls.findIndex(
+    ({ sql, bindings }) =>
+      /^INSERT INTO domain_cloud_requests/.test(sql) &&
+      bindings.includes("SQLITE_FULL"),
+  );
+  expect(cleared).toBeGreaterThan(-1);
+  expect(imported).toBeGreaterThan(cleared);
+  expect([got.status, got.json.error?.code]).toEqual([
+    400,
+    "RESTORE_INVALID_ROW",
+  ]);
+  expect(got.json.error?.message).toContain("SQLITE_FULL");
+  expect(target.snapshot()).toBe(before);
+  expect(target.calls).not.toContain("put restore:next");
+  expect(await target.storage.get("restore:next")).toBeUndefined();
+}, 60_000);
+
+test("whole restore preserves committed rows without a provisioning flag", async () => {
+  const { tables } = await projectWith(legacy);
+  const target = fixture();
+  const token = await target.device();
+  expect(
+    (await target.send(make("committed-before-activation"), { token })).status,
+  ).toBe(200);
+  target.lease();
+  await target.storage.delete("provisioned");
+  target.reopen();
+  const before = tablesOf(target.db);
+  for (const table of [
+    "state_leases",
+    "state_events",
+    "domain_cloud_command_receipts",
+  ])
+    expect(before[table]!.length).toBeGreaterThan(0);
+  const snapshot = target.snapshot();
+  target.calls.length = 0;
+  const { got } = await restoreInto("whole", tables, { target });
+  expect([got.status, got.json.error?.code]).toEqual([
+    409,
+    "RESTORE_TARGET_NOT_EMPTY",
+  ]);
+  expect(tablesOf(target.db)).toEqual(before);
+  expect(target.snapshot()).toBe(snapshot);
+  expect(target.calls).not.toContain("put restore:next");
+  expect(await target.storage.get("restore:next")).toBeUndefined();
+  expect(await target.storage.get("provisioned")).not.toBe(true);
+}, 60_000);
