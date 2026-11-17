@@ -1909,18 +1909,18 @@ export class StateOwner {
         if (stored < needed) throw refuse();
         return false;
       }
-      const record = this.#exemptFromCompactionTail(() =>
-        this.#apply(
-          namespace,
-          floorKey,
-          { prefix, number: needed },
-          actor,
-          this.#now(),
-          undefined,
-          false,
-          found.floorRevision,
-        ),
+      const archived = this.#suspendCompactionTail();
+      const record = this.#apply(
+        namespace,
+        floorKey,
+        { prefix, number: needed },
+        actor,
+        this.#now(),
+        undefined,
+        false,
+        found.floorRevision,
       );
+      this.#resumeCompactionTail(archived);
       const written = this.#db.get(
         "SELECT body, (SELECT MAX(sequence) FROM state_events) AS last FROM state_events WHERE sequence=?",
         [events + 1],
@@ -2468,49 +2468,49 @@ export class StateOwner {
   /** Preserve lease counters and history, but never revive authority from a backup. */
   releaseRestoredLeases(pageSize: number = restorePageSize): number {
     const at = new Date(this.#now()).toISOString();
-    return this.#db.transaction(() =>
-      this.#exemptFromCompactionTail(() => {
-        let releasedCount = 0;
-        // Only body changes below, never the (namespace, subject) keyset, so paging stays exact.
-        for (const row of restoredRows(
-          this.#db,
-          "state_leases",
-          "namespace,subject,body",
-          ["namespace", "subject"],
-          pageSize,
-        )) {
-          const lease = JSON.parse(String(row.body)) as LeaseRecord;
-          if (!validateLeaseRecord(lease).ok) invalid("Invalid imported lease");
-          if (
-            !decideLease(lease, {
-              mode: "held",
-              subject: lease.subject,
-              holder: lease.holder,
-              generation: lease.generation,
-              nowMs: Date.parse(at),
-            }).ok
-          )
-            continue;
-          const event = changedLeaseEvent(
-            String(row.namespace),
-            lease,
-            lease.holder,
-            at,
-          );
-          const released = event.data as LeaseRecord;
-          this.#db.run(
-            "UPDATE state_leases SET body=? WHERE namespace=? AND subject=?",
-            [json(released), row.namespace!, row.subject!],
-          );
-          this.#event(event);
-          releasedCount++;
-        }
-        return releasedCount;
-      }),
-    );
+    return this.#db.transaction(() => {
+      const archived = this.#suspendCompactionTail();
+      let releasedCount = 0;
+      // Only body changes below, never the (namespace, subject) keyset, so paging stays exact.
+      for (const row of restoredRows(
+        this.#db,
+        "state_leases",
+        "namespace,subject,body",
+        ["namespace", "subject"],
+        pageSize,
+      )) {
+        const lease = JSON.parse(String(row.body)) as LeaseRecord;
+        if (!validateLeaseRecord(lease).ok) invalid("Invalid imported lease");
+        if (
+          !decideLease(lease, {
+            mode: "held",
+            subject: lease.subject,
+            holder: lease.holder,
+            generation: lease.generation,
+            nowMs: Date.parse(at),
+          }).ok
+        )
+          continue;
+        const event = changedLeaseEvent(
+          String(row.namespace),
+          lease,
+          lease.holder,
+          at,
+        );
+        const released = event.data as LeaseRecord;
+        this.#db.run(
+          "UPDATE state_leases SET body=? WHERE namespace=? AND subject=?",
+          [json(released), row.namespace!, row.subject!],
+        );
+        this.#event(event);
+        releasedCount++;
+      }
+      this.#resumeCompactionTail(archived);
+      return releasedCount;
+    });
   }
 
-  #exemptFromCompactionTail<T>(write: () => T): T {
+  #suspendCompactionTail(): number {
     const archived = Number(
       this.#db.get(
         "SELECT archive_through FROM state_checkpoint_header WHERE id=1",
@@ -2519,12 +2519,14 @@ export class StateOwner {
     this.#db.run(
       "UPDATE state_checkpoint_header SET archive_through=0 WHERE id=1",
     );
-    const result = write();
+    return archived;
+  }
+
+  #resumeCompactionTail(archived: number): void {
     this.#db.run(
       "UPDATE state_checkpoint_header SET archive_through=? WHERE id=1",
       [archived],
     );
-    return result;
   }
 
   #images(): StateImageStore {
