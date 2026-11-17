@@ -3432,34 +3432,55 @@ test("list refuses a wrong project, owner headers and bad credentials before any
 
 test("a list response is capped at 1 MiB of UTF-8 bytes, measured on the whole envelope", async () => {
   const cap = 1_048_576;
+  const part = 'é"\n✓\\';
+  const ids = Array.from({ length: 17 }, (_, i) => i + 1).sort((x, y) =>
+    `issue:work-${x}` < `issue:work-${y}` ? -1 : 1,
+  );
+  const bodyOf = (n: number, pad: number) =>
+    n === 17 ? part + "x".repeat(pad) : "x".repeat(64_000);
+  const sized = (pad: number) =>
+    envelope(
+      listed(
+        ...ids.map((n) => shown({ id: `forge-${n}`, body: bodyOf(n, pad) })),
+      ),
+      "issue.list",
+    );
+  const room = cap - bytesOf(sized(0));
+  expect(room).toBeGreaterThan(1);
+  expect(room).toBeLessThan(60_000);
   const f = fixture();
   const token = await f.device();
   f.tables();
-  const body = 'é"\n✓\\';
-  const sized = (kind: string) =>
-    envelope(listed(shown({ body, kind })), "issue.list");
-  const room = cap - bytesOf(sized(""));
   for (const [delta, fits] of [
     [-1, true],
     [0, true],
     [1, false],
   ] as const) {
-    const kind = "k".repeat(room + delta);
     f.db.run("DELETE FROM state_records");
-    f.put(stored({ body, kind }));
+    for (const n of ids)
+      f.put(
+        stored({ id: `work-${n}`, body: bodyOf(n, room + delta) }),
+        {},
+        `issue:work-${n}`,
+      );
     const got = await f.send(listCall, { token });
     expect(got.probes).toEqual(WORK_PROBES);
     if (fits) {
       expect([got.status, got.bytes]).toEqual([200, cap + delta]);
-      expect(got.json.result).toEqual(listed(shown({ body, kind })));
+      expect(got.json.result).toEqual(
+        listed(
+          ...ids.map((n) =>
+            shown({ id: `forge-${n}`, body: bodyOf(n, room + delta) }),
+          ),
+        ),
+      );
       expect(got.text).toBe(JSON.stringify(got.json));
     } else {
       expect([got.status, got.code, got.exit]).toEqual([503, "UNAVAILABLE", 1]);
       expect(got.json.error?.message).toBe("response too large");
     }
   }
-}, 60_000);
-
+}, 120_000);
 test("a project over 10,000 issues lists its first page, the same whatever the filter", async () => {
   const f = fixture();
   const token = await f.device();
