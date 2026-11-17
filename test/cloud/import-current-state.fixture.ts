@@ -220,7 +220,10 @@ const changes: Record<string, Change> = {
     "verifyEventDerivedState(\n      source,\n      manifest.eventHighWaterMark,\n      undefined,\n      numbered,\n    )",
     "({ highest: 0, earlier: 0, floorRevision: 0 })",
   ],
-  scope: ["ns === namespace &&", "true || ns === namespace &&"],
+  scope: [
+    "const declared = disposition(key);",
+    "return { convert: true, value, repaired: false }; const declared = disposition(key);",
+  ],
   migration: [
     "canonicalJson(source.all(sql)) !== canonicalJson(schema.all(sql))",
     "false",

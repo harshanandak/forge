@@ -18,6 +18,7 @@ import { domain } from "../cloud/src/project.ts";
 import { durableStore } from "../cloud/src/store.ts";
 import * as image from "../cloud/conformance/digest.ts";
 import * as state from "./import-current-state.ts";
+import { workFamilyPolicy } from "../src/blocks/work/state-families.ts";
 
 const invalid = (): never => {
   throw new ForgeFailure({
@@ -187,7 +188,7 @@ export async function convert(options: Options) {
       put: invalid,
       delete: invalid,
     });
-    const owner = new StateOwner(target, clock);
+    const owner = new StateOwner(target, clock, [workFamilyPolicy]);
     owner.initialize([domain]);
     const pages: { name: string; sha256: string; bytes: number }[] = [];
     for (const page of state.pagesOf(scratch, limits)) {
@@ -218,6 +219,7 @@ export async function convert(options: Options) {
       F: projected.floors,
       rows: projected.usage.rows,
       events: projected.events,
+      repaired: projected.repaired,
       tables: expected,
       stored: projected.usage.bytes,
       limits,
@@ -254,12 +256,19 @@ export async function run(options: Options) {
   try {
     return respond(success("import-current", await convert(options)));
   } catch (error) {
-    return respond(
-      failure(
-        error instanceof ForgeFailure ? error.error.code : "UNAVAILABLE",
-        "Offline import refused; no verified complete bundle",
-      ),
+    const result = failure(
+      error instanceof ForgeFailure ? error.error.code : "UNAVAILABLE",
+      "Offline import refused; no verified complete bundle",
     );
+    return respond({
+      ...result,
+      error: {
+        ...result.error,
+        ...(error instanceof ForgeFailure && error.error.observed
+          ? { observed: error.error.observed }
+          : {}),
+      },
+    });
   }
 }
 if (

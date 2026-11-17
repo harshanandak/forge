@@ -2,10 +2,9 @@ import { ForgeFailure } from "../src/contract/failure.ts";
 import { createHash } from "node:crypto";
 import { canonicalJson, isObject } from "../src/core/config/pointer.ts";
 import {
-  validateLeaseHolder,
-  validateItemId,
-  validateTimestamp,
-} from "../src/generated/validators.ts";
+  validateDeclaredWorkRecord,
+  workFamilyDeclarations,
+} from "../src/blocks/work/state-families.ts";
 import {
   assertNoCheckpoint,
   checkpointTables,
@@ -39,133 +38,86 @@ const actor = { kind: "agent", id: "current-state-import" } as const;
 const family = (key: string) =>
   /^((?:comment|link):[^:]+:)[1-9][0-9]*$/.exec(key)?.[1];
 const numbered = { namespace, prefix: "issue:work-", family };
-const invalid = (): never => {
+function invalid(observed?: { id: string; reason: string }): never {
   throw new ForgeFailure({
     code: "INPUT_INVALID",
     message: "Unsupported or inconsistent current-state source",
     retry: "never",
+    ...(observed === undefined ? {} : { observed }),
   });
-};
-
-export function ordinaryKey(ns: string, key: string): boolean {
-  return (
-    ns === namespace &&
-    !/[\s\p{Cc}\p{Cf}]/u.test(key) &&
-    /^(?:issue:[^:]+|(?:comment|link):[^:]+:[1-9][0-9]*|(?:landing|reopen):work-[0-9]+:[1-9][0-9]*|attempt:work-[0-9]+:attempt-[1-9][0-9]*|evidence:attempt:work-[0-9]+:attempt-[1-9][0-9]*:[1-9][0-9]*|(?:cleanup|selection|slots):work-[0-9]+|allocation:(?:issue:work-|(?:comment|link):[^:]+:))$/.test(
-      key,
-    )
-  );
 }
 
-type Check = (value: unknown) => boolean;
-const text: Check = (v) => typeof v === "string";
-const positive: Check = (v) => Number.isSafeInteger(v) && Number(v) > 0;
-const reason: Check = (v) =>
-  typeof v === "string" && !!v.trim() && Array.from(v).length <= 65536;
-const attemptId: Check = (v) =>
-  typeof v === "string" &&
-  /^attempt-[1-9][0-9]*$/.test(v) &&
-  !/[\s\p{Cc}\p{Cf}]/u.test(v) &&
-  positive(Number(v.slice(8)));
-const hex = (v: unknown, length = 40): v is string =>
-  typeof v === "string" && v.length === length && !/[^a-f0-9]/i.test(v);
-const timestamp: Check = (v) => validateTimestamp(v).ok;
-const named = (names: string, check: Check) =>
-  Object.fromEntries(names.split(" ").map((name) => [name, check]));
-const checks: Record<string, Check> = {
-  ...named("id label review mode", text),
-  ...named("branch worktree note", (v) => text(v) && v !== ""),
-  ...named("reason claimReason", reason),
-  closeReason: (v) => typeof v === "string" && Array.from(v).length <= 2000,
-  withoutReceipt: (v) => reason(v) && checks.closeReason!(v),
-  holder: (v) => validateLeaseHolder(v).ok,
-  receipt: (v) => validateItemId(v).ok,
-  ...named("pr generation baseRevision", positive),
-  ...named("head mergeCommit", (v) => hex(v) || hex(v, 64)),
-  sha: (v) => hex(v) && v === v.toLowerCase(),
-  attempt: attemptId,
-  ...named("createdAt recordedAt selectedAt expiresAt", timestamp),
-  count: (n) => positive(n) && Number(n) <= 16,
-  next: (v) => positive(v) || v === 0,
-  supersededBy: (v) => v === "selection",
-  superseded: (v) => fields(v, "supersededBy reason"),
-  chosen: (v) =>
-    Array.isArray(v) &&
-    v.every((c) => fields(c, "attempt sha")) &&
-    new Set(v.map((c) => c.attempt)).size === v.length,
-  metrics: (v) =>
-    isObject(v) &&
-    Object.keys(v).length <= 32 &&
-    Object.values(v).every(
-      (x) =>
-        typeof x === "string" || (typeof x === "number" && Number.isFinite(x)),
+const localReason =
+  "local runtime state; retained in the pre-cutover snapshot; never imported as live approvals";
+export const importDispositions: Readonly<
+  Record<string, { convert: boolean; reason: string }>
+> = Object.fromEntries<{ convert: boolean; reason: string }>([
+  ..."issue comment link landing reopen attempt evidence cleanup selection slots allocation"
+    .split(" ")
+    .map(
+      (name) =>
+        [name, { convert: true, reason: "persisted project data" }] as const,
     ),
-};
-type Value = Record<string, unknown>;
-function fields(v: unknown, need: string, extra = ""): v is Value {
-  const allowed = (need + " " + extra).split(" ");
-  return (
-    isObject(v) &&
-    need.split(" ").every((k) => Object.hasOwn(v, k)) &&
-    Object.keys(v).every(
-      (k) => allowed.includes(k) && checks[k]?.(v[k]) === true,
-    )
+  ..."autopilot autopilot-global autopilot-clock autopilot-ask autopilot-event autopilot-merge"
+    .split(" ")
+    .map((name) => [name, { convert: false, reason: localReason }] as const),
+  ..."participant note bound-lane".split(" ").map(
+    (name) =>
+      [
+        name,
+        {
+          convert: false,
+          reason:
+            "local lane authority and notes; retained in the pre-cutover snapshot",
+        },
+      ] as const,
+  ),
+]);
+function disposition(key: string) {
+  const names = Object.keys(workFamilyDeclarations).filter(
+    (name) => workFamilyDeclarations[name]!.key.exec(key)?.[0] === key,
   );
+  return names.length === 1 ? importDispositions[names[0]!] : undefined;
 }
-/** Persisted writer shapes; public attempt views additionally contain lease metadata. */
-function workValue(key: string, v: unknown): boolean {
-  const [kind, id, number, attempt] = key.split(":");
-  if (
-    ["landing", "reopen", "evidence"].includes(kind!) &&
-    !positive(Number(key.split(":").at(-1)))
-  )
-    return false;
-  switch (kind) {
-    case "landing":
-      return (
-        fields(
-          v,
-          "id receipt branch worktree note pr generation head mergeCommit",
-        ) &&
-        v.id === id &&
-        String(v.pr) === number
-      );
-    case "reopen":
-      return fields(
-        v,
-        "reason holder",
-        "receipt withoutReceipt closeReason claimReason",
-      );
-    case "attempt":
-      return (
-        fields(v, "id holder baseRevision createdAt", "label superseded") &&
-        attemptId(v.id) &&
-        v.id === number
-      );
-    case "evidence":
-      return (
-        fields(v, "attempt sha holder recordedAt", "receipt review metrics") &&
-        v.attempt === attempt
-      );
-    case "cleanup":
-      return fields(v, "expiresAt");
-    case "slots":
-      return fields(v, "count next");
-    case "selection":
-      return (
-        fields(v, "mode chosen reason holder selectedAt") &&
-        (v.mode === "none"
-          ? (v.chosen as unknown[]).length === 0
-          : v.mode === "single"
-            ? (v.chosen as unknown[]).length === 1
-            : v.mode === "combine" && (v.chosen as unknown[]).length > 0)
-      );
-    default:
-      return true;
+export const ordinaryKey = (ns: string, key: string): boolean =>
+  ns === namespace && disposition(key)?.convert === true;
+const legacyCloseReason =
+  "Imported: closed before Forge required close evidence";
+function admitSource(key: string, value: unknown, checkValue = true) {
+  const declared = disposition(key);
+  if (!declared)
+    invalid({
+      id: key,
+      reason:
+        validateDeclaredWorkRecord(key, value) ?? "WORK_VALUE_DISPOSITION",
+    });
+  let repaired = false;
+  if (declared.convert && checkValue) {
+    if (
+      key.startsWith("issue:") &&
+      isObject(value) &&
+      value.status === "closed" &&
+      value.receipt === undefined &&
+      value.withoutReceipt === undefined
+    ) {
+      value = { ...value, withoutReceipt: legacyCloseReason };
+      repaired = true;
+    }
+    const reason = validateDeclaredWorkRecord(key, value);
+    if (reason) invalid({ id: key, reason });
   }
+  return { ...declared, value, repaired };
 }
+interface Repairs {
+  records: number;
+  historicalUpdates: number;
+}
+
 /** Bounded keyset reads retain only one page; admission happens before yielding each record. */
-export function* workRecords(source: SqlDatabase): Generator<StateRecord> {
+export function* workRecords(
+  source: SqlDatabase,
+  repairs?: Repairs,
+): Generator<StateRecord> {
   let after: readonly string[] | undefined;
   for (;;) {
     const rows = source.all(
@@ -174,10 +126,11 @@ export function* workRecords(source: SqlDatabase): Generator<StateRecord> {
     );
     for (const row of rows) {
       if (row.namespace !== namespace) continue;
-      if (!ordinaryKey(String(row.namespace), String(row.key))) invalid();
       const record = parseRestoreJson(String(row.body)) as StateRecord;
-      if (!workValue(record.key, record.value)) invalid();
-      yield record;
+      const admitted = admitSource(record.key, record.value);
+      if (!admitted.convert) continue;
+      if (admitted.repaired && repairs) repairs.records++;
+      yield { ...record, value: admitted.value };
     }
     if (rows.length < 128) return;
     after = [String(rows.at(-1)!.namespace), String(rows.at(-1)!.key)];
@@ -210,13 +163,8 @@ export function verifySource(
       if (canonicalJson(source.all(sql)) !== canonicalJson(schema.all(sql)))
         invalid();
     assertNoCheckpoint(source);
-    const found = verifyEventDerivedState(
-      source,
-      manifest.eventHighWaterMark,
-      undefined,
-      numbered,
-    )!;
     let sequence = 0;
+    const repaired: Repairs = { records: 0, historicalUpdates: 0 };
     for (;;) {
       const events = source.all(
         "SELECT sequence,namespace,key,body FROM state_events WHERE sequence>? ORDER BY sequence LIMIT 128",
@@ -226,34 +174,45 @@ export function verifySource(
         if (row.namespace !== namespace) continue;
         const event = parseRestoreJson(String(row.body)) as StateEvent;
         const lease = event.type.startsWith(`${namespace}:lease.`);
+        const key =
+          lease && !disposition(event.key) && event.key.startsWith("issue:")
+            ? event.key.slice(6)
+            : event.key;
         if (
-          !ordinaryKey(namespace, event.key) &&
-          !(
-            lease &&
-            event.key.startsWith("issue:") &&
-            ordinaryKey(namespace, event.key.slice(6))
-          )
+          admitSource(
+            key,
+            event.data,
+            event.type === `${namespace}:record.updated@1`,
+          ).repaired
         )
-          invalid();
-        if (
-          event.type === `${namespace}:record.updated@1` &&
-          !workValue(event.key, event.data)
-        )
-          invalid();
+          repaired.historicalUpdates++;
       }
       if (events.length < 128) break;
       sequence = Number(events.at(-1)!.sequence);
     }
-    let records = Number(
-      source.get("SELECT COUNT(*) AS n FROM state_records WHERE namespace<>?", [
-        namespace,
-      ])!.n,
+    const records = Number(
+      source.get("SELECT COUNT(*) AS n FROM state_records")!.n,
     );
-    for (const _record of workRecords(source)) records++;
+    let imported = 0;
+    for (const _record of workRecords(source, repaired)) imported++;
     if (records !== manifest.records) invalid();
-    return found;
-  } catch {
-    // Source bodies and keys may contain credentials; only the refusal category crosses this boundary.
+    const found = verifyEventDerivedState(
+      source,
+      manifest.eventHighWaterMark,
+      undefined,
+      numbered,
+    )!;
+    for (const [prefix, summary] of [
+      [numbered.prefix, found] as const,
+      ...(found.groups ?? []),
+    ])
+      admitSource(`allocation:${prefix}`, {
+        prefix,
+        number: Math.max(summary.highest, summary.earlier),
+      });
+    return { ...found, imported, repaired };
+  } catch (error) {
+    if (error instanceof ForgeFailure && error.error.observed) throw error;
     return invalid();
   }
 }
@@ -276,10 +235,29 @@ function leftBehind(source: SqlDatabase, manifest: SourceManifest) {
       shape: String(row.shape),
       count: Number(row.count),
     }));
+  const local = source
+    .all(
+      "SELECT CASE WHEN key='autopilot:global' THEN 'autopilot-global' ELSE substr(key,1,instr(key,':')-1) END AS family,COUNT(*) AS count FROM state_records WHERE namespace=? GROUP BY family ORDER BY family",
+      [namespace],
+    )
+    .flatMap((row) => {
+      const name = String(row.family),
+        entry = importDispositions[name];
+      return entry?.convert === false
+        ? [
+            {
+              namespace,
+              shape: `${name}:*`,
+              count: Number(row.count),
+              reason: entry.reason,
+            },
+          ]
+        : [];
+    });
   const report = {
     format: "forge-current-left-behind/1",
     source: manifest,
-    records,
+    records: [...records, ...local],
     liveLeases: source.all("SELECT body FROM state_leases").reduce((n, row) => {
       const lease = parseRestoreJson(String(row.body)) as {
         releasedAt?: string;
@@ -334,9 +312,9 @@ export function currentState(
           },
         },
         transactionSync: (body) => scratch.transaction(body),
-        get: invalid,
-        put: invalid,
-        delete: invalid,
+        get: () => invalid(),
+        put: () => invalid(),
+        delete: () => invalid(),
       });
       const owner = new StateOwner(cloud, {
         now: () => Date.parse(manifest.at),
@@ -350,6 +328,7 @@ export function currentState(
         });
         records++;
       }
+      if (records !== found.imported) invalid();
       for (const [prefix, summary] of [
         [numbered.prefix, found] as const,
         ...(found.groups ?? []),
@@ -388,12 +367,17 @@ export function currentState(
         records,
         floors,
         events,
+        repaired: found.repaired,
         usage,
         leftBehind: leftBehind(source, manifest),
       };
     });
   } catch (error) {
-    if (error instanceof ForgeFailure && error.error.code === "INPUT_INVALID")
+    if (
+      error instanceof ForgeFailure &&
+      error.error.code === "INPUT_INVALID" &&
+      !error.error.observed
+    )
       invalid();
     throw error;
   }
