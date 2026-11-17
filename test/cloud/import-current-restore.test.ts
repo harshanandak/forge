@@ -831,7 +831,7 @@ test("restore stop window width is bounded by the caller round trip and ignores 
   );
   assert.throws(() => stopWindowOf(undefined, 40), /restore stop window/);
   assert.throws(() => stopWindowOf({ done: true }, 40), /restore stop window/);
-});
+}, 5_000);
 
 const activationRows = [
   ["Whole and paged success", "success"],
