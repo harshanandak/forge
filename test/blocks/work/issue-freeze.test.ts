@@ -135,12 +135,16 @@ test("lane stop and resume keep the freeze", async () => {
 test("every issue and attempt write is gated and only a human can unfreeze", async () => {
   const { run, close } = await fixture();
   run("issue.freeze");
-  const writes = Object.entries(manifest.operations)
+  const declared = manifest.operations as Record<
+    string,
+    { effects: string[]; callers: string[] } | undefined
+  >;
+  const writes = Object.entries(declared)
     .filter(
       ([op, declaration]) =>
         !op.endsWith("freeze") &&
-        ((declaration.effects as string[]).includes("issue:write") ||
-          (declaration.effects as string[]).includes("attempt:write")),
+        (declaration!.effects.includes("issue:write") ||
+          declaration!.effects.includes("attempt:write")),
     )
     .map(([op]) => op);
   expect(writes.length).toBeGreaterThan(15);
@@ -148,6 +152,6 @@ test("every issue and attempt write is gated and only a human can unfreeze", asy
     expect(refusal(() => run(op, { id: "work-1" })).message).toContain(
       "frozen since",
     );
-  expect(manifest.operations["issue.unfreeze"].callers).toEqual(["human"]);
+  expect(declared["issue.unfreeze"]?.callers).toEqual(["human"]);
   await close();
 });
