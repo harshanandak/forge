@@ -186,6 +186,7 @@ jobs:
           }
           bun conformance/store-join.ts
           start first
+          bun conformance/rows-written.ts
           # The full-strength run (forge-1318): CLOUD_LIVE is unset, so the original journeys run against the small test
           # limits. The exit status is kept through the pipe, and the six paging, size and staged-validation journeys must
           # print their exact PASS row. Nothing may be skipped.
@@ -240,6 +241,7 @@ jobs:
           echo "leak counterfactual: the guard named exactly the four skipped journeys:"; echo "$leaked"
           stop
           start second
+          bun conformance/rows-written.ts restart
           bun conformance/conformance.ts restart
           stop
           # forge-1262: only the scope helper changes; fresh persistence must expose the ownership assertion.
