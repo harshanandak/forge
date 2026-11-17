@@ -8,9 +8,11 @@ export interface ComparisonProblem {
 }
 export class ComparisonCheckFailure extends Error {
   readonly problem: ComparisonProblem;
-  constructor(problem: ComparisonProblem) {
+  readonly mismatch: boolean;
+  constructor(problem: ComparisonProblem, mismatch = false) {
     super(problem.reason);
     this.problem = problem;
+    this.mismatch = mismatch;
   }
 }
 export function comparisonCheck(
@@ -18,8 +20,10 @@ export function comparisonCheck(
   table: Table,
   key: string[],
   reason: string,
+  mismatch = false,
 ): asserts condition {
-  if (!condition) throw new ComparisonCheckFailure({ table, key, reason });
+  if (!condition)
+    throw new ComparisonCheckFailure({ table, key, reason }, mismatch);
 }
 export function comparisonRecord(body: unknown, table: Table, key: string[]) {
   let value: unknown;

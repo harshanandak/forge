@@ -102,7 +102,7 @@ function observeStop(
   const global = actual.state_records!.find(
     (row) => row.namespace === globalKey[0] && row.key === globalKey[1],
   );
-  comparisonCheck(global, "state_records", globalKey, "missing row");
+  comparisonCheck(global, "state_records", globalKey, "missing row", true);
   const record = comparisonRecord(global.body, "state_records", globalKey);
   const events = source.state_events!;
   const mismatch = firstMismatch(
@@ -110,12 +110,12 @@ function observeStop(
     events,
     actual.state_events!.slice(0, events.length),
   );
-  if (mismatch) throw new ComparisonCheckFailure(mismatch);
+  if (mismatch) throw new ComparisonCheckFailure(mismatch, true);
   const next = Number(events.at(-1)?.sequence ?? 0) + 1;
   const event = (index: number, sequence: number) => {
     const row = actual.state_events![index];
     const key = [String(sequence)];
-    comparisonCheck(row, "state_events", key, "missing row");
+    comparisonCheck(row, "state_events", key, "missing row", true);
     comparisonCheck(
       row.sequence === sequence,
       "state_events",
@@ -125,6 +125,7 @@ function observeStop(
       typeof row.sequence === "number" && row.sequence < sequence
         ? "unexpected row"
         : "missing row",
+      true,
     );
     return row;
   };
@@ -134,6 +135,7 @@ function observeStop(
     "state_events",
     [String(next)],
     "stop global event key",
+    true,
   );
   const audit = event(events.length + 1, next + 1);
   comparisonCheck(
@@ -142,6 +144,7 @@ function observeStop(
     "state_events",
     [String(next + 1)],
     "stop audit suffix",
+    true,
   );
   return {
     at: record.updatedAt as string,
@@ -188,6 +191,7 @@ export function verifyPracticeReadback(
   } catch (error) {
     if (!(error instanceof ComparisonCheckFailure)) throw error;
     report.failure = error.problem;
+    if (error.mismatch) report.tables[error.problem.table].match = false;
     throw new ComparisonFailure(report);
   }
   report.phase = "rows";
