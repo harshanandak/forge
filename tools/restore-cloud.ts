@@ -242,12 +242,10 @@ export async function transfer(options: Options) {
   return report;
 }
 
-if (
-  process.argv[1] &&
-  import.meta.url === pathToFileURL(resolve(process.argv[1])).href
-) {
+export async function cli(argv: string[], fetch?: Fetch): Promise<number> {
   try {
     const { values } = parseArgs({
+      args: argv,
       options: {
         pages: { type: "string" },
         worker: { type: "string" },
@@ -276,12 +274,20 @@ if (
       project,
       token,
       report,
+      ...(fetch ? { fetch } : {}),
     });
     process.stdout.write(`${JSON.stringify({ match: result.match })}\n`);
+    return 0;
   } catch (error) {
     process.stderr.write(
       `${error instanceof Refusal ? error.message : "restore failed"}\n`,
     );
-    process.exitCode = 1;
+    return 1;
   }
 }
+
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(resolve(process.argv[1])).href
+)
+  process.exitCode = await cli(process.argv.slice(2));

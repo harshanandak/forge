@@ -1,5 +1,4 @@
 ﻿import { createHash, randomUUID } from "node:crypto";
-import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +8,7 @@ import { stopOverlay, stopPlan } from "../../cloud/conformance/restored.ts";
 import type { Tables } from "../../cloud/conformance/max-source.ts";
 import {
   Refusal,
+  cli,
   tokenFrom,
   transfer,
   type Fetch,
@@ -232,32 +232,42 @@ test("a Worker clock skewed past the round trip still restores and matches", asy
   expect(result.match).toBe(true);
 });
 
-test("a failed restore never prints the token on stdout or stderr", () => {
+test("a failed restore never prints the token on stdout or stderr", async () => {
   const { dir } = bundle();
   const out = join(mkdtempSync(join(tmpdir(), "restore-leak-")), "r.json");
-  const ran = spawnSync(
-    process.execPath,
-    [
-      "tools/restore-cloud.ts",
-      "--pages",
-      dir,
-      "--worker",
-      "http://localhost:1",
-      "--project",
-      "target",
-      "--token-env",
-      "RESTORE_LEAK_TOKEN",
-      "--report",
-      out,
-    ],
-    {
-      env: { ...process.env, RESTORE_LEAK_TOKEN: "leak-canary-token" },
-      encoding: "utf8",
-      timeout: 30_000,
-    },
-  );
-  expect(ran.status).toBe(1);
-  expect(ran.stdout + ran.stderr).not.toContain("leak-canary-token");
+  process.env.RESTORE_LEAK_TOKEN = "secret-token";
+  const printed: string[] = [];
+  const keep = [process.stdout.write, process.stderr.write];
+  const capture = (chunk: unknown) => !!printed.push(String(chunk));
+  process.stdout.write = capture as typeof process.stdout.write;
+  process.stderr.write = capture as typeof process.stderr.write;
+  let code: number;
+  try {
+    code = await cli(
+      [
+        "--pages",
+        dir,
+        "--worker",
+        "https://worker.test",
+        "--project",
+        "target",
+        "--token-env",
+        "RESTORE_LEAK_TOKEN",
+        "--report",
+        out,
+      ],
+      worker({ refuse: 1 }).fake,
+    );
+  } finally {
+    [process.stdout.write, process.stderr.write] = keep as [
+      typeof process.stdout.write,
+      typeof process.stderr.write,
+    ];
+  }
+  expect(code).toBe(1);
+  expect(printed.join("")).toContain("restore refused at page 1");
+  expect(printed.join("")).not.toContain("secret-token");
+  expect(readFileSync(out, "utf8")).not.toContain("secret-token");
 });
 
 test("an existing report file is refused before any request", async () => {
