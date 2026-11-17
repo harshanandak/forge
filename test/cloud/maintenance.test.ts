@@ -154,6 +154,26 @@ test("only writable commands arm maintenance and alarms continue expired batches
     (await command("issue.create", { title: "kept" }, "write")).status,
   ).toBe(200);
   expect(armed).toHaveLength(1);
+  p.db.run("UPDATE domain_cloud_tokens SET expires_at=?", [
+    Date.now() + 100_000,
+  ]);
+  const claim = await project.fetch(
+    new Request("https://fixture.example/p/a/claim", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        subject: "alarm",
+        requestId: "claim",
+        ttlMs: 1000,
+        holder: { actor, session: { id: "raw" } },
+      }),
+    }),
+  );
+  expect(claim.status).toBe(200);
+  expect(armed).toHaveLength(2);
+  expect(armed[1]).toBeLessThan(armed[0]!);
+  expect((await command("issue.list", {}, "read-again")).status).toBe(200);
+  expect(armed).toHaveLength(2);
   for (let i = 0; i < 257; i++)
     p.db.run(
       "INSERT INTO domain_cloud_command_receipts(request_id,fingerprint,outcome,result,created_at,expires_at) VALUES (?,'{}','ok','{}',1,2)",
@@ -168,7 +188,7 @@ test("only writable commands arm maintenance and alarms continue expired batches
       )
       .all(),
   ).toHaveLength(1);
-  expect(armed).toHaveLength(2);
+  expect(armed).toHaveLength(3);
   next = null;
   await project.alarm();
   expect(
@@ -178,7 +198,7 @@ test("only writable commands arm maintenance and alarms continue expired batches
       )
       .all(),
   ).toEqual([]);
-  expect(armed).toHaveLength(3);
+  expect(armed).toHaveLength(4);
 });
 
 test.each([
