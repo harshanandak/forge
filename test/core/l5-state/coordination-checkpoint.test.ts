@@ -263,6 +263,42 @@ for (const mode of ["initialize", "restore"])
     },
   );
 
+test.each(["initialize", "restore"])(
+  "%s refuses missing covered record request witnesses proved by its event",
+  async (mode) => {
+    const source = await fixture(),
+      target = await fixture();
+    try {
+      source.owner.initialize();
+      source.owner.put(ns, "answer", { original: true }, actor, {
+        expectRevision: 0,
+        requestId: "covered-put",
+      });
+      source.owner.put(ns, "anchor", {}, actor, { expectRevision: 0 });
+      source.owner.checkpoint(1);
+      const events = source.owner.events(ns);
+      source.db.run(
+        "DELETE FROM state_requests WHERE request_id='covered-put'",
+      );
+      source.db.run(
+        "DELETE FROM state_checkpoint_receipts WHERE request_id='covered-put'",
+      );
+      expect(source.owner.events(ns)).toEqual(events);
+      target.owner.initialize();
+      const before = target.owner.export();
+      expect(() =>
+        mode === "initialize"
+          ? source.owner.initialize()
+          : target.owner.restore(source.owner.export(), undefined, 1),
+      ).toThrow(/state_requests/);
+      expect(target.owner.export()).toEqual(before);
+    } finally {
+      await source.close();
+      await target.close();
+    }
+  },
+);
+
 test("lease witnesses beyond 5,000 JSON values decode row-wise", async () => {
   const s = await fixture();
   try {
