@@ -15,6 +15,12 @@ core request fingerprint/result witnesses. Bounded prefixes include acquisitions
 releases; initialize and restore replay only the uncovered tail. The writer deletes no events.
 Version 1 remains supported; cloud v2 still refuses checkpoints without changing its wire format.
 
+Cloud command answers and refusals remain witnesses in the registered command-receipt domain
+table, preserved by the complete owner image. Folding the event prefix does not rewrite them.
+Their existing replay deadline is the earlier of 24 hours and credential expiry. A refused answer
+is its denied-id witness; no duplicate denied checkpoint row is written. Credential revocations
+remain outside event checkpoint replay, and cloud dump v3 transport is separate work.
+
 `StateOwner` accepts the locked `SqlDatabase` and `ClockPort` ports. `initialize()` is an explicit write; construction and reads do not initialize anything. `client(namespace, actor)` returns a `DeletableStateClient`, with namespace and actor captured. It never exposes a connection.
 
 Trusted constructors may also supply a `RecordFamilyRegistry` or namespace-family policies.
