@@ -937,16 +937,6 @@ export function assertRestoreCompatible(storage: DurableStorage): void {
   }
 }
 
-export function assertRestoreEmpty(db: SqlDatabase): void {
-  const before = dumpOf(db);
-  if (Object.values(before.tables).some((rows) => rows.length > 0))
-    throw new ForgeFailure({
-      code: "RESTORE_TARGET_NOT_EMPTY",
-      message: "A dump restores only into an empty project",
-      retry: "never",
-    });
-}
-
 /** Writes a dump into an empty project and reads it back in the same transaction; any difference rolls it back. */
 export function restoreDump(
   db: SqlDatabase,
@@ -956,7 +946,13 @@ export function restoreDump(
   finalize?: () => void,
 ): Record<string, number> {
   return db.transaction(() => {
-    assertRestoreEmpty(db);
+    const before = dumpOf(db);
+    if (Object.values(before.tables).some((rows) => rows.length > 0))
+      throw new ForgeFailure({
+        code: "RESTORE_TARGET_NOT_EMPTY",
+        message: "A dump restores only into an empty project",
+        retry: "never",
+      });
     insertRows(db, dump.tables);
     assertLimits(db, limits, "RESTORE_TOO_LARGE", "The restored project");
     admitJson(dump.tables);

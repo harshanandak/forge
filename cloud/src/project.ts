@@ -23,7 +23,6 @@ import type { SqlDatabase, SqlRow } from "../../src/ports/store.ts";
 import { validateLeaseHolder } from "../../src/generated/validators.ts";
 import {
   assertRestoreCompatible,
-  assertRestoreEmpty,
   clearStaged,
   DUMP_FORMAT,
   DUMP_MIGRATION,
@@ -322,7 +321,7 @@ export class Project {
 
   // Forgets a half-finished paged restore: its staged rows and its place in the page order.
   async #abandon(): Promise<void> {
-    if (!(await this.#isProvisioned())) clearStaged(this.#open().db);
+    clearStaged(this.#open().db);
     await this.#storage.delete(STAGED);
   }
 
@@ -848,11 +847,6 @@ export class Project {
     if (dump.format === DUMP_FORMAT) {
       if (staged !== undefined) await this.#abandon();
       const { db, owner } = this.#openWrite();
-      assertRestoreEmpty(db);
-      await this.#storage.put(STAGED, {
-        next: 0,
-        format: dump.format,
-      });
       const finish = () => this.#restoreStop(db, owner, project);
       value = { restored: restoreDump(db, owner, dump, this.#limits, finish) };
     } else {
@@ -871,10 +865,11 @@ export class Project {
               : `Expected page ${staged.next}, or page 0 to start again`,
         );
       const { db, owner } = this.#openWrite(staged !== undefined);
-      await this.#storage.put(STAGED, {
-        next: page.page,
-        format: page.format,
-      });
+      if (!page.last)
+        await this.#storage.put(STAGED, {
+          next: page.page,
+          format: page.format,
+        });
       const finish = () => this.#restoreStop(db, owner, project);
       value = {
         restored: restorePage(db, owner, page, this.#limits, finish),
@@ -888,11 +883,11 @@ export class Project {
         });
         return Response.json({ ok: true, value });
       }
+      await this.#storage.delete(STAGED);
     }
     await this.#storage.put(STATE_EPOCH, crypto.randomUUID());
     await this.#storage.put(PROVISIONED, true);
     this.#provisioned = true;
-    await this.#storage.delete(STAGED);
     return Response.json({ ok: true, value });
   }
 
