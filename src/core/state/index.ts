@@ -1573,7 +1573,15 @@ export class StateOwner {
   #event(event: StateEvent): void {
     if (!validateStateEvent(event).ok) invalid("Invalid state event");
     const text = json(event);
-    if (Buffer.byteLength(text) > EVENT_RESERVE_BYTES)
+    const next = this.#db.get(
+      "SELECT sequence+1 AS n FROM state_retention WHERE id=1",
+    )?.n;
+    const row =
+      Buffer.byteLength(text) +
+      Buffer.byteLength(event.namespace) +
+      Buffer.byteLength(event.key) +
+      String(next).length;
+    if (row > EVENT_RESERVE_BYTES)
       invalid("State event exceeds the compaction reserve");
     try {
       const written = this.#db.run(
