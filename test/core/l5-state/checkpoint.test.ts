@@ -287,7 +287,7 @@ for (const encoded of ["null", "[]", "{", '{"header":[],"header":[]}'])
   }, 30000);
 
 const rows: Record<string, readonly (string | number)[]> = {
-  state_checkpoint_header: [1, 1, "lineage", 1, 20, 1, 20],
+  state_checkpoint_header: [1, 1, "lineage", 1, 20, 1, 20, ""],
   state_checkpoint_live: value().live[0]!,
   state_checkpoint_deleted: value().deleted[0]!,
   state_checkpoint_leases: value().leases[0]!,
@@ -313,6 +313,7 @@ async function open(beforeCheckpoint = false) {
             "004_state_checkpoint",
             "007_record_checkpoint",
             "008_record_checkpoint_reader",
+            "009_checkpoint_compaction",
           ].includes(entry.id),
       ),
     );
@@ -371,7 +372,7 @@ for (const table of ["empty", ...Object.keys(rows)])
 test("the previous initializer rejects migration 005 without writes", async () => {
   const source = await open();
   try {
-    expect(stateMigrations.at(-1)?.id).toBe("008_record_checkpoint_reader");
+    expect(stateMigrations.at(-1)?.id).toBe("009_checkpoint_compaction");
     const before = source.db.get("SELECT total_changes() AS n");
     expect(() => migrate(source.db, stateMigrations.slice(0, -1))).toThrow(
       NewerStoreError,
@@ -410,7 +411,8 @@ function publishFixture(store: Store, checkpoint: Checkpoint): void {
       kind === "header"
         ? "state_checkpoint_header"
         : `state_checkpoint_${kind}`;
-    const tuples = kind === "header" ? [[1, ...checked.header]] : checked[kind];
+    const tuples =
+      kind === "header" ? [[1, ...checked.header, ""]] : checked[kind];
     for (const tuple of tuples) {
       let body: string[] = [];
       if (kind === "live") {

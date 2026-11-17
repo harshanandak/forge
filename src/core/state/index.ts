@@ -48,6 +48,7 @@ import {
 } from "./families.ts";
 import {
   checkpointTables,
+  checkpointCommitment,
   assertNoCheckpoint,
   readReplayStart,
   checkpointFormat,
@@ -185,6 +186,7 @@ function wellFormedText(value: string, position: string): void {
 }
 /** The longest stored floor text accepted: the wrapper of a two-field value is well under this. */
 const FLOOR_TEXT_MAX = 4096;
+const EVENT_RESERVE_BYTES = 1048576;
 /** The stored floor's number; any value that is not the exact floor shape is refused, never read as zero. */
 export function floorNumber(value: unknown, prefix: string): number {
   const number = allocationFloorNumber(value, prefix);
@@ -626,6 +628,7 @@ export function verifyEventDerivedState(
     pageSize,
     checkpointCapable,
   );
+  const compacted = (checkpoint?.archiveThrough ?? 0) > 0;
   if (numbered !== undefined && checkpoint !== undefined)
     throw new RestoreConsistencyFailure(
       "state_checkpoint_header",
@@ -635,6 +638,12 @@ export function verifyEventDerivedState(
   const historical = new Map<string, { revision: number }>();
   const recordRevisions = new Map<string, number>();
   const leases = new Map<string, LeaseRecord>();
+  if (compacted)
+    for (const [namespace, subject, , , body] of checkpoint!.leases)
+      leases.set(
+        json([namespace, subject]),
+        parseRestoreJson(body) as LeaseRecord,
+      );
   const leaseSequences = new Map<string, number>();
   const requests = new Map<string, number>();
   const plans = new Map<string, ReceiptPlan | boolean>();
@@ -705,6 +714,7 @@ export function verifyEventDerivedState(
     )
       reject("state_requests", id);
     requests.set(id, sequence);
+    if (compacted) plans.set(id, true);
   }
   // Two numbers per observed prefix, folded from rows as they are verified: never the events or the keys themselves.
   const tally = new Map<string, { highest: number; earlier: number }>();
@@ -751,6 +761,7 @@ export function verifyEventDerivedState(
       }
   };
   const verifyLeaseSeeds = () => {
+    if (compacted) return;
     if (checkpoint && leases.size !== checkpoint.leases.length)
       reject("state_checkpoint_leases", "covered replay");
     for (const [namespace, subject, sequence, , body] of checkpoint?.leases ??
@@ -769,7 +780,7 @@ export function verifyEventDerivedState(
     "state_events",
     "sequence,namespace,key,body",
     ["sequence"],
-    checkpoint === undefined ? undefined : [0],
+    checkpoint === undefined ? undefined : [compacted ? covered : 0],
   )) {
     const eventSequence = Number(row.sequence);
     if (eventSequence < 1) reject("state_events", "sequence");
@@ -1277,7 +1288,7 @@ export class StateOwner {
     this.#checkpointReady = true;
   }
 
-  checkpoint(batch = 256): number {
+  checkpoint(batch = 256, through?: number): number {
     this.#db.transaction(() => {
       assertRetentionAuthority(this.#db);
       verifyEventDerivedState(
@@ -1288,7 +1299,69 @@ export class StateOwner {
         ),
       );
     });
-    return writeRecordCheckpoint(this.#db, batch);
+    return writeRecordCheckpoint(this.#db, batch, through);
+  }
+
+  compact(batch = 256, keepRows = 4096, keepBytes = 4194304): number {
+    if (
+      ![batch, keepRows, keepBytes].every(Number.isSafeInteger) ||
+      batch < 1 ||
+      batch > 256 ||
+      keepRows < 0 ||
+      keepRows > 8192 ||
+      keepBytes < 0 ||
+      keepBytes > 8388608
+    )
+      invalid("Invalid compaction budget");
+    keepRows = Math.min(keepRows, 8191);
+    keepBytes = Math.min(keepBytes, 8388608 - EVENT_RESERVE_BYTES);
+    const usage = this.#db.get(
+      "SELECT rows,bytes FROM state_usage WHERE table_name='state_events'",
+    );
+    if (Number(usage?.rows) <= keepRows && Number(usage?.bytes) <= keepBytes)
+      return 0;
+    const eligible = Number(
+      this.#db.get(
+        "SELECT COALESCE(MAX(sequence),0) AS n FROM (SELECT sequence,ROW_NUMBER() OVER (ORDER BY sequence DESC) AS n,SUM(LENGTH(CAST(sequence AS BLOB))+LENGTH(CAST(namespace AS BLOB))+LENGTH(CAST(key AS BLOB))+LENGTH(CAST(body AS BLOB))) OVER (ORDER BY sequence DESC) AS bytes FROM state_events) WHERE n>? OR bytes>?",
+        [keepRows, keepBytes],
+      )?.n,
+    );
+    if (!eligible) return 0;
+    const through = Math.max(
+      Number(
+        this.#db.get(
+          "SELECT covered_sequence FROM state_checkpoint_header WHERE id=1",
+        )?.covered_sequence ?? 0,
+      ),
+      Number(
+        this.#db.get(
+          "SELECT MAX(sequence) AS n FROM (SELECT sequence FROM state_events WHERE sequence<=? ORDER BY sequence LIMIT ?)",
+          [eligible, batch],
+        )?.n,
+      ),
+    );
+    this.checkpoint(batch, through);
+    return this.#db.transaction(() => {
+      verifyEventDerivedState(
+        this.#db,
+        Number(
+          this.#db.get("SELECT sequence FROM state_retention WHERE id=1")
+            ?.sequence,
+        ),
+      );
+      this.#db.run(
+        "UPDATE state_checkpoint_header SET archive_through=MAX(archive_through,?) WHERE id=1",
+        [Math.min(through, eligible)],
+      );
+      this.#db.run(
+        "UPDATE state_checkpoint_header SET commitment=? WHERE id=1",
+        [checkpointCommitment(this.#db, batch)],
+      );
+      return this.#db.run(
+        "DELETE FROM state_events WHERE sequence IN (SELECT sequence FROM state_events WHERE sequence<=? ORDER BY sequence LIMIT ?)",
+        [Math.min(through, eligible), batch],
+      ).changes;
+    });
   }
 
   client(namespace: string, actor: Actor): DeletableStateClient {
@@ -1435,6 +1508,7 @@ export class StateOwner {
   /** One bounded page of a key's events, newest first; the (namespace, key, sequence) index serves it. */
   history(namespace: string, options: HistoryOptions): readonly StateEvent[] {
     namespaceValid(namespace);
+    this.#historyAvailable(namespace);
     keyValid(options.key);
     if (
       !Number.isSafeInteger(options.limit) ||
@@ -1454,12 +1528,32 @@ export class StateOwner {
   }
   events(namespace: string, key?: string): readonly StateEvent[] {
     namespaceValid(namespace);
+    this.#historyAvailable(namespace);
     return this.#db
       .all(
         `SELECT body FROM state_events WHERE namespace=?${key === undefined ? "" : " AND key=?"} ORDER BY sequence`,
         key === undefined ? [namespace] : [namespace, key],
       )
       .map((row) => body<StateEvent>(row)!);
+  }
+  #historyAvailable(namespace: string): void {
+    if (!this.#checkpointReady)
+      this.#checkpointReady = !!this.#db.get(
+        "SELECT 1 FROM sqlite_master WHERE name='state_checkpoint_header'",
+      );
+    if (
+      this.#checkpointReady &&
+      this.#db.get(
+        "SELECT 1 FROM state_checkpoint_header WHERE archive_through>0",
+      ) &&
+      this.#db.get(
+        "SELECT 1 FROM (SELECT namespace FROM state_checkpoint_live UNION ALL SELECT namespace FROM state_checkpoint_deleted UNION ALL SELECT namespace FROM state_checkpoint_leases) WHERE namespace=? LIMIT 1",
+        [namespace],
+      )
+    )
+      invalid(
+        "CHECKPOINT_REQUIRED: load the checkpoint before requesting retired history",
+      );
   }
   lease(namespace: string, subject: string): LeaseRecord | undefined {
     namespaceValid(namespace);
@@ -1478,12 +1572,25 @@ export class StateOwner {
   }
   #event(event: StateEvent): void {
     if (!validateStateEvent(event).ok) invalid("Invalid state event");
-    const written = this.#db.run(
-      "INSERT INTO state_events(namespace,key,body,sequence) SELECT ?,?,?,sequence+1 FROM state_retention WHERE id=1 AND sequence>=0 AND sequence<9007199254740991",
-      [event.namespace, event.key, json(event)],
-    );
-    if (written.changes !== 1)
-      invalid("State retention sequence requires repair");
+    try {
+      const written = this.#db.run(
+        "INSERT INTO state_events(namespace,key,body,sequence) SELECT ?,?,?,sequence+1 FROM state_retention WHERE id=1 AND sequence>=0 AND sequence<9007199254740991",
+        [event.namespace, event.key, json(event)],
+      );
+      if (written.changes !== 1)
+        invalid("State retention sequence requires repair");
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message.includes("CHECKPOINT_MAINTENANCE_REQUIRED")
+      )
+        throw new ForgeFailure({
+          code: "UNAVAILABLE",
+          message: "CHECKPOINT_MAINTENANCE_REQUIRED",
+          retry: "safe",
+        });
+      throw error;
+    }
   }
   #held(namespace: string, fence: Fence, now: number): LeaseRecord {
     const current = this.lease(namespace, fence.subject);
@@ -2357,6 +2464,14 @@ export class StateOwner {
   releaseRestoredLeases(pageSize: number = restorePageSize): number {
     const at = new Date(this.#now()).toISOString();
     return this.#db.transaction(() => {
+      const archived = Number(
+        this.#db.get(
+          "SELECT archive_through FROM state_checkpoint_header WHERE id=1",
+        )?.archive_through ?? 0,
+      );
+      this.#db.run(
+        "UPDATE state_checkpoint_header SET archive_through=0 WHERE id=1",
+      );
       let releasedCount = 0;
       // Only body changes below, never the (namespace, subject) keyset, so paging stays exact.
       for (const row of restoredRows(
@@ -2392,6 +2507,10 @@ export class StateOwner {
         this.#event(event);
         releasedCount++;
       }
+      this.#db.run(
+        "UPDATE state_checkpoint_header SET archive_through=? WHERE id=1",
+        [archived],
+      );
       return releasedCount;
     });
   }

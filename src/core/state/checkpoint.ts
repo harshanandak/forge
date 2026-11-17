@@ -232,8 +232,46 @@ export function recordDigest(value: unknown): string {
   return `sha256:${createHash("sha256").update(canonical(value)).digest("hex")}`;
 }
 
+export function checkpointCommitment(db: SqlDatabase, pageSize = 256): string {
+  if (!Number.isSafeInteger(pageSize) || pageSize < 1)
+    invalid("Invalid checkpoint page size");
+  const hash = createHash("sha256");
+  for (const table of Object.keys(checkpointTables)) {
+    const keys = db
+      .all(`PRAGMA table_info(${table})`)
+      .filter((column) => Number(column.pk) > 0)
+      .sort((a, b) => Number(a.pk) - Number(b.pk))
+      .map((column) => String(column.name));
+    let after: SqlValue[] = [];
+    hash.update(table);
+    for (;;) {
+      const rows = db.all(
+        `SELECT * FROM ${table}${after.length ? ` WHERE (${keys.join(",")}) > (${keys.map(() => "?").join(",")})` : ""} ORDER BY ${keys.join(",")} LIMIT ?`,
+        [...after, pageSize],
+      );
+      for (const row of rows)
+        hash.update(
+          canonical(
+            Object.fromEntries(
+              Object.entries(row)
+                .filter(([column]) => column !== "commitment")
+                .map(([column, value]) => [
+                  column,
+                  typeof value === "bigint" ? Number(value) : value,
+                ]),
+            ),
+          ),
+        );
+      if (rows.length < pageSize) break;
+      after = keys.map((column) => rows.at(-1)![column]!);
+    }
+  }
+  return `sha256:${hash.digest("hex")}`;
+}
+
 export interface CheckpointSeed {
   readonly coveredSequence: number;
+  readonly archiveThrough: number;
   readonly live: Checkpoint["live"];
   readonly deleted: Checkpoint["deleted"];
   readonly floors: Checkpoint["floors"];
@@ -274,6 +312,13 @@ export function readReplayStart(
     return { checkpoint: undefined, receipts };
   }
   checkpointFormat(header.format_version);
+  if (header.commitment && Number(header.archive_through) === 0)
+    invalid("Checkpoint commitment requires repair");
+  if (
+    Number(header.archive_through) > 0 &&
+    header.commitment !== checkpointCommitment(db, pageSize)
+  )
+    invalid("Checkpoint commitment requires repair");
   for (const kind of ["denied"])
     if (db.get(`SELECT 1 FROM state_checkpoint_${kind} LIMIT 1`))
       invalid(`Unsupported checkpoint ${kind} entries; newer Forge required`);
@@ -444,6 +489,7 @@ export function readReplayStart(
   return {
     checkpoint: {
       coveredSequence: checkpoint.header[3],
+      archiveThrough: checkpoint.header[5],
       live: checkpoint.live,
       deleted: checkpoint.deleted,
       floors: [...checkpoint.floors, ...liveFloors],

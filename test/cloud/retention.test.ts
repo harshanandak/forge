@@ -71,7 +71,7 @@ test("legacy staged restore can be abandoned before write initialization", async
   const { db, close } = await fixture();
   try {
     migrate(db, [
-      ...stateMigrations.filter((m) => m.id !== "006_state_retention"),
+      ...stateMigrations.filter((m) => m.id < "006_state_retention"),
       ...domain.migrations.filter(
         (m) =>
           !["010_cloud_retention", "011_cloud_request_age_dump"].includes(m.id),
@@ -99,7 +99,7 @@ test("pre-retention dump reads preserve the schema and every stored byte, and st
   const { storage } = browserStorage(raw, (sql) => calls.push(sql));
   const db = durableStore(storage);
   migrate(db, [
-    ...stateMigrations.filter((m) => m.id !== "006_state_retention"),
+    ...stateMigrations.filter((m) => m.id < "006_state_retention"),
     ...domain.migrations.filter(
       (m) =>
         !["010_cloud_retention", "011_cloud_request_age_dump"].includes(m.id),

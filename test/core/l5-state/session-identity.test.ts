@@ -340,6 +340,7 @@ test("a migration list without 003_device_session_identity refuses a qualified s
       "006_state_retention",
       "007_record_checkpoint",
       "008_record_checkpoint_reader",
+      "009_checkpoint_compaction",
     ]);
     const before = source.db.get("SELECT total_changes() AS total")?.total;
     expect(() => migrate(source.db, [baseline, eventKeyIndex])).toThrow(
