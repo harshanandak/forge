@@ -332,7 +332,6 @@ jobs:
           [[ "$ms" =~ ^[0-9]+$ ]] || { echo "::error::large.out needs exactly one valid budget maximum duration line"; exit 1; }
           spent $(( ms / 1000 ))
           # Budget cases (forge-1304). The exact and cursor runs get page budgets that are byte sizes the oracle computes from
-          # accepted rows before the Worker starts; the body run raises the page and stored caps to the 8 MiB restore body.
           begin=$SECONDS
           exact=$(bun conformance/conformance.ts budget-plan exact | sed -n 's/^PLAN //p')
           cursor=$(bun conformance/conformance.ts budget-plan cursor | sed -n 's/^PLAN //p')

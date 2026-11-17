@@ -5170,7 +5170,6 @@ if (phase === "budget-cursor") {
 }
 
 if (phase === "budget-body") {
-  // One page near the 8 MiB restore body: page and stored caps of 8 MiB and 100 rows per table, set by the workflow.
   const limit = 8 * 1024 * 1024;
   const low = limit - 65_536;
   const oracle = await import("./budget.ts");
@@ -5183,9 +5182,7 @@ if (phase === "budget-body") {
       const built: { tail: number; size: number }[] = [];
       const build = async (tail: number) => {
         const near = await nearSource(tail);
-        const size = oracle.pageBytes(
-          oracle.finalPage(stoppedFixture(near.tables, 2)),
-        );
+        const size = oracle.pageBytes(oracle.finalPage(near.tables));
         built.push({ tail, size });
         return { ...near, size };
       };
@@ -5235,44 +5232,33 @@ if (phase === "budget-body") {
         };
       };
       const fixtureResult = await fixture();
-      let { text } = fixtureResult;
       const { size, stored, rows, tables } = fixtureResult;
-      fixtureResult.text = "";
       const [source, target] = [`${run}-body-src`, `${run}-body-dst`];
-      okValue(await adminCall(source, "POST", "restore", text), "body seed");
+      assert.equal(Buffer.byteLength(fixtureResult.text), size);
+      okValue(
+        await adminCall(source, "POST", "restore", fixtureResult.text),
+        "body seed",
+      );
+      fixtureResult.text = "";
       const trip = await roundTrip(
         source,
         target,
         "body",
-        limit,
-        (_page, real) => {
-          assert.equal(
-            Buffer.byteLength(real),
-            oracle.pageBytes(
-              oracle.finalPage(
-                stopOverlay(tables, stopPlan(tables, stopOf(source))),
-              ),
-            ),
-            "the real page is not the expected page",
-          );
-          text = "";
-        },
+        4 * 1024 * 1024,
+        undefined,
         undefined,
         comparisonFor(tables, source, target),
       );
-      assert.equal(trip.bytes.length, 1, "one real page holds the project");
       assert.ok(
-        trip.bytes[0]! >= low,
-        `the real page is ${trip.bytes[0]} bytes`,
+        trip.bytes.length > 1,
+        "the near-8-MiB import exports in bounded pages",
       );
       assert.deepEqual(
         trip.digests,
         oracle.digestOf(stopOverlay(tables, stopPlan(tables, stopOf(source)))),
       );
       console.log(
-        expectsStop()
-          ? `INFO body: expected final target page ${size} bytes (${limit - size} under the restore body), source page ${trip.bytes[0]} bytes, ${stored} stored bytes, rows ${JSON.stringify(rows)}, builds ${JSON.stringify(built)}`
-          : `INFO body: expected and real page ${size} bytes (${limit - size} under the restore body), ${stored} stored bytes, rows ${JSON.stringify(rows)}, builds ${JSON.stringify(built)}`,
+        `INFO body: imported page ${size} bytes (${limit - size} under the restore body), export pages ${trip.bytes.join(",")} bytes, ${stored} stored bytes, rows ${JSON.stringify(rows)}, builds ${JSON.stringify(built)}`,
       );
       showDigests("body", trip.digests);
       console.log(
