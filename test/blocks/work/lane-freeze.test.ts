@@ -1,4 +1,4 @@
-﻿import { afterAll, beforeAll, expect, setDefaultTimeout, test } from "bun:test";
+import { afterAll, beforeAll, expect, setDefaultTimeout, test } from "bun:test";
 import { createSqliteStore } from "../../../src/adapters/store-sqlite/index.ts";
 import { StateOwner } from "../../../src/core/state/index.ts";
 import { createStateClient } from "../../../src/assembly/state-client.ts";
@@ -84,7 +84,7 @@ const refusal = (work: () => unknown) => {
 
 test("freeze is recorded in the store and refuses later issue writes", async () => {
   const { owner, run, close } = await fixture();
-  const since = frozenAt(run("issue.freeze"));
+  const since = frozenAt(run("lane.freeze"));
   expect(owner.get(namespace, GLOBAL)?.value).toMatchObject({ frozen: since });
   const before = owner.list(namespace, "issue:").length;
   const error = refusal(() => run("issue.create", { title: "after" }));
@@ -97,7 +97,7 @@ test("freeze is recorded in the store and refuses later issue writes", async () 
 
 test("a frozen store still serves reads", async () => {
   const { run, close } = await fixture();
-  run("issue.freeze");
+  run("lane.freeze");
   expect(run("issue.show", { id: "work-1" })).toMatchObject({ id: "work-1" });
   expect(run("issue.list", {})).toMatchObject({ items: [{ id: "work-1" }] });
   await close();
@@ -105,28 +105,28 @@ test("a frozen store still serves reads", async () => {
 
 test("a second freeze writes nothing", async () => {
   const { owner, run, close } = await fixture();
-  const since = frozenAt(run("issue.freeze"));
+  const since = frozenAt(run("lane.freeze"));
   const revision = owner.get(namespace, GLOBAL)?.revision;
-  expect(run("issue.freeze")).toEqual({ frozen: true, at: since });
+  expect(run("lane.freeze")).toEqual({ frozen: true, at: since });
   expect(owner.get(namespace, GLOBAL)?.revision).toBe(revision);
   await close();
 });
 
 test("unfreeze lifts the freeze and issue writes work again", async () => {
   const { owner, run, close } = await fixture();
-  run("issue.freeze");
-  expect(run("issue.unfreeze")).toEqual({ frozen: false });
+  run("lane.freeze");
+  expect(run("lane.unfreeze")).toEqual({ frozen: false });
   expect(owner.get(namespace, GLOBAL)?.value).not.toHaveProperty("frozen");
   expect(run("issue.create", { title: "after" })).toMatchObject({
     title: "after",
   });
-  expect(run("issue.unfreeze")).toEqual({ frozen: false });
+  expect(run("lane.unfreeze")).toEqual({ frozen: false });
   await close();
 });
 
 test("lane stop and resume keep the freeze", async () => {
   const { owner, run, close } = await fixture();
-  const since = frozenAt(run("issue.freeze"));
+  const since = frozenAt(run("lane.freeze"));
   run("lane.stop", { all: true });
   run("lane.resume", { all: true });
   expect(owner.get(namespace, GLOBAL)?.value).toMatchObject({ frozen: since });
@@ -135,7 +135,7 @@ test("lane stop and resume keep the freeze", async () => {
 
 test("every issue and attempt write is gated and only a human can unfreeze", async () => {
   const { run, close } = await fixture();
-  run("issue.freeze");
+  run("lane.freeze");
   const declared = manifest.operations as Record<
     string,
     { effects: string[]; callers: string[] } | undefined
@@ -153,6 +153,6 @@ test("every issue and attempt write is gated and only a human can unfreeze", asy
     expect(refusal(() => run(op, { id: "work-1" })).message).toContain(
       "frozen since",
     );
-  expect(declared["issue.unfreeze"]?.callers).toEqual(["human"]);
+  expect(declared["lane.unfreeze"]?.callers).toEqual(["human"]);
   await close();
 });

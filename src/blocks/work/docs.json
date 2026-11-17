@@ -120,14 +120,14 @@
         }
       ]
     },
-    "issue.freeze": {
+    "lane.freeze": {
       "title": "Freeze",
-      "summary": "Freeze the local tracker store: every later issue and attempt write is refused with UNAVAILABLE naming the freeze. Reads keep working. Recorded in the store; repeating it keeps the first time.",
-      "description": "Run it at the tracker switch so no session keeps writing to the old authority. Undo it with issue unfreeze."
+      "summary": "Freeze the local tracker store: later issue and attempt writes are refused naming the freeze. Reads still work. Repeating it keeps the first time.",
+      "description": "Run it at the tracker switch so no session keeps writing to the old authority. Undo it with lane unfreeze."
     },
-    "issue.unfreeze": {
+    "lane.unfreeze": {
       "title": "Unfreeze",
-      "summary": "Lift the local tracker freeze so issue writes work again. Human only. This is the rollback path; running it on an unfrozen store changes nothing."
+      "summary": "Lift the local tracker freeze. This is the rollback path."
     },
     "lane.status": {
       "title": "Lane status",

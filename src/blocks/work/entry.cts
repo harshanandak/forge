@@ -285,8 +285,8 @@ type WorkOperations = TrackerOperations<"issue"> & {
     NextInput,
     TailAction | { actions: TailAction[] },
   ];
-  readonly "issue.freeze": readonly [Record<string, never>, FreezeState];
-  readonly "issue.unfreeze": readonly [Record<string, never>, FreezeState];
+  readonly "lane.freeze": readonly [Record<string, never>, FreezeState];
+  readonly "lane.unfreeze": readonly [Record<string, never>, FreezeState];
   readonly "lane.stop": readonly [StopInput, { stopped: string; at: string }];
   readonly "lane.resume": readonly [ResumeInput, { resumed: string }];
   readonly "lane.status": readonly [Record<string, never>, LaneStatus];
@@ -4191,7 +4191,7 @@ function readFreezable(state: LeaseStateClient) {
     return fail("INPUT_INVALID", `${error.message}; repair or remove it first`);
   }
 }
-function issueFreeze(call: HandlerCall<Record<string, never>>): FreezeState {
+function laneFreeze(call: HandlerCall<Record<string, never>>): FreezeState {
   const state = client(call.services);
   const { value, revision } = readFreezable(state);
   if (value.frozen === undefined) {
@@ -4200,7 +4200,7 @@ function issueFreeze(call: HandlerCall<Record<string, never>>): FreezeState {
   }
   return { frozen: true, at: value.frozen };
 }
-function issueUnfreeze(call: HandlerCall<Record<string, never>>): FreezeState {
+function laneUnfreeze(call: HandlerCall<Record<string, never>>): FreezeState {
   const state = client(call.services);
   const { value, revision } = readFreezable(state);
   if (value.frozen !== undefined) {
@@ -4217,7 +4217,7 @@ function refuseFrozen(services: unknown): void {
       `The local tracker store has been frozen since ${isTime(value.frozen) ? value.frozen : "an unreadable time"} and no longer accepts issue writes.`,
       {
         repair:
-          "Bind this checkout to the cloud project with forge auth login, then use the cloud-served forge issue commands. To undo the freeze, the owner runs forge issue unfreeze.",
+          "Bind this checkout to the cloud project with forge auth login, then use the cloud-served forge issue commands. To undo the freeze, the owner runs forge lane unfreeze.",
       },
     );
 }
@@ -4520,8 +4520,8 @@ const operations: Operations<WorkOperations> = {
   "lane.next": atomicRuntime(laneNext),
   "lane.stop": atomicRuntime(laneStop),
   "lane.resume": atomicRuntime(laneResume),
-  "issue.freeze": issueFreeze,
-  "issue.unfreeze": issueUnfreeze,
+  "lane.freeze": laneFreeze,
+  "lane.unfreeze": laneUnfreeze,
   "lane.status": (call) => laneStatus(call),
   "lane.record": atomicRuntime(laneRecord),
   "lane.show": ({ input, services, config }) => {
@@ -6915,12 +6915,12 @@ const operations: Operations<WorkOperations> = {
 for (const name of FROZEN_WRITES) {
   const table = operations as unknown as Record<
     string,
-    (call: HandlerCall<never>) => unknown
+    (...args: [HandlerCall<never>, ...unknown[]]) => unknown
   >;
   const run = table[name]!;
-  table[name] = (call) => {
-    refuseFrozen(call.services);
-    return run(call);
+  table[name] = (...args) => {
+    refuseFrozen(args[0].services);
+    return run(...args);
   };
 }
 Object.defineProperties(operations, {
