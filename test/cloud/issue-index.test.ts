@@ -29,7 +29,7 @@ const shape = (n: number) => ({
 const byKey = (a: number, b: number) =>
   `issue:work-${a}` < `issue:work-${b}` ? -1 : 1;
 
-function fixture(count = 0) {
+function fixture(count = 0, upgraded = true) {
   const db = new Database(":memory:");
   const sql: SqlDatabase = {
     exec: (text) => {
@@ -41,7 +41,10 @@ function fixture(count = 0) {
       (db.query(text).get(...params) ?? undefined) as SqlRow | undefined,
     transaction: (body) => db.transaction(body)(),
   };
-  migrate(sql, [...stateMigrations, ...domain.migrations]);
+  migrate(
+    sql,
+    upgraded ? [...stateMigrations, ...domain.migrations] : stateMigrations,
+  );
   const meter = { rows: 0 };
   const storage = {
     sql: {
@@ -220,4 +223,58 @@ test("status reads the usage counters in one statement and agrees with a scan", 
     expect(dumpUsage(counting, limits, true)).toEqual(dumpUsage(f.sql, limits));
     expect(calls).toHaveLength(1);
   }
+}, 30_000);
+
+test("an unmigrated project refuses every list read and names the upgrade", () => {
+  const f = fixture(3, false);
+  for (const [ready, mode] of [
+    [false, undefined],
+    [true, undefined],
+    [false, "blocked"],
+    [false, "stale"],
+  ] as const) {
+    expect(() => f.list({}, ready, mode)).toThrow(
+      /POST \/p\/<project>\/upgrade/,
+    );
+  }
+}, 30_000);
+
+test("a dependency whose index row is not usable is refused, never read as open", () => {
+  const f = fixture(100);
+  f.db.run("UPDATE state_records SET body=? WHERE key='issue:work-1'", [
+    f.body(1, { dependsOn: ["work-99"] }),
+  ]);
+  for (const [ok, message] of [
+    [0, /not valid/],
+    [2, /Issue forge-99 is over its read budget/],
+  ] as const) {
+    f.db.run(
+      "UPDATE domain_cloud_issue_index SET ok=? WHERE key='issue:work-99'",
+      [ok],
+    );
+    expect(() => f.list({ limit: 1 }, true)).toThrow(message);
+    expect(() => f.list({ limit: 1 }, false, "blocked")).toThrow(message);
+  }
+}, 30_000);
+
+test("a maximum schema-valid issue stays listable and an oversized one is named", () => {
+  const f = fixture(2);
+  const text = (n: number, chars: number) =>
+    String.fromCharCode(1).repeat(chars - 4) + String(n).padStart(4, "0");
+  f.db.run("UPDATE state_records SET body=? WHERE key='issue:work-1'", [
+    f.body(1, {
+      labels: Array.from({ length: 64 }, (_, i) => text(i, 100)),
+      dependsOn: Array.from({ length: 256 }, (_, i) => text(i, 200)),
+      parent: text(0, 200),
+    }),
+  ]);
+  const row = f.sql.get(
+    "SELECT ok FROM domain_cloud_issue_index WHERE key='issue:work-1'",
+  );
+  expect(Number(row!.ok)).toBe(1);
+  expect(f.list({}).ids).toContain("forge-1");
+  f.db.run("UPDATE state_records SET body=? WHERE key='issue:work-2'", [
+    f.body(2, { kind: "k".repeat(1_100_000) }),
+  ]);
+  expect(() => f.list({})).toThrow(/Issue forge-2 is over its read budget/);
 }, 30_000);

@@ -596,7 +596,10 @@ export class Project {
         } catch (error) {
           const refusal = storageFailure(error);
           if (refusal) throw refusal;
-          throw fail("UNAVAILABLE", "Dump usage is unavailable");
+          throw fail(
+            "UNAVAILABLE",
+            "Dump usage is unavailable; upgrade the project with POST /p/<project>/upgrade",
+          );
         }
       }
       const reads = request.method === "GET" && route === "holder";

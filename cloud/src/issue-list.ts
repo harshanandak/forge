@@ -11,6 +11,7 @@ import {
   leaseOf,
   minted,
   schemas,
+  shownId,
   shownItem,
   storedId,
   type IssueViews,
@@ -70,10 +71,26 @@ const names = (text: unknown): string[] => {
     throw invalid();
   return parsed;
 };
-const stored = (row: SqlRow): Stored => {
+const indexed = <T>(read: () => T): T => {
+  try {
+    return read();
+  } catch (error) {
+    if (/no such table/i.test(String(error)))
+      throw fail("UNAVAILABLE", "Issue index needs POST /p/<project>/upgrade");
+    throw error;
+  }
+};
+const usable = (row: SqlRow, prefix: string): SqlRow => {
   if (Number(row.ok) === 2)
-    throw fail("UNAVAILABLE", "Issue list is over its read budget");
+    throw fail(
+      "UNAVAILABLE",
+      `Issue ${shownId(String(row.key).slice(ISSUE.length), prefix)} is over its read budget`,
+    );
   if (Number(row.ok) !== 1) throw invalid();
+  return row;
+};
+const stored = (row: SqlRow, prefix: string): Stored => {
+  usable(row, prefix);
   return {
     status: String(row.status),
     ...(typeof row.kind === "string" ? { kind: row.kind } : {}),
@@ -102,8 +119,12 @@ export function listIssues(
       ? undefined
       : storedId(by.parent, prefix, minted(views.records));
   const since = by.createdSince === undefined ? 0 : Date.parse(by.createdSince);
-  const closed = (dep: string) =>
-    views.records?.get(INDEX_STATUS, [`${ISSUE}${dep}`])?.status === "closed";
+  const closed = (dep: string) => {
+    const row = indexed(() =>
+      views.records?.get(INDEX_STATUS, [`${ISSUE}${dep}`]),
+    );
+    return row !== undefined && usable(row, prefix).status === "closed";
+  };
   const leases = new Map<string, ReturnType<typeof leaseOf>>();
   const lease = (id: string) => {
     if (!leases.has(id)) leases.set(id, leaseOf(views, id));
@@ -129,10 +150,11 @@ export function listIssues(
   let after = ISSUE,
     full = false;
   for (;;) {
-    const rows = views.records?.all(INDEX_PAGE, [after, batch]) ?? [];
+    const rows =
+      indexed(() => views.records?.all(INDEX_PAGE, [after, batch])) ?? [];
     const checked = rows.map((row) => ({
       id: String(row.key).slice(ISSUE.length),
-      v: stored(row),
+      v: stored(row, prefix),
       size: Number(row.size),
     }));
     for (const { id, v, size } of checked) {

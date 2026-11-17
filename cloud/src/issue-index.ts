@@ -1,3 +1,5 @@
+import { SCHEMA_DOCUMENTS } from "../../src/generated/schemas.ts";
+
 export const ISSUE_INDEX = "domain_cloud_issue_index";
 export const MAX_RECORD_BYTES = 2 * 1024 * 1024;
 
@@ -12,7 +14,23 @@ const COLUMNS = [
   "size",
 ];
 const FIELDS = ["status", "kind", "parent", "labels", "dependsOn", "createdAt"];
-const MAX_METADATA_BYTES = 65_536;
+type Limit = { maxItems: number; items: { maxLength: number } };
+const { $defs } = SCHEMA_DOCUMENTS.find((doc) =>
+  String(doc.$id).endsWith("/schemas/tracker.json"),
+) as unknown as {
+  $defs: {
+    ItemId: { maxLength: number };
+    TrackerItem: { properties: Record<"labels" | "dependsOn", Limit> };
+  };
+};
+const { labels, dependsOn } = $defs.TrackerItem.properties;
+const id = $defs.ItemId.maxLength;
+const array = (count: number, chars: number) => count * (chars * 6 + 3) + 2;
+const MAX_METADATA_BYTES =
+  array(labels.maxItems, labels.items.maxLength) +
+  array(dependsOn.maxItems, id) +
+  id * 5 +
+  64;
 const METADATA_BYTES = FIELDS.map(
   (name) =>
     `coalesce(length(CAST(json_extract(body,'$.value.${name}') AS BLOB)),0)`,
@@ -21,7 +39,7 @@ const VALID = `CASE WHEN octet_length(body)<=${MAX_RECORD_BYTES} AND instr(CAST(
 const field = (path: string) =>
   `CASE WHEN ok=1 THEN json_extract(body,'${path}') END`;
 const project = (source: string) =>
-  `SELECT key, ok, ${FIELDS.map((name) => field(`$.value.${name}`)).join(", ")}, octet_length(body) FROM (SELECT key, body, ${VALID} AS ok FROM ${source}) WHERE true`;
+  `SELECT key, ok, ${FIELDS.map((name) => field(`$.value.${name}`)).join(", ")}, octet_length(body) FROM (SELECT key, body, ${VALID} AS ok FROM ${source} LIMIT -1) WHERE true`;
 const upsert = (source: string) =>
   `INSERT INTO ${ISSUE_INDEX} ${project(source)} ON CONFLICT(key) DO UPDATE SET ${COLUMNS.map((column) => `${column}=excluded.${column}`).join(", ")}`;
 const row = (side: string) =>
@@ -43,4 +61,4 @@ export const ISSUE_INDEX_MIGRATION = {
 };
 
 export const INDEX_PAGE = `SELECT key, ${COLUMNS.join(", ")} FROM ${ISSUE_INDEX} WHERE key>? ORDER BY key LIMIT ?`;
-export const INDEX_STATUS = `SELECT status FROM ${ISSUE_INDEX} WHERE key=?`;
+export const INDEX_STATUS = `SELECT ok, status FROM ${ISSUE_INDEX} WHERE key=?`;
