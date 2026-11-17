@@ -3,6 +3,7 @@
 // against that one install. Run it with Node (`bun run test:pack` builds first and does this): the
 // point is that a user with only Node and npm can install and run what we publish.
 import assert from "node:assert/strict";
+import { hash } from "node:crypto";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import {
   copyFileSync,
@@ -230,7 +231,18 @@ async function main(): Promise<void> {
       },
       "installed build identity must match the reviewed clean build",
     );
-    console.log(`- installed build identity ${JSON.stringify(build)}`);
+    const runId =
+      process.env.FORGE_PACK_EXPECTED_RUN_ID ??
+      process.env.GITHUB_RUN_ID ??
+      null;
+    assert.deepEqual(
+      JSON.parse(readFileSync(join(installedDir, "dist/build.json"), "utf8")),
+      { ...(build as object), runId },
+      "installed build identity record must match the reviewed CI run",
+    );
+    console.log(
+      `- installed artifact ${JSON.stringify({ build, runId, sha256: hash("sha256", readFileSync(tarball)), integrity: "sha512-" + hash("sha512", readFileSync(tarball), "base64"), node: process.version, bin: join(installedDir, binTarget) })}`,
+    );
 
     const api = join(consumer, "api.mjs");
     copyFileSync(join(root, "tools/pack-smoke/api.mjs"), api);
