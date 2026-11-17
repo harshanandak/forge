@@ -375,8 +375,6 @@ export function credentialStore(
         files.write(CREDENTIAL_FILE, text);
         if (files.read(CREDENTIAL_FILE) !== text) throw integrity();
       } catch (error) {
-        // A write can fail after the rename, so recovery looks at what is on disk, not at whether
-        // the write reported success.
         if (previous !== undefined) recover(previous);
         throw error;
       }
