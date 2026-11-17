@@ -3,24 +3,23 @@ import evidence from "./schemas/attempt-evidence.input.json" with { type: "json"
 import note from "./schemas/attempt-note.input.json" with { type: "json" };
 import slots from "./schemas/slots.input.json" with { type: "json" };
 import record from "./schemas/lane-record.input.json" with { type: "json" };
-import { SchemaRegistry, type SchemaObject } from "../../contract/schema.ts";
+import {
+  SchemaRegistry,
+  jsonEqual,
+  type SchemaObject,
+} from "../../contract/schema.ts";
 import { SCHEMA_DOCUMENTS } from "../../generated/schemas.ts";
 import { isObject } from "../../core/config/pointer.ts";
 import { allocationFloorNumber } from "../../core/state/allocation-floor.ts";
 import { suffixNumber } from "../../core/state/index.ts";
 import type { NamespaceFamilyPolicy } from "../../core/state/families.ts";
-import {
-  readBoundLane,
-  boundLanePattern,
-  readBoundLaneKey,
-} from "./bound-lane-state.ts";
-import entry, { type RecordRules } from "./entry.cts";
+import { readBoundLane } from "./bound-lane-state.ts";
+import * as primitives from "./record-primitives.ts";
 import {
   primaryWorkFamilies,
   validateWorkRecord,
   type Family,
 } from "./validation.ts";
-const writer = (entry as unknown as { recordRules: RecordRules }).recordRules;
 
 const object = (
   properties: SchemaObject,
@@ -46,12 +45,10 @@ const omit = (properties: SchemaObject, names: readonly string[]) =>
   );
 const storedAttempt = object(
   {
-    ...omit(tracker.$defs.Attempt.properties, [
-      "live",
-      "generation",
-      "expiresAt",
-      "evidence",
-    ]),
+    ...omit(
+      tracker.$defs.Attempt.properties,
+      "live generation expiresAt evidence".split(" "),
+    ),
     baseRevision: positive,
     superseded: {
       ...tracker.$defs.Attempt.properties.superseded,
@@ -83,7 +80,7 @@ const attemptIdentity = (value: Record<string, unknown>, key: string) =>
     ? undefined
     : "WORK_VALUE_ID";
 const trimmed = (value: Record<string, unknown>) =>
-  writer.validReason(value.reason) ? undefined : "WORK_VALUE_SHAPE";
+  primitives.validReason(value.reason) ? undefined : "WORK_VALUE_SHAPE";
 const askOption = object(
   {
     label: { type: "string", pattern: "^[A-Z]$" },
@@ -93,7 +90,10 @@ const askOption = object(
   },
   ["label", "text"],
 );
-const replySource = record.properties.source;
+const nonblankFields = (schema: SchemaObject) => ({
+  allOf: [schema, { additionalProperties: nonempty }],
+});
+const replySource = nonblankFields(record.properties.source);
 const approval = object({
   request: record.properties.request,
   quote: record.properties.reply,
@@ -119,7 +119,7 @@ const ask = object(
     answer: object(
       {
         label: nonempty,
-        quote: nonempty,
+        quote: record.properties.reply,
         source: replySource,
         at: time,
         approval,
@@ -127,16 +127,7 @@ const ask = object(
       ["label", "quote", "source", "at"],
     ),
   },
-  [
-    "lane",
-    "issue",
-    "title",
-    "reason",
-    "options",
-    "default",
-    "queuedAt",
-    "status",
-  ],
+  "lane issue title reason options default queuedAt status".split(" "),
 );
 const runtimeFamilies: Record<string, Family> = {
   landing: {
@@ -210,8 +201,10 @@ const runtimeFamilies: Record<string, Family> = {
       numbered,
       attemptIdentity,
       (value) =>
-        writer.evidenceProblem(value) ||
-        writer.normalizedEvidenceSha(value.sha) !== value.sha
+        primitives.evidenceProblem({
+          sha: value.sha,
+          metrics: value.metrics,
+        }) || primitives.normalizedEvidenceSha(value.sha) !== value.sha
           ? "WORK_VALUE_SHAPE"
           : undefined,
     ],
@@ -238,14 +231,20 @@ const runtimeFamilies: Record<string, Family> = {
     }),
     rules: [
       trimmed,
-      (value) =>
-        writer.validSelection(value) &&
-        Array.isArray(value.chosen) &&
-        value.chosen.every(
-          (item) => isObject(item) && safeAttempt(item.attempt),
-        )
+      (value) => {
+        const chosen = value.chosen as { attempt: string; sha: string }[];
+        const size = chosen.length;
+        const expected = value.mode === "none" ? 0 : 1;
+        return (value.mode === "combine" ? size > 0 : size === expected) &&
+          new Set(chosen.map((item) => item.attempt)).size === size &&
+          chosen.every(
+            (item) =>
+              safeAttempt(item.attempt) &&
+              primitives.normalizedEvidenceSha(item.sha) === item.sha,
+          )
           ? undefined
-          : "WORK_VALUE_SHAPE",
+          : "WORK_VALUE_SHAPE";
+      },
     ],
   },
   allocation: {
@@ -288,26 +287,19 @@ const runtimeFamilies: Record<string, Family> = {
         counters: object({ actions: count, records: count }),
         rounds: object({ review: count, ci: count }, []),
       },
-      [
-        "id",
-        "pr",
-        "url",
-        "head",
-        "mergeCommit",
-        "branch",
-        "named",
-        "step",
-        "recorded",
-        "counters",
-      ],
+      "id pr url head mergeCommit branch named step recorded counters".split(
+        " ",
+      ),
     ),
     rules: [
       (value, key) =>
-        typeof value.id === "string" && writer.journalKey(value.id) === key
+        typeof value.id === "string" && primitives.journalKey(value.id) === key
           ? undefined
           : "WORK_VALUE_ID",
       (value) =>
-        writer.journalProblem(value) ? "WORK_VALUE_SHAPE" : undefined,
+        value.receipt === undefined || primitives.validReceipt(value.receipt)
+          ? undefined
+          : "WORK_VALUE_SHAPE",
     ],
   },
   "autopilot-global": {
@@ -316,13 +308,13 @@ const runtimeFamilies: Record<string, Family> = {
       {
         stopAll: time,
         stopped: { type: "object", additionalProperties: time },
-        resumed: object({ at: time, scope: text, quote: text }, [
-          "at",
-          "scope",
-        ]),
+        resumed: object(
+          { at: time, scope: text, quote: text },
+          "at scope".split(" "),
+        ),
         owner: object(
           {
-            channel: record.properties.ownerChannel,
+            channel: nonblankFields(record.properties.ownerChannel),
             seq: count,
             sentAt: time,
             batch: object(
@@ -341,21 +333,47 @@ const runtimeFamilies: Record<string, Family> = {
       },
       ["stopped"],
     ),
-    rules: [
-      (value) => (writer.globalProblem(value) ? "WORK_VALUE_SHAPE" : undefined),
-    ],
   },
   "autopilot-clock": {
     key: /^autopilot-clock:work-[0-9]+$/,
     schema: object({ startedAt: time }),
-    rules: [
-      (value) => (writer.validClock(value) ? undefined : "WORK_VALUE_SHAPE"),
-    ],
   },
   "autopilot-ask": {
     key: /^autopilot-ask:work-[0-9]+$/,
     schema: ask,
-    rules: [(value, key) => writer.askProblem(key, value)],
+    rules: [
+      (value, key) => {
+        if (primitives.ASK(value.lane as string) !== key)
+          return "WORK_VALUE_KEY";
+        const options = value.options as Record<string, unknown>[];
+        if (!options.some((option) => option.label === value.default))
+          return "WORK_VALUE_SHAPE";
+        const answer = value.answer as Record<string, unknown> | undefined;
+        if (!answer)
+          return value.status === "answered" || value.status === "held"
+            ? "WORK_VALUE_SHAPE"
+            : undefined;
+        const option = options.find((option) => option.label === answer.label);
+        const gate = value.gated as { request?: string } | undefined;
+        const quote = answer.quote as string;
+        return option &&
+          quote === quote.trim() &&
+          quote.length <= record.properties.reply.maxLength &&
+          (value.status === "done" ||
+            value.status === (option.hold ? "held" : "answered")) &&
+          jsonEqual(
+            answer.approval,
+            primitives.approvalFor(
+              option.approve === true,
+              gate?.request,
+              quote,
+              answer.source,
+            ),
+          )
+          ? undefined
+          : "WORK_VALUE_SHAPE";
+      },
+    ],
   },
   "autopilot-event": {
     key: /^autopilot-event:work-[0-9]+:[1-9][0-9]*$/,
@@ -371,7 +389,11 @@ const runtimeFamilies: Record<string, Family> = {
       at: time,
     }),
     rules: [
-      (value) => (writer.validVerdict(value) ? undefined : "WORK_VALUE_SHAPE"),
+      (value) =>
+        primitives.validReason(value.reviewer) &&
+        primitives.validReceipt(value.reviewer)
+          ? undefined
+          : "WORK_VALUE_SHAPE",
     ],
   },
   participant: {
@@ -385,11 +407,11 @@ const runtimeFamilies: Record<string, Family> = {
     rules: [numbered, attemptIdentity],
   },
   "bound-lane": {
-    key: boundLanePattern,
+    key: primitives.boundLanePattern,
     schema: { type: "object" },
     rules: [
       (value, key) => {
-        const project = readBoundLaneKey(key);
+        const project = primitives.readBoundLaneKey(key);
         if (!project) return "WORK_VALUE_KEY";
         try {
           readBoundLane(value, project.id);
@@ -411,20 +433,14 @@ const registry = new SchemaRegistry([
     $defs: {
       ...tracker.$defs,
       ...Object.fromEntries(
-        Object.entries(runtimeFamilies).map(([name, family]) => [
+        Object.entries(runtimeFamilies).map(([name, { schema }]) => [
           name,
-          family.schema,
+          schema,
         ]),
       ),
     },
   },
 ]);
-const validators = Object.fromEntries(
-  Object.keys(runtimeFamilies).map((name) => [
-    name,
-    registry.validator(`${schemaId}#/$defs/${name}`),
-  ]),
-);
 export function validateDeclaredWorkRecord(
   key: string,
   value: unknown,
@@ -440,12 +456,16 @@ export function validateDeclaredWorkRecord(
       ? "WORK_VALUE_KEY"
       : "WORK_VALUE_FAMILY";
   const [name, family] = matches[0]!;
-  if (!isObject(value)) return "WORK_VALUE_SHAPE";
+  if (
+    !isObject(value) ||
+    registry.validate(`${schemaId}#/$defs/${name}`, value).length
+  )
+    return "WORK_VALUE_SHAPE";
   for (const rule of family.rules ?? []) {
     const reason = rule(value, key);
     if (reason) return reason;
   }
-  return validators[name]!(value).ok ? undefined : "WORK_VALUE_SHAPE";
+  return undefined;
 }
 export const workFamilyPolicy: NamespaceFamilyPolicy = {
   namespace: "forge/work",

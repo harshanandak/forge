@@ -8,7 +8,7 @@ import * as work from "../../../src/blocks/work/state-families.ts";
 import {
   boundLaneKey,
   readBoundLaneKey,
-} from "../../../src/blocks/work/bound-lane-state.ts";
+} from "../../../src/blocks/work/record-primitives.ts";
 
 setDefaultTimeout(30_000);
 const stamp = "2026-11-16T00:00:00.000Z";
@@ -340,21 +340,23 @@ test("the lane journal retains its stored issue identity", () => {
   );
 });
 
-test.each(["Codex review", "reviewer@example.com", "x".repeat(200)])(
-  "merge verdict retains accepted reviewer %s",
-  (reviewer) => {
-    const verdict = cases.find(([name]) => name === "autopilot-merge")!;
-    eq(
-      work.validateDeclaredWorkRecord(verdict[1], {
-        ...(verdict[2] as Record<string, unknown>),
-        reviewer,
-      }),
-      undefined,
-    );
-  },
-);
+test.each([
+  "Codex review",
+  "reviewer@example.com",
+  "x".repeat(200),
+  "😀".repeat(100),
+])("merge verdict retains accepted reviewer %s", (reviewer) => {
+  const verdict = cases.find(([name]) => name === "autopilot-merge")!;
+  eq(
+    work.validateDeclaredWorkRecord(verdict[1], {
+      ...(verdict[2] as Record<string, unknown>),
+      reviewer,
+    }),
+    undefined,
+  );
+});
 
-test.each([" ", "x".repeat(201)])(
+test.each([" ", "x".repeat(201), "😀".repeat(101)])(
   "merge verdict refuses invalid reviewer %s",
   (reviewer) => {
     const verdict = cases.find(([name]) => name === "autopilot-merge")!;
@@ -365,6 +367,51 @@ test.each([" ", "x".repeat(201)])(
       }),
       "WORK_VALUE_SHAPE",
     );
+  },
+);
+
+test.each([
+  ["UTF-16 reply bound", { quote: "😀".repeat(1001) }],
+  [
+    "blank reply source",
+    { source: { harness: " ", thread: "owner", message: "1" } },
+  ],
+] as const)("ask admission retains the writer's %s", (_name, patch) => {
+  const { approval: _approval, ...plainAnswer } = answer;
+  const value = { ...askValue(), status: "answered", answer: plainAnswer };
+  eq(work.validateDeclaredWorkRecord("autopilot-ask:work-1", value), undefined);
+  eq(
+    work.validateDeclaredWorkRecord("autopilot-ask:work-1", {
+      ...value,
+      answer: { ...plainAnswer, ...patch },
+    }),
+    "WORK_VALUE_SHAPE",
+  );
+});
+
+test.each([
+  [
+    "earlier journal recorded refusal",
+    "autopilot:work-1",
+    {
+      ...(cases.find(([name]) => name === "autopilot")![2] as object),
+      recorded: null,
+    },
+  ],
+  [
+    "earlier resumed-shape refusal",
+    "autopilot:global",
+    { stopped: {}, resumed: { at: 42, scope: [] } },
+  ],
+  [
+    "blank owner channel",
+    "autopilot:global",
+    { stopped: {}, owner: { channel: { harness: " ", thread: "owner" } } },
+  ],
+] as const)(
+  "the declaration retains %s after removing writer copies",
+  (_name, key, value) => {
+    eq(work.validateDeclaredWorkRecord(key, value), "WORK_VALUE_SHAPE");
   },
 );
 
