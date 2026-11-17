@@ -7,6 +7,7 @@
 // The object handles one request at a time and every write below runs without an await, so a
 // claim race is decided in arrival order and exactly one caller wins.
 import { ForgeFailure } from "../../src/contract/failure.ts";
+import { storageFailure } from "./storage-failure.ts";
 import { decideLease } from "../../src/contract/lease.ts";
 import { canonicalJson } from "../../src/core/config/pointer.ts";
 import {
@@ -176,6 +177,8 @@ const STATUS: Record<string, number> = {
   UNKNOWN_COMMAND: 404,
   INTERNAL: 500,
   UNAVAILABLE: 503,
+  QUOTA_EXHAUSTED: 503,
+  STORAGE_LIMIT_EXCEEDED: 503,
   INPUT_CONFLICT: 409,
   REVISION_CONFLICT: 409,
   DUMP_TOO_LARGE: 413,
@@ -581,7 +584,9 @@ export class Project {
             ok: true,
             value: { initialized, dump: dumpUsage(db, this.#limits) },
           });
-        } catch {
+        } catch (error) {
+          const refusal = storageFailure(error);
+          if (refusal) throw refusal;
           throw fail("UNAVAILABLE", "Dump usage is unavailable");
         }
       }
@@ -655,7 +660,8 @@ export class Project {
         await this.#storage.put(PROVISIONED, true);
       }
       return Response.json({ ok: true, value });
-    } catch (error) {
+    } catch (caught) {
+      const error = storageFailure(caught) ?? caught;
       await discard(request);
       if (!(error instanceof ForgeFailure)) {
         console.error(error);
@@ -741,7 +747,8 @@ export class Project {
         },
         open: () => this.#openWrite(),
       });
-    } catch (error) {
+    } catch (caught) {
+      const error = storageFailure(caught) ?? caught;
       if (!(error instanceof ForgeFailure)) throw error;
       await discard(request);
       return Response.json(failed(error.error), {
@@ -800,7 +807,8 @@ export class Project {
         },
         open: () => this.#openWrite(),
       });
-    } catch (error) {
+    } catch (caught) {
+      const error = storageFailure(caught) ?? caught;
       if (!(error instanceof ForgeFailure)) throw error;
       await discard(request);
       return Response.json(failed(error.error), {

@@ -1,4 +1,5 @@
 import { ForgeFailure } from "../../src/contract/failure.ts";
+import { storageFailure } from "./storage-failure.ts";
 import { parseUntrustedJson } from "../../src/contract/untrusted.ts";
 import { WATERMARK_READ_SQL, StateOwner } from "../../src/core/state/index.ts";
 import { parseRestoreJson } from "../../src/core/state/restore-json.ts";
@@ -59,7 +60,9 @@ export function readState(
       revision = new StateOwner(events, {
         now: () => Date.now(),
       }).namespaceRevision(namespace);
-  } catch {
+  } catch (error) {
+    const refusal = storageFailure(error);
+    if (refusal) throw refusal;
     invalid();
   }
   const readVersion = { epoch: epoch as string, revision };

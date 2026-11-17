@@ -142,7 +142,7 @@ if (process.argv[2] === "restart") {
             : `${project}-whole`;
         const payload =
           route === "devices"
-            ? { device: "synthetic-sensitive-device" }
+            ? { device: "synthetic-sensitive-device", ttlMs: 60_000 }
             : route === "restore"
               ? fixture.doc
               : undefined;

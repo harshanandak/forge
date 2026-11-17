@@ -4,6 +4,7 @@
 // ADMIN_TOKEN secret, before the project's object is touched; the others are checked by the object.
 export { Project } from "./project.ts";
 import { validateUpgrade } from "./project.ts";
+import { storageResponse } from "./storage-failure.ts";
 import { bearer, same, sha256, wellFormed } from "./tokens.ts";
 import type { Access, AuthComposition } from "./auth/compose.ts";
 import { configUnavailable, isOAuthRoute } from "./auth/compose.ts";
@@ -104,7 +105,9 @@ const legacyWorker = {
         return await env.PROJECTS.get(env.PROJECTS.idFromName(target)).fetch(
           request,
         );
-      } catch {
+      } catch (error) {
+        const refusal = storageResponse(error, true);
+        if (refusal) return refusal;
         if (state)
           return unauthorized(
             request,
@@ -146,7 +149,9 @@ const legacyWorker = {
         return await env.PROJECTS.get(
           env.PROJECTS.idFromName(String(project)),
         ).fetch(request);
-      } catch {
+      } catch (error) {
+        const refusal = storageResponse(error);
+        if (refusal) return refusal;
         return configUnavailable("PROJECTS", "Device login unavailable");
       }
     }
@@ -185,7 +190,9 @@ const legacyWorker = {
         return await env.PROJECTS.get(env.PROJECTS.idFromName(project)).fetch(
           request,
         );
-      } catch {
+      } catch (error) {
+        const refusal = storageResponse(error);
+        if (refusal) return refusal;
         return Response.json(
           { ok: false, error: "unavailable" },
           { status: 503, headers: { "Cache-Control": "no-store" } },
@@ -239,7 +246,9 @@ const legacyWorker = {
           403,
         );
       return await forward(request, project, access);
-    } catch {
+    } catch (error) {
+      const refusal = storageResponse(error);
+      if (refusal) return refusal;
       return unauthorized(request, "AUTH_INVALID", "Token is not valid");
     }
   },
