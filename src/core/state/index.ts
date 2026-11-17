@@ -705,8 +705,6 @@ export function verifyEventDerivedState(
     )
       reject("state_requests", id);
     requests.set(id, sequence);
-    if (checkpoint?.leases) continue;
-    plans.set(id, true);
   }
   // Two numbers per observed prefix, folded from rows as they are verified: never the events or the keys themselves.
   const tally = new Map<string, { highest: number; earlier: number }>();
@@ -753,7 +751,7 @@ export function verifyEventDerivedState(
       }
   };
   const verifyLeaseSeeds = () => {
-    if (checkpoint?.leases && leases.size !== checkpoint.leases.length)
+    if (checkpoint && leases.size !== checkpoint.leases.length)
       reject("state_checkpoint_leases", "covered replay");
     for (const [namespace, subject, sequence, , body] of checkpoint?.leases ??
       []) {
@@ -771,7 +769,7 @@ export function verifyEventDerivedState(
     "state_events",
     "sequence,namespace,key,body",
     ["sequence"],
-    checkpoint === undefined ? undefined : [checkpoint.leases ? 0 : covered],
+    checkpoint === undefined ? undefined : [0],
   )) {
     const eventSequence = Number(row.sequence);
     if (eventSequence < 1) reject("state_events", "sequence");
