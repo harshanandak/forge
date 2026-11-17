@@ -206,7 +206,11 @@ async function fixture(
   };
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
-function expectRefusalOnly(before: string, after: string, reply: ResultEnvelope) {
+function expectRefusalOnly(
+  before: string,
+  after: string,
+  reply: ResultEnvelope,
+) {
   if (reply.ok) throw new Error("Expected a refusal");
   const prior = JSON.parse(before) as unknown[];
   const current = JSON.parse(after) as unknown[];
