@@ -1,11 +1,15 @@
 import { expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import { ForgeFailure } from "../../src/contract/failure.ts";
-import { domain } from "../../cloud/src/project.ts";
+import { domain, Project } from "../../cloud/src/project.ts";
+import { createIssue } from "../../cloud/src/issue-create.ts";
+import { StateOwner } from "../../src/core/state/index.ts";
+import { writableStore, type DurableStorage } from "../../cloud/src/store.ts";
 import {
   admit,
   record,
   refused,
   replay,
+  MAX_RECEIPTS,
 } from "../../cloud/src/issue-receipts.ts";
 import { COMMAND_RECEIPTS, EXPORT_STATE } from "../../cloud/src/dump.ts";
 import { fixture, actor, ns } from "../core/l5-state/retention.fixture.ts";
@@ -29,6 +33,68 @@ function initialize(s: Fixture) {
 }
 const receipts = (s: Fixture) =>
   s.db.all(`SELECT * FROM ${COMMAND_RECEIPTS} ORDER BY request_id`);
+function cloud(s: Fixture, expiry = start + 2 * day) {
+  const values = new Map<string, unknown>();
+  const storage: DurableStorage = {
+    sql: {
+      exec: (sql, ...args) => ({
+        toArray: () =>
+          s.db
+            .all(
+              sql,
+              args.map((arg) =>
+                arg instanceof ArrayBuffer ? new Uint8Array(arg) : arg,
+              ),
+            )
+            .map((row) => ({ ...row })),
+      }),
+    },
+    transactionSync: (work) => s.db.transaction(work),
+    get: (key) => Promise.resolve(values.get(key)),
+    put: (key, value) => {
+      values.set(key, value);
+      return Promise.resolve();
+    },
+    delete: (key) => Promise.resolve(values.delete(key)),
+  };
+  const db = writableStore(storage);
+  const owner = new StateOwner(db, { now: () => Date.now() });
+  const project = new Project(
+    { storage },
+    { FORGE_CLOUD_PROJECT: "p", FORGE_CLOUD_ID_PREFIX: "forge" },
+  );
+  return {
+    create: (input: unknown) =>
+      createIssue(db, owner, {
+        principal: ["token", "synthetic-principal", "synthetic"],
+        requestId: "r",
+        input,
+        context: { variant: "project", actor, project: { id: "p" } },
+        device: "synthetic",
+        prefix: "forge",
+        expiresAt: expiry,
+        recheck: () => {
+          if (Date.now() >= expiry)
+            throw new ForgeFailure({
+              code: "AUTH_EXPIRED",
+              message: "Expired",
+              retry: "never",
+            });
+        },
+      }),
+    lease: (input: unknown) =>
+      project.fetch(
+        new Request("https://fixture.example/p/p/claim", {
+          method: "POST",
+          headers: {
+            "X-Forge-Owner": "synthetic",
+            "X-Forge-Owner-Expires": String(expiry),
+          },
+          body: JSON.stringify(input),
+        }),
+      ),
+  };
+}
 function write(s: Fixture, outcome: "ok" | "refused", expiry: number) {
   s.owner.acquire(ns, "subject", holder, 60_000, "lease");
   if (outcome === "refused")
@@ -93,7 +159,7 @@ test.each(["ok", "refused"] as const)(
 
 for (const outcome of ["ok", "refused"] as const)
   for (const window of ["24h", "credential"] as const)
-    test(`${outcome} witness stops exactly at ${window} expiry after checkpoint restore`, async () => {
+    test(`${outcome} answer stops at ${window} expiry while denial lasts through credential validity`, async () => {
       const source = await fixture(),
         target = await fixture();
       const clock = spyOn(Date, "now").mockReturnValue(start);
@@ -113,8 +179,14 @@ for (const outcome of ["ok", "refused"] as const)
         else expect(answer()).toEqual({ original: true });
         for (const at of [deadline, deadline + 1]) {
           clock.mockReturnValue(at);
-          expect(answer()).toBeUndefined();
+          if (outcome === "refused" && at < expiry) {
+            expect(answer).toThrow(/refused/);
+            expect(() =>
+              replay(target.db, target.owner, "command", "new-input"),
+            ).toThrow();
+          } else expect(answer()).toBeUndefined();
         }
+        clock.mockReturnValue(expiry);
         admit(target.db);
         expect(receipts(target)).toEqual([]);
         record(
@@ -125,7 +197,7 @@ for (const outcome of ["ok", "refused"] as const)
             outcome: "ok",
             result: { fresh: true },
           },
-          deadline + 60_000,
+          expiry + 60_000,
         );
         expect(replay(target.db, target.owner, "command", "new-input")).toEqual(
           {
@@ -138,3 +210,71 @@ for (const outcome of ["ok", "refused"] as const)
         await target.close();
       }
     });
+
+test("a refused create id remains denied after 24h and checkpoint restore until its 48h credential ends", async () => {
+  const source = await fixture(),
+    target = await fixture();
+  const clock = spyOn(Date, "now").mockReturnValue(start);
+  try {
+    initialize(source);
+    initialize(target);
+    expect(() => cloud(source).create({ title: null })).toThrow(/issue.create/);
+    source.owner.acquire(ns, "anchor", holder, 60_000, "anchor");
+    source.owner.checkpoint(1);
+    target.db.run(`DELETE FROM ${EXPORT_STATE}`);
+    target.owner.restore(source.owner.export(), undefined, 1);
+    clock.mockReturnValue(start + day);
+    const client = cloud(target);
+    expect(() => client.create({ title: "Valid now" })).toThrow();
+    expect(target.owner.list("forge/work")).toEqual([]);
+    clock.mockReturnValue(start + 2 * day);
+    expect(() => client.create({ title: "Expired" })).toThrow(/Expired/);
+  } finally {
+    clock.mockRestore();
+    await source.close();
+    await target.close();
+  }
+});
+
+test("a saturation refusal remains durable after answer capacity frees", async () => {
+  const source = await fixture();
+  const clock = spyOn(Date, "now").mockReturnValue(start);
+  try {
+    initialize(source);
+    source.db.run(
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<?) INSERT INTO ${COMMAND_RECEIPTS}(request_id,fingerprint,outcome,result,created_at,expires_at) SELECT 'fill-'||i,'{}','ok','{}',?,CASE WHEN i=1 THEN ? ELSE ? END FROM n`,
+      [MAX_RECEIPTS, start, start + 60_000, start + day],
+    );
+    const client = cloud(source);
+    expect(() => client.create({ title: null })).toThrow(/issue.create/);
+    clock.mockReturnValue(start + 60_001);
+    expect(() => client.create({ title: "Capacity freed" })).toThrow();
+    expect(source.owner.list("forge/work")).toEqual([]);
+  } finally {
+    clock.mockRestore();
+    await source.close();
+  }
+});
+
+test("lease-route refusal answers expire at 24h while their ids remain denied", async () => {
+  const source = await fixture();
+  const clock = spyOn(Date, "now").mockReturnValue(start);
+  try {
+    initialize(source);
+    const client = cloud(source);
+    const input = { subject: "s", requestId: "r", holder, ttlMs: 0 };
+    const first = await client.lease(input);
+    expect(first.status).toBe(400);
+    source.owner.acquire(ns, "anchor", holder, 60_000, "anchor");
+    source.owner.checkpoint(1);
+    clock.mockReturnValue(start + day);
+    const replayed = await client.lease(input);
+    expect(replayed.status).toBe(409);
+    const changed = await client.lease({ ...input, ttlMs: 60_000 });
+    expect(changed.status).toBe(409);
+    expect(source.owner.lease("forge/work", "s")).toBeUndefined();
+  } finally {
+    clock.mockRestore();
+    await source.close();
+  }
+});

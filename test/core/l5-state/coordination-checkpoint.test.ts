@@ -325,3 +325,35 @@ test("checkpoint load cannot replay an old acquisition into current authority", 
     await s.close();
   }
 });
+
+test.each(["initialize", "restore"])(
+  "%s refuses an omitted lease seed contradicted by retained acquisitions",
+  async (mode) => {
+    const source = await fixture(),
+      target = await fixture();
+    try {
+      source.owner.initialize();
+      const first = source.owner.acquire(ns, "s", holder, 60_000, "first");
+      source.owner.release(ns, first);
+      source.owner.acquire(ns, "s", holder, 60_000, "second");
+      source.owner.put(ns, "anchor", {}, actor, { expectRevision: 0 });
+      source.owner.checkpoint(1);
+      const events = source.owner.events(ns);
+      const requests = source.owner.export().requests;
+      source.db.run("DELETE FROM state_checkpoint_leases WHERE subject='s'");
+      source.db.run("DELETE FROM state_leases WHERE subject='s'");
+      expect(source.owner.events(ns)).toEqual(events);
+      expect(source.owner.export().requests).toEqual(requests);
+      target.owner.initialize();
+      expect(() =>
+        mode === "initialize"
+          ? source.owner.initialize()
+          : target.owner.restore(source.owner.export()),
+      ).toThrow();
+      expect(target.owner.export().leases).toEqual([]);
+    } finally {
+      await source.close();
+      await target.close();
+    }
+  },
+);
