@@ -886,6 +886,7 @@ export class Project {
   }
   // One restore request: a whole dump, or one page of a paged restore.
   async #restore(request: Request): Promise<Response> {
+    const began = Date.now();
     const project = new URL(request.url).pathname.split("/")[2]!;
     const dump = parseDump(
       await bounded(request, MAX_RESTORE_BODY, "RESTORE_TOO_LARGE"),
@@ -938,6 +939,7 @@ export class Project {
     await this.#storage.put(STATE_EPOCH, crypto.randomUUID());
     await this.#storage.put(PROVISIONED, true);
     this.#provisioned = true;
+    value.stopWindow = [began, Date.now()];
     return Response.json({ ok: true, value });
   }
 
