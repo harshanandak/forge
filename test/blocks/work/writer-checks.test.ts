@@ -21,23 +21,27 @@ const holder = {
   session: { id: "writer", device: "fixture", agent: "test", harness: "test" },
 } as const;
 const source = { harness: "codex", thread: "owner", message: "m-1" };
-const approval = { request: "request-1", quote: "#1 A", source };
-const ask = (patch: Record<string, unknown> = {}) => ({
-  lane: "work-1",
-  issue: "work-1",
-  title: "one",
-  reason: "pause",
-  options: [
-    { label: "A", text: "resume", approve: true },
-    { label: "B", text: "hold", hold: true },
-  ],
-  default: "B",
-  gated: { op: "lane.resume", input: { id: "work-1" }, request: "request-1" },
-  queuedAt: stamp,
-  status: "queued",
-  ...patch,
-});
-const answer = { label: "A", quote: "#1 A", source, at: stamp, approval };
+const approval = { request: "request-1", quote: "#1 1A", source };
+const ask = (patch: Record<string, unknown> = {}): Record<string, unknown> => {
+  const value: Record<string, unknown> = {
+    lane: "work-1",
+    issue: "work-1",
+    title: "one",
+    reason: "pause",
+    options: [
+      { label: "A", text: "resume", approve: true },
+      { label: "B", text: "hold", hold: true },
+    ],
+    default: "B",
+    gated: { op: "lane.resume", input: { id: "work-1" }, request: "request-1" },
+    queuedAt: stamp,
+    status: "queued",
+    ...patch,
+  };
+  if (value.gated === undefined) delete value.gated;
+  return value;
+};
+const answer = { label: "A", quote: "#1 1A", source, at: stamp, approval };
 const journal = {
   id: "work-1",
   pr: 1,
@@ -301,7 +305,7 @@ test.each([
     "autopilot-ask:work-1",
     ask({
       status: "held",
-      answer: { label: "B", quote: "#1 B", source, at: stamp },
+      answer: { label: "B", quote: "#1 1B", source, at: stamp },
     }),
   ],
   [
@@ -462,7 +466,7 @@ test("ownerReply writes its approval through the real ask and global writer path
         batch: { seq: 1, items: ["work-1"] },
       },
     });
-    await f.call("lane.record", { id: undefined, reply: "#1 A", source });
+    await f.call("lane.record", { id: undefined, reply: "#1 1A", source });
     const value = f.raw.get("autopilot-ask:work-1")!.value as {
       answer: { approval: unknown };
     };
