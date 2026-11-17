@@ -372,6 +372,49 @@ test.each([2, 3])(
   120_000,
 );
 
+test("Windows admission runs independently with all twenty replays and remains required", () => {
+  const { jobs } = parse(readFileSync(".github/workflows/ci.yml", "utf8")) as {
+    jobs: Record<
+      string,
+      {
+        needs: string | string[];
+        if?: string;
+        "runs-on"?: string;
+        "timeout-minutes"?: number;
+        steps: {
+          name?: string;
+          run?: string;
+          with?: Record<string, unknown>;
+        }[];
+      }
+    >;
+  };
+  const admission = jobs["comment-guard"]!;
+  expect(admission.needs).toBe("changes");
+  expect(admission.if).toBe("needs.changes.outputs.scope == 'full'");
+  expect(admission["runs-on"]).toBe("windows-latest");
+  expect(admission["timeout-minutes"]).toBe(20);
+  expect(
+    admission.steps.some((step) => step.with?.["node-version"] === "24"),
+  ).toBe(true);
+  expect(admission.steps.some((step) => step.with?.["fetch-depth"] === 0)).toBe(
+    true,
+  );
+  const guard = admission.steps.find(
+    (step) => step.name === "Admit comment guard on Windows",
+  )!;
+  expect(guard.run).toBe(
+    'bun tools/check-admit.ts no-comments-regression test/structure/fixtures/no-comments-break.patch --guard tools/checks --guard tools/lint --guard tools/git-executable.ts --guard tools/bun-builtin.ts --guard tools/bun-lint-version.json --guard test/structure/no-comments.integration.test.ts --guard package.json --guard bun.lock --guard bunfig.toml --guard .forge/config.yaml 2>&1 | tee -a "$RUNNER_TEMP/ci-tests.log"',
+  );
+  expect(jobs["verify"]!["timeout-minutes"]).toBe(20);
+  expect(
+    jobs["verify"]!.steps.some((step) =>
+      step.run?.includes("tools/check-admit.ts"),
+    ),
+  ).toBe(false);
+  expect(jobs["ci-gate"]!.needs).toContain("comment-guard");
+}, 1000);
+
 test.each(
   [
     {
@@ -459,6 +502,22 @@ test.each(
         expected: 1,
       },
     ]),
+    ...["failure", "cancelled", "skipped"].map((commentGuard) => ({
+      scope: "full",
+      event: "pull_request",
+      pack: "success",
+      verify: "success",
+      commentGuard,
+      expected: 1,
+    })),
+    ...["success", "failure", "cancelled"].map((commentGuard) => ({
+      scope: "docs",
+      event: "pull_request",
+      pack: "skipped",
+      verify: "skipped",
+      commentGuard,
+      expected: 1,
+    })),
     ...["failure", "cancelled", "skipped"].map((speed) => ({
       scope: "full",
       event: "pull_request",
@@ -478,11 +537,12 @@ test.each(
   ].map((entry) => ({
     changes: "success",
     speed: entry.scope === "full" ? "success" : "skipped",
+    commentGuard: entry.scope === "full" ? "success" : "skipped",
     ...entry,
   })),
 )(
   "CI Gate enforces scope and required results: %j",
-  ({ scope, event, pack, verify, expected, changes, speed }) => {
+  ({ scope, event, pack, verify, expected, changes, speed, commentGuard }) => {
     const { jobs } = parse(
       readFileSync(resolve(".github/workflows/ci.yml"), "utf8"),
     ) as {
@@ -505,6 +565,7 @@ test.each(
         VERIFY: verify,
         PACK: pack,
         SPEED: speed,
+        COMMENT_GUARD: commentGuard,
         CHANGES: changes,
       },
       encoding: "utf8",
