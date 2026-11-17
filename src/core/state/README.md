@@ -7,7 +7,7 @@ adds live record bodies. `StateOwner.checkpoint(batch)` folds the retained recor
 format 2 checkpoints, committing at most 256 events per transaction. Each header publishes
 one complete prefix; interrupted writes resume from the last committed header. Live bodies,
 deletion revisions, numeric key reservations and maximum allocation floors survive updates
-and deletes. The maximum live/deleted sequence in each namespace is its covered watermark.
+and deletes. Record, deletion and lease seeds retain each namespace's covered watermark.
 Checkpoint headers, tuples and live bodies decode row by row. Initialization and restore verify
 checkpoint plus tail, retained allocator authority and deletion floors. Migration `008_record_checkpoint_reader`
 makes older writers refuse the store. Format 2 also seeds lease holders, generation high-water and

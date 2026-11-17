@@ -5,6 +5,7 @@ import {
 } from "../../../src/core/state/index.ts";
 import { readReplayStart } from "../../../src/core/state/checkpoint.ts";
 import { withinRestoreBudget } from "../../../src/core/state/restore-json.ts";
+import type { SqlDatabase } from "../../../src/ports/store.ts";
 import { actor, ns, fixture, high } from "./record-checkpoint.fixture.ts";
 
 setDefaultTimeout(30_000);
@@ -181,10 +182,15 @@ test("lease witnesses beyond 5,000 JSON values decode row-wise", async () => {
   try {
     s.owner.initialize();
     s.db.transaction(() => {
-      for (let n = 0; n < 200; n++)
+      for (let n = 0; n < 1000; n++)
         s.owner.acquire(ns, `subject:${n}`, holder, 60_000, `request:${n}`);
     });
     s.owner.checkpoint(16);
+    expect(
+      withinRestoreBudget(
+        JSON.stringify(s.db.all("SELECT * FROM state_checkpoint_receipts")),
+      ),
+    ).toBe(false);
     const parse = JSON.parse;
     try {
       JSON.parse = (...args: Parameters<typeof JSON.parse>) => {
@@ -193,12 +199,105 @@ test("lease witnesses beyond 5,000 JSON values decode row-wise", async () => {
         return parse(...args) as unknown;
       };
       const seed = readReplayStart(s.db, 16, true).checkpoint;
-      expect(seed?.receipts).toHaveLength(200);
+      expect(seed?.receipts).toHaveLength(1000);
       s.owner.initialize();
       verifyEventDerivedState(s.db, high(s), 16);
     } finally {
       JSON.parse = parse;
     }
+  } finally {
+    await s.close();
+  }
+});
+
+test.each([1, 2, 256])(
+  "coordination prefix resumes atomically after a receipt interruption: batch %s",
+  async (batch) => {
+    const s = await fixture();
+    try {
+      prefix(s);
+      const before = s.owner.export();
+      let armed = true;
+      const proxy: SqlDatabase = {
+        exec: (sql) => s.db.exec(sql),
+        get: (sql, args) => s.db.get(sql, args),
+        all: (sql, args) => s.db.all(sql, args),
+        transaction: (work) => s.db.transaction(work),
+        run(sql, args) {
+          if (
+            armed &&
+            sql.startsWith("INSERT INTO state_checkpoint_receipts") &&
+            args?.[1] === "answer-1"
+          )
+            throw new Error("synthetic receipt interruption");
+          return s.db.run(sql, args);
+        },
+      };
+      const owner = new StateOwner(proxy, { now: () => 1000 });
+      expect(() => owner.checkpoint(batch)).toThrow(
+        "synthetic receipt interruption",
+      );
+      const covered = Number(
+        s.db.get("SELECT covered_sequence FROM state_checkpoint_header")
+          ?.covered_sequence ?? 0,
+      );
+      expect(covered).toBeLessThan(high(s));
+      for (const table of ["leases", "receipts", "live"])
+        expect(
+          s.db.get(`SELECT 1 FROM state_checkpoint_${table} WHERE sequence>?`, [
+            covered,
+          ]),
+        ).toBeUndefined();
+      armed = false;
+      expect(owner.checkpoint(batch)).toBe(high(s));
+      s.owner.initialize();
+      expect(s.owner.export().records).toEqual(before.records);
+      expect(s.owner.export().leases).toEqual(before.leases);
+      expect(s.owner.export().requests).toEqual(before.requests);
+      expect(s.owner.export().events).toEqual(before.events);
+    } finally {
+      await s.close();
+    }
+  },
+);
+
+test("checkpoint restore still admits every live record against the target families", async () => {
+  const s = await fixture(),
+    target = await fixture();
+  try {
+    prefix(s);
+    s.owner.checkpoint(1);
+    const owner = new StateOwner(target.db, { now: () => 1000 }, [
+      {
+        namespace: ns,
+        families: {
+          allowed: { key: /^allowed$/, admit: () => undefined },
+        },
+      },
+    ]);
+    owner.initialize();
+    const before = owner.export();
+    expect(() => owner.restore(s.owner.export(), undefined, 1)).toThrow(
+      /STATE_FAMILY_UNDECLARED/,
+    );
+    expect(owner.export()).toEqual(before);
+  } finally {
+    await s.close();
+    await target.close();
+  }
+});
+
+test("checkpoint load cannot replay an old acquisition into current authority", async () => {
+  const s = await fixture();
+  try {
+    prefix(s);
+    s.owner.checkpoint(1);
+    s.owner.initialize();
+    const before = s.owner.export();
+    expect(() =>
+      s.owner.acquire(ns, "subject", holder, 60_000, "acquire-1"),
+    ).toThrow();
+    expect(s.owner.export()).toEqual(before);
   } finally {
     await s.close();
   }
