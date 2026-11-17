@@ -697,7 +697,7 @@ export function verifyEventDerivedState(
       `sha256:${plan.result}` !== result
     )
       reject("state_requests", id);
-    if (plan.kind === "acquire") continue;
+    if (typeof plan === "object" && plan.kind === "acquire") continue;
     requests.add(id);
     plans.set(id, true);
   }
