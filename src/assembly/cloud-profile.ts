@@ -45,7 +45,6 @@ export interface CredentialStore {
   lookup(key: CredentialKey, nowMs: number): DeviceCredential | undefined;
   associations(identity: string): readonly CredentialKey[];
   save(entry: CredentialEntry): Promise<void>;
-  /** The removed entry's token id, or undefined when the key held none; other entries are kept. */
   remove(key: CredentialKey): Promise<string | undefined>;
 }
 export interface CredentialStoreOptions {
@@ -342,7 +341,7 @@ export function credentialStore(
           ...saved,
           [keyOf(entry)]: parseEntry(keyOf(entry), entry),
         };
-      });
+      }, "saved");
     },
     async remove(key) {
       let removed: string | undefined;
@@ -353,16 +352,16 @@ export function credentialStore(
         return Object.fromEntries(
           Object.entries(saved).filter(([name]) => name !== keyOf(key)),
         );
-      });
+      }, "removed");
       return removed;
     },
   };
 
-  /** One locked change to the file: the same checked write and read back, with the previous bytes restored on failure. `undefined` leaves the file alone. */
   async function commit(
     change: (
       saved: Record<string, CredentialEntry>,
     ) => Record<string, CredentialEntry> | undefined,
+    verb: "saved" | "removed",
   ): Promise<void> {
     const held = await lock();
     try {
@@ -386,7 +385,7 @@ export function credentialStore(
         ? error
         : new ForgeFailure({
             code: "UNAVAILABLE",
-            message: "The cloud credential could not be saved",
+            message: `The cloud credential could not be ${verb}`,
             retry: "never",
           });
     } finally {
@@ -506,7 +505,6 @@ export function writeBinding(
   throw conflict(`${BINDING_PATH} already binds this project elsewhere`);
 }
 
-/** Delete the binding file; the caller has already read it. */
 export function removeBinding(root: string): void {
   try {
     nodeConfigFiles(root).remove(BINDING_PATH);

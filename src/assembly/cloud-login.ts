@@ -336,7 +336,6 @@ async function login(
   };
 }
 
-/** The credential goes first and must read back; the binding goes last, so a stop between them leaves a binding with no credential, which a second logout finishes. */
 async function logout(
   deps: CloudLoginDeps,
   input: unknown,
