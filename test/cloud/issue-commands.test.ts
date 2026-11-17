@@ -12631,3 +12631,37 @@ test("an imported receipt never proves ownership of an unowned inner acquisition
   expect([attempted.status, attempted.code]).toEqual([503, "UNAVAILABLE"]);
   expect(t.snapshot()).toBe(before);
 }, 30_000);
+
+test("paged duplicate primary key preserves committed unprovisioned target", async () => {
+  const { tables } = await projectWith(legacy);
+  const target = fixture();
+  const token = await target.device();
+  expect(
+    (await target.send(make("committed-before-paged-refusal"), { token }))
+      .status,
+  ).toBe(200);
+  target.lease();
+  await target.storage.delete("provisioned");
+  target.reopen();
+  expect(await target.storage.get("restore:next")).toBeUndefined();
+  const saved = tablesOf(target.db);
+  for (const table of [
+    "state_leases",
+    "state_events",
+    "domain_cloud_command_receipts",
+  ])
+    expect(saved[table]!.length).toBeGreaterThan(0);
+  const before = target.snapshot();
+  const row = tables.state_records![0]!;
+  const page = pagesOf({ ...tables, state_records: [row, row] }, 2)[0]!;
+  expect([page.page, page.last]).toEqual([0, false]);
+  target.calls.length = 0;
+  const { got } = await restoreInto("paged", tables, { target, parts: [page] });
+  expect([got.status, got.json.error?.code]).toEqual([
+    400,
+    "RESTORE_INVALID_ROW",
+  ]);
+  expect(target.snapshot()).toBe(before);
+  expect(target.calls).not.toContain("put restore:next");
+  expect(await target.storage.get("restore:next")).toBeUndefined();
+}, 60_000);

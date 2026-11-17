@@ -57,6 +57,30 @@ jobs:
         working-directory: cloud
       - name: Storage quota merge gate regressions
         run: bun test --timeout 30000 test/cloud/storage-review.test.ts test/assembly/cloud-state-client.test.ts test/assembly/cloud-login.test.ts
+      - name: Paged restore marker ordering counterfactual
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          suite = ["bun", "test", "--timeout", "60000", "test/cloud/issue-commands.test.ts", "--test-name-pattern", "^paged duplicate primary key preserves committed unprovisioned target$"]
+          baseline = subprocess.run(suite, capture_output=True, text=True)
+          print(baseline.stdout + baseline.stderr)
+          assert baseline.returncode == 0
+          path = Path("cloud/src/project.ts")
+          original = path.read_text()
+          before = "      const { db, owner } = this.#openWrite(staged !== undefined);\n"
+          marker = "      await this.#storage.put(STAGED, { next: page.page, format: page.format });\n"
+          assert original.count(before) == 1
+          try:
+              path.write_text(original.replace(before, before + marker))
+              result = subprocess.run(suite, capture_output=True, text=True)
+              log = result.stdout + result.stderr
+              print(log)
+              assert result.returncode != 0 and "(fail) paged duplicate primary key preserves committed unprovisioned target" in log
+              assert "target.snapshot()" in log
+          finally:
+              path.write_text(original)
+          PY
       - name: Typed restore refusal counterfactual
         run: |
           python3 - <<'PY'

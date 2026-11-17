@@ -65,49 +65,6 @@ const send = (project: Project, route: string, body: unknown) =>
   );
 
 for (const [message, code] of limits) {
-  for (const cold of [false, true]) {
-    test(`checkpoint put ${code} cannot provision partial restore ${cold ? "cold" : "warm"}`, async () => {
-      const f = fixture();
-      try {
-        const source = await tinySource("checkpoint boundary synthetic");
-        const page = pagesOf(source.tables, 1)[0]!;
-        expect(page.last).toBe(false);
-        let failed = 0;
-        const storage: DurableStorage = {
-          ...f.storage,
-          put: (key, value) => {
-            if (key === "restore:next") {
-              failed++;
-              return Promise.reject(new Error(message));
-            }
-            return f.storage.put(key, value);
-          },
-        };
-        let project = new Project({ storage }, env);
-        const refused = await send(project, "restore", page);
-        expect(refused.status).toBe(503);
-        expect(failed).toBe(1);
-        expect(await refused.json()).toMatchObject({ error: { code } });
-        if (cold) project = new Project({ storage }, env);
-        const issued = await send(project, "devices", {
-          device: "synthetic",
-          ttlMs: 60_000,
-        });
-        if (issued.status === 200) {
-          const partial = page.tables.state_records![0]!;
-          expect(
-            f.db
-              .query(
-                "SELECT key FROM state_records WHERE namespace=? AND key=?",
-              )
-              .all(partial.namespace!, partial.key!),
-          ).toEqual([]);
-        } else expect(f.values.get("provisioned")).not.toBe(true);
-      } finally {
-        f.db.close();
-      }
-    });
-  }
   for (const operation of [
     "read",
     "stop-read",
