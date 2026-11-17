@@ -21,10 +21,7 @@ import {
 } from "../cloud/conformance/comparison-check.ts";
 import type { Tables } from "../cloud/conformance/max-source.ts";
 
-type Failure = Omit<ComparisonProblem, "table" | "key"> & {
-  table: Table | null;
-  key: string[] | null;
-};
+type Failure = { table: Table | null; key: string[] | null; reason: string };
 type Row = Tables[string][number];
 type Digest = { rows: number; digest: string };
 export interface PracticeComparison {
@@ -34,7 +31,7 @@ export interface PracticeComparison {
   stopOffsetMs?: number | null;
   tables: Record<
     Table,
-    { expected: Digest | null; actual: Digest; match: boolean | null }
+    { expected: Digest | null; actual: Digest | null; match: boolean | null }
   >;
   failure?: Failure;
 }
@@ -59,10 +56,17 @@ export function practiceComparisonRefusal(error: unknown) {
   return new ComparisonFailure({ failure: unexpected(error) }).error;
 }
 function hash(tables: Tables) {
-  const sum = tally();
-  for (const table of TABLES)
-    for (const row of tables[table]!) fold(sum, table, row);
-  return digests(sum);
+  return Object.fromEntries(
+    TABLES.map((table) => {
+      const sum = tally();
+      try {
+        for (const row of tables[table]!) fold(sum, table, row);
+        return [table, digests(sum)[table]];
+      } catch {
+        return [table, null];
+      }
+    }),
+  ) as Record<Table, Digest | null>;
 }
 const keyOf = (table: Table, row: Row) =>
   KEYS[table].map((column) => String(row[column]));
@@ -126,15 +130,12 @@ function observeStop(
     const row = actual.state_events![index];
     const key = [String(sequence)];
     comparisonCheck(row, "state_events", key, "missing row", true);
+    const early = typeof row.sequence === "number" && row.sequence < sequence;
     comparisonCheck(
       row.sequence === sequence,
       "state_events",
-      typeof row.sequence === "number" && row.sequence < sequence
-        ? keyOf("state_events", row)
-        : key,
-      typeof row.sequence === "number" && row.sequence < sequence
-        ? "unexpected row"
-        : "missing row",
+      early ? keyOf("state_events", row) : key,
+      early ? "unexpected row" : "missing row",
       true,
     );
     return row;
@@ -170,51 +171,48 @@ export function verifyPracticeReadback(
 ): PracticeComparison {
   const received = hash(actual),
     baseline = hash(source);
+  const compare = (wanted: Record<Table, Digest | null>, open: boolean) =>
+    Object.fromEntries(
+      TABLES.map((table) => {
+        const skip =
+          open && (table === "state_records" || table === "state_events");
+        const [left, right] = [received[table], wanted[table]];
+        return [
+          table,
+          {
+            expected: skip ? null : right,
+            actual: left,
+            match: skip
+              ? null
+              : !!left &&
+                left.rows === right?.rows &&
+                left.digest === right.digest,
+          },
+        ];
+      }),
+    ) as PracticeComparison["tables"];
   const report: PracticeComparison = {
     ok: false,
     phase: "stop-metadata",
     restoreWindow: window,
-    tables: Object.fromEntries(
-      TABLES.map((table) => {
-        const changed = table === "state_records" || table === "state_events";
-        return [
-          table,
-          {
-            expected: changed ? null : baseline[table],
-            actual: received[table],
-            match: changed
-              ? null
-              : received[table].digest === baseline[table].digest,
-          },
-        ];
-      }),
-    ) as PracticeComparison["tables"],
+    tables: compare(baseline, true),
   };
   try {
+    const broken = TABLES.find((name) => !received[name] || !baseline[name]);
+    comparisonCheck(!broken, broken as Table, [], "table shape", true);
     const delta = observeStop(source, actual, window);
-    const stopTime = Date.parse(delta.at);
-    report.stopOffsetMs = Number.isFinite(stopTime)
-      ? stopTime - window[0]
-      : null;
+    const at = Date.parse(typeof delta.at === "string" ? delta.at : "");
+    report.stopOffsetMs = Number.isFinite(at) ? at - window[0] : null;
     const expected = stopOverlay(source, stopPlan(source, delta));
     report.phase = "rows";
-    const wanted = hash(expected);
-    for (const table of TABLES) {
-      const match =
-        received[table].rows === wanted[table].rows &&
-        received[table].digest === wanted[table].digest;
-      report.tables[table] = {
-        expected: wanted[table],
-        actual: received[table],
-        match,
-      };
-      if (!match && !report.failure)
+    report.tables = compare(hash(expected), false);
+    for (const table of TABLES)
+      if (!report.tables[table].match && !report.failure)
         report.failure = firstMismatch(
           table,
           expected[table]!,
           actual[table]!,
         ) ?? { table, key: null, reason: "digest mismatch without a row" };
-    }
   } catch (error) {
     if (error instanceof ComparisonCheckFailure) {
       report.failure = error.problem;
