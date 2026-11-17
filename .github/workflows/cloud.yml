@@ -471,6 +471,9 @@ jobs:
         working-directory: cloud
       # Every shape is restored page by page through the real Project in a worker thread with a 96 MiB heap cap, under the
       # default limits (no DUMP_ variable set). This stands in for one isolate; it does not measure the deployed service.
+      - name: Synthetic tracker 3x at default limits
+        working-directory: cloud
+        run: node conformance/capacity.ts measure tracker-3x
       - name: Default limits
         working-directory: cloud
         run: node conformance/capacity.ts measure

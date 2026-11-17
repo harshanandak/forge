@@ -60,8 +60,17 @@ async function moduleUrl(file: string, change?: Change, dump?: string) {
   );
   return `data:text/javascript;base64,${Buffer.from(new Bun.Transpiler({ loader: "ts" }).transformSync(source)).toString("base64")}`;
 }
-export async function fixture(mutation?: Mutation, init = true, small = false) {
-  const env = { ...caps, DUMP_PAGE_BYTES: small ? "1024" : "4194304" };
+export async function fixture(
+  mutation?: Mutation,
+  init = true,
+  small = false,
+  extra: Record<string, string> = {},
+) {
+  const env = {
+    ...caps,
+    DUMP_PAGE_BYTES: small ? "1024" : "4194304",
+    ...extra,
+  };
   const db = new Database(":memory:");
   databases.push(db);
   let unreadable = false;
@@ -122,7 +131,7 @@ export async function fixture(mutation?: Mutation, init = true, small = false) {
     return { rows, bytes };
   };
   const pad = (bytes: number) => {
-    seed("state_records", 32);
+    seed("state_records", Math.max(32, Math.ceil(bytes / 1_048_576)));
     db.run("UPDATE state_records SET body=json_object('pad',char(233))");
     const padding = bytes - usage().bytes;
     db.query(
