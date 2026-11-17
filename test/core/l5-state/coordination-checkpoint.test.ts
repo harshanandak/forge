@@ -3,7 +3,10 @@ import {
   StateOwner,
   verifyEventDerivedState,
 } from "../../../src/core/state/index.ts";
-import { readReplayStart } from "../../../src/core/state/checkpoint.ts";
+import {
+  readReplayStart,
+  recordDigest,
+} from "../../../src/core/state/checkpoint.ts";
 import { withinRestoreBudget } from "../../../src/core/state/restore-json.ts";
 import { canonicalJson } from "../../../src/core/config/pointer.ts";
 import type { SqlDatabase } from "../../../src/ports/store.ts";
@@ -263,9 +266,14 @@ for (const mode of ["initialize", "restore"])
     },
   );
 
-test.each(["initialize", "restore"])(
-  "%s refuses missing covered record request witnesses proved by its event",
-  async (mode) => {
+test.each([
+  ["initialize", "missing"],
+  ["restore", "missing"],
+  ["initialize", "forged"],
+  ["restore", "forged"],
+])(
+  "%s refuses %s covered record request witnesses contradicted by its event",
+  async (mode, changed) => {
     const source = await fixture(),
       target = await fixture();
     try {
@@ -277,12 +285,30 @@ test.each(["initialize", "restore"])(
       source.owner.put(ns, "anchor", {}, actor, { expectRevision: 0 });
       source.owner.checkpoint(1);
       const events = source.owner.events(ns);
-      source.db.run(
-        "DELETE FROM state_requests WHERE request_id='covered-put'",
-      );
-      source.db.run(
-        "DELETE FROM state_checkpoint_receipts WHERE request_id='covered-put'",
-      );
+      if (changed === "missing") {
+        source.db.run(
+          "DELETE FROM state_requests WHERE request_id='covered-put'",
+        );
+        source.db.run(
+          "DELETE FROM state_checkpoint_receipts WHERE request_id='covered-put'",
+        );
+      } else {
+        const row = source.db.get(
+          "SELECT result FROM state_requests WHERE request_id='covered-put'",
+        )!;
+        const result = JSON.parse(String(row.result)) as {
+          value: { original: boolean };
+        };
+        result.value.original = false;
+        source.db.run(
+          "UPDATE state_requests SET result=? WHERE request_id='covered-put'",
+          [canonicalJson(result)],
+        );
+        source.db.run(
+          "UPDATE state_checkpoint_receipts SET result_digest=? WHERE request_id='covered-put'",
+          [recordDigest(result)],
+        );
+      }
       expect(source.owner.events(ns)).toEqual(events);
       target.owner.initialize();
       const before = target.owner.export();
