@@ -59,6 +59,7 @@ const send = (project: Project, route: string, body: unknown) =>
   project.fetch(
     new Request(`https://forge.test/p/quota/${route}`, {
       method: "POST",
+      headers: { "CF-Connecting-IP": "192.0.2.1" },
       body: JSON.stringify(body),
     }),
   );
@@ -165,6 +166,7 @@ for (const [message, code] of limits) {
     "poll",
     "issuance",
     "route-poll",
+    "route-start",
   ] as const) {
     test(`login engine ${operation} preserves ${code}`, async () => {
       const f = fixture();
@@ -212,23 +214,27 @@ for (const [message, code] of limits) {
             await login.approve(challenge.user_code, verified.identity),
           ).toEqual({ ok: true });
         now += 6_000;
-        let hits = 0;
+        let hits = 0,
+          reads = 0;
         f.fail((sql) => {
           if (
             operation === "issuance"
               ? sql.startsWith("INSERT INTO domain_cloud_tokens")
-              : sql.startsWith("SELECT state FROM domain_cloud_login")
+              : sql.startsWith("SELECT state FROM domain_cloud_login") &&
+                ++reads >= (operation === "route-start" ? 2 : 1)
           ) {
             hits++;
             throw new Error(message);
           }
         });
-        if (operation === "route-poll") {
+        if (operation === "route-poll" || operation === "route-start") {
           f.values.set("provisioned", true);
           const response = await send(
             new Project({ storage: f.storage }, env),
-            "loginpoll",
-            { device_code: challenge.device_code },
+            operation === "route-start" ? "loginstart" : "loginpoll",
+            operation === "route-start"
+              ? { device: "synthetic" }
+              : { device_code: challenge.device_code },
           );
           expect(response.status).toBe(503);
           expect(await response.json()).toMatchObject({ error: { code } });

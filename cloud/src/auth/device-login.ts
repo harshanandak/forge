@@ -4,6 +4,7 @@ import type {
 } from "../../../src/ports/identity.ts";
 import { isVerifiedIdentity } from "../../../src/ports/identity-mint.ts";
 import { same, sha256 as hash } from "../tokens.ts";
+import { storageFailure } from "../storage-failure.ts";
 
 export interface DeviceInfo {
   readonly label: string;
@@ -295,7 +296,9 @@ export function createDeviceLogin(options: DeviceLoginOptions): DeviceLogin {
           ok: true,
           credential: await issue(result.identity, result.device),
         };
-      } catch {
+      } catch (error) {
+        const refusal = storageFailure(error);
+        if (refusal) throw refusal;
         return refuse("issuance_failed");
       }
     },
@@ -303,6 +306,8 @@ export function createDeviceLogin(options: DeviceLoginOptions): DeviceLogin {
   return {
     start: (device) =>
       login.start(device).catch((error: unknown) => {
+        const refusal = storageFailure(error);
+        if (refusal) throw refusal;
         throw new DeviceLoginFailure(
           error instanceof DeviceLoginFailure &&
             error.code === "capacity_exceeded"
@@ -311,9 +316,22 @@ export function createDeviceLogin(options: DeviceLoginOptions): DeviceLogin {
         );
       }),
     approve: (code, identity) =>
-      login.approve(code, identity).catch(() => refuse("unavailable")),
+      login.approve(code, identity).catch((error: unknown) => {
+        const refusal = storageFailure(error);
+        if (refusal) throw refusal;
+        return refuse("unavailable");
+      }),
     deny: (code, identity) =>
-      login.deny(code, identity).catch(() => refuse("unavailable")),
-    poll: (code) => login.poll(code).catch(() => refuse("unavailable")),
+      login.deny(code, identity).catch((error: unknown) => {
+        const refusal = storageFailure(error);
+        if (refusal) throw refusal;
+        return refuse("unavailable");
+      }),
+    poll: (code) =>
+      login.poll(code).catch((error: unknown) => {
+        const refusal = storageFailure(error);
+        if (refusal) throw refusal;
+        return refuse("unavailable");
+      }),
   };
 }

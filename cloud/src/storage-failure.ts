@@ -3,6 +3,7 @@ import { ForgeFailure } from "../../src/contract/failure.ts";
 export function storageFailure(error: unknown): ForgeFailure | undefined {
   if (!(error instanceof Error)) return;
   if (
+    (error instanceof ForgeFailure && error.error.code === "QUOTA_EXHAUSTED") ||
     /^Exceeded allowed rows (?:written|read) in Durable Objects free tier\.?$/.test(
       error.message,
     )
@@ -12,7 +13,11 @@ export function storageFailure(error: unknown): ForgeFailure | undefined {
       message: "Durable Object daily quota exhausted; retry after 00:00 UTC",
       retry: "safe",
     });
-  if (/\bSQLITE_(?:FULL|TOOBIG)\b/.test(error.message))
+  if (
+    (error instanceof ForgeFailure &&
+      error.error.code === "STORAGE_LIMIT_EXCEEDED") ||
+    /\bSQLITE_(?:FULL|TOOBIG)\b/.test(error.message)
+  )
     return new ForgeFailure({
       code: "STORAGE_LIMIT_EXCEEDED",
       message: "Project storage limit exceeded",

@@ -865,6 +865,11 @@ export class Project {
               : `Expected page ${staged.next}, or page 0 to start again`,
         );
       const { db, owner } = this.#openWrite(staged !== undefined);
+      if (!page.last)
+        await this.#storage.put(STAGED, {
+          next: page.page,
+          format: page.format,
+        });
       const finish = () => this.#restoreStop(db, owner, project);
       value = {
         restored: restorePage(db, owner, page, this.#limits, finish),
