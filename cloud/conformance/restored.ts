@@ -53,8 +53,8 @@ export function stopPlan(
   if (!delta) return;
   const { at, incarnation, auditId, window } = delta;
   const uuid = /^[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/i;
-  assert.match(incarnation, uuid);
-  assert.match(auditId, uuid);
+  assert.match(incarnation, uuid, "stop incarnation UUID");
+  assert.match(auditId, uuid, "stop audit UUID");
   assert.equal(new Date(at).toISOString(), at, "stop ISO clock");
   assert.ok(
     window[0] <= Date.parse(at) && Date.parse(at) <= window[1],

@@ -19,6 +19,10 @@ import { durableStore } from "../cloud/src/store.ts";
 import * as image from "../cloud/conformance/digest.ts";
 import * as state from "./import-current-state.ts";
 import { workFamilyPolicy } from "../src/blocks/work/state-families.ts";
+export {
+  verifyPracticeReadback,
+  practiceComparisonRefusal,
+} from "./practice-compare.ts";
 
 const invalid = (): never => {
   throw new ForgeFailure({

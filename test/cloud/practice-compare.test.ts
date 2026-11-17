@@ -1,7 +1,7 @@
 import { expect, setDefaultTimeout, test } from "bun:test";
 import * as importer from "../../tools/import-current.ts";
 import { currentState, pagesOf } from "../../tools/import-current-state.ts";
-import { TABLES, type Table } from "../../cloud/conformance/digest.ts";
+import { TABLES, COLUMNS, type Table } from "../../cloud/conformance/digest.ts";
 import type { Tables } from "../../cloud/conformance/max-source.ts";
 import { LaneControlStore } from "../../cloud/src/lane-control-store.ts";
 import { limitsFrom } from "../../cloud/src/dump.ts";
@@ -158,6 +158,7 @@ test("a stop-clock refusal retains its check, table, key and all per-table actua
     reason: "stop request window",
   });
   expect(result.message).toContain("stop request window");
+  expect(result.observed).toHaveProperty("stopOffsetMs", -1000);
   expect(result.observed.tables.state_records.match).toBeNull();
   for (const table of TABLES)
     expect(result.observed.tables[table].actual.digest).toMatch(
@@ -209,3 +210,71 @@ test("foreign exceptions are not serialized as comparison details", () => {
     ),
   ).toBeUndefined();
 });
+
+test.each(["incarnation", "audit", "JSON"] as const)(
+  "stop %s failures retain their named check without values",
+  (kind) => {
+    const f = fixture();
+    const global = f.actual.state_records!.find(
+      (row) => row.key === "lane-control:global",
+    )!;
+    if (kind === "JSON") global.body = "fixture-private-value-must-not-leak";
+    else if (kind === "audit")
+      f.actual.state_events!.at(-1)!.key = "lane-control:audit:not-a-uuid";
+    else {
+      const body = JSON.parse(String(global.body)) as {
+        value: { incarnation: string };
+      };
+      body.value.incarnation = "fixture-private-value-must-not-leak";
+      global.body = JSON.stringify(body);
+    }
+    const result = refusal(f.before, f.actual, f.window);
+    expect(result.observed.failure.reason).toBe(
+      kind === "JSON" ? "stop metadata JSON" : `stop ${kind} UUID`,
+    );
+    expect(JSON.stringify(result)).not.toContain(
+      "fixture-private-value-must-not-leak",
+    );
+  },
+);
+
+test.each(TABLES)(
+  "a mismatch in %s retains its first key and the other table results",
+  (table) => {
+    const f = fixture();
+    if (table === "state_records") {
+      f.actual[table]!.find((row) => row.key === "issue:work-1")!.body += " ";
+    } else if (table === "state_events") f.actual[table]![0]!.body += " ";
+    else
+      f.actual[table]!.push(
+        Object.fromEntries<string | number>(
+          COLUMNS[table].map((column) => [
+            column,
+            column === "namespace"
+              ? "forge/work"
+              : column === "subject"
+                ? "subject"
+                : column === "request_id"
+                  ? "request-1"
+                  : column === "generation"
+                    ? 1
+                    : "{}",
+          ]),
+        ),
+      );
+    const result = refusal(f.before, f.actual, f.window);
+    expect(result.observed.failure.table).toBe(table);
+    expect(result.observed.failure.key).toEqual(
+      table === "state_records"
+        ? ["forge/work", "issue:work-1"]
+        : table === "state_events"
+          ? ["1"]
+          : table === "state_leases"
+            ? ["forge/work", "subject"]
+            : table === "state_requests"
+              ? ["forge/work", "request-1"]
+              : ["request-1"],
+    );
+    expect(result.observed.tables[table].match).toBe(false);
+  },
+);
