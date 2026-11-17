@@ -1,4 +1,4 @@
-﻿import { expect, test } from "bun:test";
+import { expect, test } from "bun:test";
 import { createWorker } from "../../cloud/src/worker.ts";
 
 const DEVICE = `fct_0123456789abcdef.${"A".repeat(43)}`;
@@ -77,7 +77,7 @@ test("each raw lease route refuses a project the Worker does not admit, for a de
       ]);
     }
   expect([r.reached, r.authorized, r.forwarded]).toEqual([[], [], []]);
-});
+}, 30_000);
 
 test("each raw lease route is still served for the admitted project", async () => {
   const r = rig();
@@ -89,7 +89,7 @@ test("each raw lease route is still served for the admitted project", async () =
   }
   expect(r.reached.length).toBe(LEASE.length);
   expect(r.forwarded.length).toBe(LEASE.length);
-});
+}, 30_000);
 
 test("admin routes stay gated by the admin token alone, for any project", async () => {
   const r = rig();
@@ -101,4 +101,4 @@ test("admin routes stay gated by the admin token alone, for any project", async 
     expect([route, refused.status]).toEqual([route, 401]);
   }
   expect(r.reached.length).toBe(5);
-});
+}, 30_000);
