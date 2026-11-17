@@ -55,6 +55,8 @@ jobs:
       - run: bun run gen
       - run: bun install --frozen-lockfile
         working-directory: cloud
+      - name: Storage quota merge gate regressions
+        run: bun test --timeout 30000 test/cloud/storage-review.test.ts
       - name: State commit guard counterfactuals
         run: |
           python3 - <<'PY'
