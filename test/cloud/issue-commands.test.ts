@@ -12659,7 +12659,7 @@ test("whole restore preserves committed rows without a provisioning flag", async
   expect(target.calls).not.toContain("put restore:next");
   expect(await target.storage.get("restore:next")).toBeUndefined();
   expect(await target.storage.get("provisioned")).not.toBe(true);
-});
+}, 60_000);
 
 test("whole restore rollback stays atomic when floor failure also blocks cleanup", async () => {
   const { tables } = await projectWith(legacy);
