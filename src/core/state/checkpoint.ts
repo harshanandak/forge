@@ -33,7 +33,7 @@ export const checkpointTables = {
 /** Tuples use table column order, excluding the singleton header's SQL id. */
 export interface Checkpoint {
   readonly header: readonly [
-    formatVersion: 1 | 2,
+    formatVersion: 2,
     lineage: string,
     generation: number,
     coveredSequence: number,
@@ -238,7 +238,7 @@ export interface CheckpointSeed {
   readonly deleted: Checkpoint["deleted"];
   readonly floors: Checkpoint["floors"];
   readonly receipts: Checkpoint["receipts"];
-  readonly leases: Checkpoint["leases"] | undefined;
+  readonly leases: Checkpoint["leases"];
 }
 
 /** Inspect once alongside the first receipt page, adding no empty-store probes. */
@@ -273,10 +273,8 @@ export function readReplayStart(
       invalid("Checkpoint entries require a header");
     return { checkpoint: undefined, receipts };
   }
-  const recordFormat = checkpointFormat(header.format_version) === 2;
-  for (const kind of recordFormat
-    ? ["denied"]
-    : ["leases", "floors", "reservations", "denied"])
+  checkpointFormat(header.format_version);
+  for (const kind of ["denied"])
     if (db.get(`SELECT 1 FROM state_checkpoint_${kind} LIMIT 1`))
       invalid(`Unsupported checkpoint ${kind} entries; newer Forge required`);
   const liveFloors: Checkpoint["floors"][number][] = [];
@@ -287,14 +285,14 @@ export function readReplayStart(
   ): SqlValue[][] => {
     const result: SqlValue[][] = [];
     let after: readonly SqlValue[] | undefined;
-    const extra = recordFormat && kind === "live" ? ",body" : "";
+    const extra = kind === "live" ? ",body" : "";
     for (;;) {
       const rows = db.all(
         `SELECT ${columns.join(",")}${extra} FROM state_checkpoint_${kind}${after === undefined ? "" : ` WHERE (${keys.join(",")}) > (${keys.map(() => "?").join(",")})`} ORDER BY ${keys.join(",")} LIMIT ?`,
         [...(after ?? []), pageSize],
       );
       for (const row of rows) {
-        if (recordFormat && kind === "live") {
+        if (kind === "live") {
           const record = parseRestoreJson(String(row.body)) as StateRecord;
           if (
             !validateStateRecord(record).ok ||
@@ -360,27 +358,21 @@ export function readReplayStart(
       ],
       ["namespace", "request_id"],
     ),
-    leases: recordFormat
-      ? read(
-          "leases",
-          ["namespace", "subject", "sequence", "generation", "body"],
-          ["namespace", "subject"],
-        )
-      : [],
-    floors: recordFormat
-      ? read(
-          "floors",
-          ["namespace", "prefix", "sequence", "highest"],
-          ["namespace", "prefix"],
-        )
-      : [],
-    reservations: recordFormat
-      ? read(
-          "reservations",
-          ["namespace", "prefix", "sequence", "number"],
-          ["namespace", "prefix", "number"],
-        )
-      : [],
+    leases: read(
+      "leases",
+      ["namespace", "subject", "sequence", "generation", "body"],
+      ["namespace", "subject"],
+    ),
+    floors: read(
+      "floors",
+      ["namespace", "prefix", "sequence", "highest"],
+      ["namespace", "prefix"],
+    ),
+    reservations: read(
+      "reservations",
+      ["namespace", "prefix", "sequence", "number"],
+      ["namespace", "prefix", "number"],
+    ),
     denied: [],
   } as unknown as Checkpoint;
   const empty = {
@@ -410,21 +402,18 @@ export function readReplayStart(
   )
     invalid();
   if (
-    recordFormat &&
     db.get(
       "SELECT 1 FROM (SELECT namespace,key,sequence FROM state_checkpoint_live UNION ALL SELECT namespace,key,sequence FROM state_checkpoint_deleted) c LEFT JOIN state_namespace_watermarks w USING(namespace) WHERE w.sequence IS NULL OR w.sequence<c.sequence OR NOT EXISTS (SELECT 1 FROM state_allocation_keys a WHERE a.namespace=c.namespace AND a.key=c.key) LIMIT 1",
     )
   )
     invalid("Checkpoint retention authority requires repair");
   if (
-    recordFormat &&
     db.get(
       "SELECT 1 FROM state_checkpoint_leases c LEFT JOIN state_namespace_watermarks w USING(namespace) WHERE w.sequence IS NULL OR w.sequence<c.sequence LIMIT 1",
     )
   )
     invalid("Checkpoint namespace watermark requires repair");
   if (
-    recordFormat &&
     db.get(
       "SELECT 1 FROM state_namespace_watermarks w WHERE w.sequence<>MAX(COALESCE((SELECT MAX(sequence) FROM state_checkpoint_live WHERE namespace=w.namespace),0),COALESCE((SELECT MAX(sequence) FROM state_checkpoint_deleted WHERE namespace=w.namespace),0),COALESCE((SELECT MAX(sequence) FROM state_checkpoint_leases WHERE namespace=w.namespace),0),COALESCE((SELECT MAX(sequence) FROM state_events WHERE namespace=w.namespace AND sequence>?),0)) LIMIT 1",
       [checkpoint.header[3]],
@@ -432,7 +421,6 @@ export function readReplayStart(
   )
     invalid("Checkpoint namespace watermark requires repair");
   if (
-    recordFormat &&
     db.get(
       "SELECT 1 FROM state_allocation_keys a WHERE NOT EXISTS (SELECT 1 FROM state_checkpoint_live c WHERE c.namespace=a.namespace AND c.key=a.key) AND NOT EXISTS (SELECT 1 FROM state_checkpoint_deleted c WHERE c.namespace=a.namespace AND c.key=a.key) AND NOT EXISTS (SELECT 1 FROM state_events e WHERE e.namespace=a.namespace AND e.key=a.key AND e.sequence>? AND json_extract(e.body,'$.type') IN (e.namespace||':record.updated@1',e.namespace||':record.deleted@1')) LIMIT 1",
       [checkpoint.header[3]],
@@ -440,18 +428,17 @@ export function readReplayStart(
   )
     invalid("Checkpoint deletion floor coverage requires repair");
   if (
-    recordFormat &&
-    (Number(header.retention_policy_version) !==
+    Number(header.retention_policy_version) !==
       Number(
         db.get("SELECT policy_version FROM state_retention WHERE id=1")
           ?.policy_version,
       ) ||
-      db.get(
-        "SELECT 1 FROM state_checkpoint_reservations c WHERE NOT EXISTS (SELECT 1 FROM state_allocation_keys a WHERE a.namespace=c.namespace AND a.key=c.prefix||c.number) LIMIT 1",
-      ) ||
-      db.get(
-        "SELECT 1 FROM state_checkpoint_floors c WHERE NOT EXISTS (SELECT 1 FROM state_allocation_keys a WHERE a.namespace=c.namespace AND a.key='allocation:'||c.prefix) LIMIT 1",
-      ))
+    db.get(
+      "SELECT 1 FROM state_checkpoint_reservations c WHERE NOT EXISTS (SELECT 1 FROM state_allocation_keys a WHERE a.namespace=c.namespace AND a.key=c.prefix||c.number) LIMIT 1",
+    ) ||
+    db.get(
+      "SELECT 1 FROM state_checkpoint_floors c WHERE NOT EXISTS (SELECT 1 FROM state_allocation_keys a WHERE a.namespace=c.namespace AND a.key='allocation:'||c.prefix) LIMIT 1",
+    )
   )
     invalid("Checkpoint allocator authority requires repair");
   return {
@@ -461,7 +448,7 @@ export function readReplayStart(
       deleted: checkpoint.deleted,
       floors: [...checkpoint.floors, ...liveFloors],
       receipts: checkpoint.receipts,
-      leases: recordFormat ? checkpoint.leases : undefined,
+      leases: checkpoint.leases,
     },
     receipts,
   };
