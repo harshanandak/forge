@@ -50,6 +50,7 @@ import {
   checkpointTables,
   assertNoCheckpoint,
   readReplayStart,
+  checkpointFormat,
 } from "./checkpoint.ts";
 
 /** Optional storage capability supplied by trusted assembly; the locked SQL port stays unchanged. */
@@ -635,7 +636,7 @@ export function verifyEventDerivedState(
   const recordRevisions = new Map<string, number>();
   const leases = new Map<string, LeaseRecord>();
   const leaseSequences = new Map<string, number>();
-  const requests = new Set<string>();
+  const requests = new Map<string, number>();
   const plans = new Map<string, ReceiptPlan | boolean>();
   const key = (namespace: string, name: string): string =>
     json([namespace, name]);
@@ -687,8 +688,13 @@ export function verifyEventDerivedState(
       plans.set(id, false);
     }
   }
-  for (const [namespace, name, , fingerprint, result] of checkpoint?.receipts ??
-    []) {
+  for (const [
+    namespace,
+    name,
+    sequence,
+    fingerprint,
+    result,
+  ] of checkpoint?.receipts ?? []) {
     const id = key(namespace, name);
     const plan = plans.get(id);
     if (
@@ -698,7 +704,7 @@ export function verifyEventDerivedState(
       `sha256:${plan.result}` !== result
     )
       reject("state_requests", id);
-    requests.add(id);
+    requests.set(id, sequence);
     if (checkpoint?.leases) continue;
     plans.set(id, true);
   }
@@ -786,11 +792,12 @@ export function verifyEventDerivedState(
       const coveredEvent = eventSequence <= covered;
       if (event.requestId !== undefined) {
         const request = key(event.namespace, event.requestId);
-        if (requests.has(request) !== coveredEvent)
+        if (
+          requests.get(request) !== (coveredEvent ? eventSequence : undefined)
+        )
           reject("state_requests", request);
-        requests.add(request);
+        requests.set(request, eventSequence);
         const plan = plans.get(request);
-        if (plan === true) reject("state_requests", request);
         if (plan && typeof plan !== "boolean") {
           try {
             const priorRecords = coveredEvent ? historical : records;
@@ -1117,7 +1124,7 @@ export function verifyEventDerivedState(
     ["namespace", "request_id"],
     verifyRequest,
   );
-  if (requests.size) reject("state_requests", requests.values().next().value!);
+  if (requests.size) reject("state_requests", requests.keys().next().value!);
   if (numbered === undefined) return undefined;
   const summary = (prefix: string): NumberedSummary => ({
     ...tally.get(prefix)!,
@@ -2295,14 +2302,13 @@ export class StateOwner {
           invalid(`Snapshot version ${String(row.id)}; newest known ${newest}`);
       if (!applied.some((row) => row.id === baseline.id))
         invalid("Missing baseline");
-      if (
-        !applied.some((row) => row.id === "007_record_checkpoint") ||
-        Number(
+      if (applied.some((row) => row.id === "004_state_checkpoint"))
+        checkpointFormat(
           candidate.get(
             "SELECT format_version FROM state_checkpoint_header WHERE id=1",
           )?.format_version,
-        ) !== 2
-      )
+        );
+      if (!applied.some((row) => row.id === "007_record_checkpoint"))
         assertNoCheckpoint(candidate);
       assertRegistered(candidate);
       if (migrated && signature(candidate) !== expected)

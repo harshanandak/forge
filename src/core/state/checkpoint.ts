@@ -100,6 +100,11 @@ const shapes = {
 function invalid(message = "Invalid checkpoint"): never {
   throw new ForgeFailure({ code: "INPUT_INVALID", message, retry: "never" });
 }
+export function checkpointFormat(version: unknown): number | undefined {
+  if (version === undefined) return;
+  if (Number(version) !== 2) invalid("CHECKPOINT_FORMAT_UNSUPPORTED");
+  return 2;
+}
 function canonical(value: unknown): string {
   const walk = (v: unknown): unknown => {
     if (typeof v === "number" && !Number.isFinite(v))
@@ -153,10 +158,7 @@ export function decodeCheckpoint(text: string): Checkpoint {
   const value = parsed as Record<string, unknown>;
   if (Object.keys(value).sort().join() !== Object.keys(shapes).sort().join())
     invalid();
-  if (
-    Array.isArray(value.header) &&
-    ![1, 2].includes(value.header[0] as number)
-  )
+  if (Array.isArray(value.header) && checkpointFormat(value.header[0]) !== 2)
     invalid("Checkpoint format unsupported; newer Forge required");
   rowValid(value.header, shapes.header);
   const covered = value.header[3] as number;
@@ -271,7 +273,7 @@ export function readReplayStart(
       invalid("Checkpoint entries require a header");
     return { checkpoint: undefined, receipts };
   }
-  const recordFormat = Number(header.format_version) === 2;
+  const recordFormat = checkpointFormat(header.format_version) === 2;
   for (const kind of recordFormat
     ? ["denied"]
     : ["leases", "floors", "reservations", "denied"])

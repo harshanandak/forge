@@ -12,7 +12,7 @@ Checkpoint headers, tuples and live bodies decode row by row. Initialization and
 checkpoint plus tail, retained allocator authority and deletion floors. Migration `008_record_checkpoint_reader`
 makes older writers refuse the store. Format 2 seeds leases and core request witnesses; covered
 lease bodies and last sequences must equal event replay before the tail. The writer deletes no events.
-Version 1 remains supported; cloud v2 still refuses checkpoints without changing its wire format.
+Non-current checkpoint formats are refused; cloud v2 still refuses checkpoints without changing its wire format.
 
 `StateOwner` accepts the locked `SqlDatabase` and `ClockPort` ports. `initialize()` is an explicit write; construction and reads do not initialize anything. `client(namespace, actor)` returns a `DeletableStateClient`, with namespace and actor captured. It never exposes a connection.
 
