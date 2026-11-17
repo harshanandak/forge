@@ -1,4 +1,5 @@
-import { createHash, randomUUID } from "node:crypto";
+﻿import { createHash, randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -62,17 +63,18 @@ function bundle() {
     for (const table of TABLES) source[table]!.push(...page.tables[table]!);
   return { dir, source };
 }
-const stopped = (source: Tables) =>
+const stopped = (source: Tables, skew = 0) =>
   stopOverlay(
     source,
     stopPlan(source, {
-      at: new Date().toISOString(),
+      at: new Date(Date.now() + skew).toISOString(),
       incarnation: randomUUID(),
       auditId: randomUUID(),
       window: [0, Number.MAX_SAFE_INTEGER],
     }),
   );
-function worker(options: { refuse?: number; held?: Tables }) {
+function worker(options: { refuse?: number; held?: Tables; skew?: number }) {
+  const skew = options.skew ?? 0;
   let held = options.held;
   const staged = empty();
   const reply = (status: number, body: unknown) =>
@@ -94,6 +96,7 @@ function worker(options: { refuse?: number; held?: Tables }) {
         },
       });
     if (path === "restore") {
+      const began = Date.now() + skew;
       const page = JSON.parse(
         String(Buffer.from(init!.body as Uint8Array)),
       ) as Page;
@@ -103,8 +106,15 @@ function worker(options: { refuse?: number; held?: Tables }) {
           error: { code: "RESTORE_INVALID_ROW" },
         });
       for (const table of TABLES) staged[table]!.push(...page.tables[table]!);
-      if (page.last) held = stopped(staged);
-      return reply(200, { ok: true, value: { restored: {}, done: page.last } });
+      if (page.last) held = stopped(staged, skew);
+      return reply(200, {
+        ok: true,
+        value: {
+          restored: {},
+          done: page.last,
+          ...(page.last ? { stopWindow: [began, Date.now() + skew] } : {}),
+        },
+      });
     }
     const cut = new URL(url).searchParams.get("cursor") === "start";
     const tables = empty();
@@ -209,9 +219,74 @@ test("a project that already matches is a no-op and a different one is refused",
 test("the token comes from a curl config or a named variable and is never invented", () => {
   const dir = mkdtempSync(join(tmpdir(), "restore-token-"));
   const file = join(dir, "curl.conf");
-  writeFileSync(file, 'header = "Authorization: Bearer abc.def-1"\n');
-  expect(tokenFrom({ file })).toBe("abc.def-1");
+  writeFileSync(file, 'header = "Authorization: Bearer abc_def-1"\n');
+  expect(tokenFrom({ file })).toBe("abc_def-1");
   process.env.RESTORE_TEST_TOKEN = "xyz";
   expect(tokenFrom({ env: "RESTORE_TEST_TOKEN" })).toBe("xyz");
   expect(() => tokenFrom({ env: "RESTORE_TEST_MISSING" })).toThrow(Refusal);
+});
+
+test("a Worker clock skewed past the round trip still restores and matches", async () => {
+  const { dir } = bundle();
+  const { result } = await run(dir, worker({ skew: 3_600_000 }).fake);
+  expect(result.match).toBe(true);
+});
+
+test("a failed restore never prints the token on stdout or stderr", () => {
+  const { dir } = bundle();
+  const out = join(mkdtempSync(join(tmpdir(), "restore-leak-")), "r.json");
+  const ran = spawnSync(
+    process.execPath,
+    [
+      "tools/restore-cloud.ts",
+      "--pages",
+      dir,
+      "--worker",
+      "http://localhost:1",
+      "--project",
+      "target",
+      "--token-env",
+      "RESTORE_LEAK_TOKEN",
+      "--report",
+      out,
+    ],
+    {
+      env: { ...process.env, RESTORE_LEAK_TOKEN: "leak-canary-token" },
+      encoding: "utf8",
+      timeout: 30_000,
+    },
+  );
+  expect(ran.status).toBe(1);
+  expect(ran.stdout + ran.stderr).not.toContain("leak-canary-token");
+});
+
+test("an existing report file is refused before any request", async () => {
+  const { dir } = bundle();
+  const report = join(mkdtempSync(join(tmpdir(), "restore-exists-")), "r.json");
+  writeFileSync(report, "{}");
+  const failure = (await run(dir, worker({}).fake, report).catch(
+    (error: unknown) => error,
+  )) as NodeJS.ErrnoException;
+  expect(failure.code).toBe("EEXIST");
+});
+
+test("a page whose sha256 differs from the manifest is refused", async () => {
+  const { dir } = bundle();
+  const file = join(dir, "manifest.json");
+  const manifest = JSON.parse(readFileSync(file, "utf8")) as {
+    pages: { sha256: string }[];
+  };
+  manifest.pages[0]!.sha256 = "0".repeat(64);
+  writeFileSync(file, JSON.stringify(manifest));
+  const failure = (await run(dir, worker({}).fake).catch(
+    (error: unknown) => error,
+  )) as Error;
+  expect(failure.message).toBe("bundle refused at page 0: BUNDLE_CORRUPT");
+});
+
+test("a token that is a NAME=value line is invalid", () => {
+  process.env.RESTORE_TEST_PAIR = "ADMIN_TOKEN=abc";
+  expect(() => tokenFrom({ env: "RESTORE_TEST_PAIR" })).toThrow(
+    "token refused: TOKEN_INVALID",
+  );
 });

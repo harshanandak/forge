@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { TABLES, digests, fold, tally } from "../cloud/conformance/digest.ts";
 import type { Tables } from "../cloud/conformance/max-source.ts";
+import { stopWindowOf } from "../cloud/conformance/stop-live.ts";
 import {
   practiceComparisonRefusal,
   verifyPracticeReadback,
@@ -53,10 +54,10 @@ export function tokenFrom(source: { file?: string; env?: string }): string {
     source.file !== undefined
       ? readFileSync(source.file, "utf8")
       : (process.env[source.env ?? ""] ?? "");
-  const token =
-    /Bearer\s+([A-Za-z0-9._~+/=-]+)/.exec(text)?.[1] ??
-    (/^\s*[A-Za-z0-9._~+/=-]+\s*$/.test(text) ? text.trim() : "");
+  const token = /Bearer\s+([^\s"']+)/.exec(text)?.[1] ?? text.trim();
   if (!token) throw new Refusal("token", "TOKEN_MISSING");
+  if (!/^[A-Za-z0-9_-]+$/.test(token))
+    throw new Refusal("token", "TOKEN_INVALID");
   return token;
 }
 
@@ -192,9 +193,21 @@ export async function transfer(options: Options) {
     if (!occupied) {
       const restoreStarted = performance.now();
       for (const [index, page] of pages.entries()) {
-        const before = Date.now();
-        await send("restore", index, "POST", "restore", page.bytes);
-        if (page.last) window = [before, Date.now()];
+        const sent = performance.now();
+        const reply = await send(
+          "restore",
+          index,
+          "POST",
+          "restore",
+          page.bytes,
+        );
+        try {
+          window =
+            stopWindowOf(reply, Math.ceil(performance.now() - sent) + 1) ??
+            window;
+        } catch {
+          throw new Refusal("restore", "STOP_WINDOW_INVALID", index);
+        }
       }
       timings.restore = Math.round(performance.now() - restoreStarted);
       report.restored = true;
@@ -207,7 +220,12 @@ export async function transfer(options: Options) {
       report.tables = comparison.tables;
       report.match = true;
     } catch (error) {
-      report.tables = practiceComparisonRefusal(error).observed;
+      const { tables, failure } = practiceComparisonRefusal(error).observed as {
+        tables: unknown;
+        failure: unknown;
+      };
+      report.tables = tables;
+      report.failure = failure;
       throw new Refusal(
         "compare",
         occupied ? "TARGET_NOT_EMPTY" : "DIGEST_MISMATCH",
