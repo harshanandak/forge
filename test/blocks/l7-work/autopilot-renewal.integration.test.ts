@@ -21,6 +21,7 @@ import { createAssembly, localCall } from "../../../src/assembly/index.ts";
 import type { AmbientContext } from "../../../src/generated/types.ts";
 import { blockCapture } from "../../../src/assembly/capture.ts";
 import { firstPartyBlocks } from "../../../src/assembly/first-party.ts";
+import { inlineWorkPrimitives } from "../../../tools/bundle-work-primitives.ts";
 
 setDefaultTimeout(60_000);
 const DAY = 24 * 60 * 60 * 1000;
@@ -54,8 +55,11 @@ async function open(rename = {}) {
   });
   writeFileSync(
     join(target, "entry.cjs"),
-    new Bun.Transpiler({ loader: "ts" }).transformSync(
-      readFileSync(join(source, "entry.cts"), "utf8"),
+    await inlineWorkPrimitives(
+      new Bun.Transpiler({ loader: "ts" }).transformSync(
+        readFileSync(join(source, "entry.cts"), "utf8"),
+      ),
+      join(source, "record-primitives.ts"),
     ),
   );
   const original = blockCapture.open.bind(blockCapture);

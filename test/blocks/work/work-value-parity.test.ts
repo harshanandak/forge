@@ -1,6 +1,8 @@
 import { test, setDefaultTimeout, afterAll, spyOn } from "bun:test";
 import { deepStrictEqual as eq, throws } from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { inlineWorkPrimitives } from "../../../tools/bundle-work-primitives.ts";
 import { createSqliteStore } from "../../../src/adapters/store-sqlite/index.ts";
 import { createStateClient } from "../../../src/assembly/state-client.ts";
 import { StateOwner } from "../../../src/core/state/index.ts";
@@ -209,6 +211,15 @@ const cases = table.map(([key, value, reason, op, input, localOnly]) => ({
 }));
 const clock = spyOn(Date, "now").mockReturnValue(stamp);
 afterAll(() => clock.mockRestore());
+const workEntry = await inlineWorkPrimitives(
+  new Bun.Transpiler({ loader: "ts" }).transformSync(
+    readFileSync(
+      new URL("../../../src/blocks/work/entry.cts", import.meta.url),
+      "utf8",
+    ),
+  ),
+  resolve(import.meta.dirname, "../../../src/blocks/work/record-primitives.ts"),
+);
 const block = captureBlock("work", {
   open: () => ({
     ownership: "borrowed",
@@ -224,11 +235,7 @@ const block = captureBlock("work", {
           new URL("../../../src/blocks/work/" + file, import.meta.url),
         );
         return name === "entry.cjs"
-          ? new TextEncoder().encode(
-              new Bun.Transpiler({ loader: "ts" }).transformSync(
-                bytes.toString("utf8"),
-              ),
-            )
+          ? new TextEncoder().encode(workEntry)
           : bytes;
       },
     },
