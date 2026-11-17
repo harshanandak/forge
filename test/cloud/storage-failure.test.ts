@@ -63,7 +63,8 @@ test.each(["command", "state/read", "state/commit", "loginstart", "claim"])(
         FORGE_CLOUD_PROJECT: "quota",
         CLERK_ISSUER: "https://clerk.test",
         FORGE_OWNER_SUBJECT: "synthetic-owner",
-        DEVICE_LOGIN_HMAC_KEY: "synthetic",
+        DEVICE_LOGIN_HMAC_KEY: "A".repeat(43),
+        CLERK_CLIENT_ID: "synthetic-client",
         PROJECTS: {
           idFromName: (name) => name,
           get: () => ({

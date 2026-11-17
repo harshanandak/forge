@@ -18,6 +18,7 @@
 // The Clerk upstream here is a test double: the code "owner" is the configured owner, anything else is refused.
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Project as Shipped } from "../src/project.ts";
+import { Project as Deployed } from "../src/adapters/workers-oauth/compose.ts";
 import type { DeviceUpstream } from "../src/auth/device-browser.ts";
 import type { DurableState } from "../src/store.ts";
 import { createOidcVerifier } from "../../src/assembly/oidc.ts";
@@ -227,8 +228,7 @@ export class Project extends Shipped {
       },
     };
     super(state, env, { upstream: clerk(env), redemption });
-    this.#cold = () =>
-      new Shipped(state, env, { upstream: clerk(env), redemption });
+    this.#cold = () => new Deployed(state, env);
     this.#boot = boot;
   }
 
