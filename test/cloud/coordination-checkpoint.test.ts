@@ -7,7 +7,7 @@ import {
   refused,
   replay,
 } from "../../cloud/src/issue-receipts.ts";
-import { COMMAND_RECEIPTS } from "../../cloud/src/dump.ts";
+import { COMMAND_RECEIPTS, EXPORT_STATE } from "../../cloud/src/dump.ts";
 import { fixture, actor, ns } from "../core/l5-state/retention.fixture.ts";
 
 setDefaultTimeout(30_000);
@@ -67,6 +67,7 @@ test.each(["ok", "refused"] as const)(
       for (const s of [full, saved])
         s.owner.put(ns, "tail", {}, actor, { expectRevision: 0 });
       saved.owner.initialize([domain]);
+      target.db.run(`DELETE FROM ${EXPORT_STATE}`);
       target.owner.restore(saved.owner.export(), undefined, 1);
       clock.mockReturnValue(start + day - 1);
       for (const s of [full, saved, target]) {
@@ -103,6 +104,7 @@ for (const outcome of ["ok", "refused"] as const)
         initialize(target);
         write(source, outcome, expiry);
         source.owner.checkpoint(1);
+        target.db.run(`DELETE FROM ${EXPORT_STATE}`);
         target.owner.restore(source.owner.export(), undefined, 1);
         clock.mockReturnValue(deadline - 1);
         const answer = () =>

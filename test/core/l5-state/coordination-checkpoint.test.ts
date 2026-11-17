@@ -186,7 +186,7 @@ test("lease witnesses beyond 5,000 JSON values decode row-wise", async () => {
     s.owner.checkpoint(16);
     expect(
       withinRestoreBudget(
-        JSON.stringify(s.db.all("SELECT * FROM state_checkpoint_receipts")),
+        JSON.stringify(readReplayStart(s.db, 16, true).checkpoint?.receipts),
       ),
     ).toBe(false);
     const parse = JSON.parse;
