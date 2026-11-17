@@ -326,11 +326,20 @@ jobs:
           # persistence directory, and the restored target is the admitted command project.
           sed '/"DUMP_/d' wrangler.test.jsonc > wrangler.large.jsonc
           ! grep -q DUMP_ wrangler.large.jsonc || { echo "::error::the small dump caps are still in the large config"; exit 1; }
+          # workerd_rss reads a high-water mark, so restore-cost and large each get their own fresh Worker; sharing one made
+          # the large reading the restore-cost peak plus the large journey (forge-1552).
+          (
+            export FORGE_CLOUD_PROJECT=ci-large config=wrangler.large.jsonc
+            persist="$RUNNER_TEMP/wrangler-restore-cost"
+            start restore-cost
+            measured restore-cost bun conformance/restore-cost.ts
+            workerd_rss restore-cost
+            stop
+          )
           (
             export FORGE_CLOUD_PROJECT=ci-large config=wrangler.large.jsonc
             persist="$RUNNER_TEMP/wrangler-large"
             start large
-            measured restore-cost bun conformance/restore-cost.ts
             measured large bun conformance/conformance.ts large
             workerd_rss large
             stop
