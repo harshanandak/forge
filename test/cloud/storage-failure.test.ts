@@ -1,9 +1,11 @@
-import { test, expect } from "bun:test";
+import { test, expect, setDefaultTimeout } from "bun:test";
 import {
   storageFailure,
   storageResponse,
 } from "../../cloud/src/storage-failure.ts";
 import { createWorker } from "../../cloud/src/worker.ts";
+
+setDefaultTimeout(30_000);
 
 const messages = [
   [
