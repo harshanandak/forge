@@ -708,16 +708,13 @@ export function verifyEventDerivedState(
       !plan ||
       typeof plan === "boolean" ||
       `sha256:${plan.fingerprint}` !== fingerprint ||
-      `sha256:${plan.result}` !== result
+      `sha256:${plan.result}` !== result ||
+      (plan.acquisition !== undefined &&
+        (leases.get(key(namespace, plan.acquisition.subject))?.generation ??
+          0) < plan.acquisition.generation)
     )
       reject("state_requests", id);
     requests.add(id);
-    if (
-      plan.acquisition &&
-      (leases.get(key(namespace, plan.acquisition.subject))?.generation ?? 0) <
-        plan.acquisition.generation
-    )
-      reject("state_leases", key(namespace, plan.acquisition.subject));
     plans.set(id, true);
   }
   // Two numbers per observed prefix, folded from rows as they are verified: never the events or the keys themselves.
