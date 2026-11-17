@@ -234,8 +234,11 @@ const LEGACY_REQUEST_USAGE = DUMP_USAGE_SQL[REQUEST_USAGE]!.replace(
   "LENGTH(CAST(created_at AS BLOB))",
   "1",
 );
+const DUMP_USAGE_COUNTERS =
+  "SELECT table_name, rows AS n, bytes FROM state_usage";
 export const DUMP_USAGE_READS = [
   ...DUMP_USAGE_SQL,
+  DUMP_USAGE_COUNTERS,
   AGE_COLUMN,
   LEGACY_REQUEST_USAGE,
 ];
@@ -276,18 +279,28 @@ export function dumpStore(storage: DurableStorage): SqlDatabase {
 }
 
 /** The same six-table accounting for diagnostics and enforcement, without loading stored rows. */
-export function dumpUsage(db: SqlDatabase | undefined, limits: Limits) {
+export function dumpUsage(
+  db: SqlDatabase | undefined,
+  limits: Limits,
+  counters = false,
+) {
+  const counted =
+    counters && db !== undefined
+      ? new Map(db.all(DUMP_USAGE_COUNTERS).map((r) => [r.table_name, r]))
+      : undefined;
   const rows: Record<string, number> = {};
   let bytes = 0;
   for (const [index, table] of Object.keys(TABLES).entries()) {
     const found =
       db === undefined
         ? { n: 0, bytes: 0 }
-        : db.get(
-            index === REQUEST_USAGE && !db.get(AGE_COLUMN)
-              ? LEGACY_REQUEST_USAGE
-              : DUMP_USAGE_SQL[index]!,
-          );
+        : counted
+          ? counted.get(table)
+          : db.get(
+              index === REQUEST_USAGE && !db.get(AGE_COLUMN)
+                ? LEGACY_REQUEST_USAGE
+                : DUMP_USAGE_SQL[index]!,
+            );
     const n = Number(found?.n),
       size = Number(found?.bytes);
     if (
