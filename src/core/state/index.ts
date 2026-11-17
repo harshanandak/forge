@@ -1312,6 +1312,8 @@ export class StateOwner {
       keepBytes > 8388608
     )
       invalid("Invalid compaction budget");
+    keepRows = Math.min(keepRows, 8191);
+    keepBytes = Math.min(keepBytes, 8388607);
     const usage = this.#db.get(
       "SELECT rows,bytes FROM state_usage WHERE table_name='state_events'",
     );

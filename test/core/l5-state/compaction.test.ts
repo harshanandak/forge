@@ -226,11 +226,12 @@ test("the hard byte limit rolls back a write until maintenance retires the pendi
     ).toThrow(/MAINTENANCE_REQUIRED/);
     expect(high(s)).toBe(sequence);
     expect(s.owner.get(ns, "blocked")).toBeUndefined();
-    drain(s.owner, s.db, 256);
+    expect(compact(s.owner, 1, 8192, 8 * 1024 * 1024)).toBe(1);
     expect(
       s.owner.put(ns, "blocked", {}, actor, { expectRevision: 0 }).revision,
     ).toBe(1);
     expect(high(s)).toBe(sequence + 1);
+    drain(s.owner, s.db, 256);
   } finally {
     await s.close();
   }
