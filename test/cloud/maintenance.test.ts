@@ -1,17 +1,28 @@
 import { expect, setDefaultTimeout, test } from "bun:test";
+import { Database } from "bun:sqlite";
+import { StateOwner } from "../../src/core/state/index.ts";
 import * as receipts from "../../cloud/src/issue-receipts.ts";
 import { domain, Project } from "../../cloud/src/project.ts";
 import { fixture as projectFixture } from "./dump-capacity.fixture.ts";
-import {
-  actor,
-  fixture,
-  ns,
-  usage,
-} from "../core/l5-state/retention.fixture.ts";
+import { actor, ns, usage } from "../core/l5-state/retention.fixture.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
-import type { DurableStorage } from "../../cloud/src/store.ts";
+import { durableStore, type DurableStorage } from "../../cloud/src/store.ts";
+import { browserStorage } from "./browser-storage.fixture.ts";
 
 setDefaultTimeout(30_000);
+
+function fixture() {
+  const raw = new Database(":memory:");
+  const db = durableStore(browserStorage(raw).storage);
+  return Promise.resolve({
+    db,
+    owner: new StateOwner(db, { now: () => 1000 }),
+    close: () => {
+      raw.close();
+      return Promise.resolve();
+    },
+  });
+}
 
 const maintain = (db: SqlDatabase, now: number, batch: number) =>
   (
