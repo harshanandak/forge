@@ -37,6 +37,13 @@ export async function digest(path: string): Promise<string> {
     hash.update(chunk as Uint8Array);
   return hash.digest("hex");
 }
+
+const DESCRIPTIVE_KEYS = [
+  "elapsedMs",
+  "forgeVersion",
+  "schemaVersion",
+  "tables",
+];
 function sourceManifest(path: string): state.SourceManifest {
   try {
     const value = JSON.parse(
@@ -44,11 +51,14 @@ function sourceManifest(path: string): state.SourceManifest {
     ) as state.SourceManifest;
     if (
       !value ||
-      Object.keys(value).sort().join() !==
-        "at,eventHighWaterMark,records,sha256"
+      Object.keys(value)
+        .filter((key) => !DESCRIPTIVE_KEYS.includes(key))
+        .sort()
+        .join() !== "at,eventHighWaterMark,records,sha256"
     )
       invalid();
-    return value;
+    const { at, eventHighWaterMark, records, sha256 } = value;
+    return { at, eventHighWaterMark, records, sha256 };
   } catch {
     return invalid();
   }

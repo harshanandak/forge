@@ -1,0 +1,9 @@
+{
+  "operations": {
+    "store.export": {
+      "title": "Export the local store",
+      "summary": "Write a consistent read-only backup of this project's store, with a source.json describing it, into an empty folder.",
+      "examples": [{ "command": "forge store export --out ./store-backup" }]
+    }
+  }
+}
