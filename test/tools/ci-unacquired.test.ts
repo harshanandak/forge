@@ -262,6 +262,7 @@ const needed = [
   "Structure guards",
   "Lint and format",
   "Pack artifact",
+  "Comment guard (windows-latest, Node 24)",
   "Speed (${{ matrix.os }}, Node 24)",
   "Verify (${{ matrix.os }}, Node ${{ matrix.node }})",
 ];
@@ -296,6 +297,7 @@ test("reruns everything when a docs-only run lost its verify job", () => {
   const jobs = [
     ...created,
     { ...skipped, name: "Pack artifact" },
+    { ...skipped, name: "Comment guard (windows-latest, Node 24)" },
     { ...skipped, name: "Speed (${{ matrix.os }}, Node 24)" },
     gate,
   ];
@@ -336,6 +338,7 @@ test("does not treat missing jobs as a problem without a needed list", () => {
 const complete = [
   ...created,
   named("Pack artifact"),
+  named("Comment guard (windows-latest, Node 24)"),
   named("Speed (ubuntu-latest, Node 24)"),
   named("Speed (windows-latest, Node 24)"),
   ...[
@@ -404,6 +407,7 @@ test("reads the needed jobs from the CI Gate in ci.yml", () => {
     "Structure guards",
     "Lint and format",
     "Pack artifact",
+    "Comment guard (",
     "Speed (",
     "Verify (",
   ]) {

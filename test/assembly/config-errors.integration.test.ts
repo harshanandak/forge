@@ -235,10 +235,15 @@ test("source repair keeps shell syntax in cwd data and emits a fixed command", (
     });
     expect(repair.command).not.toContain("$(calc)");
     const local = join(root, "consumer", "node_modules", "forge-workflow");
-    expect(localUpgradeCommand(pathToFileURL(local), version)).toEqual({
-      cwd: join(root, "consumer"),
-      command: "npm install --save-dev forge-workflow@beta",
-    });
+    for (const [candidate, tag] of [
+      [version, version.includes("-") ? "beta" : "latest"],
+      ["1.0.0", "latest"],
+      ["1.0.0-beta.1", "beta"],
+    ])
+      expect(localUpgradeCommand(pathToFileURL(local), candidate!)).toEqual({
+        cwd: join(root, "consumer"),
+        command: `npm install --save-dev forge-workflow@${tag}`,
+      });
     expect(
       localUpgradeCommand(pathToFileURL(join(root, "installed")), "1.0.0"),
     ).toEqual({
@@ -525,16 +530,17 @@ test("packaged builds keep their identity and offer a package upgrade without ru
     );
     expect(result.error).toBeUndefined();
     expect(result.status, result.stdout + result.stderr).toBe(3);
+    const { version, commit, dirty } = JSON.parse(
+      readFileSync(join(installed, "dist/build.json"), "utf8"),
+    ) as { version: string; commit: string; dirty: boolean };
     expect(JSON.parse(result.stdout) as unknown).toMatchObject({
       error: {
         code: "UNKNOWN_COMMAND",
         hint: {
-          running: JSON.parse(
-            readFileSync(join(installed, "dist/build.json"), "utf8"),
-          ) as unknown,
+          running: { version, commit, dirty },
           required: expect.stringContaining("check.future") as unknown,
           cwd: null,
-          command: "npm install --global forge-workflow@beta",
+          command: `npm install --global forge-workflow@${version.includes("-") ? "beta" : "latest"}`,
         },
       },
     });

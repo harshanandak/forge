@@ -90,6 +90,8 @@ export const requiredJourneys = [
   "test/tools/pack-smoke/identity/packed.integration.test.ts::installed identity rejects a substituted commit",
   "test/tools/pack-smoke/identity/packed.integration.test.ts::installed identity rejects a substituted dirty",
   "test/tools/pack-smoke/identity/packed.integration.test.ts::installed identity rejects a substituted version",
+  "test/tools/pack-smoke/identity/packed.integration.test.ts::installed identity rejects a substituted runId",
+  "test/tools/pack-smoke/identity/packed.integration.test.ts::installed identity rejects a substituted missing",
   "test/tools/release/launcher/packed.integration.test.ts::plain Node release gate reaches each installed identity refusal with a Bun-free consumer PATH",
 ];
 

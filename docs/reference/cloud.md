@@ -3,7 +3,73 @@
 A Cloudflare Worker with one SQLite Durable Object per project. It decides who holds a lease on a
 subject. The code is in `cloud/`.
 
-Release acceptance follows [the release runbook](../release.md): owner publishes an unused candidate to `next`, verifies the exact registry-installed version/build commit, integrity, signatures and expected release-workflow provenance, and requires the complete installed tracker journey before promotion to `beta`. Retain native CI and two-machine acceptance output; phase names are not completion evidence. Main stays at temporary prerelease `0.1.0-beta.9` (V001) until the owner decides the final number before stable.
+Release acceptance follows [the release runbook](../release.md) and the two-machine supplement below. Owner decision V001 keeps the temporary prerelease candidate from `package.json` for now, with the beta-tag default; the owner sets the final version at release time. The current workflow publishes to `next`, then promotes prereleases to `beta` and stable versions to `latest` after readback and the second owner approval. Never substitute a tag, package name or version during proof.
+
+## Installed release and two-machine proof
+
+Keep three separate results: hosted packed acceptance, live candidate-tarball acceptance and live public-registry acceptance. Missing stages are INCOMPLETE/2. CI fixtures establish installed wiring and real Project authority behavior locally; they do not establish physical-machine, deployed restore or owner identity acceptance. Execute this supplement only under separate authorization for disposable resources; it authorizes no deployment, cutover or publication.
+
+The private artifact ledger records reviewed main commit (`RELEASE_SHA`), successful push CI URL/run (`CI_RUN`), exact package/version (`VERSION`), artifact SHA-256 (`ARTIFACT_SHA256`), SHA-512 integrity, installed `dist/build.json`, CLI identity, Node version, absolute installed bin, Worker version/config, project names and machine/device/session identities. Use Windows A and a safe disposable boxes.dev B, with A1/A2 sharing A's device and B1 independent. Never reuse the meetings-template box. Save timestamped envelopes, actual CLI exits, HTTP outcomes and dispatch sentinels; redact credentials, headers and private login responses. Confidential dumps stay private, outside commits and public CI artifacts.
+
+On both machines use new absolute prefixes/caches and the same downloaded CI archive. Read the candidate version from `package.json` in the reviewed source checkout. Verify the CI event is push, branch main, conclusion success and head exactly `RELEASE_SHA`; compare the archive against the independent ledger digest, not only its adjacent sidecar. Do not rebuild, repack or use the global forge on PATH.
+
+```sh
+VERSION=$(node -p "require('./package.json').version")
+gh run view "$CI_RUN" --repo harshanandak/forge --json headSha,headBranch,event,conclusion,url
+gh run download "$CI_RUN" --repo harshanandak/forge --name packed-package --dir "$ARTIFACT_DIR"
+printf '%s  %s\n' "$ARTIFACT_SHA256" "$TARBALL" | sha256sum -c -
+npm install --prefix "$PREFIX" --cache "$CACHE" --ignore-scripts "$TARBALL"
+BIN="$PREFIX/node_modules/forge-workflow/dist/bin/forge.js"
+node --version
+node "$BIN" --version --json
+node --input-type=module -e 'import assert from "node:assert/strict"; import {readFileSync} from "node:fs"; import {hash} from "node:crypto"; const p=process.env; const build=JSON.parse(readFileSync(p.PREFIX+"/node_modules/forge-workflow/dist/build.json","utf8")); assert.deepEqual(build,{version:p.VERSION,commit:p.RELEASE_SHA,dirty:false,runId:p.CI_RUN}); console.log(JSON.stringify({build,integrity:"sha512-"+hash("sha512",readFileSync(p.TARBALL),"base64")}));'
+```
+
+Export the named nonsecret ledger variables before these commands. Preserve the existing no-Bun consumer PATH and local-owner sentinel from the installed acceptance fixture. Every subsequent command uses `node "$BIN"`; prepare project identities/config through the supported setup operation, then initiate `node "$BIN" auth login --origin "$ORIGIN" --project "$PROJECT"`. The agent runs setup, login initiation and command work; the owner personally approves each matching device code in the Clerk browser. Transfer only the committed nonsecret binding between machines, never credentials. Login cannot create a missing project identity or replace an established binding.
+
+| Phase, in order      | Agent work                                                                                                                                                              | Owner boundary                                               |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| Artifact/environment | Check ledger, cold prefixes, isolated Worker/config; verify both new project names have empty status and all six empty tables                                           | Verified owner subject supplied privately if missing         |
+| Provision/login      | Provision source only, revoke bootstrap credential, initialize fixture once; start A/B logins                                                                           | Approve each device in browser                               |
+| Stages 1-2           | A1/A2/B1 create/read/comment/held edit; identical create/comment request replay; exact domain-event counts                                                              | None                                                         |
+| Stages 3-4           | Separate three-session and 100-call races; one winner each; compare every holder tuple/expiry; release/reacquire/renew and exact stale-generation refusals              | None                                                         |
+| Stage 5              | Fresh bound clone names remote holder then claims after release; reversible outage refuses reads/writes and store reinit, including dry-run; reconnect and compare data | None; agent runs command work                                |
+| Stage 6              | Revoke precisely disposable B credential id; account for every covering token, next-call refusal, full released list and retained A access                              | None; never disclose token                                   |
+| Stage 7              | Quiet source, export every v2 page, restore never-provisioned target; complete admin table readback before target login                                                 | None                                                         |
+| Restored stop/resume | Fresh target logins, global/lane control reads, zero-launch dispatch sentinel, old-fence/approval refusals; request shared all-lanes resume and retry its exact request | Approve target logins and fresh all-lanes resume in browser  |
+| Fresh resumed work   | Fresh issue revisions/read-set and claim, one permitted dispatch, stale refusals, final stopped cleanup                                                                 | None                                                         |
+| Published repeat     | New exact-version registry installs and new disposable projects on A/B; repeat every phase                                                                              | Owner publication first; fresh browser approvals as required |
+
+The restored typed-command target must be admitted on the isolated Worker. Changing admission/config or deploying is a separate authorization with prior admission/config and Worker version recorded as the reverse path. An admin-only unadmitted target cannot prove stopped dispatch. If unavailable, leave that phase INCOMPLETE. Caller-policy refusal never authorizes hand-editing credentials/bindings, impersonation or bypassing attended approval.
+
+Read raw v2 export pages and compare every column in canonical order in `state_records`, `state_events`, `state_leases`, `state_requests`, `domain_cloud_requests` and `domain_cloud_command_receipts`. Validate exactly the floor, lease-release and stop/audit deltas described under Stopped activation; reject missing/extra rows or pages. A serving restore adds another stop and is not a neutral comparison. Enumerate X, Y, R, every comment/link, deleted-number allocation floor, holder/generation/release event, replay receipt and control/audit object, including all N imported values and F floors. No count-only or sample-only acceptance.
+
+Require no held imported lease, no consumable old approval/browser state and no login/token state in the dump. CI inspects private tables directly; live refusal behavior complements dump exclusion. Retained ordinary-restore receipt bytes are imported history, never fresh grants; current-state imports carry no receipts/leases. A reused raw request id under a new token is a different principal: verify scoped replay isolation. Reach stale fences with valid current credentials, revisions and original generation context; distinguish released LEASE_NOT_HELD from replaced LEASE_STALE. A local context refusal is not server proof. Keep verified-close evidence in a separate disposable project because snapshot export refuses such evidence; never erase it for a passing dump.
+
+Record ResultEnvelope status and CLI exit separately from HTTP and runner verdict. OK is 0, INCOMPLETE 2, lease conflicts 4, invalid/context input 6, and unavailable/approval/auth failures here 1. A successful restore is not dispatch permission. Per-lane resume cannot lift global stop; fresh owner-approved shared all-lanes resume, current grant and fresh reads remain required. Existing processes are not cancelled. Lost final restore response requires status/dump inspection; discard an ambiguous disposable target rather than forcing activation.
+
+After owner publication, install only the exact public version on both machines with fresh caches/prefixes and save registry metadata and npm-verified signatures/provenance. Compare registry integrity to the same reviewed archive, installed build commit/run/version to the ledger, and signer/source/workflow to release policy. Repeat the complete live proof in fresh projects; re-fetch registry metadata and both installed identities before acceptance. These read-only commands do not authorize publishing:
+
+```sh
+npm view "forge-workflow@$VERSION" version dist.integrity dist.attestations --json
+npm view forge-workflow dist-tags --json
+npm install --prefix "$REGISTRY_PREFIX" --cache "$REGISTRY_CACHE" --ignore-scripts "forge-workflow@$VERSION"
+npm audit signatures --prefix "$REGISTRY_PREFIX" --json --include-attestations > "$PRIVATE_AUDIT"
+```
+
+Owner-only handoff: after the reviewed version merges, all prerequisites/main CI and candidate proof pass, verify the GitHub `release` environment actually requires owner approval for both publish and promote, main-only deployment and no administrator bypass. Check npm trusted publishing and dist-tag permission. An environment name in YAML is not evidence. If policy or unused-version availability fails, stop; never fall back to an agent token or a different artifact.
+
+Owner-only commands, never for agents to execute:
+
+```sh
+test "$(gh api repos/harshanandak/forge/commits/main --jq .sha)" = "$RELEASE_SHA"
+gh run view "$CI_RUN" --repo harshanandak/forge
+gh workflow run release.yml --repo harshanandak/forge --ref main -f run_id="$CI_RUN"
+RELEASE_RUN=$(gh run list --repo harshanandak/forge --workflow release.yml --commit "$RELEASE_SHA" --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId')
+gh run view "$RELEASE_RUN" --repo harshanandak/forge --web
+```
+
+The first approval publishes the verified candidate archive to `next`. Withhold the second approval until full public-registry two-machine proof is accepted, then review that same run in the browser for promotion to `beta` (prerelease, the owner's default) or `latest` (stable). The owner sets the final version at release time. Preserve every existing integrity, provenance, signature, cold-install and environment gate. Agents never dispatch/approve release, run npm publish or change dist-tags. A published version is immutable; retain failure evidence and diagnose at the failed gate.
 
 ## Routes
 
@@ -159,7 +225,7 @@ Use pages when a project is too big for one dump. The limits are counted in SQL,
 2. While `last` is false, `GET dump?cursor=<next>` (URL-encode `next`) returns the following page. Keep every page. If the project is written to between two pages, the next page is refused as `DUMP_CHANGED` (409): start again from `cursor=start`.
 3. `POST restore` each page, unchanged and in order, into an empty project. A page other than the next one is refused as `INPUT_INVALID`. Earlier pages only stage rows. The last page runs the same row checks as a whole restore over everything staged (`RESTORE_INVALID_ROW` names the table and row) and then provisions the project.
 
-Limits: a project over 32 MiB stored (33,554,432 bytes), or with more than 20,000 rows in any table, is refused as `DUMP_TOO_LARGE` on every page request, not only page 0. A restore is checked after every staged page, in the same transaction, so the page that crosses either limit is refused (`RESTORE_TOO_LARGE`) and nothing stays staged. The last page's row checks read 16 rows at a time by key and parse events once, in sequence order, with `JSON.parse` after one linear scan of each body's text that refuses a repeated label (`JSON.parse` keeps the last copy and SQLite `json_extract` the first, so a repeat is read two ways). The same strict read covers record, lease and receipt bodies, including receipt fingerprints and results. A label in sibling objects, or label-like text inside a string, is legal. A second text scan, before anything is parsed, refuses a body, fingerprint or result nested past 32 levels or holding more than 5,000 values (containers, strings and literals; labels not counted) as `RESTORE_INVALID_ROW` naming the table and key. Both scans parse nothing and keep nothing across rows. They retain scalar revisions and digests per record and request, current lease state, and receipt read-set and fence metadata until its event. Memory therefore grows with distinct keys, request ids and their scalar metadata, but does not retain parsed record values or the whole event history. Receipts are paged once for that metadata and again for the final checks. The row and byte limits are 20,000 and 32 MiB (`DUMP_MAX_ROWS`, `DUMP_MAX_BYTES`), measured with a real-size tracker restore in a Node worker with a 96 MiB heap cap, a stand-in for one isolate; the deployed Durable Object is not measured. The 4 MiB page, 8 MiB request body and 3 MiB whole-dump ceilings are unchanged. The conformance run sets smaller values in `wrangler.test.jsonc`; `wrangler.example.jsonc` sets the initial measurement candidate only.
+Limits: a project over 64 MiB stored (67,108,864 bytes), or with more than 30,000 rows in any table, is refused as `DUMP_TOO_LARGE` on every page request, not only page 0. A restore is checked after every staged page, in the same transaction, so the page that crosses either limit is refused (`RESTORE_TOO_LARGE`) and nothing stays staged. The last page's row checks read 16 rows at a time by key and parse events once, in sequence order, with `JSON.parse` after one linear scan of each body's text that refuses a repeated label (`JSON.parse` keeps the last copy and SQLite `json_extract` the first, so a repeat is read two ways). The same strict read covers record, lease and receipt bodies, including receipt fingerprints and results. A label in sibling objects, or label-like text inside a string, is legal. A second text scan, before anything is parsed, refuses a body, fingerprint or result nested past 32 levels or holding more than 5,000 values (containers, strings and literals; labels not counted) as `RESTORE_INVALID_ROW` naming the table and key. Both scans parse nothing and keep nothing across rows. They retain scalar revisions and digests per record and request, current lease state, and receipt read-set and fence metadata until its event. Memory therefore grows with distinct keys, request ids and their scalar metadata, but does not retain parsed record values or the whole event history. Receipts are paged once for that metadata and again for the final checks. The row and byte defaults and fixed upper bounds are 30,000 and 64 MiB (`DUMP_MAX_ROWS`, `DUMP_MAX_BYTES`); smaller positive safe integers lower the caps. CI measures a synthetic 3x tracker restore in a Node worker with a 96 MiB heap cap, a stand-in for one isolate; the deployed Durable Object is not measured. The 4 MiB page, 8 MiB request body and 3 MiB whole-dump ceilings are unchanged. The conformance run sets smaller values in `wrangler.test.jsonc`; `wrangler.example.jsonc` pins these limits. `DUMP_PAGE_BYTES` can lower the 4 MiB page cap but cannot raise it.
 
 Admin `GET status` returns `value.initialized` and `value.dump`: `rows` for each of the six dump tables,
 total `bytes`, effective `limits.maxRows` / `limits.maxBytes`, and `warnings`. Bytes sum the UTF-8 stored
@@ -167,11 +233,11 @@ columns, including command receipts; they are not the SQLite database size or se
 The diagnostic and export/restore checks share the same SQL accounting. Rows are capped per table,
 not by their sum. An exact cap remains size-eligible; only usage above it refuses export or restore.
 `DUMP_CAPACITY` warning objects identify `resource`, `used` and `limit` at `ceil(0.7 * limit)`:
-14,000 rows in any table or 23,488,103 stored bytes for the initial candidate. Warnings do not block
+21,000 rows in any table or 46,976,205 stored bytes at the default limits. Warnings do not block
 writes or change status success. Above-cap status still reports usage. Uninitialized status reports
 zero without schema setup; unreadable initialized storage returns `UNAVAILABLE`, never false zero.
-The example vars pin only the initial 20,000-row / 32 MiB measurement candidate. Before deployment,
-run `capacity.ts` with `current` and all existing boundary shapes: compare all six counts and content
+The example vars pin the measured 30,000-row / 64 MiB limits. Before deployment,
+run `capacity.ts` with `current`, `tracker-3x` and the existing boundary shapes at their former candidate limits: compare all six counts and content
 digests, cold/warm results, final-page query counts, CPU/wall time and the 96 MiB heap-cap control.
 These are measurement gates, not a deployed-capacity claim; whole-dump transport limits remain unchanged.
 

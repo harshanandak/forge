@@ -49,5 +49,6 @@ writeGenerated(
   JSON.stringify({
     version: pkg.version,
     ...identity(),
+    runId: process.env.GITHUB_RUN_ID ?? null,
   }) + "\n",
 );
