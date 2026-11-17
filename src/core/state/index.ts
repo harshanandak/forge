@@ -768,6 +768,7 @@ export function verifyEventDerivedState(
     checkpoint === undefined ? undefined : [checkpoint.leases ? 0 : covered],
   )) {
     const eventSequence = Number(row.sequence);
+    if (eventSequence < 1) reject("state_events", "sequence");
     if (eventSequence > covered && sequence === covered) verifyLeaseSeeds();
     const id = rowKey("state_events", row, "key");
     if (eventSequence > covered && eventSequence !== ++sequence)

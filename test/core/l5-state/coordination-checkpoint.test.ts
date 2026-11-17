@@ -14,6 +14,28 @@ import { actor, ns, fixture, high } from "./record-checkpoint.fixture.ts";
 
 setDefaultTimeout(30_000);
 
+test("the covered boundary cannot hide an event at sequence zero", async () => {
+  const s = await fixture();
+  try {
+    s.owner.initialize();
+    s.db.run("INSERT INTO state_events VALUES (0,?,?,?)", [
+      ns,
+      "missing",
+      canonicalJson({
+        type: `${ns}:record.deleted@1`,
+        namespace: ns,
+        key: "missing",
+        revision: 1,
+        at: new Date(1000).toISOString(),
+        actor,
+      }),
+    ]);
+    expect(() => verifyEventDerivedState(s.db, 0, 1)).toThrow(/state_events/);
+  } finally {
+    await s.close();
+  }
+});
+
 const holder = {
   actor,
   session: { id: "synthetic-session", device: "synthetic-device" },
