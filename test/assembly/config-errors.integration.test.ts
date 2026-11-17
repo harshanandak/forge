@@ -236,8 +236,9 @@ test("source repair keeps shell syntax in cwd data and emits a fixed command", (
     expect(repair.command).not.toContain("$(calc)");
     const local = join(root, "consumer", "node_modules", "forge-workflow");
     for (const [candidate, tag] of [
-      ["0.0.1", "latest"],
-      ["0.1.0-beta.9", "beta"],
+      [version, version.includes("-") ? "beta" : "latest"],
+      ["1.0.0", "latest"],
+      ["1.0.0-beta.1", "beta"],
     ])
       expect(localUpgradeCommand(pathToFileURL(local), candidate!)).toEqual({
         cwd: join(root, "consumer"),
@@ -539,7 +540,7 @@ test("packaged builds keep their identity and offer a package upgrade without ru
           running: { version, commit, dirty },
           required: expect.stringContaining("check.future") as unknown,
           cwd: null,
-          command: "npm install --global forge-workflow@latest",
+          command: `npm install --global forge-workflow@${version.includes("-") ? "beta" : "latest"}`,
         },
       },
     });

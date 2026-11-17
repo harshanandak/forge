@@ -3,7 +3,7 @@
 A Cloudflare Worker with one SQLite Durable Object per project. It decides who holds a lease on a
 subject. The code is in `cloud/`.
 
-Release acceptance follows [the release runbook](../release.md) and the two-machine supplement below. The reviewed candidate requests `forge-workflow@0.0.1`; forge-1455 records that this immutable version is already used. Publication stays blocked until the owner resolves the version and a newly reviewed candidate passes the same gates. Never substitute a tag, beta, package name or version during proof. Stable promotion targets `latest`; prerelease promotion targets `beta`.
+Release acceptance follows [the release runbook](../release.md) and the two-machine supplement below. Owner decision V001 keeps the temporary prerelease candidate from `package.json` for now, with the beta-tag default; the owner sets the final version at release time. The current workflow publishes to `next`, then promotes prereleases to `beta` and stable versions to `latest` after readback and the second owner approval. Never substitute a tag, package name or version during proof.
 
 ## Installed release and two-machine proof
 
@@ -11,9 +11,10 @@ Keep three separate results: hosted packed acceptance, live candidate-tarball ac
 
 The private artifact ledger records reviewed main commit (`RELEASE_SHA`), successful push CI URL/run (`CI_RUN`), exact package/version (`VERSION`), artifact SHA-256 (`ARTIFACT_SHA256`), SHA-512 integrity, installed `dist/build.json`, CLI identity, Node version, absolute installed bin, Worker version/config, project names and machine/device/session identities. Use Windows A and a safe disposable boxes.dev B, with A1/A2 sharing A's device and B1 independent. Never reuse the meetings-template box. Save timestamped envelopes, actual CLI exits, HTTP outcomes and dispatch sentinels; redact credentials, headers and private login responses. Confidential dumps stay private, outside commits and public CI artifacts.
 
-On both machines use new absolute prefixes/caches and the same downloaded CI archive. Verify the CI event is push, branch main, conclusion success and head exactly `RELEASE_SHA`; compare the archive against the independent ledger digest, not only its adjacent sidecar. Do not rebuild, repack or use the global forge on PATH.
+On both machines use new absolute prefixes/caches and the same downloaded CI archive. Read the candidate version from `package.json` in the reviewed source checkout. Verify the CI event is push, branch main, conclusion success and head exactly `RELEASE_SHA`; compare the archive against the independent ledger digest, not only its adjacent sidecar. Do not rebuild, repack or use the global forge on PATH.
 
 ```sh
+VERSION=$(node -p "require('./package.json').version")
 gh run view "$CI_RUN" --repo harshanandak/forge --json headSha,headBranch,event,conclusion,url
 gh run download "$CI_RUN" --repo harshanandak/forge --name packed-package --dir "$ARTIFACT_DIR"
 printf '%s  %s\n' "$ARTIFACT_SHA256" "$TARBALL" | sha256sum -c -
@@ -68,7 +69,7 @@ RELEASE_RUN=$(gh run list --repo harshanandak/forge --workflow release.yml --com
 gh run view "$RELEASE_RUN" --repo harshanandak/forge --web
 ```
 
-The first approval publishes the verified archive to `next`. Withhold the second approval until full public-registry two-machine proof is accepted, then review that same run in the browser for promotion to `latest` (stable) or `beta` (prerelease). Preserve every existing integrity, provenance, signature, cold-install and environment gate. Agents never dispatch/approve release, run npm publish or change dist-tags. A published version is immutable; retain failure evidence and diagnose at the failed gate.
+The first approval publishes the verified candidate archive to `next`. Withhold the second approval until full public-registry two-machine proof is accepted, then review that same run in the browser for promotion to `beta` (prerelease, the owner's default) or `latest` (stable). The owner sets the final version at release time. Preserve every existing integrity, provenance, signature, cold-install and environment gate. Agents never dispatch/approve release, run npm publish or change dist-tags. A published version is immutable; retain failure evidence and diagnose at the failed gate.
 
 ## Routes
 

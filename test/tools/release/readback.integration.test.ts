@@ -11,11 +11,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { version } from "../../../src/version.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "forge-release-readback-"));
 const repository = "https://github.com/harshanandak/forge";
-const version = "0.1.0-beta.9",
-  commit = "b".repeat(40);
+const commit = "b".repeat(40);
 const tarball = join(dir, "candidate.tgz");
 const integrity = "sha512-" + hash("sha512", "reviewed archive", "base64");
 let certificate = "";
