@@ -201,6 +201,68 @@ test.each([
   },
 );
 
+for (const mode of ["initialize", "restore"])
+  test.each(["updated", "deleted", "absent", "entries", "forged"])(
+    `${mode} validates covered acquisition read sets at their historical revisions: %s`,
+    async (change) => {
+      const source = await fixture(),
+        target = await fixture();
+      try {
+        source.owner.initialize();
+        if (change !== "absent")
+          source.owner.put(ns, "dependency", 1, actor, { expectRevision: 0 });
+        source.owner.acquire(ns, "s", holder, 60_000, "historical", {
+          readSet: [
+            { key: "dependency", expectRevision: change === "absent" ? 0 : 1 },
+          ],
+          ...(change === "entries"
+            ? { entries: [{ key: "dependency", value: 2, expectRevision: 1 }] }
+            : {}),
+        });
+        if (change === "deleted")
+          source.owner.delete(ns, "dependency", actor, { expectRevision: 1 });
+        else if (change !== "entries")
+          source.owner.put(ns, "dependency", 2, actor, {
+            expectRevision: change === "absent" ? 0 : 1,
+          });
+        verifyEventDerivedState(source.db, high(source), 1);
+        source.owner.checkpoint(1);
+        if (change === "forged") {
+          const row = source.db.get(
+            "SELECT sequence,body FROM state_events WHERE json_extract(body,'$.requestId')='historical'",
+          )!;
+          const event = JSON.parse(String(row.body)) as {
+            data: { options: { readSet: { expectRevision: number }[] } };
+          };
+          event.data.options.readSet[0]!.expectRevision = 2;
+          source.db.run("UPDATE state_events SET body=? WHERE sequence=?", [
+            canonicalJson(event),
+            Number(row.sequence),
+          ]);
+        }
+        target.owner.initialize();
+        const before = target.owner.export();
+        const load = () =>
+          mode === "initialize"
+            ? source.owner.initialize()
+            : target.owner.restore(source.owner.export(), undefined, 1);
+        if (change === "forged") {
+          expect(load).toThrow(/state_requests/);
+          expect(target.owner.export()).toEqual(before);
+        } else {
+          expect(load).not.toThrow();
+          const owner = mode === "initialize" ? source.owner : target.owner;
+          expect(owner.get(ns, "dependency")?.value).toBe(
+            change === "deleted" ? undefined : 2,
+          );
+        }
+      } finally {
+        await source.close();
+        await target.close();
+      }
+    },
+  );
+
 test("lease witnesses beyond 5,000 JSON values decode row-wise", async () => {
   const s = await fixture();
   try {
