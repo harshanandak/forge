@@ -46,7 +46,11 @@ for (const version of [1, 3])
             open: () =>
               Promise.resolve({
                 ok: true,
-                handle: { value: source.db, close: () => Promise.resolve() },
+                handle: {
+                  ownership: "owned",
+                  value: source.db,
+                  close: () => Promise.resolve(),
+                },
               }),
           });
           await expect(state.open(true)).rejects.toThrow(
