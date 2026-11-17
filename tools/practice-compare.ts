@@ -39,7 +39,7 @@ export interface PracticeComparison {
   failure?: Failure;
 }
 class ComparisonFailure extends ForgeFailure {
-  constructor(report: PracticeComparison) {
+  constructor(report: Partial<PracticeComparison>) {
     const { table, key, reason } = report.failure!;
     super({
       code: "PRACTICE_VERIFICATION_FAILED",
@@ -56,13 +56,7 @@ const unexpected = (error: unknown): Failure => ({
 });
 export function practiceComparisonRefusal(error: unknown) {
   if (error instanceof ComparisonFailure) return error.error;
-  const failure = unexpected(error);
-  return new ForgeFailure({
-    code: "PRACTICE_VERIFICATION_FAILED",
-    message: failure.reason,
-    retry: "never",
-    observed: { failure },
-  }).error;
+  return new ComparisonFailure({ failure: unexpected(error) }).error;
 }
 function hash(tables: Tables) {
   const sum = tally();
