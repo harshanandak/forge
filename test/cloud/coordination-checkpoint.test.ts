@@ -39,7 +39,11 @@ function initialize(s: Fixture) {
 }
 const receipts = (s: Fixture) =>
   s.db.all(`SELECT * FROM ${COMMAND_RECEIPTS} ORDER BY request_id`);
-function cloud(s: Fixture, expiry = start + 2 * day) {
+function cloud(
+  s: Fixture,
+  expiry = start + 2 * day,
+  principal = "synthetic-principal",
+) {
   const values = new Map<string, unknown>();
   const storage: DurableStorage = {
     sql: {
@@ -81,7 +85,7 @@ function cloud(s: Fixture, expiry = start + 2 * day) {
     owner,
     create: (input: unknown, requestId = "r") =>
       createIssue(db, owner, {
-        principal: ["token", "synthetic-principal", "synthetic"],
+        principal: ["token", principal, "synthetic"],
         requestId,
         input,
         context: { variant: "project", actor, project: { id: "p" } },
@@ -407,3 +411,67 @@ test.each(["invalid", start])(
     }
   },
 );
+
+test("denial saturation is bounded and cannot forget a refused id when other credentials expire", async () => {
+  const source = await fixture(),
+    target = await fixture();
+  const clock = spyOn(Date, "now").mockReturnValue(start);
+  const cap = 4096;
+  try {
+    initialize(source);
+    initialize(target);
+    const short = cloud(source, start + 60_000, "short");
+    expect(() => short.create({ title: null }, "existing")).toThrow(
+      /issue.create/,
+    );
+    const first = receipts(source)[0]!;
+    source.db.run(
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<?) INSERT INTO ${COMMAND_RECEIPTS}(request_id,fingerprint,outcome,result,created_at,expires_at) SELECT 'c2:'||printf('%064x',i),?,'refused',?,?,? FROM n`,
+      [
+        cap - 1,
+        String(first.fingerprint),
+        String(first.result),
+        start,
+        start + 60_000,
+      ],
+    );
+    const before = receipts(source);
+    const long = cloud(source, start + 2 * day, "long");
+    for (const id of ["r", "another"])
+      expect(() => long.create({ title: "New" }, id)).toThrow();
+    expect(
+      (
+        await cloud(source, start + 3 * day, "raw").lease({
+          subject: "s",
+          requestId: "raw",
+          holder,
+          ttlMs: 60_000,
+        })
+      ).status,
+    ).toBe(503);
+    expect(receipts(source)).toHaveLength(cap + 1);
+    const after = new Map(receipts(source).map((row) => [row.request_id, row]));
+    for (const row of before) expect(after.get(row.request_id)).toEqual(row);
+    expect(() => short.create({ title: null }, "existing")).toThrow(
+      /issue.create/,
+    );
+    source.owner.acquire(ns, "anchor", holder, 60_000, "anchor");
+    source.owner.checkpoint(1);
+    target.db.run(`DELETE FROM ${EXPORT_STATE}`);
+    target.owner.restore(source.owner.export(), undefined, 1);
+    clock.mockReturnValue(start + 60_001);
+    expect(() =>
+      cloud(target, start + 2 * day, "long").create({ title: "Retry" }, "r"),
+    ).toThrow();
+    expect(target.owner.list("forge/work")).toEqual([]);
+    clock.mockReturnValue(start + 3 * day);
+    expect(
+      cloud(target, start + 4 * day, "fresh").create({ title: "After barrier" })
+        .title,
+    ).toBe("After barrier");
+  } finally {
+    clock.mockRestore();
+    await source.close();
+    await target.close();
+  }
+});
