@@ -17,10 +17,14 @@ import {
   ComparisonCheckFailure,
   comparisonCheck,
   comparisonRecord,
-  type ComparisonProblem as Failure,
+  type ComparisonProblem,
 } from "../cloud/conformance/comparison-check.ts";
 import type { Tables } from "../cloud/conformance/max-source.ts";
 
+type Failure = Omit<ComparisonProblem, "table" | "key"> & {
+  table: Table | null;
+  key: string[] | null;
+};
 type Row = Tables[string][number];
 type Digest = { rows: number; digest: string };
 export interface PracticeComparison {
@@ -45,8 +49,20 @@ class ComparisonFailure extends ForgeFailure {
     });
   }
 }
+const unexpected = (error: unknown): Failure => ({
+  table: null,
+  key: null,
+  reason: `unexpected:${error instanceof Error ? error.constructor.name : typeof error}`,
+});
 export function practiceComparisonRefusal(error: unknown) {
-  return error instanceof ComparisonFailure ? error.error : undefined;
+  if (error instanceof ComparisonFailure) return error.error;
+  const failure = unexpected(error);
+  return new ForgeFailure({
+    code: "PRACTICE_VERIFICATION_FAILED",
+    message: failure.reason,
+    retry: "never",
+    observed: { failure },
+  }).error;
 }
 function hash(tables: Tables) {
   const sum = tally();
@@ -62,7 +78,7 @@ function firstMismatch(
   table: Table,
   expected: Row[],
   actual: Row[],
-): Failure | undefined {
+): ComparisonProblem | undefined {
   for (
     let index = 0;
     index < Math.max(expected.length, actual.length);
@@ -180,42 +196,36 @@ export function verifyPracticeReadback(
       }),
     ) as PracticeComparison["tables"],
   };
-  let expected: Tables;
   try {
     const delta = observeStop(source, actual, window);
     const stopTime = Date.parse(delta.at);
     report.stopOffsetMs = Number.isFinite(stopTime)
       ? stopTime - window[0]
       : null;
-    expected = stopOverlay(source, stopPlan(source, delta));
-  } catch (error) {
-    if (!(error instanceof ComparisonCheckFailure)) throw error;
-    report.failure = error.problem;
-    if (error.mismatch) report.tables[error.problem.table].match = false;
-    throw new ComparisonFailure(report);
-  }
-  report.phase = "rows";
-  const wanted = hash(expected);
-  for (const table of TABLES) {
-    const match =
-      received[table].rows === wanted[table].rows &&
-      received[table].digest === wanted[table].digest;
-    report.tables[table] = {
-      expected: wanted[table],
-      actual: received[table],
-      match,
-    };
-    if (!match && !report.failure) {
-      const failure = firstMismatch(table, expected[table]!, actual[table]!);
-      if (!failure)
-        throw new ForgeFailure({
-          code: "INTERNAL",
-          message: "Digest mismatch without a divergent row",
-          retry: "never",
-          observed: { table },
-        });
-      report.failure = failure;
+    const expected = stopOverlay(source, stopPlan(source, delta));
+    report.phase = "rows";
+    const wanted = hash(expected);
+    for (const table of TABLES) {
+      const match =
+        received[table].rows === wanted[table].rows &&
+        received[table].digest === wanted[table].digest;
+      report.tables[table] = {
+        expected: wanted[table],
+        actual: received[table],
+        match,
+      };
+      if (!match && !report.failure)
+        report.failure = firstMismatch(
+          table,
+          expected[table]!,
+          actual[table]!,
+        ) ?? { table, key: null, reason: "digest mismatch without a row" };
     }
+  } catch (error) {
+    if (error instanceof ComparisonCheckFailure) {
+      report.failure = error.problem;
+      if (error.mismatch) report.tables[error.problem.table].match = false;
+    } else report.failure = unexpected(error);
   }
   if (report.failure) throw new ComparisonFailure(report);
   report.ok = true;
