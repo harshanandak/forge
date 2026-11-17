@@ -10,9 +10,11 @@ import {
   refused,
   replay,
   MAX_RECEIPTS,
+  MAX_LIVE_DENIALS,
 } from "../../cloud/src/issue-receipts.ts";
 import {
   COMMAND_RECEIPTS,
+  DENIAL_BARRIER_ID,
   EXPORT_STATE,
   dumpOf,
   restoreDump,
@@ -416,7 +418,7 @@ test("denial saturation is bounded and cannot forget a refused id when other cre
   const source = await fixture(),
     target = await fixture();
   const clock = spyOn(Date, "now").mockReturnValue(start);
-  const cap = 4096;
+  const cap = MAX_LIVE_DENIALS;
   try {
     initialize(source);
     initialize(target);
@@ -469,6 +471,78 @@ test("denial saturation is bounded and cannot forget a refused id when other cre
       cloud(target, start + 4 * day, "fresh").create({ title: "After barrier" })
         .title,
     ).toBe("After barrier");
+  } finally {
+    clock.mockRestore();
+    await source.close();
+    await target.close();
+  }
+});
+
+test("a validated denial barrier survives v2 import and imported-receipt pressure pruning", async () => {
+  const source = await fixture(),
+    target = await fixture();
+  const clock = spyOn(Date, "now").mockReturnValue(start);
+  try {
+    initialize(source);
+    initialize(target);
+    const valid = dumpOf(source.db);
+    valid.tables[COMMAND_RECEIPTS]!.push({
+      request_id: DENIAL_BARRIER_ID,
+      fingerprint: "{}",
+      outcome: "refused",
+      result: JSON.stringify({
+        code: "UNAVAILABLE",
+        message: "Denial capacity is full",
+        retry: "never",
+      }),
+      created_at: start,
+      expires_at: start + 3 * day,
+    });
+    const destination = cloud(target);
+    for (const patch of [
+      { fingerprint: '{"forged":true}' },
+      { outcome: "ok" },
+      { expires_at: start },
+      { result: JSON.stringify(failure.error) },
+    ]) {
+      const bad = structuredClone(valid);
+      Object.assign(bad.tables[COMMAND_RECEIPTS]![0]!, patch);
+      expect(() =>
+        restoreDump(
+          destination.db,
+          destination.owner,
+          bad,
+          limitsFrom(undefined),
+        ),
+      ).toThrow(/domain_cloud_command_receipts.*not valid/);
+      expect(receipts(target)).toEqual([]);
+    }
+    expect(
+      restoreDump(
+        destination.db,
+        destination.owner,
+        valid,
+        limitsFrom(undefined),
+      ),
+    ).toMatchObject({ [COMMAND_RECEIPTS]: 1 });
+    const barrier = receipts(target)[0]!;
+    expect(Number(barrier.imported)).toBe(1);
+    target.db.run(
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<?) INSERT INTO ${COMMAND_RECEIPTS}(request_id,fingerprint,outcome,result,created_at,expires_at) SELECT 'c2:'||printf('%064x',i),'{}','ok','{}',?,? FROM n`,
+      [MAX_RECEIPTS, start, start + day],
+    );
+    expect(() => admit(destination.db)).toThrow(/receipts are full/);
+    expect(
+      target.db.get(`SELECT * FROM ${COMMAND_RECEIPTS} WHERE request_id=?`, [
+        DENIAL_BARRIER_ID,
+      ]),
+    ).toEqual(barrier);
+    expect(() => destination.create({ title: "Blocked" })).toThrow(
+      /Denial capacity/,
+    );
+    expect(
+      target.owner.list("forge/work").filter((r) => r.key.startsWith("issue:")),
+    ).toEqual([]);
   } finally {
     clock.mockRestore();
     await source.close();

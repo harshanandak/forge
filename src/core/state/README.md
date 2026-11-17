@@ -20,6 +20,8 @@ table, preserved by the complete owner image. Folding the event prefix does not 
 Answers stop at the earlier of 24 hours and credential expiry. Refused ids remain denied until
 credential expiry, including refusals at answer capacity. Lease-route receipt envelopes retain
 the credential deadline too. Both stores prune denial witnesses only after retry authority ends.
+`MAX_LIVE_DENIALS` caps both stores at 4,096 live denials. At capacity, one durable barrier
+refuses all new ids through every blocked credential's expiry; existing witnesses still replay.
 No duplicate denied checkpoint row is written. Credential revocations
 remain outside event checkpoint replay, and cloud dump v3 transport is separate work.
 

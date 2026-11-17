@@ -83,6 +83,7 @@ import {
   expiredReplay,
   RETENTION_MS,
   PRUNE_RECEIPTS,
+  withDenialCapacity,
 } from "./issue-receipts.ts";
 import { EVIDENCE_MIGRATION, EVIDENCE_RECEIPTS } from "./evidence-receipts.ts";
 import { LaneControlStore } from "./lane-control-store.ts";
@@ -961,11 +962,12 @@ export class Project {
         });
       return this.#replay(route, requestId, prior, subject, holder);
     }
+    const commit = <T>(work: () => T) =>
+      withDenialCapacity(this.#open().db, expiresAt, checkExpiry, work);
     try {
       // The change and its receipt commit together: if the receipt insert fails, the change rolls
       // back, so a retry after the 500 starts from the state the caller last saw.
-      return this.#open().db.transaction(() => {
-        checkExpiry();
+      return commit(() => {
         if (route !== "release") {
           checkTtl(ttlMs, expiresAt);
         }
@@ -992,8 +994,7 @@ export class Project {
         (error.error.code.startsWith("LEASE_") ||
           error.error.code === "INPUT_INVALID")
       )
-        this.#open().db.transaction(() => {
-          checkExpiry();
+        commit(() => {
           this.#record(
             requestId,
             fingerprint,

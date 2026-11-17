@@ -4760,6 +4760,50 @@ const writes = (f: F) =>
     f.db.query("SELECT * FROM state_leases ORDER BY subject").all(),
     commandRows(f.db),
   ]);
+function expectRefusalOnly(f: F, before: string, error: unknown) {
+  type Snapshot = { sql: [string, unknown[]][]; kv: unknown };
+  const prior = JSON.parse(before) as Snapshot;
+  const current = JSON.parse(f.snapshot()) as Snapshot;
+  const oldRows = prior.sql.find(
+    ([name]) => name === "domain_cloud_command_receipts",
+  )![1] as { request_id: string }[];
+  const newRows = current.sql.find(
+    ([name]) => name === "domain_cloud_command_receipts",
+  )![1] as { request_id: string; outcome: string; result: string }[];
+  const added = newRows.filter(
+    (row) => !oldRows.some((old) => old.request_id === row.request_id),
+  );
+  expect(added).toHaveLength(1);
+  expect(added[0]!.outcome).toBe("refused");
+  expect(JSON.parse(added[0]!.result)).toEqual(error);
+  expect(newRows.filter((row) => row !== added[0])).toEqual(oldRows);
+  for (const sql of DUMP_USAGE_SQL) {
+    const table = sql.split(" FROM ")[1]!;
+    expect(
+      f.db
+        .query("SELECT rows AS n,bytes FROM state_usage WHERE table_name=?")
+        .get(table),
+    ).toEqual(f.db.query(sql).get());
+  }
+  const normalize = (snapshot: Snapshot) => ({
+    ...snapshot,
+    sql: snapshot.sql
+      .filter(
+        ([name]) =>
+          name !== "domain_cloud_command_receipts" &&
+          name !== "domain_cloud_export",
+      )
+      .map(([name, rows]) => [
+        name,
+        name === "state_usage"
+          ? (rows as { table_name: string }[]).filter(
+              (row) => row.table_name !== "domain_cloud_command_receipts",
+            )
+          : rows,
+      ]),
+  });
+  expect(normalize(current)).toEqual(normalize(prior));
+}
 const issuesIn = (f: F) =>
   rowsOf(f.db, "forge/work").filter((r) => r.key.startsWith("issue:")).length;
 const floorAt = (number: number) => ({ prefix: "issue:work-", number });
@@ -5176,7 +5220,7 @@ for (const [name, seed] of [
     },
   ],
 ] as const)
-  test(`a cloud project with ${name} and no floor refuses create as UNAVAILABLE and changes nothing`, async () => {
+  test(`a cloud project with ${name} and no floor durably refuses create as UNAVAILABLE without business effects`, async () => {
     const f = fixture();
     const token = await f.device();
     f.tables();
@@ -5189,8 +5233,11 @@ for (const [name, seed] of [
       1,
       floorMissing,
     ]);
-    expect(f.snapshot()).toBe(before);
-    expect(receiptOf(f, "o-1")).toBeUndefined();
+    expectRefusalOnly(f, before, got.json.error);
+    expect(receiptOf(f, "o-1")).toMatchObject({
+      outcome: "refused",
+      result: got.json.error,
+    });
     // Issuing another device never writes a floor over old history.
     await f.device(day, "tablet");
     expect(floorOf(f)).toBeUndefined();
@@ -7209,7 +7256,7 @@ test("a dependency walk over 10,000 issues is answered, 10,001 is refused as UNA
     );
     f.put(stored({ id: "work-52" }), {}, "issue:work-52");
     f.lease({ holder }, "issue:work-52");
-    const before = writes(f);
+    const before = f.snapshot();
     const got = await f.send(
       depCall("w-1", depIn({ id: "forge-52", target: "forge-1000" })),
       { token },
@@ -7219,7 +7266,7 @@ test("a dependency walk over 10,000 issues is answered, 10,001 is refused as UNA
       expect(got.json.result).toMatchObject({ dependsOn: ["forge-1000"] });
     else {
       expect(got.code).toBe("UNAVAILABLE");
-      expect(writes(f)).toBe(before);
+      expectRefusalOnly(f, before, got.json.error);
     }
   }
 }, 120_000);

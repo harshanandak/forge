@@ -3,7 +3,13 @@ import { ForgeFailure } from "../../src/contract/failure.ts";
 import { canonicalJson, digestValue } from "../../src/core/config/pointer.ts";
 import type { StateOwner } from "../../src/core/state/index.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
-import { admit, record, refused, replay } from "./issue-receipts.ts";
+import {
+  admit,
+  record,
+  refused,
+  replay,
+  withDenialCapacity,
+} from "./issue-receipts.ts";
 import {
   receiptScope,
   scopeRequestId,
@@ -84,9 +90,10 @@ export function commandWrite<Fields, Result>(
       ? refused(db, requestId, fingerprint, error, recheck, expiresAt)
       : error;
   }
+  const commit = (work: () => Result) =>
+    withDenialCapacity(db, expiresAt, recheck, work);
   try {
-    return db.transaction(() => {
-      recheck();
+    return commit(() => {
       admit(db);
       return record(
         db,

@@ -6,13 +6,14 @@ import { canonicalJson } from "../../src/core/config/pointer.ts";
 import type { StateOwner } from "../../src/core/state/index.ts";
 import type { ForgeError } from "../../src/generated/types.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
-import { COMMAND_RECEIPTS } from "./dump.ts";
+import { COMMAND_RECEIPTS, DENIAL_BARRIER_ID } from "./dump.ts";
 
 const NAMESPACE = "forge/cloud";
 const PREFIX = "request:";
 /** Below the paged restore row cap (20,000); legacy receipts do not consume admission. */
 export const MAX_RECEIPTS = 3000;
 export const PRUNE_RECEIPTS = 8;
+export const MAX_LIVE_DENIALS = 4096;
 export const RETENTION_MS = 24 * 60 * 60 * 1000;
 // Imported audit bytes retain their original expiry; old live rows use the new deadline too.
 const DEADLINE = `CASE WHEN imported=0 THEN min(expires_at, created_at+${RETENTION_MS}) ELSE expires_at END`;
@@ -32,6 +33,46 @@ interface Receipt {
   readonly result: unknown;
 }
 
+export function withDenialCapacity<T>(
+  db: SqlDatabase,
+  expiresAt: number | undefined,
+  recheck: () => void,
+  work: () => T,
+): T {
+  const failure = new ForgeFailure({
+    code: "UNAVAILABLE",
+    message: "Denial capacity is full; existing request ids remain replayable",
+    retry: "never",
+  });
+  let denied = false;
+  const value = db.transaction(() => {
+    recheck();
+    const now = Date.now();
+    if (
+      typeof expiresAt !== "number" ||
+      !Number.isSafeInteger(expiresAt) ||
+      expiresAt <= now
+    )
+      throw new ForgeFailure({
+        code: "AUTH_EXPIRED",
+        message: "Credential expired before denial admission",
+        retry: "never",
+      });
+    const row = db.get(
+      `SELECT EXISTS(SELECT 1 FROM ${COMMAND_RECEIPTS} WHERE request_id=? AND expires_at>?) OR ((SELECT COUNT(*) FROM ${COMMAND_RECEIPTS} WHERE request_id<>? AND imported=0 AND outcome='refused' AND expires_at>?) + (SELECT COUNT(*) FROM domain_cloud_requests WHERE outcome<>'ok' AND COALESCE(json_extract(fingerprint,'$.retryUntil'),9007199254740991)>?))>=? AS saturated`,
+      [DENIAL_BARRIER_ID, now, DENIAL_BARRIER_ID, now, now, MAX_LIVE_DENIALS],
+    );
+    if (Number(row?.saturated) === 0) return work();
+    denied = true;
+    db.run(
+      `INSERT INTO ${COMMAND_RECEIPTS}(request_id,fingerprint,outcome,result,created_at,expires_at) VALUES (?,'{}','refused',?,?,?) ON CONFLICT(request_id) DO UPDATE SET expires_at=MAX(expires_at,excluded.expires_at)`,
+      [DENIAL_BARRIER_ID, canonicalJson(failure.error), now, expiresAt],
+    );
+  });
+  if (denied) throw failure;
+  return value as T;
+}
+
 const full = (db: SqlDatabase, now: number): boolean =>
   Number(
     db.get(
@@ -42,8 +83,8 @@ const full = (db: SqlDatabase, now: number): boolean =>
 
 function prune(db: SqlDatabase, now: number): void {
   db.run(
-    `DELETE FROM ${COMMAND_RECEIPTS} WHERE request_id IN (SELECT request_id FROM ${COMMAND_RECEIPTS} WHERE ${RETRY_UNTIL}<=? OR (imported=1 AND (SELECT COUNT(*) FROM ${COMMAND_RECEIPTS})>=?) ORDER BY ${RETRY_UNTIL}, request_id LIMIT ?)`,
-    [now, MAX_RECEIPTS, PRUNE_RECEIPTS],
+    `DELETE FROM ${COMMAND_RECEIPTS} WHERE request_id IN (SELECT request_id FROM ${COMMAND_RECEIPTS} WHERE ${RETRY_UNTIL}<=? OR (imported=1 AND request_id<>? AND (SELECT COUNT(*) FROM ${COMMAND_RECEIPTS})>=?) ORDER BY ${RETRY_UNTIL}, request_id LIMIT ?)`,
+    [now, DENIAL_BARRIER_ID, MAX_RECEIPTS, PRUNE_RECEIPTS],
   );
 }
 
@@ -163,9 +204,7 @@ export function refused(
   recheck: () => void,
   expiresAt: number | undefined,
 ): ForgeFailure {
-  db.transaction(() => {
-    // An expired or revoked token records nothing.
-    recheck();
+  withDenialCapacity(db, expiresAt, recheck, () => {
     const now = Date.now();
     prune(db, now);
     record(

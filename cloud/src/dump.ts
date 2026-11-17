@@ -36,6 +36,7 @@ import {
 
 export const DUMP_FORMAT = "forge-cloud-dump/2";
 export const COMMAND_RECEIPTS = "domain_cloud_command_receipts";
+export const DENIAL_BARRIER_ID = "denial-capacity";
 export const EXPORT_STATE = "domain_cloud_export";
 
 // `keys` is each table's primary key in order: dump order, and the position a page cursor resumes after.
@@ -1029,6 +1030,21 @@ function checkCommandReceipt(row: Row): void {
     result = parseRestoreJson(String(row.result));
   } catch {
     return bad();
+  }
+  if (row.request_id === DENIAL_BARRIER_ID) {
+    if (
+      row.fingerprint !== "{}" ||
+      row.outcome !== "refused" ||
+      !isObject(result) ||
+      result.code !== "UNAVAILABLE" ||
+      !validateForgeError(result).ok ||
+      typeof row.created_at !== "number" ||
+      typeof row.expires_at !== "number" ||
+      row.created_at < 0 ||
+      row.expires_at <= row.created_at
+    )
+      bad();
+    return;
   }
   if (
     !/^[cs]2:[a-f0-9]{64}$/.test(String(row.request_id)) ||
