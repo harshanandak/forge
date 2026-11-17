@@ -77,6 +77,14 @@ export const holder = {
   actor,
   session: { id: "one", device: "fixture" },
 };
+export const issueValue = (id = "work-1", title = "Synthetic 1") => ({
+  id,
+  title,
+  status: "open",
+  labels: [],
+  dependsOn: [],
+  createdAt: new Date(at).toISOString(),
+});
 const resources: (() => void)[] = [];
 export const cleanup = () =>
   resources
@@ -134,11 +142,9 @@ export function source(
         ns,
         `issue:work-${n}`,
         {
-          id: `work-${n}`,
-          title: `Synthetic ${n}`,
-          text: 'exact\nλ\\"',
+          ...issueValue(`work-${n}`, `Synthetic ${n}`),
+          body: 'exact\nλ\\"',
           parent: "work-1",
-          dependencies: ["work-2"],
         },
         actor,
         { expectRevision: 0 },
@@ -152,7 +158,15 @@ export function source(
       ]) {
         const value = key.startsWith("allocation:")
           ? { prefix: "issue:work-", number: 12000 }
-          : { deleted: true };
+          : key.startsWith("issue:")
+            ? issueValue("work-9000")
+            : key.startsWith("comment:")
+              ? { id: "work-1", body: "deleted" }
+              : {
+                  id: "work-1",
+                  relation: "reference",
+                  url: "https://example.com/deleted",
+                };
         state.put(ns, key, value, actor, { expectRevision: 0 });
         state.delete(ns, key, actor, { expectRevision: 1 });
       }
@@ -167,7 +181,7 @@ export function source(
         });
     }
     if (authority) {
-      state.put(ns, "issue:work-1", { id: "work-1", title: "receipt" }, actor, {
+      state.put(ns, "issue:work-1", issueValue("work-1", "receipt"), actor, {
         expectRevision: 1,
         requestId: "old-put",
       });
