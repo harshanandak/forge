@@ -31,7 +31,7 @@ import type { SqlDatabase } from "../../src/ports/store.ts";
 import { Project } from "../src/project.ts";
 import { pageOrder } from "./page-order.ts";
 import { storageOf } from "./storage.ts";
-import { expectsStop, stopObservation } from "./stop-live.ts";
+import { expectsStop, stopObservation, stopWindowOf } from "./stop-live.ts";
 import { capacityStop } from "./stop-capacity.ts";
 import { stopPlan, expectedImage, type StopPlan } from "./restored.ts";
 import type { Tables } from "./max-source.ts";
@@ -492,15 +492,20 @@ async function restoreAll(): Promise<Done> {
       const queries = count.n;
       const cpu = process.threadCpuUsage();
       const started = performance.now();
-      const start = Date.now();
+      const sent = Date.now();
       const reply = await project.fetch(
         new Request(`https://cap.example/p/${NAME}/restore`, {
           method: "POST",
           body,
         }),
       );
-      window = [start, Date.now()];
       const answer = await reply.text();
+      if (reply.status === 200)
+        window =
+          stopWindowOf(
+            (JSON.parse(answer) as { value: unknown }).value,
+            Date.now() - sent,
+          ) ?? window;
       const wallMs = performance.now() - started;
       const used = process.threadCpuUsage(cpu);
       const heap = getHeapStatistics();

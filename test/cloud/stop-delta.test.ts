@@ -291,6 +291,7 @@ test.each(cases)(
                 value: {
                   page: 0,
                   done: true,
+                  stopWindow: deltas[0]!.window,
                   restored: Object.fromEntries(
                     Object.entries(source).map(([t, rows]) => [t, rows.length]),
                   ),
@@ -621,4 +622,75 @@ test.each(["correct", "floor record", "floor event"] as const)(
     else assert.throws(check, /floor|generated/i);
   },
   1000,
+);
+
+test.each([
+  ["a 1 s clock offset passes", 1000, 0, true],
+  ["wider than the caller round trip fails", 0, 5000, false],
+] as const)(
+  "stop delta caller path: server window %s",
+  async (_name, offset, width, accepted) => {
+    const original = fixture(false),
+      source = inject(original, 1, false),
+      target = inject(source, 2, false);
+    let restored = false;
+    const transport = spyOn(globalThis, "fetch").mockImplementation(
+      Object.assign(
+        async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+          await Promise.resolve();
+          assert.ok(typeof input === "string");
+          const request = new Request(input, init),
+            url = new URL(request.url);
+          if (url.pathname.endsWith("/status"))
+            return Response.json({
+              ok: true,
+              value: { initialized: restored },
+            });
+          if (request.method === "POST") {
+            restored = true;
+            const from = Date.now() + offset;
+            return Response.json({
+              ok: true,
+              value: {
+                page: 0,
+                done: true,
+                stopWindow: [from, from + width],
+                restored: Object.fromEntries(
+                  Object.entries(source).map(([t, rows]) => [t, rows.length]),
+                ),
+              },
+            });
+          }
+          return Response.json({
+            ok: true,
+            value: page(url.pathname.includes("/target/") ? target : source),
+          });
+        },
+        { preconnect: () => {} },
+      ),
+    );
+    const previous = process.env.CLOUD_RESTORE_STOP;
+    process.env.CLOUD_RESTORE_STOP = "1";
+    try {
+      const failure = await compare(
+        "source",
+        "target",
+        "stop caller path",
+        16384,
+        undefined,
+        undefined,
+        { fixture: original, seed: deltas[0]!, target: deltas[1]! },
+      ).then(
+        () => "",
+        (error: unknown) => String((error as Error).message),
+      );
+      if (accepted) assert.doesNotMatch(failure, /restore stop window/);
+      else assert.match(failure, /restore stop window/);
+    } finally {
+      if (previous === undefined) delete process.env.CLOUD_RESTORE_STOP;
+      else process.env.CLOUD_RESTORE_STOP = previous;
+      transport.mockRestore();
+    }
+  },
+  5000,
 );
