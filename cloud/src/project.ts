@@ -85,6 +85,8 @@ import {
   RETENTION_MS,
   PRUNE_RECEIPTS,
   withDenialCapacity,
+  maintainReceipts,
+  receiptMaintenanceDeadline,
 } from "./issue-receipts.ts";
 import { EVIDENCE_MIGRATION, EVIDENCE_RECEIPTS } from "./evidence-receipts.ts";
 import { LaneControlStore } from "./lane-control-store.ts";
@@ -309,6 +311,7 @@ export class Project {
   #opened: { db: SqlDatabase; owner: StateOwner } | undefined;
   #initialized = false;
   #provisioned = false;
+  #maintenanceAt: number | undefined;
   readonly #limits: Limits;
   readonly #env: LoginEnv;
   readonly #browser: DeviceBrowserOptions;
@@ -323,6 +326,36 @@ export class Project {
     this.#limits = limitsFrom(env);
     this.#env = (env ?? {}) as LoginEnv;
     this.#browser = browser;
+  }
+
+  async alarm(): Promise<void> {
+    this.#maintenanceAt = undefined;
+    if (!(await this.#isProvisioned())) return;
+    const { db } = this.#openWrite();
+    maintainReceipts(db, Date.now());
+    const next = receiptMaintenanceDeadline(db);
+    if (next !== undefined)
+      await this.#armMaintenance(Math.max(Date.now() + 1, next));
+  }
+
+  async #armMaintenance(time: number): Promise<void> {
+    if (!this.#storage.setAlarm) return;
+    if (this.#maintenanceAt === undefined) {
+      const existing = await this.#storage.getAlarm?.();
+      this.#maintenanceAt = Math.min(
+        this.#maintenanceAt ?? Infinity,
+        existing ?? Infinity,
+      );
+    }
+    if (time < this.#maintenanceAt) {
+      this.#maintenanceAt = time;
+      try {
+        await this.#storage.setAlarm(time);
+      } catch (error) {
+        this.#maintenanceAt = undefined;
+        throw error;
+      }
+    }
   }
 
   // Forgets a half-finished paged restore: its staged rows and its place in the page order.
@@ -665,6 +698,13 @@ export class Project {
         this.#provisioned = true;
         await this.#storage.put(PROVISIONED, true);
       }
+      await this.#armMaintenance(
+        Math.min(
+          Date.now() + RETENTION_MS,
+          token?.expiresAt ??
+            Number(request.headers.get("X-Forge-Owner-Expires")),
+        ),
+      );
       return Response.json({ ok: true, value });
     } catch (caught) {
       const error = storageFailure(caught) ?? caught;
@@ -799,7 +839,8 @@ export class Project {
       const body = await bounded(request, MAX_COMMAND_BODY);
       // Synchronous commands stay current; PR verification rechecks inside its commit transaction.
       const token = authorizeToken(db, parts, Date.now());
-      return await runCommand(body, {
+      let writable = false;
+      const response = await runCommand(body, {
         ...token,
         approvalConfig: this.#env,
         principal: ["token", token.id, token.device],
@@ -811,8 +852,16 @@ export class Project {
         recheck: () => {
           authorize(db, parts, Date.now());
         },
-        open: () => this.#openWrite(),
+        open: () => {
+          writable = true;
+          return this.#openWrite();
+        },
       });
+      if (writable)
+        await this.#armMaintenance(
+          Math.min(Date.now() + RETENTION_MS, token.expiresAt),
+        );
+      return response;
     } catch (caught) {
       const error = storageFailure(caught) ?? caught;
       if (!(error instanceof ForgeFailure)) throw error;

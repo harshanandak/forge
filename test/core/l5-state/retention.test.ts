@@ -81,7 +81,7 @@ test("legacy store exports without migrating before backup", async () => {
   try {
     migrate(
       db,
-      stateMigrations.filter((m) => m.id !== "006_state_retention"),
+      stateMigrations.filter((m) => m.id < "006_state_retention"),
     );
     db.run("INSERT INTO state_events VALUES (7,?,?,?)", [ns, "old", "{}"]);
     const before = db.all(
@@ -105,7 +105,7 @@ test.each(["legacy", "missing floor"])(
       if (kind === "legacy") {
         migrate(
           db,
-          stateMigrations.filter((m) => m.id !== "006_state_retention"),
+          stateMigrations.filter((m) => m.id < "006_state_retention"),
         );
         for (const [sequence, type, revision] of [
           [1, "updated", 1],
@@ -159,7 +159,7 @@ test.each(["fresh", "upgrade", "prefix", "all", "rollback", "drift"])(
       if (kind === "upgrade")
         migrate(
           db,
-          stateMigrations.filter((m) => m.id !== "006_state_retention"),
+          stateMigrations.filter((m) => m.id < "006_state_retention"),
         );
       else owner.initialize();
       if (kind === "upgrade")
