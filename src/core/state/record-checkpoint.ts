@@ -2,7 +2,7 @@ import { ForgeFailure } from "../../contract/failure.ts";
 import { validateStateEvent } from "../../generated/validators.ts";
 import type { StateEvent } from "../../generated/types.ts";
 import type { SqlDatabase } from "../../ports/store.ts";
-import { recordDigest } from "./checkpoint.ts";
+import { recordDigest, checkpointCommitment } from "./checkpoint.ts";
 import { parseRestoreJson } from "./restore-json.ts";
 import { allocationFloorNumber } from "./allocation-floor.ts";
 
@@ -16,16 +16,28 @@ function refuse(): never {
 }
 
 /** Publish each bounded prefix atomically; interrupted work resumes from its last header. */
-export function writeRecordCheckpoint(db: SqlDatabase, batch: number): number {
+export function writeRecordCheckpoint(
+  db: SqlDatabase,
+  batch: number,
+  through?: number,
+): number {
   if (!Number.isSafeInteger(batch) || batch < 1 || batch > 256) refuse();
-  const end = Number(
+  const ceiling = Number(
     db.get("SELECT sequence FROM state_retention WHERE id=1")?.sequence,
   );
+  const end = through ?? ceiling;
+  if (!Number.isSafeInteger(end) || end < 0 || end > ceiling) refuse();
   for (;;) {
     const covered = db.transaction(() => {
       const header = db.get("SELECT * FROM state_checkpoint_header WHERE id=1");
       if (header && Number(header.format_version) !== 2) refuse();
       let sequence = Number(header?.covered_sequence ?? 0);
+      if (
+        sequence > end ||
+        (Number(header?.archive_through ?? 0) > 0 &&
+          header?.commitment !== checkpointCommitment(db, batch))
+      )
+        refuse();
       const rows = db.all(
         "SELECT sequence,namespace,key,body FROM state_events WHERE sequence>? AND sequence<=? ORDER BY sequence LIMIT ?",
         [sequence, end, batch],
@@ -120,9 +132,13 @@ export function writeRecordCheckpoint(db: SqlDatabase, batch: number): number {
       }
       if (rows.length)
         db.run(
-          "INSERT INTO state_checkpoint_header VALUES (1,2,lower(hex(randomblob(16))),1,?,1,0) ON CONFLICT(id) DO UPDATE SET generation=generation+1,covered_sequence=excluded.covered_sequence",
+          "INSERT INTO state_checkpoint_header(id,format_version,lineage,generation,covered_sequence,retention_policy_version,archive_through) VALUES (1,2,lower(hex(randomblob(16))),1,?,1,0) ON CONFLICT(id) DO UPDATE SET generation=generation+1,covered_sequence=excluded.covered_sequence",
           [sequence],
         );
+      if (rows.length && Number(header?.archive_through ?? 0) > 0)
+        db.run("UPDATE state_checkpoint_header SET commitment=? WHERE id=1", [
+          checkpointCommitment(db, batch),
+        ]);
       return sequence;
     });
     if (covered === end) return covered;

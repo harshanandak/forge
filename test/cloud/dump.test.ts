@@ -248,7 +248,7 @@ for (const age of [1234n, 9007199254740992n])
   }, 30_000);
 
 const checkpointRows = {
-  state_checkpoint_header: [1, 1, "lineage", 1, 20, 1, 20],
+  state_checkpoint_header: [1, 1, "lineage", 1, 20, 1, 20, ""],
   state_checkpoint_live: ["forge/test", "a", 1, 1, "digest", ""],
   state_checkpoint_deleted: ["forge/test", "a", 1, 1],
   state_checkpoint_leases: ["forge/test", "a", 1, 1, "{}"],

@@ -207,6 +207,13 @@ export const stateMigrations: readonly Migration[] = [
   },
   // Older writers cannot preserve checkpoint deletion revisions after prefix restoration.
   { id: "008_record_checkpoint_reader", statements: ["SELECT 1"] },
+  {
+    id: "009_checkpoint_compaction",
+    statements: [
+      "ALTER TABLE state_checkpoint_header ADD COLUMN commitment TEXT NOT NULL DEFAULT ''",
+      `CREATE TRIGGER state_compaction_tail BEFORE INSERT ON state_events WHEN EXISTS(SELECT 1 FROM state_checkpoint_header WHERE archive_through>0) AND EXISTS(SELECT 1 FROM state_usage WHERE table_name='state_events' AND (rows>=8192 OR bytes+(${bytes(stateColumns.state_events!, "NEW.")})>8388608)) BEGIN SELECT RAISE(ABORT,'CHECKPOINT_MAINTENANCE_REQUIRED'); END`,
+    ],
+  },
 ];
 
 export function identifier(value: string): string {
