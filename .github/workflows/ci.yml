@@ -211,6 +211,41 @@ jobs:
           FORGE_BASE_DIST: ${{ github.workspace }}/base/dist
         run: node tools/bench/footprint.ts
 
+  comment-guard:
+    name: Comment guard (windows-latest, Node 24)
+    needs: changes
+    if: needs.changes.outputs.scope == 'full'
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      CI_NODE: "24"
+      CI_SHARD: comment-guard
+    steps:
+      - *start-record
+      - name: Keep Windows test temp files on the workspace disk
+        shell: pwsh
+        run: |
+          "TEMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+          "TMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ env.CI_HEAD }}
+          fetch-depth: 0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: "24"
+      - *lint-runtime
+      - *install-lint-runtime
+      - *preserve-lint-runtime
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      - name: Admit comment guard on Windows
+        run: bun tools/check-admit.ts no-comments-regression test/structure/fixtures/no-comments-break.patch --guard tools/checks --guard tools/lint --guard tools/git-executable.ts --guard tools/bun-builtin.ts --guard tools/bun-lint-version.json --guard test/structure/no-comments.integration.test.ts --guard package.json --guard bun.lock --guard bunfig.toml --guard .forge/config.yaml 2>&1 | tee -a "$RUNNER_TEMP/ci-tests.log"
+      - *write-record
+      - *upload-record
+
   verify:
     name: Verify (${{ matrix.os }}, Node ${{ matrix.node }}${{ matrix.suite != 'all' && format(', {0}', matrix.suite) || '' }}${{ matrix.shard && format(', shard {0}', matrix.shard) || '' }})
     needs: [changes, pack]
@@ -260,7 +295,7 @@ jobs:
           "Windows test temp directory: $env:RUNNER_TEMP" >> $env:GITHUB_STEP_SUMMARY
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: ${{ runner.os == 'Windows' && matrix.node == '24' && matrix.shard == '1/3' && '0' || '1' }}
+          fetch-depth: 1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ matrix.node }}
@@ -332,9 +367,6 @@ jobs:
       - name: Unit tests
         if: matrix.suite != 'pack'
         run: ${{ matrix.shard && format('bun tools/ci/test-shards.ts test:unit {0} {1}', matrix.shard, matrix.node == '26' && '--node26' || '') || 'bun run test:unit' }} 2>&1 | tee -a "$RUNNER_TEMP/ci-tests.log"
-      - name: Admit comment guard on Windows
-        if: runner.os == 'Windows' && matrix.node == '24' && matrix.shard == '1/3'
-        run: bun tools/check-admit.ts no-comments-regression test/structure/fixtures/no-comments-break.patch --guard tools/checks --guard tools/lint --guard tools/git-executable.ts --guard tools/bun-builtin.ts --guard tools/bun-lint-version.json --guard test/structure/no-comments.integration.test.ts --guard package.json --guard bun.lock --guard bunfig.toml --guard .forge/config.yaml 2>&1 | tee -a "$RUNNER_TEMP/ci-tests.log"
       - name: Integration tests
         if: matrix.suite != 'pack'
         run: ${{ matrix.shard && format('bun tools/ci/test-shards.ts test:integration {0} {1}', matrix.shard, matrix.node == '26' && '--node26' || '') || 'bun run test:integration' }} 2>&1 | tee -a "$RUNNER_TEMP/ci-tests.log"
@@ -380,7 +412,8 @@ jobs:
   ci-gate:
     name: CI Gate
     if: always()
-    needs: [changes, pr-title, structure, static, pack, speed, verify]
+    needs:
+      [changes, pr-title, structure, static, pack, speed, verify, comment-guard]
     runs-on: ubuntu-latest
     steps:
       - env:
@@ -393,6 +426,7 @@ jobs:
           PACK: ${{ needs.pack.result }}
           SPEED: ${{ needs.speed.result }}
           VERIFY: ${{ needs.verify.result }}
+          COMMENT_GUARD: ${{ needs.comment-guard.result }}
           STARTED: ${{ needs.changes.outputs.started }}
         run: |
           if [ -n "$STARTED" ]; then
@@ -418,9 +452,10 @@ jobs:
             require "pack" "$PACK"
             require "speed" "$SPEED"
             require "verify" "$VERIFY"
+            require "comment-guard" "$COMMENT_GUARD"
           elif [ "$SCOPE" = "docs" ] && [ "$EVENT" = "pull_request" ]; then
-            if [ "$VERIFY" != "skipped" ] || [ "$PACK" != "skipped" ] || [ "$SPEED" != "skipped" ]; then
-              echo "::error::verify='$VERIFY', pack='$PACK', speed='$SPEED' on a documentation-only change"
+            if [ "$VERIFY" != "skipped" ] || [ "$PACK" != "skipped" ] || [ "$SPEED" != "skipped" ] || [ "$COMMENT_GUARD" != "skipped" ]; then
+              echo "::error::verify='$VERIFY', pack='$PACK', speed='$SPEED', comment-guard='$COMMENT_GUARD' on a documentation-only change"
               ok=0
             fi
           else
