@@ -24,7 +24,7 @@ export interface ConfigFiles {
   /** Replace a file atomically: write a sibling temporary file, then rename it over. */
   write(path: string, bytes: Uint8Array): void;
   /** Remove a file; absent is fine. */
-  remove(path: string): void;
+  remove(path: string, expected: Uint8Array): void;
   /** File names in a directory; empty when it does not exist. */
   list(dir: string): readonly string[];
   /** Create a file only if it does not exist; false when it already does. */

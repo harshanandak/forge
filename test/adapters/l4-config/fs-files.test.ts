@@ -2,6 +2,7 @@
 // its Node implementation. The contract suite runs against that adapter.
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import {
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -48,9 +49,28 @@ describe("the fs adapter implements ConfigFiles", () => {
     files.write(".forge/notes/000002.json", bytes("{}"));
     files.write(".forge/notes/000001.json", bytes("{}"));
     expect(files.list(".forge/notes")).toEqual(["000001.json", "000002.json"]);
-    files.remove(".forge/config.yaml");
-    files.remove(".forge/config.yaml");
+    files.remove(".forge/config.yaml", bytes("a: 2\n"));
+    files.remove(".forge/config.yaml", bytes("a: 2\n"));
     expect(files.read(".forge/config.yaml")).toBeUndefined();
+  });
+
+  test("remove deletes only when the file still holds the bytes that were read", () => {
+    const dir = root();
+    const files = nodeConfigFiles(dir);
+    files.write(".forge/cloud.json", bytes("project-a"));
+    files.remove(".forge/cloud.json", bytes("project-a"));
+    expect(files.read(".forge/cloud.json")).toBeUndefined();
+    files.write(".forge/cloud.json", bytes("project-b"));
+    expect(() => files.remove(".forge/cloud.json", bytes("project-a"))).toThrow(
+      /changed since it was read/,
+    );
+    expect(text(files.read(".forge/cloud.json"))).toBe("project-b");
+    expect(readdirSync(join(dir, ".forge"))).toEqual(["cloud.json"]);
+    expect(() => files.remove(".forge/cloud.json", bytes("project-"))).toThrow(
+      /changed since it was read/,
+    );
+    expect(text(files.read(".forge/cloud.json"))).toBe("project-b");
+    files.remove(".forge/absent.json", bytes("project-a"));
   });
 
   test("createExclusive creates once and refuses while the file exists", () => {
@@ -62,7 +82,7 @@ describe("the fs adapter implements ConfigFiles", () => {
       false,
     );
     expect(text(files.read(".forge/config.lock"))).toBe("one");
-    files.remove(".forge/config.lock");
+    files.remove(".forge/config.lock", bytes("one"));
     expect(files.createExclusive(".forge/config.lock", bytes("three"))).toBe(
       true,
     );
@@ -133,7 +153,7 @@ describe("the fs adapter refuses to leave the project root", () => {
     expect(() =>
       files.write(".forge/deep/er/config.yaml", bytes("pwn")),
     ).toThrow(/outside|symlink|root/i);
-    expect(() => files.remove(".forge/config.yaml")).toThrow(
+    expect(() => files.remove(".forge/config.yaml", bytes("outside"))).toThrow(
       /outside|symlink|root/i,
     );
     expect(() => files.list(".forge")).toThrow(/outside|symlink|root/i);
@@ -185,7 +205,12 @@ describe("the fs adapter refuses to leave the project root", () => {
       !tryLinkFile(join(outside, "keep.txt"), join(dir, "cfg", "config.yaml"))
     )
       return;
-    nodeConfigFiles(dir).remove("cfg/config.yaml");
+    expect(() =>
+      nodeConfigFiles(dir).remove("cfg/config.yaml", bytes("outside")),
+    ).toThrow(/changed since it was read/);
+    expect(lstatSync(join(dir, "cfg", "config.yaml")).isSymbolicLink()).toBe(
+      true,
+    );
     expect(readFileSync(join(outside, "keep.txt"), "utf8")).toBe("outside");
   });
 
@@ -205,7 +230,9 @@ describe("the fs adapter refuses to leave the project root", () => {
       expect(() => files.write(path, bytes("pwn"))).toThrow(
         /outside|root|absolute/i,
       );
-      expect(() => files.remove(path)).toThrow(/outside|root|absolute/i);
+      expect(() => files.remove(path, bytes("pwn"))).toThrow(
+        /outside|root|absolute/i,
+      );
       expect(() => files.createExclusive(path, bytes("pwn"))).toThrow(
         /outside|root|absolute/i,
       );

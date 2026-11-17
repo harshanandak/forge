@@ -184,7 +184,7 @@ export function nodeConfigFiles(
         rmSync(temporary, { force: true });
       }
     },
-    remove(path) {
+    remove(path, _expected) {
       rmSync(resolveIn(root, path, "keep"), { force: true });
     },
     list(dir) {
