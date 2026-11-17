@@ -77,6 +77,14 @@ export const holder = {
   actor,
   session: { id: "one", device: "fixture" },
 };
+export const issueValue = (id = "work-1", title = "Synthetic 1") => ({
+  id,
+  title,
+  status: "open",
+  labels: [],
+  dependsOn: [],
+  createdAt: new Date(at).toISOString(),
+});
 const resources: (() => void)[] = [];
 export const cleanup = () =>
   resources
@@ -134,11 +142,9 @@ export function source(
         ns,
         `issue:work-${n}`,
         {
-          id: `work-${n}`,
-          title: `Synthetic ${n}`,
-          text: 'exact\nλ\\"',
+          ...issueValue(`work-${n}`, `Synthetic ${n}`),
+          body: 'exact\nλ\\"',
           parent: "work-1",
-          dependencies: ["work-2"],
         },
         actor,
         { expectRevision: 0 },
@@ -152,7 +158,15 @@ export function source(
       ]) {
         const value = key.startsWith("allocation:")
           ? { prefix: "issue:work-", number: 12000 }
-          : { deleted: true };
+          : key.startsWith("issue:")
+            ? issueValue("work-9000")
+            : key.startsWith("comment:")
+              ? { id: "work-1", body: "deleted" }
+              : {
+                  id: "work-1",
+                  relation: "reference",
+                  url: "https://example.com/deleted",
+                };
         state.put(ns, key, value, actor, { expectRevision: 0 });
         state.delete(ns, key, actor, { expectRevision: 1 });
       }
@@ -167,7 +181,7 @@ export function source(
         });
     }
     if (authority) {
-      state.put(ns, "issue:work-1", { id: "work-1", title: "receipt" }, actor, {
+      state.put(ns, "issue:work-1", issueValue("work-1", "receipt"), actor, {
         expectRevision: 1,
         requestId: "old-put",
       });
@@ -201,12 +215,18 @@ export function result(body: () => unknown) {
 }
 type Change = readonly [string, string];
 const changes: Record<string, Change> = {
-  historical: ["Math.max(summary.highest, summary.earlier)", "0"],
+  historical: [
+    "const needed = Math.max(summary.highest, summary.earlier);",
+    "const needed = 0;",
+  ],
   consistency: [
     "verifyEventDerivedState(\n      source,\n      manifest.eventHighWaterMark,\n      undefined,\n      numbered,\n    )",
     "({ highest: 0, earlier: 0, floorRevision: 0 })",
   ],
-  scope: ["ns === namespace &&", "true || ns === namespace &&"],
+  scope: [
+    "const declared = disposition(key);",
+    "return { convert: true, value, repaired: false }; const declared = disposition(key);",
+  ],
   migration: [
     "canonicalJson(source.all(sql)) !== canonicalJson(schema.all(sql))",
     "false",
