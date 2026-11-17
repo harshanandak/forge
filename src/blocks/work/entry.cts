@@ -604,6 +604,14 @@ function copyPlanned<T>(value: T, seen = new Map<object, object>()): T {
     });
   return copied as T;
 }
+class RuntimeWriteRefusal extends Error {
+  constructor(cause: unknown) {
+    super("Runtime staging refused", { cause });
+  }
+}
+function rejectRuntimeWrite(error: unknown): never {
+  throw error instanceof RuntimeWriteRefusal ? error.cause : error;
+}
 function atomicRuntime<Input, Output>(
   handler: (call: HandlerCall<Input>) => Output,
 ): (call: HandlerCall<Input>) => Output {
@@ -618,6 +626,16 @@ function atomicRuntime<Input, Output>(
       const reads = new Map<string, number>();
       let subject: string | undefined;
       let explicitBatch = false;
+      let writeFailure: RuntimeWriteRefusal | undefined;
+      const stage = <T,>(write: () => T): T => {
+        if (writeFailure) throw writeFailure;
+        try {
+          return write();
+        } catch (error) {
+          writeFailure ??= new RuntimeWriteRefusal(error);
+          throw writeFailure;
+        }
+      };
       const constraints = (
         options: Parameters<LeaseStateClient["putMany"]>[1],
       ) => {
@@ -660,40 +678,43 @@ function atomicRuntime<Input, Output>(
             ),
           );
         },
-        put: (key, value, options) => {
-          const prior = draft.get(key);
-          if ((prior?.revision ?? 0) !== options.expectRevision)
-            return fail(
-              "REVISION_CONFLICT",
-              "Runtime candidate revision changed",
+        put: (key, value, options) =>
+          stage(() => {
+            const prior = draft.get(key);
+            if ((prior?.revision ?? 0) !== options.expectRevision)
+              return fail(
+                "REVISION_CONFLICT",
+                "Runtime candidate revision changed",
+              );
+            constraints(options);
+            entries.set(key, {
+              key,
+              value: copyPlanned(value),
+              expectRevision:
+                entries.get(key)?.expectRevision ?? options.expectRevision,
+            });
+            const record: StateRecord = {
+              namespace: "forge/work",
+              key,
+              value: copyPlanned(value),
+              revision: (prior?.revision ?? 0) + 1,
+              updatedAt: new Date(state.now()).toISOString(),
+              updatedBy: prior?.updatedBy ?? { kind: "agent", id: "planned" },
+            };
+            records.set(key, record);
+            return copyPlanned(record);
+          }),
+        putMany: (values, options) =>
+          stage(() => {
+            constraints(options);
+            explicitBatch = true;
+            return values.map((entry) =>
+              draft.put(entry.key, entry.value, entry),
             );
-          constraints(options);
-          entries.set(key, {
-            key,
-            value: copyPlanned(value),
-            expectRevision:
-              entries.get(key)?.expectRevision ?? options.expectRevision,
-          });
-          const record: StateRecord = {
-            namespace: "forge/work",
-            key,
-            value: copyPlanned(value),
-            revision: (prior?.revision ?? 0) + 1,
-            updatedAt: new Date(state.now()).toISOString(),
-            updatedBy: prior?.updatedBy ?? { kind: "agent", id: "planned" },
-          };
-          records.set(key, record);
-          return copyPlanned(record);
-        },
-        putMany: (values, options) => {
-          constraints(options);
-          explicitBatch = true;
-          return values.map((entry) =>
-            draft.put(entry.key, entry.value, entry),
-          );
-        },
+          }),
       };
       finish = () => {
+        if (writeFailure) throw writeFailure;
         if (!entries.size && !explicitBatch) return;
         const accepted = state.putMany([...entries.values()], {
           ...(subject === undefined ? {} : { subject }),
@@ -722,17 +743,20 @@ function atomicRuntime<Input, Output>(
         state: { get: open, enumerable: true },
       },
     ) as object;
-    const result = handler({
-      ...call,
-      services,
-    });
-    if (result instanceof Promise)
-      return result.then((value: unknown) => {
-        finish();
-        return value;
-      }) as Output;
-    finish();
-    return result;
+    try {
+      const result = handler({ ...call, services });
+      if (result instanceof Promise)
+        return result
+          .then((value: unknown) => {
+            finish();
+            return value;
+          })
+          .catch(rejectRuntimeWrite) as Output;
+      finish();
+      return result;
+    } catch (error) {
+      return rejectRuntimeWrite(error);
+    }
   };
 }
 function persist(
@@ -4051,6 +4075,7 @@ async function laneNext(
       try {
         actions.push(await laneStep(call, id));
       } catch (error) {
+        if (error instanceof RuntimeWriteRefusal) throw error;
         // One lane that cannot be read never hides the others, and never acts.
         actions.push(
           guardPause(
