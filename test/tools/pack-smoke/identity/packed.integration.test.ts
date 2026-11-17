@@ -71,12 +71,17 @@ for (const [field, value] of [
   ["commit", "f".repeat(40)],
   ["dirty", true],
   ["runId", "wrong-run"],
+  ["missingRunId", null],
   ["missing", null],
 ] as const) {
   test(`installed identity rejects a substituted ${field}`, async () => {
     const row = mkdtempSync(join(work, `fault-${field}-`));
     try {
-      if (field === "runId" || field === "missing") {
+      if (
+        field === "runId" ||
+        field === "missingRunId" ||
+        field === "missing"
+      ) {
         const { version, commit, dirty } = build;
         const identity = { version, commit, dirty };
         const runId =
@@ -88,13 +93,18 @@ for (const [field, value] of [
           assertInstalledBuildIdentity(installed, identity, runId),
         ).not.toThrow();
         mkdirSync(join(row, "dist"));
-        if (field === "runId")
+        if (field !== "missing")
           writeFileSync(
             join(row, "dist/build.json"),
-            JSON.stringify({ ...build, runId: value }),
+            JSON.stringify(
+              field === "missingRunId"
+                ? { version, commit, dirty: false }
+                : { ...build, runId: value },
+            ),
           );
+        const expectedRun = field === "missingRunId" ? "12345" : runId;
         expect(() =>
-          assertInstalledBuildIdentity(row, identity, runId),
+          assertInstalledBuildIdentity(row, identity, expectedRun),
         ).toThrow(field === "missing" ? "ENOENT" : "installed build identity");
         const source = readFileSync(
           resolve(
@@ -114,7 +124,7 @@ for (const [field, value] of [
           pathToFileURL(mutant).href
         )) as typeof import("../../../../tools/pack-smoke/identity.ts");
         expect(() =>
-          unguarded.assertInstalledBuildIdentity(row, identity, runId),
+          unguarded.assertInstalledBuildIdentity(row, identity, expectedRun),
         ).not.toThrow();
         return;
       }
