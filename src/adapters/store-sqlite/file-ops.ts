@@ -5,6 +5,7 @@ import {
   linkSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readSync,
   renameSync,
   rmSync,
@@ -13,7 +14,7 @@ import {
   writeSync,
 } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { PrivateFileGuard } from "./private-files.ts";
 
 export interface DirectorySyncPort {
@@ -113,6 +114,25 @@ export function createPrivateFile(
   return fd;
 }
 
+export function isEmptyFolder(path: string): boolean {
+  try {
+    return statSync(path).isDirectory() && readdirSync(path).length === 0;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+    throw error;
+  }
+}
+
+export function writePrivateFolder(
+  path: string,
+  files: Readonly<Record<string, Uint8Array>>,
+  security?: PrivateFileGuard,
+): void {
+  const ops = security ? { ...nodeFs, security } : nodeFs;
+  ensurePrivateDirectory(path, ops);
+  for (const [name, data] of Object.entries(files))
+    writePrivateFile(join(path, name), data, ops);
+}
 export function openStoreFile(
   path: string,
   readOnly: boolean,

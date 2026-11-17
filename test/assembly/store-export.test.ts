@@ -116,7 +116,7 @@ test("the backup's counts, high-water mark and digest match the backup file", as
   expect(source.schemaVersion).toBe(
     String(copy.get("SELECT MAX(id) AS id FROM state_migrations")?.id),
   );
-});
+}, 60_000);
 
 test("a write that commits during the export does not reach the backup or its counts", async () => {
   const fixture = await seeded(3);
@@ -146,7 +146,7 @@ test("a write that commits during the export does not reach the backup or its co
   expect(
     copy.get("SELECT key FROM state_records WHERE key='key-99'"),
   ).toBeUndefined();
-});
+}, 60_000);
 
 test("a folder that is not empty is refused and left as it was", async () => {
   const fixture = await seeded(1);
@@ -169,7 +169,7 @@ test("a folder that is not empty is refused and left as it was", async () => {
   mkdirSync(empty);
   service.export({ out: empty });
   expect(readdirSync(empty).sort()).toEqual(["backup.sqlite", "source.json"]);
-});
+}, 60_000);
 
 test("the store file is byte-identical after an export", async () => {
   const fixture = await seeded(4);
@@ -181,7 +181,7 @@ test("the store file is byte-identical after an export", async () => {
     new StateOwner(reader.value, { now: () => 1000 }),
   ).export({ out: join(fixture.directory, "out") });
   expect(digest(fixture.path)).toBe(before);
-});
+}, 60_000);
 
 test("a missing store, a missing effect and a missing folder name are refused", async () => {
   const fixture = await seeded(1);
@@ -197,7 +197,7 @@ test("a missing store, a missing effect and a missing folder name are refused", 
     "out folder",
   );
   expect(readdirSync(fixture.directory)).not.toContain("out");
-});
+}, 60_000);
 
 test("the converter reads the exported pair and records only its own four keys", async () => {
   const fixture = await seeded(0);

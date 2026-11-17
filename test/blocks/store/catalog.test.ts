@@ -15,8 +15,7 @@ import { createHash } from "node:crypto";
 import { blockCapture } from "../../../src/assembly/capture.ts";
 import { firstPartyBlocks } from "../../../src/assembly/first-party.ts";
 import { createAssembly, type Assembly } from "../../../src/assembly/index.ts";
-import { createSqliteStore } from "../../../src/adapters/store-sqlite/index.ts";
-import { StateOwner } from "../../../src/core/state/index.ts";
+import { LocalState } from "../../../src/assembly/state.ts";
 import { createMcpHandlers } from "../../../src/surface/mcp.ts";
 import type {
   AmbientContext,
@@ -80,21 +79,17 @@ async function openStore(): Promise<Open> {
     join(root, ".forge", "project.json"),
     `${JSON.stringify({ schema: 1, id: "0d9f1c5e-3b7a-4c1e-9a52-6f4b8e2d7a10" })}\n`,
   );
-  const seeded = await createSqliteStore(root).open({
-    path: join(root, ".forge", "state.sqlite"),
-    readOnly: false,
-  });
-  if (!seeded.ok) throw new Error(seeded.unavailable.reason);
-  const owner = new StateOwner(seeded.handle.value, { now: () => 1000 });
-  owner.initialize();
-  owner.put(
+  const state = new LocalState(join(root, ".forge", "state.sqlite"));
+  const lease = await state.acquire(true);
+  lease.value?.put(
     "forge/test",
     "key",
     { saved: true },
     { kind: "agent", id: "seed" },
     { expectRevision: 0, requestId: "seed" },
   );
-  await seeded.handle.close();
+  await lease.close();
+  await state.close();
   const staged = stage(join(work, "builtins"));
   const source = fileURLToPath(firstPartyBlocks["forge/store"]!);
   const original = blockCapture.open.bind(blockCapture);
@@ -155,7 +150,7 @@ test("a person's export writes the backup and source.json for the project store"
   open = await openStore();
   const out = join(open.root, "backup");
   const envelope = await call(open, { out });
-  expect(envelope.ok).toBe(true);
+  expect(envelope).toMatchObject({ ok: true });
   const source = readSource(out);
   expect(source.sha256).toBe(
     createHash("sha256")
