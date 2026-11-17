@@ -5,6 +5,7 @@ import {
 } from "../../../src/core/state/index.ts";
 import { readReplayStart } from "../../../src/core/state/checkpoint.ts";
 import { withinRestoreBudget } from "../../../src/core/state/restore-json.ts";
+import { canonicalJson } from "../../../src/core/config/pointer.ts";
 import type { SqlDatabase } from "../../../src/ports/store.ts";
 import { actor, ns, fixture, high } from "./record-checkpoint.fixture.ts";
 
@@ -357,6 +358,50 @@ test.each([
           : target.owner.restore(source.owner.export()),
       ).toThrow();
       expect(target.owner.export().leases).toEqual([]);
+    } finally {
+      await source.close();
+      await target.close();
+    }
+  },
+);
+
+test.each(["initialize", "restore"])(
+  "%s refuses a holder-swapped seed despite matching generation and canonical live body",
+  async (mode) => {
+    const source = await fixture(),
+      target = await fixture();
+    try {
+      source.owner.initialize();
+      const a = { ...holder, session: { ...holder.session, id: "holder-a" } };
+      const first = source.owner.acquire(ns, "s", a, 60_000, "first");
+      source.owner.release(ns, first);
+      source.owner.acquire(ns, "s", a, 60_000, "second");
+      source.owner.put(ns, "anchor", {}, actor, { expectRevision: 0 });
+      source.owner.checkpoint(1);
+      const events = source.owner.events(ns);
+      const requests = source.owner.export().requests;
+      for (const table of ["state_checkpoint_leases", "state_leases"]) {
+        const row = source.db.get(
+          `SELECT body FROM ${table} WHERE subject='s'`,
+        )!;
+        const body = JSON.parse(String(row.body)) as {
+          holder: { session: { id: string } };
+        };
+        body.holder.session.id = "holder-b";
+        source.db.run(`UPDATE ${table} SET body=? WHERE subject='s'`, [
+          canonicalJson(body),
+        ]);
+      }
+      expect(source.owner.events(ns)).toEqual(events);
+      expect(source.owner.export().requests).toEqual(requests);
+      target.owner.initialize();
+      const before = target.owner.export();
+      expect(() =>
+        mode === "initialize"
+          ? source.owner.initialize()
+          : target.owner.restore(source.owner.export()),
+      ).toThrow();
+      expect(target.owner.export()).toEqual(before);
     } finally {
       await source.close();
       await target.close();
