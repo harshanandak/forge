@@ -34,6 +34,32 @@ const status = (r: ReturnType<typeof respond>) => [
   r.exitCode,
   r.envelope.ok ? null : r.envelope.error.code,
 ];
+test("offline refusal reports the record key and reason without values or bundle pages", async () => {
+  const source = f.source(4, false, false, (_db, state) =>
+    state.put(
+      f.ns,
+      "comment:work-1:1",
+      { confidential: "fixture-value-must-not-print" },
+      f.actor,
+      { expectRevision: 0 },
+    ),
+  );
+  const backup = String(source.db.all("PRAGMA database_list")[0]!.file),
+    root = dirname(backup);
+  const manifest = join(root, "source.json"),
+    out = join(root, "refused");
+  writeFileSync(manifest, JSON.stringify(source.manifest));
+  const reply = await converter.run({ backup, manifest, out });
+  eq(status(reply), ["FAIL", 6, "INPUT_INVALID"]);
+  if (!reply.envelope.ok)
+    eq(reply.envelope.error.observed, {
+      id: "comment:work-1:1",
+      reason: "WORK_VALUE_SHAPE",
+    });
+  eq(JSON.stringify(reply).includes("fixture-value-must-not-print"), false);
+  eq(readdirSync(out), []);
+  eq(source.bytes(), source.manifest.sha256);
+}, 120_000);
 type Change = readonly [string, string];
 async function moduleUrl(
   path: string,
