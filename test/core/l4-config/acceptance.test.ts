@@ -234,6 +234,28 @@ describe("configure as you go", () => {
     expect(existsSync(join(p.root, ".forge/config.lock"))).toBe(false);
   });
 
+  test("another editor's lock replaced during a commit is left in place and the commit result is still returned", () => {
+    const other = new TextEncoder().encode("other editor");
+    const p = project({
+      detections: npmDetections,
+      files: (real) => ({
+        ...real,
+        write(path, bytes) {
+          real.write(path, bytes);
+          real.write(".forge/config.lock", other);
+        },
+      }),
+    });
+    const { revision } = p.config.show();
+    const result = p.config.set({
+      path: "check.commands.test",
+      value: "pnpm test",
+      expectRevision: revision,
+    });
+    expect(result.changes.length).toBeGreaterThan(0);
+    expect(p.read(".forge/config.lock")).toBe("other editor");
+  });
+
   test("unknown keys are refused and nothing is written", () => {
     const p = project({
       configSchema: (_name, source) =>

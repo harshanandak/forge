@@ -1,7 +1,16 @@
 // The ConfigFiles port: core config reaches the filesystem only through it, and the `fs` adapter is
 // its Node implementation. The contract suite runs against that adapter.
-import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import {
+  afterEach,
+  describe,
+  expect,
+  setDefaultTimeout,
+  spyOn,
+  test,
+} from "bun:test";
+import {
+  linkSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -10,11 +19,25 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import * as nodeFs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { nodeConfigFiles } from "../../../src/adapters/fs/index.ts";
+import * as durableIO from "../../../src/adapters/fs/durable-io.ts";
+import {
+  nodeConfigFiles,
+  restoreClaim,
+} from "../../../src/adapters/fs/index.ts";
 
 setDefaultTimeout(30_000);
+
+const realLstat = nodeFs.lstatSync as unknown as (
+  path: string,
+  options?: unknown,
+) => unknown;
+const realFstat = nodeFs.fstatSync as unknown as (
+  fd: number,
+  options?: unknown,
+) => unknown;
 
 const roots: string[] = [];
 afterEach(() => {
@@ -48,10 +71,217 @@ describe("the fs adapter implements ConfigFiles", () => {
     files.write(".forge/notes/000002.json", bytes("{}"));
     files.write(".forge/notes/000001.json", bytes("{}"));
     expect(files.list(".forge/notes")).toEqual(["000001.json", "000002.json"]);
-    files.remove(".forge/config.yaml");
-    files.remove(".forge/config.yaml");
+    files.remove(".forge/config.yaml", bytes("a: 2\n"));
+    files.remove(".forge/config.yaml", bytes("a: 2\n"));
     expect(files.read(".forge/config.yaml")).toBeUndefined();
   });
+
+  test("remove deletes only when the file still holds the bytes that were read", () => {
+    const dir = root();
+    const files = nodeConfigFiles(dir);
+    files.write(".forge/cloud.json", bytes("project-a"));
+    files.remove(".forge/cloud.json", bytes("project-a"));
+    expect(files.read(".forge/cloud.json")).toBeUndefined();
+    files.write(".forge/cloud.json", bytes("project-b"));
+    expect(() => files.remove(".forge/cloud.json", bytes("project-a"))).toThrow(
+      /changed since it was read/,
+    );
+    expect(text(files.read(".forge/cloud.json"))).toBe("project-b");
+    expect(readdirSync(join(dir, ".forge"))).toEqual(["cloud.json"]);
+    expect(() => files.remove(".forge/cloud.json", bytes("project-"))).toThrow(
+      /changed since it was read/,
+    );
+    expect(text(files.read(".forge/cloud.json"))).toBe("project-b");
+    files.remove(".forge/absent.json", bytes("project-a"));
+  });
+
+  test("a failure while comparing leaves the file at its path", () => {
+    const dir = root();
+    const files = nodeConfigFiles(dir);
+    files.write(".forge/cloud.json", bytes("project-a"));
+    const hostile = bytes("project-a");
+    Object.defineProperty(hostile, "byteLength", {
+      get() {
+        throw new Error("boom");
+      },
+    });
+    expect(() => files.remove(".forge/cloud.json", hostile)).toThrow("boom");
+    expect(text(files.read(".forge/cloud.json"))).toBe("project-a");
+    expect(readdirSync(join(dir, ".forge"))).toEqual(["cloud.json"]);
+  });
+
+  test("a refused removal never leaves the path empty for another editor to take", () => {
+    const files = nodeConfigFiles(root());
+    files.write(".forge/config.lock", bytes("other-editor"));
+    const mine = bytes("mine");
+    const taken: boolean[] = [];
+    Object.defineProperty(mine, "byteLength", {
+      get() {
+        taken.push(files.createExclusive(".forge/config.lock", bytes("third")));
+        return 4;
+      },
+    });
+    expect(() => files.remove(".forge/config.lock", mine)).toThrow(
+      /changed since it was read/,
+    );
+    expect(taken.length).toBeGreaterThan(0);
+    expect(taken.every((won) => !won)).toBe(true);
+    expect(text(files.read(".forge/config.lock"))).toBe("other-editor");
+  }, 30_000);
+
+  test.skipIf(process.platform === "win32")(
+    "a same-content file swapped in after the read is not removed",
+    () => {
+      const dir = root();
+      const files = nodeConfigFiles(dir);
+      files.write(".forge/config.lock", bytes("held"));
+      const expected = bytes("held");
+      Object.defineProperty(expected, "byteLength", {
+        get() {
+          files.write(".forge/config.lock", bytes("held"));
+          return 4;
+        },
+      });
+      expect(() => files.remove(".forge/config.lock", expected)).toThrow(
+        /changed since it was read/,
+      );
+      expect(text(files.read(".forge/config.lock"))).toBe("held");
+      expect(readdirSync(join(dir, ".forge"))).toEqual(["config.lock"]);
+    },
+    30_000,
+  );
+
+  test("a failure checking the claimed file puts it back at its path", () => {
+    const dir = root();
+    const files = nodeConfigFiles(dir);
+    files.write(".forge/config.lock", bytes("held"));
+    const stat = spyOn(nodeFs, "lstatSync").mockImplementation(((
+      path: string,
+      options?: unknown,
+    ) => {
+      if (path.endsWith(".claim")) throw new Error("lstat boom");
+      return realLstat(path, options);
+    }) as typeof nodeFs.lstatSync);
+    try {
+      expect(() => files.remove(".forge/config.lock", bytes("held"))).toThrow(
+        "lstat boom",
+      );
+    } finally {
+      stat.mockRestore();
+    }
+    expect(text(files.read(".forge/config.lock"))).toBe("held");
+    expect(readdirSync(join(dir, ".forge"))).toEqual(["config.lock"]);
+  }, 30_000);
+
+  test("a file index of zero never stands in for identity", () => {
+    const dir = root();
+    const files = nodeConfigFiles(dir);
+    files.write(".forge/config.lock", bytes("held"));
+    const zeroed = (info: unknown): unknown =>
+      Object.assign(
+        Object.create(Object.getPrototypeOf(info) as object | null),
+        info,
+        {
+          ino: 0n,
+        },
+      );
+    const stat = spyOn(nodeFs, "lstatSync").mockImplementation(((
+      path: string,
+      options?: unknown,
+    ) => {
+      if (path.endsWith(".claim")) writeFileSync(path, "other");
+      return zeroed(realLstat(path, options));
+    }) as typeof nodeFs.lstatSync);
+    const fstat = spyOn(nodeFs, "fstatSync").mockImplementation(((
+      fd: number,
+      options?: unknown,
+    ) => zeroed(realFstat(fd, options))) as typeof nodeFs.fstatSync);
+    try {
+      expect(() => files.remove(".forge/config.lock", bytes("held"))).toThrow(
+        /changed since it was read/,
+      );
+    } finally {
+      stat.mockRestore();
+      fstat.mockRestore();
+    }
+    expect(text(files.read(".forge/config.lock"))).toBe("other");
+    expect(readdirSync(join(dir, ".forge"))).toEqual(["config.lock"]);
+  }, 30_000);
+
+  test("a failed link count lookup keeps the original restore error", () => {
+    const dir = root();
+    mkdirSync(join(dir, ".forge"));
+    const claimed = join(dir, ".forge", ".config.lock.x.claim");
+    writeFileSync(claimed, "mine");
+    const publish = spyOn(durableIO, "publishExclusive").mockImplementation(
+      () => {
+        throw new Error("link failed");
+      },
+    );
+    const stat = spyOn(nodeFs, "lstatSync").mockImplementation(((
+      path: string,
+      options?: unknown,
+    ) => {
+      if (path.endsWith(".claim")) throw new Error("lstat boom");
+      return realLstat(path, options);
+    }) as typeof nodeFs.lstatSync);
+    let caught: unknown;
+    try {
+      restoreClaim(
+        ".forge/config.lock",
+        join(dir, ".forge", "config.lock"),
+        claimed,
+      );
+    } catch (error) {
+      caught = error;
+    } finally {
+      publish.mockRestore();
+      stat.mockRestore();
+    }
+    expect((caught as Error).message).toMatch(/could not be put back/);
+    expect(((caught as Error).cause as Error).message).toBe("link failed");
+  }, 30_000);
+
+  test("restoring a claim keeps the original error when dropping the claim fails", () => {
+    const dir = root();
+    mkdirSync(join(dir, ".forge"));
+    const claimed = join(dir, ".forge", ".config.lock.x.claim");
+    const target = join(dir, ".forge", "config.lock");
+    writeFileSync(claimed, "mine");
+    const drop = spyOn(durableIO, "removeDurable").mockImplementation(() => {
+      throw new Error("unlink failed");
+    });
+    try {
+      expect(() =>
+        restoreClaim(".forge/config.lock", target, claimed),
+      ).not.toThrow();
+    } finally {
+      drop.mockRestore();
+    }
+    expect(readFileSync(target, "utf8")).toBe("mine");
+  }, 30_000);
+
+  test("a restore whose directory sync fails says the file is back at its path", () => {
+    const dir = root();
+    mkdirSync(join(dir, ".forge"));
+    const claimed = join(dir, ".forge", ".config.lock.x.claim");
+    const target = join(dir, ".forge", "config.lock");
+    writeFileSync(claimed, "mine");
+    const publish = spyOn(durableIO, "publishExclusive").mockImplementation(
+      (from, to) => {
+        linkSync(from, to);
+        throw new Error("fsync failed");
+      },
+    );
+    try {
+      expect(() => restoreClaim(".forge/config.lock", target, claimed)).toThrow(
+        /was put back.*could not be made durable/,
+      );
+    } finally {
+      publish.mockRestore();
+    }
+    expect(readFileSync(target, "utf8")).toBe("mine");
+  }, 30_000);
 
   test("createExclusive creates once and refuses while the file exists", () => {
     const files = nodeConfigFiles(root());
@@ -62,7 +292,7 @@ describe("the fs adapter implements ConfigFiles", () => {
       false,
     );
     expect(text(files.read(".forge/config.lock"))).toBe("one");
-    files.remove(".forge/config.lock");
+    files.remove(".forge/config.lock", bytes("one"));
     expect(files.createExclusive(".forge/config.lock", bytes("three"))).toBe(
       true,
     );
@@ -133,7 +363,7 @@ describe("the fs adapter refuses to leave the project root", () => {
     expect(() =>
       files.write(".forge/deep/er/config.yaml", bytes("pwn")),
     ).toThrow(/outside|symlink|root/i);
-    expect(() => files.remove(".forge/config.yaml")).toThrow(
+    expect(() => files.remove(".forge/config.yaml", bytes("outside"))).toThrow(
       /outside|symlink|root/i,
     );
     expect(() => files.list(".forge")).toThrow(/outside|symlink|root/i);
@@ -185,7 +415,12 @@ describe("the fs adapter refuses to leave the project root", () => {
       !tryLinkFile(join(outside, "keep.txt"), join(dir, "cfg", "config.yaml"))
     )
       return;
-    nodeConfigFiles(dir).remove("cfg/config.yaml");
+    expect(() =>
+      nodeConfigFiles(dir).remove("cfg/config.yaml", bytes("outside")),
+    ).toThrow(/changed since it was read/);
+    expect(lstatSync(join(dir, "cfg", "config.yaml")).isSymbolicLink()).toBe(
+      true,
+    );
     expect(readFileSync(join(outside, "keep.txt"), "utf8")).toBe("outside");
   });
 
@@ -205,7 +440,9 @@ describe("the fs adapter refuses to leave the project root", () => {
       expect(() => files.write(path, bytes("pwn"))).toThrow(
         /outside|root|absolute/i,
       );
-      expect(() => files.remove(path)).toThrow(/outside|root|absolute/i);
+      expect(() => files.remove(path, bytes("pwn"))).toThrow(
+        /outside|root|absolute/i,
+      );
       expect(() => files.createExclusive(path, bytes("pwn"))).toThrow(
         /outside|root|absolute/i,
       );
