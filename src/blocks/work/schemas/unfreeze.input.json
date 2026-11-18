@@ -1,0 +1,59 @@
+{
+  "type": "object",
+  "properties": {
+    "approval": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "quote": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "source": {
+          "type": "object",
+          "required": ["harness", "thread"],
+          "properties": {
+            "harness": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "thread": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 500
+            },
+            "message": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 500
+            },
+            "link": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2000
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "required": ["request"],
+      "oneOf": [
+        {
+          "maxProperties": 1
+        },
+        {
+          "required": ["quote", "source"]
+        }
+      ],
+      "additionalProperties": false,
+      "description": "A cloud approval request id, or the owner\u0027s local reply relayed verbatim with its source."
+    }
+  },
+  "additionalProperties": false
+}

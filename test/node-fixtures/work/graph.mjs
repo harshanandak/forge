@@ -29,7 +29,8 @@ const edgeCount = [...edges.values()].reduce(
   (sum, next) => sum + next.length,
   0,
 );
-const bound = nodes + edgeCount + 1;
+const freezeRead = 1;
+const bound = nodes + edgeCount + 1 + freezeRead;
 let reads = 0;
 let readsAtWrite;
 let listed = 0;
@@ -142,7 +143,10 @@ function call(operation, input = {}) {
                 new Set(options.readSet.map((read) => read.key)).size,
                 options.readSet.length,
               );
-              assert.equal(options.readSet.length, nodes);
+              assert.equal(options.readSet.length, nodes + freezeRead);
+              assert.ok(
+                options.readSet.some((read) => read.key === "autopilot:global"),
+              );
               const record = {
                 namespace: "forge/work",
                 key,
@@ -217,7 +221,7 @@ try {
     assert.ok(listed <= nodes);
     counts[operation] = reads;
     if (operation === "create") {
-      assert.ok(readsAtWrite <= nodes + edgeCount);
+      assert.ok(readsAtWrite <= nodes + edgeCount + freezeRead);
       counts.validation = readsAtWrite;
     }
   }

@@ -120,6 +120,15 @@
         }
       ]
     },
+    "lane.freeze": {
+      "title": "Freeze",
+      "summary": "Freeze the local tracker store: later issue and attempt writes are refused naming the freeze. Reads still work. Repeating it keeps the first time.",
+      "description": "Run it at the tracker switch so no session keeps writing to the old authority. Undo it with lane unfreeze."
+    },
+    "lane.unfreeze": {
+      "title": "Unfreeze",
+      "summary": "Lift the local tracker freeze. This is the rollback path. It needs the owner's reply relayed as an approval: call once without approval to get a request, then again with approval {request, quote, source}."
+    },
     "lane.status": {
       "title": "Lane status",
       "summary": "Show every lane's step, PR, stop flag and use of its call, active time and round budgets, the stop flag and autopilot switch, and a measured load sample. hold names why a new lane would not start now: lane cap, low free memory or high CPU.",

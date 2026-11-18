@@ -76,7 +76,7 @@ function project() {
       if ((records.get(key)?.revision ?? 0) !== options.expectRevision)
         throw new Error("REVISION_CONFLICT");
       for (const read of options.readSet ?? [])
-        if (records.get(read.key)?.revision !== read.expectRevision)
+        if ((records.get(read.key)?.revision ?? 0) !== read.expectRevision)
           throw new Error("REVISION_CONFLICT");
       const record: StateRecord = {
         key,
@@ -206,6 +206,7 @@ test("parent update keeps expected revision and fences ancestor reads", () => {
   const put = state.put;
   state.put = (key, value, options) => {
     expect(options.readSet?.map((r) => r.key).sort()).toEqual([
+      "autopilot:global",
       "issue:work-1",
       "issue:work-2",
     ]);

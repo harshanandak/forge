@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "out": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Folder to write backup.sqlite and source.json into. It must be empty or not exist yet."
+    }
+  },
+  "required": ["out"],
+  "additionalProperties": false
+}
