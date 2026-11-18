@@ -45,6 +45,7 @@ export interface CredentialStore {
   lookup(key: CredentialKey, nowMs: number): DeviceCredential | undefined;
   associations(identity: string): readonly CredentialKey[];
   save(entry: CredentialEntry): Promise<void>;
+  remove(key: CredentialKey): Promise<string | undefined>;
 }
 export interface CredentialStoreOptions {
   /** Pauses between attempts to take the file lock. */
@@ -321,10 +322,7 @@ export function credentialStore(
         .map(({ origin, project }) => ({ origin, identity, project }));
     },
     async save(entry) {
-      const held = await lock();
-      try {
-        const previous = files.read(CREDENTIAL_FILE);
-        const saved = previous === undefined ? {} : parseFile(previous);
+      await commit((saved) => {
         // The target was chosen before the wait for approval. Another login may have saved a different
         // origin or project for this identity since, so the choice is checked again under the lock; a
         // loser leaves the store with the winner's association only.
@@ -339,35 +337,59 @@ export function credentialStore(
           throw conflict(
             "Another login already saved this project's credential for a different Forge cloud origin or project",
           );
-        const merged = {
+        return {
           ...saved,
           [keyOf(entry)]: parseEntry(keyOf(entry), entry),
         };
-        const text = serialize(merged);
-        if (Buffer.byteLength(text) > FILE_LIMIT) throw integrity();
-        parseFile(text);
-        try {
-          files.write(CREDENTIAL_FILE, text);
-          if (files.read(CREDENTIAL_FILE) !== text) throw integrity();
-        } catch (error) {
-          // A write can fail after the rename, so recovery looks at what is on disk, not at whether
-          // the write reported success.
-          if (previous !== undefined) recover(previous);
-          throw error;
-        }
-      } catch (error) {
-        throw error instanceof ForgeFailure
-          ? error
-          : new ForgeFailure({
-              code: "UNAVAILABLE",
-              message: "The cloud credential could not be saved",
-              retry: "never",
-            });
-      } finally {
-        held.release();
-      }
+      }, "saved");
+    },
+    async remove(key) {
+      let removed: string | undefined;
+      await commit((saved) => {
+        const found = saved[keyOf(key)];
+        if (found === undefined) return undefined;
+        removed = found.id;
+        return Object.fromEntries(
+          Object.entries(saved).filter(([name]) => name !== keyOf(key)),
+        );
+      }, "removed");
+      return removed;
     },
   };
+
+  async function commit(
+    change: (
+      saved: Record<string, CredentialEntry>,
+    ) => Record<string, CredentialEntry> | undefined,
+    verb: "saved" | "removed",
+  ): Promise<void> {
+    const held = await lock();
+    try {
+      const previous = files.read(CREDENTIAL_FILE);
+      const next = change(previous === undefined ? {} : parseFile(previous));
+      if (next === undefined) return;
+      const text = serialize(next);
+      if (Buffer.byteLength(text) > FILE_LIMIT) throw integrity();
+      parseFile(text);
+      try {
+        files.write(CREDENTIAL_FILE, text);
+        if (files.read(CREDENTIAL_FILE) !== text) throw integrity();
+      } catch (error) {
+        if (previous !== undefined) recover(previous);
+        throw error;
+      }
+    } catch (error) {
+      throw error instanceof ForgeFailure
+        ? error
+        : new ForgeFailure({
+            code: "UNAVAILABLE",
+            message: `The cloud credential could not be ${verb}`,
+            retry: "never",
+          });
+    } finally {
+      held.release();
+    }
+  }
 
   /**
    * Put the previous valid document back. The restore goes through the same checked write as any other
@@ -442,6 +464,12 @@ function parseBinding(bytes: Uint8Array): CloudBinding {
 
 /** The committed binding, undefined when absent; a malformed or unsafe one fails closed. */
 export function readBinding(root: string): CloudBinding | undefined {
+  return readBindingSnapshot(root)?.binding;
+}
+
+export function readBindingSnapshot(
+  root: string,
+): { binding: CloudBinding; bytes: Uint8Array } | undefined {
   let bytes: Uint8Array | undefined;
   try {
     const kind = entryKind(root, BINDING_PATH);
@@ -453,7 +481,9 @@ export function readBinding(root: string): CloudBinding | undefined {
       `${BINDING_PATH} is not a plain file Forge can read safely`,
     );
   }
-  return bytes === undefined ? undefined : parseBinding(bytes);
+  return bytes === undefined
+    ? undefined
+    : { binding: parseBinding(bytes), bytes };
 }
 
 /** Create the binding once. An identical existing one is fine; any other is never changed. */
@@ -479,6 +509,15 @@ export function writeBinding(
   )
     return "unchanged";
   throw conflict(`${BINDING_PATH} already binds this project elsewhere`);
+}
+
+export function removeBinding(root: string, expected: Uint8Array): void {
+  try {
+    nodeConfigFiles(root).remove(BINDING_PATH, expected);
+  } catch (error) {
+    if (error instanceof ForgeFailure) throw error;
+    throw invalidInput(`${BINDING_PATH} could not be removed safely`);
+  }
 }
 
 /** The origin and project a login targets, or a refusal when it would change an established binding. */
