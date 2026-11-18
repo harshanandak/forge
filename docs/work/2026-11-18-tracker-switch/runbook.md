@@ -52,7 +52,7 @@ Do not execute step 1 until every row passes. Record evidence and paths in `run.
 | P10 Owner present          | Owner can approve each machine's login and cloud resume. Logout practice uses a hand-built sandbox binding, without the owner's browser.                                                                                                                                        |
 | P11 Reverse path           | Save S7 snapshot/hash, prior Worker version and private prior vars/config copy. Inventory every checkout and machine, installed build and token id from login results.                                                                                                          |
 | P12 Freeze                 | Require PR 652 merged and atomic refusal practised on the pinned build. PR 627's freeze alone is insufficient. Include every clone/store that can accept local writes.                                                                                                          |
-| P13 Offline/restore/logout | Export, converter and restore tools below available; PR 626 merged. Practise snapshot restore with private ACLs, preserved freeze and readback. Require PR 653's delta implementation and provenance checks, not just its current tests.                                        |
+| P13 Offline/restore/logout | Export, converter and restore tools below available; PR 626 merged. Practise snapshot restore with private ACLs, preserved freeze and readback. PR 653 is open with the delta fix, pending its merge gate; require its implementation and provenance checks.                    |
 | P14 Single writer          | A practised replay path must let exactly one designated writer write while the local freeze remains set. Current `lane.unfreeze` is not that path. No single-writer tool is specified here; block the switch until this dependency has an exact command, refusals and evidence. |
 
 P13/P14 are execution dependencies, not permission to improvise a restore or temporarily lift the freeze.
@@ -235,7 +235,7 @@ bun tools/cloud-to-local-delta.ts --dump $Dump --backup $DeltaBackup --manifest 
 ```
 
 The flags `--dump-manifest`/`--project` are PR 653 dependencies, unavailable on the cited main.
-Its current diff contains tests only; require implementation and refusal evidence before P13 passes.
+PR 653 is open with the fix at `48de4d4d956ff9d5b5ee76f172a74ffeb07be475`, pending its merge gate; require merge and refusal evidence before P13 passes.
 `INPUT_INVALID` stops on wrong project/provenance, stale/missing pages, bad cursor chain, duplicate keys, hash mismatch, sidecars, or existing output.
 Check every new, changed and `absentInCloud` entry plus allocation-floor changes and `notCarriedBack`; map each to a manual action or an explicit loss decision.
 
@@ -253,7 +253,7 @@ Check every new, changed and `absentInCloud` entry plus allocation-floor changes
 | ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | PR 652 atomic freeze                | Step 2 and rollback need freeze refusal across runtime, lease and landing writes, including races. Pending merge and pinned-build practice.                                  |
 | PR 626 logout                       | R2/R3.5 need byte-checked binding removal; practise on a hand-built binding whose identity matches a sandbox project UUID, without login/browser or real credential changes. |
-| PR 653 delta, forge-1622            | R3.4 needs allocation-floor changes, pinned dump/project provenance and verified backup bytes. Current PR has tests only.                                                    |
+| PR 653 delta, forge-1622            | R3.4 needs allocation-floor changes, pinned dump/project provenance and verified backup bytes. PR 653 is open with the fix, pending its merge gate.                          |
 | P13 retained upgrade and S7 restore | Converter deletes internal scratch. Keep a separately upgraded input; practise private ACL setup, restore and uninterrupted freeze before switch.                            |
 | P14 single-writer replay            | No command supplied. A dispatch stop or lifting freeze is insufficient; switch blocked until a practised single-writer mechanism exists.                                     |
 | Project deletion/retention          | No delete step; retain unused cloud project and S7 for the recorded period.                                                                                                  |
