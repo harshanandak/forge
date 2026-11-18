@@ -65,7 +65,10 @@ async function moved() {
   };
 }
 type Row = { key: string; body: string; revision: number };
-type Doc = { next: string | null; tables: { state_records: Row[] } };
+type Doc = {
+  next: string | null;
+  tables: Record<string, Row[]> & { state_records: Row[] };
+};
 const pageNames = (dump: string) =>
   readdirSync(dump)
     .filter((name) => name.startsWith("page-"))
@@ -154,7 +157,9 @@ test("a cloud-only comment and an issue closed in the cloud appear with their co
       row.body = JSON.stringify(record);
     }
     if (first)
-      rows.push(
+      rows.splice(
+        1,
+        0,
         cloudRow("comment:work-1:2", f.ns, {
           id: "work-1",
           body: "cloud only",
@@ -184,13 +189,27 @@ test("a cloud-only comment and an issue closed in the cloud appear with their co
 
 test("a record removed in the cloud is listed as absent and not as a change", async () => {
   const { dump, options } = await moved();
-  editCloud(dump, (rows) => {
-    const at = rows.findIndex((row) => row.key === "comment:work-1:1");
-    if (at >= 0) rows.splice(at, 1);
-  });
+  let removed: string | undefined;
+  pageNames(dump).forEach((_name, index) =>
+    editPage(dump, index, (page) => {
+      const rows = page.tables.state_records;
+      const later = Object.entries(page.tables).some(
+        ([table, other]) => table !== "state_records" && other.length > 0,
+      );
+      const at = rows.findIndex(
+        (row, place) =>
+          /^(issue|comment):/.test(row.key) &&
+          (place < rows.length - 1 || later),
+      );
+      if (removed !== undefined || at < 0) return;
+      removed = rows[at]!.key;
+      rows.splice(at, 1);
+    }),
+  );
+  expect(removed).toBeDefined();
   const report = await compute(options);
   expect(report.delta).toEqual([]);
-  expect(report.absentInCloud).toEqual(["comment:work-1:1"]);
+  expect(report.absentInCloud).toEqual([removed!]);
 }, 120_000);
 
 test("non-invertible tables, families and fields are listed as not carried back with a reason", async () => {
