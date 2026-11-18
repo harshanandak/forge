@@ -240,6 +240,7 @@ const stopped = (epoch: number, scope: string) => ({
 });
 
 const dispatchIssue = { id: "work-7" };
+const dispatchLeaseIssue = { id: "forge-7" };
 const dispatchInput = {
   ...dispatchIssue,
   dispatchId: "dispatch-proof",
@@ -247,10 +248,9 @@ const dispatchInput = {
   epoch: running.epoch,
 };
 const dispatchKey = "lane-dispatch:work-7:dispatch-proof";
-const executor = (id = "s1", leaseGeneration = 1) => ({
+const executor = (id = "s1") => ({
   actor,
   session: { id },
-  leaseGeneration,
 });
 const dispatchCall = (
   requestId = "dispatch-1",
@@ -259,9 +259,14 @@ const dispatchCall = (
 ) => call("lane.dispatch", input, requestId, { context });
 const claimDispatch = (f: Fixture, id = "s1", headers = {}) =>
   f.send(
-    call("issue.claim", { ...dispatchIssue, ttlSeconds: 60 }, `claim-${id}`, {
-      context: { actor, session: { id } },
-    }),
+    call(
+      "issue.claim",
+      { ...dispatchLeaseIssue, ttlSeconds: 60 },
+      `claim-${id}`,
+      {
+        context: { actor, session: { id } },
+      },
+    ),
     "p",
     headers,
   );
@@ -409,8 +414,8 @@ test("takeover rejects reuse of the old dispatch ID and replay by the old holder
     expect((await claimDispatch(f)).verdict).toEqual(["OK", "OK", 0]);
     const first = await f.send(dispatchCall());
     expect(first.verdict).toEqual(["OK", "OK", 0]);
-    const release = call("issue.release", dispatchIssue, "release", {
-      context: executor(),
+    const release = call("issue.release", dispatchLeaseIssue, "release", {
+      context: { ...executor(), leaseGeneration: 1 },
     });
     expect((await f.send(release)).verdict).toEqual(["OK", "OK", 0]);
     const other = { authorization: `Bearer ${await f.admit("desktop", "s2")}` };
@@ -422,7 +427,7 @@ test("takeover rejects reuse of the old dispatch ID and replay by the old holder
       4,
     ]);
     const reuse = await f.send(
-      dispatchCall("takeover", dispatchInput, executor("s2", 2)),
+      dispatchCall("takeover", dispatchInput, executor("s2")),
       "p",
       other,
     );
@@ -556,8 +561,8 @@ test.each([
         expect(
           (
             await f.send(
-              call("issue.release", dispatchIssue, "release", {
-                context: executor(),
+              call("issue.release", dispatchLeaseIssue, "release", {
+                context: { ...executor(), leaseGeneration: 1 },
               }),
             )
           ).verdict,

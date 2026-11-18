@@ -6223,7 +6223,7 @@ test.each(["CLI", "MCP"] as const)(
       { steps: [() => answer(dispatchResult, "lane.dispatch")] },
       async (r) => {
         const before = inventory(r.s.dir);
-        const context = holding(r, { leaseGeneration: 2 });
+        const context = holding(r);
         const result =
           surface === "CLI"
             ? (
@@ -6248,8 +6248,11 @@ test.each(["CLI", "MCP"] as const)(
         expect(r.net.calls[0]!.body).toMatchObject({
           op: "lane.dispatch",
           input: dispatchInput,
-          context: { leaseGeneration: 2 },
+          context: { session: { id: "s1" } },
         });
+        expect(r.net.calls[0]!.body).not.toHaveProperty(
+          "context.leaseGeneration",
+        );
         expect(inventory(r.s.dir)).toEqual(before);
       },
     ),
@@ -6275,7 +6278,7 @@ for (const mode of ["offline", "unbound", "dry run"] as const)
           const before = inventory(r.s.dir);
           const result = await r.assembly.catalog.invoke(
             r.request("lane.dispatch", dispatchInput, {
-              context: holding(r, { leaseGeneration: 2 }),
+              context: holding(r),
               dryRun: mode === "dry run",
             }),
           );

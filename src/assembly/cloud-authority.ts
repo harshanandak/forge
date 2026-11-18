@@ -92,7 +92,13 @@ const CLOUD_SERVED: ReadonlySet<string> = new Set([
   "lane.stop",
   "lane.control",
   "lane.resume",
+  "lane.dispatch",
 ]);
+
+const isDispatch = (blockId: string | undefined, op: string | undefined) =>
+  blockId === "forge/work" && op === "lane.dispatch";
+const noDispatchBinding = () =>
+  fail("UNAVAILABLE", "Lane dispatch requires a cloud-bound project");
 
 /** Bound work uses CLOUD_SERVED; other work and store recovery refuse a second writer. Other blocks stay local. */
 export function cloudRoute(
@@ -195,6 +201,12 @@ export function admitCloud(
   input: unknown,
 ): void {
   if (blockId === "forge/work") admitPrClose(deps, declared, input);
+  if (
+    isDispatch(blockId, declared) &&
+    cloudBinding(deps.root, deps.env.HOME ?? deps.env.USERPROFILE).kind ===
+      "unbound"
+  )
+    throw noDispatchBinding();
   const route = cloudRoute(blockId, declared);
   const dryRefused = dryRun === true && declared !== "lane.stop";
   const remote = route === "cloud" || route === "coordinator";
@@ -221,6 +233,8 @@ export async function selectCloud(
   if (blockId === "forge/work") admitPrClose(deps, declaredOp, request.input);
   const home = deps.env.HOME ?? deps.env.USERPROFILE;
   const binding = () => cloudBinding(deps.root, home);
+  if (isDispatch(blockId, declaredOp) && binding().kind === "unbound")
+    throw noDispatchBinding();
   let flight: ReturnType<Runtime["preflight"]>;
   let accepted: InvocationRequest | undefined;
   try {
@@ -298,6 +312,8 @@ export async function selectCloud(
     http: createCloudHttp({ origin, project, ...(fetch ? { fetch } : {}) }),
   });
   try {
+    const { leaseGeneration: _generation, ...withoutGeneration } =
+      request.context;
     const result = await client.command(
       {
         requestId: request.requestId,
@@ -305,7 +321,9 @@ export async function selectCloud(
         input: request.input,
         ...(request.dryRun === true ? { dryRun: true } : {}),
         context: {
-          ...request.context,
+          ...(isDispatch(blockId, declared)
+            ? withoutGeneration
+            : request.context),
           device: { id: device },
         },
       },

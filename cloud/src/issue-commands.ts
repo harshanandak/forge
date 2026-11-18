@@ -38,6 +38,7 @@ import { listLinks } from "./issue-links.ts";
 import { listIssues } from "./issue-list.ts";
 import { updateIssue } from "./issue-update.ts";
 import { laneCommand } from "./lane-commands.ts";
+import { dispatchLane } from "./lane-dispatch.ts";
 import { PROJECT_NAME } from "./project-name.ts";
 import { requireTokenSession } from "./token-session.ts";
 import { carriesToken } from "./tokens.ts";
@@ -82,6 +83,7 @@ const EXPOSED: readonly string[] = [
   "lane.control",
   "lane.stop",
   "lane.resume",
+  "lane.dispatch",
 ];
 const operations = manifest.operations as unknown as Readonly<
   Record<string, OperationDeclaration>
@@ -114,6 +116,7 @@ export interface PreparedCommand {
   readonly op: string;
   readonly input: unknown;
   readonly context: BoundContext;
+  readonly dispatchSession?: string;
   readonly dryRun?: true;
 }
 
@@ -193,6 +196,9 @@ export function parseCommand(text: string, host: CommandHost): PreparedCommand {
     op,
     input: call.input,
     context: bound.context,
+    ...(op === "lane.dispatch" && session !== undefined
+      ? { dispatchSession: session.id }
+      : {}),
     ...(call.dryRun === true ? { dryRun: true as const } : {}),
   };
 }
@@ -299,7 +305,8 @@ export function runCommand(
                       ? releaseIssue
                       : undefined;
   let result: unknown;
-  if (op === "lane.control" || op === "lane.stop" || op === "lane.resume")
+  if (op === "lane.dispatch") result = dispatchLane(call, host);
+  else if (op === "lane.control" || op === "lane.stop" || op === "lane.resume")
     result = laneCommand(call, host);
   else if (write !== undefined) {
     // Both come before the store is opened, so a refusal never sets up or migrates it.
