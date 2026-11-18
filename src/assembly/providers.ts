@@ -198,6 +198,7 @@ export const SNAPSHOT_OPERATION_TIMEOUT_MS: number = SNAPSHOT_TIMEOUT_MS + 1000;
 export const ASSEMBLY_PROVIDES: readonly string[] = [
   "forge.device-files@1.0.0",
   "forge.cloud-login@1.0.0",
+  "forge.store-export@1.0.0",
   "forge.state@1.0.0",
   "forge.state@2.0.0",
   "forge.process@1.0.0",

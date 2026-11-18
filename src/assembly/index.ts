@@ -2052,6 +2052,27 @@ export async function createAssembly(
                   continue;
                 }
                 if (
+                  interfaceSatisfies(
+                    "forge.store-export@1.0.0",
+                    binding.interface,
+                  )
+                ) {
+                  if (
+                    context.variant !== "project" &&
+                    context.variant !== "leased"
+                  )
+                    refuse(
+                      "CONTEXT_MISSING",
+                      "Store export requires project context",
+                    );
+                  const lease = await projectState.acquire(false);
+                  leases.push(lease);
+                  clients[binding.slot] = (
+                    await import("./store-export.ts")
+                  ).createStoreExport(scope, lease.value);
+                  continue;
+                }
+                if (
                   interfaceSatisfies("forge.receipts@1.0.0", binding.interface)
                 ) {
                   if (
