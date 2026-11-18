@@ -8,6 +8,7 @@
 // directory, then rename).
 import {
   closeSync,
+  existsSync,
   fsyncSync,
   lstatSync,
   mkdirSync,
@@ -151,31 +152,16 @@ export function removeEmptyParents(
   }
 }
 
-function restoreClaim(
-  root: string,
-  path: string,
-  target: string,
-  claimed: string,
-): void {
+function restoreClaim(path: string, target: string, claimed: string): void {
   try {
-    try {
-      publishExclusive(claimed, target);
-    } catch (error) {
-      if (errorCode(error) === "EEXIST") {
-        removeDurable(claimed);
-        return;
-      }
-      if (entryKind(root, path) !== "missing") throw error;
-      renameSync(claimed, target);
-      return;
-    }
-    removeDurable(claimed);
+    publishExclusive(claimed, target);
   } catch (error) {
     throw new Error(
       `${path} could not be put back after a refused removal; its content is kept at ${claimed}`,
       { cause: error },
     );
   }
+  removeDurable(claimed);
 }
 
 export function nodeConfigFiles(
@@ -234,14 +220,19 @@ export function nodeConfigFiles(
           held.size === expected.byteLength &&
           Buffer.from(expected).equals(readFileSync(claimed));
       } catch (error) {
-        restoreClaim(root, path, target, claimed);
+        restoreClaim(path, target, claimed);
         throw error;
       }
       if (matched) {
-        removeDurable(claimed);
+        try {
+          removeDurable(claimed);
+        } catch (error) {
+          if (existsSync(claimed)) restoreClaim(path, target, claimed);
+          throw error;
+        }
         return;
       }
-      restoreClaim(root, path, target, claimed);
+      restoreClaim(path, target, claimed);
       throw removeConflict(path);
     },
     list(dir) {
