@@ -272,6 +272,7 @@ const SERVED = [
   "lane.stop",
   "lane.control",
   "lane.resume",
+  "lane.dispatch",
 ];
 /** Every operation the work block declares, read from its manifest. */
 const MANIFEST_OPS = Object.keys(
@@ -6200,6 +6201,91 @@ const laneRequired = (result: object = LANE_APPROVAL) =>
     409,
   );
 const laneContext = (r: Rig) => r.request("lane.control", {}).context;
+
+const dispatchInput = {
+  id: "work-1",
+  dispatchId: "dispatch-proof",
+  incarnation: LANE_CONTROL.incarnation,
+  epoch: LANE_CONTROL.epoch,
+};
+const dispatchResult = {
+  ...dispatchInput,
+  holder: { device: "dev-1", session: "s1" },
+  leaseGeneration: 2,
+  recordedAt: iso(NOW),
+  kind: "recorded-intent",
+};
+
+test.each(["CLI", "MCP"] as const)(
+  "bound dispatch uses the cloud directly through %s without preparing a local lane",
+  async (surface) =>
+    using(
+      { steps: [() => answer(dispatchResult, "lane.dispatch")] },
+      async (r) => {
+        const before = inventory(r.s.dir);
+        const context = holding(r, { leaseGeneration: 2 });
+        const result =
+          surface === "CLI"
+            ? (
+                await runCli(
+                  r.assembly.catalog,
+                  [
+                    "lane",
+                    "dispatch",
+                    "--input",
+                    JSON.stringify(dispatchInput),
+                  ],
+                  { caller: "agent", context },
+                )
+              ).envelope
+            : await createMcpHandlers(
+                r.assembly.catalog,
+                { expose: ["lane"] },
+                { context },
+              ).callTool("lane_dispatch", dispatchInput);
+        expect(result).toMatchObject({ ok: true, result: dispatchResult });
+        expect(r.net.calls).toHaveLength(1);
+        expect(r.net.calls[0]!.body).toMatchObject({
+          op: "lane.dispatch",
+          input: dispatchInput,
+          context: { leaseGeneration: 2 },
+        });
+        expect(inventory(r.s.dir)).toEqual(before);
+      },
+    ),
+  30_000,
+);
+
+for (const mode of ["offline", "unbound", "dry run"] as const)
+  test(
+    `dispatch fails closed with ${mode} and leaves local state untouched`,
+    () =>
+      using(
+        {
+          ...(mode === "unbound"
+            ? { bind: false, creds: false, sentinel: false }
+            : {}),
+          steps: [
+            () => {
+              throw new Error("offline");
+            },
+          ],
+        },
+        async (r) => {
+          const before = inventory(r.s.dir);
+          const result = await r.assembly.catalog.invoke(
+            r.request("lane.dispatch", dispatchInput, {
+              context: holding(r, { leaseGeneration: 2 }),
+              dryRun: mode === "dry run",
+            }),
+          );
+          expect(failed(result, "UNAVAILABLE")).toBe(1);
+          expect(r.net.calls).toHaveLength(mode === "offline" ? 1 : 0);
+          expect(inventory(r.s.dir)).toEqual(before);
+        },
+      ),
+    30_000,
+  );
 
 for (const [name, op, input, result, dryRun] of [
   ["stop", "lane.stop", { id: "forge-1" }, LANE_CONTROL, false],
