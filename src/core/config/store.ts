@@ -214,6 +214,14 @@ export function commit(
       fileRemoved: planned.bytes === null && current.bytes !== undefined,
     };
   } finally {
-    deps.files.remove(LOCK_FILE, lock);
+    try {
+      deps.files.remove(LOCK_FILE, lock);
+    } catch (error) {
+      if (
+        !(error instanceof ForgeFailure) ||
+        error.error.code !== "INPUT_CONFLICT"
+      )
+        throw error;
+    }
   }
 }

@@ -151,6 +151,33 @@ export function removeEmptyParents(
   }
 }
 
+function restoreClaim(
+  root: string,
+  path: string,
+  target: string,
+  claimed: string,
+): void {
+  try {
+    try {
+      publishExclusive(claimed, target);
+    } catch (error) {
+      if (errorCode(error) === "EEXIST") {
+        removeDurable(claimed);
+        return;
+      }
+      if (entryKind(root, path) !== "missing") throw error;
+      renameSync(claimed, target);
+      return;
+    }
+    removeDurable(claimed);
+  } catch (error) {
+    throw new Error(
+      `${path} could not be put back after a refused removal; its content is kept at ${claimed}`,
+      { cause: error },
+    );
+  }
+}
+
 export function nodeConfigFiles(
   root: string,
   options: { beforeOpen?: () => void } = {},
@@ -199,21 +226,22 @@ export function nodeConfigFiles(
         if (errorCode(error) === "ENOENT") return;
         throw error;
       }
-      const held = lstatSync(claimed);
-      if (
-        held.isFile() &&
-        held.size === expected.byteLength &&
-        Buffer.from(expected).equals(readFileSync(claimed))
-      ) {
+      let matched: boolean;
+      try {
+        const held = lstatSync(claimed);
+        matched =
+          held.isFile() &&
+          held.size === expected.byteLength &&
+          Buffer.from(expected).equals(readFileSync(claimed));
+      } catch (error) {
+        restoreClaim(root, path, target, claimed);
+        throw error;
+      }
+      if (matched) {
         removeDurable(claimed);
         return;
       }
-      try {
-        publishExclusive(claimed, target);
-      } catch (error) {
-        if (errorCode(error) !== "EEXIST") throw error;
-      }
-      removeDurable(claimed);
+      restoreClaim(root, path, target, claimed);
       throw removeConflict(path);
     },
     list(dir) {
