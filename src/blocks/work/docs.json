@@ -127,7 +127,7 @@
     },
     "lane.unfreeze": {
       "title": "Unfreeze",
-      "summary": "Lift the local tracker freeze. This is the rollback path."
+      "summary": "Lift the local tracker freeze. This is the rollback path. It needs the owner's reply relayed as an approval: call once without approval to get a request, then again with approval {request, quote, source}."
     },
     "lane.status": {
       "title": "Lane status",

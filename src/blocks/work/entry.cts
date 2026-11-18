@@ -4120,10 +4120,15 @@ function laneStop(call: HandlerCall<StopInput>): {
   } catch (error) {
     if (!(error instanceof StateProblem)) throw error;
     // An unreadable record is replaced by a stop of every lane: the safe direction.
+    const kept = state.get(GLOBAL)?.value;
     persist(
       state,
       GLOBAL,
-      { stopAll: at, stopped: {} },
+      {
+        stopAll: at,
+        stopped: {},
+        ...(isMap(kept) && isTime(kept.frozen) ? { frozen: kept.frozen } : {}),
+      },
       state.get(GLOBAL)?.revision ?? 0,
     );
     return { stopped: "all", at };
@@ -4209,17 +4214,63 @@ function laneUnfreeze(call: HandlerCall<Record<string, never>>): FreezeState {
   }
   return { frozen: false };
 }
-function refuseFrozen(services: unknown): void {
-  const value = client(services).get(GLOBAL)?.value;
+type PinnedRead = { readonly key: string; readonly expectRevision: number };
+function pinned(state: LeaseStateClient, read: PinnedRead): LeaseStateClient {
+  const pin = <
+    T extends { readonly readSet?: readonly PinnedRead[] | undefined },
+  >(
+    options: T,
+  ): T & { readonly readSet: readonly PinnedRead[] } => ({
+    ...options,
+    readSet: options.readSet?.some((entry) => entry.key === read.key)
+      ? options.readSet
+      : [...(options.readSet ?? []), read],
+  });
+  return {
+    ...state,
+    put: (...[key, value, options]: Parameters<LeaseStateClient["put"]>) =>
+      state.put(key, value, pin(options)),
+    putMany: (...[entries, options]: Parameters<LeaseStateClient["putMany"]>) =>
+      state.putMany(entries, pin(options ?? {})),
+    putNext: (
+      ...[prefix, build, options]: Parameters<LeaseStateClient["putNext"]>
+    ) =>
+      state.putNext(
+        prefix,
+        (key, number) => {
+          const built = build(key, number);
+          return pin(built);
+        },
+        options,
+      ),
+    acquire: (
+      ...[subject, duration, options]: Parameters<LeaseStateClient["acquire"]>
+    ) => state.acquire(subject, duration, pin(options ?? {})),
+    delete: (...[key, options]: Parameters<LeaseStateClient["delete"]>) =>
+      state.delete(key, pin(options)),
+    withOwnLease: (subject) => pinned(state.withOwnLease(subject), read),
+  };
+}
+function refuseFrozen(services: unknown): object {
+  const state = client(services);
+  const record = state.get(GLOBAL);
+  const value = record?.value;
   if (isMap(value) && value.frozen !== undefined)
     fail(
       "UNAVAILABLE",
       `The local tracker store has been frozen since ${isTime(value.frozen) ? value.frozen : "an unreadable time"} and no longer accepts issue writes.`,
       {
         repair:
-          "Bind this checkout to the cloud project with forge auth login, then use the cloud-served forge issue commands. To undo the freeze, the owner runs forge lane unfreeze.",
+          "Bind this checkout to the cloud project with forge auth login, then use the cloud-served forge issue commands. Do not lift the freeze from a session; only the owner can.",
       },
     );
+  return {
+    ...(services as object),
+    state: pinned(state, {
+      key: GLOBAL,
+      expectRevision: record?.revision ?? 0,
+    }),
+  };
 }
 const FROZEN_WRITES = [
   "issue.create",
@@ -6919,10 +6970,8 @@ for (const name of FROZEN_WRITES) {
     (...args: [HandlerCall<never>, ...unknown[]]) => unknown
   >;
   const run = table[name]!;
-  table[name] = (...args) => {
-    refuseFrozen(args[0].services);
-    return run(...args);
-  };
+  table[name] = (call, ...rest) =>
+    run({ ...call, services: refuseFrozen(call.services) }, ...rest);
 }
 Object.defineProperties(operations, {
   limitsOf: { value: limitsOf },

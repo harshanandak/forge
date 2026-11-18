@@ -457,7 +457,7 @@
       "stability": "experimental"
     },
     "lane.unfreeze": {
-      "input": "schemas/freeze.input.json",
+      "input": "schemas/unfreeze.input.json",
       "output": "schemas/freeze.output.json",
       "context": "project",
       "timeoutMs": 15000,
