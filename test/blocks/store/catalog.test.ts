@@ -17,6 +17,7 @@ import { firstPartyBlocks } from "../../../src/assembly/first-party.ts";
 import { createAssembly, type Assembly } from "../../../src/assembly/index.ts";
 import { LocalState } from "../../../src/assembly/state.ts";
 import { createMcpHandlers } from "../../../src/surface/mcp.ts";
+import { runCli } from "../../../src/surface/cli.ts";
 import type {
   AmbientContext,
   ResultEnvelope,
@@ -60,7 +61,9 @@ function stage(into: string): string {
   return target;
 }
 
-async function openStore(): Promise<Open> {
+async function openStore(
+  mode: "enabled" | "disabled" | "absent" = "enabled",
+): Promise<Open> {
   const work = mkdtempSync(join(tmpdir(), "forge-store-block-"));
   const root = join(work, "project");
   mkdirSync(join(root, ".forge"), { recursive: true });
@@ -68,7 +71,15 @@ async function openStore(): Promise<Open> {
     join(root, ".forge", "config.yaml"),
     JSON.stringify({
       schemaVersion: "forge.config/1",
-      blocks: { store: { source: { builtin: "forge/store" } } },
+      blocks:
+        mode === "absent"
+          ? {}
+          : {
+              store: {
+                source: { builtin: "forge/store" },
+                enabled: mode === "enabled",
+              },
+            },
     }),
   );
   writeFileSync(
@@ -165,6 +176,24 @@ test("a person's export writes the backup and source.json for the project store"
   const again = await call(open, { out });
   expect(again.ok).toBe(false);
 }, 60_000);
+
+test.each(["absent", "disabled"] as const)(
+  "store export runs through the CLI with the store block %s",
+  async (mode) => {
+    open = await openStore(mode);
+    const config = join(open.root, ".forge", "config.yaml");
+    const before = readFileSync(config);
+    const out = join(open.root, "operator-backup");
+    const response = await runCli(
+      open.assembly.catalog,
+      ["store", "export", "--out", out],
+      { caller: "human", context: open.ambient },
+    );
+    expect(readFileSync(config)).toEqual(before);
+    expect(response.envelope).toMatchObject({ ok: true });
+    expect(readSource(out).records).toBe(1);
+  },
+);
 
 test("an agent caller is refused and writes nothing", async () => {
   open = await openStore();

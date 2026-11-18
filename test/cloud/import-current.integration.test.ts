@@ -21,6 +21,7 @@ import { success } from "../../src/surface/dispatch.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import * as f from "./import-current-state.fixture.ts";
 import * as converter from "../../tools/import-current.ts";
+import { stateMigrations } from "../../src/core/state/migrations.ts";
 
 const rows = [
   ["Offline bundle", "bundle", "OK", 0, null],
@@ -60,6 +61,60 @@ test("offline refusal reports the record key and reason without values or bundle
   eq(readdirSync(out), []);
   eq(source.bytes(), source.manifest.sha256);
 }, 120_000);
+async function convertFixture(source: ReturnType<typeof f.source>) {
+  const backup = String(source.db.all("PRAGMA database_list")[0]!.file),
+    root = dirname(backup),
+    manifest = join(root, "source.json"),
+    out = join(root, "converted");
+  writeFileSync(manifest, JSON.stringify(source.manifest));
+  const reply = await converter.run({ backup, manifest, out });
+  eq(source.bytes(), source.manifest.sha256);
+  eq(readFileSync(manifest, "utf8"), JSON.stringify(source.manifest));
+  return { reply, out };
+}
+
+test("converting a 008 backup produces the same projection as a 009 backup", async () => {
+  const old = f.source(6, false, false, undefined, stateMigrations.slice(0, 8));
+  const current = f.source(6);
+  const previous = await convertFixture(old);
+  eq(status(previous.reply), ["OK", 0, null]);
+  const latest = await convertFixture(current);
+  eq(status(latest.reply), ["OK", 0, null]);
+  const result = (reply: typeof previous.reply) => {
+    if (!reply.envelope.ok) throw new Error(reply.envelope.error.message);
+    return reply.envelope.result as Awaited<
+      ReturnType<typeof converter.convert>
+    >;
+  };
+  const oldBundle = result(previous.reply);
+  const newBundle = result(latest.reply);
+  eq(oldBundle.source, old.manifest);
+  eq(oldBundle.tables, newBundle.tables);
+  eq(oldBundle.pages, newBundle.pages);
+});
+
+test.each([
+  [
+    "unknown migration",
+    "UPDATE state_migrations SET id='004_unknown' WHERE id='004_state_checkpoint'",
+  ],
+  ["newer migration", "INSERT INTO state_migrations VALUES ('010_future')"],
+  ["newer schema", "PRAGMA user_version=1"],
+  [
+    "an extra trigger",
+    "CREATE TRIGGER sqliteXextra AFTER INSERT ON state_migrations BEGIN SELECT 1; END",
+  ],
+  [
+    "reordered ledger",
+    "UPDATE state_migrations SET rowid=100 WHERE id='001_state_010'",
+  ],
+])("conversion refuses a backup with %s", async (_name, sql) => {
+  const source = f.source(6, false, false, (db) => db.exec(sql));
+  const { reply, out } = await convertFixture(source);
+  eq(status(reply), ["FAIL", 6, "INPUT_INVALID"]);
+  eq(readdirSync(out), []);
+});
+
 type Change = readonly [string, string];
 async function moduleUrl(
   path: string,
