@@ -1,4 +1,4 @@
-// The ConfigFiles port: core config reaches the filesystem only through it, and the `fs` adapter is
+﻿// The ConfigFiles port: core config reaches the filesystem only through it, and the `fs` adapter is
 // its Node implementation. The contract suite runs against that adapter.
 import {
   afterEach,
@@ -119,23 +119,27 @@ describe("the fs adapter implements ConfigFiles", () => {
     expect(text(files.read(".forge/config.lock"))).toBe("other-editor");
   }, 30_000);
 
-  test("a same-content file swapped in after the read is not removed", () => {
-    const dir = root();
-    const files = nodeConfigFiles(dir);
-    files.write(".forge/config.lock", bytes("held"));
-    const expected = bytes("held");
-    Object.defineProperty(expected, "byteLength", {
-      get() {
-        files.write(".forge/config.lock", bytes("held"));
-        return 4;
-      },
-    });
-    expect(() => files.remove(".forge/config.lock", expected)).toThrow(
-      /changed since it was read/,
-    );
-    expect(text(files.read(".forge/config.lock"))).toBe("held");
-    expect(readdirSync(join(dir, ".forge"))).toEqual(["config.lock"]);
-  }, 30_000);
+  test.skipIf(process.platform === "win32")(
+    "a same-content file swapped in after the read is not removed",
+    () => {
+      const dir = root();
+      const files = nodeConfigFiles(dir);
+      files.write(".forge/config.lock", bytes("held"));
+      const expected = bytes("held");
+      Object.defineProperty(expected, "byteLength", {
+        get() {
+          files.write(".forge/config.lock", bytes("held"));
+          return 4;
+        },
+      });
+      expect(() => files.remove(".forge/config.lock", expected)).toThrow(
+        /changed since it was read/,
+      );
+      expect(text(files.read(".forge/config.lock"))).toBe("held");
+      expect(readdirSync(join(dir, ".forge"))).toEqual(["config.lock"]);
+    },
+    30_000,
+  );
 
   test("restoring a claim keeps the original error when dropping the claim fails", () => {
     const dir = root();
@@ -195,7 +199,7 @@ describe("the fs adapter implements ConfigFiles", () => {
 });
 
 // Directory links are junctions on Windows (no privilege needed); file links need symlink privilege
-// there, so those cases are skipped — and say so — only when the OS refuses to create one.
+// there, so those cases are skipped â€” and say so â€” only when the OS refuses to create one.
 function linkDir(target: string, link: string): void {
   symlinkSync(target, link, "junction");
 }
@@ -269,7 +273,7 @@ describe("the fs adapter refuses to leave the project root", () => {
     expect(readFileSync(join(outside, "config.yaml"), "utf8")).toBe("outside");
   });
 
-  test("a dangling symlink — as a parent or as the file — is refused, not written through", () => {
+  test("a dangling symlink â€” as a parent or as the file â€” is refused, not written through", () => {
     const outside = root();
     const dir = root();
     // dangling directory link: its target is removed after linking
