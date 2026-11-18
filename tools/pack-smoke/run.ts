@@ -2,7 +2,6 @@
 // installed package, then run every packed journey (`packed.integration.test.ts`) with `bun test`
 // against that one install. Run it with Node (`bun run test:pack` builds first and does this): the
 // point is that a user with only Node and npm can install and run what we publish.
-import assert from "node:assert/strict";
 import { hash } from "node:crypto";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import {
@@ -26,7 +25,10 @@ import {
   resolveBun,
 } from "./environment.ts";
 import { packInput } from "./input.ts";
-import { assertInstalledBuildIdentity } from "./identity.ts";
+import {
+  assertInstalledBuildIdentity,
+  assertReviewedBuild,
+} from "./identity.ts";
 import { gitExecutable } from "../git-executable.ts";
 
 const root = resolve(import.meta.dirname, "../..");
@@ -214,23 +216,18 @@ async function main(): Promise<void> {
     const build: unknown = JSON.parse(
       ok(node([join(installedDir, binTarget), "--version", "--json"])),
     );
-    assert.deepEqual(
+    assertReviewedBuild(
       build,
-      {
-        version: expected,
-        commit:
-          process.env.CI_HEAD ??
-          ok(
-            run(
-              gitExecutable(process.env),
-              ["rev-parse", "HEAD"],
-              root,
-              process.env,
-            ),
-          ).trim(),
-        dirty: false,
-      },
-      "installed build identity must match the reviewed clean build",
+      expected,
+      process.env.CI_HEAD ??
+        ok(
+          run(
+            gitExecutable(process.env),
+            ["rev-parse", "HEAD"],
+            root,
+            process.env,
+          ),
+        ).trim(),
     );
     const runId =
       process.env.FORGE_PACK_EXPECTED_RUN_ID ??
