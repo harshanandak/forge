@@ -126,6 +126,78 @@ function pinDump({
     }),
   );
 }
+const notBefore = "2026-11-18T12:00:00.000Z";
+const capturedAt = "2026-11-18T12:01:00.000Z";
+
+function capturePin(options: Options, at = capturedAt) {
+  pinDump(options);
+  const receipt = JSON.parse(
+    readFileSync(options.dumpManifest, "utf8"),
+  ) as Record<string, unknown>;
+  writeFileSync(
+    options.dumpManifest,
+    JSON.stringify({
+      ...receipt,
+      format: "forge-cloud-capture/1",
+      capturedAt: at,
+    }),
+  );
+  return { ...options, notBefore, receiptSha256: sha(options.dumpManifest) };
+}
+
+test("refuses rehearsal pages even when their capture is relabelled as tracker", async () => {
+  const { options, source, again } = await moved();
+  const rehearsal = {
+    ...options,
+    project: "rehearsal",
+    dump: await again("rehearsal", source.manifest.at),
+  };
+  const captured = capturePin(rehearsal);
+  capturePin({ ...rehearsal, project: "tracker" });
+  await refused({ ...captured, project: "tracker" }, "capture receipt");
+}, 120_000);
+
+test("refuses a substituted terminal page even when its new hash is added to the receipt", async () => {
+  const { dump, options } = await moved();
+  const captured = capturePin(options);
+  const last = pageNames(dump).length - 1;
+  editPage(dump, last, (page) => {
+    const events = page.tables.state_events! as (Row & { sequence: number })[];
+    const event = events.at(-1)!;
+    const sequence = event.sequence + 1;
+    const body = JSON.parse(event.body) as Record<string, unknown>;
+    events.push({
+      ...event,
+      sequence,
+      body: JSON.stringify({ ...body, sequence }),
+    });
+  });
+  capturePin(options);
+  await refused(captured, "capture receipt");
+}, 120_000);
+
+test("refuses an intact capture older than the rollback fence", async () => {
+  const { options } = await moved();
+  await refused(
+    capturePin(options, "2026-11-18T11:59:00.000Z"),
+    "capture predates",
+  );
+}, 120_000);
+
+test("requires the capture receipt even if the complete dump is present", async () => {
+  const { options } = await moved();
+  const captured = capturePin(options);
+  rmSync(options.dumpManifest);
+  await refused(captured, "capture receipt");
+}, 120_000);
+
+test("a verified capture of the imported project gives the expected delta", async () => {
+  const { options } = await moved();
+  const report = await compute(capturePin(options));
+  expect(report.delta).toEqual([]);
+  expect(report.absentInCloud).toEqual([]);
+}, 120_000);
+
 function editPage(dump: string, index: number, edit: (page: Doc) => void) {
   const file = join(dump, pageNames(dump)[index]!),
     page = JSON.parse(readFileSync(file, "utf8")) as Doc;
