@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAssembly } from "../../../src/assembly/index.ts";
@@ -32,6 +32,44 @@ test("MCP open returns unavailable with the trust store path and remedy", async 
         "Use a supported runtime and a readable local store path",
       );
     }
+  } finally {
+    await assembly.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 30_000);
+
+test("MCP refuses a read-only project with an invalid tool prefix", async () => {
+  const root = mkdtempSync(join(tmpdir(), "forge-mcp-invalid-config-"));
+  mkdirSync(join(root, ".forge"));
+  writeFileSync(
+    join(root, ".forge/config.yaml"),
+    JSON.stringify({
+      schemaVersion: "forge.config/1",
+      blocks: { memory: { source: { builtin: "forge/memory" } } },
+      mcp: { readOnly: true, toolPrefix: "a".repeat(65) },
+    }),
+  );
+  const assembly = await createAssembly({
+    root,
+    deviceRoot: join(root, "device"),
+    providers: { env: {} },
+  });
+  try {
+    const result = await assemblyMcp(assembly).open({
+      serverName: "test",
+      serverVersion: "1.0.0",
+      handlers: {
+        listTools: () => [],
+        callTool: () => Promise.resolve(undefined),
+      },
+      input: new ReadableStream<Uint8Array>(),
+      output: new WritableStream<Uint8Array>(),
+    });
+    if (result.ok) {
+      await result.handle.close();
+      throw new Error("MCP started with invalid read-only configuration");
+    }
+    expect(result.unavailable.reason).toMatch(/INPUT_INVALID.*mcp\.toolPrefix/);
   } finally {
     await assembly.close();
     rmSync(root, { recursive: true, force: true });
