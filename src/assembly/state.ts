@@ -22,6 +22,7 @@ import type { SqlDatabase, StorePort } from "../ports/store.ts";
 import { refuse } from "../core/trust/index.ts";
 import { ForgeFailure } from "../contract/failure.ts";
 import type { Unavailable } from "../generated/types.ts";
+import { projectWriteAdmission } from "./project-write-admission.ts";
 
 let security: PrivateFileGuard | undefined;
 const sqliteStore: StorePort = {
@@ -187,9 +188,12 @@ export class LocalState {
           : result.unavailable.reason,
       });
     try {
-      const owner = new StateOwner(result.handle.value, {
-        now: () => Date.now(),
-      });
+      const owner = new StateOwner(
+        result.handle.value,
+        { now: () => Date.now() },
+        undefined,
+        this.#projectRoot === undefined ? undefined : projectWriteAdmission,
+      );
       if (write) owner.initialize();
       let finish!: () => void;
       const drained = new Promise<void>((resolve) => {

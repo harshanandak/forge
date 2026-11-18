@@ -73,6 +73,7 @@ export interface Fence {
 export interface WriteOptions extends PutOptions {
   readonly requestId?: string;
   readonly fence?: Fence;
+  readonly writeAuthority?: object | undefined;
   /** Revisions used to validate this write; 0 asserts that a key remains absent. */
   readonly readSet?: readonly {
     readonly key: string;
@@ -1220,10 +1221,30 @@ export const WATERMARK_READ_SQL: readonly string[] = [
   NAMESPACE_WATERMARK,
 ];
 
+interface StatePut {
+  readonly namespace: string;
+  readonly key: string;
+  readonly value: unknown;
+  readonly authority: object | undefined;
+}
+
+export type StateWriteAdmission = (
+  read: (namespace: string, key: string) => StateRecord | undefined,
+  put: StatePut | undefined,
+) => string | undefined;
+
+export class StateWriteRefused extends ForgeFailure {
+  constructor(message: string) {
+    super({ code: "UNAVAILABLE", message, retry: "never" });
+    this.name = "StateWriteRefused";
+  }
+}
+
 export class StateOwner {
   readonly #db: SqlDatabase;
   readonly #clock: ClockPort;
   readonly #families: RecordFamilyRegistry;
+  readonly #writeAdmission: StateWriteAdmission | undefined;
   #knownMigrations = new Set(stateMigrations.map((migration) => migration.id));
   #domains: readonly ReviewedDomain[] = [];
   #checkpointReady = false;
@@ -1231,6 +1252,7 @@ export class StateOwner {
     db: SqlDatabase,
     clock: ClockPort,
     families: NamespaceFamilyPolicies | RecordFamilyRegistry = [],
+    writeAdmission?: StateWriteAdmission,
   ) {
     this.#db = db;
     this.#clock = clock;
@@ -1238,6 +1260,21 @@ export class StateOwner {
       families instanceof RecordFamilyRegistry
         ? families
         : new RecordFamilyRegistry(families);
+    this.#writeAdmission = writeAdmission;
+  }
+
+  #admit(put?: StatePut, initializing = false): void {
+    const reason = this.#writeAdmission?.((namespace, key) => {
+      if (
+        initializing &&
+        !this.#db.get(
+          "SELECT 1 FROM sqlite_master WHERE type='table' AND name='state_records'",
+        )
+      )
+        return undefined;
+      return this.get(namespace, key);
+    }, put);
+    if (reason !== undefined) throw new StateWriteRefused(reason);
   }
 
   /** Explicit write setup; stagedRestore is only for unpublished restore pages. */
@@ -1253,6 +1290,7 @@ export class StateOwner {
       )
         invalid("Domain tables require a reviewed first-party registration");
     }
+    const admit = () => this.#admit(undefined, true);
     migrate(
       this.#db,
       [...stateMigrations, ...domains.flatMap((domain) => domain.migrations)],
@@ -1266,6 +1304,7 @@ export class StateOwner {
               table,
             })),
           ),
+          admit,
         );
         assertRegistered(this.#db);
         assertRetention(
@@ -1293,6 +1332,7 @@ export class StateOwner {
             ),
           );
       },
+      admit,
     );
     this.#knownMigrations = new Set([
       ...stateMigrations.map((migration) => migration.id),
@@ -1306,6 +1346,7 @@ export class StateOwner {
 
   checkpoint(batch = 256, through?: number): number {
     this.#db.transaction(() => {
+      this.#admit();
       assertRetentionAuthority(this.#db);
       verifyEventDerivedState(
         this.#db,
@@ -1315,7 +1356,7 @@ export class StateOwner {
         ),
       );
     });
-    return writeRecordCheckpoint(this.#db, batch, through);
+    return writeRecordCheckpoint(this.#db, batch, through, () => this.#admit());
   }
 
   compact(batch = 256, keepRows = 4096, keepBytes = 4194304): number {
@@ -1331,9 +1372,12 @@ export class StateOwner {
       invalid("Invalid compaction budget");
     keepRows = Math.min(keepRows, 8191);
     keepBytes = Math.min(keepBytes, 8388608 - EVENT_RESERVE_BYTES);
-    const usage = this.#db.get(
-      "SELECT rows,bytes FROM state_usage WHERE table_name='state_events'",
-    );
+    const usage = this.#db.transaction(() => {
+      this.#admit();
+      return this.#db.get(
+        "SELECT rows,bytes FROM state_usage WHERE table_name='state_events'",
+      );
+    });
     if (Number(usage?.rows) <= keepRows && Number(usage?.bytes) <= keepBytes)
       return 0;
     const eligible = Number(
@@ -1358,6 +1402,7 @@ export class StateOwner {
     );
     this.checkpoint(batch, through);
     return this.#db.transaction(() => {
+      this.#admit();
       verifyEventDerivedState(
         this.#db,
         Number(
@@ -1683,6 +1728,12 @@ export class StateOwner {
     const stored = JSON.parse(json(value)) as unknown;
     this.#families.assertValue(namespace, key, stored);
     return this.#db.transaction(() => {
+      this.#admit({
+        namespace,
+        key,
+        value: stored,
+        authority: options.writeAuthority,
+      });
       const now = this.#now();
       if (options.fence) this.#held(namespace, options.fence, now);
       return this.#request(
@@ -1729,6 +1780,7 @@ export class StateOwner {
       invalid("Deletion requires an actor and a positive expected revision");
     const readSet = copyReadSet(options.readSet) ?? [];
     return this.#db.transaction(() => {
+      this.#admit();
       const now = this.#now();
       if (options.fence) this.#held(namespace, options.fence, now);
       this.#readSetHolds(namespace, key, options.expectRevision, readSet);
@@ -1797,6 +1849,7 @@ export class StateOwner {
       };
     });
     return this.#db.transaction(() => {
+      this.#admit();
       const now = this.#now();
       if (options.fence) this.#held(namespace, options.fence, now);
       for (const entry of prepared) {
@@ -1849,6 +1902,7 @@ export class StateOwner {
     wellFormedText(prefix, "Prefix");
     if (!validateActor(actor).ok) invalid("Invalid actor");
     return this.#db.transaction(() => {
+      this.#admit();
       const now = this.#now();
       if (options.fence) this.#held(namespace, options.fence, now);
       const last =
@@ -1917,6 +1971,7 @@ export class StateOwner {
     this.#families.assertKey(namespace, floorKey);
     if (!validateActor(actor).ok) invalid("Invalid actor");
     return this.#db.transaction(() => {
+      this.#admit();
       const refuse = () =>
         new RestoreConsistencyFailure(
           "state_records",
@@ -2201,6 +2256,7 @@ export class StateOwner {
       this.#families.assertValue(namespace, entry.key, entry.value);
     const readSet = copyReadSet(accepted?.readSet) ?? [];
     return this.#db.transaction(() => {
+      this.#admit();
       const now = this.#now();
       const current = this.lease(namespace, subject);
       if (current?.subject !== subject)
@@ -2326,6 +2382,7 @@ export class StateOwner {
   ): LeaseRecord {
     const reads = copyReadSet(options?.readSet) ?? [];
     return this.#db.transaction(() => {
+      this.#admit();
       const now = this.#now();
       const current = this.#held(namespace, fence, now);
       this.#readSetHolds(namespace, undefined, undefined, reads);
@@ -2443,6 +2500,7 @@ export class StateOwner {
     const expectedLedger = this.#db.get(ledger)?.sql;
     let migrated = false;
     const empty = (): void => {
+      this.#admit();
       assertRetentionAuthority(this.#db, true);
       for (const table of dataTables(this.#db))
         if (
@@ -2450,7 +2508,7 @@ export class StateOwner {
         )
           invalid("Restore target must be empty");
     };
-    empty();
+    this.#db.transaction(empty);
     let eventHighWaterMark = snapshot.eventHighWaterMark;
     const validate = (candidate: SqlDatabase): void => {
       const newest = [...this.#knownMigrations].sort().at(-1);
@@ -2522,6 +2580,7 @@ export class StateOwner {
   releaseRestoredLeases(pageSize: number = restorePageSize): number {
     const at = new Date(this.#now()).toISOString();
     return this.#db.transaction(() => {
+      this.#admit();
       const archived = this.#suspendCompactionTail();
       let releasedCount = 0;
       // Only body changes below, never the (namespace, subject) keyset, so paging stays exact.

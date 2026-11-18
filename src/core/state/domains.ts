@@ -17,6 +17,7 @@ export interface EncodedCell {
 export function registerTables(
   db: SqlDatabase,
   domains: readonly DomainTable[],
+  admit?: () => void,
 ): void {
   const names = new Set<string>();
   for (const domain of domains) {
@@ -42,6 +43,8 @@ export function registerTables(
         prior.reviewed_digest !== domain.reviewedDigest)
     )
       throw new Error("Registered table ownership changed");
+    if (prior) continue;
+    admit?.();
     db.run(
       "INSERT OR IGNORE INTO state_domains(namespace,table_name,reviewed_digest) VALUES (?,?,?)",
       [domain.namespace, domain.table, domain.reviewedDigest],

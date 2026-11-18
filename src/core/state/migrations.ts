@@ -261,6 +261,7 @@ export function migrate(
   db: SqlDatabase,
   migrations: readonly Migration[] = stateMigrations,
   after?: () => void,
+  admit?: () => void,
 ): void {
   const ids = new Set<string>();
   for (const migration of migrations) {
@@ -288,13 +289,16 @@ export function migrate(
         .at(-1);
       if (unknown !== undefined)
         throw new NewerStoreError(newestKnown, unknown);
+    } else {
+      admit?.();
+      db.exec(
+        "CREATE TABLE IF NOT EXISTS state_migrations (id TEXT PRIMARY KEY NOT NULL)",
+      );
     }
-    db.exec(
-      "CREATE TABLE IF NOT EXISTS state_migrations (id TEXT PRIMARY KEY NOT NULL)",
-    );
     for (const migration of migrations) {
       if (db.get("SELECT id FROM state_migrations WHERE id=?", [migration.id]))
         continue;
+      admit?.();
       for (const sql of migration.statements) execMigrationStatement(db, sql);
       db.run("INSERT INTO state_migrations(id) VALUES (?)", [migration.id]);
     }

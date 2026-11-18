@@ -93,6 +93,7 @@ export function createStateClient(options: {
   readonly context: BoundContext;
   readonly write: boolean;
   readonly requestId: string;
+  readonly writeAuthority?: object | undefined;
 }): LeaseStateClient {
   const { owner, namespace, context, write, requestId } = options;
   const acquired = new Map<string, LeaseRecord>();
@@ -232,6 +233,7 @@ export function createStateClient(options: {
         refuse("CONTEXT_MISSING", "Acquisition cannot mutate records");
       return state.put(namespace, key, structuredClone(value), context.actor, {
         expectRevision: put.expectRevision,
+        writeAuthority: options.writeAuthority,
         ...(put.readSet === undefined
           ? {}
           : { readSet: structuredClone(put.readSet) }),

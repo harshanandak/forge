@@ -29,7 +29,12 @@ import {
 import { Runtime, refuseDryRun } from "../core/runtime/index.ts";
 import { nodeRunIsolation } from "../adapters/node-runtime/isolation.ts";
 import { localForgeCommand } from "../adapters/node-runtime/catalog.ts";
-import { TrustStore, refuse, type TrustRecord } from "../core/trust/index.ts";
+import {
+  TrustStore,
+  refuse,
+  type OwnerApproval,
+  type TrustRecord,
+} from "../core/trust/index.ts";
 import { ForgeFailure } from "../contract/failure.ts";
 import { interfaceSatisfies } from "../contract/version.ts";
 import { bindContext } from "../contract/context.ts";
@@ -95,6 +100,7 @@ import {
   selectCloud,
 } from "./cloud-authority.ts";
 import { LocalState } from "./state.ts";
+import { authorizeUnfreeze } from "./project-write-admission.ts";
 import {
   ApprovalRequired,
   agentSession,
@@ -1946,6 +1952,7 @@ export async function createAssembly(
         const laneOwned =
           target !== undefined &&
           (laneResumeOp(target) || laneOwnerChannelOp(target, request.input));
+        let unfreeze: OwnerApproval | undefined;
         if (owned) {
           // The runtime refuses dry runs for these operations; refuse first so a dry run neither
           // burns a valid approval nor leaves a pending request behind.
@@ -1954,7 +1961,7 @@ export async function createAssembly(
             throw new ApprovalRequired(
               "The owner's reply must be at most 2000 characters; ask again with a shorter reply.",
             );
-          await approve(
+          const approval = await approve(
             { ...request, input: owned.input },
             laneOwnerChannelOp(target!, request.input)
               ? laneOwnerChannelAsk(request.input)
@@ -1964,6 +1971,12 @@ export async function createAssembly(
             // Resuming lanes restarts spending and naming the owner channel lets it approve: only a relayed reply counts, never a typed phrase or owner.json.
             laneOwned,
           );
+          if (
+            target?.builtin === true &&
+            target.blockId === "forge/work" &&
+            target.declaredOp === "lane.unfreeze"
+          )
+            unfreeze = authorizeUnfreeze(approval, request.op);
           // The block records the verified quote exactly as it did for a conversation claim.
           if (owned.relayed && !laneOwned)
             request = {
@@ -2175,6 +2188,7 @@ export async function createAssembly(
                   asyncLevels ||
                   interfaceSatisfies(PROJECT_STATE, binding.interface);
                 const projectWrite =
+                  unfreeze === undefined &&
                   context.variant !== "device" &&
                   scope.effects.includes(
                     `${current.catalog.resolve(scope.op).operation.declaredOp.split(".")[0]!}:write`,
@@ -2234,6 +2248,7 @@ export async function createAssembly(
                   context,
                   write: scope.effects.includes(`${noun}:write`),
                   requestId: request.requestId,
+                  writeAuthority: unfreeze,
                 });
                 clients[binding.slot] = interfaceSatisfies(
                   "forge.state@2.0.0",

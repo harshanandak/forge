@@ -20,6 +20,7 @@ export function writeRecordCheckpoint(
   db: SqlDatabase,
   batch: number,
   through?: number,
+  admit?: () => void,
 ): number {
   if (!Number.isSafeInteger(batch) || batch < 1 || batch > 256) refuse();
   const ceiling = Number(
@@ -29,6 +30,7 @@ export function writeRecordCheckpoint(
   if (!Number.isSafeInteger(end) || end < 0 || end > ceiling) refuse();
   for (;;) {
     const covered = db.transaction(() => {
+      admit?.();
       const header = db.get("SELECT * FROM state_checkpoint_header WHERE id=1");
       if (header && Number(header.format_version) !== 2) refuse();
       let sequence = Number(header?.covered_sequence ?? 0);
