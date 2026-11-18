@@ -110,3 +110,45 @@ test("assignment names keep the existing prefix and suffix boundaries", () => {
     );
   }
 });
+
+test("registered values are found in the raw output even when a JSON parse would drop or round them", () => {
+  const canary = ["fixture", "registered", "raw"].join("-");
+  const digits = "12345678901234567890123";
+  const event = { hook_event_name: "PostToolUse" };
+  for (const [tool_response, value] of [
+    [`{"value":"${canary}","value":"safe"}`, canary],
+    [{ output: `{"value":"${canary}","value":"safe"}` }, canary],
+    [{ output: `{"n":${digits}}` }, digits],
+    [
+      {
+        output: JSON.stringify(
+          JSON.stringify({ value: `${canary}"q`, value2: "safe" }),
+        ).replace("value2", "value"),
+      },
+      `${canary}"q`,
+    ],
+  ] as const) {
+    const result = checkOutput({ ...event, tool_response }, [value]);
+    assert.equal(result.decision, "block");
+    assert.ok(!JSON.stringify(result).includes(value));
+  }
+});
+
+test("already-redacted bearer and quoted assignment markers pass unchanged", () => {
+  const event = { hook_event_name: "PostToolUse" };
+  for (const tool_response of [
+    "sent Bearer [REDACTED] to the API",
+    "Authorization: Bearer [REDACTED]",
+    'API_TOKEN="[REDACTED]"',
+    "API_TOKEN='[REDACTED]'",
+  ])
+    assert.deepEqual(checkOutput({ ...event, tool_response }, []), {});
+  for (const tool_response of [
+    "sent Bearer [REDACTED]fixture-unredacted",
+    'API_TOKEN="[REDACTED]fixture-unredacted"',
+  ])
+    assert.equal(
+      checkOutput({ ...event, tool_response }, []).decision,
+      "block",
+    );
+});

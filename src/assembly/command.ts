@@ -20,18 +20,6 @@ export async function runLocalCommand(
         version,
         call: localCall(assembly),
         mcp: assemblyMcp(assembly),
-        hookInputLimit: (op) =>
-          assembly.catalog
-            .list()
-            .some(
-              (candidate) =>
-                candidate.op === op &&
-                candidate.builtin &&
-                candidate.blockId === "forge/guard" &&
-                candidate.declaredOp === "guard.output",
-            )
-            ? 8 * 1024 * 1024
-            : undefined,
       });
     } finally {
       await assembly.close();

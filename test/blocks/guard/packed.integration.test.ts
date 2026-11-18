@@ -29,7 +29,12 @@ const post = {
 function fixture(
   action: (
     root: string,
-    run: (args: string[], input?: string, cwd?: string) => string,
+    run: (
+      args: string[],
+      input?: string,
+      cwd?: string,
+      status?: number,
+    ) => string,
   ) => void,
 ): void {
   const root = mkdtempSync(join(tmpdir(), "forge-guard-fixture-"));
@@ -48,7 +53,7 @@ function fixture(
     const secrets = join(root, ".agent-secrets");
     mkdirSync(secrets);
     writeFileSync(join(secrets, ".env"), `FIXTURE_API_TOKEN=${canary}\n`);
-    action(root, (args, input, cwd = root) => {
+    action(root, (args, input, cwd = root, status = 0) => {
       const child = spawnSync(node, args, {
         cwd,
         env,
@@ -58,7 +63,7 @@ function fixture(
         windowsHide: true,
       });
       expect(child.error).toBeUndefined();
-      expect(child.status).toBe(0);
+      expect(child.status).toBe(status);
       expect(
         child.stdout.includes(canary) || child.stderr.includes(canary),
       ).toBe(false);
@@ -86,10 +91,16 @@ test("installed Forge dispatches hook JSON and safe inspection from the shipped 
       ...post,
       tool_response: "a".repeat(1024 * 1024 + 1),
     };
-    expect(invoke("guard.output", largerOutput)).toMatchObject({
-      ok: true,
-      result: {},
-    });
+    expect(
+      JSON.parse(
+        run(
+          [cli, "--hook", "guard.output"],
+          JSON.stringify(largerOutput),
+          profile,
+          1,
+        ),
+      ),
+    ).toMatchObject({ ok: false, error: { code: "LIMIT_EXCEEDED" } });
     const file = join(root, "fixture.json");
     const content = JSON.stringify({ accessToken: canary });
     writeFileSync(file, content);
