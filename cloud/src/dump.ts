@@ -853,25 +853,28 @@ function admitFamilies(owner: StateOwner, rows: readonly Row[]): void {
       /^issue:work-[0-9]+$/.test(String(row.key));
     const families = owner.hasRecordFamilies(String(row.namespace));
     if (!issue && !families) continue;
+    const refused = () =>
+      rejectedRow("state_records", JSON.stringify([row.namespace, row.key]));
     let record: StateRecord;
     try {
       record = parseRestoreJson(String(row.body)) as StateRecord;
       if (
         !validateStateRecord(record).ok ||
         record.namespace !== row.namespace ||
-        record.key !== row.key ||
-        (issue &&
-          ["attempts", "selection", "participants"].some((name) =>
-            Object.hasOwn(record.value as object, name),
-          ))
+        record.key !== row.key
       )
         throw new Error();
     } catch {
-      throw rejectedRow(
-        "state_records",
-        JSON.stringify([row.namespace, row.key]),
-      );
+      if (!families) continue;
+      throw refused();
     }
+    if (
+      issue &&
+      ["attempts", "selection", "participants"].some((name) =>
+        Object.hasOwn(record.value as object, name),
+      )
+    )
+      throw refused();
     if (families) owner.assertRecordFamily(record);
   }
 }
