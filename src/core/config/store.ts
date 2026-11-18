@@ -141,6 +141,18 @@ export function revisionConflict(
   });
 }
 
+function releaseLock(deps: StoreDeps, lock: Uint8Array): void {
+  try {
+    deps.files.remove(LOCK_FILE, lock);
+  } catch (error) {
+    if (
+      !(error instanceof ForgeFailure) ||
+      error.error.code !== "INPUT_CONFLICT"
+    )
+      throw error;
+  }
+}
+
 function sameBytes(a: Uint8Array | undefined, b: Uint8Array | null): boolean {
   if (a === undefined || b === null) return a === undefined && b === null;
   return a.length === b.length && a.every((byte, i) => byte === b[i]);
@@ -214,14 +226,6 @@ export function commit(
       fileRemoved: planned.bytes === null && current.bytes !== undefined,
     };
   } finally {
-    try {
-      deps.files.remove(LOCK_FILE, lock);
-    } catch (error) {
-      if (
-        !(error instanceof ForgeFailure) ||
-        error.error.code !== "INPUT_CONFLICT"
-      )
-        throw error;
-    }
+    releaseLock(deps, lock);
   }
 }
