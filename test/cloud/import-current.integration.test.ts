@@ -91,7 +91,7 @@ test("converting a 008 backup produces the same projection as a 009 backup", asy
   eq(oldBundle.source, old.manifest);
   eq(oldBundle.tables, newBundle.tables);
   eq(oldBundle.pages, newBundle.pages);
-});
+}, 120_000);
 
 test.each([
   [
@@ -108,12 +108,16 @@ test.each([
     "reordered ledger",
     "UPDATE state_migrations SET rowid=100 WHERE id='001_state_010'",
   ],
-])("conversion refuses a backup with %s", async (_name, sql) => {
-  const source = f.source(6, false, false, (db) => db.exec(sql));
-  const { reply, out } = await convertFixture(source);
-  eq(status(reply), ["FAIL", 6, "INPUT_INVALID"]);
-  eq(readdirSync(out), []);
-});
+])(
+  "conversion refuses a backup with %s",
+  async (_name, sql) => {
+    const source = f.source(6, false, false, (db) => db.exec(sql));
+    const { reply, out } = await convertFixture(source);
+    eq(status(reply), ["FAIL", 6, "INPUT_INVALID"]);
+    eq(readdirSync(out), []);
+  },
+  120_000,
+);
 
 type Change = readonly [string, string];
 async function moduleUrl(

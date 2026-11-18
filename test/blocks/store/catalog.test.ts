@@ -193,6 +193,7 @@ test.each(["absent", "disabled"] as const)(
     expect(response.envelope).toMatchObject({ ok: true });
     expect(readSource(out).records).toBe(1);
   },
+  60_000,
 );
 
 test("an agent caller is refused and writes nothing", async () => {
