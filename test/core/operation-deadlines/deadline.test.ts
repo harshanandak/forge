@@ -359,6 +359,7 @@ for (const source of [
 test("the live operation timer preserves its budget diagnostic", async () => {
   const f = fixture(10);
   const runtime = new Runtime(f.catalog, f.trust, {
+    clock: { now: () => 0 },
     isolation: {
       open: () =>
         Promise.resolve({
@@ -374,7 +375,7 @@ test("the live operation timer preserves its budget diagnostic", async () => {
   const result = await runtime.invoke(f.request);
   expect(result).toMatchObject({
     ok: false,
-    error: { code: "INVOCATION_TIMEOUT" },
+    error: { code: "INVOCATION_TIMEOUT", retry: "reconcile_first" },
   });
   if (result.ok) throw new Error("Expected expiry");
   for (const text of [
@@ -385,7 +386,43 @@ test("the live operation timer preserves its budget diagnostic", async () => {
     expect(result.error.message).toContain(text);
 }, 1000);
 
-test("the preparation safety maximum names the config budgets to lower", async () => {
+test("handler setup expiry names the operation budget before execution starts", async () => {
+  const f = fixture(10);
+  let readDeadline: (() => number) | undefined;
+  const runtime = new Runtime(f.catalog, f.trust, {
+    clock: { now: () => (readDeadline?.() === 10 ? 10 : 0) },
+    services: (_instance, _context, scope) => {
+      readDeadline = () => scope.deadline;
+      return Promise.resolve({ ownership: "borrowed", value: {} });
+    },
+    isolation: {
+      open: () =>
+        Promise.resolve({
+          ok: true,
+          handle: {
+            ownership: "owned",
+            close: () => Promise.resolve(),
+            value: {
+              run() {
+                throw new Error("Handler should not start");
+              },
+            },
+          },
+        }),
+    },
+  });
+  const result = await runtime.invoke(f.request);
+  expect(result).toMatchObject({
+    ok: false,
+    error: { code: "INVOCATION_TIMEOUT", retry: "never" },
+  });
+  if (result.ok) throw new Error("Expected expiry");
+  expect(result.error.message).toContain(
+    'Invocation operation deadline expired: blocks.sample.operationTimeouts["sample.run"] (0.01 s)',
+  );
+}, 1000);
+
+test("host preparation expiry names the timer safety limit without a host budget", async () => {
   const f = fixture(1000);
   let now = 0;
   const runtime = new Runtime(f.catalog, f.trust, {
@@ -398,15 +435,11 @@ test("the preparation safety maximum names the config budgets to lower", async (
   const result = await runtime.invoke(f.request);
   expect(result).toMatchObject({
     ok: false,
-    error: { code: "INVOCATION_TIMEOUT" },
+    error: {
+      code: "INVOCATION_TIMEOUT",
+      retry: "never",
+      message:
+        "Invocation host preparation deadline expired: reached the timer safety limit (2147483647 ms)",
+    },
   });
-  if (result.ok) throw new Error("Expected preparation expiry");
-  for (const text of [
-    "configured operation and command timeouts add up",
-    "2147483647 ms",
-    "about 24.8 days",
-    'blocks.sample.operationTimeouts["sample.run"]',
-    "blocks.sample.config.timeoutMs",
-  ])
-    expect(result.error.message).toContain(text);
 }, 1000);
