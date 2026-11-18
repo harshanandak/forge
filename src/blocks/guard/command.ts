@@ -155,8 +155,9 @@ function lenientWords(value: string) {
     .filter(Boolean);
 }
 
-function shellWords(value: string) {
-  const words: string[] = [];
+function shellWordGroups(value: string, boundaries = "") {
+  let words: string[] = [];
+  const groups = [words];
   let word = "";
   let quote: string | null = null;
   const push = () => {
@@ -171,13 +172,27 @@ function shellWords(value: string) {
       if (char === quote) quote = null;
       else if (char === "\\" && value[i + 1] === quote) word += value[++i]!;
       else word += char;
+    } else if (
+      char === "\\" &&
+      value[i + 1] &&
+      boundaries.includes(value[i + 1]!)
+    ) {
+      word += value[++i]!;
     } else if (char === '"' || char === "'") quote = char;
-    else if (/\s/.test(char)) push();
+    else if (boundaries.includes(char)) {
+      push();
+      words = [];
+      groups.push(words);
+    } else if (/\s/.test(char)) push();
     else word += char;
   }
   if (quote) return null;
   push();
-  return words;
+  return groups;
+}
+
+function shellWords(value: string) {
+  return shellWordGroups(value)?.[0] ?? null;
 }
 
 const UNCLASSIFIED = "\u0000unclassified";
@@ -412,6 +427,62 @@ function continuationVariants(cmd: string) {
   ];
 }
 
+const COMMAND_BOUNDARIES = ";&|\r\n";
+const PROTECTED_REMOVAL_TARGETS = new Set(["/", "~", "/*"]);
+const RECURSIVE_REMOVAL_OPTION = /^(?:--recursive|-[a-z]*r[a-z]*)$/i;
+
+function destructiveOperands(words: readonly string[]): string | null {
+  const offset = words[0]?.toLowerCase() === "sudo" ? 1 : 0;
+  const name = words[offset]?.toLowerCase();
+  if (!name) return null;
+  const formatsDisk = name === "mkfs" || name.startsWith("mkfs.");
+  if (!formatsDisk && name !== "rm" && name !== "dd") return null;
+
+  const args = words.slice(offset + 1);
+  const delimiter = args.indexOf("--");
+  const optionsEnd = delimiter === -1 ? args.length : delimiter;
+  const beforeDelimiter = args.slice(0, optionsEnd);
+  const operands = beforeDelimiter
+    .filter((arg) => !arg.startsWith("-"))
+    .concat(args.slice(optionsEnd + 1));
+  if (
+    formatsDisk ||
+    (name === "dd" && operands.some((arg) => /^of=\/dev\//i.test(arg)))
+  )
+    return "disk-destructive (mkfs/dd to a device)";
+  if (name !== "rm") return null;
+  const recursive = beforeDelimiter.some((arg) =>
+    RECURSIVE_REMOVAL_OPTION.test(arg),
+  );
+  if (
+    recursive &&
+    (beforeDelimiter.some(
+      (arg) => arg.toLowerCase() === "--no-preserve-root",
+    ) ||
+      operands.some((arg) => PROTECTED_REMOVAL_TARGETS.has(arg)))
+  )
+    return "rm -rf against / or ~";
+  return null;
+}
+
+function destructiveCommandReason(cmd: string): string | null {
+  const joined = cmd.replace(/\\\r?\n/g, "");
+  const groups = shellWordGroups(joined, COMMAND_BOUNDARIES);
+  const segments = joined.split(/[;&|\r\n]/);
+  for (const words of groups ?? []) {
+    const reason = destructiveOperands(words);
+    if (reason) return reason;
+  }
+  if (groups?.length === segments.length) return null;
+  for (const segment of segments) {
+    const reason = destructiveOperands(
+      shellWords(segment) ?? lenientWords(segment),
+    );
+    if (reason) return reason;
+  }
+  return null;
+}
+
 export const RULES: readonly Rule[] = [
   {
     id: "H1-secrets-bash",
@@ -505,16 +576,8 @@ export const RULES: readonly Rule[] = [
     id: "H8-live-destructive",
     action: "block",
     test: (cmd) => {
-      if (
-        /(^|[;&|\r\n]\s*)(sudo\s+)?rm\s+(-[a-z]*r[a-z]*\s+|--recursive\s+)(-\S*\s+)*(?:(?:\/\*?|~)(?=[ \t]*(?:$|[;&|\r\n]))|--no-preserve-root\b)/i.test(
-          cmd,
-        )
-      )
-        return "rm -rf against / or ~";
-      if (
-        /(^|[;&|\r\n]\s*)(mkfs(\.|[\s])|dd\s+[^\r\n]*\bof=\/dev\/)/i.test(cmd)
-      )
-        return "disk-destructive (mkfs/dd to a device)";
+      const localDestructive = destructiveCommandReason(cmd);
+      if (localDestructive) return localDestructive;
       if (/\bDROP\s+DATABASE\s+\S+/i.test(cmd)) return "DROP DATABASE";
       if (/\bgit\s+push\b[^\n]*--force[^\n]*(main|master|prod)\b/i.test(cmd))
         return "force-push to a protected branch";

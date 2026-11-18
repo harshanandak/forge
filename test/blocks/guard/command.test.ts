@@ -663,6 +663,35 @@ test("H8 blocks unconditional destructives", () => {
   assert.equal(h8("git push origin feature-x"), null);
 });
 
+test("H8 inspects each destructive command operand, including after --", () => {
+  const h8 = byId("H8-live-destructive");
+  for (const argumentsAfterOptions of [
+    "./build ~",
+    "~ ./build ./cache",
+    "./build / ./cache",
+    "./build ./cache /*",
+    "-- ./build ~",
+    '-- "./build;cache" ~',
+    "./build\\;cache ~",
+  ]) {
+    matches(h8("rm -rf " + argumentsAfterOptions), /rm -rf against/);
+  }
+  for (const command of [
+    "dd of=/dev/fixture if=fixture.img bs=512",
+    "dd if=fixture.img of=/dev/fixture bs=512",
+    'dd if=fixture.img bs=512 -- "of=/dev/fixture"',
+    "mkfs.ext4 /dev/fixture fixture.img",
+    "mkfs -t ext4 fixture.img /dev/fixture",
+    "mkfs.ext4 -- fixture.img /dev/fixture",
+    "mkfs.ext4 fixture.img",
+  ]) {
+    matches(h8(command), /disk-destructive/);
+  }
+  assert.equal(h8("rm -rf -- ./build ./cache"), null);
+  assert.equal(h8("rm -- -r ~"), null);
+  assert.equal(h8("dd if=/dev/fixture of=fixture.img"), null);
+});
+
 test("H8 denies destructive commands across LF, CR and CRLF boundaries", () => {
   const destructive = [
     ["rm -rf ~", /rm -rf against/],
