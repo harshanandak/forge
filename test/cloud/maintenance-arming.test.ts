@@ -154,11 +154,12 @@ test("a refused command keeps its FAIL envelope and discards after a failed arm"
       requestId: "denied",
       context: { actor },
     });
-    let discarded = 0;
-    Object.defineProperty(request.body, "locked", {
+    const body = request.body;
+    let bodyReads = 0;
+    Object.defineProperty(request, "body", {
       get: () => {
-        discarded++;
-        return true;
+        bodyReads++;
+        return body;
       },
     });
     const response = await s.project.fetch(request);
@@ -169,7 +170,7 @@ test("a refused command keeps its FAIL envelope and discards after a failed arm"
       error: { code: "INPUT_INVALID", retry: "never" },
       warnings: [],
     });
-    expect(discarded).toBe(1);
+    expect(bodyReads).toBe(2);
     expect(
       s.p.db.query("SELECT outcome FROM domain_cloud_command_receipts").all(),
     ).toEqual([{ outcome: "refused" }]);
