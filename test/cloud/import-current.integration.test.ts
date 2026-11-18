@@ -279,8 +279,8 @@ test.each(rows)(
             } else if (variant.startsWith("retained-")) {
               const code = variant === "retained-permission" ? "EPERM" : "EIO";
               edits.push([
-                "if (retained) fs.unlinkSync(retained);",
-                `if (retained) throw Object.assign(new Error('synthetic retained-copy deletion failure'), { code: '${code}' });`,
+                "if (sourceDirectory) fs.rmSync(sourceDirectory, { recursive: true });",
+                `if (sourceDirectory) { fs.writeFileSync(join(out, ".retained"), sourceDirectory); throw Object.assign(new Error('synthetic retained-copy deletion failure'), { code: '${code}' }); }`,
               ]);
             } else if (variant === "manifest") {
               edits.push([
@@ -331,7 +331,11 @@ test.each(rows)(
               eq(readFileSync(join(out, "manifest.json"), "utf8"), "keep");
             else eq(existsSync(join(out, "manifest.json")), false);
             if (variant.startsWith("retained-")) {
-              eq(existsSync(join(out, ".source.sqlite")), true);
+              const directory = readFileSync(join(out, ".retained"), "utf8");
+              const retained = join(directory, ".source.sqlite");
+              eq(existsSync(retained), true);
+              unlinkSync(retained);
+              rmdirSync(directory);
               eq(
                 readdirSync(out).some((name) => name.startsWith("page-")),
                 true,

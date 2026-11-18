@@ -137,6 +137,17 @@ export function* workRecords(
   }
 }
 
+export function verifySourceSchema(source: SqlDatabase, schema: SqlDatabase) {
+  for (const sql of [
+    "SELECT CAST(user_version AS TEXT) AS version FROM pragma_user_version",
+    "SELECT id FROM state_migrations ORDER BY id",
+    "SELECT namespace,table_name,reviewed_digest FROM state_domains ORDER BY table_name",
+    "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT GLOB 'sqlite_*' OR type IN ('trigger','view') ORDER BY type,name",
+  ])
+    if (canonicalJson(source.all(sql)) !== canonicalJson(schema.all(sql)))
+      invalid();
+}
+
 /** Only the exact supported standalone authority schema is admitted; never migrate the source. */
 export function verifySource(
   source: SqlDatabase,
@@ -154,14 +165,7 @@ export function verifySource(
       new Date(manifest.at).toISOString() !== manifest.at
     )
       invalid();
-    for (const sql of [
-      "SELECT CAST(user_version AS TEXT) AS version FROM pragma_user_version",
-      "SELECT id FROM state_migrations ORDER BY id",
-      "SELECT namespace,table_name,reviewed_digest FROM state_domains ORDER BY table_name",
-      "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name",
-    ])
-      if (canonicalJson(source.all(sql)) !== canonicalJson(schema.all(sql)))
-        invalid();
+    verifySourceSchema(source, schema);
     assertNoCheckpoint(source);
     let sequence = 0;
     const repaired: Repairs = { records: 0, historicalUpdates: 0 };
