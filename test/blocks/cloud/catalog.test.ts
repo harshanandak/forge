@@ -247,6 +247,8 @@ test("a person's login runs through the catalog: code printed, credential saved,
 test("cloud.logout is declared for a person only, runs through the catalog and unbinds the checkout", async () => {
   open = await openCloud(login);
   expect((await call(open, INPUT)).ok).toBe(true);
+  const credentials = join(open.home, ".forge", "cloud", "credentials.json");
+  const saved = readFileSync(credentials);
   const entry = open.assembly.catalog
     .list()
     .find((candidate) => candidate.op === "cloud.logout");
@@ -268,6 +270,7 @@ test("cloud.logout is declared for a person only, runs through the catalog and u
     });
   expect((await invoke("agent")).ok).toBe(false);
   expect(existsSync(join(open.root, ".forge", "cloud.json"))).toBe(true);
+  expect(readFileSync(credentials).equals(saved)).toBe(true);
   const envelope = await invoke("human");
   expect(envelope).toMatchObject({
     ok: true,
@@ -275,6 +278,10 @@ test("cloud.logout is declared for a person only, runs through the catalog and u
     result: { status: "logged-out", project: PROJECT, tokenRevoked: false },
   });
   expect(existsSync(join(open.root, ".forge", "cloud.json"))).toBe(false);
+  const { entries } = JSON.parse(readFileSync(credentials, "utf8")) as {
+    entries: Record<string, unknown>;
+  };
+  expect(Object.keys(entries)).toEqual([]);
   expect(JSON.stringify(envelope)).not.toContain("fct_");
 }, 60_000);
 

@@ -375,18 +375,20 @@ async function logout(
   try {
     removeBinding(deps.root, bytes);
   } catch (error) {
-    if (error instanceof ForgeFailure && error.error.code === "INPUT_CONFLICT")
-      throw error;
-    throw new ForgeFailure({
-      ...(error instanceof ForgeFailure
+    const failure =
+      error instanceof ForgeFailure
         ? error.error
         : {
             code: "UNAVAILABLE",
             message: "The project binding could not be removed.",
             retry: "never" as const,
-          }),
-      repair:
-        "The credential was removed. Run forge auth logout again to remove the binding.",
+          };
+    throw new ForgeFailure({
+      ...failure,
+      ...(failure.code === "INPUT_CONFLICT"
+        ? {}
+        : { repair: "Run forge auth logout again to remove the binding." }),
+      ...(tokenId === undefined ? {} : { observed: { tokenId } }),
     });
   }
   return {

@@ -54,6 +54,7 @@ test("logout removes this project's credential and the binding, keeps other proj
   const sb = sandbox();
   try {
     await store(sb).save(other());
+    const otherOnly = readFileSync(sb.credentials);
     await store(sb).save(entry(now));
     bind(sb);
     const result = await logoutFor(sb)({});
@@ -67,8 +68,7 @@ test("logout removes this project's credential and the binding, keeps other proj
     expect(JSON.stringify(result)).not.toContain("fct_");
     expect(read(sb.binding)).toBeNull();
     expect(store(sb).associations(PROJECT_ID)).toEqual([]);
-    expect(store(sb).associations(OTHER_PROJECT_ID)).toHaveLength(1);
-    expect(read(sb.credentials)).not.toContain(PROJECT_ID);
+    expect(readFileSync(sb.credentials).equals(otherOnly)).toBe(true);
   } finally {
     sb.close();
   }
@@ -78,11 +78,11 @@ test("a second logout, and a logout with no binding, change nothing", async () =
   const sb = sandbox();
   try {
     await store(sb).save(other());
+    await store(sb).save(entry(now));
     const before = read(sb.credentials);
     const expected = { status: "not-bound", tokenRevoked: false };
     expect(await logoutFor(sb)({})).toEqual(expected);
     expect(read(sb.credentials)).toBe(before);
-    await store(sb).save(entry(now));
     bind(sb);
     await logoutFor(sb)({});
     const after = read(sb.credentials);
@@ -118,7 +118,11 @@ test("logout refuses to remove a binding that changed after it was read", async 
     const result = logoutFor(sb)({});
     writeFileSync(sb.binding, replacement);
     await expect(result).rejects.toMatchObject({
-      error: { code: "INPUT_CONFLICT", retry: "reconcile_first" },
+      error: {
+        code: "INPUT_CONFLICT",
+        retry: "reconcile_first",
+        observed: { tokenId: "aaaaaaaaaaaaaaaa" },
+      },
     });
     expect(read(sb.binding)).toBe(replacement);
   } finally {
