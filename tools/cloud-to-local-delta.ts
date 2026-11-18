@@ -6,16 +6,13 @@ import { createSqliteStore } from "../src/adapters/store-sqlite/index.ts";
 import { ForgeFailure } from "../src/contract/failure.ts";
 import { canonicalJson } from "../src/core/config/pointer.ts";
 import { parseRestoreJson } from "../src/core/state/restore-json.ts";
-import type { StateRecord } from "../src/generated/types.ts";
+import type { StateEvent, StateRecord } from "../src/generated/types.ts";
 import { success } from "../src/surface/dispatch.ts";
 import { failure, respond } from "../src/surface/result.ts";
 import { PAGE_FORMAT, parseDump, type Page } from "../cloud/src/dump.ts";
-import { digest } from "./import-current.ts";
-import {
-  importDispositions,
-  ordinaryKey,
-  workRecords,
-} from "./import-current-state.ts";
+import { KEYS, TABLES, type Table } from "../cloud/conformance/digest.ts";
+import { digest, isolatedBackup } from "./import-current.ts";
+import { ordinaryKey, workRecords } from "./import-current-state.ts";
 
 const namespace = "forge/work";
 const tableReasons: Record<string, string> = {
@@ -28,15 +25,15 @@ const tableReasons: Record<string, string> = {
 };
 const floorReason =
   "derived number floor; the local store recomputes it from keys and events when records are applied";
-const unmappedReason =
-  "no local counterpart in the forward converter's mapping";
+const lostReason =
+  "no local counterpart in the forward converter's mapping; records created in the cloud after the move are not in the pre-cutover snapshot and are lost on rollback unless carried by hand";
 const fieldsReason =
   "cloud assigns these on every write; the local store assigns its own when the delta is applied";
 
-function invalid(): never {
+function invalid(reason: string): never {
   throw new ForgeFailure({
     code: "INPUT_INVALID",
-    message: "Invalid cloud-to-local delta input",
+    message: `Invalid cloud-to-local delta input: ${reason}`,
     retry: "never",
   });
 }
@@ -52,7 +49,7 @@ function readPages(directory: string): Page[] {
     .readdirSync(directory)
     .filter((name) => /^page-\d{4,}\.json$/.test(name))
     .sort((a, b) => number(a) - number(b));
-  if (names.length === 0) invalid();
+  if (names.length === 0) invalid("page sequence");
   return names.map((name, index) => {
     const page = parseDump(
       fs.readFileSync(join(directory, name), "utf8"),
@@ -62,58 +59,141 @@ function readPages(directory: string): Page[] {
       page.page !== index ||
       page.last !== (index === names.length - 1)
     )
-      invalid();
+      invalid("page sequence");
     return page;
   });
 }
+type Key = unknown[];
+const compare = (a: Key, b: Key): number => {
+  if (a.length !== b.length) return 1;
+  for (const [index, x] of a.entries())
+    if (x !== b[index])
+      return typeof x === "number"
+        ? x - Number(b[index])
+        : Buffer.compare(Buffer.from(String(x)), Buffer.from(String(b[index])));
+  return 0;
+};
+function edge(page: Page, last: boolean) {
+  const found = Object.entries(page.tables).filter(([, rows]) => rows.length);
+  const [table, rows] = (last ? found.at(-1) : found[0]) ?? [];
+  if (!table || !rows) return undefined;
+  const row = last ? rows.at(-1)! : rows[0]!;
+  return {
+    table: TABLES.indexOf(table as Table),
+    key: KEYS[table as Table].map((column) => row[column]),
+  };
+}
+function chained(pages: Page[]): void {
+  let watermark: string | undefined;
+  for (const [index, page] of pages.entries()) {
+    if (page.next === null) continue;
+    let cursor: { p: number; t: number; k: Key; w: string };
+    try {
+      cursor = JSON.parse(page.next) as typeof cursor;
+    } catch {
+      return invalid("cursor chain");
+    }
+    const tail = edge(page, true),
+      head = edge(pages[index + 1]!, false);
+    if (
+      !tail ||
+      !head ||
+      !Array.isArray(cursor.k) ||
+      cursor.p !== index + 1 ||
+      cursor.t !== tail.table ||
+      compare(cursor.k, tail.key) !== 0 ||
+      (watermark ??= cursor.w) !== cursor.w ||
+      head.table < cursor.t ||
+      (head.table === cursor.t && compare(head.key, cursor.k) <= 0)
+    )
+      invalid("cursor chain");
+  }
+}
+function sameProject(pages: Page[], first: string | undefined, at: string) {
+  const event = pages
+    .flatMap((page) => page.tables.state_events ?? [])
+    .find((row) => row.sequence === 1);
+  const body = event && (parseRestoreJson(String(event.body)) as StateEvent);
+  if (!body || body.key !== first || body.at !== at)
+    invalid("dump is from a different project");
+}
 async function localRecords(path: string, pin: string) {
-  if ((await digest(path)) !== pin) invalid();
+  isolatedBackup(path);
+  if ((await digest(path)) !== pin)
+    invalid("backup hash differs from source.json");
   const opened = await createSqliteStore(process.cwd()).open({
     path: resolve(path),
     readOnly: true,
   });
-  if (!opened.ok) invalid();
+  if (!opened.ok) invalid("backup cannot be opened read-only");
   const records = new Map<string, StateRecord>();
+  let first: string | undefined;
   try {
-    for (const record of workRecords(opened.handle.value))
+    for (const record of workRecords(opened.handle.value)) {
+      first ??= record.key;
       if (!record.key.startsWith("allocation:"))
         records.set(record.key, record);
+    }
   } finally {
     await opened.handle.close();
   }
-  if ((await digest(path)) !== pin) invalid();
-  return records;
+  if ((await digest(path)) !== pin) invalid("backup changed while read");
+  return { records, first };
 }
 export async function compute(options: Options) {
-  const pin = (
-    JSON.parse(fs.readFileSync(options.manifest, "utf8")) as {
-      sha256?: unknown;
-    }
-  ).sha256;
-  if (typeof pin !== "string" || !/^[a-f0-9]{64}$/.test(pin)) invalid();
-  if (fs.existsSync(options.out)) invalid();
+  const { sha256: pin, at } = JSON.parse(
+    fs.readFileSync(options.manifest, "utf8"),
+  ) as { sha256?: unknown; at?: unknown };
+  if (
+    typeof pin !== "string" ||
+    !/^[a-f0-9]{64}$/.test(pin) ||
+    typeof at !== "string"
+  )
+    invalid("source.json needs sha256 and at");
+  if (fs.existsSync(options.out)) invalid("output exists");
   const pages = readPages(options.dump);
-  const local = await localRecords(options.backup, pin);
+  chained(pages);
+  const { records: local, first } = await localRecords(options.backup, pin);
+  sameProject(pages, first, at);
   const cloud = new Map<string, StateRecord>();
+  const seen = new Set<string>();
   const left = new Map<
     string,
-    { scope: string; reason: string; count: number }
+    {
+      scope: string;
+      reason: string;
+      count: number;
+      keys?: { namespace: string; key: string }[];
+    }
   >();
-  const note = (scope: string, reason: string, count = 1) => {
+  const note = (
+    scope: string,
+    reason: string,
+    count = 1,
+    record?: StateRecord,
+  ) => {
     const entry = left.get(scope) ?? { scope, reason, count: 0 };
     entry.count += count;
+    if (record)
+      (entry.keys ??= []).push({
+        namespace: record.namespace,
+        key: record.key,
+      });
     left.set(scope, entry);
   };
   for (const page of pages)
     for (const [table, rows] of Object.entries(page.tables)) {
       if (table !== "state_records") {
-        note(table, tableReasons[table] ?? unmappedReason, rows.length);
+        note(table, tableReasons[table] ?? lostReason, rows.length);
         continue;
       }
       for (const row of rows) {
         const record = parseRestoreJson(String(row.body)) as StateRecord;
         if (record.namespace !== row.namespace || record.key !== row.key)
-          invalid();
+          invalid("record does not match its row");
+        const id = JSON.stringify([record.namespace, record.key]);
+        if (seen.has(id)) invalid("duplicate key");
+        seen.add(id);
         const family = record.key.split(":")[0]!;
         if (
           record.key.startsWith("allocation:") &&
@@ -121,14 +201,10 @@ export async function compute(options: Options) {
         )
           note(`${namespace}:allocation:*`, floorReason);
         else if (ordinaryKey(record.namespace, record.key)) {
-          if (cloud.has(record.key)) invalid();
           cloud.set(record.key, record);
         } else if (record.namespace === namespace)
-          note(
-            `${namespace}:${family}:*`,
-            importDispositions[family]?.reason ?? unmappedReason,
-          );
-        else note(`${record.namespace}:*`, unmappedReason);
+          note(`${namespace}:${family}:*`, lostReason, 1, record);
+        else note(`${record.namespace}:*`, lostReason, 1, record);
       }
     }
   note(
@@ -178,7 +254,7 @@ export async function compute(options: Options) {
       mode: 0o600,
     });
   } catch {
-    invalid();
+    invalid("output cannot be created");
   }
   return report;
 }
@@ -213,7 +289,9 @@ if (
     });
     const one = (name: string) => {
       const found = values[name];
-      return Array.isArray(found) && found.length === 1 ? found[0]! : invalid();
+      return Array.isArray(found) && found.length === 1
+        ? found[0]!
+        : invalid("arguments");
     };
     const reply = await run({
       dump: one("dump"),
