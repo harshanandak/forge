@@ -2,7 +2,6 @@
 // Device tokens and their hashes are never part of a dump. The database image is never used.
 // Every value is a string or a safe integer; anything else is refused on the way out and on the way in.
 import { ForgeFailure } from "../../src/contract/failure.ts";
-import { validateWorkRecord } from "../../src/blocks/work/validation.ts";
 import { storageFailure } from "./storage-failure.ts";
 import { canonicalJson, isObject } from "../../src/core/config/pointer.ts";
 import {
@@ -861,7 +860,10 @@ function admitFamilies(owner: StateOwner, rows: readonly Row[]): void {
         !validateStateRecord(record).ok ||
         record.namespace !== row.namespace ||
         record.key !== row.key ||
-        (issue && validateWorkRecord(record.key, record.value) !== undefined)
+        (issue &&
+          ["attempts", "selection", "participants"].some((name) =>
+            Object.hasOwn(record.value as object, name),
+          ))
       )
         throw new Error();
     } catch {
