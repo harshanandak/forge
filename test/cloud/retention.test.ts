@@ -166,9 +166,14 @@ test("status names the upgrade only when a table is missing", async () => {
   expect(
     await message(true, [...stateMigrations, ...domain.migrations]),
   ).not.toMatch(/upgrade/);
-  expect(await message(false, stateMigrations)).toMatch(
-    /POST \/p\/<project>\/upgrade/,
-  );
+  const legacy = [
+    ...stateMigrations.filter((m) => m.id < "006_state_retention"),
+    ...domain.migrations.filter(
+      (m) =>
+        !["010_cloud_retention", "011_cloud_request_age_dump"].includes(m.id),
+    ),
+  ];
+  expect(await message(false, legacy)).toMatch(/POST \/p\/<project>\/upgrade/);
 }, 30_000);
 
 test("cloud capacity metadata upgrades once without changing dump rows", () => {
