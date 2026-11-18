@@ -98,6 +98,20 @@
       "summary": "Read project control, or control for one canonical issue. A cloud stop records control and does not acknowledge another machine's cancellation.",
       "examples": [{ "input": {} }, { "input": { "id": "work-7" } }]
     },
+    "lane.dispatch": {
+      "title": "Record dispatch intent",
+      "summary": "Record one dispatch intent under shared control and a live issue lease. Starts no agent. Reuse the same dispatch ID when reconciling an uncertain outcome.",
+      "examples": [
+        {
+          "input": {
+            "id": "work-7",
+            "dispatchId": "restore-proof-1",
+            "incarnation": "<observed>",
+            "epoch": 4
+          }
+        }
+      ]
+    },
     "lane.stop": {
       "title": "Stop lanes",
       "summary": "Set the stop flag for one lane or all lanes. After it, lane next returns only pause. Stopping needs no approval.",
