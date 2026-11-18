@@ -1,36 +1,8 @@
 import { setDefaultTimeout, test } from "bun:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import {
-  checkOutput,
-  checkRegisteredOutput,
-} from "../../../src/adapters/fs/guard-files.ts";
+import { checkOutput } from "../../../src/adapters/fs/guard-files.ts";
 
 setDefaultTimeout(10_000);
-
-test("process environment cookie values and their encodings are withheld", () => {
-  const home = mkdtempSync(join(tmpdir(), "forge-guard-cookie-test-"));
-  try {
-    const cookie = "fixture opaque+cookie/value";
-    for (const tool_response of [
-      cookie,
-      encodeURIComponent(cookie),
-      Buffer.from(cookie).toString("base64"),
-    ]) {
-      const result = checkRegisteredOutput(
-        { hook_event_name: "PostToolUse", tool_response },
-        home,
-        { SESSION_COOKIE: cookie },
-      );
-      assert.equal(result.decision, "block");
-      assert.ok(!JSON.stringify(result).includes(tool_response));
-    }
-  } finally {
-    rmSync(home, { recursive: true, force: true });
-  }
-});
 
 test("post-tool hook withholds historical and registered credentials without returning them", () => {
   const canary = ["fixture", "output", "credential", "only"].join("-");

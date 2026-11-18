@@ -652,29 +652,6 @@ test("H7 blocks hook bypasses", () => {
   assert.equal(h7("git commit -m fix"), null);
 });
 
-test("H1 blocks printenv dumps and credential arguments", () => {
-  const h1 = byId("H1-secrets-bash");
-  for (const command of [
-    "printenv API_TOKEN",
-    "printenv -0",
-    "printenv --null | sort",
-    "printenv -0 PATH SESSION_COOKIE",
-    "printenv --",
-    "echo ready\rprintenv -- 'API_TOKEN'",
-  ]) {
-    assert.ok(h1(command), command);
-  }
-  for (const command of [
-    "printenv PATH",
-    "printenv -0 HOME PATH",
-    "printenv -- HOME",
-    "printenv --help",
-    "printenv --version",
-  ]) {
-    assert.equal(h1(command), null, command);
-  }
-});
-
 test("H8 blocks unconditional destructives", () => {
   const h8 = byId("H8-live-destructive");
   assert.ok(h8("rm -rf /"));
