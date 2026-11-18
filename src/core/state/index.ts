@@ -107,6 +107,13 @@ export interface AcquireOptions extends BatchOptions {
   readonly metadata?: unknown;
   readonly entries?: readonly BatchEntry[];
 }
+
+export interface StoreBackup {
+  readonly image: Uint8Array;
+  readonly schemaVersion: string;
+  readonly eventHighWaterMark: number;
+  readonly tables: Readonly<Record<string, number>>;
+}
 export interface Snapshot {
   readonly image: string;
   readonly eventHighWaterMark: number;
@@ -1194,6 +1201,15 @@ export const NAMESPACE_WATERMARK =
   "SELECT sequence AS revision FROM state_namespace_watermarks WHERE namespace=?";
 const RETENTION_PROBE =
   "SELECT name FROM sqlite_master WHERE type='table' AND name='state_retention'";
+function highWater(db: SqlDatabase): number {
+  return Number(
+    db.get(
+      db.get(RETENTION_PROBE)
+        ? "SELECT sequence FROM state_retention WHERE id=1"
+        : "SELECT COALESCE(MAX(sequence),0) AS sequence FROM state_events",
+    )?.sequence,
+  );
+}
 const INDEXED_WATERMARK =
   "SELECT sequence AS revision FROM state_events INDEXED BY state_events_by_namespace WHERE namespace=? ORDER BY sequence DESC LIMIT 1";
 export const WATERMARK_READ_SQL: readonly string[] = [
@@ -1572,13 +1588,24 @@ export class StateOwner {
   }
   #event(event: StateEvent): void {
     if (!validateStateEvent(event).ok) invalid("Invalid state event");
+    const text = json(event);
+    const fixed =
+      Buffer.byteLength(text) +
+      Buffer.byteLength(event.namespace) +
+      Buffer.byteLength(event.key);
     try {
       const written = this.#db.run(
-        "INSERT INTO state_events(namespace,key,body,sequence) SELECT ?,?,?,sequence+1 FROM state_retention WHERE id=1 AND sequence>=0 AND sequence<9007199254740991",
-        [event.namespace, event.key, json(event)],
+        "INSERT INTO state_events(namespace,key,body,sequence) SELECT ?,?,?,sequence+1 FROM state_retention WHERE id=1 AND sequence>=0 AND sequence<9007199254740991 AND LENGTH(CAST(sequence+1 AS BLOB))+?<=?",
+        [event.namespace, event.key, text, fixed, EVENT_RESERVE_BYTES],
       );
       if (written.changes !== 1)
-        invalid("State retention sequence requires repair");
+        invalid(
+          this.#db.get(
+            "SELECT 1 AS n FROM state_retention WHERE id=1 AND sequence>=0 AND sequence<9007199254740991",
+          )
+            ? "State event exceeds the compaction reserve"
+            : "State retention sequence requires repair",
+        );
     } catch (error) {
       if (
         error instanceof Error &&
@@ -1906,6 +1933,7 @@ export class StateOwner {
         if (stored < needed) throw refuse();
         return false;
       }
+      const archived = this.#suspendCompactionTail();
       const record = this.#apply(
         namespace,
         floorKey,
@@ -1916,6 +1944,7 @@ export class StateOwner {
         false,
         found.floorRevision,
       );
+      this.#resumeCompactionTail(archived);
       const written = this.#db.get(
         "SELECT body, (SELECT MAX(sequence) FROM state_events) AS last FROM state_events WHERE sequence=?",
         [events + 1],
@@ -2303,19 +2332,36 @@ export class StateOwner {
     });
   }
 
+  backup(): StoreBackup {
+    let found: Omit<StoreBackup, "image"> | undefined;
+    const image = this.#images().exportImage((db) => {
+      found = {
+        schemaVersion: String(
+          db.get("SELECT MAX(id) AS id FROM state_migrations")?.id,
+        ),
+        eventHighWaterMark: highWater(db),
+        tables: Object.fromEntries(
+          dataTables(db).map((table) => [
+            table,
+            Number(
+              db.get(
+                `SELECT COUNT(*) AS n FROM "${table.replaceAll('"', '""')}"`,
+              )?.n,
+            ),
+          ]),
+        ),
+      };
+    });
+    return { ...found!, image };
+  }
   export(): Snapshot {
     let snapshot: Omit<Snapshot, "image"> | undefined;
     const image = this.#images().exportImage((db) => {
       snapshot = {
         // INTEGER PRIMARY KEY has no sqlite_sequence; retain the export boundary
         // separately so losing the final operation cannot shorten history silently.
-        eventHighWaterMark: Number(
-          db.get(
-            db.get(RETENTION_PROBE)
-              ? "SELECT sequence FROM state_retention WHERE id=1"
-              : "SELECT COALESCE(MAX(sequence),0) AS sequence FROM state_events",
-          )?.sequence,
-        ),
+        eventHighWaterMark: highWater(db),
+
         domains: exportTables(db),
         format: "forge.state/1",
         records: db
@@ -2464,14 +2510,7 @@ export class StateOwner {
   releaseRestoredLeases(pageSize: number = restorePageSize): number {
     const at = new Date(this.#now()).toISOString();
     return this.#db.transaction(() => {
-      const archived = Number(
-        this.#db.get(
-          "SELECT archive_through FROM state_checkpoint_header WHERE id=1",
-        )?.archive_through ?? 0,
-      );
-      this.#db.run(
-        "UPDATE state_checkpoint_header SET archive_through=0 WHERE id=1",
-      );
+      const archived = this.#suspendCompactionTail();
       let releasedCount = 0;
       // Only body changes below, never the (namespace, subject) keyset, so paging stays exact.
       for (const row of restoredRows(
@@ -2507,12 +2546,28 @@ export class StateOwner {
         this.#event(event);
         releasedCount++;
       }
-      this.#db.run(
-        "UPDATE state_checkpoint_header SET archive_through=? WHERE id=1",
-        [archived],
-      );
+      this.#resumeCompactionTail(archived);
       return releasedCount;
     });
+  }
+
+  #suspendCompactionTail(): number {
+    const archived = Number(
+      this.#db.get(
+        "SELECT archive_through FROM state_checkpoint_header WHERE id=1",
+      )?.archive_through ?? 0,
+    );
+    this.#db.run(
+      "UPDATE state_checkpoint_header SET archive_through=0 WHERE id=1",
+    );
+    return archived;
+  }
+
+  #resumeCompactionTail(archived: number): void {
+    this.#db.run(
+      "UPDATE state_checkpoint_header SET archive_through=? WHERE id=1",
+      [archived],
+    );
   }
 
   #images(): StateImageStore {

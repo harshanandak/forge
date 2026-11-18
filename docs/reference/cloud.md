@@ -295,6 +295,8 @@ Staged rows are never served: a project is not provisioned until the last page, 
 
 To abandon a half restore, stop. To retry, send page 0 again: it clears the staged rows. Any refused restore request (an out-of-order page, a page over a limit, a bad document or a body that is too large) also clears them, so the next try starts at page 0. A whole `POST restore` clears them too.
 
+`bun tools/restore-cloud.ts --pages <converter output> --worker <origin> --project <name> (--token-file <curl config> | --token-env <NAME>) --report <new file>` sends the converter's pages in order, then reads the project back page by page and compares all six tables with the source plus the restore's stop rows (`verifyPracticeReadback`). The token is read from the file or variable and never printed. The first refused page stops the run with `restore refused at page N: CODE`. A project that already has records is restored into only if it already matches the source, which is a no-op success; otherwise the run is refused. There are no retries, and a mismatch exits non-zero. The report holds source and readback counts and digests, `match`, and restore and readback timings.
+
 ## Offline current-state import (step 7)
 
 The strict work-value engine requires close evidence for every closed issue. The approved
@@ -308,7 +310,7 @@ the engine has no legacy exemption, and the repair must ship before using this p
 legacy trackers. The fresh owner-tracker audit found 154 current values and 154 historical updates
 requiring this repair; those counts are a measurement, not a fixed admission allowance.
 
-Use only an owner-pinned standalone SQLite backup produced with SQLite backup/VACUUM INTO, without WAL, SHM or journal companions. Never point this tool at a running tracker. The source manifest has exactly `sha256` (lowercase SHA-256 of the complete file), `eventHighWaterMark` (last event sequence), `records` (exact current row count) and `at` (canonical ISO UTC projection time). Unsupported schema, work keys or allocation history refuse conversion; the source is opened read-only, held in one read transaction and hashed before and after. Supported work keys include landing, reopen, attempt, attempt evidence, cleanup, selection and slots, preserving their values without transferring leases.
+Use only an owner-pinned standalone SQLite backup produced with SQLite backup/VACUUM INTO, without WAL, SHM or journal companions. Never point this tool at a running tracker. The source manifest has exactly `sha256` (lowercase SHA-256 of the complete file), `eventHighWaterMark` (last event sequence), `records` (exact current row count) and `at` (canonical ISO UTC projection time). `forge store export --out <folder>` writes this pair as `backup.sqlite` and `source.json` (exactly these four keys), plus a separate `export-info.json` with `schemaVersion`, `tables`, `elapsedMs` and `forgeVersion` that nothing reads. Unsupported schema, work keys or allocation history refuse conversion; the source is opened read-only, held in one read transaction and hashed before and after. Supported work keys include landing, reopen, attempt, attempt evidence, cleanup, selection and slots, preserving their values without transferring leases.
 
 ```sh
 node tools/import-current.ts --backup synthetic-backup.sqlite --manifest source.json --out new-bundle
