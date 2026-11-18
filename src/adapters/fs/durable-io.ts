@@ -117,3 +117,10 @@ export function untrustedFileReason(path: string): string | undefined {
   if ((info.mode & 0o022) !== 0) return "it is group- or world-writable";
   return undefined;
 }
+
+export function attachRestoreError(
+  failure: unknown,
+  restoreError: unknown,
+): void {
+  if (failure instanceof Error) Object.assign(failure, { restoreError });
+}

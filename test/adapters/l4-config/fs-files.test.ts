@@ -261,6 +261,34 @@ describe("the fs adapter implements ConfigFiles", () => {
     expect(readFileSync(target, "utf8")).toBe("mine");
   }, 30_000);
 
+  test("a failed removal keeps its own error when putting the claim back also fails", () => {
+    const dir = root();
+    mkdirSync(join(dir, ".forge"));
+    writeFileSync(join(dir, ".forge", "config.lock"), "mine");
+    const files = nodeConfigFiles(dir);
+    const publish = spyOn(durableIO, "publishExclusive").mockImplementation(
+      () => {
+        throw new Error("link failed");
+      },
+    );
+    const drop = spyOn(durableIO, "removeDurable").mockImplementation(() => {
+      throw new Error("unlink failed");
+    });
+    let caught: unknown;
+    try {
+      files.remove(".forge/config.lock", bytes("mine"));
+    } catch (error) {
+      caught = error;
+    } finally {
+      publish.mockRestore();
+      drop.mockRestore();
+    }
+    expect((caught as Error).message).toBe("unlink failed");
+    expect((caught as { restoreError?: Error }).restoreError?.message).toMatch(
+      /could not be put back/,
+    );
+  }, 30_000);
+
   test("a restore whose directory sync fails says the file is back at its path", () => {
     const dir = root();
     mkdirSync(join(dir, ".forge"));

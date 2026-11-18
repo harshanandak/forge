@@ -28,6 +28,7 @@ import {
 } from "node:path";
 import { ForgeFailure } from "../../contract/failure.ts";
 import {
+  attachRestoreError,
   createPrivateDirectory,
   createPrivateFile,
   removeDurable,
@@ -928,7 +929,11 @@ function createCloneFilesAccess(
         promoted = true;
       }
     } catch (error) {
-      restoreClaim();
+      try {
+        restoreClaim();
+      } catch (restoreError) {
+        attachRestoreError(error, restoreError);
+      }
       throw error;
     } finally {
       if (fd !== -1) closeSync(fd);

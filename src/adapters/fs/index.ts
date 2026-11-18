@@ -39,7 +39,11 @@ import {
   MAX_LOCK_FILE_BYTES,
   removeConflict,
 } from "../../core/config/files.ts";
-import { publishExclusive, removeDurable } from "./durable-io.ts";
+import {
+  attachRestoreError,
+  publishExclusive,
+  removeDurable,
+} from "./durable-io.ts";
 import { nodeProjectFiles } from "./project-files.ts";
 
 function errorCode(error: unknown): string | undefined {
@@ -182,6 +186,19 @@ export function restoreClaim(
   }
 }
 
+function restoreClaimAfter(
+  failure: unknown,
+  path: string,
+  target: string,
+  claimed: string,
+): void {
+  try {
+    restoreClaim(path, target, claimed);
+  } catch (restoreError) {
+    attachRestoreError(failure, restoreError);
+  }
+}
+
 function sameFile(a: BigIntStats, b: BigIntStats): boolean {
   return a.dev === b.dev && a.ino === b.ino;
 }
@@ -278,17 +295,19 @@ export function nodeConfigFiles(
       try {
         intact = claimIntact(claimed, held, expected);
       } catch (error) {
-        restoreClaim(path, target, claimed);
+        restoreClaimAfter(error, path, target, claimed);
         throw error;
       }
       if (!intact) {
-        restoreClaim(path, target, claimed);
-        throw removeConflict(path);
+        const conflict = removeConflict(path);
+        restoreClaimAfter(conflict, path, target, claimed);
+        throw conflict;
       }
       try {
         removeDurable(claimed);
       } catch (error) {
-        if (existsSync(claimed)) restoreClaim(path, target, claimed);
+        if (existsSync(claimed))
+          restoreClaimAfter(error, path, target, claimed);
         throw error;
       }
     },
