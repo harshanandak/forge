@@ -6079,7 +6079,10 @@ test.each(acceptance)(
                     ),
                   );
                 for (const surface of ["direct", "CLI JSON"]) {
-                  if (op === "lane.resume" && surface === "direct") {
+                  if (
+                    (op === "lane.resume" || op === "lane.unfreeze") &&
+                    surface === "direct"
+                  ) {
                     const trust = new LocalState(
                       join(r.s.deviceRoot, "trust.sqlite"),
                     );
@@ -6546,6 +6549,39 @@ test(
         },
       });
       expect(r.net.calls).toHaveLength(0);
+    }),
+  30_000,
+);
+
+test(
+  "unbound lane unfreeze needs the owner's relayed approval",
+  () =>
+    using({ bind: false, creds: false, sentinel: false }, async (r) => {
+      const call = (op: string, input: Record<string, unknown>) =>
+        r.assembly.catalog.invoke(r.request(op, input));
+      expect(await call("lane.freeze", {})).toMatchObject({
+        ok: true,
+        result: { frozen: true },
+      });
+      const required = await call("lane.unfreeze", {});
+      expect(required).toMatchObject({
+        ok: false,
+        error: { code: "APPROVAL_REQUIRED" },
+      });
+      expect(
+        await call("issue.create", { title: "blocked", kind: "task" }),
+      ).toMatchObject({ ok: false, error: { code: "UNAVAILABLE" } });
+      const approval = approvalReply(required, {
+        harness: "fixture",
+        thread: "fixture",
+      });
+      expect(await call("lane.unfreeze", { approval })).toMatchObject({
+        ok: true,
+        result: { frozen: false },
+      });
+      expect(
+        await call("issue.create", { title: "allowed", kind: "task" }),
+      ).toMatchObject({ ok: true });
     }),
   30_000,
 );
