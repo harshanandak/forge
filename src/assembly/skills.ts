@@ -291,7 +291,8 @@ export function syncSkills(
   try {
     const writes: { path: string; bytes: Uint8Array; folder: string }[] = [];
     const ownershipWrites: typeof writes = [];
-    const deletes: { path: string; folder: string }[] = [];
+    const deletes: { path: string; folder: string; expected: Uint8Array }[] =
+      [];
     // Plan every directory first. Invalid metadata must not leave a partial sync.
     for (const dir of dirs) {
       const names = new Map(
@@ -385,14 +386,15 @@ export function syncSkills(
         ])) {
           if (wanted.has(key(relative))) continue;
           const target = `${folder}/${relative}`;
-          if (readFile(local, relative) !== undefined) {
-            deletes.push({ path: target, folder });
+          const held = readFile(local, relative);
+          if (held !== undefined) {
+            deletes.push({ path: target, folder, expected: held });
             differences.push(target);
           }
         }
         if (!copies.length) {
           if (listed !== undefined) {
-            deletes.push({ path, folder });
+            deletes.push({ path, folder, expected: current! });
             differences.push(path);
           }
           return;
@@ -474,7 +476,7 @@ export function syncSkills(
             (entry) => entry.folder === folder,
           )) {
             path = entry.path;
-            files.remove(entry.path);
+            files.remove(entry.path, entry.expected);
             removed.push(entry.path);
             path = entry.path.split("/").slice(0, -1).join("/");
             removeEmptyParents(root, entry.path, entry.folder);

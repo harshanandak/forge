@@ -278,3 +278,40 @@ test("a maximum schema-valid issue stays listable and an oversized one is named"
   ]);
   expect(() => f.list({})).toThrow(/Issue forge-2 is over its read budget/);
 }, 30_000);
+
+test("a kind past the schema bound is refused and the bound itself stays listable", () => {
+  const f = fixture(2);
+  const setKind = (kind: string) =>
+    f.db.run("UPDATE state_records SET body=? WHERE key='issue:work-1'", [
+      f.body(1, { kind }),
+    ]);
+  setKind("k".repeat(64));
+  expect(f.list({}).ids).toContain("forge-1");
+  setKind("k".repeat(65));
+  expect(() => f.list({})).toThrow(/Stored issue is not valid/);
+}, 30_000);
+
+test("only a missing issue index asks for the upgrade", () => {
+  const failing = (message: string) =>
+    ({
+      records: {
+        all: () => {
+          throw new Error(message);
+        },
+        get: () => {
+          throw new Error(message);
+        },
+      },
+    }) as unknown as IssueViews;
+  expect(() =>
+    listIssues(failing("no such table: state_leases"), {}, now, "forge"),
+  ).toThrow("no such table: state_leases");
+  expect(() =>
+    listIssues(
+      failing("no such table: domain_cloud_issue_index"),
+      {},
+      now,
+      "forge",
+    ),
+  ).toThrow(/POST \/p\/<project>\/upgrade/);
+}, 30_000);

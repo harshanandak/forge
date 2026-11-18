@@ -142,6 +142,40 @@ test("pre-retention dump reads preserve the schema and every stored byte, and st
   expect(raw.serialize()).toEqual(before);
 }, 30_000);
 
+test("status names the upgrade only when a table is missing", async () => {
+  const message = async (
+    broken: boolean,
+    migrations: typeof stateMigrations,
+  ) => {
+    using raw = new Database(":memory:");
+    let armed = false;
+    const { storage } = browserStorage(raw, (sql) => {
+      if (armed && sql.includes("FROM state_usage"))
+        throw new Error("disk I/O error");
+    });
+    migrate(durableStore(storage), migrations);
+    armed = broken;
+    await storage.put("provisioned", true);
+    const response = await new Project({ storage }).fetch(
+      new Request("https://fixture.example/p/a/status"),
+    );
+    expect(response.status).toBe(503);
+    return ((await response.json()) as { error: { message: string } }).error
+      .message;
+  };
+  expect(
+    await message(true, [...stateMigrations, ...domain.migrations]),
+  ).not.toMatch(/upgrade/);
+  const legacy = [
+    ...stateMigrations.filter((m) => m.id < "006_state_retention"),
+    ...domain.migrations.filter(
+      (m) =>
+        !["010_cloud_retention", "011_cloud_request_age_dump"].includes(m.id),
+    ),
+  ];
+  expect(await message(false, legacy)).toMatch(/POST \/p\/<project>\/upgrade/);
+}, 30_000);
+
 test("cloud capacity metadata upgrades once without changing dump rows", () => {
   using raw = new Database(":memory:");
   const db = durableStore(browserStorage(raw).storage);

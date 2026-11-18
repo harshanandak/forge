@@ -2545,22 +2545,32 @@ test("the response is capped at 1 MiB of UTF-8 bytes, measured on the whole enve
   f.tables();
   // Two-byte, escaped and three-byte characters, so characters and bytes differ.
   const body = 'é"\n✓\\';
-  const room = cap - bytesOf(envelope(shown({ body, kind: "" })));
+  const selection = (reason: string) => ({
+    mode: "none",
+    chosen: [],
+    reason,
+    holder: { actor, session: { id: "s1" } },
+    selectedAt: iso(start - 100),
+  });
+  const room =
+    cap - bytesOf(envelope(shown({ body, selection: selection("") })));
   for (const [delta, fits] of [
     [-1, true],
     [0, true],
     [1, false],
   ] as const) {
-    const kind = "k".repeat(room + delta);
+    const reason = "k".repeat(room + delta);
     f.db.run("DELETE FROM state_records");
-    f.put(stored({ body, kind }));
+    f.put(stored({ body, selection: selection(reason) }));
     const before = f.snapshot();
     const got = await f.send(call, { token });
     expect(got.probes).toEqual(WORK_PROBES);
     expect(f.snapshot()).toBe(before);
     if (fits) {
       expect([got.status, got.bytes]).toEqual([200, cap + delta]);
-      expect(got.json.result).toEqual(shown({ body, kind }));
+      expect(got.json.result).toEqual(
+        shown({ body, selection: selection(reason) }),
+      );
       expect(got.text).toBe(JSON.stringify(got.json));
     } else {
       expect([got.status, got.code, got.exit]).toEqual([503, "UNAVAILABLE", 1]);
@@ -3927,7 +3937,7 @@ test("ready refuses a corrupt row or a corrupt candidate lease with the fixed 50
   }
 }, 60_000);
 
-test("ready refuses stored issues with over 64 KiB of metadata as UNAVAILABLE before it loads any body, whatever the filter", async () => {
+test("ready refuses stored issues over the schema-sized metadata cap as UNAVAILABLE before it loads any body, whatever the filter", async () => {
   for (const [name, fill] of [
     [
       "over 8 MiB",
@@ -4252,7 +4262,7 @@ test("blocked and stale refuse a corrupt row, and a corrupt lease only where one
   }
 }, 60_000);
 
-test("blocked and stale refuse stored issues with over 64 KiB of metadata as UNAVAILABLE before they load any body, whatever the filter", async () => {
+test("blocked and stale refuse stored issues over the schema-sized metadata cap as UNAVAILABLE before they load any body, whatever the filter", async () => {
   for (const [name, fill] of [
     [
       "over 8 MiB",

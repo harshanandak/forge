@@ -53,7 +53,7 @@ function sourceManifest(path: string): state.SourceManifest {
     return invalid();
   }
 }
-function isolatedBackup(path: string): void {
+export function isolatedBackup(path: string): void {
   const stat = fs.lstatSync(path),
     header = Buffer.alloc(20);
   if (

@@ -15,13 +15,17 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { packedConsumer } from "../../../integration/packed-consumer.ts";
-import { assertInstalledBuildIdentity } from "../../../../tools/pack-smoke/identity.ts";
+import {
+  assertInstalledBuildIdentity,
+  assertReviewedBuild,
+} from "../../../../tools/pack-smoke/identity.ts";
 
 const work = mkdtempSync(join(tmpdir(), "forge-installed-identity-"));
 const author = join(work, "author"),
   archive = join(work, "candidate.tgz");
 let digest: string,
   build: { version: string; commit: string; dirty: boolean },
+  cli: { version: string; commit: string; dirty: boolean },
   nodeRoot: string;
 beforeAll(() => {
   const packed = process.env.FORGE_PACKED_TARBALL;
@@ -63,6 +67,17 @@ beforeAll(() => {
   if (!runtime)
     throw new Error("packed smoke must provide the author Node installation");
   nodeRoot = runtime;
+  const printed = spawnSync(
+    join(nodeRoot, process.platform === "win32" ? "node.exe" : "node"),
+    [
+      join(packedConsumer(), "node_modules/forge-workflow/dist/bin/forge.js"),
+      "--version",
+      "--json",
+    ],
+    { cwd: work, encoding: "utf8", windowsHide: true },
+  );
+  expect(printed.status, printed.stderr).toBe(0);
+  cli = JSON.parse(printed.stdout) as typeof cli;
 }, 30_000);
 afterAll(() => rmSync(work, { recursive: true, force: true }), 30_000);
 
@@ -77,6 +92,37 @@ for (const [field, value] of [
   test(`installed identity rejects a substituted ${field}`, async () => {
     const row = mkdtempSync(join(work, `fault-${field}-`));
     try {
+      if (field === "commit" || field === "dirty") {
+        const { version, commit } = build;
+        expect(() => assertReviewedBuild(cli, version, commit)).not.toThrow();
+        const faulted = { ...cli, [field]: value };
+        expect(() => assertReviewedBuild(faulted, version, commit)).toThrow(
+          "installed build identity",
+        );
+        const source = readFileSync(
+          resolve(
+            import.meta.dirname,
+            "../../../../tools/pack-smoke/identity.ts",
+          ),
+          "utf8",
+        );
+        const at = source.indexOf("export function assertReviewedBuild");
+        const removed =
+          source.slice(0, at) +
+          source
+            .slice(at)
+            .replace(/ {2}assert\.deepEqual\([\s\S]*?\n {2}\);/, "");
+        expect(removed).not.toBe(source);
+        const mutant = join(row, "identity.ts");
+        writeFileSync(mutant, removed);
+        const unguarded = (await import(
+          pathToFileURL(mutant).href
+        )) as typeof import("../../../../tools/pack-smoke/identity.ts");
+        expect(() =>
+          unguarded.assertReviewedBuild(faulted, version, commit),
+        ).not.toThrow();
+        return;
+      }
       if (
         field === "runId" ||
         field === "missingRunId" ||

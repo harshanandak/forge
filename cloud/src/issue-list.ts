@@ -1,7 +1,7 @@
 import manifest from "../../src/blocks/work/forge.block.json" with { type: "json" };
 import type { TrackerItem } from "../../src/generated/types.ts";
 import type { SqlRow } from "../../src/ports/store.ts";
-import { INDEX_PAGE, INDEX_STATUS } from "./issue-index.ts";
+import { INDEX_PAGE, INDEX_STATUS, ISSUE_INDEX } from "./issue-index.ts";
 import {
   configured,
   fail,
@@ -75,7 +75,7 @@ const indexed = <T>(read: () => T): T => {
   try {
     return read();
   } catch (error) {
-    if (/no such table/i.test(String(error)))
+    if (String(error).toLowerCase().includes(`no such table: ${ISSUE_INDEX}`))
       throw fail("UNAVAILABLE", "Issue index needs POST /p/<project>/upgrade");
     throw error;
   }
