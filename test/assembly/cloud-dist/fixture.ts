@@ -211,10 +211,11 @@ export interface CloudRig {
 export async function cloudRig(
   bin: string,
   reply: Replier = serve,
-  attachment = false,
+  setup: "bound" | "attached" | "guarded" = "bound",
   identity?: { credential: Partial<CredentialEntry>; session: string },
 ): Promise<CloudRig> {
   const s = fx.sandbox();
+  const attachment = setup === "attached";
   const canaries = [
     ...CANARIES,
     ...(identity?.credential.token ? [identity.credential.token] : []),
@@ -306,6 +307,8 @@ export async function cloudRig(
       } finally {
         await state.close();
       }
+    }
+    if (setup !== "bound") {
       const guard = join(s.dir, "owner-sentinel.mjs");
       const module = pathToFileURL(
         resolve(dirname(bin), "../src/assembly/state.js"),
