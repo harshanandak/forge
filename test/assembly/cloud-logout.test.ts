@@ -150,10 +150,11 @@ test.each(["login", "logout"] as const)(
   async (operation) => {
     const sb = sandbox();
     try {
+      const observer = openCloudFiles(sb.home);
       if (operation === "logout") {
         await store(sb).save(entry(now));
         bind(sb);
-      }
+      } else observer.lock().release();
       const before = read(sb.credentials);
       const seen: unknown[] = [];
       const clk = clock();
@@ -174,7 +175,7 @@ test.each(["login", "logout"] as const)(
               return;
             queueMicrotask(() => {
               try {
-                const held = openCloudFiles(sb.home).lock();
+                const held = observer.lock();
                 try {
                   const saved = store(sb).lookup(bindingFor(), now);
                   seen.push((saved !== undefined) === existsSync(sb.binding));
