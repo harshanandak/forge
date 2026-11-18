@@ -37,7 +37,7 @@ const namespace = "forge/work";
 const actor = { kind: "agent", id: "current-state-import" } as const;
 const family = (key: string) =>
   /^((?:comment|link):[^:]+:)[1-9][0-9]*$/.exec(key)?.[1];
-const numbered = { namespace, prefix: "issue:work-", family };
+export const numbered = { namespace, prefix: "issue:work-", family };
 function invalid(observed?: { id: string; reason: string }): never {
   throw new ForgeFailure({
     code: "INPUT_INVALID",

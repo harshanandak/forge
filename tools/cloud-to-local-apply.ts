@@ -6,12 +6,13 @@ import { createSqliteStore } from "../src/adapters/store-sqlite/index.ts";
 import { workFamilyPolicy } from "../src/blocks/work/state-families.ts";
 import { ForgeFailure } from "../src/contract/failure.ts";
 import { canonicalJson, isObject } from "../src/core/config/pointer.ts";
+import { allocationFloorNumber } from "../src/core/state/allocation-floor.ts";
 import { StateOwner } from "../src/core/state/index.ts";
 import { stateMigrations } from "../src/core/state/migrations.ts";
 import { success } from "../src/surface/dispatch.ts";
 import { failure, respond } from "../src/surface/result.ts";
 import { identityOf } from "./cloud-to-local-delta.ts";
-import { ordinaryKey } from "./import-current-state.ts";
+import { numbered, ordinaryKey } from "./import-current-state.ts";
 
 const namespace = "forge/work";
 const actor = { kind: "agent", id: "cloud-rollback-apply" } as const;
@@ -75,6 +76,15 @@ function readReport(path: string): Report {
     return invalid("report");
   return report as unknown as Report;
 }
+function numberOf(key: string) {
+  const prefix = key.startsWith(numbered.prefix)
+    ? numbered.prefix
+    : numbered.family(key);
+  const rest = prefix === undefined ? "" : key.slice(prefix.length);
+  return prefix !== undefined && /^[1-9][0-9]*$/.test(rest)
+    ? { prefix, number: Number(rest) }
+    : undefined;
+}
 export async function apply(options: Options) {
   const report = readReport(options.report);
   if (readJson(options.manifest, "source.json").sha256 !== report.source.sha256)
@@ -95,8 +105,16 @@ export async function apply(options: Options) {
     )
       invalid("report lists a record that is not carried back");
   if (!fs.existsSync(options.store)) invalid("store does not exist");
-  const opened = await createSqliteStore(process.cwd()).open({
-    path: resolve(options.store),
+  const path = resolve(options.store);
+  const store = createSqliteStore(process.cwd(), {
+    step: (name) => {
+      options.step?.(name);
+      if (name === "identity-checked" && !fs.existsSync(path))
+        invalid("store does not exist");
+    },
+  });
+  const opened = await store.open({
+    path,
     readOnly: !options.write,
   });
   if (!opened.ok) invalid("store cannot be opened");
@@ -129,14 +147,38 @@ export async function apply(options: Options) {
     const created = report.delta.filter(
       (e) => e.beforeRevision === null,
     ).length;
+    const highest = new Map<string, number>();
+    for (const entry of report.delta) {
+      const found =
+        entry.beforeRevision === null ? numberOf(entry.key) : undefined;
+      if (found)
+        highest.set(
+          found.prefix,
+          Math.max(highest.get(found.prefix) ?? 0, found.number),
+        );
+    }
+    const floors = [...highest].flatMap(([prefix, number]) => {
+      const key = `allocation:${prefix}`;
+      const record = owner.get(namespace, key);
+      if (!record) return [];
+      const held = allocationFloorNumber(record.value, prefix);
+      if (held === undefined) invalid(`allocation floor ${key} is malformed`);
+      return number > held
+        ? [{ key, value: { prefix, number }, expectRevision: record.revision }]
+        : [];
+    });
     if (options.write && report.delta.length > 0) {
+      options.step?.("preflighted");
       owner.putMany(
         namespace,
-        report.delta.map((entry) => ({
-          key: entry.key,
-          value: entry.after,
-          expectRevision: entry.beforeRevision ?? 0,
-        })),
+        [
+          ...report.delta.map((entry) => ({
+            key: entry.key,
+            value: entry.after,
+            expectRevision: entry.beforeRevision ?? 0,
+          })),
+          ...floors,
+        ],
         actor,
       );
     }

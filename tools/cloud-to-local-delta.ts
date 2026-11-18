@@ -125,7 +125,7 @@ function sameProject(pages: Page[], first: string | undefined, at: string) {
     .flatMap((page) => page.tables.state_events ?? [])
     .find((row) => row.sequence === 1);
   const body = event && (parseRestoreJson(String(event.body)) as StateEvent);
-  if (first !== undefined && (!body || body.key !== first || body.at !== at))
+  if (!body || body.key !== first || body.at !== at)
     invalid("dump is from a different project");
 }
 async function localRecords(path: string, pin: string) {
@@ -218,12 +218,6 @@ export async function compute(options: Options) {
         const id = JSON.stringify([record.namespace, record.key]);
         if (seen.has(id)) invalid("duplicate key");
         seen.add(id);
-        if (
-          record.namespace === "forge/core-project" &&
-          record.key === "identity" &&
-          canonicalJson(identityOf(record.value)) !== canonicalJson(project)
-        )
-          invalid("dump is from a different project");
         const family = record.key.split(":")[0]!;
         if (
           record.key.startsWith("allocation:") &&
