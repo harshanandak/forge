@@ -1,38 +1,51 @@
 import { expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { createCloudLogin } from "../../src/assembly/cloud-login.ts";
+import { basename } from "node:path";
 import {
+  createCloudLogin,
+  type CloudLoginDeps,
+} from "../../src/assembly/cloud-login.ts";
+import {
+  CREDENTIAL_FILE,
   credentialStore,
   openCloudFiles,
 } from "../../src/assembly/cloud-profile.ts";
+import { ForgeFailure } from "../../src/contract/failure.ts";
 import {
+  approved,
   bindingFor,
   clock,
+  credentialJson,
   entry,
+  json,
+  network,
+  ORIGIN,
   OTHER_PROJECT_ID,
+  PROJECT,
   PROJECT_ID,
   sandbox,
   SECRET,
+  startBody,
   tokenFor,
   type Sandbox,
 } from "./cloud-fixture.ts";
 
 setDefaultTimeout(30_000);
 
-type Run = (input: unknown) => Promise<unknown>;
-
-function logoutFor(sb: Sandbox): Run {
-  const service = createCloudLogin({
+function serviceFor(sb: Sandbox, overrides: Partial<CloudLoginDeps> = {}) {
+  return createCloudLogin({
     root: sb.root,
     home: sb.home,
     deviceRoot: sb.deviceRoot,
     env: { FORGE_DEVICE_ID: "dev-1" },
     signal: new AbortController().signal,
     fetch: () => Promise.reject(new Error("logout must not use the network")),
+    ...overrides,
   });
-  const holder: object = service;
-  return (input) => (holder as { logout: Run }).logout(input);
 }
+
+const logoutFor = (sb: Sandbox) => (input: unknown) =>
+  serviceFor(sb).logout(input);
 
 const now = clock().now();
 const store = (sb: Sandbox) =>
@@ -80,7 +93,7 @@ test("a second logout, and a logout with no binding, change nothing", async () =
     await store(sb).save(other());
     await store(sb).save(entry(now));
     const before = read(sb.credentials);
-    const expected = { status: "not-bound", tokenRevoked: false };
+    const expected = { status: "not-bound", tokenRevoked: false } as const;
     expect(await logoutFor(sb)({})).toEqual(expected);
     expect(read(sb.credentials)).toBe(before);
     bind(sb);
@@ -114,6 +127,7 @@ test("logout refuses to remove a binding that changed after it was read", async 
   try {
     await store(sb).save(entry(now));
     bind(sb);
+    const before = read(sb.credentials);
     const replacement = `${JSON.stringify(bindingFor({ project: "other" }))}\n`;
     const result = logoutFor(sb)({});
     writeFileSync(sb.binding, replacement);
@@ -125,6 +139,91 @@ test("logout refuses to remove a binding that changed after it was read", async 
       },
     });
     expect(read(sb.binding)).toBe(replacement);
+    expect(read(sb.credentials)).toBe(before);
+  } finally {
+    sb.close();
+  }
+});
+
+test.each(["login", "logout"] as const)(
+  "%s keeps its credential write and binding change under the same lock",
+  async (operation) => {
+    const sb = sandbox();
+    try {
+      if (operation === "logout") {
+        await store(sb).save(entry(now));
+        bind(sb);
+      }
+      const before = read(sb.credentials);
+      const seen: unknown[] = [];
+      const clk = clock();
+      const net = network(
+        () => json(startBody()),
+        () => approved(credentialJson(clk.now())),
+      );
+      const service = serviceFor(sb, {
+        env: { FORGE_DEVICE_ID: "dev-1", FORGE_NO_BROWSER: "1" },
+        fetch: net.fetch,
+        now: clk.now,
+        wait: (ms, signal) => clk.wait(ms, signal),
+        progress: () => {},
+        security: {
+          directory: () => {},
+          file(path) {
+            if (basename(path) !== CREDENTIAL_FILE || read(path) === before)
+              return;
+            queueMicrotask(() => {
+              try {
+                const held = openCloudFiles(sb.home).lock();
+                try {
+                  const saved = store(sb).lookup(bindingFor(), now);
+                  seen.push((saved !== undefined) === existsSync(sb.binding));
+                } finally {
+                  held.release();
+                }
+              } catch (error) {
+                seen.push(
+                  error instanceof ForgeFailure &&
+                    error.error.code === "INPUT_CONFLICT"
+                    ? true
+                    : error,
+                );
+              }
+            });
+          },
+        },
+      });
+      if (operation === "login")
+        await service.login({ origin: ORIGIN, project: PROJECT });
+      else await service.logout({});
+      expect(seen).toEqual([true]);
+      expect(existsSync(sb.binding)).toBe(operation === "login");
+      expect(store(sb).lookup(bindingFor(), now) !== undefined).toBe(
+        operation === "login",
+      );
+    } finally {
+      sb.close();
+    }
+  },
+);
+
+test("logout cancelled while waiting for the credential lock changes neither file", async () => {
+  const sb = sandbox();
+  try {
+    await store(sb).save(entry(now));
+    bind(sb);
+    const credentials = read(sb.credentials);
+    const binding = read(sb.binding);
+    const abort = new AbortController();
+    const held = openCloudFiles(sb.home).lock();
+    const result = serviceFor(sb, { signal: abort.signal }).logout({});
+    abort.abort();
+    held.release();
+    await expect(result).rejects.toMatchObject({
+      error: { code: "INVOCATION_CANCELLED" },
+    });
+    expect(read(sb.credentials)).toBe(credentials);
+    expect(read(sb.binding)).toBe(binding);
   } finally {
     sb.close();
   }
