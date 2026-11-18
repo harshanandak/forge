@@ -1,7 +1,6 @@
 import {
   chmodSync,
   closeSync,
-  existsSync,
   fsyncSync,
   linkSync,
   mkdirSync,
@@ -135,11 +134,17 @@ export function writePrivateFolder(
   try {
     for (const [name, data] of Object.entries(files)) {
       const file = join(path, name);
-      if (!existsSync(file)) created.push(file);
-      writePrivateFile(file, data, ops);
+      const fd = createPrivateFile(file, "wx", ops);
+      created.push(file);
+      try {
+        writeFileSync(fd, data);
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
+      }
     }
   } catch (error) {
-    for (const file of created) rmSync(file, { force: true });
+    for (const file of created) removeDurable(file, { force: true }, ops);
     throw error;
   }
 }
