@@ -162,8 +162,14 @@ export function restoreClaim(
   try {
     publishExclusive(claimed, target);
   } catch (error) {
+    let linked = false;
+    try {
+      linked = lstatSync(claimed).nlink > 1;
+    } catch {
+      linked = false;
+    }
     throw new Error(
-      lstatSync(claimed).nlink > 1
+      linked
         ? `${path} was put back after a refused removal but could not be made durable; a copy is also kept at ${claimed}`
         : `${path} could not be put back after a refused removal; its content is kept at ${claimed}`,
       { cause: error },
@@ -178,6 +184,20 @@ export function restoreClaim(
 
 function sameFile(a: BigIntStats, b: BigIntStats): boolean {
   return a.dev === b.dev && a.ino === b.ino;
+}
+
+function claimIntact(
+  claimed: string,
+  held: BigIntStats,
+  expected: Uint8Array,
+): boolean {
+  const info = lstatSync(claimed, { bigint: true });
+  if (info.ino !== 0n && held.ino !== 0n) return sameFile(info, held);
+  return (
+    info.isFile() &&
+    info.size === BigInt(expected.byteLength) &&
+    Buffer.from(expected).equals(readFileSync(claimed))
+  );
 }
 
 function holdsExpected(
@@ -254,7 +274,14 @@ export function nodeConfigFiles(
         if (errorCode(error) === "ENOENT") return;
         throw error;
       }
-      if (!sameFile(lstatSync(claimed, { bigint: true }), held)) {
+      let intact: boolean;
+      try {
+        intact = claimIntact(claimed, held, expected);
+      } catch (error) {
+        restoreClaim(path, target, claimed);
+        throw error;
+      }
+      if (!intact) {
         restoreClaim(path, target, claimed);
         throw removeConflict(path);
       }
