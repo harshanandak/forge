@@ -17,7 +17,7 @@ Run the pinned Bun with `bun <tool.ts>` for offline tools. Commands below use Po
 `$Project`, `$Origin`, the S7 snapshot path and all expected values come from step 3's `run.json` there.
 `$Bundle` holds retained or regenerated converter pages; `$Dump` holds a complete paged cloud dump.
 `$DeltaBackup` and `$DeltaManifest` name the retained upgraded converter input and its `source.json`.
-Keep the immutable raw S7 export separately. Never substitute it for `$DeltaBackup`.
+Keep the immutable raw export separately. Step 3.1 pins a frozen S7 rollback baseline; retain P4's earlier copy too. Never substitute either raw file for `$DeltaBackup`.
 Admin helpers read credentials in-process, print no secret, follow no redirect and check the exact target before every call.
 Use the step 3 reviewed helpers for status/dump/revoke; endpoints are `/p/$Project/{status,dump,revoke}`.
 Never put bearer bytes on a command line, print a credential file, or copy credentials between machines.
@@ -27,12 +27,12 @@ The binding identity is the UUID in `.forge/project.json`, not the cloud project
 Bound issue commands route to cloud; unbound worktrees sharing the store need the local freeze.
 A lane stop stops dispatch, not issue writes. A Worker admission change fences typed commands, not admin routes or raw leases.
 
-Source pointers on the cited main: `src/assembly/store-export.ts`, `tools/import-current.ts`,
+Round-1 findings also checked on `origin/main` at `5de255a3`. Source pointers on the cited main: `src/assembly/store-export.ts`, `tools/import-current.ts`,
 `tools/restore-cloud.ts`, `tools/cloud-to-local-delta.ts`, `src/blocks/work/entry.cts` (`board`, `laneFreeze`, `laneUnfreeze`),
 `src/blocks/work/docs.json` (`issue.board`) and `src/assembly/cloud-authority.ts`.
 Pending behaviour comes from the diffs of PRs 626, 652 and 653, not an assumption that they merged.
-Asset: the tracker and every cloud write after the copy. Threat: a replay race or wrong-project comparison loses writes.
-Mitigation: keep the freeze set, fence cloud before dumping, and require complete comparisons plus a practised single writer.
+Asset: every local or cloud write after the freeze. Threat: rollback loses a write, or a correct import/replay fails comparison.
+Mitigation: retain both authorities' deltas, name every replay or accepted loss, and compare with explicit field rules.
 
 ## Preconditions
 
@@ -74,14 +74,14 @@ Do not run a deploy, login or switch merely to write or review this document.
 1. Tell all sessions to stop. On an unbound checkout run `forge issue board --input '{}'`, passing each returned `cursor` back until `truncated:false`. Save every row's id, holder, `leaseState`, `expiresAt`. Open issues may have live or stale leases. Rows have no acquired time or lease generation. `CURSOR_STALE` means restart the listing. `forge issue release <id>` releases only this session's lease; another holder must release theirs or reach expiry. Recheck all pages for zero live issue leases. Lane/attempt coverage is unverified; resolve that separately before P6 passes.
 2. Run `forge lane stop --input '{"all":true}'` locally before freezing. Record this dispatch-stop write and every claim release in the ledger. These are preparation writes; the freeze itself is another recorded write.
 3. Run `forge lane freeze --input '{}'` on every local authority store. Expect `frozen:true` and `at`. It writes `autopilot:global` and its event when first setting the freeze; a repeat preserves the time. Save exact before/after records and event increments. From a second unbound worktree attempt an agreed issue update: expect `UNAVAILABLE`, exit 1, with no changed record/event. A racing write may instead get `REVISION_CONFLICT`; verify no mutation and retry the refusal check. Unexpected success stops the switch.
-4. Capture the frozen read-only local view and export in step 3. Save every issue, including closed issues, every comment and link, following pagination. Require completed pagination, with no result left truncated. Keep all artifacts private.
+4. Capture the frozen read-only local view and export in step 3. Save every issue, including closed issues, every comment and link, following pagination. Require completed pagination, with no result left truncated. Keep all artifacts private. Step 3.1 pins the frozen S7 baseline used for later breach detection and rollback.
 
 Do not release or renew a lease, stop/resume local lanes, or lift the freeze after 2.3.
 PR 652 makes those mutation paths refuse while frozen. Read-only board/list/export remain checks, not permission to write.
 
 **Step 3. Check the final delta and keep both backup forms.**
 
-1. Run `forge store export --input '{"out":"<fresh private ledger folder>"}'`. Hash the source database and project config before and after with the reviewed read-only helper; both hashes must match. Export uses a read-only store and writes `backup.sqlite`, `source.json`, `export-info.json` only in the destination. A nonempty destination is `INPUT_CONFLICT`; missing store is `UNAVAILABLE`; invalid input is `INPUT_INVALID`. Stop on any refusal or hash mismatch.
+1. Run `forge store export --input '{"out":"<fresh private ledger folder>"}'`. Hash the source database and project config before and after with the reviewed read-only helper; both hashes must match. Export uses a read-only store and writes `backup.sqlite`, `source.json`, `export-info.json` only in the destination. A nonempty destination is `INPUT_CONFLICT`; missing store is `UNAVAILABLE`; invalid input is `INPUT_INVALID`. Stop on any refusal or hash mismatch. Pin this export as the frozen S7 rollback baseline with its hash, records and event high-water mark in `run.json`; retain P4's pre-freeze copy separately.
 2. Compare frozen export to P4 by key, value, revision and `updatedAt` for all imported work records, including issues, comments, links, dependencies and allocation floors. Only recorded preparation writes from 2.1, 2.2 and the freeze write in 2.3 may explain changed local runtime/lease/event records or high-water increments. Unexplained movement stops the switch. Do not assume byte-identical SQLite exports for equal data.
 3. Any imported-content difference requires a fresh full copy into a new project, with a new acknowledgement and all six readbacks. An empty-project restore is not incremental import. Restart P1; keep the local freeze set throughout.
 4. Before Forge opens any copied store, set/check owner-only ACLs on its private parent and file. Step 3's preparation helper must use `privateFileGuard(windowsPrivateFiles())` and private copy/file operations; ordinary `Copy-Item` and a read-only attribute do not establish privacy. Verify ACLs before opening even read-only. Keep raw S7 immutable; upgrade only a private copy with the pinned migrations. Close it without sidecars, save its SHA-256 in its own source manifest, preserving the export `at` and recording the upgraded record count and event high-water mark. Reconcile every migration change against raw S7. This retained upgraded copy is the converter's input and `$DeltaBackup`. No helper that does this is specified here; P13 requires its practised procedure.
@@ -110,7 +110,7 @@ A mismatch or unexpected family stops the copy. Do not reuse the rehearsal diges
 
 6. For a replacement copy, check exact target `forge-tracker-<stamp>` and admin `initialized:false` before any cloud call. Use the reviewed guarded wrapper around `tools/restore-cloud.ts` with `--pages`, `--worker`, `--project`, `--token-env <variable-name>` and `--report`. The variable holds a credential loaded in-process, never a literal argument. Require `restored:true`, `match:true` and all six digest matches, not only counts. `TARGET_NOT_EMPTY`, `DIGEST_MISMATCH`, page/order/response refusals or any partial restore stop the run. Never retry restore into the same project; retain its failure report and use a new project only after resolving the cause.
 
-7. Dump all pages independently with the reviewed step 3 helper, pinned to `$Project`; save page hashes and project provenance. Compare all six digests to restore readback, then run the delta tool as in R3.4. Before cloud writes, require 0 new, 0 changed, 0 absent. Retain raw S7, upgraded input/manifest, bundle manifest, left-behind inventory, restore/readback/delta reports and `run.json` read-only in the private ledger. Regenerate pages before removing them if a later comparison needs them.
+7. Dump all pages independently with the guarded step 3 helper; pin project/page provenance and match all six restore digests. Run the R3.4 delta tool against the upgraded input and save its raw report. Compare each allocation key/value with the converter-derived floors in the bundle: an identical derived floor is an import artifact, not a cloud write. Require zero unexplained new/changed/absent entries after accounting for those exact floors and repairs in `same-import`; raw 0/0/0 is not required. Save the by-key derived-floor baseline and raw delta for R3, where only departures from those values count as later floor changes. Retain both raw backups, upgraded input/manifest, bundle pages/manifest, repairs by key, left-behind inventory, restore/readback/delta reports and `run.json` privately and read-only; these pages are now required comparison evidence.
 
 **Step 4. Check capacity and target.**
 Read admin status and usage for exactly `$Project`. Compare all six counts/digests with step 3's final baseline and usage with configured Worker limits.
@@ -130,7 +130,7 @@ The freeze from step 2.3 still fences every unbound worktree. Any login/integrit
 
 **Step 7. Compare through cloud.**
 Read every issue, comment and link through the bound CLI, including closed issues and all pages.
-Use `same` as defined in Verification against step 2.4. Require equality for every id/value; save comparison results.
+Use `same-import` in Verification against the frozen local view plus converter repairs, not the raw local view. Save a fresh cloud dump for persistent fields hidden by the CLI; compare every issue/comment/link key and value.
 Check known open and closed issues and one with comments using `forge issue show <id>`.
 Mismatch before cloud writes takes R2; mismatch after any write takes R3.
 
@@ -151,7 +151,7 @@ Each host reads the proof issue and writes a uniquely labelled comment; A reads 
 Inventory every checkout, UUID, origin, project and token id. No copied credentials. Plan re-login before the 30-day expiry.
 
 **Step 11. Lift the cloud dispatch stop.**
-Run `forge lane resume --input '{"all":true}'`, obtain owner approval, then rerun with `approval` set to the request id only.
+Run `forge lane resume --input '{"all":true}'`, obtain owner approval, then retry with exactly `forge lane resume --input '{"all":true,"approval":{"request":"<request-id>"}}'`.
 Cloud refuses `quote`/`source` with `INPUT_INVALID`; per-lane resume cannot clear the all-lanes stop.
 Read `forge lane control` back and require no all-lanes stop. This changes no local freeze.
 
@@ -178,26 +178,48 @@ Bound lane operations have their own coordinator; do not infer that all work com
 
 ## Verification
 
-`same` is a read-only comparison procedure, not an installed command: enumerate all issues and each one's comments and links on both sides.
-Reject unfinished pagination, duplicate or missing ids. Sort issues by id and comments/links by their numeric key within each issue.
-Compare every issue value field, dependencies and all comment/link values, retaining ids and append order.
-Ignore only import-generated envelope `revision`, `updatedAt`, `updatedBy`; never discard those names inside user values.
-Record totals and all differences. Success means zero differences across the full enumeration, not a sample.
-For R3, derive the expected view from the fenced cloud dump; never compare only with the pre-switch local view.
+`same-import` is a read-only comparison of frozen export and cloud `state_records` by namespace/key and canonical value.
+Enumerate all issues, dependencies, comments and links, including closed issues; reject unfinished pages, duplicates and missing keys. Preserve ids and append order.
+Build expected cloud values from the frozen export plus the converter's exact repairs, checked against retained bundle pages.
+For each closed issue missing both `receipt` and `withoutReceipt`, record its key and before/after `withoutReceipt:"Imported: closed before Forge required close evidence"`.
+Reconcile the number of repaired current records and historical updates with manifest `repaired.records`/`historicalUpdates`; the rehearsal's 154 is not a fixed target. Any other value change fails.
+Ignore only envelope `revision`, `updatedAt`, `updatedBy` because import resets them. No persistent value field, including `createdAt`, is ignored.
+CLI `revision`/`updatedAt` project the envelope; `lease` is a live view, not an issue value. Check leases separately; do not compare them as imported content.
 
-| Check                 | Tool and expected comparison                                                                                                                                                                                                                                                              |
-| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| V1 Six-table copy     | Restore plus independent dump must match expected rows/digests for `state_records`, `state_events`, `state_leases`, `state_requests`, `domain_cloud_requests`, `domain_cloud_command_receipts`. Expected image comes from this bundle plus the validated generated restore-stop window.   |
-| V2 Cross-machine      | A comments on proof, every host reads it; each host comments, A reads every comment. Match exact text and append order.                                                                                                                                                                   |
-| V3 Local fence        | Fresh read-only local export equals step 3 frozen baseline by all imported records and high-water mark; source/config hashes unchanged by export. Second unbound worktree's agreed write remains `UNAVAILABLE`. Any mutation stops work and takes R3; never replay by lifting the freeze. |
-| V4 Routing refusal    | Bound project memory write is `UNAVAILABLE`; `forge store reinit --dry-run` and unsupported `forge issue tree <id>` are `INPUT_INVALID`, exit 6. No local mutation or local fallback.                                                                                                     |
-| V5 Admission          | Wrong project command returns 403 `AUTH_FORBIDDEN`; target without credential returns 401 `AUTH_REQUIRED`.                                                                                                                                                                                |
-| V6 Recorded writes    | Fresh cloud dump/status accounts for every proof, comment, lease and resume write since V1. Compare all six tables with baseline plus ledger effects; equal row counts alone do not pass.                                                                                                 |
-| V7 Missing credential | In a separate private sandbox binding with no credential, `forge issue list` must refuse with no local answer. Never delete a real credential to practise this.                                                                                                                           |
+`replay-check` is a per-record checklist against frozen S7 plus both authorities' reconciled changes, minus only named owner-accepted losses.
+Retain a row for every source event and final key, its source/expected/actual values, replay command/result, field exceptions and acceptance. Check all persistent value fields, not a three-field issue summary.
 
-The 11:13Z rehearsal restored four pages, matched all six digests and produced delta 0/0/0.
+| Record or field                  | Exact replay comparison rule                                                                                                                                                                                                                                                                            |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Untouched S7 record              | Compare its raw envelope and entire value exactly against frozen S7; do not add converter repairs to rollback's raw baseline.                                                                                                                                                                           |
+| New issue replayed with create   | Only value `createdAt` is automatically regenerated by create; record old/new times by key and obtain acceptance. Keep title/body/kind/status/labels/dependencies/parent/close evidence and all other value fields exact.                                                                               |
+| Mutated/replayed record envelope | Only `revision`, `updatedAt`, `updatedBy` are regenerated by StateOwner; record old/new values by key. Existing issue `createdAt` stays exact. Comments/links add no generated value timestamps.                                                                                                        |
+| Generated identity/defaults      | Issue id/prefix and numbered comment/link keys are allocated, not caller-set. Never drop them from comparison: require exact ids, references, prefix, keys and append order, or a named owner-approved remap/loss for a collision. Defaults such as labels/dependsOn/status must match intended values. |
+| Unrepresentable fields/actions   | Deletions, floor advances, receipts, hidden `closeReason` or any value the CLI cannot reproduce remain discrepancies until explicitly accepted as lost by key/field. Never expand the ignored-field list.                                                                                               |
+| Runtime/history                  | Event sequence/time/actor/requestId, leases, request receipts and command receipts are not replayed; enumerate affected entries/keys and obtain loss acceptance. Exclude them only from the value checklist, not from coverage.                                                                         |
+
+Source of generated fields: local `issue.create`, `issue.comment`, `issue.link`/`item` in `src/blocks/work/entry.cts`; cloud `issue-create.ts`, `issue-comment.ts`, `issue-link.ts`, `issue-read.ts`; envelope generation in `src/core/state/index.ts`.
+
+**Local-breach inventory, required before any R3 restore.** Stop/isolate every local writer, including stale binaries that ignored the freeze; a lane stop alone is insufficient. If isolation cannot be established, do not replace the store.
+Export the current local store privately with hashes and save its raw records, leases and event history. Keep it immutable alongside frozen S7.
+Diff raw rows by key/value/revision and enumerate every event after frozen S7's high-water mark, including intermediate writes later overwritten or deleted. Ignore no fields in this breach diff.
+List every local write in the reconciliation ledger, even if its final value equals S7. Link local-only records and collisions to replay actions or the owner's named loss acceptance before replacing the store.
+Retake the export after isolation and verify no new local events/row changes; if writers or history coverage remain uncertain, keep both stores and stop. No local-only comment may disappear merely because cloud comparison passes.
+
+| Check                 | Tool and expected comparison                                                                                                                                                                                                                                                                                                                       |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| V1 Six-table copy     | Restore plus independent dump matches expected rows/digests for `state_records`, `state_events`, `state_leases`, `state_requests`, `domain_cloud_requests`, `domain_cloud_command_receipts`. Expected image is this bundle plus validated restore-stop rows; ignore no fields.                                                                     |
+| V2 Cross-machine      | A comments on proof, every host reads it; each host comments, A reads every comment. Exact text and append order.                                                                                                                                                                                                                                  |
+| V3 Local fence        | Fresh export matches frozen S7 in raw imported records and event high-water mark; source/config hashes unchanged by export. Second unbound checkout's agreed write is `UNAVAILABLE`. Any mutation triggers local-breach inventory immediately, then R3. Preserve both authorities' changes before replacement; never lift the freeze to reconcile. |
+| V4 Routing refusal    | Bound project memory write is `UNAVAILABLE`; `forge store reinit --dry-run` and unsupported `forge issue tree <id>` are `INPUT_INVALID`, exit 6; verify no local mutation/fallback.                                                                                                                                                                |
+| V5 Admission          | Wrong project command returns 403 `AUTH_FORBIDDEN`; target without credential returns 401 `AUTH_REQUIRED`.                                                                                                                                                                                                                                         |
+| V6 Recorded writes    | Fresh cloud dump/status accounts for every proof, comment, lease and resume write since V1. Compare all six tables with baseline plus ledger effects, ignoring no fields; counts alone do not pass.                                                                                                                                                |
+| V7 Missing credential | In a private sandbox binding without credential, `forge issue list` refuses with no local answer. Never delete a real credential to practise this.                                                                                                                                                                                                 |
+
+The 11:13Z rehearsal restored four pages and matched all six digests; its older delta tool reported 0/0/0.
 Its raw export had 9146 records, converter N=7380 and F=1117; restore added two record/event pairs.
-These numbers explain expected shape only. Use this run's manifest, stop window and reports for every acceptance value.
+With PR 653, derived allocation floors may appear as new against the raw/upgraded input. Step 3.7 requires their exact by-key bundle values, not raw 0/0/0 or F=1117.
+Use this run's manifest, repair inventory, derived floors, stop window and reports for every acceptance value.
 
 ## Rollback
 
@@ -230,8 +252,8 @@ If step 9 merged, do R3.5's binding revert. Only after all readbacks pass, with 
 
 1. Tell every session to stop; stop cloud dispatch while still admitted. This is not the write fence. Keep the local freeze set, including throughout restore and replay. If the practised restore/single-writer paths in P13/P14 are missing, stay frozen and repair forward or stop for that dependency; never improvise an unfreeze.
 2. Run R1 and verify its cloud fence. R1 returns here, with local freeze still on. Account for/revoke every device token and prevent any admin writer during the dump and replay.
-3. Read admin status, dump every page, then status again. Six counts must agree; validate page chain and digests. `DUMP_CHANGED`, missing page or target mismatch stops rollback. Retain final dump privately with a manifest containing exact project and each page's name/SHA-256, produced by the guarded exporter at capture, not invented later.
-4. Run the read-only `tools/cloud-to-local-delta.ts` against the retained upgraded converter input, never raw S7. With PR 653's required implementation use:
+3. Read admin status, dump every page, then status again. Six counts must agree; validate page chain and digests. `DUMP_CHANGED`, missing page or target mismatch stops rollback. Retain final dump privately with a manifest containing exact project and each page's name/SHA-256, produced by the guarded exporter at capture, not invented later. Enumerate every cloud event after the saved post-restore baseline, including overwritten/deleted intermediate writes; reconcile by sequence/key with the materialized delta and name superseded actions in the ledger.
+4. Before replacing any local store, perform Verification's local-breach inventory even if V3 passed. Then run read-only `tools/cloud-to-local-delta.ts` against the retained upgraded converter input, never raw S7. Classify its report against the saved converted baseline from step 3.7, including derived floors; only later changes belong in the cloud replay ledger. With PR 653 use:
 
 ```powershell
 bun tools/cloud-to-local-delta.ts --dump $Dump --backup $DeltaBackup --manifest $DeltaManifest --dump-manifest "$Dump/export.json" --project $Project --out "$Ledger/rollback-delta.json"
@@ -240,15 +262,15 @@ bun tools/cloud-to-local-delta.ts --dump $Dump --backup $DeltaBackup --manifest 
 The flags `--dump-manifest`/`--project` are PR 653 dependencies, unavailable on the cited main.
 PR 653 is open with the fix at `48de4d4d956ff9d5b5ee76f172a74ffeb07be475`, pending its merge gate; require merge and refusal evidence before P13 passes.
 `INPUT_INVALID` stops on wrong project/provenance, stale/missing pages, bad cursor chain, duplicate keys, hash mismatch, sidecars, or existing output.
-Check every new, changed and `absentInCloud` entry plus allocation-floor changes and `notCarriedBack`; map each to a manual action or an explicit loss decision.
+Check every new, changed and `absentInCloud` entry, floor advance and `notCarriedBack` item. Merge cloud changes and the local-breach inventory into a ledger keyed by authority, event sequence and record key. For each entry record before/after, replay action/readback or the owner's explicit loss acceptance by name. Resolve conflicting updates and colliding ids explicitly; an unexplained or unclassified entry blocks store replacement.
 
 5. On every host revoke recorded token ids, then run PR 626 logout as in R2; verify binding/credential removal without exposing secrets. Revert the step 9 binding commit through a normal PR and merge it via the authorized owner. Record the revert commit and verify every host/worktree has pulled it; logout again on any checkout that regained the binding. Keep the local freeze; this is the binding reversal that step 9 points to.
 
-6. Restore immutable S7 with the exact P13 procedure, using a private staged file, verified hash and ACLs before Forge opens it. Never overwrite S7. Preserve/reapply the freeze atomically before exposing the restored store; no writable interval is allowed. Read back restored records against S7. Then the sole P14 writer manually re-enters cloud changes from the delta using issue create/comment/link/update/dep/close, with claims where required. Preserve ordering, check every allocated id and floor against the dump, and record each action/result. Missing ids, deletions, floor advances or any value the CLI cannot reproduce block completion; never silently renumber or skip. No other session may write; the freeze stays set.
+6. Only after both inventories and every disposition are saved, restore the immutable frozen S7 from step 3.1 using P13's private staged file, hash/ACL verification and atomic freeze preservation. Read back against frozen S7. The sole P14 writer manually replays the reconciled cloud and local-breach actions with issue create/comment/link/update/dep/close and required claims. Read back every action using Verification's `replay-check`. Preserve ids, keys, references and append order; any necessary remap or unrepresentable field needs an explicit named loss decision, not silent skipping. No other writer may run. Keep the freeze set.
 
-7. Export the replayed local view read-only. Run `same` against the fenced final cloud dump for every issue, dependency, comment and link, and compare allocation floors. Require zero unexplained differences and account for every delta entry. Recheck that all other writers remain refused. Only after this passes may R0 unfreeze/resume. A failure leaves local frozen and cloud unadmitted.
+7. Export the replayed store read-only. Run `replay-check` against frozen S7 plus the reconciled cloud and local-breach ledger, not just the final cloud dump. Require every event/action to have its checked result or named owner-accepted loss; verify both source inventories are fully covered and every final record is accounted for. Compare effective allocation floors from local records/history with the expected floors, not merely the presence of derived allocation rows. Recheck all other writers remain refused. Only then run R0. Any mismatch leaves local frozen and cloud unadmitted.
 
-8. Lost even after value replay: original cloud event history, revisions/timestamps/authors, lease generations and request receipts. Record all `notCarriedBack` losses and owner acceptance; do not claim a full database inverse.
+8. Manual replay regenerates the metadata listed in `replay-check`; it does not restore cloud history, lease generations or request receipts. Name each affected key/field and every `notCarriedBack` item in the loss ledger with owner acceptance. No blanket timestamps/authors exemption applies to untouched records.
 
 ## Gaps
 
