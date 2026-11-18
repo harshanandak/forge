@@ -148,11 +148,13 @@ test("status names the upgrade only when a table is missing", async () => {
     migrations: typeof stateMigrations,
   ) => {
     using raw = new Database(":memory:");
+    let armed = false;
     const { storage } = browserStorage(raw, (sql) => {
-      if (broken && sql.includes("FROM state_usage"))
+      if (armed && sql.includes("FROM state_usage"))
         throw new Error("disk I/O error");
     });
     migrate(durableStore(storage), migrations);
+    armed = broken;
     await storage.put("provisioned", true);
     const response = await new Project({ storage }).fetch(
       new Request("https://fixture.example/p/a/status"),
