@@ -401,9 +401,11 @@ export class Runtime {
   ): Promise<ResultEnvelope> {
     let invocation: InvocationServices | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let timerExpiry: ForgeFailure | undefined;
     let cancel: (() => void) | undefined;
     let handle: ServiceHandle | undefined;
     let request: InvocationRequest | undefined;
+    let handlerActive = false;
     let started = false;
     let timeoutMessage: (() => string) | undefined;
     let result: ResultEnvelope;
@@ -436,13 +438,9 @@ export class Runtime {
       timeoutMessage = () => {
         const host = this.#catalog.config.runtime?.timeoutMs;
         const embedding = this.#limits.timeoutMs;
-        const value = started ? budget.timeoutMs : preparationTimeoutMs;
-        if (!started && host !== value && embedding !== value)
-          return formatConfigProblem(
-            `blocks.${operation.instance}.operationTimeouts["${operation.declaredOp}"]`,
-            "Invocation host preparation deadline expired: configured operation and command timeouts add up to more than Node's largest supported timer (2147483647 ms, about 24.8 days)",
-            `lower blocks.${operation.instance}.operationTimeouts["${operation.declaredOp}"] or blocks.${operation.instance}.config.timeoutMs`,
-          );
+        const value = handlerActive ? budget.timeoutMs : preparationTimeoutMs;
+        if (!handlerActive && host === undefined && embedding === undefined)
+          return `Invocation host preparation deadline expired: reached the timer safety limit (${value} ms)`;
         const key =
           host === value
             ? "runtime.timeoutMs"
@@ -451,7 +449,7 @@ export class Runtime {
               : `blocks.${operation.instance}.operationTimeouts["${operation.declaredOp}"]`;
         return formatConfigProblem(
           key,
-          `Invocation ${started ? "operation" : "host preparation"} deadline expired: ${key} (${value / 1000} s)`,
+          `Invocation ${handlerActive ? "operation" : "host preparation"} deadline expired: ${key} (${value / 1000} s)`,
           `increase ${key} to more than ${value / 1000} s`,
           embedding === value ? "embedding host" : ".forge/config.yaml",
         );
@@ -478,17 +476,14 @@ export class Runtime {
       if (options.signal?.aborted) cancel();
       const armDeadline = (timeoutMs: number): void => {
         if (timer !== undefined) clearTimeout(timer);
-        timer = setTimeout(
-          () =>
-            scope.controller.abort(
-              new ForgeFailure({
-                code: "INVOCATION_TIMEOUT",
-                message: "Invocation deadline exceeded",
-                retry: "reconcile_first",
-              }),
-            ),
-          timeoutMs,
-        );
+        timer = setTimeout(() => {
+          timerExpiry = new ForgeFailure({
+            code: "INVOCATION_TIMEOUT",
+            message: "Invocation deadline exceeded",
+            retry: "reconcile_first",
+          });
+          scope.controller.abort(timerExpiry);
+        }, timeoutMs);
       };
       armDeadline(preparationTimeoutMs);
       scope.check();
@@ -533,6 +528,7 @@ export class Runtime {
         // Host preparation has its own ceiling; the handler receives its whole declared budget.
         const handlerStartedAt = clock.now();
         scope.startHandler(handlerStartedAt + budget.remaining());
+        handlerActive = true;
         armDeadline(
           Math.max(TIMEOUT_BOUNDS.minimum, scope.deadline - clock.now()),
         );
@@ -588,7 +584,7 @@ export class Runtime {
       result = failureEnvelope(request, error, started, () =>
         timeoutMessage &&
         invocation !== undefined &&
-        clock.now() >= invocation.deadline
+        (error === timerExpiry || clock.now() >= invocation.deadline)
           ? timeoutMessage()
           : undefined,
       );
