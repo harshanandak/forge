@@ -18,6 +18,14 @@ export function fileLimitExceeded(
     retry: "never",
   });
 }
+export function removeConflict(path: string): ForgeFailure {
+  return new ForgeFailure({
+    code: "INPUT_CONFLICT",
+    message: `${path} changed since it was read, so it was not removed`,
+    retry: "reconcile_first",
+    repair: "read the file again, then remove it against what it now holds",
+  });
+}
 export interface ConfigFiles {
   /** Bytes of a project-relative file, or undefined when it does not exist. */
   read(path: string, maxBytes?: number): Uint8Array | undefined;

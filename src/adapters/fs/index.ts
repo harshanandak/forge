@@ -13,6 +13,7 @@ import {
   mkdirSync,
   openSync,
   readdirSync,
+  readFileSync,
   realpathSync,
   renameSync,
   rmdirSync,
@@ -33,6 +34,7 @@ import type { ConfigFiles } from "../../core/config/files.ts";
 import {
   MAX_CONFIG_FILE_BYTES,
   MAX_LOCK_FILE_BYTES,
+  removeConflict,
 } from "../../core/config/files.ts";
 import { publishExclusive, removeDurable } from "./durable-io.ts";
 import { nodeProjectFiles } from "./project-files.ts";
@@ -184,8 +186,35 @@ export function nodeConfigFiles(
         rmSync(temporary, { force: true });
       }
     },
-    remove(path, _expected) {
-      rmSync(resolveIn(root, path, "keep"), { force: true });
+    remove(path, expected) {
+      const target = resolveIn(root, path, "keep");
+      const claimed = join(
+        dirname(target),
+        `.${basename(target)}.${randomUUID()}.claim`,
+      );
+      try {
+        if (!lstatSync(target).isFile()) throw removeConflict(path);
+        renameSync(target, claimed);
+      } catch (error) {
+        if (errorCode(error) === "ENOENT") return;
+        throw error;
+      }
+      const held = lstatSync(claimed);
+      if (
+        held.isFile() &&
+        held.size === expected.byteLength &&
+        Buffer.from(expected).equals(readFileSync(claimed))
+      ) {
+        removeDurable(claimed);
+        return;
+      }
+      try {
+        publishExclusive(claimed, target);
+      } catch (error) {
+        if (errorCode(error) !== "EEXIST") throw error;
+      }
+      removeDurable(claimed);
+      throw removeConflict(path);
     },
     list(dir) {
       try {
