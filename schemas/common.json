@@ -6,6 +6,7 @@
     "Segment": {
       "description": "One kebab-case name segment: lower case, digits and single hyphens, no leading or trailing hyphen.",
       "type": "string",
+      "maxLength": 64,
       "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
     },
     "Publisher": {
