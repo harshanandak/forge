@@ -182,6 +182,29 @@ export function restoreClaim(
   }
 }
 
+function restoreClaimAndRethrow(
+  path: string,
+  target: string,
+  claimed: string,
+  error: unknown,
+): never {
+  try {
+    restoreClaim(path, target, claimed);
+  } catch (restoreError) {
+    const message = error instanceof Error ? error.message : String(error);
+    const restoreMessage =
+      restoreError instanceof Error
+        ? restoreError.message
+        : String(restoreError);
+    throw new AggregateError(
+      [error, restoreError],
+      `${message}; ${restoreMessage}`,
+      { cause: restoreError },
+    );
+  }
+  throw error;
+}
+
 function sameFile(a: BigIntStats, b: BigIntStats): boolean {
   return a.dev === b.dev && a.ino === b.ino;
 }
@@ -278,17 +301,15 @@ export function nodeConfigFiles(
       try {
         intact = claimIntact(claimed, held, expected);
       } catch (error) {
-        restoreClaim(path, target, claimed);
-        throw error;
+        restoreClaimAndRethrow(path, target, claimed, error);
       }
-      if (!intact) {
-        restoreClaim(path, target, claimed);
-        throw removeConflict(path);
-      }
+      if (!intact)
+        restoreClaimAndRethrow(path, target, claimed, removeConflict(path));
       try {
         removeDurable(claimed);
       } catch (error) {
-        if (existsSync(claimed)) restoreClaim(path, target, claimed);
+        if (existsSync(claimed))
+          restoreClaimAndRethrow(path, target, claimed, error);
         throw error;
       }
     },

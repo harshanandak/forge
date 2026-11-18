@@ -173,6 +173,57 @@ describe("the fs adapter implements ConfigFiles", () => {
     expect(readdirSync(join(dir, ".forge"))).toEqual(["config.lock"]);
   }, 30_000);
 
+  test.each(["check", "remove"] as const)(
+    "a failed claim %s remains the primary failure if restoration also fails",
+    (step) => {
+      const dir = root();
+      const files = nodeConfigFiles(dir);
+      const path = ".forge/config.lock";
+      files.write(path, bytes("held"));
+      const original = new Error(`claim ${step} failed`);
+      const fail = (): never => {
+        files.write(path, bytes("concurrent"));
+        throw original;
+      };
+      const operation =
+        step === "check"
+          ? spyOn(nodeFs, "lstatSync").mockImplementation(((
+              name: string,
+              options?: unknown,
+            ) => {
+              if (name.endsWith(".claim") && options !== undefined) fail();
+              return realLstat(name, options);
+            }) as typeof nodeFs.lstatSync)
+          : spyOn(durableIO, "removeDurable").mockImplementation(fail);
+
+      let caught: unknown;
+      try {
+        files.remove(path, bytes("held"));
+      } catch (error) {
+        caught = error;
+      } finally {
+        operation.mockRestore();
+      }
+
+      expect(caught).toBeInstanceOf(AggregateError);
+      if (!(caught instanceof AggregateError)) throw original;
+      expect(caught.message).toStartWith(original.message);
+      expect(caught.message).toContain("could not be put back");
+      const failures: readonly unknown[] = caught.errors;
+      const [primary, restoration] = failures;
+      expect(primary).toBe(original);
+      expect(restoration).toBe(caught.cause);
+      expect(restoration).toBeInstanceOf(Error);
+      expect(restoration).toMatchObject({ cause: { code: "EEXIST" } });
+      expect(text(files.read(path))).toBe("concurrent");
+      const claim = readdirSync(join(dir, ".forge")).find((name) =>
+        name.endsWith(".claim"),
+      );
+      if (claim === undefined) throw new Error("Missing retained claim");
+      expect(readFileSync(join(dir, ".forge", claim), "utf8")).toBe("held");
+    },
+  );
+
   test("a file index of zero never stands in for identity", () => {
     const dir = root();
     const files = nodeConfigFiles(dir);
