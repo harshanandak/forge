@@ -4127,7 +4127,9 @@ function laneStop(call: HandlerCall<StopInput>): {
       {
         stopAll: at,
         stopped: {},
-        ...(isMap(kept) && isTime(kept.frozen) ? { frozen: kept.frozen } : {}),
+        ...(isMap(kept) && kept.frozen !== undefined
+          ? { frozen: isTime(kept.frozen) ? kept.frozen : at }
+          : {}),
       },
       state.get(GLOBAL)?.revision ?? 0,
     );

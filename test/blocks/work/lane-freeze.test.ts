@@ -188,6 +188,21 @@ test("a freeze that lands between the check and the write refuses the write", as
   await close();
 });
 
+test("lane stop on an unreadable freeze time keeps the store frozen", async () => {
+  const { owner, run, close } = await fixture();
+  owner.put(namespace, GLOBAL, { stopped: {}, frozen: "not a time" }, actor, {
+    expectRevision: 0,
+  });
+  run("lane.stop", { all: true });
+  expect(owner.get(namespace, GLOBAL)?.value).toMatchObject({
+    frozen: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+  });
+  expect(
+    refusal(() => run("issue.create", { title: "after" })).message,
+  ).toContain("frozen since");
+  await close();
+});
+
 test("lane stop on an unreadable control record keeps a valid freeze", async () => {
   const { owner, run, close } = await fixture();
   owner.put(
