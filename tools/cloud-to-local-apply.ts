@@ -1,4 +1,4 @@
-﻿import * as fs from "node:fs";
+import * as fs from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
@@ -7,8 +7,10 @@ import { workFamilyPolicy } from "../src/blocks/work/state-families.ts";
 import { ForgeFailure } from "../src/contract/failure.ts";
 import { canonicalJson, isObject } from "../src/core/config/pointer.ts";
 import { StateOwner } from "../src/core/state/index.ts";
+import { stateMigrations } from "../src/core/state/migrations.ts";
 import { success } from "../src/surface/dispatch.ts";
 import { failure, respond } from "../src/surface/result.ts";
+import { identityOf } from "./cloud-to-local-delta.ts";
 import { ordinaryKey } from "./import-current-state.ts";
 
 const namespace = "forge/work";
@@ -56,7 +58,7 @@ function readReport(path: string): Report {
     report.format !== "forge-cloud-to-local-delta/1" ||
     !isObject(source) ||
     typeof source.sha256 !== "string" ||
-    !("project" in source) ||
+    identityOf(source.project) === undefined ||
     !Array.isArray(delta) ||
     !Array.isArray(notCarriedBack) ||
     !delta.every(
@@ -98,18 +100,24 @@ export async function apply(options: Options) {
   });
   if (!opened.ok) invalid("store cannot be opened");
   try {
+    const applied = opened.handle.value
+      .all("SELECT id FROM state_migrations ORDER BY id")
+      .map((row) => String(row.id));
+    if (
+      canonicalJson(applied) !==
+      canonicalJson(stateMigrations.map((migration) => migration.id).sort())
+    )
+      invalid("store migrations differ from the expected set");
     const owner = new StateOwner(
       opened.handle.value,
       { now: () => Date.now() },
       [workFamilyPolicy],
     );
-    const identity = owner.get("forge/core-project", "identity")?.value as
-      { id?: unknown; projectId?: unknown } | undefined;
-    const here =
-      identity === undefined
-        ? null
-        : { id: identity.id, projectId: identity.projectId ?? null };
-    if (canonicalJson(here) !== canonicalJson(report.source.project))
+    const here = identityOf(owner.get("forge/core-project", "identity")?.value);
+    if (!here) invalid("store has no project identity");
+    if (
+      canonicalJson(here) !== canonicalJson(identityOf(report.source.project))
+    )
       invalid("report is from a different project");
     for (const entry of report.delta)
       if (
@@ -121,7 +129,6 @@ export async function apply(options: Options) {
       (e) => e.beforeRevision === null,
     ).length;
     if (options.write && report.delta.length > 0) {
-      owner.initialize();
       owner.putMany(
         namespace,
         report.delta.map((entry) => ({

@@ -1,10 +1,10 @@
-﻿import * as fs from "node:fs";
+import * as fs from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { createSqliteStore } from "../src/adapters/store-sqlite/index.ts";
 import { ForgeFailure } from "../src/contract/failure.ts";
-import { canonicalJson } from "../src/core/config/pointer.ts";
+import { canonicalJson, isObject } from "../src/core/config/pointer.ts";
 import { parseRestoreJson } from "../src/core/state/restore-json.ts";
 import type { StateEvent, StateRecord } from "../src/generated/types.ts";
 import { success } from "../src/surface/dispatch.ts";
@@ -34,6 +34,13 @@ const lostReason =
 const fieldsReason =
   "cloud assigns these on every write; the local store assigns its own when the delta is applied";
 
+export function identityOf(value: unknown): Identity | undefined {
+  if (!isObject(value) || typeof value.id !== "string") return undefined;
+  return {
+    id: value.id,
+    projectId: typeof value.projectId === "string" ? value.projectId : null,
+  };
+}
 function invalid(reason: string): never {
   throw new ForgeFailure({
     code: "INPUT_INVALID",
@@ -132,7 +139,7 @@ async function localRecords(path: string, pin: string) {
   if (!opened.ok) invalid("backup cannot be opened read-only");
   const records = new Map<string, StateRecord>();
   let first: string | undefined;
-  let project: Identity | null = null;
+  let project: Identity | undefined;
   try {
     for (const record of workRecords(opened.handle.value)) {
       first ??= record.key;
@@ -143,22 +150,14 @@ async function localRecords(path: string, pin: string) {
       "SELECT body FROM state_records WHERE namespace=? AND key=?",
       ["forge/core-project", "identity"],
     );
-    if (row) {
-      const { id, projectId } = (
-        parseRestoreJson(String(row.body)) as {
-          value: { id?: unknown; projectId?: unknown };
-        }
-      ).value;
-      if (typeof id !== "string") invalid("backup project identity");
-      project = {
-        id,
-        projectId: typeof projectId === "string" ? projectId : null,
-      };
-    }
+    project = identityOf(
+      row && (parseRestoreJson(String(row.body)) as StateRecord).value,
+    );
   } finally {
     await opened.handle.close();
   }
   if ((await digest(path)) !== pin) invalid("backup changed while read");
+  if (!project) invalid("backup has no project identity");
   return { records, first, project };
 }
 export async function compute(options: Options) {
@@ -219,6 +218,12 @@ export async function compute(options: Options) {
         const id = JSON.stringify([record.namespace, record.key]);
         if (seen.has(id)) invalid("duplicate key");
         seen.add(id);
+        if (
+          record.namespace === "forge/core-project" &&
+          record.key === "identity" &&
+          canonicalJson(identityOf(record.value)) !== canonicalJson(project)
+        )
+          invalid("dump is from a different project");
         const family = record.key.split(":")[0]!;
         if (
           record.key.startsWith("allocation:") &&

@@ -1,4 +1,5 @@
-﻿import { expect, setDefaultTimeout, test } from "bun:test";
+import { expect, setDefaultTimeout, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -33,8 +34,8 @@ type Doc = {
   notCarriedBack: object[];
   source: { project: unknown };
 };
-async function prepared(identity = false) {
-  const made = await moved(identity);
+async function prepared() {
+  const made = await moved();
   cloudWrites(made.dump);
   await compute(made.options);
   const store = join(made.root, "live.sqlite");
@@ -52,6 +53,14 @@ async function prepared(identity = false) {
     apply: (write = false, manifest = made.options.manifest) =>
       apply({ report, manifest, store, write }),
   };
+}
+function rawStore(path: string, sql: string) {
+  const db = new Database(path);
+  try {
+    db.exec(sql);
+  } finally {
+    db.close();
+  }
 }
 const sha = (path: string) =>
   createHash("sha256").update(readFileSync(path)).digest("hex");
@@ -136,7 +145,7 @@ test("a report from a different backup is refused", async () => {
 }, 120_000);
 
 test("a report from a different project is refused and a matching identity is accepted", async () => {
-  const run = await prepared(true);
+  const run = await prepared();
   expect(await run.apply()).toMatchObject({ mode: "dry-run" });
   await withStore(run.store, true, (owner) =>
     owner.put(
@@ -144,21 +153,43 @@ test("a report from a different project is refused and a matching identity is ac
       "identity",
       { ...project, id: "fedcba9876543210" },
       f.actor,
-      {
-        expectRevision: 1,
-      },
+      { expectRevision: 1 },
     ),
   );
   const before = sha(run.store);
   await refused(run.apply(true), "different project");
   expect(sha(run.store)).toBe(before);
-  const plain = await prepared();
-  plain.edit((doc) => {
-    doc.source.project = { id: project.id, projectId: null };
-  });
-  await refused(plain.apply(true), "different project");
 }, 120_000);
 
+test("a store without a project identity is refused", async () => {
+  const run = await prepared();
+  rawStore(
+    run.store,
+    "DELETE FROM state_records WHERE namespace='forge/core-project'",
+  );
+  const before = sha(run.store);
+  await refused(run.apply(true), "no project identity");
+  expect(sha(run.store)).toBe(before);
+}, 120_000);
+
+test("a report without a project identity is refused", async () => {
+  const run = await prepared();
+  run.edit((doc) => {
+    doc.source.project = null;
+  });
+  await refused(run.apply(), "report");
+}, 120_000);
+
+test("a store whose migrations differ from the expected set is refused and not migrated", async () => {
+  const run = await prepared();
+  rawStore(
+    run.store,
+    "DELETE FROM state_migrations WHERE id='004_state_checkpoint'",
+  );
+  const before = sha(run.store);
+  await refused(run.apply(true), "migrations differ");
+  expect(sha(run.store)).toBe(before);
+}, 120_000);
 test("records outside the carried families are refused, including keys named in notCarriedBack", async () => {
   const cases: ((doc: Doc) => void)[] = [
     (doc) => doc.delta.push(entry("autopilot:global")),

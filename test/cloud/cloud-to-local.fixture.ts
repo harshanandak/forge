@@ -1,6 +1,7 @@
-﻿import { expect } from "bun:test";
+import { expect } from "bun:test";
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { limitsFrom } from "../../cloud/src/dump.ts";
 import { canonicalJson } from "../../src/core/config/pointer.ts";
@@ -26,7 +27,7 @@ const acknowledged = (manifest: object) =>
       }),
     )
     .digest("hex");
-export async function moved(identity = false) {
+export async function moved(identity = true) {
   const source = f.source(6, false, false, (_db, state) => {
     state.put(
       f.ns,
@@ -161,4 +162,35 @@ export function cloudWrites(dump: string) {
         }),
       );
   });
+}
+export async function emptyBackup(id: string) {
+  const dir = mkdtempSync(join(tmpdir(), "forge-empty-delta-")),
+    backup = join(dir, "standalone.sqlite"),
+    manifest = join(dir, "source.json"),
+    out = join(dir, "bundle"),
+    db = f.database(backup);
+  const state = f.owner(db);
+  state.initialize();
+  state.put("forge/core-project", "identity", { ...project, id }, f.actor, {
+    expectRevision: 0,
+  });
+  db.exec("PRAGMA journal_mode=DELETE");
+  const read = f.database(backup, true);
+  const facts = {
+    sha256: createHash("sha256").update(readFileSync(backup)).digest("hex"),
+    eventHighWaterMark: Number(
+      read.get("SELECT COALESCE(MAX(sequence),0) AS n FROM state_events")!.n,
+    ),
+    records: Number(read.get("SELECT COUNT(*) AS n FROM state_records")!.n),
+    at: new Date(f.at).toISOString(),
+  };
+  writeFileSync(manifest, JSON.stringify(facts));
+  await converter.convert({
+    backup,
+    manifest,
+    out,
+    limits,
+    acknowledgeLeftBehind: acknowledged(facts),
+  });
+  return { dir, backup, manifest, dump: out, delta: join(dir, "delta.json") };
 }

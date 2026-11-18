@@ -1,27 +1,25 @@
-﻿import { expect, setDefaultTimeout, test } from "bun:test";
+import { expect, setDefaultTimeout, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
   copyFileSync,
   existsSync,
-  mkdtempSync,
   readFileSync,
   renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { compute, type Options } from "../../tools/cloud-to-local-delta.ts";
-import * as converter from "../../tools/import-current.ts";
 import {
   cloudRow,
   editCloud,
   editPage,
-  limits,
+  emptyBackup,
   moved,
   pageNames,
   project,
+  type Row,
 } from "./cloud-to-local.fixture.ts";
 import * as f from "./import-current-state.fixture.ts";
 
@@ -275,45 +273,43 @@ test("a symlinked backup and a backup with a -wal sidecar are refused", async ()
   await refused({ ...options, backup: link }, "Invalid offline import input");
 }, 120_000);
 
-test("the report carries the backup's project identity, or null when the backup has none", async () => {
-  const plain = await moved();
-  expect((await compute(plain.options)).source.project).toBeNull();
-  const named = await moved(true);
+test("the report carries the backup's project identity", async () => {
+  const named = await moved();
   expect((await compute(named.options)).source).toEqual({
     sha256: named.source.manifest.sha256,
     project: { id: project.id, projectId: project.projectId },
   });
 }, 120_000);
 
-test("a backup with no work records converts and its delta computes", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "forge-empty-delta-"));
+test("a backup without a project identity is refused", async () => {
+  const { options } = await moved(false);
+  await refused(options, "no project identity");
+}, 120_000);
+
+test("a backup with no work records computes, and a dump carrying another project identity is refused", async () => {
+  const made = await emptyBackup(project.id);
   try {
-    const backup = join(dir, "standalone.sqlite"),
-      manifest = join(dir, "source.json"),
-      db = f.database(backup);
-    f.owner(db).initialize();
-    db.exec("PRAGMA journal_mode=DELETE");
-    writeFileSync(
-      manifest,
-      JSON.stringify({
-        sha256: sha(backup),
-        eventHighWaterMark: 0,
-        records: 0,
-        at: new Date(f.at).toISOString(),
-      }),
-    );
-    const dump = join(dir, "bundle");
-    await converter.convert({ backup, manifest, out: dump, limits });
-    const report = await compute({
-      dump,
-      backup,
-      manifest,
-      out: join(dir, "delta.json"),
-    });
+    const options = {
+      dump: made.dump,
+      backup: made.backup,
+      manifest: made.manifest,
+      out: made.delta,
+    };
+    const named =
+      (id: string) => (page: { tables: { state_records: Row[] } }) =>
+        page.tables.state_records.push(
+          cloudRow("identity", "forge/core-project", { ...project, id }),
+        );
+    editPage(made.dump, 0, named(project.id));
+    const report = await compute(options);
     expect(report.delta).toEqual([]);
     expect(report.counts.localRecords).toBe(0);
+    rmSync(made.delta);
+    editPage(made.dump, 0, (page) => page.tables.state_records.pop());
+    editPage(made.dump, 0, named("fedcba9876543210"));
+    await refused(options, "different project");
   } finally {
     f.cleanup();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(made.dir, { recursive: true, force: true });
   }
 }, 120_000);
