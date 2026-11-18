@@ -424,7 +424,7 @@ export const RULES: readonly Rule[] = [
         const printInvocation =
           /(^|(?:[;|\n]\s*|&(?!\d)\s*|\$\(\s*|`\s*))(?:cat|bat|less|more|head|tail|nl|strings|xxd|od|type|Get-Content|gc)\b((?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^;|&\n]|&(?=\d))*)/gi;
         const searchInvocation =
-          /(^|(?:[;|\n]\s*|&(?!\d)\s*|\$\(\s*|`\s*))(rg|grep|findstr|Select-String|sls)\b((?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^;|&\n]|&(?=\d))*)/gi;
+          /(^|(?:[;|\n]\s*|&(?!\d)\s*|\$\(\s*|`\s*))(?:[^\s;|&'"`]*[\\/])?(rg|grep|findstr|Select-String|sls)\b((?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^;|&\n]|&(?=\d))*)/gi;
         const withoutRedirections = (operand: string) => {
           const quoted: string[] = [];
           const protectedOperand = operand.replace(

@@ -43,6 +43,13 @@ function redactAssignments(text: string): string {
   return parts.join("");
 }
 
+function keySeparators(json: string): number {
+  let count = 0;
+  for (const token of json.matchAll(/"(?:\\.|[^"\\])*"|:/g))
+    if (token[0] === ":") count += 1;
+  return count;
+}
+
 export function createOutputGate(
   values: readonly unknown[] = [],
 ): (text: string) => string {
@@ -97,8 +104,12 @@ export function createOutputGate(
     if (depth > 40) throw new Error("Protected output nesting limit");
     if (known.includes(text)) return "[REDACTED]";
     let parsed: unknown;
+    let keys = -1;
     try {
-      parsed = JSON.parse(text);
+      parsed = JSON.parse(text, function (this: unknown, _, value: unknown) {
+        if (!Array.isArray(this)) keys += 1;
+        return value;
+      });
     } catch {
       parsed = undefined;
     }
@@ -106,6 +117,7 @@ export function createOutputGate(
       typeof parsed === "string" ||
       (parsed !== null && typeof parsed === "object")
     ) {
+      if (keys !== keySeparators(text)) return "[REDACTED]";
       const visit = (value: unknown, level: number): unknown => {
         if (level > 40) throw new Error("Protected output nesting limit");
         if (typeof value === "string") return scrub(value, level + 1);
