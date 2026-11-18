@@ -13,6 +13,7 @@ import {
   PROJECT_ID,
   sandbox,
   SECRET,
+  tokenFor,
   type Sandbox,
 } from "./cloud-fixture.ts";
 
@@ -36,11 +37,13 @@ function logoutFor(sb: Sandbox): Run {
 const now = clock().now();
 const store = (sb: Sandbox) =>
   credentialStore(openCloudFiles(sb.home), { wait: () => Promise.resolve() });
+const otherTokenId = "bbbbbbbbbbbbbbbb";
 const other = () =>
   entry(now, {
     identity: OTHER_PROJECT_ID,
     project: "other",
-    id: "bbbbbbbbbbbbbbbb",
+    id: otherTokenId,
+    token: tokenFor(otherTokenId),
   });
 const read = (path: string): string | null =>
   existsSync(path) ? readFileSync(path, "utf8") : null;
