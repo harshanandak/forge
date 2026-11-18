@@ -142,6 +142,33 @@ test("pre-retention dump reads preserve the schema and every stored byte, and st
   expect(raw.serialize()).toEqual(before);
 }, 30_000);
 
+test("status names the upgrade only when a table is missing", async () => {
+  const message = async (
+    broken: boolean,
+    migrations: typeof stateMigrations,
+  ) => {
+    using raw = new Database(":memory:");
+    const { storage } = browserStorage(raw, (sql) => {
+      if (broken && sql.includes("FROM state_usage"))
+        throw new Error("disk I/O error");
+    });
+    migrate(durableStore(storage), migrations);
+    await storage.put("provisioned", true);
+    const response = await new Project({ storage }).fetch(
+      new Request("https://fixture.example/p/a/status"),
+    );
+    expect(response.status).toBe(503);
+    return ((await response.json()) as { error: { message: string } }).error
+      .message;
+  };
+  expect(
+    await message(true, [...stateMigrations, ...domain.migrations]),
+  ).not.toMatch(/upgrade/);
+  expect(await message(false, stateMigrations)).toMatch(
+    /POST \/p\/<project>\/upgrade/,
+  );
+}, 30_000);
+
 test("cloud capacity metadata upgrades once without changing dump rows", () => {
   using raw = new Database(":memory:");
   const db = durableStore(browserStorage(raw).storage);
