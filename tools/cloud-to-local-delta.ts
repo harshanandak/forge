@@ -18,7 +18,11 @@ import { failure, respond } from "../src/surface/result.ts";
 import { PAGE_FORMAT, parseDump, type Page } from "../cloud/src/dump.ts";
 import { KEYS, TABLES, type Table } from "../cloud/conformance/digest.ts";
 import { digest, isolatedBackup } from "./import-current.ts";
-import { ordinaryKey, workRecords } from "./import-current-state.ts";
+import {
+  importFloorBaseline,
+  ordinaryKey,
+  workRecords,
+} from "./import-current-state.ts";
 
 const namespace = "forge/work";
 const projectName = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -154,7 +158,11 @@ function sameProject(pages: Page[], first: string | undefined, at: string) {
   if (!body || body.key !== first || body.at !== at)
     invalid("dump is from a different project");
 }
-async function localRecords(path: string, pin: string) {
+async function localRecords(
+  path: string,
+  pin: string,
+  eventHighWaterMark: number,
+) {
   isolatedBackup(path);
   const directory = fs.mkdtempSync(join(tmpdir(), ".forge-delta-"));
   try {
@@ -170,35 +178,48 @@ async function localRecords(path: string, pin: string) {
       readOnly: true,
     });
     if (!opened.ok) invalid("backup cannot be opened read-only");
-    const records = new Map<string, StateRecord>();
+    const db = opened.handle.value;
+    const records = new Map<string, { value: unknown; revision?: number }>();
     let first: string | undefined;
     try {
-      for (const record of workRecords(opened.handle.value)) {
+      for (const record of workRecords(db)) {
         first ??= record.key;
         records.set(record.key, record);
       }
+      const localCount = records.size;
+      for (const [key, value] of importFloorBaseline(db, eventHighWaterMark)) {
+        first ??= key;
+        if (!records.has(key)) records.set(key, { value });
+      }
+      return { records, first, localCount };
     } finally {
       await opened.handle.close();
     }
-    return { records, first };
   } finally {
     fs.rmSync(directory, { recursive: true });
   }
 }
 export async function compute(options: Options) {
-  const source = readJson(options.manifest, "source.json needs sha256 and at");
+  const source = readJson(options.manifest, "invalid source.json");
   if (
     !isObject(source) ||
     typeof source.sha256 !== "string" ||
     !sha256.test(source.sha256) ||
-    typeof source.at !== "string"
+    typeof source.at !== "string" ||
+    typeof source.eventHighWaterMark !== "number" ||
+    !Number.isSafeInteger(source.eventHighWaterMark) ||
+    source.eventHighWaterMark < 0
   )
-    invalid("source.json needs sha256 and at");
-  const { sha256: pin, at } = source;
+    invalid("source.json needs sha256, at and eventHighWaterMark");
+  const { sha256: pin, at, eventHighWaterMark } = source;
   if (fs.existsSync(options.out)) invalid("output exists");
   const pages = readPages(options);
   chained(pages);
-  const { records: local, first } = await localRecords(options.backup, pin);
+  const {
+    records: local,
+    first,
+    localCount,
+  } = await localRecords(options.backup, pin, eventHighWaterMark);
   sameProject(pages, first, at);
   const cloud = new Map<string, StateRecord>();
   const seen = new Set<string>();
@@ -284,7 +305,7 @@ export async function compute(options: Options) {
     pages: pages.length,
     counts: {
       cloudRecords: cloud.size,
-      localRecords: local.size,
+      localRecords: localCount,
       new: delta.filter((entry) => entry.change === "new").length,
       changed: delta.filter((entry) => entry.change === "changed").length,
       absentInCloud: absentInCloud.length,
