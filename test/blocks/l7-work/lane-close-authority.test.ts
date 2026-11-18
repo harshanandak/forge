@@ -111,6 +111,8 @@ async function fixture(seedLink = true) {
     calls: [] as string[][],
     privateRefs: new Set<string>(),
     afterFetch: undefined as (() => void) | undefined,
+    beforeLandingComment: undefined as (() => void) | undefined,
+    duringReceiptCheck: undefined as (() => void) | undefined,
     refuse: false,
   };
   // The handler reads time from this clock; tests never touch the global Date.
@@ -121,11 +123,20 @@ async function fixture(seedLink = true) {
     state: {
       ...state,
       now: () => now,
+      appendLandingComment: (
+        ...args: Parameters<typeof state.appendLandingComment>
+      ) => {
+        flags.beforeLandingComment?.();
+        return state.appendLandingComment(...args);
+      },
       // The landing note is a numbered write, so the injected failure fires at the numbered-write seam.
       putNext: (...args: Parameters<typeof state.putNext>) => {
-        if (args[0].startsWith("comment:") && flags.failComment) {
-          flags.failComment = false;
-          throw new Error("injected landing comment failure");
+        if (args[0].startsWith("comment:")) {
+          if (flags.failComment) {
+            flags.failComment = false;
+            throw new Error("injected landing comment failure");
+          }
+          flags.beforeLandingComment?.();
         }
         return state.putNext(...args);
       },
@@ -174,7 +185,8 @@ async function fixture(seedLink = true) {
           flags.privateRefs.add(args[2].split(":")[1]!);
           flags.afterFetch?.();
         }
-        if (args[0] === "pr")
+        if (args[0] === "pr") {
+          if (args[2] === url) flags.duringReceiptCheck?.();
           stdout = JSON.stringify({
             state: "MERGED",
             baseRefName: flags.prBase,
@@ -183,7 +195,7 @@ async function fixture(seedLink = true) {
             mergeCommit: { oid: merge },
             url,
           });
-        else if (args[0] === "log") stdout = flags.retained;
+        } else if (args[0] === "log") stdout = flags.retained;
         else if (args[0] === "worktree" && args[1] === "list")
           stdout = "worktree /project\0branch refs/heads/main\0\0";
         else if (
@@ -258,6 +270,63 @@ async function fixture(seedLink = true) {
     dispose: () => opened.handle.close(),
   };
 }
+
+function freeze(f: Awaited<ReturnType<typeof fixture>>) {
+  f.owner.put(
+    namespace,
+    "autopilot:global",
+    { stopped: {}, frozen: new Date(f.now()).toISOString() },
+    f.holder.actor,
+    { expectRevision: 0 },
+  );
+  return f.owner.events(namespace);
+}
+
+for (const recovery of [false, true]) {
+  test(`freeze wins before ${recovery ? "recovering" : "appending"} a lane close comment`, async () => {
+    const f = await fixture();
+    try {
+      if (recovery) {
+        f.flags.failComment = true;
+        await expect(f.close()).rejects.toThrow(
+          "injected landing comment failure",
+        );
+        f.state.release(`issue:${id}`);
+      }
+      let events: ReturnType<typeof freeze> = [];
+      f.flags.beforeLandingComment = () => {
+        events = freeze(f);
+      };
+      await expect(f.close()).rejects.toMatchObject({
+        error: { code: "REVISION_CONFLICT" },
+      });
+      expect(f.comments()).toHaveLength(0);
+      expect(
+        f.owner.get(namespace, `allocation:comment:${id}:`),
+      ).toBeUndefined();
+      expect(f.owner.events(namespace)).toEqual(events);
+    } finally {
+      await f.dispose();
+    }
+  });
+}
+
+test("freeze during receipt validation leaves no landing record", async () => {
+  const f = await fixture();
+  try {
+    let events: ReturnType<typeof freeze> = [];
+    f.flags.duringReceiptCheck = () => {
+      events = freeze(f);
+    };
+    await expect(f.close()).rejects.toMatchObject({
+      error: { code: "REVISION_CONFLICT" },
+    });
+    expect(f.owner.get(namespace, `landing:${id}:1`)).toBeUndefined();
+    expect(f.owner.events(namespace)).toEqual(events);
+  } finally {
+    await f.dispose();
+  }
+});
 
 test("competing keep-open validates without selection while a real lane close refuses", async () => {
   for (const keepOpen of [false, true]) {
