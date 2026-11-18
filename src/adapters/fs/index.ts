@@ -162,7 +162,7 @@ export function restoreClaim(
   try {
     publishExclusive(claimed, target);
   } catch (error) {
-    let linked = false;
+    let linked: boolean;
     try {
       linked = lstatSync(claimed).nlink > 1;
     } catch {
