@@ -108,8 +108,8 @@ test("issue show loads none of the modules it never calls", () => {
 // The public catalog after removing receipt.admit/show: help, its full contract and the MCP
 // tool listing must stay byte for byte the same until an intentional catalog change.
 const catalog = {
-  help: "fc6b8fad9c4e7ef0c465ddd35ec2d2bef6cb1029ec43d40793b739f91d2cd8a5",
-  helpJson: "1cc7c6ba35130d65bf9dae52bb2824aeac531fbce6fea1a4b598c8a72d1ec1e1",
+  help: "c5b6a4c0f6f34e828ebde7b0484db97f278d3086fb1701daeb2c74e5492c7b83",
+  helpJson: "5616528f7a5b9b36f40b0729edf81f8b7ffbf9f1e9de9aebf5d12ac50cc56f2c",
   mcpTools: "20940d83078f63696241e5f9c58074e05e833047865f72b33787bb9ba3c7a19a",
 };
 

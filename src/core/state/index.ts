@@ -107,6 +107,13 @@ export interface AcquireOptions extends BatchOptions {
   readonly metadata?: unknown;
   readonly entries?: readonly BatchEntry[];
 }
+
+export interface StoreBackup {
+  readonly image: Uint8Array;
+  readonly schemaVersion: string;
+  readonly eventHighWaterMark: number;
+  readonly tables: Readonly<Record<string, number>>;
+}
 export interface Snapshot {
   readonly image: string;
   readonly eventHighWaterMark: number;
@@ -1194,6 +1201,15 @@ export const NAMESPACE_WATERMARK =
   "SELECT sequence AS revision FROM state_namespace_watermarks WHERE namespace=?";
 const RETENTION_PROBE =
   "SELECT name FROM sqlite_master WHERE type='table' AND name='state_retention'";
+function highWater(db: SqlDatabase): number {
+  return Number(
+    db.get(
+      db.get(RETENTION_PROBE)
+        ? "SELECT sequence FROM state_retention WHERE id=1"
+        : "SELECT COALESCE(MAX(sequence),0) AS sequence FROM state_events",
+    )?.sequence,
+  );
+}
 const INDEXED_WATERMARK =
   "SELECT sequence AS revision FROM state_events INDEXED BY state_events_by_namespace WHERE namespace=? ORDER BY sequence DESC LIMIT 1";
 export const WATERMARK_READ_SQL: readonly string[] = [
@@ -2303,19 +2319,36 @@ export class StateOwner {
     });
   }
 
+  backup(): StoreBackup {
+    let found: Omit<StoreBackup, "image"> | undefined;
+    const image = this.#images().exportImage((db) => {
+      found = {
+        schemaVersion: String(
+          db.get("SELECT MAX(id) AS id FROM state_migrations")?.id,
+        ),
+        eventHighWaterMark: highWater(db),
+        tables: Object.fromEntries(
+          dataTables(db).map((table) => [
+            table,
+            Number(
+              db.get(
+                `SELECT COUNT(*) AS n FROM "${table.replaceAll('"', '""')}"`,
+              )?.n,
+            ),
+          ]),
+        ),
+      };
+    });
+    return { ...found!, image };
+  }
   export(): Snapshot {
     let snapshot: Omit<Snapshot, "image"> | undefined;
     const image = this.#images().exportImage((db) => {
       snapshot = {
         // INTEGER PRIMARY KEY has no sqlite_sequence; retain the export boundary
         // separately so losing the final operation cannot shorten history silently.
-        eventHighWaterMark: Number(
-          db.get(
-            db.get(RETENTION_PROBE)
-              ? "SELECT sequence FROM state_retention WHERE id=1"
-              : "SELECT COALESCE(MAX(sequence),0) AS sequence FROM state_events",
-          )?.sequence,
-        ),
+        eventHighWaterMark: highWater(db),
+
         domains: exportTables(db),
         format: "forge.state/1",
         records: db
