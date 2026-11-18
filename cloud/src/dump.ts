@@ -868,11 +868,13 @@ function admitFamilies(owner: StateOwner, rows: readonly Row[]): void {
       if (!families) continue;
       throw refused();
     }
+    const value = record.value;
     if (
       issue &&
-      ["attempts", "selection", "participants"].some((name) =>
-        Object.hasOwn(record.value as object, name),
-      )
+      (!isObject(value) ||
+        ["attempts", "selection", "participants"].some((name) =>
+          Object.hasOwn(value, name),
+        ))
     )
       throw refused();
     if (families) owner.assertRecordFamily(record);
