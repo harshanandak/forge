@@ -1,5 +1,6 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { Project } from "../../cloud/src/project.ts";
+import { createWorker } from "../../cloud/src/worker.ts";
 import { fixture as projectFixture } from "./dump-capacity.fixture.ts";
 import { actor } from "../core/l5-state/retention.fixture.ts";
 import type { DurableStorage } from "../../cloud/src/store.ts";
@@ -24,14 +25,14 @@ async function armed() {
     { storage },
     { FORGE_CLOUD_PROJECT: "a", FORGE_CLOUD_ID_PREFIX: "forge" },
   );
+  const request = (route: string, body?: unknown) =>
+    new Request(`https://fixture.example/p/a/${route}`, {
+      method: body === undefined ? "GET" : "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
   const post = (route: string, body: unknown) =>
-    project.fetch(
-      new Request(`https://fixture.example/p/a/${route}`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-        body: JSON.stringify(body),
-      }),
-    );
+    project.fetch(request(route, body));
   const claim = (requestId: string, ttlMs: number) =>
     post("claim", {
       subject: "alarm",
@@ -39,7 +40,7 @@ async function armed() {
       ttlMs,
       holder: { actor, session: { id: "raw" } },
     });
-  return { p, project, state, times, post, claim };
+  return { p, project, state, times, post, claim, request };
 }
 
 test("a refused claim still arms maintenance for its denial witness", async () => {
@@ -98,4 +99,137 @@ test("a refused write command still arms maintenance", async () => {
   });
   expect(response.status).not.toBe(200);
   expect(s.times).toHaveLength(1);
+}, 30_000);
+
+test("a committed command returns and replays its result when the alarm fails", async () => {
+  const s = await armed();
+  const log = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    s.state.fail = true;
+    const body = {
+      op: "issue.create",
+      input: { title: "Alarm failure" },
+      requestId: "committed",
+      context: { actor },
+    };
+    const worker = createWorker();
+    const send = () =>
+      worker.fetch(s.request("command", body), {
+        FORGE_CLOUD_PROJECT: "a",
+        PROJECTS: { idFromName: () => "a", get: () => s.project },
+      });
+    const first = await send();
+    expect(first.status).toBe(200);
+    const result = await first.json();
+    expect(result).toMatchObject({
+      ok: true,
+      status: "OK",
+      result: { id: "forge-1" },
+    });
+    const retry = await send();
+    expect(retry.status).toBe(200);
+    expect(await retry.json()).toEqual(result);
+    expect(
+      s.p.db.query("SELECT outcome FROM domain_cloud_command_receipts").all(),
+    ).toEqual([{ outcome: "ok" }]);
+    expect(
+      s.p.db
+        .query("SELECT key FROM state_records WHERE key LIKE 'issue:%'")
+        .all(),
+    ).toEqual([{ key: "issue:work-1" }]);
+    expect(log).toHaveBeenCalledTimes(2);
+  } finally {
+    log.mockRestore();
+  }
+}, 30_000);
+
+test("a refused command keeps its FAIL envelope and discards after a failed arm", async () => {
+  const s = await armed();
+  const log = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    s.state.fail = true;
+    const request = s.request("command", {
+      op: "issue.create",
+      input: {},
+      requestId: "denied",
+      context: { actor },
+    });
+    let discarded = 0;
+    Object.defineProperty(request.body, "locked", {
+      get: () => {
+        discarded++;
+        return true;
+      },
+    });
+    const response = await s.project.fetch(request);
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      ok: false,
+      status: "FAIL",
+      error: { code: "INPUT_INVALID", retry: "never" },
+      warnings: [],
+    });
+    expect(discarded).toBe(1);
+    expect(
+      s.p.db.query("SELECT outcome FROM domain_cloud_command_receipts").all(),
+    ).toEqual([{ outcome: "refused" }]);
+    expect(log).toHaveBeenCalledTimes(1);
+  } finally {
+    log.mockRestore();
+  }
+}, 30_000);
+
+test("a landed lease request replays while alarm arming fails", async () => {
+  const s = await armed();
+  const first = await s.claim("landed", 60_000);
+  expect(first.status).toBe(200);
+  const recorded = await first.json();
+  s.state.fail = true;
+  const restarted = new Project(
+    { storage: s.p.storage },
+    { FORGE_CLOUD_PROJECT: "a", FORGE_CLOUD_ID_PREFIX: "forge" },
+  );
+  const response = await restarted.fetch(
+    s.request("claim", {
+      subject: "alarm",
+      requestId: "landed",
+      ttlMs: 60_000,
+      holder: { actor, session: { id: "raw" } },
+    }),
+  );
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual(recorded);
+  expect(
+    s.p.db.query("SELECT outcome FROM domain_cloud_requests").all(),
+  ).toEqual([{ outcome: "ok" }]);
+}, 30_000);
+
+test("holder and every issue read command never arm maintenance", async () => {
+  const s = await armed();
+  const arm = spyOn(s.p.storage, "setAlarm");
+  s.state.fail = true;
+  expect(
+    (await s.project.fetch(s.request("holder?subject=alarm"))).status,
+  ).toBe(200);
+  for (const op of [
+    "issue.show",
+    "issue.comments",
+    "issue.links",
+    "issue.list",
+    "issue.ready",
+    "issue.blocked",
+    "issue.stale",
+  ]) {
+    const response = await s.post("command", {
+      op,
+      input:
+        op === "issue.show" || op === "issue.comments" || op === "issue.links"
+          ? { id: "forge-1" }
+          : {},
+      requestId: op,
+      context: { actor },
+    });
+    expect([200, 404]).toContain(response.status);
+  }
+  expect(arm).not.toHaveBeenCalled();
 }, 30_000);
