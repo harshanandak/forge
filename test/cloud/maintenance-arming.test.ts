@@ -39,7 +39,7 @@ async function armed() {
       ttlMs,
       holder: { actor, session: { id: "raw" } },
     });
-  return { p, state, times, post, claim };
+  return { p, project, state, times, post, claim };
 }
 
 test("a refused claim still arms maintenance for its denial witness", async () => {
@@ -61,6 +61,31 @@ test("a failed arm refuses the claim before anything is written and a retry succ
   s.state.fail = false;
   expect((await s.claim("retry", 1000)).status).toBe(200);
   expect(s.times).toHaveLength(1);
+}, 30_000);
+
+test("a restore staged during the arm cannot let an owner write through", async () => {
+  const s = await armed();
+  const storage = s.p.storage;
+  storage.setAlarm = async () => {
+    await storage.put("restore:next", { staged: true });
+  };
+  const response = await s.project.fetch(
+    new Request("https://fixture.example/p/a/claim", {
+      method: "POST",
+      headers: {
+        "X-Forge-Owner": "phone",
+        "X-Forge-Owner-Expires": String(Date.now() + 100_000),
+      },
+      body: JSON.stringify({
+        subject: "alarm",
+        requestId: "staged",
+        ttlMs: 1000,
+        holder: { actor, session: { id: "raw" } },
+      }),
+    }),
+  );
+  expect(response.status).toBe(409);
+  expect(s.p.db.query("SELECT * FROM state_leases").all()).toEqual([]);
 }, 30_000);
 
 test("a refused write command still arms maintenance", async () => {

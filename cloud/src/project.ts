@@ -665,12 +665,6 @@ export class Project {
         authorize(view, parts, Date.now());
       }
       const body = writes ? await bounded(request) : "";
-      if (
-        owner !== null &&
-        writes &&
-        (await this.#storage.get(STAGED)) !== undefined
-      )
-        throw fail("INPUT_CONFLICT", "An admin restore is under way");
       if (writes)
         await this.#armMaintenance(
           Math.min(
@@ -680,6 +674,12 @@ export class Project {
               : authorizeToken(view!, parts, Date.now()).expiresAt,
           ),
         );
+      if (
+        owner !== null &&
+        writes &&
+        (await this.#storage.get(STAGED)) !== undefined
+      )
+        throw fail("INPUT_CONFLICT", "An admin restore is under way");
       const token =
         parts === undefined
           ? undefined
