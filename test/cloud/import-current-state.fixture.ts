@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { afterEach } from "bun:test";
 import { StateOwner } from "../../src/core/state/index.ts";
+import { migrate, type Migration } from "../../src/core/state/migrations.ts";
 import type { SqlDatabase, SqlRow } from "../../src/ports/store.ts";
 import { success } from "../../src/surface/dispatch.ts";
 import { failure, respond } from "../../src/surface/result.ts";
@@ -130,13 +131,15 @@ export function source(
   history = false,
   authority = false,
   edit?: (db: SqlDatabase, state: StateOwner) => void,
+  migrations?: readonly Migration[],
 ) {
   const directory = mkdtempSync(join(tmpdir(), "forge-synthetic-import-"));
   resources.push(() => rmSync(directory, { recursive: true }));
   const path = join(directory, "standalone.sqlite");
   const db = database(path),
     state = owner(db);
-  state.initialize();
+  if (migrations === undefined) state.initialize();
+  else migrate(db, migrations);
   db.transaction(() => {
     for (let n = 1; n <= count - 3; n++)
       state.put(

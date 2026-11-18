@@ -1,11 +1,17 @@
 ﻿import { createHash, randomUUID } from "node:crypto";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import { TABLES } from "../../cloud/conformance/digest.ts";
 import { stopOverlay, stopPlan } from "../../cloud/conformance/restored.ts";
 import type { Tables } from "../../cloud/conformance/max-source.ts";
+import { limitsFrom } from "../../cloud/src/dump.ts";
 import {
   Refusal,
   cli,
@@ -30,23 +36,23 @@ const event = (n: number) => ({
   key: `issue:work-${n}`,
   body: JSON.stringify({ type: "forge/work:record.created@1", n }),
 });
-function bundle() {
+function bundle(count = 2) {
   const dir = mkdtempSync(join(tmpdir(), "restore-cloud-"));
-  const pages = [0, 1].map((page) => {
+  const pages = Array.from({ length: count }, (_, page) => {
     const tables = empty();
-    tables.state_records!.push(record(page + 1));
+    if (page < 2) tables.state_records!.push(record(page + 1));
     tables.state_events!.push(event(page + 1));
     return {
       format: "forge-cloud-dump-page/2",
       page,
-      last: page === 1,
-      next: page === 1 ? undefined : "next",
+      last: page === count - 1,
+      next: page === count - 1 ? undefined : "next",
       tables,
     };
   });
   const entries = pages.map((page) => {
     const text = JSON.stringify(page);
-    const name = `page-000${page.page}.json`;
+    const name = `page-${String(page.page).padStart(4, "0")}.json`;
     writeFileSync(join(dir, name), text);
     return {
       name,
@@ -145,6 +151,116 @@ const run = (
     report,
     fetch: fake,
   }).then((result) => ({ result, report }));
+
+const paged =
+  (
+    fake: Fetch,
+    pageAt: (index: number) => { tables: Tables; last: boolean },
+  ): Fetch =>
+  (url, init) => {
+    const cursor = new URL(url).searchParams.get("cursor");
+    if (cursor === null) return fake(url, init);
+    const page = cursor === "start" ? 0 : Number(cursor);
+    return Promise.resolve(
+      Response.json({
+        ok: true,
+        value: { page, next: String(page + 1), ...pageAt(page) },
+      }),
+    );
+  };
+
+test("verifies a readback of more than 1,000 small pages", async () => {
+  const { dir, source } = bundle(1_001);
+  const held = stopped(source);
+  const pages = TABLES.flatMap((table) =>
+    held[table]!.map((row) => ({ ...empty(), [table]: [row] })),
+  );
+  const { fake } = worker({ held });
+  const { result } = await run(
+    dir,
+    paged(fake, (index) => ({
+      tables: pages[index]!,
+      last: index === pages.length - 1,
+    })),
+  );
+  expect(result.match).toBe(true);
+});
+
+test("refuses the page that crosses the per-table row limit", async () => {
+  const { dir, source } = bundle();
+  const { maxRows } = limitsFrom({});
+  const { fake } = worker({ held: stopped(source) });
+  const full = Array.from({ length: maxRows }, (_, index) => record(index));
+  const fetch = paged(fake, (index) => ({
+    tables: {
+      ...empty(),
+      state_records: index === 0 ? full : [record(maxRows)],
+    },
+    last: index === 1,
+  }));
+  await expect(run(dir, fetch)).rejects.toThrow(
+    "readback refused at page 1: READBACK_TOO_LONG",
+  );
+});
+
+test("refuses the page that crosses the stored UTF-8 byte limit", async () => {
+  const { dir, source } = bundle();
+  const { maxBytes, pageBytes } = limitsFrom({});
+  const { fake } = worker({ held: stopped(source) });
+  const text = "€".repeat(Math.floor(pageBytes / 4));
+  const lastPage = Math.floor(maxBytes / Buffer.byteLength(text));
+  const fetch = paged(fake, (index) => ({
+    tables: {
+      ...empty(),
+      state_records: [{ ...record(index), body: JSON.stringify({ text }) }],
+    },
+    last: index === lastPage,
+  }));
+  await expect(run(dir, fetch)).rejects.toThrow(
+    `readback refused at page ${lastPage}: READBACK_TOO_LONG`,
+  );
+});
+
+test("refuses an empty readback page that advertises a continuation", async () => {
+  const { dir, source } = bundle();
+  const held = stopped(source);
+  const { fake } = worker({ held });
+  await expect(
+    run(
+      dir,
+      paged(fake, (index) => ({
+        tables: index === 0 ? empty() : held,
+        last: index === 1,
+      })),
+    ),
+  ).rejects.toThrow("readback refused at page 0: RESPONSE_INVALID");
+});
+
+test("restores converter bundle pages in order through page 10000", async () => {
+  const { dir } = bundle(10_001);
+  const { fake } = worker({});
+  const { result } = await run(dir, fake);
+  expect(result.restored).toBe(true);
+  expect(result.match).toBe(true);
+});
+
+test.each(["page-1.json", "page-0002.json", "page-0000.json"])(
+  "refuses a bundle that names its second page %s",
+  async (name) => {
+    const { dir } = bundle();
+    const file = join(dir, "manifest.json");
+    const manifest = JSON.parse(readFileSync(file, "utf8")) as {
+      pages: { name: string }[];
+    };
+    if (name !== manifest.pages[0]!.name)
+      copyFileSync(join(dir, manifest.pages[1]!.name), join(dir, name));
+    manifest.pages[1]!.name = name;
+    writeFileSync(file, JSON.stringify(manifest));
+    await expect(run(dir, worker({}).fake)).rejects.toThrow(
+      "bundle refused at page 1: BUNDLE_INVALID",
+    );
+  },
+);
 
 test("restores every page, reads the project back and reports matching digests", async () => {
   const { dir } = bundle();

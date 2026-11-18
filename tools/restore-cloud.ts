@@ -3,9 +3,17 @@ import { closeSync, openSync, readFileSync, writeSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
-import { TABLES, digests, fold, tally } from "../cloud/conformance/digest.ts";
+import {
+  COLUMNS,
+  TABLES,
+  digests,
+  fold,
+  tally,
+} from "../cloud/conformance/digest.ts";
 import type { Tables } from "../cloud/conformance/max-source.ts";
 import { stopWindowOf } from "../cloud/conformance/stop-live.ts";
+import { limitsFrom } from "../cloud/src/dump.ts";
+import { isObject } from "../src/core/config/pointer.ts";
 import {
   practiceComparisonRefusal,
   verifyPracticeReadback,
@@ -13,9 +21,8 @@ import {
 
 const MAX_BODY = 8 * 1024 * 1024;
 const MAX_REPLY = 16 * 1024 * 1024;
-const MAX_PAGES = 1000;
+const { maxRows, maxBytes } = limitsFrom({});
 const PROJECT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
-const PAGE_FILE = /^page-[0-9]{4}\.json$/;
 
 export type Fetch = (input: string, init: RequestInit) => Promise<Response>;
 export interface Options {
@@ -87,7 +94,8 @@ function load(dir: string) {
   const source = empty();
   const pages = entries.map((entry, index) => {
     const bad = (code: string) => new Refusal("bundle", code, index);
-    if (!PAGE_FILE.test(entry.name)) throw bad("BUNDLE_INVALID");
+    if (entry.name !== `page-${String(index).padStart(4, "0")}.json`)
+      throw bad("BUNDLE_INVALID");
     const bytes = readFileSync(join(dir, entry.name));
     if (bytes.length > MAX_BODY) throw bad("RESTORE_TOO_LARGE");
     if (
@@ -160,23 +168,52 @@ export async function transfer(options: Options) {
   const readback = async () => {
     const received = empty();
     let cursor = "start";
-    for (let index = 0; index < MAX_PAGES; index++) {
+    let storedBytes = 0;
+    for (let index = 0; ; index++) {
       const value = (await send(
         "readback",
         index,
         "GET",
         `dump?cursor=${encodeURIComponent(cursor)}`,
       )) as unknown as Dump;
+      const invalid = () => new Refusal("readback", "RESPONSE_INVALID", index);
+      const tooLong = () => new Refusal("readback", "READBACK_TOO_LONG", index);
       if (value.page !== index)
         throw new Refusal("readback", "PAGE_ORDER", index);
-      for (const table of TABLES)
-        received[table]!.push(...value.tables[table]!);
+      if (
+        typeof value.last !== "boolean" ||
+        !isObject(value.tables) ||
+        Object.keys(value.tables).length !== TABLES.length
+      )
+        throw invalid();
+      let pageRows = 0;
+      for (const table of TABLES) {
+        const rows = value.tables[table];
+        const collected = received[table]!;
+        if (!Array.isArray(rows)) throw invalid();
+        if (collected.length + rows.length > maxRows) throw tooLong();
+        pageRows += rows.length;
+        const columns = COLUMNS[table];
+        for (const row of rows) {
+          if (!isObject(row) || Object.keys(row).length !== columns.length)
+            throw invalid();
+          for (const column of columns) {
+            const scalar = row[column];
+            if (
+              typeof scalar !== "string" &&
+              (typeof scalar !== "number" || !Number.isSafeInteger(scalar))
+            )
+              throw invalid();
+            storedBytes += Buffer.byteLength(String(scalar));
+          }
+          if (storedBytes > maxBytes) throw tooLong();
+          collected.push(row);
+        }
+      }
       if (value.last) return received;
-      if (typeof value.next !== "string")
-        throw new Refusal("readback", "RESPONSE_INVALID", index);
+      if (pageRows === 0 || typeof value.next !== "string") throw invalid();
       cursor = value.next;
     }
-    throw new Refusal("readback", "READBACK_TOO_LONG");
   };
   const started = performance.now();
   try {

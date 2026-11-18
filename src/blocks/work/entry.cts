@@ -617,13 +617,14 @@ function rejectRuntimeWrite(error: unknown): never {
 }
 function atomicRuntime<Input, Output>(
   handler: (call: HandlerCall<Input>) => Output,
+  bindState: (state: LeaseStateClient) => LeaseStateClient = (state) => state,
 ): (call: HandlerCall<Input>) => Output {
   return (call) => {
     let planned: LeaseStateClient | undefined;
     let finish = () => {};
     const open = (): LeaseStateClient => {
       if (planned) return planned;
-      const state = client(call.services);
+      const state = bindState(client(call.services));
       const entries = new Map<string, BatchEntry>();
       const records = new Map<string, StateRecord>();
       const reads = new Map<string, number>();
@@ -2929,7 +2930,10 @@ function readGlobal(state: LeaseStateClient): {
   revision: number;
 } {
   const record = state.get(GLOBAL);
-  if (!record) return { value: { stopped: {} }, revision: 0 };
+  return { value: globalValue(record), revision: record?.revision ?? 0 };
+}
+function globalValue(record: StateRecord | undefined): GlobalState {
+  if (!record) return { stopped: {} };
   const value = record.value as Record<string, unknown> | null;
   if (!isMap(value))
     throw new StateProblem("autopilot:global is not an object", true);
@@ -2947,10 +2951,7 @@ function readGlobal(state: LeaseStateClient): {
     throw new StateProblem("autopilot:global resumed is not an object", true);
   if (value.owner !== undefined && !validOwner(value.owner))
     throw new StateProblem("autopilot:global owner is malformed", true);
-  return {
-    value: value as unknown as GlobalState,
-    revision: record.revision,
-  };
+  return value as unknown as GlobalState;
 }
 /** A sample counts only when both numbers are finite and in range. */
 function validLoad(load: unknown): load is Load {
@@ -4111,28 +4112,17 @@ function laneStop(call: HandlerCall<StopInput>): {
     ids = idsFor(state, config);
   if ((input.all === true) === (input.id !== undefined))
     fail("INPUT_INVALID", "Give exactly one of a lane id or --all");
+  const record = state.get(GLOBAL);
+  refuseFrozenRecord(record);
   const at = new Date(state.now()).toISOString();
+  const revision = record?.revision ?? 0;
   let value: GlobalState;
-  let revision: number;
   let scope = "all";
   try {
-    ({ value, revision } = readGlobal(state));
+    value = globalValue(record);
   } catch (error) {
     if (!(error instanceof StateProblem)) throw error;
-    // An unreadable record is replaced by a stop of every lane: the safe direction.
-    const kept = state.get(GLOBAL)?.value;
-    persist(
-      state,
-      GLOBAL,
-      {
-        stopAll: at,
-        stopped: {},
-        ...(isMap(kept) && kept.frozen !== undefined
-          ? { frozen: isTime(kept.frozen) ? kept.frozen : at }
-          : {}),
-      },
-      state.get(GLOBAL)?.revision ?? 0,
-    );
+    persist(state, GLOBAL, { stopAll: at, stopped: {} }, revision);
     return { stopped: "all", at };
   }
   if (input.all === true) value.stopAll ??= at;
@@ -4224,7 +4214,10 @@ function pinned(state: LeaseStateClient, read: PinnedRead): LeaseStateClient {
     options: T,
   ): T & { readonly readSet: readonly PinnedRead[] } => ({
     ...options,
-    readSet: options.readSet?.some((entry) => entry.key === read.key)
+    readSet: options.readSet?.some(
+      (entry) =>
+        entry.key === read.key && entry.expectRevision === read.expectRevision,
+    )
       ? options.readSet
       : [...(options.readSet ?? []), read],
   });
@@ -4248,30 +4241,43 @@ function pinned(state: LeaseStateClient, read: PinnedRead): LeaseStateClient {
     acquire: (
       ...[subject, duration, options]: Parameters<LeaseStateClient["acquire"]>
     ) => state.acquire(subject, duration, pin(options ?? {})),
+    renew: (
+      ...[subject, duration, options]: Parameters<LeaseStateClient["renew"]>
+    ) => state.renew(subject, duration, pin(options ?? {})),
+    release: (subject, options) => state.release(subject, pin(options ?? {})),
+    releaseOwn: (subject, options) =>
+      state.releaseOwn(subject, pin(options ?? {})),
+    appendLandingComment: (input, options) =>
+      state.appendLandingComment(input, pin(options ?? {})),
     delete: (...[key, options]: Parameters<LeaseStateClient["delete"]>) =>
       state.delete(key, pin(options)),
     withOwnLease: (subject) => pinned(state.withOwnLease(subject), read),
   };
 }
-function refuseFrozen(services: unknown): object {
-  const state = client(services);
-  const record = state.get(GLOBAL);
+function refuseFrozenRecord(record: StateRecord | undefined): void {
   const value = record?.value;
   if (isMap(value) && value.frozen !== undefined)
     fail(
       "UNAVAILABLE",
-      `The local tracker store has been frozen since ${isTime(value.frozen) ? value.frozen : "an unreadable time"} and no longer accepts issue writes.`,
+      `The local tracker store has been frozen since ${isTime(value.frozen) ? value.frozen : "an unreadable time"} and no longer accepts writes.`,
       {
         repair:
           "Bind this checkout to the cloud project with forge auth login, then use the cloud-served forge issue commands. Do not lift the freeze from a session; only the owner can.",
       },
     );
+}
+function freezeRead(state: LeaseStateClient): PinnedRead {
+  const record = state.get(GLOBAL);
+  refuseFrozenRecord(record);
+  return { key: GLOBAL, expectRevision: record?.revision ?? 0 };
+}
+function pinFreeze(state: LeaseStateClient): LeaseStateClient {
+  return pinned(state, freezeRead(state));
+}
+function refuseFrozen(services: unknown): object {
   return {
     ...(services as object),
-    state: pinned(state, {
-      key: GLOBAL,
-      expectRevision: record?.revision ?? 0,
-    }),
+    state: pinFreeze(client(services)),
   };
 }
 const FROZEN_WRITES = [
@@ -4296,6 +4302,7 @@ const FROZEN_WRITES = [
   "attempt.select",
   "attempt.note",
   "lane.attempt",
+  "lane.close",
 ];
 async function laneStatus(
   call: HandlerCall<Record<string, never>>,
@@ -4570,13 +4577,13 @@ function laneRecord(call: HandlerCall<TailRecordInput>):
 const operations: Operations<WorkOperations> = {
   "lane.control": () =>
     fail("UNAVAILABLE", "Lane control requires a cloud-bound project"),
-  "lane.next": atomicRuntime(laneNext),
+  "lane.next": atomicRuntime(laneNext, pinFreeze),
   "lane.stop": atomicRuntime(laneStop),
-  "lane.resume": atomicRuntime(laneResume),
+  "lane.resume": atomicRuntime(laneResume, pinFreeze),
   "lane.freeze": laneFreeze,
   "lane.unfreeze": laneUnfreeze,
   "lane.status": (call) => laneStatus(call),
-  "lane.record": atomicRuntime(laneRecord),
+  "lane.record": atomicRuntime(laneRecord, pinFreeze),
   "lane.show": ({ input, services, config }) => {
     const state = client(services),
       ids = idsFor(state, config);
@@ -4871,7 +4878,9 @@ const operations: Operations<WorkOperations> = {
   },
 
   "lane.release": async ({ input, services, config, signal, deadline }) => {
-    const state = client(services),
+    const boundState = client(services),
+      frozen = freezeRead(boundState),
+      state = pinned(boundState, frozen),
       ids = idsFor(state, config),
       id = ids.stored(input.id),
       laneId = input.attempt === undefined ? id : `${id}:${input.attempt}`,
@@ -4958,10 +4967,16 @@ const operations: Operations<WorkOperations> = {
         [{ key: issue.key, expectRevision: issue.revision }],
       );
       (
-        state as LeaseStateClient & {
-          finalizeDelete(key: string, revision: number): void;
+        boundState as LeaseStateClient & {
+          finalizeDelete(
+            key: string,
+            revision: number,
+            options: { readSet: readonly PinnedRead[] },
+          ): void;
         }
-      ).finalizeDelete(reservation.key, reservation.revision);
+      ).finalizeDelete(reservation.key, reservation.revision, {
+        readSet: [frozen],
+      });
       for (const name of new Set([input.id, lane.issue, id])) {
         const path = `forge-lane-${name}.lock`,
           info = files.inspect(path, "common");
@@ -5771,7 +5786,6 @@ const operations: Operations<WorkOperations> = {
           pull.url,
         );
       if (!matching) {
-        refuseFrozen(call.services);
         const written = recovering
           ? state.appendLandingComment({
               id,

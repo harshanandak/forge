@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
@@ -9,6 +10,7 @@ import { privateFileGuard } from "../src/adapters/store-sqlite/private-files.ts"
 import { windowsPrivateFiles } from "../src/adapters/process/windows-acl.ts";
 import { ForgeFailure } from "../src/contract/failure.ts";
 import { StateOwner } from "../src/core/state/index.ts";
+import { migrate, stateMigrations } from "../src/core/state/migrations.ts";
 import type { SqlDatabase } from "../src/ports/store.ts";
 import type { OwnedHandle } from "../src/ports/lifetime.ts";
 import { success } from "../src/surface/dispatch.ts";
@@ -97,6 +99,23 @@ async function opened(
     },
   };
 }
+function migrationPrefix(source: SqlDatabase) {
+  try {
+    const applied = source.all(
+      "SELECT id FROM state_migrations ORDER BY rowid LIMIT ?",
+      [stateMigrations.length + 1],
+    );
+    if (
+      applied.length === 0 ||
+      applied.some(({ id }, index) => id !== stateMigrations[index]?.id)
+    )
+      invalid();
+    return stateMigrations.slice(0, applied.length);
+  } catch {
+    return invalid();
+  }
+}
+
 /** Bounded scans use exactly the dump's column and key order, including empty tables. */
 export function imageDigests(db: SqlDatabase) {
   const t = image.tally();
@@ -131,7 +150,7 @@ export async function convert(options: Options) {
     manifest = sourceManifest(options.manifest),
     limits = options.limits ?? dump.limitsFrom({});
   const handles: OwnedHandle<SqlDatabase>[] = [];
-  let retained: string | undefined;
+  let sourceDirectory: string | undefined;
   const clock = { now: () => Date.parse(manifest.at) };
   const checkPin = async (file = backup) => {
     if ((await digest(file)) !== manifest.sha256) invalid();
@@ -140,18 +159,35 @@ export async function convert(options: Options) {
     isolatedBackup(backup);
     await checkPin();
     fs.mkdirSync(out, { mode: 0o700 });
-    if (process.platform === "win32")
-      privateFileGuard(windowsPrivateFiles()).directory(out, true);
-    const copy = join(fs.realpathSync(out), ".source.sqlite");
+    const security =
+      process.platform === "win32"
+        ? privateFileGuard(windowsPrivateFiles())
+        : undefined;
+    security?.directory(out, true);
+    sourceDirectory = fs.mkdtempSync(join(tmpdir(), ".forge-import-"));
+    security?.directory(sourceDirectory, true);
+    const copy = join(sourceDirectory, ".source.sqlite");
     copyPrivateFile(backup, copy);
-    retained = copy;
     await checkPin(copy);
     const source = await opened(copy, true, handles);
-    source.exec("BEGIN");
     const integrity = source.all("PRAGMA integrity_check");
     if (integrity.length !== 1 || integrity[0]?.integrity_check !== "ok")
       invalid();
     const scratch = await opened(":memory:", false, handles);
+    const migrations = migrationPrefix(source);
+    if (migrations.length < stateMigrations.length) {
+      migrate(scratch, migrations);
+      const writable = await opened(copy, false, handles);
+      try {
+        writable.transaction(() => {
+          state.verifySourceSchema(writable, scratch);
+          new StateOwner(writable, clock).initialize();
+        });
+      } catch {
+        invalid();
+      }
+    }
+    source.exec("BEGIN");
     new StateOwner(scratch, clock).initialize();
     const projected = state.currentState(source, scratch, manifest, limits);
     const leftBehind = projected.leftBehind;
@@ -235,7 +271,7 @@ export async function convert(options: Options) {
     };
   })().finally(async () => {
     await Promise.all(handles.reverse().map(async (handle) => handle.close()));
-    if (retained) fs.unlinkSync(retained);
+    if (sourceDirectory) fs.rmSync(sourceDirectory, { recursive: true });
   });
   const file = join(out, "manifest.json"),
     bytes = JSON.stringify(bundle);

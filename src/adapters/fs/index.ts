@@ -39,6 +39,7 @@ import {
   MAX_LOCK_FILE_BYTES,
   removeConflict,
 } from "../../core/config/files.ts";
+import { ForgeFailure } from "../../contract/failure.ts";
 import { publishExclusive, removeDurable } from "./durable-io.ts";
 import { nodeProjectFiles } from "./project-files.ts";
 
@@ -182,6 +183,30 @@ export function restoreClaim(
   }
 }
 
+function restoreAfterRemoveFailure(
+  path: string,
+  target: string,
+  claimed: string,
+  failure: unknown,
+): never {
+  try {
+    restoreClaim(path, target, claimed);
+  } catch (restoreError) {
+    if (!(failure instanceof Error) || failure instanceof ForgeFailure)
+      throw new AggregateError(
+        [failure, restoreError],
+        failure instanceof Error ? failure.message : "Config removal failed",
+        { cause: restoreError },
+      );
+    const cause: unknown = failure.cause;
+    failure.cause =
+      cause === undefined
+        ? restoreError
+        : new AggregateError([cause, restoreError], "Config removal causes");
+  }
+  throw failure;
+}
+
 function sameFile(a: BigIntStats, b: BigIntStats): boolean {
   return a.dev === b.dev && a.ino === b.ino;
 }
@@ -278,17 +303,15 @@ export function nodeConfigFiles(
       try {
         intact = claimIntact(claimed, held, expected);
       } catch (error) {
-        restoreClaim(path, target, claimed);
-        throw error;
+        restoreAfterRemoveFailure(path, target, claimed, error);
       }
-      if (!intact) {
-        restoreClaim(path, target, claimed);
-        throw removeConflict(path);
-      }
+      if (!intact)
+        restoreAfterRemoveFailure(path, target, claimed, removeConflict(path));
       try {
         removeDurable(claimed);
       } catch (error) {
-        if (existsSync(claimed)) restoreClaim(path, target, claimed);
+        if (existsSync(claimed))
+          restoreAfterRemoveFailure(path, target, claimed, error);
         throw error;
       }
     },
