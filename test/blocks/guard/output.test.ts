@@ -132,6 +132,19 @@ test("registered values are found in the raw output even when a JSON parse would
     assert.equal(result.decision, "block");
     assert.ok(!JSON.stringify(result).includes(value));
   }
+  const historical = `{"API_TOKEN":"fixture-stale-opaque-value","API_TOKEN":"[REDACTED]"}`;
+  for (const tool_response of [historical, { output: historical }])
+    assert.equal(
+      checkOutput({ ...event, tool_response }, []).decision,
+      "block",
+    );
+  assert.deepEqual(
+    checkOutput(
+      { ...event, tool_response: { output: `{"API_TOKEN":"[REDACTED]"}` } },
+      [],
+    ),
+    {},
+  );
 });
 
 test("already-redacted bearer and quoted assignment markers pass unchanged", () => {

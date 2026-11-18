@@ -459,6 +459,9 @@ test("H1 still blocks searches of secret files, history and the whole harness ro
   );
   assert.ok(h1("grep -r x ~/.claude"));
   assert.ok(h1("grep -r x ~/.claude/"));
+  assert.ok(h1("/usr/bin/grep -r x ~/.claude"));
+  assert.ok(h1("/opt/tools/rg x ~/.claude/*"));
+  assert.equal(h1("/usr/bin/grep -rn token ~/.claude/hooks"), null);
   assert.ok(h1("rg x ~/.claude/*"));
   assert.ok(h1("grep x ~/.codex/sessions/2026/rollout-a.jsonl"));
   assert.ok(h1("findstr KEY C:\\Users\\demo\\.zoho\\credentials"));
