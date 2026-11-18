@@ -1,10 +1,16 @@
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
+import { windowsPrivateFiles } from "../src/adapters/process/windows-acl.ts";
+import { copyPrivateFile } from "../src/adapters/store-sqlite/file-ops.ts";
 import { createSqliteStore } from "../src/adapters/store-sqlite/index.ts";
+import { privateFileGuard } from "../src/adapters/store-sqlite/private-files.ts";
+import { validateDeclaredWorkRecord } from "../src/blocks/work/state-families.ts";
 import { ForgeFailure } from "../src/contract/failure.ts";
-import { canonicalJson } from "../src/core/config/pointer.ts";
+import { canonicalJson, isObject } from "../src/core/config/pointer.ts";
 import { parseRestoreJson } from "../src/core/state/restore-json.ts";
 import type { StateEvent, StateRecord } from "../src/generated/types.ts";
 import { success } from "../src/surface/dispatch.ts";
@@ -15,6 +21,9 @@ import { digest, isolatedBackup } from "./import-current.ts";
 import { ordinaryKey, workRecords } from "./import-current-state.ts";
 
 const namespace = "forge/work";
+const projectName = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const sha256 = /^[a-f0-9]{64}$/;
+const exportWatermark = /^[a-f0-9]{32}\.[0-9]{19}$/;
 const tableReasons: Record<string, string> = {
   state_events:
     "history is not carried back; applying a record derives its event locally",
@@ -23,8 +32,6 @@ const tableReasons: Record<string, string> = {
   domain_cloud_requests: "cloud-only replay table with no local twin",
   domain_cloud_command_receipts: "cloud-only audit table with no local twin",
 };
-const floorReason =
-  "derived number floor; the local store recomputes it from keys and events when records are applied";
 const lostReason =
   "no local counterpart in the forward converter's mapping; records created in the cloud after the move are not in the pre-cutover snapshot and are lost on rollback unless carried by hand";
 const fieldsReason =
@@ -42,24 +49,51 @@ export interface Options {
   backup: string;
   manifest: string;
   out: string;
+  dumpManifest: string;
+  project: string;
 }
-function readPages(directory: string): Page[] {
+function readJson(path: string, reason: string): unknown {
+  try {
+    return JSON.parse(fs.readFileSync(path, "utf8")) as unknown;
+  } catch {
+    return invalid(reason);
+  }
+}
+function readPages({ dump, dumpManifest, project }: Options): Page[] {
+  if (typeof project !== "string" || !projectName.test(project))
+    invalid("expected a cloud project name");
+  const receipt = readJson(dumpManifest, "trusted dump provenance is required");
+  if (
+    !isObject(receipt) ||
+    typeof receipt.project !== "string" ||
+    !Array.isArray(receipt.pages)
+  )
+    invalid("invalid dump provenance");
+  if (receipt.project !== project) invalid("dump is from a different project");
+  const pins: unknown[] = receipt.pages;
   const number = (name: string) => Number(/\d+/.exec(name)![0]);
   const names = fs
-    .readdirSync(directory)
+    .readdirSync(dump)
     .filter((name) => /^page-\d{4,}\.json$/.test(name))
     .sort((a, b) => number(a) - number(b));
-  if (names.length === 0) invalid("page sequence");
+  if (names.length === 0 || names.length !== pins.length)
+    invalid("page sequence");
   return names.map((name, index) => {
-    const page = parseDump(
-      fs.readFileSync(join(directory, name), "utf8"),
-    ) as Page;
+    const bytes = fs.readFileSync(join(dump, name));
+    const page = parseDump(bytes.toString("utf8")) as Page;
     if (
       page.format !== PAGE_FORMAT ||
       page.page !== index ||
       page.last !== (index === names.length - 1)
     )
       invalid("page sequence");
+    const pin = pins[index];
+    if (
+      !isObject(pin) ||
+      pin.name !== name ||
+      pin.sha256 !== createHash("sha256").update(bytes).digest("hex")
+    )
+      invalid("page hash does not match trusted dump provenance");
     return page;
   });
 }
@@ -87,9 +121,9 @@ function chained(pages: Page[]): void {
   let watermark: string | undefined;
   for (const [index, page] of pages.entries()) {
     if (page.next === null) continue;
-    let cursor: { p: number; t: number; k: Key; w: string };
+    let cursor: unknown;
     try {
-      cursor = JSON.parse(page.next) as typeof cursor;
+      cursor = JSON.parse(page.next) as unknown;
     } catch {
       return invalid("cursor chain");
     }
@@ -98,13 +132,16 @@ function chained(pages: Page[]): void {
     if (
       !tail ||
       !head ||
+      !isObject(cursor) ||
       !Array.isArray(cursor.k) ||
       cursor.p !== index + 1 ||
       cursor.t !== tail.table ||
-      compare(cursor.k, tail.key) !== 0 ||
+      canonicalJson(cursor.k) !== canonicalJson(tail.key) ||
+      typeof cursor.w !== "string" ||
+      !exportWatermark.test(cursor.w) ||
       (watermark ??= cursor.w) !== cursor.w ||
-      head.table < cursor.t ||
-      (head.table === cursor.t && compare(head.key, cursor.k) <= 0)
+      head.table < tail.table ||
+      (head.table === tail.table && compare(head.key, tail.key) <= 0)
     )
       invalid("cursor chain");
   }
@@ -119,39 +156,47 @@ function sameProject(pages: Page[], first: string | undefined, at: string) {
 }
 async function localRecords(path: string, pin: string) {
   isolatedBackup(path);
-  if ((await digest(path)) !== pin)
-    invalid("backup hash differs from source.json");
-  const opened = await createSqliteStore(process.cwd()).open({
-    path: resolve(path),
-    readOnly: true,
-  });
-  if (!opened.ok) invalid("backup cannot be opened read-only");
-  const records = new Map<string, StateRecord>();
-  let first: string | undefined;
+  const directory = fs.mkdtempSync(join(tmpdir(), ".forge-delta-"));
   try {
-    for (const record of workRecords(opened.handle.value)) {
-      first ??= record.key;
-      if (!record.key.startsWith("allocation:"))
+    if (process.platform === "win32")
+      privateFileGuard(windowsPrivateFiles()).directory(directory, true);
+    const copy = join(directory, ".source.sqlite");
+    copyPrivateFile(path, copy);
+    if ((await digest(copy)) !== pin)
+      invalid("backup hash differs from source.json");
+    isolatedBackup(copy);
+    const opened = await createSqliteStore(process.cwd()).open({
+      path: copy,
+      readOnly: true,
+    });
+    if (!opened.ok) invalid("backup cannot be opened read-only");
+    const records = new Map<string, StateRecord>();
+    let first: string | undefined;
+    try {
+      for (const record of workRecords(opened.handle.value)) {
+        first ??= record.key;
         records.set(record.key, record);
+      }
+    } finally {
+      await opened.handle.close();
     }
+    return { records, first };
   } finally {
-    await opened.handle.close();
+    fs.rmSync(directory, { recursive: true });
   }
-  if ((await digest(path)) !== pin) invalid("backup changed while read");
-  return { records, first };
 }
 export async function compute(options: Options) {
-  const { sha256: pin, at } = JSON.parse(
-    fs.readFileSync(options.manifest, "utf8"),
-  ) as { sha256?: unknown; at?: unknown };
+  const source = readJson(options.manifest, "source.json needs sha256 and at");
   if (
-    typeof pin !== "string" ||
-    !/^[a-f0-9]{64}$/.test(pin) ||
-    typeof at !== "string"
+    !isObject(source) ||
+    typeof source.sha256 !== "string" ||
+    !sha256.test(source.sha256) ||
+    typeof source.at !== "string"
   )
     invalid("source.json needs sha256 and at");
+  const { sha256: pin, at } = source;
   if (fs.existsSync(options.out)) invalid("output exists");
-  const pages = readPages(options.dump);
+  const pages = readPages(options);
   chained(pages);
   const { records: local, first } = await localRecords(options.backup, pin);
   sameProject(pages, first, at);
@@ -196,11 +241,12 @@ export async function compute(options: Options) {
         seen.add(id);
         const family = record.key.split(":")[0]!;
         if (
-          record.key.startsWith("allocation:") &&
-          record.namespace === namespace
+          record.namespace === namespace &&
+          family === "allocation" &&
+          validateDeclaredWorkRecord(record.key, record.value) !== undefined
         )
-          note(`${namespace}:allocation:*`, floorReason);
-        else if (ordinaryKey(record.namespace, record.key)) {
+          invalid("allocation floor does not match its declared shape");
+        if (ordinaryKey(record.namespace, record.key)) {
           cloud.set(record.key, record);
         } else if (record.namespace === namespace)
           note(`${namespace}:${family}:*`, lostReason, 1, record);
@@ -224,6 +270,7 @@ export async function compute(options: Options) {
         kind: key.split(":")[0]!,
         change: before ? "changed" : "new",
         beforeRevision: before?.revision ?? null,
+        ...(key.startsWith("allocation:") && { before: before?.value ?? null }),
         after: after.value,
       },
     ];
@@ -233,7 +280,7 @@ export async function compute(options: Options) {
     .sort();
   const report = {
     format: "forge-cloud-to-local-delta/1",
-    source: { sha256: pin },
+    source: { sha256: pin, project: options.project },
     pages: pages.length,
     counts: {
       cloudRecords: cloud.size,
@@ -280,7 +327,14 @@ if (
   process.argv[1] &&
   import.meta.url === pathToFileURL(resolve(process.argv[1])).href
 ) {
-  const names = ["dump", "backup", "manifest", "out"];
+  const names = [
+    "dump",
+    "backup",
+    "manifest",
+    "out",
+    "dump-manifest",
+    "project",
+  ];
   try {
     const { values } = parseArgs({
       options: Object.fromEntries(
@@ -298,6 +352,8 @@ if (
       backup: one("backup"),
       manifest: one("manifest"),
       out: one("out"),
+      dumpManifest: one("dump-manifest"),
+      project: one("project"),
     });
     process.stdout.write(JSON.stringify(reply.envelope) + "\n");
     process.exitCode = reply.exitCode;
@@ -305,7 +361,7 @@ if (
     const reply = respond(
       failure(
         "INPUT_INVALID",
-        "Expected --dump, --backup, --manifest and --out",
+        "Expected --dump, --backup, --manifest, --out, --dump-manifest and --project",
       ),
     );
     process.stdout.write(JSON.stringify(reply.envelope) + "\n");
