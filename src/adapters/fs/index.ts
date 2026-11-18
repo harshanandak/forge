@@ -152,7 +152,11 @@ export function removeEmptyParents(
   }
 }
 
-function restoreClaim(path: string, target: string, claimed: string): void {
+export function restoreClaim(
+  path: string,
+  target: string,
+  claimed: string,
+): void {
   try {
     publishExclusive(claimed, target);
   } catch (error) {
