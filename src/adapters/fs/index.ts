@@ -9,7 +9,9 @@
 import {
   closeSync,
   existsSync,
+  fstatSync,
   fsyncSync,
+  type BigIntStats,
   lstatSync,
   mkdirSync,
   openSync,
@@ -161,11 +163,44 @@ export function restoreClaim(
     publishExclusive(claimed, target);
   } catch (error) {
     throw new Error(
-      `${path} could not be put back after a refused removal; its content is kept at ${claimed}`,
+      lstatSync(claimed).nlink > 1
+        ? `${path} was put back after a refused removal but could not be made durable; a copy is also kept at ${claimed}`
+        : `${path} could not be put back after a refused removal; its content is kept at ${claimed}`,
       { cause: error },
     );
   }
-  removeDurable(claimed);
+  try {
+    removeDurable(claimed);
+  } catch {
+    return;
+  }
+}
+
+function sameFile(a: BigIntStats, b: BigIntStats): boolean {
+  return a.dev === b.dev && a.ino === b.ino;
+}
+
+function holdsExpected(
+  target: string,
+  expected: Uint8Array,
+): BigIntStats | undefined {
+  if (!lstatSync(target).isFile()) return undefined;
+  const fd = openSync(target, "r");
+  let opened: BigIntStats;
+  let matched: boolean;
+  try {
+    opened = fstatSync(fd, { bigint: true });
+    matched =
+      opened.isFile() &&
+      opened.size === BigInt(expected.byteLength) &&
+      Buffer.from(expected).equals(readFileSync(fd));
+  } finally {
+    closeSync(fd);
+  }
+  const named = lstatSync(target, { bigint: true });
+  return matched && named.isFile() && sameFile(named, opened)
+    ? opened
+    : undefined;
 }
 
 export function nodeConfigFiles(
@@ -209,35 +244,26 @@ export function nodeConfigFiles(
         dirname(target),
         `.${basename(target)}.${randomUUID()}.claim`,
       );
+      let held: BigIntStats;
       try {
-        if (!lstatSync(target).isFile()) throw removeConflict(path);
+        const found = holdsExpected(target, expected);
+        if (found === undefined) throw removeConflict(path);
+        held = found;
         renameSync(target, claimed);
       } catch (error) {
         if (errorCode(error) === "ENOENT") return;
         throw error;
       }
-      let matched: boolean;
-      try {
-        const held = lstatSync(claimed);
-        matched =
-          held.isFile() &&
-          held.size === expected.byteLength &&
-          Buffer.from(expected).equals(readFileSync(claimed));
-      } catch (error) {
+      if (!sameFile(lstatSync(claimed, { bigint: true }), held)) {
         restoreClaim(path, target, claimed);
+        throw removeConflict(path);
+      }
+      try {
+        removeDurable(claimed);
+      } catch (error) {
+        if (existsSync(claimed)) restoreClaim(path, target, claimed);
         throw error;
       }
-      if (matched) {
-        try {
-          removeDurable(claimed);
-        } catch (error) {
-          if (existsSync(claimed)) restoreClaim(path, target, claimed);
-          throw error;
-        }
-        return;
-      }
-      restoreClaim(path, target, claimed);
-      throw removeConflict(path);
     },
     list(dir) {
       try {
