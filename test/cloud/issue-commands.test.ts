@@ -10143,6 +10143,22 @@ for (const [name, change] of [
     expect(Object.values(tablesOf(t.db)).flat()).toEqual([]);
   }, 60_000);
 
+for (const trip of ["whole", "paged"] as const)
+  test(`a ${trip} restore of an issue with a null value is RESTORE_INVALID_ROW`, async () => {
+    const { tables } = await projectWith((w) => w.issue(1));
+    const matchesIssue = (row: { namespace?: unknown; key?: unknown }) =>
+      row.namespace === WORK && row.key === issueKey(1);
+    const record = tables.state_records!.find(matchesIssue)!;
+    const event = tables.state_events!.find(matchesIssue)!;
+    const recordBody = JSON.parse(String(record.body)) as { value: unknown };
+    const eventBody = JSON.parse(String(event.body)) as { data: unknown };
+    recordBody.value = null;
+    eventBody.data = null;
+    record.body = JSON.stringify(recordBody);
+    event.body = JSON.stringify(eventBody);
+    await refuses(trip, tables, "RESTORE_INVALID_ROW", 400);
+  }, 60_000);
+
 // A token bound to a session proves it: a body that names another session, on the same device, is refused.
 test("a session-bound token cannot act as another session, on a first write or a replay, and a sessionless token keeps the device as the boundary", async () => {
   const { f, token: sessionless } = await updateRows();
