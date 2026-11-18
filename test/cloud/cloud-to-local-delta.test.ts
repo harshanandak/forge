@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import {
   copyFileSync,
   existsSync,
+  mkdirSync,
   readdirSync,
   readFileSync,
   renameSync,
@@ -11,19 +12,28 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { limitsFrom } from "../../cloud/src/dump.ts";
+import {
+  limitsFrom,
+  parseDump,
+  restorePage,
+  type Page,
+} from "../../cloud/src/dump.ts";
+import { domain } from "../../cloud/src/project.ts";
 import {
   compute,
   run,
   type Options,
 } from "../../tools/cloud-to-local-delta.ts";
 import * as converter from "../../tools/import-current.ts";
+import { pagesOf } from "../../tools/import-current-state.ts";
 import * as f from "./import-current-state.fixture.ts";
 
 setDefaultTimeout(120_000);
 const limits = { ...limitsFrom({}), pageBytes: 2048 };
+const derivedPrefix = "comment:work-2:";
+const derivedKey = `allocation:${derivedPrefix}`;
 
-async function moved() {
+async function moved(withDerivedFloor = false) {
   const source = f.source(6, false, false, (_db, state) => {
     state.put(
       f.ns,
@@ -46,13 +56,29 @@ async function moved() {
       f.actor,
       { expectRevision: 1 },
     );
+    if (withDerivedFloor) {
+      const key = `${derivedPrefix}10`;
+      state.put(
+        f.ns,
+        key,
+        { id: "work-2", body: "deleted before import" },
+        f.actor,
+        { expectRevision: 0 },
+      );
+      state.delete(f.ns, key, f.actor, { expectRevision: 1 });
+    }
   });
   const backup = String(source.db.all("PRAGMA database_list")[0]!.file),
     root = dirname(backup);
   const manifest = join(root, "source.json"),
     dump = join(root, "bundle");
   writeFileSync(manifest, JSON.stringify(source.manifest));
-  await converter.convert({ backup, manifest, out: dump, limits });
+  const conversion = await converter.convert({
+    backup,
+    manifest,
+    out: dump,
+    limits,
+  });
   const again = async (name: string, at: string) => {
     const other = join(root, `${name}.json`),
       out = join(root, name);
@@ -69,7 +95,7 @@ async function moved() {
     project: "tracker",
   };
   pinDump(options);
-  return { source, dump, root, again, options };
+  return { source, dump, root, again, options, conversion };
 }
 type Row = { key: string; body: string; revision: number };
 type Doc = {
@@ -500,4 +526,62 @@ test("scans the verified bytes when the source path changes after hashing", asyn
   expect(report.delta).toEqual([]);
   expect(report.absentInCloud).toEqual([]);
   expect(sha(backup)).toBe(sha(other));
+}, 120_000);
+
+test("a fresh import does not report converter-derived floors as changes", async () => {
+  const { options, source, conversion } = await moved(true);
+  expect(f.owner(source.db).get(f.ns, derivedKey)).toBeUndefined();
+  expect(conversion.F).toBe(1);
+  const report = await compute(options);
+  expect(report.delta).toEqual([]);
+  expect(report.counts).toMatchObject({ new: 0, changed: 0 });
+}, 120_000);
+
+test("a floor advance after import uses the derived baseline even after deletion", async () => {
+  const { options, dump, root } = await moved(true);
+  const cloud = f.cloudDatabase();
+  const owner = f.owner(cloud);
+  owner.initialize([domain]);
+  for (const name of pageNames(dump))
+    restorePage(
+      cloud,
+      owner,
+      parseDump(readFileSync(join(dump, name), "utf8")) as Page,
+      limits,
+    );
+
+  expect(owner.get(f.ns, derivedKey)?.value).toEqual({
+    prefix: derivedPrefix,
+    number: 10,
+  });
+  const allocated = owner.putNext(
+    f.ns,
+    derivedPrefix,
+    () => ({ value: { id: "work-2", body: "deleted after import" } }),
+    f.actor,
+  );
+  expect(allocated.key).toBe(`${derivedPrefix}11`);
+  owner.delete(f.ns, allocated.key, f.actor, {
+    expectRevision: allocated.revision,
+  });
+  expect(owner.get(f.ns, allocated.key)).toBeUndefined();
+
+  const after = { ...options, dump: join(root, "cloud") };
+  mkdirSync(after.dump);
+  for (const page of pagesOf(cloud, limits)) {
+    const name = `page-${String(page.page).padStart(4, "0")}.json`;
+    writeFileSync(join(after.dump, name), JSON.stringify(page));
+  }
+  pinDump(after);
+  const report = await compute(after);
+  expect(report.delta).toMatchObject([
+    {
+      key: derivedKey,
+      kind: "allocation",
+      change: "changed",
+      before: { prefix: derivedPrefix, number: 10 },
+      after: { prefix: derivedPrefix, number: 11 },
+    },
+  ]);
+  expect(report.counts).toMatchObject({ new: 0, changed: 1 });
 }, 120_000);
