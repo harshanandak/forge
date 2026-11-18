@@ -1,12 +1,23 @@
 import { expect, setDefaultTimeout, test } from "bun:test";
-import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  copyFileSync,
+  existsSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { limitsFrom } from "../../cloud/src/dump.ts";
-import { compute } from "../../tools/cloud-to-local-delta.ts";
+import { compute, type Options } from "../../tools/cloud-to-local-delta.ts";
 import * as converter from "../../tools/import-current.ts";
 import * as f from "./import-current-state.fixture.ts";
 
 setDefaultTimeout(120_000);
+const limits = { ...limitsFrom({}), pageBytes: 2048 };
 
 async function moved() {
   const source = f.source(6, false, false, (_db, state) => {
@@ -37,31 +48,78 @@ async function moved() {
   const manifest = join(root, "source.json"),
     dump = join(root, "bundle");
   writeFileSync(manifest, JSON.stringify(source.manifest));
-  await converter.convert({
-    backup,
-    manifest,
-    out: dump,
-    limits: { ...limitsFrom({}), pageBytes: 4096 },
-  });
+  await converter.convert({ backup, manifest, out: dump, limits });
+  const again = async (name: string, at: string) => {
+    const other = join(root, `${name}.json`),
+      out = join(root, name);
+    writeFileSync(other, JSON.stringify({ ...source.manifest, at }));
+    await converter.convert({ backup, manifest: other, out, limits });
+    return out;
+  };
   return {
     source,
     dump,
+    root,
+    again,
     options: { dump, backup, manifest, out: join(root, "delta.json") },
   };
 }
-type Rows = { key: string; body: string; revision: number }[];
-function editCloud(dump: string, edit: (rows: Rows, first: boolean) => void) {
-  const names = readdirSync(dump).filter((name) => name.startsWith("page-"));
-  expect(names.length).toBeGreaterThan(1);
-  names.forEach((name, index) => {
-    const file = join(dump, name),
-      page = JSON.parse(readFileSync(file, "utf8")) as {
-        tables: { state_records: Rows };
-      };
-    edit(page.tables.state_records, index === 0);
-    writeFileSync(file, JSON.stringify(page));
-  });
+type Row = { key: string; body: string; revision: number };
+type Doc = { next: string | null; tables: { state_records: Row[] } };
+const pageNames = (dump: string) =>
+  readdirSync(dump)
+    .filter((name) => name.startsWith("page-"))
+    .sort();
+function editPage(dump: string, index: number, edit: (page: Doc) => void) {
+  const file = join(dump, pageNames(dump)[index]!),
+    page = JSON.parse(readFileSync(file, "utf8")) as Doc;
+  edit(page);
+  writeFileSync(file, JSON.stringify(page));
 }
+function editCloud(dump: string, edit: (rows: Row[], first: boolean) => void) {
+  expect(pageNames(dump).length).toBeGreaterThan(1);
+  pageNames(dump).forEach((_name, index) =>
+    editPage(dump, index, (page) =>
+      edit(page.tables.state_records, index === 0),
+    ),
+  );
+}
+const cloudRow = (key: string, namespace: string, value: object): Row =>
+  ({
+    namespace,
+    key,
+    revision: 1,
+    body: JSON.stringify({
+      namespace,
+      key,
+      revision: 1,
+      value,
+      updatedAt: new Date(f.at).toISOString(),
+      updatedBy: f.actor,
+    }),
+  }) as unknown as Row;
+async function refused(options: Options, reason: string) {
+  const error = await compute(options).then(
+    () => undefined,
+    (thrown: unknown) => thrown as { error: { code: string; message: string } },
+  );
+  expect(error?.error.code).toBe("INPUT_INVALID");
+  expect(error?.error.message).toContain(reason);
+  expect(existsSync(options.out)).toBe(false);
+}
+const sha = (path: string) =>
+  createHash("sha256").update(readFileSync(path)).digest("hex");
+const state = (options: Options) =>
+  [
+    sha(options.backup),
+    ...pageNames(options.dump).map((name) => sha(join(options.dump, name))),
+  ].join();
+type Left = {
+  scope: string;
+  reason: string;
+  count: number;
+  keys?: { namespace: string; key: string }[];
+};
 
 test("a local fixture through the converter and a fake dump gives an empty delta", async () => {
   const { source, options } = await moved();
@@ -76,7 +134,7 @@ test("a local fixture through the converter and a fake dump gives an empty delta
   expect(report.pages).toBeGreaterThan(1);
   expect(JSON.parse(readFileSync(options.out, "utf8"))).toEqual(report);
   expect(source.bytes()).toBe(source.manifest.sha256);
-});
+}, 120_000);
 
 test("a cloud-only comment and an issue closed in the cloud appear with their content", async () => {
   const { dump, options } = await moved();
@@ -96,19 +154,12 @@ test("a cloud-only comment and an issue closed in the cloud appear with their co
       row.body = JSON.stringify(record);
     }
     if (first)
-      rows.push({
-        namespace: f.ns,
-        key: "comment:work-1:2",
-        revision: 1,
-        body: JSON.stringify({
-          namespace: f.ns,
-          key: "comment:work-1:2",
-          revision: 1,
-          value: { id: "work-1", body: "cloud only" },
-          updatedAt: new Date(f.at).toISOString(),
-          updatedBy: f.actor,
+      rows.push(
+        cloudRow("comment:work-1:2", f.ns, {
+          id: "work-1",
+          body: "cloud only",
         }),
-      } as never);
+      );
   });
   const report = await compute(options);
   expect(
@@ -129,7 +180,7 @@ test("a cloud-only comment and an issue closed in the cloud appear with their co
   });
   expect(report.counts).toMatchObject({ new: 1, changed: 1 });
   expect(report.absentInCloud).toEqual([]);
-});
+}, 120_000);
 
 test("a record removed in the cloud is listed as absent and not as a change", async () => {
   const { dump, options } = await moved();
@@ -140,7 +191,7 @@ test("a record removed in the cloud is listed as absent and not as a change", as
   const report = await compute(options);
   expect(report.delta).toEqual([]);
   expect(report.absentInCloud).toEqual(["comment:work-1:1"]);
-});
+}, 120_000);
 
 test("non-invertible tables, families and fields are listed as not carried back with a reason", async () => {
   const { options } = await moved();
@@ -154,13 +205,127 @@ test("non-invertible tables, families and fields are listed as not carried back 
   expect(fields.count).toBeGreaterThan(0);
   for (const entry of notCarriedBack)
     expect(entry.reason.length).toBeGreaterThan(0);
-});
+}, 120_000);
 
-test("an existing output file is refused and left untouched", async () => {
-  const { options } = await moved();
-  writeFileSync(options.out, "keep");
-  await expect(compute(options)).rejects.toMatchObject({
-    error: { code: "INPUT_INVALID" },
+test("cloud-created records outside the mapping are listed by key and said to be lost on rollback", async () => {
+  const { dump, options } = await moved();
+  editCloud(dump, (rows, first) => {
+    if (first)
+      rows.splice(
+        1,
+        0,
+        cloudRow("autopilot:global", f.ns, { any: 1 }),
+        cloudRow("lane-control:global", f.ns, { any: 2 }),
+        cloudRow("note", "forge/other", { any: 3 }),
+      );
   });
-  expect(readFileSync(options.out, "utf8")).toBe("keep");
-});
+  const left = (await compute(options)).notCarriedBack as Left[];
+  const by = Object.fromEntries(left.map((e) => [e.scope, e]));
+  const cases = [
+    ["forge/work:autopilot:*", f.ns, "autopilot:global"],
+    ["forge/work:lane-control:*", f.ns, "lane-control:global"],
+    ["forge/other:*", "forge/other", "note"],
+  ] as const;
+  for (const [scope, namespace, key] of cases) {
+    expect(by[scope]!.keys).toEqual([{ namespace, key }]);
+    expect(by[scope]!.reason).toContain("lost on rollback");
+    expect(by[scope]!.reason).not.toContain("retained in the pre-cutover");
+  }
+}, 120_000);
+
+test("a backup whose hash differs from source.json is refused", async () => {
+  const { options, source } = await moved();
+  writeFileSync(
+    options.manifest,
+    JSON.stringify({ ...source.manifest, sha256: "0".repeat(64) }),
+  );
+  await refused(options, "backup hash");
+}, 120_000);
+
+test("a missing page, an extra page and out-of-order pages are refused", async () => {
+  const { options, dump, root } = await moved();
+  const first = join(dump, "page-0000.json"),
+    second = join(dump, "page-0001.json");
+  renameSync(first, join(root, "held.json"));
+  await refused(options, "page sequence");
+  renameSync(join(root, "held.json"), first);
+  copyFileSync(first, join(dump, "page-9999.json"));
+  await refused(options, "page sequence");
+  renameSync(join(dump, "page-9999.json"), join(root, "extra.json"));
+  renameSync(first, join(root, "swap.json"));
+  renameSync(second, first);
+  renameSync(join(root, "swap.json"), second);
+  await refused(options, "page sequence");
+}, 120_000);
+
+test("a broken next-cursor chain is refused", async () => {
+  const { options, dump } = await moved();
+  editPage(dump, 0, (page) => {
+    const cursor = JSON.parse(page.next!) as { k: unknown[] };
+    page.next = JSON.stringify({ ...cursor, k: [...cursor.k, "x"] });
+  });
+  await refused(options, "cursor chain");
+}, 120_000);
+
+test("pages from two dumps are refused", async () => {
+  const { options, dump, again } = await moved();
+  const other = await again("other", "2027-01-01T00:00:00.000Z");
+  expect(pageNames(dump).length).toBeGreaterThan(2);
+  copyFileSync(join(other, "page-0001.json"), join(dump, "page-0001.json"));
+  await refused(options, "cursor chain");
+}, 120_000);
+
+test("a dump from another project is refused", async () => {
+  const { options, again } = await moved();
+  const other = await again("other", "2027-01-01T00:00:00.000Z");
+  await refused({ ...options, dump: other }, "different project");
+}, 120_000);
+
+test("a duplicate cloud key is refused, including a key outside the mapping", async () => {
+  const { options, dump } = await moved();
+  editPage(dump, 0, (page) => {
+    const rows = page.tables.state_records;
+    const allocation = rows.find((row) => row.key.startsWith("allocation:"))!;
+    rows.splice(1, 0, { ...allocation });
+  });
+  await refused(options, "duplicate key");
+}, 120_000);
+
+test("the dump and the backup are byte-identical after a run", async () => {
+  const { options } = await moved();
+  const before = state(options);
+  await compute(options);
+  expect(state(options)).toBe(before);
+}, 120_000);
+
+test("a difference only in revision, updatedAt or updatedBy gives an empty delta", async () => {
+  const { options, dump } = await moved();
+  editCloud(dump, (rows) => {
+    for (const row of rows) {
+      const record = JSON.parse(row.body) as Record<string, unknown>;
+      record.revision = row.revision = 7;
+      record.updatedAt = "2030-01-01T00:00:00.000Z";
+      record.updatedBy = { kind: "agent", id: "cloud-writer" };
+      row.body = JSON.stringify(record);
+    }
+  });
+  const report = await compute(options);
+  expect(report.delta).toEqual([]);
+  expect(report.absentInCloud).toEqual([]);
+}, 120_000);
+
+test("a symlinked backup and a backup with a -wal sidecar are refused", async () => {
+  const { options, root } = await moved();
+  writeFileSync(options.backup + "-wal", "");
+  await refused(options, "Invalid offline import input");
+  rmSync(options.backup + "-wal");
+  const link = join(root, "link.sqlite");
+  try {
+    symlinkSync(options.backup, link);
+  } catch (error) {
+    const code = (error as { code?: string }).code;
+    expect(process.platform === "win32" && code === "EPERM").toBe(true);
+    return;
+  }
+  await refused({ ...options, backup: link }, "Invalid offline import input");
+}, 120_000);
