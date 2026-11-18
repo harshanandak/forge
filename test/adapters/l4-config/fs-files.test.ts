@@ -178,9 +178,13 @@ describe("the fs adapter implements ConfigFiles", () => {
     const files = nodeConfigFiles(dir);
     files.write(".forge/config.lock", bytes("held"));
     const zeroed = (info: unknown): unknown =>
-      Object.assign(Object.create(Object.getPrototypeOf(info)), info, {
-        ino: 0n,
-      });
+      Object.assign(
+        Object.create(Object.getPrototypeOf(info) as object | null),
+        info,
+        {
+          ino: 0n,
+        },
+      );
     const stat = spyOn(nodeFs, "lstatSync").mockImplementation(((
       path: string,
       options?: unknown,
