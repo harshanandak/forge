@@ -64,3 +64,18 @@ test("stale credentials in escaped historical assignments are blocked without a 
     );
   }
 });
+
+test("textual assignments allow a complete redaction marker and block a marker with an attached value", () => {
+  const event = { hook_event_name: "PostToolUse" };
+  assert.deepEqual(
+    checkOutput({ ...event, tool_response: "API_TOKEN=[REDACTED]" }, []),
+    {},
+  );
+  assert.equal(
+    checkOutput(
+      { ...event, tool_response: "API_TOKEN=[REDACTED]fixture-unredacted" },
+      [],
+    ).decision,
+    "block",
+  );
+});

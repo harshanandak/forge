@@ -2,7 +2,7 @@ export const MAX_BYTES: number = 8 * 1024 * 1024;
 const sensitiveName =
   /(?:^|[_\-\s])(?:authorization|proxy.authorization|cookie|set.cookie|secret|token|password|passwd|credential|api.?key|access.?key|private.?key|database.?url|dsn)(?:$|[_\-\s])|(?:access|refresh|id|auth|bearer)token|clientsecret|(?:api|access|private)key|databaseurl/i;
 const assignment =
-  /(\b(?:[\w-]*_)?(?:authorization|proxy-authorization|cookie|secret|token|password|passwd|credential|api[_-]?key|access[_-]?key|private[_-]?key|database[_-]?url|dsn)(?:[_-]\w+)*\b(?:\\*["'])?\s*[:=]\s*)(?:bearer\s+|basic\s+)?(?:\\+["'][^\r\n]*|"(?:\\.|[^"\\])*"|'[^']*'|[^\s,;}\]]+)/gi;
+  /(\b(?:[\w-]*_)?(?:authorization|proxy-authorization|cookie|secret|token|password|passwd|credential|api[_-]?key|access[_-]?key|private[_-]?key|database[_-]?url|dsn)(?:[_-]\w+)*\b(?:\\*["'])?\s*[:=]\s*)(?:bearer\s+|basic\s+)?(?:\[REDACTED\](?=$|[\s,;}])|\\+["'][^\r\n]*|"(?:\\.|[^"\\])*"|'[^']*'|[^\s,;}\]]+)/gi;
 
 export function createOutputGate(
   values: readonly unknown[] = [],
