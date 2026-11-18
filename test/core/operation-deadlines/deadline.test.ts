@@ -358,55 +358,102 @@ for (const source of [
 
 test("the live operation timer preserves its budget diagnostic", async () => {
   const f = fixture(10);
+  let now = 0;
+  let runs = 0;
+  let closes = 0;
   const runtime = new Runtime(f.catalog, f.trust, {
+    clock: { now: () => now },
     isolation: {
       open: () =>
         Promise.resolve({
           ok: true,
           handle: {
             ownership: "owned",
-            close: () => Promise.resolve(),
-            value: { run: () => new Promise(() => {}) },
+            close: () => {
+              closes++;
+              return Promise.resolve();
+            },
+            value: {
+              run(options) {
+                runs++;
+                now = options.deadline;
+                return new Promise(() => {});
+              },
+            },
           },
         }),
     },
   });
   const result = await runtime.invoke(f.request);
+  expect(runs).toBe(1);
+  expect(closes).toBe(1);
   expect(result).toMatchObject({
     ok: false,
-    error: { code: "INVOCATION_TIMEOUT" },
+    error: { code: "INVOCATION_TIMEOUT", retry: "reconcile_first" },
   });
   if (result.ok) throw new Error("Expected expiry");
   for (const text of [
     'blocks.sample.operationTimeouts["sample.run"]',
+    "operation deadline expired",
     "0.01 s",
     "more than",
   ])
     expect(result.error.message).toContain(text);
 }, 1000);
 
-test("the preparation safety maximum names the config budgets to lower", async () => {
-  const f = fixture(1000);
-  let now = 0;
-  const runtime = new Runtime(f.catalog, f.trust, {
-    clock: { now: () => now },
-    services: () => {
-      now = 2147483648;
-      return Promise.resolve({ ownership: "borrowed", value: {} });
-    },
-  });
-  const result = await runtime.invoke(f.request);
-  expect(result).toMatchObject({
-    ok: false,
-    error: { code: "INVOCATION_TIMEOUT" },
-  });
-  if (result.ok) throw new Error("Expected preparation expiry");
-  for (const text of [
-    "configured operation and command timeouts add up",
-    "2147483647 ms",
-    "about 24.8 days",
-    'blocks.sample.operationTimeouts["sample.run"]',
-    "blocks.sample.config.timeoutMs",
-  ])
-    expect(result.error.message).toContain(text);
-}, 1000);
+for (const source of ["host", "embedding", "safety maximum"] as const)
+  test(`preparation expiry reports the ${source} budget without claiming overflow`, async () => {
+    const timeoutMs = source === "safety maximum" ? 2147483647 : 10;
+    const f = fixture(10, {
+      schemaVersion: "forge.config/1",
+      ...(source === "host" ? { runtime: { timeoutMs } } : {}),
+      blocks: { sample: { source: { path: "./sample" } } },
+    });
+    let now = 0;
+    let opens = 0;
+    let closes = 0;
+    const runtime = new Runtime(f.catalog, f.trust, {
+      ...(source === "embedding" ? { limits: { timeoutMs } } : {}),
+      clock: { now: () => now },
+      services: () => {
+        now = timeoutMs + 1;
+        return Promise.resolve({
+          ownership: "owned",
+          close: () => {
+            closes++;
+            return Promise.resolve();
+          },
+          value: {},
+        });
+      },
+      isolation: {
+        open: () => {
+          opens++;
+          return Promise.reject(new Error("Unexpected isolation open"));
+        },
+      },
+    });
+    const result = await runtime.invoke(f.request);
+    expect(opens).toBe(0);
+    expect(closes).toBe(1);
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "INVOCATION_TIMEOUT", retry: "never" },
+    });
+    if (result.ok) throw new Error("Expected preparation expiry");
+    expect(result.error.message).toContain("host preparation deadline expired");
+    expect(result.error.message).toContain(`${timeoutMs / 1000} s`);
+    expect(result.error.message).not.toContain("timeouts add up");
+    expect(result.error.message).not.toContain("largest supported timer");
+    expect(result.error.message).toContain(
+      source === "embedding"
+        ? "RuntimeOptions.limits.timeoutMs"
+        : "runtime.timeoutMs",
+    );
+    if (source === "safety maximum") {
+      expect(result.error.message).toContain("timer safety maximum");
+      expect(result.error.message).toContain("2147483647 ms");
+      expect(result.error.message).toContain("about 24.8 days");
+      expect(result.error.message).toContain("set runtime.timeoutMs");
+    }
+  }, 1000);

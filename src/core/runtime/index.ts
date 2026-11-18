@@ -439,9 +439,9 @@ export class Runtime {
         const value = started ? budget.timeoutMs : preparationTimeoutMs;
         if (!started && host !== value && embedding !== value)
           return formatConfigProblem(
-            `blocks.${operation.instance}.operationTimeouts["${operation.declaredOp}"]`,
-            "Invocation host preparation deadline expired: configured operation and command timeouts add up to more than Node's largest supported timer (2147483647 ms, about 24.8 days)",
-            `lower blocks.${operation.instance}.operationTimeouts["${operation.declaredOp}"] or blocks.${operation.instance}.config.timeoutMs`,
+            "runtime.timeoutMs",
+            `Invocation host preparation deadline expired: timer safety maximum (${value} ms, ${value / 1000} s, about 24.8 days)`,
+            `set runtime.timeoutMs or RuntimeOptions.limits.timeoutMs below ${value} ms`,
           );
         const key =
           host === value
