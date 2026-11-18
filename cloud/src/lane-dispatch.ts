@@ -27,14 +27,6 @@ type Intent = Fields & {
   kind: "recorded-intent";
 };
 
-class RecordedDispatch extends Error {
-  readonly intent: Intent;
-  constructor(intent: Intent) {
-    super();
-    this.intent = intent;
-  }
-}
-
 const keyOf = ({ id, dispatchId }: Fields) =>
   `lane-dispatch:${id}:${dispatchId}`;
 const changed = () =>
@@ -127,66 +119,46 @@ export function dispatchLane(call: PreparedCommand, host: CommandRun): Intent {
     return intent;
   };
   const read = (fields: Fields) => owner.get(NS, keyOf(fields));
-  try {
-    return commandWrite(
-      db,
-      owner,
-      { identity, recheck: host.recheck, expiresAt: host.expiresAt },
-      () => {
-        if (
-          validateWithSchema(Input, input).length > 0 ||
-          carriesToken((input as Fields).dispatchId)
-        )
-          throw fail(
-            "INPUT_INVALID",
-            "Expected a canonical issue, nonsecret dispatch ID and control incarnation and epoch",
-          );
+  return commandWrite(
+    db,
+    owner,
+    { identity, recheck: host.recheck, expiresAt: host.expiresAt },
+    () => {
+      if (
+        validateWithSchema(Input, input).length > 0 ||
+        carriesToken((input as Fields).dispatchId)
+      )
+        throw fail(
+          "INPUT_INVALID",
+          "Expected a canonical issue, nonsecret dispatch ID and control incarnation and epoch",
+        );
+      return input as Fields;
+    },
+    (fields) => {
+      const held = permit(fields);
+      const prior = read(fields);
+      if (prior !== undefined)
+        return matches(fields, checkedIntent(prior.value), held);
+      const intent: Intent = {
+        ...fields,
+        holder: { device, session: dispatchSession },
+        leaseGeneration: held.generation,
+        recordedAt: new Date(Date.now()).toISOString(),
+        kind: "recorded-intent",
+      };
+      owner.put(NS, keyOf(fields), intent, context.actor, {
+        expectRevision: 0,
+        fence: held,
+      });
+      return checkedIntent(read(fields)?.value);
+    },
+    (prior) =>
+      db.transaction(() => {
+        host.recheck();
         const fields = input as Fields;
-        if (read(fields) !== undefined)
-          throw new RecordedDispatch(
-            db.transaction(() => {
-              host.recheck();
-              const held = permit(fields);
-              return matches(fields, checkedIntent(read(fields)?.value), held);
-            }),
-          );
-        return fields;
-      },
-      (fields) => {
-        const held = permit(fields);
-        const prior = read(fields);
-        if (prior !== undefined)
-          throw new RecordedDispatch(
-            matches(fields, checkedIntent(prior.value), held),
-          );
-        const intent: Intent = {
-          ...fields,
-          holder: { device, session: dispatchSession },
-          leaseGeneration: held.generation,
-          recordedAt: new Date().toISOString(),
-          kind: "recorded-intent",
-        };
-        owner.put(NS, keyOf(fields), intent, context.actor, {
-          expectRevision: 0,
-          fence: held,
-        });
-        return checkedIntent(read(fields)?.value);
-      },
-      (prior) =>
-        db.transaction(() => {
-          host.recheck();
-          const fields = input as Fields;
-          const held = permit(fields, prior.leaseGeneration);
-          const saved = matches(
-            fields,
-            checkedIntent(read(fields)?.value),
-            held,
-          );
-          if (canonicalJson(prior) !== canonicalJson(saved)) throw changed();
-        }),
-    );
-  } catch (error) {
-    if (error instanceof RecordedDispatch) return error.intent;
-    throw error;
-  }
+        const held = permit(fields, prior.leaseGeneration);
+        const saved = matches(fields, checkedIntent(read(fields)?.value), held);
+        if (canonicalJson(prior) !== canonicalJson(saved)) throw changed();
+      }),
+  );
 }

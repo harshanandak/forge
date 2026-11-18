@@ -399,10 +399,34 @@ test("distinct request IDs for one live dispatch both return its single durable 
     expect(replies[0]!.result).toEqual(replies[1]!.result);
     expectOneDispatch(f, replies[0]!.result);
     const before = f.snapshot();
-    expect((await f.send(dispatchCall("duplicate-3"))).result).toEqual(
+    expect((await f.send(dispatchCall("duplicate-2"))).result).toEqual(
       replies[0]!.result,
     );
     expect(f.snapshot()).toBe(before);
+  } finally {
+    f.close();
+  }
+}, 10_000);
+
+test("a request that reconciles an intent is bound to that input", async () => {
+  const f = await liveDispatch();
+  try {
+    expect((await claimDispatch(f)).verdict).toEqual(["OK", "OK", 0]);
+    const first = await f.send(dispatchCall("request-a"));
+    expect(first.verdict).toEqual(["OK", "OK", 0]);
+    const reconciled = await f.send(dispatchCall("request-b"));
+    expect(reconciled.verdict).toEqual(["OK", "OK", 0]);
+    expect(reconciled.result).toEqual(first.result);
+    const snapshot = f.snapshot();
+    const reused = await f.send(
+      dispatchCall("request-b", { ...dispatchInput, dispatchId: "dispatch-y" }),
+    );
+    expect(reused.verdict).toEqual(["FAIL", "INPUT_CONFLICT", 4]);
+    const replay = await f.send(dispatchCall("request-b"));
+    expect(replay.verdict).toEqual(["OK", "OK", 0]);
+    expect(replay.result).toEqual(first.result);
+    expect(f.snapshot()).toBe(snapshot);
+    expectOneDispatch(f, first.result);
   } finally {
     f.close();
   }
