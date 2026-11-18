@@ -670,15 +670,22 @@ export class Project {
         authorize(view, parts, Date.now());
       }
       const body = writes ? await bounded(request) : "";
+      let requireArm = () => {};
       if (writes)
-        await this.#armMaintenance(
-          Math.min(
-            Date.now() + RETENTION_MS,
-            parts === undefined
-              ? Number(request.headers.get("X-Forge-Owner-Expires"))
-              : authorizeToken(view!, parts, Date.now()).expiresAt,
-          ),
-        );
+        try {
+          await this.#armMaintenance(
+            Math.min(
+              Date.now() + RETENTION_MS,
+              parts === undefined
+                ? Number(request.headers.get("X-Forge-Owner-Expires"))
+                : authorizeToken(view!, parts, Date.now()).expiresAt,
+            ),
+          );
+        } catch (error) {
+          requireArm = () => {
+            throw error;
+          };
+        }
       if (
         owner !== null &&
         writes &&
@@ -711,6 +718,7 @@ export class Project {
         () => {
           if (parts !== undefined) authorize(view!, parts, Date.now());
         },
+        requireArm,
         token?.expiresAt ??
           Number(request.headers.get("X-Forge-Owner-Expires")),
       );
@@ -873,9 +881,13 @@ export class Project {
         });
       } finally {
         if (writable)
-          await this.#armMaintenance(
-            Math.min(Date.now() + RETENTION_MS, token.expiresAt),
-          );
+          try {
+            await this.#armMaintenance(
+              Math.min(Date.now() + RETENTION_MS, token.expiresAt),
+            );
+          } catch (error) {
+            console.error("Maintenance alarm could not be armed", error);
+          }
       }
     } catch (caught) {
       const error = storageFailure(caught) ?? caught;
@@ -965,6 +977,7 @@ export class Project {
     tokenSession: string | null,
     principal: ReceiptPrincipal,
     recheck: () => void,
+    requireArm: () => void,
     expiresAt?: number,
   ): LeaseRecord {
     const checkExpiry = () => {
@@ -1036,6 +1049,7 @@ export class Project {
         });
       return this.#replay(route, requestId, prior, subject, holder);
     }
+    requireArm();
     const commit = <T>(work: () => T) =>
       withDenialCapacity(this.#open().db, expiresAt, checkExpiry, work);
     try {
