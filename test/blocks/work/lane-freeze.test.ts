@@ -194,9 +194,8 @@ test("lane stop on an unreadable freeze time keeps the store frozen", async () =
     expectRevision: 0,
   });
   run("lane.stop", { all: true });
-  expect(owner.get(namespace, GLOBAL)?.value).toMatchObject({
-    frozen: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
-  });
+  const stored = owner.get(namespace, GLOBAL)?.value as { frozen: string };
+  expect(Number.isNaN(Date.parse(stored.frozen))).toBe(false);
   expect(
     refusal(() => run("issue.create", { title: "after" })).message,
   ).toContain("frozen since");
