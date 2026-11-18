@@ -1935,7 +1935,7 @@ export async function createAssembly(
             laneOwnerChannelOp(target!, request.input)
               ? laneOwnerChannelAsk(request.input)
               : laneResumeOp(target!)
-                ? laneResumeAsk(request.input)
+                ? laneResumeAsk(request.input, target!.declaredOp)
                 : memoryOwnerAsk(target!.declaredOp!, request.input),
             // Resuming lanes restarts spending and naming the owner channel lets it approve: only a relayed reply counts, never a typed phrase or owner.json.
             laneOwned,
@@ -2049,6 +2049,27 @@ export async function createAssembly(
                   interfaceSatisfies("forge.crypto@1.0.0", binding.interface)
                 ) {
                   clients[binding.slot] = providers.crypto(scope);
+                  continue;
+                }
+                if (
+                  interfaceSatisfies(
+                    "forge.store-export@1.0.0",
+                    binding.interface,
+                  )
+                ) {
+                  if (
+                    context.variant !== "project" &&
+                    context.variant !== "leased"
+                  )
+                    refuse(
+                      "CONTEXT_MISSING",
+                      "Store export requires project context",
+                    );
+                  const lease = await projectState.acquire(false);
+                  leases.push(lease);
+                  clients[binding.slot] = (
+                    await import("./store-export.ts")
+                  ).createStoreExport(scope, lease.value);
                   continue;
                 }
                 if (

@@ -325,7 +325,9 @@ export function laneResumeOp(candidate: {
   declaredOp?: string | undefined;
 }): boolean {
   return (
-    candidate.blockId === "forge/work" && candidate.declaredOp === "lane.resume"
+    candidate.blockId === "forge/work" &&
+    (candidate.declaredOp === "lane.resume" ||
+      candidate.declaredOp === "lane.unfreeze")
   );
 }
 /**
@@ -425,8 +427,10 @@ export function laneResumeClaim(input: unknown): {
     ...(typeof claim?.quote === "string" ? { quote: claim.quote } : {}),
   };
 }
-export function laneResumeAsk(input: unknown): string {
+export function laneResumeAsk(input: unknown, op?: string): string {
   const fields = object(input);
+  if (op === "lane.unfreeze")
+    return "Unfreeze the local tracker store. Sessions on this machine can write issues to it again.";
   return fields?.all === true
     ? "Resume every stopped lane. Forge starts spending calls and time again."
     : `Resume lane ${typeof fields?.id === "string" ? fields.id : ""}. Forge starts spending calls and time on it again.`;
