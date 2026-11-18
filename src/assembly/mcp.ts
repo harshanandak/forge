@@ -1,5 +1,6 @@
 ﻿import { createMcpHandlers } from "../surface/mcp.ts";
 import { dispatch } from "../surface/dispatch.ts";
+import { ForgeFailure } from "../contract/failure.ts";
 import { mcpToolName } from "../contract/naming.ts";
 import { isAgentCallable, selectMcpTools } from "../contract/mcp.ts";
 import type { McpTransportPort } from "../ports/mcp-transport.ts";
@@ -13,6 +14,20 @@ import { localIdentityResolver } from "./identity.ts";
 export function assemblyMcp(assembly: Assembly): McpTransportPort {
   return {
     async open(options) {
+      let exposure: Assembly["exposure"];
+      try {
+        exposure = assembly.exposure;
+      } catch (error) {
+        if (!(error instanceof ForgeFailure)) throw error;
+        return {
+          ok: false,
+          unavailable: {
+            kind: "unavailable",
+            reason: error.message,
+            remedy: error.error.repair ?? "Check the project config.",
+          },
+        };
+      }
       try {
         await assembly.prepareTrust();
       } catch (error) {
@@ -36,7 +51,6 @@ export function assemblyMcp(assembly: Assembly): McpTransportPort {
         { kind: "agent", id: "mcp" },
         localSession(`mcp-${randomUUID()}`),
       );
-      const exposure = assembly.exposure;
       const resolveContext = localIdentityResolver(
         assembly.deviceRoot,
         { ...process.env },

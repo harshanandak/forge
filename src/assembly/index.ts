@@ -2333,7 +2333,19 @@ export async function createAssembly(
     root,
     deviceRoot,
     get exposure() {
-      return composition(callScope().config.show()).mcp ?? {};
+      const show = callScope().config.show();
+      const excluded = show.excluded.find(
+        ({ pointer }) => pointer === "/mcp" || pointer === "",
+      );
+      if (excluded !== undefined || (!show.valid && show.excluded.length === 0))
+        refuse(
+          "INPUT_INVALID",
+          (excluded?.problems ?? show.problems).join("\n"),
+          {
+            repair: `Fix ${show.file} before starting MCP.`,
+          },
+        );
+      return composition(show).mcp ?? {};
     },
     async prepareTrust() {
       await trustState.open(false);
