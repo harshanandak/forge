@@ -1,4 +1,6 @@
 import {
+  appendFileSync,
+  chmodSync,
   existsSync,
   linkSync,
   mkdirSync,
@@ -6,6 +8,7 @@ import {
   readdirSync,
   realpathSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
@@ -20,7 +23,7 @@ import {
 import * as sqlite from "../../src/adapters/store-sqlite/index.ts";
 import { privateFileGuard } from "../../src/adapters/store-sqlite/private-files.ts";
 import { stateMigrations } from "../../src/core/state/migrations.ts";
-import { buildIdentity } from "../../src/version.ts";
+import { version } from "../../src/version.ts";
 import { convert, digest } from "../../tools/import-current.ts";
 import * as f from "./import-current-state.fixture.ts";
 
@@ -54,6 +57,7 @@ function fixture() {
   const guard = windows
     ? privateFileGuard(windowsAcl.windowsPrivateFiles())
     : undefined;
+  guard?.directory(root, true);
   guard?.directory(raw, true);
   const ops = guard ? securedFileOps(guard) : undefined;
   copyPrivateFile(old, backup, ops);
@@ -127,10 +131,13 @@ test("the CLI retains a private upgraded input that the converter accepts", asyn
     records,
     eventHighWaterMark,
   });
-  expect(JSON.parse(readFileSync(report, "utf8")) as unknown).toMatchObject({
+  const preparation = JSON.parse(readFileSync(report, "utf8")) as {
+    build: { version: string; commit: string; dirty: boolean };
+  };
+  expect(preparation).toMatchObject({
     rawSha256: input.pinned.sha256,
     upgradedSha256: hash,
-    build: buildIdentity,
+    build: { version },
     appliedMigrations: stateMigrations.slice(prefix.length).map(({ id }) => id),
     reconciliation: {
       records: { before: input.pinned.records, after: records },
@@ -140,6 +147,8 @@ test("the CLI retains a private upgraded input that the converter accepts", asyn
       },
     },
   });
+  expect(preparation.build.commit).toMatch(/^[a-f0-9]{40}$/);
+  expect(typeof preparation.build.dirty).toBe("boolean");
 });
 
 test.skipIf(!windows)(
@@ -171,7 +180,12 @@ test.skipIf(!windows)(
   },
 );
 
-test.each(["wrong hash", "sidecar", "hard-link alias"] as const)(
+test.each([
+  "wrong hash",
+  "sidecar",
+  "hard-link alias",
+  "symlink alias",
+] as const)(
   "a %s is refused before SQLite opens and leaves no success manifest",
   async (bad) => {
     const prepare = await prepareTool();
@@ -184,6 +198,11 @@ test.each(["wrong hash", "sidecar", "hard-link alias"] as const)(
     if (bad === "sidecar") writeFileSync(input.backup + "-wal", "");
     if (bad === "hard-link alias")
       linkSync(input.backup, join(dirname(input.backup), "alias.sqlite"));
+    if (bad === "symlink alias") {
+      const alias = join(input.root, "alias");
+      symlinkSync(dirname(input.backup), alias, "junction");
+      input.backup = join(alias, "backup.sqlite");
+    }
     const opened = spyOn(sqlite, "createSqliteStore");
     try {
       await expect(prepare(input)).rejects.toThrow();
@@ -196,13 +215,24 @@ test.each(["wrong hash", "sidecar", "hard-link alias"] as const)(
   },
 );
 
-test.skipIf(!windows)(
-  "a broad backup ACL is refused before SQLite opens",
-  async () => {
+test.each(["source folder", "backup file"] as const)(
+  "a broadly accessible %s is refused before SQLite opens",
+  async (entry) => {
     const prepare = await prepareTool();
     const input = fixture();
-    const native = windowsAcl.windowsPrivateFiles();
-    native.protect(input.backup, "D:P(A;;FA;;;" + native.sid + ")(A;;FR;;;WD)");
+    const directory = entry === "source folder";
+    const path = directory ? dirname(input.backup) : input.backup;
+    if (windows) {
+      const native = windowsAcl.windowsPrivateFiles();
+      native.protect(
+        path,
+        "D:P(A;" +
+          (directory ? "OICI" : "") +
+          ";FA;;;" +
+          native.sid +
+          ")(A;;FR;;;WD)",
+      );
+    } else chmodSync(path, directory ? 0o755 : 0o644);
     const opened = spyOn(sqlite, "createSqliteStore");
     try {
       await expect(prepare(input)).rejects.toThrow();
@@ -213,3 +243,22 @@ test.skipIf(!windows)(
     }
   },
 );
+
+test("a raw backup change during the upgrade leaves no success manifest", async () => {
+  const prepare = await prepareTool();
+  const input = fixture();
+  const create = sqlite.createSqliteStore;
+  const opened = spyOn(sqlite, "createSqliteStore").mockImplementationOnce(
+    (...args) => {
+      appendFileSync(input.backup, Buffer.from([0]));
+      return create(...args);
+    },
+  );
+  try {
+    await expect(prepare(input)).rejects.toThrow("Raw backup changed");
+    expect(readdirSync(input.out)).toContain("preparation.json");
+    expect(existsSync(join(input.out, "source.json"))).toBe(false);
+  } finally {
+    opened.mockRestore();
+  }
+});
