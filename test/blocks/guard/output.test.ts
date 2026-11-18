@@ -79,3 +79,34 @@ test("textual assignments allow a complete redaction marker and block a marker w
     "block",
   );
 });
+
+test("long output without an assignment stays within the output guard budget", () => {
+  const tool_response = "a-".repeat(60_000) + "_";
+  const started = performance.now();
+  assert.deepEqual(
+    checkOutput({ hook_event_name: "PostToolUse", tool_response }, []),
+    {},
+  );
+  assert.ok(performance.now() - started < 1_000);
+}, 2_000);
+
+test("assignment names keep the existing prefix and suffix boundaries", () => {
+  const event = { hook_event_name: "PostToolUse" };
+  for (const name of [
+    "BUILD_TOKEN_RELEASE",
+    "service-API_KEY-prod",
+    "old--TOKEN",
+  ]) {
+    assert.equal(
+      checkOutput({ ...event, tool_response: `${name}=fixture-value` }, [])
+        .decision,
+      "block",
+    );
+  }
+  for (const name of ["BUILD_TOKEN_", "BUILD_TOKEN_-release", "TOKEN--stage"]) {
+    assert.deepEqual(
+      checkOutput({ ...event, tool_response: `${name}=fixture-value` }, []),
+      {},
+    );
+  }
+});

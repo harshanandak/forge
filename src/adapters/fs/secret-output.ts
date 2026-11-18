@@ -1,8 +1,40 @@
 export const MAX_BYTES: number = 8 * 1024 * 1024;
 const sensitiveName =
   /(?:^|[_\-\s])(?:authorization|proxy.authorization|cookie|set.cookie|secret|token|password|passwd|credential|api.?key|access.?key|private.?key|database.?url|dsn)(?:$|[_\-\s])|(?:access|refresh|id|auth|bearer)token|clientsecret|(?:api|access|private)key|databaseurl/i;
-const assignment =
-  /(\b(?:[\w-]*_)?(?:authorization|proxy-authorization|cookie|secret|token|password|passwd|credential|api[_-]?key|access[_-]?key|private[_-]?key|database[_-]?url|dsn)(?:[_-]\w+)*\b(?:\\*["'])?\s*[:=]\s*)(?:bearer\s+|basic\s+)?(?:\[REDACTED\](?=$|[\s,;}])|\\+["'][^\r\n]*|"(?:\\.|[^"\\])*"|'[^']*'|[^\s,;}\]]+)/gi;
+const assignmentName =
+  /(?:^|[_-])(?:authorization|proxy-authorization|cookie|secret|token|password|passwd|credential|api[_-]?key|access[_-]?key|private[_-]?key|database[_-]?url|dsn)(?=$|[_-])/gi;
+
+function isSensitiveAssignmentName(name: string): boolean {
+  if (name.endsWith("-")) return false;
+  const lastDoubleHyphen = name.lastIndexOf("--");
+  for (const match of name.matchAll(assignmentName)) {
+    const suffixStart = match.index + match[0].length;
+    const validSuffix =
+      suffixStart === name.length ||
+      (suffixStart + 1 < name.length && name[suffixStart + 1] !== "-");
+    if (suffixStart > lastDoubleHyphen && validSuffix) return true;
+  }
+  return false;
+}
+
+function redactAssignments(text: string): string {
+  const names = /[\w-]+/g;
+  const value =
+    /((?:\\*["'])?\s*[:=]\s*)(?:bearer\s+|basic\s+)?(?:\[REDACTED\](?=$|[\s,;}])|\\+["'][^\r\n]*|"(?:\\.|[^"\\])*"|'[^']*'|[^\s,;}\]]+)/iy;
+  const parts: string[] = [];
+  let copied = 0;
+  for (let match = names.exec(text); match; match = names.exec(text)) {
+    if (!isSensitiveAssignmentName(match[0])) continue;
+    value.lastIndex = names.lastIndex;
+    const assigned = value.exec(text);
+    if (!assigned) continue;
+    parts.push(text.slice(copied, assigned.index), assigned[1]!, "[REDACTED]");
+    copied = value.lastIndex;
+    names.lastIndex = copied;
+  }
+  parts.push(text.slice(copied));
+  return parts.join("");
+}
 
 export function createOutputGate(
   values: readonly unknown[] = [],
@@ -79,8 +111,7 @@ export function createOutputGate(
     for (const value of known) result = result.split(value).join("[REDACTED]");
     for (const pattern of percentPatterns)
       result = result.replace(pattern, "[REDACTED]");
-    return result
-      .replace(assignment, "$1[REDACTED]")
+    return redactAssignments(result)
       .replace(/\b(?:bearer|basic)\s+[^\s,"';}\]]+/gi, "[REDACTED]")
       .replace(
         /\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?):\/\/[^\s"'<>]+/gi,
