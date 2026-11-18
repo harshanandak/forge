@@ -93,7 +93,7 @@ bun tools/import-current.ts --backup $DeltaBackup --manifest $DeltaManifest --ou
 
 Expect `INPUT_INVALID`, exit 6, `Offline import refused; no verified complete bundle`, with `left-behind.json` but no verified manifest.
 Only this acknowledgement refusal is expected. Read the inventory and live-lease keys; do not mistake another failure for the gate.
-Require zero live leases and the family set in What stays local. Hash this run's file and obtain acknowledgement for this inventory:
+Require zero live leases and the frozen-export family set in What stays local, including exactly 1 `forge/work autopilot-global:*` record. Hash this run's file and obtain acknowledgement for this inventory:
 
 ```powershell
 $Ack = (Get-FileHash -Algorithm SHA256 -LiteralPath "$Ledger/bundle-first/left-behind.json").Hash.ToLowerInvariant()
@@ -161,11 +161,14 @@ No deletion, local unfreeze or local resume completes a successful switch.
 
 ## What stays local
 
-The 11:13Z practice inventory had these families; require this set, not its counts:
+The 11:13Z practice inventory had these families before this runbook's freeze:
 `forge/check runs/*`; `forge/core-project identity`; `forge/memory meta/*`, `note/*`, `transfer/*`;
 `forge/work autopilot-ask:*`, `autopilot-clock:*`, `autopilot-event:*`.
-That practice had 1766 left behind and 2 live leases; those are not acceptance counts. Real-copy acceptance requires zero live leases.
-Any new family needs review and a new acknowledgement before conversion proceeds.
+For a bundle regenerated from the frozen export, require that set plus `forge/work autopilot-global:*`, with count exactly 1.
+Step 2.3 writes the freeze into the singleton `autopilot:global`, creating it if absent or updating the existing record.
+The converter leaves that record local and reports it as `autopilot-global:*`; the namespace/key primary key permits only 1.
+Other family counts are not fixed. That practice had 1766 left behind and 2 live leases; real-copy acceptance requires zero live leases.
+Any family outside the applicable expected set needs review and a new acknowledgement before conversion proceeds.
 
 The backup also retains old event history, local runtime state, old leases, requests and receipts.
 Import creates current values with fresh revision-1 events, not the old history. Old fences cannot authorize cloud writes.
