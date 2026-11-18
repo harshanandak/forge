@@ -1,0 +1,27 @@
+{
+  "schemaVersion": "forge.block/1",
+  "id": "forge/store",
+  "version": "0.1.0",
+  "authorAbi": "forge.author/v2",
+  "profile": "trusted-action/v2",
+  "entry": "entry.cjs",
+  "requires": [
+    {
+      "slot": "store",
+      "interface": "forge.store-export@1"
+    }
+  ],
+  "operations": {
+    "store.export": {
+      "input": "schemas/input.json",
+      "output": "schemas/output.json",
+      "context": "project",
+      "timeoutMs": 120000,
+      "effects": ["state:read", "files:write"],
+      "idempotent": false,
+      "callers": ["human"],
+      "stability": "experimental"
+    }
+  },
+  "docs": "docs.json"
+}
