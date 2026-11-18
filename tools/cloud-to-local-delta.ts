@@ -1,4 +1,4 @@
-import * as fs from "node:fs";
+﻿import * as fs from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
@@ -233,7 +233,10 @@ export async function compute(options: Options) {
     .sort();
   const report = {
     format: "forge-cloud-to-local-delta/1",
-    source: { sha256: pin },
+    source: {
+      sha256: pin,
+      project: null as { id: string; projectId: string | null } | null,
+    },
     pages: pages.length,
     counts: {
       cloudRecords: cloud.size,

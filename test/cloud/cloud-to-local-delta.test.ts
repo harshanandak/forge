@@ -1,106 +1,32 @@
-import { expect, setDefaultTimeout, test } from "bun:test";
+﻿import { expect, setDefaultTimeout, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
   copyFileSync,
   existsSync,
-  readdirSync,
+  mkdtempSync,
   readFileSync,
   renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
-import { limitsFrom } from "../../cloud/src/dump.ts";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { compute, type Options } from "../../tools/cloud-to-local-delta.ts";
 import * as converter from "../../tools/import-current.ts";
+import {
+  cloudRow,
+  editCloud,
+  editPage,
+  limits,
+  moved,
+  pageNames,
+  project,
+} from "./cloud-to-local.fixture.ts";
 import * as f from "./import-current-state.fixture.ts";
 
 setDefaultTimeout(120_000);
-const limits = { ...limitsFrom({}), pageBytes: 2048 };
 
-async function moved() {
-  const source = f.source(6, false, false, (_db, state) => {
-    state.put(
-      f.ns,
-      "comment:work-1:1",
-      { id: "work-1", body: "local" },
-      f.actor,
-      { expectRevision: 0 },
-    );
-    state.put(
-      f.ns,
-      "allocation:comment:work-1:",
-      { prefix: "comment:work-1:", number: 1 },
-      f.actor,
-      { expectRevision: 1 },
-    );
-    state.put(
-      f.ns,
-      "issue:work-2",
-      { ...f.issueValue("work-2", "Synthetic 2"), status: "closed" },
-      f.actor,
-      { expectRevision: 1 },
-    );
-  });
-  const backup = String(source.db.all("PRAGMA database_list")[0]!.file),
-    root = dirname(backup);
-  const manifest = join(root, "source.json"),
-    dump = join(root, "bundle");
-  writeFileSync(manifest, JSON.stringify(source.manifest));
-  await converter.convert({ backup, manifest, out: dump, limits });
-  const again = async (name: string, at: string) => {
-    const other = join(root, `${name}.json`),
-      out = join(root, name);
-    writeFileSync(other, JSON.stringify({ ...source.manifest, at }));
-    await converter.convert({ backup, manifest: other, out, limits });
-    return out;
-  };
-  return {
-    source,
-    dump,
-    root,
-    again,
-    options: { dump, backup, manifest, out: join(root, "delta.json") },
-  };
-}
-type Row = { key: string; body: string; revision: number };
-type Doc = {
-  next: string | null;
-  tables: Record<string, Row[]> & { state_records: Row[] };
-};
-const pageNames = (dump: string) =>
-  readdirSync(dump)
-    .filter((name) => name.startsWith("page-"))
-    .sort();
-function editPage(dump: string, index: number, edit: (page: Doc) => void) {
-  const file = join(dump, pageNames(dump)[index]!),
-    page = JSON.parse(readFileSync(file, "utf8")) as Doc;
-  edit(page);
-  writeFileSync(file, JSON.stringify(page));
-}
-function editCloud(dump: string, edit: (rows: Row[], first: boolean) => void) {
-  expect(pageNames(dump).length).toBeGreaterThan(1);
-  pageNames(dump).forEach((_name, index) =>
-    editPage(dump, index, (page) =>
-      edit(page.tables.state_records, index === 0),
-    ),
-  );
-}
-const cloudRow = (key: string, namespace: string, value: object): Row =>
-  ({
-    namespace,
-    key,
-    revision: 1,
-    body: JSON.stringify({
-      namespace,
-      key,
-      revision: 1,
-      value,
-      updatedAt: new Date(f.at).toISOString(),
-      updatedBy: f.actor,
-    }),
-  }) as unknown as Row;
 async function refused(options: Options, reason: string) {
   const error = await compute(options).then(
     () => undefined,
@@ -347,4 +273,47 @@ test("a symlinked backup and a backup with a -wal sidecar are refused", async ()
     return;
   }
   await refused({ ...options, backup: link }, "Invalid offline import input");
+}, 120_000);
+
+test("the report carries the backup's project identity, or null when the backup has none", async () => {
+  const plain = await moved();
+  expect((await compute(plain.options)).source.project).toBeNull();
+  const named = await moved(true);
+  expect((await compute(named.options)).source).toEqual({
+    sha256: named.source.manifest.sha256,
+    project: { id: project.id, projectId: project.projectId },
+  });
+}, 120_000);
+
+test("a backup with no work records converts and its delta computes", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "forge-empty-delta-"));
+  try {
+    const backup = join(dir, "standalone.sqlite"),
+      manifest = join(dir, "source.json"),
+      db = f.database(backup);
+    f.owner(db).initialize();
+    db.exec("PRAGMA journal_mode=DELETE");
+    writeFileSync(
+      manifest,
+      JSON.stringify({
+        sha256: sha(backup),
+        eventHighWaterMark: 0,
+        records: 0,
+        at: new Date(f.at).toISOString(),
+      }),
+    );
+    const dump = join(dir, "bundle");
+    await converter.convert({ backup, manifest, out: dump, limits });
+    const report = await compute({
+      dump,
+      backup,
+      manifest,
+      out: join(dir, "delta.json"),
+    });
+    expect(report.delta).toEqual([]);
+    expect(report.counts.localRecords).toBe(0);
+  } finally {
+    f.cleanup();
+    rmSync(dir, { recursive: true, force: true });
+  }
 }, 120_000);
