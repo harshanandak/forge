@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["out", "sha256", "eventHighWaterMark", "records"],
+  "properties": {
+    "out": { "type": "string" },
+    "sha256": { "type": "string" },
+    "eventHighWaterMark": { "type": "integer" },
+    "records": { "type": "integer" }
+  },
+  "additionalProperties": false
+}
