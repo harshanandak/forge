@@ -12,6 +12,7 @@ import {
 import {
   StateOwner,
   verifyEventDerivedState,
+  type NumberedSummary,
 } from "../src/core/state/index.ts";
 import { parseRestoreJson } from "../src/core/state/restore-json.ts";
 import type { StateRecord, StateEvent } from "../src/generated/types.ts";
@@ -137,6 +138,28 @@ export function* workRecords(
   }
 }
 
+function* floorValues(found: NumberedSummary) {
+  for (const [prefix, summary] of [
+    [numbered.prefix, found] as const,
+    ...(found.groups ?? []),
+  ]) {
+    const needed = Math.max(summary.highest, summary.earlier);
+    const key = `allocation:${prefix}`;
+    const value = { prefix, number: needed };
+    admitSource(key, value);
+    yield [key, value] as const;
+  }
+}
+
+export function importFloorBaseline(
+  source: SqlDatabase,
+  eventHighWaterMark: number,
+) {
+  return floorValues(
+    verifyEventDerivedState(source, eventHighWaterMark, undefined, numbered)!,
+  );
+}
+
 export function verifySourceSchema(source: SqlDatabase, schema: SqlDatabase) {
   for (const sql of [
     "SELECT CAST(user_version AS TEXT) AS version FROM pragma_user_version",
@@ -206,15 +229,7 @@ export function verifySource(
       undefined,
       numbered,
     )!;
-    for (const [prefix, summary] of [
-      [numbered.prefix, found] as const,
-      ...(found.groups ?? []),
-    ])
-      admitSource(`allocation:${prefix}`, {
-        prefix,
-        number: Math.max(summary.highest, summary.earlier),
-      });
-    return { ...found, imported, repaired };
+    return { ...found, imported, repaired, floors: [...floorValues(found)] };
   } catch (error) {
     if (error instanceof ForgeFailure && error.error.observed) throw error;
     return invalid();
@@ -333,16 +348,12 @@ export function currentState(
         records++;
       }
       if (records !== found.imported) invalid();
-      for (const [prefix, summary] of [
-        [numbered.prefix, found] as const,
-        ...(found.groups ?? []),
-      ]) {
-        const needed = Math.max(summary.highest, summary.earlier);
+      for (const [, { prefix, number }] of found.floors) {
         if (
           owner.seedNumberFloor(
             namespace,
             prefix,
-            { highest: needed, earlier: 0, floorRevision: 0 },
+            { highest: number, earlier: 0, floorRevision: 0 },
             actor,
             records + floors,
           )

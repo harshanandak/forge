@@ -391,7 +391,9 @@ test("Windows admission runs independently with all twenty replays and remains r
   };
   const admission = jobs["comment-guard"]!;
   expect(admission.needs).toBe("changes");
-  expect(admission.if).toBe("needs.changes.outputs.scope == 'full'");
+  expect(admission.if).toBe(
+    "github.event_name != 'schedule' && needs.changes.outputs.scope == 'full'",
+  );
   expect(admission["runs-on"]).toBe("windows-latest");
   expect(admission["timeout-minutes"]).toBe(20);
   expect(

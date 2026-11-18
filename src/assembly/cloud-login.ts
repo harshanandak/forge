@@ -23,6 +23,7 @@ import type {
   CloudLogoutResult,
 } from "../ports/cloud-login.ts";
 import {
+  checkBindingBytes,
   credentialStore,
   openCloudFiles,
   parseDeviceCredential,
@@ -31,6 +32,7 @@ import {
   removeBinding,
   resolveTarget,
   writeBinding,
+  type CloudBinding,
 } from "./cloud-profile.ts";
 import { readProjectManifest } from "./project-manifest.ts";
 import { wireDeviceId } from "./wire-device.ts";
@@ -83,8 +85,8 @@ const LOGOUT_INPUT_SCHEMA = {
 
 const failed = (message: string, code: string): ForgeFailure =>
   new ForgeFailure({ code, message, retry: "never" });
-const cancelled = (): ForgeFailure =>
-  failed("The login was cancelled.", "INVOCATION_CANCELLED");
+const cancelled = (operation: "login" | "logout" = "login"): ForgeFailure =>
+  failed(`The ${operation} was cancelled.`, "INVOCATION_CANCELLED");
 
 /** The server's refusal as one of our fixed messages; the name is from a closed vocabulary. */
 function refusalFailure(name: string): ForgeFailure {
@@ -299,21 +301,28 @@ async function login(
     wire,
     (deps.now ?? Date.now)(),
   );
-  await store.save({
-    origin: target.origin,
+  const targetBinding = {
+    schema: 1,
     identity: manifest.id,
+    ...target,
+  } as const;
+  const binding = await store.save(
+    { ...target, identity: manifest.id, localDevice: local, ...credential },
+    () => writeLoginBinding(deps.root, targetBinding),
+  );
+  return {
+    origin: target.origin,
     project: target.project,
-    localDevice: local,
-    ...credential,
-  });
-  let binding: "created" | "unchanged";
+    device: wire,
+    tokenId: credential.id,
+    expiresAt: credential.expiresAt,
+    binding,
+  };
+}
+
+function writeLoginBinding(root: string, binding: CloudBinding) {
   try {
-    binding = writeBinding(deps.root, {
-      schema: 1,
-      identity: manifest.id,
-      origin: target.origin,
-      project: target.project,
-    });
+    return writeBinding(root, binding);
   } catch (error) {
     throw new ForgeFailure({
       ...(error instanceof ForgeFailure
@@ -327,14 +336,6 @@ async function login(
         "The credential was saved. Run forge auth login again to finish the binding.",
     });
   }
-  return {
-    origin: target.origin,
-    project: target.project,
-    device: wire,
-    tokenId: credential.id,
-    expiresAt: credential.expiresAt,
-    binding,
-  };
 }
 
 async function logout(
@@ -347,6 +348,10 @@ async function logout(
       message: `Invalid input for ${CLOUD_LOGOUT_OP}: expected {}`,
       retry: "never",
     });
+  const checkActive = () => {
+    if (deps.signal.aborted) throw cancelled("logout");
+  };
+  checkActive();
   const snapshot = readBindingSnapshot(deps.root);
   if (snapshot === undefined)
     return { status: "not-bound", tokenRevoked: false };
@@ -365,32 +370,14 @@ async function logout(
       ".forge/cloud.json belongs to a different project identity",
       "INPUT_CONFLICT",
     );
-  const tokenId = await credentialStore(
-    openCloudFiles(deps.home, deps.security),
-  ).remove({
-    origin: binding.origin,
-    identity: manifest.id,
-    project: binding.project,
+  const store = credentialStore(openCloudFiles(deps.home, deps.security));
+  const tokenId = await store.remove(binding, {
+    checkActive,
+    checkBinding: (id) =>
+      logoutBindingStep(id, () => checkBindingBytes(deps.root, bytes)),
+    removeBinding: (id) =>
+      logoutBindingStep(id, () => removeBinding(deps.root, bytes)),
   });
-  try {
-    removeBinding(deps.root, bytes);
-  } catch (error) {
-    const failure =
-      error instanceof ForgeFailure
-        ? error.error
-        : {
-            code: "UNAVAILABLE",
-            message: "The project binding could not be removed.",
-            retry: "never" as const,
-          };
-    throw new ForgeFailure({
-      ...failure,
-      ...(failure.code === "INPUT_CONFLICT"
-        ? {}
-        : { repair: "Run forge auth logout again to remove the binding." }),
-      ...(tokenId === undefined ? {} : { observed: { tokenId } }),
-    });
-  }
   return {
     status: "logged-out",
     origin: binding.origin,
@@ -398,6 +385,15 @@ async function logout(
     ...(tokenId === undefined ? {} : { tokenId }),
     tokenRevoked: false,
   };
+}
+
+function logoutBindingStep(tokenId: string | undefined, run: () => void): void {
+  try {
+    run();
+  } catch (error) {
+    if (!(error instanceof ForgeFailure) || tokenId === undefined) throw error;
+    throw new ForgeFailure({ ...error.error, observed: { tokenId } });
+  }
 }
 
 /** The login service one invocation gets. */

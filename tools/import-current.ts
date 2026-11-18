@@ -6,7 +6,10 @@ import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { createSqliteStore } from "../src/adapters/store-sqlite/index.ts";
 import { copyPrivateFile } from "../src/adapters/store-sqlite/file-ops.ts";
-import { privateFileGuard } from "../src/adapters/store-sqlite/private-files.ts";
+import {
+  privateFileGuard,
+  type PrivateFileGuard,
+} from "../src/adapters/store-sqlite/private-files.ts";
 import { windowsPrivateFiles } from "../src/adapters/process/windows-acl.ts";
 import { ForgeFailure } from "../src/contract/failure.ts";
 import { StateOwner } from "../src/core/state/index.ts";
@@ -39,7 +42,7 @@ export async function digest(path: string): Promise<string> {
     hash.update(chunk as Uint8Array);
   return hash.digest("hex");
 }
-function sourceManifest(path: string): state.SourceManifest {
+export function sourceManifest(path: string): state.SourceManifest {
   try {
     const value = JSON.parse(
       fs.readFileSync(path, "utf8"),
@@ -73,12 +76,13 @@ export function isolatedBackup(path: string): void {
     fs.closeSync(fd);
   }
 }
-async function opened(
+export async function opened(
   path: string,
   readOnly: boolean,
   handles: OwnedHandle<SqlDatabase>[],
+  security?: PrivateFileGuard,
 ): Promise<SqlDatabase> {
-  const store = createSqliteStore(process.cwd());
+  const store = createSqliteStore(process.cwd(), security ? { security } : {});
   const result = await store.open({ path, readOnly });
   if (!result.ok) throw new Error("Cannot open offline scratch or backup");
   handles.push(result.handle);
@@ -99,7 +103,7 @@ async function opened(
     },
   };
 }
-function migrationPrefix(source: SqlDatabase) {
+export function migrationPrefix(source: SqlDatabase) {
   try {
     const applied = source.all(
       "SELECT id FROM state_migrations ORDER BY rowid LIMIT ?",
@@ -113,6 +117,21 @@ function migrationPrefix(source: SqlDatabase) {
     return stateMigrations.slice(0, applied.length);
   } catch {
     return invalid();
+  }
+}
+
+export function migrateVerifiedCopy(
+  writable: SqlDatabase,
+  schema: SqlDatabase,
+  clock: { now(): number },
+): void {
+  try {
+    writable.transaction(() => {
+      state.verifySourceSchema(writable, schema);
+      new StateOwner(writable, clock).initialize();
+    });
+  } catch {
+    invalid();
   }
 }
 
@@ -178,14 +197,7 @@ export async function convert(options: Options) {
     if (migrations.length < stateMigrations.length) {
       migrate(scratch, migrations);
       const writable = await opened(copy, false, handles);
-      try {
-        writable.transaction(() => {
-          state.verifySourceSchema(writable, scratch);
-          new StateOwner(writable, clock).initialize();
-        });
-      } catch {
-        invalid();
-      }
+      migrateVerifiedCopy(writable, scratch, clock);
     }
     source.exec("BEGIN");
     new StateOwner(scratch, clock).initialize();
