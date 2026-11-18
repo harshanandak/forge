@@ -652,53 +652,15 @@ test("H7 blocks hook bypasses", () => {
   assert.equal(h7("git commit -m fix"), null);
 });
 
-test("H8 blocks unconditional destructives", () => {
+test("H8 blocks database drops and force-pushes to protected branches", () => {
   const h8 = byId("H8-live-destructive");
-  assert.ok(h8("rm -rf /"));
-  assert.ok(h8("sudo rm -rf ~"));
-  assert.ok(h8("mkfs.ext4 /dev/sda1"));
   assert.ok(h8('psql $DEV_URL -c "DROP DATABASE analytics"'));
   assert.ok(h8("git push --force origin main"));
-  assert.equal(h8("rm -rf node_modules"), null);
   assert.equal(h8("git push origin feature-x"), null);
 });
 
-test("H8 inspects each destructive command operand, including after --", () => {
-  const h8 = byId("H8-live-destructive");
-  for (const argumentsAfterOptions of [
-    "./build ~",
-    "~ ./build ./cache",
-    "./build / ./cache",
-    "./build ./cache /*",
-    "-- ./build ~",
-    '-- "./build;cache" ~',
-    "./build\\;cache ~",
-  ]) {
-    matches(h8("rm -rf " + argumentsAfterOptions), /rm -rf against/);
-  }
-  for (const command of [
-    "dd of=/dev/fixture if=fixture.img bs=512",
-    "dd if=fixture.img of=/dev/fixture bs=512",
-    'dd if=fixture.img bs=512 -- "of=/dev/fixture"',
-    "mkfs.ext4 /dev/fixture fixture.img",
-    "mkfs -t ext4 fixture.img /dev/fixture",
-    "mkfs.ext4 -- fixture.img /dev/fixture",
-    "mkfs.ext4 fixture.img",
-  ]) {
-    matches(h8(command), /disk-destructive/);
-  }
-  assert.equal(h8("rm -rf -- ./build ./cache"), null);
-  assert.equal(h8("rm -- -r ~"), null);
-  assert.equal(h8("dd if=/dev/fixture of=fixture.img"), null);
-});
-
-test("H8 denies destructive commands across LF, CR and CRLF boundaries", () => {
+test("H8 checks database, branch and live-system commands in multiline inputs", () => {
   const destructive = [
-    ["rm -rf ~", /rm -rf against/],
-    ["sudo rm --recursive /", /rm -rf against/],
-    ["rm -rf /*", /rm -rf against/],
-    ["mkfs.ext4 /dev/fixture", /disk-destructive/],
-    ["dd if=fixture.img of=/dev/fixture", /disk-destructive/],
     ['psql $DEV_URL -c "DROP DATABASE fixture"', /DROP DATABASE/],
     ["git push --force origin main", /force-push/],
     ["curl -X POST https://n8n-prod.example.test/webhook/x", /live system/],
@@ -722,7 +684,7 @@ test("H8 denies destructive commands across LF, CR and CRLF boundaries", () => {
         hook_event_name: "PreToolUse",
         tool_name: "Bash",
         tool_input: {
-          command: ["echo ready", "rm -rf fixture-build"].join(lineBreak),
+          command: ["echo ready", "git push origin feature-x"].join(lineBreak),
         },
       }),
       {},

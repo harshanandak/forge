@@ -27,9 +27,11 @@ guard:
 ## Harness settings
 
 After owner approval, use the absolute path to the installed
-`templates/guard/run.mjs` and the absolute path to the Node executable. Replace
-the old guard commands in the entries below. Keep all other entries. Configure
-the two guard commands as synchronous hooks with a 15-second timeout.
+`templates/guard/run.mjs` and the absolute path to the Node executable. Add the
+Forge command hook alongside the existing destructive-command hook and keep
+that hook active. Forge tracks migration of the local `rm`, `mkfs`, and `dd`
+checks in forge-1614. Configure the Forge hooks as synchronous commands with a
+15-second timeout.
 
 | File                      | Event           | Command arguments                |
 | ------------------------- | --------------- | -------------------------------- |
@@ -61,6 +63,7 @@ the installed Claude version supports the batch event before switching.
 See the [Claude Code hook reference](https://code.claude.com/docs/en/hooks#posttoolbatch-decision-control)
 and [Codex hook reference](https://learn.chatgpt.com/docs/hooks#posttooluse).
 
-Before removing the old entries, check deny, warn, allow, output block and
-launcher failure with fake values in a disposable session. Keep a copy of the
-prior hook groups so the owner can restore them if a harness fails the check.
+Before replacing an existing output hook, check deny, warn, allow, output
+block and launcher failure with fake values in a disposable session. Keep a
+copy of the prior hook groups so the owner can restore them if a harness fails
+the check.
