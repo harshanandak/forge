@@ -275,19 +275,36 @@ test("maintenance at the byte boundary always frees room for a full event", asyn
   }
 });
 
+const eventBytes = (db: SqlDatabase) =>
+  Number(
+    db.get("SELECT bytes FROM state_usage WHERE table_name='state_events'")
+      ?.bytes,
+  );
+const fillToLimit = (owner: StateOwner, db: SqlDatabase) => {
+  nearByteLimit(owner, db, 8_380_000);
+  for (let i = 0; i < 200; i++) {
+    try {
+      owner.put(ns, `tiny:${i}`, 0, actor, { expectRevision: 0 });
+    } catch {
+      break;
+    }
+  }
+};
+const archiveThrough = (db: SqlDatabase) =>
+  Number(
+    db.get("SELECT archive_through FROM state_checkpoint_header WHERE id=1")
+      ?.archive_through,
+  );
+
 test("an image exported at the byte boundary restores and releases its leases", async () => {
   const s = await fixture(),
     target = await fixture();
   try {
     s.owner.initialize();
-    nearByteLimit(s.owner, s.db, 8_380_000);
-    for (let i = 0; i < 200; i++) {
-      try {
-        s.owner.put(ns, `tiny:${i}`, 0, actor, { expectRevision: 0 });
-      } catch {
-        break;
-      }
-    }
+    fillToLimit(s.owner, s.db);
+    const headroom = 8388608 - eventBytes(s.db);
+    expect(headroom).toBeGreaterThanOrEqual(0);
+    expect(headroom).toBeLessThan(1024);
     target.owner.initialize();
     target.owner.restore(s.owner.export(), undefined, 1);
     expect(target.owner.lease(ns, "held")?.releasedAt).toBeDefined();
@@ -295,6 +312,106 @@ test("an image exported at the byte boundary restores and releases its leases", 
   } finally {
     await s.close();
     await target.close();
+  }
+});
+
+test("floor events written by a restore at capacity are exempt and keep archive_through", async () => {
+  const s = await fixture(),
+    target = await fixture();
+  try {
+    s.owner.initialize();
+    fillToLimit(s.owner, s.db);
+    target.owner.initialize();
+    target.owner.restore(s.owner.export(), undefined, 1);
+    const archived = archiveThrough(target.db);
+    expect(archived).toBeGreaterThan(0);
+    expect(() =>
+      target.owner.put(ns, "after", 0, actor, { expectRevision: 0 }),
+    ).toThrow(/MAINTENANCE_REQUIRED/);
+    expect(
+      target.owner.seedNumberFloor(
+        ns,
+        "n-",
+        { highest: 0, earlier: 0, floorRevision: 0 },
+        actor,
+        high(target),
+      ),
+    ).toBe(true);
+    expect(target.owner.get(ns, "allocation:n-")?.value).toEqual({
+      prefix: "n-",
+      number: 0,
+    });
+    expect(archiveThrough(target.db)).toBe(archived);
+  } finally {
+    await s.close();
+    await target.close();
+  }
+});
+
+test("archive_through is unchanged after a throw inside releaseRestoredLeases", async () => {
+  const s = await fixture();
+  try {
+    s.owner.initialize();
+    nearByteLimit(s.owner, s.db, 8_380_000);
+    const archived = archiveThrough(s.db);
+    expect(archived).toBeGreaterThan(0);
+    const proxy: SqlDatabase = {
+      ...s.db,
+      run(sql, params) {
+        if (sql.startsWith("UPDATE state_leases SET body"))
+          throw new Error("synthetic release interruption");
+        return s.db.run(sql, params);
+      },
+    };
+    expect(() =>
+      new StateOwner(proxy, { now: () => 1000 }).releaseRestoredLeases(),
+    ).toThrow("synthetic release interruption");
+    expect(archiveThrough(s.db)).toBe(archived);
+    expect(s.owner.lease(ns, "held")?.releasedAt).toBeUndefined();
+  } finally {
+    await s.close();
+  }
+});
+
+const rowBytes = (db: SqlDatabase, key: string) =>
+  Number(
+    db.get(
+      "SELECT LENGTH(CAST(sequence AS BLOB))+LENGTH(CAST(namespace AS BLOB))+LENGTH(CAST(key AS BLOB))+LENGTH(CAST(body AS BLOB)) AS n FROM state_events WHERE key=?",
+      [key],
+    )?.n,
+  );
+
+test("at the post-compaction cap the largest accepted event is inserted and one byte more is refused", async () => {
+  const s = await fixture();
+  try {
+    s.owner.initialize();
+    for (let i = 0; i < 70; i++)
+      s.owner.put(ns, "large", "x".repeat(100_000), actor, {
+        expectRevision: i,
+      });
+    expect(compact(s.owner, 1, 69, 8388608)).toBe(1);
+    expect(archiveThrough(s.db)).toBeGreaterThan(0);
+    const cap = 8388608 - 1048576;
+    s.owner.put(ns, "k:a", "", actor, { expectRevision: 0 });
+    const base = rowBytes(s.db, "k:a");
+    const fill = cap - eventBytes(s.db) - base;
+    expect(fill).toBeGreaterThan(0);
+    s.owner.put(ns, "k:b", "x".repeat(fill), actor, { expectRevision: 0 });
+    expect(eventBytes(s.db)).toBe(cap);
+    const pad = 1048576 - base;
+    const sequence = high(s);
+    expect(() =>
+      s.owner.put(ns, "k:c", "x".repeat(pad + 1), actor, {
+        expectRevision: 0,
+      }),
+    ).toThrow(/INPUT_INVALID/);
+    expect(high(s)).toBe(sequence);
+    expect(s.owner.get(ns, "k:c")).toBeUndefined();
+    s.owner.put(ns, "k:c", "x".repeat(pad), actor, { expectRevision: 0 });
+    expect(rowBytes(s.db, "k:c")).toBe(1048576);
+    expect(eventBytes(s.db)).toBe(8388608);
+  } finally {
+    await s.close();
   }
 });
 test("checkpoint commitments and mutation costs scale with bounded prefixes", async () => {
