@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "required": ["status", "tokenRevoked"],
+  "properties": {
+    "status": { "enum": ["logged-out", "not-bound"] },
+    "origin": { "type": "string" },
+    "project": { "type": "string" },
+    "tokenId": { "type": "string" },
+    "tokenRevoked": { "enum": [false] }
+  },
+  "additionalProperties": false
+}
