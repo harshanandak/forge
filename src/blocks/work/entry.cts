@@ -5718,6 +5718,7 @@ const operations: Operations<WorkOperations> = {
           pull.url,
         );
       if (!matching) {
+        refuseFrozen(call.services);
         const written = recovering
           ? state.appendLandingComment({
               id,
