@@ -670,6 +670,15 @@ export class Project {
         authorize(view, parts, Date.now());
       }
       const body = writes ? await bounded(request) : "";
+      if (writes)
+        await this.#armMaintenance(
+          Math.min(
+            Date.now() + RETENTION_MS,
+            parts === undefined
+              ? Number(request.headers.get("X-Forge-Owner-Expires"))
+              : authorizeToken(view!, parts, Date.now()).expiresAt,
+          ),
+        );
       if (
         owner !== null &&
         writes &&
@@ -709,13 +718,6 @@ export class Project {
         this.#provisioned = true;
         await this.#storage.put(PROVISIONED, true);
       }
-      await this.#armMaintenance(
-        Math.min(
-          Date.now() + RETENTION_MS,
-          token?.expiresAt ??
-            Number(request.headers.get("X-Forge-Owner-Expires")),
-        ),
-      );
       return Response.json({ ok: true, value });
     } catch (caught) {
       const error = storageFailure(caught) ?? caught;
@@ -851,28 +853,30 @@ export class Project {
       // Synchronous commands stay current; PR verification rechecks inside its commit transaction.
       const token = authorizeToken(db, parts, Date.now());
       let writable = false;
-      const response = await runCommand(body, {
-        ...token,
-        approvalConfig: this.#env,
-        principal: ["token", token.id, token.device],
-        project: commandProject(request)!,
-        storage: this.#storage,
-        idPrefix: (this.#env as { FORGE_CLOUD_ID_PREFIX?: unknown })
-          .FORGE_CLOUD_ID_PREFIX,
-        now: Date.now(),
-        recheck: () => {
-          authorize(db, parts, Date.now());
-        },
-        open: () => {
-          writable = true;
-          return this.#openWrite();
-        },
-      });
-      if (writable)
-        await this.#armMaintenance(
-          Math.min(Date.now() + RETENTION_MS, token.expiresAt),
-        );
-      return response;
+      try {
+        return await runCommand(body, {
+          ...token,
+          approvalConfig: this.#env,
+          principal: ["token", token.id, token.device],
+          project: commandProject(request)!,
+          storage: this.#storage,
+          idPrefix: (this.#env as { FORGE_CLOUD_ID_PREFIX?: unknown })
+            .FORGE_CLOUD_ID_PREFIX,
+          now: Date.now(),
+          recheck: () => {
+            authorize(db, parts, Date.now());
+          },
+          open: () => {
+            writable = true;
+            return this.#openWrite();
+          },
+        });
+      } finally {
+        if (writable)
+          await this.#armMaintenance(
+            Math.min(Date.now() + RETENTION_MS, token.expiresAt),
+          );
+      }
     } catch (caught) {
       const error = storageFailure(caught) ?? caught;
       if (!(error instanceof ForgeFailure)) throw error;
