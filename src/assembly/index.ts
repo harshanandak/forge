@@ -248,6 +248,7 @@ export interface Assembly {
   readonly catalog: SurfaceCatalog & {
     unavailable(): readonly UnavailableBlock[];
   };
+  readonly mcpCatalog: SurfaceCatalog;
   readonly root: string;
   readonly deviceRoot: string;
   readonly exposure: McpExposure;
@@ -611,6 +612,40 @@ export async function createAssembly(
       );
     }
     return checked.value;
+  }
+  function mcpConfig(call: CallScope): ShowResult {
+    let show: ShowResult;
+    const repair = { repair: "Fix .forge/config.yaml before using MCP." };
+    try {
+      show = call.config.show();
+    } catch (error) {
+      if (error instanceof ForgeFailure) throw error;
+      refuse(
+        "INPUT_INVALID",
+        error instanceof Error
+          ? error.message
+          : "Cannot read .forge/config.yaml",
+        repair,
+      );
+    }
+    const excluded = show.excluded.find(
+      ({ pointer }) => pointer === "/mcp" || pointer === "",
+    );
+    if (excluded !== undefined || (!show.valid && show.excluded.length === 0))
+      refuse(
+        "INPUT_INVALID",
+        (excluded?.problems ?? show.problems).join("\n"),
+        repair,
+      );
+    return show;
+  }
+  function requireMcpEffects(
+    exposure: McpExposure | undefined,
+    declaration: McpCandidate["declaration"],
+    op: string,
+  ): void {
+    if (exposure?.readOnly && declaration.effects.length > 0)
+      refuse("UNKNOWN_COMMAND", `Unknown operation: ${op}`);
   }
   function withCallWarnings(
     call: CallScope,
@@ -1052,7 +1087,7 @@ export async function createAssembly(
       reconcileWith: "config.show",
     };
   }
-  const catalog: Assembly["catalog"] = {
+  const createCatalog = (mcp: boolean): Assembly["catalog"] => ({
     admit(blockId, declaredOp, dryRun, input) {
       admitCloud(
         { root, env: options.providers?.env ?? process.env },
@@ -1196,6 +1231,12 @@ export async function createAssembly(
     },
     list() {
       const call = callScope([], true);
+      if (mcp)
+        return [
+          ...configCandidates(),
+          grantCandidate,
+          ...snapshot(call, false, false, mcpConfig(call)).candidates,
+        ];
       const candidates = [...snapshot(call, true).candidates];
       if (
         call.warnings.some(
@@ -1216,7 +1257,8 @@ export async function createAssembly(
     },
     async invoke(request) {
       const derived: DetectionObservation[] = [];
-      const deviceMemory = deviceMemoryRequest(request.op, request.input);
+      const deviceMemory =
+        !mcp && deviceMemoryRequest(request.op, request.input);
       const call = callScope(derived, request.op === "store.export");
       try {
         const preview =
@@ -1337,7 +1379,7 @@ export async function createAssembly(
       } catch (error) {
         return withCallWarnings(call, failure(request.op, error));
       }
-      const result = await direct.invoke(call, request);
+      const result = await direct.invoke(call, request, mcp, deviceMemory);
       if (
         !result.ok &&
         process.env.T3CODE_CLI_PATH &&
@@ -1355,11 +1397,15 @@ export async function createAssembly(
         });
       return withCallWarnings(call, result);
     },
-  };
+  });
+  const catalog = createCatalog(false);
+  const mcpCatalog = createCatalog(true);
   const direct = {
     async invoke(
       call: CallScope,
       request: Parameters<Assembly["catalog"]["invoke"]>[0],
+      mcp: boolean,
+      deviceMemory: boolean,
     ): ReturnType<Assembly["catalog"]["invoke"]> {
       try {
         const checked = validateInvocationRequest(request);
@@ -1370,6 +1416,12 @@ export async function createAssembly(
           ...discoveryOperations,
         ].find((candidate) => candidate.op === request.op);
         if (entry) {
+          if (mcp)
+            requireMcpEffects(
+              composition(mcpConfig(call)).mcp,
+              entry.declaration,
+              request.op,
+            );
           if (!entry.declaration.callers.includes(request.caller))
             refuse(
               "ADMISSION_REQUIRED",
@@ -1683,8 +1735,19 @@ export async function createAssembly(
               blockCapture,
             );
             const name = block.manifest.id.split("/").at(-1)!;
-            const show = call.config.show();
-            const current = snapshot(call);
+            const show = mcp ? mcpConfig(call) : call.config.show();
+            if (mcp)
+              requireMcpEffects(
+                composition(show).mcp,
+                entry.declaration,
+                request.op,
+              );
+            const current = snapshot(
+              call,
+              false,
+              false,
+              mcp ? show : undefined,
+            );
             const existing = current.blocks.get(name);
             if (existing && existing.manifest.id !== block.manifest.id)
               refuse("NOUN_COLLISION", "Block instance name is already in use");
@@ -1804,8 +1867,11 @@ export async function createAssembly(
           }
           refuse("UNKNOWN_COMMAND", "Operation is not assembled");
         }
-        const deviceMemory = deviceMemoryRequest(request.op, request.input);
-        let current = snapshot(call, deviceMemory);
+        const load = () =>
+          mcp
+            ? snapshot(call, false, false, mcpConfig(call))
+            : snapshot(call, deviceMemory);
+        let current = load();
         const target = current.candidates.find(
           (candidate) => candidate.op === request.op,
         );
@@ -1820,7 +1886,7 @@ export async function createAssembly(
           );
         if (target && !target.admitted) {
           await trustState.open(false);
-          current = snapshot(call, deviceMemory);
+          current = load();
         }
         if (
           !current.catalog.list().includes(request.op) &&
@@ -1831,6 +1897,12 @@ export async function createAssembly(
               current.problems,
               current.unavailable[0]?.error.code ?? "INPUT_INVALID",
             ),
+          );
+        if (mcp && current.document.mcp?.readOnly)
+          requireMcpEffects(
+            current.document.mcp,
+            current.catalog.resolve(request.op).operation.declaration,
+            request.op,
           );
         const ownContext = (context: BoundContext) => {
           if (
@@ -1866,7 +1938,7 @@ export async function createAssembly(
                     );
                     if (!nested)
                       refuse("UNKNOWN_COMMAND", "Issue read is not assembled.");
-                    const answer = await catalog.invoke({
+                    const answer = await (mcp ? mcpCatalog : catalog).invoke({
                       ...request,
                       requestId: release?.requestId ?? request.requestId,
                       op: nested.op,
@@ -2330,10 +2402,11 @@ export async function createAssembly(
   };
   return {
     catalog,
+    mcpCatalog,
     root,
     deviceRoot,
     get exposure() {
-      return composition(callScope().config.show()).mcp ?? {};
+      return composition(mcpConfig(callScope())).mcp ?? {};
     },
     async prepareTrust() {
       await trustState.open(false);
