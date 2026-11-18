@@ -385,6 +385,24 @@ test("two sessions race for the claim and only the current holder can dispatch",
   }
 }, 10_000);
 
+test("a device-only token cannot dispatch as a live lease holder on the same device", async () => {
+  const f = await liveDispatch();
+  try {
+    expect((await claimDispatch(f)).verdict).toEqual(["OK", "OK", 0]);
+    const token = await f.admit("laptop", null);
+    const before = f.snapshot();
+    const reply = await f.send(dispatchCall(), "p", {
+      authorization: `Bearer ${token}`,
+    });
+    expect(reply.status).toBe(403);
+    expect(reply.verdict).toEqual(["FAIL", "AUTH_DEVICE_MISMATCH", 1]);
+    expect(dispatchState(f)).toEqual([[], []]);
+    expect(f.snapshot()).toBe(before);
+  } finally {
+    f.close();
+  }
+}, 10_000);
+
 test("distinct request IDs for one live dispatch both return its single durable intent", async () => {
   const f = await liveDispatch();
   try {
