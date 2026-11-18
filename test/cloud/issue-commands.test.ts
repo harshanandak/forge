@@ -1447,8 +1447,22 @@ for (const bad of [
           ),
           "forge/memory",
         ]);
-      if (bad === "huge record") f.put("note:1", "x".repeat(1_048_576));
-      if (bad === "huge event") f.put("note:1", "x".repeat(1_048_576));
+      if (bad === "huge record")
+        f.db.run("UPDATE state_records SET body=? WHERE namespace=?", [
+          JSON.stringify({ ...record, value: "x".repeat(1_048_576) }),
+          "forge/memory",
+        ]);
+      if (bad === "huge event") {
+        const event = f.owner.history("forge/memory", {
+          key: "note:1",
+          limit: 1,
+        })[0]!;
+        f.db.run("UPDATE state_events SET body=? WHERE namespace=? AND key=?", [
+          JSON.stringify({ ...event, value: "x".repeat(1_048_576) }),
+          "forge/memory",
+          "note:1",
+        ]);
+      }
       if (bad === "huge page") {
         f.put("note:1", "x".repeat(600_000));
         f.put("note:2", "x".repeat(600_000));
