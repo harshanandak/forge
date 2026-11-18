@@ -111,7 +111,7 @@
     },
     "lane.resume": {
       "title": "Resume lanes",
-      "summary": "Clear the stop flag for one lane or all lanes. It restarts spending, so it needs the owner's reply relayed as an approval: call once without approval to get a request, ask the owner, then call again with approval {request, quote, source}.",
+      "summary": "Clear the stop flag for one lane or all lanes. It restarts spending, so it needs approval: call once without it to get a request. Locally, approval is {request, quote, source}. Cloud-bound, approval is {request} only; quote and source are refused.",
       "examples": [
         {
           "input": {
