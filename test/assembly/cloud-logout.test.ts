@@ -229,6 +229,55 @@ test("logout cancelled while waiting for the credential lock changes neither fil
   }
 });
 
+test.each(["binding change", "cancellation"] as const)(
+  "logout restores its credential when %s interrupts binding removal",
+  async (interruption) => {
+    const sb = sandbox();
+    try {
+      await store(sb).save(entry(now));
+      bind(sb);
+      const credentials = read(sb.credentials);
+      const binding = read(sb.binding);
+      const replacement = `${JSON.stringify(bindingFor({ project: "other" }))}\n`;
+      const abort = new AbortController();
+      let interrupted = false;
+      const result = serviceFor(sb, {
+        signal: abort.signal,
+        security: {
+          directory: () => {},
+          file(path) {
+            if (
+              interrupted ||
+              basename(path) !== CREDENTIAL_FILE ||
+              read(path) === credentials
+            )
+              return;
+            interrupted = true;
+            if (interruption === "binding change")
+              writeFileSync(sb.binding, replacement);
+            else abort.abort();
+          },
+        },
+      }).logout({});
+      await expect(result).rejects.toMatchObject({
+        error: {
+          code:
+            interruption === "binding change"
+              ? "INPUT_CONFLICT"
+              : "INVOCATION_CANCELLED",
+        },
+      });
+      expect(interrupted).toBe(true);
+      expect(read(sb.credentials)).toBe(credentials);
+      expect(read(sb.binding)).toBe(
+        interruption === "binding change" ? replacement : binding,
+      );
+    } finally {
+      sb.close();
+    }
+  },
+);
+
 test("a credential file that fails its integrity check is left as it is and the binding stays", async () => {
   const sb = sandbox();
   try {

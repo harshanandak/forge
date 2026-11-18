@@ -40,7 +40,11 @@ import {
   removeConflict,
 } from "../../core/config/files.ts";
 import { ForgeFailure } from "../../contract/failure.ts";
-import { publishExclusive, removeDurable } from "./durable-io.ts";
+import {
+  publishExclusive,
+  removeDurable,
+  syncParentDirectory,
+} from "./durable-io.ts";
 import { nodeProjectFiles } from "./project-files.ts";
 
 function errorCode(error: unknown): string | undefined {
@@ -217,9 +221,9 @@ function claimIntact(
   expected: Uint8Array,
 ): boolean {
   const info = lstatSync(claimed, { bigint: true });
-  if (info.ino !== 0n && held.ino !== 0n) return sameFile(info, held);
   return (
     info.isFile() &&
+    (info.ino === 0n || held.ino === 0n || sameFile(info, held)) &&
     info.size === BigInt(expected.byteLength) &&
     Buffer.from(expected).equals(readFileSync(claimed))
   );
@@ -250,7 +254,7 @@ function holdsExpected(
 
 export function nodeConfigFiles(
   root: string,
-  options: { beforeOpen?: () => void } = {},
+  options: { beforeOpen?: () => void; requireExistingRemove?: boolean } = {},
 ): ConfigFiles {
   const files = nodeProjectFiles(root, options);
   return {
@@ -296,23 +300,23 @@ export function nodeConfigFiles(
         held = found;
         renameSync(target, claimed);
       } catch (error) {
-        if (errorCode(error) === "ENOENT") return;
+        if (errorCode(error) === "ENOENT") {
+          if (options.requireExistingRemove) throw removeConflict(path);
+          return;
+        }
         throw error;
       }
-      let intact: boolean;
       try {
-        intact = claimIntact(claimed, held, expected);
+        if (!claimIntact(claimed, held, expected)) throw removeConflict(path);
+        syncParentDirectory(claimed);
       } catch (error) {
         restoreAfterRemoveFailure(path, target, claimed, error);
       }
-      if (!intact)
-        restoreAfterRemoveFailure(path, target, claimed, removeConflict(path));
       try {
         removeDurable(claimed);
       } catch (error) {
         if (existsSync(claimed))
           restoreAfterRemoveFailure(path, target, claimed, error);
-        throw error;
       }
     },
     list(dir) {
