@@ -172,14 +172,35 @@ async function mcpTools(root: string, env: NodeJS.ProcessEnv): Promise<string> {
 test("help, the help contract and the MCP tool listing are unchanged", async () => {
   const { root, env, cli } = project();
   try {
+    const defaultListing = await mcpTools(root, env);
     expect(
       {
         help: sha(cli(["--help"])),
         helpJson: sha(cli(["--help", "--json"])),
-        mcpTools: sha(await mcpTools(root, env)),
+        mcpTools: sha(defaultListing),
       },
       "Help or the MCP tool listing changed. If that is intended, replace the digests in `catalog` above with the Received values shown below.",
     ).toEqual(catalog);
+
+    const listed = (json: string) =>
+      (JSON.parse(json) as { result: { tools: { name: string }[] } }).result
+        .tools;
+    const defaults = listed(defaultListing);
+    const expose = [
+      ...defaults.map(({ name }) => name.replace("_", ".")),
+      "lane.dispatch",
+    ];
+    writeFileSync(
+      join(root, ".forge/config.yaml"),
+      `${config}mcp:\n  expose: ${JSON.stringify(expose)}\n`,
+    );
+    const explicit = listed(await mcpTools(root, env));
+    expect({
+      added: explicit
+        .filter(({ name }) => name === "lane_dispatch")
+        .map(({ name }) => name),
+      rest: explicit.filter(({ name }) => name !== "lane_dispatch"),
+    }).toEqual({ added: ["lane_dispatch"], rest: defaults });
   } finally {
     removeQuietly(root);
   }
