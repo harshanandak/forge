@@ -28,7 +28,14 @@ function redactAssignments(text: string): string {
     value.lastIndex = names.lastIndex;
     const assigned = value.exec(text);
     if (!assigned) continue;
-    parts.push(text.slice(copied, assigned.index), assigned[1]!, "[REDACTED]");
+    const assignedValue = assigned[0].slice(assigned[1]!.length);
+    parts.push(
+      text.slice(copied, assigned.index),
+      assigned[1]!,
+      /^(["']?)(?:(?:bearer|basic)\s+)?\[REDACTED\]\1$/i.test(assignedValue)
+        ? assignedValue
+        : "[REDACTED]",
+    );
     copied = value.lastIndex;
     names.lastIndex = copied;
   }
@@ -75,6 +82,16 @@ export function createOutputGate(
     }
   }
   const known = [...representations].sort((a, b) => b.length - a.length);
+  const unescaped = known
+    .map((form) => form.replace(/\\/g, ""))
+    .filter((form) => form.length > 0);
+  const exposed = (text: string): boolean => {
+    const flat = text.replace(/\\/g, "");
+    return (
+      unescaped.some((form) => flat.includes(form)) ||
+      percentPatterns.some((pattern) => text.search(pattern) !== -1)
+    );
+  };
 
   const scrub = (text: string, depth = 0): string => {
     if (depth > 40) throw new Error("Protected output nesting limit");
@@ -112,7 +129,10 @@ export function createOutputGate(
     for (const pattern of percentPatterns)
       result = result.replace(pattern, "[REDACTED]");
     return redactAssignments(result)
-      .replace(/\b(?:bearer|basic)\s+[^\s,"';}\]]+/gi, "[REDACTED]")
+      .replace(
+        /\b(?:bearer|basic)\s+(?!\[REDACTED\](?![^\s,"';}\]]))[^\s,"';}\]]+/gi,
+        "[REDACTED]",
+      )
       .replace(
         /\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?):\/\/[^\s"'<>]+/gi,
         "[REDACTED]",
@@ -135,6 +155,6 @@ export function createOutputGate(
   return (text: string): string => {
     if (typeof text !== "string" || Buffer.byteLength(text) > MAX_BYTES)
       throw new Error("Protected output size limit");
-    return scrub(text);
+    return exposed(text) ? "[REDACTED]" : scrub(text);
   };
 }

@@ -84,7 +84,7 @@ try {
   if (!command && op !== "guard.output") throw new Error();
   const chunks = [];
   let bytes = 0;
-  const limit = (command ? 1 : 8) * 1024 * 1024;
+  const limit = 1024 * 1024;
   for await (const chunk of process.stdin) {
     bytes += chunk.length;
     if (bytes > limit) throw new Error();
