@@ -2,6 +2,7 @@
 // Device tokens and their hashes are never part of a dump. The database image is never used.
 // Every value is a string or a safe integer; anything else is refused on the way out and on the way in.
 import { ForgeFailure } from "../../src/contract/failure.ts";
+import { validateWorkRecord } from "../../src/blocks/work/validation.ts";
 import { storageFailure } from "./storage-failure.ts";
 import { canonicalJson, isObject } from "../../src/core/config/pointer.ts";
 import {
@@ -848,14 +849,19 @@ function insertRows(db: SqlDatabase, tables: Record<string, Row[]>): void {
 
 function admitFamilies(owner: StateOwner, rows: readonly Row[]): void {
   for (const row of rows) {
-    if (!owner.hasRecordFamilies(String(row.namespace))) continue;
+    const issue =
+      row.namespace === "forge/work" &&
+      /^issue:work-[0-9]+$/.test(String(row.key));
+    const families = owner.hasRecordFamilies(String(row.namespace));
+    if (!issue && !families) continue;
     let record: StateRecord;
     try {
       record = parseRestoreJson(String(row.body)) as StateRecord;
       if (
         !validateStateRecord(record).ok ||
         record.namespace !== row.namespace ||
-        record.key !== row.key
+        record.key !== row.key ||
+        (issue && validateWorkRecord(record.key, record.value) !== undefined)
       )
         throw new Error();
     } catch {
@@ -864,7 +870,7 @@ function admitFamilies(owner: StateOwner, rows: readonly Row[]): void {
         JSON.stringify([row.namespace, row.key]),
       );
     }
-    owner.assertRecordFamily(record);
+    if (families) owner.assertRecordFamily(record);
   }
 }
 
