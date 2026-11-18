@@ -629,9 +629,14 @@ export class Project {
         } catch (error) {
           const refusal = storageFailure(error);
           if (refusal) throw refusal;
+          const missing =
+            error instanceof Error &&
+            /no such table|^Missing dump tables$/i.test(error.message);
           throw fail(
             "UNAVAILABLE",
-            "Dump usage is unavailable; upgrade the project with POST /p/<project>/upgrade",
+            missing
+              ? "Dump usage is unavailable; upgrade the project with POST /p/<project>/upgrade"
+              : "Dump usage is unavailable",
           );
         }
       }
