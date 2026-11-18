@@ -2565,6 +2565,7 @@ test("the response is capped at 1 MiB of UTF-8 bytes, measured on the whole enve
     }
   }
 }, 60_000);
+
 test("show refuses a missing issue, an unknown prefix, bad input and a corrupt record, reading only what it needs", async () => {
   for (const [name, input, over, want, probes] of [
     ["missing number", { id: "forge-2" }, {}, [404, "NOT_FOUND", 3], 2],
@@ -3441,7 +3442,7 @@ test("list refuses a wrong project, owner headers and bad credentials before any
 
 test("a list response is capped at 1 MiB of UTF-8 bytes, measured on the whole envelope", async () => {
   const cap = 1_048_576;
-  const part = 'Ã©"\nâœ“\\';
+  const part = 'é"\n✓\\';
   const ids = Array.from({ length: 17 }, (_, i) => i + 1).sort((x, y) =>
     `issue:work-${x}` < `issue:work-${y}` ? -1 : 1,
   );
@@ -4395,7 +4396,7 @@ for (const op of LIST_OPS)
 // The SQL meter table: the same page of a project over 8 MiB with one-byte and two-byte characters.
 for (const [name, count, fill] of [
   ["ASCII bodies", 130, "x"],
-  ["multibyte bodies, 65 issues of 65,536 characters", 65, "Ã©"],
+  ["multibyte bodies, 65 issues of 65,536 characters", 65, "é"],
 ] as const)
   test(`only the selected page loads full records, ${name}: the SQL results are compact rows plus one record, within 8 MiB`, async () => {
     await withLocal(async (local) => {
@@ -4481,7 +4482,7 @@ test("list refuses a returned stored issue with a bad body, unknown field, nesti
     ],
     [
       "body of 65,537 astral characters",
-      rawIssue("work-2", `,"body":"${"ð’³".repeat(65_537)}"`),
+      rawIssue("work-2", `,"body":"${"𝒳".repeat(65_537)}"`),
     ],
     ["nesting over 8", rawIssue("work-2", `,"closeReason":${nested}`)],
     ["over 1,024 nodes", rawIssue("work-2", `,"closeReason":${nodes}`)],
@@ -4544,8 +4545,8 @@ test("list reads a stored body as the existing parser does: ceiling, escapes, as
     ["empty body", ',"body":""'],
     ["quotes and escapes", ',"body":"a\\"b\\\\c\\n\\t\\u00e9\\ud835\\udcb3"'],
     ["lone surrogate escape", ',"body":"\\ud835"'],
-    ["astral at the ceiling", `,"body":"${"ð’³".repeat(65_536)}"`],
-    ["astral over the ceiling", `,"body":"${"ð’³".repeat(65_537)}"`],
+    ["astral at the ceiling", `,"body":"${"𝒳".repeat(65_536)}"`],
+    ["astral over the ceiling", `,"body":"${"𝒳".repeat(65_537)}"`],
     [
       "escaped astral at the ceiling",
       `,"body":"${"\\ud835\\udcb3".repeat(65_536)}"`,
@@ -5038,7 +5039,7 @@ test("the cloud issue.create agrees with the local handler on whole results, row
       { title: "B", kind: "bug" },
       { title: "F", kind: "feature" },
       { title: "E", kind: "epic" },
-      { title: "Full", body: 'Ã©\n"x"', labels: ["x", "y"], kind: "task" },
+      { title: "Full", body: 'é\n"x"', labels: ["x", "y"], kind: "task" },
       { title: "Bare" },
     ];
     for (const [i, input] of inputs.entries()) {
@@ -5432,7 +5433,7 @@ test("bad input is refused as INPUT_INVALID with no work record, and the schema 
   expect(eventsOf(f.db, "forge/cloud")).toHaveLength(0);
   const labels = Array.from({ length: 64 }, (_, i) => `l${i}`);
   const fits = await f.send(
-    make("b-ok", { title: "t".repeat(500), body: "Ã©".repeat(65_536), labels }),
+    make("b-ok", { title: "t".repeat(500), body: "é".repeat(65_536), labels }),
     { token },
   );
   expect([fits.status, fits.exit]).toEqual([200, 0]);
@@ -5528,7 +5529,7 @@ test("the cloud issue.comment agrees with the local handler on whole results, ro
     const before = [seeded(), await eligible()];
     const cases = [
       ["m-0", "forge-12", "plain", "comment:work-12:4"],
-      ["m-1", "forge-12", 'Ã©\n"x"', "comment:work-12:5"],
+      ["m-1", "forge-12", 'é\n"x"', "comment:work-12:5"],
       [
         "m-2",
         "forge-1",
@@ -5538,7 +5539,7 @@ test("the cloud issue.comment agrees with the local handler on whole results, ro
       ["m-3", "acme-1", "historical prefix", "comment:work-1:32"],
       ["m-4", "OLD-4", "leased, no lease needed", "comment:work-4:1"],
       ["m-5", "work-12", "the default prefix", "comment:work-12:6"],
-      ["m-6", "FORGE-1", "Ã©".repeat(65_536), "comment:work-1:33"],
+      ["m-6", "FORGE-1", "é".repeat(65_536), "comment:work-1:33"],
     ] as const;
     for (const [i, [requestId, id, body, commentId]] of cases.entries()) {
       const input = { id, body };
@@ -5699,7 +5700,7 @@ test("a missing issue is NOT_FOUND and bad input is INPUT_INVALID: no comment, o
   expect(f.snapshot()).toBe(done);
   // The longest body the schema allows is stored whole.
   const fits = await f.send(
-    note("b-ok", { id: "forge-12", body: "Ã©".repeat(65_536) }),
+    note("b-ok", { id: "forge-12", body: "é".repeat(65_536) }),
     { token },
   );
   expect([fits.status, fits.exit]).toEqual([200, 0]);
@@ -5745,7 +5746,7 @@ async function noteRows() {
   ] as const)
     f.put(
       n === 2
-        ? { id: "work-12", body: "Ã©\n", tags: ["x", { y: [1] }] }
+        ? { id: "work-12", body: "é\n", tags: ["x", { y: [1] }] }
         : { id: "work-12", body: `c${n}` },
       {
         updatedAt: iso(start - age),
@@ -5812,7 +5813,7 @@ test("the cloud issue.comments agrees with the local handler on whole records, n
           updatedBy: { kind: "agent", id: "device-1" },
         },
         expect.objectContaining({
-          value: { id: "work-12", body: "Ã©\n", tags: ["x", { y: [1] }] },
+          value: { id: "work-12", body: "é\n", tags: ["x", { y: [1] }] },
         }),
         expect.objectContaining({ key: "comment:work-12:10" }),
       ],
@@ -5959,7 +5960,7 @@ test("a comments response is capped at 1 MiB of UTF-8 bytes, measured on the who
   const token = await f.device();
   f.tables();
   f.put(stored({ id: "work-12" }), {}, "issue:work-12");
-  const body = 'Ã©"\nâœ“\\';
+  const body = 'é"\n✓\\';
   const record = (pad: string) =>
     noteRecord(1, { id: "work-12", body: body + pad });
   const room =
@@ -6477,10 +6478,7 @@ test("the cloud issue.update agrees with the local handler on whole results, row
     const before = [others(), leasesOf(f), await eligible()];
     const cases: [string, object][] = [
       ["u-0", patch()],
-      [
-        "u-1",
-        patch({ expectRevision: 4, body: 'Ã©\n"x"', labels: ["x", "y"] }),
-      ],
+      ["u-1", patch({ expectRevision: 4, body: 'é\n"x"', labels: ["x", "y"] })],
       ["u-2", patch({ id: "acme-1", title: "Historical" })],
       ["u-3", patch({ id: "FORGE-1", labels: [], expectRevision: 4 })],
       [
@@ -6611,10 +6609,7 @@ test("a missing, zero or invalid expectRevision, a missing issue and bad input w
   expect(f.snapshot()).toBe(done);
   // The longest title and body the schema allows are stored whole.
   const fits = await f.send(
-    revise(
-      "b-ok",
-      patch({ title: "t".repeat(500), body: "Ã©".repeat(65_536) }),
-    ),
+    revise("b-ok", patch({ title: "t".repeat(500), body: "é".repeat(65_536) })),
     { token },
   );
   expect([fits.status, fits.exit]).toEqual([200, 0]);
@@ -7342,7 +7337,7 @@ test("the cloud issue.close agrees with the local handler on whole results, rows
   const twin = Database.deserialize(f.db.serialize());
   const cases: [string, object][] = [
     ["x-0", closeIn()],
-    ["x-1", closeIn({ id: "acme-1", reason: 'Ã©\n"x"' })],
+    ["x-1", closeIn({ id: "acme-1", reason: 'é\n"x"' })],
     [
       "x-2",
       closeIn({
@@ -7390,7 +7385,7 @@ test("the cloud issue.close agrees with the local handler on whole results, rows
     withoutReceipt: "done",
   });
   expect(valueOf(f, 12)).not.toHaveProperty("closeReason");
-  expect(valueOf(f, 1)).toMatchObject({ closeReason: 'Ã©\n"x"' });
+  expect(valueOf(f, 1)).toMatchObject({ closeReason: 'é\n"x"' });
   for (const n of [60, 65]) expect(valueOf(f, n)).not.toHaveProperty("receipt");
   expect(valueOf(f, 61)).toMatchObject({ withoutReceipt: "done" });
 }, 60_000);
