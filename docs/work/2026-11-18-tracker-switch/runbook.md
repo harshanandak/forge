@@ -13,6 +13,7 @@ Its counts and digests describe that practice only. This switch has not been run
 
 Notation: `forge` is `node <pinned-build>/dist/bin/forge.js`, never an arbitrary PATH command.
 Run the pinned Bun with `bun <tool.ts>` for offline tools. Commands below use PowerShell variables.
+Use PowerShell 7.3+ and invoke the pinned Node executable directly, never a `.cmd`/`.bat` shim. First run `if ($PSVersionTable.PSVersion -lt [version]'7.3') { throw 'Use PowerShell 7.3 or later' }`, then `$PSNativeCommandArgumentPassing = 'Standard'`; this preserves quotes in native arguments ([PowerShell argument handling](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_parsing?view=powershell-7.5#passing-arguments-that-contain-quote-characters)).
 `$Ledger` is `E:/forge-move-ledger/<stamp>/`, private and outside every repo.
 `$Project`, `$Origin`, the S7 snapshot path and all expected values come from step 3's `run.json` there.
 `$Bundle` holds retained or regenerated converter pages; `$Dump` holds a complete paged cloud dump.
@@ -81,7 +82,7 @@ PR 652 makes those mutation paths refuse while frozen. Read-only board/list/expo
 
 **Step 3. Check the final delta and keep both backup forms.**
 
-1. Run `forge store export --input '{"out":"<fresh private ledger folder>"}'`. Hash the source database and project config before and after with the reviewed read-only helper; both hashes must match. Export uses a read-only store and writes `backup.sqlite`, `source.json`, `export-info.json` only in the destination. A nonempty destination is `INPUT_CONFLICT`; missing store is `UNAVAILABLE`; invalid input is `INPUT_INVALID`. Stop on any refusal or hash mismatch. Pin this export as the frozen S7 rollback baseline with its hash, records and event high-water mark in `run.json`; retain P4's pre-freeze copy separately.
+1. Set `$ExportInput = @{out=(Read-Host 'Fresh private ledger folder')} | ConvertTo-Json -Compress -Depth 5`, then run `forge store export --input $ExportInput`. Hash the source database and project config before and after with the reviewed read-only helper; both hashes must match. Export uses a read-only store and writes `backup.sqlite`, `source.json`, `export-info.json` only in the destination. A nonempty destination is `INPUT_CONFLICT`; missing store is `UNAVAILABLE`; invalid input is `INPUT_INVALID`. Stop on any refusal or hash mismatch. Pin this export as the frozen S7 rollback baseline with its hash, records and event high-water mark in `run.json`; retain P4's pre-freeze copy separately.
 2. Compare frozen export to P4 by key, value, revision and `updatedAt` for all imported work records, including issues, comments, links, dependencies and allocation floors. Only recorded preparation writes from 2.1, 2.2 and the freeze write in 2.3 may explain changed local runtime/lease/event records or high-water increments. Unexplained movement stops the switch. Do not assume byte-identical SQLite exports for equal data.
 3. Any imported-content difference requires a fresh full copy into a new project, with a new acknowledgement and all six readbacks. An empty-project restore is not incremental import. Restart P1; keep the local freeze set throughout.
 4. Before Forge opens any copied store, set/check owner-only ACLs on its private parent and file. Step 3's preparation helper must use `privateFileGuard(windowsPrivateFiles())` and private copy/file operations; ordinary `Copy-Item` and a read-only attribute do not establish privacy. Verify ACLs before opening even read-only. Keep raw S7 immutable; upgrade only a private copy with the pinned migrations. Close it without sidecars, save its SHA-256 in its own source manifest, preserving the export `at` and recording the upgraded record count and event high-water mark. Reconcile every migration change against raw S7. This retained upgraded copy is the converter's input and `$DeltaBackup`. No helper that does this is specified here; P13 requires its practised procedure.
@@ -135,7 +136,7 @@ Check known open and closed issues and one with comments using `forge issue show
 Mismatch before cloud writes takes R2; mismatch after any write takes R3.
 
 **Step 8. First cloud write and readback.**
-Create one permanent proof issue with `forge issue create --input '{"title":"tracker switch proof","kind":"task"}'`.
+Create one permanent proof issue. Set `$ProofInput = @{title=(Read-Host 'Proof issue title'); kind='task'} | ConvertTo-Json -Compress -Depth 5` and enter `tracker switch proof`, then run `forge issue create --input $ProofInput`.
 Require `ok:true`, read it back, and compare its number with the restored allocation floor; never require highest-live-id plus one.
 Claim it, comment `switch proof from machine A`, then close using an explicit `withoutReceipt` reason.
 Read back each result; record the proof id and every write/lease effect in the ledger. Any refusal now takes R3.
@@ -235,19 +236,23 @@ Otherwise require the entire R2 or R3 path to have passed. R1 never calls R0 its
 Only now begin the local approval flow. Keep sessions stopped until both unfreeze and resume succeed.
 
 1. Run `forge lane unfreeze --input '{}'` locally. Expect `APPROVAL_REQUIRED` with `result.request.id` and `result.request.ask`; the store remains frozen. Present that exact ask to the owner in chat and wait for their reply.
-2. Copy the owner's affirmative reply verbatim, recording the harness and thread where it was given. Never invent a quote, treat silence as approval, or reuse the cloud resume request. JSON-encode the reply without trimming or paraphrasing it, then retry:
+2. Copy the owner's affirmative reply verbatim, recording the harness and thread where it was given. Never invent a quote, treat silence as approval, or reuse the cloud resume request. Save exactly that reply in a private UTF-8 file, preserving line endings and adding no newline. The commands read the whole file without trimming; prompts take the request id and reply source as data. Serialize the payload once and pass the variable without evaluation:
 
 ```powershell
-forge lane unfreeze --input '{"approval":{"request":"<unfreeze-request-id>","quote":"<verbatim owner reply>","source":{"harness":"<reply harness>","thread":"<reply thread>"}}}'
+$UnfreezeReply = [IO.File]::ReadAllText((Read-Host 'Exact unfreeze reply UTF-8 file'), [Text.Encoding]::UTF8)
+$UnfreezeInput = @{approval=@{request=(Read-Host 'Unfreeze request id'); quote=$UnfreezeReply; source=@{harness=(Read-Host 'Reply harness'); thread=(Read-Host 'Reply thread')}}} | ConvertTo-Json -Compress -Depth 5
+forge lane unfreeze --input $UnfreezeInput
 ```
 
 Require `ok:true` and `result.frozen:false` from that retry before continuing. A request id alone does not authorize local unfreeze.
 
 3. Run `forge lane resume --input '{"all":true}'` locally. Expect a separate `APPROVAL_REQUIRED` request; lanes remain stopped. Present its `result.request.ask` to the owner and wait for a new verbatim affirmative reply with its harness/thread.
-4. Retry with exactly this shape, using the local resume request and its own reply, then require `ok:true` and `result.resumed:"all"`:
+4. Save this separate reply in its own private UTF-8 file under the same exact-text rules. Build and pass its payload as data, then require `ok:true` and `result.resumed:"all"`:
 
 ```powershell
-forge lane resume --input '{"all":true,"approval":{"request":"<local-resume-request-id>","quote":"<verbatim owner reply>","source":{"harness":"<reply harness>","thread":"<reply thread>"}}}'
+$ResumeReply = [IO.File]::ReadAllText((Read-Host 'Exact local resume reply UTF-8 file'), [Text.Encoding]::UTF8)
+$ResumeInput = @{all=$true; approval=@{request=(Read-Host 'Local resume request id'); quote=$ResumeReply; source=@{harness=(Read-Host 'Reply harness'); thread=(Read-Host 'Reply thread')}}} | ConvertTo-Json -Compress -Depth 5
+forge lane resume --input $ResumeInput
 ```
 
 Local requests bind the operation, unchanged arguments, project and device; they expire after 24 hours and are consumed once. Missing/expired/used/mismatched requests return `APPROVAL_REQUIRED`: call that operation without approval to obtain a new request and ask the owner anew. A reply over 2000 characters needs a new shorter owner reply; never shorten it yourself. No dry-run, typed terminal confirmation or owner policy bypasses these local gates.
