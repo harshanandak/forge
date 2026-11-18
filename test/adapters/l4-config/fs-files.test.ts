@@ -173,6 +173,45 @@ describe("the fs adapter implements ConfigFiles", () => {
     expect(readdirSync(join(dir, ".forge"))).toEqual(["config.lock"]);
   }, 30_000);
 
+  test("a failed restore stays attached to the original remove failure", () => {
+    const dir = root();
+    const files = nodeConfigFiles(dir);
+    const path = ".forge/config.lock";
+    files.write(path, bytes("held"));
+    const failure = new Error("claim check failed");
+    const linkFailure = new Error("link failed");
+    const stat = spyOn(nodeFs, "lstatSync").mockImplementation(((
+      path: string,
+      options?: unknown,
+    ) => {
+      if (path.endsWith(".claim") && options) throw failure;
+      return realLstat(path, options);
+    }) as typeof nodeFs.lstatSync);
+    const publish = spyOn(durableIO, "publishExclusive").mockImplementation(
+      () => {
+        throw linkFailure;
+      },
+    );
+    let caught: unknown;
+    try {
+      files.remove(path, bytes("held"));
+    } catch (error) {
+      caught = error;
+    } finally {
+      stat.mockRestore();
+      publish.mockRestore();
+    }
+    expect(caught).toBe(failure);
+    const claims = readdirSync(join(dir, ".forge"));
+    expect(claims).toHaveLength(1);
+    const [claim = ""] = claims;
+    expect(claim).toMatch(/\.claim$/);
+    const restoreFailure = failure.cause as Error;
+    expect(restoreFailure.message).toContain(join(".forge", claim));
+    expect(restoreFailure.cause).toBe(linkFailure);
+    expect(readFileSync(join(dir, ".forge", claim), "utf8")).toBe("held");
+  });
+
   test("a file index of zero never stands in for identity", () => {
     const dir = root();
     const files = nodeConfigFiles(dir);
