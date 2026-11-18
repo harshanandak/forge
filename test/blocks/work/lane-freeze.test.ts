@@ -4,6 +4,7 @@ import { StateOwner } from "../../../src/core/state/index.ts";
 import { createStateClient } from "../../../src/assembly/state-client.ts";
 import { refuse } from "../../../src/core/trust/index.ts";
 import type { HandlerCall } from "../../../src/contract/author.ts";
+import type { BoundContext } from "../../../src/generated/types.ts";
 import manifest from "../../../src/blocks/work/forge.block.json" with { type: "json" };
 
 setDefaultTimeout(30_000);
@@ -24,7 +25,7 @@ const namespace = "forge/work",
   at = "2026-01-01T00:00:00.000Z",
   GLOBAL = "autopilot:global";
 const actor = { kind: "agent", id: "freeze" } as const;
-async function fixture() {
+async function fixture(leaseSubject?: string) {
   const opened = await createSqliteStore(process.cwd()).open({
     path: ":memory:",
     readOnly: false,
@@ -55,10 +56,29 @@ async function fixture() {
     actor,
     { expectRevision: 0 },
   );
+  const holder = { actor, session: { id: "freeze" } };
+  const project = { id: "freeze" };
+  let context: BoundContext = { variant: "project", actor, project };
+  if (leaseSubject !== undefined) {
+    const lease = owner.acquire(
+      namespace,
+      leaseSubject,
+      holder,
+      60_000,
+      "claim",
+    );
+    context = {
+      variant: "leased",
+      ...holder,
+      project,
+      leaseMode: "held",
+      leaseGeneration: lease.generation,
+    };
+  }
   const state = createStateClient({
     owner,
     namespace,
-    context: { variant: "project", actor, project: { id: "freeze" } },
+    context,
     write: true,
     requestId: "freeze",
   });
@@ -69,8 +89,14 @@ async function fixture() {
       work();
     };
   };
+  let afterRead = (_key: string) => {};
   const raced = {
     ...state,
+    get: (key: string) => {
+      const row = state.get(key);
+      afterRead(key);
+      return row;
+    },
     put: (...args: Parameters<typeof state.put>) => {
       beforeWrite();
       return state.put(...args);
@@ -79,6 +105,18 @@ async function fixture() {
       beforeWrite();
       return state.putNext(...args);
     },
+    renew: (...args: Parameters<typeof state.renew>) => {
+      beforeWrite();
+      return state.renew(...args);
+    },
+    release: (...args: Parameters<typeof state.release>) => {
+      beforeWrite();
+      return state.release(...args);
+    },
+    releaseOwn: (...args: Parameters<typeof state.releaseOwn>) => {
+      beforeWrite();
+      return state.releaseOwn(...args);
+    },
   };
   const run = (op: string, input: Record<string, unknown> = {}) =>
     operations[op]!({
@@ -86,7 +124,16 @@ async function fixture() {
       services: { state: raced },
       config: {},
     } as unknown as HandlerCall<Record<string, unknown>>);
-  return { owner, run, interrupt, close: () => opened.handle.close() };
+  return {
+    owner,
+    holder,
+    run,
+    interrupt,
+    onRead: (observe: typeof afterRead) => {
+      afterRead = observe;
+    },
+    close: () => opened.handle.close(),
+  };
 }
 const frozenAt = (result: unknown) => (result as { at: string }).at;
 const refusal = (work: () => unknown) => {
@@ -142,12 +189,13 @@ test("unfreeze lifts the freeze and issue writes work again", async () => {
   await close();
 });
 
-test("lane stop and resume keep the freeze", async () => {
+test("lane stop and resume leave frozen control state unchanged", async () => {
   const { owner, run, close } = await fixture();
-  const since = frozenAt(run("lane.freeze"));
-  run("lane.stop", { all: true });
-  run("lane.resume", { all: true });
-  expect(owner.get(namespace, GLOBAL)?.value).toMatchObject({ frozen: since });
+  run("lane.freeze");
+  const before = owner.events(namespace);
+  for (const op of ["lane.stop", "lane.resume"])
+    expect(refusal(() => run(op, { all: true })).code).toBe("UNAVAILABLE");
+  expect(owner.events(namespace)).toEqual(before);
   await close();
 });
 
@@ -188,14 +236,73 @@ test("a freeze that lands between the check and the write refuses the write", as
   await close();
 });
 
-test("lane stop on an unreadable freeze time keeps the store frozen", async () => {
+for (const [op, subject, row] of [
+  ["issue.renew", "issue:work-1"],
+  ["issue.release", "issue:work-1"],
+  ["issue.leave", "issue:participant:work-1:1", "participant:work-1:1"],
+  ["attempt.release", "issue:attempt:work-1:1", "attempt:work-1:1"],
+] as const) {
+  test(`${op} changes neither the lease nor its events when a freeze lands`, async () => {
+    const { owner, holder, run, interrupt, close } = await fixture(subject);
+    try {
+      if (row !== undefined)
+        owner.put(namespace, row, { holder }, actor, { expectRevision: 0 });
+      const lease = owner.lease(namespace, subject);
+      const events = owner.events(namespace, subject);
+      interrupt(() => {
+        owner.put(namespace, GLOBAL, { stopped: {}, frozen: at }, actor, {
+          expectRevision: 0,
+        });
+      });
+      expect(refusal(() => run(op, { id: "work-1", attempt: "1" })).code).toBe(
+        "REVISION_CONFLICT",
+      );
+      expect(owner.lease(namespace, subject)).toEqual(lease);
+      expect(owner.events(namespace, subject)).toEqual(events);
+      expect(owner.get(namespace, GLOBAL)?.value).toHaveProperty("frozen");
+    } finally {
+      await close();
+    }
+  });
+}
+
+test("stop recovery cannot overwrite a freeze that lands after its snapshot", async () => {
+  const { owner, run, onRead, close } = await fixture();
+  try {
+    owner.put(namespace, GLOBAL, { stopped: null }, actor, {
+      expectRevision: 0,
+    });
+    let reads = 0;
+    onRead((key) => {
+      if (key === GLOBAL && ++reads === 2)
+        owner.put(namespace, GLOBAL, { stopped: {}, frozen: at }, actor, {
+          expectRevision: 1,
+        });
+    });
+    expect(refusal(() => run("lane.stop", { all: true })).code).toBe(
+      "REVISION_CONFLICT",
+    );
+    expect(owner.get(namespace, GLOBAL)).toMatchObject({
+      revision: 2,
+      value: { stopped: {}, frozen: at },
+    });
+  } finally {
+    await close();
+  }
+});
+
+test("lane stop on an unreadable freeze time leaves control state unchanged", async () => {
   const { owner, run, close } = await fixture();
   owner.put(namespace, GLOBAL, { stopped: {}, frozen: "not a time" }, actor, {
     expectRevision: 0,
   });
-  run("lane.stop", { all: true });
-  const stored = owner.get(namespace, GLOBAL)?.value as { frozen: string };
-  expect(Number.isNaN(Date.parse(stored.frozen))).toBe(false);
+  expect(refusal(() => run("lane.stop", { all: true })).code).toBe(
+    "UNAVAILABLE",
+  );
+  expect(owner.get(namespace, GLOBAL)).toMatchObject({
+    revision: 1,
+    value: { frozen: "not a time" },
+  });
   expect(
     refusal(() => run("issue.create", { title: "after" })).message,
   ).toContain("frozen since");
@@ -211,8 +318,13 @@ test("lane stop on an unreadable control record keeps a valid freeze", async () 
     actor,
     { expectRevision: 0 },
   );
-  run("lane.stop", { all: true });
-  expect(owner.get(namespace, GLOBAL)?.value).toMatchObject({ frozen: at });
+  expect(refusal(() => run("lane.stop", { all: true })).code).toBe(
+    "UNAVAILABLE",
+  );
+  expect(owner.get(namespace, GLOBAL)).toMatchObject({
+    revision: 1,
+    value: { owner: "unreadable", frozen: at },
+  });
   expect(
     refusal(() => run("issue.create", { title: "after" })).message,
   ).toContain("frozen since");
