@@ -8,11 +8,13 @@
 // directory, then rename).
 import {
   closeSync,
+  existsSync,
   fsyncSync,
   lstatSync,
   mkdirSync,
   openSync,
   readdirSync,
+  readFileSync,
   realpathSync,
   renameSync,
   rmdirSync,
@@ -33,6 +35,7 @@ import type { ConfigFiles } from "../../core/config/files.ts";
 import {
   MAX_CONFIG_FILE_BYTES,
   MAX_LOCK_FILE_BYTES,
+  removeConflict,
 } from "../../core/config/files.ts";
 import { publishExclusive, removeDurable } from "./durable-io.ts";
 import { nodeProjectFiles } from "./project-files.ts";
@@ -149,6 +152,18 @@ export function removeEmptyParents(
   }
 }
 
+function restoreClaim(path: string, target: string, claimed: string): void {
+  try {
+    publishExclusive(claimed, target);
+  } catch (error) {
+    throw new Error(
+      `${path} could not be put back after a refused removal; its content is kept at ${claimed}`,
+      { cause: error },
+    );
+  }
+  removeDurable(claimed);
+}
+
 export function nodeConfigFiles(
   root: string,
   options: { beforeOpen?: () => void } = {},
@@ -184,8 +199,41 @@ export function nodeConfigFiles(
         rmSync(temporary, { force: true });
       }
     },
-    remove(path) {
-      rmSync(resolveIn(root, path, "keep"), { force: true });
+    remove(path, expected) {
+      const target = resolveIn(root, path, "keep");
+      const claimed = join(
+        dirname(target),
+        `.${basename(target)}.${randomUUID()}.claim`,
+      );
+      try {
+        if (!lstatSync(target).isFile()) throw removeConflict(path);
+        renameSync(target, claimed);
+      } catch (error) {
+        if (errorCode(error) === "ENOENT") return;
+        throw error;
+      }
+      let matched: boolean;
+      try {
+        const held = lstatSync(claimed);
+        matched =
+          held.isFile() &&
+          held.size === expected.byteLength &&
+          Buffer.from(expected).equals(readFileSync(claimed));
+      } catch (error) {
+        restoreClaim(path, target, claimed);
+        throw error;
+      }
+      if (matched) {
+        try {
+          removeDurable(claimed);
+        } catch (error) {
+          if (existsSync(claimed)) restoreClaim(path, target, claimed);
+          throw error;
+        }
+        return;
+      }
+      restoreClaim(path, target, claimed);
+      throw removeConflict(path);
     },
     list(dir) {
       try {
