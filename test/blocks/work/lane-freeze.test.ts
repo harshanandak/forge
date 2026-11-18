@@ -62,13 +62,31 @@ async function fixture() {
     write: true,
     requestId: "freeze",
   });
+  let beforeWrite = () => {};
+  const interrupt = (work: () => void) => {
+    beforeWrite = () => {
+      beforeWrite = () => {};
+      work();
+    };
+  };
+  const raced = {
+    ...state,
+    put: (...args: Parameters<typeof state.put>) => {
+      beforeWrite();
+      return state.put(...args);
+    },
+    putNext: (...args: Parameters<typeof state.putNext>) => {
+      beforeWrite();
+      return state.putNext(...args);
+    },
+  };
   const run = (op: string, input: Record<string, unknown> = {}) =>
     operations[op]!({
       input,
-      services: { state },
+      services: { state: raced },
       config: {},
     } as unknown as HandlerCall<Record<string, unknown>>);
-  return { owner, run, close: () => opened.handle.close() };
+  return { owner, run, interrupt, close: () => opened.handle.close() };
 }
 const frozenAt = (result: unknown) => (result as { at: string }).at;
 const refusal = (work: () => unknown) => {
@@ -154,5 +172,36 @@ test("every issue and attempt write is gated and only a human can unfreeze", asy
       "frozen since",
     );
   expect(declared["lane.unfreeze"]?.callers).toEqual(["human"]);
+  await close();
+});
+
+test("a freeze that lands between the check and the write refuses the write", async () => {
+  const { owner, run, interrupt, close } = await fixture();
+  interrupt(() => {
+    owner.put(namespace, GLOBAL, { stopped: {}, frozen: at }, actor, {
+      expectRevision: 0,
+    });
+  });
+  const before = owner.list(namespace, "issue:").length;
+  expect(() => run("issue.create", { title: "racing" })).toThrow();
+  expect(owner.list(namespace, "issue:").length).toBe(before);
+  expect(owner.get(namespace, GLOBAL)?.value).toMatchObject({ frozen: at });
+  await close();
+});
+
+test("lane stop on an unreadable control record keeps a valid freeze", async () => {
+  const { owner, run, close } = await fixture();
+  owner.put(
+    namespace,
+    GLOBAL,
+    { stopped: {}, owner: "unreadable", frozen: at },
+    actor,
+    { expectRevision: 0 },
+  );
+  run("lane.stop", { all: true });
+  expect(owner.get(namespace, GLOBAL)?.value).toMatchObject({ frozen: at });
+  expect(
+    refusal(() => run("issue.create", { title: "after" })).message,
+  ).toContain("frozen since");
   await close();
 });
