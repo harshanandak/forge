@@ -1,5 +1,6 @@
 import {
   closeSync,
+  constants,
   fstatSync,
   lstatSync,
   openSync,
@@ -12,6 +13,55 @@ import { fileLimitExceeded } from "../../core/config/files.ts";
 
 const same = (a: BigIntStats, b: BigIntStats): boolean =>
   a.dev === b.dev && a.ino === b.ino;
+
+interface RegularFileRead {
+  readonly bytes: number;
+  readonly modifiedAt: string;
+  readText(limit: number): string;
+}
+
+export function withRegularFileRead<T>(
+  path: string,
+  use: (file: RegularFileRead) => T,
+): T | undefined {
+  let descriptor: number;
+  try {
+    descriptor = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT")
+      return undefined;
+    throw error;
+  }
+  try {
+    const stat = fstatSync(descriptor);
+    if (!stat.isFile()) throw new Error("A regular file is required");
+    return use({
+      bytes: stat.size,
+      modifiedAt: stat.mtime.toISOString(),
+      readText(limit) {
+        if (stat.size > limit) throw new Error("File size limit exceeded");
+        const buffer = Buffer.alloc(stat.size + 1);
+        let bytes = 0;
+        while (bytes < buffer.length) {
+          const read = readSync(
+            descriptor,
+            buffer,
+            bytes,
+            buffer.length - bytes,
+            bytes,
+          );
+          if (!read) break;
+          bytes += read;
+        }
+        if (bytes > stat.size)
+          throw new Error("File changed during inspection");
+        return buffer.subarray(0, bytes).toString("utf8");
+      },
+    });
+  } finally {
+    closeSync(descriptor);
+  }
+}
 
 /** Bounded pathname mitigation, not directory-handle-relative, race-free access. */
 export function nodeProjectFiles(

@@ -8,6 +8,7 @@ import {
   MAX_COMMAND_LENGTH,
   RULES,
 } from "../../../src/blocks/guard/command.ts";
+import { powerShellArgs } from "../../powershell.ts";
 import {
   hookBypassCommand,
   retiredRuleId,
@@ -17,6 +18,10 @@ import {
 setDefaultTimeout(10_000);
 
 const byId = (id: string) => RULES.find((rule) => rule.id === id)!.test;
+
+function powerShellCommand(command: string): string {
+  return ["powershell", ...powerShellArgs(command)].join(" ");
+}
 
 function runGuard(input: unknown, raw = false) {
   if (raw) {
@@ -733,7 +738,7 @@ const BLOCKED_POWERSHELL_ENV = [
   "Get-ChildItem env: | Out-File out.txt",
   "Get-ChildItem env: | Select-Object Name,Value",
   "Get-ChildItem env: | Where-Object Name -match KEY",
-  'powershell -NoProfile -Command "gci env:"',
+  powerShellCommand('"gci env:"'),
   "[Environment]::GetEnvironmentVariable('API_KEY')",
   "[System.Environment]::GetEnvironmentVariable(\"GITHUB_TOKEN\", 'User')",
   "Write-Host ([Environment]::GetEnvironmentVariable('MY_SECRET'))",
@@ -1056,8 +1061,8 @@ test("simplified: single-quoted PowerShell env references block like every other
     "Write-Output \"x;echo '$env:API_KEY'\"",
     "Write-Output '$env:API_KEY' | iex",
     "Write-Output '$env:API_KEY' | Invoke-Expression",
-    "Write-Output '$env:API_KEY' | powershell -NoProfile -Command -",
-    "powershell -NoProfile -Command 'Write-Output $env:API_KEY'",
+    `Write-Output '$env:API_KEY' | ${powerShellCommand("-")}`,
+    powerShellCommand("'Write-Output $env:API_KEY'"),
     "pwsh -c 'echo $env:API_KEY'",
     "Write-Output '$env:API_KEY' \"unclosed",
     "echo '$GITHUB_TOKEN'",

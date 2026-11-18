@@ -1,5 +1,5 @@
-import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { join } from "node:path";
+import { withRegularFileRead } from "./project-files.ts";
 import { createOutputGate, MAX_BYTES } from "./secret-output.ts";
 
 const FILE_MAX_BYTES = 1024 * 1024;
@@ -113,29 +113,6 @@ function parseDotEnv(text: string): string[] {
   return found;
 }
 
-function openFile(file: string): number {
-  return openSync(file, constants.O_RDONLY | constants.O_NONBLOCK);
-}
-
-function boundedRead(descriptor: number, size: number, limit: number): string {
-  if (size > limit) throw new Error("Inspection size limit");
-  const buffer = Buffer.alloc(size + 1);
-  let bytes = 0;
-  while (bytes < buffer.length) {
-    const read = readSync(
-      descriptor,
-      buffer,
-      bytes,
-      buffer.length - bytes,
-      bytes,
-    );
-    if (!read) break;
-    bytes += read;
-  }
-  if (bytes > size) throw new Error("File changed during inspection");
-  return buffer.subarray(0, bytes).toString("utf8");
-}
-
 function registeredValues(
   home: string,
   env: Readonly<Record<string, string | undefined>>,
@@ -148,23 +125,11 @@ function registeredValues(
     )
     .map(([, value]) => value)
     .filter((value): value is string => typeof value === "string");
-  let descriptor: number;
-  try {
-    descriptor = openFile(join(home, ".agent-secrets", ".env"));
-  } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT")
-      return values;
-    throw error;
-  }
-  try {
-    const stat = fstatSync(descriptor);
-    if (!stat.isFile()) throw new Error("Credential registry unavailable");
-    return values.concat(
-      parseDotEnv(boundedRead(descriptor, stat.size, FILE_MAX_BYTES)),
-    );
-  } finally {
-    closeSync(descriptor);
-  }
+  const registry = withRegularFileRead(
+    join(home, ".agent-secrets", ".env"),
+    (file) => parseDotEnv(file.readText(FILE_MAX_BYTES)),
+  );
+  return values.concat(registry ?? []);
 }
 
 export function checkOutput(
@@ -235,19 +200,16 @@ export function inspectFile(
 ): Inspection {
   if (typeof file !== "string" || !file || /[\r\n\0]/.test(file))
     throw new Error("Invalid inspection request");
-  const descriptor = openFile(file);
-  try {
-    const stat = fstatSync(descriptor);
-    if (!stat.isFile()) throw new Error("File inspection required");
+  const inspected = withRegularFileRead(file, (opened): Inspection => {
     const result: Inspection = {
       ok: true,
-      bytes: stat.size,
-      modifiedAt: stat.mtime.toISOString(),
+      bytes: opened.bytes,
+      modifiedAt: opened.modifiedAt,
       rawContentReturned: false,
     };
     if (mode === "metadata") return result;
-    const text = boundedRead(descriptor, stat.size, MAX_BYTES);
-    let jsonValid = false;
+    const text = opened.readText(MAX_BYTES);
+    let jsonValid: boolean;
     try {
       JSON.parse(text.replace(/^﻿/, ""));
       jsonValid = true;
@@ -260,7 +222,7 @@ export function inspectFile(
       jsonValid,
       redactionMarkers: (checked.match(/\[REDACTED\]/g) ?? []).length,
     };
-  } finally {
-    closeSync(descriptor);
-  }
+  });
+  if (!inspected) throw new Error("File inspection unavailable");
+  return inspected;
 }
