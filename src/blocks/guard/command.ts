@@ -422,9 +422,9 @@ export const RULES: readonly Rule[] = [
       const inspect = (cmd: string) => {
         const tick = makeBound(cmd.length + 64);
         const printInvocation =
-          /(^|(?:[;|\n]\s*|&(?!\d)\s*|\$\(\s*|`\s*))(?:cat|bat|less|more|head|tail|nl|strings|xxd|od|type|Get-Content|gc)\b((?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^;|&\n]|&(?=\d))*)/gi;
+          /(^\s*|(?:[;|\n]\s*|&(?!\d)\s*|\$\(\s*|`\s*))(?:cat|bat|less|more|head|tail|nl|strings|xxd|od|type|Get-Content|gc)\b((?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^;|&\n]|&(?=\d))*)/gi;
         const searchInvocation =
-          /(^|(?:[;|\n]\s*|&(?!\d)\s*|\$\(\s*|`\s*))(?:[^\s;|&'"`]*[\\/])?(rg|grep|findstr|Select-String|sls)\b((?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^;|&\n]|&(?=\d))*)/gi;
+          /(^\s*|(?:[;|\n]\s*|&(?!\d)\s*|\$\(\s*|`\s*))(?:[^\s;|&'"`]*[\\/])?(rg|grep|findstr|Select-String|sls)\b((?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^;|&\n]|&(?=\d))*)/gi;
         const withoutRedirections = (operand: string) => {
           const quoted: string[] = [];
           const protectedOperand = operand.replace(
