@@ -19,6 +19,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import * as nodeFs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as durableIO from "../../../src/adapters/fs/durable-io.ts";
@@ -28,6 +29,15 @@ import {
 } from "../../../src/adapters/fs/index.ts";
 
 setDefaultTimeout(30_000);
+
+const realLstat = nodeFs.lstatSync as unknown as (
+  path: string,
+  options?: unknown,
+) => unknown;
+const realFstat = nodeFs.fstatSync as unknown as (
+  fd: number,
+  options?: unknown,
+) => unknown;
 
 const roots: string[] = [];
 afterEach(() => {
@@ -140,6 +150,93 @@ describe("the fs adapter implements ConfigFiles", () => {
     },
     30_000,
   );
+
+  test("a failure checking the claimed file puts it back at its path", () => {
+    const dir = root();
+    const files = nodeConfigFiles(dir);
+    files.write(".forge/config.lock", bytes("held"));
+    const stat = spyOn(nodeFs, "lstatSync").mockImplementation(((
+      path: string,
+      options?: unknown,
+    ) => {
+      if (path.endsWith(".claim")) throw new Error("lstat boom");
+      return realLstat(path, options);
+    }) as typeof nodeFs.lstatSync);
+    try {
+      expect(() => files.remove(".forge/config.lock", bytes("held"))).toThrow(
+        "lstat boom",
+      );
+    } finally {
+      stat.mockRestore();
+    }
+    expect(text(files.read(".forge/config.lock"))).toBe("held");
+    expect(readdirSync(join(dir, ".forge"))).toEqual(["config.lock"]);
+  }, 30_000);
+
+  test("a file index of zero never stands in for identity", () => {
+    const dir = root();
+    const files = nodeConfigFiles(dir);
+    files.write(".forge/config.lock", bytes("held"));
+    const zeroed = (info: unknown): unknown =>
+      Object.assign(Object.create(Object.getPrototypeOf(info)), info, {
+        ino: 0n,
+      });
+    const stat = spyOn(nodeFs, "lstatSync").mockImplementation(((
+      path: string,
+      options?: unknown,
+    ) => {
+      if (path.endsWith(".claim")) writeFileSync(path, "other");
+      return zeroed(realLstat(path, options));
+    }) as typeof nodeFs.lstatSync);
+    const fstat = spyOn(nodeFs, "fstatSync").mockImplementation(((
+      fd: number,
+      options?: unknown,
+    ) => zeroed(realFstat(fd, options))) as typeof nodeFs.fstatSync);
+    try {
+      expect(() => files.remove(".forge/config.lock", bytes("held"))).toThrow(
+        /changed since it was read/,
+      );
+    } finally {
+      stat.mockRestore();
+      fstat.mockRestore();
+    }
+    expect(text(files.read(".forge/config.lock"))).toBe("other");
+    expect(readdirSync(join(dir, ".forge"))).toEqual(["config.lock"]);
+  }, 30_000);
+
+  test("a failed link count lookup keeps the original restore error", () => {
+    const dir = root();
+    mkdirSync(join(dir, ".forge"));
+    const claimed = join(dir, ".forge", ".config.lock.x.claim");
+    writeFileSync(claimed, "mine");
+    const publish = spyOn(durableIO, "publishExclusive").mockImplementation(
+      () => {
+        throw new Error("link failed");
+      },
+    );
+    const stat = spyOn(nodeFs, "lstatSync").mockImplementation(((
+      path: string,
+      options?: unknown,
+    ) => {
+      if (path.endsWith(".claim")) throw new Error("lstat boom");
+      return realLstat(path, options);
+    }) as typeof nodeFs.lstatSync);
+    let caught: unknown;
+    try {
+      restoreClaim(
+        ".forge/config.lock",
+        join(dir, ".forge", "config.lock"),
+        claimed,
+      );
+    } catch (error) {
+      caught = error;
+    } finally {
+      publish.mockRestore();
+      stat.mockRestore();
+    }
+    expect((caught as Error).message).toMatch(/could not be put back/);
+    expect(((caught as Error).cause as Error).message).toBe("link failed");
+  }, 30_000);
 
   test("restoring a claim keeps the original error when dropping the claim fails", () => {
     const dir = root();
