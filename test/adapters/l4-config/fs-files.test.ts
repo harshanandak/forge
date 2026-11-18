@@ -73,6 +73,21 @@ describe("the fs adapter implements ConfigFiles", () => {
     files.remove(".forge/absent.json", bytes("project-a"));
   });
 
+  test("a failure after the claim puts the file back at its path", () => {
+    const dir = root();
+    const files = nodeConfigFiles(dir);
+    files.write(".forge/cloud.json", bytes("project-a"));
+    const hostile = bytes("project-a");
+    Object.defineProperty(hostile, "byteLength", {
+      get() {
+        throw new Error("boom");
+      },
+    });
+    expect(() => files.remove(".forge/cloud.json", hostile)).toThrow("boom");
+    expect(text(files.read(".forge/cloud.json"))).toBe("project-a");
+    expect(readdirSync(join(dir, ".forge"))).toEqual(["cloud.json"]);
+  });
+
   test("createExclusive creates once and refuses while the file exists", () => {
     const files = nodeConfigFiles(root());
     expect(files.createExclusive(".forge/config.lock", bytes("one"))).toBe(
