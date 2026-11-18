@@ -506,12 +506,14 @@ export const RULES: readonly Rule[] = [
     action: "block",
     test: (cmd) => {
       if (
-        /(^|[;&|]\s*)(sudo\s+)?rm\s+(-[a-z]*r[a-z]*\s+|--recursive\s+)(-\S*\s+)*(\/$|~$|\/\*$|--no-preserve-root\b)/i.test(
+        /(^|[;&|\r\n]\s*)(sudo\s+)?rm\s+(-[a-z]*r[a-z]*\s+|--recursive\s+)(-\S*\s+)*(?:(?:\/\*?|~)(?=[ \t]*(?:$|[;&|\r\n]))|--no-preserve-root\b)/i.test(
           cmd,
         )
       )
         return "rm -rf against / or ~";
-      if (/(^|[;&|]\s*)(mkfs(\.|[\s])|dd\s+[^\n]*\bof=\/dev\/)/i.test(cmd))
+      if (
+        /(^|[;&|\r\n]\s*)(mkfs(\.|[\s])|dd\s+[^\r\n]*\bof=\/dev\/)/i.test(cmd)
+      )
         return "disk-destructive (mkfs/dd to a device)";
       if (/\bDROP\s+DATABASE\s+\S+/i.test(cmd)) return "DROP DATABASE";
       if (/\bgit\s+push\b[^\n]*--force[^\n]*(main|master|prod)\b/i.test(cmd))

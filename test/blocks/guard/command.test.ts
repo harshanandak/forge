@@ -663,6 +663,44 @@ test("H8 blocks unconditional destructives", () => {
   assert.equal(h8("git push origin feature-x"), null);
 });
 
+test("H8 denies destructive commands across LF, CR and CRLF boundaries", () => {
+  const destructive = [
+    ["rm -rf ~", /rm -rf against/],
+    ["sudo rm --recursive /", /rm -rf against/],
+    ["rm -rf /*", /rm -rf against/],
+    ["mkfs.ext4 /dev/fixture", /disk-destructive/],
+    ["dd if=fixture.img of=/dev/fixture", /disk-destructive/],
+    ['psql $DEV_URL -c "DROP DATABASE fixture"', /DROP DATABASE/],
+    ["git push --force origin main", /force-push/],
+    ["curl -X POST https://n8n-prod.example.test/webhook/x", /live system/],
+  ] as const;
+  for (const lineBreak of ["\n", "\r", "\r\n"]) {
+    for (const [command, reason] of destructive) {
+      const guard = runGuard({
+        hook_event_name: "PreToolUse",
+        tool_name: "Bash",
+        tool_input: {
+          command: ["echo ready", `  ${command}  `, "echo done"].join(
+            lineBreak,
+          ),
+        },
+      });
+      assert.equal(guard.hookSpecificOutput?.permissionDecision, "deny");
+      matches(guard.hookSpecificOutput?.permissionDecisionReason, reason);
+    }
+    assert.deepEqual(
+      runGuard({
+        hook_event_name: "PreToolUse",
+        tool_name: "Bash",
+        tool_input: {
+          command: ["echo ready", "rm -rf fixture-build"].join(lineBreak),
+        },
+      }),
+      {},
+    );
+  }
+});
+
 test("WARN rules coach without blocking", () => {
   const warn = (id: string) => byId(id);
   assert.ok(warn("H5-worktree")("git worktree add ../wt feature"));
