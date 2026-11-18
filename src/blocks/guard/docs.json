@@ -1,0 +1,20 @@
+{
+  "operations": {
+    "guard.command": {
+      "title": "Check a tool request",
+      "summary": "Return the command guard's allow, warn or deny decision."
+    },
+    "guard.output": {
+      "title": "Check a tool result",
+      "summary": "Withhold output that could disclose credentials."
+    },
+    "safe-inspect.metadata": {
+      "title": "Inspect file metadata",
+      "summary": "Return the byte count and modification time without reading file contents."
+    },
+    "safe-inspect.summary": {
+      "title": "Summarize a file safely",
+      "summary": "Return metadata, JSON validity and a redaction marker count without file contents."
+    }
+  }
+}

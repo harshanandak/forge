@@ -1,0 +1,21 @@
+{
+  "type": "object",
+  "properties": {
+    "permission": { "const": "deny" },
+    "agent_message": { "type": "string" },
+    "user_message": { "type": "string" },
+    "systemMessage": { "type": "string" },
+    "hookSpecificOutput": {
+      "type": "object",
+      "properties": {
+        "hookEventName": { "const": "PreToolUse" },
+        "permissionDecision": { "const": "deny" },
+        "permissionDecisionReason": { "type": "string" },
+        "additionalContext": { "type": "string" }
+      },
+      "required": ["hookEventName"],
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

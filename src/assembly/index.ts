@@ -31,6 +31,7 @@ import { nodeRunIsolation } from "../adapters/node-runtime/isolation.ts";
 import { localForgeCommand } from "../adapters/node-runtime/catalog.ts";
 import { TrustStore, refuse, type TrustRecord } from "../core/trust/index.ts";
 import { ForgeFailure } from "../contract/failure.ts";
+import type { HookGuardPort } from "../ports/hook-guard.ts";
 import { interfaceSatisfies } from "../contract/version.ts";
 import { bindContext } from "../contract/context.ts";
 import { validateWithSchema } from "../contract/schema.ts";
@@ -2043,6 +2044,44 @@ export async function createAssembly(
                   )
                 ) {
                   clients[binding.slot] = providers.environment(scope);
+                  continue;
+                }
+                if (
+                  interfaceSatisfies(
+                    "forge.hook-guard@1.0.0",
+                    binding.interface,
+                  )
+                ) {
+                  const guard = current.blocks.get(instance);
+                  if (!guard?.shipped || guard.manifest.id !== "forge/guard")
+                    refuse(
+                      "PROVIDER_MISSING",
+                      "Guard capability is private to the shipped guard block",
+                    );
+                  const client: HookGuardPort = {
+                    command: async (input) =>
+                      (await import("../blocks/guard/command.ts")).checkCommand(
+                        input,
+                        env.CROSS_HARNESS_GUARD_DIALECT,
+                      ),
+                    output: async (input) =>
+                      (
+                        await import("../adapters/fs/guard-files.ts")
+                      ).checkRegisteredOutput(input, homedir(), env),
+                    async inspect(mode, path) {
+                      try {
+                        return (
+                          await import("../adapters/fs/guard-files.ts")
+                        ).inspectFile(mode, path);
+                      } catch {
+                        refuse(
+                          "INSPECTION_UNAVAILABLE",
+                          "File inspection unavailable",
+                        );
+                      }
+                    },
+                  };
+                  clients[binding.slot] = client;
                   continue;
                 }
                 if (

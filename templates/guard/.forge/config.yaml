@@ -1,0 +1,5 @@
+schemaVersion: forge.config/1
+blocks:
+  guard:
+    source:
+      builtin: forge/guard

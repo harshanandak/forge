@@ -1,0 +1,14 @@
+{
+  "oneOf": [
+    { "type": "object", "maxProperties": 0, "additionalProperties": false },
+    {
+      "type": "object",
+      "properties": {
+        "decision": { "const": "block" },
+        "reason": { "type": "string" }
+      },
+      "required": ["decision", "reason"],
+      "additionalProperties": false
+    }
+  ]
+}

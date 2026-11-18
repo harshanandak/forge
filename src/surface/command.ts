@@ -16,6 +16,7 @@ export interface CommandOptions {
   readonly exposure?: McpExposure;
   readonly input?: Readable;
   readonly output?: Writable;
+  readonly hookInputLimit?: (op: string) => number | undefined;
 }
 
 /** Assembly injects the catalog and transport; no block or adapter is selected here. */
@@ -68,7 +69,13 @@ export async function runCommand(
   const response =
     argv[0] === "--hook"
       ? argv.length === 2 && argv[1] !== undefined
-        ? await runHook(options.catalog, argv[1], input, options.call)
+        ? await runHook(
+            options.catalog,
+            argv[1],
+            input,
+            options.call,
+            options.hookInputLimit?.(argv[1]),
+          )
         : respond(failure("INPUT_INVALID", "Expected --hook <noun.verb>."))
       : await runCli(options.catalog, argv, options.call);
   output.write(response.stdout);

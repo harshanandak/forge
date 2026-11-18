@@ -1,0 +1,62 @@
+{
+  "schemaVersion": "forge.block/1",
+  "id": "forge/guard",
+  "version": "0.1.0",
+  "authorAbi": "forge.author/v2",
+  "profile": "trusted-action/v2",
+  "entry": "entry.cjs",
+  "nouns": {
+    "guard": { "interface": "1.0.0" },
+    "safe-inspect": { "interface": "1.0.0" }
+  },
+  "requires": [{ "slot": "guard", "interface": "forge.hook-guard@1" }],
+  "operations": {
+    "guard.command": {
+      "input": "schemas/event.input.json",
+      "output": "schemas/command.output.json",
+      "context": "stateless",
+      "timeoutMs": 5000,
+      "effects": ["environment:read"],
+      "idempotent": true,
+      "destructive": false,
+      "callers": ["human", "agent"],
+      "stability": "experimental"
+    },
+    "guard.output": {
+      "input": "schemas/event.input.json",
+      "output": "schemas/output.output.json",
+      "context": "stateless",
+      "timeoutMs": 5000,
+      "effects": ["files:read", "environment:read"],
+      "idempotent": true,
+      "destructive": false,
+      "callers": ["human", "agent"],
+      "stability": "experimental"
+    },
+    "safe-inspect.metadata": {
+      "input": "schemas/inspect.input.json",
+      "output": "schemas/metadata.output.json",
+      "context": "stateless",
+      "timeoutMs": 5000,
+      "effects": ["files:read"],
+      "idempotent": true,
+      "destructive": false,
+      "callers": ["human", "agent"],
+      "stability": "experimental",
+      "args": ["path"]
+    },
+    "safe-inspect.summary": {
+      "input": "schemas/inspect.input.json",
+      "output": "schemas/summary.output.json",
+      "context": "stateless",
+      "timeoutMs": 5000,
+      "effects": ["files:read"],
+      "idempotent": true,
+      "destructive": false,
+      "callers": ["human", "agent"],
+      "stability": "experimental",
+      "args": ["path"]
+    }
+  },
+  "docs": "docs.json"
+}
