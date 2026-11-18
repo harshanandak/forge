@@ -617,13 +617,14 @@ function rejectRuntimeWrite(error: unknown): never {
 }
 function atomicRuntime<Input, Output>(
   handler: (call: HandlerCall<Input>) => Output,
+  bindState: (state: LeaseStateClient) => LeaseStateClient = (state) => state,
 ): (call: HandlerCall<Input>) => Output {
   return (call) => {
     let planned: LeaseStateClient | undefined;
     let finish = () => {};
     const open = (): LeaseStateClient => {
       if (planned) return planned;
-      const state = client(call.services);
+      const state = bindState(client(call.services));
       const entries = new Map<string, BatchEntry>();
       const records = new Map<string, StateRecord>();
       const reads = new Map<string, number>();
@@ -4270,11 +4271,13 @@ function freezeRead(state: LeaseStateClient): PinnedRead {
   refuseFrozenRecord(record);
   return { key: GLOBAL, expectRevision: record?.revision ?? 0 };
 }
+function pinFreeze(state: LeaseStateClient): LeaseStateClient {
+  return pinned(state, freezeRead(state));
+}
 function refuseFrozen(services: unknown): object {
-  const state = client(services);
   return {
     ...(services as object),
-    state: pinned(state, freezeRead(state)),
+    state: pinFreeze(client(services)),
   };
 }
 const FROZEN_WRITES = [
@@ -4300,9 +4303,6 @@ const FROZEN_WRITES = [
   "attempt.note",
   "lane.attempt",
   "lane.close",
-  "lane.next",
-  "lane.record",
-  "lane.resume",
 ];
 async function laneStatus(
   call: HandlerCall<Record<string, never>>,
@@ -4577,13 +4577,13 @@ function laneRecord(call: HandlerCall<TailRecordInput>):
 const operations: Operations<WorkOperations> = {
   "lane.control": () =>
     fail("UNAVAILABLE", "Lane control requires a cloud-bound project"),
-  "lane.next": atomicRuntime(laneNext),
+  "lane.next": atomicRuntime(laneNext, pinFreeze),
   "lane.stop": atomicRuntime(laneStop),
-  "lane.resume": atomicRuntime(laneResume),
+  "lane.resume": atomicRuntime(laneResume, pinFreeze),
   "lane.freeze": laneFreeze,
   "lane.unfreeze": laneUnfreeze,
   "lane.status": (call) => laneStatus(call),
-  "lane.record": atomicRuntime(laneRecord),
+  "lane.record": atomicRuntime(laneRecord, pinFreeze),
   "lane.show": ({ input, services, config }) => {
     const state = client(services),
       ids = idsFor(state, config);
