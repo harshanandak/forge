@@ -1179,13 +1179,13 @@ test.each([
                 fail();
               files.write(path, bytes);
             },
-            remove(path) {
+            remove(path, expected) {
               if (
                 join(base, path) === join(folder, "a.txt") &&
                 operation === "remove"
               )
                 fail();
-              files.remove(path);
+              files.remove(path, expected);
             },
           };
         },
@@ -1335,9 +1335,9 @@ test.each(["write", "remove"])(
               if (operation === "write") fail(path);
               files.write(path, bytes);
             },
-            remove(path) {
+            remove(path, expected) {
               if (operation === "remove") fail(path);
-              files.remove(path);
+              files.remove(path, expected);
             },
           };
         },
