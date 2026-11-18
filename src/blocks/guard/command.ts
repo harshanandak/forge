@@ -281,6 +281,36 @@ function searchTargets(verb: string, operand: string) {
 }
 
 const SECRET_NAME = /KEY|TOKEN|SECRET|PASSWORD|PASSWD|CRED/i;
+const PRINTENV_INVOCATION =
+  /(?:^|[;&|\r\n(`])[ \t]*printenv(?=[ \t\r\n;&|)`<>]|$)((?:"(?:\\.|[^"\\])*"|'[^']*'|[^"';&|\r\n)`<>])*)/gi;
+
+function printenvReason(cmd: string): string | null {
+  for (const match of cmd.matchAll(PRINTENV_INVOCATION)) {
+    const operand = match[1] ?? "";
+    const words = shellWords(operand) ?? lenientWords(operand);
+    const delimiter = words.indexOf("--");
+    const optionsEnd = delimiter === -1 ? words.length : delimiter;
+    const beforeDelimiter = words.slice(0, optionsEnd);
+    const names = beforeDelimiter
+      .filter((word) => !word.startsWith("-"))
+      .concat(words.slice(optionsEnd + 1));
+    if (
+      names.some(
+        (name) =>
+          SECRET_NAME.test(name) ||
+          /COOKIE|DATABASE_URL|DSN|AUTHORIZATION/i.test(name),
+      )
+    )
+      return "credential variable output";
+    if (
+      names.length === 0 &&
+      !beforeDelimiter.some((word) => word === "--help" || word === "--version")
+    )
+      return "bare env dump";
+  }
+  return null;
+}
+
 const NAME_WORDS = "(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CRED)";
 const STATEMENT_START = String.raw`(?:^|[;\n{])[ \t]*\(?[ \t]*`;
 const BRACED_NAME = `\\{(?:env:)?[^}\\n]{0,128}${NAME_WORDS}[^}\\n]{0,128}\\}`;
@@ -348,6 +378,8 @@ function hasUnclassifiableBracedName(cmd: string) {
 }
 
 function envReason(cmd: string) {
+  const printed = printenvReason(cmd);
+  if (printed) return printed;
   const drive = envDriveReason(cmd);
   if (drive) return drive;
   if (hasUnclassifiableBracedName(cmd))

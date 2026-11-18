@@ -119,7 +119,7 @@ function registeredValues(
 ): string[] {
   const values = Object.entries(env)
     .filter(([name]) =>
-      /KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|DATABASE_URL|DSN|AUTHORIZATION/i.test(
+      /KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|DATABASE_URL|DSN|AUTHORIZATION|COOKIE/i.test(
         name,
       ),
     )
