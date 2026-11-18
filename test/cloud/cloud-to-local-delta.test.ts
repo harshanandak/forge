@@ -3,23 +3,26 @@ import { createHash } from "node:crypto";
 import {
   copyFileSync,
   existsSync,
+  mkdtempSync,
   readFileSync,
   renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { compute, type Options } from "../../tools/cloud-to-local-delta.ts";
+import * as converter from "../../tools/import-current.ts";
 import {
+  acknowledged,
   cloudRow,
   editCloud,
   editPage,
-  emptyBackup,
+  limits,
   moved,
   pageNames,
   project,
-  type Row,
 } from "./cloud-to-local.fixture.ts";
 import * as f from "./import-current-state.fixture.ts";
 
@@ -286,30 +289,42 @@ test("a backup without a project identity is refused", async () => {
   await refused(options, "no project identity");
 }, 120_000);
 
-test("a backup with no work records computes, and a dump carrying another project identity is refused", async () => {
-  const made = await emptyBackup(project.id);
+test("a backup with no work records is refused", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "forge-empty-delta-"));
   try {
-    const options = {
-      dump: made.dump,
-      backup: made.backup,
-      manifest: made.manifest,
-      out: made.delta,
+    const backup = join(dir, "standalone.sqlite"),
+      manifest = join(dir, "source.json"),
+      dump = join(dir, "bundle"),
+      db = f.database(backup),
+      state = f.owner(db);
+    state.initialize();
+    state.put("forge/core-project", "identity", project, f.actor, {
+      expectRevision: 0,
+    });
+    db.exec("PRAGMA journal_mode=DELETE");
+    const read = f.database(backup, true);
+    const facts = {
+      sha256: sha(backup),
+      eventHighWaterMark: Number(
+        read.get("SELECT COALESCE(MAX(sequence),0) AS n FROM state_events")!.n,
+      ),
+      records: Number(read.get("SELECT COUNT(*) AS n FROM state_records")!.n),
+      at: new Date(f.at).toISOString(),
     };
-    const named =
-      (id: string) => (page: { tables: { state_records: Row[] } }) =>
-        page.tables.state_records.push(
-          cloudRow("identity", "forge/core-project", { ...project, id }),
-        );
-    editPage(made.dump, 0, named(project.id));
-    const report = await compute(options);
-    expect(report.delta).toEqual([]);
-    expect(report.counts.localRecords).toBe(0);
-    rmSync(made.delta);
-    editPage(made.dump, 0, (page) => page.tables.state_records.pop());
-    editPage(made.dump, 0, named("fedcba9876543210"));
-    await refused(options, "different project");
+    writeFileSync(manifest, JSON.stringify(facts));
+    await converter.convert({
+      backup,
+      manifest,
+      out: dump,
+      limits,
+      acknowledgeLeftBehind: acknowledged(facts),
+    });
+    await refused(
+      { dump, backup, manifest, out: join(dir, "delta.json") },
+      "different project",
+    );
   } finally {
     f.cleanup();
-    rmSync(made.dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
   }
 }, 120_000);

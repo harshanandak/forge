@@ -1,7 +1,6 @@
 import { expect } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { limitsFrom } from "../../cloud/src/dump.ts";
 import { canonicalJson } from "../../src/core/config/pointer.ts";
@@ -14,7 +13,7 @@ export const project = {
   name: "fixture",
   projectId: "5b9d0a42-1c3e-4f6a-9d2b-7e8f1a2b3c4d",
 };
-const acknowledged = (manifest: object) =>
+export const acknowledged = (manifest: object) =>
   createHash("sha256")
     .update(
       canonicalJson({
@@ -160,37 +159,7 @@ export function cloudWrites(dump: string) {
           id: "work-1",
           body: "cloud only",
         }),
+        cloudRow("issue:work-9", f.ns, f.issueValue("work-9", "cloud only")),
       );
   });
-}
-export async function emptyBackup(id: string) {
-  const dir = mkdtempSync(join(tmpdir(), "forge-empty-delta-")),
-    backup = join(dir, "standalone.sqlite"),
-    manifest = join(dir, "source.json"),
-    out = join(dir, "bundle"),
-    db = f.database(backup);
-  const state = f.owner(db);
-  state.initialize();
-  state.put("forge/core-project", "identity", { ...project, id }, f.actor, {
-    expectRevision: 0,
-  });
-  db.exec("PRAGMA journal_mode=DELETE");
-  const read = f.database(backup, true);
-  const facts = {
-    sha256: createHash("sha256").update(readFileSync(backup)).digest("hex"),
-    eventHighWaterMark: Number(
-      read.get("SELECT COALESCE(MAX(sequence),0) AS n FROM state_events")!.n,
-    ),
-    records: Number(read.get("SELECT COUNT(*) AS n FROM state_records")!.n),
-    at: new Date(f.at).toISOString(),
-  };
-  writeFileSync(manifest, JSON.stringify(facts));
-  await converter.convert({
-    backup,
-    manifest,
-    out,
-    limits,
-    acknowledgeLeftBehind: acknowledged(facts),
-  });
-  return { dir, backup, manifest, dump: out, delta: join(dir, "delta.json") };
 }

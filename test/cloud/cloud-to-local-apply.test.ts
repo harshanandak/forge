@@ -1,7 +1,7 @@
 import { expect, setDefaultTimeout, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { copyPrivateFile } from "../../src/adapters/store-sqlite/file-ops.ts";
 import { createSqliteStore } from "../../src/adapters/store-sqlite/index.ts";
@@ -78,7 +78,7 @@ async function refused(attempt: Promise<unknown>, reason: string) {
 test("a dry run reports the carried records and writes nothing", async () => {
   const run = await prepared();
   const before = sha(run.store);
-  expect(await run.apply()).toEqual({ mode: "dry-run", new: 1, changed: 1 });
+  expect(await run.apply()).toEqual({ mode: "dry-run", new: 2, changed: 1 });
   expect(sha(run.store)).toBe(before);
 }, 120_000);
 
@@ -86,7 +86,7 @@ test("an explicit write applies every carried record in one batch", async () => 
   const run = await prepared();
   expect(await run.apply(true)).toEqual({
     mode: "applied",
-    new: 1,
+    new: 2,
     changed: 1,
   });
   expect((await read(run.store, "comment:work-1:2"))?.value).toEqual({
@@ -190,6 +190,67 @@ test("a store whose migrations differ from the expected set is refused and not m
   await refused(run.apply(true), "migrations differ");
   expect(sha(run.store)).toBe(before);
 }, 120_000);
+test("the next local comment and issue numbers follow the carried ones", async () => {
+  const run = await prepared();
+  await run.apply(true);
+  const next = (prefix: string, value: object) =>
+    withStore(
+      run.store,
+      true,
+      (owner) => owner.putNext(f.ns, prefix, () => ({ value }), f.actor).key,
+    );
+  expect(await next("comment:work-1:", { id: "work-1", body: "local" })).toBe(
+    "comment:work-1:3",
+  );
+  expect(await next("issue:work-", f.issueValue("work-10"))).toBe(
+    "issue:work-10",
+  );
+}, 120_000);
+
+test("a store path that vanishes before the write open is refused and not created", async () => {
+  const run = await prepared();
+  const step = (name: string) => {
+    if (name === "identity-checked") rmSync(run.store);
+  };
+  await refused(
+    apply({
+      report: run.report,
+      manifest: run.options.manifest,
+      store: run.store,
+      write: true,
+      step,
+    }),
+    "store",
+  );
+  expect(existsSync(run.store)).toBe(false);
+}, 120_000);
+
+test("a revision that changes after the checks leaves no carried record and no floor change", async () => {
+  const run = await prepared();
+  const step = (name: string) => {
+    if (name === "preflighted")
+      rawStore(
+        run.store,
+        "UPDATE state_records SET revision=revision+1 WHERE namespace='forge/work' AND key='issue:work-3'",
+      );
+  };
+  await expect(
+    apply({
+      report: run.report,
+      manifest: run.options.manifest,
+      store: run.store,
+      write: true,
+      step,
+    }),
+  ).rejects.toBeDefined();
+  expect(await read(run.store, "comment:work-1:2")).toBeUndefined();
+  expect(await read(run.store, "issue:work-9")).toBeUndefined();
+  expect((await read(run.store, "allocation:comment:work-1:"))?.value).toEqual({
+    prefix: "comment:work-1:",
+    number: 1,
+  });
+}, 120_000);
+
 test("records outside the carried families are refused, including keys named in notCarriedBack", async () => {
   const cases: ((doc: Doc) => void)[] = [
     (doc) => doc.delta.push(entry("autopilot:global")),

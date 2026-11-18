@@ -27,6 +27,7 @@ export interface Options {
   manifest: string;
   store: string;
   write: boolean;
+  step?: (name: string) => void;
 }
 interface Entry {
   namespace: string;
