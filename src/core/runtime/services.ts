@@ -1,7 +1,11 @@
 import { DEFAULT_PARSE_LIMITS } from "../../contract/untrusted.ts";
 import type { ParseLimits } from "../../generated/types.ts";
 import type { ClockPort } from "../../ports/clock.ts";
-import type { DeletableStateClient } from "../../ports/state.ts";
+import type {
+  BatchOptions,
+  DeletableStateClient,
+  DeleteOptions,
+} from "../../ports/state.ts";
 import { ForgeFailure } from "../../contract/failure.ts";
 import { refuse } from "../trust/index.ts";
 import type {
@@ -14,7 +18,7 @@ import type {
 export type FinalizerState = {
   delete(
     key: string,
-    options: { expectRevision: number; guard: () => boolean },
+    options: DeleteOptions & { guard: () => boolean },
   ): unknown;
 };
 
@@ -431,7 +435,7 @@ export class InvocationServices {
             return returned(row);
           };
         if (stateClient && key === "finalizeDelete")
-          return (key: string, revision: number) => {
+          return (key: string, revision: number, options?: BatchOptions) => {
             this.check();
             if (!owned || key !== this.#finalizerKey || owned !== revision)
               refuse(
@@ -440,6 +444,7 @@ export class InvocationServices {
               );
             const bound = this.deadline;
             const monotonicBound = this.#monotonicBound;
+            const reads = structuredClone(options?.readSet);
             const guard = () =>
               this.#clock.now() < bound && this.#monotonic() < monotonicBound;
             // Only teardown may use this exact deletion; ordinary clients remain revoked.
@@ -449,6 +454,7 @@ export class InvocationServices {
                 (entry as FinalizerState).delete(key, {
                   expectRevision: revision,
                   guard,
+                  ...(reads === undefined ? {} : { readSet: reads }),
                 });
               } catch (error) {
                 if (
