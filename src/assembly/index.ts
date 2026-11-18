@@ -1959,7 +1959,7 @@ export async function createAssembly(
             laneOwnerChannelOp(target!, request.input)
               ? laneOwnerChannelAsk(request.input)
               : laneResumeOp(target!)
-                ? laneResumeAsk(request.input)
+                ? laneResumeAsk(request.input, target!.declaredOp)
                 : memoryOwnerAsk(target!.declaredOp!, request.input),
             // Resuming lanes restarts spending and naming the owner channel lets it approve: only a relayed reply counts, never a typed phrase or owner.json.
             laneOwned,
