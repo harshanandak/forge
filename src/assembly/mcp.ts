@@ -14,9 +14,8 @@ import { localIdentityResolver } from "./identity.ts";
 export function assemblyMcp(assembly: Assembly): McpTransportPort {
   return {
     async open(options) {
-      let exposure: Assembly["exposure"];
       try {
-        exposure = assembly.exposure;
+        assembly.mcpRequest();
       } catch (error) {
         if (!(error instanceof ForgeFailure)) throw error;
         return {
@@ -56,42 +55,46 @@ export function assemblyMcp(assembly: Assembly): McpTransportPort {
         { ...process.env },
         process.stdin.isTTY === true,
       );
-      const handlers = () =>
-        createMcpHandlers(assembly.catalog, exposure, {
-          context,
-          resolveContext,
-        });
+      const request = () => {
+        const { catalog, exposure } = assembly.mcpRequest();
+        return {
+          catalog,
+          exposure,
+          handlers: createMcpHandlers(catalog, exposure, {
+            context,
+            resolveContext,
+          }),
+        };
+      };
       const { createMcpTransport } =
         await import("../adapters/mcp-transport/index.ts");
       return createMcpTransport().open({
         ...options,
         handlers: {
-          listTools: () => handlers().listTools(),
+          listTools: () => request().handlers.listTools(),
           async callTool(name, args) {
-            const result = await handlers().callTool(name, args);
+            const { catalog, exposure, handlers } = request();
+            const result = await handlers.callTool(name, args);
             if (result !== undefined) return result;
+            const candidates = catalog.list();
             const reachable = new Set(
               selectMcpTools(
-                assembly.catalog
-                  .list()
-                  .map((entry) => ({ ...entry, admitted: true })),
+                candidates.map((entry) => ({ ...entry, admitted: true })),
                 { ...exposure, budget: 0 },
               ).overflow,
             );
-            const candidate = assembly.catalog
-              .list()
-              .find(
-                (entry) =>
-                  !entry.admitted &&
-                  reachable.has(entry.op) &&
-                  (!exposure.readOnly ||
-                    entry.declaration.effects.length === 0) &&
-                  isAgentCallable(entry.declaration) &&
-                  mcpToolName(entry.op, exposure.toolPrefix) === name,
-              );
+            const candidate = candidates.find(
+              (entry) =>
+                !entry.admitted &&
+                reachable.has(entry.op) &&
+                (!exposure.readOnly ||
+                  entry.declaration.effects.length === 0) &&
+                isAgentCallable(entry.declaration) &&
+                mcpToolName(entry.op, exposure.toolPrefix) === name,
+            );
             return candidate === undefined
               ? undefined
-              : dispatch(assembly.catalog, candidate.op, args, {
+              : dispatch(catalog, candidate.op, args, {
                   caller: "agent",
                   context,
                   resolveContext,

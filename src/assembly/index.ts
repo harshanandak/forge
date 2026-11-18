@@ -2,13 +2,19 @@ import { join, resolve } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import {
+  CONFIG_FILE,
   createConfig,
   createConfigOperations,
+  type ConfigFiles,
   type Enforcer,
   type LawsReport,
   schemaDeclares,
   type ShowResult,
 } from "../core/config/index.ts";
+import {
+  MAX_CONFIG_FILE_BYTES,
+  readProjectFile,
+} from "../core/config/files.ts";
 import { nodeConfigFiles } from "../adapters/fs/index.ts";
 import {
   untrustedFileReason,
@@ -251,6 +257,10 @@ export interface Assembly {
   readonly root: string;
   readonly deviceRoot: string;
   readonly exposure: McpExposure;
+  mcpRequest(): {
+    readonly exposure: McpExposure;
+    readonly catalog: SurfaceCatalog;
+  };
   /** Stateful discovery consumers load admission; plain help stays store-free. */
   prepareTrust(): Promise<void>;
   close(): Promise<void>;
@@ -431,19 +441,28 @@ export async function createAssembly(
     config: ReturnType<typeof createConfig>;
     configOperations: ReturnType<typeof createConfigOperations>;
   };
+  type BlockCaptures = Map<string, CapturedBlock | { failed: unknown }>;
+  type McpConfigRead = {
+    files: ConfigFiles;
+    inProject: boolean;
+    captures: BlockCaptures;
+  };
   const sharedBuiltins = options.oneShot
     ? new Map<string, CapturedBlock>()
     : undefined;
   function callScope(
     derived: readonly DetectionObservation[] = [],
     operatorExport = false,
+    mcp?: McpConfigRead,
   ): CallScope {
     const warnings: Array<ResultEnvelope["warnings"][number]> = [];
     const ignoredConfig = new Map<
       string,
       { paths: Set<string>; index: number }
     >();
-    const captures = new Map<string, CapturedBlock | { failed: unknown }>();
+    const captures =
+      mcp?.captures ?? new Map<string, CapturedBlock | { failed: unknown }>();
+    const currentScope = () => callScope([], false, mcp);
     const shipped = shippedTemplates();
     function captured(source: BlockSource): CapturedBlock {
       const key = JSON.stringify(source);
@@ -520,12 +539,12 @@ export async function createAssembly(
       ],
       templates: shipped,
       commandsFor: (declaredOp: string): readonly string[] =>
-        snapshot(callScope())
+        snapshot(currentScope())
           .candidates.filter((entry) => entry.declaredOp === declaredOp)
           .map((entry) => `forge ${cliWords(cliOperation(entry))!.join(" ")}`),
       // what the enabled, loadable, admitted blocks declare they enforce, for laws.check
       enforcers: (): readonly Enforcer[] =>
-        [...snapshot(callScope()).blocks].flatMap(([name, block]) => {
+        [...snapshot(currentScope()).blocks].flatMap(([name, block]) => {
           try {
             if (!block.shipped) trust.check(block.digest, []);
           } catch {
@@ -576,14 +595,18 @@ export async function createAssembly(
     };
     return {
       inProject:
-        options.project ?? existsSync(join(root, ".forge", "config.yaml")),
+        options.project ??
+        mcp?.inProject ??
+        existsSync(join(root, CONFIG_FILE)),
       operatorExport,
       warnings,
       configWarningsCollected: false,
       warnUnknownConfig: environment.warnUnknownConfig,
       captured,
       shipped,
-      config: createConfig(environment),
+      config: createConfig(
+        mcp === undefined ? environment : { ...environment, files: mcp.files },
+      ),
       configOperations: createConfigOperations(environment),
     };
   }
@@ -611,6 +634,18 @@ export async function createAssembly(
       );
     }
     return checked.value;
+  }
+  function mcpExposure(show: ShowResult): McpExposure {
+    const excluded = show.excluded.find(
+      ({ pointer }) => pointer === "/mcp" || pointer === "",
+    );
+    if (excluded !== undefined || (!show.valid && show.excluded.length === 0))
+      refuse(
+        "INPUT_INVALID",
+        (excluded?.problems ?? show.problems).join("\n"),
+        { repair: `Fix ${show.file} before using MCP.` },
+      );
+    return composition(show).mcp ?? {};
   }
   function withCallWarnings(
     call: CallScope,
@@ -1052,7 +1087,10 @@ export async function createAssembly(
       reconcileWith: "config.show",
     };
   }
-  const catalog: Assembly["catalog"] = {
+  const createCatalog = (
+    scope: typeof callScope,
+    configuredShow?: ShowResult,
+  ): Assembly["catalog"] => ({
     admit(blockId, declaredOp, dryRun, input) {
       admitCloud(
         { root, env: options.providers?.env ?? process.env },
@@ -1064,7 +1102,7 @@ export async function createAssembly(
     },
     templateHint(op, caller, readOnly) {
       try {
-        const call = callScope();
+        const call = scope();
         const show = call.config.show();
         if (!show.valid) return undefined;
         return call.shipped.hint(op, caller, readOnly, {
@@ -1079,7 +1117,7 @@ export async function createAssembly(
       try {
         const parsed = parseOperationName(op);
         if (parsed === undefined) return undefined;
-        const call = callScope();
+        const call = scope();
         const current = snapshot(call);
         if (
           current.candidates.some(
@@ -1110,10 +1148,10 @@ export async function createAssembly(
         return undefined;
       }
     },
-    unavailable: () => snapshot(callScope()).unavailable,
+    unavailable: () => snapshot(scope()).unavailable,
     diagnose(op) {
       if (parseOperationName(op) === undefined) return undefined;
-      const current = snapshot(callScope());
+      const current = snapshot(scope());
       if (
         configOperationNames.has(op) ||
         [grantCandidate, ...discoveryOperations, ...current.candidates].some(
@@ -1195,8 +1233,10 @@ export async function createAssembly(
       );
     },
     list() {
-      const call = callScope([], true);
-      const candidates = [...snapshot(call, true).candidates];
+      const call = scope([], true);
+      const candidates = [
+        ...snapshot(call, true, false, configuredShow).candidates,
+      ];
       if (
         call.warnings.some(
           (warning) => warning.code === "PROJECT_CONFIG_UNAVAILABLE",
@@ -1204,9 +1244,12 @@ export async function createAssembly(
       ) {
         try {
           candidates.unshift(
-            ...snapshot(callScope([], true)).candidates.filter(
-              (entry) => !DEVICE_MEMORY_OPS.has(entry.op),
-            ),
+            ...snapshot(
+              scope([], true),
+              false,
+              false,
+              configuredShow,
+            ).candidates.filter((entry) => !DEVICE_MEMORY_OPS.has(entry.op)),
           );
         } catch {
           // An unreadable config has no healthy project candidates to retain.
@@ -1217,7 +1260,7 @@ export async function createAssembly(
     async invoke(request) {
       const derived: DetectionObservation[] = [];
       const deviceMemory = deviceMemoryRequest(request.op, request.input);
-      const call = callScope(derived, request.op === "store.export");
+      const call = scope(derived, request.op === "store.export");
       try {
         const preview =
           request.op === "config.show"
@@ -1337,7 +1380,11 @@ export async function createAssembly(
       } catch (error) {
         return withCallWarnings(call, failure(request.op, error));
       }
-      const result = await direct.invoke(call, request);
+      const result = await direct.invoke(
+        call,
+        request,
+        scope === callScope ? catalog : createCatalog(scope, configuredShow),
+      );
       if (
         !result.ok &&
         process.env.T3CODE_CLI_PATH &&
@@ -1355,11 +1402,13 @@ export async function createAssembly(
         });
       return withCallWarnings(call, result);
     },
-  };
+  });
+  const catalog = createCatalog(callScope);
   const direct = {
     async invoke(
       call: CallScope,
       request: Parameters<Assembly["catalog"]["invoke"]>[0],
+      surface: Assembly["catalog"],
     ): ReturnType<Assembly["catalog"]["invoke"]> {
       try {
         const checked = validateInvocationRequest(request);
@@ -1377,7 +1426,7 @@ export async function createAssembly(
             );
           // Dispatch admits first; a direct invocation must not skip a bound project's refusal.
           if (entry.blockId !== undefined && entry.declaredOp !== undefined)
-            catalog.admit?.(
+            surface.admit?.(
               entry.blockId,
               entry.declaredOp,
               request.dryRun,
@@ -1594,7 +1643,7 @@ export async function createAssembly(
             const { syncSkills } = await loadSkills();
             const synced = syncSkills(
               root,
-              catalog.list(),
+              surface.list(),
               composition(show).mcp?.toolPrefix,
               typeof input.dir === "string"
                 ? input.dir
@@ -1866,7 +1915,7 @@ export async function createAssembly(
                     );
                     if (!nested)
                       refuse("UNKNOWN_COMMAND", "Issue read is not assembled.");
-                    const answer = await catalog.invoke({
+                    const answer = await surface.invoke({
                       ...request,
                       requestId: release?.requestId ?? request.requestId,
                       op: nested.op,
@@ -2333,19 +2382,31 @@ export async function createAssembly(
     root,
     deviceRoot,
     get exposure() {
-      const show = callScope().config.show();
-      const excluded = show.excluded.find(
-        ({ pointer }) => pointer === "/mcp" || pointer === "",
-      );
-      if (excluded !== undefined || (!show.valid && show.excluded.length === 0))
-        refuse(
-          "INPUT_INVALID",
-          (excluded?.problems ?? show.problems).join("\n"),
-          {
-            repair: `Fix ${show.file} before starting MCP.`,
+      return mcpExposure(callScope().config.show());
+    },
+    mcpRequest() {
+      const files = nodeConfigFiles(root);
+      const bytes = readProjectFile(files, CONFIG_FILE, MAX_CONFIG_FILE_BYTES);
+      const read: McpConfigRead = {
+        inProject: bytes !== undefined,
+        captures: new Map(),
+        files: {
+          ...files,
+          read(path, maxBytes) {
+            return path === CONFIG_FILE ? bytes : files.read(path, maxBytes);
           },
-        );
-      return composition(show).mcp ?? {};
+        },
+      };
+      const scope: typeof callScope = (derived, operatorExport) =>
+        callScope(derived, operatorExport, read);
+      const show = scope().config.show();
+      const exposure = mcpExposure(show);
+      const scoped = createCatalog(scope, show);
+      let candidates: readonly McpCandidate[] | undefined;
+      return {
+        exposure,
+        catalog: { ...scoped, list: () => (candidates ??= scoped.list()) },
+      };
     },
     async prepareTrust() {
       await trustState.open(false);
