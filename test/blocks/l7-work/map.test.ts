@@ -76,7 +76,7 @@ function project() {
       if ((records.get(key)?.revision ?? 0) !== options.expectRevision)
         throw new Error("REVISION_CONFLICT");
       for (const read of options.readSet ?? [])
-        if (records.get(read.key)?.revision !== read.expectRevision)
+        if ((records.get(read.key)?.revision ?? 0) !== read.expectRevision)
           throw new Error("REVISION_CONFLICT");
       const record: StateRecord = {
         key,

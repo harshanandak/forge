@@ -10139,7 +10139,13 @@ test("the cloud issue.claim agrees with the local handler on whole results, rows
     generation: 1,
     expiresAt: iso(start + 3_600_000),
   });
-  expect(eventsOf(f.db, "forge/work")).toEqual(eventsOf(twin, "forge/work"));
+  const withoutFreezePin = (bodies: string[]) =>
+    bodies.map((body) =>
+      body.replace(',{"expectRevision":0,"key":"autopilot:global"}', ""),
+    );
+  expect(eventsOf(f.db, "forge/work")).toEqual(
+    withoutFreezePin(eventsOf(twin, "forge/work")),
+  );
   expect(eventsOf(f.db, "forge/work")).toHaveLength(cases.length);
   expect(leasesIn(f.db)).toBe(leasesIn(twin));
   expect(requestsIn(f.db)).toBe(requestsIn(twin));

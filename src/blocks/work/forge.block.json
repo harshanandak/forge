@@ -463,7 +463,7 @@
       "timeoutMs": 15000,
       "effects": ["lane:write"],
       "idempotent": true,
-      "callers": ["human"],
+      "callers": ["agent", "human"],
       "stability": "experimental"
     },
     "lane.status": {

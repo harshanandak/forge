@@ -6079,7 +6079,10 @@ test.each(acceptance)(
                     ),
                   );
                 for (const surface of ["direct", "CLI JSON"]) {
-                  if (op === "lane.resume" && surface === "direct") {
+                  if (
+                    (op === "lane.resume" || op === "lane.unfreeze") &&
+                    surface === "direct"
+                  ) {
                     const trust = new LocalState(
                       join(r.s.deviceRoot, "trust.sqlite"),
                     );
