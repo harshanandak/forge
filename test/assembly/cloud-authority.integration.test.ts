@@ -2180,6 +2180,7 @@ for (const [name, expected] of [
   ["absent issue", "NOT_FOUND"],
   ["ambiguous claim", "UNAVAILABLE"],
   ["losing claim", "LEASE_NOT_HELD"],
+  ["frozen local tracker", "OK"],
 ] as const)
   test(`bound attachment table: ${name}`, () => {
     const lexicalAttachment = [
@@ -2229,6 +2230,20 @@ for (const [name, expected] of [
             { encoding: "utf8", windowsHide: true },
           );
           expect(git.status, git.stderr).toBe(0);
+          if (name === "frozen local tracker") {
+            const local = new LocalState(STORE(s));
+            try {
+              (await local.open(true))!.put(
+                "forge/work",
+                "autopilot:global",
+                { stopped: {}, frozen: new Date(NOW).toISOString() },
+                human,
+                { expectRevision: 0 },
+              );
+            } finally {
+              await local.close();
+            }
+          }
           if (name === "project git precedes trusted git") {
             const bin = join(s.root, "node_modules", ".bin");
             mkdirSync(bin, { recursive: true });
@@ -2596,6 +2611,8 @@ for (const [name, expected] of [
               .project!,
           };
           const before = attachmentBytes(r.s);
+          const frozenStore =
+            name === "frozen local tracker" ? readFileSync(STORE(r.s)) : null;
           const start = () =>
             assembly.catalog.invoke(
               r.request(
@@ -2675,9 +2692,9 @@ for (const [name, expected] of [
           expect(readFileSync(join(r.s.root, "brief.md"), "utf8")).toBe(
             beforeFiles,
           );
-          expect(existsSync(join(r.s.root, ".forge", "state.sqlite"))).toBe(
-            false,
-          );
+          if (frozenStore)
+            expect(readFileSync(STORE(r.s))).toEqual(frozenStore);
+          else expect(existsSync(STORE(r.s))).toBe(false);
           if (expected !== "OK") {
             if (registryFailure) {
               const local = new LocalState(
@@ -5703,6 +5720,9 @@ const acceptance = [
   "Bound unregistered missing read",
   "Unbound registered missing read/write",
   "Unbound writers and reads",
+  "Frozen generic project writer",
+  "Frozen project memory",
+  "Frozen check receipts",
   "Existing unsupported work / reinit",
   "Invalid authority binding",
   "Missing bound manifest",
@@ -6055,6 +6075,28 @@ test.each(acceptance)(
               for (const op of ["check.list", "decision.list", "renamed.read"])
                 await check(op, {}, "OK");
               break;
+            case "Frozen generic project writer":
+            case "Frozen project memory":
+            case "Frozen check receipts": {
+              rmSync(r.s.binding);
+              done(await call("lane.freeze"));
+              const before = readFileSync(STORE(r.s));
+              const result =
+                name === "Frozen project memory"
+                  ? await call("memory.add", {
+                      text: "blocked",
+                      level: "project",
+                    })
+                  : name === "Frozen check receipts"
+                    ? await call("check.run", { checks: ["test"] })
+                    : await call("renamed.put", { revision: 1 });
+              if (result.ok)
+                throw new Error("A frozen project write succeeded");
+              expect(result.error.code).toBe("UNAVAILABLE");
+              expect(result.error.message).toContain("frozen");
+              expect(readFileSync(STORE(r.s))).toEqual(before);
+              break;
+            }
             case "Existing unsupported work / reinit":
               for (const op of [...DECLARED, RECOVER]) {
                 const entry = assembly.catalog
@@ -6563,6 +6605,7 @@ test(
         ok: true,
         result: { frozen: true },
       });
+      const before = readFileSync(STORE(r.s));
       const required = await call("lane.unfreeze", {});
       expect(required).toMatchObject({
         ok: false,
@@ -6575,10 +6618,26 @@ test(
         harness: "fixture",
         thread: "fixture",
       });
-      expect(await call("lane.unfreeze", { approval })).toMatchObject({
-        ok: true,
-        result: { frozen: false },
-      });
+      const trust = new LocalState(join(r.s.deviceRoot, "trust.sqlite"));
+      try {
+        const owner = (await trust.open(false))!;
+        const audit = () => owner.get("forge/core-approvals", approval.request);
+        expect(audit()).toMatchObject({
+          revision: 1,
+          value: { status: "pending" },
+        });
+        expect(readFileSync(STORE(r.s))).toEqual(before);
+        expect(await call("lane.unfreeze", { approval })).toMatchObject({
+          ok: true,
+          result: { frozen: false },
+        });
+        expect(audit()).toMatchObject({
+          revision: 2,
+          value: { status: "used", method: "relayed" },
+        });
+      } finally {
+        await trust.close();
+      }
       expect(
         await call("issue.create", { title: "allowed", kind: "task" }),
       ).toMatchObject({ ok: true });
