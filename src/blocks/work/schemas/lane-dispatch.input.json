@@ -1,0 +1,19 @@
+{
+  "type": "object",
+  "required": ["id", "dispatchId", "incarnation", "epoch"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^work-[1-9][0-9]*$",
+      "maxLength": 200
+    },
+    "dispatchId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+      "maxLength": 128
+    },
+    "incarnation": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "epoch": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 }
+  },
+  "additionalProperties": false
+}
