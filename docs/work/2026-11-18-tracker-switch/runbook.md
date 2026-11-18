@@ -49,7 +49,7 @@ Do not execute step 1 until every row passes. Record evidence and paths in `run.
 | P7 One build               | Every machine reports identical version and commit with `dirty:false` using the pinned build's version output/build manifest. Include final dependency PRs.                                                                                                                     |
 | P8 Worker ready            | Reviewed preflight passes for the target origin, owner, login HMAC and admin-token presence. Record existence/results, never secret values.                                                                                                                                     |
 | P9 Identity/prefix         | Checked Worker `FORGE_CLOUD_ID_PREFIX` equals the configured work prefix; binding UUID equals project UUID. Record non-secret values privately.                                                                                                                                 |
-| P10 Owner present          | Owner can approve each machine's login and cloud resume. Logout practice uses a hand-built sandbox binding, without the owner's browser.                                                                                                                                        |
+| P10 Owner present          | Owner can approve login/cloud resume in the browser and reply verbatim to R0's separate local unfreeze/resume requests. Logout practice uses a hand-built sandbox binding, without the owner's browser.                                                                         |
 | P11 Reverse path           | Save S7 snapshot/hash, prior Worker version and private prior vars/config copy. Inventory every checkout and machine, installed build and token id from login results.                                                                                                          |
 | P12 Freeze                 | Require PR 652 merged and atomic refusal practised on the pinned build. PR 627's freeze alone is insufficient. Include every clone/store that can accept local writes.                                                                                                          |
 | P13 Offline/restore/logout | Export, converter and restore tools below available; PR 626 merged. Practise snapshot restore with private ACLs, preserved freeze and readback. PR 653 is open with the delta fix, pending its merge gate; require its implementation and provenance checks.                    |
@@ -123,7 +123,7 @@ An unauthenticated command on `$Project` must return 401 `AUTH_REQUIRED`. On fai
 
 **Step 6. Bind machine A.**
 Confirm project UUID/prefix from P9. Enable the cloud block through the approved config change.
-Run `forge auth login --origin $Origin --project $Project`; the owner approves in the browser.
+Run `forge auth login --origin $Origin --project $Project`; while the owner has not approved, login polls `authorization_pending` and saves no binding. The owner opens the printed verification link and approves this device in the browser; the same call then finishes without an `approval` argument. `LOGIN_DENIED`/`LOGIN_EXPIRED` stops the step; after expiry obtain a new challenge with the same command and ask again.
 Save returned origin, project, device, token id and expiry in the ledger; never the token.
 Login writes the binding last after credential readback. Verify binding UUID/origin/project against P9 and `run.json`.
 The freeze from step 2.3 still fences every unbound worktree. Any login/integrity refusal stops the switch.
@@ -146,14 +146,16 @@ Record the merged binding commit. R3 step 5 reverts that commit; R2 alone does n
 Keep the local freeze while the binding reaches every worktree and host. Failure after step 8 takes R3.
 
 **Step 10. Bind every other machine and host.**
-Pull step 9's commit, install P7's build, and run `forge auth login` with owner browser approval per device.
+Pull step 9's commit, install P7's build, and run `forge auth login` on each device. Follow step 6's pending/owner-browser-approval flow; retry an expired challenge with exactly `forge auth login`, obtaining a new owner decision.
 Each host reads the proof issue and writes a uniquely labelled comment; A reads every comment back.
 Inventory every checkout, UUID, origin, project and token id. No copied credentials. Plan re-login before the 30-day expiry.
 
 **Step 11. Lift the cloud dispatch stop.**
-Run `forge lane resume --input '{"all":true}'`, obtain owner approval, then retry with exactly `forge lane resume --input '{"all":true,"approval":{"request":"<request-id>"}}'`.
-Cloud refuses `quote`/`source` with `INPUT_INVALID`; per-lane resume cannot clear the all-lanes stop.
-Read `forge lane control` back and require no all-lanes stop. This changes no local freeze.
+Run `forge lane resume --input '{"all":true}'`. Expect `APPROVAL_REQUIRED`, with `result.request`, `result.url`, scope and expiry; the cloud dispatch stop stays set.
+Present that request's URL/scope to the owner and wait for their decision in the browser. Record the decision in the ledger; never retry on silence or denial.
+After browser approval, retry exactly `forge lane resume --input '{"all":true,"approval":{"request":"<request-id>"}}'` using the returned request id.
+Require success, then read `forge lane control` and require no all-lanes stop. This changes no local freeze.
+A pending/expired approval remains `APPROVAL_REQUIRED`; obtain a fresh request and owner decision after expiry. Cloud refuses `quote`/`source` with `INPUT_INVALID`; per-lane resume cannot clear the all-lanes stop.
 
 **Step 12. Verify and retain.**
 Run every Verification row. Retain the frozen store and both immutable backup forms for 30 days by default.
@@ -230,8 +232,27 @@ Keep the local freeze and stop from step 2 until R3.7 passes. A refusal never au
 **R0. Finish a rollback only.**
 Before step 5, when no cloud writes or binding exist, confirm S7/current local content agrees except recorded preparation writes.
 Otherwise require the entire R2 or R3 path to have passed. R1 never calls R0 itself.
-Only now may the owner run `forge lane unfreeze --input '{}'` locally and read back `frozen:false`.
-Then locally resume all lanes with owner approval and tell sessions to continue. Retain the unused cloud project; no project-delete route is supplied here.
+Only now begin the local approval flow. Keep sessions stopped until both unfreeze and resume succeed.
+
+1. Run `forge lane unfreeze --input '{}'` locally. Expect `APPROVAL_REQUIRED` with `result.request.id` and `result.request.ask`; the store remains frozen. Present that exact ask to the owner in chat and wait for their reply.
+2. Copy the owner's affirmative reply verbatim, recording the harness and thread where it was given. Never invent a quote, treat silence as approval, or reuse the cloud resume request. JSON-encode the reply without trimming or paraphrasing it, then retry:
+
+```powershell
+forge lane unfreeze --input '{"approval":{"request":"<unfreeze-request-id>","quote":"<verbatim owner reply>","source":{"harness":"<reply harness>","thread":"<reply thread>"}}}'
+```
+
+Require `ok:true` and `result.frozen:false` from that retry before continuing. A request id alone does not authorize local unfreeze.
+
+3. Run `forge lane resume --input '{"all":true}'` locally. Expect a separate `APPROVAL_REQUIRED` request; lanes remain stopped. Present its `result.request.ask` to the owner and wait for a new verbatim affirmative reply with its harness/thread.
+4. Retry with exactly this shape, using the local resume request and its own reply, then require `ok:true` and `result.resumed:"all"`:
+
+```powershell
+forge lane resume --input '{"all":true,"approval":{"request":"<local-resume-request-id>","quote":"<verbatim owner reply>","source":{"harness":"<reply harness>","thread":"<reply thread>"}}}'
+```
+
+Local requests bind the operation, unchanged arguments, project and device; they expire after 24 hours and are consumed once. Missing/expired/used/mismatched requests return `APPROVAL_REQUIRED`: call that operation without approval to obtain a new request and ask the owner anew. A reply over 2000 characters needs a new shorter owner reply; never shorten it yourself. No dry-run, typed terminal confirmation or owner policy bypasses these local gates.
+Only after both results pass tell sessions to continue. Retain the unused cloud project; no project-delete route is supplied here.
+Approval shapes checked on `origin/main` at `e2983271`: `src/assembly/index.ts`, `src/assembly/approval.ts`, `src/blocks/work/schemas/unfreeze.input.json`, `src/blocks/work/schemas/lane-resume.input.json`; cloud refusal/browser flow in `cloud/src/issue-commands.ts` and `cloud/src/lane-approval.ts`.
 
 **R1. Fence cloud writes without unfreezing local writes.**
 Restore saved Worker admission vars/config, preflight and redeploy via the authorized operator.
