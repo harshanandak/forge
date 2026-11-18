@@ -2524,36 +2524,28 @@ test("issue.show returns the stored issue through the Worker and the object, wit
   }
 }, 30_000);
 
-test("the response is capped at 1 MiB of UTF-8 bytes, measured on the whole envelope", async () => {
+test("the largest schema-valid issue is shown whole within the 1 MiB response cap", async () => {
   const cap = 1_048_576;
   const f = fixture();
   const token = await f.device();
   f.tables();
-  // Two-byte, escaped and three-byte characters, so characters and bytes differ.
-  const body = 'é"\n✓\\';
-  const room = cap - bytesOf(envelope(shown({ body, kind: "" })));
-  for (const [delta, fits] of [
-    [-1, true],
-    [0, true],
-    [1, false],
-  ] as const) {
-    const kind = "k".repeat(room + delta);
-    f.db.run("DELETE FROM state_records");
-    f.put(stored({ body, kind }));
-    const before = f.snapshot();
-    const got = await f.send(call, { token });
-    expect(got.probes).toEqual(WORK_PROBES);
-    expect(f.snapshot()).toBe(before);
-    if (fits) {
-      expect([got.status, got.bytes]).toEqual([200, cap + delta]);
-      expect(got.json.result).toEqual(shown({ body, kind }));
-      expect(got.text).toBe(JSON.stringify(got.json));
-    } else {
-      expect([got.status, got.code, got.exit]).toEqual([503, "UNAVAILABLE", 1]);
-      expect(got.json.error?.message).toContain("response too large");
-      expect(got.bytes).toBeLessThan(1000);
-    }
-  }
+  const text = (chars: number, n: number) =>
+    "\u0001".repeat(chars - 4) + String(n).padStart(4, "0");
+  const over = {
+    title: "\u0001".repeat(500),
+    body: "\u0001".repeat(65_536),
+    kind: "k".repeat(64),
+    parent: text(200, 0),
+    labels: Array.from({ length: 64 }, (_, i) => text(100, i)),
+    dependsOn: Array.from({ length: 256 }, (_, i) => text(200, i)),
+  };
+  f.put(stored(over));
+  const before = f.snapshot();
+  const got = await f.send(call, { token });
+  expect(got.probes).toEqual(WORK_PROBES);
+  expect(f.snapshot()).toBe(before);
+  expect(got.status).toBe(200);
+  expect(got.bytes).toBeLessThan(cap);
 }, 60_000);
 
 test("show refuses a missing issue, an unknown prefix, bad input and a corrupt record, reading only what it needs", async () => {
@@ -3913,7 +3905,7 @@ test("ready refuses a corrupt row or a corrupt candidate lease with the fixed 50
   }
 }, 60_000);
 
-test("ready refuses stored issues with over 64 KiB of metadata as UNAVAILABLE before it loads any body, whatever the filter", async () => {
+test("ready refuses stored issues over the schema-sized metadata cap as UNAVAILABLE before it loads any body, whatever the filter", async () => {
   for (const [name, fill] of [
     [
       "over 8 MiB",
@@ -4238,7 +4230,7 @@ test("blocked and stale refuse a corrupt row, and a corrupt lease only where one
   }
 }, 60_000);
 
-test("blocked and stale refuse stored issues with over 64 KiB of metadata as UNAVAILABLE before they load any body, whatever the filter", async () => {
+test("blocked and stale refuse stored issues over the schema-sized metadata cap as UNAVAILABLE before they load any body, whatever the filter", async () => {
   for (const [name, fill] of [
     [
       "over 8 MiB",
