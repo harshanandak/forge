@@ -15,6 +15,10 @@ import { digest, isolatedBackup } from "./import-current.ts";
 import { ordinaryKey, workRecords } from "./import-current-state.ts";
 
 const namespace = "forge/work";
+interface Identity {
+  id: string;
+  projectId: string | null;
+}
 const tableReasons: Record<string, string> = {
   state_events:
     "history is not carried back; applying a record derives its event locally",
@@ -114,7 +118,7 @@ function sameProject(pages: Page[], first: string | undefined, at: string) {
     .flatMap((page) => page.tables.state_events ?? [])
     .find((row) => row.sequence === 1);
   const body = event && (parseRestoreJson(String(event.body)) as StateEvent);
-  if (!body || body.key !== first || body.at !== at)
+  if (first !== undefined && (!body || body.key !== first || body.at !== at))
     invalid("dump is from a different project");
 }
 async function localRecords(path: string, pin: string) {
@@ -128,17 +132,34 @@ async function localRecords(path: string, pin: string) {
   if (!opened.ok) invalid("backup cannot be opened read-only");
   const records = new Map<string, StateRecord>();
   let first: string | undefined;
+  let project: Identity | null = null;
   try {
     for (const record of workRecords(opened.handle.value)) {
       first ??= record.key;
       if (!record.key.startsWith("allocation:"))
         records.set(record.key, record);
     }
+    const row = opened.handle.value.get(
+      "SELECT body FROM state_records WHERE namespace=? AND key=?",
+      ["forge/core-project", "identity"],
+    );
+    if (row) {
+      const { id, projectId } = (
+        parseRestoreJson(String(row.body)) as {
+          value: { id?: unknown; projectId?: unknown };
+        }
+      ).value;
+      if (typeof id !== "string") invalid("backup project identity");
+      project = {
+        id,
+        projectId: typeof projectId === "string" ? projectId : null,
+      };
+    }
   } finally {
     await opened.handle.close();
   }
   if ((await digest(path)) !== pin) invalid("backup changed while read");
-  return { records, first };
+  return { records, first, project };
 }
 export async function compute(options: Options) {
   const { sha256: pin, at } = JSON.parse(
@@ -153,7 +174,11 @@ export async function compute(options: Options) {
   if (fs.existsSync(options.out)) invalid("output exists");
   const pages = readPages(options.dump);
   chained(pages);
-  const { records: local, first } = await localRecords(options.backup, pin);
+  const {
+    records: local,
+    first,
+    project,
+  } = await localRecords(options.backup, pin);
   sameProject(pages, first, at);
   const cloud = new Map<string, StateRecord>();
   const seen = new Set<string>();
@@ -235,7 +260,7 @@ export async function compute(options: Options) {
     format: "forge-cloud-to-local-delta/1",
     source: {
       sha256: pin,
-      project: null as { id: string; projectId: string | null } | null,
+      project,
     },
     pages: pages.length,
     counts: {
