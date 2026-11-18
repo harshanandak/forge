@@ -422,6 +422,7 @@ export async function createAssembly(
   // time, so a long-lived server follows a changed origin; listings leave it to its default.
   type CallScope = {
     inProject: boolean;
+    operatorExport: boolean;
     warnings: Array<ResultEnvelope["warnings"][number]>;
     configWarningsCollected: boolean;
     warnUnknownConfig: (name: string, paths: readonly string[]) => void;
@@ -433,7 +434,10 @@ export async function createAssembly(
   const sharedBuiltins = options.oneShot
     ? new Map<string, CapturedBlock>()
     : undefined;
-  function callScope(derived: readonly DetectionObservation[] = []): CallScope {
+  function callScope(
+    derived: readonly DetectionObservation[] = [],
+    operatorExport = false,
+  ): CallScope {
     const warnings: Array<ResultEnvelope["warnings"][number]> = [];
     const ignoredConfig = new Map<
       string,
@@ -573,6 +577,7 @@ export async function createAssembly(
     return {
       inProject:
         options.project ?? existsSync(join(root, ".forge", "config.yaml")),
+      operatorExport,
       warnings,
       configWarningsCollected: false,
       warnUnknownConfig: environment.warnUnknownConfig,
@@ -866,6 +871,25 @@ export async function createAssembly(
       } catch {
         // The registration loop reports capture failures through its existing path.
       }
+    }
+    if (
+      call.operatorExport &&
+      call.inProject &&
+      show.valid &&
+      ![...nounOwners.keys()].some(
+        (noun) => noun === "store" || noun.startsWith("store-"),
+      )
+    ) {
+      let name = "store";
+      for (let n = 1; Object.hasOwn(document.blocks, name); n++)
+        name = `store-${n}`;
+      document = {
+        ...document,
+        blocks: {
+          ...document.blocks,
+          [name]: { source: { builtin: "forge/store" } },
+        },
+      };
     }
     const collisions = new Map(
       nounCollisions(
@@ -1171,7 +1195,7 @@ export async function createAssembly(
       );
     },
     list() {
-      const call = callScope();
+      const call = callScope([], true);
       const candidates = [...snapshot(call, true).candidates];
       if (
         call.warnings.some(
@@ -1180,7 +1204,7 @@ export async function createAssembly(
       ) {
         try {
           candidates.unshift(
-            ...snapshot(callScope()).candidates.filter(
+            ...snapshot(callScope([], true)).candidates.filter(
               (entry) => !DEVICE_MEMORY_OPS.has(entry.op),
             ),
           );
@@ -1193,7 +1217,7 @@ export async function createAssembly(
     async invoke(request) {
       const derived: DetectionObservation[] = [];
       const deviceMemory = deviceMemoryRequest(request.op, request.input);
-      const call = callScope(derived);
+      const call = callScope(derived, request.op === "store.export");
       try {
         const preview =
           request.op === "config.show"

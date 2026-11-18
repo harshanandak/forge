@@ -1,7 +1,7 @@
 # Forge store export
 
 Consumer: the owner of a project, taking a verified backup before a tracker move with `forge store export --out <folder>`.
-Enable the `forge/store` built-in block in `.forge/config.yaml` (`blocks: { store: { source: { builtin: forge/store } } }`).
+The command is available in a Forge project without enabling the store block.
 
 The command never writes to the store. It opens the project store read-only and asks SQLite for a complete image with
 `VACUUM INTO`, which reads inside one read transaction, so a concurrent writer cannot tear the copy. The counts
