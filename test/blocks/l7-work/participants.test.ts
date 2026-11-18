@@ -423,6 +423,18 @@ test("two open slots admit exactly two concurrent competitors without a refused 
   });
   expect(p.held()).toEqual(coordinator);
 }, 10000);
+test("an issue holds at most 16 attempts, even once they have expired", async () => {
+  await competing(16);
+  for (let n = 1; n <= 16; n++) await attempt(who(`W${n}`), 1);
+  p.advance(1000);
+  await refused("INPUT_CONFLICT", () => p.call("attempt.reserve", who("W17")));
+}, 20000);
+test("an issue holds at most 8 participants and repeats an invitation without a new one", async () => {
+  await p.call("claim");
+  for (let n = 1; n <= 8; n++) await p.invite(who(`P${n}`));
+  await p.invite(who("P1"));
+  await refused("INPUT_CONFLICT", () => p.invite(who("P9")));
+}, 20000);
 test("a live retry is unchanged and expired or released ids are never reused", async () => {
   await competing();
   const b = await attempt(B, 1);

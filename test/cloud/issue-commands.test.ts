@@ -2529,34 +2529,35 @@ test("the response is capped at 1 MiB of UTF-8 bytes, measured on the whole enve
   const f = fixture();
   const token = await f.device();
   f.tables();
-  // Two-byte, escaped and three-byte characters, so characters and bytes differ.
-  const body = 'é"\n✓\\';
-  const selection = (reason: string) => ({
-    mode: "none",
-    chosen: [],
-    reason,
-    holder: { actor, session: { id: "s1" } },
-    selectedAt: iso(start - 100),
-  });
+  const prefix = 'é"\n✓\\';
+  const rows = (last: string) =>
+    Array.from({ length: 16 }, (_, n) => ({
+      id: n + 1,
+      body: n === 15 ? last : "k".repeat(65_536),
+    }));
   const room =
-    cap - bytesOf(envelope(shown({ body, selection: selection("") })));
+    cap -
+    bytesOf(
+      envelope(
+        listed(
+          ...rows(prefix).map(({ id, body }) =>
+            shown({ id: `forge-${id}`, body }),
+          ),
+        ),
+        "issue.list",
+      ),
+    );
   for (const [delta, fits] of [
     [-1, true],
     [0, true],
     [1, false],
   ] as const) {
-    const reason = "k".repeat(room + delta);
     f.db.run("DELETE FROM state_records");
-    f.put(stored({ body, selection: selection(reason) }));
-    const before = f.snapshot();
-    const got = await f.send(call, { token });
-    expect(got.probes).toEqual(WORK_PROBES);
-    expect(f.snapshot()).toBe(before);
+    for (const { id, body } of rows(prefix + "k".repeat(room + delta)))
+      f.put(stored({ id: `work-${id}`, body }), {}, `issue:work-${id}`);
+    const got = await f.send(listCall, { token });
     if (fits) {
       expect([got.status, got.bytes]).toEqual([200, cap + delta]);
-      expect(got.json.result).toEqual(
-        shown({ body, selection: selection(reason) }),
-      );
       expect(got.text).toBe(JSON.stringify(got.json));
     } else {
       expect([got.status, got.code, got.exit]).toEqual([503, "UNAVAILABLE", 1]);
@@ -2564,6 +2565,90 @@ test("the response is capped at 1 MiB of UTF-8 bytes, measured on the whole enve
       expect(got.bytes).toBeLessThan(1000);
     }
   }
+}, 60_000);
+
+const selection = (reason: string) => ({
+  mode: "none",
+  chosen: [],
+  reason,
+  holder: { actor, session: { id: "s1" } },
+  selectedAt: iso(start - 100),
+});
+
+test("show reads a selection reason at its 300 character bound and refuses one over with the fixed 500", async () => {
+  for (const [length, status] of [
+    [300, 200],
+    [301, 500],
+  ] as const) {
+    const f = fixture();
+    const token = await f.device();
+    f.tables();
+    f.put(stored({ selection: selection("r".repeat(length)) }));
+    const got = await f.send(call, { token });
+    expect([length, got.status]).toEqual([length, status]);
+    if (status === 500)
+      expect(got.json.error?.message).toBe("Stored issue is not valid");
+  }
+}, 30_000);
+
+test("an issue at every schema bound still fits the 1 MiB show response", async () => {
+  const f = fixture();
+  const token = await f.device();
+  f.tables();
+  const ctl = [...Array(31).keys()]
+    .map((n) => n + 1)
+    .filter((n) => ![8, 9, 10, 12, 13].includes(n));
+  const c = (n: number) => "\u0001".repeat(n);
+  const unique = (n: number, width: number) =>
+    c(width - 2) + String.fromCharCode(ctl[n % 26]!, ctl[Math.floor(n / 26)]!);
+  const many = (count: number, make: (n: number) => unknown) =>
+    Array.from({ length: count }, (_, n) => make(n));
+  const holder = {
+    actor: { kind: "agent", id: c(200) },
+    session: { id: c(200), device: c(256), agent: c(200), harness: c(200) },
+  };
+  f.put(
+    stored({
+      title: c(500),
+      body: c(65_536),
+      kind: "k".repeat(64),
+      receipt: c(200),
+      withoutReceipt: c(2000),
+      labels: many(64, (n) => unique(n, 100)),
+      parent: c(200),
+      dependsOn: many(256, (n) => unique(n, 200)),
+      mode: "competing",
+      slots: 16,
+      attempts: many(16, (n) => ({
+        id: `attempt-${n + 1}`,
+        label: c(64),
+        holder,
+        baseRevision: 1,
+        createdAt: iso(start - 1000),
+        live: false,
+        superseded: { supersededBy: "selection", reason: c(300) },
+      })),
+      selection: {
+        ...selection(c(300)),
+        mode: "combine",
+        chosen: many(16, () => ({ attempt: c(64), sha: "a".repeat(40) })),
+        holder,
+      },
+      participants: many(8, () => ({
+        subject: c(500),
+        holder,
+        generation: 1,
+        expiresAt: iso(start + 1000),
+      })),
+    }),
+  );
+  f.lease({ holder });
+  const got = await f.send(call, { token });
+  expect([got.status, got.bytes < 1_048_576, got.bytes > 950_000]).toEqual([
+    200,
+    true,
+    true,
+  ]);
 }, 60_000);
 
 test("show refuses a missing issue, an unknown prefix, bad input and a corrupt record, reading only what it needs", async () => {
@@ -9990,6 +10075,29 @@ for (const [name, change] of [
   [
     "a raw lease receipt whose result names another subject",
     forged("forged-2", "claim", "issue:b"),
+  ],
+  [
+    "an issue row carrying an oversized selection",
+    (t: Tables) => {
+      const row = t.state_records!.find(
+        (r) =>
+          r.namespace === "forge/work" &&
+          /^issue:work-\d+$/.test(String(r.key)),
+      )!;
+      const event = [...t.state_events!]
+        .reverse()
+        .find((e) => e.namespace === "forge/work" && e.key === row.key)!;
+      const grow = (body: unknown, field: "value" | "data") => {
+        const parsed = JSON.parse(String(body)) as Record<
+          string,
+          Record<string, unknown>
+        >;
+        parsed[field]!.selection = selection("k".repeat(1_048_576));
+        return JSON.stringify(parsed);
+      };
+      row.body = grow(row.body, "value");
+      event.body = grow(event.body, "data");
+    },
   ],
   ...[
     null,
