@@ -17,12 +17,18 @@ import { ForgeFailure } from "../contract/failure.ts";
 import { storageRefusal } from "../adapters/http/storage-refusal.ts";
 import { validateWithSchema } from "../contract/schema.ts";
 import type { DesktopLauncher } from "../ports/process.ts";
-import type { CloudLogin, CloudLoginResult } from "../ports/cloud-login.ts";
+import type {
+  CloudLogin,
+  CloudLoginResult,
+  CloudLogoutResult,
+} from "../ports/cloud-login.ts";
 import {
   credentialStore,
   openCloudFiles,
   parseDeviceCredential,
   readBinding,
+  readBindingSnapshot,
+  removeBinding,
   resolveTarget,
   writeBinding,
 } from "./cloud-profile.ts";
@@ -32,6 +38,7 @@ import { wireDeviceId } from "./wire-device.ts";
 export { wireDeviceId };
 
 export const CLOUD_LOGIN_OP = "cloud.login";
+export const CLOUD_LOGOUT_OP = "cloud.logout";
 
 export interface CloudLoginDeps {
   /** The checkout root that holds .forge/project.json. */
@@ -66,6 +73,12 @@ const INPUT_SCHEMA = {
     origin: { type: "string", minLength: 1, maxLength: 300 },
     project: { type: "string", minLength: 1, maxLength: 64 },
   },
+} as const;
+
+const LOGOUT_INPUT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {},
 } as const;
 
 const failed = (message: string, code: string): ForgeFailure =>
@@ -324,7 +337,73 @@ async function login(
   };
 }
 
+async function logout(
+  deps: CloudLoginDeps,
+  input: unknown,
+): Promise<CloudLogoutResult> {
+  if (validateWithSchema(LOGOUT_INPUT_SCHEMA, input).length > 0)
+    throw new ForgeFailure({
+      code: "INPUT_INVALID",
+      message: `Invalid input for ${CLOUD_LOGOUT_OP}: expected {}`,
+      retry: "never",
+    });
+  const snapshot = readBindingSnapshot(deps.root);
+  if (snapshot === undefined)
+    return { status: "not-bound", tokenRevoked: false };
+  const { binding, bytes } = snapshot;
+  const manifest = readProjectManifest(deps.root);
+  if (manifest === undefined)
+    throw new ForgeFailure({
+      code: "CONTEXT_MISSING",
+      message:
+        "This checkout has no project identity (.forge/project.json); auth logout needs it to find the credential.",
+      missing: ["project"],
+      retry: "never",
+    });
+  if (binding.identity !== manifest.id)
+    throw failed(
+      ".forge/cloud.json belongs to a different project identity",
+      "INPUT_CONFLICT",
+    );
+  const tokenId = await credentialStore(
+    openCloudFiles(deps.home, deps.security),
+  ).remove({
+    origin: binding.origin,
+    identity: manifest.id,
+    project: binding.project,
+  });
+  try {
+    removeBinding(deps.root, bytes);
+  } catch (error) {
+    const failure =
+      error instanceof ForgeFailure
+        ? error.error
+        : {
+            code: "UNAVAILABLE",
+            message: "The project binding could not be removed.",
+            retry: "never" as const,
+          };
+    throw new ForgeFailure({
+      ...failure,
+      ...(failure.code === "INPUT_CONFLICT"
+        ? {}
+        : { repair: "Run forge auth logout again to remove the binding." }),
+      ...(tokenId === undefined ? {} : { observed: { tokenId } }),
+    });
+  }
+  return {
+    status: "logged-out",
+    origin: binding.origin,
+    project: binding.project,
+    ...(tokenId === undefined ? {} : { tokenId }),
+    tokenRevoked: false,
+  };
+}
+
 /** The login service one invocation gets. */
 export function createCloudLogin(deps: CloudLoginDeps): CloudLogin {
-  return { login: (input) => login(deps, input) };
+  return {
+    login: (input) => login(deps, input),
+    logout: (input) => logout(deps, input),
+  };
 }

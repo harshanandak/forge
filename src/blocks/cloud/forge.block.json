@@ -23,6 +23,17 @@
       "idempotent": false,
       "callers": ["human"],
       "stability": "experimental"
+    },
+    "cloud.logout": {
+      "cli": "auth.logout",
+      "input": "schemas/logout-input.json",
+      "output": "schemas/logout-output.json",
+      "context": "device",
+      "timeoutMs": 60000,
+      "effects": ["files:write"],
+      "idempotent": true,
+      "callers": ["human"],
+      "stability": "experimental"
     }
   },
   "docs": "docs.json"
