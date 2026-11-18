@@ -27,6 +27,7 @@ import {
   openCloudFiles,
   parseDeviceCredential,
   readBinding,
+  readBindingSnapshot,
   removeBinding,
   resolveTarget,
   writeBinding,
@@ -346,9 +347,10 @@ async function logout(
       message: `Invalid input for ${CLOUD_LOGOUT_OP}: expected {}`,
       retry: "never",
     });
-  const binding = readBinding(deps.root);
-  if (binding === undefined)
+  const snapshot = readBindingSnapshot(deps.root);
+  if (snapshot === undefined)
     return { status: "not-bound", tokenRevoked: false };
+  const { binding, bytes } = snapshot;
   const manifest = readProjectManifest(deps.root);
   if (manifest === undefined)
     throw new ForgeFailure({
@@ -371,8 +373,10 @@ async function logout(
     project: binding.project,
   });
   try {
-    removeBinding(deps.root);
+    removeBinding(deps.root, bytes);
   } catch (error) {
+    if (error instanceof ForgeFailure && error.error.code === "INPUT_CONFLICT")
+      throw error;
     throw new ForgeFailure({
       ...(error instanceof ForgeFailure
         ? error.error

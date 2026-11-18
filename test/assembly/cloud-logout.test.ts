@@ -106,6 +106,23 @@ test("a binding whose credential is already gone is still removed, and no token 
   }
 });
 
+test("logout refuses to remove a binding that changed after it was read", async () => {
+  const sb = sandbox();
+  try {
+    await store(sb).save(entry(now));
+    bind(sb);
+    const replacement = `${JSON.stringify(bindingFor({ project: "other" }))}\n`;
+    const result = logoutFor(sb)({});
+    writeFileSync(sb.binding, replacement);
+    await expect(result).rejects.toMatchObject({
+      error: { code: "INPUT_CONFLICT", retry: "reconcile_first" },
+    });
+    expect(read(sb.binding)).toBe(replacement);
+  } finally {
+    sb.close();
+  }
+});
+
 test("a credential file that fails its integrity check is left as it is and the binding stays", async () => {
   const sb = sandbox();
   try {

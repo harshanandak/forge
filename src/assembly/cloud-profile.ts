@@ -464,6 +464,12 @@ function parseBinding(bytes: Uint8Array): CloudBinding {
 
 /** The committed binding, undefined when absent; a malformed or unsafe one fails closed. */
 export function readBinding(root: string): CloudBinding | undefined {
+  return readBindingSnapshot(root)?.binding;
+}
+
+export function readBindingSnapshot(
+  root: string,
+): { binding: CloudBinding; bytes: Uint8Array } | undefined {
   let bytes: Uint8Array | undefined;
   try {
     const kind = entryKind(root, BINDING_PATH);
@@ -475,7 +481,9 @@ export function readBinding(root: string): CloudBinding | undefined {
       `${BINDING_PATH} is not a plain file Forge can read safely`,
     );
   }
-  return bytes === undefined ? undefined : parseBinding(bytes);
+  return bytes === undefined
+    ? undefined
+    : { binding: parseBinding(bytes), bytes };
 }
 
 /** Create the binding once. An identical existing one is fine; any other is never changed. */
@@ -503,10 +511,11 @@ export function writeBinding(
   throw conflict(`${BINDING_PATH} already binds this project elsewhere`);
 }
 
-export function removeBinding(root: string): void {
+export function removeBinding(root: string, expected: Uint8Array): void {
   try {
-    nodeConfigFiles(root).remove(BINDING_PATH);
-  } catch {
+    nodeConfigFiles(root).remove(BINDING_PATH, expected);
+  } catch (error) {
+    if (error instanceof ForgeFailure) throw error;
     throw invalidInput(`${BINDING_PATH} could not be removed safely`);
   }
 }
