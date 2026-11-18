@@ -13,3 +13,15 @@ export function assertInstalledBuildIdentity(
     "installed build identity record must match the reviewed CI run",
   );
 }
+
+export function assertReviewedBuild(
+  build: unknown,
+  version: string,
+  commit: string,
+): void {
+  assert.deepEqual(
+    build,
+    { version, commit, dirty: false },
+    "installed build identity must match the reviewed clean build",
+  );
+}
