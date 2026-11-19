@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import {
   copyFileSync,
   existsSync,
+  mkdirSync,
   readdirSync,
   readFileSync,
   renameSync,
@@ -11,19 +12,29 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { limitsFrom } from "../../cloud/src/dump.ts";
 import {
+  limitsFrom,
+  parseDump,
+  restorePage,
+  type Page,
+} from "../../cloud/src/dump.ts";
+import { domain } from "../../cloud/src/project.ts";
+import {
+  capture,
   compute,
   run,
   type Options,
 } from "../../tools/cloud-to-local-delta.ts";
 import * as converter from "../../tools/import-current.ts";
+import { pagesOf } from "../../tools/import-current-state.ts";
 import * as f from "./import-current-state.fixture.ts";
 
 setDefaultTimeout(120_000);
 const limits = { ...limitsFrom({}), pageBytes: 2048 };
+const derivedPrefix = "comment:work-2:";
+const derivedKey = `allocation:${derivedPrefix}`;
 
-async function moved() {
+async function moved(withDerivedFloor = false) {
   const source = f.source(6, false, false, (_db, state) => {
     state.put(
       f.ns,
@@ -46,13 +57,29 @@ async function moved() {
       f.actor,
       { expectRevision: 1 },
     );
+    if (withDerivedFloor) {
+      const key = `${derivedPrefix}10`;
+      state.put(
+        f.ns,
+        key,
+        { id: "work-2", body: "deleted before import" },
+        f.actor,
+        { expectRevision: 0 },
+      );
+      state.delete(f.ns, key, f.actor, { expectRevision: 1 });
+    }
   });
   const backup = String(source.db.all("PRAGMA database_list")[0]!.file),
     root = dirname(backup);
   const manifest = join(root, "source.json"),
     dump = join(root, "bundle");
   writeFileSync(manifest, JSON.stringify(source.manifest));
-  await converter.convert({ backup, manifest, out: dump, limits });
+  const conversion = await converter.convert({
+    backup,
+    manifest,
+    out: dump,
+    limits,
+  });
   const again = async (name: string, at: string) => {
     const other = join(root, `${name}.json`),
       out = join(root, name);
@@ -60,16 +87,15 @@ async function moved() {
     await converter.convert({ backup, manifest: other, out, limits });
     return out;
   };
-  const options = {
+  const options = syntheticReceipt({
     dump,
     backup,
     manifest,
     out: join(root, "delta.json"),
-    dumpManifest: join(root, "export.json"),
     project: "tracker",
-  };
-  pinDump(options);
-  return { source, dump, root, again, options };
+    notBefore,
+  });
+  return { source, dump, root, again, options, conversion };
 }
 type Row = { key: string; body: string; revision: number };
 type Doc = {
@@ -80,26 +106,146 @@ const pageNames = (dump: string) =>
   readdirSync(dump)
     .filter((name) => name.startsWith("page-"))
     .sort();
-function pinDump({
-  dump,
-  dumpManifest,
-  project,
-}: {
-  dump: string;
-  dumpManifest: string;
-  project: string;
-}) {
+const notBefore = "2026-11-18T12:00:00.000Z";
+const capturedAt = "2026-11-18T12:01:00.000Z";
+const receiptPath = (dump: string) => join(dump, "export.json");
+
+function syntheticReceipt(options: Omit<Options, "receiptSha256">): Options {
+  const { dump, project } = options;
+  const path = receiptPath(dump);
   writeFileSync(
-    dumpManifest,
+    path,
     JSON.stringify({
+      format: "forge-cloud-capture/1",
       project,
+      capturedAt,
       pages: pageNames(dump).map((name) => ({
         name,
         sha256: sha(join(dump, name)),
       })),
     }),
   );
+  return { ...options, receiptSha256: sha(path) };
 }
+
+async function workerCapture(options: Options, at = capturedAt) {
+  const origin = "https://worker.example";
+  const pages = pageNames(options.dump);
+  const out = options.dump + "-capture";
+  let count = 0;
+  let cursor: string | null = "start";
+  const result = await capture({
+    origin,
+    project: options.project,
+    out,
+    token: "fake-admin",
+    now: () => Date.parse(at),
+    fetch: (input, init) => {
+      const url = new URL(input);
+      expect(url.origin).toBe(origin);
+      expect(url.pathname).toBe(`/p/${options.project}/dump`);
+      expect(url.searchParams.get("cursor")).toBe(cursor);
+      expect(init.method).toBe("GET");
+      expect(init.redirect).toBe("error");
+      expect(new Headers(init.headers).get("authorization")).toBe(
+        "Bearer fake-admin",
+      );
+      const page = JSON.parse(
+        readFileSync(join(options.dump, pages[count++]!), "utf8"),
+      ) as Page;
+      cursor = page.next;
+      return Promise.resolve(
+        Object.defineProperty(Response.json({ ok: true, value: page }), "url", {
+          value: input,
+        }),
+      );
+    },
+  });
+  expect(count).toBe(pages.length);
+  expect(result).toMatchObject({ project: options.project, capturedAt: at });
+  expect(result.receiptSha256).toBe(sha(receiptPath(out)));
+  return { ...options, dump: out, receiptSha256: result.receiptSha256 };
+}
+
+test("refuses rehearsal pages even when their capture is relabelled as tracker", async () => {
+  const { options, source, again } = await moved();
+  const rehearsal = {
+    ...options,
+    project: "rehearsal",
+    dump: await again("rehearsal", source.manifest.at),
+  };
+  const captured = await workerCapture(rehearsal);
+  await refused({ ...captured, project: "tracker" }, "different project");
+  syntheticReceipt({ ...captured, project: "tracker" });
+  await refused({ ...captured, project: "tracker" }, "capture receipt");
+}, 120_000);
+
+test("refuses a substituted terminal page even when its new hash is added to the receipt", async () => {
+  const { options } = await moved();
+  const captured = await workerCapture(options);
+  const { dump } = captured;
+  const last = pageNames(dump).length - 1;
+  editPage(dump, last, (page) => {
+    const events = page.tables.state_events! as (Row & { sequence: number })[];
+    const event = events.at(-1)!;
+    const sequence = event.sequence + 1;
+    const body = JSON.parse(event.body) as Record<string, unknown>;
+    events.push({
+      ...event,
+      sequence,
+      body: JSON.stringify({ ...body, sequence }),
+    });
+  });
+  await refused(captured, "page hash");
+  syntheticReceipt(captured);
+  await refused(captured, "capture receipt");
+}, 120_000);
+
+test("refuses an intact capture older than the rollback fence", async () => {
+  const { options } = await moved();
+  await refused(
+    await workerCapture(options, "2026-11-18T11:59:00.000Z"),
+    "capture predates",
+  );
+}, 120_000);
+
+test("requires the capture receipt even if the complete dump is present", async () => {
+  const { options } = await moved();
+  const captured = await workerCapture(options);
+  const path = receiptPath(captured.dump);
+  const { project, pages } = JSON.parse(readFileSync(path, "utf8")) as {
+    project: string;
+    pages: unknown[];
+  };
+  writeFileSync(path, JSON.stringify({ project, pages }));
+  await refused(
+    { ...captured, receiptSha256: sha(path) },
+    "invalid capture receipt",
+  );
+  rmSync(path);
+  await refused(captured, "capture receipt");
+}, 120_000);
+
+test("a verified capture of the imported project gives the expected delta", async () => {
+  const { dump, options } = await moved();
+  editCloud(dump, (rows) => {
+    const row = rows.find(({ key }) => key === "issue:work-3");
+    if (!row) return;
+    const record = JSON.parse(row.body) as { value: Record<string, unknown> };
+    record.value.title = "Updated after import";
+    row.body = JSON.stringify(record);
+  });
+  const report = await compute(await workerCapture(options));
+  expect(report.delta).toMatchObject([
+    {
+      key: "issue:work-3",
+      change: "changed",
+      after: { title: "Updated after import" },
+    },
+  ]);
+  expect(report.absentInCloud).toEqual([]);
+}, 120_000);
+
 function editPage(dump: string, index: number, edit: (page: Doc) => void) {
   const file = join(dump, pageNames(dump)[index]!),
     page = JSON.parse(readFileSync(file, "utf8")) as Doc;
@@ -193,8 +339,7 @@ test("a cloud-only comment and an issue closed in the cloud appear with their co
         }),
       );
   });
-  pinDump(options);
-  const report = await compute(options);
+  const report = await compute(syntheticReceipt(options));
   expect(
     report.delta.map((entry) => [
       entry.key,
@@ -235,8 +380,7 @@ test("a record removed in the cloud is listed as absent and not as a change", as
     }),
   );
   expect(removed).toBeDefined();
-  pinDump(options);
-  const report = await compute(options);
+  const report = await compute(syntheticReceipt(options));
   expect(report.delta).toEqual([]);
   expect(report.absentInCloud).toEqual([removed!]);
 }, 120_000);
@@ -267,8 +411,8 @@ test("cloud-created records outside the mapping are listed by key and said to be
         cloudRow("note", "forge/other", { any: 3 }),
       );
   });
-  pinDump(options);
-  const left = (await compute(options)).notCarriedBack as Left[];
+  const left = (await compute(syntheticReceipt(options)))
+    .notCarriedBack as Left[];
   const by = Object.fromEntries(left.map((e) => [e.scope, e]));
   const cases = [
     ["forge/work:autopilot:*", f.ns, "autopilot:global"],
@@ -313,8 +457,7 @@ test("a broken next-cursor chain is refused", async () => {
     const cursor = JSON.parse(page.next!) as { k: unknown[] };
     page.next = JSON.stringify({ ...cursor, k: [...cursor.k, "x"] });
   });
-  pinDump(options);
-  await refused(options, "cursor chain");
+  await refused(syntheticReceipt(options), "cursor chain");
 }, 120_000);
 
 test("pages from two dumps are refused", async () => {
@@ -322,16 +465,14 @@ test("pages from two dumps are refused", async () => {
   const other = await again("other", "2027-01-01T00:00:00.000Z");
   expect(pageNames(dump).length).toBeGreaterThan(2);
   copyFileSync(join(other, "page-0001.json"), join(dump, "page-0001.json"));
-  pinDump(options);
-  await refused(options, "cursor chain");
+  await refused(syntheticReceipt(options), "cursor chain");
 }, 120_000);
 
 test("a dump from another project is refused", async () => {
   const { options, again } = await moved();
   const other = await again("other", "2027-01-01T00:00:00.000Z");
   const otherOptions = { ...options, dump: other };
-  pinDump(otherOptions);
-  await refused(otherOptions, "different project");
+  await refused(syntheticReceipt(otherOptions), "different project");
 }, 120_000);
 
 test("a duplicate cloud key is refused, including a key outside the mapping", async () => {
@@ -341,8 +482,7 @@ test("a duplicate cloud key is refused, including a key outside the mapping", as
     const allocation = rows.find((row) => row.key.startsWith("allocation:"))!;
     rows.splice(1, 0, { ...allocation });
   });
-  pinDump(options);
-  await refused(options, "duplicate key");
+  await refused(syntheticReceipt(options), "duplicate key");
 }, 120_000);
 
 test("the dump and the backup are byte-identical after a run", async () => {
@@ -363,8 +503,7 @@ test("a difference only in revision, updatedAt or updatedBy gives an empty delta
       row.body = JSON.stringify(record);
     }
   });
-  pinDump(options);
-  const report = await compute(options);
+  const report = await compute(syntheticReceipt(options));
   expect(report.delta).toEqual([]);
   expect(report.absentInCloud).toEqual([]);
 }, 120_000);
@@ -400,8 +539,7 @@ test("reports the floor advance when the allocated comment was deleted", async (
     record.value = { prefix, number: 2 };
     floor.body = JSON.stringify(record);
   });
-  pinDump(options);
-  const report = await compute(options);
+  const report = await compute(syntheticReceipt(options));
   expect(report.delta).toMatchObject([
     {
       key,
@@ -415,7 +553,7 @@ test("reports the floor advance when the allocated comment was deleted", async (
 }, 120_000);
 
 test("refuses a stale terminal page that still follows the preceding cursor", async () => {
-  const { dump, options, root } = await moved();
+  const { dump, options } = await moved();
   const names = pageNames(dump);
   expect(names.length).toBeGreaterThan(1);
   const last = join(dump, names.at(-1)!);
@@ -432,33 +570,26 @@ test("refuses a stale terminal page that still follows the preceding cursor", as
       body: JSON.stringify({ ...body, sequence }),
     });
   });
-  pinDump(options);
+  const pinned = syntheticReceipt(options);
   writeFileSync(last, old);
-  const reply = await run(options);
+  const reply = await run(pinned);
   expect(reply.envelope).toMatchObject({
     ok: false,
     error: { code: "INPUT_INVALID", retry: "never" },
   });
   expect(existsSync(options.out)).toBe(false);
-  const withoutManifest = {
-    ...options,
-    dumpManifest: join(root, "missing.json"),
-  };
-  await refused(withoutManifest, "dump provenance");
 }, 120_000);
 
 test("refuses another project's export of the same import", async () => {
-  const { options, root, source, again } = await moved();
-  const other = {
+  const { options, source, again } = await moved();
+  const other = syntheticReceipt({
     ...options,
     dump: await again("rehearsal", source.manifest.at),
-    dumpManifest: join(root, "rehearsal-export.json"),
     project: "rehearsal",
-  };
-  pinDump(other);
+  });
   const wrongProject = { ...other, project: options.project };
   await refused(wrongProject, "different project");
-  await refused({ ...options, dump: other.dump }, "dump provenance");
+  await refused({ ...options, dump: other.dump }, "capture receipt");
 }, 120_000);
 
 test("scans the verified bytes when the source path changes after hashing", async () => {
@@ -500,4 +631,61 @@ test("scans the verified bytes when the source path changes after hashing", asyn
   expect(report.delta).toEqual([]);
   expect(report.absentInCloud).toEqual([]);
   expect(sha(backup)).toBe(sha(other));
+}, 120_000);
+
+test("a fresh import does not report converter-derived floors as changes", async () => {
+  const { options, source, conversion } = await moved(true);
+  expect(f.owner(source.db).get(f.ns, derivedKey)).toBeUndefined();
+  expect(conversion.F).toBe(1);
+  const report = await compute(options);
+  expect(report.delta).toEqual([]);
+  expect(report.counts).toMatchObject({ new: 0, changed: 0 });
+}, 120_000);
+
+test("a floor advance after import uses the derived baseline even after deletion", async () => {
+  const { options, dump, root } = await moved(true);
+  const cloud = f.cloudDatabase();
+  const owner = f.owner(cloud);
+  owner.initialize([domain]);
+  for (const name of pageNames(dump))
+    restorePage(
+      cloud,
+      owner,
+      parseDump(readFileSync(join(dump, name), "utf8")) as Page,
+      limits,
+    );
+
+  expect(owner.get(f.ns, derivedKey)?.value).toEqual({
+    prefix: derivedPrefix,
+    number: 10,
+  });
+  const allocated = owner.putNext(
+    f.ns,
+    derivedPrefix,
+    () => ({ value: { id: "work-2", body: "deleted after import" } }),
+    f.actor,
+  );
+  expect(allocated.key).toBe(`${derivedPrefix}11`);
+  owner.delete(f.ns, allocated.key, f.actor, {
+    expectRevision: allocated.revision,
+  });
+  expect(owner.get(f.ns, allocated.key)).toBeUndefined();
+
+  const after = { ...options, dump: join(root, "cloud") };
+  mkdirSync(after.dump);
+  for (const page of pagesOf(cloud, limits)) {
+    const name = `page-${String(page.page).padStart(4, "0")}.json`;
+    writeFileSync(join(after.dump, name), JSON.stringify(page));
+  }
+  const report = await compute(syntheticReceipt(after));
+  expect(report.delta).toMatchObject([
+    {
+      key: derivedKey,
+      kind: "allocation",
+      change: "changed",
+      before: { prefix: derivedPrefix, number: 10 },
+      after: { prefix: derivedPrefix, number: 11 },
+    },
+  ]);
+  expect(report.counts).toMatchObject({ new: 0, changed: 1 });
 }, 120_000);

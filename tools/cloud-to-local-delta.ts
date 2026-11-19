@@ -1,8 +1,7 @@
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { windowsPrivateFiles } from "../src/adapters/process/windows-acl.ts";
 import { copyPrivateFile } from "../src/adapters/store-sqlite/file-ops.ts";
@@ -16,12 +15,21 @@ import type { StateEvent, StateRecord } from "../src/generated/types.ts";
 import { success } from "../src/surface/dispatch.ts";
 import { failure, respond } from "../src/surface/result.ts";
 import { PAGE_FORMAT, parseDump, type Page } from "../cloud/src/dump.ts";
+import { isProjectName } from "../cloud/src/project-name.ts";
 import { KEYS, TABLES, type Table } from "../cloud/conformance/digest.ts";
 import { digest, isolatedBackup } from "./import-current.ts";
-import { ordinaryKey, workRecords } from "./import-current-state.ts";
+import {
+  importFloorBaseline,
+  ordinaryKey,
+  workRecords,
+} from "./import-current-state.ts";
+import { Refusal, tokenFrom, type Fetch } from "./restore-cloud.ts";
 
 const namespace = "forge/work";
-const projectName = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const captureFormat = "forge-cloud-capture/1";
+const receiptName = "export.json";
+const hashBytes = (bytes: string | Buffer) =>
+  createHash("sha256").update(bytes).digest("hex");
 const sha256 = /^[a-f0-9]{64}$/;
 const exportWatermark = /^[a-f0-9]{32}\.[0-9]{19}$/;
 const tableReasons: Record<string, string> = {
@@ -49,27 +57,110 @@ export interface Options {
   backup: string;
   manifest: string;
   out: string;
-  dumpManifest: string;
+  receiptSha256: string;
+  notBefore: string;
   project: string;
 }
-function readJson(path: string, reason: string): unknown {
+function readJson(path: string, reason: string, pin?: string): unknown {
   try {
-    return JSON.parse(fs.readFileSync(path, "utf8")) as unknown;
+    const bytes = fs.readFileSync(path);
+    if (pin !== undefined && pin !== hashBytes(bytes)) invalid(reason);
+    return JSON.parse(bytes.toString("utf8")) as unknown;
   } catch {
     return invalid(reason);
   }
 }
-function readPages({ dump, dumpManifest, project }: Options): Page[] {
-  if (typeof project !== "string" || !projectName.test(project))
-    invalid("expected a cloud project name");
-  const receipt = readJson(dumpManifest, "trusted dump provenance is required");
+function instant(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    Number.isFinite(Date.parse(value)) &&
+    new Date(value).toISOString() === value
+  );
+}
+export async function capture(options: {
+  origin: string;
+  project: string;
+  out: string;
+  token: string;
+  fetch?: Fetch;
+  now?: () => number;
+}) {
+  const { project, out, token } = options;
+  const origin = new URL(options.origin);
+  if (!isProjectName(project) || origin.protocol !== "https:")
+    throw new Refusal("capture", "INPUT_INVALID");
+  fs.mkdirSync(out, { mode: 0o700 });
+  const exclusive = { flag: "wx", mode: 0o600 };
+  const capturedAt = new Date((options.now ?? Date.now)()).toISOString();
+  const pages: { name: string; sha256: string }[] = [];
+  let cursor = "start";
+  for (let index = 0; ; index++) {
+    const url = new URL(`/p/${project}/dump`, origin);
+    url.searchParams.set("cursor", cursor);
+    const response = await (options.fetch ?? fetch)(url.href, {
+      method: "GET",
+      headers: { authorization: `Bearer ${token}` },
+      cache: "no-store",
+      redirect: "error",
+      signal: AbortSignal.timeout(90_000),
+    });
+    if (response.url !== url.href)
+      throw new Refusal("capture", "TARGET_MISMATCH", index);
+    const text = await response.text();
+    if (Buffer.byteLength(text) > 16 * 1024 * 1024)
+      invalid("capture reply size");
+    const reply: unknown = JSON.parse(text);
+    const error = isObject(reply) && reply.error;
+    if (isObject(error) && error.code === "DUMP_CHANGED")
+      throw new Refusal("capture", "DUMP_CHANGED", index);
+    if (
+      response.status !== 200 ||
+      !isObject(reply) ||
+      reply.ok !== true ||
+      !isObject(reply.value)
+    )
+      throw new Refusal("capture", "RESPONSE_INVALID", index);
+    const bytes = JSON.stringify(reply.value);
+    const page = parseDump(bytes) as Page;
+    if (page.format !== PAGE_FORMAT || page.page !== index)
+      throw new Refusal("capture", "PAGE_ORDER", index);
+    const name = `page-${String(index).padStart(4, "0")}.json`;
+    fs.writeFileSync(join(out, name), bytes, exclusive);
+    pages.push({ name, sha256: hashBytes(bytes) });
+    if (page.next === null) {
+      const capture = {
+        project: new URL(response.url).pathname.split("/")[2]!,
+        capturedAt,
+      };
+      const receipt = JSON.stringify({
+        format: captureFormat,
+        ...capture,
+        pages,
+      });
+      fs.writeFileSync(join(out, receiptName), receipt, exclusive);
+      return { ...capture, receiptSha256: hashBytes(receipt) };
+    }
+    cursor = page.next;
+  }
+}
+
+function readPages(options: Options): Page[] {
+  const { dump, receiptSha256, notBefore, project } = options;
+  if (!isProjectName(project)) invalid("expected a cloud project name");
+  if (!instant(notBefore)) invalid("expected a rollback fence time");
+  const reason = "verified capture receipt is required";
+  if (!sha256.test(receiptSha256)) invalid(reason);
+  const receipt = readJson(join(dump, receiptName), reason, receiptSha256);
   if (
     !isObject(receipt) ||
-    typeof receipt.project !== "string" ||
+    receipt.format !== captureFormat ||
+    !instant(receipt.capturedAt) ||
     !Array.isArray(receipt.pages)
   )
-    invalid("invalid dump provenance");
+    invalid("invalid capture receipt");
   if (receipt.project !== project) invalid("dump is from a different project");
+  if (Date.parse(receipt.capturedAt) < Date.parse(notBefore))
+    invalid("capture predates the rollback fence");
   const pins: unknown[] = receipt.pages;
   const number = (name: string) => Number(/\d+/.exec(name)![0]);
   const names = fs
@@ -88,12 +179,8 @@ function readPages({ dump, dumpManifest, project }: Options): Page[] {
     )
       invalid("page sequence");
     const pin = pins[index];
-    if (
-      !isObject(pin) ||
-      pin.name !== name ||
-      pin.sha256 !== createHash("sha256").update(bytes).digest("hex")
-    )
-      invalid("page hash does not match trusted dump provenance");
+    if (!isObject(pin) || pin.name !== name || pin.sha256 !== hashBytes(bytes))
+      invalid("page hash does not match the capture receipt");
     return page;
   });
 }
@@ -154,7 +241,11 @@ function sameProject(pages: Page[], first: string | undefined, at: string) {
   if (!body || body.key !== first || body.at !== at)
     invalid("dump is from a different project");
 }
-async function localRecords(path: string, pin: string) {
+async function localRecords(
+  path: string,
+  pin: string,
+  eventHighWaterMark: number,
+) {
   isolatedBackup(path);
   const directory = fs.mkdtempSync(join(tmpdir(), ".forge-delta-"));
   try {
@@ -170,35 +261,48 @@ async function localRecords(path: string, pin: string) {
       readOnly: true,
     });
     if (!opened.ok) invalid("backup cannot be opened read-only");
-    const records = new Map<string, StateRecord>();
+    const db = opened.handle.value;
+    const records = new Map<string, { value: unknown; revision?: number }>();
     let first: string | undefined;
     try {
-      for (const record of workRecords(opened.handle.value)) {
+      for (const record of workRecords(db)) {
         first ??= record.key;
         records.set(record.key, record);
       }
+      const localCount = records.size;
+      for (const [key, value] of importFloorBaseline(db, eventHighWaterMark)) {
+        first ??= key;
+        if (!records.has(key)) records.set(key, { value });
+      }
+      return { records, first, localCount };
     } finally {
       await opened.handle.close();
     }
-    return { records, first };
   } finally {
     fs.rmSync(directory, { recursive: true });
   }
 }
 export async function compute(options: Options) {
-  const source = readJson(options.manifest, "source.json needs sha256 and at");
+  const source = readJson(options.manifest, "invalid source.json");
   if (
     !isObject(source) ||
     typeof source.sha256 !== "string" ||
     !sha256.test(source.sha256) ||
-    typeof source.at !== "string"
+    typeof source.at !== "string" ||
+    typeof source.eventHighWaterMark !== "number" ||
+    !Number.isSafeInteger(source.eventHighWaterMark) ||
+    source.eventHighWaterMark < 0
   )
-    invalid("source.json needs sha256 and at");
-  const { sha256: pin, at } = source;
+    invalid("source.json needs sha256, at and eventHighWaterMark");
+  const { sha256: pin, at, eventHighWaterMark } = source;
   if (fs.existsSync(options.out)) invalid("output exists");
   const pages = readPages(options);
   chained(pages);
-  const { records: local, first } = await localRecords(options.backup, pin);
+  const {
+    records: local,
+    first,
+    localCount,
+  } = await localRecords(options.backup, pin, eventHighWaterMark);
   sameProject(pages, first, at);
   const cloud = new Map<string, StateRecord>();
   const seen = new Set<string>();
@@ -284,7 +388,7 @@ export async function compute(options: Options) {
     pages: pages.length,
     counts: {
       cloudRecords: cloud.size,
-      localRecords: local.size,
+      localRecords: localCount,
       new: delta.filter((entry) => entry.change === "new").length,
       changed: delta.filter((entry) => entry.change === "changed").length,
       absentInCloud: absentInCloud.length,
@@ -323,20 +427,23 @@ export async function run(options: Options) {
     );
   }
 }
-if (
-  process.argv[1] &&
-  import.meta.url === pathToFileURL(resolve(process.argv[1])).href
-) {
-  const names = [
-    "dump",
-    "backup",
-    "manifest",
-    "out",
-    "dump-manifest",
-    "project",
-  ];
+if (import.meta.main) {
+  const capturing = process.argv[2] === "capture";
+  const names = capturing
+    ? ["worker", "project", "out", "token-env"]
+    : [
+        "dump",
+        "backup",
+        "manifest",
+        "out",
+        "receipt-sha256",
+        "not-before",
+        "project",
+      ];
+  let reply: ReturnType<typeof respond>;
   try {
     const { values } = parseArgs({
+      args: process.argv.slice(capturing ? 3 : 2),
       options: Object.fromEntries(
         names.map((name) => [name, { type: "string", multiple: true }]),
       ),
@@ -347,24 +454,36 @@ if (
         ? found[0]!
         : invalid("arguments");
     };
-    const reply = await run({
-      dump: one("dump"),
-      backup: one("backup"),
-      manifest: one("manifest"),
-      out: one("out"),
-      dumpManifest: one("dump-manifest"),
-      project: one("project"),
-    });
-    process.stdout.write(JSON.stringify(reply.envelope) + "\n");
-    process.exitCode = reply.exitCode;
-  } catch {
-    const reply = respond(
+    const target = { project: one("project"), out: one("out") };
+    reply = capturing
+      ? respond(
+          success(
+            "capture-cloud-dump",
+            await capture({
+              origin: one("worker"),
+              ...target,
+              token: tokenFrom({ env: one("token-env") }),
+            }),
+          ),
+        )
+      : await run({
+          dump: one("dump"),
+          backup: one("backup"),
+          manifest: one("manifest"),
+          ...target,
+          receiptSha256: one("receipt-sha256"),
+          notBefore: one("not-before"),
+        });
+  } catch (error) {
+    reply = respond(
       failure(
         "INPUT_INVALID",
-        "Expected --dump, --backup, --manifest, --out, --dump-manifest and --project",
+        error instanceof Refusal
+          ? error.message
+          : `Expected ${names.map((name) => `--${name}`).join(", ")}`,
       ),
     );
-    process.stdout.write(JSON.stringify(reply.envelope) + "\n");
-    process.exitCode = reply.exitCode;
   }
+  process.stdout.write(reply.stdout);
+  process.exitCode = reply.exitCode;
 }

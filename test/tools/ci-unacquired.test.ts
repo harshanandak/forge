@@ -348,7 +348,6 @@ const complete = [
     "ubuntu-latest, Node 26, tests, shard 2/2",
     "macos-latest, Node 24, shard 1/2",
     "macos-latest, Node 24, tests, shard 2/2",
-    "macos-latest, Node 26, pack",
     "windows-latest, Node 24, tests, shard 1/3",
     "windows-latest, Node 24, tests, shard 2/3",
     "windows-latest, Node 24, tests, shard 3/3",

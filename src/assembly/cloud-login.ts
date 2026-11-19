@@ -17,14 +17,22 @@ import { ForgeFailure } from "../contract/failure.ts";
 import { storageRefusal } from "../adapters/http/storage-refusal.ts";
 import { validateWithSchema } from "../contract/schema.ts";
 import type { DesktopLauncher } from "../ports/process.ts";
-import type { CloudLogin, CloudLoginResult } from "../ports/cloud-login.ts";
+import type {
+  CloudLogin,
+  CloudLoginResult,
+  CloudLogoutResult,
+} from "../ports/cloud-login.ts";
 import {
+  checkBindingBytes,
   credentialStore,
   openCloudFiles,
   parseDeviceCredential,
   readBinding,
+  readBindingSnapshot,
+  removeBinding,
   resolveTarget,
   writeBinding,
+  type CloudBinding,
 } from "./cloud-profile.ts";
 import { readProjectManifest } from "./project-manifest.ts";
 import { wireDeviceId } from "./wire-device.ts";
@@ -32,6 +40,7 @@ import { wireDeviceId } from "./wire-device.ts";
 export { wireDeviceId };
 
 export const CLOUD_LOGIN_OP = "cloud.login";
+export const CLOUD_LOGOUT_OP = "cloud.logout";
 
 export interface CloudLoginDeps {
   /** The checkout root that holds .forge/project.json. */
@@ -68,10 +77,16 @@ const INPUT_SCHEMA = {
   },
 } as const;
 
+const LOGOUT_INPUT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {},
+} as const;
+
 const failed = (message: string, code: string): ForgeFailure =>
   new ForgeFailure({ code, message, retry: "never" });
-const cancelled = (): ForgeFailure =>
-  failed("The login was cancelled.", "INVOCATION_CANCELLED");
+const cancelled = (operation: "login" | "logout" = "login"): ForgeFailure =>
+  failed(`The ${operation} was cancelled.`, "INVOCATION_CANCELLED");
 
 /** The server's refusal as one of our fixed messages; the name is from a closed vocabulary. */
 function refusalFailure(name: string): ForgeFailure {
@@ -286,21 +301,28 @@ async function login(
     wire,
     (deps.now ?? Date.now)(),
   );
-  await store.save({
-    origin: target.origin,
+  const targetBinding = {
+    schema: 1,
     identity: manifest.id,
+    ...target,
+  } as const;
+  const binding = await store.save(
+    { ...target, identity: manifest.id, localDevice: local, ...credential },
+    () => writeLoginBinding(deps.root, targetBinding),
+  );
+  return {
+    origin: target.origin,
     project: target.project,
-    localDevice: local,
-    ...credential,
-  });
-  let binding: "created" | "unchanged";
+    device: wire,
+    tokenId: credential.id,
+    expiresAt: credential.expiresAt,
+    binding,
+  };
+}
+
+function writeLoginBinding(root: string, binding: CloudBinding) {
   try {
-    binding = writeBinding(deps.root, {
-      schema: 1,
-      identity: manifest.id,
-      origin: target.origin,
-      project: target.project,
-    });
+    return writeBinding(root, binding);
   } catch (error) {
     throw new ForgeFailure({
       ...(error instanceof ForgeFailure
@@ -314,17 +336,70 @@ async function login(
         "The credential was saved. Run forge auth login again to finish the binding.",
     });
   }
-  return {
-    origin: target.origin,
-    project: target.project,
-    device: wire,
-    tokenId: credential.id,
-    expiresAt: credential.expiresAt,
-    binding,
+}
+
+async function logout(
+  deps: CloudLoginDeps,
+  input: unknown,
+): Promise<CloudLogoutResult> {
+  if (validateWithSchema(LOGOUT_INPUT_SCHEMA, input).length > 0)
+    throw new ForgeFailure({
+      code: "INPUT_INVALID",
+      message: `Invalid input for ${CLOUD_LOGOUT_OP}: expected {}`,
+      retry: "never",
+    });
+  const checkActive = () => {
+    if (deps.signal.aborted) throw cancelled("logout");
   };
+  checkActive();
+  const snapshot = readBindingSnapshot(deps.root);
+  if (snapshot === undefined)
+    return { status: "not-bound", tokenRevoked: false };
+  const { binding, bytes } = snapshot;
+  const manifest = readProjectManifest(deps.root);
+  if (manifest === undefined)
+    throw new ForgeFailure({
+      code: "CONTEXT_MISSING",
+      message:
+        "This checkout has no project identity (.forge/project.json); auth logout needs it to find the credential.",
+      missing: ["project"],
+      retry: "never",
+    });
+  if (binding.identity !== manifest.id)
+    throw failed(
+      ".forge/cloud.json belongs to a different project identity",
+      "INPUT_CONFLICT",
+    );
+  const store = credentialStore(openCloudFiles(deps.home, deps.security));
+  const tokenId = await store.remove(binding, {
+    checkActive,
+    checkBinding: (id) =>
+      logoutBindingStep(id, () => checkBindingBytes(deps.root, bytes)),
+    removeBinding: (id) =>
+      logoutBindingStep(id, () => removeBinding(deps.root, bytes)),
+  });
+  return {
+    status: "logged-out",
+    origin: binding.origin,
+    project: binding.project,
+    ...(tokenId === undefined ? {} : { tokenId }),
+    tokenRevoked: false,
+  };
+}
+
+function logoutBindingStep(tokenId: string | undefined, run: () => void): void {
+  try {
+    run();
+  } catch (error) {
+    if (!(error instanceof ForgeFailure) || tokenId === undefined) throw error;
+    throw new ForgeFailure({ ...error.error, observed: { tokenId } });
+  }
 }
 
 /** The login service one invocation gets. */
 export function createCloudLogin(deps: CloudLoginDeps): CloudLogin {
-  return { login: (input) => login(deps, input) };
+  return {
+    login: (input) => login(deps, input),
+    logout: (input) => logout(deps, input),
+  };
 }

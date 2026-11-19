@@ -108,8 +108,8 @@ test("issue show loads none of the modules it never calls", () => {
 // The public catalog after removing receipt.admit/show: help, its full contract and the MCP
 // tool listing must stay byte for byte the same until an intentional catalog change.
 const catalog = {
-  help: "2912971515d0b30a91464a732db597d2b13940e159ebb33aa3e0fdc6c7a2f6bd",
-  helpJson: "7a78ffbd64d5c795fb21d9ed196aa28fe5e149eea176359ad8c66320c0b7d7fe",
+  help: "d082b65bcc5bf39a55c831265b1a0fa8f6ad5d33cad2c8f828bc6ab441b6a03b",
+  helpJson: "961b23e503af8960ea739a3a5116d20ba02472c3a1b227cf2af594bbf41b1439",
   mcpTools: "20940d83078f63696241e5f9c58074e05e833047865f72b33787bb9ba3c7a19a",
 };
 
@@ -172,14 +172,35 @@ async function mcpTools(root: string, env: NodeJS.ProcessEnv): Promise<string> {
 test("help, the help contract and the MCP tool listing are unchanged", async () => {
   const { root, env, cli } = project();
   try {
+    const defaultListing = await mcpTools(root, env);
     expect(
       {
         help: sha(cli(["--help"])),
         helpJson: sha(cli(["--help", "--json"])),
-        mcpTools: sha(await mcpTools(root, env)),
+        mcpTools: sha(defaultListing),
       },
       "Help or the MCP tool listing changed. If that is intended, replace the digests in `catalog` above with the Received values shown below.",
     ).toEqual(catalog);
+
+    const listed = (json: string) =>
+      (JSON.parse(json) as { result: { tools: { name: string }[] } }).result
+        .tools;
+    const defaults = listed(defaultListing);
+    const expose = [
+      ...defaults.map(({ name }) => name.replace("_", ".")),
+      "lane.dispatch",
+    ];
+    writeFileSync(
+      join(root, ".forge/config.yaml"),
+      `${config}mcp:\n  expose: ${JSON.stringify(expose)}\n`,
+    );
+    const explicit = listed(await mcpTools(root, env));
+    expect({
+      added: explicit
+        .filter(({ name }) => name === "lane_dispatch")
+        .map(({ name }) => name),
+      rest: explicit.filter(({ name }) => name !== "lane_dispatch"),
+    }).toEqual({ added: ["lane_dispatch"], rest: defaults });
   } finally {
     removeQuietly(root);
   }

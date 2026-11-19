@@ -13,13 +13,14 @@ Its counts and digests describe that practice only. This switch has not been run
 
 Notation: `forge` is `node <pinned-build>/dist/bin/forge.js`, never an arbitrary PATH command.
 Run the pinned Bun with `bun <tool.ts>` for offline tools. Commands below use PowerShell variables.
+Use PowerShell 7.3+ and invoke the pinned Node executable directly, never a `.cmd`/`.bat` shim. First run `if ($PSVersionTable.PSVersion -lt [version]'7.3') { throw 'Use PowerShell 7.3 or later' }`, then `$PSNativeCommandArgumentPassing = 'Standard'`; this preserves quotes in native arguments ([PowerShell argument handling](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_parsing?view=powershell-7.5#passing-arguments-that-contain-quote-characters)).
 `$Ledger` is `E:/forge-move-ledger/<stamp>/`, private and outside every repo.
 `$Project`, `$Origin`, the S7 snapshot path and all expected values come from step 3's `run.json` there.
 `$Bundle` holds retained or regenerated converter pages; `$Dump` holds a complete paged cloud dump.
 `$DeltaBackup` and `$DeltaManifest` name the retained upgraded converter input and its `source.json`.
 Keep the immutable raw export separately. Step 3.1 pins a frozen S7 rollback baseline; retain P4's earlier copy too. Never substitute either raw file for `$DeltaBackup`.
 Admin helpers read credentials in-process, print no secret, follow no redirect and check the exact target before every call.
-Use the step 3 reviewed helpers for status/dump/revoke; endpoints are `/p/$Project/{status,dump,revoke}`.
+Use the reviewed helpers for status and revoke and the R3.3 capture command for paged dumps.
 Never put bearer bytes on a command line, print a credential file, or copy credentials between machines.
 
 The binding identity is the UUID in `.forge/project.json`, not the cloud project name.
@@ -49,7 +50,7 @@ Do not execute step 1 until every row passes. Record evidence and paths in `run.
 | P7 One build               | Every machine reports identical version and commit with `dirty:false` using the pinned build's version output/build manifest. Include final dependency PRs.                                                                                                                     |
 | P8 Worker ready            | Reviewed preflight passes for the target origin, owner, login HMAC and admin-token presence. Record existence/results, never secret values.                                                                                                                                     |
 | P9 Identity/prefix         | Checked Worker `FORGE_CLOUD_ID_PREFIX` equals the configured work prefix; binding UUID equals project UUID. Record non-secret values privately.                                                                                                                                 |
-| P10 Owner present          | Owner can approve each machine's login and cloud resume. Logout practice uses a hand-built sandbox binding, without the owner's browser.                                                                                                                                        |
+| P10 Owner present          | Owner can approve login/cloud resume in the browser and reply verbatim to R0's separate local unfreeze/resume requests. Logout practice uses a hand-built sandbox binding, without the owner's browser.                                                                         |
 | P11 Reverse path           | Save S7 snapshot/hash, prior Worker version and private prior vars/config copy. Inventory every checkout and machine, installed build and token id from login results.                                                                                                          |
 | P12 Freeze                 | Require PR 652 merged and atomic refusal practised on the pinned build. PR 627's freeze alone is insufficient. Include every clone/store that can accept local writes.                                                                                                          |
 | P13 Offline/restore/logout | Export, converter and restore tools below available; PR 626 merged. Practise snapshot restore with private ACLs, preserved freeze and readback. PR 653 is open with the delta fix, pending its merge gate; require its implementation and provenance checks.                    |
@@ -81,10 +82,10 @@ PR 652 makes those mutation paths refuse while frozen. Read-only board/list/expo
 
 **Step 3. Check the final delta and keep both backup forms.**
 
-1. Run `forge store export --input '{"out":"<fresh private ledger folder>"}'`. Hash the source database and project config before and after with the reviewed read-only helper; both hashes must match. Export uses a read-only store and writes `backup.sqlite`, `source.json`, `export-info.json` only in the destination. A nonempty destination is `INPUT_CONFLICT`; missing store is `UNAVAILABLE`; invalid input is `INPUT_INVALID`. Stop on any refusal or hash mismatch. Pin this export as the frozen S7 rollback baseline with its hash, records and event high-water mark in `run.json`; retain P4's pre-freeze copy separately.
+1. Set `$ExportInput = @{out=(Read-Host 'Fresh private ledger folder')} | ConvertTo-Json -Compress -Depth 5`, then run `forge store export --input $ExportInput`. Hash the source database and project config before and after with the reviewed read-only helper; both hashes must match. Export uses a read-only store and writes `backup.sqlite`, `source.json`, `export-info.json` only in the destination. A nonempty destination is `INPUT_CONFLICT`; missing store is `UNAVAILABLE`; invalid input is `INPUT_INVALID`. Stop on any refusal or hash mismatch. Pin this export as the frozen S7 rollback baseline with its hash, records and event high-water mark in `run.json`; retain P4's pre-freeze copy separately.
 2. Compare frozen export to P4 by key, value, revision and `updatedAt` for all imported work records, including issues, comments, links, dependencies and allocation floors. Only recorded preparation writes from 2.1, 2.2 and the freeze write in 2.3 may explain changed local runtime/lease/event records or high-water increments. Unexplained movement stops the switch. Do not assume byte-identical SQLite exports for equal data.
 3. Any imported-content difference requires a fresh full copy into a new project, with a new acknowledgement and all six readbacks. An empty-project restore is not incremental import. Restart P1; keep the local freeze set throughout.
-4. Before Forge opens any copied store, set/check owner-only ACLs on its private parent and file. Step 3's preparation helper must use `privateFileGuard(windowsPrivateFiles())` and private copy/file operations; ordinary `Copy-Item` and a read-only attribute do not establish privacy. Verify ACLs before opening even read-only. Keep raw S7 immutable; upgrade only a private copy with the pinned migrations. Close it without sidecars, save its SHA-256 in its own source manifest, preserving the export `at` and recording the upgraded record count and event high-water mark. Reconcile every migration change against raw S7. This retained upgraded copy is the converter's input and `$DeltaBackup`. No helper that does this is specified here; P13 requires its practised procedure.
+4. Set `$S7` to step 3.1's frozen export folder and `$Prepared` to `"$Ledger/retained-input"`, which must be new. Use owner-only permissions on S7 and its files and on `$Ledger`. From the pinned source checkout run `bun tools/prepare-tracker-input.ts --backup "$S7/backup.sqlite" --manifest "$S7/source.json" --out $Prepared`. Require exit 0 and `"$Prepared/source.json"`. Record both hashes and reconcile the applied migrations, schema and table changes in `"$Prepared/preparation.json"`. Check the reported commit against P7 and require `dirty:false`. Retain the raw export and preparation outputs privately. Set `$DeltaBackup` to `"$Prepared/backup.sqlite"` and `$DeltaManifest` to `"$Prepared/source.json"`.
 5. Regenerate a bundle if needed, using two fresh output directories. The converter's own internal migrated scratch is deleted on exit; it is not the retained upgraded backup. Run:
 
 ```powershell
@@ -110,7 +111,7 @@ A mismatch or unexpected family stops the copy. Do not reuse the rehearsal diges
 
 6. For a replacement copy, check exact target `forge-tracker-<stamp>` and admin `initialized:false` before any cloud call. Use the reviewed guarded wrapper around `tools/restore-cloud.ts` with `--pages`, `--worker`, `--project`, `--token-env <variable-name>` and `--report`. The variable holds a credential loaded in-process, never a literal argument. Require `restored:true`, `match:true` and all six digest matches, not only counts. `TARGET_NOT_EMPTY`, `DIGEST_MISMATCH`, page/order/response refusals or any partial restore stop the run. Never retry restore into the same project; retain its failure report and use a new project only after resolving the cause.
 
-7. Dump all pages independently with the guarded step 3 helper; pin project/page provenance and match all six restore digests. Run the R3.4 delta tool against the upgraded input and save its raw report. Compare each allocation key/value with the converter-derived floors in the bundle: an identical derived floor is an import artifact, not a cloud write. Require zero unexplained new/changed/absent entries after accounting for those exact floors and repairs in `same-import`; raw 0/0/0 is not required. Save the by-key derived-floor baseline and raw delta for R3, where only departures from those values count as later floor changes. Retain both raw backups, upgraded input/manifest, bundle pages/manifest, repairs by key, left-behind inventory, restore/readback/delta reports and `run.json` privately and read-only; these pages are now required comparison evidence.
+7. Capture all pages independently with R3.3 while cloud writes remain withheld, then match all six restore digests. Run the R3.4 delta tool against the upgraded input and save its raw report. Compare each allocation key/value with the converter-derived floors in the bundle: an identical derived floor is an import artifact, not a cloud write. Require zero unexplained new/changed/absent entries after accounting for those exact floors and repairs in `same-import`; raw 0/0/0 is not required. Save the by-key derived-floor baseline and raw delta for R3, where only departures from those values count as later floor changes. Retain both raw backups, upgraded input/manifest, bundle pages/manifest, repairs by key, left-behind inventory, restore/readback/delta reports and `run.json` privately and read-only; these pages are now required comparison evidence.
 
 **Step 4. Check capacity and target.**
 Read admin status and usage for exactly `$Project`. Compare all six counts/digests with step 3's final baseline and usage with configured Worker limits.
@@ -123,7 +124,7 @@ An unauthenticated command on `$Project` must return 401 `AUTH_REQUIRED`. On fai
 
 **Step 6. Bind machine A.**
 Confirm project UUID/prefix from P9. Enable the cloud block through the approved config change.
-Run `forge auth login --origin $Origin --project $Project`; the owner approves in the browser.
+Run `forge auth login --origin $Origin --project $Project`; while the owner has not approved, login polls `authorization_pending` and saves no binding. The owner opens the printed verification link and approves this device in the browser; the same call then finishes without an `approval` argument. `LOGIN_DENIED`/`LOGIN_EXPIRED` stops the step; after expiry obtain a new challenge with the same command and ask again.
 Save returned origin, project, device, token id and expiry in the ledger; never the token.
 Login writes the binding last after credential readback. Verify binding UUID/origin/project against P9 and `run.json`.
 The freeze from step 2.3 still fences every unbound worktree. Any login/integrity refusal stops the switch.
@@ -135,7 +136,7 @@ Check known open and closed issues and one with comments using `forge issue show
 Mismatch before cloud writes takes R2; mismatch after any write takes R3.
 
 **Step 8. First cloud write and readback.**
-Create one permanent proof issue with `forge issue create --input '{"title":"tracker switch proof","kind":"task"}'`.
+Create one permanent proof issue. Set `$ProofInput = @{title=(Read-Host 'Proof issue title'); kind='task'} | ConvertTo-Json -Compress -Depth 5` and enter `tracker switch proof`, then run `forge issue create --input $ProofInput`.
 Require `ok:true`, read it back, and compare its number with the restored allocation floor; never require highest-live-id plus one.
 Claim it, comment `switch proof from machine A`, then close using an explicit `withoutReceipt` reason.
 Read back each result; record the proof id and every write/lease effect in the ledger. Any refusal now takes R3.
@@ -146,14 +147,16 @@ Record the merged binding commit. R3 step 5 reverts that commit; R2 alone does n
 Keep the local freeze while the binding reaches every worktree and host. Failure after step 8 takes R3.
 
 **Step 10. Bind every other machine and host.**
-Pull step 9's commit, install P7's build, and run `forge auth login` with owner browser approval per device.
+Pull step 9's commit, install P7's build, and run `forge auth login` on each device. Follow step 6's pending/owner-browser-approval flow; retry an expired challenge with exactly `forge auth login`, obtaining a new owner decision.
 Each host reads the proof issue and writes a uniquely labelled comment; A reads every comment back.
 Inventory every checkout, UUID, origin, project and token id. No copied credentials. Plan re-login before the 30-day expiry.
 
 **Step 11. Lift the cloud dispatch stop.**
-Run `forge lane resume --input '{"all":true}'`, obtain owner approval, then retry with exactly `forge lane resume --input '{"all":true,"approval":{"request":"<request-id>"}}'`.
-Cloud refuses `quote`/`source` with `INPUT_INVALID`; per-lane resume cannot clear the all-lanes stop.
-Read `forge lane control` back and require no all-lanes stop. This changes no local freeze.
+Run `forge lane resume --input '{"all":true}'`. Expect `APPROVAL_REQUIRED`, with `result.request`, `result.url`, scope and expiry; the cloud dispatch stop stays set.
+Present that request's URL/scope to the owner and wait for their decision in the browser. Record the decision in the ledger; never retry on silence or denial.
+After browser approval, retry exactly `forge lane resume --input '{"all":true,"approval":{"request":"<request-id>"}}'` using the returned request id.
+Require success, then read `forge lane control` and require no all-lanes stop. This changes no local freeze.
+A pending/expired approval remains `APPROVAL_REQUIRED`; obtain a fresh request and owner decision after expiry. Cloud refuses `quote`/`source` with `INPUT_INVALID`; per-lane resume cannot clear the all-lanes stop.
 
 **Step 12. Verify and retain.**
 Run every Verification row. Retain the frozen store and both immutable backup forms for 30 days by default.
@@ -230,8 +233,31 @@ Keep the local freeze and stop from step 2 until R3.7 passes. A refusal never au
 **R0. Finish a rollback only.**
 Before step 5, when no cloud writes or binding exist, confirm S7/current local content agrees except recorded preparation writes.
 Otherwise require the entire R2 or R3 path to have passed. R1 never calls R0 itself.
-Only now may the owner run `forge lane unfreeze --input '{}'` locally and read back `frozen:false`.
-Then locally resume all lanes with owner approval and tell sessions to continue. Retain the unused cloud project; no project-delete route is supplied here.
+Only now begin the local approval flow. Keep sessions stopped until both unfreeze and resume succeed.
+
+1. Run `forge lane unfreeze --input '{}'` locally. Expect `APPROVAL_REQUIRED` with `result.request.id` and `result.request.ask`; the store remains frozen. Present that exact ask to the owner in chat and wait for their reply.
+2. Copy the owner's affirmative reply verbatim, recording the harness and thread where it was given. Never invent a quote, treat silence as approval, or reuse the cloud resume request. Save exactly that reply in a private UTF-8 file, preserving line endings and adding no newline. The commands read the whole file without trimming; prompts take the request id and reply source as data. Serialize the payload once and pass the variable without evaluation:
+
+```powershell
+$UnfreezeReply = [IO.File]::ReadAllText((Read-Host 'Exact unfreeze reply UTF-8 file'), [Text.Encoding]::UTF8)
+$UnfreezeInput = @{approval=@{request=(Read-Host 'Unfreeze request id'); quote=$UnfreezeReply; source=@{harness=(Read-Host 'Reply harness'); thread=(Read-Host 'Reply thread')}}} | ConvertTo-Json -Compress -Depth 5
+forge lane unfreeze --input $UnfreezeInput
+```
+
+Require `ok:true` and `result.frozen:false` from that retry before continuing. A request id alone does not authorize local unfreeze.
+
+3. Run `forge lane resume --input '{"all":true}'` locally. Expect a separate `APPROVAL_REQUIRED` request; lanes remain stopped. Present its `result.request.ask` to the owner and wait for a new verbatim affirmative reply with its harness/thread.
+4. Save this separate reply in its own private UTF-8 file under the same exact-text rules. Build and pass its payload as data, then require `ok:true` and `result.resumed:"all"`:
+
+```powershell
+$ResumeReply = [IO.File]::ReadAllText((Read-Host 'Exact local resume reply UTF-8 file'), [Text.Encoding]::UTF8)
+$ResumeInput = @{all=$true; approval=@{request=(Read-Host 'Local resume request id'); quote=$ResumeReply; source=@{harness=(Read-Host 'Reply harness'); thread=(Read-Host 'Reply thread')}}} | ConvertTo-Json -Compress -Depth 5
+forge lane resume --input $ResumeInput
+```
+
+Local requests bind the operation, unchanged arguments, project and device; they expire after 24 hours and are consumed once. Missing/expired/used/mismatched requests return `APPROVAL_REQUIRED`: call that operation without approval to obtain a new request and ask the owner anew. A reply over 2000 characters needs a new shorter owner reply; never shorten it yourself. No dry-run, typed terminal confirmation or owner policy bypasses these local gates.
+Only after both results pass tell sessions to continue. Retain the unused cloud project; no project-delete route is supplied here.
+Approval shapes checked on `origin/main` at `e2983271`: `src/assembly/index.ts`, `src/assembly/approval.ts`, `src/blocks/work/schemas/unfreeze.input.json`, `src/blocks/work/schemas/lane-resume.input.json`; cloud refusal/browser flow in `cloud/src/issue-commands.ts` and `cloud/src/lane-approval.ts`.
 
 **R1. Fence cloud writes without unfreezing local writes.**
 Restore saved Worker admission vars/config, preflight and redeploy via the authorized operator.
@@ -252,16 +278,24 @@ If step 9 merged, do R3.5's binding revert. Only after all readbacks pass, with 
 
 1. Tell every session to stop; stop cloud dispatch while still admitted. This is not the write fence. Keep the local freeze set, including throughout restore and replay. If the practised restore/single-writer paths in P13/P14 are missing, stay frozen and repair forward or stop for that dependency; never improvise an unfreeze.
 2. Run R1 and verify its cloud fence. R1 returns here, with local freeze still on. Account for/revoke every device token and prevent any admin writer during the dump and replay.
-3. Read admin status, dump every page, then status again. Six counts must agree; validate page chain and digests. `DUMP_CHANGED`, missing page or target mismatch stops rollback. Retain final dump privately with a manifest containing exact project and each page's name/SHA-256, produced by the guarded exporter at capture, not invented later. Enumerate every cloud event after the saved post-restore baseline, including overwritten/deleted intermediate writes; reconcile by sequence/key with the materialized delta and name superseded actions in the ledger.
-4. Before replacing any local store, perform Verification's local-breach inventory even if V3 passed. Then run read-only `tools/cloud-to-local-delta.ts` against the retained upgraded converter input, never raw S7. Classify its report against the saved converted baseline from step 3.7, including derived floors; only later changes belong in the cloud replay ledger. With PR 653 use:
+3. Read admin status, capture every page, then read status again. Six counts must agree. Use a fresh `$Dump` directory inside the private ledger. Set `$AdminTokenEnv` to the variable name used by the guarded admin helpers.
 
 ```powershell
-bun tools/cloud-to-local-delta.ts --dump $Dump --backup $DeltaBackup --manifest $DeltaManifest --dump-manifest "$Dump/export.json" --project $Project --out "$Ledger/rollback-delta.json"
+$CaptureNotBefore = [DateTime]::UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", [Globalization.CultureInfo]::InvariantCulture)
+$CaptureJson = bun tools/cloud-to-local-delta.ts capture --worker $Origin --project $Project --out $Dump --token-env $AdminTokenEnv
+if ($LASTEXITCODE -ne 0) { throw 'Cloud capture refused' }
+$Capture = ($CaptureJson | ConvertFrom-Json).result
 ```
 
-The flags `--dump-manifest`/`--project` are PR 653 dependencies, unavailable on the cited main.
-PR 653 is open with the fix at `48de4d4d956ff9d5b5ee76f172a74ffeb07be475`, pending its merge gate; require merge and refusal evidence before P13 passes.
-`INPUT_INVALID` stops on wrong project/provenance, stale/missing pages, bad cursor chain, duplicate keys, hash mismatch, sidecars, or existing output.
+Record `$CaptureJson` and `$CaptureNotBefore` in the protected rollback ledger outside `$Dump` and use those recorded values in R3.4. Take the receipt digest from the capture command's output. Validate the page chain and digests. `DUMP_CHANGED`, a missing page or target mismatch stops rollback. Enumerate every cloud event after the saved post-restore baseline, including overwritten or deleted intermediate writes, and reconcile by sequence and key with the materialized delta. Name superseded actions in the ledger.
+
+4. Before replacing any local store, perform Verification's local-breach inventory even if V3 passed. Run the read-only delta against the retained upgraded converter input. Classify its report against the saved converted baseline from step 3.7, including derived floors. Only later changes belong in the cloud replay ledger.
+
+```powershell
+bun tools/cloud-to-local-delta.ts --dump $Dump --backup $DeltaBackup --manifest $DeltaManifest --receipt-sha256 $Capture.receiptSha256 --not-before $CaptureNotBefore --project $Project --out "$Ledger/rollback-delta.json"
+```
+
+`INPUT_INVALID` stops rollback on a wrong project, a missing or mismatched receipt, a capture before the fence, stale or missing pages, a bad cursor chain, duplicate keys, a hash mismatch, sidecars, or existing output.
 Check every new, changed and `absentInCloud` entry, floor advance and `notCarriedBack` item. Merge cloud changes and the local-breach inventory into a ledger keyed by authority, event sequence and record key. For each entry record before/after, replay action/readback or the owner's explicit loss acceptance by name. Resolve conflicting updates and colliding ids explicitly; an unexplained or unclassified entry blocks store replacement.
 
 5. On every host revoke recorded token ids, then run PR 626 logout as in R2; verify binding/credential removal without exposing secrets. Revert the step 9 binding commit through a normal PR and merge it via the authorized owner. Record the revert commit and verify every host/worktree has pulled it; logout again on any checkout that regained the binding. Keep the local freeze; this is the binding reversal that step 9 points to.

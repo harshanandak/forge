@@ -87,13 +87,13 @@ async function fixture(
       },
     },
   };
-  const admit = async (device: string) => {
+  const admit = async (device: string, tokenSession = session) => {
     const admitted = await project.fetch(
       new Request(`https://w.example/p/${projectName}/devices`, {
         method: "POST",
         body: JSON.stringify({
           device,
-          ...(session === null ? {} : { session }),
+          ...(tokenSession === null ? {} : { session: tokenSession }),
           ttlMs: 86_400_000,
         }),
       }),
@@ -238,6 +238,395 @@ const stopped = (epoch: number, scope: string) => ({
   scope,
   since: new Date(now).toISOString(),
 });
+
+const dispatchIssue = { id: "work-7" };
+const dispatchLeaseIssue = { id: "forge-7" };
+const dispatchInput = {
+  ...dispatchIssue,
+  dispatchId: "dispatch-proof",
+  incarnation: running.incarnation,
+  epoch: running.epoch,
+};
+const dispatchKey = "lane-dispatch:work-7:dispatch-proof";
+const executor = (id = "s1") => ({
+  actor,
+  session: { id },
+});
+const dispatchCall = (
+  requestId = "dispatch-1",
+  input = dispatchInput,
+  context = executor(),
+) => call("lane.dispatch", input, requestId, { context });
+const claimDispatch = (f: Fixture, id = "s1", headers = {}) =>
+  f.send(
+    call(
+      "issue.claim",
+      { ...dispatchLeaseIssue, ttlSeconds: 60 },
+      `claim-${id}`,
+      {
+        context: { actor, session: { id } },
+      },
+    ),
+    "p",
+    headers,
+  );
+const dispatchState = (f: Fixture) =>
+  ["state_records", "state_events"].map((table) =>
+    f.db
+      .query(
+        `SELECT key FROM ${table} WHERE namespace='forge/work' AND key LIKE 'lane-dispatch:%'`,
+      )
+      .values()
+      .flat(),
+  );
+const expectOneDispatch = (f: Fixture, result: unknown) => {
+  expect(dispatchState(f)).toEqual([[dispatchKey], [dispatchKey]]);
+  expect(f.owner.get("forge/work", dispatchKey)).toMatchObject({
+    revision: 1,
+    value: result,
+  });
+  const event = f.db
+    .query<{ body: string }, [string]>(
+      "SELECT body FROM state_events WHERE namespace='forge/work' AND key=?",
+    )
+    .get(dispatchKey)!;
+  expect(JSON.parse(event.body)).toMatchObject({
+    type: "forge/work:record.updated@1",
+    revision: 1,
+    data: result,
+  });
+};
+const liveDispatch = async () => {
+  const f = await fixture();
+  f.put("lane-control:global", running);
+  return f;
+};
+
+test.each([{ all: true }, dispatchIssue])(
+  "dispatch refuses the current stopped epoch even with a valid lease, scope %j",
+  async (scope) => {
+    const f = await liveDispatch();
+    try {
+      expect((await claimDispatch(f)).verdict).toEqual(["OK", "OK", 0]);
+      const stop = await f.send(call("lane.stop", scope, "dispatch-stop"));
+      expect(stop.result).toMatchObject({ stopped: true, epoch: 5 });
+      const reply = await f.send(
+        dispatchCall("stopped", { ...dispatchInput, epoch: 5 }),
+      );
+      expect(reply.verdict).toEqual(["FAIL", "INPUT_CONFLICT", 4]);
+      expect(reply.envelope.ok ? "" : reply.envelope.error.message).toMatch(
+        /stopped/i,
+      );
+      expect(dispatchState(f)).toEqual([[], []]);
+    } finally {
+      f.close();
+    }
+  },
+  10_000,
+);
+
+test("approved resume permits one dispatch with fresh control and records its event", async () => {
+  const f = await resumeFixture("all");
+  try {
+    expect((await claimDispatch(f)).verdict).toEqual(["OK", "OK", 0]);
+    expect((await f.send(f.resume)).verdict).toEqual(["OK", "OK", 0]);
+    const fresh = await control(f, dispatchIssue.id);
+    expect(fresh.result).toEqual({
+      incarnation: "history",
+      epoch: 6,
+      stopped: false,
+    });
+    const reply = await f.send(
+      dispatchCall("resumed", { ...dispatchInput, epoch: 6 }),
+    );
+    expect(reply.verdict).toEqual(["OK", "OK", 0]);
+    expect(reply.result).toEqual({
+      ...dispatchInput,
+      epoch: 6,
+      holder: { device: "laptop", session: "s1" },
+      leaseGeneration: 1,
+      recordedAt: new Date(now).toISOString(),
+      kind: "recorded-intent",
+    });
+    expectOneDispatch(f, reply.result);
+  } finally {
+    f.close();
+  }
+}, 10_000);
+
+test("two sessions race for the claim and only the current holder can dispatch", async () => {
+  const f = await liveDispatch();
+  try {
+    const other = { authorization: `Bearer ${await f.admit("desktop", "s2")}` };
+    const clients = [
+      ["s1", {}],
+      ["s2", other],
+    ] as const;
+    const claims = await Promise.all(
+      clients.map(([id, headers]) => claimDispatch(f, id, headers)),
+    );
+    const winner = claims.findIndex((reply) => reply.envelope.ok);
+    expect(winner).toBeGreaterThanOrEqual(0);
+    expect(claims[1 - winner]!.verdict).toEqual(["FAIL", "LEASE_HELD", 4]);
+    const replies = await Promise.all(
+      clients.map(([id, headers]) =>
+        f.send(
+          dispatchCall(`dispatch-${id}`, dispatchInput, executor(id)),
+          "p",
+          headers,
+        ),
+      ),
+    );
+    expect(replies[winner]!.verdict).toEqual(["OK", "OK", 0]);
+    expect(replies[1 - winner]!.verdict).toEqual(["FAIL", "LEASE_NOT_HELD", 4]);
+    expectOneDispatch(f, replies[winner]!.result);
+  } finally {
+    f.close();
+  }
+}, 10_000);
+
+test("a device-only token cannot dispatch as a live lease holder on the same device", async () => {
+  const f = await liveDispatch();
+  try {
+    expect((await claimDispatch(f)).verdict).toEqual(["OK", "OK", 0]);
+    const token = await f.admit("laptop", null);
+    const before = f.snapshot();
+    const reply = await f.send(dispatchCall(), "p", {
+      authorization: `Bearer ${token}`,
+    });
+    expect(reply.status).toBe(403);
+    expect(reply.verdict).toEqual(["FAIL", "AUTH_DEVICE_MISMATCH", 1]);
+    expect(dispatchState(f)).toEqual([[], []]);
+    expect(f.snapshot()).toBe(before);
+  } finally {
+    f.close();
+  }
+}, 10_000);
+
+test("distinct request IDs for one live dispatch both return its single durable intent", async () => {
+  const f = await liveDispatch();
+  try {
+    expect((await claimDispatch(f)).verdict).toEqual(["OK", "OK", 0]);
+    const replies = await Promise.all(
+      ["duplicate-1", "duplicate-2"].map((id) => f.send(dispatchCall(id))),
+    );
+    expect(replies.map(({ verdict }) => verdict)).toEqual([
+      ["OK", "OK", 0],
+      ["OK", "OK", 0],
+    ]);
+    expect(replies[0]!.result).toEqual(replies[1]!.result);
+    expectOneDispatch(f, replies[0]!.result);
+    const before = f.snapshot();
+    expect((await f.send(dispatchCall("duplicate-2"))).result).toEqual(
+      replies[0]!.result,
+    );
+    expect(f.snapshot()).toBe(before);
+  } finally {
+    f.close();
+  }
+}, 10_000);
+
+test("a request that reconciles an intent is bound to that input", async () => {
+  const f = await liveDispatch();
+  try {
+    expect((await claimDispatch(f)).verdict).toEqual(["OK", "OK", 0]);
+    const first = await f.send(dispatchCall("request-a"));
+    expect(first.verdict).toEqual(["OK", "OK", 0]);
+    const reconciled = await f.send(dispatchCall("request-b"));
+    expect(reconciled.verdict).toEqual(["OK", "OK", 0]);
+    expect(reconciled.result).toEqual(first.result);
+    const snapshot = f.snapshot();
+    const reused = await f.send(
+      dispatchCall("request-b", { ...dispatchInput, dispatchId: "dispatch-y" }),
+    );
+    expect(reused.verdict).toEqual(["FAIL", "INPUT_CONFLICT", 4]);
+    const replay = await f.send(dispatchCall("request-b"));
+    expect(replay.verdict).toEqual(["OK", "OK", 0]);
+    expect(replay.result).toEqual(first.result);
+    expect(f.snapshot()).toBe(snapshot);
+    expectOneDispatch(f, first.result);
+  } finally {
+    f.close();
+  }
+}, 10_000);
+
+test("takeover rejects reuse of the old dispatch ID and replay by the old holder", async () => {
+  const f = await liveDispatch();
+  try {
+    expect((await claimDispatch(f)).verdict).toEqual(["OK", "OK", 0]);
+    const first = await f.send(dispatchCall());
+    expect(first.verdict).toEqual(["OK", "OK", 0]);
+    const release = call("issue.release", dispatchLeaseIssue, "release", {
+      context: { ...executor(), leaseGeneration: 1 },
+    });
+    expect((await f.send(release)).verdict).toEqual(["OK", "OK", 0]);
+    const other = { authorization: `Bearer ${await f.admit("desktop", "s2")}` };
+    const claim = await claimDispatch(f, "s2", other);
+    expect(claim.result).toMatchObject({ generation: 2 });
+    expect((await f.send(dispatchCall())).verdict).toEqual([
+      "FAIL",
+      "LEASE_STALE",
+      4,
+    ]);
+    const reuse = await f.send(
+      dispatchCall("takeover", dispatchInput, executor("s2")),
+      "p",
+      other,
+    );
+    expect(reuse.verdict).toEqual(["FAIL", "INPUT_CONFLICT", 4]);
+    expectOneDispatch(f, first.result);
+  } finally {
+    f.close();
+  }
+}, 10_000);
+
+test("stop after dispatch refuses both a receipt replay and a new request for the same intent", async () => {
+  const f = await liveDispatch();
+  try {
+    expect((await claimDispatch(f)).verdict).toEqual(["OK", "OK", 0]);
+    const first = await f.send(dispatchCall());
+    expect(first.verdict).toEqual(["OK", "OK", 0]);
+    const stop = await f.send(call("lane.stop", { all: true }, "stop"));
+    expect(stop.result).toMatchObject({ stopped: true, epoch: 5 });
+    const refused = await Promise.all([
+      f.send(dispatchCall()),
+      f.send(dispatchCall("same-intent", { ...dispatchInput, epoch: 5 })),
+    ]);
+    for (const reply of refused) {
+      expect(reply.verdict).toEqual(["FAIL", "INPUT_CONFLICT", 4]);
+      expect(reply.envelope.ok ? "" : reply.envelope.error.message).toMatch(
+        /stopped/i,
+      );
+    }
+    expectOneDispatch(f, first.result);
+  } finally {
+    f.close();
+  }
+}, 10_000);
+
+test("a dispatch from a previous control incarnation remains history", async () => {
+  const f = await liveDispatch();
+  try {
+    expect((await claimDispatch(f)).verdict).toEqual(["OK", "OK", 0]);
+    const first = await f.send(dispatchCall());
+    expect(first.verdict).toEqual(["OK", "OK", 0]);
+    f.owner.put(
+      "forge/work",
+      "lane-control:global",
+      {
+        ...running,
+        incarnation: "restored",
+      },
+      actor,
+      { expectRevision: 1 },
+    );
+    const replies = await Promise.all([
+      f.send(dispatchCall()),
+      f.send(
+        dispatchCall("restored", { ...dispatchInput, incarnation: "restored" }),
+      ),
+    ]);
+    for (const reply of replies)
+      expect(reply.verdict).toEqual(["FAIL", "INPUT_CONFLICT", 4]);
+    expectOneDispatch(f, first.result);
+  } finally {
+    f.close();
+  }
+}, 10_000);
+
+test.each(["state_events", "domain_cloud_command_receipts"])(
+  "failure writing %s after inserting the intent rolls back the dispatch",
+  async (table) => {
+    const f = await liveDispatch();
+    try {
+      expect((await claimDispatch(f)).verdict).toEqual(["OK", "OK", 0]);
+      f.db.run(
+        `CREATE TRIGGER refuse_dispatch BEFORE INSERT ON ${table}
+        WHEN EXISTS (SELECT 1 FROM state_records WHERE namespace='forge/work' AND key='${dispatchKey}')
+        BEGIN SELECT RAISE(ABORT, 'injected SQLITE_FULL'); END`,
+      );
+      const before = f.snapshot();
+      const reply = await f.send(dispatchCall());
+      expect(reply.status).toBe(503);
+      expect(reply.verdict).toEqual(["FAIL", "STORAGE_LIMIT_EXCEEDED", 1]);
+      expect(f.snapshot()).toBe(before);
+      expect(dispatchState(f)).toEqual([[], []]);
+    } finally {
+      f.close();
+    }
+  },
+  10_000,
+);
+
+test("a lost dispatch response reconciles from the durable key after the receipt is gone", async () => {
+  const f = await liveDispatch();
+  try {
+    expect((await claimDispatch(f)).verdict).toEqual(["OK", "OK", 0]);
+    await f.send(dispatchCall());
+    const prior = f.owner.get("forge/work", dispatchKey)?.value;
+    expect(prior).toMatchObject({ kind: "recorded-intent" });
+    f.db.run("DELETE FROM domain_cloud_command_receipts");
+    f.reopen();
+    const retry = await f.send(dispatchCall("reconcile"));
+    expect(retry.verdict).toEqual(["OK", "OK", 0]);
+    expect(retry.result).toEqual(prior);
+    expectOneDispatch(f, prior);
+  } finally {
+    f.close();
+  }
+}, 10_000);
+
+test.each([
+  ["missing control", "UNAVAILABLE", 1],
+  ["corrupt control", "UNAVAILABLE", 1],
+  ["stale epoch", "INPUT_CONFLICT", 4],
+  ["stale incarnation", "INPUT_CONFLICT", 4],
+  ["revoked token", "AUTH_REVOKED", 1],
+  ["dry run", "UNAVAILABLE", 1],
+  ["missing lease", "LEASE_NOT_HELD", 4],
+  ["expired lease", "LEASE_EXPIRED", 4],
+  ["released lease", "LEASE_NOT_HELD", 4],
+] as const)(
+  "dispatch fails closed with %s",
+  async (mode, code, exit) => {
+    const f = await fixture();
+    try {
+      if (mode !== "missing control") {
+        f.put("lane-control:global", running);
+        if (mode === "corrupt control")
+          f.put("lane-control:work-7", { stoppedAt: null });
+      }
+      if (mode !== "missing lease")
+        expect((await claimDispatch(f)).verdict).toEqual(["OK", "OK", 0]);
+      if (mode === "expired lease") f.clock.mockReturnValue(now + 60_000);
+      if (mode === "released lease")
+        expect(
+          (
+            await f.send(
+              call("issue.release", dispatchLeaseIssue, "release", {
+                context: { ...executor(), leaseGeneration: 1 },
+              }),
+            )
+          ).verdict,
+        ).toEqual(["OK", "OK", 0]);
+      if (mode === "revoked token")
+        f.db.run("UPDATE domain_cloud_tokens SET revoked_at=?", [now]);
+      const reply = await f.send({
+        ...dispatchCall("refuse", {
+          ...dispatchInput,
+          epoch: mode === "stale epoch" ? 3 : 4,
+          incarnation: mode === "stale incarnation" ? "older" : "history",
+        }),
+        ...(mode === "dry run" ? { dryRun: true } : {}),
+      });
+      expect(reply.verdict).toEqual(["FAIL", code, exit]);
+      expect(dispatchState(f)).toEqual([[], []]);
+    } finally {
+      f.close();
+    }
+  },
+  10_000,
+);
 
 test.each([undefined, "work-7"])(
   "lane.control reads running or unavailable without writing, scope %s",

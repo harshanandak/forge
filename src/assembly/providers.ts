@@ -723,6 +723,25 @@ export function createAssemblyProviders(
             }).login(input);
           });
         },
+        logout(input) {
+          active(scope);
+          if (!scope.effects.includes("files:write"))
+            refuse("EFFECT_UNDECLARED", "Cloud logout requires files:write");
+          if (options.deviceRoot === undefined)
+            refuse("UNAVAILABLE", "Cloud logout requires a device folder");
+          const deviceRoot = options.deviceRoot;
+          return loadCloudLogin().then(({ createCloudLogin }) => {
+            active(scope);
+            return createCloudLogin({
+              root: projectManifestRoot(root),
+              home: env.HOME ?? env.USERPROFILE,
+              deviceRoot,
+              env,
+              signal: scope.signal,
+              ...options.cloudLogin,
+            }).logout(input);
+          });
+        },
       };
     },
     runnerOutput(scope: ServiceScope): RunnerOutputPort {

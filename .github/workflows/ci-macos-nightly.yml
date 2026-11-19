@@ -1,0 +1,12 @@
+name: Nightly macOS pack
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  nightly:
+    uses: ./.github/workflows/ci.yml
