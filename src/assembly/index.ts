@@ -168,6 +168,11 @@ const DEVICE_MEMORY_OPS = new Set([
   "memory.show",
   "memory.add",
 ]);
+function mcpConfigExcluded(show: ShowResult): boolean {
+  return show.excluded.some(
+    ({ pointer }) => pointer === "" || pointer === "/mcp",
+  );
+}
 function deviceMemoryRequest(op: string, input: unknown): boolean {
   if (!DEVICE_MEMORY_OPS.has(op)) return false;
   const fields = record(input);
@@ -798,7 +803,7 @@ export async function createAssembly(
     try {
       if (invalidMemoryConfig) refuse("INPUT_INVALID", "Invalid memory config");
       configured = configuredShow ?? call.config.show();
-      if (deviceMemory && !configured.valid)
+      if (deviceMemory && !configured.valid && !mcpConfigExcluded(configured))
         refuse("INPUT_INVALID", "Invalid project config");
     } catch (error) {
       if (!deviceMemory) throw error;
@@ -933,6 +938,7 @@ export async function createAssembly(
         if (
           deviceMemory &&
           !fallback &&
+          !mcpConfigExcluded(configured) &&
           "builtin" in instance.source &&
           instance.source.builtin === "forge/memory" &&
           block.manifest.configSchema !== undefined &&
@@ -2333,7 +2339,16 @@ export async function createAssembly(
     root,
     deviceRoot,
     get exposure() {
-      return composition(callScope().config.show()).mcp ?? {};
+      const show = callScope().config.show();
+      if (
+        mcpConfigExcluded(show) ||
+        (!show.valid && show.excluded.length === 0)
+      )
+        refuse(
+          "INPUT_INVALID",
+          "Cannot determine MCP exposure from invalid project config",
+        );
+      return composition(show).mcp ?? {};
     },
     async prepareTrust() {
       await trustState.open(false);

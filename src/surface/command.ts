@@ -1,6 +1,6 @@
 import { Readable, Writable } from "node:stream";
 import type { McpExposure } from "../generated/types.ts";
-import type { McpTransportPort } from "../ports/mcp-transport.ts";
+import type { McpHandlers, McpTransportPort } from "../ports/mcp-transport.ts";
 import type { SurfaceCatalog } from "./catalog.ts";
 import { runCli } from "./cli.ts";
 import type { CallOptions } from "./dispatch.ts";
@@ -40,12 +40,18 @@ export async function runCommand(
       output.write(response.stdout);
       return response.exitCode;
     }
-    const opened = await options.mcp.open({
-      handlers: createMcpHandlers(
+    let handlers: McpHandlers | undefined;
+    const mcpHandlers = () =>
+      (handlers ??= createMcpHandlers(
         options.catalog,
         options.exposure,
         options.call,
-      ),
+      ));
+    const opened = await options.mcp.open({
+      handlers: {
+        listTools: () => mcpHandlers().listTools(),
+        callTool: (name, args) => mcpHandlers().callTool(name, args),
+      },
       serverName: "forge",
       serverVersion: options.version,
       input: Readable.toWeb(input),

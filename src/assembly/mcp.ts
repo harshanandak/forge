@@ -13,6 +13,20 @@ import { localIdentityResolver } from "./identity.ts";
 export function assemblyMcp(assembly: Assembly): McpTransportPort {
   return {
     async open(options) {
+      let exposure: Assembly["exposure"];
+      try {
+        exposure = assembly.exposure;
+      } catch {
+        return {
+          ok: false,
+          unavailable: {
+            kind: "unavailable",
+            reason:
+              "Cannot determine MCP exposure from .forge/config.yaml. Run forge config show for details.",
+            remedy: "Repair the project config before starting MCP.",
+          },
+        };
+      }
       try {
         await assembly.prepareTrust();
       } catch (error) {
@@ -36,17 +50,18 @@ export function assemblyMcp(assembly: Assembly): McpTransportPort {
         { kind: "agent", id: "mcp" },
         localSession(`mcp-${randomUUID()}`),
       );
-      const exposure = assembly.exposure;
       const resolveContext = localIdentityResolver(
         assembly.deviceRoot,
         { ...process.env },
         process.stdin.isTTY === true,
       );
-      const handlers = () =>
-        createMcpHandlers(assembly.catalog, exposure, {
+      const handlers = () => {
+        void assembly.exposure;
+        return createMcpHandlers(assembly.catalog, exposure, {
           context,
           resolveContext,
         });
+      };
       const { createMcpTransport } =
         await import("../adapters/mcp-transport/index.ts");
       return createMcpTransport().open({
