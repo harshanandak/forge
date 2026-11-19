@@ -84,12 +84,19 @@ Export the named nonsecret ledger variables before these commands. Run every com
 The restored typed-command target must be admitted on an isolated Worker (see Projects and Workers). Deploying a second Worker, changing admission/config or redeploying is a separate authorization with prior admission/config and Worker version recorded as the reverse path. An admin-only unadmitted target cannot prove stopped control. If unavailable, leave that phase INCOMPLETE.
 
 **Dispatch.** Capture the installed contract with `node "$BIN" lane dispatch --help --json`.
-After target login, run `node "$BIN" lane control` for global control and
+After restore and admin readback, complete target login. Then issue a
+session-bound device credential with the admin `POST /p/<project>/devices` call
+above. Set `device` to the dispatch client's wire device ID and `session` to its
+`FORGE_SESSION`. Browser login issues a sessionless credential. Use the
+admin-issued credential for the `lane` commands and claim with the same device
+and session. If approved setup cannot configure that credential for the
+installed client, record the live dispatch phase as INCOMPLETE/2.
+
+Run `node "$BIN" lane control` for global control and
 `node "$BIN" lane control --input '{"id":"work-7"}'` for the chosen restored issue.
 Both should report `stopped: true` and `scope: "all"` after restore. Use the canonical
 issue ID (`work-7` for a displayed ID such as `forge-7`) for dispatch and the
-displayed ID for `issue claim`. Claim the open issue with the session-bound client
-that will dispatch and record the live grant.
+displayed ID for `issue claim`. Claim the open issue and record the live grant.
 
 ```sh
 node "$BIN" lane dispatch --input '{"id":"work-7","dispatchId":"restore-proof-1","incarnation":"<observed>","epoch":4}'
