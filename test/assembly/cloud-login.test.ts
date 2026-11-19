@@ -120,9 +120,7 @@ const snapshot = (sb: Sandbox) => ({
 });
 
 async function seedPrior(r: Rig) {
-  const store = credentialStore(openCloudFiles(r.sb.home), {
-    wait: () => Promise.resolve(),
-  });
+  const store = credentialStore(openCloudFiles(r.sb.home));
   await store.save(entry(r.clk.now()));
   writeFileSync(r.sb.binding, `${JSON.stringify(bindingFor(), null, 2)}\n`);
   return snapshot(r.sb);
@@ -969,3 +967,24 @@ for (const [code, retry, message] of [
     });
   }
 }
+
+test("a binding changed during approval refuses login before replacing the prior credential", async () => {
+  const r = rig();
+  try {
+    const prior = await seedPrior(r);
+    const replacement = JSON.stringify(bindingFor({ origin: OTHER_ORIGIN }));
+    const { envelope } = await login(r, [
+      () => json(startBody()),
+      () => {
+        writeFileSync(r.sb.binding, replacement);
+        return approved(credentialJson(r.clk.now()));
+      },
+    ]);
+    expect(failure(envelope).code).toBe("INPUT_CONFLICT");
+    expect(read(r.sb.credentials)).toBe(prior.credentials);
+    expect(read(r.sb.binding)).toBe(replacement);
+    expectNoSecrets(envelope, r.lines);
+  } finally {
+    r.sb.close();
+  }
+});

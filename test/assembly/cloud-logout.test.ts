@@ -1,6 +1,9 @@
 import { expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { createCloudLogin } from "../../src/assembly/cloud-login.ts";
+import {
+  createCloudLogin,
+  type CloudLoginDeps,
+} from "../../src/assembly/cloud-login.ts";
 import {
   credentialStore,
   openCloudFiles,
@@ -21,7 +24,7 @@ setDefaultTimeout(30_000);
 
 type Run = (input: unknown) => Promise<unknown>;
 
-function logoutFor(sb: Sandbox): Run {
+function logoutFor(sb: Sandbox, more: Partial<CloudLoginDeps> = {}): Run {
   const service = createCloudLogin({
     root: sb.root,
     home: sb.home,
@@ -29,14 +32,14 @@ function logoutFor(sb: Sandbox): Run {
     env: { FORGE_DEVICE_ID: "dev-1" },
     signal: new AbortController().signal,
     fetch: () => Promise.reject(new Error("logout must not use the network")),
+    ...more,
   });
   const holder: object = service;
   return (input) => (holder as { logout: Run }).logout(input);
 }
 
 const now = clock().now();
-const store = (sb: Sandbox) =>
-  credentialStore(openCloudFiles(sb.home), { wait: () => Promise.resolve() });
+const store = (sb: Sandbox) => credentialStore(openCloudFiles(sb.home));
 const otherTokenId = "bbbbbbbbbbbbbbbb";
 const other = () =>
   entry(now, {
@@ -115,16 +118,17 @@ test("logout refuses to remove a binding that changed after it was read", async 
     await store(sb).save(entry(now));
     bind(sb);
     const replacement = `${JSON.stringify(bindingFor({ project: "other" }))}\n`;
+    const before = read(sb.credentials);
     const result = logoutFor(sb)({});
     writeFileSync(sb.binding, replacement);
     await expect(result).rejects.toMatchObject({
       error: {
         code: "INPUT_CONFLICT",
         retry: "reconcile_first",
-        observed: { tokenId: "aaaaaaaaaaaaaaaa" },
       },
     });
     expect(read(sb.binding)).toBe(replacement);
+    expect(read(sb.credentials)).toBe(before);
   } finally {
     sb.close();
   }
@@ -175,6 +179,134 @@ test("input with a value is refused as invalid and never echoed", async () => {
     expect(error).toMatchObject({ error: { code: "INPUT_INVALID" } });
     expect(JSON.stringify(error)).not.toContain(SECRET);
     expect(read(sb.binding)).not.toBeNull();
+  } finally {
+    sb.close();
+  }
+});
+
+for (const when of [
+  "before invocation",
+  "after lock acquisition",
+  "before credential removal",
+  "before binding removal",
+] as const)
+  test(`logout cancellation ${when} preserves both files`, async () => {
+    const sb = sandbox();
+    try {
+      await store(sb).save(entry(now));
+      bind(sb);
+      const before = [read(sb.credentials), read(sb.binding)];
+      const controller = new AbortController();
+      if (when === "before invocation") controller.abort();
+      const pending = logoutFor(sb, {
+        signal: controller.signal,
+        ...(when === "before credential removal" ||
+        when === "before binding removal"
+          ? {
+              security: {
+                directory() {},
+                file(path) {
+                  if (
+                    when === "before credential removal" ||
+                    (path === sb.credentials &&
+                      !readFileSync(path, "utf8").includes("aaaaaaaaaaaaaaaa"))
+                  )
+                    controller.abort();
+                },
+              },
+            }
+          : {}),
+      })({});
+      if (when === "after lock acquisition") controller.abort();
+      await expect(pending).rejects.toMatchObject({
+        error: { code: "INVOCATION_CANCELLED" },
+      });
+      expect([read(sb.credentials), read(sb.binding)]).toEqual(before);
+      await store(sb).save(entry(now));
+    } finally {
+      sb.close();
+    }
+  });
+
+test("a held credential lock refuses logout without removing either file", async () => {
+  const sb = sandbox();
+  try {
+    await store(sb).save(entry(now));
+    bind(sb);
+    const before = [read(sb.credentials), read(sb.binding)];
+    const held = openCloudFiles(sb.home).lock();
+    try {
+      await expect(logoutFor(sb)({})).rejects.toMatchObject({
+        error: { code: "INPUT_CONFLICT" },
+      });
+      expect([read(sb.credentials), read(sb.binding)]).toEqual(before);
+    } finally {
+      held.release();
+    }
+  } finally {
+    sb.close();
+  }
+});
+
+test("binding replacement after credential removal rolls the credential back", async () => {
+  const sb = sandbox();
+  try {
+    await store(sb).save(entry(now));
+    bind(sb);
+    const before = read(sb.credentials);
+    const replacement = JSON.stringify(bindingFor({ project: "other" }));
+    let replaced = false;
+    await expect(
+      logoutFor(sb, {
+        security: {
+          directory() {},
+          file(path) {
+            if (
+              !replaced &&
+              path === sb.credentials &&
+              !readFileSync(path, "utf8").includes("aaaaaaaaaaaaaaaa")
+            ) {
+              replaced = true;
+              writeFileSync(sb.binding, replacement);
+            }
+          },
+        },
+      })({}),
+    ).rejects.toMatchObject({ error: { code: "INPUT_CONFLICT" } });
+    expect(replaced).toBe(true);
+    expect(read(sb.credentials)).toBe(before);
+    expect(read(sb.binding)).toBe(replacement);
+  } finally {
+    sb.close();
+  }
+});
+
+test("logout keeps the lock until binding deletion and refuses a competing credential save", async () => {
+  const sb = sandbox();
+  try {
+    await store(sb).save(entry(now));
+    bind(sb);
+    let competing: Promise<unknown> | undefined;
+    await logoutFor(sb, {
+      security: {
+        directory() {},
+        file(path) {
+          if (
+            competing === undefined &&
+            path === sb.credentials &&
+            !readFileSync(path, "utf8").includes("aaaaaaaaaaaaaaaa")
+          )
+            competing = store(sb)
+              .save(entry(now))
+              .catch((error: unknown) => error);
+        },
+      },
+    })({});
+    expect(await competing).toMatchObject({
+      error: { code: "INPUT_CONFLICT" },
+    });
+    expect(read(sb.binding)).toBeNull();
+    expect(store(sb).associations(PROJECT_ID)).toEqual([]);
   } finally {
     sb.close();
   }

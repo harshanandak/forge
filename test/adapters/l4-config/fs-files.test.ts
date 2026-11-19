@@ -17,6 +17,7 @@ import {
   readFileSync,
   rmSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import * as nodeFs from "node:fs";
@@ -507,4 +508,46 @@ describe("the fs adapter refuses to leave the project root", () => {
     expect(() => files.write("cfg/config.yaml", bytes("x"))).toThrow();
     expect(readdirSync(join(dir, "cfg"))).toEqual(["config.yaml"]);
   });
+});
+
+test("a failed sync of the binding removal restores the original binding", () => {
+  const dir = root();
+  const files = nodeConfigFiles(dir);
+  files.write(".forge/cloud.json", bytes("project-a"));
+  const sync = spyOn(durableIO, "syncParentDirectory").mockImplementation(
+    () => {
+      throw new Error("synthetic directory sync failure");
+    },
+  );
+  try {
+    expect(() => files.remove(".forge/cloud.json", bytes("project-a"))).toThrow(
+      "synthetic directory sync failure",
+    );
+    expect(sync).toHaveBeenCalledWith(join(dir, ".forge", "cloud.json"));
+  } finally {
+    sync.mockRestore();
+  }
+  expect(text(files.read(".forge/cloud.json"))).toBe("project-a");
+});
+
+test("a claim cleanup sync failure cannot undo an already synced binding removal", () => {
+  const dir = root();
+  const files = nodeConfigFiles(dir);
+  files.write(".forge/cloud.json", bytes("project-a"));
+  const sync = spyOn(durableIO, "syncParentDirectory");
+  const drop = spyOn(durableIO, "removeDurable").mockImplementation((path) => {
+    expect(sync).toHaveBeenCalledWith(join(dir, ".forge", "cloud.json"));
+    unlinkSync(path);
+    throw new Error("synthetic cleanup sync failure");
+  });
+  try {
+    expect(() =>
+      files.remove(".forge/cloud.json", bytes("project-a")),
+    ).not.toThrow();
+  } finally {
+    drop.mockRestore();
+    sync.mockRestore();
+  }
+  expect(files.read(".forge/cloud.json")).toBeUndefined();
+  expect(readdirSync(join(dir, ".forge"))).toEqual([]);
 });

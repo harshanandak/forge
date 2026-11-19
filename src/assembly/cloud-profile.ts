@@ -44,14 +44,21 @@ export interface CloudBinding {
 export interface CredentialStore {
   lookup(key: CredentialKey, nowMs: number): DeviceCredential | undefined;
   associations(identity: string): readonly CredentialKey[];
-  save(entry: CredentialEntry): Promise<void>;
-  remove(key: CredentialKey): Promise<string | undefined>;
+  save(
+    entry: CredentialEntry,
+    transition?: CredentialTransition,
+  ): Promise<void>;
+  remove(
+    key: CredentialKey,
+    transition?: CredentialTransition,
+  ): Promise<string | undefined>;
 }
-export interface CredentialStoreOptions {
-  /** Pauses between attempts to take the file lock. */
-  readonly wait?: (ms: number) => Promise<void>;
-  readonly attempts?: number;
+export interface CredentialTransition {
+  readonly signal: AbortSignal;
+  readonly prepare?: () => void;
+  readonly finish: () => void;
 }
+
 type PrivateChecks = {
   directory(path: string, created?: boolean): void;
   file(path: string): void;
@@ -274,35 +281,11 @@ function serialize(map: Readonly<Record<string, CredentialEntry>>): string {
   return `${JSON.stringify({ schema: 1, entries }, null, 2)}\n`;
 }
 
-export function credentialStore(
-  files: DeviceFiles,
-  options: CredentialStoreOptions = {},
-): CredentialStore {
-  const attempts = options.attempts ?? 20;
-  const wait =
-    options.wait ??
-    ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+export function credentialStore(files: DeviceFiles): CredentialStore {
   const load = (): Record<string, CredentialEntry> => {
     const text = files.read(CREDENTIAL_FILE);
     return text === undefined ? {} : parseFile(text);
   };
-
-  /** Never held while waiting for approval: taken only to merge one verified entry. */
-  async function lock(): Promise<{ release(): void }> {
-    for (let attempt = 1; ; attempt++) {
-      try {
-        return files.lock();
-      } catch (error) {
-        if (
-          !(error instanceof ForgeFailure) ||
-          error.error.code !== "INPUT_CONFLICT" ||
-          attempt >= attempts
-        )
-          throw error;
-        await wait(100);
-      }
-    }
-  }
 
   return {
     lookup(key, nowMs) {
@@ -321,38 +304,43 @@ export function credentialStore(
         .filter((entry) => entry.identity === identity)
         .map(({ origin, project }) => ({ origin, identity, project }));
     },
-    async save(entry) {
-      await commit((saved) => {
-        // The target was chosen before the wait for approval. Another login may have saved a different
-        // origin or project for this identity since, so the choice is checked again under the lock; a
-        // loser leaves the store with the winner's association only.
-        if (
-          Object.values(saved).some(
-            (other) =>
-              other.identity === entry.identity &&
-              (other.origin !== entry.origin ||
-                other.project !== entry.project),
+    async save(entry, transition) {
+      await commit(
+        (saved) => {
+          if (
+            Object.values(saved).some(
+              (other) =>
+                other.identity === entry.identity &&
+                (other.origin !== entry.origin ||
+                  other.project !== entry.project),
+            )
           )
-        )
-          throw conflict(
-            "Another login already saved this project's credential for a different Forge cloud origin or project",
-          );
-        return {
-          ...saved,
-          [keyOf(entry)]: parseEntry(keyOf(entry), entry),
-        };
-      }, "saved");
+            throw conflict(
+              "Another login already saved this project's credential for a different Forge cloud origin or project",
+            );
+          return {
+            ...saved,
+            [keyOf(entry)]: parseEntry(keyOf(entry), entry),
+          };
+        },
+        "saved",
+        transition,
+      );
     },
-    async remove(key) {
+    async remove(key, transition) {
       let removed: string | undefined;
-      await commit((saved) => {
-        const found = saved[keyOf(key)];
-        if (found === undefined) return undefined;
-        removed = found.id;
-        return Object.fromEntries(
-          Object.entries(saved).filter(([name]) => name !== keyOf(key)),
-        );
-      }, "removed");
+      await commit(
+        (saved) => {
+          const found = saved[keyOf(key)];
+          if (found === undefined) return undefined;
+          removed = found.id;
+          return Object.fromEntries(
+            Object.entries(saved).filter(([name]) => name !== keyOf(key)),
+          );
+        },
+        "removed",
+        transition,
+      );
       return removed;
     },
   };
@@ -362,20 +350,39 @@ export function credentialStore(
       saved: Record<string, CredentialEntry>,
     ) => Record<string, CredentialEntry> | undefined,
     verb: "saved" | "removed",
+    transition?: CredentialTransition,
   ): Promise<void> {
-    const held = await lock();
+    const checkCancelled = () => {
+      if (transition?.signal.aborted)
+        throw new ForgeFailure({
+          code: "INVOCATION_CANCELLED",
+          message: "The authentication change was cancelled.",
+          retry: "never",
+        });
+    };
+    checkCancelled();
+    const held = await Promise.resolve(files.lock());
     try {
+      checkCancelled();
+      transition?.prepare?.();
       const previous = files.read(CREDENTIAL_FILE);
       const next = change(previous === undefined ? {} : parseFile(previous));
-      if (next === undefined) return;
+      if (next === undefined) {
+        checkCancelled();
+        transition?.finish();
+        return;
+      }
       const text = serialize(next);
       if (Buffer.byteLength(text) > FILE_LIMIT) throw integrity();
       parseFile(text);
+      checkCancelled();
       try {
         files.write(CREDENTIAL_FILE, text);
         if (files.read(CREDENTIAL_FILE) !== text) throw integrity();
+        checkCancelled();
+        transition?.finish();
       } catch (error) {
-        if (previous !== undefined) recover(previous);
+        recover(previous ?? serialize({}));
         throw error;
       }
     } catch (error) {

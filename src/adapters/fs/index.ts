@@ -40,7 +40,11 @@ import {
   removeConflict,
 } from "../../core/config/files.ts";
 import { ForgeFailure } from "../../contract/failure.ts";
-import { publishExclusive, removeDurable } from "./durable-io.ts";
+import {
+  publishExclusive,
+  removeDurable,
+  syncParentDirectory,
+} from "./durable-io.ts";
 import { nodeProjectFiles } from "./project-files.ts";
 
 function errorCode(error: unknown): string | undefined {
@@ -308,11 +312,15 @@ export function nodeConfigFiles(
       if (!intact)
         restoreAfterRemoveFailure(path, target, claimed, removeConflict(path));
       try {
+        syncParentDirectory(target);
+      } catch (error) {
+        restoreAfterRemoveFailure(path, target, claimed, error);
+      }
+      try {
         removeDurable(claimed);
       } catch (error) {
         if (existsSync(claimed))
           restoreAfterRemoveFailure(path, target, claimed, error);
-        throw error;
       }
     },
     list(dir) {

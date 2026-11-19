@@ -193,9 +193,7 @@ test("a binding edited to another origin than the saved credential is refused wi
   const f = fixture();
   try {
     f.manifest();
-    await credentialStore(openCloudFiles(f.home), {
-      wait: () => Promise.resolve(),
-    }).save(entry(Date.now()));
+    await credentialStore(openCloudFiles(f.home)).save(entry(Date.now()));
     writeFileSync(
       f.binding,
       `${JSON.stringify(bindingFor({ origin: OTHER_ORIGIN }), null, 2)}\n`,
