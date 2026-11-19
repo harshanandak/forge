@@ -87,7 +87,8 @@ function argumentType(schema: unknown): unknown {
   );
 }
 
-function argumentValue(raw: string, type: unknown): unknown {
+function argumentValue(raw: string, schema: unknown): unknown {
+  const type = argumentType(schema);
   if (type === "string" || type === undefined) return raw;
   if (type === "boolean") {
     const value = raw.trim();
@@ -141,7 +142,7 @@ function mapArguments(
           !["true", "false"].includes(next));
       const raw = inline ?? (booleanSwitch ? "true" : tokens[++i]);
       if (raw === undefined) throw new Error(`Missing value for --${key}.`);
-      result[key] = argumentValue(raw, type);
+      result[key] = argumentValue(raw, properties[key]);
     } else {
       const key = positions[position++];
       if (key === undefined) {

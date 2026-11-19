@@ -395,67 +395,6 @@ test("a redirect from start or poll is unavailable and its Location is never fol
           headers: { location: "https://evil.example.test/steal" },
         });
 
-      test("binding uses the native session and checks both echoes before replacing an existing login", async () => {
-        const r = rig();
-        const session = "codex:root%2Fpart+claude-code:thread%20part";
-        const env = {
-          FORGE_DEVICE_ID: "dev-1",
-          CODEX_SESSION_ID: "root/part",
-          CLAUDE_CODE_SESSION_ID: "thread part",
-        };
-        try {
-          const prior = JSON.stringify(await seedPrior(r));
-          const input = { ...INPUT, bindSession: true };
-          for (const wrong of [undefined, "wrong"]) {
-            for (const start of [false, true]) {
-              const { envelope, net } = await login(
-                r,
-                [
-                  () =>
-                    json({ ...startBody(), session: start ? wrong : session }),
-                  goodPoll(r, { session: wrong }),
-                ],
-                { env },
-                input,
-              );
-              expect(failure(envelope).code).toBe("UNAVAILABLE");
-              expect(net.calls).toHaveLength(start ? 1 : 2);
-              expect(net.calls[0]?.body).toEqual({ device: "dev-1", session });
-              expect(JSON.stringify(snapshot(r.sb)) === prior).toBe(true);
-            }
-          }
-          const { envelope } = await login(
-            r,
-            [() => json({ ...startBody(), session }), goodPoll(r, { session })],
-            { env },
-            input,
-          );
-          expect(envelope).toMatchObject({ ok: true, result: { session } });
-          expect(r.lines.some((line) => line.includes(session))).toBe(true);
-          expectNoSecrets(envelope, r.lines);
-        } finally {
-          r.sb.close();
-        }
-      });
-
-      test("binding without a stable session fails before any network call", async () => {
-        const r = rig();
-        try {
-          const { envelope, net } = await login(
-            r,
-            [],
-            {},
-            { ...INPUT, bindSession: true },
-          );
-          expect(failure(envelope)).toMatchObject({
-            code: "CONTEXT_MISSING",
-            message: expect.stringContaining("FORGE_SESSION") as unknown,
-          });
-          expect(net.calls).toHaveLength(0);
-        } finally {
-          r.sb.close();
-        }
-      });
       const prior = await seedPrior(r);
       const { envelope, exit, net } = await login(
         r,
@@ -470,6 +409,67 @@ test("a redirect from start or poll is unavailable and its Location is never fol
     } finally {
       r.sb.close();
     }
+  }
+}, 30_000);
+
+test("binding uses the native session and checks both echoes before replacing an existing login", async () => {
+  const r = rig();
+  const session = "codex:root%2Fpart+claude-code:thread%20part";
+  const env = {
+    FORGE_DEVICE_ID: "dev-1",
+    CODEX_SESSION_ID: "root/part",
+    CLAUDE_CODE_SESSION_ID: "thread part",
+  };
+  try {
+    const prior = JSON.stringify(await seedPrior(r));
+    const input = { ...INPUT, bindSession: true };
+    for (const wrong of [undefined, "wrong"]) {
+      for (const start of [false, true]) {
+        const { envelope, net } = await login(
+          r,
+          [
+            () => json({ ...startBody(), session: start ? wrong : session }),
+            goodPoll(r, { session: wrong }),
+          ],
+          { env },
+          input,
+        );
+        expect(failure(envelope).code).toBe("UNAVAILABLE");
+        expect(net.calls).toHaveLength(start ? 1 : 2);
+        expect(net.calls[0]?.body).toEqual({ device: "dev-1", session });
+        expect(JSON.stringify(snapshot(r.sb)) === prior).toBe(true);
+      }
+    }
+    const { envelope } = await login(
+      r,
+      [() => json({ ...startBody(), session }), goodPoll(r, { session })],
+      { env },
+      input,
+    );
+    expect(envelope).toMatchObject({ ok: true, result: { session } });
+    expect(r.lines.some((line) => line.includes(session))).toBe(true);
+    expectNoSecrets(envelope, r.lines);
+  } finally {
+    r.sb.close();
+  }
+}, 30_000);
+
+test("binding without a stable session fails before any network call", async () => {
+  const r = rig();
+  try {
+    const { envelope, net } = await login(
+      r,
+      [],
+      {},
+      { ...INPUT, bindSession: true },
+    );
+    expect(failure(envelope)).toMatchObject({
+      code: "CONTEXT_MISSING",
+      message: expect.stringContaining("FORGE_SESSION") as unknown,
+    });
+    expect(net.calls).toHaveLength(0);
+  } finally {
+    r.sb.close();
   }
 }, 30_000);
 
