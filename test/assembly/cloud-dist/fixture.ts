@@ -11,6 +11,7 @@ import {
   readdirSync,
   readFileSync,
   statSync,
+  realpathSync,
   writeFileSync,
   mkdirSync,
   existsSync,
@@ -276,6 +277,7 @@ export async function cloudRig(
     if (address === null || typeof address === "string")
       throw new Error("the loopback server has no port");
     const origin = `https://127.0.0.1:${address.port}`;
+    const root = realpathSync(s.root);
 
     writeFileSync(
       join(s.root, ".forge", "config.yaml"),
@@ -354,7 +356,7 @@ export async function cloudRig(
     const stop = () =>
       new Promise<void>((resolve) => listening.close(() => resolve()));
     return {
-      root: s.root,
+      root,
       origin,
       env,
       requests,
@@ -364,7 +366,7 @@ export async function cloudRig(
           "node",
           [...preload, bin, ...args],
           {
-            cwd: s.root,
+            cwd: root,
             env: { ...env, ...overrides },
             timeout: 40_000,
             maxBuffer: 1_000_000,
