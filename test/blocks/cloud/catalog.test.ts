@@ -205,6 +205,7 @@ test("cloud.login is declared by the block for a person only, so it is in the ca
   expect(Object.keys(entry?.inputSchema.properties ?? {})).toEqual([
     "origin",
     "project",
+    "bindSession",
   ]);
   expect(entry?.inputSchema.type).toBeUndefined();
   expect(entry?.outputSchema?.type).toBe("object");
