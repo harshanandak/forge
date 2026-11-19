@@ -63,6 +63,7 @@ async function fixture() {
     requestId: "freeze",
   });
   let beforeWrite = () => {};
+  let afterRead: ((key: string) => void) | undefined;
   const interrupt = (work: () => void) => {
     beforeWrite = () => {
       beforeWrite = () => {};
@@ -71,6 +72,11 @@ async function fixture() {
   };
   const raced = {
     ...state,
+    get: (key: string) => {
+      const record = state.get(key);
+      afterRead?.(key);
+      return record;
+    },
     put: (...args: Parameters<typeof state.put>) => {
       beforeWrite();
       return state.put(...args);
@@ -86,7 +92,15 @@ async function fixture() {
       services: { state: raced },
       config: {},
     } as unknown as HandlerCall<Record<string, unknown>>);
-  return { owner, run, interrupt, close: () => opened.handle.close() };
+  return {
+    owner,
+    run,
+    interrupt,
+    onRead: (work: (key: string) => void) => {
+      afterRead = work;
+    },
+    close: () => opened.handle.close(),
+  };
 }
 const frozenAt = (result: unknown) => (result as { at: string }).at;
 const refusal = (work: () => unknown) => {
@@ -217,4 +231,29 @@ test("lane stop on an unreadable control record keeps a valid freeze", async () 
     refusal(() => run("issue.create", { title: "after" })).message,
   ).toContain("frozen since");
   await close();
+});
+
+test("lane stop recovery cannot overwrite a freeze committed after its recovery read", async () => {
+  const { owner, run, onRead, close } = await fixture();
+  try {
+    owner.put(namespace, GLOBAL, { stopped: null }, actor, {
+      expectRevision: 0,
+    });
+    const frozen = { stopped: {}, frozen: at };
+    let reads = 0;
+    onRead((key) => {
+      if (key === GLOBAL && ++reads === 2)
+        owner.put(namespace, GLOBAL, frozen, actor, { expectRevision: 1 });
+    });
+
+    expect(refusal(() => run("lane.stop", { all: true })).code).toBe(
+      "REVISION_CONFLICT",
+    );
+    expect(owner.get(namespace, GLOBAL)).toMatchObject({
+      revision: 2,
+      value: frozen,
+    });
+  } finally {
+    await close();
+  }
 });

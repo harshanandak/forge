@@ -168,6 +168,58 @@ async function collaborate() {
   await p.invite(B);
   await p.invite(C);
 }
+for (const op of [
+  "issue.renew",
+  "issue.release",
+  "issue.leave",
+  "attempt.release",
+]) {
+  test(
+    op + " fences the lease and its event against a concurrent freeze",
+    async () => {
+      let caller = A;
+      if (op === "attempt.release") {
+        await competing();
+        await attempt(B);
+        caller = B;
+      } else {
+        await p.call("claim");
+        if (op === "issue.leave") {
+          await p.invite(B);
+          await p.call("join", B);
+          caller = B;
+        }
+      }
+
+      let frozen: ReturnType<typeof p.snapshot> | undefined;
+      intercept = (state) => ({
+        ...state,
+        get: (key) => {
+          const record = state.get(key);
+          if (key === "autopilot:global" && !frozen) {
+            p.owner.put(
+              ns,
+              key,
+              { stopped: {}, frozen: new Date(state.now()).toISOString() },
+              A.actor,
+              { expectRevision: 0 },
+            );
+            frozen = p.snapshot();
+          }
+          return record;
+        },
+      });
+      const input = op === "attempt.release" ? { attempt: "attempt-1" } : {};
+      await expect(p.call(op, caller, input)).rejects.toMatchObject({
+        error: { code: "REVISION_CONFLICT" },
+      });
+      if (!frozen) throw new Error("Freeze injection did not run");
+      expect(p.snapshot()).toEqual(frozen);
+    },
+    10000,
+  );
+}
+
 test("A coordinates while B and C have separate participant leases", async () => {
   await collaborate();
   const coordinator = p.held();

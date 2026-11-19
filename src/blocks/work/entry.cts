@@ -4120,7 +4120,8 @@ function laneStop(call: HandlerCall<StopInput>): {
   } catch (error) {
     if (!(error instanceof StateProblem)) throw error;
     // An unreadable record is replaced by a stop of every lane: the safe direction.
-    const kept = state.get(GLOBAL)?.value;
+    const record = state.get(GLOBAL);
+    const kept = record?.value;
     persist(
       state,
       GLOBAL,
@@ -4131,7 +4132,7 @@ function laneStop(call: HandlerCall<StopInput>): {
           ? { frozen: isTime(kept.frozen) ? kept.frozen : at }
           : {}),
       },
-      state.get(GLOBAL)?.revision ?? 0,
+      record?.revision ?? 0,
     );
     return { stopped: "all", at };
   }
@@ -4248,13 +4249,19 @@ function pinned(state: LeaseStateClient, read: PinnedRead): LeaseStateClient {
     acquire: (
       ...[subject, duration, options]: Parameters<LeaseStateClient["acquire"]>
     ) => state.acquire(subject, duration, pin(options ?? {})),
+    renew: (subject, duration, options) =>
+      state.renew(subject, duration, pin(options ?? {})),
+    release: (subject, options) => state.release(subject, pin(options ?? {})),
+    releaseOwn: (subject, options) =>
+      state.releaseOwn(subject, pin(options ?? {})),
+    appendLandingComment: (input, options) =>
+      state.appendLandingComment(input, pin(options ?? {})),
     delete: (...[key, options]: Parameters<LeaseStateClient["delete"]>) =>
       state.delete(key, pin(options)),
     withOwnLease: (subject) => pinned(state.withOwnLease(subject), read),
   };
 }
-function refuseFrozen(services: unknown): object {
-  const state = client(services);
+function refuseFrozen(state: LeaseStateClient): LeaseStateClient {
   const record = state.get(GLOBAL);
   const value = record?.value;
   if (isMap(value) && value.frozen !== undefined)
@@ -4266,13 +4273,10 @@ function refuseFrozen(services: unknown): object {
           "Bind this checkout to the cloud project with forge auth login, then use the cloud-served forge issue commands. Do not lift the freeze from a session; only the owner can.",
       },
     );
-  return {
-    ...(services as object),
-    state: pinned(state, {
-      key: GLOBAL,
-      expectRevision: record?.revision ?? 0,
-    }),
-  };
+  return pinned(state, {
+    key: GLOBAL,
+    expectRevision: record?.revision ?? 0,
+  });
 }
 const FROZEN_WRITES = [
   "issue.create",
@@ -5761,7 +5765,13 @@ const operations: Operations<WorkOperations> = {
           pull.url,
         );
         if (!keepOpen && !recovering)
-          persist(state, landingKey, landing, accepted?.revision ?? 0, key(id));
+          persist(
+            refuseFrozen(state),
+            landingKey,
+            landing,
+            accepted?.revision ?? 0,
+            key(id),
+          );
       }
       save();
       if (!keepOpen && current.status !== "closed")
@@ -5771,15 +5781,20 @@ const operations: Operations<WorkOperations> = {
           pull.url,
         );
       if (!matching) {
-        refuseFrozen(call.services);
+        const commentState = refuseFrozen(state);
         const written = recovering
-          ? state.appendLandingComment({
+          ? commentState.appendLandingComment({
               id,
               pr: input.pr!,
               receipt,
               generation: generation!,
             })
-          : appendNext(state, `comment:${id}:`, { id, body: note }, key(id));
+          : appendNext(
+              commentState,
+              `comment:${id}:`,
+              { id, body: note },
+              key(id),
+            );
         Object.assign(progressState, { commentId: written.key });
         save();
       }
@@ -6973,7 +6988,16 @@ for (const name of FROZEN_WRITES) {
   >;
   const run = table[name]!;
   table[name] = (call, ...rest) =>
-    run({ ...call, services: refuseFrozen(call.services) }, ...rest);
+    run(
+      {
+        ...call,
+        services: {
+          ...(call.services as object),
+          state: refuseFrozen(client(call.services)),
+        },
+      },
+      ...rest,
+    );
 }
 Object.defineProperties(operations, {
   limitsOf: { value: limitsOf },

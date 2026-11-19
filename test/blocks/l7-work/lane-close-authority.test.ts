@@ -98,6 +98,7 @@ async function fixture(seedLink = true) {
     present: true,
     branch: true,
     failComment: false,
+    beforeWrite: undefined as ((key: string) => void) | undefined,
     failCleanup: false,
     run: 0,
     checkout: "",
@@ -121,8 +122,19 @@ async function fixture(seedLink = true) {
     state: {
       ...state,
       now: () => now,
+      put: (...args: Parameters<typeof state.put>) => {
+        flags.beforeWrite?.(args[0]);
+        return state.put(...args);
+      },
+      appendLandingComment: (
+        ...args: Parameters<typeof state.appendLandingComment>
+      ) => {
+        flags.beforeWrite?.("comment:" + args[0].id + ":");
+        return state.appendLandingComment(...args);
+      },
       // The landing note is a numbered write, so the injected failure fires at the numbered-write seam.
       putNext: (...args: Parameters<typeof state.putNext>) => {
+        flags.beforeWrite?.(args[0]);
         if (args[0].startsWith("comment:") && flags.failComment) {
           flags.failComment = false;
           throw new Error("injected landing comment failure");
@@ -390,6 +402,52 @@ test("receipt refusal leaves lease expiry and renewal events unchanged", async (
     await f.dispose();
   }
 });
+
+for (const mode of ["landing record", "comment", "recovery comment"]) {
+  test(
+    "lane close fences the " + mode + " against a concurrent freeze",
+    async () => {
+      const f = await fixture();
+      try {
+        if (mode === "recovery comment") {
+          f.flags.failComment = true;
+          await expect(f.close()).rejects.toThrow(
+            "injected landing comment failure",
+          );
+          f.expire();
+        }
+        const landingKey = "landing:" + id + ":1";
+        const commentPrefix = "comment:" + id + ":";
+        const target = mode === "landing record" ? landingKey : commentPrefix;
+        let events: ReturnType<typeof f.owner.events> | undefined;
+        f.flags.beforeWrite = (key) => {
+          if (key !== target) return;
+          f.owner.put(
+            namespace,
+            "autopilot:global",
+            { stopped: {}, frozen: new Date(f.now()).toISOString() },
+            f.holder.actor,
+            { expectRevision: 0 },
+          );
+          events = f.owner.events(namespace);
+        };
+
+        await expect(f.close()).rejects.toMatchObject({
+          error: { code: "REVISION_CONFLICT" },
+        });
+        if (!events) throw new Error("Freeze injection did not run");
+        expect(f.owner.events(namespace)).toEqual(events);
+        if (mode === "landing record")
+          expect(f.state.get(landingKey)).toBeUndefined();
+        expect(f.comments()).toHaveLength(0);
+        expect(f.state.get("allocation:" + commentPrefix)).toBeUndefined();
+        expect(f.flags.present).toBe(true);
+      } finally {
+        await f.dispose();
+      }
+    },
+  );
+}
 
 test("landing comment recovery rejects mismatched authority and cannot mutate issue or claim", async () => {
   const f = await fixture();
