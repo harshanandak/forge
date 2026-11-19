@@ -2303,18 +2303,30 @@ export class StateOwner {
       [namespace, lease.subject, lease.generation, json(lease)],
     );
   }
-  renew(namespace: string, fence: Fence, durationMs: number): LeaseRecord {
-    return this.#changeLease(namespace, fence, durationMs);
+  renew(
+    namespace: string,
+    fence: Fence,
+    durationMs: number,
+    options?: Pick<WriteOptions, "readSet">,
+  ): LeaseRecord {
+    return this.#changeLease(namespace, fence, durationMs, options);
   }
-  release(namespace: string, fence: Fence): LeaseRecord {
-    return this.#changeLease(namespace, fence);
+  release(
+    namespace: string,
+    fence: Fence,
+    options?: Pick<WriteOptions, "readSet">,
+  ): LeaseRecord {
+    return this.#changeLease(namespace, fence, undefined, options);
   }
   #changeLease(
     namespace: string,
     fence: Fence,
     durationMs?: number,
+    options?: Pick<WriteOptions, "readSet">,
   ): LeaseRecord {
+    const readSet = copyReadSet(options?.readSet) ?? [];
     return this.#db.transaction(() => {
+      this.#readSetHolds(namespace, undefined, undefined, readSet);
       const now = this.#now();
       const current = this.#held(namespace, fence, now);
       const at = new Date(now).toISOString();

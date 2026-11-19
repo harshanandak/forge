@@ -4120,7 +4120,8 @@ function laneStop(call: HandlerCall<StopInput>): {
   } catch (error) {
     if (!(error instanceof StateProblem)) throw error;
     // An unreadable record is replaced by a stop of every lane: the safe direction.
-    const kept = state.get(GLOBAL)?.value;
+    const snapshot = state.get(GLOBAL);
+    const kept = snapshot?.value;
     persist(
       state,
       GLOBAL,
@@ -4131,7 +4132,7 @@ function laneStop(call: HandlerCall<StopInput>): {
           ? { frozen: isTime(kept.frozen) ? kept.frozen : at }
           : {}),
       },
-      state.get(GLOBAL)?.revision ?? 0,
+      snapshot?.revision ?? 0,
     );
     return { stopped: "all", at };
   }
@@ -4248,6 +4249,17 @@ function pinned(state: LeaseStateClient, read: PinnedRead): LeaseStateClient {
     acquire: (
       ...[subject, duration, options]: Parameters<LeaseStateClient["acquire"]>
     ) => state.acquire(subject, duration, pin(options ?? {})),
+    renew: (
+      ...[subject, duration, options]: Parameters<LeaseStateClient["renew"]>
+    ) => state.renew(subject, duration, pin(options ?? {})),
+    release: (...[subject, options]: Parameters<LeaseStateClient["release"]>) =>
+      state.release(subject, pin(options ?? {})),
+    releaseOwn: (
+      ...[subject, options]: Parameters<LeaseStateClient["releaseOwn"]>
+    ) => state.releaseOwn(subject, pin(options ?? {})),
+    appendLandingComment: (
+      ...[input, options]: Parameters<LeaseStateClient["appendLandingComment"]>
+    ) => state.appendLandingComment(input, pin(options ?? {})),
     delete: (...[key, options]: Parameters<LeaseStateClient["delete"]>) =>
       state.delete(key, pin(options)),
     withOwnLease: (subject) => pinned(state.withOwnLease(subject), read),
@@ -5220,7 +5232,7 @@ const operations: Operations<WorkOperations> = {
 
   "lane.close": async (call) => {
     const { input, services, config, signal, deadline } = call;
-    const state = client(services),
+    const state = client(refuseFrozen(services)),
       ids = idsFor(state, config),
       id = ids.stored(input.id),
       laneId = input.attempt === undefined ? id : `${id}:${input.attempt}`;
@@ -5771,7 +5783,6 @@ const operations: Operations<WorkOperations> = {
           pull.url,
         );
       if (!matching) {
-        refuseFrozen(call.services);
         const written = recovering
           ? state.appendLandingComment({
               id,

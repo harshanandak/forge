@@ -111,6 +111,7 @@ async function fixture(seedLink = true) {
     calls: [] as string[][],
     privateRefs: new Set<string>(),
     afterFetch: undefined as (() => void) | undefined,
+    afterReceiptRead: undefined as (() => void) | undefined,
     refuse: false,
   };
   // The handler reads time from this clock; tests never touch the global Date.
@@ -167,6 +168,8 @@ async function fixture(seedLink = true) {
         if (flags.refuse || options?.signal?.aborted)
           return Promise.reject(new Error(`SERVICE_EXPIRED: ${args[0]}`));
         flags.calls.push(args);
+        if (args.includes("state,headRefOid,mergeCommit"))
+          flags.afterReceiptRead?.();
         if (
           args[0] === "fetch" &&
           args[2]?.includes(":refs/forge/lane-close/")
@@ -597,6 +600,59 @@ for (const [name, code, setup] of refusals) {
     }
   }, 30_000);
 }
+for (const phase of ["receipt", "landing", "comment", "released", "expired"])
+  test(`lane close pins the freeze during ${phase}`, async () => {
+    const f = await fixture();
+    try {
+      if (phase === "released" || phase === "expired") {
+        f.flags.failComment = true;
+        await expect(f.close()).rejects.toThrow(
+          "injected landing comment failure",
+        );
+        if (phase === "released") f.state.release(`issue:${id}`);
+        else f.expire();
+      }
+      let frozenEvents: ReturnType<typeof f.owner.events> | undefined;
+      const freeze = () => {
+        f.owner.put(
+          namespace,
+          "autopilot:global",
+          { stopped: {}, frozen: new Date(f.now()).toISOString() },
+          f.holder.actor,
+          { expectRevision: 0 },
+        );
+        frozenEvents = f.owner.events(namespace);
+      };
+      const put = f.owner.put.bind(f.owner);
+      const putNext = f.owner.putNext.bind(f.owner);
+      if (phase === "receipt") f.flags.afterReceiptRead = freeze;
+      else if (phase === "landing")
+        f.owner.put = (...args) => {
+          if (args[1].startsWith("landing:")) freeze();
+          return put(...args);
+        };
+      else
+        f.owner.putNext = (...args) => {
+          if (args[1].startsWith("comment:")) freeze();
+          return putNext(...args);
+        };
+      await expect(f.close()).rejects.toThrow();
+      expect(frozenEvents).toBeDefined();
+      expect(f.owner.events(namespace)).toEqual(frozenEvents!);
+      expect(f.comments()).toHaveLength(0);
+      expect(f.state.get(`allocation:comment:${id}:`)).toBeUndefined();
+      if (phase === "receipt" || phase === "landing") {
+        expect(f.state.get(`landing:${id}:1`)).toBeUndefined();
+        expect(f.state.get(`issue:${id}`)?.value).toMatchObject({
+          status: "open",
+        });
+      }
+      expect(f.flags.present).toBe(true);
+      expect(f.flags.branch).toBe(true);
+    } finally {
+      await f.dispose();
+    }
+  });
 
 test("a failed ancestry check outside a shallow clone is not reported as shallow", async () => {
   const f = await fixture();

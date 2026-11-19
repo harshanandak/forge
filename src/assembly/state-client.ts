@@ -56,9 +56,19 @@ export interface LeaseStateClient extends DeletableStateClient {
     durationMs: number,
     options?: AcquireOptions,
   ): LeaseRecord;
-  renew(subject: string, durationMs: number): LeaseRecord;
-  release(subject: string): LeaseRecord;
-  releaseOwn(subject: string): LeaseRecord;
+  renew(
+    subject: string,
+    durationMs: number,
+    options?: Pick<WriteOptions, "readSet">,
+  ): LeaseRecord;
+  release(
+    subject: string,
+    options?: Pick<WriteOptions, "readSet">,
+  ): LeaseRecord;
+  releaseOwn(
+    subject: string,
+    options?: Pick<WriteOptions, "readSet">,
+  ): LeaseRecord;
   withOwnLease(subject: string): LeaseStateClient;
   /** Write the next unused number under a key prefix; the owner keeps the floor, never the caller. */
   putNext(
@@ -67,7 +77,10 @@ export interface LeaseStateClient extends DeletableStateClient {
     options?: { readonly subject?: string },
   ): StateRecord;
   /** Completes only the note already authorized by a fenced work landing. */
-  appendLandingComment(input: LandingCommentInput): StateRecord;
+  appendLandingComment(
+    input: LandingCommentInput,
+    options?: Pick<WriteOptions, "readSet">,
+  ): StateRecord;
   put(
     key: string,
     value: unknown,
@@ -133,7 +146,10 @@ export function createStateClient(options: {
       owner?.history(namespace, options) ?? [],
     events: (key?: string) => owner?.events(namespace, key) ?? [],
     lease: (subject: string) => owner?.lease(namespace, subject),
-    appendLandingComment(input: LandingCommentInput) {
+    appendLandingComment(
+      input: LandingCommentInput,
+      options?: Pick<WriteOptions, "readSet">,
+    ) {
       const state = writable();
       const held = fence(`issue:${input.id}`);
       const authorityKey = `landing:${input.id}:${input.pr}`;
@@ -186,6 +202,7 @@ export function createStateClient(options: {
         () => ({
           value: { id: input.id, body: landing.note },
           readSet: [
+            ...(options?.readSet ?? []),
             { key: authorityKey, expectRevision: authority.revision },
             { key: held.subject, expectRevision: issue.revision },
           ],
@@ -302,8 +319,11 @@ export function createStateClient(options: {
       acquired.set(subject, structuredClone(lease));
       return lease;
     },
-    renew: (subject: string, durationMs: number) =>
-      writable().renew(namespace, fence(subject), durationMs),
+    renew: (
+      subject: string,
+      durationMs: number,
+      options?: Pick<WriteOptions, "readSet">,
+    ) => writable().renew(namespace, fence(subject), durationMs, options),
     withOwnLease(subject: string): LeaseStateClient {
       if (context.variant !== "leased")
         refuse("CONTEXT_MISSING", "Missing lease holder");
@@ -321,16 +341,20 @@ export function createStateClient(options: {
         now: this.now,
       });
     },
-    releaseOwn(subject: string) {
+    releaseOwn(subject: string, options?: Pick<WriteOptions, "readSet">) {
       const lease = writable().lease(namespace, subject);
       if (!lease) refuse("LEASE_NOT_HELD", "No lease on this subject");
-      return writable().release(namespace, {
-        subject,
-        holder: this.holder(),
-        generation: lease.generation,
-      });
+      return writable().release(
+        namespace,
+        {
+          subject,
+          holder: this.holder(),
+          generation: lease.generation,
+        },
+        options,
+      );
     },
-    release(subject: string) {
+    release(subject: string, options?: Pick<WriteOptions, "readSet">) {
       const state = writable();
       const rollback =
         context.variant === "leased" && context.leaseMode === "acquire"
@@ -340,7 +364,7 @@ export function createStateClient(options: {
       const held = rollback
         ? { subject, holder: rollback.holder, generation: rollback.generation }
         : fence(subject);
-      return state.release(namespace, held);
+      return state.release(namespace, held, options);
     },
   });
 }

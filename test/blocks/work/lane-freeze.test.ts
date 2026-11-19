@@ -80,13 +80,23 @@ async function fixture() {
       return state.putNext(...args);
     },
   };
-  const run = (op: string, input: Record<string, unknown> = {}) =>
+  const run = (
+    op: string,
+    input: Record<string, unknown> = {},
+    bound: typeof state = raced,
+  ) =>
     operations[op]!({
       input,
-      services: { state: raced },
+      services: { state: bound },
       config: {},
     } as unknown as HandlerCall<Record<string, unknown>>);
-  return { owner, run, interrupt, close: () => opened.handle.close() };
+  return {
+    owner,
+    state: raced,
+    run,
+    interrupt,
+    close: () => opened.handle.close(),
+  };
 }
 const frozenAt = (result: unknown) => (result as { at: string }).at;
 const refusal = (work: () => unknown) => {
@@ -218,3 +228,94 @@ test("lane stop on an unreadable control record keeps a valid freeze", async () 
   ).toContain("frozen since");
   await close();
 });
+
+test("stop recovery cannot overwrite a freeze committed after its snapshot", async () => {
+  const f = await fixture();
+  try {
+    f.owner.put(namespace, GLOBAL, { owner: "unreadable" }, actor, {
+      expectRevision: 0,
+    });
+    let reads = 0;
+    const get = f.state.get.bind(f.state);
+    f.state.get = (key) => {
+      const record = get(key);
+      if (key === GLOBAL && ++reads === 2)
+        f.owner.put(namespace, GLOBAL, { stopped: {}, frozen: at }, actor, {
+          expectRevision: record!.revision,
+        });
+      return record;
+    };
+    expect(() => f.run("lane.stop", { all: true })).toThrow();
+    expect(f.owner.get(namespace, GLOBAL)?.value).toEqual({
+      stopped: {},
+      frozen: at,
+    });
+    expect(f.owner.events(namespace, GLOBAL)).toHaveLength(2);
+  } finally {
+    await f.close();
+  }
+});
+
+for (const op of [
+  "issue.renew",
+  "issue.release",
+  "issue.leave",
+  "attempt.release",
+])
+  test(`${op} refuses a concurrent freeze without changing lease or events`, async () => {
+    const f = await fixture();
+    try {
+      const holder = { actor, session: { id: "freeze" } };
+      const recordKey =
+        op === "issue.leave"
+          ? "participant:work-1:1"
+          : op === "attempt.release"
+            ? "attempt:work-1:attempt-1"
+            : "work-1";
+      if (recordKey !== "work-1")
+        f.owner.put(namespace, recordKey, { holder }, actor, {
+          expectRevision: 0,
+        });
+      const subject = `issue:${recordKey}`;
+      const lease = f.owner.acquire(namespace, subject, holder, 60000, "held");
+      const state = createStateClient({
+        owner: f.owner,
+        namespace,
+        context: {
+          variant: "leased",
+          ...holder,
+          project: { id: "freeze" },
+          leaseMode: "held",
+          leaseGeneration: lease.generation,
+        },
+        write: true,
+        requestId: op,
+      });
+      const freeze = () =>
+        f.owner.put(namespace, GLOBAL, { stopped: {}, frozen: at }, actor, {
+          expectRevision: 0,
+        });
+      const renew = f.owner.renew.bind(f.owner);
+      const release = f.owner.release.bind(f.owner);
+      f.owner.renew = (...args) => {
+        freeze();
+        return renew(...args);
+      };
+      f.owner.release = (...args) => {
+        freeze();
+        return release(...args);
+      };
+      const events = f.owner.events(namespace, subject);
+      expect(() =>
+        f.run(op, { id: "work-1", attempt: "attempt-1" }, state),
+      ).toThrow();
+      expect(f.owner.get(namespace, GLOBAL)?.value).toHaveProperty(
+        "frozen",
+        at,
+      );
+      expect(f.owner.lease(namespace, subject)).toEqual(lease);
+      expect(f.owner.events(namespace, subject)).toEqual(events);
+    } finally {
+      await f.close();
+    }
+  });
