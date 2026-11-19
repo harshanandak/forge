@@ -793,15 +793,22 @@ export async function createAssembly(
     unavailable: readonly UnavailableBlock[];
     problems: readonly string[];
   } {
-    let configured: ShowResult;
+    let configured: ShowResult | undefined;
     let fallback = false;
     try {
-      if (invalidMemoryConfig) refuse("INPUT_INVALID", "Invalid memory config");
       configured = configuredShow ?? call.config.show();
+      if (invalidMemoryConfig) refuse("INPUT_INVALID", "Invalid memory config");
       if (deviceMemory && !configured.valid)
         refuse("INPUT_INVALID", "Invalid project config");
     } catch (error) {
-      if (!deviceMemory) throw error;
+      if (
+        !deviceMemory ||
+        configured?.effective.mcp !== undefined ||
+        configured?.excluded.some(
+          ({ pointer }) => pointer === "" || pointer === "/mcp",
+        )
+      )
+        throw error;
       fallback = true;
       call.inProject = false;
       const kind =
@@ -2333,7 +2340,9 @@ export async function createAssembly(
     root,
     deviceRoot,
     get exposure() {
-      return composition(callScope().config.show()).mcp ?? {};
+      const show = callScope().config.show();
+      if (!show.valid) throw new ForgeFailure(configError(show.problems));
+      return composition(show).mcp ?? {};
     },
     async prepareTrust() {
       await trustState.open(false);

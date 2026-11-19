@@ -3,6 +3,8 @@ import { dispatch } from "../surface/dispatch.ts";
 import { mcpToolName } from "../contract/naming.ts";
 import { isAgentCallable, selectMcpTools } from "../contract/mcp.ts";
 import type { McpTransportPort } from "../ports/mcp-transport.ts";
+import type { McpExposure } from "../generated/types.ts";
+import { ForgeFailure } from "../contract/failure.ts";
 import type { Assembly } from "./index.ts";
 import { randomUUID } from "node:crypto";
 import { localContext, localSession } from "./index.ts";
@@ -13,7 +15,9 @@ import { localIdentityResolver } from "./identity.ts";
 export function assemblyMcp(assembly: Assembly): McpTransportPort {
   return {
     async open(options) {
+      let exposure: McpExposure;
       try {
+        exposure = assembly.exposure;
         await assembly.prepareTrust();
       } catch (error) {
         return {
@@ -21,14 +25,21 @@ export function assemblyMcp(assembly: Assembly): McpTransportPort {
           unavailable:
             error instanceof StateUnavailable
               ? error.unavailable
-              : {
-                  kind: "unavailable",
-                  reason:
-                    error instanceof Error
-                      ? error.message
-                      : "Trust preparation failed",
-                  remedy: "Check that the local trust store is readable.",
-                },
+              : error instanceof ForgeFailure
+                ? {
+                    kind: "unavailable",
+                    reason: error.error.message,
+                    remedy:
+                      "Run forge config show and repair .forge/config.yaml before starting MCP.",
+                  }
+                : {
+                    kind: "unavailable",
+                    reason:
+                      error instanceof Error
+                        ? error.message
+                        : "Trust preparation failed",
+                    remedy: "Check that the local trust store is readable.",
+                  },
         };
       }
       const context = localContext(
@@ -36,7 +47,6 @@ export function assemblyMcp(assembly: Assembly): McpTransportPort {
         { kind: "agent", id: "mcp" },
         localSession(`mcp-${randomUUID()}`),
       );
-      const exposure = assembly.exposure;
       const resolveContext = localIdentityResolver(
         assembly.deviceRoot,
         { ...process.env },
