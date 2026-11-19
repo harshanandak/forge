@@ -5,6 +5,10 @@
     },
     "project": {
       "description": "Name of the cloud project. Needed for the first login only."
+    },
+    "bindSession": {
+      "x-cli-switch": true,
+      "description": "Bind the credential to the current Forge session."
     }
   },
   "additionalProperties": true

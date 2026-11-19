@@ -8,6 +8,7 @@ import { storageFailure } from "../storage-failure.ts";
 
 export interface DeviceInfo {
   readonly label: string;
+  readonly session?: string;
 }
 export interface DeviceChallenge {
   readonly device_code: string;
@@ -240,7 +241,12 @@ export function createDeviceLogin(options: DeviceLoginOptions): DeviceLogin {
           state.challenges.push({
             deviceHash,
             userHash,
-            deviceInfo: { label: device.label },
+            deviceInfo: {
+              label: device.label,
+              ...(device.session === undefined
+                ? {}
+                : { session: device.session }),
+            },
             expiresAt: time + LIFETIME * 1_000,
             interval: INTERVAL,
             nextPoll: time,
@@ -287,7 +293,12 @@ export function createDeviceLogin(options: DeviceLoginOptions): DeviceLogin {
         return {
           ok: true as const,
           identity: identityClaims(record.identity),
-          device: { label: record.deviceInfo.label },
+          device: {
+            label: record.deviceInfo.label,
+            ...(record.deviceInfo.session === undefined
+              ? {}
+              : { session: record.deviceInfo.session }),
+          },
         };
       });
       if (!result.ok) return result;

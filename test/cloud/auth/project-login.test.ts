@@ -197,7 +197,11 @@ test("loginstart returns a challenge and stores only hashes", async () => {
 test("pending, early and expired polls return the engine errors", async () => {
   const f = fixture();
   await f.provision();
-  const { body } = await f.begin();
+  const { body } = await f.send(
+    "loginstart",
+    { device: "laptop-1", session: "codex:expired" },
+    { "CF-Connecting-IP": "203.0.113.1" },
+  );
   const pending = await f.poll(body.device_code);
   expect<unknown>([pending.status, pending.body]).toEqual([
     400,

@@ -116,7 +116,11 @@ export interface CloudHttp {
   /** The validated origin and project every request of this adapter goes to. */
   readonly origin: string;
   readonly project: string;
-  loginStart(device: string, signal?: AbortSignal): Promise<StartResult>;
+  loginStart(
+    device: string,
+    signal?: AbortSignal,
+    session?: string,
+  ): Promise<StartResult>;
   loginPoll(deviceCode: string, signal?: AbortSignal): Promise<PollResult>;
   leaseWrite(
     token: string,
@@ -569,8 +573,12 @@ export function createCloudHttp(options: CloudHttpOptions): CloudHttp {
       state<State.StateReadResult>(token, body, signal),
     stateCommit: (token, body, signal) =>
       state<State.StateCommitResult>(token, body, signal),
-    async loginStart(device, signal) {
-      const body = await post("loginstart", { device }, signal);
+    async loginStart(device, signal, session) {
+      const body = await post(
+        "loginstart",
+        session === undefined ? { device } : { device, session },
+        signal,
+      );
       if (body.ok !== true) return refusal(body);
       const challenge = {
         deviceCode: body.device_code,
@@ -588,7 +596,8 @@ export function createCloudHttp(options: CloudHttpOptions): CloudHttp {
         challenge.interval === undefined ||
         body.verification_uri !== "/device" ||
         body.project !== project ||
-        challenge.device !== device
+        challenge.device !== device ||
+        body.session !== session
       )
         throw unavailable("the login answer failed its checks");
       return {

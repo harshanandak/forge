@@ -3,6 +3,7 @@ export interface CloudLoginResult {
   readonly origin: string;
   readonly project: string;
   readonly device: string;
+  readonly session?: string;
   readonly tokenId: string;
   readonly expiresAt: string;
   readonly binding: "created" | "unchanged";

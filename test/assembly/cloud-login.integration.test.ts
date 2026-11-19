@@ -137,7 +137,11 @@ test("an input with a credential as a property name or value prints it nowhere",
     f.manifest();
     const name = `fct_0123456789abcdef.${SECRET}`;
     const value = `fct_fedcba9876543210.${"V".repeat(43)}`;
-    for (const input of [{ [name]: value }, { origin: { [name]: value } }]) {
+    for (const input of [
+      { [name]: value },
+      { origin: { [name]: value } },
+      { bindSession: value },
+    ]) {
       const out = f.run(["auth", "login", "--input", JSON.stringify(input)]);
       expect(out.status).toBe(6);
       expect(code(out.envelope)).toBe("INPUT_INVALID");

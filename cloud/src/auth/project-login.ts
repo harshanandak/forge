@@ -2,6 +2,7 @@
 // one private row, updated inside the object's synchronous transaction; the token it mints lives in
 // the same project database. This slice has no approve route: nothing here can approve a login.
 import { ForgeFailure } from "../../../src/contract/failure.ts";
+import { isLoginSession } from "../../../src/contract/login-session.ts";
 import { storageFailure } from "../storage-failure.ts";
 import type { SqlDatabase } from "../../../src/ports/store.ts";
 import { issueToken, sha256 } from "../tokens.ts";
@@ -269,7 +270,7 @@ export async function loginRoute(
         db,
         {
           device: device.label,
-          session: null,
+          session: device.session ?? null,
           agent: null,
           harness: null,
           ttlMs: LOGIN_TTL_MS,
@@ -282,6 +283,7 @@ export async function loginRoute(
         token: token.token,
         device: token.device,
         expiresAt: token.expiresAt,
+        ...(device.session === undefined ? {} : { session: device.session }),
       });
     },
   });
@@ -300,6 +302,14 @@ export async function loginRoute(
       message: "device must be a short identifier",
       retry: "never",
     });
+  const session = input.session;
+  if (session !== undefined && !isLoginSession(session))
+    throw new ForgeFailure({
+      code: "INPUT_INVALID",
+      message: "session must be an ASCII identifier of up to 200 characters",
+      retry: "never",
+    });
+  const binding = session === undefined ? {} : { session };
   if (address === null || address === "")
     throw new ForgeFailure({
       code: "AUTH_FORBIDDEN",
@@ -309,13 +319,14 @@ export async function loginRoute(
   if (!admit(store, await sha256(address), Date.now()))
     return reply(429, refusal("rate_limited"));
   try {
-    const challenge = await login.start({ label: device });
+    const challenge = await login.start({ label: device, ...binding });
     return reply(200, {
       ok: true,
       ...challenge,
       verification_uri: "/device",
       project,
       device,
+      ...binding,
     });
   } catch (error) {
     const storageError = storageFailure(error);

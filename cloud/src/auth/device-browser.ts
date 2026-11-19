@@ -403,7 +403,10 @@ export async function deviceRoute(
       expiresAt: now + STATE_TTL_MS,
       tickets: { approve: approveHash, deny: denyHash },
     });
-    return { device: challenge.deviceInfo.label };
+    return {
+      device: challenge.deviceInfo.label,
+      session: challenge.deviceInfo.session,
+    };
   });
   if ("refused" in shown)
     return result(shown.refused === "invalid_code" ? 400 : 429, shown.refused);
@@ -411,8 +414,12 @@ export async function deviceRoute(
     '<label><input type="checkbox" name="confirm" value="yes" required> I started this login myself, and this code matches the one in my terminal.</label>';
   const choice = (action: "approve" | "deny") =>
     `<form method="post" action="/device/${action}"><input type="hidden" name="csrf" value="${esc(csrf)}"><input type="hidden" name="ticket" value="${tickets[action]}"><input type="hidden" name="challenge" value="${esc(hash)}">${action === "approve" ? confirmation : ""}<button>${action === "approve" ? "Approve" : "Deny"}</button></form>`;
+  const session =
+    shown.session === undefined
+      ? ""
+      : `<p>Session <code>${esc(shown.session)}</code></p>`;
   return page(
     200,
-    `<h1>Approve this device?</h1><p>Code <code>${esc(code)}</code></p><p>Project <code>${esc(project)}</code></p><p>Device <code>${esc(shown.device)}</code></p>${choice("approve")}${choice("deny")}`,
+    `<h1>Approve this device?</h1><p>Code <code>${esc(code)}</code></p><p>Project <code>${esc(project)}</code></p><p>Device <code>${esc(shown.device)}</code></p>${session}${choice("approve")}${choice("deny")}`,
   );
 }
