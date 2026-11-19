@@ -20,7 +20,7 @@ Use PowerShell 7.3+ and invoke the pinned Node executable directly, never a `.cm
 `$DeltaBackup` and `$DeltaManifest` name the retained upgraded converter input and its `source.json`.
 Keep the immutable raw export separately. Step 3.1 pins a frozen S7 rollback baseline; retain P4's earlier copy too. Never substitute either raw file for `$DeltaBackup`.
 Admin helpers read credentials in-process, print no secret, follow no redirect and check the exact target before every call.
-Use the step 3 reviewed helpers for status/dump/revoke; endpoints are `/p/$Project/{status,dump,revoke}`.
+Use the reviewed helpers for status and revoke and the R3.3 capture command for paged dumps.
 Never put bearer bytes on a command line, print a credential file, or copy credentials between machines.
 
 The binding identity is the UUID in `.forge/project.json`, not the cloud project name.
@@ -111,7 +111,7 @@ A mismatch or unexpected family stops the copy. Do not reuse the rehearsal diges
 
 6. For a replacement copy, check exact target `forge-tracker-<stamp>` and admin `initialized:false` before any cloud call. Use the reviewed guarded wrapper around `tools/restore-cloud.ts` with `--pages`, `--worker`, `--project`, `--token-env <variable-name>` and `--report`. The variable holds a credential loaded in-process, never a literal argument. Require `restored:true`, `match:true` and all six digest matches, not only counts. `TARGET_NOT_EMPTY`, `DIGEST_MISMATCH`, page/order/response refusals or any partial restore stop the run. Never retry restore into the same project; retain its failure report and use a new project only after resolving the cause.
 
-7. Dump all pages independently with the guarded step 3 helper; pin project/page provenance and match all six restore digests. Run the R3.4 delta tool against the upgraded input and save its raw report. Compare each allocation key/value with the converter-derived floors in the bundle: an identical derived floor is an import artifact, not a cloud write. Require zero unexplained new/changed/absent entries after accounting for those exact floors and repairs in `same-import`; raw 0/0/0 is not required. Save the by-key derived-floor baseline and raw delta for R3, where only departures from those values count as later floor changes. Retain both raw backups, upgraded input/manifest, bundle pages/manifest, repairs by key, left-behind inventory, restore/readback/delta reports and `run.json` privately and read-only; these pages are now required comparison evidence.
+7. Capture all pages independently with R3.3 while cloud writes remain withheld, then match all six restore digests. Run the R3.4 delta tool against the upgraded input and save its raw report. Compare each allocation key/value with the converter-derived floors in the bundle: an identical derived floor is an import artifact, not a cloud write. Require zero unexplained new/changed/absent entries after accounting for those exact floors and repairs in `same-import`; raw 0/0/0 is not required. Save the by-key derived-floor baseline and raw delta for R3, where only departures from those values count as later floor changes. Retain both raw backups, upgraded input/manifest, bundle pages/manifest, repairs by key, left-behind inventory, restore/readback/delta reports and `run.json` privately and read-only; these pages are now required comparison evidence.
 
 **Step 4. Check capacity and target.**
 Read admin status and usage for exactly `$Project`. Compare all six counts/digests with step 3's final baseline and usage with configured Worker limits.
@@ -278,16 +278,24 @@ If step 9 merged, do R3.5's binding revert. Only after all readbacks pass, with 
 
 1. Tell every session to stop; stop cloud dispatch while still admitted. This is not the write fence. Keep the local freeze set, including throughout restore and replay. If the practised restore/single-writer paths in P13/P14 are missing, stay frozen and repair forward or stop for that dependency; never improvise an unfreeze.
 2. Run R1 and verify its cloud fence. R1 returns here, with local freeze still on. Account for/revoke every device token and prevent any admin writer during the dump and replay.
-3. Read admin status, dump every page, then status again. Six counts must agree; validate page chain and digests. `DUMP_CHANGED`, missing page or target mismatch stops rollback. Retain final dump privately with a manifest containing exact project and each page's name/SHA-256, produced by the guarded exporter at capture, not invented later. Enumerate every cloud event after the saved post-restore baseline, including overwritten/deleted intermediate writes; reconcile by sequence/key with the materialized delta and name superseded actions in the ledger.
-4. Before replacing any local store, perform Verification's local-breach inventory even if V3 passed. Then run read-only `tools/cloud-to-local-delta.ts` against the retained upgraded converter input, never raw S7. Classify its report against the saved converted baseline from step 3.7, including derived floors; only later changes belong in the cloud replay ledger. With PR 653 use:
+3. Read admin status, capture every page, then read status again. Six counts must agree. Use a fresh `$Dump` directory inside the private ledger. Set `$AdminTokenEnv` to the variable name used by the guarded admin helpers.
 
 ```powershell
-bun tools/cloud-to-local-delta.ts --dump $Dump --backup $DeltaBackup --manifest $DeltaManifest --dump-manifest "$Dump/export.json" --project $Project --out "$Ledger/rollback-delta.json"
+$CaptureNotBefore = [DateTime]::UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", [Globalization.CultureInfo]::InvariantCulture)
+$CaptureJson = bun tools/cloud-to-local-delta.ts capture --worker $Origin --project $Project --out $Dump --token-env $AdminTokenEnv
+if ($LASTEXITCODE -ne 0) { throw 'Cloud capture refused' }
+$Capture = ($CaptureJson | ConvertFrom-Json).result
 ```
 
-The flags `--dump-manifest`/`--project` are PR 653 dependencies, unavailable on the cited main.
-PR 653 is open with the fix at `48de4d4d956ff9d5b5ee76f172a74ffeb07be475`, pending its merge gate; require merge and refusal evidence before P13 passes.
-`INPUT_INVALID` stops on wrong project/provenance, stale/missing pages, bad cursor chain, duplicate keys, hash mismatch, sidecars, or existing output.
+Record `$CaptureJson` and `$CaptureNotBefore` in the protected rollback ledger outside `$Dump` and use those recorded values in R3.4. Take the receipt digest from the capture command's output. Validate the page chain and digests. `DUMP_CHANGED`, a missing page or target mismatch stops rollback. Enumerate every cloud event after the saved post-restore baseline, including overwritten or deleted intermediate writes, and reconcile by sequence and key with the materialized delta. Name superseded actions in the ledger.
+
+4. Before replacing any local store, perform Verification's local-breach inventory even if V3 passed. Run the read-only delta against the retained upgraded converter input. Classify its report against the saved converted baseline from step 3.7, including derived floors. Only later changes belong in the cloud replay ledger.
+
+```powershell
+bun tools/cloud-to-local-delta.ts --dump $Dump --backup $DeltaBackup --manifest $DeltaManifest --receipt-sha256 $Capture.receiptSha256 --not-before $CaptureNotBefore --project $Project --out "$Ledger/rollback-delta.json"
+```
+
+`INPUT_INVALID` stops rollback on a wrong project, a missing or mismatched receipt, a capture before the fence, stale or missing pages, a bad cursor chain, duplicate keys, a hash mismatch, sidecars, or existing output.
 Check every new, changed and `absentInCloud` entry, floor advance and `notCarriedBack` item. Merge cloud changes and the local-breach inventory into a ledger keyed by authority, event sequence and record key. For each entry record before/after, replay action/readback or the owner's explicit loss acceptance by name. Resolve conflicting updates and colliding ids explicitly; an unexplained or unclassified entry blocks store replacement.
 
 5. On every host revoke recorded token ids, then run PR 626 logout as in R2; verify binding/credential removal without exposing secrets. Revert the step 9 binding commit through a normal PR and merge it via the authorized owner. Record the revert commit and verify every host/worktree has pulled it; logout again on any checkout that regained the binding. Keep the local freeze; this is the binding reversal that step 9 points to.
