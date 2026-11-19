@@ -6063,6 +6063,8 @@ const operations: Operations<WorkOperations> = {
       matches((row.value as Attempt).holder, caller),
     );
     if (own) return attemptView(state, own);
+    if (attempts(state, id).length >= 16)
+      fail("INPUT_CONFLICT", "An issue holds at most 16 attempts");
     if (active.length >= value.count)
       fail(
         "ATTEMPT_SLOTS_FULL",
@@ -6292,7 +6294,9 @@ const operations: Operations<WorkOperations> = {
       !invited.some((record) =>
         matches((record.value as { holder: LeaseHolder }).holder, holder),
       )
-    )
+    ) {
+      if (invited.length >= 8)
+        fail("INPUT_CONFLICT", "An issue holds at most 8 participants");
       persist(
         state,
         `participant:${id}:${invited.length + 1}`,
@@ -6300,6 +6304,7 @@ const operations: Operations<WorkOperations> = {
         0,
         key(id),
       );
+    }
     return { id: ids.shown(id) };
   },
   "issue.join": ({ input, services, config }) => {
