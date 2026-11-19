@@ -23,6 +23,7 @@ const start = 1_800_000_000_000,
   day = 86_400_000;
 const ORIGIN = "https://w.example";
 const COOKIE = "__Host-forge_device";
+const SESSION = "codex:root%2Fpart+claude-code:thread'";
 const vars: Record<string, string> = {
   FORGE_CLOUD_PROJECT: "p",
   DEVICE_LOGIN_HMAC_KEY: Buffer.alloc(32, 7).toString("base64url"),
@@ -182,8 +183,8 @@ function fixture(
   }
   const rows = (sql: string) =>
     db.query(sql).all() as Record<string, unknown>[];
-  const begin = (device = "laptop-1", ip = "203.0.113.1") =>
-    send("/p/p/loginstart", { json: { device }, ip });
+  const begin = (device = "laptop-1", ip = "203.0.113.1", session?: unknown) =>
+    send("/p/p/loginstart", { json: { device, session }, ip });
   const open = async (cookie?: string): Promise<Jar & { page: Reply }> => {
     const page = await send("/device", cookie === undefined ? {} : { cookie });
     const csrf =
@@ -257,8 +258,9 @@ function fixture(
     action: "approve" | "deny",
     proof: string,
     ip = fresh(),
+    session?: string,
   ) {
-    const login = body(await begin("laptop-1", ip));
+    const login = body(await begin("laptop-1", ip, session));
     const jar = await open();
     const decision = await decide(action, login.user_code, jar, ip);
     const state = stateOf(decision);
@@ -597,7 +599,7 @@ test("the owner approves in the browser and only the polling device receives the
 test("a denial in the browser makes the poll fail and mints nothing", async () => {
   const f = fixture();
   await f.provision();
-  const flow = await f.through("deny", "owner");
+  const flow = await f.through("deny", "owner", undefined, SESSION);
   const done = await flow.done();
   expect([done.status, outcome(done)]).toEqual([200, "denied"]);
   const polled = await f.poll(flow.login.device_code);
@@ -613,7 +615,7 @@ test("another Clerk user cannot approve or deny, and the challenge stays pending
     ["approve", "other-issuer"],
     ["deny", "other-subject"],
   ] as const) {
-    const flow = await f.through(action, proof);
+    const flow = await f.through(action, proof, undefined, SESSION);
     const done = await flow.done();
     expect([done.status, outcome(done)]).toEqual([403, "AUTH_FORBIDDEN"]);
     expect(await f.pending(flow.login)).toEqual([400, "authorization_pending"]);
@@ -630,7 +632,7 @@ test("a forged, foreign or unverified proof decides nothing", async () => {
   const f = fixture();
   await f.provision();
   for (const proof of ["forged", "wrong-audience", "expired"]) {
-    const flow = await f.through("approve", proof);
+    const flow = await f.through("approve", proof, undefined, SESSION);
     const done = await flow.done();
     expect([done.status, outcome(done)]).toEqual([401, "AUTH_INVALID"]);
     expect(await f.pending(flow.login)).toEqual([400, "authorization_pending"]);
@@ -652,6 +654,83 @@ test("a forged, foreign or unverified proof decides nothing", async () => {
   expect([done.status, outcome(done)]).toEqual([401, "AUTH_INVALID"]);
   expect(await f.pending(flow.login)).toEqual([400, "authorization_pending"]);
   expect(f.tokens()).toBe(1);
+}, 30_000);
+
+test("the browser and poll use only the original challenge session", async () => {
+  const f = fixture();
+  await f.provision();
+  for (const invalid of [
+    null,
+    1,
+    "",
+    "a".repeat(201),
+    "a\n",
+    "a<",
+    "bad-fct_label",
+  ]) {
+    const reply = await f.begin("laptop-1", f.fresh(), invalid);
+    expect([reply.status, outcome(reply)]).toEqual([400, "INPUT_INVALID"]);
+    expect(reply.text).not.toContain("bad-fct_label");
+  }
+  let boundToken: string | undefined;
+  for (const session of [SESSION, undefined]) {
+    const count = f.tokens();
+    const started = await f.begin("laptop-1", f.fresh(), session);
+    expect(started.status).toBe(200);
+    const login = body(started);
+    const jar = await f.open();
+    const preview = await f.preview(login.user_code, jar);
+    expect(preview.status).toBe(200);
+    expect(
+      preview.text.includes(
+        "Session <code>codex:root%2Fpart+claude-code:thread&#39;</code>",
+      ),
+    ).toBe(session !== undefined);
+    expect(preview.text).not.toContain(SESSION);
+    const poll = () =>
+      f.send("/p/p/loginpoll", {
+        json: { device_code: login.device_code, session: "injected" },
+      });
+    expect(body(await poll()).error).toBe("authorization_pending");
+    expect(f.tokens()).toBe(count);
+    const decision = await f.send("/device/approve", {
+      cookie: jar.cookie,
+      form: {
+        csrf: jar.csrf,
+        confirm: "yes",
+        session: "injected",
+        ticket: f.ticketFor(preview, "approve"),
+        challenge: f.selectorFor(preview),
+      },
+    });
+    expect(decision.status).toBe(302);
+    const query = new URLSearchParams({
+      state: f.stateOf(decision),
+      code: "clerk-code",
+      proof: "owner",
+      session: "injected",
+    });
+    expect(
+      (await f.send(`/callback?${query}`, { cookie: f.bindOf(decision) }))
+        .status,
+    ).toBe(200);
+    f.advance(5_000);
+    const polls = await Promise.all([poll(), poll()]);
+    expect(polls.map((reply) => reply.status).sort()).toEqual([200, 400]);
+    const credential = JSON.parse(
+      body(polls.find((reply) => reply.status === 200)!).credential,
+    ) as { id: string; token: string; session?: string };
+    expect(credential.session).toBe(session);
+    expect(Object.hasOwn(credential, "session")).toBe(session !== undefined);
+    expect(f.tokens()).toBe(count + 1);
+    if (session) boundToken = credential.token;
+  }
+  f.advance(LOGIN_TTL_MS);
+  const expired = await f.send("/p/p/command", {
+    json: {},
+    headers: { authorization: `Bearer ${boundToken!}` },
+  });
+  expect([expired.status, outcome(expired)]).toEqual([401, "AUTH_EXPIRED"]);
 }, 30_000);
 
 test("a callback state is used once, only by its own browser, before its deadline", async () => {

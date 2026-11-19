@@ -7,12 +7,56 @@ import {
   ns,
   project,
 } from "../../cloud/import-current-state.fixture.ts";
+import { testIdentityVerifier } from "../../contract/lib/identity-verifier.ts";
 import { cloudRig, type CloudRig, type Seen } from "./fixture.ts";
 
 if (!("timingSafeEqual" in crypto.subtle))
   Object.defineProperty(crypto.subtle, "timingSafeEqual", {
     value: timingSafeEqual,
   });
+
+const origin = "https://fixture.example";
+const issuer = "https://clerk.example";
+const ip = "203.0.113.1";
+
+async function approve(
+  fetch: (request: Request) => Promise<Response>,
+  code: string,
+) {
+  const send = (path: string, cookie = "", form?: Record<string, string>) =>
+    fetch(
+      new Request(origin + path, {
+        method: form === undefined ? "GET" : "POST",
+        headers: { Origin: origin, Cookie: cookie, "CF-Connecting-IP": ip },
+        ...(form === undefined ? {} : { body: new URLSearchParams(form) }),
+      }),
+    );
+  const start = await send("/device");
+  assert.equal(start.status, 200);
+  const cookie = start.headers.get("set-cookie")!.split(";")[0]!;
+  const csrf = cookie.slice(cookie.indexOf("=") + 1);
+  const preview = await send("/device", cookie, { csrf, code });
+  assert.equal(preview.status, 200);
+  const page = await preview.text();
+  const field = (name: string) =>
+    new RegExp(`name="${name}" value="([^"]+)"`).exec(page)![1]!;
+  const decision = await send("/device/approve", cookie, {
+    csrf,
+    confirm: "yes",
+    ticket: field("ticket"),
+    challenge: field("challenge"),
+  });
+  assert.equal(decision.status, 302);
+  const state = new URL(decision.headers.get("location")!).searchParams.get(
+    "state",
+  )!;
+  const callback = await send(
+    `/callback?${new URLSearchParams({ state, code: "owner" })}`,
+    decision.headers.get("set-cookie")!.split(";")[0],
+  );
+  assert.equal(callback.status, 200);
+  assert.ok((await callback.text()).includes(">approved</code>"));
+}
 
 /** Only the HTTPS boundary is adapted; Project.fetch owns tokens, receipts and leases. */
 export async function trackerRig(
@@ -23,11 +67,54 @@ export async function trackerRig(
   } = {},
 ) {
   let unavailable = false;
+  const redeemed = new Set<string>();
   const authority = await project(
     undefined,
-    { FORGE_CLOUD_PROJECT: "proj", FORGE_CLOUD_ID_PREFIX: "forge" },
+    {
+      FORGE_CLOUD_PROJECT: "proj",
+      FORGE_CLOUD_ID_PREFIX: "forge",
+      DEVICE_LOGIN_HMAC_KEY: Buffer.alloc(32, 7).toString("base64url"),
+      CLERK_ISSUER: issuer,
+      FORGE_OWNER_SUBJECT: "owner",
+      CLERK_CLIENT_ID: "client",
+      CLERK_REDIRECT_URI: `${origin}/callback`,
+    },
     () => {
       if (unavailable) throw new Error("synthetic storage outage");
+    },
+    {
+      upstream: {
+        begin: (state) =>
+          Promise.resolve(
+            `${issuer}/authorize?${new URLSearchParams({ state })}`,
+          ),
+        verify: (request, now) =>
+          testIdentityVerifier(
+            new Map([
+              [
+                "owner",
+                {
+                  issuer,
+                  subject: "owner",
+                  audience: "client",
+                  authenticatedAt: now,
+                  expiresAt: now + 60_000,
+                },
+              ],
+            ]),
+          ).verify(
+            new URL(request.url).searchParams.get("code"),
+            "client",
+            now,
+          ),
+      },
+      redemption: {
+        claimOnce(hash) {
+          if (redeemed.has(hash)) return Promise.resolve(false);
+          redeemed.add(hash);
+          return Promise.resolve(true);
+        },
+      },
     },
   );
   const clients: CloudRig[] = [];
@@ -35,17 +122,23 @@ export async function trackerRig(
   const ids: string[] = [];
   const forward = async (seen: Seen) => {
     const response = await authority.p.fetch(
-      new Request(`https://fixture.example${seen.url}`, {
+      new Request(`${origin}${seen.url}`, {
         method: seen.method ?? "POST",
         headers: {
           authorization: seen.authorization ?? "",
           "content-type": "application/json",
+          "CF-Connecting-IP": ip,
         },
         ...(seen.body === undefined ? {} : { body: JSON.stringify(seen.body) }),
       }),
     );
     const answer = { status: response.status, body: await response.json() };
-    responses.push(answer);
+    if (seen.url?.endsWith("/loginstart") && response.ok) {
+      await approve(
+        (request) => authority.p.fetch(request),
+        (answer.body as { user_code: string }).user_code,
+      );
+    } else if (seen.url?.endsWith("/command")) responses.push(answer);
     return answer;
   };
   const close = async () => {
@@ -56,36 +149,39 @@ export async function trackerRig(
     }
   };
   try {
+    const seeded = await authority.send("devices", {
+      device: "seed",
+      ttlMs: 86_400_000,
+    });
+    assert.equal(seeded.r.ok, true);
     const setup = guardProjectOwner ? "guarded" : "bound";
     for (const [index, device] of devices.entries()) {
       const session = `installed-${index}`;
-      // Administrative setup goes through the real Project routes as well.
-      const issued = await authority.send("devices", {
-        device,
-        session,
-        // A default one-hour claim must end before the credential expires.
-        ttlMs: 86_400_000,
-      });
-      assert.equal(issued.r.ok, true);
-      const credential = issued.r.value as {
-        id: string;
-        token: string;
-        device: string;
-        expiresAt: string;
+      clients.push(await cloudRig(bin, forward, setup, { device, session }));
+    }
+    const logins = await Promise.all(
+      clients.map((client) =>
+        client.run([
+          "auth",
+          "login",
+          "--bind-session",
+          "--origin",
+          client.origin,
+          "--project",
+          "proj",
+        ]),
+      ),
+    );
+    for (const [index, login] of logins.entries()) {
+      const client = clients[index]!;
+      if (!login.envelope.ok) throw new Error(login.envelope.error.code);
+      client.expectUntouched(login);
+      const result = login.envelope.result as {
+        session: string;
+        tokenId: string;
       };
-      ids.push(credential.id);
-      clients.push(
-        await cloudRig(bin, forward, setup, {
-          credential: {
-            id: credential.id,
-            token: credential.token,
-            device: credential.device,
-            expiresAt: credential.expiresAt,
-            localDevice: device,
-          },
-          session,
-        }),
-      );
+      assert.equal(result.session, client.env.FORGE_SESSION);
+      ids.push(result.tokenId);
     }
     return {
       clients,

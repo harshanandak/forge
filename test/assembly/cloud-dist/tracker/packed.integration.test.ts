@@ -223,6 +223,44 @@ test("installed lane dispatch records one intent under shared control and a live
       dispatchId: "permitted",
       ...(await control(running.id, false)),
     };
+    const dispatch = ["lane", "dispatch", "--input", JSON.stringify(input)];
+    const wrongSession = await holder.run(dispatch, {
+      FORGE_SESSION: "other-session",
+    });
+    const noSession = await holder.run([
+      "catalog",
+      "call",
+      "--input",
+      JSON.stringify({
+        op: "lane.dispatch",
+        input,
+        context: {
+          actor: { kind: "human", id: "local-cli" },
+          project: { id: holder.root, root: holder.root },
+        },
+      }),
+    ]);
+    const [different, missing] = rig.responses.slice(-2);
+    const wrongDevice = await holder.run(dispatch, {
+      FORGE_DEVICE_ID: "other-device",
+    });
+    for (const [out, code] of [
+      [wrongSession, "AUTH_DEVICE_MISMATCH"],
+      [noSession, "CONTEXT_MISSING"],
+      [wrongDevice, "AUTH_DEVICE_MISMATCH"],
+    ] as const) {
+      holder.expectUntouched(out);
+      expect(out.envelope).toMatchObject({ ok: false, error: { code } });
+    }
+    expect(different).toMatchObject({
+      status: 403,
+      body: { error: { code: "AUTH_DEVICE_MISMATCH" } },
+    });
+    expect(missing).toMatchObject({
+      status: 400,
+      body: { error: { code: "CONTEXT_MISSING" } },
+    });
+    expect(rig.dispatchState()).toEqual([[], []]);
     await command(peer, "lane.dispatch", input, "LEASE_NOT_HELD");
     const intent = await command(holder, "lane.dispatch", input);
     expect(intent).toEqual({

@@ -190,9 +190,14 @@ const filesUnder = (dir: string): string[] =>
     .filter((path) => statSync(path).isFile());
 
 export interface CloudRig {
+  readonly root: string;
+  readonly origin: string;
   readonly env: Record<string, string>;
   readonly requests: Seen[];
-  run(args: string[]): Promise<{
+  run(
+    args: string[],
+    overrides?: Record<string, string>,
+  ): Promise<{
     envelope: ResultEnvelope;
     status: number | null;
     stdout: string;
@@ -212,14 +217,11 @@ export async function cloudRig(
   bin: string,
   reply: Replier = serve,
   setup: "bound" | "attached" | "guarded" = "bound",
-  identity?: { credential: Partial<CredentialEntry>; session: string },
+  identity?: { device: string; session: string },
 ): Promise<CloudRig> {
   const s = fx.sandbox();
   const attachment = setup === "attached";
-  const canaries = [
-    ...CANARIES,
-    ...(identity?.credential.token ? [identity.credential.token] : []),
-  ];
+  const canaries = [...CANARIES];
   let server: Server | undefined;
   try {
     const base = Object.fromEntries(
@@ -250,6 +252,13 @@ export async function cloudRig(
           requests.push(seen);
           void Promise.resolve(reply(seen))
             .then((answer) => {
+              if (seen.url?.endsWith("/loginpoll")) {
+                const { credential } = answer.body as { credential?: string };
+                if (credential !== undefined)
+                  canaries.push(
+                    (JSON.parse(credential) as CredentialEntry).token,
+                  );
+              }
               res.writeHead(answer.status, {
                 "content-type": "application/json",
               });
@@ -277,14 +286,22 @@ export async function cloudRig(
             source: { builtin: "forge/work" },
             config: { idPrefix: "forge" },
           },
+          ...(identity === undefined
+            ? {}
+            : { cloud: { source: { builtin: "forge/cloud" } } }),
         },
         mcp: { expose: ["lane"] },
       }),
     );
-    writeFileSync(s.binding, `${JSON.stringify(fx.bindingFor({ origin }))}\n`);
-    await credentialStore(openCloudFiles(s.home)).save(
-      fx.entry(Date.now(), { origin, ...identity?.credential }),
-    );
+    if (identity === undefined) {
+      writeFileSync(
+        s.binding,
+        `${JSON.stringify(fx.bindingFor({ origin }))}\n`,
+      );
+      await credentialStore(openCloudFiles(s.home)).save(
+        fx.entry(Date.now(), { origin }),
+      );
+    }
     const preload: string[] = [];
     const marker = join(s.dir, "project-owner-opened");
     if (attachment) {
@@ -329,23 +346,26 @@ export async function cloudRig(
       HOME: s.home,
       USERPROFILE: s.home,
       FORGE_DEVICE_ROOT: s.deviceRoot,
-      FORGE_DEVICE_ID: identity?.credential.localDevice ?? "dev-1",
+      FORGE_DEVICE_ID: identity?.device ?? "dev-1",
       FORGE_SESSION: identity?.session ?? "cloud-dist-test",
+      FORGE_NO_BROWSER: "1",
       NODE_EXTRA_CA_CERTS: tls.file,
     };
     const stop = () =>
       new Promise<void>((resolve) => listening.close(() => resolve()));
     return {
+      root: s.root,
+      origin,
       env,
       requests,
-      async run(args) {
+      async run(args, overrides) {
         // Native asynchronous children permit a real three-session arrival race.
         const out = await promisify(execFile)(
           "node",
           [...preload, bin, ...args],
           {
             cwd: s.root,
-            env,
+            env: { ...env, ...overrides },
             timeout: 40_000,
             maxBuffer: 1_000_000,
             windowsHide: true,
