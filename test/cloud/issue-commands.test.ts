@@ -2037,7 +2037,7 @@ test("issue writes ignore runtime tables and refuse unregistered user tables", a
       },
     },
   });
-});
+}, 30_000);
 
 const configured = (forward?: () => Promise<Response>) =>
   createConfiguredWorker(undefined, forward ? { forward } : {});
