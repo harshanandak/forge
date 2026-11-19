@@ -11,6 +11,7 @@ import { windowsPrivateFiles } from "../adapters/process/windows-acl.ts";
 import { privateFileGuard } from "../adapters/store-sqlite/private-files.ts";
 import type { PrivateFiles } from "../ports/private-files.ts";
 import { ForgeFailure } from "../contract/failure.ts";
+import { isLoginSession } from "../contract/login-session.ts";
 import { removeConflict } from "../core/config/files.ts";
 import type { DeviceFiles } from "../ports/device-files.ts";
 import { PROJECT_ID_PATTERN } from "./project-manifest.ts";
@@ -31,6 +32,7 @@ export interface DeviceCredential {
   readonly token: string;
   readonly device: string;
   readonly expiresAt: string;
+  readonly session?: string;
 }
 export interface CredentialEntry extends CredentialKey, DeviceCredential {
   /** The device id this machine holds locally; `device` is the id sent to the Worker. */
@@ -166,6 +168,7 @@ export function parseDeviceCredential(
   text: string,
   wireDevice: string,
   nowMs: number,
+  session?: string,
 ): DeviceCredential {
   let value: Record<string, unknown> | undefined;
   try {
@@ -175,13 +178,21 @@ export function parseDeviceCredential(
   }
   if (
     value === undefined ||
-    !exactly(value, ["format", "id", "token", "device", "expiresAt"]) ||
+    !exactly(value, [
+      "format",
+      "id",
+      "token",
+      "device",
+      "expiresAt",
+      ...(session === undefined ? [] : ["session"]),
+    ]) ||
     value.format !== FORMAT ||
     typeof value.id !== "string" ||
     !TOKEN_ID.test(value.id) ||
     typeof value.token !== "string" ||
     TOKEN.exec(value.token)?.[1] !== value.id ||
-    value.device !== wireDevice
+    value.device !== wireDevice ||
+    value.session !== session
   )
     throw unusable();
   const expires = isoMs(value.expiresAt);
@@ -196,6 +207,7 @@ export function parseDeviceCredential(
     token: value.token,
     device: wireDevice,
     expiresAt: value.expiresAt as string,
+    ...(session === undefined ? {} : { session }),
   };
 }
 
@@ -213,6 +225,7 @@ function parseEntry(key: string, value: unknown): CredentialEntry {
       "id",
       "token",
       "expiresAt",
+      ...(Object.hasOwn(fields, "session") ? ["session"] : []),
     ])
   )
     throw integrity();
@@ -225,6 +238,7 @@ function parseEntry(key: string, value: unknown): CredentialEntry {
     id,
     token,
     expiresAt,
+    session,
   } = fields;
   try {
     if (
@@ -244,6 +258,7 @@ function parseEntry(key: string, value: unknown): CredentialEntry {
       TOKEN.exec(token)?.[1] !== id ||
       typeof expiresAt !== "string" ||
       isoMs(expiresAt) === undefined ||
+      (session !== undefined && !isLoginSession(session)) ||
       keyOf({ origin, identity, project }) !== key
     )
       throw integrity();
@@ -259,6 +274,7 @@ function parseEntry(key: string, value: unknown): CredentialEntry {
     id,
     token,
     expiresAt,
+    ...(session === undefined ? {} : { session }),
   };
 }
 
@@ -329,6 +345,7 @@ export function credentialStore(
         token: found.token,
         device: found.device,
         expiresAt: found.expiresAt,
+        ...(found.session === undefined ? {} : { session: found.session }),
       };
     },
     associations(identity) {

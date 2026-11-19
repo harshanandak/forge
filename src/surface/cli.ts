@@ -79,16 +79,27 @@ function help(catalog: SurfaceCatalog, options: CallOptions, op?: string) {
   };
 }
 
-function argumentValue(raw: string, schema: unknown): unknown {
-  const type = record(schema)?.type;
+function argumentType(schema: unknown): unknown {
+  const property = record(schema);
+  return (
+    property?.type ??
+    (property?.["x-cli-switch"] === true ? "boolean" : undefined)
+  );
+}
+
+function argumentValue(raw: string, type: unknown): unknown {
   if (type === "string" || type === undefined) return raw;
+  if (type === "boolean") {
+    const value = raw.trim();
+    if (value !== "true" && value !== "false")
+      throw new Error("Expected a boolean.");
+    return value === "true";
+  }
   const value: unknown = JSON.parse(raw);
   if (type === "integer" && !Number.isInteger(value))
     throw new Error("Expected an integer.");
   if (type === "number" && typeof value !== "number")
     throw new Error("Expected a number.");
-  if (type === "boolean" && typeof value !== "boolean")
-    throw new Error("Expected a boolean.");
   return value;
 }
 
@@ -120,7 +131,7 @@ function mapArguments(
         throw new Error(`Unknown argument --${flag}.`);
       if (Object.hasOwn(result, key))
         throw new Error(`Duplicate argument ${key}.`);
-      const type = record(properties[key])?.type;
+      const type = argumentType(properties[key]);
       const next = tokens[i + 1];
       const booleanSwitch =
         type === "boolean" &&
@@ -130,7 +141,7 @@ function mapArguments(
           !["true", "false"].includes(next));
       const raw = inline ?? (booleanSwitch ? "true" : tokens[++i]);
       if (raw === undefined) throw new Error(`Missing value for --${key}.`);
-      result[key] = argumentValue(raw, properties[key]);
+      result[key] = argumentValue(raw, type);
     } else {
       const key = positions[position++];
       if (key === undefined) {

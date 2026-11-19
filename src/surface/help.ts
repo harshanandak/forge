@@ -81,8 +81,12 @@ export function renderHelp(
             typeof property?.description === "string"
               ? property.description.replace(/\s+/g, " ").trim()
               : `Set ${key.replace(/[A-Z]/g, (letter) => ` ${letter.toLowerCase()}`)}.`;
+          const argument =
+            property?.["x-cli-switch"] === true
+              ? ""
+              : ` <${schemaType(value)}>`;
           lines.push(
-            `  --${flagName(key)} <${schemaType(value)}> (${required.includes(key) ? "required" : "optional"})  ${meaning}`,
+            `  --${flagName(key)}${argument} (${required.includes(key) ? "required" : "optional"})  ${meaning}`,
           );
         }
       }

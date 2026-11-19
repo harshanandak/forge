@@ -12,6 +12,7 @@
     "origin": { "type": "string" },
     "project": { "type": "string" },
     "device": { "type": "string" },
+    "session": { "type": "string" },
     "tokenId": { "type": "string" },
     "expiresAt": { "type": "string" },
     "binding": { "enum": ["created", "unchanged"] }

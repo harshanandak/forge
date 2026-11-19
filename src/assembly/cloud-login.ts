@@ -14,6 +14,7 @@ import {
   type LoginChallenge,
 } from "../adapters/http/index.ts";
 import { ForgeFailure } from "../contract/failure.ts";
+import { isLoginSession } from "../contract/login-session.ts";
 import { storageRefusal } from "../adapters/http/storage-refusal.ts";
 import { validateWithSchema } from "../contract/schema.ts";
 import type { DesktopLauncher } from "../ports/process.ts";
@@ -34,6 +35,7 @@ import {
   writeBinding,
   type CloudBinding,
 } from "./cloud-profile.ts";
+import { sessionIdentity } from "./identity.ts";
 import { readProjectManifest } from "./project-manifest.ts";
 import { wireDeviceId } from "./wire-device.ts";
 
@@ -74,6 +76,7 @@ const INPUT_SCHEMA = {
   properties: {
     origin: { type: "string", minLength: 1, maxLength: 300 },
     project: { type: "string", minLength: 1, maxLength: 64 },
+    bindSession: { type: "boolean" },
   },
 } as const;
 
@@ -239,10 +242,26 @@ async function login(
   if (problems.length > 0)
     throw new ForgeFailure({
       code: "INPUT_INVALID",
-      message: `Invalid input for ${CLOUD_LOGIN_OP}: expected {"origin": "<https origin>", "project": "<project name>"}, both optional`,
+      message: `Invalid input for ${CLOUD_LOGIN_OP}: expected optional origin, project and boolean bindSession`,
       retry: "never",
     });
-  const given = input as { origin?: string; project?: string };
+  const given = input as {
+    origin?: string;
+    project?: string;
+    bindSession?: boolean;
+  };
+  const session =
+    given.bindSession === true ? sessionIdentity(deps.env, "") : undefined;
+  if (session === "")
+    throw failed(
+      "Set FORGE_SESSION to a stable identifier before using --bind-session.",
+      "CONTEXT_MISSING",
+    );
+  if (session !== undefined && !isLoginSession(session))
+    throw failed(
+      "FORGE_SESSION must be a nonsecret ASCII identifier of up to 200 characters.",
+      "INPUT_INVALID",
+    );
   const asked = {
     ...(given.origin === undefined
       ? {}
@@ -279,7 +298,7 @@ async function login(
     project: target.project,
     ...(deps.fetch === undefined ? {} : { fetch: deps.fetch }),
   });
-  const started = await http.loginStart(wire, signal);
+  const started = await http.loginStart(wire, signal, session);
   if (started.kind === "refused") throw refusalFailure(started.error);
   const { challenge } = started;
   const deadline = (deps.now ?? Date.now)() + challenge.expiresIn * 1_000;
@@ -300,6 +319,7 @@ async function login(
     text,
     wire,
     (deps.now ?? Date.now)(),
+    session,
   );
   const targetBinding = {
     schema: 1,
@@ -310,6 +330,10 @@ async function login(
     { ...target, identity: manifest.id, localDevice: local, ...credential },
     () => writeLoginBinding(deps.root, targetBinding),
   );
+  if (session !== undefined)
+    progress(
+      `Bound to session ${session}. This replaces any saved credential for the project. Cloud commands from another session get AUTH_DEVICE_MISMATCH.`,
+    );
   return {
     origin: target.origin,
     project: target.project,
@@ -317,6 +341,7 @@ async function login(
     tokenId: credential.id,
     expiresAt: credential.expiresAt,
     binding,
+    ...(session === undefined ? {} : { session }),
   };
 }
 

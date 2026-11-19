@@ -852,7 +852,7 @@ test("an input refusal is one fixed message that holds no field name, pointer, v
       const error = failure(envelope);
       expect(error.code).toBe("INPUT_INVALID");
       expect(error.message).toBe(
-        'Invalid input for cloud.login: expected {"origin": "<https origin>", "project": "<project name>"}, both optional',
+        "Invalid input for cloud.login: expected optional origin, project and boolean bindSession",
       );
       expect(error.observed).toBeUndefined();
       const text = JSON.stringify(envelope) + r.lines.join("\n");
