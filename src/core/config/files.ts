@@ -31,8 +31,11 @@ export interface ConfigFiles {
   read(path: string, maxBytes?: number): Uint8Array | undefined;
   /** Replace a file atomically: write a sibling temporary file, then rename it over. */
   write(path: string, bytes: Uint8Array): void;
-  /** Remove a file; absent is fine. */
-  remove(path: string, expected: Uint8Array): void;
+  remove(
+    path: string,
+    expected: Uint8Array,
+    options?: { readonly requirePresent?: boolean },
+  ): void;
   /** File names in a directory; empty when it does not exist. */
   list(dir: string): readonly string[];
   /** Create a file only if it does not exist; false when it already does. */

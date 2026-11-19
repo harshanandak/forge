@@ -173,6 +173,37 @@ describe("the fs adapter implements ConfigFiles", () => {
     expect(readdirSync(join(dir, ".forge"))).toEqual(["config.lock"]);
   }, 30_000);
 
+  test("a failed parent directory sync restores the binding before reporting failure", () => {
+    const dir = root();
+    const files = nodeConfigFiles(dir);
+    const path = ".forge/cloud.json";
+    files.write(path, bytes("held"));
+    const sync = spyOn(durableIO, "syncParentDirectory").mockImplementationOnce(
+      () => {
+        throw new Error("sync failed");
+      },
+    );
+    try {
+      expect(() => files.remove(path, bytes("held"))).toThrow("sync failed");
+      expect(sync).toHaveBeenCalledWith(
+        join(nodeFs.realpathSync.native(dir), ".forge", "cloud.json"),
+      );
+    } finally {
+      sync.mockRestore();
+    }
+    expect(text(files.read(path))).toBe("held");
+    expect(files.list(".forge")).toEqual(["cloud.json"]);
+  });
+
+  test("a missing file is a conflict when removal requires the expected file", () => {
+    const files = nodeConfigFiles(root());
+    expect(() =>
+      files.remove(".forge/cloud.json", bytes("held"), {
+        requirePresent: true,
+      }),
+    ).toThrow(/changed since it was read/);
+  });
+
   test("a failed restore stays attached to the original remove failure", () => {
     const dir = root();
     const files = nodeConfigFiles(dir);

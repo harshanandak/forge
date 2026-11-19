@@ -1,13 +1,15 @@
-import { expect, setDefaultTimeout, test } from "bun:test";
+import { expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
+import * as fsAdapter from "../../src/adapters/fs/index.ts";
 import {
   createCloudLogin,
   wireDeviceId,
   type CloudLoginDeps,
 } from "../../src/assembly/cloud-login.ts";
 import {
+  BINDING_PATH,
   credentialStore,
   openCloudFiles,
 } from "../../src/assembly/cloud-profile.ts";
@@ -120,9 +122,7 @@ const snapshot = (sb: Sandbox) => ({
 });
 
 async function seedPrior(r: Rig) {
-  const store = credentialStore(openCloudFiles(r.sb.home), {
-    wait: () => Promise.resolve(),
-  });
+  const store = credentialStore(openCloudFiles(r.sb.home));
   await store.save(entry(r.clk.now()));
   writeFileSync(r.sb.binding, `${JSON.stringify(bindingFor(), null, 2)}\n`);
   return snapshot(r.sb);
@@ -613,6 +613,50 @@ test("the file lock is not held while waiting for approval", async () => {
       },
     );
     expect(exit).toBe(0);
+  } finally {
+    r.sb.close();
+  }
+}, 30_000);
+
+test("a logout started while login publishes the binding cannot split the pair", async () => {
+  const r = rig();
+  try {
+    const service = createCloudLogin({
+      root: r.sb.root,
+      home: r.sb.home,
+      deviceRoot: r.sb.deviceRoot,
+      env: {},
+      signal: new AbortController().signal,
+    });
+    const configFiles = fsAdapter.nodeConfigFiles;
+    let competingLogout: Promise<unknown> | undefined;
+    const config = spyOn(fsAdapter, "nodeConfigFiles").mockImplementation(
+      (...args) => {
+        const files = configFiles(...args);
+        return {
+          ...files,
+          createExclusive(path, bytes) {
+            const created = files.createExclusive(path, bytes);
+            if (path === BINDING_PATH)
+              competingLogout = service
+                .logout({})
+                .catch((error: unknown) => error);
+            return created;
+          },
+        };
+      },
+    );
+    try {
+      const { exit } = await login(r, [() => json(startBody()), goodPoll(r)]);
+      expect(exit).toBe(0);
+      expect(await competingLogout).toMatchObject({
+        error: { code: "INPUT_CONFLICT" },
+      });
+    } finally {
+      config.mockRestore();
+    }
+    expect(read(r.sb.credentials)).toContain("0123456789abcdef");
+    expect(JSON.parse(read(r.sb.binding) ?? "")).toEqual(bindingFor());
   } finally {
     r.sb.close();
   }

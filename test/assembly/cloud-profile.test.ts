@@ -70,7 +70,6 @@ async function asyncFailure(
   throw new Error("expected a failure");
 }
 const fileText = (path: string): string => readFileSync(path, "utf8");
-const noWait = () => Promise.resolve();
 
 const invalidCredentials: [string, string | Record<string, unknown>][] = [
   ["text that is not JSON", "not json"],
@@ -122,7 +121,7 @@ for (const [name, change] of invalidCredentials)
 test("a saved credential is found by its exact origin, project UUID and project name only", async () => {
   const s = sandbox();
   try {
-    const store = credentialStore(openCloudFiles(s.home), { wait: noWait });
+    const store = credentialStore(openCloudFiles(s.home));
     const saved = entry(NOW);
     await store.save(saved);
     const key = { origin: ORIGIN, identity: PROJECT_ID, project: PROJECT };
@@ -148,7 +147,7 @@ test("a saved credential is found by its exact origin, project UUID and project 
 test("another project binds and saves its own entry without touching the first", async () => {
   const s = sandbox();
   try {
-    const store = credentialStore(openCloudFiles(s.home), { wait: noWait });
+    const store = credentialStore(openCloudFiles(s.home));
     const first = entry(NOW);
     const second = entry(NOW, {
       identity: OTHER_PROJECT_ID,
@@ -184,10 +183,10 @@ test("another project binds and saves its own entry without touching the first",
 test("a second login for the same key replaces only that entry, merged into the latest file", async () => {
   const s = sandbox();
   try {
-    const store = credentialStore(openCloudFiles(s.home), { wait: noWait });
+    const store = credentialStore(openCloudFiles(s.home));
     await store.save(entry(NOW));
     // Another process adds an entry after this one started: nothing is cached.
-    await credentialStore(openCloudFiles(s.home), { wait: noWait }).save(
+    await credentialStore(openCloudFiles(s.home)).save(
       entry(NOW, {
         identity: OTHER_PROJECT_ID,
         id: "cccccccccccccccc",
@@ -210,20 +209,20 @@ test("a second login for the same key replaces only that entry, merged into the 
   }
 }, 20_000);
 
-test("the file lock is bounded: a held lock fails the save and changes nothing", async () => {
+test("a held file lock refuses a save on the first attempt and changes nothing", async () => {
   const s = sandbox();
   try {
     const files = openCloudFiles(s.home);
-    const store = credentialStore(files, { wait: noWait, attempts: 3 });
+    const store = credentialStore(files);
     await store.save(entry(NOW));
     const before = fileText(s.credentials);
     const held = files.lock();
-    let pauses = 0;
-    const blocked = credentialStore(files, {
-      attempts: 3,
-      wait: () => {
-        pauses += 1;
-        return Promise.resolve();
+    let attempts = 0;
+    const blocked = credentialStore({
+      ...files,
+      lock: () => {
+        attempts += 1;
+        return files.lock();
       },
     });
     const code = await asyncCodeOf(() =>
@@ -231,7 +230,7 @@ test("the file lock is bounded: a held lock fails the save and changes nothing",
     );
     held.release();
     expect(code).toBe("INPUT_CONFLICT");
-    expect(pauses).toBe(2);
+    expect(attempts).toBe(1);
     expect(fileText(s.credentials)).toBe(before);
     await blocked.save(entry(NOW, { identity: OTHER_PROJECT_ID }));
   } finally {
@@ -250,7 +249,7 @@ test("a damaged credential file is an integrity failure for reads and saves and 
       JSON.stringify({ schema: 1, entries: { x: { token: "t" } } }),
     ]) {
       files.write(CREDENTIAL_FILE, damaged);
-      const store = credentialStore(files, { wait: noWait });
+      const store = credentialStore(files);
       expect(codeOf(() => store.associations(PROJECT_ID))).toBe(
         "ACCOUNT_INTEGRITY",
       );
@@ -286,7 +285,7 @@ test("a credential file over the read limit is refused, not truncated", async ()
     // The helper will not write what it could not read back, so grow the file directly.
     files.write(CREDENTIAL_FILE, "{}");
     writeFileSync(s.credentials, text);
-    const store = credentialStore(files, { wait: noWait });
+    const store = credentialStore(files);
     expect(await asyncCodeOf(() => store.save(entry(NOW)))).toBe(
       "ACCOUNT_INTEGRITY",
     );
@@ -313,7 +312,7 @@ test("a failure before the replace keeps the previous file byte for byte", async
       s.home,
       failing((path) => staged && basename(path) !== CREDENTIAL_FILE),
     );
-    const store = credentialStore(files, { wait: noWait });
+    const store = credentialStore(files);
     await store.save(entry(NOW));
     const before = fileText(s.credentials);
     staged = true;
@@ -369,7 +368,7 @@ test("a readback that fails only once puts the previous entry back through the c
         return true;
       }),
     );
-    const store = credentialStore(files, { wait: noWait });
+    const store = credentialStore(files);
     await store.save(entry(NOW));
     const before = fileText(s.credentials);
     expect(await asyncCodeOf(() => store.save(newer()))).toBe(
@@ -396,7 +395,7 @@ test("an unsafe destination is never overwritten by the restore: the previous by
           fileText(path).includes("NEWMARK"),
       ),
     );
-    const store = credentialStore(files, { wait: noWait });
+    const store = credentialStore(files);
     await store.save(entry(NOW));
     const before = fileText(s.credentials);
     const failure = await asyncFailure(() => store.save(newer()));
@@ -429,7 +428,7 @@ test("a write that fails after the rename (the directory sync) still leaves the 
         }
       },
     };
-    const store = credentialStore(files, { wait: noWait });
+    const store = credentialStore(files);
     await store.save(entry(NOW));
     const before = fileText(s.credentials);
     armed = true;
@@ -446,8 +445,8 @@ test("a write that fails after the rename (the directory sync) still leaves the 
 test("two first logins for one project identity with different origins: one wins, the other is refused and the store keeps only the winner", async () => {
   const s = sandbox();
   try {
-    const first = credentialStore(openCloudFiles(s.home), { wait: noWait });
-    const second = credentialStore(openCloudFiles(s.home), { wait: noWait });
+    const first = credentialStore(openCloudFiles(s.home));
+    const second = credentialStore(openCloudFiles(s.home));
     const winner = entry(NOW);
     const loser = entry(NOW, {
       origin: OTHER_ORIGIN,
@@ -463,7 +462,7 @@ test("two first logins for one project identity with different origins: one wins
     const reason: unknown = (settled[1] as PromiseRejectedResult).reason;
     expect(reason).toBeInstanceOf(ForgeFailure);
     expect((reason as ForgeFailure).error.code).toBe("INPUT_CONFLICT");
-    const check = credentialStore(openCloudFiles(s.home), { wait: noWait });
+    const check = credentialStore(openCloudFiles(s.home));
     expect(check.associations(PROJECT_ID)).toEqual([prior]);
     expect(check.lookup(prior, NOW)?.id).toBe("aaaaaaaaaaaaaaaa");
     expect(fileText(s.credentials)).not.toContain("cccccccccccccccc");
@@ -481,25 +480,21 @@ test("two first logins for one project identity with different origins: one wins
   }
 }, 20_000);
 
-test("two writers that overlap on different keys both succeed and both entries remain", async () => {
+test("overlapping writers on different keys preserve the winner and a later save merges both entries", async () => {
   const s = sandbox();
   try {
-    const waits: number[] = [];
-    const first = credentialStore(openCloudFiles(s.home), { wait: noWait });
-    const second = credentialStore(openCloudFiles(s.home), {
-      wait: (ms) => {
-        waits.push(ms);
-        return Promise.resolve();
-      },
-    });
+    const first = credentialStore(openCloudFiles(s.home));
+    const second = credentialStore(openCloudFiles(s.home));
     const other = entry(NOW, {
       identity: OTHER_PROJECT_ID,
       id: "cccccccccccccccc",
       token: tokenFor("cccccccccccccccc", "C".repeat(43)),
     });
-    // Both start before either finishes: the first takes the lock, the second meets it and retries.
-    await Promise.all([first.save(entry(NOW)), second.save(other)]);
-    expect(waits.length).toBeGreaterThan(0);
+    const written = first.save(entry(NOW));
+    expect(await asyncCodeOf(() => second.save(other))).toBe("INPUT_CONFLICT");
+    await written;
+    expect(first.associations(OTHER_PROJECT_ID)).toEqual([]);
+    await second.save(other);
     const check = credentialStore(openCloudFiles(s.home));
     expect(check.lookup(prior, NOW)?.id).toBe("aaaaaaaaaaaaaaaa");
     expect(
@@ -516,7 +511,7 @@ test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
     const s = sandbox();
     try {
       const files = openCloudFiles(s.home);
-      const store = credentialStore(files, { wait: noWait });
+      const store = credentialStore(files);
       await store.save(entry(NOW));
       chmodSync(s.credentials, 0o000);
       try {
@@ -547,7 +542,7 @@ test("a first save whose readback fails reports an integrity failure and finds n
           fileText(path).includes("NEWMARK"),
       ),
     );
-    const store = credentialStore(files, { wait: noWait });
+    const store = credentialStore(files);
     const failed = await asyncCodeOf(() =>
       store.save(
         entry(NOW, {
@@ -757,7 +752,7 @@ test("a missing binding with a saved association repairs only toward that associ
 test("the credential directory is created only when a credential is saved", async () => {
   const s = sandbox();
   try {
-    const store = credentialStore(openCloudFiles(s.home), { wait: noWait });
+    const store = credentialStore(openCloudFiles(s.home));
     expect(store.associations(PROJECT_ID)).toEqual([]);
     expect(existsSync(join(s.home, ".forge", "cloud"))).toBe(false);
     mkdirSync(join(s.home, ".forge"), { recursive: true });

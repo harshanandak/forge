@@ -40,7 +40,11 @@ import {
   removeConflict,
 } from "../../core/config/files.ts";
 import { ForgeFailure } from "../../contract/failure.ts";
-import { publishExclusive, removeDurable } from "./durable-io.ts";
+import {
+  publishExclusive,
+  removeDurable,
+  syncParentDirectory,
+} from "./durable-io.ts";
 import { nodeProjectFiles } from "./project-files.ts";
 
 function errorCode(error: unknown): string | undefined {
@@ -216,12 +220,10 @@ function claimIntact(
   held: BigIntStats,
   expected: Uint8Array,
 ): boolean {
-  const info = lstatSync(claimed, { bigint: true });
-  if (info.ino !== 0n && held.ino !== 0n) return sameFile(info, held);
+  const info = holdsExpected(claimed, expected);
   return (
-    info.isFile() &&
-    info.size === BigInt(expected.byteLength) &&
-    Buffer.from(expected).equals(readFileSync(claimed))
+    info !== undefined &&
+    (info.ino === 0n || held.ino === 0n || sameFile(info, held))
   );
 }
 
@@ -283,7 +285,7 @@ export function nodeConfigFiles(
         rmSync(temporary, { force: true });
       }
     },
-    remove(path, expected) {
+    remove(path, expected, { requirePresent = false } = {}) {
       const target = resolveIn(root, path, "keep");
       const claimed = join(
         dirname(target),
@@ -296,7 +298,10 @@ export function nodeConfigFiles(
         held = found;
         renameSync(target, claimed);
       } catch (error) {
-        if (errorCode(error) === "ENOENT") return;
+        if (errorCode(error) === "ENOENT") {
+          if (requirePresent) throw removeConflict(path);
+          return;
+        }
         throw error;
       }
       let intact: boolean;
@@ -308,11 +313,15 @@ export function nodeConfigFiles(
       if (!intact)
         restoreAfterRemoveFailure(path, target, claimed, removeConflict(path));
       try {
+        syncParentDirectory(target);
+      } catch (error) {
+        restoreAfterRemoveFailure(path, target, claimed, error);
+      }
+      try {
         removeDurable(claimed);
       } catch (error) {
         if (existsSync(claimed))
           restoreAfterRemoveFailure(path, target, claimed, error);
-        throw error;
       }
     },
     list(dir) {

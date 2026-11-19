@@ -11,6 +11,7 @@ import { windowsPrivateFiles } from "../adapters/process/windows-acl.ts";
 import { privateFileGuard } from "../adapters/store-sqlite/private-files.ts";
 import type { PrivateFiles } from "../ports/private-files.ts";
 import { ForgeFailure } from "../contract/failure.ts";
+import { removeConflict } from "../core/config/files.ts";
 import type { DeviceFiles } from "../ports/device-files.ts";
 import { PROJECT_ID_PATTERN } from "./project-manifest.ts";
 
@@ -44,13 +45,19 @@ export interface CloudBinding {
 export interface CredentialStore {
   lookup(key: CredentialKey, nowMs: number): DeviceCredential | undefined;
   associations(identity: string): readonly CredentialKey[];
-  save(entry: CredentialEntry): Promise<void>;
-  remove(key: CredentialKey): Promise<string | undefined>;
+  save(
+    entry: CredentialEntry,
+    binding?: CredentialBindingUpdate,
+  ): Promise<void>;
+  remove(
+    key: CredentialKey,
+    binding?: CredentialBindingUpdate,
+  ): Promise<string | undefined>;
 }
-export interface CredentialStoreOptions {
-  /** Pauses between attempts to take the file lock. */
-  readonly wait?: (ms: number) => Promise<void>;
-  readonly attempts?: number;
+interface CredentialBindingUpdate {
+  readonly checkCancelled?: () => void;
+  readonly beforeWrite: () => void;
+  readonly afterWrite: () => void;
 }
 type PrivateChecks = {
   directory(path: string, created?: boolean): void;
@@ -274,35 +281,11 @@ function serialize(map: Readonly<Record<string, CredentialEntry>>): string {
   return `${JSON.stringify({ schema: 1, entries }, null, 2)}\n`;
 }
 
-export function credentialStore(
-  files: DeviceFiles,
-  options: CredentialStoreOptions = {},
-): CredentialStore {
-  const attempts = options.attempts ?? 20;
-  const wait =
-    options.wait ??
-    ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+export function credentialStore(files: DeviceFiles): CredentialStore {
   const load = (): Record<string, CredentialEntry> => {
     const text = files.read(CREDENTIAL_FILE);
     return text === undefined ? {} : parseFile(text);
   };
-
-  /** Never held while waiting for approval: taken only to merge one verified entry. */
-  async function lock(): Promise<{ release(): void }> {
-    for (let attempt = 1; ; attempt++) {
-      try {
-        return files.lock();
-      } catch (error) {
-        if (
-          !(error instanceof ForgeFailure) ||
-          error.error.code !== "INPUT_CONFLICT" ||
-          attempt >= attempts
-        )
-          throw error;
-        await wait(100);
-      }
-    }
-  }
 
   return {
     lookup(key, nowMs) {
@@ -321,38 +304,43 @@ export function credentialStore(
         .filter((entry) => entry.identity === identity)
         .map(({ origin, project }) => ({ origin, identity, project }));
     },
-    async save(entry) {
-      await commit((saved) => {
-        // The target was chosen before the wait for approval. Another login may have saved a different
-        // origin or project for this identity since, so the choice is checked again under the lock; a
-        // loser leaves the store with the winner's association only.
-        if (
-          Object.values(saved).some(
-            (other) =>
-              other.identity === entry.identity &&
-              (other.origin !== entry.origin ||
-                other.project !== entry.project),
+    async save(entry, binding) {
+      await commit(
+        (saved) => {
+          if (
+            Object.values(saved).some(
+              (other) =>
+                other.identity === entry.identity &&
+                (other.origin !== entry.origin ||
+                  other.project !== entry.project),
+            )
           )
-        )
-          throw conflict(
-            "Another login already saved this project's credential for a different Forge cloud origin or project",
-          );
-        return {
-          ...saved,
-          [keyOf(entry)]: parseEntry(keyOf(entry), entry),
-        };
-      }, "saved");
+            throw conflict(
+              "Another login already saved this project's credential for a different Forge cloud origin or project",
+            );
+          return {
+            ...saved,
+            [keyOf(entry)]: parseEntry(keyOf(entry), entry),
+          };
+        },
+        "saved",
+        binding,
+      );
     },
-    async remove(key) {
+    async remove(key, binding) {
       let removed: string | undefined;
-      await commit((saved) => {
-        const found = saved[keyOf(key)];
-        if (found === undefined) return undefined;
-        removed = found.id;
-        return Object.fromEntries(
-          Object.entries(saved).filter(([name]) => name !== keyOf(key)),
-        );
-      }, "removed");
+      await commit(
+        (saved) => {
+          const found = saved[keyOf(key)];
+          if (found === undefined) return undefined;
+          removed = found.id;
+          return Object.fromEntries(
+            Object.entries(saved).filter(([name]) => name !== keyOf(key)),
+          );
+        },
+        "removed",
+        binding,
+      );
       return removed;
     },
   };
@@ -362,22 +350,35 @@ export function credentialStore(
       saved: Record<string, CredentialEntry>,
     ) => Record<string, CredentialEntry> | undefined,
     verb: "saved" | "removed",
+    binding: CredentialBindingUpdate | undefined,
   ): Promise<void> {
-    const held = await lock();
+    binding?.checkCancelled?.();
+    const held = await Promise.resolve(files.lock());
     try {
+      binding?.checkCancelled?.();
       const previous = files.read(CREDENTIAL_FILE);
       const next = change(previous === undefined ? {} : parseFile(previous));
-      if (next === undefined) return;
-      const text = serialize(next);
-      if (Buffer.byteLength(text) > FILE_LIMIT) throw integrity();
-      parseFile(text);
+      const text = next === undefined ? undefined : serialize(next);
+      if (text !== undefined) {
+        if (Buffer.byteLength(text) > FILE_LIMIT) throw integrity();
+        parseFile(text);
+      }
+      binding?.beforeWrite();
+      binding?.checkCancelled?.();
       try {
-        files.write(CREDENTIAL_FILE, text);
-        if (files.read(CREDENTIAL_FILE) !== text) throw integrity();
+        if (text !== undefined) {
+          files.write(CREDENTIAL_FILE, text);
+          if (files.read(CREDENTIAL_FILE) !== text) throw integrity();
+        }
+        if (verb === "removed") {
+          binding?.checkCancelled?.();
+          binding?.afterWrite();
+        }
       } catch (error) {
-        if (previous !== undefined) recover(previous);
+        if (text !== undefined && previous !== undefined) recover(previous);
         throw error;
       }
+      if (verb === "saved") binding?.afterWrite();
     } catch (error) {
       throw error instanceof ForgeFailure
         ? error
@@ -513,11 +514,27 @@ export function writeBinding(
 
 export function removeBinding(root: string, expected: Uint8Array): void {
   try {
-    nodeConfigFiles(root).remove(BINDING_PATH, expected);
+    nodeConfigFiles(root).remove(BINDING_PATH, expected, {
+      requirePresent: true,
+    });
   } catch (error) {
     if (error instanceof ForgeFailure) throw error;
     throw invalidInput(`${BINDING_PATH} could not be removed safely`);
   }
+}
+
+export function assertBindingUnchanged(
+  root: string,
+  expected: Uint8Array,
+): void {
+  let current: Uint8Array | undefined;
+  try {
+    current = nodeConfigFiles(root).read(BINDING_PATH, BINDING_LIMIT);
+  } catch {
+    throw removeConflict(BINDING_PATH);
+  }
+  if (current === undefined || !Buffer.from(expected).equals(current))
+    throw removeConflict(BINDING_PATH);
 }
 
 /** The origin and project a login targets, or a refusal when it would change an established binding. */

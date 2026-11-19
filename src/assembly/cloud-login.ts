@@ -1,10 +1,4 @@
 // `forge auth login`: the device flow against one Forge cloud project, then a private credential.
-//
-// The CLI starts a challenge, prints the verification address and the user code on stderr, and polls
-// until the owner approves it in a browser. Nothing is held while waiting: the credential file is
-// locked only to merge one verified entry, and the project binding is written last, after the
-// credential has read back. Nothing here sends a bearer token, and nothing routes any other command
-// to the cloud. The forge/cloud block declares the operation; this is the service it calls.
 import { nodeDeviceIdentity } from "../adapters/fs/device-identity.ts";
 import {
   createCloudHttp,
@@ -23,6 +17,7 @@ import type {
   CloudLogoutResult,
 } from "../ports/cloud-login.ts";
 import {
+  assertBindingUnchanged,
   credentialStore,
   openCloudFiles,
   parseDeviceCredential,
@@ -83,8 +78,8 @@ const LOGOUT_INPUT_SCHEMA = {
 
 const failed = (message: string, code: string): ForgeFailure =>
   new ForgeFailure({ code, message, retry: "never" });
-const cancelled = (): ForgeFailure =>
-  failed("The login was cancelled.", "INVOCATION_CANCELLED");
+const cancelled = (action: "login" | "logout" = "login"): ForgeFailure =>
+  failed(`The ${action} was cancelled.`, "INVOCATION_CANCELLED");
 
 /** The server's refusal as one of our fixed messages; the name is from a closed vocabulary. */
 function refusalFailure(name: string): ForgeFailure {
@@ -299,34 +294,41 @@ async function login(
     wire,
     (deps.now ?? Date.now)(),
   );
-  await store.save({
-    origin: target.origin,
-    identity: manifest.id,
-    project: target.project,
-    localDevice: local,
-    ...credential,
-  });
-  let binding: "created" | "unchanged";
-  try {
-    binding = writeBinding(deps.root, {
-      schema: 1,
+  let binding: CloudLoginResult["binding"] = "unchanged";
+  await store.save(
+    {
       identity: manifest.id,
-      origin: target.origin,
-      project: target.project,
-    });
-  } catch (error) {
-    throw new ForgeFailure({
-      ...(error instanceof ForgeFailure
-        ? error.error
-        : {
-            code: "UNAVAILABLE",
-            message: "The project binding could not be written.",
-            retry: "never" as const,
-          }),
-      repair:
-        "The credential was saved. Run forge auth login again to finish the binding.",
-    });
-  }
+      ...target,
+      localDevice: local,
+      ...credential,
+    },
+    {
+      beforeWrite: () => {
+        resolveTarget(target, manifest.id, readBinding(deps.root), []);
+      },
+      afterWrite: () => {
+        try {
+          binding = writeBinding(deps.root, {
+            schema: 1,
+            identity: manifest.id,
+            ...target,
+          });
+        } catch (error) {
+          throw new ForgeFailure({
+            ...(error instanceof ForgeFailure
+              ? error.error
+              : {
+                  code: "UNAVAILABLE",
+                  message: "The project binding could not be written.",
+                  retry: "never" as const,
+                }),
+            repair:
+              "The credential was saved. Run forge auth login again to finish the binding.",
+          });
+        }
+      },
+    },
+  );
   return {
     origin: target.origin,
     project: target.project,
@@ -347,6 +349,10 @@ async function logout(
       message: `Invalid input for ${CLOUD_LOGOUT_OP}: expected {}`,
       retry: "never",
     });
+  const checkCancelled = () => {
+    if (deps.signal.aborted) throw cancelled("logout");
+  };
+  checkCancelled();
   const snapshot = readBindingSnapshot(deps.root);
   if (snapshot === undefined)
     return { status: "not-bound", tokenRevoked: false };
@@ -367,30 +373,14 @@ async function logout(
     );
   const tokenId = await credentialStore(
     openCloudFiles(deps.home, deps.security),
-  ).remove({
-    origin: binding.origin,
-    identity: manifest.id,
-    project: binding.project,
-  });
-  try {
-    removeBinding(deps.root, bytes);
-  } catch (error) {
-    const failure =
-      error instanceof ForgeFailure
-        ? error.error
-        : {
-            code: "UNAVAILABLE",
-            message: "The project binding could not be removed.",
-            retry: "never" as const,
-          };
-    throw new ForgeFailure({
-      ...failure,
-      ...(failure.code === "INPUT_CONFLICT"
-        ? {}
-        : { repair: "Run forge auth logout again to remove the binding." }),
-      ...(tokenId === undefined ? {} : { observed: { tokenId } }),
-    });
-  }
+  ).remove(
+    { origin: binding.origin, identity: manifest.id, project: binding.project },
+    {
+      checkCancelled,
+      beforeWrite: () => assertBindingUnchanged(deps.root, bytes),
+      afterWrite: () => removeBinding(deps.root, bytes),
+    },
+  );
   return {
     status: "logged-out",
     origin: binding.origin,

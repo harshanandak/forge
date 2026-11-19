@@ -269,9 +269,11 @@ Start and poll send no bearer token, follow no redirect and have a deadline and 
 
 ## Log out from the CLI
 
-`forge auth logout` unbinds a checkout from its cloud project, so it uses the local store again. It takes no flags, is for a person at a terminal and is not an MCP tool. With no `.forge/cloud.json` it changes nothing and reports `not-bound`. Otherwise it removes only this checkout's entry from `~/.forge/cloud/credentials.json`, under the same lock, checked write and read back as login, and keeps every other project's entry. Only after that read back does it delete `.forge/cloud.json`, so a stop between the two leaves a binding with no credential, and running logout again finishes. A binding for another project id is `INPUT_CONFLICT` and nothing is removed.
+`forge auth logout` unbinds a checkout from its cloud project, so it uses the local store again. It takes no flags, is for a person at a terminal and is not an MCP tool. With no `.forge/cloud.json` it changes nothing and reports `not-bound`. Otherwise it removes only this checkout's entry from `~/.forge/cloud/credentials.json` and keeps every other project's entry. Login and logout hold the same lock through the credential write, readback and binding change. A held lock returns `INPUT_CONFLICT` immediately. A binding that changes during logout or belongs to another project id also returns `INPUT_CONFLICT`.
 
-A `logged-out` result lists the origin and project, and includes `tokenId` only when that invocation removed a saved credential. If binding removal fails after the credential was removed, the error reports the ID in `error.observed.tokenId`. A retry that only removes the binding has no token ID to return. Logout leaves the server-side token in place (`tokenRevoked` is always `false`). To revoke it with the admin `revoke` route, use the ID reported by logout or, if unavailable, the `tokenId` from the original login result.
+Logout checks for cancellation before each change. If cancellation or a binding removal failure occurs after the credential write, logout restores the previous credential document through the same checked write and backup path as login. If the process is forcibly stopped between the two writes, running logout again removes the remaining binding.
+
+A `logged-out` result lists the origin and project, and includes `tokenId` only when that invocation removed a saved credential. Logout leaves the server-side token in place (`tokenRevoked` is always `false`). To revoke it with the admin `revoke` route, use the ID reported by logout or, if unavailable, the `tokenId` from the original login result.
 
 ## Dump and restore in pages
 
