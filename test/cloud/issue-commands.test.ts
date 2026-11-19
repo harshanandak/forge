@@ -2003,6 +2003,42 @@ const call = {
   input: { id: "forge-1" },
   context: { actor },
 };
+
+test("issue writes ignore runtime tables and refuse unregistered user tables", async () => {
+  const f = fixture();
+  const token = await f.device();
+  const create = (title: string, requestId: string) =>
+    f.send(
+      { ...call, op: "issue.create", input: { title }, requestId },
+      { token },
+    );
+
+  expect(await create("Before metadata", "before-metadata")).toMatchObject({
+    status: 200,
+    json: { ok: true, result: { id: "forge-1" } },
+  });
+  f.db.run("CREATE TABLE _cf_METADATA (key TEXT PRIMARY KEY)");
+  f.reopen();
+  expect(await create("With metadata", "with-metadata")).toMatchObject({
+    status: 200,
+    json: { ok: true, result: { id: "forge-2" } },
+  });
+
+  f.db.run("CREATE TABLE _CF_EXTERNALS (key TEXT PRIMARY KEY)");
+  f.db.run("CREATE TABLE xcf_METADATA (key TEXT PRIMARY KEY)");
+  f.reopen();
+  expect(await create("With a user table", "with-user-table")).toMatchObject({
+    status: 400,
+    json: {
+      ok: false,
+      error: {
+        code: "INPUT_INVALID",
+        message: "Unregistered user table: xcf_METADATA",
+      },
+    },
+  });
+}, 30_000);
+
 const configured = (forward?: () => Promise<Response>) =>
   createConfiguredWorker(undefined, forward ? { forward } : {});
 const fakeToken = `fct_0123456789abcdef.${"A".repeat(43)}`;

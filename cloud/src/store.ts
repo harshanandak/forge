@@ -111,7 +111,7 @@ export function writableStore(storage: DurableStorage): SqlDatabase {
     ) {
       // Tables owned by the runtime, not by Forge.
       run =
-        "SELECT name FROM sqlite_schema WHERE type='table' AND name NOT IN ('__miniflare_do_name','_cf_KV') ORDER BY name";
+        "SELECT name FROM sqlite_schema WHERE type='table' AND name != '__miniflare_do_name' AND lower(name) NOT GLOB '_cf_*' ORDER BY name";
     }
     return sql
       .exec(run, ...params.map(bind))
