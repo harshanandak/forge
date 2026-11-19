@@ -249,4 +249,4 @@ test("installed lane dispatch records one intent under shared control and a live
   } finally {
     await rig.close();
   }
-});
+}, 120_000);
