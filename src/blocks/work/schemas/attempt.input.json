@@ -6,7 +6,8 @@
       "$ref": "https://raw.githubusercontent.com/harshanandak/forge/main/schemas/tracker.json#/$defs/ItemId"
     },
     "label": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 64
     },
     "ttlSeconds": {
       "type": "integer",

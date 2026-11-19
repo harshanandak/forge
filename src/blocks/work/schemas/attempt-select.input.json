@@ -8,7 +8,7 @@
     "attempt": { "type": "string" },
     "combine": { "type": "string" },
     "none": { "type": "boolean", "const": true },
-    "reason": { "type": "string" }
+    "reason": { "type": "string", "maxLength": 300 }
   },
   "oneOf": [
     { "required": ["attempt"] },

@@ -848,7 +848,13 @@ function insertRows(db: SqlDatabase, tables: Record<string, Row[]>): void {
 
 function admitFamilies(owner: StateOwner, rows: readonly Row[]): void {
   for (const row of rows) {
-    if (!owner.hasRecordFamilies(String(row.namespace))) continue;
+    const issue =
+      row.namespace === "forge/work" &&
+      /^issue:work-[0-9]+$/.test(String(row.key));
+    const families = owner.hasRecordFamilies(String(row.namespace));
+    if (!issue && !families) continue;
+    const refused = () =>
+      rejectedRow("state_records", JSON.stringify([row.namespace, row.key]));
     let record: StateRecord;
     try {
       record = parseRestoreJson(String(row.body)) as StateRecord;
@@ -859,12 +865,19 @@ function admitFamilies(owner: StateOwner, rows: readonly Row[]): void {
       )
         throw new Error();
     } catch {
-      throw rejectedRow(
-        "state_records",
-        JSON.stringify([row.namespace, row.key]),
-      );
+      if (!families) continue;
+      throw refused();
     }
-    owner.assertRecordFamily(record);
+    const value = record.value;
+    if (
+      issue &&
+      (!isObject(value) ||
+        ["attempts", "selection", "participants"].some((name) =>
+          Object.hasOwn(value, name),
+        ))
+    )
+      throw refused();
+    if (families) owner.assertRecordFamily(record);
   }
 }
 

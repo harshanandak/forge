@@ -22,7 +22,8 @@
           "pattern": "^attempt-[1-9][0-9]*$"
         },
         "label": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 64
         },
         "holder": {
           "$ref": "state.json#/$defs/LeaseHolder"
@@ -50,7 +51,7 @@
           "required": ["supersededBy", "reason"],
           "properties": {
             "supersededBy": { "const": "selection" },
-            "reason": { "type": "string" }
+            "reason": { "type": "string", "maxLength": 300 }
           },
           "additionalProperties": false
         }
@@ -103,7 +104,11 @@
         "updatedAt": { "$ref": "common.json#/$defs/Timestamp" },
         "mode": { "enum": ["exclusive", "collaborative", "competing"] },
         "slots": { "type": "integer", "minimum": 1, "maximum": 16 },
-        "attempts": { "type": "array", "items": { "$ref": "#/$defs/Attempt" } },
+        "attempts": {
+          "type": "array",
+          "maxItems": 16,
+          "items": { "$ref": "#/$defs/Attempt" }
+        },
         "selection": {
           "type": "object",
           "required": ["mode", "chosen", "reason", "holder", "selectedAt"],
@@ -111,17 +116,18 @@
             "mode": { "enum": ["single", "combine", "none"] },
             "chosen": {
               "type": "array",
+              "maxItems": 16,
               "items": {
                 "type": "object",
                 "required": ["attempt", "sha"],
                 "properties": {
-                  "attempt": { "type": "string" },
+                  "attempt": { "type": "string", "maxLength": 64 },
                   "sha": { "type": "string", "pattern": "^[a-fA-F0-9]{40}$" }
                 },
                 "additionalProperties": false
               }
             },
-            "reason": { "type": "string" },
+            "reason": { "type": "string", "maxLength": 300 },
             "holder": { "$ref": "state.json#/$defs/LeaseHolder" },
             "selectedAt": { "$ref": "common.json#/$defs/Timestamp" }
           },
@@ -129,6 +135,7 @@
         },
         "participants": {
           "type": "array",
+          "maxItems": 8,
           "items": { "$ref": "state.json#/$defs/LeaseRecord" }
         },
         "revision": { "type": "integer", "minimum": 1 }

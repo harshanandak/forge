@@ -37,6 +37,11 @@ const reason = {
   ...nonempty,
   maxLength: tracker.$defs.CommentInput.properties.body.maxLength,
 };
+const selectionReason = {
+  ...nonempty,
+  maxLength:
+    tracker.$defs.TrackerItem.properties.selection.properties.reason.maxLength,
+};
 const commit = record.properties.mergeGate.properties.head;
 const step = { enum: ["receipt", "close", "issues", "rebuild", "unwatch"] };
 const omit = (properties: SchemaObject, names: readonly string[]) =>
@@ -54,7 +59,7 @@ const storedAttempt = object(
       ...tracker.$defs.Attempt.properties.superseded,
       properties: {
         ...tracker.$defs.Attempt.properties.superseded.properties,
-        reason,
+        reason: selectionReason,
       },
     },
   },
@@ -234,7 +239,7 @@ const runtimeFamilies: Record<string, Family> = {
         type: "array",
         items: object({ attempt, sha: evidence.properties.sha }),
       },
-      reason,
+      reason: selectionReason,
       holder,
       selectedAt: time,
     }),
