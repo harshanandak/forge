@@ -11,6 +11,12 @@ Keep three separate results: hosted packed acceptance, live candidate-tarball ac
 
 The private artifact ledger records reviewed main commit (`RELEASE_SHA`), successful push CI URL/run (`CI_RUN`), exact package/version (`VERSION`), artifact SHA-256 (`ARTIFACT_SHA256`), SHA-512 integrity, installed `dist/build.json`, CLI identity, Node version, absolute installed bin, Worker version/config, project names and machine/device/session identities. Use Windows A and a safe disposable boxes.dev B, with A1/A2 sharing A's device and B1 independent. Never reuse the meetings-template box. Save timestamped envelopes, actual CLI exits, HTTP outcomes and dispatch sentinels; redact credentials, headers and private login responses. Confidential dumps stay private, outside commits and public CI artifacts.
 
+Hosted packed acceptance includes generated `lane dispatch` help and commands from
+two device/session clients on Node with no Bun on PATH. The tracker journey checks
+zero intent records and events after a stopped refusal, then one stored intent and
+event across two allowed calls with the same dispatch ID. Keep the local project-owner
+sentinel intact throughout the journey.
+
 On both machines use new absolute prefixes/caches and the same downloaded CI archive. Read the candidate version from `package.json` in the reviewed source checkout. Verify the CI event is push, branch main, conclusion success and head exactly `RELEASE_SHA`; compare the archive against the independent ledger digest, not only its adjacent sidecar. Do not rebuild, repack or use the global forge on PATH.
 
 ```sh
@@ -30,7 +36,7 @@ Export the named nonsecret ledger variables before these commands. Run every com
 **Projects and Workers.** A Worker admits exactly one project, the one named by `FORGE_CLOUD_PROJECT`. Device login, `command` and the `state/*` routes refuse any other name (`AUTH_FORBIDDEN`, 403), and the owner's device pages always go to that project. The raw lease routes (`claim`, `renew`, `release`, `holder`) and every admin route accept any project name. The proof therefore uses these roles:
 
 - **Source project.** The `FORGE_CLOUD_PROJECT` of the first isolated Worker. A1, A2 and B1 all log in to it, which is why one project name serves both machines.
-- **Restore target.** A project name that is never provisioned before the restore. Admin `status`, `dump` and `restore` work for it on any Worker, but typed commands and login work only on a Worker that admits it. Provide that with a second disposable Worker, with its own `wrangler.local.jsonc`, name, KV namespace, secrets and Clerk redirect URI. Repeat Deploy steps 1 to 5 for it with `FORGE_CLOUD_PROJECT` set to the target name and the same `FORGE_CLOUD_ID_PREFIX` as the first. Read the source dump with the first Worker's admin token and post the pages to the second Worker with its own admin token. The other route is to redeploy the first Worker with `FORGE_CLOUD_PROJECT` changed to the target. That stops admitting the source, so do it last. Either route is the separate authorization described after the table, and the second Worker's reverse path is deleting it.
+- **Restore target.** A project name that is never provisioned before the restore. Admin `status`, `dump` and `restore` work for it on any Worker, but typed commands and login work only on a Worker that admits it. Provide that with a second disposable Worker, with its own `wrangler.local.jsonc`, name, KV namespace, secrets and Clerk redirect URI. Follow Deploy steps 1 to 4 and only the non-provisioning smoke checks of step 5, with `FORGE_CLOUD_PROJECT` set to the target name and the same `FORGE_CLOUD_ID_PREFIX` as the first. Read the source dump with the first Worker's admin token and post the pages to the second Worker with its own admin token. The other route is to redeploy the first Worker with `FORGE_CLOUD_PROJECT` changed to the target. That stops admitting the source, so do it last. Either route is the separate authorization described after the table, and the second Worker's reverse path is deleting it.
 - **Verified-close evidence project.** A third name. Verified close is a typed command and needs the GitHub settings of Deploy step 3, so it also needs a Worker that admits it. It is never dumped or restored.
 
 **Setup operations.** "The supported setup operation" means these steps, in order, for each checkout. Each checkout is a git repository root.
@@ -70,14 +76,47 @@ Export the named nonsecret ledger variables before these commands. Run every com
 | Stages 3-4           | Separate three-session and 100-call races (see Races); one winner each; compare every holder tuple/expiry; release/reacquire/renew and exact stale-generation refusals | None                                                         |
 | Stage 5              | Fresh bound clone names remote holder then claims after release; host-network outage (see Outage) refuses reads/writes; reconnect and compare data                     | None; agent runs command work                                |
 | Stage 6              | Revoke precisely disposable B credential id; account for tokens by ledger (see Token accounting), next-call refusal, full released list and retained A access          | None; never disclose token                                   |
-| Stage 7              | Quiet source, export every v2 page, restore never-provisioned target on the Worker that admits it; complete admin table readback before target login                   | None                                                         |
-| Restored stop/resume | Fresh target logins from the target checkout, global/lane control reads, old-fence/approval refusals; request shared all-lanes resume and retry its exact request      | Approve target logins and fresh all-lanes resume in browser  |
-| Fresh resumed work   | Fresh issue revisions/read-set and claim, stale refusals, final stopped cleanup                                                                                        | None                                                         |
+| Stage 7              | Quiet source, export every v2 page, check target status is uninitialized immediately before restore; complete admin table readback before target login                 | None                                                         |
+| Restored stop/resume | Fresh target logins, global/lane control reads, stopped dispatch and old-fence/approval refusals; request shared all-lanes resume and retry its exact request          | Approve target logins and fresh all-lanes resume in browser  |
+| Fresh resumed work   | Fresh issue revisions/read-set and claim, stale refusals, one permitted dispatch intent with readback, final stopped cleanup                                           | None                                                         |
 | Published repeat     | New exact-version registry installs and new disposable projects on A/B; repeat every phase (see Registry repeat)                                                       | Owner publication first; fresh browser approvals as required |
 
 The restored typed-command target must be admitted on an isolated Worker (see Projects and Workers). Deploying a second Worker, changing admission/config or redeploying is a separate authorization with prior admission/config and Worker version recorded as the reverse path. An admin-only unadmitted target cannot prove stopped control. If unavailable, leave that phase INCOMPLETE.
 
-**Dispatch.** The installed package has no dispatch entry point, so the proof cannot show a stopped launch refused or one permitted launch (tracked in forge-1592). The only gate is the lane runner, which README.md marks repository-only (`bun tools/lane.ts`). It reads control immediately before each spawn and refuses with "Bound lane dispatch refused: control stopped." (`tools/lane-control.ts`). What the installed CLI can show is control. In the restored stop/resume phase, run `node "$BIN" lane control` on the target after its login (no id reads the global control; `--input '{"id":"work-<n>"}'` reads one lane) and record the result. It is `{ incarnation, epoch, stopped, scope?, since? }` (`src/blocks/work/schemas/lane-control.output.json`): expect `stopped: true` and `scope: "all"` straight after the restore, and `stopped: false` only after the owner approves the all-lanes resume. The proof starts no lane runner and records no launch. Do not call this a zero-launch refusal. Leave "one permitted dispatch" INCOMPLETE/2 until forge-1592 lands. Caller-policy refusal never authorizes hand-editing credentials/bindings, impersonation or bypassing attended approval.
+**Dispatch.** Capture the installed contract with `node "$BIN" lane dispatch --help --json`.
+After restore and admin readback, the admin `POST /p/<project>/devices` call above
+can mint a credential bound to the dispatch client's wire `device` and
+`session`. The packed tracker fixture loads this credential for its CLI client.
+`auth login` mints a sessionless credential. `FORGE_SESSION` names the caller's
+session and leaves the credential's binding unchanged. The shipped CLI has no
+supported import for the admin-issued credential, so the live installed
+dispatch proof is INCOMPLETE/2.
+
+Once the installed CLI supports this credential setup, use the same device,
+session and credential for the following checks. Run `node "$BIN" lane control`
+for global control and
+`node "$BIN" lane control --input '{"id":"work-7"}'` for the chosen restored issue.
+Both should report `stopped: true` and `scope: "all"` after restore. Use the canonical
+issue ID (`work-7` for a displayed ID such as `forge-7`) for dispatch and the
+displayed ID for `issue claim`. Claim the open issue and record the live grant.
+
+```sh
+node "$BIN" lane dispatch --input '{"id":"work-7","dispatchId":"restore-proof-1","incarnation":"<observed>","epoch":4}'
+```
+
+Substitute the issue, control incarnation and epoch actually observed. With the
+stop set, expect `INPUT_CONFLICT`, CLI exit 4 and HTTP 409. Read back the relevant
+dump records and events to verify zero new dispatch intents. After the owner
+approves the all-lanes resume, read the lane control again and confirm
+`stopped: false`. Check the live grant, then dispatch with fresh control and an
+unused dispatch ID. Expect exit 0 and a `recorded-intent` with the authenticated
+device/session and lease generation. While the same control and lease hold, call
+again with the same input and compare the returned record, including its timestamp.
+Verify exactly one record and event under `lane-dispatch:<issue>:<dispatchId>` in
+`forge/work`. Use the same dispatch ID to reconcile an uncertain outcome. The
+installed command needs no worktree and starts no agent. Caller-policy refusal
+never authorizes hand-editing credentials/bindings, impersonation or bypassing
+attended approval.
 
 Read raw v2 export pages and compare every column in canonical order in `state_records`, `state_events`, `state_leases`, `state_requests`, `domain_cloud_requests` and `domain_cloud_command_receipts`. Validate exactly the floor, lease-release and stop/audit deltas described under Stopped activation; reject missing/extra rows or pages. A serving restore adds another stop and is not a neutral comparison. Enumerate X, Y, R, every comment/link, deleted-number allocation floor, holder/generation/release event, replay receipt and control/audit object, including all N imported values and F floors. No count-only or sample-only acceptance.
 
@@ -89,7 +128,7 @@ No tool makes this comparison for a cloud-to-cloud restore yet (tracked in forge
 
 Require no held imported lease, no consumable old approval/browser state and no login/token state in the dump. CI inspects private tables directly; live refusal behavior complements dump exclusion. Retained ordinary-restore receipt bytes are imported history, never fresh grants; current-state imports carry no receipts/leases. A reused raw request id under a new token is a different principal: verify scoped replay isolation. Reach stale fences with valid current credentials, revisions and original generation context; distinguish released LEASE_NOT_HELD from replaced LEASE_STALE. A local context refusal is not server proof. Keep verified-close evidence in a separate disposable project because snapshot export refuses such evidence; never erase it for a passing dump.
 
-Record ResultEnvelope status and CLI exit separately from HTTP and runner verdict. OK is 0, INCOMPLETE 2, lease conflicts 4, invalid/context input 6, and unavailable/approval/auth failures here 1. A successful restore is not dispatch permission. The stop does not refuse `issue.*` writes: issue create, comment, close and claim still succeed through the cloud project after a restore, so hold every writer until the verified switch. Per-lane resume cannot lift global stop; fresh owner-approved shared all-lanes resume, current grant and fresh reads remain required. Existing processes are not cancelled. Lost final restore response requires status/dump inspection; discard an ambiguous disposable target rather than forcing activation.
+Record ResultEnvelope status and CLI exit separately from HTTP and dispatch readback. OK is 0, INCOMPLETE 2, lease conflicts 4, invalid/context input 6, and unavailable/approval/auth failures here 1. A successful restore is not dispatch permission. The stop does not refuse `issue.*` writes: issue create, comment, close and claim still succeed through the cloud project after a restore, so hold every writer until the verified switch. Per-lane resume cannot lift global stop; fresh owner-approved shared all-lanes resume, current grant and fresh reads remain required. The intent commit is the launch boundary. A stop committed first refuses dispatch. A dispatch committed first records an accepted intent. Accepted work is not cancelled by a later stop. Lost final restore response requires status/dump inspection; discard an ambiguous disposable target rather than forcing activation.
 
 After owner publication, install only the exact public version on both machines with fresh caches/prefixes and save registry metadata and npm-verified signatures/provenance. Compare registry integrity to the same reviewed archive, installed build commit/run/version to the ledger, and signer/source/workflow to release policy. Repeat the complete live proof in fresh projects; re-fetch registry metadata and both installed identities before acceptance. These read-only commands do not authorize publishing:
 
@@ -463,13 +502,19 @@ The owner runs these steps. Replace angle-bracket placeholders; `<worker-origin>
 
    Expect 200 with `value.initialized: true` for a provisioned project (`false` before provisioning), plus the dump usage, effective caps and warnings described above.
 
+   For a restore target, use the metadata, admin status and unauthenticated
+   command checks in this step. Wait until after restore for device provisioning,
+   authenticated holder checks and login. Immediately before the first restore
+   request, run the admin status check against the target again and require
+   `value.initialized: false` with all six table counts zero.
+
    ```sh
    curl -sS -i --config '<device-curl-config>' '<worker-origin>/p/<project-id>/holder?subject=deploy-smoke'
    ```
 
    With an existing unexpired device token for this project, expect 200 `{"ok":true,"value":null}` for an unused subject, or a lease object. This is the working project path.
 
-   The admitted project (`FORGE_CLOUD_PROJECT`) must exist. On a first setup with an isolated Worker and config, `POST devices` with the admin config provisions it. On an existing deployment, check `status` and keep its binding and credentials; never point the live Worker at a disposable project. These unauthenticated checks show only that the routes answer and refuse correctly:
+   For an ordinary first setup with an isolated Worker and config, `POST devices` with the admin config provisions the admitted project (`FORGE_CLOUD_PROJECT`). For a restore target, let restore initialize it before issuing device credentials or starting login. On an existing deployment, check `status` and keep its binding and credentials; never point the live Worker at a disposable project. These unauthenticated checks show only that the routes answer and refuse correctly:
 
    ```sh
    curl -sS --output '<private-login-response-file>' --write-out 'HTTP %{http_code}\n' -H 'Content-Type: application/json' --data '{"device":"deploy-smoke"}' '<worker-origin>/p/<project-id>/loginstart'

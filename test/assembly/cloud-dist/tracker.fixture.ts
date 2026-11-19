@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { timingSafeEqual } from "node:crypto";
-import { project } from "../../cloud/import-current-state.fixture.ts";
+import { durableStore } from "../../../cloud/src/store.ts";
+import { StateOwner } from "../../../src/core/state/index.ts";
+import {
+  actor,
+  ns,
+  project,
+} from "../../cloud/import-current-state.fixture.ts";
 import { cloudRig, type CloudRig, type Seen } from "./fixture.ts";
 
 if (!("timingSafeEqual" in crypto.subtle))
@@ -9,7 +15,13 @@ if (!("timingSafeEqual" in crypto.subtle))
   });
 
 /** Only the HTTPS boundary is adapted; Project.fetch owns tokens, receipts and leases. */
-export async function trackerRig(bin: string) {
+export async function trackerRig(
+  bin: string,
+  {
+    devices = ["laptop", "desktop", "third", "fresh-checkout"],
+    guardProjectOwner = false,
+  } = {},
+) {
   let unavailable = false;
   const authority = await project(
     undefined,
@@ -44,7 +56,7 @@ export async function trackerRig(bin: string) {
     }
   };
   try {
-    const devices = ["laptop", "desktop", "third", "fresh-checkout"];
+    const setup = guardProjectOwner ? "guarded" : "bound";
     for (const [index, device] of devices.entries()) {
       const session = `installed-${index}`;
       // Administrative setup goes through the real Project routes as well.
@@ -63,7 +75,7 @@ export async function trackerRig(bin: string) {
       };
       ids.push(credential.id);
       clients.push(
-        await cloudRig(bin, forward, false, {
+        await cloudRig(bin, forward, setup, {
           credential: {
             id: credential.id,
             token: credential.token,
@@ -78,6 +90,34 @@ export async function trackerRig(bin: string) {
     return {
       clients,
       responses,
+      seedLaneControl() {
+        new StateOwner(durableStore(authority.storage), { now: Date.now }).put(
+          ns,
+          "lane-control:global",
+          {
+            version: 1,
+            incarnation: "installed-dispatch",
+            epoch: 0,
+            resumeAllEpoch: 0,
+            stopAll: null,
+          },
+          actor,
+          { expectRevision: 0 },
+        );
+      },
+      dispatchState() {
+        return ["state_records", "state_events"].map((table) =>
+          authority.db
+            .query<{ key: string; body: string }, [string]>(
+              `SELECT key, body FROM ${table} WHERE namespace=? AND key LIKE 'lane-dispatch:%' ORDER BY key`,
+            )
+            .all(ns)
+            .map(({ key, body }) => ({
+              key,
+              body: JSON.parse(body) as unknown,
+            })),
+        );
+      },
       outage(value: boolean) {
         unavailable = value;
       },

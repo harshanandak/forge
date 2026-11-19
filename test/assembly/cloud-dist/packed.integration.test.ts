@@ -52,7 +52,7 @@ test("installed CLI and MCP read device attachments without acquiring a local pr
             },
           }
         : refuse("UNAVAILABLE", 503),
-    true,
+    "attached",
   );
   try {
     for (const surface of ["CLI", "MCP"] as const)

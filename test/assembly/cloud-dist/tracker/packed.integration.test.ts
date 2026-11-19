@@ -2,6 +2,7 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
 import { packedConsumer } from "../../../integration/packed-consumer.ts";
+import type { CloudRig } from "../fixture.ts";
 import { trackerRig } from "../tracker.fixture.ts";
 
 test("installed tracker persists writes, fences sessions and refuses unavailable or revoked authority", async () => {
@@ -136,6 +137,115 @@ test("installed tracker persists writes, fences sessions and refuses unavailable
       error: { code: "AUTH_REVOKED" },
     });
     expect((await pass(1, "comments", { id })).records).toHaveLength(1);
+  } finally {
+    await rig.close();
+  }
+}, 120_000);
+
+test("installed lane dispatch records one intent under shared control and a live lease", async () => {
+  const rig = await trackerRig(
+    join(packedConsumer(), "node_modules/forge-workflow/dist/bin/forge.js"),
+    { devices: ["laptop", "desktop"], guardProjectOwner: true },
+  );
+  const [holder, peer] = [rig.clients[0]!, rig.clients[1]!];
+  const command = async (
+    client: CloudRig,
+    op: string,
+    input: object,
+    code?: string,
+  ) => {
+    const before = rig.responses.length;
+    const args = [...op.split("."), "--input", JSON.stringify(input)];
+    const out = await client.run(args);
+    client.expectUntouched(out);
+    const verdict = code
+      ? { ok: false, status: "FAIL", error: { code } }
+      : { ok: true, status: "OK", op };
+    expect(out.status, out.stderr).toBe(code ? 4 : 0);
+    expect(out.envelope).toMatchObject(verdict);
+    expect(rig.responses.slice(before)).toMatchObject([
+      { status: code ? 409 : 200, body: verdict },
+    ]);
+    return out.envelope.result;
+  };
+  const createAndClaim = async (title: string) => {
+    const issue = (await command(holder, "issue.create", { title })) as {
+      id: string;
+    };
+    expect(issue.id).toMatch(/^forge-[1-9]\d*$/);
+    const grant = (await command(holder, "issue.claim", {
+      id: issue.id,
+    })) as { generation: number };
+    return {
+      id: issue.id.replace(/^forge-/, "work-"),
+      generation: grant.generation,
+    };
+  };
+  const control = async (id: string, stopped: boolean) => {
+    const result = (await command(peer, "lane.control", { id })) as {
+      incarnation: string;
+      epoch: number;
+      stopped: boolean;
+    };
+    expect(result.stopped).toBe(stopped);
+    return { incarnation: result.incarnation, epoch: result.epoch };
+  };
+  try {
+    const path = Object.entries(holder.env).find(
+      ([name]) => name.toLowerCase() === "path",
+    )?.[1];
+    expect(Bun.which("bun", { PATH: path ?? "" })).toBeNull();
+    const help = await holder.run(["lane", "dispatch", "--help", "--json"]);
+    holder.expectUntouched(help);
+    expect(help.status).toBe(0);
+    expect(help.envelope).toMatchObject({
+      result: { operations: [{ op: "lane.dispatch" }] },
+    });
+    expect(rig.responses).toHaveLength(0);
+
+    rig.seedLaneControl();
+    const stopped = await createAndClaim("stopped lane");
+    await command(peer, "lane.stop", { id: stopped.id });
+    const refused = {
+      id: stopped.id,
+      dispatchId: "refused",
+      ...(await control(stopped.id, true)),
+    };
+    await command(holder, "lane.dispatch", refused, "INPUT_CONFLICT");
+    expect(rig.responses.at(-1)?.body).toMatchObject({
+      error: { message: expect.stringMatching(/stopped/i) as unknown },
+    });
+    expect(rig.dispatchState()).toEqual([[], []]);
+
+    const running = await createAndClaim("running lane");
+    const input = {
+      id: running.id,
+      dispatchId: "permitted",
+      ...(await control(running.id, false)),
+    };
+    await command(peer, "lane.dispatch", input, "LEASE_NOT_HELD");
+    const intent = await command(holder, "lane.dispatch", input);
+    expect(intent).toEqual({
+      ...input,
+      holder: { device: "laptop", session: "installed-0" },
+      leaseGeneration: running.generation,
+      recordedAt: expect.any(String) as unknown,
+      kind: "recorded-intent",
+    });
+    const key = `lane-dispatch:${input.id}:${input.dispatchId}`;
+    const state = rig.dispatchState();
+    expect(state.map((rows) => rows.length)).toEqual([1, 1]);
+    const event = {
+      type: "forge/work:record.updated@1",
+      revision: 1,
+      data: intent,
+    };
+    expect(state).toMatchObject([
+      [{ key, body: { revision: 1, value: intent } }],
+      [{ key, body: event }],
+    ]);
+    expect(await command(holder, "lane.dispatch", input)).toEqual(intent);
+    expect(rig.dispatchState()).toEqual(state);
   } finally {
     await rig.close();
   }
