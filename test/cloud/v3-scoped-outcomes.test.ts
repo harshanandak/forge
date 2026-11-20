@@ -41,6 +41,8 @@ interface Step {
   readonly generation?: number;
   readonly restart?: true;
   readonly expired?: true;
+  readonly change?: Readonly<Record<string, unknown>>;
+  readonly raw?: unknown;
 }
 
 const headers = (owner: string, expires: number) => ({
@@ -54,6 +56,7 @@ const leaseBody = (step: Omit<Step, "expect" | "writes">) => ({
   holder,
   ...(step.route === "claim" ? {} : { generation: step.generation ?? 1 }),
   ...(step.route === "release" ? {} : { ttlMs: step.ttlMs ?? HOUR }),
+  ...step.change,
 });
 
 async function run(store: "v2" | "v3", steps: readonly Step[]) {
@@ -82,7 +85,7 @@ async function run(store: "v2" | "v3", steps: readonly Step[]) {
       writes = 0;
       const response = await f.send(
         store === "v3" ? `${probe}/${step.route}` : step.route,
-        leaseBody(step),
+        "raw" in step ? step.raw : leaseBody(step),
         headers(step.owner ?? "owner-a", step.expires ?? E1),
       );
       results.push({
@@ -433,6 +436,262 @@ test(
     ]),
   timeout,
 );
+
+test(
+  "a v3 exact retry inside the 24-hour window replays and at the window end is refused as v2 refuses it",
+  () =>
+    scenario([
+      {
+        route: "claim",
+        requestId: "acq-1",
+        expect: 1,
+        writes: 1,
+        expires: E2 + HOUR,
+        ttlMs: 24 * HOUR,
+      },
+      {
+        route: "claim",
+        requestId: "acq-1",
+        expect: 1,
+        writes: 0,
+        at: E2 - 1,
+        expires: E2 + HOUR,
+        ttlMs: 24 * HOUR,
+        restart: true,
+      },
+      {
+        route: "claim",
+        requestId: "acq-1",
+        expect: "INPUT_CONFLICT",
+        writes: 0,
+        at: E2,
+        expires: E2 + HOUR,
+        ttlMs: 24 * HOUR,
+      },
+    ]),
+  timeout,
+);
+
+test(
+  "after its receipt expires, an acquisition ID with an invalid ttl is refused before the witness check and replays",
+  () =>
+    scenario([
+      { route: "claim", requestId: "acq-1", expect: 1, writes: 1 },
+      {
+        route: "claim",
+        requestId: "acq-1",
+        expect: "INPUT_INVALID",
+        writes: 1,
+        at: EXPIRED,
+        expires: E2,
+        ttlMs: 24 * HOUR + 1,
+        expired: true,
+      },
+      {
+        route: "claim",
+        requestId: "acq-1",
+        expect: "INPUT_INVALID",
+        writes: 0,
+        at: EXPIRED,
+        expires: E2,
+        ttlMs: 24 * HOUR + 1,
+        restart: true,
+      },
+    ]),
+  timeout,
+);
+
+const long = "w".repeat(501);
+const otherDevice = { ...holder, session: { id: "fixture", device: "other" } };
+const parity: readonly {
+  readonly label: string;
+  readonly step: Omit<Step, "requestId" | "expect" | "writes">;
+  readonly expect: number | string;
+  readonly writes: 0 | 1;
+  readonly other?: number | string;
+  readonly message?: string;
+}[] = [
+  {
+    label: "a 501-character subject",
+    step: { route: "claim", change: { subject: long } },
+    expect: "INPUT_INVALID",
+    writes: 1,
+    other: "INPUT_INVALID",
+    message: "Key must contain 1 to 500 characters",
+  },
+  {
+    label: "a lone-surrogate subject",
+    step: { route: "claim", change: { subject: "\ud800" } },
+    expect: "INPUT_INVALID",
+    writes: 1,
+    other: "INPUT_INVALID",
+    message: "Lease subject must be well-formed UTF-16 text",
+  },
+  {
+    label: "a 500-character subject",
+    step: { route: "claim", change: { subject: "w".repeat(500) } },
+    expect: 1,
+    writes: 1,
+    other: "LEASE_HELD",
+  },
+  {
+    label: "a 501-character subject",
+    step: { route: "renew", change: { subject: long } },
+    expect: "INPUT_INVALID",
+    writes: 1,
+  },
+  {
+    label: "a 501-character subject",
+    step: { route: "release", change: { subject: long } },
+    expect: "INPUT_INVALID",
+    writes: 1,
+  },
+  {
+    label: "a lone-surrogate subject",
+    step: { route: "renew", change: { subject: "\ud800" } },
+    expect: "LEASE_NOT_HELD",
+    writes: 1,
+  },
+  {
+    label: "a lone-surrogate subject",
+    step: { route: "release", change: { subject: "\ud800" } },
+    expect: "LEASE_NOT_HELD",
+    writes: 1,
+  },
+  {
+    label: "a 501-character subject and a zero ttl",
+    step: { route: "claim", ttlMs: 0, change: { subject: long } },
+    expect: "INPUT_INVALID",
+    writes: 1,
+    message: "ttlMs must be a positive safe integer",
+  },
+  {
+    label: "a zero ttl",
+    step: { route: "claim", ttlMs: 0 },
+    expect: "INPUT_INVALID",
+    writes: 1,
+  },
+  {
+    label: "a negative ttl",
+    step: { route: "renew", ttlMs: -1 },
+    expect: "INPUT_INVALID",
+    writes: 1,
+  },
+  {
+    label: "a fractional ttl",
+    step: { route: "claim", ttlMs: 1.5 },
+    expect: "INPUT_INVALID",
+    writes: 1,
+  },
+  {
+    label: "a text ttl",
+    step: { route: "claim", change: { ttlMs: "60000" } },
+    expect: "INPUT_INVALID",
+    writes: 1,
+  },
+  {
+    label: "a missing ttl",
+    step: { route: "claim", change: { ttlMs: undefined } },
+    expect: "INPUT_INVALID",
+    writes: 1,
+  },
+  {
+    label: "a ttl over 24 hours",
+    step: { route: "claim", ttlMs: 24 * HOUR + 1, expires: E2 + HOUR },
+    expect: "INPUT_INVALID",
+    writes: 1,
+    message: "ttlMs is over 24 hours",
+  },
+  {
+    label: "a ttl past the owner expiry",
+    step: { route: "renew", ttlMs: 3 * HOUR },
+    expect: "INPUT_INVALID",
+    writes: 1,
+    message: "ttlMs would exceed the token expiry",
+  },
+  {
+    label: "an empty subject",
+    step: { route: "claim", change: { subject: "" } },
+    expect: "INPUT_INVALID",
+    writes: 0,
+  },
+  {
+    label: "a numeric subject",
+    step: { route: "release", change: { subject: 7 } },
+    expect: "INPUT_INVALID",
+    writes: 0,
+  },
+  {
+    label: "a missing generation",
+    step: { route: "renew", change: { generation: undefined } },
+    expect: "INPUT_INVALID",
+    writes: 0,
+  },
+  {
+    label: "a zero generation",
+    step: { route: "release", generation: 0 },
+    expect: "INPUT_INVALID",
+    writes: 0,
+  },
+  {
+    label: "a text generation",
+    step: { route: "renew", change: { generation: "1" } },
+    expect: "INPUT_INVALID",
+    writes: 0,
+  },
+  {
+    label: "an empty request ID",
+    step: { route: "claim", change: { requestId: "" } },
+    expect: "INPUT_INVALID",
+    writes: 0,
+  },
+  {
+    label: "a malformed request ID",
+    step: { route: "claim", change: { requestId: "-x" } },
+    expect: "INPUT_INVALID",
+    writes: 0,
+  },
+  {
+    label: "a missing holder",
+    step: { route: "claim", change: { holder: undefined } },
+    expect: "INPUT_INVALID",
+    writes: 0,
+  },
+  {
+    label: "another device",
+    step: { route: "release", change: { holder: otherDevice } },
+    expect: "AUTH_DEVICE_MISMATCH",
+    writes: 0,
+  },
+  {
+    label: "a non-object body",
+    step: { route: "renew", raw: ["work-1"] },
+    expect: "INPUT_INVALID",
+    writes: 0,
+  },
+];
+
+for (const row of parity) {
+  test(
+    `v3 ${row.step.route} with ${row.label} answers as v2, and its exact retry replays with zero writes`,
+    async () => {
+      const step = { ...row.step, requestId: "p-1", expect: row.expect };
+      const v3 = await scenario([
+        { ...step, writes: row.writes },
+        { ...step, writes: 0, restart: true },
+        ...(row.other === undefined
+          ? []
+          : [{ ...step, owner: "owner-b", expect: row.other, writes: 1 }]),
+      ]);
+      expect(v3[1]!.body).toEqual(v3[0]!.body);
+      if (row.message !== undefined)
+        expect(v3[0]!.body).toMatchObject({
+          error: { message: row.message },
+        });
+    },
+    timeout,
+  );
+}
 
 test(
   "a v3 claim frame carries its exact scope, outcome and acquisition witness, and a refusal frame carries neither lease nor witness",
