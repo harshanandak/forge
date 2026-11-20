@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { Project } from "../../cloud/src/project.ts";
 import { createWorker } from "../../cloud/src/worker.ts";
+import { ForgeFailure } from "../../src/contract/failure.ts";
 import {
   canonicalJson,
   digestBytes,
@@ -12,6 +13,7 @@ import { browserStorage } from "./browser-storage.fixture.ts";
 const timeout = 30_000;
 const probe = "test-v3";
 const format = "forge-cloud-root/3";
+const sqlMutation = /^\s*(ALTER|CREATE|DELETE|DROP|INSERT|REPLACE|UPDATE)\b/i;
 const frames = [
   {
     operation: "fixture.put",
@@ -25,22 +27,39 @@ const frames = [
 function fixture(before?: (sql: string) => void) {
   const db = new Database(":memory:");
   const { storage, values } = browserStorage(db, before);
+  const alarms: number[] = [];
+  storage.getAlarm = () => Promise.resolve(alarms.at(-1) ?? null);
+  storage.setAlarm = (time) => {
+    alarms.push(time);
+    return Promise.resolve();
+  };
   const context = { storage, testV3: true };
   let project = new Project(context);
-  const request = (route: string, body?: unknown) =>
+  const request = (
+    route: string,
+    body?: unknown,
+    headers: Record<string, string> = {},
+  ) =>
     new Request(`https://fixture.example/p/a/${route}`, {
       method: body === undefined ? "GET" : "POST",
+      headers,
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
   return {
     db,
     values,
+    alarms,
+    alarm: () => project.alarm(),
     request,
     restart: (testV3 = true) => {
       project = new Project(testV3 ? context : { storage });
     },
-    send: async (route: string, body?: unknown) => {
-      const response = await project.fetch(request(route, body));
+    send: async (
+      route: string,
+      body?: unknown,
+      headers?: Record<string, string>,
+    ) => {
+      const response = await project.fetch(request(route, body, headers));
       return {
         status: response.status,
         body: await response.json(),
@@ -271,8 +290,7 @@ test(
     const check = async (route: string, input?: unknown) => {
       let sqlWriteAttempts = 0;
       const f = fixture((sql) => {
-        if (/^\s*(ALTER|CREATE|DELETE|DROP|INSERT|REPLACE|UPDATE)\b/i.test(sql))
-          sqlWriteAttempts++;
+        if (sqlMutation.test(sql)) sqlWriteAttempts++;
       });
       try {
         const provisioned = await f.send(probe, {});
@@ -324,6 +342,105 @@ test(
   },
   timeout,
 );
+
+test(
+  "a stale v2 provisioning marker cannot make an alarm enter v2 maintenance on a v3 root",
+  async () => {
+    const f = guardFixture();
+    try {
+      expect((await f.send(probe, {})).status).toBe(200);
+      f.values.set("provisioned", true);
+      const effects = f.observeEffects();
+      f.restart(false);
+      const result = await f.alarm().then(
+        () => "returned",
+        (error: unknown) =>
+          error instanceof ForgeFailure
+            ? error.error.code
+            : "unexpected rejection",
+      );
+      expect({ result, ...effects() }).toEqual({
+        result: "returned",
+        ...noWrites,
+      });
+    } finally {
+      f.db.close();
+    }
+  },
+  timeout,
+);
+
+const noWrites = {
+  sqlWriteAttempts: 0,
+  alarmWrites: 0,
+  sqlAndKvIntact: true,
+};
+
+function guardFixture() {
+  let sqlWriteAttempts = 0;
+  const f = fixture((sql) => {
+    if (sqlMutation.test(sql)) sqlWriteAttempts++;
+  });
+  return {
+    ...f,
+    observeEffects() {
+      const before = f.snapshot();
+      const priorAlarmWrites = f.alarms.length;
+      sqlWriteAttempts = 0;
+      return () => {
+        const after = f.snapshot();
+        return {
+          sqlWriteAttempts,
+          alarmWrites: f.alarms.length - priorAlarmWrites,
+          sqlAndKvIntact:
+            Buffer.from(before.sql).equals(after.sql) &&
+            JSON.stringify(before.kv) === JSON.stringify(after.kv),
+        };
+      };
+    },
+  };
+}
+
+for (const route of ["claim", "renew", "release"] as const) {
+  test(
+    `owner ${route} refuses a stored v3 root before any SQL or alarm write`,
+    async () => {
+      const f = guardFixture();
+      try {
+        expect((await f.send(probe, {})).status).toBe(200);
+        const effects = f.observeEffects();
+        f.restart(false);
+        const { status, body } = await f.send(
+          route,
+          {
+            subject: "fixture",
+            requestId: `owner-${route}`,
+            generation: 1,
+            ttlMs: 60_000,
+            holder: {
+              actor: { kind: "agent", id: "fixture" },
+              session: { id: "fixture", device: "owner-fixture" },
+            },
+          },
+          {
+            "X-Forge-Owner": "owner-fixture",
+            "X-Forge-Owner-Expires": String(Date.now() + 600_000),
+          },
+        );
+        const code =
+          isObject(body) && isObject(body.error) ? body.error.code : undefined;
+        expect({ status, code, ...effects() }).toEqual({
+          status: 409,
+          code: "INPUT_CONFLICT",
+          ...noWrites,
+        });
+      } finally {
+        f.db.close();
+      }
+    },
+    timeout,
+  );
+}
 
 test(
   "ordinary rehearsal provisioning still writes v2 and the public Worker cannot forward the probe",
