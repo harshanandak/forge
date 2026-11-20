@@ -5,7 +5,20 @@
     "issue": { "type": "string" },
     "status": { "type": "string" },
     "removed": { "type": "boolean" },
-    "discarded": { "type": "array", "items": { "type": "string" } }
+    "discarded": { "type": "array", "items": { "type": "string" } },
+    "leftover": {
+      "type": "object",
+      "required": ["path", "reason", "next"],
+      "properties": {
+        "path": { "type": "string" },
+        "reason": { "type": "string" },
+        "next": {
+          "type": "array",
+          "items": { "type": "array", "items": { "type": "string" } }
+        }
+      },
+      "additionalProperties": false
+    }
   },
   "additionalProperties": false
 }

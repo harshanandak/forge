@@ -5290,11 +5290,10 @@ const operations: Operations<WorkOperations> = {
     };
     let checkout = files.root;
     const clock = laneClock(services);
-    const run = async (
+    const execute = async (
       args: string[],
       cwd = checkout,
       github = false,
-      optional = false,
       leaveDirectory?: string,
     ) => {
       const remaining = deadline - clock();
@@ -5316,6 +5315,15 @@ const operations: Operations<WorkOperations> = {
           "UNAVAILABLE",
           "Lane command timed out or exceeded output limit",
         );
+      return result;
+    };
+    const run = async (
+      args: string[],
+      cwd = checkout,
+      github = false,
+      optional = false,
+    ) => {
+      const result = await execute(args, cwd, github);
       if (result.exitCode !== 0) {
         if (optional) return "";
         refuse(
@@ -5507,13 +5515,19 @@ const operations: Operations<WorkOperations> = {
           progress.mergeCommit !== mergeCommit)
       )
         refuse("INPUT_CONFLICT", "PR changed since close began");
-      const exists = async () =>
-        (await run(
-          ["-C", worktree, "rev-parse", "--is-inside-work-tree"],
-          checkout,
-          false,
-          true,
-        )) === "true";
+      const place = async () => {
+        const probe = await execute([
+          "-C",
+          worktree,
+          "rev-parse",
+          "--is-inside-work-tree",
+          "--show-prefix",
+        ]);
+        if (probe.exitCode !== 0) return "missing";
+        const [inside, prefix] = probe.stdout.split(/\r?\n/);
+        return inside === "true" && prefix === "" ? "worktree" : "leftover";
+      };
+      const exists = async () => (await place()) === "worktree";
       const discardable = (config as WorkConfig | undefined)?.lanes
         ?.discardIgnored ?? ["node_modules/", "dist/"];
       let ignored: string[] = [];
@@ -5803,9 +5817,11 @@ const operations: Operations<WorkOperations> = {
       if (dropped || keepOpen) state.putMany([], { subject: key(id) });
       if (hasBranch && (await run(["rev-parse", ref])) !== head)
         refuse("INPUT_CONFLICT", "Lane head changed during close");
-      if (await exists()) {
+      let reason = "The lane directory is no longer a git worktree";
+      let found = await place();
+      if (found === "worktree") {
         await clean();
-        await run(
+        const removal = await execute(
           [
             "worktree",
             "remove",
@@ -5814,9 +5830,25 @@ const operations: Operations<WorkOperations> = {
           ],
           checkout,
           false,
-          false,
           worktree,
         );
+        if (removal.exitCode === 0) found = "missing";
+        else {
+          reason =
+            removal.stderr
+              .split(/\r?\n/)
+              .map((line) => line.trim())
+              .find(Boolean) ??
+            `git worktree remove exited ${removal.exitCode}`;
+          if (await exists()) {
+            next = [resume];
+            refuse(
+              "INPUT_CONFLICT",
+              `Issue ${current.id} is ${current.status}, but git kept the worktree ${worktree}: ${reason}`,
+            );
+          }
+          found = "leftover";
+        }
       }
       if (
         input.attempt === undefined &&
@@ -5845,6 +5877,11 @@ const operations: Operations<WorkOperations> = {
         status: current.status,
         removed: true,
         discarded: ignored,
+        ...(found === "leftover"
+          ? {
+              leftover: { path: worktree, reason, next: [["rmdir", worktree]] },
+            }
+          : {}),
       };
     } finally {
       try {
