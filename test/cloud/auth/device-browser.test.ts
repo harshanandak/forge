@@ -300,6 +300,10 @@ function fixture(
       t += ms;
     },
     writes,
+    seedLogin: (state: unknown) =>
+      db
+        .query("UPDATE domain_cloud_login SET state = ?")
+        .run(JSON.stringify(state)),
     restart: () => {
       project = new Project({ storage }, env, { upstream, redemption });
     },
@@ -926,12 +930,7 @@ test("repeating a decision replaces the old one, and one challenge holds only a 
   await f.provision();
   const login = body(await f.begin());
   const jar = await f.open();
-  const held = () =>
-    (
-      JSON.parse(
-        String(f.rows("SELECT state FROM domain_cloud_login")[0]!.state),
-      ) as { browser: unknown[] }
-    ).browser.length;
+  const held = () => browserState(f).browser.length;
   const decisions: Reply[] = [];
   for (let n = 0; n < 4; n++)
     decisions.push(await f.decide("approve", login.user_code, jar));
@@ -942,8 +941,15 @@ test("repeating a decision replaces the old one, and one challenge holds only a 
     f.bindOf(decisions[0]!),
   );
   expect([old.status, outcome(old)]).toEqual([400, "access_denied"]);
-  for (let n = 0; n < 5; n++) await f.preview(login.user_code, await f.open());
+  const latest = decisions.at(-1)!;
+  expect(latest.status).toBe(302);
+  fillChallenge(f, 2);
+  const before = f.frozen();
+  for (let n = 0; n < 3; n++)
+    expect((await f.preview(login.user_code, await f.open())).status).toBe(409);
   expect(held()).toBe(3);
+  expect(f.frozen()).toBe(before);
+  expect(pair(await finish(f, latest))).toEqual([200, "approved"]);
 }, 30_000);
 
 test("a second tab keeps the page cookie, so the first tab still completes", async () => {
@@ -1004,6 +1010,161 @@ const right = (
 ) => post(f, p, { action, ticket: p.ticket(action) });
 const finish = (f: Fixture, decision: Reply, ip: string | null = f.fresh()) =>
   f.callback(f.stateOf(decision), "owner", f.bindOf(decision), ip);
+
+type BrowserRow = { code: string; userHash: string; expiresAt: number };
+const browserState = (f: Fixture) =>
+  JSON.parse(
+    String(f.rows("SELECT state FROM domain_cloud_login")[0]!.state),
+  ) as {
+    browser: BrowserRow[];
+    previews?: unknown;
+  };
+const otherRows = ({ code, userHash, expiresAt }: BrowserRow, count: number) =>
+  Array.from({ length: count }, (_, n) => ({
+    code,
+    userHash,
+    expiresAt,
+    cookieHash: n.toString(16).padStart(64, "0"),
+    tickets: { approve: "a".repeat(64), deny: "b".repeat(64) },
+  }));
+function fillChallenge(f: Fixture, others: number) {
+  const state = browserState(f);
+  state.browser.push(...otherRows(state.browser[0]!, others));
+  f.seedLogin(state);
+}
+
+for (const setup of [
+  "fresh budget",
+  "expired budget",
+  "expired row",
+  "active budget",
+]) {
+  test(`a full challenge writes nothing with ${setup}`, async () => {
+    const f = fixture();
+    await f.provision();
+    const p = await previewed(f);
+    const jar = await f.open();
+    if (setup === "expired budget") {
+      expect((await f.preview("BBBB-BBBB", jar)).status).toBe(400);
+      f.advance(60_000);
+    }
+    if (setup === "active budget")
+      expect((await f.preview("BBBB-BBBB", jar, f.fresh())).status).toBe(400);
+    fillChallenge(f, setup === "expired row" ? 3 : 2);
+    const state = browserState(f);
+    if (setup === "fresh budget") delete state.previews;
+    if (setup === "expired row") state.browser[3]!.expiresAt = f.now();
+    f.seedLogin(state);
+    const before = f.frozen();
+    const refused = await f.preview(p.login.user_code, jar);
+    expect(refused.status).toBe(409);
+    expect(outcome(refused)).toBe("code_busy");
+    expect(refused.text).toContain(
+      "This code is already open in three other browsers. Finish the sign-in there, or run forge auth login again for a new code.",
+    );
+    expect(f.frozen()).toBe(before);
+    for (let n = 0; n < 5; n++)
+      expect((await f.preview("BBBB-BBBB", jar)).status).toBe(400);
+    expect((await f.preview("BBBB-BBBB", jar)).status).toBe(429);
+    if (setup === "active budget") expect((await right(f, p)).status).toBe(302);
+  }, 30_000);
+}
+
+test("a browser can replace its tickets when two other rows are held", async () => {
+  const f = fixture();
+  await f.provision();
+  const p = await previewed(f);
+  fillChallenge(f, 2);
+  const others = browserState(f).browser.slice(1);
+  const shown = await f.preview(p.login.user_code, p.jar);
+  expect(shown.status).toBe(200);
+  expect(browserState(f).browser.slice(0, -1)).toEqual(others);
+  expect((await right(f, p)).status).toBe(400);
+  expect(
+    (await post(f, p, { ticket: f.ticketFor(shown, "approve") })).status,
+  ).toBe(302);
+}, 30_000);
+
+test("a full challenge is separate from a new challenge and its rows expire", async () => {
+  const f = fixture();
+  await f.provision();
+  await previewed(f);
+  fillChallenge(f, 2);
+  const first = browserState(f).browser;
+  const b = body(await f.begin("other", f.fresh()));
+  expect((await f.preview(b.user_code, await f.open())).status).toBe(200);
+  expect(browserState(f).browser.slice(0, 3)).toEqual(first);
+  f.advance(600_001);
+  const c = body(await f.begin("next", f.fresh()));
+  expect(browserState(f).browser.slice(0, 3)).toEqual(first);
+  const shown = await f.preview(c.user_code, await f.open());
+  expect(shown.status).toBe(200);
+  expect(browserState(f).browser.map((row) => row.userHash)).toEqual([
+    f.selectorFor(shown),
+  ]);
+}, 30_000);
+
+for (const [count, expired, replace, status] of [
+  [255, false, false, 200],
+  [256, false, false, 429],
+  [256, true, false, 200],
+  [256, false, true, 429],
+] as const) {
+  test(`project cap with ${count} other rows, expired=${expired}, replacing=${replace}`, async () => {
+    const f = fixture();
+    await f.provision();
+    const p = await previewed(f);
+    const state = browserState(f);
+    const owner = state.browser[0]!;
+    const others = otherRows(owner, count).map((row) => ({
+      ...row,
+      userHash: row.cookieHash,
+    }));
+    if (expired) others[0]!.expiresAt = f.now();
+    state.browser = replace ? [owner, ...others] : others;
+    f.seedLogin(state);
+    const before = f.frozen();
+    const shown = await f.preview(p.login.user_code, p.jar);
+    expect(shown.status).toBe(status);
+    if (status === 429) {
+      expect(outcome(shown)).toBe("rate_limited");
+      expect(f.frozen()).toBe(before);
+    } else {
+      const kept = browserState(f).browser;
+      expect(kept.slice(0, -1)).toEqual(expired ? others.slice(1) : others);
+      expect(kept.at(-1)?.userHash).toBe(owner.userHash);
+      expect(kept).toHaveLength(256);
+    }
+  }, 30_000);
+}
+
+test("a new preview can use an open slot while a bound callback is pending", async () => {
+  const f = fixture();
+  await f.provision();
+  const flow = await f.through("approve", "owner");
+  expect(flow.decision.status).toBe(302);
+  fillChallenge(f, 1);
+  const decided = browserState(f).browser[0];
+  expect((await f.preview(flow.login.user_code, await f.open())).status).toBe(
+    200,
+  );
+  expect(browserState(f).browser[0]).toEqual(decided);
+  expect(pair(await flow.done())).toEqual([200, "approved"]);
+}, 30_000);
+
+test("overlapping previews admit at most three browsers per challenge", async () => {
+  const f = fixture();
+  await f.provision();
+  const login = body(await f.begin());
+  const jars = await Promise.all(Array.from({ length: 4 }, () => f.open()));
+  const replies = await Promise.all(
+    jars.map((jar) => f.preview(login.user_code, jar)),
+  );
+  expect(replies.map((reply) => reply.status).sort()).toEqual([
+    200, 200, 200, 409,
+  ]);
+  expect(browserState(f).browser).toHaveLength(3);
+}, 30_000);
 
 test("a wrong ticket or selector writes nothing and leaves the right ones usable", async () => {
   for (const action of ["approve", "deny"] as const) {
