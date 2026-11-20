@@ -224,13 +224,34 @@ jobs:
       CI_NODE: "24"
       CI_SHARD: comment-guard
     steps:
+      - &windows-storsvc-off
+        name: Disable the Storage Service
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dir = Join-Path $env:RUNNER_TEMP 'windows-diag'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $timer = [Diagnostics.Stopwatch]::StartNew()
+          $boot = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime()
+          $service = Get-Service StorSvc
+          $hostPid = (Get-CimInstance Win32_Service -Filter "Name='StorSvc'").ProcessId
+          $log = @("storsvc-before at=$((Get-Date).ToUniversalTime().ToString('o')) boot=$($boot.ToString('o')) status=$($service.Status) start=$($service.StartType) pid=$hostPid dependents=$($service.DependentServices.Name -join ',')")
+          Set-Service StorSvc -StartupType Disabled
+          $stopTimer = [Diagnostics.Stopwatch]::StartNew()
+          Stop-Service StorSvc -Force
+          $stopMs = $stopTimer.ElapsedMilliseconds
+          $service = Get-Service StorSvc
+          $log += "storsvc-after at=$((Get-Date).ToUniversalTime().ToString('o')) status=$($service.Status) start=$($service.StartType) stop-ms=$stopMs step-ms=$($timer.ElapsedMilliseconds)"
+          $log | Tee-Object -FilePath "$dir/storsvc.txt"
+          if ($service.Status -ne 'Stopped' -or $service.StartType -ne 'Disabled') { throw "StorSvc is $($service.Status) and $($service.StartType)" }
       - &windows-diag-start
         name: Start Windows diagnostics
         if: runner.os == 'Windows'
         continue-on-error: true
         shell: pwsh
         env:
-          DIAG_JOB: ${{ github.job }} group=${{ matrix.diag || 'control' }} node=${{ matrix.node }} suite=${{ matrix.suite }} shard=${{ matrix.shard }}
+          DIAG_JOB: ${{ github.job }} group=storsvc-off node=${{ matrix.node }} suite=${{ matrix.suite }} shard=${{ matrix.shard }}
         run: |
           $ErrorActionPreference = 'Continue'
           $dir = Join-Path $env:RUNNER_TEMP 'windows-diag'
@@ -283,113 +304,6 @@ jobs:
             wevtutil gl Microsoft-Windows-TaskScheduler/Operational
           } *>&1 | Tee-Object "$dir/setup.txt"
           Get-Content "$dir/job.txt"
-      - &windows-wpr-start
-        name: Start WPR disk trace
-        if: runner.os == 'Windows'
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Continue'
-          $dir = Join-Path $env:RUNNER_TEMP 'windows-diag'
-          $wprp = Join-Path $dir 'forge-diskio.wprp'
-          @'
-          <?xml version="1.0" encoding="utf-8"?>
-          <WindowsPerformanceRecorder Version="1.0">
-            <Profiles>
-              <SystemCollector Id="WPR_initiated_WprApp_WPR_System_Collector" Name="WPR_initiated_WprApp_WPR System Collector">
-                <BufferSize Value="1024" />
-                <Buffers Value="512" />
-              </SystemCollector>
-              <EventCollector Id="WPR_initiated_WprApp_WPR_Event_Collector" Name="WPR_initiated_WprApp_WPR Event Collector">
-                <BufferSize Value="1024" />
-                <Buffers Value="20" />
-              </EventCollector>
-              <SystemProvider Id="WPR_initiated_WprApp_WPR_System_Collector_Provider">
-                <Keywords>
-                  <Keyword Value="CpuConfig" />
-                  <Keyword Value="DiskIO" />
-                  <Keyword Value="DiskIOInit" />
-                  <Keyword Value="HardFaults" />
-                  <Keyword Value="IdealProcessor" />
-                  <Keyword Value="Loader" />
-                  <Keyword Value="ProcessCounter" />
-                  <Keyword Value="ProcessThread" />
-                  <Keyword Value="SplitIO" />
-                  <Keyword Value="ThreadPriority" />
-                </Keywords>
-                <Stacks>
-                  <Stack Value="DiskReadInit" />
-                  <Stack Value="DiskWriteInit" />
-                  <Stack Value="DiskFlushInit" />
-                </Stacks>
-              </SystemProvider>
-              <EventProvider Id="WPR_Event_Collector_36b6f488-aad7-48c2-afe3-d4ec2c8b46fa" Name="36b6f488-aad7-48c2-afe3-d4ec2c8b46fa" NonPagedMemory="true">
-                <Keywords>
-                  <Keyword Value="0x0000000000010000" />
-                </Keywords>
-              </EventProvider>
-              <EventProvider Id="WPR_Event_Collector_b7a19fcd-15ba-41ba-a3d7-dc352d5f79ba" Name="b7a19fcd-15ba-41ba-a3d7-dc352d5f79ba" NonPagedMemory="true" Strict="true" />
-              <EventProvider Id="WPR_Event_Collector_e13c0d23-ccbc-4e12-931b-d9cc2eee27e4" Name="e13c0d23-ccbc-4e12-931b-d9cc2eee27e4" NonPagedMemory="true" Level="5">
-                <Keywords>
-                  <Keyword Value="0x0000000000020098" />
-                </Keywords>
-                <CaptureStateOnSave Timeout="30">
-                  <Keyword Value="0x0000000000020118" />
-                </CaptureStateOnSave>
-              </EventProvider>
-              <EventProvider Id="WPR_Event_Collector_57277741-3638-4a4b-bdba-0ac6e45da56c" Name="57277741-3638-4a4b-bdba-0ac6e45da56c" NonPagedMemory="true">
-                <Keywords>
-                  <Keyword Value="0x0000000000000001" />
-                </Keywords>
-                <CaptureStateOnSave Timeout="30">
-                  <Keyword Value="0x0000000000000004" />
-                </CaptureStateOnSave>
-              </EventProvider>
-              <EventProvider Id="WPR_Event_Collector_b675ec37-bdb6-4648-bc92-f3fdc74d3ca2" Name="b675ec37-bdb6-4648-bc92-f3fdc74d3ca2" NonPagedMemory="true" Level="15">
-                <Keywords>
-                  <Keyword Value="0x0000000000000040" />
-                </Keywords>
-              </EventProvider>
-              <EventProvider Id="WPR_Event_Collector_d49918cf-9489-4bf1-9d7b-014d864cf71f" Name="d49918cf-9489-4bf1-9d7b-014d864cf71f" NonPagedMemory="true" />
-              <EventProvider Id="WPR_Event_Collector_e6835967-e0d2-41fb-bcec-58387404e25a" Name="e6835967-e0d2-41fb-bcec-58387404e25a" NonPagedMemory="true">
-                <Keywords>
-                  <Keyword Value="0x0000000000000001" />
-                </Keywords>
-              </EventProvider>
-              <EventProvider Id="WPR_Event_Collector_c4636a1e-7986-4646-bf10-7bc3b4a76e8e" Name="c4636a1e-7986-4646-bf10-7bc3b4a76e8e" NonPagedMemory="true" />
-              <EventProvider Id="WPR_Event_Collector_a669021c-c450-4609-a035-5af59af4df18_CaptureState" Name="a669021c-c450-4609-a035-5af59af4df18" NonPagedMemory="true" Level="0" CaptureStateOnly="true">
-                <CaptureStateOnSave Timeout="30">
-                  <Keyword Value="0x0000000000020118" />
-                </CaptureStateOnSave>
-              </EventProvider>
-              <Profile Id="ForgeDiskIO.Verbose.Memory" Name="ForgeDiskIO" Description="DiskIO with stacks, 512 MB circular memory buffer" LoggingMode="Memory" DetailLevel="Verbose">
-                <Collectors>
-                  <SystemCollectorId Value="WPR_initiated_WprApp_WPR_System_Collector">
-                    <SystemProviderId Value="WPR_initiated_WprApp_WPR_System_Collector_Provider" />
-                  </SystemCollectorId>
-                  <EventCollectorId Value="WPR_initiated_WprApp_WPR_Event_Collector">
-                    <EventProviders>
-                      <EventProviderId Value="WPR_Event_Collector_36b6f488-aad7-48c2-afe3-d4ec2c8b46fa" />
-                      <EventProviderId Value="WPR_Event_Collector_b7a19fcd-15ba-41ba-a3d7-dc352d5f79ba" />
-                      <EventProviderId Value="WPR_Event_Collector_e13c0d23-ccbc-4e12-931b-d9cc2eee27e4" />
-                      <EventProviderId Value="WPR_Event_Collector_57277741-3638-4a4b-bdba-0ac6e45da56c" />
-                      <EventProviderId Value="WPR_Event_Collector_b675ec37-bdb6-4648-bc92-f3fdc74d3ca2" />
-                      <EventProviderId Value="WPR_Event_Collector_d49918cf-9489-4bf1-9d7b-014d864cf71f" />
-                      <EventProviderId Value="WPR_Event_Collector_e6835967-e0d2-41fb-bcec-58387404e25a" />
-                      <EventProviderId Value="WPR_Event_Collector_c4636a1e-7986-4646-bf10-7bc3b4a76e8e" />
-                      <EventProviderId Value="WPR_Event_Collector_a669021c-c450-4609-a035-5af59af4df18_CaptureState" />
-                    </EventProviders>
-                  </EventCollectorId>
-                </Collectors>
-              </Profile>
-            </Profiles>
-          </WindowsPerformanceRecorder>
-          '@ | Set-Content -Encoding utf8 $wprp
-          & {
-            wpr -start "$wprp!ForgeDiskIO"
-            if ($LASTEXITCODE -eq 0) { "started $((Get-Date).ToUniversalTime().ToString('o'))" | Set-Content "$dir/wpr-started.txt" }
-            wpr -status
-          } *>&1 | Tee-Object "$dir/wpr-start.txt"
       - *start-record
       - name: Keep Windows test temp files on the workspace disk
         shell: pwsh
@@ -437,12 +351,6 @@ jobs:
           "end=$((Get-Date).ToUniversalTime().ToString('o'))" | Add-Content "$dir/job.txt"
           New-Item -ItemType File -Force -Path "$dir/stop" | Out-Null
           & {
-            if (Test-Path "$dir/wpr-started.txt") {
-              wpr -status
-              $timer = [Diagnostics.Stopwatch]::StartNew()
-              wpr -stop "$dir\wpr.etl" -skipPdbGen
-              "wpr stop exit $LASTEXITCODE in $($timer.ElapsedMilliseconds) ms, $([math]::Round((Get-Item "$dir\wpr.etl" -ErrorAction SilentlyContinue).Length / 1MB)) MB"
-            }
             wevtutil epl Microsoft-Windows-TaskScheduler/Operational "$dir\taskscheduler.evtx" /ow:true
             wevtutil epl Security "$dir\security-process.evtx" '/q:*[System[(EventID=4688 or EventID=4689)]]' /ow:true
             $logs = @('Application', 'System', 'Microsoft-Windows-Windows Defender/Operational')
@@ -466,7 +374,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: windows-diag-${{ matrix.diag || 'control' }}-${{ github.job }}-${{ strategy.job-index }}
+          name: windows-diag-storsvc-off-${{ github.job }}-${{ strategy.job-index }}
           path: ${{ runner.temp }}/windows-diag
           retention-days: 7
           if-no-files-found: warn
@@ -474,7 +382,7 @@ jobs:
       - *upload-record
 
   verify:
-    name: Verify (${{ matrix.os }}, Node ${{ matrix.node }}${{ matrix.suite != 'all' && format(', {0}', matrix.suite) || '' }}${{ matrix.shard && format(', shard {0}', matrix.shard) || '' }}${{ matrix.diag && format(', {0}', matrix.diag) || '' }})
+    name: Verify (${{ matrix.os }}, Node ${{ matrix.node }}${{ matrix.suite != 'all' && format(', {0}', matrix.suite) || '' }}${{ matrix.shard && format(', shard {0}', matrix.shard) || '' }})
     needs: [changes, pack]
     if: github.event_name != 'schedule' && needs.changes.outputs.scope == 'full'
     runs-on: ${{ matrix.os }}
@@ -510,66 +418,9 @@ jobs:
           - { os: windows-latest, node: "26", suite: tests, shard: "2/3" }
           - { os: windows-latest, node: "26", suite: tests, shard: "3/3" }
           - { os: windows-latest, node: "26", suite: pack }
-          - {
-              os: windows-latest,
-              node: "24",
-              suite: tests,
-              shard: "1/3",
-              diag: forced,
-            }
-          - {
-              os: windows-latest,
-              node: "24",
-              suite: tests,
-              shard: "2/3",
-              diag: forced,
-            }
-          - {
-              os: windows-latest,
-              node: "24",
-              suite: tests,
-              shard: "3/3",
-              diag: forced,
-            }
-          - {
-              os: windows-latest,
-              node: "26",
-              suite: tests,
-              shard: "1/3",
-              diag: forced,
-            }
-          - {
-              os: windows-latest,
-              node: "26",
-              suite: tests,
-              shard: "2/3",
-              diag: forced,
-            }
-          - {
-              os: windows-latest,
-              node: "26",
-              suite: tests,
-              shard: "3/3",
-              diag: forced,
-            }
     steps: &verify-steps
+      - *windows-storsvc-off
       - *windows-diag-start
-      - *windows-wpr-start
-      - name: Force the pending definitions install
-        if: runner.os == 'Windows' && matrix.diag == 'forced'
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Continue'
-          $dir = Join-Path $env:RUNNER_TEMP 'windows-diag'
-          $exe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-          $start = (Get-Date).ToUniversalTime()
-          $update = Start-Process $exe -ArgumentList '-NoProfile -NonInteractive -Command "$ErrorActionPreference = ''Stop''; Update-MpSignature -UpdateSource MicrosoftUpdateServer"' -WindowStyle Hidden -PassThru -RedirectStandardOutput "$dir\forced-install.out" -RedirectStandardError "$dir\forced-install.err"
-          $update.WaitForExit()
-          $end = (Get-Date).ToUniversalTime()
-          $left = Get-Process MpSigStub, AM_Delta, wuaucltcore, MpCmdRun -ErrorAction SilentlyContinue | ForEach-Object { "$($_.Name):$($_.Id)" }
-          "forced-install pid=$($update.Id) start=$($start.ToString('o')) end=$($end.ToString('o')) seconds=$([math]::Round(($end - $start).TotalSeconds, 1)) exit=$($update.ExitCode) still-running=$($left -join ',')" | Tee-Object -Append "$dir/job.txt"
-          Get-Content "$dir\forced-install.out", "$dir\forced-install.err" -ErrorAction SilentlyContinue
       - *start-record
       - name: Keep Windows test temp files on the workspace disk
         if: runner.os == 'Windows'
