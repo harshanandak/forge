@@ -40,9 +40,11 @@ const TAIL_BYTES = 16 * MiB;
 const ROOT_FORMAT = "forge-cloud-root/3";
 const KINDS = ["directory", "snapshot", "transcript"];
 const COLLECTIONS = ["lease", "outcome", "record", "witness"] as const;
-const SYNTHETIC_KEYS = ["events", "operation", "time"];
+const SYNTHETIC_KEYS = ["changes", "events", "operation", "time"];
 const FRAME_KEYS =
-  "events,format,lease,operation,outcome,sequence,time,witness".split(",");
+  "changes,events,format,lease,operation,outcome,sequence,time,witness".split(
+    ",",
+  );
 const empty = "[]";
 const emptyBytes = Buffer.byteLength(empty);
 const emptyDigest = digestBytes(empty);
@@ -111,7 +113,7 @@ interface Pointer {
   readonly length: number;
   readonly digest: string;
 }
-type Slot = { readonly value: unknown } | Pointer;
+type Slot = { readonly value: unknown } | Pointer | null;
 export interface V3Image {
   readonly root: Readonly<Record<string, unknown>> & {
     readonly coveredHead: number;
@@ -120,6 +122,9 @@ export interface V3Image {
   readonly entries: Readonly<Record<Collection, Map<string, Slot>>>;
   head: number;
   eventWatermark: number;
+  tailBytes: number;
+  stale: boolean;
+  readonly staged: [sequence: number, body: string][];
 }
 
 const fail = (code: string, message: string) =>
@@ -189,6 +194,7 @@ export function readV3Root(db: SqlDatabase) {
   const bytes: Record<string, number> = {};
   let rank = 0;
   let next = 0;
+  let sequence = 0;
   const listed = root.pages.map((page): Page & { ordinal: number } => {
     const kind = isObject(page) ? KINDS.indexOf(String(page.kind)) : -1;
     if (!isObject(page) || kind < rank || !isDigest(page.hash))
@@ -197,6 +203,16 @@ export function readV3Root(db: SqlDatabase) {
     const ordinal = nat(page.ordinal);
     if (ordinal !== next++) throw unavailable();
     const name = KINDS[kind]!;
+    const count = nat(page.count);
+    const ends =
+      name === "transcript" && count > 0
+        ? [sequence + 1, (sequence += count)]
+        : [null, null];
+    if (
+      name !== "directory" &&
+      (page.first !== ends[0] || page.last !== ends[1])
+    )
+      throw unavailable();
     counts[name] = (counts[name] ?? 0) + nat(page.count);
     bytes[name] = (bytes[name] ?? 0) + nat(page.bytes);
     return {
@@ -242,6 +258,8 @@ function directoryEntry(entry: unknown, byId: ReadonlyMap<string, Page>) {
   )
     throw unavailable();
   const { key } = entry;
+  if (collection === "record" && entry.deleted === true)
+    return { collection, key, deleted: true as const };
   const target = byId.get(String(entry.page));
   const offset = nat(entry.offset);
   const length = nat(entry.length);
@@ -284,6 +302,9 @@ export function recoverV3(db: SqlDatabase): V3Image {
     },
     head: root.coveredHead,
     eventWatermark: root.eventWatermark,
+    tailBytes: 0,
+    stale: false,
+    staged: [],
   };
   const bodies = new Map(
     db
@@ -317,7 +338,7 @@ export function recoverV3(db: SqlDatabase): V3Image {
       )
         throw unavailable();
       prior = [collection, key];
-      image.entries[collection].set(key, slot);
+      image.entries[collection].set(key, "deleted" in slot ? null : slot);
     }
   }
   const rows = db.all(
@@ -325,19 +346,28 @@ export function recoverV3(db: SqlDatabase): V3Image {
     [root.coveredHead],
   );
   if (rows.length > TAIL_ROWS) throw unavailable();
-  for (const { sequence, body } of rows) {
-    const frame = typeof body === "string" ? parse(body) : undefined;
-    if (
-      sequence !== image.head + 1 ||
-      canonicalJson(frame) !== body ||
-      !validFrame(frame) ||
-      frame.format !== COMMIT_FORMAT ||
-      frame.sequence !== sequence
-    )
-      throw unavailable();
-    apply(image, frame, nat(sequence));
-  }
+  for (const { sequence, body } of rows) foldRow(image, sequence, body);
   return image;
+}
+
+function foldRow(image: V3Image, sequence: unknown, body: unknown) {
+  const frame = typeof body === "string" ? parse(body) : undefined;
+  if (
+    sequence !== image.head + 1 ||
+    canonicalJson(frame) !== body ||
+    !validFrame(frame) ||
+    frame.format !== COMMIT_FORMAT ||
+    frame.sequence !== sequence
+  )
+    throw unavailable();
+  apply(image, frame, nat(sequence));
+  image.tailBytes += Buffer.byteLength(String(body));
+}
+
+export function publishV3(image: V3Image) {
+  for (const [sequence, body] of image.staged) foldRow(image, sequence, body);
+  image.staged.length = 0;
+  image.stale = false;
 }
 
 export function provisionV3(db: SqlDatabase, legacyMarker: boolean) {
@@ -354,13 +384,17 @@ export function provisionV3(db: SqlDatabase, legacyMarker: boolean) {
       );
       db.run(`INSERT INTO ${ROOT} VALUES (1, ?, ?)`, [body, digestBytes(body)]);
     }
-    return viewV3(recoverV3(db));
+    return recoverV3(db);
   });
 }
 
 export function viewV3(image: V3Image) {
   const digest = (slot: Slot) =>
-    "value" in slot ? digestBytes(canonicalJson(slot.value)) : slot.digest;
+    slot === null
+      ? null
+      : "value" in slot
+        ? digestBytes(canonicalJson(slot.value))
+        : slot.digest;
   return {
     ...image.root,
     image: {
@@ -381,12 +415,16 @@ export function viewV3(image: V3Image) {
 export const GENESIS_LEASE_ONLY =
   "Cloud v3 lease commands need the genesis root until they read the recovered image";
 
-export function requireGenesisForLease(db: SqlDatabase) {
-  if (recoverV3(db).root.generation !== 0)
+export function requireGenesisForLease(image: V3Image) {
+  if (image.root.generation !== 0)
     throw fail("UNAVAILABLE", GENESIS_LEASE_ONLY);
 }
 
-export function appendV3Frames(db: SqlDatabase, frames: unknown) {
+export function appendV3Frames(
+  db: SqlDatabase,
+  frames: unknown,
+  image: () => V3Image,
+) {
   if (!Array.isArray(frames) || frames.length === 0)
     throw fail("INPUT_INVALID", "Invalid v3 frame batch");
   const batch: readonly unknown[] = frames;
@@ -394,54 +432,60 @@ export function appendV3Frames(db: SqlDatabase, frames: unknown) {
     batch.some(
       (frame) =>
         !isObject(frame) ||
-        Object.keys(frame).some((key) => !SYNTHETIC_KEYS.includes(key)),
+        Object.keys(frame).some((key) => !SYNTHETIC_KEYS.includes(key)) ||
+        !validShape(frame),
     )
   )
     throw fail("INPUT_INVALID", "Invalid v3 frame");
-  return append(db, batch);
+  return append(db, image(), batch);
 }
 
-function append(db: SqlDatabase, batch: readonly unknown[]) {
+function append(db: SqlDatabase, image: V3Image, batch: readonly unknown[]) {
+  if (!batch.every(validShape)) throw fail("INPUT_INVALID", "Invalid v3 frame");
   return db.transaction(() => {
     const { coveredHead } = readV3Root(db);
     const last = db.get(
       `SELECT sequence FROM ${COMMITS} ORDER BY sequence DESC LIMIT 1`,
     );
-    let sequence = Math.max(coveredHead, Number(last?.sequence ?? 0));
+    const head = Math.max(coveredHead, Number(last?.sequence ?? 0));
+    const bodies = batch.map((frame, i) =>
+      canonicalJson({
+        ...(frame as Frame),
+        format: COMMIT_FORMAT,
+        sequence: head + i + 1,
+      }),
+    );
+    const bytes = bodies.reduce(
+      (sum, body) => sum + Buffer.byteLength(body),
+      image.tailBytes,
+    );
     if (
-      !Number.isSafeInteger(sequence) ||
-      sequence - coveredHead + batch.length > TAIL_ROWS
+      head !== image.head ||
+      head - coveredHead + batch.length > TAIL_ROWS ||
+      bytes > TAIL_BYTES
     )
       throw unavailable();
-    for (const frame of batch) {
-      if (
-        !isObject(frame) ||
-        typeof frame.operation !== "string" ||
-        !frame.operation ||
-        typeof frame.time !== "number" ||
-        !Number.isSafeInteger(frame.time) ||
-        frame.time < 0 ||
-        !Array.isArray(frame.events)
-      )
-        throw fail("INPUT_INVALID", "Invalid v3 frame");
-      sequence++;
-      const body = canonicalJson({
-        ...frame,
-        format: "forge-cloud-commit/3",
-        sequence,
-      });
+    for (const body of bodies) {
       const fault = authorityFault(JSON.parse(body) as Record<string, unknown>);
       if (fault !== undefined)
         throw new Error(`Refusing a v3 frame with an invalid ${fault}`);
-      db.run(`INSERT INTO ${COMMITS} VALUES (?, ?)`, [sequence, body]);
     }
-    return { head: sequence };
+    image.stale = true;
+    for (const [i, body] of bodies.entries()) {
+      db.run(`INSERT INTO ${COMMITS} VALUES (?, ?)`, [head + i + 1, body]);
+      image.staged.push([head + i + 1, body]);
+    }
+    return { head: head + batch.length };
   });
 }
 
 interface Frame {
   readonly time: number;
   readonly events: readonly unknown[];
+  readonly changes?: readonly (
+    | { readonly key: string; readonly value: unknown }
+    | { readonly key: string; readonly deleted: true }
+  )[];
   readonly lease?: LeaseRecord;
   readonly outcome?: {
     readonly id: string;
@@ -460,7 +504,14 @@ interface Frame {
   };
 }
 
-function validFrame(frame: unknown): frame is Frame & Record<string, unknown> {
+const validChange = (change: unknown) =>
+  isObject(change) &&
+  typeof change.key === "string" &&
+  change.key.length > 0 &&
+  Object.keys(change).sort().join() ===
+    (change.deleted === true ? "deleted,key" : "key,value");
+
+function validShape(frame: unknown): frame is Frame & Record<string, unknown> {
   return (
     isObject(frame) &&
     Object.keys(frame).every((key) => FRAME_KEYS.includes(key)) &&
@@ -470,9 +521,13 @@ function validFrame(frame: unknown): frame is Frame & Record<string, unknown> {
     Number.isSafeInteger(frame.time) &&
     frame.time >= 0 &&
     Array.isArray(frame.events) &&
-    authorityFault(frame) === undefined
+    (frame.changes === undefined ||
+      (Array.isArray(frame.changes) && frame.changes.every(validChange)))
   );
 }
+
+const validFrame = (frame: unknown): frame is Frame & Record<string, unknown> =>
+  validShape(frame) && authorityFault(frame) === undefined;
 
 function apply(image: V3Image, frame: Frame, sequence: number) {
   const { time, lease, outcome, witness } = frame;
@@ -483,6 +538,11 @@ function apply(image: V3Image, frame: Frame, sequence: number) {
     });
   if (witness)
     image.entries.witness.set(witness.id, { value: { witness, lease } });
+  for (const change of frame.changes ?? [])
+    image.entries.record.set(
+      change.key,
+      "deleted" in change ? null : { value: change.value },
+    );
   image.head = sequence;
   image.eventWatermark += frame.events.length;
 }
@@ -525,6 +585,7 @@ function transition(
 
 export function leaseV3(
   db: SqlDatabase,
+  image: V3Image,
   command: LeaseCommand,
   expiresAt: number,
 ): LeaseRecord {
@@ -561,7 +622,7 @@ export function leaseV3(
         if (!recordable(error)) throw error;
         const status = error.error.code;
         const refused = { ...outcome, status, result: error.error };
-        append(db, [{ ...frame, outcome: refused }]);
+        append(db, image, [{ ...frame, outcome: refused }]);
         return { refusal: error };
       };
       let current: LeaseRecord | undefined;
@@ -598,7 +659,7 @@ export function leaseV3(
       } catch (error) {
         return refuse(error);
       }
-      append(db, [
+      append(db, image, [
         {
           ...frame,
           lease,

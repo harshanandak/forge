@@ -493,30 +493,29 @@ for (const at of ["tail", "directory"] as const) {
 }
 
 test(
-  "each write publishes its frames to the cached image, which serves reads without recovery and equals a cold recovery",
+  "each successful write publishes its frames to the cached image and the next read does no recovery, a recorded refusal makes the next read recover, and every image equals a cold recovery",
   async () => {
     const f = fixture();
     try {
       expect((await f.send(probe, {})).status).toBe(200);
-      const writes = [
-        () => commit(f, { ...put, changes: [{ key: "a", value: 1 }] }),
-        () => claim(f, "owner-a"),
-        () => claim(f, "owner-b"),
-        () => claim(f, "owner-a"),
-        () => commit(f, put),
+      const writes: [() => Promise<{ status: number }>, number][] = [
+        [() => commit(f, { ...put, changes: [{ key: "a", value: 1 }] }), 200],
+        [() => claim(f, "owner-a"), 200],
+        [() => claim(f, "owner-b"), 409],
+        [() => claim(f, "owner-a"), 200],
+        [() => commit(f, put), 200],
       ];
-      const statuses = [];
-      for (const write of writes) {
-        statuses.push((await write()).status);
-        const settled = await f.send(probe);
+      for (const [write, status] of writes) {
+        expect((await write()).status).toBe(status);
         f.reads.rows = 0;
         const warm = await f.send(probe);
+        expect(f.reads.rows > 0).toBe(status !== 200);
+        f.reads.rows = 0;
+        expect(await f.send(probe)).toEqual(warm);
         expect(f.reads.rows).toBe(0);
-        expect(warm).toEqual(settled);
         f.restart();
         expect(await f.send(probe)).toEqual(warm);
       }
-      expect(statuses).toEqual([200, 200, 409, 200, 200]);
     } finally {
       f.db.close();
     }
