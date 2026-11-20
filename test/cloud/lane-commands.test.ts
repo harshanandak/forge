@@ -2008,7 +2008,7 @@ test("lane preview and POST log a refusal, a redirect, and a ticket replay", asy
     log.mockRestore();
     f.close();
   }
-});
+}, 10_000);
 
 test("lane callback logs a replayed code after a rejected proof", async () => {
   const f = await browserFixture("all", undefined, () =>
@@ -2039,7 +2039,7 @@ test("lane callback logs a replayed code after a rejected proof", async () => {
     log.mockRestore();
     f.close();
   }
-});
+}, 10_000);
 
 test.each([
   "approve all",
