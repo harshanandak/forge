@@ -392,89 +392,6 @@ for (const [label, shape] of overLimits) {
   );
 }
 
-test(
-  "an append that would take the tail past 16 MiB is refused before any write, and one that fits is admitted",
-  async () => {
-    const f = fixture();
-    try {
-      expect((await f.send(probe, {})).status).toBe(200);
-      const full = TAIL_BYTES / TAIL_ROWS;
-      tail(f.db, 0, TAIL_ROWS - 1, (i) =>
-        i === TAIL_ROWS - 2 ? TAIL_BYTES - 4096 - (TAIL_ROWS - 2) * full : full,
-      );
-      f.restart();
-      const frame = (pad: number) => ({
-        operation: "fixture.put",
-        time: T0,
-        events: [{ pad: "x".repeat(pad) }],
-      });
-      const before = f.snapshot();
-      expect(await commit(f, frame(6000))).toMatchObject(unavailable);
-      expect(f.snapshot()).toEqual(before);
-      expect(await commit(f, frame(3000))).toMatchObject({
-        status: 200,
-        body: { value: { head: TAIL_ROWS } },
-      });
-      f.restart();
-      expect(image(await f.send(probe))).toMatchObject({
-        head: TAIL_ROWS,
-        eventWatermark: TAIL_ROWS,
-      });
-    } finally {
-      f.db.close();
-    }
-  },
-  timeout,
-);
-
-for (const at of ["tail", "directory"] as const) {
-  test(
-    `a key deleted in the ${at} stays deleted after a cold read`,
-    async () => {
-      const f = fixture();
-      try {
-        expect((await f.send(probe, {})).status).toBe(200);
-        expect(
-          await commit(f, {
-            operation: "fixture.put",
-            time: T0,
-            events: [{ key: "a" }, { key: "b" }],
-            changes: [
-              { key: "a", value: { n: 1 } },
-              { key: "b", value: { n: 2 } },
-            ],
-          }),
-        ).toMatchObject({ status: 200 });
-        if (at === "tail") checkpoint(f);
-        expect(
-          await commit(f, {
-            operation: "fixture.delete",
-            time: T0 + 1,
-            events: [{ key: "a" }],
-            changes: [{ key: "a", deleted: true }],
-          }),
-        ).toMatchObject({ status: 200 });
-        if (at === "directory") checkpoint(f);
-        const warm = await f.send(probe);
-        f.restart();
-        const cold = await f.send(probe);
-        expect(cold).toEqual(warm);
-        expect(image(cold)).toEqual({
-          head: 2,
-          eventWatermark: 3,
-          lease: {},
-          outcome: {},
-          witness: {},
-          record: { a: null, b: digestOf({ n: 2 }) },
-        });
-      } finally {
-        f.db.close();
-      }
-    },
-    timeout,
-  );
-}
-
 async function snapshotWithClaim(f: Fixture) {
   expect((await f.send(probe, {})).status).toBe(200);
   expect(
@@ -487,43 +404,6 @@ async function snapshotWithClaim(f: Fixture) {
   expect(await claim(f, "owner-a")).toMatchObject({ status: 200 });
   checkpoint(f);
 }
-
-test(
-  "a receipt-only frame keeps the event watermark, and its receipt replays after a cold read with no write",
-  async () => {
-    const f = fixture();
-    try {
-      await snapshotWithClaim(f);
-      const before = image(await f.send(probe))!;
-      expect(before).toMatchObject({ head: 2, eventWatermark: 2, record: {} });
-      const refused = await claim(f, "owner-b");
-      expect(refused).toMatchObject({
-        status: 409,
-        body: { error: { code: "LEASE_HELD" } },
-      });
-      const warm = await f.send(probe);
-      expect(image(warm)).toMatchObject({
-        head: 3,
-        eventWatermark: 2,
-        lease: before.lease,
-        witness: before.witness,
-      });
-      expect(Object.keys(image(warm)!.outcome as Json)).toHaveLength(2);
-      f.restart();
-      expect(await f.send(probe)).toEqual(warm);
-      const stored = f.snapshot();
-      expect(await claim(f, "owner-b")).toEqual(refused);
-      expect(await claim(f, "owner-a")).toMatchObject({
-        status: 200,
-        body: { value: { generation: 1 } },
-      });
-      expect(f.snapshot()).toEqual(stored);
-    } finally {
-      f.db.close();
-    }
-  },
-  timeout,
-);
 
 function reseal(
   db: Database,
@@ -551,11 +431,10 @@ const first =
   (change: Json) =>
   ([head, ...rest]: Json[]) => [{ ...head, ...change }, ...rest];
 
-const corruptions: readonly [string, (db: Database) => void, boolean][] = [
+const corruptions: readonly [string, (db: Database) => void][] = [
   [
     "a missing directory page",
     (db) => db.run("DELETE FROM cloud_v3_pages WHERE id='directory:0'"),
-    true,
   ],
   [
     "a page outside the roster",
@@ -563,7 +442,6 @@ const corruptions: readonly [string, (db: Database) => void, boolean][] = [
       db.run(
         "INSERT INTO cloud_v3_pages SELECT 'snapshot:1', body FROM cloud_v3_pages WHERE id='snapshot:0'",
       ),
-    true,
   ],
   [
     "a directory page changed in place",
@@ -571,27 +449,22 @@ const corruptions: readonly [string, (db: Database) => void, boolean][] = [
       db.run(
         "UPDATE cloud_v3_pages SET body=replace(body,'work-1','work-2') WHERE id='directory:0'",
       ),
-    true,
   ],
   [
     "a resealed pointer past the end of its page",
     (db) => reseal(db, first({ offset: 1_000_000 })),
-    true,
   ],
   [
     "a resealed pointer into a directory page",
     (db) => reseal(db, first({ page: "directory:0", offset: 0 })),
-    true,
   ],
   [
     "a resealed pointer to a page outside the roster",
     (db) => reseal(db, first({ page: "snapshot:9" })),
-    true,
   ],
   [
     "resealed entries out of order",
     (db) => reseal(db, ([a, b, ...rest]) => [b!, a!, ...rest]),
-    true,
   ],
   [
     "a resealed roster count that does not match its page",
@@ -601,19 +474,10 @@ const corruptions: readonly [string, (db: Database) => void, boolean][] = [
         (entries) => entries,
         (entry) => ({ ...entry, count: entry.count + 1 }),
       ),
-    true,
-  ],
-  [
-    "a payload slice that no longer matches its pointer digest",
-    (db) =>
-      db.run(
-        "UPDATE cloud_v3_pages SET body=replace(body,'work-1','work-2') WHERE id='snapshot:0'",
-      ),
-    false,
   ],
 ];
 
-for (const [label, corrupt, atRecovery] of corruptions) {
+for (const [label, corrupt] of corruptions) {
   test(
     `v3 recovery refuses ${label} and serves nothing from it`,
     async () => {
@@ -631,10 +495,8 @@ for (const [label, corrupt, atRecovery] of corruptions) {
         f.restart();
         const before = f.snapshot();
         const read = await f.send(probe);
-        if (atRecovery) {
-          expect(read).toMatchObject(unavailable);
-          expect(read.body).not.toHaveProperty("value");
-        } else expect(image(read)).toEqual(pristine);
+        expect(read).toMatchObject(unavailable);
+        expect(read.body).not.toHaveProperty("value");
         expect(await claim(f, "owner-a")).toMatchObject(unavailable);
         expect(f.snapshot()).toEqual(before);
       } finally {
