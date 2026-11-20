@@ -131,7 +131,8 @@ import {
   hasV3Root,
   leaseV3,
   provisionV3,
-  readV3Root,
+  recoverV3,
+  viewV3,
 } from "./v3-store.ts";
 
 const REQUESTS = "domain_cloud_requests";
@@ -482,7 +483,7 @@ export class Project {
       if (probe && !url.search) {
         const db = writableStore(this.#storage);
         if (!probe[1] && request.method === "GET")
-          return Response.json({ ok: true, value: readV3Root(db) });
+          return Response.json({ ok: true, value: viewV3(recoverV3(db)) });
         if (request.method === "POST") {
           const body = await bounded(request);
           const owner = request.headers.get("X-Forge-Owner");
@@ -500,17 +501,20 @@ export class Project {
               null,
               ["owner", owner, owner],
             );
+            recoverV3(db);
             return Response.json({
               ok: true,
               value: leaseV3(db, command, expiresAt),
             });
           }
           const input = object(body);
-          if (probe[1])
+          if (probe[1]) {
+            recoverV3(db);
             return Response.json({
               ok: true,
               value: appendV3Frames(db, input.frames),
             });
+          }
           if (Object.keys(input).length)
             throw fail("INPUT_INVALID", "Expected an empty provision body");
           const legacy =
