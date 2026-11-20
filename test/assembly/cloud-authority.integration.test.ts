@@ -6336,16 +6336,17 @@ for (const [name, op, input, result, dryRun] of [
     30_000,
   );
 
-for (const [surface, plain] of [
+for (const [surface, plain, message = SERVER_APPROVAL_MESSAGE] of [
   ["CLI", false],
   ["MCP catalog", false],
   ["MCP direct", false],
   ["CLI", true],
   ["MCP catalog", true],
   ["MCP direct", true],
+  ["CLI", true, "Fresh approved owner authorization is required"],
 ] as const)
   test(
-    `bound resume keeps the cloud approval ${plain ? "pending, denied or expired refusal without a link" : "request and link"} through ${surface}`,
+    `bound resume keeps the cloud approval ${plain ? "pending, denied or expired refusal without a link" : "request and link"} through ${surface}${message === SERVER_APPROVAL_MESSAGE ? "" : " with the Worker refusal"}`,
     () =>
       using(
         {
@@ -6359,7 +6360,7 @@ for (const [surface, plain] of [
                       warnings: [],
                       error: {
                         code: "APPROVAL_REQUIRED",
-                        message: SERVER_APPROVAL_MESSAGE,
+                        message,
                         retry: "never",
                       },
                     },
@@ -6390,7 +6391,7 @@ for (const [surface, plain] of [
               expect(cli.stdout).toContain(LANE_APPROVAL.url);
             } else {
               expect(cli.stdout).toContain(PENDING_APPROVAL_MESSAGE);
-              expect(cli.stdout).not.toContain(SERVER_APPROVAL_MESSAGE);
+              expect(cli.stdout).not.toContain(message);
             }
             result = cli.envelope;
           } else {
@@ -6420,9 +6421,7 @@ for (const [surface, plain] of [
               : { result: LANE_APPROVAL }),
           });
           if (plain) {
-            expect(JSON.stringify(result)).not.toContain(
-              SERVER_APPROVAL_MESSAGE,
-            );
+            expect(JSON.stringify(result)).not.toContain(message);
             expect(result).not.toHaveProperty("result");
             expect(JSON.stringify(result)).not.toContain("https://");
           }

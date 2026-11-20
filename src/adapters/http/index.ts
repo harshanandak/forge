@@ -174,7 +174,7 @@ const REFUSAL_STATUS = {
   AUTH_DEVICE_MISMATCH: 403,
 } as const;
 // The refusals the command route sends, each with the one status the Worker gives it.
-const COMMAND_STATUS = {
+export const COMMAND_STATUS = {
   QUOTA_EXHAUSTED: 503,
   STORAGE_LIMIT_EXCEEDED: 503,
   APPROVAL_REQUIRED: 409,

@@ -181,7 +181,7 @@ export const domain = {
 
 const fail = (code: string, message: string): ForgeFailure =>
   new ForgeFailure({ code, message, retry: "never" });
-const STATUS: Record<string, number> = {
+export const STATUS: Record<string, number> = {
   INPUT_INVALID: 400,
   CONTEXT_MISSING: 400,
   NOT_FOUND: 404,
@@ -191,6 +191,7 @@ const STATUS: Record<string, number> = {
   QUOTA_EXHAUSTED: 503,
   STORAGE_LIMIT_EXCEEDED: 503,
   INPUT_CONFLICT: 409,
+  APPROVAL_REQUIRED: 409,
   REVISION_CONFLICT: 409,
   DUMP_TOO_LARGE: 413,
   DUMP_CHANGED: 409,
