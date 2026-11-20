@@ -1,9 +1,17 @@
-import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
+import {
+  afterEach,
+  beforeEach,
+  expect,
+  setSystemTime,
+  spyOn,
+  test,
+} from "bun:test";
 import {
   authorityFault,
   isDigest,
   isNat,
 } from "../../cloud/src/v3-authority.ts";
+import { ForgeFailure } from "../../src/contract/failure.ts";
 import { digestBytes } from "../../src/core/config/pointer.ts";
 import { fixture, probe } from "./v3-project.fixture.ts";
 
@@ -71,6 +79,58 @@ test(
     expect(
       authorityFault({ operation: "fixture.put", time: T0, events: [] }),
     ).toBeUndefined();
+  },
+  timeout,
+);
+
+test(
+  "a refusal the writer builds from a malformed stored lease is never appended",
+  async () => {
+    const f = fixture();
+    const logged = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const send = (owner: string, subject: string, requestId: string) =>
+        f.send(
+          `${probe}/claim`,
+          { subject, holder, requestId, ttlMs: HOUR },
+          { "X-Forge-Owner": owner, "X-Forge-Owner-Expires": String(E1) },
+        );
+      expect((await f.send(probe, {})).status).toBe(200);
+      expect((await send("owner-a", "work-1", "acq-1")).status).toBe(200);
+      expect(
+        f.db.run(
+          "UPDATE cloud_v3_commits SET body=json_set(body,'$.lease.generation',0) WHERE sequence=1",
+        ).changes,
+      ).toBe(1);
+      const rows = () =>
+        f.db
+          .query<{ sequence: number; body: string }, []>(
+            "SELECT sequence, body FROM cloud_v3_commits ORDER BY sequence",
+          )
+          .all();
+      const stored = rows();
+      const before = f.snapshot();
+      expect(await send("owner-b", "work-1", "acq-2")).toMatchObject({
+        status: 500,
+        body: { ok: false, error: { code: "INTERNAL" } },
+      });
+      const thrown = logged.mock.calls.flat();
+      expect(thrown).toHaveLength(1);
+      expect(thrown[0]).toBeInstanceOf(Error);
+      expect(thrown[0]).not.toBeInstanceOf(ForgeFailure);
+      expect((thrown[0] as Error).message).toBe(
+        "Refusing a v3 frame with an invalid outcome status",
+      );
+      expect(rows()).toEqual(stored);
+      expect(f.snapshot()).toEqual(before);
+      expect(await send("owner-b", "work-2", "acq-3")).toMatchObject({
+        status: 200,
+        body: { ok: true, value: { subject: "work-2", generation: 1 } },
+      });
+    } finally {
+      logged.mockRestore();
+      f.db.close();
+    }
   },
   timeout,
 );

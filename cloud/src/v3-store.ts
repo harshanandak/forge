@@ -23,7 +23,6 @@ import {
   requestConflict,
 } from "./lease-command.ts";
 import { checkTtl } from "./lease-ttl.ts";
-import { authorityFault } from "./v3-authority.ts";
 import { TABLE_PROBE } from "./store.ts";
 
 const ROOT = "cloud_v3_root";
@@ -178,9 +177,6 @@ function append(db: SqlDatabase, batch: readonly unknown[]) {
         !Array.isArray(frame.events)
       )
         throw fail("INPUT_INVALID", "Invalid v3 frame");
-      const fault = authorityFault(frame);
-      if (fault !== undefined)
-        throw new Error(`Refusing a v3 frame with an invalid ${fault}`);
       sequence++;
       db.run(`INSERT INTO ${COMMITS} VALUES (?, ?)`, [
         sequence,
