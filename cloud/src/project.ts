@@ -119,6 +119,12 @@ import {
 } from "./tokens.ts";
 
 import { stateMigrations } from "../../src/core/state/migrations.ts";
+import {
+  appendV3Frames,
+  hasV3Root,
+  provisionV3,
+  readV3Root,
+} from "./v3-store.ts";
 
 const NAMESPACE = "forge/work";
 const REQUESTS = "domain_cloud_requests";
@@ -319,6 +325,7 @@ export class Project {
   readonly #limits: Limits;
   readonly #env: LoginEnv;
   readonly #browser: DeviceBrowserOptions;
+  readonly #testV3: boolean;
 
   // The existing parser resolves DUMP_PAGE_BYTES, DUMP_MAX_ROWS and DUMP_MAX_BYTES once.
   constructor(
@@ -330,6 +337,7 @@ export class Project {
     this.#limits = limitsFrom(env);
     this.#env = (env ?? {}) as LoginEnv;
     this.#browser = browser;
+    this.#testV3 = ctx.testV3 === true;
   }
 
   async alarm(): Promise<void> {
@@ -442,6 +450,33 @@ export class Project {
     try {
       const url = new URL(request.url);
       const route = url.pathname.split("/")[3] ?? "";
+      const probe =
+        this.#testV3 && /^\/p\/[^/]+\/test-v3(\/commits)?$/.exec(url.pathname);
+      if (probe && !url.search) {
+        const db = writableStore(this.#storage);
+        if (!probe[1] && request.method === "GET")
+          return Response.json({ ok: true, value: readV3Root(db) });
+        if (request.method === "POST") {
+          const input = object(await bounded(request));
+          if (probe[1])
+            return Response.json({
+              ok: true,
+              value: appendV3Frames(db, input.frames),
+            });
+          if (Object.keys(input).length)
+            throw fail("INPUT_INVALID", "Expected an empty provision body");
+          const legacy =
+            (await this.#storage.get(PROVISIONED)) !== undefined ||
+            (await this.#storage.get(STAGED)) !== undefined;
+          const value = provisionV3(db, legacy);
+          return Response.json({ ok: true, value });
+        }
+      }
+      if (
+        (route === "upgrade" || route === "devices" || route === "restore") &&
+        hasV3Root(writableStore(this.#storage))
+      )
+        throw fail("INPUT_CONFLICT", "Cloud v3 projects cannot use v2 routes");
       if (isStatePath(request)) return await this.#state(request);
       if (route === "upgrade") {
         await validateUpgrade(request);
