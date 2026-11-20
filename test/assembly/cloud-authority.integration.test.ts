@@ -3973,6 +3973,57 @@ for (const surface of ["CLI", "MCP"] as const) {
 const CLOSED = { ...ISSUE, status: "closed", revision: 4 };
 const VERIFIED_CLOSE = { id: "forge-1", pr: 490 };
 const verifiedClosed = { ...CLOSED, receipt: "verified-1" };
+
+for (const [
+  code,
+  status,
+  message,
+  expectedCode = code,
+  expectedMessage = message,
+] of [
+  ["RECEIPT_INVALID", 400, "Missing or unapproved workflow evidence"],
+  ["RECEIPT_HEAD_MISMATCH", 409, "Workflow must cover merge commit"],
+  ["PR_NOT_MERGED", 409, "PR has not landed on target"],
+  [
+    "RECEIPT_INVALID",
+    200,
+    "Missing or unapproved workflow evidence",
+    "UNAVAILABLE",
+    NOT_USABLE,
+  ],
+] as const)
+  test(`CLI verified close reports ${expectedCode} for ${code} at HTTP ${status}`, () =>
+    using(
+      {
+        steps: [
+          () =>
+            fx.json(
+              {
+                ok: false,
+                status: "FAIL",
+                error: { code, message, retry: "never" },
+                warnings: [],
+              },
+              status,
+            ),
+        ],
+      },
+      async (r) => {
+        const done = await runCli(
+          r.assembly.catalog,
+          ["issue", "close", "forge-1", "--pr", "490"],
+          { caller: "agent", context: holding(r, { leaseGeneration: 3 }) },
+        );
+        expect(done.envelope).toMatchObject({
+          ok: false,
+          status: "FAIL",
+          error: { code: expectedCode, message: expectedMessage },
+        });
+        expect(done.exitCode).toBe(1);
+        expect(sent(r)).toEqual(["issue.close"]);
+      },
+    ));
+
 for (const surface of ["CLI", "MCP", "catalog"] as const)
   for (const [name, authority, extra, flags, code, exit, requests] of [
     ["verified", "bound", {}, [], undefined, 0, 1],
