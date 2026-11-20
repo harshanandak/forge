@@ -26,7 +26,8 @@ import {
 import { guardLegacy } from "./issue-request-id.ts";
 import { LaneControlStore } from "./lane-control-store.ts";
 import {
-  checkedApproval,
+  checkApprovalReplay,
+  checkedRelay,
   consumeLaneApproval,
   requestLaneApproval,
   type ApprovalRequired,
@@ -102,16 +103,10 @@ export function laneCommand(
   const fields = input as {
     id?: string;
     all?: true;
-    approval?: { request: string; quote?: string; source?: unknown };
+    approval?: unknown;
   };
-  if (
-    fields.approval?.quote !== undefined ||
-    fields.approval?.source !== undefined
-  )
-    throw fail(
-      "INPUT_INVALID",
-      "Cloud resume accepts only an approval request id",
-    );
+  const relay =
+    fields.approval === undefined ? undefined : checkedRelay(fields.approval);
   if (fields.id !== undefined && !/^work-[1-9][0-9]*$/.test(fields.id))
     throw fail("INPUT_INVALID", "Expected a canonical issue id");
   const scope: LaneScope =
@@ -167,8 +162,7 @@ export function laneCommand(
   });
   const { db, owner } = host.open();
   guardLegacy(db, requestId, identity.requestId);
-  if (resume && fields.approval !== undefined) {
-    const request = fields.approval.request;
+  if (resume && relay !== undefined) {
     return commandWrite(
       db,
       owner,
@@ -176,7 +170,7 @@ export function laneCommand(
       () => scope,
       (target) => {
         const canonical = scopeOf(owner, target);
-        const approval = consumeLaneApproval(db, request, canonical, host);
+        const approval = consumeLaneApproval(db, owner, relay, canonical, host);
         const global = owner.get(NS, GLOBAL);
         const key =
           "id" in canonical ? `lane-control:${canonical.id}` : undefined;
@@ -237,7 +231,7 @@ export function laneCommand(
       { identity, recheck: host.recheck, expiresAt: host.expiresAt },
       () => scope,
       (target) => requestLaneApproval(db, owner, scopeOf(owner, target), host),
-      checkedApproval,
+      (prior) => checkApprovalReplay(db, owner, prior, scope, host),
     );
   return commandWrite(
     db,

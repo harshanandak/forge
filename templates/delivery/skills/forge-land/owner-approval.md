@@ -1,6 +1,13 @@
 # Owner approval by chat
 
-When Forge returns `APPROVAL_REQUIRED`, ask the owner in this chat using
+For cloud `lane.resume`, first request the exact scope. Display the flat
+`result.ask` in chat and wait for a clear affirmative reply to that question
+within 10 minutes. Retry the same scope with a new command id and
+`approval: {request: result.request, quote, source: {harness, thread, message?, link?}}`.
+Copy the reply verbatim. Refusal, ambiguity or silence leaves the stop set.
+After expiry or a changed stop, request and ask again.
+
+For local approval, when Forge returns `APPROVAL_REQUIRED`, ask the owner in this chat using
 `result.request.ask`: say what will happen, to what, and what it allows. Wait for
 their reply to this specific request. Silence or a reply to another question is
 not approval. Any non-empty answer, including "yes" or "continue", counts when it

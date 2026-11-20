@@ -1,5 +1,11 @@
 import { expect, mock, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
+import { format } from "node:util";
+import {
+  LANE_BROWSER,
+  LANE_STATE_PREFIX,
+} from "../../cloud/src/auth/lane-browser.ts";
+import { sha256 } from "../../cloud/src/tokens.ts";
 import { Project } from "../../cloud/src/project.ts";
 import {
   OLD_SCHEMA,
@@ -145,6 +151,11 @@ async function fixture(
     writes: () => writes,
     env,
     reached,
+    dump: (cursor?: string) => {
+      const url = new URL(`https://w.example/p/${projectName}/dump`);
+      if (cursor !== undefined) url.searchParams.set("cursor", cursor);
+      return project.fetch(new Request(url.href));
+    },
     browser: async (
       path: string,
       body?: string,
@@ -924,13 +935,11 @@ test.each([
       });
       const pending = (
         reply.envelope as unknown as {
-          result: { request: string; url: string };
+          result: { request: string };
         }
       ).result;
       expect(pending.request).toMatch(/^[a-f0-9-]+$/);
-      expect(pending.url).toBe(
-        `https://w.example/lane-approval/${pending.request}`,
-      );
+      expect(pending).not.toHaveProperty("url");
       const after = f.snapshot();
       expect((await f.send(request)).envelope).toEqual(reply.envelope);
       expect(f.snapshot()).toBe(after);
@@ -1156,11 +1165,9 @@ const pageTicket = (page: { text: string }, action: string) =>
     `/${action}"><input type="hidden" name="ticket" value="([^"]+)"`,
   ).exec(page.text)?.[1] ?? "";
 async function browserFixture(
-  scope: "all" | "issue" = "all",
+  scope: "all" | "issue" | "chat" = "all",
   issuer = "https://identity.example",
   verify?: NonNullable<DeviceBrowserOptions["upstream"]>["verify"],
-  id = "work-7",
-  prefix?: string,
 ) {
   const begun: { state: string; verifier: string }[] = [];
   const spent = new Set<string>();
@@ -1192,20 +1199,9 @@ async function browserFixture(
       },
     },
   });
-  if (prefix !== undefined)
-    for (const key of ["issue:work-7", "issue:work-8"]) {
-      const issue = f.owner.get("forge/work", key)!;
-      f.owner.put(
-        "forge/work",
-        key,
-        { ...(issue.value as object), prefix },
-        actor,
-        { expectRevision: issue.revision },
-      );
-    }
   f.env.CLERK_ISSUER = issuer;
   f.put("lane-control:global", running);
-  const input = scope === "all" ? { all: true } : { id };
+  const input = scope === "issue" ? { id: "work-7" } : { all: true };
   await f.send(call("lane.stop", input, "browser-stop"));
   const reply = await f.send(call("lane.resume", input, "browser-ask"));
   expect(reply.verdict).toEqual(["FAIL", "APPROVAL_REQUIRED", 1]);
@@ -1215,6 +1211,7 @@ async function browserFixture(
       result: { request: string; expiresAt: string };
     }
   ).result;
+  if (scope !== "chat") seedLegacyApproval(f, pending.request);
   const path = `/lane-approval/${pending.request}`;
   const shown = await f.browser(path);
   const cookie = pageCookie(shown);
@@ -1487,6 +1484,17 @@ const approvalRows = (f: Fixture) =>
       ),
     ) as { requests: LaneApproval[] }
   ).requests;
+function seedLegacyApproval(f: Fixture, request: string) {
+  const requests = approvalRows(f).map((row) => {
+    if (row.request !== request) return row;
+    const { binding: _binding, ...legacy } = row;
+    return { ...legacy, url: `https://w.example/lane-approval/${request}` };
+  });
+  f.db.run(`UPDATE ${LANE_APPROVALS} SET state=? WHERE id=1`, [
+    JSON.stringify({ requests }),
+  ]);
+}
+
 const ownerClaims: IdentityClaims = {
   issuer: "https://identity.example",
   subject: "user_Owner1",
@@ -1508,13 +1516,20 @@ async function resumeFixture(
   id = "work-7",
   prefix?: string,
 ) {
-  const f = await browserFixture(
-    scope,
-    undefined,
-    async () => ownerProof(),
-    id,
-    prefix,
-  );
+  const f = await fixture();
+  if (prefix !== undefined)
+    for (const key of ["issue:work-7", "issue:work-8"]) {
+      const issue = f.owner.get("forge/work", key)!;
+      f.owner.put(
+        "forge/work",
+        key,
+        { ...(issue.value as object), prefix },
+        actor,
+        { expectRevision: issue.revision },
+      );
+    }
+  const target: RelayScope = scope === "all" ? { all: true } : { id };
+  await stopForRelay(f, target);
   for (const id of scope === "all" ? ["work-7", "work-8"] : ["work-8"])
     f.put(`lane-control:${id}`, {
       version: 1,
@@ -1523,16 +1538,8 @@ async function resumeFixture(
       epoch: 4,
       stoppedAt: new Date(now).toISOString(),
     });
-  const back = await laneReturn(f);
-  expect(
-    (await f.browser(back.path, undefined, { Cookie: back.cookie }, true))
-      .status,
-  ).toBe(200);
-  const input = {
-    ...(scope === "all" ? { all: true } : { id }),
-    approval: { request: f.pending.request },
-  };
-  return { ...f, input, resume: call("lane.resume", input, "consume") };
+  const { input, complete } = await askForRelay(f, target);
+  return { ...f, input, resume: complete };
 }
 const replaceApproval = (f: Fixture, changes: Partial<LaneApproval>) =>
   f.db.run(`UPDATE ${LANE_APPROVALS} SET state=? WHERE id=1`, [
@@ -1556,7 +1563,7 @@ test.each([
       expect((await control(f, id)).result).toMatchObject({ stopped: true });
       expect(approvalRows(f)[0]).toMatchObject({
         scope: { id: "work-7" },
-        status: "approved",
+        status: "pending",
       });
       const issue = f.owner.get("forge/work", "issue:work-7");
       if (prefix !== undefined) expect(issue!.value).toMatchObject({ prefix });
@@ -1582,6 +1589,489 @@ test.each([
   },
   10_000,
 );
+
+type RelayScope = { all: true } | { id: string };
+const chatReply = {
+  quote: " \tYes, resume these lanes.\n",
+  source: {
+    harness: "test-chat",
+    thread: "owner-thread",
+    message: "owner-message",
+    link: "https://chat.example.test/owner-message",
+  },
+};
+const challenge = (reply: Awaited<ReturnType<Fixture["send"]>>) =>
+  (
+    reply.envelope as unknown as {
+      result: { request: string; scope: RelayScope; expiresAt: string };
+    }
+  ).result;
+
+async function stopForRelay(f: Fixture, scope: RelayScope) {
+  f.put("lane-control:global", running);
+  expect((await f.send(call("lane.stop", scope, "relay-stop"))).status).toBe(
+    200,
+  );
+}
+
+async function askForRelay(f: Fixture, scope: RelayScope) {
+  const issue = call("lane.resume", scope, "relay-ask");
+  const reply = await f.send(issue);
+  expect(reply.verdict).toEqual(["FAIL", "APPROVAL_REQUIRED", 1]);
+  const approval = { request: challenge(reply).request, ...chatReply };
+  const input = { ...scope, approval };
+  return { issue, reply, input, complete: call("lane.resume", input, "relay") };
+}
+
+test("chat relay red 1: wire challenge has only the request, scope and deadline", async () => {
+  const f = await fixture();
+  try {
+    const scope = { all: true } as const;
+    await stopForRelay(f, scope);
+    const before = await control(f);
+    const { reply } = await askForRelay(f, scope);
+    expect(reply.status).toBe(409);
+    expect(challenge(reply).request).toMatch(
+      /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/,
+    );
+    expect((await control(f)).result).toEqual(before.result);
+    expect(before.result).toMatchObject({ stopped: true, scope: "all" });
+    expect(challenge(reply)).toEqual({
+      request: challenge(reply).request,
+      scope,
+      expiresAt: new Date(now + 600_000).toISOString(),
+    });
+  } finally {
+    f.close();
+  }
+}, 10_000);
+
+const completionReceipts = (f: Fixture) =>
+  f.db
+    .query<{ result: string }, []>(
+      "SELECT result FROM domain_cloud_command_receipts WHERE outcome='ok' ORDER BY request_id",
+    )
+    .all();
+
+test.each([{ all: true }, { id: "work-7" }] as const)(
+  "chat relay red 2: completion spends one request and records the exact reply for %j",
+  async (scope) => {
+    const f = await fixture();
+    try {
+      await stopForRelay(f, scope);
+      const { input, complete } = await askForRelay(f, scope);
+      const [pending] = approvalRows(f);
+      expect(pending?.status).toBe("pending");
+      const receiptsBefore = completionReceipts(f);
+      const result = { resumed: "id" in scope ? scope.id : "all" };
+      const reply = await f.send(complete);
+      expect(reply.status).toBe(200);
+      expect(reply.result).toEqual(result);
+      expect(approvalRows(f)).toHaveLength(1);
+      expect(approvalRows(f)[0]).toMatchObject({
+        request: input.approval.request,
+        scope,
+        status: "spent",
+        token: pending!.token,
+        device: pending!.device,
+        session: pending!.session,
+        decision: {
+          method: "relayed",
+          ...chatReply,
+          at: new Date(now).toISOString(),
+        },
+      });
+      const receiptsAfter = completionReceipts(f);
+      expect(receiptsAfter).toHaveLength(receiptsBefore.length + 1);
+      expect(
+        receiptsAfter
+          .filter(
+            (row) => !receiptsBefore.some((old) => old.result === row.result),
+          )
+          .map((row) => JSON.parse(row.result) as unknown),
+      ).toEqual([result]);
+      expect(
+        (await control(f, "id" in scope ? scope.id : undefined)).result,
+      ).toMatchObject({ stopped: false, epoch: running.epoch + 2 });
+      const spent = approvalRows(f);
+      const duplicate = await f.send({ ...complete, requestId: "relay-again" });
+      expect(duplicate.verdict).toEqual(["FAIL", "APPROVAL_REQUIRED", 1]);
+      expect(approvalRows(f)).toEqual(spent);
+    } finally {
+      f.close();
+    }
+  },
+  10_000,
+);
+
+test.each([
+  "different scope",
+  "different request",
+  "renewed token",
+  "expired",
+  "later stop",
+  "blank quote",
+  "blank source",
+  "credential in quote",
+  "browser-approved row",
+  "receipt write failure",
+] as const)(
+  "chat relay keeps the stop and request intact after %s",
+  async (mode) => {
+    const f = await fixture();
+    try {
+      const scope = { id: "work-7" };
+      await stopForRelay(f, scope);
+      expect(
+        (await f.send(call("lane.stop", { id: "work-8" }, "other-stop")))
+          .status,
+      ).toBe(200);
+      const { input, complete } = await askForRelay(f, scope);
+      let attempt = complete;
+      let headers: Record<string, string> = {};
+      switch (mode) {
+        case "different scope":
+          attempt = {
+            ...complete,
+            input: { all: true, approval: input.approval },
+          };
+          break;
+        case "different request":
+          attempt = {
+            ...complete,
+            input: {
+              ...input,
+              approval: { ...input.approval, request: crypto.randomUUID() },
+            },
+          };
+          break;
+        case "renewed token":
+          headers = { authorization: `Bearer ${await f.admit("laptop")}` };
+          break;
+        case "expired":
+          f.clock.mockReturnValue(now + 600_000);
+          break;
+        case "later stop":
+          expect(
+            (await f.send(call("lane.stop", scope, "new-stop"))).status,
+          ).toBe(200);
+          break;
+        case "blank quote":
+          attempt = {
+            ...complete,
+            input: { ...input, approval: { ...input.approval, quote: " \n" } },
+          };
+          break;
+        case "blank source":
+          attempt = {
+            ...complete,
+            input: {
+              ...input,
+              approval: {
+                ...input.approval,
+                source: { ...chatReply.source, thread: " \t" },
+              },
+            },
+          };
+          break;
+        case "credential in quote":
+          attempt = {
+            ...complete,
+            input: {
+              ...input,
+              approval: { ...input.approval, quote: "yes fct_example" },
+            },
+          };
+          break;
+        case "browser-approved row":
+          replaceApproval(f, {
+            status: "approved",
+            decision: {
+              issuer: ownerClaims.issuer,
+              subject: ownerClaims.subject,
+              at: new Date(now).toISOString(),
+            },
+          });
+          break;
+        case "receipt write failure":
+          f.db.run(
+            "CREATE TRIGGER refuse_relay BEFORE INSERT ON domain_cloud_command_receipts BEGIN SELECT RAISE(ABORT, 'injected relay failure'); END",
+          );
+          break;
+      }
+      const before = f.snapshot();
+      const reply = await f.send(attempt, "p", headers);
+      expect(reply.envelope.ok).toBe(false);
+      expect(f.snapshot()).toBe(before);
+      expect((await control(f, scope.id)).result).toMatchObject({
+        stopped: true,
+      });
+      if (mode === "receipt write failure") {
+        f.db.run("DROP TRIGGER refuse_relay");
+        expect((await f.send(attempt)).status).toBe(200);
+      }
+    } finally {
+      f.close();
+    }
+  },
+  10_000,
+);
+
+test.each(["later stop", "spent", "expired"] as const)(
+  "chat relay red 4: issuance replay refuses a %s request without an ask",
+  async (mode) => {
+    const f = await fixture();
+    try {
+      const scope = { all: true } as const;
+      await stopForRelay(f, scope);
+      const { issue, reply } = await askForRelay(f, scope);
+      const first = f.snapshot();
+      expect((await f.send(issue)).envelope).toEqual(reply.envelope);
+      expect(f.snapshot()).toBe(first);
+      if (mode === "later stop")
+        expect(
+          (await f.send(call("lane.stop", scope, "new-stop"))).status,
+        ).toBe(200);
+      if (mode === "spent") replaceApproval(f, { status: "spent" });
+      if (mode === "expired") f.clock.mockReturnValue(now + 600_000);
+      const before = f.snapshot();
+      const replay = await f.send(issue);
+      expect(replay.verdict).toEqual(["FAIL", "APPROVAL_REQUIRED", 1]);
+      expect(replay.envelope).not.toHaveProperty("result");
+      if (replay.envelope.ok) throw new Error("Expected approval refusal");
+      expect(replay.envelope.error.message).toMatch(
+        /(?:new|fresh) (?:approval )?request/i,
+      );
+      expect(f.snapshot()).toBe(before);
+    } finally {
+      f.close();
+    }
+  },
+  10_000,
+);
+
+test("chat relay red 5: completion replay keeps a later stop and epoch", async () => {
+  const f = await fixture();
+  try {
+    const scope = { all: true } as const;
+    await stopForRelay(f, scope);
+    const { complete } = await askForRelay(f, scope);
+    const result = await f.send(complete);
+    expect(result.status).toBe(200);
+    const later = await f.send(call("lane.stop", scope, "new-stop"));
+    expect(later.status).toBe(200);
+    expect(later.result).toMatchObject({
+      stopped: true,
+      epoch: running.epoch + 3,
+    });
+    const before = f.snapshot();
+    expect((await f.send(complete)).envelope).toEqual(result.envelope);
+    expect((await control(f)).result).toEqual(later.result);
+    expect(f.snapshot()).toBe(before);
+  } finally {
+    f.close();
+  }
+}, 10_000);
+
+test("chat relay completes without a Clerk redirect URI", async () => {
+  const f = await fixture();
+  try {
+    f.env.CLERK_REDIRECT_URI = "";
+    const scope = { all: true } as const;
+    await stopForRelay(f, scope);
+    const { complete } = await askForRelay(f, scope);
+    expect((await f.send(complete)).status).toBe(200);
+    expect((await control(f)).result).toMatchObject({ stopped: false });
+  } finally {
+    f.close();
+  }
+}, 10_000);
+
+test("chat relay refuses a newly issued request at the old browser URLs", async () => {
+  const f = await browserFixture("chat");
+  try {
+    const before = f.snapshot();
+    const approve = await f.submit();
+    expect(f.shown.status).toBe(400);
+    expect(approve.status).toBe(400);
+    expect(f.begun).toHaveLength(0);
+    expect(f.spent.size).toBe(0);
+    expect(f.snapshot()).toBe(before);
+  } finally {
+    f.close();
+  }
+}, 10_000);
+
+test("a chat request cannot spend valid legacy browser callback state", async () => {
+  const verify = mock(async () => ownerProof());
+  const f = await browserFixture("chat", undefined, verify);
+  try {
+    const state = LANE_STATE_PREFIX + "s".repeat(43);
+    const bind = "b".repeat(43);
+    const stateHash = await sha256(state);
+    f.db.run(`INSERT INTO ${LANE_BROWSER} (id, state) VALUES (1, ?)`, [
+      JSON.stringify([
+        {
+          request: f.pending.request,
+          action: "approve",
+          stateHash,
+          bindHash: await sha256(bind),
+          verifier: "v".repeat(43),
+          expiresAt: Date.parse(f.pending.expiresAt),
+        },
+      ]),
+    ]);
+    const callback = () =>
+      f.browser(
+        `/callback?state=${state}&code=owner`,
+        undefined,
+        {
+          Cookie: `__Host-forge_lane_${stateHash.slice(0, 24)}=${bind}`,
+        },
+        true,
+      );
+    const snapshot = () => [
+      f.snapshot(),
+      f.db.query(`SELECT * FROM ${LANE_BROWSER}`).all(),
+    ];
+
+    const before = snapshot();
+    expect((await callback()).status).toBe(400);
+    expect(snapshot()).toEqual(before);
+    expect(f.spent.size).toBe(0);
+    expect(verify).not.toHaveBeenCalled();
+
+    seedLegacyApproval(f, f.pending.request);
+    expect((await callback()).status).toBe(200);
+    expect(verify).toHaveBeenCalledTimes(1);
+  } finally {
+    f.close();
+  }
+}, 10_000);
+
+test("the private lane reply stays out of dumps, receipts and console logs", async () => {
+  const f = await fixture();
+  const logged: string[] = [];
+  const spies = (["log", "warn", "error", "info", "debug"] as const).map(
+    (method) =>
+      spyOn(console, method).mockImplementation((...args: unknown[]) => {
+        logged.push(format(...args));
+      }),
+  );
+  try {
+    Object.assign(f.env, { DUMP_PAGE_BYTES: "4096" });
+    f.reopen();
+    const scope = { all: true } as const;
+    await stopForRelay(f, scope);
+    const { input } = await askForRelay(f, scope);
+    const quote = "Yes, resume. Private restore-lane reply 5da7c2.";
+    const source = {
+      harness: "private-harness-5da7c2",
+      thread: "private-thread-5da7c2",
+      message: "private-message-5da7c2",
+      link: "https://example.test/private-reply-5da7c2",
+    };
+    const relay = { ...input.approval, quote, source };
+    const result = await f.send(
+      call("lane.resume", { ...scope, approval: relay }, "private-relay"),
+    );
+    expect(result.status).toBe(200);
+    expect(approvalRows(f)[0]).toMatchObject({
+      status: "spent",
+      decision: { quote, source },
+    });
+
+    const receipts = f.db
+      .query<{ request_id: string }, []>(
+        "SELECT * FROM domain_cloud_command_receipts WHERE json_extract(result, '$.resumed')='all'",
+      )
+      .all();
+    expect(receipts).toHaveLength(1);
+    const whole = await f.dump();
+    expect(whole.status).toBe(200);
+    const wholeText = await whole.text();
+    const pages: string[] = [];
+    let cursor: string | null = "start";
+    while (cursor !== null) {
+      const response = await f.dump(cursor);
+      expect(response.status).toBe(200);
+      const text = await response.text();
+      pages.push(text);
+      const value = (JSON.parse(text) as { value: { next: string | null } })
+        .value;
+      cursor = value.next;
+    }
+    const pagedText = pages.join("\n");
+    const completionId = receipts[0]!.request_id;
+    expect(wholeText).toContain(completionId);
+    expect(pagedText).toContain(completionId);
+    for (const surface of [
+      wholeText,
+      pagedText,
+      JSON.stringify(receipts),
+      logged.join("\n"),
+    ])
+      for (const privateText of [quote, ...Object.values(source)])
+        expect(surface).not.toContain(privateText);
+  } finally {
+    for (const spy of spies) spy.mockRestore();
+    f.close();
+  }
+}, 10_000);
+
+test("chat relay refuses request-only completion with a legacy browser decision", async () => {
+  const f = await fixture();
+  try {
+    const scope = { all: true } as const;
+    await stopForRelay(f, scope);
+    const { input } = await askForRelay(f, scope);
+    const { request } = input.approval;
+    const {
+      project,
+      incarnation,
+      epoch,
+      policyIdentity,
+      token,
+      device,
+      session,
+      expiresAt,
+    } = approvalRows(f)[0]!;
+    f.db.run(`UPDATE ${LANE_APPROVALS} SET state=? WHERE id=1`, [
+      JSON.stringify({
+        requests: [
+          {
+            request,
+            scope,
+            expiresAt,
+            project,
+            incarnation,
+            epoch,
+            policyIdentity,
+            token,
+            device,
+            session,
+            url: `https://w.example/lane-approval/${request}`,
+            status: "approved",
+            decision: {
+              issuer: ownerClaims.issuer,
+              subject: ownerClaims.subject,
+              at: new Date(now).toISOString(),
+            },
+          },
+        ],
+      }),
+    ]);
+    const before = f.snapshot();
+    const reply = await f.send(
+      call("lane.resume", { ...scope, approval: { request } }, "legacy-resume"),
+    );
+    expect(reply.envelope.ok).toBe(false);
+    expect(f.snapshot()).toBe(before);
+    expect((await control(f)).result).toMatchObject({ stopped: true });
+  } finally {
+    f.close();
+  }
+}, 10_000);
 
 test.each(["all", "issue"] as const)(
   "approved resume %s commits once and replays historically after a later stop",
@@ -1625,7 +2115,7 @@ test.each(["all", "issue"] as const)(
 );
 
 test.each([
-  ["pending", "APPROVAL_REQUIRED"],
+  ["legacy pending", "APPROVAL_REQUIRED"],
   ["denied", "APPROVAL_REQUIRED"],
   ["spent", "APPROVAL_REQUIRED"],
   ["expired", "APPROVAL_REQUIRED"],
@@ -1646,11 +2136,16 @@ test.each([
     const f = await resumeFixture(mode === "all later stop" ? "all" : "issue");
     try {
       let input: object = f.input;
-      if (["pending", "denied", "spent"].includes(mode))
+      if (mode === "legacy pending")
+        seedLegacyApproval(f, f.input.approval.request);
+      if (["denied", "spent"].includes(mode))
         replaceApproval(f, { status: mode as LaneApproval["status"] });
       if (mode === "expired") f.clock.mockReturnValue(now + 600_000);
       if (mode === "missing")
-        input = { ...f.input, approval: { request: "missing" } };
+        input = {
+          ...f.input,
+          approval: { ...f.input.approval, request: "missing" },
+        };
       if (["epoch", "global stop", "all later stop"].includes(mode))
         await f.send(
           call(
@@ -1670,7 +2165,7 @@ test.each([
         input = {
           ...f.input,
           approval: {
-            ...f.input.approval,
+            request: f.input.approval.request,
             [mode]:
               mode === "quote" ? "yes" : { harness: "test", thread: "owner" },
           },
@@ -2213,6 +2708,7 @@ test.each(["approve", "deny"])(
       const otherId = (
         other.envelope as unknown as { result: { request: string } }
       ).result.request;
+      seedLegacyApproval(f, otherId);
       for (let n = 0; n < 257; n++) {
         const page = await f.browser(f.path);
         const reply = await f.browser(
