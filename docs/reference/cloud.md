@@ -399,7 +399,9 @@ A device token acts only as its own device. The admin token is the Worker secret
 
 ## Deploy
 
-The owner runs these steps. Replace angle-bracket placeholders; `<worker-origin>` is an HTTPS origin without a trailing slash. Use an existing Cloudflare login with Workers/KV write access. Run every command from `cloud/` with the git-ignored `wrangler.local.jsonc` (copied from `wrangler.example.jsonc`) as `--config`; a bare `wrangler deploy` finds no `wrangler.jsonc` and stops. Commit no real value.
+**Rehearsal redeploys from `main` are paused until the v3 launch.** Deploying Forge 0.0.1 over the rehearsal Worker closes its HTTP access and returns 503 `UNAVAILABLE` for every request.
+
+The steps below document how the existing ungated rehearsal artifact was deployed. Replace angle-bracket placeholders; `<worker-origin>` is an HTTPS origin without a trailing slash. Use an existing Cloudflare login with Workers/KV write access. Run every command from `cloud/` with the git-ignored `wrangler.local.jsonc` (copied from `wrangler.example.jsonc`) as `--config`; a bare `wrangler deploy` finds no `wrangler.jsonc` and stops. Commit no real value.
 
 1. **Clerk OAuth application.** In the Clerk admin console, open **OAuth applications** and create or open an application. Set its redirect URI to `<worker-origin>/callback`, make it a public client and require PKCE S256; no client secret is used. Allow `openid profile email` scopes (the Worker currently requests `openid`). Copy the client ID from **Application credentials** and the Frontend API URL from **API keys → Show API URLs**. Clerk organizations are informational only and grant no project access. See [Clerk's public-client guidance](https://clerk.com/docs/guides/configure/auth-strategies/oauth/how-clerk-implements-oauth).
    If the Clerk instance requires organization membership, a new user must create or join an organization during sign-up before consent; organizations still grant no project access.
@@ -444,7 +446,7 @@ The owner runs these steps. Replace angle-bracket placeholders; `<worker-origin>
 
    Every HTTPS value above rejects credentials, query strings, fragments, whitespace and backslashes. Registration accepts only loopback redirects (`http` on `127.0.0.1`, `[::1]` or `localhost`) and exact matches of `FORGE_OAUTH_REDIRECTS`; anything else is refused with `REGISTRATION_INVALID` before the rate limiter counts it. Metadata uses the callback origin, not the Host header. No Clerk secret key is needed or used; never put one in `vars`.
 
-4. **Deploy.** First prepare generated validators from the repository root:
+4. **Historical deploy of the ungated rehearsal artifact.** First prepare generated validators from the repository root:
 
    ```sh
    bun install --frozen-lockfile
@@ -463,7 +465,7 @@ The owner runs these steps. Replace angle-bracket placeholders; `<worker-origin>
    node scripts/set-admin-token.mjs --config wrangler.local.jsonc --token-file ~/.forge-cloud/<worker-name>.token
    ```
 
-   **Redeploy.** Skip both commands. Record the current version (`bun x wrangler deployments list --config wrangler.local.jsonc`) and keep a private dump first. Then run the preflight. It refuses placeholders, a missing var or secret name, and an `OAUTH_KV` id that is not an existing namespace, before anything is uploaded:
+   **Previous rehearsal redeploy.** Skip both commands. Record the current version (`bun x wrangler deployments list --config wrangler.local.jsonc`) and keep a private dump first. Then run the preflight. It refuses placeholders, a missing var or secret name, and an `OAUTH_KV` id that is not an existing namespace, before anything is uploaded:
 
    ```sh
    node scripts/preflight.mjs --config wrangler.local.jsonc
@@ -477,7 +479,7 @@ The owner runs these steps. Replace angle-bracket placeholders; `<worker-origin>
 
    Expect a deployed Worker URL. Durable Object class migrations `v1`, `v2-code-redemption` and `v3-registration-limits` apply automatically on deploy; there is no manual migration command. `set-admin-token.mjs` saves its secret to the token file you named, without printing it. For authenticated curls below, prepare private curl config files containing the appropriate `Authorization` header; never put token values on the command line or print their files. Keep response files private too.
 
-5. **Smoke checks.** Start with metadata:
+5. **Smoke checks for the existing ungated rehearsal artifact.** Start with metadata:
 
    ```sh
    curl -sS -i '<worker-origin>/.well-known/oauth-authorization-server'
@@ -591,6 +593,8 @@ GET discovery advertises `/oauth/revoke`, `authorization_code` and guarded `refr
 Access lifetime is explicitly 3600 seconds, refresh lifetime 2592000 seconds, with no idle renewal. The first refresh pins the absolute grant deadline; fewer than 60 seconds remaining refuses, and near-boundary access is shortened. Upstream proof expiry remains an earlier limit and refresh never renews it. Cleanup after deadline plus 30 seconds removes spent hashes but retains closed/revoked authority. Device credentials, CLI behavior and the admin-only device revoke route retain their contracts. CI-local workerd covers overlap, restart, late writes and claim/access-check-removal counterfactuals; deployed refresh remains unverified.
 
 ## Check a live Worker
+
+The successful responses in this check apply only to the existing ungated rehearsal artifact.
 
 ```sh
 CLOUD_BASE=https://<worker>.workers.dev CLOUD_LIVE=1 \
