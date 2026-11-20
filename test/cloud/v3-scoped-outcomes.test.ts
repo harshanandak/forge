@@ -202,6 +202,40 @@ test(
 );
 
 test(
+  "a recorded renew or release refusal on a fresh v3 project replays after restart with zero writes",
+  () =>
+    scenario([
+      {
+        route: "renew",
+        requestId: "ren-1",
+        expect: "LEASE_NOT_HELD",
+        writes: 1,
+      },
+      {
+        route: "renew",
+        requestId: "ren-1",
+        expect: "LEASE_NOT_HELD",
+        writes: 0,
+        restart: true,
+      },
+      {
+        route: "release",
+        requestId: "rel-1",
+        expect: "LEASE_NOT_HELD",
+        writes: 1,
+      },
+      {
+        route: "release",
+        requestId: "rel-1",
+        expect: "LEASE_NOT_HELD",
+        writes: 0,
+        restart: true,
+      },
+    ]),
+  timeout,
+);
+
+test(
   "changed input under a v3 request ID is refused exactly as v2 refuses it, with zero writes",
   () =>
     scenario([
