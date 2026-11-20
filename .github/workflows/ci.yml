@@ -224,6 +224,15 @@ jobs:
       CI_NODE: "24"
       CI_SHARD: comment-guard
     steps:
+      - &windows-storsvc-off
+        name: Disable the Storage Service
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Set-Service StorSvc -StartupType Disabled
+          Stop-Service StorSvc -Force
+          $service = Get-Service StorSvc
+          if ($service.Status -ne 'Stopped' -or $service.StartType -ne 'Disabled') { throw "StorSvc is $($service.Status) and $($service.StartType)" }
       - *start-record
       - name: Keep Windows test temp files on the workspace disk
         shell: pwsh
@@ -287,6 +296,7 @@ jobs:
           - { os: windows-latest, node: "26", suite: tests, shard: "3/3" }
           - { os: windows-latest, node: "26", suite: pack }
     steps: &verify-steps
+      - *windows-storsvc-off
       - *start-record
       - name: Keep Windows test temp files on the workspace disk
         if: runner.os == 'Windows'
