@@ -120,6 +120,12 @@ export function refusalDetails(
       error.retry !== "never"
     )
       return undefined;
+  } else if (
+    code === "RECEIPT_INVALID" ||
+    code === "RECEIPT_HEAD_MISMATCH" ||
+    code === "PR_NOT_MERGED"
+  ) {
+    if (call.op !== "issue.close") return undefined;
   } else if (code.startsWith("LEASE_")) {
     if (suffix === undefined) return undefined;
     const lease = conflictOf(
