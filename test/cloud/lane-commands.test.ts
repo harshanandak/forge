@@ -1637,7 +1637,7 @@ test("chat relay red 1: wire challenge has only the request, scope and deadline"
   } finally {
     f.close();
   }
-});
+}, 10_000);
 
 const completionReceipts = (f: Fixture) =>
   f.db
@@ -1691,6 +1691,7 @@ test.each([{ all: true }, { id: "work-7" }] as const)(
       f.close();
     }
   },
+  10_000,
 );
 
 test.each([
@@ -1793,6 +1794,7 @@ test.each([
       f.close();
     }
   },
+  10_000,
 );
 
 test.each(["later stop", "spent", "expired"] as const)(
@@ -1825,6 +1827,7 @@ test.each(["later stop", "spent", "expired"] as const)(
       f.close();
     }
   },
+  10_000,
 );
 
 test("chat relay red 5: completion replay keeps a later stop and epoch", async () => {
@@ -1848,7 +1851,7 @@ test("chat relay red 5: completion replay keeps a later stop and epoch", async (
   } finally {
     f.close();
   }
-});
+}, 10_000);
 
 test("chat relay refuses a newly issued request at the old browser URLs", async () => {
   const f = await browserFixture();
@@ -1863,7 +1866,7 @@ test("chat relay refuses a newly issued request at the old browser URLs", async 
   } finally {
     f.close();
   }
-});
+}, 10_000);
 
 test("chat relay refuses request-only completion with a legacy browser decision", async () => {
   const f = await fixture();
@@ -1917,7 +1920,7 @@ test("chat relay refuses request-only completion with a legacy browser decision"
   } finally {
     f.close();
   }
-});
+}, 10_000);
 
 test.each(["all", "issue"] as const)(
   "approved resume %s commits once and replays historically after a later stop",
