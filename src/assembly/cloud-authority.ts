@@ -45,7 +45,7 @@ const notServed = (declared: string) =>
   );
 
 /** Recheck authority for every writable owner, including an already cached owner. */
-export function refuseUnsyncedProjectWrite(
+export function refuseUnsupportedProjectWrite(
   root: string,
   home: string | undefined,
 ): void {
@@ -53,10 +53,10 @@ export function refuseUnsyncedProjectWrite(
     throw new ForgeFailure({
       code: "UNAVAILABLE",
       message:
-        "This project is cloud-bound. Local project-state writes are unavailable because this block does not sync project state to the cloud.",
+        "This project is connected to Forge cloud. Local project-state writes are unavailable because this block has no cloud version.",
       retry: "never",
       repair:
-        "Use cloud-served forge issue commands for issue work. For device-only notes, use memory.add with level=device; block authors must declare context=device and use device state. Other project-state writes must wait for cloud sync (forge-1345). Do not run forge store reinit or remove the cloud binding to bypass this refusal.",
+        "Use cloud-served forge issue commands for issue work. For device-only notes, use memory.add with level=device; block authors must declare context=device and use device state. Other project-state writes must wait until their blocks have cloud versions (forge-1345). Do not run forge store reinit or remove the cloud binding to bypass this refusal.",
     });
 }
 

@@ -5684,9 +5684,9 @@ test("every public pinning path keeps the cloud id and refusal mapping; ordinary
   });
 }, 30_000);
 const FENCE_MESSAGE =
-  "This project is cloud-bound. Local project-state writes are unavailable because this block does not sync project state to the cloud.";
+  "This project is connected to Forge cloud. Local project-state writes are unavailable because this block has no cloud version.";
 const FENCE_REPAIR =
-  "Use cloud-served forge issue commands for issue work. For device-only notes, use memory.add with level=device; block authors must declare context=device and use device state. Other project-state writes must wait for cloud sync (forge-1345). Do not run forge store reinit or remove the cloud binding to bypass this refusal.";
+  "Use cloud-served forge issue commands for issue work. For device-only notes, use memory.add with level=device; block authors must declare context=device and use device state. Other project-state writes must wait until their blocks have cloud versions (forge-1345). Do not run forge store reinit or remove the cloud binding to bypass this refusal.";
 const acceptance = [
   "Bound native check writer",
   "Bound decision writers",
