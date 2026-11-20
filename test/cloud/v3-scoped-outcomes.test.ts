@@ -19,7 +19,7 @@ const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const T0 = Date.parse("2026-11-20T12:00:00.000Z");
 const E1 = T0 + 2 * HOUR;
-const PRUNED = E1 + 1;
+const EXPIRED = E1 + 1;
 const E2 = T0 + 24 * HOUR;
 const holder = {
   actor: { kind: "agent", id: "fixture" },
@@ -40,7 +40,7 @@ interface Step {
   readonly ttlMs?: number;
   readonly generation?: number;
   readonly restart?: true;
-  readonly prune?: true;
+  readonly expired?: true;
 }
 
 const headers = (owner: string, expires: number) => ({
@@ -67,8 +67,7 @@ async function run(store: "v2" | "v3", steps: readonly Step[]) {
     const results = [];
     for (const step of steps) {
       setSystemTime(step.at ?? T0);
-      if (step.prune) await f.alarm();
-      if (step.restart || step.prune) f.restart(store === "v3");
+      if (step.restart || step.expired) f.restart(store === "v3");
       const alarms = f.alarms.length;
       const kv = JSON.stringify([...f.values]);
       writes = 0;
@@ -235,7 +234,7 @@ test(
 );
 
 test(
-  "after receipt pruning a released acquisition ID gets the lease refusal with no append and no new generation",
+  "after its receipt expires, a released acquisition ID gets the lease refusal with no append and no new generation",
   () =>
     scenario([
       { route: "claim", requestId: "acq-1", expect: 1, writes: 1 },
@@ -251,16 +250,16 @@ test(
         requestId: "acq-1",
         expect: "LEASE_NOT_HELD",
         writes: 0,
-        at: PRUNED,
+        at: EXPIRED,
         expires: E2,
-        prune: true,
+        expired: true,
       },
       {
         route: "claim",
         requestId: "acq-2",
         expect: 2,
         writes: 1,
-        at: PRUNED,
+        at: EXPIRED,
         expires: E2,
       },
     ]),
@@ -268,7 +267,7 @@ test(
 );
 
 test(
-  "after receipt pruning the held generation is checked before the input fingerprint",
+  "after its receipt expires, the held generation is checked before the input fingerprint",
   () =>
     scenario([
       { route: "claim", requestId: "acq-1", expect: 1, writes: 1 },
@@ -284,17 +283,17 @@ test(
         requestId: "acq-1",
         expect: "LEASE_NOT_HELD",
         writes: 0,
-        at: PRUNED,
+        at: EXPIRED,
         expires: E2,
         ttlMs: 30 * MINUTE,
-        prune: true,
+        expired: true,
       },
     ]),
   timeout,
 );
 
 test(
-  "after receipt pruning an expired acquisition ID cannot revive its lease",
+  "after its receipt expires, an expired acquisition ID cannot revive its lease",
   () =>
     scenario([
       { route: "claim", requestId: "acq-1", expect: 1, writes: 1 },
@@ -303,16 +302,16 @@ test(
         requestId: "acq-1",
         expect: "LEASE_EXPIRED",
         writes: 0,
-        at: PRUNED,
+        at: EXPIRED,
         expires: E2,
-        prune: true,
+        expired: true,
       },
     ]),
   timeout,
 );
 
 test(
-  "after receipt pruning a replaced acquisition ID gets the stale lease refusal",
+  "after its receipt expires, a replaced acquisition ID gets the stale lease refusal",
   () =>
     scenario([
       { route: "claim", requestId: "acq-1", expect: 1, writes: 1 },
@@ -330,16 +329,16 @@ test(
         requestId: "acq-1",
         expect: "LEASE_STALE",
         writes: 0,
-        at: PRUNED,
+        at: EXPIRED,
         expires: E2,
-        prune: true,
+        expired: true,
       },
     ]),
   timeout,
 );
 
 test(
-  "after receipt pruning a still-held acquisition ID keeps its fingerprint and recorded grant with zero writes",
+  "after its receipt expires, a still-held acquisition ID keeps its fingerprint and recorded grant with zero writes",
   () =>
     scenario([
       { route: "claim", requestId: "acq-1", expect: 1, writes: 1 },
@@ -357,17 +356,17 @@ test(
         requestId: "acq-1",
         expect: "INPUT_CONFLICT",
         writes: 0,
-        at: PRUNED,
+        at: EXPIRED,
         expires: E2,
         ttlMs: 2 * HOUR,
-        prune: true,
+        expired: true,
       },
       {
         route: "claim",
         requestId: "acq-1",
         expect: 1,
         writes: 0,
-        at: PRUNED,
+        at: EXPIRED,
         expires: E2,
       },
     ]),
