@@ -62,10 +62,10 @@ into a digest before executing code.
 
 For device-only records, declare `context: device` on the operation and obtain
 `forge.state@1` from core. That capability writes the device store. In Forge
-0.0.1, a cloud-bound project refuses unsupported local project-state writes,
+0.0.1, a project connected to Forge cloud refuses unsupported local project-state writes,
 including `forge.project-state@1` project selection from a device operation.
-Project and leased operations require cloud sync; do not relabel shared records
-as device-local to bypass the refusal. Generic sync follows in forge-1345.
+Project and leased operations need a cloud version of the block. Keep shared
+records in project state. Broader cloud support is tracked in forge-1345.
 
 The explicit `forge.state@2` contract returns Promises for `get`, `put`,
 `putMany`, `range`, `history`, `count` and `max`. `range` and `max` correspond

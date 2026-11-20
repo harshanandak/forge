@@ -49,7 +49,7 @@ export function readState(
   if (typeof epoch !== "string" || epoch.length === 0 || epoch.length > 128)
     fail(
       "UNAVAILABLE",
-      "Provision state sync by issuing an admin device token for this project",
+      "Enable cloud project state by issuing an admin device token for this project",
     );
   const namespace = input.namespace,
     query = input.query;
