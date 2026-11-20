@@ -119,6 +119,12 @@ import {
 } from "./tokens.ts";
 
 import { stateMigrations } from "../../src/core/state/migrations.ts";
+import {
+  appendV3Frames,
+  hasV3Root,
+  provisionV3,
+  readV3Root,
+} from "./v3-store.ts";
 
 const NAMESPACE = "forge/work";
 const REQUESTS = "domain_cloud_requests";
@@ -315,10 +321,12 @@ export class Project {
   #opened: { db: SqlDatabase; owner: StateOwner } | undefined;
   #initialized = false;
   #provisioned = false;
+  #v3Root: boolean | undefined;
   #maintenanceAt: number | undefined;
   readonly #limits: Limits;
   readonly #env: LoginEnv;
   readonly #browser: DeviceBrowserOptions;
+  readonly #testV3: boolean;
 
   // The existing parser resolves DUMP_PAGE_BYTES, DUMP_MAX_ROWS and DUMP_MAX_BYTES once.
   constructor(
@@ -330,9 +338,11 @@ export class Project {
     this.#limits = limitsFrom(env);
     this.#env = (env ?? {}) as LoginEnv;
     this.#browser = browser;
+    this.#testV3 = ctx.testV3 === true;
   }
 
   async alarm(): Promise<void> {
+    if (this.#hasV3Root()) return;
     this.#maintenanceAt = undefined;
     if (!(await this.#isProvisioned())) return;
     const { db } = this.#openWrite();
@@ -352,6 +362,7 @@ export class Project {
       );
     }
     if (time < this.#maintenanceAt) {
+      this.#requireV2();
       this.#maintenanceAt = time;
       try {
         await this.#storage.setAlarm(time);
@@ -360,6 +371,15 @@ export class Project {
         throw error;
       }
     }
+  }
+
+  #hasV3Root(): boolean {
+    return (this.#v3Root ??= hasV3Root(writableStore(this.#storage)));
+  }
+
+  #requireV2(): void {
+    if (this.#hasV3Root())
+      throw fail("INPUT_CONFLICT", "Cloud v3 projects cannot use v2 routes");
   }
 
   // Forgets a half-finished paged restore: its staged rows and its place in the page order.
@@ -379,6 +399,7 @@ export class Project {
   }
 
   #openWrite(stagedRestore = false): { db: SqlDatabase; owner: StateOwner } {
+    this.#requireV2();
     const opened = this.#open();
     if (!this.#initialized) {
       opened.db.transaction(() => {
@@ -442,6 +463,31 @@ export class Project {
     try {
       const url = new URL(request.url);
       const route = url.pathname.split("/")[3] ?? "";
+      const probe =
+        this.#testV3 && /^\/p\/[^/]+\/test-v3(\/commits)?$/.exec(url.pathname);
+      if (probe && !url.search) {
+        const db = writableStore(this.#storage);
+        if (!probe[1] && request.method === "GET")
+          return Response.json({ ok: true, value: readV3Root(db) });
+        if (request.method === "POST") {
+          const input = object(await bounded(request));
+          if (probe[1])
+            return Response.json({
+              ok: true,
+              value: appendV3Frames(db, input.frames),
+            });
+          if (Object.keys(input).length)
+            throw fail("INPUT_INVALID", "Expected an empty provision body");
+          const legacy =
+            (await this.#storage.get(PROVISIONED)) !== undefined ||
+            (await this.#storage.get(STAGED)) !== undefined;
+          const value = provisionV3(db, legacy);
+          this.#v3Root = true;
+          return Response.json({ ok: true, value });
+        }
+      }
+      if (route === "upgrade" || route === "devices" || route === "restore")
+        this.#requireV2();
       if (isStatePath(request)) return await this.#state(request);
       if (route === "upgrade") {
         await validateUpgrade(request);

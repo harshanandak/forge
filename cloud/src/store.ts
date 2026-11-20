@@ -6,6 +6,7 @@ import type { SqlDatabase, SqlRow, SqlValue } from "../../src/ports/store.ts";
 type Binding = string | number | null | ArrayBuffer;
 export interface DurableState {
   readonly storage: DurableStorage;
+  readonly testV3?: boolean;
 }
 export interface DurableStorage {
   readonly sql: {
