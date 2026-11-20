@@ -1,4 +1,10 @@
 import { expect, mock, spyOn, test } from "bun:test";
+import {
+  closedOutcome,
+  entries,
+  inspectIngress,
+  stockIngress,
+} from "../stock-ingress.fixture.ts";
 import { sha256 } from "../../../cloud/src/tokens.ts";
 import { Database } from "bun:sqlite";
 import { Project } from "../../../cloud/src/project.ts";
@@ -42,7 +48,12 @@ function sanitized(body: string, ...proofs: string[]) {
   ])
     expect(body).not.toContain(value);
 }
-async function fixture(claims = {}, alg = "RS256", admission = "refuse") {
+async function fixture(
+  claims = {},
+  alg = "RS256",
+  admission = "refuse",
+  ingress?: ReturnType<typeof stockIngress>,
+) {
   const harness = createOAuthHarness();
   harness.advance(Date.now() - harness.options.clock.now());
   const now = Math.floor(harness.options.clock.now() / 1000);
@@ -129,16 +140,15 @@ async function fixture(claims = {}, alg = "RS256", admission = "refuse") {
   });
   const send = async (path: string, form?: Record<string, string>) => {
     const charged = admissions.mock.calls.length;
-    const response = await worker.fetch(
-      new Request(new URL(path, issuer).href, {
-        headers: {
-          cookie: [...cookies.values()].join("; "),
-          "CF-Connecting-IP": "203.0.113.1",
-        },
-        ...(form ? { method: "POST", body: new URLSearchParams(form) } : {}),
-      }),
-      env,
-    );
+    const request = new Request(new URL(path, issuer).href, {
+      headers: {
+        cookie: [...cookies.values()].join("; "),
+        "CF-Connecting-IP": "203.0.113.1",
+      },
+      ...(form ? { method: "POST", body: new URLSearchParams(form) } : {}),
+    });
+    await ingress?.observe(request, env);
+    const response = await worker.fetch(request, env);
     if (form || new URL(path, issuer).pathname === "/callback")
       expect(admissions).toHaveBeenCalledTimes(charged);
     for (const cookie of response.headers.getSetCookie())
@@ -148,21 +158,20 @@ async function fixture(claims = {}, alg = "RS256", admission = "refuse") {
   async function start(allow = true) {
     const charged = admissions.mock.calls.length;
     admissions.mockResolvedValue(new Response());
-    const registered = await worker.fetch(
-      new Request(`${issuer}/register`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "CF-Connecting-IP": "203.0.113.1",
-        },
-        body: JSON.stringify({
-          redirect_uris: [redirect],
-          token_endpoint_auth_method: "none",
-          client_name: '<script>"',
-        }),
+    const request = new Request(`${issuer}/register`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "CF-Connecting-IP": "203.0.113.1",
+      },
+      body: JSON.stringify({
+        redirect_uris: [redirect],
+        token_endpoint_auth_method: "none",
+        client_name: '<script>"',
       }),
-      env,
-    );
+    });
+    await ingress?.observe(request, env);
+    const registered = await worker.fetch(request, env);
     expect(registered.status).toBe(201);
     const client = await field(registered, "client_id");
     const auth = await send(
@@ -302,14 +311,31 @@ async function ownerFixture(claims = {}) {
         ...extra,
       },
     });
-  const post = (route: string, body: unknown, credential = token) =>
-    f.configured.fetch(
-      new Request(request(route, credential), {
+  const post = async (
+    route: string,
+    body: unknown,
+    credential = token,
+    ingress?: ReturnType<typeof stockIngress>,
+  ) => {
+    const input = new Request(
+      request(
+        route,
+        credential,
+        ingress
+          ? {
+              "X-Forge-Owner": "user_attacker",
+              "X-Forge-Owner-Expires": "1",
+            }
+          : {},
+      ),
+      {
         method: "POST",
         body: typeof body === "string" ? body : JSON.stringify(body),
-      }),
-      env,
+      },
     );
+    await ingress?.observe(input, env);
+    return f.configured.fetch(input, env);
+  };
   return {
     ...f,
     env,
@@ -348,20 +374,27 @@ test("configured owner reaches the real project object without injected policy o
         device: `oauth-owner:${await sha256(JSON.stringify([vars.CLERK_ISSUER, "user_owner"]))}`,
       },
     };
+    const ingress = stockIngress();
     for (const route of ["claim", "renew", "release"]) {
-      const written = await f.post(route, {
-        subject: "issue",
-        holder,
-        requestId: route,
-        ttlMs: 60_000,
-        generation: 1,
-      });
+      const written = await f.post(
+        route,
+        {
+          subject: "issue",
+          holder,
+          requestId: route,
+          ttlMs: 60_000,
+          generation: 1,
+        },
+        f.token,
+        ingress,
+      );
       expect(written.status).toBe(200);
       expect(await written.json()).toMatchObject({
         ok: true,
         value: { holder },
       });
     }
+    ingress.expect(["POST /p/a/claim", "POST /p/a/renew", "POST /p/a/release"]);
   } finally {
     f.close();
   }
@@ -600,8 +633,11 @@ async function refused(
   sanitized(body, proof);
 }
 
-async function configuredLogin(admission: string) {
-  const f = await fixture({}, "RS256", admission),
+async function configuredLogin(
+  admission: string,
+  ingress?: ReturnType<typeof stockIngress>,
+) {
+  const f = await fixture({}, "RS256", admission, ingress),
     a = await f.start(),
     callback = await a.finish();
   expect(callback.status).toBe(302);
@@ -633,7 +669,104 @@ async function configuredLogin(admission: string) {
     else expect(await response.text()).toBe("");
   }
   await f.start(false);
+  if (ingress) {
+    for (const metadata of [
+      "oauth-authorization-server",
+      "oauth-protected-resource",
+    ])
+      expect((await f.send("/.well-known/" + metadata)).status).toBe(200);
+  }
 }
+
+test("stock Workers suspend the configured OAuth protocol from registration to revocation", async () => {
+  const ingress = stockIngress();
+  await configuredLogin("refuse", ingress);
+  ingress.expect([
+    "POST /register",
+    "GET /authorize",
+    "POST /authorize",
+    "GET /callback",
+    "POST /oauth/token",
+    "POST /oauth/revoke",
+    "GET /.well-known/oauth-authorization-server",
+    "GET /.well-known/oauth-protected-resource",
+  ]);
+}, 30_000);
+
+test.each(Object.entries(entries))(
+  "%s stock Worker cancels the unread body and ignores configuration",
+  async (_surface, worker) => {
+    const f = await fixture();
+    const env = {
+      ...f.env,
+      FORGE_CLOUD_PROJECT: "a",
+      FORGE_CLOUD_ID_PREFIX: "forge",
+      FORGE_OWNER_SUBJECT: "user_owner",
+      DEVICE_LOGIN_HMAC_KEY: Buffer.alloc(32, 7).toString("base64url"),
+    };
+    expect(
+      await status(
+        f.configured.fetch(
+          new Request(issuer + "/p/a/devices", {
+            method: "POST",
+            headers: { authorization: "Bearer fixture-admin" },
+            body: JSON.stringify({ device: "seed", ttlMs: 60_000 }),
+          }),
+          env,
+        ),
+      ),
+    ).toBe(200);
+    const observed = [];
+    for (const settings of [
+      undefined,
+      env,
+      { ...env },
+      { ...env, FORGE_CLOUD_REHEARSAL: "false" },
+      { ...env, FORGE_CLOUD_REHEARSAL: "true" },
+    ]) {
+      const stream = { reads: 0, cancels: 0 };
+      const request = new Request(issuer + "/p/a/devices", {
+        method: "POST",
+        headers: { authorization: "Bearer fixture-admin" },
+        duplex: "half",
+        body: new ReadableStream(
+          {
+            pull(controller) {
+              stream.reads++;
+              controller.enqueue(
+                new TextEncoder().encode(
+                  JSON.stringify({ device: "seed", ttlMs: 60_000 }),
+                ),
+              );
+              controller.close();
+            },
+            cancel() {
+              stream.cancels++;
+            },
+          },
+          { highWaterMark: 0 },
+        ),
+      });
+      const outcome = await inspectIngress(
+        request,
+        settings,
+        worker,
+        [],
+        settings === env,
+      );
+      observed.push({ outcome, stream: { ...stream } });
+      if (!request.bodyUsed) await request.body?.cancel();
+    }
+    expect(observed).toEqual(
+      Array.from({ length: 5 }, () => ({
+        outcome: closedOutcome,
+        stream: { reads: 0, cancels: 1 },
+      })),
+    );
+  },
+  30_000,
+);
+
 for (const mode of ["refuse", "throw"])
   test(
     `configured login with ${mode} admission`,

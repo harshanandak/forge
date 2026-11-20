@@ -14,6 +14,7 @@ import {
   setupCalls,
 } from "./old-schema.ts";
 import { createWorker } from "../../cloud/src/worker.ts";
+import { stockIngress } from "./stock-ingress.fixture.ts";
 import { durableStore } from "../../cloud/src/store.ts";
 import { StateOwner } from "../../src/core/state/index.ts";
 import type { ResultEnvelope } from "../../src/generated/types.ts";
@@ -61,6 +62,7 @@ async function fixture(
   projectName = "p",
   session: string | null = "s1",
   browser: DeviceBrowserOptions = {},
+  ingress?: ReturnType<typeof stockIngress>,
 ) {
   const clock = spyOn(Date, "now").mockReturnValue(now);
   const db = new Database(":memory:");
@@ -162,19 +164,18 @@ async function fixture(
       headers: Record<string, string> = {},
       production = false,
     ) => {
+      const request = new Request(`https://w.example${path}`, {
+        method: body === undefined ? "GET" : "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          ...headers,
+        },
+        ...(body === undefined ? {} : { body }),
+      });
+      await ingress?.observe(request, bindings);
       const response = await (
         production ? createConfiguredWorker() : createWorker()
-      ).fetch(
-        new Request(`https://w.example${path}`, {
-          method: body === undefined ? "GET" : "POST",
-          headers: {
-            "content-type": "application/x-www-form-urlencoded",
-            ...headers,
-          },
-          ...(body === undefined ? {} : { body }),
-        }),
-        bindings,
-      );
+      ).fetch(request, bindings);
       return {
         status: response.status,
         headers: response.headers,
@@ -1168,37 +1169,43 @@ async function browserFixture(
   scope: "all" | "issue" | "chat" = "all",
   issuer = "https://identity.example",
   verify?: NonNullable<DeviceBrowserOptions["upstream"]>["verify"],
+  ingress?: ReturnType<typeof stockIngress>,
 ) {
   const begun: { state: string; verifier: string }[] = [];
   const spent = new Set<string>();
   let duringBegin = () => {};
   let duringClaim = () => {};
-  const f = await fixture("p", "s1", {
-    upstream: {
-      begin: (state, verifier) => {
-        begun.push({ state, verifier });
-        return Promise.resolve().then(() => {
-          duringBegin();
-          return `${new URL("/oauth/authorize", issuer).href}?state=${state}&redirect_uri=https%3A%2F%2Fw.example%2Fcallback`;
-        });
+  const f = await fixture(
+    "p",
+    "s1",
+    {
+      upstream: {
+        begin: (state, verifier) => {
+          begun.push({ state, verifier });
+          return Promise.resolve().then(() => {
+            duringBegin();
+            return `${new URL("/oauth/authorize", issuer).href}?state=${state}&redirect_uri=https%3A%2F%2Fw.example%2Fcallback`;
+          });
+        },
+        verify:
+          verify ??
+          (() => {
+            throw new Error("This slice must not verify an owner");
+          }),
       },
-      verify:
-        verify ??
-        (() => {
-          throw new Error("This slice must not verify an owner");
-        }),
-    },
-    redemption: {
-      claimOnce: (hash) => {
-        const won = !spent.has(hash);
-        spent.add(hash);
-        return Promise.resolve().then(() => {
-          duringClaim();
-          return won;
-        });
+      redemption: {
+        claimOnce: (hash) => {
+          const won = !spent.has(hash);
+          spent.add(hash);
+          return Promise.resolve().then(() => {
+            duringClaim();
+            return won;
+          });
+        },
       },
     },
-  });
+    ingress,
+  );
   f.env.CLERK_ISSUER = issuer;
   f.put("lane-control:global", running);
   const input = scope === "issue" ? { id: "work-7" } : { all: true };
@@ -1242,6 +1249,40 @@ async function browserFixture(
     },
   };
 }
+
+test.each(["approve", "deny"] as const)(
+  "stock Workers suspend lane browser preview, %s and callback",
+  async (action) => {
+    const ingress = stockIngress();
+    const f = await browserFixture(
+      "all",
+      undefined,
+      () => ownerProof(),
+      ingress,
+    );
+    try {
+      expect(f.shown.status).toBe(200);
+      const decision = await f.submit(action);
+      expect(decision.status).toBe(302);
+      const state = f.begun[0]!.state;
+      const callback = await f.browser(
+        `/callback?state=${state}&code=owner`,
+        undefined,
+        { Cookie: pageCookie(decision) },
+        true,
+      );
+      expect(callback.status).toBe(200);
+      ingress.expect([
+        `GET ${f.path}`,
+        `POST ${f.path}/${action}`,
+        "GET /callback",
+      ]);
+    } finally {
+      f.close();
+    }
+  },
+  10_000,
+);
 
 test.each(["all", "issue"] as const)(
   "lane browser preview is read-only for %s",
