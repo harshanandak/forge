@@ -879,6 +879,38 @@ for (const [label, store, owner, change, code] of boundaries) {
 }
 
 test(
+  "an ownerless lease body over 8 KB gets AUTH_REQUIRED on v3 as on v2, before the body is read",
+  async () => {
+    const refuse = async (store: "v2" | "v3") => {
+      const f = guardFixture();
+      try {
+        if (store === "v3") expect((await f.send(probe, {})).status).toBe(200);
+        else f.restart(false);
+        const effects = f.observeEffects();
+        const response = await f.send(
+          store === "v3" ? `${probe}/claim` : "claim",
+          {
+            ...leaseBody({ route: "claim", requestId: "acq-1" }),
+            pad: "x".repeat(9000),
+          },
+        );
+        return { ...response, ...effects() };
+      } finally {
+        f.db.close();
+      }
+    };
+    const v2 = await refuse("v2");
+    expect(v2).toMatchObject({
+      status: 401,
+      body: { ok: false, error: { code: "AUTH_REQUIRED" } },
+      ...noWrites,
+    });
+    expect(await refuse("v3")).toEqual(v2);
+  },
+  timeout,
+);
+
+test(
   "the public Worker cannot forward the v3 lease route",
   async () => {
     const f = fixture();
