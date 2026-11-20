@@ -50,7 +50,7 @@ Do not execute step 1 until every row passes. Record evidence and paths in `run.
 | P7 One build               | Every machine reports identical version and commit with `dirty:false` using the pinned build's version output/build manifest. Include final dependency PRs.                                                                                                                     |
 | P8 Worker ready            | Reviewed preflight passes for the target origin, owner, login HMAC and admin-token presence. Record existence/results, never secret values.                                                                                                                                     |
 | P9 Identity/prefix         | Checked Worker `FORGE_CLOUD_ID_PREFIX` equals the configured work prefix; binding UUID equals project UUID. Record non-secret values privately.                                                                                                                                 |
-| P10 Owner present          | Owner can approve login/cloud resume in the browser and reply verbatim to R0's separate local unfreeze/resume requests. Logout practice uses a hand-built sandbox binding, without the owner's browser.                                                                         |
+| P10 Owner present          | Owner can approve login in the browser and reply in chat to cloud resume and R0's separate local unfreeze/resume requests. Logout practice uses a hand-built sandbox binding, without the owner's browser.                                                                      |
 | P11 Reverse path           | Save S7 snapshot/hash, prior Worker version and private prior vars/config copy. Inventory every checkout and machine, installed build and token id from login results.                                                                                                          |
 | P12 Freeze                 | Require PR 652 merged and atomic refusal practised on the pinned build. PR 627's freeze alone is insufficient. Include every clone/store that can accept local writes.                                                                                                          |
 | P13 Offline/restore/logout | Export, converter and restore tools below available; PR 626 merged. Practise snapshot restore with private ACLs, preserved freeze and readback. PR 653 is open with the delta fix, pending its merge gate; require its implementation and provenance checks.                    |
@@ -152,11 +152,11 @@ Each host reads the proof issue and writes a uniquely labelled comment; A reads 
 Inventory every checkout, UUID, origin, project and token id. No copied credentials. Plan re-login before the 30-day expiry.
 
 **Step 11. Lift the cloud dispatch stop.**
-Run `forge lane resume --input '{"all":true}'`. Expect `APPROVAL_REQUIRED`, with `result.request`, `result.url`, scope and expiry; the cloud dispatch stop stays set.
-Present that request's URL/scope to the owner and wait for their decision in the browser. Record the decision in the ledger; never retry on silence or denial.
-After browser approval, retry exactly `forge lane resume --input '{"all":true,"approval":{"request":"<request-id>"}}'` using the returned request id.
+Run `forge lane resume --input '{"all":true}'`. Expect `APPROVAL_REQUIRED` with the request, scope and UTC expiry. The cloud dispatch stop stays set.
+Show `result.ask` in chat and wait for a clear affirmative reply within 10 minutes. Silence, refusal or ambiguity leaves the stop set.
+Retry `forge lane resume --input '{"all":true,"approval":{"request":"<result.request>","quote":"<exact owner reply>","source":{"harness":"<harness>","thread":"<thread>"}}}'`.
 Require success, then read `forge lane control` and require no all-lanes stop. This changes no local freeze.
-A pending/expired approval remains `APPROVAL_REQUIRED`; obtain a fresh request and owner decision after expiry. Cloud refuses `quote`/`source` with `INPUT_INVALID`; per-lane resume cannot clear the all-lanes stop.
+If the request expires or the stop changes, obtain a fresh request and a fresh owner reply. To reconcile a lost completion response, retry the same completion id and input, then read current lane control.
 
 **Step 12. Verify and retain.**
 Run every Verification row. Retain the frozen store and both immutable backup forms for 30 days by default.

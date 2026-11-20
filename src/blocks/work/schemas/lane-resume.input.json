@@ -53,7 +53,7 @@
       "required": ["request"],
       "oneOf": [{ "maxProperties": 1 }, { "required": ["quote", "source"] }],
       "additionalProperties": false,
-      "description": "Cloud-bound project: only the approved request id; quote and source are refused. Local project: the request id with the owner's reply as quote and its source, relayed verbatim."
+      "description": "The issued request id, the owner's verbatim chat reply as quote, and its source."
     }
   },
   "oneOf": [

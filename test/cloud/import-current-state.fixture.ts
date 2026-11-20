@@ -373,6 +373,7 @@ export async function project(
     };
     return {
       r,
+      httpStatus: response.status,
       projected: respond(
         r.ok
           ? success("restore", r.value ?? r.result)
@@ -599,10 +600,5 @@ export async function activation(
     env,
     exchanges: () => exchanges,
     oldCallback: () => browser(oldState, oldCookie),
-    approve: async (request: string) => {
-      const state = "forge-lane." + "f".repeat(43),
-        cookie = await challenge(request, state, "c".repeat(43));
-      assert.equal((await browser(state, cookie)).status, 200);
-    },
   };
 }
