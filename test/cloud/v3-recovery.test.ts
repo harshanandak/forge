@@ -1,5 +1,12 @@
 import type { Database } from "bun:sqlite";
-import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
+import {
+  afterEach,
+  beforeEach,
+  expect,
+  setSystemTime,
+  spyOn,
+  test,
+} from "bun:test";
 import { GENESIS_LEASE_ONLY } from "../../cloud/src/v3-store.ts";
 import { canonicalJson, digestBytes } from "../../src/core/config/pointer.ts";
 import { fixture, probe } from "./v3-project.fixture.ts";
@@ -190,7 +197,14 @@ function seal(
       ),
     ),
     ...snapshots,
-    page("transcript", 0, "[]", coveredHead),
+    page(
+      "transcript",
+      0,
+      "[]",
+      coveredHead,
+      coveredHead ? 1 : null,
+      coveredHead || null,
+    ),
   ];
   db.run("DELETE FROM cloud_v3_pages");
   const insert = db.prepare("INSERT INTO cloud_v3_pages VALUES (?, ?)");
@@ -397,6 +411,197 @@ for (const [label, shape] of overLimits) {
   );
 }
 
+test(
+  "an append that would take the tail past 16 MiB is refused before any write, and one that fits is admitted",
+  async () => {
+    const f = fixture();
+    try {
+      expect((await f.send(probe, {})).status).toBe(200);
+      const full = TAIL_BYTES / TAIL_ROWS;
+      tail(f.db, 0, TAIL_ROWS - 1, (i) =>
+        i === TAIL_ROWS - 2 ? TAIL_BYTES - 4096 - (TAIL_ROWS - 2) * full : full,
+      );
+      f.restart();
+      const frame = (pad: number) => ({
+        ...put,
+        events: [{ pad: "x".repeat(pad) }],
+      });
+      const before = f.snapshot();
+      expect(await commit(f, frame(6000))).toMatchObject(unavailable);
+      expect(f.snapshot()).toEqual(before);
+      expect(await commit(f, frame(3000))).toMatchObject({
+        status: 200,
+        body: { value: { head: TAIL_ROWS } },
+      });
+      f.restart();
+      expect(image(await f.send(probe))).toMatchObject({
+        head: TAIL_ROWS,
+        eventWatermark: TAIL_ROWS,
+      });
+    } finally {
+      f.db.close();
+    }
+  },
+  timeout,
+);
+
+for (const at of ["tail", "directory"] as const) {
+  test(
+    `a key deleted in the ${at} stays deleted after a cold read`,
+    async () => {
+      const f = fixture();
+      try {
+        expect((await f.send(probe, {})).status).toBe(200);
+        expect(
+          await commit(f, {
+            ...put,
+            events: [{ key: "a" }, { key: "b" }],
+            changes: [
+              { key: "a", value: { n: 1 } },
+              { key: "b", value: { n: 2 } },
+            ],
+          }),
+        ).toMatchObject({ status: 200 });
+        if (at === "tail") checkpoint(f);
+        expect(
+          await commit(f, {
+            operation: "fixture.delete",
+            time: T0 + 1,
+            events: [{ key: "a" }],
+            changes: [{ key: "a", deleted: true }],
+          }),
+        ).toMatchObject({ status: 200 });
+        if (at === "directory") checkpoint(f);
+        const warm = await f.send(probe);
+        f.restart();
+        const cold = await f.send(probe);
+        expect(cold).toEqual(warm);
+        expect(image(cold)).toEqual({
+          head: 2,
+          eventWatermark: 3,
+          lease: {},
+          outcome: {},
+          witness: {},
+          record: { a: null, b: digestOf({ n: 2 }) },
+        });
+      } finally {
+        f.db.close();
+      }
+    },
+    timeout,
+  );
+}
+
+test(
+  "each write publishes its frames to the cached image, which serves reads without recovery and equals a cold recovery",
+  async () => {
+    const f = fixture();
+    try {
+      expect((await f.send(probe, {})).status).toBe(200);
+      const writes = [
+        () => commit(f, { ...put, changes: [{ key: "a", value: 1 }] }),
+        () => claim(f, "owner-a"),
+        () => claim(f, "owner-b"),
+        () => claim(f, "owner-a"),
+        () => commit(f, put),
+      ];
+      const statuses = [];
+      for (const write of writes) {
+        statuses.push((await write()).status);
+        const settled = await f.send(probe);
+        f.reads.rows = 0;
+        const warm = await f.send(probe);
+        expect(f.reads.rows).toBe(0);
+        expect(warm).toEqual(settled);
+        f.restart();
+        expect(await f.send(probe)).toEqual(warm);
+      }
+      expect(statuses).toEqual([200, 200, 409, 200, 200]);
+    } finally {
+      f.db.close();
+    }
+  },
+  timeout,
+);
+
+test(
+  "a write that fails after staging publishes nothing, and the next read recovers from storage",
+  async () => {
+    let failing = false;
+    let inserts = 0;
+    const f = fixture((sql) => {
+      if (failing && sql.startsWith("INSERT INTO cloud_v3_commits"))
+        if (++inserts === 2) throw new Error("injected insert failure");
+    });
+    const logged = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect((await f.send(probe, {})).status).toBe(200);
+      expect(await commit(f, put)).toMatchObject({ status: 200 });
+      const before = await f.send(probe);
+      const stored = f.snapshot();
+      failing = true;
+      expect(await commit(f, put, put)).toMatchObject({
+        status: 500,
+        body: { ok: false, error: { code: "INTERNAL" } },
+      });
+      expect(inserts).toBe(2);
+      failing = false;
+      expect(f.snapshot()).toEqual(stored);
+      f.reads.rows = 0;
+      expect(await f.send(probe)).toEqual(before);
+      expect(f.reads.rows).toBeGreaterThan(0);
+      f.reads.rows = 0;
+      expect(await f.send(probe)).toEqual(before);
+      expect(f.reads.rows).toBe(0);
+      expect(await commit(f, put)).toMatchObject({
+        status: 200,
+        body: { value: { head: 2 } },
+      });
+      const warm = await f.send(probe);
+      f.restart();
+      expect(await f.send(probe)).toEqual(warm);
+    } finally {
+      logged.mockRestore();
+      f.db.close();
+    }
+  },
+  timeout,
+);
+
+test(
+  "a malformed synthetic frame is refused as input before the root is read, with or without a root",
+  async () => {
+    const f = fixture();
+    try {
+      const malformed = [
+        { ...put, extra: 1 },
+        { ...put, operation: "" },
+        { ...put, events: {} },
+        { ...put, changes: {} },
+        { ...put, changes: [{ key: "", value: 1 }] },
+        { ...put, changes: [{ key: "a" }] },
+        { ...put, changes: [{ key: "a", deleted: false }] },
+        { ...put, changes: [{ key: "a", value: 1, deleted: true }] },
+      ];
+      for (const provisioned of [false, true]) {
+        if (provisioned) expect((await f.send(probe, {})).status).toBe(200);
+        const before = f.snapshot();
+        for (const frame of malformed)
+          expect(await commit(f, put, frame)).toMatchObject({
+            status: 400,
+            body: { ok: false, error: { code: "INPUT_INVALID" } },
+          });
+        expect(f.snapshot()).toEqual(before);
+      }
+      f.restart();
+      expect(image(await f.send(probe))).toMatchObject({ head: 0 });
+    } finally {
+      f.db.close();
+    }
+  },
+  timeout,
+);
+
 async function snapshotWithClaim(f: Fixture) {
   expect((await f.send(probe, {})).status).toBe(200);
   expect(
@@ -582,6 +787,18 @@ const rootFields: readonly [string, (root: Json) => Json, string?][] = [
     set({ format: "forge-cloud-root/4" }),
   ],
   ["an unknown root key", set({ extra: 1 })],
+  [
+    "a snapshot page with a first key",
+    roster(([d, s, t]) => [d!, { ...s, first: ["lease", "work-1"] }, t!]),
+  ],
+  [
+    "a transcript page whose last sequence is not its count",
+    roster(([d, s, t]) => [d!, s!, { ...t, last: 1 }]),
+  ],
+  [
+    "a transcript page with no first sequence",
+    roster(([d, s, t]) => [d!, s!, { ...t, first: null }]),
+  ],
   ["a parent digest that is not a digest", set({ parentDigest: "sha256:abc" })],
   ["a transcript digest that is not a digest", set({ transcriptDigest: 7 })],
   ["a public digest that is not a digest", set({ publicDigest: "sha256:abc" })],
@@ -732,6 +949,20 @@ const tails: readonly [string, string][] = [
     "a tail frame with a duplicate outcome key",
     `UPDATE cloud_v3_commits SET body=replace(body,'"outcome":','"outcome":{},"outcome":') WHERE sequence=2`,
   ],
+  ...(
+    [
+      ["changes that are not a list", "{}"],
+      ["a change with an empty key", '[{"key":"","value":1}]'],
+      ["a change with neither value nor deletion", '[{"key":"a"}]'],
+      [
+        "a change with both value and deletion",
+        '[{"deleted":true,"key":"a","value":1}]',
+      ],
+    ] as const
+  ).map(([label, changes]): [string, string] => [
+    `a tail frame with ${label}`,
+    `UPDATE cloud_v3_commits SET body=replace(body,'{"events"','{"changes":${changes},"events"') WHERE sequence=2`,
+  ]),
   [
     "a tail frame with a witness but no lease or outcome",
     "UPDATE cloud_v3_commits SET body=json_remove(body,'$.lease','$.outcome') WHERE sequence=2",

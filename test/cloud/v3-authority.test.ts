@@ -98,6 +98,7 @@ test(
           "UPDATE cloud_v3_commits SET body=json_set(body,'$.lease.generation',0) WHERE sequence=1",
         ).changes,
       ).toBe(1);
+      f.restart();
       const rows = () =>
         f.db
           .query<{ sequence: number; body: string }, []>(
@@ -363,6 +364,74 @@ test(
         "a witness whose digest is not its fingerprint's",
         at("witness.digest", digestBytes("x"))(claim),
         "witness",
+      ],
+      [
+        "an ok outcome on an operation leaseV3 never writes",
+        at("operation", "fixture.put")(claim),
+        "outcome operation",
+      ],
+      [
+        "a refusal on an operation leaseV3 never writes",
+        at("operation", "fixture.put")(refusal),
+        "outcome operation",
+      ],
+      [
+        "a refusal with a lease code leaseV3 never records",
+        at(
+          "outcome.status",
+          "LEASE_FOO",
+        )(
+          at("outcome.result", {
+            ...((refusal.outcome as Json).result as Json),
+            code: "LEASE_FOO",
+          })(refusal),
+        ),
+        "outcome status",
+      ],
+      [
+        "a renew recorded as a claim",
+        at("operation", "lease.claim")(renew),
+        "outcome fingerprint",
+      ],
+      [
+        "a refusal recorded on another route",
+        at("operation", "lease.renew")(refusal),
+        "outcome fingerprint",
+      ],
+      [
+        "a lease for another subject than its fingerprint",
+        at("lease.subject", "work-2")(renew),
+        "outcome fingerprint",
+      ],
+      [
+        "a lease for another holder than its fingerprint",
+        at("lease.holder", { ...holder, actor: { kind: "agent", id: "x" } })(
+          renew,
+        ),
+        "outcome fingerprint",
+      ],
+      [
+        "a lease at another generation than its fingerprint",
+        at("lease.generation", 2)(release),
+        "outcome fingerprint",
+      ],
+      [
+        "an outcome scope for another principal than its fingerprint",
+        at("outcome.scope.principal", digestBytes("x"))(renew),
+        "outcome fingerprint",
+      ],
+      [
+        "a fingerprint that is not JSON",
+        at("outcome.fingerprint", "x")(renew),
+        "outcome fingerprint",
+      ],
+      [
+        "a fingerprint that is not canonical",
+        at(
+          "outcome.fingerprint",
+          ` ${String((renew.outcome as Json).fingerprint)}`,
+        )(renew),
+        "outcome fingerprint",
       ],
     ];
     expect(
