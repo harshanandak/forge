@@ -2,7 +2,7 @@
   "operations": {
     "cloud.login": {
       "title": "Log in to Forge cloud",
-      "summary": "Log this device in to one Forge cloud project. Prints a code and an address on stderr; the owner approves it in a browser. Saves the credential privately and binds the project. Never prints the token.",
+      "summary": "Standard Worker entry points refuse cloud requests until v3 launches. Existing rehearsal and custom deployments fall outside Forge 0.0.1 support. Log in to a compatible deployment with the owner's approval, save the credential privately and bind the project. Never prints the token.",
       "examples": [
         {
           "command": "forge auth login --origin https://forge.example.com --project my-project"

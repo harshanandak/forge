@@ -8,6 +8,7 @@ import { Project } from "../../cloud/src/project.ts";
 import { TABLE_PROBE, type DurableStorage } from "../../cloud/src/store.ts";
 import { TOKEN_LOOKUP } from "../../cloud/src/tokens.ts";
 import { createWorker } from "../../cloud/src/worker.ts";
+import { stockIngress } from "./stock-ingress.fixture.ts";
 import { createSqliteStore } from "../../src/adapters/store-sqlite/index.ts";
 import { StateOwner } from "../../src/core/state/index.ts";
 import type {
@@ -137,6 +138,8 @@ function fixture(env?: unknown) {
     input: unknown,
     headers: Record<string, string>,
     via: Via = "direct",
+    ingress?: ReturnType<typeof stockIngress>,
+    label?: string,
   ) {
     const request = new Request(`https://fixture.example/p/a/${route}`, {
       method: input === undefined ? "GET" : "POST",
@@ -149,6 +152,7 @@ function fixture(env?: unknown) {
             duplex: "half",
           }),
     });
+    await ingress?.observe(request, bindings, label);
     calls.length = 0;
     const response =
       via === "direct"
@@ -247,6 +251,71 @@ function fixture(env?: unknown) {
     },
   };
 }
+
+test.each(["devices", "whole restore", "page zero"] as const)(
+  "stock Workers suspend fresh %s before project storage",
+  async (mode) => {
+    using source = fixture();
+    const seeded = await source.issue();
+    await source.claim("issue", seeded);
+    const dump = (await source.send("dump")).body.value as Dump;
+    const body =
+      mode === "devices"
+        ? { device: "seed", ttlMs: day }
+        : mode === "whole restore"
+          ? dump
+          : {
+              format: PAGE_FORMAT,
+              page: 0,
+              last: false,
+              next: "next",
+              tables: dump.tables,
+            };
+    using target = fixture();
+    const ingress = stockIngress();
+    const reply = await target.raw(
+      mode === "devices" ? "devices" : "restore",
+      body,
+      { authorization: "Bearer fixture-admin" },
+      "configured",
+      ingress,
+      mode,
+    );
+    expect(reply.status).toBe(200);
+    ingress.expect([mode]);
+  },
+  10_000,
+);
+
+test("stock Workers suspend provisioned project administration and reads", async () => {
+  using f = fixture();
+  const device = await f.issue();
+  const ingress = stockIngress();
+  const admin = { authorization: "Bearer fixture-admin" };
+  for (const [route, input, headers] of [
+    ["devices", { device: "second", ttlMs: day }, admin],
+    ["upgrade", {}, admin],
+    ["status", undefined, admin],
+    ["dump", undefined, admin],
+    [
+      "holder?subject=issue",
+      undefined,
+      { authorization: `Bearer ${device.token}` },
+    ],
+    ["revoke", { id: device.id }, admin],
+  ] as const)
+    expect((await f.raw(route, input, headers, "worker", ingress)).status).toBe(
+      200,
+    );
+  ingress.expect([
+    "POST /p/a/devices",
+    "POST /p/a/upgrade",
+    "GET /p/a/status",
+    "GET /p/a/dump",
+    "GET /p/a/holder",
+    "POST /p/a/revoke",
+  ]);
+}, 10_000);
 
 test("public and admin reads never initialize a reopened Project", async () => {
   for (const old of [false, true]) {

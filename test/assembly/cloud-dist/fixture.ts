@@ -3,6 +3,7 @@
 // server's throwaway certificate through Node's own NODE_EXTRA_CA_CERTS; no production module has a switch.
 import { expect } from "bun:test";
 import { createServer, type Server } from "node:https";
+import { createHash } from "node:crypto";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createInterface } from "node:readline";
@@ -210,6 +211,7 @@ export interface CloudRig {
   ): Promise<{ envelope: ResultEnvelope; stdout: string; stderr: string }>;
   /** The project holds only what the test put there, and no token is anywhere outside the credential store. */
   expectUntouched(out: { stdout: string; stderr: string }): void;
+  profile(): (string | null)[];
   close(): Promise<void>;
 }
 
@@ -217,7 +219,7 @@ export interface CloudRig {
 export async function cloudRig(
   bin: string,
   reply: Replier = serve,
-  setup: "bound" | "attached" | "guarded" = "bound",
+  setup: "bound" | "attached" | "guarded" | "unbound" = "bound",
   identity?: { device: string; session: string },
 ): Promise<CloudRig> {
   const s = fx.sandbox();
@@ -292,10 +294,10 @@ export async function cloudRig(
             ? {}
             : { cloud: { source: { builtin: "forge/cloud" } } }),
         },
-        mcp: { expose: ["lane"] },
+        mcp: { expose: ["lane", "issue"] },
       }),
     );
-    if (identity === undefined) {
+    if (identity === undefined && setup !== "unbound") {
       writeFileSync(
         s.binding,
         `${JSON.stringify(fx.bindingFor({ origin }))}\n`,
@@ -327,7 +329,7 @@ export async function cloudRig(
         await state.close();
       }
     }
-    if (setup !== "bound") {
+    if (setup === "attached" || setup === "guarded") {
       const guard = join(s.dir, "owner-sentinel.mjs");
       const module = pathToFileURL(
         resolve(dirname(bin), "../src/assembly/state.js"),
@@ -419,6 +421,12 @@ export async function cloudRig(
         );
         expect(leaked).toEqual([]);
       },
+      profile: () =>
+        [s.binding, s.credentials].map((path) =>
+          existsSync(path)
+            ? createHash("sha256").update(readFileSync(path)).digest("hex")
+            : null,
+        ),
       async close() {
         try {
           await stop();

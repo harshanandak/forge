@@ -7,6 +7,7 @@ import type {
 } from "../../../cloud/src/adapters/workers-oauth/clerk/upstream.ts";
 import { Project } from "../../../cloud/src/project.ts";
 import { browserStorage } from "../browser-storage.fixture.ts";
+import { stockIngress } from "../stock-ingress.fixture.ts";
 import { createWorker } from "../../../cloud/src/worker.ts";
 import type { IdentityClaims } from "../../../src/ports/identity.ts";
 import { testIdentityVerifier } from "../../contract/lib/identity-verifier.ts";
@@ -77,6 +78,7 @@ const hex = async (value: string) =>
 function fixture(
   env: Record<string, string> = vars,
   extra: Record<string, unknown> = {},
+  ingress?: ReturnType<typeof stockIngress>,
 ) {
   let t = start;
   spyOn(Date, "now").mockImplementation(() => t);
@@ -167,14 +169,13 @@ function fixture(
       : init.json === undefined
         ? undefined
         : JSON.stringify(init.json);
-    const response = await worker.fetch(
-      new Request(`${ORIGIN}${path}`, {
-        method,
-        headers,
-        ...(payload === undefined ? {} : { body: payload }),
-      }),
-      bindings as never,
-    );
+    const request = new Request(`${ORIGIN}${path}`, {
+      method,
+      headers,
+      ...(payload === undefined ? {} : { body: payload }),
+    });
+    await ingress?.observe(request, bindings);
+    const response = await worker.fetch(request, bindings as never);
     return {
       status: response.status,
       text: await response.text(),
@@ -327,6 +328,7 @@ function fixture(
         return [];
       }
     },
+    close: () => db.close(),
     useWorker: (next: Fetcher) => {
       worker = next;
     },
@@ -345,6 +347,39 @@ function fixture(
     },
   };
 }
+
+test("stock Workers suspend a provisioned device login and both browser decisions", async () => {
+  const ingress = stockIngress();
+  const f = fixture(vars, {}, ingress);
+  try {
+    expect((await f.provision()).status).toBe(200);
+    for (const action of ["approve", "deny"] as const) {
+      const flow = await f.through(action, "owner");
+      expect(flow.decision.status).toBe(302);
+      const done = await flow.done();
+      expect([done.status, outcome(done)]).toEqual([
+        200,
+        action === "approve" ? "approved" : "denied",
+      ]);
+      const polled = await f.poll(flow.login.device_code);
+      expect(polled.status).toBe(action === "approve" ? 200 : 400);
+      expect(body(polled)).toMatchObject(
+        action === "approve" ? { ok: true } : { error: "access_denied" },
+      );
+    }
+    ingress.expect([
+      "POST /p/p/loginstart",
+      "POST /p/p/loginpoll",
+      "GET /device",
+      "POST /device",
+      "POST /device/approve",
+      "POST /device/deny",
+      "GET /callback",
+    ]);
+  } finally {
+    f.close();
+  }
+}, 30_000);
 
 test("GET /device serves a page and a csrf cookie", async () => {
   const f = fixture();
