@@ -231,7 +231,9 @@ const root=process.env.LANE_FIXTURE,args=process.argv.slice(2),file=join(root,'a
 const prompt=readFileSync(0,'utf8');const count=existsSync(file)?readFileSync(file,'utf8').trim().split('\n').length:0;
 const pending=file+'.'+process.pid+'.tmp';writeFileSync(pending,(existsSync(file)?readFileSync(file,'utf8'):'')+JSON.stringify({args,cwd:process.cwd(),prompt})+'\n');renameSync(pending,file);
 const mode=readFileSync(join(root,'mode'),'utf8');
-writeFileSync(join(root,'harness-pid'),String(process.pid));
+const pidFile=join(root,'harness-pid'),pidPending=pidFile+'.'+process.pid+'.tmp';
+writeFileSync(pidPending,String(process.pid));
+renameSync(pidPending,pidFile);
 if(mode==='capacity'||mode==='limit')console.log('session id: fake-session');else console.log(JSON.stringify({type:'thread.started',thread_id:'fake-session'}));
 if(mode==='limit'||(mode==='capacity'&&count===0)){console.log('Selected model is at capacity');process.exit(1)}
 if(mode==='auto-slow')while(!existsSync(join(root,'finish')))await new Promise(done=>setTimeout(done,10));
@@ -918,18 +920,53 @@ async function signalRun(emitted: boolean) {
   f.start();
   writeFileSync(join(f.root, "mode"), "hold");
   const helper = join(f.root, "emit-term.ts");
+  const signal = join(f.root, "signal");
+  const harnessPid = join(f.root, "harness-pid");
+  const lock = join(f.main, ".git", "forge-lane-one.lock");
+  const unlockObservation = join(f.root, "harness-at-unlock");
   writeFileSync(
     helper,
-    `import {existsSync} from 'node:fs';const timer=setInterval(()=>{if(existsSync(${JSON.stringify(join(f.root, "signal"))})){clearInterval(timer);process.emit('SIGTERM');}},20);const {main}=await import(${JSON.stringify(script)});process.exitCode=await main();`,
+    `import { mock } from "bun:test";
+import fs from "node:fs";
+import { basename, dirname } from "node:path";
+const native = { ...fs };
+mock.module("node:fs", () => ({
+  ...native,
+  unlinkSync(path) {
+    try {
+      if (typeof path === "string" &&
+          dirname(path) === ${JSON.stringify(lock)} &&
+          basename(path).startsWith("owner-" + process.pid + "-")) {
+        const pid = Number(native.readFileSync(${JSON.stringify(harnessPid)}, "utf8"));
+        let state = "alive";
+        try {
+          process.kill(pid, 0);
+        } catch (error) {
+          state = error.code === "ESRCH" ? "exited" : String(error);
+        }
+        native.writeFileSync(${JSON.stringify(unlockObservation)}, state);
+      }
+    } finally {
+      native.unlinkSync(path);
+    }
+  },
+}));
+const timer = setInterval(() => {
+  if (native.existsSync(${JSON.stringify(signal)})) {
+    clearInterval(timer);
+    process.emit("SIGTERM");
+  }
+}, 20);
+const { main } = await import(${JSON.stringify(script)});
+process.exitCode = await main();`,
   );
   const first = f.launch(emitted ? helper : script, true);
   let pid = 0;
   try {
-    await waitForProcess("harness startup", () =>
-      existsSync(join(f.root, "harness-pid")),
-    );
-    pid = Number(readFileSync(join(f.root, "harness-pid"), "utf8"));
-    if (emitted) writeFileSync(join(f.root, "signal"), "terminate");
+    await waitForProcess("harness startup", () => existsSync(harnessPid));
+    pid = Number(readFileSync(harnessPid, "utf8"));
+    expect(Number.isSafeInteger(pid) && pid > 0, "harness PID").toBe(true);
+    if (emitted) writeFileSync(signal, "terminate");
     else expect(first.child.kill("SIGTERM")).toBe(true);
     expect((await first).code).not.toBe(0);
     const runs = join(f.main, ".git", "forge-lane-runs", "one");
@@ -939,7 +976,8 @@ async function signalRun(emitted: boolean) {
     expect(record.verdict).toBe("failed");
     expect(record.end).toMatch(/^\d{4}-/);
     await waitForProcess("harness exit", () => !alive(pid));
-    expect(existsSync(join(f.main, ".git", "forge-lane-one.lock"))).toBe(false);
+    if (emitted) expect(readFileSync(unlockObservation, "utf8")).toBe("exited");
+    expect(existsSync(lock)).toBe(false);
   } finally {
     writeFileSync(join(f.root, "finish"), "finish");
     await first;
