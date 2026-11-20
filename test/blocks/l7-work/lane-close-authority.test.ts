@@ -221,7 +221,7 @@ async function fixture(seedLink = true) {
           else if (flags.mergeBase === "none") exitCode = 1;
         } else if (args[0] === "merge-base") exitCode = flags.ancestor ? 0 : 1;
         else if (args[0] === "-C") {
-          stdout = "true";
+          stdout = "true\n\n";
           if (!flags.present) exitCode = 1;
         } else if (args[0] === "worktree") {
           if (flags.failCleanup) exitCode = 1;

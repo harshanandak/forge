@@ -155,7 +155,7 @@ test("lane close retries an injected landing-comment write failure exactly once"
         else if (args[0] === "merge-base") stdout = args[1]!;
         else if (args[0] === "symbolic-ref") stdout = lane.branch;
         else if (args[0] === "-C") {
-          stdout = "true";
+          stdout = "true\n\n";
           if (!flags.present) exitCode = 1;
         } else if (args[0] === "worktree") flags.present = false;
         else if (args[0] === "update-ref") {
