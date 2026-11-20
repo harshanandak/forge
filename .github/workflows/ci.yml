@@ -224,6 +224,63 @@ jobs:
       CI_NODE: "24"
       CI_SHARD: comment-guard
     steps:
+      - &windows-diag-start
+        name: Start Windows diagnostics
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        env:
+          DIAG_JOB: ${{ github.job }} node=${{ matrix.node }} suite=${{ matrix.suite }} shard=${{ matrix.shard }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $dir = Join-Path $env:RUNNER_TEMP 'windows-diag'
+          New-Item -ItemType Directory -Force -Path $dir, "$dir/tasklist" | Out-Null
+          "$env:DIAG_JOB image=$env:ImageOS/$env:ImageVersion runner=$env:RUNNER_NAME start=$((Get-Date).ToUniversalTime().ToString('o'))" | Set-Content "$dir/job.txt"
+          $counters = @(
+            '\Processor(_Total)\% Processor Time'
+            '\Memory\Available MBytes'
+            '\Memory\Pages Input/sec'
+            '\PhysicalDisk(_Total)\% Disk Time'
+            '\PhysicalDisk(_Total)\Avg. Disk Queue Length'
+            '\PhysicalDisk(*)\Disk Read Bytes/sec'
+            '\PhysicalDisk(*)\Disk Write Bytes/sec'
+            '\LogicalDisk(*)\Avg. Disk sec/Read'
+            '\LogicalDisk(*)\Avg. Disk sec/Write'
+            '\LogicalDisk(*)\Disk Bytes/sec'
+            '\LogicalDisk(*)\Disk Read Bytes/sec'
+            '\LogicalDisk(*)\Disk Reads/sec'
+            '\Process(*)\IO Data Bytes/sec'
+            '\Process(*)\IO Read Bytes/sec'
+            '\Process(*)\IO Write Bytes/sec'
+            '\Process(*)\% Processor Time'
+            '\Process(*)\ID Process'
+            '\Process(*)\Creating Process ID'
+          )
+          $counters | Set-Content -Encoding ascii "$dir/counters.txt"
+          $typeperf = Start-Process "$env:SystemRoot\System32\typeperf.exe" -ArgumentList '-cf', "$dir\counters.txt", '-f', 'BIN', '-o', "$dir\counters.blg", '-si', '1', '-y' -WindowStyle Hidden -PassThru
+          $typeperf.Id | Set-Content "$dir/typeperf.pid"
+          $loop = Join-Path $dir 'tasklist-loop.ps1'
+          @'
+          param($dir)
+          while (-not (Test-Path "$dir/stop")) {
+            $at = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
+            tasklist /svc /fo csv > "$dir/tasklist/$at.csv"
+            for ($i = 0; $i -lt 30 -and -not (Test-Path "$dir/stop"); $i++) { Start-Sleep -Seconds 1 }
+          }
+          '@ | Set-Content $loop
+          Start-Process pwsh -ArgumentList '-NoProfile', '-NonInteractive', '-File', $loop, $dir -WindowStyle Hidden
+          & {
+            wevtutil sl Microsoft-Windows-TaskScheduler/Operational /e:true
+            wevtutil sl Security /ms:1073741824
+            auditpol /set /subcategory:'{0CCE922B-69AE-11D9-BED3-505054503030}' /success:enable
+            auditpol /set /subcategory:'{0CCE922C-69AE-11D9-BED3-505054503030}' /success:enable
+            $audit = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit'
+            if (-not (Test-Path $audit)) { New-Item -Path $audit | Out-Null }
+            New-ItemProperty -Path $audit -Name ProcessCreationIncludeCmdLine_Enabled -Value 1 -PropertyType DWord -Force | Out-Null
+            auditpol /get /category:'Detailed Tracking'
+            wevtutil gl Microsoft-Windows-TaskScheduler/Operational
+          } *>&1 | Tee-Object "$dir/setup.txt"
+          Get-Content "$dir/job.txt"
       - *start-record
       - name: Keep Windows test temp files on the workspace disk
         shell: pwsh
@@ -246,6 +303,52 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Admit comment guard on Windows
         run: bun tools/check-admit.ts no-comments-regression test/structure/fixtures/no-comments-break.patch --guard tools/checks --guard tools/lint --guard tools/git-executable.ts --guard tools/bun-builtin.ts --guard tools/bun-lint-version.json --guard test/structure/no-comments.integration.test.ts --guard package.json --guard bun.lock --guard bunfig.toml --guard .forge/config.yaml 2>&1 | tee -a "$RUNNER_TEMP/ci-tests.log"
+      - &windows-diag-stop
+        name: Stop Windows diagnostics
+        if: always() && runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $dir = Join-Path $env:RUNNER_TEMP 'windows-diag'
+          "end=$((Get-Date).ToUniversalTime().ToString('o'))" | Add-Content "$dir/job.txt"
+          New-Item -ItemType File -Force -Path "$dir/stop" | Out-Null
+          & {
+            if (Test-Path "$dir/wpr-started.txt") {
+              $timer = [Diagnostics.Stopwatch]::StartNew()
+              wpr -stop "$dir\wpr.etl" -skipPdbGen
+              "wpr stop exit $LASTEXITCODE in $($timer.ElapsedMilliseconds) ms"
+            }
+            wevtutil epl Microsoft-Windows-TaskScheduler/Operational "$dir\taskscheduler.evtx" /ow:true
+            wevtutil epl Security "$dir\security-process.evtx" '/q:*[System[(EventID=4688 or EventID=4689)]]' /ow:true
+            $logs = @('Application', 'System', 'Microsoft-Windows-Windows Defender/Operational')
+            $logs += Get-WinEvent -ListLog '*Provisioning*', '*VolumeSnapshot*', '*Backup*', '*VSS*' -ErrorAction SilentlyContinue | Where-Object RecordCount | ForEach-Object LogName
+            foreach ($log in $logs) { wevtutil epl $log "$dir\log-$($log -replace '[\\/ ]', '-').evtx" /ow:true }
+            Get-WinEvent -FilterHashtable @{ LogName = 'Application'; ProviderName = 'VSS' } -ErrorAction SilentlyContinue | Select-Object TimeCreated, Id, LevelDisplayName, Message | Export-Csv "$dir/vss-application-events.csv" -NoTypeInformation
+            vssadmin list shadows | Tee-Object "$dir/vssadmin-shadows.txt"
+            Get-ScheduledTask | ForEach-Object {
+              $info = $_ | Get-ScheduledTaskInfo -ErrorAction SilentlyContinue
+              [pscustomobject]@{ Task = $_.TaskPath + $_.TaskName; State = $_.State; LastRunTime = $info.LastRunTime; LastTaskResult = $info.LastTaskResult; NextRunTime = $info.NextRunTime }
+            } | Export-Csv "$dir/scheduled-tasks.csv" -NoTypeInformation
+            Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId, Name, CreationDate, CommandLine | Export-Csv "$dir/processes-end.csv" -NoTypeInformation
+            Get-Service | Select-Object Name, Status, StartType | Export-Csv "$dir/services-end.csv" -NoTypeInformation
+            tasklist /svc /fo csv > "$dir/tasklist/end.csv"
+            Stop-Process -Id (Get-Content "$dir/typeperf.pid") -Force
+            Start-Sleep -Seconds 2
+            Get-ChildItem $dir -Recurse -File | Measure-Object Length -Sum | ForEach-Object { "diagnostics: $($_.Count) files, $([math]::Round($_.Sum / 1MB)) MB" }
+          } *>&1 | Tee-Object "$dir/stop.txt"
+      - &windows-diag-upload
+        name: Upload Windows diagnostics
+        if: always() && runner.os == 'Windows'
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-diag-${{ github.job }}-${{ strategy.job-index }}
+          path: |
+            ${{ runner.temp }}/windows-diag
+            !${{ runner.temp }}/windows-diag/wpr-temp
+          retention-days: 7
+          if-no-files-found: warn
       - *write-record
       - *upload-record
 
@@ -287,6 +390,18 @@ jobs:
           - { os: windows-latest, node: "26", suite: tests, shard: "3/3" }
           - { os: windows-latest, node: "26", suite: pack }
     steps: &verify-steps
+      - *windows-diag-start
+      - name: Start WPR trace on one shard
+        if: runner.os == 'Windows' && matrix.node == '24' && matrix.shard == '2/3'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $dir = Join-Path $env:RUNNER_TEMP 'windows-diag'
+          New-Item -ItemType Directory -Force -Path "$dir/wpr-temp" | Out-Null
+          wpr -start GeneralProfile -start DiskIO -start FileIO -filemode -recordtempto "$dir\wpr-temp" *>&1 | Tee-Object "$dir/wpr-start.txt"
+          if ($LASTEXITCODE -eq 0) { "started $((Get-Date).ToUniversalTime().ToString('o'))" | Set-Content "$dir/wpr-started.txt" }
+          wpr -status *>&1 | Tee-Object -Append "$dir/wpr-start.txt"
       - *start-record
       - name: Keep Windows test temp files on the workspace disk
         if: runner.os == 'Windows'
@@ -360,10 +475,6 @@ jobs:
             Write-Host $line
             $line >> $env:GITHUB_STEP_SUMMARY
           }
-      - name: Start Windows runner trace
-        if: runner.os == 'Windows'
-        continue-on-error: true
-        run: bun tools/ci/windows-trace.ts start
       - if: matrix.suite != 'pack'
         run: bun run check
       - name: Unit tests
@@ -386,29 +497,10 @@ jobs:
           FORGE_PACK_EXPECTED_SHA256: ${{ needs.pack.outputs.sha256 }}
           FORGE_PACK_EXPECTED_VERSION: ${{ needs.pack.outputs.version }}
         run: bun run test:pack 2>&1 | tee -a "$RUNNER_TEMP/ci-tests.log"
+      - *windows-diag-stop
+      - *windows-diag-upload
       - *write-record
       - *upload-record
-      - name: Stop and summarize Windows runner trace
-        id: trace
-        if: always() && runner.os == 'Windows'
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          "shard=$('${{ matrix.shard || 'pack' }}'.Replace('/', '-'))" >> $env:GITHUB_OUTPUT
-          bun tools/ci/windows-trace.ts stop
-          if (Test-Path "$env:RUNNER_TEMP/windows-trace.jsonl.error") { Get-Content "$env:RUNNER_TEMP/windows-trace.jsonl.error" }
-      - name: Upload Windows runner trace
-        if: always() && runner.os == 'Windows'
-        continue-on-error: true
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: windows-trace-node-${{ matrix.node }}-${{ matrix.suite }}-${{ steps.trace.outputs.shard || strategy.job-index }}
-          path: |
-            ${{ runner.temp }}/windows-trace.jsonl
-            ${{ runner.temp }}/windows-trace.jsonl.error
-            ${{ runner.temp }}/windows-trace.jsonl.blg
-          retention-days: 7
-          if-no-files-found: warn
 
   verify-nightly:
     name: macOS Node 26 pack
