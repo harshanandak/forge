@@ -26,6 +26,12 @@ for (const runtime of [process.execPath, Bun.which("node")!]) {
           timeout: 20000,
         },
       );
+      const error = result.error as NodeJS.ErrnoException | undefined;
+      if (method === "exec:gap" && error?.code === "ETIMEDOUT")
+        throw new Error(
+          `restore/writer ${method} timed out\n${result.stdout}\n${result.stderr}`,
+          { cause: error },
+        );
       expect(`${result.stdout}\n${result.stderr}`).toContain(`PASS ${method}`);
       expect(result.status).toBe(0);
     }, 30000);

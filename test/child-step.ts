@@ -25,6 +25,9 @@ export async function powerShellStep(
   let stdout = "",
     stderr = "";
   const marker = "FORGE_COMMAND_START:";
+  const markers: { line: string; receivedAt: string }[] = [];
+  const markerLines =
+    /FORGE_(?:COMMAND_START|CASE_START|CASE_END|CHILD_PID|STEP):[^\r\n]+\r?\n/g;
   const child = launch(
     shell,
     powerShellArgs(
@@ -41,13 +44,18 @@ export async function powerShellStep(
     await new Promise<void>((resolve, reject) => {
       child.on("error", reject);
       child.stdout.on("data", (data: Buffer) => {
-        phases.firstOutput ??= new Date().toISOString();
+        const receivedAt = new Date().toISOString();
+        phases.firstOutput ??= receivedAt;
         stdout += data.toString();
-        phases.commandStart ??= new RegExp(`${marker}([^\\r\\n]+)`).exec(
-          stdout,
-        )?.[1];
-        for (const match of stdout.matchAll(/FORGE_CASE_START:(\d+)\r?\n/g))
-          phases.case = caseNames[Number(match[1])];
+        for (const match of stdout.matchAll(markerLines)) {
+          const line = match[0].trimEnd();
+          markers.push({ line, receivedAt });
+          markerLines.lastIndex = match.index + match[0].length;
+          if (line.startsWith(marker))
+            phases.commandStart ??= line.slice(marker.length);
+          const caseStart = /^FORGE_CASE_START:(\d+)$/.exec(line);
+          if (caseStart) phases.case = caseNames[Number(caseStart[1])];
+        }
       });
       child.stderr.on("data", (data: Buffer) => {
         phases.firstOutput ??= new Date().toISOString();
@@ -60,7 +68,7 @@ export async function powerShellStep(
           reject(
             Object.assign(
               new Error(
-                `PowerShell ${timedOut ? "timeout" : `exit ${status}`}; phase=${phases.commandStart ? "command" : phases.firstOutput ? "startup-output" : "startup"}; case=${phases.case ?? "pending"}; ${JSON.stringify(phases)}; ${stderr}`,
+                `PowerShell ${timedOut ? "timeout" : `exit ${status}`}; phase=${phases.commandStart ? "command" : phases.firstOutput ? "startup-output" : "startup"}; case=${phases.case ?? "pending"}; ${JSON.stringify({ ...phases, ...(timedOut ? { markers } : {}) })}; ${stderr}`,
               ),
               { stdout, stderr, timedOut },
             ),
@@ -77,7 +85,9 @@ export async function powerShellStep(
   }
 }
 
-type BatchCase = { name: string; command: string };
+type BatchCase = { name: string } & (
+  { command: string } | { steps: readonly { name: string; command: string }[] }
+);
 type CaseOutcome = {
   name: string;
   status: number;
@@ -89,10 +99,44 @@ type CaseOutcome = {
 
 function batchScript(cases: readonly BatchCase[]) {
   return cases
-    .map(
-      ({ command }, index) =>
-        `[Console]::Out.WriteLine('FORGE_CASE_START:${index}'); & {\n${command}\n}; $caseStatus = [int](-not $?); [Console]::Out.WriteLine('FORGE_CASE_END:${index}:' + $caseStatus)`,
-    )
+    .map((batchCase, index) => {
+      const start = `[Console]::Out.WriteLine('FORGE_CASE_START:${index}')`;
+      const end = `[Console]::Out.WriteLine('FORGE_CASE_END:${index}:' + $caseStatus)`;
+      if ("command" in batchCase)
+        return `${start}; & {\n${batchCase.command}\n}; $caseStatus = [int](-not $?); ${end}`;
+
+      const steps = batchCase.steps.map(({ name, command }, step) =>
+        [
+          `Write-ForgeStep '${name}:start'`,
+          command,
+          ...(step === batchCase.steps.length - 1
+            ? []
+            : [`Write-ForgeStep '${name}:end'`]),
+        ].join("\n"),
+      );
+      const last = batchCase.steps.at(-1)!;
+      return `${start}
+[Console]::Out.WriteLine('FORGE_CHILD_PID:' + $PID)
+[Console]::Out.Flush()
+$forgeClock = [System.Diagnostics.Stopwatch]::StartNew()
+$forgeStep = [System.Diagnostics.Stopwatch]::new()
+function Write-ForgeStep($phase) {
+  $line = 'FORGE_STEP:' + $phase + ':atMs=' + $forgeClock.ElapsedMilliseconds
+  if (!$phase.EndsWith(':start')) {
+    $line += ' durationMs=' + $forgeStep.Elapsed.TotalMilliseconds.ToString('F3', [System.Globalization.CultureInfo]::InvariantCulture)
+  }
+  [Console]::Out.WriteLine($line)
+  [Console]::Out.Flush()
+  if ($phase.EndsWith(':start')) { $forgeStep.Restart() }
+}
+& {
+${steps.join("\n")}
+}
+$caseStatus = [int](-not $?)
+Write-ForgeStep '${last.name}:end'
+${end}
+[Console]::Out.Flush()`;
+    })
     .join("\n");
 }
 
