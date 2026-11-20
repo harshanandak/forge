@@ -139,15 +139,18 @@ export function spend(
     project: { count: 0, resetAt: 0 },
     addresses: {},
   };
+  const projectExpired = now >= budget.project.resetAt;
+  const window = budget.addresses[address];
+  const mine =
+    window !== undefined && now >= window.resetAt ? undefined : window;
+  const allowed =
+    (projectExpired || budget.project.count < PROJECT_STARTS) &&
+    (mine?.count ?? 0) < ADDRESS_STARTS;
+  if (!charge) return allowed;
   for (const [key, window] of Object.entries(budget.addresses))
     if (now >= window.resetAt) delete budget.addresses[key];
-  if (now >= budget.project.resetAt)
-    budget.project = { count: 0, resetAt: now + WINDOW_MS };
-  const mine = budget.addresses[address];
-  const allowed =
-    budget.project.count < PROJECT_STARTS &&
-    (mine?.count ?? 0) < ADDRESS_STARTS;
-  if (allowed && charge) {
+  if (projectExpired) budget.project = { count: 0, resetAt: now + WINDOW_MS };
+  if (allowed) {
     budget.project.count++;
     budget.addresses[address] = {
       count: (mine?.count ?? 0) + 1,
