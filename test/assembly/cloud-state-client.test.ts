@@ -649,8 +649,7 @@ const APPROVAL_REQUEST = "00000000-0000-4000-8000-000000000008";
 const APPROVAL_RESULT = {
   request: APPROVAL_REQUEST,
   scope: { all: true },
-  expiresAt: "2026-11-11T12:00:00.000Z",
-  url: `${ORIGIN}/lane-approval/${APPROVAL_REQUEST}`,
+  expiresAt: "2026-11-11T00:10:00.000Z",
 };
 const RESUME_CALL = { ...cmd, op: "lane.resume", input: { all: true } };
 const approvalBody = (result: unknown) =>
@@ -667,7 +666,7 @@ const approvalBody = (result: unknown) =>
     warnings: [],
   });
 
-test("the cloud command client carries a checked approval failure with its request and link", async () => {
+test("the cloud command client carries a checked approval failure with its request and local ask", async () => {
   const { client, bodies } = wired(approvalBody(APPROVAL_RESULT), 409);
   const checked: unknown[] = [];
   const failed = await failureOf(() =>
@@ -677,9 +676,10 @@ test("the cloud command client carries a checked approval failure with its reque
     }),
   );
   expect(failed.error.code).toBe("APPROVAL_REQUIRED");
-  expect((failed as ForgeFailure & { result?: unknown }).result).toEqual(
-    APPROVAL_RESULT,
-  );
+  expect((failed as ForgeFailure & { result?: unknown }).result).toEqual({
+    ...APPROVAL_RESULT,
+    ask: `Resume all stopped lanes in Forge project ${PROJECT}? Forge can dispatch work and start spending calls and time again. Please reply here before 2026-11-11 00:10 UTC.`,
+  });
   expect(checked).toEqual([APPROVAL_RESULT]);
   expect(exit(failed)).toBe(1);
   expect(bodies).toHaveLength(1);
@@ -704,7 +704,10 @@ for (const [name, result, validate] of [
   ],
   [
     "insecure link",
-    { ...APPROVAL_RESULT, url: APPROVAL_RESULT.url.replace("https:", "http:") },
+    {
+      ...APPROVAL_RESULT,
+      url: `http://forge.example.test/lane-approval/${APPROVAL_REQUEST}`,
+    },
     () => true,
   ],
   [
@@ -714,7 +717,10 @@ for (const [name, result, validate] of [
   ],
   [
     "token echo",
-    { ...APPROVAL_RESULT, url: `${APPROVAL_RESULT.url}?value=${TOKEN}` },
+    {
+      ...APPROVAL_RESULT,
+      url: `${ORIGIN}/lane-approval/${APPROVAL_REQUEST}?value=${TOKEN}`,
+    },
     () => true,
   ],
 ] as const)

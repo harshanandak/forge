@@ -4,6 +4,12 @@ Claim the issue, prepare its checkout and brief, then attach. `lane.next {id,hea
 
 For `lane.record`, set `context.leaseGeneration` to that reserved generation and `result.head` to that head. Results and merge-gate verdicts require the original generation. Keep rejected old output as a diagnostic; never relabel it for the current grant.
 
+To resume a stopped cloud lane, call `lane.resume` for the exact scope, show
+`result.ask` in chat and wait for a clear affirmative reply within 10 minutes.
+Retry the same scope with a new command id and
+`approval: {request: result.request, quote, source: {harness, thread, message?, link?}}`.
+Copy the reply verbatim. Progress replies, refusal, ambiguity and silence leave the stop set.
+
 Counters survive reattachment and regrant on this device; pending actions, asks and verdicts do not cross generations. Existing autopilot limits apply, including elapsed time since the first reservation. Record completed review/CI rounds with `review:true`/`ci:true`.
 
 Record scope questions as `ask:{reason,releaseTotal,default}`, including the total release size and smallest default. Record the owner's verbatim `answer` on that action; next stays paused. Answers never grant cloud resume approval.

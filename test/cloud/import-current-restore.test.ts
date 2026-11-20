@@ -649,9 +649,17 @@ test.each(rows)(
           if (kind === "old") {
             const state = f.snapshot(target);
             const r = f.result(() =>
-              consumeLaneApproval(target, "old-owner-approval", { all: true }, {
-                now: f.at,
-              } as Parameters<typeof consumeLaneApproval>[3]),
+              consumeLaneApproval(
+                target,
+                owner,
+                {
+                  request: "old-owner-approval",
+                  quote: "yes",
+                  source: { harness: "fixture", thread: "owner" },
+                },
+                { all: true },
+                { now: f.at } as Parameters<typeof consumeLaneApproval>[4],
+              ),
             );
             eq(status(r), [expectedStatus, exit, code]);
             eq(f.snapshot(target), state);
@@ -859,7 +867,14 @@ async function reply<T extends { projected: ReturnType<typeof respond> }>(
   verdict(found.projected, code, exit);
   return found;
 }
-const approval = (request: string) => ({ all: true, approval: { request } });
+const relayApproval = (request: string) => ({
+  all: true,
+  approval: {
+    request,
+    quote: "Yes, resume all stopped lanes.",
+    source: { harness: "fixture", thread: "restore-owner" },
+  },
+});
 test.each(activationRows)(
   "activation: %s",
   async (_name, kind) => {
@@ -977,9 +992,14 @@ test.each(activationRows)(
             eq(p.values.get("provisioned"), true);
             if (kind === "approval" || kind === "resume") {
               const saved = f.snapshot(p.db);
-              await reply(
-                p.command("lane.resume", approval("old-approved")),
+              const refused = await reply(
+                p.command("lane.resume", relayApproval("old-approved")),
                 "APPROVAL_REQUIRED",
+              );
+              eq(refused.httpStatus, 409);
+              eq(
+                refused.r.error.message,
+                "Run lane resume without an approval to get a new request",
               );
               eq(f.snapshot(p.db), saved);
             }
@@ -1024,8 +1044,7 @@ test.each(activationRows)(
                   "APPROVAL_REQUIRED",
                 )
               ).r.result as { request: string };
-              await p.approve(ask.request);
-              await reply(p.command("lane.resume", approval(ask.request)));
+              await reply(p.command("lane.resume", relayApproval(ask.request)));
               const control = new LaneControlStore(f.owner(p.db), "a").read();
               assert.ok(control.ok);
               eq(control.result.stopped, false);

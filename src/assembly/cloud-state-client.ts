@@ -129,7 +129,7 @@ function cloudExchange(
       message:
         held ??
         (bad.code === "APPROVAL_REQUIRED"
-          ? "Owner approval is still required: the approval request is pending, denied or expired. Run lane resume without an approval to get a new request."
+          ? "Owner approval is still required. Run lane resume without an approval to get a new request."
           : `The Forge cloud refused the request (${bad.code}).`),
       retry: bad.code.startsWith("LEASE_") ? "reconcile_first" : "never",
       ...(bad.lease === undefined ? {} : { lease: bad.lease }),
@@ -198,20 +198,42 @@ export function createCloudLeaseClient(
       const valid = await Promise.resolve()
         .then(() => validate(result))
         .catch(() => false);
-      // A pending approval is never a successful resume, even with a valid schema and link.
-      const approval =
-        answer.kind === "approval_required" ||
-        (call.op === "lane.resume" && "request" in result);
-      const linked =
-        !approval ||
-        (typeof result.request === "string" &&
-          /^[a-f0-9-]{36}$/.test(result.request) &&
-          result.url === `${key.origin}/lane-approval/${result.request}`);
-      const pendingSuccess = answer.kind === "ok" && approval;
-      if (!valid || !linked || pendingSuccess || carriesToken(result, token))
+      if (!valid || carriesToken(result, token))
         throw failure("UNAVAILABLE", UNAVAILABLE);
-      if (answer.kind === "approval_required")
-        throw new CloudCommandFailure(result);
+      if (answer.kind === "approval_required") {
+        const input = call.input as {
+          all?: true;
+          id?: string;
+          approval?: unknown;
+        };
+        const scope = result.scope as { all?: true; id?: string } | undefined;
+        const expiresAt = Date.parse(String(result.expiresAt));
+        const expected =
+          typeof input?.id === "string"
+            ? input.id.replace(/^.*-/, "work-")
+            : undefined;
+        if (
+          call.op !== "lane.resume" ||
+          input?.approval !== undefined ||
+          Object.keys(result).sort().join() !== "expiresAt,request,scope" ||
+          !(expiresAt > options.now()) ||
+          typeof result.request !== "string" ||
+          (input?.all === true
+            ? scope?.all !== true
+            : expected === undefined || scope?.id !== expected)
+        )
+          throw failure("UNAVAILABLE", UNAVAILABLE);
+        const deadline = new Date(expiresAt)
+          .toISOString()
+          .replace("T", " ")
+          .replace(/:00\.000Z$|\.000Z$|Z$/, " UTC");
+        const target =
+          input?.all === true ? "all stopped lanes" : `lane ${expected}`;
+        const ask = `Resume ${target} in Forge project ${key.project}? Forge can dispatch work and start spending calls and time again. Please reply here before ${deadline}.`;
+        throw new CloudCommandFailure({ ...result, ask });
+      }
+      if (call.op === "lane.resume" && "request" in result)
+        throw failure("UNAVAILABLE", UNAVAILABLE);
       return result;
     },
     claim: (input) => write("claim", input),
