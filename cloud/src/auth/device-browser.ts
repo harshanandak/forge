@@ -144,6 +144,27 @@ const REFUSAL: Partial<Record<LoginError, number>> = {
   unavailable: 503,
 };
 
+function place(
+  rows: readonly Pending[],
+  cookieHash: string,
+  userHash: string,
+  now: number,
+  mode: "replace" | "add",
+): Pending[] | "own" | "busy" | "full" {
+  const live = rows.filter((row) => now < row.expiresAt);
+  const own = live.find(
+    (row) => same(row.cookieHash, cookieHash) && same(row.userHash, userHash),
+  );
+  if (own !== undefined && mode === "add") return "own";
+  const kept = live.filter((row) => row !== own);
+  if (
+    kept.filter((row) => same(row.userHash, userHash)).length >= PER_CHALLENGE
+  )
+    return "busy";
+  if (kept.length >= MAX_PENDING_STATES) return "full";
+  return kept;
+}
+
 /** Serves one device browser request against the project database. The caller has checked the project is provisioned. */
 export async function deviceRoute(
   db: SqlDatabase,
@@ -387,27 +408,27 @@ export async function deviceRoute(
       return { refused: "invalid_code" };
     }
     // One record per browser and challenge, a few per challenge, and a cap for the project.
-    const live = (state.browser ?? []).filter(
-      (row) =>
-        now < row.expiresAt &&
-        !(same(row.cookieHash, cookieHash) && same(row.userHash, hash)),
-    );
-    const mine = live.filter((row) => same(row.userHash, hash));
-    if (mine.length >= PER_CHALLENGE) live.splice(live.indexOf(mine[0]!), 1);
-    state.browser = live;
-    if (live.length >= MAX_PENDING_STATES) return { refused: "rate_limited" };
-    live.push({
+    const kept = place(state.browser ?? [], cookieHash, hash, now, "replace");
+    if (kept === "full") return { refused: "rate_limited" };
+    if (typeof kept === "string") return { refused: "code_busy" };
+    const row: Pending = {
       cookieHash,
       userHash: hash,
       code,
       expiresAt: now + STATE_TTL_MS,
       tickets: { approve: approveHash, deny: denyHash },
-    });
+    };
+    state.browser = [...kept, row];
     return {
       device: challenge.deviceInfo.label,
       session: challenge.deviceInfo.session,
     };
   });
+  if (shown.refused === "code_busy")
+    return page(
+      409,
+      '<h1>Device login</h1><p><code class="result">code_busy</code></p><p>This code is already open in three other browsers. Finish the sign-in there, or run forge auth login again for a new code.</p>',
+    );
   if ("refused" in shown)
     return result(shown.refused === "invalid_code" ? 400 : 429, shown.refused);
   const confirmation =
