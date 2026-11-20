@@ -6202,6 +6202,115 @@ const laneRequired = (result: object = LANE_APPROVAL) =>
   );
 const laneContext = (r: Rig) => r.request("lane.control", {}).context;
 
+const chatChallenge = {
+  request: LANE_REQUEST,
+  scope: { id: "work-1" },
+  expiresAt: iso(NOW + 60_000),
+};
+const chatRelay = {
+  request: LANE_REQUEST,
+  quote: " \tYes, resume this lane.\n",
+  source: { harness: "test-chat", thread: "owner-thread", message: "reply-1" },
+};
+const relaySurfaces = ["CLI", "MCP direct", "MCP catalog"] as const;
+type RelaySurface = (typeof relaySurfaces)[number];
+
+async function runResume(
+  r: Rig,
+  surface: RelaySurface,
+  input: object,
+): Promise<ResultEnvelope> {
+  const context = laneContext(r);
+  if (surface === "CLI") {
+    const cli = await runCli(
+      r.assembly.catalog,
+      ["lane", "resume", "--input", JSON.stringify(input)],
+      { caller: "agent", context },
+    );
+    expect(cli.exitCode).toBe(exitCode(cli.envelope));
+    expect(JSON.parse(cli.stdout)).toEqual(cli.envelope);
+    return cli.envelope;
+  }
+  const mcp = createMcpHandlers(
+    r.assembly.catalog,
+    { expose: ["lane"] },
+    { context },
+  );
+  return (await mcp.callTool(
+    surface === "MCP direct" ? mcpToolName("lane.resume")! : "catalog_call",
+    surface === "MCP direct" ? input : { op: "lane.resume", input },
+  ))!;
+}
+
+for (const surface of relaySurfaces) {
+  test.each([
+    [{ all: true }, { all: true }, "all stopped lanes"],
+    [{ id: "forge-1" }, { id: "work-1" }, "lane work-1"],
+  ] as const)(
+    `chat relay red 3: ${surface} shows the same local ask for %j`,
+    (input, scope, target) =>
+      using(
+        { steps: [() => laneRequired({ ...chatChallenge, scope })] },
+        async (r) => {
+          const result = await runResume(r, surface, input);
+          expect(exitCode(result)).toBe(1);
+          expect(result).toMatchObject({
+            ok: false,
+            error: { code: "APPROVAL_REQUIRED" },
+            result: {
+              ...chatChallenge,
+              scope,
+              ask: `Resume ${target} in Forge project ${fx.PROJECT}? Forge can dispatch work and start spending calls and time again. Please reply here before 2026-11-11 00:01 UTC.`,
+            },
+          });
+          expect(result).not.toHaveProperty("result.url");
+          expect(r.net.calls).toHaveLength(1);
+        },
+      ),
+    30_000,
+  );
+
+  test.each([
+    { ...chatChallenge, scope: { id: "work-2" } },
+    { ...chatChallenge, scope: { all: true } },
+    { ...chatChallenge, ask: "Untrusted remote ask text" },
+    { ...chatChallenge, expiresAt: iso(NOW - 1) },
+  ])(
+    `chat relay red 3: ${surface} refuses unchecked challenge %j`,
+    (challenge) =>
+      using({ steps: [() => laneRequired(challenge)] }, async (r) => {
+        const result = await runResume(r, surface, { id: "forge-1" });
+        expect(failed(result, "UNAVAILABLE")).toBe(1);
+        expect(result).not.toHaveProperty("result");
+        expect(r.net.calls).toHaveLength(1);
+      }),
+    30_000,
+  );
+
+  test(
+    `chat relay red 3: ${surface} sends the reply verbatim to the cloud`,
+    () =>
+      using(
+        { steps: [() => answer({ resumed: "work-1" }, "lane.resume")] },
+        async (r) => {
+          const input = { id: "forge-1", approval: chatRelay };
+          const result = await runResume(r, surface, input);
+          expect(r.net.calls).toHaveLength(1);
+          expect(r.net.calls[0]!.body).toMatchObject({
+            op: "lane.resume",
+            input,
+          });
+          expect(result).toMatchObject({
+            ok: true,
+            result: { resumed: "work-1" },
+          });
+          expect(exitCode(result)).toBe(0);
+        },
+      ),
+    30_000,
+  );
+}
+
 const dispatchInput = {
   id: "work-1",
   dispatchId: "dispatch-proof",

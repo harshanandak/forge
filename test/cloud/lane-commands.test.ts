@@ -1583,6 +1583,342 @@ test.each([
   10_000,
 );
 
+type RelayScope = { all: true } | { id: string };
+const chatReply = {
+  quote: " \tYes, resume these lanes.\n",
+  source: {
+    harness: "test-chat",
+    thread: "owner-thread",
+    message: "owner-message",
+    link: "https://chat.example.test/owner-message",
+  },
+};
+const challenge = (reply: Awaited<ReturnType<Fixture["send"]>>) =>
+  (
+    reply.envelope as unknown as {
+      result: { request: string; scope: RelayScope; expiresAt: string };
+    }
+  ).result;
+
+async function stopForRelay(f: Fixture, scope: RelayScope) {
+  f.put("lane-control:global", running);
+  expect((await f.send(call("lane.stop", scope, "relay-stop"))).status).toBe(
+    200,
+  );
+}
+
+async function askForRelay(f: Fixture, scope: RelayScope) {
+  const issue = call("lane.resume", scope, "relay-ask");
+  const reply = await f.send(issue);
+  expect(reply.verdict).toEqual(["FAIL", "APPROVAL_REQUIRED", 1]);
+  const approval = { request: challenge(reply).request, ...chatReply };
+  const input = { ...scope, approval };
+  return { issue, reply, input, complete: call("lane.resume", input, "relay") };
+}
+
+test("chat relay red 1: wire challenge has only the request, scope and deadline", async () => {
+  const f = await fixture();
+  try {
+    const scope = { all: true } as const;
+    await stopForRelay(f, scope);
+    const before = await control(f);
+    const { reply } = await askForRelay(f, scope);
+    expect(reply.status).toBe(409);
+    expect(challenge(reply).request).toMatch(
+      /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/,
+    );
+    expect((await control(f)).result).toEqual(before.result);
+    expect(before.result).toMatchObject({ stopped: true, scope: "all" });
+    expect(challenge(reply)).toEqual({
+      request: challenge(reply).request,
+      scope,
+      expiresAt: new Date(now + 600_000).toISOString(),
+    });
+  } finally {
+    f.close();
+  }
+});
+
+const completionReceipts = (f: Fixture) =>
+  f.db
+    .query<{ result: string }, []>(
+      "SELECT result FROM domain_cloud_command_receipts WHERE outcome='ok' ORDER BY request_id",
+    )
+    .all();
+
+test.each([{ all: true }, { id: "work-7" }] as const)(
+  "chat relay red 2: completion spends one request and records the exact reply for %j",
+  async (scope) => {
+    const f = await fixture();
+    try {
+      await stopForRelay(f, scope);
+      const { input, complete } = await askForRelay(f, scope);
+      const [pending] = approvalRows(f);
+      expect(pending?.status).toBe("pending");
+      const receiptsBefore = completionReceipts(f);
+      const result = { resumed: "id" in scope ? scope.id : "all" };
+      const reply = await f.send(complete);
+      expect(reply.status).toBe(200);
+      expect(reply.result).toEqual(result);
+      expect(approvalRows(f)).toHaveLength(1);
+      expect(approvalRows(f)[0]).toMatchObject({
+        request: input.approval.request,
+        scope,
+        status: "spent",
+        decision: {
+          method: "relayed",
+          ...chatReply,
+          at: new Date(now).toISOString(),
+        },
+      });
+      const receiptsAfter = completionReceipts(f);
+      expect(receiptsAfter).toHaveLength(receiptsBefore.length + 1);
+      expect(
+        receiptsAfter
+          .filter(
+            (row) => !receiptsBefore.some((old) => old.result === row.result),
+          )
+          .map((row) => JSON.parse(row.result) as unknown),
+      ).toEqual([result]);
+      expect(
+        (await control(f, "id" in scope ? scope.id : undefined)).result,
+      ).toMatchObject({ stopped: false, epoch: running.epoch + 2 });
+      const spent = approvalRows(f);
+      const duplicate = await f.send({ ...complete, requestId: "relay-again" });
+      expect(duplicate.verdict).toEqual(["FAIL", "APPROVAL_REQUIRED", 1]);
+      expect(approvalRows(f)).toEqual(spent);
+    } finally {
+      f.close();
+    }
+  },
+);
+
+test.each([
+  "different scope",
+  "different request",
+  "renewed token",
+  "expired",
+  "later stop",
+  "blank quote",
+  "blank source",
+  "browser-approved row",
+  "receipt write failure",
+] as const)(
+  "chat relay keeps the stop and request intact after %s",
+  async (mode) => {
+    const f = await fixture();
+    try {
+      const scope = { id: "work-7" };
+      await stopForRelay(f, scope);
+      expect(
+        (await f.send(call("lane.stop", { id: "work-8" }, "other-stop")))
+          .status,
+      ).toBe(200);
+      const { input, complete } = await askForRelay(f, scope);
+      let attempt = complete;
+      let headers: Record<string, string> = {};
+      switch (mode) {
+        case "different scope":
+          attempt = {
+            ...complete,
+            input: { all: true, approval: input.approval },
+          };
+          break;
+        case "different request":
+          attempt = {
+            ...complete,
+            input: {
+              ...input,
+              approval: { ...input.approval, request: crypto.randomUUID() },
+            },
+          };
+          break;
+        case "renewed token":
+          headers = { authorization: `Bearer ${await f.admit("laptop")}` };
+          break;
+        case "expired":
+          f.clock.mockReturnValue(now + 600_000);
+          break;
+        case "later stop":
+          expect(
+            (await f.send(call("lane.stop", scope, "new-stop"))).status,
+          ).toBe(200);
+          break;
+        case "blank quote":
+          attempt = {
+            ...complete,
+            input: { ...input, approval: { ...input.approval, quote: " \n" } },
+          };
+          break;
+        case "blank source":
+          attempt = {
+            ...complete,
+            input: {
+              ...input,
+              approval: {
+                ...input.approval,
+                source: { ...chatReply.source, thread: " \t" },
+              },
+            },
+          };
+          break;
+        case "browser-approved row":
+          replaceApproval(f, {
+            status: "approved",
+            decision: {
+              issuer: ownerClaims.issuer,
+              subject: ownerClaims.subject,
+              at: new Date(now).toISOString(),
+            },
+          });
+          break;
+        case "receipt write failure":
+          f.db.run(
+            "CREATE TRIGGER refuse_relay BEFORE INSERT ON domain_cloud_command_receipts BEGIN SELECT RAISE(ABORT, 'injected relay failure'); END",
+          );
+          break;
+      }
+      const before = f.snapshot();
+      const reply = await f.send(attempt, "p", headers);
+      expect(reply.envelope.ok).toBe(false);
+      expect(f.snapshot()).toBe(before);
+      expect((await control(f, scope.id)).result).toMatchObject({
+        stopped: true,
+      });
+      if (mode === "receipt write failure") {
+        f.db.run("DROP TRIGGER refuse_relay");
+        expect((await f.send(attempt)).status).toBe(200);
+      }
+    } finally {
+      f.close();
+    }
+  },
+);
+
+test.each(["later stop", "spent", "expired"] as const)(
+  "chat relay red 4: issuance replay refuses a %s request without an ask",
+  async (mode) => {
+    const f = await fixture();
+    try {
+      const scope = { all: true } as const;
+      await stopForRelay(f, scope);
+      const { issue, reply } = await askForRelay(f, scope);
+      const first = f.snapshot();
+      expect((await f.send(issue)).envelope).toEqual(reply.envelope);
+      expect(f.snapshot()).toBe(first);
+      if (mode === "later stop")
+        expect(
+          (await f.send(call("lane.stop", scope, "new-stop"))).status,
+        ).toBe(200);
+      if (mode === "spent") replaceApproval(f, { status: "spent" });
+      if (mode === "expired") f.clock.mockReturnValue(now + 600_000);
+      const before = f.snapshot();
+      const replay = await f.send(issue);
+      expect(replay.verdict).toEqual(["FAIL", "APPROVAL_REQUIRED", 1]);
+      expect(replay.envelope).not.toHaveProperty("result");
+      if (replay.envelope.ok) throw new Error("Expected approval refusal");
+      expect(replay.envelope.error.message).toMatch(
+        /(?:new|fresh) (?:approval )?request/i,
+      );
+      expect(f.snapshot()).toBe(before);
+    } finally {
+      f.close();
+    }
+  },
+);
+
+test("chat relay red 5: completion replay keeps a later stop and epoch", async () => {
+  const f = await fixture();
+  try {
+    const scope = { all: true } as const;
+    await stopForRelay(f, scope);
+    const { complete } = await askForRelay(f, scope);
+    const result = await f.send(complete);
+    expect(result.status).toBe(200);
+    const later = await f.send(call("lane.stop", scope, "new-stop"));
+    expect(later.status).toBe(200);
+    expect(later.result).toMatchObject({
+      stopped: true,
+      epoch: running.epoch + 3,
+    });
+    const before = f.snapshot();
+    expect((await f.send(complete)).envelope).toEqual(result.envelope);
+    expect((await control(f)).result).toEqual(later.result);
+    expect(f.snapshot()).toBe(before);
+  } finally {
+    f.close();
+  }
+});
+
+test("chat relay refuses a newly issued request at the old browser URLs", async () => {
+  const f = await browserFixture();
+  try {
+    const before = f.snapshot();
+    const approve = await f.submit();
+    expect(f.shown.status).toBe(400);
+    expect(approve.status).toBe(400);
+    expect(f.begun).toHaveLength(0);
+    expect(f.spent.size).toBe(0);
+    expect(f.snapshot()).toBe(before);
+  } finally {
+    f.close();
+  }
+});
+
+test("chat relay refuses request-only completion with a legacy browser decision", async () => {
+  const f = await fixture();
+  try {
+    const scope = { all: true } as const;
+    await stopForRelay(f, scope);
+    const { input } = await askForRelay(f, scope);
+    const { request } = input.approval;
+    const {
+      project,
+      incarnation,
+      epoch,
+      policyIdentity,
+      token,
+      device,
+      session,
+      expiresAt,
+    } = approvalRows(f)[0]!;
+    f.db.run(`UPDATE ${LANE_APPROVALS} SET state=? WHERE id=1`, [
+      JSON.stringify({
+        requests: [
+          {
+            request,
+            scope,
+            expiresAt,
+            project,
+            incarnation,
+            epoch,
+            policyIdentity,
+            token,
+            device,
+            session,
+            url: `https://w.example/lane-approval/${request}`,
+            status: "approved",
+            decision: {
+              issuer: ownerClaims.issuer,
+              subject: ownerClaims.subject,
+              at: new Date(now).toISOString(),
+            },
+          },
+        ],
+      }),
+    ]);
+    const before = f.snapshot();
+    const reply = await f.send(
+      call("lane.resume", { ...scope, approval: { request } }, "legacy-resume"),
+    );
+    expect(reply.envelope.ok).toBe(false);
+    expect(f.snapshot()).toBe(before);
+    expect((await control(f)).result).toMatchObject({ stopped: true });
+  } finally {
+    f.close();
+  }
+});
+
 test.each(["all", "issue"] as const)(
   "approved resume %s commits once and replays historically after a later stop",
   async (scope) => {
