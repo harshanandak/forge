@@ -57,6 +57,7 @@ import {
   type IssueViews,
 } from "../../cloud/src/issue-read.ts";
 import { createWorker } from "../../cloud/src/worker.ts";
+import { stockIngress } from "./stock-ingress.fixture.ts";
 import manifest from "../../src/blocks/work/forge.block.json" with { type: "json" };
 import { createStateClient } from "../../src/assembly/state-client.ts";
 import { StateOwner } from "../../src/core/state/index.ts";
@@ -122,6 +123,7 @@ interface AdminEnvelope {
 }
 type Fetcher = { fetch: (request: Request, env: never) => Promise<Response> };
 type Options = {
+  ingress?: ReturnType<typeof stockIngress>;
   token?: string;
   headers?: Record<string, string>;
   name?: string;
@@ -235,6 +237,7 @@ function fixture(
             }),
       },
     );
+    await o.ingress?.observe(request, bindings);
     calls.length = 0;
     probes.length = 0;
     const response =
@@ -5133,6 +5136,40 @@ const make = (id: string, input: object = { title: "New" }, more = {}) => ({
   context: { actor },
   ...more,
 });
+test("stock Workers suspend valid issue writes and block-state reads and commits", async () => {
+  const f = await stateFixture();
+  const ingress = stockIngress();
+  try {
+    const token = await f.device(day, "stock-test", "s1");
+    const command = await f.send(make("stock-create"), { ingress, token });
+    expect([command.status, command.exit]).toEqual([200, 0]);
+    const input = await f.plan(stateEntries("stock-note"));
+    const commit = await f.send(input, {
+      ingress,
+      token: f.token,
+      path: "state/commit",
+    });
+    expect([commit.status, commit.exit]).toEqual([200, 0]);
+    const read = await f.send(
+      {
+        ...stateRead,
+        namespace: input.namespace,
+        policyRevision: "discover",
+        query: { kind: "get", key: "stock-note" },
+      },
+      { ingress, token: f.token, path: "state/read" },
+    );
+    expect([read.status, read.exit]).toEqual([200, 0]);
+    ingress.expect([
+      "POST /p/p/command",
+      "POST /p/p/state/commit",
+      "POST /p/p/state/read",
+    ]);
+  } finally {
+    f.db.close();
+  }
+}, 30_000);
+
 const revoke = (f: { db: Database; now: () => number }, token: string) =>
   f.db
     .query("UPDATE domain_cloud_tokens SET revoked_at=? WHERE id=?")
