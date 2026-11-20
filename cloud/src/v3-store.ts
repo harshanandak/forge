@@ -94,7 +94,7 @@ export function readV3Root(db: SqlDatabase) {
     row.body !== canonicalJson(expected) ||
     canonicalJson(
       db.all(
-        `SELECT id, substr(body,1,${emptyBytes + 1}) AS body FROM ${PAGES} ORDER BY id LIMIT 3`,
+        `SELECT id, CASE WHEN length(CAST(body AS BLOB))=${emptyBytes} THEN body END AS body FROM ${PAGES} ORDER BY id LIMIT 3`,
       ),
     ) !== canonicalJson(pages)
   )

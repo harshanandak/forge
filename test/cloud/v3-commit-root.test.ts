@@ -92,6 +92,10 @@ const corruptions = [
     "extra page",
     "INSERT INTO cloud_v3_pages (id, body) SELECT 'foreign:0', body FROM cloud_v3_pages WHERE id='directory:0'",
   ],
+  [
+    "page with bytes after a NUL",
+    "UPDATE cloud_v3_pages SET body=body||char(0)||'extra' WHERE id='directory:0'",
+  ],
   ["reordered roster", `UPDATE cloud_v3_root SET body=${reorderedPages}`],
   [
     "wrong covered head",
