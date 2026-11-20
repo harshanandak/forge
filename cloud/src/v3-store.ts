@@ -343,6 +343,14 @@ export function viewV3(image: V3Image) {
   };
 }
 
+export const GENESIS_LEASE_ONLY =
+  "Cloud v3 lease commands need the genesis root until they read the recovered image";
+
+export function requireGenesisForLease(db: SqlDatabase) {
+  if (recoverV3(db).root.generation !== 0)
+    throw fail("UNAVAILABLE", GENESIS_LEASE_ONLY);
+}
+
 export function appendV3Frames(
   db: SqlDatabase,
   frames: unknown,

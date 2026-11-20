@@ -132,6 +132,7 @@ import {
   leaseV3,
   provisionV3,
   recoverV3,
+  requireGenesisForLease,
   viewV3,
 } from "./v3-store.ts";
 
@@ -501,7 +502,7 @@ export class Project {
               null,
               ["owner", owner, owner],
             );
-            recoverV3(db);
+            requireGenesisForLease(db);
             return Response.json({
               ok: true,
               value: leaseV3(db, command, expiresAt),

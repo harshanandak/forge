@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
+import { GENESIS_LEASE_ONLY } from "../../cloud/src/v3-store.ts";
 import { canonicalJson, digestBytes } from "../../src/core/config/pointer.ts";
 import { fixture, probe } from "./v3-project.fixture.ts";
 
@@ -404,6 +405,50 @@ async function snapshotWithClaim(f: Fixture) {
   expect(await claim(f, "owner-a")).toMatchObject({ status: 200 });
   checkpoint(f);
 }
+
+test(
+  "lease commands on a checkpointed root are refused before any write while they still scan commits",
+  async () => {
+    const f = fixture();
+    try {
+      await snapshotWithClaim(f);
+      const held = image(await f.send(probe))!;
+      expect(Object.keys(held.lease as Json)).toEqual(["work-1"]);
+      const before = f.snapshot();
+      const lease = (route: string, owner: string, body: Json) =>
+        f.send(
+          `${probe}/${route}`,
+          { subject: "work-1", holder, ...body },
+          { "X-Forge-Owner": owner, "X-Forge-Owner-Expires": String(E1) },
+        );
+      const responses = [
+        await lease("claim", "owner-b", {
+          requestId: "acq-2",
+          ttlMs: 3_600_000,
+        }),
+        await lease("renew", "owner-a", {
+          requestId: "ren-1",
+          generation: 1,
+          ttlMs: 3_600_000,
+        }),
+        await lease("release", "owner-a", {
+          requestId: "rel-1",
+          generation: 1,
+        }),
+      ];
+      for (const response of responses)
+        expect(response).toMatchObject({
+          ...unavailable,
+          body: { error: { message: GENESIS_LEASE_ONLY } },
+        });
+      expect(f.snapshot()).toEqual(before);
+      expect(image(await f.send(probe))).toEqual(held);
+    } finally {
+      f.db.close();
+    }
+  },
+  timeout,
+);
 
 function reseal(
   db: Database,
