@@ -1682,6 +1682,7 @@ test.each([
         code,
         code === "INPUT_INVALID" ? 6 : code === "INPUT_CONFLICT" ? 4 : 1,
       ]);
+      expect(reply.status).toBe(code === "INPUT_INVALID" ? 400 : 409);
       expect(f.snapshot()).toBe(before);
     } finally {
       f.close();
