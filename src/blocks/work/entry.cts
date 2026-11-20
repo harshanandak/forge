@@ -312,6 +312,12 @@ type WorkOperations = TrackerOperations<"issue"> & {
       status: string;
       removed: boolean;
       discarded: string[];
+      leftover?: {
+        path: string;
+        reason: string;
+        empty: boolean;
+        next: string[][];
+      };
     },
   ];
   readonly "issue.checkpoint": readonly [
@@ -5278,6 +5284,11 @@ const operations: Operations<WorkOperations> = {
       fail("UNAVAILABLE", `${git.reason} ${git.remedy}`);
     if (!input.noPr && gh.kind !== "resolved")
       fail("UNAVAILABLE", "Install gh and put it on PATH");
+    const windows = bound.environment.platform === "win32",
+      pathKey = (path: string) => {
+        const normalized = slash(path).replace(/\/+$/, "");
+        return windows ? normalized.toLowerCase() : normalized;
+      };
     let next: string[][] = [];
     const refuse = (code: string, message: string): never => {
       try {
@@ -5294,7 +5305,7 @@ const operations: Operations<WorkOperations> = {
       args: string[],
       cwd = checkout,
       github = false,
-      leaveDirectory?: string,
+      removing?: string,
     ) => {
       const remaining = deadline - clock();
       if (remaining <= 0)
@@ -5308,9 +5319,9 @@ const operations: Operations<WorkOperations> = {
         signal,
         timeoutMs: Math.min(20000, remaining),
         maxOutputBytes: 262144,
-        ...(leaveDirectory ? { leaveDirectory } : {}),
+        ...(removing ? { leaveDirectory: removing } : {}),
       });
-      if (result.timedOut || result.truncated)
+      if (result.truncated || (result.timedOut && !removing))
         refuse(
           "UNAVAILABLE",
           "Lane command timed out or exceeded output limit",
@@ -5515,6 +5526,7 @@ const operations: Operations<WorkOperations> = {
           progress.mergeCommit !== mergeCommit)
       )
         refuse("INPUT_CONFLICT", "PR changed since close began");
+      let unreadable = "";
       const place = async () => {
         const probe = await execute([
           "-C",
@@ -5523,7 +5535,27 @@ const operations: Operations<WorkOperations> = {
           "--is-inside-work-tree",
           "--show-prefix",
         ]);
-        if (probe.exitCode !== 0) return "missing";
+        if (probe.exitCode !== 0) {
+          unreadable =
+            probe.stderr
+              .split(/\r?\n/)
+              .map((line) => line.trim())
+              .find(Boolean) ?? `git -C exited ${probe.exitCode}`;
+          const root = pathKey(files.root),
+            path = pathKey(worktree);
+          try {
+            return path.startsWith(`${root}/`) &&
+              files.inspect(
+                slash(worktree)
+                  .replace(/\/+$/, "")
+                  .slice(root.length + 1),
+              ) === undefined
+              ? "missing"
+              : "unknown";
+          } catch {
+            return "unknown";
+          }
+        }
         const [inside, prefix] = probe.stdout.split(/\r?\n/);
         return inside === "true" && prefix === "" ? "worktree" : "leftover";
       };
@@ -5703,6 +5735,7 @@ const operations: Operations<WorkOperations> = {
         head = await run(["rev-parse", "HEAD"], worktree);
         if (head !== pull.headRefOid)
           refuse("INPUT_CONFLICT", "Fast-forward missed the PR head");
+        next = [resume];
       }
       if (dropped && !noPr && head !== pull.headRefOid)
         await run(["fetch", "origin", `pull/${input.pr}/head`]);
@@ -5818,7 +5851,8 @@ const operations: Operations<WorkOperations> = {
       if (hasBranch && (await run(["rev-parse", ref])) !== head)
         refuse("INPUT_CONFLICT", "Lane head changed during close");
       let reason = "The lane directory is no longer a git worktree";
-      let found = await place();
+      let found = await place(),
+        removed = false;
       if (found === "worktree") {
         await clean();
         const removal = await execute(
@@ -5832,24 +5866,56 @@ const operations: Operations<WorkOperations> = {
           false,
           worktree,
         );
-        if (removal.exitCode === 0) found = "missing";
-        else {
-          reason =
-            removal.stderr
-              .split(/\r?\n/)
-              .map((line) => line.trim())
-              .find(Boolean) ??
-            `git worktree remove exited ${removal.exitCode}`;
-          if (await exists()) {
-            next = [resume];
-            refuse(
-              "INPUT_CONFLICT",
-              `Issue ${current.id} is ${current.status}, but git kept the worktree ${worktree}: ${reason}`,
-            );
-          }
-          found = "leftover";
+        removed = removal.exitCode === 0 && !removal.timedOut;
+        if (!removed) {
+          reason = removal.timedOut
+            ? "git worktree remove timed out"
+            : (removal.stderr
+                .split(/\r?\n/)
+                .map((line) => line.trim())
+                .find(Boolean) ??
+              `git worktree remove exited ${removal.exitCode}`);
+          found = await place();
         }
       }
+      if (found === "unknown")
+        refuse(
+          "INPUT_CONFLICT",
+          `Issue ${current.id} is ${current.status}, but git cannot read the lane directory ${worktree}: ${unreadable}`,
+        );
+      if (
+        !removed &&
+        (found === "worktree" ||
+          (await run(["worktree", "list", "--porcelain", "-z"]))
+            .split("\0")
+            .some(
+              (field) =>
+                field.startsWith("worktree ") &&
+                pathKey(field.slice(9)) === pathKey(worktree),
+            ))
+      ) {
+        next =
+          found === "worktree"
+            ? [resume]
+            : [["git", "worktree", "prune"], resume];
+        refuse(
+          "INPUT_CONFLICT",
+          `Issue ${current.id} is ${current.status}, but git kept the worktree ${worktree}: ${reason}`,
+        );
+      }
+      const empty =
+        found === "leftover" &&
+        (await execute([
+          "-C",
+          worktree,
+          "status",
+          "--porcelain",
+          "-z",
+          "--ignored",
+          "--untracked-files=all",
+          "--",
+          ".",
+        ]).then((status) => status.exitCode === 0 && status.stdout === ""));
       if (
         input.attempt === undefined &&
         hasBranch &&
@@ -5879,7 +5945,12 @@ const operations: Operations<WorkOperations> = {
         discarded: ignored,
         ...(found === "leftover"
           ? {
-              leftover: { path: worktree, reason, next: [["rmdir", worktree]] },
+              leftover: {
+                path: worktree,
+                reason: empty ? reason : `${reason}; files remain`,
+                empty,
+                next: empty ? [["rmdir", worktree]] : [],
+              },
             }
           : {}),
       };

@@ -788,6 +788,7 @@ test("lane close finishes and names a lane directory another process still uses"
       next: [["rmdir", laneDirectory]],
     });
     expect(leftover?.reason).toContain("failed to delete");
+    expect(leftover).toMatchObject({ empty: true });
   } else expect(leftover).toBeUndefined();
   expect(call("issue.show", { id }).result.status).toBe("closed");
   expect(git(["worktree", "list", "--porcelain"])).not.toContain(
@@ -855,6 +856,7 @@ test("a close retried after git left an empty lane directory finishes without re
     removed: true,
     leftover: { path: laneDirectory, next: [["rmdir", laneDirectory]] },
   });
+  expect(result.result.leftover).toMatchObject({ empty: true });
   expect(call("issue.events", { id }).result.events).toEqual(events);
   expect(call("issue.comments", { id }).result.records).toEqual(comments);
   expect(git(["branch", "--list", String(lane.branch)])).toBe("");

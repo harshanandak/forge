@@ -8,10 +8,11 @@
     "discarded": { "type": "array", "items": { "type": "string" } },
     "leftover": {
       "type": "object",
-      "required": ["path", "reason", "next"],
+      "required": ["path", "reason", "empty", "next"],
       "properties": {
         "path": { "type": "string" },
         "reason": { "type": "string" },
+        "empty": { "type": "boolean" },
         "next": {
           "type": "array",
           "items": { "type": "array", "items": { "type": "string" } }
