@@ -312,6 +312,12 @@ type WorkOperations = TrackerOperations<"issue"> & {
       status: string;
       removed: boolean;
       discarded: string[];
+      leftover?: {
+        path: string;
+        reason: string;
+        empty: boolean;
+        next: string[][];
+      };
     },
   ];
   readonly "issue.checkpoint": readonly [
@@ -5278,6 +5284,11 @@ const operations: Operations<WorkOperations> = {
       fail("UNAVAILABLE", `${git.reason} ${git.remedy}`);
     if (!input.noPr && gh.kind !== "resolved")
       fail("UNAVAILABLE", "Install gh and put it on PATH");
+    const windows = bound.environment.platform === "win32",
+      pathKey = (path: string) => {
+        const normalized = slash(path).replace(/\/+$/, "");
+        return windows ? normalized.toLowerCase() : normalized;
+      };
     let next: string[][] = [];
     const refuse = (code: string, message: string): never => {
       try {
@@ -5290,12 +5301,11 @@ const operations: Operations<WorkOperations> = {
     };
     let checkout = files.root;
     const clock = laneClock(services);
-    const run = async (
+    const execute = async (
       args: string[],
       cwd = checkout,
       github = false,
-      optional = false,
-      leaveDirectory?: string,
+      removing?: string,
     ) => {
       const remaining = deadline - clock();
       if (remaining <= 0)
@@ -5309,13 +5319,22 @@ const operations: Operations<WorkOperations> = {
         signal,
         timeoutMs: Math.min(20000, remaining),
         maxOutputBytes: 262144,
-        ...(leaveDirectory ? { leaveDirectory } : {}),
+        ...(removing ? { leaveDirectory: removing } : {}),
       });
-      if (result.timedOut || result.truncated)
+      if (result.truncated || (result.timedOut && !removing))
         refuse(
           "UNAVAILABLE",
           "Lane command timed out or exceeded output limit",
         );
+      return result;
+    };
+    const run = async (
+      args: string[],
+      cwd = checkout,
+      github = false,
+      optional = false,
+    ) => {
+      const result = await execute(args, cwd, github);
       if (result.exitCode !== 0) {
         if (optional) return "";
         refuse(
@@ -5507,13 +5526,19 @@ const operations: Operations<WorkOperations> = {
           progress.mergeCommit !== mergeCommit)
       )
         refuse("INPUT_CONFLICT", "PR changed since close began");
-      const exists = async () =>
-        (await run(
-          ["-C", worktree, "rev-parse", "--is-inside-work-tree"],
-          checkout,
-          false,
-          true,
-        )) === "true";
+      let unreadable = "",
+        empty = false;
+      const place = () => {
+        try {
+          const state = files.lane(worktree, `${slash(checkout)}/.worktrees`);
+          empty = state === "empty";
+          return empty ? "leftover" : state;
+        } catch (error) {
+          unreadable = error instanceof Error ? error.message : String(error);
+          return "unknown";
+        }
+      };
+      const exists = () => place() === "worktree";
       const discardable = (config as WorkConfig | undefined)?.lanes
         ?.discardIgnored ?? ["node_modules/", "dist/"];
       let ignored: string[] = [];
@@ -5565,7 +5590,7 @@ const operations: Operations<WorkOperations> = {
           );
         }
       };
-      if (await exists()) await clean();
+      if (exists()) await clean();
       else if (!progress) refuse("INPUT_CONFLICT", "Lane checkout is missing");
       current = item(state, get(state, id, input.id), ids);
       const links = appended(state, `link:${id}:`),
@@ -5674,7 +5699,7 @@ const operations: Operations<WorkOperations> = {
           ["git", "-C", worktree, "merge", "--ff-only", pull.headRefOid!],
           resume,
         ];
-        if (!hasBranch || !(await exists()))
+        if (!hasBranch || !exists())
           refuse("INPUT_CONFLICT", "Local head differs from PR head");
         await run(["fetch", "origin", `pull/${input.pr}/head`], worktree);
         if (
@@ -5689,6 +5714,7 @@ const operations: Operations<WorkOperations> = {
         head = await run(["rev-parse", "HEAD"], worktree);
         if (head !== pull.headRefOid)
           refuse("INPUT_CONFLICT", "Fast-forward missed the PR head");
+        next = [resume];
       }
       if (dropped && !noPr && head !== pull.headRefOid)
         await run(["fetch", "origin", `pull/${input.pr}/head`]);
@@ -5803,9 +5829,12 @@ const operations: Operations<WorkOperations> = {
       if (dropped || keepOpen) state.putMany([], { subject: key(id) });
       if (hasBranch && (await run(["rev-parse", ref])) !== head)
         refuse("INPUT_CONFLICT", "Lane head changed during close");
-      if (await exists()) {
+      let reason = "The lane directory is no longer a git worktree";
+      let found = place(),
+        removed = false;
+      if (found === "worktree") {
         await clean();
-        await run(
+        const removal = await execute(
           [
             "worktree",
             "remove",
@@ -5814,16 +5843,63 @@ const operations: Operations<WorkOperations> = {
           ],
           checkout,
           false,
-          false,
           worktree,
         );
+        removed = removal.exitCode === 0 && !removal.timedOut;
+        if (!removed) {
+          reason = removal.timedOut
+            ? "git worktree remove timed out"
+            : (removal.stderr
+                .split(/\r?\n/)
+                .map((line) => line.trim())
+                .find(Boolean) ??
+              `git worktree remove exited ${removal.exitCode}`);
+          found = place();
+        }
       }
+      if (found === "unknown")
+        refuse(
+          "INPUT_CONFLICT",
+          `Issue ${current.id} is ${current.status}, but Forge cannot read the lane directory ${worktree}: ${unreadable}`,
+        );
+      const trees = (await run(["worktree", "list", "--porcelain", "-z"]))
+        .split("\0\0")
+        .map((record) => record.split("\0"));
       if (
+        !removed &&
+        (found === "worktree" ||
+          trees.some((fields) =>
+            fields.some(
+              (field) =>
+                field.startsWith("worktree ") &&
+                pathKey(field.slice(9)) === pathKey(worktree),
+            ),
+          ))
+      ) {
+        next =
+          found === "worktree"
+            ? [resume]
+            : found === "missing"
+              ? [["git", "worktree", "remove", worktree], resume]
+              : [["git", "worktree", "prune"], resume];
+        refuse(
+          "INPUT_CONFLICT",
+          `Issue ${current.id} is ${current.status}, but git kept the worktree ${worktree}: ${reason}${found === "leftover" ? "; git worktree prune acts on the whole repository" : ""}`,
+        );
+      }
+      const deleting =
         input.attempt === undefined &&
         hasBranch &&
-        (!dropped || (noPr && head === pull.headRefOid))
-      )
-        await run(["update-ref", "-d", ref, head]);
+        (!dropped || (noPr && head === pull.headRefOid));
+      const holder = trees
+        .find((fields) => fields.includes(`branch ${ref}`))?.[0]
+        ?.slice(9);
+      if (deleting && holder !== undefined)
+        refuse(
+          "INPUT_CONFLICT",
+          `Lane close stopped: the worktree ${holder} has ${branch} checked out. Issue ${current.id} is ${current.status}; the branch, registry row and journal were kept. Free the branch in that worktree, then resume`,
+        );
+      if (deleting) await run(["update-ref", "-d", ref, head]);
       if (dropped)
         files.write(
           `forge-lane-runs/${lane?.issue ?? current.id}/${archive}`,
@@ -5845,6 +5921,18 @@ const operations: Operations<WorkOperations> = {
         status: current.status,
         removed: true,
         discarded: ignored,
+        ...(found === "leftover"
+          ? {
+              leftover: {
+                path: worktree,
+                reason: empty
+                  ? reason
+                  : `${reason}; the directory is not proven empty`,
+                empty,
+                next: empty ? [["rmdir", worktree]] : [],
+              },
+            }
+          : {}),
       };
     } finally {
       try {

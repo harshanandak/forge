@@ -23,6 +23,7 @@ import {
   requestConflict,
 } from "./lease-command.ts";
 import { checkTtl } from "./lease-ttl.ts";
+import { authorityFault } from "./v3-authority.ts";
 import { TABLE_PROBE } from "./store.ts";
 
 const ROOT = "cloud_v3_root";
@@ -388,14 +389,22 @@ export function requireGenesisForLease(db: SqlDatabase) {
     throw fail("UNAVAILABLE", GENESIS_LEASE_ONLY);
 }
 
-export function appendV3Frames(
-  db: SqlDatabase,
-  frames: unknown,
-  trusted = false,
-) {
+export function appendV3Frames(db: SqlDatabase, frames: unknown) {
   if (!Array.isArray(frames) || frames.length === 0)
     throw fail("INPUT_INVALID", "Invalid v3 frame batch");
   const batch: readonly unknown[] = frames;
+  if (
+    batch.some(
+      (frame) =>
+        !isObject(frame) ||
+        Object.keys(frame).some((key) => !SYNTHETIC_KEYS.includes(key)),
+    )
+  )
+    throw fail("INPUT_INVALID", "Invalid v3 frame");
+  return append(db, batch);
+}
+
+function append(db: SqlDatabase, batch: readonly unknown[]) {
   return db.transaction(() => {
     const { coveredHead } = readV3Root(db);
     const last = db.get(
@@ -410,8 +419,6 @@ export function appendV3Frames(
     for (const frame of batch) {
       if (
         !isObject(frame) ||
-        (!trusted &&
-          Object.keys(frame).some((key) => !SYNTHETIC_KEYS.includes(key))) ||
         typeof frame.operation !== "string" ||
         !frame.operation ||
         typeof frame.time !== "number" ||
@@ -421,10 +428,15 @@ export function appendV3Frames(
       )
         throw fail("INPUT_INVALID", "Invalid v3 frame");
       sequence++;
-      db.run(`INSERT INTO ${COMMITS} VALUES (?, ?)`, [
+      const body = canonicalJson({
+        ...frame,
+        format: "forge-cloud-commit/3",
         sequence,
-        canonicalJson({ ...frame, format: "forge-cloud-commit/3", sequence }),
-      ]);
+      });
+      const fault = authorityFault(JSON.parse(body) as Record<string, unknown>);
+      if (fault !== undefined)
+        throw new Error(`Refusing a v3 frame with an invalid ${fault}`);
+      db.run(`INSERT INTO ${COMMITS} VALUES (?, ?)`, [sequence, body]);
     }
     return { head: sequence };
   });
@@ -552,7 +564,7 @@ export function leaseV3(
         if (!recordable(error)) throw error;
         const status = error.error.code;
         const refused = { ...outcome, status, result: error.error };
-        appendV3Frames(db, [{ ...frame, outcome: refused }], true);
+        append(db, [{ ...frame, outcome: refused }]);
         return { refusal: error };
       };
       let current: LeaseRecord | undefined;
@@ -589,26 +601,22 @@ export function leaseV3(
       } catch (error) {
         return refuse(error);
       }
-      appendV3Frames(
-        db,
-        [
-          {
-            ...frame,
-            lease,
-            outcome: { ...outcome, status: "ok" },
-            ...(route === "claim" && {
-              witness: {
-                namespace: NAMESPACE,
-                id: requestId,
-                subject,
-                generation: lease.generation,
-                digest: digestBytes(fingerprint),
-              },
-            }),
-          },
-        ],
-        true,
-      );
+      append(db, [
+        {
+          ...frame,
+          lease,
+          outcome: { ...outcome, status: "ok" },
+          ...(route === "claim" && {
+            witness: {
+              namespace: NAMESPACE,
+              id: requestId,
+              subject,
+              generation: lease.generation,
+              digest: digestBytes(fingerprint),
+            },
+          }),
+        },
+      ]);
       return { lease };
     },
   );

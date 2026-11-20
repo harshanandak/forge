@@ -4,7 +4,7 @@ import {
   acceptanceTable,
 } from "./lane-brief-fixture.ts";
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { processStartTime } from "../../../src/adapters/process/index.ts";
 import {
@@ -15,7 +15,11 @@ import {
   readFileSync,
   readdirSync,
   realpathSync,
+  renameSync,
   rmSync,
+  rmdirSync,
+  symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -748,9 +752,194 @@ finally { fs.rmSync(staged, { recursive: true, force: true }); }
     status: "closed",
     receipt: proof,
   });
+  expect(result.result.leftover).toBeUndefined();
   expect(existsSync(String(lane.worktree))).toBe(false);
   expect(git(["branch", "--list", String(lane.branch)])).toBe("");
   expect(registry().some((row) => row.issue === id)).toBe(false);
+}, 30000);
+
+test("lane close finishes and names a lane directory another process still uses", async () => {
+  const { id, lane } = closeFixture(),
+    proof = receipt(),
+    laneDirectory = String(lane.worktree);
+  const holder = spawn("node", ["-e", "setInterval(() => {}, 1000)"], {
+    cwd: laneDirectory,
+    stdio: "ignore",
+    windowsHide: true,
+  });
+  const stopped = new Promise((done) => holder.once("exit", done));
+  let result: ReturnType<typeof close>;
+  try {
+    result = close(id, { receipt: proof });
+  } finally {
+    holder.kill();
+    await stopped;
+  }
+  expect(result.ok, JSON.stringify(result)).toBe(true);
+  const held = process.platform === "win32";
+  expect(existsSync(laneDirectory)).toBe(held);
+  expect(result.result).toMatchObject({
+    issue: id,
+    status: "closed",
+    removed: true,
+  });
+  const leftover = result.result.leftover as
+    { path: string; reason: string; next: string[][] } | undefined;
+  if (held) {
+    expect(leftover).toMatchObject({
+      path: laneDirectory,
+      next: [["rmdir", laneDirectory]],
+    });
+    expect(leftover?.reason).toContain("failed to delete");
+    expect(leftover).toMatchObject({ empty: true });
+  } else expect(leftover).toBeUndefined();
+  expect(call("issue.show", { id }).result.status).toBe("closed");
+  expect(git(["worktree", "list", "--porcelain"])).not.toContain(
+    `branch refs/heads/${String(lane.branch)}`,
+  );
+  expect(git(["branch", "--list", String(lane.branch)])).toBe("");
+  expect(registry().some((row) => row.issue === id)).toBe(false);
+  expect(existsSync(join(repo, `.git/forge-lane-close-${id}.json`))).toBe(
+    false,
+  );
+  if (held) {
+    expect(readdirSync(laneDirectory)).toEqual([]);
+    rmdirSync(laneDirectory);
+  }
+}, 30000);
+
+test("lane close names the closed issue and the worktree git kept, and the retry removes it", () => {
+  const { id, lane } = closeFixture(),
+    proof = receipt(),
+    laneDirectory = String(lane.worktree);
+  git(["worktree", "lock", laneDirectory]);
+  const failed = close(id, { receipt: proof });
+  expect(failed.ok, JSON.stringify(failed)).toBe(false);
+  expect(failed.error?.code).toBe("INPUT_CONFLICT");
+  expect(failed.error?.message).toContain(`Issue ${id} is closed`);
+  expect(failed.error?.message).toContain(laneDirectory);
+  expect(failed.error?.message).toContain("locked");
+  expect(call("issue.show", { id }).result.status).toBe("closed");
+  expect(existsSync(laneDirectory)).toBe(true);
+  git(["worktree", "unlock", laneDirectory]);
+  const events = call("issue.events", { id }).result.events;
+  const comments = call("issue.comments", { id }).result.records;
+  const result = close(id, { receipt: proof });
+  expect(result.ok, JSON.stringify(result)).toBe(true);
+  expect(result.result.leftover).toBeUndefined();
+  expect(existsSync(laneDirectory)).toBe(false);
+  expect(git(["branch", "--list", String(lane.branch)])).toBe("");
+  expect(registry().some((row) => row.issue === id)).toBe(false);
+  expect(call("issue.events", { id }).result.events).toEqual(events);
+  expect(call("issue.comments", { id }).result.records).toEqual(comments);
+}, 30000);
+
+test("a close retried after git left an empty lane directory finishes without repeating the close", () => {
+  const { id, lane } = closeFixture(),
+    proof = receipt(),
+    laneDirectory = String(lane.worktree),
+    branchLock = join(repo, ".git/refs/heads", `${String(lane.branch)}.lock`);
+  writeFileSync(branchLock, "", { flag: "wx" });
+  try {
+    const failed = close(id, { receipt: proof });
+    expect(failed.error?.code, JSON.stringify(failed)).toBe("INPUT_CONFLICT");
+  } finally {
+    rmSync(branchLock);
+  }
+  expect(existsSync(laneDirectory)).toBe(false);
+  mkdirSync(laneDirectory);
+  expect(call("issue.show", { id }).result.status).toBe("closed");
+  const events = call("issue.events", { id }).result.events;
+  const comments = call("issue.comments", { id }).result.records;
+  const result = close(id, { receipt: proof });
+  expect(result.ok, JSON.stringify(result)).toBe(true);
+  expect(result.result).toMatchObject({
+    issue: id,
+    status: "closed",
+    removed: true,
+    leftover: { path: laneDirectory, next: [["rmdir", laneDirectory]] },
+  });
+  expect(result.result.leftover).toMatchObject({ empty: true });
+  expect(call("issue.events", { id }).result.events).toEqual(events);
+  expect(call("issue.comments", { id }).result.records).toEqual(comments);
+  expect(git(["branch", "--list", String(lane.branch)])).toBe("");
+  expect(registry().some((row) => row.issue === id)).toBe(false);
+  expect(existsSync(join(repo, `.git/forge-lane-close-${id}.json`))).toBe(
+    false,
+  );
+  expect(readdirSync(laneDirectory)).toEqual([]);
+  rmdirSync(laneDirectory);
+}, 30000);
+
+test("a close retried through a linked .worktrees after the lane directory is gone finishes cleanup", () => {
+  const { id, lane } = closeFixture(),
+    proof = receipt(),
+    laneDirectory = String(lane.worktree),
+    lanes = join(repo, ".worktrees"),
+    moved = join(root, `lanes-${id}`),
+    branchLock = join(repo, ".git/refs/heads", `${String(lane.branch)}.lock`);
+  writeFileSync(branchLock, "", { flag: "wx" });
+  try {
+    const failed = close(id, { receipt: proof });
+    expect(failed.error?.code, JSON.stringify(failed)).toBe("INPUT_CONFLICT");
+  } finally {
+    rmSync(branchLock);
+  }
+  expect(existsSync(laneDirectory)).toBe(false);
+  renameSync(lanes, moved);
+  symlinkSync(moved, lanes, "junction");
+  try {
+    const result = close(id, { receipt: proof });
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    expect(result.result.leftover).toBeUndefined();
+  } finally {
+    unlinkSync(lanes);
+    renameSync(moved, lanes);
+  }
+  expect(git(["branch", "--list", String(lane.branch)])).toBe("");
+  expect(registry().some((row) => row.issue === id)).toBe(false);
+  expect(existsSync(join(repo, `.git/forge-lane-close-${id}.json`))).toBe(
+    false,
+  );
+}, 30000);
+
+test("a close retried through a .worktrees linked outside the checkout finishes cleanup and offers rmdir for an empty leftover", () => {
+  const { id, lane } = closeFixture(),
+    proof = receipt(),
+    laneDirectory = String(lane.worktree),
+    lanes = join(repo, ".worktrees"),
+    moved = join(root, `lanes-${id}`),
+    branchLock = join(repo, ".git/refs/heads", `${String(lane.branch)}.lock`);
+  writeFileSync(branchLock, "", { flag: "wx" });
+  try {
+    const failed = close(id, { receipt: proof });
+    expect(failed.error?.code, JSON.stringify(failed)).toBe("INPUT_CONFLICT");
+  } finally {
+    rmSync(branchLock);
+  }
+  expect(existsSync(laneDirectory)).toBe(false);
+  renameSync(lanes, moved);
+  symlinkSync(moved, lanes, "junction");
+  try {
+    mkdirSync(laneDirectory);
+    const result = close(id, { receipt: proof });
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    expect(result.result.leftover).toMatchObject({
+      path: laneDirectory,
+      empty: true,
+      next: [["rmdir", laneDirectory]],
+    });
+    expect(readdirSync(laneDirectory)).toEqual([]);
+  } finally {
+    rmdirSync(laneDirectory);
+    unlinkSync(lanes);
+    renameSync(moved, lanes);
+  }
+  expect(git(["branch", "--list", String(lane.branch)])).toBe("");
+  expect(registry().some((row) => row.issue === id)).toBe(false);
+  expect(existsSync(join(repo, `.git/forge-lane-close-${id}.json`))).toBe(
+    false,
+  );
 }, 30000);
 
 test("lane close CLI drops a closed unmerged PR and keeps the issue and branch", () => {

@@ -71,6 +71,7 @@ export interface CloneFileCondition {
 export interface CloneFileWriteOptions extends CloneFileCondition {
   readonly executable?: boolean;
 }
+export type CloneLaneState = "missing" | "worktree" | "empty" | "leftover";
 export interface CloneFilesService {
   readonly root: string;
   readonly roots: Readonly<Record<CloneFileArea, string>>;
@@ -82,6 +83,7 @@ export interface CloneFilesService {
   write(path: string, text: string, options?: CloneFileWriteOptions): void;
   remove(path: string, options?: CloneFileCondition): void;
   inspect(path: string, area?: CloneFileArea): CloneFileInspection | undefined;
+  lane(path: string, lanes: string): CloneLaneState;
   list(
     path: string,
     maxEntries: number,
@@ -1232,6 +1234,62 @@ function createCloneFilesAccess(
           (process.platform === "win32" || (info.mode & 0o111n) !== 0n),
         size: Number(info.size),
       };
+    },
+    lane(path: string, lanes: string): CloneLaneState {
+      checkActive();
+      if (!options.read)
+        failure(
+          "EFFECT_UNDECLARED",
+          "Lane path checks require the declared files:read effect",
+        );
+      const local = (candidate: string) =>
+        (process.platform === "win32"
+          ? /^[A-Za-z]:[\\/]/.test(candidate)
+          : /^\/(?!\/)/.test(candidate)) &&
+        !candidate
+          .split(/[\\/]/)
+          .some((segment) => segment === "." || segment === "..");
+      const refused = (): never =>
+        failure(
+          "INPUT_INVALID",
+          "Lane path checks take a local absolute path inside a .worktrees directory",
+        );
+      const within = (base: string, target: string) => {
+        const inside = relative(base, target);
+        if (!inside || /^\.\.(?:[\\/]|$)/.test(inside) || isAbsolute(inside))
+          refused();
+      };
+      if (!local(path) || !local(lanes) || basename(lanes) !== ".worktrees")
+        refused();
+      within(lanes, path);
+      if (stat(lanes) === null) return "missing";
+      let target = path;
+      const rest: string[] = [];
+      for (;;)
+        try {
+          target = join(realpathSync.native(target), ...rest);
+          break;
+        } catch (error) {
+          if (errorCode(error) !== "ENOENT" || dirname(target) === target)
+            throw error;
+          rest.unshift(basename(target));
+          target = dirname(target);
+        }
+      within(realpathSync.native(lanes), target);
+      const info = stat(target);
+      if (info === null) return "missing";
+      if (!info.isDirectory()) return "leftover";
+      if (stat(join(target, ".git")) !== null) return "worktree";
+      try {
+        const dir = opendirSync(target, { bufferSize: 1 });
+        try {
+          return dir.readSync() === null ? "empty" : "leftover";
+        } finally {
+          dir.closeSync();
+        }
+      } catch {
+        return "leftover";
+      }
     },
     list(
       path: string,

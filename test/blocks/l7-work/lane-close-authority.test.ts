@@ -99,6 +99,18 @@ async function fixture(seedLink = true) {
     branch: true,
     failComment: false,
     failCleanup: false,
+    partialRemove: false,
+    deniedRemove: false,
+    denied: false,
+    failBranchDelete: false,
+    root: "/project",
+    leftover: false,
+    listed: false,
+    held: "",
+    vanishRemove: false,
+    emptyFails: false,
+    lanes: "",
+    holder: false,
     run: 0,
     checkout: "",
     prBranch: "",
@@ -152,7 +164,19 @@ async function fixture(seedLink = true) {
         `00000000-0000-4000-8000-${String(++flags.run).padStart(12, "0")}`,
     },
     files: {
-      root: "/project",
+      get root() {
+        return flags.root;
+      },
+      lane: (path: string, lanes: string) => {
+        flags.lanes = lanes;
+        if (flags.denied || path !== lane.worktree)
+          throw new Error("EACCES: permission denied");
+        if (!flags.present) return "missing" as const;
+        if (!flags.leftover) return "worktree" as const;
+        return flags.held === "" && !flags.emptyFails
+          ? ("empty" as const)
+          : ("leftover" as const);
+      },
       read: (path: string) => files.get(path),
       write: (path: string, text: string) => {
         files.set(path, text);
@@ -173,6 +197,7 @@ async function fixture(seedLink = true) {
         options?: { signal?: AbortSignal },
       ) => {
         let stdout = "",
+          stderr = "",
           exitCode = 0;
         // A cancelled or expired invocation refuses every further process call.
         if (flags.refuse || options?.signal?.aborted)
@@ -197,7 +222,14 @@ async function fixture(seedLink = true) {
           });
         } else if (args[0] === "log") stdout = flags.retained;
         else if (args[0] === "worktree" && args[1] === "list")
-          stdout = "worktree /project\0branch refs/heads/main\0\0";
+          stdout =
+            "worktree /project\0branch refs/heads/main\0\0" +
+            (flags.listed
+              ? "worktree /lane\0prunable gitdir file points to non-existent location\0\0"
+              : "") +
+            (flags.holder
+              ? `worktree /elsewhere\0HEAD ${head}\0branch refs/heads/feature\0\0`
+              : "");
         else if (
           args[0] === "for-each-ref" &&
           args[2]?.startsWith("refs/forge/")
@@ -220,21 +252,37 @@ async function fixture(seedLink = true) {
           else if (flags.mergeBase === "other") stdout = "c".repeat(40);
           else if (flags.mergeBase === "none") exitCode = 1;
         } else if (args[0] === "merge-base") exitCode = flags.ancestor ? 0 : 1;
-        else if (args[0] === "-C") {
-          stdout = "true";
+        else if (args[0] === "-C" && flags.denied) {
+          exitCode = 128;
+          stderr = "fatal: cannot change to '/lane': Permission denied";
+        } else if (args[0] === "-C") {
+          stdout = flags.leftover ? "true\n.worktrees/lane/\n" : "true\n\n";
           if (!flags.present) exitCode = 1;
         } else if (args[0] === "worktree") {
-          if (flags.failCleanup) exitCode = 1;
+          if (flags.deniedRemove) {
+            flags.denied = true;
+            exitCode = 128;
+            stderr = "fatal: '/lane' is locked";
+          } else if (flags.vanishRemove) {
+            flags.present = false;
+            exitCode = 255;
+            stderr = "error: failed to delete '/lane/.git': Permission denied";
+          } else if (flags.partialRemove) {
+            flags.leftover = true;
+            exitCode = 255;
+            stderr = "error: failed to delete '/lane': Permission denied";
+          } else if (flags.failCleanup) exitCode = 1;
           else flags.present = false;
         } else if (args[0] === "update-ref") {
           if (args[2]?.startsWith("refs/forge/lane-close/"))
             flags.privateRefs.delete(args[2]);
+          else if (flags.failBranchDelete) exitCode = 1;
           else flags.branch = false;
         }
         return Promise.resolve({
           stdout,
           exitCode,
-          stderr: "",
+          stderr,
           timedOut: false,
           truncated: false,
         });
@@ -439,6 +487,208 @@ for (const end of ["release", "expire"] as const) {
     }
   });
 }
+
+test("a worktree remove that git still lists refuses before the branch delete, and the retry names the files left", async () => {
+  const f = await fixture();
+  try {
+    f.flags.partialRemove = true;
+    f.flags.listed = true;
+    await expect(f.close()).rejects.toThrow("INPUT_CONFLICT");
+    expect(
+      (f.owner.get(namespace, `issue:${id}`)?.value as { status: string })
+        .status,
+    ).toBe("closed");
+    expect(f.flags.branch).toBe(true);
+    expect(
+      f.flags.calls.some(
+        (args) => args[0] === "update-ref" && args[2] === "refs/heads/feature",
+      ),
+    ).toBe(false);
+    expect(f.files.get("forge-lanes.json")).toContain('"/lane"');
+    f.flags.partialRemove = false;
+    f.flags.listed = false;
+    f.flags.held = "!! .worktrees/lane/held.txt\0";
+    expect(await f.close()).toMatchObject({
+      issue: id,
+      status: "closed",
+      removed: true,
+      leftover: { path: "/lane", empty: false, next: [] },
+    });
+    expect(f.flags.branch).toBe(false);
+    expect(f.files.get("forge-lanes.json")).not.toContain('"/lane"');
+    expect(f.comments()).toHaveLength(1);
+  } finally {
+    await f.dispose();
+  }
+}, 30000);
+
+test("a lane directory git cannot read after a refused remove keeps the branch, registry row and journal", async () => {
+  const f = await fixture();
+  try {
+    const kept = () => {
+      expect(f.flags.branch).toBe(true);
+      expect(f.files.get("forge-lanes.json")).toContain('"/lane"');
+      expect(
+        [...f.files.keys()].some((path) =>
+          path.startsWith("forge-lane-close-"),
+        ),
+      ).toBe(true);
+    };
+    f.flags.deniedRemove = true;
+    f.flags.listed = true;
+    await expect(f.close()).rejects.toThrow("INPUT_CONFLICT");
+    kept();
+    f.flags.deniedRemove = false;
+    f.flags.listed = false;
+    await expect(f.close()).rejects.toThrow("INPUT_CONFLICT");
+    kept();
+    f.flags.denied = false;
+    expect(await f.close()).toMatchObject({ status: "closed", removed: true });
+    expect(f.flags.present).toBe(false);
+    expect(f.flags.branch).toBe(false);
+    expect(f.files.get("forge-lanes.json")).not.toContain('"/lane"');
+    expect(f.comments()).toHaveLength(1);
+  } finally {
+    await f.dispose();
+  }
+}, 30000);
+
+test("a retry from another worktree finishes cleanup after the lane directory was removed and the branch delete failed", async () => {
+  const f = await fixture();
+  try {
+    f.flags.failBranchDelete = true;
+    await expect(f.close()).rejects.toThrow("INPUT_CONFLICT");
+    expect(f.flags.present).toBe(false);
+    expect(f.flags.branch).toBe(true);
+    f.flags.failBranchDelete = false;
+    f.flags.root = "/other";
+    const result = (await f.close()) as Record<string, unknown>;
+    expect(result).toMatchObject({ status: "closed", removed: true });
+    expect(result.leftover).toBeUndefined();
+    expect(f.flags.lanes).toBe("/project/.worktrees");
+    expect(f.flags.branch).toBe(false);
+    expect(f.files.get("forge-lanes.json")).not.toContain('"/lane"');
+    expect(
+      [...f.files.keys()].some((path) => path.startsWith("forge-lane-close-")),
+    ).toBe(false);
+    expect(f.comments()).toHaveLength(1);
+  } finally {
+    await f.dispose();
+  }
+}, 30000);
+
+async function refusal(close: () => Promise<unknown>) {
+  const previous = globals.fail;
+  globals.fail = (code: string, message: string) => {
+    throw Object.assign(new Error(code), { error: { code, message } });
+  };
+  try {
+    await close();
+  } catch (error) {
+    return (
+      error as {
+        error: {
+          code: string;
+          message: string;
+          observed?: { next: string[][] };
+        };
+      }
+    ).error;
+  } finally {
+    globals.fail = previous;
+  }
+  throw new Error("expected a refusal");
+}
+const resume = [
+  "forge",
+  "lane",
+  "close",
+  id,
+  "--pr",
+  "1",
+  "--receipt",
+  "proof",
+];
+
+test("a leftover whose emptiness read fails still finishes, and only a proven empty one gets rmdir", async () => {
+  for (const fails of [true, false]) {
+    const f = await fixture();
+    try {
+      f.flags.partialRemove = true;
+      f.flags.emptyFails = fails;
+      expect(await f.close()).toMatchObject({
+        status: "closed",
+        removed: true,
+        leftover: {
+          path: "/lane",
+          empty: !fails,
+          next: fails ? [] : [["rmdir", "/lane"]],
+        },
+      });
+      expect(f.flags.branch).toBe(false);
+      expect(f.files.get("forge-lanes.json")).not.toContain('"/lane"');
+    } finally {
+      await f.dispose();
+    }
+  }
+}, 30000);
+
+test("a lane git still lists gets worktree remove when its directory is gone, and prune with a warning when it is left", async () => {
+  for (const vanished of [true, false]) {
+    const f = await fixture();
+    try {
+      f.flags.listed = true;
+      if (vanished) f.flags.vanishRemove = true;
+      else f.flags.partialRemove = true;
+      const error = await refusal(() => f.close());
+      expect(error.code).toBe("INPUT_CONFLICT");
+      expect(error.observed?.next).toEqual([
+        vanished
+          ? ["git", "worktree", "remove", "/lane"]
+          : ["git", "worktree", "prune"],
+        resume,
+      ]);
+      if (vanished) expect(error.message).not.toContain("prune");
+      else
+        expect(error.message).toContain(
+          "git worktree prune acts on the whole repository",
+        );
+      expect(f.flags.branch).toBe(true);
+      expect(f.files.get("forge-lanes.json")).toContain('"/lane"');
+    } finally {
+      await f.dispose();
+    }
+  }
+}, 30000);
+
+test("a lane branch another worktree has checked out is kept with the registry row and journal", async () => {
+  const f = await fixture();
+  try {
+    f.flags.holder = true;
+    const error = await refusal(() => f.close());
+    expect(error.code).toBe("INPUT_CONFLICT");
+    expect(error.message).toContain("/elsewhere");
+    expect(error.message).toContain(
+      "branch, registry row and journal were kept",
+    );
+    expect(error.observed?.next).toEqual([resume]);
+    expect(f.flags.branch).toBe(true);
+    expect(
+      f.flags.calls.some(
+        (args) => args[0] === "update-ref" && args[2] === "refs/heads/feature",
+      ),
+    ).toBe(false);
+    expect(f.files.get("forge-lanes.json")).toContain('"/lane"');
+    expect(
+      [...f.files.keys()].some((path) => path.startsWith("forge-lane-close-")),
+    ).toBe(true);
+    f.flags.holder = false;
+    expect(await f.close()).toMatchObject({ status: "closed", removed: true });
+    expect(f.flags.branch).toBe(false);
+  } finally {
+    await f.dispose();
+  }
+}, 30000);
 
 test("receipt refusal leaves lease expiry and renewal events unchanged", async () => {
   const f = await fixture();

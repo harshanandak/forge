@@ -907,6 +907,7 @@ export function createAssemblyProviders(
             write: denied,
             remove: denied,
             inspect: denied,
+            lane: denied,
             list: denied,
             lock: denied,
             snapshot: denied,
