@@ -23,6 +23,7 @@ import {
   requestConflict,
 } from "./lease-command.ts";
 import { checkTtl } from "./lease-ttl.ts";
+import { authorityFault } from "./v3-authority.ts";
 import { TABLE_PROBE } from "./store.ts";
 
 const ROOT = "cloud_v3_root";
@@ -178,10 +179,15 @@ function append(db: SqlDatabase, batch: readonly unknown[]) {
       )
         throw fail("INPUT_INVALID", "Invalid v3 frame");
       sequence++;
-      db.run(`INSERT INTO ${COMMITS} VALUES (?, ?)`, [
+      const body = canonicalJson({
+        ...frame,
+        format: "forge-cloud-commit/3",
         sequence,
-        canonicalJson({ ...frame, format: "forge-cloud-commit/3", sequence }),
-      ]);
+      });
+      const fault = authorityFault(JSON.parse(body) as Record<string, unknown>);
+      if (fault !== undefined)
+        throw new Error(`Refusing a v3 frame with an invalid ${fault}`);
+      db.run(`INSERT INTO ${COMMITS} VALUES (?, ?)`, [sequence, body]);
     }
     return { head: sequence };
   });
