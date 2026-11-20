@@ -81,11 +81,12 @@ import {
 import { checkTtl } from "./lease-ttl.ts";
 import {
   type LeaseCommand,
+  leaseFingerprint,
   NAMESPACE,
   recordable,
   replayLease,
   requestConflict,
-} from "./lease-replay.ts";
+} from "./lease-command.ts";
 import {
   expiredReplay,
   RETENTION_MS,
@@ -1093,15 +1094,6 @@ export class Project {
     const generation = route === "claim" ? null : integer(input, "generation");
 
     const requestId = scopeRequestId("lease", principal, rawId);
-    const scope = receiptScope(principal);
-    const fingerprint = canonicalJson({
-      scope,
-      route,
-      subject,
-      holder,
-      generation,
-      ttlMs,
-    });
     return {
       route,
       subject,
@@ -1110,8 +1102,7 @@ export class Project {
       generation,
       rawId,
       requestId,
-      fingerprint,
-      scope,
+      scope: receiptScope(principal),
     };
   }
 
@@ -1122,9 +1113,10 @@ export class Project {
     expiresAt?: number,
   ): LeaseRecord {
     const { route, subject, holder, ttlMs, generation } = command;
-    const { rawId, requestId, fingerprint } = command;
+    const { rawId, requestId } = command;
     this.#openWrite();
     guardLegacy(this.#open().db, rawId, requestId);
+    const fingerprint = leaseFingerprint(command);
     const prior = this.#open().db.get(
       `SELECT json_remove(fingerprint,'$.retryUntil') AS fingerprint, outcome, result, created_at FROM ${REQUESTS} WHERE request_id=? AND COALESCE(json_extract(fingerprint,'$.retryUntil'),9007199254740991)>?`,
       [requestId, Date.now()],

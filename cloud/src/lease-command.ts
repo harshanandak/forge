@@ -1,5 +1,6 @@
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { decideLease } from "../../src/contract/lease.ts";
+import { canonicalJson } from "../../src/core/config/pointer.ts";
 import type {
   ForgeError,
   LeaseHolder,
@@ -17,9 +18,18 @@ export interface LeaseCommand {
   readonly generation: number | null;
   readonly rawId: string;
   readonly requestId: string;
-  readonly fingerprint: string;
   readonly scope: ReceiptScope;
 }
+
+export const leaseFingerprint = ({
+  scope,
+  route,
+  subject,
+  holder,
+  generation,
+  ttlMs,
+}: LeaseCommand): string =>
+  canonicalJson({ scope, route, subject, holder, generation, ttlMs });
 
 export const requestConflict = (): ForgeFailure =>
   new ForgeFailure({
@@ -42,8 +52,8 @@ export function replayLease(
 ): LeaseRecord {
   if (outcome !== "ok") throw new ForgeFailure(recorded as ForgeError);
   const first = recorded as LeaseRecord;
-  if (route === "release") return first;
   const current = read();
+  if (route === "release") return first;
   if (
     current !== undefined &&
     decideLease(current, {
