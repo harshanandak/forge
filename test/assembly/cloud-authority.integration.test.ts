@@ -3974,55 +3974,51 @@ const CLOSED = { ...ISSUE, status: "closed", revision: 4 };
 const VERIFIED_CLOSE = { id: "forge-1", pr: 490 };
 const verifiedClosed = { ...CLOSED, receipt: "verified-1" };
 
-for (const [
-  code,
-  status,
-  message,
-  expectedCode = code,
-  expectedMessage = `The Forge cloud refused the request (${code}).`,
-] of [
-  ["RECEIPT_INVALID", 400, "Missing or unapproved workflow evidence"],
-  ["RECEIPT_HEAD_MISMATCH", 409, "Workflow must cover merge commit"],
-  ["PR_NOT_MERGED", 409, "PR has not landed on target"],
-  [
-    "RECEIPT_INVALID",
-    200,
-    "Missing or unapproved workflow evidence",
-    "UNAVAILABLE",
-    NOT_USABLE,
-  ],
+for (const [code, status, wrongStatus, message] of [
+  ["RECEIPT_INVALID", 400, 200, "Missing or unapproved workflow evidence"],
+  ["RECEIPT_HEAD_MISMATCH", 409, 400, "Workflow must cover merge commit"],
+  ["PR_NOT_MERGED", 409, 200, "PR has not landed on target"],
 ] as const)
-  test(`CLI verified close reports ${expectedCode} for ${code} at HTTP ${status}`, () =>
-    using(
-      {
-        steps: [
-          () =>
-            fx.json(
-              {
-                ok: false,
-                status: "FAIL",
-                error: { code, message, retry: "never" },
-                warnings: [],
-              },
-              status,
-            ),
-        ],
-      },
-      async (r) => {
-        const done = await runCli(
-          r.assembly.catalog,
-          ["issue", "close", "forge-1", "--pr", "490"],
-          { caller: "agent", context: holding(r, { leaseGeneration: 3 }) },
-        );
-        expect(done.envelope).toMatchObject({
-          ok: false,
-          status: "FAIL",
-          error: { code: expectedCode, message: expectedMessage },
-        });
-        expect(done.exitCode).toBe(1);
-        expect(sent(r)).toEqual(["issue.close"]);
-      },
-    ));
+  for (const [op, httpStatus, expectedCode, expectedMessage] of [
+    ["close", status, code, `The Forge cloud refused the request (${code}).`],
+    ["close", wrongStatus, "UNAVAILABLE", NOT_USABLE],
+    ["show", status, "UNAVAILABLE", NOT_USABLE],
+  ] as const)
+    test(`CLI issue ${op} reports ${expectedCode} for ${code} at HTTP ${httpStatus}`, () =>
+      using(
+        {
+          steps: [
+            () =>
+              fx.json(
+                {
+                  ok: false,
+                  status: "FAIL",
+                  error: { code, message, retry: "never" },
+                  warnings: [],
+                },
+                httpStatus,
+              ),
+          ],
+        },
+        async (r) => {
+          const prArgs = op === "close" ? ["--pr", "490"] : [];
+          const done = await runCli(
+            r.assembly.catalog,
+            ["issue", op, "forge-1", ...prArgs],
+            {
+              caller: "agent",
+              context: holding(r, op === "close" ? { leaseGeneration: 3 } : {}),
+            },
+          );
+          expect(done.envelope).toMatchObject({
+            ok: false,
+            status: "FAIL",
+            error: { code: expectedCode, message: expectedMessage },
+          });
+          expect(done.exitCode).toBe(1);
+          expect(sent(r)).toEqual([`issue.${op}`]);
+        },
+      ));
 
 for (const surface of ["CLI", "MCP", "catalog"] as const)
   for (const [name, authority, extra, flags, code, exit, requests] of [
