@@ -924,13 +924,11 @@ test.each([
       });
       const pending = (
         reply.envelope as unknown as {
-          result: { request: string; url: string };
+          result: { request: string };
         }
       ).result;
       expect(pending.request).toMatch(/^[a-f0-9-]+$/);
-      expect(pending.url).toBe(
-        `https://w.example/lane-approval/${pending.request}`,
-      );
+      expect(pending).not.toHaveProperty("url");
       const after = f.snapshot();
       expect((await f.send(request)).envelope).toEqual(reply.envelope);
       expect(f.snapshot()).toBe(after);
@@ -1156,11 +1154,9 @@ const pageTicket = (page: { text: string }, action: string) =>
     `/${action}"><input type="hidden" name="ticket" value="([^"]+)"`,
   ).exec(page.text)?.[1] ?? "";
 async function browserFixture(
-  scope: "all" | "issue" = "all",
+  scope: "all" | "issue" | "chat" = "all",
   issuer = "https://identity.example",
   verify?: NonNullable<DeviceBrowserOptions["upstream"]>["verify"],
-  id = "work-7",
-  prefix?: string,
 ) {
   const begun: { state: string; verifier: string }[] = [];
   const spent = new Set<string>();
@@ -1192,20 +1188,9 @@ async function browserFixture(
       },
     },
   });
-  if (prefix !== undefined)
-    for (const key of ["issue:work-7", "issue:work-8"]) {
-      const issue = f.owner.get("forge/work", key)!;
-      f.owner.put(
-        "forge/work",
-        key,
-        { ...(issue.value as object), prefix },
-        actor,
-        { expectRevision: issue.revision },
-      );
-    }
   f.env.CLERK_ISSUER = issuer;
   f.put("lane-control:global", running);
-  const input = scope === "all" ? { all: true } : { id };
+  const input = scope === "issue" ? { id: "work-7" } : { all: true };
   await f.send(call("lane.stop", input, "browser-stop"));
   const reply = await f.send(call("lane.resume", input, "browser-ask"));
   expect(reply.verdict).toEqual(["FAIL", "APPROVAL_REQUIRED", 1]);
@@ -1215,6 +1200,7 @@ async function browserFixture(
       result: { request: string; expiresAt: string };
     }
   ).result;
+  if (scope !== "chat") seedLegacyApproval(f, pending.request);
   const path = `/lane-approval/${pending.request}`;
   const shown = await f.browser(path);
   const cookie = pageCookie(shown);
@@ -1487,6 +1473,17 @@ const approvalRows = (f: Fixture) =>
       ),
     ) as { requests: LaneApproval[] }
   ).requests;
+function seedLegacyApproval(f: Fixture, request: string) {
+  const requests = approvalRows(f).map((row) => {
+    if (row.request !== request) return row;
+    const { binding: _binding, ...legacy } = row;
+    return { ...legacy, url: `https://w.example/lane-approval/${request}` };
+  });
+  f.db.run(`UPDATE ${LANE_APPROVALS} SET state=? WHERE id=1`, [
+    JSON.stringify({ requests }),
+  ]);
+}
+
 const ownerClaims: IdentityClaims = {
   issuer: "https://identity.example",
   subject: "user_Owner1",
@@ -1508,13 +1505,20 @@ async function resumeFixture(
   id = "work-7",
   prefix?: string,
 ) {
-  const f = await browserFixture(
-    scope,
-    undefined,
-    async () => ownerProof(),
-    id,
-    prefix,
-  );
+  const f = await fixture();
+  if (prefix !== undefined)
+    for (const key of ["issue:work-7", "issue:work-8"]) {
+      const issue = f.owner.get("forge/work", key)!;
+      f.owner.put(
+        "forge/work",
+        key,
+        { ...(issue.value as object), prefix },
+        actor,
+        { expectRevision: issue.revision },
+      );
+    }
+  const target: RelayScope = scope === "all" ? { all: true } : { id };
+  await stopForRelay(f, target);
   for (const id of scope === "all" ? ["work-7", "work-8"] : ["work-8"])
     f.put(`lane-control:${id}`, {
       version: 1,
@@ -1523,16 +1527,8 @@ async function resumeFixture(
       epoch: 4,
       stoppedAt: new Date(now).toISOString(),
     });
-  const back = await laneReturn(f);
-  expect(
-    (await f.browser(back.path, undefined, { Cookie: back.cookie }, true))
-      .status,
-  ).toBe(200);
-  const input = {
-    ...(scope === "all" ? { all: true } : { id }),
-    approval: { request: f.pending.request },
-  };
-  return { ...f, input, resume: call("lane.resume", input, "consume") };
+  const { input, complete } = await askForRelay(f, target);
+  return { ...f, input, resume: complete };
 }
 const replaceApproval = (f: Fixture, changes: Partial<LaneApproval>) =>
   f.db.run(`UPDATE ${LANE_APPROVALS} SET state=? WHERE id=1`, [
@@ -1556,7 +1552,7 @@ test.each([
       expect((await control(f, id)).result).toMatchObject({ stopped: true });
       expect(approvalRows(f)[0]).toMatchObject({
         scope: { id: "work-7" },
-        status: "approved",
+        status: "pending",
       });
       const issue = f.owner.get("forge/work", "issue:work-7");
       if (prefix !== undefined) expect(issue!.value).toMatchObject({ prefix });
@@ -1665,6 +1661,9 @@ test.each([{ all: true }, { id: "work-7" }] as const)(
         request: input.approval.request,
         scope,
         status: "spent",
+        token: pending!.token,
+        device: pending!.device,
+        session: pending!.session,
         decision: {
           method: "relayed",
           ...chatReply,
@@ -1702,6 +1701,7 @@ test.each([
   "later stop",
   "blank quote",
   "blank source",
+  "credential in quote",
   "browser-approved row",
   "receipt write failure",
 ] as const)(
@@ -1760,6 +1760,15 @@ test.each([
                 ...input.approval,
                 source: { ...chatReply.source, thread: " \t" },
               },
+            },
+          };
+          break;
+        case "credential in quote":
+          attempt = {
+            ...complete,
+            input: {
+              ...input,
+              approval: { ...input.approval, quote: "yes fct_example" },
             },
           };
           break;
@@ -1853,8 +1862,22 @@ test("chat relay red 5: completion replay keeps a later stop and epoch", async (
   }
 }, 10_000);
 
+test("chat relay completes without a Clerk redirect URI", async () => {
+  const f = await fixture();
+  try {
+    f.env.CLERK_REDIRECT_URI = "";
+    const scope = { all: true } as const;
+    await stopForRelay(f, scope);
+    const { complete } = await askForRelay(f, scope);
+    expect((await f.send(complete)).status).toBe(200);
+    expect((await control(f)).result).toMatchObject({ stopped: false });
+  } finally {
+    f.close();
+  }
+}, 10_000);
+
 test("chat relay refuses a newly issued request at the old browser URLs", async () => {
-  const f = await browserFixture();
+  const f = await browserFixture("chat");
   try {
     const before = f.snapshot();
     const approve = await f.submit();
@@ -1964,7 +1987,7 @@ test.each(["all", "issue"] as const)(
 );
 
 test.each([
-  ["pending", "APPROVAL_REQUIRED"],
+  ["legacy pending", "APPROVAL_REQUIRED"],
   ["denied", "APPROVAL_REQUIRED"],
   ["spent", "APPROVAL_REQUIRED"],
   ["expired", "APPROVAL_REQUIRED"],
@@ -1985,11 +2008,16 @@ test.each([
     const f = await resumeFixture(mode === "all later stop" ? "all" : "issue");
     try {
       let input: object = f.input;
-      if (["pending", "denied", "spent"].includes(mode))
+      if (mode === "legacy pending")
+        seedLegacyApproval(f, f.input.approval.request);
+      if (["denied", "spent"].includes(mode))
         replaceApproval(f, { status: mode as LaneApproval["status"] });
       if (mode === "expired") f.clock.mockReturnValue(now + 600_000);
       if (mode === "missing")
-        input = { ...f.input, approval: { request: "missing" } };
+        input = {
+          ...f.input,
+          approval: { ...f.input.approval, request: "missing" },
+        };
       if (["epoch", "global stop", "all later stop"].includes(mode))
         await f.send(
           call(
@@ -2009,7 +2037,7 @@ test.each([
         input = {
           ...f.input,
           approval: {
-            ...f.input.approval,
+            request: f.input.approval.request,
             [mode]:
               mode === "quote" ? "yes" : { harness: "test", thread: "owner" },
           },
@@ -2552,6 +2580,7 @@ test.each(["approve", "deny"])(
       const otherId = (
         other.envelope as unknown as { result: { request: string } }
       ).result.request;
+      seedLegacyApproval(f, otherId);
       for (let n = 0; n < 257; n++) {
         const page = await f.browser(f.path);
         const reply = await f.browser(

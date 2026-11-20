@@ -1,3 +1,4 @@
+import Memory from "../../src/blocks/memory/schemas/defs.json" with { type: "json" };
 import Output from "../../src/blocks/work/schemas/lane-resume.output.json" with { type: "json" };
 import type {
   LaneControl,
@@ -10,6 +11,7 @@ import type { SqlDatabase } from "../../src/ports/store.ts";
 import type { CommandRun } from "./issue-commands.ts";
 import { fail } from "./issue-read.ts";
 import { LaneControlStore } from "./lane-control-store.ts";
+import { carriesToken } from "./tokens.ts";
 
 const NS = "forge/work";
 export const LANE_APPROVALS = "domain_cloud_lane_approvals";
@@ -23,9 +25,15 @@ export interface ApprovalRequired {
   readonly request: string;
   readonly scope: LaneScope;
   readonly expiresAt: string;
-  readonly url: string;
 }
+type Relay = {
+  request: string;
+  quote: string;
+  source: { harness: string; thread: string; message?: string; link?: string };
+};
+type Decision = Omit<Relay, "request"> & { method: "relayed"; at: string };
 export interface LaneApproval extends ApprovalRequired {
+  readonly binding?: string;
   readonly project: string;
   readonly incarnation: string;
   readonly epoch: number;
@@ -35,11 +43,8 @@ export interface LaneApproval extends ApprovalRequired {
   readonly token: string;
   readonly status:
     "pending" | "approved" | "denied" | "expired" | "stale" | "spent";
-  readonly decision?: {
-    readonly issuer: string;
-    readonly subject: string;
-    readonly at: string;
-  };
+  readonly decision?:
+    Decision | { issuer: string; subject: string; at: string };
 }
 
 /** Pure read: an old request never becomes current again after expiry or a new stop. */
@@ -55,50 +60,122 @@ export function laneApprovalStatus(
     : row.status;
 }
 
-export function checkedApproval(value: unknown): ApprovalRequired {
-  if (validateWithSchema(Output.$defs.ApprovalRequired, value).length > 0)
-    throw fail("INTERNAL", "Lane approval result is not valid");
-  return value as ApprovalRequired;
+export function checkedRelay(value: unknown): Relay {
+  const relay = value as Relay;
+  if (
+    validateWithSchema(Memory.$defs.RelayedApproval, value).length > 0 ||
+    [relay.request, relay.quote, ...Object.values(relay.source)].some(
+      (text) => !text.trim() || carriesToken(text),
+    )
+  )
+    throw fail(
+      "INPUT_INVALID",
+      "Relay the owner's verbatim reply and its source",
+    );
+  return relay;
 }
 
-/** Called only within commandWrite: consumption rolls back with control and its receipt. */
-export function consumeLaneApproval(
+const freshRequest = () =>
+  fail(
+    "APPROVAL_REQUIRED",
+    "Run lane resume without an approval to get a new request",
+  );
+
+function bindingFields(host: CommandRun, control: LaneControl) {
+  const config = host.approvalConfig ?? {};
+  return {
+    project: host.project,
+    token: host.principal[1],
+    device: host.device,
+    session: host.session ?? null,
+    policyIdentity: digestValue([
+      config.CLERK_ISSUER,
+      config.FORGE_OWNER_SUBJECT,
+      config.CLERK_CLIENT_ID,
+    ]),
+    incarnation: control.incarnation,
+    epoch: control.epoch,
+  };
+}
+
+const bindingOf = (
+  fields: ApprovalRequired & ReturnType<typeof bindingFields>,
+) => digestValue([1, "lane.resume", fields]);
+
+function matchingApproval(
   db: SqlDatabase,
+  owner: StateOwner,
   request: string,
   scope: LaneScope,
   host: CommandRun,
-): LaneApproval {
+  replay = false,
+) {
   const held = db.get(`SELECT state FROM ${LANE_APPROVALS} WHERE id=1`);
-  const state =
+  const requests =
     held === undefined
-      ? { requests: [] }
-      : (JSON.parse(String(held.state)) as { requests: LaneApproval[] });
-  const row = state.requests.find((entry) => entry.request === request);
+      ? []
+      : (JSON.parse(String(held.state)) as { requests: LaneApproval[] })
+          .requests;
+  const row = requests.find((entry) => entry.request === request);
   if (
-    row === undefined ||
-    row.status !== "approved" ||
+    !row?.binding ||
+    row.status !== "pending" ||
+    row.decision !== undefined ||
     !(Date.parse(row.expiresAt) > host.now)
   )
-    throw fail(
-      "APPROVAL_REQUIRED",
-      "Fresh approved owner authorization is required",
-    );
-  const config = host.approvalConfig ?? {};
+    throw freshRequest();
+  if (row.project === host.project && row.token !== host.principal[1])
+    throw freshRequest();
+  const control = new LaneControlStore(owner, host.project).read();
+  const { binding, status: _status, decision: _decision, ...stored } = row;
   if (
-    row.project !== host.project ||
-    digestValue(row.scope) !== digestValue(scope) ||
-    row.policyIdentity !==
-      digestValue([
-        config.CLERK_ISSUER,
-        config.FORGE_OWNER_SUBJECT,
-        config.CLERK_CLIENT_ID,
-      ])
+    !control.ok ||
+    binding !== bindingOf(stored) ||
+    binding !==
+      bindingOf({ ...stored, scope, ...bindingFields(host, control.result) })
   )
-    throw fail("INPUT_CONFLICT", "Lane approval binding changed");
+    throw replay
+      ? freshRequest()
+      : fail("INPUT_CONFLICT", "Lane approval binding changed");
+  return { requests, row };
+}
+
+export function checkApprovalReplay(
+  db: SqlDatabase,
+  owner: StateOwner,
+  prior: ApprovalRequired,
+  scope: LaneScope,
+  host: CommandRun,
+): void {
+  if (validateWithSchema(Output.$defs.ApprovalRequired, prior).length > 0)
+    throw freshRequest();
+  const { row } = matchingApproval(db, owner, prior.request, scope, host, true);
+  if (
+    row.expiresAt !== prior.expiresAt ||
+    digestValue(row.scope) !== digestValue(prior.scope)
+  )
+    throw freshRequest();
+}
+
+export function consumeLaneApproval(
+  db: SqlDatabase,
+  owner: StateOwner,
+  relay: Relay,
+  scope: LaneScope,
+  host: CommandRun,
+): LaneApproval {
+  const { request, quote, source } = relay;
+  const { requests, row } = matchingApproval(db, owner, request, scope, host);
+  const decision: Decision = {
+    method: "relayed",
+    quote,
+    source,
+    at: new Date(host.now).toISOString(),
+  };
   db.run(`UPDATE ${LANE_APPROVALS} SET state=? WHERE id=1`, [
     JSON.stringify({
-      requests: state.requests.map((entry) =>
-        entry.request === request ? { ...entry, status: "spent" } : entry,
+      requests: requests.map((entry) =>
+        entry === row ? { ...row, status: "spent", decision } : entry,
       ),
     }),
   ]);
@@ -158,25 +235,6 @@ export function requestLaneApproval(
       "AUTH_CONFIG_UNAVAILABLE",
       "Lane approval owner policy is unavailable",
     );
-  let origin: string;
-  try {
-    const callback = new URL(String(config.CLERK_REDIRECT_URI));
-    if (
-      callback.protocol !== "https:" ||
-      callback.pathname !== "/callback" ||
-      callback.username ||
-      callback.password ||
-      callback.search ||
-      callback.hash
-    )
-      throw new Error();
-    origin = callback.origin;
-  } catch {
-    throw fail(
-      "AUTH_CONFIG_UNAVAILABLE",
-      "Lane approval origin is unavailable",
-    );
-  }
   const held = db.get(`SELECT state FROM ${LANE_APPROVALS} WHERE id=1`);
   const prior =
     held === undefined
@@ -187,11 +245,13 @@ export function requestLaneApproval(
     (!Array.isArray(prior.requests) || prior.requests.length > 128)
   )
     throw fail("UNAVAILABLE", "Lane approval storage is unavailable");
-  const policyIdentity = digestValue(policy);
+  const fields = bindingFields(host, control.result);
   const rows = (prior?.requests ?? []).map((row) => ({
     ...row,
     status:
-      row.policyIdentity !== policyIdentity || row.project !== host.project
+      row.status === "pending" &&
+      (row.policyIdentity !== fields.policyIdentity ||
+        row.project !== host.project)
         ? ("stale" as const)
         : laneApprovalStatus(row, control.result, host.now),
   }));
@@ -201,13 +261,12 @@ export function requestLaneApproval(
     live.filter((row) => row.device === host.device).length >= 4
   )
     throw fail("UNAVAILABLE", "Lane approval pending request limit reached");
-  const request = crypto.randomUUID();
-  const pending = checkedApproval({
-    request,
+  const pending: ApprovalRequired = {
+    request: crypto.randomUUID(),
     scope,
     expiresAt: new Date(host.now + 600_000).toISOString(),
-    url: `${origin}/lane-approval/${request}`,
-  });
+  };
+  const row = { ...pending, ...fields };
   // Like loginStore, replace private state without copying trimmed requests into events.
   db.run(
     `INSERT INTO ${LANE_APPROVALS} (id, state) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET state=excluded.state`,
@@ -216,17 +275,7 @@ export function requestLaneApproval(
         requests: [
           ...rows.filter((row) => row.status !== "pending").slice(-64),
           ...live,
-          {
-            ...pending,
-            project: host.project,
-            incarnation: control.result.incarnation,
-            epoch: control.result.epoch,
-            policyIdentity,
-            device: host.device,
-            session: host.session ?? null,
-            token: host.principal[1],
-            status: "pending",
-          },
+          { ...row, binding: bindingOf(row), status: "pending" },
         ],
       }),
     ],

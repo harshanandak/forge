@@ -125,7 +125,7 @@
     },
     "lane.resume": {
       "title": "Resume lanes",
-      "summary": "Clear the stop flag for one lane or all lanes. It restarts spending, so it needs approval: call once without it to get a request. Locally, approval is {request, quote, source}. Cloud-bound, approval is {request} only; quote and source are refused.",
+      "summary": "Clear the stop for one lane or all lanes and restart spending. Call without approval to get a request. On cloud, show result.ask in chat and wait up to 10 minutes for a clear yes. Retry the same scope with approval: {request, quote, source}, copying the reply exactly.",
       "examples": [
         {
           "input": {

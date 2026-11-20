@@ -135,19 +135,7 @@ function unserved(declared: string, input: unknown): ForgeFailure | undefined {
       "INPUT_INVALID",
       `${declared} was not given its input to check before a cloud request.`,
     );
-  const { reopen, reason, receipt, approval } = (input ?? {}) as Record<
-    string,
-    unknown
-  >;
-  const local = approval as { quote?: unknown; source?: unknown } | undefined;
-  if (
-    declared === "lane.resume" &&
-    (local?.quote !== undefined || local?.source !== undefined)
-  )
-    return fail(
-      "INPUT_INVALID",
-      "Cloud resume accepts only an approval request id",
-    );
+  const { reopen, reason, receipt } = (input ?? {}) as Record<string, unknown>;
   const claim =
     declared === "issue.claim" &&
     (reopen !== undefined || reason !== undefined);

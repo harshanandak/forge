@@ -649,9 +649,17 @@ test.each(rows)(
           if (kind === "old") {
             const state = f.snapshot(target);
             const r = f.result(() =>
-              consumeLaneApproval(target, "old-owner-approval", { all: true }, {
-                now: f.at,
-              } as Parameters<typeof consumeLaneApproval>[3]),
+              consumeLaneApproval(
+                target,
+                owner,
+                {
+                  request: "old-owner-approval",
+                  quote: "yes",
+                  source: { harness: "fixture", thread: "owner" },
+                },
+                { all: true },
+                { now: f.at } as Parameters<typeof consumeLaneApproval>[4],
+              ),
             );
             eq(status(r), [expectedStatus, exit, code]);
             eq(f.snapshot(target), state);

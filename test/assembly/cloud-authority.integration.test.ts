@@ -6173,7 +6173,7 @@ test.each(acceptance)(
 );
 
 const PENDING_APPROVAL_MESSAGE =
-  "Owner approval is still required: the approval request is pending, denied or expired. Run lane resume without an approval to get a new request.";
+  "Owner approval is still required. Run lane resume without an approval to get a new request.";
 const SERVER_APPROVAL_MESSAGE =
   "Visit https://elsewhere.example.test/approve to approve";
 const LANE_REQUEST = "00000000-0000-4000-8000-000000000008";
@@ -6181,7 +6181,6 @@ const LANE_APPROVAL = {
   request: LANE_REQUEST,
   scope: { id: "work-1" },
   expiresAt: iso(NOW + 60_000),
-  url: `${fx.ORIGIN}/lane-approval/${LANE_REQUEST}`,
 };
 const LANE_CONTROL = { incarnation: "cloud-1", epoch: 2, stopped: true };
 const laneRequired = (result: object = LANE_APPROVAL) =>
@@ -6202,11 +6201,7 @@ const laneRequired = (result: object = LANE_APPROVAL) =>
   );
 const laneContext = (r: Rig) => r.request("lane.control", {}).context;
 
-const chatChallenge = {
-  request: LANE_REQUEST,
-  scope: { id: "work-1" },
-  expiresAt: iso(NOW + 60_000),
-};
+const chatChallenge = LANE_APPROVAL;
 const chatRelay = {
   request: LANE_REQUEST,
   quote: " \tYes, resume this lane.\n",
@@ -6413,7 +6408,7 @@ for (const [name, op, input, result, dryRun] of [
   [
     "approved resume",
     "lane.resume",
-    { id: "forge-1", approval: { request: LANE_REQUEST } },
+    { id: "forge-1", approval: chatRelay },
     { resumed: "work-1" },
     false,
   ],
@@ -6482,7 +6477,7 @@ for (const [surface, plain, message = SERVER_APPROVAL_MESSAGE] of [
           const before = inventory(r.s.dir);
           const input = {
             id: "forge-1",
-            ...(plain ? { approval: { request: LANE_REQUEST } } : {}),
+            ...(plain ? { approval: chatRelay } : {}),
           };
           const context = laneContext(r);
           let result: ResultEnvelope;
@@ -6497,7 +6492,7 @@ for (const [surface, plain, message = SERVER_APPROVAL_MESSAGE] of [
             expect(cli.exitCode).toBe(1);
             if (!plain) {
               expect(cli.stdout).toContain(LANE_REQUEST);
-              expect(cli.stdout).toContain(LANE_APPROVAL.url);
+              expect(cli.stdout).toContain("Resume lane work-1");
             } else {
               expect(cli.stdout).toContain(PENDING_APPROVAL_MESSAGE);
               expect(cli.stdout).not.toContain(message);
@@ -6527,7 +6522,12 @@ for (const [surface, plain, message = SERVER_APPROVAL_MESSAGE] of [
                     message: PENDING_APPROVAL_MESSAGE,
                   },
                 }
-              : { result: LANE_APPROVAL }),
+              : {
+                  result: {
+                    ...LANE_APPROVAL,
+                    ask: `Resume lane work-1 in Forge project ${fx.PROJECT}? Forge can dispatch work and start spending calls and time again. Please reply here before 2026-11-11 00:01 UTC.`,
+                  },
+                }),
           });
           if (plain) {
             expect(JSON.stringify(result)).not.toContain(message);
@@ -6544,21 +6544,6 @@ for (const [surface, plain, message = SERVER_APPROVAL_MESSAGE] of [
   );
 
 for (const [name, op, input, dryRun, code, exit] of [
-  [
-    "local reply",
-    "lane.resume",
-    {
-      all: true,
-      approval: {
-        request: LANE_REQUEST,
-        quote: "yes",
-        source: { harness: "fixture", thread: "fixture" },
-      },
-    },
-    false,
-    "INPUT_INVALID",
-    6,
-  ],
   [
     "quote alone",
     "lane.resume",
@@ -6611,7 +6596,10 @@ for (const [name, result] of [
   ],
   [
     "http",
-    { ...LANE_APPROVAL, url: LANE_APPROVAL.url.replace("https:", "http:") },
+    {
+      ...LANE_APPROVAL,
+      url: `http://forge.example.test/lane-approval/${LANE_REQUEST}`,
+    },
   ],
   [
     "another path",
@@ -6627,7 +6615,7 @@ for (const [name, result] of [
   ["missing request", { ...LANE_APPROVAL, request: undefined }],
   ["invalid expiry", { ...LANE_APPROVAL, expiresAt: "tomorrow" }],
   ["an extra field", { ...LANE_APPROVAL, extra: true }],
-  ["success with a valid same-origin pending approval", LANE_APPROVAL],
+  ["success with a valid pending approval", LANE_APPROVAL],
   [
     "success with another origin",
     {
@@ -6637,7 +6625,10 @@ for (const [name, result] of [
   ],
   [
     "success with http",
-    { ...LANE_APPROVAL, url: LANE_APPROVAL.url.replace("https:", "http:") },
+    {
+      ...LANE_APPROVAL,
+      url: `http://forge.example.test/lane-approval/${LANE_REQUEST}`,
+    },
   ],
   [
     "success with another path",

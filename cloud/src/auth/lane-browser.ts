@@ -154,6 +154,7 @@ export async function laneRoute(
     const row = rows.find((entry) => entry.request === id);
     if (
       row === undefined ||
+      row.binding !== undefined ||
       row.project !== env.FORGE_CLOUD_PROJECT ||
       row.policyIdentity !==
         digestValue([
