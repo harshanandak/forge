@@ -7,7 +7,7 @@ Forge 0.0.1 supports local project storage. The standard Worker entry points ref
 A Cloudflare Worker with one SQLite Durable Object per project. It decides who holds a lease on a
 subject. The code is in `cloud/`.
 
-Release acceptance follows [the release runbook](../release.md) and the two-machine supplement below. Owner decision V001 keeps the temporary prerelease candidate from `package.json` for now, with the beta-tag default; the owner sets the final version at release time. The current workflow publishes to `next`, then promotes prereleases to `beta` and stable versions to `latest` after readback and the second owner approval. Never substitute a tag, package name or version during proof.
+Follow [the release runbook](../release.md) for 0.0.1. The two-machine supplement below applies to the v3 cloud launch. Owner decision V001 keeps the temporary prerelease candidate from `package.json` for now, with the beta-tag default; the owner sets the final version at release time. The current workflow publishes to `next`, then promotes prereleases to `beta` and stable versions to `latest` after readback and the second owner approval. Never substitute a tag, package name or version during proof.
 
 ## Installed release and two-machine proof
 
@@ -147,7 +147,7 @@ npm audit signatures --prefix "$REGISTRY_PREFIX" --json --include-attestations >
 - Use new project names, new isolated Workers (each admits one project), new admin token files, new checkouts with new project identities, new prefixes and caches, and fresh logins and approvals on A and B. A binding or credential from the candidate run is never reused.
 - Record the `RELEASE_RUN` the owner supplies. Agents never create it.
 
-Owner-only handoff: after the reviewed version merges, all prerequisites/main CI and candidate proof pass, verify the GitHub `release` environment actually requires owner approval for both publish and promote, main-only deployment and no administrator bypass. Check npm trusted publishing and dist-tag permission. An environment name in YAML is not evidence. If policy or unused-version availability fails, stop; never fall back to an agent token or a different artifact.
+Owner-only handoff for the v3 cloud launch: after the reviewed version merges, all prerequisites/main CI and candidate proof pass, verify the GitHub `release` environment actually requires owner approval for both publish and promote, main-only deployment and no administrator bypass. Check npm trusted publishing and dist-tag permission. An environment name in YAML is not evidence. If policy or unused-version availability fails, stop; never fall back to an agent token or a different artifact.
 
 Owner-only commands, never for agents to execute:
 
@@ -159,7 +159,7 @@ RELEASE_RUN=$(gh run list --repo harshanandak/forge --workflow release.yml --com
 gh run view "$RELEASE_RUN" --repo harshanandak/forge --web
 ```
 
-The first approval publishes the verified candidate archive to `next`. Withhold the second approval until full public-registry two-machine proof is accepted, then review that same run in the browser for promotion to `beta` (prerelease, the owner's default) or `latest` (stable). The owner sets the final version at release time. Preserve every existing integrity, provenance, signature, cold-install and environment gate. Agents never dispatch/approve release, run npm publish or change dist-tags. A published version is immutable; retain failure evidence and diagnose at the failed gate.
+The first approval publishes the verified candidate archive to `next`. For the v3 cloud launch, withhold the second approval until full public-registry two-machine proof is accepted, then review that same run in the browser for promotion to `beta` (prerelease, the owner's default) or `latest` (stable). The owner sets the final version at release time. Preserve every existing integrity, provenance, signature, cold-install and environment gate. Agents never dispatch/approve release, run npm publish or change dist-tags. A published version is immutable; retain failure evidence and diagnose at the failed gate.
 
 ## Routes
 

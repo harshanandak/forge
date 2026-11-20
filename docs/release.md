@@ -12,7 +12,11 @@ Release readback installs its pinned ecosystem fixture tools and requires every 
 
 Run: keep the temporary prerelease `0.1.0-beta.9` (V001); the owner decides the final number before stable. Require an unused version, successful main CI, and dispatch Release with its numeric `run_id` at that same commit. Review verify's version/hash, then approve publish to `next`.
 
-Before promotion, require all three OS readbacks: exact registry version and `next` tag, approved archive integrity, native installed version/clean build commit, npm-verified signatures and provenance from this repository's main release workflow, and the full registry-installed journey. Retain the run logs. The owner runs the two-machine tracker and restore acceptance with that exact version, retains sanitized native outputs, then gives the second approval to promote to `beta`. Never promote from version/help output alone or substitute phase names for acceptance. The automated journey uses isolated fixtures; it does not prove live restore or tracker cutover.
+Before promotion, require all three OS readbacks: exact registry version and `next` tag, approved archive integrity, native installed version/clean build commit, npm-verified signatures and provenance from this repository's main release workflow, and the full registry-installed journey. Retain the run logs.
+
+Before giving the second approval to promote to `beta`, the owner reviews the `packed-package` artifact and the SHA-256 printed by the `Pack artifact` job in successful main CI at the release commit. In that same CI run, confirm that the `Pack smoke` step passed in each `Verify (...)` job that runs it. The step checks the archive against that SHA-256. Review the three OS registry readbacks above. Retain the digest and the CI run link with the readback logs. Never promote from version/help output alone or substitute phase names for acceptance.
+
+Forge 0.0.1 supports local project storage only. Cloud projects are outside this release. Live two-machine tracker and restore acceptance returns with the v3 cloud launch. The automated journey uses isolated fixtures; it does not prove live restore or tracker cutover.
 
 Prereleases publish to `next`, and promotion moves `beta`; stable versions move `latest`. Moving `beta` switches anyone installing `forge-workflow@beta` from old to new Forge.
 
