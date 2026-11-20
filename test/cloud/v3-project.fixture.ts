@@ -50,6 +50,7 @@ export function fixture(before?: (sql: string) => void) {
     });
   return {
     db,
+    storage,
     values,
     reads,
     alarms,

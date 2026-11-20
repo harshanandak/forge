@@ -23,7 +23,7 @@ import {
   requestConflict,
 } from "./lease-command.ts";
 import { checkTtl } from "./lease-ttl.ts";
-import { authorityFault } from "./v3-authority.ts";
+import { authorityFault, isDigest, isNat } from "./v3-authority.ts";
 import { TABLE_PROBE } from "./store.ts";
 
 const ROOT = "cloud_v3_root";
@@ -125,8 +125,6 @@ export interface V3Image {
 const fail = (code: string, message: string) =>
   new ForgeFailure({ code, message, retry: "never" });
 const unavailable = () => fail("UNAVAILABLE", "Cloud v3 root is unavailable");
-const isNat = (value: unknown): value is number =>
-  typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 const nat = (value: unknown): number => {
   if (!isNat(value)) throw unavailable();
   return value;
@@ -139,8 +137,6 @@ const parse = (text: unknown): unknown => {
   }
 };
 
-const isDigest = (value: unknown): value is string =>
-  typeof value === "string" && /^sha256:[0-9a-f]{64}$/.test(value);
 const utcDay = (value: unknown) => {
   const time =
     typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)
@@ -254,7 +250,7 @@ function directoryEntry(entry: unknown, byId: ReadonlyMap<string, Page>) {
     target.kind === "directory" ||
     length === 0 ||
     offset + length > target.bytes ||
-    typeof entry.digest !== "string"
+    !isDigest(entry.digest)
   )
     throw unavailable();
   return {
@@ -472,7 +468,8 @@ function validFrame(frame: unknown): frame is Frame & Record<string, unknown> {
     typeof frame.time === "number" &&
     Number.isSafeInteger(frame.time) &&
     frame.time >= 0 &&
-    Array.isArray(frame.events)
+    Array.isArray(frame.events) &&
+    authorityFault(frame) === undefined
   );
 }
 
@@ -533,8 +530,7 @@ export function leaseV3(
   const { route, subject, holder, ttlMs, requestId } = command;
   const result = db.transaction(
     (): { lease: LeaseRecord } | { refusal: ForgeFailure } => {
-      if (readV3Root(db).generation !== 0)
-        throw fail("UNAVAILABLE", GENESIS_LEASE_ONLY);
+      readV3Root(db);
       const fingerprint = leaseFingerprint(command);
       const now = Date.now();
       const read = () => latest(db, "$.lease.subject", subject)?.lease;

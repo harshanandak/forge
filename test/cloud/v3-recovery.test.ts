@@ -66,6 +66,7 @@ const claim = (f: Fixture, owner: string) =>
   );
 const commit = (f: Fixture, ...frames: Json[]) =>
   f.send(`${probe}/commits`, { frames });
+const put = { operation: "fixture.put", time: T0, events: [] };
 const image = (response: { body: unknown }) =>
   (response.body as { value?: { image?: Json } }).value?.image;
 const unavailable = {
@@ -516,6 +517,10 @@ const corruptions: readonly [string, (db: Database) => void][] = [
     (db) => reseal(db, first({ page: "snapshot:9" })),
   ],
   [
+    "a resealed pointer whose digest is not a digest",
+    (db) => reseal(db, first({ digest: "sha256:abc" })),
+  ],
+  [
     "resealed entries out of order",
     (db) => reseal(db, ([a, b, ...rest]) => [b!, a!, ...rest]),
   ],
@@ -551,6 +556,7 @@ for (const [label, corrupt] of corruptions) {
         expect(read).toMatchObject(unavailable);
         expect(read.body).not.toHaveProperty("value");
         expect(await claim(f, "owner-a")).toMatchObject(unavailable);
+        expect(await commit(f, put)).toMatchObject(unavailable);
         expect(f.snapshot()).toEqual(before);
       } finally {
         f.db.close();
@@ -570,7 +576,7 @@ const roster =
   (edit: (pages: Json[]) => Json[]) =>
   (root: Json): Json => ({ ...root, pages: edit(root.pages as Json[]) });
 
-const rootFields: readonly [string, (root: Json) => Json][] = [
+const rootFields: readonly [string, (root: Json) => Json, string?][] = [
   [
     "a format other than forge-cloud-root/3",
     set({ format: "forge-cloud-root/4" }),
@@ -578,11 +584,19 @@ const rootFields: readonly [string, (root: Json) => Json][] = [
   ["an unknown root key", set({ extra: 1 })],
   ["a parent digest that is not a digest", set({ parentDigest: "sha256:abc" })],
   ["a transcript digest that is not a digest", set({ transcriptDigest: 7 })],
+  ["a public digest that is not a digest", set({ publicDigest: "sha256:abc" })],
+  ["a private digest that is not a digest", set({ privateDigest: 7 })],
+  ["namespace watermarks that are null", set({ namespaceWatermarks: null })],
+  ["an empty watermark name", set({ namespaceWatermarks: { "": 1 } })],
   [
     "a namespace watermark below zero",
     set({ namespaceWatermarks: { issue: -1 } }),
   ],
   ["a receipt cutoff that is not a count", set({ receiptCutoff: 1.5 })],
+  [
+    "active days that are not a count",
+    set({ activeDays: 1.5, lastActiveDay: "2026-11-20" }),
+  ],
   [
     "a last active day with no active days",
     set({ lastActiveDay: "2026-11-20" }),
@@ -602,6 +616,22 @@ const rootFields: readonly [string, (root: Json) => Json][] = [
     ]),
   ],
   [
+    "a page hash that is not a digest",
+    roster(([d, s, t]) => [d!, { ...s, hash: "sha256:abc" }, t!]),
+  ],
+  [
+    "an interleaved roster",
+    (root) => {
+      const { body, ...late } = directory([], 1);
+      const bytes = root.bytes as Json;
+      return {
+        ...roster(([d, s, t]) => [d!, s!, late, t!])(root),
+        bytes: { ...bytes, directory: Number(bytes.directory) + bytesOf(body) },
+      };
+    },
+    "INSERT INTO cloud_v3_pages VALUES ('directory:1', '[]')",
+  ],
+  [
     "an unknown page kind",
     roster(([d, s, t]) => [d!, { ...s, kind: "archive" }, t!]),
   ],
@@ -618,7 +648,7 @@ const rootFields: readonly [string, (root: Json) => Json][] = [
   ],
 ];
 
-for (const [label, edit] of rootFields) {
+for (const [label, edit, sql] of rootFields) {
   test(
     `v3 recovery refuses a sealed root with ${label} and appends nothing`,
     async () => {
@@ -627,6 +657,7 @@ for (const [label, edit] of rootFields) {
         await snapshotWithClaim(f);
         expect((await f.send(probe)).status).toBe(200);
         resealRoot(f.db, edit);
+        if (sql !== undefined) f.db.run(sql);
         f.restart();
         const before = f.snapshot();
         const read = await f.send(probe);
@@ -682,6 +713,25 @@ const tails: readonly [string, string][] = [
     "a tail frame with an unknown key",
     "UPDATE cloud_v3_commits SET body=json_set(body,'$.changes',json('[]')) WHERE sequence=2",
   ],
+  ...(
+    [
+      ["an empty operation", "$.operation", "''"],
+      ["a negative time", "$.time", "-1"],
+      ["events that are not a list", "$.events", "json('{}')"],
+      ["an empty lease", "$.lease", "json('{}')"],
+      ["a null lease", "$.lease", "json('null')"],
+      ["a lease with a number subject", "$.lease.subject", "7"],
+      ["an empty outcome", "$.outcome", "json('{}')"],
+      ["an empty witness", "$.witness", "json('{}')"],
+    ] as const
+  ).map(([label, path, value]): [string, string] => [
+    `a tail frame with ${label}`,
+    `UPDATE cloud_v3_commits SET body=json_set(body,'${path}',${value}) WHERE sequence=2`,
+  ]),
+  [
+    "a tail frame with a witness but no lease or outcome",
+    "UPDATE cloud_v3_commits SET body=json_remove(body,'$.lease','$.outcome') WHERE sequence=2",
+  ],
 ];
 
 for (const [label, sql] of tails) {
@@ -691,8 +741,9 @@ for (const [label, sql] of tails) {
       const f = fixture();
       try {
         expect((await f.send(probe, {})).status).toBe(200);
-        const frame = { operation: "fixture.put", time: T0, events: [] };
-        expect(await commit(f, frame, frame, frame)).toMatchObject({
+        expect(await commit(f, put)).toMatchObject({ status: 200 });
+        expect(await claim(f, "owner-a")).toMatchObject({ status: 200 });
+        expect(await commit(f, put)).toMatchObject({
           status: 200,
           body: { value: { head: 3 } },
         });
@@ -703,6 +754,7 @@ for (const [label, sql] of tails) {
         expect(read).toMatchObject(unavailable);
         expect(read.body).not.toHaveProperty("value");
         expect(await claim(f, "owner-a")).toMatchObject(unavailable);
+        expect(await commit(f, put)).toMatchObject(unavailable);
         expect(f.snapshot()).toEqual(before);
       } finally {
         f.db.close();
