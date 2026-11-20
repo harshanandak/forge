@@ -128,6 +128,7 @@ test("lane close retries an injected landing-comment write failure exactly once"
       write: files.set.bind(files),
       remove: files.delete.bind(files),
       inspect() {},
+      lane: () => (flags.present ? "worktree" : "missing"),
       list: () => [...files.keys()],
       lock: () => ({ release() {} }),
     },

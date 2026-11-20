@@ -5526,31 +5526,19 @@ const operations: Operations<WorkOperations> = {
           progress.mergeCommit !== mergeCommit)
       )
         refuse("INPUT_CONFLICT", "PR changed since close began");
-      let unreadable = "";
-      const place = async () => {
-        const probe = await execute([
-          "-C",
-          worktree,
-          "rev-parse",
-          "--is-inside-work-tree",
-          "--show-prefix",
-        ]);
-        if (probe.exitCode !== 0) {
-          unreadable =
-            probe.stderr
-              .split(/\r?\n/)
-              .map((line) => line.trim())
-              .find(Boolean) ?? `git -C exited ${probe.exitCode}`;
-          try {
-            return files.exists(worktree) ? "unknown" : "missing";
-          } catch {
-            return "unknown";
-          }
+      let unreadable = "",
+        empty = false;
+      const place = () => {
+        try {
+          const state = files.lane(worktree, `${slash(checkout)}/.worktrees`);
+          empty = state === "empty";
+          return empty ? "leftover" : state;
+        } catch (error) {
+          unreadable = error instanceof Error ? error.message : String(error);
+          return "unknown";
         }
-        const [inside, prefix] = probe.stdout.split(/\r?\n/);
-        return inside === "true" && prefix === "" ? "worktree" : "leftover";
       };
-      const exists = async () => (await place()) === "worktree";
+      const exists = () => place() === "worktree";
       const discardable = (config as WorkConfig | undefined)?.lanes
         ?.discardIgnored ?? ["node_modules/", "dist/"];
       let ignored: string[] = [];
@@ -5602,7 +5590,7 @@ const operations: Operations<WorkOperations> = {
           );
         }
       };
-      if (await exists()) await clean();
+      if (exists()) await clean();
       else if (!progress) refuse("INPUT_CONFLICT", "Lane checkout is missing");
       current = item(state, get(state, id, input.id), ids);
       const links = appended(state, `link:${id}:`),
@@ -5711,7 +5699,7 @@ const operations: Operations<WorkOperations> = {
           ["git", "-C", worktree, "merge", "--ff-only", pull.headRefOid!],
           resume,
         ];
-        if (!hasBranch || !(await exists()))
+        if (!hasBranch || !exists())
           refuse("INPUT_CONFLICT", "Local head differs from PR head");
         await run(["fetch", "origin", `pull/${input.pr}/head`], worktree);
         if (
@@ -5842,7 +5830,7 @@ const operations: Operations<WorkOperations> = {
       if (hasBranch && (await run(["rev-parse", ref])) !== head)
         refuse("INPUT_CONFLICT", "Lane head changed during close");
       let reason = "The lane directory is no longer a git worktree";
-      let found = await place(),
+      let found = place(),
         removed = false;
       if (found === "worktree") {
         await clean();
@@ -5866,13 +5854,13 @@ const operations: Operations<WorkOperations> = {
                 .map((line) => line.trim())
                 .find(Boolean) ??
               `git worktree remove exited ${removal.exitCode}`);
-          found = await place();
+          found = place();
         }
       }
       if (found === "unknown")
         refuse(
           "INPUT_CONFLICT",
-          `Issue ${current.id} is ${current.status}, but git cannot read the lane directory ${worktree}: ${unreadable}`,
+          `Issue ${current.id} is ${current.status}, but Forge cannot read the lane directory ${worktree}: ${unreadable}`,
         );
       const trees = (await run(["worktree", "list", "--porcelain", "-z"]))
         .split("\0\0")
@@ -5909,14 +5897,8 @@ const operations: Operations<WorkOperations> = {
       if (deleting && holder !== undefined)
         refuse(
           "INPUT_CONFLICT",
-          `Issue ${current.id} is ${current.status}, but the worktree ${holder} has ${branch} checked out, so the branch was kept`,
+          `Lane close stopped: the worktree ${holder} has ${branch} checked out. Issue ${current.id} is ${current.status}; the branch, registry row and journal were kept. Free the branch in that worktree, then resume`,
         );
-      let empty = false;
-      try {
-        empty = found === "leftover" && files.empty(worktree);
-      } catch {
-        empty = false;
-      }
       if (deleting) await run(["update-ref", "-d", ref, head]);
       if (dropped)
         files.write(

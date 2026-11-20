@@ -71,6 +71,7 @@ export interface CloneFileCondition {
 export interface CloneFileWriteOptions extends CloneFileCondition {
   readonly executable?: boolean;
 }
+export type CloneLaneState = "missing" | "worktree" | "empty" | "leftover";
 export interface CloneFilesService {
   readonly root: string;
   readonly roots: Readonly<Record<CloneFileArea, string>>;
@@ -82,8 +83,7 @@ export interface CloneFilesService {
   write(path: string, text: string, options?: CloneFileWriteOptions): void;
   remove(path: string, options?: CloneFileCondition): void;
   inspect(path: string, area?: CloneFileArea): CloneFileInspection | undefined;
-  exists(path: string): boolean;
-  empty(path: string): boolean;
+  lane(path: string, lanes: string): CloneLaneState;
   list(
     path: string,
     maxEntries: number,
@@ -1174,43 +1174,6 @@ function createCloneFilesAccess(
       throw error;
     }
   }
-  function worktreePath(path: string): string {
-    checkActive();
-    if (!options.read)
-      failure(
-        "EFFECT_UNDECLARED",
-        "Clone path checks require the declared files:read effect",
-      );
-    const refused = (): never =>
-      failure(
-        "INPUT_INVALID",
-        "Clone path checks take a local absolute path inside the main checkout's .worktrees directory",
-      );
-    if (!isAbsolute(path) || /^[\\/]{2}/.test(path)) refused();
-    const resolved = (candidate: string): string => {
-      const rest: string[] = [];
-      for (;;)
-        try {
-          return join(realpathSync.native(candidate), ...rest);
-        } catch (error) {
-          if (errorCode(error) !== "ENOENT" || dirname(candidate) === candidate)
-            throw error;
-          rest.unshift(basename(candidate));
-          candidate = dirname(candidate);
-        }
-    };
-    let boundary = "";
-    try {
-      boundary = realpathSync.native(join(dirname(roots.common), ".worktrees"));
-    } catch {
-      refused();
-    }
-    const target = resolved(path);
-    const inside = relative(boundary, target);
-    if (!inside || /^\.\.(?:[\\/]|$)/.test(inside) || isAbsolute(inside))
-      refused();
-    return target;
-  }
   const service: CloneFilesService = Object.freeze({
     get root(): string {
       checkActive();
@@ -1272,19 +1235,60 @@ function createCloneFilesAccess(
         size: Number(info.size),
       };
     },
-    exists(path: string): boolean {
-      return stat(worktreePath(path)) !== null;
-    },
-    empty(path: string): boolean {
-      const target = worktreePath(path);
+    lane(path: string, lanes: string): CloneLaneState {
+      checkActive();
+      if (!options.read)
+        failure(
+          "EFFECT_UNDECLARED",
+          "Lane path checks require the declared files:read effect",
+        );
+      const local = (candidate: string) =>
+        (process.platform === "win32"
+          ? /^[A-Za-z]:[\\/]/.test(candidate)
+          : /^\/(?!\/)/.test(candidate)) &&
+        !candidate
+          .split(/[\\/]/)
+          .some((segment) => segment === "." || segment === "..");
+      const refused = (): never =>
+        failure(
+          "INPUT_INVALID",
+          "Lane path checks take a local absolute path inside a .worktrees directory",
+        );
+      const within = (base: string, target: string) => {
+        const inside = relative(base, target);
+        if (!inside || /^\.\.(?:[\\/]|$)/.test(inside) || isAbsolute(inside))
+          refused();
+      };
+      if (!local(path) || !local(lanes) || basename(lanes) !== ".worktrees")
+        refused();
+      within(lanes, path);
+      if (stat(lanes) === null) return "missing";
+      let target = path;
+      const rest: string[] = [];
+      for (;;)
+        try {
+          target = join(realpathSync.native(target), ...rest);
+          break;
+        } catch (error) {
+          if (errorCode(error) !== "ENOENT" || dirname(target) === target)
+            throw error;
+          rest.unshift(basename(target));
+          target = dirname(target);
+        }
+      within(realpathSync.native(lanes), target);
       const info = stat(target);
-      if (info === null || !info.isDirectory() || info.isSymbolicLink())
-        return false;
-      const dir = opendirSync(target, { bufferSize: 1 });
+      if (info === null) return "missing";
+      if (!info.isDirectory()) return "leftover";
+      if (stat(join(target, ".git")) !== null) return "worktree";
       try {
-        return dir.readSync() === null;
-      } finally {
-        dir.closeSync();
+        const dir = opendirSync(target, { bufferSize: 1 });
+        try {
+          return dir.readSync() === null ? "empty" : "leftover";
+        } finally {
+          dir.closeSync();
+        }
+      } catch {
+        return "leftover";
       }
     },
     list(

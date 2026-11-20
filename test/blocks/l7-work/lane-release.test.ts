@@ -220,8 +220,7 @@ async function fixture() {
       files.delete(path);
     },
     inspect: () => undefined,
-    exists: () => false,
-    empty: () => false,
+    lane: () => "missing" as const,
     list: () => [],
     lock: () => {
       flags.locked = true;

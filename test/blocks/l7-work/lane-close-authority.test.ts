@@ -109,6 +109,7 @@ async function fixture(seedLink = true) {
     held: "",
     vanishRemove: false,
     emptyFails: false,
+    lanes: "",
     holder: false,
     run: 0,
     checkout: "",
@@ -166,10 +167,15 @@ async function fixture(seedLink = true) {
       get root() {
         return flags.root;
       },
-      exists: (path: string) => path === lane.worktree && flags.present,
-      empty: () => {
-        if (flags.emptyFails) throw new Error("EACCES: permission denied");
-        return flags.held === "";
+      lane: (path: string, lanes: string) => {
+        flags.lanes = lanes;
+        if (flags.denied || path !== lane.worktree)
+          throw new Error("EACCES: permission denied");
+        if (!flags.present) return "missing" as const;
+        if (!flags.leftover) return "worktree" as const;
+        return flags.held === "" && !flags.emptyFails
+          ? ("empty" as const)
+          : ("leftover" as const);
       },
       read: (path: string) => files.get(path),
       write: (path: string, text: string) => {
@@ -559,6 +565,7 @@ test("a retry from another worktree finishes cleanup after the lane directory wa
     const result = (await f.close()) as Record<string, unknown>;
     expect(result).toMatchObject({ status: "closed", removed: true });
     expect(result.leftover).toBeUndefined();
+    expect(f.flags.lanes).toBe("/project/.worktrees");
     expect(f.flags.branch).toBe(false);
     expect(f.files.get("forge-lanes.json")).not.toContain('"/lane"');
     expect(
@@ -661,6 +668,9 @@ test("a lane branch another worktree has checked out is kept with the registry r
     const error = await refusal(() => f.close());
     expect(error.code).toBe("INPUT_CONFLICT");
     expect(error.message).toContain("/elsewhere");
+    expect(error.message).toContain(
+      "branch, registry row and journal were kept",
+    );
     expect(error.observed?.next).toEqual([resume]);
     expect(f.flags.branch).toBe(true);
     expect(

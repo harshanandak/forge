@@ -69,59 +69,66 @@ test("linked worktree areas are independent and missing reads create nothing", (
   expect(files.read("config", 100, "git")).toBe("git");
 });
 
-test("worktree path checks are read-only and stay inside the main checkout's .worktrees directory", () => {
-  const { root, files, options } = fixture();
-  const base = join(root, ".worktrees"),
-    lane = join(base, "lane");
+test("lane checks classify by the filesystem inside the main checkout's .worktrees directory", () => {
+  const { projectRoot, files, options } = fixture();
+  const lanes = join(projectRoot, ".worktrees"),
+    lane = join(lanes, "lane");
+  expect(files.lane(lane, lanes)).toBe("missing");
   mkdirSync(lane, { recursive: true });
-  expect(files.exists(lane)).toBe(true);
-  expect(files.empty(lane)).toBe(true);
+  expect(files.lane(lane, lanes)).toBe("empty");
   writeFileSync(join(lane, "held.txt"), "x");
-  expect(files.empty(lane)).toBe(false);
-  expect(files.exists(join(base, "gone"))).toBe(false);
-  expect(files.empty(join(base, "gone"))).toBe(false);
+  expect(files.lane(lane, lanes)).toBe("leftover");
+  writeFileSync(join(lane, ".git"), "gitdir: elsewhere");
+  expect(files.lane(lane, lanes)).toBe("worktree");
+  expect(files.lane(join(lanes, "gone"), lanes)).toBe("missing");
   const segment = join(lane, "held.txt", "x");
-  if (process.platform === "win32") expect(files.exists(segment)).toBe(false);
-  else expect(() => files.exists(segment)).toThrow(/ENOTDIR/);
+  if (process.platform === "win32")
+    expect(files.lane(segment, lanes)).toBe("missing");
+  else expect(() => files.lane(segment, lanes)).toThrow(/ENOTDIR/);
   for (const path of [
     "relative/lane",
     ".worktrees/lane",
-    "C:\\x",
-    base,
-    join(root, "outside"),
-    join(base, "..", "outside"),
+    lanes,
+    join(projectRoot, "outside"),
+    `${lanes}/lane/../../outside`,
+    `${lanes}/./lane`,
     "\\\\host\\share\\.worktrees\\lane",
     "//host/share/.worktrees/lane",
     "\\\\?\\C:\\x",
     "\\\\.\\C:\\x",
-  ]) {
-    expect(() => files.exists(path)).toThrow(/INPUT_INVALID/);
-    expect(() => files.empty(path)).toThrow(/INPUT_INVALID/);
-  }
-  const denied = createCloneFiles({ ...options, read: false });
-  expect(() => denied.exists(lane)).toThrow(/EFFECT_UNDECLARED/);
-  expect(() => denied.empty(lane)).toThrow(/EFFECT_UNDECLARED/);
-}, 30000);
-
-test("worktree path checks follow a linked .worktrees directory and still refuse escapes", () => {
-  const { root, files } = fixture();
-  const real = join(root, "lanes"),
-    link = join(root, ".worktrees"),
-    elsewhere = join(root, "elsewhere");
-  expect(() => files.exists(join(link, "lane"))).toThrow(/INPUT_INVALID/);
-  mkdirSync(real);
-  mkdirSync(elsewhere);
-  symlinkSync(real, link, "junction");
-  symlinkSync(elsewhere, join(real, "escape"), "junction");
-  expect(files.exists(join(link, "lane"))).toBe(false);
-  expect(files.exists(join(link, "lane", "nested"))).toBe(false);
-  mkdirSync(join(real, "lane"));
-  expect(files.exists(join(link, "lane"))).toBe(true);
-  expect(files.empty(join(link, "lane"))).toBe(true);
-  expect(() => files.exists(join(link, "escape", "lane"))).toThrow(
+    "\\??\\UNC\\host\\share\\.worktrees\\lane",
+    process.platform === "win32"
+      ? "/x/.worktrees/lane"
+      : "C:\\x\\.worktrees\\lane",
+  ])
+    expect(() => files.lane(path, lanes)).toThrow(/INPUT_INVALID/);
+  expect(() => files.lane(lane, projectRoot)).toThrow(/INPUT_INVALID/);
+  expect(() => files.lane(lane, `${lanes}/../.worktrees`)).toThrow(
     /INPUT_INVALID/,
   );
-  expect(() => files.empty(join(link, "escape"))).toThrow(/INPUT_INVALID/);
+  const denied = createCloneFiles({ ...options, read: false });
+  expect(() => denied.lane(lane, lanes)).toThrow(/EFFECT_UNDECLARED/);
+}, 30000);
+
+test("lane checks follow a .worktrees directory linked outside the checkout and still refuse escapes", () => {
+  const { root, projectRoot, files } = fixture();
+  const real = join(root, "lanes"),
+    lanes = join(projectRoot, ".worktrees"),
+    elsewhere = join(root, "elsewhere");
+  mkdirSync(real);
+  mkdirSync(elsewhere);
+  symlinkSync(real, lanes, "junction");
+  symlinkSync(elsewhere, join(real, "escape"), "junction");
+  expect(files.lane(join(lanes, "lane"), lanes)).toBe("missing");
+  expect(files.lane(join(lanes, "lane", "nested"), lanes)).toBe("missing");
+  mkdirSync(join(real, "lane"));
+  expect(files.lane(join(lanes, "lane"), lanes)).toBe("empty");
+  expect(() => files.lane(join(lanes, "escape", "lane"), lanes)).toThrow(
+    /INPUT_INVALID/,
+  );
+  expect(() => files.lane(join(lanes, "escape"), lanes)).toThrow(
+    /INPUT_INVALID/,
+  );
 }, 30000);
 
 test("write authority and cancellation are enforced before creating directories", () => {
