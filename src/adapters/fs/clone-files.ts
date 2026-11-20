@@ -82,6 +82,7 @@ export interface CloneFilesService {
   write(path: string, text: string, options?: CloneFileWriteOptions): void;
   remove(path: string, options?: CloneFileCondition): void;
   inspect(path: string, area?: CloneFileArea): CloneFileInspection | undefined;
+  exists(path: string): boolean;
   list(
     path: string,
     maxEntries: number,
@@ -1232,6 +1233,17 @@ function createCloneFilesAccess(
           (process.platform === "win32" || (info.mode & 0o111n) !== 0n),
         size: Number(info.size),
       };
+    },
+    exists(path: string): boolean {
+      checkActive();
+      if (!options.read)
+        failure(
+          "EFFECT_UNDECLARED",
+          "Clone path checks require the declared files:read effect",
+        );
+      if (!isAbsolute(path) && !win32.isAbsolute(path))
+        failure("INPUT_INVALID", "Clone path checks need an absolute path");
+      return stat(path) !== null;
     },
     list(
       path: string,

@@ -5541,17 +5541,8 @@ const operations: Operations<WorkOperations> = {
               .split(/\r?\n/)
               .map((line) => line.trim())
               .find(Boolean) ?? `git -C exited ${probe.exitCode}`;
-          const root = pathKey(files.root),
-            path = pathKey(worktree);
           try {
-            return path.startsWith(`${root}/`) &&
-              files.inspect(
-                slash(worktree)
-                  .replace(/\/+$/, "")
-                  .slice(root.length + 1),
-              ) === undefined
-              ? "missing"
-              : "unknown";
+            return files.exists(worktree) ? "unknown" : "missing";
           } catch {
             return "unknown";
           }

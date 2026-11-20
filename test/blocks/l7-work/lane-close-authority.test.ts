@@ -102,6 +102,8 @@ async function fixture(seedLink = true) {
     partialRemove: false,
     deniedRemove: false,
     denied: false,
+    failBranchDelete: false,
+    root: "/project",
     leftover: false,
     listed: false,
     held: "",
@@ -158,7 +160,10 @@ async function fixture(seedLink = true) {
         `00000000-0000-4000-8000-${String(++flags.run).padStart(12, "0")}`,
     },
     files: {
-      root: "/project",
+      get root() {
+        return flags.root;
+      },
+      exists: (path: string) => path === lane.worktree && flags.present,
       read: (path: string) => files.get(path),
       write: (path: string, text: string) => {
         files.set(path, text);
@@ -253,6 +258,7 @@ async function fixture(seedLink = true) {
         } else if (args[0] === "update-ref") {
           if (args[2]?.startsWith("refs/forge/lane-close/"))
             flags.privateRefs.delete(args[2]);
+          else if (flags.failBranchDelete) exitCode = 1;
           else flags.branch = false;
         }
         return Promise.resolve({
@@ -523,6 +529,29 @@ test("a lane directory git cannot read after a refused remove keeps the branch, 
     expect(f.flags.present).toBe(false);
     expect(f.flags.branch).toBe(false);
     expect(f.files.get("forge-lanes.json")).not.toContain('"/lane"');
+    expect(f.comments()).toHaveLength(1);
+  } finally {
+    await f.dispose();
+  }
+}, 30000);
+
+test("a retry from another worktree finishes cleanup after the lane directory was removed and the branch delete failed", async () => {
+  const f = await fixture();
+  try {
+    f.flags.failBranchDelete = true;
+    await expect(f.close()).rejects.toThrow("INPUT_CONFLICT");
+    expect(f.flags.present).toBe(false);
+    expect(f.flags.branch).toBe(true);
+    f.flags.failBranchDelete = false;
+    f.flags.root = "/other";
+    const result = (await f.close()) as Record<string, unknown>;
+    expect(result).toMatchObject({ status: "closed", removed: true });
+    expect(result.leftover).toBeUndefined();
+    expect(f.flags.branch).toBe(false);
+    expect(f.files.get("forge-lanes.json")).not.toContain('"/lane"');
+    expect(
+      [...f.files.keys()].some((path) => path.startsWith("forge-lane-close-")),
+    ).toBe(false);
     expect(f.comments()).toHaveLength(1);
   } finally {
     await f.dispose();
