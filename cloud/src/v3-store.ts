@@ -329,6 +329,7 @@ export function recoverV3(db: SqlDatabase): V3Image {
     const frame = typeof body === "string" ? parse(body) : undefined;
     if (
       sequence !== image.head + 1 ||
+      canonicalJson(frame) !== body ||
       !validFrame(frame) ||
       frame.format !== COMMIT_FORMAT ||
       frame.sequence !== sequence

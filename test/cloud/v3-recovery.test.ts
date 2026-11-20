@@ -711,7 +711,7 @@ const tails: readonly [string, string][] = [
   ],
   [
     "a tail frame with an unknown key",
-    "UPDATE cloud_v3_commits SET body=json_set(body,'$.changes',json('[]')) WHERE sequence=2",
+    "UPDATE cloud_v3_commits SET body=json_set(body,'$.zone',json('[]')) WHERE sequence=2",
   ],
   ...(
     [
@@ -728,6 +728,10 @@ const tails: readonly [string, string][] = [
     `a tail frame with ${label}`,
     `UPDATE cloud_v3_commits SET body=json_set(body,'${path}',${value}) WHERE sequence=2`,
   ]),
+  [
+    "a tail frame with a duplicate outcome key",
+    `UPDATE cloud_v3_commits SET body=replace(body,'"outcome":','"outcome":{},"outcome":') WHERE sequence=2`,
+  ],
   [
     "a tail frame with a witness but no lease or outcome",
     "UPDATE cloud_v3_commits SET body=json_remove(body,'$.lease','$.outcome') WHERE sequence=2",
