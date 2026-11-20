@@ -484,11 +484,12 @@ export class Project {
         if (!probe[1] && request.method === "GET")
           return Response.json({ ok: true, value: readV3Root(db) });
         if (request.method === "POST") {
-          const body = await bounded(request);
+          const lease = probe[1] !== "commits" && probe[1];
           const owner = request.headers.get("X-Forge-Owner");
-          if (probe[1] && probe[1] !== "commits") {
-            if (owner === null)
-              throw fail("AUTH_REQUIRED", "A device token is required");
+          if (lease && owner === null)
+            throw fail("AUTH_REQUIRED", "A device token is required");
+          const body = await bounded(request);
+          if (lease && owner !== null) {
             const expiresAt = Number(
               request.headers.get("X-Forge-Owner-Expires"),
             );
