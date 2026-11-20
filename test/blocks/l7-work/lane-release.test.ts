@@ -221,6 +221,7 @@ async function fixture() {
     },
     inspect: () => undefined,
     exists: () => false,
+    empty: () => false,
     list: () => [],
     lock: () => {
       flags.locked = true;

@@ -83,6 +83,7 @@ export interface CloneFilesService {
   remove(path: string, options?: CloneFileCondition): void;
   inspect(path: string, area?: CloneFileArea): CloneFileInspection | undefined;
   exists(path: string): boolean;
+  empty(path: string): boolean;
   list(
     path: string,
     maxEntries: number,
@@ -1173,6 +1174,28 @@ function createCloneFilesAccess(
       throw error;
     }
   }
+  function worktreePath(path: string): string {
+    checkActive();
+    if (!options.read)
+      failure(
+        "EFFECT_UNDECLARED",
+        "Clone path checks require the declared files:read effect",
+      );
+    const refused = (): never =>
+      failure(
+        "INPUT_INVALID",
+        "Clone path checks take a local absolute path inside the main checkout's .worktrees directory",
+      );
+    if (!isAbsolute(path) || /^[\\/]{2}/.test(path)) refused();
+    const target = join(realpathSync.native(dirname(path)), basename(path));
+    const inside = relative(
+      join(realpathSync.native(dirname(roots.common)), ".worktrees"),
+      target,
+    );
+    if (!inside || /^\.\.(?:[\\/]|$)/.test(inside) || isAbsolute(inside))
+      refused();
+    return target;
+  }
   const service: CloneFilesService = Object.freeze({
     get root(): string {
       checkActive();
@@ -1235,15 +1258,19 @@ function createCloneFilesAccess(
       };
     },
     exists(path: string): boolean {
-      checkActive();
-      if (!options.read)
-        failure(
-          "EFFECT_UNDECLARED",
-          "Clone path checks require the declared files:read effect",
-        );
-      if (!isAbsolute(path) && !win32.isAbsolute(path))
-        failure("INPUT_INVALID", "Clone path checks need an absolute path");
-      return stat(path) !== null;
+      return stat(worktreePath(path)) !== null;
+    },
+    empty(path: string): boolean {
+      const target = worktreePath(path);
+      const info = stat(target);
+      if (info === null || !info.isDirectory() || info.isSymbolicLink())
+        return false;
+      const dir = opendirSync(target, { bufferSize: 1 });
+      try {
+        return dir.readSync() === null;
+      } finally {
+        dir.closeSync();
+      }
     },
     list(
       path: string,

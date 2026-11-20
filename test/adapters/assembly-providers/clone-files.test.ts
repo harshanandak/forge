@@ -69,6 +69,40 @@ test("linked worktree areas are independent and missing reads create nothing", (
   expect(files.read("config", 100, "git")).toBe("git");
 });
 
+test("worktree path checks are read-only and stay inside the main checkout's .worktrees directory", () => {
+  const { root, files, options } = fixture();
+  const base = join(root, ".worktrees"),
+    lane = join(base, "lane");
+  mkdirSync(lane, { recursive: true });
+  expect(files.exists(lane)).toBe(true);
+  expect(files.empty(lane)).toBe(true);
+  writeFileSync(join(lane, "held.txt"), "x");
+  expect(files.empty(lane)).toBe(false);
+  expect(files.exists(join(base, "gone"))).toBe(false);
+  expect(files.empty(join(base, "gone"))).toBe(false);
+  const segment = join(lane, "held.txt", "x");
+  if (process.platform === "win32") expect(files.exists(segment)).toBe(false);
+  else expect(() => files.exists(segment)).toThrow(/ENOTDIR/);
+  for (const path of [
+    "relative/lane",
+    ".worktrees/lane",
+    "C:\\x",
+    base,
+    join(root, "outside"),
+    join(base, "..", "outside"),
+    "\\\\host\\share\\.worktrees\\lane",
+    "//host/share/.worktrees/lane",
+    "\\\\?\\C:\\x",
+    "\\\\.\\C:\\x",
+  ]) {
+    expect(() => files.exists(path)).toThrow(/INPUT_INVALID/);
+    expect(() => files.empty(path)).toThrow(/INPUT_INVALID/);
+  }
+  const denied = createCloneFiles({ ...options, read: false });
+  expect(() => denied.exists(lane)).toThrow(/EFFECT_UNDECLARED/);
+  expect(() => denied.empty(lane)).toThrow(/EFFECT_UNDECLARED/);
+}, 30000);
+
 test("write authority and cancellation are enforced before creating directories", () => {
   const denied = fixture(false);
   expect(() => denied.files.write("nested/config", "x")).toThrow(

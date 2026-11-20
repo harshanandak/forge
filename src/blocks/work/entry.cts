@@ -5874,45 +5874,50 @@ const operations: Operations<WorkOperations> = {
           "INPUT_CONFLICT",
           `Issue ${current.id} is ${current.status}, but git cannot read the lane directory ${worktree}: ${unreadable}`,
         );
+      const trees = (await run(["worktree", "list", "--porcelain", "-z"]))
+        .split("\0\0")
+        .map((record) => record.split("\0"));
       if (
         !removed &&
         (found === "worktree" ||
-          (await run(["worktree", "list", "--porcelain", "-z"]))
-            .split("\0")
-            .some(
+          trees.some((fields) =>
+            fields.some(
               (field) =>
                 field.startsWith("worktree ") &&
                 pathKey(field.slice(9)) === pathKey(worktree),
-            ))
+            ),
+          ))
       ) {
         next =
           found === "worktree"
             ? [resume]
-            : [["git", "worktree", "prune"], resume];
+            : found === "missing"
+              ? [["git", "worktree", "remove", worktree], resume]
+              : [["git", "worktree", "prune"], resume];
         refuse(
           "INPUT_CONFLICT",
-          `Issue ${current.id} is ${current.status}, but git kept the worktree ${worktree}: ${reason}`,
+          `Issue ${current.id} is ${current.status}, but git kept the worktree ${worktree}: ${reason}${found === "leftover" ? "; git worktree prune acts on the whole repository" : ""}`,
         );
       }
-      const empty =
-        found === "leftover" &&
-        (await execute([
-          "-C",
-          worktree,
-          "status",
-          "--porcelain",
-          "-z",
-          "--ignored",
-          "--untracked-files=all",
-          "--",
-          ".",
-        ]).then((status) => status.exitCode === 0 && status.stdout === ""));
-      if (
+      const deleting =
         input.attempt === undefined &&
         hasBranch &&
-        (!dropped || (noPr && head === pull.headRefOid))
-      )
-        await run(["update-ref", "-d", ref, head]);
+        (!dropped || (noPr && head === pull.headRefOid));
+      const holder = trees
+        .find((fields) => fields.includes(`branch ${ref}`))?.[0]
+        ?.slice(9);
+      if (deleting && holder !== undefined)
+        refuse(
+          "INPUT_CONFLICT",
+          `Issue ${current.id} is ${current.status}, but the worktree ${holder} has ${branch} checked out, so the branch was kept`,
+        );
+      let empty = false;
+      try {
+        empty = found === "leftover" && files.empty(worktree);
+      } catch {
+        empty = false;
+      }
+      if (deleting) await run(["update-ref", "-d", ref, head]);
       if (dropped)
         files.write(
           `forge-lane-runs/${lane?.issue ?? current.id}/${archive}`,
@@ -5938,7 +5943,9 @@ const operations: Operations<WorkOperations> = {
           ? {
               leftover: {
                 path: worktree,
-                reason: empty ? reason : `${reason}; files remain`,
+                reason: empty
+                  ? reason
+                  : `${reason}; the directory is not proven empty`,
                 empty,
                 next: empty ? [["rmdir", worktree]] : [],
               },
