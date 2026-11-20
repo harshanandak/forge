@@ -1,5 +1,7 @@
 # Forge auth login
 
+The standard Worker entry points refuse cloud requests until the v3 launch. These instructions describe existing rehearsal and custom deployments, which are outside the supported boundary of Forge 0.0.1.
+
 Consumer: the owner of a Forge cloud project, logging a second machine or a cloud agent in to it with `forge auth login`.
 Enable the `forge/cloud` built-in block in `.forge/config.yaml` (`blocks: { cloud: { source: { builtin: forge/cloud } } }`).
 

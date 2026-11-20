@@ -26,8 +26,9 @@ import { recordWrite, type StatementProfile } from "./write-profile.ts";
 import { populateCost, COST_CLOCK } from "./cost-fixture.ts";
 import { StateOwner } from "../../src/core/state/index.ts";
 import { durableStore } from "../src/store.ts";
+import { createWorker } from "../src/worker.ts";
 
-export { default } from "../src/worker.ts";
+export default createWorker();
 
 const RECEIPT_INSERT =
   /^\s*INSERT INTO domain_cloud_(?:requests|command_receipts)\b/i;

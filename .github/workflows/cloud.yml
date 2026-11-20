@@ -743,3 +743,29 @@ jobs:
           fi
           git checkout -- src/issue-commands.ts
           grep -q 'missing.block.json' "$RUNNER_TEMP/broken.out" || { cat "$RUNNER_TEMP/broken.out"; echo "::error::the bundle failed for another reason"; exit 1; }
+      - name: Example configuration refuses cloud requests in workerd
+        working-directory: cloud
+        run: |
+          timeout --kill-after=5s 90s node --input-type=module <<'JS'
+          import assert from "node:assert/strict";
+          import { unstable_startWorker } from "wrangler";
+
+          const worker = await unstable_startWorker({
+            config: "wrangler.ci.jsonc",
+            dev: { remote: false, persist: false },
+          });
+          try {
+            const url = new URL("/.well-known/oauth-authorization-server", await worker.url);
+            const response = await fetch(url, { signal: AbortSignal.timeout(5000) });
+            assert.equal(response.status, 503);
+            assert.equal(response.headers.get("cache-control"), "no-store");
+            assert.deepEqual(await response.json(), {
+              ok: false,
+              status: "FAIL",
+              warnings: [],
+              error: { code: "UNAVAILABLE", message: "Cloud projects arrive with v3.", retry: "never" },
+            });
+          } finally {
+            await worker.dispose();
+          }
+          JS

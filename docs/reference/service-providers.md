@@ -36,6 +36,8 @@ assembly.
 
 ## Cloud login
 
+The standard Worker entry points refuse cloud requests until the v3 launch. Existing rehearsal and custom deployments can still use this service and are outside the supported boundary of Forge 0.0.1.
+
 `forge.cloud-login@1.0.0` supplies `login(input)` for the `forge/cloud` block. It runs the device login
 against one Forge cloud project over HTTPS, saves the credential in the private `~/.forge/cloud` file and writes
 the project's `.forge/cloud.json` binding last. It requires the `files:write` and `external:forge-cloud`

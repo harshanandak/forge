@@ -347,4 +347,4 @@ export function createConfiguredWorker(
   };
 }
 
-export default createConfiguredWorker();
+export { default } from "../../local-only.ts";

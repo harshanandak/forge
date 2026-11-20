@@ -265,4 +265,4 @@ export function createWorker(auth?: AuthComposition, forward?: ProjectForward) {
       legacyWorker.fetch(request, env, auth, forward),
   };
 }
-export default createWorker();
+export { default } from "./local-only.ts";
