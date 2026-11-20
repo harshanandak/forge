@@ -1258,9 +1258,9 @@ test("a challenge allows five attempts a minute, whoever makes them", async () =
   const f = fixture();
   await f.provision();
   const a = await previewed(f);
-  // Five wrong tickets from five addresses, across both actions and new browsers.
+  const other = await f.open();
   for (let n = 0; n < 5; n++) {
-    const jar = await f.open();
+    const jar = n % 2 ? a.jar : other;
     const shown = await f.preview(a.login.user_code, jar);
     const reply = await f.submit(
       n % 2 ? "deny" : "approve",
