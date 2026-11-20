@@ -1,5 +1,9 @@
 # Forge cloud claim server
 
+Forge 0.0.1 supports local project storage. The standard Worker entry points refuse cloud requests until the v3 launch. Older Worker artifacts, existing rehearsal deployments and custom cloud deployments are outside this release's supported boundary.
+
+`Project.alarm`, `CodeRedemption.alarm` and `GrantState.alarm` can still change existing storage. Those alarms run independently of the Worker fetch handlers.
+
 A Cloudflare Worker with one SQLite Durable Object per project. It decides who holds a lease on a
 subject. The code is in `cloud/`.
 
