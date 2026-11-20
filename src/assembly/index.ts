@@ -91,7 +91,7 @@ import {
   admitCloud,
   boundMissingStoreRemedy,
   cloudRoute,
-  refuseUnsyncedProjectWrite,
+  refuseUnsupportedProjectWrite,
   selectCloud,
 } from "./cloud-authority.ts";
 import { LocalState } from "./state.ts";
@@ -320,7 +320,7 @@ export async function createAssembly(
         boundMissingStoreRemedy(root, home, path),
       ),
     stateRoot,
-    () => refuseUnsyncedProjectWrite(root, home),
+    () => refuseUnsupportedProjectWrite(root, home),
   );
   let trustActor: Actor | undefined;
   const trust = new TrustStore(
