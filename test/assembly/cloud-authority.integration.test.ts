@@ -3979,7 +3979,7 @@ for (const [
   status,
   message,
   expectedCode = code,
-  expectedMessage = message,
+  expectedMessage = `The Forge cloud refused the request (${code}).`,
 ] of [
   ["RECEIPT_INVALID", 400, "Missing or unapproved workflow evidence"],
   ["RECEIPT_HEAD_MISMATCH", 409, "Workflow must cover merge commit"],
