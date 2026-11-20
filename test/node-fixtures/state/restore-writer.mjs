@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { Worker, isMainThread, workerData } from "node:worker_threads";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -22,13 +22,28 @@ const signal = (state, index, value = 1) => {
   Atomics.store(state, index, value);
   Atomics.notify(state, index);
 };
+const mode = isMainThread ? process.argv[2] : workerData.mode;
+const role = isMainThread ? "main" : "writer";
+let previous = performance.now();
+const mark = (phase) => {
+  if (mode !== "exec:gap") return;
+  const now = performance.now();
+  writeSync(
+    1,
+    `FORGE_RESTORE pid=${process.pid} ${role}:${phase} at=${now.toFixed(3)}ms delta=${(now - previous).toFixed(3)}ms\n`,
+  );
+  previous = now;
+};
+mark("start");
 if (!isMainThread) {
   const { directory, shared, method } = workerData;
   const state = new Int32Array(shared);
   const { createSqliteStore } = await import(storeUrl);
+  mark("ready");
   signal(state, 6);
   const opened = await createSqliteStore(directory, {
     step(step) {
+      mark(step);
       if (step === "write-pre-lock") {
         signal(state, 0);
         wait(state, 1, 0);
@@ -47,12 +62,14 @@ if (!isMainThread) {
   } catch (error) {
     signal(state, 2, error?.code === "restoring" ? 1 : 3);
   } finally {
+    mark("closing");
     await opened.handle.close();
+    mark("closed");
     signal(state, 3);
   }
 } else {
   const { createSqliteStore } = await import(storeUrl);
-  const mode = process.argv[2];
+  mark("ready");
   const directory = mkdtempSync(join(tmpdir(), "forge-writer-fence-"));
   const handles = [];
   try {
@@ -101,6 +118,7 @@ if (!isMainThread) {
       let worker;
       const target = await open("live.db", {
         step(step) {
+          mark(step);
           if (step === "fenced" && worker && boundary === "queued") {
             signal(state, 1);
             wait(state, 4, 0);
@@ -112,17 +130,20 @@ if (!isMainThread) {
         },
       });
       target.exec("CREATE TABLE entries(value TEXT)");
+      mark("launch-worker");
       worker = new Worker(new URL(import.meta.url), {
-        workerData: { directory, shared: state.buffer, method },
+        workerData: { directory, shared: state.buffer, method, mode },
       });
       wait(state, 6, 0, Infinity);
       wait(state, 0, 0);
+      mark("restore");
       target.restoreImage(
         image,
         () => {},
         () => {},
         () => {},
       );
+      mark("restored");
       assert.equal(
         Atomics.load(state, 5),
         1,
@@ -137,11 +158,14 @@ if (!isMainThread) {
         target.all("SELECT value FROM entries").map((row) => row.value),
         ["snapshot"],
       );
+      mark("terminate-worker");
       await worker.terminate();
+      mark("worker-terminated");
     }
     console.log(`PASS ${mode}`);
   } finally {
     for (const handle of handles.reverse()) await handle.close();
     rmSync(directory, { recursive: true, force: true });
+    mark("end");
   }
 }

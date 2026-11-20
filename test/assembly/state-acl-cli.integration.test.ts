@@ -25,6 +25,17 @@ afterAll(() => {
   );
 });
 
+function repairSteps(command: string) {
+  const names = ["FileSecurity", "parse-SDDL", "Get-Item", "SetAccessControl"];
+  const statements = command.match(/(?:'(?:[^']|'')*'|[^';])+/g);
+  if (statements?.length !== names.length)
+    throw new Error("Expected four PowerShell repair statements");
+  return statements.map((statement, index) => ({
+    name: names[index]!,
+    command: statement.trimStart(),
+  }));
+}
+
 async function configShow(assembly: Assembly) {
   const output = new PassThrough();
   let stdout = "";
@@ -155,7 +166,7 @@ test.skipIf(process.platform !== "win32")(
       assembly = undefined;
       const repairs = await batch.run(
         "powershell.exe",
-        [{ name: "CLI ACL repair", command }],
+        [{ name: "CLI ACL repair", steps: repairSteps(command) }],
         15_000,
       );
       expect(batch.launches).toBe(1);
