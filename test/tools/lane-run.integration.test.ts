@@ -931,7 +931,6 @@ async function signalRun(emitted: boolean) {
 import fs from "node:fs";
 import { basename, dirname } from "node:path";
 const native = { ...fs };
-// Windows awaits the shim while the Node descendant can still be exiting (forge-1667).
 if (process.platform !== "win32") mock.module("node:fs", () => ({
   ...native,
   unlinkSync(path) {
