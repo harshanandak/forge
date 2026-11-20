@@ -174,6 +174,7 @@ async function fixture(
     put,
     clock,
     admit,
+    token,
     snapshot,
     close: () => {
       db.close();
@@ -1897,6 +1898,148 @@ async function laneReturn(
     cookie: pageCookie(start),
   };
 }
+
+function expectLaneRefusal(reply: { status: number; text: string }) {
+  expect(reply.status).toBe(400);
+  expect(reply.text).toBe(
+    '<!doctype html><html lang="en"><meta charset="utf-8"><title>Forge lane approval</title><h1>Lane approval unavailable</h1><p>This request cannot be used.</p></html>',
+  );
+}
+
+test.each([
+  "bind_cookie_missing",
+  "bind_cookie_duplicate",
+  "bind_cookie_malformed",
+  "bind_cookie_mismatch",
+  "state_unknown",
+  "state_expired",
+  "callback_malformed",
+  "callback_code_invalid",
+  "callback_method",
+  "provider_error",
+])(
+  "lane callback logs %s with the same refusal page",
+  async (reason) => {
+    const f = await browserFixture();
+    const code = "private-callback-code";
+    const log = spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const back = await laneReturn(f, "approve", code);
+      const { state, verifier } = f.begun[0]!;
+      const url = new URL(back.path, "https://w.example");
+      const [name] = back.cookie.split("=");
+      let cookie = back.cookie;
+      if (reason === "bind_cookie_missing") cookie = "";
+      if (reason === "bind_cookie_duplicate") cookie += `; ${cookie}`;
+      if (reason === "bind_cookie_malformed") cookie = `${name}=too-short`;
+      if (reason === "bind_cookie_mismatch")
+        cookie = `${name}=${"x".repeat(43)}`;
+      if (reason === "state_unknown")
+        url.searchParams.set("state", `forge-lane.${"x".repeat(43)}`);
+      if (reason === "state_expired") f.clock.mockReturnValue(now + 600_000);
+      if (reason === "callback_malformed")
+        url.searchParams.append("state", state);
+      if (reason === "callback_code_invalid" || reason === "provider_error")
+        url.searchParams.delete("code");
+      if (reason === "provider_error")
+        url.searchParams.set("error", "private-provider-error");
+      log.mockClear();
+      const reply = await f.browser(
+        `/callback${url.search}`,
+        reason === "callback_method" ? "" : undefined,
+        { Cookie: cookie },
+        true,
+      );
+      expectLaneRefusal(reply);
+      expect(log.mock.calls).toEqual([
+        [{ step: "callback", reason, status: 400 }],
+      ]);
+      const logged = JSON.stringify(log.mock.calls);
+      for (const secret of [
+        pageTicket(f.shown, "approve"),
+        state,
+        back.cookie.split("=")[1]!,
+        f.cookie.split("=")[1]!,
+        code,
+        verifier,
+        f.token,
+        f.pending.request,
+        "private-provider-error",
+      ])
+        expect(logged).not.toContain(secret);
+    } finally {
+      log.mockRestore();
+      f.close();
+    }
+  },
+  10_000,
+);
+
+test("lane preview and POST log a refusal, a redirect, and a ticket replay", async () => {
+  const f = await browserFixture();
+  const log = spyOn(console, "log").mockImplementation(() => {});
+  try {
+    expectLaneRefusal(await f.browser("/lane-approval/unknown"));
+    expectLaneRefusal(await f.submit("approve", undefined, { Origin: "" }));
+    const start = await f.submit();
+    expect(start.status).toBe(302);
+    const { state } = f.begun[0]!;
+    expect(start.headers.get("location")).toBe(
+      `https://identity.example/oauth/authorize?state=${state}&redirect_uri=https%3A%2F%2Fw.example%2Fcallback`,
+    );
+    expect(start.headers.get("set-cookie")).toMatch(
+      /^__Host-forge_lane_[a-f0-9]{24}=[A-Za-z0-9_-]{43}; Path=\/; Secure; HttpOnly; SameSite=Lax; Max-Age=600$/,
+    );
+    expectLaneRefusal(await f.submit());
+    expect(log.mock.calls).toEqual([
+      [{ step: "preview", reason: "request_ineligible", status: 400 }],
+      [{ step: "post", reason: "post_origin_invalid", status: 400 }],
+      [{ step: "post", reason: "post_redirect_sent", status: 302 }],
+      [
+        {
+          step: "post",
+          reason: "ticket_replayed",
+          claimKind: "ticket",
+          status: 400,
+        },
+      ],
+    ]);
+  } finally {
+    log.mockRestore();
+    f.close();
+  }
+});
+
+test("lane callback logs a replayed code after a rejected proof", async () => {
+  const f = await browserFixture("all", undefined, () =>
+    Promise.resolve({ ok: false, reason: "invalid_proof" }),
+  );
+  const log = spyOn(console, "log").mockImplementation(() => {});
+  try {
+    const code = "private-replayed-code";
+    const first = await laneReturn(f, "approve", code);
+    const second = await laneReturn(f, "deny", code);
+    log.mockClear();
+    for (const back of [first, second])
+      expectLaneRefusal(
+        await f.browser(back.path, undefined, { Cookie: back.cookie }, true),
+      );
+    expect(log.mock.calls).toEqual([
+      [{ step: "callback", reason: "proof_rejected", status: 400 }],
+      [
+        {
+          step: "callback",
+          reason: "code_replayed",
+          claimKind: "code",
+          status: 400,
+        },
+      ],
+    ]);
+  } finally {
+    log.mockRestore();
+    f.close();
+  }
+});
 
 test.each([
   "approve all",
