@@ -129,6 +129,7 @@ import { stateMigrations } from "../../src/core/state/migrations.ts";
 import {
   appendV3Frames,
   hasV3Root,
+  leaseV3,
   provisionV3,
   readV3Root,
 } from "./v3-store.ts";
@@ -474,13 +475,37 @@ export class Project {
       const url = new URL(request.url);
       const route = url.pathname.split("/")[3] ?? "";
       const probe =
-        this.#testV3 && /^\/p\/[^/]+\/test-v3(\/commits)?$/.exec(url.pathname);
+        this.#testV3 &&
+        /^\/p\/[^/]+\/test-v3(?:\/(commits|claim|renew|release))?$/.exec(
+          url.pathname,
+        );
       if (probe && !url.search) {
         const db = writableStore(this.#storage);
         if (!probe[1] && request.method === "GET")
           return Response.json({ ok: true, value: readV3Root(db) });
         if (request.method === "POST") {
-          const input = object(await bounded(request));
+          const body = await bounded(request);
+          const owner = request.headers.get("X-Forge-Owner");
+          if (probe[1] && probe[1] !== "commits") {
+            if (owner === null)
+              throw fail("AUTH_REQUIRED", "A device token is required");
+            const expiresAt = Number(
+              request.headers.get("X-Forge-Owner-Expires"),
+            );
+            tokenLive(expiresAt);
+            const command = this.#admit(
+              probe[1] as "claim" | "renew" | "release",
+              body,
+              owner,
+              null,
+              ["owner", owner, owner],
+            );
+            return Response.json({
+              ok: true,
+              value: leaseV3(db, command, expiresAt),
+            });
+          }
+          const input = object(body);
           if (probe[1])
             return Response.json({
               ok: true,
