@@ -191,6 +191,30 @@ function wellFormedText(value: string, position: string): void {
   if (!value.isWellFormed())
     invalid(`${position} must be well-formed UTF-16 text`);
 }
+export function checkLeaseSubject(
+  subject: string,
+  mode: "acquire" | "held",
+  current?: LeaseRecord,
+): void {
+  keyValid(subject);
+  if (mode === "acquire" && current?.subject !== subject)
+    wellFormedText(subject, "Lease subject");
+}
+export function leaseExpiry(now: number, durationMs: number): string {
+  if (
+    !Number.isSafeInteger(durationMs) ||
+    durationMs <= 0 ||
+    !Number.isSafeInteger(now + durationMs)
+  )
+    invalid("Lease duration must produce a future finite expiry");
+  if (Number.isNaN(new Date(now + durationMs).getTime()))
+    invalid("Lease duration exceeds the date range");
+  return new Date(now + durationMs).toISOString();
+}
+export function checkLeaseRecord(lease: LeaseRecord): void {
+  if (!validateLeaseRecord(lease).ok || !Number.isSafeInteger(lease.generation))
+    invalid("Invalid lease");
+}
 /** The longest stored floor text accepted: the wrapper of a two-field value is well under this. */
 const FLOOR_TEXT_MAX = 4096;
 const EVENT_RESERVE_BYTES = 1048576;
@@ -2203,8 +2227,7 @@ export class StateOwner {
     return this.#db.transaction(() => {
       const now = this.#now();
       const current = this.lease(namespace, subject);
-      if (current?.subject !== subject)
-        wellFormedText(subject, "Lease subject");
+      checkLeaseSubject(subject, "acquire", current);
       // Historical acquisition replays cannot grant authority over a newer holder or revive expiry.
       const prior = this.#db.get(
         "SELECT result FROM state_requests WHERE namespace=? AND request_id=?",
@@ -2254,7 +2277,7 @@ export class StateOwner {
             subject,
             holder,
             generation: decision.generation,
-            expiresAt: this.#expiry(now, durationMs),
+            expiresAt: leaseExpiry(now, durationMs),
           };
           this.#saveLease(namespace, lease);
           this.#event(
@@ -2281,23 +2304,8 @@ export class StateOwner {
       );
     });
   }
-  #expiry(now: number, durationMs: number): string {
-    if (
-      !Number.isSafeInteger(durationMs) ||
-      durationMs <= 0 ||
-      !Number.isSafeInteger(now + durationMs)
-    )
-      invalid("Lease duration must produce a future finite expiry");
-    if (Number.isNaN(new Date(now + durationMs).getTime()))
-      invalid("Lease duration exceeds the date range");
-    return new Date(now + durationMs).toISOString();
-  }
   #saveLease(namespace: string, lease: LeaseRecord): void {
-    if (
-      !validateLeaseRecord(lease).ok ||
-      !Number.isSafeInteger(lease.generation)
-    )
-      invalid("Invalid lease");
+    checkLeaseRecord(lease);
     this.#db.run(
       "INSERT INTO state_leases(namespace,subject,generation,body) VALUES (?,?,?,?) ON CONFLICT(namespace,subject) DO UPDATE SET generation=excluded.generation,body=excluded.body",
       [namespace, lease.subject, lease.generation, json(lease)],
@@ -2335,7 +2343,7 @@ export class StateOwner {
         current,
         fence.holder,
         at,
-        durationMs === undefined ? undefined : this.#expiry(now, durationMs),
+        durationMs === undefined ? undefined : leaseExpiry(now, durationMs),
       );
       const lease = event.data as LeaseRecord;
       this.#saveLease(namespace, lease);

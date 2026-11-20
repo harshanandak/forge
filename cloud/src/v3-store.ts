@@ -5,14 +5,23 @@ import {
   digestBytes,
   isObject,
 } from "../../src/core/config/pointer.ts";
-import type {
-  ForgeError,
-  LeaseHolder,
-  LeaseRecord,
-} from "../../src/generated/types.ts";
+import {
+  checkLeaseRecord,
+  checkLeaseSubject,
+  leaseExpiry,
+} from "../../src/core/state/index.ts";
+import type { ForgeError, LeaseRecord } from "../../src/generated/types.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
 import { expiredReplay, RETENTION_MS } from "./issue-receipts.ts";
 import type { ReceiptScope } from "./issue-request-id.ts";
+import {
+  type LeaseCommand,
+  leaseFingerprint,
+  NAMESPACE,
+  recordable,
+  replayLease,
+  requestConflict,
+} from "./lease-command.ts";
 import { checkTtl } from "./lease-ttl.ts";
 import { TABLE_PROBE } from "./store.ts";
 
@@ -21,7 +30,6 @@ const PAGES = "cloud_v3_pages";
 const COMMITS = "cloud_v3_commits";
 const MANIFEST_BYTES = 128 * 1024;
 const TAIL_ROWS = 1024;
-const NAMESPACE = "forge/work";
 const SYNTHETIC_KEYS = ["events", "operation", "time"];
 const empty = "[]";
 const emptyBytes = Buffer.byteLength(empty);
@@ -173,31 +181,24 @@ export function appendV3Frames(
   });
 }
 
-export interface V3LeaseCommand {
-  readonly route: "claim" | "renew" | "release";
-  readonly subject: string;
-  readonly holder: LeaseHolder;
-  readonly ttlMs: number | null;
-  readonly generation: number | null;
-  readonly requestId: string;
-  readonly fingerprint: string;
-  readonly scope: ReceiptScope;
-}
-type Replay = (
-  status: string,
-  recorded: unknown,
-  current: LeaseRecord | undefined,
-) => LeaseRecord;
 interface Frame {
   readonly time: number;
   readonly lease?: LeaseRecord;
   readonly outcome?: {
+    readonly id: string;
+    readonly scope: ReceiptScope & { readonly family: "lease" };
     readonly fingerprint: string;
     readonly status: string;
     readonly result?: ForgeError;
     readonly retryUntil: number;
   };
-  readonly witness?: { readonly generation: number; readonly digest: string };
+  readonly witness?: {
+    readonly namespace: string;
+    readonly id: string;
+    readonly subject: string;
+    readonly generation: number;
+    readonly digest: string;
+  };
 }
 
 function latest(db: SqlDatabase, path: string, value: string) {
@@ -210,19 +211,8 @@ function latest(db: SqlDatabase, path: string, value: string) {
     : (JSON.parse(String(row.body)) as Frame);
 }
 
-const conflict = () =>
-  new ForgeFailure({
-    code: "INPUT_CONFLICT",
-    message: "Request ID belongs to a different input",
-    retry: "reconcile_first",
-  });
-const recordable = (error: unknown): error is ForgeFailure =>
-  error instanceof ForgeFailure &&
-  (error.error.code.startsWith("LEASE_") ||
-    error.error.code === "INPUT_INVALID");
-
 function transition(
-  { route, subject, holder, ttlMs, generation }: V3LeaseCommand,
+  { route, subject, holder, ttlMs, generation }: LeaseCommand,
   current: LeaseRecord | undefined,
   now: number,
 ): LeaseRecord {
@@ -234,7 +224,7 @@ function transition(
     nowMs: now,
   });
   if (!decision.ok) throw new ForgeFailure(decision.error);
-  const expiresAt = () => new Date(now + Number(ttlMs)).toISOString();
+  const expiresAt = () => leaseExpiry(now, Number(ttlMs));
   if (route === "claim")
     return {
       subject,
@@ -249,102 +239,102 @@ function transition(
 
 export function leaseV3(
   db: SqlDatabase,
-  command: V3LeaseCommand,
+  command: LeaseCommand,
   expiresAt: number,
-  replay: Replay,
 ): LeaseRecord {
-  const { route, subject, holder, ttlMs, requestId, fingerprint } = command;
-  let refusal: ForgeFailure | undefined;
-  const value = db.transaction(() => {
-    readV3Root(db);
-    const now = Date.now();
-    const current = latest(db, "$.lease.subject", subject)?.lease;
-    const prior = latest(db, "$.outcome.id", requestId);
-    if (prior?.outcome !== undefined && prior.outcome.retryUntil > now) {
-      if (now >= prior.time + RETENTION_MS)
-        expiredReplay(prior.outcome.status !== "ok");
-      if (prior.outcome.fingerprint !== fingerprint) throw conflict();
-      return replay(
-        prior.outcome.status,
-        prior.outcome.result ?? prior.lease,
-        current,
-      );
-    }
-    const frame = { operation: `lease.${route}`, time: now, events: [] };
-    const outcome = {
-      id: requestId,
-      scope: { family: "lease", ...command.scope },
-      fingerprint,
-      retryUntil: expiresAt,
-    };
-    const refuse = (error: unknown) => {
-      if (!recordable(error)) throw error;
-      refusal = error;
+  const { route, subject, holder, ttlMs, requestId } = command;
+  const result = db.transaction(
+    (): { lease: LeaseRecord } | { refusal: ForgeFailure } => {
+      readV3Root(db);
+      const fingerprint = leaseFingerprint(command);
+      const now = Date.now();
+      const read = () => latest(db, "$.lease.subject", subject)?.lease;
+      const prior = latest(db, "$.outcome.id", requestId);
+      if (prior?.outcome !== undefined && prior.outcome.retryUntil > now) {
+        if (now >= prior.time + RETENTION_MS)
+          expiredReplay(prior.outcome.status !== "ok");
+        if (prior.outcome.fingerprint !== fingerprint) throw requestConflict();
+        return {
+          lease: replayLease(
+            command,
+            prior.outcome.status,
+            prior.outcome.result ?? prior.lease,
+            read,
+            now,
+          ),
+        };
+      }
+      const frame = { operation: `lease.${route}`, time: now, events: [] };
+      const outcome = {
+        id: requestId,
+        scope: { family: "lease", ...command.scope },
+        fingerprint,
+        retryUntil: expiresAt,
+      };
+      const refuse = (error: unknown) => {
+        if (!recordable(error)) throw error;
+        const status = error.error.code;
+        const refused = { ...outcome, status, result: error.error };
+        appendV3Frames(db, [{ ...frame, outcome: refused }], true);
+        return { refusal: error };
+      };
+      let current: LeaseRecord | undefined;
+      try {
+        if (route !== "release") checkTtl(ttlMs, expiresAt);
+        current = read();
+        checkLeaseSubject(
+          subject,
+          route === "claim" ? "acquire" : "held",
+          current,
+        );
+      } catch (error) {
+        return refuse(error);
+      }
+      const witnessed =
+        route === "claim" ? latest(db, "$.witness.id", requestId) : undefined;
+      if (witnessed?.witness !== undefined) {
+        const held = decideLease(current, {
+          mode: "held",
+          subject,
+          holder,
+          generation: witnessed.witness.generation,
+          nowMs: now,
+        });
+        if (!held.ok) throw new ForgeFailure(held.error);
+        if (witnessed.witness.digest !== digestBytes(fingerprint))
+          throw requestConflict();
+        return { lease: witnessed.lease! };
+      }
+      let lease: LeaseRecord;
+      try {
+        lease = transition(command, current, now);
+        checkLeaseRecord(lease);
+      } catch (error) {
+        return refuse(error);
+      }
       appendV3Frames(
         db,
         [
           {
             ...frame,
-            outcome: {
-              ...outcome,
-              status: error.error.code,
-              result: error.error,
-            },
+            lease,
+            outcome: { ...outcome, status: "ok" },
+            ...(route === "claim" && {
+              witness: {
+                namespace: NAMESPACE,
+                id: requestId,
+                subject,
+                generation: lease.generation,
+                digest: digestBytes(fingerprint),
+              },
+            }),
           },
         ],
         true,
       );
-      return undefined;
-    };
-    if (route !== "release")
-      try {
-        checkTtl(ttlMs, expiresAt);
-      } catch (error) {
-        return refuse(error);
-      }
-    const witnessed =
-      route === "claim" ? latest(db, "$.witness.id", requestId) : undefined;
-    if (witnessed?.witness !== undefined) {
-      const held = decideLease(current, {
-        mode: "held",
-        subject,
-        holder,
-        generation: witnessed.witness.generation,
-        nowMs: now,
-      });
-      if (!held.ok) throw new ForgeFailure(held.error);
-      if (witnessed.witness.digest !== digestBytes(fingerprint))
-        throw conflict();
-      return witnessed.lease;
-    }
-    let lease: LeaseRecord;
-    try {
-      lease = transition(command, current, now);
-    } catch (error) {
-      return refuse(error);
-    }
-    appendV3Frames(
-      db,
-      [
-        {
-          ...frame,
-          lease,
-          outcome: { ...outcome, status: "ok" },
-          ...(route === "claim" && {
-            witness: {
-              namespace: NAMESPACE,
-              id: requestId,
-              subject,
-              generation: lease.generation,
-              digest: digestBytes(fingerprint),
-            },
-          }),
-        },
-      ],
-      true,
-    );
-    return lease;
-  });
-  if (refusal !== undefined) throw refusal;
-  return value!;
+      return { lease };
+    },
+  );
+  if ("refusal" in result) throw result.refusal;
+  return result.lease;
 }

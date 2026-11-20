@@ -8,7 +8,6 @@
 // claim race is decided in arrival order and exactly one caller wins.
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { storageFailure } from "./storage-failure.ts";
-import { decideLease } from "../../src/contract/lease.ts";
 import { canonicalJson } from "../../src/core/config/pointer.ts";
 import {
   StateOwner,
@@ -81,6 +80,14 @@ import {
 } from "./issue-request-id.ts";
 import { checkTtl } from "./lease-ttl.ts";
 import {
+  type LeaseCommand,
+  leaseFingerprint,
+  NAMESPACE,
+  recordable,
+  replayLease,
+  requestConflict,
+} from "./lease-command.ts";
+import {
   expiredReplay,
   RETENTION_MS,
   PRUNE_RECEIPTS,
@@ -127,7 +134,6 @@ import {
   readV3Root,
 } from "./v3-store.ts";
 
-const NAMESPACE = "forge/work";
 const REQUESTS = "domain_cloud_requests";
 const MAX_BODY = 8192;
 // A restore carries a whole project, so its own bound is 8 MiB: far above a device request, and
@@ -188,6 +194,10 @@ export const domain = {
 
 const fail = (code: string, message: string): ForgeFailure =>
   new ForgeFailure({ code, message, retry: "never" });
+const tokenLive = (expiresAt?: number): void => {
+  if (!Number.isSafeInteger(expiresAt) || !(Number(expiresAt) > Date.now()))
+    throw fail("AUTH_EXPIRED", "Token expired");
+};
 export const STATUS: Record<string, number> = {
   INPUT_INVALID: 400,
   CONTEXT_MISSING: 400,
@@ -479,18 +489,21 @@ export class Project {
           if (probe[1] && probe[1] !== "commits") {
             if (owner === null)
               throw fail("AUTH_REQUIRED", "A device token is required");
-            const value = this.#write(
+            const expiresAt = Number(
+              request.headers.get("X-Forge-Owner-Expires"),
+            );
+            tokenLive(expiresAt);
+            const command = this.#admit(
               probe[1] as "claim" | "renew" | "release",
               body,
               owner,
               null,
               ["owner", owner, owner],
-              () => {},
-              () => {},
-              Number(request.headers.get("X-Forge-Owner-Expires")),
-              true,
             );
-            return Response.json({ ok: true, value });
+            return Response.json({
+              ok: true,
+              value: leaseV3(db, command, expiresAt),
+            });
           }
           const input = object(body);
           if (probe[1])
@@ -1048,14 +1061,27 @@ export class Project {
     recheck: () => void,
     requireArm: () => void,
     expiresAt?: number,
-    v3 = false,
   ): LeaseRecord {
     const checkExpiry = () => {
       recheck();
-      if (!Number.isSafeInteger(expiresAt) || !(Number(expiresAt) > Date.now()))
-        throw fail("AUTH_EXPIRED", "Token expired");
+      tokenLive(expiresAt);
     };
     checkExpiry();
+    return this.#lease(
+      this.#admit(route, body, device, tokenSession, principal),
+      checkExpiry,
+      requireArm,
+      expiresAt,
+    );
+  }
+
+  #admit(
+    route: "claim" | "renew" | "release",
+    body: string,
+    device: string,
+    tokenSession: string | null,
+    principal: ReceiptPrincipal,
+  ): LeaseCommand {
     let parsed: unknown;
     try {
       parsed = JSON.parse(body);
@@ -1093,42 +1119,29 @@ export class Project {
     const generation = route === "claim" ? null : integer(input, "generation");
 
     const requestId = scopeRequestId("lease", principal, rawId);
-    const scope = receiptScope(principal);
-    const fingerprint = canonicalJson({
-      scope,
+    return {
       route,
       subject,
       holder,
-      generation,
       ttlMs,
-    });
-    if (v3)
-      return leaseV3(
-        writableStore(this.#storage),
-        {
-          route,
-          subject,
-          holder,
-          ttlMs,
-          generation,
-          requestId,
-          fingerprint,
-          scope,
-        },
-        Number(expiresAt),
-        (outcome, recorded, current) =>
-          this.#replay(
-            route,
-            requestId,
-            outcome,
-            recorded,
-            subject,
-            holder,
-            current,
-          ),
-      );
+      generation,
+      rawId,
+      requestId,
+      scope: receiptScope(principal),
+    };
+  }
+
+  #lease(
+    command: LeaseCommand,
+    checkExpiry: () => void,
+    requireArm: () => void,
+    expiresAt?: number,
+  ): LeaseRecord {
+    const { route, subject, holder, ttlMs, generation } = command;
+    const { rawId, requestId } = command;
     this.#openWrite();
     guardLegacy(this.#open().db, rawId, requestId);
+    const fingerprint = leaseFingerprint(command);
     const prior = this.#open().db.get(
       `SELECT json_remove(fingerprint,'$.retryUntil') AS fingerprint, outcome, result, created_at FROM ${REQUESTS} WHERE request_id=? AND COALESCE(json_extract(fingerprint,'$.retryUntil'),9007199254740991)>?`,
       [requestId, Date.now()],
@@ -1137,20 +1150,13 @@ export class Project {
       checkExpiry();
       if (Date.now() >= Number(prior.created_at) + RETENTION_MS)
         expiredReplay(prior.outcome !== "ok");
-      if (prior.fingerprint !== fingerprint)
-        throw new ForgeFailure({
-          code: "INPUT_CONFLICT",
-          message: "Request ID belongs to a different input",
-          retry: "reconcile_first",
-        });
-      return this.#replay(
-        route,
-        requestId,
+      if (prior.fingerprint !== fingerprint) throw requestConflict();
+      return replayLease(
+        command,
         prior.outcome,
         JSON.parse(String(prior.result)),
-        subject,
-        holder,
-        this.#open().owner.lease(NAMESPACE, subject),
+        () => this.#open().owner.lease(NAMESPACE, subject),
+        Date.now(),
       );
     }
     requireArm();
@@ -1181,11 +1187,7 @@ export class Project {
       });
     } catch (error) {
       // A refusal changed no lease state (its transaction rolled back), so its receipt is one insert.
-      if (
-        error instanceof ForgeFailure &&
-        (error.error.code.startsWith("LEASE_") ||
-          error.error.code === "INPUT_INVALID")
-      )
+      if (recordable(error))
         commit(() => {
           this.#record(
             requestId,
@@ -1197,46 +1199,6 @@ export class Project {
         });
       throw error;
     }
-  }
-
-  #replay(
-    route: "claim" | "renew" | "release",
-    requestId: string,
-    outcome: unknown,
-    recorded: unknown,
-    subject: string,
-    holder: LeaseHolder,
-    current: LeaseRecord | undefined,
-  ): LeaseRecord {
-    if (outcome !== "ok") throw new ForgeFailure(recorded as ForgeError);
-    const first = recorded as LeaseRecord;
-    // A recorded release returns the same released result at any generation: it grants nothing.
-    if (route === "release") return first;
-    if (
-      current !== undefined &&
-      decideLease(current, {
-        mode: "held",
-        subject,
-        holder,
-        generation: first.generation,
-        nowMs: Date.now(),
-      }).ok
-    )
-      return current;
-    throw new ForgeFailure({
-      code: "LEASE_STALE",
-      message: `Request ${requestId} no longer matches the current lease on ${subject}`,
-      retry: "reconcile_first",
-      lease:
-        current === undefined
-          ? { subject }
-          : {
-              subject,
-              holder: current.holder,
-              generation: current.generation,
-              expiresAt: current.expiresAt,
-            },
-    });
   }
 
   #record(
