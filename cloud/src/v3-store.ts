@@ -40,6 +40,8 @@ const ROOT_FORMAT = "forge-cloud-root/3";
 const KINDS = ["directory", "snapshot", "transcript"];
 const COLLECTIONS = ["lease", "outcome", "record", "witness"] as const;
 const SYNTHETIC_KEYS = ["events", "operation", "time"];
+const FRAME_KEYS =
+  "events,format,lease,operation,outcome,sequence,time,witness".split(",");
 const empty = "[]";
 const emptyBytes = Buffer.byteLength(empty);
 const emptyDigest = digestBytes(empty);
@@ -228,7 +230,7 @@ export function readV3Root(db: SqlDatabase) {
     (bytes.directory ?? 0) > DIRECTORY_BYTES
   )
     throw unavailable();
-  return { ...manifest, coveredHead, eventWatermark };
+  return { ...manifest, generation, coveredHead, eventWatermark };
 }
 
 function directoryEntry(entry: unknown, byId: ReadonlyMap<string, Page>) {
@@ -452,6 +454,7 @@ interface Frame {
 function validFrame(frame: unknown): frame is Frame & Record<string, unknown> {
   return (
     isObject(frame) &&
+    Object.keys(frame).every((key) => FRAME_KEYS.includes(key)) &&
     typeof frame.operation === "string" &&
     frame.operation.length > 0 &&
     typeof frame.time === "number" &&
@@ -518,7 +521,8 @@ export function leaseV3(
   const { route, subject, holder, ttlMs, requestId } = command;
   const result = db.transaction(
     (): { lease: LeaseRecord } | { refusal: ForgeFailure } => {
-      readV3Root(db);
+      if (readV3Root(db).generation !== 0)
+        throw fail("UNAVAILABLE", GENESIS_LEASE_ONLY);
       const fingerprint = leaseFingerprint(command);
       const now = Date.now();
       const read = () => latest(db, "$.lease.subject", subject)?.lease;

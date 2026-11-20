@@ -70,7 +70,10 @@ const image = (response: { body: unknown }) =>
   (response.body as { value?: { image?: Json } }).value?.image;
 const unavailable = {
   status: 503,
-  body: { ok: false, error: { code: "UNAVAILABLE" } },
+  body: {
+    ok: false,
+    error: { code: "UNAVAILABLE", message: "Cloud v3 root is unavailable" },
+  },
 };
 
 function page(
@@ -403,7 +406,9 @@ async function snapshotWithClaim(f: Fixture) {
     }),
   ).toMatchObject({ status: 200 });
   expect(await claim(f, "owner-a")).toMatchObject({ status: 200 });
+  const folded = image(await f.send(probe));
   checkpoint(f);
+  expect(image(await f.send(probe))).toEqual(folded);
 }
 
 test(
@@ -438,8 +443,11 @@ test(
       ];
       for (const response of responses)
         expect(response).toMatchObject({
-          ...unavailable,
-          body: { error: { message: GENESIS_LEASE_ONLY } },
+          status: 503,
+          body: {
+            ok: false,
+            error: { code: "UNAVAILABLE", message: GENESIS_LEASE_ONLY },
+          },
         });
       expect(f.snapshot()).toEqual(before);
       expect(image(await f.send(probe))).toEqual(held);
@@ -552,29 +560,65 @@ for (const [label, corrupt] of corruptions) {
   );
 }
 
-function resealRoot(db: Database, change: Json) {
-  const body = canonicalJson({
-    ...(JSON.parse(rootOf(db).body) as Json),
-    ...change,
-  });
+function resealRoot(db: Database, edit: (root: Json) => Json) {
+  const body = canonicalJson(edit(JSON.parse(rootOf(db).body) as Json));
   db.run("UPDATE cloud_v3_root SET body=?, seal=?", [body, digestBytes(body)]);
 }
 
-const rootFields: readonly [string, Json][] = [
-  ["a format other than forge-cloud-root/3", { format: "forge-cloud-root/4" }],
-  ["an unknown root key", { extra: 1 }],
-  ["a parent digest that is not a digest", { parentDigest: "sha256:abc" }],
-  ["a transcript digest that is not a digest", { transcriptDigest: 7 }],
-  ["a namespace watermark below zero", { namespaceWatermarks: { issue: -1 } }],
-  ["a receipt cutoff that is not a count", { receiptCutoff: 1.5 }],
-  ["a last active day with no active days", { lastActiveDay: "2026-11-20" }],
+const set = (change: Json) => (root: Json) => ({ ...root, ...change });
+const roster =
+  (edit: (pages: Json[]) => Json[]) =>
+  (root: Json): Json => ({ ...root, pages: edit(root.pages as Json[]) });
+
+const rootFields: readonly [string, (root: Json) => Json][] = [
+  [
+    "a format other than forge-cloud-root/3",
+    set({ format: "forge-cloud-root/4" }),
+  ],
+  ["an unknown root key", set({ extra: 1 })],
+  ["a parent digest that is not a digest", set({ parentDigest: "sha256:abc" })],
+  ["a transcript digest that is not a digest", set({ transcriptDigest: 7 })],
+  [
+    "a namespace watermark below zero",
+    set({ namespaceWatermarks: { issue: -1 } }),
+  ],
+  ["a receipt cutoff that is not a count", set({ receiptCutoff: 1.5 })],
+  [
+    "a last active day with no active days",
+    set({ lastActiveDay: "2026-11-20" }),
+  ],
   [
     "an impossible last active day",
-    { activeDays: 1, lastActiveDay: "2026-13-45" },
+    set({ activeDays: 1, lastActiveDay: "2026-13-45" }),
+  ],
+  ["a duplicate roster entry", roster(([d, ...rest]) => [d!, d!, ...rest])],
+  ["roster entries out of order", roster(([d, s, t]) => [d!, t!, s!])],
+  [
+    "swapped page kinds",
+    roster(([d, s, t]) => [
+      { ...d, kind: "snapshot" },
+      { ...s, kind: "directory" },
+      t!,
+    ]),
+  ],
+  [
+    "an unknown page kind",
+    roster(([d, s, t]) => [d!, { ...s, kind: "archive" }, t!]),
+  ],
+  [
+    "a covered head that differs from the transcript count",
+    set({ coveredHead: 1 }),
+  ],
+  [
+    "per-kind counts that differ from the roster",
+    (root) => ({
+      ...root,
+      counts: { ...(root.counts as Json), snapshot: 99 },
+    }),
   ],
 ];
 
-for (const [label, change] of rootFields) {
+for (const [label, edit] of rootFields) {
   test(
     `v3 recovery refuses a sealed root with ${label} and appends nothing`,
     async () => {
@@ -582,7 +626,7 @@ for (const [label, change] of rootFields) {
       try {
         await snapshotWithClaim(f);
         expect((await f.send(probe)).status).toBe(200);
-        resealRoot(f.db, change);
+        resealRoot(f.db, edit);
         f.restart();
         const before = f.snapshot();
         const read = await f.send(probe);
@@ -612,7 +656,7 @@ test(
         namespaceWatermarks: { issue: 4 },
         receiptCutoff: T0,
       };
-      resealRoot(f.db, fields);
+      resealRoot(f.db, set(fields));
       f.restart();
       const read = await f.send(probe);
       expect(read).toMatchObject({ status: 200, body: { value: fields } });
@@ -623,3 +667,47 @@ test(
   },
   timeout,
 );
+
+const tails: readonly [string, string][] = [
+  ["a gap in the tail", "DELETE FROM cloud_v3_commits WHERE sequence=2"],
+  [
+    "a tail frame with another commit format",
+    "UPDATE cloud_v3_commits SET body=json_set(body,'$.format','forge-cloud-commit/2') WHERE sequence=2",
+  ],
+  [
+    "a tail frame with the wrong sequence",
+    "UPDATE cloud_v3_commits SET body=json_set(body,'$.sequence',5) WHERE sequence=2",
+  ],
+  [
+    "a tail frame with an unknown key",
+    "UPDATE cloud_v3_commits SET body=json_set(body,'$.changes',json('[]')) WHERE sequence=2",
+  ],
+];
+
+for (const [label, sql] of tails) {
+  test(
+    `v3 recovery on a genesis root refuses ${label}, and a claim runs that recovery before any write`,
+    async () => {
+      const f = fixture();
+      try {
+        expect((await f.send(probe, {})).status).toBe(200);
+        const frame = { operation: "fixture.put", time: T0, events: [] };
+        expect(await commit(f, frame, frame, frame)).toMatchObject({
+          status: 200,
+          body: { value: { head: 3 } },
+        });
+        expect(f.db.run(sql).changes).toBe(1);
+        f.restart();
+        const before = f.snapshot();
+        const read = await f.send(probe);
+        expect(read).toMatchObject(unavailable);
+        expect(read.body).not.toHaveProperty("value");
+        expect(await claim(f, "owner-a")).toMatchObject(unavailable);
+        expect(f.snapshot()).toEqual(before);
+      } finally {
+        f.db.close();
+      }
+    },
+    timeout,
+  );
+}
