@@ -64,12 +64,21 @@ async function run(store: "v2" | "v3", steps: readonly Step[]) {
   try {
     if (store === "v3") expect((await f.send(probe, {})).status).toBe(200);
     else f.restart(false);
+    const frames = () =>
+      store === "v3"
+        ? f.db
+            .query<{ n: number }, []>(
+              "SELECT COUNT(*) AS n FROM cloud_v3_commits",
+            )
+            .get()!.n
+        : 0;
     const results = [];
     for (const step of steps) {
       setSystemTime(step.at ?? T0);
       if (step.restart || step.expired) f.restart(store === "v3");
       const alarms = f.alarms.length;
       const kv = JSON.stringify([...f.values]);
+      const committed = frames();
       writes = 0;
       const response = await f.send(
         store === "v3" ? `${probe}/${step.route}` : step.route,
@@ -79,6 +88,7 @@ async function run(store: "v2" | "v3", steps: readonly Step[]) {
       results.push({
         ...response,
         writes,
+        committed: frames() - committed,
         alarmWrites: f.alarms.length - alarms,
         kvIntact: kv === JSON.stringify([...f.values]),
       });
@@ -108,16 +118,18 @@ async function scenario(steps: readonly Step[]) {
       status,
       body,
       writes: steps[i]!.writes,
+      committed: steps[i]!.writes,
       alarmWrites: 0,
       kvIntact: true,
     })),
   );
+  return v3;
 }
 
 test(
   "an admitted v3 outcome replays after restart on every lease route with zero writes",
-  () =>
-    scenario([
+  async () => {
+    const v3 = await scenario([
       { route: "claim", requestId: "acq-1", expect: 1, writes: 1 },
       {
         route: "claim",
@@ -140,6 +152,13 @@ test(
         writes: 0,
         at: T0 + 11 * MINUTE,
         restart: true,
+      },
+      {
+        route: "claim",
+        requestId: "acq-1",
+        expect: 1,
+        writes: 0,
+        at: T0 + 12 * MINUTE,
       },
       {
         route: "release",
@@ -170,7 +189,15 @@ test(
         writes: 0,
         at: T0 + 22 * MINUTE,
       },
-    ]),
+    ]);
+    const value = (i: number) =>
+      (v3[i]!.body as { value?: { expiresAt?: string } }).value;
+    expect(value(4)).toEqual(value(2));
+    expect([value(2)?.expiresAt, value(0)?.expiresAt]).toEqual([
+      new Date(T0 + 70 * MINUTE).toISOString(),
+      new Date(T0 + HOUR).toISOString(),
+    ]);
+  },
   timeout,
 );
 

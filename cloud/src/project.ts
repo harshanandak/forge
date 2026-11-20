@@ -19,7 +19,7 @@ import type {
   LeaseHolder,
   LeaseRecord,
 } from "../../src/generated/types.ts";
-import type { SqlDatabase, SqlRow } from "../../src/ports/store.ts";
+import type { SqlDatabase } from "../../src/ports/store.ts";
 import { validateLeaseHolder } from "../../src/generated/validators.ts";
 import {
   assertRestoreCompatible,
@@ -122,6 +122,7 @@ import { stateMigrations } from "../../src/core/state/migrations.ts";
 import {
   appendV3Frames,
   hasV3Root,
+  leaseV3,
   provisionV3,
   readV3Root,
 } from "./v3-store.ts";
@@ -464,13 +465,34 @@ export class Project {
       const url = new URL(request.url);
       const route = url.pathname.split("/")[3] ?? "";
       const probe =
-        this.#testV3 && /^\/p\/[^/]+\/test-v3(\/commits)?$/.exec(url.pathname);
+        this.#testV3 &&
+        /^\/p\/[^/]+\/test-v3(?:\/(commits|claim|renew|release))?$/.exec(
+          url.pathname,
+        );
       if (probe && !url.search) {
         const db = writableStore(this.#storage);
         if (!probe[1] && request.method === "GET")
           return Response.json({ ok: true, value: readV3Root(db) });
         if (request.method === "POST") {
-          const input = object(await bounded(request));
+          const body = await bounded(request);
+          const owner = request.headers.get("X-Forge-Owner");
+          if (probe[1] && probe[1] !== "commits") {
+            if (owner === null)
+              throw fail("AUTH_REQUIRED", "A device token is required");
+            const value = this.#write(
+              probe[1] as "claim" | "renew" | "release",
+              body,
+              owner,
+              null,
+              ["owner", owner, owner],
+              () => {},
+              () => {},
+              Number(request.headers.get("X-Forge-Owner-Expires")),
+              true,
+            );
+            return Response.json({ ok: true, value });
+          }
+          const input = object(body);
           if (probe[1])
             return Response.json({
               ok: true,
@@ -1026,6 +1048,7 @@ export class Project {
     recheck: () => void,
     requireArm: () => void,
     expiresAt?: number,
+    v3 = false,
   ): LeaseRecord {
     const checkExpiry = () => {
       recheck();
@@ -1070,16 +1093,42 @@ export class Project {
     const generation = route === "claim" ? null : integer(input, "generation");
 
     const requestId = scopeRequestId("lease", principal, rawId);
-    this.#openWrite();
-    guardLegacy(this.#open().db, rawId, requestId);
+    const scope = receiptScope(principal);
     const fingerprint = canonicalJson({
-      scope: receiptScope(principal),
+      scope,
       route,
       subject,
       holder,
       generation,
       ttlMs,
     });
+    if (v3)
+      return leaseV3(
+        writableStore(this.#storage),
+        {
+          route,
+          subject,
+          holder,
+          ttlMs,
+          generation,
+          requestId,
+          fingerprint,
+          scope,
+        },
+        Number(expiresAt),
+        (outcome, recorded, current) =>
+          this.#replay(
+            route,
+            requestId,
+            outcome,
+            recorded,
+            subject,
+            holder,
+            current,
+          ),
+      );
+    this.#openWrite();
+    guardLegacy(this.#open().db, rawId, requestId);
     const prior = this.#open().db.get(
       `SELECT json_remove(fingerprint,'$.retryUntil') AS fingerprint, outcome, result, created_at FROM ${REQUESTS} WHERE request_id=? AND COALESCE(json_extract(fingerprint,'$.retryUntil'),9007199254740991)>?`,
       [requestId, Date.now()],
@@ -1094,7 +1143,14 @@ export class Project {
           message: "Request ID belongs to a different input",
           retry: "reconcile_first",
         });
-      return this.#replay(route, requestId, prior, subject, holder);
+      return this.#replay(
+        route,
+        requestId,
+        prior.outcome,
+        JSON.parse(String(prior.result)),
+        subject,
+        holder,
+      );
     }
     requireArm();
     const commit = <T>(work: () => T) =>
@@ -1145,15 +1201,14 @@ export class Project {
   #replay(
     route: "claim" | "renew" | "release",
     requestId: string,
-    prior: SqlRow,
+    outcome: unknown,
+    recorded: unknown,
     subject: string,
     holder: LeaseHolder,
+    current = this.#open().owner.lease(NAMESPACE, subject),
   ): LeaseRecord {
-    const recorded = JSON.parse(String(prior.result)) as
-      LeaseRecord | ForgeError;
-    if (prior.outcome !== "ok") throw new ForgeFailure(recorded as ForgeError);
+    if (outcome !== "ok") throw new ForgeFailure(recorded as ForgeError);
     const first = recorded as LeaseRecord;
-    const current = this.#open().owner.lease(NAMESPACE, subject);
     // A recorded release returns the same released result at any generation: it grants nothing.
     if (route === "release") return first;
     if (
