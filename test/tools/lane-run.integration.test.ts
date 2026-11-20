@@ -924,13 +924,15 @@ async function signalRun(emitted: boolean) {
   const harnessPid = join(f.root, "harness-pid");
   const lock = join(f.main, ".git", "forge-lane-one.lock");
   const unlockObservation = join(f.root, "harness-at-unlock");
+  const observeReleaseOrder = emitted && process.platform !== "win32";
   writeFileSync(
     helper,
     `import { mock } from "bun:test";
 import fs from "node:fs";
 import { basename, dirname } from "node:path";
 const native = { ...fs };
-mock.module("node:fs", () => ({
+// Windows awaits the shim while the Node descendant can still be exiting (forge-1667).
+if (process.platform !== "win32") mock.module("node:fs", () => ({
   ...native,
   unlinkSync(path) {
     try {
@@ -976,7 +978,8 @@ process.exitCode = await main();`,
     expect(record.verdict).toBe("failed");
     expect(record.end).toMatch(/^\d{4}-/);
     await waitForProcess("harness exit", () => !alive(pid));
-    if (emitted) expect(readFileSync(unlockObservation, "utf8")).toBe("exited");
+    if (observeReleaseOrder)
+      expect(readFileSync(unlockObservation, "utf8")).toBe("exited");
     expect(existsSync(lock)).toBe(false);
   } finally {
     writeFileSync(join(f.root, "finish"), "finish");
