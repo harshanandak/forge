@@ -551,3 +551,75 @@ for (const [label, corrupt] of corruptions) {
     timeout,
   );
 }
+
+function resealRoot(db: Database, change: Json) {
+  const body = canonicalJson({
+    ...(JSON.parse(rootOf(db).body) as Json),
+    ...change,
+  });
+  db.run("UPDATE cloud_v3_root SET body=?, seal=?", [body, digestBytes(body)]);
+}
+
+const rootFields: readonly [string, Json][] = [
+  ["a format other than forge-cloud-root/3", { format: "forge-cloud-root/4" }],
+  ["an unknown root key", { extra: 1 }],
+  ["a parent digest that is not a digest", { parentDigest: "sha256:abc" }],
+  ["a transcript digest that is not a digest", { transcriptDigest: 7 }],
+  ["a namespace watermark below zero", { namespaceWatermarks: { issue: -1 } }],
+  ["a receipt cutoff that is not a count", { receiptCutoff: 1.5 }],
+  ["a last active day with no active days", { lastActiveDay: "2026-11-20" }],
+  [
+    "an impossible last active day",
+    { activeDays: 1, lastActiveDay: "2026-13-45" },
+  ],
+];
+
+for (const [label, change] of rootFields) {
+  test(
+    `v3 recovery refuses a sealed root with ${label} and appends nothing`,
+    async () => {
+      const f = fixture();
+      try {
+        await snapshotWithClaim(f);
+        expect((await f.send(probe)).status).toBe(200);
+        resealRoot(f.db, change);
+        f.restart();
+        const before = f.snapshot();
+        const read = await f.send(probe);
+        expect(read).toMatchObject(unavailable);
+        expect(read.body).not.toHaveProperty("value");
+        expect(
+          await commit(f, { operation: "fixture.put", time: T0, events: [] }),
+        ).toMatchObject(unavailable);
+        expect(f.snapshot()).toEqual(before);
+      } finally {
+        f.db.close();
+      }
+    },
+    timeout,
+  );
+}
+
+test(
+  "a sealed root with counted active days and a namespace watermark is served",
+  async () => {
+    const f = fixture();
+    try {
+      await snapshotWithClaim(f);
+      const fields = {
+        activeDays: 3,
+        lastActiveDay: "2026-11-20",
+        namespaceWatermarks: { issue: 4 },
+        receiptCutoff: T0,
+      };
+      resealRoot(f.db, fields);
+      f.restart();
+      const read = await f.send(probe);
+      expect(read).toMatchObject({ status: 200, body: { value: fields } });
+      expect(image(read)).toMatchObject({ head: 2, eventWatermark: 2 });
+    } finally {
+      f.db.close();
+    }
+  },
+  timeout,
+);

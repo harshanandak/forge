@@ -36,6 +36,7 @@ const DIRECTORY_PAGES = 32;
 const DIRECTORY_BYTES = 4 * MiB;
 const TAIL_ROWS = 1024;
 const TAIL_BYTES = 16 * MiB;
+const ROOT_FORMAT = "forge-cloud-root/3";
 const KINDS = ["directory", "snapshot", "transcript"];
 const COLLECTIONS = ["lease", "outcome", "record", "witness"] as const;
 const SYNTHETIC_KEYS = ["events", "operation", "time"];
@@ -71,7 +72,7 @@ export const hasV3Root = (db: SqlDatabase): boolean => hasTable(db, ROOT);
 
 function genesis(incarnation: string, restoreEpoch: string) {
   return {
-    format: "forge-cloud-root/3",
+    format: ROOT_FORMAT,
     incarnation,
     restoreEpoch,
     generation: 0,
@@ -121,9 +122,10 @@ export interface V3Image {
 const fail = (code: string, message: string) =>
   new ForgeFailure({ code, message, retry: "never" });
 const unavailable = () => fail("UNAVAILABLE", "Cloud v3 root is unavailable");
+const isNat = (value: unknown): value is number =>
+  typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 const nat = (value: unknown): number => {
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0)
-    throw unavailable();
+  if (!isNat(value)) throw unavailable();
   return value;
 };
 const parse = (text: unknown): unknown => {
@@ -133,6 +135,37 @@ const parse = (text: unknown): unknown => {
     throw unavailable();
   }
 };
+
+const isDigest = (value: unknown): value is string =>
+  typeof value === "string" && /^sha256:[0-9a-f]{64}$/.test(value);
+const utcDay = (value: unknown) => {
+  const time =
+    typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)
+      ? Date.parse(`${value}T00:00:00.000Z`)
+      : Number.NaN;
+  return (
+    Number.isFinite(time) &&
+    new Date(time).toISOString().startsWith(String(value))
+  );
+};
+
+function sealedFields(root: Record<string, unknown>) {
+  const { namespaceWatermarks: marks, activeDays, lastActiveDay } = root;
+  return (
+    root.format === ROOT_FORMAT &&
+    [
+      root.parentDigest,
+      root.transcriptDigest,
+      root.publicDigest,
+      root.privateDigest,
+    ].every(isDigest) &&
+    isObject(marks) &&
+    Object.entries(marks).every(([name, mark]) => name !== "" && isNat(mark)) &&
+    isNat(root.receiptCutoff) &&
+    isNat(activeDays) &&
+    (activeDays === 0 ? lastActiveDay === null : utcDay(lastActiveDay))
+  );
+}
 
 export function readV3Root(db: SqlDatabase) {
   if (!tables.every((table) => hasTable(db, table))) throw unavailable();
@@ -159,7 +192,8 @@ export function readV3Root(db: SqlDatabase) {
   let next = 0;
   const listed = root.pages.map((page): Page & { ordinal: number } => {
     const kind = isObject(page) ? KINDS.indexOf(String(page.kind)) : -1;
-    if (!isObject(page) || kind < rank) throw unavailable();
+    if (!isObject(page) || kind < rank || !isDigest(page.hash))
+      throw unavailable();
     if (kind > rank) [rank, next] = [kind, 0];
     const ordinal = nat(page.ordinal);
     if (ordinal !== next++) throw unavailable();
@@ -174,7 +208,7 @@ export function readV3Root(db: SqlDatabase) {
       last: page.last,
       count: nat(page.count),
       bytes: nat(page.bytes),
-      hash: String(page.hash),
+      hash: page.hash,
     };
   });
   const [generation, coveredHead, eventWatermark] = [
@@ -187,6 +221,7 @@ export function readV3Root(db: SqlDatabase) {
     Object.keys(root).sort().join() !== Object.keys(base).sort().join() ||
     canonicalJson(manifest) !== row.body ||
     (generation === 0 && row.body !== canonicalJson(base)) ||
+    (generation > 0 && !sealedFields(root)) ||
     coveredHead !== (counts.transcript ?? 0) ||
     listed.filter(({ kind }) => kind === "directory").length >
       DIRECTORY_PAGES ||
