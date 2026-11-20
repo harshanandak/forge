@@ -12,7 +12,8 @@ import {
   isNat,
 } from "../../cloud/src/v3-authority.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
-import { digestBytes } from "../../src/core/config/pointer.ts";
+import { canonicalJson, digestBytes } from "../../src/core/config/pointer.ts";
+import { validateForgeError } from "../../src/generated/validators.ts";
 import { fixture, probe } from "./v3-project.fixture.ts";
 
 const timeout = 30_000;
@@ -135,88 +136,228 @@ test(
   timeout,
 );
 
+const DELETE = Symbol("delete");
 const at = (path: string, value: unknown) => (frame: Json) => {
   const copy = structuredClone(frame);
   const keys = path.split(".");
   const last = keys.pop()!;
   const target = keys.reduce<Json>((node, key) => node[key] as Json, copy);
-  if (value === undefined) delete target[last];
+  if (value === DELETE) delete target[last];
   else target[last] = value;
   return copy;
 };
-
-const claimed: readonly [string, (frame: Json) => Json][] = [
-  ["an empty lease", at("lease", {})],
-  ["a null lease", at("lease", null)],
-  ["a false lease", at("lease", false)],
-  ["a zero lease", at("lease", 0)],
-  ["an empty-string lease", at("lease", "")],
-  ["a lease with an extra key", at("lease.extra", 1)],
-  ["a lease with a number subject", at("lease.subject", 7)],
-  ["a lease with a fractional generation", at("lease.generation", 1.5)],
-  ["an empty outcome", at("outcome", {})],
-  ["a null outcome", at("outcome", null)],
-  ["an outcome missing its fingerprint", at("outcome.fingerprint", undefined)],
-  ["an outcome with an extra key", at("outcome.extra", 1)],
-  ["an outcome with a number id", at("outcome.id", 7)],
-  ["an outcome with an empty id", at("outcome.id", "")],
-  ["an outcome with a number fingerprint", at("outcome.fingerprint", 7)],
-  ["an outcome with a negative deadline", at("outcome.retryUntil", -1)],
-  ["an outcome with another family", at("outcome.scope.family", "command")],
-  ["an outcome scope with an extra key", at("outcome.scope.extra", 1)],
-  ["an outcome scope of another version", at("outcome.scope.version", 1)],
-  [
-    "an outcome scope whose principal is not a digest",
-    at("outcome.scope.principal", "owner-a"),
-  ],
-  ["an ok outcome carrying a result", at("outcome.result", { code: "ok" })],
-  ["an outcome with another status", at("outcome.status", "LEASE_HELD")],
-  ["an ok outcome without its lease", at("lease", undefined)],
-  ["a lease without an outcome", at("outcome", undefined)],
-  ["an empty witness", at("witness", {})],
-  ["a null witness", at("witness", null)],
-  ["a witness with an extra key", at("witness.extra", 1)],
-  ["a witness in another namespace", at("witness.namespace", "forge/other")],
-  ["a witness for another request", at("witness.id", "acq-9")],
-  ["a witness for another subject", at("witness.subject", "work-2")],
-  ["a witness at another generation", at("witness.generation", 2)],
-  ["a witness whose digest is not a digest", at("witness.digest", "abc")],
-];
-
-const refused: readonly [string, (frame: Json) => Json][] = [
-  ["a refusal whose status is not its code", at("outcome.status", "ok")],
-  ["a refusal with an invalid result", at("outcome.result", { code: 7 })],
-  [
-    "a refusal carrying a lease",
-    (frame) => ({ ...frame, lease: { subject: "work-1" } }),
-  ],
-  [
-    "a refusal carrying a witness without a lease",
-    (frame) => ({
-      ...frame,
-      witness: {
-        namespace: "forge/work",
-        id: "acq-2",
-        subject: "work-1",
-        generation: 1,
-        digest: digestBytes("x"),
-      },
-    }),
-  ],
-];
+const stored = (frame: Json) => JSON.parse(canonicalJson(frame)) as Json;
+const RELEASED = "2026-11-20T12:30:00.000Z";
+const UNAVAILABLE = {
+  code: "UNAVAILABLE",
+  message: "Cloud v3 root is unavailable",
+  retry: "never",
+};
 
 test(
-  "the shared validator refuses every malformed lease, outcome and witness after-image",
+  "the shared validator refuses every malformed lease, outcome and witness after-image with its reason",
   async () => {
-    const [claim, refusal] = await writerFrames();
-    const faults = [
-      ...claimed.map(([label, edit]) => [label, authorityFault(edit(claim!))]),
-      ...refused.map(([label, edit]) => [
-        label,
-        authorityFault(edit(refusal!)),
-      ]),
+    const [claim, refusal, renew, release] = (await writerFrames()) as [
+      Json,
+      Json,
+      Json,
+      Json,
     ];
-    expect(faults.filter(([, fault]) => fault === undefined)).toEqual([]);
+    expect(validateForgeError(UNAVAILABLE).ok).toBe(true);
+    const cases: readonly [string, Json, string][] = [
+      ["an empty lease", at("lease", {})(claim), "lease"],
+      ["a null lease", at("lease", null)(claim), "lease"],
+      ["a false lease", at("lease", false)(claim), "lease"],
+      ["a zero lease", at("lease", 0)(claim), "lease"],
+      ["an empty-string lease", at("lease", "")(claim), "lease"],
+      ["a lease with an extra key", at("lease.extra", 1)(claim), "lease"],
+      ["a lease with a number subject", at("lease.subject", 7)(claim), "lease"],
+      [
+        "a lease with a fractional generation",
+        at("lease.generation", 1.5)(claim),
+        "lease",
+      ],
+      [
+        "a claimed lease marked released",
+        at("lease.releasedAt", RELEASED)(claim),
+        "lease release marker",
+      ],
+      [
+        "a renewed lease marked released",
+        at("lease.releasedAt", RELEASED)(renew),
+        "lease release marker",
+      ],
+      [
+        "a released lease without its marker",
+        at("lease.releasedAt", DELETE)(release),
+        "lease release marker",
+      ],
+      ["an empty outcome", at("outcome", {})(claim), "outcome shape"],
+      ["a null outcome", at("outcome", null)(claim), "outcome shape"],
+      [
+        "an outcome missing its fingerprint",
+        at("outcome.fingerprint", DELETE)(claim),
+        "outcome fields",
+      ],
+      [
+        "an outcome with an extra key",
+        at("outcome.extra", 1)(claim),
+        "outcome fields",
+      ],
+      [
+        "an outcome with a number id",
+        at("outcome.id", 7)(claim),
+        "outcome fields",
+      ],
+      [
+        "an outcome with an empty id",
+        at("outcome.id", "")(claim),
+        "outcome fields",
+      ],
+      [
+        "an outcome with a number fingerprint",
+        at("outcome.fingerprint", 7)(claim),
+        "outcome fields",
+      ],
+      [
+        "an outcome with an empty fingerprint",
+        at("outcome.fingerprint", "")(claim),
+        "outcome fields",
+      ],
+      [
+        "an outcome with a negative deadline",
+        at("outcome.retryUntil", -1)(claim),
+        "outcome fields",
+      ],
+      [
+        "an outcome with another family",
+        at("outcome.scope.family", "command")(claim),
+        "outcome scope",
+      ],
+      [
+        "an outcome scope with an extra key",
+        at("outcome.scope.extra", 1)(claim),
+        "outcome scope",
+      ],
+      [
+        "an outcome scope of another version",
+        at("outcome.scope.version", 1)(claim),
+        "outcome scope",
+      ],
+      [
+        "an outcome scope whose principal is not a digest",
+        at("outcome.scope.principal", "owner-a")(claim),
+        "outcome scope",
+      ],
+      [
+        "an ok outcome carrying a result",
+        at("outcome.result", { code: "ok" })(claim),
+        "outcome status",
+      ],
+      [
+        "an outcome with another status",
+        at("outcome.status", "LEASE_HELD")(claim),
+        "outcome status",
+      ],
+      [
+        "a refusal whose status is not its code",
+        at("outcome.status", "ok")(refusal),
+        "outcome status",
+      ],
+      [
+        "a refusal with an invalid result",
+        at("outcome.result", { code: 7 })(refusal),
+        "outcome status",
+      ],
+      [
+        "a refusal with an undefined status and an invalid result",
+        at("outcome.result", { code: 7 })(
+          at("outcome.status", undefined)(refusal),
+        ),
+        "outcome status",
+      ],
+      [
+        "a refusal with a code leaseV3 never records",
+        at(
+          "outcome.status",
+          "UNAVAILABLE",
+        )(at("outcome.result", UNAVAILABLE)(refusal)),
+        "outcome status",
+      ],
+      [
+        "an ok outcome without its lease",
+        at("lease", DELETE)(claim),
+        "lease and ok outcome pairing",
+      ],
+      [
+        "a lease without an outcome",
+        at("outcome", DELETE)(claim),
+        "lease and ok outcome pairing",
+      ],
+      [
+        "a refusal carrying the claim's lease",
+        at("lease", claim.lease)(refusal),
+        "lease and ok outcome pairing",
+      ],
+      [
+        "a refusal whose own undefined lease is stored",
+        stored(at("lease", undefined)(refusal)),
+        "lease",
+      ],
+      ["a claim without its witness", at("witness", DELETE)(claim), "witness"],
+      [
+        "a claim whose own undefined witness is stored",
+        stored(at("witness", undefined)(claim)),
+        "witness",
+      ],
+      ["a witness on a renew", at("witness", claim.witness)(renew), "witness"],
+      [
+        "a witness on a release",
+        at("witness", claim.witness)(release),
+        "witness",
+      ],
+      [
+        "a witness on a refusal",
+        at("witness", claim.witness)(refusal),
+        "witness",
+      ],
+      ["an empty witness", at("witness", {})(claim), "witness"],
+      ["a null witness", at("witness", null)(claim), "witness"],
+      ["a witness with an extra key", at("witness.extra", 1)(claim), "witness"],
+      [
+        "a witness in another namespace",
+        at("witness.namespace", "forge/other")(claim),
+        "witness",
+      ],
+      [
+        "a witness for another request",
+        at("witness.id", "acq-9")(claim),
+        "witness",
+      ],
+      [
+        "a witness for another subject",
+        at("witness.subject", "work-2")(claim),
+        "witness",
+      ],
+      [
+        "a witness at another generation",
+        at("witness.generation", 2)(claim),
+        "witness",
+      ],
+      [
+        "a witness whose digest is not a digest",
+        at("witness.digest", "abc")(claim),
+        "witness",
+      ],
+      [
+        "a witness whose digest is not its fingerprint's",
+        at("witness.digest", digestBytes("x"))(claim),
+        "witness",
+      ],
+    ];
+    expect(
+      cases.map(([label, frame]) => [label, authorityFault(frame)]),
+    ).toEqual(cases.map(([label, , reason]) => [label, reason]));
   },
   timeout,
 );
