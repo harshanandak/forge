@@ -14,6 +14,22 @@ export const noWrites = {
 export function fixture(before?: (sql: string) => void) {
   const db = new Database(":memory:");
   const { storage, values } = browserStorage(db, before);
+  const reads = { rows: 0, bytes: 0 };
+  const exec = storage.sql.exec.bind(storage.sql);
+  storage.sql.exec = (statement, ...bindings) => {
+    const rows = exec(statement, ...bindings).toArray();
+    reads.rows += rows.length;
+    for (const value of rows.flatMap((row) => Object.values(row)))
+      reads.bytes +=
+        typeof value === "string"
+          ? Buffer.byteLength(value)
+          : value instanceof Uint8Array
+            ? value.byteLength
+            : typeof value === "number"
+              ? 8
+              : 0;
+    return { toArray: () => rows };
+  };
   const alarms: number[] = [];
   storage.getAlarm = () => Promise.resolve(alarms.at(-1) ?? null);
   storage.setAlarm = (time) => {
@@ -34,7 +50,9 @@ export function fixture(before?: (sql: string) => void) {
     });
   return {
     db,
+    storage,
     values,
+    reads,
     alarms,
     alarm: () => project.alarm(),
     request,

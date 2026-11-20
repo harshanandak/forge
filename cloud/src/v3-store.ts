@@ -23,15 +23,26 @@ import {
   requestConflict,
 } from "./lease-command.ts";
 import { checkTtl } from "./lease-ttl.ts";
-import { authorityFault } from "./v3-authority.ts";
+import { authorityFault, isDigest, isNat } from "./v3-authority.ts";
 import { TABLE_PROBE } from "./store.ts";
 
 const ROOT = "cloud_v3_root";
 const PAGES = "cloud_v3_pages";
 const COMMITS = "cloud_v3_commits";
+const COMMIT_FORMAT = "forge-cloud-commit/3";
+const MiB = 1024 * 1024;
 const MANIFEST_BYTES = 128 * 1024;
+const ROSTER_PAGES = 640;
+const DIRECTORY_PAGES = 32;
+const DIRECTORY_BYTES = 4 * MiB;
 const TAIL_ROWS = 1024;
+const TAIL_BYTES = 16 * MiB;
+const ROOT_FORMAT = "forge-cloud-root/3";
+const KINDS = ["directory", "snapshot", "transcript"];
+const COLLECTIONS = ["lease", "outcome", "record", "witness"] as const;
 const SYNTHETIC_KEYS = ["events", "operation", "time"];
+const FRAME_KEYS =
+  "events,format,lease,operation,outcome,sequence,time,witness".split(",");
 const empty = "[]";
 const emptyBytes = Buffer.byteLength(empty);
 const emptyDigest = digestBytes(empty);
@@ -64,7 +75,7 @@ export const hasV3Root = (db: SqlDatabase): boolean => hasTable(db, ROOT);
 
 function genesis(incarnation: string, restoreEpoch: string) {
   return {
-    format: "forge-cloud-root/3",
+    format: ROOT_FORMAT,
     incarnation,
     restoreEpoch,
     generation: 0,
@@ -84,9 +95,76 @@ function genesis(incarnation: string, restoreEpoch: string) {
   };
 }
 
+type Collection = (typeof COLLECTIONS)[number];
+interface Page {
+  readonly id: string;
+  readonly kind: string;
+  readonly first: unknown;
+  readonly last: unknown;
+  readonly count: number;
+  readonly bytes: number;
+  readonly hash: string;
+}
+interface Pointer {
+  readonly page: string;
+  readonly offset: number;
+  readonly length: number;
+  readonly digest: string;
+}
+type Slot = { readonly value: unknown } | Pointer;
+export interface V3Image {
+  readonly root: Readonly<Record<string, unknown>> & {
+    readonly coveredHead: number;
+    readonly pages: readonly Page[];
+  };
+  readonly entries: Readonly<Record<Collection, Map<string, Slot>>>;
+  head: number;
+  eventWatermark: number;
+}
+
 const fail = (code: string, message: string) =>
   new ForgeFailure({ code, message, retry: "never" });
 const unavailable = () => fail("UNAVAILABLE", "Cloud v3 root is unavailable");
+const nat = (value: unknown): number => {
+  if (!isNat(value)) throw unavailable();
+  return value;
+};
+const parse = (text: unknown): unknown => {
+  try {
+    return JSON.parse(String(text));
+  } catch {
+    throw unavailable();
+  }
+};
+
+const utcDay = (value: unknown) => {
+  const time =
+    typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)
+      ? Date.parse(`${value}T00:00:00.000Z`)
+      : Number.NaN;
+  return (
+    Number.isFinite(time) &&
+    new Date(time).toISOString().startsWith(String(value))
+  );
+};
+
+function sealedFields(root: Record<string, unknown>) {
+  const { namespaceWatermarks: marks, activeDays, lastActiveDay } = root;
+  return (
+    root.format === ROOT_FORMAT &&
+    [
+      root.parentDigest,
+      root.transcriptDigest,
+      root.publicDigest,
+      root.privateDigest,
+    ].every(isDigest) &&
+    isObject(marks) &&
+    Object.entries(marks).every(([name, mark]) => name !== "" && isNat(mark)) &&
+    isNat(root.receiptCutoff) &&
+    isNat(activeDays) &&
+    (activeDays === 0 ? lastActiveDay === null : utcDay(lastActiveDay))
+  );
+}
 
 export function readV3Root(db: SqlDatabase) {
   if (!tables.every((table) => hasTable(db, table))) throw unavailable();
@@ -95,31 +173,171 @@ export function readV3Root(db: SqlDatabase) {
   );
   if (typeof row?.body !== "string" || row.seal !== digestBytes(row.body))
     throw unavailable();
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(row.body);
-  } catch {
+  const root = parse(row.body);
+  if (
+    !isObject(root) ||
+    typeof root.incarnation !== "string" ||
+    root.incarnation.length === 0 ||
+    typeof root.restoreEpoch !== "string" ||
+    root.restoreEpoch.length === 0 ||
+    !Array.isArray(root.pages) ||
+    root.pages.length > ROSTER_PAGES
+  )
     throw unavailable();
+  const base = genesis(root.incarnation, root.restoreEpoch);
+  const counts: Record<string, number> = {};
+  const bytes: Record<string, number> = {};
+  let rank = 0;
+  let next = 0;
+  const listed = root.pages.map((page): Page & { ordinal: number } => {
+    const kind = isObject(page) ? KINDS.indexOf(String(page.kind)) : -1;
+    if (!isObject(page) || kind < rank || !isDigest(page.hash))
+      throw unavailable();
+    if (kind > rank) [rank, next] = [kind, 0];
+    const ordinal = nat(page.ordinal);
+    if (ordinal !== next++) throw unavailable();
+    const name = KINDS[kind]!;
+    counts[name] = (counts[name] ?? 0) + nat(page.count);
+    bytes[name] = (bytes[name] ?? 0) + nat(page.bytes);
+    return {
+      id: `${name}:${ordinal}`,
+      kind: name,
+      ordinal,
+      first: page.first,
+      last: page.last,
+      count: nat(page.count),
+      bytes: nat(page.bytes),
+      hash: page.hash,
+    };
+  });
+  const [generation, coveredHead, eventWatermark] = [
+    root.generation,
+    root.coveredHead,
+    root.eventWatermark,
+  ].map(nat) as [number, number, number];
+  const manifest = { ...root, counts, bytes, pages: listed };
+  if (
+    Object.keys(root).sort().join() !== Object.keys(base).sort().join() ||
+    canonicalJson(manifest) !== row.body ||
+    (generation === 0 && row.body !== canonicalJson(base)) ||
+    (generation > 0 && !sealedFields(root)) ||
+    coveredHead !== (counts.transcript ?? 0) ||
+    listed.filter(({ kind }) => kind === "directory").length >
+      DIRECTORY_PAGES ||
+    (bytes.directory ?? 0) > DIRECTORY_BYTES
+  )
+    throw unavailable();
+  return { ...manifest, generation, coveredHead, eventWatermark };
+}
+
+function directoryEntry(entry: unknown, byId: ReadonlyMap<string, Page>) {
+  const collection = isObject(entry)
+    ? COLLECTIONS.find((name) => name === entry.collection)
+    : undefined;
+  if (
+    !isObject(entry) ||
+    collection === undefined ||
+    typeof entry.key !== "string" ||
+    entry.key.length === 0
+  )
+    throw unavailable();
+  const { key } = entry;
+  const target = byId.get(String(entry.page));
+  const offset = nat(entry.offset);
+  const length = nat(entry.length);
+  if (
+    target === undefined ||
+    target.kind === "directory" ||
+    length === 0 ||
+    offset + length > target.bytes ||
+    !isDigest(entry.digest)
+  )
+    throw unavailable();
+  return {
+    collection,
+    key,
+    page: target.id,
+    offset,
+    length,
+    digest: entry.digest,
+  };
+}
+
+export function recoverV3(db: SqlDatabase): V3Image {
+  const root = readV3Root(db);
+  const byId = new Map(root.pages.map((page) => [page.id, page]));
+  const headers = db.all(
+    `SELECT id, length(CAST(body AS BLOB)) AS bytes FROM ${PAGES} LIMIT ${ROSTER_PAGES + 1}`,
+  );
+  if (
+    headers.length !== byId.size ||
+    headers.some(({ id, bytes }) => byId.get(String(id))?.bytes !== bytes)
+  )
+    throw unavailable();
+  const image: V3Image = {
+    root,
+    entries: {
+      lease: new Map(),
+      outcome: new Map(),
+      record: new Map(),
+      witness: new Map(),
+    },
+    head: root.coveredHead,
+    eventWatermark: root.eventWatermark,
+  };
+  const bodies = new Map(
+    db
+      .all(
+        `SELECT id, body FROM ${PAGES} WHERE id>='directory:' AND id<'directory;' LIMIT ${DIRECTORY_PAGES + 1}`,
+      )
+      .map(({ id, body }) => [id, body]),
+  );
+  let prior = ["", ""];
+  for (const page of root.pages) {
+    if (page.kind !== "directory") continue;
+    const body = bodies.get(page.id);
+    if (typeof body !== "string" || digestBytes(body) !== page.hash)
+      throw unavailable();
+    const list = parse(body);
+    if (!Array.isArray(list)) throw unavailable();
+    const entries = list.map((entry) => directoryEntry(entry, byId));
+    const ends = [entries[0], entries.at(-1)].map((entry) =>
+      entry === undefined ? null : [entry.collection, entry.key],
+    );
+    if (
+      canonicalJson(entries) !== body ||
+      entries.length !== page.count ||
+      canonicalJson(ends) !== canonicalJson([page.first, page.last])
+    )
+      throw unavailable();
+    for (const { collection, key, ...slot } of entries) {
+      if (
+        collection < prior[0]! ||
+        (collection === prior[0] && key <= prior[1]!)
+      )
+        throw unavailable();
+      prior = [collection, key];
+      image.entries[collection].set(key, slot);
+    }
   }
-  if (
-    !isObject(parsed) ||
-    typeof parsed.incarnation !== "string" ||
-    parsed.incarnation.length === 0 ||
-    typeof parsed.restoreEpoch !== "string" ||
-    parsed.restoreEpoch.length === 0
-  )
-    throw unavailable();
-  const expected = genesis(parsed.incarnation, parsed.restoreEpoch);
-  if (
-    row.body !== canonicalJson(expected) ||
-    canonicalJson(
-      db.all(
-        `SELECT id, CASE WHEN length(CAST(body AS BLOB))=${emptyBytes} THEN body END AS body FROM ${PAGES} ORDER BY id LIMIT 3`,
-      ),
-    ) !== canonicalJson(pages)
-  )
-    throw unavailable();
-  return expected;
+  const rows = db.all(
+    `SELECT sequence, CASE WHEN sum(length(CAST(body AS BLOB))) OVER (ORDER BY sequence)<=${TAIL_BYTES} THEN body END AS body FROM (SELECT sequence, body FROM ${COMMITS} WHERE sequence>? ORDER BY sequence LIMIT ${TAIL_ROWS + 1}) ORDER BY sequence`,
+    [root.coveredHead],
+  );
+  if (rows.length > TAIL_ROWS) throw unavailable();
+  for (const { sequence, body } of rows) {
+    const frame = typeof body === "string" ? parse(body) : undefined;
+    if (
+      sequence !== image.head + 1 ||
+      canonicalJson(frame) !== body ||
+      !validFrame(frame) ||
+      frame.format !== COMMIT_FORMAT ||
+      frame.sequence !== sequence
+    )
+      throw unavailable();
+    apply(image, frame, nat(sequence));
+  }
+  return image;
 }
 
 export function provisionV3(db: SqlDatabase, legacyMarker: boolean) {
@@ -136,8 +354,36 @@ export function provisionV3(db: SqlDatabase, legacyMarker: boolean) {
       );
       db.run(`INSERT INTO ${ROOT} VALUES (1, ?, ?)`, [body, digestBytes(body)]);
     }
-    return readV3Root(db);
+    return viewV3(recoverV3(db));
   });
+}
+
+export function viewV3(image: V3Image) {
+  const digest = (slot: Slot) =>
+    "value" in slot ? digestBytes(canonicalJson(slot.value)) : slot.digest;
+  return {
+    ...image.root,
+    image: {
+      head: image.head,
+      eventWatermark: image.eventWatermark,
+      ...Object.fromEntries(
+        COLLECTIONS.map((name) => [
+          name,
+          Object.fromEntries(
+            [...image.entries[name]].map(([key, slot]) => [key, digest(slot)]),
+          ),
+        ]),
+      ),
+    },
+  };
+}
+
+export const GENESIS_LEASE_ONLY =
+  "Cloud v3 lease commands need the genesis root until they read the recovered image";
+
+export function requireGenesisForLease(db: SqlDatabase) {
+  if (recoverV3(db).root.generation !== 0)
+    throw fail("UNAVAILABLE", GENESIS_LEASE_ONLY);
 }
 
 export function appendV3Frames(db: SqlDatabase, frames: unknown) {
@@ -195,6 +441,7 @@ function append(db: SqlDatabase, batch: readonly unknown[]) {
 
 interface Frame {
   readonly time: number;
+  readonly events: readonly unknown[];
   readonly lease?: LeaseRecord;
   readonly outcome?: {
     readonly id: string;
@@ -211,6 +458,33 @@ interface Frame {
     readonly generation: number;
     readonly digest: string;
   };
+}
+
+function validFrame(frame: unknown): frame is Frame & Record<string, unknown> {
+  return (
+    isObject(frame) &&
+    Object.keys(frame).every((key) => FRAME_KEYS.includes(key)) &&
+    typeof frame.operation === "string" &&
+    frame.operation.length > 0 &&
+    typeof frame.time === "number" &&
+    Number.isSafeInteger(frame.time) &&
+    frame.time >= 0 &&
+    Array.isArray(frame.events) &&
+    authorityFault(frame) === undefined
+  );
+}
+
+function apply(image: V3Image, frame: Frame, sequence: number) {
+  const { time, lease, outcome, witness } = frame;
+  if (lease) image.entries.lease.set(lease.subject, { value: lease });
+  if (outcome)
+    image.entries.outcome.set(outcome.id, {
+      value: { time, outcome, ...(lease && { lease }) },
+    });
+  if (witness)
+    image.entries.witness.set(witness.id, { value: { witness, lease } });
+  image.head = sequence;
+  image.eventWatermark += frame.events.length;
 }
 
 function latest(db: SqlDatabase, path: string, value: string) {

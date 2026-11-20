@@ -1,16 +1,12 @@
-import {
-  afterEach,
-  beforeEach,
-  expect,
-  setSystemTime,
-  spyOn,
-  test,
-} from "bun:test";
+import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
+import type { LeaseCommand } from "../../cloud/src/lease-command.ts";
+import { writableStore } from "../../cloud/src/store.ts";
 import {
   authorityFault,
   isDigest,
   isNat,
 } from "../../cloud/src/v3-authority.ts";
+import { leaseV3 } from "../../cloud/src/v3-store.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { canonicalJson, digestBytes } from "../../src/core/config/pointer.ts";
 import { validateForgeError } from "../../src/generated/validators.ts";
@@ -85,10 +81,9 @@ test(
 );
 
 test(
-  "a refusal the writer builds from a malformed stored lease is never appended",
+  "a malformed stored lease is refused by recovery on the route, and a refusal leaseV3 builds from it is never appended",
   async () => {
     const f = fixture();
-    const logged = spyOn(console, "error").mockImplementation(() => {});
     try {
       const send = (owner: string, subject: string, requestId: string) =>
         f.send(
@@ -112,24 +107,39 @@ test(
       const stored = rows();
       const before = f.snapshot();
       expect(await send("owner-b", "work-1", "acq-2")).toMatchObject({
-        status: 500,
-        body: { ok: false, error: { code: "INTERNAL" } },
+        status: 503,
+        body: { ok: false, error: { code: "UNAVAILABLE" } },
       });
-      const thrown = logged.mock.calls.flat();
-      expect(thrown).toHaveLength(1);
-      expect(thrown[0]).toBeInstanceOf(Error);
-      expect(thrown[0]).not.toBeInstanceOf(ForgeFailure);
-      expect((thrown[0] as Error).message).toBe(
+      const db = writableStore(f.storage);
+      const command = (subject: string, requestId: string) =>
+        ({
+          route: "claim",
+          subject,
+          holder,
+          ttlMs: HOUR,
+          generation: null,
+          rawId: requestId,
+          requestId,
+          scope: { principal: digestBytes("owner-b"), version: 2 },
+        }) as LeaseCommand;
+      let thrown: unknown;
+      try {
+        leaseV3(db, command("work-1", "acq-2"), E1);
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeInstanceOf(Error);
+      expect(thrown).not.toBeInstanceOf(ForgeFailure);
+      expect((thrown as Error).message).toBe(
         "Refusing a v3 frame with an invalid outcome status",
       );
       expect(rows()).toEqual(stored);
       expect(f.snapshot()).toEqual(before);
-      expect(await send("owner-b", "work-2", "acq-3")).toMatchObject({
-        status: 200,
-        body: { ok: true, value: { subject: "work-2", generation: 1 } },
+      expect(leaseV3(db, command("work-2", "acq-3"), E1)).toMatchObject({
+        subject: "work-2",
+        generation: 1,
       });
     } finally {
-      logged.mockRestore();
       f.db.close();
     }
   },
