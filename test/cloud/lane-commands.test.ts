@@ -1,5 +1,11 @@
 import { expect, mock, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
+import { format } from "node:util";
+import {
+  LANE_BROWSER,
+  LANE_STATE_PREFIX,
+} from "../../cloud/src/auth/lane-browser.ts";
+import { sha256 } from "../../cloud/src/tokens.ts";
 import { Project } from "../../cloud/src/project.ts";
 import {
   OLD_SCHEMA,
@@ -145,6 +151,11 @@ async function fixture(
     writes: () => writes,
     env,
     reached,
+    dump: (cursor?: string) => {
+      const url = new URL(`https://w.example/p/${projectName}/dump`);
+      if (cursor !== undefined) url.searchParams.set("cursor", cursor);
+      return project.fetch(new Request(url.href));
+    },
     browser: async (
       path: string,
       body?: string,
@@ -1887,6 +1898,123 @@ test("chat relay refuses a newly issued request at the old browser URLs", async 
     expect(f.spent.size).toBe(0);
     expect(f.snapshot()).toBe(before);
   } finally {
+    f.close();
+  }
+}, 10_000);
+
+test("a chat request cannot spend valid legacy browser callback state", async () => {
+  const verify = mock(async () => ownerProof());
+  const f = await browserFixture("chat", undefined, verify);
+  try {
+    const state = LANE_STATE_PREFIX + "s".repeat(43);
+    const bind = "b".repeat(43);
+    const stateHash = await sha256(state);
+    f.db.run(`INSERT INTO ${LANE_BROWSER} (id, state) VALUES (1, ?)`, [
+      JSON.stringify([
+        {
+          request: f.pending.request,
+          action: "approve",
+          stateHash,
+          bindHash: await sha256(bind),
+          verifier: "v".repeat(43),
+          expiresAt: Date.parse(f.pending.expiresAt),
+        },
+      ]),
+    ]);
+    const callback = () =>
+      f.browser(
+        `/callback?state=${state}&code=owner`,
+        undefined,
+        {
+          Cookie: `__Host-forge_lane_${stateHash.slice(0, 24)}=${bind}`,
+        },
+        true,
+      );
+    const snapshot = () => [
+      f.snapshot(),
+      f.db.query(`SELECT * FROM ${LANE_BROWSER}`).all(),
+    ];
+
+    const before = snapshot();
+    expect((await callback()).status).toBe(400);
+    expect(snapshot()).toEqual(before);
+    expect(f.spent.size).toBe(0);
+    expect(verify).not.toHaveBeenCalled();
+
+    seedLegacyApproval(f, f.pending.request);
+    expect((await callback()).status).toBe(200);
+    expect(verify).toHaveBeenCalledTimes(1);
+  } finally {
+    f.close();
+  }
+}, 10_000);
+
+test("the private lane reply stays out of dumps, receipts and console logs", async () => {
+  const f = await fixture();
+  const logged: string[] = [];
+  const spies = (["log", "warn", "error", "info", "debug"] as const).map(
+    (method) =>
+      spyOn(console, method).mockImplementation((...args: unknown[]) => {
+        logged.push(format(...args));
+      }),
+  );
+  try {
+    Object.assign(f.env, { DUMP_PAGE_BYTES: "4096" });
+    f.reopen();
+    const scope = { all: true } as const;
+    await stopForRelay(f, scope);
+    const { input } = await askForRelay(f, scope);
+    const quote = "Yes, resume. Private restore-lane reply 5da7c2.";
+    const source = {
+      harness: "private-harness-5da7c2",
+      thread: "private-thread-5da7c2",
+      message: "private-message-5da7c2",
+      link: "https://example.test/private-reply-5da7c2",
+    };
+    const relay = { ...input.approval, quote, source };
+    const result = await f.send(
+      call("lane.resume", { ...scope, approval: relay }, "private-relay"),
+    );
+    expect(result.status).toBe(200);
+    expect(approvalRows(f)[0]).toMatchObject({
+      status: "spent",
+      decision: { quote, source },
+    });
+
+    const receipts = f.db
+      .query<{ request_id: string }, []>(
+        "SELECT * FROM domain_cloud_command_receipts WHERE json_extract(result, '$.resumed')='all'",
+      )
+      .all();
+    expect(receipts).toHaveLength(1);
+    const whole = await f.dump();
+    expect(whole.status).toBe(200);
+    const wholeText = await whole.text();
+    const pages: string[] = [];
+    let cursor: string | null = "start";
+    while (cursor !== null) {
+      const response = await f.dump(cursor);
+      expect(response.status).toBe(200);
+      const text = await response.text();
+      pages.push(text);
+      const value = (JSON.parse(text) as { value: { next: string | null } })
+        .value;
+      cursor = value.next;
+    }
+    const pagedText = pages.join("\n");
+    const completionId = receipts[0]!.request_id;
+    expect(wholeText).toContain(completionId);
+    expect(pagedText).toContain(completionId);
+    for (const surface of [
+      wholeText,
+      pagedText,
+      JSON.stringify(receipts),
+      logged.join("\n"),
+    ])
+      for (const privateText of [quote, ...Object.values(source)])
+        expect(surface).not.toContain(privateText);
+  } finally {
+    for (const spy of spies) spy.mockRestore();
     f.close();
   }
 }, 10_000);
