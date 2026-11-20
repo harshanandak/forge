@@ -103,6 +103,27 @@ test("worktree path checks are read-only and stay inside the main checkout's .wo
   expect(() => denied.empty(lane)).toThrow(/EFFECT_UNDECLARED/);
 }, 30000);
 
+test("worktree path checks follow a linked .worktrees directory and still refuse escapes", () => {
+  const { root, files } = fixture();
+  const real = join(root, "lanes"),
+    link = join(root, ".worktrees"),
+    elsewhere = join(root, "elsewhere");
+  expect(() => files.exists(join(link, "lane"))).toThrow(/INPUT_INVALID/);
+  mkdirSync(real);
+  mkdirSync(elsewhere);
+  symlinkSync(real, link, "junction");
+  symlinkSync(elsewhere, join(real, "escape"), "junction");
+  expect(files.exists(join(link, "lane"))).toBe(false);
+  expect(files.exists(join(link, "lane", "nested"))).toBe(false);
+  mkdirSync(join(real, "lane"));
+  expect(files.exists(join(link, "lane"))).toBe(true);
+  expect(files.empty(join(link, "lane"))).toBe(true);
+  expect(() => files.exists(join(link, "escape", "lane"))).toThrow(
+    /INPUT_INVALID/,
+  );
+  expect(() => files.empty(join(link, "escape"))).toThrow(/INPUT_INVALID/);
+}, 30000);
+
 test("write authority and cancellation are enforced before creating directories", () => {
   const denied = fixture(false);
   expect(() => denied.files.write("nested/config", "x")).toThrow(

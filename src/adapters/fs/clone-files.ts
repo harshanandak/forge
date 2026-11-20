@@ -1187,11 +1187,26 @@ function createCloneFilesAccess(
         "Clone path checks take a local absolute path inside the main checkout's .worktrees directory",
       );
     if (!isAbsolute(path) || /^[\\/]{2}/.test(path)) refused();
-    const target = join(realpathSync.native(dirname(path)), basename(path));
-    const inside = relative(
-      join(realpathSync.native(dirname(roots.common)), ".worktrees"),
-      target,
-    );
+    const resolved = (candidate: string): string => {
+      const rest: string[] = [];
+      for (;;)
+        try {
+          return join(realpathSync.native(candidate), ...rest);
+        } catch (error) {
+          if (errorCode(error) !== "ENOENT" || dirname(candidate) === candidate)
+            throw error;
+          rest.unshift(basename(candidate));
+          candidate = dirname(candidate);
+        }
+    };
+    let boundary = "";
+    try {
+      boundary = realpathSync.native(join(dirname(roots.common), ".worktrees"));
+    } catch {
+      refused();
+    }
+    const target = resolved(path);
+    const inside = relative(boundary, target);
     if (!inside || /^\.\.(?:[\\/]|$)/.test(inside) || isAbsolute(inside))
       refused();
     return target;
