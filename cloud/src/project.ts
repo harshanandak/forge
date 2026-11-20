@@ -1150,6 +1150,7 @@ export class Project {
         JSON.parse(String(prior.result)),
         subject,
         holder,
+        this.#open().owner.lease(NAMESPACE, subject),
       );
     }
     requireArm();
@@ -1205,7 +1206,7 @@ export class Project {
     recorded: unknown,
     subject: string,
     holder: LeaseHolder,
-    current = this.#open().owner.lease(NAMESPACE, subject),
+    current: LeaseRecord | undefined,
   ): LeaseRecord {
     if (outcome !== "ok") throw new ForgeFailure(recorded as ForgeError);
     const first = recorded as LeaseRecord;
