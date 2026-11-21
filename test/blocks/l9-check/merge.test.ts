@@ -31,6 +31,32 @@ setDefaultTimeout(1000);
 const head = "a".repeat(40),
   base = "c".repeat(40),
   merged = "d".repeat(40);
+const reviewed = "e".repeat(40);
+const fork = "f".repeat(40);
+const reviewRequirement = { kind: "merge-gate", reviewer: "Review-Agent" };
+const reviewEvidence = "https://github.com/org/repo/pull/7#pullrequestreview-1";
+const requiredReviewReason = {
+  code: "REQUIRED_REVIEW_NOT_COVERED",
+  detail:
+    "Required merge-gate does not cover the current PR head; review this head and record its result before merging.",
+};
+
+function reviewRecord(
+  commitId: string,
+  overrides: Record<string, unknown> = {},
+) {
+  return {
+    id: 1,
+    body: "forge-review:merge-gate",
+    user: { login: "review-agent" },
+    commit_id: commitId,
+    state: "APPROVED",
+    submitted_at: "2026-11-21T11:00:00Z",
+    html_url: reviewEvidence,
+    ...overrides,
+  };
+}
+
 // The default reviewer (the Codex connector) is always checked; the fake prints what the real jq filter would.
 const reviewLine = `<!-- codex-review-state:v1 ${JSON.stringify({
   code_review: {
@@ -55,6 +81,18 @@ const config: CheckConfig = {
   maxInputBytes: 1048576,
   environment: ["PATH"],
 };
+const reviewConfig = {
+  ...config,
+  gate: {
+    requiredReviews: [reviewRequirement],
+    requiredChecks: ["CI Gate"] as const,
+  },
+};
+const emptyReviewConfig = {
+  ...config,
+  gate: { requiredReviews: [], requiredChecks: ["CI Gate"] as const },
+};
+const codeDelta = `:100644 100644 ${fork} ${reviewed} M\tsrc/main.ts\n`;
 const complete: ProcessResult = {
   stdout: "",
   stderr: "",
@@ -71,7 +109,7 @@ type MergeResult = {
   receipt?: string;
   mergeCommit?: string;
   detail?: string;
-  gate: { reasons: { code: string }[] };
+  gate: { reasons: { code: string; detail?: string }[]; reviews?: unknown };
 };
 const catalog = {
   resolve: () => ({
@@ -119,6 +157,14 @@ function fixture() {
     throwRead = false,
     afterGate = false;
   let scoped = false;
+  let reviewPages: readonly unknown[] = [[]];
+  let author = "builder";
+  let gitEvidence: {
+    parents?: readonly string[];
+    finalDelta?: string;
+    shallow?: boolean;
+    missing?: boolean;
+  } = {};
   let hook:
     ((phase: "merge" | "readback", options: SpawnOptions) => void) | undefined;
   const services: CheckServices = {
@@ -154,6 +200,31 @@ function fixture() {
           : { kind: "resolved", path },
       run(executable, args, options) {
         return Promise.resolve().then(() => {
+          if (executable.path === "git") {
+            calls.push(["git", ...args]);
+            expect(args).toContain("--no-replace-objects");
+            let stdout: string;
+            if (args.includes("--is-shallow-repository"))
+              stdout = gitEvidence.shallow ? "true\n" : "false\n";
+            else if (args.includes("cat-file"))
+              stdout = `tree ${fork}\n${(gitEvidence.parents ?? [base]).map((oid) => `parent ${oid}\n`).join("")}author Test <test@example.com> 0 +0000\n\nMerge\n`;
+            else if (args.includes("merge-base")) stdout = `${fork}\n`;
+            else if (args.includes("diff-tree")) {
+              expect(args).toContain("--no-renames");
+              expect(args).toContain("--no-ext-diff");
+              expect(args).toContain("--no-textconv");
+              expect(args).toContain("--no-abbrev");
+              stdout = args.includes(head)
+                ? (gitEvidence.finalDelta ?? codeDelta)
+                : codeDelta;
+            } else
+              throw new Error(`Unexpected git arguments: ${args.join(" ")}`);
+            return {
+              ...complete,
+              stdout,
+              exitCode: gitEvidence.missing ? 1 : 0,
+            };
+          }
           if (executable.path !== "gh")
             return captured({ ...complete, stdout: "checked" }, options);
           calls.push([...args]);
@@ -187,6 +258,7 @@ function fixture() {
               };
             }
             value = {
+              author: { login: author },
               headRefOid: head,
               headRefName: "feat/x",
               baseRefOid: base,
@@ -228,7 +300,12 @@ function fixture() {
             ];
           } else if (args[1]?.includes("/issues/7/comments"))
             return { ...complete, stdout: reviewLine };
-          else if (args[1]?.includes("/compare/"))
+          else if (args[1]?.includes("/pulls/7/reviews?")) {
+            const page = Number(
+              new URLSearchParams(args[1].split("?")[1]).get("page"),
+            );
+            value = reviewPages[page - 1] ?? [];
+          } else if (args[1]?.includes("/compare/"))
             value = [
               {
                 status: "ahead",
@@ -291,6 +368,9 @@ function fixture() {
       cancelAfterGate?: boolean;
       scoped?: boolean;
       hook?: typeof hook;
+      reviewPages?: typeof reviewPages;
+      author?: typeof author;
+      gitEvidence?: typeof gitEvidence;
     }) {
       missing = options.missing ?? missing;
       unresolved = options.unresolved ?? unresolved;
@@ -303,6 +383,9 @@ function fixture() {
       cancelAfterGate = options.cancelAfterGate ?? cancelAfterGate;
       scoped = options.scoped ?? scoped;
       hook = options.hook ?? hook;
+      reviewPages = options.reviewPages ?? reviewPages;
+      author = options.author ?? author;
+      gitEvidence = options.gitEvidence ?? gitEvidence;
     },
     async run(
       gateConfig = config,
@@ -337,6 +420,194 @@ function fixture() {
     },
   };
 }
+
+test("merge refuses a stale independent review with the exact reason and no merge call", async () => {
+  const f = fixture();
+  await f.receipt();
+  f.alter({ reviewPages: [[reviewRecord(reviewed)]] });
+  const result = await f.run(reviewConfig);
+  expect(result.gate.reasons).toContainEqual(requiredReviewReason);
+  expect(result.outcome).toBe("REFUSED");
+  expect(exitCode(envelope(result))).toBe(1);
+  expect(f.calls.some((args) => args[1] === "merge")).toBe(false);
+}, 1000);
+
+test("merge accepts and reports the independent approval of the pinned head", async () => {
+  const f = fixture();
+  await f.receipt();
+  f.alter({ reviewPages: [[reviewRecord(head)]] });
+  const result = await f.run(reviewConfig);
+  expect(result.gate.reviews).toEqual([
+    {
+      kind: "merge-gate",
+      reviewer: "review-agent",
+      head,
+      verdict: "PASS",
+      evidence: reviewEvidence,
+    },
+  ]);
+  expect(result.outcome).toBe("MERGED");
+  expect(exitCode(envelope(result))).toBe(0);
+  expect(f.calls.some((args) => args[1] === "merge")).toBe(true);
+  expect(f.calls.some((args) => args[0] === "git")).toBe(false);
+}, 1000);
+
+test("merge carries an approval only across an update with the same tree delta", async () => {
+  const f = fixture();
+  await f.receipt();
+  f.alter({
+    reviewPages: [[reviewRecord(reviewed)]],
+    gitEvidence: { parents: [reviewed, base] },
+  });
+  const result = await f.run(reviewConfig);
+  expect(result.gate.reviews).toEqual([
+    {
+      kind: "merge-gate",
+      reviewer: "review-agent",
+      head,
+      verdict: "PASS",
+      evidence: reviewEvidence,
+      carriedFrom: reviewed,
+      base,
+    },
+  ]);
+  expect(result.outcome).toBe("MERGED");
+  expect(exitCode(envelope(result))).toBe(0);
+  expect(
+    f.calls.find((args) => args.includes("merge-base"))?.slice(-2),
+  ).toEqual([reviewed, base]);
+}, 1000);
+
+const incompleteCarry = [
+  [
+    "returns changed content",
+    {
+      parents: [reviewed, base],
+      finalDelta: codeDelta + codeDelta.replace("main.ts", "extra.ts"),
+    },
+  ],
+  ["reverses the parent order", { parents: [base, reviewed] }],
+  ["has three parents", { parents: [reviewed, base, fork] }],
+  ["has shallow history", { parents: [reviewed, base], shallow: true }],
+  ["has missing objects", { parents: [reviewed, base], missing: true }],
+] as const;
+for (const [condition, gitEvidence] of incompleteCarry) {
+  test(`merge refuses a carried approval when Git ${condition}`, async () => {
+    const f = fixture();
+    await f.receipt();
+    f.alter({ reviewPages: [[reviewRecord(reviewed)]], gitEvidence });
+    const result = await f.run(reviewConfig);
+    expect(result.gate.reasons).toContainEqual(requiredReviewReason);
+    expect(result.outcome).toBe("REFUSED");
+    expect(f.calls.some((args) => args[1] === "merge")).toBe(false);
+  }, 1000);
+}
+
+const laterReview = { id: 2, submitted_at: "2026-11-21T11:01:00Z" };
+const unusableReviews = [
+  [
+    "a newer request for changes on another commit",
+    [
+      reviewRecord(head),
+      reviewRecord(fork, { ...laterReview, state: "CHANGES_REQUESTED" }),
+    ],
+  ],
+  [
+    "a newer marked comment on another commit",
+    [
+      reviewRecord(head),
+      reviewRecord(fork, { ...laterReview, state: "COMMENTED" }),
+    ],
+  ],
+  [
+    "a newer marked dismissal on another commit",
+    [
+      reviewRecord(head),
+      reviewRecord(fork, { ...laterReview, state: "DISMISSED" }),
+    ],
+  ],
+  ["a dismissed approval", [reviewRecord(head, { state: "DISMISSED" })]],
+  ["the PR author's approval", [reviewRecord(head)], "Review-Agent"],
+  [
+    "an unmarked approval",
+    [reviewRecord(head, { body: "Please see forge-review:merge-gate" })],
+  ],
+  [
+    "a duplicate marker",
+    [
+      reviewRecord(head, {
+        body: "forge-review:merge-gate\nforge-review:merge-gate",
+      }),
+    ],
+  ],
+  ["an unknown kind", [reviewRecord(head, { body: "forge-review:other" })]],
+  ["a missing commit", [reviewRecord("", {})]],
+  ["an absent review", []],
+] as const;
+for (const [condition, page, author] of unusableReviews) {
+  test(`merge refuses ${condition}`, async () => {
+    const f = fixture();
+    await f.receipt();
+    f.alter({ reviewPages: [page], ...(author ? { author } : {}) });
+    expect((await f.run(reviewConfig)).gate.reasons).toContainEqual(
+      requiredReviewReason,
+    );
+    expect(f.calls.some((args) => args[1] === "merge")).toBe(false);
+  }, 1000);
+}
+
+const unmarkedPage = Array.from({ length: 100 }, (_, index) =>
+  reviewRecord(head, {
+    id: index + 20,
+    body: "Reviewed",
+    user: { login: "unrelated" },
+  }),
+);
+
+test("merge reads subsequent review pages before deciding", async () => {
+  const f = fixture();
+  await f.receipt();
+  f.alter({
+    reviewPages: [
+      [reviewRecord(head), ...unmarkedPage.slice(1)],
+      [reviewRecord(fork, { ...laterReview, state: "COMMENTED" })],
+    ],
+  });
+  expect((await f.run(reviewConfig)).gate.reasons).toContainEqual(
+    requiredReviewReason,
+  );
+  expect(
+    f.calls.filter((args) => args[1]?.includes("/pulls/7/reviews?")),
+  ).toHaveLength(2);
+}, 1000);
+
+test("merge fails closed when ten full review pages leave evidence incomplete", async () => {
+  const f = fixture();
+  await f.receipt();
+  f.alter({
+    reviewPages: Array.from({ length: 11 }, (_, index) =>
+      index === 0
+        ? [reviewRecord(head), ...unmarkedPage.slice(1)]
+        : unmarkedPage,
+    ),
+  });
+  expect((await f.run(reviewConfig)).gate.reasons).toContainEqual(
+    requiredReviewReason,
+  );
+  expect(
+    f.calls.filter((args) => args[1]?.includes("/pulls/7/reviews?")),
+  ).toHaveLength(10);
+}, 1000);
+
+test("an empty required review list preserves the merge outcome and evidence calls", async () => {
+  const implicit = fixture();
+  const explicit = fixture();
+  await implicit.receipt();
+  await explicit.receipt();
+  expect((await implicit.run()).outcome).toBe("MERGED");
+  expect((await explicit.run(emptyReviewConfig)).outcome).toBe("MERGED");
+  expect(explicit.calls).toEqual(implicit.calls);
+}, 1000);
 
 test("pr.merge declares its destructive non-idempotent contract", () => {
   const op = (manifest.operations as Record<string, unknown>)["pr.merge"];
