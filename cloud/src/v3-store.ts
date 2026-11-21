@@ -724,7 +724,8 @@ function verifyLeaseFrame(
       device,
       null,
       undefined,
-      [outcome.retryUntil, time],
+      outcome.retryUntil,
+      time,
     );
   } catch {
     throw unavailable();
@@ -766,13 +767,12 @@ export function leaseV3(
   image: V3Image,
   command: LeaseCommand,
   expiresAt: number,
-  admittedAt?: number,
+  now = Date.now(),
 ): LeaseRecord {
   const { route, subject, holder, requestId } = command;
   const result = db.transaction(
     (): { lease: LeaseRecord } | { refusal: ForgeFailure } => {
       const fingerprint = leaseFingerprint(command);
-      const now = admittedAt ?? Date.now();
       const read = () => readV3Value(db, image, "lease", subject);
       const prior = readV3Value(db, image, "outcome", requestId);
       if (prior !== undefined && prior.outcome.retryUntil > now) {

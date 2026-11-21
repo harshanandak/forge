@@ -200,8 +200,11 @@ export const domain = {
 
 const fail = (code: string, message: string): ForgeFailure =>
   new ForgeFailure({ code, message, retry: "never" });
-const tokenLive = (expiresAt?: number, now = Date.now()): void => {
-  if (!Number.isSafeInteger(expiresAt) || !(Number(expiresAt) > now))
+const tokenLive = (expiresAt?: number, now?: number): void => {
+  if (
+    !Number.isSafeInteger(expiresAt) ||
+    !(Number(expiresAt) > (now ?? Date.now()))
+  )
     throw fail("AUTH_EXPIRED", "Token expired");
 };
 export const STATUS: Record<string, number> = {
@@ -528,7 +531,8 @@ export class Project {
               owner,
               null,
               undefined,
-              [expiresAt, now],
+              expiresAt,
+              now,
             );
             const image = this.#image(db);
             const value = leaseV3(db, image, command, expiresAt, now);
@@ -1085,9 +1089,16 @@ export class Project {
       recheck();
       tokenLive(expiresAt);
     };
-    checkExpiry();
+    recheck();
     return this.#lease(
-      Project.admitLeaseRequest(route, body, device, tokenSession, principal),
+      Project.admitLeaseRequest(
+        route,
+        body,
+        device,
+        tokenSession,
+        principal,
+        expiresAt,
+      ),
       checkExpiry,
       requireArm,
       expiresAt,
@@ -1101,22 +1112,15 @@ export class Project {
     device: unknown,
     tokenSession: string | null,
     principal: ReceiptPrincipal | undefined,
-    probe?: readonly [expiresAt: number, now: number],
+    expiresAt?: number,
+    now?: number,
   ): LeaseCommand {
+    tokenLive(expiresAt, now);
     const bytes =
       Buffer.byteLength(body) - 2 * (body.match(/\ufffd/g)?.length ?? 0);
     if (bytes > MAX_BODY)
       throw fail("INPUT_INVALID", `body is over ${MAX_BODY} bytes`);
-    if (probe) tokenLive(...probe);
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(body);
-    } catch {
-      throw fail("INPUT_INVALID", "body must be JSON");
-    }
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
-      throw fail("INPUT_INVALID", "body must be a JSON object");
-    const input = parsed as Record<string, unknown>;
+    const input = object(body);
     const subject = text(input, "subject");
     const rawId = text(input, "requestId");
     if (!REQUEST_ID.test(rawId))
@@ -1146,7 +1150,7 @@ export class Project {
       route === "release" ? null : ((input.ttlMs ?? null) as number);
     const generation = route === "claim" ? null : integer(input, "generation");
 
-    if (probe && !validateLeaseHolder(holder).ok)
+    if (principal === undefined && !validateLeaseHolder(holder).ok)
       throw fail("INPUT_INVALID", "Lease holder has an invalid device");
     const identity = principal ?? ["owner", device, device];
     const requestId = scopeRequestId("lease", identity, rawId);
@@ -1160,7 +1164,7 @@ export class Project {
       requestId,
       scope: receiptScope(identity),
     };
-    if (probe && !withinDepth(command))
+    if (principal === undefined && !withinDepth(command))
       throw fail("INPUT_INVALID", "Lease input is nested too deeply");
     return command;
   }

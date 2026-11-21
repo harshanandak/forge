@@ -50,8 +50,12 @@ function parse(text: string): unknown {
   }
 }
 
-function inventory(image: V3Image, pages: ReadonlyMap<string, Buffer>): Item[] {
-  return COLLECTIONS.flatMap((collection) =>
+function inventory(
+  image: V3Image,
+  pages: ReadonlyMap<string, Buffer>,
+  collections: readonly (typeof COLLECTIONS)[number][] = COLLECTIONS,
+): Item[] {
+  return collections.flatMap((collection) =>
     [...image.entries[collection].keys()].sort().map((key) => {
       const slot = image.entries[collection].get(key)!;
       if (slot === null) return [collection, key, null];
@@ -292,12 +296,7 @@ async function checkpoint(
     admit,
     pages: previous,
     sealed: (sealed) =>
-      reconcileReceipts(
-        inventory(sealed, previous).filter(
-          ([collection]) => collection === "outcome",
-        ),
-        history,
-      ),
+      reconcileReceipts(inventory(sealed, previous, ["outcome"]), history),
   });
   requireCheckpoint(image.head === cut);
   const expected = inventory(image, previous);
