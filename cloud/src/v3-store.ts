@@ -23,7 +23,12 @@ import {
   requestConflict,
 } from "./lease-command.ts";
 import { checkTtl } from "./lease-ttl.ts";
-import { authorityFault, isDigest, isNat } from "./v3-authority.ts";
+import {
+  authorityFault,
+  isDigest,
+  isNat,
+  sealedAuthorityValid,
+} from "./v3-authority.ts";
 import { TABLE_PROBE } from "./store.ts";
 
 const ROOT = "cloud_v3_root";
@@ -37,6 +42,7 @@ const DIRECTORY_PAGES = 32;
 const DIRECTORY_BYTES = 4 * MiB;
 const TAIL_ROWS = 1024;
 const TAIL_BYTES = 16 * MiB;
+const MAX_JSON_DEPTH = 64;
 const ROOT_FORMAT = "forge-cloud-root/3";
 const KINDS = ["directory", "snapshot", "transcript"];
 const COLLECTIONS = ["lease", "outcome", "record", "witness"] as const;
@@ -114,6 +120,19 @@ interface Pointer {
   readonly digest: string;
 }
 type Slot = { readonly value: unknown } | Pointer | null;
+interface Values {
+  readonly lease: LeaseRecord;
+  readonly outcome: {
+    readonly time: number;
+    readonly outcome: NonNullable<Frame["outcome"]>;
+    readonly lease?: LeaseRecord;
+  };
+  readonly witness: {
+    readonly witness: NonNullable<Frame["witness"]>;
+    readonly lease: LeaseRecord;
+  };
+  readonly record: unknown;
+}
 export interface V3Image {
   readonly root: Readonly<Record<string, unknown>> & {
     readonly coveredHead: number;
@@ -134,13 +153,32 @@ const nat = (value: unknown): number => {
   if (!isNat(value)) throw unavailable();
   return value;
 };
-const parse = (text: unknown): unknown => {
+function withinDepth(value: unknown, remaining = MAX_JSON_DEPTH): boolean {
+  if (value === null || typeof value !== "object") return true;
+  if (remaining === 0) return false;
+  const children: readonly unknown[] = Array.isArray(value)
+    ? value
+    : Object.values(value);
+  return children.every((child) => withinDepth(child, remaining - 1));
+}
+
+function readStored<T>(read: () => T): T {
   try {
-    return JSON.parse(String(text));
+    return read();
   } catch {
     throw unavailable();
   }
-};
+}
+
+const parse = (text: string): unknown =>
+  readStored(() => {
+    const value: unknown = JSON.parse(text);
+    if (!withinDepth(value)) throw unavailable();
+    return value;
+  });
+
+const storedCanonical = (value: unknown) =>
+  readStored(() => canonicalJson(value));
 
 const utcDay = (value: unknown) => {
   const time =
@@ -196,7 +234,10 @@ export function readV3Root(db: SqlDatabase) {
   let next = 0;
   let sequence = 0;
   const listed = root.pages.map((page): Page & { ordinal: number } => {
-    const kind = isObject(page) ? KINDS.indexOf(String(page.kind)) : -1;
+    const kind =
+      isObject(page) && typeof page.kind === "string"
+        ? KINDS.indexOf(page.kind)
+        : -1;
     if (!isObject(page) || kind < rank || !isDigest(page.hash))
       throw unavailable();
     if (kind > rank) [rank, next] = [kind, 0];
@@ -234,8 +275,8 @@ export function readV3Root(db: SqlDatabase) {
   const manifest = { ...root, counts, bytes, pages: listed };
   if (
     Object.keys(root).sort().join() !== Object.keys(base).sort().join() ||
-    canonicalJson(manifest) !== row.body ||
-    (generation === 0 && row.body !== canonicalJson(base)) ||
+    storedCanonical(manifest) !== row.body ||
+    (generation === 0 && row.body !== storedCanonical(base)) ||
     (generation > 0 && !sealedFields(root)) ||
     coveredHead !== (counts.transcript ?? 0) ||
     listed.filter(({ kind }) => kind === "directory").length >
@@ -260,7 +301,8 @@ function directoryEntry(entry: unknown, byId: ReadonlyMap<string, Page>) {
   const { key } = entry;
   if (collection === "record" && entry.deleted === true)
     return { collection, key, deleted: true as const };
-  const target = byId.get(String(entry.page));
+  const target =
+    typeof entry.page === "string" ? byId.get(entry.page) : undefined;
   const offset = nat(entry.offset);
   const length = nat(entry.length);
   if (
@@ -326,9 +368,9 @@ export function recoverV3(db: SqlDatabase): V3Image {
       entry === undefined ? null : [entry.collection, entry.key],
     );
     if (
-      canonicalJson(entries) !== body ||
+      storedCanonical(entries) !== body ||
       entries.length !== page.count ||
-      canonicalJson(ends) !== canonicalJson([page.first, page.last])
+      storedCanonical(ends) !== storedCanonical([page.first, page.last])
     )
       throw unavailable();
     for (const { collection, key, ...slot } of entries) {
@@ -354,7 +396,7 @@ function foldRow(image: V3Image, sequence: unknown, body: unknown) {
   const frame = typeof body === "string" ? parse(body) : undefined;
   if (
     sequence !== image.head + 1 ||
-    canonicalJson(frame) !== body ||
+    storedCanonical(frame) !== body ||
     !validFrame(frame) ||
     frame.format !== COMMIT_FORMAT ||
     frame.sequence !== sequence
@@ -412,12 +454,35 @@ export function viewV3(image: V3Image) {
   };
 }
 
-export const GENESIS_LEASE_ONLY =
-  "Cloud v3 lease commands need the genesis root until they read the recovered image";
-
-export function requireGenesisForLease(image: V3Image) {
-  if (image.root.generation !== 0)
-    throw fail("UNAVAILABLE", GENESIS_LEASE_ONLY);
+export function readV3Value<C extends Collection>(
+  db: SqlDatabase,
+  image: V3Image,
+  collection: C,
+  key: string,
+): Values[C] | undefined {
+  const slot = image.entries[collection].get(key);
+  if (!slot) return undefined;
+  if ("value" in slot) return slot.value as Values[C];
+  const bytes = db.get(
+    `SELECT substr(CAST(body AS BLOB), ?, ?) AS value FROM ${PAGES} WHERE id=?`,
+    [slot.offset + 1, slot.length, slot.page],
+  )?.value;
+  if (
+    !(bytes instanceof Uint8Array) ||
+    bytes.byteLength !== slot.length ||
+    digestBytes(bytes) !== slot.digest
+  )
+    throw unavailable();
+  const text = readStored(() =>
+    new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes),
+  );
+  const value = parse(text);
+  if (
+    storedCanonical(value) !== text ||
+    (collection !== "record" && !sealedAuthorityValid(collection, key, value))
+  )
+    throw unavailable();
+  return value as Values[C];
 }
 
 export function appendV3Frames(
@@ -433,7 +498,7 @@ export function appendV3Frames(
       (frame) =>
         !isObject(frame) ||
         Object.keys(frame).some((key) => !SYNTHETIC_KEYS.includes(key)) ||
-        !validShape(frame),
+        !validAppendFrame(frame),
     )
   )
     throw fail("INPUT_INVALID", "Invalid v3 frame");
@@ -441,7 +506,8 @@ export function appendV3Frames(
 }
 
 function append(db: SqlDatabase, image: V3Image, batch: readonly unknown[]) {
-  if (!batch.every(validShape)) throw fail("INPUT_INVALID", "Invalid v3 frame");
+  if (!batch.every(validAppendFrame))
+    throw fail("INPUT_INVALID", "Invalid v3 frame");
   return db.transaction(() => {
     const { coveredHead } = readV3Root(db);
     const last = db.get(
@@ -529,6 +595,9 @@ function validShape(frame: unknown): frame is Frame & Record<string, unknown> {
 const validFrame = (frame: unknown): frame is Frame & Record<string, unknown> =>
   validShape(frame) && authorityFault(frame) === undefined;
 
+const validAppendFrame = (frame: unknown) =>
+  validShape(frame) && withinDepth(frame);
+
 function apply(image: V3Image, frame: Frame, sequence: number) {
   const { time, lease, outcome, witness } = frame;
   if (lease) image.entries.lease.set(lease.subject, { value: lease });
@@ -545,16 +614,6 @@ function apply(image: V3Image, frame: Frame, sequence: number) {
     );
   image.head = sequence;
   image.eventWatermark += frame.events.length;
-}
-
-function latest(db: SqlDatabase, path: string, value: string) {
-  const row = db.get(
-    `SELECT body FROM ${COMMITS} WHERE json_extract(body, ?)=? ORDER BY sequence DESC LIMIT 1`,
-    [path, value],
-  );
-  return row === undefined
-    ? undefined
-    : (JSON.parse(String(row.body)) as Frame);
 }
 
 function transition(
@@ -589,15 +648,16 @@ export function leaseV3(
   command: LeaseCommand,
   expiresAt: number,
 ): LeaseRecord {
+  if (!withinDepth(command))
+    throw fail("INPUT_INVALID", "Lease input is nested too deeply");
   const { route, subject, holder, ttlMs, requestId } = command;
   const result = db.transaction(
     (): { lease: LeaseRecord } | { refusal: ForgeFailure } => {
-      readV3Root(db);
       const fingerprint = leaseFingerprint(command);
       const now = Date.now();
-      const read = () => latest(db, "$.lease.subject", subject)?.lease;
-      const prior = latest(db, "$.outcome.id", requestId);
-      if (prior?.outcome !== undefined && prior.outcome.retryUntil > now) {
+      const read = () => readV3Value(db, image, "lease", subject);
+      const prior = readV3Value(db, image, "outcome", requestId);
+      if (prior !== undefined && prior.outcome.retryUntil > now) {
         if (now >= prior.time + RETENTION_MS)
           expiredReplay(prior.outcome.status !== "ok");
         if (prior.outcome.fingerprint !== fingerprint) throw requestConflict();
@@ -638,8 +698,10 @@ export function leaseV3(
         return refuse(error);
       }
       const witnessed =
-        route === "claim" ? latest(db, "$.witness.id", requestId) : undefined;
-      if (witnessed?.witness !== undefined) {
+        route === "claim"
+          ? readV3Value(db, image, "witness", requestId)
+          : undefined;
+      if (witnessed !== undefined) {
         const held = decideLease(current, {
           mode: "held",
           subject,
@@ -650,7 +712,7 @@ export function leaseV3(
         if (!held.ok) throw new ForgeFailure(held.error);
         if (witnessed.witness.digest !== digestBytes(fingerprint))
           throw requestConflict();
-        return { lease: witnessed.lease! };
+        return { lease: witnessed.lease };
       }
       let lease: LeaseRecord;
       try {

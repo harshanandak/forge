@@ -133,7 +133,6 @@ import {
   provisionV3,
   publishV3,
   recoverV3,
-  requireGenesisForLease,
   type V3Image,
   viewV3,
 } from "./v3-store.ts";
@@ -513,7 +512,6 @@ export class Project {
               ["owner", owner, owner],
             );
             const image = this.#image(db);
-            requireGenesisForLease(image);
             const value = leaseV3(db, image, command, expiresAt);
             return Response.json({ ok: true, value });
           }

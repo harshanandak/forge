@@ -8,6 +8,8 @@ import {
   test,
 } from "bun:test";
 import { scopeRequestId } from "../../cloud/src/issue-request-id.ts";
+import { writableStore } from "../../cloud/src/store.ts";
+import { readV3Value, recoverV3 } from "../../cloud/src/v3-store.ts";
 import { canonicalJson, digestBytes } from "../../src/core/config/pointer.ts";
 import { fixture, probe } from "./v3-project.fixture.ts";
 
@@ -470,6 +472,7 @@ for (const at of ["tail", "directory"] as const) {
             changes: [
               { key: "a", value: { n: 1 } },
               { key: "b", value: { n: 2 } },
+              { key: "c", value: null },
             ],
           }),
         ).toMatchObject({ status: 200 });
@@ -493,8 +496,14 @@ for (const at of ["tail", "directory"] as const) {
           lease: {},
           outcome: {},
           witness: {},
-          record: { a: null, b: digestOf({ n: 2 }) },
+          record: { a: null, b: digestOf({ n: 2 }), c: digestOf(null) },
         });
+        const db = writableStore(f.storage);
+        const recovered = recoverV3(db);
+        const before = { ...f.reads };
+        expect(readV3Value(db, recovered, "record", "a")).toBeUndefined();
+        expect(f.reads).toEqual(before);
+        expect(readV3Value(db, recovered, "record", "c")).toBeNull();
       } finally {
         f.db.close();
       }
@@ -819,6 +828,44 @@ test(
       const before = f.snapshot();
       expect(await claim(f, "owner-a")).toMatchObject(unavailable);
       expect(f.snapshot()).toEqual(before);
+    } finally {
+      f.db.close();
+    }
+  },
+  timeout,
+);
+
+test(
+  "append accepts the 64-level JSON boundary and refuses a deeper frame without writing",
+  async () => {
+    const f = fixture();
+    const events = (depth: number): unknown =>
+      JSON.parse("[".repeat(depth) + "0" + "]".repeat(depth));
+    try {
+      expect((await f.send(probe, {})).status).toBe(200);
+      expect(await commit(f, { ...put, events: events(63) })).toMatchObject({
+        status: 200,
+      });
+      const before = f.snapshot();
+      expect(await commit(f, { ...put, events: events(64) })).toMatchObject({
+        status: 400,
+        body: { error: { code: "INPUT_INVALID" } },
+      });
+      expect(
+        await lease(f, "claim", "owner-a", {
+          requestId: "acq-1",
+          ttlMs: events(64),
+        }),
+      ).toMatchObject({
+        status: 400,
+        body: { error: { code: "INPUT_INVALID" } },
+      });
+      expect(f.snapshot()).toEqual(before);
+      f.restart();
+      expect(image(await f.send(probe))).toMatchObject({
+        head: 1,
+        eventWatermark: 1,
+      });
     } finally {
       f.db.close();
     }
