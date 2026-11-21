@@ -7,18 +7,40 @@ start with `forge lane start <issue> --branch <name> --brief <file>`. Use
 
 ## Checks before pushing
 
-Use Git, a supported Node version and Bun 1.4.4 or newer. Put Bun canary on your
-PATH for lint. Run these commands in order and fix the first failure.
+Use Git, Node.js 24.15 or later in the 24.x series or Node.js 26 and later, and
+Bun 1.4.4, the stable version in [package.json](package.json). From the repository
+root, run these checks in Bash (Git Bash on Windows). Fix the first failure.
 
 ```sh
 bun install --frozen-lockfile
-(cd cloud && bun install --frozen-lockfile --ignore-scripts)
+bun install --cwd=cloud --frozen-lockfile --ignore-scripts
 bun run gen
 bun run build
 bun x tsc -p tsconfig.json
 bun run check
 bun run fmt --check
-bun run lint
+```
+
+Lint requires the exact canary listed in
+[tools/bun-lint-version.json](tools/bun-lint-version.json).
+Like [CI](.github/workflows/ci.yml), install the pinned Bun package for your platform
+in a separate directory and put its `bin` first on PATH for lint. The revision printed by
+`bun --revision` must match the file's `revision` field. Lint checks that match
+before running.
+
+```sh
+(
+  set -e
+  lint_package=$(node -p '
+    const platform = process.platform === "win32" ? "windows" : process.platform;
+    const arch = process.arch === "arm64" ? "aarch64" : process.arch;
+    `@oven/bun-${platform}-${arch}@${require("./tools/bun-lint-version.json").package}`')
+  lint_dir=node_modules/.forge-lint-runtime
+  npm install --prefix "$lint_dir" --ignore-scripts --no-save "$lint_package"
+  export PATH="$PWD/$lint_dir/node_modules/${lint_package%@*}/bin:$PATH"
+  bun --revision
+  bun run lint
+)
 ```
 
 CI is the test gate. Run test suites in hosted CI. For a behavior change,
