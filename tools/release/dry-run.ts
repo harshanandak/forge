@@ -19,6 +19,7 @@ export async function dryRun(
     run: (args: string[], stdin?: Uint8Array) => string;
     fetch: (url: string) => Promise<Response>;
     requireRegistry?: boolean;
+    readbackOnly?: boolean;
   },
 ): Promise<string> {
   const tarball = packInput(input)!;
@@ -38,12 +39,16 @@ export async function dryRun(
       `https://registry.npmjs.org/forge-workflow/${encodeURIComponent(pkg.version)}`,
     )
     .catch((error: unknown) => {
-      if (io.requireRegistry) throw error;
+      if (io.requireRegistry || io.readbackOnly) throw error;
       console.warn(
         "release: offline; skipped registry version check (local dry-run only)",
       );
       return undefined;
     });
+  if (io.readbackOnly) {
+    if (response?.status === 200) return pkg.version;
+    throw new Error(`release: recovery got HTTP ${response?.status}`);
+  }
   if (response?.ok)
     throw new Error(`release: ${pkg.version} already published`);
   if (response && response.status !== 404)
@@ -62,6 +67,7 @@ if (import.meta.main) {
       run,
       fetch: (url) => fetch(url, { signal: AbortSignal.timeout(10_000) }),
       requireRegistry: process.env.CI === "true",
+      readbackOnly: process.env.READBACK_ONLY === "true",
     });
     if (process.env.GITHUB_OUTPUT)
       appendFileSync(

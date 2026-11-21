@@ -215,7 +215,7 @@ test("promotion derives the channel and verifies tags around the write", () => {
   expect(run).toContain('npm dist-tag add "forge-workflow@$VERSION" "$TAG"');
   assert.match(run, /dist-tags\?nocache=\$\{crypto\.randomUUID\(\)\}/);
   assert.match(run, /'Cache-Control': 'no-cache'/);
-  assert.match(run, /Bun\.semver\.order\(current, version\) > 0\)/);
+  expect(run).toContain("Bun.semver.order(current, version) > 0)");
   assert.match(run, /read_tag before\n[^]*npm dist-tag add.*\nread_tag after/);
   assert.match(run, /mode === 'after' && current !== version/);
   expect(run).not.toMatch(/npm view/);

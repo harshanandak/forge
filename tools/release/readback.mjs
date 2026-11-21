@@ -8,7 +8,7 @@ const read = (path) => JSON.parse(readFileSync(path, "utf8"));
 const [bin, auditFile, lockFile] = process.argv.slice(2);
 const {
   VERSION: version,
-  GITHUB_SHA: commit,
+  EXPECTED_COMMIT: commit = process.env.GITHUB_SHA,
   TARBALL: tarball,
   CI_RUN: runId,
 } = process.env;
