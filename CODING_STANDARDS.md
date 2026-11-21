@@ -1,6 +1,6 @@
 # Coding standards
 
-Forge-only review rules. Behavior: [AGENTS.md](AGENTS.md). **Guard**: CI in `test/structure/**`; guard enforceable findings and review the rest.
+Forge review rules. See [AGENTS.md](AGENTS.md). CI guards what it can (`test/structure/**`). Review the rest.
 
 ## Language
 
@@ -41,13 +41,13 @@ Forge-only review rules. Behavior: [AGENTS.md](AGENTS.md). **Guard**: CI in `tes
 
 ## Tests
 
-- Every test declares an explicit timeout: a third argument, a `{ timeout }` option, or `setDefaultTimeout(<ms>)` at the top of the file. A configured default alone is not enough. **Guard:** `test-timeouts`.
-- Unit tests use an injected clock and fake process ports. Real git and subprocesses run only in a labelled integration lane. A flaky test is quarantined with an issue, never retried.
-- Every guard ships with a test that it fails on its motivating bad input. A concurrency or authority fix has a fault-injection test and a check that the journey fails with the fix removed.
-- CI acceptance uses the real artifact, never test counts. `bun run test:pack` is the minimum: pack once, install with npm on Node without Bun, run `forge --version` and every packed journey against that install.
-- Before adding a check command, run `bun tools/check-admit.ts <check-name> <break.patch> --guard <check-path>` (defaults: replay 20, Windows limit 120 seconds).
-  Admit only after all five rows pass; keep the break patch and JSON verdict as evidence.
-- Gates judge outcomes and return `PASS`, `FAIL`, `INCOMPLETE` or `NOT_EXECUTED`. Nothing checked is never `PASS`.
+- Tests need a third timeout argument, `{ timeout }`, or file-level `setDefaultTimeout(<ms>)`. **Guard:** `test-timeouts`.
+- Inject clocks and fake process ports in unit tests. Run real git and subprocesses only in a labelled integration lane.
+- No in-run test or check retries, retry loops, or raised timeouts. Rerun a failed CI run at most once, only to classify the failure. A pass on rerun confirms a flake. Keep the check enabled and the fix open. Find or file one issue per signature (job, test, first error line). Comment there and increment its count on every repeat. Close only with a root-cause fix and deterministic regression test, or proof the named failure mechanism cannot happen.
+- Test each guard against the bad input it addresses. For concurrency or authority fixes, inject the fault and show the journey fails without the fix.
+- CI acceptance runs the real artifact. At minimum, `bun run test:pack` packs once, installs with npm on Node without Bun, and runs `forge --version` and all packed journeys.
+- Admit checks with `bun tools/check-admit.ts <check-name> <break.patch> --guard <check-path>` (defaults: 20 replays, 120 s on Windows). Require all five rows to pass. Keep the patch and verdict JSON.
+- Gates return `PASS`, `FAIL`, `INCOMPLETE` or `NOT_EXECUTED`. `PASS` requires a checked outcome.
 
 ## Platform
 
@@ -59,9 +59,9 @@ Forge-only review rules. Behavior: [AGENTS.md](AGENTS.md). **Guard**: CI in `tes
 ## Documents and reviews
 
 - Document byte caps live in `test/structure/budget.json`; prune before growing. **Guard:** `budget`.
-- One decision record namespace (`ADR-NNN`) with a title; refer to a decision by name. Records hold durable choices only.
-- Reports lead with the answer in plain language, then evidence and what would change it.
-- PR size: at most 330 non-test lines when the PR touches security, state or cloud code, record admission rules included; up to about 600 elsewhere; no cap for deletion-only PRs. Test size is a default of 2 times the changed code lines plus 100; the PR body says why each extra row guards a real case. Measure additions plus deletions with `git diff --numstat origin/main...HEAD`, split test and non-test.
+- Use titled `ADR-NNN` records for durable choices. Refer to decisions by name.
+- Reports lead with a plain answer, then evidence and what would change it.
+- PR caps: 330 non-test lines for security, state or cloud code (including record admission), about 600 elsewhere, none for deletion-only PRs. Tests default to 2 times the changed code lines plus 100. Tie extra rows to real cases in the PR. Count additions plus deletions with `git diff --numstat origin/main...HEAD`, split test and non-test.
 - Tests run in hosted CI; after a red caused only by a test's own setup, run that one file locally once.
 - Review ends with no P0/P1 and own regressions fixed; file adjacent findings. At most 2 review rounds per mechanism, then write a 3-line threat model (asset, threat, mitigation) and choose ship, simplify or park. Never waive P0/P1.
 - The pull request title is a conventional commit title; it becomes the changelog line. Do not edit the changelog by hand.

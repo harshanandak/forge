@@ -32,9 +32,12 @@ Read [thread-helpers.md](thread-helpers.md) before replying or resolving, includ
 
 ## Red checks
 
+No in-run test or check retries, retry loops, or raised timeouts. Rerun a failed CI run at most once, only to classify the failure. A pass on rerun confirms a flake. Keep the check enabled and the fix open. Find or file one issue per signature (job, test, first error line). Comment there and increment its count on every repeat. Close only with a root-cause fix and deterministic regression test, or proof the named failure mechanism cannot happen.
+
 1. `gh pr checks <n>`, then `gh run view <run> --log-failed`.
-2. Red on base too (`gh run list --branch <base>`)? File or comment on the issue and label it. For a confirmed flake on base or head, Rerun up to 1 time: one fresh build with `gh run rerun <run> --failed`; another failure blocks handoff. Never fix an unrelated base bug in this PR.
-3. Red only here: fix it like a finding, in the same push wave.
+2. For classification, use `gh run rerun <run> --failed` only on the first attempt. A job that never started has no test failure to classify. If the check fails again, handoff stays blocked.
+3. For a check still red on base too (`gh run list --branch <base>`), file or comment on the issue and label it. Keep unrelated base fixes out of this PR.
+4. For a check still red only here, fix it like a finding, in the same push wave.
 
 ## Round budget and handoff
 

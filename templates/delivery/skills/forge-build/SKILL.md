@@ -36,7 +36,7 @@ First commit/push: `forge accounts plan --json`; relay `result.ask`, wait. Follo
 2. Reproduce the issue (or read the code named) before editing. Log: `forge issue comment --input '{"id":"<slice>","body":"premise holds: <evidence>"}'` or `premise does not hold: <evidence>`; if false, stop and report; change no code.
 3. Every slice goes red then green. Name a check's implementation-independent expected value. Run the new assertion on trunk first; it must fail on that assertion, not setup or unrelated errors.
 4. `forge check run --input '{"checks":["<name>"]}'`. FAIL: exit 1, `ok:false`; INCOMPLETE/NOT_EXECUTED: exit 2; only PASS exits 0. Keep full `result`/receipt id, even nonzero. No `&&` red chains or discarded failure output.
-5. Smallest fix; rerun green; keep receipt id.
+5. Apply the smallest fix, verify it with the check, and keep the receipt id. For CI flakes, follow [Red checks](../forge-review/SKILL.md#red-checks).
 
 Proof:
 

@@ -110,7 +110,12 @@
     "Everything else (P2, P3",
     "P2,P3"
   ],
-  ["guidance.review.reruns", "forge-review/SKILL.md", "Rerun up to 1 time", 1],
+  [
+    "guidance.review.reruns",
+    "forge-review/SKILL.md",
+    "Rerun a failed CI run at most once, only to classify the failure.",
+    1
+  ],
   ["guidance.merge.by", "forge-land/SKILL.md", "Merge by: agent", "agent"],
   [
     "guidance.merge.method",
