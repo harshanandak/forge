@@ -431,7 +431,6 @@ export function recoverV3(
     }
   }
   verification?.sealed(image);
-  // The checkpoint bound never reaches a restored-root tail read.
   const upper = through === undefined ? "" : " AND sequence<=?";
   const rows = db.all(
     `SELECT sequence, CASE WHEN sum(length(CAST(body AS BLOB))) OVER (ORDER BY sequence)<=${TAIL_BYTES} THEN body END AS body FROM (SELECT sequence, body FROM ${COMMITS} WHERE sequence>?${upper} ORDER BY sequence LIMIT ${TAIL_ROWS + 1}) ORDER BY sequence`,

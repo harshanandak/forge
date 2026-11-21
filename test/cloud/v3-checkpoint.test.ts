@@ -120,15 +120,12 @@ async function prefix(f: Fixture, previous: number, head: number) {
   const { rows, bytes } = f.reads;
   const result = await checkpoint(f);
   expect(result.status).toBe(200);
-  const { coveredHead, more } = (
-    result.body as {
-      value: { coveredHead: number; more: boolean };
-    }
-  ).value;
+  const { value } = result.body as { value: Json };
+  const coveredHead = value.coveredHead as number;
   const manifest = JSON.parse(root(f).body) as Json;
   expect(coveredHead).toBeGreaterThan(previous);
   expect(coveredHead).toBeLessThanOrEqual(head);
-  expect(more).toBe(coveredHead < head);
+  expect(value.more).toBe(coveredHead < head);
   expect(result.body).toMatchObject({
     ok: true,
     value: {
@@ -605,7 +602,7 @@ for (const point of [
             const runSql = f.storage.sql.exec.bind(f.storage.sql);
             f.storage.sql.exec = (statement, ...bindings) => {
               if (
-                /^DROP TABLE IF EXISTS cloud_v3_retired_pages\\b/i.test(
+                /^DROP TABLE IF EXISTS cloud_v3_retired_pages\b/i.test(
                   statement,
                 )
               ) {
@@ -853,9 +850,7 @@ test(
   "v3 checkpoint preserves authority and record transitions across prefixes",
   () =>
     withFixture(async (f) => {
-      expect(
-        (await append(f, ...Array.from({ length: 10 }, frame))).status,
-      ).toBe(200);
+      await appendNotes(f, 10);
       await populate(f);
       const db = writableStore(f.storage);
       const before = recoverV3(db);
@@ -876,9 +871,7 @@ test(
   "v3 checkpoint leaves a malformed suffix for full recovery and rejects its prefix",
   () =>
     withFixture(async (f) => {
-      expect(
-        (await append(f, ...Array.from({ length: 13 }, frame))).status,
-      ).toBe(200);
+      await appendNotes(f, 13);
       f.db.run("UPDATE cloud_v3_commits SET body='{}' WHERE sequence=13");
       f.restart();
       expect(await f.send(probe)).toMatchObject(refused);
