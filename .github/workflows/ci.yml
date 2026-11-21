@@ -197,8 +197,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
-    steps:
+        os: [ubuntu-latest]
+    steps: &speed-steps
       - &windows-storsvc-off
         name: Disable the Storage Service
         if: runner.os == 'Windows'
@@ -245,6 +245,18 @@ jobs:
         env:
           FORGE_BASE_DIST: ${{ github.workspace }}/base/dist
         run: node tools/bench/footprint.ts
+
+  speed-windows:
+    name: Speed main (${{ matrix.os }}, Node 24)
+    needs: changes
+    if: github.event_name == 'push'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest]
+    steps: *speed-steps
 
   comment-guard:
     name: Comment guard (windows-latest, Node 24)
@@ -308,14 +320,9 @@ jobs:
         include:
           - { os: ubuntu-latest, node: "24", suite: all, shard: "1/2" }
           - { os: ubuntu-latest, node: "24", suite: tests, shard: "2/2" }
-          - { os: ubuntu-latest, node: "26", suite: all, shard: "1/2" }
-          - { os: ubuntu-latest, node: "26", suite: tests, shard: "2/2" }
-          - { os: macos-latest, node: "24", suite: all, shard: "1/2" }
-          - { os: macos-latest, node: "24", suite: tests, shard: "2/2" }
           - { os: windows-latest, node: "24", suite: tests, shard: "1/3" }
           - { os: windows-latest, node: "24", suite: tests, shard: "2/3" }
           - { os: windows-latest, node: "24", suite: tests, shard: "3/3" }
-          - { os: windows-latest, node: "24", suite: pack }
     steps: &verify-steps
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -393,6 +400,23 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
 
+  verify-main:
+    name: Verify main (${{ matrix.os }}, Node ${{ matrix.node }}${{ matrix.suite != 'all' && format(', {0}', matrix.suite) || '' }}${{ matrix.shard && format(', shard {0}', matrix.shard) || '' }})
+    needs: [changes, pack]
+    if: github.event_name == 'push'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, node: "26", suite: all, shard: "1/2" }
+          - { os: ubuntu-latest, node: "26", suite: tests, shard: "2/2" }
+          - { os: macos-latest, node: "24", suite: all, shard: "1/2" }
+          - { os: macos-latest, node: "24", suite: tests, shard: "2/2" }
+          - { os: windows-latest, node: "24", suite: pack }
+    steps: *verify-steps
+
   verify-node26:
     name: Verify Node 26 (${{ matrix.os }}, ${{ matrix.suite }}) ${{ matrix.shard }}
     needs: pack
@@ -421,7 +445,9 @@ jobs:
         static,
         pack,
         speed,
+        speed-windows,
         verify,
+        verify-main,
         verify-node26,
         comment-guard,
       ]
@@ -438,7 +464,9 @@ jobs:
           STATIC: ${{ needs.static.result }}
           PACK: ${{ needs.pack.result }}
           SPEED: ${{ needs.speed.result }}
+          SPEED_WINDOWS: ${{ needs.speed-windows.result }}
           VERIFY: ${{ needs.verify.result }}
+          VERIFY_MAIN: ${{ needs.verify-main.result }}
           VERIFY_NODE26: ${{ needs.verify-node26.result }}
           COMMENT_GUARD: ${{ needs.comment-guard.result }}
           GUARD_CHANGED: ${{ needs.changes.outputs.comment_guard }}
@@ -466,6 +494,7 @@ jobs:
           static=success
           heavy=success
           packed=success
+          main_only=skipped
           node26=skipped
           admission=success
           case "$EVENT:$DRAFT:$TIER" in
@@ -488,6 +517,7 @@ jobs:
               esac
               ;;
             push::full)
+              main_only=success
               node26=success
               ;;
             schedule::full)
@@ -513,7 +543,9 @@ jobs:
           require "static" "$STATIC" "$static"
           require "pack" "$PACK" "$packed"
           require "speed" "$SPEED" "$heavy"
+          require "speed-windows" "$SPEED_WINDOWS" "$main_only"
           require "verify" "$VERIFY" "$heavy"
+          require "verify-main" "$VERIFY_MAIN" "$main_only"
           require "verify-node26" "$VERIFY_NODE26" "$node26"
           require "comment-guard" "$COMMENT_GUARD" "$admission"
           [ "$ok" = "1" ]
