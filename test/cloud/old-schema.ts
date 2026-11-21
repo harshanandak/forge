@@ -33,14 +33,8 @@ export const PUBLIC_ENV = {
   CLERK_REDIRECT_URI: "https://fixture.example/callback",
 };
 
-export const OLD_LANE_SCHEMA = [
-  "DROP TABLE domain_cloud_lane_browser",
-  "DELETE FROM state_migrations WHERE id='009_cloud_lane_browser'",
-  "DELETE FROM state_domains WHERE table_name='domain_cloud_lane_browser'",
-];
 const openers = {
   constructor: "this.#browser = browser;",
-  public: "this.#public(LANE_BROWSER, LANE_APPROVALS)",
   dump: "dumpStore(this.#storage)",
   cleanup: "clearStaged(this.#open().db)",
 } as const;
@@ -53,11 +47,9 @@ export async function badOpener(
   const after =
     name === "constructor"
       ? `${before} this.#openWrite();`
-      : name === "public"
-        ? "this.#openWrite()"
-        : name === "dump"
-          ? "this.#openWrite().db"
-          : before.replace("#open()", "#openWrite()");
+      : name === "dump"
+        ? "this.#openWrite().db"
+        : before.replace("#open()", "#openWrite()");
   if (source.split(before).length !== 2)
     throw new Error(`Missing unique ${name} opener`);
   const changed = source

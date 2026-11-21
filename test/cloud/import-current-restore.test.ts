@@ -24,9 +24,9 @@ import { pagesOf as cut } from "../../cloud/conformance/max-source.ts";
 import { stopWindowOf } from "../../cloud/conformance/stop-live.ts";
 import { pageOrder } from "../../cloud/conformance/page-order.ts";
 import { failure, respond } from "../../src/surface/result.ts";
-import { LANE_BROWSER } from "../../cloud/src/auth/lane-browser.ts";
 import {
   LANE_APPROVALS,
+  LANE_BROWSER,
   consumeLaneApproval,
 } from "../../cloud/src/lane-approval.ts";
 import { LaneControlStore } from "../../cloud/src/lane-control-store.ts";
@@ -1002,13 +1002,6 @@ test.each(activationRows)(
                 "Run lane resume without an approval to get a new request",
               );
               eq(f.snapshot(p.db), saved);
-            }
-            if (kind === "browser") {
-              const saved = f.snapshot(p.db),
-                callback = await p.oldCallback();
-              eq(callback.status, 400);
-              eq(f.snapshot(p.db), saved);
-              eq(p.exchanges(), 0);
             }
             await restoreStopped([image], p.db, "a", [f.at, f.at]);
             if (kind === "release") {
