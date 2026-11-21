@@ -73,9 +73,9 @@ for (const [label, subject, acquire, held] of cases) {
       const fence = { subject, holder, generation: 1 };
       const renewed = outcome(() => state.renew(namespace, fence, 60_000));
       const checked = outcome(() => checkLeaseSubject(subject, "held"));
+      expect(checked).toEqual(held === undefined ? "accepted" : renewed);
       if (held !== undefined)
         expect(renewed).toMatchObject({ code: "INPUT_INVALID", message: held });
-      expect(checked).toEqual(held === undefined ? "accepted" : renewed);
     },
     timeout,
   );
