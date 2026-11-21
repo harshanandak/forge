@@ -151,6 +151,82 @@ beforeAll(() => {
 }, 30000);
 afterAll(() => rmSync(root, { recursive: true, force: true }), 30000);
 
+test("hosted lane close records CI Gate evidence and frees the cap without changing a failed receipt", () => {
+  const { id, head, pull } = closeFixture();
+  configure(1);
+  const blocked = issue();
+  expect(start(blocked).error?.code).toBe("LIMIT_REACHED");
+  const failedReceipt = receipt(1);
+  const failedBefore = call("check.show", { id: failedReceipt }).result;
+  expect(failedBefore).toMatchObject({ status: "FAIL" });
+  const url = "https://github.com/harshanandak/forge/pull/42";
+  const pr = {
+    ...pull,
+    url,
+    baseRefOid: head,
+    mergeStateStatus: "UNKNOWN",
+    changedFiles: 1,
+  };
+  const pages = [
+    {
+      data: {
+        repository: {
+          object: {
+            oid: head,
+            statusCheckRollup: {
+              contexts: {
+                totalCount: 1,
+                pageInfo: { hasNextPage: false, endCursor: null },
+                nodes: [
+                  {
+                    __typename: "CheckRun",
+                    databaseId: 17,
+                    name: "CI Gate",
+                    status: "COMPLETED",
+                    conclusion: "SUCCESS",
+                    isRequired: true,
+                    checkSuite: {
+                      app: { slug: "github-actions" },
+                      commit: { oid: head },
+                      repository: { nameWithOwner: "harshanandak/forge" },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+      },
+    },
+  ];
+  writeFileSync(
+    join(root, "bin/gh.cjs"),
+    `process.stdout.write(process.argv[2] === 'api' ? ${JSON.stringify(JSON.stringify(pages))} : ${JSON.stringify(JSON.stringify(pr))});`,
+  );
+  const result = close(id, { hostedEvidence: true });
+  expect(result.result, JSON.stringify(result)).toMatchObject({
+    status: "closed",
+    removed: true,
+  });
+  const evidence = `github-actions:check-run:17:${head}:success`;
+  expect(call("issue.show", { id }).result).toMatchObject({
+    receipt: evidence,
+  });
+  expect(call("check.show", { id: failedReceipt }).result).toEqual(
+    failedBefore,
+  );
+  expect(call("check.show", { id: evidence }).error?.code).toBe(
+    "INPUT_INVALID",
+  );
+  expect(registry().some((lane) => lane.issue === id)).toBe(false);
+  expect(start(blocked).ok).toBe(true);
+  expect(call("issue.claim", { id: blocked }).ok).toBe(true);
+  expect(
+    close(blocked, { pr: undefined, noPr: true, dropped: "Fixture complete" })
+      .ok,
+  ).toBe(true);
+}, 30_000);
+
 test("lane CLI starts and shows a recorded worktree and deduplicates the issue", () => {
   const id = issue();
   const started = start(id);
@@ -562,22 +638,22 @@ function close(
   cwd = repo,
   session = "lane-acceptance",
 ) {
-  const result = spawnSync(
-    "node",
-    [bin, "lane", "close", "--input", JSON.stringify({ id, pr: 42, ...extra })],
-    {
-      cwd,
-      env: {
-        ...process.env,
-        PATH: join(root, "bin") + delimiter + process.env.PATH,
-        FORGE_DEVICE_ROOT: join(root, "device"),
-        FORGE_SESSION: session,
-      },
-      encoding: "utf8",
-      windowsHide: true,
-      timeout: 20000,
+  const args =
+    extra.hostedEvidence === true && Object.keys(extra).length === 1
+      ? [id, "--pr", "42", "--hosted-evidence"]
+      : ["--input", JSON.stringify({ id, pr: 42, ...extra })];
+  const result = spawnSync("node", [bin, "lane", "close", ...args], {
+    cwd,
+    env: {
+      ...process.env,
+      PATH: join(root, "bin") + delimiter + process.env.PATH,
+      FORGE_DEVICE_ROOT: join(root, "device"),
+      FORGE_SESSION: session,
     },
-  );
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 20000,
+  });
   expect(result.error).toBeUndefined();
   return JSON.parse(result.stdout) as ReturnType<typeof cli>;
 }
@@ -716,7 +792,8 @@ function receipt(exitCode = 0) {
     }).ok,
   ).toBe(true);
   const result = call("check.run", { checks: ["acceptance"] });
-  expect(result.ok, JSON.stringify(result)).toBe(true);
+  expect(result.ok, JSON.stringify(result)).toBe(exitCode === 0);
+  if (exitCode) expect(result.error?.code).toBe("CHECK_FAIL");
   return String(result.result.id);
 }
 function registry() {
@@ -724,75 +801,6 @@ function registry() {
     readFileSync(join(repo, ".git/forge-lanes.json"), "utf8"),
   ) as Record<string, unknown>[];
 }
-
-test("hosted lane close records CI Gate evidence and frees the cap without changing a failed receipt", () => {
-  const { id, head, pull } = closeFixture();
-  configure(1);
-  const blocked = issue();
-  expect(start(blocked).ok).toBe(false);
-  const failedReceipt = receipt(1);
-  const failedBefore = call("check.show", { id: failedReceipt }).result;
-  expect(failedBefore).toMatchObject({ status: "FAIL" });
-  const url = "https://github.com/harshanandak/forge/pull/42";
-  const pr = {
-    ...pull,
-    url,
-    baseRefOid: head,
-    mergeStateStatus: "UNKNOWN",
-    changedFiles: 1,
-  };
-  const pages = [
-    {
-      data: {
-        repository: {
-          object: {
-            oid: head,
-            statusCheckRollup: {
-              contexts: {
-                totalCount: 1,
-                pageInfo: { hasNextPage: false, endCursor: null },
-                nodes: [
-                  {
-                    __typename: "CheckRun",
-                    databaseId: 17,
-                    name: "CI Gate",
-                    status: "COMPLETED",
-                    conclusion: "SUCCESS",
-                    isRequired: true,
-                    checkSuite: {
-                      app: { slug: "github-actions" },
-                      commit: { oid: head },
-                      repository: { nameWithOwner: "harshanandak/forge" },
-                    },
-                  },
-                ],
-              },
-            },
-          },
-        },
-      },
-    },
-  ];
-  writeFileSync(
-    join(root, "bin/gh.cjs"),
-    `process.stdout.write(process.argv[2] === 'api' ? ${JSON.stringify(JSON.stringify(pages))} : ${JSON.stringify(JSON.stringify(pr))});`,
-  );
-  const result = close(id, { hostedEvidence: true });
-  expect(result.result, JSON.stringify(result)).toMatchObject({
-    status: "closed",
-    removed: true,
-  });
-  const evidence = `github-actions:check-run:17:${head}:success`;
-  expect(call("issue.show", { id }).result).toMatchObject({
-    receipt: evidence,
-  });
-  expect(call("check.show", { id: failedReceipt }).result).toEqual(
-    failedBefore,
-  );
-  expect(call("check.show", { id: evidence }).result).toBeNull();
-  expect(registry().some((lane) => lane.issue === id)).toBe(false);
-  expect(start(blocked).ok).toBe(true);
-}, 30_000);
 
 test("lane close CLI removes a merged lane with a verified receipt", () => {
   const { id, lane } = closeFixture(),

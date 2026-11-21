@@ -7,13 +7,15 @@
     "pr": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
     "noPr": { "type": "boolean" },
     "receipt": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "hostedEvidence": { "type": "boolean", "const": true },
     "dropped": { "type": "string", "minLength": 1, "maxLength": 4000 },
     "keepOpen": { "type": "boolean" },
     "discardIgnored": { "type": "boolean" }
   },
   "oneOf": [
-    { "required": ["receipt"], "not": { "required": ["dropped"] } },
-    { "required": ["dropped"], "not": { "required": ["receipt"] } }
+    { "required": ["receipt"] },
+    { "required": ["dropped"] },
+    { "required": ["hostedEvidence"] }
   ],
   "anyOf": [
     { "required": ["pr"], "properties": { "noPr": { "const": false } } },

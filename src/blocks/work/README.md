@@ -39,6 +39,8 @@ On a cloud-bound project, `forge issue close <id> --pr <number>` (or MCP `issue.
 
 Local closing requires `receipt`, naming an existing verified PASS receipt from the configured check block, or `withoutReceipt`, a nonblank written exemption available to any caller (also supported on cloud). The read-only `forge.receipts@1` binding supplies local verified evidence; work never reads the check namespace. The receipt id or exemption survives `issue.show`. `reason` remains a separate close note and cannot waive the receipt requirement. An unknown, damaged or non-PASS receipt is refused before any write, including when an exemption is also supplied.
 
+`forge lane close <id> --pr <number> --hosted-evidence` accepts the merge-time CI Gate result for the exact head of a merged PR in `harshanandak/forge`. The PR defines its workflow and the human merge is the safeguard. `forge issue show` displays the saved evidence string. `forge check show` looks up stored local receipts only.
+
 The receipts slot is optional so state-only hosts can compose work independently. Without that binding, a supplied `receipt` is refused with `RECEIPTS_UNAVAILABLE`, even if `withoutReceipt` is also supplied. Omit `receipt` to close with an explicit `withoutReceipt` reason; omitting both still returns `RECEIPT_REQUIRED`.
 
 A supplied receipt must cover the newest `delivers` link's merged PR: its subject must equal the final head or merge commit. Missing or non-PR links return `PR_UNLINKED`; open or closed-unmerged PRs return `PR_NOT_MERGED`; another subject returns `RECEIPT_HEAD_MISMATCH`. Every refusal precedes the close write, including when an exemption accompanies the receipt.

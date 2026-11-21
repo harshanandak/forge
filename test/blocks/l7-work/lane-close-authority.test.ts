@@ -4,9 +4,11 @@ import { tmpdir } from "node:os";
 import { createSqliteStore } from "../../../src/adapters/store-sqlite/index.ts";
 import { createStateClient } from "../../../src/assembly/state-client.ts";
 import { StateOwner } from "../../../src/core/state/index.ts";
+import { SchemaRegistry } from "../../../src/contract/schema.ts";
 import type { BoundContext } from "../../../src/generated/types.ts";
 import tracker from "../../../schemas/tracker.json" with { type: "json" };
 import { validateWorkRecord } from "../../../src/blocks/work/validation.ts";
+import laneCloseInput from "../../../src/blocks/work/schemas/lane-close.input.json" with { type: "json" };
 
 setDefaultTimeout(30_000);
 type Handler = (call: {
@@ -869,6 +871,28 @@ const snapshot = (f: Awaited<ReturnType<typeof fixture>>) =>
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 const hostedInput = { hostedEvidence: true, receipt: undefined };
+test("lane close accepts exactly one evidence mode and requires a PR for hosted evidence", () => {
+  const schemaId = "https://test.invalid/lane-close";
+  const schema = new SchemaRegistry([{ ...laneCloseInput, $id: schemaId }]);
+  const validate = (input: Record<string, unknown>) =>
+    schema.validate(schemaId, { id, ...input }, true);
+  for (const input of [
+    { pr: 1, hostedEvidence: true },
+    { pr: 1, receipt: "proof" },
+    { pr: 1, dropped: "fixture" },
+    { noPr: true, dropped: "fixture" },
+  ])
+    expect(validate(input)).toEqual([]);
+  for (const input of [
+    { hostedEvidence: true },
+    { pr: 1, hostedEvidence: false },
+    { pr: 1, hostedEvidence: true, receipt: "proof" },
+    { pr: 1, hostedEvidence: true, dropped: "fixture" },
+    { noPr: true, hostedEvidence: true, dropped: "fixture" },
+  ])
+    expect(validate(input).length).toBeGreaterThan(0);
+}, 30_000);
+
 const hostedUrl = "https://github.com/harshanandak/forge/pull/1";
 const ciGate = (databaseId = 17) => ({
   __typename: "CheckRun",
