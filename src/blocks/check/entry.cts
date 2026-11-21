@@ -833,10 +833,10 @@ function githubLogin(account: unknown): string {
 const THREAD_QUERY =
   "query($owner:String!,$repo:String!,$n:Int!,$endCursor:String){repository(owner:$owner,name:$repo){pullRequest(number:$n){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{id isResolved}}}}}";
 const CHECK_QUERY =
-  "query($owner:String!,$repo:String!,$n:Int!,$head:GitObjectID!,$endCursor:String){repository(owner:$owner,name:$repo){object(oid:$head){... on Commit{oid statusCheckRollup{contexts(first:100,after:$endCursor){totalCount pageInfo{hasNextPage endCursor} nodes{__typename ... on CheckRun{name databaseId checkSuite{workflowRun{workflow{databaseId}}} status conclusion isRequired(pullRequestNumber:$n)} ... on StatusContext{context state isRequired(pullRequestNumber:$n)}}}}}}}}";
+  "query($owner:String!,$repo:String!,$n:Int!,$head:GitObjectID!,$endCursor:String){repository(owner:$owner,name:$repo){object(oid:$head){... on Commit{oid statusCheckRollup{contexts(first:100,after:$endCursor){totalCount pageInfo{hasNextPage endCursor} nodes{__typename ... on CheckRun{name databaseId checkSuite{app{slug} workflowRun{workflow{databaseId}}} status conclusion isRequired(pullRequestNumber:$n)} ... on StatusContext{context state isRequired(pullRequestNumber:$n)}}}}}}}}";
 const HOSTED_CHECK_QUERY = CHECK_QUERY.replace(
   "on CheckRun{name",
-  "on CheckRun{checkSuite{app{slug} commit{oid} repository{nameWithOwner}} name",
+  "on CheckRun{checkSuite{commit{oid} repository{nameWithOwner}} name",
 );
 const repo = "github.com/harshanandak/forge";
 
@@ -1195,16 +1195,17 @@ async function gate(
           const id = run ? value.databaseId : 0;
           if (!integer(id) || (run && (id < 1 || seenRuns.has(id)))) invalid();
           if (run) seenRuns.add(id);
-          const suite = value.checkSuite;
+          const suite = run && value.checkSuite;
           const workflowRun = isRecord(suite) && suite.workflowRun;
           const workflow = isRecord(workflowRun) && workflowRun.workflow;
           const workflowId = isRecord(workflow) && workflow.databaseId;
+          const app = isRecord(suite) && isRecord(suite.app) && suite.app;
+          const slug = app && typeof app.slug === "string" && app.slug;
           if (hostedHead) {
             if (!run || !integer(workflowId) || workflowId < 1) invalid();
             if (
               !isRecord(suite) ||
-              !isRecord(suite.app) ||
-              suite.app.slug !== "github-actions" ||
+              slug !== "github-actions" ||
               !isRecord(suite.commit) ||
               suite.commit.oid !== head ||
               !isRecord(suite.repository) ||
@@ -1212,9 +1213,8 @@ async function gate(
             )
               invalid();
           }
-          const key = run
-            ? `${integer(workflowId) ? workflowId : ""}|${name}`
-            : checkCount;
+          const source = integer(workflowId) ? workflowId : slug;
+          const key = source ? JSON.stringify([source, name]) : checkCount;
           if ((newest.get(key)?.id ?? -1) < id) selected = { key, id };
         }
         const judge = () => {

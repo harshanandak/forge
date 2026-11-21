@@ -41,12 +41,15 @@ function ciPage(checks: unknown, oid = head, endCursor: string | null = null) {
               totalCount: Array.isArray(checks) ? checks.length : 0,
               nodes: Array.isArray(checks)
                 ? checks.map(
-                    (check: { name?: unknown; state?: unknown }, index) => ({
+                    (
+                      check: { name?: unknown; state?: unknown; app?: string },
+                      index,
+                    ) => ({
                       __typename: "CheckRun",
                       databaseId: index + 1,
-                      checkSuite: {
-                        workflowRun: { workflow: { databaseId: 10 } },
-                      },
+                      checkSuite: check.app
+                        ? { app: { slug: check.app }, workflowRun: null }
+                        : { workflowRun: { workflow: { databaseId: 10 } } },
                       name: check.name,
                       status:
                         check.state === "IN_PROGRESS"
@@ -440,6 +443,21 @@ test("github-required refuses when a newer failure supersedes a successful run",
     "REQUIRED_CHECK_FAILED",
   );
   expect(result.checks).toEqual([{ name: "CI Gate", state: "FAILURE" }]);
+}, 1000);
+
+test("a passing check from another app cannot supersede a required failure with the same name", async () => {
+  const f = fixture();
+  await f.receipt();
+  f.alter({
+    checks: [
+      { name: "build", state: "FAILURE", app: "first-app" },
+      { name: "build", state: "SUCCESS", app: "second-app" },
+    ],
+  });
+  await refuses(f, "REQUIRED_CHECK_FAILED", {
+    ...config,
+    gate: { requiredChecks: ["build"] },
+  });
 }, 1000);
 
 test("named required checks must be present; unrelated failure is not required", async () => {
