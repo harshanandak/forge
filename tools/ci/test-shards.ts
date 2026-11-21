@@ -58,9 +58,17 @@ if (import.meta.main) {
       (command) => command.match(/test\/\S+\.test\.ts/g) ?? [],
     ),
   );
-  const assigned = assignShards(selectedFiles, timings, count, serial)[
-    index - 1
-  ]!;
+  const manifest = process.env.CI_AFFECTED_TESTS;
+  const affected = manifest
+    ? (JSON.parse(readFileSync(manifest, "utf8")) as { files: string[] }).files
+    : undefined;
+  if (
+    affected &&
+    (!affected.length || affected.some((file) => !selectedFiles.includes(file)))
+  )
+    throw new Error("invalid affected test list");
+  const assigned =
+    affected ?? assignShards(selectedFiles, timings, count, serial)[index - 1]!;
   console.log(
     `Source selection: ${selectedFiles.length}/${files.length} files, shard ${shard}`,
   );

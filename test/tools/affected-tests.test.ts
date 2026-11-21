@@ -1,15 +1,6 @@
 import { expect, test } from "bun:test";
+import { affectedTests } from "../../tools/ci/affected-tests.ts";
 
-type Selection = {
-  files: string[];
-  count: number;
-  fallback: boolean;
-  reason: string;
-  opaque: string[];
-  alwaysSelected: string[];
-};
-
-const modulePath = "../../tools/ci/affected-tests.ts";
 const target = "src/blocks/memory/store.ts";
 const consumer = "test/blocks/memory/store.test.ts";
 const standalone = "test/blocks/memory/standalone.test.ts";
@@ -24,42 +15,32 @@ const graph = new Map([
   [standalone, "export {};"],
 ]);
 
-async function select(paths: string[], files = graph): Promise<Selection> {
-  expect(
-    await Bun.file(new URL(modulePath, import.meta.url)).exists(),
-    "affected-tests module exists",
-  ).toBe(true);
-  const { affectedTests } = (await import(modulePath)) as {
-    affectedTests: (
-      files: ReadonlyMap<string, string>,
-      paths: string[],
-    ) => Selection;
-  };
+function select(paths: string[], files = graph) {
   return affectedTests(files, paths);
 }
 
-test("a module change reaches tests through re-exports and literal dynamic imports", async () => {
-  expect(await select([target])).toMatchObject({
+test("a module change reaches tests through re-exports and literal dynamic imports", () => {
+  expect(select([target])).toMatchObject({
     files: [consumer],
     count: 1,
     fallback: false,
   });
 }, 1000);
 
-test("a changed test selects itself", async () => {
-  expect(await select([standalone])).toMatchObject({
+test("a changed test selects itself", () => {
+  expect(select([standalone])).toMatchObject({
     files: [standalone],
     count: 1,
     fallback: false,
   });
 }, 1000);
 
-test("a literal require reaches its relative TypeScript dependency", async () => {
+test("a literal require reaches its relative TypeScript dependency", () => {
   const files = new Map(graph).set(
     standalone,
     "const { store } = require('../../../src/blocks/memory/store.ts'); void store;",
   );
-  expect(await select([target], files)).toMatchObject({
+  expect(select([target], files)).toMatchObject({
     files: [standalone, consumer],
     count: 2,
     fallback: false,
@@ -83,8 +64,8 @@ test.each([
   ["src/deleted.ts", "outside the graph"],
 ])(
   "%s opens the full suite",
-  async (path, rule) => {
-    const result = await select([path, target]);
+  (path, rule) => {
+    const result = select([path, target]);
     expect(result).toMatchObject({
       files: [standalone, consumer],
       count: 2,
@@ -95,12 +76,9 @@ test.each([
   1000,
 );
 
-test("a source change with no reachable test opens the full suite", async () => {
+test("a source change with no reachable test opens the full suite", () => {
   const unused = "src/unused.ts";
-  const result = await select(
-    [unused],
-    new Map(graph).set(unused, "export {};"),
-  );
+  const result = select([unused], new Map(graph).set(unused, "export {};"));
   expect(result).toMatchObject({
     files: [standalone, consumer],
     count: 2,
@@ -116,7 +94,7 @@ test.each([
   "export const broken = @;",
 ])(
   "only tests that reach an opaque node are always selected for %s",
-  async (text) => {
+  (text) => {
     const opaque = "src/blocks/memory/opaque.ts";
     const bridge = "src/blocks/memory/bridge.ts";
     const unrelated = "src/unrelated.ts";
@@ -125,7 +103,7 @@ test.each([
       .set(bridge, "export * from './opaque.ts';")
       .set(unrelated, "export {};")
       .set(consumer, "import '../../../src/blocks/memory/bridge.ts';");
-    expect(await select([unrelated], files)).toMatchObject({
+    expect(select([unrelated], files)).toMatchObject({
       files: [consumer],
       count: 1,
       fallback: false,
