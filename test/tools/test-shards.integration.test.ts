@@ -464,8 +464,14 @@ test("Windows admission uses the guarded paths and Node 26 verify runs after PRs
   );
   expect(node26["timeout-minutes"]).toBe(20);
   expect(node26.steps).toEqual(jobs["verify"]!.steps);
-  const prMatrix = jobs["verify"]!.strategy!.matrix.include;
-  const windows24 = prMatrix.filter((leg) => leg.os === "windows-latest");
+  const mainOnly = jobs["verify-main"]!;
+  expect(mainOnly["timeout-minutes"]).toBe(20);
+  expect(mainOnly.steps).toEqual(jobs["verify"]!.steps);
+  const fullMatrix = [
+    ...jobs["verify"]!.strategy!.matrix.include,
+    ...mainOnly.strategy!.matrix.include,
+  ];
+  const windows24 = fullMatrix.filter((leg) => leg.os === "windows-latest");
   expect(windows24).toHaveLength(4);
   expect(windows24.every((leg) => leg.node === "24")).toBe(true);
   expect(node26.strategy!.matrix.include).toEqual([
@@ -473,7 +479,7 @@ test("Windows admission uses the guarded paths and Node 26 verify runs after PRs
     { os: "macos-latest", node: "26", suite: "pack" },
   ]);
   expect(
-    prMatrix.some((leg) => leg.os === "macos-latest" && leg.node === "26"),
+    fullMatrix.some((leg) => leg.os === "macos-latest" && leg.node === "26"),
   ).toBe(false);
 }, 1000);
 
