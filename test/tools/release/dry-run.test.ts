@@ -112,3 +112,26 @@ test("offline local check is explicit; CI fails closed", async () => {
     f.cleanup();
   }
 }, 1000);
+
+for (const status of [200, 201, 404, 500, "offline"] as const) {
+  test(`readback-only preflight requires HTTP 200 (${status})`, async () => {
+    const f = fixture();
+    try {
+      const { dryRun } = await import("../../../tools/release/dry-run.ts");
+      const io = {
+        run: f.run,
+        readbackOnly: true,
+        fetch: () =>
+          status === "offline"
+            ? Promise.reject(new Error("offline"))
+            : Promise.resolve(new Response(null, { status })),
+      };
+      if (status === 200)
+        await expect(dryRun(f.tarball, io)).resolves.toBe("0.1.0-dev.0");
+      else await expect(dryRun(f.tarball, io)).rejects.toThrow();
+      expect(f.calls).toEqual([["tar", "-xzOf", "-", "package/package.json"]]);
+    } finally {
+      f.cleanup();
+    }
+  }, 1000);
+}
