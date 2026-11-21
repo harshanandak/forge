@@ -74,6 +74,7 @@ import { refuse } from "../../src/core/trust/index.ts";
 import { migrate, stateMigrations } from "../../src/core/state/migrations.ts";
 import type { SqlDatabase, SqlRow, SqlValue } from "../../src/ports/store.ts";
 import { exitCode } from "../../src/surface/result.ts";
+import { issueStoreSnapshot } from "./issue-command-storage.fixture.ts";
 import {
   BODY,
   DUMP,
@@ -304,24 +305,13 @@ function fixture(
     };
   };
   const dump = async () => (await admin("dump")).text;
-  const snapshot = () =>
-    JSON.stringify({
-      sql: (
-        db
-          .query("SELECT name FROM sqlite_master WHERE type='table' ORDER BY 1")
-          .all() as { name: string }[]
-      ).map(({ name }) => [name, db.query(`SELECT * FROM "${name}"`).all()]),
-      kv: [...values.entries()].sort(([a], [b]) =>
-        a < b ? -1 : a > b ? 1 : 0,
-      ),
-    });
   return {
     send,
     receiptKey,
     device,
     admin,
     dump,
-    snapshot,
+    snapshot: () => issueStoreSnapshot(db, values),
     reached,
     meter,
     db,

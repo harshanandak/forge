@@ -24,6 +24,7 @@ import {
   RECORD_READS,
   type IssueViews,
 } from "./issue-read.ts";
+import type { WriteCall } from "./issue-write.ts";
 import { claimIssue } from "./issue-claim.ts";
 import { commentIssue } from "./issue-comment.ts";
 import { createIssue } from "./issue-create.ts";
@@ -64,15 +65,6 @@ export const LIMITS = {
 // The cloud's exposure policy: names only. What each one needs comes from the work block's own
 // declaration, so there is no second catalog.
 const EXPOSED: readonly string[] = [
-  "issue.create",
-  "issue.update",
-  "issue.dep",
-  "issue.link",
-  "issue.close",
-  "issue.claim",
-  "issue.renew",
-  "issue.release",
-  "issue.comment",
   "issue.show",
   "issue.comments",
   "issue.links",
@@ -150,7 +142,10 @@ export function parseCommand(text: string, host: CommandHost): PreparedCommand {
       "body must be { requestId, op, input, context, dryRun? } with a valid context",
     );
   const op = call.op as string;
-  if (!EXPOSED.includes(op) || !Object.hasOwn(operations, op))
+  if (
+    (!Object.hasOwn(issueWriters, op) && !EXPOSED.includes(op)) ||
+    !Object.hasOwn(operations, op)
+  )
     throw fail("UNKNOWN_COMMAND", "No such command");
   const { session, device, project, ...rest } = checked.value;
   // The token proves the device; a named one must match it. Neither value is repeated.
@@ -265,6 +260,39 @@ function lazyViews(storage: DurableStorage): IssueViews {
  * Runs an exposed command and measures the serialized response in UTF-8 bytes.
  * Synchronous except for PR verification, whose coordinator rechecks authority after its awaits.
  */
+export const issueWriters = Object.freeze({
+  "issue.create": createIssue,
+  "issue.comment": commentIssue,
+  "issue.update": updateIssue,
+  "issue.dep": depIssue,
+  "issue.link": linkIssue,
+  "issue.close": dispatchClose,
+  "issue.claim": claimIssue,
+  "issue.renew": renewIssue,
+  "issue.release": releaseIssue,
+});
+
+function dispatchClose(
+  db: SqlDatabase,
+  owner: StateOwner,
+  call: WriteCall,
+  host: CommandRun,
+) {
+  const { input } = call;
+  if (typeof input === "object" && input !== null && "pr" in input)
+    return admitReceipt(
+      db,
+      owner,
+      call,
+      host.github ?? {
+        ...composeGithub(host.approvalConfig),
+        signal: new AbortController().signal,
+        verifierVersion: "1",
+      },
+    );
+  return closeIssue(db, owner, call);
+}
+
 export function runCommand(
   text: string,
   host: CommandRun,
@@ -287,26 +315,9 @@ export function runCommand(
                 : op === "issue.stale"
                   ? staleIssues
                   : undefined;
-  const write =
-    op === "issue.create"
-      ? createIssue
-      : op === "issue.comment"
-        ? commentIssue
-        : op === "issue.update"
-          ? updateIssue
-          : op === "issue.dep"
-            ? depIssue
-            : op === "issue.link"
-              ? linkIssue
-              : op === "issue.close"
-                ? closeIssue
-                : op === "issue.claim"
-                  ? claimIssue
-                  : op === "issue.renew"
-                    ? renewIssue
-                    : op === "issue.release"
-                      ? releaseIssue
-                      : undefined;
+  const write = Object.hasOwn(issueWriters, op)
+    ? issueWriters[op as keyof typeof issueWriters]
+    : undefined;
   let result: unknown;
   if (op === "lane.dispatch") result = dispatchLane(call, host);
   else if (op === "lane.control" || op === "lane.stop" || op === "lane.resume")
@@ -329,23 +340,10 @@ export function runCommand(
       recheck: host.recheck,
       expiresAt: host.expiresAt,
     };
-    if (
-      op === "issue.close" &&
-      typeof input === "object" &&
-      input !== null &&
-      "pr" in input
-    )
-      return admitReceipt(
-        db,
-        owner,
-        writeCall,
-        host.github ?? {
-          ...composeGithub(host.approvalConfig),
-          signal: new AbortController().signal,
-          verifierVersion: "1",
-        },
-      ).then((closed) => commandResponse(op, closed));
-    result = write(db, owner, writeCall);
+    const written = write(db, owner, writeCall, host);
+    if (written instanceof Promise)
+      return written.then((closed) => commandResponse(op, closed));
+    result = written;
   } else if (read !== undefined)
     result = read(
       lazyViews(host.storage),
