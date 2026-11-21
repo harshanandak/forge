@@ -957,6 +957,7 @@ test(
 
 for (const fault of [
   "empty subject",
+  "oversized subject",
   "missing holder device",
   "holder device outside the receipt scope",
   "extra fingerprint scope field",
@@ -976,6 +977,17 @@ for (const fault of [
           status: 400,
           body: { error: { message: "subject must be a non-empty string" } },
         });
+        if (fault === "oversized subject")
+          expect(
+            await sendLease(f, "claim", "owner-a", {
+              requestId,
+              subject: "a".repeat(9000),
+              ttlMs: HOUR,
+            }),
+          ).toMatchObject({
+            status: 400,
+            body: { error: { message: "body is over 8192 bytes" } },
+          });
         expect(commits(f)).toEqual([]);
         expect(
           await sendLease(f, "claim", "owner-a", {
@@ -992,6 +1004,7 @@ for (const fault of [
           const fingerprint = JSON.parse(String(outcome.fingerprint)) as Json;
           const changes = {
             "empty subject": { subject: "" },
+            "oversized subject": { subject: "a".repeat(9000) },
             "missing holder device": { holder },
             "holder device outside the receipt scope": {
               holder: {
