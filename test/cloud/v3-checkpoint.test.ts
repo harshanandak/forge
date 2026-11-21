@@ -1281,28 +1281,26 @@ test(
   "v3 portable replay accepts a page with more than 1024 commands",
   () =>
     withFixture(async (source) => {
-      const frames = await portableHistory(source);
-      for (let count = frames.length; count < 1025; count += 100) {
-        const batch = Array.from(
-          { length: Math.min(100, 1025 - count) },
-          frame,
-        );
+      await populate(source);
+      const start = commits(source).length;
+      expect((await checkpoint(source)).status).toBe(200);
+      for (let count = start; count < 1025; count += 12) {
+        const batch = Array.from({ length: Math.min(12, 1025 - count) }, frame);
         expect((await append(source, ...batch)).status).toBe(200);
+        expect((await checkpoint(source)).status).toBe(200);
       }
-      const notes = commits(source);
       const native = pages(source).find(
         ({ id }) => id === "transcript:0",
       )!.body;
-      const history = JSON.parse(native) as unknown[];
-      expect(
-        Buffer.byteLength(
-          canonicalJson([
-            ...history,
-            ...notes.map(({ body }) => JSON.parse(body) as unknown),
-          ]),
-        ),
-      ).toBeLessThanOrEqual(PAGE_BYTES);
-      frames.push(...notes.map(({ sequence }) => ({ sequence })));
+      const history = JSON.parse(native) as Json[];
+      expect(history).toHaveLength(1025);
+      expect(Buffer.byteLength(native)).toBeLessThanOrEqual(PAGE_BYTES);
+      expect(commits(source)).toEqual([]);
+      const frames = history.map((entry) =>
+        entry.operation === "fixture.note"
+          ? { sequence: entry.sequence }
+          : entry,
+      );
       const expected = recoverV3(writableStore(source.storage));
       expect(expected.head).toBe(1025);
       await withFixture((target) => {
