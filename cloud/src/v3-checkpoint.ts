@@ -12,6 +12,7 @@ import {
   COLLECTIONS,
   COMMITS,
   entryDigest,
+  PAGE_BYTES,
   PAGES,
   PAGE_SCHEMA,
   readV3Root,
@@ -23,7 +24,7 @@ import {
 const STAGE = "cloud_v3_checkpoint";
 const STAGED = "cloud_v3_checkpoint_pages";
 const RETIRED = "cloud_v3_retired_pages";
-const PAGE_BYTES = 256 * 1024;
+export { PAGE_BYTES };
 const MANIFEST_BYTES = 128 * 1024;
 const TURN_ROWS = 64;
 const TURN_MAX_NON_TAIL_ROWS = 39;
@@ -51,7 +52,7 @@ function parse(text: string): unknown {
   }
 }
 
-function inventory(
+export function inventory(
   image: V3Image,
   pages: ReadonlyMap<string, Buffer>,
   collections: readonly (typeof COLLECTIONS)[number][] = COLLECTIONS,
@@ -75,7 +76,7 @@ function inventory(
   );
 }
 
-function storedPages(db: SqlDatabase, table: string) {
+export function storedPages(db: SqlDatabase, table: string) {
   const rows = db.all(
     `SELECT id, CASE WHEN length(CAST(body AS BLOB))<=${PAGE_BYTES} THEN body END AS body FROM ${table} ORDER BY id LIMIT 4`,
   );
@@ -150,7 +151,7 @@ function pack(items: readonly Item[], transcript: string) {
   ]);
 }
 
-function roster(
+export function roster(
   pages: ReadonlyMap<string, string>,
   items: readonly Item[],
   cut: number,
@@ -192,7 +193,7 @@ function roster(
   };
 }
 
-function reconcile(
+export function reconcile(
   pages: ReadonlyMap<string, string>,
   expected: readonly Item[],
   transcript: string,
@@ -219,6 +220,16 @@ function reconcile(
     return { ...entry, ...metadata };
   });
   requireCheckpoint(offset === bytes.length && canonicalJson(entries) === body);
+}
+
+export function projectionDigest(items: readonly Item[]) {
+  return digestValue(
+    items.map(([collection, key, body, revision]) => [
+      collection,
+      key,
+      entryDigest(body === null ? null : digestBytes(body), revision),
+    ]),
+  );
 }
 
 function discardStage(db: SqlDatabase) {
@@ -343,12 +354,6 @@ async function checkpoint(
     reconcile(readback, expected, transcript);
     const verified = roster(readback, expected, cut);
     requireCheckpoint(canonicalJson(verified) === staged.proposal);
-    const inventoryDigests = expected.map(([name, key, body, revision]) => [
-      name,
-      key,
-      entryDigest(body === null ? null : digestBytes(body), revision),
-    ]);
-    const projectionDigest = digestValue(inventoryDigests);
     const manifest = canonicalJson({
       ...root,
       ...verified,
@@ -357,7 +362,7 @@ async function checkpoint(
       coveredHead: cut,
       eventWatermark: image.eventWatermark,
       transcriptDigest: digestBytes(transcript),
-      publicDigest: projectionDigest,
+      publicDigest: projectionDigest(expected),
       privateDigest: digestValue([]),
     });
     requireCheckpoint(Buffer.byteLength(manifest) <= MANIFEST_BYTES);
