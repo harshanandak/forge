@@ -81,8 +81,10 @@ import {
 } from "./issue-request-id.ts";
 import { checkTtl } from "./lease-ttl.ts";
 import {
+  hasText,
   type LeaseCommand,
   leaseFingerprint,
+  leaseHolderDevice,
   NAMESPACE,
   recordable,
   replayLease,
@@ -240,7 +242,7 @@ export const STATUS: Record<string, number> = {
 
 function text(input: Record<string, unknown>, key: string): string {
   const value = input[key];
-  if (typeof value !== "string" || value === "")
+  if (!hasText(value))
     throw fail("INPUT_INVALID", `${key} must be a non-empty string`);
   return value;
 }
@@ -527,6 +529,8 @@ export class Project {
               null,
               ["owner", owner, owner],
             );
+            if (leaseHolderDevice(command.holder) === undefined)
+              throw fail("INPUT_INVALID", "Lease holder has an invalid device");
             const image = this.#image(db);
             const value = leaseV3(db, image, command, expiresAt);
             return Response.json({ ok: true, value });

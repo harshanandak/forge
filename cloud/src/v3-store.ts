@@ -11,13 +11,14 @@ import {
   leaseExpiry,
 } from "../../src/core/state/index.ts";
 import type { ForgeError, LeaseRecord } from "../../src/generated/types.ts";
-import { validateLeaseHolder } from "../../src/generated/validators.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
 import { expiredReplay, RETENTION_MS } from "./issue-receipts.ts";
-import type { ReceiptScope } from "./issue-request-id.ts";
+import { receiptScope, type ReceiptScope } from "./issue-request-id.ts";
 import {
+  hasText,
   type LeaseCommand,
   leaseFingerprint,
+  leaseHolderDevice,
   NAMESPACE,
   recordable,
   replayLease,
@@ -116,7 +117,7 @@ interface Page {
   readonly bytes: number;
   readonly hash: string;
 }
-export interface Pointer {
+interface Pointer {
   readonly page: string;
   readonly offset: number;
   readonly length: number;
@@ -326,11 +327,12 @@ function directoryEntry(entry: unknown, byId: ReadonlyMap<string, Page>) {
   };
 }
 
-type PageSlice = (slot: Pointer) => string;
-
 export function recoverV3(
   db: SqlDatabase,
-  verification?: { read: PageSlice; sealed: (image: V3Image) => void },
+  verification?: {
+    pages: ReadonlyMap<string, Buffer>;
+    sealed: (image: V3Image) => void;
+  },
 ): V3Image {
   const root = readV3Root(db);
   const byId = new Map(root.pages.map((page) => [page.id, page]));
@@ -399,7 +401,7 @@ export function recoverV3(
   if (rows.length > TAIL_ROWS) throw unavailable();
   const verify =
     verification &&
-    ((frame: Frame) => verifyLeaseFrame(db, image, frame, verification.read));
+    ((frame: Frame) => verifyLeaseFrame(db, image, frame, verification.pages));
   for (const { sequence, body } of rows) foldRow(image, sequence, body, verify);
   return image;
 }
@@ -476,13 +478,13 @@ export function readV3Value<C extends Collection>(
   image: V3Image,
   collection: C,
   key: string,
-  read?: PageSlice,
+  pages?: ReadonlyMap<string, Buffer>,
 ): Values[C] | undefined {
   const slot = image.entries[collection].get(key);
   if (!slot) return undefined;
   if ("value" in slot) return slot.value as Values[C];
-  const bytes = read
-    ? Buffer.from(read(slot))
+  const bytes = pages
+    ? pages.get(slot.page)?.subarray(slot.offset, slot.offset + slot.length)
     : db.get(
         `SELECT substr(CAST(body AS BLOB), ?, ?) AS value FROM ${PAGES} WHERE id=?`,
         [slot.offset + 1, slot.length, slot.page],
@@ -679,18 +681,19 @@ function verifyLeaseFrame(
   db: SqlDatabase,
   image: V3Image,
   frame: Frame,
-  read: PageSlice,
+  pages: ReadonlyMap<string, Buffer>,
 ): Frame {
   const { outcome, time } = frame;
   if (!outcome) return frame;
   const input = parse(outcome.fingerprint);
+  const device = isObject(input) ? leaseHolderDevice(input.holder) : undefined;
   if (
     frame.events.length !== 0 ||
     frame.changes !== undefined ||
     !isObject(input) ||
-    typeof input.subject !== "string" ||
+    !hasText(input.subject) ||
     typeof input.route !== "string" ||
-    !validateLeaseHolder(input.holder).ok ||
+    device === undefined ||
     (input.route === "claim"
       ? input.generation !== null
       : !isNat(input.generation) || input.generation === 0) ||
@@ -700,15 +703,17 @@ function verifyLeaseFrame(
     throw unavailable();
   const command = input as unknown as LeaseCommand;
   if (
+    storedCanonical(input.scope) !==
+      storedCanonical(receiptScope(["owner", device, device])) ||
     leaseFingerprint(command) !== outcome.fingerprint ||
-    (readV3Value(db, image, "outcome", outcome.id, read)?.outcome.retryUntil ??
+    (readV3Value(db, image, "outcome", outcome.id, pages)?.outcome.retryUntil ??
       0) > time
   )
     throw unavailable();
   let lease: LeaseRecord;
   try {
     const current = admitLease(command, outcome.retryUntil, time, () =>
-      readV3Value(db, image, "lease", command.subject, read),
+      readV3Value(db, image, "lease", command.subject, pages),
     );
     if (command.route === "claim" && image.entries.witness.has(outcome.id))
       throw unavailable();

@@ -7,9 +7,17 @@ import type {
   LeaseHolder,
   LeaseRecord,
 } from "../../src/generated/types.ts";
+import { validateLeaseHolder } from "../../src/generated/validators.ts";
 import type { ReceiptScope } from "./issue-request-id.ts";
 
 export const NAMESPACE = "forge/work";
+export const hasText = (value: unknown): value is string =>
+  typeof value === "string" && value !== "";
+
+export function leaseHolderDevice(value: unknown): string | undefined {
+  const checked = validateLeaseHolder(value);
+  return checked.ok ? checked.value.session.device : undefined;
+}
 
 export interface LeaseCommand {
   readonly route: "claim" | "renew" | "release";

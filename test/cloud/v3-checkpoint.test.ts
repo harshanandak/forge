@@ -1023,3 +1023,24 @@ for (const fault of [
     timeout,
   );
 }
+
+test(
+  "v3 lease admission refuses an invalid device assigned by the test probe",
+  () =>
+    withFixture(async (f) => {
+      const effects = f.observeEffects();
+      expect(
+        await sendLease(f, "claim", "", {
+          requestId: "attempt",
+          subject: "a".repeat(501),
+          holder,
+          ttlMs: HOUR,
+        }),
+      ).toMatchObject({
+        status: 400,
+        body: { error: { message: "Lease holder has an invalid device" } },
+      });
+      expect(effects()).toEqual(noWrites);
+    }),
+  timeout,
+);

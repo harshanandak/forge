@@ -12,7 +12,6 @@ import {
   COMMITS,
   PAGES,
   PAGE_SCHEMA,
-  type Pointer,
   readV3Root,
   recoverV3,
   ROOT,
@@ -50,28 +49,25 @@ function parse(text: string): unknown {
   }
 }
 
-const pageReader = (pages: ReadonlyMap<string, Buffer>) => (slot: Pointer) => {
-  const data = pages
-    .get(slot.page)
-    ?.subarray(slot.offset, slot.offset + slot.length);
-  requireCheckpoint(
-    data?.length === slot.length && digestBytes(data) === slot.digest,
-  );
-  const body = data.toString("utf8");
-  requireCheckpoint(digestBytes(body) === slot.digest);
-  return body;
-};
-
 function inventory(
   image: V3Image,
-  read: ReturnType<typeof pageReader>,
+  pages: ReadonlyMap<string, Buffer>,
+  collections: readonly (typeof COLLECTIONS)[number][] = COLLECTIONS,
 ): Item[] {
-  return COLLECTIONS.flatMap((collection) =>
+  return collections.flatMap((collection) =>
     [...image.entries[collection].keys()].sort().map((key) => {
       const slot = image.entries[collection].get(key)!;
       if (slot === null) return [collection, key, null];
       if ("value" in slot) return [collection, key, canonicalJson(slot.value)];
-      return [collection, key, read(slot)];
+      const data = pages
+        .get(slot.page)
+        ?.subarray(slot.offset, slot.offset + slot.length);
+      requireCheckpoint(
+        data?.length === slot.length && digestBytes(data) === slot.digest,
+      );
+      const body = data.toString("utf8");
+      requireCheckpoint(digestBytes(body) === slot.digest);
+      return [collection, key, body];
     }),
   );
 }
@@ -99,9 +95,8 @@ function archive(body: string): unknown {
 }
 
 function reconcileReceipts(
-  image: V3Image,
+  retained: readonly Item[],
   history: readonly unknown[],
-  read: ReturnType<typeof pageReader>,
 ) {
   const expected = new Map<string, string>();
   for (const [i, frame] of history.entries()) {
@@ -118,12 +113,10 @@ function reconcileReceipts(
       canonicalJson({ time, outcome, ...(lease !== undefined && { lease }) }),
     );
   }
-  requireCheckpoint(expected.size === image.entries.outcome.size);
-  for (const [id, slot] of image.entries.outcome)
+  requireCheckpoint(expected.size === retained.length);
+  for (const [, id, body] of retained)
     requireCheckpoint(
-      slot &&
-        !("value" in slot) &&
-        expected.get(id) === canonicalJson(archive(read(slot))),
+      body !== null && expected.get(id) === canonicalJson(archive(body)),
     );
 }
 
@@ -293,16 +286,17 @@ async function checkpoint(
       digestBytes(prior.get("transcript:0")!) === root.transcriptDigest,
   );
   const history: readonly unknown[] = archived;
-  const read = pageReader(
-    new Map([...prior].map(([id, body]) => [id, Buffer.from(body)])),
+  const previous = new Map(
+    [...prior].map(([id, body]) => [id, Buffer.from(body)]),
   );
   const image = recoverV3(db, {
-    read,
-    sealed: (sealed) => reconcileReceipts(sealed, history, read),
+    pages: previous,
+    sealed: (sealed) =>
+      reconcileReceipts(inventory(sealed, previous, ["outcome"]), history),
   });
   requireCheckpoint(image.head === cut);
-  const expected = inventory(image, read);
-  const current = inventory(warm && !warm.stale ? warm : image, read);
+  const expected = inventory(image, previous);
+  const current = inventory(warm && !warm.stale ? warm : image, previous);
   const transcript = canonicalJson([
     ...history,
     ...frames.map(({ body }) => archive(String(body))),
