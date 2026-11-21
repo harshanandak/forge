@@ -27,6 +27,7 @@ export type Guard = {
   mainRed: boolean;
 };
 const sha = /^[0-9a-f]{40}$/;
+const fullReviewScope = /(?:^|\s)\bscope=full\b(?=\s|$)/;
 const codexQuota =
   /You have reached your Codex usage limits for code reviews\./;
 const bots = [
@@ -86,7 +87,7 @@ export function decide(evidence: Evidence, rows: GateRow[], guard: Guard) {
     checkedThrough = Math.max(checkedThrough, row.at);
     if (!exactSol) continue;
     exactPass = Math.max(exactPass, row.at);
-    if (/\bfull\b/.test(row.note)) fullPass = Math.max(fullPass, row.at);
+    if (fullReviewScope.test(row.note)) fullPass = Math.max(fullPass, row.at);
   }
   if (block > -Infinity && exactPass <= block) return failure("Sol blocked");
   const securityPass = guard.securitySolPass === true && exactPass > block;
@@ -118,20 +119,22 @@ export function decide(evidence: Evidence, rows: GateRow[], guard: Guard) {
       completed =
         summary?.commit_sha === head && summary.status === "completed";
     } else {
-      const exact = evidence.reviews.filter(
-        (review) => authored(review) && review.head === head,
-      );
-      for (const { id, body, state } of exact) {
+      const reviews = evidence.reviews.filter(authored);
+      for (const { id, body } of reviews) {
         const format =
           /^<!-- coderabbit-ai-generated:v1 -->\s+\*\*Actionable comments posted: (\d+)\*\*/;
         const count = Number(format.exec(body)?.[1]);
         const inline = findings.filter((finding) => finding.reviewId === id);
-        if (
-          !(count <= inline.length) ||
-          !["APPROVED", "COMMENTED"].includes(state)
-        )
+        if (!(count <= inline.length))
           return failure("incomplete coderabbit review");
       }
+      const exact = reviews.filter((review) => review.head === head);
+      if (
+        exact.some(
+          (review) => !["APPROVED", "COMMENTED"].includes(review.state),
+        )
+      )
+        return failure("incomplete coderabbit review");
       completed = exact.length > 0;
     }
     if (completed) {

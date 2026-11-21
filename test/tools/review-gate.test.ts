@@ -32,6 +32,12 @@ const rabbitReview = {
   state: "COMMENTED",
   body: "<!-- coderabbit-ai-generated:v1 -->\n\n**Actionable comments posted: 0**",
 };
+const historicalRabbit = { ...rabbitReview, head: old, id: 23 };
+const rabbitFinding = {
+  author: rabbit,
+  at: start + 40,
+  reviewId: historicalRabbit.id,
+};
 const quota = { author: codex, at: start + 30, body: codexQuota };
 const finding = { author: codex, at: start + 40 };
 
@@ -60,7 +66,7 @@ const sol = {
   p1: 0,
   note: "findings checked",
 };
-const full = { ...sol, note: "full review" };
+const full = { ...sol, note: "review finished scope=full" };
 const p1 = {
   ...sol,
   at: start,
@@ -250,6 +256,30 @@ const cases: Case[] = [
     expected: blocked("unchecked coderabbit findings"),
   },
   ...[
+    ["unaccounted findings", rabbitReview.body.replace(": 0**", ": 1**")],
+    ["a missing count", "<!-- coderabbit-ai-generated:v1 -->"],
+    ["a malformed count", rabbitReview.body.replace(": 0**", ": unknown**")],
+  ].map(([caseName, body]) => ({
+    name: `historical CodeRabbit review with ${caseName} blocks a clean head`,
+    evidence: { reviews: [rabbitReview, { ...historicalRabbit, body: body! }] },
+    expected: blocked("incomplete coderabbit review"),
+  })),
+  {
+    name: "a checked historical CodeRabbit finding permits current coverage",
+    evidence: {
+      reviews: [
+        rabbitReview,
+        {
+          ...historicalRabbit,
+          body: historicalRabbit.body.replace(": 0**", ": 1**"),
+        },
+      ],
+      findings: [rabbitFinding],
+    },
+    rows: [sol],
+    expected: passed(),
+  },
+  ...[
     { ...sol, kind: "lead-check" },
     { ...sol, kind: "sonnet-temp" },
     { ...sol, head: old },
@@ -275,12 +305,14 @@ const cases: Case[] = [
     rows: [sol, { ...sol, at: sol.at + 1, verdict: "BLOCK" }],
     expected: blocked("Sol blocked"),
   },
-  {
-    name: "a finding check cannot stand in for a missing bot review",
-    evidence: { comments: [], now: deadline },
-    rows: [{ ...sol, note: "not fullish" }],
-    expected: blocked("Sol needed: codex timeout"),
-  },
+  ...["not a full review", "scope=full-summary", "other-scope=full"].map(
+    (note) => ({
+      name: `a finding check with note "${note}" cannot stand in for a missing bot review`,
+      evidence: { comments: [], now: deadline },
+      rows: [{ ...sol, note }],
+      expected: blocked("Sol needed: codex timeout"),
+    }),
+  ),
   {
     name: "security paths need a Sol pass on this head",
     rows: [{ ...sol, head: old }],
