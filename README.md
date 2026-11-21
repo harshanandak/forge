@@ -98,6 +98,21 @@ The globally installed `forge` command also runs the installed entry point.
 Windows measurements and the profiling method are in
 [Local read performance](docs/local-read-performance.md).
 
+## Install and network
+
+Forge declares no npm install hooks. Its native dependency `koffi` runs an
+install script that tries a prebuilt binary and falls back to building from source.
+
+Local commands such as `forge issue list` and `forge memory search` read state
+on your machine without sending it anywhere. GitHub-facing commands such as
+`forge accounts plan`, `forge pr state` and `forge pr merge` use `gh`.
+Delivery commands such as `forge lane start` can fetch from the configured Git
+remote. Project checks run your configured commands, which can use the network.
+
+Outside the 0.0.11 support boundary, experimental `forge auth login` and
+cloud-bound issue and lane operations send requests to the configured Forge
+cloud origin.
+
 ## Claim identity
 
 An issue claim belongs to a device plus a session. Agent and harness names are
@@ -261,38 +276,4 @@ rules still apply to that fallback.
 
 ## Contributing
 
-[Releases](docs/release.md) use manual CI run IDs; tag triggers are out of scope.
-
-Install Bun 1.4.4+. From a clone of this repository:
-
-```sh
-bun install
-bun run build
-bun run test:unit
-bun run check
-bun run test:structure
-```
-
-The `test:integration` script runs process and Git journeys. `test:pack` builds,
-packs and installs the package with npm, then runs its packed journeys on Node.
-The `test` script runs all lanes. CI runs the full matrix. Lint requires a canary
-Bun; format is available in stable Bun 1.4.4. Read
-[AGENTS.md](AGENTS.md) and [CODING_STANDARDS.md](CODING_STANDARDS.md) before editing.
-
-Start repository lanes with `forge lane start <issue> --branch <name> --brief <file>`;
-Use `bun tools/lane.ts` for repository-only `run`, `tier`, `list` and `auto` commands.
-After merging, close with a PASS receipt on the merge commit. In a plain terminal,
-set `FORGE_SESSION` to a stable session id before claiming and closing; agent
-sessions supply their own session identity.
-
-```sh
-forge issue claim <issue>
-forge lane close <issue> --pr <number> --receipt <id>
-```
-
-Close checks the PR, local head, clean worktree and receipt before writing, then
-links, closes and comments on the issue and removes the worktree, branch and lane
-entry. Run history stays. `--keep-open` only comments and cleans up. Retry the same
-arguments after failure to finish without repeating the close or landing comment.
-Ignored paths other than `node_modules/` and `dist/` refuse closure. Move needed
-files first; `--discard-ignored` permits removal and lists the discarded paths.
+See the [contributing guide](https://github.com/harshanandak/forge/blob/main/CONTRIBUTING.md).
