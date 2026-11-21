@@ -207,6 +207,7 @@ export async function admissionFixture() {
   });
   const legacyEvidence = () =>
     db.all("SELECT * FROM domain_cloud_evidence_receipts ORDER BY id");
+  const values = new Map<string, unknown>();
   const command = (input: unknown = write.input, op = "issue.close") => {
     if (
       write.context.variant !== "leased" ||
@@ -226,9 +227,12 @@ export async function admissionFixture() {
           }),
         },
         transactionSync: <T>(body: () => T) => db.transaction(body),
-        get: () => Promise.resolve(undefined),
-        put: () => Promise.resolve(),
-        delete: () => Promise.resolve(false),
+        get: (key: string) => Promise.resolve(values.get(key)),
+        put: (key: string, value: unknown) => {
+          values.set(key, value);
+          return Promise.resolve();
+        },
+        delete: (key: string) => Promise.resolve(values.delete(key)),
       },
       idPrefix: write.prefix,
       now: ports.now(),
@@ -264,6 +268,7 @@ export async function admissionFixture() {
     link,
     snapshot,
     command,
+    values,
     legacyEvidence,
   };
 }
