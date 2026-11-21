@@ -1,4 +1,4 @@
-name: Nightly macOS pack
+name: Nightly Node 26 verification
 
 on:
   schedule:

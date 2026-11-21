@@ -1,0 +1,28 @@
+name: Feature request
+description: Suggest an improvement to Forge.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This form is public. Leave out credentials and private project data.
+        [Report vulnerabilities privately](https://github.com/harshanandak/forge/security/advisories/new).
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do, and where do you get stuck?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: What should Forge do? Give an example of how you would use it.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you tried
+      description: Share any workaround and where it falls short.

@@ -110,7 +110,7 @@ test("CI and Release use the shared packed journey setup", () => {
         version: "${{ needs.pack.outputs.version }}",
       },
     ),
-    ["verify", "verify-nightly"],
+    ["verify", "verify-node26"],
   );
   assert.deepEqual(Object.keys(release.env ?? {}).sort(), [
     "NPM_CONFIG_REGISTRY",
@@ -119,13 +119,14 @@ test("CI and Release use the shared packed journey setup", () => {
   assert.deepEqual(Object.keys(ci.env ?? {}).sort(), [
     "BUN_VERSION",
     "CI_HEAD",
+    "COMMENT_GUARD_PATHS",
   ]);
   const bunStep = (job: Job): Step | undefined =>
     job.steps?.find((step) => step.uses?.startsWith("oven-sh/setup-bun@"));
   const releaseBun = bunStep(release.jobs.readback!);
   assert.match(releaseBun?.uses ?? "", /@[a-f0-9]{40}$/);
   assert.equal(releaseBun?.with?.["bun-version"], ci.env?.BUN_VERSION);
-  for (const id of ["verify", "verify-nightly"]) {
+  for (const id of ["verify", "verify-node26"]) {
     const ciBun = bunStep(ci.jobs[id]!);
     assert.equal(ciBun?.uses, releaseBun?.uses);
     assert.equal(ciBun?.with?.["bun-version"], "${{ env.BUN_VERSION }}");

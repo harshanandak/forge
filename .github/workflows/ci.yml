@@ -18,6 +18,10 @@ env:
   # `bun lint` still needs the canary build used by the `static` job.
   BUN_VERSION: "1.4.4"
   CI_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+  COMMENT_GUARD_PATHS: >-
+    tools/checks tools/lint tools/git-executable.ts tools/bun-builtin.ts
+    tools/bun-lint-version.json test/structure/no-comments.integration.test.ts
+    package.json bun.lock bunfig.toml .forge/config.yaml
 
 defaults:
   run:
@@ -30,6 +34,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       scope: ${{ steps.diff.outputs.scope }}
+      comment_guard: ${{ steps.diff.outputs.comment_guard }}
       started: ${{ steps.start.outputs.at }}
     steps:
       - id: start
@@ -46,9 +51,7 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          scope="$(bun tools/ci/change-scope.ts)"
-          echo "$scope" >> "$GITHUB_OUTPUT"
-          echo "$scope"
+          bun tools/ci/change-scope.ts | tee -a "$GITHUB_OUTPUT"
 
   pr-title:
     name: PR title
@@ -226,7 +229,7 @@ jobs:
   comment-guard:
     name: Comment guard (windows-latest, Node 24)
     needs: changes
-    if: github.event_name != 'schedule' && needs.changes.outputs.scope == 'full'
+    if: github.event_name != 'schedule' && (github.event_name != 'pull_request' || needs.changes.outputs.comment_guard == 'true')
     runs-on: windows-latest
     timeout-minutes: 20
     env:
@@ -255,7 +258,11 @@ jobs:
           bun-version: ${{ env.BUN_VERSION }}
       - run: bun install --frozen-lockfile
       - name: Admit comment guard on Windows
-        run: bun tools/check-admit.ts no-comments-regression test/structure/fixtures/no-comments-break.patch --guard tools/checks --guard tools/lint --guard tools/git-executable.ts --guard tools/bun-builtin.ts --guard tools/bun-lint-version.json --guard test/structure/no-comments.integration.test.ts --guard package.json --guard bun.lock --guard bunfig.toml --guard .forge/config.yaml 2>&1 | tee -a "$RUNNER_TEMP/ci-tests.log"
+        run: |
+          read -ra paths <<< "$COMMENT_GUARD_PATHS"
+          guards=()
+          for path in "${paths[@]}"; do guards+=(--guard "$path"); done
+          bun tools/check-admit.ts no-comments-regression test/structure/fixtures/no-comments-break.patch "${guards[@]}" 2>&1 | tee -a "$RUNNER_TEMP/ci-tests.log"
       - *write-record
       - *upload-record
 
@@ -289,10 +296,6 @@ jobs:
           - { os: windows-latest, node: "24", suite: tests, shard: "2/3" }
           - { os: windows-latest, node: "24", suite: tests, shard: "3/3" }
           - { os: windows-latest, node: "24", suite: pack }
-          - { os: windows-latest, node: "26", suite: tests, shard: "1/3" }
-          - { os: windows-latest, node: "26", suite: tests, shard: "2/3" }
-          - { os: windows-latest, node: "26", suite: tests, shard: "3/3" }
-          - { os: windows-latest, node: "26", suite: pack }
     steps: &verify-steps
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -370,24 +373,38 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
 
-  verify-nightly:
-    name: macOS Node 26 pack
+  verify-node26:
+    name: Verify Node 26 (${{ matrix.os }}, ${{ matrix.suite }}) ${{ matrix.shard }}
     needs: pack
-    if: github.event_name == 'schedule'
+    if: github.event_name == 'push' || github.event_name == 'schedule'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
+      fail-fast: false
       matrix:
         include:
+          - { os: windows-latest, node: "26", suite: tests, shard: "1/3" }
+          - { os: windows-latest, node: "26", suite: tests, shard: "2/3" }
+          - { os: windows-latest, node: "26", suite: tests, shard: "3/3" }
+          - { os: windows-latest, node: "26", suite: pack }
           - { os: macos-latest, node: "26", suite: pack }
     steps: *verify-steps
 
-  # The one required check. Skipped heavy legs pass only when the change is documentation-only.
   ci-gate:
     name: CI Gate
-    if: always() && github.event_name != 'schedule'
+    if: always()
     needs:
-      [changes, pr-title, structure, static, pack, speed, verify, comment-guard]
+      [
+        changes,
+        pr-title,
+        structure,
+        static,
+        pack,
+        speed,
+        verify,
+        verify-node26,
+        comment-guard,
+      ]
     runs-on: ubuntu-latest
     steps:
       - env:
@@ -400,7 +417,9 @@ jobs:
           PACK: ${{ needs.pack.result }}
           SPEED: ${{ needs.speed.result }}
           VERIFY: ${{ needs.verify.result }}
+          VERIFY_NODE26: ${{ needs.verify-node26.result }}
           COMMENT_GUARD: ${{ needs.comment-guard.result }}
+          GUARD_CHANGED: ${{ needs.changes.outputs.comment_guard }}
           STARTED: ${{ needs.changes.outputs.started }}
         run: |
           if [ -n "$STARTED" ]; then
@@ -413,27 +432,48 @@ jobs:
           fi
           ok=1
           require() {
-            if [ "$2" != "success" ]; then
-              echo "::error::$1 finished as '$2'"
+            if [ "$2" != "${3:-success}" ]; then
+              echo "::error::$1 finished as '$2', expected '${3:-success}'"
               ok=0
             fi
           }
           require "changes" "$CHANGES"
-          require "structure" "$STRUCTURE"
-          require "static" "$STATIC"
-          if [ "$EVENT" = "pull_request" ]; then require "pr-title" "$PR_TITLE"; fi
-          if [ "$SCOPE" = "full" ]; then
-            require "pack" "$PACK"
-            require "speed" "$SPEED"
-            require "verify" "$VERIFY"
-            require "comment-guard" "$COMMENT_GUARD"
-          elif [ "$SCOPE" = "docs" ] && [ "$EVENT" = "pull_request" ]; then
-            if [ "$VERIFY" != "skipped" ] || [ "$PACK" != "skipped" ] || [ "$SPEED" != "skipped" ] || [ "$COMMENT_GUARD" != "skipped" ]; then
-              echo "::error::verify='$VERIFY', pack='$PACK', speed='$SPEED', comment-guard='$COMMENT_GUARD' on a documentation-only change"
-              ok=0
-            fi
-          else
-            echo "::error::unexpected scope '$SCOPE' for '$EVENT'"
-            ok=0
-          fi
+
+          title=skipped
+          checks=success
+          heavy=success
+          packed=success
+          node26=skipped
+          admission=success
+          case "$EVENT" in
+            pull_request)
+              title=success
+              case "$GUARD_CHANGED" in
+                true) ;;
+                false) admission=skipped ;;
+                *) echo "::error::unexpected comment guard selection '$GUARD_CHANGED'"; ok=0 ;;
+              esac
+              ;;
+            push) node26=success ;;
+            schedule)
+              checks=skipped
+              heavy=skipped
+              node26=success
+              admission=skipped
+              ;;
+          esac
+          case "$EVENT:$SCOPE" in
+            pull_request:docs) heavy=skipped; packed=skipped ;;
+            *:full) ;;
+            *) echo "::error::unexpected scope '$SCOPE' for '$EVENT'"; ok=0 ;;
+          esac
+
+          require "pr-title" "$PR_TITLE" "$title"
+          require "structure" "$STRUCTURE" "$checks"
+          require "static" "$STATIC" "$checks"
+          require "pack" "$PACK" "$packed"
+          require "speed" "$SPEED" "$heavy"
+          require "verify" "$VERIFY" "$heavy"
+          require "verify-node26" "$VERIFY_NODE26" "$node26"
+          require "comment-guard" "$COMMENT_GUARD" "$admission"
           [ "$ok" = "1" ]
