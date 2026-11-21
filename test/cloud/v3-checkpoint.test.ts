@@ -777,6 +777,72 @@ function changeCommit(
   ]);
 }
 
+const putRecord = (key: string, revision: number, value: unknown) => ({
+  ...frame(),
+  events: [{ key, revision, value }],
+  changes: [{ key, value: { revision, value } }],
+});
+const deleteRecord = (key: string, revision: number) => ({
+  ...frame(),
+  operation: "fixture.delete",
+  events: [{ key, revision }],
+  changes: [{ key, value: { revision, deleted: true } }],
+});
+
+for (const [fault, corrupt] of [
+  [
+    "changed after-image",
+    () => ({
+      ...putRecord("r2", 2, "next"),
+      changes: putRecord("r2", 2, "other").changes,
+    }),
+  ],
+  [
+    "wrong operation",
+    () => ({
+      ...deleteRecord("r2", 2),
+      changes: putRecord("r2", 2, "next").changes,
+    }),
+  ],
+  ["repeated revision", () => putRecord("r2", 1, "next")],
+  [
+    "reissued number below the tombstone floor",
+    () => putRecord("r1", 1, "next"),
+  ],
+] as const) {
+  test(
+    `v3 checkpoint refuses a record frame with ${fault}`,
+    () =>
+      withFixture(async (f) => {
+        expect((await append(f, putRecord("r2", 1, "first"))).status).toBe(200);
+        const belowFloor =
+          fault === "reissued number below the tombstone floor";
+        if (belowFloor) {
+          expect((await append(f, deleteRecord("r2", 2))).status).toBe(200);
+          expect((await checkpoint(f)).status).toBe(200);
+        }
+        const next = belowFloor
+          ? putRecord("r3", 1, "next")
+          : putRecord("r2", 2, "next");
+        expect((await append(f, next)).status).toBe(200);
+        changeCommit(f, belowFloor ? 3 : 2, (stored) => ({
+          ...stored,
+          ...corrupt(),
+        }));
+        f.restart();
+        const source = active(f);
+        const log = commits(f);
+        const effects = f.observeEffects();
+        expect(await checkpoint(f)).toMatchObject(refused);
+        expect(await f.send(probe)).toMatchObject(refused);
+        expect(effects()).toEqual(noWrites);
+        expect(active(f)).toEqual(source);
+        expect(commits(f)).toEqual(log);
+      }),
+    timeout,
+  );
+}
+
 function generation(frame: Json, next: number): Json {
   return {
     ...frame,
