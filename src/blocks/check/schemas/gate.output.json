@@ -13,6 +13,23 @@
     "verdict": { "enum": ["PASS", "REFUSED"] },
     "head": { "type": "string" },
     "receipt": { "type": "string", "pattern": "^[a-f0-9-]{36}$" },
+    "reviews": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "reviewer", "head", "verdict", "evidence"],
+        "properties": {
+          "kind": { "type": "string" },
+          "reviewer": { "type": "string" },
+          "head": { "type": "string" },
+          "verdict": { "const": "PASS" },
+          "evidence": { "type": "string" },
+          "carriedFrom": { "type": "string" },
+          "base": { "type": "string" }
+        }
+      }
+    },
     "checks": {
       "type": "array",
       "items": {

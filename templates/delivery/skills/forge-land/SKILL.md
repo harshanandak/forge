@@ -9,9 +9,11 @@ Orchestrator only. A worker never merges. Merge by: agent. Read [owner-approval.
 
 ## Merge conditions
 
-Preview: `forge check gate --pr <n>`. Merge requires exit 0, `ok:true` and `result.outcome` MERGED. Keep `result.head` as `<head>` and `result.receipt` as `<id>`.
+Preview: `forge check gate --pr <n>` from the trusted project configuration. Keep the PASS result's `result.head` as `<head>` and `result.receipt` as `<id>`.
 
 The gate requires an open, clean PR, a current-head PASS receipt covering `receiptChecks`, successful required CI, no unresolved threads across every page, and no changed file matching `doorPaths`. It re-reads the head before returning. REFUSED exits 1; fix through `forge-review` and rerun.
+
+For each `gate.requiredReviews` entry, the configured independent reviewer submits a GitHub approval with a standalone `forge-review:<kind>` line. Require the gate to list that approval on `<head>`, directly or with verified carry evidence. For an owner-only manual merge, check the same review evidence and pin the write to `<head>`. The door path is the owner's only allowed gate refusal.
 
 A matched door path always refuses: the owner merges that PR by hand. A merge that deploys, publishes or migrates is also a door (publish, force-push, prod-write, migration-apply, delete-branch, delete-worktree, merge-to-autodeploy, global-config): it needs the owner's reply naming that action. Silence, "continue" or "fix all" never counts as approval.
 
@@ -20,10 +22,10 @@ A matched door path always refuses: the owner merges that PR by hand. A merge th
 Merge serially after combined-code CI, with zero red checks, open threads and open doors.
 
 ```
-forge pr merge <n>
+forge pr merge <n> --head <head>
 ```
 
-It runs the gate and uses `gh pr merge <n> --squash --match-head-commit <head>` pinned to its head, never `--admin`, `--auto` or `--delete-branch`. Never run raw `gh pr merge`. On `CHECK_GATE_REFUSED`, fix `result.gate.reasons` through `forge-review`. On `MERGE_UNVERIFIED`, read `gh pr view <n> --json state,mergeCommit,headRefOid` before anything else; apply Verify 1 against the printed gate head.
+It runs the gate and uses `gh pr merge <n> --squash --match-head-commit <head>` pinned to its head, never `--admin`, `--auto` or `--delete-branch`. Never run raw `gh pr merge`. Require exit 0, `ok:true` and `result.outcome` MERGED. On `CHECK_GATE_REFUSED`, fix `result.gate.reasons` through `forge-review`. On `MERGE_UNVERIFIED`, read `gh pr view <n> --json state,mergeCommit,headRefOid` before anything else; apply Verify 1 against the printed gate head.
 
 A refused merge because the head moved means run the gate again. Never merge without the pin.
 

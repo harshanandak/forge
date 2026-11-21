@@ -826,6 +826,15 @@ function doorMatches(path: string, glob: string): boolean {
 /** A GitHub login, with the [bot] suffix the REST API gives apps. It is spliced into a jq filter, so it stays strict. */
 const REVIEWER = /^[A-Za-z0-9][A-Za-z0-9-]*(?:\[bot\])?$/;
 const CODEX_REVIEWER = "chatgpt-codex-connector[bot]";
+const OID = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
+const TREE_DELTA =
+  "--raw -r --no-commit-id --no-abbrev --no-color --no-renames --no-ext-diff --no-textconv --ignore-submodules=none".split(
+    " ",
+  );
+function githubLogin(account: unknown): string {
+  const login = isRecord(account) && account.login;
+  return typeof login === "string" ? login.toLowerCase() : "";
+}
 const THREAD_QUERY =
   "query($owner:String!,$repo:String!,$n:Int!,$endCursor:String){repository(owner:$owner,name:$repo){pullRequest(number:$n){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{id isResolved}}}}}";
 const CHECK_QUERY =
@@ -843,6 +852,8 @@ async function gate(
   const reasons: { code: string; detail: string }[] = [];
   const checks: { name: string; state: string }[] = [];
   const doors: string[] = [];
+  const requiredReviews = config.gate?.requiredReviews ?? [];
+  const reviews: NonNullable<GateResult["reviews"]>[number][] = [];
   let head = "",
     receipt: string | undefined,
     unresolvedThreads = 0;
@@ -862,17 +873,21 @@ async function gate(
   function invalid(): never {
     throw new Error("Invalid GitHub evidence");
   }
-  async function gh(
-    args: readonly string[],
-    allowedExits: readonly number[] = [0],
-  ): Promise<string> {
+  async function readCommand(program: "gh" | "git", args: readonly string[]) {
     active();
-    const executable = services.process.resolve("gh", services.environment);
+    const executable = services.process.resolve(program, services.environment);
     if (executable.kind !== "resolved")
-      throw new Error("GitHub CLI unavailable");
+      throw new Error(`${program} unavailable`);
+    const env = { ...services.environment };
+    if (program === "git") {
+      for (const key of Object.keys(env))
+        if (/^(GIT|GH)_/i.test(key)) delete env[key];
+      env.GIT_GRAFT_FILE = "";
+      env.GIT_NO_LAZY_FETCH = "1";
+    }
     const result = await services.process.run(executable, args, {
       cwd: services.root,
-      env: { ...services.environment },
+      env,
       timeoutMs: Math.max(
         1,
         Math.min(config.timeoutMs, deadline - services.clock.now()),
@@ -883,8 +898,7 @@ async function gate(
     timedOut = result.timedOut;
     active();
     if (
-      result.exitCode === null ||
-      !allowedExits.includes(result.exitCode) ||
+      result.exitCode !== 0 ||
       result.signal !== null ||
       result.timedOut ||
       result.truncated ||
@@ -892,9 +906,10 @@ async function gate(
         (!result.outputEvidence.stdout.complete ||
           !result.outputEvidence.stderr.complete))
     )
-      throw new Error("GitHub command did not complete successfully");
+      throw new Error(`${program} command did not complete successfully`);
     return result.stdout;
   }
+  const gh = (args: readonly string[]) => readCommand("gh", args);
   async function view() {
     const value: unknown = JSON.parse(
       await gh([
@@ -902,7 +917,8 @@ async function gate(
         "view",
         String(input.pr),
         "--json",
-        "headRefOid,headRefName,baseRefOid,state,mergeStateStatus,url,changedFiles",
+        "headRefOid,headRefName,baseRefOid,state,mergeStateStatus,url,changedFiles" +
+          (requiredReviews.length ? ",author" : ""),
       ]),
     );
     if (
@@ -929,7 +945,88 @@ async function gate(
       mergeStateStatus: string;
       url: string;
       changedFiles: number;
+      author?: unknown;
     };
+  }
+  async function carries(reviewed: string, base: string) {
+    const gitOptions = ["--no-replace-objects", "-c", "core.quotePath=true"];
+    const git = (args: readonly string[]) =>
+      readCommand("git", [...gitOptions, ...args]);
+    const shallow = await git(["rev-parse", "--is-shallow-repository"]);
+    if (shallow.trim() !== "false" || reviewed === base) return false;
+    const commit = await git(["cat-file", "-p", head]);
+    const parents = commit.split("\nauthor ", 1)[0]?.split("\n").slice(1);
+    if (parents?.join("\n") !== `parent ${reviewed}\nparent ${base}`)
+      return false;
+    const fork = (await git(["merge-base", "--all", reviewed, base])).trim();
+    if (!OID.test(fork)) return false;
+    const delta = (from: string, to: string) =>
+      git(["diff-tree", ...TREE_DELTA, from, to, "--"]);
+    return (await delta(fork, reviewed)) === (await delta(base, head));
+  }
+  async function requireReviews(
+    pr: Awaited<ReturnType<typeof view>>,
+    repo: RegExpExecArray,
+  ) {
+    const author = githubLogin(pr.author);
+    if (!REVIEWER.test(author)) invalid();
+    const markers = new Set(
+      requiredReviews.map(({ kind }) => `forge-review:${kind}`),
+    );
+    const endpoint = `repos/${repo[2]}/${repo[3]}/pulls/${input.pr}/reviews`;
+    const rows: Record<string, unknown>[] = [];
+    for (let page = 1; page <= 10; page++) {
+      const url = `${endpoint}?per_page=100&page=${page}`;
+      const batch: unknown = JSON.parse(
+        await gh(["api", url, "--hostname", repo[1]!]),
+      );
+      if (!Array.isArray(batch) || batch.length > 100) invalid();
+      for (const row of batch) {
+        if (!isRecord(row)) invalid();
+        rows.push(row);
+      }
+      if (batch.length < 100) break;
+      if (page === 10) invalid();
+    }
+    for (const { kind, reviewer } of requiredReviews) {
+      const login = reviewer.toLowerCase();
+      if (login === author) continue;
+      let latest: Record<string, unknown> | undefined;
+      let newestAt = -Infinity,
+        newestId = 0;
+      for (const row of rows) {
+        if (githubLogin(row.user) !== login || row.state === "PENDING")
+          continue;
+        if (typeof row.body !== "string") continue;
+        const found = row.body
+          .split(/\r?\n/)
+          .filter((line) => line.startsWith("forge-review:"));
+        if (!found.length) continue;
+        if (found.length !== 1 || !markers.has(found[0]!)) invalid();
+        if (found[0] !== `forge-review:${kind}`) continue;
+        if (typeof row.submitted_at !== "string") invalid();
+        const at = Date.parse(row.submitted_at);
+        if (!Number.isFinite(at) || !integer(row.id) || row.id < 1) invalid();
+        if (at === newestAt && row.id === newestId) invalid();
+        if (at > newestAt || (at === newestAt && row.id > newestId))
+          [latest, newestAt, newestId] = [row, at, row.id];
+      }
+      if (latest?.state !== "APPROVED") continue;
+      const reviewed = latest.commit_id;
+      if (typeof reviewed !== "string" || !OID.test(reviewed)) continue;
+      if (reviewed !== head && !(await carries(reviewed, pr.baseRefOid)))
+        continue;
+      reviews.push({
+        kind,
+        reviewer: login,
+        head,
+        verdict: "PASS",
+        evidence: pr.url + "#pullrequestreview-" + newestId,
+        ...(reviewed === head
+          ? {}
+          : { carriedFrom: reviewed, base: pr.baseRefOid }),
+      });
+    }
   }
   try {
     if (!Number.isSafeInteger(input.pr) || input.pr < 1) invalid();
@@ -1337,6 +1434,22 @@ async function gate(
           `head review has unresolved findings: ${login}`,
         );
     }
+    if (requiredReviews.length) {
+      try {
+        await requireReviews(pr, repository);
+      } catch {
+        reviews.length = 0;
+      }
+      for (const { kind, reviewer } of requiredReviews) {
+        const login = reviewer.toLowerCase();
+        if (reviews.some((row) => row.kind === kind && row.reviewer === login))
+          continue;
+        refuse(
+          "REQUIRED_REVIEW_NOT_COVERED",
+          `Required ${kind} does not cover the current PR head; review this head and record its result before merging.`,
+        );
+      }
+    }
     const after = await view();
     if (after.headRefOid !== head)
       refuse(
@@ -1368,6 +1481,7 @@ async function gate(
     verdict: reasons.length ? "REFUSED" : "PASS",
     head,
     ...(receipt ? { receipt } : {}),
+    ...(requiredReviews.length ? { reviews } : {}),
     checks,
     unresolvedThreads,
     doorPaths: doors,

@@ -12,6 +12,7 @@ import type { HandlerArgs } from "../../../src/contract/author.ts";
 import type { StateRecord } from "../../../src/generated/types.ts";
 import { validateWithSchema } from "../../../src/contract/schema.ts";
 import schema from "../../../src/blocks/check/schemas/config.json" with { type: "json" };
+import gateOutput from "../../../src/blocks/check/schemas/gate.output.json" with { type: "json" };
 import manifest from "../../../src/blocks/check/forge.block.json" with { type: "json" };
 import mergeInput from "../../../src/blocks/check/schemas/pr-merge.input.json" with { type: "json" };
 import { validateBlockManifest } from "../../../src/contract/index.ts";
@@ -70,6 +71,40 @@ const config: CheckConfig = {
   maxInputBytes: 4096,
   environment: ["SELECTED"],
 };
+
+test("the check contract accepts a named review requirement and its carried evidence", () => {
+  const reviewer = "review-agent[bot]";
+  const kind = "merge-gate";
+  const head = "a".repeat(40);
+  const withReview = (login: string) => ({
+    ...config,
+    gate: { requiredReviews: [{ kind, reviewer: login }] },
+  });
+  expect(validateWithSchema(schema, withReview(reviewer))).toEqual([]);
+  expect(validateWithSchema(schema, withReview("wrong/login"))).toHaveLength(1);
+  expect(
+    validateWithSchema(gateOutput, {
+      verdict: "PASS",
+      head,
+      checks: [],
+      unresolvedThreads: 0,
+      doorPaths: [],
+      reasons: [],
+      reviews: [
+        {
+          kind,
+          reviewer,
+          head,
+          verdict: "PASS",
+          evidence: "https://github.com/org/repo/pull/7#pullrequestreview-1",
+          carriedFrom: "b".repeat(40),
+          base: "c".repeat(40),
+        },
+      ],
+    }),
+  ).toEqual([]);
+}, 1000);
+
 function fixture() {
   const records = new Map<string, StateRecord>();
   const observed: string[] = [];
