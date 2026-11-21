@@ -826,6 +826,10 @@ function doorMatches(path: string, glob: string): boolean {
 /** A GitHub login, with the [bot] suffix the REST API gives apps. It is spliced into a jq filter, so it stays strict. */
 const REVIEWER = /^[A-Za-z0-9][A-Za-z0-9-]*(?:\[bot\])?$/;
 const CODEX_REVIEWER = "chatgpt-codex-connector[bot]";
+function githubLogin(account: unknown): string {
+  const login = isRecord(account) && account.login;
+  return typeof login === "string" ? login.toLowerCase() : "";
+}
 const THREAD_QUERY =
   "query($owner:String!,$repo:String!,$n:Int!,$endCursor:String){repository(owner:$owner,name:$repo){pullRequest(number:$n){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{id isResolved}}}}}";
 const CHECK_QUERY =
@@ -843,6 +847,8 @@ async function gate(
   const reasons: { code: string; detail: string }[] = [];
   const checks: { name: string; state: string }[] = [];
   const doors: string[] = [];
+  const requiredReviews = config.gate?.requiredReviews ?? [];
+  const reviews: NonNullable<GateResult["reviews"]>[number][] = [];
   let head = "",
     receipt: string | undefined,
     unresolvedThreads = 0;
@@ -902,7 +908,8 @@ async function gate(
         "view",
         String(input.pr),
         "--json",
-        "headRefOid,headRefName,baseRefOid,state,mergeStateStatus,url,changedFiles",
+        "headRefOid,headRefName,baseRefOid,state,mergeStateStatus,url,changedFiles" +
+          (requiredReviews.length ? ",author" : ""),
       ]),
     );
     if (
@@ -929,7 +936,75 @@ async function gate(
       mergeStateStatus: string;
       url: string;
       changedFiles: number;
+      author?: unknown;
     };
+  }
+  async function requireReviews(
+    pr: Awaited<ReturnType<typeof view>>,
+    repo: RegExpExecArray,
+  ) {
+    const author = githubLogin(pr.author);
+    if (!REVIEWER.test(author)) invalid();
+    const endpoint = `repos/${repo[2]}/${repo[3]}/pulls/${input.pr}/reviews`;
+    const rows: Record<string, unknown>[] = [];
+    for (let page = 1; page <= 10; page++) {
+      const url = `${endpoint}?per_page=100&page=${page}`;
+      const batch: unknown = JSON.parse(
+        await gh(["api", url, "--hostname", repo[1]!]),
+      );
+      if (!Array.isArray(batch) || batch.length > 100) invalid();
+      for (const row of batch) {
+        if (!isRecord(row)) invalid();
+        rows.push(row);
+      }
+      if (batch.length < 100) break;
+      if (page === 10) invalid();
+    }
+    for (const { kind, reviewer } of requiredReviews) {
+      const login = reviewer.toLowerCase();
+      if (login === author) continue;
+      const marker = `forge-review:${kind}`;
+      let newestAt = -Infinity;
+      let newest: { row: Record<string, unknown>; markers: string[] }[] = [];
+      for (const row of rows) {
+        if (githubLogin(row.user) !== login || row.state === "PENDING")
+          continue;
+        if (typeof row.body !== "string") continue;
+        const markers = row.body
+          .split(/\r?\n/)
+          .filter((line) => line.trimStart().startsWith("forge-review:"));
+        if (
+          !markers.some((line) => line.trimStart().split(/\s/, 1)[0] === marker)
+        )
+          continue;
+        if (typeof row.submitted_at !== "string") invalid();
+        const at = Date.parse(row.submitted_at);
+        if (!Number.isFinite(at)) invalid();
+        if (at > newestAt) {
+          newestAt = at;
+          newest = [];
+        }
+        if (at === newestAt) newest.push({ row, markers });
+      }
+      if (!newest.every(({ row }) => integer(row.id) && row.id > 0)) continue;
+      newest.sort((a, b) => Number(b.row.id) - Number(a.row.id));
+      const [latest, tied] = newest;
+      if (
+        latest?.row.state !== "APPROVED" ||
+        latest.row.commit_id !== head ||
+        latest.row.id === tied?.row.id ||
+        latest.markers.length !== 1 ||
+        latest.markers[0] !== marker
+      )
+        continue;
+      reviews.push({
+        kind,
+        reviewer: login,
+        head,
+        verdict: "PASS",
+        evidence: pr.url + "#pullrequestreview-" + String(latest.row.id),
+      });
+    }
   }
   try {
     if (!Number.isSafeInteger(input.pr) || input.pr < 1) invalid();
@@ -1337,6 +1412,22 @@ async function gate(
           `head review has unresolved findings: ${login}`,
         );
     }
+    if (requiredReviews.length) {
+      try {
+        await requireReviews(pr, repository);
+      } catch {
+        reviews.length = 0;
+      }
+      for (const { kind, reviewer } of requiredReviews) {
+        const login = reviewer.toLowerCase();
+        if (reviews.some((row) => row.kind === kind && row.reviewer === login))
+          continue;
+        refuse(
+          "REQUIRED_REVIEW_NOT_COVERED",
+          `Required ${kind} does not cover the current PR head; review this head and record its result before merging.`,
+        );
+      }
+    }
     const after = await view();
     if (after.headRefOid !== head)
       refuse(
@@ -1368,6 +1459,7 @@ async function gate(
     verdict: reasons.length ? "REFUSED" : "PASS",
     head,
     ...(receipt ? { receipt } : {}),
+    ...(requiredReviews.length ? { reviews } : {}),
     checks,
     unresolvedThreads,
     doorPaths: doors,

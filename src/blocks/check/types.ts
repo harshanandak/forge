@@ -37,6 +37,10 @@ export interface CheckConfig {
     readonly receiptChecks?: readonly string[];
     readonly doorPaths?: readonly string[];
     readonly headReviewers?: readonly string[];
+    readonly requiredReviews?: readonly {
+      readonly kind: string;
+      readonly reviewer: string;
+    }[];
   };
 }
 export interface GateInput {
@@ -48,6 +52,13 @@ export interface GateResult {
   readonly verdict: "PASS" | "REFUSED";
   readonly head: string;
   readonly receipt?: string;
+  readonly reviews?: readonly {
+    readonly kind: string;
+    readonly reviewer: string;
+    readonly head: string;
+    readonly verdict: "PASS";
+    readonly evidence: string;
+  }[];
   readonly checks: readonly { readonly name: string; readonly state: string }[];
   readonly unresolvedThreads: number;
   readonly doorPaths: readonly string[];
