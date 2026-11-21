@@ -416,7 +416,7 @@ test("Windows admission uses the guarded paths and Node 26 verify runs after PRs
   const admission = jobs["comment-guard"]!;
   expect(admission.needs).toBe("changes");
   expect(admission.if).toBe(
-    "github.event_name != 'schedule' && (github.event_name != 'pull_request' || needs.changes.outputs.comment_guard == 'true')",
+    "github.event_name != 'schedule' && (github.event_name != 'pull_request' || needs.changes.outputs.comment_guard == 'true') && needs.changes.outputs.tier != 'quick'",
   );
   expect(admission["runs-on"]).toBe("windows-latest");
   expect(admission["timeout-minutes"]).toBe(20);
@@ -664,6 +664,8 @@ test.each(
       env: {
         ...process.env,
         EVENT: event,
+        DRAFT: event === "pull_request" ? "false" : "",
+        TIER: event === "pull_request" ? "merge" : "full",
         SCOPE: scope,
         STARTED: "",
         STRUCTURE: event === "schedule" ? "skipped" : "success",

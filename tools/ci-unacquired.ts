@@ -154,14 +154,14 @@ export function neededJobNames(
       throw new Error("Unsupported job name");
     if (
       countLegs &&
-      (matchingPrefix(name).trim() === "" ||
+      (prefixes(name).some((prefix) => prefix.trim() === "") ||
         Object.entries(jobs ?? {}).some(([otherId, other]) => {
           if (otherId === id) return false;
           const otherName = other.name ?? otherId;
           return (
             typeof otherName !== "string" ||
-            matchesName(name, matchingPrefix(otherName)) ||
-            matchesName(otherName, matchingPrefix(name))
+            prefixes(otherName).some((prefix) => matchesName(name, prefix)) ||
+            prefixes(name).some((prefix) => matchesName(otherName, prefix))
           );
         }))
     )
@@ -174,8 +174,14 @@ export function neededJobNames(
   });
 }
 // A matrix name is a template; match on the text before its first expression.
-const matchingPrefix = (template: string) => template.split("${{", 1)[0] ?? "";
+const tierPattern =
+  /^\$\{\{ needs\.changes\.outputs\.tier == 'quick' && '([^']+)' \|\| '([^']+)' \}\}$/;
+const tierNames = (template: string) => tierPattern.exec(template)?.slice(1);
+const prefixes = (template: string) =>
+  tierNames(template) ?? [template.split("${{", 1)[0] ?? ""];
 const matchesName = (template: string, name: string) => {
+  const choices = tierNames(template);
+  if (choices) return choices.includes(name);
   const cut = template.indexOf("${{");
   return cut < 0 ? name === template : name.startsWith(template.slice(0, cut));
 };

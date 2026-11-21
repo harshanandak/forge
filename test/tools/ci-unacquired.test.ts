@@ -452,6 +452,26 @@ const output = (jobs: CiJob[], run_attempt = 1) =>
     ciWorkflow,
   ).split("\n");
 
+test("matches Quick and Structure guards as exact alternatives", () => {
+  for (const name of ["Structure guards", "Quick", "Quick extra"]) {
+    const jobs = complete.map((job) =>
+      job.name === "Structure guards" ? { ...job, name } : job,
+    );
+    const rerun = output([...jobs, gate]).includes("rerun=true");
+    expect(rerun).toBe(name === "Quick extra");
+  }
+}, 1000);
+
+test("rejects a matrix prefix that overlaps with Quick", () => {
+  const workflow = ciWorkflow.replace(
+    "    name: PR title",
+    "    name: Qu${{ matrix.os }}",
+  );
+  expect(() => neededJobNames(workflow, true)).toThrow(
+    "Head CI workflow has ambiguous job name prefixes",
+  );
+}, 1000);
+
 test("outputs rerun=true and scope=all for a job missing from the real ci.yml", () => {
   const lines = output([...noVerify, gate]);
   expect(lines).toContain("rerun=true");
