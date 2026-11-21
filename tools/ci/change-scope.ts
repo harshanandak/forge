@@ -44,12 +44,20 @@ export function changedPaths(
 }
 
 if (import.meta.main) {
-  const { EVENT, BASE_SHA, HEAD_SHA } = process.env;
-  if (EVENT === "pull_request" && (!BASE_SHA || !HEAD_SHA))
-    throw new Error("pull_request requires BASE_SHA and HEAD_SHA");
-  const scope =
-    EVENT === "pull_request"
-      ? scopeOf(changedPaths(BASE_SHA!, HEAD_SHA!, process.cwd()))
-      : "full";
-  console.log(`scope=${scope}`);
+  const { EVENT, BASE_SHA, HEAD_SHA, COMMENT_GUARD_PATHS } = process.env;
+  const pullRequest = EVENT === "pull_request";
+  const guardPaths =
+    COMMENT_GUARD_PATHS?.trim().split(/\s+/).filter(Boolean) ?? [];
+  if (pullRequest && (!BASE_SHA || !HEAD_SHA || guardPaths.length === 0))
+    throw new Error(
+      "pull_request requires BASE_SHA, HEAD_SHA and COMMENT_GUARD_PATHS",
+    );
+  const paths = pullRequest
+    ? changedPaths(BASE_SHA!, HEAD_SHA!, process.cwd())
+    : [];
+  const commentGuard = paths.some((path) =>
+    guardPaths.some((guard) => path === guard || path.startsWith(`${guard}/`)),
+  );
+  console.log(`scope=${pullRequest ? scopeOf(paths) : "full"}`);
+  console.log(`comment_guard=${commentGuard}`);
 }

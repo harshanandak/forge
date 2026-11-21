@@ -256,6 +256,8 @@ for (const [name, latest] of [
 
 // Jobs GitHub never created: absent from the attempt's job list, not skipped.
 // The CI Gate reports them as 'abandoned'. Names mirror ci.yml's `needs`.
+const node26Name =
+  "Verify Node 26 (${{ matrix.os }}, ${{ matrix.suite }}) ${{ matrix.shard }}";
 const needed = [
   "Changes",
   "PR title",
@@ -265,6 +267,7 @@ const needed = [
   "Comment guard (windows-latest, Node 24)",
   "Speed (${{ matrix.os }}, Node 24)",
   "Verify (${{ matrix.os }}, Node ${{ matrix.node }})",
+  node26Name,
 ];
 const named = (name: string): CiJob => ({ ...success, name });
 const created = [
@@ -352,11 +355,8 @@ const complete = [
     "windows-latest, Node 24, tests, shard 2/3",
     "windows-latest, Node 24, tests, shard 3/3",
     "windows-latest, Node 24, pack",
-    "windows-latest, Node 26, tests, shard 1/3",
-    "windows-latest, Node 26, tests, shard 2/3",
-    "windows-latest, Node 26, tests, shard 3/3",
-    "windows-latest, Node 26, pack",
   ].map((leg) => named(`Verify (${leg})`)),
+  { ...skipped, name: node26Name },
 ];
 
 test("does not rerun when every needed job exists and only the gate failed", () => {
@@ -409,6 +409,7 @@ test("reads the needed jobs from the CI Gate in ci.yml", () => {
     "Comment guard (",
     "Speed (",
     "Verify (",
+    "Verify Node 26 (",
   ]) {
     const withoutJob = jobs.filter((job) => !job.name.startsWith(prefix));
     const decision = decideRerun(

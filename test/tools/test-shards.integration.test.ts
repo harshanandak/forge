@@ -93,23 +93,33 @@ test("H2: a code-to-doc rename requires full CI through the real selector", () =
       "rename",
     );
     const head = git("rev-parse", "HEAD");
-    const result = spawnSync(
-      process.execPath,
-      [resolve("tools/ci/change-scope.ts")],
-      {
-        cwd: work,
-        env: {
-          ...process.env,
-          EVENT: "pull_request",
-          BASE_SHA: base,
-          HEAD_SHA: head,
+    for (const [guardPaths, selected] of [
+      ["other src", true],
+      ["src/a.ts", true],
+      ["src/a", false],
+      ["tools/checks", false],
+    ] as const) {
+      const result = spawnSync(
+        process.execPath,
+        [resolve("tools/ci/change-scope.ts")],
+        {
+          cwd: work,
+          env: {
+            ...process.env,
+            EVENT: "pull_request",
+            BASE_SHA: base,
+            HEAD_SHA: head,
+            COMMENT_GUARD_PATHS: guardPaths,
+          },
+          encoding: "utf8",
+          timeout: 10_000,
         },
-        encoding: "utf8",
-        timeout: 10_000,
-      },
-    );
-    expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout.trim()).toBe("scope=full");
+      );
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout.trim()).toBe(
+        `scope=full\ncomment_guard=${selected}`,
+      );
+    }
     expect(changedPaths(base, head, work).sort()).toEqual([
       "docs/a.md",
       "src/a.ts",
@@ -127,7 +137,7 @@ test("H2: a code-to-doc rename requires full CI through the real selector", () =
         },
       );
       expect(main.status, main.stderr).toBe(0);
-      expect(main.stdout.trim()).toBe("scope=full");
+      expect(main.stdout.trim()).toBe("scope=full\ncomment_guard=false");
     }
     const invalid = spawnSync(
       process.execPath,
@@ -139,6 +149,7 @@ test("H2: a code-to-doc rename requires full CI through the real selector", () =
           EVENT: "pull_request",
           BASE_SHA: "not-a-revision",
           HEAD_SHA: head,
+          COMMENT_GUARD_PATHS: "src",
         },
         encoding: "utf8",
         timeout: 10_000,
@@ -372,8 +383,11 @@ test.each([2, 3])(
   120_000,
 );
 
-test("Windows admission runs independently with all twenty replays and remains required", () => {
-  const { jobs } = parse(readFileSync(".github/workflows/ci.yml", "utf8")) as {
+test("Windows admission uses the guarded paths and Node 26 verify runs after PRs", () => {
+  const { jobs, env } = parse(
+    readFileSync(".github/workflows/ci.yml", "utf8"),
+  ) as {
+    env: { COMMENT_GUARD_PATHS: string };
     jobs: Record<
       string,
       {
@@ -381,6 +395,16 @@ test("Windows admission runs independently with all twenty replays and remains r
         if?: string;
         "runs-on"?: string;
         "timeout-minutes"?: number;
+        strategy?: {
+          matrix: {
+            include: {
+              os: string;
+              node: string;
+              suite: string;
+              shard?: string;
+            }[];
+          };
+        };
         steps: {
           name?: string;
           run?: string;
@@ -392,7 +416,7 @@ test("Windows admission runs independently with all twenty replays and remains r
   const admission = jobs["comment-guard"]!;
   expect(admission.needs).toBe("changes");
   expect(admission.if).toBe(
-    "github.event_name != 'schedule' && needs.changes.outputs.scope == 'full'",
+    "github.event_name != 'schedule' && (github.event_name != 'pull_request' || needs.changes.outputs.comment_guard == 'true')",
   );
   expect(admission["runs-on"]).toBe("windows-latest");
   expect(admission["timeout-minutes"]).toBe(20);
@@ -405,8 +429,26 @@ test("Windows admission runs independently with all twenty replays and remains r
   const guard = admission.steps.find(
     (step) => step.name === "Admit comment guard on Windows",
   )!;
+  expect(env.COMMENT_GUARD_PATHS.split(" ")).toEqual([
+    "tools/checks",
+    "tools/lint",
+    "tools/git-executable.ts",
+    "tools/bun-builtin.ts",
+    "tools/bun-lint-version.json",
+    "test/structure/no-comments.integration.test.ts",
+    "package.json",
+    "bun.lock",
+    "bunfig.toml",
+    ".forge/config.yaml",
+  ]);
   expect(guard.run).toBe(
-    'bun tools/check-admit.ts no-comments-regression test/structure/fixtures/no-comments-break.patch --guard tools/checks --guard tools/lint --guard tools/git-executable.ts --guard tools/bun-builtin.ts --guard tools/bun-lint-version.json --guard test/structure/no-comments.integration.test.ts --guard package.json --guard bun.lock --guard bunfig.toml --guard .forge/config.yaml 2>&1 | tee -a "$RUNNER_TEMP/ci-tests.log"',
+    [
+      'read -ra paths <<< "$COMMENT_GUARD_PATHS"',
+      "guards=()",
+      'for path in "${paths[@]}"; do guards+=(--guard "$path"); done',
+      'bun tools/check-admit.ts no-comments-regression test/structure/fixtures/no-comments-break.patch "${guards[@]}" 2>&1 | tee -a "$RUNNER_TEMP/ci-tests.log"',
+      "",
+    ].join("\n"),
   );
   expect(jobs["verify"]!["timeout-minutes"]).toBe(20);
   expect(
@@ -415,6 +457,24 @@ test("Windows admission runs independently with all twenty replays and remains r
     ),
   ).toBe(false);
   expect(jobs["ci-gate"]!.needs).toContain("comment-guard");
+  expect(jobs["ci-gate"]!.needs).toContain("verify-node26");
+  const node26 = jobs["verify-node26"]!;
+  expect(node26.if).toBe(
+    "github.event_name == 'push' || github.event_name == 'schedule'",
+  );
+  expect(node26["timeout-minutes"]).toBe(20);
+  expect(node26.steps).toEqual(jobs["verify"]!.steps);
+  const prMatrix = jobs["verify"]!.strategy!.matrix.include;
+  const windows24 = prMatrix.filter((leg) => leg.os === "windows-latest");
+  expect(windows24).toHaveLength(4);
+  expect(windows24.every((leg) => leg.node === "24")).toBe(true);
+  expect(node26.strategy!.matrix.include).toEqual([
+    ...windows24.map((leg) => ({ ...leg, node: "26" })),
+    { os: "macos-latest", node: "26", suite: "pack" },
+  ]);
+  expect(
+    prMatrix.some((leg) => leg.os === "macos-latest" && leg.node === "26"),
+  ).toBe(false);
 }, 1000);
 
 test.each(
@@ -433,6 +493,23 @@ test.each(
       verify: "success",
       expected: 0,
     },
+    {
+      scope: "full",
+      event: "schedule",
+      pack: "success",
+      verify: "skipped",
+      expected: 0,
+    },
+    ...["failure", "cancelled", "skipped"].flatMap((node26) =>
+      ["push", "schedule"].map((event) => ({
+        scope: "full",
+        event,
+        pack: "success",
+        verify: event === "schedule" ? "skipped" : "success",
+        node26,
+        expected: 1,
+      })),
+    ),
     ...["failure", "cancelled", "skipped"].flatMap((result) => [
       {
         scope: "full",
@@ -536,15 +613,45 @@ test.each(
       speed,
       expected: 1,
     })),
-  ].map((entry) => ({
-    changes: "success",
-    speed: entry.scope === "full" ? "success" : "skipped",
-    commentGuard: entry.scope === "full" ? "success" : "skipped",
-    ...entry,
-  })),
+    ...["skipped", "success", "failure", "cancelled"].map((commentGuard) => ({
+      scope: "full",
+      event: "pull_request",
+      pack: "success",
+      verify: "success",
+      guardChanged: "false",
+      commentGuard,
+      expected: commentGuard === "skipped" ? 0 : 1,
+    })),
+  ].map((entry) => {
+    const guardChanged =
+      entry.event === "pull_request" && entry.scope === "full";
+    return {
+      changes: "success",
+      speed:
+        entry.event !== "schedule" && entry.scope === "full"
+          ? "success"
+          : "skipped",
+      commentGuard:
+        entry.event === "push" || guardChanged ? "success" : "skipped",
+      guardChanged: String(guardChanged),
+      node26: entry.event === "pull_request" ? "skipped" : "success",
+      ...entry,
+    };
+  }),
 )(
   "CI Gate enforces scope and required results: %j",
-  ({ scope, event, pack, verify, expected, changes, speed, commentGuard }) => {
+  ({
+    scope,
+    event,
+    pack,
+    verify,
+    expected,
+    changes,
+    speed,
+    commentGuard,
+    guardChanged,
+    node26,
+  }) => {
     const { jobs } = parse(
       readFileSync(resolve(".github/workflows/ci.yml"), "utf8"),
     ) as {
@@ -559,12 +666,12 @@ test.each(
         EVENT: event,
         SCOPE: scope,
         STARTED: "",
-        ...Object.fromEntries(
-          "CHANGES STRUCTURE STATIC PR_TITLE"
-            .split(" ")
-            .map((name) => [name, "success"]),
-        ),
+        STRUCTURE: event === "schedule" ? "skipped" : "success",
+        STATIC: event === "schedule" ? "skipped" : "success",
+        PR_TITLE: event === "pull_request" ? "success" : "skipped",
         VERIFY: verify,
+        VERIFY_NODE26: node26,
+        GUARD_CHANGED: guardChanged,
         PACK: pack,
         SPEED: speed,
         COMMENT_GUARD: commentGuard,
