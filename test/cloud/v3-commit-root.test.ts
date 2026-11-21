@@ -20,10 +20,22 @@ const frames = [
   {
     operation: "fixture.put",
     time: 1000,
-    events: [{ key: "a" }, { key: "b" }],
+    events: [
+      { key: "r1", revision: 1, value: "a" },
+      { key: "r2", revision: 1, value: "b" },
+    ],
+    changes: [
+      { key: "r1", value: { revision: 1, value: "a" } },
+      { key: "r2", value: { revision: 1, value: "b" } },
+    ],
   },
-  { operation: "fixture.refuse", time: 1001, events: [] },
-  { operation: "fixture.delete", time: 1002, events: [{ key: "a" }] },
+  { operation: "fixture.note", time: 1001, events: [] },
+  {
+    operation: "fixture.delete",
+    time: 1002,
+    events: [{ key: "r1", revision: 2 }],
+    changes: [{ key: "r1", value: { revision: 2, deleted: true } }],
+  },
 ] as const;
 
 test(
@@ -165,7 +177,8 @@ test(
     const next = {
       operation: "fixture.put",
       time: 1003,
-      events: [{ key: "c" }],
+      events: [{ key: "r3", revision: 1, value: "c" }],
+      changes: [{ key: "r3", value: { revision: 1, value: "c" } }],
     };
     const expected = [...frames, next].map((frame, i) => ({
       sequence: i + 1,
