@@ -20,7 +20,7 @@ test("the independent CI pin rejects repacked bytes even when identity and sidec
   const dist = join(root, "package", "dist");
   const archive = join(root, "candidate.tgz");
   const identity = JSON.stringify({
-    version: "0.1.0-beta.9",
+    version: "0.0.11",
     commit: "a".repeat(40),
     dirty: false,
   });
