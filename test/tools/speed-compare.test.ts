@@ -250,6 +250,17 @@ test("identical builds pass on a pull request however high the runner's memory s
     expect(decide(base, NOISE_DELTA_MB).failures).toEqual([]);
 }, 1000);
 
+test("85.1 MB against an 84 MB base on main warns and passes", () => {
+  const { failures, warnings } = decide(84, 1.1, {
+    current: 85.1,
+    pullRequest: false,
+  });
+  expect(failures).toEqual([]);
+  expect(warnings).toEqual([
+    "issue show peak 85.1 MB is over the 85 MB limit on linux",
+  ]);
+}, 1000);
+
 test.each([
   [3, 1],
   [2, 1],
