@@ -452,6 +452,44 @@ const output = (jobs: CiJob[], run_attempt = 1) =>
     ciWorkflow,
   ).split("\n");
 
+test("does not rerun a red draft with GitHub's rewritten Verify name", () => {
+  // Job names and conclusions from run 44939566981, attempt 1.
+  const jobs = [
+    named("Changes"),
+    named("Quick"),
+    ...[
+      "Speed (${{ matrix.os }}, Node 24)",
+      "Lint and format",
+      "PR title",
+      "Pack artifact",
+      "Verify Node 26 (${{ matrix.os }}, ${{ matrix.suite }}) ${{ matrix.shard }}",
+      "Comment guard (windows-latest, Node 24)",
+      "Verify (${{ matrix.os }}, Node ${{ matrix.node }}${{ (((matrix.suite != 'all') && format(', {0}', matrix.suite)) || '') }}${{ ((matrix.shard && format(', shard {0}', matrix.shard)) || '') }})",
+    ].map((name) => ({ ...skipped, name })),
+    gate,
+  ];
+  expect(output(jobs)).toContain("rerun=false");
+}, 1000);
+
+test("recognizes a skipped matrix whose name matches the literal template", () => {
+  const decision = decideRerun(
+    { ...run, jobs: [{ ...skipped, name: "Verify" }, gate] },
+    current,
+    ["Verify", "Verify"],
+  );
+  expect(decision.rerun).toBe(false);
+}, 1000);
+
+test("reruns everything when the only created Verify leg was skipped", () => {
+  const lines = output([
+    ...noVerify,
+    { ...skipped, name: "Verify (ubuntu-latest, Node 24, shard 1/2)" },
+    gate,
+  ]);
+  expect(lines).toContain("rerun=true");
+  expect(lines).toContain("scope=all");
+}, 1000);
+
 test("matches Quick and Structure guards as exact alternatives", () => {
   for (const name of ["Structure guards", "Quick", "Quick extra"]) {
     const jobs = complete.map((job) =>
