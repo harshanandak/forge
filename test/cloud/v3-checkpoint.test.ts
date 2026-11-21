@@ -1568,6 +1568,37 @@ test(
   timeout,
 );
 
+test(
+  "v3 restore refuses exact retries when staged bytes have changed",
+  () =>
+    withPortable(async (target, data) => {
+      const upload = portableUpload(target, data);
+      expect(await upload(0)).toMatchObject(restoreResult(0));
+      expect(await upload(1)).toMatchObject(restoreResult(1));
+      expect(await upload(2)).toMatchObject(restoreResult(2, true));
+
+      const overwrite = target.db.query(
+        "UPDATE cloud_v3_restore SET body=? WHERE id=?",
+      );
+      const directory = data.pages[0]!;
+      overwrite.run("[]", directory.id);
+      target.restart();
+      const directoryEffects = target.observeEffects();
+      expect(await upload(0)).toMatchObject(restoreRefusal);
+      expect(await upload(2)).toMatchObject(restoreRefusal);
+      expect(directoryEffects()).toEqual(noWrites);
+
+      overwrite.run(directory.body, directory.id);
+      overwrite.run("[]", "transcript:0");
+      target.restart();
+      const transcriptEffects = target.observeEffects();
+      expect(await upload(2)).toMatchObject(restoreRefusal);
+      expect(transcriptEffects()).toEqual(noWrites);
+      await unprovisioned(target);
+    }),
+  timeout,
+);
+
 for (const [fault, tamper] of [
   [
     "missing release",

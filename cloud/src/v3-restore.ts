@@ -123,22 +123,27 @@ export function restoreV3Page(
         )
       : [];
     const prior = staged[page];
+    check(prior || page === staged.length);
+    const first = staged[0];
+    const manifest = first
+      ? manifestOf(decode(first.manifest), first.pin)
+      : manifestOf(input.manifest, pin);
+    check(matches(body, manifest.members[page]!));
+    const verified = page === IDS.length - 1;
     if (prior) {
       check(prior.id === id && prior.request === request && prior.pin === pin);
+      const saved = db.get(
+        `SELECT body FROM ${STAGE} WHERE id=? AND length(CAST(body AS BLOB))<=${PAGE_BYTES}`,
+        [id],
+      );
+      check(saved?.body === body && prior.verified === Number(verified));
+      if (verified) verify(db, manifest, admit);
       return { page, verified: prior.verified === 1 };
     }
-    check(page === staged.length);
-    const first = staged[0];
-    const manifest =
-      page === 0
-        ? manifestOf(input.manifest, pin)
-        : manifestOf(decode(first?.manifest), first?.pin);
-    check(matches(body, manifest.members[page]!));
     if (page === 0)
       db.exec(
         `CREATE TABLE ${STAGE} (id TEXT PRIMARY KEY, body TEXT NOT NULL, request TEXT NOT NULL, manifest TEXT, pin TEXT, verified INTEGER NOT NULL) WITHOUT ROWID`,
       );
-    const verified = page === IDS.length - 1;
     db.run(`INSERT INTO ${STAGE} VALUES (?, ?, ?, ?, ?, ?)`, [
       id,
       body,
