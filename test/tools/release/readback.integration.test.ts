@@ -90,19 +90,20 @@ test("release source shell validates the run and emits its original SHA", () => 
       timeout: 2_000,
     });
   };
+  const rejects = (result: ReturnType<typeof source>, label: string) => {
+    const stderr = result.stderr.toString();
+    expect(result.exitCode, `${label}\n${stderr}`).not.toBe(0);
+  };
   const older = "a".repeat(40);
   for (const mode of ["true", "false"]) {
     const result = source(ci, mode, mode === "true" ? older : commit);
     expect(result.exitCode, result.stderr.toString()).toBe(0);
     expect(readFileSync(output, "utf8").trim()).toBe("source_sha=" + commit);
-    expect(source(ci, mode, commit, "invalid").exitCode).not.toBe(0);
+    rejects(source(ci, mode, commit, "invalid"), "invalid run ID");
     for (const field of Object.keys(ci))
-      expect(
-        source({ ...ci, [field]: "wrong" }, mode).exitCode,
-        field,
-      ).not.toBe(0);
+      rejects(source({ ...ci, [field]: "wrong" }, mode), field);
   }
-  expect(source(ci, "false", older).exitCode).not.toBe(0);
+  rejects(source(ci, "false", older), "different dispatch SHA");
 }, 15_000);
 
 test("inline readback sends unique nonces and rejects unverifiable HTTP 200s", () => {
