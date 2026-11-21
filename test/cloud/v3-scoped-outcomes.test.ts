@@ -503,6 +503,11 @@ test(
 
 const long = "w".repeat(501);
 const otherDevice = { ...holder, session: { id: "fixture", device: "other" } };
+const invalidSubject = {
+  code: "INPUT_INVALID",
+  message: "Lease subject must be well-formed UTF-16 text",
+  retry: "never",
+};
 const parity: readonly {
   readonly label: string;
   readonly step: Omit<Step, "requestId" | "expect" | "writes">;
@@ -521,7 +526,7 @@ const parity: readonly {
   },
   {
     label: "a lone-surrogate subject",
-    step: { route: "claim", change: { subject: "\ud800" } },
+    step: { route: "claim", change: { subject: "work-\ud800" } },
     expect: "INPUT_INVALID",
     writes: 1,
     other: "INPUT_INVALID",
@@ -549,13 +554,13 @@ const parity: readonly {
   {
     label: "a lone-surrogate subject",
     step: { route: "renew", change: { subject: "\ud800" } },
-    expect: "LEASE_NOT_HELD",
+    expect: "INPUT_INVALID",
     writes: 1,
   },
   {
     label: "a lone-surrogate subject",
     step: { route: "release", change: { subject: "\ud800" } },
-    expect: "LEASE_NOT_HELD",
+    expect: "INPUT_INVALID",
     writes: 1,
   },
   {
@@ -684,10 +689,67 @@ for (const row of parity) {
           : [{ ...step, owner: "owner-b", expect: row.other, writes: 1 }]),
       ]);
       expect(v3[1]!.body).toEqual(v3[0]!.body);
+      if (row.expect === "INPUT_INVALID") expect(v3[0]!.status).toBe(400);
       if (row.message !== undefined)
         expect(v3[0]!.body).toMatchObject({
           error: { message: row.message },
         });
+    },
+    timeout,
+  );
+}
+
+for (const store of ["v2", "v3"] as const) {
+  test.each(["renew", "release"] as const)(
+    `${store} %s refuses an ill-formed subject that collides under SQL replacement`,
+    async (route) => {
+      const f = guardFixture();
+      using db = f.db;
+      const v3 = store === "v3";
+      const malformed = "work-\ud800",
+        subject = "work-\ufffd";
+      const query = f.storage.sql.exec.bind(f.storage.sql);
+      f.storage.sql.exec = (sql, ...bindings) => {
+        const bound = bindings.map((b) => (b === malformed ? subject : b));
+        return query(sql, ...bound);
+      };
+      if (v3) expect((await f.send(probe, {})).status).toBe(200);
+      else f.restart(false);
+      const send = (op: Step["route"], subject: string) =>
+        f.send(
+          v3 ? `${probe}/${op}` : op,
+          leaseBody({ route: op, requestId: op, change: { subject } }),
+          headers("owner-a", E1),
+        );
+      const grant = await send("claim", subject);
+      expect(grant.status).toBe(200);
+      const state = db.query(
+        v3
+          ? "SELECT json_extract(body,'$.lease') AS lease, json_extract(body,'$.events') AS events FROM cloud_v3_commits ORDER BY sequence"
+          : `SELECT json_array(namespace,subject,generation,body) FROM state_leases
+           UNION ALL SELECT json_array(namespace,subject,generation,body) FROM state_checkpoint_leases
+           UNION ALL SELECT json_array(namespace,key,sequence,body) FROM state_events ORDER BY 1`,
+      );
+      const before = state.all();
+      const kv = [...f.values];
+      const fresh = f.observeEffects();
+      setSystemTime(T0 + MINUTE);
+      const refusal = await send(route, malformed);
+      expect(refusal).toEqual({
+        status: 400,
+        body: { ok: false, error: invalidSubject },
+      });
+      const receipt = { lease: null, events: "[]" };
+      expect(state.all()).toEqual(v3 ? [...before, receipt] : before);
+      expect([...f.values]).toEqual(kv);
+      const { sqlWriteAttempts, alarmWrites } = fresh();
+      expect(sqlWriteAttempts).toBe(v3 ? 1 : 2);
+      expect(alarmWrites).toBe(0);
+      if (v3) f.restart();
+      const replay = f.observeEffects();
+      expect(await send(route, malformed)).toEqual(refusal);
+      expect(replay()).toEqual(noWrites);
+      expect(await send("claim", subject)).toEqual(grant);
     },
     timeout,
   );
