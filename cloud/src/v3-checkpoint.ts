@@ -279,6 +279,7 @@ async function checkpoint(
   admit: AdmitLeaseRequest,
 ) {
   const root = readV3Root(db);
+  requireCheckpoint(root.activationDigest === undefined);
   if (db.get(TABLE_PROBE, [RETIRED])) collect(db, root.coveredHead);
   const source = canonicalJson(root);
   const seal = digestBytes(source);
