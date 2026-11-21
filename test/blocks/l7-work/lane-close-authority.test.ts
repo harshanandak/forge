@@ -36,7 +36,7 @@ const id = "work-1",
   merge = "b".repeat(40);
 const url = "https://github.com/example/repo/pull/1";
 const namespace = "forge/work";
-async function fixture(seedLink = true) {
+async function fixture(seedLink = true, pullUrl = url) {
   const opened = await createSqliteStore(tmpdir()).open({
     path: ":memory:",
     readOnly: false,
@@ -74,7 +74,7 @@ async function fixture(seedLink = true) {
     owner.put(
       namespace,
       `link:${id}:1`,
-      { id, relation: "delivers", url },
+      { id, relation: "delivers", url: pullUrl },
       holder.actor,
       { expectRevision: 0 },
     );
@@ -118,6 +118,8 @@ async function fixture(seedLink = true) {
     retained: "",
     ancestor: true,
     prBase: "main",
+    prState: "MERGED",
+    checkPages: [] as unknown[],
     mergeBase: "match",
     shallow: false,
     calls: [] as string[][],
@@ -211,16 +213,20 @@ async function fixture(seedLink = true) {
           flags.afterFetch?.();
         }
         if (args[0] === "pr") {
-          if (args[2] === url) flags.duringReceiptCheck?.();
+          if (args[2] === pullUrl) flags.duringReceiptCheck?.();
           stdout = JSON.stringify({
-            state: "MERGED",
+            state: flags.prState,
             baseRefName: flags.prBase,
+            baseRefOid: merge,
+            changedFiles: 1,
+            mergeStateStatus: "UNKNOWN",
             headRefName: flags.prBranch || lane.branch,
             headRefOid: head,
             mergeCommit: { oid: merge },
-            url,
+            url: pullUrl,
           });
-        } else if (args[0] === "log") stdout = flags.retained;
+        } else if (args[0] === "api") stdout = JSON.stringify(flags.checkPages);
+        else if (args[0] === "log") stdout = flags.retained;
         else if (args[0] === "worktree" && args[1] === "list")
           stdout =
             "worktree /project\0branch refs/heads/main\0\0" +
@@ -283,6 +289,7 @@ async function fixture(seedLink = true) {
           stdout,
           exitCode,
           stderr,
+          signal: null,
           timedOut: false,
           truncated: false,
         });
@@ -861,6 +868,178 @@ const snapshot = (f: Awaited<ReturnType<typeof fixture>>) =>
   });
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
+const hostedInput = { hostedEvidence: true, receipt: undefined };
+const hostedUrl = "https://github.com/harshanandak/forge/pull/1";
+const ciGate = (databaseId = 17) => ({
+  __typename: "CheckRun",
+  databaseId,
+  name: "CI Gate",
+  status: "COMPLETED",
+  conclusion: "SUCCESS",
+  isRequired: true,
+  checkSuite: {
+    app: { slug: "github-actions" },
+    commit: { oid: head },
+    repository: { nameWithOwner: "harshanandak/forge" },
+  },
+});
+function checkPage(nodes: unknown[], totalCount = nodes.length, oid = head) {
+  return {
+    data: {
+      repository: {
+        object: {
+          oid,
+          statusCheckRollup: {
+            contexts: {
+              totalCount,
+              pageInfo: { hasNextPage: false, endCursor: null },
+              nodes,
+            },
+          },
+        },
+      },
+    },
+  };
+}
+const hostedRefusals: [string, string, (f: Fixture) => void][] = [
+  [
+    "stale lane head",
+    "HOSTED_EVIDENCE_HEAD_MISMATCH",
+    (f) => {
+      f.flags.localHead = "c".repeat(40);
+    },
+  ],
+  ...["OPEN", "CLOSED"].map((state): [string, string, (f: Fixture) => void] => [
+    state,
+    "HOSTED_EVIDENCE_NOT_MERGED",
+    (f) => {
+      f.flags.prState = state;
+    },
+  ]),
+  ...(
+    [
+      ["missing CI Gate", checkPage([])],
+      ["failed CI Gate", checkPage([{ ...ciGate(), conclusion: "FAILURE" }])],
+      [
+        "a second CI Gate still running",
+        checkPage([
+          ciGate(),
+          { ...ciGate(18), status: "IN_PROGRESS", conclusion: null },
+        ]),
+      ],
+      [
+        "another app",
+        checkPage([
+          {
+            ...ciGate(),
+            checkSuite: { ...ciGate().checkSuite, app: { slug: "other-app" } },
+          },
+        ]),
+      ],
+      [
+        "another repository",
+        checkPage([
+          {
+            ...ciGate(),
+            checkSuite: {
+              ...ciGate().checkSuite,
+              repository: { nameWithOwner: "fork/forge" },
+            },
+          },
+        ]),
+      ],
+      [
+        "another check suite head",
+        checkPage([
+          {
+            ...ciGate(),
+            checkSuite: { ...ciGate().checkSuite, commit: { oid: merge } },
+          },
+        ]),
+      ],
+      ["another queried head", checkPage([ciGate()], 1, merge)],
+      [
+        "a same-name status beside the real run",
+        checkPage([
+          ciGate(),
+          {
+            __typename: "StatusContext",
+            context: "CI Gate",
+            state: "SUCCESS",
+            isRequired: true,
+          },
+        ]),
+      ],
+      ["an incomplete page", checkPage([ciGate()], 2)],
+    ] as const
+  ).map(([name, page]): [string, string, (f: Fixture) => void] => [
+    name,
+    "HOSTED_EVIDENCE_UNVERIFIED",
+    (f) => {
+      f.flags.checkPages = [page];
+    },
+  ]),
+];
+
+for (const [name, code, setup] of hostedRefusals) {
+  test(`hosted lane close refuses ${name} with ${code} before changing the lane`, async () => {
+    const f = await fixture(false, hostedUrl);
+    try {
+      f.flags.checkPages = [checkPage([ciGate()])];
+      setup(f);
+      const before = snapshot(f);
+      const error = await refusal(() => f.close(hostedInput));
+      expect(error.code).toBe(code);
+      expect(snapshot(f)).toBe(before);
+      expect(f.flags.calls.some((args) => args.includes("--ff-only"))).toBe(
+        false,
+      );
+      if (code === "HOSTED_EVIDENCE_HEAD_MISMATCH") {
+        expect(error.observed?.next).toEqual([
+          ["git", "-C", "/lane", "fetch", "origin", "pull/1/head"],
+          ["git", "-C", "/lane", "merge", "--ff-only", head],
+          ["forge", "lane", "close", id, "--pr", "1", "--hosted-evidence"],
+        ]);
+      }
+    } finally {
+      await f.dispose();
+    }
+  }, 30_000);
+}
+
+test("hosted lane close accepts two successful runs and resumes from the saved evidence after a rerun", async () => {
+  const f = await fixture(false, hostedUrl);
+  const proof = `github-actions:check-run:17:${head}:success`;
+  try {
+    f.flags.checkPages = [checkPage([ciGate(), ciGate(18)])];
+    f.flags.failComment = true;
+    await expect(f.close(hostedInput)).rejects.toThrow(
+      "injected landing comment failure",
+    );
+    expect(f.state.get(`issue:${id}`)?.value).toMatchObject({
+      status: "closed",
+      receipt: proof,
+    });
+    expect(f.state.get(`landing:${id}:1`)?.value).toMatchObject({
+      receipt: proof,
+    });
+    f.flags.checkPages = [
+      checkPage([{ ...ciGate(19), conclusion: "FAILURE" }]),
+    ];
+    f.flags.calls.length = 0;
+    expect(await f.close(hostedInput)).toMatchObject({
+      status: "closed",
+      removed: true,
+    });
+    expect(f.flags.calls.some((args) => args[0] === "api")).toBe(false);
+    const comment = f.comments()[0]?.value as { body: string } | undefined;
+    expect(comment?.body).toContain(`Hosted CI evidence: ${proof}`);
+    expect(f.files.get("forge-lanes.json")).not.toContain(id);
+  } finally {
+    await f.dispose();
+  }
+}, 30_000);
+
 const refusals: [string, string, (f: Fixture) => void][] = [
   [
     "a PR merged into a branch other than main",
