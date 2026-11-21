@@ -27,8 +27,8 @@ import { authorityFault, isDigest, isNat } from "./v3-authority.ts";
 import { TABLE_PROBE } from "./store.ts";
 
 const ROOT = "cloud_v3_root";
-const PAGES = "cloud_v3_pages";
-const COMMITS = "cloud_v3_commits";
+export const PAGES = "cloud_v3_pages";
+export const COMMITS = "cloud_v3_commits";
 const COMMIT_FORMAT = "forge-cloud-commit/3";
 const MiB = 1024 * 1024;
 const MANIFEST_BYTES = 128 * 1024;
@@ -39,7 +39,7 @@ const TAIL_ROWS = 1024;
 const TAIL_BYTES = 16 * MiB;
 const ROOT_FORMAT = "forge-cloud-root/3";
 const KINDS = ["directory", "snapshot", "transcript"];
-const COLLECTIONS = ["lease", "outcome", "record", "witness"] as const;
+export const COLLECTIONS = ["lease", "outcome", "record", "witness"] as const;
 const SYNTHETIC_KEYS = ["changes", "events", "operation", "time"];
 const FRAME_KEYS =
   "changes,events,format,lease,operation,outcome,sequence,time,witness".split(
