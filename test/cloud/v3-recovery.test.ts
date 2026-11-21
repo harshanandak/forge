@@ -736,12 +736,14 @@ test(
     const f = fixture();
     try {
       expect((await f.send(probe, {})).status).toBe(200);
-      expect(
-        await commit(f, {
-          ...put,
-          changes: [{ key: "padding", value: "é".repeat(32 * 1024) }],
-        }),
-      ).toMatchObject({ status: 200 });
+      for (let i = 0; i < 16; i++) {
+        expect(
+          await commit(f, {
+            ...put,
+            changes: [{ key: `padding-${i}`, value: "é".repeat(2048) }],
+          }),
+        ).toMatchObject({ status: 200 });
+      }
       const acquired = await claim(f, "owner-a");
       expect(acquired).toMatchObject({ status: 200 });
       const renewedAt = T0 + HOUR / 2;
