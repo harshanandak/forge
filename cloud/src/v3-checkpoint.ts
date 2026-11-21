@@ -51,7 +51,7 @@ function parse(text: string): unknown {
   }
 }
 
-function inventory(
+export function inventory(
   image: V3Image,
   pages: ReadonlyMap<string, Buffer>,
   collections: readonly (typeof COLLECTIONS)[number][] = COLLECTIONS,
@@ -192,7 +192,7 @@ function roster(
   };
 }
 
-function reconcile(
+export function reconcile(
   pages: ReadonlyMap<string, string>,
   expected: readonly Item[],
   transcript: string,
@@ -219,6 +219,13 @@ function reconcile(
     return { ...entry, ...metadata };
   });
   requireCheckpoint(offset === bytes.length && canonicalJson(entries) === body);
+  return digestValue(
+    expected.map(([name, key, value, revision]) => [
+      name,
+      key,
+      entryDigest(value === null ? null : digestBytes(value), revision),
+    ]),
+  );
 }
 
 function discardStage(db: SqlDatabase) {
@@ -340,15 +347,9 @@ async function checkpoint(
       staged?.source === seal && staged.cut === cut && staged.cutoff === cutoff,
     );
     const readback = storedPages(db, STAGED);
-    reconcile(readback, expected, transcript);
+    const projectionDigest = reconcile(readback, expected, transcript);
     const verified = roster(readback, expected, cut);
     requireCheckpoint(canonicalJson(verified) === staged.proposal);
-    const inventoryDigests = expected.map(([name, key, body, revision]) => [
-      name,
-      key,
-      entryDigest(body === null ? null : digestBytes(body), revision),
-    ]);
-    const projectionDigest = digestValue(inventoryDigests);
     const manifest = canonicalJson({
       ...root,
       ...verified,

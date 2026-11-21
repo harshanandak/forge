@@ -60,11 +60,17 @@ function fingerprintTied(
   }
 }
 
-function outcomeFault(outcome: unknown): string | undefined {
+function outcomeFault(outcome: unknown, portable = false): string | undefined {
   if (!isObject(outcome) || !isObject(outcome.scope)) return "outcome shape";
-  const { scope, result } = outcome;
+  const { scope, result, resultDigest } = outcome;
+  const archived = portable && outcome.status !== "ok";
+  const keys = archived
+    ? "fingerprint,id,resultDigest,retryUntil,scope,status"
+    : result === undefined
+      ? OUTCOME_KEYS
+      : REFUSAL_KEYS;
   if (
-    keysOf(outcome) !== (result === undefined ? OUTCOME_KEYS : REFUSAL_KEYS) ||
+    keysOf(outcome) !== keys ||
     typeof outcome.id !== "string" ||
     outcome.id.length === 0 ||
     typeof outcome.fingerprint !== "string" ||
@@ -79,7 +85,12 @@ function outcomeFault(outcome: unknown): string | undefined {
     !isDigest(scope.principal)
   )
     return "outcome scope";
-  const status = result === undefined ? "ok" : refusalCode(result);
+  const status =
+    archived && isDigest(resultDigest)
+      ? outcome.status
+      : result === undefined
+        ? "ok"
+        : refusalCode(result);
   return status !== undefined && outcome.status === status
     ? undefined
     : "outcome status";
@@ -126,12 +137,10 @@ export function sealedAuthorityValid(
   );
 }
 
-export function authorityFault({
-  operation,
-  lease,
-  outcome,
-  witness,
-}: Readonly<Record<string, unknown>>): string | undefined {
+export function authorityFault(
+  { operation, lease, outcome, witness }: Readonly<Record<string, unknown>>,
+  portable = false,
+): string | undefined {
   if (lease !== undefined && !validLease(lease)) return "lease";
   if (
     isObject(lease) &&
@@ -139,7 +148,7 @@ export function authorityFault({
   )
     return "lease release marker";
   const outcomeError =
-    outcome === undefined ? undefined : outcomeFault(outcome);
+    outcome === undefined ? undefined : outcomeFault(outcome, portable);
   if (outcomeError !== undefined) return outcomeError;
   if ((outcome !== undefined) !== OPERATIONS.includes(String(operation)))
     return "outcome operation";

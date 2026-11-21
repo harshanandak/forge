@@ -339,19 +339,51 @@ function directoryEntry(entry: unknown, byId: ReadonlyMap<string, Page>) {
 
 interface Verification {
   admit: AdmitLeaseRequest;
-  pages: ReadonlyMap<string, Buffer>;
-  sealed: (image: V3Image) => void;
+  pages?: ReadonlyMap<string, Buffer>;
+  sealed?: (image: V3Image) => void;
+  transcript?: string;
+}
+
+function portableRows(text: string) {
+  const frames = parse(text);
+  if (
+    !Array.isArray(frames) ||
+    frames.length > TAIL_ROWS ||
+    storedCanonical(frames) !== text
+  )
+    throw unavailable();
+  return frames.map((frame: unknown, index) => {
+    if (!isObject(frame) || frame.operation === "fixture.note")
+      throw unavailable();
+    const value =
+      Object.keys(frame).join() === "sequence"
+        ? {
+            ...frame,
+            format: COMMIT_FORMAT,
+            operation: "fixture.note",
+            time: 0,
+            events: [],
+          }
+        : frame;
+    return { sequence: index + 1, body: storedCanonical(value) };
+  });
 }
 
 export function recoverV3(
   db: SqlDatabase,
   verification?: Verification,
 ): V3Image {
-  const root = readV3Root(db);
+  const transcript = verification?.transcript;
+  const portable = transcript !== undefined;
+  const root = portable
+    ? { ...genesis("portable", "portable"), pages: [] }
+    : readV3Root(db);
   const byId = new Map(root.pages.map((page) => [page.id, page]));
-  const headers = db.all(
-    `SELECT id, length(CAST(body AS BLOB)) AS bytes FROM ${PAGES} LIMIT ${ROSTER_PAGES + 1}`,
-  );
+  const headers = portable
+    ? []
+    : db.all(
+        `SELECT id, length(CAST(body AS BLOB)) AS bytes FROM ${PAGES} LIMIT ${ROSTER_PAGES + 1}`,
+      );
   if (
     headers.length !== byId.size ||
     headers.some(({ id, bytes }) => byId.get(String(id))?.bytes !== bytes)
@@ -373,11 +405,13 @@ export function recoverV3(
     staged: [],
   };
   const bodies = new Map(
-    db
-      .all(
-        `SELECT id, body FROM ${PAGES} WHERE id>='directory:' AND id<'directory;' LIMIT ${DIRECTORY_PAGES + 1}`,
-      )
-      .map(({ id, body }) => [id, body]),
+    portable
+      ? []
+      : db
+          .all(
+            `SELECT id, body FROM ${PAGES} WHERE id>='directory:' AND id<'directory;' LIMIT ${DIRECTORY_PAGES + 1}`,
+          )
+          .map(({ id, body }) => [id, body]),
   );
   let prior = ["", ""];
   for (const page of root.pages) {
@@ -409,16 +443,19 @@ export function recoverV3(
         image.recordFloor = Math.max(image.recordFloor, recordNumber(key));
     }
   }
-  verification?.sealed(image);
-  const rows = db.all(
-    `SELECT sequence, CASE WHEN sum(length(CAST(body AS BLOB))) OVER (ORDER BY sequence)<=${TAIL_BYTES} THEN body END AS body FROM (SELECT sequence, body FROM ${COMMITS} WHERE sequence>? ORDER BY sequence LIMIT ${TAIL_ROWS + 1}) ORDER BY sequence`,
-    [root.coveredHead],
-  );
+  verification?.sealed?.(image);
+  const rows = portable
+    ? portableRows(transcript)
+    : db.all(
+        `SELECT sequence, CASE WHEN sum(length(CAST(body AS BLOB))) OVER (ORDER BY sequence)<=${TAIL_BYTES} THEN body END AS body FROM (SELECT sequence, body FROM ${COMMITS} WHERE sequence>? ORDER BY sequence LIMIT ${TAIL_ROWS + 1}) ORDER BY sequence`,
+        [root.coveredHead],
+      );
   if (rows.length > TAIL_ROWS) throw unavailable();
   const verify =
     verification &&
     ((frame: Frame) => verifyLeaseFrame(db, image, frame, verification));
-  for (const { sequence, body } of rows) foldRow(image, sequence, body, verify);
+  for (const { sequence, body } of rows)
+    foldRow(image, sequence, body, verify, portable);
   return image;
 }
 
@@ -427,12 +464,13 @@ function foldRow(
   sequence: unknown,
   body: unknown,
   verify?: (frame: Frame) => Frame,
+  portable = false,
 ) {
   const frame = typeof body === "string" ? parse(body) : undefined;
   if (
     sequence !== image.head + 1 ||
     storedCanonical(frame) !== body ||
-    !validFrame(frame) ||
+    !validFrame(frame, portable) ||
     frame.format !== COMMIT_FORMAT ||
     frame.sequence !== sequence
   )
@@ -457,10 +495,22 @@ export function publishV3(image: V3Image) {
   image.stale = false;
 }
 
+export function requireFreshV3(
+  db: SqlDatabase,
+  legacyMarker: boolean,
+  restoring = false,
+) {
+  if (
+    legacyMarker ||
+    db.get(legacyTables) ||
+    (restoring && tables.some((table) => hasTable(db, table)))
+  )
+    throw fail("INPUT_CONFLICT", "Cloud v3 requires a fresh project");
+}
+
 export function provisionV3(db: SqlDatabase, legacyMarker: boolean) {
   return db.transaction(() => {
-    if (legacyMarker || db.get(legacyTables))
-      throw fail("INPUT_CONFLICT", "Cloud v3 requires a fresh project");
+    requireFreshV3(db, legacyMarker);
     if (!tables.some((table) => hasTable(db, table))) {
       for (const [table, definition] of Object.entries(schema))
         db.exec(`CREATE TABLE ${table} ${definition}`);
@@ -618,6 +668,7 @@ export interface Frame {
     readonly fingerprint: string;
     readonly status: string;
     readonly result?: ForgeError;
+    readonly resultDigest?: string;
     readonly retryUntil: number;
   };
   readonly witness?: {
@@ -650,8 +701,11 @@ function validShape(frame: unknown): frame is Frame & Record<string, unknown> {
   );
 }
 
-const validFrame = (frame: unknown): frame is Frame & Record<string, unknown> =>
-  validShape(frame) && authorityFault(frame) === undefined;
+const validFrame = (
+  frame: unknown,
+  portable: boolean,
+): frame is Frame & Record<string, unknown> =>
+  validShape(frame) && authorityFault(frame, portable) === undefined;
 
 const validAppendFrame = (frame: unknown) =>
   validShape(frame) && withinDepth(frame);
@@ -774,13 +828,16 @@ function verifyLeaseFrame(
     lease = transition(command, current, time);
     checkLeaseRecord(lease);
   } catch (error) {
+    const { resultDigest, ...retained } = outcome;
     if (
       !recordable(error) ||
       outcome.status !== error.error.code ||
-      storedCanonical(outcome.result) !== storedCanonical(error.error)
+      (resultDigest === undefined
+        ? storedCanonical(outcome.result) !== storedCanonical(error.error)
+        : resultDigest !== digestValue(error.error))
     )
       throw unavailable();
-    return { ...frame, outcome: { ...outcome, result: error.error } };
+    return { ...frame, outcome: { ...retained, result: error.error } };
   }
   if (
     outcome.status !== "ok" ||
