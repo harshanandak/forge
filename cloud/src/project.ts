@@ -515,7 +515,6 @@ export class Project {
             const image = this.#image(db);
             requireGenesisForLease(image);
             const value = leaseV3(db, image, command, expiresAt);
-            publishV3(image);
             return Response.json({ ok: true, value });
           }
           const input = object(body);

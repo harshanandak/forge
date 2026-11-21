@@ -459,11 +459,11 @@ function append(db: SqlDatabase, image: V3Image, batch: readonly unknown[]) {
       (sum, body) => sum + Buffer.byteLength(body),
       image.tailBytes,
     );
-    if (
-      head !== image.head ||
-      head - coveredHead + batch.length > TAIL_ROWS ||
-      bytes > TAIL_BYTES
-    )
+    if (head !== image.head) {
+      image.stale = true;
+      throw unavailable();
+    }
+    if (head - coveredHead + batch.length > TAIL_ROWS || bytes > TAIL_BYTES)
       throw unavailable();
     for (const body of bodies) {
       const fault = authorityFault(JSON.parse(body) as Record<string, unknown>);
@@ -678,6 +678,7 @@ export function leaseV3(
       return { lease };
     },
   );
+  publishV3(image);
   if ("refusal" in result) throw result.refusal;
   return result.lease;
 }

@@ -493,7 +493,7 @@ for (const at of ["tail", "directory"] as const) {
 }
 
 test(
-  "each successful write publishes its frames to the cached image and the next read does no recovery, a recorded refusal makes the next read recover, and every image equals a cold recovery",
+  "each committed write, a recorded refusal included, publishes its frames to the cached image, the next read does no recovery, and every image equals a cold recovery",
   async () => {
     const f = fixture();
     try {
@@ -509,13 +509,34 @@ test(
         expect((await write()).status).toBe(status);
         f.reads.rows = 0;
         const warm = await f.send(probe);
-        expect(f.reads.rows > 0).toBe(status !== 200);
-        f.reads.rows = 0;
-        expect(await f.send(probe)).toEqual(warm);
         expect(f.reads.rows).toBe(0);
         f.restart();
         expect(await f.send(probe)).toEqual(warm);
       }
+    } finally {
+      f.db.close();
+    }
+  },
+  timeout,
+);
+
+test(
+  "a write refused because storage moved past the cached head marks the image stale, and the next read recovers the stored head",
+  async () => {
+    const f = fixture();
+    try {
+      expect((await f.send(probe, {})).status).toBe(200);
+      expect(await commit(f, put)).toMatchObject({ status: 200 });
+      tail(f.db, 1, 1, () => 256);
+      const stored = f.snapshot();
+      expect(await commit(f, put)).toMatchObject(unavailable);
+      expect(f.snapshot()).toEqual(stored);
+      f.reads.rows = 0;
+      const warm = await f.send(probe);
+      expect(f.reads.rows).toBeGreaterThan(0);
+      expect(image(warm)).toMatchObject({ head: 2, eventWatermark: 1 });
+      f.restart();
+      expect(await f.send(probe)).toEqual(warm);
     } finally {
       f.db.close();
     }

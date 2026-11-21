@@ -6,7 +6,7 @@ import {
 import { checkLeaseRecord } from "../../src/core/state/index.ts";
 import type { ForgeError, LeaseRecord } from "../../src/generated/types.ts";
 import { validateForgeError } from "../../src/generated/validators.ts";
-import { NAMESPACE } from "./lease-command.ts";
+import { NAMESPACE, REFUSALS } from "./lease-command.ts";
 
 export const isDigest = (value: unknown): value is string =>
   typeof value === "string" && /^sha256:[0-9a-f]{64}$/.test(value);
@@ -19,13 +19,6 @@ const OUTCOME_KEYS = "fingerprint,id,retryUntil,scope,status";
 const REFUSAL_KEYS = "fingerprint,id,result,retryUntil,scope,status";
 const WITNESS_KEYS = "digest,generation,id,namespace,subject";
 const OPERATIONS = ["lease.claim", "lease.renew", "lease.release"];
-const REFUSALS = [
-  "INPUT_INVALID",
-  "LEASE_EXPIRED",
-  "LEASE_HELD",
-  "LEASE_NOT_HELD",
-  "LEASE_STALE",
-];
 
 function validLease(lease: unknown): boolean {
   try {
@@ -107,10 +100,16 @@ export function authorityFault({
   const outcomeError =
     outcome === undefined ? undefined : outcomeFault(outcome);
   if (outcomeError !== undefined) return outcomeError;
+  if ((outcome !== undefined) !== OPERATIONS.includes(String(operation)))
+    return "outcome operation";
   if (isObject(outcome)) {
-    if (!OPERATIONS.includes(String(operation))) return "outcome operation";
     if (!fingerprintTied(operation, lease, outcome))
       return "outcome fingerprint";
+    if (
+      !["ok", "INPUT_INVALID"].includes(String(outcome.status)) &&
+      (outcome.status === "LEASE_HELD") !== (operation === "lease.claim")
+    )
+      return "outcome route";
   }
   if ((lease !== undefined) !== (isObject(outcome) && outcome.status === "ok"))
     return "lease and ok outcome pairing";

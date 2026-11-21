@@ -302,13 +302,50 @@ test(
         "lease and ok outcome pairing",
       ],
       [
-        "a lease without an outcome",
-        at("outcome", DELETE)(claim),
+        "a lease without an outcome on a non-lease operation",
+        at("operation", "fixture.put")(at("outcome", DELETE)(claim)),
         "lease and ok outcome pairing",
       ],
       [
-        "a refusal carrying the claim's lease",
-        at("lease", claim.lease)(refusal),
+        "a claim without its outcome",
+        at("outcome", DELETE)(claim),
+        "outcome operation",
+      ],
+      [
+        "a refused claim without its outcome",
+        at("outcome", DELETE)(refusal),
+        "outcome operation",
+      ],
+      [
+        "a claim refused with a renew or release code",
+        at(
+          "outcome.status",
+          "LEASE_STALE",
+        )(
+          at("outcome.result", {
+            ...((refusal.outcome as Json).result as Json),
+            code: "LEASE_STALE",
+          })(refusal),
+        ),
+        "outcome route",
+      ],
+      [
+        "a renew refused with the claim code",
+        at("outcome", {
+          ...(renew.outcome as Json),
+          status: "LEASE_HELD",
+          result: (refusal.outcome as Json).result,
+        })(at("lease", DELETE)(renew)),
+        "outcome route",
+      ],
+      [
+        "a refusal carrying a lease its fingerprint names",
+        at("lease", {
+          ...(claim.lease as Json),
+          holder: (
+            JSON.parse(String((refusal.outcome as Json).fingerprint)) as Json
+          ).holder,
+        })(refusal),
         "lease and ok outcome pairing",
       ],
       [
