@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { parse } from "yaml";
 import { version } from "../../../src/version.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "forge-release-readback-"));
@@ -45,6 +46,116 @@ beforeAll(() => {
   mkdirSync(join(dir, "bin"));
 });
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+const release = parse(
+  readFileSync(
+    new URL("../../../.github/workflows/release.yml", import.meta.url),
+    "utf8",
+  ),
+) as { jobs: Record<string, { steps: { run?: string }[] }> };
+
+test("release source shell validates the run and emits its original SHA", () => {
+  const step = release.jobs.verify!.steps.find((s) =>
+    s.run?.includes("actions/runs/"),
+  )!;
+  const bash =
+    process.platform === "win32"
+      ? join(process.env.ProgramFiles ?? "C:/Program Files", "Git/bin/bash.exe")
+      : "bash";
+  const repo = "harshanandak/forge";
+  const ci = {
+    repository: { full_name: repo },
+    head_repository: { full_name: repo },
+    path: ".github/workflows/ci.yml",
+    event: "push",
+    head_branch: "main",
+    head_sha: commit,
+    status: "completed",
+    conclusion: "success",
+  };
+  const source = (run: unknown, mode: string, sha = commit, id = "12345") => {
+    const curl = `curl() { printf '%s\\n' '${JSON.stringify(run)}'; }\n`;
+    return Bun.spawnSync([bash, "-eo", "pipefail"], {
+      stdin: Buffer.from(curl + step.run!),
+      env: {
+        ...process.env,
+        RUN_ID: id,
+        READBACK_ONLY: mode,
+        GITHUB_SHA: sha,
+        GITHUB_REPOSITORY: repo,
+        GITHUB_OUTPUT: "/dev/stdout",
+      },
+      timeout: 2_000,
+    });
+  };
+  const older = "a".repeat(40);
+  for (const mode of ["true", "false"]) {
+    const result = source(ci, mode, mode === "true" ? older : commit);
+    expect(result.exitCode, "validated run must succeed").toBe(0);
+    expect(result.stdout.toString().trim()).toBe("source_sha=" + commit);
+    expect(source(ci, mode, commit, "invalid").exitCode).not.toBe(0);
+    for (const field of Object.keys(ci))
+      expect(
+        source({ ...ci, [field]: "wrong" }, mode).exitCode,
+        field,
+      ).not.toBe(0);
+  }
+  expect(source(ci, "false", older).exitCode).not.toBe(0);
+}, 15_000);
+
+test("inline readback sends unique nonces and rejects unverifiable HTTP 200s", () => {
+  const step = release.jobs.readback!.steps.find((s) =>
+    s.run?.includes("registry source:"),
+  )!;
+  const script = step.run!.split("<<'JS'\n")[1]!.split("\nJS")[0]!;
+  const transport = `
+    import assert from 'node:assert/strict';
+    import { hash as fixtureHash } from 'node:crypto';
+    const seen = new Set();
+    globalThis.fetch = async (url, options) => {
+      const parsed = new URL(url);
+      const nonce = parsed.searchParams.get('nocache');
+      assert.ok(nonce && !seen.has(nonce), 'every registry request needs a unique nonce');
+      seen.add(nonce);
+      assert.equal(new Headers(options.headers).get('cache-control'), 'no-cache');
+      assert.equal(options.cache, 'no-store');
+      assert.equal(options.redirect, 'error');
+      assert.ok(options.signal instanceof AbortSignal && !options.signal.aborted);
+      const headers = new Headers();
+      if (cacheStatus !== '-') headers.set('CF-Cache-Status', cacheStatus);
+      if (age !== '-') headers.set('Age', age);
+      return Response.json(parsed.pathname.endsWith('/dist-tags') ? { next: process.env.VERSION } : {
+        name: 'forge-workflow', version: process.env.VERSION,
+        dist: { integrity: 'sha512-' + fixtureHash('sha512', 'reviewed archive', 'base64'),
+                attestations: { provenance: { predicateType: 'fixture' } } },
+      }, { headers });
+    };
+  `;
+  for (const [cache, age, pass] of [
+    ["DYNAMIC", "-", true],
+    ["MISS", "0", true],
+    ["BYPASS", "-", true],
+    ["HIT", "-", false],
+    ["STALE", "-", false],
+    ["UPDATING", "-", false],
+    ["DYNAMIC", "2", false],
+    ["DYNAMIC", "bad", false],
+    ["DYNAMIC", "", false],
+    ["-", "-", false],
+    ["OTHER", "-", false],
+  ] as const) {
+    const headers = JSON.stringify([cache, age]);
+    const input = "const [cacheStatus, age] = " + headers + ";\n";
+    const output = Bun.spawnSync([process.execPath, "run", "-"], {
+      stdin: Buffer.from(input + transport + script),
+      env: { ...process.env, VERSION: version, TARBALL: tarball },
+      timeout: 2_000,
+    });
+    const stderr = output.stderr.toString();
+    expect(output.exitCode === 0, stderr || headers).toBe(pass);
+    if (!pass) expect(stderr).toMatch(/cached|unproven registry response/);
+  }
+}, 15_000);
 
 function fixture() {
   const statement = {
@@ -111,8 +222,11 @@ function fixture() {
 type Fixture = ReturnType<typeof fixture>;
 const workflow = (f: Fixture) =>
   f.statement.predicate.buildDefinition.externalParameters.workflow;
-const rows: [string, (f: Fixture) => void][] = [
+const rows: [string, (f: Fixture) => void, string?][] = [
   ["accepted reviewed identity and workflow", () => {}],
+  ["accepted recovery of original CI commit", () => {}, commit],
+  ["wrong expected commit", () => {}, "c".repeat(40)],
+  ["empty expected commit", () => {}, ""],
   [
     "accepted certificate bundle",
     (f) => {
@@ -239,7 +353,7 @@ const rows: [string, (f: Fixture) => void][] = [
     },
   ],
 ];
-for (const [name, change] of rows)
+for (const [name, change, expectedCommit] of rows)
   test(`release readback: ${name}`, () => {
     const marker = join(dir, "executed");
     rmSync(marker, { force: true });
@@ -276,7 +390,10 @@ for (const [name, change] of rows)
         env: {
           ...process.env,
           VERSION: version,
-          GITHUB_SHA: commit,
+          GITHUB_SHA: name.startsWith("accepted recovery")
+            ? "c".repeat(40)
+            : commit,
+          EXPECTED_COMMIT: expectedCommit,
           CI_RUN: "12345",
           TARBALL: tarball,
         },
