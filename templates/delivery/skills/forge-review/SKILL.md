@@ -24,17 +24,20 @@ Each push: [checkpoint](../forge-build/pull-request.md#checkpoints) `review` SHA
 1. Check the source; bots can be wrong. Cite the line that shows it.
 2. Fix only P0, P1 findings on lines this PR changed, inside the slice's done boundary.
 3. Everything else (P2, P3, or outside the boundary) is filed, not fixed. Search open issues for the symptom, then comment on a match or `forge issue create --input '{"title":"...","kind":"task","labels":["review-deferred","p2"],"parent":"<epic>","body":"from <pr url> thread <id>"}'`.
-4. Batch and commit thread/CI fixes. Run `forge-build`'s Final-head proof section on that commit, then send one push wave.
+4. Commit thread and CI fixes together, run `forge-build`'s Final-head proof, then send one push wave.
 
 ## Reply and resolve every answered thread
 
-Read [thread-helpers.md](thread-helpers.md) before replying or resolving, including reply failures and null comment ids.
+Read [thread-helpers.md](thread-helpers.md) before replying or resolving.
 
 ## Red checks
 
+No in-run test or check retries, retry loops, or raised timeouts. Rerun a failed CI run at most once, only to classify the failure. A pass on rerun confirms a flake. Keep the check enabled and the fix open. Find or file one issue per signature (job, test, first error line). Comment there and increment its count on every repeat. Close only with a root-cause fix and deterministic regression test, or proof the named failure mechanism cannot happen.
+
 1. `gh pr checks <n>`, then `gh run view <run> --log-failed`.
-2. Red on base too (`gh run list --branch <base>`)? File or comment on the issue and label it. For a confirmed flake on base or head, Rerun up to 1 time: one fresh build with `gh run rerun <run> --failed`; another failure blocks handoff. Never fix an unrelated base bug in this PR.
-3. Red only here: fix it like a finding, in the same push wave.
+2. Classify only jobs that started in attempt one (`gh run rerun <run> --failed`). A second failure blocks handoff.
+3. Still red on base (`gh run list --branch <base>`)? File or comment on the issue and label it. Keep unrelated fixes out of this PR.
+4. Still red only here? Fix it in the same push wave.
 
 ## Round budget and handoff
 

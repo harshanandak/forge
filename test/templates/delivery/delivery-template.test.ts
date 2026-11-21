@@ -842,7 +842,9 @@ test("the delivery template renders all six skills: linted, at most 4 KB, values
     );
     expect(text["forge-review"]).toContain("At most 2 rounds");
     expect(text["forge-review"]).toContain("Fix only P0, P1 findings");
-    expect(text["forge-review"]).toContain("Rerun up to 1 time");
+    expect(text["forge-review"]).toContain(
+      "Rerun a failed CI run at most once, only to classify the failure.",
+    );
     // Companion scripts travel with the generated skill; commands use their installed paths.
     expect(text["forge-review"]).toContain("list-threads.mjs");
     expect(text["forge-review"]).toContain("reply-and-resolve.mjs");
@@ -1076,7 +1078,11 @@ const GUIDANCE = [
   ["review.rounds", "forge-review", "At most 2 rounds"],
   ["review.fix", "forge-review", "Fix only P0, P1 findings"],
   ["review.file", "forge-review", "Everything else (P2, P3"],
-  ["review.reruns", "forge-review", "Rerun up to 1 time"],
+  [
+    "review.reruns",
+    "forge-review",
+    "Rerun a failed CI run at most once, only to classify the failure.",
+  ],
   ["merge.by", "forge-land", "Merge by: agent"],
   ["merge.method", "forge-land", "gh pr merge <n> --squash"],
   [
