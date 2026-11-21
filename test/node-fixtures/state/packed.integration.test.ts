@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { optionalJourneyEnv } from "../../integration/journey-env.ts";
 import { packedConsumer } from "../../integration/packed-consumer.ts";
 import { assertCounterfactualResult } from "../../integration/counterfactual-result.ts";
 import { cleanupAttribution } from "../../tools/cleanup-attribution.ts";
@@ -63,7 +64,7 @@ async function complete(tasks: Promise<void>[]): Promise<void> {
 
 // Labelled integration: real package install and separate runtime processes, no developer checkout imports.
 test("integration: packed state journeys and targeted remove-the-fix checks", async () => {
-  const coverage = packedCoverage(process.env.STATE_NODE_LEG);
+  const coverage = packedCoverage(optionalJourneyEnv("STATE_NODE_LEG"));
   let started = performance.now();
   function phase(name: string) {
     console.log(
@@ -83,7 +84,9 @@ test("integration: packed state journeys and targeted remove-the-fix checks", as
         [
           node,
           ...(coverage.bun ? [process.execPath] : []),
-          ...(coverage.shard === undefined ? [process.env.STATE_NODE26] : []),
+          ...(coverage.shard === undefined
+            ? [optionalJourneyEnv("STATE_NODE26")]
+            : []),
         ].filter((value): value is string => Boolean(value)),
       ),
     ];
@@ -108,9 +111,12 @@ test("integration: packed state journeys and targeted remove-the-fix checks", as
         expect(report.binding).toBe(
           runtime === process.execPath ? "bun:sqlite" : "node:sqlite",
         );
-        if (runtime !== process.execPath && process.env.STATE_NODE_LEG)
+        if (
+          runtime !== process.execPath &&
+          optionalJourneyEnv("STATE_NODE_LEG")
+        )
           expect(report.runtime.split(".")[0]).toBe(
-            `v${process.env.STATE_NODE_LEG}`,
+            `v${optionalJourneyEnv("STATE_NODE_LEG")}`,
           );
       }),
     );

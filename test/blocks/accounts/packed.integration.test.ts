@@ -15,6 +15,10 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
+import {
+  journeyChildEnv,
+  optionalJourneyEnv,
+} from "../../integration/journey-env.ts";
 import { packedConsumer } from "../../integration/packed-consumer.ts";
 import { gitExecutable } from "../../../tools/git-executable.ts";
 import { gitFixtureDirectory } from "../../fixtures/git-resolution.ts";
@@ -50,7 +54,7 @@ function baseClone() {
   const config = join(dir, "gitconfig");
   writeFileSync(config, "");
   const env = Object.fromEntries(
-    Object.entries(process.env).filter(
+    Object.entries(journeyChildEnv()).filter(
       (entry): entry is [string, string] =>
         entry[1] !== undefined && !entry[0].toUpperCase().startsWith("GIT_"),
     ),
@@ -112,14 +116,22 @@ function setup() {
     TMPDIR: temp,
     TEMP: temp,
     TMP: temp,
-    PATH: bin + delimiter + (process.env.PATH ?? process.env.Path ?? ""),
+    PATH:
+      bin +
+      delimiter +
+      (optionalJourneyEnv("PATH") ?? optionalJourneyEnv("Path") ?? ""),
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_CONFIG_GLOBAL: join(home, ".gitconfig"),
     FORGE_DEVICE_ROOT: join(home, "device"),
     FORGE_SESSION: "accounts-fixture",
   };
-  for (const name of ["SystemRoot", "SYSTEMROOT", "PATHEXT", "COMSPEC"])
-    if (process.env[name]) env[name] = process.env[name]!;
+  for (const [name, value] of Object.entries({
+    SystemRoot: optionalJourneyEnv("SystemRoot"),
+    SYSTEMROOT: optionalJourneyEnv("SYSTEMROOT"),
+    PATHEXT: optionalJourneyEnv("PATHEXT"),
+    COMSPEC: optionalJourneyEnv("COMSPEC"),
+  }))
+    if (value) env[name] = value;
   // Git's own trace2 log lists every git process; a global setting makes each one append a start event.
   const gitTrace = join(home, "git-trace.txt");
   writeFileSync(

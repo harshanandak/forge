@@ -12,9 +12,13 @@ import {
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import {
+  journeyChildEnv,
+  optionalJourneyEnv,
+} from "../../integration/journey-env.ts";
 import { packedConsumer } from "../../integration/packed-consumer.ts";
 
-const consumer = process.env.FORGE_PACKED_CONSUMER
+const consumer = optionalJourneyEnv("FORGE_PACKED_CONSUMER")
   ? packedConsumer()
   : undefined;
 const repo = consumer
@@ -56,7 +60,10 @@ function fixture() {
       mcp: { expose: ["issue"] },
     }),
   );
-  const base: NodeJS.ProcessEnv = { ...process.env, FORGE_DEVICE_ROOT: device };
+  const base: NodeJS.ProcessEnv = {
+    ...journeyChildEnv(),
+    FORGE_DEVICE_ROOT: device,
+  };
   for (const key of [
     "FORGE_SESSION",
     "FORGE_DEVICE_ID",

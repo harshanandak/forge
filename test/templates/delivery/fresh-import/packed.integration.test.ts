@@ -19,6 +19,10 @@ import type {
   OperationDeclaration,
   ResultEnvelope,
 } from "../../../../src/generated/types.ts";
+import {
+  journeyChildEnv,
+  optionalJourneyEnv,
+} from "../../../integration/journey-env.ts";
 import { packedConsumer } from "../../../integration/packed-consumer.ts";
 import { powerShellArgs } from "../../../powershell.ts";
 
@@ -30,7 +34,10 @@ for (const shell of ["POSIX", ...(windows ? ["PowerShell 5.1"] : [])]) {
       packedConsumer(),
       "node_modules/forge-workflow/dist/bin/forge.js",
     );
-    const env = { ...process.env, FORGE_DEVICE_ROOT: join(root, "device") };
+    const env = {
+      ...journeyChildEnv(),
+      FORGE_DEVICE_ROOT: join(root, "device"),
+    };
     const cli = (args: string[], status = 0) => {
       const result = spawnSync("node", [bin, ...args], {
         cwd: root,
@@ -100,12 +107,12 @@ for (const shell of ["POSIX", ...(windows ? ["PowerShell 5.1"] : [])]) {
         shell === "POSIX"
           ? windows
             ? join(
-                process.env.ProgramFiles ?? "C:/Program Files",
+                optionalJourneyEnv("ProgramFiles") ?? "C:/Program Files",
                 "Git/bin/bash.exe",
               )
             : "bash"
           : join(
-              process.env.SystemRoot ?? "C:/Windows",
+              optionalJourneyEnv("SystemRoot") ?? "C:/Windows",
               "System32/WindowsPowerShell/v1.0/powershell.exe",
             );
       const script =

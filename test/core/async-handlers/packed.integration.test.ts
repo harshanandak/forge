@@ -21,6 +21,10 @@ import {
 } from "../../node-fixtures/state/counterfactuals.ts";
 import { asyncCounterfactuals } from "../../node-fixtures/async-handlers/counterfactuals.ts";
 import { runFixtures } from "../../integration/fixtures/run.ts";
+import {
+  journeyChildEnv,
+  optionalJourneyEnv,
+} from "../../integration/journey-env.ts";
 import { packedConsumer } from "../../integration/packed-consumer.ts";
 import { assertCounterfactualResult } from "../../integration/counterfactual-result.ts";
 const root = resolve(import.meta.dirname, "../../..");
@@ -53,7 +57,7 @@ test("installed async ABI: supervised cleanup, strict containment, service revoc
   try {
     const node = Bun.which("node");
     if (!node) throw Error("Node required");
-    const env = { ...process.env };
+    const env = journeyChildEnv();
     const path =
       Object.keys(env).find((key) => key.toLowerCase() === "path") ?? "PATH";
     env[path] = (env[path] ?? "")
@@ -108,8 +112,8 @@ test("installed async ABI: supervised cleanup, strict containment, service revoc
     const journey = join(privateCopy, "async-journey.mjs");
     const runtimes = [
       ...new Set(
-        [node, process.env.FORGE_NODE26].filter((value): value is string =>
-          Boolean(value),
+        [node, optionalJourneyEnv("FORGE_NODE26")].filter(
+          (value): value is string => Boolean(value),
         ),
       ),
     ];
@@ -127,7 +131,7 @@ test("installed async ABI: supervised cleanup, strict containment, service revoc
     phase("positives");
     for (const mutation of selectShard(
       asyncCounterfactuals(process.platform),
-      packedCoverage(process.env.STATE_NODE_LEG).shard,
+      packedCoverage(optionalJourneyEnv("STATE_NODE_LEG")).shard,
     )) {
       const file = join(privateCopy, "dist/src", mutation.file);
       const original = readFileSync(file, "utf8");

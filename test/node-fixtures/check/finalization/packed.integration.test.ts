@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
+import { journeyChildEnv } from "../../../integration/journey-env.ts";
 import { packedConsumer } from "../../../integration/packed-consumer.ts";
 
 test("packed unscoped slow finalization returns the durable receipt", () => {
@@ -13,7 +14,7 @@ test("packed unscoped slow finalization returns the durable receipt", () => {
     const consumer = packedConsumer();
     const installed = join(consumer, "node_modules/forge-workflow");
     const env: NodeJS.ProcessEnv = {
-      ...process.env,
+      ...journeyChildEnv(),
       FORGE_DEVICE_ROOT: join(work, "device"),
     };
     const pathKey =

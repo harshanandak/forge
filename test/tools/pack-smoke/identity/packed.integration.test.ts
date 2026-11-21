@@ -14,6 +14,11 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import {
+  journeyChildEnv,
+  optionalJourneyEnv,
+  requireJourneyEnv,
+} from "../../../integration/journey-env.ts";
 import { packedConsumer } from "../../../integration/packed-consumer.ts";
 import {
   assertInstalledBuildIdentity,
@@ -28,11 +33,13 @@ let digest: string,
   cli: { version: string; commit: string; dirty: boolean },
   nodeRoot: string;
 beforeAll(() => {
-  const packed = process.env.FORGE_PACKED_TARBALL;
-  if (!packed) throw new Error("packed smoke must provide its archive");
+  const packed = requireJourneyEnv(
+    "FORGE_PACKED_TARBALL",
+    "packed smoke must provide its archive",
+  );
   copyFileSync(packed, archive);
   digest =
-    process.env.FORGE_PACK_EXPECTED_SHA256 ??
+    optionalJourneyEnv("FORGE_PACK_EXPECTED_SHA256") ??
     hash("sha256", readFileSync(archive));
   writeFileSync(`${archive}.sha256`, `${digest}  candidate.tgz\n`);
   build = JSON.parse(
@@ -63,9 +70,10 @@ beforeAll(() => {
     join(author, "test/marker/packed.integration.test.ts"),
     "import { test } from 'bun:test'; test('isolated packed suite', () => {}, 1000);",
   );
-  const runtime = process.env.FORGE_AUTHOR_NPM_ROOT;
-  if (!runtime)
-    throw new Error("packed smoke must provide the author Node installation");
+  const runtime = requireJourneyEnv(
+    "FORGE_AUTHOR_NPM_ROOT",
+    "packed smoke must provide the author Node installation",
+  );
   nodeRoot = runtime;
   const printed = spawnSync(
     join(nodeRoot, process.platform === "win32" ? "node.exe" : "node"),
@@ -131,8 +139,8 @@ for (const [field, value] of [
         const { version, commit, dirty } = build;
         const identity = { version, commit, dirty };
         const runId =
-          process.env.FORGE_PACK_EXPECTED_RUN_ID ??
-          process.env.GITHUB_RUN_ID ??
+          optionalJourneyEnv("FORGE_PACK_EXPECTED_RUN_ID") ??
+          optionalJourneyEnv("GITHUB_RUN_ID") ??
           null;
         const installed = join(packedConsumer(), "node_modules/forge-workflow");
         expect(() =>
@@ -195,13 +203,13 @@ for (const [field, value] of [
         {
           cwd: author,
           env: {
-            ...process.env,
+            ...journeyChildEnv(),
             FORGE_PACK_INPUT: archive,
             FORGE_PACK_EXPECTED_SHA256: digest,
             FORGE_PACK_EXPECTED_VERSION: build.version,
             CI_HEAD: build.commit,
             NODE_OPTIONS:
-              `${process.env.NODE_OPTIONS ?? ""} --import=${pathToFileURL(preload).href}`.trim(),
+              `${optionalJourneyEnv("NODE_OPTIONS") ?? ""} --import=${pathToFileURL(preload).href}`.trim(),
           },
           encoding: "utf8",
           timeout: 45_000,
