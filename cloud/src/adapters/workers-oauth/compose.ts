@@ -13,6 +13,7 @@ import {
 } from "../../worker.ts";
 import { Project as BaseProject } from "../../project.ts";
 import {
+  hasUnsupportedCallbackState,
   isDeviceCallback,
   isDeviceRoute,
   type DeviceBrowserOptions,
@@ -32,7 +33,6 @@ import {
 import { clerkUpstream, productionOptions } from "./production.ts";
 import { bearer, sha256, wellFormed } from "../../tokens.ts";
 import { durableRedemption, type RedemptionNamespace } from "./redemption.ts";
-import { isLaneCallback } from "../../auth/lane-browser.ts";
 import { isLoginRoute } from "../../auth/project-login.ts";
 import { commandProject } from "../../issue-commands.ts";
 import { isStatePath } from "../../state-access.ts";
@@ -176,16 +176,18 @@ export function createConfiguredWorker(
       env: Parameters<typeof worker.fetch>[1] &
         Readonly<Record<string, unknown>>,
     ) {
-      const path = new URL(request.url).pathname;
+      const url = new URL(request.url);
+      const path = url.pathname;
       const token = bearer(request);
-      if (isLaneCallback(request)) return worker.fetch(request, env);
       if (
+        hasUnsupportedCallbackState(url) ||
         isDeviceRoute(request) ||
         isDeviceCallback(request) ||
         commandProject(request) !== undefined ||
         isStatePath(request) ||
         (!isOAuthRoute(request) &&
-          (isLoginRoute(request) ||
+          (!path.startsWith("/p/") ||
+            isLoginRoute(request) ||
             !token ||
             wellFormed(token) ||
             isAdminRoute(path.split("/").at(-1) ?? "")))

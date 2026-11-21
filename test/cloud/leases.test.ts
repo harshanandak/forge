@@ -326,7 +326,7 @@ test("public and admin reads never initialize a reopened Project", async () => {
       ["/p/a/loginpoll", "{", 400],
       ["/p/a/loginpoll", '{"device_code":"invalid"}', old ? 503 : 400],
       ["/device", undefined, 200],
-      ["/lane-approval/unknown", undefined, 400],
+      ["/lane-approval/unknown", undefined, 404],
       ["/p/a/dump?cursor=bad", undefined, 400],
       ["/p/a/status", undefined, 200],
       ["/p/a/dump", undefined, 200],

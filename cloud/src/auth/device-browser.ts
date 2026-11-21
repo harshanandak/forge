@@ -87,6 +87,14 @@ export const isDeviceCallback = (request: Request): boolean => {
   );
 };
 
+export const hasUnsupportedCallbackState = (url: URL): boolean =>
+  url.pathname === "/callback" &&
+  url.searchParams
+    .getAll("state")
+    .some(
+      (state) => state.includes(".") && !state.startsWith(DEVICE_STATE_PREFIX),
+    );
+
 const esc = (value: string) =>
   value
     .replaceAll("&", "&amp;")

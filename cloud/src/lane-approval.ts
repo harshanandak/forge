@@ -21,6 +21,17 @@ export const LANE_APPROVAL_MIGRATION = {
     `CREATE TABLE ${LANE_APPROVALS} (id INTEGER PRIMARY KEY CHECK (id = 1), state TEXT NOT NULL)`,
   ],
 };
+export const LANE_BROWSER = "domain_cloud_lane_browser";
+export const LANE_BROWSER_MIGRATION = {
+  id: "009_cloud_lane_browser",
+  statements: [
+    `CREATE TABLE ${LANE_BROWSER} (id INTEGER PRIMARY KEY CHECK (id = 1), state TEXT NOT NULL)`,
+  ],
+};
+export const CLEAR_LANE_BROWSER_MIGRATION = {
+  id: "013_cloud_clear_lane_browser",
+  statements: [`DELETE FROM ${LANE_BROWSER}`],
+};
 export interface ApprovalRequired {
   readonly request: string;
   readonly scope: LaneScope;
