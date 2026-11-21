@@ -222,7 +222,7 @@ export function reconcile(
   requireCheckpoint(offset === bytes.length && canonicalJson(entries) === body);
 }
 
-export function projectionDigest(items: readonly Item[]) {
+export function digestProjection(items: readonly Item[]) {
   return digestValue(
     items.map(([collection, key, body, revision]) => [
       collection,
@@ -354,6 +354,7 @@ async function checkpoint(
     reconcile(readback, expected, transcript);
     const verified = roster(readback, expected, cut);
     requireCheckpoint(canonicalJson(verified) === staged.proposal);
+    const projectionDigest = digestProjection(expected);
     const manifest = canonicalJson({
       ...root,
       ...verified,
@@ -362,7 +363,7 @@ async function checkpoint(
       coveredHead: cut,
       eventWatermark: image.eventWatermark,
       transcriptDigest: digestBytes(transcript),
-      publicDigest: projectionDigest(expected),
+      publicDigest: projectionDigest,
       privateDigest: digestValue([]),
     });
     requireCheckpoint(Buffer.byteLength(manifest) <= MANIFEST_BYTES);

@@ -440,11 +440,7 @@ function recoverPortableV3(
 ): V3Image {
   if (Buffer.byteLength(portableTranscript) > PAGE_BYTES) throw unavailable();
   const frames = parse(portableTranscript);
-  if (
-    !Array.isArray(frames) ||
-    frames.length > TAIL_ROWS ||
-    storedCanonical(frames) !== portableTranscript
-  )
+  if (!Array.isArray(frames) || storedCanonical(frames) !== portableTranscript)
     throw unavailable();
   const image = recoveryImage(genesis("portable", "portable"), 0);
   const verification = { admit, pages: new Map<string, Buffer>() };

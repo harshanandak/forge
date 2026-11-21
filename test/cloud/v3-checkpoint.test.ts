@@ -3,7 +3,7 @@ import { domain, Project } from "../../cloud/src/project.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { canonicalJson, digestBytes } from "../../src/core/config/pointer.ts";
 import { writableStore } from "../../cloud/src/store.ts";
-import { recoverV3, viewV3 } from "../../cloud/src/v3-store.ts";
+import { PAGE_BYTES, recoverV3, viewV3 } from "../../cloud/src/v3-store.ts";
 import { guardFixture, noWrites, probe } from "./v3-project.fixture.ts";
 
 const timeout = 30_000;
@@ -1272,6 +1272,43 @@ test(
         expect(viewV3(replayed).image).toEqual(viewV3(expected).image);
         expect(replayed.recordFloor).toBe(expected.recordFloor);
         expect(effects()).toEqual(noWrites);
+      });
+    }),
+  timeout,
+);
+
+test(
+  "v3 portable replay accepts a page with more than 1024 commands",
+  () =>
+    withFixture(async (source) => {
+      const frames = await portableHistory(source);
+      for (let count = frames.length; count < 1025; count += 100) {
+        const batch = Array.from(
+          { length: Math.min(100, 1025 - count) },
+          frame,
+        );
+        expect((await append(source, ...batch)).status).toBe(200);
+      }
+      const notes = commits(source);
+      const native = pages(source).find(
+        ({ id }) => id === "transcript:0",
+      )!.body;
+      const history = JSON.parse(native) as unknown[];
+      expect(
+        Buffer.byteLength(
+          canonicalJson([
+            ...history,
+            ...notes.map(({ body }) => JSON.parse(body) as unknown),
+          ]),
+        ),
+      ).toBeLessThanOrEqual(PAGE_BYTES);
+      frames.push(...notes.map(({ sequence }) => ({ sequence })));
+      const expected = recoverV3(writableStore(source.storage));
+      expect(expected.head).toBe(1025);
+      await withFixture((target) => {
+        const replayed = replayPortable(target, frames);
+        expect(viewV3(replayed).image).toEqual(viewV3(expected).image);
+        expect(replayed.recordFloor).toBe(expected.recordFloor);
       });
     }),
   timeout,
