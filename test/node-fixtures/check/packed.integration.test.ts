@@ -12,10 +12,6 @@ import {
 import { delimiter, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { counterfactuals } from "./counterfactuals.ts";
-import {
-  journeyChildEnv,
-  optionalJourneyEnv,
-} from "../../integration/journey-env.ts";
 import { packedConsumer } from "../../integration/packed-consumer.ts";
 
 let ecosystems: string[] = [];
@@ -25,7 +21,7 @@ function run(
   args: string[],
   cwd: string,
   timeout = 30000,
-  env = journeyChildEnv(),
+  env = process.env,
 ) {
   return spawnSync(executable, args, {
     cwd,
@@ -50,7 +46,7 @@ test("packed Node check journeys and sharded remove-the-fix proofs", () => {
     if (!node) throw new Error("Node runtime required");
     const consumer = packedConsumer();
     const installed = join(consumer, "node_modules/forge-workflow");
-    const artifactEnv = journeyChildEnv();
+    const artifactEnv = { ...process.env };
     const pathKey =
       Object.keys(artifactEnv).find((key) => key.toLowerCase() === "path") ??
       "PATH";
@@ -112,7 +108,7 @@ test("packed Node check journeys and sharded remove-the-fix proofs", () => {
       "receipt",
     ]);
     ecosystems = report.ecosystem.passed;
-    if (optionalJourneyEnv("FORGE_RELEASE_ACCEPTANCE") === "1") {
+    if (process.env.FORGE_RELEASE_ACCEPTANCE === "1") {
       expect(report.ecosystem.skipped).toEqual([]);
       expect(report.ecosystem.passed).toEqual([
         "npm+vitest",
@@ -136,7 +132,7 @@ test("packed Node check journeys and sharded remove-the-fix proofs", () => {
       join(isolated, "node_modules"),
       process.platform === "win32" ? "junction" : "dir",
     );
-    const leg = optionalJourneyEnv("STATE_NODE_LEG");
+    const leg = process.env.STATE_NODE_LEG;
     if (leg !== undefined && leg !== "24" && leg !== "26")
       throw new Error("STATE_NODE_LEG must be 24 or 26");
     const mutations = counterfactuals.filter(
@@ -178,7 +174,7 @@ test("packed Node check journeys and sharded remove-the-fix proofs", () => {
   }
 }, 900000);
 
-if (optionalJourneyEnv("FORGE_RELEASE_ACCEPTANCE") === "1")
+if (process.env.FORGE_RELEASE_ACCEPTANCE === "1")
   for (const name of ["npm+vitest", "pnpm+jest", "python+pytest", "make"])
     test(
       `installed ecosystem: ${name}`,

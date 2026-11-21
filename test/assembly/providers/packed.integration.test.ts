@@ -19,10 +19,6 @@ import {
 } from "../../node-fixtures/state/counterfactuals.ts";
 import { providerCounterfactuals } from "../../node-fixtures/assembly-providers/counterfactuals.ts";
 import { runFixtures } from "../../integration/fixtures/run.ts";
-import {
-  journeyChildEnv,
-  optionalJourneyEnv,
-} from "../../integration/journey-env.ts";
 import { packedConsumer } from "../../integration/packed-consumer.ts";
 
 const root = resolve(import.meta.dirname, "../../..");
@@ -52,7 +48,7 @@ function run(
   }
 }
 function withoutBun(): NodeJS.ProcessEnv {
-  const env = journeyChildEnv();
+  const env = { ...process.env };
   const key =
     Object.keys(env).find((name) => name.toLowerCase() === "path") ?? "PATH";
   env[key] = (env[key] ?? "")
@@ -89,8 +85,8 @@ test("packed stock providers: declared capabilities, generated CLI/MCP, bounded 
     );
     const runtimes = [
       ...new Set(
-        [node, optionalJourneyEnv("FORGE_NODE26")].filter(
-          (value): value is string => Boolean(value),
+        [node, process.env.FORGE_NODE26].filter((value): value is string =>
+          Boolean(value),
         ),
       ),
     ];
@@ -145,7 +141,7 @@ test("packed stock providers: declared capabilities, generated CLI/MCP, bounded 
     phase("copy");
     for (const mutation of selectShard(
       providerCounterfactuals,
-      packedCoverage(optionalJourneyEnv("STATE_NODE_LEG")).shard,
+      packedCoverage(process.env.STATE_NODE_LEG).shard,
     )) {
       const file = join(isolated, "dist/src", mutation.file);
       const original = readFileSync(file, "utf8");

@@ -9,10 +9,6 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { runBounded, runFixtures } from "../../integration/fixtures/run.ts";
-import {
-  journeyChildEnv,
-  optionalJourneyEnv,
-} from "../../integration/journey-env.ts";
 import { packedConsumer } from "../../integration/packed-consumer.ts";
 import { packedCoverage, selectShard } from "../state/counterfactuals.ts";
 import { counterfactuals } from "./counterfactuals.ts";
@@ -97,7 +93,7 @@ test("integration: packed memory journeys, each failing with its fix removed", a
   const started = performance.now();
   const selected = selectShard(
     counterfactuals,
-    packedCoverage(optionalJourneyEnv("STATE_NODE_LEG")).shard,
+    packedCoverage(process.env.STATE_NODE_LEG).shard,
   );
   const consumer = packedConsumer();
   // Private copies remain below the consumer so dependencies resolve from its shared install.
@@ -110,7 +106,7 @@ test("integration: packed memory journeys, each failing with its fix removed", a
       command: node,
       args: [fixture, installed, journey],
       cwd: mkdtempSync(join(work, "positive-")),
-      env: journeyChildEnv(),
+      env: process.env,
     }));
     const passed = await timedAsync("positives", () =>
       runFixtures(positives, 3, "Packed memory"),

@@ -10,7 +10,7 @@ Public repo/package OIDC generates provenance; we request it, require registry a
 
 Release readback installs its pinned ecosystem fixture tools and requires every installed journey, including Vitest, Jest, pytest and Make. Missing tools, skipped tests, failed tests or an absent native test report block promotion. Developer pack smoke may still report optional ecosystem skips; release acceptance cannot.
 
-The release journeys require the packed artifact, the installed consumer, author Node, and the same pinned Bun lint runtime as CI (`FORGE_LINT_BUN`). The structure guard checks that the launcher and readback workflow supply the environment variables the journey tests require.
+CI and Release prepare packed journeys with the same setup. It selects the pinned lint runtime and Windows prerequisites, and takes explicit inputs for each path's artifact and fixture environment. The workflow structure guard requires both paths to use it and prevents separate journey environment configuration.
 
 Run: release `0.0.12` as the local-only stable version and promote it to `latest` after readback and the second approval. The next prerelease line is `0.1.0`. Require an unused version, successful main CI, and dispatch Release with its numeric `run_id` at that same commit. Review verify's version/hash, then approve publish to `next`. Version `0.0.11` reached `next` without promotion and is slated for removal.
 

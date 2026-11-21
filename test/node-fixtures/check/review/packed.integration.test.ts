@@ -10,7 +10,6 @@ import {
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { journeyChildEnv } from "../../../integration/journey-env.ts";
 import { packedConsumer } from "../../../integration/packed-consumer.ts";
 
 test("focused packed review proofs run only their relevant surface operations", () => {
@@ -39,7 +38,7 @@ syncBuiltinESMExports();
 `,
     );
     const env: NodeJS.ProcessEnv = {
-      ...journeyChildEnv(),
+      ...process.env,
       FORGE_DEVICE_ROOT: join(work, "device"),
     };
     const pathKey =

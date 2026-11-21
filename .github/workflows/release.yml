@@ -84,30 +84,18 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-    env:
-      VERSION: ${{ needs.verify.outputs.version }}
     steps:
-      - name: Match the Windows CI runner setup
-        run: |
-          if [[ "$RUNNER_OS" == Windows ]]; then
-            pwsh -NoProfile -NonInteractive -Command '
-              $ErrorActionPreference = "Stop"
-              Set-Service StorSvc -StartupType Disabled
-              Stop-Service StorSvc -Force
-              $service = Get-Service StorSvc
-              if ($service.Status -ne "Stopped" -or $service.StartType -ne "Disabled") {
-                throw "StorSvc is $($service.Status) and $($service.StartType)"
-              }
-            '
-            printf 'TEMP=%s\nTMP=%s\n' "$RUNNER_TEMP" "$RUNNER_TEMP" >> "$GITHUB_ENV"
-          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with: { node-version: "24" }
-      - id: lint-runtime
-        run: node tools/ci/preserve-lint-runtime.ts prepare
-      - run: npm install --prefix "$RUNNER_TEMP/comment-lint" --ignore-scripts --no-save "${{ steps.lint-runtime.outputs.package }}"
-      - run: node tools/ci/preserve-lint-runtime.ts
+      - uses: ./.github/actions/journey-setup
+        with:
+          mode: release
+          version: ${{ needs.verify.outputs.version }}
+          release-run-id: ${{ inputs.run_id }}
+          device-root: ${{ runner.temp }}/release-forge
+          ecosystem-tools: ${{ runner.temp }}/fixture-tools
+          python-packages: ${{ runner.temp }}/fixture-python
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with: { bun-version: "1.4.4" }
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -118,17 +106,7 @@ jobs:
             run-id: "${{ inputs.run_id }}",
             github-token: "${{ github.token }}",
           }
-      - run: npm install --global npm@11.21.0
       - run: bun install --frozen-lockfile
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-        with: { python-version: "3.12" }
-      - name: Install required release fixture tools
-        run: |
-          npm install --prefix "$RUNNER_TEMP/fixture-tools" --ignore-scripts --no-audit --no-fund vitest@4.0.18 jest@30.2.0 pnpm@10.28.2
-          python -m pip install --target "$RUNNER_TEMP/fixture-python" pytest==9.0.2
-          echo "$RUNNER_TEMP/fixture-tools/node_modules/.bin" >> "$GITHUB_PATH"
-          if [[ "$RUNNER_OS" == Windows ]]; then choco install make --version=4.4.1 --yes --no-progress; fi
-          make --version
       - name: Bounded registry readback of integrity, next and provenance
         run: |
           node --input-type=module <<'JS'
@@ -170,9 +148,6 @@ jobs:
           CI_RUN: ${{ inputs.run_id }}
           npm_config_cache: ${{ runner.temp }}/release-npm-cache
           BUN_INSTALL_CACHE_DIR: ${{ runner.temp }}/release-bun-cache
-          FORGE_DEVICE_ROOT: ${{ runner.temp }}/release-forge
-          CHECK_ECOSYSTEM_TOOLS: ${{ runner.temp }}/fixture-tools
-          CHECK_PYTHON_PACKAGES: ${{ runner.temp }}/fixture-python
         run: |
           mkdir -p "$RUNNER_TEMP/npm-smoke" "$RUNNER_TEMP/bun-smoke"
           cd "$RUNNER_TEMP/npm-smoke"
@@ -189,11 +164,6 @@ jobs:
           bun run forge --version
           bun run forge help
       - name: Required registry journeys
-        env:
-          FORGE_PACK_EXPECTED_RUN_ID: ${{ inputs.run_id }}
-          FORGE_DEVICE_ROOT: ${{ runner.temp }}/release-forge
-          CHECK_ECOSYSTEM_TOOLS: ${{ runner.temp }}/fixture-tools
-          CHECK_PYTHON_PACKAGES: ${{ runner.temp }}/fixture-python
         run: node tools/release/journeys.mjs "$GITHUB_WORKSPACE" "$RUNNER_TEMP/npm-smoke" "$TARBALL"
   promote:
     needs: [verify, readback]

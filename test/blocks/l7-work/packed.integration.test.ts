@@ -15,10 +15,6 @@ import {
   selectShard,
 } from "../../node-fixtures/state/counterfactuals.ts";
 import { runFixtures } from "../../integration/fixtures/run.ts";
-import {
-  journeyChildEnv,
-  optionalJourneyEnv,
-} from "../../integration/journey-env.ts";
 import { packedConsumer } from "../../integration/packed-consumer.ts";
 
 const root = resolve(import.meta.dirname, "../../..");
@@ -36,7 +32,7 @@ function run(
   command: string,
   args: string[],
   cwd: string,
-  env: NodeJS.ProcessEnv = journeyChildEnv(),
+  env: NodeJS.ProcessEnv = process.env,
 ) {
   return spawnSync(command, args, {
     cwd,
@@ -56,7 +52,7 @@ test("installed work block: CLI readback, lease fixtures and remove-the-fix chec
     const node = Bun.which("node");
     if (!node) throw new Error("Node is required");
     const installed = join(consumer, "node_modules/forge-workflow");
-    const env = journeyChildEnv();
+    const env = { ...process.env };
     const path =
       Object.keys(env).find((key) => key.toLowerCase() === "path") ?? "PATH";
     env[path] = (env[path] ?? "")
@@ -69,11 +65,11 @@ test("installed work block: CLI readback, lease fixtures and remove-the-fix chec
       )
       .join(delimiter);
     delete env.BUN_INSTALL;
-    const coverage = packedCoverage(optionalJourneyEnv("STATE_NODE_LEG"));
+    const coverage = packedCoverage(process.env.STATE_NODE_LEG);
     const nodes = [
       ...new Set(
-        [node, optionalJourneyEnv("FORGE_NODE26")].filter(
-          (value): value is string => Boolean(value),
+        [node, process.env.FORGE_NODE26].filter((value): value is string =>
+          Boolean(value),
         ),
       ),
     ];
@@ -117,7 +113,7 @@ test("installed work block: CLI readback, lease fixtures and remove-the-fix chec
           command: runtime,
           args: [fixture.file, installed, cwd, "all"],
           cwd,
-          env: fixture.name === "CLI" ? env : journeyChildEnv(),
+          env: fixture.name === "CLI" ? env : process.env,
         };
       }),
     );

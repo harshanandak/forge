@@ -7,7 +7,6 @@ import {
 import { mkdtempSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { requireJourneyEnv } from "../../integration/journey-env.ts";
 import { packedConsumer } from "../../integration/packed-consumer.ts";
 
 test("the installed check adds no parser dependency and runs the selected lint runtime", () => {
@@ -27,10 +26,8 @@ test("the installed check adds no parser dependency and runs the selected lint r
     git("add", ".");
     git("commit", "-qm", "base");
     git("branch", "baseline");
-    const lint = requireJourneyEnv(
-      "FORGE_LINT_BUN",
-      "FORGE_LINT_BUN must select the CI canary",
-    );
+    const lint = process.env.FORGE_LINT_BUN;
+    if (!lint) throw new Error("FORGE_LINT_BUN must select the CI canary");
     const pkg = JSON.parse(
       readFileSync(
         join(packedConsumer(), "node_modules/forge-workflow/package.json"),

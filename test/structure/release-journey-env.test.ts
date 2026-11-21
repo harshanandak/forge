@@ -8,12 +8,13 @@ const setupAction = "./.github/actions/journey-setup";
 type Step = {
   uses?: string;
   run?: string;
+  with?: Record<string, unknown>;
   env?: Record<string, unknown>;
   if?: unknown;
   "continue-on-error"?: unknown;
 };
 type Job = { env?: Record<string, unknown>; steps?: Step[] };
-type Workflow = { jobs: Record<string, Job> };
+type Workflow = { env?: Record<string, unknown>; jobs: Record<string, Job> };
 type Selector = (run: string) => boolean;
 
 function workflow(name: string): Workflow {
@@ -25,6 +26,7 @@ function verifySetup(
   name: string,
   source: Workflow,
   selectsJourney: Selector,
+  inputs?: Record<string, string>,
 ): string[] {
   const found: string[] = [];
   for (const [id, job] of Object.entries(source.jobs)) {
@@ -43,6 +45,8 @@ function verifySetup(
       `${location} must use ${setupAction} before running packed journeys`,
     );
     const setup = steps[setupIndexes[0]!]!;
+    if (inputs)
+      assert.deepEqual(setup.with, inputs, `${location}: shared setup inputs`);
     for (const key of ["if", "continue-on-error", "env"] as const)
       assert.equal(
         setup[key],
@@ -73,18 +77,59 @@ function verifySetup(
 }
 
 test("CI and Release use the shared packed journey setup", () => {
+  const release = workflow("release.yml");
   assert.deepEqual(
-    verifySetup("release.yml", workflow("release.yml"), (run) =>
-      /(?:^|\s)tools\/release\/journeys\.mjs(?:\s|$)/.test(run),
+    verifySetup(
+      "release.yml",
+      release,
+      (run) => /(?:^|\s)tools\/release\/journeys\.mjs(?:\s|$)/.test(run),
+      {
+        mode: "release",
+        version: "${{ needs.verify.outputs.version }}",
+        "release-run-id": "${{ inputs.run_id }}",
+        "device-root": "${{ runner.temp }}/release-forge",
+        "ecosystem-tools": "${{ runner.temp }}/fixture-tools",
+        "python-packages": "${{ runner.temp }}/fixture-python",
+      },
     ),
     ["readback"],
   );
+  const ci = workflow("ci.yml");
   assert.deepEqual(
-    verifySetup("ci.yml", workflow("ci.yml"), (run) =>
-      /^\s*bun run test:pack(?:\s|$)/.test(run),
+    verifySetup(
+      "ci.yml",
+      ci,
+      (run) => /^\s*bun run test:pack(?:\s|$)/.test(run),
+      {
+        mode: "ci",
+        node: "${{ matrix.node }}",
+        shard: "${{ matrix.shard || matrix.suite }}",
+        artifact:
+          "${{ matrix.suite != 'tests' && format('{0}/packed/forge-workflow.tgz', runner.temp) || '' }}",
+        sha256: "${{ needs.pack.outputs.sha256 }}",
+        version: "${{ needs.pack.outputs.version }}",
+      },
     ),
     ["verify", "verify-nightly"],
   );
+  assert.deepEqual(Object.keys(release.env ?? {}).sort(), [
+    "NPM_CONFIG_REGISTRY",
+    "TARBALL",
+  ]);
+  assert.deepEqual(Object.keys(ci.env ?? {}).sort(), [
+    "BUN_VERSION",
+    "CI_HEAD",
+  ]);
+  const bunStep = (job: Job): Step | undefined =>
+    job.steps?.find((step) => step.uses?.startsWith("oven-sh/setup-bun@"));
+  const releaseBun = bunStep(release.jobs.readback!);
+  assert.match(releaseBun?.uses ?? "", /@[a-f0-9]{40}$/);
+  assert.equal(releaseBun?.with?.["bun-version"], ci.env?.BUN_VERSION);
+  for (const id of ["verify", "verify-nightly"]) {
+    const ciBun = bunStep(ci.jobs[id]!);
+    assert.equal(ciBun?.uses, releaseBun?.uses);
+    assert.equal(ciBun?.with?.["bun-version"], "${{ env.BUN_VERSION }}");
+  }
 }, 1000);
 
 for (const change of [
@@ -116,7 +161,7 @@ for (const change of [
       job.steps!.unshift({ run: '"PROOF=x" >> $env:GITHUB_ENV' });
     if (change === "legacy exporter")
       job.steps!.unshift({
-        run: ["node", "tools/ci/preserve-lint-runtime.ts"].join(" "),
+        run: "tools/ci/preserve-lint-runtime.ts",
       });
     expect(() =>
       verifySetup(

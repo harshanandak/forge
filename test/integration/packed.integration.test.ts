@@ -19,7 +19,6 @@ import {
 } from "../node-fixtures/state/counterfactuals.ts";
 import { firstSliceMutations } from "./counterfactuals.ts";
 import { runFixtures } from "./fixtures/run.ts";
-import { journeyChildEnv, optionalJourneyEnv } from "./journey-env.ts";
 import { packedConsumer } from "./packed-consumer.ts";
 
 function timed<T>(label: string, action: () => T): T {
@@ -33,7 +32,7 @@ function timed<T>(label: string, action: () => T): T {
   }
 }
 function withoutBun(): NodeJS.ProcessEnv {
-  const env = journeyChildEnv();
+  const env = { ...process.env };
   const path =
     Object.keys(env).find((key) => key.toLowerCase() === "path") ?? "PATH";
   env[path] = (env[path] ?? "")
@@ -52,7 +51,7 @@ function withoutBun(): NodeJS.ProcessEnv {
 test("packed first slice: npm detection, human admission, CLI/MCP parity and competing revisions", async () => {
   const mutations = selectShard(
     firstSliceMutations,
-    packedCoverage(optionalJourneyEnv("STATE_NODE_LEG")).shard,
+    packedCoverage(process.env.STATE_NODE_LEG).shard,
   );
   const started = performance.now();
   const shared = packedConsumer();
@@ -84,8 +83,8 @@ test("packed first slice: npm detection, human admission, CLI/MCP parity and com
       );
     const runtimes = [
       ...new Set(
-        [node, optionalJourneyEnv("FORGE_NODE26")].filter(
-          (runtime): runtime is string => Boolean(runtime),
+        [node, process.env.FORGE_NODE26].filter((runtime): runtime is string =>
+          Boolean(runtime),
         ),
       ),
     ];

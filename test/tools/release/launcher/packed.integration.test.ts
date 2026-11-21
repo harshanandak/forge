@@ -5,10 +5,6 @@ import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { resolveBun } from "../../../../tools/pack-smoke/environment.ts";
-import {
-  journeyChildEnv,
-  requireJourneyEnv,
-} from "../../../integration/journey-env.ts";
 import { packedConsumer } from "../../../integration/packed-consumer.ts";
 
 test("plain Node release gate reaches each installed identity refusal with a Bun-free consumer PATH", () => {
@@ -22,7 +18,6 @@ test("plain Node release gate reaches each installed identity refusal with a Bun
       "package.json",
       "test/tools/pack-smoke/identity/packed.integration.test.ts",
       "test/integration/packed-consumer.ts",
-      "test/integration/journey-env.ts",
     ]) {
       const target = join(dir, path);
       mkdirSync(dirname(target), { recursive: true });
@@ -33,16 +28,12 @@ test("plain Node release gate reaches each installed identity refusal with a Bun
       join(dir, "test/marker/packed.integration.test.ts"),
       "import {test,expect} from 'bun:test'; test('consumer PATH has no Bun',()=>expect(Bun.which('bun')).toBeNull(),1000);",
     );
-    const runtime = requireJourneyEnv(
-      "FORGE_AUTHOR_NPM_ROOT",
-      "packed artifact and author Node required",
-    );
-    const tarball = requireJourneyEnv(
-      "FORGE_PACKED_TARBALL",
-      "packed artifact and author Node required",
-    );
+    const runtime = process.env.FORGE_AUTHOR_NPM_ROOT;
+    const tarball = process.env.FORGE_PACKED_TARBALL;
+    if (!runtime || !tarball)
+      throw new Error("packed artifact and author Node required");
     const env: NodeJS.ProcessEnv = {
-      ...journeyChildEnv(),
+      ...process.env,
       npm_execpath: "",
       NO_COLOR: "1",
     };

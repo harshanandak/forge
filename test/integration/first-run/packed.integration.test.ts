@@ -3,7 +3,6 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
-import { journeyChildEnv } from "../journey-env.ts";
 import { packedConsumer } from "../packed-consumer.ts";
 
 const root = resolve(import.meta.dirname, "../../..");
@@ -12,7 +11,7 @@ function run(
   args: string[],
   cwd: string,
   timeout = 120000,
-  env = journeyChildEnv(),
+  env = process.env,
 ): string {
   const result = spawnSync(executable, args, {
     cwd,
@@ -35,7 +34,7 @@ test("a new user's first run works end to end from the packed package", () => {
     if (!node) throw new Error("Node runtime required");
     const consumer = packedConsumer();
     // The journey runs as a Node-only user: no Bun on PATH.
-    const env = journeyChildEnv();
+    const env = { ...process.env };
     const pathKey =
       Object.keys(env).find((key) => key.toLowerCase() === "path") ?? "PATH";
     env[pathKey] = (env[pathKey] ?? "")
