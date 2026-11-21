@@ -1,0 +1,58 @@
+name: Bug report
+description: Report a problem with Forge.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This form is public. Remove tokens, credentials, private project data and
+        personal information before submitting.
+        [Report vulnerabilities privately](https://github.com/harshanandak/forge/security/advisories/new).
+  - type: input
+    id: version
+    attributes:
+      label: Forge version
+      description: Paste the output of `forge --version`.
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      description: Include the OS version and CPU architecture.
+    validations:
+      required: true
+  - type: input
+    id: node
+    attributes:
+      label: Node.js version
+      description: Paste the output of `node --version`.
+    validations:
+      required: true
+  - type: input
+    id: install
+    attributes:
+      label: Install method
+      description: Say how you installed Forge, such as npm global, project-local or from source.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Include the commands and the smallest sample project or configuration needed.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include any relevant output with private details removed.
+    validations:
+      required: true
