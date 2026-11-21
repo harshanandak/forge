@@ -87,13 +87,66 @@ const blocked = (description: string): Decision => ({
   description,
 });
 const withFinding = { comments: [summary(head, true)], findings: [finding] };
+const conflictingState = summary(head, true, true).body.slice(
+  summaryMarker.length,
+);
 
 const cases: Case[] = [
   { name: "clean exact-head reviews pass without Sol", expected: passed() },
   {
+    name: "a clock earlier than the push cannot pass",
+    evidence: { now: start - 1 },
+    expected: blocked("invalid clock"),
+  },
+  {
+    name: "a non-finite elapsed time cannot pass",
+    evidence: { now: NaN },
+    expected: blocked("invalid clock"),
+  },
+  {
+    name: "a ledger pass dated after the decision cannot count",
+    rows: [{ ...sol, at: clean.now + 1 }],
+    expected: blocked("invalid ledger time"),
+  },
+  {
+    name: "a negative ledger P1 count is invalid",
+    rows: [{ ...sol, p1: -1 }],
+    expected: blocked("invalid P1 count"),
+  },
+  {
+    name: "a fractional ledger P1 count is invalid",
+    rows: [{ ...sol, p1: 0.5 }],
+    expected: blocked("invalid P1 count"),
+  },
+  {
     name: "stale Codex summary withholds success",
     evidence: { comments: [summary(old)] },
     expected: blocked("waiting for codex"),
+  },
+  {
+    name: "two Codex summary comments fail closed even across heads",
+    evidence: { comments: [summary(old), summary()] },
+    expected: blocked("unknown codex summary"),
+  },
+  {
+    name: "a conflicting second state record blocks a clean Codex summary",
+    evidence: {
+      comments: [{ ...summary(), body: summary().body + conflictingState }],
+    },
+    expected: blocked("unknown codex summary"),
+  },
+  {
+    name: "an unknown second state record also blocks a clean Codex summary",
+    evidence: {
+      comments: [
+        {
+          ...summary(),
+          body:
+            summary().body + conflictingState.replace("state:v1", "state:v2"),
+        },
+      ],
+    },
+    expected: blocked("unknown codex summary"),
   },
   {
     name: "CodeRabbit formal review must cover the exact head",

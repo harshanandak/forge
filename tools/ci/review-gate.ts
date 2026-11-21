@@ -39,7 +39,7 @@ function failure(description: string) {
 
 function codexState(body: string) {
   const json = /<!-- codex-review-state:v1 (.*?) -->/s.exec(body)?.[1];
-  if (!json) return;
+  if (!json || body.match(/<!--\s*codex-review-state:/g)?.length !== 1) return;
   try {
     const { code_review: state } = JSON.parse(json) as {
       code_review: {
