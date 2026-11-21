@@ -173,7 +173,9 @@ const expectCut = async (
   coveredHead: number,
   image: Json,
 ) => {
-  expect(await view(f)).toMatchObject({ generation, coveredHead, image });
+  const actual = await view(f);
+  expect(actual).toMatchObject({ generation, coveredHead });
+  expect(actual.image).toEqual(image);
 };
 
 test(
@@ -573,6 +575,8 @@ function resealProposal(f: Fixture, entries: readonly DirectoryItem[]) {
       count: number;
       bytes: number;
       hash: string;
+      first: unknown;
+      last: unknown;
     }[];
     counts: Record<string, number>;
     bytes: Record<string, number>;
@@ -582,10 +586,14 @@ function resealProposal(f: Fixture, entries: readonly DirectoryItem[]) {
     const body = pageBody(f, page.id);
     const bytes = Buffer.byteLength(body);
     proposal.bytes[page.kind] = proposal.bytes[page.kind]! + bytes - page.bytes;
-    page.count =
-      page.kind === "directory"
-        ? entries.length
-        : entries.filter((entry) => !entry.deleted).length;
+    if (page.kind === "directory") {
+      const [first, last] = [entries[0], entries.at(-1)];
+      page.first = first ? [first.collection, first.key] : null;
+      page.last = last ? [last.collection, last.key] : null;
+      page.count = entries.length;
+    } else {
+      page.count = entries.filter((entry) => !entry.deleted).length;
+    }
     proposal.counts[page.kind] = page.count;
     page.bytes = bytes;
     page.hash = digestBytes(body);
@@ -667,14 +675,36 @@ for (const change of [
         const source = active(f);
         const log = commits(f);
         const initialLease = (JSON.parse(log[1]!.body) as Json).lease;
-        let tampered = false;
+        let readStagedPages = false;
+        let attemptedSwitch = false;
+        const executeSql = f.storage.sql.exec.bind(f.storage.sql);
         afterSync(f, 1, () => {
           changedPages(f, change, initialLease);
-          tampered = true;
+          f.storage.sql.exec = (statement, ...bindings) => {
+            readStagedPages ||= statement.includes(
+              "FROM cloud_v3_checkpoint_pages",
+            );
+            attemptedSwitch ||= statement.includes("AND seal=? AND body=?");
+            return executeSql(statement, ...bindings);
+          };
         });
         const result = await checkpoint(f);
-        expect(result).toMatchObject(refused);
-        expect(tampered).toBe(true);
+        f.storage.sql.exec = executeSql;
+        expect(result).toEqual({
+          status: 503,
+          body: {
+            ok: false,
+            error: {
+              code: "UNAVAILABLE",
+              message: "Cloud v3 checkpoint cannot be verified within one turn",
+              retry: "never",
+            },
+          },
+        });
+        expect({ readStagedPages, attemptedSwitch }).toEqual({
+          readStagedPages: true,
+          attemptedSwitch: false,
+        });
         expect(stagingTables(f)).toEqual([]);
         expect(active(f)).toEqual(source);
         expect(commits(f)).toEqual(log);
