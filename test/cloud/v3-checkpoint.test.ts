@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
+import { domain } from "../../cloud/src/project.ts";
+import { ForgeFailure } from "../../src/contract/failure.ts";
 import { canonicalJson, digestBytes } from "../../src/core/config/pointer.ts";
-import { fixture, probe } from "./v3-project.fixture.ts";
+import { guardFixture, noWrites, probe } from "./v3-project.fixture.ts";
 
 const timeout = 30_000;
 const MiB = 1024 * 1024;
@@ -20,7 +22,7 @@ const refused = {
 beforeEach(() => setSystemTime(T0));
 afterEach(() => setSystemTime());
 
-type Fixture = ReturnType<typeof fixture>;
+type Fixture = ReturnType<typeof guardFixture>;
 type Json = Record<string, unknown>;
 interface DirectoryItem {
   collection: string;
@@ -57,6 +59,27 @@ const pages = ({ db }: Fixture) =>
     )
     .all();
 const active = (f: Fixture) => ({ root: root(f), pages: pages(f) });
+const catalog = ({ db }: Fixture) =>
+  db
+    .query<
+      { type: string; name: string; tbl_name: string; sql: string | null },
+      []
+    >("SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name")
+    .all();
+const pageSchema = (f: Fixture) =>
+  catalog(f)
+    .filter(({ tbl_name }) => tbl_name === "cloud_v3_pages")
+    .map(({ sql, ...row }) => ({ ...row, sql: sql?.replaceAll('"', "") }));
+const retired = ({ db }: Fixture) =>
+  db
+    .query<{ id: string; body: string }, []>(
+      "SELECT id, body FROM cloud_v3_retired_pages ORDER BY id",
+    )
+    .all();
+const tableNames = (f: Fixture) =>
+  catalog(f)
+    .filter(({ type }) => type === "table")
+    .map(({ name }) => name);
 const stagingTables = (f: Fixture) =>
   f.db
     .query(
@@ -71,7 +94,7 @@ const append = (f: Fixture, ...frames: Json[]) =>
   f.send(`${probe}/commits`, { frames });
 
 async function withFixture(run: (f: Fixture) => Promise<void>) {
-  const f = fixture();
+  const f = guardFixture();
   try {
     expect((await f.send(probe, {})).status).toBe(200);
     await run(f);
@@ -136,13 +159,41 @@ function afterSync(
   });
 }
 
+const crash = () => {
+  throw new ForgeFailure({
+    code: "UNAVAILABLE",
+    message: "Injected checkpoint fault",
+    retry: "never",
+  });
+};
+
+const expectCut = async (
+  f: Fixture,
+  generation: number,
+  coveredHead: number,
+  image: Json,
+) => {
+  const actual = await view(f);
+  expect(actual).toMatchObject({ generation, coveredHead });
+  expect(actual.image).toEqual(image);
+};
+
 test(
-  "v3 checkpoint verifies staged digests and keeps the active root and log intact",
+  "v3 checkpoint activates the verified digests, collects the source and recovers the image",
   () =>
     withFixture(async (f) => {
       await populate(f);
       const before = await view(f);
       const source = active(f);
+      const schema = pageSchema(f);
+      const tables = tableNames(f);
+      expect(tables).toEqual([
+        "cloud_v3_commits",
+        "cloud_v3_pages",
+        "cloud_v3_root",
+      ]);
+      const dump = await f.send("dump");
+      expect(dump.status).toBe(200);
       const log = commits(f);
       const original = log.map(({ body }) => JSON.parse(body) as Json);
       const { result: refusal, ...receipt } = original[2]!.outcome as Json;
@@ -233,17 +284,73 @@ test(
       expect(reads.rows).toBeLessThanOrEqual(64);
       expect(reads.bytes).toBeLessThanOrEqual(4 * MiB);
       expect(f.alarms).toEqual([]);
-      expect(active(f)).toEqual(source);
-      expect(commits(f)).toEqual(log);
+      expect(commits(f)).toEqual([]);
+      expect(root(f).seal).not.toBe(source.root.seal);
+      expect(pageSchema(f)).toEqual(schema);
+      expect(tableNames(f)).toEqual(tables);
+      expect(await f.send("dump")).toEqual(dump);
+      expect(await f.send("upgrade")).toMatchObject({ status: 409 });
+      expect(await f.send("restore", {})).toMatchObject({ status: 409 });
+      expect(pages(f).map(({ id }) => id)).toEqual([
+        "directory:0",
+        "snapshot:0",
+        "transcript:0",
+      ]);
+      const collected = [...log, ...source.pages];
+      console.log("v3 checkpoint fixture collection", {
+        rows: collected.length,
+        bodyBytes: collected.reduce(
+          (total, row) => total + Buffer.byteLength(row.body),
+          0,
+        ),
+      });
       expect(stagingTables(f)).toEqual([]);
+      await expectCut(f, 1, 5, before.image);
       f.restart();
-      expect(await view(f)).toEqual(before);
+      await expectCut(f, 1, 5, before.image);
+
+      expect(
+        (await append(f, frame([{ key: "a", value: { revision: 2 } }]))).status,
+      ).toBe(200);
+      const { image } = await view(f);
+      const expected = ["lease", "outcome", "record", "witness"].flatMap(
+        (collection) =>
+          Object.entries(image[collection] as Json)
+            .sort(([a], [b]) => (a < b ? -1 : 1))
+            .map(([key, digest]) => [collection, key, digest]),
+      );
+      expect(await checkpoint(f)).toMatchObject({
+        status: 200,
+        body: {
+          value: { projectionDigest: digestBytes(canonicalJson(expected)) },
+        },
+      });
+      const transcript = pages(f).find(({ id }) => id === "transcript:0")!;
+      expect(JSON.parse(transcript.body)).toEqual([
+        ...archived,
+        {
+          ...frame([{ key: "a", value: { revision: 2 } }]),
+          format: "forge-cloud-commit/3",
+          sequence: 6,
+        },
+      ]);
+      expect(commits(f)).toEqual([]);
+      f.restart();
+      await expectCut(f, 2, 6, image);
+
+      f.db.run(
+        "UPDATE cloud_v3_pages SET body='[' || substr(body, 2) WHERE id='snapshot:0'",
+      );
+      const corrupted = active(f);
+      expect(await checkpoint(f)).toMatchObject(refused);
+      expect(active(f)).toEqual(corrupted);
+      expect(commits(f)).toEqual([]);
     }),
   timeout,
 );
 
 test(
-  "v3 checkpoint keeps a later append visible during staging and after eviction",
+  "v3 checkpoint refuses a changed cut and keeps the staging append visible after eviction",
   () =>
     withFixture(async (f) => {
       await populate(f);
@@ -258,7 +365,7 @@ test(
         expect(staged).toMatchObject({ generation: 0, image: { head: 6 } });
       });
       const result = await checkpoint(f);
-      expect(result.status).toBe(200);
+      expect(result).toMatchObject(refused);
       expect(staged).toBeDefined();
       expect(active(f)).toEqual(source);
       expect(commits(f).slice(0, -1)).toEqual(log);
@@ -271,6 +378,176 @@ test(
     }),
   timeout,
 );
+
+test(
+  "a post-switch append survives collection and eviction",
+  () =>
+    withFixture(async (f) => {
+      await populate(f);
+      const before = await view(f);
+      let appended: Json | undefined;
+      afterSync(f, 2, async () => {
+        await expectCut(f, 1, 5, before.image);
+        expect(
+          (await append(f, frame([{ key: "late", value: 9 }]))).status,
+        ).toBe(200);
+        appended = (await view(f)).image;
+      });
+      expect(await checkpoint(f)).toMatchObject({ status: 200 });
+      expect(commits(f).map(({ sequence }) => sequence)).toEqual([6]);
+      expect(appended).toBeDefined();
+      await expectCut(f, 1, 5, appended!);
+      f.restart();
+      await expectCut(f, 1, 5, appended!);
+    }),
+  timeout,
+);
+
+test(
+  "a competing sealed source refuses the switch and preserves the log",
+  () =>
+    withFixture(async (f) => {
+      await populate(f);
+      const log = commits(f);
+      let changed: ReturnType<typeof active> | undefined;
+      afterSync(f, 1, () => {
+        const body = canonicalJson({
+          ...(JSON.parse(root(f).body) as Json),
+          incarnation: "competing-root",
+        });
+        f.db.run("UPDATE cloud_v3_root SET body=?, seal=? WHERE id=1", [
+          body,
+          digestBytes(body),
+        ]);
+        changed = active(f);
+      });
+      expect(await checkpoint(f)).toMatchObject(refused);
+      expect(active(f)).toEqual(changed!);
+      expect(commits(f)).toEqual(log);
+    }),
+  timeout,
+);
+
+for (const point of [
+  "before switch",
+  "between renames",
+  "before collection",
+  "during collection",
+]) {
+  test(
+    `v3 checkpoint recovers after a fault ${point}`,
+    () =>
+      withFixture(async (f) => {
+        await populate(f);
+        const before = await view(f);
+        const source = active(f);
+        const log = commits(f);
+        const tables = tableNames(f);
+        const maintenance = ["cloud_v3_checkpoint", "cloud_v3_retired_pages"];
+        const schema = pageSchema(f);
+        const switched =
+          point === "before collection" || point === "during collection";
+        if (point === "between renames" || point === "during collection") {
+          const executeSql = f.storage.sql.exec.bind(f.storage.sql);
+          f.storage.sql.exec = (statement, ...bindings) => {
+            if (
+              point === "between renames" &&
+              /^ALTER TABLE cloud_v3_checkpoint_pages RENAME/i.test(statement)
+            ) {
+              f.storage.sql.exec = executeSql;
+              expect(tableNames(f)).not.toContain("cloud_v3_pages");
+              expect(retired(f)).toEqual(source.pages);
+              expect(root(f)).toEqual(source.root);
+              crash();
+            }
+            if (
+              point === "during collection" &&
+              /^DELETE FROM cloud_v3_commits\b/i.test(statement)
+            ) {
+              f.storage.sql.exec = executeSql;
+              f.db.run("DELETE FROM cloud_v3_commits WHERE sequence=1");
+              crash();
+            }
+            return executeSql(statement, ...bindings);
+          };
+        } else {
+          afterSync(f, switched ? 2 : 1, async () => {
+            if (switched) await expectCut(f, 1, 5, before.image);
+            crash();
+          });
+        }
+        expect(await checkpoint(f)).toMatchObject({
+          ...refused,
+          body: {
+            ok: false,
+            error: {
+              code: "UNAVAILABLE",
+              message: "Injected checkpoint fault",
+            },
+          },
+        });
+        expect(commits(f)).toEqual(
+          point === "during collection" ? log.slice(1) : log,
+        );
+        expect(pageSchema(f)).toEqual(schema);
+        if (switched) {
+          expect(retired(f)).toEqual(source.pages);
+          expect(tableNames(f)).toEqual(tables.concat(maintenance).sort());
+        } else {
+          expect(active(f)).toEqual(source);
+          if (point === "between renames")
+            expect(stagingTables(f)).toHaveLength(2);
+        }
+        if (point === "before collection") {
+          const { id, body } = pages(f)[0]!;
+          f.db.run(
+            "UPDATE cloud_v3_pages SET body='!' || substr(body, 2) WHERE id=?",
+            [id],
+          );
+          expect(await f.send(probe)).toMatchObject(refused);
+          f.db.run("UPDATE cloud_v3_pages SET body=? WHERE id=?", [body, id]);
+        }
+        f.restart();
+        await expectCut(f, switched ? 1 : 0, switched ? 5 : 0, before.image);
+        if (switched) {
+          const dump = await f.send("dump");
+          const rows = (
+            dump.body as { value: { tables: Record<string, unknown[]> } }
+          ).value.tables;
+          expect(
+            Object.keys(rows).every(
+              (name) =>
+                name.startsWith("state_") || domain.tables.includes(name),
+            ),
+          ).toBe(true);
+          expect(Object.values(rows).flat()).toEqual([]);
+          expect(await f.send("upgrade")).toMatchObject({ status: 409 });
+          expect(await f.send("restore", {})).toMatchObject({ status: 409 });
+          expect(tableNames(f)).toEqual(tables.concat(maintenance).sort());
+          expect(pages(f)).toHaveLength(3);
+          const tail = Array.from({ length: 13 }, () => frame());
+          expect((await append(f, ...tail)).status).toBe(200);
+          const effects = f.observeEffects();
+          expect(await checkpoint(f)).toMatchObject(refused);
+          expect(effects()).toEqual(noWrites);
+          f.db.run("DELETE FROM cloud_v3_commits WHERE sequence=18");
+          f.restart();
+        }
+        const rows = f.reads.rows;
+        expect((await checkpoint(f)).status).toBe(200);
+        const reads = f.reads.rows - rows;
+        expect(reads).toBeLessThanOrEqual(64);
+        console.log("v3 checkpoint retry rows", { point, reads });
+        expect(commits(f)).toEqual([]);
+        expect(tableNames(f)).toEqual(tables);
+        expect(pageSchema(f)).toEqual(schema);
+        const cut = switched ? 17 : 5;
+        const image = { ...before.image, head: cut };
+        await expectCut(f, switched ? 2 : 1, cut, image);
+      }),
+    timeout,
+  );
+}
 
 function pageBody(f: Fixture, id: string) {
   return f.db
@@ -287,7 +564,7 @@ function writePage(f: Fixture, id: string, body: string) {
   ]);
 }
 
-function resealProposal(f: Fixture, countChange: number) {
+function resealProposal(f: Fixture, entries: readonly DirectoryItem[]) {
   const row = f.db
     .query<{ proposal: string }, []>("SELECT proposal FROM cloud_v3_checkpoint")
     .get()!;
@@ -298,6 +575,8 @@ function resealProposal(f: Fixture, countChange: number) {
       count: number;
       bytes: number;
       hash: string;
+      first: unknown;
+      last: unknown;
     }[];
     counts: Record<string, number>;
     bytes: Record<string, number>;
@@ -307,9 +586,16 @@ function resealProposal(f: Fixture, countChange: number) {
     const body = pageBody(f, page.id);
     const bytes = Buffer.byteLength(body);
     proposal.bytes[page.kind] = proposal.bytes[page.kind]! + bytes - page.bytes;
-    proposal.counts[page.kind] = proposal.counts[page.kind]! + countChange;
+    if (page.kind === "directory") {
+      const [first, last] = [entries[0], entries.at(-1)];
+      page.first = first ? [first.collection, first.key] : null;
+      page.last = last ? [last.collection, last.key] : null;
+      page.count = entries.length;
+    } else {
+      page.count = entries.filter((entry) => !entry.deleted).length;
+    }
+    proposal.counts[page.kind] = page.count;
     page.bytes = bytes;
-    page.count += countChange;
     page.hash = digestBytes(body);
   }
   f.db.run("UPDATE cloud_v3_checkpoint SET proposal=?", [
@@ -329,13 +615,24 @@ function changedPages(f: Fixture, change: string, originalClaim: unknown) {
   if (change === "a pointer to another key with identical value bytes") {
     a.offset = b.offset!;
     writePage(f, directoryId, canonicalJson(entries));
-    resealProposal(f, 0);
+    resealProposal(f, entries);
     return;
   }
 
   const snapshotId = "snapshot:0";
   const snapshot = Buffer.from(pageBody(f, snapshotId));
-  if (change === "a missing record") entries.splice(entries.indexOf(a), 1);
+  const removable: Record<string, DirectoryItem | undefined> = {
+    "a missing record": a,
+    "a missing tombstone": entries.find(({ deleted }) => deleted),
+    "a missing receipt": entries.find(
+      ({ collection }) => collection === "outcome",
+    ),
+    "a missing witness": entries.find(
+      ({ collection }) => collection === "witness",
+    ),
+  };
+  const missing = removable[change];
+  if (missing) entries.splice(entries.indexOf(missing), 1);
   const extra = { ...b, key: "c" };
   if (change === "an extra record")
     entries.splice(entries.indexOf(b) + 1, 0, extra);
@@ -356,15 +653,15 @@ function changedPages(f: Fixture, change: string, originalClaim: unknown) {
   }
   writePage(f, snapshotId, body);
   writePage(f, directoryId, canonicalJson(entries));
-  resealProposal(
-    f,
-    change === "a missing record" ? -1 : change === "an extra record" ? 1 : 0,
-  );
+  resealProposal(f, entries);
 }
 
 for (const change of [
   "a missing release",
   "a missing record",
+  "a missing tombstone",
+  "a missing receipt",
+  "a missing witness",
   "an altered record",
   "an extra record",
   "a pointer to another key with identical value bytes",
@@ -378,18 +675,40 @@ for (const change of [
         const source = active(f);
         const log = commits(f);
         const initialLease = (JSON.parse(log[1]!.body) as Json).lease;
-        let tampered = false;
+        let readStagedPages = false;
+        let attemptedSwitch = false;
+        const executeSql = f.storage.sql.exec.bind(f.storage.sql);
         afterSync(f, 1, () => {
           changedPages(f, change, initialLease);
-          tampered = true;
+          f.storage.sql.exec = (statement, ...bindings) => {
+            readStagedPages ||= statement.includes(
+              "FROM cloud_v3_checkpoint_pages",
+            );
+            attemptedSwitch ||= statement.includes("AND seal=? AND body=?");
+            return executeSql(statement, ...bindings);
+          };
         });
         const result = await checkpoint(f);
-        expect(result).toMatchObject(refused);
-        expect(tampered).toBe(true);
+        f.storage.sql.exec = executeSql;
+        expect(result).toEqual({
+          status: 503,
+          body: {
+            ok: false,
+            error: {
+              code: "UNAVAILABLE",
+              message: "Cloud v3 checkpoint cannot be verified within one turn",
+              retry: "never",
+            },
+          },
+        });
+        expect({ readStagedPages, attemptedSwitch }).toEqual({
+          readStagedPages: true,
+          attemptedSwitch: false,
+        });
         expect(stagingTables(f)).toEqual([]);
-        expect((await checkpoint(f)).status).toBe(200);
         expect(active(f)).toEqual(source);
         expect(commits(f)).toEqual(log);
+        expect((await checkpoint(f)).status).toBe(200);
         f.restart();
         expect((await view(f)).image).toEqual(before.image);
       }),
