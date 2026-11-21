@@ -1,6 +1,6 @@
 # Code of conduct
 
-Everyone participating in Forge issues, pull requests and project spaces
+Everyone participating in this project's issues, pull requests and other spaces
 deserves to take part without harassment. Welcome different backgrounds and
 levels of experience. Give specific feedback about the work and receive it
 respectfully. Harassment, threats, slurs, personal attacks and sharing someone's
