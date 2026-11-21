@@ -747,3 +747,168 @@ test(
     }),
   timeout,
 );
+
+const sendLease = (f: Fixture, route: string, owner: string, input: Json) =>
+  f.send(
+    `${probe}/${route}`,
+    {
+      subject: "work-1",
+      holder: { ...holder, session: { ...holder.session, device: owner } },
+      ...input,
+    },
+    {
+      "X-Forge-Owner": owner,
+      "X-Forge-Owner-Expires": String(E1 + HOUR),
+    },
+  );
+
+const leaseClaim = (f: Fixture, owner: string) =>
+  sendLease(f, "claim", owner, { requestId: owner, ttlMs: HOUR });
+
+function changeCommit(
+  f: Fixture,
+  sequence: number,
+  edit: (body: Json) => Json,
+) {
+  const { body } = commits(f).find((row) => row.sequence === sequence)!;
+  f.db.run("UPDATE cloud_v3_commits SET body=? WHERE sequence=?", [
+    canonicalJson(edit(JSON.parse(body) as Json)),
+    sequence,
+  ]);
+}
+
+function generation(frame: Json, next: number): Json {
+  return {
+    ...frame,
+    lease: { ...(frame.lease as Json), generation: next },
+    witness: { ...(frame.witness as Json), generation: next },
+  };
+}
+
+for (const fault of [
+  "skipped generation",
+  "repeated generation",
+  "release by a different holder",
+  "takeover before expiry",
+  "wrong refusal body",
+] as const) {
+  test(
+    `v3 checkpoint refuses a ${fault} in the source transcript`,
+    () =>
+      withFixture(async (f) => {
+        expect((await leaseClaim(f, "owner-a")).status).toBe(200);
+        if (fault === "skipped generation") {
+          changeCommit(f, 1, (frame) => generation(frame, 2));
+        } else if (fault === "release by a different holder") {
+          expect(
+            (
+              await sendLease(f, "release", "owner-a", {
+                requestId: "release-a",
+                generation: 1,
+              })
+            ).status,
+          ).toBe(200);
+          changeCommit(f, 2, (frame) => {
+            const outcome = frame.outcome as Json;
+            const lease = frame.lease as Json;
+            const fingerprint = JSON.parse(String(outcome.fingerprint)) as Json;
+            const previousHolder = lease.holder as Json;
+            const wrongHolder = {
+              ...previousHolder,
+              session: { ...(previousHolder.session as Json), device: "other" },
+            };
+            return {
+              ...frame,
+              lease: { ...lease, holder: wrongHolder },
+              outcome: {
+                ...outcome,
+                fingerprint: canonicalJson({
+                  ...fingerprint,
+                  holder: wrongHolder,
+                }),
+              },
+            };
+          });
+        } else if (fault === "wrong refusal body") {
+          expect((await leaseClaim(f, "owner-b")).status).toBe(409);
+          changeCommit(f, 2, (frame) => {
+            const outcome = frame.outcome as Json;
+            return {
+              ...frame,
+              outcome: {
+                ...outcome,
+                result: {
+                  ...(outcome.result as Json),
+                  message: "A different refusal",
+                },
+              },
+            };
+          });
+        } else {
+          setSystemTime(T0 + HOUR + 1);
+          expect((await leaseClaim(f, "owner-b")).status).toBe(200);
+          changeCommit(f, 2, (frame) =>
+            fault === "repeated generation"
+              ? generation(frame, 1)
+              : {
+                  ...frame,
+                  time: T0 + 1,
+                  lease: {
+                    ...(frame.lease as Json),
+                    expiresAt: new Date(T0 + HOUR + 1).toISOString(),
+                  },
+                },
+          );
+        }
+        f.restart();
+        const source = active(f);
+        const log = commits(f);
+        expect(await checkpoint(f)).toMatchObject(refused);
+        expect(active(f)).toEqual(source);
+        expect(commits(f)).toEqual(log);
+      }),
+    timeout,
+  );
+}
+
+test(
+  "v3 checkpoint refuses a rehashed archive with the wrong refusal digest",
+  () =>
+    withFixture(async (f) => {
+      expect((await leaseClaim(f, "owner-a")).status).toBe(200);
+      expect((await leaseClaim(f, "owner-b")).status).toBe(409);
+      expect((await checkpoint(f)).status).toBe(200);
+
+      const id = "transcript:0";
+      const page = pages(f).find((row) => row.id === id)!;
+      const history = JSON.parse(page.body) as Json[];
+      const refusal = history[1]!.outcome as Json;
+      expect(refusal.resultDigest).toEqual(expect.any(String));
+      const transcript = canonicalJson(
+        history.with(1, {
+          ...history[1],
+          outcome: { ...refusal, resultDigest: digestBytes("wrong refusal") },
+        }),
+      );
+      const hash = digestBytes(transcript);
+      const manifest = JSON.parse(root(f).body) as { pages: Json[] };
+      const updated = canonicalJson({
+        ...manifest,
+        transcriptDigest: hash,
+        pages: manifest.pages.map((entry) =>
+          entry.id === id ? { ...entry, hash } : entry,
+        ),
+      });
+      f.db.run("UPDATE cloud_v3_pages SET body=? WHERE id=?", [transcript, id]);
+      f.db.run("UPDATE cloud_v3_root SET body=?, seal=? WHERE id=1", [
+        updated,
+        digestBytes(updated),
+      ]);
+      f.restart();
+      const source = active(f);
+      expect(await checkpoint(f)).toMatchObject(refused);
+      expect(active(f)).toEqual(source);
+      expect(commits(f)).toEqual([]);
+    }),
+  timeout,
+);
