@@ -127,6 +127,7 @@ import {
 
 import { stateMigrations } from "../../src/core/state/migrations.ts";
 import { checkpointV3 } from "./v3-checkpoint.ts";
+import { hasV3Restore, restoreV3Page } from "./v3-restore.ts";
 import {
   appendV3Frames,
   hasV3Root,
@@ -405,6 +406,8 @@ export class Project {
   }
 
   #requireV2(): void {
+    if (this.#testV3 && hasV3Restore(writableStore(this.#storage)))
+      throw fail("INPUT_CONFLICT", "An admin restore is under way");
     if (this.#hasV3Root())
       throw fail("INPUT_CONFLICT", "Cloud v3 projects cannot use v2 routes");
   }
@@ -551,10 +554,29 @@ export class Project {
           const legacy =
             (await this.#storage.get(PROVISIONED)) !== undefined ||
             (await this.#storage.get(STAGED)) !== undefined;
-          this.#v3Image = provisionV3(db, legacy);
+          this.#v3Image = provisionV3(db, legacy || hasV3Restore(db));
           this.#v3Root = true;
           return Response.json({ ok: true, value: viewV3(this.#v3Image) });
         }
+      }
+      if (route === "restore" && request.method === "POST" && this.#testV3) {
+        const body = await bounded(
+          request,
+          2 * 1024 * 1024,
+          "RESTORE_TOO_LARGE",
+          true,
+        );
+        const legacy =
+          (await this.#storage.get(PROVISIONED)) !== undefined ||
+          (await this.#storage.get(STAGED)) !== undefined;
+        const value = restoreV3Page(
+          writableStore(this.#storage),
+          body,
+          request.headers.get("X-Forge-Manifest-Digest"),
+          legacy,
+          Project.admitLeaseRequest,
+        );
+        return Response.json({ ok: true, value });
       }
       if (route === "upgrade" || route === "devices" || route === "restore")
         this.#requireV2();
