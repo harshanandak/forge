@@ -6,6 +6,7 @@ import {
   isObject,
 } from "../../src/core/config/pointer.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
+import type { AdmitLeaseRequest } from "./project.ts";
 import { type DurableStorage, TABLE_PROBE } from "./store.ts";
 import {
   COLLECTIONS,
@@ -49,12 +50,8 @@ function parse(text: string): unknown {
   }
 }
 
-function inventory(
-  image: V3Image,
-  pages: ReadonlyMap<string, Buffer>,
-  collections: readonly (typeof COLLECTIONS)[number][] = COLLECTIONS,
-): Item[] {
-  return collections.flatMap((collection) =>
+function inventory(image: V3Image, pages: ReadonlyMap<string, Buffer>): Item[] {
+  return COLLECTIONS.flatMap((collection) =>
     [...image.entries[collection].keys()].sort().map((key) => {
       const slot = image.entries[collection].get(key)!;
       if (slot === null) return [collection, key, null];
@@ -239,12 +236,13 @@ export async function checkpointV3(
   storage: DurableStorage,
   warm: V3Image | undefined,
   replaceWarm: ReplaceWarm,
+  admit: AdmitLeaseRequest,
 ) {
   requireCheckpoint(!activeStages.has(storage));
   activeStages.add(storage);
   try {
     const pending = db.get(TABLE_PROBE, [RETIRED]) !== undefined;
-    return await checkpoint(db, storage, warm, replaceWarm, pending);
+    return await checkpoint(db, storage, warm, replaceWarm, pending, admit);
   } finally {
     activeStages.delete(storage);
   }
@@ -256,6 +254,7 @@ async function checkpoint(
   warm: V3Image | undefined,
   replaceWarm: ReplaceWarm,
   pending: boolean,
+  admit: AdmitLeaseRequest,
 ) {
   const root = readV3Root(db);
   const source = canonicalJson(root);
@@ -290,9 +289,15 @@ async function checkpoint(
     [...prior].map(([id, body]) => [id, Buffer.from(body)]),
   );
   const image = recoverV3(db, {
+    admit,
     pages: previous,
     sealed: (sealed) =>
-      reconcileReceipts(inventory(sealed, previous, ["outcome"]), history),
+      reconcileReceipts(
+        inventory(sealed, previous).filter(
+          ([collection]) => collection === "outcome",
+        ),
+        history,
+      ),
   });
   requireCheckpoint(image.head === cut);
   const expected = inventory(image, previous);

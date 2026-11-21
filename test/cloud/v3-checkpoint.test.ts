@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
-import { domain } from "../../cloud/src/project.ts";
+import { domain, Project } from "../../cloud/src/project.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { canonicalJson, digestBytes } from "../../src/core/config/pointer.ts";
 import { guardFixture, noWrites, probe } from "./v3-project.fixture.ts";
@@ -872,6 +872,35 @@ for (const fault of [
 }
 
 test(
+  "v3 checkpoint refuses a release written with an expired token deadline",
+  () =>
+    withFixture(async (f) => {
+      expect((await leaseClaim(f, "owner-a")).status).toBe(200);
+      expect(
+        (
+          await sendLease(f, "release", "owner-a", {
+            requestId: "release-a",
+            generation: 1,
+          })
+        ).status,
+      ).toBe(200);
+      changeCommit(f, 2, (frame) => ({
+        ...frame,
+        outcome: { ...(frame.outcome as Json), retryUntil: 0 },
+      }));
+      f.restart();
+      const source = active(f);
+      const log = commits(f);
+      const effects = f.observeEffects();
+      expect(await checkpoint(f)).toMatchObject(refused);
+      expect(effects()).toEqual(noWrites);
+      expect(active(f)).toEqual(source);
+      expect(commits(f)).toEqual(log);
+    }),
+  timeout,
+);
+
+test(
   "v3 checkpoint refuses a rehashed archive with the wrong refusal digest",
   () =>
     withFixture(async (f) => {
@@ -1054,6 +1083,43 @@ test(
         body: { error: { message: "Lease holder has an invalid device" } },
       });
       expect(effects()).toEqual(noWrites);
+    }),
+  timeout,
+);
+
+test(
+  "v3 checkpoint accepts a refusal from the smallest 8192-byte lease request",
+  () =>
+    withFixture(async (f) => {
+      const minimal = JSON.stringify({
+        subject: "",
+        holder,
+        requestId: "a",
+        ttlMs: 1e20,
+      }).replace('"ttlMs":100000000000000000000', '"ttlMs":1e20');
+      const subject = "!".repeat(8192 - Buffer.byteLength(minimal));
+      const body = Buffer.from(minimal.replace('""', JSON.stringify(subject)));
+      body[body.indexOf("!")] = 0xff;
+      expect(body.byteLength).toBe(8192);
+      const project = new Project({ storage: f.storage, testV3: true });
+      const response = await project.fetch(
+        new Request(`https://fixture.example/p/a/${probe}/claim`, {
+          method: "POST",
+          body: new Blob([new Uint8Array(body)]),
+          headers: {
+            "X-Forge-Owner": "owner-a",
+            "X-Forge-Owner-Expires": String(E1 + HOUR),
+          },
+        }),
+      );
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({
+        error: { message: "ttlMs must be a positive safe integer" },
+      });
+      expect(commits(f)).toHaveLength(1);
+      f.restart();
+      expect((await checkpoint(f)).status).toBe(200);
+      expect(commits(f)).toEqual([]);
     }),
   timeout,
 );

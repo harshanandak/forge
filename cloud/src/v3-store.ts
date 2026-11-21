@@ -13,18 +13,17 @@ import {
 import type { ForgeError, LeaseRecord } from "../../src/generated/types.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
 import { expiredReplay, RETENTION_MS } from "./issue-receipts.ts";
-import { receiptScope, type ReceiptScope } from "./issue-request-id.ts";
+import type { ReceiptScope } from "./issue-request-id.ts";
 import {
-  hasText,
   type LeaseCommand,
   leaseFingerprint,
-  leaseHolderDevice,
   NAMESPACE,
   recordable,
   replayLease,
   requestConflict,
 } from "./lease-command.ts";
 import { checkTtl } from "./lease-ttl.ts";
+import type { AdmitLeaseRequest } from "./project.ts";
 import {
   authorityFault,
   isDigest,
@@ -33,6 +32,7 @@ import {
 } from "./v3-authority.ts";
 import { TABLE_PROBE } from "./store.ts";
 
+export { withinDepth };
 export const ROOT = "cloud_v3_root";
 export const PAGES = "cloud_v3_pages";
 export const PAGE_SCHEMA =
@@ -327,12 +327,15 @@ function directoryEntry(entry: unknown, byId: ReadonlyMap<string, Page>) {
   };
 }
 
+interface Verification {
+  admit: AdmitLeaseRequest;
+  pages: ReadonlyMap<string, Buffer>;
+  sealed: (image: V3Image) => void;
+}
+
 export function recoverV3(
   db: SqlDatabase,
-  verification?: {
-    pages: ReadonlyMap<string, Buffer>;
-    sealed: (image: V3Image) => void;
-  },
+  verification?: Verification,
 ): V3Image {
   const root = readV3Root(db);
   const byId = new Map(root.pages.map((page) => [page.id, page]));
@@ -401,7 +404,7 @@ export function recoverV3(
   if (rows.length > TAIL_ROWS) throw unavailable();
   const verify =
     verification &&
-    ((frame: Frame) => verifyLeaseFrame(db, image, frame, verification.pages));
+    ((frame: Frame) => verifyLeaseFrame(db, image, frame, verification));
   for (const { sequence, body } of rows) foldRow(image, sequence, body, verify);
   return image;
 }
@@ -677,34 +680,56 @@ function admitLease(
   return current;
 }
 
+function compactLeaseJson(input: object): string {
+  const tokens = /"(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?(?:e[+-]?\d+)?/g;
+  return JSON.stringify(input).replace(tokens, (token) => {
+    if (token.startsWith('"')) return token;
+    const scientific = Number(token).toExponential().replace("+", "");
+    const [mantissa = "", power] = scientific.split("e");
+    const decimals = mantissa.split(".")[1]?.length ?? 0;
+    const integer = `${mantissa.replace(".", "")}e${Number(power) - decimals}`;
+    return [token, scientific, integer].sort((a, b) => a.length - b.length)[0]!;
+  });
+}
+
 function verifyLeaseFrame(
   db: SqlDatabase,
   image: V3Image,
   frame: Frame,
-  pages: ReadonlyMap<string, Buffer>,
+  { pages, admit }: Verification,
 ): Frame {
   const { outcome, time } = frame;
   if (!outcome) return frame;
   const input = parse(outcome.fingerprint);
-  const device = isObject(input) ? leaseHolderDevice(input.holder) : undefined;
   if (
     frame.events.length !== 0 ||
     frame.changes !== undefined ||
     !isObject(input) ||
-    !hasText(input.subject) ||
-    typeof input.route !== "string" ||
-    device === undefined ||
-    (input.route === "claim"
-      ? input.generation !== null
-      : !isNat(input.generation) || input.generation === 0) ||
-    (input.route === "release" && input.ttlMs !== null) ||
     !/^l2:[a-f0-9]{64}$/.test(outcome.id)
   )
     throw unavailable();
-  const command = input as unknown as LeaseCommand;
+  const holder = isObject(input.holder) ? input.holder : {};
+  const { device, ...session } = isObject(holder.session) ? holder.session : {};
+  let command: LeaseCommand;
+  try {
+    command = admit(
+      String(input.route) as LeaseCommand["route"],
+      compactLeaseJson({
+        requestId: "a",
+        subject: input.subject,
+        holder: { ...holder, session },
+        ttlMs: input.ttlMs ?? undefined,
+        generation: input.generation ?? undefined,
+      }),
+      device,
+      null,
+      undefined,
+      [outcome.retryUntil, time],
+    );
+  } catch {
+    throw unavailable();
+  }
   if (
-    storedCanonical(input.scope) !==
-      storedCanonical(receiptScope(["owner", device, device])) ||
     leaseFingerprint(command) !== outcome.fingerprint ||
     (readV3Value(db, image, "outcome", outcome.id, pages)?.outcome.retryUntil ??
       0) > time
@@ -741,14 +766,13 @@ export function leaseV3(
   image: V3Image,
   command: LeaseCommand,
   expiresAt: number,
+  admittedAt?: number,
 ): LeaseRecord {
-  if (!withinDepth(command))
-    throw fail("INPUT_INVALID", "Lease input is nested too deeply");
   const { route, subject, holder, requestId } = command;
   const result = db.transaction(
     (): { lease: LeaseRecord } | { refusal: ForgeFailure } => {
       const fingerprint = leaseFingerprint(command);
-      const now = Date.now();
+      const now = admittedAt ?? Date.now();
       const read = () => readV3Value(db, image, "lease", subject);
       const prior = readV3Value(db, image, "outcome", requestId);
       if (prior !== undefined && prior.outcome.retryUntil > now) {
