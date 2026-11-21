@@ -187,6 +187,7 @@ test("hosted lane close records CI Gate evidence and frees the cap without chang
                     isRequired: true,
                     checkSuite: {
                       app: { slug: "github-actions" },
+                      workflowRun: { workflow: { databaseId: 10 } },
                       commit: { oid: head },
                       repository: { nameWithOwner: "harshanandak/forge" },
                     },
