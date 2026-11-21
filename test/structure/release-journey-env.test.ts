@@ -15,6 +15,7 @@ function source(path: string): string {
 
 const helper = "test/integration/journey-env.ts";
 const optionalNames = new Set<string>(optionalJourneyVariables);
+const helperName = /^(?:requireJourneyEnv|optionalJourneyEnv|journeyChildEnv)$/;
 
 function verifyJourneyEnvironment(
   file: string,
@@ -22,19 +23,34 @@ function verifyJourneyEnvironment(
   provided: ReadonlySet<string>,
 ): void {
   const imported = new Set<string>();
+  const isHelper = (path: string): boolean =>
+    posix.normalize(posix.join(posix.dirname(file), path)) === helper;
   const withoutImports = maskSource(text, false).replace(
     /^ *import\s*\{([\w\s,]+)\}\s*from\s*["'](\.[^"'\n]+)["'] *;?/gm,
     (statement: string, names: string, path: string) => {
-      if (posix.normalize(posix.join(posix.dirname(file), path)) !== helper)
+      const bindings = names
+        .split(",")
+        .map((name) => name.trim())
+        .filter(Boolean);
+      if (!isHelper(path) || !bindings.every((name) => helperName.test(name)))
         return statement;
-      for (const name of names.split(",").map((name) => name.trim()))
-        imported.add(name);
+      for (const name of bindings) imported.add(name);
       return statement.replace(/[^\r\n]/g, " ");
     },
   );
   const code = maskSource(withoutImports, true);
   const location = (index: number): string =>
     `${file}:${code.slice(0, index).split("\n").length}`;
+
+  const otherImports =
+    /\b(?:from\s*|(?:import|require)\s*\(\s*|import\s+)["'](\.[^"'\n]+)["']/g;
+  const indirect = [...withoutImports.matchAll(otherImports)].find(
+    (match) => code[match.index] === match[0][0] && isHelper(match[1]!),
+  );
+  assert.ok(
+    !indirect,
+    `${location(indirect?.index ?? 0)}: import journey environment helpers by their declared names`,
+  );
 
   const raw =
     /\bprocess\b(?!\s*\.\s*(?:execPath|on|pid|platform)\b)|\bBun\s*(?:\?\.|\.)\s*env\b/g;
@@ -184,6 +200,17 @@ test("release guard refuses direct fixture reads from a child environment", () =
   expect(() => verifyJourneyEnvironment(fixture, code, new Set())).toThrow(
     `${fixture}:2: use journeyChildEnv only to prepare a child environment`,
   );
+}, 1000);
+
+test("release guard rejects renamed and namespace environment imports", () => {
+  for (const code of [
+    'import { requireJourneyEnv as read } from "../integration/journey-env.ts"; read("RELEASE_PROOF", "missing");',
+    'import * as env from "../integration/journey-env.ts"; env["requireJourneyEnv"]("RELEASE_PROOF", "missing");',
+  ]) {
+    expect(() => verifyJourneyEnvironment(fixture, code, new Set())).toThrow(
+      `${fixture}:1: import journey environment helpers by their declared names`,
+    );
+  }
 }, 1000);
 
 test("release guard rejects dynamic required names and unapproved optional names", () => {
