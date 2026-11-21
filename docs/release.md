@@ -10,7 +10,7 @@ Public repo/package OIDC generates provenance; we request it, require registry a
 
 Release readback installs its pinned ecosystem fixture tools and requires every installed journey, including Vitest, Jest, pytest and Make. Missing tools, skipped tests, failed tests or an absent native test report block promotion. Developer pack smoke may still report optional ecosystem skips; release acceptance cannot.
 
-Run: keep the temporary prerelease `0.1.0-beta.9` (V001); the owner decides the final number before stable. Require an unused version, successful main CI, and dispatch Release with its numeric `run_id` at that same commit. Review verify's version/hash, then approve publish to `next`.
+Run: release `0.0.11` as the local-only stable version and promote it to `latest` after readback and the second approval. The next prerelease line is `0.1.0`. Require an unused version, successful main CI, and dispatch Release with its numeric `run_id` at that same commit. Review verify's version/hash, then approve publish to `next`.
 
 Before promotion, require all three OS readbacks: exact registry version and `next` tag, approved archive integrity, native installed version/clean build commit, npm-verified signatures and provenance from this repository's main release workflow, and the full registry-installed journey. Retain the run logs.
 
