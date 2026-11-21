@@ -6,7 +6,7 @@ import {
   isDigest,
   isNat,
 } from "../../cloud/src/v3-authority.ts";
-import { leaseV3 } from "../../cloud/src/v3-store.ts";
+import { leaseV3, recoverV3 } from "../../cloud/src/v3-store.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { canonicalJson, digestBytes } from "../../src/core/config/pointer.ts";
 import { validateForgeError } from "../../src/generated/validators.ts";
@@ -93,11 +93,14 @@ test(
         );
       expect((await f.send(probe, {})).status).toBe(200);
       expect((await send("owner-a", "work-1", "acq-1")).status).toBe(200);
+      const db = writableStore(f.storage);
+      const image = recoverV3(db);
       expect(
         f.db.run(
           "UPDATE cloud_v3_commits SET body=json_set(body,'$.lease.generation',0) WHERE sequence=1",
         ).changes,
       ).toBe(1);
+      f.restart();
       const rows = () =>
         f.db
           .query<{ sequence: number; body: string }, []>(
@@ -110,7 +113,6 @@ test(
         status: 503,
         body: { ok: false, error: { code: "UNAVAILABLE" } },
       });
-      const db = writableStore(f.storage);
       const command = (subject: string, requestId: string) =>
         ({
           route: "claim",
@@ -124,7 +126,7 @@ test(
         }) as LeaseCommand;
       let thrown: unknown;
       try {
-        leaseV3(db, command("work-1", "acq-2"), E1);
+        leaseV3(db, image, command("work-1", "acq-2"), E1);
       } catch (error) {
         thrown = error;
       }
@@ -135,7 +137,7 @@ test(
       );
       expect(rows()).toEqual(stored);
       expect(f.snapshot()).toEqual(before);
-      expect(leaseV3(db, command("work-2", "acq-3"), E1)).toMatchObject({
+      expect(leaseV3(db, image, command("work-2", "acq-3"), E1)).toMatchObject({
         subject: "work-2",
         generation: 1,
       });
@@ -300,13 +302,50 @@ test(
         "lease and ok outcome pairing",
       ],
       [
-        "a lease without an outcome",
-        at("outcome", DELETE)(claim),
+        "a lease without an outcome on a non-lease operation",
+        at("operation", "fixture.put")(at("outcome", DELETE)(claim)),
         "lease and ok outcome pairing",
       ],
       [
-        "a refusal carrying the claim's lease",
-        at("lease", claim.lease)(refusal),
+        "a claim without its outcome",
+        at("outcome", DELETE)(claim),
+        "outcome operation",
+      ],
+      [
+        "a refused claim without its outcome",
+        at("outcome", DELETE)(refusal),
+        "outcome operation",
+      ],
+      [
+        "a claim refused with a renew or release code",
+        at(
+          "outcome.status",
+          "LEASE_STALE",
+        )(
+          at("outcome.result", {
+            ...((refusal.outcome as Json).result as Json),
+            code: "LEASE_STALE",
+          })(refusal),
+        ),
+        "outcome route",
+      ],
+      [
+        "a renew refused with the claim code",
+        at("outcome", {
+          ...(renew.outcome as Json),
+          status: "LEASE_HELD",
+          result: (refusal.outcome as Json).result,
+        })(at("lease", DELETE)(renew)),
+        "outcome route",
+      ],
+      [
+        "a refusal carrying a lease its fingerprint names",
+        at("lease", {
+          ...(claim.lease as Json),
+          holder: (
+            JSON.parse(String((refusal.outcome as Json).fingerprint)) as Json
+          ).holder,
+        })(refusal),
         "lease and ok outcome pairing",
       ],
       [
@@ -363,6 +402,74 @@ test(
         "a witness whose digest is not its fingerprint's",
         at("witness.digest", digestBytes("x"))(claim),
         "witness",
+      ],
+      [
+        "an ok outcome on an operation leaseV3 never writes",
+        at("operation", "fixture.put")(claim),
+        "outcome operation",
+      ],
+      [
+        "a refusal on an operation leaseV3 never writes",
+        at("operation", "fixture.put")(refusal),
+        "outcome operation",
+      ],
+      [
+        "a refusal with a lease code leaseV3 never records",
+        at(
+          "outcome.status",
+          "LEASE_FOO",
+        )(
+          at("outcome.result", {
+            ...((refusal.outcome as Json).result as Json),
+            code: "LEASE_FOO",
+          })(refusal),
+        ),
+        "outcome status",
+      ],
+      [
+        "a renew recorded as a claim",
+        at("operation", "lease.claim")(renew),
+        "outcome fingerprint",
+      ],
+      [
+        "a refusal recorded on another route",
+        at("operation", "lease.renew")(refusal),
+        "outcome fingerprint",
+      ],
+      [
+        "a lease for another subject than its fingerprint",
+        at("lease.subject", "work-2")(renew),
+        "outcome fingerprint",
+      ],
+      [
+        "a lease for another holder than its fingerprint",
+        at("lease.holder", { ...holder, actor: { kind: "agent", id: "x" } })(
+          renew,
+        ),
+        "outcome fingerprint",
+      ],
+      [
+        "a lease at another generation than its fingerprint",
+        at("lease.generation", 2)(release),
+        "outcome fingerprint",
+      ],
+      [
+        "an outcome scope for another principal than its fingerprint",
+        at("outcome.scope.principal", digestBytes("x"))(renew),
+        "outcome fingerprint",
+      ],
+      [
+        "a fingerprint that is not JSON",
+        at("outcome.fingerprint", "x")(renew),
+        "outcome fingerprint",
+      ],
+      [
+        "a fingerprint that is not canonical",
+        at(
+          "outcome.fingerprint",
+          ` ${String((renew.outcome as Json).fingerprint)}`,
+        )(renew),
+        "outcome fingerprint",
       ],
     ];
     expect(

@@ -38,10 +38,16 @@ export const requestConflict = (): ForgeFailure =>
     retry: "reconcile_first",
   });
 
+export const REFUSALS = [
+  "INPUT_INVALID",
+  "LEASE_EXPIRED",
+  "LEASE_HELD",
+  "LEASE_NOT_HELD",
+  "LEASE_STALE",
+];
+
 export const recordable = (error: unknown): error is ForgeFailure =>
-  error instanceof ForgeFailure &&
-  (error.error.code.startsWith("LEASE_") ||
-    error.error.code === "INPUT_INVALID");
+  error instanceof ForgeFailure && REFUSALS.includes(error.error.code);
 
 export function replayLease(
   { route, requestId, subject, holder }: LeaseCommand,

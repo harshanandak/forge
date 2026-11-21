@@ -131,8 +131,10 @@ import {
   hasV3Root,
   leaseV3,
   provisionV3,
+  publishV3,
   recoverV3,
   requireGenesisForLease,
+  type V3Image,
   viewV3,
 } from "./v3-store.ts";
 
@@ -335,6 +337,7 @@ export class Project {
   #initialized = false;
   #provisioned = false;
   #v3Root: boolean | undefined;
+  #v3Image: V3Image | undefined;
   #maintenanceAt: number | undefined;
   readonly #limits: Limits;
   readonly #env: LoginEnv;
@@ -388,6 +391,12 @@ export class Project {
 
   #hasV3Root(): boolean {
     return (this.#v3Root ??= hasV3Root(writableStore(this.#storage)));
+  }
+
+  #image(db: SqlDatabase): V3Image {
+    if (this.#v3Image === undefined || this.#v3Image.stale)
+      this.#v3Image = recoverV3(db);
+    return this.#v3Image;
   }
 
   #requireV2(): void {
@@ -484,7 +493,7 @@ export class Project {
       if (probe && !url.search) {
         const db = writableStore(this.#storage);
         if (!probe[1] && request.method === "GET")
-          return Response.json({ ok: true, value: viewV3(recoverV3(db)) });
+          return Response.json({ ok: true, value: viewV3(this.#image(db)) });
         if (request.method === "POST") {
           const lease = probe[1] !== "commits" && probe[1];
           const owner = request.headers.get("X-Forge-Owner");
@@ -503,28 +512,27 @@ export class Project {
               null,
               ["owner", owner, owner],
             );
-            requireGenesisForLease(db);
-            return Response.json({
-              ok: true,
-              value: leaseV3(db, command, expiresAt),
-            });
+            const image = this.#image(db);
+            requireGenesisForLease(image);
+            const value = leaseV3(db, image, command, expiresAt);
+            return Response.json({ ok: true, value });
           }
           const input = object(body);
           if (probe[1]) {
-            recoverV3(db);
-            return Response.json({
-              ok: true,
-              value: appendV3Frames(db, input.frames),
-            });
+            const value = appendV3Frames(db, input.frames, () =>
+              this.#image(db),
+            );
+            publishV3(this.#v3Image!);
+            return Response.json({ ok: true, value });
           }
           if (Object.keys(input).length)
             throw fail("INPUT_INVALID", "Expected an empty provision body");
           const legacy =
             (await this.#storage.get(PROVISIONED)) !== undefined ||
             (await this.#storage.get(STAGED)) !== undefined;
-          const value = provisionV3(db, legacy);
+          this.#v3Image = provisionV3(db, legacy);
           this.#v3Root = true;
-          return Response.json({ ok: true, value });
+          return Response.json({ ok: true, value: viewV3(this.#v3Image) });
         }
       }
       if (route === "upgrade" || route === "devices" || route === "restore")
