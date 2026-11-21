@@ -257,7 +257,7 @@ for (const [name, latest] of [
 // Jobs GitHub never created: absent from the attempt's job list, not skipped.
 // The CI Gate reports them as 'abandoned'. Names mirror ci.yml's `needs`.
 const node26Name =
-  "Verify Node 26 (${{ matrix.os }}, ${{ matrix.suite }}${{ matrix.shard && format(', shard {0}', matrix.shard) || '' }})";
+  "Verify Node 26 (${{ matrix.os }}, ${{ matrix.suite }}) ${{ matrix.shard }}";
 const needed = [
   "Changes",
   "PR title",

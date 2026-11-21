@@ -425,7 +425,7 @@ jobs:
           if-no-files-found: warn
 
   verify-node26:
-    name: Verify Node 26 (${{ matrix.os }}, ${{ matrix.suite }}${{ matrix.shard && format(', shard {0}', matrix.shard) || '' }})
+    name: Verify Node 26 (${{ matrix.os }}, ${{ matrix.suite }}) ${{ matrix.shard }}
     needs: pack
     if: github.event_name == 'push' || github.event_name == 'schedule'
     runs-on: ${{ matrix.os }}
