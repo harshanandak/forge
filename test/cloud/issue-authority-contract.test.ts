@@ -4,7 +4,7 @@ import { ACTOR, DEVICE } from "../../cloud/conformance/max-source.ts";
 import { issueWriters } from "../../cloud/src/issue-commands.ts";
 import { Project, STATUS } from "../../cloud/src/project.ts";
 import { storageFailure } from "../../cloud/src/storage-failure.ts";
-import { TOKEN_LOOKUP, tokenParts } from "../../cloud/src/tokens.ts";
+import { TOKEN_LOOKUP } from "../../cloud/src/tokens.ts";
 import { createWorker } from "../../cloud/src/worker.ts";
 import manifest from "../../src/blocks/work/forge.block.json" with { type: "json" };
 import { ForgeFailure } from "../../src/contract/failure.ts";
@@ -30,6 +30,10 @@ const cases = [
   ["issue.comment", { id, body: "A comment" }],
   ["issue.update", { id, expectRevision: 1, title: "Renamed" }],
   ["issue.dep", { id, target: "forge-2", action: "add", expectRevision: 1 }],
+  [
+    "issue.link",
+    { id, relation: "references", url: "https://fixture.example/ref" },
+  ],
   ["issue.close", { id, withoutReceipt: "Done" }],
   ["issue.claim", { id, ttlSeconds: 60 }],
   ["issue.renew", { id, ttlSeconds: 120 }],
@@ -49,6 +53,17 @@ test("cloud issue authority covers every dispatched writer exactly once", () => 
       "issue:write",
     );
   requireAuthorityCoverage(writers, covered);
+}, 5_000);
+
+test("cloud issue authority names an omitted writer", () => {
+  expect(() =>
+    requireAuthorityCoverage(
+      writers,
+      covered.filter((op) => op !== "issue.link"),
+    ),
+  ).toThrow(
+    /^Authority invariant missing or failed for issue\.link: add this entry point to the shared contract suite and test refusal before state changes\.$/,
+  );
 }, 5_000);
 
 const host = "https://fixture.example/p/contract";
@@ -85,13 +100,13 @@ async function projectFixture([
   const db = new Database(":memory:");
   try {
     let tokenReads = 0;
-    const { storage, values } = browserStorage(db, (sql) => {
-      if (sql === TOKEN_LOOKUP) tokenReads++;
-    });
+    const { storage, values } = browserStorage(db);
     const store = observeAuthorityStore(db, values);
     const query = storage.sql.exec.bind(storage.sql);
-    storage.sql.exec = (sql, ...params) =>
-      store.traceSql(sql, () => query(sql, ...params));
+    storage.sql.exec = (sql, ...params) => {
+      if (sql === TOKEN_LOOKUP) tokenReads++;
+      return store.traceSql(sql, () => query(sql, ...params));
+    };
     const settings = {
       ADMIN_TOKEN: crypto.randomUUID(),
       FORGE_CLOUD_PROJECT: "contract",
@@ -114,18 +129,24 @@ async function projectFixture([
         }),
         env,
       );
-    const issueToken = async (who: string) => {
-      const reply = await send(
-        "devices",
-        { device: DEVICE, session: who, ttlMs: 3_600_000 },
-        settings.ADMIN_TOKEN,
-      );
+    const admin = async (route: string, body: object) => {
+      const reply = await send(route, body, settings.ADMIN_TOKEN);
       expect(reply.status).toBe(200);
-      const { value } = (await reply.json()) as { value: { token: string } };
-      return value.token;
+      return reply;
     };
-    const token = await issueToken(session);
-    const contender = await issueToken(rival);
+    const issueToken = async (who: string) => {
+      const reply = await admin("devices", {
+        device: DEVICE,
+        session: who,
+        ttlMs: 3_600_000,
+      });
+      const { value } = (await reply.json()) as {
+        value: { id: string; token: string };
+      };
+      return value;
+    };
+    const { id: tokenId, token } = await issueToken(session);
+    const { token: contender } = await issueToken(rival);
     const submitCommand = async (body: object, presented?: string) =>
       responseOf(await send("command", body, presented));
 
@@ -175,13 +196,7 @@ async function projectFixture([
           {
             async pull(controller) {
               expect(tokenReads).toBe(beforeReads + 1);
-              const { id: tokenId } = await tokenParts(token);
-              const revoked = await send(
-                "revoke",
-                { id: tokenId },
-                settings.ADMIN_TOKEN,
-              );
-              expect(revoked.status).toBe(200);
+              await admin("revoke", { id: tokenId });
               markCompetitorCommitted();
               controller.enqueue(encoder.encode(JSON.stringify(called)));
               controller.close();
