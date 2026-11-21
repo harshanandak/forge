@@ -1,5 +1,6 @@
 ﻿import { expect, test } from "bun:test";
-import { scratchStorage, ACTOR } from "../../cloud/conformance/max-source.ts";
+import { Database } from "bun:sqlite";
+import { ACTOR, DEVICE } from "../../cloud/conformance/max-source.ts";
 import { issueWriters } from "../../cloud/src/issue-commands.ts";
 import { Project, STATUS } from "../../cloud/src/project.ts";
 import { storageFailure } from "../../cloud/src/storage-failure.ts";
@@ -12,7 +13,9 @@ import {
   requireAuthorityCoverage,
   runAuthorityContract,
   type AuthorityFixture,
+  type RefusalCase,
 } from "./issue-authority-contract.ts";
+import { browserStorage } from "./browser-storage.fixture.ts";
 import {
   admissionFixture,
   namespace,
@@ -51,7 +54,6 @@ test("cloud issue authority covers every dispatched writer exactly once", () => 
 const host = "https://fixture.example/p/contract";
 const session = "holder";
 const rival = "rival";
-const device = "laptop";
 const encoder = new TextEncoder();
 
 const command = (
@@ -66,8 +68,8 @@ const command = (
   input,
   context: {
     actor: ACTOR,
-    session: { id: who, device },
-    ...(generation === undefined ? {} : { leaseGeneration: generation }),
+    session: { id: who, device: DEVICE },
+    leaseGeneration: generation,
   },
 });
 
@@ -80,16 +82,16 @@ async function projectFixture([
   op,
   input,
 ]: IssueCase): Promise<AuthorityFixture> {
-  const { db, storage, values } = scratchStorage();
+  const db = new Database(":memory:");
   try {
-    const store = observeAuthorityStore(db, values);
-    const original = storage.sql.exec.bind(storage.sql);
     let tokenReads = 0;
-    storage.sql.exec = (sql, ...params) => {
+    const { storage, values } = browserStorage(db, (sql) => {
       if (sql === TOKEN_LOOKUP) tokenReads++;
-      store.beforeSql(sql);
-      return original(sql, ...params);
-    };
+    });
+    const store = observeAuthorityStore(db, values);
+    const query = storage.sql.exec.bind(storage.sql);
+    storage.sql.exec = (sql, ...params) =>
+      store.traceSql(sql, () => query(sql, ...params));
     const settings = {
       ADMIN_TOKEN: crypto.randomUUID(),
       FORGE_CLOUD_PROJECT: "contract",
@@ -115,7 +117,7 @@ async function projectFixture([
     const issueToken = async (who: string) => {
       const reply = await send(
         "devices",
-        { device, session: who, ttlMs: 3_600_000 },
+        { device: DEVICE, session: who, ttlMs: 3_600_000 },
         settings.ADMIN_TOKEN,
       );
       expect(reply.status).toBe(200);
@@ -127,60 +129,46 @@ async function projectFixture([
     const submitCommand = async (body: object, presented?: string) =>
       responseOf(await send("command", body, presented));
 
-    for (const title of ["First", "Second"])
-      expect(
-        await submitCommand(
-          command(`seed-${title}`, "issue.create", { title }),
-          token,
-        ),
-      ).toEqual([200, undefined]);
+    const seed = async (requestId: string, op: string, input: object) => {
+      const reply = await submitCommand(command(requestId, op, input), token);
+      expect(reply).toEqual([200, undefined]);
+    };
+    await seed("seed-first", "issue.create", { title: "First" });
+    await seed("seed-second", "issue.create", { title: "Second" });
 
-    const mode = manifest.operations[op];
-    const held = "leaseMode" in mode && mode.leaseMode === "held";
-    if (mode.context === "leased") {
-      expect(
-        await submitCommand(
-          command("seed-lease", "issue.claim", {
-            id: held ? id : "forge-2",
-            ttlSeconds: 60,
-          }),
-          token,
-        ),
-      ).toEqual([200, undefined]);
+    const operation = manifest.operations[op];
+    const leased = operation.context === "leased";
+    const held = "leaseMode" in operation && operation.leaseMode === "held";
+    const generation = held ? 1 : undefined;
+    const called = command("authority-case", op, input, session, generation);
+    const refusals: RefusalCase[] = leased
+      ? [
+          [
+            () => submitCommand(called, contender),
+            [403, "AUTH_DEVICE_MISMATCH"],
+          ],
+        ]
+      : [[() => submitCommand(called), [401, "AUTH_REQUIRED"]]];
+    if (leased) {
+      const heldId = held ? id : "forge-2";
+      await seed("seed-lease", "issue.claim", { id: heldId, ttlSeconds: 60 });
+      const other = command(
+        "other-holder",
+        op,
+        { ...input, id: heldId },
+        rival,
+        generation,
+      );
+      refusals.push([
+        () => submitCommand(other, contender),
+        [409, held ? "LEASE_NOT_HELD" : "LEASE_HELD"],
+      ]);
     }
 
-    const called = command(
-      "authority-case",
-      op,
-      input,
-      session,
-      held ? 1 : undefined,
-    );
-    const competing = command(
-      "other-holder",
-      op,
-      held ? input : { ...input, id: "forge-2" },
-      rival,
-      held ? 1 : undefined,
-    );
     return {
       store,
       submit: () => submitCommand(called, token),
-      unauthorized:
-        mode.context === "leased"
-          ? [
-              () => submitCommand(called, contender),
-              [403, "AUTH_DEVICE_MISMATCH"],
-            ]
-          : [() => submitCommand(called), [401, "AUTH_REQUIRED"]],
-      ...(mode.context === "leased"
-        ? {
-            competingHolder: [
-              () => submitCommand(competing, contender),
-              [409, held ? "LEASE_NOT_HELD" : "LEASE_HELD"],
-            ] as const,
-          }
-        : {}),
+      refusals,
       race: (markCompetitorCommitted: () => void) => {
         const beforeReads = tokenReads;
         const body = new ReadableStream<Uint8Array>(
@@ -215,69 +203,61 @@ async function projectFixture([
 for (const entry of cases)
   test(
     `cloud authority contract for ${entry[0]}`,
-    () => runAuthorityContract(() => projectFixture(entry)),
+    () => runAuthorityContract(entry[0], () => projectFixture(entry)),
     15_000,
   );
 
+async function evidenceFixture(): Promise<AuthorityFixture> {
+  const f = await admissionFixture();
+  const store = observeAuthorityStore(f.dbSource, f.values);
+  const original = f.db.run.bind(f.db);
+  f.db.run = (sql, params) => store.traceSql(sql, () => original(sql, params));
+  const submit = async () => {
+    try {
+      return await responseOf(await f.command());
+    } catch (caught) {
+      const error = storageFailure(caught) ?? caught;
+      if (!(error instanceof ForgeFailure)) throw error;
+      return [STATUS[error.error.code] ?? 500, error.error.code] as const;
+    }
+  };
+  const unauthorized = async () => {
+    f.state.auth = "AUTH_REVOKED";
+    try {
+      return await submit();
+    } finally {
+      f.state.auth = "";
+    }
+  };
+  return {
+    store,
+    submit,
+    refusals: [[unauthorized, [401, "AUTH_REVOKED"]]],
+    race: (markCompetitorCommitted) => {
+      f.state.onRead = () => {
+        f.owner.release(namespace, f.lease);
+        f.owner.acquire(
+          namespace,
+          subject,
+          {
+            ...f.holder,
+            session: { ...f.holder.session, id: rival },
+          },
+          60_000,
+          "competing-claim",
+        );
+        markCompetitorCommitted();
+        return Promise.resolve();
+      };
+      return submit();
+    },
+    raceRefusal: [409, "LEASE_STALE"],
+    close: () => f.dbSource.close(),
+  };
+}
+
 test(
   "cloud authority contract for issue.close with PR evidence",
-  () =>
-    runAuthorityContract(async () => {
-      const f = await admissionFixture();
-      const store = observeAuthorityStore(f.dbSource, f.values);
-      const original = f.db.run.bind(f.db);
-      f.db.run = (sql, params) => {
-        store.beforeSql(sql);
-        return original(sql, params);
-      };
-      const submit = async () => {
-        try {
-          return await responseOf(await f.command());
-        } catch (caught) {
-          const error = storageFailure(caught) ?? caught;
-          if (!(error instanceof ForgeFailure)) throw error;
-          return [STATUS[error.error.code] ?? 500, error.error.code] as const;
-        }
-      };
-      return {
-        store,
-        submit,
-        unauthorized: [
-          async () => {
-            f.state.auth = "AUTH_REVOKED";
-            try {
-              return await submit();
-            } finally {
-              f.state.auth = "";
-            }
-          },
-          [401, "AUTH_REVOKED"],
-        ],
-        race: (markCompetitorCommitted) => {
-          f.state.onRead = () => {
-            f.owner.release(namespace, {
-              subject,
-              holder: f.holder,
-              generation: f.lease.generation,
-            });
-            f.owner.acquire(
-              namespace,
-              subject,
-              {
-                ...f.holder,
-                session: { ...f.holder.session, id: rival },
-              },
-              60_000,
-              "competing-claim",
-            );
-            markCompetitorCommitted();
-            return Promise.resolve();
-          };
-          return submit();
-        },
-        raceRefusal: [409, "LEASE_STALE"],
-        close: () => f.dbSource.close(),
-      };
-    }),
+  () => runAuthorityContract("issue.close with PR evidence", evidenceFixture),
   15_000,
 );

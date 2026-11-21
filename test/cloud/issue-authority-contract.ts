@@ -1,5 +1,6 @@
 import { expect } from "bun:test";
 import type { Database } from "bun:sqlite";
+import { COMMAND_RECEIPTS } from "../../cloud/src/dump.ts";
 import { issueStoreSnapshot } from "./issue-command-storage.fixture.ts";
 
 export const authorityDiagnostic = (operation: string) =>
@@ -9,18 +10,13 @@ export function requireAuthorityCoverage(
   writers: readonly string[],
   cases: readonly string[],
 ) {
-  const available = new Set(writers);
-  const covered = new Set<string>();
-  if (available.size === 0)
-    throw new Error(authorityDiagnostic("issue writers"));
-  for (const operation of cases) {
-    if (!available.has(operation) || covered.has(operation))
+  const missing = new Set(writers);
+  if (missing.size === 0) throw new Error(authorityDiagnostic("issue writers"));
+  for (const operation of cases)
+    if (!missing.delete(operation))
       throw new Error(authorityDiagnostic(operation));
-    covered.add(operation);
-  }
-  for (const operation of available)
-    if (!covered.has(operation))
-      throw new Error(authorityDiagnostic(operation));
+  for (const operation of missing)
+    throw new Error(authorityDiagnostic(operation));
 }
 
 export function observeAuthorityStore(
@@ -28,52 +24,69 @@ export function observeAuthorityStore(
   values: ReadonlyMap<string, unknown>,
 ) {
   const snapshot = () => issueStoreSnapshot(db, values);
+  const rows = (sql: string) => db.query(sql).all();
   const business = () => [
-    ...db
-      .query(
-        "SELECT * FROM state_records WHERE namespace='forge/work' ORDER BY key",
-      )
-      .all(),
-    ...db
-      .query(
-        "SELECT * FROM state_leases WHERE namespace='forge/work' ORDER BY subject",
-      )
-      .all(),
+    ...rows(
+      "SELECT * FROM state_records WHERE namespace='forge/work' ORDER BY key",
+    ),
+    ...rows(
+      "SELECT * FROM state_leases WHERE namespace='forge/work' ORDER BY subject",
+    ),
   ];
   const receipts = () =>
+    rows(
+      `SELECT * FROM ${COMMAND_RECEIPTS} WHERE outcome='ok' ORDER BY request_id`,
+    );
+  const expiredId = "expired-authority-fixture";
+  const expired = () =>
     db
-      .query(
-        "SELECT * FROM domain_cloud_command_receipts WHERE outcome='ok' ORDER BY request_id",
-      )
-      .all();
-  let writes = 0;
-  let faultBase: ReturnType<typeof business> | undefined;
-  let injected = false;
+      .query(`SELECT 1 FROM ${COMMAND_RECEIPTS} WHERE request_id=?`)
+      .get(expiredId);
+  const changes = () =>
+    db.query<{ n: number }, []>("SELECT total_changes() AS n").get()!.n;
+  let pruneChanges = 0;
+  let fault: (() => never) | undefined;
   return {
     snapshot,
+    effects: () => ({ stored: snapshot(), changes: changes(), pruneChanges }),
     business,
     receipts,
-    writes: () => writes,
-    beforeSql(sql: string) {
-      if (/^\s*(?:INSERT|UPDATE|DELETE|REPLACE|ALTER|CREATE|DROP)\b/i.test(sql))
-        writes++;
-      if (
-        faultBase !== undefined &&
-        sql.startsWith("INSERT INTO domain_cloud_command_receipts")
-      ) {
-        expect(business()).not.toEqual(faultBase);
-        injected = true;
-        throw new Error("SQLITE_FULL");
-      }
+    seedExpiredReceipt() {
+      db.run(
+        `INSERT INTO ${COMMAND_RECEIPTS}(request_id,fingerprint,outcome,result,created_at,expires_at) VALUES (?,'{}','refused',?,1,2)`,
+        [
+          expiredId,
+          JSON.stringify({
+            code: "INPUT_INVALID",
+            message: "Expired fixture",
+            retry: "never",
+          }),
+        ],
+      );
+    },
+    traceSql<T>(sql: string, apply: () => T): T {
+      if (sql.startsWith(`INSERT INTO ${COMMAND_RECEIPTS}`)) fault?.();
+      if (!sql.startsWith(`DELETE FROM ${COMMAND_RECEIPTS} `) || !expired())
+        return apply();
+      const before = changes();
+      const result = apply();
+      if (!expired()) pruneChanges += changes() - before;
+      return result;
     },
     async failReceipt<T>(submit: () => Promise<T>) {
-      faultBase = business();
+      const before = business();
+      let injected = false;
+      fault = () => {
+        expect(business()).not.toEqual(before);
+        injected = true;
+        throw new Error("SQLITE_FULL");
+      };
       try {
         const reply = await submit();
         expect(injected).toBe(true);
         return reply;
       } finally {
-        faultBase = undefined;
+        fault = undefined;
       }
     },
   };
@@ -81,35 +94,39 @@ export function observeAuthorityStore(
 
 type Refusal = readonly [status: number, code: string];
 type Reply = readonly [status: number, code: string | undefined];
+export type RefusalCase = readonly [() => Promise<Reply>, Refusal];
 
 export interface AuthorityFixture {
   store: ReturnType<typeof observeAuthorityStore>;
   submit: () => Promise<Reply>;
-  unauthorized: readonly [() => Promise<Reply>, Refusal];
-  competingHolder?: readonly [() => Promise<Reply>, Refusal];
+  refusals: readonly RefusalCase[];
   race: (markCompetitorCommitted: () => void) => Promise<Reply>;
   raceRefusal: Refusal;
   close: () => void;
 }
 
 export async function runAuthorityContract(
+  operation: string,
   prepare: () => Promise<AuthorityFixture>,
 ) {
   const fixture = await prepare();
-  const { store, submit, unauthorized, competingHolder } = fixture;
-  const checkRefusal = async ([send, expected]: readonly [
-    () => Promise<Reply>,
-    Refusal,
-  ]) => {
-    const before = store.snapshot();
-    const writes = store.writes();
-    expect(await send()).toEqual(expected);
-    expect(store.writes()).toBe(writes);
-    expect(store.snapshot()).toBe(before);
+  const { store, submit, refusals } = fixture;
+  type Effects = ReturnType<typeof store.effects>;
+  const checkUnchanged = (code: string, before: Effects, after: Effects) => {
+    expect(after.stored).toBe(before.stored);
+    const pruned = after.pruneChanges - before.pruneChanges;
+    expect(after.changes - before.changes).toBe(pruned);
+    console.info(
+      `authority contract ${operation} ${code}: expired receipt ${pruned ? "rolled back" : "untouched"}`,
+    );
   };
   try {
-    await checkRefusal(unauthorized);
-    if (competingHolder !== undefined) await checkRefusal(competingHolder);
+    store.seedExpiredReceipt();
+    for (const [send, expected] of refusals) {
+      const before = store.effects();
+      expect(await send()).toEqual(expected);
+      checkUnchanged(expected[1], before, store.effects());
+    }
 
     const before = store.snapshot();
     expect(await store.failReceipt(submit)).toEqual([
@@ -131,18 +148,19 @@ export async function runAuthorityContract(
 
   const other = await prepare();
   try {
-    let afterCompetitor: string | undefined;
-    let afterWrites: number | undefined;
-    expect(
-      await other.race(() => {
-        expect(afterCompetitor).toBeUndefined();
-        afterCompetitor = other.store.snapshot();
-        afterWrites = other.store.writes();
-      }),
-    ).toEqual(other.raceRefusal);
+    other.store.seedExpiredReceipt();
+    let afterCompetitor: Effects | undefined;
+    const reply = await other.race(() => {
+      expect(afterCompetitor).toBeUndefined();
+      afterCompetitor = other.store.effects();
+    });
+    expect(reply).toEqual(other.raceRefusal);
     expect(afterCompetitor).toBeDefined();
-    expect(other.store.writes()).toBe(afterWrites!);
-    expect(other.store.snapshot()).toBe(afterCompetitor!);
+    checkUnchanged(
+      other.raceRefusal[1],
+      afterCompetitor!,
+      other.store.effects(),
+    );
   } finally {
     other.close();
   }
