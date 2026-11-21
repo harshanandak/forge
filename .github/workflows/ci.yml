@@ -2,6 +2,7 @@ name: CI
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   push:
     branches: [main]
   workflow_call:
@@ -36,6 +37,7 @@ jobs:
       scope: ${{ steps.diff.outputs.scope }}
       comment_guard: ${{ steps.diff.outputs.comment_guard }}
       started: ${{ steps.start.outputs.at }}
+      tier: ${{ github.event_name == 'pull_request' && (github.event.pull_request.draft && 'quick' || 'merge') || 'full' }}
     steps:
       - id: start
         run: echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"
@@ -55,7 +57,8 @@ jobs:
 
   pr-title:
     name: PR title
-    if: github.event_name == 'pull_request'
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.tier != 'quick'
     runs-on: ubuntu-latest
     steps:
       - env:
@@ -69,7 +72,8 @@ jobs:
 
   # Always runs: guards and formatting also apply to documentation changes.
   structure:
-    name: Structure guards
+    name: ${{ needs.changes.outputs.tier == 'quick' && 'Quick' || 'Structure guards' }}
+    needs: changes
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
@@ -102,6 +106,15 @@ jobs:
       - run: bun install --frozen-lockfile --ignore-scripts
         working-directory: cloud
       - run: bun run test:structure --timings="$CI_TIMINGS" --update-timings 2>&1 | tee -a "$RUNNER_TEMP/ci-tests.log"
+      - name: Select the pinned lint Bun for Quick
+        if: needs.changes.outputs.tier == 'quick'
+        run: dirname "$FORGE_LINT_BUN" >> "$GITHUB_PATH"
+      - name: Quick lint, format and typecheck
+        if: needs.changes.outputs.tier == 'quick'
+        run: |
+          bun run lint
+          bun run fmt --check
+          bun run check
       - &write-record
         if: always()
         run: bun tools/ci/ci-record.ts
@@ -115,7 +128,8 @@ jobs:
 
   static:
     name: Lint and format
-    if: github.event_name != 'schedule'
+    needs: changes
+    if: github.event_name != 'schedule' && needs.changes.outputs.tier != 'quick'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -135,7 +149,7 @@ jobs:
   pack:
     name: Pack artifact
     needs: changes
-    if: needs.changes.outputs.scope == 'full'
+    if: needs.changes.outputs.scope == 'full' && needs.changes.outputs.tier != 'quick'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     outputs:
@@ -177,7 +191,7 @@ jobs:
   speed:
     name: Speed (${{ matrix.os }}, Node 24)
     needs: changes
-    if: github.event_name != 'schedule' && needs.changes.outputs.scope == 'full'
+    if: github.event_name != 'schedule' && needs.changes.outputs.scope == 'full' && needs.changes.outputs.tier != 'quick'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
@@ -235,7 +249,7 @@ jobs:
   comment-guard:
     name: Comment guard (windows-latest, Node 24)
     needs: changes
-    if: github.event_name != 'schedule' && (github.event_name != 'pull_request' || needs.changes.outputs.comment_guard == 'true')
+    if: github.event_name != 'schedule' && (github.event_name != 'pull_request' || needs.changes.outputs.comment_guard == 'true') && needs.changes.outputs.tier != 'quick'
     runs-on: windows-latest
     timeout-minutes: 20
     env:
@@ -275,7 +289,7 @@ jobs:
   verify:
     name: Verify (${{ matrix.os }}, Node ${{ matrix.node }}${{ matrix.suite != 'all' && format(', {0}', matrix.suite) || '' }}${{ matrix.shard && format(', shard {0}', matrix.shard) || '' }})
     needs: [changes, pack]
-    if: github.event_name != 'schedule' && needs.changes.outputs.scope == 'full'
+    if: github.event_name != 'schedule' && needs.changes.outputs.scope == 'full' && needs.changes.outputs.tier != 'quick'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
@@ -415,6 +429,8 @@ jobs:
     steps:
       - env:
           EVENT: ${{ github.event_name }}
+          DRAFT: ${{ github.event.pull_request.draft }}
+          TIER: ${{ needs.changes.outputs.tier }}
           SCOPE: ${{ needs.changes.outputs.scope }}
           CHANGES: ${{ needs.changes.result }}
           PR_TITLE: ${{ needs.pr-title.result }}
@@ -446,13 +462,24 @@ jobs:
           require "changes" "$CHANGES"
 
           title=skipped
-          checks=success
+          structure=success
+          static=success
           heavy=success
           packed=success
           node26=skipped
           admission=success
-          case "$EVENT" in
-            pull_request)
+          case "$EVENT:$DRAFT:$TIER" in
+            pull_request:true:quick)
+              static=skipped
+              heavy=skipped
+              packed=skipped
+              admission=skipped
+              draft_message="Draft PR: the quick tier ran. Mark the PR ready for review to run the merge tier."
+              echo "::error::$draft_message"
+              echo "$draft_message" >> "$GITHUB_STEP_SUMMARY"
+              ok=0
+              ;;
+            pull_request:false:merge)
               title=success
               case "$GUARD_CHANGED" in
                 true) ;;
@@ -460,12 +487,19 @@ jobs:
                 *) echo "::error::unexpected comment guard selection '$GUARD_CHANGED'"; ok=0 ;;
               esac
               ;;
-            push) node26=success ;;
-            schedule)
-              checks=skipped
+            push::full)
+              node26=success
+              ;;
+            schedule::full)
+              structure=skipped
+              static=skipped
               heavy=skipped
               node26=success
               admission=skipped
+              ;;
+            *)
+              echo "::error::unexpected CI tier '$TIER' for event '$EVENT' and draft '$DRAFT'"
+              ok=0
               ;;
           esac
           case "$EVENT:$SCOPE" in
@@ -475,8 +509,8 @@ jobs:
           esac
 
           require "pr-title" "$PR_TITLE" "$title"
-          require "structure" "$STRUCTURE" "$checks"
-          require "static" "$STATIC" "$checks"
+          require "structure" "$STRUCTURE" "$structure"
+          require "static" "$STATIC" "$static"
           require "pack" "$PACK" "$packed"
           require "speed" "$SPEED" "$heavy"
           require "verify" "$VERIFY" "$heavy"
