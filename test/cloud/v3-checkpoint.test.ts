@@ -1417,3 +1417,306 @@ test(
     }),
   timeout,
 );
+
+type Portable = {
+  pages: { id: string; body: string }[];
+  head: number;
+  eventWatermark: number;
+  recordFloor: number;
+  publicDigest: string;
+};
+
+async function withPortable(
+  run: (target: Fixture, data: Portable) => Promise<void>,
+) {
+  const target = guardFixture();
+  try {
+    await withFixture(async (source) => {
+      const transcript = await portableHistory(source);
+      const manifest = JSON.parse(root(source).body) as {
+        coveredHead: number;
+        eventWatermark: number;
+        publicDigest: string;
+      };
+      const data = {
+        pages: pages(source).map((page) =>
+          page.id === "transcript:0"
+            ? { ...page, body: canonicalJson(transcript) }
+            : page,
+        ),
+        head: manifest.coveredHead,
+        eventWatermark: manifest.eventWatermark,
+        recordFloor: 3,
+        publicDigest: manifest.publicDigest,
+      };
+      await run(target, data);
+    });
+  } finally {
+    target.db.close();
+  }
+}
+
+function editHistory(data: Portable, edit: (frames: Json[]) => void) {
+  const page = data.pages.find(({ id }) => id === "transcript:0")!;
+  const frames = JSON.parse(page.body) as Json[];
+  edit(frames);
+  page.body = canonicalJson(frames);
+}
+
+function editProjection(
+  data: Portable,
+  collection: string,
+  key: string,
+  edit: (body: string) => string,
+) {
+  const [directory, snapshot] = data.pages;
+  const entries = JSON.parse(directory!.body) as DirectoryItem[];
+  const item = entries.find(
+    (e) => e.collection === collection && e.key === key,
+  )!;
+  const from = item.offset!;
+  const to = from + item.length!;
+  const original = Buffer.from(snapshot!.body);
+  const replacement = Buffer.from(edit(original.subarray(from, to).toString()));
+  expect(replacement.length).toBe(item.length!);
+  snapshot!.body = Buffer.concat([
+    original.subarray(0, from),
+    replacement,
+    original.subarray(to),
+  ]).toString();
+  item.digest = digestBytes(replacement);
+  directory!.body = canonicalJson(entries);
+  data.publicDigest = digestBytes(
+    canonicalJson(
+      entries.map(({ collection, key, revision, digest }) => [
+        collection,
+        key,
+        revision === undefined
+          ? (digest ?? null)
+          : digestBytes(canonicalJson([revision, digest ?? null])),
+      ]),
+    ),
+  );
+}
+
+function portableUpload(target: Fixture, { pages, ...projection }: Portable) {
+  const manifest = {
+    ...projection,
+    format: "forge-cloud-portable/3",
+    pages: pages.map(({ id, body }) => ({
+      id,
+      bytes: Buffer.byteLength(body),
+      hash: digestBytes(body),
+    })),
+  };
+  const digest = digestBytes(canonicalJson(manifest));
+  return (page: number, member = pages[page] ?? pages[0]!, pin = digest) =>
+    target.send(
+      "restore",
+      { page, ...member, ...(page === 0 && { manifest }) },
+      page === 0 ? { "X-Forge-Manifest-Digest": pin } : {},
+    );
+}
+
+const restoreResult = (page: number, verified = false) => ({
+  status: 200,
+  body: { ok: true, value: { page, verified } },
+});
+const restoreRefusal = {
+  status: 400,
+  body: { ok: false, error: { code: "RESTORE_INVALID_ROW" } },
+};
+const unprovisioned = async (target: Fixture) => {
+  expect(await target.send("status")).toMatchObject({
+    status: 200,
+    body: { ok: true, value: { initialized: false } },
+  });
+  expect(tableNames(target)).not.toContain("cloud_v3_root");
+  expect(tableNames(target)).not.toContain("cloud_v3_commits");
+  expect(target.values.has("provisioned")).toBe(false);
+};
+
+test(
+  "v3 restore verifies a public transcript and saves each staging result",
+  () =>
+    withPortable(async (target, data) => {
+      const upload = portableUpload(target, data);
+      const first = await upload(0);
+      const second = await upload(1);
+      target.restart();
+      const firstRetry = await upload(0);
+      const before = { ...target.reads };
+      const verified = await upload(2);
+      const reads = {
+        rows: target.reads.rows - before.rows,
+        bytes: target.reads.bytes - before.bytes,
+      };
+      target.restart();
+      const finalRetry = await upload(2);
+      await unprovisioned(target);
+      expect([first, second, verified]).toMatchObject([
+        restoreResult(0),
+        restoreResult(1),
+        restoreResult(2, true),
+      ]);
+      expect(firstRetry).toEqual(first);
+      expect(finalRetry).toEqual(verified);
+      expect(reads.rows).toBeLessThanOrEqual(64);
+      expect(reads.bytes).toBeLessThanOrEqual(2 * MiB);
+      console.log("v3 restore final verification reads", reads);
+    }),
+  timeout,
+);
+
+test(
+  "v3 restore refuses exact retries when staged bytes have changed",
+  () =>
+    withPortable(async (target, data) => {
+      const upload = portableUpload(target, data);
+      expect(await upload(0)).toMatchObject(restoreResult(0));
+      expect(await upload(1)).toMatchObject(restoreResult(1));
+      expect(await upload(2)).toMatchObject(restoreResult(2, true));
+
+      const overwrite = target.db.query(
+        "UPDATE cloud_v3_restore SET body=? WHERE id=?",
+      );
+      const directory = data.pages[0]!;
+      overwrite.run("[]", directory.id);
+      target.restart();
+      const directoryEffects = target.observeEffects();
+      expect(await upload(0)).toMatchObject(restoreRefusal);
+      expect(await upload(2)).toMatchObject(restoreRefusal);
+      expect(directoryEffects()).toEqual(noWrites);
+
+      overwrite.run(directory.body, directory.id);
+      overwrite.run("[]", "transcript:0");
+      target.restart();
+      const transcriptEffects = target.observeEffects();
+      expect(await upload(2)).toMatchObject(restoreRefusal);
+      expect(transcriptEffects()).toEqual(noWrites);
+      await unprovisioned(target);
+    }),
+  timeout,
+);
+
+for (const [fault, tamper] of [
+  [
+    "missing release",
+    (data: Portable) => editHistory(data, (f) => (f[3] = { sequence: 4 })),
+  ],
+  [
+    "missing tombstone",
+    (data: Portable) => {
+      data.eventWatermark--;
+      editHistory(data, (f) => (f[4] = { sequence: 5 }));
+    },
+  ],
+  [
+    "missing receipt-only frame",
+    (data: Portable) => editHistory(data, (f) => (f[2] = { sequence: 3 })),
+  ],
+  ["lower number floor", (data: Portable) => (data.recordFloor = 2)],
+  [
+    "lower generation floor",
+    (data: Portable) =>
+      editProjection(data, "lease", "work-1", (body) =>
+        body.replace('"generation":1', '"generation":0'),
+      ),
+  ],
+  [
+    "rehashed after-image",
+    (data: Portable) =>
+      editProjection(data, "record", "r1", (body) =>
+        body.replace("café", "tacé"),
+      ),
+  ],
+  [
+    "altered refusal digest",
+    (data: Portable) =>
+      editHistory(data, (f) => {
+        (f[2]!.outcome as Json).resultDigest = digestBytes("different refusal");
+      }),
+  ],
+  [
+    "private frame",
+    (data: Portable) =>
+      editHistory(data, (f) => {
+        f[5]!.private = { approval: "fixture-only" };
+      }),
+  ],
+] as const) {
+  test(
+    `v3 restore refuses ${fault}`,
+    () =>
+      withPortable(async (target, data) => {
+        tamper(data);
+        const upload = portableUpload(target, data);
+        const replies = [await upload(0), await upload(1)];
+        const staged = target.snapshot();
+        replies.push(await upload(2));
+        await unprovisioned(target);
+        expect(replies).toMatchObject([
+          restoreResult(0),
+          restoreResult(1),
+          restoreRefusal,
+        ]);
+        expect(target.snapshot()).toEqual(staged);
+      }),
+    timeout,
+  );
+}
+
+test(
+  "v3 restore refuses bad pins, repeated members, skipped pages and extras",
+  () =>
+    withPortable(async (target, data) => {
+      const upload = portableUpload(target, data);
+      const duplicate = portableUpload(target, {
+        ...data,
+        pages: [data.pages[0]!, data.pages[0]!, data.pages[2]!],
+      });
+      const replies = [
+        await upload(0, undefined, digestBytes("different manifest")),
+        await duplicate(0),
+        await upload(1),
+        await upload(0),
+        await upload(0, { ...data.pages[0]!, body: "[]" }),
+        await upload(2),
+        await upload(1, data.pages[0]),
+        await upload(1),
+        await upload(2),
+        await upload(3),
+      ];
+      await unprovisioned(target);
+      expect(replies).toMatchObject([
+        restoreRefusal,
+        restoreRefusal,
+        restoreRefusal,
+        restoreResult(0),
+        restoreRefusal,
+        restoreRefusal,
+        restoreRefusal,
+        restoreResult(1),
+        restoreResult(2, true),
+        restoreRefusal,
+      ]);
+    }),
+  timeout,
+);
+
+test(
+  "v3 staging keeps both project setup paths from provisioning the target",
+  () =>
+    withPortable(async (target, data) => {
+      const upload = portableUpload(target, data);
+      await unprovisioned(target);
+      expect(await upload(0)).toMatchObject(restoreResult(0));
+      target.restart();
+      expect(await target.send(probe, {})).toMatchObject({ status: 409 });
+      expect(
+        await target.send("devices", { device: "fixture", ttlMs: HOUR }),
+      ).toMatchObject({ status: 409 });
+      await unprovisioned(target);
+    }),
+  timeout,
+);

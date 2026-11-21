@@ -88,6 +88,10 @@ const hasTable = (db: SqlDatabase, name: string): boolean =>
 
 export const hasV3Root = (db: SqlDatabase): boolean => hasTable(db, ROOT);
 
+export const hasPriorV3RestoreState = (db: SqlDatabase): boolean =>
+  db.get(legacyTables) !== undefined ||
+  tables.some((table) => hasTable(db, table));
+
 function genesis(incarnation: string, restoreEpoch: string) {
   return {
     format: ROOT_FORMAT,
@@ -156,7 +160,7 @@ export interface V3Image {
   readonly staged: [sequence: number, body: string][];
 }
 
-const fail = (code: string, message: string) =>
+export const fail = (code: string, message: string) =>
   new ForgeFailure({ code, message, retry: "never" });
 const unavailable = () => fail("UNAVAILABLE", "Cloud v3 root is unavailable");
 const nat = (value: unknown): number => {
