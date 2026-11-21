@@ -11,6 +11,7 @@ import { type DurableStorage, TABLE_PROBE } from "./store.ts";
 import {
   COLLECTIONS,
   COMMITS,
+  entryDigest,
   PAGES,
   PAGE_SCHEMA,
   readV3Root,
@@ -40,7 +41,7 @@ function requireCheckpoint(condition: unknown): asserts condition {
     });
 }
 
-type Item = readonly [collection: string, key: string, body: string | null];
+type Item = readonly [string, string, string | null, number | undefined];
 
 function parse(text: string): unknown {
   try {
@@ -58,8 +59,9 @@ function inventory(
   return collections.flatMap((collection) =>
     [...image.entries[collection].keys()].sort().map((key) => {
       const slot = image.entries[collection].get(key)!;
-      if (slot === null) return [collection, key, null];
-      if ("value" in slot) return [collection, key, canonicalJson(slot.value)];
+      if ("deleted" in slot) return [collection, key, null, slot.revision];
+      if ("value" in slot)
+        return [collection, key, canonicalJson(slot.value), slot.revision];
       const data = pages
         .get(slot.page)
         ?.subarray(slot.offset, slot.offset + slot.length);
@@ -68,7 +70,7 @@ function inventory(
       );
       const body = data.toString("utf8");
       requireCheckpoint(digestBytes(body) === slot.digest);
-      return [collection, key, body];
+      return [collection, key, body, slot.revision];
     }),
   );
 }
@@ -124,12 +126,14 @@ function reconcileReceipts(
 function pack(items: readonly Item[], transcript: string) {
   let offset = 0;
   const snapshot: string[] = [];
-  const directory = items.map(([collection, key, body]) => {
-    if (body === null) return { collection, key, deleted: true };
+  const directory = items.map(([collection, key, body, revision]) => {
+    const metadata = revision === undefined ? {} : { revision };
+    if (body === null) return { collection, key, ...metadata, deleted: true };
     const length = Buffer.byteLength(body);
     const entry = {
       collection,
       key,
+      ...metadata,
       page: SNAPSHOT,
       offset,
       length,
@@ -202,8 +206,9 @@ function reconcile(
   );
   const bytes = Buffer.from(snapshot);
   let offset = 0;
-  const entries = expected.map(([collection, key, value]) => {
-    if (value === null) return { collection, key, deleted: true };
+  const entries = expected.map(([collection, key, value, revision]) => {
+    const metadata = revision === undefined ? {} : { revision };
+    if (value === null) return { collection, key, ...metadata, deleted: true };
     const length = Buffer.byteLength(value);
     const digest = digestBytes(value);
     requireCheckpoint(
@@ -211,7 +216,7 @@ function reconcile(
     );
     const entry = { collection, key, page: SNAPSHOT, offset, length, digest };
     offset += length;
-    return entry;
+    return { ...entry, ...metadata };
   });
   requireCheckpoint(offset === bytes.length && canonicalJson(entries) === body);
 }
@@ -338,10 +343,10 @@ async function checkpoint(
     reconcile(readback, expected, transcript);
     const verified = roster(readback, expected, cut);
     requireCheckpoint(canonicalJson(verified) === staged.proposal);
-    const inventoryDigests = expected.map(([collection, key, body]) => [
-      collection,
+    const inventoryDigests = expected.map(([name, key, body, revision]) => [
+      name,
       key,
-      body === null ? null : digestBytes(body),
+      entryDigest(body === null ? null : digestBytes(body), revision),
     ]);
     const projectionDigest = digestValue(inventoryDigests);
     const manifest = canonicalJson({

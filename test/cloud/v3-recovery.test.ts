@@ -39,7 +39,9 @@ afterEach(() => setSystemTime());
 
 type Fixture = ReturnType<typeof fixture>;
 type Json = Record<string, unknown>;
-type Slot = { readonly value: unknown } | null;
+type Slot = ({ readonly value: unknown } | { readonly deleted: true }) & {
+  readonly revision?: number;
+};
 type Item = readonly [collection: string, key: string, slot: Slot];
 interface Page {
   readonly id: string;
@@ -62,8 +64,7 @@ interface Frame {
   readonly witness?: { readonly id: string };
   readonly changes?: readonly {
     readonly key: string;
-    readonly value?: unknown;
-    readonly deleted?: true;
+    readonly value: Slot;
   }[];
 }
 
@@ -85,7 +86,18 @@ const claim = (f: Fixture, owner: string, expires = E1) =>
   lease(f, "claim", owner, { requestId: "acq-1", ttlMs: HOUR }, expires);
 const commit = (f: Fixture, ...frames: Json[]) =>
   f.send(`${probe}/commits`, { frames });
-const put = { operation: "fixture.put", time: T0, events: [] };
+const note = { operation: "fixture.note", time: T0, events: [] };
+const putRecords = (
+  ...events: { key: string; revision: number; value: unknown }[]
+) => ({
+  ...note,
+  operation: "fixture.put",
+  events,
+  changes: events.map(({ key, revision, value }) => ({
+    key,
+    value: { revision, value },
+  })),
+});
 const image = (response: { body: unknown }) =>
   (response.body as { value?: { image?: Json } }).value?.image;
 const unavailable = {
@@ -174,7 +186,7 @@ function seal(
   const sorted = [...items].sort(([a, k], [b, l]) =>
     a === b ? (k < l ? -1 : 1) : a < b ? -1 : 1,
   );
-  const live = sorted.filter(([, , slot]) => slot !== null);
+  const live = sorted.filter(([, , slot]) => "value" in slot);
   const perSnapshot = Math.ceil(live.length / snapshotPages) || 1;
   const pointers = new Map<Item, Json>();
   const snapshots = Array.from({ length: snapshotPages }, (_, ordinal) => {
@@ -184,7 +196,7 @@ function seal(
     );
     let body = "";
     for (const item of chunk) {
-      const text = canonicalJson(item[2]!.value);
+      const text = canonicalJson("value" in item[2] ? item[2].value : null);
       pointers.set(item, {
         page: `snapshot:${ordinal}`,
         offset: bytesOf(body),
@@ -198,7 +210,8 @@ function seal(
   const entries = sorted.map((item) => ({
     collection: item[0],
     key: item[1],
-    ...(item[2] === null ? { deleted: true } : pointers.get(item)),
+    ...(item[2].revision === undefined ? {} : { revision: item[2].revision }),
+    ...("deleted" in item[2] ? { deleted: true } : pointers.get(item)),
   }));
   const perDirectory = Math.ceil(entries.length / directoryPages) || 1;
   const pages = [
@@ -257,11 +270,7 @@ function checkpoint(f: Fixture) {
         value: { witness: frame.witness, lease: frame.lease },
       });
     for (const change of frame.changes ?? [])
-      put(
-        "record",
-        change.key,
-        change.deleted ? null : { value: change.value },
-      );
+      put("record", change.key, change.value);
     events += frame.events.length;
   }
   const pages = seal(f.db, [...items.values()], frames.length, events);
@@ -274,19 +283,25 @@ function tail(
   from: number,
   rows: number,
   rowBytes: (i: number) => number,
+  keys: readonly string[] = [],
 ) {
   const insert = db.prepare("INSERT INTO cloud_v3_commits VALUES (?, ?)");
   for (let i = 0; i < rows; i++) {
     const sequence = from + i + 1;
-    const frame = (pad: string) =>
+    const key = keys[i];
+    const frame = (pad: string, time = T0) =>
       canonicalJson({
-        events: [{ pad }],
+        ...(key === undefined
+          ? { ...note, events: [{ pad }] }
+          : putRecords({ key, revision: 2, value: pad })),
         format: "forge-cloud-commit/3",
-        operation: "fixture.put",
         sequence,
-        time: T0,
+        time,
       });
-    insert.run(sequence, frame("x".repeat(rowBytes(i) - bytesOf(frame("")))));
+    const remaining = rowBytes(i) - bytesOf(frame(""));
+    const time = key !== undefined && remaining % 2 ? Math.floor(T0 / 10) : T0;
+    const padding = key === undefined ? remaining : Math.ceil(remaining / 2);
+    insert.run(sequence, frame("x".repeat(padding), time));
   }
 }
 
@@ -294,10 +309,11 @@ const widest = bytesOf(
   canonicalJson({
     collection: "record",
     digest: digestBytes(""),
-    key: "r000000",
+    key: "r100000",
     length: 15,
     offset: 99_999,
     page: `snapshot:${ROSTER_PAGES}`,
+    revision: 1,
   }),
 );
 
@@ -322,8 +338,8 @@ async function capacity(f: Fixture, shape: Capacity = {}) {
     (directoryBytes / directoryPages - 1) / (widest + 1),
   );
   const items = Array.from({ length: perPage * directoryPages }, (_, i) => {
-    const key = `r${String(i).padStart(6, "0")}`;
-    return ["record", key, { value: { v: key } }] as const;
+    const key = `r${100_000 + i}`;
+    return ["record", key, { value: { v: key }, revision: 1 }] as const;
   });
   const pages = seal(
     f.db,
@@ -333,7 +349,13 @@ async function capacity(f: Fixture, shape: Capacity = {}) {
     directoryPages,
     roster - directoryPages - 1,
   );
-  tail(f.db, COVERED, tailRows, rowBytes);
+  tail(
+    f.db,
+    COVERED,
+    tailRows,
+    rowBytes,
+    items.slice(0, tailRows).map(([, key]) => key),
+  );
   f.restart();
   f.reads.rows = 0;
   f.reads.bytes = 0;
@@ -368,7 +390,11 @@ test(
       });
       const records = rebuilt.record as Record<string, unknown>;
       expect(Object.keys(records)).toHaveLength(items.length);
-      expect(records[items.at(-1)![1]]).toBe(digestOf(items.at(-1)![2].value));
+      const [, last, slot] = items.at(-1)!;
+      expect(records[last]).toBe(digestOf([1, digestOf(slot.value)]));
+      const [, first, previous] = items[0]!;
+      expect(records[first]).not.toBe(digestOf([1, digestOf(previous.value)]));
+      console.log("v3 cold record recovery reads", reads);
       expect(reads.rows).toBe(
         COLD_QUERY_ROWS + ROSTER_PAGES + DIRECTORY_PAGES + TAIL_ROWS,
       );
@@ -376,9 +402,7 @@ test(
       expect(reads.bytes).toBeGreaterThan(directoryBytes + TAIL_BYTES);
       expect(reads.bytes).toBeLessThanOrEqual(COLD_BYTES);
       const before = f.snapshot();
-      expect(
-        await commit(f, { operation: "fixture.put", time: T0, events: [] }),
-      ).toMatchObject(unavailable);
+      expect(await commit(f, note)).toMatchObject(unavailable);
       expect(f.snapshot()).toEqual(before);
     } finally {
       f.db.close();
@@ -436,7 +460,7 @@ test(
       );
       f.restart();
       const frame = (pad: number) => ({
-        ...put,
+        ...note,
         events: [{ pad: "x".repeat(pad) }],
       });
       const before = f.snapshot();
@@ -466,23 +490,22 @@ for (const at of ["tail", "directory"] as const) {
       try {
         expect((await f.send(probe, {})).status).toBe(200);
         expect(
-          await commit(f, {
-            ...put,
-            events: [{ key: "a" }, { key: "b" }],
-            changes: [
-              { key: "a", value: { n: 1 } },
-              { key: "b", value: { n: 2 } },
-              { key: "c", value: null },
-            ],
-          }),
+          await commit(
+            f,
+            putRecords(
+              { key: "r1", revision: 1, value: { n: 1 } },
+              { key: "r2", revision: 1, value: { n: 2 } },
+              { key: "r3", revision: 1, value: null },
+            ),
+          ),
         ).toMatchObject({ status: 200 });
         if (at === "tail") checkpoint(f);
         expect(
           await commit(f, {
             operation: "fixture.delete",
             time: T0 + 1,
-            events: [{ key: "a" }],
-            changes: [{ key: "a", deleted: true }],
+            events: [{ key: "r1", revision: 2 }],
+            changes: [{ key: "r1", value: { revision: 2, deleted: true } }],
           }),
         ).toMatchObject({ status: 200 });
         if (at === "directory") checkpoint(f);
@@ -492,18 +515,22 @@ for (const at of ["tail", "directory"] as const) {
         expect(cold).toEqual(warm);
         expect(image(cold)).toEqual({
           head: 2,
-          eventWatermark: 3,
+          eventWatermark: 4,
           lease: {},
           outcome: {},
           witness: {},
-          record: { a: null, b: digestOf({ n: 2 }), c: digestOf(null) },
+          record: {
+            r1: digestOf([2, null]),
+            r2: digestOf([1, digestOf({ n: 2 })]),
+            r3: digestOf([1, digestOf(null)]),
+          },
         });
         const db = writableStore(f.storage);
         const recovered = recoverV3(db);
         const before = { ...f.reads };
-        expect(readV3Value(db, recovered, "record", "a")).toBeUndefined();
+        expect(readV3Value(db, recovered, "record", "r1")).toBeUndefined();
         expect(f.reads).toEqual(before);
-        expect(readV3Value(db, recovered, "record", "c")).toBeNull();
+        expect(readV3Value(db, recovered, "record", "r3")).toBeNull();
       } finally {
         f.db.close();
       }
@@ -519,11 +546,14 @@ test(
     try {
       expect((await f.send(probe, {})).status).toBe(200);
       const writes: [() => Promise<{ status: number }>, number][] = [
-        [() => commit(f, { ...put, changes: [{ key: "a", value: 1 }] }), 200],
+        [
+          () => commit(f, putRecords({ key: "r1", revision: 1, value: 1 })),
+          200,
+        ],
         [() => claim(f, "owner-a"), 200],
         [() => claim(f, "owner-b"), 409],
         [() => claim(f, "owner-a"), 200],
-        [() => commit(f, put), 200],
+        [() => commit(f, note), 200],
       ];
       for (const [write, status] of writes) {
         expect((await write()).status).toBe(status);
@@ -546,10 +576,10 @@ test(
     const f = fixture();
     try {
       expect((await f.send(probe, {})).status).toBe(200);
-      expect(await commit(f, put)).toMatchObject({ status: 200 });
+      expect(await commit(f, note)).toMatchObject({ status: 200 });
       tail(f.db, 1, 1, () => 256);
       const stored = f.snapshot();
-      expect(await commit(f, put)).toMatchObject(unavailable);
+      expect(await commit(f, note)).toMatchObject(unavailable);
       expect(f.snapshot()).toEqual(stored);
       f.reads.rows = 0;
       const warm = await f.send(probe);
@@ -576,11 +606,11 @@ test(
     const logged = spyOn(console, "error").mockImplementation(() => {});
     try {
       expect((await f.send(probe, {})).status).toBe(200);
-      expect(await commit(f, put)).toMatchObject({ status: 200 });
+      expect(await commit(f, note)).toMatchObject({ status: 200 });
       const before = await f.send(probe);
       const stored = f.snapshot();
       failing = true;
-      expect(await commit(f, put, put)).toMatchObject({
+      expect(await commit(f, note, note)).toMatchObject({
         status: 500,
         body: { ok: false, error: { code: "INTERNAL" } },
       });
@@ -593,7 +623,7 @@ test(
       f.reads.rows = 0;
       expect(await f.send(probe)).toEqual(before);
       expect(f.reads.rows).toBe(0);
-      expect(await commit(f, put)).toMatchObject({
+      expect(await commit(f, note)).toMatchObject({
         status: 200,
         body: { value: { head: 2 } },
       });
@@ -614,20 +644,20 @@ test(
     const f = fixture();
     try {
       const malformed = [
-        { ...put, extra: 1 },
-        { ...put, operation: "" },
-        { ...put, events: {} },
-        { ...put, changes: {} },
-        { ...put, changes: [{ key: "", value: 1 }] },
-        { ...put, changes: [{ key: "a" }] },
-        { ...put, changes: [{ key: "a", deleted: false }] },
-        { ...put, changes: [{ key: "a", value: 1, deleted: true }] },
+        { ...note, extra: 1 },
+        { ...note, operation: "" },
+        { ...note, events: {} },
+        { ...note, changes: {} },
+        { ...note, changes: [{ key: "", value: 1 }] },
+        { ...note, changes: [{ key: "a" }] },
+        { ...note, changes: [{ key: "a", deleted: false }] },
+        { ...note, changes: [{ key: "a", value: 1, deleted: true }] },
       ];
       for (const provisioned of [false, true]) {
         if (provisioned) expect((await f.send(probe, {})).status).toBe(200);
         const before = f.snapshot();
         for (const frame of malformed)
-          expect(await commit(f, put, frame)).toMatchObject({
+          expect(await commit(f, note, frame)).toMatchObject({
             status: 400,
             body: { ok: false, error: { code: "INPUT_INVALID" } },
           });
@@ -646,7 +676,7 @@ async function snapshotWithClaim(f: Fixture) {
   expect((await f.send(probe, {})).status).toBe(200);
   expect(
     await commit(f, {
-      operation: "fixture.put",
+      operation: "fixture.note",
       time: T0,
       events: [{ key: "a" }, { key: "b" }],
     }),
@@ -715,9 +745,9 @@ test(
     const f = fixture();
     try {
       expect((await f.send(probe, {})).status).toBe(200);
-      expect(await commit(f, { ...put, events: [{ key: "a" }] })).toMatchObject(
-        { status: 200 },
-      );
+      expect(
+        await commit(f, { ...note, events: [{ key: "a" }] }),
+      ).toMatchObject({ status: 200 });
       expect(await claim(f, "owner-a")).toMatchObject({ status: 200 });
       const refusal = await claim(f, "owner-b");
       expect(refusal).toMatchObject({
@@ -747,10 +777,14 @@ test(
       expect((await f.send(probe, {})).status).toBe(200);
       for (let i = 0; i < 16; i++) {
         expect(
-          await commit(f, {
-            ...put,
-            changes: [{ key: `padding-${i}`, value: "é".repeat(2048) }],
-          }),
+          await commit(
+            f,
+            putRecords({
+              key: `r${i + 1}`,
+              revision: 1,
+              value: "é".repeat(1900),
+            }),
+          ),
         ).toMatchObject({ status: 200 });
       }
       const acquired = await claim(f, "owner-a");
@@ -843,11 +877,11 @@ test(
       JSON.parse("[".repeat(depth) + "0" + "]".repeat(depth));
     try {
       expect((await f.send(probe, {})).status).toBe(200);
-      expect(await commit(f, { ...put, events: events(63) })).toMatchObject({
+      expect(await commit(f, { ...note, events: events(63) })).toMatchObject({
         status: 200,
       });
       const before = f.snapshot();
-      expect(await commit(f, { ...put, events: events(64) })).toMatchObject({
+      expect(await commit(f, { ...note, events: events(64) })).toMatchObject({
         status: 400,
         body: { error: { code: "INPUT_INVALID" } },
       });
@@ -881,13 +915,13 @@ test(
     try {
       expect((await f.send(probe, {})).status).toBe(200);
       const nested = "[".repeat(10_000) + "0" + "]".repeat(10_000);
-      const frame = `{"events":[${nested}],"format":"forge-cloud-commit/3","operation":"fixture.put","sequence":1,"time":${T0}}`;
+      const frame = `{"events":[${nested}],"format":"forge-cloud-commit/3","operation":"fixture.note","sequence":1,"time":${T0}}`;
       f.db.run("INSERT INTO cloud_v3_commits VALUES (1, ?)", [frame]);
       const before = f.snapshot();
       f.restart();
       expect(await f.send(probe)).toMatchObject(unavailable);
       expect(await claim(f, "owner-a")).toMatchObject(unavailable);
-      expect(await commit(f, put)).toMatchObject(unavailable);
+      expect(await commit(f, note)).toMatchObject(unavailable);
       expect(f.snapshot()).toEqual(before);
     } finally {
       logged.mockRestore();
@@ -994,7 +1028,7 @@ for (const [label, corrupt] of corruptions) {
         expect(read).toMatchObject(unavailable);
         expect(read.body).not.toHaveProperty("value");
         expect(await claim(f, "owner-a")).toMatchObject(unavailable);
-        expect(await commit(f, put)).toMatchObject(unavailable);
+        expect(await commit(f, note)).toMatchObject(unavailable);
         expect(f.snapshot()).toEqual(before);
       } finally {
         f.db.close();
@@ -1113,9 +1147,7 @@ for (const [label, edit, sql] of rootFields) {
         const read = await f.send(probe);
         expect(read).toMatchObject(unavailable);
         expect(read.body).not.toHaveProperty("value");
-        expect(
-          await commit(f, { operation: "fixture.put", time: T0, events: [] }),
-        ).toMatchObject(unavailable);
+        expect(await commit(f, note)).toMatchObject(unavailable);
         expect(f.snapshot()).toEqual(before);
       } finally {
         f.db.close();
@@ -1209,9 +1241,9 @@ for (const [label, sql] of tails) {
       const f = fixture();
       try {
         expect((await f.send(probe, {})).status).toBe(200);
-        expect(await commit(f, put)).toMatchObject({ status: 200 });
+        expect(await commit(f, note)).toMatchObject({ status: 200 });
         expect(await claim(f, "owner-a")).toMatchObject({ status: 200 });
-        expect(await commit(f, put)).toMatchObject({
+        expect(await commit(f, note)).toMatchObject({
           status: 200,
           body: { value: { head: 3 } },
         });
@@ -1222,7 +1254,7 @@ for (const [label, sql] of tails) {
         expect(read).toMatchObject(unavailable);
         expect(read.body).not.toHaveProperty("value");
         expect(await claim(f, "owner-a")).toMatchObject(unavailable);
-        expect(await commit(f, put)).toMatchObject(unavailable);
+        expect(await commit(f, note)).toMatchObject(unavailable);
         expect(f.snapshot()).toEqual(before);
       } finally {
         f.db.close();

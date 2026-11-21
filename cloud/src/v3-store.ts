@@ -3,6 +3,7 @@ import { decideLease } from "../../src/contract/lease.ts";
 import {
   canonicalJson,
   digestBytes,
+  digestValue,
   isObject,
 } from "../../src/core/config/pointer.ts";
 import {
@@ -30,6 +31,7 @@ import {
   isNat,
   sealedAuthorityValid,
 } from "./v3-authority.ts";
+import { recordNumber, verifyRecordFrame } from "./v3-record-transitions.ts";
 import { TABLE_PROBE } from "./store.ts";
 
 export { withinDepth };
@@ -123,7 +125,9 @@ interface Pointer {
   readonly length: number;
   readonly digest: string;
 }
-type Slot = { readonly value: unknown } | Pointer | null;
+type Slot = (
+  { readonly value: unknown } | Pointer | { readonly deleted: true }
+) & { readonly revision?: number };
 interface Values {
   readonly lease: LeaseRecord;
   readonly outcome: {
@@ -143,6 +147,7 @@ export interface V3Image {
     readonly pages: readonly Page[];
   };
   readonly entries: Readonly<Record<Collection, Map<string, Slot>>>;
+  recordFloor: number;
   head: number;
   eventWatermark: number;
   tailBytes: number;
@@ -303,8 +308,12 @@ function directoryEntry(entry: unknown, byId: ReadonlyMap<string, Page>) {
   )
     throw unavailable();
   const { key } = entry;
+  const revision = collection === "record" ? nat(entry.revision) : undefined;
+  if (revision !== undefined && (!revision || !recordNumber(key)))
+    throw unavailable();
+  const metadata = revision === undefined ? {} : { revision };
   if (collection === "record" && entry.deleted === true)
-    return { collection, key, deleted: true as const };
+    return { collection, key, ...metadata, deleted: true as const };
   const target =
     typeof entry.page === "string" ? byId.get(entry.page) : undefined;
   const offset = nat(entry.offset);
@@ -320,6 +329,7 @@ function directoryEntry(entry: unknown, byId: ReadonlyMap<string, Page>) {
   return {
     collection,
     key,
+    ...metadata,
     page: target.id,
     offset,
     length,
@@ -355,6 +365,7 @@ export function recoverV3(
       record: new Map(),
       witness: new Map(),
     },
+    recordFloor: 0,
     head: root.coveredHead,
     eventWatermark: root.eventWatermark,
     tailBytes: 0,
@@ -393,7 +404,9 @@ export function recoverV3(
       )
         throw unavailable();
       prior = [collection, key];
-      image.entries[collection].set(key, "deleted" in slot ? null : slot);
+      image.entries[collection].set(key, slot);
+      if (collection === "record")
+        image.recordFloor = Math.max(image.recordFloor, recordNumber(key));
     }
   }
   verification?.sealed(image);
@@ -424,7 +437,17 @@ function foldRow(
     frame.sequence !== sequence
   )
     throw unavailable();
+  const { record } = image.entries;
+  const read = (key: string) => record.get(key);
+  const records = verifyRecordFrame(
+    frame,
+    image.recordFloor,
+    read,
+    unavailable,
+  );
   apply(image, verify ? verify(frame) : frame, nat(sequence));
+  image.recordFloor = records.floor;
+  for (const { key, value } of records.changes) record.set(key, value);
   image.tailBytes += Buffer.byteLength(String(body));
 }
 
@@ -452,13 +475,17 @@ export function provisionV3(db: SqlDatabase, legacyMarker: boolean) {
   });
 }
 
+export const entryDigest = (digest: string | null, revision?: number) =>
+  revision === undefined ? digest : digestValue([revision, digest]);
+
 export function viewV3(image: V3Image) {
   const digest = (slot: Slot) =>
-    slot === null
-      ? null
-      : "value" in slot
-        ? digestBytes(canonicalJson(slot.value))
-        : slot.digest;
+    "deleted" in slot
+      ? entryDigest(null, slot.revision)
+      : entryDigest(
+          "value" in slot ? digestValue(slot.value) : slot.digest,
+          slot.revision,
+        );
   return {
     ...image.root,
     image: {
@@ -484,7 +511,7 @@ export function readV3Value<C extends Collection>(
   pages?: ReadonlyMap<string, Buffer>,
 ): Values[C] | undefined {
   const slot = image.entries[collection].get(key);
-  if (!slot) return undefined;
+  if (!slot || "deleted" in slot) return undefined;
   if ("value" in slot) return slot.value as Values[C];
   const bytes = pages
     ? pages.get(slot.page)?.subarray(slot.offset, slot.offset + slot.length)
@@ -556,10 +583,19 @@ function append(db: SqlDatabase, image: V3Image, batch: readonly unknown[]) {
     }
     if (head - coveredHead + batch.length > TAIL_ROWS || bytes > TAIL_BYTES)
       throw unavailable();
+    const pending = new Map<string, Slot>();
+    let floor = image.recordFloor;
+    const read = (key: string) =>
+      pending.get(key) ?? image.entries.record.get(key);
+    const refuse = () => fail("INPUT_INVALID", "Invalid v3 record transition");
     for (const body of bodies) {
-      const fault = authorityFault(JSON.parse(body) as Record<string, unknown>);
+      const frame = JSON.parse(body) as Frame & Record<string, unknown>;
+      const fault = authorityFault(frame);
       if (fault !== undefined)
         throw new Error(`Refusing a v3 frame with an invalid ${fault}`);
+      const records = verifyRecordFrame(frame, floor, read, refuse);
+      floor = records.floor;
+      for (const { key, value } of records.changes) pending.set(key, value);
     }
     image.stale = true;
     for (const [i, body] of bodies.entries()) {
@@ -570,13 +606,11 @@ function append(db: SqlDatabase, image: V3Image, batch: readonly unknown[]) {
   });
 }
 
-interface Frame {
+export interface Frame {
+  readonly operation: string;
   readonly time: number;
   readonly events: readonly unknown[];
-  readonly changes?: readonly (
-    | { readonly key: string; readonly value: unknown }
-    | { readonly key: string; readonly deleted: true }
-  )[];
+  readonly changes?: readonly unknown[];
   readonly lease?: LeaseRecord;
   readonly outcome?: {
     readonly id: string;
@@ -599,8 +633,7 @@ const validChange = (change: unknown) =>
   isObject(change) &&
   typeof change.key === "string" &&
   change.key.length > 0 &&
-  Object.keys(change).sort().join() ===
-    (change.deleted === true ? "deleted,key" : "key,value");
+  Object.keys(change).sort().join() === "key,value";
 
 function validShape(frame: unknown): frame is Frame & Record<string, unknown> {
   return (
@@ -632,11 +665,6 @@ function apply(image: V3Image, frame: Frame, sequence: number) {
     });
   if (witness)
     image.entries.witness.set(witness.id, { value: { witness, lease } });
-  for (const change of frame.changes ?? [])
-    image.entries.record.set(
-      change.key,
-      "deleted" in change ? null : { value: change.value },
-    );
   image.head = sequence;
   image.eventWatermark += frame.events.length;
 }

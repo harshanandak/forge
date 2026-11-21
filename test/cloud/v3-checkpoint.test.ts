@@ -27,6 +27,7 @@ type Json = Record<string, unknown>;
 interface DirectoryItem {
   collection: string;
   key: string;
+  revision?: number;
   page?: string;
   offset?: number;
   length?: number;
@@ -86,10 +87,30 @@ const stagingTables = (f: Fixture) =>
       "SELECT name FROM sqlite_schema WHERE type='table' AND name GLOB 'cloud_v3_checkpoint*'",
     )
     .all();
-const frame = (
-  changes: readonly Json[] = [],
-  events: readonly Json[] = [],
-) => ({ operation: "fixture.put", time: Date.now(), events, changes });
+const frame = () => ({
+  operation: "fixture.note",
+  time: Date.now(),
+  events: [],
+});
+const putRecords = (
+  ...events: { key: string; revision: number; value: unknown }[]
+) => ({
+  ...frame(),
+  operation: "fixture.put",
+  events,
+  changes: events.map(({ key, revision, value }) => ({
+    key,
+    value: { revision, value },
+  })),
+});
+const putRecord = (key: string, revision: number, value: unknown) =>
+  putRecords({ key, revision, value });
+const deleteRecord = (key: string, revision: number) => ({
+  ...frame(),
+  operation: "fixture.delete",
+  events: [{ key, revision }],
+  changes: [{ key, value: { revision, deleted: true } }],
+});
 const append = (f: Fixture, ...frames: Json[]) =>
   f.send(`${probe}/commits`, { frames });
 
@@ -121,13 +142,10 @@ async function populate(f: Fixture) {
     (
       await append(
         f,
-        frame(
-          [
-            { key: "a", value: { revision: 1, text: "café" } },
-            { key: "b", value: { revision: 1, text: "café" } },
-            { key: "gone", value: 1 },
-          ],
-          [{ key: "a" }],
+        putRecords(
+          { key: "r1", revision: 1, value: { text: "café" } },
+          { key: "r2", revision: 1, value: { text: "café" } },
+          { key: "r3", revision: 1, value: 1 },
         ),
       )
     ).status,
@@ -141,9 +159,7 @@ async function populate(f: Fixture) {
   expect(
     await lease("release", "owner-a", { requestId: "rel-1", generation: 1 }),
   ).toMatchObject({ status: 200 });
-  expect(
-    (await append(f, frame([{ key: "gone", deleted: true }]))).status,
-  ).toBe(200);
+  expect((await append(f, deleteRecord("r3", 2))).status).toBe(200);
 }
 
 function afterSync(
@@ -225,7 +241,14 @@ test(
         const snapshot = pageBody(f, "snapshot:0");
         const transcript = pageBody(f, "transcript:0");
         expect(JSON.parse(transcript)).toEqual(archived);
-        const refusalSlot = (JSON.parse(directory) as DirectoryItem[]).find(
+        const slots = JSON.parse(directory) as DirectoryItem[];
+        expect(slots.find(({ key }) => key === "r3")).toEqual({
+          collection: "record",
+          key: "r3",
+          revision: 2,
+          deleted: true,
+        });
+        const refusalSlot = slots.find(
           (item) => item.collection === "outcome" && item.key === receipt.id,
         )!;
         expect(
@@ -249,7 +272,7 @@ test(
           [
             "snapshot",
             snapshot,
-            entries.filter((item) => item[2] !== null).length,
+            slots.filter(({ deleted }) => !deleted).length,
             null,
             null,
           ],
@@ -310,7 +333,7 @@ test(
       await expectCut(f, 1, 5, before.image);
 
       expect(
-        (await append(f, frame([{ key: "a", value: { revision: 2 } }]))).status,
+        (await append(f, putRecord("r1", 2, { text: "updated" }))).status,
       ).toBe(200);
       const { image } = await view(f);
       const expected = ["lease", "outcome", "record", "witness"].flatMap(
@@ -329,7 +352,7 @@ test(
       expect(JSON.parse(transcript.body)).toEqual([
         ...archived,
         {
-          ...frame([{ key: "a", value: { revision: 2 } }]),
+          ...putRecord("r1", 2, { text: "updated" }),
           format: "forge-cloud-commit/3",
           sequence: 6,
         },
@@ -358,9 +381,7 @@ test(
       const log = commits(f);
       let staged: Awaited<ReturnType<typeof view>> | undefined;
       afterSync(f, 1, async () => {
-        expect(
-          (await append(f, frame([{ key: "late", value: 9 }]))).status,
-        ).toBe(200);
+        expect((await append(f, putRecord("r4", 1, 9))).status).toBe(200);
         staged = await view(f);
         expect(staged).toMatchObject({ generation: 0, image: { head: 6 } });
       });
@@ -388,9 +409,7 @@ test(
       let appended: Json | undefined;
       afterSync(f, 2, async () => {
         await expectCut(f, 1, 5, before.image);
-        expect(
-          (await append(f, frame([{ key: "late", value: 9 }]))).status,
-        ).toBe(200);
+        expect((await append(f, putRecord("r4", 1, 9))).status).toBe(200);
         appended = (await view(f)).image;
       });
       expect(await checkpoint(f)).toMatchObject({ status: 200 });
@@ -607,10 +626,10 @@ function changedPages(f: Fixture, change: string, originalClaim: unknown) {
   const directoryId = "directory:0";
   const entries = JSON.parse(pageBody(f, directoryId)) as DirectoryItem[];
   const a = entries.find(
-    ({ collection, key }) => collection === "record" && key === "a",
+    ({ collection, key }) => collection === "record" && key === "r1",
   )!;
   const b = entries.find(
-    ({ collection, key }) => collection === "record" && key === "b",
+    ({ collection, key }) => collection === "record" && key === "r2",
   )!;
   if (change === "a pointer to another key with identical value bytes") {
     a.offset = b.offset!;
@@ -633,9 +652,9 @@ function changedPages(f: Fixture, change: string, originalClaim: unknown) {
   };
   const missing = removable[change];
   if (missing) entries.splice(entries.indexOf(missing), 1);
-  const extra = { ...b, key: "c" };
+  const extra = { ...b, key: "r4" };
   if (change === "an extra record")
-    entries.splice(entries.indexOf(b) + 1, 0, extra);
+    entries.splice(entries.findIndex(({ key }) => key === "r3") + 1, 0, extra);
   let body = "";
   for (const item of entries) {
     if (item.deleted) continue;
@@ -776,18 +795,6 @@ function changeCommit(
     sequence,
   ]);
 }
-
-const putRecord = (key: string, revision: number, value: unknown) => ({
-  ...frame(),
-  events: [{ key, revision, value }],
-  changes: [{ key, value: { revision, value } }],
-});
-const deleteRecord = (key: string, revision: number) => ({
-  ...frame(),
-  operation: "fixture.delete",
-  events: [{ key, revision }],
-  changes: [{ key, value: { revision, deleted: true } }],
-});
 
 for (const [fault, corrupt] of [
   [
@@ -936,6 +943,47 @@ for (const fault of [
     timeout,
   );
 }
+
+test(
+  "v3 record batches retain the updated tombstone and floor after checkpoint recovery",
+  () =>
+    withFixture(async (f) => {
+      const frames = [
+        putRecord("r2", 1, "first"),
+        putRecord("r2", 2, "next"),
+        deleteRecord("r2", 3),
+      ];
+      const effects = f.observeEffects();
+      const empty = f.snapshot();
+      expect(await append(f, frames[0]!, frames[0]!)).toMatchObject({
+        status: 400,
+        body: { ok: false, error: { code: "INPUT_INVALID" } },
+      });
+      expect(effects()).toEqual(noWrites);
+      expect(f.snapshot()).toEqual(empty);
+      expect((await append(f, ...frames)).status).toBe(200);
+      const { image } = await view(f);
+      expect(image.record).toEqual({
+        r2: digestBytes(canonicalJson([3, null])),
+      });
+      expect((await checkpoint(f)).status).toBe(200);
+      expect(commits(f)).toEqual([]);
+      f.restart();
+      await expectCut(f, 1, 3, image);
+      const sealed = f.snapshot();
+      expect(await append(f, putRecord("r1", 1, "old"))).toMatchObject({
+        status: 400,
+        body: { ok: false, error: { code: "INPUT_INVALID" } },
+      });
+      expect(await append(f, putRecord("r2", 4, "reused"))).toMatchObject({
+        status: 400,
+        body: { ok: false, error: { code: "INPUT_INVALID" } },
+      });
+      expect(f.snapshot()).toEqual(sealed);
+      expect((await append(f, putRecord("r3", 1, "new"))).status).toBe(200);
+    }),
+  timeout,
+);
 
 test(
   "v3 checkpoint refuses a release written with an expired token deadline",
