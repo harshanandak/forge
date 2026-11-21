@@ -1,0 +1,99 @@
+name: Prepare packed journeys
+description: Set up the packed journey environment for CI and Release
+inputs:
+  mode: { description: ci or release, required: true }
+  node: { description: CI Node leg }
+  shard: { description: CI timing shard }
+  artifact: { description: CI archive path }
+  sha256: { description: CI archive digest }
+  version: { description: Reviewed package version }
+  release-run-id: { description: Release artifact run ID }
+  ecosystem-tools: { description: Release npm fixture directory }
+  python-packages: { description: Release Python fixture directory }
+  device-root: { description: Release Forge state directory }
+runs:
+  using: composite
+  steps:
+    - if: inputs.mode == 'ci'
+      shell: bash
+      env:
+        {
+          CI_NODE: "${{ inputs.node }}",
+          CI_SHARD: "${{ inputs.shard }}",
+          ARCHIVE: "${{ inputs.artifact }}",
+          SHA256: "${{ inputs.sha256 }}",
+          VERSION: "${{ inputs.version }}",
+        }
+      run: |
+        touch "$RUNNER_TEMP/ci-tests.log"
+        timings="$RUNNER_TEMP/ci-timings.json"
+        echo '{"version":1,"files":{}}' > "$timings"
+        printf '%s\n' "CI_NODE=$CI_NODE" "CI_SHARD=$CI_SHARD" "CI_JOB_STARTED=$(date +%s)000" \
+          "CI_TIMINGS=$timings" "FORGE_TEST_TIMINGS_ARG=--timings=$timings" "FORGE_TEST_UPDATE_ARG=--update-timings" >> "$GITHUB_ENV"
+        if [[ -n "$ARCHIVE" ]]; then
+          [[ "$SHA256" =~ ^[a-f0-9]{64}$ && -n "$VERSION" ]]
+          printf '%s\n' "STATE_NODE_LEG=$CI_NODE" "FORGE_PACK_INPUT=$ARCHIVE" \
+            "FORGE_PACK_EXPECTED_SHA256=$SHA256" "FORGE_PACK_EXPECTED_VERSION=$VERSION" >> "$GITHUB_ENV"
+        fi
+    - if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        Set-Service StorSvc -StartupType Disabled
+        Stop-Service StorSvc -Force
+        $service = Get-Service StorSvc
+        if ($service.Status -ne 'Stopped' -or $service.StartType -ne 'Disabled') { throw "StorSvc is $($service.Status) and $($service.StartType)" }
+        $env:TEMP = $env:RUNNER_TEMP
+        $env:TMP = $env:RUNNER_TEMP
+        "TEMP=$env:TEMP", "TMP=$env:TMP", "FORGE_HANDLE_EXE=", "FORGE_HANDLE_UNAVAILABLE=" >> $env:GITHUB_ENV
+        "Windows test temp directory: $env:RUNNER_TEMP" >> $env:GITHUB_STEP_SUMMARY
+        try {
+          $zip = Join-Path $env:RUNNER_TEMP 'Handle.zip'
+          Invoke-WebRequest 'https://download.sysinternals.com/files/Handle.zip' -OutFile $zip -ErrorAction Stop -TimeoutSec 60 -OperationTimeoutSeconds 60
+          if ((Get-FileHash $zip -Algorithm SHA256 -ErrorAction Stop).Hash -ne '279aaf8eccb6f79147f4dcc6ba091fb895c4cb8b199a0dd186a4c76bc519d2cd') { throw 'Handle 5.0 checksum mismatch' }
+          $directory = Join-Path $env:RUNNER_TEMP 'handle-5.0'
+          Expand-Archive $zip -DestinationPath $directory -ErrorAction Stop
+          "FORGE_HANDLE_EXE=$(Join-Path $directory 'handle64.exe')" >> $env:GITHUB_ENV
+        } catch {
+          $reason = $_.Exception.Message -replace '[\r\n]+', ' '
+          "FORGE_HANDLE_UNAVAILABLE=handle unavailable: $reason" >> $env:GITHUB_ENV
+          Write-Host "handle unavailable: $reason"
+        }
+        $exe = Join-Path $env:SystemRoot 'System32/WindowsPowerShell/v1.0/powershell.exe'
+        $script = "Add-Type -TypeDefinition 'public static class ForgeWarm { public static int One() { return 1; } }'; [ForgeWarm]::One()"
+        foreach ($pass in 'cold', 'warm') {
+          $timer = [Diagnostics.Stopwatch]::StartNew()
+          $out = & $exe -NoProfile -NonInteractive -Command $script
+          if ($LASTEXITCODE -ne 0 -or "$out".Trim() -ne '1') { throw "PowerShell 5.1 $pass warm-up failed: exit $LASTEXITCODE, output '$out'" }
+          $line = "PowerShell 5.1 $pass start plus compile: $($timer.ElapsedMilliseconds) ms"
+          $line >> $env:GITHUB_STEP_SUMMARY
+        }
+    - id: lint-runtime
+      shell: bash
+      run: node tools/ci/preserve-lint-runtime.ts prepare
+    - shell: bash
+      run: npm install --prefix "$RUNNER_TEMP/comment-lint" --ignore-scripts --no-save "${{ steps.lint-runtime.outputs.package }}"
+    - shell: bash
+      run: node tools/ci/preserve-lint-runtime.ts
+    - if: inputs.mode == 'release'
+      uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+      with: { python-version: "3.12" }
+    - if: inputs.mode == 'release'
+      shell: bash
+      env:
+        {
+          VERSION: "${{ inputs.version }}",
+          CI_RUN: "${{ inputs.release-run-id }}",
+          FORGE_DEVICE_ROOT: "${{ inputs.device-root }}",
+          CHECK_ECOSYSTEM_TOOLS: "${{ inputs.ecosystem-tools }}",
+          CHECK_PYTHON_PACKAGES: "${{ inputs.python-packages }}",
+        }
+      run: |
+        [[ -n "$VERSION" && "$CI_RUN" =~ ^[0-9]+$ && -n "$FORGE_DEVICE_ROOT" && -n "$CHECK_ECOSYSTEM_TOOLS" && -n "$CHECK_PYTHON_PACKAGES" ]]
+        npm install --global npm@11.21.0
+        npm install --prefix "$CHECK_ECOSYSTEM_TOOLS" --ignore-scripts --no-audit --no-fund vitest@4.0.18 jest@30.2.0 pnpm@10.28.2
+        python -m pip install --target "$CHECK_PYTHON_PACKAGES" pytest==9.0.2
+        echo "$CHECK_ECOSYSTEM_TOOLS/node_modules/.bin" >> "$GITHUB_PATH"
+        if [[ "$RUNNER_OS" == Windows ]]; then choco install make --version=4.4.1 --yes --no-progress; fi
+        make --version
+        printf '%s\n' "VERSION=$VERSION" "FORGE_PACK_EXPECTED_RUN_ID=$CI_RUN" "FORGE_DEVICE_ROOT=$FORGE_DEVICE_ROOT" \
+          "CHECK_ECOSYSTEM_TOOLS=$CHECK_ECOSYSTEM_TOOLS" "CHECK_PYTHON_PACKAGES=$CHECK_PYTHON_PACKAGES" >> "$GITHUB_ENV"

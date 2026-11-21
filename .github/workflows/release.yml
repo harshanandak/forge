@@ -84,12 +84,18 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-    env:
-      VERSION: ${{ needs.verify.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with: { node-version: "24" }
+      - uses: ./.github/actions/journey-setup
+        with:
+          mode: release
+          version: ${{ needs.verify.outputs.version }}
+          release-run-id: ${{ inputs.run_id }}
+          device-root: ${{ runner.temp }}/release-forge
+          ecosystem-tools: ${{ runner.temp }}/fixture-tools
+          python-packages: ${{ runner.temp }}/fixture-python
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with: { bun-version: "1.4.4" }
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -100,17 +106,7 @@ jobs:
             run-id: "${{ inputs.run_id }}",
             github-token: "${{ github.token }}",
           }
-      - run: npm install --global npm@11.21.0
       - run: bun install --frozen-lockfile
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-        with: { python-version: "3.12" }
-      - name: Install required release fixture tools
-        run: |
-          npm install --prefix "$RUNNER_TEMP/fixture-tools" --ignore-scripts --no-audit --no-fund vitest@4.0.18 jest@30.2.0 pnpm@10.28.2
-          python -m pip install --target "$RUNNER_TEMP/fixture-python" pytest==9.0.2
-          echo "$RUNNER_TEMP/fixture-tools/node_modules/.bin" >> "$GITHUB_PATH"
-          if [[ "$RUNNER_OS" == Windows ]]; then choco install make --version=4.4.1 --yes --no-progress; fi
-          make --version
       - name: Bounded registry readback of integrity, next and provenance
         run: |
           node --input-type=module <<'JS'
@@ -118,14 +114,29 @@ jobs:
           import {readFileSync} from 'node:fs';
           const start = Date.now(), version = process.env.VERSION;
           const integrity = 'sha512-' + hash('sha512', readFileSync(process.env.TARBALL), 'base64');
+          const registry = 'https://registry.npmjs.org';
+          const urls = [
+            `${registry}/forge-workflow/${encodeURIComponent(version)}`,
+            `${registry}/-/package/forge-workflow/dist-tags`,
+          ];
           for (let attempt = 0; attempt < 12; attempt++) {
-            const r = await fetch('https://registry.npmjs.org/forge-workflow', {signal: AbortSignal.timeout(10000)});
-            if (!r.ok && r.status !== 404) throw Error(`registry HTTP ${r.status}`);
-            const p = r.ok ? await r.json() : {}, v = p.versions?.[version];
+            const signal = AbortSignal.timeout(10000);
+            const responses = await Promise.all(urls.map(url => fetch(url, {cache: 'no-store', redirect: 'error', signal})));
             console.log(`registry readback: ${Date.now()-start}ms, attempt ${attempt+1}/12`);
-            if (v && p['dist-tags']?.next === version) {
-              if (v.dist.integrity !== integrity) throw Error('registry integrity mismatch');
-              if (!v.dist.attestations?.provenance?.predicateType) throw Error('registry provenance missing');
+            for (const r of responses) {
+              const cache = r.headers.get('cf-cache-status');
+              const age = r.headers.get('age');
+              console.log(`registry source: ${r.url} HTTP ${r.status}, CF-Cache-Status=${cache}, Age=${age}`);
+              if (!r.ok && r.status !== 404) throw Error(`registry HTTP ${r.status}: ${r.url}`);
+              if (Number(age) > 0 || /^(HIT|STALE|UPDATING)$/i.test(cache ?? ''))
+                throw Error(`cached registry response: ${r.url}`);
+            }
+            const [manifest, tags] = await Promise.all(responses.map(r => r.ok ? r.json() : null));
+            if (manifest && (manifest.name !== 'forge-workflow' || manifest.version !== version))
+              throw Error('registry package/version mismatch');
+            if (manifest && tags?.next === version) {
+              if (manifest.dist?.integrity !== integrity) throw Error('registry integrity mismatch');
+              if (!manifest.dist?.attestations?.provenance?.predicateType) throw Error('registry provenance missing');
               break;
             }
             if (attempt === 11) throw Error(`registry version/next unavailable after ${Date.now()-start}ms`);
@@ -137,9 +148,6 @@ jobs:
           CI_RUN: ${{ inputs.run_id }}
           npm_config_cache: ${{ runner.temp }}/release-npm-cache
           BUN_INSTALL_CACHE_DIR: ${{ runner.temp }}/release-bun-cache
-          FORGE_DEVICE_ROOT: ${{ runner.temp }}/release-forge
-          CHECK_ECOSYSTEM_TOOLS: ${{ runner.temp }}/fixture-tools
-          CHECK_PYTHON_PACKAGES: ${{ runner.temp }}/fixture-python
         run: |
           mkdir -p "$RUNNER_TEMP/npm-smoke" "$RUNNER_TEMP/bun-smoke"
           cd "$RUNNER_TEMP/npm-smoke"
@@ -156,11 +164,6 @@ jobs:
           bun run forge --version
           bun run forge help
       - name: Required registry journeys
-        env:
-          FORGE_PACK_EXPECTED_RUN_ID: ${{ inputs.run_id }}
-          FORGE_DEVICE_ROOT: ${{ runner.temp }}/release-forge
-          CHECK_ECOSYSTEM_TOOLS: ${{ runner.temp }}/fixture-tools
-          CHECK_PYTHON_PACKAGES: ${{ runner.temp }}/fixture-python
         run: node tools/release/journeys.mjs "$GITHUB_WORKSPACE" "$RUNNER_TEMP/npm-smoke" "$TARBALL"
   promote:
     needs: [verify, readback]

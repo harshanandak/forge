@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import { parse } from "yaml";
 import assert from "node:assert/strict";
 
+const journeySetup = "./.github/actions/journey-setup";
+
 interface Job {
   if?: unknown;
   "continue-on-error"?: unknown;
@@ -37,6 +39,19 @@ function workflow() {
   };
 }
 
+function noLoaders(value: unknown): void {
+  if (!value || typeof value !== "object") return;
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    if (key === "env" && child && typeof child === "object")
+      for (const name of Object.keys(child))
+        assert.doesNotMatch(
+          name,
+          /^(NODE_OPTIONS|NODE_PATH|BUN_OPTIONS|BUN_PRELOAD|NPM_CONFIG_NODE_OPTIONS|NPM_CONFIG_SCRIPT_SHELL|BASH_ENV|BASH_FUNC_.+|ENV|ZDOTDIR|SHELLOPTS|BASHOPTS|LD_.+|DYLD_.+|PYTHONPATH|PYTHONHOME|PYTHONSTARTUP|PERL5OPT|PERL5LIB|RUBYOPT|RUBYLIB)$/i,
+        );
+    noLoaders(child);
+  }
+}
+
 function requiredReadback(w: ReturnType<typeof workflow>) {
   assert.deepEqual(w.defaults, { run: { shell: "bash" } });
   assert.deepEqual(w.env, {
@@ -44,20 +59,6 @@ function requiredReadback(w: ReturnType<typeof workflow>) {
     NPM_CONFIG_REGISTRY: "https://registry.npmjs.org",
   });
   const version = { VERSION: "${{ needs.verify.outputs.version }}" };
-  const noLoaders = (value: unknown): void => {
-    if (!value || typeof value !== "object") return;
-    for (const [key, child] of Object.entries(
-      value as Record<string, unknown>,
-    )) {
-      if (key === "env" && child && typeof child === "object")
-        for (const name of Object.keys(child))
-          assert.doesNotMatch(
-            name,
-            /^(NODE_OPTIONS|NODE_PATH|BUN_OPTIONS|BUN_PRELOAD|NPM_CONFIG_NODE_OPTIONS|NPM_CONFIG_SCRIPT_SHELL|BASH_ENV|BASH_FUNC_.+|ENV|ZDOTDIR|SHELLOPTS|BASHOPTS|LD_.+|DYLD_.+|PYTHONPATH|PYTHONHOME|PYTHONSTARTUP|PERL5OPT|PERL5LIB|RUBYOPT|RUBYLIB)$/i,
-          );
-      noLoaders(child);
-    }
-  };
   noLoaders(w);
   for (const [name, job] of Object.entries(w.jobs)) {
     assert.equal(
@@ -65,10 +66,7 @@ function requiredReadback(w: ReturnType<typeof workflow>) {
       undefined,
       "jobs inherit only the pinned Bash defaults",
     );
-    assert.deepEqual(
-      job.env,
-      ["readback", "promote"].includes(name) ? version : undefined,
-    );
+    assert.deepEqual(job.env, name === "promote" ? version : undefined);
     for (const step of job.steps) {
       assert.equal(step.shell, undefined);
       assert.equal(step["working-directory"], undefined);
@@ -84,17 +82,26 @@ function requiredReadback(w: ReturnType<typeof workflow>) {
       assert.equal(step["continue-on-error"], undefined);
     }
   }
-  const journey = w.jobs.readback!.steps.find(
-    (s) => s.name === "Required registry journeys",
+  const steps = w.jobs.readback!.steps;
+  assert.deepEqual(
+    steps.find((step) => step.uses === journeySetup),
+    {
+      uses: journeySetup,
+      with: {
+        mode: "release",
+        version: version.VERSION,
+        "release-run-id": "${{ inputs.run_id }}",
+        "device-root": "${{ runner.temp }}/release-forge",
+        "ecosystem-tools": "${{ runner.temp }}/fixture-tools",
+        "python-packages": "${{ runner.temp }}/fixture-python",
+      },
+    },
+  );
+  const journey = steps.find(
+    (step) => step.name === "Required registry journeys",
   );
   assert.deepEqual(journey, {
     name: "Required registry journeys",
-    env: {
-      FORGE_PACK_EXPECTED_RUN_ID: "${{ inputs.run_id }}",
-      FORGE_DEVICE_ROOT: "${{ runner.temp }}/release-forge",
-      CHECK_ECOSYSTEM_TOOLS: "${{ runner.temp }}/fixture-tools",
-      CHECK_PYTHON_PACKAGES: "${{ runner.temp }}/fixture-python",
-    },
     run: 'node tools/release/journeys.mjs "$GITHUB_WORKSPACE" "$RUNNER_TEMP/npm-smoke" "$TARBALL"',
   });
   const runs = w.jobs.readback!.steps.map((s) => s.run ?? "").join("\n");
@@ -128,25 +135,41 @@ test("release approvals, dependency chain and OIDC cannot be bypassed", () => {
 test("release actions are immutable and no npm token is configured", () => {
   const w = workflow();
   expect(JSON.stringify(w)).not.toMatch(/NODE_AUTH_TOKEN|secrets\.NPM/);
-  for (const job of Object.values(w.jobs)) {
+  for (const [name, job] of Object.entries(w.jobs)) {
     for (const step of job.steps) {
+      if (name === "readback" && step.uses === journeySetup) continue;
       if (step.uses) expect(step.uses).toMatch(/@[a-f0-9]{40}$/);
     }
   }
+  const action = parse(
+    readFileSync(
+      new URL(
+        "../../.github/actions/journey-setup/action.yml",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  ) as {
+    runs: { using: string; steps: Job["steps"] };
+  };
+  noLoaders(action);
+  expect(action.runs.using).toBe("composite");
+  expect(JSON.stringify(action)).not.toMatch(/NODE_AUTH_TOKEN|secrets\.NPM/);
+  for (const step of action.runs.steps)
+    if (step.uses) expect(step.uses).toMatch(/@[a-f0-9]{40}$/);
 }, 1000);
 
-test("cold installs use runner-scoped caches and an isolated Forge store in step context", () => {
+test("cold installs use runner-scoped caches and the shared setup supplies the isolated store", () => {
   const job = workflow().jobs.readback;
-  expect(JSON.stringify(job?.env)).not.toContain("${{ runner.");
+  expect(job?.env).toBeUndefined();
   const cold = job?.steps.find((step) => step.run?.includes("npx --yes"));
   expect(cold?.env).toEqual({
     CI_RUN: "${{ inputs.run_id }}",
     npm_config_cache: "${{ runner.temp }}/release-npm-cache",
     BUN_INSTALL_CACHE_DIR: "${{ runner.temp }}/release-bun-cache",
-    FORGE_DEVICE_ROOT: "${{ runner.temp }}/release-forge",
-    CHECK_ECOSYSTEM_TOOLS: "${{ runner.temp }}/fixture-tools",
-    CHECK_PYTHON_PACKAGES: "${{ runner.temp }}/fixture-python",
   });
+  const setup = job?.steps.find((step) => step.uses === journeySetup);
+  expect(setup?.with?.["device-root"]).toBe("${{ runner.temp }}/release-forge");
 }, 1000);
 
 test("promotion derives beta for prereleases and latest for stable versions", () => {
@@ -181,6 +204,8 @@ for (const change of [
   "ignored step failure",
   "ignored job failure",
   "conditional promotion",
+  "unverified setup version",
+  "unverified setup run ID",
 ]) {
   test(`release guard refuses ${change}`, () => {
     const w = workflow();
@@ -206,6 +231,11 @@ for (const change of [
     if (change === "ignored job failure")
       w.jobs.readback!["continue-on-error"] = true;
     if (change === "conditional promotion") w.jobs.promote!.if = "always()";
+    const setup = w.jobs.readback!.steps.find((s) => s.uses === journeySetup)!;
+    if (change === "unverified setup version")
+      setup.with!.version = "unverified";
+    if (change === "unverified setup run ID")
+      setup.with!["release-run-id"] = "0";
     expect(() => requiredReadback(w)).toThrow();
   }, 1000);
 }
@@ -239,11 +269,11 @@ for (const change of [
     const options = {
       NODE_OPTIONS: "--import=data:text/javascript,process.exit(0)",
     };
-    if (change === "step NODE_OPTIONS") Object.assign(step.env!, options);
-    if (change === "job NODE_OPTIONS") Object.assign(job.env!, options);
+    if (change === "step NODE_OPTIONS") step.env = options;
+    if (change === "job NODE_OPTIONS") job.env = options;
     if (change === "workflow NODE_OPTIONS") Object.assign(w.env, options);
-    if (change === "step extra env") step.env!.UNREVIEWED = "yes";
-    if (change === "job extra env") job.env!.UNREVIEWED = "yes";
+    if (change === "step extra env") step.env = { UNREVIEWED: "yes" };
+    if (change === "job extra env") job.env = { UNREVIEWED: "yes" };
     if (change === "workflow extra env") w.env.UNREVIEWED = "yes";
     if (change === "extra step key")
       Object.assign(step, { uses: "foreign/action@main" });
