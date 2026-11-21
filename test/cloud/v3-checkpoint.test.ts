@@ -3,7 +3,12 @@ import { domain, Project } from "../../cloud/src/project.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { canonicalJson, digestBytes } from "../../src/core/config/pointer.ts";
 import { writableStore } from "../../cloud/src/store.ts";
-import { PAGE_BYTES, recoverV3, viewV3 } from "../../cloud/src/v3-store.ts";
+import {
+  PAGE_BYTES,
+  readV3Value,
+  recoverV3,
+  viewV3,
+} from "../../cloud/src/v3-store.ts";
 import { guardFixture, noWrites, probe } from "./v3-project.fixture.ts";
 
 const timeout = 30_000;
@@ -1559,12 +1564,29 @@ type Portable = {
 };
 
 async function withPortable(
-  run: (target: Fixture, data: Portable) => Promise<void>,
+  run: (target: Fixture, data: Portable, source: Fixture) => Promise<void>,
+  extra = 0,
 ) {
   const target = guardFixture();
   try {
     await withFixture(async (source) => {
-      const transcript = await portableHistory(source);
+      let transcript = await portableHistory(source);
+      for (let i = 0; i < extra; i++) {
+        expect(
+          await sendLease(source, "claim", "owner-a", {
+            subject: `work-${i + 2}`,
+            requestId: `extra-${i}`,
+            ttlMs: i === 0 ? 1 : HOUR,
+          }),
+        ).toMatchObject({ status: 200 });
+      }
+      if (extra > 0) {
+        await drain(source, transcript.length, transcript.length + extra);
+        transcript = JSON.parse(
+          pages(source).find(({ id }) => id === "transcript:0")!.body,
+        ) as Json[];
+        transcript[5] = { sequence: 6 };
+      }
       const manifest = JSON.parse(root(source).body) as {
         coveredHead: number;
         eventWatermark: number;
@@ -1581,7 +1603,7 @@ async function withPortable(
         recordFloor: 3,
         publicDigest: manifest.publicDigest,
       };
-      await run(target, data);
+      await run(target, data, source);
     });
   } finally {
     target.db.close();
@@ -1685,7 +1707,7 @@ test(
       };
       target.restart();
       const finalRetry = await upload(2);
-      await unprovisioned(target);
+      expect(await target.send("status")).toMatchObject(stopped);
       expect([first, second, verified]).toMatchObject([
         restoreResult(0),
         restoreResult(1),
@@ -1709,8 +1731,9 @@ test(
       expect(await upload(1)).toMatchObject(restoreResult(1));
       expect(await upload(2)).toMatchObject(restoreResult(2, true));
 
+      expect(tableNames(target)).toContain("cloud_v3_pages");
       const overwrite = target.db.query(
-        "UPDATE cloud_v3_restore SET body=? WHERE id=?",
+        "UPDATE cloud_v3_pages SET body=? WHERE id=?",
       );
       const directory = data.pages[0]!;
       overwrite.run("[]", directory.id);
@@ -1726,7 +1749,6 @@ test(
       const transcriptEffects = target.observeEffects();
       expect(await upload(2)).toMatchObject(restoreRefusal);
       expect(transcriptEffects()).toEqual(noWrites);
-      await unprovisioned(target);
     }),
   timeout,
 );
@@ -1767,6 +1789,18 @@ for (const [fault, tamper] of [
     (data: Portable) =>
       editHistory(data, (f) => {
         (f[2]!.outcome as Json).resultDigest = digestBytes("different refusal");
+      }),
+  ],
+  [
+    "uploaded activation frame",
+    (data: Portable) =>
+      editHistory(data, (f) => {
+        f[5] = {
+          ...frame(),
+          format: "forge-cloud-commit/3",
+          sequence: 6,
+          operation: "restore.activate",
+        };
       }),
   ],
   [
@@ -1819,7 +1853,6 @@ test(
         await upload(2),
         await upload(3),
       ];
-      await unprovisioned(target);
       expect(replies).toMatchObject([
         restoreRefusal,
         restoreRefusal,
@@ -1853,5 +1886,241 @@ test(
       ).toMatchObject({ status: 409 });
       await unprovisioned(target);
     }),
+  timeout,
+);
+
+const stopped = {
+  status: 200,
+  body: { ok: true, value: { initialized: true, stopped: true } },
+};
+
+async function stageRestore(target: Fixture, data: Portable) {
+  const upload = portableUpload(target, data);
+  expect(await upload(0)).toMatchObject(restoreResult(0));
+  expect(await upload(1)).toMatchObject(restoreResult(1));
+  await unprovisioned(target);
+  return upload;
+}
+
+test(
+  "v3 restore activates in one commit and recovers the entire stopped image",
+  () =>
+    withPortable(async (target, data, source) => {
+      const upload = await stageRestore(target, data);
+      setSystemTime(T0 + 1);
+      const before = { ...target.reads };
+      expect(await upload(2)).toMatchObject(restoreResult(2, true));
+      const reads = {
+        rows: target.reads.rows - before.rows,
+        bytes: target.reads.bytes - before.bytes,
+      };
+      expect(await target.send("status")).toMatchObject(stopped);
+      expect(tableNames(target)).toEqual([
+        "cloud_v3_commits",
+        "cloud_v3_pages",
+        "cloud_v3_restore",
+        "cloud_v3_root",
+      ]);
+      expect([...target.values]).toEqual([]);
+      expect(
+        target.db.query("SELECT body FROM cloud_v3_restore ORDER BY id").all(),
+      ).toEqual(data.pages.map(() => ({ body: "" })));
+      const log = commits(target);
+      expect(log.map(({ sequence }) => sequence)).toEqual([data.head + 1]);
+      const activation = JSON.parse(log[0]!.body) as Json;
+      expect(activation).toMatchObject({
+        operation: "restore.activate",
+        time: T0 + 1,
+      });
+      expect(activation.events).toHaveLength(1);
+
+      const from = writableStore(source.storage);
+      const to = writableStore(target.storage);
+      const origin = recoverV3(from);
+      const restored = recoverV3(to);
+      const { lease: _lease, ...expected } = viewV3(origin).image as Json;
+      const { lease: _restoredLease, ...actual } = viewV3(restored)
+        .image as Json;
+      expect(actual).toEqual({
+        ...expected,
+        head: data.head + 1,
+        eventWatermark: data.eventWatermark + 1,
+      });
+      expect(restored.recordFloor).toBe(data.recordFloor);
+      expect(restored.root.incarnation).not.toBe(origin.root.incarnation);
+      expect(restored.root.restoreEpoch).not.toBe(origin.root.restoreEpoch);
+      for (const subject of origin.entries.lease.keys()) {
+        const lease = readV3Value(from, origin, "lease", subject)!;
+        expect(readV3Value(to, restored, "lease", subject)).toEqual({
+          ...lease,
+          releasedAt: lease.releasedAt ?? new Date(T0 + 1).toISOString(),
+        });
+      }
+      expect(restored.entries.lease.size).toBe(3);
+      await expectWarmAndCold(target, viewV3(restored).image);
+      expect(await target.send("status")).toMatchObject(stopped);
+      expect(reads.rows).toBeLessThanOrEqual(64);
+      expect(reads.bytes).toBeLessThanOrEqual(2 * MiB);
+      console.log("v3 restore activation reads", reads);
+    }, 2),
+  timeout,
+);
+
+test(
+  "v3 restored witness checks the held generation before the stop",
+  () =>
+    withPortable(async (target, data, source) => {
+      const forged = { ...frame(), operation: "restore.activate" };
+      expect(await append(source, forged)).toMatchObject({ status: 400 });
+      const upload = await stageRestore(target, data);
+      expect(await upload(2)).toMatchObject(restoreResult(2, true));
+      target.restart();
+      const guard = target.observeEffects();
+      const claim = { requestId: "acq-1", ttlMs: HOUR };
+      expect(await sendLease(target, "claim", "owner-a", claim)).toMatchObject({
+        status: 409,
+        body: { error: { code: "LEASE_NOT_HELD", lease: { generation: 1 } } },
+      });
+      expect(
+        await sendLease(target, "claim", "owner-b", {
+          ...claim,
+          requestId: "acq-2",
+        }),
+      ).toMatchObject({
+        status: 409,
+        body: { error: { code: "INPUT_CONFLICT" } },
+      });
+      expect(
+        await sendLease(target, "release", "owner-a", {
+          requestId: "rel-1",
+          generation: 1,
+        }),
+      ).toMatchObject({
+        status: 409,
+        body: { error: { code: "INPUT_CONFLICT" } },
+      });
+      expect(await append(target, frame())).toMatchObject({ status: 409 });
+      expect(guard()).toEqual(noWrites);
+      target.db.run(
+        "CREATE TABLE cloud_v3_retired_pages (id TEXT PRIMARY KEY, body TEXT)",
+      );
+      const before = target.observeEffects();
+      expect(await checkpoint(target)).toMatchObject(refused);
+      expect(before()).toEqual(noWrites);
+    }),
+  timeout,
+);
+
+test(
+  "v3 restore rolls back publication before commit and accepts a complete staged retry",
+  () =>
+    withPortable(async (target, data) => {
+      const upload = await stageRestore(target, data);
+      const before = target.snapshot();
+      const executeSql = target.storage.sql.exec.bind(target.storage.sql);
+      target.storage.sql.exec = (statement, ...bindings) => {
+        if (statement.startsWith("INSERT INTO cloud_v3_commits"))
+          throw new Error("before activation commit");
+        return executeSql(statement, ...bindings);
+      };
+      const interrupted = await upload(2);
+      target.storage.sql.exec = executeSql;
+      expect(interrupted.status).toBe(500);
+      expect(target.snapshot()).toEqual(before);
+      await unprovisioned(target);
+      const page = data.pages[2]!;
+      target.db.run(
+        "INSERT INTO cloud_v3_restore VALUES (?, ?, ?, NULL, NULL, 1)",
+        [page.id, page.body, digestBytes(JSON.stringify({ page: 2, ...page }))],
+      );
+      expect(await upload(2)).toMatchObject(restoreResult(2, true));
+      expect(await target.send("status")).toMatchObject(stopped);
+    }),
+  timeout,
+);
+
+test(
+  "v3 restore recovers a post-commit fault and returns the same saved retries",
+  () =>
+    withPortable(async (target, data) => {
+      const upload = await stageRestore(target, data);
+      const transact = target.storage.transactionSync.bind(target.storage);
+      target.storage.transactionSync = (body) => {
+        const result = transact(body);
+        if (tableNames(target).includes("cloud_v3_root"))
+          throw new Error("after activation commit");
+        return result;
+      };
+      const interrupted = await upload(2);
+      target.storage.transactionSync = transact;
+      expect(interrupted.status).toBe(500);
+      expect(await target.send("status")).toMatchObject(stopped);
+      const warm = await view(target);
+      const committed = commits(target);
+      const before = target.observeEffects();
+      target.restart();
+      expect(await view(target)).toEqual(warm);
+      expect(await upload(0)).toMatchObject(restoreResult(0));
+      const first = { ...target.reads };
+      expect(await upload(2)).toMatchObject(restoreResult(2, true));
+      const reads = {
+        rows: target.reads.rows - first.rows,
+        bytes: target.reads.bytes - first.bytes,
+      };
+      expect(reads.rows).toBeLessThanOrEqual(64);
+      expect(reads.bytes).toBeLessThanOrEqual(2 * MiB);
+      console.log("v3 restore activation retry reads", reads);
+      expect(
+        await upload(0, undefined, digestBytes("other manifest")),
+      ).toMatchObject(restoreRefusal);
+      expect(committed).toHaveLength(1);
+      expect(commits(target)).toEqual(committed);
+      expect(before()).toEqual(noWrites);
+    }),
+  timeout,
+);
+
+for (const damage of ["missing", "altered", "extra"] as const) {
+  test(
+    `v3 restore cold recovery refuses ${damage} activation proof`,
+    () =>
+      withPortable(async (target, data) => {
+        const upload = await stageRestore(target, data);
+        expect(await upload(2)).toMatchObject(restoreResult(2, true));
+        expect(tableNames(target)).toContain("cloud_v3_commits");
+        if (damage === "missing") target.db.run("DELETE FROM cloud_v3_commits");
+        if (damage === "altered")
+          changeCommit(target, data.head + 1, (body) => ({
+            ...body,
+            time: T0 + 1,
+          }));
+        if (damage === "extra")
+          target.db.run("INSERT INTO cloud_v3_commits VALUES (?, ?)", [
+            data.head + 2,
+            commits(target)[0]!.body,
+          ]);
+        target.restart();
+        const before = target.observeEffects();
+        expect(await target.send("status")).toMatchObject(refused);
+        expect(await target.send(probe)).toMatchObject(refused);
+        expect(before()).toEqual(noWrites);
+      }),
+    timeout,
+  );
+}
+
+test(
+  "v3 restore refuses to activate more than sixteen imported leases",
+  () =>
+    withPortable(async (target, data) => {
+      const upload = await stageRestore(target, data);
+      const before = target.snapshot();
+      expect(await upload(2)).toMatchObject({
+        status: 413,
+        body: { error: { code: "RESTORE_TOO_LARGE" } },
+      });
+      await unprovisioned(target);
+      expect(target.snapshot()).toEqual(before);
+    }, 16),
   timeout,
 );

@@ -134,6 +134,7 @@ import {
   leaseV3,
   provisionV3,
   publishV3,
+  readV3Root,
   recoverV3,
   type V3Image,
   viewV3,
@@ -560,7 +561,9 @@ export class Project {
         }
       }
       if (route === "restore" && request.method === "POST" && this.#testV3) {
-        if (this.#hasV3Root()) this.#requireV2();
+        const db = writableStore(this.#storage);
+        if (this.#hasV3Root() && readV3Root(db).activationDigest === undefined)
+          this.#requireV2();
         const body = await bounded(
           request,
           2 * 1024 * 1024,
@@ -570,8 +573,9 @@ export class Project {
         const legacy =
           (await this.#storage.get(PROVISIONED)) !== undefined ||
           (await this.#storage.get(STAGED)) !== undefined;
+        this.#v3Root = this.#v3Image = undefined;
         const value = restoreV3Page(
-          writableStore(this.#storage),
+          db,
           body,
           request.headers.get("X-Forge-Manifest-Digest"),
           legacy,
@@ -743,6 +747,16 @@ export class Project {
         }
       }
       if (request.method === "GET" && route === "status") {
+        if (this.#testV3 && this.#hasV3Root()) {
+          const db = writableStore(this.#storage);
+          if (readV3Root(db).activationDigest !== undefined) {
+            this.#image(db);
+            return Response.json({
+              ok: true,
+              value: { initialized: true, stopped: true },
+            });
+          }
+        }
         try {
           const initialized = await this.#isProvisioned();
           const db = initialized

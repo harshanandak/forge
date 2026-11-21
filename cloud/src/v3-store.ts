@@ -1,3 +1,4 @@
+import { transitionLaneControl } from "../../src/blocks/work/lane-control.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { decideLease } from "../../src/contract/lease.ts";
 import {
@@ -31,6 +32,7 @@ import {
   isNat,
   sealedAuthorityValid,
 } from "./v3-authority.ts";
+import type { roster as checkpointRoster } from "./v3-checkpoint.ts";
 import { recordNumber, verifyRecordFrame } from "./v3-record-transitions.ts";
 import { TABLE_PROBE } from "./store.ts";
 
@@ -50,6 +52,7 @@ const DIRECTORY_BYTES = 4 * MiB;
 export const TAIL_ROWS = 1024;
 const TAIL_BYTES = 16 * MiB;
 const MAX_JSON_DEPTH = 64;
+const RESTORE_LEASES = 16;
 const ROOT_FORMAT = "forge-cloud-root/3";
 const KINDS = ["directory", "snapshot", "transcript"];
 export const COLLECTIONS = ["lease", "outcome", "record", "witness"] as const;
@@ -148,6 +151,7 @@ interface Values {
 }
 export interface V3Image {
   readonly root: Readonly<Record<string, unknown>> & {
+    readonly activationDigest?: string;
     readonly coveredHead: number;
     readonly pages: readonly Page[];
   };
@@ -163,6 +167,7 @@ export interface V3Image {
 export const fail = (code: string, message: string) =>
   new ForgeFailure({ code, message, retry: "never" });
 const unavailable = () => fail("UNAVAILABLE", "Cloud v3 root is unavailable");
+const stopped = () => fail("INPUT_CONFLICT", "The restored project is stopped");
 const nat = (value: unknown): number => {
   if (!isNat(value)) throw unavailable();
   return value;
@@ -223,7 +228,9 @@ function sealedFields(root: Record<string, unknown>) {
   );
 }
 
-export function readV3Root(db: SqlDatabase) {
+export function readV3Root(
+  db: SqlDatabase,
+): V3Image["root"] & { generation: number; eventWatermark: number } {
   if (!tables.every((table) => hasTable(db, table))) throw unavailable();
   const row = db.get(
     `SELECT body, seal FROM ${ROOT} WHERE id=1 AND length(CAST(body AS BLOB))<=${MANIFEST_BYTES}`,
@@ -286,9 +293,18 @@ export function readV3Root(db: SqlDatabase) {
     root.coveredHead,
     root.eventWatermark,
   ].map(nat) as [number, number, number];
+  const { activationDigest, ...ordinary } = root;
+  if (
+    activationDigest !== undefined &&
+    (!isDigest(activationDigest) ||
+      generation !== 1 ||
+      root.parentDigest !== digestValue(base))
+  )
+    throw unavailable();
   const manifest = { ...root, counts, bytes, pages: listed };
   if (
-    Object.keys(root).sort().join() !== Object.keys(base).sort().join() ||
+    Object.keys(ordinary).length !== Object.keys(base).length ||
+    !Object.keys(base).every((key) => Object.hasOwn(ordinary, key)) ||
     storedCanonical(manifest) !== row.body ||
     (generation === 0 && row.body !== storedCanonical(base)) ||
     (generation > 0 && !sealedFields(root)) ||
@@ -366,6 +382,57 @@ function recoveryImage(root: V3Image["root"], eventWatermark: number): V3Image {
   };
 }
 
+function activationFrame(root: V3Image["root"], time: number) {
+  const { incarnation, restoreEpoch, coveredHead } = root;
+  const now = new Date(time).toJSON();
+  const stop = transitionLaneControl(
+    { version: 1, incarnation, epoch: 0, resumeAllEpoch: 0, stopAll: null },
+    undefined,
+    { action: "stop", scope: { all: true } },
+    { project: incarnation, policyIdentity: "restore.activate", now },
+  );
+  if (!stop.ok) throw unavailable();
+  return canonicalJson({
+    format: COMMIT_FORMAT,
+    operation: "restore.activate",
+    restoreEpoch,
+    sequence: coveredHead + 1,
+    time,
+    control: stop.result.candidate.global,
+    events: [{ type: "lane.stop", actor: "restore", scope: "all", at: now }],
+  });
+}
+
+function applyActivation(db: SqlDatabase, image: V3Image) {
+  const { root } = image;
+  const [row, extra] = db.all(
+    `SELECT sequence, CASE WHEN length(CAST(body AS BLOB))<=${PAGE_BYTES} THEN body END AS body FROM ${COMMITS} ORDER BY sequence LIMIT 2`,
+  );
+  if (
+    extra ||
+    row?.sequence !== image.head + 1 ||
+    typeof row.body !== "string" ||
+    digestBytes(row.body) !== root.activationDigest ||
+    image.entries.lease.size > RESTORE_LEASES
+  )
+    throw unavailable();
+  const frame = parse(row.body);
+  const time = nat(isObject(frame) ? frame.time : undefined);
+  if (activationFrame(root, time) !== row.body) throw unavailable();
+  for (const subject of image.entries.lease.keys()) {
+    const lease = readV3Value(db, image, "lease", subject);
+    if (!lease) throw unavailable();
+    if (lease.releasedAt === undefined)
+      image.entries.lease.set(subject, {
+        value: { ...lease, releasedAt: new Date(time).toISOString() },
+      });
+  }
+  image.head++;
+  image.eventWatermark++;
+  image.tailBytes = Buffer.byteLength(row.body);
+  return image;
+}
+
 export function recoverV3(
   db: SqlDatabase,
   verification: PortableVerification,
@@ -429,6 +496,10 @@ export function recoverV3(
       if (collection === "record")
         image.recordFloor = Math.max(image.recordFloor, recordNumber(key));
     }
+  }
+  if (root.activationDigest !== undefined) {
+    if (through !== undefined || verification) throw unavailable();
+    return applyActivation(db, image);
   }
   verification?.sealed(image);
   const upper = through === undefined ? "" : " AND sequence<=?";
@@ -535,6 +606,42 @@ export function provisionV3(db: SqlDatabase, legacyMarker: boolean) {
   });
 }
 
+export function activateV3(
+  db: SqlDatabase,
+  imported: V3Image,
+  projection: ReturnType<typeof checkpointRoster>,
+  published: ReadonlyMap<string, string>,
+  publicDigest: string,
+) {
+  if (imported.entries.lease.size > RESTORE_LEASES)
+    throw fail("RESTORE_TOO_LARGE", "Too many imported leases for activation");
+  const base = genesis(crypto.randomUUID(), crypto.randomUUID());
+  const root = {
+    ...base,
+    ...projection,
+    publicDigest,
+    generation: 1,
+    parentDigest: digestValue(base),
+    coveredHead: imported.head,
+    eventWatermark: imported.eventWatermark,
+    transcriptDigest: digestBytes(published.get("transcript:0")!),
+  };
+  const activation = activationFrame(root, Date.now());
+  const body = canonicalJson({
+    ...root,
+    activationDigest: digestBytes(activation),
+  });
+  for (const [table, definition] of Object.entries(schema))
+    db.exec(`CREATE TABLE ${table} ${definition}`);
+  for (const [id, page] of published)
+    db.run(`INSERT INTO ${PAGES} VALUES (?, ?)`, [id, page]);
+  db.run(`INSERT INTO ${ROOT} VALUES (1, ?, ?)`, [body, digestBytes(body)]);
+  db.run(`INSERT INTO ${COMMITS} VALUES (?, ?)`, [
+    imported.head + 1,
+    activation,
+  ]);
+}
+
 export const entryDigest = (digest: string | null, revision?: number) =>
   revision === undefined ? digest : digestValue([revision, digest]);
 
@@ -621,7 +728,8 @@ function append(db: SqlDatabase, image: V3Image, batch: readonly unknown[]) {
   if (!batch.every(validAppendFrame))
     throw fail("INPUT_INVALID", "Invalid v3 frame");
   return db.transaction(() => {
-    const { coveredHead } = readV3Root(db);
+    const { activationDigest, coveredHead } = readV3Root(db);
+    if (activationDigest) throw stopped();
     const last = db.get(
       `SELECT sequence FROM ${COMMITS} ORDER BY sequence DESC LIMIT 1`,
     );
@@ -863,7 +971,10 @@ export function leaseV3(
     (): { lease: LeaseRecord } | { refusal: ForgeFailure } => {
       const fingerprint = leaseFingerprint(command);
       const read = () => readV3Value(db, image, "lease", subject);
-      const prior = readV3Value(db, image, "outcome", requestId);
+      const prior =
+        image.root.activationDigest === undefined
+          ? readV3Value(db, image, "outcome", requestId)
+          : undefined;
       if (prior !== undefined && prior.outcome.retryUntil > now) {
         if (now >= prior.time + RETENTION_MS)
           expiredReplay(prior.outcome.status !== "ok");
@@ -915,6 +1026,7 @@ export function leaseV3(
           throw requestConflict();
         return { lease: witnessed.lease };
       }
+      if (image.root.activationDigest) throw stopped();
       let lease: LeaseRecord;
       try {
         lease = transition(command, current, now);

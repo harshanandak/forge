@@ -18,9 +18,18 @@ import {
   inventory,
   PAGE_BYTES,
   reconcile,
+  roster,
   storedPages,
 } from "./v3-checkpoint.ts";
-import { fail, hasPriorV3RestoreState, recoverV3 } from "./v3-store.ts";
+import {
+  activateV3,
+  fail,
+  hasPriorV3RestoreState,
+  hasV3Root,
+  PAGES,
+  readV3Root,
+  recoverV3,
+} from "./v3-store.ts";
 
 const STAGE = "cloud_v3_restore";
 const IDS = ["directory:0", "snapshot:0", "transcript:0"];
@@ -81,9 +90,10 @@ function verify(
   db: SqlDatabase,
   manifest: ReturnType<typeof manifestOf>,
   admit: AdmitLeaseRequest,
+  table: string,
 ) {
   try {
-    const pages = storedPages(db, STAGE);
+    const pages = storedPages(db, table);
     check(pages.size === IDS.length);
     for (const member of manifest.members)
       check(matches(pages.get(member.id), member));
@@ -95,6 +105,7 @@ function verify(
     check(image.eventWatermark === manifest.eventWatermark);
     check(image.recordFloor === manifest.recordFloor);
     check(digestProjection(expected) === manifest.publicDigest);
+    return { pages, expected, image };
   } catch (error) {
     if (error instanceof ForgeFailure && error.error.code === "UNAVAILABLE")
       check(false);
@@ -116,28 +127,46 @@ export function restoreV3Page(
   check(Object.keys(input).length === (page === 0 ? 4 : 3));
   const request = digestBytes(text);
   return db.transaction(() => {
-    check(!legacy && !hasPriorV3RestoreState(db), "RESTORE_TARGET_NOT_EMPTY");
+    const restored =
+      hasV3Root(db) && readV3Root(db).activationDigest !== undefined;
+    check(
+      !legacy && (restored || !hasPriorV3RestoreState(db)),
+      "RESTORE_TARGET_NOT_EMPTY",
+    );
+    const table = restored ? PAGES : STAGE;
     const staged = hasV3Restore(db)
       ? db.all(
           `SELECT id, request, manifest, pin, verified FROM ${STAGE} ORDER BY id LIMIT 4`,
         )
       : [];
     const prior = staged[page];
-    check(prior || page === staged.length);
+    if (restored) check(staged.length === IDS.length);
+    check(prior || (!restored && page === staged.length));
     const first = staged[0];
     const manifest = first
       ? manifestOf(decode(first.manifest), first.pin)
       : manifestOf(input.manifest, pin);
     check(matches(body, manifest.members[page]!));
     const verified = page === IDS.length - 1;
+    const finish = () => {
+      if (verified) {
+        const { pages, expected, image } = verify(db, manifest, admit, table);
+        if (!restored) {
+          const projection = roster(pages, expected, image.head);
+          activateV3(db, image, projection, pages, manifest.publicDigest);
+          db.run(`UPDATE ${STAGE} SET body=''`);
+        }
+      }
+      if (restored || verified) recoverV3(db);
+    };
     if (prior) {
       check(prior.id === id && prior.request === request && prior.pin === pin);
       const saved = db.get(
-        `SELECT body FROM ${STAGE} WHERE id=? AND length(CAST(body AS BLOB))<=${PAGE_BYTES}`,
+        `SELECT body FROM ${table} WHERE id=? AND length(CAST(body AS BLOB))<=${PAGE_BYTES}`,
         [id],
       );
       check(saved?.body === body && prior.verified === Number(verified));
-      if (verified) verify(db, manifest, admit);
+      finish();
       return { page, verified: prior.verified === 1 };
     }
     if (page === 0)
@@ -152,7 +181,7 @@ export function restoreV3Page(
       pin,
       Number(verified),
     ]);
-    if (verified) verify(db, manifest, admit);
+    finish();
     return { page, verified };
   });
 }
