@@ -560,6 +560,7 @@ export class Project {
         }
       }
       if (route === "restore" && request.method === "POST" && this.#testV3) {
+        if (this.#hasV3Root()) this.#requireV2();
         const body = await bounded(
           request,
           2 * 1024 * 1024,
