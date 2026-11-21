@@ -155,7 +155,9 @@ test("release approvals, dependency chain and OIDC cannot be bypassed", () => {
   const publish = steps.filter((step) => step.run?.includes("npm publish"));
   const hash = steps.find((s) => s.run?.includes("process.env.EXPECTED"));
   expect(hash?.env?.EXPECTED).toBe("${{ needs.verify.outputs.sha256 }}");
-  expect(hash?.run).toMatch(/hash\("sha256".*!==process\.env\.EXPECTED/);
+  expect(hash?.run).toContain(
+    'hash("sha256",readFileSync(packInput(process.env.TARBALL)))!==process.env.EXPECTED',
+  );
   expect(steps.indexOf(hash!)).toBeLessThan(steps.indexOf(publish[0]!));
   expect(publish).toHaveLength(1);
   expect(publish[0]?.if).toBe(publishCondition);
