@@ -5,6 +5,7 @@ import {
   LANE_BROWSER,
   LANE_STATE_PREFIX,
 } from "../../cloud/src/auth/lane-browser.ts";
+import { importLoginKey } from "../../cloud/src/auth/project-login.ts";
 import { sha256 } from "../../cloud/src/tokens.ts";
 import { Project } from "../../cloud/src/project.ts";
 import {
@@ -153,6 +154,15 @@ async function fixture(
     writes: () => writes,
     env,
     reached,
+    upgrade: () =>
+      createConfiguredWorker().fetch(
+        new Request(`https://w.example/p/${projectName}/upgrade`, {
+          method: "POST",
+          headers: { authorization: "Bearer fixture-admin" },
+          body: "{}",
+        }),
+        { ...bindings, ADMIN_TOKEN: "fixture-admin" },
+      ),
     dump: (cursor?: string) => {
       const url = new URL(`https://w.example/p/${projectName}/dump`);
       if (cursor !== undefined) url.searchParams.set("cursor", cursor);
@@ -1663,6 +1673,120 @@ async function askForRelay(f: Fixture, scope: RelayScope) {
   const input = { ...scope, approval };
   return { issue, reply, input, complete: call("lane.resume", input, "relay") };
 }
+
+test.each(["preview", "approve", "deny", "callback"] as const)(
+  "retired lane browser %s is refused before reaching the Project",
+  async (route) => {
+    const verify = mock(async () => ownerProof());
+    const claimOnce = mock(() => Promise.resolve(true));
+    const f = await fixture("p", "s1", {
+      redemption: { claimOnce },
+      upstream: {
+        verify,
+        begin: (state) =>
+          Promise.resolve(
+            `https://identity.example/oauth/authorize?state=${state}`,
+          ),
+      },
+    });
+    try {
+      const scope = { all: true } as const;
+      await stopForRelay(f, scope);
+      const { input } = await askForRelay(f, scope);
+      const request = input.approval.request;
+      seedLegacyApproval(f, request);
+      let path = `/lane-approval/${request}`;
+      let body: string | undefined;
+      const headers: Record<string, string> = {};
+      const rows = () => f.db.query(`SELECT * FROM ${LANE_BROWSER}`).all();
+      if (route === "callback") {
+        const state = "forge-lane." + "s".repeat(43);
+        const bind = "b".repeat(43);
+        const stateHash = await sha256(state);
+        f.db.run(`INSERT INTO ${LANE_BROWSER} VALUES (1, ?)`, [
+          JSON.stringify([
+            {
+              request,
+              action: "approve",
+              stateHash,
+              bindHash: await sha256(bind),
+              verifier: "v".repeat(43),
+              expiresAt: now + 600_000,
+            },
+          ]),
+        ]);
+        path = `/callback?state=${state}&code=owner`;
+        headers.Cookie = `__Host-forge_lane_${stateHash.slice(0, 24)}=${bind}`;
+      } else if (route !== "preview") {
+        const jar = "b".repeat(43);
+        const nonce = "n".repeat(43);
+        const row = approvalRows(f).find((entry) => entry.request === request)!;
+        const mac = await crypto.subtle.sign(
+          "HMAC",
+          await importLoginKey(f.env.DEVICE_LOGIN_HMAC_KEY),
+          new TextEncoder().encode(
+            JSON.stringify([`lane.${route}`, row, jar, nonce]),
+          ),
+        );
+        path += `/${route}`;
+        body = new URLSearchParams({
+          ticket: `${nonce}.${Buffer.from(mac).toString("base64url")}`,
+        }).toString();
+        headers.Origin = "https://w.example";
+        headers.Cookie = `__Host-forge_lane_preview=${jar}`;
+      }
+      const before = [f.reached.length, f.writes(), f.snapshot(), rows()];
+      const reply = await f.browser(path, body, headers, true);
+      expect(reply.status).toBe(404);
+      expect([f.reached.length, f.writes(), f.snapshot(), rows()]).toEqual(
+        before,
+      );
+      expect(claimOnce).not.toHaveBeenCalled();
+      expect(verify).not.toHaveBeenCalled();
+    } finally {
+      f.close();
+    }
+  },
+  10_000,
+);
+
+test("upgrade empties only retired lane browser state and preserves its registration", async () => {
+  const f = await fixture();
+  try {
+    const scope = { all: true } as const;
+    await stopForRelay(f, scope);
+    await askForRelay(f, scope);
+    f.db.run(
+      "DELETE FROM state_migrations WHERE id = '013_cloud_clear_lane_browser'",
+    );
+    f.db.run(`INSERT INTO ${LANE_BROWSER} VALUES (1, ?)`, [
+      '[{"request":"legacy"}]',
+    ]);
+    f.reopen();
+    const before = f.snapshot();
+    const reply = await f.upgrade();
+    expect(reply.status).toBe(200);
+    expect(f.db.query(`SELECT * FROM ${LANE_BROWSER}`).all()).toEqual([]);
+    expect(f.snapshot()).toBe(before);
+    expect(await reply.json()).toMatchObject({
+      value: { ready: true, pending: [], outcome: "upgraded" },
+    });
+    expect(
+      f.db
+        .query(
+          "SELECT id FROM state_migrations WHERE id = '009_cloud_lane_browser'",
+        )
+        .get(),
+    ).toEqual({ id: "009_cloud_lane_browser" });
+    expect(
+      f.db
+        .query("SELECT table_name FROM state_domains WHERE table_name = ?")
+        .get(LANE_BROWSER),
+    ).toEqual({ table_name: LANE_BROWSER });
+  } finally {
+    f.close();
+  }
+}, 10_000);
 
 test("chat relay red 1: wire challenge has only the request, scope and deadline", async () => {
   const f = await fixture();
