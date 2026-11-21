@@ -1,242 +1,129 @@
 import assert from "node:assert/strict";
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { posix } from "node:path";
-import { fileURLToPath } from "node:url";
 import { parse } from "yaml";
-import { optionalJourneyVariables } from "../integration/journey-env.ts";
-import { maskSource } from "./lib/platform.ts";
 
-const root = new URL("../../", import.meta.url);
+const setupAction = "./.github/actions/journey-setup";
 
-function source(path: string): string {
-  return readFileSync(new URL(path, root), "utf8");
-}
-
-const helper = "test/integration/journey-env.ts";
-const optionalNames = new Set<string>(optionalJourneyVariables);
-const helperName = /^(?:requireJourneyEnv|optionalJourneyEnv|journeyChildEnv)$/;
-
-function verifyJourneyEnvironment(
-  file: string,
-  text: string,
-  provided: ReadonlySet<string>,
-): void {
-  const imported = new Set<string>();
-  const isHelper = (path: string): boolean =>
-    posix.normalize(posix.join(posix.dirname(file), path)) === helper;
-  const withoutImports = maskSource(text, false).replace(
-    /^ *import\s*\{([\w\s,]+)\}\s*from\s*["'](\.[^"'\n]+)["'] *;?/gm,
-    (statement: string, names: string, path: string) => {
-      const bindings = names
-        .split(",")
-        .map((name) => name.trim())
-        .filter(Boolean);
-      if (!isHelper(path) || !bindings.every((name) => helperName.test(name)))
-        return statement;
-      for (const name of bindings) imported.add(name);
-      return statement.replace(/[^\r\n]/g, " ");
-    },
-  );
-  const code = maskSource(withoutImports, true);
-  const location = (index: number): string =>
-    `${file}:${code.slice(0, index).split("\n").length}`;
-
-  const otherImports =
-    /\b(?:from\s*|(?:import|require)\s*\(\s*|import\s+)["'](\.[^"'\n]+)["']/g;
-  const indirect = [...withoutImports.matchAll(otherImports)].find(
-    (match) => code[match.index] === match[0][0] && isHelper(match[1]!),
-  );
-  assert.ok(
-    !indirect,
-    `${location(indirect?.index ?? 0)}: import journey environment helpers by their declared names`,
-  );
-
-  const raw =
-    /\bprocess\b(?!\s*\.\s*(?:execPath|on|pid|platform)\b)|\bBun\s*(?:\?\.|\.)\s*env\b/g;
-  const alternate =
-    /\b(?:(?:import|require)\s*\(\s*|(?:from|import)\s+|globalThis\s*(?:\?\.)?\s*\[\s*)["'](?:node:)?process["']|\bBun\s*(?:\?\.)?\s*\[\s*["']env["']/g;
-  const direct = raw.exec(code);
-  const bypass = [...withoutImports.matchAll(alternate)].find(
-    (match) => code[match.index] === match[0][0],
-  );
-  const ambient = direct ?? bypass;
-  assert.ok(
-    !ambient,
-    `${location(ambient?.index ?? 0)}: use the journey environment helpers instead of reading the ambient environment`,
-  );
-
-  for (const match of code.matchAll(
-    /\b(?:requireJourneyEnv|optionalJourneyEnv|journeyChildEnv)\b/g,
-  )) {
-    const [method] = match;
-    const at = location(match.index);
-    const suffix = withoutImports.slice(match.index + method.length);
-    if (method === "journeyChildEnv") {
-      assert.ok(
-        imported.has(method) && /^\s*\(\s*\)(?!\s*(?:[?.]|\[))/.test(suffix),
-        `${at}: use journeyChildEnv only to prepare a child environment`,
-      );
-      continue;
-    }
-    const name = /^\s*\(\s*["']([A-Za-z_]\w*)["']\s*[,)]/.exec(suffix)?.[1];
-    assert.ok(
-      imported.has(method) && name,
-      `${at}: ${method} needs a direct import and a literal variable name`,
-    );
-    if (method === "requireJourneyEnv") {
-      assert.ok(
-        provided.has(name),
-        `${at}: release readback missing environment: ${name}`,
-      );
-    } else {
-      assert.ok(
-        optionalNames.has(name),
-        `${at}: unapproved optional journey environment: ${name}`,
-      );
-    }
-  }
-}
-
-type Step = { run?: string; env?: Record<string, string> };
-type Workflow = {
-  env?: Record<string, string>;
-  jobs: { readback: { env?: Record<string, string>; steps: Step[] } };
+type Step = {
+  uses?: string;
+  run?: string;
+  env?: Record<string, unknown>;
+  if?: unknown;
+  "continue-on-error"?: unknown;
 };
+type Job = { env?: Record<string, unknown>; steps?: Step[] };
+type Workflow = { jobs: Record<string, Job> };
+type Selector = (run: string) => boolean;
 
-function providedEnvironment(workflow: Workflow, journey: Step): Set<string> {
-  const { readback } = workflow.jobs;
-  const provided = new Set(
-    Object.keys({ ...workflow.env, ...readback.env, ...journey.env }),
-  );
-  for (const step of readback.steps.slice(0, readback.steps.indexOf(journey))) {
-    const helper = step.run?.match(/^node ([\w./-]+\.(?:ts|mjs))$/)?.[1];
-    const text = helper ? source(helper) : (step.run ?? "");
-    for (const [, appended, shell] of text.matchAll(
-      /appendFileSync\(\s*process\.env\.GITHUB_ENV,\s*[`'"]([\w]+)=|^\s*echo\s+["']([\w]+)=[^\n]*>>\s*"?\$GITHUB_ENV/gm,
-    ))
-      provided.add((appended ?? shell)!);
-  }
-  return provided;
+function workflow(name: string): Workflow {
+  const path = new URL(`../../.github/workflows/${name}`, import.meta.url);
+  return parse(readFileSync(path, "utf8"), { maxAliasCount: 200 }) as Workflow;
 }
 
-function releaseJourneySelection(): { filter: string; provided: Set<string> } {
-  const workflow = parse(source(".github/workflows/release.yml")) as Workflow;
-  const journey = workflow.jobs.readback.steps.find(
-    (step) => step.run?.split(" ")[1] === "tools/release/journeys.mjs",
-  );
-  assert.ok(journey?.run);
-  const launcher = source(journey.run.split(" ")[1]!);
-  const filter = launcher.match(
-    /"test",\s*(?:"--[^"]+",\s*|"\d+",\s*)*"([^"]+\.test)",/,
-  )?.[1];
-  const runnerEnv = launcher.match(/\benv:\s*\{([^{}]+)\}/)?.[1];
-  assert.ok(filter && runnerEnv, "release journey selector and environment");
-  const provided = providedEnvironment(workflow, journey);
-  for (const [, name] of runnerEnv.matchAll(/^\s*(\w+):/gm))
-    provided.add(name!);
-  assert.match(
-    runnerEnv,
-    /^\s*FORGE_RELEASE_ACCEPTANCE:\s*"1",/m,
-    "release launcher must enable FORGE_RELEASE_ACCEPTANCE",
-  );
-  return { filter, provided };
+function verifySetup(
+  name: string,
+  source: Workflow,
+  selectsJourney: Selector,
+): string[] {
+  const found: string[] = [];
+  for (const [id, job] of Object.entries(source.jobs)) {
+    const steps = job.steps ?? [];
+    const journeyIndexes = steps.flatMap((step, index) =>
+      selectsJourney(step.run ?? "") ? [index] : [],
+    );
+    if (journeyIndexes.length === 0) continue;
+    found.push(id);
+    const location = `${name}:${id}`;
+    const setupIndexes = steps.flatMap((step, index) =>
+      step.uses === setupAction ? [index] : [],
+    );
+    assert.ok(
+      setupIndexes.length === 1 && setupIndexes[0]! < journeyIndexes[0]!,
+      `${location} must use ${setupAction} before running packed journeys`,
+    );
+    const setup = steps[setupIndexes[0]!]!;
+    for (const key of ["if", "continue-on-error", "env"] as const)
+      assert.equal(
+        setup[key],
+        undefined,
+        `${location}: unexpected setup ${key}`,
+      );
+    assert.equal(
+      job.env,
+      undefined,
+      `${location}: journey job env belongs in the shared setup`,
+    );
+    for (const index of journeyIndexes)
+      assert.equal(
+        steps[index]!.env,
+        undefined,
+        `${location}: journey step env belongs in the shared setup`,
+      );
+    for (const step of steps.slice(0, journeyIndexes.at(-1))) {
+      assert.doesNotMatch(
+        step.run ?? "",
+        /\bGITHUB_ENV\b|tools\/ci\/preserve-lint-runtime\.ts\b/,
+        `${location}: journey environment writes belong in the shared setup`,
+      );
+    }
+  }
+  assert.ok(found.length, `${name}: no packed journey entry point found`);
+  return found.sort();
 }
 
-test("release readback supplies the environment required by every registry journey", () => {
-  const { filter, provided } = releaseJourneySelection();
-  const testRoot = new URL("test/", root);
-  const files = [
-    ...new Bun.Glob(`**/*${filter}*.{ts,tsx,js,jsx,mjs,cjs,mts,cts}`).scanSync({
-      cwd: fileURLToPath(testRoot),
-    }),
-  ].sort();
-  assert.ok(files.length, "release journey selector must match test files");
-  files.push("integration/packed-consumer.ts");
-  for (const relative of files) {
-    const file = `test/${relative.replaceAll("\\", "/")}`;
-    verifyJourneyEnvironment(file, source(file), provided);
-  }
+test("CI and Release use the shared packed journey setup", () => {
+  assert.deepEqual(
+    verifySetup("release.yml", workflow("release.yml"), (run) =>
+      /(?:^|\s)tools\/release\/journeys\.mjs(?:\s|$)/.test(run),
+    ),
+    ["readback"],
+  );
+  assert.deepEqual(
+    verifySetup("ci.yml", workflow("ci.yml"), (run) =>
+      /^\s*bun run test:pack(?:\s|$)/.test(run),
+    ),
+    ["verify", "verify-nightly"],
+  );
 }, 1000);
 
-const fixture = "test/fixtures/packed.integration.test.ts";
-const contractImport =
-  'import { requireJourneyEnv, optionalJourneyEnv, journeyChildEnv } from "../integration/journey-env.ts";\n';
-
-for (const [form, expression] of [
-  ["destructuring", "const { RELEASE_PROOF } = process.env;"],
-  [
-    "typed alias",
-    "const proof: string | undefined = process.env.RELEASE_PROOF;",
-  ],
-  ["optional chaining", "const proof = process.env.RELEASE_PROOF?.trim();"],
-  ["bracket property", 'const proof = process.env["RELEASE_PROOF"];'],
-  ["bracket environment", 'const proof = process["env"]["RELEASE_PROOF"];'],
-  ["imported environment", 'import { env } from "node:process";'],
-  ["Bun environment", 'const proof = Bun["env"].RELEASE_PROOF;'],
+for (const change of [
+  "missing",
+  "late",
+  "conditional",
+  "ignored failure",
+  "setup env",
+  "job env",
+  "journey env",
+  "bash write",
+  "PowerShell write",
+  "legacy exporter",
 ]) {
-  test(`release guard rejects ambient environment access via ${form}`, () => {
+  test(`packed journey setup rejects ${change}`, () => {
+    const setup: Step = { uses: setupAction };
+    const journey: Step = { run: "journey" };
+    const job: Job = { steps: [setup, journey] };
+    if (change === "missing") job.steps = [journey];
+    if (change === "late") job.steps = [journey, setup];
+    if (change === "conditional") setup.if = false;
+    if (change === "ignored failure") setup["continue-on-error"] = true;
+    if (change === "setup env") setup.env = { PROOF: "setup" };
+    if (change === "job env") job.env = { PROOF: "job" };
+    if (change === "journey env") journey.env = { PROOF: "journey" };
+    if (change === "bash write")
+      job.steps!.unshift({ run: 'echo "PROOF=x" >> "$GITHUB_ENV"' });
+    if (change === "PowerShell write")
+      job.steps!.unshift({ run: '"PROOF=x" >> $env:GITHUB_ENV' });
+    if (change === "legacy exporter")
+      job.steps!.unshift({
+        run: ["node", "tools/ci/preserve-lint-runtime.ts"].join(" "),
+      });
     expect(() =>
-      verifyJourneyEnvironment(fixture, contractImport + expression, new Set()),
-    ).toThrow(`${fixture}:2: use the journey environment helpers`);
+      verifySetup(
+        "release.yml",
+        { jobs: { readback: job } },
+        (run) => run === "journey",
+      ),
+    ).toThrow("release.yml:readback");
   }, 1000);
 }
-
-test("release guard reports a declared requirement missing from the workflow", () => {
-  const { provided } = releaseJourneySelection();
-  const code =
-    contractImport + 'requireJourneyEnv("RELEASE_PROOF", "proof required");';
-  expect(() => verifyJourneyEnvironment(fixture, code, provided)).toThrow(
-    `${fixture}:2: release readback missing environment: RELEASE_PROOF`,
-  );
-  expect(() =>
-    verifyJourneyEnvironment(fixture, code, new Set(["RELEASE_PROOF"])),
-  ).not.toThrow();
-}, 1000);
-
-test("release guard refuses direct fixture reads from a child environment", () => {
-  const code =
-    contractImport + "const proof = journeyChildEnv().RELEASE_PROOF;";
-  expect(() => verifyJourneyEnvironment(fixture, code, new Set())).toThrow(
-    `${fixture}:2: use journeyChildEnv only to prepare a child environment`,
-  );
-}, 1000);
-
-test("release guard rejects renamed and namespace environment imports", () => {
-  for (const code of [
-    'import { requireJourneyEnv as read } from "../integration/journey-env.ts"; read("RELEASE_PROOF", "missing");',
-    'import * as env from "../integration/journey-env.ts"; env["requireJourneyEnv"]("RELEASE_PROOF", "missing");',
-  ]) {
-    expect(() => verifyJourneyEnvironment(fixture, code, new Set())).toThrow(
-      `${fixture}:1: import journey environment helpers by their declared names`,
-    );
-  }
-}, 1000);
-
-test("release guard rejects dynamic required names and unapproved optional names", () => {
-  expect(() =>
-    verifyJourneyEnvironment(
-      fixture,
-      contractImport + "requireJourneyEnv(name, message);",
-      new Set(),
-    ),
-  ).toThrow(
-    `${fixture}:2: requireJourneyEnv needs a direct import and a literal variable name`,
-  );
-  expect(() =>
-    verifyJourneyEnvironment(
-      fixture,
-      contractImport + 'optionalJourneyEnv("RELEASE_PROOF");',
-      new Set(),
-    ),
-  ).toThrow(
-    `${fixture}:2: unapproved optional journey environment: RELEASE_PROOF`,
-  );
-  expect(() =>
-    verifyJourneyEnvironment(
-      fixture,
-      contractImport + 'optionalJourneyEnv("STATE_NODE_LEG");',
-      new Set(),
-    ),
-  ).not.toThrow();
-}, 1000);
