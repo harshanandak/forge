@@ -66,6 +66,7 @@ jobs:
             [[ $file =~ $test_path ]] || refuse "Invalid test path: $file"
             entry=$(git ls-files --stage -- "$file")
             [[ $entry == @(100644|100755)' '*$'\t'"$file" && -f $file && ! -L $file ]] || refuse "Not a tracked test file: $file"
+            [[ $file != */packed.integration.test.ts ]] || refuse "Packed journey: $file. Use the pack-smoke runner (bun run test:pack)."
           done
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
