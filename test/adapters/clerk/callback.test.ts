@@ -1,4 +1,4 @@
-import { expect, mock, test } from "bun:test";
+import { expect, jest, mock, test } from "bun:test";
 import { createClerkBinding } from "../../../cloud/src/adapters/workers-oauth/clerk/index.ts";
 import {
   createClerkUpstream,
@@ -171,6 +171,7 @@ for (const [name, options] of [
 test("an upstream code from flow A cannot authenticate flow B", async () => {
   let expected = "",
     proof = "";
+  const bindingMatches: boolean[] = [];
   const provider: ClerkHttpPort["post"] = async (_url, body) => {
     const challenge = Buffer.from(
       await crypto.subtle.digest(
@@ -178,7 +179,9 @@ test("an upstream code from flow A cannot authenticate flow B", async () => {
         new TextEncoder().encode(body.get("code_verifier")!),
       ),
     ).toString("base64url");
-    return challenge === expected
+    const matches = challenge === expected;
+    bindingMatches.push(matches);
+    return matches
       ? Response.json({ id_token: proof })
       : new Response(null, { status: 400 });
   };
@@ -192,8 +195,14 @@ test("an upstream code from flow A cannot authenticate flow B", async () => {
   expect(second.target.searchParams.get("code_challenge_method")).toBe("S256");
   expect(expected).toBeTruthy();
   expect(expected).not.toBe(second.target.searchParams.get("code_challenge"));
-  await refused(await second.finish(code), proof, "recorded-code");
-  expect((await first.finish(code)).status).toBe(302);
+  jest.useFakeTimers();
+  try {
+    await refused(await second.finish(code), proof, "recorded-code");
+    expect((await first.finish(code)).status).toBe(302);
+    expect(bindingMatches).toEqual([false, true]);
+  } finally {
+    jest.useRealTimers();
+  }
 }, 5_000);
 
 for (const missing of [true, false]) {

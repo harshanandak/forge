@@ -2,6 +2,8 @@ import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
 import { domain, Project } from "../../cloud/src/project.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { canonicalJson, digestBytes } from "../../src/core/config/pointer.ts";
+import { writableStore } from "../../cloud/src/store.ts";
+import { PAGE_BYTES, recoverV3, viewV3 } from "../../cloud/src/v3-store.ts";
 import { guardFixture, noWrites, probe } from "./v3-project.fixture.ts";
 
 const timeout = 30_000;
@@ -114,7 +116,7 @@ const deleteRecord = (key: string, revision: number) => ({
 const append = (f: Fixture, ...frames: Json[]) =>
   f.send(`${probe}/commits`, { frames });
 
-async function withFixture(run: (f: Fixture) => Promise<void>) {
+async function withFixture(run: (f: Fixture) => void | Promise<void>) {
   const f = guardFixture();
   try {
     expect((await f.send(probe, {})).status).toBe(200);
@@ -1238,6 +1240,184 @@ test(
   timeout,
 );
 
+const portableHistory = async (source: Fixture) => {
+  await populate(source);
+  expect((await append(source, frame())).status).toBe(200);
+  expect((await checkpoint(source)).status).toBe(200);
+  const transcript = pages(source).find(({ id }) => id === "transcript:0")!;
+  const frames = JSON.parse(transcript.body) as Json[];
+  frames[5] = { sequence: 6 };
+  return frames;
+};
+
+function replayPortable(target: Fixture, frames: readonly unknown[]) {
+  const verification = {
+    admit: Project.admitLeaseRequest,
+    pages: new Map<string, Buffer>(),
+    sealed: () => {},
+    portableTranscript: canonicalJson(frames),
+  };
+  return recoverV3(writableStore(target.storage), verification);
+}
+
+test(
+  "v3 portable replay reconstructs the public projection from genesis",
+  () =>
+    withFixture(async (source) => {
+      const frames = await portableHistory(source);
+      const expected = recoverV3(writableStore(source.storage));
+      await withFixture((target) => {
+        const effects = target.observeEffects();
+        const replayed = replayPortable(target, frames);
+        expect(viewV3(replayed).image).toEqual(viewV3(expected).image);
+        expect(replayed.recordFloor).toBe(expected.recordFloor);
+        expect(effects()).toEqual(noWrites);
+      });
+    }),
+  timeout,
+);
+
+test(
+  "v3 portable replay accepts a page with more than 1024 commands",
+  () =>
+    withFixture(async (source) => {
+      await populate(source);
+      const start = commits(source).length;
+      expect((await checkpoint(source)).status).toBe(200);
+      for (let count = start; count < 1025; count += 12) {
+        const batch = Array.from({ length: Math.min(12, 1025 - count) }, frame);
+        expect((await append(source, ...batch)).status).toBe(200);
+        expect((await checkpoint(source)).status).toBe(200);
+      }
+      const native = pages(source).find(
+        ({ id }) => id === "transcript:0",
+      )!.body;
+      const history = JSON.parse(native) as Json[];
+      expect(history).toHaveLength(1025);
+      expect(Buffer.byteLength(native)).toBeLessThanOrEqual(PAGE_BYTES);
+      expect(commits(source)).toEqual([]);
+      const frames = history.map((entry) =>
+        entry.operation === "fixture.note"
+          ? { sequence: entry.sequence }
+          : entry,
+      );
+      const expected = recoverV3(writableStore(source.storage));
+      expect(expected.head).toBe(1025);
+      await withFixture((target) => {
+        const replayed = replayPortable(target, frames);
+        expect(viewV3(replayed).image).toEqual(viewV3(expected).image);
+        expect(replayed.recordFloor).toBe(expected.recordFloor);
+      });
+    }),
+  timeout,
+);
+
+test(
+  "v3 portable replay keeps the live frame depth limit",
+  () =>
+    withFixture(async (source) => {
+      const recordAtDepth = (depth: number) => {
+        const value: unknown = JSON.parse(
+          "[".repeat(depth) + "0" + "]".repeat(depth),
+        );
+        return putRecord("r1", 1, value);
+      };
+      expect((await append(source, recordAtDepth(60))).status).toBe(200);
+      expect((await checkpoint(source)).status).toBe(200);
+      const native = pages(source).find(
+        ({ id }) => id === "transcript:0",
+      )!.body;
+      const frames = JSON.parse(native) as Json[];
+      const expected = recoverV3(writableStore(source.storage));
+      await withFixture((target) => {
+        const replayed = replayPortable(target, frames);
+        expect(viewV3(replayed).image).toEqual(viewV3(expected).image);
+        const deeper = { ...frames[0], ...recordAtDepth(61) };
+        expect(() => replayPortable(target, [deeper])).toThrow(ForgeFailure);
+      });
+    }),
+  timeout,
+);
+
+for (const [fault, edit] of [
+  [
+    "private frame",
+    (frames: Json[]) => {
+      frames[5]!.private = { approval: "fixture-only" };
+    },
+  ],
+  [
+    "sequence gap",
+    (frames: Json[]) => {
+      frames[5] = { sequence: 7 };
+    },
+  ],
+  [
+    "repeated marker",
+    (frames: Json[]) => {
+      frames[5] = { sequence: 5 };
+    },
+  ],
+  [
+    "changed record after-image",
+    (frames: Json[]) => {
+      (frames[0]!.changes as Json[])[0]!.value = {
+        revision: 1,
+        value: { text: "tampered" },
+      };
+    },
+  ],
+  [
+    "altered refusal digest",
+    (frames: Json[]) => {
+      (frames[2]!.outcome as Json).resultDigest =
+        digestBytes("different refusal");
+    },
+  ],
+] as const) {
+  test(
+    `v3 portable replay refuses a ${fault}`,
+    () =>
+      withFixture(async (source) => {
+        const frames = await portableHistory(source);
+        edit(frames);
+        await withFixture((target) => {
+          const effects = target.observeEffects();
+          expect(() => replayPortable(target, frames)).toThrow(ForgeFailure);
+          expect(effects()).toEqual(noWrites);
+        });
+      }),
+    timeout,
+  );
+}
+
+test(
+  "live v3 writes and recovery refuse an archived refusal",
+  () =>
+    withFixture(async (f) => {
+      await populate(f);
+      const before = f.observeEffects();
+      const frame = JSON.parse(commits(f)[2]!.body) as Json;
+      const { result, ...outcome } = frame.outcome as Json;
+      const archived = {
+        ...outcome,
+        resultDigest: digestBytes(canonicalJson(result)),
+      };
+      const attempted = {
+        operation: frame.operation,
+        time: frame.time,
+        events: frame.events,
+        outcome: archived,
+      };
+      expect(await append(f, attempted)).toMatchObject({ status: 400 });
+      expect(before()).toEqual(noWrites);
+      changeCommit(f, 3, (stored) => ({ ...stored, outcome: archived }));
+      f.restart();
+      expect(await f.send(probe)).toMatchObject(refused);
+    }),
+  timeout,
+);
+
 type Portable = {
   pages: { id: string; body: string }[];
   head: number;
@@ -1252,24 +1432,23 @@ async function withPortable(
   const target = guardFixture();
   try {
     await withFixture(async (source) => {
-      await populate(source);
-      expect((await append(source, frame())).status).toBe(200);
-      expect((await checkpoint(source)).status).toBe(200);
+      const transcript = await portableHistory(source);
       const manifest = JSON.parse(root(source).body) as {
         coveredHead: number;
         eventWatermark: number;
         publicDigest: string;
       };
       const data = {
-        pages: pages(source),
+        pages: pages(source).map((page) =>
+          page.id === "transcript:0"
+            ? { ...page, body: canonicalJson(transcript) }
+            : page,
+        ),
         head: manifest.coveredHead,
         eventWatermark: manifest.eventWatermark,
         recordFloor: 3,
         publicDigest: manifest.publicDigest,
       };
-      editHistory(data, (frames) => {
-        frames[5] = { sequence: 6 };
-      });
       await run(target, data);
     });
   } finally {
@@ -1441,13 +1620,16 @@ for (const [fault, tamper] of [
       withPortable(async (target, data) => {
         tamper(data);
         const upload = portableUpload(target, data);
-        const replies = [await upload(0), await upload(1), await upload(2)];
+        const replies = [await upload(0), await upload(1)];
+        const staged = target.snapshot();
+        replies.push(await upload(2));
         await unprovisioned(target);
         expect(replies).toMatchObject([
           restoreResult(0),
           restoreResult(1),
           restoreRefusal,
         ]);
+        expect(target.snapshot()).toEqual(staged);
       }),
     timeout,
   );
@@ -1504,33 +1686,6 @@ test(
         await target.send("devices", { device: "fixture", ttlMs: HOUR }),
       ).toMatchObject({ status: 409 });
       await unprovisioned(target);
-    }),
-  timeout,
-);
-
-test(
-  "live v3 writes and recovery refuse the archived refusal shape",
-  () =>
-    withFixture(async (f) => {
-      await populate(f);
-      const before = f.observeEffects();
-      const refusal = JSON.parse(commits(f)[2]!.body) as Json;
-      const { result, ...outcome } = refusal.outcome as Json;
-      const archived = {
-        ...outcome,
-        resultDigest: digestBytes(canonicalJson(result)),
-      };
-      const attempted = {
-        operation: refusal.operation,
-        time: refusal.time,
-        events: refusal.events,
-        outcome: archived,
-      };
-      expect(await append(f, attempted)).toMatchObject({ status: 400 });
-      expect(before()).toEqual(noWrites);
-      changeCommit(f, 3, (stored) => ({ ...stored, outcome: archived }));
-      f.restart();
-      expect(await f.send(probe)).toMatchObject(refused);
     }),
   timeout,
 );

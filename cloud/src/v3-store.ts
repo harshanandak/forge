@@ -37,6 +37,7 @@ import { TABLE_PROBE } from "./store.ts";
 export { withinDepth };
 export const ROOT = "cloud_v3_root";
 export const PAGES = "cloud_v3_pages";
+export const PAGE_BYTES = 256 * 1024;
 export const PAGE_SCHEMA =
   "(id TEXT PRIMARY KEY, body TEXT NOT NULL) WITHOUT ROWID";
 export const COMMITS = "cloud_v3_commits";
@@ -179,10 +180,10 @@ function readStored<T>(read: () => T): T {
   }
 }
 
-const parse = (text: string): unknown =>
+const parse = (text: string, depth = MAX_JSON_DEPTH): unknown =>
   readStored(() => {
     const value: unknown = JSON.parse(text);
-    if (!withinDepth(value)) throw unavailable();
+    if (!withinDepth(value, depth)) throw unavailable();
     return value;
   });
 
@@ -343,10 +344,30 @@ interface Verification {
   sealed: (image: V3Image) => void;
 }
 
+function recoveryImage(root: V3Image["root"], eventWatermark: number): V3Image {
+  return {
+    root,
+    entries: {
+      lease: new Map(),
+      outcome: new Map(),
+      record: new Map(),
+      witness: new Map(),
+    },
+    recordFloor: 0,
+    head: root.coveredHead,
+    eventWatermark,
+    tailBytes: 0,
+    stale: false,
+    staged: [],
+  };
+}
+
 export function recoverV3(
   db: SqlDatabase,
-  verification?: Verification,
+  verification?: Verification | PortableVerification,
 ): V3Image {
+  if (verification && "portableTranscript" in verification)
+    return recoverPortableV3(db, verification);
   const root = readV3Root(db);
   const byId = new Map(root.pages.map((page) => [page.id, page]));
   const headers = db.all(
@@ -357,21 +378,7 @@ export function recoverV3(
     headers.some(({ id, bytes }) => byId.get(String(id))?.bytes !== bytes)
   )
     throw unavailable();
-  const image: V3Image = {
-    root,
-    entries: {
-      lease: new Map(),
-      outcome: new Map(),
-      record: new Map(),
-      witness: new Map(),
-    },
-    recordFloor: 0,
-    head: root.coveredHead,
-    eventWatermark: root.eventWatermark,
-    tailBytes: 0,
-    stale: false,
-    staged: [],
-  };
+  const image = recoveryImage(root, root.eventWatermark);
   const bodies = new Map(
     db
       .all(
@@ -422,17 +429,55 @@ export function recoverV3(
   return image;
 }
 
+interface PortableVerification {
+  admit: AdmitLeaseRequest;
+  portableTranscript: string;
+}
+
+function recoverPortableV3(
+  db: SqlDatabase,
+  { admit, portableTranscript }: PortableVerification,
+): V3Image {
+  if (Buffer.byteLength(portableTranscript) > PAGE_BYTES) throw unavailable();
+  const frames = parse(portableTranscript, MAX_JSON_DEPTH + 1);
+  if (!Array.isArray(frames) || storedCanonical(frames) !== portableTranscript)
+    throw unavailable();
+  const image = recoveryImage(genesis("portable", "portable"), 0);
+  const verification = { admit, pages: new Map<string, Buffer>() };
+  const verify = (frame: Frame) =>
+    verifyLeaseFrame(db, image, frame, verification);
+  const marker = {
+    format: COMMIT_FORMAT,
+    operation: "fixture.note",
+    time: 0,
+    events: [],
+  };
+  for (const [index, raw] of frames.entries()) {
+    const frame: unknown = raw;
+    if (!isObject(frame) || frame.operation === marker.operation)
+      throw unavailable();
+    const body =
+      Object.keys(frame).join() === "sequence"
+        ? { ...marker, ...frame }
+        : frame;
+    foldRow(image, index + 1, storedCanonical(body), verify, true);
+  }
+  return image;
+}
+
 function foldRow(
   image: V3Image,
   sequence: unknown,
   body: unknown,
   verify?: (frame: Frame) => Frame,
+  portable = false,
 ) {
   const frame = typeof body === "string" ? parse(body) : undefined;
   if (
     sequence !== image.head + 1 ||
     storedCanonical(frame) !== body ||
-    !validFrame(frame) ||
+    !validShape(frame) ||
+    authorityFault(frame, portable) !== undefined ||
     frame.format !== COMMIT_FORMAT ||
     frame.sequence !== sequence
   )
@@ -618,6 +663,7 @@ export interface Frame {
     readonly fingerprint: string;
     readonly status: string;
     readonly result?: ForgeError;
+    readonly resultDigest?: string;
     readonly retryUntil: number;
   };
   readonly witness?: {
@@ -649,9 +695,6 @@ function validShape(frame: unknown): frame is Frame & Record<string, unknown> {
       (Array.isArray(frame.changes) && frame.changes.every(validChange)))
   );
 }
-
-const validFrame = (frame: unknown): frame is Frame & Record<string, unknown> =>
-  validShape(frame) && authorityFault(frame) === undefined;
 
 const validAppendFrame = (frame: unknown) =>
   validShape(frame) && withinDepth(frame);
@@ -724,7 +767,7 @@ function verifyLeaseFrame(
   db: SqlDatabase,
   image: V3Image,
   frame: Frame,
-  { pages, admit }: Verification,
+  { pages, admit }: Pick<Verification, "pages" | "admit">,
 ): Frame {
   const { outcome, time } = frame;
   if (!outcome) return frame;
@@ -774,13 +817,16 @@ function verifyLeaseFrame(
     lease = transition(command, current, time);
     checkLeaseRecord(lease);
   } catch (error) {
+    const { resultDigest, ...receipt } = outcome;
     if (
       !recordable(error) ||
       outcome.status !== error.error.code ||
-      storedCanonical(outcome.result) !== storedCanonical(error.error)
+      (resultDigest === undefined
+        ? storedCanonical(outcome.result) !== storedCanonical(error.error)
+        : resultDigest !== digestValue(error.error))
     )
       throw unavailable();
-    return { ...frame, outcome: { ...outcome, result: error.error } };
+    return { ...frame, outcome: { ...receipt, result: error.error } };
   }
   if (
     outcome.status !== "ok" ||

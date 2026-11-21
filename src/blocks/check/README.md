@@ -100,6 +100,11 @@ Codex connector format is understood; logins compare case-insensitively, an omit
 `forge pr merge <n> --head <sha>` additionally returns `HEAD_MOVED` and merges nothing when the
 gate reads a different head than the one given.
 
+`gate.requiredReviews` defaults to `[]`. For each `{kind: merge-gate, reviewer: review-agent}` entry, that GitHub reviewer submits an approval with exactly one standalone `forge-review:merge-gate` line. The PR author is excluded.
+The newest submitted review for that kind governs across all commits. It must be a well-formed approval on the exact PR head. A newer comment, request for changes or dismissal for that kind blocks an earlier approval.
+The gate reads at most ten pages of 100 reviews and refuses incomplete evidence if page ten is full.
+Accepted `reviews` include the reviewer, head, verdict, and GitHub link.
+
 `gate.requiredChecks` defaults to `"github-required"`, resolved by each commit context's
 `isRequired(pullRequestNumber: ...)` field.
 An explicit list requires every named check; an empty resolved list refuses.
