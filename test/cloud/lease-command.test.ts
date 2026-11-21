@@ -1,16 +1,39 @@
 import { Database } from "bun:sqlite";
 import { afterEach, expect, setSystemTime, test } from "bun:test";
+import { receiptScope } from "../../cloud/src/issue-request-id.ts";
+import { replayLease } from "../../cloud/src/lease-command.ts";
 import { Project } from "../../cloud/src/project.ts";
 import { browserStorage } from "./browser-storage.fixture.ts";
 
 const timeout = 30_000;
 const T0 = Date.parse("2026-11-20T12:00:00.000Z");
 const holder = {
-  actor: { kind: "agent", id: "fixture" },
+  actor: { kind: "agent" as const, id: "fixture" },
   session: { id: "fixture" },
 };
 
 afterEach(() => setSystemTime());
+
+test(
+  "lease replay refuses an ill-formed subject in an older recorded refusal",
+  () => {
+    const command = {
+      route: "release",
+      subject: "work-\ud800",
+      holder,
+      ttlMs: null,
+      generation: 1,
+      rawId: "r-1",
+      requestId: "r-1",
+      scope: receiptScope(["owner", "owner-a", "owner-a"]),
+    } as const;
+    const recorded = { code: "LEASE_NOT_HELD", message: "No lease" };
+    expect(() =>
+      replayLease(command, recorded.code, recorded, () => undefined, T0),
+    ).toThrow("INPUT_INVALID: Lease subject must be well-formed UTF-16 text");
+  },
+  timeout,
+);
 
 test(
   "a v2 retry of a recorded ttl refusal returns that refusal before the subject is read",

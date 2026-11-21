@@ -6,7 +6,7 @@ import {
   checkLeaseSubject,
   StateOwner,
 } from "../../../src/core/state/index.ts";
-import type { LeaseHolder } from "../../../src/generated/types.ts";
+import type { LeaseHolder, LeaseRecord } from "../../../src/generated/types.ts";
 
 const timeout = 30_000;
 const namespace = "forge/work";
@@ -15,7 +15,7 @@ const holder: LeaseHolder = {
   session: { id: "lease-subject" },
 };
 
-async function owner() {
+async function owner(legacy?: LeaseRecord) {
   const opened = await createSqliteStore(tmpdir()).open({
     path: ":memory:",
     readOnly: false,
@@ -23,6 +23,11 @@ async function owner() {
   if (!opened.ok) throw new Error(opened.unavailable.reason);
   const state = new StateOwner(opened.handle.value, { now: () => 1000 });
   state.initialize();
+  if (legacy)
+    opened.handle.value.run(
+      "INSERT INTO state_leases(namespace,subject,generation,body) VALUES (?,?,?,?)",
+      [namespace, legacy.subject, legacy.generation, JSON.stringify(legacy)],
+    );
   return state;
 }
 
@@ -44,7 +49,7 @@ const cases = [
     "a lone-surrogate",
     "\ud800",
     "Lease subject must be well-formed UTF-16 text",
-    undefined,
+    "Lease subject must be well-formed UTF-16 text",
   ],
   ["a 500-character", "w".repeat(500), undefined, undefined],
 ] as const;
@@ -75,3 +80,23 @@ for (const [label, subject, acquire, held] of cases) {
     timeout,
   );
 }
+
+test(
+  "StateOwner renews and releases an exact legacy subject",
+  async () => {
+    const legacy = {
+      subject: "work-\ud800",
+      holder,
+      generation: 1,
+      expiresAt: new Date(61_000).toISOString(),
+    };
+    const state = await owner(legacy);
+    const renewed = state.renew(namespace, legacy, 90_000);
+    expect(renewed.expiresAt).toBe(new Date(91_000).toISOString());
+    expect(state.release(namespace, legacy)).toEqual({
+      ...renewed,
+      releasedAt: new Date(1000).toISOString(),
+    });
+  },
+  timeout,
+);

@@ -1,6 +1,7 @@
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { decideLease } from "../../src/contract/lease.ts";
 import { canonicalJson } from "../../src/core/config/pointer.ts";
+import { checkLeaseSubject } from "../../src/core/state/index.ts";
 import type {
   ForgeError,
   LeaseHolder,
@@ -56,9 +57,12 @@ export function replayLease(
   read: () => LeaseRecord | undefined,
   now: number,
 ): LeaseRecord {
+  const checkSubject = outcome !== "INPUT_INVALID" && !subject.isWellFormed();
+  const current = outcome === "ok" || checkSubject ? read() : undefined;
+  if (checkSubject) checkLeaseSubject(subject, "held", current);
   if (outcome !== "ok") throw new ForgeFailure(recorded as ForgeError);
   const first = recorded as LeaseRecord;
-  const current = read();
+  if (checkSubject) checkLeaseSubject(subject, "held", first);
   if (route === "release") return first;
   if (
     current !== undefined &&

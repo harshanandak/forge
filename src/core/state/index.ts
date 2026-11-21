@@ -193,12 +193,11 @@ function wellFormedText(value: string, position: string): void {
 }
 export function checkLeaseSubject(
   subject: string,
-  mode: "acquire" | "held",
+  _mode: "acquire" | "held",
   current?: LeaseRecord,
 ): void {
   keyValid(subject);
-  if (mode === "acquire" && current?.subject !== subject)
-    wellFormedText(subject, "Lease subject");
+  if (current?.subject !== subject) wellFormedText(subject, "Lease subject");
 }
 export function leaseExpiry(now: number, durationMs: number): string {
   if (
@@ -1645,6 +1644,7 @@ export class StateOwner {
   }
   #held(namespace: string, fence: Fence, now: number): LeaseRecord {
     const current = this.lease(namespace, fence.subject);
+    checkLeaseSubject(fence.subject, "held", current);
     const decision = decideLease(current, {
       mode: "held",
       subject: fence.subject,
