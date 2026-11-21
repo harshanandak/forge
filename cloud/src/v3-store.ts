@@ -47,7 +47,7 @@ const MANIFEST_BYTES = 128 * 1024;
 const ROSTER_PAGES = 640;
 const DIRECTORY_PAGES = 32;
 const DIRECTORY_BYTES = 4 * MiB;
-const TAIL_ROWS = 1024;
+export const TAIL_ROWS = 1024;
 const TAIL_BYTES = 16 * MiB;
 const MAX_JSON_DEPTH = 64;
 const ROOT_FORMAT = "forge-cloud-root/3";
@@ -368,7 +368,17 @@ function recoveryImage(root: V3Image["root"], eventWatermark: number): V3Image {
 
 export function recoverV3(
   db: SqlDatabase,
+  verification: PortableVerification,
+): V3Image;
+export function recoverV3(
+  db: SqlDatabase,
+  verification?: Verification,
+  options?: { through: number },
+): V3Image;
+export function recoverV3(
+  db: SqlDatabase,
   verification?: Verification | PortableVerification,
+  { through }: { through?: number } = {},
 ): V3Image {
   if (verification && "portableTranscript" in verification)
     return recoverPortableV3(db, verification);
@@ -421,9 +431,10 @@ export function recoverV3(
     }
   }
   verification?.sealed(image);
+  const upper = through === undefined ? "" : " AND sequence<=?";
   const rows = db.all(
-    `SELECT sequence, CASE WHEN sum(length(CAST(body AS BLOB))) OVER (ORDER BY sequence)<=${TAIL_BYTES} THEN body END AS body FROM (SELECT sequence, body FROM ${COMMITS} WHERE sequence>? ORDER BY sequence LIMIT ${TAIL_ROWS + 1}) ORDER BY sequence`,
-    [root.coveredHead],
+    `SELECT sequence, CASE WHEN sum(length(CAST(body AS BLOB))) OVER (ORDER BY sequence)<=${TAIL_BYTES} THEN body END AS body FROM (SELECT sequence, body FROM ${COMMITS} WHERE sequence>?${upper} ORDER BY sequence LIMIT ${TAIL_ROWS + 1}) ORDER BY sequence`,
+    through === undefined ? [root.coveredHead] : [root.coveredHead, through],
   );
   if (rows.length > TAIL_ROWS) throw unavailable();
   const verify =

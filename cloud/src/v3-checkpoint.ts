@@ -18,6 +18,7 @@ import {
   readV3Root,
   recoverV3,
   ROOT,
+  TAIL_ROWS,
   type V3Image,
 } from "./v3-store.ts";
 
@@ -238,8 +239,11 @@ function discardStage(db: SqlDatabase) {
 }
 
 function collect(db: SqlDatabase, cut: number) {
-  db.run(`DELETE FROM ${COMMITS} WHERE sequence<=?`, [cut]);
-  db.exec(`DROP TABLE IF EXISTS ${RETIRED}`);
+  db.transaction(() => {
+    db.run(`DELETE FROM ${COMMITS} WHERE sequence<=?`, [cut]);
+    db.exec(`DROP TABLE IF EXISTS ${RETIRED}`);
+    discardStage(db);
+  });
 }
 
 function commitHead(db: SqlDatabase, coveredHead: number) {
@@ -261,8 +265,7 @@ export async function checkpointV3(
   requireCheckpoint(!activeStages.has(storage));
   activeStages.add(storage);
   try {
-    const pending = db.get(TABLE_PROBE, [RETIRED]) !== undefined;
-    return await checkpoint(db, storage, warm, replaceWarm, pending, admit);
+    return await checkpoint(db, storage, warm, replaceWarm, admit);
   } finally {
     activeStages.delete(storage);
   }
@@ -273,14 +276,15 @@ async function checkpoint(
   storage: DurableStorage,
   warm: V3Image | undefined,
   replaceWarm: ReplaceWarm,
-  pending: boolean,
   admit: AdmitLeaseRequest,
 ) {
   const root = readV3Root(db);
+  if (db.get(TABLE_PROBE, [RETIRED])) collect(db, root.coveredHead);
   const source = canonicalJson(root);
   const seal = digestBytes(source);
-  const cut = commitHead(db, root.coveredHead);
-  requireCheckpoint(cut - root.coveredHead <= TURN_TAIL_ROWS);
+  const tail = commitHead(db, root.coveredHead) - root.coveredHead;
+  requireCheckpoint(tail >= 0 && tail <= TAIL_ROWS);
+  const cut = root.coveredHead + Math.min(tail, TURN_TAIL_ROWS);
   const prior = storedPages(db, PAGES);
   requireCheckpoint(
     prior.size === root.pages.length &&
@@ -308,15 +312,22 @@ async function checkpoint(
   const previous = new Map(
     [...prior].map(([id, body]) => [id, Buffer.from(body)]),
   );
-  const image = recoverV3(db, {
-    admit,
-    pages: previous,
-    sealed: (sealed) =>
-      reconcileReceipts(inventory(sealed, previous, ["outcome"]), history),
-  });
+  const image = recoverV3(
+    db,
+    {
+      admit,
+      pages: previous,
+      sealed: (sealed) =>
+        reconcileReceipts(inventory(sealed, previous, ["outcome"]), history),
+    },
+    { through: cut },
+  );
   requireCheckpoint(image.head === cut);
   const expected = inventory(image, previous);
-  const current = inventory(warm && !warm.stale ? warm : image, previous);
+  const current =
+    warm && !warm.stale && warm.head === cut
+      ? inventory(warm, previous)
+      : expected;
   const transcript = canonicalJson([
     ...history,
     ...frames.map(({ body }) => archive(String(body))),
@@ -372,17 +383,19 @@ async function checkpoint(
         `SELECT 1 FROM ${ROOT} WHERE id=1 AND seal=? AND body=?`,
         [seal, source],
       );
-      requireCheckpoint(pinned && commitHead(db, root.coveredHead) === cut);
+      requireCheckpoint(pinned);
+      const head = commitHead(db, root.coveredHead);
+      requireCheckpoint(head >= cut);
       replaceWarm(undefined);
       switchStarted = true;
-      if (pending) collect(db, root.coveredHead);
       db.exec(`ALTER TABLE ${PAGES} RENAME TO ${RETIRED}`);
       db.exec(`ALTER TABLE ${STAGED} RENAME TO ${PAGES}`);
       db.run(`UPDATE ${ROOT} SET body=?, seal=? WHERE id=1`, [
         manifest,
         digestBytes(manifest),
       ]);
-      return recoverV3(db);
+      const verifiedRoot = recoverV3(db, undefined, { through: cut });
+      return head === cut ? verifiedRoot : undefined;
     });
     try {
       await storage.sync?.();
@@ -390,10 +403,12 @@ async function checkpoint(
       replaceWarm(undefined);
       throw error;
     }
-    replaceWarm(next);
+    if (next) replaceWarm(next);
     collect(db, cut);
-    discardStage(db);
+    await storage.sync?.();
     return {
+      coveredHead: cut,
+      more: commitHead(db, cut) > cut,
       rosterDigest: digestValue(verified.pages),
       projectionDigest,
     };

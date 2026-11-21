@@ -116,6 +116,50 @@ const deleteRecord = (key: string, revision: number) => ({
 const append = (f: Fixture, ...frames: Json[]) =>
   f.send(`${probe}/commits`, { frames });
 
+async function prefix(f: Fixture, previous: number, head: number) {
+  const { rows, bytes } = f.reads;
+  const result = await checkpoint(f);
+  expect(result.status).toBe(200);
+  const { value } = result.body as { value: Json };
+  const coveredHead = value.coveredHead as number;
+  const manifest = JSON.parse(root(f).body) as Json;
+  expect(coveredHead).toBeGreaterThan(previous);
+  expect(coveredHead).toBeLessThanOrEqual(head);
+  expect(value.more).toBe(coveredHead < head);
+  expect(result.body).toMatchObject({
+    ok: true,
+    value: {
+      coveredHead: manifest.coveredHead,
+      rosterDigest: digestBytes(canonicalJson(manifest.pages)),
+      projectionDigest: manifest.publicDigest,
+    },
+  });
+  const reads = f.reads.rows - rows;
+  console.log("v3 checkpoint prefix reads", {
+    coveredHead,
+    rows: reads,
+    fixedRows: reads - 2 * (coveredHead - previous),
+    bytes: f.reads.bytes - bytes,
+  });
+  expect(reads).toBeLessThanOrEqual(64);
+  expect(f.reads.bytes - bytes).toBeLessThanOrEqual(4 * MiB);
+  return coveredHead;
+}
+
+async function drain(f: Fixture, coveredHead: number, head: number) {
+  while (coveredHead < head) coveredHead = await prefix(f, coveredHead, head);
+  expect(commits(f)).toEqual([]);
+  expect(stagingTables(f)).toEqual([]);
+  expect(tableNames(f)).not.toContain("cloud_v3_retired_pages");
+}
+
+async function expectWarmAndCold(f: Fixture, image: Json) {
+  const warm = await view(f);
+  expect(warm.image).toEqual(image);
+  f.restart();
+  expect(await view(f)).toEqual(warm);
+}
+
 async function withFixture(run: (f: Fixture) => void | Promise<void>) {
   const f = guardFixture();
   try {
@@ -375,29 +419,24 @@ test(
 );
 
 test(
-  "v3 checkpoint refuses a changed cut and keeps the staging append visible after eviction",
+  "v3 checkpoint switches its verified prefix when an append lands during prepare sync",
   () =>
     withFixture(async (f) => {
       await populate(f);
-      const source = active(f);
-      const log = commits(f);
-      let staged: Awaited<ReturnType<typeof view>> | undefined;
+      let appended: Json | undefined;
       afterSync(f, 1, async () => {
         expect((await append(f, putRecord("r4", 1, 9))).status).toBe(200);
-        staged = await view(f);
-        expect(staged).toMatchObject({ generation: 0, image: { head: 6 } });
+        appended = (await view(f)).image;
       });
-      const result = await checkpoint(f);
-      expect(result).toMatchObject(refused);
-      expect(staged).toBeDefined();
-      expect(active(f)).toEqual(source);
-      expect(commits(f).slice(0, -1)).toEqual(log);
-      expect(commits(f).map(({ sequence }) => sequence)).toEqual([
-        1, 2, 3, 4, 5, 6,
-      ]);
-      expect(await view(f)).toEqual(staged!);
-      f.restart();
-      expect(await view(f)).toEqual(staged!);
+      expect(await checkpoint(f)).toMatchObject({
+        status: 200,
+        body: { value: { coveredHead: 5, more: true } },
+      });
+      expect(commits(f).map(({ sequence }) => sequence)).toEqual([6]);
+      expect(appended).toBeDefined();
+      await expectWarmAndCold(f, appended!);
+      await drain(f, 5, 6);
+      await expectWarmAndCold(f, appended!);
     }),
   timeout,
 );
@@ -454,6 +493,7 @@ for (const point of [
   "between renames",
   "before collection",
   "during collection",
+  "after collection",
 ]) {
   test(
     `v3 checkpoint recovers after a fault ${point}`,
@@ -466,8 +506,11 @@ for (const point of [
         const tables = tableNames(f);
         const maintenance = ["cloud_v3_checkpoint", "cloud_v3_retired_pages"];
         const schema = pageSchema(f);
+        const collected = point === "after collection";
         const switched =
-          point === "before collection" || point === "during collection";
+          collected ||
+          point === "before collection" ||
+          point === "during collection";
         if (point === "between renames" || point === "during collection") {
           const executeSql = f.storage.sql.exec.bind(f.storage.sql);
           f.storage.sql.exec = (statement, ...bindings) => {
@@ -483,16 +526,16 @@ for (const point of [
             }
             if (
               point === "during collection" &&
-              /^DELETE FROM cloud_v3_commits\b/i.test(statement)
+              /^DROP TABLE IF EXISTS cloud_v3_retired_pages\b/i.test(statement)
             ) {
               f.storage.sql.exec = executeSql;
-              f.db.run("DELETE FROM cloud_v3_commits WHERE sequence=1");
+              expect(commits(f)).toEqual([]);
               crash();
             }
             return executeSql(statement, ...bindings);
           };
         } else {
-          afterSync(f, switched ? 2 : 1, async () => {
+          afterSync(f, collected ? 3 : switched ? 2 : 1, async () => {
             if (switched) await expectCut(f, 1, 5, before.image);
             crash();
           });
@@ -507,11 +550,11 @@ for (const point of [
             },
           },
         });
-        expect(commits(f)).toEqual(
-          point === "during collection" ? log.slice(1) : log,
-        );
+        expect(commits(f)).toEqual(collected ? [] : log);
         expect(pageSchema(f)).toEqual(schema);
-        if (switched) {
+        if (collected) {
+          expect(tableNames(f)).toEqual(tables);
+        } else if (switched) {
           expect(retired(f)).toEqual(source.pages);
           expect(tableNames(f)).toEqual(tables.concat(maintenance).sort());
         } else {
@@ -519,7 +562,10 @@ for (const point of [
           if (point === "between renames")
             expect(stagingTables(f)).toHaveLength(2);
         }
+        await expectCut(f, switched ? 1 : 0, switched ? 5 : 0, before.image);
+        await expectWarmAndCold(f, before.image);
         if (point === "before collection") {
+          f.restart();
           const { id, body } = pages(f)[0]!;
           f.db.run(
             "UPDATE cloud_v3_pages SET body='!' || substr(body, 2) WHERE id=?",
@@ -530,7 +576,7 @@ for (const point of [
         }
         f.restart();
         await expectCut(f, switched ? 1 : 0, switched ? 5 : 0, before.image);
-        if (switched) {
+        if (switched && !collected) {
           const dump = await f.send("dump");
           const rows = (
             dump.body as { value: { tables: Record<string, unknown[]> } }
@@ -546,25 +592,48 @@ for (const point of [
           expect(await f.send("restore", {})).toMatchObject({ status: 409 });
           expect(tableNames(f)).toEqual(tables.concat(maintenance).sort());
           expect(pages(f)).toHaveLength(3);
-          const tail = Array.from({ length: 13 }, () => frame());
+          const tail = Array.from({ length: 13 }, frame);
           expect((await append(f, ...tail)).status).toBe(200);
-          const effects = f.observeEffects();
-          expect(await checkpoint(f)).toMatchObject(refused);
-          expect(effects()).toEqual(noWrites);
-          f.db.run("DELETE FROM cloud_v3_commits WHERE sequence=18");
-          f.restart();
+          const appended = await view(f);
+          const suffix = commits(f).slice(log.length);
+          if (point === "before collection") {
+            const activePrefix = active(f);
+            const pendingTables = tableNames(f);
+            const runSql = f.storage.sql.exec.bind(f.storage.sql);
+            f.storage.sql.exec = (statement, ...bindings) => {
+              if (
+                /^DROP TABLE IF EXISTS cloud_v3_retired_pages\b/i.test(
+                  statement,
+                )
+              ) {
+                f.storage.sql.exec = runSql;
+                expect(commits(f)).toEqual(suffix);
+                crash();
+              }
+              return runSql(statement, ...bindings);
+            };
+            expect(await checkpoint(f)).toMatchObject({
+              status: 503,
+              body: { error: { message: "Injected checkpoint fault" } },
+            });
+            expect(active(f)).toEqual(activePrefix);
+            expect(tableNames(f)).toEqual(pendingTables);
+            expect(commits(f)).toEqual([...log, ...suffix]);
+            await expectWarmAndCold(f, appended.image);
+          }
+          afterSync(f, 1, () => {
+            expect(commits(f)).toEqual(suffix);
+            expect(tableNames(f)).not.toContain("cloud_v3_retired_pages");
+          });
+          await drain(f, 5, 18);
+          await expectWarmAndCold(f, appended.image);
+        } else if (!switched) {
+          expect((await checkpoint(f)).status).toBe(200);
+          expect(commits(f)).toEqual([]);
+          await expectCut(f, 1, 5, before.image);
         }
-        const rows = f.reads.rows;
-        expect((await checkpoint(f)).status).toBe(200);
-        const reads = f.reads.rows - rows;
-        expect(reads).toBeLessThanOrEqual(64);
-        console.log("v3 checkpoint retry rows", { point, reads });
-        expect(commits(f)).toEqual([]);
         expect(tableNames(f)).toEqual(tables);
         expect(pageSchema(f)).toEqual(schema);
-        const cut = switched ? 17 : 5;
-        const image = { ...before.image, head: cut };
-        await expectCut(f, switched ? 2 : 1, cut, image);
       }),
     timeout,
   );
@@ -737,19 +806,80 @@ for (const change of [
   );
 }
 
+async function appendNotes(f: Fixture, count: number) {
+  for (let sent = 0; sent < count; sent += 100) {
+    const batch = Array.from({ length: Math.min(100, count - sent) }, frame);
+    expect((await append(f, ...batch)).status).toBe(200);
+  }
+}
+
+for (const size of [13, 1024]) {
+  test(
+    `v3 checkpoint drains ${size} uncovered commands within the read budget`,
+    () =>
+      withFixture(async (f) => {
+        await appendNotes(f, size);
+        const { image } = await view(f);
+        const cut = await prefix(f, 0, size);
+        expect(cut).toBeLessThan(size);
+        await expectWarmAndCold(f, image);
+        await drain(f, cut, size);
+        expect(f.alarms).toEqual([]);
+        await expectWarmAndCold(f, image);
+      }),
+    timeout,
+  );
+}
+
 test(
-  "v3 checkpoint refuses a tail that exceeds one maintenance turn before changing the source",
+  "v3 checkpoint frees admission capacity after one prefix",
   () =>
     withFixture(async (f) => {
-      expect(
-        (await append(f, ...Array.from({ length: 65 }, () => frame()))).status,
-      ).toBe(200);
-      const source = active(f);
-      const log = commits(f);
-      const result = await checkpoint(f);
-      expect(result).toMatchObject(refused);
-      expect(active(f)).toEqual(source);
-      expect(commits(f)).toEqual(log);
+      await appendNotes(f, 1024);
+      const effects = f.observeEffects();
+      expect(await append(f, frame())).toMatchObject(refused);
+      expect(effects()).toEqual(noWrites);
+      await prefix(f, 0, 1024);
+      expect((await append(f, frame())).status).toBe(200);
+      expect(commits(f).at(-1)?.sequence).toBe(1025);
+    }),
+  timeout,
+);
+
+test(
+  "v3 checkpoint preserves authority and record transitions across prefixes",
+  () =>
+    withFixture(async (f) => {
+      await appendNotes(f, 10);
+      await populate(f);
+      const db = writableStore(f.storage);
+      const before = recoverV3(db);
+      const cut = await prefix(f, 0, before.head);
+      expect(cut).toBeGreaterThanOrEqual(11);
+      expect(cut).toBeLessThan(before.head);
+      await expectWarmAndCold(f, viewV3(before).image);
+      await drain(f, cut, before.head);
+      const after = recoverV3(db);
+      expect(after.root.eventWatermark).toBe(before.eventWatermark);
+      expect(after.recordFloor).toBe(before.recordFloor);
+      await expectWarmAndCold(f, viewV3(before).image);
+    }),
+  timeout,
+);
+
+test(
+  "v3 checkpoint leaves a malformed suffix for full recovery and rejects its prefix",
+  () =>
+    withFixture(async (f) => {
+      await appendNotes(f, 13);
+      f.db.run("UPDATE cloud_v3_commits SET body='{}' WHERE sequence=13");
+      f.restart();
+      expect(await f.send(probe)).toMatchObject(refused);
+      await prefix(f, 0, 13);
+      expect(await f.send(probe)).toMatchObject(refused);
+      const effects = f.observeEffects();
+      expect(await checkpoint(f)).toMatchObject(refused);
+      expect(effects()).toEqual(noWrites);
     }),
   timeout,
 );
@@ -1287,7 +1417,9 @@ test(
       for (let count = start; count < 1025; count += 12) {
         const batch = Array.from({ length: Math.min(12, 1025 - count) }, frame);
         expect((await append(source, ...batch)).status).toBe(200);
-        expect((await checkpoint(source)).status).toBe(200);
+        do {
+          expect((await checkpoint(source)).status).toBe(200);
+        } while (commits(source).length > 0);
       }
       const native = pages(source).find(
         ({ id }) => id === "transcript:0",
@@ -1712,6 +1844,9 @@ test(
       await unprovisioned(target);
       expect(await upload(0)).toMatchObject(restoreResult(0));
       target.restart();
+      const effects = target.observeEffects();
+      expect(await checkpoint(target)).toMatchObject(refused);
+      expect(effects()).toEqual(noWrites);
       expect(await target.send(probe, {})).toMatchObject({ status: 409 });
       expect(
         await target.send("devices", { device: "fixture", ttlMs: HOUR }),
