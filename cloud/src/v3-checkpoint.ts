@@ -23,7 +23,9 @@ const STAGED = "cloud_v3_checkpoint_pages";
 const RETIRED = "cloud_v3_retired_pages";
 const PAGE_BYTES = 256 * 1024;
 const MANIFEST_BYTES = 128 * 1024;
-const TURN_TAIL_ROWS = 16;
+const TURN_ROWS = 64;
+const TURN_MAX_NON_TAIL_ROWS = 39;
+const TURN_TAIL_ROWS = Math.floor((TURN_ROWS - TURN_MAX_NON_TAIL_ROWS) / 2);
 const TURN_TAIL_BYTES = 512 * 1024;
 const SNAPSHOT = "snapshot:0";
 const activeStages = new WeakSet<DurableStorage>();
@@ -212,7 +214,6 @@ export async function checkpointV3(
   activeStages.add(storage);
   try {
     const pending = db.get(TABLE_PROBE, [RETIRED]) !== undefined;
-    if (pending) await storage.sync?.();
     return await checkpoint(db, storage, warm, replaceWarm, pending);
   } finally {
     activeStages.delete(storage);

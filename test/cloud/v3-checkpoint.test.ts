@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
 import { domain } from "../../cloud/src/project.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { canonicalJson, digestBytes } from "../../src/core/config/pointer.ts";
-import { fixture, probe } from "./v3-project.fixture.ts";
+import { guardFixture, noWrites, probe } from "./v3-project.fixture.ts";
 
 const timeout = 30_000;
 const MiB = 1024 * 1024;
@@ -22,7 +22,7 @@ const refused = {
 beforeEach(() => setSystemTime(T0));
 afterEach(() => setSystemTime());
 
-type Fixture = ReturnType<typeof fixture>;
+type Fixture = ReturnType<typeof guardFixture>;
 type Json = Record<string, unknown>;
 interface DirectoryItem {
   collection: string;
@@ -94,7 +94,7 @@ const append = (f: Fixture, ...frames: Json[]) =>
   f.send(`${probe}/commits`, { frames });
 
 async function withFixture(run: (f: Fixture) => Promise<void>) {
-  const f = fixture();
+  const f = guardFixture();
   try {
     expect((await f.send(probe, {})).status).toBe(200);
     await run(f);
@@ -441,6 +441,7 @@ for (const point of [
         const source = active(f);
         const log = commits(f);
         const tables = tableNames(f);
+        const maintenance = ["cloud_v3_checkpoint", "cloud_v3_retired_pages"];
         const schema = pageSchema(f);
         const switched =
           point === "before collection" || point === "during collection";
@@ -489,9 +490,7 @@ for (const point of [
         expect(pageSchema(f)).toEqual(schema);
         if (switched) {
           expect(retired(f)).toEqual(source.pages);
-          expect(tableNames(f)).toEqual(
-            [...tables, "cloud_v3_checkpoint", "cloud_v3_retired_pages"].sort(),
-          );
+          expect(tableNames(f)).toEqual(tables.concat(maintenance).sort());
         } else {
           expect(active(f)).toEqual(source);
           if (point === "between renames")
@@ -522,15 +521,27 @@ for (const point of [
           expect(Object.values(rows).flat()).toEqual([]);
           expect(await f.send("upgrade")).toMatchObject({ status: 409 });
           expect(await f.send("restore", {})).toMatchObject({ status: 409 });
-          expect(tableNames(f)).toEqual(
-            [...tables, "cloud_v3_checkpoint", "cloud_v3_retired_pages"].sort(),
-          );
+          expect(tableNames(f)).toEqual(tables.concat(maintenance).sort());
+          expect(pages(f)).toHaveLength(3);
+          const tail = Array.from({ length: 13 }, () => frame());
+          expect((await append(f, ...tail)).status).toBe(200);
+          const effects = f.observeEffects();
+          expect(await checkpoint(f)).toMatchObject(refused);
+          expect(effects()).toEqual(noWrites);
+          f.db.run("DELETE FROM cloud_v3_commits WHERE sequence=18");
+          f.restart();
         }
+        const rows = f.reads.rows;
         expect((await checkpoint(f)).status).toBe(200);
+        const reads = f.reads.rows - rows;
+        expect(reads).toBeLessThanOrEqual(64);
+        console.log("v3 checkpoint retry rows", { point, reads });
         expect(commits(f)).toEqual([]);
         expect(tableNames(f)).toEqual(tables);
         expect(pageSchema(f)).toEqual(schema);
-        await expectCut(f, switched ? 2 : 1, 5, before.image);
+        const cut = switched ? 17 : 5;
+        const image = { ...before.image, head: cut };
+        await expectCut(f, switched ? 2 : 1, cut, image);
       }),
     timeout,
   );
