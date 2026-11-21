@@ -1,0 +1,121 @@
+name: On-demand tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      os:
+        description: Runner operating system
+        type: choice
+        options: [ubuntu-latest, windows-latest, macos-latest]
+        default: ubuntu-latest
+      node:
+        description: Node.js major version
+        type: choice
+        options: ["24", "26"]
+        default: "24"
+      files:
+        description: Space-separated test paths under test/ (empty runs all source tests)
+        type: string
+        default: ""
+      repeat:
+        description: Number of attempts (1 to 20)
+        type: string
+        default: "1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: on-demand-tests-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run: { shell: bash }
+
+jobs:
+  tests:
+    runs-on: ${{ inputs.os == 'windows-latest' && 'windows-latest' || inputs.os == 'macos-latest' && 'macos-latest' || 'ubuntu-latest' }}
+    env:
+      TEST_OS: ${{ inputs.os }}
+      TEST_NODE: ${{ inputs.node }}
+      TEST_FILES: ${{ inputs.files }}
+      TEST_REPEAT: ${{ inputs.repeat }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Validate dispatch inputs
+        run: |
+          refuse() {
+            printf '::error::%s\n' "$1"
+            exit 1
+          }
+          case "$TEST_OS" in
+            ubuntu-latest|windows-latest|macos-latest) ;;
+            *) refuse "os must be ubuntu-latest, windows-latest, or macos-latest." ;;
+          esac
+          [[ $TEST_NODE =~ ^(24|26)$ ]] || refuse "node must be 24 or 26."
+          [[ $TEST_REPEAT =~ ^([1-9]|1[0-9]|20)$ ]] || refuse "repeat must be an integer from 1 to 20."
+          file_list='^[A-Za-z0-9._/ -]*$'
+          test_path='^test/([A-Za-z0-9_-][A-Za-z0-9._-]*/)*[A-Za-z0-9_-][A-Za-z0-9._-]*\.test\.ts$'
+          [[ $TEST_FILES =~ $file_list ]] || refuse "files must be space-separated test paths without special characters."
+          read -ra files <<< "$TEST_FILES"
+          [[ -z $TEST_FILES || ${#files[@]} -gt 0 ]] || refuse "files must be empty or name at least one test."
+          for file in "${files[@]}"; do
+            [[ $file =~ $test_path ]] || refuse "Invalid test path: $file"
+            entry=$(git ls-files --stage -- "$file")
+            [[ $entry == @(100644|100755)' '*$'\t'"$file" && -f $file && ! -L $file ]] || refuse "Not a tracked test file: $file"
+            [[ $file != */packed.integration.test.ts ]] || refuse "Packed journey: $file. Use the pack-smoke runner (bun run test:pack)."
+          done
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.TEST_NODE }}
+          cache: ${{ runner.os == 'Windows' && 'npm' || '' }}
+          cache-dependency-path: bun.lock
+      - uses: ./.github/actions/journey-setup
+        with:
+          mode: ci
+          node: ${{ env.TEST_NODE }}
+          shard: on-demand
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.4.4"
+      - id: bun-cache
+        if: runner.os == 'Windows'
+        run: echo "dir=$(bun pm cache)" >> "$GITHUB_OUTPUT"
+      - if: runner.os == 'Windows'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.bun-cache.outputs.dir }}
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile --ignore-scripts
+        working-directory: cloud
+      - if: env.TEST_FILES != ''
+        run: bun run build
+      - name: Run test attempts
+        run: |
+          read -ra files <<< "$TEST_FILES"
+          node_flags=()
+          if [[ $TEST_NODE == 26 ]]; then node_flags+=(--node26); fi
+          failed=()
+          printf '| Attempt | Result | Duration |\n| --- | --- | --- |\n' >> "$GITHUB_STEP_SUMMARY"
+          for ((attempt=1; attempt<=TEST_REPEAT; attempt++)); do
+            printf '::group::Attempt %s of %s\n' "$attempt" "$TEST_REPEAT"
+            start=$SECONDS
+            result=Pass
+            if (( ${#files[@]} )); then
+              bun test --timeout 30000 "${files[@]/#/./}" || result=Fail
+            else
+              bun tools/ci/test-shards.ts test:unit 1/1 "${node_flags[@]}" || result=Fail
+              bun tools/ci/test-shards.ts test:integration 1/1 "${node_flags[@]}" || result=Fail
+            fi
+            printf '::endgroup::\n'
+            printf '| %s | %s | %ss |\n' "$attempt" "$result" "$((SECONDS - start))" >> "$GITHUB_STEP_SUMMARY"
+            if [[ $result == Fail ]]; then failed+=("$attempt"); fi
+          done
+          if (( ${#failed[@]} )); then
+            printf '::error::Failed test attempts: %s\n' "${failed[*]}"
+            exit 1
+          fi
