@@ -53,6 +53,7 @@ import {
 } from "./store.ts";
 import {
   deviceRoute,
+  hasUnsupportedCallbackState,
   isDeviceCallback,
   isDeviceRoute,
   type DeviceBrowserOptions,
@@ -97,15 +98,14 @@ import {
 } from "./issue-receipts.ts";
 import { EVIDENCE_MIGRATION, EVIDENCE_RECEIPTS } from "./evidence-receipts.ts";
 import { LaneControlStore } from "./lane-control-store.ts";
-import { LANE_APPROVALS, LANE_APPROVAL_MIGRATION } from "./lane-approval.ts";
-import { ISSUE_INDEX, ISSUE_INDEX_MIGRATION } from "./issue-index.ts";
 import {
-  isLaneCallback,
-  isLaneRoute,
-  laneRoute,
+  CLEAR_LANE_BROWSER_MIGRATION,
+  LANE_APPROVALS,
+  LANE_APPROVAL_MIGRATION,
   LANE_BROWSER,
   LANE_BROWSER_MIGRATION,
-} from "./auth/lane-browser.ts";
+} from "./lane-approval.ts";
+import { ISSUE_INDEX, ISSUE_INDEX_MIGRATION } from "./issue-index.ts";
 import { requireTokenSession } from "./token-session.ts";
 import { admitState, isStatePath, stateRoute } from "./state-access.ts";
 import { parseStateInput } from "./state-input.ts";
@@ -179,6 +179,7 @@ export const domain = {
     RETENTION_MIGRATION,
     REQUEST_AGE_DUMP_MIGRATION,
     ISSUE_INDEX_MIGRATION,
+    CLEAR_LANE_BROWSER_MIGRATION,
   ],
   tables: [
     PRAGMA_TABLE,
@@ -573,23 +574,11 @@ export class Project {
           url.pathname.split("/")[2] ?? "",
         );
       }
-      if (isLaneRoute(request) || isLaneCallback(request)) {
-        if (!(await this.#isProvisioned()))
-          throw fail(
-            "AUTH_FORBIDDEN",
-            "Lane approval is not available for this project",
-          );
-        return await laneRoute(
-          this.#storage,
-          () => this.#public(LANE_BROWSER, LANE_APPROVALS),
-          this.#env,
-          request,
-          this.#browser,
-          request.method === "POST" ? await bounded(request, 2048) : "",
-        );
-      }
       // The owner's browser pages: public, and every decision still needs the Clerk proof of the exact owner.
-      if (isDeviceRoute(request) || isDeviceCallback(request)) {
+      if (
+        !hasUnsupportedCallbackState(url) &&
+        (isDeviceRoute(request) || isDeviceCallback(request))
+      ) {
         if (!(await this.#isProvisioned()))
           throw fail(
             "AUTH_FORBIDDEN",

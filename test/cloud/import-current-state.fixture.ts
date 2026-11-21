@@ -14,15 +14,13 @@ import * as projection from "../../tools/import-current-state.ts";
 import { durableStore } from "../../cloud/src/store.ts";
 import { browserStorage } from "./browser-storage.fixture.ts";
 import { domain, type Project } from "../../cloud/src/project.ts";
-import type { DeviceBrowserOptions } from "../../cloud/src/auth/device-browser.ts";
 import { LaneControlStore } from "../../cloud/src/lane-control-store.ts";
-import { LANE_APPROVALS } from "../../cloud/src/lane-approval.ts";
-import { LANE_BROWSER } from "../../cloud/src/auth/lane-browser.ts";
+import type { DeviceBrowserOptions } from "../../cloud/src/auth/device-browser.ts";
+import { LANE_APPROVALS, LANE_BROWSER } from "../../cloud/src/lane-approval.ts";
 import { ISSUE_INDEX } from "../../cloud/src/issue-index.ts";
-import { issueToken, sha256 } from "../../cloud/src/tokens.ts";
+import { issueToken } from "../../cloud/src/tokens.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { digestValue } from "../../src/core/config/pointer.ts";
-import { testIdentityVerifier } from "../contract/lib/identity-verifier.ts";
 
 export function controlDelta(state: StateOwner, title: string): void {
   state.put(
@@ -448,22 +446,7 @@ export async function activation(
     DEVICE_LOGIN_HMAC_KEY: Buffer.alloc(32, 7).toString("base64url"),
     ...extra,
   };
-  const verifier = testIdentityVerifier(
-    new Map([
-      [
-        "owner",
-        {
-          issuer: env.CLERK_ISSUER,
-          subject: "owner",
-          audience: "synthetic",
-          authenticatedAt: at - 1000,
-          expiresAt: at + 600_000,
-        },
-      ],
-    ]),
-  );
-  let exchanges = 0,
-    fault = "",
+  let fault = "",
     transactions = 0;
   const fixture = await project(
     mutation && ["stop", "approval", "browser"].includes(mutation)
@@ -477,16 +460,6 @@ export async function activation(
           message: "synthetic deletion fault",
           retry: "never",
         });
-    },
-    {
-      upstream: {
-        begin: () => Promise.reject(new Error("Callback-only fixture")),
-        verify: () => {
-          exchanges++;
-          return verifier.verify("owner", "synthetic", at);
-        },
-      },
-      redemption: { claimOnce: () => Promise.resolve(true) },
     },
   );
   const db = durableStore(fixture.storage);
@@ -503,25 +476,7 @@ export async function activation(
     harness: null,
     ttlMs: 3_600_000,
   };
-  const challenge = async (request: string, state: string, bind: string) => {
-    const stateHash = await sha256(state);
-    db.run(`INSERT OR REPLACE INTO ${LANE_BROWSER} VALUES (1, ?)`, [
-      JSON.stringify([
-        {
-          request,
-          action: "approve",
-          stateHash,
-          bindHash: await sha256(bind),
-          verifier: "synthetic",
-          expiresAt: at + 600_000,
-        },
-      ]),
-    ]);
-    return `__Host-forge_lane_${stateHash.slice(0, 24)}=${bind}`;
-  };
-  let credential: Record<string, unknown> | undefined,
-    oldCookie = "";
-  const oldState = "forge-lane." + "s".repeat(43);
+  let credential: Record<string, unknown> | undefined;
   if (retained) {
     credential = await issueToken(db, deviceInput, at);
     const row = {
@@ -547,15 +502,10 @@ export async function activation(
         requests: [row, { ...row, request: "old-browser", status: "pending" }],
       }),
     ]);
-    oldCookie = await challenge("old-browser", oldState, "b".repeat(43));
+    db.run(`INSERT INTO ${LANE_BROWSER} VALUES (1, ?)`, [
+      '[{"request":"old-browser"}]',
+    ]);
   }
-  const browser = (state: string, cookie: string) =>
-    fixture.p.fetch(
-      new Request(
-        `https://synthetic.example/callback?state=${state}&code=owner`,
-        { headers: { Cookie: cookie } },
-      ),
-    );
   let request = 0;
   const command = async (
     op: string,
@@ -598,7 +548,5 @@ export async function activation(
     credential,
     deviceInput,
     env,
-    exchanges: () => exchanges,
-    oldCallback: () => browser(oldState, oldCookie),
   };
 }

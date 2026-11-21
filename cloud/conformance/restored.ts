@@ -1,8 +1,7 @@
 // Expected-image replay and independent lease-release expectations for conformance.
 import assert from "node:assert/strict";
 import { LaneControlStore } from "../src/lane-control-store.ts";
-import { LANE_APPROVALS } from "../src/lane-approval.ts";
-import { LANE_BROWSER } from "../src/auth/lane-browser.ts";
+import { LANE_APPROVALS, LANE_BROWSER } from "../src/lane-approval.ts";
 import type { LaneControlGlobal } from "../../src/blocks/work/lane-control.ts";
 import { digests, fold, tally, type Table } from "./digest.ts";
 import { canonicalJson } from "../../src/core/config/pointer.ts";

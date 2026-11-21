@@ -8,8 +8,11 @@ import { storageResponse } from "./storage-failure.ts";
 import { bearer, same, sha256, wellFormed } from "./tokens.ts";
 import type { Access, AuthComposition } from "./auth/compose.ts";
 import { configUnavailable, isOAuthRoute } from "./auth/compose.ts";
-import { isDeviceCallback, isDeviceRoute } from "./auth/device-browser.ts";
-import { isLaneCallback, isLaneRoute } from "./auth/lane-browser.ts";
+import {
+  hasUnsupportedCallbackState,
+  isDeviceCallback,
+  isDeviceRoute,
+} from "./auth/device-browser.ts";
 import { commandProject, failed } from "./issue-commands.ts";
 import { isStatePath, stateRoute } from "./state-access.ts";
 import { PROJECT_NAME } from "./project-name.ts";
@@ -130,12 +133,15 @@ const legacyWorker = {
       request = new Request(request, { headers });
     }
     // The owner's device pages and their Clerk return reach the one admitted project, before OAuth routing.
-    if (
-      isLaneRoute(request) ||
-      isLaneCallback(request) ||
-      isDeviceRoute(request) ||
-      isDeviceCallback(request)
-    ) {
+    const url = new URL(request.url);
+    if (hasUnsupportedCallbackState(url))
+      return unauthorized(
+        request,
+        "UNKNOWN_COMMAND",
+        "No such callback route",
+        404,
+      );
+    if (isDeviceRoute(request) || isDeviceCallback(request)) {
       const project = env.FORGE_CLOUD_PROJECT;
       const gap =
         typeof project === "string" && project !== ""
@@ -157,7 +163,7 @@ const legacyWorker = {
     }
     if (isOAuthRoute(request))
       return auth?.route(request) ?? configUnavailable("OAUTH_COMPOSITION");
-    const match = PATH.exec(new URL(request.url).pathname);
+    const match = PATH.exec(url.pathname);
     const project = match?.[1];
     if (project === undefined)
       return Response.json(

@@ -257,7 +257,7 @@ forge lane resume --input $ResumeInput
 
 Local requests bind the operation, unchanged arguments, project and device; they expire after 24 hours and are consumed once. Missing/expired/used/mismatched requests return `APPROVAL_REQUIRED`: call that operation without approval to obtain a new request and ask the owner anew. A reply over 2000 characters needs a new shorter owner reply; never shorten it yourself. No dry-run, typed terminal confirmation or owner policy bypasses these local gates.
 Only after both results pass tell sessions to continue. Retain the unused cloud project; no project-delete route is supplied here.
-Approval shapes checked on `origin/main` at `e2983271`: `src/assembly/index.ts`, `src/assembly/approval.ts`, `src/blocks/work/schemas/unfreeze.input.json`, `src/blocks/work/schemas/lane-resume.input.json`; cloud refusal/browser flow in `cloud/src/issue-commands.ts` and `cloud/src/lane-approval.ts`.
+Approval shapes checked on `origin/main` at `e2983271`: `src/assembly/index.ts`, `src/assembly/approval.ts`, `src/blocks/work/schemas/unfreeze.input.json`, `src/blocks/work/schemas/lane-resume.input.json`; cloud reply binding and refusals in `cloud/src/lane-approval.ts`.
 
 **R1. Fence cloud writes without unfreezing local writes.**
 Restore saved Worker admission vars/config, preflight and redeploy via the authorized operator.

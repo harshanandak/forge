@@ -1,21 +1,10 @@
 import { expect, mock, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { format } from "node:util";
-import {
-  LANE_BROWSER,
-  LANE_STATE_PREFIX,
-} from "../../cloud/src/auth/lane-browser.ts";
 import { importLoginKey } from "../../cloud/src/auth/project-login.ts";
 import { sha256 } from "../../cloud/src/tokens.ts";
 import { Project } from "../../cloud/src/project.ts";
-import {
-  OLD_SCHEMA,
-  OLD_LANE_SCHEMA,
-  badOpener,
-  setupCalls,
-} from "./old-schema.ts";
 import { createWorker } from "../../cloud/src/worker.ts";
-import { stockIngress } from "./stock-ingress.fixture.ts";
 import { durableStore } from "../../cloud/src/store.ts";
 import { StateOwner } from "../../src/core/state/index.ts";
 import type { ResultEnvelope } from "../../src/generated/types.ts";
@@ -24,6 +13,7 @@ import ResumeInput from "../../src/blocks/work/schemas/lane-resume.input.json" w
 import { validateWithSchema } from "../../src/contract/schema.ts";
 import {
   LANE_APPROVALS,
+  LANE_BROWSER,
   laneApprovalStatus,
   type LaneApproval,
 } from "../../cloud/src/lane-approval.ts";
@@ -34,10 +24,7 @@ if (!("timingSafeEqual" in crypto.subtle))
   });
 import { browserStorage } from "./browser-storage.fixture.ts";
 import type { DeviceBrowserOptions } from "../../cloud/src/auth/device-browser.ts";
-import type {
-  IdentityClaims,
-  IdentityResult,
-} from "../../src/ports/identity.ts";
+import type { IdentityClaims } from "../../src/ports/identity.ts";
 import { testIdentityVerifier } from "../contract/lib/identity-verifier.ts";
 await mock.module("cloudflare:workers", () => ({ WorkerEntrypoint: class {} }));
 const { createConfiguredWorker } =
@@ -63,14 +50,11 @@ async function fixture(
   projectName = "p",
   session: string | null = "s1",
   browser: DeviceBrowserOptions = {},
-  ingress?: ReturnType<typeof stockIngress>,
 ) {
   const clock = spyOn(Date, "now").mockReturnValue(now);
   const db = new Database(":memory:");
   let writes = 0;
-  const calls: string[] = [];
   const { storage, values } = browserStorage(db, (sql) => {
-    calls.push(sql);
     if (/^\s*(INSERT|UPDATE|DELETE|CREATE)\b/i.test(sql)) writes++;
   });
   const env = {
@@ -132,25 +116,15 @@ async function fixture(
         "state_requests",
         "domain_cloud_command_receipts",
         LANE_APPROVALS,
+        LANE_BROWSER,
       ].map((name) => db.query(`SELECT * FROM ${name}`).all()),
       [...values],
     ]);
   return {
     db,
-    calls,
-    reopen: (Constructor = Project) => {
-      calls.length = 0;
-      project = new Constructor({ storage }, env, browser);
+    reopen: () => {
+      project = new Project({ storage }, env, browser);
     },
-    schema: () =>
-      JSON.stringify(
-        [
-          "sqlite_schema",
-          "state_migrations",
-          "state_domains",
-          "domain_cloud_pragma",
-        ].map((table) => db.query(`SELECT * FROM ${table}`).all()),
-      ),
     writes: () => writes,
     env,
     reached,
@@ -168,11 +142,11 @@ async function fixture(
       if (cursor !== undefined) url.searchParams.set("cursor", cursor);
       return project.fetch(new Request(url.href));
     },
-    browser: async (
+    browser: (
       path: string,
-      body?: string,
-      headers: Record<string, string> = {},
-      production = false,
+      body: string | undefined,
+      headers: Record<string, string>,
+      target: "configured" | "worker" | "project",
     ) => {
       const request = new Request(`https://w.example${path}`, {
         method: body === undefined ? "GET" : "POST",
@@ -182,15 +156,10 @@ async function fixture(
         },
         ...(body === undefined ? {} : { body }),
       });
-      await ingress?.observe(request, bindings);
-      const response = await (
-        production ? createConfiguredWorker() : createWorker()
+      if (target === "project") return project.fetch(request);
+      return (
+        target === "configured" ? createConfiguredWorker() : createWorker()
       ).fetch(request, bindings);
-      return {
-        status: response.status,
-        headers: response.headers,
-        text: await response.text(),
-      };
     },
     owner,
     put,
@@ -1169,360 +1138,6 @@ test.each(["project cap", "expired", "epoch", "incarnation", "retention"])(
   10_000,
 );
 
-const pageCookie = (page: { headers: Headers }) =>
-  (page.headers.get("set-cookie") ?? "").split(";")[0]!;
-const pageTicket = (page: { text: string }, action: string) =>
-  new RegExp(
-    `/${action}"><input type="hidden" name="ticket" value="([^"]+)"`,
-  ).exec(page.text)?.[1] ?? "";
-async function browserFixture(
-  scope: "all" | "issue" | "chat" = "all",
-  issuer = "https://identity.example",
-  verify?: NonNullable<DeviceBrowserOptions["upstream"]>["verify"],
-  ingress?: ReturnType<typeof stockIngress>,
-) {
-  const begun: { state: string; verifier: string }[] = [];
-  const spent = new Set<string>();
-  let duringBegin = () => {};
-  let duringClaim = () => {};
-  const f = await fixture(
-    "p",
-    "s1",
-    {
-      upstream: {
-        begin: (state, verifier) => {
-          begun.push({ state, verifier });
-          return Promise.resolve().then(() => {
-            duringBegin();
-            return `${new URL("/oauth/authorize", issuer).href}?state=${state}&redirect_uri=https%3A%2F%2Fw.example%2Fcallback`;
-          });
-        },
-        verify:
-          verify ??
-          (() => {
-            throw new Error("This slice must not verify an owner");
-          }),
-      },
-      redemption: {
-        claimOnce: (hash) => {
-          const won = !spent.has(hash);
-          spent.add(hash);
-          return Promise.resolve().then(() => {
-            duringClaim();
-            return won;
-          });
-        },
-      },
-    },
-    ingress,
-  );
-  f.env.CLERK_ISSUER = issuer;
-  f.put("lane-control:global", running);
-  const input = scope === "issue" ? { id: "work-7" } : { all: true };
-  await f.send(call("lane.stop", input, "browser-stop"));
-  const reply = await f.send(call("lane.resume", input, "browser-ask"));
-  expect(reply.verdict).toEqual(["FAIL", "APPROVAL_REQUIRED", 1]);
-  expect(reply.status).toBe(409);
-  const pending = (
-    reply.envelope as unknown as {
-      result: { request: string; expiresAt: string };
-    }
-  ).result;
-  if (scope !== "chat") seedLegacyApproval(f, pending.request);
-  const path = `/lane-approval/${pending.request}`;
-  const shown = await f.browser(path);
-  const cookie = pageCookie(shown);
-  const submit = (
-    action = "approve",
-    ticket = pageTicket(shown, action),
-    extra: Record<string, string> = {},
-  ) =>
-    f.browser(`${path}/${action}`, new URLSearchParams({ ticket }).toString(), {
-      Origin: "https://w.example",
-      Cookie: cookie,
-      ...extra,
-    });
-  return {
-    ...f,
-    path,
-    shown,
-    pending,
-    cookie,
-    submit,
-    begun,
-    spent,
-    duringBegin: (run: () => void) => {
-      duringBegin = run;
-    },
-    duringClaim: (run: () => void) => {
-      duringClaim = run;
-    },
-  };
-}
-
-test.each(["approve", "deny"] as const)(
-  "stock Workers suspend lane browser preview, %s and callback",
-  async (action) => {
-    const ingress = stockIngress();
-    const f = await browserFixture(
-      "all",
-      undefined,
-      () => ownerProof(),
-      ingress,
-    );
-    try {
-      expect(f.shown.status).toBe(200);
-      const decision = await f.submit(action);
-      expect(decision.status).toBe(302);
-      const state = f.begun[0]!.state;
-      const callback = await f.browser(
-        `/callback?state=${state}&code=owner`,
-        undefined,
-        { Cookie: pageCookie(decision) },
-        true,
-      );
-      expect(callback.status).toBe(200);
-      ingress.expect([
-        `GET ${f.path}`,
-        `POST ${f.path}/${action}`,
-        "GET /callback",
-      ]);
-    } finally {
-      f.close();
-    }
-  },
-  10_000,
-);
-
-test.each(["all", "issue"] as const)(
-  "lane browser preview is read-only for %s",
-  async (scope) => {
-    const f = await browserFixture(scope);
-    try {
-      const before = f.snapshot(),
-        writes = f.writes();
-      const page = await f.browser(f.path, undefined, {
-        Host: "evil.example",
-        Origin: "https://evil.example",
-        "X-Forwarded-Host": "evil.example",
-      });
-      expect(page.status).toBe(200);
-      for (const text of [
-        "p",
-        scope === "all" ? "ALL LANES" : "work-7",
-        "Affected scope",
-        "Current stop",
-        f.pending.expiresAt,
-        "https://w.example/lane-approval/",
-      ])
-        expect(page.text).toContain(text);
-      expect(page.text).not.toContain("evil.example");
-      expect(page.headers.get("cache-control")).toBe("no-store");
-      expect(page.headers.get("content-security-policy")).toContain(
-        "frame-ancestors 'none'",
-      );
-      expect([f.snapshot(), f.writes(), f.begun.length, f.spent.size]).toEqual([
-        before,
-        writes,
-        0,
-        0,
-      ]);
-    } finally {
-      f.close();
-    }
-  },
-  10_000,
-);
-
-test.each([
-  "unknown",
-  "expired",
-  "epoch",
-  "incarnation",
-  "spent",
-  "policy",
-  "revoked",
-])(
-  "lane preview refuses %s without writes or actions",
-  async (mode) => {
-    const f = await browserFixture();
-    try {
-      if (mode === "expired") f.clock.mockReturnValue(now + 600_000);
-      if (mode === "epoch" || mode === "incarnation") {
-        const old = f.owner.get("forge/work", "lane-control:global")!;
-        f.owner.put(
-          "forge/work",
-          old.key,
-          {
-            ...(old.value as object),
-            ...(mode === "epoch" ? { epoch: 99 } : { incarnation: "new" }),
-          },
-          actor,
-          { expectRevision: old.revision },
-        );
-      }
-      if (mode === "spent")
-        f.db.run(
-          `UPDATE ${LANE_APPROVALS} SET state=json_set(state, '$.requests[0].status', 'spent')`,
-        );
-      if (mode === "policy") f.env.FORGE_OWNER_SUBJECT = "user_Other2";
-      if (mode === "revoked")
-        f.db.run("UPDATE domain_cloud_tokens SET revoked_at=?", [now]);
-      const before = f.snapshot(),
-        writes = f.writes();
-      const page = await f.browser(
-        mode === "unknown" ? "/lane-approval/unknown" : f.path,
-      );
-      expect(page.status).toBe(400);
-      expect(page.text).not.toContain("<form");
-      expect(page.headers.get("set-cookie")).toBeNull();
-      expect([f.snapshot(), f.writes()]).toEqual([before, writes]);
-    } finally {
-      f.close();
-    }
-  },
-  10_000,
-);
-
-test.each(["approve", "deny"])(
-  "lane %s starts Clerk once and leaves approval pending",
-  async (action) => {
-    const f = await browserFixture();
-    try {
-      const before = f.snapshot();
-      const replies = await Promise.all([f.submit(action), f.submit(action)]);
-      expect(replies.map((r) => r.status).sort()).toEqual([302, 400]);
-      const reply = replies.find((r) => r.status === 302)!;
-      expect(f.begun).toHaveLength(1);
-      expect(f.begun[0]!.state).toMatch(/^forge-lane\./);
-      expect(f.begun[0]!.verifier).toMatch(/^[A-Za-z0-9_-]{43}$/);
-      for (const part of [
-        "__Host-forge_lane_",
-        "Secure",
-        "HttpOnly",
-        "SameSite=Lax",
-        "Path=/",
-      ])
-        expect(reply.headers.get("set-cookie")).toContain(part);
-      expect(reply.headers.get("set-cookie")).not.toContain("Domain=");
-      expect(
-        new URL(reply.headers.get("location")!).searchParams.get(
-          "redirect_uri",
-        ),
-      ).toBe("https://w.example/callback");
-      expect(f.snapshot()).toBe(before);
-      expect((await f.submit(action)).status).toBe(400);
-    } finally {
-      f.close();
-    }
-  },
-  10_000,
-);
-
-test.each([
-  "foreign origin",
-  "missing origin",
-  "missing ticket",
-  "device ticket",
-  "other action",
-  "other browser",
-  "device cookie",
-  "duplicate",
-  "unknown field",
-  "expired",
-  "changed during upstream",
-])(
-  "lane start refuses %s",
-  async (mode) => {
-    const f = await browserFixture();
-    try {
-      let fields = new URLSearchParams({
-        ticket: pageTicket(
-          f.shown,
-          mode === "other action" ? "deny" : "approve",
-        ),
-      }).toString();
-      const headers: Record<string, string> = {
-        Origin: "https://w.example",
-        Cookie: f.cookie,
-      };
-      if (mode === "foreign origin") headers.Origin = "https://evil.example";
-      if (mode === "missing origin") delete headers.Origin;
-      if (mode === "missing ticket") fields = "";
-      if (mode === "device ticket") fields = `ticket=${"a".repeat(43)}`;
-      if (mode === "other browser")
-        headers.Cookie = `__Host-forge_lane_preview=${"x".repeat(43)}`;
-      if (mode === "device cookie")
-        headers.Cookie = `__Host-forge_device=${"x".repeat(43)}`;
-      if (mode === "duplicate") fields += `&${fields}`;
-      if (mode === "unknown field") fields += "&owner=yes";
-      if (mode === "expired") f.clock.mockReturnValue(now + 600_000);
-      if (mode === "changed during upstream")
-        f.duringBegin(() => {
-          f.env.FORGE_OWNER_SUBJECT = "user_Other2";
-        });
-      const before = f.snapshot();
-      const reply = await f.browser(`${f.path}/approve`, fields, headers);
-      expect(reply.status).toBe(400);
-      expect(reply.headers.get("location")).toBeNull();
-      expect(f.snapshot()).toBe(before);
-      if (mode !== "changed during upstream")
-        expect([f.begun.length, f.spent.size]).toEqual([0, 0]);
-      if (
-        [
-          "foreign origin",
-          "missing origin",
-          "duplicate",
-          "unknown field",
-        ].includes(mode)
-      )
-        expect((await f.submit()).status).toBe(302);
-    } finally {
-      f.close();
-    }
-  },
-  10_000,
-);
-
-test.each(["lane", "mixed lane and device", "device", "generic"])(
-  "production callback routes %s in its own domain",
-  async (mode) => {
-    const f = await browserFixture();
-    try {
-      const states =
-        mode === "lane"
-          ? ["forge-lane.state"]
-          : mode === "mixed lane and device"
-            ? ["forge-device.state", "forge-lane.state"]
-            : [mode === "device" ? "forge-device.state" : "generic-state"];
-      const query = new URLSearchParams(
-        states.map((state): [string, string] => ["state", state]),
-      );
-      const reached = f.reached.length,
-        before = f.snapshot();
-      const reply = await f.browser(
-        `/callback?${query}`,
-        undefined,
-        {
-          Cookie:
-            "__Host-forge_device=foreign; __Host-forge_lane_wrong=foreign",
-          "CF-Connecting-IP": "203.0.113.1",
-        },
-        true,
-      );
-      expect(reply.status).toBe(mode === "generic" ? 503 : 400);
-      expect(f.reached.length - reached).toBe(mode === "generic" ? 0 : 1);
-      if (mode.includes("lane"))
-        expect(reply.text).toContain("This request cannot be used.");
-      if (mode !== "device") expect(f.snapshot()).toBe(before);
-      expect(f.begun).toEqual([]);
-    } finally {
-      f.close();
-    }
-  },
-  10_000,
-);
-
 const approvalRows = (f: Fixture) =>
   (
     JSON.parse(
@@ -1674,32 +1289,40 @@ async function askForRelay(f: Fixture, scope: RelayScope) {
   return { issue, reply, input, complete: call("lane.resume", input, "relay") };
 }
 
-test.each(["preview", "approve", "deny", "callback"] as const)(
-  "retired lane browser %s is refused before reaching the Project",
-  async (route) => {
+test.each([
+  ["preview", true],
+  ["approve", true],
+  ["deny", true],
+  ["callback", true],
+  ["mixed callback", true],
+  ["preview", false],
+  ["approve", false],
+  ["callback", false],
+] as const)(
+  "retired lane browser %s is refused for legacy row: %s",
+  async (route, legacy) => {
     const verify = mock(async () => ownerProof());
     const claimOnce = mock(() => Promise.resolve(true));
+    const begin = mock((state: string) =>
+      Promise.resolve(
+        `https://identity.example/oauth/authorize?state=${state}`,
+      ),
+    );
     const f = await fixture("p", "s1", {
       redemption: { claimOnce },
-      upstream: {
-        verify,
-        begin: (state) =>
-          Promise.resolve(
-            `https://identity.example/oauth/authorize?state=${state}`,
-          ),
-      },
+      upstream: { verify, begin },
     });
     try {
       const scope = { all: true } as const;
       await stopForRelay(f, scope);
       const { input } = await askForRelay(f, scope);
       const request = input.approval.request;
-      seedLegacyApproval(f, request);
+      if (legacy) seedLegacyApproval(f, request);
       let path = `/lane-approval/${request}`;
       let body: string | undefined;
       const headers: Record<string, string> = {};
       const rows = () => f.db.query(`SELECT * FROM ${LANE_BROWSER}`).all();
-      if (route === "callback") {
+      if (route === "callback" || route === "mixed callback") {
         const state = "forge-lane." + "s".repeat(43);
         const bind = "b".repeat(43);
         const stateHash = await sha256(state);
@@ -1715,7 +1338,12 @@ test.each(["preview", "approve", "deny", "callback"] as const)(
             },
           ]),
         ]);
-        path = `/callback?state=${state}&code=owner`;
+        const query = new URLSearchParams({ state, code: "owner" });
+        if (route === "mixed callback") {
+          query.set("state", "forge-device." + "d".repeat(43));
+          query.append("state", state);
+        }
+        path = `/callback?${query}`;
         headers.Cookie = `__Host-forge_lane_${stateHash.slice(0, 24)}=${bind}`;
       } else if (route !== "preview") {
         const jar = "b".repeat(43);
@@ -1736,11 +1364,24 @@ test.each(["preview", "approve", "deny", "callback"] as const)(
         headers.Cookie = `__Host-forge_lane_preview=${jar}`;
       }
       const before = [f.reached.length, f.writes(), f.snapshot(), rows()];
-      const reply = await f.browser(path, body, headers, true);
-      expect(reply.status).toBe(404);
+      for (const target of ["configured", "worker", "project"] as const) {
+        const reply = await f.browser(path, body, headers, target);
+        expect(reply.status).toBe(404);
+        expect([f.reached.length, f.writes(), f.snapshot(), rows()]).toEqual(
+          before,
+        );
+      }
+      const withBearer = await f.browser(
+        path,
+        body,
+        { ...headers, Authorization: "Bearer unrelated" },
+        "configured",
+      );
+      expect(withBearer.status).toBe(404);
       expect([f.reached.length, f.writes(), f.snapshot(), rows()]).toEqual(
         before,
       );
+      expect(begin).not.toHaveBeenCalled();
       expect(claimOnce).not.toHaveBeenCalled();
       expect(verify).not.toHaveBeenCalled();
     } finally {
@@ -2047,68 +1688,6 @@ test("chat relay completes without a Clerk redirect URI", async () => {
     const { complete } = await askForRelay(f, scope);
     expect((await f.send(complete)).status).toBe(200);
     expect((await control(f)).result).toMatchObject({ stopped: false });
-  } finally {
-    f.close();
-  }
-}, 10_000);
-
-test("chat relay refuses a newly issued request at the old browser URLs", async () => {
-  const f = await browserFixture("chat");
-  try {
-    const before = f.snapshot();
-    const approve = await f.submit();
-    expect(f.shown.status).toBe(400);
-    expect(approve.status).toBe(400);
-    expect(f.begun).toHaveLength(0);
-    expect(f.spent.size).toBe(0);
-    expect(f.snapshot()).toBe(before);
-  } finally {
-    f.close();
-  }
-}, 10_000);
-
-test("a chat request cannot spend valid legacy browser callback state", async () => {
-  const verify = mock(async () => ownerProof());
-  const f = await browserFixture("chat", undefined, verify);
-  try {
-    const state = LANE_STATE_PREFIX + "s".repeat(43);
-    const bind = "b".repeat(43);
-    const stateHash = await sha256(state);
-    f.db.run(`INSERT INTO ${LANE_BROWSER} (id, state) VALUES (1, ?)`, [
-      JSON.stringify([
-        {
-          request: f.pending.request,
-          action: "approve",
-          stateHash,
-          bindHash: await sha256(bind),
-          verifier: "v".repeat(43),
-          expiresAt: Date.parse(f.pending.expiresAt),
-        },
-      ]),
-    ]);
-    const callback = () =>
-      f.browser(
-        `/callback?state=${state}&code=owner`,
-        undefined,
-        {
-          Cookie: `__Host-forge_lane_${stateHash.slice(0, 24)}=${bind}`,
-        },
-        true,
-      );
-    const snapshot = () => [
-      f.snapshot(),
-      f.db.query(`SELECT * FROM ${LANE_BROWSER}`).all(),
-    ];
-
-    const before = snapshot();
-    expect((await callback()).status).toBe(400);
-    expect(snapshot()).toEqual(before);
-    expect(f.spent.size).toBe(0);
-    expect(verify).not.toHaveBeenCalled();
-
-    seedLegacyApproval(f, f.pending.request);
-    expect((await callback()).status).toBe(200);
-    expect(verify).toHaveBeenCalledTimes(1);
   } finally {
     f.close();
   }
@@ -2488,460 +2067,6 @@ test.each(["cloud", "local", "partial local"])(
     expect(
       validateWithSchema(ResumeInput, { all: true, approval }).length === 0,
     ).toBe(mode !== "partial local");
-  },
-  10_000,
-);
-type BrowserFixture = Awaited<ReturnType<typeof browserFixture>>;
-test.each(["missing", "POST", "callback", "bad POST", "bad callback"])(
-  "reopened lane opener authority: %s",
-  async (mode) => {
-    let verified = 0;
-    const f = await browserFixture("all", undefined, async () => {
-      verified++;
-      return ownerProof();
-    });
-    try {
-      const callback = mode.endsWith("callback");
-      const back = callback ? await laneReturn(f) : undefined;
-      for (const sql of mode === "missing" ? OLD_LANE_SCHEMA : OLD_SCHEMA)
-        f.db.run(sql);
-      const schema = f.schema(),
-        was = f.snapshot(),
-        spent = [...f.spent];
-      f.reopen(mode.startsWith("bad") ? await badOpener("public") : Project);
-      const reply = back
-        ? await f.browser(back.path, undefined, { Cookie: back.cookie })
-        : await f.submit();
-      expect(reply.status).toBe(
-        mode === "missing" ? 503 : callback ? 200 : 302,
-      );
-      if (mode === "missing") {
-        expect(JSON.parse(reply.text)).toMatchObject({
-          error: { code: "UNAVAILABLE" },
-        });
-        expect(f.snapshot()).toBe(was);
-        expect([...f.spent]).toEqual(spent);
-        expect([f.begun.length, verified]).toEqual([0, 0]);
-      }
-      const assertAuthority = () => {
-        expect(setupCalls(f.calls)).toEqual([]);
-        expect(f.schema()).toBe(schema);
-      };
-      if (mode.startsWith("bad")) expect(assertAuthority).toThrow("toEqual");
-      else {
-        assertAuthority();
-        const write = () =>
-          f.send(call("lane.stop", { all: true }, "after-public"));
-        f.calls.length = 0;
-        expect((await write()).status).toBe(200);
-        expect(setupCalls(f.calls).length).toBeGreaterThan(0);
-        f.calls.length = 0;
-        expect((await write()).status).toBe(200);
-        expect(setupCalls(f.calls)).toEqual([]);
-      }
-    } finally {
-      f.close();
-    }
-  },
-  30_000,
-);
-async function laneReturn(
-  f: BrowserFixture,
-  action = "approve",
-  code = "owner",
-) {
-  const start = await f.submit(action);
-  expect(start.status).toBe(302);
-  return {
-    path: `/callback?state=${f.begun.at(-1)!.state}&code=${code}`,
-    cookie: pageCookie(start),
-  };
-}
-
-test.each([
-  "approve all",
-  "deny all",
-  "approve issue",
-  "deny issue",
-  "hostile headers",
-])(
-  "lane callback records only the owner decision: %s",
-  async (mode) => {
-    const verified: string[] = [];
-    const f = await browserFixture(
-      mode.endsWith("issue") ? "issue" : "all",
-      undefined,
-      async (_request, _at, verifier) => {
-        verified.push(verifier);
-        return ownerProof();
-      },
-    );
-    try {
-      const action = mode.startsWith("deny") ? "deny" : "approve";
-      const back = await laneReturn(f, action);
-      const before = [
-        f.owner.get("forge/work", "lane-control:global"),
-        f.owner.get("forge/work", "lane-control:work-7"),
-      ];
-      const reply = await f.browser(
-        back.path,
-        undefined,
-        {
-          Cookie: back.cookie,
-          Host: "evil.example",
-          Origin: "https://evil.example",
-          "X-Forwarded-Host": "evil.example",
-        },
-        true,
-      );
-      expect(reply.status).toBe(200);
-      expect(reply.text).toContain(
-        action === "approve" ? "approved" : "denied",
-      );
-      expect(reply.text).not.toContain("evil.example");
-      expect(reply.headers.get("location")).toBeNull();
-      expect(reply.headers.get("cache-control")).toBe("no-store");
-      expect(approvalRows(f)[0]).toMatchObject({
-        status: action === "approve" ? "approved" : "denied",
-        expiresAt: f.pending.expiresAt,
-        decision: {
-          issuer: ownerClaims.issuer,
-          subject: ownerClaims.subject,
-          at: new Date(now).toISOString(),
-        },
-      });
-      expect([
-        f.owner.get("forge/work", "lane-control:global"),
-        f.owner.get("forge/work", "lane-control:work-7"),
-      ]).toEqual(before);
-      expect(verified).toEqual([f.begun[0]!.verifier]);
-      const decided = f.snapshot();
-      expect(
-        (await f.browser(back.path, undefined, { Cookie: back.cookie }, true))
-          .status,
-      ).toBe(400);
-      expect(f.snapshot()).toBe(decided);
-      expect(verified).toHaveLength(1);
-    } finally {
-      f.close();
-    }
-  },
-  10_000,
-);
-
-test.each([
-  "subject",
-  "issuer",
-  "audience",
-  "expired identity",
-  "future identity",
-  "unbranded",
-  "exchange failure",
-  "invalid proof",
-  "missing cookie",
-  "foreign cookie",
-  "device cookie",
-  "duplicate cookie",
-  "duplicate state",
-  "device state",
-  "expired state",
-  "post",
-])(
-  "lane callback refuses %s without recording a decision",
-  async (mode) => {
-    let calls = 0;
-    const f = await browserFixture("all", undefined, async () => {
-      calls++;
-      if (mode === "exchange failure")
-        throw new Error("Injected exchange failure");
-      if (mode === "invalid proof")
-        return { ok: false, reason: "invalid_proof" };
-      if (mode === "unbranded")
-        return { ok: true, identity: ownerClaims } as IdentityResult;
-      return ownerProof({
-        ...(mode === "subject" ? { subject: "user_Other2" } : {}),
-        ...(mode === "issuer" ? { issuer: "https://other.example" } : {}),
-        ...(mode === "audience" ? { audience: "other" } : {}),
-        ...(mode === "expired identity" ? { expiresAt: now } : {}),
-        ...(mode === "future identity" ? { authenticatedAt: now + 1 } : {}),
-      });
-    });
-    try {
-      const back = await laneReturn(f);
-      let cookie = back.cookie,
-        path = back.path;
-      if (mode === "missing cookie") cookie = "";
-      if (mode === "foreign cookie")
-        cookie = back.cookie.split("=")[0] + "=" + "x".repeat(43);
-      if (mode === "device cookie")
-        cookie = back.cookie.replace("forge_lane_", "forge_device_");
-      if (mode === "duplicate cookie") cookie += `; ${cookie}`;
-      if (mode === "duplicate state") path += `&state=${f.begun[0]!.state}`;
-      if (mode === "device state")
-        path = path.replace("forge-lane.", "forge-device.");
-      if (mode === "expired state") f.clock.mockReturnValue(now + 600_000);
-      const before = f.snapshot();
-      const reply = await f.browser(
-        path,
-        mode === "post" ? "" : undefined,
-        { Cookie: cookie, "CF-Connecting-IP": "203.0.113.1" },
-        true,
-      );
-      expect(reply.status).toBe(400);
-      expect(f.snapshot()).toBe(before);
-      expect(approvalRows(f)[0]!.status).toBe("pending");
-      if (
-        mode.includes("cookie") ||
-        ["duplicate state", "device state", "expired state", "post"].includes(
-          mode,
-        )
-      )
-        expect(calls).toBe(0);
-    } finally {
-      f.close();
-    }
-  },
-  10_000,
-);
-
-test.each(
-  ["claim", "exchange"].flatMap((phase) =>
-    [
-      "expiry",
-      "epoch",
-      "incarnation",
-      "owner",
-      "issuer",
-      "audience",
-      "revoke",
-      "token expiry",
-      "device",
-      "session",
-    ].map((change) => [phase, change] as const),
-  ),
-)(
-  "lane callback rechecks after %s await: %s",
-  async (phase, change) => {
-    let mutate = () => {},
-      calls = 0;
-    const f = await browserFixture("all", undefined, async () => {
-      calls++;
-      const proof = await ownerProof();
-      if (phase === "exchange") mutate();
-      return proof;
-    });
-    try {
-      const back = await laneReturn(f);
-      let expected = "";
-      mutate = () => {
-        if (change === "expiry") f.clock.mockReturnValue(now + 600_000);
-        if (change === "epoch" || change === "incarnation") {
-          const old = f.owner.get("forge/work", "lane-control:global")!;
-          f.owner.put(
-            "forge/work",
-            old.key,
-            {
-              ...(old.value as object),
-              ...(change === "epoch"
-                ? { epoch: 99 }
-                : { incarnation: "replacement" }),
-            },
-            actor,
-            { expectRevision: old.revision },
-          );
-        }
-        if (change === "owner") f.env.FORGE_OWNER_SUBJECT = "user_Other2";
-        if (change === "issuer") f.env.CLERK_ISSUER = "https://other.example";
-        if (change === "audience") f.env.CLERK_CLIENT_ID = "other";
-        if (change === "revoke")
-          f.db.run("UPDATE domain_cloud_tokens SET revoked_at=?", [now]);
-        if (change === "token expiry")
-          f.db.run("UPDATE domain_cloud_tokens SET expires_at=?", [now]);
-        if (change === "device")
-          f.db.run("UPDATE domain_cloud_tokens SET device='other'");
-        if (change === "session")
-          f.db.run("UPDATE domain_cloud_tokens SET session='other'");
-        expected = f.snapshot();
-      };
-      if (phase === "claim") f.duringClaim(mutate);
-      expect(
-        (await f.browser(back.path, undefined, { Cookie: back.cookie }, true))
-          .status,
-      ).toBe(400);
-      expect(f.snapshot()).toBe(expected);
-      expect(approvalRows(f)[0]!.status).toBe("pending");
-      expect(calls).toBe(phase === "claim" ? 0 : 1);
-    } finally {
-      f.close();
-    }
-  },
-  10_000,
-);
-
-test.each([
-  "same state",
-  "opposite actions",
-  "same code after failure",
-  "write failure",
-])(
-  "lane callback atomicity: %s",
-  async (mode) => {
-    let calls = 0;
-    const f = await browserFixture("all", undefined, async () => {
-      calls++;
-      const proof = await ownerProof();
-      return mode === "same code after failure"
-        ? { ok: false, reason: "invalid_proof" }
-        : proof;
-    });
-    try {
-      const first = await laneReturn(f),
-        before = f.snapshot();
-      const second =
-        mode === "same state" || mode === "write failure"
-          ? first
-          : await laneReturn(
-              f,
-              "deny",
-              mode === "same code after failure" ? "owner" : "other-code",
-            );
-      if (mode === "write failure")
-        f.db.run(
-          `CREATE TRIGGER refuse_decision BEFORE UPDATE ON ${LANE_APPROVALS} BEGIN SELECT RAISE(ABORT, 'injected decision failure'); END`,
-        );
-      const returns = [first, second].map(
-        (back) => () =>
-          f.browser(back.path, undefined, { Cookie: back.cookie }, true),
-      );
-      const replies =
-        mode === "same code after failure"
-          ? [await returns[0]!(), await returns[1]!()]
-          : await Promise.all(returns.map((run) => run()));
-      if (mode === "write failure") {
-        expect(replies.every((reply) => reply.status >= 400)).toBe(true);
-        expect(f.snapshot()).toBe(before);
-      } else if (mode === "same code after failure") {
-        expect(replies.map((reply) => reply.status)).toEqual([400, 400]);
-        expect(calls).toBe(1);
-        expect(f.snapshot()).toBe(before);
-      } else {
-        expect(replies.map((reply) => reply.status).sort()).toEqual([200, 400]);
-        expect(
-          approvalRows(f).filter((row) =>
-            ["approved", "denied"].includes(row.status),
-          ),
-        ).toHaveLength(1);
-      }
-    } finally {
-      f.close();
-    }
-  },
-  10_000,
-);
-
-test.each(["https://identity.example", "https://other-clerk.example:8443/"])(
-  "lane preview CSP allows exactly the configured Clerk origin %s",
-  async (issuer) => {
-    const f = await browserFixture("all", issuer);
-    try {
-      const page = await f.browser(f.path, undefined, {
-        Host: "evil.example",
-        Origin: "https://evil.example",
-        "X-Forwarded-Host": "evil.example",
-      });
-      expect(page.status).toBe(200);
-      expect(page.headers.get("content-security-policy")).toBe(
-        `default-src 'none'; form-action 'self' ${new URL(issuer).origin}; frame-ancestors 'none'`,
-      );
-    } finally {
-      f.close();
-    }
-  },
-  10_000,
-);
-
-test.each(["approve", "deny"])(
-  "repeated %s starts on one request leave capacity for another",
-  async (action) => {
-    const f = await browserFixture();
-    try {
-      const other = await f.send(
-        call("lane.resume", { all: true }, "other-browser-ask"),
-      );
-      expect(other.verdict).toEqual(["FAIL", "APPROVAL_REQUIRED", 1]);
-      expect(other.status).toBe(409);
-      const otherId = (
-        other.envelope as unknown as { result: { request: string } }
-      ).result.request;
-      seedLegacyApproval(f, otherId);
-      for (let n = 0; n < 257; n++) {
-        const page = await f.browser(f.path);
-        const reply = await f.browser(
-          `${f.path}/${action}`,
-          new URLSearchParams({ ticket: pageTicket(page, action) }).toString(),
-          { Origin: "https://w.example", Cookie: pageCookie(page) },
-        );
-        expect(reply.status).toBe(302);
-      }
-      const path = `/lane-approval/${otherId}`;
-      const page = await f.browser(path);
-      const reply = await f.browser(
-        `${path}/${action}`,
-        new URLSearchParams({ ticket: pageTicket(page, action) }).toString(),
-        { Origin: "https://w.example", Cookie: pageCookie(page) },
-      );
-      expect(reply.status).toBe(302);
-      const stored = f.db
-        .query("SELECT state FROM domain_cloud_lane_browser WHERE id=1")
-        .get() as { state: string };
-      const states = JSON.parse(stored.state) as {
-        request: string;
-        action: string;
-      }[];
-      expect(states.map((entry) => [entry.request, entry.action])).toEqual([
-        [f.pending.request, action],
-        [otherId, action],
-      ]);
-    } finally {
-      f.close();
-    }
-  },
-  10_000,
-);
-
-test.each(
-  ["approve", "deny"].flatMap((action) =>
-    ["cancelled", "failed upstream"].map((mode) => [action, mode] as const),
-  ),
-)(
-  "reloading the same browser permits a new %s start after %s",
-  async (action, mode) => {
-    const f = await browserFixture();
-    try {
-      const oldTicket = pageTicket(f.shown, action);
-      if (mode === "failed upstream")
-        f.duringBegin(() => {
-          throw new Error("Injected upstream start failure");
-        });
-      expect((await f.submit(action)).status).toBe(
-        mode === "failed upstream" ? 503 : 302,
-      );
-      f.duringBegin(() => {});
-      const before = f.snapshot(),
-        writes = f.writes();
-      const reloaded = await f.browser(f.path, undefined, { Cookie: f.cookie });
-      expect(reloaded.status).toBe(200);
-      expect(pageCookie(reloaded)).toBe(f.cookie);
-      expect([f.snapshot(), f.writes()]).toEqual([before, writes]);
-      const newTicket = pageTicket(reloaded, action);
-      expect(newTicket).toMatch(/^[A-Za-z0-9_-]{43}\.[A-Za-z0-9_-]{43}$/);
-      expect(newTicket).not.toBe(oldTicket);
-      expect((await f.submit(action, newTicket)).status).toBe(302);
-      expect((await f.submit(action, oldTicket)).status).toBe(400);
-      expect(f.begun).toHaveLength(2);
-    } finally {
-      f.close();
-    }
   },
   10_000,
 );
