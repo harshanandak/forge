@@ -453,7 +453,6 @@ const output = (jobs: CiJob[], run_attempt = 1) =>
   ).split("\n");
 
 test("does not rerun a red draft with GitHub's rewritten Verify name", () => {
-  // Job names and conclusions from run 44939566981, attempt 1.
   const jobs = [
     named("Changes"),
     named("Quick"),

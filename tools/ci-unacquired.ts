@@ -219,11 +219,14 @@ export function decideRerun(
   const missing = needed.filter((template) => {
     const created = run.jobs.filter((job) => matchesName(template, job.name));
     // An if-skipped matrix has one unexpanded placeholder, not missing legs.
-    return (
-      !created.some(
-        (job) => job.name === template && job.conclusion === "skipped",
-      ) && created.length < needed.filter((name) => name === template).length
-    );
+    const [job] = created;
+    if (
+      created.length === 1 &&
+      job?.conclusion === "skipped" &&
+      (job.name === template || job.name.includes("${{"))
+    )
+      return false;
+    return created.length < needed.filter((name) => name === template).length;
   });
   const hasGate = run.jobs.some((job) => job.name === "CI Gate");
   const rerun =
