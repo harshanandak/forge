@@ -2,6 +2,8 @@ import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
 import { domain, Project } from "../../cloud/src/project.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { canonicalJson, digestBytes } from "../../src/core/config/pointer.ts";
+import { writableStore } from "../../cloud/src/store.ts";
+import { recoverV3, viewV3 } from "../../cloud/src/v3-store.ts";
 import { guardFixture, noWrites, probe } from "./v3-project.fixture.ts";
 
 const timeout = 30_000;
@@ -114,7 +116,7 @@ const deleteRecord = (key: string, revision: number) => ({
 const append = (f: Fixture, ...frames: Json[]) =>
   f.send(`${probe}/commits`, { frames });
 
-async function withFixture(run: (f: Fixture) => Promise<void>) {
+async function withFixture(run: (f: Fixture) => void | Promise<void>) {
   const f = guardFixture();
   try {
     expect((await f.send(probe, {})).status).toBe(200);
@@ -1234,6 +1236,122 @@ test(
       f.restart();
       expect((await checkpoint(f)).status).toBe(200);
       expect(commits(f)).toEqual([]);
+    }),
+  timeout,
+);
+
+const portableHistory = async (source: Fixture) => {
+  await populate(source);
+  expect((await append(source, frame())).status).toBe(200);
+  expect((await checkpoint(source)).status).toBe(200);
+  const transcript = pages(source).find(({ id }) => id === "transcript:0")!;
+  const frames = JSON.parse(transcript.body) as Json[];
+  frames[5] = { sequence: 6 };
+  return frames;
+};
+
+function replayPortable(target: Fixture, frames: readonly unknown[]) {
+  const verification = {
+    admit: Project.admitLeaseRequest,
+    pages: new Map<string, Buffer>(),
+    sealed: () => {},
+    portableTranscript: canonicalJson(frames),
+  };
+  return recoverV3(writableStore(target.storage), verification);
+}
+
+test(
+  "v3 portable replay reconstructs the public projection from genesis",
+  () =>
+    withFixture(async (source) => {
+      const frames = await portableHistory(source);
+      const expected = recoverV3(writableStore(source.storage));
+      await withFixture((target) => {
+        const effects = target.observeEffects();
+        const replayed = replayPortable(target, frames);
+        expect(viewV3(replayed).image).toEqual(viewV3(expected).image);
+        expect(replayed.recordFloor).toBe(expected.recordFloor);
+        expect(effects()).toEqual(noWrites);
+      });
+    }),
+  timeout,
+);
+
+for (const [fault, edit] of [
+  [
+    "private frame",
+    (frames: Json[]) => {
+      frames[5]!.private = { approval: "fixture-only" };
+    },
+  ],
+  [
+    "sequence gap",
+    (frames: Json[]) => {
+      frames[5] = { sequence: 7 };
+    },
+  ],
+  [
+    "repeated marker",
+    (frames: Json[]) => {
+      frames[5] = { sequence: 5 };
+    },
+  ],
+  [
+    "changed record after-image",
+    (frames: Json[]) => {
+      (frames[0]!.changes as Json[])[0]!.value = {
+        revision: 1,
+        value: { text: "tampered" },
+      };
+    },
+  ],
+  [
+    "altered refusal digest",
+    (frames: Json[]) => {
+      (frames[2]!.outcome as Json).resultDigest =
+        digestBytes("different refusal");
+    },
+  ],
+] as const) {
+  test(
+    `v3 portable replay refuses a ${fault}`,
+    () =>
+      withFixture(async (source) => {
+        const frames = await portableHistory(source);
+        edit(frames);
+        await withFixture((target) => {
+          const effects = target.observeEffects();
+          expect(() => replayPortable(target, frames)).toThrow(ForgeFailure);
+          expect(effects()).toEqual(noWrites);
+        });
+      }),
+    timeout,
+  );
+}
+
+test(
+  "live v3 writes and recovery refuse an archived refusal",
+  () =>
+    withFixture(async (f) => {
+      await populate(f);
+      const before = f.observeEffects();
+      const frame = JSON.parse(commits(f)[2]!.body) as Json;
+      const { result, ...outcome } = frame.outcome as Json;
+      const archived = {
+        ...outcome,
+        resultDigest: digestBytes(canonicalJson(result)),
+      };
+      const attempted = {
+        operation: frame.operation,
+        time: frame.time,
+        events: frame.events,
+        outcome: archived,
+      };
+      expect(await append(f, attempted)).toMatchObject({ status: 400 });
+      expect(before()).toEqual(noWrites);
+      changeCommit(f, 3, (stored) => ({ ...stored, outcome: archived }));
+      f.restart();
+      expect(await f.send(probe)).toMatchObject(refused);
     }),
   timeout,
 );
