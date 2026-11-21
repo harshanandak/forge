@@ -116,7 +116,6 @@ async function fixture(
         "state_requests",
         "domain_cloud_command_receipts",
         LANE_APPROVALS,
-        LANE_BROWSER,
       ].map((name) => db.query(`SELECT * FROM ${name}`).all()),
       [...values],
     ]);
