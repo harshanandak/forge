@@ -666,6 +666,7 @@ test.each(
     const gate = jobs["ci-gate"]!;
     expect(gate.needs).toContain("verify");
     expect(gate.needs).toContain("speed");
+    const mainOnly = event === "push" ? "success" : "skipped";
     const result = spawnSync("bash", ["-c", gate.steps[0]!.run], {
       env: {
         ...process.env,
@@ -678,17 +679,19 @@ test.each(
         STATIC: event === "schedule" ? "skipped" : "success",
         PR_TITLE: event === "pull_request" ? "success" : "skipped",
         VERIFY: verify,
+        VERIFY_MAIN: mainOnly,
         VERIFY_NODE26: node26,
         GUARD_CHANGED: guardChanged,
         PACK: pack,
         SPEED: speed,
+        SPEED_WINDOWS: mainOnly,
         COMMENT_GUARD: commentGuard,
         CHANGES: changes,
       },
       encoding: "utf8",
       timeout: 10_000,
     });
-    expect(result.status, result.stderr).toBe(expected);
+    expect(result.status, result.stdout + result.stderr).toBe(expected);
   },
   30_000,
 );
