@@ -248,6 +248,7 @@ function fixture() {
                           nodes: [
                             {
                               __typename: "CheckRun",
+                              databaseId: 17,
                               name: "CI Gate",
                               status: "COMPLETED",
                               conclusion: "SUCCESS",

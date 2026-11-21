@@ -129,6 +129,7 @@ function gateFixture(options: {
                         nodes: [
                           {
                             __typename: "CheckRun",
+                            databaseId: 17,
                             name: "CI Gate",
                             status: "COMPLETED",
                             conclusion: "SUCCESS",
@@ -469,6 +470,7 @@ function fixture(
                     ...(world.nullNode ? [null] : []),
                     {
                       __typename: "CheckRun",
+                      databaseId: 17,
                       name: "CI Gate",
                       status: "COMPLETED",
                       conclusion: world.checkState,
@@ -476,6 +478,7 @@ function fixture(
                     },
                     {
                       __typename: "CheckRun",
+                      databaseId: 18,
                       name: "optional",
                       status: "COMPLETED",
                       conclusion: "FAILURE",

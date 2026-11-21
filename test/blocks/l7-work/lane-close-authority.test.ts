@@ -894,7 +894,7 @@ test("lane close accepts exactly one evidence mode and requires a PR for hosted 
 }, 30_000);
 
 const hostedUrl = "https://github.com/harshanandak/forge/pull/1";
-const ciGate = (databaseId = 17) => ({
+const ciGate = (databaseId = 17, workflowId = 10) => ({
   __typename: "CheckRun",
   databaseId,
   name: "CI Gate",
@@ -903,11 +903,17 @@ const ciGate = (databaseId = 17) => ({
   isRequired: true,
   checkSuite: {
     app: { slug: "github-actions" },
+    workflowRun: { workflow: { databaseId: workflowId } },
     commit: { oid: head },
     repository: { nameWithOwner: "harshanandak/forge" },
   },
 });
-function checkPage(nodes: unknown[], totalCount = nodes.length, oid = head) {
+function checkPage(
+  nodes: unknown[],
+  totalCount = nodes.length,
+  oid = head,
+  endCursor: string | null = null,
+) {
   return {
     data: {
       repository: {
@@ -916,7 +922,7 @@ function checkPage(nodes: unknown[], totalCount = nodes.length, oid = head) {
           statusCheckRollup: {
             contexts: {
               totalCount,
-              pageInfo: { hasNextPage: false, endCursor: null },
+              pageInfo: { hasNextPage: endCursor !== null, endCursor },
               nodes,
             },
           },
@@ -944,6 +950,23 @@ const hostedRefusals: [string, string, (f: Fixture) => void][] = [
     [
       ["missing CI Gate", checkPage([])],
       ["failed CI Gate", checkPage([{ ...ciGate(), conclusion: "FAILURE" }])],
+      [
+        "two CI Gate runs when one has no database ID",
+        checkPage([ciGate(), { ...ciGate(18), databaseId: undefined }]),
+      ],
+      [
+        "a CI Gate run without a workflow ID",
+        checkPage([
+          {
+            ...ciGate(),
+            checkSuite: { ...ciGate().checkSuite, workflowRun: null },
+          },
+        ]),
+      ],
+      [
+        "a newer CI Gate success in a different workflow",
+        checkPage([{ ...ciGate(), conclusion: "FAILURE" }, ciGate(18, 11)]),
+      ],
       [
         "a second CI Gate still running",
         checkPage([
@@ -1031,9 +1054,33 @@ for (const [name, code, setup] of hostedRefusals) {
   }, 30_000);
 }
 
+for (const draftFailed of [false, true])
+  test(`hosted lane close uses the successful CI Gate receipt (${draftFailed ? "after a failed draft" : "single run"})`, async () => {
+    const f = await fixture(false, hostedUrl);
+    try {
+      const ready = checkPage([ciGate(18)], draftFailed ? 2 : 1);
+      const draft = checkPage(
+        [{ ...ciGate(), conclusion: "FAILURE" }],
+        2,
+        head,
+        "ready",
+      );
+      f.flags.checkPages = draftFailed ? [draft, ready] : [ready];
+      await expect(f.close(hostedInput)).resolves.toMatchObject({
+        status: "closed",
+        removed: true,
+      });
+      expect(f.state.get(`landing:${id}:1`)?.value).toMatchObject({
+        receipt: `github-actions:check-run:18:${head}:success`,
+      });
+    } finally {
+      await f.dispose();
+    }
+  }, 30_000);
+
 test("hosted lane close accepts two successful runs and resumes from the saved evidence after a rerun", async () => {
   const f = await fixture(false, hostedUrl);
-  const proof = `github-actions:check-run:17:${head}:success`;
+  const proof = `github-actions:check-run:18:${head}:success`;
   try {
     f.flags.checkPages = [checkPage([ciGate(), ciGate(18)])];
     f.flags.failComment = true;
