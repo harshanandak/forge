@@ -108,6 +108,9 @@ test(
           )
           .all();
       const stored = rows();
+      image.entries.lease.set("work-1", {
+        value: (JSON.parse(stored[0]!.body) as Json).lease,
+      });
       const before = f.snapshot();
       expect(await send("owner-b", "work-1", "acq-2")).toMatchObject({
         status: 503,

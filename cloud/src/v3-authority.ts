@@ -85,6 +85,47 @@ function outcomeFault(outcome: unknown): string | undefined {
     : "outcome status";
 }
 
+function witnessMatches(
+  witness: unknown,
+  lease: unknown,
+  id: unknown,
+): witness is Record<string, unknown> {
+  return (
+    isObject(witness) &&
+    isObject(lease) &&
+    keysOf(witness) === WITNESS_KEYS &&
+    witness.namespace === NAMESPACE &&
+    witness.id === id &&
+    witness.subject === lease.subject &&
+    witness.generation === lease.generation &&
+    isDigest(witness.digest)
+  );
+}
+
+export function sealedAuthorityValid(
+  collection: "lease" | "outcome" | "witness",
+  key: string,
+  value: unknown,
+): boolean {
+  if (!isObject(value)) return false;
+  if (collection === "lease") return value.subject === key && validLease(value);
+  const { lease, outcome, time, witness } = value;
+  if (collection === "witness")
+    return (
+      isObject(lease) &&
+      lease.releasedAt === undefined &&
+      validLease(lease) &&
+      witnessMatches(witness, lease, key)
+    );
+  return (
+    isNat(time) &&
+    isObject(outcome) &&
+    outcome.id === key &&
+    outcomeFault(outcome) === undefined &&
+    (outcome.status === "ok" ? validLease(lease) : lease === undefined)
+  );
+}
+
 export function authorityFault({
   operation,
   lease,
@@ -121,14 +162,8 @@ export function authorityFault({
   if (
     witness !== undefined &&
     !(
-      isObject(witness) &&
-      isObject(lease) &&
       isObject(outcome) &&
-      keysOf(witness) === WITNESS_KEYS &&
-      witness.namespace === NAMESPACE &&
-      witness.id === outcome.id &&
-      witness.subject === lease.subject &&
-      witness.generation === lease.generation &&
+      witnessMatches(witness, lease, outcome.id) &&
       witness.digest === digestBytes(String(outcome.fingerprint))
     )
   )

@@ -7,7 +7,9 @@ import {
   spyOn,
   test,
 } from "bun:test";
-import { GENESIS_LEASE_ONLY } from "../../cloud/src/v3-store.ts";
+import { scopeRequestId } from "../../cloud/src/issue-request-id.ts";
+import { writableStore } from "../../cloud/src/store.ts";
+import { readV3Value, recoverV3 } from "../../cloud/src/v3-store.ts";
 import { canonicalJson, digestBytes } from "../../src/core/config/pointer.ts";
 import { fixture, probe } from "./v3-project.fixture.ts";
 
@@ -22,7 +24,9 @@ const COLD_ROWS = 1750;
 const COLD_BYTES = 22 * MiB;
 const COLD_QUERY_ROWS = 4;
 const T0 = Date.parse("2026-11-20T12:00:00.000Z");
-const E1 = T0 + 2 * 3_600_000;
+const HOUR = 3_600_000;
+const E1 = T0 + 2 * HOUR;
+const E2 = T0 + 24 * HOUR;
 const COVERED = 5000;
 const WATERMARK = 9000;
 const holder = {
@@ -65,12 +69,20 @@ interface Frame {
 
 const bytesOf = (text: string) => Buffer.byteLength(text);
 const digestOf = (value: unknown) => digestBytes(canonicalJson(value));
-const claim = (f: Fixture, owner: string) =>
+const lease = (
+  f: Fixture,
+  route: string,
+  owner: string,
+  body: Json,
+  expires = E1,
+) =>
   f.send(
-    `${probe}/claim`,
-    { subject: "work-1", requestId: "acq-1", holder, ttlMs: 3_600_000 },
-    { "X-Forge-Owner": owner, "X-Forge-Owner-Expires": String(E1) },
+    `${probe}/${route}`,
+    { subject: "work-1", holder, ...body },
+    { "X-Forge-Owner": owner, "X-Forge-Owner-Expires": String(expires) },
   );
+const claim = (f: Fixture, owner: string, expires = E1) =>
+  lease(f, "claim", owner, { requestId: "acq-1", ttlMs: HOUR }, expires);
 const commit = (f: Fixture, ...frames: Json[]) =>
   f.send(`${probe}/commits`, { frames });
 const put = { operation: "fixture.put", time: T0, events: [] };
@@ -252,8 +264,9 @@ function checkpoint(f: Fixture) {
       );
     events += frame.events.length;
   }
-  seal(f.db, [...items.values()], frames.length, events);
+  const pages = seal(f.db, [...items.values()], frames.length, events);
   f.restart();
+  return pages;
 }
 
 function tail(
@@ -459,6 +472,7 @@ for (const at of ["tail", "directory"] as const) {
             changes: [
               { key: "a", value: { n: 1 } },
               { key: "b", value: { n: 2 } },
+              { key: "c", value: null },
             ],
           }),
         ).toMatchObject({ status: 200 });
@@ -482,8 +496,14 @@ for (const at of ["tail", "directory"] as const) {
           lease: {},
           outcome: {},
           witness: {},
-          record: { a: null, b: digestOf({ n: 2 }) },
+          record: { a: null, b: digestOf({ n: 2 }), c: digestOf(null) },
         });
+        const db = writableStore(f.storage);
+        const recovered = recoverV3(db);
+        const before = { ...f.reads };
+        expect(readV3Value(db, recovered, "record", "a")).toBeUndefined();
+        expect(f.reads).toEqual(before);
+        expect(readV3Value(db, recovered, "record", "c")).toBeNull();
       } finally {
         f.db.close();
       }
@@ -638,46 +658,239 @@ async function snapshotWithClaim(f: Fixture) {
 }
 
 test(
-  "lease commands on a checkpointed root are refused before any write while they still scan commits",
+  "a claim, renew, and release honor the lease and its generation floor on a checkpointed root",
   async () => {
     const f = fixture();
     try {
       await snapshotWithClaim(f);
-      const held = image(await f.send(probe))!;
-      expect(Object.keys(held.lease as Json)).toEqual(["work-1"]);
-      const before = f.snapshot();
-      const lease = (route: string, owner: string, body: Json) =>
-        f.send(
-          `${probe}/${route}`,
-          { subject: "work-1", holder, ...body },
-          { "X-Forge-Owner": owner, "X-Forge-Owner-Expires": String(E1) },
-        );
-      const responses = [
-        await lease("claim", "owner-b", {
-          requestId: "acq-2",
-          ttlMs: 3_600_000,
-        }),
-        await lease("renew", "owner-a", {
+      expect(await claim(f, "owner-b")).toMatchObject({
+        status: 409,
+        body: { error: { code: "LEASE_HELD" } },
+      });
+      setSystemTime(T0 + 1);
+      expect(
+        await lease(f, "renew", "owner-a", {
           requestId: "ren-1",
           generation: 1,
-          ttlMs: 3_600_000,
+          ttlMs: HOUR,
         }),
-        await lease("release", "owner-a", {
+      ).toMatchObject({
+        status: 200,
+        body: {
+          value: {
+            generation: 1,
+            expiresAt: new Date(T0 + HOUR + 1).toISOString(),
+          },
+        },
+      });
+      expect(
+        await lease(f, "release", "owner-a", {
           requestId: "rel-1",
           generation: 1,
         }),
-      ];
-      for (const response of responses)
-        expect(response).toMatchObject({
-          status: 503,
-          body: {
-            ok: false,
-            error: { code: "UNAVAILABLE", message: GENESIS_LEASE_ONLY },
-          },
-        });
-      expect(f.snapshot()).toEqual(before);
-      expect(image(await f.send(probe))).toEqual(held);
+      ).toMatchObject({
+        status: 200,
+        body: {
+          value: { generation: 1, releasedAt: new Date(T0 + 1).toISOString() },
+        },
+      });
+      f.restart();
+      expect(
+        await lease(f, "claim", "owner-b", { requestId: "acq-2", ttlMs: HOUR }),
+      ).toMatchObject({ status: 200, body: { value: { generation: 2 } } });
+      expect(image(await f.send(probe))).toMatchObject({
+        head: 6,
+        eventWatermark: 2,
+      });
     } finally {
+      f.db.close();
+    }
+  },
+  timeout,
+);
+
+test(
+  "a receipt-only refusal survives eviction without advancing the event watermark",
+  async () => {
+    const f = fixture();
+    try {
+      expect((await f.send(probe, {})).status).toBe(200);
+      expect(await commit(f, { ...put, events: [{ key: "a" }] })).toMatchObject(
+        { status: 200 },
+      );
+      expect(await claim(f, "owner-a")).toMatchObject({ status: 200 });
+      const refusal = await claim(f, "owner-b");
+      expect(refusal).toMatchObject({
+        status: 409,
+        body: { error: { code: "LEASE_HELD" } },
+      });
+      const before = f.snapshot();
+      f.restart();
+      expect(await claim(f, "owner-b")).toEqual(refusal);
+      expect(image(await f.send(probe))).toMatchObject({
+        head: 3,
+        eventWatermark: 1,
+      });
+      expect(f.snapshot()).toEqual(before);
+    } finally {
+      f.db.close();
+    }
+  },
+  timeout,
+);
+
+test(
+  "a replay reads exactly the sealed outcome, lease, and any needed witness slices",
+  async () => {
+    const f = fixture();
+    try {
+      expect((await f.send(probe, {})).status).toBe(200);
+      for (let i = 0; i < 16; i++) {
+        expect(
+          await commit(f, {
+            ...put,
+            changes: [{ key: `padding-${i}`, value: "é".repeat(2048) }],
+          }),
+        ).toMatchObject({ status: 200 });
+      }
+      const acquired = await claim(f, "owner-a");
+      expect(acquired).toMatchObject({ status: 200 });
+      const renewedAt = T0 + HOUR / 2;
+      setSystemTime(renewedAt);
+      const renewed = await lease(
+        f,
+        "renew",
+        "owner-a",
+        { requestId: "ren-1", generation: 1, ttlMs: 23 * HOUR },
+        E2,
+      );
+      expect(renewed).toMatchObject({ status: 200 });
+      const phases = [
+        { at: renewedAt, expected: renewed, rows: 2 },
+        { at: E1 + 1, expected: acquired, rows: 3 },
+      ];
+      for (const { at, expected } of phases) {
+        setSystemTime(at);
+        f.restart();
+        expect(await claim(f, "owner-a", E2)).toEqual(expected);
+      }
+      const pages = checkpoint(f);
+      const entries = JSON.parse(pages[0]!.body) as {
+        collection: string;
+        key: string;
+        length: number;
+      }[];
+      const original = scopeRequestId(
+        "lease",
+        ["owner", "owner-a", "owner-a"],
+        "acq-1",
+      );
+      const before = f.snapshot();
+      for (const { at, expected, rows } of phases) {
+        setSystemTime(at);
+        f.restart();
+        expect((await f.send(probe)).status).toBe(200);
+        f.reads.rows = 0;
+        f.reads.bytes = 0;
+        expect(await claim(f, "owner-a", E2)).toEqual(expected);
+        const bytes = entries
+          .filter(
+            ({ collection, key }) =>
+              collection === "lease" ||
+              (key === original &&
+                (collection === "outcome" ||
+                  (rows === 3 && collection === "witness"))),
+          )
+          .reduce((sum, { length }) => sum + length, 0);
+        expect(f.reads).toEqual({ rows, bytes });
+        expect(f.snapshot()).toEqual(before);
+      }
+    } finally {
+      f.db.close();
+    }
+  },
+  timeout,
+);
+
+test(
+  "a changed payload slice on a sealed page is unavailable without a write",
+  async () => {
+    const f = fixture();
+    try {
+      await snapshotWithClaim(f);
+      expect(
+        f.db.run(
+          `UPDATE cloud_v3_pages SET body=replace(body, '"status":"ok"', '"status":"xx"') WHERE id='snapshot:0'`,
+        ).changes,
+      ).toBe(1);
+      f.restart();
+      expect((await f.send(probe)).status).toBe(200);
+      const before = f.snapshot();
+      expect(await claim(f, "owner-a")).toMatchObject(unavailable);
+      expect(f.snapshot()).toEqual(before);
+    } finally {
+      f.db.close();
+    }
+  },
+  timeout,
+);
+
+test(
+  "append accepts the 64-level JSON boundary and refuses a deeper frame without writing",
+  async () => {
+    const f = fixture();
+    const events = (depth: number): unknown =>
+      JSON.parse("[".repeat(depth) + "0" + "]".repeat(depth));
+    try {
+      expect((await f.send(probe, {})).status).toBe(200);
+      expect(await commit(f, { ...put, events: events(63) })).toMatchObject({
+        status: 200,
+      });
+      const before = f.snapshot();
+      expect(await commit(f, { ...put, events: events(64) })).toMatchObject({
+        status: 400,
+        body: { error: { code: "INPUT_INVALID" } },
+      });
+      expect(
+        await lease(f, "claim", "owner-a", {
+          requestId: "acq-1",
+          ttlMs: events(64),
+        }),
+      ).toMatchObject({
+        status: 400,
+        body: { error: { code: "INPUT_INVALID" } },
+      });
+      expect(f.snapshot()).toEqual(before);
+      f.restart();
+      expect(image(await f.send(probe))).toMatchObject({
+        head: 1,
+        eventWatermark: 1,
+      });
+    } finally {
+      f.db.close();
+    }
+  },
+  timeout,
+);
+
+test(
+  "a deeply nested tail row is unavailable and no operation can use it",
+  async () => {
+    const f = fixture();
+    const logged = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect((await f.send(probe, {})).status).toBe(200);
+      const nested = "[".repeat(10_000) + "0" + "]".repeat(10_000);
+      const frame = `{"events":[${nested}],"format":"forge-cloud-commit/3","operation":"fixture.put","sequence":1,"time":${T0}}`;
+      f.db.run("INSERT INTO cloud_v3_commits VALUES (1, ?)", [frame]);
+      const before = f.snapshot();
+      f.restart();
+      expect(await f.send(probe)).toMatchObject(unavailable);
+      expect(await claim(f, "owner-a")).toMatchObject(unavailable);
+      expect(await commit(f, put)).toMatchObject(unavailable);
+      expect(f.snapshot()).toEqual(before);
+    } finally {
+      logged.mockRestore();
       f.db.close();
     }
   },
