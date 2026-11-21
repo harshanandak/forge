@@ -24,7 +24,7 @@ Each push: [checkpoint](../forge-build/pull-request.md#checkpoints) `review` SHA
 1. Check the source; bots can be wrong. Cite the line that shows it.
 2. Fix only P0, P1 findings on lines this PR changed, inside the slice's done boundary.
 3. Everything else (P2, P3, or outside the boundary) is filed, not fixed. Search open issues for the symptom, then comment on a match or `forge issue create --input '{"title":"...","kind":"task","labels":["review-deferred","p2"],"parent":"<epic>","body":"from <pr url> thread <id>"}'`.
-4. Commit thread and CI fixes together, run `forge-build`'s Final-head proof, and push once.
+4. Commit thread and CI fixes together, run `forge-build`'s Final-head proof, then send one push wave.
 
 ## Reply and resolve every answered thread
 
