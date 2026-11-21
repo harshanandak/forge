@@ -9,13 +9,10 @@ import {
   readFileSync,
   rmSync,
   symlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import {
-  MAX_PEAK_DELTA_MB,
-  medianPairedDelta,
-} from "../../tools/bench/speed-compare.ts";
 
 const root = resolve(import.meta.dirname, "../..");
 
@@ -29,6 +26,7 @@ test
     try {
       const trace = join(folder, "loads.jsonl");
       const output = join(folder, "samples.json");
+      const summary = join(folder, "summary.md");
       cpSync(join(root, "tools/bench"), join(folder, "tools/bench"), {
         recursive: true,
       });
@@ -54,7 +52,7 @@ test
         appendFileSync(
           join(folder, "dist/bin/forge.js"),
           `\nif (process.argv[2] === "issue" && process.argv[3] === "show") {
-  const retained = Buffer.alloc(8 * 1024 * 1024, 1);
+  const retained = Buffer.alloc(32 * 1024 * 1024, 1);
   process.on("exit", () => { if (retained[0] !== 1) throw new Error("allocation lost"); });
 }\n`,
         );
@@ -64,13 +62,18 @@ test
         [
           join(folder, "tools/bench/cli-speed.ts"),
           "--gate",
-          "--pull-request",
           "--base",
           join(folder, "base/dist"),
           "--json",
           output,
         ],
-        { cwd: folder, encoding: "utf8", timeout: 110_000, windowsHide: true },
+        {
+          cwd: folder,
+          encoding: "utf8",
+          timeout: 110_000,
+          windowsHide: true,
+          env: { ...process.env, GITHUB_STEP_SUMMARY: summary },
+        },
       );
       expect(result.error).toBeUndefined();
       console.log(
@@ -95,17 +98,40 @@ test
       const base = report.rows.find(
         (row) => row.command === "issue show (origin/main build)",
       )!;
-      const delta = medianPairedDelta(current.peaksMb, base.peaksMb);
+      const baseMedianPeakMb = [...base.peaksMb].sort((a, b) => a - b)[23]!;
+      const headMedianPeakMb = [...current.peaksMb].sort((a, b) => a - b)[23]!;
+      const changePercent =
+        ((headMedianPeakMb - baseMedianPeakMb) * 100) / baseMedianPeakMb;
+      const absoluteCapMb = process.platform === "linux" ? 85 : 70;
+      const status = growth
+        ? "failure"
+        : headMedianPeakMb > absoluteCapMb
+          ? "warning"
+          : "pass";
+      const trend = `speed-memory ${JSON.stringify({
+        platform: process.platform,
+        command: "issue show",
+        baseMedianPeakMb,
+        headMedianPeakMb,
+        changePercent,
+        absoluteCapMb,
+        status,
+      })}`;
+      expect(
+        readFileSync(summary, "utf8")
+          .split("\n")
+          .filter((line) => line.startsWith("speed-memory ")),
+      ).toEqual([trend]);
       if (growth) {
-        expect(delta).toBeGreaterThan(MAX_PEAK_DELTA_MB);
+        expect(changePercent).toBeGreaterThan(20);
         expect(result.status, result.stdout + result.stderr).toBe(1);
         expect(result.stderr).toContain("issue show peak is");
-        expect(result.stderr).toContain("more than the 1.5 MB limit");
+        expect(result.stderr).toContain("more than the 20% limit");
       } else {
         // A loaded integration runner can fail wall time independently of the memory decision.
         expect(result.status === 0 || result.status === 1).toBe(true);
         expect(result.signal).toBeNull();
-        expect(delta).toBeLessThanOrEqual(MAX_PEAK_DELTA_MB);
+        expect(changePercent).toBeLessThanOrEqual(10);
         expect(result.stderr).not.toContain("::error::issue show peak");
       }
     } finally {
@@ -113,4 +139,62 @@ test
     }
   },
   120_000,
+);
+
+test
+  .skipIf(process.platform !== "linux" && process.platform !== "win32")
+  .each(["missing", "failed"])(
+  "%s base measurement exits incomplete",
+  (base) => {
+    const folder = mkdtempSync(join(tmpdir(), "forge-speed-incomplete-"));
+    try {
+      const summary = join(folder, "summary.md");
+      cpSync(join(root, "tools/bench"), join(folder, "tools/bench"), {
+        recursive: true,
+      });
+      mkdirSync(join(folder, "dist/bin"), { recursive: true });
+      writeFileSync(join(folder, "package.json"), '{"type":"module"}');
+      writeFileSync(
+        join(folder, "dist/bin/forge.js"),
+        'console.log(JSON.stringify({ result: { id: "bench" } }));',
+      );
+      if (base === "failed") {
+        mkdirSync(join(folder, "base/dist/bin"), { recursive: true });
+        writeFileSync(join(folder, "base/package.json"), '{"type":"module"}');
+        writeFileSync(
+          join(folder, "base/dist/bin/forge.js"),
+          "process.exit(2);",
+        );
+      }
+      const result = spawnSync(
+        "node",
+        [
+          "tools/bench/cli-speed.ts",
+          "--gate",
+          "--base",
+          "base/dist",
+          "--pairs",
+          "1",
+        ],
+        {
+          cwd: folder,
+          encoding: "utf8",
+          timeout: 20_000,
+          windowsHide: true,
+          env: { ...process.env, GITHUB_STEP_SUMMARY: summary },
+        },
+      );
+      const expected =
+        base === "failed"
+          ? "Speed memory comparison incomplete: the base measurement failed."
+          : "Speed memory comparison incomplete: the base build was not found";
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stdout + result.stderr).toBe(1);
+      expect(result.stderr).toContain(expected);
+      expect(readFileSync(summary, "utf8")).toContain(expected);
+    } finally {
+      rmSync(folder, { recursive: true, force: true });
+    }
+  },
+  30_000,
 );

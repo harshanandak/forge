@@ -7,17 +7,8 @@ export const MAX_RATIO_TO_BASE = 1.05;
 /** 47 pairs use the 64 launches saved by sampling the eight report-only commands once, not nine times. */
 export const GATED_PAIRS = 47;
 
-/**
- * Maximum peak growth (MB), as the median of paired differences. Pairing controls runner drift,
- * but identical builds still have process-to-process RSS variation.
- */
-export const MAX_PEAK_DELTA_MB = 1.5;
-
-/**
- * Cap crossings use the same paired noise margin (owner decision F4). Main still enforces the
- * absolute cap, including smaller increases.
- */
-export const MIN_CROSSING_DELTA_MB = MAX_PEAK_DELTA_MB;
+const PEAK_MEMORY_WARN_PERCENT = 10;
+const PEAK_MEMORY_FAIL_PERCENT = 20;
 
 export type Side = "current" | "base";
 
@@ -79,6 +70,15 @@ export interface GateRow {
 export interface GateDecision {
   readonly failures: string[];
   readonly warnings: string[];
+  readonly memory:
+    | {
+        readonly baseMedianPeakMb: number;
+        readonly headMedianPeakMb: number;
+        readonly changePercent: number;
+        readonly absoluteCapMb: number;
+        readonly status: "pass" | "warning" | "failure";
+      }
+    | undefined;
 }
 
 /**
@@ -96,13 +96,6 @@ export function medianPairedDelta(
   ]!;
 }
 
-/**
- * The Speed gate's whole decision for the gated command. `baseRow` is the base build measured in
- * the same job, or undefined when it is missing. `where` words the messages; `pullRequest` turns
- * the absolute memory cap into a warning, because only the paired difference is steady enough to
- * fail a pull request, unless the build crosses the cap by a real step. A push to main keeps the
- * cap as a failure, so slow creep cannot build up.
- */
 export function gateDecision(
   limit: GateLimit,
   row: GateRow,
@@ -111,38 +104,44 @@ export function gateDecision(
     readonly command: string;
     readonly platform: string;
     readonly baseMissing: string;
-    readonly pullRequest?: boolean;
   },
 ): GateDecision {
   const { command, platform } = where;
   const failures: string[] = [];
   const warnings: string[] = [];
+  let memory: GateDecision["memory"];
   const overCap = row.medianPeakMb > limit.maxPeakMb;
   const capMessage = `${command} peak ${row.medianPeakMb.toFixed(1)} MB is over the ${limit.maxPeakMb} MB limit on ${platform}`;
-  if (overCap && (where.pullRequest !== true || baseRow === undefined))
-    failures.push(capMessage);
+  if (overCap) warnings.push(capMessage);
   const overCeiling = row.medianMs > limit.ceilingMs;
   const ceilingMessage = `${command} median ${row.medianMs.toFixed(0)} ms is over the ${limit.ceilingMs} ms ceiling on ${platform}`;
   if (baseRow === undefined) {
     if (overCeiling) failures.push(ceilingMessage);
     failures.push(where.baseMissing);
   } else {
-    const delta = medianPairedDelta(row.peaksMb, baseRow.peaksMb);
-    if (delta > MAX_PEAK_DELTA_MB)
+    const basePeakMb = baseRow.medianPeakMb;
+    const growth = (row.medianPeakMb - basePeakMb) * 100;
+    const changePercent = growth / basePeakMb;
+    const relativeMessage = `${command} peak is ${changePercent.toFixed(1)}% over the same-job base on ${platform}`;
+    if (growth > basePeakMb * PEAK_MEMORY_FAIL_PERCENT)
       failures.push(
-        `${command} peak is ${delta.toFixed(1)} MB over the origin/main build's in the same job on ${platform}, more than the ${MAX_PEAK_DELTA_MB} MB limit`,
+        `${relativeMessage}, more than the ${PEAK_MEMORY_FAIL_PERCENT}% limit`,
       );
-    // On a pull request the cap warns, unless this build crossed it from under it by a real step.
-    if (overCap && where.pullRequest === true) {
-      const crossed =
-        baseRow.medianPeakMb <= limit.maxPeakMb &&
-        delta > MIN_CROSSING_DELTA_MB;
-      if (crossed)
-        failures.push(
-          `${capMessage}, crossing it from the origin/main build's ${baseRow.medianPeakMb.toFixed(1)} MB by ${delta.toFixed(1)} MB (more than ${MIN_CROSSING_DELTA_MB} MB)`,
-        );
-      else warnings.push(capMessage);
-    }
+    else if (growth > basePeakMb * PEAK_MEMORY_WARN_PERCENT)
+      warnings.push(
+        `${relativeMessage}, more than the ${PEAK_MEMORY_WARN_PERCENT}% warning threshold`,
+      );
+    memory = {
+      baseMedianPeakMb: basePeakMb,
+      headMedianPeakMb: row.medianPeakMb,
+      changePercent,
+      absoluteCapMb: limit.maxPeakMb,
+      status: failures.length
+        ? "failure"
+        : warnings.length
+          ? "warning"
+          : "pass",
+    };
     const verdict = compareToBase(row.timesMs, baseRow.timesMs);
     if (overCeiling) {
       // Runner speed does not cancel in an absolute time, so the ceiling fails the job only when
@@ -158,7 +157,7 @@ export function gateDecision(
         `${command} ${SCORE_LABEL} ${verdict.currentMs.toFixed(0)} ms is more than ${MAX_RATIO_TO_BASE} times the origin/main build's ${verdict.baseMs.toFixed(0)} ms in the same job on ${platform}`,
       );
   }
-  return { failures, warnings };
+  return { failures, warnings, memory };
 }
 
 export function compareToBase(

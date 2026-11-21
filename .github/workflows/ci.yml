@@ -206,18 +206,24 @@ jobs:
       - run: bun run build:team
       # The speed gate compares this build with the base branch's, built here and run on the same runner.
       - name: Check out the base branch
+        id: speed-base-checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.base.sha || github.event.before }}
           path: base
           persist-credentials: false
       - name: Build the base branch
+        id: speed-base-build
         working-directory: base
         run: |
           bun install --frozen-lockfile
           bun run build
+      - name: Report an unavailable Speed base
+        if: failure() && (steps.speed-base-checkout.outcome == 'failure' || steps.speed-base-build.outcome == 'failure')
+        shell: bash
+        run: echo 'Speed memory comparison incomplete. The base checkout or build failed.' >> "$GITHUB_STEP_SUMMARY"
       - name: CLI speed
-        run: node tools/bench/cli-speed.ts --gate --base base/dist ${{ github.event_name == 'pull_request' && '--pull-request' || '' }}
+        run: node tools/bench/cli-speed.ts --gate --base base/dist
       # A report, not a gate: a failure here must not fail the required Speed check.
       - name: CLI footprint
         if: always()
