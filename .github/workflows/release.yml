@@ -87,9 +87,27 @@ jobs:
     env:
       VERSION: ${{ needs.verify.outputs.version }}
     steps:
+      - name: Match the Windows CI runner setup
+        run: |
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            pwsh -NoProfile -NonInteractive -Command '
+              $ErrorActionPreference = "Stop"
+              Set-Service StorSvc -StartupType Disabled
+              Stop-Service StorSvc -Force
+              $service = Get-Service StorSvc
+              if ($service.Status -ne "Stopped" -or $service.StartType -ne "Disabled") {
+                throw "StorSvc is $($service.Status) and $($service.StartType)"
+              }
+            '
+            printf 'TEMP=%s\nTMP=%s\n' "$RUNNER_TEMP" "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with: { node-version: "24" }
+      - id: lint-runtime
+        run: node tools/ci/preserve-lint-runtime.ts prepare
+      - run: npm install --prefix "$RUNNER_TEMP/comment-lint" --ignore-scripts --no-save "${{ steps.lint-runtime.outputs.package }}"
+      - run: node tools/ci/preserve-lint-runtime.ts
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with: { bun-version: "1.4.4" }
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -118,14 +136,29 @@ jobs:
           import {readFileSync} from 'node:fs';
           const start = Date.now(), version = process.env.VERSION;
           const integrity = 'sha512-' + hash('sha512', readFileSync(process.env.TARBALL), 'base64');
+          const registry = 'https://registry.npmjs.org';
+          const urls = [
+            `${registry}/forge-workflow/${encodeURIComponent(version)}`,
+            `${registry}/-/package/forge-workflow/dist-tags`,
+          ];
           for (let attempt = 0; attempt < 12; attempt++) {
-            const r = await fetch('https://registry.npmjs.org/forge-workflow', {signal: AbortSignal.timeout(10000)});
-            if (!r.ok && r.status !== 404) throw Error(`registry HTTP ${r.status}`);
-            const p = r.ok ? await r.json() : {}, v = p.versions?.[version];
+            const signal = AbortSignal.timeout(10000);
+            const responses = await Promise.all(urls.map(url => fetch(url, {cache: 'no-store', redirect: 'error', signal})));
             console.log(`registry readback: ${Date.now()-start}ms, attempt ${attempt+1}/12`);
-            if (v && p['dist-tags']?.next === version) {
-              if (v.dist.integrity !== integrity) throw Error('registry integrity mismatch');
-              if (!v.dist.attestations?.provenance?.predicateType) throw Error('registry provenance missing');
+            for (const r of responses) {
+              const cache = r.headers.get('cf-cache-status');
+              const age = r.headers.get('age');
+              console.log(`registry source: ${r.url} HTTP ${r.status}, CF-Cache-Status=${cache}, Age=${age}`);
+              if (!r.ok && r.status !== 404) throw Error(`registry HTTP ${r.status}: ${r.url}`);
+              if (Number(age) > 0 || /^(HIT|STALE|UPDATING)$/i.test(cache ?? ''))
+                throw Error(`cached registry response: ${r.url}`);
+            }
+            const [manifest, tags] = await Promise.all(responses.map(r => r.ok ? r.json() : null));
+            if (manifest && (manifest.name !== 'forge-workflow' || manifest.version !== version))
+              throw Error('registry package/version mismatch');
+            if (manifest && tags?.next === version) {
+              if (manifest.dist?.integrity !== integrity) throw Error('registry integrity mismatch');
+              if (!manifest.dist?.attestations?.provenance?.predicateType) throw Error('registry provenance missing');
               break;
             }
             if (attempt === 11) throw Error(`registry version/next unavailable after ${Date.now()-start}ms`);

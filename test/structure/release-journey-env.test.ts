@@ -19,14 +19,22 @@ function requiredEnvironment(text: string): Set<string> {
     aliases.set(alias!, (dot ?? bracket)!);
 
   const required = new Set<string>();
+  const value = String.raw`(?:${reference}|(\w+)\b)`;
+  const absent = [
+    String.raw`!(?!=)\s*${value}`,
+    String.raw`(?<![\w.])${value}\s*===?\s*(?:undefined|null)\b`,
+    String.raw`\b(?:undefined|null)\s*===?\s*${value}`,
+  ];
   for (const [, condition] of text.matchAll(
     /\bif\s*\(((?:[^(){};]|\([^()]*\))*)\)\s*(?:\{\s*)?throw\b/g,
   )) {
-    for (const [, dot, bracket, alias] of condition!.matchAll(
-      new RegExp(String.raw`!(?!=)\s*(?:${reference}|(\w+)\b)`, "g"),
-    )) {
-      const name = dot ?? bracket ?? aliases.get(alias!);
-      if (name) required.add(name);
+    for (const pattern of absent) {
+      for (const [, dot, bracket, alias] of condition!.matchAll(
+        new RegExp(pattern, "g"),
+      )) {
+        const name = dot ?? bracket ?? aliases.get(alias!);
+        if (name) required.add(name);
+      }
     }
   }
   return required;
@@ -56,8 +64,8 @@ function providedEnvironment(workflow: Workflow, journey: Step): Set<string> {
 
 test("release readback supplies the environment required by every registry journey", () => {
   const workflow = parse(source(".github/workflows/release.yml")) as Workflow;
-  const journey = workflow.jobs.readback.steps.find((step) =>
-    step.run?.startsWith("node tools/release/journeys.mjs "),
+  const journey = workflow.jobs.readback.steps.find(
+    (step) => step.run?.split(" ")[1] === "tools/release/journeys.mjs",
   );
   assert.ok(journey?.run);
   const launcher = source(journey.run.split(" ")[1]!);
@@ -98,8 +106,10 @@ test("release environment requirements include direct reads and local aliases", 
       throw new Error("inputs required");
     }
     if (!process.env["PROOF"]) throw new Error("proof required");
+    if (process.env.RECEIPT === undefined) throw new Error("receipt required");
+    if (null == process.env.INPUT) throw new Error("input required");
     const optional = process.env.OPTIONAL;
     if (optional !== undefined && optional !== "24") throw new Error("bad value");
   `),
-  ).toEqual(new Set(["RUNTIME", "ARCHIVE", "PROOF"]));
+  ).toEqual(new Set(["RUNTIME", "ARCHIVE", "PROOF", "RECEIPT", "INPUT"]));
 }, 1000);
