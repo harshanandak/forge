@@ -101,11 +101,9 @@ Codex connector format is understood; logins compare case-insensitively, an omit
 gate reads a different head than the one given.
 
 `gate.requiredReviews` defaults to `[]`. For each `{kind: merge-gate, reviewer: review-agent}` entry, that GitHub reviewer submits an approval with exactly one standalone `forge-review:merge-gate` line. The PR author is excluded.
-The latest submitted review with that marker governs across all commits. A newer marked comment, request for changes or dismissal blocks an earlier approval.
+The newest submitted review for that kind governs across all commits. It must be a well-formed approval on the exact PR head. A newer comment, request for changes or dismissal for that kind blocks an earlier approval.
 The gate reads at most ten pages of 100 reviews and refuses incomplete evidence if page ten is full.
-
-An approval covers its named head. Carry requires a two-parent merge with the reviewed head first, the current base second, and identical raw file deltas proved from fetched Git objects and unshallow history.
-Accepted `reviews` include the reviewer, verdict, and GitHub link, plus the source head and base for a carry. Test-only changes require a fresh review.
+Accepted `reviews` include the reviewer, head, verdict, and GitHub link.
 
 `gate.requiredChecks` defaults to `"github-required"`, resolved by each commit context's
 `isRequired(pullRequestNumber: ...)` field.

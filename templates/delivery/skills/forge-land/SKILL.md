@@ -11,7 +11,7 @@ Orchestrator only. A worker never merges. Merge by: agent. Read [owner-approval.
 
 From trusted config, run `forge check gate --pr <n>`. Keep `result.head` as `<head>` and `result.receipt` as `<id>`.
 
-The gate checks PR state, current-head `receiptChecks`, required CI, unresolved threads, and `doorPaths`. For `gate.requiredReviews`, the named reviewer submits a GitHub approval with one standalone `forge-review:<kind>` line. Require approval on `<head>` or verified carry. Fix refusals through `forge-review`.
+The gate checks PR state, current-head `receiptChecks`, required CI, unresolved threads, and `doorPaths`. For `gate.requiredReviews`, the named reviewer submits a GitHub approval on `<head>` with one standalone `forge-review:<kind>` line. Fix refusals through `forge-review`.
 
 Only the owner merges by hand when `DOOR_PATH_TOUCHED` is the sole refusal. Verify the same reviews and pin `<head>`. A merge that deploys, publishes or migrates is a door. Doors (publish, force-push, prod-write, migration-apply, delete-branch, delete-worktree, merge-to-autodeploy, global-config) need an owner reply naming the action. Silence, "continue" or "fix all" never counts.
 

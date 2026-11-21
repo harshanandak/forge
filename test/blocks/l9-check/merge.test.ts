@@ -52,7 +52,6 @@ function reviewRecord(
     commit_id: commitId,
     state: "APPROVED",
     submitted_at: "2026-11-21T11:00:00Z",
-    html_url: reviewEvidence,
     ...overrides,
   };
 }
@@ -81,16 +80,9 @@ const config: CheckConfig = {
   maxInputBytes: 1048576,
   environment: ["PATH"],
 };
-const reviewConfig = {
+const reviewConfig: CheckConfig = {
   ...config,
-  gate: {
-    requiredReviews: [reviewRequirement],
-    requiredChecks: ["CI Gate"] as const,
-  },
-};
-const emptyReviewConfig = {
-  ...config,
-  gate: { requiredReviews: [], requiredChecks: ["CI Gate"] as const },
+  gate: { requiredReviews: [reviewRequirement] },
 };
 const complete: ProcessResult = {
   stdout: "",
@@ -423,42 +415,24 @@ test("merge accepts and reports the independent approval of the pinned head", as
 }, 1000);
 
 const laterReview = { id: 2, submitted_at: "2026-11-21T11:01:00Z" };
+const later = (state: string) => reviewRecord(fork, { ...laterReview, state });
+const duplicateMarker = "forge-review:merge-gate\nforge-review:merge-gate";
 const unusableReviews = [
-  [
-    "a newer request for changes on another commit",
-    [
-      reviewRecord(head),
-      reviewRecord(fork, { ...laterReview, state: "CHANGES_REQUESTED" }),
-    ],
-  ],
-  [
-    "a newer marked comment on another commit",
-    [
-      reviewRecord(head),
-      reviewRecord(fork, { ...laterReview, state: "COMMENTED" }),
-    ],
-  ],
-  [
-    "a newer marked dismissal on another commit",
-    [
-      reviewRecord(head),
-      reviewRecord(fork, { ...laterReview, state: "DISMISSED" }),
-    ],
-  ],
+  ...["CHANGES_REQUESTED", "COMMENTED", "DISMISSED"].map(
+    (state) =>
+      [
+        `a newer ${state} on another commit`,
+        [reviewRecord(head), later(state)],
+        undefined,
+      ] as const,
+  ),
   ["a dismissed approval", [reviewRecord(head, { state: "DISMISSED" })]],
   ["the PR author's approval", [reviewRecord(head)], "Review-Agent"],
   [
     "an unmarked approval",
     [reviewRecord(head, { body: "Please see forge-review:merge-gate" })],
   ],
-  [
-    "a duplicate marker",
-    [
-      reviewRecord(head, {
-        body: "forge-review:merge-gate\nforge-review:merge-gate",
-      }),
-    ],
-  ],
+  ["a duplicate marker", [reviewRecord(head, { body: duplicateMarker })]],
   ["an unknown kind", [reviewRecord(head, { body: "forge-review:other" })]],
   ["a missing commit", [reviewRecord("", {})]],
   ["an absent review", []],
@@ -475,6 +449,49 @@ for (const [condition, page, author] of unusableReviews) {
   }, 1000);
 }
 
+test.each([
+  [
+    "valid newest approval after a malformed older review",
+    [
+      reviewRecord(head, laterReview),
+      reviewRecord(reviewed, { id: -1, body: duplicateMarker }),
+    ],
+    "MERGED",
+  ],
+  [
+    "valid older approval before a malformed newest review",
+    [
+      reviewRecord(head),
+      reviewRecord(head, { ...laterReview, body: duplicateMarker }),
+    ],
+    "REFUSED",
+  ],
+  [
+    "valid approval with a newer unrelated-kind review",
+    [
+      reviewRecord(head),
+      reviewRecord(fork, { ...laterReview, body: "forge-review:other" }),
+    ],
+    "MERGED",
+  ],
+] as const)(
+  "merge evaluates the %s",
+  async (_name, rows, outcome) => {
+    const f = fixture();
+    await f.receipt();
+    f.alter({ reviewPages: [rows] });
+    const result = await f.run(reviewConfig);
+    expect(result.outcome).toBe(outcome);
+    expect(result.gate.reasons).toEqual(
+      outcome === "REFUSED" ? [requiredReviewReason] : [],
+    );
+    expect(f.calls.some((args) => args[1] === "merge")).toBe(
+      outcome === "MERGED",
+    );
+  },
+  1000,
+);
+
 const unmarkedPage = Array.from({ length: 100 }, (_, index) =>
   reviewRecord(head, {
     id: index + 20,
@@ -483,40 +500,29 @@ const unmarkedPage = Array.from({ length: 100 }, (_, index) =>
   }),
 );
 
-test("merge reads subsequent review pages before deciding", async () => {
-  const f = fixture();
-  await f.receipt();
-  f.alter({
-    reviewPages: [
-      [reviewRecord(head), ...unmarkedPage.slice(1)],
-      [reviewRecord(fork, { ...laterReview, state: "COMMENTED" })],
-    ],
-  });
-  expect((await f.run(reviewConfig)).gate.reasons).toContainEqual(
-    requiredReviewReason,
-  );
-  expect(
-    f.calls.filter((args) => args[1]?.includes("/pulls/7/reviews?")),
-  ).toHaveLength(2);
-}, 1000);
-
-test("merge fails closed when ten full review pages leave evidence incomplete", async () => {
-  const f = fixture();
-  await f.receipt();
-  f.alter({
-    reviewPages: Array.from({ length: 11 }, (_, index) =>
-      index === 0
-        ? [reviewRecord(head), ...unmarkedPage.slice(1)]
-        : unmarkedPage,
-    ),
-  });
-  expect((await f.run(reviewConfig)).gate.reasons).toContainEqual(
-    requiredReviewReason,
-  );
-  expect(
-    f.calls.filter((args) => args[1]?.includes("/pulls/7/reviews?")),
-  ).toHaveLength(10);
-}, 1000);
+const fullPage = [reviewRecord(head), ...unmarkedPage.slice(1)];
+test.each([
+  ["reads subsequent review pages before deciding", [[later("COMMENTED")]], 2],
+  [
+    "fails closed with ten full review pages",
+    Array.from({ length: 10 }, () => unmarkedPage),
+    10,
+  ],
+] as const)(
+  "merge %s",
+  async (_name, pages, count) => {
+    const f = fixture();
+    await f.receipt();
+    f.alter({ reviewPages: [fullPage, ...pages] });
+    expect((await f.run(reviewConfig)).gate.reasons).toContainEqual(
+      requiredReviewReason,
+    );
+    expect(
+      f.calls.filter((args) => args[1]?.includes("/pulls/7/reviews?")),
+    ).toHaveLength(count);
+  },
+  1000,
+);
 
 test("an empty required review list preserves the merge outcome and evidence calls", async () => {
   const implicit = fixture();
@@ -524,7 +530,8 @@ test("an empty required review list preserves the merge outcome and evidence cal
   await implicit.receipt();
   await explicit.receipt();
   expect((await implicit.run()).outcome).toBe("MERGED");
-  expect((await explicit.run(emptyReviewConfig)).outcome).toBe("MERGED");
+  const empty: CheckConfig = { ...config, gate: { requiredReviews: [] } };
+  expect((await explicit.run(empty)).outcome).toBe("MERGED");
   expect(explicit.calls).toEqual(implicit.calls);
 }, 1000);
 

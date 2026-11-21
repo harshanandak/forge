@@ -109,7 +109,7 @@ test("issue show loads none of the modules it never calls", () => {
 // tool listing must stay byte for byte the same until an intentional catalog change.
 const catalog = {
   help: "d082b65bcc5bf39a55c831265b1a0fa8f6ad5d33cad2c8f828bc6ab441b6a03b",
-  helpJson: "2fae43efec96cd205b36032fa42cf7bdeef8daf69ab23bee7a42b3b8ea45981d",
+  helpJson: "47cc251c5a9b07a6bcf23e2221e7f5cbfe4d314bf3c3b93c344aadafe953902b",
   mcpTools: "20940d83078f63696241e5f9c58074e05e833047865f72b33787bb9ba3c7a19a",
 };
 

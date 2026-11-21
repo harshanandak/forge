@@ -24,9 +24,7 @@
           "reviewer": { "type": "string" },
           "head": { "type": "string" },
           "verdict": { "const": "PASS" },
-          "evidence": { "type": "string" },
-          "carriedFrom": { "type": "string" },
-          "base": { "type": "string" }
+          "evidence": { "type": "string" }
         }
       }
     },

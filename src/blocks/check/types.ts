@@ -58,8 +58,6 @@ export interface GateResult {
     readonly head: string;
     readonly verdict: "PASS";
     readonly evidence: string;
-    readonly carriedFrom?: string;
-    readonly base?: string;
   }[];
   readonly checks: readonly { readonly name: string; readonly state: string }[];
   readonly unresolvedThreads: number;

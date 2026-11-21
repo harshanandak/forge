@@ -826,11 +826,6 @@ function doorMatches(path: string, glob: string): boolean {
 /** A GitHub login, with the [bot] suffix the REST API gives apps. It is spliced into a jq filter, so it stays strict. */
 const REVIEWER = /^[A-Za-z0-9][A-Za-z0-9-]*(?:\[bot\])?$/;
 const CODEX_REVIEWER = "chatgpt-codex-connector[bot]";
-const OID = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
-const TREE_DELTA =
-  "--raw -r --no-commit-id --no-abbrev --no-color --no-renames --no-ext-diff --no-textconv --ignore-submodules=none".split(
-    " ",
-  );
 function githubLogin(account: unknown): string {
   const login = isRecord(account) && account.login;
   return typeof login === "string" ? login.toLowerCase() : "";
@@ -873,21 +868,17 @@ async function gate(
   function invalid(): never {
     throw new Error("Invalid GitHub evidence");
   }
-  async function readCommand(program: "gh" | "git", args: readonly string[]) {
+  async function gh(
+    args: readonly string[],
+    allowedExits: readonly number[] = [0],
+  ): Promise<string> {
     active();
-    const executable = services.process.resolve(program, services.environment);
+    const executable = services.process.resolve("gh", services.environment);
     if (executable.kind !== "resolved")
-      throw new Error(`${program} unavailable`);
-    const env = { ...services.environment };
-    if (program === "git") {
-      for (const key of Object.keys(env))
-        if (/^(GIT|GH)_/i.test(key)) delete env[key];
-      env.GIT_GRAFT_FILE = "";
-      env.GIT_NO_LAZY_FETCH = "1";
-    }
+      throw new Error("GitHub CLI unavailable");
     const result = await services.process.run(executable, args, {
       cwd: services.root,
-      env,
+      env: { ...services.environment },
       timeoutMs: Math.max(
         1,
         Math.min(config.timeoutMs, deadline - services.clock.now()),
@@ -898,7 +889,8 @@ async function gate(
     timedOut = result.timedOut;
     active();
     if (
-      result.exitCode !== 0 ||
+      result.exitCode === null ||
+      !allowedExits.includes(result.exitCode) ||
       result.signal !== null ||
       result.timedOut ||
       result.truncated ||
@@ -906,10 +898,9 @@ async function gate(
         (!result.outputEvidence.stdout.complete ||
           !result.outputEvidence.stderr.complete))
     )
-      throw new Error(`${program} command did not complete successfully`);
+      throw new Error("GitHub command did not complete successfully");
     return result.stdout;
   }
-  const gh = (args: readonly string[]) => readCommand("gh", args);
   async function view() {
     const value: unknown = JSON.parse(
       await gh([
@@ -948,31 +939,12 @@ async function gate(
       author?: unknown;
     };
   }
-  async function carries(reviewed: string, base: string) {
-    const gitOptions = ["--no-replace-objects", "-c", "core.quotePath=true"];
-    const git = (args: readonly string[]) =>
-      readCommand("git", [...gitOptions, ...args]);
-    const shallow = await git(["rev-parse", "--is-shallow-repository"]);
-    if (shallow.trim() !== "false" || reviewed === base) return false;
-    const commit = await git(["cat-file", "-p", head]);
-    const parents = commit.split("\nauthor ", 1)[0]?.split("\n").slice(1);
-    if (parents?.join("\n") !== `parent ${reviewed}\nparent ${base}`)
-      return false;
-    const fork = (await git(["merge-base", "--all", reviewed, base])).trim();
-    if (!OID.test(fork)) return false;
-    const delta = (from: string, to: string) =>
-      git(["diff-tree", ...TREE_DELTA, from, to, "--"]);
-    return (await delta(fork, reviewed)) === (await delta(base, head));
-  }
   async function requireReviews(
     pr: Awaited<ReturnType<typeof view>>,
     repo: RegExpExecArray,
   ) {
     const author = githubLogin(pr.author);
     if (!REVIEWER.test(author)) invalid();
-    const markers = new Set(
-      requiredReviews.map(({ kind }) => `forge-review:${kind}`),
-    );
     const endpoint = `repos/${repo[2]}/${repo[3]}/pulls/${input.pr}/reviews`;
     const rows: Record<string, unknown>[] = [];
     for (let page = 1; page <= 10; page++) {
@@ -991,40 +963,46 @@ async function gate(
     for (const { kind, reviewer } of requiredReviews) {
       const login = reviewer.toLowerCase();
       if (login === author) continue;
-      let latest: Record<string, unknown> | undefined;
-      let newestAt = -Infinity,
-        newestId = 0;
+      const marker = `forge-review:${kind}`;
+      let newestAt = -Infinity;
+      let newest: { row: Record<string, unknown>; markers: string[] }[] = [];
       for (const row of rows) {
         if (githubLogin(row.user) !== login || row.state === "PENDING")
           continue;
         if (typeof row.body !== "string") continue;
-        const found = row.body
+        const markers = row.body
           .split(/\r?\n/)
-          .filter((line) => line.startsWith("forge-review:"));
-        if (!found.length) continue;
-        if (found.length !== 1 || !markers.has(found[0]!)) invalid();
-        if (found[0] !== `forge-review:${kind}`) continue;
+          .filter((line) => line.trimStart().startsWith("forge-review:"));
+        if (
+          !markers.some((line) => line.trimStart().split(/\s/, 1)[0] === marker)
+        )
+          continue;
         if (typeof row.submitted_at !== "string") invalid();
         const at = Date.parse(row.submitted_at);
-        if (!Number.isFinite(at) || !integer(row.id) || row.id < 1) invalid();
-        if (at === newestAt && row.id === newestId) invalid();
-        if (at > newestAt || (at === newestAt && row.id > newestId))
-          [latest, newestAt, newestId] = [row, at, row.id];
+        if (!Number.isFinite(at)) invalid();
+        if (at > newestAt) {
+          newestAt = at;
+          newest = [];
+        }
+        if (at === newestAt) newest.push({ row, markers });
       }
-      if (latest?.state !== "APPROVED") continue;
-      const reviewed = latest.commit_id;
-      if (typeof reviewed !== "string" || !OID.test(reviewed)) continue;
-      if (reviewed !== head && !(await carries(reviewed, pr.baseRefOid)))
+      if (!newest.every(({ row }) => integer(row.id) && row.id > 0)) continue;
+      newest.sort((a, b) => Number(b.row.id) - Number(a.row.id));
+      const [latest, tied] = newest;
+      if (
+        latest?.row.state !== "APPROVED" ||
+        latest.row.commit_id !== head ||
+        latest.row.id === tied?.row.id ||
+        latest.markers.length !== 1 ||
+        latest.markers[0] !== marker
+      )
         continue;
       reviews.push({
         kind,
         reviewer: login,
         head,
         verdict: "PASS",
-        evidence: pr.url + "#pullrequestreview-" + newestId,
-        ...(reviewed === head
-          ? {}
-          : { carriedFrom: reviewed, base: pr.baseRefOid }),
+        evidence: pr.url + "#pullrequestreview-" + String(latest.row.id),
       });
     }
   }

@@ -72,7 +72,7 @@ const config: CheckConfig = {
   environment: ["SELECTED"],
 };
 
-test("the check contract accepts a named review requirement and its carried evidence", () => {
+test("the check contract accepts a named review requirement and exact-head evidence", () => {
   const reviewer = "review-agent[bot]";
   const kind = "merge-gate";
   const head = "a".repeat(40);
@@ -97,8 +97,6 @@ test("the check contract accepts a named review requirement and its carried evid
           head,
           verdict: "PASS",
           evidence: "https://github.com/org/repo/pull/7#pullrequestreview-1",
-          carriedFrom: "b".repeat(40),
-          base: "c".repeat(40),
         },
       ],
     }),
