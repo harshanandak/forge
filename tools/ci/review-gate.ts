@@ -27,6 +27,11 @@ export type Guard = {
   mainRed: boolean;
 };
 const sha = /^[0-9a-f]{40}$/;
+const ledgerKinds = ["sol", "lead-check", "sonnet-temp", "review-gate"];
+const reservedMarker =
+  /<!--\s*(?:codex-pull-request-review-summary|codex-review-state|coderabbit-ai-generated)/g;
+const botRecord =
+  /<!-- (?:codex-pull-request-review-summary -->\s*<!-- codex-review-state:v1 (?<summary>.*?) -->|(?<rabbit>coderabbit-ai-generated:v1) -->(?:\s+\*\*Actionable comments posted: (?<count>\d+)\*\*)?)/s;
 const fullReviewScope = /(?:^|\s)\bscope=full\b(?=\s|$)/;
 const codexQuota =
   /You have reached your Codex usage limits for code reviews\./;
@@ -38,24 +43,20 @@ function failure(description: string) {
   return { state: "failure" as const, description };
 }
 
-function codexState(body: string) {
-  const json = /<!-- codex-review-state:v1 (.*?) -->/s.exec(body)?.[1];
-  if (!json || body.match(/<!--\s*codex-review-state:/g)?.length !== 1) return;
+function codexState(json: string) {
   try {
-    const { code_review: state } = JSON.parse(json) as {
-      code_review: {
-        commit_sha: string;
-        status: string;
-        has_any_findings: boolean;
-        has_unresolved_findings: boolean;
-      };
-    };
-    if (typeof state.commit_sha !== "string" || !sha.test(state.commit_sha))
+    const parsed = JSON.parse(json) as Record<string, Record<string, unknown>>;
+    const {
+      commit_sha: head,
+      status,
+      has_any_findings: hasFindings,
+      has_unresolved_findings: unresolved,
+    } = parsed.code_review ?? {};
+    if (typeof head !== "string" || !sha.test(head)) return;
+    if (status !== "completed" && status !== "in_progress") return;
+    if (typeof hasFindings !== "boolean" || typeof unresolved !== "boolean")
       return;
-    if (!["completed", "in_progress"].includes(state.status)) return;
-    if (typeof state.has_any_findings !== "boolean") return;
-    if (typeof state.has_unresolved_findings !== "boolean") return;
-    return state;
+    return { head, completed: status === "completed", hasFindings, unresolved };
   } catch {
     return;
   }
@@ -71,15 +72,56 @@ export function decide(evidence: Evidence, rows: GateRow[], guard: Guard) {
     return failure("open threads");
   if (guard.mainRed !== false) return failure("main CI is red");
 
+  for (const { kind, verdict, head: reviewedHead, at, p1 } of rows) {
+    if (typeof reviewedHead !== "string") return failure("invalid ledger row");
+    if (!ledgerKinds.includes(kind) || !sha.test(reviewedHead))
+      return failure("invalid ledger row");
+    if (verdict !== "PASS" && verdict !== "BLOCK")
+      return failure("invalid ledger row");
+    if (!Number.isFinite(at) || at > now) return failure("invalid ledger row");
+    if (!Number.isInteger(p1) || p1 < 0) return failure("invalid ledger row");
+  }
+  const incompleteRabbit = failure("incomplete coderabbit review");
+  const rabbitFindings = evidence.findings.filter(
+    ({ author }) => author.type === "Bot" && author.login === bots[1][1],
+  );
+  let summary: ReturnType<typeof codexState>;
+  let rabbitComplete = false;
+  for (const message of [...evidence.comments, ...evidence.reviews]) {
+    const { author, body } = message;
+    if (author.type !== "Bot") continue;
+    const markers = body.match(reservedMarker)?.length ?? 0;
+    const rabbitReview = "id" in message && author.login === bots[1][1];
+    if (!markers && !rabbitReview) continue;
+    const record = botRecord.exec(body)?.groups;
+    if (rabbitReview || record?.rabbit) {
+      if (markers !== 1 || !record?.rabbit) return incompleteRabbit;
+      const reports = body.match(/Actionable comments posted/g)?.length;
+      if (reports !== (record.count ? 1 : undefined)) return incompleteRabbit;
+      if ("id" in message && !record.count) return incompleteRabbit;
+      if (!rabbitReview) continue;
+      const inline = rabbitFindings.filter(
+        ({ reviewId }) => reviewId === message.id,
+      );
+      if (Number(record.count) > inline.length) return incompleteRabbit;
+      if (message.head !== head) continue;
+      if (!["APPROVED", "COMMENTED"].includes(message.state))
+        return incompleteRabbit;
+      rabbitComplete = true;
+    } else {
+      const state = record?.summary && codexState(record.summary);
+      if (markers !== 2 || !state) return failure("unknown codex summary");
+      if ("id" in message || author.login !== bots[0][1]) continue;
+      if (summary) return failure("unknown codex summary");
+      summary = state;
+    }
+  }
+
   let block = -Infinity;
   let checkedThrough = -Infinity;
   let exactPass = -Infinity;
   let fullPass = -Infinity;
   for (const row of rows) {
-    if (!Number.isFinite(row.at) || row.at > now)
-      return failure("invalid ledger time");
-    if (!Number.isInteger(row.p1) || row.p1 < 0)
-      return failure("invalid P1 count");
     const exactSol = row.head === head && row.kind === "sol";
     if (row.p1 > 0 || (exactSol && row.verdict !== "PASS"))
       block = Math.max(block, row.at);
@@ -94,6 +136,7 @@ export function decide(evidence: Evidence, rows: GateRow[], guard: Guard) {
   if (guard.securityPathNeedsSol !== false && !securityPass)
     return failure("security path needs Sol");
 
+  const codexComplete = summary?.head === head && summary.completed;
   const routes: string[] = [];
   for (const [bot, login, quota] of bots) {
     const authored = ({ author }: { author: Author }) =>
@@ -103,41 +146,10 @@ export function decide(evidence: Evidence, rows: GateRow[], guard: Guard) {
     if (findings.some((finding) => !(finding.at < checkedThrough)))
       return failure(`unchecked ${bot} findings`);
 
-    let completed: boolean;
-    if (bot === "codex") {
-      const [note, duplicate] = comments.filter((comment) =>
-        comment.body.includes("<!-- codex-pull-request-review-summary -->"),
-      );
-      const summary = note && codexState(note.body);
-      if (duplicate || (note && !summary))
-        return failure("unknown codex summary");
-      if (
-        summary?.has_unresolved_findings ||
-        (summary?.has_any_findings && !findings.length)
-      )
-        return failure("incomplete codex findings");
-      completed =
-        summary?.commit_sha === head && summary.status === "completed";
-    } else {
-      const reviews = evidence.reviews.filter(authored);
-      for (const { id, body } of reviews) {
-        const format =
-          /^<!-- coderabbit-ai-generated:v1 -->\s+\*\*Actionable comments posted: (\d+)\*\*/;
-        const count = Number(format.exec(body)?.[1]);
-        const inline = findings.filter((finding) => finding.reviewId === id);
-        if (!(count <= inline.length))
-          return failure("incomplete coderabbit review");
-      }
-      const exact = reviews.filter((review) => review.head === head);
-      if (
-        exact.some(
-          (review) => !["APPROVED", "COMMENTED"].includes(review.state),
-        )
-      )
-        return failure("incomplete coderabbit review");
-      completed = exact.length > 0;
-    }
-    if (completed) {
+    const missingFindings = summary?.hasFindings && !findings.length;
+    if (bot === "codex" && (summary?.unresolved || missingFindings))
+      return failure("incomplete codex findings");
+    if (bot === "codex" ? codexComplete : rabbitComplete) {
       routes.push(bot);
       continue;
     }

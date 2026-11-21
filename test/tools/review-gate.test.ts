@@ -109,20 +109,25 @@ const cases: Case[] = [
     evidence: { now: NaN },
     expected: blocked("invalid clock"),
   },
+  ...[
+    { name: "a future ledger pass", row: { ...sol, at: clean.now + 1 } },
+    { name: "a negative P1 count", row: { ...sol, p1: -1 } },
+    { name: "a fractional P1 count", row: { ...sol, p1: 0.5 } },
+    {
+      name: "an unknown ledger kind",
+      row: { ...sol, kind: "sol-v2", verdict: "BLOCK" },
+    },
+    { name: "an unknown ledger verdict", row: { ...sol, verdict: "UNKNOWN" } },
+  ].map(({ name, row }) => ({
+    name: `${name} is invalid`,
+    rows: [row],
+    expected: blocked("invalid ledger row"),
+  })),
   {
-    name: "a ledger pass dated after the decision cannot count",
-    rows: [{ ...sol, at: clean.now + 1 }],
-    expected: blocked("invalid ledger time"),
-  },
-  {
-    name: "a negative ledger P1 count is invalid",
-    rows: [{ ...sol, p1: -1 }],
-    expected: blocked("invalid P1 count"),
-  },
-  {
-    name: "a fractional ledger P1 count is invalid",
-    rows: [{ ...sol, p1: 0.5 }],
-    expected: blocked("invalid P1 count"),
+    name: "a ledger pass with a malformed head cannot cover a finding",
+    evidence: withFinding,
+    rows: [{ ...sol, head: "not-a-sha" }],
+    expected: blocked("invalid ledger row"),
   },
   {
     name: "stale Codex summary withholds success",
@@ -255,6 +260,18 @@ const cases: Case[] = [
     },
     expected: blocked("unchecked coderabbit findings"),
   },
+  {
+    name: "two CodeRabbit counts in one review cannot grant coverage",
+    evidence: {
+      reviews: [
+        {
+          ...rabbitReview,
+          body: rabbitReview.body + "\n\n**Actionable comments posted: 1**",
+        },
+      ],
+    },
+    expected: blocked("incomplete coderabbit review"),
+  },
   ...[
     ["unaccounted findings", rabbitReview.body.replace(": 0**", ": 1**")],
     ["a missing count", "<!-- coderabbit-ai-generated:v1 -->"],
@@ -363,7 +380,11 @@ const cases: Case[] = [
       "malformed JSON",
       `${summaryMarker}\n<!-- codex-review-state:v1 {broken} -->`,
     ],
-    ["unknown version", summary().body.replace("state:v1", "state:v2")],
+    ["unknown state version", summary().body.replace("state:v1", "state:v2")],
+    [
+      "unknown summary version",
+      summary().body.replace("summary -->", "summary:v2 -->"),
+    ],
     ["short SHA", summary(head.slice(0, 7)).body],
     [
       "unknown findings boolean",
