@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
-import { ForgeFailure } from "../../src/contract/failure.ts";
 import { canonicalJson, digestBytes } from "../../src/core/config/pointer.ts";
 import { fixture, probe } from "./v3-project.fixture.ts";
 
@@ -58,6 +57,12 @@ const pages = ({ db }: Fixture) =>
     )
     .all();
 const active = (f: Fixture) => ({ root: root(f), pages: pages(f) });
+const stagingTables = (f: Fixture) =>
+  f.db
+    .query(
+      "SELECT name FROM sqlite_schema WHERE type='table' AND name GLOB 'cloud_v3_checkpoint*'",
+    )
+    .all();
 const frame = (
   changes: readonly Json[] = [],
   events: readonly Json[] = [],
@@ -131,57 +136,108 @@ function afterSync(
   });
 }
 
-const crash = () => {
-  throw new ForgeFailure({
-    code: "UNAVAILABLE",
-    message: "Injected checkpoint fault",
-    retry: "never",
-  });
-};
-
 test(
-  "v3 checkpoint seals records, release, refusal, tombstone and witness before collecting the log",
+  "v3 checkpoint verifies staged digests and keeps the active root and log intact",
   () =>
     withFixture(async (f) => {
       await populate(f);
       const before = await view(f);
-      const original = commits(f).map(({ body }) => JSON.parse(body) as Json);
+      const source = active(f);
+      const log = commits(f);
+      const original = log.map(({ body }) => JSON.parse(body) as Json);
+      const { result: refusal, ...receipt } = original[2]!.outcome as Json;
+      expect(refusal).toMatchObject({ code: "LEASE_HELD" });
+      const archived = original.with(2, {
+        ...original[2],
+        outcome: {
+          ...receipt,
+          resultDigest: digestBytes(canonicalJson(refusal)),
+        },
+      });
+      const entries = ["lease", "outcome", "record", "witness"].flatMap(
+        (collection) =>
+          Object.keys(before.image[collection] as Json)
+            .sort()
+            .map(
+              (key) =>
+                [
+                  collection,
+                  key,
+                  (before.image[collection] as Json)[key],
+                ] as const,
+            ),
+      );
+      const projectionDigest = digestBytes(canonicalJson(entries));
+      let rosterDigest: string | undefined;
+      afterSync(f, 1, () => {
+        const directory = pageBody(f, "directory:0");
+        const snapshot = pageBody(f, "snapshot:0");
+        const transcript = pageBody(f, "transcript:0");
+        expect(JSON.parse(transcript)).toEqual(archived);
+        const refusalSlot = (JSON.parse(directory) as DirectoryItem[]).find(
+          (item) => item.collection === "outcome" && item.key === receipt.id,
+        )!;
+        expect(
+          JSON.parse(
+            Buffer.from(snapshot)
+              .subarray(
+                refusalSlot.offset,
+                refusalSlot.offset! + refusalSlot.length!,
+              )
+              .toString(),
+          ),
+        ).toMatchObject({ outcome: { result: refusal } });
+        const roster = [
+          [
+            "directory",
+            directory,
+            entries.length,
+            entries[0]!.slice(0, 2),
+            entries.at(-1)!.slice(0, 2),
+          ],
+          [
+            "snapshot",
+            snapshot,
+            entries.filter((item) => item[2] !== null).length,
+            null,
+            null,
+          ],
+          ["transcript", transcript, log.length, 1, log.length],
+        ] as const;
+        rosterDigest = digestBytes(
+          canonicalJson(
+            roster.map(([kind, body, count, first, last]) => ({
+              id: `${kind}:0`,
+              kind,
+              ordinal: 0,
+              first,
+              last,
+              count,
+              bytes: Buffer.byteLength(body),
+              hash: digestBytes(body),
+            })),
+          ),
+        );
+      });
       const rows = f.reads.rows;
       const bytes = f.reads.bytes;
       const result = await checkpoint(f);
       expect(result.status).toBe(200);
+      expect(rosterDigest).toBeDefined();
+      expect(result.body).toMatchObject({
+        ok: true,
+        value: { rosterDigest, projectionDigest },
+      });
       const reads = { rows: f.reads.rows - rows, bytes: f.reads.bytes - bytes };
       console.log("v3 checkpoint fixture reads", reads);
       expect(reads.rows).toBeLessThanOrEqual(64);
       expect(reads.bytes).toBeLessThanOrEqual(4 * MiB);
       expect(f.alarms).toEqual([]);
-      expect(commits(f)).toEqual([]);
-      expect(
-        pages(f)
-          .filter(({ id }) => id.startsWith("transcript:"))
-          .flatMap(({ body }) => JSON.parse(body) as Json[]),
-      ).toEqual(original);
-      expect(await view(f)).toMatchObject({
-        generation: 1,
-        coveredHead: 5,
-        eventWatermark: 1,
-        image: before.image,
-      });
+      expect(active(f)).toEqual(source);
+      expect(commits(f)).toEqual(log);
+      expect(stagingTables(f)).toEqual([]);
       f.restart();
-      expect((await view(f)).image).toEqual(before.image);
-
-      expect(
-        (await append(f, frame([{ key: "a", value: { revision: 2 } }]))).status,
-      ).toBe(200);
-      const next = await view(f);
-      expect((await checkpoint(f)).status).toBe(200);
-      expect(commits(f)).toEqual([]);
-      f.restart();
-      expect(await view(f)).toMatchObject({
-        generation: 2,
-        coveredHead: 6,
-        image: next.image,
-      });
+      expect(await view(f)).toEqual(before);
     }),
   timeout,
 );
@@ -191,6 +247,8 @@ test(
   () =>
     withFixture(async (f) => {
       await populate(f);
+      const source = active(f);
+      const log = commits(f);
       let staged: Awaited<ReturnType<typeof view>> | undefined;
       afterSync(f, 1, async () => {
         expect(
@@ -202,11 +260,14 @@ test(
       const result = await checkpoint(f);
       expect(result.status).toBe(200);
       expect(staged).toBeDefined();
-      expect(commits(f).map(({ sequence }) => sequence)).toEqual([6]);
-      const expected = { generation: 1, coveredHead: 5, image: staged!.image };
-      expect(await view(f)).toMatchObject(expected);
+      expect(active(f)).toEqual(source);
+      expect(commits(f).slice(0, -1)).toEqual(log);
+      expect(commits(f).map(({ sequence }) => sequence)).toEqual([
+        1, 2, 3, 4, 5, 6,
+      ]);
+      expect(await view(f)).toEqual(staged!);
       f.restart();
-      expect(await view(f)).toMatchObject(expected);
+      expect(await view(f)).toEqual(staged!);
     }),
   timeout,
 );
@@ -325,84 +386,12 @@ for (const change of [
         const result = await checkpoint(f);
         expect(result).toMatchObject(refused);
         expect(tampered).toBe(true);
+        expect(stagingTables(f)).toEqual([]);
+        expect((await checkpoint(f)).status).toBe(200);
         expect(active(f)).toEqual(source);
         expect(commits(f)).toEqual(log);
         f.restart();
         expect((await view(f)).image).toEqual(before.image);
-      }),
-    timeout,
-  );
-}
-
-for (const changed of ["source", "cut"]) {
-  test(
-    `v3 checkpoint refuses a changed ${changed} before switching the root`,
-    () =>
-      withFixture(async (f) => {
-        await populate(f);
-        let source = active(f);
-        const log = commits(f);
-        afterSync(f, 1, () => {
-          if (changed === "source") {
-            const body = canonicalJson({
-              ...(JSON.parse(root(f).body) as Json),
-              incarnation: "competing-root",
-            });
-            f.db.run("UPDATE cloud_v3_root SET body=?, seal=? WHERE id=1", [
-              body,
-              digestBytes(body),
-            ]);
-            source = active(f);
-          } else {
-            expect(
-              f.db.run("UPDATE cloud_v3_checkpoint SET cut=cut-1").changes,
-            ).toBe(1);
-          }
-        });
-        const result = await checkpoint(f);
-        expect(result).toMatchObject(refused);
-        expect(active(f)).toEqual(source);
-        expect(commits(f)).toEqual(log);
-      }),
-    timeout,
-  );
-}
-
-for (const point of ["before switch", "after switch", "during collection"]) {
-  test(
-    `v3 checkpoint recovers the complete image after a fault ${point}`,
-    () =>
-      withFixture(async (f) => {
-        await populate(f);
-        const before = await view(f);
-        const source = active(f);
-        const log = commits(f);
-        if (point === "during collection") {
-          const executeSql = f.storage.sql.exec.bind(f.storage.sql);
-          f.storage.sql.exec = (statement, ...bindings) => {
-            if (/^DELETE FROM cloud_v3_commits\b/i.test(statement)) {
-              f.db.run("DELETE FROM cloud_v3_commits WHERE sequence=1");
-              crash();
-            }
-            return executeSql(statement, ...bindings);
-          };
-        } else {
-          afterSync(f, point === "before switch" ? 1 : 2, crash);
-        }
-        const result = await checkpoint(f);
-        expect(result).toMatchObject(refused);
-        expect(result.body).toMatchObject({
-          error: { message: "Injected checkpoint fault" },
-        });
-        expect(commits(f)).toEqual(
-          point === "during collection" ? log.slice(1) : log,
-        );
-        if (point === "before switch") expect(active(f)).toEqual(source);
-        f.restart();
-        expect(await view(f)).toMatchObject({
-          generation: point === "before switch" ? 0 : 1,
-          image: before.image,
-        });
       }),
     timeout,
   );
