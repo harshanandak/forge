@@ -104,7 +104,7 @@ jobs:
         run: bun tools/ci/ci-record.ts
       - &upload-record
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ci-record-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ strategy.job-index || 0 }}
           path: ${{ runner.temp }}/ci-record.json
@@ -161,7 +161,7 @@ jobs:
           digest=$(sha256sum forge-workflow.tgz | cut -d' ' -f1)
           printf '%s  forge-workflow.tgz\n' "$digest" | tee forge-workflow.tgz.sha256
           echo "sha256=$digest" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: packed-package
           path: ${{ runner.temp }}/forge-workflow.tgz*
@@ -384,7 +384,7 @@ jobs:
         if: matrix.suite != 'pack'
         run: ${{ matrix.shard && format('bun tools/ci/test-shards.ts test:integration {0} {1}', matrix.shard, matrix.node == '26' && '--node26' || '') || 'bun run test:integration' }} 2>&1 | tee -a "$RUNNER_TEMP/ci-tests.log"
       - if: matrix.suite != 'tests'
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: packed-package
           path: ${{ runner.temp }}/packed
@@ -411,7 +411,7 @@ jobs:
       - name: Upload Windows runner trace
         if: always() && runner.os == 'Windows'
         continue-on-error: true
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-trace-node-${{ matrix.node }}-${{ matrix.suite }}-${{ steps.trace.outputs.shard || strategy.job-index }}
           path: |

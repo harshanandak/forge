@@ -522,7 +522,7 @@ jobs:
           restore_cf duplicate-labels src/core/state/restore-json.ts 's/^  checkLabels\(text\);$/  void 0;/m' "a whole restore with a duplicate event label is RESTORE_INVALID_ROW and leaves nothing" '[got.status, got.json.error?.code]'
       - name: Restore write-cost evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: restore-cost-${{ github.run_id }}
           path: |
