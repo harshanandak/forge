@@ -2,6 +2,8 @@ Decisions needed: none.
 
 # Local read performance
 
+Hosted Speed CI compares the median `issue show` peaks from 47 alternating pairs on the same runner and writes both medians, the percent change, and the platform cap on a `speed-memory` job summary line. Growth above 10% warns, growth above 20% fails, and the 85 MB Linux and 70 MB Windows caps warn.
+
 Windows, Node 24.18.0. Baseline: main (6e3c10a). Each side was built and
 packed separately, then its tarball was extracted into a separate scratch
 installation. Both used the same pinned, already-installed dependencies.

@@ -32,10 +32,6 @@ interface Limit {
   readonly maxPeakMb: number;
 }
 
-// The speed gate, on `issue show` on a hosted runner. Peak memory is checked against
-// an absolute cap. Time is checked against the build of the base branch, run in the same job and
-// interleaved with this build, so runner speed cancels out. The absolute time is a ceiling that only
-// warns while that comparison passes.
 // Platforms without a limit only report.
 const GATE_COMMAND = "issue show";
 const gatedSamples: SpeedSample[] = [];
@@ -67,8 +63,6 @@ const baseDist = flag("--base");
 const runs = Number(flag("--runs") ?? (gate && baseDist !== undefined ? 1 : 9));
 if (!Number.isInteger(runs) || runs < 1)
   throw new Error("--runs must be a positive integer");
-// A pull request only warns when the absolute peak is over its cap; a push to main fails.
-const pullRequest = argv.includes("--pull-request");
 const pairs = Number(flag("--pairs") ?? GATED_PAIRS);
 // An even count has two middle values, and the median would take the upper one.
 if (!Number.isInteger(pairs) || pairs < 1 || pairs % 2 === 0)
@@ -239,12 +233,22 @@ function measurePair(
   args: readonly string[],
   baseProgram: string,
 ): { current: Row; base: Row } {
+  const baseSample = () => {
+    try {
+      return run(args, baseProgram);
+    } catch (cause) {
+      const message =
+        "Speed memory comparison incomplete: the base measurement failed.";
+      if (gate) appendSummary(message);
+      throw new Error(message, { cause });
+    }
+  };
   run(args);
-  run(args, baseProgram);
+  baseSample();
   const current: { ms: number; peakMb: number }[] = [];
   const base: { ms: number; peakMb: number }[] = [];
   for (const side of sampleOrder(pairs)) {
-    const sample = run(args, side === "current" ? bin : baseProgram);
+    const sample = side === "current" ? run(args) : baseSample();
     (side === "current" ? current : base).push(sample);
     if (command === GATE_COMMAND)
       recordSpeedSample(gatedSamples, side, sample.ms);
@@ -253,6 +257,11 @@ function measurePair(
     current: toRow(command, current),
     base: toRow(`${command} (origin/main build)`, base),
   };
+}
+
+function appendSummary(text: string): void {
+  if (process.env.GITHUB_STEP_SUMMARY)
+    appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${text}\n`);
 }
 
 const rows: Row[] = [];
@@ -327,8 +336,7 @@ console.log(JSON.stringify(speedSamples));
 for (const row of rows)
   if (row.command.startsWith(GATE_COMMAND))
     console.log(`peaks ${row.command}: ${JSON.stringify(row.peaksMb)}`);
-if (process.env.GITHUB_STEP_SUMMARY)
-  appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${table}\n`);
+appendSummary(table);
 const jsonPath = flag("--json");
 if (jsonPath)
   writeFileSync(
@@ -346,12 +354,17 @@ if (gate) {
       (candidate) =>
         candidate.command === `${GATE_COMMAND} (origin/main build)`,
     );
-    const { failures, warnings } = gateDecision(limit, row, baseRow, {
+    const baseMissing = `Speed memory comparison incomplete: the base build was not found${baseDist === undefined ? " (no --base folder was given)" : ` at ${baseDist}`}.`;
+    const { failures, warnings, memory } = gateDecision(limit, row, baseRow, {
       command: GATE_COMMAND,
       platform,
-      pullRequest,
-      baseMissing: `the origin/main build was not found${baseDist === undefined ? " (no --base folder was given)" : ` at ${baseDist}`}, so the check against the base branch cannot run; build the base branch first`,
+      baseMissing,
     });
+    const trend = memory
+      ? `speed-memory ${JSON.stringify({ platform, command: GATE_COMMAND, ...memory })}`
+      : baseMissing;
+    appendSummary(trend);
+    if (memory) console.log(trend);
     for (const message of warnings) console.log(`::warning::${message}`);
     for (const message of failures) console.error(`::error::${message}`);
     if (failures.length > 0) process.exitCode = 1;
