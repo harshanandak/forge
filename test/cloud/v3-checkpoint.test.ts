@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { canonicalJson, digestBytes } from "../../src/core/config/pointer.ts";
 import { fixture, probe } from "./v3-project.fixture.ts";
@@ -6,6 +6,8 @@ import { fixture, probe } from "./v3-project.fixture.ts";
 const timeout = 30_000;
 const MiB = 1024 * 1024;
 const HOUR = 3_600_000;
+const T0 = Date.parse("2026-11-20T12:00:00.000Z");
+const E1 = T0 + 2 * HOUR;
 const holder = {
   actor: { kind: "agent", id: "fixture" },
   session: { id: "fixture" },
@@ -15,6 +17,10 @@ const refused = {
   status: 503,
   body: { ok: false, error: { code: "UNAVAILABLE" } },
 };
+
+beforeEach(() => setSystemTime(T0));
+afterEach(() => setSystemTime());
+
 type Fixture = ReturnType<typeof fixture>;
 type Json = Record<string, unknown>;
 interface DirectoryItem {
@@ -73,10 +79,14 @@ async function populate(f: Fixture) {
   const lease = (route: string, owner: string, input: Json) =>
     f.send(
       `${probe}/${route}`,
-      { subject: "work-1", holder, ...input },
+      {
+        subject: "work-1",
+        holder: { ...holder, session: { ...holder.session, device: owner } },
+        ...input,
+      },
       {
         "X-Forge-Owner": owner,
-        "X-Forge-Owner-Expires": String(Date.now() + HOUR),
+        "X-Forge-Owner-Expires": String(E1),
       },
     );
   expect(
@@ -95,17 +105,14 @@ async function populate(f: Fixture) {
     ).status,
   ).toBe(200);
   expect(
-    (await lease("claim", "owner-a", { requestId: "acq-1", ttlMs: HOUR }))
-      .status,
-  ).toBe(200);
+    await lease("claim", "owner-a", { requestId: "acq-1", ttlMs: HOUR }),
+  ).toMatchObject({ status: 200 });
   expect(
-    (await lease("claim", "owner-b", { requestId: "acq-2", ttlMs: HOUR }))
-      .status,
-  ).toBe(409);
+    await lease("claim", "owner-b", { requestId: "acq-2", ttlMs: HOUR }),
+  ).toMatchObject({ status: 409, body: { error: { code: "LEASE_HELD" } } });
   expect(
-    (await lease("release", "owner-a", { requestId: "rel-1", generation: 1 }))
-      .status,
-  ).toBe(200);
+    await lease("release", "owner-a", { requestId: "rel-1", generation: 1 }),
+  ).toMatchObject({ status: 200 });
   expect(
     (await append(f, frame([{ key: "gone", deleted: true }]))).status,
   ).toBe(200);
