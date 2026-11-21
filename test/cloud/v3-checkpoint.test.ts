@@ -1314,6 +1314,33 @@ test(
   timeout,
 );
 
+test(
+  "v3 portable replay keeps the live frame depth limit",
+  () =>
+    withFixture(async (source) => {
+      const recordAtDepth = (depth: number) => {
+        const value: unknown = JSON.parse(
+          "[".repeat(depth) + "0" + "]".repeat(depth),
+        );
+        return putRecord("r1", 1, value);
+      };
+      expect((await append(source, recordAtDepth(60))).status).toBe(200);
+      expect((await checkpoint(source)).status).toBe(200);
+      const native = pages(source).find(
+        ({ id }) => id === "transcript:0",
+      )!.body;
+      const frames = JSON.parse(native) as Json[];
+      const expected = recoverV3(writableStore(source.storage));
+      await withFixture((target) => {
+        const replayed = replayPortable(target, frames);
+        expect(viewV3(replayed).image).toEqual(viewV3(expected).image);
+        const deeper = { ...frames[0], ...recordAtDepth(61) };
+        expect(() => replayPortable(target, [deeper])).toThrow(ForgeFailure);
+      });
+    }),
+  timeout,
+);
+
 for (const [fault, edit] of [
   [
     "private frame",

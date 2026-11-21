@@ -180,10 +180,10 @@ function readStored<T>(read: () => T): T {
   }
 }
 
-const parse = (text: string): unknown =>
+const parse = (text: string, depth = MAX_JSON_DEPTH): unknown =>
   readStored(() => {
     const value: unknown = JSON.parse(text);
-    if (!withinDepth(value)) throw unavailable();
+    if (!withinDepth(value, depth)) throw unavailable();
     return value;
   });
 
@@ -439,7 +439,7 @@ function recoverPortableV3(
   { admit, portableTranscript }: PortableVerification,
 ): V3Image {
   if (Buffer.byteLength(portableTranscript) > PAGE_BYTES) throw unavailable();
-  const frames = parse(portableTranscript);
+  const frames = parse(portableTranscript, MAX_JSON_DEPTH + 1);
   if (!Array.isArray(frames) || storedCanonical(frames) !== portableTranscript)
     throw unavailable();
   const image = recoveryImage(genesis("portable", "portable"), 0);
