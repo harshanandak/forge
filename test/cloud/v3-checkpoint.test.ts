@@ -954,3 +954,72 @@ test(
     }),
   timeout,
 );
+
+for (const fault of [
+  "empty subject",
+  "missing holder device",
+  "holder device outside the receipt scope",
+  "extra fingerprint scope field",
+] as const) {
+  test(
+    `v3 checkpoint refuses a pre-admission frame with ${fault}`,
+    () =>
+      withFixture(async (f) => {
+        const requestId = "attempt";
+        expect(
+          await sendLease(f, "claim", "owner-a", {
+            requestId,
+            subject: "",
+            ttlMs: HOUR,
+          }),
+        ).toMatchObject({
+          status: 400,
+          body: { error: { message: "subject must be a non-empty string" } },
+        });
+        expect(commits(f)).toEqual([]);
+        expect(
+          await sendLease(f, "claim", "owner-a", {
+            requestId,
+            subject: "a".repeat(501),
+            ttlMs: HOUR,
+          }),
+        ).toMatchObject({
+          status: 400,
+          body: { error: { message: "Key must contain 1 to 500 characters" } },
+        });
+        changeCommit(f, 1, (frame) => {
+          const outcome = frame.outcome as Json;
+          const fingerprint = JSON.parse(String(outcome.fingerprint)) as Json;
+          const changes = {
+            "empty subject": { subject: "" },
+            "missing holder device": { holder },
+            "holder device outside the receipt scope": {
+              holder: {
+                ...holder,
+                session: { ...holder.session, device: "other" },
+              },
+            },
+            "extra fingerprint scope field": {
+              scope: { ...(fingerprint.scope as Json), family: "lease" },
+            },
+          };
+          return {
+            ...frame,
+            outcome: {
+              ...outcome,
+              fingerprint: canonicalJson({ ...fingerprint, ...changes[fault] }),
+            },
+          };
+        });
+        f.restart();
+        const source = active(f);
+        const log = commits(f);
+        const effects = f.observeEffects();
+        expect(await checkpoint(f)).toMatchObject(refused);
+        expect(effects()).toEqual(noWrites);
+        expect(active(f)).toEqual(source);
+        expect(commits(f)).toEqual(log);
+      }),
+    timeout,
+  );
+}
