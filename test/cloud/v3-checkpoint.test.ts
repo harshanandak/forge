@@ -185,6 +185,11 @@ test(
       const source = active(f);
       const schema = pageSchema(f);
       const tables = tableNames(f);
+      expect(tables).toEqual([
+        "cloud_v3_commits",
+        "cloud_v3_pages",
+        "cloud_v3_root",
+      ]);
       const dump = await f.send("dump");
       expect(dump.status).toBe(200);
       const log = commits(f);
@@ -282,6 +287,8 @@ test(
       expect(pageSchema(f)).toEqual(schema);
       expect(tableNames(f)).toEqual(tables);
       expect(await f.send("dump")).toEqual(dump);
+      expect(await f.send("upgrade")).toMatchObject({ status: 409 });
+      expect(await f.send("restore", {})).toMatchObject({ status: 409 });
       expect(pages(f).map(({ id }) => id)).toEqual([
         "directory:0",
         "snapshot:0",
@@ -461,7 +468,10 @@ for (const point of [
             return executeSql(statement, ...bindings);
           };
         } else {
-          afterSync(f, switched ? 2 : 1, crash);
+          afterSync(f, switched ? 2 : 1, async () => {
+            if (switched) await expectCut(f, 1, 5, before.image);
+            crash();
+          });
         }
         expect(await checkpoint(f)).toMatchObject({
           ...refused,
@@ -486,6 +496,15 @@ for (const point of [
           expect(active(f)).toEqual(source);
           if (point === "between renames")
             expect(stagingTables(f)).toHaveLength(2);
+        }
+        if (point === "before collection") {
+          const { id, body } = pages(f)[0]!;
+          f.db.run(
+            "UPDATE cloud_v3_pages SET body='!' || substr(body, 2) WHERE id=?",
+            [id],
+          );
+          expect(await f.send(probe)).toMatchObject(refused);
+          f.db.run("UPDATE cloud_v3_pages SET body=? WHERE id=?", [body, id]);
         }
         f.restart();
         await expectCut(f, switched ? 1 : 0, switched ? 5 : 0, before.image);

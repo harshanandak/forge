@@ -31,8 +31,10 @@ import {
 } from "./v3-authority.ts";
 import { TABLE_PROBE } from "./store.ts";
 
-const ROOT = "cloud_v3_root";
+export const ROOT = "cloud_v3_root";
 export const PAGES = "cloud_v3_pages";
+export const PAGE_SCHEMA =
+  "(id TEXT PRIMARY KEY, body TEXT NOT NULL) WITHOUT ROWID";
 export const COMMITS = "cloud_v3_commits";
 const COMMIT_FORMAT = "forge-cloud-commit/3";
 const MiB = 1024 * 1024;
@@ -68,7 +70,7 @@ const pages = roster.map(({ id }) => ({ id, body: empty }));
 const schema = {
   [ROOT]:
     "(id INTEGER PRIMARY KEY CHECK(id=1), body TEXT NOT NULL, seal TEXT NOT NULL)",
-  [PAGES]: "(id TEXT PRIMARY KEY, body TEXT NOT NULL) WITHOUT ROWID",
+  [PAGES]: PAGE_SCHEMA,
   [COMMITS]:
     "(sequence INTEGER PRIMARY KEY CHECK(sequence>0), body TEXT NOT NULL)",
 };

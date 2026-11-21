@@ -497,7 +497,15 @@ export class Project {
         if (probe[1] === "checkpoint" && request.method === "POST") {
           if (Object.keys(object(await bounded(request))).length)
             throw fail("INPUT_INVALID", "Expected an empty checkpoint body");
-          const value = await checkpointV3(db, this.#storage, this.#v3Image);
+          const value = await checkpointV3(
+            db,
+            this.#storage,
+            this.#v3Image,
+            (image) => {
+              if (image === undefined || this.#v3Image === undefined)
+                this.#v3Image = image;
+            },
+          );
           return Response.json({ ok: true, value });
         }
         if (request.method === "POST") {

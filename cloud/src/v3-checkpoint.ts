@@ -6,18 +6,21 @@ import {
   isObject,
 } from "../../src/core/config/pointer.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
-import type { DurableStorage } from "./store.ts";
+import { type DurableStorage, TABLE_PROBE } from "./store.ts";
 import {
   COLLECTIONS,
   COMMITS,
   PAGES,
+  PAGE_SCHEMA,
   readV3Root,
   recoverV3,
+  ROOT,
   type V3Image,
 } from "./v3-store.ts";
 
 const STAGE = "cloud_v3_checkpoint";
 const STAGED = "cloud_v3_checkpoint_pages";
+const RETIRED = "cloud_v3_retired_pages";
 const PAGE_BYTES = 256 * 1024;
 const MANIFEST_BYTES = 128 * 1024;
 const TURN_TAIL_ROWS = 16;
@@ -185,18 +188,48 @@ function discardStage(db: SqlDatabase) {
   db.exec(`DROP TABLE IF EXISTS ${STAGE}`);
 }
 
+function collect(db: SqlDatabase, cut: number) {
+  db.run(`DELETE FROM ${COMMITS} WHERE sequence<=?`, [cut]);
+  db.exec(`DROP TABLE IF EXISTS ${RETIRED}`);
+}
+
+function commitHead(db: SqlDatabase, coveredHead: number) {
+  const last = db.get(
+    `SELECT sequence FROM ${COMMITS} ORDER BY sequence DESC LIMIT 1`,
+  );
+  return Math.max(coveredHead, Number(last?.sequence ?? 0));
+}
+
+type ReplaceWarm = (image: V3Image | undefined) => void;
+
 export async function checkpointV3(
   db: SqlDatabase,
   storage: DurableStorage,
   warm: V3Image | undefined,
+  replaceWarm: ReplaceWarm,
 ) {
   requireCheckpoint(!activeStages.has(storage));
+  activeStages.add(storage);
+  try {
+    const pending = db.get(TABLE_PROBE, [RETIRED]) !== undefined;
+    if (pending) await storage.sync?.();
+    return await checkpoint(db, storage, warm, replaceWarm, pending);
+  } finally {
+    activeStages.delete(storage);
+  }
+}
+
+async function checkpoint(
+  db: SqlDatabase,
+  storage: DurableStorage,
+  warm: V3Image | undefined,
+  replaceWarm: ReplaceWarm,
+  pending: boolean,
+) {
   const root = readV3Root(db);
-  const seal = digestValue(root);
-  const last = db.get(
-    `SELECT sequence FROM ${COMMITS} ORDER BY sequence DESC LIMIT 1`,
-  );
-  const cut = Math.max(root.coveredHead, Number(last?.sequence ?? 0));
+  const source = canonicalJson(root);
+  const seal = digestBytes(source);
+  const cut = commitHead(db, root.coveredHead);
   requireCheckpoint(cut - root.coveredHead <= TURN_TAIL_ROWS);
   const prior = storedPages(db, PAGES);
   requireCheckpoint(
@@ -241,9 +274,7 @@ export async function checkpointV3(
     db.exec(
       `CREATE TABLE ${STAGE} (source TEXT NOT NULL, cut INTEGER NOT NULL, cutoff INTEGER NOT NULL, proposal TEXT NOT NULL)`,
     );
-    db.exec(
-      `CREATE TABLE ${STAGED} (id TEXT PRIMARY KEY, body TEXT NOT NULL) WITHOUT ROWID`,
-    );
+    db.exec(`CREATE TABLE ${STAGED} ${PAGE_SCHEMA}`);
     db.run(`INSERT INTO ${STAGE} VALUES (?, ?, ?, ?)`, [
       seal,
       cut,
@@ -254,7 +285,7 @@ export async function checkpointV3(
       db.run(`INSERT INTO ${STAGED} VALUES (?, ?)`, [id, body]);
   });
 
-  activeStages.add(storage);
+  let switchStarted = false;
   try {
     await storage.sync?.();
     const staged = db.get(
@@ -272,12 +303,50 @@ export async function checkpointV3(
       key,
       body === null ? null : digestBytes(body),
     ]);
+    const projectionDigest = digestValue(inventoryDigests);
+    const manifest = canonicalJson({
+      ...root,
+      ...verified,
+      generation: root.generation + 1,
+      parentDigest: seal,
+      coveredHead: cut,
+      eventWatermark: image.eventWatermark,
+      transcriptDigest: digestBytes(transcript),
+      publicDigest: projectionDigest,
+      privateDigest: digestValue([]),
+    });
+    requireCheckpoint(Buffer.byteLength(manifest) <= MANIFEST_BYTES);
+    const next = db.transaction(() => {
+      const pinned = db.get(
+        `SELECT 1 FROM ${ROOT} WHERE id=1 AND seal=? AND body=?`,
+        [seal, source],
+      );
+      requireCheckpoint(pinned && commitHead(db, root.coveredHead) === cut);
+      replaceWarm(undefined);
+      switchStarted = true;
+      if (pending) collect(db, root.coveredHead);
+      db.exec(`ALTER TABLE ${PAGES} RENAME TO ${RETIRED}`);
+      db.exec(`ALTER TABLE ${STAGED} RENAME TO ${PAGES}`);
+      db.run(`UPDATE ${ROOT} SET body=?, seal=? WHERE id=1`, [
+        manifest,
+        digestBytes(manifest),
+      ]);
+      return recoverV3(db);
+    });
+    try {
+      await storage.sync?.();
+    } catch (error) {
+      replaceWarm(undefined);
+      throw error;
+    }
+    replaceWarm(next);
+    collect(db, cut);
+    discardStage(db);
     return {
       rosterDigest: digestValue(verified.pages),
-      projectionDigest: digestValue(inventoryDigests),
+      projectionDigest,
     };
   } finally {
-    activeStages.delete(storage);
-    db.transaction(() => discardStage(db));
+    if (!switchStarted) db.transaction(() => discardStage(db));
   }
 }
