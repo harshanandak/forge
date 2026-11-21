@@ -136,6 +136,7 @@ import {
   recoverV3,
   type V3Image,
   viewV3,
+  withinDepth,
 } from "./v3-store.ts";
 
 const REQUESTS = "domain_cloud_requests";
@@ -199,8 +200,11 @@ export const domain = {
 
 const fail = (code: string, message: string): ForgeFailure =>
   new ForgeFailure({ code, message, retry: "never" });
-const tokenLive = (expiresAt?: number): void => {
-  if (!Number.isSafeInteger(expiresAt) || !(Number(expiresAt) > Date.now()))
+const tokenLive = (expiresAt?: number, now?: number): void => {
+  if (
+    !Number.isSafeInteger(expiresAt) ||
+    !(Number(expiresAt) > (now ?? Date.now()))
+  )
     throw fail("AUTH_EXPIRED", "Token expired");
 };
 export const STATUS: Record<string, number> = {
@@ -506,6 +510,7 @@ export class Project {
               if (image === undefined || this.#v3Image === undefined)
                 this.#v3Image = image;
             },
+            Project.admitLeaseRequest,
           );
           return Response.json({ ok: true, value });
         }
@@ -519,16 +524,18 @@ export class Project {
             const expiresAt = Number(
               request.headers.get("X-Forge-Owner-Expires"),
             );
-            tokenLive(expiresAt);
-            const command = this.#admit(
+            const now = Date.now();
+            const command = Project.admitLeaseRequest(
               probe[1] as "claim" | "renew" | "release",
               body,
               owner,
               null,
-              ["owner", owner, owner],
+              undefined,
+              expiresAt,
+              now,
             );
             const image = this.#image(db);
-            const value = leaseV3(db, image, command, expiresAt);
+            const value = leaseV3(db, image, command, expiresAt, now);
             return Response.json({ ok: true, value });
           }
           const input = object(body);
@@ -1082,31 +1089,38 @@ export class Project {
       recheck();
       tokenLive(expiresAt);
     };
-    checkExpiry();
+    recheck();
     return this.#lease(
-      this.#admit(route, body, device, tokenSession, principal),
+      Project.admitLeaseRequest(
+        route,
+        body,
+        device,
+        tokenSession,
+        principal,
+        expiresAt,
+      ),
       checkExpiry,
       requireArm,
       expiresAt,
     );
   }
 
-  #admit(
+  static admitLeaseRequest(
+    this: void,
     route: "claim" | "renew" | "release",
     body: string,
-    device: string,
+    device: unknown,
     tokenSession: string | null,
-    principal: ReceiptPrincipal,
+    principal: ReceiptPrincipal | undefined,
+    expiresAt?: number,
+    now?: number,
   ): LeaseCommand {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(body);
-    } catch {
-      throw fail("INPUT_INVALID", "body must be JSON");
-    }
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
-      throw fail("INPUT_INVALID", "body must be a JSON object");
-    const input = parsed as Record<string, unknown>;
+    tokenLive(expiresAt, now);
+    const bytes =
+      Buffer.byteLength(body) - 2 * (body.match(/\ufffd/g)?.length ?? 0);
+    if (bytes > MAX_BODY)
+      throw fail("INPUT_INVALID", `body is over ${MAX_BODY} bytes`);
+    const input = object(body);
     const subject = text(input, "subject");
     const rawId = text(input, "requestId");
     if (!REQUEST_ID.test(rawId))
@@ -1119,6 +1133,8 @@ export class Project {
       );
     // A device token acts only as its own device: the server sets the holder's device from the token.
     const named = checked.value.session.device;
+    if (typeof device !== "string")
+      throw fail("INPUT_INVALID", "Lease holder has an invalid device");
     if (named !== undefined && named !== device)
       throw fail(
         "AUTH_DEVICE_MISMATCH",
@@ -1134,8 +1150,11 @@ export class Project {
       route === "release" ? null : ((input.ttlMs ?? null) as number);
     const generation = route === "claim" ? null : integer(input, "generation");
 
-    const requestId = scopeRequestId("lease", principal, rawId);
-    return {
+    if (principal === undefined && !validateLeaseHolder(holder).ok)
+      throw fail("INPUT_INVALID", "Lease holder has an invalid device");
+    const identity = principal ?? ["owner", device, device];
+    const requestId = scopeRequestId("lease", identity, rawId);
+    const command = {
       route,
       subject,
       holder,
@@ -1143,8 +1162,11 @@ export class Project {
       generation,
       rawId,
       requestId,
-      scope: receiptScope(principal),
+      scope: receiptScope(identity),
     };
+    if (principal === undefined && !withinDepth(command))
+      throw fail("INPUT_INVALID", "Lease input is nested too deeply");
+    return command;
   }
 
   #lease(
@@ -1254,3 +1276,5 @@ export class Project {
       throw fail("INTERNAL", "Lease request witness was not recorded");
   }
 }
+
+export type AdmitLeaseRequest = typeof Project.admitLeaseRequest;

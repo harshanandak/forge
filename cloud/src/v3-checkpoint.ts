@@ -6,6 +6,7 @@ import {
   isObject,
 } from "../../src/core/config/pointer.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
+import type { AdmitLeaseRequest } from "./project.ts";
 import { type DurableStorage, TABLE_PROBE } from "./store.ts";
 import {
   COLLECTIONS,
@@ -49,8 +50,12 @@ function parse(text: string): unknown {
   }
 }
 
-function inventory(image: V3Image, pages: ReadonlyMap<string, Buffer>): Item[] {
-  return COLLECTIONS.flatMap((collection) =>
+function inventory(
+  image: V3Image,
+  pages: ReadonlyMap<string, Buffer>,
+  collections: readonly (typeof COLLECTIONS)[number][] = COLLECTIONS,
+): Item[] {
+  return collections.flatMap((collection) =>
     [...image.entries[collection].keys()].sort().map((key) => {
       const slot = image.entries[collection].get(key)!;
       if (slot === null) return [collection, key, null];
@@ -88,6 +93,32 @@ function archive(body: string): unknown {
     frame.outcome = { ...receipt, resultDigest: digestValue(result) };
   }
   return frame;
+}
+
+function reconcileReceipts(
+  retained: readonly Item[],
+  history: readonly unknown[],
+) {
+  const expected = new Map<string, string>();
+  for (const [i, frame] of history.entries()) {
+    requireCheckpoint(isObject(frame) && frame.sequence === i + 1);
+    const { time, outcome, lease } = frame;
+    if (outcome === undefined) continue;
+    requireCheckpoint(
+      isObject(outcome) &&
+        typeof outcome.id === "string" &&
+        !("result" in outcome),
+    );
+    expected.set(
+      outcome.id,
+      canonicalJson({ time, outcome, ...(lease !== undefined && { lease }) }),
+    );
+  }
+  requireCheckpoint(expected.size === retained.length);
+  for (const [, id, body] of retained)
+    requireCheckpoint(
+      body !== null && expected.get(id) === canonicalJson(archive(body)),
+    );
 }
 
 function pack(items: readonly Item[], transcript: string) {
@@ -209,12 +240,13 @@ export async function checkpointV3(
   storage: DurableStorage,
   warm: V3Image | undefined,
   replaceWarm: ReplaceWarm,
+  admit: AdmitLeaseRequest,
 ) {
   requireCheckpoint(!activeStages.has(storage));
   activeStages.add(storage);
   try {
     const pending = db.get(TABLE_PROBE, [RETIRED]) !== undefined;
-    return await checkpoint(db, storage, warm, replaceWarm, pending);
+    return await checkpoint(db, storage, warm, replaceWarm, pending, admit);
   } finally {
     activeStages.delete(storage);
   }
@@ -226,6 +258,7 @@ async function checkpoint(
   warm: V3Image | undefined,
   replaceWarm: ReplaceWarm,
   pending: boolean,
+  admit: AdmitLeaseRequest,
 ) {
   const root = readV3Root(db);
   const source = canonicalJson(root);
@@ -248,20 +281,26 @@ async function checkpoint(
     frames.length === cut - root.coveredHead &&
       frames.every(({ body }) => typeof body === "string"),
   );
-  const image = recoverV3(db);
-  requireCheckpoint(image.head === cut);
-  const previous = new Map(
-    [...prior].map(([id, body]) => [id, Buffer.from(body)]),
-  );
-  const expected = inventory(image, previous);
-  const current = inventory(warm && !warm.stale ? warm : image, previous);
   const archived = parse(prior.get("transcript:0") ?? "null");
   requireCheckpoint(
     Array.isArray(archived) &&
       archived.length === root.coveredHead &&
-      digestBytes(prior.get("transcript:0")!) === image.root.transcriptDigest,
+      "transcriptDigest" in root &&
+      digestBytes(prior.get("transcript:0")!) === root.transcriptDigest,
   );
   const history: readonly unknown[] = archived;
+  const previous = new Map(
+    [...prior].map(([id, body]) => [id, Buffer.from(body)]),
+  );
+  const image = recoverV3(db, {
+    admit,
+    pages: previous,
+    sealed: (sealed) =>
+      reconcileReceipts(inventory(sealed, previous, ["outcome"]), history),
+  });
+  requireCheckpoint(image.head === cut);
+  const expected = inventory(image, previous);
+  const current = inventory(warm && !warm.stale ? warm : image, previous);
   const transcript = canonicalJson([
     ...history,
     ...frames.map(({ body }) => archive(String(body))),

@@ -23,6 +23,7 @@ import {
   requestConflict,
 } from "./lease-command.ts";
 import { checkTtl } from "./lease-ttl.ts";
+import type { AdmitLeaseRequest } from "./project.ts";
 import {
   authorityFault,
   isDigest,
@@ -31,6 +32,7 @@ import {
 } from "./v3-authority.ts";
 import { TABLE_PROBE } from "./store.ts";
 
+export { withinDepth };
 export const ROOT = "cloud_v3_root";
 export const PAGES = "cloud_v3_pages";
 export const PAGE_SCHEMA =
@@ -325,7 +327,16 @@ function directoryEntry(entry: unknown, byId: ReadonlyMap<string, Page>) {
   };
 }
 
-export function recoverV3(db: SqlDatabase): V3Image {
+interface Verification {
+  admit: AdmitLeaseRequest;
+  pages: ReadonlyMap<string, Buffer>;
+  sealed: (image: V3Image) => void;
+}
+
+export function recoverV3(
+  db: SqlDatabase,
+  verification?: Verification,
+): V3Image {
   const root = readV3Root(db);
   const byId = new Map(root.pages.map((page) => [page.id, page]));
   const headers = db.all(
@@ -385,16 +396,25 @@ export function recoverV3(db: SqlDatabase): V3Image {
       image.entries[collection].set(key, "deleted" in slot ? null : slot);
     }
   }
+  verification?.sealed(image);
   const rows = db.all(
     `SELECT sequence, CASE WHEN sum(length(CAST(body AS BLOB))) OVER (ORDER BY sequence)<=${TAIL_BYTES} THEN body END AS body FROM (SELECT sequence, body FROM ${COMMITS} WHERE sequence>? ORDER BY sequence LIMIT ${TAIL_ROWS + 1}) ORDER BY sequence`,
     [root.coveredHead],
   );
   if (rows.length > TAIL_ROWS) throw unavailable();
-  for (const { sequence, body } of rows) foldRow(image, sequence, body);
+  const verify =
+    verification &&
+    ((frame: Frame) => verifyLeaseFrame(db, image, frame, verification));
+  for (const { sequence, body } of rows) foldRow(image, sequence, body, verify);
   return image;
 }
 
-function foldRow(image: V3Image, sequence: unknown, body: unknown) {
+function foldRow(
+  image: V3Image,
+  sequence: unknown,
+  body: unknown,
+  verify?: (frame: Frame) => Frame,
+) {
   const frame = typeof body === "string" ? parse(body) : undefined;
   if (
     sequence !== image.head + 1 ||
@@ -404,7 +424,7 @@ function foldRow(image: V3Image, sequence: unknown, body: unknown) {
     frame.sequence !== sequence
   )
     throw unavailable();
-  apply(image, frame, nat(sequence));
+  apply(image, verify ? verify(frame) : frame, nat(sequence));
   image.tailBytes += Buffer.byteLength(String(body));
 }
 
@@ -461,14 +481,17 @@ export function readV3Value<C extends Collection>(
   image: V3Image,
   collection: C,
   key: string,
+  pages?: ReadonlyMap<string, Buffer>,
 ): Values[C] | undefined {
   const slot = image.entries[collection].get(key);
   if (!slot) return undefined;
   if ("value" in slot) return slot.value as Values[C];
-  const bytes = db.get(
-    `SELECT substr(CAST(body AS BLOB), ?, ?) AS value FROM ${PAGES} WHERE id=?`,
-    [slot.offset + 1, slot.length, slot.page],
-  )?.value;
+  const bytes = pages
+    ? pages.get(slot.page)?.subarray(slot.offset, slot.offset + slot.length)
+    : db.get(
+        `SELECT substr(CAST(body AS BLOB), ?, ?) AS value FROM ${PAGES} WHERE id=?`,
+        [slot.offset + 1, slot.length, slot.page],
+      )?.value;
   if (
     !(bytes instanceof Uint8Array) ||
     bytes.byteLength !== slot.length ||
@@ -644,19 +667,112 @@ function transition(
     : { ...current!, holder, releasedAt: new Date(now).toISOString() };
 }
 
+function admitLease(
+  command: LeaseCommand,
+  expiresAt: number,
+  now: number,
+  read: () => LeaseRecord | undefined,
+) {
+  const { route, subject, ttlMs } = command;
+  if (route !== "release") checkTtl(ttlMs, expiresAt, now);
+  const current = read();
+  checkLeaseSubject(subject, route === "claim" ? "acquire" : "held", current);
+  return current;
+}
+
+function compactLeaseJson(input: object): string {
+  const tokens = /"(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?(?:e[+-]?\d+)?/g;
+  return JSON.stringify(input).replace(tokens, (token) => {
+    if (token.startsWith('"')) return token;
+    const scientific = Number(token).toExponential().replace("+", "");
+    const [mantissa = "", power] = scientific.split("e");
+    const decimals = mantissa.split(".")[1]?.length ?? 0;
+    const integer = `${mantissa.replace(".", "")}e${Number(power) - decimals}`;
+    return [token, scientific, integer].sort((a, b) => a.length - b.length)[0]!;
+  });
+}
+
+function verifyLeaseFrame(
+  db: SqlDatabase,
+  image: V3Image,
+  frame: Frame,
+  { pages, admit }: Verification,
+): Frame {
+  const { outcome, time } = frame;
+  if (!outcome) return frame;
+  const input = parse(outcome.fingerprint);
+  if (
+    frame.events.length !== 0 ||
+    frame.changes !== undefined ||
+    !isObject(input) ||
+    !/^l2:[a-f0-9]{64}$/.test(outcome.id)
+  )
+    throw unavailable();
+  const holder = isObject(input.holder) ? input.holder : {};
+  const { device, ...session } = isObject(holder.session) ? holder.session : {};
+  let command: LeaseCommand;
+  try {
+    command = admit(
+      String(input.route) as LeaseCommand["route"],
+      compactLeaseJson({
+        requestId: "a",
+        subject: input.subject,
+        holder: { ...holder, session },
+        ttlMs: input.ttlMs ?? undefined,
+        generation: input.generation ?? undefined,
+      }),
+      device,
+      null,
+      undefined,
+      outcome.retryUntil,
+      time,
+    );
+  } catch {
+    throw unavailable();
+  }
+  if (
+    leaseFingerprint(command) !== outcome.fingerprint ||
+    (readV3Value(db, image, "outcome", outcome.id, pages)?.outcome.retryUntil ??
+      0) > time
+  )
+    throw unavailable();
+  let lease: LeaseRecord;
+  try {
+    const current = admitLease(command, outcome.retryUntil, time, () =>
+      readV3Value(db, image, "lease", command.subject, pages),
+    );
+    if (command.route === "claim" && image.entries.witness.has(outcome.id))
+      throw unavailable();
+    lease = transition(command, current, time);
+    checkLeaseRecord(lease);
+  } catch (error) {
+    if (
+      !recordable(error) ||
+      outcome.status !== error.error.code ||
+      storedCanonical(outcome.result) !== storedCanonical(error.error)
+    )
+      throw unavailable();
+    return { ...frame, outcome: { ...outcome, result: error.error } };
+  }
+  if (
+    outcome.status !== "ok" ||
+    storedCanonical(frame.lease) !== storedCanonical(lease)
+  )
+    throw unavailable();
+  return { ...frame, lease };
+}
+
 export function leaseV3(
   db: SqlDatabase,
   image: V3Image,
   command: LeaseCommand,
   expiresAt: number,
+  now = Date.now(),
 ): LeaseRecord {
-  if (!withinDepth(command))
-    throw fail("INPUT_INVALID", "Lease input is nested too deeply");
-  const { route, subject, holder, ttlMs, requestId } = command;
+  const { route, subject, holder, requestId } = command;
   const result = db.transaction(
     (): { lease: LeaseRecord } | { refusal: ForgeFailure } => {
       const fingerprint = leaseFingerprint(command);
-      const now = Date.now();
       const read = () => readV3Value(db, image, "lease", subject);
       const prior = readV3Value(db, image, "outcome", requestId);
       if (prior !== undefined && prior.outcome.retryUntil > now) {
@@ -689,13 +805,7 @@ export function leaseV3(
       };
       let current: LeaseRecord | undefined;
       try {
-        if (route !== "release") checkTtl(ttlMs, expiresAt);
-        current = read();
-        checkLeaseSubject(
-          subject,
-          route === "claim" ? "acquire" : "held",
-          current,
-        );
+        current = admitLease(command, expiresAt, now, read);
       } catch (error) {
         return refuse(error);
       }

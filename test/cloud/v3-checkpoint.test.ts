@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
-import { domain } from "../../cloud/src/project.ts";
+import { domain, Project } from "../../cloud/src/project.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { canonicalJson, digestBytes } from "../../src/core/config/pointer.ts";
 import { guardFixture, noWrites, probe } from "./v3-project.fixture.ts";
@@ -744,6 +744,382 @@ test(
         body: { ok: false, error: { code: "UNKNOWN_COMMAND" } },
       });
       expect(f.snapshot()).toEqual(before);
+    }),
+  timeout,
+);
+
+const sendLease = (f: Fixture, route: string, owner: string, input: Json) =>
+  f.send(
+    `${probe}/${route}`,
+    {
+      subject: "work-1",
+      holder: { ...holder, session: { ...holder.session, device: owner } },
+      ...input,
+    },
+    {
+      "X-Forge-Owner": owner,
+      "X-Forge-Owner-Expires": String(E1 + HOUR),
+    },
+  );
+
+const leaseClaim = (f: Fixture, owner: string) =>
+  sendLease(f, "claim", owner, { requestId: owner, ttlMs: HOUR });
+
+function changeCommit(
+  f: Fixture,
+  sequence: number,
+  edit: (body: Json) => Json,
+) {
+  const { body } = commits(f).find((row) => row.sequence === sequence)!;
+  f.db.run("UPDATE cloud_v3_commits SET body=? WHERE sequence=?", [
+    canonicalJson(edit(JSON.parse(body) as Json)),
+    sequence,
+  ]);
+}
+
+function generation(frame: Json, next: number): Json {
+  return {
+    ...frame,
+    lease: { ...(frame.lease as Json), generation: next },
+    witness: { ...(frame.witness as Json), generation: next },
+  };
+}
+
+for (const fault of [
+  "skipped generation",
+  "repeated generation",
+  "release by a different holder",
+  "takeover before expiry",
+  "wrong refusal body",
+] as const) {
+  test(
+    `v3 checkpoint refuses a ${fault} in the source transcript`,
+    () =>
+      withFixture(async (f) => {
+        expect((await leaseClaim(f, "owner-a")).status).toBe(200);
+        if (fault === "skipped generation") {
+          changeCommit(f, 1, (frame) => generation(frame, 2));
+        } else if (fault === "release by a different holder") {
+          expect(
+            (
+              await sendLease(f, "release", "owner-a", {
+                requestId: "release-a",
+                generation: 1,
+              })
+            ).status,
+          ).toBe(200);
+          changeCommit(f, 2, (frame) => {
+            const outcome = frame.outcome as Json;
+            const lease = frame.lease as Json;
+            const fingerprint = JSON.parse(String(outcome.fingerprint)) as Json;
+            const previousHolder = lease.holder as Json;
+            const wrongHolder = {
+              ...previousHolder,
+              session: { ...(previousHolder.session as Json), device: "other" },
+            };
+            return {
+              ...frame,
+              lease: { ...lease, holder: wrongHolder },
+              outcome: {
+                ...outcome,
+                fingerprint: canonicalJson({
+                  ...fingerprint,
+                  holder: wrongHolder,
+                }),
+              },
+            };
+          });
+        } else if (fault === "wrong refusal body") {
+          expect((await leaseClaim(f, "owner-b")).status).toBe(409);
+          changeCommit(f, 2, (frame) => {
+            const outcome = frame.outcome as Json;
+            return {
+              ...frame,
+              outcome: {
+                ...outcome,
+                result: {
+                  ...(outcome.result as Json),
+                  message: "A different refusal",
+                },
+              },
+            };
+          });
+        } else {
+          setSystemTime(T0 + HOUR + 1);
+          expect((await leaseClaim(f, "owner-b")).status).toBe(200);
+          changeCommit(f, 2, (frame) =>
+            fault === "repeated generation"
+              ? generation(frame, 1)
+              : {
+                  ...frame,
+                  time: T0 + 1,
+                  lease: {
+                    ...(frame.lease as Json),
+                    expiresAt: new Date(T0 + HOUR + 1).toISOString(),
+                  },
+                },
+          );
+        }
+        f.restart();
+        const source = active(f);
+        const log = commits(f);
+        expect(await checkpoint(f)).toMatchObject(refused);
+        expect(active(f)).toEqual(source);
+        expect(commits(f)).toEqual(log);
+      }),
+    timeout,
+  );
+}
+
+test(
+  "v3 checkpoint refuses a release written with an expired token deadline",
+  () =>
+    withFixture(async (f) => {
+      expect((await leaseClaim(f, "owner-a")).status).toBe(200);
+      expect(
+        (
+          await sendLease(f, "release", "owner-a", {
+            requestId: "release-a",
+            generation: 1,
+          })
+        ).status,
+      ).toBe(200);
+      changeCommit(f, 2, (frame) => ({
+        ...frame,
+        outcome: { ...(frame.outcome as Json), retryUntil: 0 },
+      }));
+      f.restart();
+      const source = active(f);
+      const log = commits(f);
+      const effects = f.observeEffects();
+      expect(await checkpoint(f)).toMatchObject(refused);
+      expect(effects()).toEqual(noWrites);
+      expect(active(f)).toEqual(source);
+      expect(commits(f)).toEqual(log);
+    }),
+  timeout,
+);
+
+test(
+  "v3 checkpoint refuses a rehashed archive with the wrong refusal digest",
+  () =>
+    withFixture(async (f) => {
+      expect((await leaseClaim(f, "owner-a")).status).toBe(200);
+      expect((await leaseClaim(f, "owner-b")).status).toBe(409);
+      expect((await checkpoint(f)).status).toBe(200);
+
+      const id = "transcript:0";
+      const page = pages(f).find((row) => row.id === id)!;
+      const history = JSON.parse(page.body) as Json[];
+      const refusal = history[1]!.outcome as Json;
+      expect(refusal.resultDigest).toEqual(expect.any(String));
+      const transcript = canonicalJson(
+        history.with(1, {
+          ...history[1],
+          outcome: { ...refusal, resultDigest: digestBytes("wrong refusal") },
+        }),
+      );
+      const hash = digestBytes(transcript);
+      const manifest = JSON.parse(root(f).body) as { pages: Json[] };
+      const updated = canonicalJson({
+        ...manifest,
+        transcriptDigest: hash,
+        pages: manifest.pages.map((entry) =>
+          entry.id === id ? { ...entry, hash } : entry,
+        ),
+      });
+      f.db.run("UPDATE cloud_v3_pages SET body=? WHERE id=?", [transcript, id]);
+      f.db.run("UPDATE cloud_v3_root SET body=?, seal=? WHERE id=1", [
+        updated,
+        digestBytes(updated),
+      ]);
+      f.restart();
+      const source = active(f);
+      expect(await checkpoint(f)).toMatchObject(refused);
+      expect(active(f)).toEqual(source);
+      expect(commits(f)).toEqual([]);
+    }),
+  timeout,
+);
+
+test(
+  "v3 checkpoint verifies a renewed lease and an expired takeover from sealed state",
+  () =>
+    withFixture(async (f) => {
+      expect((await leaseClaim(f, "owner-a")).status).toBe(200);
+      expect((await checkpoint(f)).status).toBe(200);
+      f.restart();
+
+      setSystemTime(T0 + 1);
+      expect(
+        (
+          await sendLease(f, "renew", "owner-a", {
+            requestId: "renew-a",
+            generation: 1,
+            ttlMs: HOUR,
+          })
+        ).status,
+      ).toBe(200);
+      expect((await leaseClaim(f, "owner-b")).status).toBe(409);
+      setSystemTime(T0 + HOUR + 2);
+      expect(
+        await sendLease(f, "claim", "owner-b", {
+          requestId: "takeover-b",
+          ttlMs: HOUR,
+        }),
+      ).toMatchObject({ status: 200, body: { value: { generation: 2 } } });
+
+      const { image } = await view(f);
+      f.restart();
+      const { rows, bytes } = f.reads;
+      expect((await checkpoint(f)).status).toBe(200);
+      const reads = { rows: f.reads.rows - rows, bytes: f.reads.bytes - bytes };
+      console.log("v3 checkpoint sealed lease replay reads", reads);
+      expect(reads.rows).toBeLessThanOrEqual(64);
+      expect(reads.bytes).toBeLessThanOrEqual(4 * MiB);
+      expect(commits(f)).toEqual([]);
+      f.restart();
+      await expectCut(f, 2, 4, image);
+    }),
+  timeout,
+);
+
+for (const fault of [
+  "empty subject",
+  "oversized subject",
+  "missing holder device",
+  "holder device outside the receipt scope",
+  "extra fingerprint scope field",
+] as const) {
+  test(
+    `v3 checkpoint refuses a pre-admission frame with ${fault}`,
+    () =>
+      withFixture(async (f) => {
+        const requestId = "attempt";
+        expect(
+          await sendLease(f, "claim", "owner-a", {
+            requestId,
+            subject: "",
+            ttlMs: HOUR,
+          }),
+        ).toMatchObject({
+          status: 400,
+          body: { error: { message: "subject must be a non-empty string" } },
+        });
+        if (fault === "oversized subject")
+          expect(
+            await sendLease(f, "claim", "owner-a", {
+              requestId,
+              subject: "a".repeat(9000),
+              ttlMs: HOUR,
+            }),
+          ).toMatchObject({
+            status: 400,
+            body: { error: { message: "body is over 8192 bytes" } },
+          });
+        expect(commits(f)).toEqual([]);
+        expect(
+          await sendLease(f, "claim", "owner-a", {
+            requestId,
+            subject: "a".repeat(501),
+            ttlMs: HOUR,
+          }),
+        ).toMatchObject({
+          status: 400,
+          body: { error: { message: "Key must contain 1 to 500 characters" } },
+        });
+        changeCommit(f, 1, (frame) => {
+          const outcome = frame.outcome as Json;
+          const fingerprint = JSON.parse(String(outcome.fingerprint)) as Json;
+          const changes = {
+            "empty subject": { subject: "" },
+            "oversized subject": { subject: "a".repeat(9000) },
+            "missing holder device": { holder },
+            "holder device outside the receipt scope": {
+              holder: {
+                ...holder,
+                session: { ...holder.session, device: "other" },
+              },
+            },
+            "extra fingerprint scope field": {
+              scope: { ...(fingerprint.scope as Json), family: "lease" },
+            },
+          };
+          return {
+            ...frame,
+            outcome: {
+              ...outcome,
+              fingerprint: canonicalJson({ ...fingerprint, ...changes[fault] }),
+            },
+          };
+        });
+        f.restart();
+        const source = active(f);
+        const log = commits(f);
+        const effects = f.observeEffects();
+        expect(await checkpoint(f)).toMatchObject(refused);
+        expect(effects()).toEqual(noWrites);
+        expect(active(f)).toEqual(source);
+        expect(commits(f)).toEqual(log);
+      }),
+    timeout,
+  );
+}
+
+test(
+  "v3 lease admission refuses an invalid device assigned by the test probe",
+  () =>
+    withFixture(async (f) => {
+      const effects = f.observeEffects();
+      expect(
+        await sendLease(f, "claim", "", {
+          requestId: "attempt",
+          subject: "a".repeat(501),
+          holder,
+          ttlMs: HOUR,
+        }),
+      ).toMatchObject({
+        status: 400,
+        body: { error: { message: "Lease holder has an invalid device" } },
+      });
+      expect(effects()).toEqual(noWrites);
+    }),
+  timeout,
+);
+
+test(
+  "v3 checkpoint accepts a refusal from the smallest 8192-byte lease request",
+  () =>
+    withFixture(async (f) => {
+      const minimal = JSON.stringify({
+        subject: "",
+        holder,
+        requestId: "a",
+        ttlMs: 1e20,
+      }).replace('"ttlMs":100000000000000000000', '"ttlMs":1e20');
+      const subject = "!".repeat(8192 - Buffer.byteLength(minimal));
+      const body = Buffer.from(minimal.replace('""', JSON.stringify(subject)));
+      body[body.indexOf("!")] = 0xff;
+      expect(body.byteLength).toBe(8192);
+      const project = new Project({ storage: f.storage, testV3: true });
+      const response = await project.fetch(
+        new Request(`https://fixture.example/p/a/${probe}/claim`, {
+          method: "POST",
+          body: new Blob([new Uint8Array(body)]),
+          headers: {
+            "X-Forge-Owner": "owner-a",
+            "X-Forge-Owner-Expires": String(E1 + HOUR),
+          },
+        }),
+      );
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({
+        error: { message: "ttlMs must be a positive safe integer" },
+      });
+      expect(commits(f)).toHaveLength(1);
+      f.restart();
+      expect((await checkpoint(f)).status).toBe(200);
+      expect(commits(f)).toEqual([]);
     }),
   timeout,
 );
