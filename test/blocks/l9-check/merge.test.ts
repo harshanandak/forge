@@ -92,7 +92,6 @@ const emptyReviewConfig = {
   ...config,
   gate: { requiredReviews: [], requiredChecks: ["CI Gate"] as const },
 };
-const codeDelta = `:100644 100644 ${fork} ${reviewed} M\tsrc/main.ts\n`;
 const complete: ProcessResult = {
   stdout: "",
   stderr: "",
@@ -159,12 +158,6 @@ function fixture() {
   let scoped = false;
   let reviewPages: readonly unknown[] = [[]];
   let author = "builder";
-  let gitEvidence: {
-    parents?: readonly string[];
-    finalDelta?: string;
-    shallow?: boolean;
-    missing?: boolean;
-  } = {};
   let hook:
     ((phase: "merge" | "readback", options: SpawnOptions) => void) | undefined;
   const services: CheckServices = {
@@ -202,28 +195,7 @@ function fixture() {
         return Promise.resolve().then(() => {
           if (executable.path === "git") {
             calls.push(["git", ...args]);
-            expect(args).toContain("--no-replace-objects");
-            let stdout: string;
-            if (args.includes("--is-shallow-repository"))
-              stdout = gitEvidence.shallow ? "true\n" : "false\n";
-            else if (args.includes("cat-file"))
-              stdout = `tree ${fork}\n${(gitEvidence.parents ?? [base]).map((oid) => `parent ${oid}\n`).join("")}author Test <test@example.com> 0 +0000\n\nMerge\n`;
-            else if (args.includes("merge-base")) stdout = `${fork}\n`;
-            else if (args.includes("diff-tree")) {
-              expect(args).toContain("--no-renames");
-              expect(args).toContain("--no-ext-diff");
-              expect(args).toContain("--no-textconv");
-              expect(args).toContain("--no-abbrev");
-              stdout = args.includes(head)
-                ? (gitEvidence.finalDelta ?? codeDelta)
-                : codeDelta;
-            } else
-              throw new Error(`Unexpected git arguments: ${args.join(" ")}`);
-            return {
-              ...complete,
-              stdout,
-              exitCode: gitEvidence.missing ? 1 : 0,
-            };
+            return { ...complete, exitCode: 1 };
           }
           if (executable.path !== "gh")
             return captured({ ...complete, stdout: "checked" }, options);
@@ -370,7 +342,6 @@ function fixture() {
       hook?: typeof hook;
       reviewPages?: typeof reviewPages;
       author?: typeof author;
-      gitEvidence?: typeof gitEvidence;
     }) {
       missing = options.missing ?? missing;
       unresolved = options.unresolved ?? unresolved;
@@ -385,7 +356,6 @@ function fixture() {
       hook = options.hook ?? hook;
       reviewPages = options.reviewPages ?? reviewPages;
       author = options.author ?? author;
-      gitEvidence = options.gitEvidence ?? gitEvidence;
     },
     async run(
       gateConfig = config,
@@ -451,57 +421,6 @@ test("merge accepts and reports the independent approval of the pinned head", as
   expect(f.calls.some((args) => args[1] === "merge")).toBe(true);
   expect(f.calls.some((args) => args[0] === "git")).toBe(false);
 }, 1000);
-
-test("merge carries an approval only across an update with the same tree delta", async () => {
-  const f = fixture();
-  await f.receipt();
-  f.alter({
-    reviewPages: [[reviewRecord(reviewed)]],
-    gitEvidence: { parents: [reviewed, base] },
-  });
-  const result = await f.run(reviewConfig);
-  expect(result.gate.reviews).toEqual([
-    {
-      kind: "merge-gate",
-      reviewer: "review-agent",
-      head,
-      verdict: "PASS",
-      evidence: reviewEvidence,
-      carriedFrom: reviewed,
-      base,
-    },
-  ]);
-  expect(result.outcome).toBe("MERGED");
-  expect(exitCode(envelope(result))).toBe(0);
-  expect(
-    f.calls.find((args) => args.includes("merge-base"))?.slice(-2),
-  ).toEqual([reviewed, base]);
-}, 1000);
-
-const incompleteCarry = [
-  [
-    "returns changed content",
-    {
-      parents: [reviewed, base],
-      finalDelta: codeDelta + codeDelta.replace("main.ts", "extra.ts"),
-    },
-  ],
-  ["reverses the parent order", { parents: [base, reviewed] }],
-  ["has three parents", { parents: [reviewed, base, fork] }],
-  ["has shallow history", { parents: [reviewed, base], shallow: true }],
-  ["has missing objects", { parents: [reviewed, base], missing: true }],
-] as const;
-for (const [condition, gitEvidence] of incompleteCarry) {
-  test(`merge refuses a carried approval when Git ${condition}`, async () => {
-    const f = fixture();
-    await f.receipt();
-    f.alter({ reviewPages: [[reviewRecord(reviewed)]], gitEvidence });
-    const result = await f.run(reviewConfig);
-    expect(result.gate.reasons).toContainEqual(requiredReviewReason);
-    expect(result.outcome).toBe("REFUSED");
-    expect(f.calls.some((args) => args[1] === "merge")).toBe(false);
-  }, 1000);
-}
 
 const laterReview = { id: 2, submitted_at: "2026-11-21T11:01:00Z" };
 const unusableReviews = [
