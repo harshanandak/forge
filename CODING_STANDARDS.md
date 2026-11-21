@@ -52,7 +52,7 @@ Forge-only review rules. Behavior: [AGENTS.md](AGENTS.md). **Guard**: CI in `tes
 ## Platform
 
 - Durable file operations in adapters go through shared helpers that create private files and directories and fsync the parent directory after create, rename and unlink. **Guard:** `assembly-directories` rejects raw directory creation in assembly.
-- Paths, executables and processes go through the process and OS adapters. CI runs Ubuntu and Windows on Node 24 and 26, and macOS on Node 24 only.
+- Paths, executables and processes go through the process and OS adapters. PR CI runs Ubuntu on Node 24 and 26, and Windows and macOS on Node 24. Windows Node 26 tests and pack smoke, and macOS Node 26 pack smoke, run on pushes to main and nightly.
 - Spawn with argument arrays only, never shell strings. Resolve executables with a PATH and PATHEXT walk.
 - Worktrees base on the fetched remote default branch.
 
