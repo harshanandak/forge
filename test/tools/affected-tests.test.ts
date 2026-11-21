@@ -113,3 +113,26 @@ test.each([
   },
   1000,
 );
+
+test("a test that starts a fixture process is selected for a change to the fixture dependency", () => {
+  const module = "src/assembly/cloud-authority.ts";
+  const fixture = "test/assembly/fixtures/device-mismatch.ts";
+  const integration = "test/assembly/cloud-device-mismatch.integration.test.ts";
+  const files = new Map([
+    [module, "export const selectCloud = () => {};"],
+    [fixture, "await import('../../../src/assembly/cloud-authority.ts');"],
+    [
+      integration,
+      "import { spawnSync } from 'node:child_process';\n" +
+        "import { resolve } from 'node:path';\n" +
+        "spawnSync(process.execPath, [resolve('test/assembly/fixtures/device-mismatch.ts')]);",
+    ],
+    [standalone, "export {};"],
+  ]);
+  expect(select([module], files)).toMatchObject({
+    files: [integration],
+    count: 1,
+    fallback: false,
+    alwaysSelected: [integration],
+  });
+}, 1000);

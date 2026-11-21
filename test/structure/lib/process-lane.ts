@@ -1,8 +1,5 @@
 import type { SourceFile, Violation } from "./repo.ts";
-import { maskLiterals } from "./timeouts.ts";
-
-const PROCESS_CALL =
-  /\b(?:spawn|spawnSync|execSync|execFile|execFileSync|fork|createProcessPort|listRepoFiles)\s*\(|(?<![\w.])exec\s*\(|\bBun\.spawn(?:Sync)?\s*\(/;
+import { processCall } from "../../../tools/ci/source-scan.ts";
 
 export function findMisplacedProcessTests(
   files: readonly SourceFile[],
@@ -14,7 +11,7 @@ export function findMisplacedProcessTests(
       path.endsWith(".integration.test.ts")
     )
       return [];
-    const match = PROCESS_CALL.exec(maskLiterals(text));
+    const match = processCall(text);
     return match === null
       ? []
       : [

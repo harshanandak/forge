@@ -1,7 +1,7 @@
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { posix, win32 } from "node:path";
-import { importsOf } from "../../test/structure/lib/imports.ts";
 import { changedPaths } from "./change-scope.ts";
+import { processCall, scanImports } from "./source-scan.ts";
 
 const extensions = ["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs"];
 const sources = new Bun.Glob(
@@ -55,9 +55,10 @@ export function affectedTests(
   const reverse = new Map<string, string[]>();
   const opaque = new Set<string>();
   for (const [path, text] of files) {
+    if (processCall(text)) opaque.add(path);
     let imports: string[];
     try {
-      imports = importsOf({ path, text }, () => opaque.add(path));
+      imports = scanImports({ path, text }, () => opaque.add(path));
     } catch {
       opaque.add(path);
       continue;

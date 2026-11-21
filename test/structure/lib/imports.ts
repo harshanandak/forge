@@ -1,7 +1,7 @@
 import { builtinModules } from "node:module";
 import { posix } from "node:path";
 import { FILESYSTEM_OWNERS } from "./filesystem-owners.ts";
-import { maskSource } from "./platform.ts";
+import { maskSource, scanImports } from "../../../tools/ci/source-scan.ts";
 import type { SourceFile, Violation } from "./repo.ts";
 import { CODE_FILE, DETECTOR_MODULE, isTestFile } from "./repo.ts";
 import { findWords } from "./words.ts";
@@ -45,11 +45,6 @@ const BUILTINS = new Set(
   builtinModules.map((m) => m.replace(/^node:/, "").split("/")[0]),
 );
 
-const scanners = {
-  ts: new Bun.Transpiler({ loader: "ts" }),
-  tsx: new Bun.Transpiler({ loader: "tsx" }),
-};
-
 /** Normalize TypeScript syntax without removing unused value references. */
 export function parsedSource(file: SourceFile): string {
   const loader = /\.[jt]sx$/.test(file.path) ? "tsx" : "ts";
@@ -59,39 +54,11 @@ export function parsedSource(file: SourceFile): string {
   }).transformSync(file.text);
 }
 
-/** Import specifiers of a code file, including `import type` (erased at run time, but still a leak). */
 export function importsOf(
   file: SourceFile,
   onNonliteral?: () => void,
 ): string[] {
-  if (!CODE_FILE.test(file.path)) return [];
-  const found = new Set<string>();
-  // Keep type-only dependencies visible in JavaScript-named inputs too.
-  const loader = /\.[jt]sx$/.test(file.path) ? "tsx" : "ts";
-  const source = file.text.replace(/^\uFEFF/, "").replace(/^#![^\r\n]*/, "");
-  try {
-    for (const entry of scanners[loader].scan(source).imports)
-      found.add(entry.path);
-  } catch (cause) {
-    throw new Error(`Cannot parse ${file.path} for dependency scanning`, {
-      cause,
-    });
-  }
-  const typeImports =
-    /^[ \t]*(?:import|export)\b[^;]*?\bfrom\s*["']([^"']+)["']/gm;
-  for (const match of source.matchAll(typeImports)) {
-    if (match[1] !== undefined) found.add(match[1]);
-  }
-  const withStrings = maskSource(source, false);
-  const codeOnly = maskSource(source, true);
-  const calls =
-    /(?<![\w$.])(?:import|require)\s*\(\s*(?:["']([^"']+)["']\s*[,)]|)/g;
-  for (const match of withStrings.matchAll(calls)) {
-    if (codeOnly[match.index] !== match[0][0]) continue;
-    if (match[1] === undefined) onNonliteral?.();
-    else found.add(match[1]);
-  }
-  return [...found];
+  return CODE_FILE.test(file.path) ? scanImports(file, onNonliteral) : [];
 }
 
 const FILESYSTEM_REMEDY =

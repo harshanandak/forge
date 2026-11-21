@@ -1,5 +1,8 @@
+import { maskLiterals } from "../../../tools/ci/source-scan.ts";
 import type { SourceFile, Violation } from "./repo.ts";
 import { TEST_FILE } from "./repo.ts";
+
+export { maskLiterals };
 
 /**
  * Every test declares an explicit timeout: a third argument on the call (a number or a `{ timeout }`
@@ -11,64 +14,6 @@ const FILE_DEFAULT = /^[ \t]*setDefaultTimeout\(\s*\d[\d_]*\s*\)/m;
 /** Modifiers that return the real test function: `test.each(table)(name, fn, timeout)`, `test.skipIf(cond)(...)`. */
 const CURRIED = ["each", "skipIf", "if", "todoIf"];
 const TEST_CALL = /(?<![\w.$])(?:test|it)((?:\.\w+)*)\s*\(/g;
-
-function blank(text: string, from: number, to: number): string {
-  return text.slice(from, to).replace(/[^\n]/g, " ");
-}
-
-/** Index just past the template literal whose opening backtick is at `start`. */
-function templateEnd(text: string, start: number): number {
-  let i = start + 1;
-  while (i < text.length && text[i] !== "`") {
-    if (text[i] === "\\") {
-      i += 2;
-    } else if (text[i] === "$" && text[i + 1] === "{") {
-      let depth = 0;
-      for (; i < text.length; i += 1) {
-        if (text[i] === "{") depth += 1;
-        if (text[i] === "}" && --depth === 0) break;
-      }
-      i += 1;
-    } else {
-      i += 1;
-    }
-  }
-  return i + 1;
-}
-
-/** Same text with comment and string contents blanked, so scanning sees only code. */
-export function maskLiterals(text: string): string {
-  let out = "";
-  let i = 0;
-  while (i < text.length) {
-    const ch = text[i];
-    const next = text[i + 1];
-    let end = i;
-    if (ch === "/" && next === "/") {
-      end = text.indexOf("\n", i);
-      if (end === -1) end = text.length;
-    } else if (ch === "/" && next === "*") {
-      const close = text.indexOf("*/", i + 2);
-      end = close === -1 ? text.length : close + 2;
-    } else if (ch === '"' || ch === "'") {
-      end = i + 1;
-      while (end < text.length && text[end] !== ch && text[end] !== "\n") {
-        end += text[end] === "\\" ? 2 : 1;
-      }
-      end += 1;
-    } else if (ch === "`") {
-      end = templateEnd(text, i);
-    }
-    if (end > i) {
-      out += blank(text, i, Math.min(end, text.length));
-      i = end;
-    } else {
-      out += ch;
-      i += 1;
-    }
-  }
-  return out;
-}
 
 /** Arguments of the call whose opening bracket is at `open`, split on top-level commas. */
 function callArguments(

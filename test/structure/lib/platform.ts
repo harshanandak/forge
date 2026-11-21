@@ -1,6 +1,9 @@
 import { builtinModules } from "node:module";
+import { maskSource } from "../../../tools/ci/source-scan.ts";
 import type { SourceFile, Violation } from "./repo.ts";
 import { CODE_FILE, isTestFile } from "./repo.ts";
+
+export { maskSource };
 
 /** Code that must stay pure: it reaches the OS only through a port, never by importing a platform module. */
 export const PURE_PREFIXES: readonly string[] = [
@@ -87,86 +90,6 @@ export const PROCESS_MEMBERS: readonly string[] = [
   "hrtime",
   "pid",
 ];
-
-/** Blank out comments (and, when asked, string contents) so patterns match code only; positions and newlines are kept. */
-export function maskSource(text: string, maskStrings: boolean): string {
-  const out: string[] = [];
-  const blank = (ch: string): string => (ch === "\n" || ch === "\r" ? ch : " ");
-  const literal = (chars: string): string =>
-    maskStrings ? [...chars].map(blank).join("") : chars;
-  // Brace depth at each open `${`, so the template resumes at the matching `}`.
-  const resume: number[] = [];
-  let depth = 0;
-  let inTemplate = false;
-  let i = 0;
-  const n = text.length;
-
-  while (i < n) {
-    const ch = text[i] ?? "";
-    const next = text[i + 1] ?? "";
-    if (inTemplate) {
-      if (ch === "\\") {
-        out.push(literal(ch + next));
-        i += 2;
-      } else if (ch === "`") {
-        out.push(ch);
-        inTemplate = false;
-        i += 1;
-      } else if (ch === "$" && next === "{") {
-        out.push("${");
-        resume.push(depth);
-        depth += 1;
-        inTemplate = false;
-        i += 2;
-      } else {
-        out.push(literal(ch));
-        i += 1;
-      }
-    } else if (ch === "/" && next === "/") {
-      while (i < n && text[i] !== "\n") {
-        out.push(" ");
-        i += 1;
-      }
-    } else if (ch === "/" && next === "*") {
-      const end = text.indexOf("*/", i + 2);
-      const stop = end === -1 ? n : end + 2;
-      out.push([...text.slice(i, stop)].map(blank).join(""));
-      i = stop;
-    } else if (ch === "'" || ch === '"') {
-      out.push(ch);
-      i += 1;
-      while (i < n && text[i] !== ch && text[i] !== "\n") {
-        const escaped = text[i] === "\\" && i + 1 < n;
-        out.push(
-          literal(
-            escaped ? (text[i] ?? "") + (text[i + 1] ?? "") : (text[i] ?? ""),
-          ),
-        );
-        i += escaped ? 2 : 1;
-      }
-      if (text[i] === ch) {
-        out.push(ch);
-        i += 1;
-      }
-    } else if (ch === "`") {
-      out.push(ch);
-      inTemplate = true;
-      i += 1;
-    } else {
-      if (ch === "{") depth += 1;
-      if (ch === "}") {
-        depth -= 1;
-        if (resume[resume.length - 1] === depth) {
-          resume.pop();
-          inTemplate = true;
-        }
-      }
-      out.push(ch);
-      i += 1;
-    }
-  }
-  return out.join("");
-}
 
 interface Found {
   readonly specifier: string;
