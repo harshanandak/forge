@@ -16,6 +16,7 @@ export interface DurableStorage {
     ): { toArray(): Record<string, unknown>[] };
   };
   transactionSync<T>(body: () => T): T;
+  sync?(): Promise<void>;
   get(key: string): Promise<unknown>;
   put(key: string, value: unknown): Promise<void>;
   delete(key: string): Promise<unknown>;

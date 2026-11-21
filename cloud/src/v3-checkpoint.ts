@@ -1,0 +1,283 @@
+import { ForgeFailure } from "../../src/contract/failure.ts";
+import {
+  canonicalJson,
+  digestBytes,
+  digestValue,
+  isObject,
+} from "../../src/core/config/pointer.ts";
+import type { SqlDatabase } from "../../src/ports/store.ts";
+import type { DurableStorage } from "./store.ts";
+import {
+  COLLECTIONS,
+  COMMITS,
+  PAGES,
+  readV3Root,
+  recoverV3,
+  type V3Image,
+} from "./v3-store.ts";
+
+const STAGE = "cloud_v3_checkpoint";
+const STAGED = "cloud_v3_checkpoint_pages";
+const PAGE_BYTES = 256 * 1024;
+const MANIFEST_BYTES = 128 * 1024;
+const TURN_TAIL_ROWS = 16;
+const TURN_TAIL_BYTES = 512 * 1024;
+const SNAPSHOT = "snapshot:0";
+const activeStages = new WeakSet<DurableStorage>();
+
+function requireCheckpoint(condition: unknown): asserts condition {
+  if (!condition)
+    throw new ForgeFailure({
+      code: "UNAVAILABLE",
+      message: "Cloud v3 checkpoint cannot be verified within one turn",
+      retry: "never",
+    });
+}
+
+type Item = readonly [collection: string, key: string, body: string | null];
+
+function parse(text: string): unknown {
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    requireCheckpoint(false);
+  }
+}
+
+function inventory(image: V3Image, pages: ReadonlyMap<string, Buffer>): Item[] {
+  return COLLECTIONS.flatMap((collection) =>
+    [...image.entries[collection].keys()].sort().map((key) => {
+      const slot = image.entries[collection].get(key)!;
+      if (slot === null) return [collection, key, null];
+      if ("value" in slot) return [collection, key, canonicalJson(slot.value)];
+      const data = pages
+        .get(slot.page)
+        ?.subarray(slot.offset, slot.offset + slot.length);
+      requireCheckpoint(
+        data?.length === slot.length && digestBytes(data) === slot.digest,
+      );
+      const body = data.toString("utf8");
+      requireCheckpoint(digestBytes(body) === slot.digest);
+      return [collection, key, body];
+    }),
+  );
+}
+
+function storedPages(db: SqlDatabase, table: string) {
+  const rows = db.all(
+    `SELECT id, CASE WHEN length(CAST(body AS BLOB))<=${PAGE_BYTES} THEN body END AS body FROM ${table} ORDER BY id LIMIT 4`,
+  );
+  requireCheckpoint(rows.length <= 3);
+  return new Map(
+    rows.map(({ id, body }) => {
+      requireCheckpoint(typeof id === "string" && typeof body === "string");
+      return [id, body];
+    }),
+  );
+}
+
+function archive(body: string): unknown {
+  const frame = JSON.parse(body) as Record<string, unknown>;
+  if (isObject(frame.outcome) && "result" in frame.outcome) {
+    const { result, ...receipt } = frame.outcome;
+    frame.outcome = { ...receipt, resultDigest: digestValue(result) };
+  }
+  return frame;
+}
+
+function pack(items: readonly Item[], transcript: string) {
+  let offset = 0;
+  const snapshot: string[] = [];
+  const directory = items.map(([collection, key, body]) => {
+    if (body === null) return { collection, key, deleted: true };
+    const length = Buffer.byteLength(body);
+    const entry = {
+      collection,
+      key,
+      page: SNAPSHOT,
+      offset,
+      length,
+      digest: digestBytes(body),
+    };
+    offset += length;
+    snapshot.push(body);
+    return entry;
+  });
+  return new Map([
+    ["directory:0", canonicalJson(directory)],
+    [SNAPSHOT, snapshot.join("")],
+    ["transcript:0", transcript],
+  ]);
+}
+
+function roster(
+  pages: ReadonlyMap<string, string>,
+  items: readonly Item[],
+  cut: number,
+) {
+  const counts = {
+    directory: items.length,
+    snapshot: items.filter((item) => item[2] !== null).length,
+    transcript: cut,
+  };
+  const spans: Record<string, readonly unknown[]> = {
+    directory: [
+      items[0]?.slice(0, 2) ?? null,
+      items.at(-1)?.slice(0, 2) ?? null,
+    ],
+    snapshot: [null, null],
+    transcript: cut ? [1, cut] : [null, null],
+  };
+  const listed = Object.entries(counts).map(([kind, count]) => {
+    const id = `${kind}:0`;
+    const body = pages.get(id);
+    requireCheckpoint(body !== undefined);
+    const [first, last] = spans[kind]!;
+    return {
+      id,
+      kind,
+      ordinal: 0,
+      count,
+      first,
+      last,
+      bytes: Buffer.byteLength(body),
+      hash: digestBytes(body),
+    };
+  });
+  requireCheckpoint(listed.every(({ bytes }) => bytes <= PAGE_BYTES));
+  return {
+    counts,
+    bytes: Object.fromEntries(listed.map(({ kind, bytes }) => [kind, bytes])),
+    pages: listed,
+  };
+}
+
+function reconcile(
+  pages: ReadonlyMap<string, string>,
+  expected: readonly Item[],
+  transcript: string,
+) {
+  const body = pages.get("directory:0");
+  const snapshot = pages.get(SNAPSHOT);
+  requireCheckpoint(
+    body !== undefined &&
+      snapshot !== undefined &&
+      pages.get("transcript:0") === transcript,
+  );
+  const bytes = Buffer.from(snapshot);
+  let offset = 0;
+  const entries = expected.map(([collection, key, value]) => {
+    if (value === null) return { collection, key, deleted: true };
+    const length = Buffer.byteLength(value);
+    const digest = digestBytes(value);
+    requireCheckpoint(
+      digestBytes(bytes.subarray(offset, offset + length)) === digest,
+    );
+    const entry = { collection, key, page: SNAPSHOT, offset, length, digest };
+    offset += length;
+    return entry;
+  });
+  requireCheckpoint(offset === bytes.length && canonicalJson(entries) === body);
+}
+
+function discardStage(db: SqlDatabase) {
+  db.exec(`DROP TABLE IF EXISTS ${STAGED}`);
+  db.exec(`DROP TABLE IF EXISTS ${STAGE}`);
+}
+
+export async function checkpointV3(
+  db: SqlDatabase,
+  storage: DurableStorage,
+  warm: V3Image | undefined,
+) {
+  requireCheckpoint(!activeStages.has(storage));
+  const root = readV3Root(db);
+  const seal = digestValue(root);
+  const last = db.get(
+    `SELECT sequence FROM ${COMMITS} ORDER BY sequence DESC LIMIT 1`,
+  );
+  const cut = Math.max(root.coveredHead, Number(last?.sequence ?? 0));
+  requireCheckpoint(cut - root.coveredHead <= TURN_TAIL_ROWS);
+  const prior = storedPages(db, PAGES);
+  requireCheckpoint(
+    prior.size === root.pages.length &&
+      root.pages.every(({ id, hash }) => {
+        const body = prior.get(id);
+        return body !== undefined && digestBytes(body) === hash;
+      }),
+  );
+  const frames = db.all(
+    `SELECT CASE WHEN sum(length(CAST(body AS BLOB))) OVER (ORDER BY sequence)<=${TURN_TAIL_BYTES} THEN body END AS body FROM ${COMMITS} WHERE sequence>? AND sequence<=? ORDER BY sequence`,
+    [root.coveredHead, cut],
+  );
+  requireCheckpoint(
+    frames.length === cut - root.coveredHead &&
+      frames.every(({ body }) => typeof body === "string"),
+  );
+  const image = recoverV3(db);
+  requireCheckpoint(image.head === cut);
+  const previous = new Map(
+    [...prior].map(([id, body]) => [id, Buffer.from(body)]),
+  );
+  const expected = inventory(image, previous);
+  const current = inventory(warm && !warm.stale ? warm : image, previous);
+  const archived = parse(prior.get("transcript:0") ?? "null");
+  requireCheckpoint(
+    Array.isArray(archived) &&
+      archived.length === root.coveredHead &&
+      digestBytes(prior.get("transcript:0")!) === image.root.transcriptDigest,
+  );
+  const history: readonly unknown[] = archived;
+  const transcript = canonicalJson([
+    ...history,
+    ...frames.map(({ body }) => archive(String(body))),
+  ]);
+  const cutoff = Math.max(Number(image.root.receiptCutoff), Date.now());
+  const pages = pack(current, transcript);
+  const proposal = canonicalJson(roster(pages, current, cut));
+  requireCheckpoint(Buffer.byteLength(proposal) <= MANIFEST_BYTES);
+  db.transaction(() => {
+    discardStage(db);
+    db.exec(
+      `CREATE TABLE ${STAGE} (source TEXT NOT NULL, cut INTEGER NOT NULL, cutoff INTEGER NOT NULL, proposal TEXT NOT NULL)`,
+    );
+    db.exec(
+      `CREATE TABLE ${STAGED} (id TEXT PRIMARY KEY, body TEXT NOT NULL) WITHOUT ROWID`,
+    );
+    db.run(`INSERT INTO ${STAGE} VALUES (?, ?, ?, ?)`, [
+      seal,
+      cut,
+      cutoff,
+      proposal,
+    ]);
+    for (const [id, body] of pages)
+      db.run(`INSERT INTO ${STAGED} VALUES (?, ?)`, [id, body]);
+  });
+
+  activeStages.add(storage);
+  try {
+    await storage.sync?.();
+    const staged = db.get(
+      `SELECT source, cut, cutoff, CASE WHEN length(CAST(proposal AS BLOB))<=${MANIFEST_BYTES} THEN proposal END AS proposal FROM ${STAGE} LIMIT 1`,
+    );
+    requireCheckpoint(
+      staged?.source === seal && staged.cut === cut && staged.cutoff === cutoff,
+    );
+    const readback = storedPages(db, STAGED);
+    reconcile(readback, expected, transcript);
+    const verified = roster(readback, expected, cut);
+    requireCheckpoint(canonicalJson(verified) === staged.proposal);
+    const inventoryDigests = expected.map(([collection, key, body]) => [
+      collection,
+      key,
+      body === null ? null : digestBytes(body),
+    ]);
+    return {
+      rosterDigest: digestValue(verified.pages),
+      projectionDigest: digestValue(inventoryDigests),
+    };
+  } finally {
+    activeStages.delete(storage);
+    db.transaction(() => discardStage(db));
+  }
+}

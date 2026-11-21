@@ -126,6 +126,7 @@ import {
 } from "./tokens.ts";
 
 import { stateMigrations } from "../../src/core/state/migrations.ts";
+import { checkpointV3 } from "./v3-checkpoint.ts";
 import {
   appendV3Frames,
   hasV3Root,
@@ -486,13 +487,19 @@ export class Project {
       const route = url.pathname.split("/")[3] ?? "";
       const probe =
         this.#testV3 &&
-        /^\/p\/[^/]+\/test-v3(?:\/(commits|claim|renew|release))?$/.exec(
+        /^\/p\/[^/]+\/test-v3(?:\/(checkpoint|commits|claim|renew|release))?$/.exec(
           url.pathname,
         );
       if (probe && !url.search) {
         const db = writableStore(this.#storage);
         if (!probe[1] && request.method === "GET")
           return Response.json({ ok: true, value: viewV3(this.#image(db)) });
+        if (probe[1] === "checkpoint" && request.method === "POST") {
+          if (Object.keys(object(await bounded(request))).length)
+            throw fail("INPUT_INVALID", "Expected an empty checkpoint body");
+          const value = await checkpointV3(db, this.#storage, this.#v3Image);
+          return Response.json({ ok: true, value });
+        }
         if (request.method === "POST") {
           const lease = probe[1] !== "commits" && probe[1];
           const owner = request.headers.get("X-Forge-Owner");
