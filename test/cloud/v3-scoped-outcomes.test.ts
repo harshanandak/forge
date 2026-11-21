@@ -59,7 +59,10 @@ const leaseBody = (step: Omit<Step, "expect" | "writes">) => ({
   ...step.change,
 });
 
-async function run(store: "v2" | "v3", steps: readonly Step[]) {
+async function run(
+  store: "v2" | "v3",
+  steps: readonly Omit<Step, "expect" | "writes">[],
+) {
   let writes = 0;
   const f = fixture((sql) => {
     if (sqlMutation.test(sql)) writes++;
@@ -521,7 +524,7 @@ const parity: readonly {
   },
   {
     label: "a lone-surrogate subject",
-    step: { route: "claim", change: { subject: "\ud800" } },
+    step: { route: "claim", change: { subject: "work-\ud800" } },
     expect: "INPUT_INVALID",
     writes: 1,
     other: "INPUT_INVALID",
@@ -544,18 +547,6 @@ const parity: readonly {
     label: "a 501-character subject",
     step: { route: "release", change: { subject: long } },
     expect: "INPUT_INVALID",
-    writes: 1,
-  },
-  {
-    label: "a lone-surrogate subject",
-    step: { route: "renew", change: { subject: "\ud800" } },
-    expect: "LEASE_NOT_HELD",
-    writes: 1,
-  },
-  {
-    label: "a lone-surrogate subject",
-    step: { route: "release", change: { subject: "\ud800" } },
-    expect: "LEASE_NOT_HELD",
     writes: 1,
   },
   {
@@ -685,12 +676,50 @@ for (const row of parity) {
       ]);
       expect(v3[1]!.body).toEqual(v3[0]!.body);
       if (row.message !== undefined)
-        expect(v3[0]!.body).toMatchObject({
-          error: { message: row.message },
+        expect(v3[0]).toMatchObject({
+          status: 400,
+          body: { error: { message: row.message } },
         });
     },
     timeout,
   );
+}
+
+for (const store of ["v2", "v3"] as const) {
+  for (const route of ["renew", "release"] as const) {
+    test(
+      `${store} ${route} refuses an ill-formed subject and preserves the existing lease`,
+      async () => {
+        const seed = { route: "claim", requestId: "seed" } as const;
+        const malformed = {
+          route,
+          requestId: "malformed",
+          change: { subject: "work-\ud800" },
+          at: T0 + MINUTE,
+        };
+        const [before, refusal, retry, after] = await run(store, [
+          seed,
+          malformed,
+          { ...malformed, restart: true },
+          { ...seed, at: T0 + MINUTE },
+        ]);
+        expect(before!.status).toBe(200);
+        expect(refusal!.status).toBe(400);
+        expect(refusal!.body).toEqual({
+          ok: false,
+          error: {
+            code: "INPUT_INVALID",
+            message: "Lease subject must be well-formed UTF-16 text",
+            retry: "never",
+          },
+        });
+        expect(retry).toMatchObject({ status: 400, body: refusal!.body });
+        if (store === "v3") expect(retry!.committed).toBe(0);
+        expect(after).toMatchObject({ status: 200, body: before!.body });
+      },
+      timeout,
+    );
+  }
 }
 
 test(
