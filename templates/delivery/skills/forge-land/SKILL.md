@@ -9,13 +9,11 @@ Orchestrator only. A worker never merges. Merge by: agent. Read [owner-approval.
 
 ## Merge conditions
 
-Preview: `forge check gate --pr <n>` from the trusted project configuration. Keep the PASS result's `result.head` as `<head>` and `result.receipt` as `<id>`.
+From trusted config, run `forge check gate --pr <n>`. Keep `result.head` as `<head>` and `result.receipt` as `<id>`.
 
-The gate requires an open, clean PR, a current-head PASS receipt covering `receiptChecks`, successful required CI, no unresolved threads across every page, and no changed file matching `doorPaths`. It re-reads the head before returning. REFUSED exits 1; fix through `forge-review` and rerun.
+The gate checks PR state, current-head `receiptChecks`, required CI, unresolved threads, and `doorPaths`. For `gate.requiredReviews`, the named reviewer submits a GitHub approval with one standalone `forge-review:<kind>` line. Require approval on `<head>` or verified carry. Fix refusals through `forge-review`.
 
-For each `gate.requiredReviews` entry, the configured independent reviewer submits a GitHub approval with a standalone `forge-review:<kind>` line. Require the gate to list that approval on `<head>`, directly or with verified carry evidence. For an owner-only manual merge, check the same review evidence and pin the write to `<head>`. The door path is the owner's only allowed gate refusal.
-
-A matched door path always refuses: the owner merges that PR by hand. A merge that deploys, publishes or migrates is also a door (publish, force-push, prod-write, migration-apply, delete-branch, delete-worktree, merge-to-autodeploy, global-config): it needs the owner's reply naming that action. Silence, "continue" or "fix all" never counts as approval.
+Only the owner merges by hand when `DOOR_PATH_TOUCHED` is the sole refusal. Verify the same reviews and pin `<head>`. A merge that deploys, publishes or migrates is a door. Doors (publish, force-push, prod-write, migration-apply, delete-branch, delete-worktree, merge-to-autodeploy, global-config) need an owner reply naming the action. Silence, "continue" or "fix all" never counts.
 
 ## Merge, pinned and serial
 
@@ -25,7 +23,7 @@ Merge serially after combined-code CI, with zero red checks, open threads and op
 forge pr merge <n> --head <head>
 ```
 
-It runs the gate and uses `gh pr merge <n> --squash --match-head-commit <head>` pinned to its head, never `--admin`, `--auto` or `--delete-branch`. Never run raw `gh pr merge`. Require exit 0, `ok:true` and `result.outcome` MERGED. On `CHECK_GATE_REFUSED`, fix `result.gate.reasons` through `forge-review`. On `MERGE_UNVERIFIED`, read `gh pr view <n> --json state,mergeCommit,headRefOid` before anything else; apply Verify 1 against the printed gate head.
+It runs the gate and pins `gh pr merge <n> --squash --match-head-commit <head>`. Never run raw `gh pr merge` or add `--admin`, `--auto` or `--delete-branch`. Require exit 0, `ok:true` and `result.outcome` MERGED. On `CHECK_GATE_REFUSED`, fix `result.gate.reasons`. On `MERGE_UNVERIFIED`, read `gh pr view <n> --json state,mergeCommit,headRefOid` before anything else and apply Verify 1.
 
 A refused merge because the head moved means run the gate again. Never merge without the pin.
 
