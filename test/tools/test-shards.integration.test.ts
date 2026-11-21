@@ -415,6 +415,7 @@ test("Windows admission runs independently with all twenty replays and remains r
     ),
   ).toBe(false);
   expect(jobs["ci-gate"]!.needs).toContain("comment-guard");
+  expect(jobs["ci-gate"]!.needs).toContain("verify-node26");
 }, 1000);
 
 test.each(
