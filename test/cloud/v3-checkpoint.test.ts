@@ -371,13 +371,13 @@ for (const point of ["before switch", "after switch", "during collection"]) {
         const source = active(f);
         const log = commits(f);
         if (point === "during collection") {
-          const exec = f.storage.sql.exec.bind(f.storage.sql);
+          const executeSql = f.storage.sql.exec.bind(f.storage.sql);
           f.storage.sql.exec = (statement, ...bindings) => {
             if (/^DELETE FROM cloud_v3_commits\b/i.test(statement)) {
               f.db.run("DELETE FROM cloud_v3_commits WHERE sequence=1");
               crash();
             }
-            return exec(statement, ...bindings);
+            return executeSql(statement, ...bindings);
           };
         } else {
           afterSync(f, point === "before switch" ? 1 : 2, crash);
