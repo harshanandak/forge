@@ -63,6 +63,7 @@ test("release source shell validates the run and emits its original SHA", () => 
       ? join(process.env.ProgramFiles ?? "C:/Program Files", "Git/bin/bash.exe")
       : "bash";
   const repo = "harshanandak/forge";
+  const output = join(dir, "source-output.txt");
   const ci = {
     repository: { full_name: repo },
     head_repository: { full_name: repo },
@@ -75,6 +76,7 @@ test("release source shell validates the run and emits its original SHA", () => 
   };
   const source = (run: unknown, mode: string, sha = commit, id = "12345") => {
     const curl = `curl() { printf '%s\\n' '${JSON.stringify(run)}'; }\n`;
+    writeFileSync(output, "");
     return Bun.spawnSync([bash, "-eo", "pipefail"], {
       stdin: Buffer.from(curl + step.run!),
       env: {
@@ -83,7 +85,7 @@ test("release source shell validates the run and emits its original SHA", () => 
         READBACK_ONLY: mode,
         GITHUB_SHA: sha,
         GITHUB_REPOSITORY: repo,
-        GITHUB_OUTPUT: "/dev/stdout",
+        GITHUB_OUTPUT: output,
       },
       timeout: 2_000,
     });
@@ -91,8 +93,8 @@ test("release source shell validates the run and emits its original SHA", () => 
   const older = "a".repeat(40);
   for (const mode of ["true", "false"]) {
     const result = source(ci, mode, mode === "true" ? older : commit);
-    expect(result.exitCode, "validated run must succeed").toBe(0);
-    expect(result.stdout.toString().trim()).toBe("source_sha=" + commit);
+    expect(result.exitCode, result.stderr.toString()).toBe(0);
+    expect(readFileSync(output, "utf8").trim()).toBe("source_sha=" + commit);
     expect(source(ci, mode, commit, "invalid").exitCode).not.toBe(0);
     for (const field of Object.keys(ci))
       expect(
