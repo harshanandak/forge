@@ -12,6 +12,7 @@ import {
   COMMITS,
   PAGES,
   PAGE_SCHEMA,
+  type Pointer,
   readV3Root,
   recoverV3,
   ROOT,
@@ -49,21 +50,28 @@ function parse(text: string): unknown {
   }
 }
 
-function inventory(image: V3Image, pages: ReadonlyMap<string, Buffer>): Item[] {
+const pageReader = (pages: ReadonlyMap<string, Buffer>) => (slot: Pointer) => {
+  const data = pages
+    .get(slot.page)
+    ?.subarray(slot.offset, slot.offset + slot.length);
+  requireCheckpoint(
+    data?.length === slot.length && digestBytes(data) === slot.digest,
+  );
+  const body = data.toString("utf8");
+  requireCheckpoint(digestBytes(body) === slot.digest);
+  return body;
+};
+
+function inventory(
+  image: V3Image,
+  read: ReturnType<typeof pageReader>,
+): Item[] {
   return COLLECTIONS.flatMap((collection) =>
     [...image.entries[collection].keys()].sort().map((key) => {
       const slot = image.entries[collection].get(key)!;
       if (slot === null) return [collection, key, null];
       if ("value" in slot) return [collection, key, canonicalJson(slot.value)];
-      const data = pages
-        .get(slot.page)
-        ?.subarray(slot.offset, slot.offset + slot.length);
-      requireCheckpoint(
-        data?.length === slot.length && digestBytes(data) === slot.digest,
-      );
-      const body = data.toString("utf8");
-      requireCheckpoint(digestBytes(body) === slot.digest);
-      return [collection, key, body];
+      return [collection, key, read(slot)];
     }),
   );
 }
@@ -88,6 +96,35 @@ function archive(body: string): unknown {
     frame.outcome = { ...receipt, resultDigest: digestValue(result) };
   }
   return frame;
+}
+
+function reconcileReceipts(
+  image: V3Image,
+  history: readonly unknown[],
+  read: ReturnType<typeof pageReader>,
+) {
+  const expected = new Map<string, string>();
+  for (const [i, frame] of history.entries()) {
+    requireCheckpoint(isObject(frame) && frame.sequence === i + 1);
+    const { time, outcome, lease } = frame;
+    if (outcome === undefined) continue;
+    requireCheckpoint(
+      isObject(outcome) &&
+        typeof outcome.id === "string" &&
+        !("result" in outcome),
+    );
+    expected.set(
+      outcome.id,
+      canonicalJson({ time, outcome, ...(lease !== undefined && { lease }) }),
+    );
+  }
+  requireCheckpoint(expected.size === image.entries.outcome.size);
+  for (const [id, slot] of image.entries.outcome)
+    requireCheckpoint(
+      slot &&
+        !("value" in slot) &&
+        expected.get(id) === canonicalJson(archive(read(slot))),
+    );
 }
 
 function pack(items: readonly Item[], transcript: string) {
@@ -248,20 +285,24 @@ async function checkpoint(
     frames.length === cut - root.coveredHead &&
       frames.every(({ body }) => typeof body === "string"),
   );
-  const image = recoverV3(db);
-  requireCheckpoint(image.head === cut);
-  const previous = new Map(
-    [...prior].map(([id, body]) => [id, Buffer.from(body)]),
-  );
-  const expected = inventory(image, previous);
-  const current = inventory(warm && !warm.stale ? warm : image, previous);
   const archived = parse(prior.get("transcript:0") ?? "null");
   requireCheckpoint(
     Array.isArray(archived) &&
       archived.length === root.coveredHead &&
-      digestBytes(prior.get("transcript:0")!) === image.root.transcriptDigest,
+      "transcriptDigest" in root &&
+      digestBytes(prior.get("transcript:0")!) === root.transcriptDigest,
   );
   const history: readonly unknown[] = archived;
+  const read = pageReader(
+    new Map([...prior].map(([id, body]) => [id, Buffer.from(body)])),
+  );
+  const image = recoverV3(db, {
+    read,
+    sealed: (sealed) => reconcileReceipts(sealed, history, read),
+  });
+  requireCheckpoint(image.head === cut);
+  const expected = inventory(image, read);
+  const current = inventory(warm && !warm.stale ? warm : image, read);
   const transcript = canonicalJson([
     ...history,
     ...frames.map(({ body }) => archive(String(body))),

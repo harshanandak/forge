@@ -912,3 +912,45 @@ test(
     }),
   timeout,
 );
+
+test(
+  "v3 checkpoint verifies a renewed lease and an expired takeover from sealed state",
+  () =>
+    withFixture(async (f) => {
+      expect((await leaseClaim(f, "owner-a")).status).toBe(200);
+      expect((await checkpoint(f)).status).toBe(200);
+      f.restart();
+
+      setSystemTime(T0 + 1);
+      expect(
+        (
+          await sendLease(f, "renew", "owner-a", {
+            requestId: "renew-a",
+            generation: 1,
+            ttlMs: HOUR,
+          })
+        ).status,
+      ).toBe(200);
+      expect((await leaseClaim(f, "owner-b")).status).toBe(409);
+      setSystemTime(T0 + HOUR + 2);
+      expect(
+        await sendLease(f, "claim", "owner-b", {
+          requestId: "takeover-b",
+          ttlMs: HOUR,
+        }),
+      ).toMatchObject({ status: 200, body: { value: { generation: 2 } } });
+
+      const { image } = await view(f);
+      f.restart();
+      const { rows, bytes } = f.reads;
+      expect((await checkpoint(f)).status).toBe(200);
+      const reads = { rows: f.reads.rows - rows, bytes: f.reads.bytes - bytes };
+      console.log("v3 checkpoint sealed lease replay reads", reads);
+      expect(reads.rows).toBeLessThanOrEqual(64);
+      expect(reads.bytes).toBeLessThanOrEqual(4 * MiB);
+      expect(commits(f)).toEqual([]);
+      f.restart();
+      await expectCut(f, 2, 4, image);
+    }),
+  timeout,
+);
