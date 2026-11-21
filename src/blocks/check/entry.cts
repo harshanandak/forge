@@ -834,15 +834,19 @@ const THREAD_QUERY =
   "query($owner:String!,$repo:String!,$n:Int!,$endCursor:String){repository(owner:$owner,name:$repo){pullRequest(number:$n){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{id isResolved}}}}}";
 const CHECK_QUERY =
   "query($owner:String!,$repo:String!,$n:Int!,$head:GitObjectID!,$endCursor:String){repository(owner:$owner,name:$repo){object(oid:$head){... on Commit{oid statusCheckRollup{contexts(first:100,after:$endCursor){totalCount pageInfo{hasNextPage endCursor} nodes{__typename ... on CheckRun{name status conclusion isRequired(pullRequestNumber:$n)} ... on StatusContext{context state isRequired(pullRequestNumber:$n)}}}}}}}}";
+const HOSTED_CHECK_QUERY = CHECK_QUERY.replace(
+  "on CheckRun{name",
+  "on CheckRun{databaseId checkSuite{app{slug} commit{oid} repository{nameWithOwner}} name",
+);
+const repo = "github.com/harshanandak/forge";
 
 async function gate(
-  services: Pick<
-    CheckServices,
-    "process" | "state" | "root" | "environment" | "clock"
-  > & { readonly crypto: CryptoService },
+  services: Pick<CheckServices, "process" | "root" | "environment" | "clock"> &
+    Partial<Pick<CheckServices, "state"> & { readonly crypto: CryptoService }>,
   input: GateInput,
-  config: CheckConfig,
+  config: Pick<CheckConfig, "gate" | "timeoutMs">,
   scope?: CheckInvocationScope,
+  hostedHead?: string,
 ): Promise<GateResult> {
   const reasons: { code: string; detail: string }[] = [];
   const checks: { name: string; state: string }[] = [];
@@ -907,6 +911,7 @@ async function gate(
         "pr",
         "view",
         String(input.pr),
+        ...(hostedHead ? ["--repo", repo] : []),
         "--json",
         "headRefOid,headRefName,baseRefOid,state,mergeStateStatus,url,changedFiles" +
           (requiredReviews.length ? ",author" : ""),
@@ -925,7 +930,7 @@ async function gate(
       typeof value.url !== "string" ||
       !integer(value.changedFiles) ||
       value.changedFiles < 0 ||
-      value.changedFiles > 300
+      (!hostedHead && value.changedFiles > 300)
     )
       invalid();
     return value as {
@@ -1006,26 +1011,27 @@ async function gate(
       });
     }
   }
-  try {
+  readEvidence: try {
     if (!Number.isSafeInteger(input.pr) || input.pr < 1) invalid();
     const pr = await view();
     head = pr.headRefOid;
-    if (pr.headRefName.toLowerCase().startsWith("prototype/"))
+    if (hostedHead && (pr.state !== "MERGED" || head !== hostedHead)) invalid();
+    if (!hostedHead && pr.headRefName.toLowerCase().startsWith("prototype/"))
       refuse(
         "PROTOTYPE_BRANCH",
         `${pr.headRefName}: prototype branches never merge; port the decision into a slice`,
       );
-    if (pr.state !== "OPEN" || pr.mergeStateStatus !== "CLEAN")
+    if (!hostedHead && (pr.state !== "OPEN" || pr.mergeStateStatus !== "CLEAN"))
       refuse(
         "PR_NOT_MERGEABLE",
         "Pull request must be OPEN with merge state CLEAN",
       );
-    const candidates = services.state.list("runs/");
+    const candidates = hostedHead ? [] : services.state!.list("runs/");
     const verified = candidates.flatMap((record) => {
       const value = record.value;
       return isRecord(value) &&
         typeof value.inputsDigest === "string" &&
-        verify(value, value.inputsDigest, services.crypto) &&
+        verify(value, value.inputsDigest, services.crypto!) &&
         record.key === `runs/${value.id}` &&
         Number.isFinite(Date.parse(value.checkedAt))
         ? [value]
@@ -1077,7 +1083,7 @@ async function gate(
         b.id.localeCompare(a.id),
     );
     receipt = rejected ? undefined : eligible[0]?.id;
-    if (!receipt && !rejected) {
+    if (!hostedHead && !receipt && !rejected) {
       const code = !candidates.length
         ? "RECEIPT_MISSING"
         : !verified.length
@@ -1092,10 +1098,13 @@ async function gate(
         "No verified PASS receipt for this head covers all configured receipt checks",
       );
     }
-    const required = config.gate?.requiredChecks ?? "github-required";
+    const required = hostedHead
+      ? ["CI Gate"]
+      : (config.gate?.requiredChecks ?? "github-required");
     const repository =
       /^https:\/\/([^/]+)\/([^/]+)\/([^/]+)\/pull\/(\d+)$/.exec(pr.url);
     if (!repository || Number(repository[4]) !== input.pr) invalid();
+    if (hostedHead && pr.url !== `https://${repo}/pull/${input.pr}`) invalid();
     const checkPages: unknown = JSON.parse(
       await gh([
         "api",
@@ -1113,13 +1122,14 @@ async function gate(
         "-F",
         `head=${head}`,
         "-f",
-        `query=${CHECK_QUERY}`,
+        `query=${hostedHead ? HOSTED_CHECK_QUERY : CHECK_QUERY}`,
       ]),
     );
     if (!Array.isArray(checkPages) || !checkPages.length) invalid();
     let checkCount = 0;
     let expectedChecks: number | undefined;
     const checkCursors = new Set<string>();
+    const seenRuns = new Set<number>();
     for (const [index, page] of checkPages.entries()) {
       if (
         !isRecord(page) ||
@@ -1180,6 +1190,22 @@ async function gate(
             ? value.isRequired
             : required.includes(name)
         ) {
+          if (hostedHead) {
+            const { databaseId: id, checkSuite: suite } = value;
+            if (!run || !integer(id) || id < 1 || seenRuns.has(id)) invalid();
+            if (
+              !isRecord(suite) ||
+              !isRecord(suite.app) ||
+              suite.app.slug !== "github-actions" ||
+              !isRecord(suite.commit) ||
+              suite.commit.oid !== head ||
+              !isRecord(suite.repository) ||
+              suite.repository.nameWithOwner !== "harshanandak/forge"
+            )
+              invalid();
+            seenRuns.add(id);
+            receipt ??= `github-actions:check-run:${id}:${head}:success`;
+          }
           checks.push({ name, state });
           if (state !== "SUCCESS" || (run && value.status !== "COMPLETED"))
             refuse(
@@ -1200,6 +1226,7 @@ async function gate(
         "REQUIRED_CHECKS_EMPTY",
         "Required checks must resolve to a nonempty list",
       );
+    if (hostedHead) break readEvidence;
     const pages: unknown = JSON.parse(
       await gh([
         "api",
@@ -2078,4 +2105,6 @@ module.exports = {
   validateBudgets,
   runTimeoutMs,
   finalizationTimeoutMs,
+  hostedGate: gate,
+  repo,
 };

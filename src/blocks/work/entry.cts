@@ -15,8 +15,8 @@ const {
   clockKey,
   MERGE_KEY,
   approvalFor,
-} =
-  require("./record-primitives.ts") as typeof import("./record-primitives.ts");
+  hostedCheck: { hostedGate, repo: hostedRepo },
+} = require("./record-primitives.ts") as typeof import("./record-primitives.ts");
 import type {
   ReceiptsService,
   ProcessService,
@@ -143,12 +143,14 @@ type CloseIssue = (
   call: HandlerCall<TrackerOperations<"issue">["issue.close"][0]>,
   validateOnly?: boolean,
   deliveredUrl?: string,
+  hostedProof?: string,
 ) => Promise<TrackerItem>;
 type LaneRef = ItemRef & { attempt?: string };
 type CloseLaneInput = LaneRef & {
   pr?: number;
   noPr?: boolean;
   receipt?: string;
+  hostedEvidence?: true;
   dropped?: string;
   keepOpen?: boolean;
   discardIgnored?: boolean;
@@ -5367,8 +5369,9 @@ const operations: Operations<WorkOperations> = {
       if (typeof recorded !== "string" || typeof worktree !== "string")
         fail("NOT_FOUND", `No recorded lane for ${current.id}`);
       let branch: string = recorded;
+      let receipt = input.receipt ?? "";
       const dropped = input.dropped ?? "",
-        receipt = input.receipt ?? "",
+        hosted = input.hostedEvidence === true,
         keepOpen = !!dropped || !!input.keepOpen;
       if (input.attempt !== undefined) {
         const selection = state.get(`selection:${id}`)?.value as
@@ -5391,7 +5394,11 @@ const operations: Operations<WorkOperations> = {
         current.id,
         ...(input.attempt === undefined ? [] : ["--attempt", input.attempt]),
         ...(noPr ? ["--no-pr"] : ["--pr", String(input.pr)]),
-        ...(dropped ? ["--dropped", dropped] : ["--receipt", receipt]),
+        ...(hosted
+          ? ["--hosted-evidence"]
+          : dropped
+            ? ["--dropped", dropped]
+            : ["--receipt", receipt]),
         ...(input.keepOpen ? ["--keep-open"] : []),
         ...(input.discardIgnored ? ["--discard-ignored"] : []),
       ];
@@ -5400,7 +5407,8 @@ const operations: Operations<WorkOperations> = {
         progress &&
         (progress.pr !== input.pr ||
           !!progress.noPr !== noPr ||
-          progress.receipt !== receipt ||
+          !!progress.hostedEvidence !== hosted ||
+          (!hosted && progress.receipt !== receipt) ||
           progress.keepOpen !== keepOpen ||
           (progress.dropped ?? "") !== dropped ||
           progress.worktree !== worktree ||
@@ -5442,6 +5450,7 @@ const operations: Operations<WorkOperations> = {
                 "pr",
                 "view",
                 String(input.pr),
+                ...(hosted ? ["--repo", hostedRepo] : []),
                 "--json",
                 "state,headRefName,baseRefName,headRefOid,mergeCommit,url",
               ],
@@ -5495,13 +5504,15 @@ const operations: Operations<WorkOperations> = {
         pull.headRefName !== branch
       )
         refuse("INPUT_CONFLICT", "PR data or branch mismatch");
+      if (hosted && pull.url !== `https://${hostedRepo}/pull/${input.pr}`)
+        refuse("HOSTED_EVIDENCE_UNVERIFIED", "Unexpected PR repository");
       if (
         dropped
           ? pull.state !== "CLOSED" || pull.mergeCommit !== null
           : pull.state !== "MERGED" || !commit(pull.mergeCommit?.oid)
       )
         refuse(
-          "PR_NOT_MERGED",
+          hosted ? "HOSTED_EVIDENCE_NOT_MERGED" : "PR_NOT_MERGED",
           dropped
             ? "Dropped PR must be CLOSED and unmerged"
             : "PR must be MERGED with a merge commit",
@@ -5519,6 +5530,15 @@ const operations: Operations<WorkOperations> = {
       if (!commit(observedHead))
         return refuse("INPUT_CONFLICT", "Lane head is unavailable");
       let head = observedHead;
+      const fastForward = () => [
+        ["git", "-C", worktree, "fetch", "origin", `pull/${input.pr}/head`],
+        ["git", "-C", worktree, "merge", "--ff-only", pull.headRefOid!],
+        resume,
+      ];
+      if (hosted && head !== pull.headRefOid) {
+        next = fastForward();
+        refuse("HOSTED_EVIDENCE_HEAD_MISMATCH", "Lane head is stale");
+      }
       if (
         progress &&
         (progress.head !== head ||
@@ -5598,6 +5618,46 @@ const operations: Operations<WorkOperations> = {
           const link = record.value as LinkInput;
           return link.relation === "delivers" && link.url === pull.url;
         });
+      const landingKey = `landing:${id}:${input.pr}`;
+      const accepted = state.get(landingKey);
+      const generation = state.lease(key(id))?.generation;
+      const landingNote = () =>
+        `PR #${input.pr} landed: ${pull.url}\nMerge commit: ${mergeCommit}\n${hosted ? "Hosted CI evidence" : "Receipt"}: ${receipt}`;
+      const landingRecord = (note = landingNote()) => ({
+        id,
+        pr: input.pr,
+        receipt,
+        branch,
+        worktree,
+        generation,
+        head,
+        mergeCommit,
+        note,
+      });
+      const matchesLanding = () =>
+        canonical(accepted?.value) === canonical(landingRecord());
+      if (hosted) {
+        const saved = accepted?.value as { receipt?: string } | undefined;
+        receipt = saved?.receipt ?? "";
+        if (!receipt || !matchesLanding()) {
+          const result = await hostedGate(
+            {
+              process: executor,
+              root: checkout,
+              environment: env,
+              clock: { now: clock },
+            },
+            { pr: input.pr! },
+            { timeoutMs: 20000 },
+            { signal, deadline },
+            head,
+          );
+          receipt = result.verdict === "PASS" ? (result.receipt ?? "") : "";
+          if (!receipt) refuse("HOSTED_EVIDENCE_UNVERIFIED", "CI Gate failed");
+        }
+        if (progress && progress.receipt !== receipt)
+          refuse("INPUT_CONFLICT", "Resume the pending close arguments");
+      }
       if (
         (!dropped && keepOpen && current.status !== "open") ||
         (!keepOpen &&
@@ -5605,27 +5665,12 @@ const operations: Operations<WorkOperations> = {
           (!linked || current.receipt !== receipt))
       )
         refuse("INPUT_CONFLICT", "Issue was closed by another landing");
-      const landingKey = `landing:${id}:${input.pr}`;
-      const accepted = state.get(landingKey);
-      const generation = state.lease(key(id))?.generation;
       // Recovery is authorized only by the exact fenced landing, never by a file journal.
       const resumingLanding =
         !dropped &&
         !keepOpen &&
         current.status === "closed" &&
-        accepted !== undefined &&
-        canonical(accepted.value) ===
-          canonical({
-            id,
-            pr: input.pr,
-            receipt,
-            branch,
-            worktree,
-            generation,
-            head,
-            mergeCommit,
-            note: `PR #${input.pr} landed: ${pull.url}\nMerge commit: ${mergeCommit}\nReceipt: ${receipt}`,
-          });
+        matchesLanding();
       if (!resumingLanding) state.putMany([], { subject: key(id) });
       if (!dropped) {
         // A merge into another branch has not landed. Check before any write.
@@ -5694,11 +5739,7 @@ const operations: Operations<WorkOperations> = {
         }
       }
       if (!dropped && head !== pull.headRefOid) {
-        next = [
-          ["git", "-C", worktree, "fetch", "origin", `pull/${input.pr}/head`],
-          ["git", "-C", worktree, "merge", "--ff-only", pull.headRefOid!],
-          resume,
-        ];
+        next = fastForward();
         if (!hasBranch || !exists())
           refuse("INPUT_CONFLICT", "Local head differs from PR head");
         await run(["fetch", "origin", `pull/${input.pr}/head`], worktree);
@@ -5735,7 +5776,7 @@ const operations: Operations<WorkOperations> = {
       const note = state.formatComment(
         (dropped
           ? `${noPr ? `Lane dropped without a PR\nArchive: ${archive}` : `PR #${input.pr} dropped: ${pull.url}`}\nReason: ${dropped}`
-          : `PR #${input.pr} landed: ${pull.url}\nMerge commit: ${mergeCommit}\nReceipt: ${receipt}`) +
+          : landingNote()) +
           (ahead ? `\nBranch retained: ${branch}\nCommits preserved:\n` : ""),
         ahead ? ahead.split("\n") : [],
       );
@@ -5745,17 +5786,7 @@ const operations: Operations<WorkOperations> = {
           body === note || (!dropped && body?.startsWith(note + "\nChecks: "))
         );
       });
-      const landing = {
-        id,
-        pr: input.pr,
-        receipt,
-        branch,
-        worktree,
-        generation,
-        head,
-        mergeCommit,
-        note,
-      };
+      const landing = landingRecord(note);
       const recovering =
         !dropped &&
         !keepOpen &&
@@ -5770,6 +5801,7 @@ const operations: Operations<WorkOperations> = {
         ...progress,
         pr: input.pr,
         ...(noPr ? { noPr: true, base: pull.headRefOid } : {}),
+        ...(hosted ? { hostedEvidence: true } : {}),
         receipt,
         keepOpen,
         dropped,
@@ -5793,6 +5825,7 @@ const operations: Operations<WorkOperations> = {
           reason: `PR #${input.pr} merged as ${mergeCommit.slice(0, 7)}`,
         },
       };
+      const hostedProof = hosted ? ([receipt] as const) : ([] as const);
       if (!dropped) {
         if (!linked)
           await operations["issue.link"]({
@@ -5803,6 +5836,7 @@ const operations: Operations<WorkOperations> = {
           closing,
           true,
           pull.url,
+          ...hostedProof,
         );
         if (!keepOpen && !recovering)
           persist(state, landingKey, landing, accepted?.revision ?? 0, key(id));
@@ -5813,6 +5847,7 @@ const operations: Operations<WorkOperations> = {
           closing,
           false,
           pull.url,
+          ...hostedProof,
         );
       if (!matching) {
         const written = recovering
@@ -6657,6 +6692,7 @@ const operations: Operations<WorkOperations> = {
     { input, services, config, signal },
     validateOnly = false,
     deliveredUrl?: string,
+    hostedProof?: string,
   ) => {
     services = withReadFence(services, input.id, config, [
       "slots",
@@ -6684,7 +6720,8 @@ const operations: Operations<WorkOperations> = {
         },
       );
     }
-    if (input.receipt !== undefined) {
+    const verifiedHosted = deliveredUrl && input.receipt === hostedProof;
+    if (input.receipt !== undefined && !verifiedHosted) {
       const receipts = (services as { receipts?: ReceiptsService }).receipts;
       if (!receipts || typeof receipts.get !== "function")
         fail(
@@ -6819,7 +6856,7 @@ const operations: Operations<WorkOperations> = {
           "RECEIPT_HEAD_MISMATCH",
           "Receipt must cover the delivered PR's final head or merge commit",
         );
-    } else if (!input.withoutReceipt?.trim()) {
+    } else if (input.receipt === undefined && !input.withoutReceipt?.trim()) {
       fail(
         "RECEIPT_REQUIRED",
         "Supply a PASS receipt or an explicit withoutReceipt reason",

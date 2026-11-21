@@ -1,3 +1,16 @@
+import check from "../check/entry.cts";
+import type * as Check from "../check/types.ts";
+interface HostedCheck {
+  repo: string;
+  hostedGate: (
+    services: Omit<Check.CheckServices, "output" | "state" | "snapshot">,
+    input: Check.GateInput,
+    config: Pick<Check.CheckConfig, "timeoutMs">,
+    scope: Check.CheckInvocationScope,
+    head: string,
+  ) => Promise<Check.GateResult>;
+}
+export const hostedCheck: HostedCheck = check as unknown as HostedCheck;
 export const isCommit = (value: unknown): value is string =>
   typeof value === "string" && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(value);
 export const validReceipt = (value: unknown): value is string =>
