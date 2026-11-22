@@ -11,6 +11,7 @@ type Step = {
   run?: string;
   env?: Record<string, string>;
   id?: string;
+  uses?: string;
   with?: { ref?: string };
 };
 type Job = {
@@ -54,6 +55,48 @@ test("Changes selects the tier from the event and draft flag", () => {
   assert.equal(gateStep.env?.EVENT, "${{ github.event_name }}");
   assert.equal(gateStep.env?.DRAFT, "${{ github.event.pull_request.draft }}");
   assert.equal(gateStep.env?.TIER, "${{ needs.changes.outputs.tier }}");
+}, 1_000);
+
+test("Changes preserves the diff, outputs and setup steps", () => {
+  const changes = jobs.changes!;
+  assert.deepEqual(changes.outputs, {
+    scope: "${{ steps.diff.outputs.scope }}",
+    comment_guard: "${{ steps.diff.outputs.comment_guard }}",
+    started: "${{ steps.start.outputs.at }}",
+    tier: "${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && (github.event.pull_request.draft && 'quick' || 'merge') || 'full' }}",
+  });
+  assert.deepEqual(
+    changes.steps.map((step) => step.id ?? step.uses?.split("@")[0]),
+    ["start", "actions/checkout", "oven-sh/setup-bun", "diff"],
+  );
+  assert.deepEqual(changes.steps[1]?.with, { "fetch-depth": 0 });
+  assert.equal(
+    changes.steps[3]?.run?.trim(),
+    'bun tools/ci/change-scope.ts | tee -a "$GITHUB_OUTPUT"',
+  );
+}, 1_000);
+
+test("Structure checks merges from main on pull requests after the Quick checks", () => {
+  const steps = jobs.structure!.steps;
+  const quick = steps.findIndex(
+    (step) => step.name === "Quick lint, format and typecheck",
+  );
+  assert.ok(quick >= 0, "Quick checks must precede the merge check");
+  assert.deepEqual(
+    steps[quick + 1],
+    {
+      name: "Check merges from main",
+      if: "${{ !cancelled() && github.event_name == 'pull_request' }}",
+      env: {
+        BASE_SHA: "${{ github.event.pull_request.base.sha }}",
+        HEAD_SHA: "${{ github.event.pull_request.head.sha }}",
+        BASE_REF: "${{ github.base_ref }}",
+      },
+      run: "bun tools/ci/merge-from-main.ts",
+    },
+    "Missing pull-request merge check after Quick",
+  );
+  assert.equal(steps[quick + 2]?.if, "always()");
 }, 1_000);
 
 test("CI_HEAD uses the queued commit and Speed compares its base", () => {
