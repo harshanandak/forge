@@ -1,6 +1,7 @@
 import type { DeviceBrowserOptions } from "./device-browser.ts";
 import { isProjectName } from "../project-name.ts";
-import { reportPage, appReply, SESSION_AGE } from "../report-http.ts";
+import { appReply, SESSION_AGE } from "../report-http.ts";
+import { appAsset, appPage, validIssue } from "../report-app.ts";
 import { same, sha256 } from "../tokens.ts";
 import { ownerPolicy } from "./compose.ts";
 import { importLoginKey, type LoginEnv } from "./project-login.ts";
@@ -20,7 +21,15 @@ type Backend = Required<DeviceBrowserOptions> & {
   owner: string;
   clientId: string;
   now: () => number;
-  session: (id: string, op: SessionOperation) => Promise<number>;
+  session: (
+    id: string,
+    op: SessionOperation,
+  ) => Promise<{ status: number; until?: number }>;
+  fetchReport: (
+    project: string,
+    issue: string,
+    until: number,
+  ) => Promise<Response>;
 };
 type Configure = () => Backend;
 export async function report(req: Request, env: LoginEnv, setup: Configure) {
@@ -40,7 +49,9 @@ export async function report(req: Request, env: LoginEnv, setup: Configure) {
       return appReply(400);
     if (!report) return;
   } else if (!start && !logout && path !== APP) {
-    return /^\/app(?:\/|$)/.test(path) ? appReply(404) : undefined;
+    return /^\/app(?:\/|$)/.test(path)
+      ? (appAsset(path, req.method) ?? appReply(404))
+      : undefined;
   }
   const method = logout ? "POST" : "GET";
   if (req.method !== method) return appReply(405, { Allow: method });
@@ -49,8 +60,16 @@ export async function report(req: Request, env: LoginEnv, setup: Configure) {
   const { FORGE_CLOUD_PROJECT: project, DEVICE_LOGIN_HMAC_KEY: secret } = env;
   if (!isProjectName(project) || typeof secret !== "string")
     return appReply(503);
-  const { issuer, owner, clientId, now, upstream, redemption, session } =
-    setup();
+  const {
+    issuer,
+    owner,
+    clientId,
+    now,
+    upstream,
+    redemption,
+    session,
+    fetchReport,
+  } = setup();
   const key = await importLoginKey(secret);
   const binding = [url.origin, project, issuer, clientId, owner];
   const mac = async (name: string, data: string) => {
@@ -75,9 +94,7 @@ export async function report(req: Request, env: LoginEnv, setup: Configure) {
   if (start) {
     const [issue, duplicate] = url.searchParams.getAll("issue");
     if (duplicate !== undefined) return appReply(400);
-    const issueId = /^[a-z0-9]+(?:-[a-z0-9]+)*-\d+$/i;
-    if (issue !== undefined && (issue.length > 200 || !issueId.test(issue)))
-      return appReply(400);
+    if (issue !== undefined && !validIssue(issue)) return appReply(400);
     const state = "forge-report." + random(),
       verifier = random();
     const data = [state, verifier, now() + LOGIN_AGE * 1000, issue].join("~");
@@ -111,7 +128,7 @@ export async function report(req: Request, env: LoginEnv, setup: Configure) {
     const id = random();
     const active = await sign(ACTIVE, id, SESSION_AGE);
     const saved = await session(id, now() + SESSION_AGE * 1000);
-    if (saved !== 204) return appReply(503);
+    if (saved.status !== 204) return appReply(503);
     const query = new URLSearchParams(issue ? { issue } : {});
     const Location = issue ? APP + "?" + query.toString() : APP;
     const response = appReply(303, { Location, "Set-Cookie": active });
@@ -120,11 +137,25 @@ export async function report(req: Request, env: LoginEnv, setup: Configure) {
   }
   const id = await read(ACTIVE);
   if (logout) {
-    if (id && (await session(id, "DELETE")) !== 204) return appReply(503);
+    if (id && (await session(id, "DELETE")).status !== 204)
+      return appReply(503);
     const cleared = cookie(ACTIVE, "", 0);
     return appReply(303, { Location: APP, "Set-Cookie": cleared });
   }
-  const status = id ? await session(id, "GET") : 401;
-  if (status !== 200 && status !== 401) return appReply(503);
-  return reportPage(status === 200);
+  const live = async () => {
+    if (!id) return;
+    const { status, until } = await session(id, "GET");
+    if (status !== 200 && status !== 401)
+      throw new Error("Session unavailable");
+    if (status === 200 && until !== undefined && now() < until) return until;
+  };
+  const until = await live();
+  const [issue, duplicate] = url.searchParams.getAll("issue");
+  if (issue === undefined) return appPage(until !== undefined);
+  if (until === undefined) return appPage(false, 401);
+  if (duplicate !== undefined || !validIssue(issue)) return appReply(400);
+  const reply = await fetchReport(project, issue, until);
+  if ((await live()) === until) return reply;
+  void reply.body?.cancel().catch(() => undefined);
+  return appPage(false, 401);
 }
