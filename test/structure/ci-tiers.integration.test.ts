@@ -24,7 +24,6 @@ type Job = {
 const ci = new URL("../../.github/workflows/ci.yml", import.meta.url);
 const workflow = parse(readFileSync(ci, "utf8"), { maxAliasCount: 200 }) as {
   on: Record<string, { types?: string[] } | null>;
-  concurrency: Record<string, string>;
   env: Record<string, string>;
   jobs: Record<string, Job>;
 };
@@ -50,22 +49,11 @@ test("CI requests checks on merge group commits and keeps the PR triggers", () =
 test("Changes selects the tier from the event and draft flag", () => {
   assert.equal(
     jobs.changes?.outputs?.tier,
-    "${{ github.event_name == 'pull_request' && (github.event.pull_request.draft && 'quick' || 'merge') || github.event_name == 'merge_group' && 'merge' || 'full' }}",
+    "${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && (github.event.pull_request.draft && 'quick' || 'merge') || 'full' }}",
   );
   assert.equal(gateStep.env?.EVENT, "${{ github.event_name }}");
   assert.equal(gateStep.env?.DRAFT, "${{ github.event.pull_request.draft }}");
   assert.equal(gateStep.env?.TIER, "${{ needs.changes.outputs.tier }}");
-}, 1_000);
-
-test("Changes receives the merge group base and head SHAs", () => {
-  const diff = jobs.changes?.steps.find((step) => step.id === "diff");
-  assert.deepEqual(diff?.env, {
-    EVENT: "${{ github.event_name }}",
-    BASE_SHA:
-      "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}",
-    HEAD_SHA:
-      "${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}",
-  });
 }, 1_000);
 
 test("CI_HEAD uses the queued commit and Speed compares its base", () => {
@@ -80,14 +68,6 @@ test("CI_HEAD uses the queued commit and Speed compares its base", () => {
     base?.with?.ref,
     "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}",
   );
-}, 1_000);
-
-test("Merge group runs use run ID concurrency without cancelling in-progress runs", () => {
-  assert.deepEqual(workflow.concurrency, {
-    group:
-      "ci-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}",
-    "cancel-in-progress": "${{ github.event_name == 'pull_request' }}",
-  });
 }, 1_000);
 
 test("Quick runs structure, lint, format and typecheck", () => {
@@ -111,7 +91,7 @@ test("Quick runs structure, lint, format and typecheck", () => {
 
 test("Heavy jobs wait for Changes and skip Quick", () => {
   const scoped = `${outsideSchedule} && ${fullScope}`;
-  const guard = `${outsideSchedule} && github.event_name != 'merge_group' && (github.event_name != 'pull_request' || needs.changes.outputs.comment_guard == 'true')`;
+  const guard = `${outsideSchedule} && (github.event_name != 'pull_request' || needs.changes.outputs.comment_guard == 'true')`;
   for (const [id, predicate] of Object.entries({
     "pr-title": "github.event_name == 'pull_request'",
     static: outsideSchedule,
@@ -204,7 +184,8 @@ const push =
   "CHANGES STRUCTURE STATIC PACK SPEED SPEED_WINDOWS VERIFY VERIFY_MAIN VERIFY_NODE26 COMMENT_GUARD";
 const schedule = "CHANGES PACK VERIFY_NODE26";
 const mergeGroup = { EVENT: "merge_group", DRAFT: "", GUARD_CHANGED: "false" };
-const mergeGroupFull = "CHANGES STRUCTURE STATIC PACK SPEED VERIFY";
+const mergeGroupFull =
+  "CHANGES STRUCTURE STATIC PACK SPEED VERIFY COMMENT_GUARD";
 
 function evaluateGate(passedJobs: string, overrides: Record<string, string>) {
   const passed = passedJobs.split(" ");
@@ -239,86 +220,9 @@ function evaluateGate(passedJobs: string, overrides: Record<string, string>) {
   }
 }
 
-test("Changes detects docs and code on a merge group and uses full scope when the diff is unavailable", () => {
-  const dir = mkdtempSync(join(tmpdir(), "forge-merge-group-"));
-  const git = (...args: string[]) => {
-    const result = Bun.spawnSync(["git", ...args], {
-      cwd: dir,
-      timeout: 5_000,
-    });
-    assert.equal(result.exitCode, 0, result.stderr.toString());
-    return result.stdout.toString().trim();
-  };
-  const commit = () => {
-    git("add", ".");
-    git("commit", "-qm", "fixture");
-    return git("rev-parse", "HEAD");
-  };
-  try {
-    git("init", "-q");
-    git("config", "user.name", "CI fixture");
-    git("config", "user.email", "ci@example.test");
-    writeFileSync(join(dir, "code.ts"), "export const value = 1;\n");
-    const base = commit();
-    writeFileSync(join(dir, "AGENTS.md"), "# Guide\n");
-    const docs = commit();
-    writeFileSync(join(dir, "code.ts"), "export const value = 2;\n");
-    const code = commit();
-    const script = Bun.fileURLToPath(
-      new URL("../../tools/ci/change-scope.ts", import.meta.url),
-    );
-    for (const [baseSha, headSha, scope] of [
-      [base, code, "full"],
-      [base, docs, "docs"],
-      [base, base, "full"],
-      ["", docs, "full"],
-      [base, "", "full"],
-      ["f".repeat(40), docs, "full"],
-    ] as const) {
-      const result = Bun.spawnSync([process.execPath, script], {
-        cwd: dir,
-        env: {
-          ...process.env,
-          ...mergeGroup,
-          BASE_SHA: baseSha,
-          HEAD_SHA: headSha,
-        },
-        timeout: 5_000,
-      });
-      assert.equal(result.exitCode, 0, result.stderr.toString());
-      assert.match(
-        result.stdout.toString(),
-        new RegExp(`^scope=${scope}$`, "m"),
-      );
-    }
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}, 10_000);
-
-for (const [scope, passed] of [
-  ["full", mergeGroupFull],
-  ["docs", "CHANGES STRUCTURE STATIC"],
-] as const) {
-  test(`merge group ${scope} CI Gate passes when its jobs match scope`, () => {
-    const result = evaluateGate(passed, { ...mergeGroup, SCOPE: scope });
-    assert.equal(result.exit, 0, result.log);
-  }, 10_000);
-}
-
-test("merge group CI Gate rejects unexpected success from skipped jobs", () => {
-  for (const key of ["PR_TITLE", "COMMENT_GUARD", "VERIFY_NODE26"]) {
-    const result = evaluateGate(mergeGroupFull, {
-      ...mergeGroup,
-      [key]: "success",
-    });
-    const name = key.toLowerCase().replace("_", "-");
-    assert.match(
-      result.log,
-      new RegExp(`${name} finished as 'success', expected 'skipped'`),
-    );
-    assert.equal(result.exit, 1, result.log);
-  }
+test("merge group CI Gate passes when all required jobs succeed", () => {
+  const result = evaluateGate(mergeGroupFull, mergeGroup);
+  assert.equal(result.exit, 0, result.log);
 }, 10_000);
 
 for (const scope of ["docs", "full"]) {
@@ -374,7 +278,11 @@ for (const [event, passed, env] of expectedJobs) {
     }, 10_000);
   }
   if (event === "push to main") continue;
-  for (const key of ["SPEED_WINDOWS", "VERIFY_MAIN"]) {
+  const skipped =
+    env.EVENT === "merge_group"
+      ? ["PR_TITLE", "SPEED_WINDOWS", "VERIFY_MAIN", "VERIFY_NODE26"]
+      : ["SPEED_WINDOWS", "VERIFY_MAIN"];
+  for (const key of skipped) {
     const name = key.toLowerCase().replace("_", "-");
     test(`${event} CI Gate refuses unexpected success from ${name}`, () => {
       const result = evaluateGate(passed, { ...env, [key]: "success" });
@@ -393,7 +301,16 @@ const failures: [string, Record<string, string>, string][] = [
   ["ready payload selecting Quick", { TIER: "quick" }, tierError],
   ["unknown event", { ...full, EVENT: "workflow_dispatch" }, tierError],
   ["merge group with full tier", { ...mergeGroup, TIER: "full" }, tierError],
-  ["merge group with draft flag", { ...mergeGroup, DRAFT: "true" }, tierError],
+  [
+    "merge group with false draft flag",
+    { ...mergeGroup, DRAFT: "false" },
+    tierError,
+  ],
+  [
+    "merge group with docs scope",
+    { ...mergeGroup, SCOPE: "docs" },
+    "unexpected scope",
+  ],
   ["unknown scope", { SCOPE: "other" }, "unexpected scope"],
   ["push docs", { ...full, EVENT: "push", SCOPE: "docs" }, "unexpected scope"],
   [
@@ -424,7 +341,8 @@ for (const job of ["PACK", "SPEED", "VERIFY", "STRUCTURE", "STATIC"]) {
 }
 for (const [name, overrides, diagnostic] of failures) {
   test(`CI Gate fails for ${name}`, () => {
-    const result = evaluateGate(ready, overrides);
+    const passed = overrides.EVENT === "merge_group" ? mergeGroupFull : ready;
+    const result = evaluateGate(passed, overrides);
     assert.ok(result.log.includes(diagnostic), result.log || diagnostic);
     assert.equal(result.exit, 1, result.log);
   }, 10_000);

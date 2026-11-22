@@ -657,8 +657,7 @@ test("judges the matrix read through the API at the run head SHA", async () => {
 
 test("judges runner allocation at the merge group head with its skipped jobs", async () => {
   const jobs = complete.map((job) => {
-    if (job.name === "PR title" || job.name.startsWith("Comment guard ("))
-      return { ...skipped, name: job.name };
+    if (job.name === "PR title") return skipped;
     if (job.name === "Pack artifact") return { ...unacquired, name: job.name };
     return job;
   });
