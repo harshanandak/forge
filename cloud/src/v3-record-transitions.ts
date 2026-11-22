@@ -18,16 +18,21 @@ export function verifyRecordFrame(
   refuse: () => Error,
 ) {
   const changes: { key: string; value: RecordValue }[] = [];
-  const put = frame.operation === "fixture.put";
+  const create = frame.operation === "issue.create";
+  const put =
+    (create && frame.outcome?.status === "ok") ||
+    frame.operation === "fixture.put";
   if (!put && frame.operation !== "fixture.delete") {
     if (
       frame.changes !== undefined ||
+      (create && frame.events.length !== 0) ||
       (frame.operation !== "fixture.note" && !frame.outcome)
     )
       throw refuse();
     return { floor, changes };
   }
-  if (frame.events.length === 0) throw refuse();
+  if (frame.events.length === 0 || (create && frame.events.length !== 1))
+    throw refuse();
   const keys = put ? "key,revision,value" : "key,revision";
   const seen = new Set<string>();
   for (const input of frame.events) {
@@ -43,6 +48,7 @@ export function verifyRecordFrame(
     const prior = read(key);
     if (
       !number ||
+      (create && (prior || number !== floor + 1 || revision !== 1)) ||
       seen.has(key) ||
       (prior && "deleted" in prior) ||
       revision <= (prior?.revision ?? 0)

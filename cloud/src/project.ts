@@ -131,6 +131,7 @@ import {
 
 import { stateMigrations } from "../../src/core/state/migrations.ts";
 import { checkpointV3 } from "./v3-checkpoint.ts";
+import { commandV3 } from "./v3-commands.ts";
 import { hasV3Restore, restoreV3Page } from "./v3-restore.ts";
 import {
   appendV3Frames,
@@ -533,7 +534,7 @@ export class Project {
       const route = url.pathname.split("/")[3] ?? "";
       const probe =
         this.#testV3 &&
-        /^\/p\/[^/]+\/test-v3(?:\/(checkpoint|commits|claim|renew|release))?$/.exec(
+        /^\/p\/[^/]+\/test-v3(?:\/(checkpoint|commits|command|claim|renew|release))?$/.exec(
           url.pathname,
         );
       if (probe && !url.search) {
@@ -560,12 +561,25 @@ export class Project {
           const owner = request.headers.get("X-Forge-Owner");
           if (lease && owner === null)
             throw fail("AUTH_REQUIRED", "A device token is required");
-          const body = await bounded(request);
+          const typed = probe[1] === "command";
+          const limit = typed ? MAX_COMMAND_BODY : MAX_BODY;
+          const body = await bounded(request, limit);
           if (lease && owner !== null) {
             const expiresAt = Number(
               request.headers.get("X-Forge-Owner-Expires"),
             );
             const now = Date.now();
+            if (typed) {
+              tokenLive(expiresAt, now);
+              return commandV3(db, this.#image(db), body, {
+                project: url.pathname.split("/")[2]!,
+                device: owner,
+                prefix: (this.#env as { FORGE_CLOUD_ID_PREFIX?: string })
+                  .FORGE_CLOUD_ID_PREFIX!,
+                expiresAt,
+                now,
+              });
+            }
             const command = Project.admitLeaseRequest(
               probe[1] as "claim" | "renew" | "release",
               body,
