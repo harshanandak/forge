@@ -3,6 +3,7 @@ import { Database } from "bun:sqlite";
 import { browserStorage } from "../browser-storage.fixture.ts";
 import {
   active,
+  callback,
   Jar,
   noStore,
   origin,
@@ -111,15 +112,65 @@ async function checked(reply: Promise<Response>, status: number) {
   return response;
 }
 
+const signInLink = /href="([^"]+)">Sign in<\/a>/;
+
+async function followSignIn(
+  f: ReturnType<typeof fixture>,
+  jar: Jar,
+  href: string,
+) {
+  const start = await checked(f.send(href, jar), 302);
+  const clerk = new URL(start.headers.get("Location")!);
+  return checked(f.send(callback(clerk.searchParams.get("state")!), jar), 303);
+}
+
+reportTest("shared report link survives sign-in", async () => {
+  const f = fixture();
+  const jar = new Jar();
+  using db = new Database(":memory:");
+  const { PROJECTS } = projectBinding(db);
+  await seed(f, PROJECTS);
+  const lookups = spyOn(PROJECTS, "get");
+  const page = await checked(f.send(issue, jar, {}, { PROJECTS }), 401);
+  const href = signInLink.exec(await page.text())?.[1];
+  expect(href).toBe("/app/sign-in?issue=fixture-1");
+  const signedIn = await followSignIn(f, jar, href!);
+  const destination = signedIn.headers.get("Location");
+  expect(destination).toBe(issue);
+  expect(lookups).not.toHaveBeenCalled();
+  const reply = await checked(f.send(destination!, jar, {}, { PROJECTS }), 200);
+  expect(await reply.text()).toContain(escapedTitle);
+});
+
+reportTest("bad report ids stay out of sign-in and its redirect", async () => {
+  const f = fixture();
+  for (const query of [
+    "fixture-1%22%3E",
+    "p".repeat(199) + "-1",
+    "fixture-1&issue=fixture-2",
+  ]) {
+    const jar = new Jar();
+    const page = await checked(f.send("/app/?issue=" + query, jar), 401);
+    const href = signInLink.exec(await page.text())?.[1];
+    expect(href).toBe("/app/sign-in");
+    const signedIn = await followSignIn(f, jar, href!);
+    expect(signedIn.headers.get("Location")).toBe("/app/");
+  }
+  expect(f.trace.projects).toEqual([]);
+});
+
 reportTest("report requires owner", async () => {
   const f = fixture();
   const anonymous = await f.send(issue);
   expect(anonymous.status).toBe(401);
   noStore(anonymous);
-  const generic = await anonymous.text();
+  const generic = (await anonymous.text()).replace(signInLink, "Sign in");
   expect(generic).toContain("Sign in");
   expect(generic).not.toContain("fixture-1");
-  expect(await (await checked(f.send(missing), 401)).text()).toBe(generic);
+  const missingPage = await checked(f.send(missing), 401);
+  expect((await missingPage.text()).replace(signInLink, "Sign in")).toBe(
+    generic,
+  );
   expect(f.trace.projects).toEqual([]);
 
   const jar = new Jar();
