@@ -236,11 +236,15 @@ function sealedFields(root: Record<string, unknown>) {
   );
 }
 
+export function rejectOldCommits(db: SqlDatabase): void {
+  if (db.get(oldCommits)) throw unavailable();
+}
+
 export function readV3Root(
   db: SqlDatabase,
 ): V3Image["root"] & { generation: number; eventWatermark: number } {
-  if (!tables.every((table) => hasTable(db, table)) || db.get(oldCommits))
-    throw unavailable();
+  if (!tables.every((table) => hasTable(db, table))) throw unavailable();
+  rejectOldCommits(db);
   const row = db.get(
     `SELECT body, seal FROM ${ROOT} WHERE id=1 AND length(CAST(body AS BLOB))<=${MANIFEST_BYTES}`,
   );

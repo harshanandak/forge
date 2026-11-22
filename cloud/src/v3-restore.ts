@@ -30,6 +30,7 @@ import {
   PAGES,
   readV3Root,
   recoverV3,
+  rejectOldCommits,
   type V3Image,
   withinDepth,
 } from "./v3-store.ts";
@@ -172,6 +173,7 @@ export function restoreV3Page(
   check(Object.keys(input).length === (page === 0 ? 4 : 3));
   const request = digestBytes(text);
   return db.transaction(() => {
+    rejectOldCommits(db);
     const restored =
       hasV3Root(db) && readV3Root(db).activationDigest !== undefined;
     check(

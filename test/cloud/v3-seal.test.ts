@@ -572,9 +572,13 @@ for (const read of ["archive", "recovery"] as const)
         return target
           ? {
               toArray: () =>
-                result
-                  .toArray()
-                  .map((row) => ({ ...row, body: `${String(row.body)} ` })),
+                result.toArray().map((row) => ({
+                  ...row,
+                  body: canonicalJson({
+                    ...JSON.parse(String(row.body)),
+                    time: 2,
+                  }),
+                })),
             }
           : result;
       };
