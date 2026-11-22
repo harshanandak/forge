@@ -225,12 +225,6 @@ function ownerTag(
     ),
   );
 }
-function ownerHeld(note: NoteValue, config: MemoryConfig) {
-  return (
-    note.approval?.by === "owner" ||
-    ownerTag(note.tags ?? [], config) !== undefined
-  );
-}
 function words(text: string): string[] {
   return text
     .normalize("NFKC")
@@ -696,13 +690,10 @@ function indexNotes(notes: Note[], index: Replacements = new Map()) {
 
 function replacers(index: Replacements, note: Target, config: MemoryConfig) {
   const candidates = index.get(note.id);
-  if (!candidates) return [];
-  const owner = ownerHeld(note.value, config);
+  if (!candidates || ownerTag(note.value.tags ?? [], config)) return [];
   return candidates
-    .flatMap(({ id, value }) => {
-      if (owner && value.approval?.by !== "owner") return [];
-      return replacementScope(value, note.value) ? [id] : [];
-    })
+    .filter(({ value }) => replacementScope(value, note.value))
+    .map(({ id }) => id)
     .sort();
 }
 
@@ -1699,15 +1690,11 @@ module.exports = {
         config,
       );
       // Removing one owner tag never lets changed text skip the owner while another owner tag stays.
-      const movingReplacement =
-        old.replaces?.length &&
-        input.scope !== undefined &&
-        (input.scope ?? undefined) !== old.scope;
       if (
         old.status === undefined &&
         (taggedNow !== undefined ||
-          (ownerHeld(old, config) &&
-            (input.text !== old.text || movingReplacement) &&
+          (ownerTag(old.tags, config) !== undefined &&
+            input.text !== old.text &&
             (removed === undefined || ownerTag(newTags, config) !== undefined)))
       ) {
         const scope =
@@ -1841,7 +1828,6 @@ module.exports = {
       // An owner tag never reaches the served rules on an agent's say-so: the note starts proposed
       // and only the owner's relayed memory.accept activates it, whatever approval the add carries.
       const targets = new Map<number, number>();
-      let needsOwner = ownerHeld(value, config);
       if ((input.replaces?.length ?? 0) > 8)
         fail("INPUT_INVALID", "A note can replace at most eight notes");
       for (const id of input.replaces ?? []) {
@@ -1858,14 +1844,17 @@ module.exports = {
           fail("INPUT_INVALID", `Replacement target ${id} was not found`);
         if (!replacementScope(value, old))
           fail("INPUT_INVALID", `Replacement target ${id} is in another scope`);
+        if (ownerTag(old.tags, config))
+          fail("INPUT_INVALID", `Cannot replace owner-tagged note ${id}`);
         targets.set(n, record.revision);
-        needsOwner ||= ownerHeld(old, config);
       }
       const replaces = [...targets.keys()].map((n) => idIn(target, n));
       if (replaces.length) Object.assign(value, { replaces });
-      const twins = needsOwner
-        ? twinsOf(target, value.text, value.scope, config)
-        : undefined;
+      const tag = ownerTag(value.tags, config);
+      const twins =
+        tag === undefined
+          ? undefined
+          : twinsOf(target, value.text, value.scope, config);
       if (twins?.exact && replaces.length) {
         const { id } = twins.exact;
         const key = noteKey(parseRef(id)!.number);
@@ -1880,9 +1869,8 @@ module.exports = {
           notice: twinNotice(twins.exact),
         };
       const hint = similarity(twins?.similar ?? []);
-      const stored: NoteValue = needsOwner
-        ? { ...value, status: "proposed" }
-        : value;
+      const stored: NoteValue =
+        tag === undefined ? value : { ...value, status: "proposed" };
       const expected = canonical(stored);
       const entries: BatchEntry[] = [
         {
@@ -1924,10 +1912,10 @@ module.exports = {
           record.value as NoteValue,
           input.text,
         ),
-        ...(!needsOwner
+        ...(tag === undefined
           ? {}
           : {
-              notice: `${id} waits for the owner and is not served yet. Owner tags are for directional choices only; settled implementation facts and procedures use the tag fact, procedure or reference and apply at once. Withdraw a duplicate with memory.withdraw. The owner accepts with memory.accept: copy id, revision and text from memory.show ${id}, then follow the approval request.${hint.notice === undefined ? "" : ` ${hint.notice}`}`,
+              notice: `${id} has the owner tag ${tag}, so it waits for the owner and is not served yet. Owner tags are for directional choices only; settled implementation facts and procedures use the tag fact, procedure or reference and apply at once. Withdraw a duplicate with memory.withdraw. The owner accepts with memory.accept: copy id, revision and text from memory.show ${id}, then follow the approval request.${hint.notice === undefined ? "" : ` ${hint.notice}`}`,
               ...(hint.similarTo === undefined
                 ? {}
                 : { similarTo: hint.similarTo }),
@@ -2015,7 +2003,6 @@ module.exports = {
         .filter(
           (note) =>
             note.value.deleted !== true &&
-            !replacers(page.replacements, note, config).length &&
             (input.scope === undefined ||
               note.value.scope === input.scope ||
               note.value.proposal?.scope === input.scope) &&
@@ -2037,6 +2024,7 @@ module.exports = {
             note,
             source: page.source,
             order: page.index,
+            hidden: replacers(page.replacements, note, config).length > 0,
             counts,
             length,
           };
@@ -2098,8 +2086,10 @@ module.exports = {
         : olderBounds.some((bound) => bound !== -1)
           ? encode(olderBounds, 0)
           : undefined;
+    const visible = (row: (typeof scored)[number]) => !row.document.hidden;
+    const hits = scored.slice(skip, skip + limit).filter(visible);
     return {
-      hits: scored.slice(skip, skip + limit).map(({ document, score }) => {
+      hits: hits.map(({ document, score }) => {
         const { note, source } = document;
         return {
           id: note.id,
@@ -2136,7 +2126,7 @@ module.exports = {
           ...dates(source.state, note.record, note.value),
         };
       }),
-      matched: scored.length,
+      matched: scored.filter(visible).length,
       scanned: documents.length,
       ...(unreachable.length === 0 ? {} : { unreachable }),
       truncated: next !== undefined,

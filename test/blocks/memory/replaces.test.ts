@@ -77,27 +77,36 @@ test(
 );
 
 test(
-  "a replacement waiting for the owner leaves the old rule in the startup packet",
+  "an owner-tagged replacer retires an agent note only after acceptance",
   async () => {
     const { call, add, packet } = fixture();
+    const old = await add("Use the old falcon procedure");
     const tags = ["rule"];
-    const old = await accepted<{ id: string }>(call, {
-      level,
-      scope,
-      tags,
-      text: "Use the obsolete falcon procedure",
-    });
-    const proposed = await add("Follow the approved owl procedure", {
+    const rejected = await add("Try the heron procedure", {
       tags,
       replaces: [old.id],
     });
-    expect(await packet("memory.rules", { notes: true })).toEqual([old.id]);
+    expect(await call("memory.proposals", {})).toMatchObject({
+      groups: [{ items: [{ id: rejected.id, replaces: [old.id] }] }],
+    });
+    await call("memory.reject", {
+      items: await decisionItems(call, [rejected.id]),
+      approval: ownerApproval,
+    });
+    const proposed = await add("Use the approved owl procedure", {
+      tags,
+      replaces: [old.id],
+    });
+    expect(proposed).toMatchObject({ note: { status: "proposed" } });
+    const ids = [old.id, rejected.id, proposed.id];
+    expect(await packet("memory.attach", { ids })).toEqual([old.id]);
     expect(
       await call("memory.accept", {
         items: await decisionItems(call, [proposed.id]),
         approval: ownerApproval,
       }),
     ).toMatchObject({ results: [{ id: proposed.id, status: "accepted" }] });
+    expect(await packet("memory.attach", { ids })).toEqual([proposed.id]);
     expect(await packet("memory.rules", { notes: true })).toEqual([
       proposed.id,
     ]);
@@ -169,47 +178,28 @@ test(
 );
 
 test(
-  "a plain agent note cannot retire an owner rule",
+  "replacing an owner-tagged note fails before writing even with approval",
   async () => {
-    const { call, packet } = fixture();
+    const { state, call, add } = fixture();
     const old = await accepted<{ id: string }>(call, {
       level,
       scope,
       tags: ["rule"],
       text: "Owner chose the kestrel procedure",
     });
-    const pending = (await call("memory.add", {
-      level,
-      scope,
-      text: "Agent picked a gull procedure",
-      replaces: [old.id],
-    })) as { id: string };
-    expect(pending).toMatchObject({ note: { status: "proposed" } });
-    expect(await call("memory.proposals", {})).toMatchObject({
-      groups: [{ items: [{ id: pending.id, replaces: [old.id] }] }],
-    });
-    expect(await packet("memory.rules", { notes: true })).toEqual([old.id]);
-    expect(
-      await call("memory.reject", {
-        items: await decisionItems(call, [pending.id]),
+    const writes = state.counts.puttedRecords;
+    await expect(
+      add("Agent picked a gull procedure", {
+        replaces: [old.id],
         approval: ownerApproval,
       }),
-    ).toMatchObject({ results: [{ id: pending.id, status: "rejected" }] });
-    expect(await packet("memory.rules", { notes: true })).toEqual([old.id]);
-    const next = (await call("memory.add", {
-      level,
-      scope,
-      text: "Owner may choose the tern procedure",
-      replaces: [old.id],
-    })) as { id: string };
-    await call("memory.accept", {
-      items: await decisionItems(call, [next.id]),
-      approval: ownerApproval,
+    ).rejects.toMatchObject({
+      error: {
+        code: "INPUT_INVALID",
+        message: `Cannot replace owner-tagged note ${old.id}`,
+      },
     });
-    expect(await packet("memory.rules", { notes: true })).toEqual([]);
-    expect(await packet("memory.attach", { ids: [old.id, next.id] })).toEqual([
-      next.id,
-    ]);
+    expect(state.counts.puttedRecords).toBe(writes);
   },
   timeout,
 );
@@ -386,71 +376,58 @@ test(
 );
 
 test(
-  "a replacement of an owner-approved untagged replacement needs acceptance",
+  "a replaced note is served again after it gains an accepted owner tag",
   async () => {
-    const { call, add, packet } = fixture();
-    const fields = { level, scope };
-    const a = await accepted<{ id: string }>(call, {
-      ...fields,
+    const { call, add, packet, search } = fixture();
+    const text = "Old heron procedure";
+    const old = await add(text);
+    const current = await add("Current heron procedure", {
+      replaces: [old.id],
+    });
+    const ids = [old.id, current.id];
+    expect(await packet("memory.attach", { ids })).toEqual([current.id]);
+    expect(await search("heron")).toEqual([current.id]);
+    await add(text, {
+      id: old.id,
+      expectRevision: old.note.revision,
       tags: ["rule"],
-      text: "Old falcon procedure",
     });
-    const b = await accepted<{ id: string }>(call, {
-      ...fields,
-      text: "First falcon procedure",
-      replaces: [a.id],
-    });
-    const c = await add("Next falcon procedure", { replaces: [b.id] });
-    expect(c).toMatchObject({ note: { status: "proposed" } });
-    const ids = [a.id, b.id, c.id];
-    expect(await packet("memory.attach", { ids })).toEqual([b.id]);
-    await call("memory.accept", {
-      items: await decisionItems(call, [c.id]),
-      approval: ownerApproval,
-    });
-    expect(await packet("memory.attach", { ids })).toEqual([c.id]);
+    expect(await packet("memory.attach", { ids })).toEqual([current.id]);
+    expect(
+      await call("memory.accept", {
+        items: await decisionItems(call, [old.id]),
+        approval: ownerApproval,
+      }),
+    ).toMatchObject({ results: [{ id: old.id, status: "accepted" }] });
+    expect(await packet("memory.attach", { ids })).toEqual(ids);
+    expect(await packet("memory.rules", { notes: true })).toEqual([old.id]);
+    expect((await search("heron")).sort()).toEqual([...ids].sort());
   },
   timeout,
 );
 
 test(
-  "an unapproved text and scope edit cannot reuse a replacer's owner approval",
+  "a new replacement cannot make a search cursor skip an unrelated note",
   async () => {
-    const { call, add, search } = fixture();
-    const fields = { level, scope: "alpha" };
-    const a = await accepted<{ id: string }>(call, {
-      ...fields,
-      tags: ["rule"],
-      text: "Owner heron procedure",
+    const { call, add } = fixture();
+    const first = await add("identical shrike procedure");
+    const second = await add("identical shrike procedure");
+    const third = await add("identical shrike procedure");
+    const input = { query: "shrike", limit: 1 };
+    const start = (await call("memory.search", input)) as { next: string };
+    expect(start).toMatchObject({ hits: [{ id: third.id }], next: "4:1" });
+    await add("identical shrike procedure", { replaces: [third.id] });
+    const middle = (await call("memory.search", {
+      ...input,
+      cursor: start.next,
+    })) as { next: string };
+    expect(middle).toMatchObject({ hits: [{ id: second.id }], next: "4:2" });
+    expect(
+      await call("memory.search", { ...input, cursor: middle.next }),
+    ).toMatchObject({
+      hits: [{ id: first.id }],
+      truncated: false,
     });
-    const text = "Accepted heron procedure";
-    const b = await accepted<{ id: string }>(call, {
-      ...fields,
-      text,
-      replaces: [a.id],
-    });
-    const edit = async (text: string, scope: string) => {
-      const shown = (await call("memory.show", { id: b.id })) as {
-        note: { revision: number };
-      };
-      return add(text, {
-        id: b.id,
-        scope,
-        expectRevision: shown.note.revision,
-      });
-    };
-    expect(await edit(text, "beta")).toMatchObject({
-      note: { scope: "alpha", proposal: { scope: "beta" } },
-    });
-    await call("memory.accept", {
-      items: await decisionItems(call, [b.id]),
-      approval: ownerApproval,
-    });
-    expect(await search("heron", { scope: "alpha" })).toEqual([a.id]);
-    expect(await edit("Unapproved heron procedure", "alpha")).toMatchObject({
-      note: { scope: "beta", text: { text }, proposal: { scope: "alpha" } },
-    });
-    expect(await search("heron", { scope: "alpha" })).toContain(a.id);
   },
   timeout,
 );
