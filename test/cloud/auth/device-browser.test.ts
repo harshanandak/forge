@@ -399,60 +399,54 @@ test.each([
   "deployment Project handles Clerk %s on device approval",
   async (mode) => {
     const now = start / 1000;
+    const claims = {
+      auth_time: now - 1,
+      exp: now + 600,
+      sub: vars.FORGE_OWNER_SUBJECT,
+    };
     const { proof, jwk } = await jwtFixture(
       vars.CLERK_ISSUER!,
       vars.CLERK_CLIENT_ID!,
-      {
-        claims: {
-          auth_time: now - 1,
-          exp: now + 600,
-          sub: vars.FORGE_OWNER_SUBJECT,
-        },
-      },
+      { claims },
     );
-    const network = spyOn(globalThis, "fetch").mockImplementation(
-      Object.assign(
-        (input: Request | URL | string) => {
-          const url = input instanceof Request ? input.url : input.toString();
-          if (url.endsWith("/jwks.json"))
-            return mode === "JWKS"
-              ? Promise.reject(new Error("private provider detail"))
-              : Promise.resolve(Response.json({ keys: [jwk] }));
-          expect(url).toBe(vars.CLERK_ISSUER + "/oauth/token");
-          if (mode === "token body") {
-            const stream = new ReadableStream(
+    const failure = new Error("private provider detail");
+    const upstream = (input: Request | URL | string) => {
+      const url = input instanceof Request ? input.url : input.toString();
+      if (url.endsWith("/jwks.json"))
+        return mode === "JWKS"
+          ? Promise.reject(failure)
+          : Promise.resolve(Response.json({ keys: [jwk] }));
+      expect(url).toBe(vars.CLERK_ISSUER + "/oauth/token");
+      if (mode === "token body")
+        return Promise.resolve(
+          new Response(
+            new ReadableStream(
               {
                 start: (body) =>
                   body.enqueue(new TextEncoder().encode('{"id_token":')),
-                pull: (body) =>
-                  body.error(new Error("private provider detail")),
+                pull: (body) => body.error(failure),
               },
               { highWaterMark: 0 },
-            );
-            return Promise.resolve(new Response(stream));
-          }
-          return mode === "token exchange"
-            ? Promise.reject(new Error("private provider detail"))
-            : Promise.resolve(Response.json({ id_token: proof }));
-        },
-        { preconnect: fetch.preconnect },
-      ),
+            ),
+          ),
+        );
+      return mode === "token exchange"
+        ? Promise.reject(failure)
+        : Promise.resolve(Response.json({ id_token: proof }));
+    };
+    const network = spyOn(globalThis, "fetch").mockImplementation(
+      Object.assign(upstream, { preconnect: fetch.preconnect }),
     );
+    const response = new Response(null, {
+      status: mode === "redemption" ? 503 : 200,
+    });
+    const redemption = {
+      idFromName: (hash: string) => hash,
+      get: () => ({ fetch: () => Promise.resolve(response) }),
+    };
     const f = fixture(
       vars,
-      {
-        CODE_REDEMPTION: {
-          idFromName: (hash: string) => hash,
-          get: () => ({
-            fetch: () =>
-              Promise.resolve(
-                new Response(null, {
-                  status: mode === "redemption" ? 503 : 200,
-                }),
-              ),
-          }),
-        },
-      },
+      { CODE_REDEMPTION: redemption },
       undefined,
       DeployedProject,
     );

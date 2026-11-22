@@ -282,7 +282,9 @@ export async function deviceRoute(
       !proof ||
       (!proof.ok && proof.reason === "unavailable") ||
       ("error" in proof &&
-        (proof.error === "unavailable" || proof.error === "timeout"))
+        (proof.error === "unavailable" ||
+          proof.error === "timeout" ||
+          proof.error === "upstream_error"))
     )
       return restart();
     const at = Date.now();

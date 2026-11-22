@@ -9,11 +9,7 @@ const unavailable = (retry: RetryPosture) =>
   });
 
 export function storageFailure(error: unknown, reconcile = false) {
-  if (error instanceof ForgeFailure)
-    return error.error.code === "QUOTA_EXHAUSTED" ||
-      error.error.code === "STORAGE_LIMIT_EXCEEDED"
-      ? error
-      : undefined;
+  if (error instanceof ForgeFailure) return error;
   if (!(error instanceof Error)) return;
   if (
     /^Exceeded allowed rows (?:written|read) in Durable Objects free tier\.?$/.test(
@@ -39,6 +35,7 @@ export function storageResponse(
   error: unknown,
   typed = false,
   retry?: RetryPosture,
+  statuses?: Readonly<Record<string, number>>,
 ): Response | undefined {
   const failure =
     storageFailure(error, retry === "reconcile_first") ??
@@ -50,6 +47,9 @@ export function storageResponse(
         ...(typed ? { status: "FAIL", warnings: [] } : {}),
         error: failure.error,
       },
-      { status: 503, headers: { "Cache-Control": "no-store" } },
+      {
+        status: statuses ? (statuses[failure.error.code] ?? 500) : 503,
+        headers: { "Cache-Control": "no-store" },
+      },
     );
 }

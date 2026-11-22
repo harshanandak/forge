@@ -920,9 +920,23 @@ export class Project {
           { status: 500 },
         );
       }
+      const failure = error.error;
+      if (failure.code === "UNAVAILABLE" && isLoginRoute(request))
+        return Response.json(
+          {
+            ok: false,
+            error: {
+              ...failure,
+              message:
+                "Device login temporarily unavailable. Start a new login.",
+              retry: "reconcile_first",
+            },
+          },
+          { status: 503, headers: { "Cache-Control": "no-store" } },
+        );
       return Response.json(
-        { ok: false, error: error.error },
-        { status: STATUS[error.error.code] ?? 500 },
+        { ok: false, error: failure },
+        { status: STATUS[failure.code] ?? 500 },
       );
     }
   }

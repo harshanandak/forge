@@ -314,19 +314,38 @@ test("legacy device auth refusals never reach trusted OAuth transport", async ()
   }
 }, 30_000);
 
-test.each([
+const outageSources = [
   "device",
   "admin",
   "owner",
   "verifier",
   "token lookup",
   "grant lookup",
-] as const)(
-  "%s transport rejection is a sanitized 503",
-  async (source) => {
+];
+test.each([
+  ...outageSources.map((source) => [source, "UNAVAILABLE", 503] as const),
+  ...Object.entries(STATUS)
+    .filter(([code]) => code.startsWith("AUTH_"))
+    .flatMap(([code, status]) =>
+      ["verifier", "owner", "device"].map(
+        (source) => [source, code, status] as const,
+      ),
+    ),
+])(
+  "%s rejection preserves %s (%d)",
+  async (source, code, status) => {
     const f = await fixture();
     const token = await f.token();
-    const reject = () => Promise.reject(new Error("private transport detail"));
+    const failure =
+      code === "UNAVAILABLE"
+        ? undefined
+        : new ForgeFailure({
+            code,
+            message: "Credential refused",
+            retry: "never",
+          });
+    const reject = () =>
+      Promise.reject(failure ?? new Error("private transport detail"));
     const worker =
       source === "verifier"
         ? createWorker(composeAuth({ verify: reject }, resource), f.forward)
@@ -343,48 +362,16 @@ test.each([
         : projectRequest(source === "device" ? deviceToken : token),
       f.env,
     );
-    expect(reply.status).toBe(503);
-    const text = await reply.text();
-    expect(JSON.parse(text)).toMatchObject({
-      ok: false,
-      error: { code: "UNAVAILABLE", retry: "safe" },
-    });
-    expect(text).not.toContain("private transport detail");
-    expect(f.forward).toHaveBeenCalledTimes(0);
-  },
-  30_000,
-);
-
-test.each(
-  Object.entries(STATUS)
-    .filter(([code]) => code.startsWith("AUTH_"))
-    .flatMap(([code, status]) =>
-      ["verifier", "forward", "binding"].map(
-        (phase) => [code, status, phase] as const,
-      ),
-    ),
-)(
-  "typed %s (%d) survives %s rejection",
-  async (code, status, phase) => {
-    const f = await fixture();
-    const token = await f.token();
-    const error = new ForgeFailure({
-      code,
-      message: "Credential refused",
-      retry: "never",
-    });
-    const reject = () => Promise.reject(error);
-    const worker =
-      phase === "verifier"
-        ? createWorker(composeAuth({ verify: reject }, resource), f.forward)
-        : createWorker(f.auth, reject);
-    if (phase === "binding") f.env.PROJECTS.get = () => ({ fetch: reject });
-    const reply = await worker.fetch(
-      projectRequest(phase === "binding" ? deviceToken : token),
-      f.env,
-    );
     expect(reply.status).toBe(status);
-    expect(await reply.json()).toEqual({ ok: false, error: error.error });
+    const text = await reply.text();
+    if (failure)
+      expect(JSON.parse(text)).toEqual({ ok: false, error: failure.error });
+    else
+      expect(JSON.parse(text)).toMatchObject({
+        ok: false,
+        error: { code: "UNAVAILABLE", retry: "safe" },
+      });
+    expect(text).not.toContain("private transport detail");
     expect(f.forward).toHaveBeenCalledTimes(0);
   },
   30_000,

@@ -168,7 +168,9 @@ export function createClerkUpstream(
             let text = "",
               size = 0;
             for (;;) {
+              phase = "unavailable";
               const chunk = await reader.read();
+              phase = "malformed_response";
               if (chunk.done) break;
               const bytes: unknown = chunk.value;
               if (!(bytes instanceof Uint8Array))

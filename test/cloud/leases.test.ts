@@ -323,38 +323,32 @@ test("an interrupted holder lookup returns 503 and no lease answer", async () =>
   const device = await f.issue();
   await f.claim("issue", device);
   const was = f.snapshot();
-  const project = new Project({
-    storage: {
-      ...f.storage,
-      sql: {
-        exec: (statement, ...params) => {
-          if (statement.includes("FROM state_leases"))
-            throw Object.assign(new Error("private storage problem"), {
-              retryable: true,
-            });
-          return f.storage.sql.exec(statement, ...params);
-        },
-      },
-    },
-  });
-  const worker = createWorker();
-  const reply = await worker.fetch(
-    new Request("https://fixture.example/p/a/holder?subject=issue", {
-      headers: { authorization: "Bearer " + device.token },
-    }),
-    {
-      FORGE_CLOUD_PROJECT: "a",
-      PROJECTS: { idFromName: (name) => name, get: () => project },
+  const read = f.storage.sql.exec.bind(f.storage.sql);
+  const fault = spyOn(f.storage.sql, "exec").mockImplementation(
+    (statement, ...params) => {
+      if (statement.includes("FROM state_leases"))
+        throw Object.assign(new Error("private storage problem"), {
+          retryable: true,
+        });
+      return read(statement, ...params);
     },
   );
+  const reply = await f.raw(
+    "holder?subject=issue",
+    undefined,
+    { authorization: "Bearer " + device.token },
+    "worker",
+  );
+  fault.mockRestore();
   expect(reply.status).toBe(503);
-  const text = await reply.text();
-  expect(JSON.parse(text)).toMatchObject({
+  expect<unknown>(reply.body).toEqual({
     ok: false,
-    error: { code: "UNAVAILABLE", retry: "safe" },
+    error: {
+      code: "UNAVAILABLE",
+      message: "Project temporarily unavailable",
+      retry: "safe",
+    },
   });
-  expect(text).not.toContain("private storage problem");
-  expect(JSON.parse(text)).not.toHaveProperty("value");
   expect(f.snapshot()).toBe(was);
 }, 10_000);
 
