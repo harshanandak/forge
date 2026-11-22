@@ -219,7 +219,8 @@ async function main(): Promise<void> {
     assertReviewedBuild(
       build,
       expected,
-      process.env.CI_HEAD ??
+      process.env.CI_BUILD_SHA ??
+        process.env.CI_HEAD ??
         ok(
           run(
             gitExecutable(process.env),
