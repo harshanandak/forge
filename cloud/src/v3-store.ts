@@ -511,7 +511,8 @@ export function recoverV3(
   const verify =
     verification &&
     ((frame: Frame) => verifyLeaseFrame(db, image, frame, verification));
-  for (const { sequence, body } of rows) foldRow(image, sequence, body, verify);
+  for (const { sequence, body } of rows)
+    foldRow(db, image, sequence, body, verify);
   return image;
 }
 
@@ -546,12 +547,13 @@ function recoverPortableV3(
       Object.keys(frame).join() === "sequence"
         ? { ...marker, ...frame }
         : frame;
-    foldRow(image, index + 1, storedCanonical(body), verify, true);
+    foldRow(db, image, index + 1, storedCanonical(body), verify, true);
   }
   return image;
 }
 
 function foldRow(
+  db: SqlDatabase,
   image: V3Image,
   sequence: unknown,
   body: unknown,
@@ -575,6 +577,7 @@ function foldRow(
     image.recordFloor,
     read,
     unavailable,
+    (key) => readV3Value(db, image, "record", key),
   );
   apply(image, verify ? verify(frame) : frame, nat(sequence));
   image.recordFloor = records.floor;
@@ -582,8 +585,9 @@ function foldRow(
   image.tailBytes += Buffer.byteLength(String(body));
 }
 
-export function publishV3(image: V3Image) {
-  for (const [sequence, body] of image.staged) foldRow(image, sequence, body);
+export function publishV3(db: SqlDatabase, image: V3Image) {
+  for (const [sequence, body] of image.staged)
+    foldRow(db, image, sequence, body);
   image.staged.length = 0;
   image.stale = false;
 }
@@ -724,7 +728,11 @@ export function appendV3Frames(
   return append(db, image(), batch);
 }
 
-function append(db: SqlDatabase, image: V3Image, batch: readonly unknown[]) {
+export function append(
+  db: SqlDatabase,
+  image: V3Image,
+  batch: readonly unknown[],
+) {
   if (!batch.every(validAppendFrame))
     throw fail("INPUT_INVALID", "Invalid v3 frame");
   return db.transaction(() => {
@@ -761,7 +769,9 @@ function append(db: SqlDatabase, image: V3Image, batch: readonly unknown[]) {
       const fault = authorityFault(frame);
       if (fault !== undefined)
         throw new Error(`Refusing a v3 frame with an invalid ${fault}`);
-      const records = verifyRecordFrame(frame, floor, read, refuse);
+      const records = verifyRecordFrame(frame, floor, read, refuse, (key) =>
+        readV3Value(db, image, "record", key),
+      );
       floor = records.floor;
       for (const { key, value } of records.changes) pending.set(key, value);
     }
@@ -782,10 +792,10 @@ export interface Frame {
   readonly lease?: LeaseRecord;
   readonly outcome?: {
     readonly id: string;
-    readonly scope: ReceiptScope & { readonly family: "lease" };
+    readonly scope: ReceiptScope & { readonly family: "lease" | "command" };
     readonly fingerprint: string;
     readonly status: string;
-    readonly result?: ForgeError;
+    readonly result?: unknown;
     readonly resultDigest?: string;
     readonly retryUntil: number;
   };
@@ -893,7 +903,7 @@ function verifyLeaseFrame(
   { pages, admit }: Pick<Verification, "pages" | "admit">,
 ): Frame {
   const { outcome, time } = frame;
-  if (!outcome) return frame;
+  if (outcome?.scope.family !== "lease") return frame;
   const input = parse(outcome.fingerprint);
   if (
     frame.events.length !== 0 ||
@@ -1053,7 +1063,7 @@ export function leaseV3(
       return { lease };
     },
   );
-  publishV3(image);
+  publishV3(db, image);
   if ("refusal" in result) throw result.refusal;
   return result.lease;
 }

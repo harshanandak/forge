@@ -72,6 +72,7 @@ import {
   failed,
   lazyViews,
   MAX_COMMAND_BODY,
+  parseCommand,
   runCommand,
 } from "./issue-commands.ts";
 import { readIssue } from "./issue-read.ts";
@@ -131,6 +132,7 @@ import {
 
 import { stateMigrations } from "../../src/core/state/migrations.ts";
 import { checkpointV3 } from "./v3-checkpoint.ts";
+import { commandV3 } from "./v3-commands.ts";
 import { hasV3Restore, restoreV3Page } from "./v3-restore.ts";
 import {
   appendV3Frames,
@@ -533,7 +535,7 @@ export class Project {
       const route = url.pathname.split("/")[3] ?? "";
       const probe =
         this.#testV3 &&
-        /^\/p\/[^/]+\/test-v3(?:\/(checkpoint|commits|claim|renew|release))?$/.exec(
+        /^\/p\/[^/]+\/test-v3(?:\/(checkpoint|commits|command|claim|renew|release))?$/.exec(
           url.pathname,
         );
       if (probe && !url.search) {
@@ -560,6 +562,35 @@ export class Project {
           const owner = request.headers.get("X-Forge-Owner");
           if (lease && owner === null)
             throw fail("AUTH_REQUIRED", "A device token is required");
+          if (probe[1] === "command" && owner !== null) {
+            const body = await bounded(request, MAX_COMMAND_BODY);
+            const expiresAt = Number(
+              request.headers.get("X-Forge-Owner-Expires"),
+            );
+            const now = Date.now();
+            tokenLive(expiresAt, now);
+            const call = parseCommand(body, {
+              device: owner,
+              project: url.pathname.split("/")[2]!,
+            });
+            const result = commandV3(
+              db,
+              this.#image(db),
+              call,
+              owner,
+              (this.#env as { FORGE_CLOUD_ID_PREFIX?: string })
+                .FORGE_CLOUD_ID_PREFIX!,
+              expiresAt,
+              now,
+            );
+            return Response.json({
+              ok: true,
+              op: call.op,
+              status: "OK",
+              result,
+              warnings: [],
+            });
+          }
           const body = await bounded(request);
           if (lease && owner !== null) {
             const expiresAt = Number(
@@ -584,7 +615,7 @@ export class Project {
             const value = appendV3Frames(db, input.frames, () =>
               this.#image(db),
             );
-            publishV3(this.#v3Image!);
+            publishV3(db, this.#v3Image!);
             return Response.json({ ok: true, value });
           }
           if (Object.keys(input).length)

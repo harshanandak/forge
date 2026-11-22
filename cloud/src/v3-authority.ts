@@ -5,7 +5,10 @@ import {
 } from "../../src/core/config/pointer.ts";
 import { checkLeaseRecord } from "../../src/core/state/index.ts";
 import type { ForgeError, LeaseRecord } from "../../src/generated/types.ts";
-import { validateForgeError } from "../../src/generated/validators.ts";
+import {
+  validateForgeError,
+  validateTrackerItem,
+} from "../../src/generated/validators.ts";
 import { NAMESPACE, REFUSALS } from "./lease-command.ts";
 
 export const isDigest = (value: unknown): value is string =>
@@ -20,6 +23,8 @@ const REFUSAL_KEYS = "fingerprint,id,result,retryUntil,scope,status";
 const ARCHIVED_KEYS = "fingerprint,id,resultDigest,retryUntil,scope,status";
 const WITNESS_KEYS = "digest,generation,id,namespace,subject";
 const OPERATIONS = ["lease.claim", "lease.renew", "lease.release"];
+export const isV3Command = (op: unknown) =>
+  op === "issue.create" || op === "issue.update";
 
 function validLease(lease: unknown): boolean {
   try {
@@ -44,6 +49,15 @@ function fingerprintTied(
 ): boolean {
   try {
     const input: unknown = JSON.parse(String(outcome.fingerprint));
+    if (isV3Command(operation))
+      return (
+        isObject(input) &&
+        keysOf(input) === "input,scope" &&
+        isDigest(input.input) &&
+        canonicalJson(input) === outcome.fingerprint &&
+        canonicalJson({ family: "command", ...Object(input.scope) }) ===
+          canonicalJson(outcome.scope)
+      );
     return (
       isObject(input) &&
       canonicalJson(input) === outcome.fingerprint &&
@@ -64,8 +78,10 @@ function fingerprintTied(
 function outcomeFault(outcome: unknown, portable = false): string | undefined {
   if (!isObject(outcome) || !isObject(outcome.scope)) return "outcome shape";
   const { scope, result } = outcome;
-  const archived = portable && outcome.status !== "ok";
-  const liveKeys = result === undefined ? OUTCOME_KEYS : REFUSAL_KEYS;
+  const command = scope.family === "command";
+  const archived = portable && (command || outcome.status !== "ok");
+  const liveKeys =
+    command || result !== undefined ? REFUSAL_KEYS : OUTCOME_KEYS;
   if (
     keysOf(outcome) !== (archived ? ARCHIVED_KEYS : liveKeys) ||
     (archived &&
@@ -80,11 +96,22 @@ function outcomeFault(outcome: unknown, portable = false): string | undefined {
     return "outcome fields";
   if (
     keysOf(scope) !== "family,principal,version" ||
-    scope.family !== "lease" ||
+    (!command && scope.family !== "lease") ||
     scope.version !== 2 ||
     !isDigest(scope.principal)
   )
     return "outcome scope";
+  if (command) {
+    if (!/^c2:[a-f0-9]{64}$/.test(outcome.id)) return "outcome id";
+    const valid =
+      outcome.status === "ok"
+        ? validateTrackerItem(result).ok
+        : (outcome.status === "INPUT_INVALID" ||
+            outcome.status === "NOT_FOUND") &&
+          validateForgeError(result).ok &&
+          (result as ForgeError).code === outcome.status;
+    return archived || valid ? undefined : "command outcome status";
+  }
   if (archived) return undefined;
   const status = result === undefined ? "ok" : refusalCode(result);
   return status !== undefined && outcome.status === status
@@ -129,7 +156,11 @@ export function sealedAuthorityValid(
     isObject(outcome) &&
     outcome.id === key &&
     outcomeFault(outcome) === undefined &&
-    (outcome.status === "ok" ? validLease(lease) : lease === undefined)
+    (outcome.status === "ok" &&
+    isObject(outcome.scope) &&
+    outcome.scope.family === "lease"
+      ? validLease(lease)
+      : lease === undefined)
   );
 }
 
@@ -146,6 +177,13 @@ export function authorityFault(
   const outcomeError =
     outcome === undefined ? undefined : outcomeFault(outcome, portable);
   if (outcomeError !== undefined) return outcomeError;
+  if (isV3Command(operation))
+    return isObject(outcome) &&
+      lease === undefined &&
+      witness === undefined &&
+      fingerprintTied(operation, lease, outcome)
+      ? undefined
+      : "command outcome";
   if ((outcome !== undefined) !== OPERATIONS.includes(String(operation)))
     return "outcome operation";
   if (isObject(outcome)) {
