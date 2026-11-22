@@ -858,13 +858,13 @@ test(
       await appendNotes(f, 10);
       await populate(f);
       const db = writableStore(f.storage);
-      const before = recoverV3(db);
+      const before = recoverV3(db, f.seal());
       const cut = await prefix(f, 0, before.head);
       expect(cut).toBeGreaterThanOrEqual(11);
       expect(cut).toBeLessThan(before.head);
       await expectWarmAndCold(f, viewV3(before).image);
       await drain(f, cut, before.head);
-      const after = recoverV3(db);
+      const after = recoverV3(db, f.seal());
       expect(after.root.eventWatermark).toBe(before.eventWatermark);
       expect(after.recordFloor).toBe(before.recordFloor);
       await expectWarmAndCold(f, viewV3(before).image);
@@ -1352,7 +1352,7 @@ test(
       const body = Buffer.from(minimal.replace('""', JSON.stringify(subject)));
       body[body.indexOf("!")] = 0xff;
       expect(body.byteLength).toBe(8192);
-      const project = new Project({ storage: f.storage, testV3: true });
+      const project = new Project(f.context, f.env);
       const response = await project.fetch(
         new Request(`https://fixture.example/p/a/${probe}/claim`, {
           method: "POST",
@@ -1392,7 +1392,7 @@ function replayPortable(target: Fixture, frames: readonly unknown[]) {
     sealed: () => {},
     portableTranscript: canonicalJson(frames),
   };
-  return recoverV3(writableStore(target.storage), verification);
+  return recoverV3(writableStore(target.storage), target.seal(), verification);
 }
 
 test(
@@ -1400,7 +1400,7 @@ test(
   () =>
     withFixture(async (source) => {
       const frames = await portableHistory(source);
-      const expected = recoverV3(writableStore(source.storage));
+      const expected = recoverV3(writableStore(source.storage), source.seal());
       await withFixture((target) => {
         const effects = target.observeEffects();
         const replayed = replayPortable(target, frames);
@@ -1438,7 +1438,7 @@ test(
           ? { sequence: entry.sequence }
           : entry,
       );
-      const expected = recoverV3(writableStore(source.storage));
+      const expected = recoverV3(writableStore(source.storage), source.seal());
       expect(expected.head).toBe(1025);
       await withFixture((target) => {
         const replayed = replayPortable(target, frames);
@@ -1465,7 +1465,7 @@ test(
         ({ id }) => id === "transcript:0",
       )!.body;
       const frames = JSON.parse(native) as Json[];
-      const expected = recoverV3(writableStore(source.storage));
+      const expected = recoverV3(writableStore(source.storage), source.seal());
       await withFixture((target) => {
         const replayed = replayPortable(target, frames);
         expect(viewV3(replayed).image).toEqual(viewV3(expected).image);
@@ -1922,7 +1922,10 @@ const typed = (f: Fixture, body: Json, expires = E1) =>
 
 function typedBackup(source: Fixture): Portable {
   const store = writableStore(source.storage);
-  const { head, eventWatermark, recordFloor, root } = recoverV3(store);
+  const { head, eventWatermark, recordFloor, root } = recoverV3(
+    store,
+    source.seal(),
+  );
   return {
     pages: pages(source),
     head,
@@ -2100,8 +2103,8 @@ test(
 
       const from = writableStore(source.storage);
       const to = writableStore(target.storage);
-      const origin = recoverV3(from);
-      const restored = recoverV3(to);
+      const origin = recoverV3(from, source.seal());
+      const restored = recoverV3(to, target.seal());
       const { lease: _lease, ...expected } = viewV3(origin).image as Json;
       const { lease: _restoredLease, ...actual } = viewV3(restored)
         .image as Json;
@@ -2244,7 +2247,7 @@ test(
   timeout,
 );
 
-for (const damage of ["missing", "altered", "extra"] as const) {
+for (const damage of ["missing", "altered", "extra", "mac"] as const) {
   test(
     `v3 restore cold recovery refuses ${damage} activation proof`,
     () =>
@@ -2258,11 +2261,16 @@ for (const damage of ["missing", "altered", "extra"] as const) {
             ...body,
             time: T0 + 1,
           }));
-        if (damage === "extra")
-          target.db.run("INSERT INTO cloud_v3_commits VALUES (?, ?)", [
-            data.head + 2,
-            commits(target)[0]!.body,
+        if (damage === "mac")
+          target.db.run("UPDATE cloud_v3_commits SET mac=? WHERE sequence=?", [
+            `${"0".repeat(16)}.${"0".repeat(64)}`,
+            data.head + 1,
           ]);
+        if (damage === "extra")
+          target.db.run(
+            "INSERT INTO cloud_v3_commits SELECT ?, body, mac FROM cloud_v3_commits",
+            [data.head + 2],
+          );
         target.restart();
         const before = target.observeEffects();
         expect(await target.send("status")).toMatchObject(refused);

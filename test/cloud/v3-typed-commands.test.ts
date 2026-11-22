@@ -121,7 +121,7 @@ async function oneRow(
 
 function record(f: Fixture, key = "r1") {
   const db = writableStore(f.storage);
-  const image = recoverV3(db);
+  const image = recoverV3(db, f.seal());
   return {
     value: readV3Value(db, image, "record", key),
     revision: image.entries.record.get(key)?.revision,
@@ -130,7 +130,7 @@ function record(f: Fixture, key = "r1") {
 
 async function checkpoint(f: Fixture) {
   const db = writableStore(f.storage);
-  const image = viewV3(recoverV3(db)).image;
+  const image = viewV3(recoverV3(db, f.seal())).image;
   const { head } = image;
   expect(await f.send(`${probe}/checkpoint`, {})).toMatchObject({
     status: 200,
@@ -236,6 +236,96 @@ function tamper(f: Fixture, sequence: number, edit: (frame: Json) => void) {
   ]);
   f.restart();
 }
+
+for (const command of [create, update]) {
+  test(
+    `v3 refuses a coordinated stored ${command.op} edit after restart`,
+    async () => {
+      const f = guardFixture(env);
+      using _db = f.db;
+      await provision(f);
+      await oneRow(f, () => send(f, create));
+      if (command === update) {
+        await rawClaim(f);
+        await oneRow(f, () => send(f, update));
+      }
+      tamper(f, frames(f).length, (frame) => {
+        const event = (frame.events as Json[])[0]!;
+        const change = (frame.changes as Json[])[0]!.value as Json;
+        const result = (frame.outcome as Json).result as Json;
+        const input = (event.patch ?? event.value) as Json;
+        for (const value of [input, change.value as Json, result])
+          value.title = "Edited in storage";
+      });
+      const effects = f.observeEffects();
+      expect(await send(f, command)).toMatchObject(error(503, "UNAVAILABLE"));
+      expect(effects()).toEqual(noWrites);
+    },
+    timeout,
+  );
+}
+
+const refusalEdits: [string, (outcome: Json) => void][] = [
+  [
+    "swapped code",
+    (outcome) => {
+      const result = outcome.result as Json;
+      outcome.status = "REVISION_CONFLICT";
+      result.code = "REVISION_CONFLICT";
+    },
+  ],
+  [
+    "edited message",
+    (outcome) => {
+      (outcome.result as Json).message = "Edited in storage";
+    },
+  ],
+  [
+    "status turned into ok",
+    (outcome) => {
+      outcome.status = "ok";
+    },
+  ],
+];
+
+for (const [label, edit] of refusalEdits)
+  test(
+    `v3 refuses a stored update refusal with a ${label} after restart`,
+    async () => {
+      const f = guardFixture(env);
+      using _db = f.db;
+      await provision(f);
+      await oneRow(f, () => send(f, create));
+      await updateRefusal(f, update, 409, "LEASE_NOT_HELD");
+      tamper(f, 2, (frame) => edit(frame.outcome as Json));
+      const effects = f.observeEffects();
+      expect(await send(f, update)).toMatchObject(error(503, "UNAVAILABLE"));
+      expect(frames(f)).toHaveLength(2);
+      expect(effects()).toEqual(noWrites);
+    },
+    timeout,
+  );
+
+test(
+  "v3 refuses a lowered stored retry deadline and does not run the same request again",
+  async () => {
+    const f = guardFixture(env);
+    using _db = f.db;
+    await provision(f);
+    await oneRow(f, () => send(f, create));
+    await updateRefusal(f, update, 409, "LEASE_NOT_HELD");
+    await rawClaim(f);
+    tamper(f, 2, (frame) => {
+      (frame.outcome as Json).retryUntil = time + 1;
+    });
+    setSystemTime(time + 2);
+    const effects = f.observeEffects();
+    expect(await send(f, update)).toMatchObject(error(503, "UNAVAILABLE"));
+    expect(frames(f)).toHaveLength(3);
+    expect(effects()).toEqual(noWrites);
+  },
+  timeout,
+);
 
 async function updateRefusal(
   f: Fixture,
@@ -468,7 +558,7 @@ test(
       .get()!.body;
     const store = writableStore(f.storage);
     const verify = (portableTranscript: string) =>
-      recoverV3(store, {
+      recoverV3(store, f.seal(), {
         admit: Project.admitLeaseRequest,
         portableTranscript,
       });
