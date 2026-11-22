@@ -15,7 +15,7 @@ Each push: [checkpoint](../forge-build/pull-request.md#checkpoints) `review` SHA
 
 ## On each wake: conflicts, then threads, then CI
 
-1. On wake, run `forge pr state <n>` and act on `verdict`. Read the last push SHA/time and round from the checkpoint before triage. Merge main into a PR branch only to resolve a conflict or after a queue rejection. Resolve conflicts locally, then commit and run `forge-build`'s Final-head proof before push. Never rebase a pushed branch or force-push.
+1. On wake, run `forge pr state <n>` and act on `verdict`. Read the last push SHA/time and round from the checkpoint before triage. Merge the base branch into a PR branch only to resolve a conflict or after a queue rejection. Resolve conflicts locally, then commit and run `forge-build`'s Final-head proof before push. Never rebase a pushed branch or force-push.
 2. Get `<owner> <repo>` from `gh repo view --json owner,name`. List unresolved threads via `node <skill-dir>/list-threads.mjs <owner> <repo> <n>`. Read full comments and timestamps via `gh api repos/{owner}/{repo}/pulls/<n>/comments --paginate` before deciding.
 3. Triage comments and checks newer than the last push only. Verify old fixes at head before closing with `Fixed in <sha>`. Other old threads wait for new evidence.
 

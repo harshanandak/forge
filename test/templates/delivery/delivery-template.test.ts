@@ -498,7 +498,7 @@ test("S5 sync retires four stage skills, preserves notes and ships proof and thr
               ),
             );
           expect(text).toContain(
-            "Merge main into a PR branch only to resolve a conflict or after a queue rejection.",
+            "Merge the base branch into a PR branch only to resolve a conflict or after a queue rejection.",
           );
           expect(text).toContain("Resolve conflicts locally");
           expect(text).toContain(
