@@ -64,7 +64,7 @@ jobs:
           cp test/cloud/auth/report-{fixture,session.test}.ts "$baseline/test/cloud/auth/"
           suite=(bun test --timeout 15000 test/cloud/auth/report-session.test.ts)
           log="$RUNNER_TEMP/report-red.log"
-          if (cd "$baseline" && "${suite[@]}" --test-name-pattern '^report sign-in is bound and single-use$') > "$log" 2>&1; then exit 1; fi
+          if env --chdir="$baseline" "${suite[@]}" --test-name-pattern '^report sign-in is bound and single-use$' > "$log" 2>&1; then exit 1; fi
           cat "$log"
           for text in '(fail) report sign-in is bound and single-use' 'expect(start.status).toBe(302)' 'Expected: 302' 'Received: 404'; do
             grep -Fq "$text" "$log"

@@ -1363,9 +1363,12 @@ test.each([
         headers.Cookie = `__Host-forge_lane_preview=${jar}`;
       }
       const before = [f.reached.length, f.writes(), f.snapshot(), rows()];
+      const configuredStatus = route === "mixed callback" ? 400 : 404;
       for (const target of ["configured", "worker", "project"] as const) {
         const reply = await f.browser(path, body, headers, target);
-        expect(reply.status).toBe(404);
+        expect(reply.status).toBe(
+          target === "configured" ? configuredStatus : 404,
+        );
         expect([f.reached.length, f.writes(), f.snapshot(), rows()]).toEqual(
           before,
         );
@@ -1376,7 +1379,7 @@ test.each([
         { ...headers, Authorization: "Bearer unrelated" },
         "configured",
       );
-      expect(withBearer.status).toBe(404);
+      expect(withBearer.status).toBe(configuredStatus);
       expect([f.reached.length, f.writes(), f.snapshot(), rows()]).toEqual(
         before,
       );

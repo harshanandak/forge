@@ -9,7 +9,6 @@ export function appReply(code: number, fields?: Fields, body?: string) {
   const headers = { ...fields, ...noStore };
   return new Response(body, { status: code, headers });
 }
-
 export function reportPage(signedIn: boolean) {
   const control = signedIn
     ? '<form method="post" action="/app/logout"><button>Sign out</button></form>'

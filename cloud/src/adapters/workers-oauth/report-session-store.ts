@@ -1,13 +1,13 @@
 import { appReply as reply, SESSION_AGE } from "../../report-http.ts";
 import { sha256 } from "../../tokens.ts";
+import type { SessionOperation } from "../../auth/report-session.ts";
 import type { ClaimState } from "./redemption.ts";
 import type { RedemptionNamespace as Namespace } from "./redemption.ts";
 
 export const REPORT_PATH = "/__forge/report-session";
 const KEY = "report-session";
 
-type RecordOperation = "GET" | "DELETE" | number;
-export async function record(ns: Namespace, id: string, op: RecordOperation) {
+export async function record(ns: Namespace, id: string, op: SessionOperation) {
   const name = "forge-report-session:v1:" + (await sha256(id));
   const method = typeof op === "number" ? "POST" : op;
   const url = "https://redemption.internal" + REPORT_PATH;
