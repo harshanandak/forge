@@ -728,6 +728,17 @@ test.each([
   timeout,
 );
 
+test.each(["its own pin", "a wrong pin"] as const)(
+  "v3 authentication refuses sparse pages pinned by %s without throwing",
+  async (kind) => {
+    const seal = sealOf({ V3_SEAL_KEY: newKey() }, { toString: () => "f" });
+    const signed = await signPages(seal, new Array(2));
+    const pin = kind === "its own pin" ? pinOf(signed) : digestBytes("other");
+    expect(authenticateManifest(seal, signed, pin)).toBeUndefined();
+  },
+  timeout,
+);
+
 test(
   "v3 manifest signed bytes cover every member except the mac, under their own domain",
   () => {

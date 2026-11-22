@@ -157,7 +157,12 @@ export function authenticateManifest(
   pin: unknown,
 ): VerifiedManifest | undefined {
   const text = canonicalJson(manifest);
-  const snapshot: unknown = JSON.parse(text);
+  let snapshot: unknown;
+  try {
+    snapshot = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
   if (
     digestBytes(text) !== pin ||
     !isObject(snapshot) ||
