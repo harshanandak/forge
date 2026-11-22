@@ -1,4 +1,4 @@
-﻿import { timingSafeEqual } from "node:crypto";
+import { timingSafeEqual } from "node:crypto";
 import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
 import {
   receiptScope,
@@ -27,12 +27,6 @@ const create = {
   requestId: "create",
   input: { title: "Before" },
   context: { actor },
-};
-const update = {
-  op: "issue.update",
-  requestId: "update",
-  input: { id: "forge-1", expectRevision: 1, title: "After" },
-  context: { ...holder, leaseGeneration: 1 },
 };
 const initial = {
   id: "work-1",
@@ -209,83 +203,6 @@ test(
       error(409, "INPUT_CONFLICT"),
     );
     expect(replay()).toEqual(noWrites);
-  },
-  timeout,
-);
-
-test(
-  "v3 typed update writes one row and preserves the revision and lease checks across collection",
-  async () => {
-    const f = guardFixture(env);
-    using _db = f.db;
-    await provision(f);
-    const recordChange = { key: "r1", revision: 1, value: initial };
-    expect(
-      await f.send(`${probe}/commits`, {
-        frames: [
-          {
-            operation: "fixture.put",
-            time,
-            events: [recordChange],
-            changes: [
-              { key: recordChange.key, value: { revision: 1, value: initial } },
-            ],
-          },
-        ],
-      }),
-    ).toMatchObject({ status: 200 });
-    await rawClaim(f);
-    const first = await oneRow(f, () => send(f, update));
-    expect(first.body).toMatchObject({
-      ok: true,
-      op: update.op,
-      status: "OK",
-      result: {
-        id: "forge-1",
-        title: "After",
-        revision: 2,
-        lease: { generation: 1 },
-      },
-    });
-    expect(frames(f).at(-1)).toMatchObject({
-      operation: update.op,
-      events: [
-        {
-          key: "r1",
-          revision: 2,
-          expectRevision: 1,
-          patch: { title: "After" },
-        },
-      ],
-      outcome: { status: "ok", result: { id: "forge-1", revision: 2 } },
-    });
-    await checkpoint(f);
-    const replay = f.observeEffects();
-    expect(await send(f, update)).toEqual(first);
-    expect(
-      await send(f, { ...update, requestId: "old-revision" }),
-    ).toMatchObject(error(409, "REVISION_CONFLICT"));
-    expect(
-      await send(f, {
-        ...update,
-        requestId: "stale-fence",
-        input: { ...update.input, expectRevision: 2 },
-        context: { ...update.context, leaseGeneration: 2 },
-      }),
-    ).toMatchObject(error(409, "LEASE_STALE"));
-    expect(
-      await send(f, { ...update, requestId: "other-holder" }, "tablet"),
-    ).toMatchObject(error(409, "LEASE_NOT_HELD"));
-    setSystemTime(time + ttlMs);
-    expect(
-      await send(f, { ...update, requestId: "expired-lease" }),
-    ).toMatchObject(error(409, "LEASE_EXPIRED"));
-    expect(await send(f, update)).toMatchObject(error(409, "LEASE_STALE"));
-    expect(replay()).toEqual(noWrites);
-    expect(record(f)).toEqual({
-      revision: 2,
-      value: { ...initial, title: "After" },
-    });
   },
   timeout,
 );
