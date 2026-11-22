@@ -1902,6 +1902,170 @@ async function stageRestore(target: Fixture, data: Portable) {
   return upload;
 }
 
+const typedEnv = { FORGE_CLOUD_PROJECT: "a", FORGE_CLOUD_ID_PREFIX: "forge" };
+const missingUpdate = {
+  op: "issue.update",
+  requestId: "restored-update",
+  input: { id: "forge-9", expectRevision: 1, title: "After" },
+  context: { ...holder, leaseGeneration: 1 },
+};
+const invalidUpdate = {
+  ...missingUpdate,
+  requestId: "invalid-update",
+  input: { ...missingUpdate.input, dependsOn: ["forge-1"] },
+};
+const typed = (f: Fixture, body: Json, expires = E1) =>
+  f.send(`${probe}/command`, body, {
+    "X-Forge-Owner": "owner-a",
+    "X-Forge-Owner-Expires": String(expires),
+  });
+
+function typedBackup(source: Fixture): Portable {
+  const store = writableStore(source.storage);
+  const { head, eventWatermark, recordFloor, root } = recoverV3(store);
+  return {
+    pages: pages(source),
+    head,
+    eventWatermark,
+    recordFloor,
+    publicDigest: root.publicDigest as string,
+  };
+}
+
+async function grantTypedUpdate(source: Fixture) {
+  const record = putRecord("r1", 1, {
+    id: "work-1",
+    prefix: "forge",
+    title: "Before",
+    status: "open",
+    labels: [],
+    dependsOn: [],
+    createdAt: new Date(T0).toISOString(),
+  });
+  expect((await append(source, record)).status).toBe(200);
+  const subject = "issue:work-1";
+  const claim = { subject, requestId: "restore-claim", ttlMs: HOUR };
+  const release = { subject, requestId: "restore-release", generation: 1 };
+  const update = {
+    ...missingUpdate,
+    input: { ...missingUpdate.input, id: "forge-1" },
+  };
+  expect((await sendLease(source, "claim", "owner-a", claim)).status).toBe(200);
+  expect((await typed(source, update)).status).toBe(200);
+  expect((await sendLease(source, "release", "owner-a", release)).status).toBe(
+    200,
+  );
+  await drain(source, 0, 4);
+}
+
+for (const scenario of [
+  "NOT_FOUND",
+  "INPUT_INVALID",
+  "mixed history",
+] as const) {
+  test(
+    `v3 restore replays a refused typed update with ${scenario}`,
+    async () => {
+      const source = guardFixture(typedEnv);
+      const target = guardFixture(typedEnv);
+      using _source = source.db;
+      using _target = target.db;
+      expect(await source.send(probe, {})).toMatchObject({ status: 200 });
+      const mixed = scenario === "mixed history";
+      if (mixed) {
+        await grantTypedUpdate(source);
+        setSystemTime(E1 + 1);
+      }
+      const calls =
+        scenario === "INPUT_INVALID" ? [invalidUpdate] : [missingUpdate];
+      if (mixed) calls.push(invalidUpdate);
+      const expires = mixed ? E1 + HOUR : E1;
+      const replies = [];
+      for (const call of calls) {
+        const invalid = call === invalidUpdate;
+        const reply = await typed(source, call, expires);
+        expect(reply).toMatchObject({
+          status: invalid ? 400 : 404,
+          body: { error: { code: invalid ? "INPUT_INVALID" : "NOT_FOUND" } },
+        });
+        replies.push(reply);
+      }
+      const prior = mixed ? 4 : 0;
+      await drain(source, prior, prior + calls.length);
+      const data = typedBackup(source);
+      const upload = await stageRestore(target, data);
+      expect(await upload(2)).toMatchObject(restoreResult(2, true));
+      expect(pages(target)).toEqual(data.pages);
+      const expected = await view(source);
+      const restored = await view(target);
+      expect(restored).toMatchObject({
+        pages: (expected as Json).pages,
+        publicDigest: data.publicDigest,
+      });
+      expect(restored.image).toEqual({
+        ...expected.image,
+        head: data.head + 1,
+        eventWatermark: data.eventWatermark + 1,
+      });
+      target.restart();
+      const effects = target.observeEffects();
+      for (const [index, call] of calls.entries())
+        expect(await typed(target, call, expires)).toEqual(replies[index]!);
+      expect(effects()).toEqual(noWrites);
+    },
+    timeout,
+  );
+}
+
+for (const fault of [
+  "snapshot error",
+  "receipt metadata",
+  "refusal digest",
+  "missing outcome",
+  "digest-only grant",
+] as const) {
+  test(
+    `v3 restore refuses a typed transcript with ${fault}`,
+    async () => {
+      const source = guardFixture(typedEnv);
+      const target = guardFixture(typedEnv);
+      using _source = source.db;
+      using _target = target.db;
+      expect(await source.send(probe, {})).toMatchObject({ status: 200 });
+      if (fault === "digest-only grant") await grantTypedUpdate(source);
+      else {
+        expect((await typed(source, missingUpdate)).status).toBe(404);
+        await drain(source, 0, 1);
+      }
+      const data = typedBackup(source);
+      const [directory, snapshot] = data.pages;
+      const [entry] = JSON.parse(directory!.body) as DirectoryItem[];
+      if (fault === "snapshot error" || fault === "receipt metadata") {
+        editProjection(data, "outcome", entry!.key, (body) =>
+          fault === "snapshot error"
+            ? body.replace("Issue was not found", "Issue was not FOUND")
+            : body.replace(`"retryUntil":${E1}`, `"retryUntil":${E1 + 1}`),
+        );
+      } else if (fault === "refusal digest") {
+        editHistory(data, ([frame]) => {
+          (frame!.outcome as Json).resultDigest =
+            digestBytes("different refusal");
+        });
+      } else if (fault === "missing outcome") {
+        directory!.body = "[]";
+        snapshot!.body = "";
+        data.publicDigest = digestBytes("[]");
+      }
+      const upload = await stageRestore(target, data);
+      const staged = target.snapshot();
+      expect(await upload(2)).toMatchObject(restoreRefusal);
+      await unprovisioned(target);
+      expect(target.snapshot()).toEqual(staged);
+    },
+    timeout,
+  );
+}
+
 test(
   "v3 restore activates in one commit and recovers the entire stopped image",
   () =>
