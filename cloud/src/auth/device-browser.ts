@@ -264,20 +264,24 @@ export async function deviceRoute(
     });
     if (taken === "limited") return result(429, "rate_limited");
     if (taken === undefined) return result(400, "access_denied");
+    const callbackRejection = (error: unknown) => {
+      if (error instanceof ForgeFailure) throw error;
+      return undefined;
+    };
     // One Clerk code, one try: the durable claim comes before the proof is verified.
     const claimed = await redemption!
       .claimOnce(
         await sha256(`device-upstream:${taken.verifier}`),
         taken.expiresAt,
       )
-      .catch(() => undefined);
+      .catch(callbackRejection);
     const restart = () =>
       result(503, "Temporarily unavailable. Start a new login.");
     if (claimed === undefined) return restart();
     if (!claimed) return result(400, "access_denied");
     const proof = await upstream!
       .verify(request, Date.now(), taken.verifier)
-      .catch(() => undefined);
+      .catch(callbackRejection);
     if (
       !proof ||
       (!proof.ok && proof.reason === "unavailable") ||
