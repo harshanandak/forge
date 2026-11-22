@@ -1,9 +1,49 @@
 import { expect } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
-import { delimiter, join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { delimiter, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { acceptanceTable } from "./lane-brief-fixture.ts";
+
+type LaneReply = {
+  exit: number | null;
+  ok: boolean;
+  result: Record<string, unknown>;
+  error?: { code: string; message: string };
+};
+
+const built = (name: string) =>
+  new URL(`../../../dist/src/${name}.js`, import.meta.url).href;
+export const { processStartTime } = (await import(
+  built("adapters/process/index")
+)) as typeof import("../../../src/adapters/process/index.ts");
+
+export const laneBin = fileURLToPath(
+  new URL("../../../dist/bin/forge.js", import.meta.url),
+);
+
+export function laneCli(
+  root: string,
+  cwd: string,
+  args: string[],
+  session: string,
+  env: NodeJS.ProcessEnv = {},
+) {
+  const result = spawnSync("node", [laneBin, ...args], {
+    cwd,
+    env: {
+      ...process.env,
+      ...env,
+      FORGE_DEVICE_ROOT: join(root, "device"),
+      FORGE_SESSION: session,
+    },
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 20000,
+  });
+  expect(result.error).toBeUndefined();
+  return { ...JSON.parse(result.stdout), exit: result.status } as LaneReply;
+}
 
 export function laneGit(args: string[], cwd: string) {
   const result = spawnSync("git", args, {
@@ -28,14 +68,28 @@ export const laneBrief =
 export function laneRepository(
   root: string,
   brief: string,
-  options: { ignore?: string; max?: number; checkExit?: number } = {},
+  options: {
+    ignore?: string;
+    max?: number;
+    base?: string;
+    checkExit?: number;
+  } = {},
 ) {
   const origin = join(root, "origin.git"),
     repo = join(root, "project");
   laneGit(["init", "--bare", "--initial-branch=main", origin], root);
-  laneGit(["clone", origin, repo], root);
-  laneGit(["config", "user.name", "Lane test"], repo);
-  laneGit(["config", "user.email", "lane@example.test"], repo);
+  laneGit(
+    [
+      "clone",
+      "-c",
+      "user.name=Lane test",
+      "-c",
+      "user.email=lane@example.test",
+      origin,
+      repo,
+    ],
+    root,
+  );
   writeFileSync(join(repo, "tracked"), "base\n");
   if (options.ignore) writeFileSync(join(repo, ".gitignore"), options.ignore);
   laneGit(["add", "."], repo);
@@ -45,7 +99,7 @@ export function laneRepository(
   mkdirSync(join(repo, ".forge"));
   writeFileSync(
     join(repo, ".forge/config.yaml"),
-    `schemaVersion: forge.config/1\nblocks:\n  work:\n    source: { builtin: forge/work }\n    bind: { state: core }\n    config: { idPrefix: sample, lanes: { max: ${options.max ?? 3} } }\n` +
+    `schemaVersion: forge.config/1\nblocks:\n  work:\n    source: { builtin: forge/work }\n    bind: { state: core }\n    config: { idPrefix: sample, lanes: ${JSON.stringify({ max: options.max ?? 3, base: options.base })} }\n` +
       (options.checkExit === undefined
         ? ""
         : `  check:\n    source: { builtin: forge/check }\n    bind: { state: core }\n    config: { commands: { acceptance: { argv: ["node", "-e", "process.exit(${options.checkExit})"] } } }\n`),
@@ -56,27 +110,26 @@ export function laneRepository(
   return { repo, origin };
 }
 
-export function pullFiles(root: string, hosted = false) {
+export function pullFiles(root: string) {
   const dir = join(root, "bin");
   const posix = dir.replaceAll("\\", "/");
   writeFileSync(
     join(dir, "gh"),
-    `#!/bin/sh\n${hosted ? `if [ "$1" = api ]; then cat "${posix}/checks.json"; else ` : ""}cat "${posix}/pull.json"${hosted ? "; fi" : ""}\n`,
+    `#!/bin/sh\nif [ "$1" = api ]; then cat "${posix}/checks.json"; else cat "${posix}/pull.json"; fi\n`,
   );
   chmodSync(join(dir, "gh"), 0o755);
   writeFileSync(
     join(dir, "gh.cmd"),
-    `@echo off\r\n${hosted ? 'if "%~1"=="api" (type "%~dp0checks.json") else ' : ""}(type "%~dp0pull.json")\r\n`,
+    '@echo off\r\nif "%~1"=="api" (type "%~dp0checks.json") else (type "%~dp0pull.json")\r\n',
   );
 }
 
 export async function laneCommands(root: string, repo: string) {
-  const dist = resolve(import.meta.dirname, "../../../dist/src");
   const { createAssembly, localContext } = (await import(
-    pathToFileURL(join(dist, "assembly/index.js")).href
+    built("assembly/index")
   )) as typeof import("../../../src/assembly/index.ts");
   const { runCli } = (await import(
-    pathToFileURL(join(dist, "surface/cli.js")).href
+    built("surface/cli")
   )) as typeof import("../../../src/surface/cli.ts");
   const deviceRoot = join(root, "device");
   const env = { PATH: "", ...process.env };
@@ -89,7 +142,7 @@ export async function laneCommands(root: string, repo: string) {
     oneShot: true,
     providers: { env },
   });
-  const cli = async (args: string[], session: string) => {
+  const cli = async (args: string[], session = "coordinator") => {
     const context = localContext(
       assembly,
       { kind: "human", id: "local-cli" },
@@ -102,14 +155,9 @@ export async function laneCommands(root: string, repo: string) {
         session: { ...context.session, id: session, device: "lane-fixture" },
       },
     });
-    return { ...response.envelope, exit: response.exitCode } as {
-      exit: number;
-      ok: boolean;
-      result: Record<string, unknown>;
-      error?: { code: string; message: string };
-    };
+    return { ...response.envelope, exit: response.exitCode } as LaneReply;
   };
-  const call = (op: string, input: object = {}, session = "coordinator") =>
+  const call = (op: string, input: object = {}, session?: string) =>
     cli([...op.split("."), "--input", JSON.stringify(input)], session);
   const good = async (op: string, input?: object, session?: string) => {
     const reply = await call(op, input, session);

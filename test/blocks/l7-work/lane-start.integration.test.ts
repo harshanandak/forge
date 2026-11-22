@@ -4,16 +4,18 @@ import {
   acceptanceTable,
 } from "./lane-brief-fixture.ts";
 import {
-  laneBrief,
+  laneBin as bin,
+  laneBrief as text,
+  laneCli,
   laneCommands,
   laneGit,
   laneRepository,
+  processStartTime,
   pullFiles,
 } from "./lane-repository-fixture.ts";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { processStartTime } from "../../../src/adapters/process/index.ts";
 import {
   chmodSync,
   existsSync,
@@ -32,13 +34,11 @@ import {
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 
-const bin = resolve(import.meta.dirname, "../../../dist/bin/forge.js");
 let root: string;
 let repo: string;
 let origin: string;
 let sequence = 0;
 const brief = ".worktrees/briefs/lane.md";
-const text = laneBrief;
 const git = (args: string[], cwd = repo) => laneGit(args, cwd);
 function cli(
   args: string[],
@@ -46,25 +46,7 @@ function cli(
   session = "lane-acceptance",
   path = process.env.PATH,
 ) {
-  const result = spawnSync("node", [bin, ...args], {
-    cwd,
-    env: {
-      ...process.env,
-      PATH: path,
-      FORGE_DEVICE_ROOT: join(root, "device"),
-      FORGE_SESSION: session,
-    },
-    encoding: "utf8",
-    windowsHide: true,
-    timeout: 20000,
-  });
-  expect(result.error).toBeUndefined();
-  return Object.assign(JSON.parse(result.stdout), { exit: result.status }) as {
-    exit: number;
-    ok: boolean;
-    result: Record<string, unknown>;
-    error?: { code: string; message: string };
-  };
+  return laneCli(root, cwd, args, session, { PATH: path });
 }
 function helper(args: string[]) {
   const result = spawnSync(
@@ -131,20 +113,23 @@ test("hosted lane close records CI Gate evidence and frees the cap without chang
   );
   let commands: Awaited<ReturnType<typeof laneCommands>> | undefined;
   try {
-    const { repo } = laneRepository(sandbox, brief, { max: 1, checkExit: 1 });
-    const head = laneGit(["rev-parse", "HEAD"], repo);
+    const { repo } = laneRepository(sandbox, brief, {
+      max: 1,
+      base: "main",
+      checkExit: 1,
+    });
     commands = await laneCommands(sandbox, repo);
     const { call, cli, good } = commands;
     const start = (id: string) =>
       call("lane.start", { id, branch: `feat/${id}`, brief });
-    const id = String(
-      (await good("issue.create", { title: "Hosted lane" })).id,
-    );
-    expect((await start(id)).ok).toBe(true);
+    const addIssue = async (title: string) =>
+      String((await good("issue.create", { title })).id);
+    const id = await addIssue("Hosted lane");
+    const started = await start(id);
+    expect(started.ok).toBe(true);
+    const head = String(started.result.base);
     await good("issue.claim", { id });
-    const blocked = String(
-      (await good("issue.create", { title: "Replacement lane" })).id,
-    );
+    const blocked = await addIssue("Replacement lane");
     expect((await start(blocked)).error?.code).toBe("LIMIT_REACHED");
     const failed = await call("check.run", { checks: ["acceptance"] });
     expect(failed.ok, JSON.stringify(failed)).toBe(false);
@@ -165,46 +150,40 @@ test("hosted lane close records CI Gate evidence and frees the cap without chang
       mergeStateStatus: "UNKNOWN",
       changedFiles: 1,
     };
-    const pages = [
-      {
-        data: {
-          repository: {
-            object: {
-              oid: head,
-              statusCheckRollup: {
-                contexts: {
-                  totalCount: 1,
-                  pageInfo: { hasNextPage: false, endCursor: null },
-                  nodes: [
-                    {
-                      __typename: "CheckRun",
-                      databaseId: 17,
-                      name: "CI Gate",
-                      status: "COMPLETED",
-                      conclusion: "SUCCESS",
-                      isRequired: true,
-                      checkSuite: {
-                        app: { slug: "github-actions" },
-                        workflowRun: { workflow: { databaseId: 10 } },
-                        commit: { oid: head },
-                        repository: { nameWithOwner: "harshanandak/forge" },
-                      },
-                    },
-                  ],
-                },
-              },
-            },
-          },
-        },
+    const gate = {
+      __typename: "CheckRun",
+      databaseId: 17,
+      name: "CI Gate",
+      status: "COMPLETED",
+      conclusion: "SUCCESS",
+      isRequired: true,
+      checkSuite: {
+        app: { slug: "github-actions" },
+        workflowRun: { workflow: { databaseId: 10 } },
+        commit: { oid: head },
+        repository: { nameWithOwner: "harshanandak/forge" },
       },
-    ];
-    pullFiles(sandbox, true);
+    };
+    const contexts = {
+      totalCount: 1,
+      pageInfo: { hasNextPage: false, endCursor: null },
+      nodes: [gate],
+    };
+    const object = { oid: head, statusCheckRollup: { contexts } };
+    pullFiles(sandbox);
     writeFileSync(join(sandbox, "bin/pull.json"), JSON.stringify(pr));
-    writeFileSync(join(sandbox, "bin/checks.json"), JSON.stringify(pages));
-    const result = await cli(
-      ["lane", "close", id, "--pr", "42", "--hosted-evidence"],
-      "coordinator",
+    writeFileSync(
+      join(sandbox, "bin/checks.json"),
+      JSON.stringify([{ data: { repository: { object } } }]),
     );
+    const result = await cli([
+      "lane",
+      "close",
+      id,
+      "--pr",
+      "42",
+      "--hosted-evidence",
+    ]);
     expect(result.result, JSON.stringify(result)).toMatchObject({
       status: "closed",
       removed: true,
