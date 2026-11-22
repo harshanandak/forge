@@ -120,6 +120,7 @@ export default {
       return createWorker(auth, () =>
         Promise.resolve(new Response("owner access")),
       ).fetch(request, {
+        FORGE_CLOUD_PROJECT: "oauth",
         PROJECTS: {
           idFromName: (name) => name,
           get: () => ({

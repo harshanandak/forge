@@ -27,8 +27,25 @@ import { populateCost, COST_CLOCK } from "./cost-fixture.ts";
 import { StateOwner } from "../../src/core/state/index.ts";
 import { durableStore } from "../src/store.ts";
 import { createWorker } from "../src/worker.ts";
+import { PROJECT_NAME, isProjectName } from "../src/project-name.ts";
 
-export default createWorker();
+const worker = createWorker();
+const raw = new RegExp(`^/p/${PROJECT_NAME}/(claim|renew|release|holder)$`);
+const selector = "x-conformance-project";
+
+export default {
+  fetch(request: Request, env: Parameters<typeof worker.fetch>[1]) {
+    const project = request.headers.get(selector);
+    if (project === null) return worker.fetch(request, env);
+    if (!isProjectName(project)) return new Response(null, { status: 400 });
+    const headers = new Headers(request.headers);
+    headers.delete(selector);
+    const selected = raw.test(new URL(request.url).pathname)
+      ? { ...env, FORGE_CLOUD_PROJECT: project }
+      : env;
+    return worker.fetch(new Request(request, { headers }), selected);
+  },
+};
 
 const RECEIPT_INSERT =
   /^\s*INSERT INTO domain_cloud_(?:requests|command_receipts)\b/i;

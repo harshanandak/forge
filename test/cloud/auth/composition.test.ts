@@ -111,6 +111,7 @@ async function fixture(denied = false, expectedResource = resource) {
   );
   const env = {
     ADMIN_TOKEN: "fixture-admin",
+    FORGE_CLOUD_PROJECT: "a",
     GRANT_STATE: harness.grantNamespace,
     PROJECTS: {
       idFromName: (name: string) => name,

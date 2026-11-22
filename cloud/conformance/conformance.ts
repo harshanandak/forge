@@ -468,7 +468,9 @@ async function send(
     headers: {
       ...(payload === undefined ? {} : { "content-type": "application/json" }),
       ...Object.fromEntries(
-        Object.entries(auth).filter(([, value]) => value !== ""),
+        Object.entries({ "x-conformance-project": project, ...auth }).filter(
+          ([, value]) => value !== "",
+        ),
       ),
     },
     ...(payload === undefined
@@ -1614,6 +1616,27 @@ if (phase === "ownership") await ownershipJourney();
 
 if (phase === "main") {
   await revokeCheck();
+  if (typedProject !== "")
+    await check(
+      "raw lease admission uses explicit or fixed configuration",
+      async () => {
+        const project = `${run}-admission`;
+        const bearer = `Bearer ${(await issue(project, "admission")).token}`;
+        const results = [];
+        for (const [selector, authorization] of [
+          [typedProject, bearer],
+          ["", bearer],
+          [typedProject, ""],
+        ] as const) {
+          const reply = await lookup(project, "issue", {
+            authorization,
+            "x-conformance-project": selector,
+          });
+          results.push([reply.status, reply.body.error?.code]);
+        }
+        assert.deepEqual(results, Array(3).fill([403, "AUTH_FORBIDDEN"]));
+      },
+    );
   // The deployed Worker has no fault switch, so live runs skip that one case.
   const faulty = live ? skip(SKIP_FAULT) : check;
 

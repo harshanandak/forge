@@ -78,6 +78,7 @@ async function fixture(
   };
   const env = {
     ...vars,
+    FORGE_CLOUD_PROJECT: "a",
     FORGE_OAUTH_REDIRECTS: redirect,
     ADMIN_TOKEN: "fixture-admin",
     PROJECTS: transport,
