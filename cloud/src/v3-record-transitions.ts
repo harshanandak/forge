@@ -11,6 +11,18 @@ export function recordNumber(key: string): number {
   return isNat(number) && key === `r${number}` ? number : 0;
 }
 
+function created(frame: Frame, number: number, input: unknown) {
+  if (!isObject(input)) return false;
+  const { id, prefix, ...item } = input;
+  const updatedAt = new Date(frame.time).toJSON();
+  const shown = { ...item, id: `${prefix}-${number}`, revision: 1, updatedAt };
+  return (
+    id === `work-${number}` &&
+    item.createdAt === updatedAt &&
+    canonicalJson(frame.outcome?.result) === canonicalJson(shown)
+  );
+}
+
 export function verifyRecordFrame(
   frame: Frame,
   floor: number,
@@ -49,6 +61,7 @@ export function verifyRecordFrame(
     if (
       !number ||
       (create && (prior || number !== floor + 1 || revision !== 1)) ||
+      (create && !created(frame, number, value)) ||
       seen.has(key) ||
       (prior && "deleted" in prior) ||
       revision <= (prior?.revision ?? 0)
