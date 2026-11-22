@@ -15,13 +15,13 @@ import {
   PAGE_BYTES,
   PAGES,
   PAGE_SCHEMA,
-  readV3Root,
+  readSealedRoot,
   recoverV3,
   ROOT,
   TAIL_ROWS,
   type V3Image,
 } from "./v3-store.ts";
-import { BOUNDED_MAC, type Seal, verifyRow } from "./v3-seal.ts";
+import { BOUNDED_MAC, type Seal, signRoot, verifyRow } from "./v3-seal.ts";
 
 const STAGE = "cloud_v3_checkpoint";
 const STAGED = "cloud_v3_checkpoint_pages";
@@ -281,7 +281,7 @@ async function checkpoint(
   replaceWarm: ReplaceWarm,
   admit: AdmitLeaseRequest,
 ) {
-  const root = readV3Root(db);
+  const { root, envelope } = readSealedRoot(db, commitSeal);
   requireCheckpoint(root.activationDigest === undefined);
   if (db.get(TABLE_PROBE, [RETIRED])) collect(db, root.coveredHead);
   const source = canonicalJson(root);
@@ -388,7 +388,7 @@ async function checkpoint(
     const next = db.transaction(() => {
       const pinned = db.get(
         `SELECT 1 FROM ${ROOT} WHERE id=1 AND seal=? AND body=?`,
-        [seal, source],
+        [envelope, source],
       );
       requireCheckpoint(pinned);
       const head = commitHead(db, root.coveredHead);
@@ -399,7 +399,7 @@ async function checkpoint(
       db.exec(`ALTER TABLE ${STAGED} RENAME TO ${PAGES}`);
       db.run(`UPDATE ${ROOT} SET body=?, seal=? WHERE id=1`, [
         manifest,
-        digestBytes(manifest),
+        signRoot(commitSeal, manifest),
       ]);
       const verifiedRoot = recoverV3(db, commitSeal, undefined, {
         through: cut,

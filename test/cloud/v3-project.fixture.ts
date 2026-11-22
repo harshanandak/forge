@@ -2,7 +2,12 @@ import { randomBytes } from "node:crypto";
 import { Database } from "bun:sqlite";
 import { Project } from "../../cloud/src/project.ts";
 import type { DurableState } from "../../cloud/src/store.ts";
-import { sealOf, signRow } from "../../cloud/src/v3-seal.ts";
+import {
+  type Seal,
+  sealOf,
+  signRoot,
+  signRow,
+} from "../../cloud/src/v3-seal.ts";
 import { browserStorage } from "./browser-storage.fixture.ts";
 
 export const probe = "test-v3";
@@ -13,6 +18,10 @@ export const noWrites = {
   alarmWrites: 0,
   sqlAndKvIntact: true,
 };
+
+const sealers = new WeakMap<Database, () => Seal>();
+export const trustedSeal = (db: Database, body: string) =>
+  signRoot(sealers.get(db)!(), body);
 
 export interface SealSetup {
   key?: string | null;
@@ -67,6 +76,7 @@ export function fixture(
   };
   let project = new Project(context, sealed);
   const seal = () => sealOf(sealed, context.id);
+  sealers.set(db, seal);
   const sign = (sequence: number, body: string) =>
     signRow(
       seal(),
@@ -147,4 +157,19 @@ export function guardFixture(env?: unknown, setup?: SealSetup) {
       };
     },
   };
+}
+
+export function copyTables(from: { db: Database }, to: { db: Database }) {
+  for (const table of ["cloud_v3_commits", "cloud_v3_pages", "cloud_v3_root"]) {
+    to.db.run(`DELETE FROM ${table}`);
+    for (const row of from.db
+      .query<Record<string, string | number>, []>(`SELECT * FROM ${table}`)
+      .all()) {
+      const names = Object.keys(row);
+      to.db.run(
+        `INSERT INTO ${table} (${names.join()}) VALUES (${names.map(() => "?").join()})`,
+        Object.values(row),
+      );
+    }
+  }
 }

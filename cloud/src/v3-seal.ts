@@ -11,8 +11,9 @@ export interface Seal {
   readonly keys: readonly [Key, ...Key[]];
 }
 
-export const BOUNDED_MAC =
-  "CASE WHEN length(CAST(mac AS BLOB))=81 THEN mac END AS mac";
+export const bounded = (column: string) =>
+  `CASE WHEN length(CAST(${column} AS BLOB))=81 THEN ${column} END AS ${column}`;
+export const BOUNDED_MAC = bounded("mac");
 
 const SECRET = /^[A-Za-z0-9_-]{43,512}$/;
 const ENVELOPE = /^([0-9a-f]{16})\.([0-9a-f]{64})$/;
@@ -64,39 +65,54 @@ export function sealOf(
   return { scope, keys };
 }
 
-const tag = (
-  { bytes }: Key,
-  scope: string,
+const tag = ({ bytes }: Key, parts: readonly unknown[]) =>
+  createHmac("sha256", bytes).update(canonicalJson(parts)).digest();
+
+const sealed = ({ keys: [key] }: Seal, parts: readonly unknown[]) =>
+  `${key.id}.${tag(key, parts).toString("hex")}`;
+
+function authentic(seal: Seal, parts: readonly unknown[], mac: unknown) {
+  const found = typeof mac === "string" ? ENVELOPE.exec(mac) : null;
+  const key = found && seal.keys.find(({ id }) => id === found[1]);
+  if (!key) return false;
+  const expected = tag(key, parts);
+  const given = Buffer.from(found[2]!, "hex");
+  return given.length === expected.length && timingSafeEqual(given, expected);
+}
+
+const rowParts = (
+  { scope }: Seal,
   incarnation: unknown,
   sequence: number,
   body: string,
-) =>
-  createHmac("sha256", bytes)
-    .update(
-      canonicalJson(["forge/v3/commit/1", scope, incarnation, sequence, body]),
-    )
-    .digest();
+) => ["forge/v3/commit/1", scope, incarnation, sequence, body];
+
+const rootParts = ({ scope }: Seal, body: string) => [
+  "forge/v3/root/1",
+  scope,
+  body,
+];
 
 export const signRow = (
-  { scope, keys: [key] }: Seal,
+  seal: Seal,
   incarnation: unknown,
   sequence: number,
   body: string,
-) =>
-  `${key.id}.${tag(key, scope, incarnation, sequence, body).toString("hex")}`;
+) => sealed(seal, rowParts(seal, incarnation, sequence, body));
 
-export function verifyRow(
+export const verifyRow = (
   seal: Seal,
   incarnation: unknown,
   sequence: unknown,
   body: unknown,
   mac: unknown,
-): boolean {
-  const parts = typeof mac === "string" ? ENVELOPE.exec(mac) : null;
-  const key = parts && seal.keys.find(({ id }) => id === parts[1]);
-  if (!key || typeof body !== "string" || typeof sequence !== "number")
-    return false;
-  const expected = tag(key, seal.scope, incarnation, sequence, body);
-  const given = Buffer.from(parts[2]!, "hex");
-  return given.length === expected.length && timingSafeEqual(given, expected);
-}
+): boolean =>
+  typeof body === "string" &&
+  typeof sequence === "number" &&
+  authentic(seal, rowParts(seal, incarnation, sequence, body), mac);
+
+export const signRoot = (seal: Seal, body: string) =>
+  sealed(seal, rootParts(seal, body));
+
+export const verifyRoot = (seal: Seal, body: string, envelope: unknown) =>
+  authentic(seal, rootParts(seal, body), envelope);

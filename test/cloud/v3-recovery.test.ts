@@ -11,7 +11,7 @@ import { scopeRequestId } from "../../cloud/src/issue-request-id.ts";
 import { writableStore } from "../../cloud/src/store.ts";
 import { readV3Value, recoverV3 } from "../../cloud/src/v3-store.ts";
 import { canonicalJson, digestBytes } from "../../src/core/config/pointer.ts";
-import { fixture, probe } from "./v3-project.fixture.ts";
+import { fixture, probe, trustedSeal } from "./v3-project.fixture.ts";
 
 const timeout = 30_000;
 const MiB = 1024 * 1024;
@@ -172,7 +172,10 @@ function writeRoot(db: Database, pages: readonly Page[], fields: Json) {
     bytes: total("bytes"),
     pages: roster,
   });
-  db.run("UPDATE cloud_v3_root SET body=?, seal=?", [body, digestBytes(body)]);
+  db.run("UPDATE cloud_v3_root SET body=?, seal=?", [
+    body,
+    trustedSeal(db, body),
+  ]);
 }
 
 function seal(
@@ -236,7 +239,7 @@ function seal(
   for (const { id, body } of pages) insert.run(id, body);
   writeRoot(db, pages, {
     generation: 1,
-    parentDigest: rootOf(db).seal,
+    parentDigest: digestBytes(rootOf(db).body),
     coveredHead,
     eventWatermark,
   });
@@ -1067,7 +1070,10 @@ for (const [label, corrupt] of corruptions) {
 
 function resealRoot(db: Database, edit: (root: Json) => Json) {
   const body = canonicalJson(edit(JSON.parse(rootOf(db).body) as Json));
-  db.run("UPDATE cloud_v3_root SET body=?, seal=?", [body, digestBytes(body)]);
+  db.run("UPDATE cloud_v3_root SET body=?, seal=?", [
+    body,
+    trustedSeal(db, body),
+  ]);
 }
 
 const set = (change: Json) => (root: Json) => ({ ...root, ...change });

@@ -626,7 +626,10 @@ export class Project {
       if (route === "restore" && request.method === "POST" && this.#testV3) {
         const seal = this.#seal();
         const db = writableStore(this.#storage);
-        if (this.#hasV3Root() && readV3Root(db).activationDigest === undefined)
+        if (
+          this.#hasV3Root() &&
+          readV3Root(db, seal).activationDigest === undefined
+        )
           this.#requireV2();
         const body = await bounded(
           request,
@@ -815,7 +818,7 @@ export class Project {
         if (this.#testV3 && this.#hasV3Root()) {
           const seal = this.#seal();
           const db = writableStore(this.#storage);
-          if (readV3Root(db).activationDigest !== undefined) {
+          if (readV3Root(db, seal).activationDigest !== undefined) {
             this.#image(db, seal);
             return Response.json({
               ok: true,

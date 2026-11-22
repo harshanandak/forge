@@ -9,13 +9,15 @@ import {
   signRow,
   verifyRow,
 } from "../../cloud/src/v3-seal.ts";
-import { canonicalJson, digestBytes } from "../../src/core/config/pointer.ts";
+import { canonicalJson } from "../../src/core/config/pointer.ts";
 import {
+  copyTables,
   guardFixture,
   newKey,
   noWrites,
   probe,
   type SealSetup,
+  trustedSeal,
 } from "./v3-project.fixture.ts";
 
 if (!("timingSafeEqual" in crypto.subtle))
@@ -429,21 +431,6 @@ test(
   timeout,
 );
 
-function copyTables(from: Fixture, to: Fixture) {
-  for (const table of ["cloud_v3_commits", "cloud_v3_pages", "cloud_v3_root"]) {
-    to.db.run(`DELETE FROM ${table}`);
-    for (const row of from.db
-      .query<Record<string, string | number>, []>(`SELECT * FROM ${table}`)
-      .all()) {
-      const names = Object.keys(row);
-      to.db.run(
-        `INSERT INTO ${table} (${names.join()}) VALUES (${names.map(() => "?").join()})`,
-        Object.values(row),
-      );
-    }
-  }
-}
-
 test(
   "v3 refuses the rows of another object that shares the key and accepts them under the same object id",
   async () => {
@@ -466,6 +453,27 @@ test(
       status: 200,
       body: { value: { image: { head: 2 } } },
     });
+  },
+  timeout,
+);
+
+test(
+  "v3 refuses the rows of another object even when its own signer re-signs the copied root",
+  async () => {
+    const key = newKey();
+    const a = guardFixture(env, { key });
+    const b = guardFixture(env, { key });
+    using _a = a.db;
+    using _b = b.db;
+    await history(a);
+    await history(b, 0);
+    copyTables(a, b);
+    const { body } = b.db
+      .query<{ body: string }, []>("SELECT body FROM cloud_v3_root")
+      .get()!;
+    b.db.run("UPDATE cloud_v3_root SET seal=?", [trustedSeal(b.db, body)]);
+    b.restart();
+    expect(await b.send(probe)).toMatchObject(refused);
   },
   timeout,
 );
@@ -620,7 +628,7 @@ test(
     });
     f.db.run("UPDATE cloud_v3_root SET body=?, seal=?", [
       edited,
-      digestBytes(edited),
+      trustedSeal(f.db, edited),
     ]);
     await refusedAfterRestart(f);
   },

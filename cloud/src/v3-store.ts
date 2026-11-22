@@ -40,7 +40,15 @@ import {
   verifyRecordFrame,
 } from "./v3-record-transitions.ts";
 import { TABLE_PROBE } from "./store.ts";
-import { BOUNDED_MAC, type Seal, signRow, verifyRow } from "./v3-seal.ts";
+import {
+  BOUNDED_MAC,
+  bounded,
+  type Seal,
+  signRoot,
+  signRow,
+  verifyRoot,
+  verifyRow,
+} from "./v3-seal.ts";
 
 export { withinDepth };
 export const ROOT = "cloud_v3_root";
@@ -240,15 +248,28 @@ export function rejectOldCommits(db: SqlDatabase): void {
   if (db.get(oldCommits)) throw unavailable();
 }
 
-export function readV3Root(
+type StoredRoot = V3Image["root"] & {
+  generation: number;
+  eventWatermark: number;
+};
+
+export const readV3Root = (db: SqlDatabase, seal: Seal): StoredRoot =>
+  readSealedRoot(db, seal).root;
+
+export function readSealedRoot(
   db: SqlDatabase,
-): V3Image["root"] & { generation: number; eventWatermark: number } {
+  seal: Seal,
+): { root: StoredRoot; envelope: string } {
   if (!tables.every((table) => hasTable(db, table))) throw unavailable();
   rejectOldCommits(db);
   const row = db.get(
-    `SELECT body, seal FROM ${ROOT} WHERE id=1 AND length(CAST(body AS BLOB))<=${MANIFEST_BYTES}`,
+    `SELECT body, ${bounded("seal")} FROM ${ROOT} WHERE id=1 AND length(CAST(body AS BLOB))<=${MANIFEST_BYTES}`,
   );
-  if (typeof row?.body !== "string" || row.seal !== digestBytes(row.body))
+  if (
+    typeof row?.body !== "string" ||
+    typeof row.seal !== "string" ||
+    !verifyRoot(seal, row.body, row.seal)
+  )
     throw unavailable();
   const root = parse(row.body);
   if (
@@ -327,7 +348,10 @@ export function readV3Root(
     (bytes.directory ?? 0) > DIRECTORY_BYTES
   )
     throw unavailable();
-  return { ...manifest, generation, coveredHead, eventWatermark };
+  return {
+    root: { ...manifest, generation, coveredHead, eventWatermark },
+    envelope: row.seal,
+  };
 }
 
 function directoryEntry(entry: unknown, byId: ReadonlyMap<string, Page>) {
@@ -473,7 +497,7 @@ export function recoverV3(
 ): V3Image {
   if (verification && "portableTranscript" in verification)
     return recoverPortableV3(db, verification);
-  const root = readV3Root(db);
+  const root = readV3Root(db, seal);
   const byId = new Map(root.pages.map((page) => [page.id, page]));
   const headers = db.all(
     `SELECT id, length(CAST(body AS BLOB)) AS bytes FROM ${PAGES} LIMIT ${ROSTER_PAGES + 1}`,
@@ -636,7 +660,10 @@ export function provisionV3(
       const body = canonicalJson(
         genesis(crypto.randomUUID(), crypto.randomUUID()),
       );
-      db.run(`INSERT INTO ${ROOT} VALUES (1, ?, ?)`, [body, digestBytes(body)]);
+      db.run(`INSERT INTO ${ROOT} VALUES (1, ?, ?)`, [
+        body,
+        signRoot(seal, body),
+      ]);
     }
     return recoverV3(db, seal);
   });
@@ -672,7 +699,7 @@ export function activateV3(
     db.exec(`CREATE TABLE ${table} ${definition}`);
   for (const [id, page] of published)
     db.run(`INSERT INTO ${PAGES} VALUES (?, ?)`, [id, page]);
-  db.run(`INSERT INTO ${ROOT} VALUES (1, ?, ?)`, [body, digestBytes(body)]);
+  db.run(`INSERT INTO ${ROOT} VALUES (1, ?, ?)`, [body, signRoot(seal, body)]);
   const sequence = imported.head + 1;
   db.run(`INSERT INTO ${COMMITS} VALUES (?, ?, ?)`, [
     sequence,
@@ -775,7 +802,7 @@ function append(
   if (!batch.every(validAppendFrame))
     throw fail("INPUT_INVALID", "Invalid v3 frame");
   return db.transaction(() => {
-    const { activationDigest, coveredHead, incarnation } = readV3Root(db);
+    const { activationDigest, coveredHead, incarnation } = readV3Root(db, seal);
     if (activationDigest) throw stopped();
     const last = db.get(
       `SELECT sequence FROM ${COMMITS} ORDER BY sequence DESC LIMIT 1`,

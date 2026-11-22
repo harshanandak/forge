@@ -9,7 +9,12 @@ import {
   recoverV3,
   viewV3,
 } from "../../cloud/src/v3-store.ts";
-import { guardFixture, noWrites, probe } from "./v3-project.fixture.ts";
+import {
+  guardFixture,
+  noWrites,
+  probe,
+  trustedSeal,
+} from "./v3-project.fixture.ts";
 
 const timeout = 30_000;
 const MiB = 1024 * 1024;
@@ -482,7 +487,7 @@ test(
         });
         f.db.run("UPDATE cloud_v3_root SET body=?, seal=? WHERE id=1", [
           body,
-          digestBytes(body),
+          trustedSeal(f.db, body),
         ]);
         changed = active(f);
       });
@@ -1182,7 +1187,7 @@ test(
       f.db.run("UPDATE cloud_v3_pages SET body=? WHERE id=?", [transcript, id]);
       f.db.run("UPDATE cloud_v3_root SET body=?, seal=? WHERE id=1", [
         updated,
-        digestBytes(updated),
+        trustedSeal(f.db, updated),
       ]);
       f.restart();
       const source = active(f);
