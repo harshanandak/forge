@@ -4452,14 +4452,18 @@ for (const [source, noun, ids] of [
   [WORK, "issue", ["forge-0007", "work-0007", "FORGE-0007", "legacy-0007"]],
   [RENAMED, "ticket", ["forge-0007"]],
 ] as const)
-  test(`${noun}.claim for ${ids.join(", ")} lost to another holder shows that holder in --json and --text exactly as the local engine refuses, with exit 4 and no local state`, () =>
+  test(`${noun}.claim for ${ids.join(", ")} lost to another holder shows fixed text and the full lease in --json and --text, with exit 4 and no local state`, () =>
     using(
       {
         config: source,
         steps: [() => refusing("LEASE_HELD", { lease: heldBy("0007") })],
       },
       async (r) => {
-        const want = localRefusal(heldBy("0007"), 0);
+        const want = {
+          ...localRefusal(heldBy("0007"), 0),
+          message:
+            "Another holder has the lease. Read the lease state to reconcile before retrying.",
+        };
         expect(want.code).toBe("LEASE_HELD");
         let sent = 0;
         for (const id of ids)
