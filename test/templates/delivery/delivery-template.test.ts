@@ -54,6 +54,18 @@ test("rendered build resolves and reuses the slice base", async () => {
     expect(setup.split("gh pr create --base ")[1]?.split(" ")[0]).toBe(
       "<base>",
     );
+    expect(setup).toContain("gh pr create --base <base> --draft");
+    expect(setup).toContain("Draft before iterative pushes.");
+    expect(setup).toContain("Mark ready only when the batch is complete.");
+    expect(setup).toContain(
+      "For a first red test that hosted CI must prove, open ready and push the fix as the next commit.",
+    );
+    expect(setup).toContain(
+      "Lint and check formatting on changed files before `git push -u origin <branch>`.",
+    );
+    expect(setup).toContain(
+      "A `[skip ci]` head skips CI and blocks merge until another push.",
+    );
   });
 }, 30_000);
 
@@ -332,7 +344,7 @@ test("restart guidance reads older direction and every review push checkpoints w
     "Each push: [checkpoint](../forge-build/pull-request.md#checkpoints) `review` SHA/time, round in `next`, before replies.",
   );
   expect(review.indexOf("Each push:")).toBeLessThan(
-    review.indexOf("For conflicts,"),
+    review.indexOf("Resolve conflicts locally"),
   );
   expect(Buffer.byteLength(review)).toBeLessThanOrEqual(3944);
   expect(skill("forge-build", "pull-request.md")).toContain(
@@ -485,17 +497,25 @@ test("S5 sync retires four stage skills, preserves notes and ships proof and thr
                 "utf8",
               ),
             );
+          expect(text).toContain(
+            "Merge the base branch into a PR branch only to resolve a conflict or after a queue rejection.",
+          );
+          expect(text).toContain("Resolve conflicts locally");
+          expect(text).toContain(
+            "Let the run finish, collect its failures, fix the batch, then push once.",
+          );
+          expect(text).toContain("Stop after three failed runs and escalate.");
+          expect(text).toContain(
+            "Only known flakes qualify for a rerun. Rerun a failed CI run at most once, only to classify the failure.",
+          );
           for (const phrase of [
             "forge route get review",
             "forge issue call",
             "single-family",
             "conflicts, then threads, then CI",
             "Fixed in <sha>",
-            "one push wave",
             "harness wake",
             "sleep loop",
-            "clean behind-base update",
-            "merge base locally",
             "retry only `resolveReviewThread`",
             "gh repo view --json owner,name",
             "Other old threads wait for new evidence",
