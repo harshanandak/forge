@@ -814,6 +814,21 @@ test("forge-cut replaces marked slice copies while keeping user notes in both ad
   });
 }, 30_000);
 
+test.each([
+  "In the merge message, write `Merge-reason: conflict`",
+  "In the merge message, write `Merge-reason: conflict` or `Merge-reason: queue-rejection`.",
+])(
+  "rendered review includes %s",
+  async (instruction) => {
+    await withDelivery(async (root, call) => {
+      expect(await call("skills.sync")).toMatchObject({ ok: true });
+      const text = readFileSync(join(root, rendered("forge-review")), "utf8");
+      expect(text).toContain(instruction);
+    });
+  },
+  30_000,
+);
+
 test("the delivery template renders all six skills: linted, at most 4 KB, values filled in", async () => {
   await withDelivery(async (root, call, lint) => {
     const synced = await call("skills.sync");
