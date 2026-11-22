@@ -2288,3 +2288,163 @@ test(
     }, 16),
   timeout,
 );
+
+function refusalEntry(data: Portable) {
+  const entries = JSON.parse(data.pages[0]!.body) as DirectoryItem[];
+  const bytes = Buffer.from(data.pages[1]!.body);
+  const text = ({ offset, length }: DirectoryItem) =>
+    bytes.subarray(offset, offset! + length!).toString();
+  const item = entries.find(
+    (e) =>
+      e.collection === "outcome" &&
+      e.length !== undefined &&
+      text(e).includes('"status":"LEASE_HELD"'),
+  )!;
+  return { entries, item, text, size: bytes.length };
+}
+
+function forgeRefusal(data: Portable, edit: (result: Json) => unknown) {
+  const { entries, item, text } = refusalEntry(data);
+  const saved = JSON.parse(text(item)) as { outcome: { result: Json } };
+  edit(saved.outcome.result);
+  const parts = entries.map((e) =>
+    e === item ? canonicalJson(saved) : e.length === undefined ? "" : text(e),
+  );
+  let offset = 0;
+  for (const [i, e] of entries.entries()) {
+    const length = Buffer.byteLength(parts[i]!);
+    if (e.length !== undefined)
+      Object.assign(e, { offset, length, digest: digestBytes(parts[i]!) });
+    offset += length;
+  }
+  data.pages[1]!.body = parts.join("");
+  data.pages[0]!.body = canonicalJson(entries);
+  editProjection(data, item.collection, item.key, (same) => same);
+  editHistory(data, (f) => {
+    (f[2]!.outcome as Json).resultDigest = digestBytes(
+      canonicalJson(saved.outcome.result),
+    );
+  });
+}
+
+function retarget(
+  data: Portable,
+  edit: (found: ReturnType<typeof refusalEntry>) => unknown,
+) {
+  const found = refusalEntry(data);
+  edit(found);
+  data.pages[0]!.body = canonicalJson(found.entries);
+}
+
+const accent = (result: Json) =>
+  Object.assign(result, { message: "caf\u00e9" });
+const splitAccent = (data: Portable, atEnd: boolean) => {
+  forgeRefusal(data, accent);
+  retarget(data, ({ item, text }) => {
+    const at = Buffer.from(text(item)).indexOf(0xc3) + 1;
+    return atEnd
+      ? Object.assign(item, { length: at })
+      : Object.assign(item, {
+          offset: item.offset! + at,
+          length: item.length! - at,
+        });
+  });
+};
+
+test(
+  "v3 restore accepts a saved refusal with a multi-byte message",
+  () =>
+    withPortable(async (target, data) => {
+      forgeRefusal(data, accent);
+      const upload = portableUpload(target, data);
+      expect([await upload(0), await upload(1), await upload(2)]).toMatchObject(
+        [restoreResult(0), restoreResult(1), restoreResult(2, true)],
+      );
+    }),
+  timeout,
+);
+
+for (const [fault, tamper] of [
+  [
+    "a result missing a field",
+    (d: Portable) => forgeRefusal(d, (r) => delete r.message),
+  ],
+  [
+    "a result code that contradicts the status",
+    (d: Portable) =>
+      forgeRefusal(d, (r) => Object.assign(r, { code: "LEASE_STALE" })),
+  ],
+  [
+    "a result with an extra field",
+    (d: Portable) => forgeRefusal(d, (r) => Object.assign(r, { extra: true })),
+  ],
+  [
+    "a duplicate directory entry",
+    (d: Portable) =>
+      retarget(d, ({ entries, item }) =>
+        entries.splice(entries.indexOf(item), 0, { ...item }),
+      ),
+  ],
+  [
+    "an offset past the snapshot",
+    (d: Portable) =>
+      retarget(d, ({ item, size }) => Object.assign(item, { offset: size })),
+  ],
+  [
+    "a length past the snapshot",
+    (d: Portable) =>
+      retarget(d, ({ item, size }) =>
+        Object.assign(item, { length: size + 1 }),
+      ),
+  ],
+  [
+    "a negative offset",
+    (d: Portable) =>
+      retarget(d, ({ item }) => Object.assign(item, { offset: -1 })),
+  ],
+  [
+    "an entry that overlaps another outcome",
+    (d: Portable) =>
+      retarget(d, ({ entries, item }) => {
+        const { offset, length } = entries.find(
+          (e) =>
+            e.collection === "outcome" && e !== item && e.length !== undefined,
+        )!;
+        Object.assign(item, { offset, length });
+      }),
+  ],
+  [
+    "a slice that ends inside a multi-byte character",
+    (d: Portable) => splitAccent(d, true),
+  ],
+  [
+    "a slice that starts inside a multi-byte character",
+    (d: Portable) => splitAccent(d, false),
+  ],
+  [
+    "a directory page nested far past the depth check",
+    (d: Portable) => {
+      d.pages[0]!.body = "[".repeat(100_000) + "]".repeat(100_000);
+    },
+  ],
+] as const) {
+  test(
+    `v3 restore guards a saved refusal against ${fault}`,
+    () =>
+      withPortable(async (target, data) => {
+        tamper(data);
+        const upload = portableUpload(target, data);
+        const replies = [await upload(0), await upload(1)];
+        const staged = target.snapshot();
+        replies.push(await upload(2));
+        await unprovisioned(target);
+        expect(replies).toMatchObject([
+          restoreResult(0),
+          restoreResult(1),
+          restoreRefusal,
+        ]);
+        expect(target.snapshot()).toEqual(staged);
+      }),
+    timeout,
+  );
+}
