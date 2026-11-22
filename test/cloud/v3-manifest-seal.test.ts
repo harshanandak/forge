@@ -15,6 +15,7 @@ import { canonicalJson, digestBytes } from "../../src/core/config/pointer.ts";
 import {
   guardFixture,
   newKey,
+  noWrites,
   probe,
   trustedManifest,
   verifiedPortable,
@@ -216,10 +217,16 @@ function rewriteRefusal(data: Portable) {
   data.pages[2]!.body = canonicalJson(frames);
 }
 
-function expectNothingStaged(target: Fixture, reply: unknown) {
-  expect(reply).toMatchObject(restoreRefusal);
-  expect(tableNames(target)).not.toContain("cloud_v3_restore");
-  expect(tableNames(target)).not.toContain("cloud_v3_root");
+async function refused(target: Fixture, send: () => Promise<unknown>) {
+  expect(
+    await target.send("restore", { page: 9, id: "warm-up", body: "" }),
+  ).toMatchObject(restoreRefusal);
+  const effects = target.observeEffects();
+  expect(await send()).toMatchObject(restoreRefusal);
+  expect(effects()).toEqual(noWrites);
+  expect(
+    tableNames(target).filter((name) => name.startsWith("cloud_v3_")),
+  ).toEqual([]);
 }
 
 test(
@@ -231,9 +238,7 @@ test(
     const honest = trustedManifest(target.seal(), unsigned(data));
     rewriteRefusal(data);
     const forged = { ...unsigned(data), mac: honest.mac };
-    const reply = await uploader(target, forged, data.pages)(0);
-    expect(reply.status).toBe(400);
-    expectNothingStaged(target, reply);
+    await refused(target, () => uploader(target, forged, data.pages)(0));
   },
   timeout,
 );
@@ -306,9 +311,7 @@ for (const [name, edit] of edits)
       const { data } = await shared();
       const target = guardFixture(typedEnv);
       using _db = target.db;
-      const reply = await forgedUpload(target, data, edit)(0);
-      expect(reply.status).toBe(400);
-      expectNothingStaged(target, reply);
+      await refused(target, () => forgedUpload(target, data, edit)(0));
     },
     timeout,
   );
@@ -323,10 +326,10 @@ for (const [name, domain] of [
       const { data } = await shared();
       const target = guardFixture(typedEnv);
       using _db = target.db;
-      const reply = await forgedUpload(target, data, (m) => {
+      const send = forgedUpload(target, data, (m) => {
         m.mac = domain(target);
-      })(0);
-      expectNothingStaged(target, reply);
+      });
+      await refused(target, () => send(0));
     },
     timeout,
   );
@@ -365,8 +368,8 @@ for (const [name, build] of [
       const { data } = await shared();
       const target = guardFixture(typedEnv);
       using _db = target.db;
-      const reply = await uploader(target, build(target, data), data.pages)(0);
-      expectNothingStaged(target, reply);
+      const send = uploader(target, build(target, data), data.pages);
+      await refused(target, () => send(0));
     },
     timeout,
   );
@@ -379,10 +382,8 @@ test(
     using _db = target.db;
     const manifest = trustedManifest(target.seal(), unsigned(data));
     const { mac: _mac, ...bare } = manifest;
-    expectNothingStaged(
-      target,
-      await uploader(target, manifest, data.pages, pinOf(bare))(0),
-    );
+    const bareSend = uploader(target, manifest, data.pages, pinOf(bare));
+    await refused(target, () => bareSend(0));
     expect(await uploader(target, manifest, data.pages)(0)).toMatchObject({
       status: 200,
       body: { value: { page: 0, verified: false } },
@@ -519,7 +520,8 @@ test(
     const { source, data } = await shared();
     const target = guardFixture(typedEnv);
     using _db = target.db;
-    expectNothingStaged(target, await signedUpload(target, data, source)(0));
+    const send = signedUpload(target, data, source);
+    await refused(target, () => send(0));
   },
   timeout,
 );
@@ -589,11 +591,18 @@ test(
         portableTranscript,
       });
     const value = verifiedPortable(seal, a);
+    const folds = f.observeEffects();
     expect(fold(value, a).head).toBe(1);
     expect(fold(verifiedPortable(seal, b), b).head).toBe(1);
     expect(fold(verifiedPortable(seal, longer), longer).head).toBe(2);
-    expect(() => fold(value, b)).toThrow(unavailable);
-    expect(() => fold(value, longer)).toThrow(unavailable);
+    expect(folds()).toEqual(noWrites);
+    const refuse = (call: () => unknown) => {
+      const effects = f.observeEffects();
+      expect(call).toThrow(unavailable);
+      expect(effects()).toEqual(noWrites);
+    };
+    refuse(() => fold(value, b));
+    refuse(() => fold(value, longer));
     for (const lookalike of [
       { ...value },
       Object.create(null, Object.getOwnPropertyDescriptors(value)),
@@ -602,7 +611,7 @@ test(
       {},
     ]) {
       expect(isVerifiedManifest(lookalike)).toBe(false);
-      expect(() => fold(lookalike, a)).toThrow(unavailable);
+      refuse(() => fold(lookalike, a));
     }
     expect(isVerifiedManifest(value)).toBe(true);
     expect(Object.isFrozen(value)).toBe(true);
@@ -617,8 +626,8 @@ test(
     const raw = () => recoverV3(st, seal, { admit, portableTranscript: a });
     // @ts-expect-error the ordinary overload excludes a portable transcript
     const ordinary = () => recoverV3(st, seal, loose);
-    expect(raw).toThrow(unavailable);
-    expect(ordinary).toThrow(unavailable);
+    refuse(raw);
+    refuse(ordinary);
   },
   timeout,
 );
