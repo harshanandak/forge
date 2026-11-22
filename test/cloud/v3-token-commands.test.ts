@@ -12,7 +12,8 @@ import {
   receiptScope,
   scopeRequestId,
 } from "../../cloud/src/issue-request-id.ts";
-import { TABLE_PROBE } from "../../cloud/src/store.ts";
+import { TABLE_PROBE, writableStore } from "../../cloud/src/store.ts";
+import { readV3Value, recoverV3 } from "../../cloud/src/v3-store.ts";
 import { createWorker } from "../../cloud/src/worker.ts";
 import type { ForgeError } from "../../src/generated/types.ts";
 import { exitCode } from "../../src/surface/result.ts";
@@ -156,6 +157,17 @@ async function refuses(
   expect(effects()).toEqual(noWrites);
 }
 
+function unchanged(f: Fixture, expected: ReturnType<Fixture["snapshot"]>) {
+  const now = f.snapshot();
+  expect(Buffer.from(now.sql).equals(expected.sql)).toBe(true);
+  expect(JSON.stringify(now.kv)).toBe(JSON.stringify(expected.kv));
+}
+
+const lease = (f: Fixture) => {
+  const db = writableStore(f.storage);
+  return readV3Value(db, recoverV3(db, f.seal()), "lease", "issue:work-1");
+};
+
 async function logged(run: () => Promise<unknown>) {
   const spy = spyOn(console, "log").mockImplementation(() => undefined);
   try {
@@ -215,6 +227,7 @@ test(
     const reply = await post(f, create, token);
     const { error } = reply.body as { error?: { code: string } };
     expect([reply.status, error?.code]).toEqual([200, undefined]);
+    answers(reply, 200);
     expect(reply.body).toMatchObject({
       ok: true,
       op: create.op,
@@ -257,6 +270,8 @@ test(
     const first = await f.send(`${probe}/command`, same, owner);
     const second = await post(f, same, t);
     expect([first.status, second.status]).toEqual([200, 200]);
+    answers(first, 200);
+    answers(second, 200);
     const ids = frames(f).map((frame) => (frame.outcome as Json).id);
     expect(ids).toEqual([
       scopeRequestId("command", ["owner", "laptop", "laptop"], "same"),
@@ -290,12 +305,19 @@ row(
       4,
     );
     const second = await issue(f);
+    const [firstFrame] = frames(f);
+    const write = f.observeEffects();
     const again = await post(f, create, second);
     answers(again, 200);
+    expect(write().sqlWriteAttempts).toBe(1);
     expect(again.body).toMatchObject({ result: { id: "forge-2" } });
     expect(frames(f)).toHaveLength(2);
+    expect(frames(f)[0]).toEqual(firstFrame);
+    const replays = f.observeEffects();
     expect(await post(f, create, t)).toEqual(first);
     expect(await post(f, create, second)).toEqual(again);
+    expect(replays()).toEqual(noWrites);
+    expect(frames(f)).toHaveLength(2);
   },
 );
 
@@ -421,25 +443,39 @@ row("a token changed while the body is read ends the command", async (f) => {
     const u = await issue(f);
     const effects = f.observeEffects();
     const bytes = f.reads.bytes;
-    answers(await during(f, u, () => between(u)), status, code);
+    let interleaved = f.snapshot();
+    answers(
+      await during(f, u, async () => {
+        await between(u);
+        interleaved = f.snapshot();
+      }),
+      status,
+      code,
+    );
     expect(effects()).toMatchObject({
       sqlWriteAttempts: writes,
       alarmWrites: 0,
     });
+    unchanged(f, interleaved);
     expect(frames(f)).toEqual([]);
     if (small) expect(f.reads.bytes - bytes).toBeLessThan(4096);
     setSystemTime(time);
   }
   const u = await issue(f);
   const effects = f.observeEffects();
+  let interleaved = f.snapshot();
   const reply = await during(
     f,
     u,
-    () => f.send("revoke", { id: u.id }),
+    async () => {
+      await f.send("revoke", { id: u.id });
+      interleaved = f.snapshot();
+    },
     "{not json at all",
   );
   answers(reply, 401, "AUTH_REVOKED");
   expect(effects()).toMatchObject({ sqlWriteAttempts: 1, alarmWrites: 0 });
+  unchanged(f, interleaved);
   expect(frames(f)).toEqual([]);
 });
 
@@ -509,17 +545,24 @@ test(
     const t = await issue(f);
     const adminSecret = newKey();
     const reached: string[] = [];
+    const looked: string[] = [];
     const bindings = {
       ADMIN_TOKEN: adminSecret,
       ...env,
       PROJECTS: {
-        idFromName: (name: string) => name,
-        get: () => ({
-          fetch: (request: Request) => {
-            reached.push(request.url);
-            return f.fetch(request);
-          },
-        }),
+        idFromName: (name: string) => {
+          looked.push(`name:${name}`);
+          return name;
+        },
+        get: (id: string) => {
+          looked.push(`get:${id}`);
+          return {
+            fetch: (request: Request) => {
+              reached.push(request.url);
+              return f.fetch(request);
+            },
+          };
+        },
       },
     };
     const worker = async (request: Request): Promise<Answer> => {
@@ -546,9 +589,10 @@ test(
       answers(await worker(req(headers, text, project)), status, code);
       expect(effects()).toEqual(noWrites);
     }
-    expect(reached).toEqual([]);
+    expect([reached, looked]).toEqual([[], []]);
     answers(await worker(req(bearer(t), text)), 200);
     expect(reached).toHaveLength(1);
+    expect(looked).toEqual(["name:a", "get:a"]);
   },
   timeout,
 );
@@ -620,33 +664,36 @@ row(
     const wide = (n: number) => `{"x":[${new Array(n).fill(0).join(",")}]}`;
     expect(padded(limit - 10)).toHaveLength(limit);
     const over = [padded(limit - 9), padded(limit * 2)];
-    for (const text of over) {
-      await refuses(f, () => raw(f, t, text), 400, "INPUT_INVALID", 6);
-      await refuses(
-        f,
-        () => raw(f, t, text, { "content-length": String(text.length) }),
-        400,
-        "INPUT_INVALID",
-        6,
-      );
-      await refuses(
-        f,
-        () =>
-          sent(
-            f,
-            req(
-              bearer(t),
-              slow(text, () => undefined),
-            ),
+    const message = (reply: Answer) =>
+      (reply.body as { error: { message: string } }).error.message;
+    const transports: ((text: string) => Promise<Answer>)[] = [
+      (text) => raw(f, t, text),
+      (text) => raw(f, t, text, { "content-length": String(text.length) }),
+      (text) =>
+        sent(
+          f,
+          req(
+            bearer(t),
+            slow(text, () => undefined),
           ),
-        400,
-        "INPUT_INVALID",
-        6,
-      );
-      const reply = await raw(f, t, text);
-      expect(
-        (reply.body as { error: { message: string } }).error.message,
-      ).toContain(`${limit} bytes`);
+        ),
+    ];
+    for (const text of over) {
+      for (const go of transports) {
+        const effects = f.observeEffects();
+        const reply = await go(text);
+        answers(reply, 400, "INPUT_INVALID", 6);
+        expect(message(reply)).toContain(`${limit} bytes`);
+        expect(effects()).toEqual(noWrites);
+      }
+    }
+    for (const go of transports) {
+      const effects = f.observeEffects();
+      const reply = await go(padded(limit - 10));
+      answers(reply, 400, "INPUT_INVALID", 6);
+      expect(message(reply)).toContain("body must be { requestId");
+      expect(message(reply)).not.toContain("bytes");
+      expect(effects()).toEqual(noWrites);
     }
     const parsed: [string, string][] = [
       [padded(limit - 10), "body must be { requestId"],
@@ -694,6 +741,9 @@ row(
     const id = f.context.id;
     const seen = statements(f);
     Reflect.deleteProperty(f.env, "V3_SEAL_KEY");
+    await refuses(f, () => post(f, create, t), 503, "UNAVAILABLE");
+    expect(seen).toEqual([]);
+    Reflect.set(f.env, "V3_SEAL_KEY", "short");
     await refuses(f, () => post(f, create, t), 503, "UNAVAILABLE");
     expect(seen).toEqual([]);
     for (const bad of [undefined, "short"]) {
@@ -786,7 +836,9 @@ row(
       saved.revoked_at,
       saved.mac,
     ] as (string | null)[]);
+    const before = frames(f).length;
     answers(await post(f, create, t), 200);
+    expect(frames(f)).toHaveLength(before + 1);
   },
 );
 
@@ -794,17 +846,24 @@ row(
   "revoking a token releases no lease and a sibling token keeps acting under it, a stated limit (forge-1847)",
   async (f, t) => {
     answers(await post(f, create, t), 200);
-    expect(await post(f, claim, t)).toMatchObject({
+    const claimed = await post(f, claim, t);
+    answers(claimed, 200);
+    expect(claimed).toMatchObject({
       status: 200,
       body: { result: { generation: 1 } },
     });
+    const held = lease(f);
+    expect(held).toMatchObject({ generation: 1 });
     const revoked = await f.send("revoke", { id: t.id });
     expect(revoked).toMatchObject({
       status: 200,
       body: { value: { leasesReleased: false } },
     });
+    expect(lease(f)).toEqual(held);
     const sibling = await issue(f);
-    expect(await post(f, update, sibling)).toMatchObject({
+    const updated = await post(f, update, sibling);
+    answers(updated, 200);
+    expect(updated).toMatchObject({
       status: 200,
       body: { result: { id: "forge-1", title: "After", revision: 2 } },
     });

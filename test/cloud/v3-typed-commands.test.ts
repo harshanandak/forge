@@ -4,8 +4,11 @@ import {
   receiptScope,
   scopeRequestId,
 } from "../../cloud/src/issue-request-id.ts";
+import { failed } from "../../cloud/src/issue-commands.ts";
 import { Project } from "../../cloud/src/project.ts";
 import { canonicalJson, digestBytes } from "../../src/core/config/pointer.ts";
+import type { ForgeError } from "../../src/generated/types.ts";
+import { exitCode } from "../../src/surface/result.ts";
 import { writableStore } from "../../cloud/src/store.ts";
 import { authorityFault } from "../../cloud/src/v3-authority.ts";
 import { readV3Value, recoverV3, viewV3 } from "../../cloud/src/v3-store.ts";
@@ -117,6 +120,43 @@ const error = (status: number, code: string) => ({
   body: { ok: false, error: { code } },
 });
 
+const exits: Record<string, number> = {
+  INPUT_INVALID: 6,
+  NOT_FOUND: 3,
+  INPUT_CONFLICT: 4,
+  REVISION_CONFLICT: 4,
+  LEASE_HELD: 4,
+  LEASE_STALE: 4,
+  LEASE_NOT_HELD: 4,
+  LEASE_EXPIRED: 4,
+};
+function exited(response: { body: unknown }, code?: string) {
+  const body = response.body as { status?: string; error?: ForgeError };
+  expect(
+    exitCode(
+      "status" in body
+        ? (response.body as ReturnType<typeof failed>)
+        : failed(body.error!),
+    ),
+  ).toBe(code === undefined ? 0 : (exits[code] ?? 1));
+}
+function refused(
+  response: { status: number; body: unknown },
+  status: number,
+  code: string,
+) {
+  expect(response).toMatchObject(error(status, code));
+  exited(response, code);
+}
+function deadlines(f: Fixture, before: number) {
+  if (!tokens.has(f)) return;
+  for (const frame of frames(f).slice(before)) {
+    const outcome = frame.outcome as Json | undefined;
+    if ((outcome?.scope as Json | undefined)?.family === "command")
+      expect(outcome?.retryUntil).toBe(expiry);
+  }
+}
+
 async function provision(f: Fixture) {
   expect(await f.send(probe, {})).toMatchObject({ status: 200 });
 }
@@ -165,6 +205,10 @@ async function oneRow(
     sqlWriteAttempts: 1,
     alarmWrites: 0,
   });
+  const reply = response.body as Json;
+  if ("op" in reply || "error" in reply)
+    exited(response, status === 200 ? undefined : "INPUT_INVALID");
+  deadlines(f, before);
   return response;
 }
 
@@ -280,12 +324,16 @@ test.each(modes)(
     const replay = f.observeEffects();
     expect(await send(f, create)).toEqual(first);
     expect(await send(f, create, "tablet")).toEqual(other);
-    expect(
+    refused(
       await send(f, { ...create, input: { title: "Changed" } }),
-    ).toMatchObject(error(409, "INPUT_CONFLICT"));
+      409,
+      "INPUT_CONFLICT",
+    );
     expect(await send(f, invalid)).toEqual(denied);
-    expect(await send(f, { ...invalid, input: create.input })).toMatchObject(
-      error(409, "INPUT_CONFLICT"),
+    refused(
+      await send(f, { ...invalid, input: create.input }),
+      409,
+      "INPUT_CONFLICT",
     );
     expect(replay()).toEqual(noWrites);
   },
@@ -404,8 +452,9 @@ async function updateRefusal(
   const effects = f.observeEffects();
   const response = await send(f, body, owner);
   expect(tokenRows(f)).toBe(rows);
-  expect(response).toMatchObject(error(status, code));
+  refused(response, status, code);
   expect(frames(f)).toHaveLength(before + 1);
+  deadlines(f, before);
   expect(effects()).toMatchObject({ sqlWriteAttempts: 1, alarmWrites: 0 });
   expect(frames(f).at(-1)).toMatchObject({
     operation: update.op,
@@ -415,13 +464,15 @@ async function updateRefusal(
   expect(frames(f).at(-1)?.changes).toBeUndefined();
   const replay = f.observeEffects();
   expect(await send(f, body, owner)).toEqual(response);
-  expect(
+  refused(
     await send(
       f,
       { ...body, input: { ...body.input, title: "Changed" } },
       owner,
     ),
-  ).toMatchObject(error(409, "INPUT_CONFLICT"));
+    409,
+    "INPUT_CONFLICT",
+  );
   expect(replay()).toEqual(noWrites);
 }
 
@@ -462,12 +513,14 @@ test.each(modes)(
     await checkpoint(f);
     const replay = f.observeEffects();
     expect(await send(f, update)).toEqual(first);
-    expect(
+    refused(
       await send(f, {
         ...update,
         input: { ...update.input, title: "Changed" },
       }),
-    ).toMatchObject(error(409, "INPUT_CONFLICT"));
+      409,
+      "INPUT_CONFLICT",
+    );
     expect(replay()).toEqual(noWrites);
 
     const current = { ...update.input, expectRevision: 2 };
@@ -510,7 +563,7 @@ test.each(modes)(
       "LEASE_EXPIRED",
     );
     const lost = f.observeEffects();
-    expect(await send(f, update)).toMatchObject(error(409, "LEASE_STALE"));
+    refused(await send(f, update), 409, "LEASE_STALE");
     expect(lost()).toEqual(noWrites);
     await checkpoint(f);
     expect(record(f)).toEqual({
@@ -879,12 +932,14 @@ test.each(modes)(
     await checkpoint(f);
     const replay = f.observeEffects();
     expect(await send(f, typedClaim)).toEqual(first);
-    expect(
+    refused(
       await send(f, {
         ...typedClaim,
         input: { ...typedClaim.input, ttlSeconds: 30 },
       }),
-    ).toMatchObject(error(409, "INPUT_CONFLICT"));
+      409,
+      "INPUT_CONFLICT",
+    );
     for (const [changed, status, code] of [
       [
         { ...typedClaim, input: { ...typedClaim.input, id: "forge-2" } },
@@ -897,7 +952,7 @@ test.each(modes)(
         mode === "token" ? "AUTH_DEVICE_MISMATCH" : "INPUT_CONFLICT",
       ],
     ] as const) {
-      expect(await send(f, changed)).toMatchObject(error(status, code));
+      refused(await send(f, changed), status, code);
     }
     expect(replay()).toEqual(noWrites);
 
@@ -909,7 +964,7 @@ test.each(modes)(
       ),
     );
     const released = f.observeEffects();
-    expect(await send(f, typedClaim)).toMatchObject(error(409, "LEASE_STALE"));
+    refused(await send(f, typedClaim), 409, "LEASE_STALE");
     expect(released()).toEqual(noWrites);
     expect(
       (
@@ -942,8 +997,9 @@ async function claimRefusal(
   const effects = f.observeEffects();
   const reply = await send(f, body, owner, as);
   expect(tokenRows(f)).toBe(rows);
-  expect(reply).toMatchObject(error(status, code));
+  refused(reply, status, code);
   expect(frames(f)).toHaveLength(before + 1);
+  deadlines(f, before);
   expect(effects()).toMatchObject({ sqlWriteAttempts: 1, alarmWrites: 0 });
   const frame = frames(f).at(-1)!;
   expect(frame).toMatchObject({
