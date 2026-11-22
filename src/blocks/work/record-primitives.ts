@@ -1,5 +1,9 @@
 import check from "../check/entry.cts";
 import type * as Check from "../check/types.ts";
+export {
+  escapeDisplayText,
+  quoteDisplayText,
+} from "../../contract/display-text.ts";
 interface HostedCheck {
   repo: string;
   hostedGate: (

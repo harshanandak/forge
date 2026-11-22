@@ -9,6 +9,8 @@ const {
   isCommit,
   validReceipt,
   validReason,
+  escapeDisplayText,
+  quoteDisplayText,
   evidenceProblem,
   ASK,
   journalKey,
@@ -433,6 +435,10 @@ const kinds: readonly string[] = ["task", "bug", "feature", "epic"];
  */
 const STORED = "work-";
 const QUALIFIED = /^([a-z0-9]+(?:-[a-z0-9]+)*)-(\d+)$/i;
+const displayIssueId = (id: string): string =>
+  QUALIFIED.exec(id)?.[0] === id ? id : quoteDisplayText(id);
+const recordJson = (input: object): string =>
+  escapeDisplayText(JSON.stringify(input)).replaceAll("'", "\\u0027");
 type Ids = {
   readonly prefix: string;
   readonly stored: (id: string) => string;
@@ -2248,7 +2254,7 @@ async function tailNext(call: HandlerCall<TailInput>): Promise<TailAction> {
       return pause(
         `${ids.shown(target)} is named for closing but does not exist`,
         journal.named.includes(target)
-          ? `Correct it with: forge lane record ${issue.id} --action ${journal.action?.n ?? 1} --result '{"drop":"${ids.shown(target)}","reason":"<why>"}' (or {"replace":{"from":"${ids.shown(target)}","to":"<id>"},"reason":"<why>"}), then run lane next again.`
+          ? closingRepair(issue.id, ids.shown(target), journal.action?.n ?? 1)
           : "A delivers link names an issue that does not exist. Fix the link, then run lane next again.",
         target,
       );
@@ -2319,6 +2325,15 @@ async function tailNext(call: HandlerCall<TailInput>): Promise<TailAction> {
     expect: "nothing further",
     budget: { ...journal.counters },
   };
+}
+function closingRepair(id: string, target: string, action: number): string {
+  const drop = { drop: target, reason: "<why>" };
+  const replace = { replace: { from: target, to: "<id>" }, reason: "<why>" };
+  const args =
+    QUALIFIED.exec(id)?.[0] === id
+      ? `${id} --action ${action} --result '${recordJson(drop)}'`
+      : `--input '${recordJson({ id, action, result: JSON.stringify(drop) })}'`;
+  return `Correct it with: forge lane record ${args} (or ${recordJson(replace)}), then run lane next again.`;
 }
 /*
  * Lane autopilot, merge step (forge-885 S4). While the PR is OPEN, `lane.next` re-reads every merge
@@ -2851,7 +2866,7 @@ async function mergeNext(
     return action(
       "wait",
       `No merge-gate verdict is recorded for head ${head}`,
-      `a verdict from the merge-gate reviewer, recorded with: forge lane record --input '{"id":"${issue}","mergeGate":{"head":"${head}","verdict":"<MERGE|FIX>","reviewer":"<who>"}}'. Record only the verdict the merge-gate reviewer gave; never your own.`,
+      `a verdict from the merge-gate reviewer, recorded with: forge lane record --input '${recordJson({ id: issue, mergeGate: { head, verdict: "<MERGE|FIX>", reviewer: "<who>" } })}'. Record only the verdict the merge-gate reviewer gave; never your own.`,
     );
   // lane.record cannot tell which session records a verdict, so a verdict is not yet trustworthy.
   if (settings?.enabled !== true)
@@ -3171,7 +3186,7 @@ async function guardedNext(
       return guardPause(
         shown,
         `${shown} used up its ${name} budget`,
-        `${shown} has used its ${name} budget (limit ${usage.limit}, used ${usage.used}). Raise blocks.work.config.lanes.autopilot.budgets or stop the lane; Forge waits for your reply.`,
+        `${quoteDisplayText(shown)} has used its ${name} budget (limit ${usage.limit}, used ${usage.used}). Raise blocks.work.config.lanes.autopilot.budgets or stop the lane; Forge waits for your reply.`,
         { budget: name, ...usage },
       );
   return await tailNext({ ...call, input: { ...input, id: shown } });
@@ -3255,6 +3270,12 @@ const RESUME: AskOption[] = [
   { label: "A", text: "resume it (your reply is the approval)", approve: true },
   { label: "B", text: "keep it stopped", hold: true },
 ];
+function displayOption(ask: Ask, option: AskOption): string {
+  const fixed = (ask.gated ? RESUME : GENERIC).find(
+    ({ label, text }) => label === option.label && text === option.text,
+  );
+  return fixed?.text ?? quoteDisplayText(option.text);
+}
 /** Facts a pause carries that its action shape cannot: urgency and the gated step it waits on. */
 const pauseMeta = new WeakMap<TailAction, { urgent?: string; gated?: Gate }>();
 const nonEmpty = (value: unknown): value is string =>
@@ -3376,11 +3397,13 @@ function quiet(action: TailAction): TailAction {
 }
 /** The owner already decided this pause: no ask text, no message, nothing written, until the lane changes. */
 function settledAction(action: TailAction, ask: Ask): TailAction {
+  const label = ask.answer?.label;
+  const chosen = ask.options.find((option) => option.label === label);
   return {
     ...quiet(action),
     step: "owner",
     kind: "pause",
-    why: `${action.why}. The owner already answered${ask.answer ? ` ${ask.answer.label}` : ""}, so this is not asked again until the lane's state changes.`,
+    why: `${quoteDisplayText(action.why)}. The owner already answered${ask.answer ? ` ${chosen?.label ?? quoteDisplayText(String(label))}` : ""}, so this is not asked again until the lane's state changes.`,
     expect:
       "nothing; the owner decided, so do not ask or message them about this again",
   };
@@ -3403,7 +3426,7 @@ function digestLine(
           id?: string;
           type?: string;
           at?: string;
-          detail?: { pr?: number };
+          detail?: { pr?: unknown };
         },
     )
     .filter(
@@ -3413,7 +3436,18 @@ function digestLine(
         isTime(event.at) &&
         (since === undefined || Date.parse(event.at) > Date.parse(since)),
     )
-    .map((event) => `${ids.shown(event.id!)} (#${event.detail?.pr ?? "?"})`);
+    .map((event) => {
+      const pr = event.detail?.pr;
+      const shown =
+        pr == null
+          ? "?"
+          : typeof pr === "number"
+            ? pr
+            : quoteDisplayText(
+                typeof pr === "string" ? pr : JSON.stringify(pr),
+              );
+      return `${displayIssueId(ids.shown(event.id!))} (#${shown})`;
+    });
   if (!done.length) return "";
   const shown = done.slice(0, 5).join(", ");
   return `Merged and closed since my last message: ${shown}${done.length > 5 ? ` and ${done.length - 5} more` : ""}.`;
@@ -3429,12 +3463,12 @@ function composeMessage(
     clarify === undefined
       ? `Message #${seq}. Lanes need you (${items.length}):`
       : allOrNothing
-        ? `Message #${seq}. Resuming after a stop of every lane is all or nothing, so I resumed nothing for "${clip(clarify, 80)}". Answer A for every lane to resume them all, or B for every lane to keep them stopped:`
-        : `Message #${seq}. I could not tell which option you chose for each item in "${clip(clarify, 80)}". Answer once per item:`,
+        ? `Message #${seq}. Resuming after a stop of every lane is all or nothing, so I resumed nothing for ${quoteDisplayText(clip(clarify, 80))}. Answer A for every lane to resume them all, or B for every lane to keep them stopped:`
+        : `Message #${seq}. I could not tell which option you chose for each item in ${quoteDisplayText(clip(clarify, 80))}. Answer once per item:`,
   ];
   items.forEach((ask, index) =>
     lines.push(
-      `${index + 1}. ${ask.issue} "${clip(ask.title, 80)}": ${clip(ask.reason, 240).replace(/[.\s]+$/, "")}. ${ask.options.map((option) => `${option.label}) ${option.text}`).join(", ")}. Default ${ask.default}.`,
+      `${index + 1}. ${displayIssueId(ask.issue)} ${quoteDisplayText(clip(ask.title, 80))}: ${quoteDisplayText(clip(ask.reason, 240).replace(/[. ]+$/, ""))}. ${ask.options.map((option) => `${option.label}) ${displayOption(ask, option)}`).join(", ")}. Default ${ask.default}.`,
     ),
   );
   lines.push(
@@ -3499,7 +3533,13 @@ function ownerRoute(
   const state = client(services),
     ids = idsFor(state, config),
     channel = channelOf(services);
-  if (channel === undefined) return actions;
+  const direct = () =>
+    actions.map((action) =>
+      action.kind === "pause"
+        ? { ...action, why: quoteDisplayText(action.why) }
+        : action,
+    );
+  if (channel === undefined) return direct();
   try {
     const now = state.now(),
       at = new Date(now).toISOString();
@@ -3555,10 +3595,11 @@ function ownerRoute(
             ? settledAction(action, current.get(ids.stored(action.lane))!)
             : {
                 ...action,
-                why: `${action.why}. The owner channel is not set, so this ask stays queued.`,
-                ask: `Set the owner channel with forge lane record --input '{"ownerChannel":{"harness":"<owner chat harness>","thread":"<owner chat thread>"}}' (fill in the owner's chat harness and thread; Forge asks the owner to approve it). Then run lane next again.`,
+                why: `${quoteDisplayText(action.why)}. The owner channel is not set, so this ask stays queued.`,
+                ask: `Set the owner channel with forge lane record --input '${recordJson({ ownerChannel: { harness: "<owner chat harness>", thread: "<owner chat thread>" } })}' (fill in the owner's chat harness and thread; Forge asks the owner to approve it). Then run lane next again.`,
               },
       );
+    const { harness, thread } = owner.channel;
     if (!sameChannel(owner.channel, channel))
       return actions.map((action): TailAction =>
         current.get(ids.stored(action.lane)) === undefined
@@ -3569,7 +3610,7 @@ function ownerRoute(
                 ...quiet(action),
                 step: "owner",
                 kind: "hand-to-owner",
-                why: `${action.why}. This session is not the owner channel (${owner.channel.harness}, ${owner.channel.thread}).`,
+                why: `${quoteDisplayText(action.why)}. This session is not the owner channel (${quoteDisplayText(harness)}, ${quoteDisplayText(thread)}).`,
                 expect:
                   "nothing from this session; hand this to the owner channel and stop",
               },
@@ -3646,8 +3687,8 @@ function ownerRoute(
             "resume",
             ...(ask.gated.input.all === true ? ["--all"] : [ask.issue]),
           ],
-          why: `${action.why}. The owner's approval needs a request id first.`,
-          expect: `Run this once without approval; it fails with APPROVAL_REQUIRED and a request id. Record it with: forge lane record --input '{"id":"${ask.issue}","request":"<request id>","scope":${JSON.stringify(ask.gated.input)}}'. Do not ask the owner yet.`,
+          why: `${quoteDisplayText(action.why)}. The owner's approval needs a request id first.`,
+          expect: `Run this once without approval; it fails with APPROVAL_REQUIRED and a request id. Record it with: forge lane record --input '${recordJson({ id: ask.issue, request: "<request id>", scope: ask.gated.input })}'. Do not ask the owner yet.`,
         };
       if (message !== undefined && action === carrier)
         return {
@@ -3656,7 +3697,7 @@ function ownerRoute(
           kind: "ask-owner",
           n: seq,
           why: `${ready.length} lane${ready.length === 1 ? "" : "s"} need the owner`,
-          expect: `Send this text as your reply in this chat. When the owner answers, record it verbatim with: forge lane record --input '{"reply":"<their words, including #${seq}>","source":{"harness":"${owner.channel.harness}","thread":"${owner.channel.thread}","message":"<message id>"}}'`,
+          expect: `Send this text as your reply in this chat. When the owner answers, record it verbatim with: forge lane record --input '${recordJson({ reply: `<their words, including #${seq}>`, source: { harness, thread, message: "<message id>" } })}'`,
           ask: message,
         };
       return {
@@ -3664,14 +3705,14 @@ function ownerRoute(
         kind: "wait",
         why:
           message !== undefined && ask.batch === seq
-            ? `${action.why}. This lane is asked in the owner message sent in this call.`
-            : `${action.why}. Queued for the owner; the next message is due ${next}.`,
+            ? `${quoteDisplayText(action.why)}. This lane is asked in the owner message sent in this call.`
+            : `${quoteDisplayText(action.why)}. Queued for the owner; the next message is due ${next}.`,
         expect:
           "the owner's reply; Forge guesses nothing and the lane stays paused",
       };
     });
   } catch (error) {
-    if (error instanceof StateProblem) return actions;
+    if (error instanceof StateProblem) return direct();
     throw error;
   }
 }
@@ -3724,8 +3765,8 @@ async function laneStep(
     step: "owner",
     n: ask.n ?? 0,
     kind: "harness",
-    why: `The owner chose ${ask.answer.label}${chosen ? ` (${chosen.text})` : ""} on "${clip(ask.reason, 120)}". Their words: ${JSON.stringify(clip(ask.answer.quote, 300))}.`,
-    expect: `Do what they chose${ask.answer.approval ? ", passing the approval to the gated operation" : ""}, then record it with: forge lane record --input '{"id":"${shown}","action":${ask.n ?? 0},"result":"{\\"done\\":true}"}'`,
+    why: `The owner chose ${chosen?.label ?? quoteDisplayText(String(ask.answer.label))}${chosen ? ` (${displayOption(ask, chosen)})` : ""} on ${quoteDisplayText(clip(ask.reason, 120))}. Their words: ${quoteDisplayText(clip(ask.answer.quote, 300))}.`,
+    expect: `Do what they chose${ask.answer.approval ? ", passing the approval to the gated operation" : ""}, then record it with: forge lane record --input '${recordJson({ id: shown, action: ask.n ?? 0, result: JSON.stringify({ done: true }) })}'`,
     budget: { actions: 0, records: 0 },
     ...(ask.answer.approval ? { approval: ask.answer.approval } : {}),
   };

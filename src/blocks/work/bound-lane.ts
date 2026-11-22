@@ -1,4 +1,5 @@
 import { ForgeFailure } from "../../contract/failure.ts";
+import { escapeDisplayText } from "../../contract/display-text.ts";
 import {
   gitCapability,
   createGitScope,
@@ -392,7 +393,7 @@ export async function boundLaneProgress(
     why = "Reserved local action; this is not dispatch permission.";
   if (p.ask) {
     kind = p.ask.answer ? "pause" : "ask-owner";
-    why = JSON.stringify(p.ask);
+    why = escapeDisplayText(JSON.stringify(p.ask));
   } else if (
     !limits.enabled ||
     now() - p.started >= limits.activeHours * 3_600_000 ||
