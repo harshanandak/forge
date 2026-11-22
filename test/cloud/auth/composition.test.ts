@@ -1,3 +1,5 @@
+import { ForgeFailure } from "../../../src/contract/failure.ts";
+import { STATUS } from "../../../cloud/src/project.ts";
 import { singleOwnerPolicy } from "../../../src/ports/authorization.ts";
 import { expect, mock, test } from "bun:test";
 import {
@@ -348,6 +350,41 @@ test.each([
       error: { code: "UNAVAILABLE", retry: "safe" },
     });
     expect(text).not.toContain("private transport detail");
+    expect(f.forward).toHaveBeenCalledTimes(0);
+  },
+  30_000,
+);
+
+test.each(
+  Object.entries(STATUS)
+    .filter(([code]) => code.startsWith("AUTH_"))
+    .flatMap(([code, status]) =>
+      ["verifier", "forward", "binding"].map(
+        (phase) => [code, status, phase] as const,
+      ),
+    ),
+)(
+  "typed %s (%d) survives %s rejection",
+  async (code, status, phase) => {
+    const f = await fixture();
+    const token = await f.token();
+    const error = new ForgeFailure({
+      code,
+      message: "Credential refused",
+      retry: "never",
+    });
+    const reject = () => Promise.reject(error);
+    const worker =
+      phase === "verifier"
+        ? createWorker(composeAuth({ verify: reject }, resource), f.forward)
+        : createWorker(f.auth, reject);
+    if (phase === "binding") f.env.PROJECTS.get = () => ({ fetch: reject });
+    const reply = await worker.fetch(
+      projectRequest(phase === "binding" ? deviceToken : token),
+      f.env,
+    );
+    expect(reply.status).toBe(status);
+    expect(await reply.json()).toEqual({ ok: false, error: error.error });
     expect(f.forward).toHaveBeenCalledTimes(0);
   },
   30_000,

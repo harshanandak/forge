@@ -388,7 +388,14 @@ test("stock deployment serves both owner browser decisions", async () => {
   }
 }, 30_000);
 
-test.each(["redemption", "token exchange", "JWKS", "success"] as const)(
+test.each([
+  "redemption",
+  "token exchange",
+  "token body",
+  "provider error",
+  "JWKS",
+  "success",
+] as const)(
   "deployment Project handles Clerk %s on device approval",
   async (mode) => {
     const now = start / 1000;
@@ -412,6 +419,18 @@ test.each(["redemption", "token exchange", "JWKS", "success"] as const)(
               ? Promise.reject(new Error("private provider detail"))
               : Promise.resolve(Response.json({ keys: [jwk] }));
           expect(url).toBe(vars.CLERK_ISSUER + "/oauth/token");
+          if (mode === "token body") {
+            const stream = new ReadableStream(
+              {
+                start: (body) =>
+                  body.enqueue(new TextEncoder().encode('{"id_token":')),
+                pull: (body) =>
+                  body.error(new Error("private provider detail")),
+              },
+              { highWaterMark: 0 },
+            );
+            return Promise.resolve(new Response(stream));
+          }
           return mode === "token exchange"
             ? Promise.reject(new Error("private provider detail"))
             : Promise.resolve(Response.json({ id_token: proof }));
@@ -441,7 +460,12 @@ test.each(["redemption", "token exchange", "JWKS", "success"] as const)(
       expect((await f.provision()).status).toBe(200);
       const flow = await f.through("approve", "unused");
       expect(flow.decision.status).toBe(302);
-      const done = await flow.done();
+      const done =
+        mode === "provider error"
+          ? await f.send(`/callback?state=${flow.state}&error=server_error`, {
+              cookie: flow.bind,
+            })
+          : await flow.done();
       expect(done.status).toBe(mode === "success" ? 200 : 503);
       if (mode === "success") {
         expect(outcome(done)).toBe("approved");
