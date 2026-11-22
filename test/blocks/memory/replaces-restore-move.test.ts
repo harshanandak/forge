@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import {
   accepted,
   blockSchema,
+  decisionItems,
   done,
   loadEntry,
   memoryState,
@@ -51,6 +52,159 @@ const oldId = "device/note-1";
 const currentId = "device/note-2";
 const unissuedId = "00000000-0000-4000-8000-000000000001";
 type RestorePage = { restoreId?: string; next?: number };
+type Call = ReturnType<typeof fixture>["call"];
+
+async function startRestore(call: Call, note: ReturnType<typeof item>) {
+  const { restoreId } = (await call("memory.restore", {
+    ...bundle([note]),
+    truncated: true,
+  })) as RestorePage;
+  expect(restoreId).toBeDefined();
+  return restoreId ?? unissuedId;
+}
+
+async function servedIds(call: Call) {
+  const found = (await call("memory.search", { query: "wren" })) as {
+    hits: { id: string }[];
+  };
+  return found.hits.map(({ id }) => id).sort();
+}
+
+function deferredLink(restoreId: string) {
+  return {
+    replaces: [oldId],
+    restored: { id: restoreId, sourceId: currentId, pending: [oldId] },
+  };
+}
+
+test("catalog refuses bundle-supplied provenance", { timeout }, async () => {
+  const target = await openHarness(["memory"]);
+  try {
+    const older = item(oldId);
+    done(await target.call("memory.restore", bundle([older])));
+    const restored = { id: unissuedId, sourceId: oldId, pending: [] };
+    const forged = { ...older, restored };
+    const page = bundle([forged, item(currentId, [oldId])]);
+    expect(await target.call("memory.restore", page)).toMatchObject({
+      ok: false,
+      error: { code: "INPUT_INVALID" },
+    });
+    const shown = done(await target.call("memory.show", { id: oldId }));
+    expect(shown).not.toHaveProperty("note.replacedBy");
+    expect(
+      done(await target.call("memory.search", { query: "wren" })),
+    ).toMatchObject({ hits: [{ id: oldId }] });
+  } finally {
+    await target.close();
+  }
+});
+
+test(
+  "a finished restore ID cannot hide another slot",
+  { timeout },
+  async () => {
+    const { call, state } = fixture();
+    const lastId = "device/note-3";
+    const replayId = "device/note-4";
+    await call("memory.restore", bundle([item(oldId)]));
+    const before = state.get("note/000000001");
+    const restoreId = await startRestore(call, item(currentId));
+    const continuation = { restoreId, approval: ownerApproval };
+    const expected = { added: 1, skipped: 0, conflicts: [], restoreId };
+    for (const note of [item(lastId), item(replayId, [oldId])]) {
+      const page = { ...bundle([note]), ...continuation };
+      expect(await call("memory.restore", page)).toEqual(expected);
+    }
+    const replay = state.get("note/000000004")?.value;
+    const restored = { id: restoreId, sourceId: replayId, pending: [] };
+    expect(replay).toHaveProperty("restored", restored);
+    expect(replay).not.toHaveProperty("replaces");
+    expect(state.get("note/000000001")).toEqual(before);
+    expect(state.count("replaced-by/")).toBe(0);
+    expect(await servedIds(call)).toEqual([oldId, currentId, lastId, replayId]);
+  },
+);
+
+test("a foreign project cannot reuse a restore ID", { timeout }, async () => {
+  const { call, project } = fixture();
+  const restoreId = await startRestore(call, item(`${sourcePrefix}/note-1`));
+  const writes = project.counts.puttedRecords;
+  const old = `${targetPrefix}/note-1`;
+  const page = {
+    ...bundle([item(`${targetPrefix}/note-2`, [old])]),
+    project: { id: targetId, name: "alpha" },
+    restoreId,
+    approval: ownerApproval,
+  };
+  const message = "Unknown restore ID for this source and store";
+  const error = { code: "INPUT_INVALID", message };
+  await expect(call("memory.restore", page)).rejects.toMatchObject({ error });
+  expect(project.counts.puttedRecords).toBe(writes);
+  expect(project.count("replaced-by/")).toBe(0);
+  expect(await servedIds(call)).toEqual([old]);
+});
+
+test("edits and decisions keep deferred provenance", { timeout }, async () => {
+  const { call, state } = fixture();
+  const restoreId = await startRestore(call, item(currentId, [oldId]));
+  await call("memory.restore", bundle([item(oldId)]));
+  const id = currentId;
+  const fields = { id, scope: "general" };
+  const link = deferredLink(restoreId);
+  const check = async () => {
+    const value = state.get("note/000000002")?.value;
+    expect(value).toHaveProperty("restored", link.restored);
+    expect(value).toHaveProperty("replaces", link.replaces);
+    expect(await servedIds(call)).toEqual([oldId, currentId]);
+  };
+  await check();
+  const edit = (text: string, tag: string) =>
+    call("memory.add", { ...fields, text, tags: [tag] });
+  const updated = { status: "updated" };
+  expect(await edit("wren edit", "fact")).toMatchObject(updated);
+  await check();
+  for (const [op, status] of [
+    ["accept", "accepted"],
+    ["reject", "rejected"],
+    ["withdraw", "withdrawn"],
+  ]) {
+    const text = `wren ${op} proposal`;
+    expect(await edit(text, "rule")).toMatchObject(updated);
+    await check();
+    const items = await decisionItems(call, [id]);
+    const input = { items, approval: ownerApproval, reason: "Superseded" };
+    expect(await call(`memory.${op}`, input)).toEqual({
+      results: [{ id, status }],
+    });
+    await check();
+  }
+  const proposal = await call("memory.propose-forget", { id });
+  expect(proposal).toMatchObject({ status: "proposed" });
+  await check();
+});
+
+test("forget and undo preserve deferred provenance", { timeout }, async () => {
+  const { call, state } = fixture();
+  const restoreId = await startRestore(call, item(currentId, [oldId]));
+  const page = { ...bundle([item(oldId)]), restoreId, approval: ownerApproval };
+  await call("memory.restore", page);
+  const link = deferredLink(restoreId);
+  const record = () => state.get("note/000000002")?.value;
+  expect(record()).toHaveProperty("restored", link.restored);
+  expect(record()).toHaveProperty("replaces", link.replaces);
+  expect(await servedIds(call)).toEqual([currentId]);
+  const forget = { id: currentId, approval };
+  const forgotten = await call("memory.forget", forget);
+  expect(forgotten).toMatchObject({ status: "forgotten" });
+  expect(record()).toHaveProperty("forgotten.restored", link.restored);
+  expect(record()).toHaveProperty("forgotten.replaces", link.replaces);
+  expect(await servedIds(call)).toEqual([oldId]);
+  const undone = await call("memory.forget", { ...forget, undo: true });
+  expect(undone).toMatchObject({ status: "restored" });
+  expect(record()).toHaveProperty("restored", link.restored);
+  expect(record()).toHaveProperty("replaces", link.replaces);
+  expect(await servedIds(call)).toEqual([currentId]);
+});
 
 test(
   "three export pages restore a split pair using the ID issued by the first page",
