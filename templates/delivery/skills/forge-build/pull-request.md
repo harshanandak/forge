@@ -19,8 +19,11 @@ On checkpoint REVISION_CONFLICT: `forge issue resume <slice>`, `forge issue comm
 ## Push and open
 
 1. Require SKILL.md's Final-head proof. Target at most 800 changed lines and 15 files; above 1500, split before opening. No co-author or tool trailers (trailers: none).
-2. `git push -u origin <branch>`. Never force-push; that is a one-way door.
-3. Write body with editor, then `gh pr create --base <base> --title "<plain conventional commit>" --body-file <file>`. Speed, memory, size or work savings: the title names the user-visible gain and its number.
+2. Lint and check formatting on changed files before `git push -u origin <branch>`. Never force-push; that is a one-way door.
+   A head commit with `[skip ci]` starts no CI and cannot merge until another push. Use it only for draft pushes of docs or notes.
+3. Open as draft before iterative pushes. Mark ready only after the intended batch is complete.
+   Open ready from the start when the first commit is a red test that hosted CI must prove; then push the fix as the next commit, not a stream of pushes.
+   Write the body, then run `gh pr create --draft --base <base> --title "<plain conventional commit>" --body-file <file>`. Omit `--draft` when opening ready. Speed, memory, size or work savings: the title names the user-visible gain and its number.
 
 PR body: when the repository has a PR template, fill its sections in order and keep its headings. Without one, cover:
 

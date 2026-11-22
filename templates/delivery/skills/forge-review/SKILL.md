@@ -15,7 +15,7 @@ Each push: [checkpoint](../forge-build/pull-request.md#checkpoints) `review` SHA
 
 ## On each wake: conflicts, then threads, then CI
 
-1. On wake, run `forge pr state <n>` and act on `verdict`. Read checkpoint's last push SHA/time and round before triage. Use `gh pr update-branch <n>` only for a clean behind-base update. For conflicts, merge base locally, resolve, commit, run `forge-build`'s Final-head proof, then push. Never rebase a pushed branch or force-push.
+1. On wake, run `forge pr state <n>` and act on `verdict`. Read checkpoint's last push SHA/time and round before triage. Merge main into a PR branch only to resolve a conflict or after a queue rejection. Resolve conflicts locally and run `forge-build`'s Final-head proof before pushing. Never rebase a pushed branch or force-push.
 2. Get `<owner> <repo>` from `gh repo view --json owner,name`. List unresolved threads: `node <skill-dir>/list-threads.mjs <owner> <repo> <n>`. Read full comments and timestamps with `gh api repos/{owner}/{repo}/pulls/<n>/comments --paginate` before deciding.
 3. Triage only comments and checks newer than the last push. Verify an old thread is fixed at head before closing with `Fixed in <sha>`. Other old threads wait for new evidence; age never justifies resolution.
 
@@ -24,7 +24,7 @@ Each push: [checkpoint](../forge-build/pull-request.md#checkpoints) `review` SHA
 1. Check the source; bots can be wrong. Cite the line that shows it.
 2. Fix only P0, P1 findings on lines this PR changed, inside the slice's done boundary.
 3. Everything else (P2, P3, or outside the boundary) is filed, not fixed. Search open issues for the symptom, then comment on a match or `forge issue create --input '{"title":"...","kind":"task","labels":["review-deferred","p2"],"parent":"<epic>","body":"from <pr url> thread <id>"}'`.
-4. Commit thread and CI fixes together, run `forge-build`'s Final-head proof, then send one push wave.
+4. Let the run finish, collect its failures, fix the batch, then push once. Stop after three failed runs and escalate. Commit thread and CI fixes together and run `forge-build`'s Final-head proof before the push.
 
 ## Reply and resolve every answered thread
 
@@ -32,7 +32,7 @@ Read [thread-helpers.md](thread-helpers.md) before replying or resolving.
 
 ## Red checks
 
-No in-run test or check retries, retry loops, or raised timeouts. Rerun a failed CI run at most once, only to classify the failure. A pass on rerun confirms a flake. Keep the check enabled and the fix open. Find or file one issue per signature (job, test, first error line). Comment there and increment its count on every repeat. Close only with a root-cause fix and deterministic regression test, or proof the named failure mechanism cannot happen.
+No in-run test or check retries, retry loops, or raised timeouts. Only known flakes qualify for a rerun. Rerun a failed CI run at most once, only to classify the failure. A pass on rerun confirms a flake. Keep the check enabled and the fix open. Find or file one issue per signature (job, test, first error line). Comment there and increment its count on every repeat. Close only with a root-cause fix and deterministic regression test, or proof the named failure mechanism cannot happen.
 
 1. `gh pr checks <n>`, then `gh run view <run> --log-failed`.
 2. Classify only jobs that started in attempt one (`gh run rerun <run> --failed`). A second failure blocks handoff.
