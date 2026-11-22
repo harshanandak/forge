@@ -40,6 +40,8 @@ import { boundedOAuthRequest } from "./body.ts";
 import { revokeOAuth } from "./revocation.ts";
 import { refreshPolicy } from "./refresh.ts";
 import { composeGithub } from "../../github-compose.ts";
+import { report } from "../../auth/report-session.ts";
+import { appUnavailable } from "../../report-http.ts";
 export { GrantState } from "./grant-state.ts";
 export { CodeRedemption } from "./redemption.ts";
 export { RegistrationLimiter } from "./registration.ts";
@@ -177,6 +179,10 @@ export function createConfiguredWorker(
         Readonly<Record<string, unknown>>,
     ) {
       const url = new URL(request.url);
+      const app = await report(request, env, dependencies).catch(
+        appUnavailable,
+      );
+      if (app) return app;
       const path = url.pathname;
       const token = bearer(request);
       if (

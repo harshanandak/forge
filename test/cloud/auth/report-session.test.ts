@@ -352,7 +352,10 @@ reportTest("report cookies bind to identity", async () => {
     { FORGE_OWNER_SUBJECT: "user_Other2" },
     { FORGE_CLOUD_PROJECT: "other" },
   ]) {
-    const changed = await refused(f.send("/app/", jar, {}, overrides), 200);
+    const changed = await refused(
+      f.send("/app/", new Jar(jar), {}, overrides),
+      200,
+    );
     expect(await changed.text()).toContain("Sign in");
   }
   expect(f.trace.durable).toHaveLength(operations);
