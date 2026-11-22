@@ -438,9 +438,10 @@ function decodeCommand(
       throw bad();
     return { kind: "approval_required", result };
   }
-  const details = refusalDetails(code, call, error ?? {}, token);
+  const { reasonId: wireReasonId, ...errorDetails } = error ?? {};
+  const details = refusalDetails(code, call, errorDetails, token);
   if (details === undefined) throw bad();
-  const reasonId = checkedCloudRefusalReason(error?.reasonId, code, op);
+  const reasonId = checkedCloudRefusalReason(wireReasonId, code, op);
   const refused = { kind: "refused" as const, code, ...details };
   return reasonId === undefined ? refused : { ...refused, reasonId };
 }
