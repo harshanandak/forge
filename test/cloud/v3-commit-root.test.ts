@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { verifyRoot } from "../../cloud/src/v3-seal.ts";
 import { createWorker } from "../../cloud/src/worker.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import {
@@ -12,6 +13,7 @@ import {
   noWrites,
   probe,
   sqlMutation,
+  trustedSeal,
 } from "./v3-project.fixture.ts";
 
 const timeout = 30_000;
@@ -139,14 +141,14 @@ test(
           "SELECT body, seal FROM cloud_v3_root",
         );
         const original = root.get()!;
-        expect(original.seal).toBe(digestBytes(original.body));
+        expect(verifyRoot(f.seal(), original.body, original.seal)).toBe(true);
         const changed = f.db
           .query<{ body: string }, []>(
             `SELECT ${reorderedPages} AS body FROM cloud_v3_root`,
           )
           .get()!;
         const body = canonicalJson(JSON.parse(changed.body));
-        const seal = digestBytes(body);
+        const seal = trustedSeal(f.db, body);
         expect(seal).not.toBe(original.seal);
         expect(
           f.db.run("UPDATE cloud_v3_root SET body=?, seal=?", [body, seal])

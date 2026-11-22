@@ -2,7 +2,12 @@ import { randomBytes } from "node:crypto";
 import { Database } from "bun:sqlite";
 import { Project } from "../../cloud/src/project.ts";
 import type { DurableState } from "../../cloud/src/store.ts";
-import { sealOf, signRow } from "../../cloud/src/v3-seal.ts";
+import {
+  type Seal,
+  sealOf,
+  signRoot,
+  signRow,
+} from "../../cloud/src/v3-seal.ts";
 import { browserStorage } from "./browser-storage.fixture.ts";
 
 export const probe = "test-v3";
@@ -13,6 +18,10 @@ export const noWrites = {
   alarmWrites: 0,
   sqlAndKvIntact: true,
 };
+
+const sealers = new WeakMap<Database, () => Seal>();
+export const trustedSeal = (db: Database, body: string) =>
+  signRoot(sealers.get(db)!(), body);
 
 export interface SealSetup {
   key?: string | null;
@@ -67,6 +76,7 @@ export function fixture(
   };
   let project = new Project(context, sealed);
   const seal = () => sealOf(sealed, context.id);
+  sealers.set(db, seal);
   const sign = (sequence: number, body: string) =>
     signRow(
       seal(),

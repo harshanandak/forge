@@ -175,7 +175,7 @@ export function restoreV3Page(
   return db.transaction(() => {
     rejectOldCommits(db);
     const restored =
-      hasV3Root(db) && readV3Root(db).activationDigest !== undefined;
+      hasV3Root(db) && readV3Root(db, seal).activationDigest !== undefined;
     check(
       !legacy && (restored || !hasPriorV3RestoreState(db)),
       "RESTORE_TARGET_NOT_EMPTY",

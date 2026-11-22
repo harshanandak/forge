@@ -9,7 +9,7 @@ import {
   signRow,
   verifyRow,
 } from "../../cloud/src/v3-seal.ts";
-import { canonicalJson, digestBytes } from "../../src/core/config/pointer.ts";
+import { canonicalJson } from "../../src/core/config/pointer.ts";
 import {
   copyTables,
   guardFixture,
@@ -17,6 +17,7 @@ import {
   noWrites,
   probe,
   type SealSetup,
+  trustedSeal,
 } from "./v3-project.fixture.ts";
 
 if (!("timingSafeEqual" in crypto.subtle))
@@ -457,6 +458,27 @@ test(
 );
 
 test(
+  "v3 refuses the rows of another object even when its own signer re-signs the copied root",
+  async () => {
+    const key = newKey();
+    const a = guardFixture(env, { key });
+    const b = guardFixture(env, { key });
+    using _a = a.db;
+    using _b = b.db;
+    await history(a);
+    await history(b, 0);
+    copyTables(a, b);
+    const { body } = b.db
+      .query<{ body: string }, []>("SELECT body FROM cloud_v3_root")
+      .get()!;
+    b.db.run("UPDATE cloud_v3_root SET seal=?", [trustedSeal(b.db, body)]);
+    b.restart();
+    expect(await b.send(probe)).toMatchObject(refused);
+  },
+  timeout,
+);
+
+test(
   "v3 signs with the current key, verifies the previous key and refuses rows once their key is removed",
   async () => {
     const [first, second, third] = [newKey(), newKey(), newKey()];
@@ -606,7 +628,7 @@ test(
     });
     f.db.run("UPDATE cloud_v3_root SET body=?, seal=?", [
       edited,
-      digestBytes(edited),
+      trustedSeal(f.db, edited),
     ]);
     await refusedAfterRestart(f);
   },

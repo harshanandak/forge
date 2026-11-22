@@ -2,7 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import { expect, test } from "bun:test";
 import { Project } from "../../cloud/src/project.ts";
 import { REPORT_UNTIL } from "../../cloud/src/report-app.ts";
-import { sealKeys } from "../../cloud/src/v3-seal.ts";
+import { sealKeys, verifyRoot } from "../../cloud/src/v3-seal.ts";
 import { canonicalJson, digestBytes } from "../../src/core/config/pointer.ts";
 import {
   guardFixture,
@@ -10,6 +10,7 @@ import {
   noWrites,
   probe,
   type SealSetup,
+  trustedSeal,
 } from "./v3-project.fixture.ts";
 
 if (!("timingSafeEqual" in crypto.subtle))
@@ -280,6 +281,50 @@ for (const [at, where] of [
     timeout,
   );
 
+const sealOfRoot = (f: Fixture) =>
+  f.db.query<{ body: string; seal: string }, []>(
+    "SELECT body, seal FROM cloud_v3_root",
+  );
+
+test(
+  "v3 signs an activated root under the current key and refuses a changed activation digest that keeps the envelope",
+  () =>
+    withActivated(async (f) => {
+      const { body, seal } = sealOfRoot(f).get()!;
+      expect(verifyRoot(f.seal(), body, seal)).toBe(true);
+      const changed = canonicalJson({
+        ...JSON.parse(body),
+        activationDigest: digestBytes("another activation"),
+      });
+      f.db.run("UPDATE cloud_v3_root SET body=?", [changed]);
+      f.restart();
+      const effects = f.observeEffects();
+      for (const [route, input] of gated)
+        expect(await f.send(route, input)).toMatchObject(refused);
+      expect(effects()).toEqual(noWrites);
+      expect(sealOfRoot(f).get()!.seal).toBe(seal);
+    }),
+  timeout,
+);
+
+test(
+  "v3 reads a stopped activated root under a previous key and refuses it once that key is removed, never re-signing it",
+  () =>
+    withActivated(async (f) => {
+      const { seal } = sealOfRoot(f).get()!;
+      const first = f.env.V3_SEAL_KEY as string;
+      f.env.V3_SEAL_KEY = newKey();
+      f.env.V3_SEAL_KEY_PREVIOUS = first;
+      f.restart();
+      expect(await f.send("status")).toMatchObject(stopped);
+      delete f.env.V3_SEAL_KEY_PREVIOUS;
+      f.restart();
+      expect(await f.send("status")).toMatchObject(refused);
+      expect(sealOfRoot(f).get()!.seal).toBe(seal);
+    }),
+  timeout,
+);
+
 const put = (revision: number, value: string) => ({
   operation: "fixture.put",
   time: 1,
@@ -336,27 +381,40 @@ test(
   timeout,
 );
 
+async function substituted(f: Fixture, seal: (body: string) => string) {
+  await history(f);
+  const edited = canonicalJson({
+    ...JSON.parse(rootBody(f)),
+    incarnation: crypto.randomUUID(),
+  });
+  f.db.run("UPDATE cloud_v3_root SET body=?, seal=?", [edited, seal(edited)]);
+  for (const { sequence, body } of rows(f))
+    f.db.run("UPDATE cloud_v3_commits SET mac=? WHERE sequence=?", [
+      f.sign(sequence, body),
+      sequence,
+    ]);
+  f.restart();
+  return f.send(probe);
+}
+
 test(
-  "v3 accepts rows signed under a substituted root incarnation, a stated limit until seal slice 2",
+  "v3 refuses rows signed under a substituted root incarnation when the root seal is the plain digest",
   async () => {
     const f = guardFixture(env);
     using _db = f.db;
-    await history(f);
-    const edited = canonicalJson({
-      ...JSON.parse(rootBody(f)),
-      incarnation: crypto.randomUUID(),
-    });
-    f.db.run("UPDATE cloud_v3_root SET body=?, seal=?", [
-      edited,
-      digestBytes(edited),
-    ]);
-    for (const { sequence, body } of rows(f))
-      f.db.run("UPDATE cloud_v3_commits SET mac=? WHERE sequence=?", [
-        f.sign(sequence, body),
-        sequence,
-      ]);
-    f.restart();
-    expect(await f.send(probe)).toMatchObject({
+    expect(await substituted(f, digestBytes)).toMatchObject(refused);
+  },
+  timeout,
+);
+
+test(
+  "v3 accepts rows signed under a substituted root incarnation when a trusted signer signs the root, a trusted-signer control",
+  async () => {
+    const f = guardFixture(env);
+    using _db = f.db;
+    expect(
+      await substituted(f, (body) => trustedSeal(f.db, body)),
+    ).toMatchObject({
       status: 200,
       body: { value: { image: { head: 2 } } },
     });
