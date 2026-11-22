@@ -2,40 +2,63 @@ import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { writeGenerated } from "./gen/write.ts";
 
-export async function inlineWorkPrimitives(
+async function inlineModule(
   entry: string,
   path: string,
+  marker: string,
 ): Promise<string> {
-  const marker = 'require("./record-primitives.ts")';
   if (entry.split(marker).length !== 2)
-    throw new Error("Expected one work primitive import");
+    throw new Error(`Expected one import of ${path}`);
   const result = await Bun.build({
     entrypoints: [path],
     target: "node",
     format: "cjs",
   });
   if (!result.success || result.outputs.length !== 1)
-    throw new AggregateError(result.logs, "Work primitive build failed");
+    throw new AggregateError(result.logs, `Could not bundle ${path}`);
   const code = await result.outputs[0]!.text();
   if (new Bun.Transpiler({ loader: "js" }).scan(code).imports.length !== 0)
-    throw new Error("Work primitives must be self-contained");
+    throw new Error(`${path} must be self-contained`);
   return entry.replace(
     marker,
     () =>
       `(() => { const module = { exports: {} }; const exports = module.exports;\n${code}\nreturn module.exports; })()`,
   );
 }
+
+export function inlineWorkPrimitives(
+  entry: string,
+  path: string,
+): Promise<string> {
+  return inlineModule(entry, path, 'require("./record-primitives.ts")');
+}
+
 if (import.meta.main) {
   const root = resolve(import.meta.dirname, "..");
-  const entry = join(root, "dist/src/blocks/work/entry.cjs");
-  writeGenerated(
-    entry,
-    await inlineWorkPrimitives(
-      readFileSync(entry, "utf8").replace(
-        'require("./record-primitives.js")',
-        'require("./record-primitives.ts")',
+  for (const { block, module, specifier } of [
+    {
+      block: "work",
+      module: "blocks/work/record-primitives.ts",
+      specifier: "./record-primitives",
+    },
+    {
+      block: "accounts",
+      module: "contract/display-text.ts",
+      specifier: "../../contract/display-text",
+    },
+  ]) {
+    const entry = join(root, "dist/src/blocks", block, "entry.cjs");
+    const marker = `require("${specifier}.ts")`;
+    writeGenerated(
+      entry,
+      await inlineModule(
+        readFileSync(entry, "utf8").replaceAll(
+          `require("${specifier}.js")`,
+          marker,
+        ),
+        join(root, "src", module),
+        marker,
       ),
-      join(root, "src/blocks/work/record-primitives.ts"),
-    ),
-  );
+    );
+  }
 }
