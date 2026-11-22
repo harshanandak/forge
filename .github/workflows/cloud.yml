@@ -55,6 +55,21 @@ jobs:
       - run: bun run gen
       - run: bun install --frozen-lockfile
         working-directory: cloud
+      - name: Report session red on pinned main and green on the PR
+        run: |
+          baseline="$RUNNER_TEMP/report-baseline"
+          git fetch --no-tags --depth=1 origin 88a510a2765537fc54c89a06075291cac08a6b93
+          git worktree add --detach "$baseline" FETCH_HEAD
+          for deps in node_modules cloud/node_modules; do ln -s "$PWD/$deps" "$baseline/$deps"; done
+          cp test/cloud/auth/report-{fixture,session.test}.ts "$baseline/test/cloud/auth/"
+          suite=(bun test --timeout 15000 test/cloud/auth/report-session.test.ts)
+          log="$RUNNER_TEMP/report-red.log"
+          if env --chdir="$baseline" "${suite[@]}" --test-name-pattern '^report sign-in is bound and single-use$' > "$log" 2>&1; then exit 1; fi
+          cat "$log"
+          for text in '(fail) report sign-in is bound and single-use' 'expect(start.status).toBe(302)' 'Expected: 302' 'Received: 404'; do
+            grep -Fq "$text" "$log"
+          done
+          "${suite[@]}"
       - name: Storage quota merge gate regressions
         run: bun test --timeout 30000 test/cloud/storage-review.test.ts test/assembly/cloud-state-client.test.ts test/assembly/cloud-login.test.ts
       - name: Paged restore marker ordering counterfactual

@@ -40,6 +40,9 @@ import { boundedOAuthRequest } from "./body.ts";
 import { revokeOAuth } from "./revocation.ts";
 import { refreshPolicy } from "./refresh.ts";
 import { composeGithub } from "../../github-compose.ts";
+import { report } from "../../auth/report-session.ts";
+import { record } from "./report-session-store.ts";
+import { appUnavailable } from "../../report-http.ts";
 export { GrantState } from "./grant-state.ts";
 export { CodeRedemption } from "./redemption.ts";
 export { RegistrationLimiter } from "./registration.ts";
@@ -177,6 +180,21 @@ export function createConfiguredWorker(
         Readonly<Record<string, unknown>>,
     ) {
       const url = new URL(request.url);
+      const app = await report(request, env, () => {
+        const cfg = readOAuthConfig(env, url.origin);
+        const ns = env.CODE_REDEMPTION as RedemptionNamespace | undefined;
+        if (!cfg.ownerSubject || !ns?.idFromName || !ns.get)
+          throw new Error("Report configuration unavailable");
+        return {
+          ...cfg,
+          owner: cfg.ownerSubject,
+          now: () => dependencies.clock?.now() ?? Date.now(),
+          upstream: clerkUpstream(cfg, dependencies),
+          redemption: durableRedemption(ns),
+          session: record.bind(null, ns),
+        };
+      }).catch(appUnavailable);
+      if (app) return app;
       const path = url.pathname;
       const token = bearer(request);
       if (

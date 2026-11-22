@@ -3,6 +3,8 @@ import type {
   OAuthStorage,
 } from "./index.ts";
 import { registerDurableRedemption } from "../../auth/compose.ts";
+import { REPORT_PATH, reportStore } from "./report-session-store.ts";
+import { appUnavailable } from "../../report-http.ts";
 
 export interface ClaimStore {
   get<T>(key: string): Promise<T | undefined>;
@@ -59,6 +61,10 @@ export class CodeRedemption {
     try {
       const url = new URL(request.url),
         hash = url.pathname.slice(1);
+      if (url.pathname === REPORT_PATH)
+        return reportStore(request, this.#storage, this.#clock).catch(
+          appUnavailable,
+        );
       const expiresAt = Number(url.searchParams.get("until"));
       if (
         request.method !== "POST" ||
