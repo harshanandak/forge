@@ -106,7 +106,7 @@ interface Shown {
   };
 }
 const OWNER_TAGS = ["rule", "preference", "decision"];
-/** What the owner is shown for a proposal: its note revision, the text that would be served, and the owner tags it removes. */
+/** What the owner is shown for a proposal: its note revision and the text that would be served. */
 export function decisionItem(id: string, shown: Shown) {
   const { proposal, tags } = shown.note;
   const removedOwnerTags = (tags ?? []).filter(

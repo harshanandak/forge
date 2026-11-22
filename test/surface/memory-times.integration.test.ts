@@ -23,6 +23,8 @@ interface Note {
   createdAt: string;
   updatedAt: string;
   revision: number;
+  tags: string[];
+  text: { text: string };
   versions: {
     revision: number;
     at: string;
@@ -131,16 +133,25 @@ for (const route of ["cli", "mcp"] as const)
         const shown = (await call("memory.show", { id })) as {
           note: {
             revision: number;
+            tags: string[];
             text: { text: string };
-            proposal?: { text: { text: string } };
+            proposal?: { text: { text: string }; tags: string[] };
           };
         };
+        const kept = shown.note.proposal?.tags;
+        const removedOwnerTags =
+          kept === undefined
+            ? []
+            : shown.note.tags.filter(
+                (tag) => tag === "rule" && !kept.includes(tag),
+              );
         return call("memory.accept", {
           items: [
             {
               id,
               revision: shown.note.revision,
               text: (shown.note.proposal ?? shown.note).text.text,
+              ...(removedOwnerTags.length === 0 ? {} : { removedOwnerTags }),
             },
           ],
           approval: acceptance,
@@ -184,7 +195,7 @@ for (const route of ["cli", "mcp"] as const)
         by: "owner",
         quote: "Remove the rule tag from this note.",
       };
-      const approved = (
+      const staged = (
         await add({
           id: first.id,
           expectRevision: note.revision,
@@ -193,6 +204,10 @@ for (const route of ["cli", "mcp"] as const)
           approval,
         })
       ).note;
+      expect(staged.tags).toEqual(["rule"]);
+      expect(staged.text.text).toBe("dated edit 7");
+      await accept(first.id);
+      const approved = await show(first.id);
       const ordinary = (
         await add({
           id: first.id,
@@ -209,7 +224,7 @@ for (const route of ["cli", "mcp"] as const)
       ).toMatchObject({
         approval: {
           by: "owner",
-          quote: { kind: "untrusted", text: approval.quote },
+          quote: { kind: "untrusted", text: acceptance.quote },
           at: expect.any(String) as unknown,
         },
       });
