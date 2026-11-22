@@ -169,6 +169,7 @@ interface Portable {
 
 async function withActivated(
   run: (target: Fixture, portable: Portable) => Promise<void>,
+  staged = false,
 ) {
   const source = guardFixture(env);
   const target = guardFixture(env);
@@ -214,14 +215,15 @@ async function withActivated(
       { page, ...pages[page]!, ...(page === 0 && { manifest }) },
       page === 0 ? { "X-Forge-Manifest-Digest": pin } : {},
     );
-  for (const page of pages.keys())
+  for (const page of staged ? [0] : pages.keys())
     expect(await upload(page)).toMatchObject({
       status: 200,
       body: { ok: true, value: { page, verified: page === 2 } },
     });
-  expect(await target.send("status")).toMatchObject({
-    body: { value: { initialized: true, stopped: true } },
-  });
+  if (!staged)
+    expect(await target.send("status")).toMatchObject({
+      body: { value: { initialized: true, stopped: true } },
+    });
   await run(target, { pages, upload });
 }
 
@@ -457,7 +459,7 @@ test(
       expect(checked(target, t)).toBe("AUTH_REVOKED");
       const headers = { authorization: `Bearer ${t.token}` };
       const sent = await target.send("command", create, headers);
-      answers(sent, 401, "AUTH_INVALID");
+      answers(sent, 401, "AUTH_REVOKED");
     }),
   timeout,
 );
@@ -777,7 +779,37 @@ test(
       });
       expect(JSON.stringify(tokenRows(target))).toBe(rows);
       expect(checked(target, t)).toBe("ok");
+      const headers = { authorization: `Bearer ${t.token}` };
+      const fresh = await target.send("command", create, headers);
+      answers(fresh, 409, "INPUT_CONFLICT");
+      expect(JSON.stringify(fresh.body)).toContain(
+        "The restored project is stopped",
+      );
+      answers(await target.send("revoke", { id: t.id }), 200);
+      answers(
+        await target.send("command", create, headers),
+        401,
+        "AUTH_REVOKED",
+      );
     }),
+  timeout,
+);
+
+test(
+  "a well-formed v3 token is refused as before while a restore is only staged",
+  () =>
+    withActivated(async (target) => {
+      const effects = target.observeEffects();
+      const headers = {
+        authorization: `Bearer fct_${"0".repeat(16)}.${"A".repeat(43)}`,
+      };
+      answers(
+        await target.send("command", create, headers),
+        401,
+        "AUTH_INVALID",
+      );
+      expect(effects()).toEqual(noWrites);
+    }, true),
   timeout,
 );
 
@@ -816,7 +848,7 @@ v3test(
 );
 
 v3test(
-  "a valid v3 token opens no command, state, lease or login route",
+  "a valid v3 token opens no state route, lease route or login route",
   async (f) => {
     const t = await issued(f);
     expect(check(f, t).device).toBe("laptop");
@@ -829,7 +861,6 @@ v3test(
       ttlMs: HOUR,
     };
     const effects = f.observeEffects();
-    answers(await f.send("command", create, headers), 401, "AUTH_INVALID");
     const routes: [string, object | undefined, number, string][] = [
       ["state/read", {}, 401, "AUTH_INVALID"],
       ["holder", undefined, 401, "AUTH_INVALID"],

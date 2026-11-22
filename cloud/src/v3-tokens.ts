@@ -1,3 +1,4 @@
+import { ForgeFailure } from "../../src/contract/failure.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
 import { TABLE_PROBE } from "./store.ts";
 import {
@@ -101,17 +102,39 @@ function authentic(db: SqlDatabase, seal: Seal, id: string) {
   return found?.fields;
 }
 
+const audit = (line: object) => console.log(JSON.stringify(line));
+
 export function authorizeV3Token(
   db: SqlDatabase,
   seal: Seal,
   parts: { id: string; hash: string },
   now: number,
 ) {
-  const token = authentic(db, seal, parts.id);
+  let token: TokenFields | undefined;
+  try {
+    token = authentic(db, seal, parts.id);
+  } catch (error) {
+    if (error instanceof ForgeFailure && error.error.code === "UNAVAILABLE")
+      audit({
+        auth: "refused",
+        code: "UNAVAILABLE",
+        ...(ID.test(parts.id) ? { id: parts.id } : {}),
+      });
+    throw error;
+  }
   const match = same(parts.hash, token?.hash ?? NO_ROW_HASH);
-  if (token === undefined || !match) throw invalid();
-  if (token.revokedAt !== null) throw fail("AUTH_REVOKED", "Token was revoked");
-  if (token.expiresAt <= now) throw fail("AUTH_EXPIRED", "Token expired");
+  if (token === undefined || !match) {
+    audit({ auth: "refused", code: "AUTH_INVALID" });
+    throw invalid();
+  }
+  const refuse = (code: string, message: string) => {
+    audit({ auth: "refused", code, ...holder(token) });
+    return fail(code, message);
+  };
+  if (token.revokedAt !== null)
+    throw refuse("AUTH_REVOKED", "Token was revoked");
+  if (token.expiresAt <= now) throw refuse("AUTH_EXPIRED", "Token expired");
+  audit({ auth: "granted", ...holder(token) });
   const { id, device, session, agent, harness, expiresAt } = token;
   return { id, device, session, agent, harness, expiresAt };
 }

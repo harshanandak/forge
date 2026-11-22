@@ -10,7 +10,7 @@ import { checked } from "./issue-create.ts";
 import { DEFAULT_TTL_SECONDS, holderOf } from "./issue-claim.ts";
 import { configured, shownId, storedId } from "./issue-read.ts";
 import { expiredReplay, RETENTION_MS } from "./issue-receipts.ts";
-import { receiptScope } from "./issue-request-id.ts";
+import { receiptScope, type ReceiptPrincipal } from "./issue-request-id.ts";
 import { checkedUpdateInput, fence } from "./issue-update.ts";
 import { NAMESPACE, requestConflict } from "./lease-command.ts";
 import { carriesToken } from "./tokens.ts";
@@ -19,7 +19,12 @@ import { updateEffect } from "./v3-record-transitions.ts";
 import type { Seal } from "./v3-seal.ts";
 import * as store from "./v3-store.ts";
 
-type CommandOptions = { prefix: string; expiresAt: number; now: number };
+type CommandOptions = {
+  prefix: string;
+  expiresAt: number;
+  now: number;
+  principal: ReceiptPrincipal;
+};
 type Host = api.CommandHost & CommandOptions;
 type Call = Host & {
   db: SqlDatabase;
@@ -74,7 +79,7 @@ const commands: Readonly<Record<string, Command>> = {
   },
   "issue.claim": {
     refusalCodes: CLAIM_REFUSALS,
-    write({ image, call, device, prefix, now, expiresAt }) {
+    write({ image, call, device, principal, prefix, now, expiresAt }) {
       const { op, requestId, input, context } = call;
       const checked = validateClaimInput(input);
       if (!checked.ok)
@@ -90,12 +95,12 @@ const commands: Readonly<Record<string, Command>> = {
           );
         }),
       );
-      const identity = prepareReceipt(
-        "command",
-        ["owner", device, device],
-        requestId,
-        { op, input, context, device },
-      );
+      const identity = prepareReceipt("command", principal, requestId, {
+        op,
+        input,
+        context,
+        device,
+      });
       if (image.entries.witness.has(identity.requestId))
         throw store.fail("LEASE_STALE", "The claim receipt expired");
       const subject = `issue:${id}`;
@@ -193,7 +198,7 @@ export function commandV3(
 ) {
   const call = api.parseCommand(text, host);
   const { op, requestId, input, context } = call;
-  const { device, now, expiresAt, prefix } = host;
+  const { device, now, expiresAt, prefix, principal } = host;
   const command = Object.hasOwn(commands, op) ? commands[op] : undefined;
   if (!command) throw store.fail("UNKNOWN_COMMAND", "No such v3 command");
   if (carriesToken(requestId))
@@ -202,7 +207,6 @@ export function commandV3(
   const state = { ...host, db, image, call };
   const respond = (result: unknown) =>
     Response.json({ ok: true, op, status: "OK", result, warnings: [] });
-  const principal = ["owner", device, device] as const;
   const { requestId: id, fingerprint } = prepareReceipt(
     "command",
     principal,

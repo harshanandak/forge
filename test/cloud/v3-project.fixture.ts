@@ -147,6 +147,7 @@ export function fixture(
     alarms,
     alarm: () => project.alarm(),
     request,
+    fetch: (incoming: Request) => project.fetch(incoming),
     env: sealed,
     context,
     seal,
