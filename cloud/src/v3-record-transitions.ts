@@ -1,4 +1,5 @@
 import { canonicalJson, isObject } from "../../src/core/config/pointer.ts";
+import { checkedUpdateInput } from "./issue-update.ts";
 import { isNat } from "./v3-authority.ts";
 import type { Frame } from "./v3-store.ts";
 
@@ -26,30 +27,40 @@ function created(frame: Frame, number: number, input: unknown) {
 export function verifyRecordFrame(
   frame: Frame,
   floor: number,
-  read: (key: string) => { readonly revision?: number } | undefined,
+  read: (
+    key: string,
+  ) => { readonly revision?: number; readonly value?: unknown } | undefined,
   refuse: () => Error,
+  readValue?: (key: string) => unknown,
 ) {
   const changes: { key: string; value: RecordValue }[] = [];
   const create = frame.operation === "issue.create";
+  const update = frame.operation === "issue.update";
+  const command = create || update;
   const put =
-    (create && frame.outcome?.status === "ok") ||
+    (command && frame.outcome?.status === "ok") ||
     frame.operation === "fixture.put";
   if (!put && frame.operation !== "fixture.delete") {
     if (
       frame.changes !== undefined ||
-      (create && frame.events.length !== 0) ||
+      (command && frame.events.length !== 0) ||
       (frame.operation !== "fixture.note" && !frame.outcome)
     )
       throw refuse();
     return { floor, changes };
   }
-  if (frame.events.length === 0 || (create && frame.events.length !== 1))
+  if (frame.events.length === 0 || (command && frame.events.length !== 1))
     throw refuse();
-  const keys = put ? "key,revision,value" : "key,revision";
+  const keys = update
+    ? "expectRevision,key,patch,revision"
+    : put
+      ? "key,revision,value"
+      : "key,revision";
   const seen = new Set<string>();
   for (const input of frame.events) {
     if (!isObject(input)) throw refuse();
-    const { key, revision, value } = input;
+    const { key, revision } = input;
+    let { value } = input;
     if (
       typeof key !== "string" ||
       !isNat(revision) ||
@@ -58,6 +69,26 @@ export function verifyRecordFrame(
       throw refuse();
     const number = recordNumber(key);
     const prior = read(key);
+    if (update) {
+      const { expectRevision, patch } = input;
+      const current =
+        prior && "value" in prior ? prior.value : readValue?.(key);
+      if (
+        prior?.revision !== expectRevision ||
+        revision !== Number(expectRevision) + 1 ||
+        !isObject(current) ||
+        !isObject(patch) ||
+        "id" in patch ||
+        "expectRevision" in patch
+      )
+        throw refuse();
+      try {
+        checkedUpdateInput({ ...patch, id: `work-${number}`, expectRevision });
+      } catch {
+        throw refuse();
+      }
+      value = { ...current, ...patch };
+    }
     if (
       !number ||
       (create && (prior || number !== floor + 1 || revision !== 1)) ||

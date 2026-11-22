@@ -4,6 +4,7 @@ import {
   receiptScope,
   scopeRequestId,
 } from "../../cloud/src/issue-request-id.ts";
+import { Project } from "../../cloud/src/project.ts";
 import { canonicalJson } from "../../src/core/config/pointer.ts";
 import { writableStore } from "../../cloud/src/store.ts";
 import { authorityFault } from "../../cloud/src/v3-authority.ts";
@@ -336,6 +337,13 @@ test(
       "LEASE_NOT_HELD",
       "tablet",
     );
+    await updateRefusal(
+      f,
+      { ...update, requestId: "stale-revision-and-fence" },
+      409,
+      "LEASE_NOT_HELD",
+      "tablet",
+    );
     setSystemTime(time + ttlMs);
     await updateRefusal(
       f,
@@ -405,6 +413,52 @@ test(
     );
     expect(effects()).toEqual(noWrites);
     expect(frames(f)).toHaveLength(3);
+  },
+  timeout,
+);
+
+test(
+  "portable v3 recovery derives an update from its patch and refuses a forged change",
+  async () => {
+    const f = guardFixture(env);
+    using db = f.db;
+    await provision(f);
+    expect(
+      await f.send(`${probe}/commits`, {
+        frames: [
+          {
+            operation: "fixture.put",
+            time,
+            events: [{ key: "r1", revision: 1, value: initial }],
+            changes: [{ key: "r1", value: { revision: 1, value: initial } }],
+          },
+        ],
+      }),
+    ).toMatchObject({ status: 200 });
+    await rawClaim(f);
+    await oneRow(f, () => send(f, update));
+    await checkpoint(f);
+    const transcript = db
+      .query<{ body: string }, []>(
+        "SELECT body FROM cloud_v3_pages WHERE id='transcript:0'",
+      )
+      .get()!.body;
+    const store = writableStore(f.storage);
+    const verify = (portableTranscript: string) =>
+      recoverV3(store, {
+        admit: Project.admitLeaseRequest,
+        portableTranscript,
+      });
+    expect(readV3Value(store, verify(transcript), "record", "r1")).toEqual({
+      ...initial,
+      title: "After",
+    });
+    const archived = JSON.parse(transcript) as Json[];
+    const [change] = archived[2]!.changes as Json[];
+    ((change!.value as Json).value as Json).title = "Tampered";
+    expect(() => verify(canonicalJson(archived))).toThrow(
+      "Cloud v3 root is unavailable",
+    );
   },
   timeout,
 );

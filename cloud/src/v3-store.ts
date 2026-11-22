@@ -162,6 +162,7 @@ export interface V3Image {
   tailBytes: number;
   stale: boolean;
   readonly staged: [sequence: number, body: string][];
+  readonly readRecord?: (key: string) => unknown;
 }
 
 export const fail = (code: string, message: string) =>
@@ -459,7 +460,11 @@ export function recoverV3(
     headers.some(({ id, bytes }) => byId.get(String(id))?.bytes !== bytes)
   )
     throw unavailable();
-  const image = recoveryImage(root, root.eventWatermark);
+  const image: V3Image = {
+    ...recoveryImage(root, root.eventWatermark),
+    readRecord: (key) =>
+      readV3Value(db, image, "record", key, verification?.pages),
+  };
   const bodies = new Map(
     db
       .all(
@@ -573,6 +578,7 @@ function foldRow(
     image.recordFloor,
     read,
     unavailable,
+    image.readRecord,
   );
   apply(image, verify ? verify(frame) : frame, nat(sequence));
   image.recordFloor = records.floor;
@@ -761,7 +767,13 @@ function append(db: SqlDatabase, image: V3Image, batch: readonly unknown[]) {
       const fault = authorityFault(frame);
       if (fault !== undefined)
         throw new Error(`Refusing a v3 frame with an invalid ${fault}`);
-      const records = verifyRecordFrame(frame, floor, read, refuse);
+      const records = verifyRecordFrame(
+        frame,
+        floor,
+        read,
+        refuse,
+        image.readRecord,
+      );
       floor = records.floor;
       for (const { key, value } of records.changes) pending.set(key, value);
     }
