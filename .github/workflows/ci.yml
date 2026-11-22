@@ -3,6 +3,8 @@ name: CI
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+  merge_group:
+    types: [checks_requested]
   push:
     branches: [main]
   workflow_call:
@@ -37,7 +39,7 @@ jobs:
       scope: ${{ steps.diff.outputs.scope }}
       comment_guard: ${{ steps.diff.outputs.comment_guard }}
       started: ${{ steps.start.outputs.at }}
-      tier: ${{ github.event_name == 'pull_request' && (github.event.pull_request.draft && 'quick' || 'merge') || 'full' }}
+      tier: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && (github.event.pull_request.draft && 'quick' || 'merge') || 'full' }}
     steps:
       - id: start
         run: echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"
@@ -223,7 +225,7 @@ jobs:
         id: speed-base-checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.base.sha || github.event.before }}
+          ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
           path: base
           persist-credentials: false
       - name: Build the base branch
@@ -516,6 +518,7 @@ jobs:
                 *) echo "::error::unexpected comment guard selection '$GUARD_CHANGED'"; ok=0 ;;
               esac
               ;;
+            merge_group::merge) ;;
             push::full)
               main_only=success
               node26=success

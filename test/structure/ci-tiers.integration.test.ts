@@ -10,6 +10,8 @@ type Step = {
   if?: string;
   run?: string;
   env?: Record<string, string>;
+  id?: string;
+  with?: { ref?: string };
 };
 type Job = {
   name?: string;
@@ -21,7 +23,8 @@ type Job = {
 };
 const ci = new URL("../../.github/workflows/ci.yml", import.meta.url);
 const workflow = parse(readFileSync(ci, "utf8"), { maxAliasCount: 200 }) as {
-  on: { pull_request: { types?: string[] } | null };
+  on: Record<string, { types?: string[] } | null>;
+  env: Record<string, string>;
   jobs: Record<string, Job>;
 };
 const jobs = workflow.jobs;
@@ -32,7 +35,8 @@ const outsideQuick = "needs.changes.outputs.tier != 'quick'";
 const fullScope = "needs.changes.outputs.scope == 'full'";
 const outsideSchedule = "github.event_name != 'schedule'";
 
-test("CI starts on ready, draft and default PR events", () => {
+test("CI requests checks on merge group commits and keeps the PR triggers", () => {
+  assert.deepEqual(workflow.on.merge_group, { types: ["checks_requested"] });
   assert.deepEqual(workflow.on.pull_request?.types, [
     "opened",
     "synchronize",
@@ -45,11 +49,25 @@ test("CI starts on ready, draft and default PR events", () => {
 test("Changes selects the tier from the event and draft flag", () => {
   assert.equal(
     jobs.changes?.outputs?.tier,
-    "${{ github.event_name == 'pull_request' && (github.event.pull_request.draft && 'quick' || 'merge') || 'full' }}",
+    "${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && (github.event.pull_request.draft && 'quick' || 'merge') || 'full' }}",
   );
   assert.equal(gateStep.env?.EVENT, "${{ github.event_name }}");
   assert.equal(gateStep.env?.DRAFT, "${{ github.event.pull_request.draft }}");
   assert.equal(gateStep.env?.TIER, "${{ needs.changes.outputs.tier }}");
+}, 1_000);
+
+test("CI_HEAD uses the queued commit and Speed compares its base", () => {
+  assert.equal(
+    workflow.env.CI_HEAD,
+    "${{ github.event.pull_request.head.sha || github.sha }}",
+  );
+  const base = jobs.speed?.steps.find(
+    (step) => step.id === "speed-base-checkout",
+  );
+  assert.equal(
+    base?.with?.ref,
+    "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}",
+  );
 }, 1_000);
 
 test("Quick runs structure, lint, format and typecheck", () => {
@@ -165,6 +183,9 @@ const full = { DRAFT: "", TIER: "full" };
 const push =
   "CHANGES STRUCTURE STATIC PACK SPEED SPEED_WINDOWS VERIFY VERIFY_MAIN VERIFY_NODE26 COMMENT_GUARD";
 const schedule = "CHANGES PACK VERIFY_NODE26";
+const mergeGroup = { EVENT: "merge_group", DRAFT: "", GUARD_CHANGED: "false" };
+const mergeGroupFull =
+  "CHANGES STRUCTURE STATIC PACK SPEED VERIFY COMMENT_GUARD";
 
 function evaluateGate(passedJobs: string, overrides: Record<string, string>) {
   const passed = passedJobs.split(" ");
@@ -199,6 +220,11 @@ function evaluateGate(passedJobs: string, overrides: Record<string, string>) {
   }
 }
 
+test("merge group CI Gate passes when all required jobs succeed", () => {
+  const result = evaluateGate(mergeGroupFull, mergeGroup);
+  assert.equal(result.exit, 0, result.log);
+}, 10_000);
+
 for (const scope of ["docs", "full"]) {
   test(`draft ${scope} CI Gate gives the ready message`, () => {
     const env = { ...draft, SCOPE: scope };
@@ -229,18 +255,21 @@ for (const [event, passed] of Object.entries({
   }, 10_000);
 }
 
-const expectedJobs = [
+const expectedJobs: [string, string, Record<string, string>][] = [
   ["draft push", "CHANGES STRUCTURE", draft],
   ["ready code PR", ready, {}],
   ["docs-only PR", readyDocs, { SCOPE: "docs", GUARD_CHANGED: "false" }],
   ["push to main", push, { ...full, EVENT: "push" }],
   ["schedule", schedule, { ...full, EVENT: "schedule" }],
-] satisfies [string, string, Record<string, string>][];
+  ["merge group code", mergeGroupFull, mergeGroup],
+];
 for (const [event, passed, env] of expectedJobs) {
   for (const key of passed.split(" ")) {
     const name = key.toLowerCase().replace("_", "-");
     test(`${event} CI Gate rejects skipped or missing ${name}`, () => {
-      for (const outcome of ["skipped", ""]) {
+      for (const outcome of env.EVENT === "merge_group"
+        ? ["skipped", "", "failure", "cancelled"]
+        : ["skipped", ""]) {
         const result = evaluateGate(passed, { ...env, [key]: outcome });
         const diagnostic = `${name} finished as '${outcome}', expected 'success'`;
         assert.ok(result.log.includes(diagnostic), diagnostic);
@@ -249,7 +278,11 @@ for (const [event, passed, env] of expectedJobs) {
     }, 10_000);
   }
   if (event === "push to main") continue;
-  for (const key of ["SPEED_WINDOWS", "VERIFY_MAIN"]) {
+  const skipped =
+    env.EVENT === "merge_group"
+      ? ["PR_TITLE", "SPEED_WINDOWS", "VERIFY_MAIN", "VERIFY_NODE26"]
+      : ["SPEED_WINDOWS", "VERIFY_MAIN"];
+  for (const key of skipped) {
     const name = key.toLowerCase().replace("_", "-");
     test(`${event} CI Gate refuses unexpected success from ${name}`, () => {
       const result = evaluateGate(passed, { ...env, [key]: "success" });
@@ -267,6 +300,17 @@ const failures: [string, Record<string, string>, string][] = [
   ["unknown tier", { TIER: "other" }, tierError],
   ["ready payload selecting Quick", { TIER: "quick" }, tierError],
   ["unknown event", { ...full, EVENT: "workflow_dispatch" }, tierError],
+  ["merge group with full tier", { ...mergeGroup, TIER: "full" }, tierError],
+  [
+    "merge group with false draft flag",
+    { ...mergeGroup, DRAFT: "false" },
+    tierError,
+  ],
+  [
+    "merge group with docs scope",
+    { ...mergeGroup, SCOPE: "docs" },
+    "unexpected scope",
+  ],
   ["unknown scope", { SCOPE: "other" }, "unexpected scope"],
   ["push docs", { ...full, EVENT: "push", SCOPE: "docs" }, "unexpected scope"],
   [
@@ -297,7 +341,8 @@ for (const job of ["PACK", "SPEED", "VERIFY", "STRUCTURE", "STATIC"]) {
 }
 for (const [name, overrides, diagnostic] of failures) {
   test(`CI Gate fails for ${name}`, () => {
-    const result = evaluateGate(ready, overrides);
+    const passed = overrides.EVENT === "merge_group" ? mergeGroupFull : ready;
+    const result = evaluateGate(passed, overrides);
     assert.ok(result.log.includes(diagnostic), result.log || diagnostic);
     assert.equal(result.exit, 1, result.log);
   }, 10_000);
