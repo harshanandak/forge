@@ -258,6 +258,10 @@ for (const [name, latest] of [
 // The CI Gate reports them as 'abandoned'. Names mirror ci.yml's `needs`.
 const node26Name =
   "Verify Node 26 (${{ matrix.os }}, ${{ matrix.suite }}) ${{ matrix.shard }}";
+const mainOnlyNames = [
+  "Speed main (${{ matrix.os }}, Node 24)",
+  "Verify main (${{ matrix.os }}, Node ${{ matrix.node }}${{ (((matrix.suite != 'all') && format(', {0}', matrix.suite)) || '') }}${{ ((matrix.shard && format(', shard {0}', matrix.shard)) || '') }})",
+];
 const needed = [
   "Changes",
   "PR title",
@@ -343,20 +347,14 @@ const complete = [
   named("Pack artifact"),
   named("Comment guard (windows-latest, Node 24)"),
   named("Speed (ubuntu-latest, Node 24)"),
-  named("Speed (windows-latest, Node 24)"),
   ...[
     "ubuntu-latest, Node 24, shard 1/2",
     "ubuntu-latest, Node 24, tests, shard 2/2",
-    "ubuntu-latest, Node 26, shard 1/2",
-    "ubuntu-latest, Node 26, tests, shard 2/2",
-    "macos-latest, Node 24, shard 1/2",
-    "macos-latest, Node 24, tests, shard 2/2",
     "windows-latest, Node 24, tests, shard 1/3",
     "windows-latest, Node 24, tests, shard 2/3",
     "windows-latest, Node 24, tests, shard 3/3",
-    "windows-latest, Node 24, pack",
   ].map((leg) => named(`Verify (${leg})`)),
-  { ...skipped, name: node26Name },
+  ...[node26Name, ...mainOnlyNames].map((name) => ({ ...skipped, name })),
 ];
 
 test("does not rerun when every needed job exists and only the gate failed", () => {
@@ -408,7 +406,9 @@ test("reads the needed jobs from the CI Gate in ci.yml", () => {
     "Pack artifact",
     "Comment guard (",
     "Speed (",
+    "Speed main (",
     "Verify (",
+    "Verify main (",
     "Verify Node 26 (",
   ]) {
     const withoutJob = jobs.filter((job) => !job.name.startsWith(prefix));
@@ -420,6 +420,26 @@ test("reads the needed jobs from the CI Gate in ci.yml", () => {
     expect(decision.scope).toBe("all");
     expect(decision.rerun).toBe(true);
   }
+}, 1000);
+
+test("a failed ready PR with main-only jobs skipped has no missing legs", () => {
+  const detected = neededJobNames(ciWorkflow, true);
+  expect(
+    detected.filter((name) => name.startsWith("Speed main (")),
+  ).toHaveLength(1);
+  expect(
+    detected.filter((name) => name.startsWith("Verify main (")),
+  ).toHaveLength(5);
+  const decision = decideRerun(
+    { ...run, jobs: [...complete, gate] },
+    current,
+    detected,
+  );
+  expect(decision).toEqual({
+    rerun: false,
+    scope: "failed",
+    reason: "Real failure or no never-acquired job; keep CI failed",
+  });
 }, 1000);
 
 test("derives needed job names from a workflow's gate", () => {
@@ -464,6 +484,7 @@ test("does not rerun a red draft with GitHub's rewritten Verify name", () => {
       "Verify Node 26 (${{ matrix.os }}, ${{ matrix.suite }}) ${{ matrix.shard }}",
       "Comment guard (windows-latest, Node 24)",
       "Verify (${{ matrix.os }}, Node ${{ matrix.node }}${{ (((matrix.suite != 'all') && format(', {0}', matrix.suite)) || '') }}${{ ((matrix.shard && format(', shard {0}', matrix.shard)) || '') }})",
+      ...mainOnlyNames,
     ].map((name) => ({ ...skipped, name })),
     gate,
   ];

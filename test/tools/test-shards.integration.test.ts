@@ -464,8 +464,14 @@ test("Windows admission uses the guarded paths and Node 26 verify runs after PRs
   );
   expect(node26["timeout-minutes"]).toBe(20);
   expect(node26.steps).toEqual(jobs["verify"]!.steps);
-  const prMatrix = jobs["verify"]!.strategy!.matrix.include;
-  const windows24 = prMatrix.filter((leg) => leg.os === "windows-latest");
+  const mainOnly = jobs["verify-main"]!;
+  expect(mainOnly["timeout-minutes"]).toBe(20);
+  expect(mainOnly.steps).toEqual(jobs["verify"]!.steps);
+  const fullMatrix = [
+    ...jobs["verify"]!.strategy!.matrix.include,
+    ...mainOnly.strategy!.matrix.include,
+  ];
+  const windows24 = fullMatrix.filter((leg) => leg.os === "windows-latest");
   expect(windows24).toHaveLength(4);
   expect(windows24.every((leg) => leg.node === "24")).toBe(true);
   expect(node26.strategy!.matrix.include).toEqual([
@@ -473,7 +479,7 @@ test("Windows admission uses the guarded paths and Node 26 verify runs after PRs
     { os: "macos-latest", node: "26", suite: "pack" },
   ]);
   expect(
-    prMatrix.some((leg) => leg.os === "macos-latest" && leg.node === "26"),
+    fullMatrix.some((leg) => leg.os === "macos-latest" && leg.node === "26"),
   ).toBe(false);
 }, 1000);
 
@@ -660,6 +666,7 @@ test.each(
     const gate = jobs["ci-gate"]!;
     expect(gate.needs).toContain("verify");
     expect(gate.needs).toContain("speed");
+    const mainOnly = event === "push" ? "success" : "skipped";
     const result = spawnSync("bash", ["-c", gate.steps[0]!.run], {
       env: {
         ...process.env,
@@ -672,17 +679,19 @@ test.each(
         STATIC: event === "schedule" ? "skipped" : "success",
         PR_TITLE: event === "pull_request" ? "success" : "skipped",
         VERIFY: verify,
+        VERIFY_MAIN: mainOnly,
         VERIFY_NODE26: node26,
         GUARD_CHANGED: guardChanged,
         PACK: pack,
         SPEED: speed,
+        SPEED_WINDOWS: mainOnly,
         COMMENT_GUARD: commentGuard,
         CHANGES: changes,
       },
       encoding: "utf8",
       timeout: 10_000,
     });
-    expect(result.status, result.stderr).toBe(expected);
+    expect(result.status, result.stdout + result.stderr).toBe(expected);
   },
   30_000,
 );

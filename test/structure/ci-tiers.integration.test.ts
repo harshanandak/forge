@@ -16,6 +16,7 @@ type Job = {
   needs?: string | string[];
   if?: string;
   outputs?: Record<string, string>;
+  strategy?: { matrix: { include?: unknown[]; os?: string[] } };
   steps: Step[];
 };
 const ci = new URL("../../.github/workflows/ci.yml", import.meta.url);
@@ -93,10 +94,61 @@ test("Heavy jobs wait for Changes and skip Quick", () => {
   assert.deepEqual([...(gate.needs ?? [])].sort(), otherJobs.sort());
 }, 1_000);
 
+test("CI has the exact ready, main-only and nightly matrix rows", () => {
+  assert.deepEqual(
+    jobs.verify?.strategy?.matrix,
+    {
+      include: [
+        { os: "ubuntu-latest", node: "24", suite: "all", shard: "1/2" },
+        { os: "ubuntu-latest", node: "24", suite: "tests", shard: "2/2" },
+        { os: "windows-latest", node: "24", suite: "tests", shard: "1/3" },
+        { os: "windows-latest", node: "24", suite: "tests", shard: "2/3" },
+        { os: "windows-latest", node: "24", suite: "tests", shard: "3/3" },
+      ],
+    },
+    "Verify on a ready PR must contain only Ubuntu and Windows Node 24 shards",
+  );
+  assert.deepEqual(jobs["verify-main"]?.strategy?.matrix, {
+    include: [
+      { os: "ubuntu-latest", node: "26", suite: "all", shard: "1/2" },
+      { os: "ubuntu-latest", node: "26", suite: "tests", shard: "2/2" },
+      { os: "macos-latest", node: "24", suite: "all", shard: "1/2" },
+      { os: "macos-latest", node: "24", suite: "tests", shard: "2/2" },
+      { os: "windows-latest", node: "24", suite: "pack" },
+    ],
+  });
+  assert.deepEqual(jobs["verify-node26"]?.strategy?.matrix, {
+    include: [
+      { os: "windows-latest", node: "26", suite: "tests", shard: "1/3" },
+      { os: "windows-latest", node: "26", suite: "tests", shard: "2/3" },
+      { os: "windows-latest", node: "26", suite: "tests", shard: "3/3" },
+      { os: "windows-latest", node: "26", suite: "pack" },
+      { os: "macos-latest", node: "26", suite: "pack" },
+    ],
+  });
+  assert.deepEqual(jobs.speed?.strategy?.matrix, { os: ["ubuntu-latest"] });
+  assert.deepEqual(jobs["speed-windows"]?.strategy?.matrix, {
+    os: ["windows-latest"],
+  });
+  assert.equal(
+    jobs["verify-node26"]?.if,
+    "github.event_name == 'push' || github.event_name == 'schedule'",
+  );
+  for (const [id, needs] of [
+    ["verify-main", ["changes", "pack"]],
+    ["speed-windows", "changes"],
+  ] as const) {
+    assert.equal(jobs[id]?.if, "github.event_name == 'push'", id);
+    assert.deepEqual(jobs[id]?.needs, needs, id);
+    const key = id.toUpperCase().replace("-", "_");
+    assert.equal(gateStep.env?.[key], `\${{ needs.${id}.result }}`);
+  }
+}, 1_000);
+
 const draftMessage =
   "Draft PR: the quick tier ran. Mark the PR ready for review to run the merge tier.";
 const resultKeys =
-  "CHANGES PR_TITLE STRUCTURE STATIC PACK SPEED VERIFY VERIFY_NODE26 COMMENT_GUARD";
+  "CHANGES PR_TITLE STRUCTURE STATIC PACK SPEED SPEED_WINDOWS VERIFY VERIFY_MAIN VERIFY_NODE26 COMMENT_GUARD";
 const fixture = {
   EVENT: "pull_request",
   DRAFT: "false",
@@ -111,7 +163,8 @@ const ready = `${readyFull} COMMENT_GUARD`;
 const draft = { DRAFT: "true", TIER: "quick" };
 const full = { DRAFT: "", TIER: "full" };
 const push =
-  "CHANGES STRUCTURE STATIC PACK SPEED VERIFY VERIFY_NODE26 COMMENT_GUARD";
+  "CHANGES STRUCTURE STATIC PACK SPEED SPEED_WINDOWS VERIFY VERIFY_MAIN VERIFY_NODE26 COMMENT_GUARD";
+const schedule = "CHANGES PACK VERIFY_NODE26";
 
 function evaluateGate(passedJobs: string, overrides: Record<string, string>) {
   const passed = passedJobs.split(" ");
@@ -168,12 +221,43 @@ for (const scope of ["docs", "full"]) {
 
 for (const [event, passed] of Object.entries({
   push,
-  schedule: "CHANGES PACK VERIFY_NODE26",
+  schedule,
 })) {
   test(`${event} CI Gate passes with its existing jobs`, () => {
     const result = evaluateGate(passed, { ...full, EVENT: event });
     assert.equal(result.exit, 0, result.log);
   }, 10_000);
+}
+
+const expectedJobs = [
+  ["draft push", "CHANGES STRUCTURE", draft],
+  ["ready code PR", ready, {}],
+  ["docs-only PR", readyDocs, { SCOPE: "docs", GUARD_CHANGED: "false" }],
+  ["push to main", push, { ...full, EVENT: "push" }],
+  ["schedule", schedule, { ...full, EVENT: "schedule" }],
+] satisfies [string, string, Record<string, string>][];
+for (const [event, passed, env] of expectedJobs) {
+  for (const key of passed.split(" ")) {
+    const name = key.toLowerCase().replace("_", "-");
+    test(`${event} CI Gate rejects skipped or missing ${name}`, () => {
+      for (const outcome of ["skipped", ""]) {
+        const result = evaluateGate(passed, { ...env, [key]: outcome });
+        const diagnostic = `${name} finished as '${outcome}', expected 'success'`;
+        assert.ok(result.log.includes(diagnostic), diagnostic);
+        assert.equal(result.exit, 1, result.log);
+      }
+    }, 10_000);
+  }
+  if (event === "push to main") continue;
+  for (const key of ["SPEED_WINDOWS", "VERIFY_MAIN"]) {
+    const name = key.toLowerCase().replace("_", "-");
+    test(`${event} CI Gate refuses unexpected success from ${name}`, () => {
+      const result = evaluateGate(passed, { ...env, [key]: "success" });
+      const diagnostic = `${name} finished as 'success', expected 'skipped'`;
+      assert.ok(result.log.includes(diagnostic), diagnostic);
+      assert.equal(result.exit, 1, result.log);
+    }, 10_000);
+  }
 }
 
 const tierError = "unexpected CI tier";

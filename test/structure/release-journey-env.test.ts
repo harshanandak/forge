@@ -129,7 +129,7 @@ describe("Accidental packed journey environment drift between CI and Release. Co
       sha256: "${{ needs.pack.outputs.sha256 }}",
       version: "${{ needs.pack.outputs.version }}",
     });
-    assert.deepEqual(ciJobs, ["verify", "verify-node26"]);
+    assert.deepEqual(ciJobs, ["verify", "verify-main", "verify-node26"]);
     assert.deepEqual(Object.keys(release.env ?? {}).sort(), [
       "NPM_CONFIG_REGISTRY",
       "TARBALL",
