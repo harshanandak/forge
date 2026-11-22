@@ -784,7 +784,7 @@ jobs:
           fi
           git checkout -- src/issue-commands.ts
           grep -q 'missing.block.json' "$RUNNER_TEMP/broken.out" || { cat "$RUNNER_TEMP/broken.out"; echo "::error::the bundle failed for another reason"; exit 1; }
-      - name: Example configuration refuses cloud requests in workerd
+      - name: Example configuration serves only the v2 pilot in workerd
         working-directory: cloud
         run: |
           timeout --kill-after=5s 90s node --input-type=module <<'JS'
@@ -796,16 +796,18 @@ jobs:
             dev: { remote: false, persist: false },
           });
           try {
-            const url = new URL("/.well-known/oauth-authorization-server", await worker.url);
-            const response = await fetch(url, { signal: AbortSignal.timeout(5000) });
-            assert.equal(response.status, 503);
-            assert.equal(response.headers.get("cache-control"), "no-store");
-            assert.deepEqual(await response.json(), {
-              ok: false,
-              status: "FAIL",
-              warnings: [],
-              error: { code: "UNAVAILABLE", message: "Cloud projects arrive with v3.", retry: "never" },
-            });
+            for (const [path, status, code] of [
+              ["/p/ci-project/status", 401, "AUTH_REQUIRED"],
+              ["/p/other/status", 403, "AUTH_FORBIDDEN"],
+              ["/p/ci-project/test-v3", 404, "UNKNOWN_COMMAND"],
+              ["/.well-known/oauth-authorization-server", 503, "AUTH_CONFIG_UNAVAILABLE"],
+            ]) {
+              const response = await fetch(new URL(path, await worker.url), {
+                signal: AbortSignal.timeout(5000),
+              });
+              assert.equal(response.status, status, path);
+              assert.equal((await response.json()).error.code, code, path);
+            }
           } finally {
             await worker.dispose();
           }

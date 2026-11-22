@@ -5,17 +5,6 @@ await mock.module("cloudflare:workers", () => ({ WorkerEntrypoint: class {} }));
 const { default: configured } =
   await import("../../cloud/src/adapters/workers-oauth/compose.ts");
 
-const closedReply = {
-  ok: false,
-  status: "FAIL",
-  warnings: [],
-  error: {
-    code: "UNAVAILABLE",
-    message: "Cloud projects arrive with v3.",
-    retry: "never",
-  },
-};
-
 type Entry = {
   fetch(request: Request, env: never): Response | Promise<Response>;
 };
@@ -60,14 +49,7 @@ export async function inspectIngress(
   }
 }
 
-export const closedOutcome = {
-  status: 503,
-  cache: "no-store",
-  body: closedReply,
-  reads: [],
-};
-
-export function stockIngress() {
+export function stockIngress(entry?: string) {
   const failures: object[] = [];
   const covered = new Set<string>();
   return {
@@ -75,6 +57,8 @@ export function stockIngress() {
       const route =
         label ?? request.method + " " + new URL(request.url).pathname;
       covered.add(route);
+      if (entry !== undefined)
+        return entries[entry]!.fetch(request, env as never);
       const body = request.body
         ? await request.clone().arrayBuffer()
         : undefined;
@@ -85,7 +69,15 @@ export function stockIngress() {
           ...(body === undefined ? {} : { body }),
         });
         const observed = await inspectIngress(copy, env, worker);
-        if (!Bun.deepEquals(observed, closedOutcome))
+        const lease = route.includes("/p/");
+        if (
+          "error" in observed ||
+          observed.status !== (lease ? 401 : 503) ||
+          (!lease && observed.cache !== "no-store") ||
+          (observed.body as { error?: { code?: string } } | null)?.error
+            ?.code !== (lease ? "AUTH_INVALID" : "AUTH_CONFIG_UNAVAILABLE") ||
+          observed.reads.some((name) => bindings.has(name))
+        )
           failures.push({ route, surface, ...observed });
       }
     },

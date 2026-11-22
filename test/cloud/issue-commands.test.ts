@@ -238,13 +238,13 @@ function fixture(
             }),
       },
     );
-    await o.ingress?.observe(request, bindings);
     calls.length = 0;
     probes.length = 0;
     const response =
-      o.via === "direct"
+      (await o.ingress?.observe(request, bindings)) ??
+      (o.via === "direct"
         ? await project.fetch(request)
-        : await (o.via ?? createWorker()).fetch(request, bindings as never);
+        : await (o.via ?? createWorker()).fetch(request, bindings as never));
     const text = await response.text();
     const json = JSON.parse(text) as Envelope;
     const raw =
@@ -5126,12 +5126,18 @@ const make = (id: string, input: object = { title: "New" }, more = {}) => ({
   context: { actor },
   ...more,
 });
-test("stock Workers suspend valid issue writes and block-state reads and commits", async () => {
+test("stock Worker protects and serves v2 command and state routes", async () => {
   const f = await stateFixture();
-  const ingress = stockIngress();
+  const ingress = stockIngress("raw");
   try {
     const token = await f.device(day, "stock-test", "s1");
+    const refused = await f.send(make("stock-create"), { ingress });
     const command = await f.send(make("stock-create"), { ingress, token });
+    expect([refused.status, refused.code, command.status]).toEqual([
+      401,
+      "AUTH_REQUIRED",
+      200,
+    ]);
     expect([command.status, command.exit]).toEqual([200, 0]);
     const input = await f.plan(stateEntries("stock-note"));
     const commit = await f.send(input, {

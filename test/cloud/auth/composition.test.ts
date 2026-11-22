@@ -17,6 +17,7 @@ await mock.module("cloudflare:workers", () => ({ WorkerEntrypoint: class {} }));
 const { createOAuthAdapter } =
   await import("../../../cloud/src/adapters/workers-oauth/index.ts");
 const { createWorker } = await import("../../../cloud/src/worker.ts");
+const { composeAuth } = await import("../../../cloud/src/auth/compose.ts");
 const { composeOAuth, createConfiguredWorker } =
   await import("../../../cloud/src/adapters/workers-oauth/compose.ts");
 const { readOAuthConfig } =
@@ -296,7 +297,7 @@ test("Worker and MCP receive the same verified identity and allow decision", asy
   }
 }, 30_000);
 const deviceToken = `fct_${"0".repeat(16)}.${"x".repeat(43)}`;
-test("legacy devices never reach trusted transport and fetch rejections are sanitized", async () => {
+test("legacy device auth refusals never reach trusted OAuth transport", async () => {
   const f = await fixture();
   for (const code of ["AUTH_INVALID", "AUTH_REVOKED", "AUTH_EXPIRED"]) {
     const device = mock(() =>
@@ -309,21 +310,48 @@ test("legacy devices never reach trusted transport and fetch rejections are sani
     expect(device).toHaveBeenCalledTimes(1);
     expect(f.forward).toHaveBeenCalledTimes(0);
   }
-  const token = await f.token(),
-    message = "private transport detail";
-  const reject = () => Promise.reject(new Error(message));
-  const worker = createWorker(f.auth, reject);
-  f.env.PROJECTS.get = () => ({ fetch: reject });
-  for (const presented of [token, deviceToken]) {
-    const response = await worker.fetch(projectRequest(presented), f.env);
-    expect(response.status).toBe(401);
-    const body = await response.text();
-    expect(JSON.parse(body)).toMatchObject({
-      error: { code: "AUTH_INVALID", message: "Token is not valid" },
-    });
-    expect(body).not.toContain(message);
-  }
 }, 30_000);
+
+test.each([
+  "device",
+  "admin",
+  "owner",
+  "verifier",
+  "token lookup",
+  "grant lookup",
+] as const)(
+  "%s transport rejection is a sanitized 503",
+  async (source) => {
+    const f = await fixture();
+    const token = await f.token();
+    const reject = () => Promise.reject(new Error("private transport detail"));
+    const worker =
+      source === "verifier"
+        ? createWorker(composeAuth({ verify: reject }, resource), f.forward)
+        : source === "owner"
+          ? createWorker(f.auth, reject)
+          : f.worker;
+    if (source === "device" || source === "admin")
+      f.env.PROJECTS.get = () => ({ fetch: reject });
+    if (source === "token lookup") f.options.storage.get = reject;
+    if (source === "grant lookup") f.options.grantRevocation.isActive = reject;
+    const reply = await worker.fetch(
+      source === "admin"
+        ? projectRequest("fixture-admin", "/p/a/status")
+        : projectRequest(source === "device" ? deviceToken : token),
+      f.env,
+    );
+    expect(reply.status).toBe(503);
+    const text = await reply.text();
+    expect(JSON.parse(text)).toMatchObject({
+      ok: false,
+      error: { code: "UNAVAILABLE", retry: "safe" },
+    });
+    expect(text).not.toContain("private transport detail");
+    expect(f.forward).toHaveBeenCalledTimes(0);
+  },
+  30_000,
+);
 
 test("missing OAuth composition refuses OAuth routes and preserves device and admin routing", async () => {
   const f = await fixture(),

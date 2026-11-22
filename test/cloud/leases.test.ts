@@ -153,14 +153,14 @@ function fixture(env?: unknown) {
             duplex: "half",
           }),
     });
-    await ingress?.observe(request, bindings, label);
     calls.length = 0;
     const response =
-      via === "direct"
+      (await ingress?.observe(request, bindings, label)) ??
+      (via === "direct"
         ? await project.fetch(request)
         : await (
             via === "worker" ? createWorker() : createConfiguredWorker()
-          ).fetch(request, bindings);
+          ).fetch(request, bindings));
     return {
       status: response.status,
       body: (await response.json()) as { value: unknown; error?: ForgeError },
@@ -254,7 +254,7 @@ function fixture(env?: unknown) {
 }
 
 test.each(["devices", "whole restore", "page zero"] as const)(
-  "stock Workers suspend fresh %s before project storage",
+  "stock Worker permits fresh admin %s on the configured project",
   async (mode) => {
     using source = fixture();
     const seeded = await source.issue();
@@ -273,7 +273,7 @@ test.each(["devices", "whole restore", "page zero"] as const)(
               tables: dump.tables,
             };
     using target = fixture();
-    const ingress = stockIngress();
+    const ingress = stockIngress("configured");
     const reply = await target.raw(
       mode === "devices" ? "devices" : "restore",
       body,
@@ -288,10 +288,10 @@ test.each(["devices", "whole restore", "page zero"] as const)(
   10_000,
 );
 
-test("stock Workers suspend provisioned project administration and reads", async () => {
+test("stock Worker serves provisioned project administration and reads", async () => {
   using f = fixture();
   const device = await f.issue();
-  const ingress = stockIngress();
+  const ingress = stockIngress("configured");
   const admin = { authorization: "Bearer fixture-admin" };
   for (const [route, input, headers] of [
     ["devices", { device: "second", ttlMs: day }, admin],
@@ -316,6 +316,46 @@ test("stock Workers suspend provisioned project administration and reads", async
     "GET /p/a/holder",
     "POST /p/a/revoke",
   ]);
+}, 10_000);
+
+test("an interrupted holder lookup returns 503 and no lease answer", async () => {
+  using f = fixture();
+  const device = await f.issue();
+  await f.claim("issue", device);
+  const was = f.snapshot();
+  const project = new Project({
+    storage: {
+      ...f.storage,
+      sql: {
+        exec(statement, ...params) {
+          if (statement.includes("FROM state_leases"))
+            throw Object.assign(new Error("private storage problem"), {
+              retryable: true,
+            });
+          return f.storage.sql.exec(statement, ...params);
+        },
+      },
+    },
+  });
+  const worker = createWorker();
+  const reply = await worker.fetch(
+    new Request("https://fixture.example/p/a/holder?subject=issue", {
+      headers: { authorization: "Bearer " + device.token },
+    }),
+    {
+      FORGE_CLOUD_PROJECT: "a",
+      PROJECTS: { idFromName: (name) => name, get: () => project },
+    },
+  );
+  expect(reply.status).toBe(503);
+  const text = await reply.text();
+  expect(JSON.parse(text)).toMatchObject({
+    ok: false,
+    error: { code: "UNAVAILABLE", retry: "safe" },
+  });
+  expect(text).not.toContain("private storage problem");
+  expect(JSON.parse(text)).not.toHaveProperty("value");
+  expect(f.snapshot()).toBe(was);
 }, 10_000);
 
 test("public and admin reads never initialize a reopened Project", async () => {
