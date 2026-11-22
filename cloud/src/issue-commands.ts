@@ -2,7 +2,7 @@
 // The envelope and context are closed shapes, the device comes from the token and the
 // project from the server, and no caller value becomes an SQL identifier, a namespace or a key.
 import manifest from "../../src/blocks/work/forge.block.json" with { type: "json" };
-import type { CloudRefusalReasonId } from "../../src/contract/cloud-refusal.ts";
+import { isCloudRefusalReasonId } from "../../src/blocks/work/cloud-refusal.ts";
 import { bindContext } from "../../src/contract/context.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { parseUntrustedJson } from "../../src/contract/untrusted.ts";
@@ -88,11 +88,14 @@ export const commandProject = (request: Request): string | undefined =>
 
 export const failed = (
   error: ForgeError,
-  reasonId?: CloudRefusalReasonId,
+  reasonId?: string,
 ): ResultEnvelope => ({
   ok: false,
   status: "FAIL",
-  error: { ...error, ...(reasonId === undefined ? {} : { reasonId }) },
+  error: {
+    ...error,
+    ...(isCloudRefusalReasonId(reasonId) ? { reasonId } : {}),
+  },
   warnings: [],
 });
 

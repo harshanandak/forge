@@ -6,7 +6,7 @@ import { Readable } from "node:stream";
 import {
   checkedCloudRefusalReason,
   type CloudRefusalReasonId,
-} from "../../contract/cloud-refusal.ts";
+} from "../../blocks/work/cloud-refusal.ts";
 import { ForgeFailure } from "../../contract/failure.ts";
 import { parseUntrustedJson } from "../../contract/untrusted.ts";
 import { parseRestoreJson } from "../../core/state/restore-json.ts";

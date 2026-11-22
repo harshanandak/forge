@@ -12,7 +12,10 @@ import {
 } from "../adapters/http/index.ts";
 import { ForgeFailure } from "../contract/failure.ts";
 import { storageRefusal } from "../adapters/http/storage-refusal.ts";
-import type { CloudRefusalReasonId } from "../contract/cloud-refusal.ts";
+import {
+  isCloudRefusalReasonId,
+  type CloudRefusalReasonId,
+} from "../blocks/work/cloud-refusal.ts";
 import type {
   AmbientContext,
   LeaseHolder,
@@ -160,12 +163,11 @@ function cloudExchange(
     const storage = storageRefusal(bad.code);
     if (storage) throw new Refusal(storage);
     const { code, reasonId } = bad;
-    const message =
-      reasonId !== undefined && Object.hasOwn(reasonMessages, reasonId)
-        ? reasonMessages[reasonId]
-        : Object.hasOwn(refusalMessages, code)
-          ? refusalMessages[code as keyof typeof refusalMessages]
-          : "The Forge cloud refused the request.";
+    const message = isCloudRefusalReasonId(reasonId)
+      ? reasonMessages[reasonId]
+      : Object.hasOwn(refusalMessages, code)
+        ? refusalMessages[code as keyof typeof refusalMessages]
+        : "The Forge cloud refused the request.";
     throw new Refusal({
       code,
       message,

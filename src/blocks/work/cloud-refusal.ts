@@ -19,13 +19,18 @@ Object.freeze(reasonOperations);
 
 export type CloudRefusalReasonId = keyof typeof reasonOperations;
 
+export function isCloudRefusalReasonId(
+  id: unknown,
+): id is CloudRefusalReasonId {
+  return typeof id === "string" && Object.hasOwn(reasonOperations, id);
+}
+
 export function checkedCloudRefusalReason(
   id: unknown,
   code: string,
   op: string,
 ): CloudRefusalReasonId | undefined {
-  if (typeof id !== "string" || !Object.hasOwn(reasonOperations, id)) return;
-  const reasonId = id as CloudRefusalReasonId;
-  const ops: readonly string[] = reasonOperations[reasonId];
-  return code === "INPUT_INVALID" && ops.includes(op) ? reasonId : undefined;
+  if (!isCloudRefusalReasonId(id)) return undefined;
+  const ops: readonly string[] = reasonOperations[id];
+  return code === "INPUT_INVALID" && ops.includes(op) ? id : undefined;
 }
