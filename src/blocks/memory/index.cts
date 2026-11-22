@@ -739,6 +739,9 @@ function readReplacements(source: Source, notes: readonly Note[]) {
     from = page.at(-1)!.key + "/";
   }
 }
+function activeReplacer(source: Source, note: Note, config: MemoryConfig) {
+  return replacers(readReplacements(source, [note]), note, config)[0];
+}
 function movedPointer(to: string) {
   const project = parseRef(to)?.project;
   return {
@@ -2341,8 +2344,10 @@ module.exports = {
 
   "memory.move": async function move({
     input,
+    config = {},
     services,
     deadline,
+    onReplaced,
   }: {
     input:
       | {
@@ -2356,8 +2361,10 @@ module.exports = {
           to: "project";
           limit?: number;
         };
+    config?: MemoryConfig;
     services: Services;
     deadline?: number;
+    onReplaced?: () => void;
   }): Promise<object> {
     if ("scope" in input) {
       const limit = input.limit ?? 25;
@@ -2376,6 +2383,7 @@ module.exports = {
       let after = 0;
       let end = false;
       const moved: { id: string; to: string }[] = [];
+      let skipped = 0;
       let stopped: { id: string; code: string } | undefined;
       let slowestMoveMs = 0;
       // Replaying transfer markers does not measure the cost of a fresh destination write.
@@ -2442,7 +2450,13 @@ module.exports = {
               current.revision === note.record.revision &&
               (current.value as NoteValue).deleted !== true &&
               !target.state.get(`${TRANSFER_PREFIX}${note.id}`);
+            const replaced = regular && activeReplacer(source, note, config);
             slowestReadMs = Math.max(slowestReadMs, Date.now() - collected);
+            if (replaced) {
+              skipped += 1;
+              index += 1;
+              continue;
+            }
             if (!regular) {
               irregular = note;
               break;
@@ -2575,6 +2589,7 @@ module.exports = {
               deferred = true;
               break;
             }
+            const skippedBefore = skipped;
             const to = single
               ? (
                   (await move({
@@ -2584,9 +2599,14 @@ module.exports = {
                       expectRevision: note.record.revision,
                     },
                     services,
+                    config,
+                    onReplaced: () => {
+                      skipped += 1;
+                    },
                   })) as { to: string }
                 ).to
               : placed[i]!;
+            if (skipped !== skippedBefore) continue;
             if (single && (!to || !to.startsWith(`${target.prefix}/`))) {
               stopped ??= { id: note.id, code: "VERIFY_FAILED" };
               break;
@@ -2641,6 +2661,7 @@ module.exports = {
         status: "moved" as const,
         moved,
         complete,
+        ...(skipped > 0 ? { skipped } : {}),
         ...(stopped ? { stopped } : {}),
         ...(!complete
           ? {
@@ -2677,7 +2698,17 @@ module.exports = {
         "REVISION_CONFLICT",
         `${qualified(input.id)} is at revision ${existing.revision}; read it again and move that revision`,
       );
+    const note = noteOf(source, existing);
+    const refuseReplaced = (id: string) => {
+      if (!onReplaced) fail("REPLACED_NOTE", `${note.id} is replaced by ${id}`);
+      onReplaced();
+      return {};
+    };
+    const beforeOpen = activeReplacer(source, note, config);
+    if (beforeOpen) return refuseReplaced(beforeOpen);
     const target = await writeTarget(services, input.to);
+    const afterOpen = activeReplacer(source, note, config);
+    if (afterOpen) return refuseReplaced(afterOpen);
     // The source's id is the transfer's identity. The destination records it beside the copy in
     // the same transaction, so a retry after a failure between the two stores finds the copy it
     // already made instead of making another.
@@ -2930,6 +2961,26 @@ module.exports = {
       input.format === "forge.memory.export/1"
         ? "device"
         : (input.level ?? "device");
+    const notes = input.notes.map((note) => {
+      const ref = parseRef(note.id);
+      const replacements = new Set<number>();
+      if ((note.replaces?.length ?? 0) > 8)
+        fail("INPUT_INVALID", "A note can replace at most eight notes");
+      for (const id of note.replaces ?? []) {
+        const link = parseRef(id);
+        if (!ref || link?.level !== ref.level)
+          fail(
+            "INPUT_INVALID",
+            `Expected a replacement at the same level: ${id}`,
+          );
+        if (link.project !== ref.project)
+          fail("INPUT_INVALID", `Replacement is in another project: ${id}`);
+        if (link.number === 0 || link.number >= ref.number)
+          fail("INPUT_INVALID", `Expected an earlier note: ${id}`);
+        replacements.add(link.number);
+      }
+      return { note, ref, replacements };
+    });
     const target = await writeTarget(services, level);
     const { state } = target;
     // A link to a note of the exported project moves to the restoring project only when that note
@@ -2962,16 +3013,26 @@ module.exports = {
       const queued = new Set<string>();
       // The exported ids of the notes this call restores: added, or already here unchanged.
       const restored = new Set<string>();
-      const adding: { key: string; note: (typeof input.notes)[number] }[] = [];
+      const restoredTargets = new Map<string, boolean>();
+      const adding: {
+        key: string;
+        note: (typeof input.notes)[number];
+        source: string;
+        number: number;
+        replacements: Set<number>;
+      }[] = [];
       let highest = 0;
-      for (const note of input.notes) {
-        const ref = parseRef(note.id);
+      for (const { note, ref, replacements } of notes) {
         if (!ref || ref.level !== level) {
           conflicts.push(qualified(note.id));
           continue;
         }
         const key = noteKey(ref.number);
         const id = idIn(target, ref.number);
+        const source = ref.project ?? ref.level;
+        const sourceId = `${source}/${ref.number}`;
+        if (!restoredTargets.has(sourceId))
+          restoredTargets.set(sourceId, false);
         // A note is either never accepted (status) or accepted with a pending revision (proposal).
         if (note.status !== undefined && note.proposal !== undefined) {
           conflicts.push(id);
@@ -2985,6 +3046,7 @@ module.exports = {
           if (old.deleted !== true && old.text === note.text.text) {
             skipped += 1;
             restored.add(qualified(note.id));
+            restoredTargets.set(sourceId, true);
           } else conflicts.push(id);
           continue;
         }
@@ -2994,7 +3056,8 @@ module.exports = {
         }
         queued.add(key);
         restored.add(qualified(note.id));
-        adding.push({ key, note });
+        restoredTargets.set(sourceId, true);
+        adding.push({ key, note, source, number: ref.number, replacements });
       }
       const approval = approved(
         input.approval,
@@ -3029,7 +3092,7 @@ module.exports = {
       // A bundle's own fields are never proof that the owner accepted a note: a new owner-tagged
       // note comes back proposed, whatever status the bundle claims, and only memory.accept serves it.
       let proposals = 0;
-      for (const { key, note } of adding) {
+      for (const { key, note, source, number, replacements } of adding) {
         const ownerTagged = ownerTag(note.tags, config) !== undefined;
         const status =
           note.status === "withdrawn"
@@ -3054,6 +3117,22 @@ module.exports = {
             `${qualified(note.id)} waits for owner accept but its text is longer than ${MAX_TEXT_CHARS} characters, the most memory.accept takes; nothing was restored. Shorten it in the export and retry.`,
           );
         if (ownerTagged && status === "proposed") proposals += 1;
+        const replaces: string[] = [];
+        for (const replaced of replacements) {
+          const restoredTarget = restoredTargets.get(`${source}/${replaced}`);
+          if (restoredTarget === false) continue;
+          if (restoredTarget === undefined) {
+            const targetKey = noteKey(replaced);
+            if (queued.has(targetKey) || state.get(targetKey)) continue;
+            read.push({ key: targetKey, expectRevision: 0 });
+          }
+          replaces.push(idIn(target, replaced));
+          entries.push({
+            key: numberKey(numberKey(REPLACED_BY, replaced) + "/", number),
+            value: number,
+            expectRevision: 0,
+          });
+        }
         entries.push({
           key,
           value: {
@@ -3067,7 +3146,7 @@ module.exports = {
             ...(note.scope === undefined ? {} : { scope: note.scope }),
             tags: note.tags,
             links: relinked(note.links, restored),
-            ...(note.replaces ? { restoredReplaces: note.replaces } : {}),
+            ...(replaces.length ? { replaces } : {}),
             previous: [],
             // A pending revision cannot ride on a note that was never accepted.
             ...(note.proposal === undefined || status !== undefined
@@ -3083,7 +3162,7 @@ module.exports = {
           expectRevision: 0,
         });
       }
-      const added = entries.length;
+      const added = adding.length;
       const counter = readCounter(state, NOTE_COUNTER);
       if (counter.last < highest)
         entries.push({

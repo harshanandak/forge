@@ -37,6 +37,11 @@
       }
     },
     "complete": { "type": "boolean" },
+    "skipped": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Number of device notes skipped on this scope move because an active note replaces them."
+    },
     "next": { "type": "string", "maxLength": 1000 },
     "stopped": {
       "type": "object",
