@@ -21,13 +21,22 @@ function created(frame: Frame, number: number, input: unknown) {
   if (!isObject(input) || !frame.outcome) return undefined;
   const { id, prefix, ...item } = input as Record<string, string>;
   const updatedAt = new Date(frame.time).toJSON();
-  const shown = { ...item, id: `${prefix}-${number}`, revision: 1, updatedAt };
-  return id === `work-${number}` &&
-    item.createdAt === updatedAt &&
-    resultMatches(frame.outcome, shown) &&
-    trackerValid(shown)
-    ? shown
-    : undefined;
+  try {
+    const shown = {
+      ...item,
+      id: `${prefix}-${number}`,
+      revision: 1,
+      updatedAt,
+    };
+    return id === `work-${number}` &&
+      item.createdAt === updatedAt &&
+      resultMatches(frame.outcome, shown) &&
+      trackerValid(shown)
+      ? shown
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 type Update = {
