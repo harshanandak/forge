@@ -1,5 +1,13 @@
 import { expect, test } from "bun:test";
-import { accepted, blockSchema, loadEntry, memoryState } from "./lib.ts";
+import {
+  accepted,
+  blockSchema,
+  done,
+  loadEntry,
+  memoryState,
+  openHarness,
+  ownerApproval,
+} from "./lib.ts";
 
 const timeout = 30_000;
 const approval = { by: "agent", reason: "Restore or retire historical notes" };
@@ -28,7 +36,7 @@ function fixture(projectId = targetId) {
 
 const item = (id: string, replaces?: readonly string[]) => ({
   id,
-  tags: [],
+  tags: [] as string[],
   links: [],
   text: { kind: "untrusted", source: "fixture", text: `wren ${id}` },
   ...(replaces ? { replaces } : {}),
@@ -41,6 +49,248 @@ const bundle = (notes: ReturnType<typeof item>[]) => ({
 });
 const oldId = "device/note-1";
 const currentId = "device/note-2";
+const unissuedId = "00000000-0000-4000-8000-000000000001";
+type RestorePage = { restoreId?: string; next?: number };
+
+test(
+  "three export pages restore a split pair using the ID issued by the first page",
+  async () => {
+    const source = fixture();
+    const { call, state } = fixture();
+    await source.add("wren obsolete");
+    for (let number = 2; number <= 50; number += 1)
+      await source.add(`filler ${number}`);
+    await source.add("wren current", { replaces: [oldId] });
+    const fields = { level: "device" };
+    const first = (await source.call("memory.export", fields)) as RestorePage;
+    const second = (await source.call("memory.export", {
+      ...fields,
+      after: first.next,
+    })) as RestorePage;
+    const third = (await source.call("memory.export", {
+      ...fields,
+      after: second.next,
+    })) as RestorePage;
+    const started = (await call("memory.restore", {
+      ...first,
+      approval,
+    })) as RestorePage;
+    const restoreId = started.restoreId ?? unissuedId;
+    const continued = [];
+    for (const page of [second, third]) {
+      continued.push(
+        await call("memory.restore", {
+          ...page,
+          restoreId,
+          approval: ownerApproval,
+        }),
+      );
+    }
+    const current = "device/note-51";
+    const found = (await call("memory.search", { query: "wren" })) as {
+      hits: { id: string }[];
+    };
+    expect(found.hits.map(({ id }) => id)).toEqual([current]);
+    expect(started).toMatchObject({ added: 25, restoreId });
+    expect(continued).toMatchObject([
+      { added: 25, restoreId },
+      { added: 1, restoreId },
+    ]);
+    for (const number of [1, 26, 51]) {
+      const key = `note/${String(number).padStart(9, "0")}`;
+      expect(state.get(key)?.value).toMatchObject({
+        restored: { id: restoreId, sourceId: `device/note-${number}` },
+      });
+    }
+  },
+  timeout,
+);
+
+for (const continued of [false, true]) {
+  test(
+    `an empty replacement slot only hides a matching later fill (continued: ${continued})`,
+    async () => {
+      const { call } = fixture();
+      const older = continued ? oldId : `${targetPrefix}/note-1`;
+      const newer = continued ? currentId : `${targetPrefix}/note-2`;
+      const replacer = continued
+        ? item(currentId, [oldId])
+        : item(`${sourcePrefix}/note-2`, [`${sourcePrefix}/note-1`]);
+      const fill = continued
+        ? item("device/note-01")
+        : item("project/aaaaaaaaaaaaaaaa/note-1");
+      const first = (await call("memory.restore", {
+        ...bundle([replacer]),
+        truncated: continued,
+      })) as RestorePage;
+      const restored = await call("memory.restore", {
+        ...bundle([fill]),
+        ...(continued
+          ? {
+              restoreId: first.restoreId ?? unissuedId,
+              approval: ownerApproval,
+            }
+          : {}),
+      });
+      expect(restored).toMatchObject({ added: 1, conflicts: [] });
+      const found = (await call("memory.search", { query: "wren" })) as {
+        hits: { id: string }[];
+      };
+      const attached = (await call("memory.attach", {
+        ids: [older, newer],
+      })) as {
+        receipt: { selected: { id: string }[] };
+      };
+      const expected = continued ? [newer] : [older, newer];
+      expect(found.hits.map(({ id }) => id).sort()).toEqual(expected);
+      expect(attached.receipt.selected.map(({ id }) => id).sort()).toEqual(
+        expected,
+      );
+      if (!continued) {
+        expect(
+          await call("memory.move", {
+            id: older,
+            to: "device",
+            expectRevision: 1,
+          }),
+        ).toMatchObject({ status: "moved" });
+      }
+    },
+    timeout,
+  );
+}
+
+test(
+  "a device backup with the same note numbers cannot replace a note from a different restore",
+  async () => {
+    const { call, state } = fixture();
+    await call("memory.restore", { ...bundle([item(oldId)]), truncated: true });
+    const other = (await call("memory.restore", {
+      ...bundle([item("device/note-3")]),
+      truncated: true,
+    })) as RestorePage;
+    await call("memory.restore", {
+      ...bundle([item(currentId, [oldId])]),
+      restoreId: other.restoreId ?? unissuedId,
+      approval: ownerApproval,
+    });
+    expect(state.count("replaced-by/")).toBe(0);
+    const found = (await call("memory.search", { query: "wren" })) as {
+      hits: { id: string }[];
+    };
+    expect(found.hits.map(({ id }) => id).sort()).toEqual([
+      oldId,
+      currentId,
+      "device/note-3",
+    ]);
+  },
+  timeout,
+);
+
+test(
+  "restore refuses an unissued ID, the wrong destination store, and another source project",
+  async () => {
+    const destination = fixture();
+    const another = fixture("0123456789abcdee");
+    const old = `${sourcePrefix}/note-1`;
+    const first = (await destination.call("memory.restore", {
+      ...bundle([item(old)]),
+      truncated: true,
+    })) as RestorePage;
+    const page = {
+      ...bundle([item(`${sourcePrefix}/note-2`, [old])]),
+      approval: ownerApproval,
+    };
+    const foreign = {
+      ...bundle([item(`${targetPrefix}/note-2`, [`${targetPrefix}/note-1`])]),
+      project: { id: sourceId, name: "alpha" },
+    };
+    const count = destination.project.counts.puttedRecords;
+    for (const [target, input, restoreId] of [
+      [destination, page, unissuedId],
+      [another, page, first.restoreId ?? unissuedId],
+      [
+        destination,
+        { ...foreign, approval: ownerApproval },
+        first.restoreId ?? unissuedId,
+      ],
+    ] as const) {
+      await expect(
+        target.call("memory.restore", { ...input, restoreId }),
+      ).rejects.toMatchObject({
+        error: { code: "INPUT_INVALID" },
+      });
+    }
+    expect(destination.project.counts.puttedRecords).toBe(count);
+    expect(another.project.counts.puttedRecords).toBe(0);
+  },
+  timeout,
+);
+
+test(
+  "a split restore cannot hide an owner-tagged rule after the owner accepts it",
+  async () => {
+    const { call, state } = fixture();
+    const rule = { ...item(oldId), tags: ["rule"], scope: "general" };
+    const first = (await call("memory.restore", {
+      ...bundle([rule]),
+      truncated: true,
+      approval: ownerApproval,
+    })) as RestorePage;
+    await call("memory.accept", {
+      items: [{ id: oldId, revision: 1, text: rule.text.text }],
+      approval: ownerApproval,
+    });
+    const replacer = { ...item(currentId, [oldId]), scope: "general" };
+    await call("memory.restore", {
+      ...bundle([replacer]),
+      restoreId: first.restoreId ?? unissuedId,
+      approval: ownerApproval,
+    });
+    expect(state.count("replaced-by/")).toBe(1);
+    expect(await call("memory.rules", { notes: true })).toMatchObject({
+      receipt: { selected: [{ id: oldId }] },
+    });
+  },
+  timeout,
+);
+
+test(
+  "a restore continuation needs relayed owner approval while its first page accepts agent approval",
+  async () => {
+    const target = await openHarness(["memory"]);
+    try {
+      const first = done(
+        await target.call("memory.restore", {
+          ...bundle([item(oldId)]),
+          truncated: true,
+        }),
+      ) as RestorePage;
+      const next = {
+        ...bundle([item(currentId, [oldId])]),
+        restoreId: first.restoreId ?? unissuedId,
+      };
+      expect(await target.call("memory.restore", next)).toMatchObject({
+        ok: false,
+        error: { code: "HUMAN_REQUIRED" },
+      });
+      expect(
+        done(await target.call("memory.show", { id: currentId })),
+      ).toMatchObject({ status: "not_found" });
+      expect(
+        done(
+          await target.call("memory.restore", {
+            ...next,
+            approval: ownerApproval,
+          }),
+        ),
+      ).toMatchObject({ added: 1, restoreId: first.restoreId });
+    } finally {
+      await target.close();
+    }
+  },
+  timeout,
+);
 
 test(
   "a project round trip rewrites IDs and writes the reverse key in the note batch",
