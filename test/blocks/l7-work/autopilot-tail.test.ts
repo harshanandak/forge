@@ -533,10 +533,11 @@ test("a direct pause and a queued repeat keep the same raw reason and event", as
   expect(await f.next()).toEqual(setup);
   expect(f.records.get("autopilot-ask:work-1")).toEqual(queued);
   expect(f.records.get(event.key)).toEqual(event);
-  const visibleError = quoteDisplayText(f.brief.error);
-  expect(
-    [direct.why, setup.why].map((why) => why.includes(visibleError)),
-  ).toEqual([true, true]);
+  const displayReason = quoteDisplayText(reason);
+  expect([direct.why, setup.why]).toEqual([
+    displayReason,
+    displayReason + ". The owner channel is not set, so this ask stays queued.",
+  ]);
 }, 30_000);
 
 test("repair examples decode to the untouched stored target", async () => {

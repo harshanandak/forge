@@ -745,7 +745,9 @@ test("a security label added after the first read is caught on the fresh read", 
   f.world.laterLabels = ["security"];
   const action = await seen(f);
   expect(action.kind).toBe("pause");
-  expect(action.why).toContain('label "security"');
+  expect(action.why).toBe(
+    quoteDisplayText("PR #7 is security tier (label security)"),
+  );
   expect(action.argv).toBeUndefined();
 });
 
@@ -899,7 +901,9 @@ test("a direct merge pause quotes the branch while its event keeps the raw branc
   expect(action.kind).toBe("pause");
   expect(action.argv).toBeUndefined();
   expect(JSON.parse(action.raw!)).toMatchObject({ pr: branch });
-  expect(action.why).toContain(quoteDisplayText(branch));
+  expect(action.why).toBe(
+    quoteDisplayText("PR #7 is on " + branch + " but the lane is on feat/x"),
+  );
 }, 30_000);
 
 test("a PR in another repository or host is never merged automatically", async () => {
