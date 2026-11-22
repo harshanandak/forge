@@ -13,7 +13,7 @@ export function recordNumber(key: string): number {
 
 function created(frame: Frame, number: number, input: unknown) {
   if (!isObject(input)) return false;
-  const { id, prefix, ...item } = input;
+  const { id, prefix, ...item } = input as Record<string, string>;
   const updatedAt = new Date(frame.time).toJSON();
   const shown = { ...item, id: `${prefix}-${number}`, revision: 1, updatedAt };
   return (
