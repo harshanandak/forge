@@ -1,4 +1,6 @@
 import { execFileSync } from "node:child_process";
+import { lstatSync, writeSync } from "node:fs";
+import { resolve } from "node:path";
 import { gitExecutable } from "../git-executable.ts";
 
 try {
@@ -20,6 +22,31 @@ try {
       throw error;
     }
   };
+  const replacementRefs = git([
+    "for-each-ref",
+    "--count=1",
+    "--format=%(refname)",
+    "refs/replace/",
+  ])!.trim();
+  const graftPath = git(["rev-parse", "--git-path", "info/grafts"])!.trim();
+  let hasGrafts = true;
+  try {
+    lstatSync(resolve(graftPath));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    hasGrafts = false;
+  }
+  if (replacementRefs)
+    writeSync(
+      2,
+      "::error::This checkout has Git replacement refs under refs/replace/. Delete them (git replace -d) or use a fresh checkout.\n",
+    );
+  if (hasGrafts)
+    writeSync(
+      2,
+      "::error::This checkout has a Git graft file (info/grafts). Delete it or use a fresh checkout.\n",
+    );
+  if (replacementRefs || hasGrafts) process.exit(1);
   for (const sha of [base, head]) git(["cat-file", "-e", `${sha}^{commit}`]);
   if (git(["rev-parse", "--is-shallow-repository"])!.trim() !== "false")
     throw new Error();
