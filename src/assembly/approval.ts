@@ -1,4 +1,8 @@
 import { randomUUID } from "node:crypto";
+import {
+  escapeDisplayText,
+  quoteDisplayText,
+} from "../contract/display-text.ts";
 import { ForgeFailure } from "../contract/failure.ts";
 import { digest, type OwnerApproval } from "../core/trust/index.ts";
 import type { DeletableStateClient } from "../ports/state.ts";
@@ -73,6 +77,7 @@ export function ownerApproval(options: {
   deviceRoot: string;
   projectRoot: string;
   ask: string;
+  displayAsk?: string;
   relay: RelayingSession;
   warning?: string;
   now?: () => number;
@@ -95,8 +100,8 @@ export function ownerApproval(options: {
       { expectRevision: 0 },
     );
     throw new ApprovalRequired(
-      `An owner reply is required before this operation runs.${options.warning === undefined ? "" : ` ${options.warning}`}`,
-      request,
+      `An owner reply is required before this operation runs.${options.warning === undefined ? "" : ` ${escapeDisplayText(options.warning)}`}`,
+      { ...request, ask: escapeDisplayText(options.displayAsk ?? options.ask) },
     );
   }
   const approval = object(evidence);
@@ -292,23 +297,41 @@ const shown = (value: unknown) =>
     /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu,
     (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`,
   );
-/** What the owner is asked, in one plain sentence naming the action. */
 export function memoryOwnerAsk(declaredOp: string, input: unknown): string {
+  return memoryAsk(declaredOp, input, false);
+}
+export function memoryOwnerDisplayAsk(
+  declaredOp: string,
+  input: unknown,
+): string {
+  return memoryAsk(declaredOp, input, true);
+}
+function memoryAsk(
+  declaredOp: string,
+  input: unknown,
+  display: boolean,
+): string {
   const fields = object(input);
-  const id = typeof fields?.id === "string" ? fields.id : "";
+  const rawId = typeof fields?.id === "string" ? fields.id : "";
+  const id = display ? quoteDisplayText(rawId) : rawId;
   if (declaredOp === "decision.adopt")
     return `Adopt decision ${id} so it becomes a binding standing rule.`;
   if (declaredOp === "memory.accept" || declaredOp === "memory.reject") {
     // What the owner sees is what the call binds: each note's id, revision and its whole proposed
     // text, never a first line or a cut. One call holds at most 10 items, so the ask stays bounded.
+    const field = display
+      ? (value: unknown) => quoteDisplayText(String(value))
+      : shown;
     const lines = (Array.isArray(fields?.items) ? fields.items : []).map(
       (entry: unknown) => {
         const item = object(entry);
         const text =
           typeof item?.text === "string"
-            ? item.text.split(/\r?\n/u).map(shown).join("\n    ")
+            ? display
+              ? quoteDisplayText(item.text)
+              : item.text.split(/\r?\n/u).map(shown).join("\n    ")
             : "(text not shown)";
-        return `- ${shown(item?.id)} (revision ${shown(item?.revision)}):\n    ${text}${Array.isArray(item?.removedOwnerTags) && item.removedOwnerTags.length > 0 ? `\nremoves owner tags: ${item.removedOwnerTags.map(shown).join(", ")}` : ""}`;
+        return `- ${field(item?.id)} (revision ${field(item?.revision)}):\n    ${text}${Array.isArray(item?.removedOwnerTags) && item.removedOwnerTags.length > 0 ? `\nremoves owner tags: ${item.removedOwnerTags.map(field).join(", ")}` : ""}`;
       },
     );
     return declaredOp === "memory.accept"
@@ -349,9 +372,13 @@ export function laneOwnerChannelOp(
     object(input)?.ownerChannel !== undefined
   );
 }
-export function laneOwnerChannelAsk(input: unknown): string {
+export function laneOwnerChannelAsk(
+  input: unknown,
+  format: (text: string) => string = String,
+): string {
   const channel = object(object(input)?.ownerChannel);
-  const shown = (value: unknown) => (typeof value === "string" ? value : "");
+  const shown = (value: unknown) =>
+    format(typeof value === "string" ? value : "");
   return `Make ${shown(channel?.harness)} thread ${shown(channel?.thread)} the owner channel. Replies from it become approvals for gated lane steps.`;
 }
 /** Recording a gated step's request id on an ask: the runtime checks the request before the block stores it. */
@@ -432,11 +459,15 @@ export function laneResumeClaim(input: unknown): {
     ...(typeof claim?.quote === "string" ? { quote: claim.quote } : {}),
   };
 }
-export function laneResumeAsk(input: unknown, op?: string): string {
+export function laneResumeAsk(
+  input: unknown,
+  op?: string,
+  format: (text: string) => string = String,
+): string {
   const fields = object(input);
   if (op === "lane.unfreeze")
     return "Unfreeze the local tracker store. Sessions on this machine can write issues to it again.";
   return fields?.all === true
     ? "Resume every stopped lane. Forge starts spending calls and time again."
-    : `Resume lane ${typeof fields?.id === "string" ? fields.id : ""}. Forge starts spending calls and time on it again.`;
+    : `Resume lane ${format(typeof fields?.id === "string" ? fields.id : "")}. Forge starts spending calls and time on it again.`;
 }
