@@ -557,8 +557,8 @@ test("the owner's question shows the whole proposed text of every item", async (
         expect(exitCode(reply!)).toBe(0);
         expect(reply?.result).toMatchObject({
           results: [
-            { id: revised.id, status: "rejected" },
             { id: absent.id, status: "not_found" },
+            { id: revised.id, status: "rejected" },
           ],
         });
       }
