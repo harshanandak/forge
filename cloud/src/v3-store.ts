@@ -604,7 +604,16 @@ function foldRow(
     unavailable,
     image.load,
   );
-  apply(image, verify ? verify(frame) : frame, nat(sequence));
+  const verified = verify ? verify(frame) : frame;
+  const { outcome } = verified;
+  if (records.result !== undefined && outcome) {
+    const { resultDigest: _digest, ...receipt } = outcome;
+    apply(
+      image,
+      { ...verified, outcome: { ...receipt, result: records.result } },
+      nat(sequence),
+    );
+  } else apply(image, verified, nat(sequence));
   image.recordFloor = records.floor;
   for (const { key, value } of records.changes) record.set(key, value);
   image.tailBytes += Buffer.byteLength(String(body));

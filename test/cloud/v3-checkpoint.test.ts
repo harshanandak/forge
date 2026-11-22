@@ -2119,8 +2119,12 @@ for (const fault of [
             ? body.replace("Issue was not found", "Issue was not FOUND")
             : body.replace(`"retryUntil":${E1}`, `"retryUntil":${E1 + 1}`),
         );
-      } else if (fault === "refusal digest") {
-        editHistory(data, ([frame]) => {
+      } else if (fault === "refusal digest" || fault === "digest-only grant") {
+        editHistory(data, (frames) => {
+          const frame = frames.find(
+            ({ operation }) =>
+              fault === "refusal digest" || operation === "issue.update",
+          );
           (frame!.outcome as Json).resultDigest =
             digestBytes("different refusal");
         });

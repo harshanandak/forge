@@ -31,6 +31,9 @@ export const UPDATE_REFUSALS = REFUSALS.filter(
   (code) => code !== "LEASE_HELD",
 ).concat("NOT_FOUND", "REVISION_CONFLICT");
 
+export const trackerValid = (result: unknown) =>
+  validators.validateTrackerItem(result).ok;
+
 function validLease(lease: unknown): boolean {
   try {
     checkLeaseRecord(lease as LeaseRecord);
@@ -191,8 +194,7 @@ export function authorityFault(
       : outcomeFault(outcome, command, portable, claim);
   if (outcomeError !== undefined) return outcomeError;
   if (command && !claim)
-    return (!create || !portable) &&
-      lease === undefined &&
+    return lease === undefined &&
       witness === undefined &&
       isObject(outcome) &&
       (!create || ["ok", "INPUT_INVALID"].includes(String(outcome.status))) &&
