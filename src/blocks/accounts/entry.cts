@@ -424,19 +424,20 @@ async function contact(
         "Git grafts can hide commits from the check; remove the info/grafts file in the common git directory and retry",
       );
     const resolve = async (name: string) => {
-      if (!REF.test(name)) refuse("INPUT_INVALID", `Invalid revision ${name}`);
+      if (!REF.test(name))
+        refuse("INPUT_INVALID", `Invalid revision ${quoteFragment(name)}`);
       const out = await g(
         ["rev-parse", "--verify", "--quiet", `${name}^{commit}`],
         true,
       );
       if (!out.ok || !out.text)
-        refuse("INPUT_INVALID", `Unknown revision ${name}`);
+        refuse("INPUT_INVALID", `Unknown revision ${quoteFragment(name)}`);
       return out.text;
     };
     // One git process answers both the shallow test and the tip: the shallow line prints first.
     const tipName = input.tip ?? "HEAD";
     if (!REF.test(tipName))
-      refuse("INPUT_INVALID", `Invalid revision ${tipName}`);
+      refuse("INPUT_INVALID", `Invalid revision ${quoteFragment(tipName)}`);
     const head = await g(
       [
         "rev-parse",
@@ -459,7 +460,7 @@ async function contact(
         "Shallow history hides commits from the check; run git fetch --unshallow and retry",
       );
     if (!head.ok || !tipSha)
-      refuse("INPUT_INVALID", `Unknown revision ${tipName}`);
+      refuse("INPUT_INVALID", `Unknown revision ${quoteFragment(tipName)}`);
     const tip = tipSha;
     // An explicit all-zero base is a new-branch push: check the tip's full history.
     const newBranch = Boolean(input.base && /^0+$/.test(input.base));
@@ -492,12 +493,19 @@ async function contact(
         ] as const
       )
         .filter(([, e]) => !allowed.includes((e ?? "").toLowerCase()))
-        .map(([field, e]) => `${commit} ${field}=${e}`);
+        .map(([field, e]) => {
+          const id =
+            commit !== undefined &&
+            /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(commit)
+              ? commit
+              : quoteFragment(commit);
+          return `${id} ${field}=${quoteFragment(e)}`;
+        });
     });
     if (wrong.length)
       refuse(
         "ACCOUNT_COMMIT_IDENTITY",
-        `Push refused: ${wrong.length} commit field(s) do not use GitHub ${selected.login}'s email (${selected.commitEmails.join(", ")}): ${wrong.slice(0, 20).join("; ")}. Rewrite those commits with the bound identity, then check again.`,
+        `Push refused: ${wrong.length} commit field(s) do not use GitHub ${quoteFragment(selected.login)}'s email (${selected.commitEmails.map(quoteFragment).join(", ")}): ${wrong.slice(0, 20).join("; ")}. Rewrite those commits with the bound identity, then check again.`,
       );
     return { repo, login: selected.login, checked: rows.length };
   }
@@ -528,7 +536,10 @@ async function contact(
       if (!out.ok || !/^\S{8,512}$/.test(token))
         return optional
           ? { ok: false, text: "" }
-          : refuse("ACCOUNT_VERIFY_FAILED", `gh has no token for ${login}`);
+          : refuse(
+              "ACCOUNT_VERIFY_FAILED",
+              `gh has no token for ${quoteFragment(login)}`,
+            );
       secrets.push(token);
       tokens.set(login, token);
     }
@@ -664,7 +675,7 @@ async function contact(
   )
     refuse(
       "ACCOUNT_VERIFY_FAILED",
-      `Approved GitHub account ${selected.login} is absent from gh's signed-in accounts`,
+      `Approved GitHub account ${quoteFragment(selected.login)} is absent from gh's signed-in accounts`,
     );
   const recent = recentRows.text;
   // With -z each entry is `origin NUL key NL value NUL` (a valueless key has no NL), so a value
@@ -830,7 +841,7 @@ async function contact(
     if (me.login?.toLowerCase() !== login.toLowerCase())
       refuse(
         "ACCOUNT_VERIFY_FAILED",
-        `The gh token for ${login} belongs to another GitHub account`,
+        `The gh token for ${quoteFragment(login)} belongs to another GitHub account`,
       );
     const id = me.id;
     if (typeof id !== "number" || !Number.isSafeInteger(id) || id < 1)
@@ -844,7 +855,7 @@ async function contact(
     if ((await identify(account.login)).id !== account.userId)
       refuse(
         "ACCOUNT_VERIFY_FAILED",
-        `The gh token for ${account.login} belongs to another GitHub account`,
+        `The gh token for ${quoteFragment(account.login)} belongs to another GitHub account`,
       );
   };
   const verifyIdentity = async (account: Account) => {
@@ -871,7 +882,7 @@ async function contact(
             ? roleKey
             : "user.email";
         integrity(
-          `${overridingKey} overrides the effective ${role.toLowerCase()} email for GitHub ${account.login}`,
+          `${overridingKey} overrides the effective ${role.toLowerCase()} email for GitHub ${quoteFragment(account.login)}`,
         );
       }
     }
@@ -973,7 +984,7 @@ async function contact(
         if (!page.ok && page.text.startsWith("["))
           refuse(
             "ACCOUNT_VERIFY_FAILED",
-            `GitHub's email list for ${login} was incomplete (a page failed); try again`,
+            `GitHub's email list for ${quoteFragment(login)} was incomplete (a page failed); try again`,
           );
         listed = page.ok
           ? new Set(
@@ -988,8 +999,8 @@ async function contact(
           refuse(
             "ACCOUNT_VERIFY_FAILED",
             listed
-              ? `GitHub ${login} does not list these commit emails: ${unlisted.join(", ")}`
-              : `Cannot confirm the custom commit emails ${unlisted.join(", ")}: the gh token for ${login} needs the user:email permission to read GitHub's email list`,
+              ? `GitHub ${quoteFragment(login)} does not list these commit emails: ${unlisted.map(quoteFragment).join(", ")}`
+              : `Cannot confirm the custom commit emails ${unlisted.map(quoteFragment).join(", ")}: the gh token for ${quoteFragment(login)} needs the user:email permission to read GitHub's email list`,
           );
       }
       const approved: Binding = {
