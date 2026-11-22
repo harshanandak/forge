@@ -98,9 +98,11 @@ test.each(
       error: { code: string; retry: string };
       status?: string;
     };
-    expect(body.error).toMatchObject({
-      code: quota ? "QUOTA_EXHAUSTED" : "UNAVAILABLE",
-      retry: !quota && route.startsWith("login") ? "reconcile_first" : "safe",
+    expect(body).toMatchObject({
+      error: {
+        code: quota ? "QUOTA_EXHAUSTED" : "UNAVAILABLE",
+        retry: !quota && route.startsWith("login") ? "reconcile_first" : "safe",
+      },
     });
     expect(body.status).toBe(typed ? "FAIL" : undefined);
   },

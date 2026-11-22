@@ -327,7 +327,7 @@ test("an interrupted holder lookup returns 503 and no lease answer", async () =>
     storage: {
       ...f.storage,
       sql: {
-        exec(statement, ...params) {
+        exec: (statement, ...params) => {
           if (statement.includes("FROM state_leases"))
             throw Object.assign(new Error("private storage problem"), {
               retryable: true,
