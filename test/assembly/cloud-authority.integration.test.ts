@@ -146,7 +146,10 @@ import {
   readBoundLane,
   writeBoundLane,
 } from "../../src/blocks/work/bound-lane-state.ts";
-import { approvalReply } from "../fixtures/owner-approval.mjs";
+import {
+  approvalReply,
+  writeOwnerPolicy,
+} from "../fixtures/owner-approval.mjs";
 
 setDefaultTimeout(30_000);
 const NOW = Date.UTC(2026, 10, 11);
@@ -6831,11 +6834,7 @@ test("local lane asks quote caller fields and still require relayed approval", a
     { bind: false, creds: false, sentinel: false, attended: () => attended },
     async (r) => {
       r.confirm.mockResolvedValue(true);
-      writeFileSync(
-        join(r.s.deviceRoot, "owner.json"),
-        '{"unattended":["block.admit","config.grant"]}\n',
-        { mode: 0o600 },
-      );
+      writeOwnerPolicy(r.s.deviceRoot);
       const channel = {
         harness: 'owner"\t\\',
         thread: "thread\n\u2028\u2029\u202e",
