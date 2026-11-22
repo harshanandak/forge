@@ -2405,16 +2405,21 @@ for (const [fault, tamper] of [
       retarget(d, ({ item, size }) => Object.assign(item, { offset: size })),
   ],
   [
-    "a length past the snapshot",
+    "a last entry whose length runs past the snapshot end",
     (d: Portable) =>
-      retarget(d, ({ item, size }) =>
-        Object.assign(item, { length: size + 1 }),
-      ),
+      retarget(d, ({ entries, size }) => {
+        const last = entries.at(-1)!;
+        last.length = size - last.offset! + 1;
+      }),
   ],
   [
-    "a negative offset",
+    "a saved outcome nested past 64 levels",
     (d: Portable) =>
-      retarget(d, ({ item }) => Object.assign(item, { offset: -1 })),
+      forgeRefusal(d, (r) =>
+        Object.assign(r, {
+          observed: JSON.parse("[".repeat(70) + "]".repeat(70)),
+        }),
+      ),
   ],
   [
     "an entry that overlaps another outcome",
@@ -2433,7 +2438,7 @@ for (const [fault, tamper] of [
     (d: Portable) => splitAccent(d, false),
   ],
   [
-    "a directory page nested far past the depth check",
+    "a 100000-level directory page inside the page cap",
     (d: Portable) => {
       d.pages[0]!.body = "[".repeat(100_000) + "]".repeat(100_000);
     },
