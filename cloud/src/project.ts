@@ -1101,7 +1101,7 @@ export class Project {
       const error = storageFailure(caught) ?? caught;
       if (!(error instanceof ForgeFailure)) throw error;
       await discard(request);
-      return Response.json(failed(error.error), {
+      return Response.json(failed(error.error, error.reasonId), {
         status: STATUS[error.error.code] ?? 500,
       });
     }

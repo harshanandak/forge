@@ -3,6 +3,10 @@
 // header, bounds every request by a deadline and a size, and never repeats server text or the token.
 import { request } from "node:https";
 import { Readable } from "node:stream";
+import {
+  checkedCloudRefusalReason,
+  type CloudRefusalReasonId,
+} from "../../blocks/work/cloud-refusal.ts";
 import { ForgeFailure } from "../../contract/failure.ts";
 import { parseUntrustedJson } from "../../contract/untrusted.ts";
 import { parseRestoreJson } from "../../core/state/restore-json.ts";
@@ -110,6 +114,7 @@ export type CommandResult =
   | ({
       readonly kind: "refused";
       readonly code: CommandRefusalCode;
+      readonly reasonId?: CloudRefusalReasonId;
     } & RefusalDetails);
 type Answer = { status: number; value: Record<string, unknown> };
 export interface CloudHttp {
@@ -413,7 +418,8 @@ function decodeCommand(
     if (!Array.isArray(body.warnings)) throw bad();
     return { kind: "ok", result };
   }
-  const code = object(body.error)?.code as CommandRefusalCode;
+  const error = object(body.error);
+  const code = error?.code as CommandRefusalCode;
   const linked =
     code === "APPROVAL_REQUIRED" &&
     keys === "error,ok,op,result,status,warnings";
@@ -432,9 +438,12 @@ function decodeCommand(
       throw bad();
     return { kind: "approval_required", result };
   }
-  const details = refusalDetails(code, call, object(body.error) ?? {}, token);
+  const { reasonId: wireReasonId, ...errorDetails } = error ?? {};
+  const details = refusalDetails(code, call, errorDetails, token);
   if (details === undefined) throw bad();
-  return { kind: "refused", code, ...details };
+  const reasonId = checkedCloudRefusalReason(wireReasonId, code, op);
+  const refused = { kind: "refused" as const, code, ...details };
+  return reasonId === undefined ? refused : { ...refused, reasonId };
 }
 
 export function createCloudHttp(options: CloudHttpOptions): CloudHttp {

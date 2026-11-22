@@ -1009,6 +1009,27 @@ test("CLAIM_BLOCKED keeps exactly the blocker edges in server order, with no inv
   } as never);
 }, 10_000);
 
+test("a plain approval refusal with a reason ID still rejects another extra error key", async () => {
+  await unusable(
+    refused("APPROVAL_REQUIRED", 409, { reasonId: null, extra: true }),
+    { ...wire, op: "lane.resume", input: { all: true } },
+  );
+}, 10_000);
+
+test("CLAIM_BLOCKED ignores a reason ID beside the code and checks the blocker edges", async () => {
+  const reason = { reasonId: "receipt.delivery_mismatch" };
+  const observed = { blockers: BLOCKERS };
+  expect(await ask(blocked(observed, reason), claimWire())).toStrictEqual({
+    kind: "refused",
+    code: "CLAIM_BLOCKED",
+    observed,
+  } as never);
+  await unusable(
+    blocked({ blockers: [{ ...BLOCKERS[0], ...reason }] }, reason),
+    claimWire(),
+  );
+}, 10_000);
+
 test("a holder with non-ASCII letters is kept unchanged in a lease and in a blocker", async () => {
   const holder = session({ agent: "agent-é" }).holder;
   const lease = { ...HELD, holder };

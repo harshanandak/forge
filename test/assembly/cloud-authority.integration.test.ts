@@ -3974,13 +3974,31 @@ const CLOSED = { ...ISSUE, status: "closed", revision: 4 };
 const VERIFIED_CLOSE = { id: "forge-1", pr: 490 };
 const verifiedClosed = { ...CLOSED, receipt: "verified-1" };
 
-for (const [code, status, wrongStatus, message] of [
-  ["RECEIPT_INVALID", 400, 200, "Missing or unapproved workflow evidence"],
-  ["RECEIPT_HEAD_MISMATCH", 409, 400, "Workflow must cover merge commit"],
-  ["PR_NOT_MERGED", 409, 200, "PR has not landed on target"],
+for (const [code, status, wrongStatus, message, localMessage] of [
+  [
+    "RECEIPT_INVALID",
+    400,
+    200,
+    "Missing or unapproved workflow evidence",
+    "The Forge cloud could not accept the receipt evidence.",
+  ],
+  [
+    "RECEIPT_HEAD_MISMATCH",
+    409,
+    400,
+    "Workflow must cover merge commit",
+    "The receipt evidence must cover the merge commit.",
+  ],
+  [
+    "PR_NOT_MERGED",
+    409,
+    200,
+    "PR has not landed on target",
+    "The pull request has not merged into its target branch.",
+  ],
 ] as const)
   for (const [op, httpStatus, expectedCode, expectedMessage] of [
-    ["close", status, code, `The Forge cloud refused the request (${code}).`],
+    ["close", status, code, localMessage],
     ["close", wrongStatus, "UNAVAILABLE", NOT_USABLE],
     ["show", status, "UNAVAILABLE", NOT_USABLE],
   ] as const)
@@ -4434,14 +4452,18 @@ for (const [source, noun, ids] of [
   [WORK, "issue", ["forge-0007", "work-0007", "FORGE-0007", "legacy-0007"]],
   [RENAMED, "ticket", ["forge-0007"]],
 ] as const)
-  test(`${noun}.claim for ${ids.join(", ")} lost to another holder shows that holder in --json and --text exactly as the local engine refuses, with exit 4 and no local state`, () =>
+  test(`${noun}.claim for ${ids.join(", ")} lost to another holder shows fixed text and the full lease in --json and --text, with exit 4 and no local state`, () =>
     using(
       {
         config: source,
         steps: [() => refusing("LEASE_HELD", { lease: heldBy("0007") })],
       },
       async (r) => {
-        const want = localRefusal(heldBy("0007"), 0);
+        const want = {
+          ...localRefusal(heldBy("0007"), 0),
+          message:
+            "Another holder has the lease. Read the lease state to reconcile before retrying.",
+        };
         expect(want.code).toBe("LEASE_HELD");
         let sent = 0;
         for (const id of ids)

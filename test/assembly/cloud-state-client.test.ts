@@ -28,7 +28,11 @@ import type {
   StateReadRequest,
   StateCommitRequest,
 } from "../../src/ports/state-protocol.ts";
-import { exitCode, failure as failEnvelope } from "../../src/surface/result.ts";
+import {
+  exitCode,
+  failure as failEnvelope,
+  respond,
+} from "../../src/surface/result.ts";
 import {
   entry,
   ORIGIN,
@@ -452,12 +456,17 @@ const refusedWith = (code: string, more: object) =>
 const commandFailure = (answer: LeaseResult) =>
   failureOf(() => rig({ answer }).client.command(cmd, () => true));
 
-test("a refused command's LEASE_HELD is the complete local error, with the holder, generation and expiry", async () => {
+test("a refused command's LEASE_HELD has fixed text and keeps the holder, generation and expiry", async () => {
   const answer = refusedWith("LEASE_HELD", { lease: conflictOf(OWNED) });
   const { client, calls } = rig({ answer });
   const failed = await failureOf(() => client.command(cmd, () => true));
-  expect(failed.error).toEqual(localError(OWNED, "acquire"));
   expect(exit(failed)).toBe(4);
+  expect(failed.error.retry).toBe("reconcile_first");
+  expect(failed.error).toEqual({
+    ...localError(OWNED, "acquire"),
+    message:
+      "Another holder has the lease. Read the lease state to reconcile before retrying.",
+  });
   expect(calls).toHaveLength(1);
 }, 10_000);
 
@@ -592,6 +601,163 @@ function wired(text: string, status = 200) {
   });
   return { client, bodies };
 }
+const deliveryReason = "receipt.delivery_mismatch";
+const storeReason = "store.unregistered_table";
+const deliveryMessage =
+  "Add or correct the newest delivers link so it points to the pull request being closed in the admitted repository.";
+const storeMessage =
+  "The cloud project contains an unregistered storage table. Ask the project owner to inspect the store.";
+const invalidMessage = "The Forge cloud rejected the command input.";
+const approvalMessage =
+  "Owner approval is still required. Run lane resume without an approval to get a new request.";
+const hostile = "\u001b[31m\nFAKE PROMPT";
+
+for (const [name, op, code, reasonId, message, expectedExit] of [
+  [
+    "delivery reason",
+    "issue.close",
+    "INPUT_INVALID",
+    deliveryReason,
+    deliveryMessage,
+    6,
+  ],
+  [
+    "store reason",
+    "issue.create",
+    "INPUT_INVALID",
+    storeReason,
+    storeMessage,
+    6,
+  ],
+  ...(
+    [
+      ["approval with an unknown ID", "__proto__"],
+      ["approval with a mismatched ID", deliveryReason],
+      ["approval with a null ID", null],
+    ] as const
+  ).map(
+    ([name, reasonId]) =>
+      [
+        name,
+        "lane.resume",
+        "APPROVAL_REQUIRED",
+        reasonId,
+        approvalMessage,
+        1,
+      ] as const,
+  ),
+  ["hostile ID", "issue.close", "INPUT_INVALID", hostile, invalidMessage, 6],
+  [
+    "prototype key",
+    "issue.close",
+    "INPUT_INVALID",
+    "__proto__",
+    invalidMessage,
+    6,
+  ],
+  [
+    "constructor key",
+    "issue.close",
+    "INPUT_INVALID",
+    "constructor",
+    invalidMessage,
+    6,
+  ],
+  [
+    "object method",
+    "issue.close",
+    "INPUT_INVALID",
+    "toString",
+    invalidMessage,
+    6,
+  ],
+  [
+    "case variant",
+    "issue.close",
+    "INPUT_INVALID",
+    "Receipt.delivery_mismatch",
+    invalidMessage,
+    6,
+  ],
+  [
+    "trailing space",
+    "issue.close",
+    "INPUT_INVALID",
+    deliveryReason + " ",
+    invalidMessage,
+    6,
+  ],
+  [
+    "absent ID from an old Worker",
+    "issue.close",
+    "INPUT_INVALID",
+    undefined,
+    invalidMessage,
+    6,
+  ],
+  [
+    "wrong operation",
+    "issue.show",
+    "INPUT_INVALID",
+    deliveryReason,
+    invalidMessage,
+    6,
+  ],
+  [
+    "store reason on a read",
+    "issue.show",
+    "INPUT_INVALID",
+    storeReason,
+    invalidMessage,
+    6,
+  ],
+  [
+    "wrong code",
+    "issue.close",
+    "NOT_FOUND",
+    deliveryReason,
+    "The requested item was not found in the Forge cloud.",
+    3,
+  ],
+] as const)
+  test(`a cloud refusal with ${name} displays only its local message`, async () => {
+    const { client, bodies } = wired(
+      JSON.stringify({
+        ok: false,
+        status: "FAIL",
+        error: { code, message: hostile, retry: "never", reasonId },
+        warnings: [],
+      }),
+      code === "APPROVAL_REQUIRED" ? 409 : code === "NOT_FOUND" ? 404 : 400,
+    );
+    const failed = await failureOf(() =>
+      client.command(
+        op === "lane.resume" ? RESUME_CALL : { ...cmd, op },
+        () => true,
+      ),
+    );
+    const envelope = {
+      ok: false as const,
+      op,
+      status: "FAIL" as const,
+      error: failed.error,
+      warnings: [],
+    };
+    const json = respond(envelope);
+    const text = respond(envelope, true);
+    expect(json.exitCode).toBe(expectedExit);
+    expect(text.exitCode).toBe(expectedExit);
+    expect(failed.error.retry).toBe("never");
+    expect(bodies).toHaveLength(1);
+    expect(JSON.parse(json.stdout)).toEqual({
+      ...envelope,
+      error: { code, message, retry: "never" },
+    });
+    expect(text.stdout).toBe(
+      `ok: false\nop: ${op}\nstatus: FAIL\nerror:\n  code: ${code}\n  message: ${message}\n  retry: never\nwarnings:\n\n`,
+    );
+  }, 10_000);
+
 /** The six characters backslash, u, 0, 0, 6, 6 followed by "ct_": a JSON escape of the first letter of the token prefix. */
 const ESCAPED_FCT = String.raw`\u0066ct_`;
 const escaped = (value: unknown) =>
@@ -1079,7 +1245,8 @@ for (const [code, retry, message] of [
                 ? lease.claim(claim)
                 : lease.holder(SUBJECT),
       );
+      expect(exit(failed)).toBe(1);
       expect(failed.error).toEqual({ code, message, retry });
-    });
+    }, 30_000);
   }
 }

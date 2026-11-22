@@ -112,9 +112,13 @@ export async function admitReceipt(
     typeof url !== "string" ||
     url.toLowerCase() !== expectedUrl.toLowerCase()
   )
-    throw fail(
-      "INPUT_INVALID",
-      "Newest delivery must name the admitted repository and PR",
+    throw new ForgeFailure(
+      {
+        code: "INPUT_INVALID",
+        message: "Newest delivery must name the admitted repository and PR",
+        retry: "never",
+      },
+      "receipt.delivery_mismatch",
     );
   if (!p0.ok) throw fail(p0.code, p0.reason);
   const policy = p0.policy;
