@@ -123,7 +123,15 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           BASE_REF: ${{ github.base_ref }}
-        run: bun tools/ci/merge-from-main.ts
+        run: |
+          set -euo pipefail
+          base_commit=$(git show-ref --verify --hash "refs/remotes/origin/$BASE_REF")
+          base_tree="$RUNNER_TEMP/merge-check-base"
+          git worktree add --detach "$base_tree" "$base_commit"
+          checker="$base_tree/tools/ci/merge-from-main.ts"
+          test -f "$checker"
+          echo "Running base merge checker at $base_commit: $checker"
+          bun "$checker"
       - &write-record
         if: always()
         run: bun tools/ci/ci-record.ts

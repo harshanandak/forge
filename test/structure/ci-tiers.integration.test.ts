@@ -78,12 +78,20 @@ test("Changes preserves the diff, outputs and setup steps", () => {
 
 test("Structure checks merges from main on pull requests after the Quick checks", () => {
   const steps = jobs.structure!.steps;
+  const checkout = steps.find((step) =>
+    step.uses?.startsWith("actions/checkout@"),
+  );
+  assert.deepEqual(checkout?.with, {
+    ref: "${{ env.CI_HEAD }}",
+    "fetch-depth": 0,
+  });
   const quick = steps.findIndex(
     (step) => step.name === "Quick lint, format and typecheck",
   );
   assert.ok(quick >= 0, "Quick checks must precede the merge check");
+  const mergeCheck = steps[quick + 1];
   assert.deepEqual(
-    steps[quick + 1],
+    mergeCheck,
     {
       name: "Check merges from main",
       if: "${{ !cancelled() && github.event_name == 'pull_request' }}",
@@ -92,9 +100,25 @@ test("Structure checks merges from main on pull requests after the Quick checks"
         HEAD_SHA: "${{ github.event.pull_request.head.sha }}",
         BASE_REF: "${{ github.base_ref }}",
       },
-      run: "bun tools/ci/merge-from-main.ts",
+      run: [
+        "set -euo pipefail",
+        'base_commit=$(git show-ref --verify --hash "refs/remotes/origin/$BASE_REF")',
+        'base_tree="$RUNNER_TEMP/merge-check-base"',
+        'git worktree add --detach "$base_tree" "$base_commit"',
+        'checker="$base_tree/tools/ci/merge-from-main.ts"',
+        'test -f "$checker"',
+        'echo "Running base merge checker at $base_commit: $checker"',
+        'bun "$checker"',
+        "",
+      ].join("\n"),
     },
     "Missing pull-request merge check after Quick",
+  );
+  assert.ok(mergeCheck?.run);
+  assert.match(mergeCheck.run, /"refs\/remotes\/origin\/\$BASE_REF"/);
+  assert.doesNotMatch(
+    mergeCheck.run,
+    /^\s*bun\s+(?:\.\/)?tools\/ci\/merge-from-main\.ts(?:\s|$)/m,
   );
   assert.equal(steps[quick + 2]?.if, "always()");
 }, 1_000);
