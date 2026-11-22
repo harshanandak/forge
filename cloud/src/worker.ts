@@ -5,6 +5,7 @@
 export { Project } from "./project.ts";
 import { validateUpgrade } from "./project.ts";
 import { storageResponse } from "./storage-failure.ts";
+import { ForgeFailure } from "../../src/contract/failure.ts";
 import { bearer, same, sha256, wellFormed } from "./tokens.ts";
 import type { Access, AuthComposition } from "./auth/compose.ts";
 import { configUnavailable, isOAuthRoute } from "./auth/compose.ts";
@@ -79,6 +80,7 @@ const legacyWorker = {
     env: Env,
     auth?: AuthComposition,
     forward?: ProjectForward,
+    pilot = false,
   ): Promise<Response> {
     // Commands are for a device token on the one admitted project. Refuse everything else first:
     // before owner headers are stripped, before OAuth is read and before any object is looked up.
@@ -111,17 +113,7 @@ const legacyWorker = {
           request,
         );
       } catch (error) {
-        const refusal = storageResponse(error, true);
-        if (refusal) return refusal;
-        if (state)
-          return unauthorized(
-            request,
-            "UNAVAILABLE",
-            "State routes unavailable",
-            503,
-            true,
-          );
-        return configUnavailable("PROJECTS", "Commands unavailable");
+        return storageResponse(error, true, "safe")!;
       }
     }
     // Only an authorized forward may supply this header to the private Project binding.
@@ -158,9 +150,7 @@ const legacyWorker = {
           env.PROJECTS.idFromName(String(project)),
         ).fetch(request);
       } catch (error) {
-        const refusal = storageResponse(error);
-        if (refusal) return refusal;
-        return configUnavailable("PROJECTS", "Device login unavailable");
+        return storageResponse(error, false, "reconcile_first")!;
       }
     }
     if (isOAuthRoute(request))
@@ -199,15 +189,11 @@ const legacyWorker = {
           request,
         );
       } catch (error) {
-        const refusal = storageResponse(error);
-        if (refusal) return refusal;
-        return Response.json(
-          { ok: false, error: "unavailable" },
-          { status: 503, headers: { "Cache-Control": "no-store" } },
-        );
+        return storageResponse(error, false, "reconcile_first")!;
       }
     }
-    if (LEASE_ROUTES.has(match![2]!) && project !== env.FORGE_CLOUD_PROJECT)
+    const lease = LEASE_ROUTES.has(match![2]!);
+    if ((pilot || lease) && project !== env.FORGE_CLOUD_PROJECT)
       return unauthorized(request, ...NOT_ADMITTED);
     const presented = bearer(request);
     if (presented === undefined)
@@ -242,12 +228,14 @@ const legacyWorker = {
     const legacy = isAdminRoute(match![2]!) || wellFormed(presented);
     if (!legacy && auth === undefined)
       return unauthorized(request, "AUTH_INVALID", "Token is not valid");
+    let authorizing = !legacy;
     try {
       if (legacy)
         return await env.PROJECTS.get(env.PROJECTS.idFromName(project)).fetch(
           request,
         );
       const access = await auth!.authorize(request, project, match![2]!);
+      authorizing = false;
       if (!access.decision.allowed || forward === undefined)
         return unauthorized(
           request,
@@ -257,9 +245,16 @@ const legacyWorker = {
         );
       return await forward(request, project, access);
     } catch (error) {
-      const refusal = storageResponse(error);
-      if (refusal) return refusal;
-      return unauthorized(request, "AUTH_INVALID", "Token is not valid");
+      if (
+        authorizing &&
+        error instanceof ForgeFailure &&
+        error.error.code === "AUTH_INVALID"
+      )
+        return unauthorized(request, "AUTH_INVALID", "Token is not valid");
+      void request.body?.cancel().catch(() => undefined);
+      const retry =
+        lease || request.method === "GET" ? "safe" : "reconcile_first";
+      return storageResponse(error, false, retry)!;
     }
   },
 };
@@ -269,10 +264,14 @@ export type ProjectForward = (
   project: string,
   access: Access,
 ) => Promise<Response>;
-export function createWorker(auth?: AuthComposition, forward?: ProjectForward) {
+export function createWorker(
+  auth?: AuthComposition,
+  forward?: ProjectForward,
+  pilot = false,
+) {
   return {
     fetch: (request: Request, env: Env) =>
-      legacyWorker.fetch(request, env, auth, forward),
+      legacyWorker.fetch(request, env, auth, forward, pilot),
   };
 }
-export { default } from "./local-only.ts";
+export default createWorker(undefined, undefined, true);

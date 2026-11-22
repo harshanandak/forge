@@ -19,7 +19,8 @@ export type IdentityRefusal =
   | "empty_issuer"
   | "empty_subject"
   | "wrong_audience"
-  | "expired";
+  | "expired"
+  | "unavailable";
 
 export type IdentityResult =
   | { readonly ok: true; readonly identity: VerifiedIdentity }

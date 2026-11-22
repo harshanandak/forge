@@ -1,6 +1,14 @@
 import { ForgeFailure } from "../../src/contract/failure.ts";
+import type { RetryPosture } from "../../src/generated/types.ts";
 
-export function storageFailure(error: unknown): ForgeFailure | undefined {
+const unavailable = (retry: RetryPosture) =>
+  new ForgeFailure({
+    code: "UNAVAILABLE",
+    message: "Project temporarily unavailable",
+    retry,
+  });
+
+export function storageFailure(error: unknown, reconcile = false) {
   if (error instanceof ForgeFailure)
     return error.error.code === "QUOTA_EXHAUSTED" ||
       error.error.code === "STORAGE_LIMIT_EXCEEDED"
@@ -23,13 +31,18 @@ export function storageFailure(error: unknown): ForgeFailure | undefined {
       message: "Project storage limit exceeded",
       retry: "never",
     });
+  if ("retryable" in error && error.retryable === true)
+    return unavailable(reconcile ? "reconcile_first" : "safe");
 }
 
 export function storageResponse(
   error: unknown,
   typed = false,
+  retry?: RetryPosture,
 ): Response | undefined {
-  const failure = storageFailure(error);
+  const failure =
+    storageFailure(error, retry === "reconcile_first") ??
+    (retry && unavailable(retry));
   if (failure)
     return Response.json(
       {
@@ -37,6 +50,6 @@ export function storageResponse(
         ...(typed ? { status: "FAIL", warnings: [] } : {}),
         error: failure.error,
       },
-      { status: 503 },
+      { status: 503, headers: { "Cache-Control": "no-store" } },
     );
 }

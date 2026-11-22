@@ -167,7 +167,8 @@ export function createOAuthAdapter(options: OAuthOptions): OAuthAdapter {
       const hash = await grantHash(token, proof.validated.userId);
       if (!hash || !(await options.grantRevocation.isActive(hash))) return null;
       return mintIdentity(proof.claims);
-    } catch {
+    } catch (error) {
+      if (options.resources.includes(resource)) throw error;
       return null;
     }
   }

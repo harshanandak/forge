@@ -907,7 +907,8 @@ export class Project {
       }
       return Response.json({ ok: true, value });
     } catch (caught) {
-      const error = storageFailure(caught) ?? caught;
+      const reconcile = request.method !== "GET" || isDeviceCallback(request);
+      const error = storageFailure(caught, reconcile) ?? caught;
       await discard(request);
       if (!(error instanceof ForgeFailure)) {
         console.error(error);

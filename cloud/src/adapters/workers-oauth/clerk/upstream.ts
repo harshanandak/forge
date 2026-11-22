@@ -152,6 +152,8 @@ export function createClerkUpstream(
               response.redirected
             ) {
               void response.body?.cancel().catch(() => {});
+              if ([400, 401, 403].includes(response.status))
+                return refusal("invalid_token");
               throw new Error("Clerk unavailable");
             }
             phase = "malformed_response";

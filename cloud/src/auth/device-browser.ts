@@ -270,14 +270,24 @@ export async function deviceRoute(
         await sha256(`device-upstream:${taken.verifier}`),
         taken.expiresAt,
       )
-      .catch(() => false);
+      .catch(() => undefined);
+    const restart = () =>
+      result(503, "Temporarily unavailable. Start a new login.");
+    if (claimed === undefined) return restart();
     if (!claimed) return result(400, "access_denied");
     const proof = await upstream!
       .verify(request, Date.now(), taken.verifier)
       .catch(() => undefined);
+    if (
+      !proof ||
+      (!proof.ok && proof.reason === "unavailable") ||
+      ("error" in proof &&
+        (proof.error === "unavailable" || proof.error === "timeout"))
+    )
+      return restart();
     const at = Date.now();
     if (
-      proof?.ok !== true ||
+      !proof.ok ||
       !isVerifiedIdentity(proof.identity) ||
       proof.identity.audience !== env.CLERK_CLIENT_ID ||
       !(at < proof.identity.expiresAt) ||

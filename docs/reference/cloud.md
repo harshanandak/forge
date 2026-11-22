@@ -1,6 +1,6 @@
 # Forge cloud claim server
 
-Forge 0.0.1 supports local project storage. The standard Worker entry points refuse cloud requests until the v3 launch. Older Worker artifacts, existing rehearsal deployments and custom cloud deployments are outside this release's supported boundary.
+Forge 0.0.1 supports local project storage. The standard Worker also serves an owner-only v2 pilot on the single project named by `FORGE_CLOUD_PROJECT`. Use a fresh, throwaway project on two owner-controlled machines. The pilot has no import, team access or v2-to-v3 migration. Start a fresh project for v3.
 
 `Project.alarm`, `CodeRedemption.alarm` and `GrantState.alarm` can still change existing storage. Those alarms run independently of the Worker fetch handlers.
 
@@ -8,6 +8,10 @@ A Cloudflare Worker with one SQLite Durable Object per project. It decides who h
 subject. The code is in `cloud/`.
 
 Follow [the release runbook](../release.md) for 0.0.1. The two-machine supplement below applies to the v3 cloud launch. Owner decision V001 keeps the temporary prerelease candidate from `package.json` for now, with the beta-tag default; the owner sets the final version at release time. The current workflow publishes to `next`, then promotes prereleases to `beta` and stable versions to `latest` after readback and the second owner approval. Never substitute a tag, package name or version during proof.
+
+Provision once with the admin `devices` route. Run `forge auth login --origin <https-origin> --project <project>` on each machine and approve each in the browser. Use only the CLI with structured input, such as `forge issue create --input '{"kind":"task","title":"Pilot check"}'`. See [Routes](#routes) for supported issue, lane and state operations. Unbind with `forge auth logout` and revoke issued tokens with the admin `revoke` route.
+
+After a temporary 503, keep the credential. For a replay-safe call, back off and use the same request ID. Start a new login after a login interruption. Check the prior outcome before resending other operations marked `reconcile_first`.
 
 ## Installed release and two-machine proof
 
@@ -401,9 +405,9 @@ A device token acts only as its own device. The admin token is the Worker secret
 
 ## Deploy
 
-**Rehearsal redeploys from `main` are paused until the v3 launch.** Deploying Forge 0.0.1 over the rehearsal Worker closes its HTTP access and returns 503 `UNAVAILABLE` for every request.
+The pilot uses a separate Worker and only admits its configured project, including for admin requests. The checked-in example uses `src/adapters/workers-oauth/compose.ts` for its Clerk-capable Project class and the same project-scoped handler as `src/worker.ts`. It serves device login and v2 routes. OAuth protocol and phone report routes stay closed. For the pilot, expect 503 from OAuth metadata and omit the rehearsal's OAuth-specific smoke checks.
 
-The steps below document how the existing ungated rehearsal artifact was deployed. Replace angle-bracket placeholders; `<worker-origin>` is an HTTPS origin without a trailing slash. Use an existing Cloudflare login with Workers/KV write access. Run every command from `cloud/` with the git-ignored `wrangler.local.jsonc` (copied from `wrangler.example.jsonc`) as `--config`; a bare `wrangler deploy` finds no `wrangler.jsonc` and stops. Commit no real value.
+The steps below document the existing rehearsal deployment. Adapt them for the isolated pilot and record the prior Worker version before deploying. Replace angle-bracket placeholders; `<worker-origin>` is an HTTPS origin without a trailing slash. Use an existing Cloudflare login with Workers/KV write access. Run every command from `cloud/` with the git-ignored `wrangler.local.jsonc` (copied from `wrangler.example.jsonc`) as `--config`; a bare `wrangler deploy` finds no `wrangler.jsonc` and stops. Commit no real value.
 
 1. **Clerk OAuth application.** In the Clerk admin console, open **OAuth applications** and create or open an application. Set its redirect URI to `<worker-origin>/callback`, make it a public client and require PKCE S256; no client secret is used. Allow `openid profile email` scopes (the Worker currently requests `openid`). Copy the client ID from **Application credentials** and the Frontend API URL from **API keys → Show API URLs**. Clerk organizations are informational only and grant no project access. See [Clerk's public-client guidance](https://clerk.com/docs/guides/configure/auth-strategies/oauth/how-clerk-implements-oauth).
    If the Clerk instance requires organization membership, a new user must create or join an organization during sign-up before consent; organizations still grant no project access.

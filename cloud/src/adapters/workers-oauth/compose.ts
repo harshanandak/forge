@@ -57,7 +57,7 @@ function deviceBrowser(env: unknown): DeviceBrowserOptions {
     );
     const namespace = vars.CODE_REDEMPTION as RedemptionNamespace | undefined;
     return {
-      upstream: clerkUpstream(config, {}),
+      upstream: clerkUpstream(config, {}, true),
       ...(typeof namespace?.idFromName === "function" &&
       typeof namespace.get === "function"
         ? { redemption: durableRedemption(namespace) }
@@ -372,4 +372,4 @@ export function createConfiguredWorker(
   };
 }
 
-export { default } from "../../local-only.ts";
+export { default } from "../../worker.ts";
