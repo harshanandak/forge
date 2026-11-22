@@ -21,6 +21,7 @@ env:
   # `bun lint` still needs the canary build used by the `static` job.
   BUN_VERSION: "1.4.4"
   CI_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+  CI_BUILD_SHA: ${{ github.sha }}
   COMMENT_GUARD_PATHS: >-
     tools/checks tools/lint tools/git-executable.ts tools/bun-builtin.ts
     tools/bun-lint-version.json test/structure/no-comments.integration.test.ts
@@ -175,7 +176,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ env.CI_HEAD }}
+          ref: ${{ env.CI_BUILD_SHA }}
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
