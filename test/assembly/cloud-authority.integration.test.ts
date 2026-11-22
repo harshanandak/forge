@@ -1696,7 +1696,9 @@ for (const [name, variants] of [
             expect(await saved()).toEqual(before);
             if (!shown.ok) throw new Error("The bound ask was not shown");
             const display = (shown.result as { ask: string }).ask;
-            expect(display).toBe(escapeDisplayText(JSON.stringify(ask)));
+            const savedAsk = readBoundLane(before.value, "work-1").progress
+              ?.ask;
+            expect(display).toBe(escapeDisplayText(JSON.stringify(savedAsk)));
             expect(JSON.parse(display)).toEqual(ask);
             return;
           }
