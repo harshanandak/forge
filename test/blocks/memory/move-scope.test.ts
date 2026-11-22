@@ -115,7 +115,11 @@ for (const budget of [15_000, 30_000]) {
         },
         new Map([["memory", block]]),
         undefined,
-        ["forge.state@1.0.0", "forge.project-state@1.0.0"],
+        [
+          "forge.state@1.0.0",
+          "forge.project-state@1.0.0",
+          "forge.crypto@1.0.0",
+        ],
       );
       const trust = new TrustStore();
       admit(trust, block.digest);

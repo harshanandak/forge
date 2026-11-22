@@ -1,5 +1,7 @@
 import type { ProcessPort, ResolvedExecutable } from "../../ports/process.ts";
 import type { DeviceFiles, ExecutablePin } from "../../ports/device-files.ts";
+const { quoteDisplayText } =
+  require("../../contract/display-text.ts") as typeof import("../../contract/display-text.ts");
 declare const fail: (...args: [string, string, { repair?: string }?]) => never;
 interface Files {
   root: string;
@@ -62,6 +64,8 @@ interface ApprovalRecord {
   fingerprint?: string;
   approval?: { quote?: string; source?: string };
 }
+const quoteFragment = (value: unknown): string =>
+  quoteDisplayText(String(value));
 const LIMIT = 1048576,
   MAX_COMMITS = 500,
   REF = /^[A-Za-z0-9_][A-Za-z0-9._/@{}^~-]{0,255}$/,
@@ -739,31 +743,44 @@ async function contact(
           : pick
             ? "matches the commit email"
             : "no signal chooses one account";
-  const hazards: string[] = [];
   const active = candidates.find((c) => c.active);
-  if (pick && active && active.login !== pick.login)
-    hazards.push(`gh is signed in as ${active.login} right now`);
-  if (pick && email && !belongs(email, pick.login))
-    hazards.push(
-      `effective user.email is ${email}, outside ${pick.login}'s noreply identity`,
-    );
-  if (!pushers.length && candidates.length && denied === candidates.length)
-    hazards.push("no signed-in account can push to this remote");
-  if (pick && pushers.length && !pushers.includes(pick.login))
-    hazards.push(
-      `${pick.login} cannot push to this remote; ${pushers.join(", ")} can`,
-    );
   const wrong = pick
     ? unpushed.filter(
         (c) =>
           !belongs(c.author, pick.login) || !belongs(c.committer, pick.login),
       )
     : [];
-  if (wrong.length)
-    hazards.push(
-      `${wrong.length} unpushed commit(s) use another account's email: ${wrong.map((c) => `${c.commit} (${c.author}, ${c.committer})`).join(", ")}`,
-    );
-  const ask = `This repo is ${match ? `${match[1]}/${match[2]}` : "local"}. ${pick ? `I will use GitHub ${pick.login} for it (${reason}; commits will use ${pick.login}'s noreply address).` : `Choose GitHub: ${candidates.map((c, i) => `${i + 1}. ${c.login}`).join(", ") || "no signed-in accounts found"}.`} ${hazards.length ? `Caught: ${hazards.join("; ")}. Without this binding the next push could carry another identity. ` : ""}Reply yes, or name a different account.`;
+  function renderPlan(fragment: (value: string) => string) {
+    const hazards: string[] = [];
+    if (pick && active && active.login !== pick.login)
+      hazards.push(`gh is signed in as ${fragment(active.login)} right now`);
+    if (pick && email && !belongs(email, pick.login))
+      hazards.push(
+        `effective user.email is ${fragment(email)}, outside ${fragment(pick.login)}'s noreply identity`,
+      );
+    if (!pushers.length && candidates.length && denied === candidates.length)
+      hazards.push("no signed-in account can push to this remote");
+    if (pick && pushers.length && !pushers.includes(pick.login))
+      hazards.push(
+        `${fragment(pick.login)} cannot push to this remote; ${pushers.map(fragment).join(", ")} can`,
+      );
+    if (wrong.length)
+      hazards.push(
+        `${wrong.length} unpushed commit(s) use another account's email: ${wrong.map((c) => `${fragment(c.commit)} (${fragment(c.author)}, ${fragment(c.committer)})`).join(", ")}`,
+      );
+    const repository = match
+      ? `${fragment(match[1]!)}/${fragment(match[2]!)}`
+      : "local";
+    const choice = pick
+      ? `I will use GitHub ${fragment(pick.login)} for it (${reason}; commits will use ${fragment(pick.login)}'s noreply address).`
+      : `Choose GitHub: ${candidates.map((c, i) => `${i + 1}. ${fragment(c.login)}`).join(", ") || "no signed-in accounts found"}.`;
+    const caught = hazards.length
+      ? `Caught: ${hazards.join("; ")}. Without this binding the next push could carry another identity. `
+      : "";
+    const ask = `This repo is ${repository}. ${choice} ${caught}Reply yes, or name a different account.`;
+    return { hazards, ask };
+  }
+  const { ask } = renderPlan(String);
   function audit(value: object) {
     const id = s.crypto.randomUUID();
     const previous = s.device.read("audit.jsonl") ?? "";
@@ -1007,6 +1024,7 @@ async function contact(
       await verifyIdentity(selected);
     }
     if (!selected) audit({ kind: "ask", ask });
+    const { hazards, ask: displayAsk } = renderPlan(quoteFragment);
     return {
       repo,
       candidates,
@@ -1014,8 +1032,8 @@ async function contact(
       reason,
       hazards,
       ask: selected
-        ? `Using GitHub ${selected.login} for this clone, from approval ${binding!.appliedFrom}.`
-        : ask,
+        ? `Using GitHub ${quoteFragment(selected.login)} for this clone, from approval ${quoteFragment(binding!.appliedFrom)}.`
+        : displayAsk,
       identities,
       recent,
       appliedFrom: binding?.appliedFrom ?? null,

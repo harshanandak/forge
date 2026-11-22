@@ -16,6 +16,7 @@ import { NAMESPACE, requestConflict } from "./lease-command.ts";
 import { carriesToken } from "./tokens.ts";
 import { CLAIM_REFUSALS, UPDATE_REFUSALS } from "./v3-authority.ts";
 import { updateEffect } from "./v3-record-transitions.ts";
+import type { Seal } from "./v3-seal.ts";
 import * as store from "./v3-store.ts";
 
 type CommandOptions = { prefix: string; expiresAt: number; now: number };
@@ -185,6 +186,7 @@ const commands: Readonly<Record<string, Command>> = {
 
 export function commandV3(
   db: SqlDatabase,
+  seal: Seal,
   image: store.V3Image,
   text: string,
   host: Host,
@@ -237,7 +239,9 @@ export function commandV3(
     result,
     retryUntil: expiresAt,
   };
-  store.append(db, image, [{ operation: op, time: now, ...changes, outcome }]);
+  store.append(db, seal, image, [
+    { operation: op, time: now, ...changes, outcome },
+  ]);
   store.publishV3(image);
   if (refusal) throw refusal;
   return respond(result);

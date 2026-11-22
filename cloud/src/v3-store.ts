@@ -40,6 +40,7 @@ import {
   verifyRecordFrame,
 } from "./v3-record-transitions.ts";
 import { TABLE_PROBE } from "./store.ts";
+import { BOUNDED_MAC, type Seal, signRow, verifyRow } from "./v3-seal.ts";
 
 export { withinDepth };
 export const ROOT = "cloud_v3_root";
@@ -85,9 +86,10 @@ const schema = {
     "(id INTEGER PRIMARY KEY CHECK(id=1), body TEXT NOT NULL, seal TEXT NOT NULL)",
   [PAGES]: PAGE_SCHEMA,
   [COMMITS]:
-    "(sequence INTEGER PRIMARY KEY CHECK(sequence>0), body TEXT NOT NULL)",
+    "(sequence INTEGER PRIMARY KEY CHECK(sequence>0), body TEXT NOT NULL, mac TEXT NOT NULL)",
 };
 const tables = Object.keys(schema);
+const oldCommits = `SELECT 1 FROM (SELECT count(*) AS n, sum(name='mac') AS m FROM pragma_table_info('${COMMITS}')) WHERE n>0 AND m=0`;
 const legacyTables =
   "SELECT 1 FROM sqlite_schema WHERE type='table' AND (name GLOB 'state_*' OR name GLOB 'domain_cloud_*') LIMIT 1";
 
@@ -237,7 +239,8 @@ function sealedFields(root: Record<string, unknown>) {
 export function readV3Root(
   db: SqlDatabase,
 ): V3Image["root"] & { generation: number; eventWatermark: number } {
-  if (!tables.every((table) => hasTable(db, table))) throw unavailable();
+  if (!tables.every((table) => hasTable(db, table)) || db.get(oldCommits))
+    throw unavailable();
   const row = db.get(
     `SELECT body, seal FROM ${ROOT} WHERE id=1 AND length(CAST(body AS BLOB))<=${MANIFEST_BYTES}`,
   );
@@ -416,16 +419,17 @@ function activationFrame(root: V3Image["root"], time: number) {
   });
 }
 
-function applyActivation(db: SqlDatabase, image: V3Image) {
+function applyActivation(db: SqlDatabase, seal: Seal, image: V3Image) {
   const { root } = image;
   const [row, extra] = db.all(
-    `SELECT sequence, CASE WHEN length(CAST(body AS BLOB))<=${PAGE_BYTES} THEN body END AS body FROM ${COMMITS} ORDER BY sequence LIMIT 2`,
+    `SELECT sequence, ${BOUNDED_MAC}, CASE WHEN length(CAST(body AS BLOB))<=${PAGE_BYTES} THEN body END AS body FROM ${COMMITS} ORDER BY sequence LIMIT 2`,
   );
   if (
     extra ||
     row?.sequence !== image.head + 1 ||
     typeof row.body !== "string" ||
     digestBytes(row.body) !== root.activationDigest ||
+    !verifyRow(seal, root.incarnation, row.sequence, row.body, row.mac) ||
     image.entries.lease.size > RESTORE_LEASES
   )
     throw unavailable();
@@ -448,15 +452,18 @@ function applyActivation(db: SqlDatabase, image: V3Image) {
 
 export function recoverV3(
   db: SqlDatabase,
+  seal: Seal,
   verification: PortableVerification,
 ): V3Image;
 export function recoverV3(
   db: SqlDatabase,
+  seal: Seal,
   verification?: Verification,
   options?: { through: number },
 ): V3Image;
 export function recoverV3(
   db: SqlDatabase,
+  seal: Seal,
   verification?: Verification | PortableVerification,
   { through }: { through?: number } = {},
 ): V3Image {
@@ -517,17 +524,21 @@ export function recoverV3(
   }
   if (root.activationDigest !== undefined) {
     if (through !== undefined || verification) throw unavailable();
-    return applyActivation(db, image);
+    return applyActivation(db, seal, image);
   }
   verification?.sealed(image);
   const upper = through === undefined ? "" : " AND sequence<=?";
   const rows = db.all(
-    `SELECT sequence, CASE WHEN sum(length(CAST(body AS BLOB))) OVER (ORDER BY sequence)<=${TAIL_BYTES} THEN body END AS body FROM (SELECT sequence, body FROM ${COMMITS} WHERE sequence>?${upper} ORDER BY sequence LIMIT ${TAIL_ROWS + 1}) ORDER BY sequence`,
+    `SELECT sequence, ${BOUNDED_MAC}, CASE WHEN sum(length(CAST(body AS BLOB))) OVER (ORDER BY sequence)<=${TAIL_BYTES} THEN body END AS body FROM (SELECT sequence, body, mac FROM ${COMMITS} WHERE sequence>?${upper} ORDER BY sequence LIMIT ${TAIL_ROWS + 1}) ORDER BY sequence`,
     through === undefined ? [root.coveredHead] : [root.coveredHead, through],
   );
   if (rows.length > TAIL_ROWS) throw unavailable();
   const verify = (row: Frame) => verifyLeaseFrame(db, image, row, verification);
-  for (const { sequence, body } of rows) foldRow(image, sequence, body, verify);
+  for (const { sequence, body, mac } of rows) {
+    if (!verifyRow(seal, root.incarnation, sequence, body, mac))
+      throw unavailable();
+    foldRow(image, sequence, body, verify);
+  }
   return image;
 }
 
@@ -605,7 +616,11 @@ export function publishV3(image: V3Image) {
   image.stale = false;
 }
 
-export function provisionV3(db: SqlDatabase, legacyMarker: boolean) {
+export function provisionV3(
+  db: SqlDatabase,
+  seal: Seal,
+  legacyMarker: boolean,
+) {
   return db.transaction(() => {
     if (legacyMarker || db.get(legacyTables))
       throw fail("INPUT_CONFLICT", "Cloud v3 requires a fresh project");
@@ -619,12 +634,13 @@ export function provisionV3(db: SqlDatabase, legacyMarker: boolean) {
       );
       db.run(`INSERT INTO ${ROOT} VALUES (1, ?, ?)`, [body, digestBytes(body)]);
     }
-    return recoverV3(db);
+    return recoverV3(db, seal);
   });
 }
 
 export function activateV3(
   db: SqlDatabase,
+  seal: Seal,
   imported: V3Image,
   projection: ReturnType<typeof checkpointRoster>,
   published: ReadonlyMap<string, string>,
@@ -653,9 +669,11 @@ export function activateV3(
   for (const [id, page] of published)
     db.run(`INSERT INTO ${PAGES} VALUES (?, ?)`, [id, page]);
   db.run(`INSERT INTO ${ROOT} VALUES (1, ?, ?)`, [body, digestBytes(body)]);
-  db.run(`INSERT INTO ${COMMITS} VALUES (?, ?)`, [
-    imported.head + 1,
+  const sequence = imported.head + 1;
+  db.run(`INSERT INTO ${COMMITS} VALUES (?, ?, ?)`, [
+    sequence,
     activation,
+    signRow(seal, root.incarnation, sequence, activation),
   ]);
 }
 
@@ -723,6 +741,7 @@ export function readV3Value<C extends Collection>(
 
 export function appendV3Frames(
   db: SqlDatabase,
+  seal: Seal,
   frames: unknown,
   image: () => V3Image,
 ) {
@@ -738,16 +757,21 @@ export function appendV3Frames(
     )
   )
     throw fail("INPUT_INVALID", "Invalid v3 frame");
-  return append(db, image(), batch);
+  return append(db, seal, image(), batch);
 }
 
 export { append };
 
-function append(db: SqlDatabase, image: V3Image, batch: readonly unknown[]) {
+function append(
+  db: SqlDatabase,
+  seal: Seal,
+  image: V3Image,
+  batch: readonly unknown[],
+) {
   if (!batch.every(validAppendFrame))
     throw fail("INPUT_INVALID", "Invalid v3 frame");
   return db.transaction(() => {
-    const { activationDigest, coveredHead } = readV3Root(db);
+    const { activationDigest, coveredHead, incarnation } = readV3Root(db);
     if (activationDigest) throw stopped();
     const last = db.get(
       `SELECT sequence FROM ${COMMITS} ORDER BY sequence DESC LIMIT 1`,
@@ -787,8 +811,13 @@ function append(db: SqlDatabase, image: V3Image, batch: readonly unknown[]) {
     }
     image.stale = true;
     for (const [i, body] of bodies.entries()) {
-      db.run(`INSERT INTO ${COMMITS} VALUES (?, ?)`, [head + i + 1, body]);
-      image.staged.push([head + i + 1, body]);
+      const sequence = head + i + 1;
+      db.run(`INSERT INTO ${COMMITS} VALUES (?, ?, ?)`, [
+        sequence,
+        body,
+        signRow(seal, incarnation, sequence, body),
+      ]);
+      image.staged.push([sequence, body]);
     }
     return { head: head + batch.length };
   });
@@ -1097,6 +1126,7 @@ function verifyLeaseFrame(
 
 export function leaseV3(
   db: SqlDatabase,
+  seal: Seal,
   image: V3Image,
   command: LeaseCommand,
   expiresAt: number,
@@ -1136,7 +1166,7 @@ export function leaseV3(
         if (!recordable(error)) throw error;
         const status = error.error.code;
         const refused = { ...outcome, status, result: error.error };
-        append(db, image, [{ ...frame, outcome: refused }]);
+        append(db, seal, image, [{ ...frame, outcome: refused }]);
         return { refusal: error };
       };
       let current: LeaseRecord | undefined;
@@ -1170,7 +1200,7 @@ export function leaseV3(
       } catch (error) {
         return refuse(error);
       }
-      append(db, image, [
+      append(db, seal, image, [
         {
           ...frame,
           lease,

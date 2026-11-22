@@ -8,6 +8,7 @@ import {
 import {
   chmodSync,
   cpSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   rmSync,
@@ -19,8 +20,10 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createAssembly, localCall } from "../../src/assembly/index.ts";
 import { AGENT_MARKERS } from "../../src/assembly/identity.ts";
+import { PROJECT_MANIFEST } from "../../src/assembly/project-manifest.ts";
 import { LocalState } from "../../src/assembly/state.ts";
 import { dispatch, record } from "../../src/surface/dispatch.ts";
+import { exitCode } from "../../src/surface/result.ts";
 
 const MARKERS = [...AGENT_MARKERS, "FORGE_HARNESS"];
 const saved = MARKERS.map((key) => [key, process.env[key]] as const);
@@ -37,9 +40,10 @@ afterEach(() => {
 async function open(
   project: boolean,
   terminal?: NonNullable<Parameters<typeof createAssembly>[0]["terminal"]>,
+  rootName = "project",
 ) {
   const work = mkdtempSync(join(tmpdir(), "forge-owner-policy-"));
-  const root = join(work, "project");
+  const root = join(work, rootName);
   const deviceRoot = join(work, "device");
   mkdirSync(root);
   mkdirSync(deviceRoot);
@@ -223,16 +227,41 @@ test("an attended approval uses the host's configured terminal, not the process'
       const admitted = await h.call("block.admit", { digest });
       if (stdin) {
         expect(admitted).toMatchObject({ ok: true });
+        const unattended = ["block.admit", "config.grant"];
+        expect(await h.call("owner.policy", { unattended })).toMatchObject({
+          ok: true,
+          result: { unattended },
+        });
+        expect(
+          await h.call("config.grant", { digest, effects: [] }),
+        ).toMatchObject({ ok: true });
+        expect(readFileSync(join(h.deviceRoot, "owner.json"), "utf8")).toBe(
+          `${JSON.stringify({ unattended })}\n`,
+        );
         await h.assembly.close();
         const trust = new LocalState(join(h.deviceRoot, "trust.sqlite"));
         try {
           const rows = (await trust.open(false))?.list("forge/core-approvals");
           expect(rows?.map((row) => record(row.value)?.method)).toEqual([
             "attended",
+            "attended",
+            "attended",
+          ]);
+          expect(
+            rows?.map((row) => String(record(row.value)?.ask)).sort(),
+          ).toEqual([
+            `Admit block example.org/hello at ${digest} so its captured code can run. Declared effects: none.`,
+            `Grant effects none to block example.org/hello at ${digest}.`,
+            "Let scripts and CI with no agent session run block.admit, config.grant without asking, by writing owner.json in the device folder.",
           ]);
         } finally {
           await trust.close();
         }
+        expect(asked.map(([, ask]) => ask)).toEqual([
+          `Admit block "example.org/hello" at "${digest}" so its captured code can run. Declared effects: none.`,
+          'Let scripts and CI with no agent session run "block.admit", "config.grant" without asking, by writing owner.json in the device folder.',
+          `Grant effects none to block "example.org/hello" at "${digest}".`,
+        ]);
       } else {
         expect(admitted).toMatchObject({
           ok: false,
@@ -244,10 +273,81 @@ test("an attended approval uses the host's configured terminal, not the process'
       rmSync(h.work, { recursive: true, force: true });
     }
   }
-  expect(asked).toHaveLength(1);
-  expect(asked[0]?.[0]).toBe("block.admit");
-  expect(asked[0]?.[1]).toContain("Admit block");
+  expect(asked.map(([op]) => op)).toEqual([
+    "block.admit",
+    "owner.policy",
+    "config.grant",
+  ]);
 }, 30_000);
+
+test.each(["project.init", "store.reinit"])(
+  "%s shows the quoted root while writing to the original path",
+  async (op) => {
+    const asks: string[] = [];
+    let attended = false;
+    const rootName = "project\u2028\u2029\u202e";
+    const h = await open(
+      true,
+      {
+        tty: () => ({ stdin: attended, stderr: attended }),
+        confirm: (_op, ask) => {
+          asks.push(ask);
+          return Promise.resolve(true);
+        },
+      },
+      rootName,
+    );
+    const root = join(h.work, rootName);
+    const trust = new LocalState(join(h.deviceRoot, "trust.sqlite"));
+    try {
+      const pending = await h.call(op, {});
+      expect(pending).toMatchObject({
+        ok: false,
+        status: "FAIL",
+        error: { code: "APPROVAL_REQUIRED" },
+      });
+      expect(exitCode(pending)).toBe(1);
+      const request = record(record(pending.result)?.request);
+      const file =
+        op === "project.init" ? PROJECT_MANIFEST : ".forge/state.sqlite";
+      expect(existsSync(join(root, file))).toBe(false);
+      attended = true;
+      expect(exitCode(await h.call(op, {}))).toBe(0);
+      expect(existsSync(join(root, file))).toBe(true);
+      const stored = (await trust.open(false))?.list("forge/core-approvals");
+      const pendingRow = stored?.find((row) => row.key === request?.id)?.value;
+      const rawAsk = (target: string) =>
+        op === "project.init"
+          ? `Create ${PROJECT_MANIFEST} with a new random project id for ${target}. The id is never changed by init.`
+          : `Start a new empty Forge store for ${target}. Existing records will not be recovered.`;
+      expect(pendingRow).toMatchObject({
+        ask: rawAsk(root),
+        binding: request?.binding,
+        status: "pending",
+      });
+      expect(stored?.map((row) => row.value)).toContainEqual(
+        expect.objectContaining({
+          ask: rawAsk(root),
+          binding: request?.binding,
+          method: "attended",
+        }),
+      );
+      const displayedRoot = JSON.stringify(root).replace(
+        "\u2028\u2029\u202e",
+        "\\u2028\\u2029\\u202e",
+      );
+      expect([request?.ask, ...asks]).toEqual([
+        rawAsk(displayedRoot),
+        rawAsk(displayedRoot),
+      ]);
+    } finally {
+      await trust.close();
+      await h.assembly.close();
+      rmSync(h.work, { recursive: true, force: true });
+    }
+  },
+  30_000,
+);
 
 // The platform-conditional tests below take the same 30 s as the rest of this file.
 setDefaultTimeout(30_000);

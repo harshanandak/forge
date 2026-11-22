@@ -277,7 +277,7 @@ test(
 );
 
 test(
-  "restoring a replacement bundle keeps its references inert",
+  "restoring a replacement bundle serves only the replacer",
   async () => {
     const source = await openHarness(["memory"]);
     let target: Harness | undefined;
@@ -306,16 +306,11 @@ test(
       const search = done(
         await target.call("memory.search", { query: "swift" }),
       ) as { hits: { id: string }[] };
-      expect(search.hits.map(({ id }) => id).sort()).toEqual(
-        [old.id, current.id].sort(),
-      );
+      expect(search.hits.map(({ id }) => id)).toEqual([current.id]);
       const packet = done(
         await target.call("memory.attach", { ids: [old.id, current.id] }),
       ) as { receipt: { selected: { id: string }[] } };
-      expect(packet.receipt.selected.map(({ id }) => id)).toEqual([
-        old.id,
-        current.id,
-      ]);
+      expect(packet.receipt.selected.map(({ id }) => id)).toEqual([current.id]);
     } finally {
       await Promise.all([source.close(), target?.close()]);
     }

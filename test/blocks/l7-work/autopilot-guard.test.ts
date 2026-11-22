@@ -213,6 +213,17 @@ test("a lane whose calls are used up pauses with an ask naming calls, limit and 
   expect(row?.calls).toEqual({ used: 3, limit: 3 });
 });
 
+test("the budget ask quotes its lane ID and pauses without changing the lane", async () => {
+  const f = fixture({ budgets: { calls: 1 } });
+  f.call("work-1", 1);
+  const before = f.records.get("issue:work-1");
+  const action = (await f.next({ id: "work-1" })) as Action;
+  expect(action.kind).toBe("pause");
+  expect(f.records.get("issue:work-1")).toEqual(before);
+  expect(f.ghCalls).toHaveLength(0);
+  expect(action.ask).toContain('"work-1" has used its calls budget');
+}, 30_000);
+
 test("the default call budget is 20", async () => {
   const f = fixture();
   expect((await f.status()).lanes[0]?.calls).toEqual({ used: 0, limit: 20 });
