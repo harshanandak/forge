@@ -20,6 +20,9 @@ const REFUSAL_KEYS = "fingerprint,id,result,retryUntil,scope,status";
 const ARCHIVED_KEYS = "fingerprint,id,resultDigest,retryUntil,scope,status";
 const WITNESS_KEYS = "digest,generation,id,namespace,subject";
 const OPERATIONS = ["lease.claim", "lease.renew", "lease.release"];
+export const UPDATE_REFUSALS = REFUSALS.filter(
+  (code) => code !== "LEASE_HELD",
+).concat("NOT_FOUND", "REVISION_CONFLICT");
 
 function validLease(lease: unknown): boolean {
   try {
@@ -30,9 +33,9 @@ function validLease(lease: unknown): boolean {
   }
 }
 
-function refusalCode(result: unknown): unknown {
+function refusalCode(result: unknown, codes = REFUSALS): unknown {
   return validators.validateForgeError(result).ok &&
-    REFUSALS.includes((result as ForgeError).code)
+    codes.includes((result as ForgeError).code)
     ? (result as ForgeError).code
     : undefined;
 }
@@ -44,7 +47,7 @@ function fingerprintTied(
 ): boolean {
   try {
     const input: unknown = JSON.parse(String(outcome.fingerprint));
-    if (operation === "issue.create") {
+    if (operation === "issue.create" || operation === "issue.update") {
       if (!isObject(input) || !isObject(outcome.scope)) return false;
       const { family: _family, ...scope } = outcome.scope;
       return (
@@ -73,7 +76,7 @@ function outcomeFault(outcome: unknown, typed?: boolean, portable = false) {
   if (!isObject(outcome) || !isObject(outcome.scope)) return "outcome shape";
   const { scope, result } = outcome;
   const command = typed ?? scope.family === "command";
-  const archived = portable && outcome.status !== "ok";
+  const archived = portable && (command || outcome.status !== "ok");
   const liveKeys = result === undefined ? OUTCOME_KEYS : REFUSAL_KEYS;
   if (
     keysOf(outcome) !== (archived ? ARCHIVED_KEYS : liveKeys) ||
@@ -97,7 +100,8 @@ function outcomeFault(outcome: unknown, typed?: boolean, portable = false) {
   if (
     command &&
     (!/^c2:[a-f0-9]{64}$/.test(outcome.id) ||
-      !["ok", "INPUT_INVALID"].includes(String(outcome.status)))
+      (outcome.status !== "ok" &&
+        !UPDATE_REFUSALS.includes(String(outcome.status))))
   )
     return "command outcome";
   if (archived) return undefined;
@@ -105,7 +109,10 @@ function outcomeFault(outcome: unknown, typed?: boolean, portable = false) {
     return validators.validateTrackerItem(result).ok
       ? undefined
       : "command result";
-  const status = result === undefined ? "ok" : refusalCode(result);
+  const status =
+    result === undefined
+      ? "ok"
+      : refusalCode(result, command ? UPDATE_REFUSALS : REFUSALS);
   return status !== undefined && outcome.status === status
     ? undefined
     : "outcome status";
@@ -165,14 +172,18 @@ export function authorityFault(
   )
     return "lease release marker";
   const create = operation === "issue.create";
+  const command = create || operation === "issue.update";
   const outcomeError =
-    outcome === undefined ? undefined : outcomeFault(outcome, create, portable);
+    outcome === undefined
+      ? undefined
+      : outcomeFault(outcome, command, portable);
   if (outcomeError !== undefined) return outcomeError;
-  if (create)
-    return !portable &&
+  if (command)
+    return (!create || !portable) &&
       lease === undefined &&
       witness === undefined &&
       isObject(outcome) &&
+      (!create || ["ok", "INPUT_INVALID"].includes(String(outcome.status))) &&
       fingerprintTied(operation, lease, outcome)
       ? undefined
       : "command frame";

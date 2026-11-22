@@ -91,6 +91,21 @@ export const heldReplay =
   (prior: TrackerItem, context: BoundContext): void =>
     heldLease(owner, context, `work-${prior.id.replace(/^.*-/, "")}`, op);
 
+export function checkedUpdateInput(input: unknown) {
+  if (
+    typeof input === "object" &&
+    input !== null &&
+    ("kind" in input || "parent" in input || "dependsOn" in input)
+  )
+    throw fail(
+      "INPUT_INVALID",
+      "Kind, parent and dependencies are not supported in cloud yet",
+    );
+  if (schemas().validate(UpdateItemInput.$ref, input).length > 0)
+    throw fail("INPUT_INVALID", "input must be a valid issue.update input");
+  return input as Fields["patch"] & { id: string; expectRevision: number };
+}
+
 /** Edits one issue's title, body or labels, or returns the recorded answer while the caller still holds its lease. */
 export function updateIssue(
   db: SqlDatabase,
@@ -103,23 +118,7 @@ export function updateIssue(
     "issue.update",
     call,
     (input, prefix): Fields => {
-      // Graph fields are refused by name, never dropped: the graph arrives in a later slice.
-      if (
-        typeof input === "object" &&
-        input !== null &&
-        ("kind" in input || "parent" in input || "dependsOn" in input)
-      )
-        throw fail(
-          "INPUT_INVALID",
-          "Kind, parent and dependencies are not supported in cloud yet",
-        );
-      if (schemas().validate(UpdateItemInput.$ref, input).length > 0)
-        throw fail("INPUT_INVALID", "input must be a valid issue.update input");
-      const {
-        id: given,
-        expectRevision,
-        ...patch
-      } = input as Fields["patch"] & { id: string; expectRevision: number };
+      const { id: given, expectRevision, ...patch } = checkedUpdateInput(input);
       const id = storedId(given, prefix, minted(db));
       if (owner.get(NAMESPACE, `issue:${id}`) === undefined)
         throw fail("NOT_FOUND", "Issue was not found");

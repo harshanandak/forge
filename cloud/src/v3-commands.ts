@@ -1,14 +1,19 @@
 import { ForgeFailure } from "../../src/contract/failure.ts";
+import { decideLease } from "../../src/contract/lease.ts";
+import { isObject } from "../../src/core/config/pointer.ts";
 import type { ForgeError } from "../../src/generated/types.ts";
 import type { SqlDatabase } from "../../src/ports/store.ts";
 import { prepareReceipt } from "./command-write.ts";
 import * as api from "./issue-commands.ts";
 import { checked } from "./issue-create.ts";
-import { configured, shownId } from "./issue-read.ts";
+import { configured, shownId, storedId } from "./issue-read.ts";
 import { expiredReplay, RETENTION_MS } from "./issue-receipts.ts";
 import { receiptScope } from "./issue-request-id.ts";
+import { checkedUpdateInput, fence } from "./issue-update.ts";
 import { requestConflict } from "./lease-command.ts";
 import { carriesToken } from "./tokens.ts";
+import { UPDATE_REFUSALS } from "./v3-authority.ts";
+import { updateEffect } from "./v3-record-transitions.ts";
 import * as store from "./v3-store.ts";
 
 type CommandOptions = { prefix: string; expiresAt: number; now: number };
@@ -25,6 +30,20 @@ interface Command {
   write(state: Call): Effect;
   replay?(state: Call, result: unknown): void;
   refusalCodes?: readonly string[];
+}
+
+function updateLease(state: Call, id: string, replay = false) {
+  const { db, image, call, now } = state;
+  const held = fence(call.context, id, call.op);
+  const lease = store.readV3Value(db, image, "lease", held.subject);
+  const decision = decideLease(lease, { ...held, mode: "held", nowMs: now });
+  if (decision.ok) return lease;
+  if (!replay) throw new ForgeFailure(decision.error);
+  throw new ForgeFailure({
+    ...decision.error,
+    code: "LEASE_STALE",
+    message: `Request no longer matches the current lease on ${held.subject}`,
+  });
 }
 
 const commands: Readonly<Record<string, Command>> = {
@@ -48,6 +67,52 @@ const commands: Readonly<Record<string, Command>> = {
         changes: [{ key, value: { revision, value } }],
         result: { ...item, id: shownId(id, prefix), revision, updatedAt },
       };
+    },
+  },
+  "issue.update": {
+    refusalCodes: UPDATE_REFUSALS,
+    write(state) {
+      const { db, image, call, now, prefix } = state;
+      const {
+        id: given,
+        expectRevision,
+        ...patch
+      } = checkedUpdateInput(call.input);
+      const read = (key: string) => store.readV3Value(db, image, "record", key);
+      const id = storedId(given, prefix, (alias) =>
+        [...image.entries.record.keys()].some((key) => {
+          const value = read(key);
+          return (
+            isObject(value) &&
+            value.id === `work-${key.slice(1)}` &&
+            (value.prefix ?? "work") === alias
+          );
+        }),
+      );
+      const key = `r${id.slice(5)}`;
+      const current = read(key);
+      const prior = image.entries.record.get(key)?.revision;
+      if (current === undefined || prior === undefined)
+        throw store.fail("NOT_FOUND", "Issue was not found");
+      if (!isObject(current)) throw store.fail("INTERNAL", "Invalid issue");
+      const lease = updateLease(state, id);
+      if (prior !== expectRevision)
+        throw new ForgeFailure({
+          code: "REVISION_CONFLICT",
+          message: `Expected revision ${expectRevision}; current revision is ${prior}`,
+          retry: "reconcile_first",
+          currentRevision: prior,
+        });
+      return updateEffect(
+        { key, prefix, expectRevision, patch },
+        current,
+        now,
+        lease,
+      );
+    },
+    replay(state) {
+      const { id } = checkedUpdateInput(state.call.input);
+      updateLease(state, `work-${id.replace(/^.*-/, "")}`, true);
     },
   },
 };
