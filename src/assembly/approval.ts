@@ -287,6 +287,11 @@ export function memoryOwnerClaim(
     ...(typeof claim.quote === "string" ? { quote: claim.quote } : {}),
   };
 }
+const shown = (value: unknown) =>
+  String(value).replace(
+    /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu,
+    (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`,
+  );
 /** What the owner is asked, in one plain sentence naming the action. */
 export function memoryOwnerAsk(declaredOp: string, input: unknown): string {
   const fields = object(input);
@@ -301,9 +306,9 @@ export function memoryOwnerAsk(declaredOp: string, input: unknown): string {
         const item = object(entry);
         const text =
           typeof item?.text === "string"
-            ? item.text.split(/\r?\n/u).join("\n    ")
+            ? item.text.split(/\r?\n/u).map(shown).join("\n    ")
             : "(text not shown)";
-        return `- ${String(item?.id)} (revision ${String(item?.revision)}):\n    ${text}`;
+        return `- ${shown(item?.id)} (revision ${shown(item?.revision)}):\n    ${text}${Array.isArray(item?.removedOwnerTags) && item.removedOwnerTags.length > 0 ? `\nremoves owner tags: ${item.removedOwnerTags.map(shown).join(", ")}` : ""}`;
       },
     );
     return declaredOp === "memory.accept"

@@ -254,6 +254,10 @@ test("show retains every version timestamp and only its approval after metadata 
     tags: [],
     approval: ownerApproval,
   });
+  await call("memory.accept", {
+    items: await decisionItems(call, ["note-1"]),
+    approval: ownerApproval,
+  });
   setDay(3);
   await call("memory.add", { id: "note-1", text: "third" });
   setDay(4);
@@ -267,7 +271,7 @@ test("show retains every version timestamp and only its approval after metadata 
   expect(shown.note.versions).toMatchObject([
     { revision: 1, at: day(1) },
     {
-      revision: 2,
+      revision: 3,
       at: day(2),
       approval: {
         by: "owner",
@@ -275,7 +279,7 @@ test("show retains every version timestamp and only its approval after metadata 
         at: day(2),
       },
     },
-    { revision: 3, at: day(3) },
+    { revision: 4, at: day(3) },
   ]);
   expect(shown.note.versions[0]).not.toHaveProperty("approval");
   expect(shown.note.versions[2]).not.toHaveProperty("approval");
