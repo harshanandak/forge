@@ -26,6 +26,7 @@ interface Services {
   readonly state: ExtendedStateClient;
   /** The declared forge.project-state@1 slot: this host's project, and other projects read-only. */
   readonly levels: StoreLevels;
+  readonly crypto: { randomUUID(): string };
 }
 interface Untrusted {
   kind: "untrusted";
@@ -54,6 +55,11 @@ interface NoteValue {
   readonly textRevision?: number;
   readonly replaces?: readonly string[];
   readonly restoredReplaces?: readonly string[];
+  readonly restored?: {
+    readonly id: string;
+    readonly sourceId: string;
+    readonly pending?: readonly string[];
+  };
   /** The note this one was moved or copied from: the transfer's identity. */
   readonly from?: string;
   readonly deleted?: true;
@@ -684,6 +690,21 @@ function replacementScope(replacer: NoteValue, target: NoteValue) {
   return replacer.scope === target.scope || replacer.scope === "general";
 }
 
+function restoredFrom(value: NoteValue, id: string, sourceId: string) {
+  return value?.restored?.id === id && value.restored.sourceId === sourceId;
+}
+
+function replacementMatches(value: NoteValue, target: Target) {
+  const restored = value.restored;
+  if (!restored?.pending?.includes(target.id)) return true;
+  const origin = restored.sourceId.slice(0, restored.sourceId.lastIndexOf("/"));
+  return restoredFrom(
+    target.value,
+    restored.id,
+    `${origin}/note-${parseRef(target.id)!.number}`,
+  );
+}
+
 function indexNotes(notes: Note[], index: Replacements = new Map()) {
   for (const note of notes) {
     if (note.value?.deleted || note.value?.status) continue;
@@ -700,7 +721,10 @@ function replacers(index: Replacements, note: Target, config: MemoryConfig) {
   const candidates = index.get(note.id);
   if (!candidates || ownerTag(note.value.tags ?? [], config)) return [];
   return candidates
-    .filter(({ value }) => replacementScope(value, note.value))
+    .filter(
+      ({ value }) =>
+        replacementScope(value, note.value) && replacementMatches(value, note),
+    )
     .map(({ id }) => id)
     .sort();
 }
@@ -1676,6 +1700,7 @@ module.exports = {
         ...(kept?.restoredReplaces
           ? { restoredReplaces: kept.restoredReplaces }
           : {}),
+        ...(kept?.restored ? { restored: kept.restored } : {}),
         previous,
         ...(kept?.approval === undefined ? {} : { approval: kept.approval }),
         ...(kept?.from === undefined ? {} : { from: kept.from }),
@@ -2857,6 +2882,20 @@ module.exports = {
     }
     const more = stopped || records.length === EXPORT_READ;
     const replacements = readReplacements(source, chosen);
+    const exportRelations = (note: Note) => {
+      const refs = relations(replacements, note, config);
+      const pending = note.value.restored?.pending;
+      if (!pending?.length) return refs;
+      const { replaces, ...rest } = refs;
+      const retained = replaces?.filter((id) => {
+        if (!pending.includes(id)) return true;
+        const target = source.state.get(noteKey(parseRef(id)!.number));
+        return (
+          !target || replacementMatches(note.value, noteOf(source, target))
+        );
+      });
+      return retained?.length ? { ...rest, replaces: retained } : rest;
+    };
     // A bundle that carries proposal state is a newer format, so a restorer that predates it
     // refuses the bundle instead of reading a proposed note as an accepted one.
     const waiting = chosen.some(
@@ -2903,7 +2942,7 @@ module.exports = {
         revision: note.record.revision,
         ...(note.value.scope === undefined ? {} : { scope: note.value.scope }),
         tags: [...note.value.tags],
-        ...relations(replacements, note, config),
+        ...exportRelations(note),
         links: qualifiedLinks(note.value.links),
         text: {
           kind: "untrusted" as const,
@@ -2939,6 +2978,8 @@ module.exports = {
         | "forge.memory.export/3";
       level?: Level;
       project?: ProjectIdentity;
+      truncated?: boolean;
+      restoreId?: string;
       approval?: Approval;
       notes: readonly {
         id: string;
@@ -2981,8 +3022,20 @@ module.exports = {
       }
       return { note, ref, replacements };
     });
+    const continuation = input.restoreId;
+    const paged = input.truncated === true || continuation !== undefined;
+    const sourceProject = input.project?.id ?? notes[0]?.ref?.project;
+    const fromSource = ({ ref }: (typeof notes)[number]) =>
+      ref?.level === level && ref.project === sourceProject;
+    if (paged && !notes.every(fromSource))
+      fail("INPUT_INVALID", "The restore page contains other source notes");
+    if (continuation !== undefined && input.approval?.by !== "owner")
+      approved(input.approval, "memory.restore", "a restore continuation");
     const target = await writeTarget(services, level);
     const { state } = target;
+    const restoreId = continuation ?? services.crypto.randomUUID();
+    const restoreKey = `restore/${restoreId}`;
+    const origin = sourceProject ?? level;
     // A link to a note of the exported project moves to the restoring project only when that note
     // is restored by this call, so the link and its note arrive together. Every other link, to a
     // note left out of the export, the device or another project, stays exactly as it was.
@@ -3010,6 +3063,14 @@ module.exports = {
       const read: { key: string; expectRevision: number }[] = [];
       const conflicts: string[] = [];
       const entries: BatchEntry[] = [];
+      if (continuation !== undefined) {
+        const issued = state.get(restoreKey);
+        if (!issued || issued.value !== origin)
+          fail("INPUT_INVALID", "Unknown restore ID for this source and store");
+        read.push({ key: restoreKey, expectRevision: issued.revision });
+      } else if (paged) {
+        entries.push({ key: restoreKey, value: origin, expectRevision: 0 });
+      }
       const queued = new Set<string>();
       // The exported ids of the notes this call restores: added, or already here unchanged.
       const restored = new Set<string>();
@@ -3029,8 +3090,9 @@ module.exports = {
         }
         const key = noteKey(ref.number);
         const id = idIn(target, ref.number);
-        const source = ref.project ?? ref.level;
-        const sourceId = `${source}/${ref.number}`;
+        const source =
+          ref.project === undefined ? ref.level : `project/${ref.project}`;
+        const sourceId = `${source}/note-${ref.number}`;
         if (!restoredTargets.has(sourceId))
           restoredTargets.set(sourceId, false);
         // A note is either never accepted (status) or accepted with a pending revision (proposal).
@@ -3046,7 +3108,8 @@ module.exports = {
           if (old.deleted !== true && old.text === note.text.text) {
             skipped += 1;
             restored.add(qualified(note.id));
-            restoredTargets.set(sourceId, true);
+            const verified = restoredFrom(old, restoreId, sourceId);
+            restoredTargets.set(sourceId, !paged || verified);
           } else conflicts.push(id);
           continue;
         }
@@ -3093,6 +3156,7 @@ module.exports = {
       // note comes back proposed, whatever status the bundle claims, and only memory.accept serves it.
       let proposals = 0;
       for (const { key, note, source, number, replacements } of adding) {
+        const sourceId = `${source}/note-${number}`;
         const ownerTagged = ownerTag(note.tags, config) !== undefined;
         const status =
           note.status === "withdrawn"
@@ -3118,13 +3182,25 @@ module.exports = {
           );
         if (ownerTagged && status === "proposed") proposals += 1;
         const replaces: string[] = [];
+        const pendingLinks: string[] = [];
         for (const replaced of replacements) {
-          const restoredTarget = restoredTargets.get(`${source}/${replaced}`);
+          const sourceId = `${source}/note-${replaced}`;
+          const restoredTarget = restoredTargets.get(sourceId);
           if (restoredTarget === false) continue;
           if (restoredTarget === undefined) {
             const targetKey = noteKey(replaced);
-            if (queued.has(targetKey) || state.get(targetKey)) continue;
-            read.push({ key: targetKey, expectRevision: 0 });
+            if (queued.has(targetKey)) continue;
+            const { value, revision } = state.get(targetKey) ?? {
+              value: undefined,
+              revision: 0,
+            };
+            if (
+              revision !== 0 &&
+              !restoredFrom(value as NoteValue, restoreId, sourceId)
+            )
+              continue;
+            read.push({ key: targetKey, expectRevision: revision });
+            if (revision === 0) pendingLinks.push(idIn(target, replaced));
           }
           replaces.push(idIn(target, replaced));
           entries.push({
@@ -3147,6 +3223,7 @@ module.exports = {
             tags: note.tags,
             links: relinked(note.links, restored),
             ...(replaces.length ? { replaces } : {}),
+            restored: { id: restoreId, sourceId, pending: pendingLinks },
             previous: [],
             // A pending revision cannot ride on a note that was never accepted.
             ...(note.proposal === undefined || status !== undefined
@@ -3175,6 +3252,7 @@ module.exports = {
         added,
         skipped,
         conflicts,
+        ...(paged ? { restoreId } : {}),
         ...(proposals === 0
           ? {}
           : {

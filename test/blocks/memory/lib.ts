@@ -15,6 +15,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
+import { randomUUID } from "node:crypto";
 import { runInNewContext } from "node:vm";
 import { join, resolve } from "node:path";
 import {
@@ -192,6 +193,13 @@ export function loadEntry(
     },
   ) as (module: unknown, exports: unknown) => void;
   wrapped(module, module.exports);
+  const restore = module.exports["memory.restore"];
+  if (restore)
+    module.exports["memory.restore"] = (args) =>
+      restore({
+        ...args,
+        services: { crypto: { randomUUID }, ...(args.services as object) },
+      });
   return module.exports;
 }
 
