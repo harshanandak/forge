@@ -4,6 +4,7 @@ import {
   receiptScope,
   scopeRequestId,
 } from "../../cloud/src/issue-request-id.ts";
+import { canonicalJson } from "../../src/core/config/pointer.ts";
 import { writableStore } from "../../cloud/src/store.ts";
 import { authorityFault } from "../../cloud/src/v3-authority.ts";
 import { readV3Value, recoverV3, viewV3 } from "../../cloud/src/v3-store.ts";
@@ -218,6 +219,69 @@ test(
   },
   timeout,
 );
+
+function tamper(f: Fixture, sequence: number, edit: (frame: Json) => void) {
+  const frame = frames(f)[sequence - 1]!;
+  edit(frame);
+  f.db.run("UPDATE cloud_v3_commits SET body=? WHERE sequence=?", [
+    canonicalJson(frame),
+    sequence,
+  ]);
+  f.restart();
+}
+
+test(
+  "v3 checkpoint refuses a create frame whose receipt id collides with a live receipt",
+  async () => {
+    const f = guardFixture(env);
+    using _db = f.db;
+    await provision(f);
+    await oneRow(f, () => send(f, create));
+    await oneRow(f, () =>
+      send(f, { ...create, requestId: "second", input: { title: "Second" } }),
+    );
+    const [first] = frames(f);
+    tamper(f, 2, (frame) => {
+      (frame.outcome as Json).id = (first!.outcome as Json).id;
+    });
+    expect(await f.send(`${probe}/checkpoint`, {})).toMatchObject(
+      error(503, "UNAVAILABLE"),
+    );
+    expect(frames(f)).toHaveLength(2);
+  },
+  timeout,
+);
+
+for (const [fault, edit] of [
+  [
+    "a saved result that names another issue",
+    (frame: Json) => {
+      ((frame.outcome as Json).result as Json).id = "forge-2";
+    },
+  ],
+  [
+    "an event value that names another issue",
+    (frame: Json) => {
+      const [event] = frame.events as Json[];
+      const [change] = frame.changes as Json[];
+      (event!.value as Json).id = "work-2";
+      ((change!.value as Json).value as Json).id = "work-2";
+    },
+  ],
+] as const) {
+  test(
+    `v3 recovery refuses a create frame with ${fault}`,
+    async () => {
+      const f = guardFixture(env);
+      using _db = f.db;
+      await provision(f);
+      await oneRow(f, () => send(f, create));
+      tamper(f, 1, edit);
+      expect(await send(f, create)).toMatchObject(error(503, "UNAVAILABLE"));
+    },
+    timeout,
+  );
+}
 
 test(
   "the ordinary command route refuses owner headers on v3 and the disabled selector refuses the probe",
