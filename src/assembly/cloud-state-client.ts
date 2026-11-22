@@ -4,6 +4,7 @@
 import {
   carriesToken,
   type CloudHttp,
+  type CommandRefusalCode,
   type CommandWire,
   type LeaseRoute,
   type LeaseWriteBody,
@@ -11,7 +12,7 @@ import {
 } from "../adapters/http/index.ts";
 import { ForgeFailure } from "../contract/failure.ts";
 import { storageRefusal } from "../adapters/http/storage-refusal.ts";
-import { leaseHeldMessage } from "../contract/lease.ts";
+import type { CloudRefusalReasonId } from "../contract/cloud-refusal.ts";
 import type {
   AmbientContext,
   LeaseHolder,
@@ -56,6 +57,47 @@ const failure = (code: string, message: string) =>
 const MISMATCH =
   "This session's device is not the device the stored credential belongs to.";
 const UNAVAILABLE = "The Forge cloud gave no usable answer.";
+
+const reasonMessages: Readonly<Record<CloudRefusalReasonId, string>> =
+  Object.freeze({
+    "receipt.delivery_mismatch":
+      "Add or correct the newest delivers link so it points to the pull request being closed in the admitted repository.",
+    "store.unregistered_table":
+      "The cloud project contains an unregistered storage table. Ask the project owner to inspect the store.",
+  });
+
+const refusalMessages = Object.freeze({
+  APPROVAL_REQUIRED:
+    "Owner approval is still required. Run lane resume without an approval to get a new request.",
+  INPUT_INVALID: "The Forge cloud rejected the command input.",
+  CONTEXT_MISSING: "The request is missing required context.",
+  UNKNOWN_COMMAND: "This command is unavailable in the Forge cloud.",
+  NOT_FOUND: "The requested item was not found in the Forge cloud.",
+  INPUT_CONFLICT: "The request conflicts with current cloud state.",
+  RECEIPT_REQUIRED: "A receipt or an explicit exemption is required.",
+  RECEIPT_INVALID: "The Forge cloud could not accept the receipt evidence.",
+  RECEIPT_HEAD_MISMATCH: "The receipt evidence must cover the merge commit.",
+  PR_NOT_MERGED: "The pull request has not merged into its target branch.",
+  REVISION_CONFLICT: "Cloud state changed. Read it again before retrying.",
+  LEASE_HELD:
+    "Another holder has the lease. Read the lease state to reconcile before retrying.",
+  CLAIM_BLOCKED: "The issue has unresolved blockers.",
+  LEASE_NOT_HELD: "The caller does not hold the lease.",
+  LEASE_STALE: "The lease generation is stale.",
+  LEASE_EXPIRED: "The lease has expired.",
+  INTERNAL: "The Forge cloud encountered an internal error.",
+  UNAVAILABLE: "The Forge cloud is unavailable.",
+  AUTH_REQUIRED: "The Forge cloud requires a device credential.",
+  AUTH_INVALID: "The cloud credential is invalid.",
+  AUTH_REVOKED: "The cloud credential was revoked.",
+  AUTH_EXPIRED: "The cloud credential has expired.",
+  AUTH_DEVICE_MISMATCH:
+    "The cloud credential does not match the device or session.",
+  AUTH_FORBIDDEN: "The request is forbidden in the Forge cloud.",
+} satisfies Record<
+  Exclude<CommandRefusalCode, "QUOTA_EXHAUSTED" | "STORAGE_LIMIT_EXCEEDED">,
+  string
+>);
 
 /** A checked command failure with a result the CLI and MCP must carry. */
 export class CloudCommandFailure extends ForgeFailure {
@@ -113,24 +155,20 @@ function cloudExchange(
       return result as Extract<T, { kind: "ok" | "approval_required" }>;
     const bad = result as unknown as {
       code: string;
+      reasonId?: CloudRefusalReasonId;
     } & RefusalDetails;
     const storage = storageRefusal(bad.code);
     if (storage) throw new Refusal(storage);
-    const held =
-      bad.code === "LEASE_HELD" && bad.lease?.holder !== undefined
-        ? leaseHeldMessage(
-            bad.lease.subject,
-            bad.lease.holder,
-            bad.lease.expiresAt ?? "",
-          )
-        : undefined;
+    const { code, reasonId } = bad;
+    const message =
+      reasonId !== undefined && Object.hasOwn(reasonMessages, reasonId)
+        ? reasonMessages[reasonId]
+        : Object.hasOwn(refusalMessages, code)
+          ? refusalMessages[code as keyof typeof refusalMessages]
+          : "The Forge cloud refused the request.";
     throw new Refusal({
-      code: bad.code,
-      message:
-        held ??
-        (bad.code === "APPROVAL_REQUIRED"
-          ? "Owner approval is still required. Run lane resume without an approval to get a new request."
-          : `The Forge cloud refused the request (${bad.code}).`),
+      code,
+      message,
       retry: bad.code.startsWith("LEASE_") ? "reconcile_first" : "never",
       ...(bad.lease === undefined ? {} : { lease: bad.lease }),
       ...(bad.observed === undefined ? {} : { observed: bad.observed }),

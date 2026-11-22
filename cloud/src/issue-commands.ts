@@ -2,6 +2,7 @@
 // The envelope and context are closed shapes, the device comes from the token and the
 // project from the server, and no caller value becomes an SQL identifier, a namespace or a key.
 import manifest from "../../src/blocks/work/forge.block.json" with { type: "json" };
+import type { CloudRefusalReasonId } from "../../src/contract/cloud-refusal.ts";
 import { bindContext } from "../../src/contract/context.ts";
 import { ForgeFailure } from "../../src/contract/failure.ts";
 import { parseUntrustedJson } from "../../src/contract/untrusted.ts";
@@ -85,10 +86,13 @@ const operations = manifest.operations as unknown as Readonly<
 export const commandProject = (request: Request): string | undefined =>
   COMMAND_ROUTE.exec(new URL(request.url).pathname)?.[1];
 
-export const failed = (error: ForgeError): ResultEnvelope => ({
+export const failed = (
+  error: ForgeError,
+  reasonId?: CloudRefusalReasonId,
+): ResultEnvelope => ({
   ok: false,
   status: "FAIL",
-  error,
+  error: { ...error, ...(reasonId === undefined ? {} : { reasonId }) },
   warnings: [],
 });
 

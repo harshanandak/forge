@@ -1213,7 +1213,14 @@ function assertRegistered(db: SqlDatabase): void {
   );
   for (const table of dataTables(db))
     if (!stateDataTables.has(table) && !registered.has(table))
-      invalid(`Unregistered user table: ${table}`);
+      throw new ForgeFailure(
+        {
+          code: "INPUT_INVALID",
+          message: `Unregistered user table: ${table}`,
+          retry: "never",
+        },
+        "store.unregistered_table",
+      );
 }
 
 export const WATERMARK_INDEX_PROBE =

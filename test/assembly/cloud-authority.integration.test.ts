@@ -3974,13 +3974,31 @@ const CLOSED = { ...ISSUE, status: "closed", revision: 4 };
 const VERIFIED_CLOSE = { id: "forge-1", pr: 490 };
 const verifiedClosed = { ...CLOSED, receipt: "verified-1" };
 
-for (const [code, status, wrongStatus, message] of [
-  ["RECEIPT_INVALID", 400, 200, "Missing or unapproved workflow evidence"],
-  ["RECEIPT_HEAD_MISMATCH", 409, 400, "Workflow must cover merge commit"],
-  ["PR_NOT_MERGED", 409, 200, "PR has not landed on target"],
+for (const [code, status, wrongStatus, message, localMessage] of [
+  [
+    "RECEIPT_INVALID",
+    400,
+    200,
+    "Missing or unapproved workflow evidence",
+    "The Forge cloud could not accept the receipt evidence.",
+  ],
+  [
+    "RECEIPT_HEAD_MISMATCH",
+    409,
+    400,
+    "Workflow must cover merge commit",
+    "The receipt evidence must cover the merge commit.",
+  ],
+  [
+    "PR_NOT_MERGED",
+    409,
+    200,
+    "PR has not landed on target",
+    "The pull request has not merged into its target branch.",
+  ],
 ] as const)
   for (const [op, httpStatus, expectedCode, expectedMessage] of [
-    ["close", status, code, `The Forge cloud refused the request (${code}).`],
+    ["close", status, code, localMessage],
     ["close", wrongStatus, "UNAVAILABLE", NOT_USABLE],
     ["show", status, "UNAVAILABLE", NOT_USABLE],
   ] as const)
